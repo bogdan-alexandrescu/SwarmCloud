@@ -537,7 +537,15 @@
      by a hairline. Now a bordered card with a gap between cards: the run id
      and its state on the first row, the issue under them, and the four facts
      label over value after it (V206, below: in a row that wraps). */
-  .rn-table tbody { display: grid; gap: 8px; }
+  /* EVERY CARD IS THE COLUMN'S WIDTH, NEVER ITS CONTENT'S (visual QA VQ-018,
+     2026-10-26). The grid's one implicit track was `auto`, so a card's
+     min-content -- a run's whole "Not ready: …" reason or issue title on one
+     nowrap line -- set the track: at 390 the cards were laid out ~8,600px
+     wide and clipped, the title cut mid-word at the edge and every card's
+     right border gone. One `minmax(0, 1fr)` track and `min-width: 0` on the
+     row hold a card to the column; what is wider is cut with an ellipsis,
+     whole in its title. */
+  .rn-table tbody { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
   /* THE FACTS ARE A ROW THAT WRAPS (visual QA V206, 2026-10-16): four equal
      grid quarters cut By to "operator@ex…" (80 of 125px) beside room under
      Plan approval and Workflow, and columns sized to their values still cut
@@ -548,13 +556,23 @@
      first line and the issue takes the second whole: the state follows the
      issue in the table's order, so `order` draws it beside the id. */
   .rn-row {
-    display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px 8px;
+    display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px 8px; min-width: 0;
     padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface);
   }
   .rn-row > td { width: auto; height: auto; min-height: 0; padding: 0; border-bottom: 0; white-space: normal; min-width: 0; }
   .rn-row > td { order: 4; }
   .rn-row > td[data-label='Run'] { order: 1; flex: 1 1 0; align-self: center; }
-  .rn-row > td[data-label='State'] { order: 2; flex: none; align-self: center; text-align: right; }
+  /* THE STATE'S REASON IS ITS OWN LINE (VQ-018). The State cell was one
+     `flex: none` item beside the run id, so its width was the reason's whole
+     unwrapped line. The cell gives its two pieces to the card: the state's
+     mark sits beside the run id, and the reason, when there is one, takes a
+     full line after the issue, cut with an ellipsis and whole in its title.
+     `display: contents` drops the cell's box; Chromium keeps the td's role,
+     but older engines took a display: contents cell out of the accessibility
+     tree, so its pill and reason read without their column there. */
+  .rn-row > td[data-label='State'] { display: contents; }
+  .rn-row > td[data-label='State'] > .c-pill { order: 2; flex: none; align-self: center; }
+  .rn-row > td[data-label='State'] > .rn-why { order: 3; flex: 0 0 100%; min-width: 0; }
   .rn-row > td[data-label='Issue'] { order: 3; flex: 0 0 100%; }
   .rn-row > td[data-label='Plan approval'], .rn-row > td[data-label='Workflow'],
   .rn-row > td[data-label='Created'], .rn-row > td[data-label='By'] { font-size: var(--t-micro); line-height: var(--lh-micro); }
@@ -569,6 +587,9 @@
      using quarters still holds: By is never squeezed beside its pair). */
   .rn-row > td[data-label='Plan approval'], .rn-row > td[data-label='Created'] { flex: 0 0 96px; }
   .rn-row > td[data-label='Workflow'], .rn-row > td[data-label='By'] { flex: 1 1 calc(100% - 104px); }
+  /* A run with no workflow says why in its own line's width (VQ-017): the
+     desktop cut is not needed where the note can wrap. */
+  .rn-row > td[data-label='Workflow'] > .rn-nowf { white-space: normal; }
   /* THE LABEL ON ITS OWN LINE, NO SEPARATOR (QA G2-19, 2026-10-07): a cell
      whose value is a block (Issue, Workflow, By) put the label alone on a
      line ending in a dangling " · ". Every label is a micro line above its

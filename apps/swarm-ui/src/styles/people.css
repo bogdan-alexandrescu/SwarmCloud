@@ -15,7 +15,7 @@
 /* A ROW WITH AN OPEN REQUEST HAS AN AMBER LEFT EDGE, drawn as an inset shadow
    on its first cell so it costs no layout and moves no column. */
 .pp-table > tbody > tr.is-waiting > th { box-shadow: inset 3px 0 0 var(--warn); }
-.pp-person { display: inline-flex; align-items: center; gap: var(--ctl-s2); min-width: 0; max-width: 100%; }
+.pp-person { display: inline-flex; align-items: flex-start; gap: var(--ctl-s2); min-width: 0; max-width: 100%; }
 /* ONE LONG ADDRESS DOES NOT WIDEN THE TABLE (visual QA V021) AND IS NEVER
    BROKEN (#1206): one line, capped at 18rem, cut with an ellipsis. */
 .pp-who { display: block; min-width: 0; max-width: 18rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; overflow-wrap: normal; }
@@ -24,6 +24,12 @@
    job in flight the table was 1151px wide. A typical address (`name@example.com`)
    is far inside either cap; the phone record's name line keeps 18rem. */
 .is-scroll > .pp-table .pp-who { max-width: 15rem; }
+/* AND THE NAME DOES NOT SHRINK BELOW ITS OWN WIDTH (visual QA VQ-052): with
+   `min-width: 0` the Person column's min-content was the avatar alone, so the
+   table took its width for a long Claude account cell and cut "Bogdan
+   Alexandrescu" to "Bogdan Alexand…" with room to spare. At its own width,
+   capped above, the name reads whole; only one past the cap is cut. */
+.is-scroll > .pp-table .pp-who { flex-shrink: 0; width: max-content; }
 .pp-avatar {
   flex: none; display: inline-flex; align-items: center; justify-content: center;
   width: 24px; height: 24px; border-radius: 50%;
@@ -33,6 +39,18 @@
 .pp-gh { flex: none; display: inline-flex; color: var(--text-dim); }
 .pp-gh.is-expired { color: var(--warn-ink); }
 .pp-claude { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s1) var(--ctl-s2); }
+/* SEVERAL LOANS ARE ONE LINE AND A DISCLOSURE (S5c, visual QA VQ-052): the
+   count and the lenders on the summary line; the accounts, one per line, only
+   when it is opened. THE LINE WRAPS BETWEEN WORDS, NEVER INSIDE ONE: never in
+   the count, a lender or an account id (`.pp-nobr`), in the grid and in the
+   Manage drawer alike. It was nowrap in the wide table, and with the Platform
+   role column that held the grid 115px past its 1009px pane at 1440 with the
+   nav open: "Last active" read "Last act" and every Manage sat behind the
+   table's scroll (rendered review of PR 2464). Wrapping, the cell's least
+   width is one word ("Engineering"), and the table gives it two lines only
+   when it has no room for one. */
+.pp-loans > .pp-loan-sum { cursor: pointer; }
+.pp-loan-list { list-style: none; margin: var(--ctl-s1) 0 0; padding: 0; display: grid; gap: 2px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
 .pp-manage-cell { text-align: right; }
 /* AN ID IS ONE TOKEN: no break opportunity, at its hyphen or anywhere. The
    ids the shared workspace bodies print (a request id) are held to the same
@@ -142,7 +160,23 @@
   padding: var(--ctl-s3) var(--ctl-pad-chrome); display: flex; flex-direction: column; gap: var(--ctl-s3);
 }
 .pp-drawer-h { display: flex; align-items: center; justify-content: space-between; gap: var(--ctl-s2); min-width: 0; }
-.pp-drawer-h h2 { margin: 0; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--t-lead); line-height: var(--lh-lead); }
+.pp-drawer-h h2 { margin: 0; min-width: 0; overflow: hidden; font-size: var(--t-lead); line-height: var(--lh-lead); }
+/* THE NAME READS; ONLY THE ADDRESS MAY BE CUT (rendered review of PR 2464).
+   The h2 was one nowrap line cut with an ellipsis, and its content is the 1px
+   hidden "Manage " and PersonName's inline-flex box at `max-width: 100%`:
+   299px for 298px at 390, and an inline-flex box is atomic, so a 1px
+   overflow elided all of it and the heading read "…". As a flex row the box
+   is an item that shrinks into the room, and inside it the name and the
+   address wrap onto two lines rather than cut the name; an address too long
+   for a line of its own ends in an ellipsis, whole in the box's `title`. A
+   short one ("Carol · carol@example.com") stays one line. */
+.pp-drawer-h h2 { display: flex; align-items: baseline; }
+.pp-drawer-h h2 > .person-name { flex-wrap: wrap; }
+.pp-drawer-h h2 .person-name-email { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+/* The drawer's Claude account: "Now using" and the grid's line, the
+   disclosure's accounts under its summary. */
+.pp-now { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 0.3em; }
+.pp-now-what { min-width: 0; }
 .pp-dsec { display: grid; gap: var(--ctl-s2); padding-top: var(--ctl-s3); border-top: 1px solid var(--line-soft); }
 .pp-dsec > h3 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; }
 .pp-dsec > p { margin: 0; }
@@ -194,10 +228,101 @@
 .pp-role-w { color: var(--text-dim); }
 .pp-role-w.is-admin { color: var(--text); font-weight: 600; }
 .pp-role-none { color: var(--text-dim); opacity: 0.75; }
-.pp-padmin { flex: none; }
-/* THE PLATFORM ADMIN CHIP WRAPS UNDER THE NAME (rendered review, 2026-10-25).
-   Beside it, on a phone it cut `alice@example.com` to "alice@examp", and at
-   1440 it widened Person until "lent by u-bogdan" broke at its hyphen. The
-   name line may wrap; the address still never breaks. */
+/* THE PLATFORM ROLE IS A COLUMN (S5c, visual QA VQ-051), one line. It was a
+   chip in the Person cell, which on a phone cut `alice@example.com` to
+   "alice@examp" and at 1440 took the name's room (VQ-052). */
+.pp-grid td.pp-prole { white-space: nowrap; }
+/* The name line may still wrap its GitHub mark under it; the address never breaks. */
 .pp-grid .pp-person { flex-wrap: wrap; }
+/* THE NAME OVER THE ADDRESS, THE AVATAR ON THE NAME'S LINE (visual QA VQ-052,
+   review of ADMIN-PEOPLE-VQ). On one line, "Bogdan Alexandrescu · bob@example.com"
+   needed more than the 15rem cap, the address does not shrink (PersonName),
+   so the name was cut to "Bogdan Alexan…"; and the capped 240px who no longer
+   fit beside the avatar, so the cell wrapped to three lines (avatar; cut
+   name; GitHub mark) -- a row 89px tall where the others are 56px. Stacked,
+   the who is as wide as the longer of the two, the name never shares a line
+   with the address, and the cell is two lines. The cell aligns to its top
+   (`.pp-person` above), and in the wide table it does not wrap, so the
+   avatar and the GitHub mark stay on the name's line; a phone
+   record keeps the wrap above for a long address. */
+.pp-person > .pp-who > .person-name { flex-direction: column; }
+.pp-person > .pp-who .person-name-dot { display: none; }
+.is-scroll > .pp-table .pp-person { flex-wrap: nowrap; }
+/* AND ITS TWO GAPS ARE 4PX, NOT 8 (render review of PR 2464's FIX2, 1440
+   with the nav open): nowrap, the cell's least width is avatar, gap, who,
+   gap, GitHub mark, and the seven-loan row's "Bogdan Alexandrescu" held the
+   table at 1010.8px in its 1009px pane, a 2px sideways scroll under the
+   grid. The 8px saved is the margin; the cell does not wrap for it. */
+.is-scroll > .pp-table .pp-person { gap: var(--ctl-s1); }
 .pp-nobr { white-space: nowrap; }
+
+/* THE GRID'S OWN CONTROLS (ADMIN-PEOPLE-FILTER; part of #2157, S5c, S5f).
+   The head holds the workspace filter, the count and Grant admin, pushed to
+   the right of the title and wrapping under it when the card is narrow (a
+   phone). A filter with more workspaces than the card is wide stays inside
+   the card: the shared `.c-seg` is `flex: none`, which held it at its full
+   width beside the "Workspace" label and pushed it 37px past a 390px
+   viewport (rendered review, 2026-10-25). Here it shrinks to what is left
+   after the label; on a desktop it then scrolls inside itself, and on a
+   phone the shared rule wraps its segments onto a second row. */
+.pp-people .pp-head-acts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); margin-left: auto; min-width: 0; max-width: 100%; }
+.pp-filter { display: inline-flex; align-items: center; gap: var(--ctl-s2); min-width: 0; max-width: 100%; }
+.pp-filter > .c-seg { flex: 1 1 auto; min-width: 0; max-width: 100%; overflow-x: auto; }
+/* Find a person sits on the card's first line, its count beside it. */
+.pp-find { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s1) var(--ctl-s3); margin-bottom: var(--ctl-s3); }
+.pp-find > .ur-search { flex: 0 1 18rem; width: auto; min-width: 0; }
+.pp-find > .ur-hint:empty { display: none; }
+.pp-nobody { margin: 0; }
+.pp-grant-form { display: grid; gap: var(--ctl-s2); }
+
+/* RECENT ADMIN ACTIONS IS FOLDED (S5c): its title is the control, a chevron
+   that turns down when open, and this week's count sits at the right. */
+.pp-fold {
+  display: inline-flex; align-items: center; gap: var(--ctl-s2); padding: 0; border: 0; background: none;
+  font: inherit; color: inherit; cursor: pointer; text-align: left;
+}
+.pp-fold:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: var(--r-ctl); }
+.pp-fold-ic { flex: none; transition: transform 120ms ease; }
+.pp-audit.is-open .pp-fold-ic { transform: rotate(90deg); }
+.pp-audit .pp-week { margin: 0 0 0 auto; }
+@media (prefers-reduced-motion: reduce) {
+  .pp-fold-ic { transition: none; }
+}
+
+/* JOIN REQUESTS (JOIN-UI-ADMIN; part of #2325; join-requests.md §4.6, S5f).
+   `requested` is an open request to join and nothing else there: the amber
+   of Waiting for you, where it is decided. "joined by request" sits beside a
+   role and tells a platform membership from a Google-group member; a
+   membership whose group changed admits nobody, so it reads as a warning.
+   The approval's group command is one copyable line that scrolls inside the
+   card on a phone, never past it. */
+.pp-role-w.is-requested { color: var(--warn-ink); font-weight: 600; }
+.pp-joined {
+  display: inline-block; padding: 0 6px; border: 1px solid var(--line); border-radius: var(--r-ctl);
+  color: var(--text-dim); font-size: var(--t-meta); line-height: var(--lh-meta); white-space: nowrap;
+}
+.pp-joined.is-changed { border-color: var(--warn); color: var(--warn-ink); }
+.pp-joined-unread { margin: 0 0 var(--ctl-s2); }
+.pp-join-msg { color: var(--text-dim); font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
+.pp-join-approve { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); min-width: 0; }
+.pp-join-role { width: auto; max-width: 12rem; min-height: var(--h-ctl); }
+.pp-said-cmd { display: grid; gap: var(--ctl-s1); min-width: 0; }
+.pp-said-cmd .ur-hint { margin: 0; }
+.pp-cmd {
+  margin: 0; padding: var(--ctl-s1) var(--ctl-s2); max-width: 100%; overflow-x: auto;
+  border: 1px solid var(--line-soft); border-radius: var(--r-ctl); background: var(--surface-2);
+  font: var(--t-meta)/var(--lh-meta) var(--mono); user-select: all;
+}
+@media (max-width: 560px) {
+  .pp-req[data-kind='join'] .pp-join-approve { flex: 1 1 100%; }
+  .pp-req[data-kind='join'] .pp-join-role { flex: 1 1 0; max-width: none; min-height: 44px; }
+}
+
+/* SET DEFAULT'S NO-OP IS A MUTED NOTE, NOT A WARNING (visual QA VQ-052).
+   Choosing the default already in effect disables Set default, and the
+   shared disabled-button reason (`Button`'s `disabledReason`, components.css
+   `.c-why`) draws an amber ▲ before "The default is already member": a
+   warning mark on a non-problem. The note keeps its muted text and loses the
+   glyph, in the Workspace roles card this page draws (WorkspaceRolesAdmin's
+   `SetDefault`, the one `.wra-form` that sets a disabled reason). */
+.wra-form .c-why svg { display: none; }

@@ -120,7 +120,7 @@ describe('the Admin panel\'s badges (S1b)', () => {
     expect(count('Workspaces you admin')).toBe('2')
     expect(count('Platform secrets')).toBe('3')
     // Something waiting is amber; how many workspaces you admin is only a count.
-    expect(row('Tenants')?.querySelector('.sk-cnt')?.className).toBe('sk-cnt is-alert')
+    expect(row('Tenants')?.querySelector('.sk-cnt')?.className).toBe('sk-cnt is-alert is-chip')
     expect(row('Workspaces you admin')?.querySelector('.sk-cnt')?.className).toBe('sk-cnt')
     // Nothing counts Runner sizes or Platform counts.
     expect(count('Runner sizes')).toBeNull()
@@ -158,6 +158,18 @@ describe('the Admin panel\'s badges (S1b)', () => {
     // MUTATION: hand a workspace admin the platform's request count -> "4" and this fails.
     expect(count('People and roles')).toBeNull()
     expect([...document.querySelectorAll('.sk-panel [aria-label="Your workspaces"] .sk-cnt')].map((c) => c.textContent)).toEqual(['2'])
+  })
+
+  it('counts a workspace admin the join requests the feed serves them (S1c, VQ-051)', async () => {
+    const item = (id: string, group = 'admin'): Json => ({ id, group, needs_you: true, title: 'lee@example.com asks to join Labs', detail: null, href: '/admin/people', at: new Date().toISOString(), read: false })
+    serve(ME(false), [PERSONAL, group('eng', 'admin'), group('ops', 'admin')], {
+      // Two requests to join a workspace of theirs; the platform's count and a non-join item are not theirs.
+      feed: FEED({ admin_pending: 4, items: [item('admin:join:r1'), item('admin:join:r2'), item('admin:workspace:w-1'), item('task:t1', 'task')] }),
+    })
+    await app('/admin/workspaces')
+    // MUTATION: draw a workspace admin no People and roles badge -> null and this fails.
+    await waitFor(() => expect(count('People and roles')).toBe('2'))
+    expect(row('People and roles')?.querySelector('.sk-cnt')?.className).toBe('sk-cnt is-alert')
   })
 })
 
@@ -201,10 +213,10 @@ describe('Workspaces you admin\'s lead and links (S10a)', () => {
     })
     await app('/admin/workspaces')
     const lead = await screen.findByRole('region', { name: 'Your workspaces' })
-    expect(lead.querySelector('b')?.textContent).toBe('ops@example.com is behind')
+    expect(lead.querySelector('b')?.textContent).toBe('ops is behind')
     const buttons = [...lead.querySelectorAll('a, button')]
     // MUTATION: draw the old status line with no button -> fails.
-    expect(buttons.map((b) => b.textContent)).toEqual(['Open ops@example.com’s Config'])
+    expect(buttons.map((b) => b.textContent)).toEqual(['Open ops’s Config'])
     expect(buttons[0]!.getAttribute('href')).toBe('/config/repositories')
     fireEvent.click(buttons[0]!)
     const { chosenTenant } = await import('../fetch')
@@ -216,7 +228,7 @@ describe('Workspaces you admin\'s lead and links (S10a)', () => {
   it('links each workspace to its Config pages by their tab names', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'admin')], { setups: { eng: onboarding('done', 'eng', PEOPLE(true, 2)) } })
     await app('/admin/workspaces')
-    const nav = await screen.findByRole('navigation', { name: 'eng@example.com settings' })
+    const nav = await screen.findByRole('navigation', { name: 'eng settings' })
     const links = [...nav.querySelectorAll('a')]
     // MUTATION: keep "Workspace" -> settings/workspace and MCP servers -> settings/mcp-servers -> fails.
     expect(links.map((a) => a.textContent)).toEqual(['Workspace Settings', 'MCP servers', 'People and roles', 'Secrets'])
@@ -236,5 +248,43 @@ describe('no stale place names in this lane\'s files', () => {
   it('points the workspace roles address at Config › People and roles, as SECTIONS spells it', async () => {
     const { WORKSPACE_PEOPLE_ADDRESS } = await import('../roles')
     expect(WORKSPACE_PEOPLE_ADDRESS).toBe('config/people')
+  })
+})
+
+/**
+ * CONFIG-ADMIN-POLISH-2 (part of #2157; BGD, 2026-10-25): a worded count
+ * draws as a small amber chip, the way config-e.html S1b's `C('1 waiting',
+ * 'wn')` does; a plain number stays a bare count. And the feed's two platform
+ * counts are declared on `NotificationFeed`, so Spine reads them uncast.
+ */
+describe('the Admin panel\'s worded counts are chips (S1b)', () => {
+  it('draws a worded count as a chip and a number count without one', async () => {
+    serve(ME(true), [PERSONAL, group('eng', 'admin'), group('ops', 'admin')], {
+      feed: FEED({ admin_pending: 2, tenants_waiting: 1, platform_secrets_unset: 3 }),
+      capacity: CAPACITY([pool('global', 46, 50)]),
+    })
+    await app('/admin/platform-secrets')
+    await waitFor(() => expect(count('Tenants')).toBe('1 waiting'))
+    await waitFor(() => expect(count('Pool limits')).toBe('1 near ceiling'))
+    const cls = (label: string) => row(label)?.querySelector('.sk-cnt')?.classList
+    // MUTATION: draw a worded count as bare text -> no chip and these fail.
+    expect(cls('Tenants')?.contains('is-chip')).toBe(true)
+    expect(cls('Pool limits')?.contains('is-chip')).toBe(true)
+    // MUTATION: chip every count -> these fail. Amber numbers stay bare numbers.
+    for (const label of ['People and roles', 'Platform secrets', 'Workspaces you admin']) expect(cls(label)?.contains('is-chip'), label).toBe(false)
+    expect(count('Platform secrets')).toBe('3')
+  })
+
+  it('reads the feed\'s two platform counts as declared, with no cast', () => {
+    const api = readFileSync(join(__dirname, '..', 'api.ts'), 'utf8')
+    const feed = api.slice(api.indexOf('export interface NotificationFeed {'))
+    const body = feed.slice(0, feed.indexOf('\n}'))
+    // MUTATION: leave either count undeclared -> fails.
+    expect(body).toMatch(/\btenants_waiting\?: number \| null\b/)
+    expect(body).toMatch(/\bplatform_secrets_unset\?: number \| null\b/)
+    const spine = readFileSync(join(__dirname, '..', 'Spine.tsx'), 'utf8')
+    const fn = spine.slice(spine.indexOf('function feedCount('))
+    // MUTATION: keep the `as unknown as Record` cast -> fails.
+    expect(fn.slice(0, fn.indexOf('\n}'))).not.toMatch(/\bas unknown\b|\bas Record\b/)
   })
 })

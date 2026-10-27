@@ -4,8 +4,10 @@ import { AgParentLink } from '../AgentChildren'
 import { SplitClock } from '../AgentDetail'
 import { agentName, rememberAgentName, workflowHref } from '../agentlist'
 import { useResourceClasses } from '../Blockers'
+import { BrowserUseFact, browserUseOf } from '../BrowserUse'
 import { HelpCard } from '../HelpCard'
 import { LiveControl, type LiveState } from '../LiveBrowser'
+import { rowTitle } from '../OverviewRegions'
 import { addressToPath } from '../paths'
 import { StopRun } from '../StopRun'
 import { TaskIdLine } from '../TaskIdLine'
@@ -32,10 +34,14 @@ const COPY_SAID_MS = 4000
  * THE DETAIL'S HEADER, IN TWO LINES (agent-details-v3.html A, picked
  * 2026-10-04). Line 1: the state pill, the agent's name -- its step, or what
  * it is when it stands alone -- the headline `elapsed · attempt n of N` in
- * sans, and Copy link, Stop and ✕. Under it the whole task id, printed in
- * mono with its copy button (`TaskIdLine`, #94 -- it was only the button's
- * tooltip). Then one sans meta line -- profile · class · workflow · account --
- * and the dispatch as plain-language chips.
+ * sans, and Copy link, Stop and ✕. Line 2: one sans meta line -- profile ·
+ * class · workflow · account · the whole task id with its copy button -- and
+ * the dispatch as plain-language chips.
+ *
+ * THE ID IS ON THE META LINE, NOT A LINE OF ITS OWN (VQ-010, BGD's visual QA
+ * 2026-10-26): with it under the title the header was three lines where v3 A
+ * draws two. It is still printed whole, in mono, with its copy
+ * (`TaskIdLine`, #94 -- it was once only the button's tooltip).
  *
  * WHAT LEFT IT, AND WHERE TO: the tenant
  * (the panel's tenant tile says it), gen and units (the Attempts tab), and
@@ -141,10 +147,7 @@ export function AgHead({
           </Button>
         </span>
       </div>
-      {/* UNDER THE NAME, THE WHOLE ID, PRINTED (#94): it was only the copy
-          button's tooltip, so it had to be hovered to be read. */}
-      <TaskIdLine id={taskId} className="ag-head-id" />
-      <AgHeadMeta task={task} />
+      <AgHeadMeta task={task} taskId={taskId} />
     </div>
   )
 }
@@ -222,25 +225,37 @@ function accountTitle(account: Task['account'], text: { title: string; known: bo
 
 /**
  * Profile · `<class> class` (with its size, once the catalogue answers) · workflow ·
- * account, and the dispatch chips. Sans; mono only for the ids. An account
- * not read is a dash with its reason, never blank. The task id is the line
- * above this one (`TaskIdLine`).
+ * account · the task id, and the dispatch chips. Sans; mono only for the ids.
+ * An account not read is a dash with its reason, never blank. The id is drawn
+ * before the task is read, since it is all the header knows then.
  */
-export function AgHeadMeta({ task }: { task: Task | null }) {
+export function AgHeadMeta({ task, taskId = task?.id ?? null }: { task: Task | null; taskId?: string | null }) {
   const classes = useResourceClasses()
   const cls = task === null ? null : (classes?.[task.resource_class] ?? null)
   const account = task === null ? null : accountText(task.account)
   const d = task === null ? null : dispatchOf(task)
+  // WHETHER ITS BROWSER WAS USED (BROWSER-USE-UI, #2322), beside the profile
+  // it is a fact about: used, not used (warning), or a dash with its reason,
+  // the counts on a press. Nothing for a runtime with no browser.
+  const browser = task === null ? null : browserUseOf(task)
   // A WRAPPED LINE NEVER STARTS WITH A MIDDOT (G2-20, QA 2026-10-07). The
   // separator was each fact's `::before`, so on a phone a fact that wrapped
   // took its dot to the head of the next line (`· workflow wf_…`). It is the
   // `::after` of every fact but the last now, so it stays at the end of the
   // line it separates on.
+  // THE WORKFLOW BY ITS NAME (VQ-010): the link read `wf_65e76c6a… ›`. It
+  // reads the workflow's title -- every step carries its workflow's metadata,
+  // the Overview's row label reads the same (`rowTitle`) -- with the id its
+  // title; a workflow submitted without one keeps the id, in mono.
+  const wfTitle = task === null ? null : rowTitle(task)
+  const idFact =
+    taskId === null ? [] : [{ key: 'id', li: <TaskIdLine id={taskId} className="ag-head-id" /> }]
   const facts: { key: string; li: ReactNode; className?: string; title?: string }[] =
     task === null
-      ? []
+      ? idFact
       : [
           { key: 'profile', li: <b>{task.runner_profile}</b> },
+          ...(browser === null ? [] : [{ key: 'browser-use', li: <BrowserUseFact view={browser} /> }]),
           {
             key: 'class',
             title: cls === null ? 'The class catalogue has not answered, so its size is not shown.' : undefined,
@@ -265,8 +280,12 @@ export function AgHeadMeta({ task }: { task: Task | null }) {
                   li: (
                     <>
                       workflow{' '}
-                      <a className="ctl-link mono" href={addressToPath(workflowHref(task.workflow_id).replace(/^#/, ''))}>
-                        {task.workflow_id} ›
+                      <a
+                        className={wfTitle === null ? 'ctl-link mono' : 'ctl-link'}
+                        href={addressToPath(workflowHref(task.workflow_id).replace(/^#/, ''))}
+                        title={task.workflow_id}
+                      >
+                        {wfTitle ?? task.workflow_id} ›
                       </a>
                     </>
                   ),
@@ -292,6 +311,7 @@ export function AgHeadMeta({ task }: { task: Task | null }) {
                   ),
                 },
               ]),
+          ...idFact,
         ]
   return (
     <ul className="ag-head-facts">

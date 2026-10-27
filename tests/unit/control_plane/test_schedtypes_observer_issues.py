@@ -279,7 +279,8 @@ def test_the_tenants_own_credential_writes_and_appears_in_no_body(db, ctx, write
     assert all(secret not in (b or b"").decode() for _u, _h, b in posts)
     (comment,) = writes.on_issue(epics(writes)[0]["number"])
     assert "@octocat" not in comment["body"] and "fixes #12" not in comment["body"]
-    assert "<script>" not in comment["body"]
+    # Prose, so a backslash escape GitHub renders as `<`, never a live tag (#2391).
+    assert "\\<script>" in comment["body"] and "<script>" not in comment["body"].replace("\\<", "")
 
 
 def test_a_retried_firing_files_nothing_twice(db, ctx, writes, monkeypatch, switched_on) -> None:

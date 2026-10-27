@@ -9,7 +9,8 @@ import { createPortal } from 'react-dom'
 // is only a rebuild if the screens stop hand-rolling their own.
 import { Em, Mark, timesRun, type ChipTone } from './AgentDetail'
 import { TaskIdLine } from './TaskIdLine'
-import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, agentKind, agentList, agentName, shortTaskId, workflowHref, type AgentList, type RecentState } from './agentlist'
+import { BrowserUseMark, browserUseOf, browserUseSay } from './BrowserUse'
+import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, agentKind, agentList, shortTaskId, workflowHref, type AgentList, type RecentState } from './agentlist'
 import { TASK_PAGE_LIMIT, USE_FIXTURES, loadAttempts, loadLiveSession, loadTask, loadTasks, loadTasksInState, type LiveSession, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
 import type { Result } from './fetch'
@@ -24,11 +25,14 @@ import './styles/agents.css'
 import { PARK_WORD, Segmented, StateMark, ToneMark } from './components'
 import { Id, Screen } from './Shell'
 import { publishListCounts } from './Spine'
+import { rowLabel, useRowTitles } from './OverviewRegions'
 import { rowClock, useNow } from './useNow'
 import { waitingShort } from './waitingShort'
 import {
   CONCURRENCY_STATES,
+  NEVER_WRITTEN,
   TERMINAL_STATES,
+  WAITING_STATES,
   compareStarted,
   elapsed,
   rollupState,
@@ -38,6 +42,7 @@ import {
   whyNeedsAction,
   type Task,
   type TaskPage,
+  type TaskState,
 } from './types'
 
 type Tab = 'live' | 'waiting' | 'recent'
@@ -109,6 +114,40 @@ export function browserRows(tasks: readonly Task[]): Task[] {
  * component, because one cell of one kind of row uses it.
  */
 const ListReadAt = createContext<number | null>(null)
+
+/**
+ * EACH WORKFLOW STEP'S WORKFLOW TITLE (VQ-009, BGD's visual QA 2026-10-26):
+ * of 21 live rows most read `build`, `implement` or `re-review`, while
+ * Overview's Running now named the same agents `<title> · implement`. The
+ * list reads the titles the way Overview does (`useRowTitles`: one full read
+ * per workflow, once a session, at most 12 at a time, a shared cache), so the
+ * two pages name an agent one way. A context, as `ListReadAt`, because only
+ * the row's name uses it. A lone agent is never read for it: reading every
+ * lone row in full would be a read per row, so its title comes on the summary
+ * row itself (`ownTitle`, SUMMARY-TITLE).
+ */
+const RowTitleOf = createContext<((t: Task) => string | null) | null>(null)
+
+/** The rows that are a workflow's steps: the ones a workflow title names. */
+function isStep(t: Task): boolean {
+  return (t.workflow_id ?? null) !== null && (t.step_id ?? null) !== null
+}
+
+/**
+ * A LONE AGENT'S OWN TITLE (SUMMARY-TITLE, BGD's decision on VQ-009,
+ * 2026-10-26): `metadata.title`, which the list's summary view carries and
+ * nothing else of the metadata (`codec.SUMMARY_METADATA_KEYS`), so the row
+ * reads `Fix flaky lease heartbeat test (#248)` with no read per row. Null
+ * for a step -- its name is the step, led by its workflow's title -- and for
+ * a title that is absent, blank or not a string, or an API older than the
+ * change, whose summary sends no metadata: the row is then `agentName`'s
+ * `claude-code agent · 01234567`, as before.
+ */
+export function ownTitle(t: Pick<Task, 'step_id' | 'metadata'>): string | null {
+  if ((t.step_id ?? null) !== null) return null
+  const v = t.metadata?.title
+  return typeof v === 'string' && v.trim() !== '' ? v.trim() : null
+}
 
 function tabOf(t: Task): Tab {
   if (CONCURRENCY_STATES.has(t.state)) return 'live'
@@ -205,11 +244,17 @@ interface AgentsPage extends TaskPage {
   extended?: boolean
   /**
    * EVERY LIVE AGENT IS IN `tasks` (QA12-20): the page held them all, or the
-   * live states were read in full beside it (`readLive`). False when a capped
+   * live states were read in full beside it (`readStates`). False when a capped
    * page's live-state read failed or was itself capped, and Live's count is
    * then a lower bound like every other.
    */
   liveWhole?: boolean
+  /**
+   * EVERY WAITING AGENT IS IN `tasks` (VQ-012), as `liveWhole` says of the
+   * live ones: the page held them all, or the waiting states were read in
+   * full beside it (`readStates`).
+   */
+  waitingWhole?: boolean
 }
 
 /**
@@ -243,6 +288,7 @@ export function withMorePages(page: AgentsPage, more: MorePages | null): AgentsP
     extended: true,
     // Read to the last page, the list holds every row, live ones included.
     liveWhole: page.liveWhole === true || more.token === null,
+    waitingWhole: page.waitingWhole === true || more.token === null,
   }
 }
 
@@ -269,23 +315,42 @@ async function loadAgentsPage(): Promise<Result<AgentsPage>> {
     return { status: 'ok', data: { tasks: [], next_page_token: null, asked }, fetchedAt: read.fetchedAt, serverAt: read.serverAt }
   }
   if (read.status !== 'ok' && read.status !== 'stale') return read
-  if (!read.data.next_page_token) return { ...read, data: { ...read.data, asked, liveWhole: true } }
+  if (!read.data.next_page_token) return { ...read, data: { ...read.data, asked, liveWhole: true, waitingWhole: true } }
   // A FIXTURE LIST IS ONE PAGE (`loadTasks`): it never hands out a token, so
   // there is no capped page to read the live states beside, and its `?state=`
   // reads are the same fixture rows again, not a second population.
-  if (USE_FIXTURES) return { ...read, data: { ...read.data, asked, liveWhole: false } }
-  const live = await readLive()
+  if (USE_FIXTURES) return { ...read, data: { ...read.data, asked, liveWhole: false, waitingWhole: false } }
+  const [live, waiting] = await Promise.all([readStates([...CONCURRENCY_STATES]), readStates(WAITING_READ)])
   const held = new Set(read.data.tasks.map((t) => t.id))
+  const extra: Task[] = []
+  for (const t of [...live.tasks, ...waiting.tasks]) {
+    if (held.has(t.id)) continue
+    held.add(t.id)
+    extra.push(t)
+  }
   return {
     ...read,
     data: {
       ...read.data,
-      tasks: [...read.data.tasks, ...live.tasks.filter((t) => !held.has(t.id))],
+      tasks: [...read.data.tasks, ...extra],
       asked,
       liveWhole: live.whole,
+      waitingWhole: waiting.whole,
     },
   }
 }
+
+/**
+ * THE WAITING STATES, READ IN FULL TOO (VQ-012, BGD's visual QA 2026-10-26):
+ * over a capped page the tab read `Waiting 38+` beside the panel's `Waiting
+ * 38` -- the panel counts by state over every task (`/v1/stats`, Spine.tsx
+ * D27), the tab over the newest page -- so one figure was drawn with and
+ * without its `+`. Read whole, as the live states are, the tab's figure is
+ * every waiting agent and needs no `+`; a failed or capped read keeps it a
+ * lower bound. QUEUED is a workflow's state and never a task's
+ * (`NEVER_WRITTEN`), so it is not asked for.
+ */
+const WAITING_READ: readonly TaskState[] = [...WAITING_STATES].filter((s) => !NEVER_WRITTEN.has(s))
 
 /**
  * THE LIVE STATES, READ IN FULL (live-browser QA p12, QA12-20). Live was
@@ -297,11 +362,11 @@ async function loadAgentsPage(): Promise<Result<AgentsPage>> {
  * rows, made only when the page is capped. A failed or capped read leaves
  * Live a lower bound, as it was.
  */
-async function readLive(): Promise<{ tasks: Task[]; whole: boolean }> {
+async function readStates(states: readonly TaskState[]): Promise<{ tasks: Task[]; whole: boolean }> {
   const reads = await Promise.all(
     // A read that throws or answers nothing is a failed read, never an
     // empty state, as the header's attempt read treats one (AgentSplit.tsx).
-    [...CONCURRENCY_STATES].map((state) =>
+    states.map((state) =>
       Promise.resolve()
         .then(() => loadTasksInState(state, { view: 'summary' }))
         .then((r) => r ?? null, () => null),
@@ -362,19 +427,27 @@ export function AgentsScreen({
   // and reported through `onList` like the tab and the state.
   const [grouped, setGrouped] = useState(list?.grouped === true)
   const [failedFirst, setFailedFirst] = useState(list?.failedFirst === true)
+  // ONLY THE BROWSER AGENTS THAT DID NOT USE IT (BROWSER-USE-UI, part of
+  // #2322): `?browser=unused`, where Platform counts' "Unused browser time"
+  // links. Seeded from the address and reported through `onList` like the
+  // toggles above, so the link survives a reload and the chip that clears it
+  // writes the plain address back.
+  const [browserUnused, setBrowserUnused] = useState(list?.browserUnused === true)
   // THE ADDRESS WINS WHEN IT NAMES A TAB, and only then. Keyed on the values
   // rather than the object, which App rebuilds on every route.
   const listTab = list?.tab ?? null
   const listState = list?.state ?? null
   const listGrouped = list?.grouped === true
   const listFirst = list?.failedFirst === true
+  const listBrowserUnused = list?.browserUnused === true
   useEffect(() => {
     if (listTab === null) return
     setTab(listTab)
     setRecentState(listTab === 'recent' ? listState : null)
     setGrouped(listGrouped)
     setFailedFirst(listFirst)
-  }, [listTab, listState, listGrouped, listFirst])
+    setBrowserUnused(listBrowserUnused)
+  }, [listTab, listState, listGrouped, listFirst, listBrowserUnused])
   // RECENT'S SEARCH (#99). Held here beside `profile`, not in the address: a
   // query is a reader's scratch.
   const [query, setQuery] = useState('')
@@ -453,6 +526,8 @@ export function AgentsScreen({
           setQuery={setQuery}
           failedFirst={failedFirst}
           setFailedFirst={setFailedFirst}
+          browserUnused={browserUnused}
+          setBrowserUnused={setBrowserUnused}
         />
       )}
     </Screen>
@@ -490,6 +565,8 @@ function AgentsBody({
   setQuery,
   failedFirst,
   setFailedFirst,
+  browserUnused,
+  setBrowserUnused,
 }: {
   onOpen: (taskId: string) => void
   openTaskId: string | null
@@ -517,6 +594,9 @@ function AgentsBody({
   /** Recent's "failed first" sort (#99). */
   failedFirst: boolean
   setFailedFirst: (f: boolean) => void
+  /** Only the browser agents whose browser was not used (`?browser=unused`, #2322). */
+  browserUnused: boolean
+  setBrowserUnused: (b: boolean) => void
 }) {
   // One clock for every ticking duration on the screen, so a hundred rows do
   // not each hold their own interval. The SHARED 1s clock (useNow.ts), the
@@ -626,11 +706,15 @@ function AgentsBody({
           // not reorder it; the profile and the search still narrow it.
           browserRows(page.tasks)
             .filter((t) => profile === '' || t.runner_profile === profile)
+            .filter((t) => !browserUnused || browserUseOf(t)?.kind === 'unused')
             .filter((t) => needle === '' || matchesQuery(t, needle))
         : page.tasks
         .filter((t) => tabOf(t) === shown)
         .filter((t) => stateFilter === null || t.state === RECENT_STATE_OF[stateFilter])
         .filter((t) => profile === '' || t.runner_profile === profile)
+        // Only an explicit `false` from the worker: a null verdict is not
+        // "not used" (BrowserUse.tsx), so it is never listed here.
+        .filter((t) => !browserUnused || browserUseOf(t)?.kind === 'unused')
         .filter((t) => needle === '' || matchesQuery(t, needle))
         .sort((a, b) => {
           if (failFirst) {
@@ -640,7 +724,7 @@ function AgentsBody({
           if (startedSort !== null) return compareStarted(a, b, startedSort === 'asc')
           return listOrder(a, b, shown)
         }),
-    [page.tasks, shown, stateFilter, profile, needle, failFirst, startedSort, browsers],
+    [page.tasks, shown, stateFilter, profile, needle, failFirst, startedSort, browsers, browserUnused],
   )
 
   // EVERY ROW READ, BY ID, not only the ones this tab and its filters keep
@@ -651,24 +735,37 @@ function AgentsBody({
   // The segment's counts, from the loaded Recent rows, like the tab badges --
   // UNDER THE PROFILE FILTER (live QA WA-9): with `indexer` chosen and 15 rows
   // on screen the segment read `all 181+`, the count of every profile's rows.
-  // A count beside a filter counts what that filter lets through.
+  // A count beside a filter counts what that filter lets through -- the
+  // browser filter too (review, light-desktop-03-filtered: `all 6` over the
+  // two rows `?browser=unused` drew).
   const stateCounts = useMemo(() => {
-    const recent = page.tasks.filter((t) => tabOf(t) === 'recent' && (profile === '' || t.runner_profile === profile))
+    const recent = page.tasks.filter(
+      (t) =>
+        tabOf(t) === 'recent' &&
+        (profile === '' || t.runner_profile === profile) &&
+        (!browserUnused || browserUseOf(t)?.kind === 'unused'),
+    )
     return {
       all: recent.length,
       failed: recent.filter((t) => t.state === RECENT_STATE_OF.failed).length,
       cancelled: recent.filter((t) => t.state === RECENT_STATE_OF.cancelled).length,
       succeeded: recent.filter((t) => t.state === RECENT_STATE_OF.succeeded).length,
     }
-  }, [page.tasks, profile])
+  }, [page.tasks, profile, browserUnused])
 
   // EVERY REPORT CARRIES THE TOGGLES (G2-22): a tab click that wrote only
   // `{ tab, state }` would clear `group=wf` from the address, and the
   // address is what the screen re-reads its toggles from.
-  const report = (over: { tab?: Tab; state?: RecentState | null; grouped?: boolean; failedFirst?: boolean }) => {
+  const report = (over: { tab?: Tab; state?: RecentState | null; grouped?: boolean; failedFirst?: boolean; browserUnused?: boolean }) => {
     const t = over.tab ?? shown
     const st = over.state !== undefined ? over.state : recentState
-    onList?.(agentList(t, st, { grouped: over.grouped ?? grouped, failedFirst: over.failedFirst ?? failedFirst }))
+    onList?.(
+      agentList(t, st, {
+        grouped: over.grouped ?? grouped,
+        failedFirst: over.failedFirst ?? failedFirst,
+        browserUnused: over.browserUnused ?? browserUnused,
+      }),
+    )
   }
   const chooseTab = (next: Tab) => {
     setTab(next)
@@ -685,6 +782,10 @@ function AgentsBody({
   const chooseFailedFirst = (next: boolean) => {
     setFailedFirst(next)
     report({ failedFirst: next })
+  }
+  const clearBrowserUnused = () => {
+    setBrowserUnused(false)
+    report({ browserUnused: false })
   }
   // A ROW OPENS UNDER THE TAB IT CAME FROM (N9, owner QA 2026-10-04). The
   // landing tab is this screen's own state until a click reports one, so a
@@ -760,10 +861,11 @@ function AgentsBody({
   // the page's by design (the Overview counts over the same page, OV-10).
   const bounded = Boolean(page.next_page_token)
   // LIVE IS READ IN FULL (QA12-20), so its count is exact over a capped page
-  // whenever the live-state reads answered whole (`readLive`): `Live 5+` with
+  // whenever the live-state reads answered whole (`readStates`): `Live 5+` with
   // exactly five live claimed a doubt there was no reason for.
   const liveWhole = page.liveWhole === true
-  const tabBounded = (t: Tab): boolean => bounded && !(t === 'live' && liveWhole)
+  const waitingWhole = page.waitingWhole === true
+  const tabBounded = (t: Tab): boolean => bounded && !(t === 'live' && liveWhole) && !(t === 'waiting' && waitingWhole)
   const countText = (n: number, b: boolean = bounded): string => (b ? `${n}+` : String(n))
   const countSay = (n: number): string => `at least ${n} among the ${page.tasks.length} newest read; more rows exist beyond them`
   // ON LIVE, NO "MORE" WHEN THERE IS NO MORE (QA12-20): `200 loaded · more
@@ -784,10 +886,13 @@ function AgentsBody({
       : sort.started === 'desc'
         ? `${sortWord}; press for oldest start first`
         : `${sortWord}; press for the list’s own order, ${ownOrder}`
+  // The workflow titles of the steps on screen (VQ-009, `RowTitleOf`).
+  const titleOf = useRowTitles(rows.filter(isStep))
   const liveSay = `Every agent holding a pool slot is listed: the live states are read in full, not only from the ${page.tasks.length} newest rows.`
 
   return (
     <ListReadAt.Provider value={readAt}>
+    <RowTitleOf.Provider value={titleOf}>
       {/* THE SECTION'S PAGES AS A STRIP (agents.html V1; #503 at 390): Live,
           Waiting and Recent with their counts, underlined rather than boxed.
           On a phone it sticks under the header, so the reader can change tab
@@ -864,7 +969,7 @@ function AgentsBody({
             the checkboxes and `Started` are one unbreakable tail inside the
             group, so a narrow list never strands the last control either. */}
         <div className="ag-tools">
-          <label className="ag-filter">
+          <label className="ag-filter ag-filter-profile">
             <span className="ag-filter-k">profile:</span>
             {/* CAPPED, NOT SIZED TO ITS LONGEST OPTION (V061): the whole value is
                 its title. */}
@@ -951,6 +1056,25 @@ function AgentsBody({
             </a>
           )}
 
+          {/* THE ADDRESS'S BROWSER FILTER, NAMED WHILE IT IS ON (BROWSER-USE-UI,
+              #2322). It arrives from Platform counts' link, not from a control
+              here, so the list says why it is narrowed and × gives every agent
+              back. Only an explicit "not used" passes it, never a dash. */}
+          {browserUnused && (
+            <span className="ag-filter bu-filter" data-filter="browser-unused">
+              <ToneMark tone="warn">browser not used</ToneMark>
+              <button
+                type="button"
+                className="bu-filter-clear"
+                aria-label="Clear the browser filter: show every agent, not only the browser agents that did not use the browser"
+                title="Clear the browser filter"
+                onClick={clearBrowserUnused}
+              >
+                ×
+              </button>
+            </span>
+          )}
+
           <div className="ag-tools-tail">
             {failFirstOffered && (
               <label className="ag-filter check">
@@ -1022,6 +1146,19 @@ function AgentsBody({
           classes={classes}
           onOpen={openElsewhere}
         />
+      ) : rows.length === 0 && browserUnused ? (
+        // THE BROWSER FILTER FOUND NONE, IN THE LOADED ROWS ONLY. Over a capped
+        // page that is a partial answer and says so; whole, it is a real zero.
+        <div className="ctl-empty" data-empty="browser-unused">
+          <h3>
+            <Mark
+              kind={bounded ? 'partial' : 'zero'}
+              say={`No browser agent that did not use its browser among the ${page.tasks.length} loaded rows of ${shown}${needle !== '' ? ` matches “${query.trim()}”` : ''}.${bounded ? ' More rows exist beyond them, so this is not an answer for the platform.' : ''} An agent whose browser use was not recorded is not listed here.`}
+            />{' '}
+            {`no browser left unused in the ${page.tasks.length} loaded`}
+            {needle !== '' && ` matching “${query.trim()}”`}
+          </h3>
+        </div>
       ) : rows.length === 0 && bounded && (needle !== '' || stateFilter !== null) ? (
         // A SEARCH OR A STATE OVER A CAPPED PAGE FOUND NOTHING IN THE PAGE,
         // AND THAT IS ALL IT FOUND (live QA WA-1). It said `real zero`, a
@@ -1073,7 +1210,7 @@ function AgentsBody({
           </h3>
         </div>
       ) : shown === 'waiting' ? (
-        <WaitingGroups rows={rows} now={now} vouched={vouched} onOpen={openRow} openTaskId={openTaskId} classes={classes} grouped={grouped} bounded={bounded} />
+        <WaitingGroups rows={rows} now={now} vouched={vouched} onOpen={openRow} openTaskId={openTaskId} classes={classes} grouped={grouped} bounded={tabBounded('waiting')} />
       ) : grouped && shown !== 'live' ? (
         <GroupedRows rows={rows} now={now} vouched={vouched} onOpen={openRow} openTaskId={openTaskId} classes={classes} taskById={taskById} />
       ) : (
@@ -1097,6 +1234,7 @@ function AgentsBody({
           )}
         </div>
       )}
+    </RowTitleOf.Provider>
     </ListReadAt.Provider>
   )
 }
@@ -1792,10 +1930,12 @@ type CardAt = { top: number; left: number }
  *   then    the reason it waits or stopped, where there is one -- never
  *           dropped, for the reason `TaskRow` gives (the phone question)
  *
- * THE NAME IS THE STEP, OR THE TASK ID. A task carries no title; the step id
- * is the name a workflow gave it (#94), and a lone task is named by the id
- * prefix the rest of the product prints (`shortTaskId`). Either way the whole
- * id is printed under the name, with its copy (`TaskIdLine`, #94).
+ * THE NAME IS THE STEP, THE TITLE, OR THE TASK ID. The step id is the name a
+ * workflow gave it (#94), led by the workflow's title once read (VQ-009); a
+ * lone task is named by its own title, which the summary row carries
+ * (`ownTitle`, SUMMARY-TITLE), and without one by the id prefix the rest of
+ * the product prints (`shortTaskId`). Either way the whole id is printed
+ * under the name, with its copy (`TaskIdLine`, #94).
  *
  * FOLDED TO THE STRIP, the sheet leaves only the mark (`:root[data-agent-list
  * ='strip']`), and a mark alone says nothing about which agent it is. So
@@ -1849,9 +1989,20 @@ function CompactRow({
   const tries = attemptsUsed(task, useRuns(task, live || task.attempt_count > task.max_attempts))
   // NAMED FROM WHAT IT IS (walkthrough G): its step, else `browser check ·
   // 02e9705a` -- it was the bare hash. `agentName`'s rule, drawn below.
-  const name = agentName(task)
+  // A STEP LEADS WITH ITS WORKFLOW'S TITLE (VQ-009), once it is read:
+  // `<title> · implement`, Overview's `rowLabel`.
+  const titleOf = useContext(RowTitleOf)
+  const wfTitle = isStep(task) ? (titleOf?.(task) ?? null) : null
+  // A LONE AGENT LEADS WITH ITS OWN TITLE (SUMMARY-TITLE), off the row itself.
+  const loneTitle = ownTitle(task)
+  const name = loneTitle ?? rowLabel(task, wfTitle)
   const owner = task.submitted_by?.split('@')[0] ?? null
   const profile = task.model ? `${task.runner_profile} · ${task.model}` : task.runner_profile
+  // WHETHER ITS BROWSER WAS USED (BROWSER-USE-UI, #2322): an ended agent on a
+  // browser runtime only. A live one has no verdict yet, and its row already
+  // carries the browser's thumbnail; the inspector says "recorded when it ends".
+  const browserUse = browserUseOf(task)
+  const browserMark = browserUse !== null && browserUse.ended ? browserUse : null
   // A BROWSER AGENT WHOSE BROWSER IS NOT UP YET (QA12-20): listed under
   // Browsers with the running ones, and marked, so it is not read as a
   // browser to watch.
@@ -1888,6 +2039,7 @@ function CompactRow({
     endedAt !== null ? `ended ${whenText}` : whenText === '' ? null : whenText,
     ran,
     profile,
+    browserMark !== null ? browserUseSay(browserMark) : null,
     owner ?? 'no owner recorded',
     live || tries.over ? tries.say : null,
     startingBrowser ? 'browser starting' : null,
@@ -1954,13 +2106,28 @@ function CompactRow({
       <span className="agent cr-name">
         {/* The whole id is the name's hover; a lone task's short id is
             the id treatment, as a step's is on line two. */}
-        <b title={task.id}>
-          {task.step_id ?? (
-            <>
-              {agentKind(task.runner_profile)} · <span className="id" title={task.id}>{shortTaskId(task.id)}</span>
-            </>
-          )}
-        </b>
+        {wfTitle !== null ? (
+          // THE STEP IS NEVER THE PART CUT (agents.css `.cr-wf`): it is what
+          // tells one workflow's rows apart, so the title gives way first.
+          <b className="is-titled" title={`${name} · ${task.id}`}>
+            <span className="cr-wf">{wfTitle}</span>
+            <span className="cr-step">{'\u00a0· '}{task.step_id}</span>
+          </b>
+        ) : loneTitle !== null ? (
+          // One text, so `.cr-name b`'s ellipsis cuts a long one (not the
+          // step's flex `is-titled`); the whole title and the id are the hover.
+          <b title={`${name} · ${task.id}`}>
+            {loneTitle}
+          </b>
+        ) : (
+          <b title={task.id}>
+            {task.step_id ?? (
+              <>
+                {agentKind(task.runner_profile)} · <span className="id" title={task.id}>{shortTaskId(task.id)}</span>
+              </>
+            )}
+          </b>
+        )}
         {/* THE WHOLE ID, PRINTED, under the name (#94): it was a hover
             title, and an id read off the screen had to be hovered for. */}
         <TaskIdLine id={task.id} />
@@ -1969,7 +2136,10 @@ function CompactRow({
       <span className={`when${el.ticking && endedAt === null ? ' ticking' : ''}`} title={whenTitle}>
         {whenText}
       </span>
-      <span className="cr-sub">
+      {/* A BROWSER ROW WRAPS BETWEEN ITS FACTS AT EVERY WIDTH (review,
+          dark-desktop-02-inspector-used): beside the inspector its mark cut
+          the owner and the run time off the one line (agents.css `.has-bu`). */}
+      <span className={`cr-sub${browserMark !== null ? ' has-bu' : ''}`}>
         {task.state === 'RUNNING' && isLiveBrowser(task) && <DeviceThumb taskId={task.id} />}
         {/* A LIVE ROW LEADS WITH WHERE IT IS (visual QA run 2, work-a-007):
             the line is one line cut at its end (agents.css `.cr-sub`), and
@@ -2006,6 +2176,12 @@ function CompactRow({
         )}
         <span className="cr-profile">{profile}</span>
         {' · '}
+        {browserMark !== null && (
+          <>
+            <BrowserUseMark view={browserMark} />
+            {' · '}
+          </>
+        )}
         <span className="cr-owner" title={task.submitted_by ?? undefined}>
           {owner ?? <Em />}
         </span>

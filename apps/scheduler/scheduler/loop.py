@@ -38,7 +38,7 @@ import logging
 import random
 import time
 from dataclasses import asdict, dataclass, field, replace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from google.api_core.exceptions import Aborted
@@ -67,6 +67,7 @@ from swarm_common.states import (
 )
 
 from . import children as children_mod
+from . import runtime as runtime_mod
 from . import sizes as sizes_mod
 from .awaitinput import is_control_plane
 from .codec import as_datetime
@@ -79,7 +80,12 @@ from .credentials import (
     credential_for,
     task_model_class,
 )
-from .mcp_admission import McpCode
+from .mcp_admission import (
+    MCP_CREDENTIAL,
+    MCP_CREDENTIAL_PARK_MAX_SECONDS,
+    McpCode,
+    credential_block,
+)
 from .secret_slots import WorkspaceGrants
 from .dispatch import BackendRouter, DispatchError, live_display_on
 from .fairness import AgingConfig, round_robin_order
@@ -158,6 +164,12 @@ def _newest_disable(db: Any, tenant: Tenant) -> dict[str, str]:
 #: tests/unit/worker/test_merge_action.py.
 MERGE_WAIT_METADATA_KEY = "merge_wait"
 MERGE_WAKE_MARKER = "wake_requested_at"
+#: The wake tick's record of a merge step's owner-question hold, inside
+#: `merge_wait` (MERGE-OUTSIDE-ENDS, part of #2441): the park instant it read
+#: (`parked_at`) and, once the hold's pull request was merged or closed
+#: outside the workflow, the marker. `swarm_api.mergewake.OWNER_HOLD_KEY`,
+#: held equal by tests/unit/control_plane/test_merge_outside_ends.py.
+OWNER_HOLD_KEY = "owner_hold"
 
 #: A MERGE verdict's integrator, published by swarm-api without a worker
 #: (#748, `swarm_api.verdictpublish`): the marker it writes on the step, its
@@ -217,6 +229,46 @@ HUMAN_WAIT_EXPIRED = "human_wait_expired"
 HUMAN_PARK_MAX_SECONDS = 86_400
 
 
+def mcp_park_blocked_by(credential: CredentialAnswer, now: datetime) -> list[dict[str, Any]] | None:
+    """The `blocked_by` a CREDENTIAL_MISSING park writes when it waits for
+    its caller to re-store a workflow's MCP credential (§4.10, BGD
+    2026-10-26): one entry naming `reason`, `credential` ("mcp"), `code`, `server`,
+    `expired_at` and `parked_at`, which is where the API serves a park's detail on
+    the task and what a caller watches. `parked_at` is what the sweep's limit
+    is measured from. None for every other park, which leaves the field as
+    it was."""
+    mcp = credential.mcp
+    waiting = mcp.waits_for_credential if mcp is not None else ()
+    if not waiting or mcp is None or mcp.terminal:
+        return None
+    return [{
+        "reason": ParkReason.CREDENTIAL_MISSING.value,
+        **credential_block(waiting[0]),
+        "parked_at": now.isoformat(),
+    }]
+
+
+def mcp_park_since(task: Task) -> datetime | None:
+    """When a park waiting for a re-stored MCP credential began: the
+    earliest of its `blocked_by` entry's `parked_at` and the task's
+    `updated_at`, which the park itself wrote. The entry sits in a document
+    a tenant's agent may be able to write, so the earliest is taken: a
+    forged instant can only end the wait sooner, never hold it longer."""
+    moments: list[datetime] = []
+    for block in task.blocked_by or ():
+        if not isinstance(block, dict) or block.get("credential") != MCP_CREDENTIAL:
+            continue
+        try:
+            parked = as_datetime(block.get("parked_at"))
+        except (TypeError, ValueError):
+            parked = None
+        if parked is not None:
+            moments.append(parked)
+    if task.updated_at is not None:
+        moments.append(task.updated_at)
+    return min(moments) if moments else None
+
+
 def held_for_control_publish(metadata: Any) -> bool:
     """`swarm_api.verdictpublish.held_by_scheduler`, restated: `integrate`'s gated integrator."""
     block = (metadata or {}).get("dispatch") if isinstance(metadata, dict) else None
@@ -258,6 +310,34 @@ def owner_wait(task: Task, key: str) -> bool:
     """
     return any(isinstance(block, dict) and isinstance(block.get(key), dict)
                for block in task.blocked_by or ())
+
+
+def _instant(value: Any) -> datetime | None:
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def owner_hold_marked(task: Task) -> str | None:
+    """The wake reason of an owner-question hold the wake tick marked, else None (#2441).
+
+    Marked means `merge_wait.owner_hold.wake_requested_at` set at the park
+    instant this task is parked at now (`next_eligible_at`, the worker's park
+    instant): a mark the tick wrote for an earlier park answers nothing.
+    """
+    wait = (task.metadata or {}).get(MERGE_WAIT_METADATA_KEY)
+    hold = wait.get(OWNER_HOLD_KEY) if isinstance(wait, dict) else None
+    if not isinstance(hold, dict) or not hold.get(MERGE_WAKE_MARKER):
+        return None
+    parked_at = _instant(hold.get("parked_at"))
+    if parked_at is None or parked_at != _instant(task.next_eligible_at):
+        return None
+    return str(hold.get("wake_reason") or "wake_requested")
 
 
 def account_park_provider(task: Task) -> str | None:
@@ -665,9 +745,12 @@ class Scheduler:
         # the next drain, so a sibling admitted in between starts, holds
         # capacity and runs to completion (docs/workflows.md says so).
         self._workflow_verdicts: dict[tuple[str, str], FailedWorkflow | None] = {}
-        # Where each paged park sweep resumes (`_parked_window`). Kept across
-        # drains on purpose: that is what moves the window.
-        self._park_cursors: dict[ParkReason, str | None] = {}
+        # Where each paged park sweep resumes (`_parked_window`), keyed by
+        # (sweep, reason): the account wake and the prewarm both read
+        # PROVIDER_QUOTA_EXHAUSTED, and one cursor between them would hand each
+        # only every other page. Kept across drains on purpose: that is what
+        # moves the window.
+        self._park_cursors: dict[tuple[str, ParkReason], str | None] = {}
         self._swept_workflows: set[tuple[str, str]] = set()
         # Tasks this run ended itself (`_note_ended`), whose dependants it
         # resolves before it returns (`_release_ended`, #636). Per run.
@@ -971,9 +1054,7 @@ class Scheduler:
             return []
         now = self._now()
         woken: list[str] = []
-        for task in self._store.parked_tasks(
-            ParkReason.PROVIDER_QUOTA_EXHAUSTED, self._settings.dependency_sweep_size
-        ):
+        for task in self._parked_window(ParkReason.PROVIDER_QUOTA_EXHAUSTED, sweep="account_wake"):
             provider = account_park_provider(task)
             if provider is None or (task.tenant_id, provider) not in served:
                 continue
@@ -1287,10 +1368,13 @@ class Scheduler:
             profile, tenant, self._pool, task=task, forge=self._forge,
             secrets=self._secrets, tenant_of=self._tenant,
         )
-        # A per-run MCP credential that expired or was revoked is not a park:
-        # nobody can hand this task a new value, so it ends FAILED here, from
-        # READY, in one guarded write that takes no lease and reserves nothing
-        # (registered-mcp-servers.md §4.10, contract request 99).
+        # A per-run MCP credential that expired or was revoked, on a task that
+        # is no workflow's, is not a park: nobody can hand it a new value, so
+        # it ends FAILED here, from READY, in one guarded write that takes no
+        # lease and reserves nothing (registered-mcp-servers.md §4.10,
+        # contract request 99). A WORKFLOW's task parks instead (BGD
+        # 2026-10-26): its caller re-stores the credential, and the park's
+        # `blocked_by` entry says which server and when it expired.
         if credential.terminal:
             self._fail_unrunnable(task, credential, report)
             return False
@@ -1300,6 +1384,7 @@ class Scheduler:
                 ParkReason.CREDENTIAL_MISSING,
                 report,
                 detail=credential.park_detail(),
+                blocked_by=mcp_park_blocked_by(credential, now),
             )
             return False
 
@@ -1598,7 +1683,8 @@ class Scheduler:
             self._count_stale(outcome, report)
 
     def _fail_unrunnable(
-        self, task: Task, credential: CredentialAnswer, report: DrainReport
+        self, task: Task, credential: CredentialAnswer, report: DrainReport,
+        *, extra: dict[str, Any] | None = None,
     ) -> None:
         """End a READY or PARKED task whose MCP credential answer is terminal.
 
@@ -1610,7 +1696,7 @@ class Scheduler:
         writes, and a workflow step drops the cached verdict so its siblings
         next in this pass see the failure.
         """
-        detail = credential.park_detail()
+        detail = {**credential.park_detail(), **(extra or {})}
         error = str(detail.get("code") or McpCode.CREDENTIAL_EXPIRED.value)
         outcome = self._store.fail_before_lease(task, error, detail=detail)
         if not outcome.applied:
@@ -1645,7 +1731,9 @@ class Scheduler:
         that one write and holds nothing during it. It is not returned as
         released, so the finish event's admission pass is never handed it.
         """
-        if not self._promote(task, kind="dependency", detail={"reason": reason}, report=report):
+        patch_from, event_detail = self._runtime_resolution(task)
+        if not self._promote(task, kind="dependency", detail={"reason": reason}, report=report,
+                             patch_from=patch_from, event_detail=event_detail):
             return False
         if not is_control_plane(task.runner_profile):
             return True
@@ -1670,11 +1758,54 @@ class Scheduler:
         else:
             self._count_stale(outcome, report)
 
+    def _runtime_resolution(self, task: Task) -> tuple[
+        Callable[[dict[str, Any]], dict[str, Any]] | None, Callable[[], dict[str, Any]] | None
+    ]:
+        """A `browser_if_ui` step's profile, resolved as it is readied (#2322, `runtime`).
+
+        `(None, None)` for every other step, and for one already resolved.
+        Otherwise the parents' changed files are read now -- every parent has
+        SUCCEEDED, so what they changed is final -- and the swap is computed
+        from the document as stored inside the promotion's own transaction:
+        the step is READY on the resolved profile in the one write, before
+        any admission has looked at it (invariants 2 and 3). The READY event
+        records the profile and the reason (`runtime` in its detail).
+        """
+        policy = runtime_mod.policy_of(task.metadata)
+        if policy is None or "resolved" in policy:
+            return None, None
+        resolution = runtime_mod.resolve(
+            list(task.depends_on), policy,
+            lambda task_id: self._store.task_document(task_id, tenant_id=task.tenant_id),
+        )
+        at = self._now()
+        record: dict[str, Any] = {}
+
+        def patch_from(stored: dict[str, Any]) -> dict[str, Any]:
+            patch = runtime_mod.swap_patch(stored, resolution, at)
+            record.clear()
+            record.update(patch["metadata"][runtime_mod.RUNTIME_METADATA_KEY]["resolved"])
+            return patch
+
+        def event_detail() -> dict[str, Any]:
+            return {"runtime": {key: value for key, value in record.items() if key != "at"}}
+
+        log.info(
+            "runtime resolved as the step is readied",
+            extra={"task_id": task.id, "tenant_id": task.tenant_id,
+                   "profile": resolution.profile, "reason": resolution.reason},
+        )
+        return patch_from, event_detail
+
     def _promote(
-        self, task: Task, *, kind: str, detail: dict[str, Any], report: DrainReport | None
+        self, task: Task, *, kind: str, detail: dict[str, Any], report: DrainReport | None,
+        patch_from: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        event_detail: Callable[[], dict[str, Any]] | None = None,
     ) -> bool:
         """Promote one PARKED task; True only if the promotion was written."""
-        outcome = self._store.promote_to_ready(task, detail=detail)
+        outcome = self._store.promote_to_ready(
+            task, detail=detail, patch_from=patch_from, event_detail=event_detail,
+        )
         if not outcome.applied:
             self._count_stale(outcome, report)
             return False
@@ -1838,9 +1969,7 @@ class Scheduler:
         next when a bound stops it.
         """
         promoted = 0
-        for task in self._store.parked_tasks(
-            ParkReason.DEPENDENCY_INCOMPLETE, self._settings.dependency_sweep_size
-        ):
+        for task in self._parked_window(ParkReason.DEPENDENCY_INCOMPLETE):
             if self._resolve_dependency(task, report):
                 promoted += 1
         return promoted
@@ -2028,9 +2157,7 @@ class Scheduler:
         """
         promoted = 0
         now = self._now()
-        for task in self._store.parked_tasks(
-            ParkReason.CREDENTIAL_MISSING, self._settings.dependency_sweep_size
-        ):
+        for task in self._parked_window(ParkReason.CREDENTIAL_MISSING):
             if self._stop_for_failed_workflow(task, report):
                 continue
             tenant = self._tenant(task.tenant_id)
@@ -2049,6 +2176,18 @@ class Scheduler:
                 # either way it can never run, so it ends here, PARKED -> FAILED.
                 self._fail_unrunnable(task, credential, report)
                 continue
+            if credential.mcp is not None and credential.mcp.waits_for_credential:
+                # Waiting for its caller to re-store a workflow's MCP
+                # credential (§4.10, BGD 2026-10-26). Promoted below once the
+                # row is live; past the limit it ends PARKED -> FAILED with
+                # the credential's code. Either way nothing was leased.
+                limit = int(getattr(self._settings, "mcp_credential_park_max_seconds",
+                                    MCP_CREDENTIAL_PARK_MAX_SECONDS))
+                since = mcp_park_since(task)
+                if since is not None and now - since >= timedelta(seconds=limit):
+                    self._fail_unrunnable(task, credential, report, extra={
+                        "waited_since": since.isoformat(), "limit_seconds": limit})
+                continue
             if (
                 credential.source is CredentialSource.ACCOUNT_POOL
                 and task.next_eligible_at is not None
@@ -2065,20 +2204,25 @@ class Scheduler:
                     promoted += 1
         return promoted
 
-    def _parked_window(self, reason: ParkReason) -> list[Task]:
+    def _parked_window(self, reason: ParkReason, *, sweep: str = "") -> list[Task]:
         """The next `dependency_sweep_size` parks on `reason`, resuming where the last drain stopped.
 
-        The two sweeps below leave a park in place while what parked it has not
-        cleared -- a retry not yet due, a tenant still disabled. With a fixed
+        Every park sweep reads through here (#1822). Each leaves a park in
+        place while what parked it has not cleared -- a retry not yet due, a
+        tenant still disabled, a parent still running. With a fixed
         window, that many such parks ahead in the index would hide every park
         behind them for ever, which is the defect these sweeps exist to end.
         So the window moves: a full page leaves its last id as the next drain's
         start, and a short page sends the next drain back to the top. Every
         park is looked at within ceil(parks / sweep size) drains.
+
+        `sweep` names the cursor when two sweeps read one reason, so each
+        moves its own window.
         """
         size = self._settings.dependency_sweep_size
-        page = self._store.parked_page(reason, size, self._park_cursors.get(reason))
-        self._park_cursors[reason] = page[-1].id if len(page) >= size else None
+        key = (sweep, reason)
+        page = self._store.parked_page(reason, size, self._park_cursors.get(key))
+        self._park_cursors[key] = page[-1].id if len(page) >= size else None
         return page
 
     def _promote_scheduled_retries(self, report: DrainReport) -> int:
@@ -2276,7 +2420,9 @@ class Scheduler:
                 # (#2070) is woken by swarm-api's answer route once none is
                 # open, and never expires (owner decision 2026-10-23,
                 # "Resume on answer, no expiry"). It holds no lease while
-                # it waits (invariant 1).
+                # it waits (invariant 1). Its pull request merged or closed
+                # outside the workflow wakes it too (#2441).
+                self._wake_owner_hold(task, report)
                 continue
             parked_at = task.next_eligible_at or task.updated_at
             if parked_at + timedelta(seconds=limit) > now:
@@ -2303,6 +2449,36 @@ class Scheduler:
             else:
                 self._count_stale(outcome, report)
         return ended
+
+    def _wake_owner_hold(self, task: Task, report: DrainReport) -> bool:
+        """Return an owner-question hold to READY on the wake tick's marker (#2441).
+
+        MERGE-OUTSIDE-ENDS (BGD 2026-10-26): a merge held on owner questions
+        whose pull request was merged or closed outside the workflow finishes
+        on its own. swarm-api's wake tick reads the pull request -- the
+        scheduler holds no forge token -- and marks `merge_wait.owner_hold`
+        with `wake_requested_at` and the park instant it read. Only a mark
+        bound to THIS park counts (`owner_hold_marked`): a mark that outlived
+        an earlier park, which the worker parked again on an open pull
+        request, would otherwise wake it on every drain. A forged mark costs
+        one early wake, whose worker re-reads the pull request and parks
+        again on an open one. Promotion writes the task alone; only
+        admission takes capacity (invariants 1 and 3), and the next attempt
+        is fenced as any other (invariant 5).
+        """
+        reason = owner_hold_marked(task)
+        if reason is None:
+            return False
+        return self._promote(
+            task,
+            kind="owner_hold_wake",
+            detail={
+                "reason": "wake_requested",
+                "wake_reason": reason,
+                "park_reason": ParkReason.HUMAN_REQUIRED.value,
+            },
+            report=report,
+        )
 
     def _sweep_awaiting_input(self, report: DrainReport) -> None:
         """Apply `fail_workflow` to await-input steps waiting for a person. Never promotes, never expires.
@@ -2536,9 +2712,11 @@ class Scheduler:
         and looked at again on the next drain -- when no account can take it.
         A park whose tenant no account serves any more is promoted as before:
         its worker falls back to the tenant's own key. These parks are read
-        with `parked_tasks`, one fixed page of `dependency_sweep_size`; a
-        backlog of held parks larger than that page would hide the rest,
-        which `_parked_window` would cure if it ever grows that large.
+        through `_parked_window`, so a backlog of held parks larger than one
+        page of `dependency_sweep_size` no longer hides the rest (#1822). When
+        the budget stops a page part-way, the cursor goes back to the last
+        park looked at, so the next drain starts at the first one this drain
+        did not reach rather than a page beyond it.
         """
         budget = max(0, self._settings.core.prewarm_max_agents)
         if budget == 0:
@@ -2551,9 +2729,13 @@ class Scheduler:
         for reason in PREWARM_REASONS:
             if promoted >= budget:
                 break
-            for task in self._store.parked_tasks(reason, self._settings.dependency_sweep_size):
+            key = ("prewarm", reason)
+            resume = self._park_cursors.get(key)
+            for task in self._parked_window(reason, sweep="prewarm"):
                 if promoted >= budget:
+                    self._park_cursors[key] = resume
                     break
+                resume = task.id
                 if self._stop_for_failed_workflow(task, report):
                     continue
                 eligible_at = task.next_eligible_at

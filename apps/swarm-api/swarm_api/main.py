@@ -47,6 +47,7 @@ from .routes import (
     await_input,
     browser_logins,
     browser_slots,
+    budget_settings,
     checkpoints,
     children,
     credentials,
@@ -72,6 +73,7 @@ from .routes import (
     people,
     platform,
     qa_identity,
+    qa_settings,
     qatargets,
     repositories,
     roles,
@@ -92,6 +94,7 @@ from .routes import (
 from .routes import repository_secrets
 from .routes import actions_secrets
 from .routes import secrets_overview
+from .routes import join_requests
 from .qa_identity import QaIdentityOrigin
 from .validation import FORBIDDEN_CALLER_FIELDS
 
@@ -118,6 +121,9 @@ UNCAPTURED_ROUTES = frozenset({
     "/v1/tasks",
     "/v1/tasks/batch",
     "/v1/workflows",
+    # A workflow's per-run MCP credentials, re-stored by its caller
+    # (registered-mcp-servers.md §4.10, BGD 2026-10-26).
+    workflows.MCP_CREDENTIALS_ROUTE,
     # An await-input answer (docs/design/human-steps.md §4.6): a person's
     # form and up to 16 MiB of their files.
     await_input.INPUT_ROUTE,
@@ -153,6 +159,13 @@ UNCAPTURED_ROUTES = frozenset({
     # a GitHub personal access token, and the GitHub App's authorization code.
     "/v1/onboarding/github/token",
     "/v1/onboarding/github/exchange",
+    # A workspace's join code (docs/design/join-requests.md §4.2, lane
+    # JOIN-API): the two bodies that carry one, and the answer that makes one.
+    # A code admits nobody, but it is what lets a person ask, so it stays out
+    # of every log like the URL fragment it travels in.
+    join_requests.LOOKUP_ROUTE,
+    join_requests.ASK_ROUTE,
+    join_requests.LINK_ROUTE,
 })
 
 # --------------------------------------------------------------------------
@@ -388,6 +401,12 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # A workspace's code-intelligence setting (CTXQ-SET,
     # docs/design/context-quality.md §4.7): its owner or a platform admin, audited.
     app.include_router(codeintel.router)
+    # A workspace's visual-QA settings: how many flows one live-browser step
+    # runs when a run names none (QA-FLOWS-CAP): its owner or admin, audited.
+    app.include_router(qa_settings.router)
+    # A workspace's per-agent budget, which a step may only lower and the
+    # platform ceiling caps (BUDGET-CAP, #2459): its owner or admin, audited.
+    app.include_router(budget_settings.router)
     # Connect GitHub as yourself (docs/onboarding.md §3.2, lane OB3):
     # authorise, exchange, disconnect, and the refresh sweep the
     # swarm-forge-refresh job calls. No route returns a token.
@@ -436,6 +455,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # Admin roles in Firestore: grant and remove, audited (docs/workspaces.md
     # §6.5, lane W2). Admin-only; W7 adds the People list to the same router.
     app.include_router(people.router)
+    # Join requests (docs/design/join-requests.md §4.8, lane JOIN-API): a
+    # person asks with a workspace's join link; its admins decide.
+    app.include_router(join_requests.router)
     # The schedule tick (docs/schedules.md §2, lane S2): one route, admitted
     # to the `swarm-schedule-tick` identity alone (SD10).
     app.include_router(schedule_tick.router)

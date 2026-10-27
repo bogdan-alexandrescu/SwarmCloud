@@ -477,6 +477,9 @@ const STEP_FIELDS = {
     // The owner's answers to them, `{question_index, choice, text}` each
     // (swarm_mcp.compact.step_result; ANSWERS-429).
     owner_answers: { type: ['array', 'null'] },
+    // What a person must do for a step PARKED on HUMAN_REQUIRED, the row's
+    // reason to end (swarm_mcp.compact.person_wait_result, #2441).
+    waiting_on_person: { type: ['object', 'null'] },
   },
   required: [],
 }
@@ -529,7 +532,72 @@ function stepAnswer(answer) {
     last_error: text(given.last_error),
   }
   if (text(given.console)) flat.console = given.console
+  const waiting = personWait(given.waiting_on_person)
+  if (waiting) flat.waiting_on_person = waiting
   return withQuestions(flat, given.questions, given.owner_answers)
+}
+
+// A ROW THAT ENDS WAITING ON A PERSON (#2441, BGD 2026-10-26). Seven merge
+// rows followed an owner-question hold for 3 to 7 hours, 27 to 35 calls and
+// 0.32-0.46M tokens each. The bridge now ends the follow of a task PARKED on
+// HUMAN_REQUIRED (`stop_reason: "waiting_on_person"`) with a PARKED result
+// whose `waiting_on_person` says what the person must do: `kind`
+// (`owner_questions` or `hand_off`), `since`, the `questions` the hold names
+// -- each with the ASKING task, step and index, since they are that task's
+// questions, not this step's -- the `console` link and, for a hand-off,
+// `human_ready_route`. Read here into the same shape, every text capped; null
+// when there is none. The run's owner_questions then carries those questions
+// under the asking task (personAskers), and /sc check attaches a new row
+// once the step leaves PARKED.
+function personWait(given) {
+  if (!given || typeof given !== 'object' || Array.isArray(given)) return null
+  const text = (value, limit) => (typeof value === 'string' && value !== '' ? clip(value, limit) : null)
+  const questions = []
+  for (const entry of Array.isArray(given.questions) ? given.questions : []) {
+    if (!entry || typeof entry !== 'object' || questions.length >= QUESTIONS_MAX) continue
+    const index = entry.question_index
+    if (typeof entry.task_id !== 'string' || !entry.task_id || typeof index !== 'number' || !Number.isInteger(index) || index < 0) continue
+    const [asked] = ownerQuestions([entry])
+    questions.push(Object.assign({ task_id: entry.task_id, step_id: text(entry.step_id, LABEL_TEXT_CHARS), question_index: index }, asked, { index: index }))
+  }
+  return {
+    kind: given.kind === 'owner_questions' ? 'owner_questions' : 'hand_off',
+    since: text(given.since, 40),
+    since_clock: text(given.since_clock, 20),
+    questions: questions,
+    console: consoleLink(given.console) || null,
+    human_ready_route: text(given.human_ready_route, 200),
+  }
+}
+
+// The askers of the questions rows ended waiting on, for withOwnerQuestions():
+// one per ASKING task, its questions under their own index -- the
+// `question_index` swarm_task_answer records the pick under, on that task.
+// A question a row of this run already reports for its own task is not
+// listed twice.
+function personAskers(rows) {
+  const reported = {}
+  for (const row of rows) {
+    if (!row || !row.task_id || !Array.isArray(row.questions)) continue
+    for (const question of row.questions) reported[row.task_id + '#' + question.index] = true
+  }
+  const byTask = {}
+  const order = []
+  for (const row of rows) {
+    const waiting = row && row.waiting_on_person
+    if (!waiting) continue
+    for (const question of waiting.questions) {
+      if (reported[question.task_id + '#' + question.question_index]) continue
+      reported[question.task_id + '#' + question.question_index] = true
+      if (!byTask[question.task_id]) {
+        const name = question.step_id || question.task_id
+        byTask[question.task_id] = { where: { step_id: name }, name: name, task_id: question.task_id, console: waiting.console, questions: [], answered: [] }
+        order.push(question.task_id)
+      }
+      byTask[question.task_id].questions.push({ index: question.question_index, question: question.question, options: question.options, recommended: question.recommended, context: question.context })
+    }
+  }
+  return order.map((id) => byTask[id])
 }
 
 // THE QUESTIONS A ROW HANDS ON (PLUGIN-OWNER-QUESTIONS, part of #1904).
@@ -762,13 +830,25 @@ function readHandle(given) {
   return { path: path, digest: digest }
 }
 
-// The row mode the bridge chose (the sc plugin's `rows` setting, or 'pane'
-// when this project's layout is the pane: `/sc layout pane`): 'summary',
-// 'per-step' or 'pane'; null for anything else, which runs a row per step --
-// what every bridge older than the setting launched.
+// The row mode the bridge chose (the sc plugin's `rows` setting, 'pane'
+// when this project's layout is the pane: `/sc layout pane`, or 'band' when
+// it is the band: `/sc layout band`, which starts no row at all): 'summary',
+// 'per-step', 'pane' or 'band'; null for anything else, which runs a row per
+// step -- what every bridge older than the setting launched.
 function readRows(given) {
   const mode = typeof given === 'string' ? given.trim().toLowerCase() : ''
-  return mode === 'summary' || mode === 'per-step' || mode === 'pane' ? mode : null
+  return mode === 'summary' || mode === 'per-step' || mode === 'pane' || mode === 'band' ? mode : null
+}
+
+// THE BAND LAYOUT (SC-BAND, BGD 2026-10-26): the sc plugin's strip above the
+// prompt follows the work with direct reads and says when a workflow finishes
+// or waits on a person, so this run starts NO row. A spec is still submitted
+// here; an attach given 'band' (a copy written before the switch) follows
+// nothing. The result says so: `followed_by: 'band'`.
+const BANDED = 'no row: the SwarmCloud strip above the prompt follows it (layout band; /sc layout rows or pane brings rows back)'
+
+function banded(result) {
+  return Object.assign(result, { rows: 'band', followed_by: 'band', note: BANDED })
 }
 
 // Whether a mode follows a whole workflow with ONE row: the summary row, or
@@ -1174,6 +1254,15 @@ function narrate(stepId, result, submittedLink) {
   }
   if (result.state_from) {
     return stepId + ' ' + result.state + ' (from the ' + result.state_from + '; its row could not answer: ' + clip(result.row_note, 100) + ')' + link
+  }
+  if (result.waiting_on_person) {
+    // WAITING ON A PERSON since <HH:MMZ> · <n> owner questions (#2441).
+    const waiting = result.waiting_on_person
+    const head = stepId + ' ' + (result.state || 'PARKED') + ' · WAITING ON A PERSON' + (waiting.since_clock ? ' since ' + waiting.since_clock : '')
+    const what = waiting.kind === 'owner_questions'
+      ? waiting.questions.length + ' owner question' + (waiting.questions.length === 1 ? '' : 's')
+      : 'hand-off: sign in on its console page, then say it is ready' + (waiting.human_ready_route ? ' (' + waiting.human_ready_route + ')' : '')
+    return head + ' · ' + what + consoleSuffix(waiting.console || (result && result.console) || submittedLink)
   }
   const parts = [stepId + ' ' + (result.state || 'UNKNOWN'), duration(result.duration_s), money(result.cost_usd)]
   const pr = pullRequest(result.pr_url)
@@ -1593,6 +1682,68 @@ const WAITED = {
   required: ['waited', 'error'],
 }
 
+// A HOLD THAT DOES NOT HOLD (#2441). One row's thirty-minute holds came back
+// after a median of 3.3 s: 119 calls in 2h14m, 2.1M tokens. The bridge times
+// every held call and, after FAST_RETURNS_WAIT (3) in a row that came back in
+// under 60 s with nothing changed, ends the row's follow with result.state
+// HOLD_WAIT; this script then runs one sc:wait row of HOLD_WAIT_S and starts
+// the row again under the same label -- the bridge resumes it from where it
+// stopped. At FAST_RETURNS_END (5) the bridge answers UNKNOWN itself, naming
+// the durations. HOLD_WAITS_MAX bounds the waits here too, for a bridge that
+// kept answering HOLD_WAIT.
+const HOLD_WAIT_STATE = 'HOLD_WAIT'
+const HOLD_WAIT_S = 60
+const HOLD_WAITS_MAX = 2
+
+function holdWait(result) {
+  return !!result && result.state === HOLD_WAIT_STATE
+}
+
+function holdGaveUp(result) {
+  return Object.assign({}, result, {
+    state: 'UNKNOWN',
+    last_error: (result.last_error || 'the hold is not holding') + ' · the row waited ' + HOLD_WAITS_MAX + ' times and its holds still came back at once',
+  })
+}
+
+// One sc:wait row of HOLD_WAIT_S before the row follows again.
+async function waitForHold(name, stepId, next, phaseName) {
+  let answer = null
+  try {
+    answer = await agent('WAIT\nseconds: ' + HOLD_WAIT_S, {
+      label: setupLabel(name, [], 'its holds came back at once · ' + stepId + ' · wait ' + next + ' of ' + HOLD_WAITS_MAX, null),
+      phase: phaseName,
+      agentType: 'sc:wait',
+      schema: WAITED,
+    })
+  } catch (error) {
+    answer = { waited: false, error: failureText(error) }
+  }
+  if (!answer || answer.waited !== true) {
+    const why = answer && answer.error ? answer.error : 'the wait row stopped before it answered'
+    log(stepId + ' · the ' + HOLD_WAIT_S + 's wait could not be made (' + clip(why, 120) + ') · following it again at once')
+  }
+}
+
+// ONE ROW PER STEP (#2441). After one row died, the Result phase attached a
+// second for the same step. Every row this run starts is counted here by the
+// task it follows while its agent runs, and reattachable() never starts a
+// row for a task another live row of this run follows.
+const LIVE_ROWS = {}
+
+function rowLive(taskId) {
+  return !!taskId && (LIVE_ROWS[taskId] || 0) > 0
+}
+
+async function liveAgent(taskId, prompt, opts) {
+  LIVE_ROWS[taskId] = (LIVE_ROWS[taskId] || 0) + 1
+  try {
+    return await agent(prompt, opts)
+  } finally {
+    LIVE_ROWS[taskId] -= 1
+  }
+}
+
 async function waitForBridge(wf, step, next, phaseName) {
   let answer = null
   try {
@@ -1618,14 +1769,23 @@ async function waitForBridge(wf, step, next, phaseName) {
 // workflow.
 async function followRow(wf, step, prompt, opts) {
   let result = null
+  let waits = 0
   for (let tried = 1; tried <= BRIDGE_TRIES; tried++) {
     try {
-      result = stepAnswer(await agent(prompt, opts))
+      result = stepAnswer(await liveAgent(step.task_id, prompt, opts))
     } catch (error) {
       return await rowFromStatus(wf, step, failureText(error), opts.phase)
     }
     if (result && !(typeof result.state === 'string' && result.state)) {
       return await rowFromStatus(wf, step, 'the row answered with no state', opts.phase)
+    }
+    if (holdWait(result)) {
+      if (waits >= HOLD_WAITS_MAX) return holdGaveUp(result)
+      waits++
+      log(step.step_id + ' · ' + clip(result.last_error, 160) + ' · waiting ' + HOLD_WAIT_S + 's, ' + waits + ' of ' + HOLD_WAITS_MAX)
+      await waitForHold(wf.name, step.step_id, waits, opts.phase)
+      tried--
+      continue
     }
     if (!bridgeDown(result)) return result
     if (tried < BRIDGE_TRIES) {
@@ -1683,11 +1843,20 @@ async function followTaskRow(task, name) {
     schema: STEP_RESULT,
   }
   let result = null
+  let waits = 0
   for (let tried = 1; tried <= BRIDGE_TRIES; tried++) {
     try {
-      result = stepAnswer(await agent(taskPrompt(task), opts))
+      result = stepAnswer(await liveAgent(task.task_id, taskPrompt(task), opts))
     } catch (error) {
       return { row_error: failureText(error) }
+    }
+    if (holdWait(result)) {
+      if (waits >= HOLD_WAITS_MAX) return holdGaveUp(result)
+      waits++
+      log(task.task_id + ' · ' + clip(result.last_error, 160) + ' · waiting ' + HOLD_WAIT_S + 's, ' + waits + ' of ' + HOLD_WAITS_MAX)
+      await waitForHold(name, task.task_id, waits, 'Tasks')
+      tried--
+      continue
     }
     if (!bridgeDown(result)) return result
     if (tried < BRIDGE_TRIES) {
@@ -1702,6 +1871,10 @@ async function followTaskRow(task, name) {
 // `max_rows`, else MAX_ATTACHED_TASKS), all at once, grouped by workspace;
 // each ends when its task does. Nothing is submitted.
 async function attachTasks(given, cap, rowMode) {
+  if (rowMode === 'band') {
+    log(given.length + ' single task(s) · ' + BANDED)
+    return banded({ tasks: given.map((task) => withConsole({ task_id: task.task_id, title: task.title || null }, task.console)) })
+  }
   const limit = liveRowCap(cap, MAX_ATTACHED_TASKS)
   const tasks = groupByWorkspace(given)
   const follow = tasks.slice(0, limit)
@@ -1740,7 +1913,7 @@ async function attachTasks(given, cap, rowMode) {
   return withOwnerQuestions(done, rows.filter(Boolean).map((row) => {
     const name = titleName([row.title, row.task_id])
     return rowAsker(row, { title: row.title || row.task_id }, name)
-  }), null)
+  }).concat(personAskers(rows)), null)
 }
 
 // A workflow as its rows show it: `id`; `name`, the title's name; `count`,
@@ -1841,19 +2014,21 @@ function fillFromStatus(rows, final) {
 
 // The steps to re-attach: while SwarmCloud says the workflow still runs, every
 // step whose row ended UNKNOWN (or stopped) and whose task SwarmCloud names as
-// unfinished. A workflow state of UNKNOWN is a partial read, not a running
-// workflow, and starts nothing.
+// unfinished -- and that no other live row of this run follows (LIVE_ROWS,
+// #2441). A row that ended waiting on a person is not UNKNOWN: it answered,
+// and /sc check gives it a new row once the step resumes. A workflow state of
+// UNKNOWN is a partial read, not a running workflow, and starts nothing.
 function reattachable(wf, rows, final) {
   const state = final ? final.state : null
   if (typeof state !== 'string' || !state || state === 'UNKNOWN' || TERMINAL.indexOf(state) >= 0) return []
   const statusOf = statusSteps(final)
   const lost = {}
   for (const row of rows) {
-    if (!row || !(row.state === 'UNKNOWN' || row.row_error)) continue
+    if (!row || row.waiting_on_person || !(row.state === 'UNKNOWN' || row.row_error)) continue
     const now = statusOf[row.step_id]
     if (now && TERMINAL.indexOf(now) < 0) lost[row.step_id] = true
   }
-  return wf.all.filter((step) => lost[step.step_id] && step.task_id)
+  return wf.all.filter((step) => lost[step.step_id] && step.task_id && !rowLive(step.task_id))
 }
 
 // The final status read, the same after a submission and after an attach,
@@ -1909,7 +2084,8 @@ async function finish(wf, rows, knownConsole) {
   }
   if (reattached) finished.reattached = reattached
   if (workflowLink) finished.console = workflowConsole.trim()
-  return withOwnerQuestions(finished, rows.filter(Boolean).map((row) => rowAsker(row, { step_id: row.step_id }, row.step_id)), wf.id)
+  return withOwnerQuestions(finished, rows.filter(Boolean).map((row) => rowAsker(row, { step_id: row.step_id }, row.step_id))
+    .concat(personAskers(rows)), wf.id)
 }
 
 // THE SUMMARY ROW (PLUGIN-ROW-SPLIT). The buckets a count line sorts a state
@@ -2344,6 +2520,10 @@ async function summarizeTasks(tasks) {
 // `rowMode` is the row mode (readRows) and `share` a per-step copy's share of
 // the steps (readShare), or null.
 async function attachOne(workflowId, givenTitle, givenWorkspace, givenDetails, rowMode, share) {
+  if (rowMode === 'band') {
+    log(workflowId + ' · ' + BANDED)
+    return banded({ workflow_id: workflowId, state: null, steps: [] })
+  }
   let attached = null
   let attachFailure = null
   try {
@@ -2528,6 +2708,17 @@ async function unverifiedWithRows(submitted, back, differs, workflowConsole) {
     flatText(submitted.workspace) || flatText(back.workspace), given.details)
   const finished = (step) => TERMINAL.indexOf(step.state) >= 0
   const open = back.steps.filter((step) => step.task_id && !finished(step))
+  if (given.rows === 'band') {
+    log(id + ' · the read-back differs from the spec · ' + BANDED + workspaceNote(wf.workspace) + consoleSuffix(workflowConsole))
+    return banded(withConsole({
+      workflow_id: id,
+      workspace: wf.workspace,
+      title: wf.title,
+      state: 'SUBMITTED_UNVERIFIED',
+      steps: back.steps.map((step) => ({ step_id: step.step_id, task_id: step.task_id || null, state: step.state || null })),
+      error: 'SwarmCloud accepted workflow ' + id + ', but its steps as read back do not match the spec given: ' + differs.join('; ') + '. The SwarmCloud strip above the prompt follows it. The workflow runs regardless: cancel it with swarm_workflow_cancel if it is not what was meant.',
+    }, workflowConsole))
+  }
   const known = {}
   for (const step of back.steps) known[step.step_id] = step
   log(id + ' · the read-back differs from the spec · following its ' + open.length + ' unfinished step(s) anyway' + workspaceNote(wf.workspace) + consoleSuffix(workflowConsole))
@@ -2744,6 +2935,18 @@ if (knownShape && knownShape.length > 0) {
   log(submitted.workflow_id + ' · SwarmCloud appended ' + knownShape.map((step) => step.step_id).join(', ') + ' for ' + knownShape[0].why)
 } else if (addedSteps.length > 0) {
   log(submitted.workflow_id + ' · SwarmCloud added ' + addedSteps.map((step) => step.step_id).join(', '))
+}
+
+// The band layout: submitted, and no row -- the strip above the prompt follows it.
+if (given.rows === 'band') {
+  log(submitted.workflow_id + ' · ' + BANDED)
+  return verified(banded(withConsole({
+    workflow_id: submitted.workflow_id,
+    workspace: wf.workspace,
+    title: wf.title,
+    state: 'SUBMITTED',
+    steps: submitted.steps.map((step) => ({ step_id: step.step_id, task_id: step.task_id || null })),
+  }, submitted.console)))
 }
 
 // ONE summary row for the whole workflow (PLUGIN-ROW-SPLIT): nothing has

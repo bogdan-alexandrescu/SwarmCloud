@@ -8,7 +8,8 @@
  *   1  box 6343793416       (6:flow-find-failure-phone-05) the overflow names
  *                           what it hides and keeps its count:
  *                           `2 more: Artifacts, Checkpoints ▾`, named by that
- *                           text.
+ *                           text. (BROWSER-TAB-TABS, #2423, shortened it to
+ *                           `More 2`, named `More 2 tabs: Artifacts, …`.)
  *   2  box 6343764730       (6:flow-find-failure-desktop-04, the error half)
  *                           the error jump never draws a dash: `Error 1 of 1`
  *                           with one, `N error lines` with several and none
@@ -132,7 +133,12 @@ function bar(t: Task) {
 describe('1 (box 6343793416): the overflow names the tabs it hides, and keeps the count', () => {
   afterEach(unsizeTabs)
 
-  it('reads `N more: <Tab>, <Tab> ▾`, and is named by exactly that text', () => {
+  // SHORTENED BY BROWSER-TAB-TABS (BT-004, BT-005, #2423, 2026-10-26): the
+  // names drawn on the glass made More as wide as the tabs it hid -- 448 px
+  // at 390, over the open tab. It draws `More <n>`; the names are still its
+  // name (`More <n> tabs: Artifacts, …`) and its title, so a phone reader
+  // still hears what is behind it, and the count is kept (c02/c20).
+  it('reads `More <n>`, and is named `More <n> tabs: <Tab>, <Tab>`', () => {
     sizeTabs(358)
     const { onBar } = bar(failed())
     const more = document.querySelector<HTMLElement>('.ag-tabs-more')!
@@ -140,22 +146,22 @@ describe('1 (box 6343793416): the overflow names the tabs it hides, and keeps th
     const all = ['Details', 'Logs', 'Changes', 'Attempts', 'Artifacts', 'Checkpoints']
     const hidden = all.filter((l) => !onBar().includes(l))
     expect(hidden.length).toBeGreaterThan(1)
-    // MUTATION: draw `2 more tabs ▾` again -- the phone reader still cannot see Checkpoints is behind it.
-    expect(flat(more)).toBe(`${hidden.length} more: ${hidden.join(', ')} ▾`)
-    // MUTATION (c02/c20 kept): drop the count and the button says the names only.
-    expect(flat(more)).toMatch(/^\d+ more: /)
-    // MUTATION: keep a separate aria-label (`2 more tabs: ...`) -- the name and the text it draws part again.
+    // MUTATION (c02/c20 kept): drop the count and the button says only `More`.
+    expect(flat(more.querySelector('.ag-tabs-more-label'))).toBe(`More ${hidden.length}`)
+    // MUTATION: keep a separate aria-label -- the name and the text it draws part again.
     expect(more.hasAttribute('aria-label')).toBe(false)
-    expect(screen.getByRole('button', { name: `${hidden.length} more: ${hidden.join(', ')}` })).toBe(more)
+    // MUTATION: drop the names from its name -- the phone reader cannot hear Checkpoints is behind it.
+    expect(screen.getByRole('button', { name: `More ${hidden.length} tabs: ${hidden.join(', ')}` })).toBe(more)
+    expect(more.getAttribute('title')).toBe(hidden.join(', '))
   })
 
-  it('one hidden tab reads `1 more: <Tab> ▾`', () => {
+  it('with room for one more tab, More holds the two it says', () => {
     sizeTabs(62 + 46 + 84 + 130 + 130 + 110)
     const { onBar } = bar(failed())
     const more = document.querySelector<HTMLElement>('.ag-tabs-more')!
-    expect(onBar()).not.toContain('Checkpoints')
-    // MUTATION: say `1 more tab` and the one tab behind it is not named on the glass.
-    expect(flat(more)).toBe('1 more: Checkpoints ▾')
+    expect(onBar()).toEqual(['Details', 'Logs', 'Changes', 'Attempts'])
+    expect(flat(more.querySelector('.ag-tabs-more-label'))).toBe('More 2')
+    expect(more.getAttribute('title')).toBe('Artifacts, Checkpoints')
   })
 })
 

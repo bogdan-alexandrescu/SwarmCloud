@@ -24,7 +24,13 @@ PATH serving a job listing:
   * (observer proposal H, 2026-10-08) nothing is warmed when --previous names
     a release whose three runner digests equal this one's, and a listed job
     that already ran its current digest successfully is skipped by name -- a
-    job new to this release is still warmed.
+    job new to this release is still warmed;
+  * (#888 box 94, measured 2026-10-27) that skip counts any successful
+    execution on the digest, however old and whether a warm run or a tenant
+    task, because the cached import was measured to hold across every
+    same-digest idle gap that exists; the script's header cites that
+    measurement (docs/ci-warm-jobs-measurement.md) instead of calling the
+    premise unmeasured.
 """
 
 from __future__ import annotations
@@ -347,3 +353,33 @@ def test_every_job_already_on_its_digest_says_it_skipped_warming(world):
     assert proc.returncode == 0, proc.stderr
     assert _executed(world) == []
     assert "skipped warming: all 1 worker job(s)" in proc.stderr, proc.stderr
+
+
+def test_an_old_tenant_task_on_the_same_digest_still_skips_the_job(world):
+    """Measured 2026-10-27 (docs/ci-warm-jobs-measurement.md): after a 1-13.7 h
+    same-digest idle gap every timed import read 1.0-2.5 s, never the 30-59 s
+    of a fresh digest, and no runner digest has ever idled a day. So an old
+    successful tenant task on the digest counts as its import paid: no age
+    bound, no warm-runs-only rule."""
+    current = f"{WORKER_REPO}@{_digest('now')}"
+    (world["tmp"] / "listing.json").write_text(json.dumps([_job("swarm-job-acme-claude-code", image=current)]))
+    old_agent_run = _execution(current)
+    old_agent_run["metadata"] = {"creationTimestamp": "2026-10-03T20:35:05.123456Z"}
+    old_agent_run["spec"]["template"]["spec"]["containers"][0]["args"] = ["--task"]
+    (world["tmp"] / "executions.json").write_text(json.dumps({"swarm-job-acme-claude-code": [old_agent_run]}))
+    proc = _run(world, FAKE_EXECUTIONS=str(world["tmp"] / "executions.json"))
+    assert proc.returncode == 0, proc.stderr
+    assert _executed(world) == []
+    assert "skipped swarm-job-acme-claude-code" in proc.stderr, proc.stderr
+
+
+def test_the_skip_rule_cites_its_measurement_and_no_longer_calls_it_unmeasured():
+    header = SCRIPT.read_text().split("\nset -euo pipefail", 1)[0]
+    assert "UNMEASURED" not in header, "the skip's premise was measured on 2026-10-27 (#888)"
+    assert "docs/ci-warm-jobs-measurement.md" in header
+    doc = (REPO / "docs" / "ci-warm-jobs-measurement.md").read_text()
+    # The read time, the longest same-digest gap on a runner, and what it read.
+    assert "2026-10-27" in doc and "05:52" in doc and "06:12" in doc
+    assert "13.7 h" in doc and "1.00-2.49 s" in doc
+    # The gap nobody could measure is stated as such, not glossed.
+    assert "24 h or more" in doc

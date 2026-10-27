@@ -94,6 +94,9 @@ export const SECRETS_LINK_PATH = '/settings/workspace/secrets'
 export const CONFIG_SECRETS_ADDRESS = 'config/secrets'
 export const CONFIG_SECRETS_PATH = '/config/secrets'
 
+/** Config › Secrets' Browser logins tab, `?view=logins` (GA-MOVE-VIEWS). */
+export const SECRETS_LOGINS_VIEW = 'logins'
+
 /**
  * The link's token, read off a location: only on the secrets page's paths, as
  * `keyLinkToken`. Since SSC-UI (part of #2158) that includes the TypeSafe key
@@ -117,9 +120,10 @@ export function secretsLinkToken(pathname: string, search: string): string | nul
  * `runner_key=<provider>` (SSC-LINKS, BGD 2026-10-24); and `key=typesafe`,
  * the TypeSafe key form Settings › API keys used to be; and, when none of
  * those forms is named, `add=secret` with an optional `consumer` (Add a
- * secret, a consumer picked: `secretsAddAddress`). NEVER `t`, and
- * nothing else: an unknown key, or a value of the wrong shape, is dropped,
- * not carried. Always in this order, so one view has one spelling. '' for none.
+ * secret, a consumer picked: `secretsAddAddress`); and, when none of
+ * those is named at all, `view=logins`, the Browser logins tab
+ * (GA-MOVE-VIEWS). NEVER `t`, and nothing else: an unknown key, or a value
+ * of the wrong shape, is dropped, not carried. Always in this order, so one view has one spelling. '' for none.
  */
 export function secretsLinkView(query: string): string {
   const given = new URLSearchParams(query)
@@ -145,6 +149,9 @@ export function secretsLinkView(query: string): string {
     form = take('runner_key', (v) => SECRETS_ID.test(v)) !== null || take('key', (v) => v === 'typesafe') !== null
   }
   if (!form && take('add', (v) => v === 'secret') !== null) take('consumer', (v) => SECRETS_CONSUMER.test(v))
+  // Browser logins, the page's second tab (GA-MOVE-VIEWS), only when nothing
+  // else is named: a scope, a link's form or an add is on the first tab.
+  if (kept.toString() === '' && given.get('view') === SECRETS_LOGINS_VIEW) return `view=${SECRETS_LOGINS_VIEW}`
   return kept.toString()
 }
 
@@ -230,15 +237,19 @@ export const FIXED: Readonly<Record<string, string>> = {
   // docs/schedules.md §6.1 (SD1): Automate › Schedules. One schedule is
   // `/automate/schedules/<id>`, below.
   'automate/schedules': '/automate/schedules',
-  // §6.1: "Approvals is a page of its own at `/approvals`". One item is
-  // `/approvals/<id>`, below.
-  'automate/approvals': '/approvals',
+  // §6.1: Approvals is Automate's second page, at `/automate/approvals` beside
+  // `/automate/schedules` (APPROVALS-MOVE, BGD 2026-10-26, VQ-030). One item is
+  // `/automate/approvals/<id>`, below; the old `/approvals` and
+  // `/approvals/<id>` land on them (`pathToAddress`).
+  'automate/approvals': '/automate/approvals',
   submit: '/submit',
   'capacity/pools': '/capacity/pools',
   'capacity/profiles': '/capacity/pools/profiles',
   'capacity/catalogue': '/capacity/runtimes',
   'capacity/holders': '/capacity/holders',
   'capacity/accounts': '/capacity/accounts',
+  // ACCOUNT-HEALTH-PAGE (part of #2302): Capacity › Account health.
+  'capacity/account-health': '/capacity/account-health',
   'capacity/quota': '/capacity/accounts/quota',
   // NAV-FOOT (#1672): API reads, Capacity's last page. It was `/api-reads`
   // at the spine's foot; that path and `/reference` still land here.
@@ -313,11 +324,25 @@ const MOVED_TO_CONFIG: Readonly<Record<string, string>> = {
   [KEY_LINK_ADDRESS]: CONFIG_SECRETS_ADDRESS,
 }
 
+/**
+ * GITHUB ACCESS' TWO OLD VIEWS, EACH ON THE PAGE WHOSE SUBJECT IT IS
+ * (GA-MOVE-VIEWS; part of #2157, BGD 2026-10-24: "Members to Config › People
+ * and roles, Browser logins to Config › Secrets"). GitHub access is mock-up
+ * S2's two tabs and nothing else since; `?view=members` and `?view=logins`
+ * there -- and on `/access` and `#work/access` before it -- name these.
+ */
+const MOVED_VIEWS: ReadonlyMap<string, string> = new Map([
+  ['members', 'config/people?view=members'],
+  [SECRETS_LOGINS_VIEW, `${CONFIG_SECRETS_ADDRESS}?view=${SECRETS_LOGINS_VIEW}`],
+])
+
 /** An old Config page's address, rewritten to its new one; null for any other address. */
 export function movedToConfig(address: string): string | null {
   const q = address.indexOf('?')
   const bare = q === -1 ? address : address.slice(0, q)
   const query = q === -1 ? '' : address.slice(q + 1)
+  const view = MOVED_VIEWS.get(new URLSearchParams(query).get('view') ?? '')
+  if (view !== undefined && (bare === 'config/github' || bare === 'work/access')) return view
   const to = MOVED_TO_CONFIG[bare]
   if (to === undefined) return null
   if (bare === SECRETS_ADDRESS || bare === 'settings/keys') {
@@ -515,14 +540,14 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
       return tab === null || tab === '' ? base : `${base}?${new URLSearchParams({ tab }).toString()}`
     }
   }
-  // One inbox item rides on the page's query as `approval=<id>`: `/approvals/<id>`,
+  // One inbox item rides on the page's query as `approval=<id>`: `/automate/approvals/<id>`,
   // keeping the inbox's kind filter as `?kind=` (AUT-15).
   if (bare === 'automate/approvals' && query !== '') {
     const q = new URLSearchParams(query)
     const id = q.get('approval')
     if (id !== null && id !== '') {
       const kind = q.get('kind')
-      const base = `/approvals/${encodeURIComponent(id)}`
+      const base = `/automate/approvals/${encodeURIComponent(id)}`
       return kind === null || kind === '' ? base : `${base}?${new URLSearchParams({ kind }).toString()}`
     }
   }
@@ -660,8 +685,12 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
     return plain(`automate/schedules?${q.toString()}`)
   }
 
-  if (seg[0] === 'approvals' && seg.length === 2 && seg[1] !== '') {
-    const q = new URLSearchParams({ approval: decodeURIComponent(seg[1]!) })
+  // One inbox item, `/automate/approvals/<id>`, and the same item at its old
+  // address, `/approvals/<id>` (APPROVALS-MOVE, VQ-030): a notification or a
+  // saved link still opens the item, the bar rewritten once by App's normalise.
+  const approvalId = seg[0] === 'automate' && seg[1] === 'approvals' && seg.length === 3 ? seg[2] : seg[0] === 'approvals' && seg.length === 2 ? seg[1] : undefined
+  if (approvalId !== undefined && approvalId !== '') {
+    const q = new URLSearchParams({ approval: decodeURIComponent(approvalId) })
     const kind = new URLSearchParams(query).get('kind')
     if (kind !== null && kind !== '') q.set('kind', kind)
     return plain(`automate/approvals?${q.toString()}`)
@@ -726,6 +755,9 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
   // every tenant's schedules are Automate › Schedules' All tenants view, and
   // its old path lands there, the bar rewritten once by App's normalise.
   if (path === '/admin/schedules') return plain('automate/schedules?scope=all')
+  // Approvals' old page (APPROVALS-MOVE, VQ-030): `/approvals` lands on
+  // `/automate/approvals`, its `?kind=` kept.
+  if (path === '/approvals') return plain(query === '' ? 'automate/approvals' : `automate/approvals?${query}`)
   // API reads' old paths, and anything under them (NAV-FOOT, #1672).
   if (OLD_API_READS_PATHS.some((old) => path === old || path.startsWith(`${old}/`))) return plain(REFERENCE_ADDRESS)
 

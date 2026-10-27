@@ -191,10 +191,13 @@ describe('V206: the phone card never cuts a fact to share a row', () => {
     expect(painted(row, 'grid-template-columns', PHONE)).toBeNull()
     expect(painted(row.querySelector('td[data-label="Issue"]')!, 'flex', PHONE)).toBe('0 0 100%')
     // The state is after the issue in the table's order: as a flex item it
-    // would open the facts' line, so `order` puts it beside the run id.
+    // would open the facts' line, so `order` puts it beside the run id. The
+    // State cell gives its mark to the card (VQ-018, vq.runs.test.tsx), so
+    // the order is the mark's.
     const order = (label: string) => Number(painted(row.querySelector(`td[data-label="${label}"]`)!, 'order', PHONE) ?? 0)
-    expect(order('Run')).toBeLessThan(order('State'))
-    expect(order('State')).toBeLessThan(order('Issue'))
+    const mark = Number(painted(row.querySelector('td[data-label="State"] > .c-pill')!, 'order', PHONE) ?? 0)
+    expect(order('Run')).toBeLessThan(mark)
+    expect(mark).toBeLessThan(order('Issue'))
     for (const label of ['Plan approval', 'Workflow', 'Created', 'By']) expect(order('Issue'), label).toBeLessThan(order(label))
     // TWO FIXED PAIRS SINCE QA-082 (qafix.runs.test.tsx): content-sized
     // facts laid each card out on its own grid. Plan approval and Created

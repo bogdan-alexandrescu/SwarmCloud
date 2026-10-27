@@ -244,15 +244,20 @@ def test_the_skill_and_the_command_say_a_switch_reattaches_and_which_attach_is_p
 
 def test_the_version_moved_with_its_pin_and_the_marketplace():
     manifest = json.loads(_MANIFEST.read_text())
-    assert manifest["version"] == "0.5.69"  # MUTATION: no bump -- installed copies keep the old hooks.
-    assert any("@sc-v0.5.69#" in arg for arg in manifest["mcpServers"]["swarmcloud"]["args"])
+    version = manifest["version"]
+    # At least the bump this change made; a later bump moves it on (0.5.70,
+    # ARTIFACT-IMAGES, pins its own exact version in test_artifact_images.py).
+    assert tuple(int(part) for part in version.split(".")) >= (0, 5, 69), version  # MUTATION: no bump.
+    assert any(f"@sc-v{version}#" in arg for arg in manifest["mcpServers"]["swarmcloud"]["args"])
     # The marketplace entry pins no version of its own (its source is ./plugin):
     # one it ever names must be this one, or `claude plugin tag` refuses.
     market = json.loads(_MARKETPLACE.read_text())
-    assert [p.get("version", "0.5.69") for p in market["plugins"] if p["name"] == "sc"] == ["0.5.69"]
+    assert [p.get("version", version) for p in market["plugins"] if p["name"] == "sc"] == [version]
 
 
 def test_the_pane_module_queues_the_reattach_by_rewriting_the_run_not_by_a_timer():
     pane = _PANE.read_text()
     assert "args: 'attach --all'" in pane  # MUTATION: save and stop -- the new layout starts no rows.
-    assert pane.count("$.command.run(") == 1  # the pane's own Layout control, a press, outside any command hook
+    # The pane's own Layout control, a press, outside any command hook -- and
+    # the band's one turn per noticed change (SC-BAND, `queue`), never inside one.
+    assert pane.count("$.command.run(") == 2

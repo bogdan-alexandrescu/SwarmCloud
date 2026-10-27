@@ -379,11 +379,17 @@ class _Body(BaseModel):
 
 
 class FetchBody(_Body):
-    ref: str = Field(min_length=1, max_length=255)
+    #: Required, except by a `git_fetch` that carries `confirm` instead.
+    ref: str | None = Field(default=None, min_length=1, max_length=255)
     #: Every sha the worker learnt origin has, oldest first: G3 sends them
     #: all (`agent_worker.gittools._Origin.haves`), and gitexec negotiates
     #: against at most `gitexec.MAX_HAVES`, so the newest are passed on.
     haves: list[str] = Field(default_factory=list, max_length=MAX_HAVES_SENT)
+    #: #2413: instead of a ref, the shas the worker's push asks "does origin
+    #: have these?" about -- commits somebody else wrote, before it refuses
+    #: them `foreign_author`. Answered `{"confirmed": [...]}` from the forge
+    #: (`GitExec.confirm_shas`); nothing is fetched into the clone.
+    confirm: list[str] = Field(default_factory=list, max_length=MAX_HAVES)
 
 
 class PushBody(_Body):
@@ -988,6 +994,13 @@ class GitTools:
     # -- git_fetch and git_rebase_onto ------------------------------------------
 
     def _fetch(self, call: _Call, task: Mapping[str, Any], body: FetchBody) -> dict[str, Any]:
+        if body.confirm and body.ref is None and call.tool == FETCH:
+            return self._confirm(call, task, body)
+        if body.confirm:
+            raise GitToolRefused("bad_ref", "a git_fetch names a ref or shas to confirm, not "
+                                            "both, and a rebase names a ref")
+        if body.ref is None:
+            raise GitToolRefused("bad_ref", f"a {call.tool} names a ref")
         attempt = call.attempt
         ref = task_repository(task)
         call.fields.update(repository=ref.repository, ref=body.ref)
@@ -1035,6 +1048,24 @@ class GitTools:
         answer: dict[str, Any] = {"ref": body.ref, "resolved_sha": fetched.sha}
         answer.update(fetched.delivered or {})
         return answer
+
+    def _confirm(self, call: _Call, task: Mapping[str, Any], body: FetchBody) -> dict[str, Any]:
+        """#2413: which of `body.confirm` the task's own repository has.
+
+        The answer is the subset that is there, from the forge with the
+        task's slot; the worker excludes exactly those from the commits it
+        checks, scans and bundles. The audit row counts the shas, asked and
+        found, and names none of them."""
+        ref = task_repository(task)
+        call.fields.update(repository=ref.repository)
+        shas = list(dict.fromkeys(body.confirm))
+        if not all(isinstance(sha, str) and _SHA.match(sha) for sha in shas):
+            raise GitToolRefused("bad_ref", "confirm names 40-hex shas only")
+        suffix, _ = task_slot(task)
+        token = self._token(call, self._tenant(call.attempt.tenant_id), suffix)
+        found = self.gitexec.confirm_shas(url=self.remote_url(ref), token=token, shas=shas)
+        call.fields["confirm"] = {"asked": len(shas), "found": len(found)}
+        return {"confirmed": found}
 
     # -- git_push_branch ------------------------------------------------------
 
@@ -1293,9 +1324,20 @@ class GitTools:
         The bundle is thin, so it is read where `gitexec.push_bundle` reads it:
         a scratch repository holding the forge's prerequisite commits at depth
         1 and the bundle's objects, with this call's own slot, deadline and
-        credential file. `git log --name-only -m --no-renames` over exactly
-        the new commits names every path they add, change, delete or rename
-        away, so a rename out of `.github/workflows/` counts as touching it.
+        credential file. `git log --name-only --no-renames
+        --diff-merges=combined` over exactly the new commits names every path
+        they add, change, delete or rename away, so a rename out of
+        `.github/workflows/` counts as touching it -- the worker's
+        `Worker._workflow_paths` runs the same listing, and the two must never
+        disagree about which route a branch takes.
+
+        A merge is listed COMBINED, not with `-m` (#2452): `-m` diffs it
+        against each parent, so a lane's merge of main named main's own
+        workflow changes as the branch's and was refused
+        `workflow_scope_missing` (or routed here at all). Combined, a merge
+        names a path only where its result differs from every parent. Both
+        parents' trees are what that reads: the prerequisites fetched at
+        depth 1 above carry them, as they did for `-m`.
         """
         gx = self.gitexec
         url, host = gx._check_url(url)
@@ -1322,7 +1364,8 @@ class GitTools:
                              token=token, extra=("-c", "protocol.file.allow=always")),
                      "unbundle", code="bad_bundle")
             run = gx._must(gx._git(scratch, repo, [
-                "log", "--format=", "--name-only", "--no-renames", "-m", header.tip,
+                "log", "--format=", "--name-only", "--no-renames", "--diff-merges=combined",
+                header.tip,
                 "--not", *header.prerequisites, "--", *WORKFLOW_PATHSPECS], token=token),
                 "listing the pushed range's paths", code="bad_bundle")
         return sorted({line.strip() for line in run.stdout.splitlines()

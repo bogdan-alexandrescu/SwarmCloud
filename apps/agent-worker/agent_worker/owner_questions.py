@@ -67,6 +67,18 @@ REVIEW_OUTPUT = "verdict.json"
 #: The verdict keys the guidance names; `verdict.read_verdict` reads both.
 NEEDS_OWNER_KEY = "needs_owner"
 OPEN_QUESTIONS_KEY = "open_questions"
+#: A question's record of the option its asker's branch builds, or null when
+#: the answer changes nothing it builds (`questions`, ANSWER-CONTENT-CHECK).
+BUILT_KEY = "built"
+#: A merge's pick-fix round's report (PICK-FIX-ROUND, part of #2441): a JSON
+#: list, one `{task_id, question_index, picked, builds_pick}` per pick its
+#: brief named, `picked` the owner's option label (null for a free-text
+#: answer) and `builds_pick` whether the branch now builds it. Written by the
+#: round's agent beside its other artifacts, read back by the merge
+#: (`picks_built`); swarm-api's brief names the file
+#: (`swarm_api.mergewake.PICKS_BUILT_NAME`, held equal by
+#: tests/unit/worker/test_merge_pick_fix_round.py).
+PICKS_BUILT_NAME = "picks-built.json"
 #: The most task documents the ancestor walk reads: every ancestor is a
 #: distinct step of one workflow, so the most steps a workflow may have, read
 #: from the FROZEN `Settings` default as `lifecycle._MAX_WORKFLOW_STEPS` is.
@@ -175,7 +187,7 @@ def questions_of(
     rows: list[dict[str, Any]] = []
     for index, question in enumerate(asked):
         answer = answers.get(index)
-        rows.append({
+        row: dict[str, Any] = {
             "task_id": task_id,
             "step_id": step_id,
             "question_index": index,
@@ -186,7 +198,27 @@ def questions_of(
             "blocking": question.get("blocking") is True,
             "answer": None if answer is None else {
                 "choice": answer.get("choice"), "text": answer.get("text")},
-        })
+        }
+        # Only where the asker wrote it: a file from before ANSWER-CONTENT-CHECK
+        # has no `built`, and the merge reads its absence as "answered is
+        # enough", never as null.
+        if BUILT_KEY in question:
+            row[BUILT_KEY] = question[BUILT_KEY]
+        rows.append(row)
+    return rows
+
+
+def workflow_questions(
+    task: Mapping[str, Any], *, fetch: Fetch, store: ObjectStore, tenant_id: str
+) -> list[dict[str, Any]]:
+    """Every question the steps `task` depends on asked, each with its answer.
+
+    The review's staging (`collect`) and the merge's comparison of every
+    answered pick with its `built` (PICK-FIX-ROUND) read the same rows.
+    """
+    rows: list[dict[str, Any]] = []
+    for task_id, doc in workflow_ancestors(task, fetch):
+        rows += questions_of(task_id, doc, store=store, tenant_id=tenant_id)
     return rows
 
 
@@ -196,10 +228,47 @@ def collect(
     """Every earlier step's questions for a review; [] for any other step."""
     if not is_review(task.get("metadata")):
         return []
-    rows: list[dict[str, Any]] = []
-    for task_id, doc in workflow_ancestors(task, fetch):
-        rows += questions_of(task_id, doc, store=store, tenant_id=tenant_id)
-    return rows
+    return workflow_questions(task, fetch=fetch, store=store, tenant_id=tenant_id)
+
+
+def picks_built(
+    task_id: str, doc: Mapping[str, Any], *, store: ObjectStore, tenant_id: str
+) -> dict[tuple[str, int], tuple[str | None, bool]]:
+    """A pick-fix round's `PICKS_BUILT_NAME`: `{(task, index): (picked, builds_pick)}`.
+
+    {} when the round uploaded no such file: a round that reported nothing
+    built nothing. A file that is there and cannot be read, or is not the
+    list the brief asked for, raises `InputUnavailable`; the merge reads that
+    as no report, so its picks stay unbuilt, never as built.
+    """
+    try:
+        reference = inputs_mod.artifact_reference(
+            dict(doc), tenant_id=tenant_id, upstream_task_id=task_id, filename=PICKS_BUILT_NAME)
+    except InputUnavailable:
+        return {}
+    where = f"the {PICKS_BUILT_NAME} of pick fix round task {task_id}"
+    if reference.size_bytes > questions_mod.MAX_BYTES:
+        raise InputUnavailable(f"{where} is larger than {questions_mod.MAX_BYTES} bytes")
+    try:
+        rows = json.loads(store.download_bytes(reference.key))
+    except ValueError:
+        raise InputUnavailable(f"{where} is not JSON") from None
+    if not isinstance(rows, list):
+        raise InputUnavailable(f"{where} is not a JSON list")
+    out: dict[tuple[str, int], tuple[str | None, bool]] = {}
+    for row in rows:
+        asker = row.get("task_id") if isinstance(row, Mapping) else None
+        index = row.get("question_index") if isinstance(row, Mapping) else None
+        picked = row.get("picked") if isinstance(row, Mapping) else None
+        builds = row.get("builds_pick") if isinstance(row, Mapping) else None
+        if (not isinstance(asker, str) or type(index) is not int or index < 0
+                or not (picked is None or isinstance(picked, str))
+                or not isinstance(builds, bool)):
+            raise InputUnavailable(
+                f"{where} holds an entry that is not {{task_id, question_index, picked, "
+                "builds_pick}")
+        out[(asker, index)] = (picked, builds)
+    return out
 
 
 def guidance(path: Path | str, rows: list[dict[str, Any]]) -> str:
@@ -209,7 +278,9 @@ def guidance(path: Path | str, rows: list[dict[str, Any]]) -> str:
         f"\n\nEarlier steps of this workflow asked the owner {len(rows)} question(s), "
         f"{open_count} still unanswered. They are in {path}, a JSON list of "
         "{task_id, step_id, question_index, question, options, recommended, context, "
-        "blocking, answer}, with answer null while the owner has not answered. Read it "
+        "blocking, answer}, with answer null while the owner has not answered, and "
+        "`built`, where the asker wrote it, the option label its branch implements "
+        "(null: the answer changes nothing it builds). Read it "
         f"before you write verdict.json. In verdict.json, put in `{NEEDS_OWNER_KEY}` a "
         "list of {task_id, step_id, question_index, question}, one for each UNANSWERED "
         "question that must hold the merge: one whose answer could reverse a recorded "
@@ -217,7 +288,8 @@ def guidance(path: Path | str, rows: list[dict[str, Any]]) -> str:
         "contract, and one the asker marked blocking. Put every other unanswered "
         f"question, in the same shape, in `{OPEN_QUESTIONS_KEY}`, so the pull request "
         f"lists it. The merge step will not merge while a `{NEEDS_OWNER_KEY}` question "
-        "is unanswered; it merges past the others. An answered question goes in neither."
+        "is unanswered, nor once its answer picks an option other than its `built`; "
+        "it merges past the others. An answered question goes in neither."
     )
 
 

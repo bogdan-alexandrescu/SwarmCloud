@@ -79,9 +79,14 @@ FILE = "issues"
 #: BGD set these on 2026-10-23 (docs/design/qa-environments.md §10, Q9 (a)):
 #: `per_run_usd` 40 bounds each LEG (a work item), as it bounded a run;
 #: `max_concurrent` 2 lets a two-leg firing start both legs; `per_day_usd` 160
-#: keeps "the daily firing plus one run-now" for both legs. A schedule may set
-#: lower figures; raising them is a change to this line, in a pull request.
-BUDGET_CAPS = scheduletypes.BudgetCaps(per_run_usd=40, per_day_usd=160, max_concurrent=2)
+#: keeps "the daily firing plus one run-now" for both legs. A leg may run up
+#: to 150 flows in batches (QA-FLOWS-CAP, PR 2409), and at the bench median of $0.14 a
+#: flow run, 132 flows at 2 widths cost about $37 before capture, review and
+#: the report, so BGD raised `per_run_usd` to 80 on 2026-10-26 (QA-TRIPWIRE-MAC).
+#: `per_day_usd` 160 still holds two legs, so it and `max_concurrent` stay.
+#: A schedule may set lower figures; raising them is a change to this line,
+#: in a pull request.
+BUDGET_CAPS = scheduletypes.BudgetCaps(per_run_usd=80, per_day_usd=160, max_concurrent=2)
 
 #: `check_target`'s refusal: the same for another tenant's target and for none.
 TARGET_NOT_FOUND = "qa_target_not_found"
@@ -192,7 +197,7 @@ def create(firing: Any) -> list[dict[str, Any]]:
             continue
         task_ids = browser_task_ids(firing.ctx.db, tenant_id, item["id"], leg.browser)
         targets.record_run(tenant_id=tenant_id, target=leg.target, workflow_id=item["id"],
-                           task_ids=task_ids, file=FILE, by=by, group_id=group_id)
+                           task_ids=task_ids, file=FILE, by=by, group_id=group_id, leg=leg)
         targets.leg_submitted(group_id, leg.name, workflow_id=item["id"])
         items.append(item)
         log.info("schedule %s firing %s: QA run %s of target %s, leg %s", schedule["schedule_id"],

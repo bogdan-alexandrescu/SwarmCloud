@@ -35,6 +35,7 @@ import pytest
 from swarm_api import failurecauses, failuredigest, schedulefire, schedules, scheduletypes
 from swarm_api.errors import Forbidden, ValidationFailed
 from swarm_api.scheduletypes import BudgetCaps
+from swarm_api.routes import failurefindings
 from swarm_api.schedtypes import failure_review
 
 from .test_schedtypes_issue_sweep import (  # noqa: F401 -- fixtures
@@ -722,3 +723,141 @@ def test_a_dry_run_says_what_it_would_review_and_writes_nothing(db, ctx, writes)
 def test_the_executor_module_declares_what_the_tick_loads() -> None:
     assert schedulefire.load_executor(ENTRY) is failure_review
     assert Path(failure_review.__file__).name == "failure_review.py"
+
+
+# ---------------------------------------------------------------------------
+# The issue's text is plain: GitHub escapes for display itself (ISSUE-WRITER,
+# part of #2391; VQ-020). #2217 was filed titled 'implement -&gt; review -&gt;
+# fix' with a Signature of '#&lt;n&gt;': GitHub stores a title as given and a
+# code span shows an entity as typed, so every surface printed the entities.
+# ---------------------------------------------------------------------------
+
+ARROWS = "An issue run compiles implement -> review -> fix gated on NOT_YET."
+ENTITIES = ("&gt;", "&lt;", "&amp;")
+
+
+def plain_cause(text: str = ARROWS, signature: str = "issue #12 refused: plan -> step 3 failed",
+                **kwargs: Any) -> dict[str, Any]:
+    item = cause(text=text, **kwargs)
+    item["fingerprint_of"]["signature"] = signature
+    return item
+
+
+def test_a_filed_issue_keeps_arrows_and_placeholders_unescaped(db, ctx, writes, monkeypatch) -> None:
+    schedule, investigator, firing = first_firing(db, ctx)
+    end(db, investigator)
+    _artifacts(monkeypatch, ctx, {investigator["id"]: rca(firing.firing["firing_id"], plain_cause(
+        fix="Gate the review on the plan -> run edge, & test it."))})
+    failure_review.create(fire(ctx, schedule, NOW + timedelta(hours=6)))
+
+    (issue,) = filed(writes)
+    # MUTATION: `neutral` (which writes `&gt;`) for the title and this is '-&gt; review -&gt;'.
+    assert issue["title"] == ARROWS
+    assert "issue #<n> refused: plan -> step <n> failed" in issue["body"]
+    assert "implement -> review -> fix" in issue["body"]
+    assert "plan -> run edge, & test it." in issue["body"]
+    for entity in ENTITIES:
+        assert entity not in issue["title"] and entity not in issue["body"]
+
+
+def _review() -> dict[str, Any]:
+    return {"schedule_id": SCHEDULE_ID, "firing_id": "f1", "tenant_id": "eng",
+            "window": {"from": "a", "to": "b"}, "refs": {}}
+
+
+def _cause(**over: Any) -> failurecauses.Cause:
+    fields: dict[str, Any] = dict(
+        fingerprint="fr-" + "0" * 12, signature="issue #<n> -> <n>", failures=("f-001",), cause=ARROWS,
+        evidence=(failurecauses.Evidence(command="rg -n '->' apps", result="a -> b"),),
+        fix="Stop escaping: a -> b.", files=("apps/x.py",), hold="none", where="platform", known=False)
+    fields.update(over)
+    return failurecauses.Cause(**fields)
+
+
+def test_the_issue_and_its_comment_carry_no_entity() -> None:
+    title, body = failure_review.render_issue(_review(), _cause(), "worker", held=False)
+    comment = failure_review.render_comment(_review(), _cause(), 1, action=failurecauses.Action.COMMENT,
+                                            record={})
+    assert title == ARROWS
+    assert "`issue #<n> -> <n>`" in body and "`rg -n '->' apps`: a -> b" in body
+    assert "`rg -n '->' apps`: a -> b" in comment
+    for text in (title, body, comment):
+        for entity in ENTITIES:
+            assert entity not in text
+
+
+def test_prose_still_cannot_open_html_and_a_code_span_still_closes() -> None:
+    """What `neutral`'s escaping was for, kept without an entity: an HTML opener
+    in prose is a Markdown backslash escape, which GitHub renders as the character;
+    a value with a backtick gets a longer fence, so it cannot leave its span."""
+    marker = failurecauses.marker("fr-" + "1" * 12)
+    _, body = failure_review.render_issue(
+        _review(), _cause(cause=f"a <details> and {marker} and <img src=x>", signature="a ` <b> c"),
+        "worker", held=False)
+    assert body.startswith(failurecauses.marker("fr-" + "0" * 12))
+    # MUTATION: write prose raw and `<details>` swallows the rest of the body.
+    assert "a \\<details> and \\<!-- failure-review" in body and "\\<img src=x>" in body
+    assert "Signature: `` a ` <b> c ``" in body
+    # A mention and a closing keyword are still neutralised.
+    _, body = failure_review.render_issue(_review(), _cause(cause="@octocat fixes #12 -> done"),
+                                          "worker", held=False)
+    assert "@octocat" not in body and "fixes #12" not in body and "-> done" in body
+
+
+# ---------------------------------------------------------------------------
+# What Firestore stores is plain too (FAILURE-STORE-PLAIN, part of #2391; the
+# owner's "Store plain", 2026-10-26). The console shows `failure_causes.title`
+# and a finding's `cause` and `fix` through React, which escapes them again, so
+# a stored `&gt;` read '-&gt;' on screen. Documents written before keep theirs.
+# ---------------------------------------------------------------------------
+
+STORED = "implement -> review"
+
+
+def test_a_tenant_finding_and_its_cause_record_store_and_serve_the_text_as_written(
+        db, ctx, writes, monkeypatch) -> None:
+    schedule, investigator, firing = first_firing(db, ctx)
+    end(db, investigator)
+    _artifacts(monkeypatch, ctx, {investigator["id"]: rca(firing.firing["firing_id"], cause(
+        where="tenant_repo", text=STORED, fix="Gate the review on the plan -> run edge, & test it."))})
+
+    failure_review.create(fire(ctx, schedule, NOW + timedelta(hours=6)))
+
+    (finding,) = [d for p, d in db.docs.items() if p.startswith(f"{failure_review.FINDINGS}/")]
+    # MUTATION: store `neutral(...)` again and these read 'implement -&gt; review'.
+    assert finding["cause"] == STORED
+    assert finding["fix"] == "Gate the review on the plan -> run edge, & test it."
+    assert records(db)[0]["title"] == STORED
+    assert failurefindings.tenant_view(finding)["cause"] == STORED
+
+
+def test_a_no_change_fix_is_stored_as_written(db, ctx, writes, monkeypatch) -> None:
+    schedule, investigator, firing = first_firing(db, ctx)
+    end(db, investigator)
+    why = "No change: implement -> review is gated on main, & tested."
+    _artifacts(monkeypatch, ctx, {investigator["id"]: rca(
+        firing.firing["firing_id"], cause(text=STORED, fix=why, action="none"))})
+
+    failure_review.create(fire(ctx, schedule, NOW + timedelta(hours=6)))
+
+    (record,) = records(db)
+    # MUTATION: store `neutral(cause.fix, ...)` and this reads 'implement -&gt; review'.
+    assert record["state"] == "no_change" and record["no_change"]["fix"] == why
+    assert record["title"] == STORED
+
+
+def test_the_stored_text_is_still_masked_and_neutralised(db, ctx, writes, monkeypatch) -> None:
+    """Plain is `neutral` without its HTML escaping only: a mention, a closing
+    keyword and a credential are still handled before anything is stored."""
+    schedule, investigator, firing = first_firing(db, ctx)
+    end(db, investigator)
+    token = "ghp_" + "x" * 36
+    _artifacts(monkeypatch, ctx, {investigator["id"]: rca(firing.firing["firing_id"], cause(
+        where="tenant_repo", text=f"@octocat fixes #12 -> {token}", fix=f"see <b>{token}</b>"))})
+
+    failure_review.create(fire(ctx, schedule, NOW + timedelta(hours=6)))
+
+    (finding,) = [d for p, d in db.docs.items() if p.startswith(f"{failure_review.FINDINGS}/")]
+    for text in (finding["cause"], finding["fix"], records(db)[0]["title"]):
+        assert token not in text and "@octocat" not in text and "fixes #12" not in text
+    assert "-> " in finding["cause"] and "<b>" in finding["fix"]

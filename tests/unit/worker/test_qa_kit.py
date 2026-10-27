@@ -68,13 +68,8 @@ class Display:
         pass
 
 
-class Scale:
-    def set_scale(self, scale: float) -> None:
-        pass
-
-
 def _controller(chromium: Chromium, records: list[tuple[str, dict[str, str]]]) -> DeviceController:
-    return DeviceController(chromium, Display(), Scale(), record=lambda k, f: records.append((k, dict(f))))
+    return DeviceController(chromium, Display(), record=lambda k, f: records.append((k, dict(f))))
 
 
 def _scheme(value: str) -> dict[str, Any]:
@@ -89,6 +84,18 @@ def test_phone_390_is_a_preset_with_iphone_15s_mobile_flags():
     assert (phone.width, phone.height) == (390, 844)
     for flag in ("scale", "mobile", "touch", "user_agent", "platform", "hints_platform", "natural"):
         assert getattr(phone, flag) == getattr(iphone, flag), flag
+
+
+def test_phone_380_is_phone_390_ten_pixels_narrower():
+    """IMPLEMENT-RENDER (#2442, BGD 2026-10-26): a repository whose frames are
+    drawn at 380 renders at 380. Only the width differs from phone-390, so a
+    render at either compares with the frame drawn for it."""
+    narrow, phone = PRESETS["phone-380"], PRESETS["phone-390"]
+    assert (narrow.width, narrow.height) == (380, phone.height)
+    for flag in ("scale", "mobile", "touch", "user_agent", "platform", "hints_platform", "natural"):
+        assert getattr(narrow, flag) == getattr(phone, flag), flag
+    names = list(PRESETS)
+    assert names.index("phone-380") == names.index("phone-390") + 1
 
 
 # ------------------------------------------------------------- the theme, gate

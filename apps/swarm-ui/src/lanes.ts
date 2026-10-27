@@ -38,7 +38,9 @@
  *
  * Pure: no React, no reads, so every rule above is tested without a DOM.
  */
+import { clockTickText, clockTicks } from './charts/series'
 import { eventKind } from './events'
+import { currentZone } from './timezone'
 import type { AttemptRow, Task, TaskEvent, TaskState } from './types'
 import { CONCURRENCY_STATES, TERMINAL_STATES } from './types'
 
@@ -575,14 +577,18 @@ const MIN = 60_000
 const HOUR = 3_600_000
 const STEPS = [15 * MIN, 30 * MIN, HOUR, 2 * HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR, DAY_MS, 2 * DAY_MS, 7 * DAY_MS, 14 * DAY_MS, 30 * DAY_MS]
 
-/** Ticks on the viewer's clock, at most about seven across the window. */
-export function axisTicks(since: number, until: number): number[] {
-  const width = until - since
-  if (!(width > 0)) return []
-  const step = STEPS.find((s) => width / s <= 7) ?? STEPS[STEPS.length - 1]!
-  const off = new Date(since).getTimezoneOffset() * MIN
-  const first = Math.ceil((since - off) / step) * step + off
-  const out: number[] = []
-  for (let t = first; t < until; t += step) out.push(t)
-  return out
+/**
+ * Ticks on the PERSON'S clock (VQ-023, lane TIMEZONE-SHARED, part of #2391),
+ * at most about seven across the window: the zone picked in Profile, UTC
+ * until one is. They were on the browser's own clock, so a reader in Los
+ * Angeles with UTC picked saw an hour axis in PDT under an Overview counting
+ * its day in UTC. A day tick is the zone's midnight (`startOfDay`).
+ */
+export function axisTicks(since: number, until: number, z: string = currentZone()): number[] {
+  return clockTicks(since, until, 7, z, STEPS)
+}
+
+/** A tick's words on the same clock: "Oct 26" on a midnight or a day axis, "09:00" inside a day. */
+export function axisTickText(t: number, ticks: readonly number[], z: string = currentZone()): string {
+  return clockTickText(t, ticks, z)
 }

@@ -74,10 +74,10 @@ not one):
 | `credential` | `{set: bool, set_at, set_by, version}`, never a value | a **reference**: the value is in Secret Manager (§2.1) |
 | `challenge_bypass` | `{kind: "header" \| "cookie", name}`, optional; its value served only as `challenge_bypass_value: {set, set_at, set_by, version}` | §2.5: the app owner's own way past their CAPTCHA, added by the gate on the approved origins only |
 | `screens` | a list `{id, path, ready?, segments?}`, or `discover: {max_pages ≤ 60, max_depth ≤ 3}` | the capture's route list; discovery is bounded and same-origin (§4.1) |
-| `flows` | `{id, goal, start_path, mutating: false}` each | goal-driven flows; `mutating: true` is refused unless `environment` is `non_production` (§3). `start_path` is relative to **`base_url`**, path included: under `https://h/app/`, `/` opens `https://h/app/` and `/settings` opens `https://h/app/settings`. Screen paths, exclusions and `login_path` are origin-relative instead, because discovery writes routes as the origin's paths (QA-ORIGIN); a flow says where it starts in the app, so it is read from the app's base, through the one join `qaspec.screen_url`, and its start is refused when either reading is excluded (QA-TARGET-FILE, #2062) |
+| `flows` | `{id, goal, start_path, mutating: false}` each, at most 150 | goal-driven flows, run in **batches** (QA-FLOWS-CAP, BGD 2026-10-26): `flows_per_step` read-only flows a live-browser step, one agent that signs in once and runs its batch in order, each flow ending "STOP and capture" with its own `flow-<id>.tar`. `flows_per_step` is 1-30, chosen by `:run`'s `flows_per_step`, else the workspace's `qa_flows_per_step` (`GET`/`PUT /v1/workspaces/{id}/qa-settings`), else default 15; the run's `qa_target_runs` row records the value and where it came from. 150 because AI Studio's ai-studio-staging needs 132 read-only frame-state flows; it is stated once, in `qaspec.MAX_FLOWS` (the capture tool never reads a flow). A leg over the 50 steps a workflow holds is refused naming the smallest `flows_per_step` that fits (with 60 screens, 150 flows need 5), and one whose prompts pass the 256 KiB of workflow input is refused saying so (§4.1 step 4). `mutating: true` is refused unless `environment` is `non_production` (§3). `start_path` is relative to **`base_url`**, path included: under `https://h/app/`, `/` opens `https://h/app/` and `/settings` opens `https://h/app/settings`. Screen paths, exclusions and `login_path` are origin-relative instead, because discovery writes routes as the origin's paths (QA-ORIGIN); a flow says where it starts in the app, so it is read from the app's base, through the one join `qaspec.screen_url`, and its start is refused when either reading is excluded (QA-TARGET-FILE, #2062) |
 | `flows_browser_tool` | `playwright` (default, when unset) or `jev` | the tool the flows drive the live browser with (§4.1, step 4); anything else is refused at registration |
 | `widths` | presets by name, default `["desktop", "phone-390"]` (1440 and 390) | the gate's presets, never a viewport override (the gate refuses one) |
-| `themes` | default `["light", "dark"]`, through emulated media | as the console's capture sets them |
+| `themes` | default `["light"]`, through emulated media; name `dark` to capture it too | owner pick 2026-10-27 (PR #2522): light only by default, so an app with no dark theme is never captured or judged in one; a target that names dark has an unchanged dark capture filed as a defect (`dark_differs`) |
 | `exclusions` | path globs never visited, element texts or selectors never clicked | always merged with the defaults: `/logout`, `/signout`, and controls whose text names delete, remove, pay, buy, purchase, send, invite, unsubscribe or cancel subscription |
 | `environment` | `production` (default) or `non_production` | §3: only a non-production target can run a mutating flow |
 | `read_posts` | target-origin paths whose `POST` is a read (a GraphQL endpoint) | §3's method rule would otherwise refuse them |
@@ -561,11 +561,31 @@ finding) carries over.
    at most 8 groups (60 screens a run, the discovery cap).
 3. **review-<group>**: `claude-code`, opus, `input_from` its capture tar,
    against the checklist (§4.3).
-4. **flow-<id>**: `claude-code-browser`, sonnet, with the target's
+4. **flows-<k>**: `claude-code-browser`, sonnet, with the target's
    `flows_browser_tool` (Playwright unless it says `jev`), or the one run's
    `browser_tool` when `:run` names one; recorded with `swarm-handoff record`,
-   one per declared flow, at each width. The prompt names the tool's own
-   tools: Playwright MCP's `browser_*`, or the jev tools.
+   each flow at each width. The prompt names the tool's own tools:
+   Playwright MCP's `browser_*`, or the jev tools. Since QA-FLOWS-CAP
+   (BGD, 2026-10-26) the read-only flows render as ceil(n / `flows_per_step`)
+   batch steps, `flows-1` ... `flows-<k>`, in the target's order, each one
+   agent that signs in once and runs its batch's flows one after another;
+   each flow ends "STOP and capture" with its own `flow-<id>.json`,
+   `flows/flow-<id>-*.gif` recordings and `flow-<id>.tar`, and the step
+   bundles its flows' tars into `flows-<k>.tar`, the one file it stages to
+   the flow report (`input_from` stages one file a step). A batch step's
+   timeout is 2,700 s (one flow's step before batching) times its flows, held
+   to the profile's 7,200 s: one flow 2,700 s, two 5,400 s, three or more
+   7,200 s, so 15 flows have 480 s each and 30 have 240 s, which is why 30 is
+   the most. **A mutating flow is never batched**: it keeps its own
+   **flow-<id>** step, because the gate grants writes per step, from the step
+   id naming one flow the stored target declares mutating
+   (`QaTargetIssuer._mutating`); a batch carrying one would either lose the
+   grant or hand it to the read-only flows beside it. The batch prompt says
+   the per-width recipe once, not under every flow, so 150 flows of
+   500-character goals stay inside the 256 KiB of workflow input; a leg whose
+   prompts do not is refused at render with that reason. `MAX_ISSUES` (30)
+   is not met by flows at all: the **file** step files the screen findings,
+   and the flows are reported in `flow-report`'s `flows.md`, never filed.
 5. **report**: `claude-code`, opus, every capture and review tar staged; the
    console report's checks (reviewed against listed; a missing tar is a
    finding about the run), writing `report.md` and `findings.json` (§4.4).
@@ -756,7 +776,10 @@ holds unchanged:
   `POST /v1/qa-targets/{id}:run` (body: optional `environments`, the
   entries to run by name, default every one; optional `screens` subset,
   `file: "issues" | "none"`, optional `browser_tool: "playwright" | "jev"`
-  for this run's flows, §4.1), and the plugin's `swarm_qa_run`. A
+  for this run's flows, §4.1, optional `flows_per_step`, 1-30, how many
+  flows one live-browser step runs, over the workspace's `qa_flows_per_step`
+  and its default 15), and the plugin's `swarm_qa_run` (the same
+  arguments). A
   member may run; the run is that member's submission in the tenant, one
   workflow per leg linked by a run group (§10).
 * **A schedule type `visual-qa`** (optional): tenant-scoped, created by a

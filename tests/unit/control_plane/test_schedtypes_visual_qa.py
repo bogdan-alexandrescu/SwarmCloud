@@ -12,8 +12,9 @@ WHAT IS HELD HERE
   names of its legs (default: every entry); a caller can name nothing else
   about the run (invariant 10). The names are checked against the target at
   create, edit and every firing (qa-environments.md §7, QAENV-RUN).
-* A FIRING IS ONE WORK ITEM PER LEG, within the firing's room, its caps $40
-  a leg, `max_concurrent` 2 and $160 a day (BGD, 2026-10-23, Q9 (a)).
+* A FIRING IS ONE WORK ITEM PER LEG, within the firing's room, its caps $80
+  a leg (BGD, 2026-10-26, for 132-flow legs), `max_concurrent` 2 and $160 a
+  day (BGD, 2026-10-23, Q9 (a)).
 * A FIRING RUNS `:run` FOR ITS TARGET: one workflow, the schedule owner's,
   marked with the firing, its browser steps stamped `metadata.qa_target` and
   named in `qa_target_runs/{workflow_id}` exactly as the route's are.
@@ -145,15 +146,36 @@ def test_the_type_is_available_because_its_file_exists() -> None:
     assert schedulefire.load_executor(entry) is visual_qa
 
 
-def test_the_schedules_caps_are_40_a_leg_2_at_once_and_160_a_day() -> None:
+def test_the_schedules_caps_are_80_a_leg_2_at_once_and_160_a_day() -> None:
     # QA run 5b (wf_025ae735511546d99eff: 17 steps, 362 screenshots) cost $23.62;
     # BGD set 40 / 80 / 1 on 2026-10-22 (VQ7-CAPS, #1933) for one leg, and on
     # 2026-10-23 (qa-environments.md §10, Q9 (a)) $40 a leg, max_concurrent 2 and
     # $160 a day: a firing is one work item per leg, so a two-leg app keeps "the
-    # daily firing plus one run-now" for both legs.
-    # MUTATION: keep VQ7-CAPS' per_day_usd=80, max_concurrent=1 and this is (40, 80, 1).
+    # daily firing plus one run-now" for both legs. On 2026-10-26 BGD raised the
+    # leg to $80: 132 flows at 2 widths at the bench median of $0.14 a flow run
+    # are about $37 before capture, review and the report (QA-TRIPWIRE-MAC).
+    # MUTATION: keep the 2026-10-23 per_run_usd=40 and this is (40, 160, 2).
     caps = scheduletypes.budget_caps(scheduletypes.get(TYPE))
-    assert (caps.per_run_usd, caps.per_day_usd, caps.max_concurrent) == (40, 160, 2)
+    assert (caps.per_run_usd, caps.per_day_usd, caps.max_concurrent) == (80, 160, 2)
+    # The day still holds at least one leg, so the default budget resolves.
+    assert caps.per_day_usd >= caps.per_run_usd
+
+
+def test_a_creator_may_set_lower_caps_never_higher() -> None:
+    entry = scheduletypes.get(TYPE)
+    # The caps are the defaults a schedule gets when it names none.
+    assert schedules.resolve_budget(entry, None) == {
+        "per_run_usd": 80.0, "per_day_usd": 160.0, "max_concurrent": 2,
+    }
+    # Lower figures are the creator's to choose, the old $40 a leg among them.
+    lowered = schedules.resolve_budget(
+        entry, schedules.BudgetIn(per_run_usd=40.0, per_day_usd=80.0, max_concurrent=1))
+    assert lowered == {"per_run_usd": 40.0, "per_day_usd": 80.0, "max_concurrent": 1}
+    # MUTATION: per_run_usd=81 in BUDGET_CAPS and the first of these is accepted.
+    for above in ({"per_run_usd": 80.01}, {"per_day_usd": 160.01}, {"max_concurrent": 3}):
+        with pytest.raises(schedules.ScheduleInvalid) as raised:
+            schedules.resolve_budget(entry, schedules.BudgetIn(**above))
+        assert raised.value.code == "budget_above_cap", above
 
 
 def test_it_files_issues_and_never_merges_or_pushes() -> None:

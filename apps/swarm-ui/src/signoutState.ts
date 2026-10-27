@@ -59,6 +59,8 @@ export const USER_KEYS: readonly string[] = [
   'swarm.workflows.newest', // Spine.tsx NEWEST_WORKFLOWS_KEY
   'swarm.timeline.view', // Activity.tsx VIEW_KEY: a saved filter query
   'swarm.access.owner', // Access.tsx CHOSEN_OWNER_KEY: the phone chooser's owner (sessionStorage)
+  'swarm.people.workspace', // People.tsx PEOPLE_WORKSPACE_KEY: the workspace this administrator chose
+  'swarm.timezone', // timezone.ts ZONE_KEY, as `swarm.timezone:<email>`: the zone this person picked in Profile
   SIGNED_OUT_KEY,
 ]
 
@@ -77,6 +79,8 @@ export const BROWSER_KEYS: readonly string[] = [
   DIFF_VIEW_KEY,
   'swarm.accounts.view', // accountsLanes.ts VIEW_KEY: Table or Timeline
   'swarm.schedule.history.view', // ScheduleHistoryTimeline.tsx HISTORY_VIEW_KEY: Timeline or Table
+  'swarm.config.setupSteps', // ConfigSetup.tsx SHOW_STEPS_KEY: a finished setup strip unfolded
+  'swarm.live.logsSplit', // LiveBrowser.tsx SPLIT_KEY: the logs column's share of the Browser tab
 ]
 
 function ours(key: string): boolean {

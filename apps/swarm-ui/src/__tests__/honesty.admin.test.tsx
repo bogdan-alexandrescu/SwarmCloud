@@ -288,7 +288,7 @@ describe('Pool limits groups its ceilings the way Capacity > Pools does (#132)',
     await limitsDrawn()
     const families = [...document.querySelectorAll('.adm-family')]
     const titles = families.map((f) => f.querySelector('.ctl-card-title')?.textContent)
-    expect(titles).toEqual(['Global', 'Tenants', 'Resource classes', 'Runner profiles', 'Backends', 'Providers'])
+    expect(titles).toEqual(['Global', 'Workspaces', 'Resource classes', 'Runner profiles', 'Backends', 'Providers'])
     // Each family holds its own pools and nothing else, sorted by name.
     const tenants = families[1]!
     expect([...tenants.querySelectorAll('tbody tr')].map((tr) => tr.id)).toEqual(['limit-tenant:eng', 'limit-tenant:research'])
@@ -328,7 +328,7 @@ describe('Pool limits shows a ceiling as a value with one editor open at a time 
     expect(screen.queryAllByRole('button', { name: 'Save' })).toHaveLength(0)
     expect(screen.queryAllByRole('button', { name: 'Cancel' })).toHaveLength(0)
     for (const tr of document.querySelectorAll('tbody tr')) {
-      expect(within(tr as HTMLElement).getByRole('button', { name: /^Edit ceiling for / }).textContent).toBe('edit')
+      expect(within(tr as HTMLElement).getByRole('button', { name: /^Edit ceiling for / }).textContent, 'VQ-054: the console says Edit').toBe('Edit')
       expect(tr.querySelector('td[data-label^="Ceiling"] .adm-ceiling')!.textContent).toMatch(/^\d+$/)
     }
 
@@ -442,7 +442,7 @@ describe('Pool limits filters its rows by name at phone width (#132)', () => {
     const box = screen.getByRole('searchbox', { name: /filter pools/i })
     fireEvent.change(box, { target: { value: 'ENG' } })
     expect(rowIds()).toEqual(['limit-tenant:eng'])
-    expect([...document.querySelectorAll('.adm-family .ctl-card-title')].map((t) => t.textContent)).toEqual(['Tenants'])
+    expect([...document.querySelectorAll('.adm-family .ctl-card-title')].map((t) => t.textContent)).toEqual(['Workspaces'])
     fireEvent.change(box, { target: { value: 'nothing-is-called-this' } })
     expect(rowIds()).toEqual([])
     expect(screen.getByText('no pool matches')).toBeTruthy()
@@ -575,7 +575,7 @@ describe('Provider quota says which run its 429 count is of (CP-10)', () => {
     expect(row.querySelector('td[data-label="Last 429"]')?.textContent).toContain('ago')
   })
 
-  it('puts no help glyph inside the quota tables, and indexes the row fields in the footer', async () => {
+  it('puts no help glyph inside the quota tables, and indexes the row fields behind the title’s ?', async () => {
     await renderQuota([
       quota({ state: 'AVAILABLE', updated_at: minutesAgo(1) }),
       quota({ provider: 'openai', state: 'AVAILABLE', updated_at: minutesAgo(1) }),
@@ -585,7 +585,12 @@ describe('Provider quota says which run its 429 count is of (CP-10)', () => {
     for (const t of tables) {
       expect(t.querySelector('button[aria-expanded]'), 'a ? sits inside a quota table').toBeNull()
     }
-    expect(document.querySelector('a[href="#help/quota-row-fields"]'), 'the footer does not index the row fields').not.toBeNull()
+    // THE INDEX IS BEHIND THE PAGE TITLE'S ONE `?` (VQ-033, BGD 2026-10-26),
+    // where the `Reading this screen:` footer was.
+    expect(screen.queryByText('Reading this screen:')).toBeNull()
+    fireEvent.click(within(document.querySelector<HTMLElement>('.c-phead')!).getByRole('button', { name: /^Help:/ }))
+    const card = await screen.findByRole('dialog')
+    expect(card.querySelector('a[href="#help/quota-row-fields"]'), 'the title’s ? does not index the row fields').not.toBeNull()
   })
 })
 

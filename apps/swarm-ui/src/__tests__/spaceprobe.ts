@@ -976,7 +976,11 @@ export function probe(root: ParentNode, restrict?: readonly Element[]): Report {
       if (w <= 0) continue
 
       const c = colour(s.getPropertyValue(`border-${Side.toLowerCase()}-color`), unresolved, `${where} border-${Side.toLowerCase()}-color`)
-      const bg = behind(el, unresolved)
+      // Looked up only for a border that is drawn: a transparent one has no
+      // contrast to measure, so what it sits on is not something the probe
+      // failed to resolve. The spine's bell (`.nt-bell`, 1px transparent)
+      // sits on the spine's gradient and was reported as unresolved for it.
+      const bg = c !== null && c.a > 0.05 ? behind(el, unresolved) : null
       if (c !== null && bg !== null && c.a > 0.05) {
         const ratio = contrast(over(c, bg), bg)
         // A control's own boundary is 3:1; a rule BETWEEN repeated rows is a

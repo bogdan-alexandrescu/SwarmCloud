@@ -98,7 +98,7 @@ from swarm_common.profiles import RUNNER_PROFILES, url_refusal
 from swarm_common.states import EventType, ParkReason, TaskState, assert_transition
 from swarm_redaction import redact as redact_text
 
-from . import browser_tools
+from . import browser_tools, cf_access
 from .browser_resume import BrowserResume, Restored
 from .egress_ticket import BrowserEgress
 from .qa_identity import NOTICE_NAME as QA_NOTICE_NAME
@@ -456,7 +456,8 @@ it is what you continue from if this attempt is parked.
 
 `swarm-handoff status` prints the last control episode in the same shape as
 `wait`. `swarm-handoff device <preset>` switches the browser to a device
-preset by name (desktop, iphone-15, phone-390, pixel-8, iphone-se, ipad-7).
+preset by name (desktop, iphone-15, phone-390, phone-380, pixel-8, iphone-se,
+ipad-7).
 `swarm-handoff theme dark|light|system` sets the colour scheme every page is
 told to prefer (prefers-color-scheme); it holds across navigation and new
 tabs, and `system` lifts it. browser_resize is refused: the size is a preset's.
@@ -466,10 +467,11 @@ or `restarting` (the worker already waited, and says how long; try again in a
 minute), `unresponsive` (try again), `crashed` or `not_enabled` (carry on
 without the live browser, and say so).
 
-A flow as a GIF, and a mockup beside the app (one line each):
+A flow as a GIF, a mockup beside the app, and a render against its frame (one line each):
 
     swarm-handoff record start <name>   then the flow, then   swarm-handoff record stop   -> $SWARM_ARTIFACTS_DIR/flows/<name>.gif
     swarm-handoff serve <dir>   -> prints http://127.0.0.1:<port>/ for a new tab of the live browser (file:// is blocked)
+    swarm-handoff compare <shot.png> <frame.png>   -> a score (0 = the same picture) and $SWARM_ARTIFACTS_DIR/compare/<name>.diff.png; exit 1 over the threshold
 
 Never copy cookies or a storage state into your files: they are refused.
 """
@@ -1293,6 +1295,14 @@ class HandoffPath:
                   "reason": f"browser egress {cause}: pages do not load, and there is no direct fallback"})
         except Exception:  # a note must never stop the attempt
             pass
+
+    def give_cf_access(self, items: list[dict[str, Any]]) -> str:
+        """The attempt's Cloudflare Access tokens to the gate, before the agent
+        exists (CF-ACCESS-TOKEN; `cf_access.hand_over`). Never raises; `items`
+        is emptied. A heap the agent could read hands nothing over."""
+        gate = self.gate if self.live else None
+        protected = getattr(self._memory, "status", None) == PROTECTED
+        return cf_access.hand_over(gate, items, self.log, protected=protected)
 
     def start_qa_identity(self, task: Any) -> str | None:
         """The QA identity's first credential, before the agent exists (§4.5). Never raises.

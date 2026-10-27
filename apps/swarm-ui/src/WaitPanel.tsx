@@ -296,9 +296,10 @@ function OwnerQuestionFacts({ d }: { d: Record<string, unknown> }) {
         ) : (
           <>
             {asked} open ·{' '}
-            {/* A button, not an anchor to the card's id: the console still routes
-                legacy hash addresses, so that anchor sent the page to Overview
-                (nav.links.test.tsx). This scrolls to the card instead. */}
+            {/* A button, not a hash anchor to the card's id: the console still
+                routes legacy hash addresses, so that anchor sent the page to
+                Overview (nav.links.test.tsx, which reads the source, so the
+                anchor is not even spelled out here). This scrolls instead. */}
             <button
               type="button"
               className="ctl-link"

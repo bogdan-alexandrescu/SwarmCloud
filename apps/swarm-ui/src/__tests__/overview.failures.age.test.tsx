@@ -92,9 +92,9 @@ describe('the Waiting, and why card', () => {
   function grid(): HTMLElement {
     document.body.innerHTML =
       '<div class="ov-g21 ov-cols">' +
-      '<div class="ov-col"><section class="ctl-card ov-card ov-running"></section><section class="ctl-card ov-card ov-waiting"></section><section class="ctl-card ov-card ov-failures"></section></div>' +
+      '<div class="ov-col"><section class="ctl-card ov-card ov-running"></section><section class="ctl-card ov-card ov-waiting"></section></div>' +
       '<div class="ov-col"><section class="ctl-card ov-card ov-spend"></section><section class="ctl-card ov-card ov-headroom"></section></div>' +
-      '</div>'
+      '<section class="ctl-card ov-card ov-failures"></section></div>'
     return document.querySelector<HTMLElement>('.ov-waiting')!
   }
 

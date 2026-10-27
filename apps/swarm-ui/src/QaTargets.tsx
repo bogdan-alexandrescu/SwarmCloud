@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
 import { loadRepositories } from './api'
 import { Banner, Button, Card, EmptyState } from './components'
 import { repoName } from './RepositoriesData'
@@ -25,6 +25,7 @@ import {
   legsOf,
   linkSpent,
   promoteQaScreen,
+  QA_LINK_INVALID,
   repoSlug,
   runQaTarget,
   type FlowBrowserTool,
@@ -582,6 +583,11 @@ function TargetCard({
             <Button size="sm" onClick={onEdit}>
               Edit
             </Button>
+            {/* DELETE SITS WITH EDIT, NOT BESIDE RUN (visual QA VQ-043): in the run row the red Delete was the
+                next control after the primary "Run 5 environments". Its typed confirmation stays in the body. */}
+            <Button size="sm" kind="danger" disabled={busy} onClick={() => setConfirmDelete(true)}>
+              Delete
+            </Button>
           </span>
         ) : undefined
       }
@@ -725,11 +731,6 @@ function TargetCard({
         {t.discovers && (
           <Button size="sm" busy={discoveryBusy} disabled={runGate !== null || discoverable.length === 0} onClick={() => void discover()}>
             {anyDiscovered ? 'Run discovery again' : 'Run discovery'}
-          </Button>
-        )}
-        {admin && (
-          <Button size="sm" kind="danger" disabled={busy} onClick={() => setConfirmDelete(true)}>
-            Delete
           </Button>
         )}
       </div>
@@ -970,6 +971,16 @@ function ApproveHostForm({
   )
 }
 
+const ENTRY_RUN: CSSProperties = { whiteSpace: 'nowrap' }
+
+/** A refusal's message as a sentence: capitalised, and ended with a full stop when it has no end of its own. */
+function asSentence(message: string): string {
+  const t = message.trim()
+  if (t === '') return t
+  const capital = t.charAt(0).toUpperCase() + t.slice(1)
+  return /[.!?]$/.test(capital) ? capital : `${capital}.`
+}
+
 /**
  * The one-time link's form: the test credential's username and password, or
  * a `challenge_bypass` link's value. The fields are UNCONTROLLED: their values
@@ -996,7 +1007,17 @@ function CredentialForm({
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
   const isBypass = link.field === 'challenge_bypass'
-  const where = link.environment === null ? name : `${name} · ${link.environment}`
+  // The entry is one unbroken run: at 390 the title broke at the name's own
+  // hyphen ("ai-studio-prod · prod-" / "reviewer"). An entry is at most 20
+  // characters (`ENTRY_NAME`), so it always fits a line.
+  const where =
+    link.environment === null ? (
+      name
+    ) : (
+      <>
+        {name} · <span style={ENTRY_RUN}>{link.environment}</span>
+      </>
+    )
 
   async function submit(e: FormEvent) {
     e.preventDefault()
@@ -1025,10 +1046,17 @@ function CredentialForm({
     // those drop the token.
     if (linkSpent(r)) onSent()
     if (r.status === 'error') {
+      // The API's message is a lowercase clause with no full stop; drawn as
+      // is it ran into the next sentence ("name the one to use Nothing was
+      // saved"). `qa_credential_link_invalid`'s message already ends "ask for
+      // a new one", so that refusal is not told to ask twice.
+      const why = asSentence(writeFailure(r.error))
       setFailed(
-        linkSpent(r)
-          ? `${writeFailure(r.error)} The link is used; ask for a new one to try again.`
-          : `${writeFailure(r.error)} Nothing was saved; the link still works, fix the field and save again.`,
+        !linkSpent(r)
+          ? `${why} Nothing was saved; the link still works, fix the field and save again.`
+          : r.error.code === QA_LINK_INVALID
+            ? `${why} The link is used.`
+            : `${why} The link is used; ask for a new one to try again.`,
       )
       return
     }
@@ -1036,7 +1064,14 @@ function CredentialForm({
   }
 
   return (
-    <Card className="ur-form" title={isBypass ? `Challenge bypass value for ${where}` : `Test credential for ${where}`}>
+    <Card
+      className="ur-form"
+      title={
+        <>
+          {isBypass ? 'Challenge bypass value for' : 'Test credential for'} {where}
+        </>
+      }
+    >
       {isBypass ? (
         <p className="ur-small">
           Type the value of the challenge bypass the app&rsquo;s owner made for these runs. It goes from this page to the

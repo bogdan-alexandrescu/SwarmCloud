@@ -1,9 +1,11 @@
-import { createContext, useContext, type MouseEvent } from 'react'
-import { routedClick } from './components'
+import { createContext, useContext, useState, type MouseEvent } from 'react'
+import { Dash, routedClick } from './components'
 import type { Result } from './fetch'
 import { configSetupOf, itemName, secretsUnreadReason, type ConfigSetup } from './configSetupApi'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import type { OnboardingDoc, OnboardingStepState } from './types'
+import { ageSpan } from './types'
+import { useNow } from './useNow'
 import './styles/config.css'
 
 /**
@@ -180,7 +182,11 @@ export function configBadges(doc: OnboardingDoc | null, personal: boolean): Read
   const needed = setup?.secrets?.needed ?? null
   put('secrets', stepBadge(secrets, needed === null ? 'to set' : `${needed} to set`))
   // MCP servers: the secrets step's MCP source alone, so its count is the
-  // part of Secrets' count that is set from that page.
+  // part of Secrets' count that is set from that page. NOTHING TO SET DRAWS
+  // NO MARK (VQ-046): the setup read counts missing credentials, not
+  // registrations, so a ✓ there read as "configured" over a workspace with no
+  // MCP server at all. Registering one is optional; the page's lead says
+  // whether any is registered.
   const mcp = setup?.secrets?.sources.mcp_servers
   if (doc !== null && setup?.secrets != null && mcp !== undefined) {
     const n = setup.secrets.items.filter((i) => i.kind === 'mcp_server').length
@@ -190,7 +196,7 @@ export function configBadges(doc: OnboardingDoc | null, personal: boolean): Read
         ? { tone: 'unknown', text: '—', why: `MCP servers: ${mcp.reason ?? 'not read'}` }
         : n > 0
           ? { tone: 'missing', text: `${n} to set`, why: `MCP servers: ${n} need a secret nobody has stored` }
-          : { tone: 'done', text: '✓', why: 'MCP servers: nothing to set' },
+          : null,
     )
   } else put('mcp-servers', { tone: 'unknown', text: '—', why: `MCP servers: ${doc === null ? 'not read' : 'not in the setup read'}` })
   const people = by('people')
@@ -216,9 +222,13 @@ export function ConfigBadgeMark({ badge }: { badge: ConfigBadge | undefined }) {
   )
 }
 
-/** The first measured step not done: the one the strip calls next. */
+/** The first measured step not done: the one the strip calls next, for a page's lead to name. */
+export function setupNext(steps: readonly SetupStep[]): SetupStep | null {
+  return steps.find((s) => s.state !== 'done' && s.state !== 'unknown') ?? null
+}
+
 function nextOf(steps: readonly SetupStep[]): string | null {
-  return steps.find((s) => s.state !== 'done' && s.state !== 'unknown')?.key ?? null
+  return setupNext(steps)?.key ?? null
 }
 
 /** The strip's count, in words: measured done of all, and how many nothing measured. */
@@ -254,11 +264,81 @@ function StepMark({ state }: { state: SetupState }) {
   )
 }
 
-/** The strip across the top of a Config page. */
+/**
+ * THE AGE OF THE READING A STEP CAME FROM (CONFIG-STRIP-DONE): the onboarding
+ * read's `derived_at`, as "checked 5m ago". Every step is one read's, so they
+ * share it. `ageSpan`'s buckets, so under five seconds is still "2s", never
+ * "just now": a read that carried no time, or one that does not parse, has no
+ * age to show and says why, rather than borrowing the render's clock and
+ * reading as fresh.
+ */
+export type ReadingAge = { age: string; why: null } | { age: null; why: string }
+
+export function readingAge(derivedAt: unknown, now: number): ReadingAge {
+  const at = str(derivedAt)
+  if (at === null) return { age: null, why: 'the setup read carried no time' }
+  const t = Date.parse(at)
+  if (!Number.isFinite(t)) return { age: null, why: "the setup read's time could not be read" }
+  return { age: `checked ${ageSpan(now - t)} ago`, why: null }
+}
+
+function Checked({ age }: { age: ReadingAge }) {
+  return age.age ?? (
+    <>
+      checked <Dash why={age.why} />
+    </>
+  )
+}
+
+/**
+ * SHOW STEPS ON A FINISHED STRIP, REMEMBERED PER DEVICE. Storage can refuse
+ * (a private window, a blocked origin): the choice then lasts the page.
+ */
+const SHOW_STEPS_KEY = 'swarm.config.setupSteps'
+
+function readShowSteps(): boolean {
+  try {
+    return window.localStorage.getItem(SHOW_STEPS_KEY) === 'shown'
+  } catch {
+    return false
+  }
+}
+
+function writeShowSteps(shown: boolean) {
+  try {
+    if (shown) window.localStorage.setItem(SHOW_STEPS_KEY, 'shown')
+    else window.localStorage.removeItem(SHOW_STEPS_KEY)
+  } catch {
+    // Not remembered; this page still draws what was asked.
+  }
+}
+
+/**
+ * The strip across the top of a Config page.
+ *
+ * FINISHED, IT FOLDS (config-e.html `stripD`): with every step done, measured,
+ * the strip is one line, "Setup complete · N of N · checked <age> · Show
+ * steps", on a phone as on a desk, so a finished workspace stops paying four
+ * cells of height on every Config page. An unknown step is not done, so a
+ * strip with one never folds. Show steps unfolds the steps and the compact
+ * strip as before, with Hide steps to fold again.
+ */
 export function SetupStrip({ go }: { go: (to: string) => void }) {
+  const { doc } = useContext(SetupContext)
+  const data = doc.status === 'ok' || doc.status === 'stale' ? doc.data : null
   const steps = useSetupSteps()
+  const now = useNow()
+  const [shown, setShown] = useState(readShowSteps)
   const next = nextOf(steps)
   const { done, of, unknown } = setupCount(steps)
+  // Only a step drawn from a read has a reading to age; "not read" has none,
+  // and a step the read did not measure draws no age on its line either.
+  const age = data === null ? null : readingAge(data.derived_at, now)
+  const complete = of > 0 && done === of
+  const show = (v: boolean) => {
+    setShown(v)
+    writeShowSteps(v)
+  }
   const link = (to: string) => ({
     href: addressToPath(to),
     onClick: (e: MouseEvent) => {
@@ -267,6 +347,33 @@ export function SetupStrip({ go }: { go: (to: string) => void }) {
       go(to)
     },
   })
+  if (complete && !shown) {
+    return (
+      <section className="cfg-strip is-complete" aria-label="Workspace setup">
+        <div className="cfg-done">
+          <StepMark state="done" />
+          <b>Setup complete</b>
+          <small>
+            {done} of {of}
+            {age !== null && (
+              <>
+                {' · '}
+                <Checked age={age} />
+              </>
+            )}
+          </small>
+          <button type="button" className="ctl-link" aria-expanded={false} onClick={() => show(true)}>
+            Show steps
+          </button>
+        </div>
+      </section>
+    )
+  }
+  const hide = complete ? (
+    <button type="button" className="ctl-link" aria-expanded={true} onClick={() => show(false)}>
+      Hide steps
+    </button>
+  ) : null
   const nextStep = steps.find((s) => s.key === next) ?? null
   return (
     <section className="cfg-strip" aria-label="Workspace setup">
@@ -278,9 +385,11 @@ export function SetupStrip({ go }: { go: (to: string) => void }) {
           <b>
             Setup {done} of {of}
           </b>
-          <a className="ctl-link" {...link(nextStep === null ? WORKSPACE_SETUP_ADDRESS : nextStep.to)}>
-            {nextStep === null ? 'Workspace setup' : nextStep.label} ›
-          </a>
+          {hide ?? (
+            <a className="ctl-link" {...link(nextStep === null ? WORKSPACE_SETUP_ADDRESS : nextStep.to)}>
+              {nextStep === null ? 'Workspace setup' : nextStep.label} ›
+            </a>
+          )}
         </div>
         <div className="cfg-meter-bar" aria-hidden="true">
           {steps.map((s) => (
@@ -289,6 +398,12 @@ export function SetupStrip({ go }: { go: (to: string) => void }) {
         </div>
         <small>
           {nextStep !== null ? `Next: ${nextStep.label}, ${nextStep.line}` : unknown > 0 ? `${unknown} not measured` : 'Every step done'}
+          {age !== null && (
+            <>
+              {' · '}
+              <Checked age={age} />
+            </>
+          )}
         </small>
       </div>
       <ol className="cfg-steps" aria-label="Workspace setup steps" style={{ ['--cfg-n' as string]: steps.length }}>
@@ -300,6 +415,13 @@ export function SetupStrip({ go }: { go: (to: string) => void }) {
                 {i + 1}. {s.label}
               </b>
               <small>{s.key === next ? `Next: ${s.line}` : s.line}</small>
+              {/* Its own line, so the step's line stays word for word what the panel's badge names.
+                  Only a measured step has a reading to age: an unknown one's line already says why. */}
+              {age !== null && s.state !== 'unknown' && (
+                <small className="cfg-step-age">
+                  <Checked age={age} />
+                </small>
+              )}
             </a>
           </li>
         ))}
@@ -309,6 +431,7 @@ export function SetupStrip({ go }: { go: (to: string) => void }) {
           {done} of {of} done
         </b>
         {unknown > 0 && <small>{unknown} not measured</small>}
+        {hide}
         <a className="ctl-link" {...link(WORKSPACE_SETUP_ADDRESS)}>
           Workspace setup
         </a>

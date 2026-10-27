@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
-import { deleteRepository, loadAccess, loadRepositories, loadRepositoryCounts, loadRepositoryIndex, patchRepositoryFileIssues, patchRepositoryWorkflowFiles, runRepositoryIndex } from './api'
+import { deleteRepository, loadAccess, loadRepositories, loadRepositoryCounts, loadRepositoryIndex, runRepositoryIndex } from './api'
 import { ADD_REPOSITORY_ADDRESS } from './Access'
 import { Banner, Button, Card, Dash, EmptyState, NamedMark, Tabs, TypedConfirm, routedClick } from './components'
 import { useSetupSteps } from './ConfigSetup'
 import { addressToPath } from './paths'
 import { ReachableRepositories } from './ReachableRepositories'
-import { HEAD_UNREAD, WORKFLOW_FILES_WHY, freshness, indexCredentialWords, repoName, scheduleWords, shortSha, workflowsNotGranted, type RepoRecord } from './RepositoriesData'
+import { HEAD_UNREAD, WORKFLOW_FILES_WHY, freshness, indexCredentialWords, repoName, scheduleWords, shortSha, type RepoRecord } from './RepositoriesData'
 import { REGISTER, GT_PAGE, TestsMapped, UrConfirmIndex, UrFreshPill, UrLink, UrNavButton, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
 import { RegisterRepository } from './RepositoriesRegister'
-import { RepositoryDetail, WorkflowsGrantLine } from './RepositoriesDetail'
+import { RepositoryDetail } from './RepositoriesDetail'
 import { GitTokensPage, PermissionsPage } from './GitTokens'
 import { RepoDot, useForgePermissions } from './PermissionCards'
 import { QA_TARGETS_PAGE, QaTargetsScreen } from './QaTargets'
@@ -282,7 +282,6 @@ function RepositoryList({
   const access = useUrRead(loadAccess, 'access')
   const grants = access.state.status === 'ok' || access.state.status === 'stale' ? access.state.data.grants : null
   // GitHub permissions per repository (#1086): one dot each, absent until read.
-  // The orgs too, for the not-granted line's installation link (#2029).
   const forge = useForgePermissions().state
   const forgeDoc = forge.status === 'ok' || forge.status === 'stale' ? forge.data : null
   const perms = new Map((forgeDoc?.repositories ?? []).map((p) => [p.repo_id, p]))
@@ -293,16 +292,6 @@ function RepositoryList({
   // A VIEWER REGISTERS AND INDEXES NOTHING (docs/design/workspace-roles.md
   // §4.8): register and index:run need `member`. The server still decides.
   const roleGate = useRoleGate('member', 'register and index repositories')
-  // ONLY THE WORKSPACE'S ADMIN TURNS AGENTS' ISSUE FILING ON OR OFF (§3.2, Q2):
-  // below admin the card shows the setting with no control. The server decides.
-  const fileGate = useRoleGate('admin', 'set whether agents may file issues')
-  const [filing, setFiling] = useState<string | null>(null)
-  const [fileFailed, setFileFailed] = useState<string | null>(null)
-  // WORKFLOW FILES ARE THE WORKSPACE ADMIN'S TO TURN ON, PER REPOSITORY (#2029;
-  // BGD, 2026-10-22). Below admin the card shows the setting with no control.
-  const workflowGate = useRoleGate('admin', 'set whether agents may push workflow files')
-  const [workflowBusy, setWorkflowBusy] = useState<string | null>(null)
-  const [workflowFailed, setWorkflowFailed] = useState<string | null>(null)
   const count = state.status === 'ok' || state.status === 'stale' ? state.data.length : state.status === 'empty' ? 0 : null
   // EVERY CARD'S COUNTS IN ONE READ (REPOS-FOLLOWUPS, S3a's "Secrets: N" and
   // "QA targets: N"): never a read per card. Counts only, never a name.
@@ -338,30 +327,6 @@ function RepositoryList({
     setConfirm(null)
     if (res.status === 'error') {
       setFailed(`${repoName(r)}: ${writeFailure(res.error)}`)
-      return
-    }
-    reload()
-  }
-
-  async function setFileIssues(r: RepoRecord, on: boolean) {
-    setFiling(r.repo_id)
-    setFileFailed(null)
-    const res = await patchRepositoryFileIssues(r.repo_id, on)
-    setFiling(null)
-    if (res.status === 'error') {
-      setFileFailed(`${repoName(r)}: ${writeFailure(res.error)}`)
-      return
-    }
-    reload()
-  }
-
-  async function setWorkflowFiles(r: RepoRecord, on: boolean) {
-    setWorkflowBusy(r.repo_id)
-    setWorkflowFailed(null)
-    const res = await patchRepositoryWorkflowFiles(r.repo_id, on)
-    setWorkflowBusy(null)
-    if (res.status === 'error') {
-      setWorkflowFailed(`${repoName(r)}: ${writeFailure(res.error)}`)
       return
     }
     reload()
@@ -462,16 +427,6 @@ function RepositoryList({
           {failed}
         </Banner>
       )}
-      {fileFailed !== null && (
-        <Banner tone="bad" title="Agents may file issues was not changed">
-          {fileFailed}
-        </Banner>
-      )}
-      {workflowFailed !== null && (
-        <Banner tone="bad" title="Workflow files was not changed">
-          {workflowFailed}
-        </Banner>
-      )}
       <CountNote>{meta}</CountNote>
       <UrRegion
         state={state}
@@ -526,29 +481,20 @@ function RepositoryList({
                       }
                     : undefined
                 }
-                fileIssues={
-                  <FileIssues
-                    on={r.agents_may_file_issues}
-                    admin={fileGate === null}
-                    busy={filing === r.repo_id}
-                    onSet={(on) => void setFileIssues(r, on)}
-                  />
-                }
-                workflowFiles={
-                  <WorkflowFiles
-                    on={r.workflow_files}
-                    admin={workflowGate === null}
-                    busy={workflowBusy === r.repo_id}
-                    onSet={(on) => void setWorkflowFiles(r, on)}
-                    grant={workflowsNotGranted(r.workflow_files, perms.get(r.repo_id), forgeDoc?.orgs ?? [])}
-                  />
-                }
               />
             ))}
             {chosen}
           </div>
         )}
       </UrRegion>
+      {/* WHAT WORKFLOW FILES MEANS, SAID ONCE FOR EVERY CARD (visual QA VQ-043). Under each card's switch the
+          same three lines repeated on all six cards and doubled their height against S3a's compact card; the
+          switch itself is on the repository's page now, which says it again beside it. */}
+      {registered !== null && registered.length > 0 && (
+        <p className="ur-hint" data-note="workflow-files">
+          <b>Workflow files:</b> {WORKFLOW_FILES_WHY}
+        </p>
+      )}
       {removing !== null && (
         <TypedConfirm
           title={`Remove ${repoName(removing)}?`}
@@ -625,8 +571,9 @@ function toCard(e: MouseEvent, repoId: string) {
  */
 function CountLine({ row, label, n, why, to, go }: { row: string; label: string; n: number | null | undefined; why: string; to?: string; go: (to: string) => void }) {
   const words = n === null || n === undefined ? null : n === 0 ? 'none' : String(n)
+  // A span in its card's shared `.ur-cmeta` line, which draws the dot between the two counts.
   return (
-    <div className="ur-cmeta" data-row={row}>
+    <span data-row={row}>
       {words === null ? (
         <span>
           {label}: <Dash why={why} />
@@ -640,7 +587,7 @@ function CountLine({ row, label, n, why, to, go }: { row: string; label: string;
           {label}: <b>{words}</b>
         </span>
       )}
-    </div>
+    </span>
   )
 }
 
@@ -772,73 +719,27 @@ function IndexingUses({ r, go }: { r: RepoRecord; go: (to: string) => void }) {
 }
 
 /**
- * The card's line for `agents_may_file_issues` (AU-0 REG-FLAG,
- * docs/design/agent-autonomy.md §3.2, owner decision Q2), with a control for
- * an admin only. It draws `RepoRecord`'s value as served and never re-derives
- * the platform default; null is a dash, with no control to set it.
+ * THE CARD SAYS THE TWO SWITCHES' STATE AND NOTHING ELSE (BGD's answer to
+ * visual QA VQ-043, 2026-10-26: "Show state only on the card"). One read-only
+ * line, "Agents may file issues on · Workflow files off", each word the
+ * registration's value as served: `agents_may_file_issues` (AU-0 REG-FLAG,
+ * agent-autonomy.md §3.2) and `workflow_files` (#2029). The switches, who may
+ * use them (a workspace admin) and "Workflows: not granted" are on the
+ * repository's own page, the card's Open (RepositoriesDetail.tsx, Settings):
+ * two switches with their read-only lines doubled the card against S3a's
+ * compact one. Null is a dash, never a confident off.
  */
-function FileIssues({ on, admin, busy, onSet }: { on: boolean | null; admin: boolean; busy: boolean; onSet: (on: boolean) => void }) {
+function SwitchStates({ r }: { r: RepoRecord }) {
+  const fi = r.agents_may_file_issues
+  const wf = r.workflow_files
   return (
-    <div className="ur-cmeta ur-file-issues" data-file-issues={on === null ? undefined : String(on)}>
-      <span>
-        Agents may file issues{' '}
-        {on === null ? <Dash why="Whether agents may file issues was not served" /> : <b>{on ? 'on' : 'off'}</b>}
+    <div className="ur-cmeta" data-row="switches">
+      <span className="ur-file-issues" data-file-issues={fi === null ? undefined : String(fi)}>
+        Agents may file issues {fi === null ? <Dash why="Whether agents may file issues was not served" /> : <b>{fi ? 'on' : 'off'}</b>}
       </span>
-      {on !== null &&
-        (admin ? (
-          <Button size="sm" busy={busy} onClick={() => onSet(!on)} data-file-issues-set={String(!on)}>
-            {on ? 'Turn off' : 'Turn on'}
-          </Button>
-        ) : (
-          <span className="ur-small" data-role-gate="admin">
-            set by a workspace admin
-          </span>
-        ))}
-    </div>
-  )
-}
-
-/**
- * The card's line for `workflow_files` (#2029, WF-APP-TOKEN; BGD's decision
- * 2026-10-22: self-serve, per-repo opt-in, off by default), with a control for
- * the workspace admin only, exactly as `FileIssues`. It draws the value as
- * served; null is a dash, with no control to set it. Under it, what turning it
- * on means, and "Workflows: not granted" where it is on and the App
- * installation has not accepted Workflows.
- */
-function WorkflowFiles({
-  on,
-  admin,
-  busy,
-  onSet,
-  grant,
-}: {
-  on: boolean | null
-  admin: boolean
-  busy: boolean
-  onSet: (on: boolean) => void
-  grant: { installed: boolean; link: string | null } | null
-}) {
-  return (
-    <div className="ur-workflow-files" data-workflow-files={on === null ? undefined : String(on)}>
-      <div className="ur-cmeta">
-        <span>
-          Workflow files{' '}
-          {on === null ? <Dash why="Whether agents may push workflow files was not served" /> : <b>{on ? 'on' : 'off'}</b>}
-        </span>
-        {on !== null &&
-          (admin ? (
-            <Button size="sm" busy={busy} onClick={() => onSet(!on)} data-workflow-files-set={String(!on)}>
-              {on ? 'Turn off' : 'Turn on'}
-            </Button>
-          ) : (
-            <span className="ur-small" data-role-gate="admin">
-              set by a workspace admin
-            </span>
-          ))}
-      </div>
-      <p className="ur-hint">{WORKFLOW_FILES_WHY}</p>
-      <WorkflowsGrantLine grant={grant} />
+      <span className="ur-workflow-files" data-workflow-files={wf === null ? undefined : String(wf)}>
+        Workflow files {wf === null ? <Dash why="Whether agents may push workflow files was not served" /> : <b>{wf ? 'on' : 'off'}</b>}
+      </span>
     </div>
   )
 }
@@ -853,8 +754,6 @@ function RepoCard({
   onIndex,
   perm,
   viewerOnly = false,
-  fileIssues,
-  workflowFiles,
   counts = null,
   countsWhy = 'The counts were not read',
   onRemove,
@@ -870,10 +769,6 @@ function RepoCard({
   perm?: ForgeRepoStatus
   /** The caller's role is below `member`: Index now is drawn disabled, the list says why. */
   viewerOnly?: boolean
-  /** The `agents_may_file_issues` line (AU-0 REG-FLAG). */
-  fileIssues?: ReactNode
-  /** The `workflow_files` line (#2029). */
-  workflowFiles?: ReactNode
   /** Its secrets and QA targets, from the page's one counts read; null while not read. */
   counts?: RepoCounts | null
   /** Why the counts are a dash, when they are. */
@@ -929,10 +824,12 @@ function RepoCard({
         <span>Schedule {sched === null ? <Dash why="The schedule was not served" /> : <b>{sched}</b>}</span>
       </div>
       <IndexingUses r={r} go={go} />
-      <CountLine row="secrets" label="Secrets" n={counts?.secrets} why={countsWhy} go={go} />
-      <CountLine row="qa-targets" label="QA targets" n={counts?.qa_targets} why={countsWhy} to={qaTargetsOf(repoName(r))} go={go} />
-      {fileIssues}
-      {workflowFiles}
+      {/* Secrets and QA targets share a line (VQ-043): two short counts were two of the card's rows. */}
+      <div className="ur-cmeta">
+        <CountLine row="secrets" label="Secrets" n={counts?.secrets} why={countsWhy} go={go} />
+        <CountLine row="qa-targets" label="QA targets" n={counts?.qa_targets} why={countsWhy} to={qaTargetsOf(repoName(r))} go={go} />
+      </div>
+      <SwitchStates r={r} />
       <FailureLine r={r} go={go} />
       <div className="ur-cacts" ref={acts}>
         <UrNavButton to={repoAddress(r.repo_id)} go={go} size="sm">

@@ -26,7 +26,7 @@ describe('Reliability groups by model and by model class', () => {
     expect(choices(tenant.container)).toEqual(['runner profile', 'person', 'model', 'model class'])
     tenant.unmount()
     const platform = render(<ReliabilityCard data={ledgerFixture()} group="runner_profile" platform onGroup={() => {}} />)
-    expect(choices(platform.container)).toEqual(['runner profile', 'tenant', 'person', 'model', 'model class'])
+    expect(choices(platform.container)).toEqual(['runner profile', 'workspace', 'person', 'model', 'model class'])
   })
 
   it('asks for the group it names', () => {

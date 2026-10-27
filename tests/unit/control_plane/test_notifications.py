@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import quote
 
 import pytest
 
@@ -177,7 +178,11 @@ def test_approvals_list_the_tenants_pending_records_and_planned_runs(db):
     assert any(i.startswith("approval:run:run_a:") for i in ids)
     assert len(items) == 2
     run_item = next(i for i in items if "run_a" in i["id"])
-    assert run_item["href"] == "/approvals/run%3Arun_a"
+    # Approvals lives under Automate (APPROVALS-MOVE, PR 2486); the console's
+    # `/approvals/<id>` redirect is only for links already sent.
+    assert run_item["href"] == "/automate/approvals/run%3Arun_a"
+    assert next(i for i in items if i["id"] == f"approval:{mine}")["href"] \
+        == f"/automate/approvals/{quote(mine, safe='')}"
     assert "example-org/swarm#12" in run_item["title"]
 
 
@@ -199,6 +204,7 @@ def test_a_firing_awaiting_approval_without_a_record_has_the_records_id(db):
     before = dict(db.docs)
     items = notif.approval_items(_reading(db, _viewer()))
     assert _ids(items) == [f"approval:{approvals.approval_id(approvals.RUN, 'fir_9')}"]
+    assert items[0]["href"] == "/automate/approvals"
     assert db.docs == before  # derived: nothing is written by reading
 
 
@@ -737,3 +743,20 @@ def test_the_route_serves_both_counts(client, db):
     assert "platform_secrets_unset" in root
     alice = _feed(client, "alice")
     assert alice["tenants_waiting"] is None and alice["platform_secrets_unset"] is None
+
+
+def test_the_route_hands_the_service_the_apps_own_secret_metadata_reader(client, catalogue):
+    # CONFIG-ADMIN-POLISH-2 (part of #2157): one reader, the one Admin ›
+    # Platform secrets reads (`routes.admin.secret_metadata`, kept on
+    # `app.state`), not a second one built from the Firestore client's project.
+    meta = _Meta({"swarm-a-key": [], "swarm-b-key": None})
+    client.app.state.secret_metadata = meta
+    # MUTATION: build `Notifications` without `secret_metadata=` -> None, fails.
+    assert _feed(client, "root")["platform_secrets_unset"] == 2
+    assert meta.calls
+    # A member's feed reads nothing from it.
+    calls = meta.calls
+    assert _feed(client, "alice")["platform_secrets_unset"] is None
+    assert meta.calls == calls
+    # MUTATION: keep the project fallback -> a second reader, and this fails.
+    assert not hasattr(notif, "_reader_for")

@@ -772,9 +772,12 @@ def _not_githubs(world: MergeWorld, how: str) -> str:
         world.commit(OTHER, [PINNED, "f" * 40])
         world.on_base("f" * 40, status="diverged")
         return OTHER
-    if how == "a_merge_committed_by_someone_else":
+    # Since FIX-MERGE-PURE-BASE-MERGE anyone's merge of main is taken when its
+    # tree is the clean merge of its parents; these two serve no tree, so
+    # that is never shown (the served-tree cases are below).
+    if how == "a_merge_committed_by_someone_else_with_no_readable_tree":
         return world.github_merge(PINNED, committer={"name": "mallory", "email": "m@example.com"})
-    if how == "an_unverified_merge":
+    if how == "an_unverified_merge_with_no_readable_tree":
         return world.github_merge(PINNED, verified=False)
     if how == "a_merge_onto_another_head":
         return world.github_merge("a" * 40)
@@ -789,7 +792,8 @@ def _not_githubs(world: MergeWorld, how: str) -> str:
 
 @pytest.mark.parametrize("how", [
     "a_plain_commit_on_the_pushed_head", "a_merge_of_a_commit_not_on_the_base",
-    "a_merge_committed_by_someone_else", "an_unverified_merge", "a_merge_onto_another_head",
+    "a_merge_committed_by_someone_else_with_no_readable_tree",
+    "an_unverified_merge_with_no_readable_tree", "a_merge_onto_another_head",
     "a_merge_with_the_parents_swapped", "more_merges_than_the_bound",
 ])
 def test_a_head_that_is_not_a_github_base_merge_of_the_pushed_head_is_head_moved(tmp_path, how):
@@ -799,6 +803,287 @@ def test_a_head_that_is_not_a_github_base_merge_of_the_pushed_head_is_head_moved
     assert outcome.state is TaskState.FAILED, (how, outcome.message)
     assert outcome.summary["refusal"]["code"] == "head_moved", (how, outcome.summary)
     assert world.merge_calls() == [] and world.update_calls() == []
+
+
+# ---- A person's clean merge of main (FIX-MERGE-PURE-BASE-MERGE, part of #2379)
+#
+# F05: a person merged main into PR #2376 on top of the head the workflow
+# pinned, and the parked merge step ended FAILED head_moved, though
+# auto-merge.yml's `is_pure_base_merge` accepts the same commit from anyone.
+# BGD, 2026-10-26: "accept a pure base merge, and record who made it". The
+# walk takes a two-parent commit from anyone when its second parent is on
+# main and its tree is the clean merge of its two parents, read through
+# GitHub's tree API; anything else stays head_moved, and the refusal names
+# the commit. The proof may refuse what git accepts and never accepts what
+# git refuses: a file both parents change, or a possible rename the other
+# side touches, stays head_moved.
+
+#: The commit main and the pushed head share.
+MERGE_BASE = "1" * 40
+#: Who a person's merge is committed by: neither GitHub nor signed.
+PERSON = {"name": "Pat Person", "email": "pat@example.com"}
+#: Each file's content in the merge base, on the pushed head (PINNED) and on
+#: main's tip (BASE_TIP). The pushed head changes the first line of
+#: notes.txt and adds pr.txt; main changes readme.txt and adds main.txt.
+#: No file is changed by both.
+_FILES = {
+    MERGE_BASE: {"readme.txt": b"widgets\n", "notes.txt": b"one\ntwo\nthree\nfour\n"},
+    PINNED: {"readme.txt": b"widgets\n", "notes.txt": b"ONE\ntwo\nthree\nfour\n",
+             "pr.txt": b"the pull request's file\n"},
+    merge_world.BASE_TIP: {"readme.txt": b"widgets, by price\n",
+                           "notes.txt": b"one\ntwo\nthree\nfour\n", "main.txt": b"main's file\n"},
+}
+#: The clean merge of the pushed head and main's tip over the merge base.
+CLEAN = {"readme.txt": b"widgets, by price\n", "notes.txt": b"ONE\ntwo\nthree\nfour\n",
+         "pr.txt": b"the pull request's file\n", "main.txt": b"main's file\n"}
+
+
+def _blob_sha(content: bytes) -> str:
+    import hashlib
+    return hashlib.sha256(content).hexdigest()[:40]
+
+
+def _serve_tree(world: MergeWorld, commit_sha: str, files: dict[str, bytes], *,
+                truncated: bool = False) -> str:
+    """Serve `files` as `commit_sha`'s tree, every blob in it, and return the tree's sha."""
+    import base64
+    entries = []
+    for path, content in sorted(files.items()):
+        sha = _blob_sha(content)
+        entries.append({"path": path, "mode": "100644", "type": "blob", "sha": sha,
+                        "size": len(content)})
+        world.github.route("GET", f"{API}/git/blobs/{sha}", (200, {}, {
+            "sha": sha, "size": len(content), "encoding": "base64",
+            "content": base64.b64encode(content).decode()}))
+    tree = _blob_sha(commit_sha.encode())
+    world.github.route("GET", f"{API}/git/trees/{tree}", (200, {}, {
+        "sha": tree, "tree": [{"path": "docs", "mode": "040000", "type": "tree",
+                               "sha": "0" * 40}, *entries],
+        "truncated": truncated}))
+    return tree
+
+
+def _serve_commit(world: MergeWorld, sha: str, parents: list[str], files: dict[str, bytes], *,
+                  committer: dict[str, str] | None = None, verified: bool = False,
+                  truncated: bool = False) -> None:
+    tree = _serve_tree(world, sha, files, truncated=truncated)
+    world.github.route("GET", f"{API}/commits/{sha}", (200, {}, {
+        "sha": sha, "parents": [{"sha": p} for p in parents],
+        "commit": {"committer": dict(committer or PERSON), "verification": {"verified": verified},
+                   "tree": {"sha": tree}}}))
+
+
+def _person_merge(world: MergeWorld, *, first: str = PINNED, files: dict[str, bytes] | None = None,
+                  second: str = merge_world.BASE_TIP, on_main: bool = True,
+                  truncated: bool = False, main: dict[str, bytes] | None = None,
+                  base: dict[str, bytes] | None = None,
+                  pinned: dict[str, bytes] | None = None) -> str:
+    """A person's merge of `second` into `first`, unsigned, whose tree is `files`
+    (the clean merge by default), with everything the walk reads served.
+    `main`, `base` and `pinned` replace main's tip's, the merge base's and the
+    pushed head's files."""
+    sha = "7" * 40
+    _serve_commit(world, MERGE_BASE, [], _FILES[MERGE_BASE] if base is None else base,
+                  committer=merge_world.GITHUB_COMMITTER)
+    _serve_commit(world, PINNED, [MERGE_BASE], _FILES[PINNED] if pinned is None else pinned,
+                  committer=merge_world.GITHUB_COMMITTER)
+    _serve_commit(world, merge_world.BASE_TIP, [MERGE_BASE],
+                  _FILES[merge_world.BASE_TIP] if main is None else main,
+                  committer=merge_world.GITHUB_COMMITTER)
+    if first not in (PINNED, merge_world.BASE_TIP):
+        _serve_commit(world, first, [MERGE_BASE], _FILES[PINNED], committer=PERSON)
+    world.github.route("GET", f"{API}/compare/{first}...{second}", (200, {}, {
+        "status": "diverged", "merge_base_commit": {"sha": MERGE_BASE}}))
+    world.on_base(second, status="behind" if on_main else "diverged")
+    _serve_commit(world, sha, [first, second], CLEAN if files is None else files,
+                  truncated=truncated)
+    world.serve_checks(sha)
+    return sha
+
+
+def test_a_persons_clean_merge_of_main_on_the_pinned_head_merges_and_records_who_made_it(
+        tmp_path):
+    """F05's push: parents [pinned, main's tip], committed by a person,
+    unsigned, its tree the clean merge. head_moved
+    before this lane; accepted, and recorded, after it."""
+    world = MergeWorld(tmp_path)
+    head = _person_merge(world)
+    world.pr["head"]["sha"] = head
+    outcome = merge.run_merge(world.context())
+    assert outcome.state is TaskState.SUCCEEDED, (outcome.message, outcome.summary)
+    (call,) = world.merge_calls()
+    assert call.body["sha"] == head
+    assert outcome.summary["head"] == head and outcome.summary["updates"] == 1
+    assert outcome.summary["pure_base_merges"] == [{
+        "sha": head, "parents": [PINNED, merge_world.BASE_TIP],
+        "committer_email": PERSON["email"], "verified": False}]
+
+
+def test_githubs_own_update_records_no_pure_base_merge(tmp_path):
+    """The control for the record: GitHub's update-branch commit is counted
+    in `updates` as before, and names no person."""
+    world = MergeWorld(tmp_path)
+    head = _chain(world, 1)
+    world.pr["head"]["sha"] = head
+    outcome = merge.run_merge(world.context())
+    assert outcome.state is TaskState.SUCCEEDED, outcome.message
+    assert "pure_base_merges" not in outcome.summary
+
+
+def _differing(path: str, content: bytes) -> dict[str, bytes]:
+    return {**CLEAN, path: content}
+
+
+@pytest.mark.parametrize("how, kwargs, why", [
+    # A file the merge base, the head and main agree on, changed in the merge.
+    ("a_file_neither_parent_changed_is_changed", {"files": _differing("readme.txt", b"pwned\n")}, "readme.txt"),
+    # main's change to a file only main changed, dropped.
+    ("mains_change_is_dropped", {"files": _differing("readme.txt", b"widgets\n")}, "readme.txt"),
+    # The head's change to a file only the head changed, with one more line.
+    ("the_heads_file_carries_a_line_more",
+     {"files": _differing("notes.txt", b"ONE\ntwo\nthree\nfour\nfive\n")}, "notes.txt"),
+    # A file nobody had, added in the merge.
+    ("a_file_is_added_in_the_merge", {"files": {**CLEAN, "evil.sh": b"curl x | sh\n"}}, "evil.sh"),
+    # A file both parents keep, deleted in the merge.
+    ("a_file_is_deleted_in_the_merge",
+     {"files": {k: v for k, v in CLEAN.items() if k != "pr.txt"}}, "pr.txt"),
+    # A clean tree, but the second parent is not on main.
+    ("its_second_parent_is_not_on_main", {"on_main": False}, "its second parent is not on main"),
+    # A clean tree, but onto a head this workflow never pushed.
+    ("its_first_parent_is_not_an_accepted_head", {"first": "a" * 40},
+     "its first parent is not an accepted head"),
+    # A tree GitHub served only in part.
+    ("its_tree_was_truncated", {"truncated": True}, "GitHub truncated the merge's tree"),
+])
+def test_a_persons_merge_that_is_not_a_clean_merge_of_main_stays_head_moved(tmp_path, how,
+                                                                             kwargs, why):
+    """Each case is refused for its own reason, not an incidental one: a
+    bare file name is that file not being the clean merge."""
+    world = MergeWorld(tmp_path)
+    head = _person_merge(world, **kwargs)
+    world.pr["head"]["sha"] = head
+    outcome = merge.run_merge(world.context())
+    assert outcome.state is TaskState.FAILED, (how, outcome.message)
+    assert outcome.summary["refusal"]["code"] == "head_moved", (how, outcome.summary)
+    assert world.merge_calls() == [] and world.update_calls() == []
+    assert "pure_base_merges" not in outcome.summary
+    if " " not in why:
+        why = f"{why} is not the clean merge of its parents"
+    assert outcome.summary["refusal"]["commit"]["why"] == why, (how, outcome.summary)
+
+
+def _refusal_why(world: MergeWorld, **kwargs: Any) -> str:
+    """Serve a person's merge, run the step, and return why it stayed head_moved."""
+    head = _person_merge(world, **kwargs)
+    world.pr["head"]["sha"] = head
+    outcome = merge.run_merge(world.context())
+    assert outcome.summary["refusal"]["code"] == "head_moved", outcome.summary
+    assert world.merge_calls() == [] and "pure_base_merges" not in outcome.summary
+    return outcome.summary["refusal"]["commit"]["why"]
+
+
+def test_a_merge_where_both_parents_change_a_file_stays_head_moved_even_on_lines_apart(
+        tmp_path):
+    """main changes notes.txt's last line and the head its first, and the
+    merge carries both, the merge git makes too. The proof does not line
+    merge -- a line merge of its own took merges git refuses (the next
+    test) -- so a file both parents change is not shown clean."""
+    main = {**_FILES[merge_world.BASE_TIP], "notes.txt": b"one\ntwo\nthree\nFOUR\n"}
+    why = _refusal_why(MergeWorld(tmp_path), main=main,
+                       files=_differing("notes.txt", b"ONE\ntwo\nthree\nFOUR\n"))
+    assert why == "both parents change notes.txt"
+
+
+def test_a_merge_git_conflicts_on_stays_head_moved(tmp_path):
+    """The review's case: `git merge-file` conflicts on these three versions,
+    and the difflib line merge this step had merged them to the bytes the
+    merge carries, so the step took a tree `is_pure_base_merge` refuses."""
+    base = {**_FILES[MERGE_BASE], "notes.txt": b"\nc\nb\n\na\n"}
+    pinned = {**_FILES[PINNED], "notes.txt": b"\nc\n}\nc\nb\n\na\na\n"}
+    main = {**_FILES[merge_world.BASE_TIP], "notes.txt": b"\nc\nX\n\na\n"}
+    why = _refusal_why(MergeWorld(tmp_path), base=base, pinned=pinned, main=main,
+                       files=_differing("notes.txt", b"\nc\n}\nc\nX\n\na\na\n"))
+    assert why == "both parents change notes.txt"
+
+
+_OLD = b"alpha\nbeta\ngamma\ndelta\n"
+
+
+def test_a_rename_delete_conflict_stays_head_moved(tmp_path):
+    """The head deletes old.txt; main renames it to new.txt and edits it.
+    `git merge-tree` reports CONFLICT (rename/delete); path by path, old.txt
+    is gone on both sides and new.txt added on one, which looked clean."""
+    base = {**_FILES[MERGE_BASE], "old.txt": _OLD}
+    main = {**_FILES[merge_world.BASE_TIP], "new.txt": _OLD + b"epsilon\n"}
+    why = _refusal_why(MergeWorld(tmp_path), base=base, main=main,
+                       files={**CLEAN, "new.txt": _OLD + b"epsilon\n"})
+    assert why == ("old.txt is deleted by one parent, which may have renamed it, "
+                   "and changed or deleted by the other")
+
+
+def test_a_file_added_in_a_directory_the_other_side_renamed_stays_head_moved(tmp_path):
+    """main moves lib/ to src/; the head adds lib/b.txt. `git merge-tree`
+    reports CONFLICT (file location); path by path it looked clean."""
+    base = {**_FILES[MERGE_BASE], "lib/a.txt": _OLD}
+    pinned = {**_FILES[PINNED], "lib/a.txt": _OLD, "lib/b.txt": b"b\n"}
+    main = {**_FILES[merge_world.BASE_TIP], "src/a.txt": _OLD}
+    why = _refusal_why(MergeWorld(tmp_path), base=base, pinned=pinned, main=main,
+                       files={**CLEAN, "lib/b.txt": b"b\n", "src/a.txt": _OLD})
+    assert why == ("lib/b.txt is added in lib/, which the other parent removes entirely, "
+                   "so git may move it as a directory rename")
+
+
+def test_a_rename_on_main_the_head_does_not_touch_merges(tmp_path):
+    """The control for the two above: main renames old.txt to new.txt and
+    the head leaves both alone, which git merges cleanly, and so does the step."""
+    world = MergeWorld(tmp_path)
+    base = {**_FILES[MERGE_BASE], "old.txt": _OLD}
+    pinned = {**_FILES[PINNED], "old.txt": _OLD}
+    main = {**_FILES[merge_world.BASE_TIP], "new.txt": _OLD + b"epsilon\n"}
+    head = _person_merge(world, base=base, pinned=pinned, main=main,
+                         files={**CLEAN, "new.txt": _OLD + b"epsilon\n"})
+    world.pr["head"]["sha"] = head
+    outcome = merge.run_merge(world.context())
+    assert outcome.state is TaskState.SUCCEEDED, (outcome.message, outcome.summary)
+    assert [m["sha"] for m in outcome.summary["pure_base_merges"]] == [head]
+
+
+def test_a_head_moved_refusal_names_the_commit_and_who_made_it(tmp_path):
+    world = MergeWorld(tmp_path)
+    head = _person_merge(world, files=_differing("readme.txt", b"pwned\n"))
+    world.pr["head"]["sha"] = head
+    outcome = merge.run_merge(world.context())
+    refusal = outcome.summary["refusal"]
+    assert refusal["code"] == "head_moved"
+    assert refusal["commit"] == {
+        "sha": head, "parents": [PINNED, merge_world.BASE_TIP],
+        "committer_email": PERSON["email"], "verified": False, "first_parent_accepted": True,
+        "why": "readme.txt is not the clean merge of its parents"}
+    assert PERSON["email"] in refusal["message"] and head in refusal["message"]
+    assert "readme.txt is not the clean merge" in refusal["message"]
+
+
+def test_a_head_moved_refusal_onto_an_unaccepted_head_says_so(tmp_path):
+    world = MergeWorld(tmp_path)
+    head = _person_merge(world, first="a" * 40)
+    world.pr["head"]["sha"] = head
+    outcome = merge.run_merge(world.context())
+    record = outcome.summary["refusal"]["commit"]
+    assert record["first_parent_accepted"] is False
+    assert record["parents"] == ["a" * 40, merge_world.BASE_TIP]
+    assert record["why"] == "its first parent is not an accepted head"
+
+
+def test_a_head_moved_refusal_whose_commit_is_unreadable_still_refuses(tmp_path):
+    """The record is best-effort: a head GitHub does not serve is still
+    head_moved, with the read's failure in place of the commit."""
+    world = MergeWorld(tmp_path)
+    world.pr["head"]["sha"] = OTHER
+    outcome = merge.run_merge(world.context())
+    refusal = outcome.summary["refusal"]
+    assert refusal["code"] == "head_moved"
+    assert refusal["commit"]["sha"] == OTHER
+    assert "404" in refusal["commit"]["unreadable"]
 
 
 def test_a_pull_request_merged_at_an_updated_head_is_already_merged(tmp_path):

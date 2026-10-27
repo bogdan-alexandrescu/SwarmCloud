@@ -42,6 +42,31 @@ also what turns auto-merge **off** -- see below. The `disable` job's token
 asks for contents and pull requests only: turning auto-merge off writes no
 workflow file.
 
+`auto-merge.yml` is not the only workflow that mints this App's token.
+`merge-train.yml` mints it with the same three permissions as the `enable`
+job, and `runner-fallback.yml`'s `judge` mints it with **variables** write
+only, to flip the `SELF_HOSTED_CI` repository variable that the GITHUB_TOKEN
+has no scope for ([docs/ci.md](../ci.md), "Two tokens"). The App must hold the
+union of what every one of them asks for: the table in step 1, which
+`tests/unit/scripts/test_merge_app_permissions_doc.py` holds to every
+`permission-*` input of every token mint that uses `MERGE_APP_ID`.
+
+Measured 2026-10-23 to 2026-10-26 (#2220; F12, F14 and F15 of #2379): this
+runbook listed Contents, Pull requests and Workflows only, the App was set up
+from it, and every scheduled `judge` run failed at its mint with "The
+permissions requested are not granted to this installation", so
+`SELF_HOSTED_CI` was never flipped by the judge. The owner granted Variables:
+Read and write on 2026-10-26 (seen on the installation at about 01:50Z). The
+mint still failed after the grant (runs 40429497097 and 40458285194, the
+latter at 05:57Z 2026-10-27), and the cause was the input's name:
+`create-github-app-token` turns `permission-<name>` into the API key
+`<name>` with dashes as underscores, so `permission-variables` asked for
+`variables`, a key GitHub does not have. Repository variables are
+`actions_variables`, so the judge now asks for
+`permission-actions-variables: write` (2026-10-27). The action's input list
+names neither, so it still warns `Unexpected input(s)`; the warning is
+harmless, the request goes through by name.
+
 ## The App also turns auto-merge off (#795)
 
 Measured 2026-10-07: the `disable` job, on a push after `ready`, ran
@@ -173,13 +198,15 @@ repository).
 |---|---|---|
 | Contents | Read and write | `permission-contents: write`. Squash-merging writes the commit to `main`; enabling and disabling auto-merge need it too. |
 | Pull requests | Read and write | `permission-pull-requests: write`. Enabling auto-merge, turning it off (the `disarm` steps, #795) and merging are pull request mutations. |
-| Workflows | Read and write | `permission-workflows: write`, the `enable` job only. A pull request that touches `.github/workflows` cannot be merged by a token without it (owner decision, 2026-09-28). |
+| Workflows | Read and write | `permission-workflows: write`, the `enable` job and `merge-train.yml` only. A pull request that touches `.github/workflows` cannot be merged by a token without it (owner decision, 2026-09-28). |
+| Actions variables | Read and write | `permission-actions-variables: write`, `runner-fallback.yml`'s `judge` only. GitHub's App settings page calls it *Variables*; its API key is `actions_variables`. It reads and writes the `SELF_HOSTED_CI` repository variable; the GITHUB_TOKEN has no variables scope (owner decision, 2026-10-26; #2220). |
 
   Metadata: Read is added by GitHub automatically. The App does **not** need
   Checks or Actions: the gate reads check runs with the workflow's
   own GITHUB_TOKEN, which holds `checks: read`, not with the App token.
-  The token mint requests only permissions the App already holds, so an App
-  with fewer than these three makes the mint step fail.
+  A token mint may request only permissions the App's installation already
+  holds, so an App missing any row of this table makes the mint steps that
+  ask for it fail.
 * **Where can this GitHub App be installed:** **Only on this account.**
 
 Click **Create GitHub App** and note the **App ID** on the next page (a number;

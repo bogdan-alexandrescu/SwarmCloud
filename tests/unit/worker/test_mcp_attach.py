@@ -289,6 +289,7 @@ def test_a_409_attach_exits_fenced_without_the_agent(db, worker_factory, agent, 
 
 def test_a_withheld_server_fails_the_attempt_before_the_agent(
         db, worker_factory, agent, upstream):
+    """A task that is no workflow's: nothing can re-store its credential."""
     routes = FakeRoutes([], withheld=[{"name": "kb", "reason": "credential_expired"}])
     worker = _worker(db, worker_factory, routes, upstream)
     assert worker.run() == ExitCode.FAILED
@@ -297,6 +298,50 @@ def test_a_withheld_server_fails_the_attempt_before_the_agent(
     assert task.get("state") == TaskState.FAILED.value
     assert "mcp_server_withheld" in task.get("last_error")
     assert "kb:credential_expired" in task.get("last_error")
+
+
+@pytest.mark.parametrize("reason, code", [
+    ("credential_expired", "mcp_credential_expired"),
+    ("credential_missing", "mcp_credential_missing"),
+])
+def test_a_workflow_steps_lapsed_credential_parks_for_its_caller_before_the_agent(
+        db, worker_factory, agent, upstream, reason, code):
+    """BGD 2026-10-26 (registered-mcp-servers.md §4.10): a workflow step whose
+    per-run credential lapsed between admission and the attach waits for its
+    caller to re-store it, PARKED CREDENTIAL_MISSING, its lease released,
+    with the detail a caller watches for. The agent never starts."""
+    routes = FakeRoutes([], withheld=[{"name": "kb", "reason": reason}])
+    worker = _worker(db, worker_factory, routes, upstream)
+    db.doc("tasks/task_1")["workflow_id"] = "wf_oracle"
+    assert worker.run() == ExitCode.PARKED
+    assert agent() == []
+    task = db.doc("tasks/task_1")
+    assert (task.get("state"), task.get("park_reason")) == (
+        TaskState.PARKED.value, "CREDENTIAL_MISSING")
+    assert task.get("current_lease_id") is None
+    [block] = task.get("blocked_by")
+    assert {k: block[k] for k in ("reason", "credential", "code", "server", "expired_at")} == {
+        "reason": "CREDENTIAL_MISSING", "credential": "mcp", "code": code, "server": "kb",
+        "expired_at": None}
+    assert block["mcp_servers"] == [{"name": "kb", "code": code, "why": reason}]
+
+
+def test_a_lapsed_credential_beside_another_withheld_server_still_fails():
+    """Only a withholding a re-store can fix parks: one server withheld for
+    another reason means the attempt cannot start whatever is re-stored."""
+    mixed = attach_mod.Attached(withheld=[("kb", "credential_expired"), ("crm", "disabled")])
+    assert mixed.lapsed_credentials() == []
+    lapsed = attach_mod.Attached(withheld=[("kb", "credential_expired")])
+    assert lapsed.lapsed_credentials() == [("kb", "credential_expired")]
+    assert attach_mod.Attached(withheld=[("kb", "credential_expired")],
+                               unavailable="down").lapsed_credentials() == []
+
+
+def test_the_credential_reasons_are_swarm_apis():
+    from swarm_api import mcp_credentials as api_credentials
+
+    assert attach_mod.CREDENTIAL_EXPIRED == api_credentials.CREDENTIAL_EXPIRED
+    assert attach_mod.CREDENTIAL_MISSING == api_credentials.CREDENTIAL_MISSING
 
 
 def test_an_unreadable_server_fails_the_attempt_retryably(db, worker_factory, agent, upstream):

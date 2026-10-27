@@ -102,6 +102,17 @@
 # is the project's saved one, else the plugin's `layout` option, handed on
 # as SWARM_PLUGIN_LAYOUT below.
 #
+# IN THE BAND LAYOUT IT ASKS FOR NOTHING ELSE (SC-BAND, BGD 2026-10-26). With
+# the layout `band` the hooks module opens the strip above the prompt at
+# session start with this session's and this project's running work, read
+# directly, and the plugin starts no /workflows row -- so there is nothing to
+# attach, and no bridge listing is run for it. Only a remembered `/sc watch`
+# is still re-armed. The layout is read here, locally, as swarm_mcp.layout
+# reads it: the project's saved choice (`<config dir>/sc-layout/<sha256 of
+# the project>.json`, keyed as the watch's file is), else the plugin's
+# `layout` option, else `rows` (tests/unit/mcp/test_sc_band.py holds the two
+# together).
+#
 # AND IT REFRESHES THE BUILD BOARD ONCE (BOARD-WIRE, part of #1773). In a
 # project that already has a board folder (`.claude/build-board/`) or a run
 # record (`launched.jsonl` in `.sc-swarmcloud-runs/`, or the older
@@ -143,8 +154,9 @@ sha() {
   fi
 }
 
-# The file `/sc watch` saves this project's preference in, or nothing.
-watch_file() {
+# The file a per-project preference is saved in, under `$1` of the bridge's
+# config directory (`sc-watch`, `sc-layout`), or nothing.
+project_file() {
   local project top conf key
   project="${CLAUDE_PROJECT_DIR:-$PWD}"
   top="$(git -C "$project" rev-parse --show-toplevel 2>/dev/null)" || top=""
@@ -153,7 +165,33 @@ watch_file() {
   conf="$(conf_dir)" || return 0
   key="$(sha "$project")" || return 0
   [ -n "$key" ] || return 0
-  printf '%s' "$conf/sc-watch/$key.json"
+  printf '%s' "$conf/$1/$key.json"
+}
+
+# The file `/sc watch` saves this project's preference in, or nothing.
+watch_file() {
+  project_file sc-watch
+}
+
+# This project's layout: the saved choice, else the plugin's `layout` option,
+# else `rows` (swarm_mcp.layout.current).
+layout_now() {
+  local file saved option
+  file="$(project_file sc-layout)" || file=""
+  if [ -n "$file" ] && [ -r "$file" ]; then
+    saved="$(sed -n 's/.*"layout": *"\([a-z]*\)".*/\1/p' "$file" | head -n 1)" || saved=""
+    case "$saved" in
+      rows | pane | band)
+        printf '%s' "$saved"
+        return 0
+        ;;
+    esac
+  fi
+  option="$(lower "${SWARM_PLUGIN_LAYOUT:-${CLAUDE_PLUGIN_OPTION_LAYOUT:-}}" | tr -d '[:space:]')"
+  case "$option" in
+    rows | pane | band) printf '%s' "$option" ;;
+    *) printf 'rows' ;;
+  esac
 }
 
 # An id-shaped value, or nothing (swarm_mcp.session's shape).
@@ -252,6 +290,10 @@ attach=yes
 case "$(lower "${CLAUDE_PLUGIN_OPTION_AUTO_ATTACH:-true}")" in
   false | 0 | no | off) attach="" ;;
 esac
+# The band layout: the strip lists the work at session start; nothing to attach.
+if [ "$(layout_now)" = "band" ]; then
+  attach=""
+fi
 board="$(board_wanted)" || board=""
 [ -n "$attach" ] || [ -n "$board" ] || rearm_or_quiet
 

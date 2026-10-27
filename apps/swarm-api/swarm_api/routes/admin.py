@@ -205,6 +205,11 @@ def put_platform_settings(
     coerced), and each changed entry is stamped with the admin who made it.
     Read at every stopped-attempt estimate (`spendestimate`), so a change
     prices the next one with no deploy.
+
+    `agent_budget_ceiling` (#2459): `{usd, tokens}`, either or both, replaced
+    whole (`{}` clears it). No workspace default may be saved above it in its
+    unit, no step may ask for more, and every budgeted attempt's limit is at
+    most it (`budget`). Read at every submission and every save.
     """
     changes = body.model_dump(exclude_none=True)
     if not changes:

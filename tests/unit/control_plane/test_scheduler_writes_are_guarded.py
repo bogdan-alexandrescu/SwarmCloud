@@ -221,8 +221,8 @@ class _InterleavedStore(SchedulerStore):
             self.fired = True
         return rows
 
-    def parked_tasks(self, reason: ParkReason, limit: int) -> list[Task]:
-        return self._fire("parked_tasks", super().parked_tasks(reason, limit))
+    def parked_page(self, reason: ParkReason, limit: int, after: str | None) -> list[Task]:
+        return self._fire("parked_page", super().parked_page(reason, limit, after))
 
     def ready_tasks(self, limit: int) -> list[Task]:
         return self._fire("ready_tasks", super().ready_tasks(limit))
@@ -370,7 +370,7 @@ class TestPromote:
             taken.append(_admit(db, "task_child"))
 
         dispatcher = RecordingDispatcher()
-        store = _InterleavedStore(db, after="parked_tasks", writer=another_scheduler_takes_it)
+        store = _InterleavedStore(db, after="parked_page", writer=another_scheduler_takes_it)
         scheduler = _scheduler(store, dispatcher)
 
         report = scheduler.drain()

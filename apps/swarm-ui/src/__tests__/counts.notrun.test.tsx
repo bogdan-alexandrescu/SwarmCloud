@@ -15,6 +15,12 @@ const loadMe = vi.hoisted(() => vi.fn<() => Promise<Result<Me>>>())
 // (COUNTS-PAGE, BGD 2026-10-24: "Roster on mount").
 const loadTenants = vi.hoisted(() => vi.fn<() => Promise<Result<{ tenants: Tenant[] }>>>())
 vi.mock('../api', () => ({ loadStats, loadMe, loadTenants }))
+// The over-time read, which the page's one Run starts for an admin
+// (COUNTS-ONE-RUN). It never answers here: this file is about the state counts.
+vi.mock('../platformTimeApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../platformTimeApi')>()),
+  loadPlatformTime: vi.fn(() => new Promise(() => {})),
+}))
 
 const { PlatformCountsScreen } = await import('../PlatformCounts')
 
@@ -88,12 +94,12 @@ describe('Platform counts before the first run (#135)', () => {
     await waitFor(() => expect(document.querySelectorAll('.split-row').length).toBeGreaterThan(0))
     expect(document.querySelector('.counts-notrun')).toBeNull()
     // The state cards' placeholder words are gone. Scoped to the cards: the
-    // Over time section below keeps its own not-run card until its own read.
+    // Over time section above keeps its not-run card until its read lands.
     expect(document.querySelector('.counts-scopes')?.textContent ?? '').not.toContain('not run yet')
     expect(screen.getAllByRole('heading', { name: /This tenant/ })).toHaveLength(1)
   })
 
-  it('draws the Over time section below the scope cards and above the ticks (COUNTS-PAGE)', async () => {
+  it('draws the Over time section above the scope cards and the ticks last (mock-up F1, COUNTS-ONE-RUN)', async () => {
     render(<PlatformCountsScreen />)
     const scopes = document.querySelector('.counts-scopes')
     const over = screen.getByRole('region', { name: 'Over time' })
@@ -102,10 +108,11 @@ describe('Platform counts before the first run (#135)', () => {
     expect(ticks).not.toBeNull()
     // MUTATION: drop <PlatformOverTime /> from PlatformCounts.tsx, and the
     // region lookup above throws.
-    // MUTATION: mount it above the scope cards, and this goes red.
-    expect(scopes!.compareDocumentPosition(over) & Node.DOCUMENT_POSITION_FOLLOWING, 'Over time is not below the scope cards').toBeTruthy()
-    // MUTATION: mount it below the ticks, and this goes red.
-    expect(over.compareDocumentPosition(ticks!) & Node.DOCUMENT_POSITION_FOLLOWING, 'Over time is not above the platform ticks').toBeTruthy()
+    // MUTATION: mount it below the scope cards again (COUNTS-PAGE's order),
+    // and this goes red: F1 draws the span first and "Right now" under it.
+    expect(over.compareDocumentPosition(scopes!) & Node.DOCUMENT_POSITION_FOLLOWING, 'Over time is not above the scope cards').toBeTruthy()
+    // MUTATION: mount the ticks above the state counts, and this goes red.
+    expect(scopes!.compareDocumentPosition(ticks!) & Node.DOCUMENT_POSITION_FOLLOWING, 'the ticks are not last').toBeTruthy()
     // NOTHING BILLED ON MOUNT: the roster read prices the press, once, and
     // neither count runs before one.
     // MUTATION: read the roster on every render, or not at all.

@@ -144,6 +144,7 @@ from swarm_redaction import RULES as CREDENTIAL_RULES
 from swarm_redaction import redact as redact_text
 
 from . import artifact_manifest as manifest_mod
+from . import budget as budget_mod
 from . import cachedirs as cachedirs_mod
 from . import children as children_mod
 from . import continuation as continuation_mod
@@ -543,8 +544,10 @@ PUBLISH_UNREACHABLE_FIELD = "forge_unreachable"
 PUBLISH_FAILED_FIELD = "publish_failed"
 #: The `result_summary.git` key `_publish_git` sets when a continued branch
 #: moved only by merges of the default branch already holds every change this
-#: round made (#2179: PR #2093's GitHub update carried main's identical fix).
-#: Its value is the reason, naming the moved tip; nothing was pushed. Read by
+#: round made (#2179: PR #2093's GitHub update carried main's identical fix),
+#: or when origin's tip of the branch already holds the round's HEAD (#2506:
+#: PR #2446's head was the commit the round ended on). The name is the first
+#: case's. Its value is the reason, naming the tip; nothing was pushed. Read by
 #: `_no_change_after_publish`: the attempt ends `no_change`, not
 #: `publish_failed`.
 BASE_MERGE_NO_CHANGE_FIELD = "base_merge_no_change"
@@ -982,6 +985,12 @@ class Worker:
         # in this process, or the base a previous attempt's worker recorded in
         # the checkpoint manifest. `EMPTY_CLONE_BASE` for an empty repository.
         self._publish_base: str | None = None
+        # Origin's tip of the branch this publish pushes, read from the forge
+        # into the publish repository, kept only when HEAD descends from it
+        # (`_read_publish_remote_tip`, #2506): commits origin already has,
+        # which the workflow range and the broker's bundle leave out
+        # (`_workflow_negatives`). Reset at the start of every publish.
+        self._publish_remote_tip: str | None = None
         # The branch this attempt's clone left HEAD on (`refs/heads/<name>`, or
         # `DETACHED_HEAD` for a clone at a commit), read by the worker before
         # any agent process existed: the branch the step was given (#2094).
@@ -1134,6 +1143,21 @@ class Worker:
         self._channel_seen: int | None = None
         self._swaps = 0
         self._just_swapped = False
+        #: The attempt's budget (#2459, `budget`), built with the first child
+        #: environment of a budgeted CLI task; None for every other attempt,
+        #: which then runs exactly as before.
+        self.budget: budget_mod.BudgetGuard | None = None
+        # EVERY AGENT RUN, COUNTED (SWAP-RUNS, #2457). An attempt can start
+        # several runners -- an account swap, a short rate limit and a
+        # reloaded credential all restart the agent in place -- and the
+        # summary's `duration_seconds` used to be the LAST one's alone: two
+        # 7,200 s timeouts on 2026-10-26 read "agent ran 4,600 s" because a
+        # swap at minute 42 restarted it. One entry per runner start, closed
+        # when it is reaped (`_close_run`); one per swap (`_emit_swapped`).
+        # `_run_open` is the run now running, with what was spent before it.
+        self._runs: list[dict[str, Any]] = []
+        self._swap_log: list[dict[str, Any]] = []
+        self._run_open: dict[str, Any] | None = None
         # WHAT THIS ATTEMPT SPENT, summed over every runner it started. An
         # attempt can start several -- a short rate limit and a reloaded
         # credential both restart in place -- and each one's result.json is
@@ -3419,6 +3443,11 @@ class Worker:
                     "workspace-secret:" + ",".join(released.missing_required),
                 ),
             )
+        # STEP 6a*: a Cloudflare Access token (CF-ACCESS-TOKEN), held in this
+        # heap by the release and never written, goes to the live gate now,
+        # before the runner exists; the release's copy is emptied either way.
+        # None granted, nothing is sent and the gate intercepts nothing.
+        self.handoff.give_cf_access(released.gate)
         # STEP 6a': the TypeSafe forwarder's first ticket and the shim, before
         # the runner and before `_build_child_env` (whose jev key and judge
         # setup read the shim file). Switched off, nothing happens. A 409 is
@@ -3452,6 +3481,12 @@ class Worker:
                 )
         if unattached is not None:
             self.mcp.close()
+            # A WORKFLOW STEP'S per-run credential that lapsed while it waited
+            # parks for its caller to re-store it (BGD 2026-10-26, §4.10);
+            # anything else withheld still fails the attempt.
+            lapsed = attached.lapsed_credentials() if task.get("workflow_id") else []
+            if lapsed:
+                return functools.partial(self._park_mcp_credential, lapsed)
             return functools.partial(self._fail_mcp_unattached, *unattached)
         try:
             child_env = self._build_child_env()
@@ -3572,6 +3607,7 @@ class Worker:
         # The session this runner reports for: its own, or an earlier
         # runner's it continues with `--resume` (`_account_channel_env`).
         self._note_runner_spend_start(resumed=bool(child_env.get(RESUME_SESSION_ENV)))
+        self._open_run(resumed=bool(child_env.get(RESUME_SESSION_ENV)))
 
         if self.phases.current != "runner":
             # The last startup line. An in-place restart is not a new phase.
@@ -3690,6 +3726,12 @@ class Worker:
                 with self._heartbeat_meanwhile("account channel"):
                     self._watch_account()
 
+            if self.budget is not None:
+                # A file stat when nothing changed; a price asked of swarm-api
+                # at most every `budget.PRICE_INTERVAL_SECONDS` (#2459).
+                with self._heartbeat_meanwhile("budget"):
+                    self.budget.watch()
+
             if now >= next_poll:
                 next_poll = now + cfg.control_poll_seconds
                 try:
@@ -3754,7 +3796,7 @@ class Worker:
                 break
 
         result = child.finish()
-        self._child_ended()
+        self._child_ended(result)
         # An agent that ended with a hand-off open is waiting for nobody now:
         # resolved while the task is still RUNNING (live-browser §4.1).
         self.handoff.agent_exited(ws.work)
@@ -4327,6 +4369,12 @@ class Worker:
             summary["branch"] = self._scrub(dict(self._carrier_pushed))
         summary["exit_code"] = result.exit_code
         summary["duration_seconds"] = round(result.duration_seconds, 3)
+        if len(self._runs) > 1:
+            # EVERY RUN (SWAP-RUNS, #2457): the attempt's agent time is the
+            # sum of its runs; the last run's own figure keeps its own name.
+            summary["duration_seconds"] = round(
+                sum(float(run.get("duration_s") or 0.0) for run in self._runs), 3)
+            summary["last_run_duration_seconds"] = round(result.duration_seconds, 3)
         if self._index_phases is not None:
             summary["repo_index_phases"] = [r.as_dict() for r in self._index_phases]
         if self._verdict is not None:
@@ -4345,6 +4393,23 @@ class Worker:
             summary[verdict_mod.RENDERED_REVIEW_KEY] = self._scrub(dict(self._rendered_review))
 
         runner_result = self._add_runner_block(summary)
+
+        if self.budget is not None:
+            # The limits, what the attempt used and, when it stopped the
+            # agent, how (#2459); on every budgeted attempt, however it ended.
+            summary[budget_mod.SUMMARY_KEY] = self.budget.summary()
+        if self.budget is not None and self.budget.exceeded:
+            # STOPPED BY ITS BUDGET: checkpointed and published above, as a
+            # timed-out step is. FAILED with the cause `budget_exceeded`;
+            # `end_cause` stays null until contract request 118 types it --
+            # the contract's own rule for an end with no value of its own.
+            self._finish_terminal(
+                state=TaskState.FAILED,
+                exit_code=result.exit_code,
+                error=self.budget.error(),
+                result_summary=summary,
+            )
+            return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
 
         if result.timed_out:
             error = f"runner exceeded its {self.cfg.timeout_seconds}s timeout and was killed"
@@ -4619,6 +4684,8 @@ class Worker:
         ws = self.ws
         if ws is None:
             return None
+        # Every run and swap, when there was more than one run (SWAP-RUNS).
+        summary.update(_runs_summary(self._runs, self._swap_log))
         if self._spend.get("cost_estimated"):
             # The attempt's `cost_usd` includes an estimate for a run stopped
             # before it reported one (#627). Said here, at the top, because a
@@ -6112,15 +6179,48 @@ class Worker:
 
     def _publish_branch_name(self) -> str | None:
         """The branch `_publish_git` would push, or None when it would refuse to
-        name one. Read only to ask for this attempt's own tool-pushed tip."""
+        name one. Read to ask for this attempt's own tool-pushed tip, and by
+        the head-moved guard as this step's own line (`_fetched_line`)."""
         try:
-            if self._pr_role() == "amender":
-                return self._pr_author_branch()
-            return continuation_mod.publish_branch(
-                (self._task or {}).get("metadata"), self.cfg.git_branch_prefix, self.cfg.task_id
-            )
+            return self._push_branch()[0]
         except WorkerError:
             return None
+
+    def _push_branch(self) -> "tuple[str, publishpr_mod.Target | None]":
+        """The branch this step pushes, and the pull request it pushes onto
+        (or None). The ONE place that is decided: `_publish_git` pushes it and
+        the head-moved guard exempts it (`_publish_branch_name`).
+
+        MEASURED 2026-10-26 (F04 of #2379): the guard named only the amender's
+        or `swarm/<own task>`, while a `publish_to_pr` step pushes the pull
+        request's branch; an agent that checked that branch out was refused
+        `head_moved` and its work published nothing. The descent check and
+        `_check_pull_before_push` still bound what lands there.
+
+        Raises WorkerError where `_publish_git` refuses to name a branch.
+        """
+        pr_role = self._pr_role()
+        # The amender's branch is the author's, derived from its task id;
+        # `push_branch` never forces, so its push only fast-forwards.
+        # Otherwise its own `<prefix><task id>`, or the branch a fix step
+        # continues (#263).
+        branch = self._pr_author_branch() if pr_role == "amender" else (
+            continuation_mod.publish_branch(
+                (self._task or {}).get("metadata"), self.cfg.git_branch_prefix, self.cfg.task_id
+            )
+        )
+        # `publish_to_pr` (#2183): the step that would open the pull
+        # request -- `direct-pr`, the `integrate` integrator -- pushes
+        # onto the existing one's branch instead, derived from the signed
+        # task id. A contributor still pushes its own branch: the
+        # integrator merges it, as without the field.
+        onto_pr = (
+            self._publish_to_pr()
+            if not pr_role and self._opens_pull_request() else None
+        )
+        if onto_pr is not None:
+            branch = onto_pr.branch(self.cfg.git_branch_prefix)
+        return branch, onto_pr
 
     def _adopt_tool_pushed_tip(self, publish_repo: Path, branch: str) -> str | None:
         """The tip this attempt's own `git_push_branch` left on `branch`, when
@@ -6695,9 +6795,10 @@ class Worker:
         Decided at the publish, not by the harvest's diff (#2179): the round
         did change its clone, but the branch it continues moved by a merge of
         the default branch (`_push_onto_base_merge`) to a tip that already
-        holds every change, the PR #2093 case. The work is on the branch, so
-        it is the `no_change` result rather than `publish_failed`, with the
-        moved tip named in the reason.
+        holds every change, the PR #2093 case -- or origin's tip of the branch
+        already holds the round's HEAD, the PR #2446 case (#2506). The work is
+        on the branch, so it is the `no_change` result rather than
+        `publish_failed`, with the tip named in the reason.
         """
         git = summary.get("git")
         reason = git.get(BASE_MERGE_NO_CHANGE_FIELD) if isinstance(git, dict) else None
@@ -9128,6 +9229,9 @@ class Worker:
         # task, from its document as swarm-api recorded it at submission --
         # never from `input` (invariant 10). See `gitidentity`.
         base.update(git_identity_env(self._task))
+        # THE BUDGET (#2459): where the runner reports usage and reads the
+        # stop, on a budgeted task only. Nothing for any other.
+        base.update(self._budget_env())
         for name in ("CLAUDE_CODE_BIN", "CLAUDE_CODE_ARGS", "CODEX_BIN", "CODEX_ARGS"):
             # Platform-set, never caller-set: they live in the Job definition.
             if os.environ.get(name):
@@ -9436,6 +9540,31 @@ class Worker:
         return outcome
 
     # -- the account mid-run (S13-S15) ---------------------------------------
+    def _budget_env(self) -> dict[str, str]:
+        """The runner's budget files (#2459), building the guard on first use.
+
+        Only for a coding-agent CLI (`cli_agent_spec`) whose signed dispatch
+        block carries a budget: every other attempt gets nothing, and its
+        runner, settings and supervision are what they were before.
+        """
+        if self.budget is None:
+            spec = cli_agent_spec(self.cfg.runner_profile)
+            limits = budget_mod.Limits.from_dispatch(self._dispatch_block())
+            if spec is None or limits is None or self.ws is None:
+                return {}
+            self.budget = budget_mod.BudgetGuard(
+                limits,
+                private=self.ws.private,
+                emit=lambda detail: self.control.emit(EventType.RUNNING, detail),
+                log=self.log,
+                pricer=self.spend_pricer.price,
+                # claude-code's PostToolUse hook is the one way to tell an
+                # agent mid-run; `codex exec` takes nothing once started.
+                can_tell=spec.name == "claude-code",
+            )
+            self.log.info("this attempt has a budget", limit=limits.as_dict())
+        return self.budget.env()
+
     def _account_channel_paths(self) -> tuple[Path, Path]:
         """(stream, move): the runner's channel, in the worker's own `private/`.
 
@@ -9744,6 +9873,14 @@ class Worker:
             account_id=taken.account_id,
             reason=reason,
         )
+        # The summary's record of it (SWAP-RUNS): after which run, and when.
+        self._swap_log.append({
+            "at": _rfc3339_now(),
+            "from": left.account_id,
+            "to": taken.account_id,
+            "reason": reason,
+            "after_run": len(self._runs),
+        })
         try:
             self.control.emit(
                 EventType.RUNNING,
@@ -10438,6 +10575,7 @@ class Worker:
             self._lease_live_until = started + self.control.heartbeat_extension_seconds
         self._last_beat_started = started
         self._heartbeats += 1
+        self._log_memory_guard_kills()
         if self._heartbeats % HEARTBEAT_EVENT_EVERY == 1:
             self.control.emit(EventType.HEARTBEAT, self._usage_reading())
             # THE LIVE READING DETAILS DRAWS, on the attempt itself (contract
@@ -11071,6 +11209,51 @@ class Worker:
                 end_cause=EndCause.CANNOT_START,
             )
         return Outcome(exit_code=ExitCode.FAILED, state=state)
+
+    def _park_mcp_credential(self, lapsed: list[tuple[str, str]]) -> Outcome:
+        """A workflow step's per-run MCP credential lapsed between admission
+        and this attach (registered-mcp-servers.md §4.10, BGD 2026-10-26).
+        Its caller is online and re-stores it through
+        `PUT /v1/workflows/{id}/mcp-credentials`, so this is a wait, not a
+        failure: checkpoint, PARKED(CREDENTIAL_MISSING), release, exit, with
+        the detail a caller watches for (`credential: "mcp"`, the code, the
+        server by name). The attach does not say when the row expired, so
+        `expired_at` is null here; the scheduler's park says it. The park's
+        instant is `next_eligible_at`, so the credential sweep promotes it
+        the moment the row is live again. Names and reason words only.
+        """
+        name, reason = lapsed[0]
+        code = ("mcp_credential_missing" if reason == mcp_attach_mod.CREDENTIAL_MISSING
+                else "mcp_credential_expired")
+        self.log.warning(
+            "a workflow's mcp credential lapsed before the agent; parking for its caller",
+            servers=[n for n, _ in lapsed], code=code,
+        )
+        self._checkpoint("mcp-credential")
+        summary = self._upload_outputs()
+        now = utcnow()
+        with self._metrics_after_the_record():
+            self.control.park(
+                reason=ParkReason.CREDENTIAL_MISSING,
+                next_eligible_at=now,
+                detail={
+                    "credential": "mcp",
+                    "code": code,
+                    "server": name,
+                    "expired_at": None,
+                    "parked_at": now.isoformat(),
+                    "mcp_servers": [
+                        {"name": n,
+                         "code": ("mcp_credential_missing"
+                                  if r == mcp_attach_mod.CREDENTIAL_MISSING
+                                  else "mcp_credential_expired"),
+                         "why": r}
+                        for n, r in lapsed
+                    ],
+                    **summary,
+                },
+            )
+        return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _fail_mcp_unattached(self, cause: str, detail: str, retryable: bool) -> Outcome:
         """The attempt ends before its agent ran: a registered MCP server the
@@ -13053,6 +13236,7 @@ class Worker:
         cfg = self.cfg
         ws = self.ws
         assert ws is not None
+        self._publish_remote_tip = None
 
         if not publish:
             return {
@@ -13175,26 +13359,11 @@ class Worker:
             out["publish_reason"] = "no credential"
             return out
 
-        # Its own `<prefix><task id>`, or the branch a fix step continues (#263).
+        # The amender's author branch, the pull request's (`publish_to_pr`),
+        # or its own `<prefix><task id>` / the branch a fix step continues.
         try:
-            # The amender's branch is the author's, derived from its task id;
-            # `push_branch` never forces, so its push only fast-forwards.
-            branch = self._pr_author_branch() if pr_role == "amender" else (
-                continuation_mod.publish_branch(
-                    (self._task or {}).get("metadata"), cfg.git_branch_prefix, cfg.task_id
-                )
-            )
-            # `publish_to_pr` (#2183): the step that would open the pull
-            # request -- `direct-pr`, the `integrate` integrator -- pushes
-            # onto the existing one's branch instead, derived from the signed
-            # task id. A contributor still pushes its own branch: the
-            # integrator merges it, as without the field.
-            onto_pr = (
-                self._publish_to_pr()
-                if not pr_role and self._opens_pull_request() else None
-            )
+            branch, onto_pr = self._push_branch()
             if onto_pr is not None:
-                branch = onto_pr.branch(cfg.git_branch_prefix)
                 out["publish_to_pr"] = {
                     **onto_pr.to_record(cfg.git_branch_prefix),
                     "started_head": self._pr_start_head,
@@ -13371,6 +13540,50 @@ class Worker:
                 publish_repo, url=url, token=token, default_branch=access.default_branch,
                 tip=default_tip,
             )
+            # WHAT ORIGIN'S BRANCH ALREADY HOLDS IS NOT THIS ROUND'S TO PUSH
+            # (#2506). The publish read its range as HEAD not reachable from
+            # the clone base or the merged default-branch commit, and never
+            # asked where origin's branch stood. Measured on ci-fix
+            # task_1297d8f4 (PR #2446): the round cloned at fba856, the owner
+            # pushed 89507cf -- a workflow change -- to the pull request's
+            # branch, and the agent's clone ended on exactly that commit. The
+            # publish counted the owner's workflow file as the round's, sent a
+            # push of nothing new through the broker, whose one call answered
+            # api_unavailable, and the step ended publish_failed.
+            #
+            # So origin's tip is read from the FORGE into the publish
+            # repository (`_read_publish_remote_tip`, never the agent's
+            # clone). When HEAD descends from it, it joins the commits the
+            # range starts from (`_workflow_negatives`), and when it also
+            # descends from the clone base it becomes the base, as a tool
+            # push's tip does (#1188): the replay, the fold and the scans then
+            # read only what origin lacks, and origin's commits are pushed as
+            # they are, never rewritten into a non-fast-forward. A HEAD that is
+            # the tip, or behind it, pushes nothing: see below `commit_dirty`.
+            # Asked only of a publish that continues a branch origin may hold
+            # (`_publish_continues_a_branch`), or of a tool push's tip, which
+            # is not fetched again: a fresh lane's first attempt is not.
+            remote_tip = (
+                self._read_publish_remote_tip(
+                    publish_repo, url=url, token=token, branch=branch, tool_tip=tool_tip,
+                )
+                if carrier != "branches" and onto_pr is None
+                and (tool_tip is not None or self._publish_continues_a_branch())
+                else None
+            )
+            if remote_tip is not None and self._publish_is_ancestor(
+                publish_repo, remote_tip, "HEAD"
+            ):
+                self._publish_remote_tip = remote_tip
+                base = self._publish_base
+                if (
+                    tool_tip is None and base and remote_tip != base
+                    and _FULL_SHA_RE.fullmatch(base)
+                    and self._publish_is_ancestor(publish_repo, base, remote_tip)
+                ):
+                    out["remote_tip_from"] = base
+                    out["remote_tip"] = remote_tip
+                    self._publish_base = remote_tip
             new_sha = commit_dirty(
                 repo=publish_repo,
                 message=self._worker_commit_message(
@@ -13389,6 +13602,32 @@ class Worker:
             if new_sha:
                 auto_committed = True
                 work_head = new_sha
+
+            # A HEAD ORIGIN'S BRANCH ALREADY HOLDS PUSHES NOTHING (#2506): the
+            # measured case, HEAD the pull request's own tip. It ends as the
+            # `no_change` result, as a branch whose base merge already holds
+            # the round's change does (`_push_onto_base_merge`, #2179): no
+            # broker call, no token push. Not for a tool push's tip, which the
+            # push below re-proves under its lease (#1188); not for a conflict
+            # fix round, which the check before the push refuses when it
+            # merged nothing (#1321); not for an integrator, whose merges are
+            # still to come.
+            if (
+                remote_tip is not None and not new_sha and tool_tip is None
+                and not conflict_round and role != "integrator"
+                and self._publish_is_ancestor(publish_repo, "HEAD", remote_tip)
+            ):
+                out[BASE_MERGE_NO_CHANGE_FIELD] = (
+                    f"no_change: {branch} on origin already stands at {remote_tip[:12]}, "
+                    "which holds every commit this round's head carries; nothing was pushed"
+                )
+                out["remote_tip"] = remote_tip
+                out["published"] = False
+                out["auto_committed"] = auto_committed
+                out["publish_reason"] = out[BASE_MERGE_NO_CHANGE_FIELD]
+                self.log.info("origin's branch already holds this round's head; nothing to push",
+                              branch=branch, tip=remote_tip)
+                return out
 
             # `carrier: branches` (D13): the branch may already hold this step's
             # earlier pushes (`_push_carrier_branch`), and a replay writes new
@@ -14047,20 +14286,116 @@ class Worker:
 
     def _workflow_negatives(self, floor: str | None) -> list[str]:
         """The commits origin has that the publish's range starts from: the
-        clone base and the default branch's commit the lane merged."""
+        clone base, the default branch's commit the lane merged, and origin's
+        tip of the publish branch when HEAD descends from it (#2506).
+
+        The tip is `_publish_remote_tip`, read from the forge and kept only
+        after `merge-base --is-ancestor` showed HEAD stands on it, so a tip
+        that moved elsewhere, or names an unrelated line, hides none of the
+        round's own commits. Unread or absent, the range is as before."""
         out: list[str] = []
-        for sha in (self._publish_base, floor):
+        for sha in (self._publish_base, floor, self._publish_remote_tip):
             if sha and _FULL_SHA_RE.fullmatch(sha) and sha not in out:
                 out.append(sha)
         return out
+
+    def _publish_continues_a_branch(self) -> bool:
+        """True when this publish may find its branch already on origin, so
+        `_read_publish_remote_tip` asks the forge (#2506): a round that
+        continues another task's branch (`dispatch.continues`, the ci-fix
+        round #2506 measured), or a later attempt of this task, whose earlier
+        one may have pushed. A fresh lane's first attempt publishes a branch
+        origin cannot hold yet, so it makes no token-bearing fetch for it.
+
+        `attempt_count` is counted with the refunded child-await and hand-off
+        resumes, as `_recorded_checkpoint` counts it.
+        """
+        task = self._task or {}
+        try:
+            if continuation_mod.continued_task(task.get("metadata")):
+                return True
+        except WorkerError:
+            return False
+        count = task.get("attempt_count")
+        if isinstance(count, bool) or not isinstance(count, int):
+            return False
+        metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+        resumes = 0
+        for key in (CHILD_AWAIT_RESUMES_METADATA_KEY, handoff_mod.HUMAN_WAIT_RESUMES_METADATA_KEY):
+            value = metadata.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                resumes += max(0, value)
+        return count + resumes > 1
+
+    def _read_publish_remote_tip(
+        self, publish_repo: Path, *, url: str, token: str, branch: str, tool_tip: str | None
+    ) -> str | None:
+        """Origin's current tip of `branch`, fetched from the FORGE into the
+        publish repository (`fetch_branch_tip`, the token-bearing fetch, as
+        `_default_branch_tip` reads the default branch), or None when the
+        branch is absent or could not be read (#2506). Never read from the
+        agent's clone, whose refs the agent can point anywhere.
+
+        `tool_tip`, the tip this attempt's own `git_push_branch` left
+        (`_adopt_tool_pushed_tip`), is returned as it is, not fetched again.
+        """
+        if tool_tip is not None:
+            return tool_tip
+        ws = self.ws
+        assert ws is not None
+        try:
+            tip = fetch_branch_tip(
+                repo=publish_repo,
+                url=url,
+                branch=branch,
+                token=token,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=self.cfg.git_clone_timeout_seconds,
+                logger=self.log,
+                branch_prefix=self.cfg.git_branch_prefix,
+            )
+        except GitError as exc:
+            self.log.warning("could not read the publish branch from the forge",
+                             branch=branch, error=str(self._scrub(str(exc)[:300])))
+            return None
+        return tip if isinstance(tip, str) and _FULL_SHA_RE.fullmatch(tip) else None
+
+    def _publish_is_ancestor(self, publish_repo: Path, ancestor: str, descendant: str) -> bool:
+        """True when `ancestor` is `descendant` or one of its ancestors in the
+        publish repository; False when it is not or git could not tell."""
+        ws = self.ws
+        assert ws is not None
+        code, _ = _git_text(
+            ["git", *_NO_HOOKS, "merge-base", "--is-ancestor", ancestor, descendant],
+            repo=Path(publish_repo), private_dir=ws.private, logs_dir=ws.logs,
+            slug="publish-remote-tip", timeout_seconds=self.cfg.git_harvest_timeout_seconds,
+            logger=self.log,
+        )
+        return code == 0
 
     def _workflow_paths(self, publish_repo: Path, *, floor: str | None) -> list[str]:
         """The workflow and action files the branch's new commits touch, sorted.
 
         The command swarm-api reads the pushed bundle with
-        (`swarm_api.gittools._workflow_paths`): `--name-only --no-renames -m`
-        over exactly the new commits, so a rename away from a workflow path
-        counts, and the two never disagree about which route a branch takes.
+        (`swarm_api.gittools._workflow_paths`): `--name-only --no-renames
+        --diff-merges=combined` over exactly the new commits, so a rename away
+        from a workflow path counts, and the two never disagree about which
+        route a branch takes.
+
+        COMBINED, NOT `-m` (#2452). `-m` diffs a merge against EACH parent, so
+        a lane's merge of main named every workflow file main changed since
+        the branch was cut: task_1297d8f4 and task_f2b72856 (2026-10-26),
+        after PR 2446 changed application.yml and release.yml, were sent to
+        the broker with no workflow change of their own and ended FAILED.
+        A combined listing names a merge's path only where the result differs
+        from EVERY parent -- a conflict resolution, an evil merge -- and lists
+        a non-merge commit exactly as before. Its one blind spot: a merge that
+        keeps the branch's version of a file main also changed, where that
+        version is already on origin (below the negatives), is not listed and
+        goes out on the worker's own push. Should GitHub refuse that push for
+        the `workflow` scope, the publish fails as any refused push does
+        (`PUBLISH_FAILED_FIELD`), the work kept (docs/runner-git-tools.md).
 
         A listing git could not make is no workflow paths, logged: the
         worker's own push then runs, as before AU-3, and GitHub refuses a
@@ -14072,8 +14407,8 @@ class Worker:
         assert ws is not None
         negatives = self._workflow_negatives(floor)
         code, text = _git_text(
-            ["git", *_NO_HOOKS, "log", "--format=", "--name-only", "--no-renames", "-m",
-             "HEAD", *(["--not", *negatives] if negatives else []),
+            ["git", *_NO_HOOKS, "log", "--format=", "--name-only", "--no-renames",
+             "--diff-merges=combined", "HEAD", *(["--not", *negatives] if negatives else []),
              "--", *WORKFLOW_PATHSPECS],
             repo=Path(publish_repo), private_dir=ws.private, logs_dir=ws.logs,
             slug="publish-workflow-paths",
@@ -14096,12 +14431,28 @@ class Worker:
 
         The bundle is built here, in the worker-owned publish repository, from
         exactly the commits the token push would have sent -- HEAD not
-        reachable from the clone base or the merged default-branch commit --
-        so swarm-api reads the same range and decides the credential: a
+        reachable from the clone base, the merged default-branch commit or
+        origin's tip of the branch (`_workflow_negatives`, #2506), all sent
+        as `haves` -- so swarm-api reads the same range and decides the credential: a
         GitHub App token it mints for that one repository when the
         registration's `workflow_files` switch is on (#2029),
         `workflow_scope_missing` otherwise. A fence (409) is a
         refusal too: nothing is pushed, and this worker touches no lease.
+
+        A refusal marked `retryable` -- `GitTools.call` turns every retryable
+        ChildApiError into `api_unavailable` -- is asked again in-process:
+        one swarm-api blip failed task_b7b69bce7da247e0afaf's finished
+        42-minute build with publish_failed (#2138). The bundle is built and
+        uploaded once and every try carries the same request_id and fields,
+        so the broker sees one logical call; a replay after a push whose
+        answer was lost is safe because swarm-api's `_push` leases on
+        `recorded_tip`, which that push already recorded. The tries are
+        `_forge_retry()`'s bound -- `cfg.forge_read_attempts`, one budget of
+        the smaller of `max_in_worker_retry_delay_seconds` and the step's
+        remaining deadline -- so this is never the long in-worker wait
+        invariant 4 forbids; past it the last refusal is returned as before.
+        A fence, a refusal not marked retryable, and any other failure are
+        tried once (invariant 5: a fence is never asked again).
         """
         from . import gittools as gittools_mod  # lazy: gittools imports this module
 
@@ -14165,7 +14516,25 @@ class Worker:
                     tenant=cfg.tenant_id, attempt=cfg.attempt_id, call=request_id)
                 self.store.upload_bytes(key, raw, "application/x-git-bundle")
                 fields["bundle_object"] = key
-            payload = relay.call("git_push_branch", fields, request_id=request_id)
+            policy = self._forge_retry()
+            started = policy.clock()
+            attempt = 1
+            while True:
+                try:
+                    payload = relay.call("git_push_branch", fields, request_id=request_id)
+                    break
+                except gittools_mod.GitToolRefused as refusal:
+                    if not refusal.retryable or attempt >= policy.attempts:
+                        raise
+                    wait = policy.base_delay_seconds * (2 ** (attempt - 1))
+                    if (policy.clock() - started) + wait > policy.budget_seconds:
+                        raise
+                    self.log.warning(
+                        "the broker could not answer the workflow publish; asking again",
+                        code=refusal.code, attempt=attempt, attempts=policy.attempts,
+                        wait_seconds=wait)
+                    policy.sleep(wait)
+                    attempt += 1
         except gittools_mod.GitToolFenced:
             self.log.warning("the broker fenced the workflow publish; nothing was pushed")
             return None, {"code": "fenced", "message": (
@@ -14244,6 +14613,10 @@ class Worker:
         repo = Path(publish_repo)
         timeout = self.cfg.git_harvest_timeout_seconds
         try:
+            # Not `_workflow_negatives`: a diff has one start. Origin's tip of
+            # the branch, when HEAD stood on it past the clone base, already
+            # IS `_publish_base` (#2506), so the patch carries only the lines
+            # origin lacks and applies onto the branch as origin holds it.
             start = floor if floor and _FULL_SHA_RE.fullmatch(floor) else self._publish_base
             if not start or not _FULL_SHA_RE.fullmatch(start):
                 code, start = _git_text(
@@ -15277,16 +15650,78 @@ class Worker:
         }
 
     # -- spend -------------------------------------------------------------
-    def _child_ended(self) -> None:
+    def _child_ended(self, result: ChildResult | None = None) -> None:
         """Everything that has to happen the moment a runner is gone.
 
-        Called at every site that reaps a runner, so a new site gets both
-        halves by calling one thing: the resource sample is stopped and
-        written, and the run's spend is taken before a restart can overwrite
-        the result.json it is in.
+        Called at every site that reaps a runner, so a new site gets every
+        part by calling one thing: the resource sample is stopped and
+        written, the run's spend is taken before a restart can overwrite
+        the result.json it is in, and the run is closed in `_runs` with what
+        it spent. `result` is the reaped runner's, where the site kept it.
         """
         self._stop_sampler()
+        before = dict(self._spend)
         self._collect_spend()
+        if self.budget is not None:
+            self.budget.runner_ended()
+        self._close_run(result, spent_before=before)
+
+    def _open_run(self, *, resumed: bool) -> None:
+        """Start this runner's entry in `_runs` (SWAP-RUNS). Never raises."""
+        account = self._account
+        self._run_open = {
+            "run": len(self._runs) + 1,
+            "started_at": _rfc3339_now(),
+            "account": account.account_id if account is not None else None,
+            "resumed": resumed,
+            # `_just_swapped` is set by a swap and read after the next run
+            # ends, so here it says this run is the one the swap started.
+            "after_swap": bool(self._just_swapped),
+        }
+
+    def _close_run(self, result: ChildResult | None, *, spent_before: dict[str, Any]) -> None:
+        """Close the run `_open_run` started, once. Never raises.
+
+        Its duration and exit are the reaped runner's; its tokens and cost
+        are what `_collect_spend` added for it -- the difference, because a
+        resumed session reports the session's running totals (`_add_spend`).
+        A run that followed a swap also carries `reread`: the seconds and
+        tokens it spent before its first action (`cliagent.is_action`), as
+        the runner's account channel measured them, or everything it spent
+        when it never acted (`reached: false`).
+        """
+        entry, self._run_open = self._run_open, None
+        if entry is None:
+            return
+        try:
+            child = self._child
+            if result is not None:
+                seconds, exit_code, timed_out = (
+                    result.duration_seconds, result.exit_code, result.timed_out)
+            else:
+                seconds = child.elapsed_seconds if child is not None else 0.0
+                exit_code = child.poll() if child is not None else None
+                timed_out = False
+            entry["ended_at"] = _rfc3339_now()
+            entry["duration_s"] = round(float(seconds), 3)
+            entry["exit_code"] = exit_code
+            if timed_out:
+                entry["timed_out"] = True
+            tokens = {
+                key: self._spend[key] - spent_before.get(key, 0)
+                for key in _RUN_TOKEN_KEYS
+                if key in self._spend
+            }
+            if tokens:
+                entry["tokens"] = tokens
+            if "total_cost_usd" in self._spend:
+                entry["cost_usd"] = round(
+                    self._spend["total_cost_usd"] - spent_before.get("total_cost_usd", 0), 10)
+            if entry.get("after_swap") and self.ws is not None:
+                entry["reread"] = _reread_of(self._read_account_channel())
+        except Exception as exc:  # pragma: no cover - defensive; teardown path
+            self.log.warning("could not close the run's record", error=str(exc))
+        self._runs.append(entry)
 
     def _collect_spend(self) -> None:
         """Add the runner that just ended to this attempt's spend. Never raises.
@@ -15416,6 +15851,11 @@ class Worker:
     def _start_sampler(self, child: ChildProcess) -> None:
         ws = self.ws
         assert ws is not None
+        # THE MEMORY GUARD IS ON FOR EVERY RUNNER (#2504): at 95% of the
+        # cgroup's `memory.max` the sampler kills the agent's largest process
+        # rather than let the kernel's OOM killer take this worker with it.
+        # Its kills are logged by `_log_memory_guard_kills` and counted on the
+        # runner's usage (`ResourceUsage.memory_guard_kills`).
         # THE CONTAINER'S MEMORY, NOT THE PROFILE'S (#205). The dispatcher
         # sizes the container from the task's class, and a workflow step may
         # narrow `browser` (16 GiB) to `standard` (8 GiB): judged against the
@@ -15439,6 +15879,7 @@ class Worker:
         self._runner_usage.append(usage)
         # And its points since the last heartbeat, for the next one to carry.
         self._pending_points.extend(self._drain_points())
+        self._log_memory_guard_kills()
         self._sampler = None
         # THE ATTEMPT'S PEAKS, not this runner's. `record_resource_usage`
         # merge-sets absolute values, so writing each runner's own peak let a
@@ -15469,6 +15910,29 @@ class Worker:
         # The attempt's CPU at this runner's end, on the attempt (request #15)
         # -- where #188 emitted a `final` HEARTBEAT into the task's events.
         self._record_cpu()
+
+    def _log_memory_guard_kills(self) -> None:
+        """One warning per process the live sampler's memory guard killed. Never raises.
+
+        The pid, command name and sizes only: never the argv, which can carry
+        a secret. Drained on every heartbeat and when the runner is reaped.
+        """
+        if self._sampler is None:
+            return
+        try:
+            kills = self._sampler.drain_guard_kills()
+        except Exception as exc:
+            self.log.warning("could not read memory guard kills", error=f"{type(exc).__name__}: {exc}")
+            return
+        for kill in kills:
+            self.log.warning(
+                "memory guard killed the agent's largest process",
+                pid=kill.get("pid"),
+                name=kill.get("name"),
+                rss_bytes=kill.get("rss_bytes"),
+                memory_current_bytes=kill.get("memory_current_bytes"),
+                memory_max_bytes=kill.get("memory_max_bytes"),
+            )
 
     def _attempt_usage(self) -> ResourceUsage | None:
         """Every runner this attempt has started, combined; None if none has.
@@ -18889,6 +19353,84 @@ def _tail_text(path: Path, limit: int = 2000) -> str:
     if not path.exists():
         return ""
     return path.read_text(errors="replace")[-limit:]
+
+
+#: The token counts a run's entry in `_runs` carries, each its own share.
+_RUN_TOKEN_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+)
+
+
+def _runs_summary(runs: list[dict[str, Any]], swaps: list[dict[str, Any]]) -> dict[str, Any]:
+    """`runs`, `swaps` and `swap_cost` for a summary, or {} (SWAP-RUNS, #2457).
+
+    AN ATTEMPT OF ONE RUN GETS NOTHING NEW: {} when it started one runner and
+    swapped nothing, so its summary is exactly what it was before these keys
+    existed. `swap_cost` sums the `reread` of every run that followed a swap:
+    what the swaps cost the attempt in seconds and tokens before the agent
+    acted again.
+    """
+    if len(runs) <= 1 and not swaps:
+        return {}
+    out: dict[str, Any] = {
+        "runs": [dict(run) for run in runs],
+        "swaps": [dict(swap) for swap in swaps],
+    }
+    measured = [
+        run["reread"] for run in runs
+        if isinstance(run.get("reread"), dict) and "seconds" in run["reread"]
+    ]
+    if measured:
+        tokens: dict[str, int] = {}
+        for reread in measured:
+            for key, value in (reread.get("tokens") or {}).items():
+                tokens[key] = tokens.get(key, 0) + int(value)
+        out["swap_cost"] = {
+            "reread_seconds": round(sum(float(r.get("seconds") or 0) for r in measured), 3),
+            "reread_tokens": tokens,
+            "measured_runs": len(measured),
+            "reached_action": sum(1 for r in measured if r.get("reached")),
+        }
+    return out
+
+
+def _reread_of(channel: dict[str, Any]) -> dict[str, Any]:
+    """A run's re-read cost from its account channel (`cliagent.AccountStreamWatcher`).
+
+    `reached: true` with the seconds and tokens spent before the run's first
+    action and the tool it was; `reached: false` with everything the run
+    spent when it never acted; `measured: false` when the channel said
+    nothing (a runner that wrote none). Numbers only, never stream text.
+    """
+    def figures(block: Any) -> dict[str, Any] | None:
+        if not isinstance(block, dict):
+            return None
+        seconds = block.get("seconds")
+        tokens = block.get("tokens")
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+            return None
+        counts = {
+            key: int(tokens[key])
+            for key in _RUN_TOKEN_KEYS
+            if isinstance(tokens, dict) and isinstance(tokens.get(key), int)
+            and not isinstance(tokens.get(key), bool)
+        }
+        return {"seconds": round(float(seconds), 3), "tokens": counts}
+
+    first = channel.get("first_action")
+    reached = figures(first)
+    if reached is not None:
+        tool = first.get("tool") if isinstance(first, dict) else None
+        if isinstance(tool, str) and tool:
+            reached["tool"] = tool[:80]
+        return {"reached": True, **reached}
+    spent = figures(channel.get("spent"))
+    if spent is not None:
+        return {"reached": False, **spent}
+    return {"measured": False}
 
 
 def _rfc3339_now() -> str:

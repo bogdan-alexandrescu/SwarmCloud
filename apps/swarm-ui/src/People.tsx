@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { Fragment, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import {
   approveWorkspace,
@@ -10,10 +10,11 @@ import {
   retryWorkspace,
   setWorkspaceCeiling,
   setWorkspaceLoan,
+  USE_FIXTURES,
 } from './api'
 import { AdminLead } from './AdminSettings'
-import { Banner, Button, buttonClass, Card, Chip, Dash, Dialog, ToneMark } from './components'
-import type { ApiError, Result } from './fetch'
+import { Banner, Button, buttonClass, Card, Chip, CIcon, Dash, Dialog, Segmented, ToneMark } from './components'
+import { classifyFailure, route, TENANT_HEADER, write, type ApiError, type ErrorEnvelope, type Result } from './fetch'
 import { trapTab } from './focus'
 import { ApprovedWaiting, JobSteps, waitingOf } from './OnboardingWorkspace'
 import { PersonName } from './PersonName'
@@ -30,6 +31,7 @@ import type {
   PeopleRoleCell,
   PeopleWorkspaceColumn,
   PersonClaudeAccount,
+  PersonLentAccount,
   PersonRow,
   ScopedPeopleDoc,
   ScopedPersonRow,
@@ -212,7 +214,15 @@ function accountWithId(a: { account_id: string; label: string | null; display_na
 function claudeText(c: PersonClaudeAccount): ReactNode {
   if (c.source === 'own') return `own (${c.own})`
   if (c.source === 'lent' && c.lent_accounts !== undefined && c.lent_accounts.length > 0) {
-    return c.lent_accounts.map((a) => `${accountWithId(a)}, lent by ${a.owner_name ?? a.owner_tenant}`).join('; ')
+    // Each id is one token (`ai-eng-4` broke as "ai-" over "eng-4" at 390,
+    // rendered review of PR 2464): the line wraps between words, not in one.
+    return c.lent_accounts.map((a, i) => (
+      <Fragment key={`${a.owner_tenant}/${a.account_id}`}>
+        {i > 0 ? '; ' : ''}
+        <span className="pp-nobr">{a.account_id}</span>
+        {accountWithId(a).slice(a.account_id.length)}, lent by <span className="pp-nobr">{a.owner_name ?? a.owner_tenant}</span>
+      </Fragment>
+    ))
   }
   // The lenders' tenant ids are tokens like the workspace ids beside them:
   // "lent by u-" over "bogdan" read as a lender called "u-" (rendered review).
@@ -227,10 +237,21 @@ function holderOf(doc: PeopleDoc, email: string): AdminHolder | undefined {
 }
 
 /** One write's outcome, said where it was made from. */
-type Said = { ok: true; text: string } | { ok: false; error: ApiError }
+type Said = { ok: true; text: string; command?: string } | { ok: false; error: ApiError }
 
 function SaidLine({ said }: { said: Said | null }) {
   if (said === null) return null
+  if (said.ok && said.command !== undefined) {
+    // A join approved with platform memberships off: the one line that admits the person.
+    return (
+      <div className="pp-said-cmd" role="status">
+        <p className="ur-hint">{said.text}</p>
+        <pre className="pp-cmd">
+          <code>{said.command}</code>
+        </pre>
+      </div>
+    )
+  }
   if (said.ok) return <p className="ur-hint" role="status">{said.text}</p>
   return (
     <p className="ur-small ob-issue" role="alert" data-code={said.error.code ?? undefined}>
@@ -697,30 +718,374 @@ function Requested({ at }: { at: string | null }) {
   return <span className="ur-hint">{at !== null ? `asked ${timeAgo(at)}` : 'asked at an unknown time'}</span>
 }
 
+// ---------------------------------------------------------------------------
+// JOIN REQUESTS (JOIN-UI-ADMIN; part of #2325; docs/design/join-requests.md
+// §4.6, config-e.html S5f: "1 person is waiting to join Example Labs")
+// ---------------------------------------------------------------------------
+// A person asked to join a group workspace with its join link, and that
+// workspace's admins and the platform admins decide it here. The People read
+// carries the open requests its reader decides (`join_requests`, oldest last
+// as served; drawn oldest first), and a requester's cell reads `requested`.
+// These types live here, not in types.ts: the two join UI lanes never share
+// a file (§6's note under the table).
+
+/** One open request to join, as `People.join_rows` serves it: never a document id, never a MAC. */
+export interface JoinRequestRow {
+  /** The handle the decision routes take. Not a secret. */
+  ref: string
+  tenant_id: string
+  /** The workspace's name, or its group when it has none. */
+  display_name: string
+  requester: string
+  requester_name?: string | null
+  requested_at: string
+  expires_at: string
+  /** Redacted when it was written. */
+  message?: string | null
+}
+
+/** A grid cell with the join's word: `requested`, an open request and nothing else there. */
+type JoinCell = PeopleRoleCell | 'requested'
+
+/** What the People read adds for join requests; null with its code when they were not read; absent from an older API. */
+interface JoinFields {
+  join_requests?: JoinRequestRow[] | null
+  join_requests_error?: string | null
+}
+
+/** One platform membership, `GET /v1/workspace/members`. */
+export interface WorkspaceMember {
+  email: string
+  by: string
+  at: string
+  via?: string
+  /** The workspace's group changed since: it admits nobody now. */
+  group_changed: boolean
+  /** A fresh check finds them in the Google group too; null when the directory did not answer. */
+  still_in_group: boolean | null
+}
+
+interface WorkspaceMembersDoc {
+  platform_memberships: boolean
+  members: WorkspaceMember[]
+}
+
+/** `POST /v1/admin/join-requests/{ref}/approve`'s answer. */
+interface JoinApproval {
+  email: string
+  tenant_id: string
+  role: string
+  /** False with platform memberships off: the group decides, and `group_change` says how. */
+  admitted: boolean
+  group_change: { group: string; command: string } | null
+}
+
+/** The open join requests, oldest first (an undated one last). */
+export function openJoins(doc: JoinFields): JoinRequestRow[] {
+  const rows = Array.isArray(doc.join_requests) ? doc.join_requests : []
+  const when = (r: JoinRequestRow) => new Date(r.requested_at).getTime() || Number.POSITIVE_INFINITY
+  return [...rows].sort((a, b) => when(a) - when(b))
+}
+
+/** fetch.ts READ_INIT's form: the init's credential mode, named once (a literal reads as a key to the publish scan). */
+const MEMBERS_INIT = { sameOrigin: 'same-origin' } as const satisfies Record<string, RequestCredentials>
+
+/**
+ * ONE WORKSPACE'S PLATFORM MEMBERSHIPS: `GET /v1/workspace/members` with
+ * `X-Swarm-Tenant` naming `tenantId`, so the grid reads every column's list
+ * without switching the workspace in hand (as `loadWorkspaceSetup` reads each
+ * workspace's setup). The header selects among the reader's verified
+ * memberships and grants none, so a workspace they may not read is the API's
+ * refusal, drawn as unread. Failures go through fetch.ts's one classifier.
+ */
+export async function loadWorkspaceMembers(tenantId: string, signal?: AbortSignal): Promise<Result<WorkspaceMembersDoc>> {
+  // The fixture build serves no members list, and a mark is never a guess.
+  if (USE_FIXTURES) return { status: 'error', error: { kind: 'not_found', httpStatus: null, code: null, message: 'The fixture build serves no members list.' } }
+  const target = route('/v1/workspace/members')
+  let res: Response
+  try {
+    // Behind IAP the browser holds the session cookie; nothing here handles a token.
+    res = await globalThis.fetch(target.url, { headers: { accept: 'application/json', [TENANT_HEADER]: tenantId }, credentials: MEMBERS_INIT.sameOrigin, signal })
+  } catch (err) {
+    return { status: 'error', error: { kind: 'unreachable', httpStatus: null, code: null, message: err instanceof Error ? err.message : 'The request did not complete.' } }
+  }
+  if (!(res.headers.get('content-type') ?? '').includes('application/json')) {
+    return { status: 'error', error: { kind: 'session_expired', httpStatus: res.status, code: null, message: 'The API answered with a page instead of data, which is how an expired sign-in arrives. Reload to sign in again.' } }
+  }
+  let body: unknown = null
+  try {
+    body = await res.json()
+  } catch {
+    body = null
+  }
+  const env = typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : null
+  if (!res.ok) {
+    const envelope: ErrorEnvelope | null =
+      env === null ? null : typeof env.message === 'string' ? (env as ErrorEnvelope) : { message: typeof env.detail === 'string' ? env.detail : undefined }
+    return { status: 'error', error: classifyFailure(res.status, envelope, undefined) }
+  }
+  if (env === null || !Array.isArray(env.members)) {
+    return { status: 'error', error: { kind: 'server_error', httpStatus: res.status, code: null, message: 'The members list was not readable.' } }
+  }
+  return { status: 'ok', data: body as WorkspaceMembersDoc, fetchedAt: Date.now() }
+}
+
+/** One column's members list: read (email -> membership), failed (with why), or still being read. */
+type MembersRead = { ok: true; members: ReadonlyMap<string, WorkspaceMember> } | { ok: false; why: string }
+
+/**
+ * THE "JOINED BY REQUEST" MARK'S SOURCE (§4.6; BGD 2026-10-26): each
+ * column's members list, read once per set of columns and again after a
+ * decision (`version`). A column absent from the answer is still being read
+ * or was not read: it draws no mark, never a guess.
+ */
+function useWorkspaceMembers(columns: readonly PeopleWorkspaceColumn[] | null, version: number): Readonly<Record<string, MembersRead>> {
+  const ids = (columns ?? []).filter((c) => !c.unavailable).map((c) => c.tenant_id)
+  const key = ids.join('\n')
+  const [reads, setReads] = useState<Record<string, MembersRead>>({})
+  useEffect(() => {
+    const abort = new AbortController()
+    for (const id of key === '' ? [] : key.split('\n')) {
+      void loadWorkspaceMembers(id, abort.signal).then((r) => {
+        if (abort.signal.aborted) return
+        const read: MembersRead | null =
+          r.status === 'ok' || r.status === 'stale'
+            ? { ok: true, members: new Map(r.data.members.map((m) => [m.email.toLowerCase(), m])) }
+            : r.status === 'empty'
+              ? { ok: true, members: new Map() }
+              : r.status === 'error'
+                ? { ok: false, why: r.error.code ?? r.error.kind }
+                : null
+        if (read === null) return
+        setReads((was) => ({ ...was, [id]: read }))
+      })
+    }
+    return () => abort.abort()
+  }, [key, version])
+  return reads
+}
+
+/** The membership `email` holds in `tenant`, when that column's list was read and names them. */
+function joinedIn(reads: Readonly<Record<string, MembersRead>>, tenant: string, email: string): WorkspaceMember | undefined {
+  const read = reads[tenant]
+  return read?.ok === true ? read.members.get(email.toLowerCase()) : undefined
+}
+
+/** Said once, above the grid: the columns whose members list was not read, so no mark is drawn in them. */
+function MembersUnread({ columns, reads }: { columns: readonly PeopleWorkspaceColumn[]; reads: Readonly<Record<string, MembersRead>> }) {
+  const failed = columns.flatMap((c) => {
+    const read = reads[c.tenant_id]
+    return read !== undefined && !read.ok ? [`${c.display_name} (${read.why})`] : []
+  })
+  if (failed.length === 0) return null
+  return (
+    <p className="ur-hint pp-joined-unread">
+      No “joined by request” mark is drawn for {listed(failed)}: {failed.length === 1 ? 'its members list' : 'their members lists'} could not be read.
+    </p>
+  )
+}
+
+/** The mark beside a role (§4.6): this person is in by a platform membership, not by the Google group alone. */
+function JoinedMark({ member }: { member: WorkspaceMember }) {
+  const word = member.group_changed ? 'joined by request, group changed' : 'joined by request'
+  const why = member.group_changed
+    ? `Let in by ${member.by} ${timeAgo(member.at)}. The workspace's group changed since, so this membership admits nobody.`
+    : `Let in by ${member.by} ${timeAgo(member.at)}${member.still_in_group === true ? '; also in the Google group' : ''}.`
+  return (
+    <span className={`pp-joined${member.group_changed ? ' is-changed' : ''}`} title={why}>
+      {word}
+    </span>
+  )
+}
+
+/** What an approval gives (Q4 (a)): the workspace's default, or viewer below it; never admin. */
+function offeredRoles(defaultRole: string | null | undefined): string[] {
+  const out = defaultRole === 'member' || defaultRole === 'viewer' ? [defaultRole] : []
+  if (!out.includes('viewer')) out.push('viewer')
+  return out
+}
+
+function joinWrite<T>(path: string, ref: string, body: unknown): Promise<Result<T>> {
+  if (USE_FIXTURES) {
+    return Promise.resolve({ status: 'error', error: { kind: 'not_found', httpStatus: null, code: null, message: 'The fixture build does not decide join requests.' } })
+  }
+  return write(route(path, { ref }), 'POST', body) as Promise<Result<T>>
+}
+
+/**
+ * APPROVE A JOIN. The role is the workspace's default, preselected; the one
+ * below it, viewer, is the only other choice, and a default sends no role at
+ * all, so the API gives whatever the default is when it decides. With
+ * platform memberships off the API admits nobody (`admitted: false`) and
+ * answers the group command, which the card says with the command in full.
+ */
+function JoinApprove({ join, defaultRole, reload, onSaid }: { join: JoinRequestRow; defaultRole: string | null | undefined; reload: () => void; onSaid: (s: Said) => void }) {
+  const roles = offeredRoles(defaultRole)
+  const known = defaultRole === 'member' || defaultRole === 'viewer'
+  const [role, setRole] = useState(roles[0] ?? 'viewer')
+  const [busy, setBusy] = useState(false)
+  const go = async () => {
+    if (busy) return
+    setBusy(true)
+    const r = await joinWrite<JoinApproval>('/v1/admin/join-requests/{ref}/approve', join.ref, known && role === defaultRole ? {} : { role })
+    setBusy(false)
+    if (r.status === 'error') onSaid({ ok: false, error: r.error })
+    else if (r.status === 'ok' || r.status === 'stale') {
+      const d = r.data
+      onSaid(
+        d.admitted || d.group_change === null
+          ? { ok: true, text: `Approved: ${d.email} joined ${join.display_name} as ${d.role}.` }
+          : {
+              ok: true,
+              text: `Approved, waiting for the group change: platform memberships are off here, so ${d.email} is not in ${join.display_name} until they are added to ${d.group_change.group}. Run:`,
+              command: d.group_change.command,
+            },
+      )
+    } else onSaid({ ok: true, text: `Approved ${join.requester}.` })
+    reload()
+  }
+  return (
+    <span className="pp-join-approve">
+      {roles.length > 1 && (
+        <select className="c-inp pp-join-role" aria-label={`Role for ${join.requester}`} value={role} disabled={busy} onChange={(e) => setRole(e.target.value)}>
+          {roles.map((r) => (
+            <option key={r} value={r}>
+              {r === defaultRole ? `${r} (the default)` : r}
+            </option>
+          ))}
+        </select>
+      )}
+      <Button size="sm" kind="primary" disabled={busy} onClick={() => void go()}>
+        {busy ? 'Approving…' : 'Approve'}
+      </Button>
+    </span>
+  )
+}
+
+/** DENY A JOIN: a reason is required and shown to the person (§4.3), so a blank one is never sent. */
+function JoinDeny({ join, reload, onSaid }: { join: JoinRequestRow; reload: () => void; onSaid: (s: Said) => void }) {
+  const [open, setOpen] = useState(false)
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const blank = reason.trim() === ''
+  const denyId = useId()
+  const reasonRef = useRef<HTMLTextAreaElement>(null)
+  const wasOpen = useRef(open)
+  useEffect(() => {
+    if (wasOpen.current === open) return
+    wasOpen.current = open
+    if (open) reasonRef.current?.focus()
+    else document.getElementById(denyId)?.focus()
+  }, [open])
+  const go = async () => {
+    if (busy || blank) return
+    setBusy(true)
+    const r = await joinWrite('/v1/admin/join-requests/{ref}/deny', join.ref, { reason: reason.trim() })
+    setBusy(false)
+    if (r.status !== 'error') {
+      setOpen(false)
+      setReason('')
+    }
+    onSaid(outcome(r, () => `Denied ${join.requester}’s request to join ${join.display_name}. They see the reason.`))
+    reload()
+  }
+  if (!open) {
+    return (
+      <Button size="sm" id={denyId} onClick={() => setOpen(true)}>
+        Deny
+      </Button>
+    )
+  }
+  return (
+    <span className="pp-deny">
+      <label className="c-field">
+        <span className="c-lbl">Reason, shown to {join.requester}</span>
+        <textarea ref={reasonRef} className="c-inp" value={reason} maxLength={JOIN_REASON_MAX} rows={2} onChange={(e) => setReason(e.target.value)} />
+      </label>
+      <span className="ob-acts">
+        <Button size="sm" onClick={() => setOpen(false)}>
+          Cancel
+        </Button>
+        <Button size="sm" kind="primary" disabled={blank || busy} onClick={() => void go()}>
+          {busy ? 'Denying…' : 'Deny'}
+        </Button>
+      </span>
+    </span>
+  )
+}
+
+/** `joinrequests.REASON_MAX`: the API refuses a longer reason, so the field stops there. */
+const JOIN_REASON_MAX = 200
+
+/** One open join on Waiting for you: who, to join which workspace, when, their message, and the decision. */
+function JoinReq({ join, columns, reload, onSaid }: { join: JoinRequestRow; columns: readonly PeopleWorkspaceColumn[] | null; reload: () => void; onSaid: (s: Said) => void }) {
+  const defaultRole = columns?.find((c) => c.tenant_id === join.tenant_id)?.default_role
+  return (
+    <li className="pp-req" data-kind="join" data-ref={join.ref} data-email={join.requester}>
+      <div className="pp-req-who">
+        <Avatar email={join.requester} />
+        <span className="pp-who" title={join.requester}>
+          <PersonName email={join.requester} name={join.requester_name ?? null} variant="full" />
+        </span>
+      </div>
+      <div className="pp-req-what">
+        <span>
+          to join <b>{join.display_name}</b> · <Requested at={join.requested_at} />
+        </span>
+        {typeof join.message === 'string' && join.message.trim() !== '' && <q className="pp-join-msg">{join.message}</q>}
+      </div>
+      <div className="pp-req-acts">
+        <JoinApprove join={join} defaultRole={defaultRole} reload={reload} onSaid={onSaid} />
+        <JoinDeny join={join} reload={reload} onSaid={onSaid} />
+      </div>
+    </li>
+  )
+}
+
+/** The join requests were not read: the rest of the page is served, and this says why nobody may appear to wait. */
+function JoinsUnread({ code }: { code: string }) {
+  return (
+    <Banner tone="warn" title="The requests to join could not be read">
+      Who is waiting to join a workspace is not shown ({code}). Read again shortly.
+    </Banner>
+  )
+}
+
+/** Bring a Waiting for you row into view and focus its first decision. */
+function reviewRow(match: (li: HTMLElement) => boolean): void {
+  const li = [...document.querySelectorAll<HTMLElement>('.pp-waiting li.pp-req')].find(match)
+  if (li === undefined) return
+  li.scrollIntoView?.({ block: 'center' })
+  ;(li.querySelector<HTMLElement>('button, select, input') ?? li).focus()
+}
+
 /**
  * WAITING FOR YOU (#1206 part 1). Every open request, oldest first, each with
  * its decision beside it. Not drawn when nothing is open. Once a decision is
  * made the request leaves the list on the next read, so its outcome is said
  * under the list, and the card stays for that sentence.
  */
-function WaitingCard({ doc, rows, reload }: { doc: PeopleDoc; rows: PersonRow[]; reload: () => void }) {
+function WaitingCard({ doc, rows, reload }: { doc: PeopleDoc & JoinFields; rows: PersonRow[]; reload: () => void }) {
   const [said, setSaid] = useState<Said | null>(null)
   const items = waitingRequests(rows)
-  if (items.length === 0 && said === null) return null
-  const oldest = items.find((i) => i.at !== null)?.at ?? null
+  // JOIN-UI-ADMIN: a platform admin decides every join request too (§4.6).
+  const joins = openJoins(doc)
+  const total = items.length + joins.length
+  if (total === 0 && said === null) return null
+  const oldest = oldestAt([...items.map((i) => i.at), ...joins.map((j) => j.requested_at)])
   return (
     <Card
       className="pp-waiting"
       title="Waiting for you"
       action={
-        items.length > 0 ? (
+        total > 0 ? (
           <Chip>
-            {items.length} waiting{oldest !== null ? ` · oldest ${timeAgo(oldest)}` : ''}
+            {total} waiting{oldest !== null ? ` · oldest ${timeAgo(oldest)}` : ''}
           </Chip>
         ) : undefined
       }
     >
-      {items.length === 0 ? (
+      {total === 0 ? (
         <p className="ur-hint">Nothing else is waiting.</p>
       ) : (
         <ul className="pp-reqs" aria-label="Open requests">
@@ -763,11 +1128,59 @@ function WaitingCard({ doc, rows, reload }: { doc: PeopleDoc; rows: PersonRow[];
               )}
             </li>
           ))}
+          {joins.map((j) => (
+            <JoinReq key={`join:${j.ref}`} join={j} columns={gridColumns(doc)} reload={reload} onSaid={setSaid} />
+          ))}
         </ul>
       )}
       <SaidLine said={said} />
     </Card>
   )
+}
+
+/**
+ * WAITING FOR YOU, A WORKSPACE ADMIN'S (S5f): the requests to join the
+ * workspaces they administer, and nothing else -- a personal workspace and a
+ * loan are a platform admin's. Not drawn when nothing is open.
+ */
+function JoinWaitingCard({ joins, columns, reload }: { joins: JoinRequestRow[]; columns: readonly PeopleWorkspaceColumn[]; reload: () => void }) {
+  const [said, setSaid] = useState<Said | null>(null)
+  if (joins.length === 0 && said === null) return null
+  const oldest = oldestAt(joins.map((j) => j.requested_at))
+  return (
+    <Card
+      className="pp-waiting"
+      title="Waiting for you"
+      action={
+        joins.length > 0 ? (
+          <Chip>
+            {joins.length} waiting{oldest !== null ? ` · oldest ${timeAgo(oldest)}` : ''}
+          </Chip>
+        ) : undefined
+      }
+    >
+      {joins.length === 0 ? (
+        <p className="ur-hint">Nothing else is waiting.</p>
+      ) : (
+        <ul className="pp-reqs" aria-label="Open requests">
+          {joins.map((j) => (
+            <JoinReq key={j.ref} join={j} columns={columns} reload={reload} onSaid={setSaid} />
+          ))}
+        </ul>
+      )}
+      <SaidLine said={said} />
+    </Card>
+  )
+}
+
+/** The earliest of these times, or null when none is dated. */
+function oldestAt(times: readonly (string | null)[]): string | null {
+  let best: string | null = null
+  for (const t of times) {
+    if (t === null || !Number.isFinite(new Date(t).getTime())) continue
+    if (best === null || new Date(t).getTime() < new Date(best).getTime()) best = t
+  }
+  return best
 }
 
 function Avatar({ email }: { email: string }) {
@@ -802,10 +1215,32 @@ function PersonCell({ row, doc }: { row: PersonRow; doc: PeopleDoc }) {
         <PersonName email={row.email} name={row.display_name ?? null} variant="full" />
       </span>
       <GitHubMark github={row.github} />
-      {holderOf(doc, row.email)?.role === 'owner' && <Chip className="pp-owner">platform owner</Chip>}
-      {/* The grid's Platform role (S5c), in the person's own cell rather than a column of its own. */}
-      {gridColumns(doc) !== null && holderOf(doc, row.email)?.role === 'admin' && <Chip className="pp-padmin">platform admin</Chip>}
+      {/* The grid says the platform role in a column of its own (`PlatformRoleCell`); an older API's table keeps the owner's chip. */}
+      {gridColumns(doc) === null && holderOf(doc, row.email)?.role === 'owner' && <Chip className="pp-owner">platform owner</Chip>}
     </span>
+  )
+}
+
+/**
+ * THE GRID'S PLATFORM ROLE COLUMN (S5c, visual QA VQ-051): "platform owner",
+ * "platform admin", or a dash for no platform role. It was a chip beside the
+ * name, which took the room the name needed ("Bogdan Alexand…" at 1440,
+ * VQ-052). When `admins` was not read, the dash says that instead: an unread
+ * list is not "nobody holds one". A member of an ADMIN_GROUPS group holds no
+ * document and reads as none here, as it does in Admins.
+ */
+function PlatformRoleCell({ row, doc }: { row: PersonRow; doc: PeopleDoc }) {
+  const role = holderOf(doc, row.email)?.role
+  return (
+    <td role="cell" data-label="Platform role" className="pp-prole">
+      {!Array.isArray(doc.admins) ? (
+        <Dash why="The platform roles were not read" />
+      ) : role === 'owner' || role === 'admin' ? (
+        <span className={`pp-role-w is-${role}`}>platform {role}</span>
+      ) : (
+        <Dash why="No platform role" />
+      )}
+    </td>
   )
 }
 
@@ -820,7 +1255,21 @@ function gridColumns(doc: { workspaces?: PeopleWorkspaceColumn[] | null }): Peop
  * not seen there and no role of their own. A dash is only for a workspace
  * whose roles were not read, and says why.
  */
-function RoleCell({ cell, column }: { cell: PeopleRoleCell | undefined; column: PeopleWorkspaceColumn }) {
+function RoleCell({
+  cell,
+  column,
+  email,
+  join,
+  joined,
+}: {
+  cell: JoinCell | undefined
+  column: PeopleWorkspaceColumn
+  email: string
+  /** Their open request to join this workspace, when `cell` is `requested` and the request was served. */
+  join?: JoinRequestRow
+  /** Their platform membership here, when this column's members list was read and names them. */
+  joined?: WorkspaceMember
+}) {
   const role = cell === undefined || cell === null || column.unavailable ? 'unread' : cell
   return (
     <td role="cell" data-label={column.display_name} data-tenant={column.tenant_id} data-role={role} className="pp-role">
@@ -828,11 +1277,41 @@ function RoleCell({ cell, column }: { cell: PeopleRoleCell | undefined; column: 
         <Dash why={`${column.display_name}’s roles could not be read`} />
       ) : role === 'none' ? (
         <span className="pp-role-none">none</span>
+      ) : role === 'requested' ? (
+        // JOIN-UI-ADMIN (§4.6): an open request to join, and nothing else here.
+        <span className="pp-role-w is-requested" title={`${email} asked to join ${column.display_name} ${join !== undefined ? timeAgo(join.requested_at) : 'at an unknown time'}`}>
+          requested
+        </span>
       ) : (
         <span className={`pp-role-w is-${role}`}>{role}</span>
       )}
+      {role !== 'unread' && joined !== undefined && (
+        <>
+          {' '}
+          <JoinedMark member={joined} />
+        </>
+      )}
     </td>
   )
+}
+
+/** The props a row's cells need for join requests: the open requests, and each column's members list. */
+interface JoinGrid {
+  joins: readonly JoinRequestRow[]
+  members: Readonly<Record<string, MembersRead>>
+}
+
+function roleCells(row: { email: string; roles?: Record<string, PeopleRoleCell> }, columns: readonly PeopleWorkspaceColumn[], grid: JoinGrid): ReactNode[] {
+  return columns.map((c) => (
+    <RoleCell
+      key={c.tenant_id}
+      cell={row.roles?.[c.tenant_id]}
+      column={c}
+      email={row.email}
+      join={grid.joins.find((j) => j.tenant_id === c.tenant_id && j.requester === row.email)}
+      joined={joinedIn(grid.members, c.tenant_id, row.email)}
+    />
+  ))
 }
 
 /**
@@ -893,10 +1372,57 @@ function WorkspaceCell({ row }: { row: PersonRow }) {
   )
 }
 
+/** Who lent an account: the owner tenant's display name, else its id. */
+function lenderOf(a: PersonLentAccount): string {
+  return a.owner_name ?? a.owner_tenant
+}
+
+/**
+ * THE ROW'S CLAUDE ACCOUNT IS ONE SHORT LINE (S5c, visual QA VQ-052): seven
+ * loans joined with '; ' ran eight lines, said "lent by Engineering" seven
+ * times and made the row about 200px tall. Two or more loans are a count and
+ * their lenders, each named once, with the accounts behind a disclosure; a
+ * lender is repeated in it only when there is more than one. One loan, and
+ * every other source, is already one line. The Manage drawer draws the same
+ * line (`ClaudeSection`, rendered review of PR 2464): a phone's grid has no
+ * Claude column, so the drawer is the only place a phone draws loans.
+ */
+function ClaudeSummary({ c }: { c: PersonClaudeAccount }) {
+  const accounts = c.source === 'lent' ? (c.lent_accounts ?? []) : []
+  if (accounts.length < 2) return <>{claudeText(c)}</>
+  const lenders = [...new Set(accounts.map(lenderOf))]
+  return (
+    <details className="pp-loans">
+      <summary className="pp-loan-sum">
+        <span className="pp-nobr">{accounts.length} accounts ·</span> lent by{' '}
+        {lenders.map((l, i) => (
+          <Fragment key={l}>
+            {i > 0 ? ', ' : ''}
+            <span className="pp-nobr">{l}</span>
+          </Fragment>
+        ))}
+      </summary>
+      <ul className="pp-loan-list">
+        {accounts.map((a) => (
+          <li key={`${a.owner_tenant}/${a.account_id}`}>
+            <span className="pp-nobr">{a.account_id}</span>
+            {accountWithId(a).slice(a.account_id.length)}
+            {lenders.length > 1 && (
+              <>
+                , lent by <span className="pp-nobr">{lenderOf(a)}</span>
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+    </details>
+  )
+}
+
 function ClaudeCell({ row }: { row: PersonRow }) {
   return (
     <span className="pp-claude">
-      {claudeText(row.claude_account)}
+      <ClaudeSummary c={row.claude_account} />
       {row.loan_request?.state === 'requested' && <Chip className="pp-borrow">borrow requested</Chip>}
       {row.loan_request?.state === 'declined' && <Chip className="pp-borrow">loan declined</Chip>}
     </span>
@@ -912,9 +1438,23 @@ function isWaiting(row: PersonRow): boolean {
  * row is the person, their workspace and Manage; the rest is in the drawer,
  * which opens as a full sheet.
  */
-function Row({ row, doc, phone, onManage }: { row: PersonRow; doc: PeopleDoc; phone: boolean; onManage: (email: string) => void }) {
+function Row({
+  row,
+  doc,
+  columns,
+  phone,
+  grid,
+  onManage,
+}: {
+  row: PersonRow
+  doc: PeopleDoc
+  grid: JoinGrid
+  /** The grid's columns as narrowed by the workspace filter; null for an older API's doc. */
+  columns: PeopleWorkspaceColumn[] | null
+  phone: boolean
+  onManage: (email: string) => void
+}) {
   const w = row.workspace
-  const columns = gridColumns(doc)
   const manage = (
     <td role="cell" data-label="Manage" className="pp-manage-cell">
       <Button size="sm" onClick={() => onManage(row.email)}>
@@ -927,8 +1467,9 @@ function Row({ row, doc, phone, onManage }: { row: PersonRow; doc: PeopleDoc; ph
       <th role="rowheader" scope="row">
         <PersonCell row={row} doc={doc} />
       </th>
+      {columns !== null && <PlatformRoleCell row={row} doc={doc} />}
       {columns !== null
-        ? columns.map((c) => <RoleCell key={c.tenant_id} cell={row.roles?.[c.tenant_id]} column={c} />)
+        ? roleCells(row, columns, grid)
         : !phone && (
             <td role="cell" data-label="Teams">
               {row.teams.length > 0 ? row.teams.join(', ') : <Dash why="Resolves to no team" />}
@@ -988,8 +1529,15 @@ function ClaudeSection({ row, doc, reload }: { row: PersonRow; doc: PeopleDoc; r
   return (
     <section className="pp-dsec" data-section="claude">
       <h3>Claude account</h3>
-      <p>
-        Now using {claudeText(row.claude_account)}
+      {/* THE GRID'S ONE LINE, NOT THE SEMICOLON PARAGRAPH (rendered review of
+          PR 2464): seven loans printed "lent by Engineering" seven times, and
+          on a phone this is the only place loans are drawn. A div, because a
+          disclosure is not phrasing content a <p> may hold. */}
+      <div className="pp-now">
+        Now using{' '}
+        <div className="pp-now-what">
+          <ClaudeSummary c={row.claude_account} />
+        </div>
         {row.loan_request?.state === 'requested' && (
           <>
             {' '}
@@ -1007,7 +1555,7 @@ function ClaudeSection({ row, doc, reload }: { row: PersonRow; doc: PeopleDoc; r
             </Chip>
           </>
         )}
-      </p>
+      </div>
       {row.claude_account.source === 'lent' && lent.length === 0 && lendable !== null && (
         <p className="ur-hint">Lent by an owner whose accounts you may not lend, so it is not yours to reclaim.</p>
       )}
@@ -1228,6 +1776,85 @@ function AdminList({ admins, onRemove }: { admins: AdminHolder[]; onRemove: (ema
   )
 }
 
+/** What a grant gives, in both places Grant admin asks before it grants. */
+const GRANT_GIVES = 'An admin can approve workspaces, change every ceiling and pool limit, lend accounts and grant admin to others.'
+
+function granted(d: { email: string; changed: boolean }): string {
+  return d.changed ? `${d.email} is now an admin.` : `${d.email} was already an admin.`
+}
+
+/**
+ * GRANT ADMIN FROM THE GRID'S HEAD (S5c draws it there): the Admins card's
+ * grant, as a dialog -- one email address, checked by the field's own
+ * validity, then the same question before anything is sent (live QA ADM-4).
+ */
+function GrantDialog({ reload, onClose, onSaid }: { reload: () => void; onClose: () => void; onSaid: (s: Said) => void }) {
+  const formId = useId()
+  const [email, setEmail] = useState('')
+  const [valid, setValid] = useState(false)
+  const [asking, setAsking] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const typed = email.trim()
+  const ask = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
+    if (typed === '' || !e.currentTarget.checkValidity()) return
+    setAsking(typed)
+  }
+  const grant = async () => {
+    if (busy || asking === null) return
+    setBusy(true)
+    const r = await grantAdmin(asking)
+    setBusy(false)
+    onSaid(outcome(r, granted))
+    reload()
+    onClose()
+  }
+  return (
+    <Dialog
+      title="Grant admin"
+      onClose={onClose}
+      actions={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          {asking === null ? (
+            <Button kind="primary" type="submit" form={formId} disabled={!valid}>
+              Grant admin
+            </Button>
+          ) : (
+            <Button kind="primary" disabled={busy} onClick={() => void grant()}>
+              {busy ? 'Granting…' : 'Grant admin'}
+            </Button>
+          )}
+        </>
+      }
+    >
+      {asking === null ? (
+        <form id={formId} className="pp-grant-form" onSubmit={ask} noValidate>
+          <label className="c-field">
+            <span className="c-lbl">Email</span>
+            <input
+              className="c-inp"
+              type="email"
+              required
+              value={email}
+              onChange={(e) => {
+                setEmail(e.target.value)
+                setValid(e.target.value.trim() !== '' && e.target.checkValidity())
+              }}
+            />
+          </label>
+          {typed !== '' && !valid && <p className="ur-hint">Grant admin takes one email address.</p>}
+        </form>
+      ) : (
+        <>
+          <p>Make {asking} a platform admin?</p>
+          <p className="ur-hint">{GRANT_GIVES}</p>
+        </>
+      )}
+    </Dialog>
+  )
+}
+
 function Admins({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
   const [email, setEmail] = useState('')
   const [busy, setBusy] = useState(false)
@@ -1256,7 +1883,7 @@ function Admins({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
     const r = await grantAdmin(granting)
     setBusy(false)
     setGranting(null)
-    setSaid(outcome(r, (d) => (d.changed ? `${d.email} is now an admin.` : `${d.email} was already an admin.`)))
+    setSaid(outcome(r, granted))
     reload()
   }
   const remove = async () => {
@@ -1323,9 +1950,7 @@ function Admins({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
           }
         >
           <p>Make {granting} a platform admin?</p>
-          <p className="ur-hint">
-            An admin can approve workspaces, change every ceiling and pool limit, lend accounts and grant admin to others.
-          </p>
+          <p className="ur-hint">{GRANT_GIVES}</p>
         </Dialog>
       )}
       {target !== null && (
@@ -1365,6 +1990,118 @@ function auditTenant(e: AuditEntry): string | null {
   return typeof t === 'string' && t !== '' ? t : null
 }
 
+/**
+ * WHAT EACH ADMIN ACTION IS CALLED (visual QA VQ-052): Recent admin actions
+ * printed the recorded kind, "qa_target_credential_set × 12". ONE TABLE, the
+ * kinds the API's `admin_audit` writers record (people.py, admins.py,
+ * purge.py, qatargets.py, repositories.py, roles.py, joinrequests.py and the
+ * rest), each as what happened. A kind not in it -- a writer added later --
+ * still reads as words, by `auditWords`' fallback, never as a raw token; the
+ * kind itself stays in the name's `title`.
+ */
+export const AUDIT_ACTION_WORDS: Readonly<Record<string, string>> = {
+  // People and roles: workspaces, loans, platform admins (people.py, admins.py).
+  approve: 'Workspace approved',
+  approve_own_workspace_auto: 'Own workspace approved automatically',
+  request_workspace: 'Workspace requested',
+  request_workspace_approved: 'Workspace requested and approved',
+  deny: 'Workspace denied',
+  retry: 'Workspace build retried',
+  limits: 'Workspace ceiling set',
+  lend: 'Claude account lent',
+  reclaim: 'Claude account reclaimed',
+  lend_pending: 'Claude account loan queued',
+  reclaim_pending: 'Claude account reclaim queued',
+  lend_pending_dropped: 'Queued loan dropped',
+  loan_declined: 'Claude account loan declined',
+  grant: 'Platform admin granted',
+  remove: 'Platform admin removed',
+  seed_owner: 'Platform owner recorded',
+  owner_changed: 'Platform owner changed',
+  history_purged: 'History purged',
+  history_purge_failed: 'History purge failed',
+  // Workspace roles, members and join requests.
+  workspace_role_granted: 'Workspace role granted',
+  workspace_role_cleared: 'Workspace role cleared',
+  workspace_role_grant_invalid: 'Workspace role grant refused',
+  workspace_default_role_set: 'Workspace default role set',
+  workspace_member_added: 'Workspace member added',
+  workspace_member_removed: 'Workspace member removed',
+  join_requested: 'Join requested',
+  join_approved: 'Join request approved',
+  join_denied: 'Join request denied',
+  join_withdrawn: 'Join request withdrawn',
+  join_link_changed: 'Join link changed',
+  platform_admin_acted: 'Platform admin acted in a workspace',
+  platform_admin_viewed: 'Platform admin viewed a workspace',
+  workspace_renamed: 'Workspace renamed',
+  display_name_changed: 'Display name changed',
+  tenant_enabled: 'Workspace enabled',
+  tenant_disabled: 'Workspace disabled',
+  // Secrets and keys.
+  workspace_secret_created: 'Workspace secret created',
+  workspace_secret_rotated: 'Workspace secret rotated',
+  workspace_secret_deleted: 'Workspace secret deleted',
+  workspace_secret_grant_enabled: 'Workspace secret grant enabled',
+  workspace_secret_grant_disabled: 'Workspace secret grant disabled',
+  workspace_secret_grant_attested: 'Workspace secret grant attested',
+  workspace_secret_use_in_set: 'Workspace secret use set',
+  workspace_secret_version_disabled: 'Workspace secret version disabled',
+  workspace_secret_repository_grants_disabled: 'Workspace secret repository grants disabled',
+  actions_secret_set: 'GitHub Actions secret set',
+  actions_secret_deleted: 'GitHub Actions secret deleted',
+  provider_key_set: 'Provider key set',
+  provider_key_deleted: 'Provider key deleted',
+  // Repositories, merge settings, code intelligence.
+  repository_platform_set: 'Repository platform set',
+  repository_platform_cleared: 'Repository platform cleared',
+  repository_merge_policy_set: 'Repository merge policy set',
+  repository_readable_by_tasks_set: 'Repository task access set',
+  repository_workflow_files_set: 'Repository workflow files set',
+  repository_context_set: 'Repository context set',
+  agents_may_file_issues_set: 'Agent issue filing set',
+  workspace_merge_settings_set: 'Workspace merge settings set',
+  workspace_code_intelligence_set: 'Code intelligence set',
+  judgment_backend_set: 'Judgment backend set',
+  // QA targets and identities, MCP servers.
+  qa_target_created: 'QA target created',
+  qa_target_changed: 'QA target changed',
+  qa_target_deleted: 'QA target deleted',
+  qa_target_host_approved: 'QA target host approved',
+  qa_target_credential_set: 'QA target credentials set',
+  qa_target_challenge_bypass_set: 'QA target challenge bypass set',
+  qa_target_migrated: 'QA target migrated',
+  qa_target_issued: 'QA target issued',
+  qa_target_route_dismissed: 'QA target route dismissed',
+  qa_target_route_restored: 'QA target route restored',
+  qa_identity_granted: 'QA identity granted',
+  qa_identity_revoked: 'QA identity revoked',
+  qa_identity_issued: 'QA identity issued',
+  mcp_server_registered: 'MCP server registered',
+  mcp_server_updated: 'MCP server updated',
+  mcp_server_disabled: 'MCP server disabled',
+  mcp_server_enabled: 'MCP server enabled',
+}
+
+/** Short words a fallback name keeps in capitals. */
+const AUDIT_ACRONYMS: ReadonlySet<string> = new Set(['qa', 'mcp', 'ci', 'pr', 'id', 'url', 'iam', 'gcs', 'api'])
+
+/**
+ * An admin action in words: the table's, else the kind's own words --
+ * `frobnicated_mcp_widget` reads "Frobnicated MCP widget".
+ */
+export function auditWords(action: string): string {
+  const named = Object.prototype.hasOwnProperty.call(AUDIT_ACTION_WORDS, action) ? AUDIT_ACTION_WORDS[action] : undefined
+  if (named !== undefined) return named
+  const words = action
+    .split(/[_\s.:-]+/)
+    .filter((w) => w !== '')
+    .map((w) => (AUDIT_ACRONYMS.has(w.toLowerCase()) ? w.toUpperCase() : w.toLowerCase()))
+  if (words.length === 0) return action
+  const [head, ...rest] = words
+  return [head!.charAt(0).toUpperCase() + head!.slice(1), ...rest].join(' ')
+}
+
 /** A run of consecutive entries with the same action, admin and tenant. */
 export interface AuditRun {
   first: AuditEntry
@@ -1401,75 +2138,111 @@ export const AUDIT_SHOWN = 50
  */
 export const HOUSEKEEPING: ReadonlySet<string> = new Set(['history_purged'])
 
-/** `history_purged × 48`, per housekeeping action, in the order they first appear. */
+/** `History purged × 48`, per housekeeping action in words, in the order they first appear. */
 export function housekeepingSummary(entries: readonly AuditEntry[]): string {
   const counts = new Map<string, number>()
   for (const e of entries) if (HOUSEKEEPING.has(e.action)) counts.set(e.action, (counts.get(e.action) ?? 0) + 1)
-  return [...counts].map(([a, n]) => `${a} × ${n}`).join(', ')
+  return [...counts].map(([a, n]) => `${auditWords(a)} × ${n}`).join(', ')
 }
 
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000
+
+/**
+ * THE FOLDED HEAD'S COUNT (S5c, "12 this week"): the decisions -- not the
+ * housekeeping the card folds away too -- recorded in the last seven days.
+ * The read holds at most AUDIT_SHOWN entries, so when it is full and even its
+ * oldest entry is from this week, the count is a floor and says so ("50+").
+ */
+export function thisWeek(entries: readonly AuditEntry[], now: number = Date.now()): string {
+  const from = now - WEEK_MS
+  const at = (e: AuditEntry) => (e.at === null ? Number.NaN : Date.parse(e.at))
+  const n = entries.filter((e) => !HOUSEKEEPING.has(e.action) && at(e) >= from).length
+  const oldest = entries.at(-1)
+  const floor = entries.length >= AUDIT_SHOWN && oldest !== undefined && at(oldest) >= from
+  return `${n}${floor ? '+' : ''} this week`
+}
+
+/**
+ * RECENT ADMIN ACTIONS OPENS FOLDED (S5c): the page is for what waits and who
+ * holds which role; the record is read when it is wanted. The head is the one
+ * control and carries this week's count, so the folded card still says
+ * whether anything happened.
+ */
 function Audit({ entries }: { entries: AuditEntry[] }) {
+  const [open, setOpen] = useState(false)
   const [showHousekeeping, setShowHousekeeping] = useState(false)
+  const bodyId = useId()
   const decisions = entries.filter((e) => !HOUSEKEEPING.has(e.action))
   const folded = entries.length - decisions.length
   const runs = auditRuns(showHousekeeping ? entries : decisions)
   const scope = entries.length >= AUDIT_SHOWN ? `the latest ${entries.length} entries` : `the ${entries.length} recorded ${entries.length === 1 ? 'entry' : 'entries'}`
   return (
-    <Card className="pp-audit" title="Recent admin actions">
-      {entries.length === 0 ? (
-        <p className="ur-hint">
-          <span aria-label="no admin actions recorded (measured)">no admin actions recorded</span>
-        </p>
-      ) : (
-        <>
-          <p className="ur-hint" data-testid="pp-audit-shown">
-            {entries.length >= AUDIT_SHOWN
-              ? `The latest ${entries.length} entries; older ones are not shown here.`
-              : `All ${entries.length} recorded ${entries.length === 1 ? 'entry' : 'entries'}.`}
+    <Card
+      className={`pp-audit${open ? ' is-open' : ''}`}
+      title={
+        <button type="button" className="pp-fold" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen((o) => !o)}>
+          <CIcon name="chevron" className="c-ic pp-fold-ic" />
+          Recent admin actions
+        </button>
+      }
+      action={<span className="ur-hint pp-week">{thisWeek(entries)}</span>}
+    >
+      <div id={bodyId} hidden={!open}>
+        {!open ? null : entries.length === 0 ? (
+          <p className="ur-hint">
+            <span aria-label="no admin actions recorded (measured)">no admin actions recorded</span>
           </p>
-          {folded > 0 && (
-            <p className="ur-hint pp-housekeeping" data-testid="pp-housekeeping">
-              <span>
-                {housekeepingSummary(entries)} housekeeping {showHousekeeping ? 'shown' : 'hidden'}
-              </span>{' '}
-              <Button size="sm" aria-pressed={showHousekeeping} onClick={() => setShowHousekeeping((v) => !v)}>
-                {showHousekeeping ? 'Hide housekeeping' : 'Show housekeeping'}
-              </Button>
+        ) : (
+          <>
+            <p className="ur-hint" data-testid="pp-audit-shown">
+              {entries.length >= AUDIT_SHOWN
+                ? `The latest ${entries.length} entries; older ones are not shown here.`
+                : `All ${entries.length} recorded ${entries.length === 1 ? 'entry' : 'entries'}.`}
             </p>
-          )}
-          {runs.length === 0 ? (
-            <p className="ur-hint">No approvals, denials, loans or admin grants in {scope}.</p>
-          ) : (
-            <ol className="pp-audit-list" aria-label="Admin audit">
-              {runs.map((r, i) => {
-                const tenant = auditTenant(r.first)
-                const target = auditTarget(r.first)
-                return (
-                  <li key={`${r.first.at ?? ''}:${i}`} data-count={r.count}>
-                    {r.first.at !== null ? timeAgo(r.first.at) : <Dash why="The entry carries no time" />}
-                    {r.count > 1 && r.last.at !== null && r.last.at !== r.first.at ? ` to ${timeAgo(r.last.at)}` : ''} ·{' '}
-                    <b>{r.first.action}</b>
-                    {r.count > 1 ? (
-                      <> × {r.count}</>
-                    ) : target !== null ? (
-                      <>
-                        {' '}
-                        <code>{target}</code>
-                      </>
-                    ) : (
-                      <>
-                        {' '}
-                        <Dash why="The entry names no target" />
-                      </>
-                    )}
-                    {tenant !== null && <> · {tenant}</>} by {r.first.by}
-                  </li>
-                )
-              })}
-            </ol>
-          )}
-        </>
-      )}
+            {folded > 0 && (
+              <p className="ur-hint pp-housekeeping" data-testid="pp-housekeeping">
+                <span>
+                  {housekeepingSummary(entries)} housekeeping {showHousekeeping ? 'shown' : 'hidden'}
+                </span>{' '}
+                <Button size="sm" aria-pressed={showHousekeeping} onClick={() => setShowHousekeeping((v) => !v)}>
+                  {showHousekeeping ? 'Hide housekeeping' : 'Show housekeeping'}
+                </Button>
+              </p>
+            )}
+            {runs.length === 0 ? (
+              <p className="ur-hint">No approvals, denials, loans or admin grants in {scope}.</p>
+            ) : (
+              <ol className="pp-audit-list" aria-label="Admin audit">
+                {runs.map((r, i) => {
+                  const tenant = auditTenant(r.first)
+                  const target = auditTarget(r.first)
+                  return (
+                    <li key={`${r.first.at ?? ''}:${i}`} data-count={r.count}>
+                      {r.first.at !== null ? timeAgo(r.first.at) : <Dash why="The entry carries no time" />}
+                      {r.count > 1 && r.last.at !== null && r.first.at !== null && timeAgo(r.last.at) !== timeAgo(r.first.at) ? ` to ${timeAgo(r.last.at)}` : ''} ·{' '}
+                      <b title={r.first.action}>{auditWords(r.first.action)}</b>
+                      {r.count > 1 ? (
+                        <> × {r.count}</>
+                      ) : target !== null ? (
+                        <>
+                          {' '}
+                          <code>{target}</code>
+                        </>
+                      ) : (
+                        <>
+                          {' '}
+                          <Dash why="The entry names no target" />
+                        </>
+                      )}
+                      {tenant !== null && <> · {tenant}</>} by {r.first.by}
+                    </li>
+                  )
+                })}
+              </ol>
+            )}
+          </>
+        )}
+      </div>
     </Card>
   )
 }
@@ -1504,24 +2277,36 @@ function count(n: number, one: string, many: string): string {
  * its row is scrolled into view and its first decision focused. Green when
  * nothing is open, and then no button.
  */
-function PeopleLead({ rows }: { rows: readonly PersonRow[] }) {
+function PeopleLead({ rows, joins, joinsError }: { rows: readonly PersonRow[]; joins: readonly JoinRequestRow[]; joinsError: string | null }) {
   const items = waitingRequests(rows)
-  const oldest = items[0]
-  if (oldest === undefined) {
-    return <AdminLead tone="ok" kicker="Nothing waiting" title="Nobody is waiting for an admin" body="A new workspace request or a request to borrow a Claude account appears here first." />
+  // JOIN-UI-ADMIN: a join request counts with the others (§4.6), and the
+  // oldest of all of them is the one named.
+  const first = items[0]
+  const join = joins[0]
+  const named = join !== undefined && (first === undefined || first.at === null || new Date(join.requested_at).getTime() < new Date(first.at).getTime()) ? join : null
+  if (first === undefined && join === undefined) {
+    if (joinsError !== null) {
+      // Nobody else waits, but the joins were not read: "nobody" would be a guess.
+      return <AdminLead tone="unread" kicker="Not read" title="—, who is waiting to join a workspace could not be read" body={`No workspace or loan request is open; the join requests were not read (${joinsError}).`} />
+    }
+    return <AdminLead tone="ok" kicker="Nothing waiting" title="Nobody is waiting for an admin" body="A new workspace request, a request to join a workspace or a request to borrow a Claude account appears here first." />
   }
-  const open = () => {
-    const li = [...document.querySelectorAll<HTMLElement>('.pp-waiting li.pp-req')].find((el) => el.dataset.kind === oldest.kind && el.dataset.email === oldest.row.email)
-    if (li === undefined) return
-    li.scrollIntoView?.({ block: 'center' })
-    ;(li.querySelector<HTMLElement>('button, select, input') ?? li).focus()
-  }
+  const open = () =>
+    named !== null
+      ? reviewRow((el) => el.dataset.kind === 'join' && el.dataset.ref === named.ref)
+      : first !== undefined && reviewRow((el) => el.dataset.kind === first.kind && el.dataset.email === first.row.email)
+  const oldest =
+    named !== null
+      ? `${named.requester} asked to join ${named.display_name} ${timeAgo(named.requested_at)}`
+      : first !== undefined
+        ? `${first.row.email} asked for ${askedFor(first)} ${first.at !== null ? timeAgo(first.at) : 'at an unknown time'}`
+        : ''
   return (
     <AdminLead
       tone="warn"
       kicker="Needs an admin"
-      title={`${count(items.length, 'request is', 'requests are')} waiting for an admin`}
-      body={`The oldest: ${oldest.row.email} asked for ${askedFor(oldest)} ${oldest.at !== null ? timeAgo(oldest.at) : 'at an unknown time'}.`}
+      title={`${count(items.length + joins.length, 'request is', 'requests are')} waiting for an admin`}
+      body={`The oldest: ${oldest}.`}
       action={
         <Button kind="primary" onClick={open}>
           Review the oldest
@@ -1546,41 +2331,227 @@ function listed(names: readonly string[]): string {
 }
 
 /**
+ * THE GRID'S WORKSPACE IS THIS DEVICE'S CHOICE, AND THE PAGE IS RIGHT WITHOUT
+ * IT: storage throws in a private window and in previews, and the grid then
+ * opens on every workspace. So does a remembered workspace this read no
+ * longer serves -- removed, or not one this reader administers.
+ */
+export const PEOPLE_WORKSPACE_KEY = 'swarm.people.workspace'
+
+/** Every workspace: never a tenant id, which is a slug. */
+const EVERY = '*'
+
+/** A person is IN a workspace when they hold a role there; `none` and an unread cell are not one. */
+const HOLDS_ROLE: ReadonlySet<PeopleRoleCell> = new Set(['admin', 'member', 'viewer'])
+
+function rememberedWorkspace(): string {
+  try {
+    return window.localStorage.getItem(PEOPLE_WORKSPACE_KEY) ?? EVERY
+  } catch {
+    return EVERY
+  }
+}
+
+function rememberWorkspace(key: string): void {
+  try {
+    if (key === EVERY) window.localStorage.removeItem(PEOPLE_WORKSPACE_KEY)
+    else window.localStorage.setItem(PEOPLE_WORKSPACE_KEY, key)
+  } catch {
+    // Nothing to do: this visit still shows the choice.
+  }
+}
+
+type GridRow = { email: string; display_name?: string | null; roles?: Record<string, PeopleRoleCell> }
+
+interface GridView<R> {
+  /** The columns to draw: the chosen one, or every one; null for an older API's doc. */
+  columns: PeopleWorkspaceColumn[] | null
+  /** The chosen workspace, or null for every workspace. */
+  column: PeopleWorkspaceColumn | null
+  rows: R[]
+  /** How many rows the chosen workspace holds before Find a person narrows them; every row when none is chosen. */
+  inWorkspace: number
+  typed: string
+  setTyped: (v: string) => void
+  choose: (key: string) => void
+}
+
+/**
+ * THE GRID, NARROWED (S5c, S5f): to the chosen workspace's column and the
+ * people who hold a role in it, then to the people whose name or email holds
+ * what was typed. Both read the list already loaded; neither asks the API.
+ */
+function useGridView<R extends GridRow>(rows: readonly R[], columns: PeopleWorkspaceColumn[] | null): GridView<R> {
+  const [chosen, setChosen] = useState(rememberedWorkspace)
+  const [typed, setTyped] = useState('')
+  const column = columns?.find((c) => c.tenant_id === chosen) ?? null
+  const q = typed.trim().toLowerCase()
+  const matches = (r: R) => q === '' || r.email.toLowerCase().includes(q) || (r.display_name ?? '').toLowerCase().includes(q)
+  const held = rows.filter((r) => column === null || HOLDS_ROLE.has(r.roles?.[column.tenant_id] ?? null))
+  return {
+    columns: column === null ? columns : [column],
+    column,
+    rows: held.filter(matches),
+    inWorkspace: held.length,
+    typed,
+    setTyped,
+    choose: (key) => {
+      setChosen(key)
+      rememberWorkspace(key)
+    },
+  }
+}
+
+/**
+ * THE WORKSPACE FILTER, IN THE GRID CARD'S HEAD: a platform admin's "Every
+ * workspace" and one choice per workspace (S5c); a workspace admin's only the
+ * workspaces they administer, "Both" when there are two (S5f). One workspace
+ * leaves nothing to choose, so no filter is drawn.
+ */
+function WorkspaceFilter({ view, all, scoped }: { view: GridView<GridRow>; all: readonly PeopleWorkspaceColumn[]; scoped: boolean }) {
+  if (all.length < 2) return null
+  return (
+    <span className="pp-filter">
+      <span className="c-lbl" aria-hidden="true">
+        Workspace
+      </span>
+      <Segmented<string>
+        small
+        label="Workspace"
+        value={view.column?.tenant_id ?? EVERY}
+        onChange={view.choose}
+        options={[
+          { key: EVERY, label: scoped && all.length === 2 ? 'Both' : 'Every workspace' },
+          ...all.map((c) => ({ key: c.tenant_id, label: c.display_name })),
+        ]}
+      />
+    </span>
+  )
+}
+
+/**
+ * THE HEAD'S COUNT, NARROWED WITH THE GRID (review of ADMIN-PEOPLE-FILTER).
+ * The choice is remembered, so a reader who reloads sees a narrowed grid; a
+ * head still saying the whole platform's total above it disagreed with the
+ * rows drawn. With a workspace chosen it says how many of the total are in it.
+ */
+function narrowedCount(view: GridView<GridRow>, total: number): string | null {
+  if (view.column === null) return null
+  return `${view.inWorkspace} of ${count(total, 'person', 'people')} in ${view.column.display_name}`
+}
+
+/** "Find a person", over the loaded grid, and what it found: a count, or that nobody matches. */
+function FindPerson({ view }: { view: GridView<GridRow> }) {
+  const q = view.typed.trim()
+  const n = view.rows.length
+  const where = view.column !== null ? ` in ${view.column.display_name}` : ''
+  return (
+    <div className="pp-find">
+      <input
+        type="search"
+        className="ur-search"
+        aria-label="Find a person"
+        placeholder="Find a person"
+        value={view.typed}
+        maxLength={200}
+        onChange={(e) => view.setTyped(e.target.value)}
+      />
+      <span className="ur-hint" role="status">
+        {q === '' ? '' : `${n === 0 ? 'Nobody' : count(n, 'person', 'people')}${where} ${n > 1 ? 'match' : 'matches'} “${q}”`}
+      </span>
+    </div>
+  )
+}
+
+/** What the grid draws when its narrowing left nobody: why, in the reader's terms. */
+function NobodyShown({ view }: { view: GridView<GridRow> }) {
+  const c = view.column
+  if (view.typed.trim() !== '') return <p className="ur-hint pp-nobody">Find a person reads the names and email addresses on this page.</p>
+  if (c === null) return null
+  return (
+    <p className="ur-hint pp-nobody">
+      {c.unavailable ? `${c.display_name}’s roles could not be read, so who is in it is not known.` : `Nobody holds a role in ${c.display_name}.`}
+    </p>
+  )
+}
+
+/**
  * A WORKSPACE ADMIN'S PAGE (S5f): the lead, then the grid of their workspaces
  * and nothing else. Nobody waits for a workspace admin here: a personal
  * workspace request and a loan are a platform admin's, so the lead says that
  * rather than drawing decisions this reader cannot make.
  */
-function ScopedBody({ doc }: { doc: ScopedPeopleDoc }) {
+function ScopedBody({ doc, reload }: { doc: ScopedPeopleDoc & JoinFields; reload: () => void }) {
   const columns = Array.isArray(doc.workspaces) ? doc.workspaces : []
   const rows: ScopedPersonRow[] = Array.isArray(doc.people) ? doc.people : []
   const phone = usePhoneTables()
   const names = listed(columns.map((c) => c.display_name))
+  const view = useGridView(rows, columns)
+  const shown = view.columns ?? columns
+  // JOIN-UI-ADMIN (S5f): the requests to join these workspaces are this reader's to decide.
+  const joins = openJoins(doc)
+  const joinsError = doc.join_requests_error ?? null
+  const [version, setVersion] = useState(0)
+  const members = useWorkspaceMembers(columns, version)
+  const decided = () => {
+    reload()
+    setVersion((v) => v + 1)
+  }
+  const grid: JoinGrid = { joins, members }
+  const body = `Showing ${names}, the ${columns.length === 1 ? 'workspace' : 'workspaces'} you administer. A request for a personal workspace or a Claude account is a platform admin’s to decide.`
+  const asking = new Set(joins.map((j) => j.requester)).size
+  const into = listed([...new Set(joins.map((j) => j.display_name))])
   return (
     <>
-      <AdminLead
-        tone="ok"
-        kicker="Your workspaces"
-        title={`Nobody is waiting for you in ${names}`}
-        body={`Showing ${names}, the ${columns.length === 1 ? 'workspace' : 'workspaces'} you administer. A request for a personal workspace or a Claude account is a platform admin’s to decide.`}
-      />
-      <Card className="pp-people" title="People and their roles" action={<Chip>{count(doc.count, 'person', 'people')}</Chip>}>
+      {joins.length > 0 ? (
+        <AdminLead
+          tone="warn"
+          kicker="Your workspaces"
+          title={`${count(asking, 'person is', 'people are')} waiting to join ${into}`}
+          body={body}
+          action={
+            <Button kind="primary" onClick={() => reviewRow((el) => el.dataset.kind === 'join' && el.dataset.ref === joins[0]?.ref)}>
+              {joins.length === 1 ? 'Review it' : `Review the ${joins.length}`}
+            </Button>
+          }
+        />
+      ) : joinsError !== null ? (
+        <AdminLead tone="unread" kicker="Your workspaces" title={`—, who is waiting to join ${names} could not be read`} body={`${body} (${joinsError})`} />
+      ) : (
+        <AdminLead tone="ok" kicker="Your workspaces" title={`Nobody is waiting for you in ${names}`} body={body} />
+      )}
+      {joinsError !== null && <JoinsUnread code={joinsError} />}
+      <JoinWaitingCard joins={joins} columns={columns} reload={decided} />
+      <Card
+        className="pp-people"
+        title="People and their roles"
+        action={
+          <span className="pp-head-acts">
+            <WorkspaceFilter view={view} all={columns} scoped />
+            <Chip>{narrowedCount(view, doc.count) ?? count(doc.count, 'person', 'people')}</Chip>
+          </span>
+        }
+      >
+        {rows.length > 0 && <FindPerson view={view} />}
+        <MembersUnread columns={columns} reads={members} />
         {rows.length === 0 ? (
           <p className="ur-hint">Nobody has been seen in {names} yet, and nobody holds a role there.</p>
+        ) : view.rows.length === 0 ? (
+          <NobodyShown view={view} />
         ) : (
           <div className={`table-wrap ${tableMode(phone)} pp-wrap`}>
             <table className="pools pp-table pp-grid" role="table">
               <thead role="rowgroup">
                 <tr role="row">
                   <th role="columnheader" scope="col">Person</th>
-                  {columns.map((c) => (
+                  {shown.map((c) => (
                     <ColumnHead key={c.tenant_id} column={c} />
                   ))}
                   <th role="columnheader" scope="col">Last active</th>
                 </tr>
               </thead>
               <tbody role="rowgroup">
-                {rows.map((row) => (
+                {view.rows.map((row) => (
                   <tr key={row.email} role="row" data-email={row.email}>
                     <th role="rowheader" scope="row">
                       <span className="pp-person">
@@ -1590,9 +2561,7 @@ function ScopedBody({ doc }: { doc: ScopedPeopleDoc }) {
                         </span>
                       </span>
                     </th>
-                    {columns.map((c) => (
-                      <RoleCell key={c.tenant_id} cell={row.roles?.[c.tenant_id]} column={c} />
-                    ))}
+                    {roleCells(row, shown, grid)}
                     <td role="cell" data-label="Last active">
                       {row.last_active !== null ? timeAgo(row.last_active) : <Dash why="Not seen since roles were recorded" />}
                     </td>
@@ -1611,35 +2580,66 @@ function isScoped(doc: PeopleDoc | ScopedPeopleDoc): doc is ScopedPeopleDoc {
   return doc.scope === 'workspaces'
 }
 
-function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
+function PeopleBody({ doc, reload }: { doc: PeopleDoc & JoinFields; reload: () => void }) {
   const rows = pendingFirst(Array.isArray(doc.people) ? doc.people : [])
   const phone = usePhoneTables()
   // The drawer follows the person, not a snapshot of their row: each read
   // redraws it from the list, so a decision made in it shows there.
   const [managing, setManaging] = useState<string | null>(null)
   const managed = managing === null ? null : (rows.find((r) => r.email === managing) ?? null)
-  const columns = gridColumns(doc)
+  const all = gridColumns(doc)
+  const view = useGridView(rows, all)
+  const columns = view.columns
+  const [granting, setGranting] = useState(false)
+  const [said, setSaid] = useState<Said | null>(null)
+  // JOIN-UI-ADMIN: the open join requests, and each column's members list for the mark.
+  const joins = openJoins(doc)
+  const joinsError = doc.join_requests_error ?? null
+  const [version, setVersion] = useState(0)
+  const members = useWorkspaceMembers(all, version)
+  const decided = () => {
+    reload()
+    setVersion((v) => v + 1)
+  }
+  const grid: JoinGrid = { joins, members }
   return (
     <>
-      <PeopleLead rows={rows} />
+      <PeopleLead rows={rows} joins={joins} joinsError={joinsError} />
       <BuildingOff doc={doc} />
-      <WaitingCard doc={doc} rows={rows} reload={reload} />
+      {joinsError !== null && <JoinsUnread code={joinsError} />}
+      <WaitingCard doc={doc} rows={rows} reload={decided} />
       {doc.workspaces_error != null && <ColumnsUnread code={doc.workspaces_error} />}
       <Card
         className="pp-people"
         // Not the page's own heading again under it (visual QA V082).
         title="People and their roles"
         action={
-          <Chip>
-            {doc.count} {doc.count === 1 ? 'person' : 'people'} ·{' '}
-            {doc.pending === 0 ? <span aria-label="none pending (measured)">none pending</span> : <>{doc.pending} pending</>}
-          </Chip>
+          <span className="pp-head-acts">
+            {all !== null && <WorkspaceFilter view={view} all={all} scoped={false} />}
+            {/* The pending figure is the platform's; Waiting for you carries it while a workspace is chosen. */}
+            <Chip>
+              {narrowedCount(view, doc.count) ?? (
+                <>
+                  {doc.count} {doc.count === 1 ? 'person' : 'people'} ·{' '}
+                  {doc.pending === 0 ? <span aria-label="none pending (measured)">none pending</span> : <>{doc.pending} pending</>}
+                </>
+              )}
+            </Chip>
+            <Button size="sm" onClick={() => setGranting(true)}>
+              Grant admin
+            </Button>
+          </span>
         }
       >
+        <SaidLine said={said} />
+        {rows.length > 0 && <FindPerson view={view} />}
+        {all !== null && <MembersUnread columns={all} reads={members} />}
         {rows.length === 0 ? (
           <p className="ur-hint">
             <span aria-label="no one has signed in (measured)">no one has signed in</span>
           </p>
+        ) : view.rows.length === 0 ? (
+          <NobodyShown view={view} />
         ) : (
           /* THE TENANTS PATTERN (Activity.tsx, design-system.md §7.3): the
               table has its own scroll container inside the card; below 560px
@@ -1651,6 +2651,11 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
               <thead role="rowgroup">
                 <tr role="row">
                   <th role="columnheader" scope="col">Person</th>
+                  {columns !== null && (
+                    <th role="columnheader" scope="col">
+                      Platform role
+                    </th>
+                  )}
                   {columns !== null
                     ? columns.map((c) => <ColumnHead key={c.tenant_id} column={c} />)
                     : !phone && <th role="columnheader" scope="col">Teams</th>}
@@ -1668,8 +2673,8 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
                 </tr>
               </thead>
               <tbody role="rowgroup">
-                {rows.map((row) => (
-                  <Row key={row.email} row={row} doc={doc} phone={phone} onManage={setManaging} />
+                {view.rows.map((row) => (
+                  <Row key={row.email} row={row} doc={doc} columns={columns} phone={phone} grid={grid} onManage={setManaging} />
                 ))}
               </tbody>
             </table>
@@ -1684,6 +2689,7 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
         <Audit entries={Array.isArray(doc.audit) ? doc.audit : []} />
       </div>
       {managed !== null && <Drawer key={managed.email} row={managed} doc={doc} reload={reload} onClose={() => setManaging(null)} />}
+      {granting && <GrantDialog reload={reload} onClose={() => setGranting(false)} onSaid={setSaid} />}
     </>
   )
 }
@@ -1711,7 +2717,7 @@ export function PeopleScreen() {
           : 'Every person against every workspace, what they are waiting for, and who is an admin.'}
       </p>
       <UrRegion state={people.state} route="GET /v1/admin/people" what="People" plural onRetry={people.reload} lines={6}>
-        {(d) => (isScoped(d) ? <ScopedBody doc={d} /> : <PeopleBody doc={d} reload={people.reload} />)}
+        {(d) => (isScoped(d) ? <ScopedBody doc={d} reload={people.reload} /> : <PeopleBody doc={d} reload={people.reload} />)}
       </UrRegion>
     </div>
   )

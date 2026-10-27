@@ -331,6 +331,20 @@
 .adm-repo-limits,
 .adm-prices,
 .adm-fallback-token { margin-top: var(--ctl-s5); }
+/* FOLDED UNDER THE CEILINGS (VQ-054, part of #2391; config-e.html S10b). On
+   Pool limits the three cards above are drawn folded (AdminSettings.tsx
+   `FoldCard`): the title is the control, a chevron that turns down when open,
+   as People's Recent admin actions (styles/people.css `.pp-fold`). */
+.adm-fold {
+  display: inline-flex; align-items: center; gap: var(--ctl-s2); padding: 0; border: 0; background: none;
+  font: inherit; color: inherit; cursor: pointer; text-align: left;
+}
+.adm-fold:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: var(--r-ctl); }
+.adm-fold-ic { flex: none; transition: transform 120ms ease; }
+.adm-fold-card.is-open .adm-fold-ic { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) {
+  .adm-fold-ic { transition: none; }
+}
 /* MODEL PRICES FITS ITS CARD AT 1440 (visual QA run 5b, QA-018, part of
    #1680). Its five fields had no width, so each was the browser's default 20
    characters, about 190px: nine columns came to some 1,560px in a card of
@@ -342,7 +356,10 @@
    and a tiered model's lines lose the list's 40px indent. The table still
    scrolls inside `.ctl-table` where a card is narrower than this. */
 .adm-price-in { width: calc(7ch + 20px); }
-.adm-price-in.is-day { width: calc(10ch + 20px); }
+/* ONE CHARACTER OF SLACK ON THE DAY (VQ-054): at exactly its ten
+   characters, the caret's reserved pixel cut the empty field's placeholder to
+   `YYYY-MM-DI` at 1440. Its column grew by the same 8px (below). */
+.adm-price-in.is-day { width: calc(11ch + 20px); }
 .adm-price-table thead th { white-space: normal; }
 .adm-price-tiers { margin: 0; padding: 0; list-style: none; }
 /* AND IT NO LONGER SCROLLS, AS ADMIN OR AS MEMBER (visual QA run 6,
@@ -352,21 +369,21 @@
    one line each, and at 1440 the member's read-only table cut Set by to
    `ops@example.c` behind a scrollbar. Now it is laid out FIXED, so it is the
    card's width: each figure column is its 7ch + 20px field and the cell's
-   10px a side (99px at 14px DM Mono), As of its 10ch field (124px), Set by
+   10px a side (99px at 14px DM Mono), As of its 11ch field (132px, VQ-054), Set by
    `ops@example.com` whole (138px in Inter Tight at 14px, an upper bound),
    Currency its head (78px) and Source `pricing-page` (114px); the Model
-   column takes what is left, 126px at 1440, and its name and tier lines wrap
-   at their hyphens and spaces. Set by breaks after its `@` only
-   (`addressBreaks`, AdminSettings.tsx). The min-width is those columns and
+   column takes what is left, 118px at 1440, and its name and tier lines wrap
+   at their hyphens and spaces. Set by breaks after its `@` only (a writer
+   that is no address, after its dots; `addressBreaks`, AdminSettings.tsx). The min-width is those columns and
    `demo-model-` (112px): narrower than that the table scrolls inside
    `.ctl-table` rather than squeezing a column under its text. Above the
    phone only; at 560px and under the table is a stacked record. */
 @media (min-width: 561px) {
-  table.adm-price-table { table-layout: fixed; width: 100%; min-width: 976px; }
+  table.adm-price-table { table-layout: fixed; width: 100%; min-width: 984px; }
   table.adm-price-table > thead > tr > th.adm-pc-fig { width: 100px; }
   table.adm-price-table > thead > tr > th.adm-pc-cur { width: 80px; }
   table.adm-price-table > thead > tr > th.adm-pc-src { width: 116px; }
-  table.adm-price-table > thead > tr > th.adm-pc-day { width: 126px; }
+  table.adm-price-table > thead > tr > th.adm-pc-day { width: 134px; }
   table.adm-price-table > thead > tr > th.adm-pc-by { width: 140px; }
   table.adm-price-table > tbody > tr > th,
   table.adm-price-table > tbody > tr > td { white-space: normal; }

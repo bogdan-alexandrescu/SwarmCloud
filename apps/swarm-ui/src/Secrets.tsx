@@ -25,11 +25,12 @@ import {
   type WorkspaceSecretCatalogue,
   type WorkspaceSecretConsumer,
 } from './api'
-import { Banner, Button, ButtonLink, Card, Segmented, TypedConfirm, routedClick } from './components'
-import { SetupContext } from './ConfigSetup'
+import { BrowserLoginsPane, isPersonalTenant } from './BrowserLogins'
+import { Banner, Button, ButtonLink, Card, Segmented, Tabs, TypedConfirm, routedClick, type TabDef } from './components'
+import { SetupContext, setupNext, useSetupSteps, type SetupStep } from './ConfigSetup'
 import { configSetupOf } from './configSetupApi'
 import { chooseTenant, type Result } from './fetch'
-import { QA_LINK_ADDRESS, addressToPath, secretsLinkToken, secretsLinkView } from './paths'
+import { QA_LINK_ADDRESS, SECRETS_LOGINS_VIEW, addressToPath, secretsLinkToken, secretsLinkView } from './paths'
 import { UrRefresh, UrRegion, useUrRead, type UrRead } from './RepositoriesParts'
 import type { RepoRecord } from './RepositoriesData'
 import { JevBackendCard } from './JudgmentBackend'
@@ -94,6 +95,15 @@ import './styles/secrets.css'
  * (`config_setup.secrets`, `provider_key`) lists it -- only while Jev judges
  * with TypeSafe, which the overview cannot tell. With nothing stored and
  * nothing needed it is "Step 3 · Add your first secret".
+ *
+ * THE LEAD FOLLOWS THE STRIP, AND "STORED" COUNTS THE KEYS (VQ-041). A
+ * workspace whose only setting was a key read as empty: the lead said "Step
+ * 3 · next · Add your first secret" under a strip that marked step 3 done,
+ * and For agents suggested the TypeSafe key the table below showed set. So
+ * "nothing stored" is no agents secret AND no key set; with something stored
+ * and nothing missing the lead says step 3 is done, what is set, and the
+ * strip's next step; and every empty line says what is empty, with the keys
+ * that are set beside it.
  */
 
 type Dest = 'agents' | 'actions'
@@ -231,17 +241,46 @@ function setWords(row: Pick<SecretsRow, 'set_at' | 'set_by'>): string {
   return row.set_by === null ? `set ${timeAgo(row.set_at)}` : `set ${timeAgo(row.set_at)} by ${row.set_by}`
 }
 
+/** The keys that are set: a provider key or a runner key, never an MCP server's row or Subscription accounts. */
+function keysSetOf(rows: readonly SecretsRow[]): SecretsRow[] {
+  return rows.filter((r) => r.section === 'keys' && r.store !== 'mcp_servers' && r.status === 'set')
+}
+
+/** "1 key is" / "2 keys are", for the lines that name the keys set beside an empty list. */
+function keysAre(n: number): string {
+  return n === 1 ? '1 key is' : `${n} keys are`
+}
+
 /** Rows that block something until they are set: a QA sign-in, an MCP server's credential. */
 function neededOf(rows: readonly SecretsRow[]): SecretsRow[] {
   return rows.filter((r) => r.status === 'unset' && ((r.section === 'keys' && r.store === 'mcp_servers') || (r.section === 'qa_sign_in' && r.field === 'credential')))
 }
 
 const OVERVIEW_ROUTE = 'GET /v1/secrets/overview'
+
+/**
+ * BROWSER LOGINS, THE PAGE'S SECOND TAB (GA-MOVE-VIEWS; part of #2157, BGD
+ * 2026-10-24: "Browser logins to Config › Secrets"). It was GitHub access'
+ * Browser logins view: the person's own saved live-browser sessions, by name
+ * and site, with a typed Revoke (BrowserLogins.tsx `BrowserLoginsPane`, moved
+ * whole), beside the secrets they belong with. Its address is `?view=logins`,
+ * which `/config/github?view=logins` and `/access?view=logins` land on
+ * (paths.ts `MOVED_VIEWS`). The tab is the ROUTED view, never the bar read at
+ * mount: an old hash bookmark is rewritten to this path only after the first
+ * render. A scope, a one-time link's form or Add a secret opens the first
+ * tab whatever the address says (`secretsLinkView` keeps `view` only alone),
+ * because each is drawn there.
+ */
+const SECRETS_TABS: readonly TabDef[] = [
+  { key: 'secrets', label: 'Secrets' },
+  { key: SECRETS_LOGINS_VIEW, label: 'Browser logins' },
+]
 const CATALOGUE_ROUTE = 'GET /v1/workspace/secrets/consumers'
 
 export function SecretsScreen({ view, token = null }: { view: string | null; token?: string | null }) {
   const at = parseSecretsView(view)
   const viewKey = viewOf(at)
+  const logins = secretsLinkView(view ?? '') === `view=${SECRETS_LOGINS_VIEW}`
   // THE LINK'S TOKEN, for the form its link opened and no other: read once,
   // from App's capture or, rendered alone, off the bar. A ref, never state or
   // a prop of anything drawn.
@@ -317,9 +356,14 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
   const setup = useContext(SetupContext)
   const setupItems = configSetupOf(dataOf(setup.doc))?.secrets?.items ?? []
   const keyNeeded = at.scope === 'workspace' && setupItems.some((i) => i.kind === 'provider_key' && i.name === 'typesafe')
+  // The strip's step 3 and its next step, for the lead to follow (VQ-041).
+  const steps = useSetupSteps()
+  const strip: StripRead = { secrets: steps.find((s) => s.key === 'secrets') ?? null, next: setupNext(steps) }
   // S4i: nothing stored and nothing needed, for someone who may add one. Its
   // lead carries Add a secret, so the head does not draw it a second time.
-  const first = at.scope === 'workspace' && ov !== null && canManage && !keyNeeded && neededOf(ov.rows).length === 0 && !ov.rows.some((r) => r.section === 'agents')
+  // A key set is something stored (VQ-041).
+  const stored = ov !== null && (ov.rows.some((r) => r.section === 'agents') || keysSetOf(ov.rows).length > 0)
+  const first = at.scope === 'workspace' && ov !== null && canManage && !keyNeeded && neededOf(ov.rows).length === 0 && !stored
   // ADD A SECRET FROM ITS ADDRESS (MCP-LEAD-FORM): once the overview says the
   // reader may add one and the catalogue has answered, open the sheet with
   // the address's consumer ticked if the catalogue lists it, and nothing
@@ -339,15 +383,31 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
   }, [at.add, at.consumer, at.scope, repoId, formOpen, mayAdd, catalogueSettled, catalogueData])
   return (
     <div className="pk-page sec-page">
+      {/* The head's Refresh and Add a secret are the secrets' own, so the
+          logins tab, whose list is read by its own pane, offers neither. */}
       <PageHead title="Secrets">
-        <UrRefresh reads={[overview, repos]} ageOf={[overview]} />
-        {!formOpen && mayAdd && !first && (
+        {!logins && <UrRefresh reads={[overview, repos]} ageOf={[overview]} />}
+        {!logins && !formOpen && mayAdd && !first && (
           <Button kind="primary" size="sm" onClick={() => setWizard({ scope: at.scope, repo: repoId, consumer: null, dest: at.dest })}>
             Add a secret
           </Button>
         )}
       </PageHead>
-      {formOpen ? (
+      {/* `cfg-parts` (config.css): the Config pages' tab strip, as GitHub access draws it. */}
+      <Tabs tabs={SECRETS_TABS} current={logins ? SECRETS_LOGINS_VIEW : 'secrets'} label="Secrets" className="cfg-parts" onSelect={(k) => goView(k === SECRETS_LOGINS_VIEW ? `view=${SECRETS_LOGINS_VIEW}` : '')} />
+      {logins ? (
+        <>
+          {/* In a group workspace the pane says where logins live instead, so
+              a lede promising "the sessions you saved" would contradict it. */}
+          {(ov === null || isPersonalTenant(ov.tenant_id)) && (
+            <p className="ur-sub">
+              The browser sessions you saved from a live browser in your workspace, by name and site, with when each
+              expires. An agent names one to start signed in.
+            </p>
+          )}
+          <BrowserLoginsPane tenantId={ov?.tenant_id || null} />
+        </>
+      ) : formOpen ? (
         <OneTimeForm
           key={`${viewKey}#${again}`}
           at={at}
@@ -405,6 +465,7 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
                   onActionsTaken={actionsTaken}
                   keyNeeded={keyNeeded}
                   first={first}
+                  strip={strip}
                   personalSelected={personalSelected}
                   catalogue={catalogue}
                   onChange={overview.reload}
@@ -421,7 +482,7 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
           {at.scope === 'workspace' && <JevBackendCard />}
         </>
       )}
-      {wizard !== null && (
+      {!logins && wizard !== null && (
         <AddWizard
           start={wizard}
           repos={registered ?? []}
@@ -511,6 +572,7 @@ function ScopeBody({
   onActionsTaken,
   keyNeeded,
   first,
+  strip,
   personalSelected,
   catalogue,
   onChange,
@@ -530,6 +592,8 @@ function ScopeBody({
   keyNeeded: boolean
   /** Nothing stored and nothing needed (S4i). */
   first: boolean
+  /** The setup strip's step 3 and next step, which the lead follows. */
+  strip: StripRead
   personalSelected: boolean
   catalogue: UrRead<WorkspaceSecretCatalogue>
   onChange: () => void
@@ -592,7 +656,7 @@ function ScopeBody({
         {personalSelected ? (
           <StoreCard title="For your agents" label="Your secrets" target={{ scope: 'workspace' }} overview={overview} catalogue={catalogue} onChange={onChange} go={go} at={at} />
         ) : (
-          <YoursList rows={of('agents')} personal={overview.personal_tenant_id} />
+          <YoursList rows={of('agents')} personal={overview.personal_tenant_id} keys={keysSetOf(of('keys')).length} />
         )}
         <BrowserCard rows={of('browser_sessions')} removable={personalSelected} onChange={onChange} />
         <KeysCard rows={of('keys')} scope="personal" go={go} onChange={onChange} onAdd={onAdd} />
@@ -600,16 +664,19 @@ function ScopeBody({
       </>
     )
   }
+  const keys = keysSetOf(rows)
+  // S4a STACKS ITS THREE SECTIONS (VQ-042): For agents, Keys for agents and
+  // MCP, then GitHub token, each full width. Beside the GitHub token, the
+  // Keys table's four columns broke words mid-word and cut its Read by list.
   return (
     <>
-      {first ? <FirstLead tenant={overview.tenant_id} onAdd={() => onAdd(null)} /> : (
-        <NeedLead {...lead} rows={needed} keyNeeded={keyNeeded} scope="workspace" repository={null} repoId={null} />
-      )}
-      <StoreCard title="For agents" label="Workspace secrets" target={{ scope: 'workspace' }} overview={overview} catalogue={catalogue} onChange={onChange} go={go} at={at} empty={<FirstSecret tenant={overview.tenant_id} />} />
-      <div className="sec-g2">
-        <KeysCard rows={[...of('keys'), ...of('accounts')]} scope="workspace" go={go} onChange={onChange} onAdd={onAdd} />
-        <GitCard rows={of('github')} empty="No workspace token is registered. Connect one on GitHub access." />
-      </div>
+      {first ? <FirstLead tenant={overview.tenant_id} step={strip.secrets} onAdd={() => onAdd(null)} />
+        : needed.length > 0 || keyNeeded ? <NeedLead {...lead} rows={needed} keyNeeded={keyNeeded} scope="workspace" repository={null} repoId={null} />
+          : strip.secrets?.state === 'done' ? <DoneLead tenant={overview.tenant_id} secrets={of('agents').length} keys={keys.length} next={strip.next} />
+            : null}
+      <StoreCard title="For agents" label="Workspace secrets" target={{ scope: 'workspace' }} overview={overview} catalogue={catalogue} onChange={onChange} go={go} at={at} empty={<FirstSecret tenant={overview.tenant_id} keys={keys} />} />
+      <KeysCard rows={[...of('keys'), ...of('accounts')]} scope="workspace" go={go} onChange={onChange} onAdd={onAdd} />
+      <GitCard rows={of('github')} empty="No workspace token is registered. Connect one on GitHub access." />
     </>
   )
 }
@@ -698,11 +765,21 @@ function NeedLead({ rows, keyNeeded, manages, scope, tenant, repository, repoId,
   )
 }
 
-/** The empty workspace's lead (S4i): nothing stored, nothing needed, and the one button. */
-function FirstLead({ tenant, onAdd }: { tenant: string; onAdd: () => void }) {
+/** What the lead reads off the setup strip: its step 3 and the step it calls next. */
+interface StripRead {
+  secrets: SetupStep | null
+  next: SetupStep | null
+}
+
+/**
+ * The empty workspace's lead (S4i): nothing stored, nothing needed, and the
+ * one button. Its kicker is the strip's: where the strip measured step 3
+ * done ("nothing missing"), the lead does not call it next.
+ */
+function FirstLead({ tenant, step, onAdd }: { tenant: string; step: SetupStep | null; onAdd: () => void }) {
   return (
     <section className="sec-lead" aria-label="Add your first secret">
-      <span className="sec-k">Step 3 · next</span>
+      <span className="sec-k">{step?.state === 'done' ? 'Step 3 · nothing missing' : 'Step 3 · next'}</span>
       <b>Add your first secret</b>
       <span>Nothing is stored for {tenant || 'this workspace'} yet, and nothing registered needs one yet either.</span>
       <span className="sec-acts">
@@ -712,13 +789,43 @@ function FirstLead({ tenant, onAdd }: { tenant: string; onAdd: () => void }) {
   )
 }
 
-/** The empty workspace (S4i): nothing stored, and what people usually set first. */
-function FirstSecret({ tenant }: { tenant: string }) {
+/**
+ * Something stored and nothing missing, as the strip measured it (VQ-041):
+ * step 3 is done, what is set, and the strip's next step as the one button.
+ */
+function DoneLead({ tenant, secrets, keys, next }: { tenant: string; secrets: number; keys: number; next: SetupStep | null }) {
+  const what = secrets === 0
+    ? `${keysAre(keys)} set; no secret for agents is stored yet.`
+    : `${secrets === 1 ? '1 secret for agents' : `${secrets} secrets for agents`}${keys === 0 ? '' : ` and ${keys === 1 ? '1 key' : `${keys} keys`}`} ${secrets + keys === 1 ? 'is' : 'are'} set.`
+  return (
+    <section className="sec-lead is-ok" aria-label="Nothing missing">
+      <span className="sec-k">Step 3 · done</span>
+      <b>Nothing {tenant || 'this workspace'} needs is missing</b>
+      <span>{what}</span>
+      {next !== null && (
+        <span className="sec-acts">
+          <AppLink address={next.to} kind="primary">Next: {next.label}</AppLink>
+        </span>
+      )}
+    </section>
+  )
+}
+
+/**
+ * For agents with nothing stored (S4i), and what people usually set first,
+ * leaving out what is already set: a key set is named beside the empty list
+ * rather than suggested (VQ-041).
+ */
+function FirstSecret({ tenant, keys }: { tenant: string; keys: readonly SecretsRow[] }) {
+  const where = tenant || 'this workspace'
+  const typesafe = keys.some((r) => r.store === 'provider_keys' && r.name === 'typesafe')
   return (
     <>
-      <p className="pk-lead"><b>No secret is stored for {tenant || 'this workspace'} yet.</b> Usually first:</p>
+      <p className="pk-lead">
+        <b>{keys.length === 0 ? `No secret is stored for ${where} yet.` : `No secret for agents is stored for ${where} yet; ${keysAre(keys.length)} set below.`}</b> Usually first:
+      </p>
       <ul className="sec-first">
-        <li><b>The TypeSafe key</b><span>Jev and browser agents read it. Set it under Keys for agents and MCP.</span></li>
+        {!typesafe && <li><b>The TypeSafe key</b><span>Jev and browser agents read it. Set it under Keys for agents and MCP.</span></li>}
         <li><b>A search API key</b><span>For agents that search the web. Add a secret, then grant it.</span></li>
         <li><b>A QA sign-in</b><span>Set on a repository, once a QA target is registered.</span></li>
       </ul>
@@ -811,7 +918,7 @@ function StoreCard({
 }
 
 /** Yours, from a group workspace: read here, managed in the person's own workspace. */
-function YoursList({ rows, personal }: { rows: SecretsRow[]; personal: string | null }) {
+function YoursList({ rows, personal, keys }: { rows: SecretsRow[]; personal: string | null; keys: number }) {
   const open = () => {
     if (personal === null) return
     chooseTenant(personal)
@@ -820,7 +927,9 @@ function YoursList({ rows, personal }: { rows: SecretsRow[]; personal: string | 
   return (
     <Card title="For your agents">
       {rows.length === 0 ? (
-        <p className="ur-small">You have no secret of your own yet.</p>
+        <p className="ur-small">
+          {keys === 0 ? 'You have no secret of your own yet.' : `You have no secret of your own for agents yet; ${keysAre(keys)} yours, set under Keys below.`}
+        </p>
       ) : (
         <table className="mcp-servers" aria-label="Your secrets">
           <thead>

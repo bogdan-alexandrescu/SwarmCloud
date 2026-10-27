@@ -250,9 +250,10 @@ describe('N8: the Workflow cell is the row\'s own cell', () => {
     // At 390 the row is a card (WF-8): the cell is a block in the row's grid,
     // and the border is the row's own, so the name cell still draws none.
     expect(painted(td.parentElement!, 'display', { width: 390 }), 'the row at 390').toBe('grid')
-    // Its pieces still stack, one under the other.
-    const a = td.querySelector(':scope > a')!
-    expect(painted(a, 'display', { width: 1440 })).toBe('block')
+    // Its pieces still stack: the name's line (name, id and runners, VQ-013)
+    // is a block-level row of its own, the current step under it.
+    const line = td.querySelector(':scope > .wfl-line')!
+    expect(painted(line, 'display', { width: 1440 })).toBe('flex')
   })
 })
 

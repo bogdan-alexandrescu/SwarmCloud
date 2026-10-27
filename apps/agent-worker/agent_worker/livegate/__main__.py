@@ -68,6 +68,16 @@ from everything the agent receives. A hand-off on the console host is refused
 qa_identity_host`; the session carry leaves the host out; the wipe clears the
 credential BEFORE Chromium closes, and the verb is refused after it.
 
+THE CLOUDFLARE ACCESS TOKEN (CF-ACCESS-TOKEN, part of #2442). The worker
+hands the attempt's Cloudflare Access service tokens over on ctl.sock
+(`cf_access`), each with the hosts its grant lists, once, before the agent
+exists. The gate holds them for its life (`CfAccess`), across relaunches:
+each Chromium gets its own `CfAccessInjector`, which adds
+`CF-Access-Client-Id` and `CF-Access-Client-Secret` to requests for listed
+hosts on the gate's own sessions and strips a held value from any other
+request. The proxy scrubs the values from everything the agent receives. The
+wipe drops them BEFORE Chromium closes, and the verb is refused after it.
+
 A CAPTCHA ON THE AGENT'S PAGE IS A HAND-OFF THE GATE RAISES (CAPTCHA-HANDOFF;
 docs/design/live-browser.md §4.1, part of #2058). BGD decided on 2026-10-23
 that an agent need not notice a CAPTCHA itself: when a frame on the page the
@@ -133,6 +143,8 @@ from .inject import InjectError, XInjector, display_socket
 from .mask import MaskCdp, MaskState
 from .pointer import css_to_frame
 from .presets import DEFAULT_PRESET, MAX_DISPLAY_HEIGHT, MAX_DISPLAY_WIDTH, Device, UnknownPreset, resolve
+from .cfaccess import OP as CF_ACCESS_OP
+from .cfaccess import CfAccess, CfAccessInjector, CfAccessRefused
 from .qaidentity import OP as QA_IDENTITY_OP
 from .qaidentity import QaIdentity, QaIdentityRefused, QaInjector
 from .qatarget import OP as QA_SIGN_IN_OP
@@ -1236,6 +1248,10 @@ class LiveGate:
         #: life, across relaunches, like the QA identity.
         self.qa_target = QaTarget(self.record, clock=clock)
         self.qa_injector: QaInjector | None = None
+        #: The attempt's Cloudflare Access tokens (cfaccess.py), for the
+        #: gate's life; and the injector of the Chromium running now.
+        self.cf_access = CfAccess(self.record)
+        self.cf_injector: CfAccessInjector | None = None
         self.wiped = False
         #: Chromium's pipe closed (a wipe, or a crash, until a relaunch is up):
         #: nothing needing it is served.
@@ -1441,6 +1457,7 @@ class LiveGate:
             wall=self._wall,
             qa=self.qa,
             qa_target=self.qa_target,
+            cf_access=self.cf_access,
         )
         # A refused agent connection says when the gate takes control back.
         self.proxy.control_lease_seconds = self._lease_seconds
@@ -1451,6 +1468,9 @@ class LiveGate:
         if self.qa_injector is not None:
             await self.qa_injector.close()
         self.qa_injector = QaInjector(self.proxy, self.qa, record=self.record)
+        if self.cf_injector is not None:
+            await self.cf_injector.close()
+        self.cf_injector = CfAccessInjector(self.proxy, self.cf_access, record=self.record)
         pipe = self._tasks["pipe"] = asyncio.create_task(self._read_pipe(browser))
         version = asyncio.create_task(self.proxy.call("Browser.getVersion", {}))
         done, _ = await asyncio.wait({pipe, version}, timeout=CHROMIUM_READY_SECONDS,
@@ -1488,6 +1508,9 @@ class LiveGate:
         if self.qa.armed and not self.qa.wiped:
             # A relaunch: the new browser is signed in before the agent reconnects.
             await self.qa_injector.start()
+        if self.cf_access.held:
+            # A relaunch: the listed hosts get the token on the new browser too.
+            await self.cf_injector.start()
         if self.qa_target.armed and not self.qa_target.wiped:
             # A relaunch: the target's rules hold on the new browser too.
             await self.proxy.start_qa_target()
@@ -1649,6 +1672,8 @@ class LiveGate:
         if "method" in message:
             if self.qa_injector is not None:
                 self.qa_injector.on_event(message)
+            if self.cf_injector is not None:
+                self.cf_injector.on_event(message)
             if self.devices is not None:
                 self.devices.on_event(message)
             if self.pages is not None:
@@ -1824,6 +1849,8 @@ class LiveGate:
             return await self.qa_identity(args)
         if op == QA_SIGN_IN_OP:
             return await self.qa_sign_in(args)
+        if op == CF_ACCESS_OP:
+            return await self.set_cf_access(args)
         raise ValueError("not an operation of the gate")
 
     # -- the QA identity (qaidentity.py) -----------------------------------------
@@ -1842,6 +1869,23 @@ class LiveGate:
         except QaIdentityRefused as exc:
             raise OpRefused(exc.code) from None
         injector = self.qa_injector
+        if injector is not None and not self.browser_closed:
+            await injector.refresh()
+        return result
+
+    async def set_cf_access(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        """The worker's `cf_access` (cfaccess.py): the attempt's Cloudflare Access
+        tokens and their hosts, once. Refused after the wipe, a second time,
+        and for a malformed one (`refused:<field>`); never logged. The
+        browser's sessions follow at once."""
+        if self.wiped:
+            self.record("cf_access_refused", {"cause": "wiped"})
+            raise OpRefused("wiped")
+        try:
+            result = self.cf_access.handle(args)
+        except CfAccessRefused as exc:
+            raise OpRefused(exc.code) from None
+        injector = self.cf_injector
         if injector is not None and not self.browser_closed:
             await injector.refresh()
         return result
@@ -2007,6 +2051,8 @@ class LiveGate:
             "qa_identity": self.qa.status(),
             # VQ-4: the QA target's sign-in state, never the credential.
             "qa_target": self.qa_target.status(),
+            # CF-ACCESS-TOKEN: the listed hosts and counts, never a value.
+            "cf_access": self.cf_access.status(),
             # CAPTCHA-HANDOFF: the hand-off the gate asks for, or None.
             "challenge": dict(self.challenge) if self.challenge is not None else None,
         }
@@ -2414,8 +2460,11 @@ class LiveGate:
         # The credential goes before Chromium does (§4.4), and the verb is refused from here.
         self.qa.wipe()
         self.qa_target.wipe()
+        self.cf_access.wipe()
         if self.qa_injector is not None:
             await self.qa_injector.close()
+        if self.cf_injector is not None:
+            await self.cf_injector.close()
         self.wiped = True
         self._handed_off = False
         relaunch = self._tasks.pop("relaunch", None)

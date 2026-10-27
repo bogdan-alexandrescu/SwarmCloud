@@ -5,7 +5,11 @@
    `--series-1` and retries `--series-5` on their own lane, with a legend
    naming both (design-system.md §1.6). */
 
-.pot { display: flex; flex-direction: column; gap: var(--ctl-s3); margin-top: var(--ctl-s5); min-width: 0; }
+/* NO TOP MARGIN: Over time is the first thing under the page head (mock-up
+   F1's order, COUNTS-ONE-RUN), and the head's own margin is the one gap under
+   every admin head (qafix4.pageheads.b). "Right now" below it takes the
+   change-of-subject space instead. */
+.pot { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; }
 .pot-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--ctl-s1) var(--ctl-s3); }
 .pot-title { margin: 0; font: 600 var(--t-title)/var(--lh-title) var(--font); color: var(--text); }
 .pot-sub,
@@ -54,9 +58,17 @@
 .pot-spark { display: block; width: 100%; max-width: 160px; height: 26px; margin: var(--ctl-s1) 0; }
 .pot-spark polyline { fill: none; stroke: var(--series-1); stroke-width: 1.5; stroke-linejoin: round; }
 .pot-spark circle.is-open { fill: var(--surface); stroke: var(--series-1); stroke-width: 1.5; }
+/* SIX TILES ARE TWO ROWS OF THREE above the phone (review,
+   light-desktop-04-counts-tile): the auto-fit grid holds five at 1440, so
+   Unused browser time pushed Estimated cost onto a row of its own with a
+   four-tile hole beside it. The unread page draws five and keeps auto-fit. */
+@media (min-width: 561px) {
+  .pot-tiles.is-six { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
 @media (max-width: 560px) {
   .pot-tiles { grid-template-columns: 1fr 1fr; gap: var(--ctl-s2); }
-  .pot-tile.is-cost { grid-column: 1 / -1; }
+  .pot-tile.is-cost,
+  .pot-tile.is-tokens { grid-column: 1 / -1; }
   .pot-run { margin-left: 0; }
   /* The span words go on a phone, so the three buckets are one row; the note
      under the controls names the span. */
@@ -130,8 +142,55 @@
 .pot-key-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text); border: 1.5px solid var(--text); }
 .pot-key-dot.is-open { background: var(--surface); }
 
-/* THE READOUT, pinned under the chart (F6, phone): it never covers a mark. */
+/* THE READOUT (F6). Under the chart where the plot is narrow -- a phone's
+   340, F7 -- so it never covers a mark there. Where the plot is wide it is
+   laid OVER the chart, on the side away from its bucket (`data-side`, set by
+   PlatformOverTime.tsx), as counts-a.html's F6 draws it: in the flow it pushed
+   the cost card down by its own height on every pick and every hover. At most
+   half the plot less a margin, so it never reaches the bucket it describes;
+   a hover's readout takes no pointer, so it cannot steal the hover it shows. */
+.pot-plot { container: pot-plot / inline-size; position: relative; display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; }
 .pot-readout { padding: var(--ctl-s2) var(--ctl-s3); border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface-2); }
+.pot-readout[data-hover] { pointer-events: none; }
+/* OVER THE CHART IT FITS THE PLOT, NEVER SCROLLS (review, 2026-10-25): held
+   below the agents axis's top label (y 22, so 32 clears it at 1.2x) and above
+   the x labels (the drawing's last 22, so 30 off the bottom), clear of the
+   value labels in the 48 gutter on the left (58 at 1.2x) and the 26 on the right. Its
+   figures sit three or four to a row and its layers in narrow columns, so a
+   bucket's readout fits at 1440; where it still would not -- a long
+   breakdown, a narrow plot -- PlatformOverTime.tsx measures it and sets
+   `data-place="under"`, which puts it back in the flow under the chart. It
+   clips while it is measured, so nothing it holds is ever out of reach behind
+   a scrollbar a hover cannot take. The shadow is the system's token for a
+   surface over the page, which carries a value for each theme. */
+@container pot-plot (min-width: 640px) {
+  .pot-readout {
+    position: absolute; z-index: 2; top: 32px;
+    width: min(560px, calc(50% - 64px)); max-height: calc(100% - 62px); overflow: hidden;
+    padding: var(--ctl-s1) var(--ctl-s2);
+    background: var(--surface); box-shadow: var(--ctl-shadow-pop);
+  }
+  .pot-readout[data-side='left'] { left: 60px; }
+  .pot-readout[data-side='right'] { right: 32px; }
+  .pot-readout .pot-readout-list { grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: var(--ctl-s1) var(--ctl-s2); }
+  /* EIGHT FIGURES IN THREE ROWS OF THREE (re-review of PR 2348, 2026-10-25
+     and -26): wrapped in one 136px column, "N of N attempts reported", "N of
+     N agents reported" and "k estimated from a stopped run ($x)" took a
+     second line each, and the taller readout went under the chart for 25 of
+     26 picked weeks. Then main's Unused browser row made the figures eight,
+     with three covers of up to 37 characters. The room over the chart, 248px
+     at 1440, holds three rows with one extra line of cover between them, and
+     nine cells: so Estimated cost, whose covers are BGD's words, takes two
+     columns and keeps them on one line each, and a one-column cover that does
+     not fit its 136px shows its short form (`brief` in PlatformOverTime.tsx).
+     The full words are clipped to nothing, not removed, so a screen reader
+     still hears them in the live region; under the chart they are what shows. */
+  .pot-readout .pot-readout-row[data-wide] { grid-column: span 2; }
+  .pot-readout:not([data-place='under']) .pot-cov.is-brief { display: block; }
+  .pot-readout:not([data-place='under']) .pot-cov.is-full { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .pot-readout .pot-readout-layers { columns: 150px; font: var(--t-micro)/var(--lh-micro) var(--font); margin-bottom: var(--ctl-s1); padding-bottom: var(--ctl-s1); }
+  .pot-readout[data-place='under'] { position: static; width: auto; max-height: none; overflow: visible; box-shadow: none; background: var(--surface-2); }
+}
 .pot-readout-head { display: flex; align-items: baseline; gap: var(--ctl-s2); margin: 0 0 var(--ctl-s1); font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim); }
 .pot-readout-head b { color: var(--text); }
 .pot-readout-close { margin-left: auto; min-width: 32px; min-height: 32px; border: 0; background: none; color: var(--text-dim); cursor: pointer; font: var(--t-lead)/var(--lh-flush) var(--font); }
@@ -144,6 +203,16 @@
 .pot-fig { font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; }
 .pot-fig.is-absent { color: var(--text-faint); font-style: italic; white-space: normal; }
 .pot-cov { display: block; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); white-space: nowrap; }
+/* A COVER WRAPS INSIDE ITS CELL (re-review of PR 2348, 2026-10-25): over the
+   chart a column is minmax(118px, 1fr), about 136 at 1440, and the table's
+   one-line cover drew "N of N attempts reported" 20px over the Cache read
+   column beside it and "k estimated from a stopped run ($x)" 76px. A cell
+   shrinks to its column and its cover wraps there if it must; over the chart
+   a long cover takes two columns or shows its short form (above), so none
+   has to. The short form is drawn only over the chart. */
+.pot-readout .pot-readout-row { min-width: 0; }
+.pot-cov.is-brief { display: none; }
+.pot-readout .pot-cov { white-space: normal; overflow-wrap: anywhere; }
 .pot-table td,
 .pot-table th { vertical-align: top; }
 .pot-cell { display: flex; flex-direction: column; min-width: 0; }
@@ -167,3 +236,59 @@
 .pot-table td[data-col='cost'] .pot-cov { white-space: normal; text-wrap: balance; }
 .pot-tile-floor { display: block; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 .pot-table th[role='rowheader'] .pot-cov { white-space: normal; max-width: 22ch; }
+
+/* A BREAKDOWN STACKS THE AGENTS CHART (BGD's answer 1, 2026-10-24; mock-up
+   A's F3 and F4): the five series colours in the route's order, the busiest
+   at the bottom, and "all others" in a neutral of its own -- --series-5 is
+   already the fifth layer and the retries lane, so "all others" is that slate
+   pulled toward the text colour, darker in light and lighter in dark. An
+   unknown is never a colour: it is the hatch, outlined so its band reads as a
+   band (charts README). The split table sits beside the chart where the card
+   is wide, and under it on a phone. */
+.pot-layer { fill-opacity: .85; stroke: var(--surface); stroke-width: .75; }
+.pot-layer-0 { fill: var(--series-1); background: var(--series-1); }
+.pot-layer-1 { fill: var(--series-2); background: var(--series-2); }
+.pot-layer-2 { fill: var(--series-3); background: var(--series-3); }
+.pot-layer-3 { fill: var(--series-4); background: var(--series-4); }
+.pot-layer-4 { fill: var(--series-5); background: var(--series-5); }
+.pot-layer-other { fill: color-mix(in srgb, var(--series-5) 55%, var(--text)); background: color-mix(in srgb, var(--series-5) 55%, var(--text)); }
+.pot-layer-unknown { stroke: var(--text-faint); stroke-width: 1; }
+.pot-agents-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ctl-s3); min-width: 0; }
+@media (min-width: 1100px) {
+  .pot-agents-body.is-split { grid-template-columns: minmax(0, 1fr) minmax(260px, 320px); align-items: start; }
+}
+.pot-split { min-width: 0; }
+.pot-split table { width: 100%; border-collapse: collapse; font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); }
+.pot-split thead th { font-weight: 600; color: var(--text-dim); text-align: left; padding: 0 var(--ctl-s1) var(--ctl-s1); border-bottom: 1px solid var(--line); }
+.pot-split th[scope='row'] { font-weight: 400; text-align: left; }
+.pot-split-name > span { overflow-wrap: anywhere; }
+.pot-split th,
+.pot-split td { padding: 5px var(--ctl-s1); border-bottom: 1px solid var(--line); vertical-align: top; }
+.pot-split-name { display: flex; align-items: baseline; gap: 8px; }
+.pot-split-name .pot-key { transform: translateY(1px); }
+.pot-split .is-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pot-split .pot-row-total th,
+.pot-split .pot-row-total td { font-weight: 600; border-bottom: 0; }
+
+/* THE READOUT'S LAYERS (F6): top of the stack first, as the split table, and
+   read DOWN each column: a grid's rows put the top layer's neighbour four
+   layers down the stack beside it (review, 2026-10-25). */
+.pot-readout-layers { columns: 220px; column-gap: var(--ctl-s3); margin: 0 0 var(--ctl-s2); padding: 0 0 var(--ctl-s2); list-style: none; border-bottom: 1px solid var(--line); font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); }
+.pot-readout-layers li { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 1px 0; break-inside: avoid; }
+.pot-readout-layers li span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.pot-readout-layers b { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* RIGHT NOW (PlatformCounts.tsx, COUNTS-ONE-RUN): the state counts under Over
+   time, in mock-up F1's order. A change of subject from the span above -- a
+   snapshot, not part of it -- so it takes what `.counts-ticks` takes
+   (admin.css, QA-098): `--ctl-s5` and the hairline. Here rather than in
+   admin.css because it exists only since Over time sits above it. */
+.counts-now {
+  margin-top: var(--ctl-s5);
+  border-top-width: 1px;
+  border-top-style: solid;
+  border-top-color: var(--line-soft);
+  padding-top: var(--ctl-s5);
+}
+.counts-now > .sc-h2 { margin-top: 0; }
+.counts-now > .sb-note { margin-bottom: var(--ctl-s3); }

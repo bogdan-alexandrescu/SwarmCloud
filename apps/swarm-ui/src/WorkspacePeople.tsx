@@ -1,15 +1,16 @@
-import { useContext, useId, useState, type FormEvent, type ReactNode } from 'react'
+import { Fragment, useContext, useEffect, useId, useState, type FormEvent, type ReactNode } from 'react'
 import {
-  clearWorkspacePersonRole, loadWorkspaceRoles, setWorkspaceDefaultRole, setWorkspacePersonRole,
+  clearWorkspacePersonRole, loadAccessMembers, loadMe, loadWorkspaceRoles, setWorkspaceDefaultRole, setWorkspacePersonRole,
   type ApiError, type Result,
 } from './api'
-import { Banner, Button, Card } from './components'
+import { Banner, Button, Card, Chip, Dash, EmptyState, Segmented, Tabs, ToneMark, type TabDef } from './components'
 import { SetupContext } from './ConfigSetup'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
-import { DEFAULT_ROLES, ROLES, sourceWords } from './roles'
-import { PageHead } from './Shell'
-import { timeAgo, type WorkspaceRoleEvent, type WorkspaceRoleOverride, type WorkspaceRoles } from './types'
+import { DEFAULT_ROLES, ROLES, sourceWords, type RoleName } from './roles'
+import { FailedPanel, PageHead } from './Shell'
+import { timeAgo, type AccessMember, type WorkspaceRoleEvent, type WorkspaceRoles } from './types'
 import './styles/keys.css'
+import './styles/onboarding.css'
 import './styles/workspace-settings.css'
 
 /**
@@ -28,10 +29,11 @@ import './styles/workspace-settings.css'
  * person by person, so the selector does not offer the one value the server
  * answers 409.
  *
- * ONLY OVERRIDES ARE LISTED. Everyone else holds the default, and the
- * platform cannot list a group's members (`searchTransitiveGroups` is 403
- * here; §4.3), so the page says "everyone else" rather than drawing a roster
- * it cannot have.
+ * ONLY OVERRIDES, AND THE CALLER, ARE LISTED. Everyone else holds the
+ * default, and the platform cannot list a group's members
+ * (`searchTransitiveGroups` is 403 here; §4.3), so the page says "everyone
+ * else" rather than drawing a roster it cannot have. The caller's own row is
+ * drawn whatever they hold (S5b's lone admin, CONFIG-PEOPLE-S5).
  *
  * A PERSONAL WORKSPACE has only its person, who is its fixed admin (§4.5):
  * the page says so and offers nothing, because every write there is 409.
@@ -40,7 +42,8 @@ import './styles/workspace-settings.css'
  * stored and applies when they join, and the write's answer says which.
  *
  * Not a SECTIONS tab: a Settings route beside Profile, so the issue forms'
- * "Where" list is unchanged (§4.8).
+ * "Where" list is unchanged (§4.8). (Since CONFIG-NAV it is Config › People
+ * and roles, and since GA-MOVE-VIEWS it also holds Members' GitHub, below.)
  *
  * THE LEAD (CONFIG-S5-LEADS; part of #2157, proposal E S5b, S5e, S5g, S5h)
  * is one sentence over the body as built. An admin's is the setup strip's
@@ -80,19 +83,38 @@ function joined(names: readonly string[]): string {
   return names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
 }
 
-function Lead({ kicker, title, tone, action }: { kicker: string; title: string; tone: 'next' | 'ok'; action?: ReactNode }) {
+/** The lead: a kicker, one title, the mock-up's body sentence under it (S5b, S5g), and at most one action. */
+function Lead({ kicker, title, body, tone, action }: { kicker: string; title: string; body?: string; tone: 'next' | 'ok'; action?: ReactNode }) {
   return (
     <section className={`ws-lead is-${tone}`} aria-label={kicker}>
       <div className="ws-lead-t">
         <span className="ws-lead-k">{kicker}</span>
         <b>{title}</b>
+        {body !== undefined && body !== '' && <span className="ws-lead-s">{body}</span>}
       </div>
       {action !== undefined && <div className="ws-lead-a">{action}</div>}
     </section>
   )
 }
 
-/** The page's lead: one sentence, at most one button (proposal E). */
+/** What everyone without a role of their own holds, as the lead's body ends (S5b, S5g); '' when unread. */
+function everyoneElse(data: WorkspaceRoles, name: string): string {
+  return data.default_role === null || data.default_role === '' ? '' : `Everyone else signed in to ${name} holds ${data.default_role}, the default.`
+}
+
+/** The caller's own role in the lead's body (S5g): "You hold member, given by dana@… 6 d ago." */
+function youHold(me: WorkspaceRoles['me']): string {
+  if (me.role === '') return ''
+  const by = me.granted_by !== undefined && me.granted_by !== '' ? `, given by ${me.granted_by}` : me.source !== '' ? `, ${sourceWords(me.source)}` : ''
+  const when = me.granted_at !== undefined && me.granted_at !== '' ? ` ${timeAgo(me.granted_at)}` : ''
+  return `You hold ${me.role}${by}${when}.`
+}
+
+function sentences(...parts: string[]): string {
+  return parts.filter((p) => p !== '').join(' ')
+}
+
+/** The page's lead: one title, the mock-up's body sentence, at most one button (proposal E). */
 function PeopleLead({ state, inviteId }: { state: Result<WorkspaceRoles>; inviteId: string }) {
   const { doc } = useContext(SetupContext)
   if (state.status === 'loading') return null
@@ -108,7 +130,7 @@ function PeopleLead({ state, inviteId }: { state: Result<WorkspaceRoles>; invite
     const title = admins.length === 0
       ? `Nobody in ${name} holds admin yet: a platform admin names a group workspace’s first admin.`
       : `${joined(admins)} ${admins.length === 1 ? 'administers' : 'administer'} ${name}, and only an admin changes roles here.`
-    return <Lead tone="ok" kicker="Read only for you" title={title} />
+    return <Lead tone="ok" kicker="Read only for you" title={title} body={sentences(youHold(data.me), everyoneElse(data, name))} />
   }
   const step = peopleStepOf(doc)
   if (step === null) return null
@@ -116,12 +138,14 @@ function PeopleLead({ state, inviteId }: { state: Result<WorkspaceRoles>; invite
   if (step.pending !== null && step.pending > 0) {
     return (
       <Lead tone="next" kicker="Needs an admin"
-        title={`${step.pending} ${step.pending === 1 ? 'person is' : 'people are'} waiting for an admin to answer their request.`} />
+        title={`${step.pending} ${step.pending === 1 ? 'person is' : 'people are'} waiting for an admin to answer their request.`}
+        body={everyoneElse(data, name)} />
     )
   }
   if (step.holders === 0) {
     return (
-      <Lead tone="next" kicker="Step 4 · this page" title={`Only you hold a role in ${name} so far: give each person who will run agents their own.`}
+      <Lead tone="next" kicker="Step 4 · this page" title={`Nobody else in ${name} holds a role of their own yet`}
+        body={sentences('Give each person who will run agents their own role.', everyoneElse(data, name))}
         action={
           <Button kind="primary" size="sm" onClick={() => {
             const field = document.getElementById(inviteId)
@@ -135,47 +159,290 @@ function PeopleLead({ state, inviteId }: { state: Result<WorkspaceRoles>; invite
   }
   return (
     <Lead tone="ok" kicker="Step 4 · done"
-      title={`${step.holders} other ${step.holders === 1 ? 'person holds' : 'people hold'} a role in ${name}; nothing here is waiting for you.`} />
+      title={`${step.holders} other ${step.holders === 1 ? 'person holds' : 'people hold'} a role in ${name}; nothing here is waiting for you.`}
+      body={everyoneElse(data, name)} />
   )
 }
 
-export function WorkspacePeopleScreen() {
-  const roles = useUrRead(loadWorkspaceRoles, 'workspace-roles')
-  const inviteId = useId()
+/**
+ * MEMBERS' GITHUB, THE PAGE'S SECOND TAB (GA-MOVE-VIEWS; part of #2157, BGD
+ * 2026-10-24: "Members to Config › People and roles"). It was GitHub access'
+ * Members view: every member's GitHub connection state, the owners they
+ * enabled and how many repositories they chose, moved whole. Its address is
+ * `?view=members`, which `/config/github?view=members` and `/access?view=members`
+ * land on (paths.ts `MOVED_VIEWS`).
+ *
+ * DRAWN FOR WHOEVER THE API SERVES IT TO. `GET /v1/access/members` answers
+ * `auth.is_admin` -- a platform admin -- and refuses everyone else, a
+ * workspace admin included, so the tab is offered on `principal.is_admin`
+ * from the frame's `GET /v1/tenants/me` and the read is made only when the
+ * tab is open. Someone else who follows an old link still sees the admin
+ * gate there, as GitHub access drew it.
+ */
+type PeopleView = 'roles' | 'members'
+
+const PEOPLE_TABS: readonly TabDef[] = [
+  { key: 'roles', label: 'Roles' },
+  { key: 'members', label: "Members' GitHub" },
+]
+
+/**
+ * The tab an address names. App passes the ROUTED query (`view`), because an
+ * old hash bookmark (`#work/access?view=members`) is rewritten to this path
+ * only after the first render, so the bar read at mount names no tab (GA-MOVE-VIEWS
+ * review). Mounted without App, the page reads the bar.
+ */
+function peopleViewOf(query: string | null | undefined): PeopleView {
+  const q = query !== undefined ? query ?? '' : typeof window === 'undefined' ? '' : window.location.search
+  return new URLSearchParams(q).get('view') === 'members' ? 'members' : 'roles'
+}
+
+/** The tab into the bar in place, as GitHub access writes its own: Roles is the bare path. */
+function writePeopleView(v: PeopleView): void {
+  const url = new URL(window.location.href)
+  if (v === 'members') url.searchParams.set('view', v)
+  else url.searchParams.delete('view')
+  window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
+}
+
+/** Whether the session is a platform admin; null until the frame's read answers. Unknown is not an admin. */
+function usePlatformAdmin(): boolean | null {
+  const [admin, setAdmin] = useState<boolean | null>(null)
+  useEffect(() => {
+    let live = true
+    void loadMe({ frame: true }).then(
+      (r) => {
+        if (live) setAdmin((r.status === 'ok' || r.status === 'stale') && r.data.principal?.is_admin === true)
+      },
+      () => {
+        if (live) setAdmin(false)
+      },
+    )
+    return () => {
+      live = false
+    }
+  }, [])
+  return admin
+}
+
+export function WorkspacePeopleScreen({ view: routed }: { view?: string | null } = {}) {
+  const named = peopleViewOf(routed)
+  const [view, setViewState] = useState<PeopleView>(named)
+  // A new routed address names its tab; a tab picked here is written in place
+  // and leaves the route as it was, so it is not undone.
+  const [arrived, setArrived] = useState(named)
+  if (arrived !== named) {
+    setArrived(named)
+    setViewState(named)
+  }
+  const admin = usePlatformAdmin()
+  function setView(v: PeopleView) {
+    setViewState(v)
+    writePeopleView(v)
+  }
   return (
     <div className="pk-page wp-page">
       <PageHead title="People and roles" />
-      <PeopleLead state={roles.state} inviteId={inviteId} />
-      <Card title="Roles in this workspace" action={<UrRefresh reads={[roles]} />}>
-        <UrRegion state={roles.state} route={ROUTE} what="This workspace's roles" plural onRetry={roles.reload}>
-          {(d) => <Roles data={d} onChange={roles.reload} inviteId={inviteId} />}
-        </UrRegion>
-      </Card>
+      {/* `cfg-parts` (config.css): the Config pages' tab strip, as GitHub access draws it. */}
+      {(admin === true || view === 'members') && (
+        <Tabs tabs={PEOPLE_TABS} current={view} label="People and roles" className="cfg-parts" onSelect={(k) => setView(k === 'members' ? 'members' : 'roles')} />
+      )}
+      {view === 'members' ? <Members /> : <RolesPage />}
     </div>
   )
 }
 
-function Roles({ data, onChange, inviteId }: { data: WorkspaceRoles; onChange: () => void; inviteId: string }) {
-  const [done, setDone] = useState<string | null>(null)
-  const [failed, setFailed] = useState<string | null>(null)
+/** Where a write's outcome is said: beside the control that made it. */
+type NoteAt = 'roster' | 'person' | 'default'
+type Note = { at: NoteAt; text: string; bad: boolean }
+
+/**
+ * THE ROLES TAB AS S5b'S CARDS (CONFIG-PEOPLE-S5; part of #2391, BGD
+ * 2026-10-26: apply config-e.html S5b, S5e, S5g, S5h). The lead; then
+ * "Roles in this workspace", which holds the roster table (the caller's own
+ * row included) and what S5b's caption calls "as built" -- what each role
+ * permits, Set the default, and each row's Return to default; then, for an
+ * admin, a row of two separate cards, "Give a person their own role" and
+ * "Role events", which `.ws-grid` stacks into one column under 900 px (S5e).
+ * A member or viewer gets S5g: "read only for members" in the Roles card's
+ * head and Role events as its own card, with no row because there is no form.
+ * PR 2390's join-link card (docs/design/join-requests.md §4.6) is an admin's
+ * card after the row; this lane does not build it.
+ *
+ * Every card reads the one roles read. Each write's outcome is said in the
+ * card that made it (`Note`), and every write re-reads.
+ */
+function RolesPage() {
+  const roles = useUrRead(loadWorkspaceRoles, 'workspace-roles')
+  const inviteId = useId()
+  const [note, setNote] = useState<Note | null>(null)
+  const state = roles.state
+  const data = state.status === 'ok' || state.status === 'stale' ? state.data : null
+  const group = data !== null && data.kind === 'group'
+  const readOnly = group && !data.can_manage
+
+  /** One write: its outcome in words, or the API's refusal, and a fresh read on success. */
+  async function act<T>(at: NoteAt, run: () => Promise<Result<T>>, said: (answer: T) => string, notDone: string): Promise<boolean> {
+    setNote(null)
+    const r = await run()
+    if (r.status === 'error') {
+      setNote({ at, text: `${notDone}: ${refusal(r.error)}`, bad: true })
+      return false
+    }
+    if (r.status === 'ok' || r.status === 'stale') setNote({ at, text: said(r.data), bad: false })
+    roles.reload()
+    return true
+  }
+  const said = (at: NoteAt) => (note !== null && note.at === at ? <Said note={note} /> : null)
+
+  const events = data !== null && group ? (
+    <Card title="Role events">
+      <Events events={data.audit} />
+    </Card>
+  ) : null
+
+  return (
+    <>
+      <PeopleLead state={state} inviteId={inviteId} />
+      <Card title="Roles in this workspace"
+        action={
+          <span className="wp-card-a">
+            {/* S5g: a member's or viewer's page says so in the card's head. */}
+            {readOnly && <Chip>read only for members</Chip>}
+            <UrRefresh reads={[roles]} />
+          </span>
+        }>
+        <UrRegion state={state} route={ROUTE} what="This workspace's roles" plural onRetry={roles.reload}>
+          {(d) => (
+            <Roster data={d}
+              said={said}
+              onClear={(email) => act('roster', () => clearWorkspacePersonRole(email),
+                (a) => `${a.email} holds the default again (${a.role}).`, `${email} was not returned to the default`)}
+              onDefault={(role) => act('default', () => setWorkspaceDefaultRole(role),
+                (a) => `The default is now ${a.default_role} (was ${a.previous_default}).`, 'The default was not changed')} />
+          )}
+        </UrRegion>
+      </Card>
+      {data !== null && group && data.can_manage && (
+        <div className="ws-grid wp-row">
+          <Card title="Give a person their own role">
+            <PersonForm emailId={inviteId}
+              onSet={(email, role, reason) => act('person', () => setWorkspacePersonRole(email, role, reason), personSaid, `${email.trim()}'s role was not changed`)} />
+            {said('person')}
+          </Card>
+          {events}
+        </div>
+      )}
+      {readOnly && events}
+    </>
+  )
+}
+
+/** A write's outcome, in the card that made it. */
+function Said({ note }: { note: Note }) {
+  return note.bad ? <Banner tone="bad" title={note.text} role="alert" /> : <p className="pk-saved" role="status">{note.text}</p>
+}
+
+function MemberRow({ m }: { m: AccessMember }) {
+  const c = m.connection
+  const writes = m.grants.filter((g) => g.mode === 'write').length
+  const state = c === null ? 'not started' : (c.state ?? 'unknown')
+  return (
+    <li className="ac-member" data-member={m.user}>
+      <div className="ac-row-name">
+        <b>{m.user}</b>
+        <small className="ur-mu">{c?.forge_login != null ? `@${c.forge_login}` : 'no GitHub account'}</small>
+      </div>
+      <span className="ac-cell">
+        <span className="ac-cell-l">Connection</span>
+        <ToneMark tone={state === 'active' ? 'ok' : c === null ? 'unknown' : 'bad'}>{c?.failure ?? state}</ToneMark>
+      </span>
+      <span className="ac-cell">
+        <span className="ac-cell-l">Owners</span>
+        {m.orgs.length === 0 ? <Dash why="No owner enabled" /> : m.orgs.map((o) => o.owner).join(', ')}
+      </span>
+      <span className="ac-cell">
+        <span className="ac-cell-l">Repositories</span>
+        {m.grants.length} · {writes} write
+      </span>
+    </li>
+  )
+}
+
+/**
+ * A 403 on the members read is the admin gate, not a failure (visual QA V047).
+ * The API refuses a non-admin with its generic `forbidden` code ("the
+ * tenant's members view is for admins"), which the client classifies as an
+ * unrecognised refusal and the region drew red, with a Try again that can
+ * never succeed. On this one admin-only route a refusal means exactly that,
+ * so it is drawn as the admin gate. A tenant or domain refusal keeps its own.
+ */
+function membersGated(state: Result<unknown>): ApiError | null {
+  if (state.status !== 'error') return null
+  const e = state.error
+  if (e.kind === 'admin_required') return e
+  if (e.kind === 'forbidden' && e.httpStatus === 403) return { ...e, kind: 'admin_required' }
+  return null
+}
+
+function Members() {
+  const members = useUrRead(loadAccessMembers, 'access-members')
+  const gate = membersGated(members.state)
+  return (
+    <Card className="ac-members" title="Members' GitHub connections" action={gate === null ? <UrRefresh reads={[members]} /> : undefined}>
+      {gate !== null ? (
+        <FailedPanel error={gate} onRetry={members.reload} />
+      ) : (
+        <UrRegion state={members.state} route="GET /v1/access/members" what="The workspace's members" onRetry={members.reload} plural lines={4}>
+          {(d) =>
+            d.members.length === 0 ? (
+              <EmptyState kind="empty" heading="No member has started">
+                Nobody in workspace {d.tenant_id} has connected GitHub or chosen a repository yet.
+              </EmptyState>
+            ) : (
+              <>
+                <p className="pk-lead">
+                  Every member of {d.tenant_id}: whether they connected GitHub, the owners they enabled and how many
+                  repositories they chose.
+                </p>
+                {/* The rows' column names (visual QA V230); a phone's records carry their own (`.ac-cell-l`). */}
+                <div className="ac-members-h" aria-hidden="true">
+                  <span>Member</span>
+                  <span>Connection</span>
+                  <span>Owners</span>
+                  <span>Repositories</span>
+                </div>
+                <ul className="ac-grid" aria-label={`Members of ${d.tenant_id}`}>
+                  {d.members.map((m) => (
+                    <MemberRow key={m.user} m={m} />
+                  ))}
+                </ul>
+              </>
+            )
+          }
+        </UrRegion>
+      )}
+      <p className="ur-hint">
+        Each member connects as themselves. An admin sees states and names, never a value, and cannot reconnect for
+        someone else.
+      </p>
+    </Card>
+  )
+}
+
+/** The Roles in this workspace card's body: who you are, the default, the roster, and S5b's "as built" rest. */
+function Roster({ data, said, onClear, onDefault }: {
+  data: WorkspaceRoles
+  said: (at: NoteAt) => ReactNode
+  onClear: (email: string) => Promise<boolean>
+  onDefault: (role: string) => Promise<boolean>
+}) {
   const name = data.tenant_id || 'this workspace'
+  // People other than the caller who hold a role of their own: what the lead's step 4 counts as holders.
+  const others = data.people.filter((p) => p.email.toLowerCase() !== (data.me.email || '').toLowerCase()).length
 
   if (data.kind === 'user') {
     return <p className="pk-lead">You are this workspace&rsquo;s admin; a personal workspace has only you.</p>
-  }
-
-  /** One write: its outcome in words, or the API's refusal, and a fresh read on success. */
-  async function act<T>(run: () => Promise<Result<T>>, said: (answer: T) => string, notDone: string): Promise<boolean> {
-    setDone(null)
-    setFailed(null)
-    const r = await run()
-    if (r.status === 'error') {
-      setFailed(`${notDone}: ${refusal(r.error)}`)
-      return false
-    }
-    if (r.status === 'ok' || r.status === 'stale') setDone(said(r.data))
-    onChange()
-    return true
   }
 
   return (
@@ -186,41 +453,33 @@ function Roles({ data, onChange, inviteId }: { data: WorkspaceRoles; onChange: (
         {data.me.granted_by !== undefined && <> by {data.me.granted_by}</>}
         {data.me.granted_at !== undefined && <span title={data.me.granted_at}> {timeAgo(data.me.granted_at)}</span>}.
       </p>
+      {/* ONE STATEMENT OF WHO HOLDS WHAT, IN ONE TYPE SIZE (visual QA VQ-047): the lead said "Only you hold
+          a role", a second line said "Nobody in eng holds a role of their own", and the caller's role and the
+          default were set in two sizes. The default's sentence now says whether anyone else holds their own,
+          in the lead's words, and every line of it is `pk-lead`. */}
       {data.me.via === 'platform_admin' && (
-        <p className="ur-small">
+        <p className="pk-lead">
           You are not in {name}&rsquo;s group: you reach it as a platform admin, and every action you take here is
           recorded in its audit log.
         </p>
       )}
-      <p className="ur-small" aria-label="Default role">
+      <p className="pk-lead" aria-label="Default role">
         Everyone else in {name} holds <b>{data.default_role ?? 'no readable default'}</b>, the workspace&rsquo;s
-        default{data.default_source === 'migration' ? ': nobody has set it yet, so it is what every member could do before roles' : ''}.
+        default{others === 0 ? ': nobody else holds a role of their own yet' : ', unless they are listed below with a role of their own'}.
+        {data.default_source === 'migration' && ' Nobody has set the default yet, so it is what every member could do before roles.'}
       </p>
 
-      <RoleTable summaries={data.roles} />
+      <People data={data} onClear={onClear} />
+      {said('roster')}
 
-      {data.people.length === 0 ? (
-        <p className="ur-small">Nobody in {name} holds a role of their own: everyone holds the default.</p>
-      ) : (
-        <Overrides people={data.people} canManage={data.can_manage}
-          onClear={(email) => act(() => clearWorkspacePersonRole(email),
-            (a) => `${a.email} holds the default again (${a.role}).`, `${email} was not returned to the default`)} />
-      )}
-
-      {done !== null && <p className="pk-saved" role="status">{done}</p>}
-      {failed !== null && <Banner tone="bad" title={failed} role="alert" />}
-
-      {data.can_manage ? (
-        <>
-          <PersonForm emailId={inviteId} onSet={(email, role, reason) => act(() => setWorkspacePersonRole(email, role, reason), personSaid, `${email.trim()}'s role was not changed`)} />
-          <DefaultForm current={data.default_role} onSet={(role) => act(() => setWorkspaceDefaultRole(role),
-            (a) => `The default is now ${a.default_role} (was ${a.previous_default}).`, 'The default was not changed')} />
-        </>
-      ) : (
+      {data.can_manage ? null : (
         <p className="ur-small">Only this workspace&rsquo;s admins change roles. You can read them here.</p>
       )}
 
-      <Events events={data.audit} />
+      <RoleTable summaries={data.roles} />
+
+      {data.can_manage && <DefaultForm current={data.default_role} onSet={onDefault} />}
+      {said('default')}
     </>
   )
 }
@@ -247,29 +506,49 @@ function RoleTable({ summaries }: { summaries: WorkspaceRoles['roles'] }) {
       <div className="pk-row-head">
         <h3 id={`${id}-h`}>What each role permits</h3>
       </div>
-      <dl>
+      {/* Profile's label-value grid (keys.css `.pf-facts`): the browser's
+          definition list drew 16px text indented 40px (rendered review,
+          GA-MOVE-VIEWS). Its rules read `dt` and `dd` as direct children. */}
+      <dl className="pf-facts">
         {summaries.map((r) => (
-          <div key={r.name}>
-            <dt><b>{r.name}</b></dt>
+          <Fragment key={r.name}>
+            <dt>{r.name}</dt>
             <dd>{r.summary}</dd>
-          </div>
+          </Fragment>
         ))}
       </dl>
     </section>
   )
 }
 
-function Overrides({ people, canManage, onClear }: {
-  people: WorkspaceRoleOverride[]
-  canManage: boolean
-  onClear: (email: string) => Promise<boolean>
-}) {
+/** Who gave the caller the role they hold, when they hold none of their own (S5b's lone admin: "a platform admin"). */
+function myGiver(me: WorkspaceRoles['me']): string {
+  if (me.granted_by !== undefined && me.granted_by !== '') return me.granted_by
+  if (me.source === 'platform_admin') return 'a platform admin'
+  if (me.source === 'default') return 'the default'
+  return ''
+}
+
+/**
+ * THE ROSTER IS A TABLE EVEN FOR A LONE ADMIN (S5b), WITH THE CALLER'S OWN ROW.
+ * Every person with a role of their own, and the caller, marked "you": from
+ * their own grant when they hold one, else from `me` (the default, or a
+ * platform admin's reach), with nothing to return. Everyone else holds the
+ * default and is not listed, because the platform cannot list a group's
+ * members (§4.3).
+ */
+function People({ data, onClear }: { data: WorkspaceRoles; onClear: (email: string) => Promise<boolean> }) {
   const [busy, setBusy] = useState<string | null>(null)
+  const canManage = data.can_manage
+  const mine = (data.me.email || '').toLowerCase()
+  const isMe = (email: string) => mine !== '' && email.toLowerCase() === mine
+  const held = data.people.some((p) => isMe(p.email))
+  const you = <small className="wp-you"> you</small>
   return (
     // keys.css's stacking table (#1680): at 390 px this roster was 589 px wide
     // in the content scroller (CONFIG-S5-LEADS review), so below 720 px each
     // person is a card, each value under its column's `data-label`.
-    <table role="table" className="mcp-servers" aria-label="People with their own role">
+    <table role="table" className="mcp-servers" aria-label={`Who holds which role in ${data.tenant_id || 'this workspace'}`}>
       <thead>
         <tr>
           <th scope="col">Person</th>
@@ -281,9 +560,19 @@ function Overrides({ people, canManage, onClear }: {
         </tr>
       </thead>
       <tbody>
-        {people.map((p) => (
-          <tr key={p.email}>
-            <th scope="row" data-label="Person">{p.email}</th>
+        {!held && (
+          <tr data-you="true">
+            <th scope="row" data-label="Person">{data.me.email || 'You'}{data.me.email !== '' && you}</th>
+            <td data-label="Role">{data.me.role || <Dash why="Your role could not be read" />}</td>
+            <td data-label="Given by">{myGiver(data.me)}</td>
+            <td data-label="When" title={data.me.granted_at}>{data.me.granted_at === undefined || data.me.granted_at === '' ? '' : timeAgo(data.me.granted_at)}</td>
+            <td data-label="Reason" />
+            {canManage && <td data-label="Actions" />}
+          </tr>
+        )}
+        {data.people.map((p) => (
+          <tr key={p.email} data-you={isMe(p.email) ? 'true' : undefined}>
+            <th scope="row" data-label="Person">{p.email}{isMe(p.email) && you}</th>
             <td data-label="Role">{p.role}</td>
             <td data-label="Given by">{p.granted_by}{p.granted_via === 'platform_admin' ? ' (platform admin)' : ''}</td>
             <td data-label="When" title={p.granted_at}>{p.granted_at === '' ? '' : timeAgo(p.granted_at)}</td>
@@ -310,7 +599,7 @@ function Overrides({ people, canManage, onClear }: {
 function PersonForm({ emailId, onSet }: { emailId: string; onSet: (email: string, role: string, reason: string) => Promise<boolean> }) {
   const id = useId()
   const [email, setEmail] = useState('')
-  const [role, setRole] = useState<string>('member')
+  const [role, setRole] = useState<RoleName>('member')
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -326,32 +615,30 @@ function PersonForm({ emailId, onSet }: { emailId: string; onSet: (email: string
     }
   }
 
+  // The card's own head names the form (S5b): "Give a person their own role".
   return (
-    <section className="pk-row" aria-labelledby={`${id}-h`}>
-      <div className="pk-row-head">
-        <h3 id={`${id}-h`}>Give a person their own role</h3>
+    <form className="pk-form" autoComplete="off" aria-label="Give a person their own role" onSubmit={(e) => void save(e)}>
+      <p className="ur-small">
+        Google owns who is in the workspace: a role given to someone not in its group yet applies when they join.
+      </p>
+      <div className="pk-form-row">
+        <label htmlFor={emailId}>Email</label>
+        <input id={emailId} className="ur-search pk-input" type="email" value={email} required maxLength={254}
+          spellCheck={false} onChange={(e) => setEmail(e.target.value)} />
       </div>
-      <form className="pk-form" autoComplete="off" aria-labelledby={`${id}-h`} onSubmit={(e) => void save(e)}>
-        <p className="ur-small">
-          Google owns who is in the workspace: a role given to someone not in its group yet applies when they join.
-        </p>
-        <div className="pk-form-row">
-          <label htmlFor={emailId}>Email</label>
-          <input id={emailId} className="ur-search pk-input" type="email" value={email} required maxLength={254}
-            spellCheck={false} onChange={(e) => setEmail(e.target.value)} />
-          <label htmlFor={`${id}-role`}>Role</label>
-          <select id={`${id}-role`} value={role} onChange={(e) => setRole(e.target.value)}>
-            {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
-          </select>
-        </div>
-        <label htmlFor={`${id}-reason`}>Reason (optional, shown in the events)</label>
-        <input id={`${id}-reason`} className="ur-search pk-input" value={reason} maxLength={280}
-          onChange={(e) => setReason(e.target.value)} />
-        <div className="pk-form-row">
-          <Button kind="primary" type="submit" busy={busy}>Set role</Button>
-        </div>
-      </form>
-    </section>
+      {/* S5b's viewer | member | admin, the console's segmented control in place of a <select>.
+          Its buttons are `type="button"`, so a pick never submits the form. */}
+      <div className="pk-form-row">
+        <span className="wp-label" aria-hidden="true">Role</span>
+        <Segmented<RoleName> options={ROLES.map((r) => ({ key: r, label: r }))} value={role} onChange={setRole} label="Role" small />
+      </div>
+      <label htmlFor={`${id}-reason`}>Reason (optional, shown in the events)</label>
+      <input id={`${id}-reason`} className="ur-search pk-input" value={reason} maxLength={280}
+        onChange={(e) => setReason(e.target.value)} />
+      <div className="pk-form-row">
+        <Button kind="primary" type="submit" busy={busy}>Set role</Button>
+      </div>
+    </form>
   )
 }
 
@@ -413,25 +700,30 @@ function eventWords(e: WorkspaceRoleEvent): string {
   }
 }
 
+/** The reason a role event carries, shown after its age as S5b's rows do ("3 d ago · workspace owner"). */
+function eventReason(e: WorkspaceRoleEvent): string {
+  const r = e.detail.reason
+  return typeof r === 'string' ? r.trim() : ''
+}
+
+/** Role events, the card's body: each event's sentence over its age and reason (S5b's `.stp` rows). */
 function Events({ events }: { events: WorkspaceRoleEvent[] }) {
-  const id = useId()
+  if (events.length === 0) {
+    return <p className="ur-small">No role has been given or changed here, and no platform admin has acted here.</p>
+  }
   return (
-    <section className="pk-row" aria-labelledby={`${id}-h`}>
-      <div className="pk-row-head">
-        <h3 id={`${id}-h`}>Role events</h3>
-      </div>
-      {events.length === 0 ? (
-        <p className="ur-small">No role has been given or changed here, and no platform admin has acted here.</p>
-      ) : (
-        <ul className="pk-uses" aria-label="Role events">
-          {events.map((e, i) => (
-            <li key={`${e.at}-${i}`}>
-              {eventWords(e)}
-              {e.at !== '' && <span className="ur-small" title={e.at}> · {timeAgo(e.at)}</span>}
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
+    <ul className="ws-steps wp-events" aria-label="Role events">
+      {events.map((e, i) => {
+        const meta = [e.at === '' ? '' : timeAgo(e.at), eventReason(e)].filter((x) => x !== '').join(' · ')
+        return (
+          <li key={`${e.at}-${i}`} className="ws-step">
+            <span className="ws-step-t">
+              <b>{eventWords(e)}</b>
+              {meta !== '' && <small title={e.at}>{meta}</small>}
+            </span>
+          </li>
+        )
+      })}
+    </ul>
   )
 }

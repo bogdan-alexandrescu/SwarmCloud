@@ -239,10 +239,18 @@ function viewer(over: Partial<LiveSession> = {}): LiveSession {
   })
 }
 
+/** The chips, rotate and touch sit in the toolbar's Device menu (BT-003): opened as a person opens it. */
+function openDevice() {
+  const menu = screen.queryByRole('button', { name: /^Device:/ })
+  if (menu !== null && menu.getAttribute('aria-expanded') !== 'true') fireEvent.click(menu)
+}
+
 function pane(s: LiveSession, reload: () => void = () => {}) {
-  return render(
+  const view = render(
     <LiveBrowserPane task={agent()} live={{ status: 'ok', liveBrowser: true, session: s }} reload={reload} />,
   )
+  openDevice()
+  return view
 }
 
 /** The noVNC instance the pane connected, once the ticket and the socket are through. */
@@ -337,13 +345,19 @@ describe('the Browser tab follows Details for a running browser agent', () => {
     expect(tabs().map(label)).not.toContain('Browser')
   })
 
-  it('does not ask a finished agent for a live session at all', async () => {
+  // A FINISHED BROWSER AGENT KEEPS ITS TAB (BROWSER-TAB-TABS, BT-007, #2423,
+  // 2026-10-26): the tab was drawn only on `/browser`, so leaving it took
+  // Browser off the strip and out of More, with no way back but the address.
+  // The runner names a browser agent; the session is still not read here.
+  it('does not ask a finished agent for a live session at all, and keeps its Browser tab, second', async () => {
     api.loadTask.mockResolvedValue(ok(agent({ state: 'SUCCEEDED', completed_at: new Date().toISOString() })))
     api.loadLiveSession.mockResolvedValue(ok<LiveRead>({ live_browser: true, session: session() }))
     render(<Routed onGo={() => {}} />)
     await waitFor(() => expect(label(tabs()[0]!)).toBe('Details'))
     expect(api.loadLiveSession).not.toHaveBeenCalled()
-    expect(tabs().map(label)).not.toContain('Browser')
+    // MUTATION: draw the tab only on `/browser` (or while the session is read) and it is gone here.
+    expect(label(tabs()[1]!)).toBe('Browser')
+    expect(tabs()[0]!.getAttribute('aria-selected')).toBe('true')
   })
 })
 
@@ -520,6 +534,7 @@ describe('the person in control switches the device (LB-DEV-B)', () => {
   it('a preset is sent by name, never a size, and the session is read again', async () => {
     const reload = vi.fn()
     render(<LiveBrowserPane task={agent()} live={{ status: 'ok', liveBrowser: true, session: mine() }} reload={reload} />)
+    openDevice()
     fireEvent.click(screen.getByRole('button', { name: 'Desktop' }))
     expect(api.setLiveDevice).toHaveBeenCalledWith(ID, { preset: 'desktop' })
     await waitFor(() => expect(reload).toHaveBeenCalled())
@@ -748,6 +763,7 @@ describe('every key typed in control reaches the agent’s page (KEYS-FOCUS)', (
 
     for (const [chip, preset, key] of [['Desktop', 'desktop', 'b'], ['iPhone 15', 'iphone-15', 'c']] as const) {
       api.setLiveDevice.mockClear()
+      openDevice()
       clickButton(screen.getByRole('button', { name: chip }))
       await waitFor(() => expect(api.setLiveDevice).toHaveBeenCalledWith(ID, { preset }))
       // The re-read after the switch: the gate applied the preset and the canvas is redrawn to it.

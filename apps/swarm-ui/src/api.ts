@@ -1,4 +1,14 @@
 import type { PoolFields } from './accountsPool'
+import {
+  HEALTH_KINDS,
+  normPoolHealth,
+  type AccountHealthRecord,
+  type HealthEvent,
+  type HealthKind,
+  type HealthRead,
+  type HealthStatus,
+  type PoolHealth,
+} from './accountHealthModel'
 import { noteFixtureProbe, read, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
 // A VALUE import, not a type: the attempt fixture needs the terminal-state set
 // so a live task's newest attempt is rendered as live, and the task fixture
@@ -10,6 +20,7 @@ import { CONCURRENCY_STATES, MODEL_PRICE_RATES, TERMINAL_STATES } from './types'
 import { sumReported } from './measure'
 import { TASK_PAGE_LIMIT } from './pageLimits'
 import { normUtilisation, type UtilisationRead } from './utilisation'
+import { noteProfile, revisionAfterZoneSaves } from './timezone'
 import type { Outcomes } from './outcomes'
 import { ledgerFixture } from './outcomes.fixture'
 import {
@@ -38,7 +49,7 @@ import type {
   AdminGrantAnswer, AdminRemoveAnswer, AdminWorkspaceView, LoanDeclineAnswer, LoanRequestAnswer, NewWorkspaceBody, PeopleDoc, ScopedPeopleDoc, WorkspaceActionAnswer, WorkspaceKind, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceState, WorkspaceView,
   AccessCheckName, AccessDisableResponse, AccessEnableResponse, AccessGrantResponse, AccessMembers, AccessMode, AccessOverview,
   AccessOwners, AccessRepositoryPage, AccessRevokeResponse, AccessVerifyResponse,
-  NotificationTopic, Preferences, PreferencesSaved, PreferencesWrite, Profile, ProfileClaudeAccount, ProfileClaudeAccounts, ProfileDefault,
+  NotificationTopic, Preferences, PreferencesSaved, PreferencesWrite, Profile, TimeZoneSource, ProfileClaudeAccount, ProfileClaudeAccounts, ProfileDefault,
   ProfileGitHub, ProfileIdentity, ProfileKeyStatus, ProfileNotifications, ProfileQuotaWindow, ProfileSection, ProfileTypeSafe, ProfileWorkspace,
   ReminderCadence, WorkspaceRole,
   DefaultRoleChange, PersonRoleChange, PersonRoles, PersonWorkspaceRole, RoleSummary, WorkspaceRoleEvent, WorkspaceRoleMe,
@@ -175,12 +186,14 @@ export { TASK_PAGE_LIMIT }
  * (Agents.tsx, `PHONE_PAGE_LIMIT`).
  *
  * `view: 'summary'` (#168) asks for `GET /v1/tasks?view=summary`: each row
- * WITHOUT `input`, `metadata` and `result_summary` and their redaction counts
- * -- the keys absent, not null (`codec.task_to_api`). Those three are most of
- * a row's 10-20 KiB (docs/web-ui §2.5), so a polled list that draws none of
- * them asks for it: the Overview and the Agents list. Anything that reads a
- * row's input, metadata or result summary reads `loadTask` instead, which is
- * always the full row. No `view` is the full row, as before.
+ * WITHOUT `input` and `result_summary` and their redaction counts -- the keys
+ * absent, not null (`codec.task_to_api`) -- and with `metadata` cut to its
+ * `title` alone (SUMMARY-TITLE, `codec.SUMMARY_METADATA_KEYS`). Those are
+ * most of a row's 10-20 KiB (docs/web-ui §2.5), so a polled list that draws
+ * none of them asks for it: the Overview and the Agents list. Anything that
+ * reads a row's input, the rest of its metadata or its result summary reads
+ * `loadTask` instead, which is always the full row. No `view` is the full
+ * row, as before.
  */
 export async function loadTasks(
   limit: number = TASK_PAGE_LIMIT,
@@ -1764,18 +1777,37 @@ async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<R
   })
   // An attempt that has not started has written no transcript yet.
   const started = span?.started != null
+  // THE BROWSER QA AGENT'S LOG IS LONG (BROWSER-TAB-TABS, -LOGS and -LIVE, part of #2423): the
+  // Browser tab's findings were measured on running browser agents with
+  // logs of 20 and more steps, and a four-step log cannot show a log beside
+  // the frame that runs past its pane. Forty browser actions, each a call
+  // and its result, for the render to be checked against. THE FINISHED
+  // BROWSER AGENT, task_f523c160 (FIXTURE-BROWSER-DONE, part of #2423), has
+  // a short one, six actions and its result: its Browser tab is reviewed
+  // for the end time, the links and the recordings, not for a long log.
+  const browserSteps = (from: number, count: number): TranscriptStep[] =>
+    Array.from({ length: count }, (_, i) => {
+      const id = `toolu_b${String(i).padStart(2, '0')}`
+      const action = ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type'][i % 4]!
+      return [
+        step(from + 2 * i, { kind: 'tool_call', tool: { id, name: action, input: `{\n  "step": ${i + 1}\n}` } }),
+        step(from + 2 * i + 1, { kind: 'tool_result', role: 'user', tool_result: { tool_use_id: id, is_error: false, content: `Step ${i + 1}: ${action} done; the page says "Example Domain".`, images: 0 } }),
+      ]
+    }).flat()
+  const long = taskId === 'task_b40e5a1c' ? browserSteps(4, 40) : taskId === 'task_f523c160' ? browserSteps(4, 6) : []
   const steps: TranscriptStep[] = started
     ? [
         step(0, { kind: 'init', role: 'system', meta: { model: 'claude-opus-5', permission_mode: 'bypassPermissions', tool_count: 14 } }),
         step(1, { text: 'Reading the repository before changing anything.' }),
         step(2, { kind: 'tool_call', tool: { id: 'toolu_01', name: 'Read', input: '{\n  "file_path": "CONTRACT.md"\n}' } }),
         step(3, { kind: 'tool_result', role: 'user', tool_result: { tool_use_id: 'toolu_01', is_error: false, content: '# The contract\n...', images: 0 } }),
+        ...long,
         ...(finished && result !== null
-          ? [step(4, { kind: 'result', role: null, text: result.text, meta: { subtype: result.subtype, is_error: result.is_error, num_turns: 7 } })]
+          ? [step(4 + long.length, { kind: 'result', role: null, text: result.text, meta: { subtype: result.subtype, is_error: result.is_error, num_turns: 7 } })]
           : []),
       ]
     : []
-  const size = started ? 4096 : 0
+  const size = started ? Math.max(4096, steps.length * 120) : 0
   const at = span?.ended ?? FIXTURE_NOW - 4_000
   return {
     status: 'ok',
@@ -2648,8 +2680,14 @@ export async function loadMe(options: { frame?: boolean } = {}): Promise<Result<
 /** One tenant the caller may select: an entry of `GET /v1/tenants/mine`. */
 export interface TenantChoice {
   tenant_id: string
-  /** The registered group's email -- unique where the tenant id is not; "Your workspace (u-…)" for your own. */
+  /**
+   * The workspace's stored name when `group` is present (MINE-NAMES: the
+   * server read it, so a rename shows at once); otherwise the registered
+   * group's email -- unique where the tenant id is not; "Your workspace (u-…)" for your own.
+   */
   display_name: string
+  /** The registered group's email, present only when `display_name` is the stored name. Absent from an older API. */
+  group?: string
   /** `user` for the caller's own personal workspace, `group` for a tenant group (#1200). Absent from an older API. */
   kind?: 'user' | 'group'
   /**
@@ -2714,6 +2752,16 @@ export interface NotificationFeed {
   unread_updates: number
   /** Requests waiting on any admin; 0 for a non-admin. */
   admin_pending: number
+  /**
+   * Workspaces waiting to be created (Admin › Tenants); null for a non-admin
+   * or an admin source that could not be read, absent from an older API.
+   */
+  tenants_waiting?: number | null
+  /**
+   * Platform secrets with no enabled version (Admin › Platform secrets); null
+   * for a non-admin or a count that could not be read, absent from an older API.
+   */
+  platform_secrets_unset?: number | null
   read_at: string
 }
 
@@ -2729,7 +2777,7 @@ export interface NotificationFeed {
  */
 export async function loadNotifications(): Promise<Result<NotificationFeed>> {
   const target = route('/v1/notifications')
-  if (USE_FIXTURES) return { status: 'error', error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build serves no notification feed.' } }
+  if (USE_FIXTURES) return { status: 'ok', fetchedAt: Date.now(), data: { items: [{ id: 'admin:ws:wsr_c4r0l', group: 'admin', needs_you: true, title: 'Carol asked for a workspace', detail: null, href: '/admin/people', at: new Date(Date.now() - 40 * 60_000).toISOString(), read: false }], unread_needs_you: 1, unread_updates: 0, admin_pending: 1, tenants_waiting: null, platform_secrets_unset: null, read_at: new Date().toISOString() } } as Result<NotificationFeed>
   const r = await read<NotificationFeed>(target, () => false, { frame: true })
   // A 200 with no list is not an empty feed, and drawing "Nothing needs you"
   // over an answer nobody could read would be a claim; it is a failure.
@@ -5016,7 +5064,15 @@ function fixtureTaskRows(): Task[] {
     // dispatch and attempt 2 failed, so the Attempts tab, the events and
     // the checkpoints all have more than one attempt to agree about.
     mk('task_a073aff5', 'RUNNING', 'claude-code', 4, { attempt_count: 3, current_generation: 3 }),
-    mk('task_8ea5c26d', 'RUNNING', 'claude-code', 5),
+    // A LONE AGENT WITH A TITLE (SUMMARY-TITLE): its Agents row reads the
+    // title, beside task_a073aff5 above, which has none and reads
+    // `claude-code agent · a073aff5`. The summary view serves metadata as
+    // the title alone, so this is the whole of what the list sees. No
+    // `(#N)` in it: the copy sweep (walk.copy.test.tsx) reads every page
+    // this build draws and refuses an issue number in visible copy.
+    mk('task_8ea5c26d', 'RUNNING', 'claude-code', 5, {
+      metadata: { title: 'Fix flaky lease heartbeat test' },
+    }),
     // THE BROWSER QA AGENT: the one fixture task with a live browser, so
     // the Browser pane has a live session to draw in this build, and the
     // QA route `task-browser` (qa/routes.json) captures it rather than an
@@ -5058,7 +5114,16 @@ function fixtureTaskRows(): Task[] {
     }),
     mk('task_99284d38', 'SUCCEEDED', 'claude-code', 50),
     mk('task_f278adec', 'SUCCEEDED', 'claude-code', 48),
-    mk('task_f523c160', 'SUCCEEDED', 'claude-code', 47),
+    // THE FINISHED BROWSER AGENT (FIXTURE-BROWSER-DONE, part of #2423; BGD
+    // 2026-10-26 "Convert one"): this row was an ordinary claude-code one
+    // no test named, converted rather than a row added so every fixture
+    // total stands. A finished agent's Browser tab (BT-006, BT-007) renders
+    // from it: its end time, the links to Attempts and Artifacts, and the
+    // recordings panel, empty here because the fixture build does not serve
+    // recordings. task_b40e5a1c stays the one RUNNING browser agent.
+    mk('task_f523c160', 'SUCCEEDED', 'claude-code-browser', 47, {
+      input: { prompt: 'Browser QA agent: open https://example.com, follow its one link, and report both pages.' },
+    }),
     mk('task_812d51aa', 'SUCCEEDED', 'claude-code', 46),
     mk('task_108ef29c', 'SUCCEEDED', 'mock', 90),
     mk('task_1beb89a5', 'CANCELLED', 'claude-code', 62, {
@@ -6239,6 +6304,187 @@ async function fixtureAccountsBoard(): Promise<Result<AccountsBoard>> {
       tenantsDetail: 'Admin group membership is required for this endpoint.',
       readAt: Date.now(),
       fixture: true,
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Capacity › Account health (ACCOUNT-HEALTH-PAGE, part of #2302)
+// ---------------------------------------------------------------------------
+
+/**
+ * Everything Capacity › Account health draws, in one load of two reads:
+ *
+ *  - `/v1/accounts` IS the screen, as on Accounts: the rows, each with the
+ *    broker's `health_status` and `health_24h`, and the pool's own answer to
+ *    "can it take work" (`can_take_new_agent`, `max_agents`), which the fifth
+ *    tile repeats in one line and links back to. A failure here is a failure.
+ *  - `/v1/accounts/health` is every account's record in ONE read (status,
+ *    counts, the hourly series, the last 50 events). Its failure does not
+ *    blank the page: a 404 is a deployment that does not serve the record
+ *    (`not_served`, a dash with its reason, never a zero) and anything else
+ *    is a read that failed (`unreadable`), each said once on the page.
+ */
+export interface AccountHealthBoard {
+  page: AccountsPage
+  health: HealthRead
+  /** When the reads were made: the page's one clock ("now", "ago", open or closed). */
+  readAt: number
+}
+
+export async function loadAccountHealthBoard(): Promise<Result<AccountHealthBoard>> {
+  if (USE_FIXTURES) return fixtureAccountHealthBoard()
+  const [accounts, health] = await Promise.all([
+    read<AccountsPage>(route('/v1/accounts'), () => false),
+    read<unknown>(route('/v1/accounts/health'), () => false),
+  ])
+  if (accounts.status === 'loading' || accounts.status === 'error' || accounts.status === 'empty') {
+    return accounts as Result<AccountHealthBoard>
+  }
+  return {
+    status: accounts.status,
+    fetchedAt: accounts.fetchedAt,
+    ...(accounts.status === 'ok' ? { serverAt: accounts.serverAt } : {}),
+    data: { page: accounts.data, health: healthReadOf(health), readAt: accounts.fetchedAt },
+  } as Result<AccountHealthBoard>
+}
+
+function healthReadOf(r: Result<unknown>): HealthRead {
+  if (r.status === 'ok' || r.status === 'stale') {
+    const pool = normPoolHealth(r.data)
+    return pool === null
+      ? { kind: 'unreadable', reason: 'The health read answered in a shape this console does not know.' }
+      : { kind: 'ok', pool }
+  }
+  if (r.status === 'error' && r.error.httpStatus === 404) {
+    return {
+      kind: 'not_served',
+      reason:
+        'GET /v1/accounts/health answers 404: this deployment predates the pool-wide health read (ACCOUNT-HEALTH-PAGE).',
+    }
+  }
+  if (r.status === 'error') return { kind: 'unreadable', reason: r.error.message }
+  return { kind: 'unreadable', reason: 'The health read did not complete.' }
+}
+
+/**
+ * THE DEVELOPMENT POOL'S HEALTH, one of every state the page draws: a storm of
+ * provider errors (erroring), two windows limited, a credential that died
+ * (needs re-auth, with the refusals that follow it), quiet healthy accounts
+ * and one with no events in 7 days. Built off the fixture accounts, so the
+ * rows, the tiles and the lanes agree, and relative to FIXTURE_NOW.
+ */
+function fixturePoolHealth(): PoolHealth {
+  const H = 3_600_000
+  const M = 60_000
+  const top = Math.floor(FIXTURE_NOW / H) * H
+  type Ev = [number, HealthKind, { w?: string; r?: number; m?: string; t?: string }?]
+  const plan: Record<string, Ev[]> = {
+    'u-bogdan:primary': [[-50 * H, 'network', { m: 'the connection to the provider was reset' }], [-98 * H, 'overloaded']],
+    'u-bogdan:overflow': [
+      ...Array.from({ length: 9 }, (_, i): Ev => [-(40 - i * 4) * M, i % 3 === 0 ? 'server_error' : 'overloaded']),
+      [-30 * H, 'overloaded'], [-30 * H + 8 * M, 'overloaded'],
+    ],
+    'u-bogdan:weekly-burn': [
+      [-3 * H, 'rate_limit', { w: 'seven_day', r: 20 * H }],
+      [-2 * H, 'assign_refused', { w: 'seven_day', m: 'not assigned: its 7-day window is under its floor' }],
+      [-27 * H, 'exhausted'],
+    ],
+    'u-bogdan:five-hour-floor': [
+      [-90 * M, 'rate_limit', { w: 'five_hour', r: 50 * M }],
+      [-70 * M, 'rate_limit', { w: 'five_hour', r: 50 * M }],
+      [-52 * H, 'rate_limit', { w: 'five_hour', r: -48 * H }],
+      [-120 * H, 'rate_limit', { w: 'five_hour', r: -117 * H }],
+    ],
+    // The re-auth story sits on the account whose state IS REAUTH_REQUIRED, so
+    // its row, its callout and the phone's re-auth card tell one story.
+    'u-bogdan:retired-laptop': [
+      [-30 * H, 'refresh_failed', { m: 'the credential refresh was refused · credential [redacted]' }],
+      [-70 * M, 'refresh_failed', { m: 'the credential refresh was refused · credential [redacted]' }],
+      [-62 * M, 'auth', { m: '401 from the provider: the sign-in expired · credential [redacted]' }],
+      [-61 * M, 'reauth', { m: 'marked as needing re-auth by the worker after a 401' }],
+      [-40 * M, 'assign_refused', { m: 'not assigned: the account needs re-auth' }],
+      [-12 * M, 'assign_refused', { m: 'not assigned: the account needs re-auth' }],
+    ],
+    'u-bogdan:full-six': [[-140 * H, 'network', { m: 'read timeout after 600 s, stream closed' }]],
+  }
+  // accountstore.health_status's order: re-auth, then limited -- by the window
+  // readings OR by a 429 short of its reset (`limited_until`), so an account
+  // whose phone card is an open limit never has a Healthy row -- then erroring.
+  const status = (a: ServedAccount, limitedUntil: string | null): HealthStatus =>
+    a.state === 'REAUTH_REQUIRED' ? 'reauth_needed'
+    : a.can_take_new_agent === false && (a.blocked_by ?? []).some((b) => 'window' in b) ? 'limited'
+    : limitedUntil !== null && Date.parse(limitedUntil) > FIXTURE_NOW ? 'limited'
+    : a.account_id === 'u-bogdan:overflow' ? 'erroring'
+    : 'healthy'
+  const accounts = fixtureAccounts.map((a): AccountHealthRecord => {
+    const events: HealthEvent[] = (plan[a.account_id] ?? [])
+      .map(([dt, kind, o = {}]) => ({
+        at: ISO(dt),
+        kind,
+        tenant_id: o.t ?? FIXTURE_TENANT,
+        task_id: `task_${a.label.replace(/[^a-z0-9]/g, '')}${Math.abs(dt) % 9973}`,
+        window: o.w ?? null,
+        reset_at: o.r === undefined ? null : ISO(o.r),
+        message: o.m ?? (kind === 'rate_limit' ? 'the provider rejected a request at its rate limit' : kind === 'overloaded' ? '529 from the provider: overloaded' : kind === 'server_error' ? '503 service unavailable, retry later' : kind === 'exhausted' ? 'quota exhausted · parked at checkpoint 4, capacity released' : ''),
+        own: true,
+      }))
+      .sort((x, y) => Date.parse(y.at) - Date.parse(x.at))
+    const hourly = Array.from({ length: 168 }, (_, i) => {
+      const at = top - (167 - i) * H
+      const counts: Partial<Record<HealthKind, number>> = {}
+      for (const e of events) {
+        const t = Date.parse(e.at)
+        if (t >= at && t < at + H) counts[e.kind] = (counts[e.kind] ?? 0) + 1
+      }
+      return { hour: new Date(at).toISOString(), counts, total: Object.values(counts).reduce((n, v) => n + (v ?? 0), 0) }
+    })
+    const since = (h: number) => {
+      const c = Object.fromEntries(HEALTH_KINDS.map((k) => [k, 0])) as Record<HealthKind, number>
+      for (const e of events) if (Date.parse(e.at) >= FIXTURE_NOW - h * H) c[e.kind] += 1
+      return c
+    }
+    const limit = events.find((e) => e.kind === 'rate_limit' && e.reset_at !== null && Date.parse(e.reset_at) > FIXTURE_NOW)
+    return {
+      account_id: a.account_id,
+      label: a.label,
+      owner_tenant: a.owner_tenant,
+      status: status(a, limit?.reset_at ?? null),
+      limited_until: limit?.reset_at ?? null,
+      counts: { last_1h: since(1), last_24h: since(24), last_7d: since(168) },
+      hourly,
+      events,
+      observed_at: ISO(0),
+    }
+  })
+  return { tenant_id: FIXTURE_TENANT, accounts, events_max: 50, truncated: false, observed_at: ISO(0) }
+}
+
+async function fixtureAccountHealthBoard(): Promise<Result<AccountHealthBoard>> {
+  await new Promise((r) => setTimeout(r, 180))
+  noteFixtureProbe(route('/v1/accounts'), 180, true)
+  noteFixtureProbe(route('/v1/accounts/health'), 120, true)
+  const pool = fixturePoolHealth()
+  const byId = new Map(pool.accounts.map((r) => [r.account_id, r]))
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      page: {
+        accounts: fixtureAccounts.map((a) => ({
+          ...a,
+          health_status: byId.get(a.account_id)?.status ?? null,
+          health_24h: byId.get(a.account_id)?.counts.last_24h ?? null,
+        })),
+        tenant_id: FIXTURE_TENANT,
+        unreadable_documents: [],
+        unreadable_document_count: 0,
+      },
+      health: { kind: 'ok', pool },
+      // The fixture's events are dated off FIXTURE_NOW, so that is when it was
+      // read: the page's clock is the read's, and a real clock would show every
+      // limit as long cleared and every incident closed.
+      readAt: FIXTURE_NOW,
     },
   }
 }
@@ -7433,6 +7679,10 @@ function fixtureProfile(): unknown {
       },
     },
     notifications: { preferences: { muted: ['finished'], reminder: 'daily' }, topics: [...NOTIFICATION_TOPICS] },
+    // Nothing saved: UTC. A zone this browser cached moves to the server on
+    // the first read, which the fixture build does not serve, so it stays here.
+    time_zone: 'UTC',
+    time_zone_source: 'default',
     claude_accounts: {
       personal_workspace: FIXTURE_TENANT,
       // The accounts Capacity › Accounts lists, so the two pages agree: the
@@ -7564,6 +7814,13 @@ function fixturePeople(): unknown {
       first_seen: fixtureAgo(6 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(3 * FIXTURE_HOUR), last_submitted: fixtureAgo(4 * FIXTURE_HOUR), last_active: fixtureAgo(3 * FIXTURE_HOUR),
     },
     {
+      email: 'bogdan@example.com', display_name: 'Bogdan Alexandrescu', teams: [FIXTURE_GROUP.principal], github: 'connected', roles: { eng: 'admin', research: 'member' },
+      workspace: ws('ready', 'u-bogdan', { ready_at: fixtureAgo(12 * 24 * FIXTURE_HOUR) }),
+      claude_account: { source: 'lent', own: 0, lent: 7, lent_by: ['eng'], provider_key: false, lent_accounts: Array.from({ length: 7 }, (_, i) => ({ account_id: i === 0 ? 'ai-eng-1-max' : `ai-eng-${i + 1}`, label: i === 0 ? 'ai-eng-1-max' : `ai-eng-${i + 1}`, owner_tenant: 'eng', owner_name: 'Engineering', state: 'AVAILABLE' })) },
+      loan_request: null,
+      first_seen: fixtureAgo(12 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(2 * 60_000), last_submitted: fixtureAgo(30 * 60_000), last_active: fixtureAgo(2 * 60_000),
+    },
+    {
       email: 'dave@example.com', display_name: null, teams: [], github: 'expired', roles: { eng: 'none', research: 'admin' },
       workspace: ws('ready', 'u-dave', { ready_at: fixtureAgo(20 * 24 * FIXTURE_HOUR) }),
       claude_account: claude('provider_key', 0, 0, [], true), loan_request: null,
@@ -7577,11 +7834,16 @@ function fixturePeople(): unknown {
     people,
     count: people.length,
     pending: people.filter((p) => p.workspace.state === 'requested').length,
-    audit: [],
+    audit: [
+      ...Array.from({ length: 12 }, (_, i) => ({ action: 'qa_target_credential_set', target_workspace_id: 'eng', by: 'alice@example.com', at: fixtureAgo((i + 1) * 60_000), detail: {} })),
+      ...Array.from({ length: 10 }, (_, i) => ({ action: 'repository_workflow_files_set', target_workspace_id: 'eng', by: 'alice@example.com', at: fixtureAgo((i + 20) * 60_000), detail: {} })),
+      { action: 'approve', target_workspace_id: 'u-bob', by: 'alice@example.com', at: fixtureAgo(5 * 24 * FIXTURE_HOUR), detail: {} },
+      { action: 'frobnicated_mcp_widget', target_workspace_id: 'eng', by: 'alice@example.com', at: fixtureAgo(6 * 24 * FIXTURE_HOUR), detail: {} },
+    ],
     lendable_accounts: ownAccounts.map((a) => ({ account_id: a.account_id, owner_tenant: a.owner_tenant, label: a.label, state: a.state, lend_to: a.lend_to })),
     lendable_error: null,
     provisioning: { available: true, approved_waiting: 0 },
-    admins: [{ email: 'alice@example.com', role: 'admin', granted_by: 'ops@example.com', granted_at: fixtureAgo(30 * 24 * FIXTURE_HOUR) }],
+    admins: [{ email: 'ops@example.com', role: 'owner', granted_by: 'config:PLATFORM_OWNER', granted_at: null }, { email: 'bogdan@example.com', role: 'owner', granted_by: 'config:PLATFORM_OWNER', granted_at: null }, { email: 'alice@example.com', role: 'admin', granted_by: 'ops@example.com', granted_at: fixtureAgo(30 * 24 * FIXTURE_HOUR) }],
     admins_error: null,
   }
 }
@@ -8041,6 +8303,13 @@ export async function deleteProviderKey(provider: string, scope: ProviderKeyScop
 export interface WorkspaceSecretGrant {
   consumer: string
   enabled: boolean
+  /** The slot it fills; null when the list did not say. */
+  slot: string | null
+  /**
+   * The hosts a host-scoped slot's secret may be sent to (`cf-access`,
+   * swarm_api `slot_hosts`), as served: sorted, empty for every other slot.
+   */
+  hosts: string[]
 }
 
 /** One stored secret: never a value, its length, a prefix or a suffix. */
@@ -8120,8 +8389,9 @@ function normWorkspaceSecret(raw: unknown): WorkspaceSecret | null {
   if (name === null) return null
   const grants = (Array.isArray(r.grants) ? r.grants : []).flatMap((g): WorkspaceSecretGrant[] => {
     if (typeof g !== 'object' || g === null) return []
-    const consumer = wsText((g as Record<string, unknown>).consumer)
-    return consumer === null ? [] : [{ consumer, enabled: (g as Record<string, unknown>).enabled === true }]
+    const r = g as Record<string, unknown>
+    const consumer = wsText(r.consumer)
+    return consumer === null ? [] : [{ consumer, enabled: r.enabled === true, slot: wsText(r.slot), hosts: wsStrings(r.hosts) }]
   })
   const rotated = wsText(r.rotated_at)
   return {
@@ -8169,9 +8439,11 @@ function normWorkspaceSecretConsumers(raw: unknown): WorkspaceSecretConsumer[] {
 }
 
 /**
- * The fixture build's list: one secret on the personal workspace, which its
- * owner manages, granted to two consumers and not a third. No value: the API
- * serves none.
+ * The fixture build's list: secrets on the personal workspace, which its
+ * owner manages. One is granted to two consumers and not a third; the other
+ * is a Cloudflare Access service token in claude-code-browser's `cf-access`
+ * slot, its grant holding two hosts (CF-ACCESS-HOSTS-UI, part of #2442). No
+ * value: the API serves none.
  */
 async function fixtureWorkspaceSecrets(target: ApiRoute): Promise<Result<WorkspaceSecretList>> {
   await new Promise((r) => setTimeout(r, 80))
@@ -8191,6 +8463,10 @@ async function fixtureWorkspaceSecrets(target: ApiRoute): Promise<Result<Workspa
           { consumer: 'component:judge', enabled: true },
           { consumer: 'profile:claude-code', enabled: false },
         ],
+      }, {
+        name: 'admin-access', provider: 'other', kind: 'oauth_client', current_version: '1',
+        created_at: at, created_by: 'alice@example.com', rotated_at: null, rotated_by: null,
+        grants: [{ consumer: 'profile:claude-code-browser', slot: 'cf-access', enabled: true, hosts: ['admin.example.com', 'api.admin.example.com'] }],
       }],
     }),
   }
@@ -8217,10 +8493,20 @@ export async function loadWorkspaceSecrets(): Promise<Result<WorkspaceSecretList
 const FIXTURE_SECRET_KINDS = ['api_key', 'bearer_token', 'basic_auth', 'oauth_client', 'opaque']
 const FIXTURE_NO_SLOT = 'declares no secret slot yet; a grant would deliver nothing'
 
-/** The fixture build's catalogue: some of `_catalogue()`'s profiles, and its tools and components, with the slots §2.4 gives them. */
+/**
+ * The fixture build's catalogue: some of `_catalogue()`'s profiles, and its
+ * tools and components, with the slots §2.4 gives them. claude-code-browser
+ * also reads `cf-access`, the slot contract request 117 (accepted
+ * 2026-10-26, not yet applied) gives it, so the grant matrix's hosts field
+ * can be drawn for review.
+ */
 const FIXTURE_SECRET_CONSUMERS = [
   ...['browser', 'claude-code', 'claude-code-browser', 'codex'].map((name) => ({
-    consumer: `profile:${name}`, kind: 'profile', name, slots: [{ slot: 'files', kinds: FIXTURE_SECRET_KINDS }], grantable: true, note: '',
+    consumer: `profile:${name}`, kind: 'profile', name,
+    slots: name === 'claude-code-browser'
+      ? [{ slot: 'files', kinds: FIXTURE_SECRET_KINDS }, { slot: 'cf-access', kinds: ['oauth_client'] }]
+      : [{ slot: 'files', kinds: FIXTURE_SECRET_KINDS }],
+    grantable: true, note: '',
   })),
   { consumer: 'tool:jev-browser', kind: 'tool', name: 'jev-browser', slots: [{ slot: 'typesafe', kinds: ['api_key'] }], grantable: true, note: '' },
   { consumer: 'tool:dev-browser', kind: 'tool', name: 'dev-browser', slots: [], grantable: false, note: FIXTURE_NO_SLOT },
@@ -8284,16 +8570,26 @@ export async function rotateWorkspaceSecret(name: string, body: WorkspaceSecretR
 }
 
 /**
+ * A grant write's body: `{enabled}`, `slot` only for a consumer that declares
+ * several, and `hosts` only for a host-scoped slot (`cf-access`). Never a
+ * value: a grant names who may read a secret, not what it is.
+ */
+function grantBody(enabled: boolean, slot: string | null, hosts: readonly string[] | null): Record<string, unknown> {
+  return { enabled, ...(slot === null ? {} : { slot }), ...(hosts === null ? {} : { hosts: [...hosts] }) }
+}
+
+/**
  * `PUT /v1/workspace/secrets/{name}/grants/{consumer}`: ONE cell of the
  * matrix, `{enabled}` and nothing else. No slot: every consumer in the
  * catalogue reads one, and the API defaults to it (§2.2); `slot` is sent
- * only for a consumer that declares several. The answer is the record's
- * grants after the write, or null when it carried none.
+ * only for a consumer that declares several, and `hosts` only for a
+ * host-scoped slot's cell. The answer is the record's grants after the
+ * write, or null when it carried none.
  */
-export async function setWorkspaceSecretGrant(name: string, consumer: string, enabled: boolean, slot: string | null = null): Promise<Result<WorkspaceSecret | null>> {
+export async function setWorkspaceSecretGrant(name: string, consumer: string, enabled: boolean, slot: string | null = null, hosts: readonly string[] | null = null): Promise<Result<WorkspaceSecret | null>> {
   const target = route('/v1/workspace/secrets/{name}/grants/{consumer}', { name, consumer })
   if (USE_FIXTURES) return fixtureSecretsNotServed(target) as Result<null>
-  const r = await write(target, 'PUT', slot === null ? { enabled } : { enabled, slot })
+  const r = await write(target, 'PUT', grantBody(enabled, slot, hosts))
   if (r.status === 'error') return r
   return { status: 'ok', fetchedAt: Date.now(), data: servedSecret(r) }
 }
@@ -8711,7 +9007,7 @@ export interface SecretStoreApi {
   create(body: WorkspaceSecretCreate, linkToken: string | null): Promise<Result<null>>
   rotate(name: string, body: WorkspaceSecretRotate, linkToken: string | null): Promise<Result<WorkspaceSecret | null>>
   remove(name: string): Promise<Result<unknown>>
-  grant(name: string, consumer: string, enabled: boolean, slot?: string | null): Promise<Result<WorkspaceSecret | null>>
+  grant(name: string, consumer: string, enabled: boolean, slot?: string | null, hosts?: readonly string[] | null): Promise<Result<WorkspaceSecret | null>>
   mintLink(action: 'add' | 'rotate', name: string | null): Promise<Result<MintedLink>>
 }
 
@@ -8773,7 +9069,7 @@ const WORKSPACE_STORE: SecretStoreApi = {
   create: createWorkspaceSecret,
   rotate: rotateWorkspaceSecret,
   remove: deleteWorkspaceSecret,
-  grant: (name, consumer, enabled, slot = null) => setWorkspaceSecretGrant(name, consumer, enabled, slot),
+  grant: (name, consumer, enabled, slot = null, hosts = null) => setWorkspaceSecretGrant(name, consumer, enabled, slot, hosts),
   mintLink: (action, name) => mint(route('/v1/workspace/secrets/links'), linkBody(action, name)),
 }
 
@@ -8805,10 +9101,10 @@ function repositoryStore(repoId: string): SecretStoreApi {
       if (USE_FIXTURES) return fixtureSecretsNotServed(target)
       return write(target, 'DELETE', { name })
     },
-    async grant(name, consumer, enabled, slot = null) {
+    async grant(name, consumer, enabled, slot = null, hosts = null) {
       const target = route('/v1/repositories/{repo_id}/secrets/{name}/grants/{consumer}', { repo_id, name, consumer })
       if (USE_FIXTURES) return fixtureSecretsNotServed(target) as Result<null>
-      const r = await write(target, 'PUT', slot === null ? { enabled } : { enabled, slot })
+      const r = await write(target, 'PUT', grantBody(enabled, slot, hosts))
       return r.status === 'error' ? r : { status: 'ok', fetchedAt: Date.now(), data: servedSecret(r) }
     },
     mintLink: (action, name) => mint(route('/v1/repositories/{repo_id}/secrets/links', { repo_id }), linkBody(action, name)),
@@ -9241,10 +9537,26 @@ export function normProfile(raw: unknown): Profile {
     connections,
     revision: pfNum(r.revision),
     unavailable,
+    ...normTimeZone(r),
   }
   if (pfObj(r.notifications) !== null) profile.notifications = normNotifications(r.notifications)
   if (pfObj(r.claude_accounts) !== null) profile.claude_accounts = normClaudeAccounts(r.claude_accounts)
   return profile
+}
+
+const TIME_ZONE_SOURCES: readonly TimeZoneSource[] = ['profile', 'default', 'unavailable']
+
+/**
+ * `time_zone` and `time_zone_source` (TIMEZONE-SERVER). A source this console
+ * does not know, or a zone that is not text where one is claimed, reads as
+ * unread: never as UTC, which would move every time on the page.
+ */
+function normTimeZone(r: Record<string, unknown>): Pick<Profile, 'time_zone' | 'time_zone_source'> {
+  const source = TIME_ZONE_SOURCES.find((s) => s === r.time_zone_source)
+  const zone = pfStr(r.time_zone)
+  if (source === undefined) return {}
+  if (source === 'unavailable' || zone === null) return { time_zone: null, time_zone_source: 'unavailable' }
+  return { time_zone: zone, time_zone_source: source }
 }
 
 function normPreferencesSaved(raw: unknown): PreferencesSaved {
@@ -9255,22 +9567,32 @@ function normPreferencesSaved(raw: unknown): PreferencesSaved {
     default_workspace: normDefault(r.default_workspace),
     notifications: normNotifications(r.notifications),
     revision: pfNum(r.revision) ?? 0,
+    ...normTimeZone(r),
   }
 }
 
-/** `GET /v1/profile`: the signed-in person's own profile, each section failing alone. */
+/**
+ * `GET /v1/profile`: the signed-in person's own profile, each section failing
+ * alone. Every answered read tells `timezone.ts` who is signed in and their
+ * zone (TIMEZONE-SERVER), so Profile's read is also the zone's, not a second one.
+ */
 export async function loadProfile(): Promise<Result<Profile>> {
-  return readAs(route('/v1/profile'), normProfile)
+  const r = await readAs(route('/v1/profile'), normProfile)
+  if (r.status === 'ok' || r.status === 'stale') noteProfile(r.data)
+  return r
 }
 
 /**
  * `PUT /v1/profile/preferences`: replace the whole set at `body.revision`. A
  * stale revision is a 409 `preferences_changed` (another tab saved first); a
  * refused name is a 422 with its `display_name_*` code and a message that names
- * the rule.
+ * the rule. A save that leaves the zone as stored goes at the revision a zone
+ * pick on this page moved `body.revision` to (`revisionAfterZoneSaves`), so
+ * Profile's next save after a pick is not refused as changed elsewhere.
  */
 export async function putPreferences(body: PreferencesWrite): Promise<Result<PreferencesSaved>> {
-  const r = await writeTo(route('/v1/profile/preferences'), 'PUT', body)
+  const sent = body.time_zone === undefined ? { ...body, revision: await revisionAfterZoneSaves(body.revision) } : body
+  const r = await writeTo(route('/v1/profile/preferences'), 'PUT', sent)
   if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normPreferencesSaved(r.data) }
   if (r.status === 'empty') return { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The save answered with nothing to read back. Reload to see what was stored.', method: 'PUT' } }
   return r
@@ -11017,6 +11339,7 @@ export async function loadLiveSession(taskId: string): Promise<Result<LiveRead>>
             { name: 'desktop', width: 1440, height: 900, scale: 1, mobile: false },
             { name: 'iphone-15', width: 393, height: 852, scale: 3, mobile: true },
             { name: 'phone-390', width: 390, height: 844, scale: 3, mobile: true },
+            { name: 'phone-380', width: 380, height: 844, scale: 3, mobile: true },
             { name: 'pixel-8', width: 412, height: 915, scale: 2.625, mobile: true },
             { name: 'iphone-se', width: 375, height: 667, scale: 2, mobile: true },
             { name: 'ipad-7', width: 810, height: 1080, scale: 2, mobile: true },

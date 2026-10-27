@@ -39,6 +39,8 @@ import {
   foldMix,
   MIX_NAMED_MAX,
   monoW,
+  NODE_CHROME_W,
+  nodeWidthAt,
   hasTokenKind,
   inputsByStep,
   layoutOf,
@@ -115,6 +117,7 @@ import {
   stepOrder,
   stepTimes,
   stepWhy,
+  unfinishedParentsOf,
   ENTRY_EVENT,
   tokenKindsCell,
   tokenKindsTotal,
@@ -154,6 +157,7 @@ import {
   type WorkflowStep,
   workflowHeaderState,
   workflowStartText,
+  reasonCopy,
   TERMINAL_STATES,
   CONCURRENCY_STATES,
 } from './types'
@@ -179,11 +183,11 @@ import { gateVerdictOf, isReviewedBy, mergeOf, skippedByVerdict, verdictFor, typ
 import { WorkflowChangesTab, changesAtOf, changesCount, withChangesAt, type ChangesAt } from './WorkflowChanges'
 import { PersonName } from './PersonName'
 import { Mark } from './primitives'
+import { stateWord } from './words'
 import './styles/workflows.css'
 import './styles/names.css'
 import {
   anyRunning,
-  backLabel,
   bucketCounts,
   bucketOf,
   BUCKET_FILTERS,
@@ -397,18 +401,20 @@ export function WorkflowsScreen({
     // module constant as the tab's heading ('Workflows', below) and skips a
     // per-workflow local like this one.
     const pageTitle = name ?? id
+    // ONE BACK PATH (visual QA VQ-015, #2391): the breadcrumb above is the way
+    // back -- `Work ▸ Workflows · Failed ▸ <name>`, its list segment carrying
+    // these filters (App.tsx `crumbsOf`) -- so the page draws no `‹ Workflows`
+    // link of its own under it. `wfp-screen` scopes the page head's phone
+    // rule (V103), which that link used to.
     return (
-      <>
-        <a className="wfp-back" href={listHref(query)}>
-          ‹ {backLabel(query)}
-        </a>
+      <div className="wfp-screen">
         <Screen
           key={`wf:${id}:${stores.reloads}`}
           // THE PAGE IS TITLED BY THE WORKFLOW'S NAME (#503: the id was the
           // `h1` and the name a second heading under it). The name is the
           // spec's label as Recent last read it -- the list or this page
           // records it -- and the id until one is known; the id stays on the
-          // page whole, as the head's chip.
+          // page behind the head's Copy id (VQ-015).
           title={pageTitle}
           help="absent-vs-zero"
           load={() => loadWorkflowPage(id)}
@@ -436,7 +442,7 @@ export function WorkflowsScreen({
             />
           )}
         </Screen>
-      </>
+      </div>
     )
   }
 
@@ -472,8 +478,11 @@ export function WorkflowsScreen({
   )
 }
 
-/** The name Recent holds for `id`, kept current as the list or the page records it. */
-function useRecentName(id: string | null): string | null {
+/**
+ * The name Recent holds for `id`, kept current as the list or the page records
+ * it: the page's title, and the breadcrumb's last segment (App.tsx, VQ-015).
+ */
+export function useRecentName(id: string | null): string | null {
   const [name, setName] = useState<string | null>(() => (id === null ? null : recentName(id)))
   useEffect(() => {
     const again = () => setName(id === null ? null : recentName(id))
@@ -1170,17 +1179,21 @@ function cancelPending(workflow: Workflow): boolean {
  */
 function StateDrift({ drift }: { drift: WorkflowDrift | undefined }) {
   if (!drift || drift.agrees === true) return null
+  // STATES AS WORDS (VQ-WORKFLOWS re-review): the row read 'stored QUEUED ·
+  // steps RUNNING', the API's capitals, where the console says a state as a
+  // word in lower case (PICKS.md: no all-caps; `stateWord`, the state chip's
+  // spelling).
+  const stored = stateWord(drift.stored)
   if (drift.agrees === null) {
     return (
       <ul
         className="ctl-facts wf-drift"
         aria-label={`State could not be checked: ${drift.unreadable_steps.length} step${
           drift.unreadable_steps.length === 1 ? '' : 's'
-        } unread (${drift.reason}). The stored value is ${drift.stored} and nothing has confirmed it.`}
+        } unread (${drift.reason}). Stored as ${stored}, and nothing has confirmed it.`}
       >
         <li className="ctl-fact">
-          <b>stored</b>
-          <code>{drift.stored}</code>
+          <b>stored as</b> {stored}
         </li>
         <li className="ctl-fact is-absent">
           <b>steps</b>
@@ -1192,17 +1205,15 @@ function StateDrift({ drift }: { drift: WorkflowDrift | undefined }) {
   return (
     <ul
       className="ctl-facts wf-drift"
-      aria-label={`Stored state was ${drift.stored}; the steps say ${drift.derived}${
+      aria-label={`Stored as ${stored}; the steps say ${stateWord(drift.derived)}${
         drift.repaired ? ', and the stored copy has been corrected' : ''
       }.`}
     >
       <li className="ctl-fact">
-        <b>stored</b>
-        <code>{drift.stored}</code>
+        <b>stored as</b> {stored}
       </li>
       <li className="ctl-fact">
-        <b>steps</b>
-        <code>{drift.derived}</code>
+        <b>steps</b> {stateWord(drift.derived)}
       </li>
       {/* A plain value, NOT a `.ctl-mark`: the mark vocabulary names kinds of
           absence, and a repair is a thing that happened. Borrowing an absence
@@ -1210,7 +1221,7 @@ function StateDrift({ drift }: { drift: WorkflowDrift | undefined }) {
           learned to read as "nothing here". */}
       {drift.repaired && (
         <li className="ctl-fact">
-          <b>stored</b>repaired
+          <b>stored copy</b> corrected
         </li>
       )}
     </ul>
@@ -1364,6 +1375,10 @@ export function WorkflowCard({
       setArrival(false)
       const card =
         sectionRef.current?.querySelector<HTMLElement>('.wf-panel') ?? sectionRef.current?.querySelector<HTMLElement>('.wf-inspect') ?? null
+      // No card on screen: the Table's or Timeline's arrival pick, which draws
+      // none under its row (VQ-016). Clearing `arrival` above draws it there
+      // now; its close control takes focus once it has (`bringInline`).
+      if (card === null) bringInline.current = true
       if (card !== null) {
         if (typeof card.scrollIntoView === 'function') card.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
         // The docked panel takes focus itself; the card drawn under a row
@@ -1376,6 +1391,21 @@ export function WorkflowCard({
     }
     return togglePick(stepId)
   }
+
+  // THE ARRIVAL PICK OPENS NO CARD UNDER A ROW (visual QA VQ-016, #2391). On
+  // the Table and the Timeline below the dock width the card is drawn under
+  // the picked row or track, and the page's own pick on arrival -- the
+  // running step, or the failure -- drew a ~370px card there by itself: of
+  // five steps two rows showed and three sat below it. The view now arrives
+  // whole with the step marked picked, and its card opens under the row when
+  // a reader asks for it (`pickStep`). Where the card docks beside the view
+  // it costs the view no rows, so the arrival pick still opens it there.
+  const bringInline = useRef(false)
+  useEffect(() => {
+    if (arrival || !bringInline.current) return
+    bringInline.current = false
+    sectionRef.current?.querySelector<HTMLElement>('.wf-inspect .wf-inspect-close')?.focus({ preventScroll: true })
+  }, [arrival])
 
   // CLOSING THE GRAPH'S PANEL PUTS FOCUS BACK ON THE NODE THAT OPENED IT, so a
   // keyboard reader is where they were rather than at the top of the page. The
@@ -1560,7 +1590,7 @@ export function WorkflowCard({
                 view={view}
                 picked={picked}
                 onPick={pickStep}
-                detail={picked !== null && narrow ? inspector(picked, () => closePanel(picked)) : null}
+                detail={picked !== null && narrow && !(page && arrival) ? inspector(picked, () => closePanel(picked)) : null}
                 filter={view === 'table' ? tableFilter : null}
                 onClearFilter={onClearFilter}
               />
@@ -2454,6 +2484,7 @@ function InspectorSlot({
       now={now}
       load={loadAttempts}
       stepHeading={page}
+      idInHead={page}
     >
       {/* WHY IT FAILED, WHOLE, ON THE CARD (visual QA QA-120, 2026-10-20).
           The node's note is one ellipsed line ('exit status 1: pytest
@@ -2527,7 +2558,13 @@ function StepCardExtras({
             step={step}
             taskById={taskById}
             reload={reload}
-            variant="inline"
+            // `Stop step`, IN THE PAGE HEAD'S BUTTON (visual QA VQ-015;
+            // workflows.html B): the card's action was StopRun's small
+            // lower-case `stop` beside the head's `Cancel workflow`. The
+            // panel variant is the danger outline at the head's size; the
+            // card has the width for its in-place confirmation.
+            variant="panel"
+            label="Stop step"
           />
         </div>
       )}
@@ -2665,6 +2702,13 @@ function useNow(): number {
   }, [])
   return now
 }
+
+/**
+ * The level rail and its gap beside the canvas: `.wf-levels`' 72px and
+ * `.wf-graph`'s `--ctl-s3` (12px), the same two figures `CANVAS_COLUMN`
+ * (dag.ts) is kept in step with.
+ */
+const LEVEL_RAIL_W = 72 + 12
 
 /**
  * One stage's address in the board-wide expansion store.
@@ -3279,6 +3323,41 @@ function useEnteredAt(
   return (task) => entered.get(enteredKey(task)) ?? null
 }
 
+/**
+ * THE CARD'S NOTE IN WORDS THAT FIT IT (#2391 comment 58). A step parked on
+ * DEPENDENCY_INCOMPLETE drew `reasonCopy`'s fixed 43-character sentence on its
+ * one note line, cut to 'Waiting on an earlier…' at 1440. The note is one line
+ * by design (`layoutOf`'s NOTE_H), so the card says it short, and the whole
+ * sentence, with any `eligible again` after it, stays the title and the
+ * focused card's `.node-note-full`.
+ *
+ * MEASURED AGAINST THE NARROWEST CARD, NOT THE WIDEST (review of U02). A first
+ * form was sized to the full tier's `NODE_W` box, and Auto zoom drew the
+ * Audit page at the names tier, whose card `nodeWidthAt` sizes from the
+ * workflow's longest step id: 'waits on an earlier…' again. Every tier is at
+ * least as wide as the names tier, so a note that fits that box fits them all.
+ * It names the parents, as a not-started dependant's 'waiting on report' does
+ * on the same canvas, when that fits; otherwise it says `awaits parent(s)`,
+ * at most 14 characters -- inside the 13-character state row every names-tier
+ * box carries whatever the step ids are (`STATE_ROW_W`).
+ */
+const WAITS_ON_PARENT = reasonCopy('DEPENDENCY_INCOMPLETE')
+/** `--t-micro`, the size `.node-note` draws at. */
+const NOTE_PX = 12
+export function cardNote(
+  note: StepWhy,
+  step: WorkflowStep,
+  steps: readonly WorkflowStep[],
+  taskById: ReadonlyMap<string, Task> | null,
+): StepWhy {
+  if (!note.text.startsWith(WAITS_ON_PARENT)) return note
+  const pending = unfinishedParentsOf(step, steps, taskById)
+  const named = `waiting on ${pending.join(', ')}`
+  const room = nodeWidthAt('names', steps) - NODE_CHROME_W
+  if (pending.length > 0 && monoW(named.length, NOTE_PX) <= room) return { ...note, text: named }
+  return { ...note, text: (pending.length || step.depends_on.length) > 1 ? 'awaits parents' : 'awaits parent' }
+}
+
 function WorkflowGraph({
   workflow,
   taskById,
@@ -3348,7 +3427,7 @@ function WorkflowGraph({
   const notes = new Map<string, StepWhy>()
   for (const s of workflow.steps) {
     const n = nodeNote(s, stepState(s, taskById), workflow.steps, taskById, classUnits(classes, s.resource_class))
-    if (n !== null) notes.set(s.step_id, n)
+    if (n !== null) notes.set(s.step_id, cardNote(n, s, workflow.steps, taskById))
   }
   const noted = new Set(notes.keys())
   // A SETTLED STEP RESERVES NO STOP STRIP (browser QA D29): its task is
@@ -3591,6 +3670,16 @@ function WorkflowGraph({
   //     disappearing under its own consequence: a workflow that loses a step
   //     and would now fit must not take away the only way back from a choice
   //     still in force, leaving dropped fields with nothing explaining them.
+  // A GRAPH THAT FITS ACROSS IS AS TALL AS IT IS (visual QA VQ-014, #2391).
+  // The wrapper is held to the screen (V034) so a wide graph's one sideways
+  // scrollbar stays in view; on a graph with nothing to its right that bound
+  // only made a second scroller -- about 350px of a five-step chain under the
+  // page's head, scrolled by the wheel instead of the page. When the canvas
+  // and its level rail fit the measured wrapper (CANVAS_COLUMN before the
+  // first measure), the wrapper grows with the graph and the page is the one
+  // scroll container (`.wf-canvas-wrap.fits-x`); `scrollPortOf` then finds no
+  // room in it and steers the page.
+  const fitsAcross = view.w > 0 ? LEVEL_RAIL_W + layout.width <= view.w : layout.width <= CANVAS_COLUMN
   const zoomable =
     zoom !== 'auto' ||
     tier !== 'figures' ||
@@ -3630,7 +3719,7 @@ function WorkflowGraph({
           no data mark (WF-14), and an unmeasured path is one. */}
       {layout.edges.length > 0 && <CriticalPathNote path={critical} total={workflow.steps.length} />}
       <div className="wf-canvas-row">
-      <div className="wf-canvas-wrap" ref={wrapRef} onScroll={syncView}>
+      <div className={`wf-canvas-wrap${fitsAcross ? ' fits-x' : ''}`} ref={wrapRef} onScroll={syncView}>
         <div className="wf-graph">
           {/* THE LEVEL RAIL, WHICH WAS A ROW OF COLUMN CAPTIONS. When levels ran
             left to right these sat across the top, one over each column. Levels
@@ -4564,10 +4653,14 @@ function StepNode({
   return (
     <div
       className={`node-slot${liveTask !== null ? ' has-live' : ''}`}
+      // `layoutOf`'s height is the slot's FLOOR, not its height (VQ-WORKFLOWS
+      // re-review 3): a fixed height held the slot's one-cell grid, and so the
+      // card, to 107px for scan-terraform while `↑ plan (plan.md)` wrapped,
+      // and the stop at the cell's foot was drawn over `(plan.md)`.
       style={
         liveTask !== null
-          ? ({ left: x, top: y, width: w, height: h, '--node-live-h': `${LIVE_CARD_H}px` } as CSSProperties)
-          : { left: x, top: y, width: w, height: h }
+          ? ({ left: x, top: y, width: w, minHeight: h, '--node-live-h': `${LIVE_CARD_H}px` } as CSSProperties)
+          : { left: x, top: y, width: w, minHeight: h }
       }
     >
       <button
@@ -5502,21 +5595,26 @@ function WorkflowList({
   }, [board.workflows, labels])
 
   const which = query.state === 'all' ? '' : `${BUCKET_LABEL[query.state].toLowerCase()} `
+  // THE LIST'S ONE NOTE (VQ-013): its clauses, each only when it is true.
+  const listNote = [
+    older.more !== null ? `Counts and order are of ${scope} workflows; older ones are on the server and not read yet` : null,
+    unread.length > 0
+      ? `${rows.length - unread.length} of ${rows.length} rows have their steps read; ${
+          searching ? 'the rest are being read for the search' : 'older rows show ids only until they scroll into view'
+        }${failedReads > 0 ? `; ${failedReads} could not be read` : ''}`
+      : null,
+  ]
+    .filter((c): c is string => c !== null)
+    .join(' · ')
   return (
     <div className="wfl">
       <WorkflowListFilters query={query} choose={choose} counts={counts} owners={owners} profiles={profiles} />
-      {older.more !== null && (
-        <CountNote>
-          Counts and order are of {scope} workflows; older ones are on the server and not read yet
-        </CountNote>
-      )}
-      {unread.length > 0 && (
-        <CountNote>
-          {rows.length - unread.length} of {rows.length} rows have their steps read;{' '}
-          {searching ? 'the rest are being read for the search' : 'older rows show ids only until they scroll into view'}
-          {failedReads > 0 ? `; ${failedReads} could not be read` : ''}
-        </CountNote>
-      )}
+      {/* ONE MUTED LINE UNDER THE HEAD (visual QA VQ-013, #2391): what the
+          counts are of and how many rows know their steps were two notes,
+          each with the list's gap after it, and at 1512x806 they and the
+          tall rows left about five of 100 workflows on screen. The two facts
+          are clauses of one note now, each said only when it is true. */}
+      {listNote !== '' && <CountNote>{listNote}</CountNote>}
       {outside !== null && (
         <p className="wfl-outside" data-fact="pasted-id">
           <Id title={outside}>{outside}</Id> is not among {scope} workflows read.{' '}
@@ -5748,6 +5846,65 @@ function withChosen(options: string[], chosen: string): string[] {
   return chosen === '' || options.includes(chosen) ? options : [...options, chosen].sort()
 }
 
+/**
+ * THE RUNNERS GO UNDER THE NAME WHEN THE NAME WOULD KEEP LESS THAN 200px
+ * (VQ-013 re-review, #2391). The mix keeps room for one whole chip on the
+ * name's line (`.wfl-mix`'s 11rem, styles/workflows.css), and at 1440 with the
+ * nav open that line is 319px: the name kept 127px of it and every row read
+ * 'Audit the operator s…', the ~20-character cut QA G3-09 fixed. Below the
+ * floor the mix moves to the row's second line, beside the current step, and
+ * the name has the whole line.
+ *
+ * Only in the band where the mix is drawn at all (900-1679, where the
+ * Runners column is hidden): the phone card gives the mix its own line in the
+ * card already, and from 1680 the column carries the runners.
+ */
+const NAME_FLOOR_PX = 200
+/**
+ * `.wfl-mix`'s basis (11rem) and `.wfl-line`'s `--ctl-s2` gap, as FALLBACKS
+ * only. The row reads both from the cascade (`cssPx`), so a change to the
+ * sheet moves the threshold with it; these are what a box with no computed
+ * style (jsdom, which loads no sheet) is counted with, and
+ * vq.workflows.test.tsx holds them to the sheet's values.
+ */
+const LINE_MIX_PX = 11 * 16
+const LINE_GAP_PX = 8
+const MIX_BAND_QUERY = '(min-width: 900px) and (max-width: 1679px)'
+
+/**
+ * Whether the name would keep less than `NAME_FLOOR_PX` beside the mix on a
+ * line `el`. Counted the same way wherever the mix is drawn now -- the mix's
+ * room and its gap are counted whether or not it is on the line -- so moving
+ * it cannot change the answer, and the row settles in one step. A tag is
+ * `flex: none`, so it costs its width; so does the id, whose floor and cap
+ * are one 10ch (#2391 comment 58), so its width never moves with the line.
+ */
+function mixGoesUnder(el: HTMLElement): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
+  if (!window.matchMedia(MIX_BAND_QUERY).matches) return false
+  const line = el.clientWidth
+  if (line <= 0) return false
+  const others = [...el.children].filter((c) => !c.classList.contains('wfl-mix'))
+  const tags = others
+    .filter((c) => c.classList.contains('tag') || c.classList.contains('id'))
+    // A box with no width read (no layout) costs 0, never NaN.
+    .reduce((w, c) => w + ((c as HTMLElement).offsetWidth || 0), 0)
+  // The mix is on this line or on the row's second one; its basis is 11rem in both places.
+  const mix = el.parentElement?.querySelector<HTMLElement>(':scope > .wfl-line > .wfl-mix, :scope > .wfl-sub > .wfl-mix') ?? null
+  const style = window.getComputedStyle(el)
+  const gap = cssPx(style.columnGap, LINE_GAP_PX)
+  const basis = mix === null ? LINE_MIX_PX : cssPx(window.getComputedStyle(mix).flexBasis, LINE_MIX_PX)
+  // Every item but the name is one gap: the others less the name, and the mix.
+  const gaps = others.length * gap
+  return line - tags - gaps - basis < NAME_FLOOR_PX
+}
+
+/** A computed `<n>px` length, or `fallback` where the box has none (`auto`, `normal`, or no sheet loaded). */
+function cssPx(value: string | undefined, fallback: number): number {
+  const m = /^([\d.]+)px$/.exec((value ?? '').trim())
+  return m === null ? fallback : Number(m[1])
+}
+
 function WorkflowListRow({
   workflow,
   label,
@@ -5777,6 +5934,20 @@ function WorkflowListRow({
   useEffect(() => {
     if (onSeen !== null && inView) onSeen(workflow)
   }, [onSeen, inView, workflow])
+  // The name's line, measured: its width comes from the fixed table's column,
+  // never from what it holds, so measuring it cannot feed back into itself.
+  const lineRef = useRef<HTMLSpanElement | null>(null)
+  const [mixUnder, setMixUnder] = useState(false)
+  useLayoutEffect(() => {
+    const el = lineRef.current
+    if (el === null) return
+    const measure = () => setMixUnder(mixGoesUnder(el))
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const watch = new ResizeObserver(measure)
+    watch.observe(el)
+    return () => watch.disconnect()
+  }, [])
   const why = listRowWhy(workflow, taskById, pending)
   // A row known to have no label or title is "Untitled workflow", id under it.
   const named = listRowName(workflow.workflow_id, label, stepsRead(workflow, taskById))
@@ -5804,25 +5975,44 @@ function WorkflowListRow({
         <WorkflowStateMark workflow={workflow} />
       </td>
       <td className="wfl-name" data-col="workflow">
-        <a href={workflowHref(workflow.workflow_id, query)} title={named.name}>
-          {named.name}
-        </a>
-        {named.showId && <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>}
+        {/* ONE LINE: THE NAME, ITS ID AND ITS RUNNERS (visual QA VQ-013,
+            #2391; workflows.html A). Name, id, runner chips and the current
+            step were four stacked lines, so a row was 3-4 lines tall. The id
+            sits beside the name, muted, cut first and whole in its title;
+            the runner mix follows on the same line where the Runners column
+            is not drawn (below 1680, QA G3-09). The current step, when there
+            is one, is the row's only second line -- and the runners join it
+            when the name would keep less than 200px beside them
+            (`mixGoesUnder`; VQ-013 re-review). */}
+        <span className="wfl-line" ref={lineRef}>
+          <a href={workflowHref(workflow.workflow_id, query)} title={named.name}>
+            {named.name}
+          </a>
+          {named.showId && <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>}
+          {!mixUnder && (
+            <span className="wfl-mix">
+              <Mix steps={workflow.steps} />
+            </span>
+          )}
+          <PullRequestWaitTag workflow={workflow} />
+          {cancelPending(workflow) && <span className="tag wait">cancel requested</span>}
+        </span>
         {/* Drawn at ≤560 only, where the done, failed and age columns are
             off the right edge (#109); the cells say it wide, so hidden from
             assistive technology to keep one reading of each fact. */}
         <span className="wfl-phone" aria-hidden>
           {phoneSummary(workflow, now)}
         </span>
-        {/* THE RUNNER MIX ON THE NAME'S SECOND LINE below 1680 (QA G3-09),
-            where the Runners and Shape columns give the name their width;
-            hidden where the column draws it, so it is read once. */}
-        <span className="wfl-mix">
-          <Mix steps={workflow.steps} />
-        </span>
-        {why !== null && <RowWhyLine why={why} />}
-        <PullRequestWaitTag workflow={workflow} />
-        {cancelPending(workflow) && <span className="tag wait">cancel requested</span>}
+        {mixUnder ? (
+          <span className="wfl-sub">
+            <span className="wfl-mix">
+              <Mix steps={workflow.steps} />
+            </span>
+            {why !== null && <RowWhyLine why={why} />}
+          </span>
+        ) : (
+          why !== null && <RowWhyLine why={why} />
+        )}
       </td>
       <td className="wfl-shape" data-col="shape" title={shapeOf(workflow.steps).label}>
         <StageGlyph steps={workflow.steps} taskById={taskById} />
@@ -5925,29 +6115,39 @@ function listRowWhy(w: Workflow, taskById: ReadonlyMap<string, Task> | null, pen
 
 /** The row's second line. The step is bold; the cause is the task's own words. */
 function RowWhyLine({ why }: { why: ListWhy }) {
+  // The line is one line, cut at the cell's edge on a wide table (VQ-013);
+  // its whole sentence is its title.
   switch (why.kind) {
     case 'running':
       return (
-        <span className="wfl-why">
+        <span className="wfl-why" title={`${why.step} running`}>
           <b>{why.step}</b> running
         </span>
       )
     case 'failed':
       return (
-        <span className="wfl-why is-bad">
+        <span className="wfl-why is-bad" title={`failed at ${why.step}: ${why.why}`}>
           failed at <b>{why.step}</b>: {why.why}
         </span>
       )
     case 'failed-unread':
-      return <span className="wfl-why is-bad">failed: {why.why}</span>
+      return (
+        <span className="wfl-why is-bad" title={`failed: ${why.why}`}>
+          failed: {why.why}
+        </span>
+      )
     case 'parked':
       return (
-        <span className="wfl-why">
+        <span className="wfl-why" title={`${why.step} parked · ${why.why}`}>
           <b>{why.step}</b> parked · {why.why}
         </span>
       )
     case 'unread':
-      return <span className="wfl-why is-warn">{why.why}</span>
+      return (
+        <span className="wfl-why is-warn" title={why.why}>
+          {why.why}
+        </span>
+      )
   }
 }
 
@@ -6292,14 +6492,13 @@ function WorkflowHead({
   usage: UsageRead
 }) {
   const spend = workflowSpend(workflow.steps, taskById, telemetryOf(usage))
-  const label = workflowLabel(workflow, taskById)
   const pr = workflowPullRequest(workflow, taskById)
   // ONE ROW, CHIPS LEFT AND ACTIONS RIGHT (workflows.html B; #503). The title
   // is the shell's head above, and its meta line the count note over this
   // row (`pageSummary`, #138); this row
   // carries what is not a sentence -- the state, the pull request, the failure
-  // policy, the cost, the id when the title is the name -- and Copy link and
-  // Cancel workflow, centred on the row so nothing leaves blank space under them.
+  // policy, the cost -- and Copy id, Copy link and Cancel workflow, centred on
+  // the row so nothing leaves blank space under them.
   return (
     <div className="wfp-head">
       <div className="wfp-chips">
@@ -6326,15 +6525,46 @@ function WorkflowHead({
             )}
           </Chip>
         </span>
-        {label !== null && <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>}
         <PullRequestWaitTag workflow={workflow} />
         {cancelPending(workflow) && <span className="tag wait">cancel requested</span>}
       </div>
       <span className="wfp-actions">
+        {/* THE ID ONCE, BEHIND ITS COPY (visual QA VQ-015 re-review;
+            agent-details-v3.html A): it was a chip of plain text here and
+            printed again in the inspector's same-step row. The id is this
+            button's title and what it copies; the title above is the name. */}
+        <CopyId id={workflow.workflow_id} />
         <CopyLink />
         <CancelWorkflow workflow={workflow} taskById={taskById} onDone={reload} />
       </span>
     </div>
+  )
+}
+
+/** Copy id: the workflow's id, copied rather than printed; says when the browser refused. */
+function CopyId({ id }: { id: string }) {
+  const [said, setSaid] = useState<'copied' | 'refused' | null>(null)
+  const copy = () => {
+    // Asked inside the click: a browser grants `writeText` only during the
+    // gesture, is undefined outside a secure context, and may refuse.
+    const clip = typeof navigator === 'undefined' ? undefined : navigator.clipboard
+    if (clip === undefined || typeof clip.writeText !== 'function') {
+      setSaid('refused')
+      return
+    }
+    clip.writeText(id).then(
+      () => setSaid('copied'),
+      () => setSaid('refused'),
+    )
+  }
+  return (
+    <Button
+      onClick={copy}
+      title={said === 'refused' ? `This browser refused the clipboard. The id is ${id}` : id}
+      aria-label={`Copy workflow id ${id}`}
+    >
+      {said === 'copied' ? 'Id copied' : said === 'refused' ? 'Copy refused' : 'Copy id'}
+    </Button>
   )
 }
 

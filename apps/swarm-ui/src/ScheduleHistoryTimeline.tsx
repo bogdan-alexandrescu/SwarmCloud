@@ -28,7 +28,7 @@
  * state, and its cost as `/spans` summed it from the attempts' recorded cost.
  * A cost nobody recorded is a dash with the route's reason, never $0.
  */
-import { useEffect, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useId, useState, type ReactNode } from 'react'
 
 import type { FiringWork, ScheduleFiring } from './api'
 import { Button, Segmented } from './components'
@@ -63,6 +63,8 @@ export interface SpanAttempt {
 /** One task a work item ran. `attempts` null: not read, `attempts_unread` says why. */
 export interface SpanTask {
   task_id: string
+  /** The task's `metadata.title`, null when unset (VQ-028): what the History names a schedule-made task by. */
+  title?: string | null
   step_id?: string | null
   label: string | null
   state?: Task['state']
@@ -156,6 +158,9 @@ export function HistoryPane({ timeline, table }: { timeline: ReactNode; table: R
   return (
     <>
       <div className="sht-bar">
+        {/* THE PANE IS HEADED (schedules.html detail A, "Firings, last 7 days";
+            VQ-028). Not "last 7 days": the pane pages through every firing. */}
+        <h3 className="sc-h3 sht-h">Firings, newest first</h3>
         <Segmented<HistoryView>
           small
           label="Draw the firings as"
@@ -217,7 +222,8 @@ interface Row {
   label: string
   /** Where its label links: the task's page, or the item's. */
   to: string | null
-  sub: string
+  /** The second line's parts, drawn " · " apart; it wraps between them. */
+  sub: string[]
   segs: LaneSeg[]
   multi: boolean
   /** A dash with this reason instead of bars. */
@@ -239,6 +245,30 @@ export function workAddress(w: { kind: string; id: string }): string | null {
 
 const KIND_WORD: Record<string, string> = { issue_run: 'issue run', task: 'task', workflow: 'workflow', api_action: 'API action' }
 
+/**
+ * The runner profile `/spans` labels a task by when it has no step
+ * (`_span_task`: `step_label or step_id or runner_profile`), or null for a
+ * step. A profile says where the task ran, never what it was (VQ-028).
+ */
+function profileOf(t: SpanTask): string | null {
+  return t.step_id === null || t.step_id === undefined ? t.label : null
+}
+
+/**
+ * WHAT A WORK ITEM IS, IN WORDS (schedules.html detail A; VQ-028): an issue
+ * run by its issue, a task by its title (its `metadata.title`, BGD 2026-10-26),
+ * anything else -- and a task with no title -- by what the firing's type made:
+ * "docs-drift task", "issue-sweep workflow". Every row was its runner profile
+ * ("claude-code"), which named no firing apart from another.
+ */
+export function itemName(it: Pick<SpanItem, 'kind' | 'id' | 'issue'> & { tasks?: SpanTask[] }, type: string): string {
+  if (it.kind === 'issue_run' && it.issue) return it.issue.title === null ? `#${it.issue.number}` : `#${it.issue.number} ${it.issue.title}`
+  const title = it.kind === 'task' ? it.tasks?.[0]?.title : null
+  if (typeof title === 'string' && title.trim() !== '') return title
+  if (it.kind === 'task' || it.kind === 'workflow') return `${type} ${it.kind}`
+  return KIND_WORD[it.kind] ?? it.kind
+}
+
 function attemptsWord(n: number, truncated: boolean): string {
   if (n === 0) return 'no attempt yet'
   return `${truncated ? 'last ' : ''}${n} ${n === 1 ? 'attempt' : 'attempts'}`
@@ -256,11 +286,11 @@ function taskSegs(t: SpanTask, now: number): LaneSeg[] {
 
 function rowsOf(f: ScheduleFiring, items: SpanItem[] | null, gap: string | null, now: number): Row[] {
   if (f.work.length === 0) {
-    return [{ key: 'none', label: '', to: null, sub: '', segs: [], multi: false, gap: null, none: 'this firing made no work' }]
+    return [{ key: 'none', label: '', to: null, sub: [], segs: [], multi: false, gap: null, none: 'this firing made no work' }]
   }
   if (items === null) {
     return f.work.map((w) => ({
-      key: `${w.kind}:${w.id}`, label: w.id, to: workAddress(w), sub: KIND_WORD[w.kind] ?? w.kind,
+      key: `${w.kind}:${w.id}`, label: w.id, to: workAddress(w), sub: [KIND_WORD[w.kind] ?? w.kind],
       segs: [], multi: false, gap, none: null,
     }))
   }
@@ -268,15 +298,27 @@ function rowsOf(f: ScheduleFiring, items: SpanItem[] | null, gap: string | null,
   for (const it of items) {
     const kind = KIND_WORD[it.kind] ?? it.kind
     const itemAt = workAddress(it)
+    const name = itemName(it, f.type)
+    // An issue run's lane rows say its number; the whole title is the list's.
+    const short = it.kind === 'issue_run' && it.issue ? `#${it.issue.number}` : it.id
     if (it.tasks.length === 0) {
-      rows.push({ key: `${it.kind}:${it.id}`, label: it.id, to: itemAt, sub: kind, segs: [], multi: false, gap: it.unread ?? 'nothing was served for it', none: null })
+      rows.push({ key: `${it.kind}:${it.id}`, label: it.kind === 'issue_run' && it.issue ? name : it.id, to: itemAt, sub: [kind], segs: [], multi: false, gap: it.unread ?? 'nothing was served for it', none: null })
       continue
     }
     for (const t of it.tasks) {
-      const label = t.label ?? t.task_id
-      const sub = [it.kind === 'task' ? null : it.id, t.state?.toLowerCase().replace(/_/g, ' '), t.attempts === null ? null : attemptsWord(t.attempts.length, t.attempts_truncated === true)]
+      // A task item is named by what it is, its profile said beside it; a
+      // step of a run or a workflow by its step, its item beside it. The
+      // profile goes bare, with no "on" (VQ-SCHEDULES review). The line no
+      // longer has to fit one line of the 255px label column: it wraps
+      // between its parts (`.sht-sub`, schedules.css), so "claude-code ·
+      // succeeded · 2 attempts", which drew "2 attemp…" at 259px, and
+      // "claude-code-browser · succeeded · 12 attempts" read whole
+      // (VQ-SCHEDULES re-review).
+      const profile = profileOf(t)
+      const label = it.kind === 'task' ? name : t.label ?? t.task_id
+      const beside = it.kind === 'task' ? (profile === null ? t.label : profile) : short
+      const sub = [beside, t.state?.toLowerCase().replace(/_/g, ' '), t.attempts === null ? null : attemptsWord(t.attempts.length, t.attempts_truncated === true)]
         .filter((x): x is string => x !== null && x !== undefined)
-        .join(' · ')
       rows.push({
         key: `${it.kind}:${it.id}:${t.task_id}`,
         label,
@@ -298,7 +340,7 @@ function rowsOf(f: ScheduleFiring, items: SpanItem[] | null, gap: string | null,
         key: `${it.kind}:${it.id}:waiting`,
         label: waiting,
         to: itemAt,
-        sub: `${it.id} · holds nothing`,
+        sub: [short, 'holds nothing'],
         segs: [{ kind: 'park', from: since, to: now, gen: null, open: true, endKnown: true, future: false, label: null, attemptId: null, reason: waiting, current: false }],
         multi: false,
         gap: null,
@@ -307,7 +349,7 @@ function rowsOf(f: ScheduleFiring, items: SpanItem[] | null, gap: string | null,
       })
     }
     if (it.unread !== null) {
-      rows.push({ key: `${it.kind}:${it.id}:rest`, label: it.id, to: itemAt, sub: kind, segs: [], multi: false, gap: it.unread, none: null })
+      rows.push({ key: `${it.kind}:${it.id}:rest`, label: it.id, to: itemAt, sub: [kind], segs: [], multi: false, gap: it.unread, none: null })
     }
   }
   return rows
@@ -346,8 +388,8 @@ function itemState(it: SpanItem, w: FiringWork | undefined): string | null {
   return null
 }
 
-/** What the item is, in words. */
-function itemWhat(it: SpanItem): ReactNode {
+/** What the item is, in words: its issue, or what the firing's type made, and where it ran. */
+function itemWhat(it: SpanItem, type: string): ReactNode {
   if (it.kind === 'issue_run' && it.issue) {
     return it.issue.title === null ? (
       <>
@@ -357,8 +399,26 @@ function itemWhat(it: SpanItem): ReactNode {
       <b>{`#${it.issue.number} ${it.issue.title}`}</b>
     )
   }
-  if (it.kind === 'task') return <b>{`task${it.tasks[0]?.label ? ` ${it.tasks[0].label}` : ''}`}</b>
-  if (it.kind === 'workflow') return <b>{`workflow of ${it.tasks.length} ${it.tasks.length === 1 ? 'step' : 'steps'}`}</b>
+  if (it.kind === 'task') {
+    const t = it.tasks[0]
+    const profile = t === undefined ? null : profileOf(t)
+    const step = t === undefined || profile !== null ? null : t.label
+    return (
+      <>
+        <b>{itemName(it, type)}</b>
+        {step !== null && ` ${step}`}
+        {profile !== null && ` on ${profile}`}
+      </>
+    )
+  }
+  if (it.kind === 'workflow') {
+    return (
+      <>
+        <b>{itemName(it, type)}</b>
+        {` of ${it.tasks.length} ${it.tasks.length === 1 ? 'step' : 'steps'}`}
+      </>
+    )
+  }
   return (
     <>
       <b>{KIND_WORD[it.kind] ?? it.kind}</b> <span className="mono">{it.id}</span>
@@ -366,10 +426,20 @@ function itemWhat(it: SpanItem): ReactNode {
   )
 }
 
+/** A cost never recorded: a dash whose reason is its title (schedules.html's `.dash`). The words stay in
+ *  the text, read aloud, and schedules.css shows them under the item on a phone, where there is no hover. */
+function CostDash({ why }: { why: string }) {
+  return (
+    <i className="ctl-em sht-dash" title={why}>
+      &mdash;<span className="sht-why"> {why}</span>
+    </i>
+  )
+}
+
 /** The item's cost: the figure, a floor marked partial, or a dash with its reason -- never $0 for nothing recorded. */
 function ItemCost({ cost }: { cost: SpanCost | null | undefined }) {
-  if (cost === null || cost === undefined) return <i className="ctl-em">&mdash; its cost was not served</i>
-  if (cost.reported_usd === null) return <i className="ctl-em">&mdash; {cost.unread ?? 'no attempt recorded a cost'}</i>
+  if (cost === null || cost === undefined) return <CostDash why="its cost was not served" />
+  if (cost.reported_usd === null) return <CostDash why={cost.unread ?? 'no attempt recorded a cost'} />
   if (cost.unread !== null) {
     return (
       <span className="sc-spend">
@@ -390,38 +460,48 @@ function ItemList({
   now: number
   go: (to: string) => void
 }) {
+  const headId = useId()
   const rows = lanes.flatMap(({ f, items }) => (items ?? []).map((it) => ({ f, it })))
   if (rows.length === 0) return null
   return (
-    <ul className="sc-audit sht-list" data-testid="sc-history-items" aria-label="The work of these firings">
+    <>
+      {/* THE LIST IS HEADED AND SET APART (VQ-028): it began 10px under the
+          last lane, unnamed, and read as one more lane. */}
+      <h3 className="sc-h3 sht-list-h" id={headId}>
+        What these firings made
+      </h3>
+      <ul className="sc-audit sht-list" data-testid="sc-history-items" aria-labelledby={headId}>
       {rows.map(({ f, it }) => {
         const when = f.fired_at ?? f.slot
         const to = workAddress(it)
         const state = itemState(it, f.work.find((w) => w.kind === it.kind && w.id === it.id))
         return (
           <li key={`${f.firing_id}:${it.kind}:${it.id}`} data-work={`${it.kind}:${it.id}`}>
-            <span className="sc-who">
-              {when === null ? 'time not recorded' : <span title={localTime(when)}>{timeAgo(when, now)}</span>}
+            <span className="sht-words">
+              <span className="sc-who">
+                {when === null ? 'time not recorded' : <span title={localTime(when)}>{timeAgo(when, now)}</span>}
+              </span>
+              {' · '}
+              {itemWhat(it, f.type)}
+              {to !== null && (
+                <>
+                  {' → '}
+                  {LINK_WORD[it.kind] ?? it.kind}{' '}
+                  <InApp go={go} to={to} className="mono">
+                    {it.id}
+                  </InApp>
+                </>
+              )}
+              {state !== null && ` · ${state}`}
             </span>
-            {' · '}
-            {itemWhat(it)}
-            {to !== null && (
-              <>
-                {' → '}
-                {LINK_WORD[it.kind] ?? it.kind}{' '}
-                <InApp go={go} to={to} className="mono">
-                  {it.id}
-                </InApp>
-              </>
-            )}
-            {state !== null && ` · ${state}`}
-            <span className="sc-sub" data-cost="">
+            <span className="sc-sub sht-cost" data-cost="">
               <ItemCost cost={it.cost} />
             </span>
           </li>
         )
       })}
-    </ul>
+      </ul>
+    </>
   )
 }
 
@@ -581,7 +661,16 @@ export function HistoryTimeline({
                             {r.to === null ? <span className="tl-name mono">{r.label}</span> : <InApp go={go} to={r.to} className="tl-name">{r.label}</InApp>}
                           </b>
                         )}
-                        {r.sub !== '' && <small title={r.sub}>{r.sub}</small>}
+                        {r.sub.length > 0 && (
+                          <small className="sht-sub">
+                            {r.sub.map((p, i) => (
+                              <Fragment key={i}>
+                                {i > 0 && ' · '}
+                                <span className="sht-sub-p">{p}</span>
+                              </Fragment>
+                            ))}
+                          </small>
+                        )}
                       </div>
                       <div className="tl-trk">
                         {r.gap !== null ? (

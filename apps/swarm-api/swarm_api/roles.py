@@ -65,7 +65,7 @@ from swarm_common.identity import tenant_id_for_group
 
 from . import refusals
 from .admins import AUDIT_COLLECTION
-from .auth import AuthContext
+from .auth import VIA_PLATFORM_MEMBER, AuthContext
 from .errors import (
     PlatformAdminAuditUnavailable,
     RoleAdminRequired,
@@ -323,6 +323,9 @@ PERSON_ROUTES: frozenset[str] = frozenset({
 })
 PERSON_ROUTE_PREFIXES: tuple[str, ...] = (
     "/v1/admin/", "/v1/onboarding/github", "/v1/profile",
+    # A person's own join requests (join-requests.md §4.8): they are not in
+    # the workspace yet, so no role there decides them.
+    "/v1/join/", "/v1/join-requests",
 )
 #: Writes a `viewer` may make (§4.1's viewer row).
 VIEWER_WRITES: frozenset[tuple[str, str]] = frozenset({
@@ -357,12 +360,16 @@ ADMIN_WRITES: frozenset[tuple[str, str]] = frozenset({
     ("DELETE", "/v1/git-tokens/{token_id}"),
     ("PUT", "/v1/workspaces/{tenant_id}/merge-settings"),
     ("PUT", "/v1/workspaces/{tenant_id}/code-intelligence"),
+    ("PUT", "/v1/workspaces/{tenant_id}/qa-settings"),
     ("PUT", "/v1/workspaces/{tenant_id}/judgment-backend"),
     ("PUT", "/v1/workspaces/{tenant_id}/name"),
     ("PATCH", "/v1/repositories/{repo_id}"),
     ("PUT", "/v1/workspace/roles/person"),
     ("DELETE", "/v1/workspace/roles/person"),
     ("PUT", "/v1/workspace/roles/default"),
+    # The join link and removing a platform membership (join-requests.md §4.6).
+    ("PUT", "/v1/workspace/join-link"),
+    ("DELETE", "/v1/workspace/members/person"),
 })
 _READS = frozenset({"GET", "HEAD", "OPTIONS"})
 
@@ -655,9 +662,13 @@ class RoleStore:
 
     def write(self, *, tenant_id: str, subject: str, role: str | None, by: str, via: str,
               reason: str, previous: Grant | None, action: str,
-              detail: Mapping[str, Any]) -> str:
+              detail: Mapping[str, Any], writer: Any = None) -> str:
         """Append one signed grant and its `admin_audit` row in ONE batch:
-        both commit or neither does. Returns the grant's `granted_at`. The
+        both commit or neither does. With `writer` (a transaction or batch
+        the caller commits) both are set on it instead, as
+        `MembershipStore.write` does, so a join approval's decision,
+        membership, lowered role and audit rows land in one commit or none
+        do (join-requests.md §4.3). Returns the grant's `granted_at`. The
         document id is Firestore's auto-id and is returned to nobody."""
         keys = self._keys()
         granted_at = self._next_granted_at(previous)
@@ -670,10 +681,12 @@ class RoleStore:
         }
         if subject != DEFAULT_SUBJECT:
             row["target_email"] = subject
-        batch = self._db.batch()
-        batch.set(self._grants().document(), doc)
-        batch.set(self._db.collection(AUDIT_COLLECTION).document(), self.audit_row(row))
-        batch.commit()
+        own = writer is None
+        target = self._db.batch() if own else writer
+        target.set(self._grants().document(), doc)
+        target.set(self._db.collection(AUDIT_COLLECTION).document(), self.audit_row(row))
+        if own:
+            target.commit()
         with self._lock:
             self._cache.pop((tenant_id, subject), None)
         log.info("workspace role written tenant=%s action=%s via=%s", tenant_id, action, via)
@@ -833,10 +846,17 @@ def roles_table() -> list[dict[str, str]]:
 
 
 def tenant_via(auth: AuthContext) -> str:
-    """`TenantChoice.via` for the tenant this request selected."""
+    """`TenantChoice.via` for the tenant this request selected:
+    "platform_member" for a group workspace reached by a platform membership
+    (lane JOIN-WIRE), the same test `GET /v1/tenants/mine` applies. A label
+    only -- the role is resolved as any member's."""
     if auth.tenant_via == VIA_PLATFORM_ADMIN:
         return VIA_PLATFORM_ADMIN
-    return VIA_PERSONAL if is_personal(auth) else VIA_MEMBER
+    if is_personal(auth):
+        return VIA_PERSONAL
+    if (auth.tenant_id, auth.tenant_principal) in auth.platform_memberships:
+        return VIA_PLATFORM_MEMBER
+    return VIA_MEMBER
 
 
 def grant_api(email: str, grant: Grant) -> dict[str, Any]:

@@ -76,6 +76,21 @@ the page's own read, so the badge and the page count the same rows; it is
 reused for `PLATFORM_SECRETS_TTL` per reader, because it is two Secret Manager
 metadata calls per secret and the bell polls every 30 s.
 
+A JOIN REQUEST RINGS ITS DECIDERS, AND ITS DECISION RINGS ITS REQUESTER
+(docs/design/join-requests.md §4.6, Q3; lane JOIN-BELL, part of #2325).
+`join_requests_to_decide` rings the open requests to join a group workspace
+for that workspace's admins and for platform admins, `admin:join:<ref>`; a
+workspace admin is rung only for a workspace in `Viewer.administers` (the
+route's fresh `administered_workspaces` read, as People reads it) and only
+while the request names the group that workspace has now, which is exactly
+what `join_scope` lets them decide: a bell for a request they would be
+refused is noise. `own_join_requests` rings the requester once per approval
+or denial, `join:<ref>:<state>`, for `WINDOW`; never who decided, and never
+a workspace id or group, which a working code does not reveal. Both read the
+signed records through `joinrequests.JoinStore`, so a request or decision
+that fails its MAC rings nobody, and both read nothing while no store is
+given (`Notifications(joins=...)`).
+
 NOTHING HERE CREATES DEMAND (invariants 1-3): it reads documents and writes one
 document of its own; no task, lease or slot is touched.
 """
@@ -96,7 +111,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from swarm_common.admission import _snapshot
 from swarm_common.states import ParkReason, TaskState
 
-from . import approvals, schedulefire
+from . import approvals, joinrequests, schedulefire
 from . import platform_secrets as psec
 from .agent_questions import (
     OWNER_QUESTIONS_PARK_KEY,
@@ -206,6 +221,11 @@ class Viewer:
     #: `as_set`, with `partial: true` (§4.6). Only a request that named its
     #: workspace gets this far; one that did not is a 503 in authentication.
     preferences_unread: bool = False
+    #: tenant_id -> group of each group workspace the person administers by
+    #: their own role, read fresh (`routes.people.administered_workspaces`):
+    #: whose join requests ring them. None when that read failed, which the
+    #: join source reports as unread rather than as "administers nothing".
+    administers: tuple[tuple[str, str], ...] | None = ()
 
 
 @dataclass
@@ -217,6 +237,8 @@ class Reading:
     store: Any
     viewer: Viewer
     now: datetime
+    #: The join requests' store (`joinrequests.JoinStore`); None reads none.
+    joins: Any | None = None
     _tasks: list[Any] | None = field(default=None, repr=False)
 
     @property
@@ -299,6 +321,59 @@ def admin_requests(reading: Reading) -> list[dict[str, Any]]:
     return items
 
 
+#: What a requester is shown for a workspace with no display name: never its
+#: id or its group (join-requests.md §4.2), as the join routes say it.
+JOIN_UNNAMED = "a group workspace"
+
+
+def _display_name(reading: Reading, tenant_id: str) -> str | None:
+    """The workspace's display name, or None when it has none or cannot be
+    read: a label only, never a reason to drop an item."""
+    try:
+        tenant = reading.store.get_tenant(tenant_id)
+    except Exception:  # noqa: BLE001 - a label, never the item
+        return None
+    name = getattr(tenant, "display_name", None) if tenant is not None else None
+    return name.strip() if isinstance(name, str) and name.strip() else None
+
+
+def join_requests_to_decide(reading: Reading) -> list[dict[str, Any]]:
+    """Open requests to join a group workspace, for those who decide them
+    (join-requests.md §4.6, Q3): every one for a platform admin; for a
+    workspace admin, those of the workspaces they administer whose request
+    names the group the workspace has now. Reads nothing for anyone else.
+    Approved, denied, withdrawn or expired: nothing is derived."""
+    viewer, joins = reading.viewer, reading.joins
+    if joins is None:
+        return []
+    if viewer.is_admin:
+        views = joins.open_for(None)
+    else:
+        if viewer.administers is None:
+            raise LookupError("the workspaces this person administers could not be read")
+        groups = {tenant_id: str(group or "").strip().lower()
+                  for tenant_id, group in viewer.administers
+                  if tenant_id and not tenant_id.startswith("u-")}
+        if not groups:
+            return []
+        views = [v for v in joins.open_for(groups)
+                 if groups.get(v.request.tenant_id) == v.request.group]
+    names: dict[str, str] = {}
+    items = []
+    for view in views:
+        request = view.request
+        if view.state != joinrequests.REQUESTED:
+            continue
+        if request.tenant_id not in names:
+            names[request.tenant_id] = _display_name(reading, request.tenant_id) \
+                or request.tenant_id
+        items.append(_item(
+            f"admin:join:{request.ref}", ADMIN, True,
+            f"{request.requester} asks to join {names[request.tenant_id]}",
+            request.message or None, "/admin/people", request.requested_at, topic=T_ADMIN))
+    return items
+
+
 # --------------------------------------------------------------------------
 # approval: what blocks progress until a member decides
 # --------------------------------------------------------------------------
@@ -317,8 +392,14 @@ def _may_decide(viewer: Viewer, approvers: Any, *, excluded: Iterable[str] = ())
     return True
 
 
+# Approvals is Automate's second page (APPROVALS-MOVE, PR 2486). The console
+# still redirects `/approvals` and `/approvals/<id>`, but only for links that
+# were already sent: every link built here names the page where it lives.
+APPROVALS_HREF = "/automate/approvals"
+
+
 def _approval_href(approval_id: str) -> str:
-    return "/approvals/" + quote(approval_id, safe="")
+    return f"{APPROVALS_HREF}/" + quote(approval_id, safe="")
 
 
 def approval_items(reading: Reading) -> list[dict[str, Any]]:
@@ -367,7 +448,7 @@ def approval_items(reading: Reading) -> list[dict[str, Any]]:
         items.setdefault(approval_id, _item(
             f"approval:{approval_id}", APPROVAL, True, _APPROVAL_TITLES[approvals.RUN],
             f"{schedule.get('name')}: {schedule.get('type')} waits to run",
-            "/approvals", firing.get("fired_at"), topic=T_APPROVAL))
+            APPROVALS_HREF, firing.get("fired_at"), topic=T_APPROVAL))
 
     runs, _ = IssueRuns(db, now=lambda: reading.now).planned(tenant_id, limit=SCAN)
     for run in runs:
@@ -788,6 +869,30 @@ def loan_items(reading: Reading) -> list[dict[str, Any]]:
                   "/setup#claude-account", decision.get("at"), topic=T_ACCOUNT)]
 
 
+def own_join_requests(reading: Reading) -> list[dict[str, Any]]:
+    """The person's own requests to join a group workspace that were approved
+    or denied within `WINDOW` (join-requests.md §4.6): one item per decision,
+    `join:<ref>:<state>`, linked to their request list. A denial shows its
+    reason, which is the person's to read; who decided is not. An open request
+    is its deciders' item, and a withdrawal is the person's own act."""
+    if reading.joins is None:
+        return []
+    items = []
+    for view in reading.joins.mine(reading.email):
+        decision = view.decision
+        if decision is None or view.request.requester != reading.email \
+                or view.state not in (joinrequests.APPROVED, joinrequests.DENIED) \
+                or not _recent(reading, decision.at):
+            continue
+        name = _display_name(reading, view.request.tenant_id) or JOIN_UNNAMED
+        denied = view.state == joinrequests.DENIED
+        items.append(_item(
+            f"join:{view.request.ref}:{view.state}", ACCOUNT, False,
+            f"Your request to join {name} was {'denied' if denied else 'approved'}",
+            decision.reason if denied else None, "/join", decision.at, topic=T_ACCOUNT))
+    return items
+
+
 # --------------------------------------------------------------------------
 # finished: updates, never "needs you"
 # --------------------------------------------------------------------------
@@ -887,6 +992,7 @@ def failure_findings(reading: Reading) -> list[dict[str, Any]]:
 #: Every source, by the name a failure is logged under.
 SOURCES: tuple[tuple[str, Source], ...] = (
     ("admin", admin_requests),
+    ("join_requests", join_requests_to_decide),
     ("approvals", approval_items),
     ("handoffs", handoffs),
     ("awaiting_input", awaiting_input),
@@ -894,6 +1000,7 @@ SOURCES: tuple[tuple[str, Source], ...] = (
     ("github", github_items),
     ("workspace", workspace_items),
     ("loan", loan_items),
+    ("own_join_requests", own_join_requests),
     ("finished", finished_items),
     ("failure_review", failure_findings),
 )
@@ -920,25 +1027,9 @@ class _Derived:
     tenants_waiting: int | None = None
 
 
-#: The metadata reader for each project, built on first use and kept, so a
-#: feed read builds no Secret Manager client once one exists.
-_READERS: dict[str, psec.SecretManagerMetadata] = {}
 #: Each reader's last count and when it was read (`PLATFORM_SECRETS_TTL`).
 _SECRET_COUNTS: "weakref.WeakKeyDictionary[Any, tuple[datetime, int | None]]" = weakref.WeakKeyDictionary()
 _SECRET_COUNTS_LOCK = threading.Lock()
-
-
-def _reader_for(db: Any) -> Any | None:
-    """The project's metadata reader, from the Firestore client's own project
-    (deps.py builds it with `settings.project_id`); None when it names none."""
-    project = getattr(db, "project", None)
-    if not isinstance(project, str) or not project:
-        return None
-    with _SECRET_COUNTS_LOCK:
-        reader = _READERS.get(project)
-        if reader is None:
-            reader = _READERS[project] = psec.SecretManagerMetadata(project)
-    return reader
 
 
 def platform_secrets_unset(meta: Any, db: Any, now: datetime) -> int | None:
@@ -968,13 +1059,16 @@ def platform_secrets_unset(meta: Any, db: Any, now: datetime) -> int | None:
 class Notifications:
     def __init__(self, db: Any, store: Any, *, now: Callable[[], datetime],
                  sources: Sequence[tuple[str, Source]] = SOURCES,
-                 secret_metadata: Any | None = None) -> None:
+                 secret_metadata: Any | None = None, joins: Any | None = None) -> None:
         self._db = db
         self._store = store
         self._now = now
         self._sources = tuple(sources)
-        #: The platform secrets' metadata reader; None reads the project's own.
+        #: The platform secrets' metadata reader, the app's one (routes/notifications.py
+        #: hands it over); None counts nothing.
         self._secret_metadata = secret_metadata
+        #: The join requests' store (`joinrequests.JoinStore`); None rings no join item.
+        self._joins = joins
 
     def _ref(self, viewer: Viewer) -> Any:
         return self._db.collection(COLLECTION).document("rd_" + user_hash(viewer.email))
@@ -984,7 +1078,8 @@ class Notifications:
         `MAX_UPDATES` after the mutes, so muting the successes leaves room
         for the failures; `admin_pending` is counted before them, because it
         drives the Admin pill, not the bell."""
-        reading = Reading(db=self._db, store=self._store, viewer=viewer, now=_aware(self._now()))
+        reading = Reading(db=self._db, store=self._store, viewer=viewer, now=_aware(self._now()),
+                          joins=self._joins)
         items: dict[str, dict[str, Any]] = {}
         partial = viewer.preferences_unread
         unread: set[str] = set()
@@ -1066,8 +1161,10 @@ class Notifications:
     def _platform_secrets_unset(self, viewer: Viewer) -> int | None:
         if not viewer.is_admin:
             return None
-        meta = self._secret_metadata if self._secret_metadata is not None else _reader_for(self._db)
-        return None if meta is None else platform_secrets_unset(meta, self._db, _aware(self._now()))
+        meta = self._secret_metadata
+        if meta is None:
+            return None
+        return platform_secrets_unset(meta, self._db, _aware(self._now()))
 
     def _write(self, viewer: Viewer, ids: Iterable[str], *, all_read: bool) -> None:
         now = _aware(self._now())

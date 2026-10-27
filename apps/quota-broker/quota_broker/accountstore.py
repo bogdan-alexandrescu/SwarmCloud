@@ -161,6 +161,11 @@ HEALTH_DOCUMENT = "record"
 HEALTH_RETENTION = timedelta(days=7)
 #: Events kept per account; the 51st drops the oldest.
 HEALTH_EVENTS_MAX = 50
+#: Accounts the pool-wide read (`GET /v1/accounts/health`) serves in one
+#: answer: 200 records of at most 50 events and 168 hours each is the most one
+#: response carries. A pool larger than this is served its first 200 by id and
+#: told `truncated`, never silently cut.
+HEALTH_POOL_ACCOUNTS_MAX = 200
 #: Characters of an event's message kept. A message is a platform-written
 #: sentence ("claude-code reported a provider rate limit"), never output.
 HEALTH_MESSAGE_MAX = 200

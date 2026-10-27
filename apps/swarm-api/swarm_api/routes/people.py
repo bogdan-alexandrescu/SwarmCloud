@@ -30,7 +30,17 @@ Lane W7 (docs/workspaces.md §6.3-§6.4):
     POST /v1/admin/workspaces/sweep                      the dispatch sweep: an
                                                          admin, or the swarm-tick
                                                          scheduler identity
-                                                         (`auth.ROLLUP_SWEEPER_ROUTES`)
+                                                         (`auth.ROLLUP_SWEEPER_ROUTES`);
+                                                         it also prunes join requests
+                                                         decided or expired 90 days
+                                                         ago (join-requests.md §4.1)
+
+Lane JOIN-API (docs/design/join-requests.md §4.6, §4.8; part of #2325): the
+People read gains the open join requests its reader decides, `pending`
+counts them, and a requester's cell reads `requested`. `join_scope`, beside
+`people_scope`, is who may decide one request: a platform admin, or an
+admin of THAT request's workspace, read fresh. The decision routes are
+`routes/join_requests.py`'s.
 
 Lane WK-RECORD (docs/design/workspace-kinds.md §4.2.2):
 
@@ -69,8 +79,18 @@ from ..brokerclient import AccountPool
 from ..deps import AppContext, admin_auth, current_auth, get_context
 from .. import roles
 from .. import workspaces as ws
-from ..errors import ApiError, Forbidden, RoleUnavailable, ValidationFailed
+from ..errors import (
+    ApiError,
+    Forbidden,
+    JoinDeciderRequired,
+    JoinRequestInvalid,
+    JoinRequestUnknown,
+    RoleUnavailable,
+    ValidationFailed,
+)
 from ..groups import MembershipResolver
+from ..joinrequests import VIA_PLATFORM_ADMIN, VIA_WORKSPACE_ADMIN, JoinStore, RequestView
+from ..memberships import MembershipStore
 from ..people import (
     MAX_CEILING,
     MAX_LOAN_REASON,
@@ -87,6 +107,56 @@ from .accounts import account_pool
 from .roles import _member as group_member
 
 router = APIRouter(prefix="/v1/admin", tags=["people"])
+
+#: Where an app context keeps its one JoinStore, and the MembershipStore of a
+#: context whose authenticator has none, so each cache is per process, not
+#: per request (as `people._NAMES_ATTR`).
+_JOINS_ATTR = "_join_store"
+_MEMBERS_ATTR = "_membership_store"
+
+
+def join_store(ctx: AppContext) -> JoinStore:
+    store = getattr(ctx, _JOINS_ATTR, None)
+    if store is None:
+        store = JoinStore(ctx.db, ctx.settings, metrics=ctx.metrics, now=ctx.now)
+        setattr(ctx, _JOINS_ATTR, store)
+    return store
+
+
+def membership_store(ctx: AppContext) -> MembershipStore:
+    """The authenticator's own store, so every membership write (an approval,
+    a removal) evicts the cache the person's next request reads: a second
+    store's eviction left a removed person selecting the workspace for up to
+    `role_cache_seconds` (docs/design/join-requests.md §4.4; BGD,
+    2026-10-26, lane JOIN-ONE-STORE)."""
+    shared = getattr(ctx.authenticator, "memberships", None)
+    if shared is not None:
+        return shared
+    # Only a hand-built context reaches here: `deps.build_context` always
+    # hands the authenticator a store. Its authenticator reads none, so no
+    # resolution has a cache this one could leave stale.
+    store = getattr(ctx, _MEMBERS_ATTR, None)
+    if store is None:
+        store = MembershipStore(ctx.db, ctx.settings, metrics=ctx.metrics, now=ctx.now)
+        setattr(ctx, _MEMBERS_ATTR, store)
+    return store
+
+
+def workspace_labels(ctx: AppContext, tenant_ids: Any) -> dict[str, str]:
+    """tenant_id -> the workspace's display name (`tenants/{id}.display_name`,
+    what the shell draws), for each id that has one. A label only: nothing
+    decides anything by it. One that cannot be read is left out, and the
+    caller says what it shows instead."""
+    out: dict[str, str] = {}
+    for tenant_id in sorted(set(tenant_ids)):
+        try:
+            tenant = ctx.store.get_tenant(tenant_id)
+        except Exception:  # noqa: BLE001 - a label, never the answer
+            continue
+        name = getattr(tenant, "display_name", None) if tenant is not None else None
+        if isinstance(name, str) and name.strip():
+            out[tenant_id] = name.strip()
+    return out
 
 
 def _roles(ctx: AppContext) -> AdminRoles:
@@ -284,6 +354,59 @@ def people_scope(request: Request, auth: AuthContext = Depends(current_auth),
         return administered
 
 
+def join_scope(ctx: AppContext, scope: dict[str, str] | None, ref: str) -> tuple[RequestView, str]:
+    """WHO MAY DECIDE ONE JOIN REQUEST (join-requests.md §4.6, Q3 (a)): the
+    request, read fresh, and the `via` its decision is recorded with. `scope`
+    is `people_scope`'s answer, which every decision route declares, so a
+    member, a viewer, a pool admin, a listed service account and the
+    platform's own identities are refused before this runs.
+
+    A platform admin (`scope` None) decides any request, `platform_admin`.
+    A workspace admin decides a request only for a workspace they administer
+    NOW -- `administered_workspaces` asked each role fresh -- and for the
+    group it names; anything else is 403 `join_decider_required`. An unknown
+    ref, or one whose request fails its MAC, is the SAME 403 to a workspace
+    admin, so deciding is never a way to learn which refs exist in another
+    workspace; a platform admin is told which it is."""
+    store = join_store(ctx)
+    try:
+        view = store.view(ref)
+    except (JoinRequestUnknown, JoinRequestInvalid):
+        if scope is None:
+            raise
+        raise _not_decider() from None
+    if scope is None:
+        return view, VIA_PLATFORM_ADMIN
+    group = scope.get(view.request.tenant_id)
+    if group is None or group.strip().lower() != view.request.group:
+        raise _not_decider()
+    return view, VIA_WORKSPACE_ADMIN
+
+
+def _not_decider() -> JoinDeciderRequired:
+    return JoinDeciderRequired(
+        "only an admin of this request's workspace, or a platform admin, decides it; "
+        "nothing was changed")
+
+
+def open_join_requests(ctx: AppContext, people: People,
+                       scope: dict[str, str] | None) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """The open join requests the reader of Admin › People and roles decides:
+    every one for a platform admin, else those of the workspaces in `scope`
+    whose request names the group the workspace has now. It fails alone, as
+    each section of that read does: None and the error's code."""
+    try:
+        if scope is None:
+            views = join_store(ctx).open_for(None)
+        else:
+            views = [v for v in join_store(ctx).open_for(scope)
+                     if scope.get(v.request.tenant_id, "").strip().lower() == v.request.group]
+        labels = workspace_labels(ctx, (v.request.tenant_id for v in views))
+        return people.join_rows(views, labels), None
+    except Exception as exc:  # noqa: BLE001 - one section, never the page
+        return None, getattr(exc, "code", None) or type(exc).__name__
+
+
 @router.get("/people")
 def list_people(
     request: Request,
@@ -304,16 +427,18 @@ def list_people(
     the workspaces they administer and the people in them, and none of the
     rest (`People.in_workspaces`). Every write on this router stays a
     platform admin's (`admin_auth`)."""
+    join_requests, join_error = open_join_requests(ctx, people, scope)
     if scope is not None:
-        return people.in_workspaces(ctx.roles, scope)
-    body = people.everyone(store=ctx.store)
+        return people.in_workspaces(ctx.roles, scope, join_requests, join_error)
+    body = people.everyone(store=ctx.store, join_requests=join_requests,
+                           join_requests_error=join_error)
     body["scope"] = SCOPE_PLATFORM
     # The grid's columns fail alone, like the two sections below: a registry
     # that cannot be read leaves the list served and says why.
     try:
         columns, grants = people.role_columns(
             ctx.roles, ctx.authenticator.registered_group_workspaces())
-        people.add_roles(body["people"], columns, grants)
+        people.add_roles(body["people"], columns, grants, join_requests)
         body["workspaces"] = columns
         body["workspaces_error"] = None
     except Exception as exc:  # noqa: BLE001 - one section, never the page
@@ -356,7 +481,15 @@ def sweep_workspaces(
         pool_error = None
     except Exception as exc:  # noqa: BLE001 - the loans wait, the sweep runs
         pool, pool_error = None, getattr(exc, "code", None) or type(exc).__name__
-    return {**people.sweep(pool), "loans_error": pool_error}
+    body = {**people.sweep(pool), "loans_error": pool_error}
+    # Join requests decided or expired more than 90 days ago (Q5 (a)); the
+    # `admin_audit` rows stay. Fails alone: the dispatch sweep has run.
+    try:
+        body["join_requests_pruned"], body["join_prune_error"] = join_store(ctx).prune(), None
+    except Exception as exc:  # noqa: BLE001 - the next sweep prunes them
+        body["join_requests_pruned"] = None
+        body["join_prune_error"] = getattr(exc, "code", None) or type(exc).__name__
+    return body
 
 
 #: A record in one of these states is still being created, so naming its

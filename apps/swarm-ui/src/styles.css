@@ -3530,8 +3530,8 @@ pre.err.full { max-height: none; white-space: pre-wrap; }
    gone with the boxed tiles they drew (TS-11): the Timeline's figures are the
    shared `.ctl-metrics` strip now, whose absent state is `tone="absent"`. So
    is `.coverage`, the Timeline's row-count bar and its only caller (TS-12).
-   `.t-label` stays: Dispatch.tsx, SubmitWorkflow.tsx and Accounts.tsx label
-   fields with it. */
+   `.t-label` stays: SubmitWorkflow.tsx and Accounts.tsx label fields with
+   it. Dispatch.tsx's labels are `.dsp-head` (VQ-027). */
 .t-label { display: block; font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-faint); }
 
 /* §B4.3 move 3, the same cap on the proportional row. `minmax(0, 1fr)` in the
@@ -6684,6 +6684,18 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    steps are written as the steps they are. */
 .dsp { border: none; padding: 0; margin: var(--ctl-s3) 0 0; min-width: 0; }
 .dsp > legend { padding: 0; }
+/* EVERY FIELD LABEL IN THE DISPATCH CARD, ONE STYLE (visual QA VQ-027). The
+   control's own labels were muted lower-case `.t-label` lines while the
+   workflow form set "If a step fails" and "Priority" beside them bold and in
+   sentence case: two looks for one kind of field. Both now take this rule,
+   the weight and ink of the mock-up's step-2 headings (submit.html, `.sub3`)
+   at the meta step. Longhands, not the `font` shorthand: a shorthand would
+   reset the weight. */
+.dsp-head {
+  display: block;
+  font-family: var(--font); font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600;
+  color: var(--text);
+}
 
 .dsp-options { display: grid; gap: var(--ctl-s2); margin: var(--ctl-s2) 0 var(--ctl-s3); }
 
@@ -9829,7 +9841,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    phone's, where they collapse behind `Filters · N` (§7.2). */
 .ol-sheet { display: contents; }
 .ol-sheet-toggle { display: none; }
-.ol-span-more { display: none; }
 .ol-sheet-toggle,
 .ol-table-toggle,
 .ol-step {
@@ -10104,6 +10115,12 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   margin: var(--ctl-s2) 0 0;
 }
 .ol-pending { height: 420px; margin-top: var(--ctl-s3); }
+/* WHAT THE CHART REGION IS READING, beside its sweep (visual QA VQ-021). */
+.ol-body > .ol-reading {
+  margin: var(--ctl-s3) 0 0;
+  font: var(--t-body)/var(--lh-body) var(--font);
+  color: var(--text-dim);
+}
 /* A PERSON'S CELL IS CAPPED (QA G3-17): the local part of the address, the
    whole address in its title, and never wider than 220px, so the table's
    last columns stay inside the card at 1440. */
@@ -10138,7 +10155,14 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   gap: var(--ctl-s2);
   padding: 2px 0;
 }
+/* THE LABEL CUTS BEFORE ITS BAR (visual QA VQ-022): `nowrap` with nothing to
+   clip it ran "spec signature invalid" under its bar column, which drew over
+   it ('invali'). The grid cell is the label's width; the name is cut with an
+   ellipsis inside it, whole in its title. */
 .ol-row-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font: var(--t-body)/var(--lh-body) var(--font);
   color: var(--text-dim);
   white-space: nowrap;
@@ -10245,7 +10269,14 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 
 /* ---- phone (§7.2): 44px targets, the span first, everything else behind a sheet ---- */
 @media (max-width: 560px) {
-  .ol-span > .is-wide-only { display: none; }
+  /* EVERY SPAN, ON ONE ROW (visual QA VQ-024, 2026-10-26). The shared control
+     wraps on a phone and lays five or six segments three to a row
+     (components.css V207); with 24h and from–to hidden, as they were, the four left
+     wrapped 3+1, 90d alone beside an empty cell. All six now stay in the
+     control, the column wide, and a row too narrow for them scrolls sideways
+     rather than wrapping. 0,3,1 over the shared rules' 0,3,0. */
+  .ol-toolbar > .c-seg.ol-span { flex: 1 1 100%; flex-wrap: nowrap; overflow-x: auto; }
+  .ol-toolbar > .c-seg.ol-span > button { flex: 1 0 auto; justify-content: center; }
   .ol-sheet-toggle { display: inline-flex; align-items: center; min-height: 44px; }
   .ol-sheet { display: none; }
   .ol-sheet.is-open {
@@ -10255,7 +10286,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     align-items: center;
     gap: var(--ctl-s2);
   }
-  .ol-span-more { display: inline-flex; }
   .ol-table-toggle { min-height: 44px; }
   .ol-pick > summary { display: flex; align-items: center; min-height: 44px; }
   .ol-step {
@@ -10266,6 +10296,11 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     min-height: 44px;
   }
   .ol-row { grid-template-columns: minmax(96px, 120px) minmax(40px, 1fr) 40px; }
+  /* A 0 ROW'S EMPTY BAR CELL GOES WHERE THE BAR GOES (review of VQ-022): the
+     phone block hides every `.ctl-util-track`, so a non-zero row's count
+     takes the bar's column. The empty cell kept its column, so a 0 row's
+     count sat one column right of the rest: two count columns at 390. */
+  .ol-row > .ol-row-none { display: none; }
 }
 
 /* diff viewer (#310), a file list and one file (owner decision 2026-10-01)
@@ -10759,6 +10794,12 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-cnt { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .sk-cnt.is-alert { color: var(--s-warn); font-weight: 600; }
 .sk-cnt.is-dash { color: var(--ctl-absent); cursor: help; }
+/* A WORDED COUNT IS A CHIP (CONFIG-ADMIN-POLISH-2; part of #2157): "1 near
+   ceiling", "1 waiting" draw as config-e.html S1b's small amber chip, in the
+   amber of the Config rows' `.cfg-badge.is-missing`. Words, so the sans face,
+   and never wrapped or shrunk: at 236px a row leaves the label and its chip
+   ~164px, and "12 near ceiling" is under 90 of them. A number stays bare. */
+.sk-cnt.is-chip { flex: none; font-family: var(--font); white-space: nowrap; color: var(--s-warn); font-weight: 600; background: var(--s-warnb); border-radius: 999px; padding: 1px 7px; }
 /* THE SUB-LIST ENDS WHERE A ROW DOES (QA-055, part of #1680): a 0 right
    margin ran the lit `.sk-kid` fill into the panel's border, where a lit
    `.sk-pk` stops 10px short. */
@@ -11014,7 +11055,7 @@ span.sk-ttile { cursor: default; }
      the row at 400px the title gave way to "Overvi…". It still gives way
      first, down to a short page name whole; past that the tenant chip and
      label (`min-width: 0` through their `overflow: hidden`) shrink instead. */
-  .sk-pbar b { font-size: var(--t-body); flex: 1; min-width: 5.5em; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sk-pbar b { font-size: var(--t-body); flex: 1 1 auto; min-width: 5.5em; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* BESIDE THE SWITCHABLE CHIP THE TITLE GIVES WAY FIRST, ALL THE WAY
      (visual QA run 6, 6:admin-007, part of #1680). The floor above is for
      the member's bar, whose plain label is short. A platform admin's bar
@@ -11026,7 +11067,16 @@ span.sk-ttile { cursor: default; }
      Spine.tsx on the bar that holds `.sk-tchip`. The hidden `Top` slot keeps
      its width (N1, run 4 note 6329568327). */
   .sk-pbar.has-chip { gap: 6px; }
-  .sk-pbar.has-chip > b { min-width: 0; }
+  /* THE PAGE NAME FIRST, NOW THE CHIP HOLDS A KEY (visual QA VQ-001, part
+     of #2391). The note above gave the chip the room while it held the
+     workspace's whole name, and the page name went to `O…` on every page
+     at 390. The chip now holds the short key (`eng`) and the admin tag has
+     moved to the drawer, so the title keeps its 5.5em floor beside the chip
+     as beside the plain label, and takes its own width before either gives
+     way: `flex: 1 1 auto` (on the floor's rule above), and the workspace
+     shrinks a hundred times faster (`flex-shrink: 100`, after the chip's
+     and the label's own rules below), so the key is cut before the page
+     name is. */
   .sk-pbar .sk-tn { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-spine-ink); }
   /* THE TENANT GIVES WAY AFTER THE TITLE, NEVER PAST THE GLASS (#139). With
      no floor and no cap, a long tenant name -- a user tenant's is its email
@@ -11063,6 +11113,8 @@ span.sk-ttile { cursor: default; }
      `↑ Top` cut at the glass. The name gives way inside it, as above. */
   .sk-pbar > .sk-tchip { min-width: 0; }
   .sk-tchip > .sk-tcn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The workspace gives way before the page name (VQ-001, above). */
+  .sk-pbar > .sk-tchip, .sk-pbar .sk-tn { flex-shrink: 100; }
   .sk-app.has-drawer .sk-dclose { width: 44px; height: 44px; }
   .sk-side { display: none; }
   .sk-app.has-drawer .sk-side { display: flex; position: fixed; left: 0; top: 0; bottom: 0; height: auto; width: min(320px, 88vw); z-index: 26; box-shadow: var(--sk-sh); }
@@ -11233,10 +11285,9 @@ span.sk-ttile { cursor: default; }
    anonymous cell and its own box was 37px in a 56px row, so its bottom border
    floated ~20px above the row's. Its pieces stack as blocks instead. */
 .wfl-name { min-width: 14em; }
-.wfl-name > a, .wfl-name > .id, .wfl-name > .wfl-why { display: block; }
+/* The name, its id and its runners are one line (`.wfl-line`, styles/workflows.css; VQ-013). */
+.wfl-name > .wfl-why { display: block; }
 .wfl-name > * + * { margin-top: 2px; }
-.wfl-name > a { color: var(--text); font-weight: 600; text-decoration: none; }
-.wfl-name > a:hover, .wfl-name > a:focus-visible { text-decoration: underline; }
 .wfl-why { font-size: var(--t-micro); color: var(--text-dim); }
 .wfl-why.is-bad { color: var(--s-bad); }
 .wfl-why.is-warn { color: var(--s-warn); }
@@ -11282,8 +11333,6 @@ span.sk-ttile { cursor: default; }
 
 /* One workflow (workflows.html B): the back link and the confirm. The head's
    row, the tabs and the body card are in styles/workflows.css (#503). */
-.wfp-back { display: inline-block; margin-bottom: 6px; font-size: var(--t-meta); color: var(--sk-ac); text-decoration: none; }
-.wfp-back:hover, .wfp-back:focus-visible { text-decoration: underline; }
 .wfp { display: flex; flex-direction: column; gap: var(--ctl-gutter); min-width: 0; }
 .wfp-chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .wfp-confirm { display: flex; flex-direction: column; gap: 8px; max-width: 34em; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--s-bad) 45%, transparent); border-radius: 10px; background: var(--s-badb); font-size: var(--t-meta); }

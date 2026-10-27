@@ -257,7 +257,7 @@ describe('Rename in the pane', () => {
 describe('Remove is a danger outline until it is armed (part of #1680, box comment 6314115845)', () => {
   it('draws the unarmed button in the danger ink with no fill, and the armed one filled', async () => {
     const pane = await mount([account()], 'eng:ai-eng-2', 'ai-eng-2')
-    const btn = within(pane).getByRole('button', { name: 'remove ai-eng-2' }) as HTMLButtonElement
+    const btn = within(pane).getByRole('button', { name: 'Remove ai-eng-2' }) as HTMLButtonElement
     expect(btn.disabled).toBe(true)
     for (const theme of THEMES) {
       const env = { ...WIDE, theme }
@@ -275,7 +275,7 @@ describe('Remove is a danger outline until it is armed (part of #1680, box comme
     fireEvent.change(within(pane).getByRole('textbox', { name: 'Type ai-eng-2 to confirm removal' }), {
       target: { value: 'ai-eng-2' },
     })
-    const armed = within(pane).getByRole('button', { name: 'remove ai-eng-2' }) as HTMLButtonElement
+    const armed = within(pane).getByRole('button', { name: 'Remove ai-eng-2' }) as HTMLButtonElement
     expect(armed.disabled).toBe(false)
     // MUTATION: keep the outline once armed -- the one irreversible control
     // loses its fill when a click would fire it.

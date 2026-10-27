@@ -225,19 +225,24 @@ describe('OV-7: "last 24h" says partial when the read did not cover it', () => {
 })
 
 describe('OV-6: Finished today says how far back the phone read reaches', () => {
-  /** MUTATION: drop the `created since` clause from the band's page foot. */
+  /** MUTATION: drop the `created since` clause (`readReach`, VQ-005) from the band's page foot. */
   it('names the instant the page reaches back to', async () => {
     media(true)
-    serve(tenant())
+    // One tenant, served and counted: `ago()` reads the clock, so a second
+    // `tenant()` built at the assertion is minutes later on a slow runner,
+    // and just after midnight UTC one more row has ended "today" (#2375's
+    // run at 00:39 read 145 on screen against 146 recounted).
+    const rows = tenant()
+    const day = new Date().toISOString().slice(0, 10)
+    serve(rows)
     const el = await mount()
     const done = el.querySelectorAll('#ov-band .ov-lc')[2]!
-    expect(text(done.querySelector('.ov-lc-foot.is-page'))).toMatch(/^of the 200 newest read · created since \d\d:\d\d UTC$/)
+    expect(text(done.querySelector('.ov-lc-foot.is-page'))).toMatch(/^of the 200 newest read · partial: agents created since \d\d:\d\d UTC read$/)
     // The eleven failures are counted from their own read, not dropped: the
     // phone's page holds 196 finished rows, and with the failed read 207 --
     // whichever of them ended today in UTC, so a run just after midnight
     // counts what the screen counts.
-    const day = new Date().toISOString().slice(0, 10)
-    const today = tenant().filter((t) => (t.state === 'SUCCEEDED' || t.state === 'FAILED') && (t.completed_at ?? '').startsWith(day)).length
+    const today = rows.filter((t) => (t.state === 'SUCCEEDED' || t.state === 'FAILED') && (t.completed_at ?? '').startsWith(day)).length
     expect(text(done.querySelector('.ov-lc-n'))).toMatch(new RegExp(`^≥${today}\\b`))
   })
 })

@@ -105,6 +105,23 @@ AUTH_ERROR = (
 )
 
 
+# FAKE_LIST_FLAKY=<image>:<tag>:<n>: the first n reads of that image's :tag
+# fail as a transient Artifact Registry outage does (HTTP 503); n=all fails
+# every one. Counted from the event log, across the script's gcloud processes.
+def list_flaky(image, tag):
+    spec = os.environ.get("FAKE_LIST_FLAKY", "")
+    if not spec:
+        return False
+    want_image, want_tag, count = spec.split(":")
+    if (image, tag) != (want_image, want_tag):
+        return False
+    if count == "all":
+        return True
+    with open(os.environ["FAKE_EVENTS"]) as fh:
+        failed = sum(1 for line in fh if json.loads(line)["event"] == "list-failed")
+    return failed < int(count)
+
+
 def flag(name):
     for i, arg in enumerate(args):
         if arg == name:
@@ -119,6 +136,15 @@ if args[:4] == ["artifacts", "docker", "images", "list"]:
     wanted = (flag("--filter") or "").split(":", 1)[-1]
     fmt = flag("--format") or ""
     print("Listing items under project p, location r, repository swarm-images.", file=sys.stderr)
+    record(event="list", image=image, tag=wanted)
+    if list_flaky(image, wanted):
+        record(event="list-failed", image=image, tag=wanted)
+        if os.environ.get("FAKE_LIST_FLAKY_AUTH"):
+            print(AUTH_ERROR.format(verb="list"), file=sys.stderr)
+        else:
+            print("ERROR: (gcloud.artifacts.docker.images.list) HTTPError 503: "
+                  "The service is currently unavailable.", file=sys.stderr)
+        sys.exit(1)
     if image in set(filter(None, os.environ.get("FAKE_LIST_ERROR", "").split(","))):
         print("ERROR: (gcloud.artifacts.docker.images.list) PERMISSION_DENIED: fake", file=sys.stderr)
         sys.exit(1)
@@ -181,13 +207,19 @@ sys.exit(2)
 FAKE_TRIVY = r'''#!{python}
 import json, os, sys
 
-ref = sys.argv[-1]
+args = sys.argv[1:]
+if "--download-db-only" in args:
+    with open(os.environ["FAKE_EVENTS"], "a") as fh:
+        fh.write(json.dumps({"event": "db"}) + "\n")
+    sys.exit(0)
+ref = args[-1]
 image = ref.rsplit("/", 1)[-1].split("@", 1)[0]
 with open(os.environ["FAKE_EVENTS"], "a") as fh:
     fh.write(json.dumps({"event": "scan", "image": image, "ref": ref}) + "\n")
 if image in set(filter(None, os.environ.get("FAKE_TRIVY_FAIL", "").split(","))):
     print(f"{image}: libexpat CVE-0000-0000 HIGH fixed in 9.9.9")
-    sys.exit(1)
+    # A finding exits with the code the policy asked for, as trivy does.
+    sys.exit(int(args[args.index("--exit-code") + 1]))
 sys.exit(0)
 '''
 
@@ -260,6 +292,8 @@ def _run(tmp_path: Path, registry: dict, **fakes: str):
         "NO_COLOR": "1",
         "FAKE_REGISTRY": str(state),
         "FAKE_EVENTS": str(events),
+        # The registry read's retry backoff, in seconds: none in a test.
+        "REGISTRY_READ_BACKOFF": "0",
         **fakes,
     }
     proc = subprocess.run(
@@ -456,3 +490,60 @@ def test_every_promoted_digest_is_marked_promoted_and_a_refused_release_marks_no
     stray = sorted(i for i in IMAGES for tags in registry[i].values() if mark in tags)
     assert not stray, f"a refused promotion marked {stray} as promoted"
 
+
+
+# --------------------------------------------------------------------------
+# #1822: one transient read of the current channel tag failed a whole release.
+# --------------------------------------------------------------------------
+def _channel_reads(log: list[dict], image: str) -> list[dict]:
+    return [e for e in log if e["event"] == "list" and e["image"] == image and e["tag"] == CHANNEL]
+
+
+def test_a_channel_read_that_fails_once_is_retried_and_the_release_is_promoted(tmp_path):
+    """MUTATION: read :CHANNEL once, as before #1822, and this refuses swarm-ui."""
+    root, proc, registry, log = _run(tmp_path, _registry(), FAKE_LIST_FLAKY=f"swarm-ui:{CHANNEL}:1")
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    assert len(_channel_reads(log, "swarm-ui")) == 2, _channel_reads(log, "swarm-ui")
+    assert "could not read" not in proc.stderr, proc.stderr[-3000:]
+    assert _channel(registry) == {i: _new(i) for i in IMAGES}
+    assert (root / "build" / "deployed-images-dev.json").exists()
+
+
+def test_a_channel_read_that_keeps_failing_is_refused_naming_the_status_and_the_attempts(tmp_path):
+    before = _registry()
+    root, proc, registry, log = _run(tmp_path, before, FAKE_LIST_FLAKY=f"swarm-ui:{CHANNEL}:all")
+    assert proc.returncode != 0, "an unreadable channel was promoted"
+    assert len(_channel_reads(log, "swarm-ui")) == 4, _channel_reads(log, "swarm-ui")
+    assert not [e for e in log if e["event"] == "tag"]
+    assert _channel(registry) == _channel(before)
+    # The refusal row under "promoted nothing" says why, without the reader
+    # scrolling back to gcloud's stderr: the status and how often it was asked.
+    (row,) = [l for l in proc.stderr.splitlines() if l.strip().startswith("swarm-ui ")]
+    assert "HTTP 503" in row and "4 attempts" in row, row
+    assert "swarm-ui" in _summary(proc)
+
+
+def test_an_absent_channel_tag_is_an_answer_and_is_not_retried(tmp_path):
+    """A first promotion: no :CHANNEL yet. Empty is not transient."""
+    _, proc, _, log = _run(tmp_path, _registry(no_previous=("swarm-ui",)))
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    assert len(_channel_reads(log, "swarm-ui")) == 1, _channel_reads(log, "swarm-ui")
+
+
+@pytest.mark.parametrize("read", ["tag", "channel"])
+def test_a_dead_session_on_a_registry_read_fails_fast_and_is_not_retried(tmp_path, read):
+    tag = TAG if read == "tag" else CHANNEL
+    _, proc, _, log = _run(tmp_path, _registry(), FAKE_LIST_FLAKY=f"swarm-ui:{tag}:all",
+                           FAKE_LIST_FLAKY_AUTH="1")
+    assert proc.returncode != 0
+    reads = [e for e in log if e["event"] == "list" and e["image"] == "swarm-ui" and e["tag"] == tag]
+    assert len(reads) == 1, f"an expired session was retried: {reads}"
+    assert "authentication" in proc.stderr, proc.stderr[-2000:]
+
+
+def test_the_releases_own_tag_read_is_retried_too(tmp_path):
+    """The :TAG read is the same call, and a 503 on it refuses the same way."""
+    _, proc, _, log = _run(tmp_path, _registry(), FAKE_LIST_FLAKY=f"swarm-ui:{TAG}:2")
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    reads = [e for e in log if e["event"] == "list" and e["image"] == "swarm-ui" and e["tag"] == TAG]
+    assert len(reads) == 3, reads

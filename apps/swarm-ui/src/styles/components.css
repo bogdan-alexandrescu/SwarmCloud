@@ -262,7 +262,14 @@
 .c-tfoot { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); flex-wrap: wrap; }
 
 /* ---- tabs, segmented controls, breadcrumbs ----------------------------- */
-.c-tabs { display: flex; flex-wrap: nowrap; gap: 2px; border-bottom: 1px solid var(--line); overflow-x: auto; scroll-padding-inline: 24px; }
+/* NO VERTICAL SCROLL ON A TAB STRIP (#2391, VQ-WORKFLOWS-REVIEW 2026-10-26). A
+   tab's underline sits on the strip's border with `margin-bottom: -1px`, so the
+   strip's content is 1px taller than its box (scrollHeight 37, clientHeight 36),
+   and `overflow-x: auto` makes the other axis `auto` too: the workflow page drew
+   up/down scroll arrows at the strip's right end in every theme and width.
+   Config's strips already clipped it (`.cfg-parts`, `.ag-split-tabs`); this does
+   it once, here, for every strip. */
+.c-tabs { display: flex; flex-wrap: nowrap; gap: 2px; border-bottom: 1px solid var(--line); overflow-x: auto; overflow-y: hidden; scroll-padding-inline: 24px; }
 /* A STRIP THAT SCROLLS SAYS SO (V119, #1038). At 400px the repository's eight
    tabs ran off the right edge and the last visible one stopped mid-word
    ("Hot-spo") with nothing to say there was more. Each edge with tabs behind

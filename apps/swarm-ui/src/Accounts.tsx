@@ -18,7 +18,7 @@ import { agentName } from './agentlist'
 import { errorHeading, read, route, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
 import { ACCOUNTS_POLL_MS, capacityPoll, paneHref, useLinkedParam, usePhoneTables } from './capacityPoll'
-import { HelpCard, HelpLinks } from './HelpCard'
+import { HelpCard } from './HelpCard'
 import { Mark } from './primitives'
 import { Button, CIcon, Chip, Dialog, ToneMark, WarnMark } from './components'
 import './styles/capacity.css'
@@ -28,7 +28,7 @@ import { AGE_TICK_MS, useNow } from './useNow'
 import { AccountsTable } from './AccountsTable'
 import { AcctState } from './AccountState'
 import { DuplicateBanner, Forecast, RuleLine, Verdict, usePoolWaiting, type WaitRead } from './AccountsVerdict'
-import { agoPastDay, type PoolAccount } from './accountsPool'
+import { agoPastDay, utcAt, type PoolAccount } from './accountsPool'
 import { AgentCap, SheetAccount, SheetDuplicate, SheetForecast, SheetHealth, SheetVerdict, SheetWindows } from './AccountSheet'
 import { AccountsTimeline, ViewToggle } from './AccountsTimeline'
 import { VIEW_KEY, viewOf, type AccountsView } from './accountsLanes'
@@ -227,6 +227,10 @@ export function AccountsScreen() {
     <Screen
       key={nonce}
       title="Accounts"
+      // THE PAGE'S ONE `?` OPENS THE SCREEN'S TOPICS (VQ-033, BGD 2026-10-26:
+      // "Move the topics behind the page's one ?"). They were the `Reading
+      // this screen:` footer under the pool; see ACCOUNT_TOPICS.
+      help={ACCOUNT_TOPICS}
       load={load}
       // #117 (owner ruling 2026-10-07): every 30 s, 60 s on a phone, paused while the tab is hidden
       // (`Screen`). A poll re-reads in place; it does not bump `nonce`, so it
@@ -448,7 +452,6 @@ function Body({
         waiting={waiting}
         addForm={<AddAccount board={board} accounts={accounts} ui={ui} patch={patch} reload={reload} />}
       />
-      {lead && <HelpLinks topics={ACCOUNT_TOPICS} />}
     </>
   )
 }
@@ -1262,7 +1265,7 @@ function NameHead({ account, owned, reload }: { account: Account; owned: boolean
             }
           }}
         />
-        <Button kind="primary" size="sm" type="submit" busy={busy ? 'saving…' : false}>
+        <Button kind="primary" size="sm" type="submit" busy={busy ? 'Saving…' : false}>
           Save name
         </Button>
         <Button kind="ghost" size="sm" disabled={busy} onClick={cancel}>
@@ -1377,7 +1380,7 @@ function Detail({
             // THE CLOCK, THEN THE AGE (G5-16): a clock lines the hand-out up
             // against the holds' Since column. The age is `agoPastDay`, the
             // row's own, so the two never round one hand-out two ways.
-            <span title={new Date(account.last_assigned_at as string).toLocaleString()}>
+            <span title={account.last_assigned_at as string}>
               {givenAt(account.last_assigned_at as string, now)} ({agoPastDay(account.last_assigned_at as string, now)})
             </span>
           )}
@@ -1657,27 +1660,32 @@ function heldFor(ms: number): string {
   return `${Math.floor(h / 24)}d ${h % 24}h`
 }
 
+/**
+ * A clock in UTC, `17:46Z` (VQ-035, visual QA pass 1). The sheet printed
+ * `last given out 17:46` and the holds' Since in the browser's zone, beside
+ * `resets 05:30Z` and the Timeline's `Times are UTC`: two clocks on one
+ * sheet, one of them unmarked. Every time on Accounts is now UTC with its Z.
+ */
 function clockOf(iso: string): string {
   const d = new Date(iso)
   return Number.isFinite(d.getTime())
-    ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+    ? `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}Z`
     : '?'
 }
 
 /**
- * WHEN AN ACCOUNT WAS LAST GIVEN OUT, as a clock (G5-16): `22:30` TODAY, and
- * the date before it on any other day -- a bare `22:30` from three days ago
+ * WHEN AN ACCOUNT WAS LAST GIVEN OUT, as a clock (G5-16): `22:30Z` TODAY, and
+ * the date before it on any other day -- a bare `22:30Z` from three days ago
  * reads as tonight's. An unreadable instant is the em dash.
  *
  * TODAY, NOT "WITHIN 24 HOURS" (live QA CAP-13): `20:00 · 9h ago` was
  * yesterday evening, and read at 05:30 it looked like a time later today.
+ *
+ * IN UTC, WITH ITS Z (VQ-035): `utcAt`, the Timeline's and the Clears
+ * column's own clock, so "today" is the UTC day the Z names.
  */
 export function givenAt(iso: string, now: number): string {
-  const t = Date.parse(iso)
-  if (!Number.isFinite(t)) return '—'
-  if (new Date(t).toDateString() === new Date(now).toDateString()) return clockOf(iso)
-  const day = new Date(t).toLocaleDateString([], { month: 'short', day: 'numeric' })
-  return `${day} ${clockOf(iso)}`
+  return utcAt(iso, now)
 }
 
 /**
@@ -2384,7 +2392,7 @@ function RefreshControl({
         aria-disabled={sending || undefined}
         onClick={sending ? undefined : () => void run()}
       >
-        {sending ? 'exchanging…' : 'Refresh this account'}
+        {sending ? 'Exchanging…' : 'Refresh this account'}
       </button>
 
       {state.kind === 'answered' && <RefreshAnswer result={state.result} />}
@@ -2558,7 +2566,7 @@ function Lending({
           }}
           disabled={!dirty || busy || unknown.length > 0}
         >
-          save lending
+          Save lending
         </button>
         {/* The second `.tag` on this screen, collapsed into the same primitive
             for the same reason as the state chip above. */}
@@ -2596,8 +2604,8 @@ function Lending({
               <Button kind="ghost" onClick={closeConfirm}>
                 Keep the list as it is
               </Button>
-              <Button kind="primary" busy={busy ? 'saving…' : false} onClick={() => void save()}>
-                save lending
+              <Button kind="primary" busy={busy ? 'Saving…' : false} onClick={() => void save()}>
+                Save lending
               </Button>
             </>
           }
@@ -2776,7 +2784,7 @@ function ModelClasses({ account, reload }: { account: Account; reload: () => voi
           ))}
         </fieldset>
         <button type="button" onClick={() => void save()} disabled={!dirty || busy}>
-          {busy ? 'saving…' : 'save classes'}
+          {busy ? 'Saving…' : 'Save classes'}
         </button>
         {saved && <ToneMark tone="is-ok">saved</ToneMark>}
       </span>
@@ -2903,7 +2911,7 @@ function StateControls({ account, reload }: { account: Account; reload: () => vo
               <Button
                 kind={asked.to === 'AVAILABLE' ? 'primary' : 'danger'}
                 disabled={needsReason && reason.trim() === ''}
-                busy={busy ? 'saving…' : false}
+                busy={busy ? 'Saving…' : false}
                 onClick={() => void move(asked.to)}
               >
                 {moveLabel(asked.to)}
@@ -4427,7 +4435,7 @@ function SignInDone({
       )}
       <p className="acct-buttons">
         <button type="button" onClick={onAgain}>
-          done
+          Done
         </button>
       </p>
     </div>
@@ -4706,7 +4714,7 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
           disabled={!armed || busy}
           onClick={() => void run()}
         >
-          {busy ? 'removing…' : `remove ${account.label}`}
+          {busy ? 'Removing…' : `Remove ${account.label}`}
         </Button>
         <span className="client-side">type the label to arm this</span>
       </span>
@@ -4731,7 +4739,8 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
  * NONE OF IT WAS ANNOTATING ANYTHING ON SCREEN. It was a help article that
  * happened to be rendered below a pool, which is exactly what the owner
  * directive means by prose that belongs in a dedicated Help section. Every
- * sentence of it is now a topic in `help.ts`, reachable from the links below,
+ * sentence of it is now a topic in `help.ts`, reachable from the index the
+ * page title's `?` opens (a footer of links until VQ-033, BGD 2026-10-26),
  * from `#help/<id>` and from the Help section in the rail. It was also
  * reachable from a `?` beside the control it was about, on fifty-four of them;
  * B7.4 cut that to two. See the note on ACCOUNT_TOPICS.
@@ -4746,7 +4755,10 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
  *
  * B4.4 narrowed the index below to the six topics that have no `?` anchor on
  * the surface; B7.4 put three back, because they no longer have one either.
- * See the note inside it.
+ * See the note inside it. Since VQ-033 (BGD 2026-10-26) the list is the index
+ * the page title's `?` opens rather than a footer, so it renders no words with
+ * the card closed; the budget the note weighs it against no longer reads it,
+ * and the list stays as it was chosen.
  */
 const ACCOUNT_TOPICS: readonly TopicId[] = [
   // B4.4: SEVENTEEN ENTRIES BECAME SIX, AND NOTHING BECAME UNREACHABLE.

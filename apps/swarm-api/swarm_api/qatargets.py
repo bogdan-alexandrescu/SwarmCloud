@@ -247,7 +247,7 @@ from swarm_common.admission import _snapshot
 from swarm_common.models import new_id, utcnow
 from swarm_common.states import TERMINAL_STATES, TaskState
 
-from . import qaspec, refusals
+from . import qasettings, qaspec, refusals
 from .admins import AUDIT_COLLECTION
 from .childkey import AttemptTuple, verify_proof
 from .children import ChildService, _AttemptFields, _lease_is_live, parse_body
@@ -1856,12 +1856,22 @@ class QaTargets:
 
     def runnable_legs(self, tenant_id: str, target_id: str, *, file: str, environments: Any,
                       screens: Sequence[str] | None = None,
-                      browser_tool: str | None = None) -> list[LegRun]:
+                      browser_tool: str | None = None,
+                      flows_per_step: int | None = None) -> list[LegRun]:
         """Every leg `environments` names (every entry when None), each
         runnable now and rendered, BEFORE anything is submitted (§2.1): the
         first refusal is raised with the leg's name in `detail.environment`,
-        so one leg that cannot run refuses the dispatch and nothing spends."""
+        so one leg that cannot run refuses the dispatch and nothing spends.
+
+        `flows_per_step` is the run's own batch size (QA-FLOWS-CAP); None reads
+        the workspace's `qa_flows_per_step`, else 15 (`qasettings`). Every leg
+        of the dispatch renders with the one value, and carries it and where
+        it came from for `record_run`."""
         normal = self.get(tenant_id, target_id)
+        if flows_per_step is not None:
+            per_step, per_step_from = flows_per_step, qasettings.FROM_RUN
+        else:
+            per_step, per_step_from = qasettings.QaSettingsStore(self._db, now=self._now).flows_per_step(tenant_id)
         if environments is None:
             names = [str(e.get("name")) for e in normal["environments"]]
         elif (not isinstance(environments, list) or not 1 <= len(environments) <= qaspec.MAX_ENVIRONMENTS
@@ -1877,14 +1887,14 @@ class QaTargets:
             try:
                 view = self._runnable_view(normal, tenant_id, file=file, environment=name)
                 workflow, mark, browser = render_run(view, screens=screens, file=file, browser_tool=browser_tool,
-                                                     group=group)
+                                                     group=group, flows_per_step=per_step)
             except ApiError as exc:
                 # The name is the target's own or a checked `[a-z0-9-]` one,
                 # carried beside the fixed sentence, never inside it.
                 exc.detail = {**exc.detail, "environment": name}
                 raise
             legs.append(LegRun(name=name, target=view, workflow=workflow, mark=mark, browser=browser,
-                               group_id=group_id))
+                               group_id=group_id, flows_per_step=per_step, flows_per_step_from=per_step_from))
         return legs
 
     def _startable(self, target: dict[str, Any], tenant_id: str, *, file: str) -> dict[str, Any]:
@@ -1906,11 +1916,15 @@ class QaTargets:
 
     def record_run(self, *, tenant_id: str, target: Mapping[str, Any], workflow_id: str,
                    task_ids: Sequence[str], file: str, by: str, kind: str = "run",
-                   browser_tool: str | None = None, group_id: str | None = None) -> None:
+                   browser_tool: str | None = None, group_id: str | None = None,
+                   leg: LegRun | None = None) -> None:
         """The run's record, of one leg (`target` is its view): the worker's
         route serves a task only the leg the record names. `browser_tool` is
         the run's own override, None when it named none; `flows_browser_tool`
-        is the tool its flows ran with, the override's or the target's (lane VQ9-TOOL)."""
+        is the tool its flows ran with, the override's or the target's (lane VQ9-TOOL).
+        `leg`, a run's rendered leg, gives the batch size its flows ran with
+        and where it came from (`run`, `workspace` or `default`; QA-FLOWS-CAP);
+        a discovery has none."""
         self._db.collection(RUNS_COLLECTION).document(workflow_id).set({
             "workflow_id": workflow_id,
             "tenant_id": tenant_id,
@@ -1924,6 +1938,8 @@ class QaTargets:
             "flows_browser_tool": qaspec.flows_browser_tool(target, browser_tool),
             # The dispatch this leg is one of (§2.1); None for a discovery.
             "group_id": group_id,
+            "flows_per_step": leg.flows_per_step if leg is not None else None,
+            "flows_per_step_from": leg.flows_per_step_from if leg is not None else None,
             "by": by,
             "at": self._now(),
         })
@@ -1945,6 +1961,9 @@ class QaTargets:
             "revision": first.get("revision"),
             "file": file,
             "browser_tool": browser_tool,
+            # One value for every leg (`runnable_legs`), and where it came from.
+            "flows_per_step": legs[0].flows_per_step,
+            "flows_per_step_from": legs[0].flows_per_step_from,
             "schedule_id": schedule_id,
             "by": by,
             "at": self._now(),
@@ -2462,6 +2481,10 @@ class LegRun:
     #: The run group's id, minted before the render so the file step's
     #: issues link the group's page (§7); `open_group` writes it.
     group_id: str | None = None
+    #: The batch size its flows rendered with, and where it came from:
+    #: `qasettings.FROM_RUN`, `FROM_WORKSPACE` or `FROM_DEFAULT` (QA-FLOWS-CAP).
+    flows_per_step: int = qaspec.FLOWS_PER_STEP_DEFAULT
+    flows_per_step_from: str = qasettings.FROM_DEFAULT
 
 
 def new_group_id() -> str:
@@ -2471,15 +2494,18 @@ def new_group_id() -> str:
 
 def render_run(target: Mapping[str, Any], *, screens: Sequence[str] | None,
                file: str, browser_tool: str | None = None,
-               group: Mapping[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+               group: Mapping[str, Any] | None = None,
+               flows_per_step: int | None = None) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     """(the `WorkflowCreate` body, the mark, the browser step ids) for a run
     of `target`. The body is `qaspec.render`'s spec in the API's shape, with
     `metadata.qa_target` on each browser step: written here, never accepted
     from a caller (§1.1). `browser_tool` is the run's own choice of the flows'
     tool, by name (lane VQ9-TOOL); `group` the dispatch the leg is one of
-    (§7). Raises 422 for anything the spec cannot hold."""
+    (§7); `flows_per_step` the flows' batch size (QA-FLOWS-CAP). Raises 422
+    for anything the spec cannot hold."""
     try:
-        spec = qaspec.render(target, screens=screens, file=file, browser_tool=browser_tool, group=group)
+        spec = qaspec.render(target, screens=screens, file=file, browser_tool=browser_tool, group=group,
+                             flows_per_step=flows_per_step)
         mark = qaspec.qa_target_metadata(target)
     except qaspec.QaSpecError as exc:
         raise _spec_refusal(exc) from None
@@ -2747,7 +2773,9 @@ class QaTargetIssuer:
         """True only for a flow step of this run whose flow the stored target
         declares `mutating: true`, on a `non_production` target (§3; BGD,
         2026-10-22, lane VQ4-MUTATING). The flow is the task's own `step_id`,
-        `flow-<id>` as `qaspec.render` names it: the mark is one value for
+        `flow-<id>` as `qaspec.render` names it (a flow-batch step, `flows-<k>`,
+        holds only read-only flows and never matches the prefix, so it is
+        never mutating; QA-FLOWS-CAP): the mark is one value for
         every browser step of the run (`validation.qa_target_mark_allowed`
         admits only that value), and only a rendered run carries the mark, so
         the step id beside it was written by this service too. Nothing in the

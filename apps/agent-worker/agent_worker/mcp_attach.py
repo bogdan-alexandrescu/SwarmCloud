@@ -42,7 +42,11 @@ WHEN IT FAILS (§4.7):
   * a WITHHELD server fails the attempt before the agent runs
     (`mcp_server_withheld`): the caller named it because the agent needs it.
     Retryable only for `unreadable` (owner decision Q2: a retry is an attempt
-    of the same task); `credential_expired` and every other reason are final;
+    of the same task); `credential_expired` and every other reason are final
+    -- EXCEPT a workflow step's per-run credential that lapsed
+    (`Attached.lapsed_credentials`): its caller can re-store it (BGD
+    2026-10-26, registered-mcp-servers.md §4.10), so the step parks
+    CREDENTIAL_MISSING with `credential: "mcp"` instead;
   * swarm-api unreachable or refusing is `mcp_attach_unavailable`, before the
     agent, retryable when the refusal says so.
 
@@ -88,6 +92,14 @@ UNAVAILABLE = "mcp_attach_unavailable"
 
 #: Withheld reasons a later attempt may not meet (owner decision Q2).
 RETRYABLE_REASONS = frozenset({"unreadable"})
+
+#: Withheld reasons that are the per-run credential alone: swarm-api's
+#: `mcp_credentials.CREDENTIAL_EXPIRED` and `CREDENTIAL_MISSING`, restated
+#: (this image does not carry swarm-api); tests/unit/worker/test_mcp_attach.py
+#: holds them equal. A workflow's caller can re-store such a credential.
+CREDENTIAL_EXPIRED = "credential_expired"
+CREDENTIAL_MISSING = "credential_missing"
+CREDENTIAL_REASONS = frozenset({CREDENTIAL_EXPIRED, CREDENTIAL_MISSING})
 
 NO_KEY = "no_attempt_key"
 NOT_ANSWERED = "not_answered"
@@ -148,6 +160,17 @@ class Attached:
             retryable = all(reason in RETRYABLE_REASONS for _, reason in self.withheld)
             return WITHHELD, detail, retryable
         return None
+
+    def lapsed_credentials(self) -> list[tuple[str, str]]:
+        """`(name, reason)` for each withheld server when EVERY one was
+        withheld for its per-run credential alone (expired, destroyed or
+        missing) and the attach itself answered; else empty. Only then can a
+        re-stored credential make the attempt startable."""
+        if self.unavailable is not None or not self.withheld:
+            return []
+        if all(reason in CREDENTIAL_REASONS for _, reason in self.withheld):
+            return list(self.withheld)
+        return []
 
 
 def _dns_host(host: str | None) -> bool:

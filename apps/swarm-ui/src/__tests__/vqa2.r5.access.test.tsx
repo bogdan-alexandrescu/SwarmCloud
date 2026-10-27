@@ -11,7 +11,7 @@
 //   V228  a step body's actions start under its text and are 44px on a phone,
 //         and a step with nothing on its line draws no empty `p.ob-line`;
 //   V229  beside the repository pane the owner list is capped and scrolls;
-//   V230  Members has column heads where its rows are columns;
+//   V230  Members has column heads where its rows are columns (on People and roles since GA-MOVE-VIEWS);
 //   V232  the page lede says what the chosen view shows.
 //
 // V231 is in permissionCards.test.tsx, V233 and V234 in BrowserLogins.test.tsx,
@@ -224,8 +224,12 @@ describe('Access (VQA2-R5)', () => {
           }
         : null,
     )
-    await mount()
-    fireEvent.click(screen.getByRole('radio', { name: 'Members' }))
+    // On People and roles' Members' GitHub tab since GA-MOVE-VIEWS (part of #2157).
+    window.history.replaceState(null, '', '/config/people?view=members')
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const { WorkspacePeopleScreen } = await import('../WorkspacePeople')
+    render(<WorkspacePeopleScreen />)
     const list = await screen.findByRole('list', { name: 'Members of eng' })
     const head = document.querySelector<HTMLElement>('.ac-members-h')!
     expect(head, 'Members has no column heads').not.toBeNull()
@@ -239,27 +243,21 @@ describe('Access (VQA2-R5)', () => {
     expect(painted(row.querySelector<HTMLElement>('.ac-cell-l')!, 'display', PHONE)).toBe('inline')
   })
 
-  it('V232: the lede says what Connection, Choose repositories, Members and Browser logins each show', async () => {
-    api([ORG('example-org')], (m, url) => (m === 'GET' && url === '/v1/access/members' ? { status: 200, body: { tenant_id: 'eng', members: [] } } : null))
+  // Members and Browser logins left the page with GA-MOVE-VIEWS (part of #2157);
+  // their ledes went with them to People and roles and Secrets.
+  it('V232: the lede says what Connection and Choose repositories each show', async () => {
+    api([ORG('example-org')])
     await mount()
     const lede = () => visible(document.querySelector('.ac-page > .ur-sub'))
-    await waitFor(() => expect(lede()).toContain('in tenant eng'))
+    await waitFor(() => expect(lede()).toContain('in workspace eng'))
     // The reach-as-you list left the page (GITHUB-ACCESS-PAGE), so no tab's lede promises it.
     // MUTATION: put "The orgs and repositories SwarmCloud may reach as you" back as Mine's lede.
-    expect(lede()).toMatch(/^How SwarmCloud acts as you on GitHub in tenant eng/)
+    expect(lede()).toMatch(/^How SwarmCloud acts as you on GitHub in workspace eng/)
 
     fireEvent.click(screen.getByRole('tab', { name: 'Choose repositories' }))
-    expect(lede()).toMatch(/^The owners the GitHub App is installed on in tenant eng/)
+    expect(lede()).toMatch(/^The owners the GitHub App is installed on in workspace eng/)
 
-    fireEvent.click(screen.getByRole('radio', { name: 'Members' }))
-    expect(lede()).not.toMatch(/acts as you on GitHub|owners the GitHub App/)
-    expect(lede()).toMatch(/^Every member in tenant eng: whether they connected GitHub/)
-
-    fireEvent.click(screen.getByRole('radio', { name: 'Browser logins' }))
-    expect(lede()).not.toMatch(/acts as you on GitHub|owners the GitHub App/)
-    expect(lede()).toMatch(/^The browser sessions you saved from a live browser in your workspace/)
-
-    fireEvent.click(screen.getByRole('radio', { name: 'Mine' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Connection' }))
     expect(lede()).toMatch(/^How SwarmCloud acts as you on GitHub/)
   })
 })
@@ -300,7 +298,7 @@ describe('Setup (VQA2-R5)', () => {
     expect(main.querySelector(':scope > p.ob-line')).toBeNull()
     for (const p of el.querySelectorAll<HTMLElement>('p.ob-line')) expect(visible(p)).not.toBe('')
     // A step with a line keeps it.
-    expect(visible(document.querySelector('li.ob-step[data-step="signed_in"] > .ob-step-main > p.ob-line'))).toMatch(/tenant eng · checked /)
+    expect(visible(document.querySelector('li.ob-step[data-step="signed_in"] > .ob-step-main > p.ob-line'))).toMatch(/workspace eng · checked /)
 
     const acts = el.querySelector<HTMLElement>('.ob-ws .ob-acts')!
     const add = within(acts).getByRole('link', { name: 'Add key' })

@@ -28,7 +28,7 @@ import {
 import { MarkdownInline } from './ArtifactViewer'
 import { GapNotice, LogMarksContext, type LogMarks } from './logMarks'
 import { attemptLine, useRead } from './RunFiles'
-import { TERMINAL_STATES, clockTime, type AttemptRow, type LogStream, type Task } from './types'
+import { TERMINAL_STATES, clockTime, type AttemptRow, type LogStream, type Task, type TaskTranscript } from './types'
 import { useNow } from './useNow'
 import { Button, Segmented, ToneMark } from './components'
 
@@ -106,11 +106,40 @@ function stillMoving(task: Task, feed: LogFeed | null, now: number): boolean {
   return Number.isFinite(done) && Math.abs(now - done) <= DRAWER_SETTLE_MS
 }
 
+/**
+ * A FINISHED AGENT'S TRANSCRIPT OPENS ON ITS NEWEST WINDOW (BT-018, #2423).
+ * The route reads from byte 0 unless told otherwise, so a finished agent's
+ * Logs tab opened on its first window and ended in `later steps are in the
+ * next window`: how the agent finished was pages away. The first read says
+ * how long the object is and how much one window holds; when that is not the
+ * whole of it, the window that ends at the last byte is read instead (the
+ * route drops the line it begins inside). A live tail is the newest part
+ * already, and a second read that fails leaves the first window, which says
+ * what it is. `fromStart` is the reader's choice of the first window.
+ */
+export async function readTranscriptWindow(
+  task: Task,
+  attemptId: string | null,
+  fromStart: boolean,
+): Promise<Result<TaskTranscript>> {
+  const attempt = attemptId === null ? {} : { attemptId }
+  const first = await loadTranscript(task.id, { ...attempt, source: 'auto' })
+  if (fromStart || !TERMINAL_STATES.has(task.state) || first.status !== 'ok') return first
+  const s = first.data.stream
+  if (s.status !== 'ok' || s.source === 'live' || s.next_offset === null || s.total_bytes === null || s.returned_bytes <= 0) {
+    return first
+  }
+  const offset = Math.max(0, s.total_bytes - s.returned_bytes)
+  if (offset <= s.offset) return first
+  const last = await loadTranscript(task.id, { ...attempt, source: s.source === 'artifact' ? 'auto' : 'final', offset })
+  return last.status === 'ok' ? last : first
+}
+
 /** One read of an attempt's logs: the transcript and the polled streams, each with its own answer. */
-async function readFeed(task: Task, attemptId: string | null): Promise<Result<LogFeed>> {
+async function readFeed(task: Task, attemptId: string | null, fromStart: boolean): Promise<Result<LogFeed>> {
   const attempt = attemptId === null ? {} : { attemptId }
   const [transcript, logs] = await Promise.all([
-    loadTranscript(task.id, { ...attempt, source: 'auto' }),
+    readTranscriptWindow(task, attemptId, fromStart),
     loadTaskLogs(task.id, { ...attempt, stream: POLLED_STREAMS, source: 'auto' }),
   ])
   return { status: 'ok', data: { task, attemptId, transcript, logs }, fetchedAt: Date.now() }
@@ -170,16 +199,33 @@ export function scrollWithin(body: HTMLElement, target: HTMLElement): void {
 }
 
 /**
+ * The log's own body to its newest line, and nothing else. Marked as the
+ * log's own scroll only when it moves, so a body already at its end does not
+ * swallow the reader's next scroll as one of its own.
+ */
+function toEnd(body: HTMLElement, own: { current: boolean }): void {
+  if (body.scrollTop + body.clientHeight >= body.scrollHeight - 1) return
+  own.current = true
+  body.scrollTop = body.scrollHeight
+}
+
+/**
  * HOW FAR THE BAR HAS SPILLED INTO MORE (U10a D13 review; N11 at the 380px
  * split). The row never wraps by design: the four streams, the search, Follow,
  * Error, the attempt picker and Wrap are one row. The labels shorten first, by
  * a container query on the bar (styles/agents.css); then, while the row still
  * overflows, these move into More one at a time, least used first: the
- * attempts-unread note, Wrap, the attempt picker, Error, Follow. Past the last
- * step the row wraps rather than hide a control. The four streams never
- * spill: which log is on screen is the one thing the bar must always say.
+ * attempts-unread note, Wrap, the attempt picker, Error. Past the last step
+ * the row wraps rather than hide a control. The four streams never spill:
+ * which log is on screen is the one thing the bar must always say.
+ *
+ * NOR DOES FOLLOW (BT-001, #2423). In the column beside the live browser and
+ * in the theater's Logs panel the bar is ~210px, and Follow was the last
+ * control to spill: it was always under More there, so the embedded log had
+ * no Follow anyone could see while the Logs tab had one reading `Following`.
+ * Whether the log is following is said wherever the log is.
  */
-export const BAR_SPILL = { unread: 1, wrap: 2, attempt: 3, error: 4, follow: 5, row: 6 } as const
+export const BAR_SPILL = { unread: 1, wrap: 2, attempt: 3, error: 4, row: 5 } as const
 
 /** A label with a short form for a narrow bar. The accessible name is always the long one. */
 function LogWords({ long, short }: { long: string; short: string }) {
@@ -271,6 +317,9 @@ export function AgentLogs({ task }: { task: Task }) {
   const autoScroll = useRef(false)
   const root = useRef<HTMLElement | null>(null)
   const finished = TERMINAL_STATES.has(task.state)
+  // A finished transcript is read from its newest window unless the reader
+  // asks for its first (BT-018, `readTranscriptWindow`).
+  const [fromStart, setFromStart] = useState(false)
 
   // A different agent opened in the same split starts over: its own default
   // stream, its latest attempt, nothing searched.
@@ -283,6 +332,7 @@ export function AgentLogs({ task }: { task: Task }) {
     setAttemptId(null)
     setNeedle('')
     setCurrent(null)
+    setFromStart(false)
   }, [taskId, task.runner_profile])
 
   // THE ATTEMPTS, FOR THE PICKER. Re-read when the task's own count moves, so
@@ -311,13 +361,14 @@ export function AgentLogs({ task }: { task: Task }) {
 
   // THE READ. One transcript read and one polled-streams read per tick, for
   // the picked attempt. Each keeps its own answer.
-  const readKey = `${readId ?? 'latest'}:${tick}`
-  const held = useRead<LogFeed>(() => readFeed(task, readId), taskId, readKey, null)
+  const readKey = `${readId ?? 'latest'}:${fromStart ? 'start' : 'end'}:${tick}`
+  const held = useRead<LogFeed, boolean>(() => readFeed(task, readId, fromStart), taskId, readKey, fromStart)
   // ONLY A READ OF THE PICKED ATTEMPT IS ITS LOG. `useRead` keeps the last
   // answer on screen until the next lands, which for a new pick is the
   // previous attempt's -- so that one is "reading", never shown as this one.
+  // So is a read of the other end of a finished transcript (`held.asked`).
   const landed = okFeed(held.state)
-  const latest = landed !== null && landed.attemptId === readId ? landed : null
+  const latest = landed !== null && landed.attemptId === readId && held.asked === fromStart ? landed : null
   const latestAt = latest !== null && held.state.status === 'ok' ? held.state.fetchedAt : null
   // THE TASK ON THE FEED IS ALWAYS THE ONE ON SCREEN: the views read its
   // state to tell "not yet" from "never", and the split re-reads it.
@@ -342,18 +393,26 @@ export function AgentLogs({ task }: { task: Task }) {
   useEffect(() => setFollow(latestRunning), [latestRunning, attemptId])
 
   // PAUSED, THE SCREEN KEEPS THE READ IT WAS PAUSED ON.
-  const [frozen, setFrozen] = useState<{ feed: LogFeed; at: number } | null>(null)
+  // KEPT PER WINDOW (`fromStart`) as well as per attempt: the first and the
+  // newest window of one finished transcript are two different records.
+  const [frozen, setFrozen] = useState<{ feed: LogFeed; at: number; fromStart: boolean } | null>(null)
   useEffect(() => {
     if (follow) setFrozen(null)
     else if (feedNow !== null) {
-      setFrozen((f) => (f !== null && f.feed.attemptId === feedNow.attemptId ? f : { feed: feedNow, at: latestAt ?? Date.now() }))
+      setFrozen((f) =>
+        f !== null && f.feed.attemptId === feedNow.attemptId && f.fromStart === fromStart
+          ? f
+          : { feed: feedNow, at: latestAt ?? Date.now(), fromStart },
+      )
     }
     // On the switch, and on the first read of a newly picked attempt; `feedNow`
     // is rebuilt each render, so its identity is not the dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [follow, latest === null, readId])
+  }, [follow, latest === null, readId, fromStart])
   const shown =
-    follow || frozen === null || frozen.feed.attemptId !== readId ? feedNow : { ...frozen.feed, task }
+    follow || frozen === null || frozen.feed.attemptId !== readId || frozen.fromStart !== fromStart
+      ? feedNow
+      : { ...frozen.feed, task }
   const shownAt = follow || frozen === null ? latestAt : frozen.at
 
   // GAPS, COMPARED READ BY READ, per stream, for this attempt. A gap is kept
@@ -456,6 +515,32 @@ export function AgentLogs({ task }: { task: Task }) {
     autoScroll.current = true
     el.scrollTop = el.scrollHeight
   }, [follow, shown, view])
+
+  // AND WHENEVER THE BODY ITSELF CHANGES SIZE (BT-001, #2423). The log beside
+  // the live browser and in the theater is drawn into a column that is hidden,
+  // toggled or resized after its read lands; the scroll above ran against a
+  // body with no height and the log opened at its top. While following, a
+  // body that is resized is brought back to its newest line.
+  useEffect(() => {
+    const el = body.current
+    if (!follow || el === null || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => toEnd(el, autoScroll))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [follow])
+
+  // A FINISHED AGENT OPENS AT ITS LAST LINE (BT-001/BT-018): how it finished
+  // is what a reader opens a final record for. Once per agent, attempt, view
+  // and window; after that the reader's scroll is theirs.
+  const openedAt = useRef<string | null>(null)
+  useLayoutEffect(() => {
+    const el = body.current
+    if (!finished || fromStart || shown === null || el === null) return
+    const at = `${taskId}:${readId ?? 'latest'}:${view}`
+    if (openedAt.current === at) return
+    openedAt.current = at
+    toEnd(el, autoScroll)
+  }, [finished, fromStart, shown, taskId, readId, view])
 
   const jump = useCallback(
     (list: string[]) => {
@@ -667,6 +752,13 @@ export function AgentLogs({ task }: { task: Task }) {
       </select>
     </label>
   )
+  // THE OTHER END OF A FINISHED TRANSCRIPT (BT-018): it opens on its newest
+  // window, whose `earlier steps are not in this window` is answered here.
+  const windowPick = finished && view === 'transcript' && (fromStart || transcriptRead?.window_starts_mid_stream === true) && (
+    <Button size="sm" onClick={() => setFromStart((f) => !f)}>
+      {fromStart ? 'Read the newest window' : 'Read from the first window'}
+    </Button>
+  )
   const wrapButton = (
     <Button size="sm" aria-pressed={wrap} aria-keyshortcuts="W" onClick={() => setWrap((w) => !w)}>
       Wrap <kbd>W</kbd>
@@ -726,7 +818,7 @@ export function AgentLogs({ task }: { task: Task }) {
               />
             </span>
           )}
-          {spill < BAR_SPILL.follow && followControl}
+          {followControl}
           {spill < BAR_SPILL.error && errorButton}
           {spill < BAR_SPILL.attempt && attemptPicker}
           {spill < BAR_SPILL.wrap && wrapButton}
@@ -742,11 +834,11 @@ export function AgentLogs({ task }: { task: Task }) {
           <details ref={more} className="ag-logs-more" onKeyDown={onMoreKey}>
             <summary>More</summary>
             <div className="ag-logs-menu">
-              {spill >= BAR_SPILL.follow && followControl}
               {spill >= BAR_SPILL.error && errorButton}
               {spill >= BAR_SPILL.attempt && attemptPicker}
               {spill >= BAR_SPILL.wrap && wrapButton}
               {spill >= BAR_SPILL.unread && unreadNote}
+              {windowPick}
               <ul className="ctl-facts ag-logs-facts">
                 {logs !== null && (logs.attempt.status === 'latest' || logs.attempt.status === 'requested') && (
                   <li className="ctl-fact">
@@ -832,7 +924,7 @@ export function AgentLogs({ task }: { task: Task }) {
               <span className="ctl-pending art-loading-bar" />
             </p>
           ) : (
-            <LogBody v={shown} view={view} reading={{ fetchedAt: shownAt ?? 0, pollMs: moving ? ARTIFACTS_POLL_MS : null }} now={clock} />
+            <LogBody key={fromStart ? 'start' : 'end'} v={shown} view={view} reading={{ fetchedAt: shownAt ?? 0, pollMs: moving ? ARTIFACTS_POLL_MS : null }} now={clock} />
           )}
         </div>
 
@@ -856,7 +948,7 @@ export function AgentLogs({ task }: { task: Task }) {
  */
 export function LogLastLine({ task, onOpen }: { task: Task; onOpen: () => void }) {
   const [tick, setTick] = useState(0)
-  const held = useRead<LogFeed>(() => readFeed(task, null), task.id, `${tick}`, null)
+  const held = useRead<LogFeed>(() => readFeed(task, null, false), task.id, `${tick}`, null)
   const feed = okFeed(held.state)
   const clock = useNow(ARTIFACTS_POLL_MS)
   const moving = stillMoving(task, feed === null ? null : { ...feed, task }, clock)

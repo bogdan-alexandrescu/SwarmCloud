@@ -34,7 +34,7 @@ import pytest
 from swarm_api import issueci, mergewake
 from swarm_common.models import WorkflowStep
 from swarm_common.states import TaskState
-from swarm_rollup import derive, read_steps
+from swarm_rollup import derive, is_fix_round_step, read_steps
 
 from .conftest import auth_header
 from .test_merge_wake import (  # noqa: F401 -- fixtures, used by name
@@ -503,6 +503,24 @@ def test_a_failed_round_does_not_fail_a_workflow_whose_merge_succeeded():
     assert rollup.counts == {"SUCCEEDED": 3, "FAILED": 1}
     assert rollup.fix_round_steps == ["ci-fix:1", "ci-fix:2"]
     assert rollup.to_api()["fix_round_steps"] == ["ci-fix:1", "ci-fix:2"]
+
+
+def test_a_failed_pick_round_does_not_fail_a_workflow_whose_merge_succeeded():
+    """ROLLUP-PICK-FIX (BGD 2026-10-26): a pick-fix round is a merge round."""
+    rollup = _derive(**{"implement": "SUCCEEDED", "merge": "SUCCEEDED",
+                        "pick-fix:1": "FAILED", "pick-fix:2": "SUCCEEDED"})
+    assert rollup.state == "SUCCEEDED", rollup
+    assert rollup.fix_round_steps == ["pick-fix:1", "pick-fix:2"]
+
+
+def test_the_round_step_pattern_takes_each_kind_the_tick_writes_and_nothing_else():
+    """Every kind `mergewake.round_step_id` can write is a round, so no
+    appended round is refused; a caller-shaped id never is one."""
+    for key in mergewake.ROUND_KIND:
+        assert is_fix_round_step(mergewake.round_step_id(key, 1)), key
+    assert not is_fix_round_step("pick-fix:0")
+    assert not is_fix_round_step("pick-fix-1")
+    assert not is_fix_round_step("other-fix:1")
 
 
 def test_a_running_round_keeps_the_workflow_running_while_the_merge_is_parked():

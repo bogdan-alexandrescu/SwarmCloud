@@ -135,6 +135,17 @@ until the workflow's stage changes -- while the SwarmCloud pane beside the
 chat browses stages, agents and details with direct MCP calls and no model
 tokens. A batch of single tasks keeps its one summary row.
 
+THE BAND LAYOUT (SC-BAND, part of #2318; BGD, 2026-10-26). With the layout
+set to `band` (`/sc layout band`) the SwarmCloud view is a strip above the
+prompt and a summary line below it, and the plugin starts NO /workflows row:
+an attach, an attach-all and a dispatch's rows answer `launches: []` with
+`rows: "band"` and `followed_by: "band"` (`_banded`), and read nothing to
+build a row; a spec's copy is still the run that submits it, its args say
+`rows: "band"`, and run.js submits and starts no follow row. The strip
+re-reads the list once a minute while anything runs and queues one chat turn
+when a workflow finishes or waits on a person, which is what the rows were
+for. A launch's own `rows` still outranks the layout.
+
 THE SPEC TRAVELS BY HANDLE (SC-LAUNCH-SPEC, #2034). Measured 2026-10-23
 ~01:35Z, lane SCAN-FP (wf_053776f6-dcb): the spec embedded in a launch's
 args reached `swarm_workflow` retyped by the `sc:workflow` agent, ~23 KB of
@@ -661,6 +672,61 @@ def forget_attached() -> None:
     """Empty the registry (tests; a new session starts empty anyway)."""
     with _ATTACHED_LOCK:
         _ATTACHED.clear()
+        _PERSON_WAITS.clear()
+
+
+# A ROW THAT ENDED WAITING ON A PERSON (#2441, BGD 2026-10-26). A row whose
+# task parks on HUMAN_REQUIRED ends (`compact.person_wait_result`) instead of
+# polling for hours, so its workflow is in `_ATTACHED` with no live row. When
+# the step resumes -- the owner answered, a person said it is ready -- it
+# needs a row again, and `new_only` would never give it one. So the bridge
+# that answered the stop remembers the task here, and `{attach: "all",
+# new_only: true}` attaches a new row for it once it has LEFT PARKED, and only
+# for it: a step still parked stays left out, and an entry is forgotten as it
+# is attached, so it is attached once. Only a HUMAN_REQUIRED park ends a row
+# this way; an AWAITING_INPUT step's row keeps following it (`/sc answer`
+# fills its form in), so it is never remembered here.
+_PERSON_WAITS: dict[str, tuple[str | None, str | None]] = {}
+
+
+def remember_person_wait(task_id: str, workflow_id: str | None, step_id: str | None) -> None:
+    """A row of `task_id` (step `step_id` of `workflow_id`, or a single task
+    when that is None) ended waiting on a person."""
+    with _ATTACHED_LOCK:
+        _PERSON_WAITS[str(task_id)] = (workflow_id or None, step_id or None)
+
+
+def forget_person_wait(task_ids: Any) -> None:
+    with _ATTACHED_LOCK:
+        for task_id in task_ids:
+            _PERSON_WAITS.pop(str(task_id), None)
+
+
+def resumed_person_waits(client: SwarmClient) -> tuple[dict[str, dict[str, str]], set[str]]:
+    """`(workflows, tasks)`: of the rows that ended waiting on a person, the
+    ones whose task has since LEFT PARKED and not finished -- per workflow,
+    `{step_id: task_id}`; and the single tasks' ids. A task that finished
+    needs no row and is forgotten; one still PARKED, or not read, is kept for
+    the next check."""
+    with _ATTACHED_LOCK:
+        waits = dict(_PERSON_WAITS)
+    by_workflow: dict[str, dict[str, str]] = {}
+    tasks: set[str] = set()
+    finished = []
+    for task_id, (workflow_id, step_id) in waits.items():
+        try:
+            state = client.task(task_id).get("state")
+        except SwarmError:
+            continue
+        if state in _FINISHED:
+            finished.append(task_id)
+        elif state and state != "PARKED":
+            if workflow_id and step_id:
+                by_workflow.setdefault(workflow_id, {})[step_id] = task_id
+            elif not workflow_id:
+                tasks.add(task_id)
+    forget_person_wait(finished)
+    return by_workflow, tasks
 
 
 #: What a run's description says when the API named no workspace for it:
@@ -767,6 +833,9 @@ def for_spec(
         "workflow's finish, a line each time its stage changes, and the SwarmCloud pane "
         "browses its stages"
     ) if mode == config.ROWS_PANE else (
+        f"{title}: each step runs in SwarmCloud; this run submits it and starts no row -- the "
+        "SwarmCloud strip above the prompt follows it and says when it finishes"
+    ) if mode == layout.ROWS_BAND else (
         f"{title}: each step runs in SwarmCloud, and the whole workflow is shown here as ONE "
         "[SwarmCloud] summary row, a line each time its step counts change, with its console link"
     )
@@ -801,7 +870,24 @@ def for_spec(
         "`args.spec_handle` is the file this bridge wrote the spec to: the run submits from it, "
         "checked against its digest, so no agent retypes the spec; keep it beside `spec`"
     )
+    if mode == layout.ROWS_BAND:
+        # The run is the submission alone: no follow row after it (run.js).
+        out["followed_by"] = layout.ROWS_BAND
+        out["note"] = layout.BAND_NOTE
     return out
+
+
+def _banded(**fields: Any) -> dict[str, Any]:
+    """What a launch answers in the band layout: no row to launch, and why.
+    `fields` (the attach's id, a dispatch's task ids) go beside it."""
+    return {
+        **fields,
+        "rows": layout.ROWS_BAND,
+        "launches": [],
+        "followed_by": layout.ROWS_BAND,
+        "note": layout.BAND_NOTE,
+        "launch_with": "nothing: no Workflow call. The SwarmCloud strip above the prompt follows this work",
+    }
 
 
 #: The states a step does not leave (swarm_common.states.TERMINAL_STATES, as
@@ -863,8 +949,13 @@ def _attach_launches(
     workflow_id: str, name: str, steps: int, workspace: str | None = None, tenant: str | None = None,
     envelope: dict[str, Any] | None = None, labels: dict[str, str] | None = None,
     repository: Any = None, *, rows: str | None = None, budget: int | None = None,
+    only_steps: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str], int]:
     """`(copies, steps_left_out, rows_used)` for attaching one workflow.
+
+    `only_steps` (per-step, with an envelope): a row for these unfinished
+    steps alone, reporting no other -- the steps that resumed after their row
+    ended waiting on a person (#2441), whose workflow already had its rows.
 
     `workspace` is the one the API's document names (a display name or the
     tenant id); `tenant` the tenant id behind it, for the description.
@@ -911,7 +1002,7 @@ def _attach_launches(
         out["rows"] = mode
         return out
 
-    copies, left, used = _shaped(mode, copy, title, workflow_id, name, steps, envelope, budget)
+    copies, left, used = _shaped(mode, copy, title, workflow_id, name, steps, envelope, budget, only_steps)
     # Remembered once its copies are written: a copy that could not be
     # written is no row, and `/sc check` must still offer it.
     remember_attached([workflow_id])
@@ -920,10 +1011,22 @@ def _attach_launches(
 
 def _shaped(
     mode: str, copy: Any, title: str, workflow_id: str, name: str, steps: int,
-    envelope: dict[str, Any] | None, budget: int | None,
+    envelope: dict[str, Any] | None, budget: int | None, only_steps: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str], int]:
     """`_attach_launches`' copies, written by `copy(title, description,
     share)`, in `mode`'s shape."""
+    if only_steps is not None and mode == config.ROWS_PER_STEP and envelope is not None:
+        wanted = set(only_steps)
+        resumed = [i for i in _open_steps(envelope) if i in wanted]
+        others = [str(r["step_id"]) for r in workflows.step_rows(envelope)
+                  if r.get("step_id") and str(r["step_id"]) not in wanted]
+        description = (
+            f"{title}: attached to SwarmCloud workflow {workflow_id} again for "
+            f"{', '.join(resumed) or 'no step'}, which resumed after its row ended waiting on a "
+            "person; one [SwarmCloud] row each. Nothing is submitted"
+        )
+        share = {"from": 1, "to": len(resumed), "steps": resumed, "others": others}
+        return [copy(title, description, share)], [], len(resumed)
     if mode == config.ROWS_PANE:
         # THE PANE LAYOUT (SC-BROWSER-BUILD, #2318): one sc:finish row per
         # workflow, whose only job is to notice the finish; the pane browses.
@@ -988,6 +1091,8 @@ def for_attach(client: SwarmClient, workflow_id: str, rows: str | None = None) -
     from . import session
 
     workflow_id = attach_id(workflow_id)
+    if layout.row_mode(rows) == layout.ROWS_BAND:
+        return _banded(attach=workflow_id)
     envelope = workflows.fetch(client, workflow_id)
     stored = workflows.stored_names(envelope)
     name = workflows.title_name(stored=stored["title"] or stored["label"], workflow_id=workflow_id)
@@ -1101,6 +1206,9 @@ def for_tasks(entries: list[dict[str, Any]], client: SwarmClient | None = None, 
             task = entry.get("task") if isinstance(entry.get("task"), dict) else {}
             record("dispatch", title=tasks_title([entry]), task_id=str(entry["task_id"]),
                    repository=task.get("repository_url") or entry.get("repository_url"))
+    if mode == layout.ROWS_BAND:
+        # Recorded above, as every dispatch is; no row (the strip follows them).
+        return _banded(task_ids=[str(e["task_id"]) for e in wanted])
     follow = wanted[:cap]
     labels: dict[str, str] = {}
     if client is not None and follow:
@@ -1312,6 +1420,9 @@ def for_all(
     origin naming a repository it widens to nothing and says so."""
     from . import sc, session
 
+    if layout.row_mode(rows) == layout.ROWS_BAND:
+        # No row to start, so nothing to read: the strip lists the work itself.
+        return _banded(attach="all")
     filtering = (repository is not None or new_only or bool(exclude)) and not project
     scope = None
     if repository is not None or project:
@@ -1319,7 +1430,16 @@ def for_all(
 
         scope = resolve_scope(repository if repository is not None else "origin")
     project_repo = scope["key"] if project and scope else None
-    skip = frozenset((attached() if new_only else frozenset()) | {str(i) for i in exclude or [] if i})
+    # A step whose row ended waiting on a person and that has since resumed
+    # (#2441): its workflow is attached again, for that step alone -- in the
+    # per-step layout, where a row ends that way; `exclude` (a row the caller
+    # can see live) still wins, so nothing is attached twice.
+    resumed: dict[str, dict[str, str]] = {}
+    resumed_tasks: set[str] = set()
+    if new_only and layout.row_mode(rows) == config.ROWS_PER_STEP:
+        resumed, resumed_tasks = resumed_person_waits(client)
+    skip = frozenset((attached() - set(resumed) - resumed_tasks if new_only else frozenset())
+                     | {str(i) for i in exclude or [] if i})
 
     # The single tasks first, and on their own: a failure to read them is
     # reported beside the workflows, never instead of them.
@@ -1418,7 +1538,10 @@ def for_all(
             workflow_id, name, int(entry.get("steps_total") or 0), entry.get("workspace"), entry.get("tenant_id"),
             envelopes.get(workflow_id), labels, entry.get("repository_url"),
             rows=mode, budget=budget if mode == config.ROWS_PER_STEP else None,
+            only_steps=sorted(resumed[workflow_id]) if workflow_id in resumed else None,
         )
+        if workflow_id in resumed:
+            forget_person_wait(resumed[workflow_id].values())
         launches.extend(copies)
         budget -= used
         steps_left.extend({"workflow_id": workflow_id, "step_id": step_id,
@@ -1449,6 +1572,7 @@ def for_all(
         task_launch = for_tasks(sc.group_by_workspace(named_workspaces(singles["tasks"], names, keep_tenant=True)),
                                 client, dispatched=False, rows=mode)
         launches.append(task_launch)
+        forget_person_wait(str(t.get("task_id")) for t in singles["tasks"] if str(t.get("task_id")) in resumed_tasks)
         out["single_tasks"] = len(singles["tasks"])
         not_followed.extend(task_launch.pop("not_followed"))
         if singles.get("complete") is False:
