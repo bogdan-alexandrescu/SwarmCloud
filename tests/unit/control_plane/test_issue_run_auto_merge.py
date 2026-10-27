@@ -31,6 +31,7 @@ import json
 import urllib.error
 
 from swarm_api import issueci, issueruns
+from swarm_api.validation import REREVIEW_STEP_ID
 
 from .test_issue_run_ci import (  # noqa: F401  (fixtures, imported to be used)
     PR,
@@ -47,11 +48,15 @@ from .test_issue_run_ci import (  # noqa: F401  (fixtures, imported to be used)
     forge_tokens,
     writes,
 )
-from .test_issue_run_keyword import _review_writes, _verdict
+from .test_issue_run_keyword import SAME, _review_writes, _verdict
 from .test_issue_runs import FULL_PLAN, _approve, _create, _docs, _finish_planner, _run
 
 
-def _checking(client, db, objects, writes, *, verdict: str = "MERGE") -> dict:
+def _checking(client, db, objects, writes, *, verdict: str = "MERGE",
+              rereview: str | None = None) -> dict:
+    """A CHECKING `auto_merge` run whose review wrote `verdict`, and whose
+    re-review (#2217) wrote `rereview` -- by default the review's verdict,
+    passed on as a shut gate passes it."""
     created = _create(client, auto_merge=True)
     assert created.status_code == 201, created.text
     run = created.json()["run"]
@@ -62,8 +67,10 @@ def _checking(client, db, objects, writes, *, verdict: str = "MERGE") -> dict:
     writes.open_pull(PR, SHA_A)
     integrator = _workflow_ends(db, running["workflow_id"])
     integrator["result_summary"]["git"]["pushed_head"] = SHA_A
-    _review_writes(db, objects, running["workflow_id"],
-                   json.dumps(_verdict(True, True, verdict=verdict)))
+    _review_writes(
+        db, objects, running["workflow_id"], json.dumps(_verdict(True, True, verdict=verdict)),
+        rereview=SAME if rereview is None else json.dumps(_verdict(True, True, verdict=rereview)),
+    )
     return running
 
 
@@ -234,6 +241,73 @@ def test_a_review_verdict_of_not_yet_fails_the_merge_and_submits_none(
     client, db, objects, writes, clock,
 ):
     running = _checking(client, db, objects, writes, verdict="NOT_YET")
+    writes.check(SHA_A, "unit", "success")
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "FAILED"
+    assert "NOT_YET, not MERGE" in run["error"]
+    assert _merge_workflows(db) == []
+
+
+def test_a_not_yet_review_whose_fix_the_rereview_passes_submits_the_merge(
+    client, db, objects, writes, clock,
+):
+    """#2217: the review said NOT_YET, the fix resolved it, the re-review of
+    the fixed head says MERGE. The merge reads the LATEST verdict.
+
+    MUTATION: make `issueci._review_task_id` return the 'review' step's task
+    -- the run fails "NOT_YET, not MERGE", as wf_3cc4026eb34a43a885a4 did."""
+    running = _checking(client, db, objects, writes, verdict="NOT_YET", rereview="MERGE")
+    writes.check(SHA_A, "unit", "success")
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "CHECKING", run.get("error")
+    (merge_wf,) = _merge_workflows(db)
+    assert run["merge"] == {"workflow_id": merge_wf["workflow_id"], "head_sha": SHA_A}
+
+
+def test_a_rereview_that_still_says_not_yet_fails_the_merge_and_submits_none(
+    client, db, objects, writes, clock,
+):
+    running = _checking(client, db, objects, writes, verdict="NOT_YET", rereview="NOT_YET")
+    writes.check(SHA_A, "unit", "success")
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "FAILED"
+    assert "NOT_YET, not MERGE" in run["error"]
+    assert _merge_workflows(db) == []
+
+
+def test_a_merge_review_passed_on_by_the_shut_rereview_merges(client, db, objects, writes, clock):
+    """On MERGE the re-review's agent does not run; its gate re-publishes the
+    review's verdict (`Worker._republish_staged_verdict`), and that is read."""
+    running = _checking(client, db, objects, writes, verdict="MERGE")
+    compiled = db.docs[f"workflows/{running['workflow_id']}"]
+    assert [s["step_id"] for s in compiled["steps"]][-3:] == [
+        issueruns.REVIEW_STEP, issueruns.FIX_STEP, REREVIEW_STEP_ID,
+    ]
+    rereview = _step_task(db, running["workflow_id"], REREVIEW_STEP_ID)
+    assert rereview["result_summary"]["artifacts"][0]["name"] == issueruns.VERDICT_FILE
+    writes.check(SHA_A, "unit", "success")
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "CHECKING", run.get("error")
+    assert len(_merge_workflows(db)) == 1
+
+
+def test_a_workflow_compiled_without_a_rereview_reads_the_review(
+    client, db, objects, writes, clock,
+):
+    """A run whose workflow was compiled before #2217 has no re-review step:
+    its review's verdict is still the one read, MERGE or NOT_YET."""
+    running = _checking(client, db, objects, writes, verdict="NOT_YET", rereview="MERGE")
+    compiled = db.docs[f"workflows/{running['workflow_id']}"]
+    compiled["steps"] = [s for s in compiled["steps"]
+                         if s["step_id"] != REREVIEW_STEP_ID]
     writes.check(SHA_A, "unit", "success")
 
     run = _read(client, clock, running["id"])
