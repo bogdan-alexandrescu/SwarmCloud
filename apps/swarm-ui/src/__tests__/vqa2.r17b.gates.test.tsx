@@ -115,7 +115,7 @@ describe('V064: the Tenants gate shows the page refresh control', () => {
     // Now allowed: the press's answer is the roster, read once, not twice.
     api.loadTenants.mockResolvedValue(ok({ tenants: [tenant()] }))
     fireEvent.click(press)
-    await screen.findByText('eng@example.com', { exact: false }, WAIT)
+    await waitFor(() => expect([...container.querySelectorAll('tbody th[scope="row"]')].map((h) => h.textContent)).toEqual(['eng']), WAIT)
     expect(container.querySelector('.state.admin-gate')).toBeNull()
     // MUTATION: let `Screen` read again on top of the press's read.
     expect(api.loadTenants.mock.calls.length).toBe(calls + 2)
