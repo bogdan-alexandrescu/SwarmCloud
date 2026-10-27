@@ -136,7 +136,7 @@ def test_the_fixed_orders_carry_the_new_classes_where_an_attempt_meets_them():
         "runner_error", "timeout", "lost_worker", "could_not_start", "inputs_unavailable",
         "outputs_missing", "dispatch_failed", "spec_signature_invalid",
         "verdict_refused", "verdict_failed", "merge_refused", "merge_failed",
-        "publish_refused",
+        "publish_refused", "budget_exceeded",
         "other", "no_reason", "intended",
     ]
     # Its own class, never "other" or "runner error": every one is a tenant's
@@ -159,6 +159,17 @@ def test_the_fixed_orders_carry_the_new_classes_where_an_attempt_meets_them():
     # refused title), which is what each was counted as before.
     assert dict(outcomes.FAILURE_CLASSES)["publish_refused"] == "publish refused"
     assert outcomes._FAILURE_OF_CAUSE["publish_refused"] == "publish_refused"
+    # Contract request 118, BGD 2026-10-27: an attempt the worker stopped on
+    # its budget is its own class, never "runner error".
+    # MUTATION: map BUDGET_EXCEEDED back to "runner_error" and this fails.
+    assert dict(outcomes.FAILURE_CLASSES)["budget_exceeded"] == "budget exceeded"
+    assert outcomes._FAILURE_OF_CAUSE["budget_exceeded"] == "budget_exceeded"
+    assert outcomes.classify_failure(
+        "FAILED", "budget_exceeded: stopped", 143, end_cause="budget_exceeded") == "budget_exceeded"
+    # It is served in the vocab in its fixed place, after publish_refused.
+    served = [c["key"] for c in outcomes.VOCAB["failure_classes"]]
+    assert served.index("budget_exceeded") == served.index("publish_refused") + 1
+    assert served.index("budget_exceeded") + 1 == served.index("other")
     assert dict(outcomes.FAILURE_CLASSES)["inputs_unavailable"] == "inputs unavailable"
     assert [k for k, _ in outcomes.CANCEL_CAUSES] == [
         "requested", "after_failure", "after_cancel", "workflow_sweep", "child_cascade", "other",

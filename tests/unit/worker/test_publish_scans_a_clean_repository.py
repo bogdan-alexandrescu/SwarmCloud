@@ -25,6 +25,8 @@ Real git against a local `file://` remote; only the HTTP forge is faked.
 from __future__ import annotations
 
 import hashlib
+import io
+import os
 import shutil
 import stat
 import struct
@@ -33,7 +35,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_worker import lifecycle
+from agent_worker import lifecycle, workspace as workspace_mod
 
 from test_agent_commits_are_kept import (
     KEY,
@@ -462,3 +464,277 @@ def test_a_credential_shaped_token_in_a_test_file_publishes_nothing_and_names_th
     assert token not in log_stream.getvalue()
     assert not _branch_exists(origin, branch), "a branch was pushed"
     assert token.encode() not in _all_object_bytes(origin), "the token reached a pushed object"
+
+
+# -- a merge of a branch the agent fetched with --depth (#2559) ----------------
+#
+# MEASURED 2026-10-26T23:01Z to 2026-10-27T06:01Z: six fix steps FAILED with
+# "could not fetch the agent's work into the worker's clean repository"
+# (fingerprint fr-ffa78ac1ab9b). Each agent's swarm-git `git_fetch` answered
+# `api_unavailable`, so it ran `git fetch --depth=N origin <sibling>` in its own
+# shell and merged the sibling. The clone's `.git/shallow` then held the
+# sibling's depth cut-offs, but the upload side's boundary held the recorded
+# base alone, so the walk from HEAD crossed the merge into sibling history the
+# clone never had. A cut-off ORIGIN CONFIRMS it has may join the boundary: the
+# history under a commit origin has is origin's, and cannot hide the agent's
+# content, which descends from it. Nothing else the agent wrote there may.
+
+
+def _plain_git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def _origin_confirmer(origin_repo: Path, asked: list[list[str]], *, lie: list[str] = ()):
+    """swarm-api's answer to `git_fetch` `confirm` (#2413), from a file://
+    origin: the asked shas that are commits there -- plus, when `lie` is
+    given, shas nobody asked about, which the worker must not believe."""
+    def confirm(shas: list[str]) -> list[str]:
+        asked.append(list(shas))
+        have = [
+            sha for sha in shas
+            if subprocess.run(["git", "-C", str(origin_repo), "cat-file", "-e", f"{sha}^{{commit}}"],
+                              capture_output=True).returncode == 0
+        ]
+        return [*have, *lie]
+    return confirm
+
+
+def _merged_depth_fetch(tmp_path: Path) -> tuple[Path, Path, str, str, list[str]]:
+    """origin: main m1..m3, and X branched at m1 with x1..x5. The agent's clone
+    is `--depth 1` of main (base m3); it fetches X `--depth=3` and merges it.
+    Returns (origin, clone, base, merge, x shas oldest first)."""
+    src = tmp_path / "origin"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(src)], check=True)
+    _git(src, "commit", "-q", "--allow-empty", "-m", "m1")
+    _git(src, "checkout", "-q", "-b", "X")
+    xs = []
+    for i in range(1, 6):
+        (src / f"x{i}.txt").write_text(f"x{i}\n")
+        _git(src, "add", "-A")
+        _git(src, "commit", "-q", "-m", f"x{i}")
+        xs.append(_rev(src, "HEAD"))
+    _git(src, "checkout", "-q", "main")
+    for i in (2, 3):
+        (src / f"m{i}.txt").write_text(f"m{i}\n")
+        _git(src, "add", "-A")
+        _git(src, "commit", "-q", "-m", f"m{i}")
+    clone = tmp_path / "work" / "repo"
+    subprocess.run(["git", "clone", "-q", "--depth", "1", "--branch", "main",
+                    f"file://{src}", str(clone)], check=True, capture_output=True)
+    base = _rev(clone, "HEAD")
+    _git(clone, "fetch", "-q", "--depth=3", "origin", "X:refs/remotes/origin/X")
+    _git(clone, "merge", "-q", "--no-ff", "--allow-unrelated-histories", "-m", "merge X",
+         "origin/X")
+    merge = _rev(clone, "HEAD")
+    shallow = (clone / ".git" / "shallow").read_text().split()
+    # The control: the clone is cut off on X (x3) as well as at the base.
+    assert sorted(shallow) == sorted([base, xs[2]]), (shallow, base, xs)
+    return src, clone, base, merge, xs
+
+
+def _prepare(tmp_path: Path, clone: Path, base: str, **kwargs) -> Path:
+    from agent_worker.gitops import prepare_publish_repo
+    from agent_worker.logs import build_logger
+
+    logs = tmp_path / "logs"
+    logs.mkdir(exist_ok=True)
+    return prepare_publish_repo(
+        source_repo=clone, work_head=None, base=base, private_dir=tmp_path / "private",
+        logs_dir=logs, timeout_seconds=60,
+        logger=build_logger(task_id="task_1", attempt_id="att_1", tenant_id="acme",
+                            generation=1, runner_profile="mock", stream=io.StringIO()),
+        **kwargs,
+    )
+
+
+def test_a_merge_of_a_depth_fetched_branch_publishes_when_origin_confirms_its_shallow_lines(
+    tmp_path: Path,
+):
+    src, clone, base, merge, xs = _merged_depth_fetch(tmp_path)
+    asked: list[list[str]] = []
+    repo = _prepare(tmp_path, clone, base, confirm_on_origin=_origin_confirmer(src, asked))
+    assert _plain_git(repo, "rev-parse", "refs/swarm/head") == merge
+    assert _plain_git(repo, "rev-parse", "HEAD") == merge
+    # Asked about X's cut-off alone: the base is the worker's own floor.
+    assert asked == [[xs[2]]]
+    boundary = (repo / ".git" / "swarm-source-shallow").read_text().split()
+    assert boundary == [base, xs[2]]
+
+
+def test_an_unconfirmed_shallow_line_is_never_added_and_the_fetch_failure_names_gits_reason(
+    tmp_path: Path,
+):
+    from agent_worker.gitops import GitError
+
+    src, clone, base, _merge, _xs = _merged_depth_fetch(tmp_path)
+    for confirmer in (None, lambda shas: []):
+        kwargs = {} if confirmer is None else {"confirm_on_origin": confirmer}
+        with pytest.raises(GitError) as raised:
+            _prepare(tmp_path, clone, base, **kwargs)
+        text = str(raised.value)
+        # The prefix failurecauses and failure-review fingerprint on, verbatim.
+        assert text.startswith("could not fetch the agent's work into the worker's clean "
+                               "repository"), text
+        assert "git: " in text, text
+        assert text.split("git: ", 1)[1].strip(), text
+
+    def refusing(shas: list[str]) -> list[str]:
+        raise RuntimeError("the platform did not answer")
+
+    with pytest.raises(GitError):
+        _prepare(tmp_path, clone, base, confirm_on_origin=refusing)
+
+
+def test_a_forged_unconfirmable_or_malformed_shallow_line_never_joins_the_boundary(
+    tmp_path: Path,
+):
+    """The agent's `.git/shallow` is only a question to origin. A sha origin
+    does not have, an abbreviated one and a malformed line are not added; a
+    confirmer that answers more than it was asked is read as a subset; and
+    the key commit stays reachable, so it is fetched (and scanned)."""
+    src = tmp_path / "origin"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(src)], check=True)
+    _git(src, "commit", "-q", "--allow-empty", "-m", "base")
+    clone = tmp_path / "work" / "repo"
+    subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{src}", str(clone)],
+                   check=True, capture_output=True)
+    base, first, second, third = _key_added_then_deleted(clone)
+    stranger = hashlib.sha1(os.urandom(16)).hexdigest()
+    (clone / ".git" / "shallow").write_text(
+        f"{base}\n{second}\n{third}\n{stranger}\n{second[:12]}\nnot-a-sha\n{second}\n"
+    )
+    asked: list[list[str]] = []
+    repo = _prepare(tmp_path, clone, base,
+                    confirm_on_origin=_origin_confirmer(src, asked, lie=[first]))
+    assert asked == [[second, third, stranger]], asked
+    boundary = (repo / ".git" / "swarm-source-shallow").read_text().split()
+    assert boundary == [base], boundary
+    assert _plain_git(repo, "rev-parse", "HEAD") == third
+    # The key's commit was fetched: the walk was not stopped at C2.
+    _plain_git(repo, "cat-file", "-e", f"{first}^{{commit}}")
+
+
+# -- the worker's final publish asks origin through its git tools relay -------
+#
+# The six fr-ffa78ac1ab9b failures were all at the worker's final publish, so
+# the confirmer is exercised there too: `Worker._origin_confirmer` hands
+# `prepare_publish_repo` the relay's `confirm_on_origin`. A confirmer that
+# raises reads as "origin confirmed nothing", so a broken wiring would only
+# show as the merge failing to publish -- which is what the first test pins.
+
+
+class _ConfirmingRelay:
+    """The attempt's git tools relay, answering `git_fetch` `confirm` from the
+    file:// origin, or refusing with a fence."""
+
+    def __init__(self, origin_repo: Path, *, fenced: bool = False) -> None:
+        self.asked: list[list[str]] = []
+        self.request_ids: list[str] = []
+        self._confirm = _origin_confirmer(origin_repo, self.asked)
+        self._fenced = fenced
+
+    def confirm_on_origin(self, shas: list[str], *, request_id: str) -> list[str]:
+        self.request_ids.append(request_id)
+        if self._fenced:
+            from agent_worker import children as children_mod
+
+            self.asked.append(list(shas))
+            raise children_mod.ChildSubmitFenced(
+                409, "child_submit_fenced", "", retryable=False
+            )
+        return self._confirm(shas)
+
+
+def _origin_with_a_sibling(origin_repo: Path, tmp_path: Path) -> list[str]:
+    """Give the bare `origin` a sibling X (x1..x5, off its base) and move main
+    on by m2, m3, so a depth-1 clone of main is cut off below the merge base.
+    Returns X's shas, oldest first."""
+    seed = tmp_path / "sibling-seed"
+    subprocess.run(["git", "clone", "-q", str(origin_repo), str(seed)],
+                   check=True, capture_output=True)
+    _git(seed, "checkout", "-q", "-b", "X")
+    xs = []
+    for i in range(1, 6):
+        (seed / f"x{i}.txt").write_text(f"x{i}\n")
+        _git(seed, "add", "-A")
+        _git(seed, "commit", "-q", "-m", f"x{i}")
+        xs.append(_rev(seed, "HEAD"))
+    _git(seed, "checkout", "-q", "main")
+    for i in (2, 3):
+        (seed / f"m{i}.txt").write_text(f"m{i}\n")
+        _git(seed, "add", "-A")
+        _git(seed, "commit", "-q", "-m", f"m{i}")
+    _git(seed, "push", "-q", "origin", "main", "X")
+    return xs
+
+
+def _fetch_sibling_with_depth_and_merge(origin_repo: Path, xs: list[str]):
+    """The agent's shell, as in the six failures: `git fetch --depth=3` of X,
+    then a `--no-ff` merge of it."""
+    def edit(repo: Path) -> None:
+        base = _rev(repo, "HEAD")
+        _git(repo, "fetch", "-q", "--depth=3", f"file://{origin_repo}",
+             "X:refs/remotes/origin/X")
+        _git(repo, "merge", "-q", "--no-ff", "--allow-unrelated-histories",
+             "-m", "merge X", "refs/remotes/origin/X")
+        shallow = (repo / ".git" / "shallow").read_text().split()
+        # The control: the clone is cut off on X (x3) as well as at the base.
+        assert sorted(shallow) == sorted([base, xs[2]]), (shallow, base, xs)
+    return edit
+
+
+def test_the_final_publish_of_a_depth_fetched_merge_asks_origin_through_the_relay(
+    worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
+):
+    xs = _origin_with_a_sibling(origin, tmp_path)
+    relay = _ConfirmingRelay(origin)
+    monkeypatch.setattr(lifecycle.Worker, "_workflow_broker", lambda self: relay,
+                        raising=False)
+
+    _, config, out = _attempt(
+        worker_factory, monkeypatch, origin, task_id="t-2559-merge",
+        edit=_fetch_sibling_with_depth_and_merge(origin, xs),
+    )
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    # MUTATION: `_origin_confirmer` returns None, or calls a renamed relay
+    # method -> the boundary is the base alone and the publish-fetch fails.
+    assert out["published"] is True, out.get("publish_reason")
+    assert relay.asked == [[xs[2]]], relay.asked
+    assert all(r.startswith("publish-confirm-") for r in relay.request_ids), relay.request_ids
+    files = tree_at(origin, branch)
+    assert {"x1.txt", "x5.txt", "m3.txt"} <= files, files
+
+
+def test_a_fence_from_the_publish_confirmer_is_raised_out_of_build_clean_repo(
+    worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
+):
+    """`prepare_publish_repo` reads any confirmer error as "origin confirmed
+    nothing"; a fence is still the fence (invariant 5), so the worker raises
+    it rather than going on to publish."""
+    from agent_worker import children as children_mod
+
+    xs = _origin_with_a_sibling(origin, tmp_path)
+    relay = _ConfirmingRelay(origin, fenced=True)
+    monkeypatch.setattr(lifecycle.Worker, "_workflow_broker", lambda self: relay,
+                        raising=False)
+    worker, config, _ = worker_factory(
+        task_id="t-2559-fenced", attempt_id="att-t-2559-fenced",
+        lease_id="lease-t-2559-fenced", repository_url=f"file://{origin}",
+    )
+    worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
+    task = {"task_id": "t-2559-fenced", "metadata": {"dispatch": {"strategy": "direct-pr"}}}
+    worker._task = task
+    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    assert worker._maybe_clone(task) is not None, "the clone did not land"
+    repo = worker.ws.work / lifecycle.REPO_DIR_NAME
+    base = _rev(repo, "HEAD")
+    _fetch_sibling_with_depth_and_merge(origin, xs)(repo)
+
+    # MUTATION: drop the `finally: raise fenced[0]` -> GitError (the fetch
+    # failure on the base-only boundary) is raised instead.
+    with pytest.raises(children_mod.ChildSubmitFenced):
+        worker._build_clean_repo(repo, floor=base)
+    assert relay.asked == [[xs[2]]], relay.asked

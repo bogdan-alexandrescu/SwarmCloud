@@ -46,7 +46,7 @@ from typing import Any
 import pytest
 
 from agent_worker.expected_outputs import skipped_names
-from agent_worker import gitops
+from agent_worker import cachedirs, gitops
 from agent_worker import workspace as workspace_mod
 from agent_worker.checkpoint import CheckpointManager
 from agent_worker.errors import ExitCode
@@ -964,9 +964,16 @@ def test_a_repository_task_is_unchanged(db, tmp_path, monkeypatch, worker_factor
     # github.com, so the stager stages nothing and says so in one line. It
     # names no destination for a deliverable; it is set aside here, and the
     # "write" check below still reads it.
-    context = [line for line in lines if line.startswith(CONTEXT_LINE_START)]
-    assert len(context) <= 1 and (not context or lines[0] == context[0]), lines
-    rest = lines[len(context):]
+    # The claude-code runner's scratch note (issue #2436,
+    # `cachedirs.scratch_note`) comes first: where big scratch data goes --
+    # $TMPDIR, not /tmp -- never where a deliverable goes. Set aside the same
+    # way; the "write" check below still reads it.
+    notes = (cachedirs.scratch_note(own_volume=True), cachedirs.scratch_note(own_volume=False))
+    assert sum(line in notes for line in lines) == 1 and lines[0] in notes, lines
+    after_note = lines[1:]
+    context = [line for line in after_note if line.startswith(CONTEXT_LINE_START)]
+    assert len(context) <= 1 and (not context or after_note[0] == context[0]), lines
+    rest = after_note[len(context):]
     # The memory budget line (#2504) follows it, when the container has a
     # limit; it says how much memory there is, not where anything goes.
     budget = [line for line in rest if line.startswith(BUDGET_LINE_START)]

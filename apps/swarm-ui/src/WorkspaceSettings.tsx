@@ -1,7 +1,26 @@
-import { useContext, useState, type FormEvent, type MouseEvent, type ReactNode } from 'react'
-import { dismissOnboarding, loadMe, loadProfile, loadQaSettings, loadWorkspaceRoles, putQaSettings, renameWorkspace, type QaSettings } from './api'
+import { useContext, useEffect, useId, useState, type FormEvent, type MouseEvent, type ReactNode } from 'react'
+import {
+  BUDGET_DOES,
+  budgetAmount,
+  budgetLimitsWords,
+  budgetRefusalWords,
+  dismissOnboarding,
+  loadMe,
+  loadProfile,
+  loadQaSettings,
+  loadWorkspaceBudget,
+  loadWorkspaceRoles,
+  parseBudgetAmount,
+  putQaSettings,
+  putWorkspaceBudget,
+  renameWorkspace,
+  type BudgetLimits,
+  type BudgetUnit,
+  type QaSettings,
+  type WorkspaceBudget,
+} from './api'
 import { CodeIntelligenceCard } from './CodeIntelligence'
-import { Button, ButtonLink, Card, Dash, Tabs, routedClick } from './components'
+import { Banner, Button, ButtonLink, Card, Dash, Tabs, routedClick } from './components'
 import { SetupContext, useSetupSteps, type SetupStep } from './ConfigSetup'
 import type { ApiError } from './fetch'
 import { Refusal } from './GitHubConnect'
@@ -20,8 +39,9 @@ import './styles/workspace-settings.css'
  * own address so a link reproduces it:
  *
  *   * Settings (`/config/workspace`): the workspace's settings, as Settings ›
- *     Workspace had them (code intelligence), and which workspace they are
- *     about, read from `GET /v1/profile`'s acting workspace;
+ *     Workspace had them (code intelligence), its per-agent budget (#2459,
+ *     `WorkspaceBudgetCard`), and which workspace they are about, read from
+ *     `GET /v1/profile`'s acting workspace;
  *   * Workspace setup (`/config/workspace/setup`): Work › Setup's checklist,
  *     mounted as a part (Onboarding.tsx), so the setup strip above every
  *     Config page has its long form here;
@@ -581,6 +601,215 @@ function QaFlowsPerStep({ read }: { read: QaSettings }) {
   )
 }
 
+/**
+ * PER-AGENT BUDGET (BUDGET-UI-SETTINGS; part of #2459, docs/design/agent-budget.md §2, §4). The most one agent may
+ * spend on one attempt in this workspace, in dollars OR tokens, the unit chosen here for the whole workspace. OFF
+ * UNTIL A WORKSPACE ADMIN SETS ONE (BGD, 2026-10-26): Off is drawn as the default, and a workspace that sets nothing
+ * runs as it always has. A step may ask for less in its spec, never more.
+ *
+ * The platform ceiling is drawn as the most it can be. A default above it is refused 422 `budget_above_ceiling` with
+ * nothing changed, and the refusal is said in words (`budgetRefusalWords`); the API is the judge, so a figure typed
+ * over the ceiling is warned about but not blocked here. A ceiling an admin lowers later still binds: every attempt's
+ * limit is the least of the step's, this default and the ceiling, taken at submission.
+ *
+ * Only the workspace's owner or admin, or a platform admin, changes it (`can_edit`, `budget.authorize_write`);
+ * anyone else reads it, with no control drawn.
+ */
+type BudgetPick = 'off' | BudgetUnit
+
+/** A unit's name on its choice. A function, not a map: the publish scan reads a `tokens:` key with a string value as a credential. */
+const unitLabel = (u: BudgetUnit): string => (u === 'usd' ? 'Dollars' : 'Tokens')
+
+function WorkspaceBudgetCard() {
+  const budget = useUrRead(loadWorkspaceBudget, 'workspace-budget')
+  return (
+    <Card title="Per-agent budget" action={<UrRefresh reads={[budget]} />}>
+      <p className="pk-lead">
+        The most one agent may spend on a step in this workspace. {BUDGET_DOES} A step may set a lower budget, never a
+        higher one.
+      </p>
+      <UrRegion state={budget.state} route="GET /v1/budget" what="the Per-agent budget setting" onRetry={budget.reload}>
+        {(d) => (d.can_edit ? <BudgetForm read={d} /> : <BudgetReadOnly read={d} />)}
+      </UrRegion>
+    </Card>
+  )
+}
+
+/** The default in words: "Off" or "$5.00 per agent". */
+function budgetNow(b: WorkspaceBudget['budget']): string {
+  return b === null ? 'Off' : `${budgetAmount(b.unit, b.amount)} per agent`
+}
+
+function CeilingLine({ ceiling }: { ceiling: BudgetLimits }) {
+  const words = budgetLimitsWords(ceiling)
+  return <>{words === null ? 'None set: a budget here may be any amount the platform takes' : `${words}, the most a budget here can be`}</>
+}
+
+function SetBy({ read }: { read: WorkspaceBudget }) {
+  if (read.budget === null || read.set_by === null) return null
+  return <p className="ur-small">{`Set by ${read.set_by}${read.set_at !== null ? ` ${timeAgo(read.set_at)}` : ''}.`}</p>
+}
+
+/** A member's view: what the budget is and the ceiling over it, with no control. */
+function BudgetReadOnly({ read }: { read: WorkspaceBudget }) {
+  return (
+    <div className="jb-choice" data-testid="ws-budget">
+      <dl className="ws-kv">
+        <dt>Budget</dt>
+        <dd data-testid="ws-budget-now">{budgetNow(read.budget)}</dd>
+        <dt>Platform ceiling</dt>
+        <dd>
+          <CeilingLine ceiling={read.ceiling} />
+        </dd>
+      </dl>
+      <SetBy read={read} />
+      <p className="ur-small">Only the workspace&rsquo;s owner or admin, or a platform admin, can change this.</p>
+    </div>
+  )
+}
+
+function BudgetForm({ read }: { read: WorkspaceBudget }) {
+  const id = useId()
+  const [held, setHeld] = useState(read)
+  const [pick, setPick] = useState<BudgetPick>(read.budget?.unit ?? 'off')
+  const [typed, setTyped] = useState<Record<BudgetUnit, string>>({
+    usd: read.budget?.unit === 'usd' ? String(read.budget.amount) : '',
+    tokens: read.budget?.unit === 'tokens' ? String(read.budget.amount) : '',
+  })
+  const [busy, setBusy] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [refused, setRefused] = useState<ApiError | null>(null)
+  // A re-read from the card's refresh is the newer answer: it resets the form.
+  useEffect(() => {
+    setHeld(read)
+    setPick(read.budget?.unit ?? 'off')
+    setTyped({ usd: read.budget?.unit === 'usd' ? String(read.budget.amount) : '', tokens: read.budget?.unit === 'tokens' ? String(read.budget.amount) : '' })
+  }, [read])
+
+  const unit = pick === 'off' ? null : pick
+  const amount = unit === null ? null : parseBudgetAmount(unit, typed[unit])
+  const most = unit === null ? null : held.max[unit]
+  const top = unit === null ? null : held.ceiling[unit]
+  const overMax = amount !== null && most !== null && amount > most
+  const overCeiling = amount !== null && top !== null && amount > top
+  const invalid = unit !== null && (amount === null || overMax)
+  const was = held.budget
+  const unchanged = unit === null ? was === null : was !== null && was.unit === unit && was.amount === amount
+
+  const choose = (next: BudgetPick) => {
+    setPick(next)
+    setSaved(false)
+    setRefused(null)
+  }
+
+  async function save(e: FormEvent) {
+    e.preventDefault()
+    if (busy || invalid || unchanged) return
+    setBusy(true)
+    setSaved(false)
+    setRefused(null)
+    const r = await putWorkspaceBudget(held.tenant_id, unit === null || amount === null ? null : { unit, amount })
+    setBusy(false)
+    if (r.status === 'error') {
+      setRefused(r.error)
+      return
+    }
+    if (r.status === 'ok' || r.status === 'stale') {
+      setHeld(r.data)
+      setSaved(true)
+    }
+  }
+
+  const refusalWords = refused === null ? null : budgetRefusalWords(refused)
+  return (
+    <form className="jb-choice" aria-label="Per-agent budget" data-testid="ws-budget" onSubmit={(e) => void save(e)}>
+      <dl className="ws-kv">
+        <dt>Now</dt>
+        <dd data-testid="ws-budget-now">{budgetNow(held.budget)}</dd>
+        <dt>Platform ceiling</dt>
+        <dd>
+          <CeilingLine ceiling={held.ceiling} />
+        </dd>
+      </dl>
+      <div className="jb-options" role="radiogroup" aria-label="Limit">
+        {(['off', 'usd', 'tokens'] as const).map((p) => (
+          <label key={p} className={`jb-option${pick === p ? ' is-on' : ''}`}>
+            <input type="radio" name={`${id}-pick`} value={p} checked={pick === p} disabled={busy} onChange={() => choose(p)} />
+            <span className="jb-text">
+              <span className="jb-name">
+                {p === 'off' ? 'Off' : unitLabel(p)}
+                {p === 'off' && <span className="jb-default"> (the default)</span>}
+              </span>
+              <span className="jb-note">
+                {p === 'off'
+                  ? 'No limit: an agent runs until its step ends or times out.'
+                  : p === 'usd'
+                    ? 'The estimated cost at list prices, as each agent’s cost is reported.'
+                    : 'Input and output tokens, with cache reads, as the runner reports them.'}
+              </span>
+            </span>
+          </label>
+        ))}
+      </div>
+      {unit !== null && (
+        <>
+          <label className="c-field" htmlFor={`${id}-amount`}>
+            <span className="c-lbl">{unit === 'usd' ? 'Dollars per agent' : 'Tokens per agent'}</span>
+            <input
+              id={`${id}-amount`}
+              className="c-inp mono"
+              type="text"
+              inputMode={unit === 'usd' ? 'decimal' : 'numeric'}
+              autoComplete="off"
+              placeholder={unit === 'usd' ? '5.00' : '15,000,000'}
+              value={typed[unit]}
+              disabled={busy}
+              aria-invalid={invalid || overCeiling || undefined}
+              aria-describedby={`${id}-amount-hint`}
+              onChange={(e) => {
+                setSaved(false)
+                setRefused(null)
+                setTyped((t) => ({ ...t, [unit]: e.target.value }))
+              }}
+            />
+          </label>
+          <p id={`${id}-amount-hint`} className="ur-hint">
+            {top !== null ? `At most ${budgetAmount(unit, top)}, the platform ceiling.` : `No platform ceiling in ${unit === 'usd' ? 'dollars' : 'tokens'}.`}
+          </p>
+        </>
+      )}
+      {unit !== null && typed[unit].trim() !== '' && amount === null && (
+        <p className="warn-text">{unit === 'usd' ? 'A dollar budget is a number above 0.' : 'A token budget is a whole number, 1 or more.'}</p>
+      )}
+      {overMax && most !== null && unit !== null && <p className="warn-text">{`The most the platform takes is ${budgetAmount(unit, most)}.`}</p>}
+      {overCeiling && !overMax && top !== null && unit !== null && (
+        <p className="warn-text">{`Above the platform ceiling of ${budgetAmount(unit, top)}: saving it will be refused.`}</p>
+      )}
+      <div className="ws-acts">
+        <Button kind="primary" size="sm" type="submit" busy={busy ? 'Saving…' : false} disabled={invalid || unchanged}>
+          Save budget
+        </Button>
+      </div>
+      <SetBy read={held} />
+      {saved && (
+        <p className="pk-saved" role="status">
+          {held.budget === null ? 'Saved: the budget is off.' : `Saved: ${budgetNow(held.budget)}. It applies to steps submitted from now on.`}
+        </p>
+      )}
+      {refused !== null &&
+        (refusalWords !== null ? (
+          <Banner tone="bad" title="The budget was not saved" role="alert">
+            <p className="ur-small" data-code={refused.code ?? undefined}>
+              {refusalWords}
+            </p>
+          </Banner>
+        ) : (
+          <Refusal error={refused} title="The budget was not saved" />
+        ))}
+    </form>
+  )
+}
+
 /** The job's steps only a service workspace runs: in its order, not in a group's. */
 const SERVICE_ONLY: ReadonlySet<string> = new Set(JOB_STEP_ORDER.service.filter((id) => !JOB_STEP_ORDER.group.includes(id)))
 
@@ -667,6 +896,7 @@ export function WorkspaceSettingsScreen({ part = 'settings', go }: { part?: Work
             </UrRegion>
             <CodeIntelligenceCard />
             <QaSettingsCard />
+            <WorkspaceBudgetCard />
           </div>
         </>
       )}

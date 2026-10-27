@@ -359,14 +359,35 @@ def test_a_day_stored_under_v9_is_derived_again_under_v10():
         "arrived": outcomes._encode_rows([], outcomes.ARRIVED_COLS),
     }
     # MUTATION: add the columns without the bump and a v9 day is served without them.
-    assert outcomes.DERIVE_VERSION == 10
+    # (11 since contract request 118's class.)
+    assert outcomes.DERIVE_VERSION >= 10
     assert outcomes._decode_stored(base, []) is None
-    assert outcomes._decode_stored({**base, "derive_version": 10}, []) is not None
+    assert outcomes._decode_stored({**base, "derive_version": outcomes.DERIVE_VERSION}, []) is not None
     for column in ("browser_s", "browser_used"):
         assert column in outcomes.ENDED_COLS
     for column in ("pool_account", "provider", "run_s", "attempts", "cost_estimated", *TOKENS):
         # MUTATION: drop a column from the tuple and a v9 day cannot hold it.
         assert column in outcomes.ENDED_COLS
+
+
+def test_a_day_stored_under_v10_is_derived_again_under_v11():
+    """Contract request 118 (BGD 2026-10-27): `budget_exceeded` is a class of
+    its own. A day counted under 10 classed every budget stop as a runner
+    error, so it is refused and re-derived."""
+    base = {
+        "derive_version": 10,
+        "classifier_version": outcomes.CLASSIFIER_VERSION,
+        "built_at": T_SUBMIT,
+        "sealed": True,
+        "ended": outcomes._encode_rows([], outcomes.ENDED_COLS),
+        "arrived": outcomes._encode_rows([], outcomes.ARRIVED_COLS),
+    }
+    # MUTATION: add the class without the bump and a v10 day is served with
+    # its budget stops still counted as runner errors.
+    assert outcomes.DERIVE_VERSION == 11
+    assert "budget_exceeded" in outcomes.FAILURE_KEYS
+    assert outcomes._decode_stored(base, []) is None
+    assert outcomes._decode_stored({**base, "derive_version": 11}, []) is not None
 
 
 @pytest.fixture

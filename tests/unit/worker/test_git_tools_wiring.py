@@ -247,7 +247,7 @@ class FakeRoutes:
         self.registered_state: str | None = None
         self.db: Any = None
 
-    def call(self, method, path, *, body=None, headers=None):
+    def call(self, method, path, *, body=None, headers=None, timeout=None):
         headers = dict(headers or {})
         self.calls.append({"method": method, "path": path, "body": body, "headers": headers})
         if path.endswith("/child-key"):

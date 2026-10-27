@@ -592,7 +592,7 @@ const END_CAUSE_SAY: Readonly<Record<EndCause, string>> = {
   verdict_failed: 'the verdict failed',
   publish_refused: 'publishing was refused',
   child_cascade: 'a child agent ended it',
-  budget_exceeded: 'it spent its budget',
+  budget_exceeded: 'it was stopped at its budget',
 }
 
 /**

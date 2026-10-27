@@ -64,6 +64,7 @@ from .finishwake import FinishAnnouncer, PubSubFinishAnnouncer
 from .detect import (
     CLOUD_RUN,
     ENDED_AT_STARTUP_STATES,
+    EVERY_VOLUME,
     WORKER_EXIT_CANNOT_START,
     Finding,
     FindingKind,
@@ -79,6 +80,7 @@ from .detect import (
     detect_unused_job_resources,
     normalise_executions,
     sanitised,
+    scratch_report,
     stuck_candidates,
 )
 from .model import (
@@ -2036,6 +2038,21 @@ class Reconciler:
         if out_of_memory is not None:
             finding = replace(finding, reason=f"{out_of_memory.words}; {finding.reason}")
             outcome.reason = finding.reason
+        # What filled the volume a disk-limit eviction names, from the
+        # attempt's last scratch reading (#2436): kubelet gives no grace
+        # period, so the worker's newest heartbeat is the last word it had.
+        # Words only, like the two above: the state, the eviction count, the
+        # fence and the release below are decided exactly as before.
+        if disk_eviction and not self._config.dry_run:
+            scratch = self._scratch_report(finding)
+            if scratch:
+                what = finding.detail.get("what_ended") or finding.reason
+                finding = replace(
+                    finding,
+                    reason=f"{finding.reason}; {scratch}",
+                    detail={**finding.detail, "what_ended": f"{what}; {scratch}"},
+                )
+                outcome.reason = finding.reason
         if self._config.dry_run:
             outcome.skipped = "dry_run"
             outcome.actions.append(
@@ -2323,6 +2340,31 @@ class Reconciler:
             return None
         return stalled_at_memory_limit(
             events, attempt_id=finding.attempt_id, generation=finding.generation
+        )
+
+    def _scratch_report(self, finding: Finding) -> str | None:
+        """The evicted volume's largest paths from the attempt's last reading (#2436), or None.
+
+        A read that fails is no report: the eviction's own words stand and
+        the repair goes ahead, logged.
+        """
+        if not finding.task_id or not finding.attempt_id:
+            return None
+        try:
+            events = self._store.attempt_events(finding.task_id, finding.attempt_id)
+        except Exception as exc:
+            self._log.warning(
+                "could not read an attempt's heartbeats; not naming what filled its scratch",
+                task_id=finding.task_id,
+                attempt_id=finding.attempt_id,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return None
+        return scratch_report(
+            events,
+            attempt_id=finding.attempt_id,
+            generation=finding.generation,
+            volume=str(finding.detail.get("volume") or EVERY_VOLUME),
         )
 
     @staticmethod

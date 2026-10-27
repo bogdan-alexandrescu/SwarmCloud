@@ -15,11 +15,12 @@ import { ledgerFixture } from '../outcomes.fixture'
 import { END_CAUSES } from '../types'
 
 describe('the publish refused outcome class (contract request 29)', () => {
-  it('is in the vocabulary, after the worker actions and before other', () => {
+  it('is in the vocabulary, after the worker actions and before the budget stop', () => {
     const keys = ledgerFixture().vocab.failure_classes.map((c) => c.key)
     expect(keys).toContain('publish_refused')
     expect(keys.indexOf('publish_refused')).toBe(keys.indexOf('merge_failed') + 1)
-    expect(keys.indexOf('publish_refused')).toBe(keys.indexOf('other') - 1)
+    // Contract request 118 sits between it and `other` (BGD 2026-10-27).
+    expect(keys.indexOf('publish_refused')).toBe(keys.indexOf('budget_exceeded') - 1)
     const label = ledgerFixture().vocab.failure_classes.find((c) => c.key === 'publish_refused')
     expect(label?.label).toBe('publish refused')
   })
