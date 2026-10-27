@@ -655,15 +655,29 @@ def test_a_pr_side_claim_still_being_submitted_keeps_the_merge_parked(db, wake_c
     assert _fix_workflows(db) == []
 
 
+def test_a_live_pr_side_fix_at_another_head_keeps_the_merge_parked_too(db, wake_client, github):
+    # One writer per pull request (#2577): a fix still running from an older
+    # head pushes to the same branch, so a round beside it would collide.
+    fixable_merge(db, github, rounds=2)
+    pr_side_claim(db, head=MOVED)
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["waiting"] == 1 and body["report"]["fixing"] == 0, body
+    assert _fix_workflows(db) == []
+    assert _fix_record(db) == {}, "no round, and no re-run, beside a live PR-side fix"
+
+
 @pytest.mark.parametrize("claim", [
-    {"head": MOVED},
+    {"head": MOVED, "state": "SUCCEEDED"},
     {"state": "SUCCEEDED"},
     {"state": "FAILED"},
     {"tenant_id": "research"},
     {"task": False, "claimed_at": NOW - timedelta(hours=1)},
     None,
-], ids=["another-head", "succeeded", "failed", "another-tenant", "lapsed-grace", "no-claim"])
-def test_with_no_live_pr_side_fix_at_this_head_the_round_proceeds(db, wake_client, github, claim):
+], ids=["another-head-ended", "succeeded", "failed", "another-tenant", "lapsed-grace",
+        "no-claim"])
+def test_with_no_live_pr_side_fix_the_round_proceeds(db, wake_client, github, claim):
     fixable_merge(db, github, rounds=2)
     if claim is not None:
         pr_side_claim(db, **claim)
