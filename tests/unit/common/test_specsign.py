@@ -256,6 +256,14 @@ def test_the_golden_vector():
     assert specsign.SPEC_PURPOSE == "swarm.step-spec"
 
 
+
+def test_the_golden_vector_names_an_example_identity():
+    """#1647: the vector's submitter is RFC 2606 example data, not an address
+    on the company's real domain, in the dict and in the bytes alike."""
+    assert GOLDEN_DOC["submitted_by"] == "alice@example.com"
+    assert b'"submitted_by":"alice@example.com"' in GOLDEN_BYTES
+    assert b"saga" not in GOLDEN_BYTES
+
 GOLDEN_BYTES_V2 = (
     GOLDEN_BYTES.replace(b'"format":1,', b'"format":2,')
     .replace(
