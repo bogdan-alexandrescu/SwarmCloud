@@ -415,12 +415,21 @@ A `browser_take_screenshot` with no filename is also saved, under
 `$SWARM_ARTIFACTS_DIR/screenshots`, and the model sees it. The script above
 puts the PNG at a name the compare step can use.
 
-**Take the viewport, not the full page, on a phone preset.** Through the gate
-a full-document shot on a phone preset is not the page as laid out. `swarm_qa`
-measured a first shot at phone-390 of 980×2121 with the page drawn small
-(`swarm_qa.py`, `_shot`). On a phone, compare the viewport with
-`--top-only` (below). On `desktop`, `full_page=True` is fine when the frame
-is a whole page.
+**Take the viewport, never the full page, at any preset.** Through the gate
+a full-document shot is not the page as laid out, at any preset. On a phone,
+`swarm_qa` measured a first shot at phone-390 of 980×2121 with the page drawn
+small (`swarm_qa.py`, `_shot`). On the desktop too: a `full_page=True` shot at
+1440 of a 300-item list (epic #1981, comment 7, the visual-QA run's
+`flows/10c-long-300-fullpage--1440.png`) repeats the fixed banner and title
+at its bottom. The likely cause, not traced: the gate refuses the metrics
+override a full-page shot uses to grow the viewport to the document, so
+Chromium draws past the viewport it has and draws fixed and sticky content
+again where it does not belong.
+For a long page, take segments: `swarm_qa capture`, which scrolls and shoots
+viewport by viewport, or scroll and take one viewport shot per stop yourself.
+Compare a viewport with `--top-only` (below). (The 1440 shot above is the
+measurement; it was not re-taken through a live gate when this paragraph
+changed.)
 
 ### 6.4 Compare each render with its frame
 

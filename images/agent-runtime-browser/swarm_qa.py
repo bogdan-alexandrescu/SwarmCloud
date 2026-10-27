@@ -131,7 +131,7 @@ default only the console's route list and template rely on:
 
 * `--keep-storage` adds no RESET_STATE_JS: an own-login target keeps its
   session in its storage, and emptying it on every load signs the capture out
-  after its first route It forces no reload of a same-document hash route either.
+  after its first route. It forces no reload of a same-document hash route either.
 * `--settle generic` never evaluates PENDING_JS (or TEXT_JS): someone else's
   app draws none of the console's markers, and its own "reading…" is content.
   It waits for network idle, as every capture does, and then until the DOM
@@ -1700,6 +1700,9 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
         response = page.goto(base + route["path"], wait_until="load", timeout=NAV_TIMEOUT_MS)
         # None for a same-document navigation (a hash route from the route
         # before it): no document answered, so there is no status to read.
+        # Playwright returns None for every same-document navigation, and the
+        # forced load below relies on that rather than comparing page.url with
+        # the target by fragment.
         # #1981 comment 5: nor did a new document start, so RESET_STATE_JS (an
         # init script, run on a new document only) did not empty what the
         # route before it stored, and the app kept its memory. A reload is the
