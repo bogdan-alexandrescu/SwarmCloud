@@ -1672,6 +1672,11 @@ class SubmissionService:
             apply to is refused, because the caller asked for a merge that
             would not happen; a repository's policy or the platform default
             simply does not apply to one;
+          * "off" appends nothing, but a spec that states the re-review
+            itself -- an issue run's compiled workflow (#2217), whose merge
+            the CI loop submits later -- has its id returned when the step is
+            exactly what `rereview_step_for` derives (`_stated_rereview`), so
+            it is accepted as the appended one is;
           * neither default applies to a repository on a host no `ForgeMerger`
             serves either: the worker harvests a patch there and opens no pull
             request, so a tenant who never asked for a merge is not refused
@@ -1697,7 +1702,7 @@ class SubmissionService:
                 )
             return spec, None
         if choice == "off":
-            return spec, None
+            return spec, self._stated_rereview(spec, step_specs, strategy)
         explicit = choice is not None
         if not explicit:
             if not is_mergeable_forge(repository_url):
@@ -1736,6 +1741,43 @@ class SubmissionService:
         return spec.model_copy(
             update={"steps": [*spec.steps, WorkflowStepCreate.model_validate(appended)]}
         ), None
+
+    @staticmethod
+    def _stated_rereview(
+        spec: WorkflowCreate, step_specs: Sequence[StepSpec], strategy: str,
+    ) -> str | None:
+        """The id of the re-review `spec` states itself, or None (#2217).
+
+        An issue run compiles implement -> review -> fix -> re-review under
+        `metadata.merge` "off" (`issueruns._with_rereview`), because its CI
+        loop merges once CI is green rather than a merge step. Its re-review
+        is gated on the review, and under `integrate` a gated step that is
+        not the integrator is refused unless it is the re-review -- which
+        swarm-api names only when it appended it. So a stated step is that
+        re-review only when it is EXACTLY what `rereview_step_for` derives
+        from the other steps: the review's profile, input and metadata behind
+        `REREVIEW_PREAMBLE`, its id, the integrator's gate, building on the
+        integrator, staging the review's verdict and the review's own input,
+        and nothing depending on it. Anything looser is a caller's own gated
+        non-integrator, and `validate_step_routing` still refuses it.
+        """
+        if strategy != "integrate":
+            return None
+        by_id = {s.step_id: s for s in spec.steps}
+        for step in spec.steps:
+            if any(step.step_id in s.depends_on or step.step_id in s.input_from
+                   for s in spec.steps):
+                continue
+            rest = [s for s in step_specs if s.step_id != step.step_id]
+            sources = merge_sources(rest, strategy)
+            if sources is None or sources.review not in by_id:
+                continue
+            derived = rereview_step_for(rest, by_id[sources.review].model_dump(), strategy)
+            if derived is not None and (
+                WorkflowStepCreate.model_validate(derived).model_dump() == step.model_dump()
+            ):
+                return step.step_id
+        return None
 
     def _with_verdict_merge(
         self,
