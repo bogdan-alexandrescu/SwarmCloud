@@ -59,8 +59,17 @@
      (168px at 1056), cut with its title. */
   .wfl .wfl-table th[data-col="cost"] { width: 100px; }
   .wfl .wfl-table th[data-col="owner"] { width: 116px; }
-  /* Submitted holds "10-05 14:44", an older day's submit time (QA G3-20). */
-  .wfl .wfl-table th[data-col="submitted"] { width: 96px; }
+  /* Submitted holds "10-05 14:44", an older day's submit time (QA G3-20).
+     112px, NOT 96 (TZ-CLOCKTIME, part of #2391): every time is now in the
+     person's zone and labelled, so that is "Oct 24 14:44 PDT" and today's is
+     "14:44:09 PDT". The cell wraps at its spaces: today's time is one line,
+     an older one's date and time are one (12 characters of 13px sans, 87px
+     at the 0.56em the table tests measure by) and its label drops under
+     them, so a long label ("GMT+5:30") is never cut. One line would need
+     about 137px, and the name has only 28px over its 168px floor at 1280
+     with the nav open; 112px leaves it 180. */
+  .wfl .wfl-table th[data-col="submitted"] { width: 112px; }
+  .wfl .wfl-table td[data-col="submitted"] { white-space: normal; }
   .wfl .wfl-table th[data-col="duration"] { width: 124px; }
   .wfl .wfl-table td { overflow: hidden; text-overflow: ellipsis; }
   .wfl .wfl-table td[data-col="state"],

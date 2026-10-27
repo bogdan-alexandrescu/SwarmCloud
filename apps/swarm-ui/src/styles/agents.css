@@ -486,7 +486,11 @@
    agent-details-v3.html A5 draws it. 480px was too low: see `.ag-head-row`. */
 @container ctl-inspector (max-width: 639px) {
   .ag-head-title { order: 3; flex-basis: 100%; }
-  .ag-head-hl { order: 4; flex-basis: 100%; }
+  /* ON ITS OWN LINE IT WRAPS AT ITS SPACES (TZ-CLOCKTIME, part of #2391):
+     `ended` is now the person's zone, labelled -- `1h 3m · attempt 10 of 10
+     · ended Oct 24 14:05 GMT+5:30` is about 380px of 13px sans, past a 390
+     phone's 358px column, which clips. Beside the title it stays one line. */
+  .ag-head-hl { order: 4; flex-basis: 100%; white-space: normal; }
 }
 /* NO STICKY HEADER BAND IN THE SPLIT. `.drawer::before` is a 50px strip of
    `--bg` at z-index 3, there to seat a sticky ✕ over a drawer whose content
