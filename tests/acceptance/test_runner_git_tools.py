@@ -650,6 +650,35 @@ def test_a_refused_pr_checks_call_is_named_by_its_code(tmp_path: Any) -> None:
             "the agent was answered forge_refused)") in reason, reason
 
 
+def test_a_refused_pr_checks_call_names_the_refusals_sentence(tmp_path: Any) -> None:
+    """#1188: from 2026-10-23 to 2026-10-27 every red run of this group said
+    `forge_refused` and nothing more, and swarm-api's log -- where the
+    sentence was -- is not readable from the tenant that measured it. The
+    agent records the whole answer, sentence and all: check [1] names it,
+    so a 403 on the check-runs read is told from a 401 or another read."""
+    sentence = ("GitHub refused the tenant's forge credential for the check runs at "
+                "o/r@0123456789ab (HTTP 403): the credential needs `checks: read`")
+    files = {
+        "lane/task": "task_lane\n", "lane/state": "SUCCEEDED\n",
+        "lane/doc.json": json.dumps({"result_summary": {"git": {"pull_request": {"number": 7}}}}),
+        "lane/calls.json": json.dumps({"calls": []}),
+        "rebase/task": "task_rebase\n", "rebase/state": "SUCCEEDED\n",
+        "rebase/calls.json": json.dumps({"calls": [
+            {"tool": "pr_checks", "result": "refused", "code": "forge_refused", "at": "1"}]}),
+        f"rebase/{ANSWERS}": json.dumps({"step": "pr-checks", "answer": {
+            "refused": {"code": "forge_refused", "message": sentence}}}) + "\n",
+    }
+    for name, text in files.items():
+        path = os.path.join(str(tmp_path), name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    verdict, reason = check_rebase(Role(str(tmp_path), "lane"), Role(str(tmp_path), "rebase"))
+    assert verdict == "FAIL", reason
+    # MUTATION: name the code alone (as before) and the sentence is not in the reason.
+    assert "check runs at o/r@0123456789ab (HTTP 403)" in reason, reason
+
+
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
