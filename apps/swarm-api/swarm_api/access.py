@@ -1719,7 +1719,7 @@ class AccessService:
         """Every member's connection state and grants in `tenant_id`. Never
         a value: the records hold none."""
         if not is_admin:
-            raise Forbidden("the tenant's members view is for admins")
+            raise Forbidden("the workspace's members view is for admins")
         people: dict[str, dict[str, Any]] = {}
 
         def person(email: str) -> dict[str, Any]:

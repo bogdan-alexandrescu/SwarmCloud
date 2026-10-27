@@ -173,6 +173,9 @@ describe('QA12-11: member control goes both ways, and asks once when turned on',
     expect(ask.getAttribute('aria-modal')).toBe('true')
     expect(ask.textContent).toMatch(/later attempts/)
     expect(ask.textContent).toMatch(/turn it off/)
+    // VQ-056: the console speaks of workspaces, never tenants.
+    expect(ask.textContent).toContain('any member of this workspace can take control of its browser')
+    expect(ask.textContent).not.toMatch(/\btenant/i)
     fireEvent.click(within(ask).getByRole('button', { name: 'Let any member take control' }))
     expect(api.openLiveToMembers).toHaveBeenCalledWith(ID)
     // The answer is drawn at once: the box does not wait for a poll.

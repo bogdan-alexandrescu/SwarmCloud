@@ -360,6 +360,9 @@ def test_a_member_removed_after_the_cache_filled_is_403(live_client, db, objects
     response = live_client.post(url(ids), headers=auth_header("alice"), json=verdict())
     assert response.status_code == 403, response.text
     assert response.json()["detail"]["reason"] == "not_a_member"
+    # MUTATION: the refusal saying "tenant" again turns this red (VQ-056).
+    assert response.json()["message"] == (
+        "you are not a member of workspace 'eng', the step's workspace, so you may not answer it")
     # The decision went to the directory, past the cache.
     assert (ENG_GROUP, "alice@example.com") in directory.checks[checks_before:]
     assert snapshot(db, objects, ids["review"]) == before
@@ -381,6 +384,9 @@ def test_a_lookup_failure_is_503_and_nothing_is_written(live_client, db, objects
     response = live_client.post(url(ids), headers=auth_header("alice"), json=verdict())
     assert response.status_code == 503, response.text
     assert response.json()["code"] == "membership_unavailable"
+    assert response.json()["message"] == (
+        "your membership of this workspace could not be confirmed just now, so the "
+        "answer was not taken; retry shortly")
     assert snapshot(db, objects, ids["review"]) == before
 
 
@@ -415,6 +421,20 @@ def test_a_personal_tenants_step_refuses_anyone_but_its_owner(client, db, api_co
                            headers={**auth_header("bob"), "X-Swarm-Tenant": "u-carol"},
                            json=verdict())
     assert response.status_code == 403
+
+
+def test_a_refusal_a_person_reads_says_workspace_never_tenant(api_context):
+    """VQ-056 (BGD, 2026-10-26): every reader-facing 'tenant' is 'workspace'.
+    The reason codes and field names do not change; only the words."""
+    with pytest.raises(awaitinput.Forbidden) as refused:
+        awaitinput.member_refusal(api_context, _person("alice@example.com", "ghost"), "ghost")
+    assert refused.value.detail["reason"] == "not_a_member"
+    assert refused.value.message == "you are not a member of workspace 'ghost'"
+    with pytest.raises(Exception) as invalid:
+        awaitinput._on_behalf_of(awaitinput.PERSON, {"on_behalf_of": "a reviewer"})
+    assert invalid.value.message == (
+        "on_behalf_of is for a service workspace's principal answering for a person; "
+        "a person answers as themselves")
 
 
 def test_an_admin_answers_only_as_a_member(client, db, waiting):
