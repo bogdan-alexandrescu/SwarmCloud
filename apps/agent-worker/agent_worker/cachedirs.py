@@ -54,6 +54,28 @@ attempt where the cache lives: the workspace's memory tmpfs on Cloud Run, the
 cache volume on GKE. It is an optimisation and never a reason to fail: an
 absent image cache or a failed copy leaves the empty cache npm had before,
 and npm fetches from the network as it always did.
+
+BIG SCRATCH DATA BELONGS UNDER TMPDIR, AND THE AGENT IS TOLD SO (issue #2436).
+task_73850f24085447368991 (Product Oracle's integration lane, 2026-10-26) was
+evicted twice with `EmptyDir volume "tmp" exceeds 3Gi`, after about two hours
+each, and published nothing. TMPDIR already pointed here, at the 20 GiB cache
+volume; the agent wrote a Postgres data dir (/tmp/pgdata), test logs (/tmp/tr)
+and Chromium's unpacked libraries and fonts to a literal /tmp, the pod's 3 GiB
+`tmp` emptyDir. Two things follow:
+
+* `scratch_note` is the one sentence the claude-code runner appends to the
+  agent's prompt: databases, test logs, unpacked libraries and fonts and
+  downloads under $TMPDIR, never a literal /tmp, never the workspace. On Cloud
+  Run, where there is no cache volume, a shorter sentence that promises none.
+* `cache_env` sets PLAYWRIGHT_BROWSERS_PATH to `<cache>/ms-playwright` when the
+  worker's environment has none, so a browser an agent installs lands on this
+  volume by name. Only then: agent-runtime-browser's own value is the
+  image's read-only Chromium, and the claude-code runner swaps it for the
+  live-browser stub; both must keep winning. It is NOT in `AGENT_CACHE_ENV`:
+  cliagent copies that list from the runner's environment AFTER the runner's
+  own `extra_env`, which would put the image's real Chromium back where the
+  stub belongs. The claude-code runner hands the cache's path on itself, and
+  `image_browsers_path` tells it apart from an image's.
 """
 
 from __future__ import annotations
@@ -62,7 +84,7 @@ import os
 import shutil
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 #: Set on the GKE worker container by the dispatcher (and the YAML templates):
 #: the mount of the pod's own cache volume. Unset on Cloud Run.
@@ -100,12 +122,81 @@ AGENT_CACHE_ENV: tuple[str, ...] = (
 )
 
 
-def cache_env(cache: Path, tmp: Path, *, own_volume: bool) -> dict[str, str]:
-    """The variables that point an agent's tools at `cache`, and its TMPDIR at `tmp`."""
+#: Playwright's browsers directory (module docstring, issue #2436). Set by
+#: agent-runtime-browser's ENV to its read-only Chromium; set here,
+#: under the cache, only where the worker's environment has none.
+BROWSERS_PATH_ENV = "PLAYWRIGHT_BROWSERS_PATH"
+BROWSERS_DIR_NAME = "ms-playwright"
+
+
+def cache_env(
+    cache: Path, tmp: Path, *, own_volume: bool, browsers_path_set: bool | None = None
+) -> dict[str, str]:
+    """The variables that point an agent's tools at `cache`, and its TMPDIR at `tmp`.
+
+    `browsers_path_set`: the worker's environment already names a browsers
+    directory (the browser image's), which is then left alone. None reads
+    the worker's own environment, which is where the image's ENV is: the
+    passthrough that carries it into the child's `base` copies it from there.
+    """
+    if browsers_path_set is None:
+        browsers_path_set = bool(os.environ.get(BROWSERS_PATH_ENV, "").strip())
     env = {name: str(cache / sub) for name, sub in CACHE_SUBDIRS.items()}
     env["TMPDIR"] = str(tmp)
     env.update(SEPARATE_VOLUME_ENV if own_volume else NO_CACHE_ENV)
+    if not browsers_path_set:
+        # Playwright makes the directory on install; nothing reads it before.
+        env[BROWSERS_PATH_ENV] = str(cache / BROWSERS_DIR_NAME)
     return env
+
+
+def image_browsers_path(environ: Mapping[str, str]) -> str:
+    """The image's browsers directory in `environ`, or "" when there is none.
+
+    The one `cache_env` set is not an image's: it is `<cache>/ms-playwright`,
+    a sibling of XDG_CACHE_HOME's `<cache>/xdg`, and holds no browser until
+    the agent installs one.
+    """
+    value = environ.get(BROWSERS_PATH_ENV, "").strip()
+    xdg = environ.get("XDG_CACHE_HOME", "").strip()
+    if value and xdg and Path(value) == Path(xdg).parent / BROWSERS_DIR_NAME:
+        return ""
+    return value
+
+
+#: The scratch volumes' sizes the note names, MIRRORED from
+#: apps/scheduler/scheduler/dispatch.py (the worker does not import the
+#: scheduler): `CACHE_VOLUME_GIB`; `GKE_DISK`'s `tmp_gib`, 3 in every class;
+#: and its largest `workspace_gib` (5; the browser class's is 4).
+#: tests/unit/worker/test_scratch_usage.py holds them to dispatch's values.
+CACHE_VOLUME_GIB = 20
+TMP_VOLUME_GIB = 3
+WORKSPACE_VOLUME_GIB = 5
+
+
+def scratch_note(own_volume: bool) -> str:
+    """The one sentence an agent is told about big scratch data (issue #2436).
+
+    `own_volume`: TMPDIR is on the GKE pod's cache volume
+    (`Workspace.cache_on_own_volume`); False on Cloud Run, where it is inside
+    the workspace's memory tmpfs and no cache volume exists to promise.
+    """
+    if own_volume:
+        return (
+            "Put large scratch data -- databases (e.g. a Postgres data "
+            "directory), test logs, unpacked libraries and fonts, downloads -- "
+            f"under $TMPDIR, which is on the {CACHE_VOLUME_GIB} GiB cache volume "
+            "and never evicts the pod; never write it to a literal /tmp "
+            f"({TMP_VOLUME_GIB} GiB: past it the pod is evicted and the attempt "
+            f"lost) or to the workspace (at most {WORKSPACE_VOLUME_GIB} GiB, "
+            "checkpointed)."
+        )
+    return (
+        "Put scratch data under $TMPDIR, never a literal /tmp or the checkout: "
+        "$TMPDIR is inside the workspace's in-memory filesystem and counts "
+        "against this container's memory limit, so keep it small and delete "
+        "what you no longer need."
+    )
 
 
 #: Where `agent-runtime-base` leaves its warmed, read-only npm cache
