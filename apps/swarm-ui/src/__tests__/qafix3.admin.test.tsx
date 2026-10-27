@@ -144,7 +144,7 @@ describe('admin-004: In use and Ceiling share one alignment under left-aligned h
 
 describe('admin-002: the admin cards under the ceilings are spaced, not touching', () => {
   it('gives each card after the ceilings the section gap above it', () => {
-    for (const card of ['adm-repo-limits', 'adm-prices', 'adm-fallback-token']) {
+    for (const card of ['adm-repo-limits', 'adm-prices', 'adm-budget-ceiling', 'adm-fallback-token']) {
       const el = build(`section.c-card.${card}`, hosts)
       // MUTATION: drop `.adm-repo-limits` / `.adm-prices` from the margin rule:
       // Additional repositories and Model prices sit ~2px apart again.

@@ -544,20 +544,24 @@ describe('keyboard traversal', () => {
     expect([...unsupported]).toEqual([])
     expect(swallowers).toEqual([])
     expect(findings.map((f) => `${f.kind} ${f.where} — ${f.detail}`)).toEqual([])
-    // 480s, NOT 240s. MEASURED: 183.7s for this test alone on an idle
+    // 780s, NOT 480s. MEASURED: 183.7s for this test alone on an idle
     // 6-core agent container (2026-10-20), and 241.8s -- a timeout -- in shard
-    // 4/4 of CI run 39342685547, whose sweep renders the same fifteen routes.
-    // 240s was 76% of the idle cost, so any busy runner crossed it, and the
-    // abandoned sweep kept rendering into the next test, which then found no
-    // agent rows (the hook above now stops it). A genuine hang still fails,
-    // at eight minutes.
+    // 4/4 of CI run 39342685547, whose sweep rendered fifteen routes; 240s was
+    // 76% of the idle cost, so any busy runner crossed it, and the abandoned
+    // sweep kept rendering into the next test, which then found no agent rows
+    // (the hook above now stops it). 480s was 2.6x that idle cost. The rail
+    // has since grown to 31 routes: 290.6s alone on the same idle 6-core
+    // container (2026-10-27), and 486.8s -- a timeout, after the sweep had
+    // finished with 0 findings -- in shard 4/4 of CI run 40436247349. 780s
+    // keeps the 2.6x margin over today's idle cost. A genuine hang still
+    // fails, at thirteen minutes; re-measure when the rail grows again.
   }
 
   it('reaches every control on every route, and nothing swallows Tab', async () => {
     sweepStopped = false
     sweepRun = sweepEveryRoute()
     await sweepRun
-  }, 480_000)
+  }, 780_000)
 
   /**
    * THE DRAWER, WHICH IS THE ONE THAT MATTERS MOST.
