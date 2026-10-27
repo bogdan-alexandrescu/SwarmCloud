@@ -1,4 +1,4 @@
-import { Button, CIcon, Count, ToneMark } from './components'
+import { Banner, Button, CIcon, Count, ToneMark } from './components'
 import { Children, Fragment, cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   EVENT_PAGE_LIMIT,
@@ -29,7 +29,7 @@ import { pullRequestOf } from './decision'
 import { PHASE_LABEL, attemptEnd, instant, phasesFor, spanText, type AttemptEnd, type AttemptPhases, type Segment } from './duration'
 import { eventKind, isTerminalEvent } from './events'
 import { backendWord, eventWord, parkWord, stateWord } from './words'
-import { num, type Result } from './fetch'
+import { chooseTenant, num, type ApiError, type Result } from './fetch'
 import { type TopicId } from './help'
 import { HelpCard, HelpNote } from './HelpCard'
 import { addressToPath } from './paths'
@@ -197,10 +197,18 @@ export function AgentDetailScreen({
       mounted.current = false
     }
   }, [])
+  // THE ONE OTHER TENANT OF THE CALLER'S THAT HOLDS THIS TASK (#1194 c15):
+  // set from a 404 whose probe found it (`taskElsewhere`), cleared by any
+  // other answer. Offered under the failed panel, never switched to unasked.
+  const [elsewhere, setElsewhere] = useState<NonNullable<ApiError['elsewhere']> | null>(null)
+  useEffect(() => setElsewhere(null), [taskId])
   const load = useCallback(
     () =>
       loadAgentRun(taskId).then((r) => {
-        if (mounted.current && shown.current === taskId && (r.status === 'ok' || r.status === 'stale')) setName(agentName(r.data.task))
+        if (mounted.current && shown.current === taskId) {
+          if (r.status === 'ok' || r.status === 'stale') setName(agentName(r.data.task))
+          if (r.status !== 'loading') setElsewhere(r.status === 'error' ? (r.error.elsewhere ?? null) : null)
+        }
         return r
       }),
     [taskId],
@@ -257,13 +265,46 @@ export function AgentDetailScreen({
         {(r, reading) => <Run run={r} reload={reload} reading={reading} headed={headed} checkpoints={checkpoints} links={links} lastLine={lastLine} />}
       </Screen>
   )
-  if (headed) return screenEl
+  // THE SWITCH IS OFFERED, NOT MADE: the person chose the tenant they are in,
+  // and a link must not move them out of it. Pressing it makes the choice
+  // (`chooseTenant`) and reads the task again under it.
+  const switchEl =
+    elsewhere === null ? null : (
+      <Banner
+        tone="info"
+        role="status"
+        title={`This task is in ${elsewhere.display_name}`}
+        actions={
+          <Button
+            kind="primary"
+            onClick={() => {
+              setElsewhere(null)
+              chooseTenant(elsewhere.tenant_id)
+              reload()
+            }}
+          >
+            {`Switch to ${elsewhere.display_name}`}
+          </Button>
+        }
+      >
+        It is one of your workspaces, so it can be read there. This one answers as it would for a task that does not exist.
+      </Banner>
+    )
+  if (headed) {
+    return (
+      <>
+        {screenEl}
+        {switchEl}
+      </>
+    )
+  }
   return (
     <div className="drawer" role="dialog" aria-label={`Agent ${taskId}`}>
       <Button iconOnly icon={<CIcon name="close" />} className="drawer-close" onClick={onClose}>
         Close
       </Button>
       {screenEl}
+      {switchEl}
     </div>
   )
 }
