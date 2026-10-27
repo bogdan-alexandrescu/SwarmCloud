@@ -1232,9 +1232,9 @@ CHECK_PARITY = [
     ("queued", None, False, True,
      "#815: the gate waits only on a required check still running; the merge step holds on any"),
     ("completed", "stale", False, True,
-     "gate 5 holds only on four conclusions; the merge tolerates only success, skipped, neutral"),
+     "gate 5 holds only on three conclusions; the merge tolerates only success, skipped, neutral"),
     ("completed", "startup_failure", False, True,
-     "gate 5 holds only on four conclusions; the merge tolerates only success, skipped, neutral"),
+     "gate 5 holds only on three conclusions; the merge tolerates only success, skipped, neutral"),
 ]
 
 
