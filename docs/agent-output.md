@@ -374,7 +374,8 @@ It is `cliagent.PUBLISH_PARAGRAPH`, appended once in `run_cli_agent` for both
 CLIs, and fixed text, so a test holds it and it carries none of the rate-limit
 or credential markers a CLI that echoes its prompt would trip. An agent with no
 repository does not get it, and neither does a resumed session, which already
-holds it. It goes to every step with a repository, a review included: the
+holds it. In a claude-code prompt the context-ceiling note (#2524, below) sits
+between the questions sentence and the time-limit line. It goes to every step with a repository, a review included: the
 worker's strategy, not the agent, decides whether anything is pushed.
 
 **The no-change sentence (#2140)** names the file the worker reads as
@@ -437,6 +438,63 @@ for is the ordinary repair turn). Then:
 The prefix is the point: a fallback title is the worker's, and a reviewer has
 to be able to tell it from one the agent chose. A title a later step declared
 it will stage is never excused, issue or not: that step needs the file.
+
+## Sessions and resumes: the context ceiling (#2524)
+
+Nothing used to end a session as its context grew. In the week BGD measured
+(2026-10-20 to 10-27) the longest lanes ran 300-640 turns at a 250-390k mean
+context, the spend in the 60-150 and 150+ turn buckets was most of the week's
+total, and one account-swap resume (task_98d001a3) started at 452,706 tokens
+and wrote 1.33M tokens to cache in 8 turns. Every turn re-reads the whole
+context, so a long session costs roughly the square of its length, and
+`--resume` carries all of it over. BGD decided on 2026-10-27 (#2524 item 3):
+**200k tokens of context or 150 tool calls, whichever comes first.**
+
+* **The watch.** The claude-code runner reads its CLI's stream as it is
+  written (`runners/ceiling.py`, `CeilingWatcher`). A turn's context is its
+  top-level assistant message's `input_tokens + cache_read_input_tokens`; the
+  session's tool calls are its top-level `tool_use` blocks. A subagent's
+  messages are its own context and are not counted. When a turn passes
+  200,000 tokens, or the session passes 150 tool calls, the CLI is stopped at
+  the next turn boundary, when that turn's tool results are in, and never
+  mid-tool-call. `CONTEXT_CEILING_TOKENS` and `TOOL_CALL_CEILING` are the
+  values. A profile (`PROFILE_LIMITS`) or a step
+  (`input.context_ceiling = {"tokens", "tool_calls"}`) may lower them, and
+  nothing raises them past the hard caps the module states.
+* **A fresh session, never `--resume`.** On a stop the runner commits the
+  tree as work in progress (`git add --all`, the same as the publish), then
+  starts a new CLI session whose prompt begins with a handoff: why the last
+  session stopped, the branch's `git diff --stat` against the step's base,
+  the recent commits, the agent's own note if it wrote one
+  (`$SWARM_ARTIFACTS_DIR/handoff.md`, which every claude-code prompt says it
+  may keep), and then the prompt the first session got, less its
+  time-limit line (#2139): a handoff with nothing else to ask ends with a
+  limit line naming what is left of the step instead. The step
+  continues inside its own timeout. An attempt starts at most
+  `MAX_FRESH_SESSIONS` (4) fresh sessions. After that the ceiling stops
+  nothing, and the last session runs to its end, so a lane stuck in a loop
+  cannot restart forever. A stop with less than a minute of the step left
+  starts nothing, and the result stands.
+* **Resumes follow the same rule.** The runner keeps the last session's
+  context and tool calls in `context-ceiling.json` next to the worker's
+  session channel (in `private/`). A restart that asks it to `--resume` a
+  session that ended over the ceiling (an account swap, a credential reload)
+  starts a fresh session from a handoff instead. So do the runner's own
+  finish pass, wrap-up pass (#2139), repair turns and pre-publish gate
+  turns, whose handoff ends with what that pass was going to ask.
+* **The record.** `result_summary.runner.output.context_ceiling` holds the
+  limits, the fresh sessions started, and one entry per stop: where it
+  happened (`turn_boundary` or `resume`), why (`context_tokens` or
+  `tool_calls`), the turn, the context and peak context in tokens, the tool
+  calls, and the work-in-progress commit. The token extract counts the stops
+  from it.
+
+A stopped session never prints the CLI's `result` event, which is where its
+totals would be. So its spend is read from its stream instead
+(`CeilingWatcher.start_spend`): the tokens of each message and the turns, but
+no dollar figure. The fresh session's figures are added to that, never taken
+as a running total that already includes it. Checkpointing is unchanged,
+because the ceiling is a cost control and not a recovery path.
 
 ## Before the worker publishes: a rebase and the repository's own checks (SPEED-D1)
 
