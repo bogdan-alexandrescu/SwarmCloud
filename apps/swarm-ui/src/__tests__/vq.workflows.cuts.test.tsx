@@ -22,8 +22,9 @@ import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
 import { reasonCopy } from '../types'
 import type { CascadeEnv } from './cssgate'
 import { build, painted } from './marks'
-import { NODE_CHROME_W, NODE_W, monoW } from '../dag'
+import { NODE_CHROME_W, monoW, nodeWidthAt } from '../dag'
 import { ownFromBoard } from './workflowsById'
+import { ShapeWords, shapeWords } from '../WorkflowViews'
 
 const api = vi.hoisted(() => ({
   loadWorkflowBoard: vi.fn(),
@@ -39,7 +40,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { WorkflowsScreen } = await import('../Workflows')
+const { WorkflowsScreen, cardNote } = await import('../Workflows')
 
 const WIDE: CascadeEnv = { width: 1440 }
 const PHONE: CascadeEnv = { width: 390 }
@@ -283,8 +284,14 @@ describe('WHY: with the runners under the name, the current step has a line of i
 })
 
 describe('NOTE: a step waiting on its parents says so in a note that fits the card', () => {
+  /** The content box of the NARROWEST card this workflow draws: the names tier's, which every tier is at least as wide as. */
+  const narrowest = (steps: readonly WorkflowStep[]) => nodeWidthAt('names', steps) - NODE_CHROME_W
+  const parked = (text: string) => ({ kind: 'why' as const, text, full: text, warn: false })
+
   // MUTATION: draw `reasonCopy('DEPENDENCY_INCOMPLETE')` on the note line as
-  // it is: 43 characters cut to 'Waiting on an earlier…' at 1440.
+  // it is: 43 characters cut to 'Waiting on an earlier…' at 1440. Or restore
+  // the first fix's 'waits on an earlier step', which fits the full tier's
+  // NODE_W box and was cut at the names tier Auto zoom picked (review of U02).
   it('draws the short form on the card, the whole sentence in its title', async () => {
     viewport(1440)
     render(<Routed initial={`wf=${chain.workflow_id}`} />)
@@ -296,12 +303,42 @@ describe('NOTE: a step waiting on its parents says so in a note that fits the ca
     const sentence = reasonCopy('DEPENDENCY_INCOMPLETE')
     expect(sentence).toBe('Waiting on an earlier step in its workflow.')
     const text = note.textContent ?? ''
-    // Measured as the layout measures a node's text (mono is the wider face), against the card's content box.
-    expect(monoW(text.length, 12), `'${text}' is wider than the card`).toBeLessThanOrEqual(NODE_W - NODE_CHROME_W)
-    expect(text).toBe('waits on an earlier step')
+    // Measured as the layout measures a node's text (mono is the wider face), against the narrowest card's content box.
+    expect(monoW(text.length, 12), `'${text}' is wider than the names-tier card`).toBeLessThanOrEqual(narrowest(chain.steps))
+    // `waiting on build` is 16 characters, wider than this workflow's names-tier box: the short form stands in.
+    expect(text).toBe('awaits parent')
     expect(note.getAttribute('title')).toBe(sentence)
     // Still one line, so `layoutOf`'s NOTE_H holds.
     expect(painted(note, '-webkit-line-clamp', WIDE)).toBe('1')
+  })
+
+  it('names the parent, as a not-started dependant does, when that fits the names-tier card', () => {
+    // A long id widens every card at the names tier; the short parent's name then fits.
+    const notes = step('publish-release-notes', ['plan', 'build'])
+    const steps = [step('plan', [], { task_id: 't_plan' }), step('build', ['plan'], { task_id: 't_build' }), notes]
+    const tasks = new Map<string, Task>([
+      ['t_plan', task('t_plan', 'SUCCEEDED')],
+      ['t_build', task('t_build', 'RUNNING')],
+    ])
+    const note = cardNote(parked(reasonCopy('DEPENDENCY_INCOMPLETE')), notes, steps, tasks)
+    expect(note.text).toBe('waiting on build')
+    expect(monoW(note.text.length, 12)).toBeLessThanOrEqual(narrowest(steps))
+  })
+
+  it('fits the narrowest card any workflow can draw when the names do not fit', () => {
+    // Short ids: the names-tier box is the state row's alone, its floor, and
+    // `waiting on plan, build` (22) and `waiting on build` (16) overrun it.
+    const report = step('report', ['plan', 'build'])
+    const lone = step('report', ['build'])
+    const steps = [step('plan'), step('build'), report]
+    const one = [step('build'), lone]
+    const many = cardNote(parked(reasonCopy('DEPENDENCY_INCOMPLETE')), report, steps, null)
+    const single = cardNote(parked(reasonCopy('DEPENDENCY_INCOMPLETE')), lone, one, null)
+    expect([many.text, single.text]).toEqual(['awaits parents', 'awaits parent'])
+    expect(monoW(many.text.length, 12)).toBeLessThanOrEqual(narrowest(steps))
+    // Any other note is left as it is.
+    const other = parked('blocked: plan failed')
+    expect(cardNote(other, report, steps, null)).toBe(other)
   })
 })
 
@@ -322,5 +359,30 @@ describe('SHAPE: the same-step row’s shape drops to its own line on a phone', 
     expect(painted(shape, 'text-overflow', WIDE)).toBe('ellipsis')
     expect(painted(shape, ['flex', 'flex-basis'], WIDE)).toBe('0 1 auto')
     expect(painted(nav, 'white-space', PHONE)).toBe('nowrap')
+  })
+
+  // MUTATION: drop `order: 1` or the parenthetical's inline-block: the strip's
+  // ◉ drops to a line of its own, and the shape breaks as '(1 → 2 → 1' / '→ 1)'.
+  it('keeps the strip beside the nav and moves the parenthetical down whole at 390 (review of U02)', () => {
+    const paren = build('div.wf-scrub span.wf-scrub-shape span.wf-scrub-paren', hosts)
+    const shape = paren.parentElement!
+    expect(painted(shape, 'order', PHONE)).toBe('1')
+    expect(painted(paren, 'display', PHONE)).toBe('inline-block')
+    expect(painted(paren, 'max-width', PHONE)).toBe('100%')
+    // The control: at 1440 the one cut line is plain inline text, ellipsed as before.
+    expect(painted(paren, 'display', WIDE) ?? 'inline').toBe('inline')
+    expect(painted(shape, 'order', WIDE) ?? '0').toBe('0')
+  })
+
+  it('renders the shape’s words unchanged, the parenthetical in its own span', () => {
+    const words = shapeWords({ steps: 4, levels: 4, text: '1 → 2 → 1 → 1' })
+    render(
+      <span className="wf-scrub-shape">
+        shape: <ShapeWords words={words} />
+      </span>,
+    )
+    const shape = document.querySelector<HTMLElement>('.wf-scrub-shape')
+    expect(shape?.textContent).toBe('shape: 4 steps in 4 stages (1 → 2 → 1 → 1)')
+    expect(shape?.querySelector('.wf-scrub-paren')?.textContent).toBe('(1 → 2 → 1 → 1)')
   })
 })

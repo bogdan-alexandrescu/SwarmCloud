@@ -39,6 +39,8 @@ import {
   foldMix,
   MIX_NAMED_MAX,
   monoW,
+  NODE_CHROME_W,
+  nodeWidthAt,
   hasTokenKind,
   inputsByStep,
   layoutOf,
@@ -115,6 +117,7 @@ import {
   stepOrder,
   stepTimes,
   stepWhy,
+  unfinishedParentsOf,
   ENTRY_EVENT,
   tokenKindsCell,
   tokenKindsTotal,
@@ -3324,14 +3327,35 @@ function useEnteredAt(
  * THE CARD'S NOTE IN WORDS THAT FIT IT (#2391 comment 58). A step parked on
  * DEPENDENCY_INCOMPLETE drew `reasonCopy`'s fixed 43-character sentence on its
  * one note line, cut to 'Waiting on an earlier…' at 1440. The note is one line
- * by design (`layoutOf`'s NOTE_H), so the card says it short -- 24 characters,
- * inside the full tier's content box as `monoW` measures it -- and the whole
+ * by design (`layoutOf`'s NOTE_H), so the card says it short, and the whole
  * sentence, with any `eligible again` after it, stays the title and the
  * focused card's `.node-note-full`.
+ *
+ * MEASURED AGAINST THE NARROWEST CARD, NOT THE WIDEST (review of U02). A first
+ * form was sized to the full tier's `NODE_W` box, and Auto zoom drew the
+ * Audit page at the names tier, whose card `nodeWidthAt` sizes from the
+ * workflow's longest step id: 'waits on an earlier…' again. Every tier is at
+ * least as wide as the names tier, so a note that fits that box fits them all.
+ * It names the parents, as a not-started dependant's 'waiting on report' does
+ * on the same canvas, when that fits; otherwise it says `awaits parent(s)`,
+ * at most 14 characters -- inside the 13-character state row every names-tier
+ * box carries whatever the step ids are (`STATE_ROW_W`).
  */
 const WAITS_ON_PARENT = reasonCopy('DEPENDENCY_INCOMPLETE')
-function cardNote(note: StepWhy): StepWhy {
-  return note.text.startsWith(WAITS_ON_PARENT) ? { ...note, text: 'waits on an earlier step' } : note
+/** `--t-micro`, the size `.node-note` draws at. */
+const NOTE_PX = 12
+export function cardNote(
+  note: StepWhy,
+  step: WorkflowStep,
+  steps: readonly WorkflowStep[],
+  taskById: ReadonlyMap<string, Task> | null,
+): StepWhy {
+  if (!note.text.startsWith(WAITS_ON_PARENT)) return note
+  const pending = unfinishedParentsOf(step, steps, taskById)
+  const named = `waiting on ${pending.join(', ')}`
+  const room = nodeWidthAt('names', steps) - NODE_CHROME_W
+  if (pending.length > 0 && monoW(named.length, NOTE_PX) <= room) return { ...note, text: named }
+  return { ...note, text: (pending.length || step.depends_on.length) > 1 ? 'awaits parents' : 'awaits parent' }
 }
 
 function WorkflowGraph({
@@ -3403,7 +3427,7 @@ function WorkflowGraph({
   const notes = new Map<string, StepWhy>()
   for (const s of workflow.steps) {
     const n = nodeNote(s, stepState(s, taskById), workflow.steps, taskById, classUnits(classes, s.resource_class))
-    if (n !== null) notes.set(s.step_id, cardNote(n))
+    if (n !== null) notes.set(s.step_id, cardNote(n, s, workflow.steps, taskById))
   }
   const noted = new Set(notes.keys())
   // A SETTLED STEP RESERVES NO STOP STRIP (browser QA D29): its task is

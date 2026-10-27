@@ -485,9 +485,13 @@
 /* ON A PHONE THE SHAPE IS A LINE OF ITS OWN (#2391 comment 58): beside the
    nav at 390 'shape: 2 steps in 2 stages (1 → 1)' was cut (scrollWidth 317 in
    300). The row already wraps (styles.css `.wf-scrub`); here the shape takes
-   the whole width under the nav and wraps at its spaces. */
+   the whole width under the nav and wraps at its spaces. It goes last (order),
+   so the strip's marks stay on the nav's line rather than dropping to one of
+   their own, and its parenthetical moves down whole, breaking inside only when
+   it alone is wider than the line (review of U02). */
 @media (max-width: 560px) {
-  .wf-scrub > .wf-scrub-shape { flex: 1 1 100%; white-space: normal; }
+  .wf-scrub > .wf-scrub-shape { flex: 1 1 100%; white-space: normal; order: 1; }
+  .wf-scrub-shape > .wf-scrub-paren { display: inline-block; max-width: 100%; }
 }
 .wf-scrub-strip > li > .wf-mk { display: inline-flex; }
 
