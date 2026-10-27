@@ -544,8 +544,10 @@ PUBLISH_UNREACHABLE_FIELD = "forge_unreachable"
 PUBLISH_FAILED_FIELD = "publish_failed"
 #: The `result_summary.git` key `_publish_git` sets when a continued branch
 #: moved only by merges of the default branch already holds every change this
-#: round made (#2179: PR #2093's GitHub update carried main's identical fix).
-#: Its value is the reason, naming the moved tip; nothing was pushed. Read by
+#: round made (#2179: PR #2093's GitHub update carried main's identical fix),
+#: or when origin's tip of the branch already holds the round's HEAD (#2506:
+#: PR #2446's head was the commit the round ended on). The name is the first
+#: case's. Its value is the reason, naming the tip; nothing was pushed. Read by
 #: `_no_change_after_publish`: the attempt ends `no_change`, not
 #: `publish_failed`.
 BASE_MERGE_NO_CHANGE_FIELD = "base_merge_no_change"
@@ -983,6 +985,12 @@ class Worker:
         # in this process, or the base a previous attempt's worker recorded in
         # the checkpoint manifest. `EMPTY_CLONE_BASE` for an empty repository.
         self._publish_base: str | None = None
+        # Origin's tip of the branch this publish pushes, read from the forge
+        # into the publish repository, kept only when HEAD descends from it
+        # (`_read_publish_remote_tip`, #2506): commits origin already has,
+        # which the workflow range and the broker's bundle leave out
+        # (`_workflow_negatives`). Reset at the start of every publish.
+        self._publish_remote_tip: str | None = None
         # The branch this attempt's clone left HEAD on (`refs/heads/<name>`, or
         # `DETACHED_HEAD` for a clone at a commit), read by the worker before
         # any agent process existed: the branch the step was given (#2094).
@@ -6787,9 +6795,10 @@ class Worker:
         Decided at the publish, not by the harvest's diff (#2179): the round
         did change its clone, but the branch it continues moved by a merge of
         the default branch (`_push_onto_base_merge`) to a tip that already
-        holds every change, the PR #2093 case. The work is on the branch, so
-        it is the `no_change` result rather than `publish_failed`, with the
-        moved tip named in the reason.
+        holds every change, the PR #2093 case -- or origin's tip of the branch
+        already holds the round's HEAD, the PR #2446 case (#2506). The work is
+        on the branch, so it is the `no_change` result rather than
+        `publish_failed`, with the tip named in the reason.
         """
         git = summary.get("git")
         reason = git.get(BASE_MERGE_NO_CHANGE_FIELD) if isinstance(git, dict) else None
@@ -13226,6 +13235,7 @@ class Worker:
         cfg = self.cfg
         ws = self.ws
         assert ws is not None
+        self._publish_remote_tip = None
 
         if not publish:
             return {
@@ -13529,6 +13539,45 @@ class Worker:
                 publish_repo, url=url, token=token, default_branch=access.default_branch,
                 tip=default_tip,
             )
+            # WHAT ORIGIN'S BRANCH ALREADY HOLDS IS NOT THIS ROUND'S TO PUSH
+            # (#2506). The publish read its range as HEAD not reachable from
+            # the clone base or the merged default-branch commit, and never
+            # asked where origin's branch stood. Measured on ci-fix
+            # task_1297d8f4 (PR #2446): the round cloned at fba856, the owner
+            # pushed 89507cf -- a workflow change -- to the pull request's
+            # branch, and the agent's clone ended on exactly that commit. The
+            # publish counted the owner's workflow file as the round's, sent a
+            # push of nothing new through the broker, whose one call answered
+            # api_unavailable, and the step ended publish_failed.
+            #
+            # So origin's tip is read from the FORGE into the publish
+            # repository (`_read_publish_remote_tip`, never the agent's
+            # clone). When HEAD descends from it, it joins the commits the
+            # range starts from (`_workflow_negatives`), and when it also
+            # descends from the clone base it becomes the base, as a tool
+            # push's tip does (#1188): the replay, the fold and the scans then
+            # read only what origin lacks, and origin's commits are pushed as
+            # they are, never rewritten into a non-fast-forward. A HEAD that is
+            # the tip, or behind it, pushes nothing: see below `commit_dirty`.
+            remote_tip = (
+                self._read_publish_remote_tip(
+                    publish_repo, url=url, token=token, branch=branch, tool_tip=tool_tip,
+                )
+                if carrier != "branches" and onto_pr is None else None
+            )
+            if remote_tip is not None and self._publish_is_ancestor(
+                publish_repo, remote_tip, "HEAD"
+            ):
+                self._publish_remote_tip = remote_tip
+                base = self._publish_base
+                if (
+                    tool_tip is None and base and remote_tip != base
+                    and _FULL_SHA_RE.fullmatch(base)
+                    and self._publish_is_ancestor(publish_repo, base, remote_tip)
+                ):
+                    out["remote_tip_from"] = base
+                    out["remote_tip"] = remote_tip
+                    self._publish_base = remote_tip
             new_sha = commit_dirty(
                 repo=publish_repo,
                 message=self._worker_commit_message(
@@ -13547,6 +13596,32 @@ class Worker:
             if new_sha:
                 auto_committed = True
                 work_head = new_sha
+
+            # A HEAD ORIGIN'S BRANCH ALREADY HOLDS PUSHES NOTHING (#2506): the
+            # measured case, HEAD the pull request's own tip. It ends as the
+            # `no_change` result, as a branch whose base merge already holds
+            # the round's change does (`_push_onto_base_merge`, #2179): no
+            # broker call, no token push. Not for a tool push's tip, which the
+            # push below re-proves under its lease (#1188); not for a conflict
+            # fix round, which the check before the push refuses when it
+            # merged nothing (#1321); not for an integrator, whose merges are
+            # still to come.
+            if (
+                remote_tip is not None and not new_sha and tool_tip is None
+                and not conflict_round and role != "integrator"
+                and self._publish_is_ancestor(publish_repo, "HEAD", remote_tip)
+            ):
+                out[BASE_MERGE_NO_CHANGE_FIELD] = (
+                    f"no_change: {branch} on origin already stands at {remote_tip[:12]}, "
+                    "which holds every commit this round's head carries; nothing was pushed"
+                )
+                out["remote_tip"] = remote_tip
+                out["published"] = False
+                out["auto_committed"] = auto_committed
+                out["publish_reason"] = out[BASE_MERGE_NO_CHANGE_FIELD]
+                self.log.info("origin's branch already holds this round's head; nothing to push",
+                              branch=branch, tip=remote_tip)
+                return out
 
             # `carrier: branches` (D13): the branch may already hold this step's
             # earlier pushes (`_push_carrier_branch`), and a replay writes new
@@ -14205,12 +14280,65 @@ class Worker:
 
     def _workflow_negatives(self, floor: str | None) -> list[str]:
         """The commits origin has that the publish's range starts from: the
-        clone base and the default branch's commit the lane merged."""
+        clone base, the default branch's commit the lane merged, and origin's
+        tip of the publish branch when HEAD descends from it (#2506).
+
+        The tip is `_publish_remote_tip`, read from the forge and kept only
+        after `merge-base --is-ancestor` showed HEAD stands on it, so a tip
+        that moved elsewhere, or names an unrelated line, hides none of the
+        round's own commits. Unread or absent, the range is as before."""
         out: list[str] = []
-        for sha in (self._publish_base, floor):
+        for sha in (self._publish_base, floor, self._publish_remote_tip):
             if sha and _FULL_SHA_RE.fullmatch(sha) and sha not in out:
                 out.append(sha)
         return out
+
+    def _read_publish_remote_tip(
+        self, publish_repo: Path, *, url: str, token: str, branch: str, tool_tip: str | None
+    ) -> str | None:
+        """Origin's current tip of `branch`, fetched from the FORGE into the
+        publish repository (`fetch_branch_tip`, the token-bearing fetch, as
+        `_default_branch_tip` reads the default branch), or None when the
+        branch is absent or could not be read (#2506). Never read from the
+        agent's clone, whose refs the agent can point anywhere.
+
+        `tool_tip`, the tip this attempt's own `git_push_branch` left
+        (`_adopt_tool_pushed_tip`), is returned as it is, not fetched again.
+        """
+        if tool_tip is not None:
+            return tool_tip
+        ws = self.ws
+        assert ws is not None
+        try:
+            tip = fetch_branch_tip(
+                repo=publish_repo,
+                url=url,
+                branch=branch,
+                token=token,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=self.cfg.git_clone_timeout_seconds,
+                logger=self.log,
+                branch_prefix=self.cfg.git_branch_prefix,
+            )
+        except GitError as exc:
+            self.log.warning("could not read the publish branch from the forge",
+                             branch=branch, error=str(self._scrub(str(exc)[:300])))
+            return None
+        return tip if isinstance(tip, str) and _FULL_SHA_RE.fullmatch(tip) else None
+
+    def _publish_is_ancestor(self, publish_repo: Path, ancestor: str, descendant: str) -> bool:
+        """True when `ancestor` is `descendant` or one of its ancestors in the
+        publish repository; False when it is not or git could not tell."""
+        ws = self.ws
+        assert ws is not None
+        code, _ = _git_text(
+            ["git", *_NO_HOOKS, "merge-base", "--is-ancestor", ancestor, descendant],
+            repo=Path(publish_repo), private_dir=ws.private, logs_dir=ws.logs,
+            slug="publish-remote-tip", timeout_seconds=self.cfg.git_harvest_timeout_seconds,
+            logger=self.log,
+        )
+        return code == 0
 
     def _workflow_paths(self, publish_repo: Path, *, floor: str | None) -> list[str]:
         """The workflow and action files the branch's new commits touch, sorted.
@@ -14254,8 +14382,9 @@ class Worker:
 
         The bundle is built here, in the worker-owned publish repository, from
         exactly the commits the token push would have sent -- HEAD not
-        reachable from the clone base or the merged default-branch commit --
-        so swarm-api reads the same range and decides the credential: a
+        reachable from the clone base, the merged default-branch commit or
+        origin's tip of the branch (`_workflow_negatives`, #2506), all sent
+        as `haves` -- so swarm-api reads the same range and decides the credential: a
         GitHub App token it mints for that one repository when the
         registration's `workflow_files` switch is on (#2029),
         `workflow_scope_missing` otherwise. A fence (409) is a
@@ -14402,6 +14531,10 @@ class Worker:
         repo = Path(publish_repo)
         timeout = self.cfg.git_harvest_timeout_seconds
         try:
+            # Not `_workflow_negatives`: a diff has one start. Origin's tip of
+            # the branch, when HEAD stood on it past the clone base, already
+            # IS `_publish_base` (#2506), so the patch carries only the lines
+            # origin lacks and applies onto the branch as origin holds it.
             start = floor if floor and _FULL_SHA_RE.fullmatch(floor) else self._publish_base
             if not start or not _FULL_SHA_RE.fullmatch(start):
                 code, start = _git_text(
