@@ -945,10 +945,35 @@ CHECKLIST = (
     "mode especially, and the axe-core report the manifest lists for every screen; what differs between "
     "the widths that should not; broken or missing images; the console errors, page errors and failed "
     "requests the manifest counts; empty, loading and error states that read wrong; text that contradicts "
-    "itself or the page's purpose; and every route the manifest lists as failed, which is itself a finding"
+    "itself or the page's purpose; and every route the manifest lists as failed, which is itself a finding "
+    "(a dark capture identical to the light one is not: see below)"
 )
 
 NO_CHANGE = "Change no file in the repository."
+
+#: #1981 comment 8: a target that names no themes is captured in light and
+#: dark (DEFAULT_THEMES), and an app with no dark theme draws its dark capture
+#: the same as its light one; a review judging by eye filed "dark mode is
+#: ignored" against it. The capture records the fact per screen
+#: (`dark_differs`, swarm_qa `_dark_differs`). Only a target that declares a
+#: dark theme in `themes` makes an unchanged dark capture a defect.
+NO_DARK_THEME = (
+    "A dark capture identical to its light one means the app offers no dark theme, and that is never a "
+    "finding (never \"dark mode is ignored\"): this target does not declare `themes` including dark. Each "
+    "screen's manifest.json entry says in `dark_differs` whether its dark images differ from its light ones; "
+    "read that fact instead of judging by eye, and judge contrast in dark only where it is true."
+)
+DECLARED_DARK_THEME = (
+    "This target declares a dark theme (its `themes` include dark), so a screen whose manifest.json entry "
+    "says `dark_differs` false drew its dark capture the same as its light one: the app ignored the dark "
+    "scheme, and that is a finding."
+)
+
+
+def _dark_theme_line(target: Mapping[str, Any]) -> str:
+    """NO_DARK_THEME, or DECLARED_DARK_THEME for a target whose `themes` name dark."""
+    themes = target.get("themes")
+    return DECLARED_DARK_THEME if isinstance(themes, list) and "dark" in themes else NO_DARK_THEME
 
 #: QA-GATE-REFUSALS (part of #2067). The live gate answers some requests
 #: itself (a write, anything but GET and HEAD to another origin), and its 403
@@ -1100,7 +1125,7 @@ def _review_prompt(target: Mapping[str, Any], base: str, group: str, design_docs
         f"`severity` is one of {', '.join(SEVERITIES)}; `width` is a preset name; `evidence` lists the "
         f"crop and the capture image it came from, by their paths in the tars, and a finding without "
         f"evidence is refused. Quote no more of the page's text than the few words that name the defect. "
-        f"{GATE_REVIEW} Bundle findings-{group}.json and the crops into review-{group}.tar under $SWARM_ARTIFACTS_DIR. "
+        f"{_dark_theme_line(target)} {GATE_REVIEW} Bundle findings-{group}.json and the crops into review-{group}.tar under $SWARM_ARTIFACTS_DIR. "
         f"{NO_CHANGE}"
     )
 
@@ -1177,7 +1202,7 @@ def _report_prompt(target: Mapping[str, Any], groups: Sequence[tuple[str, Sequen
         f"none, or one no tar holds, moves to `about_run` with what was missing. `about_run` entries are "
         f"{{id, title, actual}} and are never filed in the application's repository. Copy every evidence "
         f"file to $SWARM_ARTIFACTS_DIR next to findings.json, keeping its path, so the console shows it. "
-        f"{_gate_report_line()} Then, in report.md, one line saying the flows are reported apart, in "
+        f"{_dark_theme_line(target)} {_gate_report_line()} Then, in report.md, one line saying the flows are reported apart, in "
         f"flow-report's flows.md; then a table of findings by severity and by screen, then each finding, severity first, with its "
         f"crop embedded by relative link. {_coverage_line(_leg_name(target))} {NO_CHANGE}"
     )

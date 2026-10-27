@@ -535,6 +535,26 @@ def test_the_review_reads_the_apps_design_docs() -> None:
     assert "DESIGN.md" in default and "docs/design*/**" in default
 
 
+def test_a_dark_capture_like_the_light_one_is_no_finding_unless_the_target_declares_dark() -> None:
+    """Epic #1981, the eighth comment: a target with no dark theme was
+    captured in dark (DEFAULT_THEMES) and "dark mode is ignored" was filed
+    against it. The review and the report are told that a dark capture
+    identical to the light one is an app with no dark theme, and pointed at
+    the manifest's `dark_differs`, a fact, instead of a judgement by eye."""
+    steps = _steps(qaspec.render(_target()))
+    for step in ("review-g1", "report"):
+        prompt = steps[step]["prompt"]
+        # MUTATION: drop the rule from either prompt and that prompt fails here.
+        assert "no dark theme" in prompt and "never a finding" in prompt, step
+        assert "`dark_differs`" in prompt, step
+    declared = _steps(qaspec.render(_target(themes=["light", "dark"])))
+    for step in ("review-g1", "report"):
+        prompt = declared[step]["prompt"]
+        # MUTATION: give a target that names a dark theme the no-dark-theme
+        # rule and its ignored dark scheme is never filed.
+        assert "declares a dark theme" in prompt and "never a finding" not in prompt, step
+
+
 def test_the_file_step_carries_the_filing_rules() -> None:
     spec = qaspec.render(_target(file={"min_severity": "major", "max_issues": 5,
                                        "labels": ["qa"], "evidence": "console_link"}))
