@@ -387,8 +387,9 @@ step's and the review's channel) and `issue_closed` on a closed issue unless
 `-git-wf` slot of owner decision Q3, which is removed with IAM row L-2).
 Before every `git_push_branch` swarm-api lists the paths the bundle's new
 commits touch, in a scratch repository holding the forge's prerequisite
-commits at depth 1 and the bundle's objects (`git log --name-only -m
---no-renames`), never from a list the request carries. When any is under
+commits at depth 1 and the bundle's objects (`git log --name-only
+--no-renames --diff-merges=combined`), never from a list the request
+carries. When any is under
 `.github/workflows/` or `.github/actions/` and the agent's own repository's
 registration has its `workflow_files` switch on (off by default; only a
 stored `true` is on, `platform: true` alone is not), swarm-api mints a
@@ -408,6 +409,39 @@ no workflow file mints nothing. The audit row names `credential:
 app_installation` and the `workflow_paths`, never the token. Merging such a
 change stays the owner's (`NEEDS_OWNER`, `STOP_WORKFLOWS`, lane FR-1)
 whatever the run's merge gate says ([design/agent-autonomy.md](design/agent-autonomy.md) §3.3).
+
+**A merge names a workflow file only where its result differs from every
+parent** (#2452). A non-merge commit names every path it adds, changes,
+deletes or renames away (`--no-renames`, so moving a file out of
+`.github/workflows/` counts). A merge commit is read as a combined diff
+(`--diff-merges=combined`): it names a path only where its result differs
+from EVERY parent -- a conflict resolved in that file, or an edit the merge
+made itself. The listing was `-m` until #2452, which diffs a merge against
+each parent: against its branch parent, a lane's merge of `main` named every
+workflow file `main` had changed since the branch was cut, and on 2026-10-26
+a ci-fix and a conflict-fix step that merged `main` after #2446 were routed
+to `git_push_branch` for files they never changed and ended FAILED with
+their work in `workflow-lines.patch`. A merge of `main` must not route a
+push to `git_push_branch` for `main`'s own workflow changes: they are on the
+default branch already. The worker's end-of-agent publish
+(`lifecycle.Worker._workflow_paths`) and swarm-api
+(`gittools.GitTools._workflow_paths`) run this same listing over the same
+range -- HEAD not reachable from the clone base or the merged default-branch
+commit -- so they never disagree about which route a branch takes; they
+change together or not at all
+(`tests/unit/control_plane/test_git_tools_workflow_merge_listing.py` holds
+them to each other). Both of a lane's merge parents are usually bundle
+prerequisites, held at depth 1 in swarm-api's scratch repository; the
+combined diff reads only their trees, which a depth-1 fetch holds.
+
+The known consequence: a merge whose result keeps a workflow file version
+the branch already pushed earlier -- a conflict with `main` resolved to the
+branch's side, whose own commit is behind the clone base -- equals its
+branch parent there, so it names nothing, and the worker's own push carries
+it. If GitHub refuses that push for want of the `workflow` scope, the
+publish fails through `PUBLISH_FAILED_FIELD`, as any refused push does, and
+the work is not lost
+(`tests/unit/worker/test_workflow_paths_merge_of_main.py`).
 
 ## 2. The credential
 

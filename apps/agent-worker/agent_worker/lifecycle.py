@@ -14216,9 +14216,20 @@ class Worker:
         """The workflow and action files the branch's new commits touch, sorted.
 
         The command swarm-api reads the pushed bundle with
-        (`swarm_api.gittools._workflow_paths`): `--name-only --no-renames -m`
-        over exactly the new commits, so a rename away from a workflow path
-        counts, and the two never disagree about which route a branch takes.
+        (`swarm_api.gittools._workflow_paths`): `--name-only --no-renames
+        --diff-merges=combined` over exactly the new commits, so a rename away
+        from a workflow path counts, and the two never disagree about which
+        route a branch takes. The two change together or not at all.
+
+        A MERGE NAMES A PATH ONLY WHERE ITS RESULT DIFFERS FROM EVERY PARENT
+        (#2452): a conflict resolved in it, or an edit the merge itself made.
+        `-m` diffed a merge of the default branch against its branch parent
+        and listed every workflow file `main` changed since the branch was
+        cut, so a step that merged `main` was routed to `git_push_branch` for
+        files it never changed. Non-merge commits list as before. A merge that
+        keeps the branch's own, already pushed version of a file `main`
+        changed is not listed, so this worker's push carries it; GitHub's
+        workflow-scope refusal, if it comes, fails the publish below.
 
         A listing git could not make is no workflow paths, logged: the
         worker's own push then runs, as before AU-3, and GitHub refuses a
@@ -14230,8 +14241,8 @@ class Worker:
         assert ws is not None
         negatives = self._workflow_negatives(floor)
         code, text = _git_text(
-            ["git", *_NO_HOOKS, "log", "--format=", "--name-only", "--no-renames", "-m",
-             "HEAD", *(["--not", *negatives] if negatives else []),
+            ["git", *_NO_HOOKS, "log", "--format=", "--name-only", "--no-renames",
+             "--diff-merges=combined", "HEAD", *(["--not", *negatives] if negatives else []),
              "--", *WORKFLOW_PATHSPECS],
             repo=Path(publish_repo), private_dir=ws.private, logs_dir=ws.logs,
             slug="publish-workflow-paths",

@@ -1324,9 +1324,17 @@ class GitTools:
         The bundle is thin, so it is read where `gitexec.push_bundle` reads it:
         a scratch repository holding the forge's prerequisite commits at depth
         1 and the bundle's objects, with this call's own slot, deadline and
-        credential file. `git log --name-only -m --no-renames` over exactly
-        the new commits names every path they add, change, delete or rename
-        away, so a rename out of `.github/workflows/` counts as touching it.
+        credential file. `git log --name-only --no-renames
+        --diff-merges=combined` over exactly the new commits names every path
+        a non-merge commit adds, changes, deletes or renames away, so a rename
+        out of `.github/workflows/` counts as touching it, and a path a merge
+        commit's result differs in from EVERY parent (#2452): a merge of the
+        default branch does not count `main`'s own workflow changes as the
+        branch's, as `-m` (a diff against each parent) did. The worker lists
+        its publish with the same command (`lifecycle.Worker._workflow_paths`)
+        so the two never disagree about a branch's route; they change
+        together. The merge's parents are prerequisites held at
+        depth 1 here, which is enough: the combined diff reads only their trees.
         """
         gx = self.gitexec
         url, host = gx._check_url(url)
@@ -1353,7 +1361,8 @@ class GitTools:
                              token=token, extra=("-c", "protocol.file.allow=always")),
                      "unbundle", code="bad_bundle")
             run = gx._must(gx._git(scratch, repo, [
-                "log", "--format=", "--name-only", "--no-renames", "-m", header.tip,
+                "log", "--format=", "--name-only", "--no-renames", "--diff-merges=combined",
+                header.tip,
                 "--not", *header.prerequisites, "--", *WORKFLOW_PATHSPECS], token=token),
                 "listing the pushed range's paths", code="bad_bundle")
         return sorted({line.strip() for line in run.stdout.splitlines()
