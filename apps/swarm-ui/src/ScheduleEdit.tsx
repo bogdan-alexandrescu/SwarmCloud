@@ -351,11 +351,18 @@ function usePreview(cron: string, timezone: string, type: string): { r: Result<{
  * Why the preview stops a save, or null: the parser's 422 and the type's
  * minimum-interval refusal alike (AUT-10). A preview that was not read stops
  * nothing -- the server still checks the expression -- and one being retyped
- * stops nothing until it answers. Said in place under the cron field and in
- * the sheet (A3a) as the parser's reason or the type's refusal, without the
- * "Not a schedule" / "This type would refuse it" lead the preview itself
- * carries, so the two never read as one sentence said twice.
+ * stops nothing until it answers. THE REASON IS SAID ONCE WHERE THE PREVIEW
+ * SAYS IT (review of AUTO-A3): the preview leads with "Not a schedule" /
+ * "This type would refuse it" and the reason, so the sheet's problem names
+ * the cadence without the reason (`cadenceProblem`), and the cron field
+ * carries the reason in place only beside the cards, where the preview is in
+ * the sheet; on one column the preview sits right under the field instead.
  */
+/** The sheet's line for a cadence `previewBlocks` stops: what is wrong, not the reason the preview says. */
+function cadenceProblem(r: Result<{ preview: SchedulePreview }> | null): string {
+  return r !== null && r.status === 'error' ? 'Cadence: not a schedule.' : 'Cadence: this type refuses it.'
+}
+
 export function previewBlocks(p: { r: Result<{ preview: SchedulePreview }> | null; fresh: boolean }): string | null {
   if (!p.fresh || p.r === null) return null
   if (p.r.status === 'error') return p.r.error.kind === 'invalid' ? p.r.error.message : null
@@ -868,7 +875,7 @@ function ScheduleForm({
     d.name.trim() === '' ? 'Name the schedule first.' : null,
     d.type === '' ? 'Pick a type first.' : null,
     d.scopeMode === 'repos' && d.repoIds.length === 0 ? 'Choose at least one repository.' : null,
-    d.cron.trim() === '' ? 'Say when it runs.' : cadenceWhy === null ? null : `Cadence: ${cadenceWhy}`,
+    d.cron.trim() === '' ? 'Say when it runs.' : cadenceWhy === null ? null : cadenceProblem(preview.r),
     paramsWhy(t, d),
     ...budgetWhy.map((p) => p.sheet),
   ].filter((x): x is string => x !== null)
@@ -1075,8 +1082,15 @@ function ScheduleForm({
               </Button>
             </div>
             <div className="sc-facts">
-              <Field label="Cron expression" hint="Minute, hour, day of month, month, day of week." error={d.cron.trim() === '' ? null : cadenceWhy}>
-                <input ref={cronRef} className="c-inp is-mono" value={d.cron} spellCheck={false} onChange={(e) => set({ cron: e.target.value })} />
+              <Field label="Cron expression" hint="Minute, hour, day of month, month, day of week." error={d.cron.trim() === '' || oneColumn ? null : cadenceWhy}>
+                <input
+                  ref={cronRef}
+                  className="c-inp is-mono"
+                  value={d.cron}
+                  spellCheck={false}
+                  onChange={(e) => set({ cron: e.target.value })}
+                  {...(oneColumn && d.cron.trim() !== '' && cadenceWhy !== null ? { 'aria-invalid': 'true' } : {})}
+                />
               </Field>
               <Field label="Timezone" hint="An IANA zone, such as Europe/London.">
                 <input className="c-inp is-mono" value={d.timezone} spellCheck={false} onChange={(e) => set({ timezone: e.target.value })} />
@@ -1139,7 +1153,9 @@ function ScheduleForm({
               )}
             </div>
             <p className="c-hint">
-              Merge off is below the type’s default and needs a platform admin. Merging automatically is the audited switch on the schedule’s page, never this form.
+              {/* The API's rule (`gate_below_default`), not the mock-up's caption:
+                  `merge: off` is the strictest merge, so anyone may set it. */}
+              A gate below the type’s default needs a platform admin. Merging automatically is the audited switch on the schedule’s page, never this form.
             </p>
             <div className="sc-facts">
               {typeof d.gate.approvers === 'string' || d.gate.approvers === undefined ? (
