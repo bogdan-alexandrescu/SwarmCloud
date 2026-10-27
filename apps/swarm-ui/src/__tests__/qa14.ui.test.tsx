@@ -10,21 +10,20 @@
 //     strip, plus six 2 px gaps, is 541. `fitTabs` counts the gaps.
 // (3) Schedule tick lateness printed a raw float, "182.216849 s at most".
 // (5) Schedules' Repository and When were cut while Next run, Last run and
-//     Spend held room they never used.
+//     Spend held room they never used. That table is gone since AUTO-A1
+//     (frame A1's list, part of #2417), and its width case with it.
 // (4), the bell's question items, is in notifications.test.tsx.
 //
 // MUTATIONS: drop `detailNamed` from `fromAddress` or from the split's
 // default (the /details case goes red); drop `gap` from `fitTabs` (the 541
 // case goes red); print `max_lateness_seconds` as it comes (lateness goes
-// red); drop the column widths (the CSS case goes red).
+// red).
 
 import { act, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { LiveRead } from '../api'
 import type { Result } from '../fetch'
-import type { CascadeEnv } from './cssgate'
-import { painted } from './marks'
 import type { Task, TaskPage } from '../types'
 import { task as runTask } from './runfixture'
 
@@ -176,41 +175,5 @@ describe('QA14-UI (3): schedule tick lateness reads as a duration', () => {
     expect(latenessWords(3725)).toBe('1 h 2 min')
     expect(latenessWords(7200)).toBe('2 h')
     expect(latenessWords(182.216849)).not.toMatch(/\./)
-  })
-})
-
-describe('QA14-UI (5): Repository and When take the room on the Schedules table', () => {
-  const WIDE: CascadeEnv = { width: 1440 }
-  it('sizes the short columns, leaves Repository and When to share the rest, and wraps them', () => {
-    const host = document.createElement('div')
-    host.innerHTML =
-      '<table class="sc-table is-schedules"><thead><tr>' +
-      ['name', 'repo', 'when', 'next', 'last', 'spend', 'approvals', 'state', 'acts'].map((c) => `<th data-col="${c}"></th>`).join('') +
-      '</tr></thead><tbody><tr class="sc-row">' +
-      '<td data-label="Repository" class="sc-c-more"><span class="sc-cut">every registered repository</span></td>' +
-      '<td data-label="When" class="sc-c-more"><span class="sc-cut">03:00 on Sundays</span></td>' +
-      '</tr></tbody></table>'
-    document.body.appendChild(host)
-    try {
-      const th = (c: string) => host.querySelector(`th[data-col="${c}"]`)!
-      const px = (c: string) => Number.parseFloat(painted(th(c), 'width', WIDE) ?? 'NaN')
-      for (const c of ['next', 'last', 'spend', 'approvals', 'state', 'acts']) {
-        expect(painted(th(c), 'width', WIDE), c).toMatch(/^\d+px$/)
-      }
-      expect(painted(th('repo'), 'width', WIDE)).toBeNull()
-      expect(painted(th('when'), 'width', WIDE)).toBeNull()
-      expect(Number.parseFloat(painted(th('name'), 'width', WIDE)!)).toBeLessThanOrEqual(18)
-      // A 1100 px table (1440 less the spine): Repository and When each get
-      // at least what the five unsized columns split evenly used to give them.
-      const fixed = ['next', 'last', 'spend', 'approvals', 'state', 'acts'].reduce((n, c) => n + px(c), 0)
-      const share = (1100 - 0.18 * 1100 - fixed) / 2
-      expect(share).toBeGreaterThan((1100 - 0.22 * 1100 - 88 - 120 - 172) / 5)
-      for (const label of ['Repository', 'When']) {
-        const cut = host.querySelector(`td[data-label="${label}"] > .sc-cut`)!
-        expect(painted(cut, 'white-space', WIDE), label).toBe('normal')
-      }
-    } finally {
-      host.remove()
-    }
   })
 })
