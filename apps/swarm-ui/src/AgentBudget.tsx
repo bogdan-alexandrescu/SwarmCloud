@@ -123,10 +123,19 @@ export function budgetEndOf(task: Pick<Task, 'result_summary'>): BudgetEnd | nul
  * which the list's summary row does not carry, so the row reads the first two.
  */
 export function stoppedAtBudget(task: Pick<Task, 'state' | 'end_cause' | 'last_error' | 'result_summary'>): boolean {
+  if (stoppedAtBudgetRow(task)) return true
+  return TERMINAL_STATES.has(task.state) && budgetEndOf(task)?.exceeded === true
+}
+
+/**
+ * The same, from the two fields a summary row carries. The list reads this
+ * one: naming `result_summary` on a summary row is a read of a field the
+ * summary view does not serve (#168, drawer.reread.test.tsx).
+ */
+export function stoppedAtBudgetRow(task: Pick<Task, 'state' | 'end_cause' | 'last_error'>): boolean {
   if (!TERMINAL_STATES.has(task.state)) return false
   if (task.end_cause === BUDGET_EXCEEDED) return true
-  if (typeof task.last_error === 'string' && task.last_error.startsWith(`${BUDGET_EXCEEDED}:`)) return true
-  return budgetEndOf(task)?.exceeded === true
+  return typeof task.last_error === 'string' && task.last_error.startsWith(`${BUDGET_EXCEEDED}:`)
 }
 
 /** The 80% warning, read off its event. */
@@ -253,7 +262,7 @@ export function useBudgetWarning(
  * row's own `useBudgetWarning` read, made once per row.
  */
 export function BudgetRowMark({ task, live, warning }: { task: Task; live: boolean; warning: BudgetWarning | null }) {
-  if (stoppedAtBudget(task)) {
+  if (stoppedAtBudgetRow(task)) {
     return (
       <span className="cr-budget is-stopped" title={budgetStopLine(task)}>
         <ToneMark tone="warn">stopped at its budget</ToneMark>
@@ -277,7 +286,7 @@ function warnedSay(task: Task, warning: BudgetWarning): string {
 
 /** The words a row's accessible name carries for its budget, or null: the mark's sentence. */
 export function budgetRowSay(task: Task, warning: BudgetWarning | null, live: boolean): string | null {
-  if (stoppedAtBudget(task)) return budgetStopLine(task)
+  if (stoppedAtBudgetRow(task)) return budgetStopLine(task)
   if (live && warning !== null) return warnedSay(task, warning)
   return null
 }

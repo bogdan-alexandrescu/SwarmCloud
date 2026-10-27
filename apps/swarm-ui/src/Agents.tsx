@@ -10,7 +10,7 @@ import { createPortal } from 'react-dom'
 import { Em, Mark, timesRun, type ChipTone } from './AgentDetail'
 import { TaskIdLine } from './TaskIdLine'
 import { BrowserUseMark, browserUseOf, browserUseSay } from './BrowserUse'
-import { BudgetRowMark, budgetRowSay, budgetStopLine, stoppedAtBudget, useBudgetWarning } from './AgentBudget'
+import { BudgetRowMark, budgetRowSay, budgetStopLine, stoppedAtBudgetRow, useBudgetWarning } from './AgentBudget'
 import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, agentKind, agentList, shortTaskId, workflowHref, type AgentList, type RecentState } from './agentlist'
 import { TASK_PAGE_LIMIT, USE_FIXTURES, loadAttempts, loadLiveSession, loadTask, loadTasks, loadTasksInState, type LiveSession, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
@@ -1532,7 +1532,7 @@ function rowReason(
   // A STOP AT ITS BUDGET IS NOT A PLAIN FAILURE (#2459): the worker kept and
   // published the work, so the line says that and the amount, not the
   // `budget_exceeded: ...` error text, and asks nobody to act.
-  if (stoppedAtBudget(task)) return { text: budgetStopLine(task), warn: false }
+  if (stoppedAtBudgetRow(task)) return { text: budgetStopLine(task), warn: false }
   // THE TASK'S WEIGHT, FROM THE CATALOGUE (#66) -- never `RESOURCE_UNITS`,
   // which is what fed `whyAgent`/`whyNeedsAction` a `full` reading for a pool
   // too small to ever admit this task. `classUnits` is null exactly when the
@@ -2261,7 +2261,7 @@ function CompactRow({
           colour for one fact. A BUDGET STOP IS NOT (#2459): its line says the
           work was kept and published, and it is drawn dim, not as an error. */}
       {why.text && !whyHidden && (
-        <span className={`why${why.warn ? ' is-warn' : ''}${failedRow(task) && !stoppedAtBudget(task) ? ' is-bad' : ''}`} title={whySaid(why)}>
+        <span className={`why${why.warn ? ' is-warn' : ''}${failedRow(task) && !stoppedAtBudgetRow(task) ? ' is-bad' : ''}`} title={whySaid(why)}>
           {why.text}
         </span>
       )}
