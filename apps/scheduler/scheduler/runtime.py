@@ -27,8 +27,9 @@ task after this write, so its pools, its lease and its dispatch are all the
 resolved profile's (invariants 2 and 3). Once resolved, `runtime.resolved` is
 set and a later promotion (a retry, a manual pause) never resolves again.
 
-WHAT IS READ: the parents' `result_summary.git.files` -- the record the
-worker's gate reads for its `builds_on` step (`ui_paths_in_files`) -- for
+WHAT IS READ: the parents' `result_summary.git.own_files` when recorded,
+else `git.files` -- the record the worker's gate reads for its `builds_on`
+step (`ui_paths_in_files`), own paths first since #2337 -- for
 every `depends_on` parent and, along each parent's own `builds_on`, the steps
 whose branches it started from: a chain's last step lists only its own diff.
 A parent that cannot be read, has no file list, or whose list was cut with no
@@ -72,6 +73,9 @@ SIGNATURE_FIELDS = ("spec_signature", "spec_key_version", "spec_format")
 #: The repository paths whose change makes a review need a browser. The
 #: worker's `agent_worker.verdict.UI_PATH_PREFIXES`, restated.
 UI_PATH_PREFIXES = ("apps/swarm-ui/", "docs/web-ui/")
+#: The paths a step's own work changed, in `result_summary.git` (#2337), and
+#: `<key>_truncated` beside it. The worker's `agent_worker.verdict.OWN_FILES_KEY`.
+OWN_FILES_KEY = "own_files"
 #: Directories whose files are tests, wherever they sit under a UI prefix.
 TEST_DIRECTORIES = ("__tests__", "tests")
 #: A file under `apps/swarm-ui/` whose name carries one of these is a vitest
@@ -159,12 +163,27 @@ class Resolution:
 def files_of(document: Any) -> tuple[list[str], str | None]:
     """`(UI paths, why unknown)` from one task document's `result_summary.git`.
 
+    The parent's OWN paths when it recorded them (`git.own_files`, #2337):
+    its non-merge first-parent commits and uncommitted work, so a UI file it
+    merged in from main or from the branch it built on is not its change.
+    The worker's gate reads the same list first
+    (`agent_worker.verdict.ui_paths_in_own_files`). A record without it -- a
+    step harvested before #2337, or one whose listing failed -- is judged by
+    its whole `git.files`, as before.
+
     Unknown (`REASON_UNREADABLE`) when there is no file list to read -- no
     summary, no git record, a harvest that failed -- and `REASON_CUT` when
-    the list was cut at its bound and the part kept names no UI path.
+    the list read was cut at its bound and the part kept names no UI path.
     """
     summary = document.get("result_summary") if isinstance(document, Mapping) else None
     git = summary.get("git") if isinstance(summary, Mapping) else None
+    own = git.get(OWN_FILES_KEY) if isinstance(git, Mapping) else None
+    if isinstance(own, list):
+        found_own = list(dict.fromkeys(
+            value.lstrip("/") for value in own if is_ui_path(value)))
+        if git.get(f"{OWN_FILES_KEY}_truncated") is True and not found_own:
+            return [], REASON_CUT
+        return found_own, None
     rows = git.get("files") if isinstance(git, Mapping) else None
     if not isinstance(rows, list):
         return [], REASON_UNREADABLE

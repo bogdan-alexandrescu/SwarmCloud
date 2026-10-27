@@ -141,12 +141,25 @@ finished run, not as a budget stop.
 
 ## 6. What it does not do
 
-* **codex is not stopped mid-run today.** The `codex` profile runs `codex
-  exec` without `--json`, so its stdout is prose and carries no usage. The
-  meter reads codex's `turn.completed` usage events when a stream carries
-  them. BGD answered "switch codex to `--json`" on 2026-10-26 (question 6);
-  a follow-up lane makes that switch after this lands. Until then a codex step's budget is pinned and shown, and enforced by
-  nothing.
+* **codex's stream alone would meter it once per start.** The `codex`
+  profile runs `codex exec --json` (BGD, 2026-10-26, question 6), whose
+  stream reports usage only at `turn.completed` -- and a `codex exec` start
+  runs one turn, so that figure arrives when the start ends. So the runner
+  ALSO READS THE ROLLOUT (BGD's pick "Also read the rollout", 2026-10-27,
+  CODEX-JSON question 0): codex appends a `token_count` record to
+  `$HOME/.codex/sessions/.../rollout-*.jsonl` after every model request, and
+  `budgetwatch` reads what each rollout gains while the start runs, from the
+  size it had when the start began (a restored workspace's earlier session
+  is not this start's). Each record's `last_token_usage` counts once; one
+  re-sent with an unchanged total (a rate-limit update) is skipped. The
+  rollout's figure is PROVISIONAL: the agent can write its own HOME, so the
+  start's `turn.completed` replaces it and later rollout lines of that start
+  are not read -- a rollout can bring a stop forward, never lower what the
+  stream reports. A start that ends without `turn.completed` (stopped,
+  killed, crashed) keeps its rollout figure, all there is of it. With it, a
+  codex step is stopped at the next completed tool item of the same turn
+  (`CODEX_TOOL_ITEMS`), or mid-turn past 120%, as claude-code is. What
+  codex does not do is take the 80% note: `told: false`.
 * **A profile with no CLI stream** (mock, generic, the worker actions) has
   nothing to enforce from, and gets no guard.
 * **No park.** A budget stop is FAILED, not parked: `ParkReason.

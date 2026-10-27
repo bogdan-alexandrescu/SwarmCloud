@@ -4745,6 +4745,17 @@ def _follow_rows(
     )
 
 
+def _unquoted(value: str) -> str:
+    """`value` without surrounding whitespace and ONE layer of MATCHING
+    quotes -- what a row agent that JSON-encoded an argument twice added
+    (#1865, #2379). A lone or unmatched quote stays, so the value is refused
+    or compared as received."""
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1].strip()
+    return value
+
+
 #: What `merge_pr` takes beside it: the repository and the run's name. Every
 #: other `swarm_workflow` argument would add work to, or move, a pull request
 #: that is already written, and swarm-api would refuse it anyway.
@@ -5083,10 +5094,18 @@ def _call(
         # to stop on a format error -- ended UNKNOWN while its task finished.
         # Surrounding whitespace and ONE layer of MATCHING quotes go; a lone
         # quote or a still-unknown word is refused below, as received.
-        fmt = format_received.strip()
-        if len(fmt) >= 2 and fmt[0] == fmt[-1] and fmt[0] in "\"'":
-            fmt = fmt[1:-1]
+        fmt = _unquoted(format_received)
         args = {**args, "format": fmt or None}
+    if name == "swarm_follow":
+        # `step_id` and each `parents` entry the same way, and for the same
+        # reason (#2379 comment 20): a row agent sent its step id as
+        # '"review"', the step check compared 'review' to it, and the row
+        # ended UNKNOWN on a step that succeeded. Written back before the
+        # checks below, so an id that is only quotes is refused as empty.
+        if isinstance(args.get("step_id"), str):
+            args = {**args, "step_id": _unquoted(args["step_id"])}
+        if isinstance(args.get("parents"), list):
+            args = {**args, "parents": [_unquoted(p) if isinstance(p, str) else p for p in args["parents"]]}
     if name == "swarm_follow" and (args.get("format") or "json") not in ("json", "lines", "progress", "summary", "stage"):
         raise SwarmError(
             f"unknown format {format_received!r}; "

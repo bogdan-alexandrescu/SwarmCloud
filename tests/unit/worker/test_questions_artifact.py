@@ -35,6 +35,7 @@ import pytest
 
 from agent_worker.errors import ExitCode
 from agent_worker.objectstore import LocalObjectStore
+from agent_worker.runners import ceiling
 
 from test_standalone_outputs import (  # noqa: F401 - agent_cli is a fixture
     _agent_output,
@@ -143,8 +144,9 @@ def test_the_prompt_says_once_that_the_agent_may_ask(db, worker_factory, agent_c
     assert len(lines) == 1, prompt
     assert "owner" in lines[0] and "guess" in lines[0], lines[0]
     # It follows the deliverables line and does not name the folder again:
-    # "there" is the folder that line named.
-    assert prompt.count("$SWARM_ARTIFACTS_DIR") == 1, prompt
+    # "there" is the folder that line named. The context-ceiling note (#2524)
+    # names $SWARM_ARTIFACTS_DIR/handoff.md for the next session; set it aside.
+    assert prompt.replace(ceiling.HANDOFF_NOTE, "").count("$SWARM_ARTIFACTS_DIR") == 1, prompt
 
 
 # ---------------------------------------------------------------------------

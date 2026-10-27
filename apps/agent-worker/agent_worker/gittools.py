@@ -595,8 +595,15 @@ class GitTools:
             if exc.status == 409 or exc.code in (GIT_FENCED, "child_submit_fenced"):
                 raise GitToolFenced(exc.status, GIT_FENCED, exc.message, retryable=False) from None
             if exc.retryable:
+                # Named, so a step's summary says what the platform answered
+                # (#2452: two refusals read only "did not answer", and a
+                # timeout could not be told from a 503). The status and
+                # swarm-api's code, or with no answer the exception class
+                # `ChildApi` recorded; never swarm-api's free text.
+                cause = (f"no answer ({exc.message or exc.code})" if exc.status is None
+                         else f"HTTP {exc.status} {exc.code}")
                 raise GitToolRefused("api_unavailable",
-                                     "the platform did not answer; ask again",
+                                     f"the platform did not answer: {cause}; ask again",
                                      retryable=True) from None
             raise GitToolRefused(exc.code, exc.message or exc.code) from None
         return payload

@@ -1,137 +1,195 @@
 # Deploy state
 
-**Measured 2026-09-24 between 08:05 and 08:45 UTC, read-only, against
-`saga-agents-staging`.** This replaces the record dated 2026-09-19. Every figure
-below came from a `gcloud` describe or list, a Firestore REST `GET`, or a `gh`
-read, and the commands are at the end. **Nothing was written** to any live
-system to produce it.
+**Measured 2026-10-27 between 05:52 and 06:12 UTC (22:52-23:12 PDT
+2026-10-26), read-only, against `saga-agents-staging`, region `us-central1`.**
+This replaces the record dated 2026-09-24, which is kept below as
+[the previous reading](#previous-reading-2026-09-24). The header clock was read
+with `date -u` at 2026-10-27 06:11:48Z; origin/main at read time was
+`17d6c5abd` (#2533). Every figure below came from a `gcloud` describe or list,
+a read-only `kubectl` get, a Firestore or Monitoring REST read, or a `gh` read,
+and the commands are at the end. **Nothing was created, updated, deleted,
+deployed, cancelled or applied**, and no secret value was read. The operator
+made the reading from their laptop (owner decision 2026-10-27, bundle H18: an
+agent container is not given these reads); the field-reduced raw data is in the
+operator's session scratchpad (`triage-1027/h18/`), not in this repository.
 
-Deliberately NOT read through `status.sh` or `smoke-test.sh`. Both are fixed
-now (see [the sweep](audits/2026-09-18/13-swallowed-stderr-sweep.md)), but a
-record of live state should not depend on the tools whose correctness it is
-sometimes used to check.
+`kubectl` was used only with `--context
+gke_saga-agents-staging_us-central1_swarm-autopilot`, through
+`/opt/homebrew/bin/kubectl` v1.36.3 (an old client silently drops manifest
+fields). The other team's `agents-staging` cluster, VPC and service accounts
+were not read.
+
+Deliberately NOT read through `status.sh` or `smoke-test.sh`: a record of live
+state should not depend on the tools whose correctness it is sometimes used to
+check (see [the sweep](audits/2026-09-18/13-swallowed-stderr-sweep.md)).
+
+**A release deployed in the middle of this reading.** At 05:58:26Z every
+service ran `bce4b227327c`. Release run 40454472082 (`17d6c5abd`) ran
+`terraform apply (dev)` at 05:58:52-06:01:09 and `deploy (dev)` until
+06:06:33. The tables below are the re-read from 06:02-06:08Z; where the
+before-apply value matters it is given next to them.
 
 ## In four sentences
 
-1. **What is running is a laptop deploy of `7c52762`, not main.** Every
-   control-plane service and every worker job runs image tag `7c5276212251`
-   ("Merge dense lane", 2026-09-23 09:10 PDT), rolled out at 2026-09-23 19:46 UTC.
-2. **Main's release pipeline has never completed.** 44 of its 45 runs failed
-   and one was cancelled. The latest built and promoted `b0fff1b` and then
-   failed at `terraform plan`, denied the IAM policy of two IAP backend
-   services; `deploy and smoke` was skipped.
-3. **The front door works.** The DNS record the 2026-09-19 record was waiting on
-   resolves, the certificate is `ACTIVE`, and `https://swarm.saga.xyz/` answers
-   with IAP's Google sign-in redirect.
-4. **Browser capacity is full, and nothing is using it.** Five `browser` leases
-   expired at about 04:00 UTC and were never released; they hold `runner:browser`
-   and `resource:browser` at 10 of 10, so no browser agent can be admitted.
+1. **What runs is main's head, `17d6c5abd` (#2533), deployed by the
+   release workflow.** All six control-plane services, all thirteen
+   terraform-managed worker jobs, `swarm-verify` and the four swarm images in `swarm-system` run
+   digests tagged `17d6c5abd724` (`promoted-dev-17d6c5abd724`, `dev`). The two
+   exceptions are `swarm-job-u-bogdan-mock` (`3d4e0872752b`, managed by the
+   scheduler) and `swarm-workspace-apply` (`7c2e148dd0d2`).
+2. **Main's release pipeline completes.** The last five release runs on main
+   all succeeded; two of them (`177f6f2b6`, `e854f595f`) built images, then
+   skipped promote and deploy. The newest acceptance run that ran its groups
+   (`bce4b2273`) failed only `git-tools`; the acceptance run for `17d6c5abd`
+   was still queued.
+3. **The front door works, as before.** DNS, address, certificate and IAP
+   redirect are unchanged from 2026-09-24.
+4. **Capacity is consistent.** There are 21 open leases (22 units, all tenant
+   `eng`, all `DISPATCHED` and heartbeating, none past `expires_at`), each
+   pool's `active` equals the open lease units that name it, and no pool is
+   full.
 
 ---
 
-## What is running
+## What is running: Cloud Run services
 
-`gcloud run services list` / `revisions list`, region `us-central1`:
+`gcloud run services list` / `revisions describe`, region `us-central1`, read
+06:02:21Z and 06:04:33Z:
 
-| service | serving revision | image tag | revision created (UTC) |
+| service | serving revision | image digest | registry tags on that digest | revision created (UTC) | traffic | Ready |
+|---|---|---|---|---|---|---|
+| swarm-api | swarm-api-00460-6sw | `1ebdb6fe623b` | `17d6c5abd724`, `dev`, `promoted-dev-17d6c5abd724` | 2026-10-27 05:59:51 | 100% | True |
+| swarm-github-hooks | swarm-github-hooks-00095-86j | `cda9029b56d7` | same three | 2026-10-27 06:00:42 | 100% | True |
+| swarm-quota-broker | swarm-quota-broker-00386-kkn | `7a256dd92506` | same three | 2026-10-27 05:59:51 | 100% | True |
+| swarm-reconciler | swarm-reconciler-00385-6pr | `27d9620cb179` | same three | 2026-10-27 05:59:51 | 100% | True |
+| swarm-scheduler | swarm-scheduler-00436-6df | `d613b9887d51` | same three | 2026-10-27 05:59:51 | 100% | True |
+| swarm-ui | swarm-ui-00432-ms9 | `d7e19bf553a1` | same three | 2026-10-27 05:59:51 | 100% | True |
+
+* Each revision's `serving.knative.dev/creator` is
+  `swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com`, the
+  release's deployer, not an operator. (On 2026-09-24 swarm-api's creator was
+  an operator's own account.)
+* Each service sends 100% of traffic to its latest revision; no service pins
+  traffic.
+* Ingress is `internal-and-cloud-load-balancing` on all of them except
+  `swarm-github-hooks`, which is `all`.
+* All six carry `managed-by=swarm-terraform`.
+* At 05:58:26Z, before the apply, the serving revisions were
+  swarm-api-00459-6jn, swarm-github-hooks-00094-fjd,
+  swarm-quota-broker-00385-scl, swarm-reconciler-00384-n5t,
+  swarm-scheduler-00435-rz6 and swarm-ui-00431-tgf. Each ran a digest tagged
+  only `bce4b227327c` / `promoted-dev-bce4b227327c`, created 03:54:35Z
+  (github-hooks 03:55:07Z).
+* The project also holds services that are not SwarmCloud's: `oracle-api` and
+  `oracle-web` (Product Oracle, images `product-oracle/{api,web}:2bc13abd`, no
+  `managed-by` label).
+
+### The label that lies is still there
+
+swarm-api, swarm-quota-broker, swarm-reconciler and swarm-scheduler still carry
+the service-level label `swarm-image-tag=5c99c79`. That is not what they run.
+The label was written only by `scripts/lib/deploy.sh`'s direct `gcloud run
+services update` fallback, which last ran at `5c99c79` (2026-09-20); terraform
+has deployed every release since and does not manage that label. **Read the
+image, not the label**: the commit below was mapped from digest to Artifact
+Registry tag (`gcloud artifacts docker images list --include-tags
+--filter=version=<digest>`), never from the label.
+
+## What is running: Cloud Run jobs
+
+`gcloud run jobs list`, read 06:02:21Z. Every image is pinned by digest:
+
+| job | image | registry tags on that digest | managed-by | latest execution created (UTC) |
+|---|---|---|---|---|
+| swarm-job-eng-claude-code | `agent-runtime-base@918952ff8191` | `17d6c5abd724`, `dev`, `promoted-dev-17d6c5abd724` | swarm-terraform | 2026-10-27 04:03:03 |
+| swarm-job-eng-codex | `agent-runtime-base@918952ff8191` | same | swarm-terraform | 2026-10-27 04:03:03 |
+| swarm-job-eng-generic | `agent-runtime-base@918952ff8191` | same | swarm-terraform | 2026-10-27 04:03:03 |
+| swarm-job-eng-indexer | `agent-runtime-indexer@ddb96b987690` | `17d6c5abd724`, `dev`, `promoted-dev-17d6c5abd724` | swarm-terraform | 2026-10-27 04:03:03 |
+| swarm-job-eng-mock | `agent-runtime-base@918952ff8191` | same | swarm-terraform | 2026-10-27 04:13:55 |
+| swarm-job-smoke-claude-code | `agent-runtime-base@918952ff8191` | same | swarm-terraform | 2026-10-27 04:04:46 |
+| swarm-job-smoke-generic | `agent-runtime-base@918952ff8191` | same | swarm-terraform | 2026-10-27 04:04:46 |
+| swarm-job-smoke-indexer | `agent-runtime-indexer@ddb96b987690` | same | swarm-terraform | 2026-10-27 04:04:46 |
+| swarm-job-smoke-mock | `agent-runtime-base@918952ff8191` | same | swarm-terraform | 2026-10-27 04:24:43 |
+| swarm-job-u-or-9a0792-generic | `agent-runtime-base@918952ff8191` | same | swarm-terraform | 2026-10-27 04:06:22 |
+| swarm-job-u-or-9a0792-mock | `agent-runtime-base@918952ff8191` | same | swarm-terraform | 2026-10-27 04:06:22 |
+| swarm-job-u-sw-c90291-generic | `agent-runtime-base@918952ff8191` | same | swarm-terraform | 2026-10-27 04:06:22 |
+| swarm-job-u-sw-c90291-mock | `agent-runtime-base@918952ff8191` | same | swarm-terraform | 2026-10-27 04:26:22 |
+| **swarm-job-u-bogdan-mock** | `agent-runtime-base@ee6fe197642d` | `3d4e0872752b`, `promoted-dev-3d4e0872752b` (#1915, 2026-10-22) | **swarm-scheduler** | 2026-10-22 04:55:54 |
+| swarm-verify | `swarm-verify@50f431fc8ab5` | `17d6c5abd724`, `dev`, `promoted-dev-17d6c5abd724` | swarm-terraform | 2026-10-27 04:28:51 |
+| swarm-workspace-apply | `workspace-apply@7a03edc768e6` | `7c2e148dd0d2`, `promoted-dev-7c2e148dd0d2`, `dev-promoted-7c2e148dd0d2` (#1640, 2026-10-19) | swarm-terraform | 2026-10-22 09:58:57 |
+
+The latest executions predate the new digest: they are the `bce4b22` warm and
+acceptance runs. `17d6c5abd`'s warm run belongs to accept run 40459142385,
+which was still queued at 06:08Z.
+
+## The GKE cluster and `swarm-system`
+
+`gcloud container clusters describe swarm-autopilot --region us-central1`:
+
+* `RUNNING`, Autopilot, control plane `1.36.4-gke.2326000` (2026-09-24:
+  `1.36.4-gke.1082000`).
+* Created 2026-09-17 21:46:37Z, labelled `managed-by=swarm-terraform`.
+* Master authorized networks enabled, with one entry: `open-dev-cluster` =
+  `0.0.0.0/0`.
+
+`kubectl -n swarm-system get deploy,statefulset,daemonset`, re-read 06:08:31Z
+(the release's deploy rolled these between 06:00 and 06:05). This is the first
+reading of this record that looks inside the cluster; the 2026-09-24 one used no
+`kubectl`.
+
+| kind | name | ready | image | registry tags on that digest |
+|---|---|---|---|---|
+| Deployment | decision-api-egress | 1/1 | `ghcr.io/tailscale/tailscale:v1.104.1@87c55d6be56a` (2 containers) | (third-party) |
+| Deployment | swarm-graph | 2/2 | `swarm-graph@17405c5bdb16` | `17d6c5abd724`, `dev`, `promoted-dev-17d6c5abd724` |
+| Deployment | swarm-typesafe-fwd | 1/1 | `swarm-typesafe-fwd@738c3dc5da24` | `17d6c5abd724`, `dev`, `promoted-dev-17d6c5abd724` |
+| StatefulSet | swarm-egress | 1/1 | `swarm-egress@9738dfd66ee9` | `17d6c5abd724`, `dev`, `promoted-dev-17d6c5abd724` |
+| StatefulSet | swarm-live | 1/1 | `swarm-live@dcdb31a7e995` | `17d6c5abd724`, `dev`, `promoted-dev-17d6c5abd724` |
+
+* There are no DaemonSets.
+* Six pods, all `Running` and ready with 0 restarts, created
+  06:00:36-06:05:12Z.
+* At 05:58Z (before the deploy) graph, typesafe-fwd, egress and live ran
+  `bce4b227327c` digests. typesafe-fwd was the last to move: still
+  `6b8dbdf0d29a` at 06:04:33Z, `738c3dc5da24` by 06:08:16Z.
+
+## Which commit the deployed services run
+
+**`17d6c5abd724` = `17d6c5abd` = origin/main HEAD at read time** ("Fictional
+example identities move from the company's domain to example.com, and the
+frozen models.py comment is contract request 122 (part of #1647) (#2533)",
+committed 2026-10-26 22:17 PDT). Until 05:59Z the deployed commit was
+`bce4b2273` (#2523), four commits behind main.
+
+## Main's release and acceptance runs
+
+`gh run list --workflow release.yml --branch main --limit 5`, read 05:58Z and
+again 06:08:16Z:
+
+| run | commit | conclusion | jobs |
 |---|---|---|---|
-| swarm-api | swarm-api-00050-zrc | `7c5276212251` | 2026-09-23 19:46:02 |
-| swarm-scheduler | swarm-scheduler-00043-g5t | `7c5276212251` | 2026-09-23 19:46:02 |
-| swarm-quota-broker | swarm-quota-broker-00049-f9n | `7c5276212251` | 2026-09-23 19:46:02 |
-| swarm-reconciler | swarm-reconciler-00045-zh4 | `7c5276212251` | 2026-09-23 19:46:02 |
-| swarm-ui | swarm-ui-00027-wwp | `7c5276212251` | 2026-09-23 19:46:02 |
+| 40454472082 | `17d6c5abd` | **success** (06:08Z; in progress at 05:58Z) | images and scan ✓ 05:23-05:54 · verify skipped · approval ✓ · plugin tag ✓ · promote ✓ 05:58:50 · terraform apply ✓ 06:01:09 · deploy ✓ 06:06:33 · IAM (dev-iam) skipped |
+| 40450939409 | `e854f595f` | success | images and scan ✓; approval, promote, terraform apply, IAM, deploy all skipped |
+| 40449385640 | `177f6f2b6` | success | images and scan ✓; approval, promote, terraform apply, IAM, deploy all skipped |
+| 40449197675 | `aedb96572` | success (04:20-04:24Z) | not read by job |
+| 40442880730 | `bce4b2273` | success | images and scan ✓ · approval ✓ · promote ✓ · terraform apply ✓ 03:55:46 · deploy ✓ 04:01:05 · IAM skipped |
 
-All five take 100% of traffic on that revision, and all five report `Ready`.
-Ingress is `internal-and-cloud-load-balancing` on every one. swarm-api's
-revision carries `serving.knative.dev/creator: bogdan@saga.xyz` -- an operator
-deploy, not the release workflow's service account.
+`gh run list --workflow accept.yml --branch main --limit 5` (all
+`workflow_run`):
 
-`gcloud run jobs list`: eleven per-tenant worker jobs (`swarm-job-{eng,smoke,
-u-bogdan,u-sw-c90291}-*`) on `agent-runtime-base:7c5276212251`, and
-`swarm-verify` on `swarm-verify:7c5276212251`. All labelled
-`managed-by=swarm-terraform`.
+| run | commit | conclusion | jobs |
+|---|---|---|---|
+| 40459142385 | `17d6c5abd` | **queued** (06:06:35Z) | -- |
+| 40455047269 | `17d6c5abd` | success, 20 s | only `what dev runs` ran; warm/smoke/GKE proof and every acceptance group skipped |
+| 40451053639 | `e854f595f` | success, 21 s | same: everything after `what dev runs` skipped |
+| 40449572923 | `177f6f2b6` | success (04:24-04:25Z) | not read by job |
+| 40447384962 | `bce4b2273` | **failure** | warm, smoke and GKE proof ✓ · browser ✓ · mock ✓ · workflow ✓ · claude-code ✓ · generic ✓ · tenant-isolation ✓ · **git-tools ✗** (04:28:31-04:35:07) · sweep ✓ · report ✓ |
 
-**`7c52762` is older than main.** It is a commit on
-`fix/silent-failures-env-parity-and-audits` from before that branch's later
-merges, so nothing merged to main since -- including every fix in the
-[GKE dispatch incident](incidents/2026-09-24-gke-dispatch.md), whose §5 says the
-same thing about the scheduler -- is running.
+The run before those, 40440511298 on `210f2611a`, was also a failure; it was
+not read by job.
 
-### A label that lies
+## The front door
 
-The four control-plane services carry a service-level label
-`swarm-image-tag=5c99c79`. That is not what they run. The label is written only
-by `scripts/lib/deploy.sh`'s direct `gcloud run services update` fallback, which
-last ran at `5c99c79` (2026-09-20); terraform has deployed since and does not
-manage that label. **Read the image, not the label.**
-
-## What main would deploy, and why it has not
-
-`gh run list --workflow release.yml --limit 100`: 45 runs, **44 failed and 1
-was cancelled; none succeeded.** The latest, **run 35972131246 on `b0fff1b`**
-(#17):
-
-| job | result |
-|---|---|
-| verify | success |
-| build and promote (dev) | **success** -- the libexpat refusal #17 fixed is gone |
-| terraform apply (dev) | **failure**, at `terraform plan` |
-| deploy and smoke (dev) | skipped |
-
-The plan fails reading the IAM policy of two IAP web backend services, for the
-`roles/iap.httpsResourceAccessor` binding to `domain:saga.xyz`:
-
-    Error when reading or editing Resource "iap webbackendservice
-    \"projects/saga-agents-staging/iap_web/compute/services/swarm-ui-backend\""
-    ... "reason": "IAM_PERMISSION_DENIED"
-
-and the same for `swarm-ui-ui-backend`. The `terraform` workflow's `plan (dev)`
-on the same commit (run 35972131328) fails identically.
-
-**This is the question `e233537` left open, answered in the negative.** That
-commit met this exact 403 and granted the deployer `roles/iap.admin` with a
-condition, `resource.name.startsWith(".../iap_web/compute/services/swarm")`,
-rather than unconditioned -- because the project's other nine IAP backends are
-another team's, `keycloak` and `argocd` among them. It recorded as unknown
-whether IAP evaluates `resource.name` conditions at all, and predicted that if it
-does not, "the next apply fails with the same 403". The plan at 08:30 UTC, an
-hour after that grant was applied, fails with the same denial. That is
-consistent with the condition not being honoured, or not matching the name IAP
-checks; **which of the two was not established here.** Either way the remedy is
-an IAM decision on the deploy service account, and the unconditioned version of
-it hands CI authority over another team's identity provider.
-
-### The release promoted a build it did not make
-
-Found while reading that run, and worth knowing before trusting any `:dev` tag.
-The build step's digest table prints **two digests run together** for every
-image:
-
-    swarm-api   sha256:84485114...884297sha256:5f3afe39...627f59
-
-`scripts/build-images.sh` reads each digest back with
-`gcloud artifacts docker tags list --filter="tag:${TAG}"`, and a gcloud filter
-`tag:X` matches any tag CONTAINING `X`. On a push to main the `application`
-workflow has already built the same commit as `pr-<run>-b0fff1b8d43c`, so
-`tag:b0fff1b8d43c` matches both, and `tr -d '[:space:]'` glues the two digests
-into one string. The promote step then scanned and tagged the SECOND one:
-`swarm-api:dev -> sha256:5f3afe39...`, which is `pr-35972131428-b0fff1b8d43c` --
-the `application` workflow's build -- not `b0fff1b8d43c` (`sha256:84485114...`),
-the image this release built. Checked in the registry for swarm-api:
-
-    b0fff1b8d43c                  sha256:8448511469e9...
-    pr-35972131428-b0fff1b8d43c   sha256:5f3afe399d88...
-    dev                           sha256:5f3afe399d88...
-
-Same commit, so probably the same code; but "the release promotes what it
-built and scanned" is not true, and nothing failed. `build-images.sh` is not
-this record's to change; it is reported with PR #25.
-
-## The front door -- resolved
-
-The 2026-09-19 record was "waiting on one DNS record". It no longer is:
-
-| | measured |
+| | measured 06:07:51Z |
 |---|---|
 | `dig +short swarm.saga.xyz A` | `8.232.87.184` |
 | `swarm-ui-ip` (global address) | `8.232.87.184`, `IN_USE`, `managed-by=swarm-terraform` |
@@ -140,156 +198,235 @@ The 2026-09-19 record was "waiting on one DNS record". It no longer is:
 | `curl https://swarm.saga.xyz/` | `302` -> `accounts.google.com/o/oauth2/v2/auth?...` (IAP) |
 | `curl https://swarm.saga.xyz/readyz` | `302` (IAP, before the request reaches swarm-api) |
 
-Path routing (`/v1/*`, `/healthz`, `/readyz`, `/metrics`, `/docs`,
-`/openapi.json` to swarm-api, everything else to swarm-ui) was **not**
-re-checked: every path answers IAP's redirect to an unauthenticated caller.
+Path routing behind IAP was not re-checked: every path answers IAP's redirect
+to an unauthenticated caller.
 
-## The GKE cluster
+## Capacity
 
-`gcloud container clusters describe swarm-autopilot --region us-central1`:
-`RUNNING`, Autopilot, control plane `1.36.4-gke.1082000`, created 2026-09-17,
-labelled `managed-by=swarm-terraform`. Master authorized networks are enabled
-with one entry, `0.0.0.0/0` ("open-dev-cluster"). Nothing was read from inside
-the cluster -- no `kubectl`.
+Firestore database `swarm`. Pools by REST `GET` (36 documents, all
+`enabled: true`), open leases by a read-only `runQuery` (`released_at
+IS_NULL`), both read 06:07:39-40Z:
 
-## Capacity: browser is full, and nothing is using it
+| pool | active | sum of open lease units naming it |
+|---|---:|---:|
+| global | 22 | 22 |
+| tenant:eng | 22 | 22 |
+| provider:anthropic | 22 | 22 |
+| provider:anthropic:tenant:eng | 22 | 22 |
+| backend:GKE_AUTOPILOT | 22 | 22 |
+| runner:claude-code | 20 | 20 |
+| resource:standard | 20 | 20 |
+| runner:claude-code-browser | 2 | 2 |
+| resource:browser | 2 | 2 |
+| every other pool (27) | 0 | 0 |
 
-Firestore database `swarm`, `pools` collection, by REST `GET`. Five pools show
-`active: 10`:
+There are 21 open leases: 20 `claude-code` (1 unit each) and 1
+`claude-code-browser` (2 units). All are tenant `eng`, `DISPATCHED`, created
+05:07-06:07Z, with `expires_at` 06:09Z, which is after the read. 20 had a
+heartbeat within 25 s of the read; one, created 06:07:17Z, had none yet. No
+lease was past its `expires_at`, and no pool was full. The 2026-09-24
+reading's five expired, never-heartbeated browser leases are gone.
+`backend:CLOUD_RUN_JOB` read 0: in this reading the Cloud Run worker jobs ran
+only warm self-tests (`--self-test` executions, read for #888 in the same
+session), and every agent lease was on GKE.
 
-    global  tenant:eng  provider:anthropic  provider:anthropic:tenant:eng
-    backend:GKE_AUTOPILOT  runner:browser  resource:browser
-
-`runner:browser` and `resource:browser` have a `hard_limit` of 10, so both are
-**full**. The `leases` collection holds 330 documents; exactly five have no
-`released_at`, and they account for all ten units (`units: 2` each):
-
-| lease | agent | created (UTC) | expires_at | heartbeat |
-|---|---|---|---|---|
-| lease_b8dc9372… | task_637eb5ea… | 03:40:06 | 03:42:06 | never |
-| lease_c388c25e… | task_2a417cb2… | 03:55:07 | 03:57:07 | never |
-| lease_d4d69212… | task_30074d78… | 03:55:07 | 03:57:07 | never |
-| lease_e221353b… | task_64a451a6… | 03:55:08 | 03:57:08 | never |
-| lease_66d39067… | task_719225c0… | 03:55:08 | 03:57:08 | never |
-
-All five are `DISPATCHED` on runner profile `browser`, backend `GKE_AUTOPILOT`;
-four of the agents are steps of `wf_ebb3ab2d65664707a559`. Each lease's
-`dispatch_deadline` passed at about 04:00. At the time of reading, **four and a
-half hours** later, none had been reclaimed, although `swarm-reconciler-tick`
-runs every five minutes and its last attempt (08:05:09) returned OK. The agents'
-own documents were last updated at about 07:40.
-
-**Not diagnosed.** What is established is that the capacity is held by leases
-nothing is heartbeating, past every deadline they carry, on a deployment that
-predates the dispatch fixes. What is not established is why the reconciler has
-not reclaimed them. Until something does, every browser agent will wait
-`READY` behind a pool that reads full.
-
-## Pool ceilings: live against `dev.tfvars`
+## Pool ceilings: live against main's `dev.tfvars`
 
 Still true, and still by design: `terraform/modules/firestore/bootstrap.tf`
 puts `ignore_changes = [fields]` on the pool documents, because `active` is
 mutated by every admission and an apply that rewrote the documents would zero
 live concurrency counters. Terraform creates pools once; a running
 environment's ceilings change through `PUT /v1/admin/limits/...`. So
-`dev.tfvars` is what a NEW environment is born with, and the two are expected to
-differ. They do, and in the other direction from 2026-09-19 -- the live
-ceilings are now ABOVE the file's:
+`dev.tfvars` is what a NEW environment is born with, and the two may differ.
+On 2026-09-24 seven pools did; now one does:
 
-| pool | live `hard_limit` | `dev.tfvars` |
+| pool | live `hard_limit` | `dev.tfvars` (`pool_limits`) |
 |---|---:|---:|
-| global | 50 | 40 |
-| provider:anthropic:tenant:eng | 20 | 15 (`provider_tenant`) |
-| runner:claude-code | 40 | 20 |
-| runner:browser | 10 | 4 |
-| resource:browser | 10 | 4 |
-| backend:CLOUD_RUN_JOB | 50 | 40 |
-| backend:GKE_AUTOPILOT | 20 | 4 |
+| global | 180 | 180 |
+| provider:anthropic | 200 | 200 |
+| provider:openai | 100 | 100 |
+| provider:anthropic:tenant:{eng,smoke,u-bogdan,u-or-9a0792} | 100 each | 100 (`provider_tenant`) |
+| provider:openai:tenant:eng | 100 | 100 (`provider_tenant`) |
+| runner:claude-code | 80 | 80 |
+| runner:claude-code-browser | 100 | 100 |
+| **runner:browser** | **40** | **20** |
+| runner:mock / generic / codex | 40 / 20 / 20 | 40 / 20 / 20 |
+| resource:standard / browser / large | 80 / 100 / 40 | 80 / 100 / 40 |
+| backend:CLOUD_RUN_JOB / GKE_AUTOPILOT | 100 / 180 | 100 / 180 |
+| tenant:eng / smoke | 100 / 20 | `max_active` 100 / 20 |
+| tenant:u-sw-c90291 / u-or-9a0792 | 4 / 4 | `max_active` 4 / 4 (`capacity_units` 8 / 8) |
+| tenant:u-bogdan / u-devops / u-qa-b260e6 | 100 / 30 / 4 | not in `tenants` |
+| runner:await-input, claude-code-large, indexer (100); claude-code-review, merge, post-verdict (40); provider:git (100), git-review (40), mock-provider (100), mock-provider:tenant:eng (100) | as listed | not in `runner_profiles` / `providers` |
 
-Every pool document is `enabled: true`. Nothing checks that the two agree, and
-this table is not a claim that they should.
+Only `runner:browser` differs from a value the file states. Nothing checks that
+the two agree, and this table is not a claim that they should.
 
-## Monitoring and the scheduler ticks
+## Scheduler ticks
 
-`gcloud scheduler jobs list`: `swarm-scheduler-tick` (every minute),
-`swarm-reconciler-tick` and `swarm-quota-refresh` (every five), all `ENABLED`,
-all with a last attempt at 08:05 UTC and status OK.
+`gcloud scheduler jobs list --location us-central1`, read 06:01:08Z: 33 jobs,
+all `ENABLED`, every last attempt `OK` (2026-09-24: three). They include:
 
-Alert policies (Monitoring REST): six, all enabled, all
-`managed-by=swarm-terraform` -- `swarm-dev-scheduler-not-draining`,
-`-tasks-dead-lettered`, `-control-plane-5xx`, `-generation-fencing`,
-`-wake-messages-dead-lettered`, `-job-executions-failing`.
+* `swarm-scheduler-tick` (every minute), `swarm-reconciler-tick` (`*/1`, not
+  the `*/5` of 2026-09-24) and `swarm-quota-refresh` (`*/5`);
+* `swarm-schedule-tick`, `swarm-forge-refresh`, `swarm-workspace-sweep` and
+  `swarm-mcp-credentials-sweep`;
+* per-tenant `merge-wake`, `issue-run-advance`, `workflow-rollup`,
+  `repo-index-poll` and `stranded-pr-sweep` jobs;
+* `oracle-tick`, which is Product Oracle's.
 
-**The safety-tick alert is still not created**, and still cannot be:
-`enable_safety_tick_alert = false` in `dev.tfvars`, and the project has **zero**
-metric descriptors under `cloudscheduler.googleapis.com` -- the same query
-returns 49 under `run.googleapis.com`, so it is an answer and not a failed read.
-The 2026-09-19 expectation that the metric would appear "within ten minutes" of
-the ticks running has not held in five days of ticks.
+**`swarm-issue-sweep-u-bogdan` is absent.** No job name contains
+`issue-sweep`, and `gcloud scheduler jobs describe swarm-issue-sweep-u-bogdan`
+answers `NOT_FOUND: Job not found`.
 
-**Corrected 2026-09-24: it never will.** Google publishes no Cloud Scheduler
-metric of any name, so this one could never become queryable. The alert now
-watches a logs-based metric built from Cloud Scheduler's attempt logs
-(`terraform/modules/monitoring/metrics.tf`, `safety_tick_attempts`), created in
-the same apply as the policy, and `enable_safety_tick_alert` is back to `true`
-in `dev.tfvars`. The measurement above stays the live state until a release
-applies that.
+## Monitoring
+
+* Monitoring REST `GET alertPolicies`: **21** policies (2026-09-24: six), all
+  enabled, all `managed-by=swarm-terraform`.
+* They include **`swarm-dev-safety-tick-stopped`**, so the safety-tick alert
+  the 2026-09-24 reading said "is still not created" now exists. It watches the
+  logs-based metric that reading's correction described.
+* The other 20 are `control-plane-5xx`, `dispatch-failing-on-a-backend`,
+  `generation-fencing`, `job-executions-failing`, `pr-stranded`,
+  `reconciler-cannot-see-a-backend`, `schedule-needs-attention`,
+  `scheduler-not-draining`, `spec-signature-invalid`, `tasks-dead-lettered`,
+  `tenant-namespace-mismatch`, `wake-messages-dead-lettered`,
+  `worker-action-ended`, `workspace-deployer-foreign-runtime`,
+  `workspace-deployer-front-door-iam`,
+  `workspace-deployer-outside-personal-workers`,
+  `workspace-deployer-tenant-secret-iam`, `workspace-job-or-dispatch-changed`,
+  `workspace-job-run-by-another-caller` and `workspace-stuck`.
+* `GET metricDescriptors` filtered to `logging.googleapis.com/user/`: 21
+  logs-based metrics. The scheduler one is
+  `logging.googleapis.com/user/swarm/scheduler-tick-delivered`.
 
 ## In the project, not in terraform
 
-**`swarm-authprobe`**, a Cloud Run service created 2026-09-20 14:46 UTC from
-`cloud-run-source-deploy/swarm-authprobe`, labelled
-`managed-by=scratch-delete-me`, ingress `all`. Its only `run.invoker` is the
-`swarm-verify` service account, and an anonymous request is refused with `403`.
-Its label says what it is for. **Not deleted**: this record writes nothing, and
-deleting it is the owner's call.
+* **`swarm-authprobe` is absent.** `gcloud run services describe
+  swarm-authprobe` answers `Cannot find service [swarm-authprobe]`, and it is
+  not in `services list`. The 2026-09-24 reading found it deployed, labelled
+  `managed-by=scratch-delete-me`; who deleted it, and when, was not read.
+* `swarm-job-u-bogdan-mock` is labelled `managed-by=swarm-scheduler` (not
+  terraform) and still runs `3d4e0872752b` from 2026-10-22.
+* `oracle-api`, `oracle-web` and `oracle-tick` are Product Oracle's.
 
-## Carried over from 2026-09-19, NOT re-checked
+## Not read
 
-* **The IAP brand is shared and is not ours.** `projects/209012342332/brands/
-  209012342332`, "AI Agents", `orgInternalOnly: true`. Terraform neither creates
-  nor modifies it: `google_iap_brand` cannot be deleted, so owning it would make
-  the module impossible to destroy cleanly.
-* **IAM granted to get the front door up:** `roles/compute.loadBalancerAdmin`
-  and `roles/iap.admin` to bogdan@saga.xyz. IAP IAM took ~45 seconds to
-  propagate, and the retry in between failed with the identical 403 -- which
-  reads exactly like the grant not having worked.
-* **`/readyz` answers 404 from a workstation for the `*.run.app` hostnames**,
-  because ingress is `internal-and-cloud-load-balancing` and Google's edge
-  refuses the request before it reaches the container. `deploy.sh` reports that
-  as "not reachable from here" rather than as a failure.
+These are left out of the tables above:
 
-## Outstanding, replacing the 2026-09-19 list
+* the cause of `git-tools`'s failure in accept run 40447384962 (its log was not
+  opened);
+* the jobs of release run 40449197675 and accept runs 40449572923 and
+  40440511298;
+* agent pods outside `swarm-system`;
+* the full `leases` collection: a masked `GET leases` page-through was stopped
+  at the operator's own 60-page cap (18,000 documents; the collection is
+  larger) and discarded. The open-lease count above comes from the `runQuery`,
+  which returns only unreleased leases;
+* the IAP brand, and the IAM grants made to stand the front door up (see the
+  previous reading).
 
-| 2026-09-19 said | now |
+## Outstanding, replacing the 2026-09-24 list
+
+| 2026-09-24 said | 2026-10-27 |
 |---|---|
-| the DNS A record | **done** -- resolves; certificate `ACTIVE` |
-| `enable_safety_tick_alert = false` until the metric exists | **still true** when measured; the metric never will exist, so the alert now watches a logs-based one (see the correction above) -- outstanding until a release applies it |
-| `register-tenant.sh` keeps its three sweep findings | **fixed** in PR #25 (`a1239b5`) |
-| `destroy.sh:340` reports the other team's cluster missing on an expired session | **fixed** in `f9eee2f` |
+| the release pipeline cannot plan (IAP IAM read denied), so nothing on main reaches the platform | **done**: the last five release runs on main succeeded and main's head is deployed |
+| `build-images.sh`'s digest read-back matches tags by substring | not re-read here; every deployed digest maps to one commit tag plus `dev` / `promoted-dev-<commit>` |
+| five expired, unreleased browser leases hold browser capacity full | **gone**: no open lease is past its `expires_at`; no pool is full |
+| `swarm-authprobe` is a scratch service still deployed | **gone**: `Cannot find service` |
+| the safety-tick alert is outstanding until a release applies it | **done**: `swarm-dev-safety-tick-stopped` exists |
 
 New, from this reading:
 
-* the release pipeline cannot plan (IAP IAM read denied), so nothing on main
-  reaches the platform;
-* `build-images.sh`'s digest read-back matches tags by substring, so a release
-  can promote a digest it did not build;
-* five expired, unreleased browser leases hold browser capacity full;
-* `swarm-authprobe` is a scratch service still deployed.
+* the `swarm-image-tag=5c99c79` label still lies on four services;
+* `runner:browser` is 40 live against 20 in `dev.tfvars`;
+* the newest acceptance run that ran its groups failed `git-tools`, cause not
+  read;
+* `swarm-job-u-bogdan-mock` (scheduler-managed) and `swarm-workspace-apply`
+  run older images than the rest.
+
+## Previous reading: 2026-09-24
+
+Measured 2026-09-24 between 08:05 and 08:45 UTC, read-only; it replaced a
+record dated 2026-09-19. Its four sentences, as it read then:
+
+1. What was running was a laptop deploy of `7c52762`, not main: every
+   control-plane service and every worker job ran image tag `7c5276212251`
+   ("Merge dense lane", 2026-09-23 09:10 PDT), rolled out at 2026-09-23 19:46
+   UTC by an operator, and swarm-api's revision named the operator's account as
+   its creator. `7c52762` was a commit on
+   `fix/silent-failures-env-parity-and-audits` from before that branch's later
+   merges, so no fix merged to main since (including the
+   [GKE dispatch incident](incidents/2026-09-24-gke-dispatch.md)'s) was
+   running.
+2. Main's release pipeline had never completed: 44 of 45 runs failed and one
+   was cancelled. The latest, run 35972131246 on `b0fff1b`, built and promoted
+   and then failed at `terraform plan`, denied the IAM policy of the two IAP
+   backend services `swarm-ui-backend` and `swarm-ui-ui-backend`
+   (`IAM_PERMISSION_DENIED`), even after `e233537` had granted the deployer
+   `roles/iap.admin` conditioned on `resource.name` starting with
+   `.../iap_web/compute/services/swarm` (the project's other nine IAP backends
+   are another team's). Whether IAP ignored the condition or checked a
+   different name was not established.
+3. The front door worked: the DNS record the 2026-09-19 record waited on
+   resolved, the certificate was `ACTIVE`, and IAP redirected to Google
+   sign-in.
+4. Browser capacity was full and nothing was using it: five `browser` leases
+   (`units: 2` each, `DISPATCHED` on GKE, never heartbeated) had expired at
+   about 04:00 UTC and were never released, holding `runner:browser` and
+   `resource:browser` at 10 of 10. Why the reconciler had not reclaimed them was
+   not diagnosed.
+
+It also found that `scripts/build-images.sh` read each digest back with a
+`tag:X` filter, which gcloud matches by substring, so the release promoted the
+`application` workflow's `pr-<run>-<commit>` build instead of its own (same
+commit; reported with PR #25); that the cluster ran control plane
+`1.36.4-gke.1082000`; that six alert policies existed and the safety-tick alert
+could not, because Google publishes no Cloud Scheduler metric (corrected that
+day to a logs-based metric); and that `swarm-authprobe`, a scratch Cloud Run
+service created 2026-09-20 from `cloud-run-source-deploy/swarm-authprobe`,
+labelled `managed-by=scratch-delete-me`, ingress `all`, invokable only by the
+`swarm-verify` service account, was still deployed.
+
+Carried from 2026-09-19 and not re-checked on 2026-09-24 or since: the IAP
+brand `projects/209012342332/brands/209012342332` ("AI Agents",
+`orgInternalOnly: true`) is shared and not ours, and terraform neither creates
+nor modifies it (`google_iap_brand` cannot be deleted); IAP IAM took about 45
+seconds to propagate when the front door was stood up, and a retry inside that
+window failed with the identical 403; and `/readyz` answers 404 from a
+workstation for the `*.run.app` hostnames, because ingress is
+`internal-and-cloud-load-balancing`.
 
 ## How this was measured
 
-    gcloud run services list / revisions list / revisions describe --region us-central1
-    gcloud run jobs list --region us-central1
-    gcloud run services get-iam-policy swarm-authprobe --region us-central1
-    gcloud compute ssl-certificates list;  gcloud compute addresses list --global
-    dig +short swarm.saga.xyz A;  curl -o /dev/null -w '%{http_code} %{redirect_url}'
-    gcloud container clusters describe swarm-autopilot --region us-central1
-    gcloud scheduler jobs list --location us-central1
-    gcloud artifacts docker tags list .../swarm-images/swarm-api
-    Monitoring REST: GET alertPolicies; GET metricDescriptors (filtered)
-    Firestore REST (database swarm): GET pools; GET leases (all pages); GET tasks/<id>
-    gh run list --workflow release.yml;  gh run view <id> --log-failed
+All read-only. `$B` is
+`https://firestore.googleapis.com/v1/projects/saga-agents-staging/databases/swarm/documents`.
+The bearer token came from `gcloud auth print-access-token` inside the curl
+header and was never printed. Outputs were reduced with `jq` to the fields
+shown above.
 
-`kubectl` was not used. No `gcloud ... update`, `create`, `delete`, `apply` or
-Firestore write was issued.
+```bash
+git fetch -q origin main; git log -1 origin/main; date -u
+gcloud run services list --region us-central1 --project saga-agents-staging --format=json      # 05:58:26Z and 06:02:21Z
+gcloud run revisions describe <revision> --region us-central1 --project saga-agents-staging --format=json   # creationTimestamp, creator, Ready
+gcloud run services describe swarm-authprobe --region us-central1 --project saga-agents-staging
+gcloud run jobs list --region us-central1 --project saga-agents-staging --format=json   # image, latestCreatedExecution, managed-by
+gcloud artifacts docker images list us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/<image> --include-tags --filter="version=sha256:<digest>" --format='value(tags)'
+gcloud container clusters describe swarm-autopilot --region us-central1 --project saga-agents-staging --format=json
+/opt/homebrew/bin/kubectl --context gke_saga-agents-staging_us-central1_swarm-autopilot get deploy,statefulset,daemonset -n swarm-system -o json   # images, ready only
+/opt/homebrew/bin/kubectl --context gke_saga-agents-staging_us-central1_swarm-autopilot get pods -n swarm-system -o json
+gh run list --workflow release.yml --branch main --limit 5 --json ...;  gh run view <id> --json jobs
+gh run list --workflow accept.yml --branch main --limit 5 --json ...;   gh run view <id> --json jobs
+gcloud scheduler jobs list --location us-central1 --project saga-agents-staging --format=json   # name, schedule, state, lastAttemptTime, status only
+gcloud scheduler jobs describe swarm-issue-sweep-u-bogdan --location us-central1 --project saga-agents-staging
+curl -H "$AUTH_HEADER" -H "x-goog-user-project: saga-agents-staging" "$B/pools?pageSize=300"   # AUTH_HEADER: the gcloud access token, never printed
+curl -X POST ... "${B}:runQuery" -d '{"structuredQuery":{"from":[{"collectionId":"leases"}],"where":{"unaryFilter":{"op":"IS_NULL","field":{"fieldPath":"released_at"}}},"select":{...}}}'
+curl ... "https://monitoring.googleapis.com/v3/projects/saga-agents-staging/alertPolicies?pageSize=200"
+curl -G ... "https://monitoring.googleapis.com/v3/projects/saga-agents-staging/metricDescriptors" --data-urlencode 'filter=metric.type = starts_with("logging.googleapis.com/user/")'
+dig +short swarm.saga.xyz A
+gcloud compute addresses list --global --filter='name~^swarm';  gcloud compute ssl-certificates list --filter='name~^swarm'
+curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' http://swarm.saga.xyz/ | https://swarm.saga.xyz/ | https://swarm.saga.xyz/readyz
+git show origin/main:terraform/environments/dev/dev.tfvars   # pool_limits and tenants blocks
+```
+
+No `gcloud ... update`, `create`, `delete` or `apply`, no `kubectl` write and
+no Firestore write was issued.

@@ -56,6 +56,7 @@ from agent_worker.objectstore import LocalObjectStore
 from agent_worker.runners.base import RunnerContext
 from swarm_common.states import TaskState
 
+from test_cli_prompt_names_time_limit import without_limit_line
 from worker_seeds import seed_attempt
 
 #: `task.metadata` key the API writes and the worker reads.
@@ -222,10 +223,14 @@ def test_the_agent_is_told_the_names_and_the_absolute_artifacts_path(tmp_path, m
 QUESTIONS_LINE = (
     "If a decision is the owner's to make, ask instead of guessing: write "
     "questions.json there, a JSON list of {question, options: [{label, "
-    "description}], recommended, context, built}, built being the label of "
+    "description}], recommended, context, built, blocking}, built being the label of "
     "the option your branch implements, or null when the answer changes "
     "nothing it builds; it is shown to the owner, and a merge does not go "
-    "ahead while the owner's pick differs from built."
+    "ahead while the owner's pick differs from built. A question does not "
+    "stop your step; if your work cannot go on without the answer, mark it "
+    '"blocking": true, write an empty file named await-answers beside '
+    "questions.json and exit: the step is parked until the owner answers, "
+    "then resumed with the answers."
 )
 
 
@@ -251,7 +256,10 @@ def test_a_prompt_with_nothing_expected_gets_only_the_deliverables_line(tmp_path
         {"prompt": "do the thing", RUNNER_INPUT_KEY: []},
     ):
         prompt, artifacts = _prompt_the_agent_received(tmp_path, monkeypatch, dict(payload))
-        assert prompt == f"do the thing\n\n{_deliverables_line(artifacts)}", payload
+        # Then the step's time-limit line, last (#2139).
+        assert without_limit_line(prompt) == (
+            f"do the thing\n\n{_deliverables_line(artifacts)}"
+        ), payload
 
 
 def test_the_runners_own_files_are_never_in_the_instructions(tmp_path, monkeypatch):
@@ -276,7 +284,7 @@ def test_a_prompt_whose_every_expected_name_is_the_runners_own_gets_only_the_lin
     prompt, artifacts = _prompt_the_agent_received(
         tmp_path, monkeypatch, {"prompt": "scan", RUNNER_INPUT_KEY: ["fake.stdout.log"]}
     )
-    assert prompt == f"scan\n\n{_deliverables_line(artifacts)}"
+    assert without_limit_line(prompt) == f"scan\n\n{_deliverables_line(artifacts)}"
 
 
 # ---------------------------------------------------------------------------

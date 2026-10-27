@@ -33,11 +33,18 @@ request makes the approval stale), then the subject is moved and the
 decision and its `schedule_audit` entry are written, all in that
 transaction.
 
+ONLY SOMEONE WHO MAY APPROVE AN ITEM MAY REJECT IT (BGD 2026-10-26, #2417
+A5f). A rejection used to be any member's; it now passes the same who-checks
+an approval does, else 403 `reject_approver_required` through its switch,
+which ships on (`refusals.SWITCHES`). Off: any member rejects, as before.
+
 WHO MAY DECIDE (§4.6). Any member of the item's tenant by default (SD5) --
 `tenant_scope` puts only the caller's own tenant's items in reach, and a
 platform admin decides another tenant's item by no route here. `owner_only`:
 PLATFORM_OWNER, as a member of the tenant. `second_member`: any member but
-the run's creator, its last plan editor and its schedule's last gate editor;
+the run's creator, its last plan editor and its schedule's last gate editor
+-- except that a workspace admin decides alone, even as one of those (BGD
+2026-10-26, "let an admin approve it, no need for two approvers");
 a one-person `u-*` tenant types a confirmation naming the matched paths
 (SD11). A named list: each a member now, asked of the directory. A
 merge-tier (R3) item: never the schedule's last gate, scope or spec editor
@@ -64,14 +71,31 @@ from swarm_common.admission import _snapshot
 from swarm_common.states import ParkReason, TaskState
 
 from . import refusals, roles, schedaudit, schedulefire, schedules, scheduletypes
-from .errors import NotFound
+from .errors import Forbidden, NotFound
 from .issueruns import (
     APPROVERS_OWNER_ONLY,
     APPROVERS_SECOND_MEMBER,
     AUTO_APPROVER,
+    CONTRACT_PATTERNS,
+    COST_PATTERNS,
     HOLD_NEEDS_OWNER,
+    IAM_PATTERNS,
     OWNER_SIGNATURE,
     RUNS_COLLECTION,
+    SECRETS_PATTERNS,
+    SHARED_PATTERNS,
+    STOP_CONTRACT,
+    STOP_COST,
+    STOP_IAM,
+    STOP_PROTECTED_PATH,
+    STOP_SECRETS,
+    STOP_SECURITY,
+    STOP_SHARED,
+    STOP_TENANCY,
+    STOP_WORKFLOWS,
+    TENANCY_PATTERNS,
+    WORKFLOW_HOLD_PATTERNS,
+    WORKFLOWS_PATTERN,
     HoldApproverRequired,
     IssueRun,
     IssueRuns,
@@ -79,6 +103,7 @@ from .issueruns import (
     RunState,
     hold_always_enforced,
     hold_confirmation,
+    path_matches,
 )
 from .redaction import redact_detail
 from .schedules import ScheduleConflict, ScheduleForbidden, ScheduleInvalid
@@ -421,6 +446,29 @@ def hold_excluded(ctx: Any, run: IssueRun) -> set[str]:
     return {str(p).strip().lower() for p in people if p}
 
 
+def workspace_admin(ctx: Any, tenant_id: str, email: str) -> bool:
+    """Whether `email` is an admin of workspace `tenant_id`: a platform admin
+    acting there (`admin` in a group workspace, Q5), or a person whose own
+    role grant there is `admin` -- what `roles.RoleStore.resolve` answers for
+    their request, asked from the address because a hold is checked on paths
+    that carry no request (`routes.runs._approve`, the GitHub inbox).
+
+    Read FRESH, as `require_decider` reads the role floor: an admin demoted a
+    moment ago decides alone no longer. FAILS CLOSED: a role that cannot be
+    read, or an auto-approval, is not an admin, so the hold keeps its rule."""
+    email = (email or "").strip().lower()
+    if not email or email == AUTO_APPROVER:
+        return False
+    try:
+        if ctx.authenticator.holds_platform_admin(email, fresh=True):
+            return True
+        store = getattr(ctx, "roles", None)
+        return store is not None and store.person_role(tenant_id, email, fresh=True).role == roles.ADMIN
+    except Exception as exc:  # noqa: BLE001 - an unread role never widens a hold
+        log.warning("hold admin check unreadable tenant=%s (%s)", tenant_id, type(exc).__name__)
+        return False
+
+
 def _hold_refusal(ctx: Any, run: IssueRun, hold: Mapping[str, Any], *, email: str, is_owner: bool,
                   confirm: str | None) -> tuple[str, dict[str, Any]] | None:
     if email == AUTO_APPROVER:
@@ -438,9 +486,13 @@ def _hold_refusal(ctx: Any, run: IssueRun, hold: Mapping[str, Any], *, email: st
                 return None
             return ("this one-person workspace approves its own held run only with a typed "
                     "confirmation naming the matched paths", {"confirm": expected})
-        if email.strip().lower() in hold_excluded(ctx, run):
-            return ("a second member must approve this held run: not its creator, its last "
-                    "plan editor or its schedule's last gate editor", {})
+        # BGD 2026-10-26, "let an admin approve it, no need for two
+        # approvers": a workspace admin is never one the hold excludes. Asked
+        # only of someone excluded, so a second member costs no role read.
+        if email.strip().lower() in hold_excluded(ctx, run) and not workspace_admin(ctx, run.tenant_id, email):
+            return ("a second member or a workspace admin must approve this held run: not its "
+                    "creator, its last plan editor or its schedule's last gate editor unless "
+                    "they are an admin of the workspace", {})
         return None
     return f"the hold's approvers {hold.get('approvers')!r} are not ones this platform knows", {}
 
@@ -1007,3 +1059,206 @@ def _expire_firing(db: Any, now: datetime) -> Move:
 def merge_digest_text(digest: Mapping[str, Any]) -> str:
     """The short form of a merge digest, as a person or a comment types it."""
     return f"{digest.get('head_sha')}:{digest.get('verdict')}"
+
+
+# --------------------------------------------------------------------------
+# What the decision page reads (AUTO-API-APPROVALS, part of #2417)
+#
+# Every field here is READ, never stored: derived on each read from what the
+# record, its run and its registration already hold, and ABSENT (None) when
+# that cannot be read, never a guess.
+# --------------------------------------------------------------------------
+
+
+class RejectApproverRequired(Forbidden):
+    """403: the caller may not approve this item, so may not reject it (BGD
+    2026-10-26, #2417 A5f). Behind `refusals.SWITCHES`, on by default."""
+
+    code = "reject_approver_required"
+
+
+#: The path rules each §4.4 reason matches a file by (`issueruns.
+#: hard_stop_hold`). `protected_path` reads the registration's own list and
+#: `security` matches the issue, not a file; both are handled apart.
+REASON_PATTERNS: dict[str, tuple[str, ...]] = {
+    STOP_IAM: IAM_PATTERNS,
+    STOP_CONTRACT: CONTRACT_PATTERNS,
+    STOP_WORKFLOWS: WORKFLOW_HOLD_PATTERNS,
+    STOP_SECRETS: SECRETS_PATTERNS,
+    STOP_TENANCY: TENANCY_PATTERNS,
+    STOP_SHARED: SHARED_PATTERNS,
+    STOP_COST: COST_PATTERNS,
+}
+#: The `matched` entries a security-class stop writes (`is_security_issue`).
+SECURITY_MATCH_PREFIXES = ("label:", "severity:")
+
+
+def reason_files(hold: Mapping[str, Any] | None,
+                 hard_stop_paths: Any = None) -> dict[str, list[str]] | None:
+    """`{reason: [matched entries]}`: which of a hold's `matched` each of its
+    `reasons` came from (#2417 A5 card 2).
+
+    A hold stores the two lists apart, so this re-applies each reason's own
+    path rule to the matched entries. `protected_path` uses
+    `hard_stop_paths` (the run's registration, `repositories.
+    hard_stop_paths_of`) and claims only what no other reason did, as
+    `hard_stop_hold` does; None means the registration was not read and the
+    reason is left out. A reason no entry matches by path -- an IAM stop
+    found in a `.tf` file's patch, a category found by its lines or by a
+    plan's prompt term -- is left out rather than paired with a guess; it is
+    still in `hold.reasons`, and its entry in `hold.matched`. None when no
+    reason pairs at all."""
+    if not hold:
+        return None
+    matched = [str(m) for m in hold.get("matched") or []]
+    reasons = [str(r) for r in hold.get("reasons") or []]
+    out: dict[str, list[str]] = {}
+    for reason in reasons:
+        if reason == STOP_SECURITY:
+            files = [m for m in matched if m.startswith(SECURITY_MATCH_PREFIXES)]
+        else:
+            patterns = REASON_PATTERNS.get(reason, ())
+            files = [m for m in matched if any(path_matches(m, p) for p in patterns)]
+        if files:
+            out[reason] = files
+    if STOP_PROTECTED_PATH in reasons and hard_stop_paths is not None:
+        claimed = {m for files in out.values() for m in files}
+        protected = [p for p in hard_stop_paths if p != WORKFLOWS_PATTERN]
+        files = [m for m in matched if m not in claimed and any(path_matches(m, p) for p in protected)]
+        if files:
+            out[STOP_PROTECTED_PATH] = files
+    return out or None
+
+
+def with_reason_files(hold: Mapping[str, Any] | None, hard_stop_paths: Any = None) -> dict[str, Any] | None:
+    """A served hold with its `reason_files`, which is absent when none pair."""
+    if not hold:
+        return None
+    out = dict(hold)
+    pairs = reason_files(hold, hard_stop_paths)
+    if pairs is not None:
+        out["reason_files"] = pairs
+    return out
+
+
+#: The buckets `merge.checks` serves (`forgechecks.COUNT_BUCKETS` less
+#: `skipped`, which the A5 card does not draw).
+CHECK_BUCKETS = ("passed", "failed", "pending")
+
+
+def merge_checks(doc: Mapping[str, Any], pull_request: Mapping[str, Any] | None) -> dict[str, int] | None:
+    """`{passed, failed, pending}` at the head a merge approval names (#2417 A5
+    card 1), from the run's last CI reading (`issueci.check_summary`'s
+    `check_counts`, written beside the `head_sha` it was read at).
+
+    None when the run has no reading, a bucket is missing or not a count, or
+    the reading is of another head: after a push the counts are the new
+    head's, not the ones this approval was asked on."""
+    head = (doc.get("digest") or {}).get("head_sha") if isinstance(doc.get("digest"), Mapping) else None
+    pull = pull_request or {}
+    counts = pull.get("check_counts")
+    if not head or pull.get("head_sha") != head or not isinstance(counts, Mapping):
+        return None
+    out: dict[str, int] = {}
+    for bucket in CHECK_BUCKETS:
+        value = counts.get(bucket)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return None
+        out[bucket] = value
+    return out
+
+
+def superseded_by(db: Any, doc: Mapping[str, Any], head_now: str | None) -> dict[str, Any] | None:
+    """`{approval_id, head_sha, at}`: the request to decide instead of a
+    superseded merge approval (#2417 A5e).
+
+    A merge request's id is derived from its run and head (`request_merge`,
+    `approval_id`), so the run's head NOW names the request made for it: read
+    that record, in this tenant, and serve it if it is another one. None when
+    the item is not a superseded merge, the head is unknown or unchanged, or
+    no request was made at the new head (the run merged, failed, or has not
+    gone green there yet)."""
+    if doc.get("kind") != MERGE or doc.get("state") != SUPERSEDED or not head_now:
+        return None
+    run_id = (doc.get("subject") or {}).get("run_id")
+    if not run_id:
+        return None
+    newer_id = approval_id(MERGE, f"{run_id}:{head_now}")
+    if newer_id == doc.get("approval_id"):
+        return None
+    snap = db.collection(COLLECTION).document(newer_id).get()
+    newer = snap.to_dict() if snap.exists else None
+    if not newer or newer.get("tenant_id") != doc.get("tenant_id"):
+        return None
+    return {"approval_id": newer_id, "head_sha": (newer.get("digest") or {}).get("head_sha"),
+            "at": _iso(newer.get("requested_at"))}
+
+
+#: `deciders` entries that are rules, not addresses: who may decide when the
+#: item names nobody in particular (§4.6).
+DECIDERS_MEMBERS = "members"
+DECIDERS_PLATFORM_ADMINS = "platform_admins"
+#: Beside `second_member`: a workspace admin decides a `second_member` hold
+#: alone (BGD 2026-10-26).
+DECIDERS_WORKSPACE_ADMINS = "workspace_admins"
+
+
+def deciders(ctx: Any, tenant_id: str, *, kind: str, approvers: Any, hold: Mapping[str, Any] | None,
+             schedule: Mapping[str, Any] | None, merge_tier: bool, platform_scope: bool,
+             run: IssueRun | None = None) -> list[str]:
+    """Who may approve an item, and so (BGD 2026-10-26) reject it: the
+    narrowest rule that applies to it, as a list.
+
+    Addresses where the item names people -- a named list, less the
+    schedule's last editor of a merge-tier item in a group tenant (SD5) and,
+    under a `second_member` hold, those the hold does not admit (a workspace
+    admin it admits: BGD 2026-10-26) -- else one rule word from `approvers`'
+    vocabulary: `owner_only` (the gate, or a `NEEDS_OWNER` hold),
+    `platform_admins` (a `custom-prompt` spec, or a platform-scope
+    schedule's item), `second_member` with `workspace_admins` beside it,
+    `members`. Never the reader's own judgement: the decision routes still
+    decide."""
+    if kind == SPEC:
+        return [DECIDERS_PLATFORM_ADMINS]
+    if owner_alone(approvers, hold):
+        return [APPROVERS_OWNER_ONLY]
+    if isinstance(approvers, list):
+        names = [str(n).strip().lower() for n in approvers if str(n).strip()]
+        excluded: set[str] = set()
+        if merge_tier and schedule is not None and not one_person(ctx, tenant_id):
+            editor = schedaudit.last_editor(ctx.db, tenant_id, schedule)
+            if editor:
+                excluded.add(editor)
+        if hold and hold.get("approvers") == APPROVERS_SECOND_MEMBER and run is not None \
+                and not one_person(ctx, tenant_id):
+            excluded |= {p for p in hold_excluded(ctx, run) if not workspace_admin(ctx, tenant_id, p)}
+        return list(dict.fromkeys(n for n in names if n not in excluded))
+    if platform_scope:
+        return [DECIDERS_PLATFORM_ADMINS]
+    if hold and hold.get("approvers") == APPROVERS_SECOND_MEMBER:
+        return [APPROVERS_SECOND_MEMBER, DECIDERS_WORKSPACE_ADMINS]
+    return [DECIDERS_MEMBERS]
+
+
+def hold_refusal(ctx: Any, run: IssueRun, *, email: str, is_owner: bool) -> HoldApproverRequired | None:
+    """`check_hold`'s refusal, READ: the error an approve would meet, or None.
+
+    Nothing is logged, so a read of the inbox writes no report-only line. A
+    one-person tenant's own hold, which an approve passes after the typed
+    confirmation, is not a refusal, and neither is a stop whose switch is
+    off -- the approve would go through."""
+    hold = run.approval_hold
+    if not hold:
+        return None
+    found = _hold_refusal(ctx, run, hold, email=email, is_owner=is_owner, confirm=None)
+    if found is None or "confirm" in found[1]:
+        return None
+    if not (hold_always_enforced(hold) or refusals.enforced(HoldApproverRequired.code)):
+        return None
+    message, extra = found
+    return HoldApproverRequired(
+        f"run {run.id} is held {hold.get('code')}: {message}",
+        detail={"hold": hold.get("code"), "approvers": hold.get("approvers"),
+                "reasons": list(hold.get("reasons") or []), "matched": list(hold.get("matched") or []),
+                **extra},
+    )

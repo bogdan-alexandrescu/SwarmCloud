@@ -129,6 +129,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 119 | `specsign.py`: a `"budget"` block in `SETTINGS_MAC_FIELDS`, `("unit", "amount")`, so the workspace's per-agent budget is signed (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): `BudgetStore` signs every write and verifies every read for a tenant on the MAC cutover, and `judgment.WRITER_FIELDS` lists the block so the re-sign pass signs stored ones |
 | 120 | `models.py` / `specsign.py`: `Task.budget` and `WorkflowStep.budget`, a step's budget as a typed, signed field (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): spec format 6; submission writes `Task.budget` and `WorkflowStep.budget`, and the worker and the API read `metadata.dispatch.budget` as the fallback for one release |
 | 121 | `states.py`: `EventType.BUDGET_WARNING`, the 80% warning as its own event type (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): the worker writes it; `codec.stored_event_type` reads the old `running` form as it for one release |
+| 122 | `models.py`: `Tenant.principal`'s comment gives a fictional example on the company's real domain (EXAMPLE-IDENTITIES, part of #1647) | open |
 
 ---
 
@@ -4443,7 +4444,7 @@ Unit, no credentials and no emulator:
     (`"swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com\n"`) does not
     match, where the earlier `.match()` with `$` in the pattern would have;
   - the listing wins over groups: the same account with
-    `groups=("other@saga.xyz",)` and `other@saga.xyz` first in priority still
+    `groups=("other@example.com",)` and `other@example.com` first in priority still
     resolves to `eng`;
   - no pattern and no domain: `swarm-ci-fix2@...`, `x-swarm-ci-fix@...`,
     `swarm-ci-fix@other-project.iam.gserviceaccount.com` and
@@ -14723,3 +14724,42 @@ timeline must know to look for.
 ### Invariants
 
 None is touched: an event records, it decides nothing.
+
+## 122. `models.py`: `Tenant.principal`'s example is a fictional address on the company's real domain (EXAMPLE-IDENTITIES, part of #1647)
+
+**Status:** open, REQUESTED 2026-10-27 by lane EXAMPLE-IDENTITIES (bundle
+B03). Not applied: `apps/common/swarm_common/` is frozen. #1647's triage
+asked for this entry in place of the edit; the edit waits for a decision.
+
+### What is true today
+
+`apps/common/swarm_common/models.py`, `class Tenant`, field `principal`
+(line 832 on 2026-10-27) carries a trailing comment naming two examples:
+the deployment's real group `eng@saga.xyz`, and a fictional `alice@` on the
+same domain. The group stays. The person is fictional, and #1647's owner
+decision (2026-10-19) is that example data uses the RFC 2606 family: every
+other fictional `alice@` on that domain in `tests`, `docs`, `scripts` and
+`apps` has moved to `alice@example.com`, so this comment is the one place `grep -rnoiE
+'(alice|other|u-carol|u-eng|group)@saga\.xyz' tests docs scripts apps` still
+finds in the code (with `tests/terraform/tenancy_worker_firestore.tftest.hcl`
+outside this lane's territory, noted on the PR).
+
+### The change
+
+The comment only, nothing a program reads:
+
+    principal: str                          # eng@saga.xyz | alice@example.com
+
+### What it would break if accepted
+
+Nothing. It is a comment; no type, default, field or document shape moves,
+and `scripts/lib/check-contract-parity.sh` reads no comment.
+
+### If it is declined
+
+The frozen contract keeps one fictional person on the company's domain, and
+the #1647 guard grep has a permanent known exception to explain.
+
+### Invariants
+
+None is touched: a comment decides nothing.
