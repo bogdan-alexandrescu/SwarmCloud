@@ -451,7 +451,8 @@ def test_rows_only_the_frame_has_are_boxed_below_the_render(tmp_path, monkeypatc
 def test_the_guide_reads_only_the_crop_of_a_frame_over_the_threshold():
     text = GUIDE_DOC.read_text(encoding="utf-8")
     start = text.index("### 6.5 ")
-    section = text[start:text.index("\n## ", start)]
+    end = text.find("\n## ", start)
+    section = text[start:end if end != -1 else None]
     assert "Open each diff image with `Read`" not in section
     assert "Read only the crop of a frame over threshold" in section
     assert "Sonnet child per screen" in section and "screen-review.md" in section

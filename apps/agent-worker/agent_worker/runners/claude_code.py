@@ -281,7 +281,7 @@ from swarm_common.models import (
 
 from .. import browser_tools, graphstage
 from ..budget import NOTE_ENV as BUDGET_NOTE_ENV
-from ..children import git_shim_argv, search_shim_argv
+from ..children import SCREEN_REVIEW_GUIDE_NAME, git_shim_argv, search_shim_argv
 from ..mcp_attach import MAX_SERVERS as MAX_MCP_SERVERS
 from ..mcp_attach import RELAY_ENV as MCP_RELAY_ENV
 from ..mcp_relay import LOOPBACK as MCP_RELAY_HOST
@@ -409,12 +409,23 @@ MCP_CONFIG_NAME = "mcp.json"
 #: directory for automatically named output files"); a screenshot given a
 #: filename is resolved against the workspace root instead -- the checkout --
 #: and, read off 0.0.83's own code, is then NOT returned to the model as an
-#: image, which is why the note asks for no filename. Nothing here sets
-#: `--image-responses`, whose default ("allow") returns the image; and no
+#: image, which is why the note asks for no filename. No
 #: `--output-max-size`, so nothing is evicted before the upload. Other
 #: auto-named files (a page's download, a console log the server writes) land
 #: here too, in the tenant's own artifacts.
 SCREENSHOTS_DIR_NAME = "screenshots"
+#: TOKEN-RENDER (BGD 2026-10-27, #2524 item 2): every session this runner
+#: starts registers Playwright MCP with `--image-responses omit`, so a
+#: screenshot is saved (under SCREENSHOTS_DIR_NAME) and its bytes never return
+#: into the session's context. An image in a tool result stays in context for
+#: every later turn: up to 15.7 MB of tool results in one lane, browser
+#: implement steps at ~159 turns, render lanes at a 164-382k mean context. A
+#: frame is judged instead in one Sonnet child per screen
+#: (`children.screen_review_request`), whose verdict comes back as text, and
+#: the parent reads only the crop `swarm-handoff compare` writes for a frame
+#: over its threshold. The child runs this same runner, so it too gets no
+#: inline image: it reads its own shots with Read, in its own context.
+IMAGE_RESPONSES = ("--image-responses", "omit")
 #: The tool whose results `screenshot_images` reads, as the CLI names it.
 SCREENSHOT_TOOL = f"mcp__{MCP_SERVER_NAME}__browser_take_screenshot"
 
@@ -486,8 +497,18 @@ LIVE_BROWSER_NOTE = (
     "the gate owns the browser's size, so the person watching sees the device "
     "the page is laid out for; pick a preset instead. Take screenshots with "
     "browser_take_screenshot without a filename: each is saved under "
-    "$SWARM_ARTIFACTS_DIR/screenshots and comes back to you as an image; with a "
-    "filename it lands in the checkout and you do not see it. "
+    "$SWARM_ARTIFACTS_DIR/screenshots and does not come back to you as an image "
+    "(with a filename it lands in the checkout instead). Use browser_snapshot to "
+    "read a page; open a screenshot with Read only when you must see it, since an "
+    "image stays in your context for the rest of the task. "
+    # TOKEN-RENDER (BGD 2026-10-27, #2524 item 2): IMAGE_RESPONSES.
+    "To judge rendered frames (a review, or an implement step that renders), "
+    "send each screen to one Sonnet child per screen, as "
+    f"$SWARM_CHILDREN/{SCREEN_REVIEW_GUIDE_NAME} says, and keep its text verdict; "
+    "`swarm-handoff compare` prints the changed boxes and writes a crop beside "
+    "the diff image, and you Read only the crop of a frame over threshold, "
+    "never the diff image or the render (docs/browser-qa.md §6.5). Without "
+    "$SWARM_CHILDREN (a child itself) you read your own shots. "
     # QA-FLOWS (owner decision 2026-10-19, part of #1649): one line each.
     "Flow GIFs: `swarm-handoff record start <name>`, do the flow, then "
     "`swarm-handoff record stop` saves $SWARM_ARTIFACTS_DIR/flows/<name>.gif (a "
@@ -965,7 +986,8 @@ def write_mcp_config(
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     servers: dict[str, Any] = {}
     if endpoint:
-        playwright_args = ["--cdp-endpoint", browser_tools.tag_endpoint(endpoint, "playwright")]
+        playwright_args = ["--cdp-endpoint", browser_tools.tag_endpoint(endpoint, "playwright"),
+                           *IMAGE_RESPONSES]
         if screenshots_dir:
             playwright_args += ["--output-dir", screenshots_dir]
         servers[MCP_SERVER_NAME] = {
