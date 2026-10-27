@@ -875,7 +875,12 @@ TOOLS: list[dict[str, Any]] = [
             "`outputs` says what the task made beyond its code: each artifact "
             "(`name`, `bytes`) -- read one with swarm_artifact -- the runner's "
             "`runner_status` and `runner_summary`, `exit_code`, `duration_s`, and "
-            "the `staged_inputs` copied in from upstream steps. "
+            "the `staged_inputs` copied in from upstream steps. An attempt that "
+            "ran the agent more than once (an account swap restarts it) also has "
+            "`runs` (one per run: start, end, duration_s, exit, account, tokens, "
+            "cost), `swaps` (when, from, to, reason), `last_run_duration_s` and "
+            "`swap_cost` (the seconds and tokens a restarted run spent before it "
+            "acted again); its `duration_s` is the sum of the runs. "
             "`artifacts_complete: false` means the task has not finished and its "
             "artifacts are uploaded when the attempt ends -- not that it produced "
             "none; `artifacts: null` means they could not be listed, and "
@@ -1806,17 +1811,18 @@ TOOLS: list[dict[str, Any]] = [
         "name": "swarm_layout",
         "description": (
             "How THIS PROJECT follows SwarmCloud work in Claude Code (`/sc layout`): "
-            "`rows` -- today's /workflows rows, as the plugin's `rows` setting says -- or "
+            "`rows` -- today's /workflows rows, as the plugin's `rows` setting says --, "
             "`pane` -- the SwarmCloud pane beside the chat plus ONE quiet row per "
-            "workflow that notices its finish. No argument reads it: `{layout, source, "
-            "project}`. `{layout: \"rows\"|\"pane\"}` saves it for this project (it "
+            "workflow that notices its finish -- or `band` -- a strip above the prompt "
+            "and a summary line below it, and no rows. No argument reads it: `{layout, source, "
+            "project}`. `{layout: \"rows\"|\"pane\"|\"band\"}` saves it for this project (it "
             "outranks the plugin's `layout` option) and takes effect at the next launch "
             "or `/sc attach --all`, without restarting the session; rows already running "
             "keep going. Reads and writes nothing in SwarmCloud."
         ),
         "inputSchema": {
             "type": "object",
-            "properties": {"layout": {"type": "string", "enum": ["rows", "pane"]}},
+            "properties": {"layout": {"type": "string", "enum": ["rows", "pane", "band"]}},
         },
     },
     {
@@ -3293,7 +3299,9 @@ def _dispatch_rows(sent: list[tuple[str, str | None, dict[str, Any]]]) -> dict[s
         rows = launch.for_tasks(entries)
     except (SwarmError, OSError) as exc:
         return {"error": str(exc), "attach_with": "/sc attach --all"}
-    rows["start_now"] = ROWS_START_NOW
+    if rows.get("followed_by") != "band":
+        # In the band layout there is no row to start: the strip follows the tasks.
+        rows["start_now"] = ROWS_START_NOW
     return rows
 
 
@@ -5436,7 +5444,9 @@ def _call(
                         rows=rows,
                         project=_flag(args, "project"),
                     )
-                attached.update(watch.arm_fields(bool(attached.get("launches"))))
+                # The band launches no row but still puts this session's work in
+                # front of it: arming is unchanged there (SC-BAND).
+                attached.update(watch.arm_fields(bool(attached.get("launches")) or attached.get("followed_by") == "band"))
                 return json.dumps(attached, indent=2, default=str)
             return json.dumps({**launch.for_attach(client, target, rows=rows), **watch.arm_fields(True)}, indent=2)
         document = (

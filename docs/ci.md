@@ -4920,14 +4920,90 @@ titled "the theater", or one that says `'styles/'`, is not selected for
 sheets changed, and every file is read once per run. This is a related-test
 rule, not a guard: `changed-guards.sh` does not run these files.
 
-**It never prints an unfiltered command.** Every line names files. A selection
+**A UI change also runs the node runners** (#2455). Any change under
+`apps/swarm-ui/` adds one more run, after the vitest runs:
+`(cd apps/swarm-ui && npm run test:node)`, once however many files changed, as
+long as the package's `package.json` declares `test:node`. That script runs
+`tests/run.mjs` and `test/*.test.mjs` under `node --test`, not vitest, and they
+read the tree from disk -- `no-company-name.test.mjs` scans every source file
+for the company's name -- so no import reaches them and the import graph never
+selected them. CI's ui-build runs them. Four lanes (PRs #2429, #2430, #2433,
+#2437) published UI code naming the company after passing this script, and went
+red in ui-build. The node run names no files because the runner picks its own;
+it is a whole package script by design, and a cheap one.
+
+**It never prints an unfiltered vitest or pytest command.** Every pytest and
+vitest line names files (the node run above is a package script). A selection
 too big for one run comes back as a few runs: pytest cut by
 `unit_test_durations.json` weight into parts of at most ~540 CI-seconds
-(changed-guards.sh's `SHARD_HINT_WEIGHT`), vitest in runs of at most 50 files
-(~2.5 min at the whole suite's ~2.9 s a file). `--run` runs them in turn, each
-under 540 s, and stops at the first red; a run that times out is not re-run
-as-is. `tests/unit/scripts/test_related_tests.py` holds the selection for a
-UI-only, a Python-only and a mixed change, and that no command is unfiltered.
+(changed-guards.sh's `SHARD_HINT_WEIGHT`), vitest cut the same way by
+`tests/unit/scripts/ui_test_durations.json` into runs of at most ~540
+CI-seconds (`VITEST_RUN_WEIGHT`) and 50 files (`VITEST_FILES_PER_RUN`). `--run`
+runs them in turn, each under 540 s, and stops at the first red; a run that
+times out is not re-run as-is. `tests/unit/scripts/test_related_tests.py` holds
+the selection for a UI-only, a Python-only and a mixed change, that no file run
+is unfiltered, and that a UI change prints and runs `npm run test:node` once,
+last.
+
+**Vitest runs are weighted by recorded duration** (WEIGHTED-VITEST, part of
+#2362). They used to be cut by count alone, 50 files a run on the assumption of
+~2.9 s a file. The nine `spacing.*.test.tsx` slices take 252-485 s each in an
+agent's container, and every one is reached by any change under `App.tsx`'s
+import graph (`spacingsweep.tsx` imports `{App, SECTIONS}` from `'../App'`), so
+they landed together in one run that could not finish inside the 540 s limit:
+31 timeouts in the first 7 hours of 2026-10-25, 40+ by the next morning, each
+followed by the step re-running them one by one until its own deadline. Now
+`related_tests.py`'s `vitest_runs()` mirrors `pytest_runs()`: heaviest file
+first onto the lightest run it fits, a new run whenever a file would take every
+run over 540 s or 50 files, and a file heavier than 540 s alone. A file
+`ui_test_durations.json` does not record weighs `VITEST_DEFAULT_SECONDS` = 2.9 s
+(the whole suite, 463 files, in ~22 min on 4 cores); only files far over that
+are recorded, so the file stays a few lines. Seeded 2026-10-26 from the agent
+logs #2362 cites: `spacing.accounts` 485 s and `spacing.capacity` 259 s were
+measured (the highest of each one's readings); the other six slices are an
+estimate of 300 s, the low end of the 300-485 s one lane measured for them, which
+also keeps any two slices over 540 s together.
+
+To refresh the weights, run `scripts/refresh-ui-weights.sh` and commit the
+diff. It finds main's newest successful `application.yml` run whose
+`swarm-ui component tests` jobs all ran, reads their logs with `gh run view
+--job <id> --log`, and has `scripts/lib/ui_weights.py` parse vitest's
+per-file lines (`✓ src/__tests__/x.test.tsx (1 test) 259018ms`). It keeps only
+files over 20 s. By default it never lowers a recorded figure, because the
+seeded figures are agent-container times, which are what the 540 s limit is
+measured against. A CI shard that ran a slice faster would otherwise put two
+slices back into one run; `--replace` writes the measured figures alone. It
+changes no workflow on purpose: a workflow file can only be pushed by swarm-api,
+and the first lane that tried this by editing `application.yml` could not
+publish.
+
+**A UI change selects only the spacing slices whose screens it reaches**
+(SPACING-NARROW, part of #2362). Weighting keeps the slices apart, but each
+still costs 252-437 s, and by import every change under `App.tsx` reached all
+of them: `spacingsweep.tsx` imports `{App, SECTIONS}` from `'../App'`. A slice
+renders `App` at its own `SPACING_GROUPS` routes only, so `related_tests.py`
+(`spacing_plan()`, `spacing_dropped()`) reads those routes from
+`spacingsweep.tsx` and, from `App.tsx`'s `SectionBody`, the components each
+`case '<route>':` renders, resolved through `App.tsx`'s imports to modules. A
+`spacing.<group>.test.tsx` is then kept when the change reaches a module one of
+its routes renders, or reaches the slice by a path that avoids every
+`App.tsx` -> screen import: the shell (`Spine.tsx`, a hook App calls),
+`App.tsx` itself, `spacingsweep.tsx` or `spaceprobe.ts`, which render on every
+route. An import counts as a screen's only when every name it brings in is
+used in `SectionBody`'s cases and nowhere else in `App.tsx`; a module App also
+takes a card or a hook from (`Schedules`, `Workflows`, `Activity`) stays a
+shell path. Screens import from one another -- Overview's cards come from
+several -- so one screen's change usually keeps two or three slices of eight,
+not one. A changed `src/styles.css` or `src/styles/*.css` keeps every slice,
+because the sweep reads every sheet into every route's cascade by `?raw` import
+and `import.meta.glob`, which no import edge follows. `spacing.test.tsx` is kept
+whenever a slice is. Anything that does not parse -- no `SPACING_GROUPS`, no
+`SectionBody`, a route with no case, or a component `App.tsx` neither imports
+nor defines -- keeps every slice: a reshaped `App.tsx` costs time, never a
+missed slice. `spacingsweep.tsx` and `App.tsx` are read, never edited for this;
+`test_every_real_spacing_route_resolves_to_a_screen_module` holds the parse
+against this checkout, so a renamed screen fails a test instead of quietly
+turning the narrowing off.
 
 ## Where the suites are documented
 

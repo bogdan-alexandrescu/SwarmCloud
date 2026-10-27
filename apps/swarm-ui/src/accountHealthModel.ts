@@ -176,11 +176,20 @@ export const UNREAD_WHY = "The broker could not read this account's health recor
  * it, so a tile can never say 2 limited over a list showing 3. The row's own
  * `health_status` first (the listing is the read the rest of Capacity uses),
  * then the pool read's record for the same account.
+ *
+ * When neither says, the row's own `state`: REAUTH_REQUIRED is the broker's
+ * own answer that the provider refused the credential, so an account whose
+ * health is null (not served, or unread on this read) still reads as needing
+ * re-auth. It lives here, not in the page, so `worstFirst` sorts that row
+ * first and the tiles, the list and the phone's cards agree (BGD, 2026-10-26,
+ * #2391). Its figures stay dashes with their reason: the state says nothing
+ * about counts.
  */
 export function statusOf(a: HealthAccount, record: AccountHealthRecord | undefined): StatusCell {
   const word = a.health_status
   if (isStatus(word)) return { status: word }
   if (record !== undefined && isStatus(record.status)) return { status: record.status }
+  if (a.state === 'REAUTH_REQUIRED') return { status: 'reauth_needed' }
   if (word === undefined && record === undefined) return { status: null, why: NOT_SERVED_WHY }
   return { status: null, why: UNREAD_WHY }
 }

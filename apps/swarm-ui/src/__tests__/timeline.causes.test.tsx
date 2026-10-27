@@ -466,9 +466,9 @@ describe('Not finished yet, in platform scope', () => {
     const root = await timeline(ledgerFixture(), { view: 'scope=platform' }, { admin: true })
     const c = card(root, /^Not finished yet/)
     await waitFor(() => expect(c.querySelector('.ol-open-counts')).not.toBeNull())
-    await waitFor(() => expect(c.textContent).toContain('No provider key is registered for this tenant 2'))
+    await waitFor(() => expect(c.textContent).toContain('No provider key is registered for this workspace 2'))
     expect(c.querySelector('.ol-open-counts')!.textContent).toContain('14 parked')
-    expect(c.querySelector('.ol-reason-scope')?.textContent).toBe('park reasons: tenant eng only')
+    expect(c.querySelector('.ol-reason-scope')?.textContent).toBe('park reasons: workspace eng only')
   })
 
   it('says so when the tenant has nothing parked, where the platform may', async () => {
@@ -478,7 +478,7 @@ describe('Not finished yet, in platform scope', () => {
     })
     const c = card(root, /^Not finished yet/)
     await waitFor(() => expect(c.querySelector('.ol-reason-scope')).not.toBeNull())
-    expect(c.querySelector('.ol-reason-scope')!.textContent).toBe('park reasons: tenant eng only · none parked there')
+    expect(c.querySelector('.ol-reason-scope')!.textContent).toBe('park reasons: workspace eng only · none parked there')
   })
 
   it('counts "reasons for k of n" in the tenant the reasons came from, never over the platform', async () => {
@@ -496,7 +496,7 @@ describe('Not finished yet, in platform scope', () => {
   it('draws no scope line in tenant scope, where the counts and the reasons are one tenant’s', async () => {
     const root = await timeline()
     const c = card(root, /^Not finished yet/)
-    await waitFor(() => expect(c.textContent).toContain('No provider key is registered for this tenant 2'))
+    await waitFor(() => expect(c.textContent).toContain('No provider key is registered for this workspace 2'))
     expect(c.querySelector('.ol-reason-scope')).toBeNull()
   })
 })
@@ -613,13 +613,13 @@ describe('the provenance foot of a cache hit (epic #222)', () => {
     expect(root.querySelector('.ol-prov')!.textContent).toContain('28 UTC days built by this read')
   })
 
-  it('counts them as tenant-days in platform scope, as it counts the sealed ones', async () => {
+  it('counts them as workspace-days in platform scope, as it counts the sealed ones', async () => {
     const d = ledgerFixture()
     d.scope = { kind: 'platform', tenants: ['eng', 'personal', 'verify'], excluded: [], tenants_complete: true }
     d.cached = true
     d.coverage.derived_now = 60
     const root = await timeline(d, { view: 'scope=platform' }, { admin: true })
-    expect(root.querySelector('.ol-prov')!.textContent).toContain(`60 tenant-days built by the ${at(d)} read`)
+    expect(root.querySelector('.ol-prov')!.textContent).toContain(`60 workspace-days built by the ${at(d)} read`)
   })
 })
 

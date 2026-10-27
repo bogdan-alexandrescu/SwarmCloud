@@ -24,6 +24,8 @@ import { loadAccountHealthBoard, type AccountHealthBoard } from '../api'
 import {
   HEALTH_KINDS,
   poolIncidents,
+  statusOf,
+  worstFirst,
   type AccountHealthRecord,
   type HealthAccount,
   type HealthEvent,
@@ -618,5 +620,49 @@ describe('fourth review: the marks in their lanes, the phone’s switch and the 
     desktop(b)
 
     expect(screen.getByRole('alert').querySelector('p')!.textContent).toMatch(/^Upstream timed out after 10 s\. /)
+  })
+})
+
+describe('REAUTH-MODEL: the re-auth fallback from the row’s state is the model’s rule (part of #2391)', () => {
+  // BREAK IT: move the REAUTH_REQUIRED fallback back into the page's cellOf
+  // and statusOf answers null for this row, worstFirst sorts it last among the
+  // unknowns, and the list leads with a healthy account -- each case turns red.
+
+  /** A pool that serves health, with one REAUTH_REQUIRED account whose health is null. */
+  function mixed(): { accounts: HealthAccount[]; events: Map<string, HealthEvent[]> } {
+    const { accounts, events } = pool()
+    const out = accounts.map((a) =>
+      a.account_id === 'eng:ai-eng-3' ? { ...a, health_status: null, state: 'REAUTH_REQUIRED' as const } : a,
+    )
+    return { accounts: out, events }
+  }
+
+  it('statusOf reads an account whose health is null and whose state is REAUTH_REQUIRED as needing re-auth', () => {
+    const { accounts, events } = mixed()
+    const a = accounts.find((x) => x.account_id === 'eng:ai-eng-3')!
+    const r = { ...rec(a, events.get(a.account_id) ?? []), status: null }
+    expect(statusOf(a, r)).toEqual({ status: 'reauth_needed' })
+    expect(statusOf(a, undefined)).toEqual({ status: 'reauth_needed' })
+    // The broker's word still wins over the state, and an AVAILABLE row with no word stays unknown.
+    expect(statusOf({ ...a, health_status: 'healthy' }, r)).toEqual({ status: 'healthy' })
+    expect(statusOf({ ...a, state: 'AVAILABLE' }, r).status).toBeNull()
+  })
+
+  it('worstFirst puts that account first', () => {
+    const { accounts, events } = mixed()
+    const records = new Map(accounts.map((a) => [a.account_id, { ...rec(a, events.get(a.account_id) ?? []), status: null }]))
+    expect(worstFirst(accounts, records)[0]!.account_id).toBe('eng:ai-eng-3')
+  })
+
+  it('sorts that row first on the page and counts it once in the tiles', () => {
+    const { accounts, events } = mixed()
+    const { container } = desktop(board(accounts, events))
+
+    const rows = [...container.querySelectorAll<HTMLElement>('tr[data-status]')]
+    expect(rows[0]!.dataset.account).toBe('eng:ai-eng-3')
+    expect(rows[0]!.dataset.status).toBe('reauth_needed')
+    expect(Number(container.querySelector('[data-tile="reauth_needed"] .ah-tile-n')!.textContent)).toBe(1)
+    expect(rows.filter((r) => r.dataset.status === 'reauth_needed')).toHaveLength(1)
+    expect(container.querySelectorAll('[data-state="reauth"]')).toHaveLength(1)
   })
 })

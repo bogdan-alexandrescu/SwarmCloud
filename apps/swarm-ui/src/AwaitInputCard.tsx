@@ -5,8 +5,10 @@
  *
  * It reads `GET /v1/workflows/{wf}/steps/{step}/input` and draws, in order:
  *
- *   * the step's window -- "waiting for a member", the workspace, "expires in
- *     3 h 20 m" -- and what happens at expiry;
+ *   * the step's window -- "waiting for a member", "workspace eng", "expires
+ *     in 3 h 20 m" -- and what happens at expiry. The reader is told
+ *     "workspace", never "tenant" (BGD, 2026-10-26, VQ-056); the `tenant`
+ *     field the API serves keeps its name;
  *   * the prompt, and every artifact the step shows (its `input_from`),
  *     each read through the existing artifact viewer, which applies the
  *     tenant check and read-time redaction of `/artifacts/content`;
@@ -164,7 +166,7 @@ function Closed({ view, now }: { view: AwaitInputView; now: number }) {
   if (view.status === 'not_open') {
     return (
       <p className="ai-closed sb-note" data-testid="ai-closed" data-status="not_open">
-        Not open yet: it opens when the steps it depends on have finished, and then any member of {view.tenant} may answer
+        Not open yet: it opens when the steps it depends on have finished, and then any member of workspace {view.tenant} may answer
         {view.expires_at === null ? '' : `; ${expiresWords(view.expires_at, now) ?? ''}`}.
       </p>
     )

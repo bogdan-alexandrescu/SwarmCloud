@@ -58,6 +58,7 @@ import {
   PILL_MIN_PX,
   attemptWord,
   axisTicks,
+  axisTickText,
   buildLane,
   filterLanes,
   groupLanes,
@@ -80,13 +81,16 @@ import {
 } from './lanes'
 import { STATE_MARK, type MarkName } from './marks'
 import { Button, ButtonLink, Chip, MarkIcon, Segmented, StateMark } from './components'
-import { DEFAULT_VIEW, alignedWords, ledgerRange, outcomesQuery, viewerZone, type Outcomes } from './outcomes'
+import { DEFAULT_VIEW, alignedWords, ledgerRange, outcomesQuery, type Outcomes } from './outcomes'
+import { formatClock, formatDateTime } from './timezone'
+import { useTimeZone } from './useTimeZone'
 import { CountNote, PageHead, RefreshControl, useClaimPageAge, useIdleStop, usePoll } from './Shell'
 import type { AttemptRow, Task, TaskEvent, TaskState } from './types'
 import { formatDuration, TERMINAL_STATES } from './types'
 import { useInView } from './useInView'
 import { useEscapeLayer } from './escape'
 import { VALUE_LABEL_GAP_PX } from './charts/parts'
+import { axisZone } from './charts/series'
 import { SKIPPED_WORD } from './dag'
 import { gateVerdictOf, skippedByVerdict } from './wfreview'
 import { workflowLabel } from './stepviews'
@@ -181,12 +185,14 @@ export function TimelinePages({ at, otherTitle }: { at: 'lanes' | 'outcomes'; ot
 // Words
 // ---------------------------------------------------------------------------
 
-const CLOCK = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false })
-const CLOCK_S = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
-const DAY = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' })
+// On the person's clock, the axis's (VQ-023): the window header, a mark's
+// time and the axis must not read two zones on one screen. The zone is said
+// once, under the axis's lane count and in the footnote.
+const dayOf = (ms: number) => formatDateTime(ms).split(' ').slice(0, 2).join(' ')
 
 function clock(ms: number, wide = false): string {
-  return wide ? `${DAY.format(ms)} ${CLOCK.format(ms)}` : CLOCK.format(ms)
+  const hm = formatClock(ms).slice(0, 5)
+  return wide ? `${dayOf(ms)} ${hm}` : hm
 }
 
 /**
@@ -223,15 +229,11 @@ export function axisLabels(
   nowAt: number,
   trackPx: number | null = null,
 ): { t: number; pct: number; label: string }[] {
+  // On the person's clock, ticks and words alike (`lanes.ts`, VQ-023).
   const ticks = axisTicks(since, until)
-  const daily = ticks.length > 1 && ticks[1]! - ticks[0]! >= 23 * 3_600_000
   const nowShown = until >= nowAt - 60_000
   const placed = ticks
-    .map((t) => {
-      const d = new Date(t)
-      const midnight = d.getHours() === 0 && d.getMinutes() === 0
-      return { t, pct: pct(t, since, until), label: daily || midnight ? DAY.format(t) : CLOCK.format(t) }
-    })
+    .map((t) => ({ t, pct: pct(t, since, until), label: axisTickText(t, ticks) }))
     .filter((x) => !(nowShown && x.pct > 100 - NOW_GAP_PCT))
   if (trackPx === null || !(trackPx > 0)) return placed
   const limit = nowShown ? trackPx - NOW_LABEL_PX - VALUE_LABEL_GAP_PX : trackPx
@@ -495,7 +497,7 @@ export function panWindow(win: { since: number; until: number }, dir: -1 | 1, no
 }
 
 function rangeWords(since: number, until: number): string {
-  const wide = until - since > 36 * 3_600_000 || DAY.format(since) !== DAY.format(until)
+  const wide = until - since > 36 * 3_600_000 || dayOf(since) !== dayOf(until)
   return `${clock(since, wide)}–${clock(until, wide)}`
 }
 
@@ -650,6 +652,8 @@ export function TimelineLanesScreen({
   const [trackPx, setTrackPx] = useState<number | null>(null)
   /** The phone's filter sheet, behind `Filters · N` (visual QA VQ-024). */
   const [sheet, setSheet] = useState(false)
+  /** The phone's legend, behind `Key` (VQ-024, decided 2026-10-26). */
+  const [key, setKey] = useState(false)
   const lastSpan = useRef(spanKey)
   if (lastSpan.current !== spanKey) {
     lastSpan.current = spanKey
@@ -882,7 +886,7 @@ export function TimelineLanesScreen({
               one !== undefined
                 ? { status: 'ok', read: one }
                 : isData(r)
-                  ? { status: 'error', why: 'not found in this tenant', route, limited: false }
+                  ? { status: 'error', why: 'not found in this workspace', route, limited: false }
                   : r.status === 'error'
                     ? { status: 'error', why: failureWords(r.error), route, limited: r.error.httpStatus === 429 }
                     : { status: 'error', why: 'not read', route, limited: false },
@@ -1047,7 +1051,8 @@ export function TimelineLanesScreen({
   const neverRan = allLanes.filter((l) => l.neverRan).length
 
   // ---- the outcome strip -----------------------------------------------------
-  const tz = useMemo(viewerZone, [])
+  // The person's zone, so the strip's buckets and the footnote agree with the axis.
+  const tz = useTimeZone()
   const stripQuery = useMemo(
     () =>
       outcomesQuery(
@@ -1218,6 +1223,20 @@ export function TimelineLanesScreen({
         >
           Filters · {lanesFiltersSet(view)}
         </button>
+        {/* THE LEGEND FOLDS ON A PHONE TOO (VQ-024, "Fold the legend",
+            BGD 2026-10-26): with the filters folded, the legend's seven marks
+            still stood between the strip and the first lane at 390. Closed by
+            default there; a wide screen shows it always and has no button.
+            The outcome strip's counts are not folded with it. */}
+        <button
+          type="button"
+          className="tl-key-toggle"
+          aria-expanded={key}
+          aria-controls="tl-key"
+          onClick={() => setKey(!key)}
+        >
+          Key
+        </button>
         <div className={sheet ? 'tl-sheet is-open' : 'tl-sheet'} id="tl-sheet">
           <TlPicker
             label="State"
@@ -1298,12 +1317,12 @@ export function TimelineLanesScreen({
         </p>
       )}
 
-      <Legend />
+      <Legend open={key} />
 
       {att.status === 'error' ? (
         <div className="tl-state is-bad" role="alert">
           <p>
-            The attempts could not be read: the read {failureWords(att.error)} at {CLOCK_S.format(att.at)}. Nothing is drawn, because nothing was read.
+            The attempts could not be read: the read {failureWords(att.error)} at {formatDateTime(att.at).split(' ')[2]}. Nothing is drawn, because nothing was read.
           </p>
           <Button size="sm" onClick={refresh}>
             Try again
@@ -1566,9 +1585,9 @@ function TlPicker({
   )
 }
 
-function Legend() {
+function Legend({ open }: { open: boolean }) {
   return (
-    <p className="tl-legend">
+    <p className={open ? 'tl-legend tl-key is-open' : 'tl-legend tl-key'} id="tl-key">
       <span>
         <i className="tl-lg is-hold" /> held capacity (leased → running)
       </span>
@@ -1668,6 +1687,7 @@ function Axis({
     <div className="tl-row tl-axis">
       <div className="tl-lab">
         <small>{summary}</small>
+        <small className="tl-zone">times {axisZone(since, until)}</small>
       </div>
       <div
         ref={track}

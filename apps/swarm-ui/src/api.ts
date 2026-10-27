@@ -20,6 +20,7 @@ import { CONCURRENCY_STATES, MODEL_PRICE_RATES, TERMINAL_STATES } from './types'
 import { sumReported } from './measure'
 import { TASK_PAGE_LIMIT } from './pageLimits'
 import { normUtilisation, type UtilisationRead } from './utilisation'
+import { noteProfile, revisionAfterZoneSaves } from './timezone'
 import type { Outcomes } from './outcomes'
 import { ledgerFixture } from './outcomes.fixture'
 import {
@@ -48,7 +49,7 @@ import type {
   AdminGrantAnswer, AdminRemoveAnswer, AdminWorkspaceView, LoanDeclineAnswer, LoanRequestAnswer, NewWorkspaceBody, PeopleDoc, ScopedPeopleDoc, WorkspaceActionAnswer, WorkspaceKind, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceState, WorkspaceView,
   AccessCheckName, AccessDisableResponse, AccessEnableResponse, AccessGrantResponse, AccessMembers, AccessMode, AccessOverview,
   AccessOwners, AccessRepositoryPage, AccessRevokeResponse, AccessVerifyResponse,
-  NotificationTopic, Preferences, PreferencesSaved, PreferencesWrite, Profile, ProfileClaudeAccount, ProfileClaudeAccounts, ProfileDefault,
+  NotificationTopic, Preferences, PreferencesSaved, PreferencesWrite, Profile, TimeZoneSource, ProfileClaudeAccount, ProfileClaudeAccounts, ProfileDefault,
   ProfileGitHub, ProfileIdentity, ProfileKeyStatus, ProfileNotifications, ProfileQuotaWindow, ProfileSection, ProfileTypeSafe, ProfileWorkspace,
   ReminderCadence, WorkspaceRole,
   DefaultRoleChange, PersonRoleChange, PersonRoles, PersonWorkspaceRole, RoleSummary, WorkspaceRoleEvent, WorkspaceRoleMe,
@@ -185,12 +186,14 @@ export { TASK_PAGE_LIMIT }
  * (Agents.tsx, `PHONE_PAGE_LIMIT`).
  *
  * `view: 'summary'` (#168) asks for `GET /v1/tasks?view=summary`: each row
- * WITHOUT `input`, `metadata` and `result_summary` and their redaction counts
- * -- the keys absent, not null (`codec.task_to_api`). Those three are most of
- * a row's 10-20 KiB (docs/web-ui §2.5), so a polled list that draws none of
- * them asks for it: the Overview and the Agents list. Anything that reads a
- * row's input, metadata or result summary reads `loadTask` instead, which is
- * always the full row. No `view` is the full row, as before.
+ * WITHOUT `input` and `result_summary` and their redaction counts -- the keys
+ * absent, not null (`codec.task_to_api`) -- and with `metadata` cut to its
+ * `title` alone (SUMMARY-TITLE, `codec.SUMMARY_METADATA_KEYS`). Those are
+ * most of a row's 10-20 KiB (docs/web-ui §2.5), so a polled list that draws
+ * none of them asks for it: the Overview and the Agents list. Anything that
+ * reads a row's input, the rest of its metadata or its result summary reads
+ * `loadTask` instead, which is always the full row. No `view` is the full
+ * row, as before.
  */
 export async function loadTasks(
   limit: number = TASK_PAGE_LIMIT,
@@ -1778,9 +1781,12 @@ async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<R
   // Browser tab's findings were measured on running browser agents with
   // logs of 20 and more steps, and a four-step log cannot show a log beside
   // the frame that runs past its pane. Forty browser actions, each a call
-  // and its result, for the render to be checked against.
-  const browserSteps = (from: number): TranscriptStep[] =>
-    Array.from({ length: 40 }, (_, i) => {
+  // and its result, for the render to be checked against. THE FINISHED
+  // BROWSER AGENT, task_f523c160 (FIXTURE-BROWSER-DONE, part of #2423), has
+  // a short one, six actions and its result: its Browser tab is reviewed
+  // for the end time, the links and the recordings, not for a long log.
+  const browserSteps = (from: number, count: number): TranscriptStep[] =>
+    Array.from({ length: count }, (_, i) => {
       const id = `toolu_b${String(i).padStart(2, '0')}`
       const action = ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type'][i % 4]!
       return [
@@ -1788,7 +1794,7 @@ async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<R
         step(from + 2 * i + 1, { kind: 'tool_result', role: 'user', tool_result: { tool_use_id: id, is_error: false, content: `Step ${i + 1}: ${action} done; the page says "Example Domain".`, images: 0 } }),
       ]
     }).flat()
-  const long = taskId === 'task_b40e5a1c' ? browserSteps(4) : []
+  const long = taskId === 'task_b40e5a1c' ? browserSteps(4, 40) : taskId === 'task_f523c160' ? browserSteps(4, 6) : []
   const steps: TranscriptStep[] = started
     ? [
         step(0, { kind: 'init', role: 'system', meta: { model: 'claude-opus-5', permission_mode: 'bypassPermissions', tool_count: 14 } }),
@@ -2771,7 +2777,7 @@ export interface NotificationFeed {
  */
 export async function loadNotifications(): Promise<Result<NotificationFeed>> {
   const target = route('/v1/notifications')
-  if (USE_FIXTURES) return { status: 'error', error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build serves no notification feed.' } }
+  if (USE_FIXTURES) return { status: 'ok', fetchedAt: Date.now(), data: { items: [{ id: 'admin:ws:wsr_c4r0l', group: 'admin', needs_you: true, title: 'Carol asked for a workspace', detail: null, href: '/admin/people', at: new Date(Date.now() - 40 * 60_000).toISOString(), read: false }], unread_needs_you: 1, unread_updates: 0, admin_pending: 1, tenants_waiting: null, platform_secrets_unset: null, read_at: new Date().toISOString() } } as Result<NotificationFeed>
   const r = await read<NotificationFeed>(target, () => false, { frame: true })
   // A 200 with no list is not an empty feed, and drawing "Nothing needs you"
   // over an answer nobody could read would be a claim; it is a failure.
@@ -5058,7 +5064,15 @@ function fixtureTaskRows(): Task[] {
     // dispatch and attempt 2 failed, so the Attempts tab, the events and
     // the checkpoints all have more than one attempt to agree about.
     mk('task_a073aff5', 'RUNNING', 'claude-code', 4, { attempt_count: 3, current_generation: 3 }),
-    mk('task_8ea5c26d', 'RUNNING', 'claude-code', 5),
+    // A LONE AGENT WITH A TITLE (SUMMARY-TITLE): its Agents row reads the
+    // title, beside task_a073aff5 above, which has none and reads
+    // `claude-code agent · a073aff5`. The summary view serves metadata as
+    // the title alone, so this is the whole of what the list sees. No
+    // `(#N)` in it: the copy sweep (walk.copy.test.tsx) reads every page
+    // this build draws and refuses an issue number in visible copy.
+    mk('task_8ea5c26d', 'RUNNING', 'claude-code', 5, {
+      metadata: { title: 'Fix flaky lease heartbeat test' },
+    }),
     // THE BROWSER QA AGENT: the one fixture task with a live browser, so
     // the Browser pane has a live session to draw in this build, and the
     // QA route `task-browser` (qa/routes.json) captures it rather than an
@@ -5100,7 +5114,16 @@ function fixtureTaskRows(): Task[] {
     }),
     mk('task_99284d38', 'SUCCEEDED', 'claude-code', 50),
     mk('task_f278adec', 'SUCCEEDED', 'claude-code', 48),
-    mk('task_f523c160', 'SUCCEEDED', 'claude-code', 47),
+    // THE FINISHED BROWSER AGENT (FIXTURE-BROWSER-DONE, part of #2423; BGD
+    // 2026-10-26 "Convert one"): this row was an ordinary claude-code one
+    // no test named, converted rather than a row added so every fixture
+    // total stands. A finished agent's Browser tab (BT-006, BT-007) renders
+    // from it: its end time, the links to Attempts and Artifacts, and the
+    // recordings panel, empty here because the fixture build does not serve
+    // recordings. task_b40e5a1c stays the one RUNNING browser agent.
+    mk('task_f523c160', 'SUCCEEDED', 'claude-code-browser', 47, {
+      input: { prompt: 'Browser QA agent: open https://example.com, follow its one link, and report both pages.' },
+    }),
     mk('task_812d51aa', 'SUCCEEDED', 'claude-code', 46),
     mk('task_108ef29c', 'SUCCEEDED', 'mock', 90),
     mk('task_1beb89a5', 'CANCELLED', 'claude-code', 62, {
@@ -7656,6 +7679,10 @@ function fixtureProfile(): unknown {
       },
     },
     notifications: { preferences: { muted: ['finished'], reminder: 'daily' }, topics: [...NOTIFICATION_TOPICS] },
+    // Nothing saved: UTC. A zone this browser cached moves to the server on
+    // the first read, which the fixture build does not serve, so it stays here.
+    time_zone: 'UTC',
+    time_zone_source: 'default',
     claude_accounts: {
       personal_workspace: FIXTURE_TENANT,
       // The accounts Capacity › Accounts lists, so the two pages agree: the
@@ -7787,6 +7814,13 @@ function fixturePeople(): unknown {
       first_seen: fixtureAgo(6 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(3 * FIXTURE_HOUR), last_submitted: fixtureAgo(4 * FIXTURE_HOUR), last_active: fixtureAgo(3 * FIXTURE_HOUR),
     },
     {
+      email: 'bogdan@example.com', display_name: 'Bogdan Alexandrescu', teams: [FIXTURE_GROUP.principal], github: 'connected', roles: { eng: 'admin', research: 'member' },
+      workspace: ws('ready', 'u-bogdan', { ready_at: fixtureAgo(12 * 24 * FIXTURE_HOUR) }),
+      claude_account: { source: 'lent', own: 0, lent: 7, lent_by: ['eng'], provider_key: false, lent_accounts: Array.from({ length: 7 }, (_, i) => ({ account_id: i === 0 ? 'ai-eng-1-max' : `ai-eng-${i + 1}`, label: i === 0 ? 'ai-eng-1-max' : `ai-eng-${i + 1}`, owner_tenant: 'eng', owner_name: 'Engineering', state: 'AVAILABLE' })) },
+      loan_request: null,
+      first_seen: fixtureAgo(12 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(2 * 60_000), last_submitted: fixtureAgo(30 * 60_000), last_active: fixtureAgo(2 * 60_000),
+    },
+    {
       email: 'dave@example.com', display_name: null, teams: [], github: 'expired', roles: { eng: 'none', research: 'admin' },
       workspace: ws('ready', 'u-dave', { ready_at: fixtureAgo(20 * 24 * FIXTURE_HOUR) }),
       claude_account: claude('provider_key', 0, 0, [], true), loan_request: null,
@@ -7800,11 +7834,16 @@ function fixturePeople(): unknown {
     people,
     count: people.length,
     pending: people.filter((p) => p.workspace.state === 'requested').length,
-    audit: [],
+    audit: [
+      ...Array.from({ length: 12 }, (_, i) => ({ action: 'qa_target_credential_set', target_workspace_id: 'eng', by: 'alice@example.com', at: fixtureAgo((i + 1) * 60_000), detail: {} })),
+      ...Array.from({ length: 10 }, (_, i) => ({ action: 'repository_workflow_files_set', target_workspace_id: 'eng', by: 'alice@example.com', at: fixtureAgo((i + 20) * 60_000), detail: {} })),
+      { action: 'approve', target_workspace_id: 'u-bob', by: 'alice@example.com', at: fixtureAgo(5 * 24 * FIXTURE_HOUR), detail: {} },
+      { action: 'frobnicated_mcp_widget', target_workspace_id: 'eng', by: 'alice@example.com', at: fixtureAgo(6 * 24 * FIXTURE_HOUR), detail: {} },
+    ],
     lendable_accounts: ownAccounts.map((a) => ({ account_id: a.account_id, owner_tenant: a.owner_tenant, label: a.label, state: a.state, lend_to: a.lend_to })),
     lendable_error: null,
     provisioning: { available: true, approved_waiting: 0 },
-    admins: [{ email: 'alice@example.com', role: 'admin', granted_by: 'ops@example.com', granted_at: fixtureAgo(30 * 24 * FIXTURE_HOUR) }],
+    admins: [{ email: 'ops@example.com', role: 'owner', granted_by: 'config:PLATFORM_OWNER', granted_at: null }, { email: 'bogdan@example.com', role: 'owner', granted_by: 'config:PLATFORM_OWNER', granted_at: null }, { email: 'alice@example.com', role: 'admin', granted_by: 'ops@example.com', granted_at: fixtureAgo(30 * 24 * FIXTURE_HOUR) }],
     admins_error: null,
   }
 }
@@ -9498,10 +9537,26 @@ export function normProfile(raw: unknown): Profile {
     connections,
     revision: pfNum(r.revision),
     unavailable,
+    ...normTimeZone(r),
   }
   if (pfObj(r.notifications) !== null) profile.notifications = normNotifications(r.notifications)
   if (pfObj(r.claude_accounts) !== null) profile.claude_accounts = normClaudeAccounts(r.claude_accounts)
   return profile
+}
+
+const TIME_ZONE_SOURCES: readonly TimeZoneSource[] = ['profile', 'default', 'unavailable']
+
+/**
+ * `time_zone` and `time_zone_source` (TIMEZONE-SERVER). A source this console
+ * does not know, or a zone that is not text where one is claimed, reads as
+ * unread: never as UTC, which would move every time on the page.
+ */
+function normTimeZone(r: Record<string, unknown>): Pick<Profile, 'time_zone' | 'time_zone_source'> {
+  const source = TIME_ZONE_SOURCES.find((s) => s === r.time_zone_source)
+  const zone = pfStr(r.time_zone)
+  if (source === undefined) return {}
+  if (source === 'unavailable' || zone === null) return { time_zone: null, time_zone_source: 'unavailable' }
+  return { time_zone: zone, time_zone_source: source }
 }
 
 function normPreferencesSaved(raw: unknown): PreferencesSaved {
@@ -9512,22 +9567,32 @@ function normPreferencesSaved(raw: unknown): PreferencesSaved {
     default_workspace: normDefault(r.default_workspace),
     notifications: normNotifications(r.notifications),
     revision: pfNum(r.revision) ?? 0,
+    ...normTimeZone(r),
   }
 }
 
-/** `GET /v1/profile`: the signed-in person's own profile, each section failing alone. */
+/**
+ * `GET /v1/profile`: the signed-in person's own profile, each section failing
+ * alone. Every answered read tells `timezone.ts` who is signed in and their
+ * zone (TIMEZONE-SERVER), so Profile's read is also the zone's, not a second one.
+ */
 export async function loadProfile(): Promise<Result<Profile>> {
-  return readAs(route('/v1/profile'), normProfile)
+  const r = await readAs(route('/v1/profile'), normProfile)
+  if (r.status === 'ok' || r.status === 'stale') noteProfile(r.data)
+  return r
 }
 
 /**
  * `PUT /v1/profile/preferences`: replace the whole set at `body.revision`. A
  * stale revision is a 409 `preferences_changed` (another tab saved first); a
  * refused name is a 422 with its `display_name_*` code and a message that names
- * the rule.
+ * the rule. A save that leaves the zone as stored goes at the revision a zone
+ * pick on this page moved `body.revision` to (`revisionAfterZoneSaves`), so
+ * Profile's next save after a pick is not refused as changed elsewhere.
  */
 export async function putPreferences(body: PreferencesWrite): Promise<Result<PreferencesSaved>> {
-  const r = await writeTo(route('/v1/profile/preferences'), 'PUT', body)
+  const sent = body.time_zone === undefined ? { ...body, revision: await revisionAfterZoneSaves(body.revision) } : body
+  const r = await writeTo(route('/v1/profile/preferences'), 'PUT', sent)
   if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normPreferencesSaved(r.data) }
   if (r.status === 'empty') return { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The save answered with nothing to read back. Reload to see what was stored.', method: 'PUT' } }
   return r

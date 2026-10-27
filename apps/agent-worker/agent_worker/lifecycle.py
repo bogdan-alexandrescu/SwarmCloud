@@ -144,6 +144,7 @@ from swarm_redaction import RULES as CREDENTIAL_RULES
 from swarm_redaction import redact as redact_text
 
 from . import artifact_manifest as manifest_mod
+from . import budget as budget_mod
 from . import cachedirs as cachedirs_mod
 from . import children as children_mod
 from . import continuation as continuation_mod
@@ -1134,6 +1135,21 @@ class Worker:
         self._channel_seen: int | None = None
         self._swaps = 0
         self._just_swapped = False
+        #: The attempt's budget (#2459, `budget`), built with the first child
+        #: environment of a budgeted CLI task; None for every other attempt,
+        #: which then runs exactly as before.
+        self.budget: budget_mod.BudgetGuard | None = None
+        # EVERY AGENT RUN, COUNTED (SWAP-RUNS, #2457). An attempt can start
+        # several runners -- an account swap, a short rate limit and a
+        # reloaded credential all restart the agent in place -- and the
+        # summary's `duration_seconds` used to be the LAST one's alone: two
+        # 7,200 s timeouts on 2026-10-26 read "agent ran 4,600 s" because a
+        # swap at minute 42 restarted it. One entry per runner start, closed
+        # when it is reaped (`_close_run`); one per swap (`_emit_swapped`).
+        # `_run_open` is the run now running, with what was spent before it.
+        self._runs: list[dict[str, Any]] = []
+        self._swap_log: list[dict[str, Any]] = []
+        self._run_open: dict[str, Any] | None = None
         # WHAT THIS ATTEMPT SPENT, summed over every runner it started. An
         # attempt can start several -- a short rate limit and a reloaded
         # credential both restart in place -- and each one's result.json is
@@ -3457,6 +3473,12 @@ class Worker:
                 )
         if unattached is not None:
             self.mcp.close()
+            # A WORKFLOW STEP'S per-run credential that lapsed while it waited
+            # parks for its caller to re-store it (BGD 2026-10-26, §4.10);
+            # anything else withheld still fails the attempt.
+            lapsed = attached.lapsed_credentials() if task.get("workflow_id") else []
+            if lapsed:
+                return functools.partial(self._park_mcp_credential, lapsed)
             return functools.partial(self._fail_mcp_unattached, *unattached)
         try:
             child_env = self._build_child_env()
@@ -3577,6 +3599,7 @@ class Worker:
         # The session this runner reports for: its own, or an earlier
         # runner's it continues with `--resume` (`_account_channel_env`).
         self._note_runner_spend_start(resumed=bool(child_env.get(RESUME_SESSION_ENV)))
+        self._open_run(resumed=bool(child_env.get(RESUME_SESSION_ENV)))
 
         if self.phases.current != "runner":
             # The last startup line. An in-place restart is not a new phase.
@@ -3695,6 +3718,12 @@ class Worker:
                 with self._heartbeat_meanwhile("account channel"):
                     self._watch_account()
 
+            if self.budget is not None:
+                # A file stat when nothing changed; a price asked of swarm-api
+                # at most every `budget.PRICE_INTERVAL_SECONDS` (#2459).
+                with self._heartbeat_meanwhile("budget"):
+                    self.budget.watch()
+
             if now >= next_poll:
                 next_poll = now + cfg.control_poll_seconds
                 try:
@@ -3759,7 +3788,7 @@ class Worker:
                 break
 
         result = child.finish()
-        self._child_ended()
+        self._child_ended(result)
         # An agent that ended with a hand-off open is waiting for nobody now:
         # resolved while the task is still RUNNING (live-browser §4.1).
         self.handoff.agent_exited(ws.work)
@@ -4332,6 +4361,12 @@ class Worker:
             summary["branch"] = self._scrub(dict(self._carrier_pushed))
         summary["exit_code"] = result.exit_code
         summary["duration_seconds"] = round(result.duration_seconds, 3)
+        if len(self._runs) > 1:
+            # EVERY RUN (SWAP-RUNS, #2457): the attempt's agent time is the
+            # sum of its runs; the last run's own figure keeps its own name.
+            summary["duration_seconds"] = round(
+                sum(float(run.get("duration_s") or 0.0) for run in self._runs), 3)
+            summary["last_run_duration_seconds"] = round(result.duration_seconds, 3)
         if self._index_phases is not None:
             summary["repo_index_phases"] = [r.as_dict() for r in self._index_phases]
         if self._verdict is not None:
@@ -4350,6 +4385,23 @@ class Worker:
             summary[verdict_mod.RENDERED_REVIEW_KEY] = self._scrub(dict(self._rendered_review))
 
         runner_result = self._add_runner_block(summary)
+
+        if self.budget is not None:
+            # The limits, what the attempt used and, when it stopped the
+            # agent, how (#2459); on every budgeted attempt, however it ended.
+            summary[budget_mod.SUMMARY_KEY] = self.budget.summary()
+        if self.budget is not None and self.budget.exceeded:
+            # STOPPED BY ITS BUDGET: checkpointed and published above, as a
+            # timed-out step is. FAILED with the cause `budget_exceeded`;
+            # `end_cause` stays null until contract request 118 types it --
+            # the contract's own rule for an end with no value of its own.
+            self._finish_terminal(
+                state=TaskState.FAILED,
+                exit_code=result.exit_code,
+                error=self.budget.error(),
+                result_summary=summary,
+            )
+            return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
 
         if result.timed_out:
             error = f"runner exceeded its {self.cfg.timeout_seconds}s timeout and was killed"
@@ -4624,6 +4676,8 @@ class Worker:
         ws = self.ws
         if ws is None:
             return None
+        # Every run and swap, when there was more than one run (SWAP-RUNS).
+        summary.update(_runs_summary(self._runs, self._swap_log))
         if self._spend.get("cost_estimated"):
             # The attempt's `cost_usd` includes an estimate for a run stopped
             # before it reported one (#627). Said here, at the top, because a
@@ -9166,6 +9220,9 @@ class Worker:
         # task, from its document as swarm-api recorded it at submission --
         # never from `input` (invariant 10). See `gitidentity`.
         base.update(git_identity_env(self._task))
+        # THE BUDGET (#2459): where the runner reports usage and reads the
+        # stop, on a budgeted task only. Nothing for any other.
+        base.update(self._budget_env())
         for name in ("CLAUDE_CODE_BIN", "CLAUDE_CODE_ARGS", "CODEX_BIN", "CODEX_ARGS"):
             # Platform-set, never caller-set: they live in the Job definition.
             if os.environ.get(name):
@@ -9474,6 +9531,31 @@ class Worker:
         return outcome
 
     # -- the account mid-run (S13-S15) ---------------------------------------
+    def _budget_env(self) -> dict[str, str]:
+        """The runner's budget files (#2459), building the guard on first use.
+
+        Only for a coding-agent CLI (`cli_agent_spec`) whose signed dispatch
+        block carries a budget: every other attempt gets nothing, and its
+        runner, settings and supervision are what they were before.
+        """
+        if self.budget is None:
+            spec = cli_agent_spec(self.cfg.runner_profile)
+            limits = budget_mod.Limits.from_dispatch(self._dispatch_block())
+            if spec is None or limits is None or self.ws is None:
+                return {}
+            self.budget = budget_mod.BudgetGuard(
+                limits,
+                private=self.ws.private,
+                emit=lambda detail: self.control.emit(EventType.RUNNING, detail),
+                log=self.log,
+                pricer=self.spend_pricer.price,
+                # claude-code's PostToolUse hook is the one way to tell an
+                # agent mid-run; `codex exec` takes nothing once started.
+                can_tell=spec.name == "claude-code",
+            )
+            self.log.info("this attempt has a budget", limit=limits.as_dict())
+        return self.budget.env()
+
     def _account_channel_paths(self) -> tuple[Path, Path]:
         """(stream, move): the runner's channel, in the worker's own `private/`.
 
@@ -9782,6 +9864,14 @@ class Worker:
             account_id=taken.account_id,
             reason=reason,
         )
+        # The summary's record of it (SWAP-RUNS): after which run, and when.
+        self._swap_log.append({
+            "at": _rfc3339_now(),
+            "from": left.account_id,
+            "to": taken.account_id,
+            "reason": reason,
+            "after_run": len(self._runs),
+        })
         try:
             self.control.emit(
                 EventType.RUNNING,
@@ -11109,6 +11199,51 @@ class Worker:
                 end_cause=EndCause.CANNOT_START,
             )
         return Outcome(exit_code=ExitCode.FAILED, state=state)
+
+    def _park_mcp_credential(self, lapsed: list[tuple[str, str]]) -> Outcome:
+        """A workflow step's per-run MCP credential lapsed between admission
+        and this attach (registered-mcp-servers.md §4.10, BGD 2026-10-26).
+        Its caller is online and re-stores it through
+        `PUT /v1/workflows/{id}/mcp-credentials`, so this is a wait, not a
+        failure: checkpoint, PARKED(CREDENTIAL_MISSING), release, exit, with
+        the detail a caller watches for (`credential: "mcp"`, the code, the
+        server by name). The attach does not say when the row expired, so
+        `expired_at` is null here; the scheduler's park says it. The park's
+        instant is `next_eligible_at`, so the credential sweep promotes it
+        the moment the row is live again. Names and reason words only.
+        """
+        name, reason = lapsed[0]
+        code = ("mcp_credential_missing" if reason == mcp_attach_mod.CREDENTIAL_MISSING
+                else "mcp_credential_expired")
+        self.log.warning(
+            "a workflow's mcp credential lapsed before the agent; parking for its caller",
+            servers=[n for n, _ in lapsed], code=code,
+        )
+        self._checkpoint("mcp-credential")
+        summary = self._upload_outputs()
+        now = utcnow()
+        with self._metrics_after_the_record():
+            self.control.park(
+                reason=ParkReason.CREDENTIAL_MISSING,
+                next_eligible_at=now,
+                detail={
+                    "credential": "mcp",
+                    "code": code,
+                    "server": name,
+                    "expired_at": None,
+                    "parked_at": now.isoformat(),
+                    "mcp_servers": [
+                        {"name": n,
+                         "code": ("mcp_credential_missing"
+                                  if r == mcp_attach_mod.CREDENTIAL_MISSING
+                                  else "mcp_credential_expired"),
+                         "why": r}
+                        for n, r in lapsed
+                    ],
+                    **summary,
+                },
+            )
+        return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _fail_mcp_unattached(self, cause: str, detail: str, retryable: bool) -> Outcome:
         """The attempt ends before its agent ran: a registered MCP server the
@@ -15300,16 +15435,78 @@ class Worker:
         }
 
     # -- spend -------------------------------------------------------------
-    def _child_ended(self) -> None:
+    def _child_ended(self, result: ChildResult | None = None) -> None:
         """Everything that has to happen the moment a runner is gone.
 
-        Called at every site that reaps a runner, so a new site gets both
-        halves by calling one thing: the resource sample is stopped and
-        written, and the run's spend is taken before a restart can overwrite
-        the result.json it is in.
+        Called at every site that reaps a runner, so a new site gets every
+        part by calling one thing: the resource sample is stopped and
+        written, the run's spend is taken before a restart can overwrite
+        the result.json it is in, and the run is closed in `_runs` with what
+        it spent. `result` is the reaped runner's, where the site kept it.
         """
         self._stop_sampler()
+        before = dict(self._spend)
         self._collect_spend()
+        if self.budget is not None:
+            self.budget.runner_ended()
+        self._close_run(result, spent_before=before)
+
+    def _open_run(self, *, resumed: bool) -> None:
+        """Start this runner's entry in `_runs` (SWAP-RUNS). Never raises."""
+        account = self._account
+        self._run_open = {
+            "run": len(self._runs) + 1,
+            "started_at": _rfc3339_now(),
+            "account": account.account_id if account is not None else None,
+            "resumed": resumed,
+            # `_just_swapped` is set by a swap and read after the next run
+            # ends, so here it says this run is the one the swap started.
+            "after_swap": bool(self._just_swapped),
+        }
+
+    def _close_run(self, result: ChildResult | None, *, spent_before: dict[str, Any]) -> None:
+        """Close the run `_open_run` started, once. Never raises.
+
+        Its duration and exit are the reaped runner's; its tokens and cost
+        are what `_collect_spend` added for it -- the difference, because a
+        resumed session reports the session's running totals (`_add_spend`).
+        A run that followed a swap also carries `reread`: the seconds and
+        tokens it spent before its first action (`cliagent.is_action`), as
+        the runner's account channel measured them, or everything it spent
+        when it never acted (`reached: false`).
+        """
+        entry, self._run_open = self._run_open, None
+        if entry is None:
+            return
+        try:
+            child = self._child
+            if result is not None:
+                seconds, exit_code, timed_out = (
+                    result.duration_seconds, result.exit_code, result.timed_out)
+            else:
+                seconds = child.elapsed_seconds if child is not None else 0.0
+                exit_code = child.poll() if child is not None else None
+                timed_out = False
+            entry["ended_at"] = _rfc3339_now()
+            entry["duration_s"] = round(float(seconds), 3)
+            entry["exit_code"] = exit_code
+            if timed_out:
+                entry["timed_out"] = True
+            tokens = {
+                key: self._spend[key] - spent_before.get(key, 0)
+                for key in _RUN_TOKEN_KEYS
+                if key in self._spend
+            }
+            if tokens:
+                entry["tokens"] = tokens
+            if "total_cost_usd" in self._spend:
+                entry["cost_usd"] = round(
+                    self._spend["total_cost_usd"] - spent_before.get("total_cost_usd", 0), 10)
+            if entry.get("after_swap") and self.ws is not None:
+                entry["reread"] = _reread_of(self._read_account_channel())
+        except Exception as exc:  # pragma: no cover - defensive; teardown path
+            self.log.warning("could not close the run's record", error=str(exc))
+        self._runs.append(entry)
 
     def _collect_spend(self) -> None:
         """Add the runner that just ended to this attempt's spend. Never raises.
@@ -18912,6 +19109,84 @@ def _tail_text(path: Path, limit: int = 2000) -> str:
     if not path.exists():
         return ""
     return path.read_text(errors="replace")[-limit:]
+
+
+#: The token counts a run's entry in `_runs` carries, each its own share.
+_RUN_TOKEN_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+)
+
+
+def _runs_summary(runs: list[dict[str, Any]], swaps: list[dict[str, Any]]) -> dict[str, Any]:
+    """`runs`, `swaps` and `swap_cost` for a summary, or {} (SWAP-RUNS, #2457).
+
+    AN ATTEMPT OF ONE RUN GETS NOTHING NEW: {} when it started one runner and
+    swapped nothing, so its summary is exactly what it was before these keys
+    existed. `swap_cost` sums the `reread` of every run that followed a swap:
+    what the swaps cost the attempt in seconds and tokens before the agent
+    acted again.
+    """
+    if len(runs) <= 1 and not swaps:
+        return {}
+    out: dict[str, Any] = {
+        "runs": [dict(run) for run in runs],
+        "swaps": [dict(swap) for swap in swaps],
+    }
+    measured = [
+        run["reread"] for run in runs
+        if isinstance(run.get("reread"), dict) and "seconds" in run["reread"]
+    ]
+    if measured:
+        tokens: dict[str, int] = {}
+        for reread in measured:
+            for key, value in (reread.get("tokens") or {}).items():
+                tokens[key] = tokens.get(key, 0) + int(value)
+        out["swap_cost"] = {
+            "reread_seconds": round(sum(float(r.get("seconds") or 0) for r in measured), 3),
+            "reread_tokens": tokens,
+            "measured_runs": len(measured),
+            "reached_action": sum(1 for r in measured if r.get("reached")),
+        }
+    return out
+
+
+def _reread_of(channel: dict[str, Any]) -> dict[str, Any]:
+    """A run's re-read cost from its account channel (`cliagent.AccountStreamWatcher`).
+
+    `reached: true` with the seconds and tokens spent before the run's first
+    action and the tool it was; `reached: false` with everything the run
+    spent when it never acted; `measured: false` when the channel said
+    nothing (a runner that wrote none). Numbers only, never stream text.
+    """
+    def figures(block: Any) -> dict[str, Any] | None:
+        if not isinstance(block, dict):
+            return None
+        seconds = block.get("seconds")
+        tokens = block.get("tokens")
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+            return None
+        counts = {
+            key: int(tokens[key])
+            for key in _RUN_TOKEN_KEYS
+            if isinstance(tokens, dict) and isinstance(tokens.get(key), int)
+            and not isinstance(tokens.get(key), bool)
+        }
+        return {"seconds": round(float(seconds), 3), "tokens": counts}
+
+    first = channel.get("first_action")
+    reached = figures(first)
+    if reached is not None:
+        tool = first.get("tool") if isinstance(first, dict) else None
+        if isinstance(tool, str) and tool:
+            reached["tool"] = tool[:80]
+        return {"reached": True, **reached}
+    spent = figures(channel.get("spent"))
+    if spent is not None:
+        return {"reached": False, **spent}
+    return {"measured": False}
 
 
 def _rfc3339_now() -> str:

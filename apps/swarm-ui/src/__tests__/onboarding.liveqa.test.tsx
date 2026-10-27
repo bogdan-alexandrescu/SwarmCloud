@@ -67,7 +67,7 @@ describe('RSA-25: a step row is written for a person', () => {
     const line = visible(stepEl('workspace').querySelector('.ob-line'))
     expect(line).toMatch(/^checked /)
     // A step with a line keeps the separator between the line and the time.
-    expect(visible(stepEl('signed_in').querySelector('.ob-line'))).toMatch(/tenant eng · checked /)
+    expect(visible(stepEl('signed_in').querySelector('.ob-line'))).toMatch(/workspace eng · checked /)
   })
 })
 

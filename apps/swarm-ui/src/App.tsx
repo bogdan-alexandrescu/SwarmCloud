@@ -349,7 +349,8 @@ export const SECTIONS: SectionDef[] = [
     // docs/schedules.md §6.1 (SD1, owner decision 2026-10-08): the section
     // that holds what runs by itself. A LITERAL id for the reason given on
     // Work: test_nav_headings_agree.py reads this array with a regex.
-    // Approvals is its second page, `/approvals` (§6.1), and the question's
+    // Approvals is its second page, `/automate/approvals` (§6.1; moved from
+    // `/approvals` by APPROVALS-MOVE, VQ-030), and the question's
     // last clause is its. ONE SCHEDULES PAGE (SCHED-ONE-PAGE, owner decision
     // 2026-10-13, §6.1): an admin's every-tenant view is Schedules' "All
     // tenants" switch (`?scope=all`), not a second Schedules tab under Admin.
@@ -1147,7 +1148,7 @@ function keptKeys(sectionId: string, tab: string): readonly string[] {
   // paths.ts), with its tab and its editor (AUT-11).
   // `scope=all` is the admin's All tenants view (SCHED-ONE-PAGE), linkable.
   if (sectionId === AUTOMATE && tab === 'schedules') return ['schedule', 'tab', 'edit', 'scope']
-  // One inbox item rides on the page's address (`/approvals/<id>`, paths.ts),
+  // One inbox item rides on the page's address (`/automate/approvals/<id>`, paths.ts),
   // and the inbox's kind filter beside it (AUT-15).
   if (sectionId === AUTOMATE && tab === 'approvals') return ['approval', 'kind']
   // GitHub access' Choose repositories tab, and People and roles' Members'

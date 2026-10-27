@@ -106,6 +106,23 @@ def test_all_five_firings_of_a_page_are_served_with_bars_matching_their_attempts
     assert [len(f["items"][0]["tasks"][0]["attempts"]) for f in firings] == [1, 2, 3, 4, 5]
 
 
+def test_a_task_serves_its_metadata_title_and_null_when_unset(client, db) -> None:
+    """VQ-028 (part of #2391): the History names a schedule-made task by its
+    `metadata.title`; an untitled task serves null, and nothing else of its
+    metadata is served."""
+    sid = create(client)["schedule_id"]
+    ids = _five(db, sid)
+    db.docs["tasks/task_f1"]["metadata"] = {"title": "Docs drift: README install steps",
+                                            "schedule_id": sid, "caller_label": "x"}
+    db.docs["tasks/task_f2"]["metadata"] = {"schedule_id": sid}
+    firings = _spans(client, sid, ids[:2]).json()["firings"]
+    titled, untitled = (f["items"][0]["tasks"][0] for f in firings)
+    assert titled["title"] == "Docs drift: README install steps"
+    assert untitled["title"] is None
+    for task in (titled, untitled):
+        assert "metadata" not in task and "schedule_id" not in task and "caller_label" not in task
+
+
 def test_more_firings_than_one_page_is_refused(client, db) -> None:
     sid = create(client)["schedule_id"]
     asked = [f"{sid}:cron:{n}" for n in range(schedule_routes.SPAN_FIRINGS + 1)]

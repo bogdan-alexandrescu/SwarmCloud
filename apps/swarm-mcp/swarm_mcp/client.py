@@ -946,6 +946,49 @@ def outputs_of(
         for item in summary.get("staged_inputs") or []
         if isinstance(item, dict)
     ]
+    out.update(runs_of(summary))
+    return out
+
+
+#: The fields of one agent run, and of one account swap, the worker records
+#: in `result_summary.runs` / `.swaps` (SWAP-RUNS, #2457).
+_RUN_FIELDS = (
+    "run", "started_at", "ended_at", "duration_s", "exit_code", "timed_out",
+    "account", "resumed", "after_swap", "tokens", "cost_usd", "reread",
+)
+_SWAP_FIELDS = ("at", "from", "to", "reason", "after_run")
+
+
+def runs_of(summary: dict[str, Any]) -> dict[str, Any]:
+    """Every agent run of the attempt and each account swap, or {} for one run.
+
+    The worker writes `runs` and `swaps` only when an attempt started more
+    than one runner (SWAP-RUNS, #2457): then `duration_s` above is the SUM of
+    the runs, `last_run_duration_s` the last run's alone, and `swap_cost` what
+    the swaps cost in seconds and tokens before the agent acted again. A
+    one-run attempt's outputs carry none of these keys, as before.
+    """
+    runs = summary.get("runs")
+    if not isinstance(runs, list) or not runs:
+        return {}
+    out: dict[str, Any] = {
+        "runs": [
+            {key: run[key] for key in _RUN_FIELDS if key in run}
+            for run in runs
+            if isinstance(run, dict)
+        ],
+        "swaps": [
+            {key: swap[key] for key in _SWAP_FIELDS if key in swap}
+            for swap in summary.get("swaps") or []
+            if isinstance(swap, dict)
+        ],
+    }
+    last = summary.get("last_run_duration_seconds")
+    if isinstance(last, (int, float)) and not isinstance(last, bool):
+        out["last_run_duration_s"] = round(float(last), 1)
+    cost = summary.get("swap_cost")
+    if isinstance(cost, dict):
+        out["swap_cost"] = dict(cost)
     return out
 
 

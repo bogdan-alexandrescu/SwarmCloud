@@ -35,7 +35,9 @@ import { StateMark } from './marks'
 import { addressToPath } from './paths'
 import { staleFoot } from './Shell'
 import { usePageClock } from './useNow'
-import { ENDED_BADLY, WHOLE, hhmmUtc, readReach, stateView, type Coverage, type OverviewTaskPage, type StateView } from './overviewReads'
+import { formatDateTime, isToday, startOfDay, zoneLabel } from './timezone'
+import { useTimeZone } from './useTimeZone'
+import { ENDED_BADLY, WHOLE, hhmm, readReach, stateView, type Coverage, type OverviewTaskPage, type StateView } from './overviewReads'
 import { CONCURRENCY_STATES, TERMINAL_STATES, clockTime, reasonCopy, timeAgo, whyAgent, type Stats, type Task, type TaskPage, type TaskState } from './types'
 
 /**
@@ -129,22 +131,14 @@ function rows(tasks: Result<TaskPage>): Task[] | null {
 }
 
 
-/** Since 00:00 UTC today. O1 names the day in UTC, so the cut is UTC too. */
-function isTodayUtc(iso: string | null, now: Date): boolean {
-  if (iso === null) return false
-  const d = new Date(iso)
-  return (
-    d.getUTCFullYear() === now.getUTCFullYear() && d.getUTCMonth() === now.getUTCMonth() && d.getUTCDate() === now.getUTCDate()
-  )
-}
 
 const TERMINAL_BAND: readonly TaskState[] = ['SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED']
 
-/** The three cells, each with the states under it in lifecycle order. */
-const BAND: readonly { k: string; small: string; states: readonly TaskState[]; source: 'stats' | 'page' }[] = [
+/** The three cells, each with the states under it in lifecycle order. A null `small` is the day's start, in the person's zone. */
+const BAND: readonly { k: string; small: string | null; states: readonly TaskState[]; source: 'stats' | 'page' }[] = [
   { k: 'Waiting', small: 'costs nothing', states: ['QUEUED', 'READY', 'PARKED'], source: 'stats' },
   { k: 'Holding capacity', small: 'each holds a lease', states: ['LEASED', 'DISPATCHED', 'STARTING', 'RUNNING'], source: 'stats' },
-  { k: 'Finished today', small: 'since 00:00 UTC', states: ['SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED'], source: 'page' },
+  { k: 'Finished today', small: null, states: ['SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED'], source: 'page' },
 ]
 
 /**
@@ -170,7 +164,13 @@ export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: R
       : tasks.status === 'empty'
         ? ({ rows: [], whole: () => true, since: null } satisfies StateView)
         : null
-  const now = new Date()
+  const now = Date.now()
+  // "TODAY" IS THE PERSON'S DAY (VQ-023, owner decision 2026-10-26): it
+  // starts at 00:00 in the zone they picked in Profile, UTC until they pick
+  // one, and the cell names that zone, so Overview and Timeline agree on it.
+  const zone = useTimeZone()
+  const midnight = startOfDay(now, zone)
+  const sinceMidnight = `since 00:00 ${zoneLabel(midnight, zone)}`
   // The head's instant (#98), so `counted from 6 min ago` and `⟳ 6 min` agree.
   const at = usePageClock()
   return (
@@ -186,7 +186,7 @@ export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: R
           }
           return {
             s,
-            v: finished === null ? null : finished.rows.filter((t) => t.state === s && isTodayUtc(t.completed_at, now)).length,
+            v: finished === null ? null : finished.rows.filter((t) => t.state === s && isToday(t.completed_at, now, zone)).length,
           }
         })
         const landed = c.source === 'stats' ? st !== null : page !== null
@@ -205,7 +205,7 @@ export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: R
         // beside "partial: agents created since 09:06 UTC read" on Recent
         // failures read as two rules for one thing. The instants differ
         // because the samples do -- succeeded agents are read off the page
-        // alone -- and the window, today since 00:00 UTC, is the head's.
+        // alone -- and the window, today since 00:00 in the person's zone, is the head's.
         const since = partial && finished?.since ? ` · ${readReach(finished.since)}` : ''
         const why =
           read.status === 'loading'
@@ -219,7 +219,7 @@ export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: R
           <div className="ov-lc" key={c.k}>
             <div className="ov-lc-h">
               <span>{c.k}</span>
-              <small>{c.small}</small>
+              <small>{c.small ?? sinceMidnight}</small>
             </div>
             <div
               className="ov-lc-n"
@@ -229,7 +229,7 @@ export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: R
                   : c.source === 'stats'
                     ? 'Counted by /v1/stats, one count per state, for the whole tenant.'
                     : partial
-                      ? `At least ${total}: counted off the ${page?.length ?? 0} newest agents this page read${since === '' ? '' : `, which reach back to agents created at ${hhmmUtc(finished?.since ?? '')}`}, and older agents that finished today are not on it.`
+                      ? `At least ${total}: counted off the ${page?.length ?? 0} newest agents this page read${since === '' ? '' : `, which reach back to agents created at ${hhmm(finished?.since ?? '')}`}, and older agents that finished today are not on it.`
                       : page?.length === 0
                         ? 'The agent list was read and holds no agent, so nothing has finished today.'
                         : `Counted off the ${page?.length ?? 0} newest agents this page read, which is every agent.`
@@ -350,7 +350,7 @@ export function waitGroups(all: readonly Task[], now: number = Date.now()): Wait
       // time before the scheduler picks it up, so 'since' is a live case.
       const passed = eligible !== null && new Date(eligible).getTime() <= now
       const clauses = [
-        ...(g.state === 'PARKED' && eligible !== null ? [`${passed ? 'eligible since' : 'next eligible'} ${hhmmUtc(eligible)}`] : []),
+        ...(g.state === 'PARKED' && eligible !== null ? [`${passed ? 'eligible since' : 'next eligible'} ${hhmm(eligible)}`] : []),
         ...wfs,
         ...(rest > 0 && wfs.length > 0 ? [`+${rest} more`] : []),
         why,
@@ -446,7 +446,7 @@ const DAY_MS = 24 * 60 * 60 * 1000
 
 // The state reads and their coverage live in `overviewReads.ts`, which the
 // pure check layer imports too; re-exported for the screen and its tests.
-export { ENDED_BADLY, WHOLE, hhmmUtc, readReach, stateView, type Coverage, type OverviewTaskPage, type StateRead, type StateView } from './overviewReads'
+export { ENDED_BADLY, WHOLE, hhmm, readReach, stateView, type Coverage, type OverviewTaskPage, type StateRead, type StateView } from './overviewReads'
 
 /**
  * The failed, dead-lettered and cancelled rows of the last 24 hours, newest
@@ -515,6 +515,7 @@ function cancelledLast(t: Task): number {
  * the time of the last write.
  */
 function EndedAgo({ task: t, now }: { task: Task; now: number }) {
+  const zone = useTimeZone()
   const at = clockTime(t.completed_at, now)
   if (t.completed_at === null || at === null) {
     return <Dash why={`No end time was recorded for this agent; its document was last written ${timeAgo(t.updated_at, now)}, which is not when it ended.`} />
@@ -522,8 +523,10 @@ function EndedAgo({ task: t, now }: { task: Task; now: number }) {
   // THE INSTANT UNDER THE AGE (#503): "25m ago" is what a reader scans for,
   // and the time it ended -- `clockTime`'s ISO UTC, the hover every other
   // start and end in this console carries -- is what they match to a log.
+  // The person's zone leads it (VQ-023), labelled, so the hover agrees with
+  // every other time on the page; the ISO instant stays for the log.
   return (
-    <time dateTime={t.completed_at} title={`ended ${at.title}`}>
+    <time dateTime={t.completed_at} title={`ended ${formatDateTime(t.completed_at, zone)} · ${at.title}`}>
       {timeAgo(t.completed_at, now)}
     </time>
   )
@@ -572,7 +575,7 @@ export function RecentFailures({ tasks, now = Date.now() }: { tasks: Result<Over
   // reads behind this card are not every failed, dead-lettered and cancelled
   // task, an empty list is "none among what was read", marked partial.
   if (failed.length === 0) {
-    const since = view?.since ? ` (only agents created since ${hhmmUtc(view.since)})` : ''
+    const since = view?.since ? ` (only agents created since ${hhmm(view.since)})` : ''
     if (cancelled.length > 0) {
       // NO FAILURE, SOME CANCELLED (c02): the card says there is no failure
       // and still offers the cancelled under it.

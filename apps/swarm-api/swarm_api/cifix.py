@@ -44,8 +44,10 @@ sweeper, every minute:
   * The comment is the task id, its console link, its state and one
     paragraph: what was pushed, or why nothing was, and the agent's own
     account cut to a paragraph. Every text the agent or the error wrote goes
-    through `issuecomments.neutral` with the token as a known literal:
-    redacted, `<`/`>` escaped, mentions and closing keywords broken. No log
+    through `issuecomments.prose` (a code span, `code`) with the token as a
+    known literal: redacted, an HTML opener backslash-escaped rather than
+    turned into an entity GitHub would print, mentions and closing keywords
+    broken. No log
     is quoted; the console has it.
   * It says when the per-PR cap is reached, so a reader knows the next red
     run gets the script's stop comment and no fix.
@@ -142,7 +144,7 @@ from .errors import ApiError, Conflict, NotFound
 from . import laneterritory
 from .forgewrite import GitHubWriter
 from .issueci import NO_CHANGE_MARKER
-from .issuecomments import bounded, neutral
+from .issuecomments import bounded, code, prose
 from .refusals import refuse
 from .repositories import parse_repository
 from .rollup import SKIPPED_SUMMARY_KEY
@@ -816,11 +818,11 @@ def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
 # --------------------------------------------------------------------------
 
 def _paragraph(text: Any, limit: int, literals: tuple[str, ...]) -> str:
-    """The first paragraph of `text`, neutralised and on one line."""
+    """The first paragraph of `text`, neutralised, as prose, on one line."""
     if not isinstance(text, str) or not text.strip():
         return ""
     first = re.split(r"\n\s*\n", text.strip(), maxsplit=1)[0]
-    return neutral(first, limit, literals=literals, one_line=True)
+    return prose(first, limit, literals=literals, one_line=True)
 
 
 def _what_happened(doc: Mapping[str, Any], branch: str, literals: tuple[str, ...]) -> str:
@@ -843,7 +845,7 @@ def _what_happened(doc: Mapping[str, Any], branch: str, literals: tuple[str, ...
     if state == "CANCELLED":
         return "The step was cancelled; nothing it did was pushed."
     cause = doc.get("end_cause")
-    cause_text = f" (`{neutral(str(cause), 80, literals=literals, one_line=True)}`)" if cause else ""
+    cause_text = f" ({code(str(cause), 80, literals=literals)})" if cause else ""
     error = _paragraph(doc.get("last_error"), MAX_ERROR_CHARS, literals)
     return f"The step ended {state}{cause_text}; nothing it did was pushed." + (
         f" Its error: {error}" if error else ""

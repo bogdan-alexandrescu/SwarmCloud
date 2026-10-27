@@ -1245,7 +1245,7 @@ function LedgerFacts({
         <code>{data.basis.outcomes}</code>
       </li>
       <li className="ctl-fact">
-        {/* THE ROLLUP'S UNIT, NOT THE VIEWER'S DAYS: tenant-days on the UTC
+        {/* THE ROLLUP'S UNIT, NOT THE VIEWER'S DAYS: workspace-days on the UTC
             calendar, so a 14-day span reads "14 of 15 UTC days" and a platform
             view counts every tenant's (`dayDocWords`). */}
         <b>sealed</b>
@@ -1267,18 +1267,18 @@ function LedgerFacts({
       </li>
       {s.kind === 'tenant' ? (
         <li className="ctl-fact">
-          <b>tenant</b>
+          <b>workspace</b>
           <Id>{s.tenant_id}</Id>
         </li>
       ) : (
         <li className="ctl-fact">
           <b>platform</b>
-          {s.tenants.length} tenants
+          {s.tenants.length} workspaces
           {s.excluded.length > 0 && ` · ${s.excluded.join(', ')} excluded`}
           {!s.tenants_complete && (
             <>
               {' '}
-              <Mark kind="partial" say="The tenant listing stopped at its limit, so tenants past it are not in these figures." />
+              <Mark kind="partial" say="The workspace listing stopped at its limit, so workspaces past it are not in these figures." />
             </>
           )}
         </li>
@@ -1393,11 +1393,11 @@ function LedgerFailed({ error, onRetry, onMine }: { error: ApiError; onRetry: ()
       <Absent
         kind="admin"
         heading="Platform scope is for administrators"
-        say="The platform-wide ledger is served to administrators only. Nothing failed, and your own tenant's ledger is readable."
+        say="The platform-wide ledger is served to administrators only. Nothing failed, and your own workspace's ledger is readable."
       >
-        Your own tenant’s ledger is one click away:{' '}
+        Your own workspace’s ledger is one click away:{' '}
         <button type="button" className="c-link is-sm" onClick={onMine}>
-          my tenant
+          my workspace
         </button>
       </Absent>
     )
@@ -1642,7 +1642,7 @@ function LedgerToolbar({
             label="Scope"
             value={view.platform ? 'platform' : 'tenant'}
             options={[
-              { key: 'tenant', label: 'my tenant' },
+              { key: 'tenant', label: 'my workspace' },
               { key: 'platform', label: 'platform' },
             ]}
             onChange={(k) =>
@@ -1654,7 +1654,7 @@ function LedgerToolbar({
         )}
         {admin && view.platform && (
           <Picker
-            label="Tenant"
+            label="Workspace"
             options={tenants}
             selected={view.tenant}
             summary={tenantSummary}

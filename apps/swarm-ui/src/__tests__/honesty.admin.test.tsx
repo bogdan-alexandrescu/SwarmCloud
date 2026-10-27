@@ -288,7 +288,7 @@ describe('Pool limits groups its ceilings the way Capacity > Pools does (#132)',
     await limitsDrawn()
     const families = [...document.querySelectorAll('.adm-family')]
     const titles = families.map((f) => f.querySelector('.ctl-card-title')?.textContent)
-    expect(titles).toEqual(['Global', 'Tenants', 'Resource classes', 'Runner profiles', 'Backends', 'Providers'])
+    expect(titles).toEqual(['Global', 'Workspaces', 'Resource classes', 'Runner profiles', 'Backends', 'Providers'])
     // Each family holds its own pools and nothing else, sorted by name.
     const tenants = families[1]!
     expect([...tenants.querySelectorAll('tbody tr')].map((tr) => tr.id)).toEqual(['limit-tenant:eng', 'limit-tenant:research'])
@@ -442,7 +442,7 @@ describe('Pool limits filters its rows by name at phone width (#132)', () => {
     const box = screen.getByRole('searchbox', { name: /filter pools/i })
     fireEvent.change(box, { target: { value: 'ENG' } })
     expect(rowIds()).toEqual(['limit-tenant:eng'])
-    expect([...document.querySelectorAll('.adm-family .ctl-card-title')].map((t) => t.textContent)).toEqual(['Tenants'])
+    expect([...document.querySelectorAll('.adm-family .ctl-card-title')].map((t) => t.textContent)).toEqual(['Workspaces'])
     fireEvent.change(box, { target: { value: 'nothing-is-called-this' } })
     expect(rowIds()).toEqual([])
     expect(screen.getByText('no pool matches')).toBeTruthy()
