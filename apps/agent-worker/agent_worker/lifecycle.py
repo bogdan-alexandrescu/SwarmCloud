@@ -147,6 +147,7 @@ from . import artifact_manifest as manifest_mod
 from . import budget as budget_mod
 from . import cachedirs as cachedirs_mod
 from . import children as children_mod
+from . import cifixstart as cifixstart_mod
 from . import continuation as continuation_mod
 from . import publishpr as publishpr_mod
 from . import egress as egress_mod
@@ -557,6 +558,17 @@ BASE_MERGE_NO_CHANGE_FIELD = "base_merge_no_change"
 #: the paths. Nothing was pushed. Read by `_record_finalised`, which ends the
 #: attempt FAILED with `publish_refused` (`_fail_for_auto_commit_undid`).
 AUTO_COMMIT_UNDID_FIELD = "auto_commit_undid_agent_commits"
+#: The `result_summary.git` key `_push_onto_base_merge` sets when the replay
+#: onto a base-merged tip took the tip's version of paths the base merge
+#: rewrote and this round also changed (#2367: four rounds' hand-patched
+#: unit_test_durations.json, rewritten by main's #2312). A scrubbed list of at
+#: most `BASE_MERGE_SUPERSEDED_MAX` paths. Set whether the rest of the round
+#: was pushed or, with nothing left, the round ended `no_change` with a
+#: `superseded_by_base` reason in `BASE_MERGE_NO_CHANGE_FIELD`.
+BASE_MERGE_SUPERSEDED_FIELD = "base_merge_superseded"
+#: Enough to name what main rewrote under a round -- one file, measured --
+#: without a vendored-tree conflict filling the record.
+BASE_MERGE_SUPERSEDED_MAX = 20
 #: The paths a push may touch only with the `workflow` scope (AU-3,
 #: docs/design/agent-autonomy.md §3.3): `_publish_git` hands a branch whose
 #: new commits touch either to swarm-api's `git_push_branch`. Restated from
@@ -3213,6 +3225,15 @@ class Worker:
         # A clone is the single slowest step before the agent starts, and the
         # one most likely to vary with repository size.
         self._heartbeat()
+        # ---- STEP 5 (after): a superseded CI fix runs no agent (#2276) ------
+        # A CI fix waits for capacity after `scripts/ci-fix.sh` checked its red
+        # head, and the branch can be fixed, merged or closed meanwhile. On a
+        # fresh clone, before any runner starts, it ends SUCCEEDED no_change
+        # (`cifixstart.superseded`), after the window closes like every other
+        # ending `_prepare` decides on.
+        superseded = self._ci_fix_superseded(repo_info)
+        if superseded:
+            return functools.partial(self._finish_superseded_ci_fix, superseded)
         # The services the clone declares, up from here to `_cleanup` (TS-RUN).
         self._start_test_services()
 
@@ -6807,7 +6828,10 @@ class Worker:
         holds every change, the PR #2093 case -- or origin's tip of the branch
         already holds the round's HEAD, the PR #2446 case (#2506). The work is
         on the branch, so it is the `no_change` result rather than
-        `publish_failed`, with the tip named in the reason.
+        `publish_failed`, with the tip named in the reason. The same holds
+        when the base merge rewrote every file the round changed (#2367):
+        the reason then starts `superseded_by_base:` and names the paths
+        whose base version stands.
         """
         git = summary.get("git")
         reason = git.get(BASE_MERGE_NO_CHANGE_FIELD) if isinstance(git, dict) else None
@@ -7017,6 +7041,55 @@ class Worker:
             "nothing to change: a step this one needs changed nothing; no agent ran",
             upstream=list(upstream),
         )
+        return Outcome(exit_code=ExitCode.OK, state=TaskState.SUCCEEDED)
+
+    def _ci_fix_superseded(self, repo_info: dict[str, Any] | None) -> str | None:
+        """Why this CI fix has nothing left to fix, or None (#2276, `cifixstart`).
+
+        Only for a task whose SIGNED dispatch block carries `ci_fix_head`, on a
+        fresh clone: an attempt restored from a checkpoint has already run its
+        agent on the red head, and the push judges that work. The pull request
+        is read with the reader `_read_pull_at_start` uses; a forge that cannot
+        be read, or a token this worker may not hold, leaves the clone alone
+        to decide, so an outage never ends a fix that still has work.
+        """
+        rec = cifixstart_mod.record((self._task or {}).get("metadata"))
+        if rec is None or repo_info is None or repo_info.get("from_checkpoint") \
+                or self._restored_from is not None:
+            return None
+        pull: PullHead | None = None
+        url = self._repo_url
+        token = None if self._git_token_refusal() else self._git_token()
+        if url and token:
+            try:
+                token, access = self._probe_reading_again(url, token, "the CI fix start check")
+                if access is not None:
+                    pull = self._read_pull(access, token or "", rec.pull_request)
+            except (forge_mod.ForgeUnavailable, ForgeError) as exc:
+                self.log.warning(
+                    "CI fix start check: the pull request could not be read; the clone decides",
+                    number=rec.pull_request, error=self._scrub(str(exc)[:300]),
+                )
+        return cifixstart_mod.superseded(rec, self._clone_commit, pull)
+
+    def _finish_superseded_ci_fix(self, reason: str) -> Outcome:
+        """End a superseded CI fix SUCCEEDED as `no_change`, before its agent ran (#2276).
+
+        No agent, no publish, no push: the red commit it was to fix is no
+        longer the pull request's head, or the pull request is merged or
+        closed. The generation is checked first, as before any ending, and the
+        finish is the fenced write every other ending makes, which releases
+        the lease (invariant 5).
+        """
+        self.phases.enter("superseded_ci_fix")
+        self.control.validate_generation()
+        summary: dict[str, Any] = {
+            expected_mod.NO_CHANGE_SUMMARY_KEY: True,
+            NO_CHANGE_REASON_SUMMARY_KEY: reason,
+        }
+        with self._metrics_after_the_record():
+            self.control.finish(state=TaskState.SUCCEEDED, exit_code=0, result_summary=summary)
+        self.log.info("CI fix superseded at start; no agent ran", reason=reason)
         return Outcome(exit_code=ExitCode.OK, state=TaskState.SUCCEEDED)
 
     def _integrates_with_changes(self) -> list[str]:
@@ -13146,6 +13219,16 @@ class Worker:
         `_no_change_after_publish`). Any other mover re-raises `rejected`; a
         replay that conflicts, or fails a check, raises its own GitError
         naming the base merge. Nothing is pushed in either case.
+
+        SUPERSEDED BY THE BASE (#2367, measured 2026-10-25 on four rounds
+        whose hand-patched unit_test_durations.json main's #2312 rewrote): a
+        replay whose every conflict is in a path the base merge changed takes
+        the tip's version of it (`replay_onto_tip`), and those paths are
+        recorded in `BASE_MERGE_SUPERSEDED_FIELD`. With nothing left over the
+        tip, `BASE_MERGE_NO_CHANGE_FIELD` holds a `superseded_by_base:`
+        reason naming the paths and the tip, so the round ends `no_change`,
+        not publish_failed; with something left, it is checked and pushed
+        exactly as above. A conflict in any other path still raises.
         """
         cfg = self.cfg
         ws = self.ws
@@ -13176,6 +13259,7 @@ class Worker:
             f"{branch} moved to {tip[:12]} by a base merge of "
             f"{default_branch or 'the default branch'} only"
         )
+        superseded: list[str] = []
         try:
             head = replay_onto_tip(
                 repo=publish_repo,
@@ -13187,6 +13271,7 @@ class Worker:
                 logs_dir=ws.logs,
                 timeout_seconds=cfg.git_harvest_timeout_seconds,
                 logger=self.log,
+                superseded=superseded,
             )
         except GitError as exc:
             raise GitError(
@@ -13196,6 +13281,22 @@ class Worker:
             ) from rejected
         out["base_merge_from"] = base
         out["base_merge_tip"] = tip
+        if superseded:
+            out[BASE_MERGE_SUPERSEDED_FIELD] = [
+                str(self._scrub(path[:300])) for path in superseded[:BASE_MERGE_SUPERSEDED_MAX]
+            ]
+        if head is None and superseded:
+            named = ", ".join(out[BASE_MERGE_SUPERSEDED_FIELD][:5])
+            if len(superseded) > 5:
+                named += f" and {len(superseded) - 5} more"
+            out[BASE_MERGE_NO_CHANGE_FIELD] = (
+                f"superseded_by_base: {moved}, which rewrote {named} that this round "
+                "also changed; the base's version stands and nothing was pushed"
+            )
+            self.log.info("the base merge rewrote every file this round changed; "
+                          "nothing to push", branch=branch, tip=tip,
+                          superseded=len(superseded))
+            return None
         if head is None:
             out[BASE_MERGE_NO_CHANGE_FIELD] = (
                 f"no_change: {moved}, which already holds every change this round "
@@ -13996,7 +14097,9 @@ class Worker:
                         # "Update branch" merging the default branch into
                         # it mid-run is the measured mover. Only that mover
                         # is taken, as a fast-forward onto it; see
-                        # `_push_onto_base_merge`.
+                        # `_push_onto_base_merge`. A round whose conflicts
+                        # lie only in files that merge rewrote ends no_change
+                        # `superseded_by_base` when nothing else is left (#2367).
                         pushed = self._push_onto_base_merge(
                             publish_repo, rejected, url=url, token=token, branch=branch,
                             protected=protected, default_branch=access.default_branch,

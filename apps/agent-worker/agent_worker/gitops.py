@@ -4411,6 +4411,37 @@ def base_merge_tip(
     return tip, ""
 
 
+def base_merge_changed_paths(
+    *,
+    repo: Path,
+    base: str,
+    tip: str,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+) -> frozenset[str]:
+    """The paths whose content differs between the clone `base` and the moved
+    `tip` -- what the base merges `base_merge_tip` accepted changed (#2367).
+
+    Empty when the diff cannot be read: `replay_onto_tip` then takes no
+    conflict as superseded, and fails as it did before.
+    """
+    code, text = _git_text(
+        [git_binary, *_NO_HOOKS, "diff", "--name-only", "-z", base, tip],
+        repo=Path(repo),
+        private_dir=private_dir,
+        logs_dir=logs_dir,
+        slug="replay-base-merge-paths",
+        timeout_seconds=timeout_seconds,
+        logger=logger,
+    )
+    if code != 0:
+        return frozenset()
+    return frozenset(path for path in text.split("\0") if path)
+
+
 def replay_onto_tip(
     *,
     repo: Path,
@@ -4423,13 +4454,14 @@ def replay_onto_tip(
     timeout_seconds: int,
     logger: Any,
     git_binary: str = "git",
+    superseded: list[str] | None = None,
 ) -> str | None:
     """Replay HEAD's first-parent commits since `base` onto `tip`, as the worker's.
 
     Returns the new HEAD; None when the replay adds nothing over `tip` (it
     already holds every change), with HEAD left on `tip`. Raises GitError on
-    a conflict, or on a merge commit in the span, after putting HEAD and the
-    working tree back where they were.
+    a conflict outside the base merge's paths, or on a merge commit in the
+    span, after putting HEAD and the working tree back where they were.
 
     For a continued branch moved only by merges of the default branch
     (`base_merge_tip`, #2179): each commit is cherry-picked onto the tip
@@ -4438,6 +4470,37 @@ def replay_onto_tip(
     already the worker's (`replay_agent_commits` or the fold ran). A commit
     whose change the tip already holds is dropped. Nothing here touches the
     remote; `repo` is the worker-owned publish repository.
+
+    A two-parent merge in the span (a conflict round's merge of the default
+    branch) is dropped when its second parent is an ancestor of the tip and
+    applying it against its first parent (`cherry-pick -m 1`) leaves the
+    tip's tree as it is, and a real merge of it into the tip
+    (`merge-tree --write-tree`) is clean and leaves the tip's tree too -- the
+    second check catches a hunk the round resolved by keeping the branch's
+    side, which `-m 1` cannot see: the tip already holds it. Any other merge -- its
+    second parent not on the tip, a conflict there, a tree that would differ,
+    more than two parents -- is refused, so a different resolution on the tip
+    is never silently dropped and no merge is ever rewritten as a linear
+    commit. WHY (#2366, measured 2026-10-25): conflict round task_fa6637b0
+    made one merge of main while the owner merged main into the same branch by
+    hand (0626eadf); the round's merge was refused here and the round ended
+    publish_failed although the moved tip already held it.
+
+    SUPERSEDED BY THE BASE (#2367). MEASURED 2026-10-25: four CI-fix rounds
+    had hand-patched tests/unit/scripts/unit_test_durations.json, main's
+    #2312 rewrote it and was merged into their branches, and each replay
+    conflicted on it. When EVERY conflicted path of a pick is one the base
+    merge changed (`base_merge_changed_paths`, clone base..tip), the tip's
+    version of each is taken -- removed where the tip has none -- and the
+    pick goes on. That is safe here and nowhere else: `base_merge_tip` has
+    already proved everything between the base and the tip is merges of the
+    default branch, so the tip's version is main's own change and the
+    round's, written against the older base, is stale by construction; the
+    merge wake reads CI again at the new head, so a round whose fix was not
+    in fact superseded meets its red check again rather than a silent pass.
+    Each such path is appended once to `superseded` when given. A conflict
+    in any path the base merge did not change, a merge commit the tip does
+    not already hold (above), or any other failure still raises, as before.
     """
     g = [git_binary, *_NO_HOOKS, *_worker_identity(author_name, author_email)]
 
@@ -4474,16 +4537,84 @@ def replay_onto_tip(
             return GitError(f"{why}, and the publish repository could not be put back")
         return GitError(why)
 
+    merged_paths: list[frozenset[str]] = []
+
+    def take_tip(sha: str) -> None:
+        # A failed pick: superseded only when every unmerged path is one the
+        # base merge changed; anything else raises as it always did.
+        conflicted = f"replaying commit {sha[:12]} onto {tip[:12]} conflicted"
+        code, text = run([*g, "diff", "--name-only", "-z", "--diff-filter=U"], "replay-unmerged")
+        unmerged = sorted({path for path in text.split("\0") if path}) if code == 0 else []
+        if not merged_paths:
+            merged_paths.append(base_merge_changed_paths(
+                repo=repo, base=base, tip=tip, private_dir=private_dir, logs_dir=logs_dir,
+                timeout_seconds=timeout_seconds, logger=logger, git_binary=git_binary,
+            ))
+        if not unmerged or not set(unmerged) <= merged_paths[0]:
+            raise restore(conflicted)
+        for path in unmerged:
+            code, _ = run([*g, "cat-file", "-e", f"HEAD:{path}"], "replay-tip-has")
+            if code == 0:
+                code, _ = run([*g, "checkout", "HEAD", "--", path], "replay-take-tip")
+                if code == 0:
+                    code, _ = run([*g, "add", "--", path], "replay-take-add")
+            else:
+                code, _ = run([*g, "rm", "--quiet", "-f", "--", path], "replay-take-rm")
+            if code != 0:
+                raise restore(f"{conflicted}, and the tip's version could not be taken")
+        # The pick is resolved; its sequencer state is not needed again.
+        run([*g, "cherry-pick", "--quit"], "replay-resolved")
+        if superseded is not None:
+            superseded.extend(path for path in unmerged if path not in superseded)
+        logger.info("took the moved tip's version of paths the base merge changed",
+                    commit=sha, tip=tip, paths=len(unmerged))
+
     code, _ = run([*g, "reset", "--quiet", "--hard", tip], "replay-onto")
     if code != 0:
         raise restore(f"could not move onto {tip[:12]}")
     for sha in shas:
         code, parents = run([*g, "rev-list", "--parents", "--max-count=1", sha], "replay-parents")
-        if code != 0 or len(parents.split()) != 2:
+        listed = parents.split()
+        if code != 0 or len(listed) not in (2, 3):
             raise restore(f"commit {sha[:12]} is a merge and cannot be replayed")
+        if len(listed) == 3:
+            # A merge the round made of the default branch (#2366): dropped
+            # only when its second parent is under the tip and replaying it
+            # against its first parent changes nothing there. Never written
+            # as a linear commit.
+            code, _ = run([*g, "merge-base", "--is-ancestor", listed[2], tip], "replay-merged")
+            if code != 0:
+                raise restore(
+                    f"commit {sha[:12]} is a merge and cannot be replayed: its second parent "
+                    f"{listed[2][:12]} is not on the moved tip"
+                )
+            code, _ = run([*g, "cherry-pick", "-m", "1", "--no-commit", sha], "replay-merge-pick")
+            if code != 0:
+                raise restore(
+                    f"commit {sha[:12]} is a merge and cannot be replayed, and conflicts with "
+                    "the moved tip"
+                )
+            code, tree = run([*g, "write-tree"], "replay-merge-tree")
+            if code != 0 or tree.strip() != sha_of("HEAD^{tree}", "replay-head-tree"):
+                raise restore(
+                    f"commit {sha[:12]} is a merge and cannot be replayed: the moved tip "
+                    "resolves it differently"
+                )
+            # `-m 1` sees only what the merge changed against its first
+            # parent, so a hunk the round resolved by keeping the branch's
+            # side is invisible to it. A real merge into the tip sees it: a
+            # held merge merges cleanly and leaves the tip's tree.
+            code, merged = run([*g, "merge-tree", "--write-tree", "HEAD", sha], "replay-merge-held")
+            merged_tree = merged.split("\n", 1)[0].strip()
+            if code != 0 or merged_tree != sha_of("HEAD^{tree}", "replay-head-tree"):
+                raise restore(
+                    f"commit {sha[:12]} is a merge and cannot be replayed: the moved tip "
+                    "resolves it differently"
+                )
+            continue
         code, _ = run([*g, "cherry-pick", "--no-commit", sha], "replay-pick")
         if code != 0:
-            raise restore(f"replaying commit {sha[:12]} onto {tip[:12]} conflicted")
+            take_tip(sha)
         code, tree = run([*g, "write-tree"], "replay-tree")
         tree = tree.strip()
         if code != 0 or not _FULL_SHA_RE.match(tree):
