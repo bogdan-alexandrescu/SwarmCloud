@@ -12,7 +12,7 @@
  * first case turns red; draw it for one run (`runs.length < 1`) -- the last.
  */
 import { renderToStaticMarkup } from 'react-dom/server'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { AgentRun } from '../api'
 import type { Task } from '../types'
@@ -66,9 +66,18 @@ function runOf(t: Task): AgentRun {
   }
 }
 
+// The tile drops the date from an instant on today's date only, so the clock is
+// held on the runs' own day: otherwise the span reads `10-26 09:07 → …` from
+// the next morning on.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-10-26T11:10:00Z'))
+})
+
 const hosts: HTMLElement[] = []
 afterEach(() => {
   for (const h of hosts.splice(0)) h.remove()
+  vi.useRealTimers()
 })
 
 function runTile(t: Task): HTMLElement {
