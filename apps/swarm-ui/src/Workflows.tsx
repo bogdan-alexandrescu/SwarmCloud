@@ -154,6 +154,7 @@ import {
   type WorkflowStep,
   workflowHeaderState,
   workflowStartText,
+  reasonCopy,
   TERMINAL_STATES,
   CONCURRENCY_STATES,
 } from './types'
@@ -3319,6 +3320,20 @@ function useEnteredAt(
   return (task) => entered.get(enteredKey(task)) ?? null
 }
 
+/**
+ * THE CARD'S NOTE IN WORDS THAT FIT IT (#2391 comment 58). A step parked on
+ * DEPENDENCY_INCOMPLETE drew `reasonCopy`'s fixed 43-character sentence on its
+ * one note line, cut to 'Waiting on an earlier…' at 1440. The note is one line
+ * by design (`layoutOf`'s NOTE_H), so the card says it short -- 24 characters,
+ * inside the full tier's content box as `monoW` measures it -- and the whole
+ * sentence, with any `eligible again` after it, stays the title and the
+ * focused card's `.node-note-full`.
+ */
+const WAITS_ON_PARENT = reasonCopy('DEPENDENCY_INCOMPLETE')
+function cardNote(note: StepWhy): StepWhy {
+  return note.text.startsWith(WAITS_ON_PARENT) ? { ...note, text: 'waits on an earlier step' } : note
+}
+
 function WorkflowGraph({
   workflow,
   taskById,
@@ -3388,7 +3403,7 @@ function WorkflowGraph({
   const notes = new Map<string, StepWhy>()
   for (const s of workflow.steps) {
     const n = nodeNote(s, stepState(s, taskById), workflow.steps, taskById, classUnits(classes, s.resource_class))
-    if (n !== null) notes.set(s.step_id, n)
+    if (n !== null) notes.set(s.step_id, cardNote(n))
   }
   const noted = new Set(notes.keys())
   // A SETTLED STEP RESERVES NO STOP STRIP (browser QA D29): its task is
@@ -5836,9 +5851,9 @@ const MIX_BAND_QUERY = '(min-width: 900px) and (max-width: 1679px)'
  * Whether the name would keep less than `NAME_FLOOR_PX` beside the mix on a
  * line `el`. Counted the same way wherever the mix is drawn now -- the mix's
  * room and its gap are counted whether or not it is on the line -- so moving
- * it cannot change the answer, and the row settles in one step. The id gives
- * way to nothing below 0 (`min-width: 0`), so it costs only its gap; a tag is
- * `flex: none`, so it costs its width.
+ * it cannot change the answer, and the row settles in one step. A tag is
+ * `flex: none`, so it costs its width; so does the id, whose floor and cap
+ * are one 10ch (#2391 comment 58), so its width never moves with the line.
  */
 function mixGoesUnder(el: HTMLElement): boolean {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
@@ -5846,7 +5861,10 @@ function mixGoesUnder(el: HTMLElement): boolean {
   const line = el.clientWidth
   if (line <= 0) return false
   const others = [...el.children].filter((c) => !c.classList.contains('wfl-mix'))
-  const tags = others.filter((c) => c.classList.contains('tag')).reduce((w, c) => w + (c as HTMLElement).offsetWidth, 0)
+  const tags = others
+    .filter((c) => c.classList.contains('tag') || c.classList.contains('id'))
+    // A box with no width read (no layout) costs 0, never NaN.
+    .reduce((w, c) => w + ((c as HTMLElement).offsetWidth || 0), 0)
   // The mix is on this line or on the row's second one; its basis is 11rem in both places.
   const mix = el.parentElement?.querySelector<HTMLElement>(':scope > .wfl-line > .wfl-mix, :scope > .wfl-sub > .wfl-mix') ?? null
   const style = window.getComputedStyle(el)
