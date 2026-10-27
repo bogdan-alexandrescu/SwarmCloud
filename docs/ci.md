@@ -323,7 +323,9 @@ repository.
 **Two tokens.** The GITHUB_TOKEN carries `actions: write` and nothing else:
 it reads runs and jobs, cancels and re-runs. It has no `variables` scope, so
 the variable is read and written with the merge App's installation token,
-minted with `permission-variables: write` only. That token draws on the App's
+minted with `permission-actions-variables: write` only (GitHub's API key for
+repository variables is `actions_variables`; its settings page calls it
+*Variables*). That token draws on the App's
 quota, not a person's. **Owner step, once:** give the merge App the
 repository permission *Variables: Read and write*
 ([runbook](runbooks/merge-app.md)). Until then the token mint fails and the
