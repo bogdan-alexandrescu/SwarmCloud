@@ -1,11 +1,28 @@
 # One shared graph service for every agent runtime, instead of a snapshot per pod
 
-**Status: PROPOSED 2026-10-16, design only (lane GS-DESIGN, part of #1384).**
-Nothing described here is built. The owner reviews this document before any
-lane starts. The owner's decisions of 2026-10-15 (~17:15 PDT, recorded in
-#1384's body) are taken as given and are marked **(owner)**. Every other
-choice below is this lane's, is marked **(proposed)**, and is listed as a
-question in the PR body and in §12.
+**Status: built on `main` except staging's removal (recorded 2026-10-27,
+part of #1384).** Written 2026-10-16 as a design (lane GS-DESIGN). Of §11's
+lanes, GS-MEASURE, GS-CORE, GS-TICKET, GS-INDEXDOC, GS-PUSHAPI,
+GS-SETTING, GS-SVC, GS-HOOKS, GS-SHIM, GS-PACK, GS-INFRA and GS-WORKER have
+landed. GS-INDEXDOC departs from §11: the repo-index document is a third
+manifest key, `document_shards`, not a layer of `index_shards`, because
+swarm-api refuses a manifest whose `index_shards` names a layer it does not
+know (`repo_graph_shards.py`'s header). In dev the service serves and
+answers (`graph_service = { serve = true, enabled = true }`,
+`terraform/environments/dev/dev.tfvars`, 2026-10-16), and only a workspace
+whose `code_intelligence.graph_delivery` is `service` uses it; every other
+workspace still stages. What remains:
+
+* **Widening** to every workspace (§8.2 step 5), once the `graph_ready`
+  marks show a fallback rate under 1% over 7 days. The owner decides it.
+* **GS-RETIRE (not built):** staging is deleted for GKE attempts only after
+  every attempt has run on `service` for 14 days (§8.2 step 6), so it waits
+  on the widening.
+
+The owner's decisions of 2026-10-15 (~17:15 PDT, recorded in #1384's body)
+are taken as given and are marked **(owner)**. Every other choice below was
+the design lane's, is marked **(proposed)**, and is listed in §12; #1384's
+comments record the owner's answers.
 
 It extends [knowledge-graph.md](knowledge-graph.md) §5 and
 [repo-index.md](../repo-index.md) §2.3, §3.3-§3.4 and §5. It replaces one

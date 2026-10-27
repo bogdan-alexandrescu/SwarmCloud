@@ -1324,9 +1324,20 @@ class GitTools:
         The bundle is thin, so it is read where `gitexec.push_bundle` reads it:
         a scratch repository holding the forge's prerequisite commits at depth
         1 and the bundle's objects, with this call's own slot, deadline and
-        credential file. `git log --name-only -m --no-renames` over exactly
-        the new commits names every path they add, change, delete or rename
-        away, so a rename out of `.github/workflows/` counts as touching it.
+        credential file. `git log --name-only --no-renames
+        --diff-merges=combined` over exactly the new commits names every path
+        they add, change, delete or rename away, so a rename out of
+        `.github/workflows/` counts as touching it -- the worker's
+        `Worker._workflow_paths` runs the same listing, and the two must never
+        disagree about which route a branch takes.
+
+        A merge is listed COMBINED, not with `-m` (#2452): `-m` diffs it
+        against each parent, so a lane's merge of main named main's own
+        workflow changes as the branch's and was refused
+        `workflow_scope_missing` (or routed here at all). Combined, a merge
+        names a path only where its result differs from every parent. Both
+        parents' trees are what that reads: the prerequisites fetched at
+        depth 1 above carry them, as they did for `-m`.
         """
         gx = self.gitexec
         url, host = gx._check_url(url)
@@ -1353,7 +1364,8 @@ class GitTools:
                              token=token, extra=("-c", "protocol.file.allow=always")),
                      "unbundle", code="bad_bundle")
             run = gx._must(gx._git(scratch, repo, [
-                "log", "--format=", "--name-only", "--no-renames", "-m", header.tip,
+                "log", "--format=", "--name-only", "--no-renames", "--diff-merges=combined",
+                header.tip,
                 "--not", *header.prerequisites, "--", *WORKFLOW_PATHSPECS], token=token),
                 "listing the pushed range's paths", code="bad_bundle")
         return sorted({line.strip() for line in run.stdout.splitlines()

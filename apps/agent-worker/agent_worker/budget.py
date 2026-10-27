@@ -12,7 +12,12 @@ WHAT IS COUNTED (BGD, 2026-10-26).
     reads, as reported. claude-code's stream-json carries each message's
     `usage` on its `assistant` events (the last copy of each message id
     counts, as `lifecycle._stream_usage` counts it); codex's `--json` stream
-    carries a `turn.completed` event's `usage`. Cache WRITES are not counted:
+    (the codex profile runs `codex exec --json` since CODEX-JSON, BGD's
+    answer to BUDGET-CAP question 6) carries a `turn.completed` event's
+    `usage`, once per start, cached input inside its input; WHILE the start
+    runs, its rollout's `token_count` records are read too (ROLLOUT, BGD's
+    pick "Also read the rollout", 2026-10-27), a provisional figure the
+    start's `turn.completed` replaces. Cache WRITES are not counted:
     the owner's rule names input, output and cache reads.
   * DOLLARS are the API-price estimate the worker already records as
     `cost_usd`. A live run has not reported its cost yet -- claude-code
@@ -112,6 +117,11 @@ _USAGE_FIELDS = (
     "cache_creation_input_tokens",
     "cache_read_input_tokens",
 )
+#: codex `--json` items that run something and hand its result back to the
+#: model (`UsageMeter.feed`): their completion is a turn boundary. Not
+#: `agent_message`, `reasoning`, `todo_list` or `error`, which return nothing
+#: to the model and so stop nothing halfway.
+CODEX_TOOL_ITEMS = frozenset({"command_execution", "file_change", "mcp_tool_call", "web_search"})
 #: The model a message that names none is counted under: swarm-api prices
 #: nothing for it, so the dollar figure reads "not known" rather than one
 #: that left those tokens out (as `lifecycle._UNNAMED_MODEL`).
@@ -164,19 +174,85 @@ def tokens_of(usage: Mapping[str, Any]) -> int:
             + _count(usage, "cache_read_input_tokens"))
 
 
+def _codex_usage(usage: Mapping[str, Any]) -> dict[str, int]:
+    """A codex usage block (a `turn.completed`'s, a rollout `token_count`'s),
+    in the meter's fields. codex reports cached input inside its input count."""
+    cached = _count(usage, "cached_input_tokens")
+    return {
+        "input_tokens": max(_count(usage, "input_tokens") - cached, 0),
+        "output_tokens": _count(usage, "output_tokens"),
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": cached,
+    }
+
+
 class UsageMeter:
     """The usage a CLI's stream has reported so far, and its turn boundaries.
 
     `feed(event)` answers True when the event is a TURN BOUNDARY: a top-level
     `user` event of claude-code's stream (the tool results of a turn are in,
     the next model request not yet answered -- the boundary the account swap
-    uses), or a codex `turn.completed`.
+    uses); for codex, a completed tool item (`CODEX_TOOL_ITEMS`: the same
+    point, the tool's result in and the model not yet answering it) or its
+    `turn.completed`.
+
+    CODEX REPORTS USAGE ONCE A TURN on its stream, and `codex exec` runs ONE
+    turn per start (codex-cli 0.154.0, `--json`): that figure reaches the
+    meter when the start ends. So the meter ALSO READS THE ROLLOUT
+    (`feed_rollout`, BGD's pick "Also read the rollout", 2026-10-27): codex
+    records a `token_count` event in `$HOME/.codex/sessions/.../rollout-*.jsonl`
+    after every model request, and the runner tails it as the start runs. Its
+    readings are PROVISIONAL -- the agent can write that file -- and the
+    start's `turn.completed` replaces them, so a rollout can bring a stop
+    forward but never lower the figure the stream reports. A start that ends
+    without a `turn.completed` (killed, crashed) keeps its rollout figure,
+    which is all there is of it. With the rollout read, a stop is honoured at
+    the next completed tool item of the same start, and a turn past 120% is
+    stopped mid-turn, as claude-code's is.
     """
 
     def __init__(self) -> None:
         self._messages: dict[str, tuple[str, dict[str, int]]] = {}
         self._anonymous = 0
         self.turns = 0
+        #: The rollout's usage of the running start, until its `turn.completed`.
+        self._provisional: dict[str, int] | None = None
+        #: This start's `turn.completed` is in: later rollout readings are its own.
+        self._settled = False
+        #: The last `total_token_usage` read: codex re-sends an unchanged
+        #: `token_count` (on a rate-limit update), which is not a new request.
+        self._last_total: Any = None
+
+    def start(self) -> None:
+        """A new start of the CLI. The last one's rollout figure is kept when
+        no `turn.completed` replaced it: that start was stopped mid-turn."""
+        self._fold_provisional()
+        self._settled = False
+
+    def _fold_provisional(self) -> None:
+        if self._provisional is not None and any(self._provisional.values()):
+            self._anonymous += 1
+            self._messages[f"\x00{self._anonymous}"] = (UNNAMED_MODEL, self._provisional)
+        self._provisional = None
+
+    def feed_rollout(self, record: Mapping[str, Any]) -> None:
+        """One line of codex's rollout. Only a `token_count` event with a new
+        total counts: its `last_token_usage`, one model request's usage."""
+        if self._settled or record.get("type") != "event_msg":
+            return
+        payload = record.get("payload")
+        if not isinstance(payload, Mapping) or payload.get("type") != "token_count":
+            return
+        info = payload.get("info")
+        if not isinstance(info, Mapping) or not isinstance(info.get("last_token_usage"), Mapping):
+            return
+        total = info.get("total_token_usage")
+        if total is not None and total == self._last_total:
+            return
+        self._last_total = total
+        usage = _codex_usage(info["last_token_usage"])
+        mine = self._provisional or dict.fromkeys(_USAGE_FIELDS, 0)
+        self._provisional = {k: mine[k] + usage[k] for k in _USAGE_FIELDS}
 
     def feed(self, event: Mapping[str, Any]) -> bool:
         kind = event.get("type")
@@ -196,28 +272,40 @@ class UsageMeter:
         if kind == "user" and not event.get("parent_tool_use_id"):
             self.turns += 1
             return True
+        if kind == "item.completed":
+            # A codex tool's result is in and the model has not answered it:
+            # the codex form of claude-code's top-level `user` event. Not a
+            # turn of usage (codex's stream reports usage only at
+            # `turn.completed`, once per `codex exec` start), so `turns` is
+            # not counted.
+            item = event.get("item")
+            return isinstance(item, Mapping) and item.get("type") in CODEX_TOOL_ITEMS
         if kind == "turn.completed":
             usage = event.get("usage")
             if isinstance(usage, Mapping):
+                # The turn's own figure replaces what the rollout said of it.
+                self._provisional = None
                 self._anonymous += 1
-                # codex reports cached input inside its input count.
-                cached = _count(usage, "cached_input_tokens")
-                self._messages[f"\x00{self._anonymous}"] = (UNNAMED_MODEL, {
-                    "input_tokens": max(_count(usage, "input_tokens") - cached, 0),
-                    "output_tokens": _count(usage, "output_tokens"),
-                    "cache_creation_input_tokens": 0,
-                    "cache_read_input_tokens": cached,
-                })
+                self._messages[f"\x00{self._anonymous}"] = (UNNAMED_MODEL, _codex_usage(usage))
+            else:
+                self._fold_provisional()
+            self._settled = True
             self.turns += 1
             return True
         return False
 
+    def _all(self) -> list[tuple[str, dict[str, int]]]:
+        out = list(self._messages.values())
+        if self._provisional is not None:
+            out.append((UNNAMED_MODEL, self._provisional))
+        return out
+
     def tokens(self) -> int:
-        return sum(tokens_of(usage) for _model, usage in self._messages.values())
+        return sum(tokens_of(usage) for _model, usage in self._all())
 
     def usage_by_model(self) -> dict[str, dict[str, int]]:
         out: dict[str, dict[str, int]] = {}
-        for model, usage in self._messages.values():
+        for model, usage in self._all():
             mine = out.setdefault(model, dict.fromkeys(_USAGE_FIELDS, 0))
             for k in _USAGE_FIELDS:
                 mine[k] += usage[k]
@@ -483,6 +571,7 @@ __all__ = [
     "ACTION_STOP",
     "BudgetGuard",
     "CHANNEL_ENV",
+    "CODEX_TOOL_ITEMS",
     "DISPATCH_KEY",
     "END_CAUSE",
     "KILL_AT",

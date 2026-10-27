@@ -127,6 +127,55 @@ def test_a_changed_script_reaches_the_tests_of_every_script_that_sources_it(tmp_
     assert "tests/unit/scripts/test_unrelated.py" not in out["tests"], out
 
 
+# DOC CLOSURE (#2299). PR #2267 moved PushTestCell out of Access.tsx while
+# docs/onboarding.md still cited it there; the tests that resolve that citation
+# name only onboarding.md, so no rule selected them and main's push went red.
+# A doc that cites a changed path by its full path counts as changed too.
+DOC_TREE = {
+    **FILLER,
+    "apps/swarm-ui/src/A.tsx": "export const A = 1;\n",
+    "apps/swarm-ui/src/B.tsx": "export const B = 1;\n",
+    "docs/x.md": "`function A` lives in `apps/swarm-ui/src/A.tsx`.\n",
+    "docs/y.md": "`function B` lives in `apps/swarm-ui/src/B.tsx`.\n",
+    "docs/z.md": "`function A` lives in `A.tsx`.\n",
+    "tests/unit/scripts/test_x_docs.py": 'DOC = REPO / "docs" / "x.md"\n',
+    "tests/unit/scripts/test_y_docs.py": 'DOC = REPO / "docs" / "y.md"\n',
+    "tests/unit/scripts/test_z_docs.py": 'DOC = REPO / "docs" / "z.md"\n',
+}
+
+
+def test_a_doc_citing_a_changed_path_selects_the_tests_that_read_the_doc(tmp_path):
+    root = _tree(tmp_path, DOC_TREE)
+    out = sel.select(root, ["apps/swarm-ui/src/A.tsx"])
+    # MUTATION: feed the text rule script_closure(changed) alone and this is red.
+    assert "tests/unit/scripts/test_x_docs.py" in out["tests"], out
+    # The control: a doc citing another file does not select its readers.
+    assert "tests/unit/scripts/test_y_docs.py" not in out["tests"], out
+
+
+def test_a_doc_citing_a_changed_path_by_basename_only_selects_nothing(tmp_path):
+    root = _tree(tmp_path, DOC_TREE)
+    out = sel.select(root, ["apps/swarm-ui/src/A.tsx"])
+    # MUTATION: match the basename in doc_closure and this is red.
+    assert "tests/unit/scripts/test_z_docs.py" not in out["tests"], out
+    assert sel.doc_closure(root, ["apps/swarm-ui/src/A.tsx"]) == ["apps/swarm-ui/src/A.tsx", "docs/x.md"]
+
+
+def test_the_doc_closure_is_one_level_deep_and_never_follows_a_changed_doc(tmp_path):
+    root = _tree(tmp_path, {
+        **DOC_TREE,
+        # w.md cites x.md, which cites A.tsx: two levels away, not followed.
+        "docs/w.md": "See `docs/x.md`.\n",
+        "tests/unit/scripts/test_w_docs.py": 'DOC = REPO / "docs" / "w.md"\n',
+    })
+    assert sel.doc_closure(root, ["apps/swarm-ui/src/A.tsx"]) == ["apps/swarm-ui/src/A.tsx", "docs/x.md"]
+    # A changed doc cites nothing into the closure: a docs-only diff keeps
+    # the selection it had (55 docs cite CLAUDE.md).
+    assert sel.doc_closure(root, ["docs/x.md"]) == ["docs/x.md"]
+    out = sel.select(root, ["apps/swarm-ui/src/A.tsx"])
+    assert "tests/unit/scripts/test_w_docs.py" not in out["tests"], out
+
+
 def test_a_generic_basename_needs_one_of_its_directories_beside_it(tmp_path):
     root = _tree(tmp_path, {
         **FILLER,

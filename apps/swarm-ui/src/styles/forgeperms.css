@@ -43,6 +43,9 @@ table.fp-grants tr.is-short td { color: var(--text); font-weight: 600; }
 table.fp-grants tr.is-optional td { color: var(--text-dim); }  /* WF-APP-PERMS: not granted, and nothing here needs it yet */
 .fp-perm { white-space: nowrap; }
 .fp-mark { white-space: nowrap; }
+/* PERM-DOT (#1086): an accepted permission's green dot, sized like the
+   liveness dot and in its `--ok`, so light and dark each use their own green. */
+.fp-ok-dot { display: inline-block; width: 8px; height: 8px; border-radius: 999px; background: var(--ok); vertical-align: middle; }
 .fp-for { display: flex; flex-direction: column; gap: 2px; min-width: 14em; }
 .fp-caps { color: var(--text-dim); }
 .fp-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

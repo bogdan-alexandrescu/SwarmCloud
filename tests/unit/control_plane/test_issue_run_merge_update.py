@@ -36,10 +36,17 @@ import pytest
 from swarm_api import issueci, issueruns
 
 from . import forge_fakes
-from .test_issue_run_auto_merge import _checking, _merge_task, _merge_workflows
+from .test_issue_run_auto_merge import (
+    CONFLICT_FIX_WORKFLOW,
+    _checking,
+    _conflict_fix,
+    _merge_task,
+    _merge_workflows,
+)
 from .test_issue_run_ci import (  # noqa: F401  (fixtures, imported to be used)
     PR,
     SHA_A,
+    SHA_B,
     _read,
     _step_task,
     api_context,
@@ -134,6 +141,27 @@ def test_a_head_of_base_merges_on_the_pushed_head_is_merged(
     integrator = _step_task(db, running["workflow_id"], issueruns.FIX_STEP)
     assert _merge_task(db, merge_wf)["metadata"]["dispatch"]["merge_target"] == {
         "pull_request": integrator["id"], "pull_request_workflow": running["workflow_id"],
+    }
+    assert run["merge"]["head_sha"] == head
+
+
+def test_a_base_merge_on_a_conflict_fix_head_is_merged(client, db, objects, writes, clock):
+    """#2537: the merge step's own update on top of a pr-shepherd conflict
+    fix's head is still the run's, and the merge continues the fix.
+
+    MUTATION: drop the conflict-fix candidates from `issueci._pushing_task` --
+    the run FAILs "not pushed by any of this run's tasks"."""
+    running = _checking(client, db, objects, writes)
+    fix = _conflict_fix(db, running)
+    head = _updates(writes, 1, onto=SHA_B)
+    _green_at(writes, head)
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "CHECKING", run.get("error")
+    (merge_wf,) = _merge_workflows(db)
+    assert _merge_task(db, merge_wf)["metadata"]["dispatch"]["merge_target"] == {
+        "pull_request": fix["id"], "pull_request_workflow": CONFLICT_FIX_WORKFLOW,
     }
     assert run["merge"]["head_sha"] == head
 

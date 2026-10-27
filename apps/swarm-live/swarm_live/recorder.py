@@ -395,6 +395,8 @@ class Recorder:
         live_prefix(tenant_id, task_id, attempt_id)  # refuse a bad id before anything streams
         self.tenant_id, self.task_id, self.attempt_id = tenant_id, task_id, attempt_id
         self.conn_id = conn_id or "rec-" + f"{int(clock() * 1000):x}"
+        self._first_conn_id = self.conn_id
+        self._reopens = 0
         self._send = send
         self._writer = writer
         self._encoder = encoder
@@ -415,6 +417,15 @@ class Recorder:
     @property
     def fps(self) -> int:
         return WATCHED_FPS if self._viewers > 0 else IDLE_FPS
+
+    def reopen(self) -> None:
+        """The gate ended this recorder's connection: take a new id and a fresh
+        decoder for the one the relay opens next (rendezvous.py, part of #1346).
+        The new id keeps a late byte of the old stream out of the new decoder.
+        Nothing is added to the segment until the new stream has a frame."""
+        self._reopens += 1
+        self.conn_id = f"{self._first_conn_id}-{self._reopens}"
+        self._decoder = RfbDecoder()
 
     def set_viewers(self, count: int) -> None:
         self._viewers = max(0, count)

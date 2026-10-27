@@ -33,7 +33,7 @@
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import { readFileSync } from 'node:fs'
-import { agentMaxWorkers } from './src/vitestWorkers'
+import { agentMaxWorkers, clampPoolOptions, type PoolWorkerOptions } from './src/vitestWorkers'
 
 // The container's memory limit (cgroup v2, as GKE Autopilot pods have), or null
 // outside a container or when it is unlimited ("max"). See src/vitestWorkers.ts.
@@ -46,8 +46,25 @@ function containerMemoryLimit(): number | null {
   }
 }
 
+// #1641: sized to the agent container's memory; undefined (vitest's default) elsewhere.
+const agentCap = agentMaxWorkers(process.env, containerMemoryLimit())
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    // #2508: the cap below is only what this FILE asks for, and vitest merges
+    // the command line over it -- `--poolOptions.forks.maxForks=3` beat
+    // `maxWorkers: 1` and OOM-killed f-042's agent. This hook runs after that
+    // merge and before any pool exists, so in an agent container it brings
+    // every pool's worker count back to the cap whatever the command line said.
+    // A no-op elsewhere. The precedence, as read in 3.2.7: src/vitestWorkers.ts.
+    {
+      name: 'swarm-agent-worker-cap',
+      configureVitest({ vitest }) {
+        Object.assign(vitest.config, clampPoolOptions(vitest.config, agentCap))
+      },
+    },
+  ],
   test: {
     environment: 'jsdom',
     // Colocated with the source they cover, so a moved component takes its
@@ -107,8 +124,10 @@ export default defineConfig({
     // something that never resolves is 30s, not 30 minutes -- so this buys
     // headroom without giving up the property the timeout exists for.
     testTimeout: 30_000,
-    // #1641: sized to the agent container's memory; undefined (vitest's default) elsewhere.
-    maxWorkers: agentMaxWorkers(process.env, containerMemoryLimit()),
+    // What this file asks for in an agent container; the plugin above is what
+    // makes it hold against the command line (#2508).
+    maxWorkers: agentCap,
+    poolOptions: clampPoolOptions<PoolWorkerOptions>({}, agentCap).poolOptions,
     // `globals` stays OFF. Every test imports `describe`/`it`/`expect` from
     // 'vitest' explicitly, so `tsc -b` typechecks the tests with no ambient
     // types injected into the app's own compilation.

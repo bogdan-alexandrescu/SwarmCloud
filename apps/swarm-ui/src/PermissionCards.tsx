@@ -441,7 +441,21 @@ function checkedWords(checkedAt: string | null): string {
   return `Checked ${checkedAt === null ? 'at an unknown time' : timeAgo(checkedAt)}`
 }
 
-/** The needed-permissions table: a green check, a gap, or the neutral mark. */
+/**
+ * AN ACCEPTED PERMISSION IS A GREEN DOT (PERM-DOT, #1086; BGD 2026-10-27,
+ * "Green dot"). The issue asked for green, and the row drew the console's ok
+ * mark, the grey check -- healthy is quiet everywhere else. Here the owner
+ * chose the dot: a filled disc in `--ok`, the token the liveness dot already
+ * draws in, so both themes carry their own contrast-checked green. Its
+ * silhouette (a disc) still differs from the gap's diamond and the neutral
+ * row's flat bar, and the hidden word beside it says "enough", so the state is
+ * never the hue alone.
+ */
+function OkDot() {
+  return <span className="fp-ok-dot" aria-hidden="true" />
+}
+
+/** The needed-permissions table: a green dot, a gap, or the neutral mark. */
 function GrantsTable({ rows }: { rows: readonly GrantRow[] }) {
   if (rows.length === 0) return null
   return (
@@ -470,7 +484,7 @@ function GrantsTable({ rows }: { rows: readonly GrantRow[] }) {
               <td>{r.needs ?? '?'}</td>
               <td>{r.has ?? 'none'}</td>
               <td className="fp-mark">
-                <ToneMark tone={r.ok ? 'ok' : r.optional ? 'info' : 'bad'} hidden />
+                {r.ok ? <OkDot /> : <ToneMark tone={r.optional ? 'info' : 'bad'} hidden />}
                 <span className="fp-sr">{r.ok ? 'enough' : r.optional ? 'not needed yet' : 'not enough'}</span>
               </td>
               <td className="fp-for">

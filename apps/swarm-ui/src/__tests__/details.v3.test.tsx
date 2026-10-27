@@ -17,7 +17,8 @@
  * MUTATIONS, one per block: put the id back on its own header line or drop
  * the elapsed headline; lead a failed agent with the Now card, or drop the
  * checkpoint time's honest dash; print a pending cost at full size or as $0;
- * drop the `@container ag-pane (min-width: 640px)` rule; give any element
+ * put Progress back beside Resources in a column grid (DETAILS-BUILDING folded
+ * Resources under one row); give any element
  * inside the split a second `overflow: auto`; move the Attempts section out
  * of its disclosure. Each turns a case red.
  */
@@ -273,9 +274,11 @@ describe('the Now card leads, and becomes the outcome or the failure', () => {
     expect(lead.querySelector('.dt-chip')?.textContent).toBe('lost_worker')
     expect(lead.textContent).toMatch(/Error written by\s*reconciler/)
     expect(lead.querySelector('pre')?.textContent).toBe(error)
-    // The lead precedes the strip.
+    // The lead precedes the figures: the Resources row, the strip folded under it (DETAILS-BUILDING).
     const kids = [...el.querySelector('.dt')!.children]
-    expect(kids.indexOf(lead)).toBeLessThan(kids.indexOf(el.querySelector('.dt-strip')!))
+    const row = el.querySelector('.dt > details.dt-res')!
+    expect(row.querySelector('.dt-strip')).not.toBeNull()
+    expect(kids.indexOf(lead)).toBeLessThan(kids.indexOf(row))
   })
 
   it.each([
@@ -403,14 +406,16 @@ describe('one stat strip: Elapsed · Attempt · Peak memory · CPU · Cost', () 
   })
 })
 
-describe('Progress | Resources: two columns from a 640px pane, one below', () => {
-  it('switches on the pane’s width through the shipped sheet', () => {
+describe('Progress takes the pane; Resources is folded under its row (DETAILS-BUILDING)', () => {
+  // The two columns are gone (BGD 2026-10-27): the Resources card moved under
+  // the one Resources row, so Progress stands alone at every pane width.
+  it('draws Progress outside the disclosure and the Resources card inside it, with no column grid left', () => {
     const el = host(runOf())
-    const cols = el.querySelector<HTMLElement>('.dt-cols')!
-    const two = painted(cols, 'grid-template-columns', { width: 1440, container: 700 })
-    expect(two?.trim().split(/\s+(?![^(]*\))/)).toHaveLength(2)
-    const one = painted(cols, 'grid-template-columns', { width: 1440, container: 600 })
-    expect(one?.trim().split(/\s+(?![^(]*\))/) ?? ['auto']).toHaveLength(1)
+    const progress = el.querySelector<HTMLElement>('.dt > .dt-progress')
+    expect(progress, 'Progress is not a card of its own on the pane').not.toBeNull()
+    expect(progress!.closest('details')).toBeNull()
+    expect(el.querySelector('.dt-resources')!.closest('details.dt-res')).not.toBeNull()
+    expect(el.querySelector('.dt-cols')).toBeNull()
   })
 
   // c08 (owner decision 2026-10-22, box comment 6314120811): one order at
@@ -461,7 +466,9 @@ describe('the first 900px: Now, the strip and both column heads, with nothing he
   it('keeps the order and folds the long sections at 1440', () => {
     const el = host(runOf())
     const dt = el.querySelector<HTMLElement>('.dt')!
-    const order = ['.dt-now', '.dt-strip', '.dt-progress .dt-card-head', '.dt-resources .dt-card-head', '.dt-input']
+    // DETAILS-BUILDING: Building, Now, the one Resources row (the strip and
+    // the Resources card folded inside it), then Progress and Input.
+    const order = ['.dt-building', '.dt-now', 'details.dt-res > summary', '.dt-strip', '.dt-resources .dt-card-head', '.dt-progress .dt-card-head', '.dt-input']
     const at = order.map((s) => {
       const n = dt.querySelector(s)
       expect(n, s).not.toBeNull()

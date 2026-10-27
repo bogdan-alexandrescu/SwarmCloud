@@ -116,6 +116,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Collection, Iterable, Mapping, Sequence
 
+from agent_worker import questions as questions_mod
+
 #: The key under `task.metadata`, and the key `input.json` carries it under.
 #:
 #: `Task.metadata` is a free-form dict on a FROZEN type, and per-dispatch
@@ -274,16 +276,38 @@ def questions_line() -> str:
     (`built`, ANSWER-CONTENT-CHECK, owner decision 2026-10-26), so the agent
     is told to say which option it built.
 
+    IT ALSO SAYS HOW TO WAIT (#2180). The sentence named neither the
+    `blocking` key nor `await-answers`, though a `"blocking": true` question
+    plus an empty `await-answers` beside the file parks the step for the owner
+    in `Worker._await_owner_or_release` (lifecycle STEP 9b', lane AU-7), which
+    runs before `_finalise` and so before the publish check. No agent could
+    know that. Measured on task_adb791a17d2e47d6985f: a ci-fix agent rightly
+    stopped on an owner decision, wrote `questions.json`, committed nothing,
+    and failed `published_nothing` instead of parking. So the sentence says a
+    question does not stop the step, and how one that must be answered first
+    does. The park holds no lease (invariants 1 and 4) and is the existing
+    fenced, checkpointed one (5 and 8). The file names come from
+    `agent_worker.questions`, the module the worker reads them with, so a
+    renamed marker cannot leave the prompt telling agents to write a file
+    nothing looks for.
+
     Shared by claude-code and codex, like the line before it: both are told
-    about the folder in the one place, `agent_instructions`.
+    about the folder in the one place, `agent_instructions`. Like it, it must
+    never carry a rate-limit or credential marker
+    (`cliagent._RATE_LIMIT_MARKERS`).
     """
+    name, marker = questions_mod.NAME, questions_mod.AWAIT_ANSWERS
     return (
         "If a decision is the owner's to make, ask instead of guessing: write "
-        "questions.json there, a JSON list of {question, options: [{label, "
-        "description}], recommended, context, built}, built being the label of "
-        "the option your branch implements, or null when the answer changes "
-        "nothing it builds; it is shown to the owner, and a merge does not go "
-        "ahead while the owner's pick differs from built."
+        f"{name} there, a JSON list of {{question, options: [{{label, "
+        "description}], recommended, context, built, blocking}, built being the "
+        "label of the option your branch implements, or null when the answer "
+        "changes nothing it builds; it is shown to the owner, and a merge does "
+        "not go ahead while the owner's pick differs from built. A question "
+        "does not stop your step; if your work cannot go on without the answer, "
+        f'mark it "blocking": true, write an empty file named {marker} beside '
+        f"{name} and exit: the step is parked until the owner answers, then "
+        "resumed with the answers."
     )
 
 
