@@ -10566,6 +10566,7 @@ class Worker:
             self._lease_live_until = started + self.control.heartbeat_extension_seconds
         self._last_beat_started = started
         self._heartbeats += 1
+        self._log_memory_guard_kills()
         if self._heartbeats % HEARTBEAT_EVENT_EVERY == 1:
             self.control.emit(EventType.HEARTBEAT, self._usage_reading())
             # THE LIVE READING DETAILS DRAWS, on the attempt itself (contract
@@ -15636,6 +15637,11 @@ class Worker:
     def _start_sampler(self, child: ChildProcess) -> None:
         ws = self.ws
         assert ws is not None
+        # THE MEMORY GUARD IS ON FOR EVERY RUNNER (#2504): at 95% of the
+        # cgroup's `memory.max` the sampler kills the agent's largest process
+        # rather than let the kernel's OOM killer take this worker with it.
+        # Its kills are logged by `_log_memory_guard_kills` and counted on the
+        # runner's usage (`ResourceUsage.memory_guard_kills`).
         # THE CONTAINER'S MEMORY, NOT THE PROFILE'S (#205). The dispatcher
         # sizes the container from the task's class, and a workflow step may
         # narrow `browser` (16 GiB) to `standard` (8 GiB): judged against the
@@ -15659,6 +15665,7 @@ class Worker:
         self._runner_usage.append(usage)
         # And its points since the last heartbeat, for the next one to carry.
         self._pending_points.extend(self._drain_points())
+        self._log_memory_guard_kills()
         self._sampler = None
         # THE ATTEMPT'S PEAKS, not this runner's. `record_resource_usage`
         # merge-sets absolute values, so writing each runner's own peak let a
@@ -15689,6 +15696,29 @@ class Worker:
         # The attempt's CPU at this runner's end, on the attempt (request #15)
         # -- where #188 emitted a `final` HEARTBEAT into the task's events.
         self._record_cpu()
+
+    def _log_memory_guard_kills(self) -> None:
+        """One warning per process the live sampler's memory guard killed. Never raises.
+
+        The pid, command name and sizes only: never the argv, which can carry
+        a secret. Drained on every heartbeat and when the runner is reaped.
+        """
+        if self._sampler is None:
+            return
+        try:
+            kills = self._sampler.drain_guard_kills()
+        except Exception as exc:
+            self.log.warning("could not read memory guard kills", error=f"{type(exc).__name__}: {exc}")
+            return
+        for kill in kills:
+            self.log.warning(
+                "memory guard killed the agent's largest process",
+                pid=kill.get("pid"),
+                name=kill.get("name"),
+                rss_bytes=kill.get("rss_bytes"),
+                memory_current_bytes=kill.get("memory_current_bytes"),
+                memory_max_bytes=kill.get("memory_max_bytes"),
+            )
 
     def _attempt_usage(self) -> ResourceUsage | None:
         """Every runner this attempt has started, combined; None if none has.
