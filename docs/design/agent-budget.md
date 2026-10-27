@@ -33,7 +33,7 @@ lane BUDGET-CONTRACT). Where each limit came from is
 `metadata.dispatch.budget_from: {step, workspace, ceiling}`, inside the
 signed dispatch block, and a workflow's own document records what each step
 asked for as `WorkflowStep.budget`. The worker reads the budget only from the
-verified document. A task stored before request 120 carries it in
+verified document. An agent stored before request 120 carries it in
 `metadata.dispatch.budget` (`{usd?, tokens?, from}`) instead; the worker
 (`Limits.from_task`) and the served `budget` (`codec.served_budget`) read that
 as the fallback for one release.
@@ -132,7 +132,7 @@ only from a run that finished cleanly and failed a check), then ends the
 step FAILED with `last_error` `budget_exceeded: ...` and
 `result_summary.budget: {limit, used, warned, end_cause: "budget_exceeded",
 stopped: "turn_boundary" | "mid_turn"}`, and `end_cause`
-`EndCause.BUDGET_EXCEEDED` (contract request 118). A task ended before the
+`EndCause.BUDGET_EXCEEDED` (contract request 118). An agent ended before the
 member was applied carries `end_cause` null and the cause in the summary
 alone. The outcome ledger classes the cause `runner_error`, as its text
 fallback classed those earlier ends, so its classes keep their meaning. An agent that ends on its own after the stop
