@@ -12,7 +12,7 @@
  * first case turns red; draw it for one run (`runs.length < 1`) -- the last.
  */
 import { renderToStaticMarkup } from 'react-dom/server'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { AgentRun } from '../api'
 import type { Task } from '../types'
@@ -86,6 +86,17 @@ function text(el: Element | null): string {
 }
 
 describe('the Run tile says every run and the account swap', () => {
+  // Only Date is pinned, to the fixture's own day: on any other day the tile
+  // draws an instant with its date ("10-26 09:07"), which the HH:MM readings
+  // below do not match -- these went red on 2026-10-27, the day after.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-26T10:00:00Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('a two-run attempt: the runs and the swap beside the duration, the cost in the title', () => {
     const tile = runTile(ended(TWO_RUNS))
     expect(text(tile.querySelector('.dt-sc-l'))).toBe('Ran · attempt 1')
