@@ -131,6 +131,9 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 121 | `states.py`: `EventType.BUDGET_WARNING`, the 80% warning as its own event type (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): the worker writes it; `codec.stored_event_type` reads the old `running` form as it for one release |
 | 122 | `models.py`: `Tenant.principal`'s comment gives a fictional example on the company's real domain (EXAMPLE-IDENTITIES, part of #1647) | open |
 | 123 | `states.py` / `models.py`: `ParkReason.PLATFORM_REFUSED` and `Task.platform_refusals`, so a dispatch the platform refuses parks instead of spending attempts (PLATFORM-REFUSED, part of #1820) | PROPOSED for BGD |
+| 124 | `profiles.py`: a `fix-loop` catalogue profile, `control_plane: true`, shipped unavailable until FL-ACCEPT passes, as `await-input` was (FL-CONTRACT, fix loop request A, part of #2509) | ACCEPTED by BGD 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT): mirrored in `terraform/infra/locals.tf` and listed in `profiles_without_a_job` |
+| 125 | `states.py`: `ParkReason.FIX_ROUNDS_RUNNING`, a fix loop's step while its rounds run: never promoted by the scheduler, in no capacity set, ended by swarm-api (FL-CONTRACT, fix loop request B, part of #2509) | ACCEPTED by BGD 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT), with the console's and swarm-mcp's park-reason lists |
+| 126 | `models.py`: `EndCause.FIX_LOOP_EXHAUSTED`, a fix loop that ended without a MERGE (FL-CONTRACT, fix loop request C, part of #2509) | open, REQUESTED 2026-10-27 by lane FL-CONTRACT for BGD (Q3 (c) needs an end cause). Not applied |
 
 ---
 
@@ -14867,3 +14870,172 @@ affected agent in about `30 s × max_attempts`.
 1, 2 and 3 as above. 5 is untouched: the park is guarded on the lease and
 generation exactly as today's return is, and a later attempt carries a new
 generation.
+
+## 124. `profiles.py`: a `fix-loop` catalogue profile, `control_plane`, shipped unavailable (FL-CONTRACT, fix loop request A)
+
+**Status:** ACCEPTED by BGD 2026-10-27 (Q1, Q2, Q10 of
+[docs/design/fix-loop.md](design/fix-loop.md) §9: the loop is its own
+control-plane step, named `fix-loop`) and APPLIED by the pull request that
+adds this line (lane FL-CONTRACT, part of #2509). "What is true today" below
+is the state before it was applied.
+
+### What is true today
+
+A workflow's review-then-fix loop has no step of its own. A review that says
+NOT_YET ends the workflow (`verdict_not_merge`), and every further fix round
+is a new workflow (#2509). The catalogue's one `control_plane` profile is
+`await-input` (contract requests 93 and 94).
+
+### The change
+
+```python
+"fix-loop": RunnerProfile(
+    name="fix-loop",
+    image="agent-runtime-base",   # never pulled: control_plane
+    resource_class="standard",    # never reserved: control_plane
+    backend=Backend.CLOUD_RUN_JOB,
+    runner_argv=(),
+    control_plane=True,
+    provider=None,
+    secrets=(),
+    timeout_seconds=300,
+    inputs={},
+    available=False,
+    disabled_reason="fix-loop is not available yet: ...",
+),
+```
+
+mirrored in `terraform/infra/locals.tf` `runner_profiles`, and listed in
+`profiles_without_a_job` so no tenant gets a Job for it.
+`tests/terraform/catalogue.tftest.hcl` counts thirteen profiles and asserts
+no `-fix-loop` Job. It ships unavailable, as `await-input` did, until every
+build lane of the design's §8 has merged and FL-ACCEPT is green on dev;
+enabling it is then `available=True` and nothing else, a request of its own.
+
+### What it would break if accepted
+
+Nothing at once. swarm-api refuses an unavailable profile by name, so no
+caller can submit one before it is enabled. A reader that lists every
+profile shows one more, disabled, with its reason. A `runner:fix-loop` pool
+document is materialised, as for every profile.
+
+### If it is declined
+
+The loop has no step to live in, and Q1's (b) or (c) would have to be
+designed instead.
+
+### Invariants
+
+**10** holds: a caller names `fix-loop` by name and sends no image, command,
+resource or backend. **1** holds: nothing runs it, so it creates no demand,
+and its class is never reserved. **6** and **7** are untouched: no pod.
+**9** is untouched: no Job, no account, no secret.
+
+## 125. `states.py`: `ParkReason.FIX_ROUNDS_RUNNING` (FL-CONTRACT, fix loop request B)
+
+**Status:** ACCEPTED by BGD 2026-10-27 (Q1, Q2, Q10 of
+[docs/design/fix-loop.md](design/fix-loop.md) §9; Q2 (a) is this request)
+and APPLIED by the pull request that adds this line (lane FL-CONTRACT, part
+of #2509). "What is true today" below is the state before it was applied.
+
+### What is true today
+
+A PARKED task says why through `ParkReason`. None of its members says "this
+control-plane step is waiting while steps it appended run". `HUMAN_REQUIRED`
+or `AWAITING_INPUT` with a phase would tell every reader -- `/sc check`, the
+console's "needs a person" group, the notification bell -- that a running
+loop waits for a person.
+
+### The change
+
+```python
+# states.py, class ParkReason
+#: A workflow's `fix-loop` step while its review-fix rounds run. Never
+#: promoted to READY by the scheduler; swarm-api ends it PARKED ->
+#: SUCCEEDED / FAILED / CANCELLED, and moves it to HUMAN_REQUIRED with a
+#: `park_phase` when a person is needed. Holds no capacity.
+FIX_ROUNDS_RUNNING = "FIX_ROUNDS_RUNNING"
+```
+
+* **Never promoted by the scheduler.** No sweep reads it; the scheduler
+  promotes by reason (`_parked_window`), so a reason no sweep names is never
+  made READY. FL-SCHED parks a READY `fix-loop` agent and never leases it.
+* **In no capacity set.** It rides on PARKED, which is in `PENDING_STATES`
+  and not in `CONCURRENCY_STATES`, and it is in no `PREWARM_REASONS`.
+* **Ended by swarm-api**: PARKED -> SUCCEEDED, FAILED or CANCELLED, every
+  edge already in `_ALLOWED`.
+* **Moved to `HUMAN_REQUIRED` with a `park_phase`** (`fix_loop_exhausted`,
+  ...) when a person is needed. Changing a park reason is a field write on a
+  PARKED task, not a transition. By Q3 (c) that park expires after 7 days
+  and ends the loop FAILED `fix_loop_exhausted` (see request 126 for the
+  end cause).
+
+The readers that list every `ParkReason` gain the member in the same change,
+because `scripts/lib/check-contract-parity.sh` and the unit tests hold them to
+it: the console's `ParkReason` union, `PARK_REASONS`, `PARK_CLEARS_ITSELF`
+(the rounds end on their own) and `REASON_COPY` in
+`apps/swarm-ui/src/types.ts`, `PARK_WORD` in
+`apps/swarm-ui/src/components/StatePill.tsx`, and swarm-mcp's
+`progress._PARKED_BECAUSE` and `compact._WAITS_FOR`.
+
+### What it would break if accepted
+
+Nothing that reads today's values: a new enum member. A reader that switches
+over every `ParkReason` without the member would show the raw value; the
+readers above are given a label in the same change.
+
+### If it is declined
+
+Q2's (b) or (c): a running loop reads as waiting for a person everywhere a
+park is classified.
+
+### Invariants
+
+**1** is what it keeps: a `FIX_ROUNDS_RUNNING` park holds no lease, no pool
+count and no execution, and admission never sees it. **2** and **3** are
+untouched: nothing is reserved or counted. **4** holds: the rounds are steps
+of their own, each with its own worker, and the loop's step waits parked.
+
+## 126. `models.py`: `EndCause.FIX_LOOP_EXHAUSTED`, a fix loop that ended without a MERGE (FL-CONTRACT, fix loop request C)
+
+**Status:** open, REQUESTED 2026-10-27 by lane FL-CONTRACT (part of #2509)
+for BGD. Not applied: `apps/common/swarm_common/` is frozen, and BGD's Q3
+pick (c) did not decide whether the end is a new end cause or text under an
+existing one. The question is in the FL-CONTRACT pull request.
+
+### What is true today
+
+BGD's Q3 (c) and §4.5 of the design end a loop FAILED `fix_loop_exhausted`:
+when a person answers "stop", and when the park for a person passes 7 days.
+`EndCause` (`models.py`) has no such member. Its closest are
+`runner_error` (a runner failed, which is not what happened: every round
+ran) and `verdict_refused` (the review's post was refused on the forge,
+which is not what happened either).
+
+### The change
+
+```python
+# models.py, class EndCause
+FIX_LOOP_EXHAUSTED = "fix_loop_exhausted"   # the fix loop's rounds ended without a MERGE
+```
+
+written only by swarm-api (FL-DRIVE's "stop" route) and the scheduler's
+`_expire_human_waits` (FL-SCHED), and classed by the outcome ledger as a
+failure of the work, not of the platform.
+
+### What it would break if accepted
+
+Nothing at once: a new member. The console's end-cause list and the outcome
+ledger's classes gain it in the same change, as request 118's
+`budget_exceeded` did.
+
+### If it is declined
+
+The loop ends FAILED with `last_error` beginning `fix_loop_exhausted:` under
+an existing end cause BGD picks, and every reader that wants to tell an
+exhausted loop from a crash reads text, which is the defect request 23 was
+accepted to end.
+
+### Invariants
+
+None is touched: an end cause records why, it decides nothing.

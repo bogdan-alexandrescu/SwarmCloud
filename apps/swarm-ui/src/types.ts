@@ -2922,15 +2922,18 @@ export const END_CAUSES: readonly EndCause[] = [
  * expired with nobody in control (docs/design/live-browser.md section 4.3).
  * AWAITING_INPUT is contract request 92: an `await-input` workflow step
  * waiting for an answer from a tenant member (docs/design/human-steps.md).
+ * FIX_ROUNDS_RUNNING is contract request 125: a `fix-loop` workflow step
+ * while its review-fix rounds run (docs/design/fix-loop.md).
  */
 export type ParkReason =
   | 'PROVIDER_QUOTA_EXHAUSTED' | 'PROVIDER_COOLDOWN' | 'PROVIDER_OUTAGE'
   | 'SCHEDULED_RETRY' | 'DEPENDENCY_INCOMPLETE' | 'MANUAL_PAUSE'
   | 'BUDGET_EXHAUSTED' | 'CREDENTIAL_MISSING' | 'CHILDREN_INCOMPLETE'
   | 'CI_PENDING' | 'HUMAN_REQUIRED' | 'AWAITING_INPUT'
+  | 'FIX_ROUNDS_RUNNING'
 
 /**
- * The same twelve as a value, so a test can compare the list against
+ * The same thirteen as a value, so a test can compare the list against
  * `swarm_common.states.ParkReason` and the three sets below can be checked for
  * covering it. A union type erases at build time and can be checked against
  * nothing.
@@ -2954,6 +2957,7 @@ export const PARK_REASONS = [
   'CI_PENDING',
   'HUMAN_REQUIRED',
   'AWAITING_INPUT',
+  'FIX_ROUNDS_RUNNING',
 ] as const
 
 /**
@@ -3015,6 +3019,11 @@ export const PARK_CLEARS_ITSELF: ReadonlySet<string> = new Set<ParkReason>([
   // settle, and past its fallback instant the scheduler wakes it anyway
   // (docs/merge-step.md, 2026-10-06, §1).
   'CI_PENDING',
+  // A fix-loop step while its review-fix rounds run as steps of their own
+  // (contract request 125). It ends on its own when a round says MERGE or
+  // the rounds run out; only then may it park for a person, as HUMAN_REQUIRED
+  // (docs/design/fix-loop.md §4.5).
+  'FIX_ROUNDS_RUNNING',
 ])
 
 /**
@@ -3034,7 +3043,7 @@ export const PARK_WAITS_ON_A_STEP: ReadonlySet<string> = new Set<ParkReason>([
 
 /**
  * Copy for every reason that is ever actually written -- the seven from
- * admission plus the twelve ParkReasons.
+ * admission plus the thirteen ParkReasons.
  *
  * `BlockedReason.BUDGET_LIMIT`, `QUOTA_EXHAUSTED`, `COOLDOWN`, `DEPENDENCY`
  * and `SCHEDULED_RETRY` are members of the enum that nothing ever writes as a
@@ -3068,6 +3077,7 @@ export const REASON_COPY: Readonly<Record<string, string>> = {
   CREDENTIAL_MISSING: 'No provider key is registered for this workspace.',
   HUMAN_REQUIRED: 'The agent asked for a person and nobody came in time. Holds no capacity until someone says they are ready.',
   AWAITING_INPUT: 'A workflow step waits for a member of its workspace to answer. Holds no capacity; it ends on the first answer or at its declared expiry.',
+  FIX_ROUNDS_RUNNING: 'A fix loop waits while its review and fix rounds run as steps of their own. Holds no capacity.',
   POOL_LIMIT_UNSET: 'This pool has no limit set, so it admits nothing. Nobody set it to 0: somebody has to set a limit.',
 }
 

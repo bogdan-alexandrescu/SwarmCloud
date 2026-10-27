@@ -157,8 +157,8 @@ run "runner_backends_match_resolve_backend" {
   }
 
   assert {
-    condition     = length(output.runner_backends) == 12
-    error_message = "twelve runner profiles: mock, generic, claude-code, codex, browser, #295's merge, post-verdict, claude-code-review, contract request 48's indexer, contract request 67's claude-code-browser, contract request 94's await-input and contract request 113's claude-code-large"
+    condition     = length(output.runner_backends) == 13
+    error_message = "thirteen runner profiles: mock, generic, claude-code, codex, browser, #295's merge, post-verdict, claude-code-review, contract request 48's indexer, contract request 67's claude-code-browser, contract request 94's await-input, contract request 113's claude-code-large and contract request 124's fix-loop"
   }
 
   # Contract request 94: await-input is a control_plane profile (request 93)
@@ -168,6 +168,13 @@ run "runner_backends_match_resolve_backend" {
   assert {
     condition     = output.runner_backends["await-input"] == "CLOUD_RUN_JOB"
     error_message = "await-input states CLOUD_RUN_JOB in the catalogue (contract request 94); it is never run there or anywhere"
+  }
+
+  # Contract request 124: fix-loop is the second control_plane profile, on the
+  # same terms as await-input: CLOUD_RUN_JOB in the catalogue, run nowhere.
+  assert {
+    condition     = output.runner_backends["fix-loop"] == "CLOUD_RUN_JOB"
+    error_message = "fix-loop states CLOUD_RUN_JOB in the catalogue (contract request 124); it is never run there or anywhere"
   }
 }
 
@@ -206,6 +213,7 @@ run "every_pool_name_the_contract_can_produce_is_materialised" {
         "runner:mock", "runner:generic", "runner:claude-code", "runner:codex", "runner:browser",
         "runner:merge", "runner:post-verdict", "runner:claude-code-review",
         "runner:indexer", "runner:claude-code-browser", "runner:await-input",
+        "runner:fix-loop",
       ] :
       contains(output.pool_names, r)
     ])
@@ -346,6 +354,15 @@ run "jobs_exist_only_where_a_credential_does" {
     error_message = "await-input is a control_plane profile (contract request 93); no tenant may get a Cloud Run Job for it"
   }
 
+  # Contract request 124: fix-loop is a control_plane profile too, and needs
+  # no provider either, so `profiles_without_a_job` alone keeps it Job-less.
+  assert {
+    condition = !anytrue([
+      for name in output.job_names : endswith(name, "-fix-loop")
+    ])
+    error_message = "fix-loop is a control_plane profile (contract request 124); no tenant may get a Cloud Run Job for it"
+  }
+
   # Cloud Run only exposes memory-medium ephemeral volumes, so a workspace sized
   # at the full memory limit would OOM-kill the agent instead of failing a write.
   assert {
@@ -423,8 +440,8 @@ run "the_python_catalogue_is_readable" {
   }
 
   assert {
-    condition     = length(output.runner_profiles) == 12
-    error_message = "expected 12 runner profiles in profiles.py (mock, generic, claude-code, claude-code-large, codex, browser, merge, post-verdict, claude-code-review, indexer, claude-code-browser, await-input); the parser read a different number"
+    condition     = length(output.runner_profiles) == 13
+    error_message = "expected 13 runner profiles in profiles.py (mock, generic, claude-code, claude-code-large, codex, browser, merge, post-verdict, claude-code-review, indexer, claude-code-browser, await-input, fix-loop); the parser read a different number"
   }
 
   # claude-code's and indexer's entries carry a comment above their backend;
@@ -436,12 +453,19 @@ run "the_python_catalogue_is_readable" {
     error_message = "the parser misread profiles.py: claude-code (contract request 53), indexer (63) and merge (66) must read GKE_AUTOPILOT, post-verdict must keep CLOUD_RUN_JOB, and claude-code-browser (67) must read the browser image and class"
   }
 
-  # await-input (contract request 94) is now the dict's last entry: the parser
-  # must read its own timeout and its absent provider, and not run on past
-  # the dict into the statements after it.
+  # await-input (contract request 94) is read on its own terms: its own
+  # timeout and its absent provider.
   assert {
     condition     = output.runner_profiles["await-input"].timeout_seconds == 300 && output.runner_profiles["await-input"].provider == "" && length(output.runner_profiles["await-input"].secret_env_names) == 0
     error_message = "the parser misread await-input (contract request 94): timeout 300, no provider and no secrets"
+  }
+
+  # fix-loop (contract request 124) is now the dict's last entry: the parser
+  # must read its own timeout, its absent provider and its empty secrets, and
+  # not run on past the dict into the statements after it.
+  assert {
+    condition     = output.runner_profiles["fix-loop"].timeout_seconds == 300 && output.runner_profiles["fix-loop"].provider == "" && length(output.runner_profiles["fix-loop"].secret_env_names) == 0 && output.runner_profiles["fix-loop"].backend == "CLOUD_RUN_JOB"
+    error_message = "the parser misread fix-loop (contract request 124): CLOUD_RUN_JOB, timeout 300, no provider and no secrets"
   }
 
   assert {
