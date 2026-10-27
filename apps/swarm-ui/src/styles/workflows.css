@@ -121,8 +121,14 @@
      comes from the line, never from what it draws. */
   .wfl .wfl-line > a { flex: 0 1 auto; min-width: 6em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* THE ID IS ONE LINE, CUT (QA G3-09): it broke across two and three lines
-     (`wf_37d2a419ea5a4bb / eb463`) in a 166px column. Whole in its title. */
-  .wfl .wfl-line > .id { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+     (`wf_37d2a419ea5a4bb / eb463`) in a 166px column. Whole in its title.
+     ONE WIDTH ON EVERY ROW (#2391 comment 58): with a shrink of 100 and a
+     floor of 0 each name length cut it somewhere else at 1440 -- `wf_aud…`,
+     `wf_b…`, and 0px under a long name. Floor and cap are both 10ch, `wf_`
+     and six characters then the ellipsis, so every row cuts it at the same
+     place and it never vanishes. It still gives way first (`mixGoesUnder`
+     counts its 10ch as it counts a tag). */
+  .wfl .wfl-line > .id { flex: 0 100 auto; min-width: 10ch; max-width: 10ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .wfl .wfl-line > .wfl-mix { flex: 1 0 11rem; min-width: 11rem; }
   /* The current step is the row's one second line, cut with its title. */
   .wfl .wfl-name > .wfl-why { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -131,10 +137,15 @@
      319px, and the name kept 127px ('Audit the operator s…') -- the row draws
      the mix on its second line, before the current step (`mixGoesUnder`,
      Workflows.tsx). The mix keeps its one whole chip there and does not give
-     way; the step takes the rest and is cut with its title. */
-  .wfl .wfl-name > .wfl-sub { display: flex; flex-wrap: nowrap; align-items: center; gap: var(--ctl-s2); min-width: 0; }
+     way.
+     THE STEP TAKES THE LINE UNDER IT (#2391 comment 58): beside the mix's
+     11rem the step kept ~135px at 1440 and read 'failed at checkpoints: e…'.
+     The second line wraps and the step is a line of its own, the column's
+     whole width, so the failing step and the start of its cause read; still
+     one line, cut with its title. */
+  .wfl .wfl-name > .wfl-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--ctl-s2); min-width: 0; }
   .wfl .wfl-sub > .wfl-mix { flex: 0 0 11rem; min-width: 0; }
-  .wfl .wfl-sub > .wfl-why { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wfl .wfl-sub > .wfl-why { flex: 1 1 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .wfl .wfl-table th[data-col="workflow"] { min-width: 280px; }
 }
 /* THE LIST'S NOTE IS ONE MUTED LINE UNDER THE HEAD (VQ-013): the list's
@@ -471,6 +482,13 @@
    position's own face, dim, as the shape after the same-step unit is. */
 .wf-scrub > .wf-scrub-counted { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 .wf-scrub > .wf-scrub-shape { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* ON A PHONE THE SHAPE IS A LINE OF ITS OWN (#2391 comment 58): beside the
+   nav at 390 'shape: 2 steps in 2 stages (1 → 1)' was cut (scrollWidth 317 in
+   300). The row already wraps (styles.css `.wf-scrub`); here the shape takes
+   the whole width under the nav and wraps at its spaces. */
+@media (max-width: 560px) {
+  .wf-scrub > .wf-scrub-shape { flex: 1 1 100%; white-space: normal; }
+}
 .wf-scrub-strip > li > .wf-mk { display: inline-flex; }
 
 /* THE STEP TABLE IS A FIXED TABLE WITH PX COLUMNS (walkthrough A, owner

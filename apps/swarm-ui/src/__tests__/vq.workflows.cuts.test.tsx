@@ -13,7 +13,7 @@
  *         at 390 (scrollWidth 317 > clientWidth 300).
  */
 import { cleanup, render, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { useState } from 'react'
 
 import type { Result } from '../fetch'
@@ -225,8 +225,18 @@ describe('ID: the list cuts every row’s id at one width', () => {
     vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
       return this.classList.contains('wfl-line') ? 420 : 0
     })
-    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) {
-      return this.classList.contains('id') ? idW : 0
+    // Defined, not spied: a file before this one in the fork may have deleted
+    // jsdom's own getter, which `vi.spyOn` then cannot find.
+    const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth')
+    Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.classList.contains('id') ? idW : 0
+      },
+    })
+    onTestFinished(() => {
+      if (own === undefined) delete (HTMLElement.prototype as unknown as Record<string, unknown>).offsetWidth
+      else Object.defineProperty(HTMLElement.prototype, 'offsetWidth', own)
     })
     render(<WorkflowsScreen />)
     const td = await waitFor(() => {
