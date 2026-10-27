@@ -2333,6 +2333,8 @@ def commit_dirty(
     timeout_seconds: int,
     logger: Any,
     git_binary: str = "git",
+    base: str | None = None,
+    left_unstaged: list[str] | None = None,
 ) -> str | None:
     """Commit whatever the agent left uncommitted. Returns the new sha, or None.
 
@@ -2355,6 +2357,20 @@ def commit_dirty(
     `--no-verify` and a null hooks path: the agent can write `.git/hooks/*` in
     its own workspace, and a commit that ran them would be arbitrary code
     executing under the worker after the runner has already exited.
+
+    WHAT THE AGENT'S OWN COMMITS REMOVED STAYS REMOVED (#2536). `base` is the
+    publish base. A path one of the agent's commits since it deleted, that
+    HEAD does not hold and that is still on disk untracked, is NOT staged: it
+    is appended to `left_unstaged` instead. Measured on task_6e4f6aa4: the
+    fix agent ran `git rm --cached scratchpad/runbook-cf-step2/guards.log`,
+    which keeps the file on disk, and committed the removal; `add --all`
+    staged the untracked file again, the worker's commit put it back, and the
+    fix's net diff was empty while the step read SUCCEEDED. `git rm --cached`
+    is how a file is taken out of a repository and kept locally, so the
+    agent's commit is the statement of intent and the file on disk is not.
+    A path HEAD holds again was re-added by a later commit, and an untracked
+    path no agent commit deleted is new work: both are staged as before. With
+    no `base` nothing is held back, which is the behaviour before #2536.
     """
     repo = Path(repo)
     g = [git_binary, *_NO_HOOKS, *_worker_identity(author_name, author_email)]
@@ -2372,9 +2388,30 @@ def commit_dirty(
 
     # `add --all` after the harvest's intent-to-add is what turns those
     # placeholder index entries into real staged content.
+    removed = _untracked_paths_agent_commits_removed(run, git_binary, base, repo) if base else []
     add_code, _ = run([*g, "add", "--all", "--", "."], "publish-add")
     if add_code != 0:
         raise GitError("could not stage the agent's changes")
+    if removed:
+        # Unstaged again from a file, not the command line: the list is the
+        # agent's and its length is not bounded. HEAD does not hold any of
+        # them, so resetting each to HEAD takes it out of the index.
+        listing = Path(private_dir) / "publish-left-unstaged.paths"
+        listing.write_bytes(b"".join(p.encode() + b"\0" for p in removed))
+        try:
+            reset_code, _ = run(
+                [git_binary, *_NO_HOOKS, "--literal-pathspecs", "reset", "-q",
+                 f"--pathspec-from-file={listing}", "--pathspec-file-nul"],
+                "publish-left-unstaged",
+            )
+        finally:
+            listing.unlink(missing_ok=True)
+        if reset_code != 0:
+            raise GitError("could not leave unstaged the files the agent's commits removed")
+        logger.info("left unstaged: files the agent's commits removed from the index",
+                    paths=removed[:20], count=len(removed))
+        if left_unstaged is not None:
+            left_unstaged.extend(removed)
 
     # Nothing staged means nothing to commit, and `git commit` exits 1 for
     # that. It is not a failure -- the agent may have committed everything
@@ -2398,6 +2435,44 @@ def commit_dirty(
 
     code, text = run([git_binary, *_NO_HOOKS, "rev-parse", "HEAD"], "publish-head")
     return text.strip() if code == 0 else None
+
+
+def _untracked_paths_agent_commits_removed(
+    run: Any, git_binary: str, base: str, repo: Path
+) -> list[str]:
+    """The paths `commit_dirty` leaves unstaged (#2536), sorted.
+
+    Deleted by a commit in `base..HEAD` (renames read as a delete and an
+    add), absent from HEAD's tree, and on disk as a file or a link that `add
+    --all` would stage. On disk, not "untracked" by `ls-files --others`: in
+    the publish repository the harvest's `add --intent-to-add` has already
+    put every new file in the index, so the index cannot tell them apart. A listing git cannot
+    make -- a base this repository does not hold -- is none: the auto-commit
+    then stages as it did before, and `Worker._publish_git`'s check that the
+    auto-commit did not undo the agent's commits still stands behind it.
+    """
+    span = "HEAD" if base == EMPTY_CLONE_BASE else f"{base}..HEAD"
+    g = [git_binary, *_NO_HOOKS]
+
+    def names(argv: list[str], slug: str) -> set[str] | None:
+        code, text = run(argv, slug)
+        if code != 0:
+            return None
+        return {n.strip("\n") for n in text.split("\0") if n.strip("\n")}
+
+    deleted = names(
+        [*g, "log", "--no-renames", "--diff-filter=D", "--name-only", "-z", "--format=", span],
+        "publish-agent-deletions",
+    )
+    if not deleted:
+        return []
+    held = names([*g, "ls-tree", "-r", "-z", "--name-only", "HEAD"], "publish-head-paths")
+    if held is None:
+        return []
+    return sorted(
+        path for path in deleted - held
+        if (repo / path).is_symlink() or (repo / path).is_file()
+    )
 
 
 def fold_agent_commits(
