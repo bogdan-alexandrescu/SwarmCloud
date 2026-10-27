@@ -35,8 +35,12 @@
 #      submitted (deps.submission_scope), so it cannot read a lane's
 #      workflow itself; the API's ci-fix submit path reads it and answers
 #      409 `ci_fix_lane_owns_pr` naming the merge step
-#      (swarm_api.cifix.CiFixLaneOwnsPr). This script makes no read of its
-#      own, and on that answer logs the skip, comments nothing and passes.
+#      (swarm_api.cifix.CiFixLaneOwnsPr). An issue run that is not terminal
+#      owns its pull request the same way (#2216): it has no merge step but
+#      runs its own CI-fix rounds, and the 409 names the run
+#      (`detail.issue_run_id`, `detail.issue_run_state`). This script makes
+#      no read of its own, and on that answer logs the skip, comments nothing
+#      and passes.
 #   2. Every failed job's log is read through the Actions API (`failed_jobs`)
 #      and goes through `redact` BEFORE anything else reads it, then is cut
 #      at the step that failed, narrowed to the lines that name the failure
@@ -64,8 +68,8 @@
 # the pull request, fails this run, and does not count as an attempt, because
 # nothing ran -- except two 409s, each logged with the ids it names, with no
 # comment, and the run passes: `ci_fix_in_flight`, the failure already has a
-# live fix task; and `ci_fix_lane_owns_pr`, the lane's merge step is live and
-# fixes CI here itself (1a).
+# live fix task; and `ci_fix_lane_owns_pr`, the lane's merge step or a live
+# issue run owns the pull request and fixes CI here itself (1a).
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
@@ -474,8 +478,9 @@ run_fix() {
       return 0
     fi
     # 409 `ci_fix_lane_owns_pr` (swarm_api.cifix.CiFixLaneOwnsPr, 1a): the
-    # lane's merge step is live and runs this pull request's CI-fix rounds.
-    # Skip: name the merge step and its workflow, post no comment, pass. The
+    # lane's merge step, or a non-terminal issue run (#2216), is live and runs
+    # this pull request's CI-fix rounds. Skip: name the merge step and its
+    # workflow, or the issue run and its state, post no comment, pass. The
     # same rule as above -- only the ids, only in their minted shape.
     if [[ "${API_STATUS}" == "409" && "${code}" == "ci_fix_lane_owns_pr" ]]; then
       local merge_task lane_workflow
@@ -483,7 +488,18 @@ run_fix() {
         "${WORK}/response" 2>/dev/null || true)"
       lane_workflow="$(jq -r '.detail.workflow_id // empty | strings | select(test("^wf_[0-9a-f]{20}$"))' \
         "${WORK}/response" 2>/dev/null || true)"
-      ok "#${pr}: the lane owns this pull request -- its merge step (task ${merge_task:-unknown}, workflow ${lane_workflow:-unknown}) is live and runs its own CI-fix rounds; no standalone fix, no comment"
+      # An issue run owns the pull request the same way (#2216): the detail
+      # names the run and its state instead of a merge step.
+      local issue_run issue_run_state
+      issue_run="$(jq -r '.detail.issue_run_id // empty | strings | select(test("^run_[0-9a-f]{20}$"))' \
+        "${WORK}/response" 2>/dev/null || true)"
+      issue_run_state="$(jq -r '.detail.issue_run_state // empty | strings | select(test("^[A-Z_]{1,20}$"))' \
+        "${WORK}/response" 2>/dev/null || true)"
+      if [[ -n "${issue_run}" ]]; then
+        ok "#${pr}: issue run ${issue_run} (${issue_run_state:-unknown}) owns this pull request and runs its own CI-fix rounds; no standalone fix, no comment"
+      else
+        ok "#${pr}: the lane owns this pull request -- its merge step (task ${merge_task:-unknown}, workflow ${lane_workflow:-unknown}) is live and runs its own CI-fix rounds; no standalone fix, no comment"
+      fi
       return 0
     fi
     message="$(jq -r '.message // empty' "${WORK}/response" 2>/dev/null | redact | head -c 600 || true)"

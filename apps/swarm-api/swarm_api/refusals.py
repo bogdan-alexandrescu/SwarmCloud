@@ -375,7 +375,9 @@ SWITCHES: dict[str, Switch] = {
         "as that failure being handled",
     ),
     # CI-FIXER-GATE (cifix.py `_refuse_if_lane_owns`, part of #1822): a
-    # CI-fix submission for a pull request whose lane's merge step is live.
+    # CI-fix submission for a pull request whose lane's merge step is live, or
+    # whose issue run is not terminal (#2216, the same switch: an issue run
+    # runs its own CI-fix rounds from issueci and has no merge step).
     # SHIPS ON (default=True) by owner decision 2026-10-21 (~15:15Z, asked
     # after this lane was held), unlike a new refusal's usual report-only
     # start (the 2026-10-08 rule): about 20% of standalone ci-fix pushes were
@@ -389,7 +391,9 @@ SWITCHES: dict[str, Switch] = {
         code="ci_fix_lane_owns_pr",
         why="a CI-fix submission whose continued task's workflow has a merge step that is "
         "not terminal is refused 409 naming that merge step, which runs the pull request's "
-        "CI-fix rounds itself. Ships on by owner decision 2026-10-21: scripts/ci-fix.sh reads "
+        "CI-fix rounds itself, or while a non-terminal issue run of the tenant owns the pull "
+        "request (its pr_task_id is the continued root, or the root's workflow is one of its "
+        "ci_fix_workflows), refused naming the run, which runs its own rounds. Ships on by owner decision 2026-10-21: scripts/ci-fix.sh reads "
         "the 409 as a skip, and off "
         "the standalone fixer races the lane's round for the branch again",
         default=True,
