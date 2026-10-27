@@ -55,6 +55,7 @@ from agent_worker.runners import cliagent
 from agent_worker.runners.base import RunnerContext
 from swarm_common.states import TaskState
 
+from test_cli_prompt_names_time_limit import is_limit_line, without_limit_line
 from worker_seeds import TENANT, record_as_earlier_attempt, seed_attempt
 
 PROFILE = "claude-code"
@@ -106,10 +107,14 @@ def deliverables_line(artifacts_dir: Path | str) -> str:
 QUESTIONS_LINE = (
     "If a decision is the owner's to make, ask instead of guessing: write "
     "questions.json there, a JSON list of {question, options: [{label, "
-    "description}], recommended, context, built}, built being the label of "
+    "description}], recommended, context, built, blocking}, built being the label of "
     "the option your branch implements, or null when the answer changes "
     "nothing it builds; it is shown to the owner, and a merge does not go "
-    "ahead while the owner's pick differs from built."
+    "ahead while the owner's pick differs from built. A question does not "
+    "stop your step; if your work cannot go on without the answer, mark it "
+    '"blocking": true, write an empty file named await-answers beside '
+    "questions.json and exit: the step is parked until the owner answers, "
+    "then resumed with the answers."
 )
 
 
@@ -400,8 +405,9 @@ def test_both_cli_runners_end_the_prompt_with_the_line_once(tmp_path, monkeypatc
     assert prompt.count("$SWARM_ARTIFACTS_DIR") == 1, prompt
     if "expected_outputs" not in payload:
         # Nothing else is appended when no later step expects a file: the
-        # line, and the questions sentence after it (2026-10-05).
-        assert prompt == (
+        # line, and the questions sentence after it (2026-10-05); then the
+        # step's time-limit line, last (#2139).
+        assert without_limit_line(prompt) == (
             f"compute primes\n\n{deliverables_line(ctx.artifacts_dir)}\n{QUESTIONS_LINE}"
         )
 
@@ -962,11 +968,13 @@ def test_a_repository_task_is_unchanged(db, tmp_path, monkeypatch, worker_factor
     # decision for the owner, not about where the deliverable goes; then the
     # publish paragraph (Proposal A, 2026-10-08), which says the worker
     # publishes the committed branch -- the deliverable stays the diff, and
-    # only the pull request's title and body go to the artifacts folder.
-    assert len(rest) == 3, appended
+    # only the pull request's title and body go to the artifacts folder. The
+    # step's time-limit line (#2139) comes just before that paragraph.
+    assert len(rest) == 4, appended
     assert rest[0].startswith(LINE_START) and rest[0].endswith(LINE_END), rest[0]
     assert rest[1] == QUESTIONS_LINE, rest[1]
-    assert rest[2] == cliagent.PUBLISH_PARAGRAPH, rest[2]
+    assert is_limit_line(rest[2]), rest[2]
+    assert rest[3] == cliagent.PUBLISH_PARAGRAPH, rest[3]
     assert "Write deliverables" not in prompt, prompt
     assert not any(line.lstrip().lower().startswith("write") for line in lines), lines
 
