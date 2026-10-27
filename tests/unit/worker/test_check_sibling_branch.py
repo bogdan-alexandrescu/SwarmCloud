@@ -49,19 +49,20 @@ def _head_ref(world: MergeWorld) -> str:
 def test_a_red_push_suite_on_a_sibling_branch_beside_a_pending_one_on_the_pr_branch_is_pending(
         tmp_path):
     """#2365's shape: the sibling's red push run and the PR's own push run
-    still in progress, at one sha."""
+    still in progress, at one sha. The sibling's check run is the newer one
+    (it is created when its job starts), so within the push event it is the
+    latest run unless it is dropped."""
     world = MergeWorld(tmp_path)
-    world.runs = [_gh_run(1, "failure", SIBLING_SUITE),
-                  _gh_run(2, None, OWN_SUITE, status="in_progress")]
+    world.runs = [_gh_run(2, "failure", SIBLING_SUITE),
+                  _gh_run(1, None, OWN_SUITE, status="in_progress")]
     world.workflow_runs = [_suite(SIBLING_SUITE, "push", SIBLING),
                            _suite(OWN_SUITE, "push", _head_ref(world))]
 
     outcome = merge.run_merge(world.context())
 
     # MUTATION: keep every push suite at the sha (no head_branch filter) ->
-    # the push event's latest run is in progress, but with no event read
-    # (only names repeating) or the sibling kept, its red run is judged as
-    # the PR's -> MERGE_REFUSED checks_failed.
+    # the sibling's red run 2 is the push event's latest -> MERGE_REFUSED
+    # checks_failed.
     assert outcome.end_cause is not EndCause.MERGE_REFUSED, outcome.summary
     assert world.merge_calls() == []
     # MUTATION: drop the PR branch's own suite instead of the sibling's ->
