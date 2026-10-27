@@ -70,8 +70,14 @@ hold:
   `BOT_GIT_IDENTITY`), and its message does not end with the worker's line,
   "Made by the worker for task <id>." (`WORKER_COMMIT_LINE`). Since #765 the
   worker publishes *as the person*, so the committer's address alone cannot
-  tell the owner's laptop from a lane. The worker's line can. A platform head
-  the step did not accept is a defect, and failure-review must see it;
+  tell the owner's laptop from a lane. The worker's line can, because every
+  commit the worker pushes carries it: its own (`_worker_commit_message`) and
+  each agent commit it keeps, which `lifecycle.replay_agent_commits` rewrites
+  as the person and ends with the line. Before the #2505 review the kept
+  commits did not, so a red-first lane's head -- one parent, the person's
+  address, linked to the pull request's author -- read as a person's push.
+  A platform head the step did not accept is a defect, and failure-review
+  must see it;
 * **GitHub links it to a person on the pull request.** The `User` account
   GitHub links the committer to -- or, for a web-UI edit GitHub committed,
   the author -- is the pull request's author or one of its assignees. Anyone

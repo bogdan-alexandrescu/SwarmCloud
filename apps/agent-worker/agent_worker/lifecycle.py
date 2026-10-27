@@ -18292,7 +18292,10 @@ def replay_agent_commits(
 
     WHAT IS KEPT, AND WHAT IS NOT. Each commit keeps its TREE, exactly -- so
     the tests-only commit of a red-first change is still tests only, and CI
-    can run it -- and its message, cleaned (`clean_commit_message`). Its
+    can run it -- and its message, cleaned (`clean_commit_message`) and
+    ended with the worker's line, "Made by the worker for task <id>." (#2505
+    review: the merge step reads that line to tell a platform head from a
+    person's push). Its
     author, committer, dates and signature are the worker's: the commit is
     made with `git commit-tree` under `_worker_identity`, and #219's rule that
     the worker writes every commit it pushes holds, checked again at the push
@@ -18419,6 +18422,11 @@ def replay_agent_commits(
                 scrub=scrub,
                 fallback=f"swarm: commit {index} of {len(shas)} from {task_id}",
             )
+            # Every commit the worker pushes ends with its line (#2505
+            # review): the committer is the dispatcher since #765, so this
+            # line is all that tells the merge step a kept agent commit is
+            # the platform's (`merge.WORKER_COMMIT_LINE`), not a person's push.
+            text = f"{text}\n\nMade by the worker for task {task_id}."
         argv = [*g, "commit-tree", tree]
         if parent:
             argv += ["-p", parent]

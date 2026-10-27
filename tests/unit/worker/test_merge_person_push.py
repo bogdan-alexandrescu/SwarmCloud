@@ -150,6 +150,65 @@ def test_a_commit_the_worker_made_as_the_person_is_the_platforms(tmp_path):
     assert outcome.summary["refusal"]["code"] == "head_moved"
 
 
+class _Quiet:
+    """The structured logger `replay_agent_commits` writes to, dropping all."""
+
+    def __getattr__(self, name: str) -> Any:
+        return lambda *args, **kwargs: None
+
+
+def _kept_agent_commit_message(tmp_path) -> str:
+    """The message `lifecycle.replay_agent_commits` gives an agent's commit it
+    keeps, read back from a real repository after the rewrite."""
+    import subprocess
+
+    from agent_worker import lifecycle
+
+    repo = tmp_path / "kept"
+    repo.mkdir()
+
+    def git(*argv: str) -> str:
+        return subprocess.run(["git", *argv], cwd=str(repo), check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    ident = ["-c", "user.name=Claude", "-c", "user.email=noreply@anthropic.com"]
+    git(*ident, "commit", "-q", "--allow-empty", "-m", "base")
+    base = git("rev-parse", "HEAD")
+    (repo / "test_widget.py").write_text("def test_negative(): assert False\n")
+    git("add", "-A")
+    git(*ident, "commit", "-q", "-m",
+        "Tests: the widget refuses a negative size\n\n"
+        "Co-Authored-By: Claude <noreply@anthropic.com>\n")
+    for name in ("private", "logs"):
+        (tmp_path / name).mkdir()
+    kept = lifecycle.replay_agent_commits(
+        repo=repo, base=base, keep=None, task_id="task_abc", scrub=lambda text: text,
+        author_name=PAT["name"], author_email=PAT["email"],
+        private_dir=tmp_path / "private", logs_dir=tmp_path / "logs",
+        timeout_seconds=60, logger=_Quiet(),
+    )
+    assert kept == 1
+    assert git("log", "-1", "--format=%ce") == PAT["email"]
+    return git("log", "-1", "--format=%B")
+
+
+def test_a_kept_agent_commit_the_worker_pushed_as_the_person_is_the_platforms(tmp_path):
+    """#2505 review: `replay_agent_commits` rewrites each agent commit it keeps
+    under the dispatcher's identity (#765) -- one parent, the person's
+    committer address, GitHub linking it to the pull request's author. Every
+    red-first lane's tests commit has this shape. Without the worker's line
+    its head read as the person's push, so a platform head the step did not
+    accept ended superseded_by_person_push and failure-review skipped it."""
+    message = _kept_agent_commit_message(tmp_path)
+    assert message.strip().splitlines()[-1] == merge.WORKER_COMMIT_LINE + "task_abc.", message
+    world = _world(tmp_path)
+    world.pr["head"]["sha"] = _person_commit(world, message=message)
+    outcome = merge.run_merge(world.context())
+    assert outcome.summary["refusal"]["code"] == "head_moved"
+    assert "person" not in outcome.summary["refusal"]
+
+
 def test_a_commit_under_the_platforms_own_identity_ends_head_moved(tmp_path):
     world = _world(tmp_path)
     for email in sorted(merge.PLATFORM_COMMITTER_EMAILS):

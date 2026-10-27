@@ -440,7 +440,8 @@ PLATFORM_COMMITTER_EMAILS = frozenset({
 })
 
 #: How every commit the worker pushes ends its message
-#: (`Worker._worker_commit_message`: "Made by the worker for task <id>.").
+#: (`Worker._worker_commit_message`: "Made by the worker for task <id>.";
+#: `lifecycle.replay_agent_commits` ends each kept agent commit with it too).
 #: Since #765 the worker publishes AS the person who dispatched the work, so
 #: its commits' committer names that person; this line is what still says
 #: the platform made them. A platform head the step did not accept is a
