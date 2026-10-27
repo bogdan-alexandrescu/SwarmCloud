@@ -76,15 +76,14 @@ const TASKS = new Map<string, Task>([
 
 beforeEach(() => {
   vi.spyOn(Date, 'now').mockReturnValue(T0)
-  // MUTATION PROOF (#2379 comment 19): the board read answers 2.5 s late,
-  // past setup.ts's 2000 ms asyncUtilTimeout. A wait that polls the DOM for
-  // the card times out; a wait on the read itself does not.
-  const board = {
+  // MUTATION: answer this read 2.5 s late (past setup.ts's 2000 ms window)
+  // and a bare `waitFor` on the card reads aria-label undefined in all five
+  // cases, the QA-121 flake; `arrived` waits it out and stays green.
+  api.loadWorkflowBoard.mockResolvedValue({
     status: 'ok',
     data: { workflows: [WF], taskById: TASKS, statesDetail: null },
     fetchedAt: T0,
-  } satisfies Result<WorkflowBoard>
-  api.loadWorkflowBoard.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve(board), 2500)))
+  } satisfies Result<WorkflowBoard>)
   api.loadWorkflowUsage.mockResolvedValue({ status: 'empty', fetchedAt: T0 } satisfies Result<WorkflowUsage>)
   api.loadAttempts.mockResolvedValue({ status: 'empty', fetchedAt: T0 })
   api.loadWorkflow.mockImplementation(ownFromBoard(api.loadWorkflowBoard))
