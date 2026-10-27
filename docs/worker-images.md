@@ -176,6 +176,7 @@ fails when a profile's backend moves and this table does not.
 | `post-verdict` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`); disabled |
 | `claude-code-review` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`); retired |
 | `await-input` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`): a `control_plane` profile that nothing runs on any backend, so the backend is the catalogue's statement only (contract requests 93 and 94, docs/design/human-steps.md); available since request D (contract request 105, HW-ENABLE) |
+| `fix-loop` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`): the second `control_plane` profile, on the same terms as `await-input` (contract request 124, docs/design/fix-loop.md); shipped unavailable until FL-ACCEPT passes |
 
 So `mock` is the one enabled profile still started on Cloud Run: it reaches no
 internet, so #939's option A left it there, and `post-verdict` and

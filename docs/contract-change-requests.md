@@ -14940,7 +14940,7 @@ of #2509). "What is true today" below is the state before it was applied.
 
 ### What is true today
 
-A PARKED task says why through `ParkReason`. None of its members says "this
+A PARKED agent says why through `ParkReason`. None of its members says "this
 control-plane step is waiting while steps it appended run". `HUMAN_REQUIRED`
 or `AWAITING_INPUT` with a phase would tell every reader -- `/sc check`, the
 console's "needs a person" group, the notification bell -- that a running
@@ -14966,7 +14966,7 @@ FIX_ROUNDS_RUNNING = "FIX_ROUNDS_RUNNING"
   edge already in `_ALLOWED`.
 * **Moved to `HUMAN_REQUIRED` with a `park_phase`** (`fix_loop_exhausted`,
   ...) when a person is needed. Changing a park reason is a field write on a
-  PARKED task, not a transition. By Q3 (c) that park expires after 7 days
+  PARKED agent, not a transition. By Q3 (c) that park expires after 7 days
   and ends the loop FAILED `fix_loop_exhausted` (see request 126 for the
   end cause).
 
