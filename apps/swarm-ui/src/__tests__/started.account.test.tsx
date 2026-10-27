@@ -6,7 +6,8 @@
 // the board row and in the open card. One formatter (`clockTime`), in the
 // person's zone (UTC by default): `HH:MM:SS PDT` today there, `Oct 26 14:05
 // PDT` older, the UTC instant and its age in the hover. A task that never
-// started reads `never started` with its submit time -- never blank, never a time borrowed from another field.
+// started reads `never started` with its submit time -- never blank, never a
+// time borrowed from another field.
 //
 // #379: an ACCOUNT column, the inspector head, and each attempt's own account
 // with its swaps (`acct-eng-01 → 02 (swapped: unreadable)`). The words for

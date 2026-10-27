@@ -116,3 +116,35 @@ describe('the agent inspector’s headline holds `ended <time> <label>`', () => 
     expect(nowrap(headline(), { width: 1440, container: 720 })).toBe(true)
   })
 })
+
+describe('the inspector strip’s Ran tile holds `<start> <label> → <end> <label>` whole', () => {
+  // The tile as `DtStrip` draws an ended attempt: the sub-line is one span
+  // titled `started … · ended …`. In a 480-639px pane (the 1440 split
+  // inspector) every sub-line is clamped to two lines, and the labelled pair
+  // needs three: the review render cut it to `→ Oct 19 04:47…`, label lost.
+  function tile(sub: string): HTMLElement {
+    const host = document.createElement('div')
+    host.innerHTML = `<div class="dt"><div class="dt-strip"><div class="dt-sc"><span class="dt-sc-l">Ran · attempt 1</span><span class="dt-sc-v">7m 0s</span><span class="dt-sc-s">${sub}</span></div></div></div>`
+    document.body.appendChild(host)
+    hosts.push(host)
+    return host.querySelector<HTMLElement>('.dt-sc-s')!
+  }
+  const PANE: CascadeEnv = { width: 1440, container: 600 }
+  const start = clockTime('2026-10-19T11:40:00.000Z', NOW, LA)!
+  const end = clockTime('2026-10-19T11:47:00.000Z', NOW, LA)!
+
+  it('is not clamped at a 600px pane', () => {
+    expect(`${start.text} → ${end.text}`).toBe('Oct 19 04:40 PDT → Oct 19 04:47 PDT')
+    const s = tile(`<span title="started ${start.title} · ended ${end.title}">${start.text} → ${end.text}</span>`)
+    // MUTATION: drop the Ran tile's selector from details.css's `is-whole`
+    // rule and the sub-line keeps the pane's two-line clamp.
+    expect(painted(s, '-webkit-line-clamp', PANE)).toBe('none')
+    expect(painted(s, 'line-clamp', PANE)).toBe('none')
+    expect(painted(s, 'overflow', PANE)).toBe('visible')
+  })
+
+  it('leaves every other sub-line clamped to two, so this measured the rule', () => {
+    const s = tile('<span title="started x">since 04:40:00 PDT</span>')
+    expect(painted(s, '-webkit-line-clamp', PANE)).toBe('2')
+  })
+})
