@@ -594,9 +594,10 @@ function fixtureGit(task: Task): Record<string, unknown> {
 async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> {
   const page = await fixtureTasks()
   const listed = page.status === 'ok' ? page.data.tasks : []
-  // THE WAITING FIXTURES (#1782) are reached by id and kept off the list, so
-  // every count the list's fixtures pin stays where it was.
-  const task = listed.find((t) => t.id === taskId) ?? fixtureWaitingTasks(listed).find((t) => t.id === taskId)
+  // THE WAITING FIXTURES (#1782) and THE BUDGET ONES (#2459) are reached by
+  // id and kept off the list, so every count the list's fixtures pin stays
+  // where it was.
+  const task = listed.find((t) => t.id === taskId) ?? fixtureOffList(listed, taskId)
   if (!task) {
     return {
       status: 'error',
@@ -674,6 +675,11 @@ async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> 
           seq: 1,
         }))
         events.push(ev('heartbeat', begin + ran * 0.7, { elapsed_seconds: Math.round(ran * 0.7) / 1000, peak_rss_bytes: 1_842_000_000, checkpoints: 1 }))
+        // The budget agents' 80% warning (#2459): the live one's, and the
+        // stopped one's on its way to the stop.
+        if (task.id === FIXTURE_BUDGET_WARN || task.id === FIXTURE_BUDGET_EXCEEDED) {
+          events.push(ev('running', begin + ran * 0.8, FIXTURE_BUDGET_WARNING))
+        }
         // Deliberately NO matching event for ckpt_0002, which the attempt
         // lists: that is the real paging case -- an id with no size and no
         // uri, which must render as "the event is off this page", not as a
@@ -4877,6 +4883,130 @@ function fixtureWaitingTasks(listed: Task[]): Task[] {
   ]
 }
 
+/**
+ * THE BUDGET AGENTS (#2459, BUDGET-FIXTURES): one per state of the agent's
+ * Budget card (AgentBudget.tsx), so the card is drawn in development and a
+ * visual-QA run captures it (`budget-*` in qa/routes.json). Like the waiting
+ * agents they are reached BY ID AND KEPT OFF THE LISTS (BGD, 2026-10-27):
+ * the agents list, the task window, Outcomes and every count stay as other
+ * tests pin them.
+ *
+ * Their shapes are agent.budget.test.tsx's: a step's $1 under a $5 default,
+ * the warning a `running` event carrying `cause: budget_warning` at $0.81,
+ * and a stop at $1.02 on a turn boundary. The figures agree everywhere they
+ * are shown: the warning's and the stop's `used`, the attempt's usage
+ * (`fixtureUsage`), and the runner's report in the result summary.
+ */
+const FIXTURE_BUDGET_WARN = 'task_budget_warn'
+const FIXTURE_BUDGET_EXCEEDED = 'task_budget_exceeded'
+const FIXTURE_BUDGET_NONE = 'task_budget_none'
+
+/** `dispatch.budget` as `swarm_api.budget.dispatch_block` writes it: a step's $1 under a $5 default. */
+const FIXTURE_BUDGET = { usd: 1, from: { step: { usd: 1 }, workspace: { usd: 5 }, ceiling: { usd: 50 } } }
+
+/** The 80% warning's detail, on a `running` event as the worker writes it today (contract request 121 gives it its own type). */
+const FIXTURE_BUDGET_WARNING = {
+  cause: 'budget_warning',
+  percent: 80,
+  told: true,
+  limit: { usd: 1 },
+  used: { tokens: 812_000, usd: 0.81 },
+}
+
+/** What the stopped agent's runner reported: 1.02M tokens and $1.02, the `used` its stop says. */
+const FIXTURE_BUDGET_STOP_USAGE = {
+  input_tokens: 18_400, output_tokens: 21_600, cache_read_input_tokens: 920_000, cache_creation_input_tokens: 60_000, cost_usd: 1.02,
+}
+
+/** What each budget agent's runner reported: tokens summing to the `used` its warning or its stop says. */
+const FIXTURE_BUDGET_USAGE: Readonly<Record<string, NonNullable<ReturnType<typeof fixtureUsage>>>> = {
+  [FIXTURE_BUDGET_WARN]: {
+    input_tokens: 14_200, output_tokens: 17_800, cache_read_input_tokens: 732_000, cache_creation_input_tokens: 48_000, cost_usd: 0.81,
+  },
+  [FIXTURE_BUDGET_EXCEEDED]: FIXTURE_BUDGET_STOP_USAGE,
+}
+
+function fixtureBudgetTasks(listed: Task[]): Task[] {
+  const base = listed.find((t) => t.runner_profile === 'claude-code') ?? listed[0]
+  if (base === undefined) return []
+  const at = (minsAgo: number) => new Date(FIXTURE_NOW - minsAgo * 60_000).toISOString()
+  const dispatch = { strategy: 'collect', carrier: 'checkpoints', role: null, integrates: [] }
+  // One attempt each, submitted `since` minutes ago and last changed `last`
+  // minutes ago; `fixtureTimed` derives the rest, as every fixture task's.
+  const one = (id: string, state: TaskState, since: number, last: number, over: Partial<Task>): Task =>
+    fixtureTimed({
+      ...base,
+      id,
+      state,
+      runner_profile: 'claude-code',
+      resource_class: 'standard',
+      provider: 'anthropic',
+      model: 'claude-opus-5',
+      metadata: null,
+      input: null,
+      workflow_id: null,
+      step_id: null,
+      depends_on: null,
+      park_reason: null,
+      blocked_by: null,
+      next_eligible_at: null,
+      attempt_count: 1,
+      current_generation: 1,
+      current_lease_id: CONCURRENCY_STATES.has(state) ? `lease_${id.replace('task_', '')}` : null,
+      created_at: at(since),
+      updated_at: at(last),
+      end_cause: null,
+      last_error: null,
+      result_summary: null,
+      dispatch: dispatch as Task['dispatch'],
+      ...over,
+    })
+  const stopped = { ...dispatch, strategy: 'direct-pr', budget: FIXTURE_BUDGET } as unknown as Task['dispatch']
+  const usage = FIXTURE_BUDGET_STOP_USAGE
+  const exceeded = one(FIXTURE_BUDGET_EXCEEDED, 'FAILED', 50, 22, {
+    dispatch: stopped,
+    end_cause: 'budget_exceeded',
+    last_error:
+      'budget_exceeded: the agent used $1.02 of a budget of $1.00 and was stopped at a turn boundary; ' +
+      'its work was checkpointed and published as it stood',
+  })
+  return [
+    // A RUNNING agent past 80% of its budget: the amber warning.
+    one(FIXTURE_BUDGET_WARN, 'RUNNING', 30, 0, {
+      dispatch: { ...dispatch, budget: FIXTURE_BUDGET } as unknown as Task['dispatch'],
+      heartbeat_at: at(1),
+    }),
+    // A FAILED agent the worker stopped on its budget (contract request 118),
+    // its work published: a `direct-pr` step, so its pull request and the
+    // Changes pane's publish agree with the card's "published as it stood".
+    {
+      ...exceeded,
+      result_summary: {
+        budget: { limit: { usd: 1 }, used: { tokens: 1_020_000, usd: 1.02 }, warned: true, end_cause: 'budget_exceeded', stopped: 'turn_boundary' },
+        git: {
+          ...fixtureGit(exceeded),
+          pull_request: { number: 2470, url: 'https://github.com/bogdan-alexandrescu/SwarmCloud/pull/2470', state: 'open', created: true },
+        },
+        runner: {
+          usage: {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            total_cost_usd: usage.cost_usd,
+            models: ['claude-opus-5'],
+          },
+        },
+      } as unknown as Task['result_summary'],
+    },
+    // A SUCCEEDED agent with no budget: the card draws nothing.
+    one(FIXTURE_BUDGET_NONE, 'SUCCEEDED', 90, 80, {}),
+  ]
+}
+
+/** A task a per-task read answers and no list returns: a waiting one (#1782) or a budget one (#2459). */
+function fixtureOffList(listed: Task[], taskId: string): Task | undefined {
+  return fixtureWaitingTasks(listed).find((t) => t.id === taskId) ?? fixtureBudgetTasks(listed).find((t) => t.id === taskId)
+}
+
 // ---------------------------------------------------------------------------
 // THE FIXTURE TIMELINE (QAFIX4-FIXTURE-B, visual QA run 4 F12, F14a-c; part
 // of #1680). Every time a fixture read shows for a task -- its submission, its
@@ -4996,7 +5126,7 @@ function fixtureNewestSpan(task: Task): FixtureAttemptSpan | undefined {
  */
 function fixtureTaskDoc(taskId: string): Task | undefined {
   const listed = fixtureTaskRows()
-  const known = listed.find((t) => t.id === taskId) ?? fixtureWaitingTasks(listed).find((t) => t.id === taskId)
+  const known = listed.find((t) => t.id === taskId) ?? fixtureOffList(listed, taskId)
   if (known !== undefined) return known
   const stand = listed.find((t) => t.state === 'SUCCEEDED')
   return stand === undefined ? undefined : { ...stand, id: taskId }
@@ -5014,6 +5144,8 @@ function fixtureUsage(task: Task): Pick<
   'input_tokens' | 'output_tokens' | 'cache_read_input_tokens' | 'cache_creation_input_tokens' | 'cost_usd'
 > | null {
   if (task.runner_profile === 'mock' || task.runner_profile === 'generic') return null
+  const budgeted = FIXTURE_BUDGET_USAGE[task.id]
+  if (budgeted !== undefined) return budgeted
   if (task.id === 'task_wf_scan_a') {
     return { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cost_usd: 0 }
   }
