@@ -8,8 +8,19 @@
  * sub-line says it beside the duration: `2 runs · 1 account swap (ai-eng-2
  * exhausted → ai-eng-1-max at 09:50)`. A one-run attempt's tile is unchanged.
  *
+ * THE CLOCK IS PINNED TO THE FIXTURE'S DAY (MAIN-RED-SWAPRUNS, #2391). The
+ * tile writes its start and end with `clockTime`, which reads times alone for
+ * an instant on today's date and `MM-DD HH:MM` for an older one. The fixture
+ * is dated 2026-10-26 and the clock was the machine's, so at midnight on
+ * 10-27 main turned red on '10-26 09:07 → 10-26 11:06' with no code change:
+ * the test, not the tile, was wrong. `NOW` is half an hour after the attempt
+ * ended, on the same day. The pin is set before the first render because the
+ * tile's `now` is `useNow`'s shared module clock, taken once at the first
+ * render; a static render never subscribes, so it never ticks after that.
+ *
  * MUTATIONS: drop the `runs !== null` branch from DtStrip's first cell -- the
- * first case turns red; draw it for one run (`runs.length < 1`) -- the last.
+ * first case turns red; draw it for one run (`runs.length < 1`) -- the last;
+ * drop the pin in `beforeEach` -- the first two, from the day after onwards.
  */
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -22,6 +33,8 @@ import { attempt, task as runTask } from './runfixture'
 const STARTED = '2026-10-26T09:07:00Z'
 const SWAPPED = '2026-10-26T09:50:13Z'
 const ENDED = '2026-10-26T11:06:52Z'
+/** Half an hour after the attempt ended, on the fixture's own day. */
+const NOW = '2026-10-26T11:36:52Z'
 
 const TWO_RUNS = {
   artifacts: [],
@@ -79,6 +92,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers()
   for (const h of hosts.splice(0)) h.remove()
+  vi.useRealTimers()
 })
 
 function runTile(t: Task): HTMLElement {
@@ -117,6 +131,7 @@ describe('the Run tile says every run and the account swap', () => {
     expect(text(tile.querySelector('.dt-sc-s'))).toMatch(new RegExp(`^${hm(STARTED)}(:\\d\\d)? → ${hm(ENDED)}(:\\d\\d)?$`))
     expect(tile.classList.contains('is-whole')).toBe(false)
   })
+
 
   it('runsLine: null for no summary, no runs or one run; several swaps listed in order', () => {
     expect(runsLine(null)).toBeNull()
