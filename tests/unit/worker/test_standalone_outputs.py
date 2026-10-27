@@ -51,7 +51,7 @@ from agent_worker import workspace as workspace_mod
 from agent_worker.checkpoint import CheckpointManager
 from agent_worker.errors import ExitCode
 from agent_worker.objectstore import LocalObjectStore
-from agent_worker.runners import cliagent
+from agent_worker.runners import ceiling, cliagent
 from agent_worker.runners.base import RunnerContext
 from swarm_common.states import TaskState
 
@@ -332,7 +332,10 @@ def test_the_deliverables_line_is_not_repeated_when_later_steps_expect_files(
     assert _run(worker_factory) == ExitCode.OK
     prompt = _agent_output(db)["prompt"]
     assert prompt.count(LINE_START) == 1, prompt
-    assert prompt.count("$SWARM_ARTIFACTS_DIR") == 1, prompt
+    # The context-ceiling note (#2524) names $SWARM_ARTIFACTS_DIR/handoff.md,
+    # a note for the next session and not a deliverable; set it aside.
+    assert prompt.count(ceiling.HANDOFF_NOTE) == 1, prompt
+    assert prompt.replace(ceiling.HANDOFF_NOTE, "").count("$SWARM_ARTIFACTS_DIR") == 1, prompt
     # The expected-output list is still there, with each file's full path.
     assert "Later steps of this workflow need these files from you: scan-01.md." in prompt
     assert "/artifacts/scan-01.md" in prompt
@@ -397,12 +400,17 @@ def test_both_cli_runners_end_the_prompt_with_the_line_once(tmp_path, monkeypatc
 
     assert prompt.startswith("compute primes\n\n"), prompt
     assert prompt.count(deliverables_line(ctx.artifacts_dir)) == 1, prompt
-    assert prompt.count("$SWARM_ARTIFACTS_DIR") == 1, prompt
+    # claude-code alone carries the context-ceiling note (#2524), which names
+    # $SWARM_ARTIFACTS_DIR/handoff.md for the next session, not a deliverable.
+    note = f"\n\n{ceiling.HANDOFF_NOTE}" if spec.context_ceiling else ""
+    assert prompt.count(ceiling.HANDOFF_NOTE) == (1 if note else 0), prompt
+    assert prompt.replace(ceiling.HANDOFF_NOTE, "").count("$SWARM_ARTIFACTS_DIR") == 1, prompt
     if "expected_outputs" not in payload:
         # Nothing else is appended when no later step expects a file: the
-        # line, and the questions sentence after it (2026-10-05).
+        # line, and the questions sentence after it (2026-10-05), then the
+        # ceiling note where the runner has one.
         assert prompt == (
-            f"compute primes\n\n{deliverables_line(ctx.artifacts_dir)}\n{QUESTIONS_LINE}"
+            f"compute primes\n\n{deliverables_line(ctx.artifacts_dir)}\n{QUESTIONS_LINE}{note}"
         )
 
 
@@ -963,10 +971,13 @@ def test_a_repository_task_is_unchanged(db, tmp_path, monkeypatch, worker_factor
     # publish paragraph (Proposal A, 2026-10-08), which says the worker
     # publishes the committed branch -- the deliverable stays the diff, and
     # only the pull request's title and body go to the artifacts folder.
-    assert len(rest) == 3, appended
+    # Between them, the context-ceiling note (#2524): a note for the session
+    # that may carry the task on, not a destination for the deliverable.
+    assert len(rest) == 4, appended
     assert rest[0].startswith(LINE_START) and rest[0].endswith(LINE_END), rest[0]
     assert rest[1] == QUESTIONS_LINE, rest[1]
-    assert rest[2] == cliagent.PUBLISH_PARAGRAPH, rest[2]
+    assert rest[2] == ceiling.HANDOFF_NOTE, rest[2]
+    assert rest[3] == cliagent.PUBLISH_PARAGRAPH, rest[3]
     assert "Write deliverables" not in prompt, prompt
     assert not any(line.lstrip().lower().startswith("write") for line in lines), lines
 
