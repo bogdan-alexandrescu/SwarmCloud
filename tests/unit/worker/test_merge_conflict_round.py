@@ -144,6 +144,68 @@ def test_exhausted_conflict_rounds_fail_fast_with_merge_conflict(tmp_path):
     assert world.merge_calls() == []
 
 
+EARLIER = "a" * 40
+
+
+def test_a_conflict_round_running_at_an_earlier_head_parks_running_not_pending(tmp_path):
+    """#2577: on 2026-10-27 the merge parked conflict_fix_pending at 40d1cf15
+    while round 1 (task_78214f85, claimed at a8cb2f5) was still running, and
+    the tick submitted round 2 onto the same branch. One writer per pull
+    request: a live round at any head holds the next one."""
+    world = MergeWorld(tmp_path)
+    _conflicting(world)
+    _round(world, head=EARLIER)
+    _round_task(world, state="RUNNING", pushed=None)
+
+    outcome = merge.run_merge(world.context())
+
+    _parked(outcome, merge.CONFLICT_FIX_RUNNING)
+    message = outcome.summary["wait"]["message"]
+    assert "round 1" in message and ROUND_TASK in message
+    assert _check_reads(world) == []
+
+
+def test_a_conflict_round_that_ended_at_an_earlier_head_leaves_the_next_round_due(tmp_path):
+    world = MergeWorld(tmp_path)
+    _conflicting(world)
+    _round(world, head=EARLIER)
+    _round_task(world, state="SUCCEEDED", pushed=None)
+
+    outcome = merge.run_merge(world.context())
+
+    _parked(outcome, merge.CONFLICT_FIX_PENDING)
+    assert "round 2 of 2" in outcome.summary["wait"]["message"]
+
+
+def test_spent_rounds_with_the_last_still_running_park_instead_of_refusing(tmp_path):
+    world = MergeWorld(tmp_path)
+    _conflicting(world)
+    world.spend_conflict_rounds()
+    rounds = world.docs[TASK]["metadata"][merge.MERGE_FIX_METADATA_KEY][merge.CONFLICT_ROUNDS_KEY]
+    rounds[-1].update(task_id=ROUND_TASK, workflow_id="wf_conflict")
+    _round_task(world, state="RUNNING", pushed=None)
+
+    outcome = merge.run_merge(world.context())
+
+    _parked(outcome, merge.CONFLICT_FIX_RUNNING)
+    assert ROUND_TASK in outcome.summary["wait"]["message"]
+
+
+def test_a_running_ci_fix_round_at_another_head_holds_the_conflict_round(tmp_path):
+    world = MergeWorld(tmp_path)
+    _conflicting(world)
+    world.docs[TASK]["metadata"] = {merge.MERGE_FIX_METADATA_KEY: {
+        "rounds": [{"round": 1, "head": EARLIER, "task_id": ROUND_TASK,
+                    "workflow_id": "wf_conflict"}]}}
+    _round_task(world, state="RUNNING", pushed=None)
+
+    outcome = merge.run_merge(world.context())
+
+    _parked(outcome, merge.CONFLICT_FIX_RUNNING)
+    message = outcome.summary["wait"]["message"]
+    assert "round 1" in message and ROUND_TASK in message
+
+
 @pytest.mark.parametrize("state", ["SUCCEEDED", "FAILED", "CANCELLED"])
 def test_a_conflict_round_that_ended_at_this_head_is_merge_conflict(tmp_path, state):
     world = MergeWorld(tmp_path)
