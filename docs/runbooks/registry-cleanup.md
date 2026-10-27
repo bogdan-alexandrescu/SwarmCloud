@@ -215,7 +215,8 @@ of this one.
 bash <<'DELETE'
 set -euo pipefail
 # A destructive step never honours SWARM_ASSUME_YES (CLAUDE.md, "Writing
-# scripts"): the count is typed at a terminal, every time.
+# scripts"): the count is typed at a terminal, every time. Unsetting the
+# variable is only a note; the guard is the /dev/tty read further down.
 if [[ -n "${SWARM_ASSUME_YES:-}" ]]; then
   echo "ignoring SWARM_ASSUME_YES: this delete always needs the count typed at a terminal" >&2
   unset SWARM_ASSUME_YES
@@ -226,7 +227,7 @@ list=build/registry-misnamed.txt
 # Re-list now and refuse if the registry no longer matches what BGD approved.
 gcloud artifacts packages list \
   --repository swarm-images --location us-central1 --project saga-agents-staging \
-  --format 'value(name)' \
+  --format 'value(name)' </dev/null \
   | sed 's#.*/packages/##' \
   | { grep -E '^agent-runtime-base[0-9a-f]{7,40}$' || true; } | sort > build/registry-misnamed.now
 diff -u "${list}" build/registry-misnamed.now \
@@ -240,8 +241,13 @@ while IFS= read -r pkg; do
 done < "${list}"
 [[ "${count}" -eq 7 ]] || { echo "refusing: ${count} packages listed, the approval was for 7" >&2; exit 1; }
 
-exec 3</dev/tty 2>/dev/null \
-  || { echo "refusing: no terminal to type the confirmation at" >&2; exit 1; }
+# The group's 2>/dev/null lasts only for the group; a bare `exec 3</dev/tty
+# 2>/dev/null` would keep stderr on /dev/null for the rest of the script and
+# hide the list, the prompt and every gcloud error below.
+if ! { exec 3</dev/tty; } 2>/dev/null; then
+  echo "refusing: no terminal to type the confirmation at" >&2
+  exit 1
+fi
 cat "${list}" >&2
 printf 'This permanently deletes the %s packages above from swarm-images.\nType "delete %s misnamed packages" to continue: ' "${count}" "${count}" >&2
 IFS= read -r answer <&3
