@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import os
 import re
 import shutil
@@ -45,7 +46,8 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
@@ -54,6 +56,7 @@ from swarm_redaction import redact as redact_text
 from .. import expected_outputs as expected_mod
 from .. import indexspec
 from .. import issue as issue_mod
+from .. import metrics
 from ..cachedirs import AGENT_CACHE_ENV
 from ..gitidentity import GIT_IDENTITY_ENV
 from ..logs import StructuredLogger
@@ -66,6 +69,8 @@ from .base import (
     RunnerContext,
     RunnerFailure,
 )
+from . import ceiling as ceiling_mod
+from .budgetwatch import BudgetStreamWatcher, budget_watcher
 from .limits import platform_ceilings, resolve_limits
 from .streams import AgentStreamFiles
 
@@ -104,6 +109,9 @@ _SENSITIVE_PASSTHROUGH: tuple[str, ...] = ("HTTPS_PROXY", "HTTP_PROXY", "TYPESAF
 #: node CPU and was OOM-killed at 8 GiB (task_45e9d3b7c0264ef78091). The
 #: worker sets it for this process (`lifecycle._build_child_env`); it is a
 #: task id, never a secret.
+#: The memory budget (MEMORY_LIMIT_ENV, XDIST_WORKERS_ENV, #2504) is NOT a
+#: passthrough: this process reads it from the cgroup and sets it after
+#: `extra_env`, so no environment value replaces it.
 _PLAIN_PASSTHROUGH: tuple[str, ...] = (
     "NO_PROXY",
     "NODE_EXTRA_CA_CERTS",
@@ -111,6 +119,65 @@ _PLAIN_PASSTHROUGH: tuple[str, ...] = (
     *(name for name in AGENT_CACHE_ENV if name != "TMPDIR"),
     "SWARM_TASK_ID",
 )
+
+# ---------------------------------------------------------------------------
+# The agent's memory budget (#2504)
+# ---------------------------------------------------------------------------
+#
+# Five claude-code attempts (f-013, f-014, f-039, f-040, f-041) ran `pytest -n
+# 8`, `tsc` with `--max-old-space-size=5000` and resident dev servers inside 5
+# and 8 GiB containers. The kernel OOM-killed the whole container, the worker
+# with it, and each attempt ended `lost_worker`. Nothing told the agent what it
+# had: `nproc` said 6 and no variable or prompt line named the memory. So the
+# agent's env carries the limit and a worker count, and its first prompt says
+# what to do with them. PYTEST_XDIST_AUTO_NUM_WORKERS caps `-n auto` only; the
+# prompt line is what covers an explicit `-n`.
+
+#: The container's `memory.max`, in bytes, as the agent's env carries it.
+MEMORY_LIMIT_ENV = "SWARM_MEMORY_LIMIT_BYTES"
+#: What pytest-xdist's `-n auto` uses instead of the CPU count.
+XDIST_WORKERS_ENV = "PYTEST_XDIST_AUTO_NUM_WORKERS"
+_GIB = 1 << 30
+#: Kept out of the test workers' share: the worker, the agent CLI and the node
+#: toolchain stay about 2 GiB resident (f-039's baseline was 1.47 GB before
+#: the agent ran anything).
+AGENT_MEMORY_HEADROOM_BYTES = 2 * _GIB
+#: What one xdist worker of the api suite measured, about 1 GiB resident.
+XDIST_WORKER_BYTES = 1 * _GIB
+
+
+def agent_resource_budget(memory_max: int | None, cpu_cores: float | None) -> dict[str, str]:
+    """The budget variables for the agent's env; empty when `memory.max` is unknown.
+
+    Workers: (limit - headroom) // per-worker, capped at the CPU limit (or,
+    when that is unknown, at `os.cpu_count()`), and never below 1.
+    """
+    if memory_max is None or memory_max <= 0:
+        return {}
+    cap = math.floor(cpu_cores) if cpu_cores else (os.cpu_count() or 1)
+    workers = max(1, min(cap, (memory_max - AGENT_MEMORY_HEADROOM_BYTES) // XDIST_WORKER_BYTES))
+    return {MEMORY_LIMIT_ENV: str(memory_max), XDIST_WORKERS_ENV: str(workers)}
+
+
+def container_limits() -> tuple[int | None, float | None]:
+    """This container's cgroup `memory.max` and `cpu.max` (cores), each None if unknown."""
+    return metrics.cgroup_memory_max(), metrics.cgroup_cpu_limit_cores()
+
+
+def _gib(size: int) -> str:
+    return f"{round(size / _GIB, 1):g} GiB"
+
+
+def budget_line(memory_max: int, workers: int) -> str:
+    """The one prompt line that states the budget, for a first start."""
+    return (
+        f"Memory budget: this container has {_gib(memory_max)} (${MEMORY_LIMIT_ENV}), and "
+        "at that limit the kernel kills the whole container, this attempt with it. Stop "
+        "any dev server you started (next dev, uvicorn, postgres) before running tsc or "
+        f"the tests; never pass pytest -n above {workers} (${XDIST_WORKERS_ENV}, which "
+        "-n auto already uses); never set --max-old-space-size above "
+        f"{memory_max // (1 << 20)} (MiB, the whole {_gib(memory_max)})."
+    )
 
 #: Substrings that mean "the provider said no, try later".
 _RATE_LIMIT_MARKERS = (
@@ -326,12 +393,23 @@ class CliAgentSpec:
     #: (`codex.latest_session`); claude-code's stream-json names it on every
     #: event, so it needs none.
     session_locator: Callable[[Path, float], str | None] | None = None
+    #: The files, under the CLI's HOME, whose lines carry its running usage
+    #: when its stream reports usage only at the end of a start: the budget
+    #: watcher reads what each gains while the start runs. codex's rollouts
+    #: (`codex.rollout_files`, BGD's pick "Also read the rollout",
+    #: 2026-10-27); claude-code's stream reports every message, so it needs none.
+    usage_files: Callable[[Path], list[Path]] | None = None
     #: Directories put BEFORE `BASE_PATH` in the CLI's PATH, which its tools
     #: inherit. Platform constants from the runner module, never caller input.
     #: claude-code on the browser image puts /opt/venv/bin first, so the
     #: agent's `python` is the venv holding Playwright and `swarm_browser`
     #: (BROWSER-ENFORCE, part of #1030; `claude_code.VENV_BIN`).
     path_prefix: tuple[str, ...] = ()
+    #: Stop a session at the turn boundary after its context passes 200k
+    #: tokens or its tool calls pass 150, and carry the task on in a fresh
+    #: session from a handoff, never `--resume` (TOKEN-CEILING, BGD
+    #: 2026-10-27, #2524; `ceiling`). Reads claude-code's stream-json usage.
+    context_ceiling: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -412,6 +490,78 @@ _WINDOW_NAME = re.compile(r"^[a-z0-9_]{1,40}$")
 #: for is seconds apart at the fastest, so a quarter of a second loses nothing.
 _WATCH_SECONDS = 0.25
 
+# WHAT A RESUMED RUN SPENT GETTING BACK TO WORK (SWAP-RUNS, #2457). A swap
+# restarts the CLI with `--resume`, and the restarted agent re-reads before it
+# acts again. The watcher notes the first tool call that is not a read -- an
+# edit, a write, a command that is not one of the reading commands below -- and
+# the seconds and tokens the run had spent before it. The worker exposes the
+# figure for a run that followed a swap (`lifecycle._runs`); how the swap
+# happens does not change.
+#
+#: The CLI's tools that only read. Anything else -- Edit, Write, MultiEdit,
+#: NotebookEdit, an MCP tool, a Bash command that is not a read -- is the first
+#: action. `Task`/`Agent` start a subagent, whose own calls are judged as they
+#: arrive, so the start itself is not an action.
+READ_TOOLS = frozenset({
+    "Read", "Grep", "Glob", "LS", "NotebookRead", "WebFetch", "WebSearch",
+    "TodoRead", "TodoWrite", "ToolSearch", "Task", "Agent", "BashOutput",
+})
+#: The first word of a shell command that only reads. A command reads when
+#: every one of its pieces (split at `;`, `&&`, `||`, `|` and newlines) starts
+#: with one of these; `sed -i` and a redirect (`>`) are writes whatever the
+#: word. `git` reads only with one of `_READ_GIT`.
+_READ_COMMANDS = frozenset({
+    "cat", "cd", "echo", "find", "grep", "egrep", "head", "less", "ls", "nl",
+    "pwd", "rg", "sed", "stat", "tail", "tree", "wc", "file", "awk", "sort",
+    "uniq", "cut", "diff", "jq", "realpath", "dirname", "basename", "true",
+})
+_READ_GIT = frozenset({
+    "log", "show", "diff", "status", "blame", "grep", "ls-files", "rev-parse",
+    "branch", "describe", "shortlog",
+})
+_SHELL_PIECES = re.compile(r"&&|\|\||[;|\n]")
+#: The usage counts summed per message for the re-read cost.
+_TOKEN_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+)
+
+
+def _shell_reads(command: Any) -> bool:
+    """Whether a Bash tool call's command only reads. False when unsure."""
+    if not isinstance(command, str) or not command.strip() or ">" in command:
+        return False
+    for piece in _SHELL_PIECES.split(command):
+        words = piece.strip().split()
+        if not words:
+            continue
+        word = words[0]
+        if word not in _READ_COMMANDS and word != "git":
+            return False
+        if word == "sed" and any(w.startswith("-i") or w == "--in-place" for w in words[1:]):
+            return False
+        if word == "git":
+            sub = next((w for w in words[1:] if not w.startswith("-")), None)
+            if sub not in _READ_GIT:
+                return False
+    return True
+
+
+def is_action(block: Mapping[str, Any]) -> bool:
+    """Whether one `tool_use` block is the agent acting rather than reading."""
+    name = block.get("name")
+    if not isinstance(name, str) or not name:
+        return False
+    if name in READ_TOOLS:
+        return False
+    if name == "Bash":
+        tool_input = block.get("input")
+        command = tool_input.get("command") if isinstance(tool_input, dict) else None
+        return not _shell_reads(command)
+    return True
+
 
 def _reading_of(event: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
     """(window, {utilization, resets_at}) from one `rate_limit_event`, or None.
@@ -472,7 +622,14 @@ class AccountStreamWatcher:
     Without a tap (a test driving the watcher by hand) it reads the file.
     """
 
-    def __init__(self, stdout_path: Path, channel: Path, move: Path | None) -> None:
+    def __init__(
+        self,
+        stdout_path: Path,
+        channel: Path,
+        move: Path | None,
+        *,
+        carry: "AccountStreamWatcher | None" = None,
+    ) -> None:
         self._stdout = stdout_path
         self._channel = channel
         self._move = move
@@ -485,10 +642,23 @@ class AccountStreamWatcher:
         self.turns = 0
         self.exhausted = False
         self.stopped_for: str | None = None
+        #: Stopped at a turn boundary to wrap up before the limit (#2139).
+        #: Never `stopped_for`, which the worker reads as a swap.
+        self.stopped_to_wrap_up = False
         #: The provider error the run ended in, for the account's health
         #: (`classify_account_error`): {"kind", "message"}, set by `judge`.
         self.error: dict[str, str] | None = None
         self._dirty = False
+        # THE RE-READ MEASURE (SWAP-RUNS). One runner process can start the
+        # CLI more than once (a finish pass, repair turns), each with its own
+        # watcher; `carry` is the previous one, so the clock and the tokens
+        # run from the runner's FIRST start and a first action already seen
+        # is kept. `_usage` is each message's usage, the LAST copy of each id
+        # (the stream repeats a message once per content block).
+        self._origin = carry._origin if carry is not None else time.monotonic()
+        self._usage: dict[str, dict[str, int]] = dict(carry._usage) if carry is not None else {}
+        self._anonymous = carry._anonymous if carry is not None else 0
+        self.first_action: dict[str, Any] | None = carry.first_action if carry is not None else None
 
     def poll(self) -> str | None:
         stop: str | None = None
@@ -498,6 +668,8 @@ class AccountStreamWatcher:
             if isinstance(sid, str) and _SESSION_ID.match(sid) and sid != self.session_id:
                 self.session_id = sid
                 self._dirty = True
+            if kind == "assistant":
+                self._note_assistant(event)
             if kind == "rate_limit_event":
                 reading = _reading_of(event)
                 if reading is not None and self.readings.get(reading[0]) != reading[1]:
@@ -523,6 +695,48 @@ class AccountStreamWatcher:
         if self._dirty:
             self.write()
         return stop
+
+    def _tokens(self, *, without: str | None = None) -> dict[str, int]:
+        totals = dict.fromkeys(_TOKEN_FIELDS, 0)
+        for key, usage in self._usage.items():
+            if key == without:
+                continue
+            for field_name in _TOKEN_FIELDS:
+                totals[field_name] += usage.get(field_name, 0)
+        return totals
+
+    def _note_assistant(self, event: dict[str, Any]) -> None:
+        """Count one assistant event's usage; note the first action it takes."""
+        message = event.get("message")
+        if not isinstance(message, dict):
+            return
+        key = message.get("id")
+        if not isinstance(key, str) or not key:
+            self._anonymous += 1
+            key = f"\x00{self._anonymous}"
+        usage = message.get("usage")
+        if isinstance(usage, dict):
+            self._usage[key] = {
+                f: usage[f]
+                for f in _TOKEN_FIELDS
+                if isinstance(usage.get(f), int) and not isinstance(usage.get(f), bool)
+                and usage[f] >= 0
+            }
+        if self.first_action is not None:
+            return
+        content = message.get("content")
+        for block in content if isinstance(content, list) else []:
+            if isinstance(block, dict) and block.get("type") == "tool_use" and is_action(block):
+                # BEFORE it: the message that issues the action is not counted,
+                # nor anything after it.
+                self.first_action = {
+                    "seconds": round(time.monotonic() - self._origin, 3),
+                    "tokens": self._tokens(without=key),
+                    "tool": str(block.get("name"))[:80],
+                    "turns": self.turns,
+                }
+                self._dirty = True
+                return
 
     def tap(self) -> Callable[[bytes], None]:
         """The callable the stdout capture feeds; from now on the file is not read."""
@@ -581,6 +795,15 @@ class AccountStreamWatcher:
                 "readings": self.readings,
                 "stopped_for": self.stopped_for,
                 "error": self.error,
+                # SWAP-RUNS: the first action and what was spent before it,
+                # or null when the run has taken none (yet); and the tokens
+                # and seconds the run has spent so far, which is the re-read
+                # cost of a run that never got to act.
+                "first_action": self.first_action,
+                "spent": {
+                    "seconds": round(time.monotonic() - self._origin, 3),
+                    "tokens": self._tokens(),
+                },
             }
         )
         tmp = self._channel.with_name(f".{self._channel.name}.tmp")
@@ -622,13 +845,20 @@ def write_session_file(path: Path, session: str | None) -> None:
         pass
 
 
-def _account_watcher(spec: CliAgentSpec, stdout_path: Path) -> AccountStreamWatcher | None:
-    """The watcher, when this run holds a pool account and the CLI can resume."""
+def _account_watcher(
+    spec: CliAgentSpec, stdout_path: Path, carry: AccountStreamWatcher | None = None
+) -> AccountStreamWatcher | None:
+    """The watcher, when this run holds a pool account and the CLI can resume.
+
+    `carry` is the watcher of this runner's previous start of the CLI, whose
+    re-read measure the new one continues."""
     channel = os.environ.get(ACCOUNT_STREAM_ENV, "").strip()
     if not spec.resume_flag or not channel:
         return None
     move = os.environ.get(ACCOUNT_MOVE_ENV, "").strip()
-    return AccountStreamWatcher(stdout_path, Path(channel), Path(move) if move else None)
+    return AccountStreamWatcher(
+        stdout_path, Path(channel), Path(move) if move else None, carry=carry
+    )
 
 
 def _run_watched(
@@ -642,8 +872,12 @@ def _run_watched(
     limits: Any,
     log: Any,
     log_argv: list[str],
-    watcher: AccountStreamWatcher,
+    watcher: AccountStreamWatcher | None,
     stdin_data: bytes,
+    budget: BudgetStreamWatcher | None = None,
+    usage_files: Callable[[], list[Path]] | None = None,
+    ceiling: ceiling_mod.CeilingWatcher | None = None,
+    wrap_up_seconds: float = 0.0,
 ) -> ChildResult:
     """`run_child`, with the stream read as it is produced.
 
@@ -651,7 +885,31 @@ def _run_watched(
     is the loop, which asks the watcher after every slice and stops the CLI at
     a turn boundary when it says so -- and stops it on a SIGTERM to this
     runner, which `run_child` leaves to the worker's SIGKILL.
+
+    `budget` (#2459) reads the same stream through the same tap: it stops the
+    CLI at a turn boundary once the worker has asked, or at once when the
+    worker asked for the mid-turn stop. Either watcher may be absent.
+    `usage_files` lists what else the budget reads this start's usage from
+    (`CliAgentSpec.usage_files`). `ceiling` (#2524) stops the CLI at a turn
+    boundary once the session passed its context or tool-call ceiling.
+
+    With `wrap_up_seconds` and an account watcher (#2139), once less than that
+    is left it also stops the CLI at the next turn boundary of a session it can
+    resume, and sets `watcher.stopped_to_wrap_up` for `run_cli_agent` to
+    resume it once with WRAP_UP_PROMPT. Not past the point where the pass
+    would get less than FINISH_MIN_SECONDS: from there the run goes on to the
+    hard deadline, which is unchanged.
     """
+    taps = [watcher.tap()] if watcher is not None else []
+    if budget is not None:
+        taps.append(budget.tap(usage_files))
+    if ceiling is not None:
+        taps.append(ceiling.tap())
+
+    def tap(chunk: bytes) -> None:
+        for feed in taps:
+            feed(chunk)
+
     child = ChildProcess(
         argv,
         cwd=cwd,
@@ -663,17 +921,40 @@ def _run_watched(
         logger=log,
         keep_tail=True,
         log_argv=log_argv,
-        stdout_tap=watcher.tap(),
+        stdout_tap=tap,
         stdin_data=stdin_data,
     )
     child.start()
     deadline = time.monotonic() + limits.timeout_seconds
+    soft_deadline = (
+        deadline - wrap_up_seconds if wrap_up_seconds > 0 and watcher is not None else None
+    )
+    # The turns already counted when the soft deadline passed: a boundary
+    # after them is the one the CLI is stopped at.
+    armed_at: int | None = None
     while True:
         exited = child.wait(_WATCH_SECONDS) is not None
-        stop = watcher.poll()
+        turns_before = watcher.turns if watcher is not None else 0
+        stop = watcher.poll() if watcher is not None else None
+        spent = budget.poll() if budget is not None else None
+        full = ceiling.poll() if ceiling is not None else False
         if exited:
+            if full:
+                assert ceiling is not None
+                # The CLI ended on its own: there is nothing to stop.
+                ceiling.stopped_for = None
+            break
+        if spent is not None:
+            log.info(
+                "stopping the agent: its budget is spent"
+                + (" (at a turn boundary)" if spent == "stop" else " (mid-turn, past 120%)"),
+                turns=budget.meter.turns,
+                tokens=budget.meter.tokens(),
+            )
+            child.terminate(limits.grace_seconds, reason=f"budget ({spent})")
             break
         if stop is not None:
+            assert watcher is not None
             log.info(
                 "stopping the agent at a turn boundary to move it to another account",
                 reason=stop,
@@ -681,16 +962,53 @@ def _run_watched(
             )
             child.terminate(limits.grace_seconds, reason=f"account swap ({stop})")
             break
+        if full:
+            assert ceiling is not None
+            log.info(
+                "stopping the agent at a turn boundary: its session reached the context "
+                "ceiling, and a fresh session carries the task on",
+                why=ceiling.stopped_for,
+                turns=ceiling.turns,
+                context_tokens=ceiling.context_tokens,
+                tool_calls=ceiling.tool_calls,
+            )
+            child.terminate(limits.grace_seconds, reason=f"context ceiling ({ceiling.stopped_for})")
+            break
         if ctx.stop_requested:
             child.terminate(limits.grace_seconds, reason="runner asked to stop")
             break
-        if time.monotonic() >= deadline:
+        now = time.monotonic()
+        if now >= deadline:
             child.mark_timed_out()
             child.terminate(limits.grace_seconds, reason="timeout")
             break
+        if soft_deadline is not None and now >= soft_deadline:
+            assert watcher is not None
+            if armed_at is None:
+                armed_at = turns_before
+            if (
+                watcher.turns > armed_at
+                and watcher.session_id is not None
+                and deadline - now >= FINISH_MIN_SECONDS + limits.grace_seconds
+            ):
+                log.info(
+                    "stopping the agent at a turn boundary to wrap up before the step's limit",
+                    turns=watcher.turns,
+                    remaining_seconds=round(deadline - now, 1),
+                )
+                watcher.stopped_to_wrap_up = True
+                child.terminate(limits.grace_seconds, reason="wrap-up")
+                break
     result = child.finish()
-    watcher.poll()
-    watcher.write()
+    if watcher is not None:
+        watcher.poll()
+        watcher.write()
+    if budget is not None:
+        # The rest of the stream, counted; never a stop: the CLI has exited.
+        budget.poll(honour=False)
+        budget.write()
+    if ceiling is not None:
+        ceiling.poll(honour=False)
     return result
 
 
@@ -932,6 +1250,42 @@ FINISH_PROMPT = "Finish: wait for every command you started, report its result, 
 #: timeout, which is worse for everyone reading the result.
 FINISH_MIN_SECONDS = 60.0
 
+# WRAPPED UP BEFORE THE LIMIT (#2139, the optional part of its proposed fix).
+# Measured 2026-10-23: three agents polling a background suite with ~600 s
+# `sleep` calls were killed mid-sleep at the step's 7200 s limit, their work
+# uncommitted -- and FINISH_PROMPT never ran, because it runs only after a CLI
+# that exited by itself. So a watched run (`_run_watched`, on a pool account)
+# is stopped at its first turn boundary once less than the wrap-up margin is
+# left, and resumed ONCE with WRAP_UP_PROMPT inside what is left of the
+# budget. A run that reaches no turn boundary, or is not watched, is killed at
+# the hard deadline exactly as before.
+
+#: The wrap-up margin: ten minutes is one commit, the pull request's two files
+#: and the turn that writes them, with room for a slow model turn -- and about
+#: one of the ~600 s sleeps the measured agents were killed in.
+WRAP_UP_SECONDS = 600.0
+#: At most this share of a short limit goes to the wrap-up, so a 20-minute
+#: step still gets three quarters of its time for the work itself.
+WRAP_UP_FRACTION = 0.25
+
+#: The one user message a session resumed to wrap up is given, followed by
+#: that pass's own `time_limit_line`. Fixed wording; it carries no rate-limit
+#: or credential marker for a CLI that echoes it.
+WRAP_UP_PROMPT = (
+    "Time is nearly up: you were stopped so you can wrap up. Commit what you "
+    "have now, write the pull request's title and body where you were told "
+    "to, start nothing that takes long, then end."
+)
+
+
+def wrap_up_margin(timeout_seconds: float) -> float:
+    """How long before the hard deadline a watched run is stopped to wrap up;
+    0 when the margin would be below FINISH_MIN_SECONDS and no wrap-up pass
+    could run in it."""
+    margin = min(WRAP_UP_SECONDS, timeout_seconds * WRAP_UP_FRACTION)
+    return margin if margin >= FINISH_MIN_SECONDS else 0.0
+
+
 #: Phrases that announce work still in flight, each in the shape a pending
 #: announcement takes rather than as a bare word, so a finished report that
 #: merely uses the words ("the suite was still running when I first checked;
@@ -1170,14 +1524,59 @@ def credential_lines(repo: Path) -> tuple[list[str], str | None]:
 #: agent exits. Fixed text, so it is the same in every prompt and a test can
 #: hold it; it carries no rate-limit or credential marker
 #: (`_RATE_LIMIT_MARKERS`, `_CREDENTIAL_MARKERS`) for a CLI that echoes it.
+#: The no-change sentence is #2140: build-170 found its issue already built,
+#: wrote pr-body.md and no verification.md, and failed `published_nothing`,
+#: cancelling its dependant -- the worker reads "no change plus
+#: `lifecycle.VERIFICATION_FILE`" as SUCCEEDED no_change (Proposal J), but no
+#: prompt said so. It asks only "what you checked", so a brief that wants a
+#: stricter verification.md (an issue run's table) still governs its format.
+#: The last sentence is the descent rule (#2277): fix-h9 lost 85 turns to a
+#: `git checkout -B fix-516 FETCH_HEAD`, because the harvest discards a HEAD
+#: that does not descend from the step's start (`lifecycle._head_moved`), and
+#: nothing had told the agent so.
 PUBLISH_PARAGRAPH = (
     "You do not push or open a pull request; the worker publishes your committed "
     "branch. Commit your work. Write the pull request's title (one line) to "
     "$SWARM_ARTIFACTS_DIR/pr-title.txt and its body to "
     "$SWARM_ARTIFACTS_DIR/pr-body.md. Do not say in your answer that no pull "
     "request exists because you lack GitHub credentials: the worker opens it "
-    "after you finish."
+    "after you finish. If the work is already done and nothing needs changing, "
+    "commit nothing and write $SWARM_ARTIFACTS_DIR/verification.md saying what "
+    "you checked and what showed it is done; that ends the step as no change "
+    "instead of a failure. Keep your commits on the branch you were cloned "
+    "onto: to build on another branch, fetch it and merge it in (git merge "
+    "FETCH_HEAD); never git checkout -B, git switch or git reset onto another "
+    "line, because commits that do not descend from the commit you started on "
+    "are discarded."
 )
+
+
+#: THE STEP'S WALL CLOCK, TOLD TO THE AGENT (#2139). Measured 2026-10-23 by the
+#: failure-review schedule: three claude-code agents (f-003, f-007, f-015)
+#: started the tenant's whole pytest suite in the background, polled it with
+#: ~600 s `sleep` calls, and were killed mid-sleep at the step's 7200 s limit
+#: (exit 137) -- one with a `timeout 7000` longer than its own step -- and a
+#: dependant review was cancelled `failed_parent` (f-004). Nothing told them
+#: the limit: at the deadline `_run_watched` terminates the CLI without a word,
+#: and FINISH_PROMPT runs only after the CLI exits by itself. Fixed wording, so
+#: a test can hold it; minutes rounded down and the end time in UTC, so it is
+#: never later than the deadline it names. It carries no rate-limit or
+#: credential marker for a CLI that echoes it -- the minutes are the one number
+#: in it, and only a 429-minute limit would spell one.
+def time_limit_line(timeout_seconds: float, now: datetime | None = None) -> str:
+    """The one platform line naming this run's limit and when it ends."""
+    start = now if now is not None else datetime.now(timezone.utc)
+    end = start.astimezone(timezone.utc) + timedelta(seconds=timeout_seconds)
+    minutes = int(timeout_seconds // 60)
+    return (
+        f"This step has a wall-clock limit of {minutes} minute{'' if minutes == 1 else 's'} "
+        f"and is stopped at "
+        f"{end.strftime('%Y-%m-%dT%H:%M:%SZ')} (UTC), whatever it is doing; work "
+        "that is not committed by then is lost. Commit your work and write the "
+        "pull request's title and body well before that time. Do not run the "
+        "whole test suite in the background and poll it with sleep: run the "
+        "tests related to your change, in the foreground."
+    )
 
 
 def _with_reason(entry: str) -> str:
@@ -1273,15 +1672,19 @@ def carries_session_totals(earlier: Mapping[str, Any], later: Mapping[str, Any])
     return False
 
 
-def _combined_spend(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
+def _combined_spend(
+    first: dict[str, Any], second: dict[str, Any], *, fresh: bool = False
+) -> dict[str, Any]:
     """The spend of two invocations of one session, `second` the resumed one.
 
     `SESSION_SPEND_KEYS` are the session's running totals, so `second`'s
     replace `first`'s whenever it carries them (`carries_session_totals`).
     Every other number is the invocation's own and is summed, at any depth.
     A value that is not a number on both sides is the later one's.
+    `fresh`: `second` is another session (a context-ceiling handoff, #2524),
+    whose totals never include `first`'s, so every number is summed.
     """
-    session = carries_session_totals(first, second)
+    session = not fresh and carries_session_totals(first, second)
     out = dict(first)
     for key, value in second.items():
         prior = out.get(key)
@@ -1405,17 +1808,48 @@ def run_cli_agent(
     # (`judge.attempt`, the workspace opted in), else None and no call is ever
     # made. One ledger file under it holds J1-J5's shared budget.
     jev = _jev_client(spec)
-    if cwd != ctx.work_dir and not os.environ.get(RESUME_SESSION_ENV, "").strip():
-        from .. import contextpack  # lazy: most starts have nothing staged
-
-        context_line = contextpack.prepare(ctx, cwd, judge=jev)
-        if context_line:
-            prompt = f"{prompt}\n\n{context_line}"
     # A RESUMED SESSION (S13/S14). The worker moved this attempt to another
     # account at a turn boundary and restarted this runner to continue the
     # session it stopped: `--resume <id>` and one short user message, in the
     # same workspace. The original prompt is already in the session.
     resume = os.environ.get(RESUME_SESSION_ENV, "").strip()
+    # THE CONTEXT CEILING (#2524; `ceiling`): one watcher for every start, and
+    # its state beside the worker's channel, where a restarted runner reads
+    # whether the session it was asked to resume ended over the ceiling. One
+    # that did is NOT resumed: this run starts a fresh session from a handoff.
+    ceiling_watcher: ceiling_mod.CeilingWatcher | None = None
+    ceiling_state_path: Path | None = None
+    ceiling_seed: dict[str, Any] | None = None
+    resumed_over: str | None = None
+    if spec.context_ceiling:
+        ceiling_state_path = ceiling_mod.state_path(
+            os.environ.get(ACCOUNT_STREAM_ENV, "").strip()
+            or os.environ.get(SESSION_FILE_ENV, "").strip()
+            or None
+        )
+        ceiling_seed = ceiling_mod.read_state(ceiling_state_path)
+        ceiling_watcher = ceiling_mod.CeilingWatcher(
+            ceiling_mod.resolve_limits(payload, os.environ.get(RUNNER_PROFILE_ENV)),
+            fresh_sessions=ceiling_mod.spent_sessions(ceiling_seed),
+        )
+        if resume and ceiling_watcher.armed:
+            resumed_over = ceiling_mod.over_state(ceiling_seed, resume, ceiling_watcher.limits)
+            if resumed_over is not None:
+                resume = ""
+    if cwd != ctx.work_dir and not resume:
+        from .. import contextpack  # lazy: most starts have nothing staged
+
+        context_line = contextpack.prepare(ctx, cwd, judge=jev)
+        if context_line:
+            prompt = f"{prompt}\n\n{context_line}"
+    # THE MEMORY BUDGET (#2504), read from this container's cgroup: the runner
+    # and the agent share it. Its line follows the caller's prompt, with or
+    # without a repository; not on a resume, where the session already holds
+    # it. An unknown limit sets nothing and says nothing.
+    memory_max, cpu_cores = container_limits()
+    budget = agent_resource_budget(memory_max, cpu_cores)
+    if budget and memory_max is not None and not resume:
+        prompt = f"{prompt}\n\n{budget_line(memory_max, int(budget[XDIST_WORKERS_ENV]))}"
     # The argv every start of this step shares; a finish pass (below) adds its
     # own `--resume <id>` to it, and writes its own prompt to stdin.
     base_argv = list(argv)
@@ -1429,23 +1863,37 @@ def run_cli_agent(
     # and the agent killed its own CLI (exit 143). Every process listing shows
     # the argv; nothing caller-written is in it now. One argv string is also
     # capped at 128 KiB (MAX_ARG_STRLEN), which a long brief could pass.
+    # Resolved before the prompt, which names the limit (#2139).
+    limits = resolve_limits(payload, platform_ceilings())
+    # The task as a first session is given it: also what a fresh session's
+    # handoff carries (#2524), so it is built on a resume as well. The
+    # step's time-limit line is not in it: a fresh session is told what is
+    # left when it starts, not the whole step's limit.
+    task_prompt = expected_mod.with_instructions(prompt, told, ctx.artifacts_dir, staged)
+    if ceiling_watcher is not None:
+        # The platform's note on the ceiling: a fresh session may carry the
+        # task on, from the handoff note the agent keeps (#2524).
+        task_prompt = f"{task_prompt}\n\n{ceiling_mod.HANDOFF_NOTE}"
+    # The step's wall clock (#2139): last for a task with no repository,
+    # just before the platform paragraph for one with a repository.
+    first_prompt = f"{task_prompt}\n\n{time_limit_line(limits.timeout_seconds)}"
+    if cwd != ctx.work_dir:
+        # A task with a repository (Proposal A, owner decision 2026-10-08):
+        # the platform paragraph, last. Not on a resume: the session
+        # already holds it.
+        task_prompt = f"{task_prompt}\n\n{PUBLISH_PARAGRAPH}"
+        first_prompt = f"{first_prompt}\n\n{PUBLISH_PARAGRAPH}"
     if resume:
         argv += [spec.resume_flag, resume]
         stdin_prompt = resume_prompt(os.environ.get(RESUME_REASON_ENV, "").strip())
     else:
-        stdin_prompt = expected_mod.with_instructions(prompt, told, ctx.artifacts_dir, staged)
-        if cwd != ctx.work_dir:
-            # A task with a repository (Proposal A, owner decision 2026-10-08):
-            # the platform paragraph, last. Not on a resume: the session
-            # already holds it.
-            stdin_prompt = f"{stdin_prompt}\n\n{PUBLISH_PARAGRAPH}"
+        stdin_prompt = first_prompt
     argv += spec.stdin_arg
     # `run_child`'s `child started` line prints the argv (the PR #229 review:
     # this process's stderr is served by `/logs`) and the prompt's size only.
     # A resumed session's id is masked: it never reaches a log line.
     log_argv = [("<session>" if resume and arg == resume else arg) for arg in argv]
 
-    limits = resolve_limits(payload, platform_ceilings())
     log = StructuredLogger(stream=sys.stderr, component=f"{spec.name}-runner")
     log.info(
         "the agent starts in the repository checkout"
@@ -1487,6 +1935,8 @@ def run_cli_agent(
         log.register_secret(os.environ.get(passthrough))
     if resume:
         log.register_secret(resume)
+    if budget:
+        log.info("told the agent its memory budget", **budget)
     if limits.clamped:
         log.warning(
             "requested limits exceed the platform ceiling and were clamped",
@@ -1540,6 +1990,9 @@ def run_cli_agent(
     for name, value in (extra_env or {}).items():
         if name not in env:
             env[name] = value
+    # The memory budget is the platform's: after `extra_env`, which cannot
+    # replace it, and never a passthrough, so the environment cannot either.
+    env.update(budget)
     for passthrough in (*_SENSITIVE_PASSTHROUGH, *_PLAIN_PASSTHROUGH):
         if os.environ.get(passthrough):
             env[passthrough] = os.environ[passthrough]
@@ -1553,6 +2006,8 @@ def run_cli_agent(
     # When the latest start began, for `spec.session_locator`: a session file
     # an earlier run left in the restored workspace is not this run's.
     started_at = [time.time()]
+    # The last start's account watcher, which the next start's continues.
+    last_watcher: list[AccountStreamWatcher | None] = [None]
     # THE SESSION FILE (#626), named by the worker only for a run on no
     # account; written after every start, refused or not, because a refused
     # start is exactly the one the worker's credential reload continues.
@@ -1564,16 +2019,35 @@ def run_cli_agent(
                 Path(session_file), run_session(spec, parsed_run, ctx.work_dir, started_at[0])
             )
 
+    # THE BUDGET (#2459), named by the worker only for a budgeted task: one
+    # watcher for every start below, so a resumed pass adds to the usage.
+    budget = budget_watcher()
+    usage_files = (
+        partial(spec.usage_files, Path(ctx.work_dir)) if spec.usage_files is not None else None
+    )
+
     def start(
-        run_argv: list[str], run_log_argv: list[str], run_prompt: str, timeout_seconds: float
+        run_argv: list[str],
+        run_log_argv: list[str],
+        run_prompt: str,
+        timeout_seconds: float,
+        *,
+        fresh: bool = True,
+        seed: Mapping[str, Any] | None = None,
+        wrap_up: bool = False,
     ) -> tuple[ChildResult, AccountStreamWatcher | None]:
         """One start of the CLI, `run_prompt` on its stdin, its captures redacted
-        before anything reads them."""
+        before anything reads them. `fresh`: a new session, not a `--resume`.
+        `wrap_up` arms the stop before the limit (#2139): the first start
+        only, so the wrap-up runs at most once."""
         started_at[0] = time.time()
         stdin_data = run_prompt.encode("utf-8")
         run_limits = replace(limits, timeout_seconds=timeout_seconds)
-        run_watcher = _account_watcher(spec, stdout_path)
-        if run_watcher is None:
+        run_watcher = _account_watcher(spec, stdout_path, last_watcher[0])
+        last_watcher[0] = run_watcher
+        if ceiling_watcher is not None:
+            ceiling_watcher.begin(fresh=fresh, seed=seed)
+        if run_watcher is None and budget is None and ceiling_watcher is None:
             run_result = run_child(
                 run_argv,
                 cwd=cwd,
@@ -1596,10 +2070,11 @@ def run_cli_agent(
                 keep_tail=True,
             )
         else:
-            # On a pool account: the same child, the stream read as it is
-            # written (see `AccountStreamWatcher`), so the readings reach the
-            # worker while the agent runs and a swap can happen at a turn
-            # boundary.
+            # On a pool account, with a budget or under the context ceiling:
+            # the same child, the stream read as it is written (see
+            # `AccountStreamWatcher`), so the readings and the usage reach the
+            # worker while the agent runs and a swap, the budget's stop or the
+            # ceiling's can happen at a turn boundary.
             run_result = _run_watched(
                 run_argv,
                 ctx=ctx,
@@ -1612,7 +2087,13 @@ def run_cli_agent(
                 log_argv=run_log_argv,
                 watcher=run_watcher,
                 stdin_data=stdin_data,
+                budget=budget,
+                usage_files=usage_files,
+                ceiling=ceiling_watcher,
+                wrap_up_seconds=wrap_up_margin(timeout_seconds) if wrap_up else 0.0,
             )
+        if ceiling_watcher is not None:
+            ceiling_mod.write_state(ceiling_state_path, ceiling_watcher.state())
         # Redact before anything is read back out. Everything below this
         # either becomes an artifact in GCS or a field in Firestore, and both
         # outlive the pod.
@@ -1627,6 +2108,23 @@ def run_cli_agent(
         combined: str,
     ) -> None:
         """Raise the signal or failure one start of the CLI ended in, if any."""
+        if budget is not None and budget.stopped_for is not None:
+            # STOPPED FOR THE BUDGET (#2459), at a turn boundary or past 120%
+            # mid-turn. Not judged as a rate limit or a refused credential, and
+            # no finish or repair pass follows: the worker reads the channel,
+            # checkpoints, publishes and ends the step `budget_exceeded`.
+            raise RunnerFailure(
+                f"{spec.name} was stopped by its budget ({budget.stopped_for})", spend=spend
+            )
+        if (
+            run_watcher is not None
+            and run_watcher.stopped_to_wrap_up
+            and not run_result.timed_out
+        ):
+            # STOPPED AT A TURN BOUNDARY TO WRAP UP (#2139): the exit status is
+            # this runner's SIGTERM, not the agent's outcome. The wrap-up pass
+            # below is judged instead.
+            return
         if (
             run_watcher is not None
             and run_watcher.stopped_for is not None
@@ -1702,7 +2200,70 @@ def run_cli_agent(
             + _without_capture_notices(_tail(stderr_path))
         )
 
-    result, watcher = start(argv, log_argv, stdin_prompt, limits.timeout_seconds)
+    def ceiling_stop_pending() -> bool:
+        """Whether the last start was stopped at the context ceiling, and by
+        nothing else: a budget stop, a swap and a timeout are judged as before."""
+        return (
+            ceiling_watcher is not None
+            and ceiling_watcher.stopped_for is not None
+            and not result.timed_out
+            and (budget is None or budget.stopped_for is None)
+            and (watcher is None or watcher.stopped_for is None)
+        )
+
+    def note_ceiling_stop(**fields: Any) -> dict[str, Any]:
+        """Record a stop a fresh session follows, where `result_summary` reads it."""
+        assert ceiling_watcher is not None
+        stop = ceiling_watcher.record_stop(**fields)
+        ceiling_mod.write_state(ceiling_state_path, ceiling_watcher.state())
+        ctx.report["context_ceiling"] = ceiling_watcher.summary()
+        log.warning(
+            "the session passed its context ceiling; the task carries on in a fresh "
+            "session from a handoff, not a --resume",
+            **{k: v for k, v in stop.items() if k != "wip"},
+        )
+        return stop
+
+    def ceiling_handoff(stop: dict[str, Any], then: str | None) -> str:
+        """Commit the tree, and the prompt the fresh session starts from (#2524)."""
+        from ..prepublish import CLONE_BASE_ENV, EMPTY_BASE  # lazy, as the gate's
+
+        diff_stat: str | None = None
+        commits: str | None = None
+        wip: dict[str, Any] | None = None
+        if cwd != ctx.work_dir:
+            wip = ceiling_mod.commit_wip(
+                cwd, env,
+                f"WIP: context ceiling, fresh session {stop.get('fresh_session')} (#2524)",
+            )
+            stop["wip"] = {"status": wip.get("status"), "commit": wip.get("commit")}
+            if wip.get("status") == "failed":
+                log.warning("the work-in-progress commit failed; the fresh session works "
+                            "in the same tree", detail=scrub_text(str(wip.get("detail")), secrets))
+            base = os.environ.get(CLONE_BASE_ENV, "").strip()
+            diff_stat, commits = ceiling_mod.branch_summary(
+                cwd, env, base if base and base != EMPTY_BASE else None)
+            ctx.report["context_ceiling"] = ceiling_watcher.summary() if ceiling_watcher else None
+        return ceiling_mod.handoff_prompt(
+            stop=stop, task_prompt=task_prompt, diff_stat=diff_stat, commits=commits,
+            wip=wip, note=ceiling_mod.agent_note(Path(ctx.artifacts_dir)), then=then,
+        )
+
+    if ceiling_watcher is not None:
+        ctx.report["context_ceiling"] = ceiling_watcher.summary()
+    if resumed_over is not None:
+        # Asked to resume a session that ended over the ceiling (a swap, a
+        # credential reload): a fresh session from a handoff instead.
+        stop = note_ceiling_stop(
+            at=ceiling_mod.AT_RESUME, why=resumed_over,
+            resume_reason=os.environ.get(RESUME_REASON_ENV, "").strip() or None,
+            **ceiling_mod.seed_numbers(ceiling_seed),
+        )
+        stdin_prompt = ceiling_handoff(stop, time_limit_line(limits.timeout_seconds))
+    result, watcher = start(
+        argv, log_argv, stdin_prompt, limits.timeout_seconds,
+        fresh=not resume, seed=ceiling_seed if resume else None, wrap_up=True,
+    )
     # Reported on every outcome from here on -- `write_result` carries it --
     # so a run that failed or parked after passing its cap still says so.
     capture = result.capture_report()
@@ -1727,8 +2288,13 @@ def run_cli_agent(
     parsed = _parse_cli_output(raw_stdout)
     note_session(parsed)
     spend = _scrub_json(_spend_of(parsed), secrets)
+    if ceiling_stop_pending() and not spend:
+        # Stopped at the ceiling before the CLI printed its totals (#2524).
+        assert ceiling_watcher is not None
+        spend = ceiling_watcher.start_spend()
     combined = detection_text(raw_stdout, parsed)
-    judge(result, watcher, spend, combined)
+    if not ceiling_stop_pending():
+        judge(result, watcher, spend, combined)
 
     # RESUMED ONCE TO FINISH (owner decision 2026-10-05; see `pending_work`).
     # The run succeeded, but its answer announces work still in flight -- or
@@ -1739,22 +2305,30 @@ def run_cli_agent(
     finish_skipped: str | None = None
     duration_seconds = result.duration_seconds
     stdout_bytes, stderr_bytes = result.stdout_bytes, result.stderr_bytes
+    # The spend of the sessions a context-ceiling handoff ended, and of the
+    # current one: a resume's totals are its session's alone (#2524).
+    ended_spend: dict[str, Any] = {}
+    session_spend = spend
 
-    def resume_pass(session: str, pass_prompt: str, remaining: float) -> Any:
+    def resume_pass(session: str | None, pass_prompt: str, remaining: float) -> Any:
         """Continue `session` once with `pass_prompt`; return that pass's own parsed output.
 
         Shared by the finish pass and the repair turns. The step's record is
         kept whole: the captures, the spend, the durations and what the
-        transcript and summary read cover every start.
+        transcript and summary read cover every start. `session` None starts
+        a fresh session instead (a context-ceiling handoff, #2524).
         """
         nonlocal result, watcher, capture, raw_stdout, parsed, spend, combined
-        nonlocal duration_seconds, stdout_bytes, stderr_bytes
+        nonlocal duration_seconds, stdout_bytes, stderr_bytes, ended_spend, session_spend
         first_stdout = stdout_path.read_bytes() if stdout_path.exists() else b""
         first_stderr = stderr_path.read_bytes() if stderr_path.exists() else b""
-        first_spend = spend
-        pass_argv = [*base_argv, str(spec.resume_flag), session, *spec.stdin_arg]
-        pass_log_argv = [("<session>" if arg == session else arg) for arg in pass_argv]
-        result, watcher = start(pass_argv, pass_log_argv, pass_prompt, remaining)
+        fresh = session is None
+        pass_argv = [
+            *base_argv, *([str(spec.resume_flag), session] if session else []), *spec.stdin_arg
+        ]
+        pass_log_argv = [("<session>" if session and arg == session else arg)
+                         for arg in pass_argv]
+        result, watcher = start(pass_argv, pass_log_argv, pass_prompt, remaining, fresh=fresh)
         # ONE RECORD OF THE STEP. Each start truncates the captures, so the
         # earlier starts' are put back in front of this one's: the stdout log
         # stays the whole conversation, in order.
@@ -1780,17 +2354,108 @@ def run_cli_agent(
         note_session(pass_parsed)
         raw_stdout = stdout_path.read_text(errors="replace")
         parsed = _parse_cli_output(raw_stdout)
-        spend = _combined_spend(first_spend, _scrub_json(_spend_of(pass_parsed), secrets))
+        pass_spend = _scrub_json(_spend_of(pass_parsed), secrets)
+        if ceiling_stop_pending() and not pass_spend:
+            assert ceiling_watcher is not None
+            pass_spend = ceiling_watcher.start_spend()
+        if fresh:
+            ended_spend = _combined_spend(ended_spend, session_spend, fresh=True)
+            session_spend = pass_spend
+        else:
+            session_spend = _combined_spend(session_spend, pass_spend)
+        spend = _combined_spend(ended_spend, session_spend, fresh=True)
         combined = detection_text(pass_raw, pass_parsed)
-        judge(result, watcher, spend, combined)
+        if not ceiling_stop_pending():
+            judge(result, watcher, spend, combined)
         duration_seconds += result.duration_seconds
         stdout_bytes += result.stdout_bytes
         stderr_bytes += result.stderr_bytes
         return pass_parsed
 
+    def step_remaining() -> float:
+        return limits.timeout_seconds - duration_seconds
+
+    def carry_on(then: str | None, remaining: Callable[[], float]) -> Any:
+        """While the last start stopped at the context ceiling, a fresh session
+        from a handoff (#2524); the last one's parsed output, or None."""
+        last = None
+        while ceiling_stop_pending():
+            assert ceiling_watcher is not None
+            left = remaining()
+            if left < FINISH_MIN_SECONDS:
+                ceiling_watcher.skipped = "budget"
+                ctx.report["context_ceiling"] = ceiling_watcher.summary()
+                log.warning(
+                    "the session passed its context ceiling with too little of the step's "
+                    "budget left for a fresh session; the result stands as it is",
+                    remaining_seconds=round(left, 1),
+                    minimum_seconds=FINISH_MIN_SECONDS,
+                )
+                break
+            stop = note_ceiling_stop(
+                at=ceiling_mod.AT_TURN_BOUNDARY, why=ceiling_watcher.stopped_for)
+            # A handoff with nothing else to ask ends with what is left of the
+            # step's wall clock (#2139), which the fresh session was never told.
+            last = resume_pass(
+                None, ceiling_handoff(stop, then or time_limit_line(left)), left)
+        return last
+
+    def pass_within_ceiling(
+        session: str, pass_prompt: str, remaining: Callable[[], float], reason: str
+    ) -> Any:
+        """`resume_pass`, unless the session ended over the context ceiling:
+        then a fresh session from a handoff that ends with `pass_prompt`."""
+        why = (ceiling_watcher.over()
+               if ceiling_watcher is not None and ceiling_watcher.armed else None)
+        if why is not None:
+            stop = note_ceiling_stop(at=ceiling_mod.AT_RESUME, why=why, resume_reason=reason)
+            done = resume_pass(None, ceiling_handoff(stop, pass_prompt), remaining())
+        else:
+            done = resume_pass(session, pass_prompt, remaining())
+        later = carry_on(pass_prompt, remaining)
+        return later if later is not None else done
+
+    # RESUMED ONCE TO WRAP UP (#2139; see WRAP_UP_PROMPT). The watched run was
+    # stopped at a turn boundary with less than the wrap-up margin left;
+    # continue the session once, told to commit and end, inside what is left
+    # of the step's budget. Only the first start is armed, so this never runs
+    # twice, and the passes after it count every start's duration. A session
+    # over the context ceiling wraps up in a fresh session instead (#2524).
+    resumed_to_wrap_up = False
+    if watcher is not None and watcher.stopped_to_wrap_up and not result.timed_out:
+        remaining = step_remaining()
+        session = _session_of(parsed) or watcher.session_id
+        if session is None or remaining < FINISH_MIN_SECONDS:
+            # `_run_watched` stops only with a session and the floor left, so
+            # this is a stop that overran its grace: what the hard deadline
+            # would have made of it.
+            raise RunnerFailure(
+                f"{spec.name} timed out after {limits.timeout_seconds:.0f}s", spend=spend
+            )
+        log.register_secret(session)
+        log.warning(
+            "the agent was stopped at a turn boundary before the step's limit; "
+            "resuming the session once to wrap up",
+            remaining_seconds=round(remaining, 1),
+        )
+        # Said before the pass starts, so a pass that fails or parks still
+        # reports that it was resumed (`write_result` merges it).
+        resumed_to_wrap_up = True
+        ctx.report["resumed_to_wrap_up"] = True
+        pass_within_ceiling(
+            session, f"{WRAP_UP_PROMPT}\n\n{time_limit_line(remaining)}", step_remaining,
+            "wrap_up",
+        )
+
+    # THE CONTEXT CEILING (#2524): a session stopped at it goes on fresh, and
+    # what follows -- the finish pass, the repairs, the gate -- reads the last.
+    carry_on(None, step_remaining)
+
     pending = pending_work(parsed) if spec.finish_on_pending and spec.resume_flag else None
     if pending is not None:
-        remaining = limits.timeout_seconds - result.duration_seconds
+        # The whole step's starts, not the last one's: after a wrap-up pass
+        # the finish pass gets what both left, never more (#2139).
+        remaining = step_remaining()
         session = _session_of(parsed)
         if session is None:
             finish_skipped = "no_session"
@@ -1819,7 +2484,7 @@ def run_cli_agent(
             # still reports that it was resumed (`write_result` merges it).
             resumed_to_finish = True
             ctx.report["resumed_to_finish"] = True
-            finish_parsed = resume_pass(session, FINISH_PROMPT, remaining)
+            finish_parsed = pass_within_ceiling(session, FINISH_PROMPT, step_remaining, "finish")
             still = pending_work(finish_parsed)
             if still is not None:
                 log.warning(
@@ -1932,7 +2597,7 @@ def run_cli_agent(
             if ask_index:
                 index_turns += 1
             text = repair_prompt(missing, flagged, ctx.artifacts_dir, ask_index)
-            resume_pass(session, text, remaining)
+            pass_within_ceiling(session, text, step_remaining, "repair")
             after_missing, after_flagged = run_checks()
             index_problems = index_check()
             # What a turn fixed is what it was asked to fix and no longer fails.
@@ -1994,7 +2659,7 @@ def run_cli_agent(
                 )
                 return False
             log.register_secret(session)
-            resume_pass(session, text, remaining)
+            pass_within_ceiling(session, text, gate_remaining, "prepublish")
             return True
 
         prepublish_record = run_prepublish_gate(
@@ -2063,6 +2728,9 @@ def run_cli_agent(
         # in flight, and, when that was called for but not done, why not.
         "resumed_to_finish": resumed_to_finish,
         "finish_skipped": finish_skipped,
+        # Whether the run was stopped at a turn boundary before its limit and
+        # resumed once to wrap up (#2139).
+        "resumed_to_wrap_up": resumed_to_wrap_up,
         # The repair turns taken after the checks the worker runs failed
         # (#624), what each was asked to fix and what it did; what still fails
         # after them; and, when a repair was called for but not taken, why
@@ -2077,6 +2745,10 @@ def run_cli_agent(
         # with its status and duration per round, whether the fix or conflict
         # turn was taken, and what still fails. Never a check's output.
         "prepublish": prepublish_record,
+        # The context ceiling (#2524): its limits, and every stop with its
+        # turn, context tokens, tool calls and why; null for a CLI it does
+        # not watch.
+        "context_ceiling": ceiling_watcher.summary() if ceiling_watcher is not None else None,
         # Also in `ctx.report`, which `write_result` merges anyway; stated here
         # so this function's own return value is the whole answer.
         **capture,

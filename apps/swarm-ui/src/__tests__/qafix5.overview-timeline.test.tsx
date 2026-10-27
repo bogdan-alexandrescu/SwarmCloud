@@ -122,11 +122,11 @@ describe('5b:wg-dark-D1: the failed-agents card reaches the failed workflow as p
     const p = failuresProblem(ONE)
     render(<CheckCard problem={p} />)
     // MUTATION: name the list's link by the card's headline again ('2 failed agents…').
-    const list = screen.getByRole('link', { name: /^Agents · FAILED\b/ })
+    const list = screen.getByRole('link', { name: /^Agents · failed\b/ })
     expect(list.getAttribute('href')).toBe(FAILED_LIST)
     // The card's words stay in the list link's name, after its destination.
     // MUTATION: drop the headline from the list link's name.
-    expect(list.getAttribute('aria-label')).toBe(`Agents · FAILED: ${p.headline}. ${p.detail}`)
+    expect(list.getAttribute('aria-label')).toBe(`Agents · failed: ${p.headline}. ${p.detail}`)
     // No link on the card is named by the headline alone any more.
     // MUTATION: keep `aria-label={headline. detail}` on the list link.
     expect(screen.queryAllByRole('link', { name: /^2 failed agents/ })).toHaveLength(0)
@@ -140,7 +140,7 @@ describe('5b:wg-dark-D1: the failed-agents card reaches the failed workflow as p
     expect(within(acts as HTMLElement).getAllByRole('link').map((a) => text(a))).toEqual([
       `Workflow ${WF_A} →`,
       `Workflow ${WF_B} →`,
-      'Agents · FAILED →',
+      'Agents · failed →',
     ])
   })
 
@@ -170,12 +170,16 @@ describe('5b:wg-dark-D1: the failed-agents card reaches the failed workflow as p
     expect(painted(list, 'z-index', WIDE)).toBe('1')
     // MUTATION: let the column shrink, so the links wrap under each other's words.
     expect(painted(acts(container), 'flex-shrink', WIDE)).toBe('0')
-    // On a phone the links take their own row, side by side, right-aligned.
-    // MUTATION: drop the phone block's row for the links column.
-    expect(painted(acts(container), 'flex-basis', PHONE)).toBe('100%')
-    expect(painted(acts(container), 'flex-direction', PHONE)).toBe('row')
-    // MUTATION: let the phone's `.ov-att-go { flex-basis: 100% }` reach the list link inside the column.
-    expect(painted(list, 'flex-basis', PHONE)).toBe('auto')
+    // ON A PHONE THE CARD IS ONE LINE (visual QA VQ-002, 2026-10-26): the
+    // cover's link stays, its words stepped aside visually and its arrow at
+    // the right edge, so a tap anywhere still opens the failed workflow; the
+    // other links are the desktop's.
+    // MUTATION: hide the cover's link on a phone, so a tap on the card opens nothing.
+    expect(painted(wf, 'display', PHONE)).not.toBe('none')
+    expect(painted(wf, 'content', PHONE, 'after')).not.toBeNull()
+    // MUTATION: drop `display: none` from the split card's list link in the 560px block.
+    expect(painted(list, 'display', PHONE)).toBe('none')
+    expect(painted(acts(container), 'display', PHONE)).not.toBe('none')
   })
 })
 

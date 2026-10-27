@@ -81,14 +81,14 @@ describe('N17/D19: no column is left blank beside a taller card', () => {
     const host = document.createElement('div')
     host.innerHTML =
       '<div class="ov-page"><div class="ov-g21 ov-cols">' +
-      '<div class="ov-col"><section class="ctl-card ov-card ov-running"></section><section class="ctl-card ov-card ov-waiting"></section><section class="ctl-card ov-card ov-failures"></section></div>' +
+      '<div class="ov-col"><section class="ctl-card ov-card ov-running"></section><section class="ctl-card ov-card ov-waiting"></section></div>' +
       '<div class="ov-col"><section class="ctl-card ov-card ov-spend"></section><section class="ctl-card ov-card ov-headroom"></section></div>' +
-      '<section class="ctl-card ov-card ov-pools"></section></div></div>'
+      '<section class="ctl-card ov-card ov-failures"></section><section class="ctl-card ov-card ov-pools"></section></div></div>'
     document.body.appendChild(host)
     return host
   }
 
-  it('stacks each column\'s cards at their own heights at 1440, the pools under both', () => {
+  it('stacks each column\'s cards at their own heights at 1440, the failures and the pools under both', () => {
     const host = frame()
     const grid = host.querySelector('.ov-cols')!
     expect(painted(grid, 'grid-template-columns', WIDE)).toBe('minmax(0, 1.7fr) minmax(0, 1fr)')
@@ -102,10 +102,12 @@ describe('N17/D19: no column is left blank beside a taller card', () => {
         expect(painted(card, 'height', WIDE) ?? 'auto', card.className).toBe('auto')
       }
     }
-    // Cost so far and Headroom are one column; Running now, Waiting and the
-    // failures the other -- never a row that pairs Waiting with Headroom.
+    // Cost so far and Headroom are one column; Running now and Waiting the
+    // other -- never a row that pairs Waiting with Headroom. Recent failures
+    // spans both under them (visual QA VQ-006, 2026-10-26), then the pools.
     expect(cols[1]!.querySelector('.ov-spend + .ov-headroom')).not.toBeNull()
-    expect(cols[0]!.querySelector('.ov-running + .ov-waiting + .ov-failures')).not.toBeNull()
+    expect(cols[0]!.querySelector('.ov-running + .ov-waiting')).not.toBeNull()
+    expect(painted(grid.querySelector(':scope > .ov-failures')!, 'grid-column', WIDE)).toBe('1 / -1')
     expect(painted(grid.querySelector(':scope > .ov-pools')!, 'grid-column', WIDE)).toBe('1 / -1')
     host.remove()
   })
@@ -115,7 +117,8 @@ describe('N17/D19: no column is left blank beside a taller card', () => {
     const grid = host.querySelector('.ov-cols')!
     for (const col of grid.querySelectorAll(':scope > .ov-col')) expect(painted(col, 'display', PHONE)).toBe('contents')
     const order = (sel: string, env: CascadeEnv) => Number(painted(host.querySelector(sel)!, 'order', env) ?? '0')
-    const tablet = ['.ov-running', '.ov-spend', '.ov-waiting', '.ov-headroom', '.ov-pools', '.ov-failures'].map((s) => order(s, TABLET))
+    // Recent failures before the pools, as on a desktop (VQ-006, 2026-10-26).
+    const tablet = ['.ov-running', '.ov-spend', '.ov-waiting', '.ov-headroom', '.ov-failures', '.ov-pools'].map((s) => order(s, TABLET))
     expect([...tablet].sort((a, b) => a - b)).toEqual(tablet)
     expect(new Set(tablet).size).toBe(6)
     // QA G1-07 (2026-10-07): on a phone, Recent failures comes before

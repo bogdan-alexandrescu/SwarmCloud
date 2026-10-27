@@ -97,6 +97,17 @@ async function mount(handler: Handler) {
 const sent = (calls: { method: string; url: string; body: unknown }[], method: string, path: string) =>
   calls.filter((c) => c.method === method && c.url.split('?')[0] === path)
 
+/**
+ * What a person reads in `root`: its text, and the attributes a reader sees
+ * or hears -- a title's tooltip, an aria label, the phone record's
+ * `data-label` (drawn by CSS `content: attr(data-label)`) and a placeholder.
+ */
+function readerWords(root: Element): string {
+  const attrs = ['title', 'aria-label', 'data-label', 'placeholder']
+  const said = [...root.querySelectorAll('*')].flatMap((el) => attrs.map((a) => el.getAttribute(a) ?? ''))
+  return [root.textContent ?? '', ...said].join('\n')
+}
+
 const rowOf = (id: string) => document.querySelector<HTMLElement>(`tr[data-schedule="${id}"]`)
 
 function media(phone: boolean): void {
@@ -117,12 +128,12 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('Automate › Schedules, All tenants', () => {
-  it('draws every tenant’s schedules in one table with a tenant column, and the tick’s last hour', async () => {
+describe('Automate › Schedules, All workspaces', () => {
+  it('draws every workspace’s schedules in one table with a workspace column, and the tick’s last hour', async () => {
     await mount(routes(() => null))
     await waitFor(() => expect(rowOf('sch_b')).not.toBeNull(), WAIT)
-    expect(visible(rowOf('sch_a')!.querySelector('td[data-label="Tenant"]'))).toBe('eng')
-    expect(visible(rowOf('sch_b')!.querySelector('td[data-label="Tenant"]'))).toBe('research')
+    expect(visible(rowOf('sch_a')!.querySelector('td[data-label="Workspace"]'))).toBe('eng')
+    expect(visible(rowOf('sch_b')!.querySelector('td[data-label="Workspace"]'))).toBe('research')
     expect(visible(rowOf('sch_b')!.querySelector('td[data-label="State"]'))).toContain('disabled')
     expect(visible(screen.getByTestId('as-tick'))).toContain('60 ticks, 4 fired, 0 errors')
     // §5.3: an admin's view is not the tenant's identity -- no link into the
@@ -143,9 +154,11 @@ describe('Automate › Schedules, All tenants', () => {
     expect(visible(cell)).toContain('2 attempts unreported')
   })
 
-  it('is the Absent state when no tenant has a schedule, and says the tick reported nothing', async () => {
+  it('is the Absent state when no workspace has a schedule, and says the tick reported nothing', async () => {
     await mount(routes(() => null, [], { ...TICK, ticks: 0, fired: 0, max_lateness_seconds: null }))
-    await screen.findByText('No schedules in any tenant', undefined, WAIT)
+    await screen.findByText('No schedules in any workspace', undefined, WAIT)
+    // VQ-056: the empty state speaks of workspaces too.
+    expect(readerWords(document.body)).not.toMatch(/tenant/i)
     // MUTATION: draw "0 ticks, 0 fired" for a window with no report.
     expect(screen.getByText('No tick reported')).toBeTruthy()
   })
@@ -248,10 +261,46 @@ describe('live QA: automate, admin schedules', () => {
     expect(link.getAttribute('href')).toBe('/automate/schedules/sch_a')
     // Another tenant's schedule: its page would read as the working tenant and 404.
     expect(rowOf('sch_b')!.querySelector('td[data-label="Name · type"] a')).toBeNull()
-    expect(rowOf('sch_b')!.querySelector('.sc-name')!.getAttribute('title')).toContain('switch the console to tenant research')
+    expect(rowOf('sch_b')!.querySelector('.sc-name')!.getAttribute('title')).toContain('switch the console to workspace research')
     // Last: the page is one route now, so the click opens the schedule's page.
     fireEvent.click(link)
     expect(go).toHaveBeenCalledWith('automate/schedules?schedule=sch_a')
+  })
+
+  // VQ-056 (BGD, 2026-10-26): every word a person reads says workspace, never
+  // tenant -- the table, its phone labels, the titles and both dialogs. The
+  // routes and the API's `tenant_id` do not change.
+  it('says workspace, never tenant, in everything a reader sees', async () => {
+    await mount(routes((m, url) => (m === 'GET' && url === '/v1/tenants/me' ? { status: 200, body: me } : null)))
+    await waitFor(() => expect(rowOf('sch_a')!.querySelector('td[data-label="Name · type"] a')).not.toBeNull(), WAIT)
+    // A control: the page drew its rows, its pause-all control and its summary,
+    // so an empty read cannot pass as clean.
+    expect(readerWords(document.body)).toContain('research')
+    expect(readerWords(document.body)).toMatch(/every workspace/)
+    // MUTATION: put "Tenant" back as the column head or the phone label.
+    expect(readerWords(document.body)).not.toMatch(/tenant/i)
+    fireEvent.click(within(rowOf('sch_a')!).getByRole('button', { name: 'Pause' }))
+    let dialog = await screen.findByRole('dialog', undefined, WAIT)
+    expect(readerWords(dialog)).toContain('Reason (shown to the workspace)')
+    expect(readerWords(dialog)).not.toMatch(/tenant/i)
+    fireEvent.click(within(dialog).getByRole('button', { name: /Leave it/ }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull(), WAIT)
+    fireEvent.click(within(rowOf('sch_a')!).getByRole('button', { name: 'Disable' }))
+    dialog = await screen.findByRole('dialog', undefined, WAIT)
+    expect(readerWords(dialog)).toContain('its workspace cannot resume it')
+    expect(readerWords(dialog)).not.toMatch(/tenant/i)
+    fireEvent.click(within(dialog).getByRole('button', { name: /Leave it/ }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull(), WAIT)
+    fireEvent.click(within(rowOf('sch_b')!).getByRole('button', { name: 'Re-enable' }))
+    dialog = await screen.findByRole('dialog', undefined, WAIT)
+    expect(readerWords(dialog)).toContain('the workspace’s to lift')
+    expect(readerWords(dialog)).not.toMatch(/tenant/i)
+    fireEvent.click(within(dialog).getByRole('button', { name: /Leave it/ }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull(), WAIT)
+    fireEvent.click(screen.getByRole('button', { name: /Pause all of eng’s schedules/ }))
+    dialog = await screen.findByRole('dialog', undefined, WAIT)
+    expect(readerWords(dialog)).toContain('Every enabled schedule of eng stops firing')
+    expect(readerWords(dialog)).not.toMatch(/tenant/i)
   })
 
   it('links nothing while the working tenant is not read', async () => {

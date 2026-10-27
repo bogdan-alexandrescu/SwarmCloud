@@ -9,13 +9,15 @@
 // ever reopen.
 //
 // THE DECISION. Agents splits its Waiting tab into "Needs action" and "No
-// room"; Capacity's top group is "Needs action" and holds exactly the pools
-// `blockerGroup` files there -- paused, set to zero by a person, with no limit
-// set, or capped below one task of their class -- and a full pool stays in its
-// family.
+// room" by `blockerGroup`. Capacity's top group was "Needs action" too, by the
+// same rule, from 2026-10-01 until BGD answered VQ-031 on 2026-10-26 ("Needs
+// a look, as the mock-up draws it"): Pools' top group is "Needs a look" again
+// (`needsALook`), every pool `blockerGroup` files under needs_action AND every
+// full, lowered or 80%+ one. The Waiting split is about a task's refusals and
+// stays; it no longer decides Pools' grouping.
 //
-// MUTATION: draw Agents' Waiting tab as one list, or decide Capacity's top
-// group by `needsALook` again, and the tests below go red.
+// MUTATION: draw Agents' Waiting tab as one list, or drop the needs-action
+// pools (`needsAction`) from Pools' Needs a look, and the tests below go red.
 
 import { useEffect } from 'react'
 import { describe, expect, it, vi } from 'vitest'
@@ -249,8 +251,8 @@ describe('poolGroup: the same rule, read off a pool', () => {
   })
 })
 
-describe('Capacity puts the pools that need a person under "Needs action" at the top', () => {
-  it('holds exactly the blockerGroup needs-action pools, and leaves a full pool in its family', async () => {
+describe('Capacity puts the pools that need a person under "Needs a look" at the top', () => {
+  it('holds every blockerGroup needs-action pool, and the full and zeroed ones beside them', async () => {
     const data: Capacity = { pools: POOLS, runner_profiles: {}, tenant_id: 'eng', generated_at: '2026-10-01T10:00:00Z' }
     api.loadCapacity.mockResolvedValue(ok(data))
     // The board reads leases beside capacity (`loadPoolsBoard`). Unstubbed it
@@ -266,16 +268,22 @@ describe('Capacity puts the pools that need a person under "Needs action" at the
     const names = (el: Element) => [...el.querySelectorAll('tbody .ctl-sub')].map((s) => s.textContent ?? '').sort()
     // MUTATION: drop `primeCatalogue(release)` above and `resource:large` -- too small
     // only once the catalogue says a large task weighs 4 -- is missing here.
-    expect(names(section(/^Needs action/))).toEqual(['resource:large', 'resource:standard', 'runner:codex', 'tenant:eng'])
+    expect(names(section(/^Needs a look/))).toEqual([
+      'global',
+      'provider:anthropic',
+      'resource:large',
+      'resource:standard',
+      'runner:codex',
+      'tenant:eng',
+    ])
     // MUTATION: as above, a second catalogue read means the board did not
     // draw from the primed shared read.
     expect(api.loadResourceClasses).toHaveBeenCalledTimes(1)
-    const top = section(/^Needs action/)
-    // It is the first group on the board.
+    const top = section(/^Needs a look/)
+    // It is the first group on the board, and the only one: every pool here
+    // is something to look at (BGD 2026-10-26, VQ-031).
     expect(document.querySelector('.cap-families > section')).toBe(top)
-    expect(screen.queryByRole('heading', { name: /Needs a look/ })).toBeNull()
-    // A full pool and a provider zeroed by quota stay in their families.
-    expect(names(top)).not.toContain('global')
-    expect(names(top)).not.toContain('provider:anthropic')
+    expect(document.querySelectorAll('.cap-families > section').length).toBe(1)
+    expect(screen.queryByRole('heading', { name: /Needs action/ })).toBeNull()
   })
 })

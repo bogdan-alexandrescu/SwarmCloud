@@ -107,7 +107,12 @@ const SPEND = {
   to: null,
 } as unknown as SpendRollup
 
-/** What `view=summary` leaves out of a row: `codec.SUMMARY_DROPPED_KEYS`. */
+/**
+ * What `view=summary` leaves out of a row (`codec.SUMMARY_DROPPED_KEYS`), and
+ * `metadata`, which it cuts to the title alone (SUMMARY-TITLE). The Overview
+ * names a row by `rowLabel` off a full read, never off this metadata, so it is
+ * still trapped here: a read of it would be a read of a field the row lacks.
+ */
 const DROPPED = [
   'input',
   'input_redaction_count',

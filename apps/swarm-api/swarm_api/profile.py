@@ -42,7 +42,7 @@ from .brokerclient import AccountPool
 from .display_names import check as check_display_name
 from .errors import ApiError
 from .forgeapp import CONNECTIONS, connection_id_for, user_hash
-from .preferences import TOPICS, Preferences, StoredPreferences
+from .preferences import DEFAULT_TIME_ZONE, TOPICS, Preferences, StoredPreferences
 from .provider_keys import TENANT, TYPESAFE, USER, ProviderKeys, resolve_provider_key
 from .workspace_role import role_in
 from .workspaces import READY, WORKSPACES, personal_tenant_id, state_of
@@ -84,6 +84,12 @@ SOURCE_UNAVAILABLE = "unavailable"
 IGNORED_NOT_A_MEMBER = "not_a_member"
 IGNORED_NOT_READY = "not_ready"
 IGNORED_UNKNOWN = "unknown"
+
+#: `time_zone_source`: a zone the person saved, the default (UTC, nothing
+#: saved), or unknown because the preferences could not be read.
+ZONE_SAVED = "profile"
+ZONE_DEFAULT = "default"
+ZONE_UNAVAILABLE = "unavailable"
 
 
 def _iso(value: Any) -> Any:
@@ -378,6 +384,21 @@ def notifications(stored: StoredPreferences) -> dict[str, Any]:
     }
 
 
+# -- time zone ---------------------------------------------------------------------------
+
+
+def time_zone(stored: StoredPreferences | None) -> dict[str, Any]:
+    """The zone every time in the console is shown in (TIMEZONE-SERVER), and
+    whether the person saved it. Unread preferences serve no zone rather than
+    UTC: the console then keeps the one it has instead of switching every time
+    on the page to a zone nobody picked."""
+    if stored is None:
+        return {"time_zone": None, "time_zone_source": ZONE_UNAVAILABLE}
+    if stored.time_zone is None:
+        return {"time_zone": DEFAULT_TIME_ZONE, "time_zone_source": ZONE_DEFAULT}
+    return {"time_zone": stored.time_zone, "time_zone_source": ZONE_SAVED}
+
+
 # -- the whole page ---------------------------------------------------------------------
 
 
@@ -415,6 +436,7 @@ def read_profile(
     accounts = _section(CLAUDE_ACCOUNTS, unavailable, lambda: claude_accounts(pool, auth))
     if accounts is not None:
         body["claude_accounts"] = accounts
+    body.update(time_zone(stored))
     body["revision"] = stored.revision if stored is not None else None
     body["unavailable"] = unavailable
     return body
@@ -424,8 +446,9 @@ def saved_profile(
     app_ctx: Any, auth: AuthContext, stored: StoredPreferences
 ) -> dict[str, Any]:
     """What `PUT /v1/profile/preferences` answers: the GET's
-    `identity.display_name`, `default_workspace`, `notifications` and
-    `revision`, from the document the save wrote."""
+    `identity.display_name`, `default_workspace`, `notifications`,
+    `time_zone`, `time_zone_source` and `revision`, from the document the save
+    wrote."""
     return {
         "identity": {
             "display_name": stored.display_name,
@@ -433,5 +456,6 @@ def saved_profile(
         },
         "default_workspace": default_of(app_ctx.settings, auth, stored),
         "notifications": notifications(stored),
+        **time_zone(stored),
         "revision": stored.revision,
     }

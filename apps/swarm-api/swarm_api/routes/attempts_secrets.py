@@ -279,10 +279,14 @@ class SecretRelease:
                 raise ReleaseUnavailable(
                     "a workspace secret could not be read as text; nothing was "
                     "released") from None
-            released.append({
+            item = {
                 "name": due.name, "slot": due.slot, "kind": due.record.get("kind"),
                 "version": due.record.get("current_version"), "value": value,
-            })
+            }
+            if due.hosts:
+                # CF-ACCESS-TOKEN: where the gate may send it, from the signed grant.
+                item["hosts"] = list(due.hosts)
+            released.append(item)
         self._record(attempt, task, plan.due)
         withheld = [{"name": name, "reason": reason} for name, reason in plan.withheld]
         log.info("workspace secrets released tenant=%s task=%s attempt=%s generation=%s "

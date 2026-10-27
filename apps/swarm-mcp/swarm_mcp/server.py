@@ -45,7 +45,7 @@ from urllib.parse import urlsplit
 
 from swarm_common.profiles import MODEL_CLASSES, RESOURCE_CLASSES
 
-from . import artifacts, checkout, compact, config, keys, progress, qatargets
+from . import artifacts, checkout, compact, config, keys, progress, qatargets, suitegate
 from . import secrets as secret_tools
 from . import profiles as catalogue
 from . import workflows
@@ -630,7 +630,18 @@ TOOLS: list[dict[str, Any]] = [
             "hundred bytes a call. With `step_id`, a task PARKED on "
             "`CI_PENDING` (a merge waiting on its pull request's checks) also "
             "says `stop: true`, with a `PARKED` `result` naming the park and "
-            "how to resume, rather than holding hour after hour. A call holds up to `wait_seconds` (max "
+            "how to resume, rather than holding hour after hour. A task PARKED "
+            "on `HUMAN_REQUIRED` -- the merge's owner-question hold or a "
+            "hand-off -- says `stop: true` with `stop_reason: "
+            "\"waiting_on_person\"` and a `PARKED` `result` whose "
+            "`waiting_on_person` names the questions (asking step, index, text), "
+            "the console link and, for a hand-off, the human-ready route. A wait "
+            "line says when the wait began (`parked since 03:05Z (4h 30m)`), and "
+            "an unchanged line comes back at most every 30 minutes "
+            "(`refreshed`). `held_s` is how long the call held; holds that keep "
+            "returning in under 60 s with nothing changed answer `stop_reason: "
+            "\"hold_wait\"` (wait, then follow again) and, at five, "
+            "`\"hold_not_holding\"`. A call holds up to `wait_seconds` (max "
             f"{compact.MAX_WAIT_SECONDS}) and returns early only when a task's "
             "STATE changes -- waiting, parked (and why), holding capacity, or "
             "finished; progress inside one state does not end it. With "
@@ -864,7 +875,12 @@ TOOLS: list[dict[str, Any]] = [
             "`outputs` says what the task made beyond its code: each artifact "
             "(`name`, `bytes`) -- read one with swarm_artifact -- the runner's "
             "`runner_status` and `runner_summary`, `exit_code`, `duration_s`, and "
-            "the `staged_inputs` copied in from upstream steps. "
+            "the `staged_inputs` copied in from upstream steps. An attempt that "
+            "ran the agent more than once (an account swap restarts it) also has "
+            "`runs` (one per run: start, end, duration_s, exit, account, tokens, "
+            "cost), `swaps` (when, from, to, reason), `last_run_duration_s` and "
+            "`swap_cost` (the seconds and tokens a restarted run spent before it "
+            "acted again); its `duration_s` is the sum of the runs. "
             "`artifacts_complete: false` means the task has not finished and its "
             "artifacts are uploaded when the attempt ends -- not that it produced "
             "none; `artifacts: null` means they could not be listed, and "
@@ -1313,6 +1329,17 @@ TOOLS: list[dict[str, Any]] = [
                                     "(result_summary.no_change) instead of "
                                     "failing on an empty diff; dependants that "
                                     "need its patch are SKIPPED."
+                                ),
+                            },
+                            "runtime": {
+                                "type": "string",
+                                "enum": ["browser_if_ui"],
+                                "description": (
+                                    "For a review: run on claude-code-browser only when "
+                                    "an upstream step's change touches UI (test files "
+                                    "excluded), on claude-code otherwise; the platform "
+                                    "decides as the step is readied. Name no "
+                                    "runner_profile, or claude-code-browser."
                                 ),
                             },
                             "inputs": _INPUTS_SCHEMA,
@@ -1784,17 +1811,18 @@ TOOLS: list[dict[str, Any]] = [
         "name": "swarm_layout",
         "description": (
             "How THIS PROJECT follows SwarmCloud work in Claude Code (`/sc layout`): "
-            "`rows` -- today's /workflows rows, as the plugin's `rows` setting says -- or "
+            "`rows` -- today's /workflows rows, as the plugin's `rows` setting says --, "
             "`pane` -- the SwarmCloud pane beside the chat plus ONE quiet row per "
-            "workflow that notices its finish. No argument reads it: `{layout, source, "
-            "project}`. `{layout: \"rows\"|\"pane\"}` saves it for this project (it "
+            "workflow that notices its finish -- or `band` -- a strip above the prompt "
+            "and a summary line below it, and no rows. No argument reads it: `{layout, source, "
+            "project}`. `{layout: \"rows\"|\"pane\"|\"band\"}` saves it for this project (it "
             "outranks the plugin's `layout` option) and takes effect at the next launch "
             "or `/sc attach --all`, without restarting the session; rows already running "
             "keep going. Reads and writes nothing in SwarmCloud."
         ),
         "inputSchema": {
             "type": "object",
-            "properties": {"layout": {"type": "string", "enum": ["rows", "pane"]}},
+            "properties": {"layout": {"type": "string", "enum": ["rows", "pane", "band"]}},
         },
     },
     {
@@ -2498,6 +2526,48 @@ TOOLS: list[dict[str, Any]] = [
                                    "maximum": qatargets.MAX_FLOWS_PER_STEP},
             },
             "required": ["target"],
+        },
+    },
+    {
+        "name": "swarm_suite_gate",
+        "description": (
+            "Run a registered repository's whole Playwright suite as a sharded gate "
+            "(docs/suite-gate.md). The bridge renders the workflow, you name only data: "
+            "`shards` steps on `claude-code` each run, from `working_dir`, `npm ci`, "
+            "`npx playwright install chromium` and `npx playwright test --shard k/N "
+            "--retries=1 --reporter=blob,line` (with `--project` when named, after loading "
+            "`env_file` when named), and put their blob report in their artifacts; one "
+            "`report` step depending on all of them merges the blobs "
+            "(`npx playwright merge-reports`) into playwright-report.zip and writes "
+            "summary.md and summary.json: passed, failed, flaky, and each failure's spec and "
+            "first error line. Every step runs tests only: none fixes code or commits "
+            "(strategy collect, no merge). Never an image, a command or resources from the "
+            "caller (invariant 10). Returns as soon as the workflow is accepted; follow it "
+            "with swarm_workflow_status, then read the report step with swarm_result and "
+            "swarm_artifact. A shard that produced no blob fails, and the gate with it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "repository": {"type": "string", "maxLength": 220,
+                               "description": "owner/repo, registered by your workspace."},
+                "ref": {"type": "string", "maxLength": 200,
+                        "description": "The branch, tag or commit SHA to test."},
+                "suite": {"type": "string", "enum": list(suitegate.SUITES)},
+                "working_dir": {"type": "string", "maxLength": 200,
+                                "description": "The repo-relative directory holding package.json "
+                                               "and the Playwright config, e.g. `web`; default the root."},
+                "shards": {"type": "integer", "minimum": suitegate.MIN_SHARDS,
+                           "maximum": suitegate.MAX_SHARDS, "default": suitegate.DEFAULT_SHARDS},
+                "project": {"type": "string", "maxLength": 100,
+                            "description": "A Playwright project name, passed as --project."},
+                "env_file": {"type": "string", "maxLength": 200,
+                             "description": "A repo-relative file of NON-SECRET env the suite "
+                                            "needs (a mock server's URL, say), loaded before the tests."},
+                "target": _TARGET_SCHEMA,
+            },
+            "required": ["repository", "ref", "suite"],
         },
     },
     {
@@ -3229,7 +3299,9 @@ def _dispatch_rows(sent: list[tuple[str, str | None, dict[str, Any]]]) -> dict[s
         rows = launch.for_tasks(entries)
     except (SwarmError, OSError) as exc:
         return {"error": str(exc), "attach_with": "/sc attach --all"}
-    rows["start_now"] = ROWS_START_NOW
+    if rows.get("followed_by") != "band":
+        # In the band layout there is no row to start: the strip follows the tasks.
+        rows["start_now"] = ROWS_START_NOW
     return rows
 
 
@@ -4597,6 +4669,19 @@ def _setup_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         raise
 
 
+def _remember_person_waits(reply: dict[str, Any]) -> None:
+    """Each task this reply ended a row for because a person must act on it
+    (#2441), remembered so `/sc check` attaches a new row once it resumes
+    (`launch.resumed_person_waits`)."""
+    from . import launch
+
+    for row in reply.get("tasks") or []:
+        wait = row.get("waiting_on_person") if isinstance(row, dict) else None
+        if isinstance(wait, dict) and row.get("task_id"):
+            launch.remember_person_wait(str(row["task_id"]), wait.get("workflow_id") or None,
+                                        wait.get("step_id") or None)
+
+
 def _follow_rows(
     client: SwarmClient,
     args: dict[str, Any],
@@ -4658,6 +4743,17 @@ def _follow_rows(
         include_heartbeats=_flag(args, "include_heartbeats"),
         step_id=expected_step.strip() if isinstance(expected_step, str) else None,
     )
+
+
+def _unquoted(value: str) -> str:
+    """`value` without surrounding whitespace and ONE layer of MATCHING
+    quotes -- what a row agent that JSON-encoded an argument twice added
+    (#1865, #2379). A lone or unmatched quote stays, so the value is refused
+    or compared as received."""
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1].strip()
+    return value
 
 
 #: What `merge_pr` takes beside it: the repository and the run's name. Every
@@ -4998,10 +5094,18 @@ def _call(
         # to stop on a format error -- ended UNKNOWN while its task finished.
         # Surrounding whitespace and ONE layer of MATCHING quotes go; a lone
         # quote or a still-unknown word is refused below, as received.
-        fmt = format_received.strip()
-        if len(fmt) >= 2 and fmt[0] == fmt[-1] and fmt[0] in "\"'":
-            fmt = fmt[1:-1]
+        fmt = _unquoted(format_received)
         args = {**args, "format": fmt or None}
+    if name == "swarm_follow":
+        # `step_id` and each `parents` entry the same way, and for the same
+        # reason (#2379 comment 20): a row agent sent its step id as
+        # '"review"', the step check compared 'review' to it, and the row
+        # ended UNKNOWN on a step that succeeded. Written back before the
+        # checks below, so an id that is only quotes is refused as empty.
+        if isinstance(args.get("step_id"), str):
+            args = {**args, "step_id": _unquoted(args["step_id"])}
+        if isinstance(args.get("parents"), list):
+            args = {**args, "parents": [_unquoted(p) if isinstance(p, str) else p for p in args["parents"]]}
     if name == "swarm_follow" and (args.get("format") or "json") not in ("json", "lines", "progress", "summary", "stage"):
         raise SwarmError(
             f"unknown format {format_received!r}; "
@@ -5046,6 +5150,7 @@ def _call(
         since_token, since_note = progress.HANDLES.resolve(args.get("since"), follower)
         args = {**args, "since": since_token}
         reply = _follow_rows(client, args, expected_step, parents, keepalive=keepalive)
+        _remember_person_waits(reply)
         reply["since"] = progress.HANDLES.issue(follower, reply["since"])
         if since_note:
             reply["since_note"] = since_note
@@ -5192,6 +5297,22 @@ def _call(
                              flows_per_step=args.get("flows_per_step")),
             indent=2,
         )
+
+    if name == "swarm_suite_gate":
+        # WHERE IT GOES first (S8), as swarm_workflow: under `local` nothing is
+        # read or sent. Then every argument is checked and the registration
+        # read before the one POST.
+        placed = _placement(name, {k: v for k, v in args.items() if k == "target"},
+                            profiles=[suitegate.PROFILE])
+        envelope, rendered = suitegate.gate(client, args)
+        reply = json.loads(_workflow_created(
+            without_credentials(envelope), placed=placed,
+            repository={"url": rendered["repository_url"], "ref": rendered["repository_ref"],
+                        "source": "given"},
+            given=[str(step.get("step_id")) for step in rendered["steps"]],
+            name=rendered["title"]))
+        reply["suite_gate"] = suitegate.reply_fields(rendered)
+        return json.dumps(reply, indent=2)
 
     if name == "swarm_qa_target_credential_link":
         # The url and its expiry, nothing else: `qatargets.credential_link`
@@ -5342,7 +5463,9 @@ def _call(
                         rows=rows,
                         project=_flag(args, "project"),
                     )
-                attached.update(watch.arm_fields(bool(attached.get("launches"))))
+                # The band launches no row but still puts this session's work in
+                # front of it: arming is unchanged there (SC-BAND).
+                attached.update(watch.arm_fields(bool(attached.get("launches")) or attached.get("followed_by") == "band"))
                 return json.dumps(attached, indent=2, default=str)
             return json.dumps({**launch.for_attach(client, target, rows=rows), **watch.arm_fields(True)}, indent=2)
         document = (

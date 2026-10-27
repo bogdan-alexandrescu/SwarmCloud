@@ -269,6 +269,40 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # and are tracked. ssl-cert's postinst generates a snakeoil key pair, the same
 # in every pull of the image; the service listens on loopback without TLS, so
 # the pair is deleted.
+#
+# CHROMIUM'S SYSTEM LIBRARIES AND FONTS, AND NO CHROMIUM (BGD, 2026-10-26,
+# fix (c) on #2253). A step on plain claude-code must be able to run a
+# repository's own headless suite: `npx playwright install chromium`, then
+# `npx playwright test`. Before this, the install worked and the launch did
+# not: `libglib-2.0.so.0` was missing, and the agent is not root, so
+# `install --with-deps` could not add it (task_69128d776a52467488e4).
+#   * The libraries are exactly what Playwright's `install-deps chromium`
+#     would add on this distro: playwright-core's own `debian12-x64.chromium`
+#     list (the same 21 names in 1.63.0, the browser image's pin, and 1.64.1,
+#     read 2026-10-26). Their dependencies follow with
+#     `--no-install-recommends`, as everything here does.
+#   * The fonts: fontconfig (and libfontconfig1/libfreetype6, which the
+#     renderer loads), fonts-liberation (metric-compatible Arial, Times and
+#     Courier, what a page's default sans/serif/mono resolve to) and
+#     fonts-noto-color-emoji. Without a font fontconfig can find, the renderer
+#     dies with "Skia FontConfig FATAL" (task_e97a6439de29456ba6ab got around
+#     it by unpacking fonts under /tmp by hand). The build checks that
+#     fontconfig finds both families and that the libraries Chromium loads
+#     resolve, so a list that installs and still cannot launch fails here.
+#   * Left out of Playwright's `tools` list on purpose: xvfb and
+#     xfonts-scalable (a headed display; this image only runs headless, and
+#     the browser image adds them), and the CJK, Thai, unifont and freefont
+#     families (another ~48 MiB installed, by bookworm's package index).
+#   * NO BROWSER BINARY: each repository pins its own @playwright/test and so
+#     its own Chromium revision, which `npx playwright install chromium` puts
+#     in the agent's writable cache (`$XDG_CACHE_HOME/ms-playwright`; the
+#     worker sets XDG_CACHE_HOME, cachedirs.py). A baked revision would be the
+#     wrong one for almost every repository, and ~170 MB on every start.
+#   * The cost, by bookworm's index on 2026-10-26 (no daemon in the authoring
+#     container to build the image): 51 packages, ~50 MiB installed, ~23 MiB
+#     of .debs, paid on every claude-code and codex start. In this layer so
+#     that APT_REFRESH upgrades them with everything else. agent-runtime-browser
+#     is built FROM this image, so its `--with-deps` now finds them present.
 ARG PGDG_KEY_FINGERPRINT=B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
 ARG POSTGRES_MAJOR=16
 ARG POSTGRES_MIN_VERSION=16.15
@@ -292,6 +326,20 @@ RUN echo "apt layer of ${APT_REFRESH}" \
       unzip \
       wget \
  && ln -sf "$(command -v fdfind)" /usr/local/bin/fd \
+ && apt-get install --no-install-recommends -y \
+      libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 \
+      libcups2 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 libnspr4 libnss3 \
+      libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 \
+      libxfixes3 libxkbcommon0 libxrandr2 \
+      fontconfig libfontconfig1 libfreetype6 fonts-liberation fonts-noto-color-emoji \
+ && fc-cache -f \
+ && fc-list : family | grep -q "Liberation Sans" \
+ && fc-list : family | grep -q "Noto Color Emoji" \
+ && n=0 && for lib in libglib-2.0.so.0 libnss3.so libnspr4.so libatk-1.0.so.0 libatk-bridge-2.0.so.0 libcups.so.2 libdrm.so.2 libgbm.so.1 libxkbcommon.so.0 libXcomposite.so.1 libXdamage.so.1 libXrandr.so.2 libasound.so.2 libpango-1.0.so.0 libcairo.so.2 libdbus-1.so.3 libfontconfig.so.1; do \
+      if ! /sbin/ldconfig -p | grep -q "^[[:space:]]*${lib} "; then echo "headless Chromium: ${lib} does not resolve" >&2; exit 1; fi; \
+      n=$((n + 1)); \
+    done \
+ && echo "headless Chromium: ${n} libraries resolve, fontconfig finds Liberation Sans and Noto Color Emoji" \
  && apt-get install --no-install-recommends -y gpg \
  && GNUPGHOME="$(mktemp -d)" && export GNUPGHOME \
  && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/pgdg-key.asc \
@@ -870,6 +918,56 @@ RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
  && rm -rf /tmp/toolbox \
  && test "$(/usr/local/bin/jq --version)" = "jq-${JQ_VERSION}"
 
+# The CodeRabbit CLI (CODERABBIT-IMAGE, part of #2442; owner decision
+# 2026-10-26): a lane whose repository's rules ask for a local CodeRabbit
+# review runs `coderabbit review` itself (docs/worker-images.md, "CodeRabbit").
+#
+# 0.9.1 is the release the vendor's installer binds Linux to
+# (BUNDLED_LINUX_VERSION in https://cli.coderabbit.ai/install.sh, read
+# 2026-10-26). Checksum: the coderabbit-linux-x64.zip line of
+# https://cli.coderabbit.ai/releases/0.9.1/SHA256SUMS, recomputed over the
+# downloaded file, and that SHA256SUMS's signature (SHA256SUMS.sig) verified
+# with `openssl dgst -sha256 -verify` against the release public key the
+# installer carries, on 2026-10-26. The installer itself is NOT run: it
+# writes to ~/.local/bin, edits shell profiles and offers a login.
+#
+# FROM UPSTREAM, NOT THE TOOL MIRROR: the mirror's manifest admits only
+# github.com and releases.hashicorp.com objects (scripts/lib/build-mirror.sh
+# tool_mirror_rows), and the CLI is served from cli.coderabbit.ai, as gcloud
+# is served from packages.cloud.google.com above. Moving it into the mirror
+# is a change to that list and a bucket refresh, an operator's step.
+#
+# SIZE: the zip is 42.9 MB (what a node pulls, compressed); the binary it
+# holds is 95,487,968 bytes, 91.1 MiB, on disk -- a single-file executable
+# with its JavaScript runtime inside, paid on every claude-code and codex
+# start. That is the price of the owner's decision to carry it here rather
+# than have each lane download it.
+# SCAN: trivy 0.75.0 `rootfs --scanners vuln --severity HIGH,CRITICAL
+# --ignore-unfixed` over the extracted binary, 2026-10-26, finds no package
+# it can analyse in it: nothing for the promote gate to refuse.
+#
+# ROOT-OWNED, outside the agent's reach: /opt/coderabbit/coderabbit, mode
+# 0755, so the pin holds -- the CLI's self-update cannot replace it, and the
+# launcher switches the attempt off anyway. What PATH finds is the launcher,
+# images/agent-runtime-base/coderabbit, which hands the CLI the workspace's
+# key when the worker released one: the CLI reads its key only from
+# `--api-key`, never from the environment (its own --help, 0.9.1). The build
+# runs the binary once, with a throwaway HOME, and fails unless it reports
+# the pinned version.
+ARG CODERABBIT_VERSION=0.9.1
+ARG CODERABBIT_SHA256=9558e02f1b6570ade33d8191b33e10ffae2472ab2680d4518d03261bcebc80bc
+RUN mkdir -p /tmp/toolbox /opt/coderabbit \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/coderabbit.zip \
+      "https://cli.coderabbit.ai/releases/${CODERABBIT_VERSION}/coderabbit-linux-x64.zip" \
+ && echo "${CODERABBIT_SHA256}  /tmp/toolbox/coderabbit.zip" | sha256sum -c - \
+ && unzip -q /tmp/toolbox/coderabbit.zip coderabbit -d /tmp/toolbox \
+ && install -o root -g root -m 0755 /tmp/toolbox/coderabbit /opt/coderabbit/coderabbit \
+ && rm -rf /tmp/toolbox \
+ && crhome="$(mktemp -d)" \
+ && test "$(HOME="${crhome}" CODERABBIT_CLI_DISABLE_AUTO_UPDATE=true CR_CLI_TELEMETRY_DISABLED=true /opt/coderabbit/coderabbit --version)" = "${CODERABBIT_VERSION}" \
+ && rm -rf "${crhome}"
+COPY --chmod=0555 images/agent-runtime-base/coderabbit /usr/local/bin/coderabbit
+
 # checkov is Python, so it gets its OWN environment (/opt/uv-tools/checkov,
 # entry point in /usr/local/bin) and can never change the worker's /opt/venv
 # or the agent's `pip install` target. 3.3.17 is the version CI's
@@ -1022,7 +1120,7 @@ print({c.name: _resolve_program(c.argv[0]) for c in GENERIC_COMMANDS.values()})"
 # The PostgreSQL binaries must also say POSTGRES_MAJOR: the test-service
 # catalogue offers 16 alone (docs/design/test-services.md §3.1), and a server
 # of another major on the PATH is a broken tool, not a working one.
-RUN tools="gh gcloud gke-gcloud-auth-plugin kubectl terraform checkov trivy shellcheck make docker postgres initdb pg_ctl pg_isready" \
+RUN tools="gh gcloud gke-gcloud-auth-plugin kubectl terraform checkov trivy shellcheck make docker postgres initdb pg_ctl pg_isready coderabbit" \
  && if [ "${INSTALL_TOFU}" = "1" ]; then tools="$tools tofu"; fi \
  && if [ "${INSTALL_TFLINT}" = "1" ]; then tools="$tools tflint"; fi \
  && HOME="$(mktemp -d)" && export HOME \

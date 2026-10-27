@@ -36,15 +36,56 @@
 // PROJECT's running work beside this session's, because session start
 // tracks the project's running work (BGD's note; `/sc check` and the watch
 // stay this session's).
+//
+// THE BAND (SC-BAND, part of #2318): BGD, 2026-10-26, moved the SwarmCloud
+// view out of the right-docked pane into a HORIZONTAL STRIP ABOVE THE PROMPT,
+// with one summary line BELOW the prompt -- a third layout, `band`, in which
+// the plugin starts no /workflows rows at all. Why: in Claude Code's
+// fullscreen layout a Pane docks on the right and a plugin cannot choose
+// otherwise, and the /workflows list is Claude Code's own background-task
+// list, where a plugin can only add model-driven rows. What a plugin can draw
+// horizontally is the `AbovePrompt` band -- many rows, scrolled by the engine
+// (`scroll.bodyRows`), folded by the engine's [-], held to half the terminal
+// -- and `$.ui.status`, one pinned line under the prompt beside other
+// plugins' lines.
+//
+// The band draws the pane's own levels (`frame`, from the same `$.state`
+// value as the pane's browsing) under a summary line (`bandFrame`); its Fold
+// leaves the summary alone, `SwarmCloud · 6 running · 1 waits on you · 2 PRs`,
+// and while a survey holds the band it yields. Every read is one direct
+// `swarm_browse` call, as the pane's are. It reads when it starts (session
+// start in the band layout, with this project's work, or `/sc layout band`),
+// on a press, and -- the one timer in this plugin, and only in this layout --
+// once a minute WHILE ANYTHING LISTED RUNS; the minute stops when nothing
+// runs, when the layout leaves `band`, and when the session ends. After each
+// list read a workflow that finished, a step that waits for a person, a merge
+// parked on owner questions, or new owner questions queues ONE chat turn,
+// `/sc status <wf_id> · finished: succeeded · PR #2463` (`changes`); an
+// unchanged read, and the first read, queue none. `/sc layout band` starts the
+// band and queues no `/sc attach --all` (the layout attaches no rows); leaving
+// `band` stops it and re-attaches as any other switch does. The band's code
+// lives in this module because the engine follows `$` only into functions of
+// the same file.
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { ScPaneState } from '../types'
-import { LAYOUT, SERVER, act, frame, initialState, isNarrow, parseResult } from './pane/model.ts'
+import type { ScBandState, ScPaneState } from '../types'
+import {
+  BROWSE, LAYOUT, SERVER, act, anyRunning, bandFrame, changes, frame, initialBand, initialState, isNarrow, layoutOf,
+  listArgs, parseResult, statusText, summaryText, takeList, unreachable,
+} from './pane/model.ts'
 
 const PANE = 'swarmcloud'
 const pane = atom({ plugin: 'sc', key: 'pane' } as const, initialState() as ScPaneState)
+const band = atom({ plugin: 'sc', key: 'band' } as const, initialBand() as ScBandState)
+
+/** The band's re-read while anything runs: once a minute (BGD, 2026-10-26). */
+const MINUTE_MS = 60_000
+
+/** The minute's handle while it runs; nothing else is kept outside `$.state`. */
+let minute: { cancel(): void } | null = null
+let reading = false
 
 /** `/sc` as the engine names it: bare, or scoped by the plugin. */
 const SC_COMMANDS = ['sc', 'sc:sc']
@@ -78,18 +119,25 @@ export const register: Register = on => {
       return next(e)
     }
     const wanted = (asked[1] || '').toLowerCase()
-    if (wanted && wanted !== 'rows' && wanted !== 'pane') {
-      return { text: '`' + asked[1] + '` is not a layout: `/sc layout rows` (today’s /workflows rows) or `/sc layout pane` (the SwarmCloud pane plus one row per workflow).' }
+    if (wanted && !layoutOf(wanted)) {
+      return { text: '`' + asked[1] + '` is not a layout: `/sc layout rows` (today’s /workflows rows), `/sc layout pane` (the SwarmCloud pane plus one row per workflow) or `/sc layout band` (a strip above the prompt, no rows).' }
     }
     const reply = await layoutCall($, wanted ? { layout: wanted } : {})
     if (!reply.ok) {
       return { text: 'swarm_layout did not answer: ' + reply.reason }
     }
     const data = reply.data as { layout?: string; source?: string; note?: string }
-    await update($, pane, state => ({ ...state, layout: data.layout === 'pane' || data.layout === 'rows' ? data.layout : state.layout }))
+    await update($, pane, state => ({ ...state, layout: layoutOf(data.layout) || state.layout }))
     if (!wanted) {
-      return { text: 'Layout for this project: ' + data.layout + ' (' + data.source + '). `/sc layout rows` or `/sc layout pane` switches it.' }
+      return { text: 'Layout for this project: ' + data.layout + ' (' + data.source + '). `/sc layout rows`, `/sc layout pane` or `/sc layout band` switches it.' }
     }
+    if (wanted === 'band') {
+      // No re-attach: the band layout starts no rows. The band's one read is this session's and this project's work.
+      await update($, pane, state => ({ ...state, project: true }))
+      await startBand($)
+      return { text: 'Layout set to band for this project. ' + BANDED }
+    }
+    await stopBand($)
     if (wanted === 'pane') {
       await $.ui.open({ id: PANE, title: 'SwarmCloud' })
       await run($, 'open')
@@ -140,10 +188,65 @@ export const register: Register = on => {
       </Box>
     )
   })
+
+  // THE BAND above the prompt, in the band layout.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const state = await read($, band)
+    // Off, or a survey holds the band: the band is somebody else's.
+    if (!state.on || e.props.hasSurvey) return next(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const browse = await read($, pane)
+    const cols = Math.max(20, e.props.bodyColumns)
+    const lines = bandFrame(browse, state, { cols, rows: e.props.maxRows, narrow: isNarrow(e.viewport?.columns, cols) })
+
+    return (
+      <Box flexDirection="column">
+        {lines.map((line, row) => (
+          <Box key={'row' + row} flexDirection="row">
+            {line.map((seg, col) => {
+              const action = seg.press
+              if (action !== undefined) {
+                return (
+                  <Button
+                    key={action + '@' + row + '.' + col}
+                    plain
+                    label={seg.text}
+                    hotkey={seg.hotkey}
+                    onPress={() => {
+                      void run($, action)
+                    }}
+                  />
+                )
+              }
+              return (
+                <Text key={'t' + row + '.' + col} color={seg.color} dimColor={seg.dim} bold={seg.bold}>
+                  {seg.text}
+                </Text>
+              )
+            })}
+          </Box>
+        ))}
+      </Box>
+    )
+  })
+
+  // Never while the session is closed.
+  on('session.end', async ($, e, next) => {
+    stopMinute()
+    return next(e)
+  })
 }
 
-/** One click: at most one MCP call (`act`), then the pane redraws from the new state. */
+/**
+ * One click, in the pane or the band: at most one MCP call (`act`), then both
+ * redraw from the new state. The band's Fold and Open read nothing; a list
+ * read goes on to the band's summary, status line and notices (`afterList`).
+ */
 async function run($: EngineInterface, action: string): Promise<void> {
+  if (action === 'band:fold' || action === 'band:open') {
+    await update($, band, state => ({ ...state, folded: action === 'band:fold' }))
+    return
+  }
   if (action === 'console') {
     const state = await read($, pane)
     const link = state.agent && state.agent.console
@@ -164,14 +267,25 @@ async function run($: EngineInterface, action: string): Promise<void> {
     () => new Date(started).toISOString(),
   )
   await update($, pane, () => after)
-  // The pane's Layout control saved a layout: re-attach, as `/sc layout` does.
+  // A list read answered (a new list, even one read at the same second): the band's summary, line and notices.
+  if (after.workflows !== before.workflows) await afterList($)
+  // The Layout control saved the band: start it (no rows, so no attach).
+  if (action === 'layout:band' && !after.failure) {
+    await startBand($)
+    return
+  }
+  // The Layout control saved a layout: the band stops, and re-attach, as `/sc layout` does.
   if (/^layout:(rows|pane)$/.test(action) && !after.failure) {
+    await stopBand($)
     $.command.run({ command: 'sc', args: 'attach --all' }).then(
       () => undefined,
       (error) => $.ui.toast('`/sc attach --all` could not be queued (' + (error instanceof Error ? error.message : String(error)) + '): run it now'),
     )
   }
 }
+
+/** What a switch to the band says: the strip, the line under the prompt, and that no row starts. */
+const BANDED = 'The SwarmCloud strip above the prompt lists this session’s and this project’s work, read directly with no model tokens, and the line under the prompt sums it up. No /workflows row starts in this layout; rows already running keep going until they end.'
 
 /** What a switch says: the old rows keep going, and the attach starts the new ones. */
 const SWITCHED = 'Rows already running in /workflows keep going until they end; `/sc attach --all` is queued now (one chat turn) and starts rows in the new layout beside them.'
@@ -188,8 +302,13 @@ async function atStart($: EngineInterface): Promise<void> {
     const reply = await layoutCall($, {})
     if (!reply.ok) return
     const data = reply.data as { layout?: string }
-    const layout = data.layout === 'pane' || data.layout === 'rows' ? data.layout : null
+    const layout = layoutOf(data.layout)
     await update($, pane, state => ({ ...state, layout }))
+    // The band layout: the band opens with this session's and this project's running work.
+    if (layout === 'band') {
+      await startBand($)
+      return
+    }
     if (layout !== 'pane') return
     const opened = await $.ui.open({ id: PANE, title: 'SwarmCloud' })
     if (!opened.isPlaced) {
@@ -206,4 +325,87 @@ async function layoutCall($: EngineInterface, args: Record<string, unknown>) {
   } catch (error) {
     return { ok: false as const, reason: error instanceof Error ? error.message : String(error) }
   }
+}
+
+/**
+ * The band on: drawn above the prompt, and ONE list read -- this session's
+ * work, and after session start this project's running work too (the pane
+ * state's `project`). That read is the baseline: it queues no turn.
+ */
+async function startBand($: EngineInterface): Promise<void> {
+  await update($, band, state => ({ ...state, on: true, seen: null }))
+  await run($, 'open')
+}
+
+/** The band off: not drawn, no minute, and the line under the prompt cleared. */
+async function stopBand($: EngineInterface): Promise<void> {
+  stopMinute()
+  const state = await read($, band)
+  if (!state.on) return
+  await update($, band, s => ({ ...s, on: false, seen: null, summary: null }))
+  $.ui.status(undefined)
+}
+
+/**
+ * After a list read: the summary, the line under the prompt, a chat turn for
+ * each workflow whose read shows something new (`changes`), and the minute
+ * kept running exactly while anything runs.
+ */
+async function afterList($: EngineInterface): Promise<void> {
+  const state = await read($, band)
+  if (!state.on) return
+  const browse = await read($, pane)
+  const { turns, seen } = changes(state.seen, browse)
+  await update($, band, s => ({ ...s, seen, summary: summaryText(browse), turns: s.turns + turns.length }))
+  $.ui.status(statusText(browse) ?? undefined)
+  for (const args of turns) queue($, args)
+  if (anyRunning(browse)) startMinute($)
+  else stopMinute()
+}
+
+function startMinute($: EngineInterface): void {
+  if (minute) return
+  minute = $.clock.every(MINUTE_MS, () => {
+    void tick($)
+  })
+}
+
+function stopMinute(): void {
+  if (minute) minute.cancel()
+  minute = null
+}
+
+/** The minute: ONE swarm_browse list read, taken in without moving whoever browses. A failed read waits for the next minute. */
+async function tick($: EngineInterface): Promise<void> {
+  if (reading) return
+  reading = true
+  try {
+    const state = await read($, band)
+    if (!state.on) {
+      stopMinute()
+      return
+    }
+    const before = await read($, pane)
+    let reply
+    try {
+      reply = parseResult(await $.mcp.call(SERVER, BROWSE, listArgs(before)))
+    } catch (error) {
+      reply = unreachable(error)
+    }
+    if (!reply.ok) return
+    const data = reply.data
+    const at = new Date(await $.clock.now()).toISOString()
+    await update($, pane, s => takeList(s, data, at))
+    await afterList($)
+  } finally {
+    reading = false
+  }
+}
+
+/** One chat turn, `/sc <args>`, queued outside any hook; a refusal is said in a toast. */
+function queue($: EngineInterface, args: string): void {
+  $.command.run({ command: 'sc', args }).then(
+    () => undefined,
+    (error) => $.ui.toast('`/sc ' + args + '` could not be queued (' + (error instanceof Error ? error.message : String(error)) + '): run it now'),
+  )
 }

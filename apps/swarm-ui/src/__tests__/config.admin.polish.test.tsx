@@ -159,6 +159,18 @@ describe('the Admin panel\'s badges (S1b)', () => {
     expect(count('People and roles')).toBeNull()
     expect([...document.querySelectorAll('.sk-panel [aria-label="Your workspaces"] .sk-cnt')].map((c) => c.textContent)).toEqual(['2'])
   })
+
+  it('counts a workspace admin the join requests the feed serves them (S1c, VQ-051)', async () => {
+    const item = (id: string, group = 'admin'): Json => ({ id, group, needs_you: true, title: 'lee@example.com asks to join Labs', detail: null, href: '/admin/people', at: new Date().toISOString(), read: false })
+    serve(ME(false), [PERSONAL, group('eng', 'admin'), group('ops', 'admin')], {
+      // Two requests to join a workspace of theirs; the platform's count and a non-join item are not theirs.
+      feed: FEED({ admin_pending: 4, items: [item('admin:join:r1'), item('admin:join:r2'), item('admin:workspace:w-1'), item('task:t1', 'task')] }),
+    })
+    await app('/admin/workspaces')
+    // MUTATION: draw a workspace admin no People and roles badge -> null and this fails.
+    await waitFor(() => expect(count('People and roles')).toBe('2'))
+    expect(row('People and roles')?.querySelector('.sk-cnt')?.className).toBe('sk-cnt is-alert')
+  })
 })
 
 describe('the Config panel in a personal workspace (S1e) and the panel foot (S1a)', () => {
@@ -201,10 +213,10 @@ describe('Workspaces you admin\'s lead and links (S10a)', () => {
     })
     await app('/admin/workspaces')
     const lead = await screen.findByRole('region', { name: 'Your workspaces' })
-    expect(lead.querySelector('b')?.textContent).toBe('ops@example.com is behind')
+    expect(lead.querySelector('b')?.textContent).toBe('ops is behind')
     const buttons = [...lead.querySelectorAll('a, button')]
     // MUTATION: draw the old status line with no button -> fails.
-    expect(buttons.map((b) => b.textContent)).toEqual(['Open ops@example.com’s Config'])
+    expect(buttons.map((b) => b.textContent)).toEqual(['Open ops’s Config'])
     expect(buttons[0]!.getAttribute('href')).toBe('/config/repositories')
     fireEvent.click(buttons[0]!)
     const { chosenTenant } = await import('../fetch')
@@ -216,7 +228,7 @@ describe('Workspaces you admin\'s lead and links (S10a)', () => {
   it('links each workspace to its Config pages by their tab names', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'admin')], { setups: { eng: onboarding('done', 'eng', PEOPLE(true, 2)) } })
     await app('/admin/workspaces')
-    const nav = await screen.findByRole('navigation', { name: 'eng@example.com settings' })
+    const nav = await screen.findByRole('navigation', { name: 'eng settings' })
     const links = [...nav.querySelectorAll('a')]
     // MUTATION: keep "Workspace" -> settings/workspace and MCP servers -> settings/mcp-servers -> fails.
     expect(links.map((a) => a.textContent)).toEqual(['Workspace Settings', 'MCP servers', 'People and roles', 'Secrets'])

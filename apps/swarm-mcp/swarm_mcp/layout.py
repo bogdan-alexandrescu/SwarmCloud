@@ -1,8 +1,8 @@
-"""`/sc layout rows|pane`: how this project follows SwarmCloud work in Claude
-Code, remembered per project (SC-BROWSER-BUILD, #2318; BGD picked proposal B
-on 2026-10-25, PR 2328).
+"""`/sc layout rows|pane|band`: how this project follows SwarmCloud work in
+Claude Code, remembered per project (SC-BROWSER-BUILD, #2318; BGD picked
+proposal B on 2026-10-25, PR 2328, and added the band on 2026-10-26, SC-BAND).
 
-TWO LAYOUTS.
+THREE LAYOUTS.
 
 * `rows` -- today's: /sc:swarmcloud shows each workflow in /workflows as the
   plugin's `rows` setting says (`summary`, one sc:summary row per workflow,
@@ -14,6 +14,17 @@ TWO LAYOUTS.
   whose only job is to notice the finish: it holds each follow until the
   workflow's STAGE changes (`compact.watch_stage`), so a quiet stage is a
   call every thirty minutes, not one per step change.
+* `band` -- a strip ABOVE the prompt (the hooks module's `AbovePrompt` band)
+  drawing the pane's levels, with one summary line below the prompt, and NO
+  /workflows row at all (BGD, 2026-10-26): in Claude Code's fullscreen layout
+  a pane docks on the right where a plugin cannot move it, and a /workflows
+  row is a model agent. The band re-reads the list once a minute while
+  anything runs (one direct `swarm_browse` call, no model tokens) and queues
+  one chat turn when a workflow finishes or starts waiting on a person -- the
+  job the rows did. So `row_mode` answers `band` (ROWS_BAND), and
+  swarm_workflow_launch answers `launches: []` with `followed_by: "band"`
+  for an attach, an attach-all and a dispatch, and a spec's run submits and
+  starts no follow row.
 
 `rows` is the default: a project that never chose keeps what it had.
 
@@ -39,7 +50,11 @@ from .client import SwarmError
 
 ROWS = "rows"
 PANE = "pane"
-LAYOUTS = (ROWS, PANE)
+BAND = "band"
+LAYOUTS = (ROWS, PANE, BAND)
+#: The row mode of the band layout: no row (`launch` answers `launches: []`).
+#: Kept here, not in config's row modes, because it is no row shape at all.
+ROWS_BAND = "band"
 #: Today's layout, unless the project or the plugin option chose the pane.
 DEFAULT = ROWS
 STATE_DIR = "sc-layout"
@@ -48,12 +63,13 @@ OPTION_ENV = config.plugin_env("layout")
 
 
 def check(value: Any) -> str:
-    """`rows` or `pane`, from what a person typed; anything else is refused."""
+    """`rows`, `pane` or `band`, from what a person typed; anything else is refused."""
     given = value.strip().lower() if isinstance(value, str) else ""
     if given not in LAYOUTS:
         raise SwarmError(
-            f"`{value}` is not a layout: `rows` (today's /workflows rows) or `pane` (the "
-            "SwarmCloud pane plus one row per workflow). Nothing was saved"
+            f"`{value}` is not a layout: `rows` (today's /workflows rows), `pane` (the "
+            "SwarmCloud pane plus one row per workflow) or `band` (a strip above the prompt "
+            "and no rows). Nothing was saved"
         )
     return given
 
@@ -114,17 +130,30 @@ def save(value: Any, environ: Mapping[str, str] | None = None) -> dict[str, Any]
 
 def row_mode(rows: str | None, environ: Mapping[str, str] | None = None) -> str:
     """The row mode a launch writes: `rows` when the caller named one, else
-    `pane` (config.ROWS_PANE) when this project's layout is the pane, else the
-    plugin's `rows` setting (`config.rows_mode`)."""
+    `pane` (config.ROWS_PANE) when this project's layout is the pane, `band`
+    (ROWS_BAND: no row at all) when it is the band, else the plugin's `rows`
+    setting (`config.rows_mode`)."""
     if rows:
         return rows
-    if current(environ)["layout"] == PANE:
+    chosen = current(environ)["layout"]
+    if chosen == PANE:
         return config.ROWS_PANE
+    if chosen == BAND:
+        return ROWS_BAND
     return config.rows_mode(environ)
 
+
+#: What a launch in the band layout says instead of launching a row.
+BAND_NOTE = (
+    "This project's layout is `band`: the SwarmCloud strip above the prompt follows this "
+    "work with direct reads and no model tokens, and queues one chat turn when a workflow "
+    "finishes or waits on you, so no /workflows row is started. `/sc layout rows` or "
+    "`/sc layout pane` brings rows back"
+)
 
 #: What a layout answer says about rows already running.
 SWITCH_NOTE = (
     "Rows already running in /workflows keep going until they end; the next launch or "
-    "`/sc attach --all` starts rows in the new layout. Nothing in SwarmCloud was touched"
+    "`/sc attach --all` starts rows in the new layout (in `band`, none: the strip above the "
+    "prompt follows the work). Nothing in SwarmCloud was touched"
 )

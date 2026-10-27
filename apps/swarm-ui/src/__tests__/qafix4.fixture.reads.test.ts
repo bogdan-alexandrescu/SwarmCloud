@@ -181,9 +181,11 @@ describe('the people list is served (F3, admin-003)', () => {
     expect(pending.length).toBe(1)
     expect(doc.pending).toBe(pending.length)
     expect(doc.count).toBe(doc.people.length)
-    // MUTATION: name no admin -> fails.
-    expect(doc.admins?.length).toBe(1)
-    expect(doc.people.map((p) => p.email)).toContain(doc.admins?.[0]?.email)
+    // MUTATION: name no admin -> fails. The two platform owners hold no granted
+    // document (PLATFORM_OWNER), and alice, a person here, holds the admin one.
+    expect(doc.admins?.map((a) => a.role)).toEqual(['owner', 'owner', 'admin'])
+    const admin = doc.admins?.find((a) => a.role === 'admin')
+    expect(doc.people.map((p) => p.email)).toContain(admin?.email)
   })
 })
 

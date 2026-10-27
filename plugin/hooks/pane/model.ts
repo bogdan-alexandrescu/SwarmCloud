@@ -37,6 +37,7 @@ export type Line = Seg[]
 import type {
   ScAgentDetail as AgentDetail,
   ScAgentRow as AgentRow,
+  ScBandState as BandState,
   ScFailure as Failure,
   ScLayout as Layout,
   ScPaneState as PaneState,
@@ -45,7 +46,7 @@ import type {
   ScWorkflowRow as WorkflowRow,
 } from '../../types/index.d.ts'
 
-export type { AgentDetail, AgentRow, Failure, Layout, PaneState, SingleTask, Step, WorkflowRow }
+export type { AgentDetail, AgentRow, BandState, Failure, Layout, PaneState, SingleTask, Step, WorkflowRow }
 
 export const SERVER = 'plugin:sc:swarmcloud'
 export const BROWSE = 'swarm_browse'
@@ -657,13 +658,14 @@ function narrowFrame(state: PaneState, row: WorkflowRow, stage: Stage | null, vi
 function settingsFrame(state: PaneState, view: View): Line[] {
   const { cols } = view
   const out: Line[] = [ends([plain(' SwarmCloud · settings')], [button('‹ Workflows', 'back:workflows')], cols), rule(cols)]
-  const name = (layout: Layout | null) => (layout === 'pane' ? 'Pane + 1 row each' : layout === 'rows' ? 'Steps (today)' : 'not read')
+  const name = (layout: Layout | null) => (layout === 'band' ? 'Band above the prompt' : layout === 'pane' ? 'Pane + 1 row each' : layout === 'rows' ? 'Steps (today)' : 'not read')
   out.push(fit([plain(' Layout  [' + name(state.layout) + ' ▾]')], cols))
   out.push(fit([], cols))
   const option = (layout: Layout, note: string): Line[] => [
     fit([plain('         '), { text: (state.layout === layout ? '● ' : '○ ') + name(layout), press: 'layout:' + layout }], cols),
     fit([plain('           ' + note, { dim: true })], cols),
   ]
+  out.push(...option('band', 'a strip above the prompt, no rows at all'))
   out.push(...option('pane', 'one quiet row per workflow'))
   out.push(...option('rows', 'one row per unfinished step, as the rows setting says'))
   out.push(fit([], cols))
@@ -742,16 +744,22 @@ function readAgent(taskId: string, from: 'agents' | 'workflows'): Read {
   }
 }
 
+/** A layout as swarm_layout answers it, or null for anything else. */
+export function layoutOf(value: unknown): Layout | null {
+  return value === 'pane' || value === 'rows' || value === 'band' ? value : null
+}
+
 const READ_LAYOUT: Read = {
   tool: LAYOUT, args: {},
-  take: (s, d) => ({ ...s, level: 'settings', layout: d.layout === 'pane' || d.layout === 'rows' ? d.layout : null }),
+  take: (s, d) => ({ ...s, level: 'settings', layout: layoutOf(d.layout) }),
 }
 
 function saveLayout(layout: Layout): Read {
+  const named = layout === 'band' ? 'Band above the prompt' : layout === 'pane' ? 'Pane + 1 row each' : 'Steps (today)'
   return {
     tool: LAYOUT, args: { layout },
-    take: (s, d) => ({ ...s, level: 'settings', layout: d.layout === 'pane' || d.layout === 'rows' ? d.layout : layout,
-      layoutNote: 'Saved for this project: ' + (layout === 'pane' ? 'Pane + 1 row each' : 'Steps (today)') + '. ' + (d.note || '') }),
+    take: (s, d) => ({ ...s, level: 'settings', layout: layoutOf(d.layout) || layout,
+      layoutNote: 'Saved for this project: ' + named + '. ' + (d.note || '') }),
   }
 }
 
@@ -777,7 +785,10 @@ export function plan(state: PaneState, action: string): { read: Read | null; mov
   }
   if (verb === 'agent') return { read: readAgent(arg, 'agents'), move: null }
   if (verb === 'task') return { read: readAgent(arg, 'workflows'), move: null }
-  if (verb === 'layout') return { read: arg === 'pane' || arg === 'rows' ? saveLayout(arg) : READ_LAYOUT, move: null }
+  if (verb === 'layout') {
+    const chosen = layoutOf(arg)
+    return { read: chosen ? saveLayout(chosen) : READ_LAYOUT, move: null }
+  }
   if (verb === 'back') {
     const failure = null
     if (arg === 'workflows') return { read: null, move: { ...state, level: 'workflows', failure, layoutNote: null } }
@@ -807,4 +818,169 @@ export async function act(state: PaneState, action: string, call: Call, now: () 
     return { ...counted, failure: { tool: read.tool, reason: reply.reason, at, action: again } }
   }
   return { ...read.take(counted, reply.data || {}, at), failure: null }
+}
+
+// --------------------------------------------------------------------------
+// The band above the prompt (SC-BAND, BGD 2026-10-26)
+// --------------------------------------------------------------------------
+//
+// WHY A BAND. In Claude Code's fullscreen layout a Pane docks on the right,
+// and a plugin cannot choose that; the /workflows list is Claude Code's own
+// background-task list, where a plugin can only add model-driven rows. What a
+// plugin CAN draw horizontally is the `AbovePrompt` band (many rows, scrolled
+// by the engine, folded by its [-], held to half the terminal) and one
+// `$.ui.status` line under the prompt. So in the `band` layout the same
+// levels the pane draws (`frame`) sit in a strip above the prompt, under a
+// summary line, and no /workflows row is started at all (swarm_layout's
+// `band`; swarm_workflow_launch answers `launches: []`).
+//
+// WHAT THE ROWS USED TO NOTICE, THE BAND NOTICES. A row's job was to make the
+// session learn of a finish or a wait. While anything runs, ../band.tsx
+// re-reads the list every minute (one direct swarm_browse call, no model
+// tokens) and `changes` compares it with the read before: a workflow that
+// finished, a step that now waits for a person, a merge parked on owner
+// questions, or more owner questions than before is ONE chat turn,
+// `/sc status <wf_id> · <what changed>`. Nothing else ever queues one, and the
+// first read -- with nothing to compare -- queues none.
+
+
+export function initialBand(): BandState {
+  return { on: false, folded: false, seen: null, summary: null, turns: 0 }
+}
+
+/** The park reasons that wait for a person: a human step's answer, or a hold only a person releases. */
+const PERSON = ['AWAITING_INPUT', 'HUMAN_REQUIRED']
+
+function waitsOnYou(step: Step): boolean {
+  return step.state === 'PARKED' && typeof step.park_reason === 'string' && PERSON.indexOf(step.park_reason) >= 0
+}
+
+function finishedRow(row: WorkflowRow): boolean {
+  return !!row.state && TERMINAL.indexOf(row.state) >= 0
+}
+
+function rowPulls(row: WorkflowRow): string[] {
+  return Array.isArray(row.pull_requests) ? row.pull_requests.filter((u) => typeof u === 'string' && u.length > 0) : []
+}
+
+/** What the list says now: running work, steps waiting for a person, pull requests (null where none were served). */
+export type BandCount = { read: boolean; running: number; waiting: number; prs: number | null }
+
+export function bandCount(state: PaneState): BandCount {
+  if (state.workflows === null) return { read: false, running: 0, waiting: 0, prs: null }
+  const rows = state.workflows
+  const live = rows.filter((r) => !!r.state && !finishedRow(r))
+  const singles = state.singles.filter((t) => !t.state || TERMINAL.indexOf(t.state) < 0)
+  const waiting = live.reduce((n, r) => n + r.steps.filter(waitsOnYou).length, 0)
+  const served = rows.some((r) => Array.isArray(r.pull_requests))
+  const pulls: string[] = []
+  for (const row of rows) for (const url of rowPulls(row)) if (pulls.indexOf(url) < 0) pulls.push(url)
+  return { read: true, running: live.length + singles.length, waiting, prs: served ? pulls.length : null }
+}
+
+function countWords(count: BandCount): string[] {
+  const parts = [count.running ? count.running + ' running' : 'nothing running']
+  if (count.waiting) parts.push(count.waiting + (count.waiting === 1 ? ' waits on you' : ' wait on you'))
+  if (count.prs) parts.push(count.prs + (count.prs === 1 ? ' PR' : ' PRs'))
+  return parts
+}
+
+/** The band's one line, folded or open: `SwarmCloud · 6 running · 1 waits on you · 2 PRs`. */
+export function summaryText(state: PaneState): string {
+  const count = bandCount(state)
+  if (!count.read) return 'SwarmCloud · not read yet'
+  return ['SwarmCloud', ...countWords(count)].join(' · ')
+}
+
+/**
+ * The line under the prompt (`$.ui.status`): `SC 6 running · 1 waits on you ·
+ * 2 PRs`, or null -- the line cleared -- when nothing of this session or
+ * project runs, or nothing has been read.
+ */
+export function statusText(state: PaneState): string | null {
+  const count = bandCount(state)
+  if (!count.read || count.running === 0) return null
+  return 'SC ' + countWords(count).join(' · ')
+}
+
+/** Whether anything listed still runs: the band re-reads every minute only while it does. */
+export function anyRunning(state: PaneState): boolean {
+  return bandCount(state).running > 0
+}
+
+/**
+ * The facts of one workflow a chat turn is queued for, each a short phrase:
+ * `finished: succeeded`, `<step> waits for a person`, `merge parked on owner
+ * questions (<step>)`, `owner questions: N`.
+ */
+export function noticesOf(row: WorkflowRow): string[] {
+  const out: string[] = []
+  if (finishedRow(row)) out.push('finished: ' + (row.state as string).toLowerCase())
+  for (const step of row.steps) {
+    if (!waitsOnYou(step)) continue
+    out.push(step.park_reason === 'HUMAN_REQUIRED' && step.park_phase === 'owner_questions'
+      ? 'merge parked on owner questions (' + step.step_id + ')'
+      : step.step_id + ' waits for a person')
+  }
+  if (typeof row.owner_questions === 'number' && row.owner_questions > 0) out.push('owner questions: ' + Math.trunc(row.owner_questions))
+  return out
+}
+
+function questionsIn(facts: readonly string[]): number {
+  const fact = facts.find((f) => f.indexOf('owner questions: ') === 0)
+  return fact ? Number(fact.slice('owner questions: '.length)) || 0 : 0
+}
+
+/**
+ * What changed since the read before, as `/sc` arguments -- one per workflow
+ * with anything new: `status <wf_id> · finished: succeeded · PR #2463`. With
+ * no read before (`seen` null) nothing is new: the first read is the baseline.
+ * A fact already seen, a step that stopped waiting, or fewer owner questions
+ * than before is no turn.
+ */
+export function changes(seen: Record<string, string[]> | null, state: PaneState): { turns: string[]; seen: Record<string, string[]> } {
+  const next: Record<string, string[]> = {}
+  const turns: string[] = []
+  for (const row of state.workflows || []) {
+    const facts = noticesOf(row)
+    next[row.workflow_id] = facts
+    if (seen === null) continue
+    const before = seen[row.workflow_id] || []
+    const fresh = facts.filter((f) => before.indexOf(f) < 0 && (f.indexOf('owner questions: ') !== 0 || questionsIn(facts) > questionsIn(before)))
+    if (fresh.length === 0) continue
+    const said = fresh.map((f) => (f.indexOf('owner questions: ') === 0 ? 'new owner questions: ' + (questionsIn(facts) - questionsIn(before)) : f))
+    const pulls = fresh.some((f) => f.indexOf('finished: ') === 0) ? rowPulls(row).map(prText).filter((t): t is string => !!t) : []
+    if (pulls.length) said.push('PR ' + pulls.join(', '))
+    turns.push('status ' + row.workflow_id + ' · ' + said.join(' · '))
+  }
+  return { turns, seen: next }
+}
+
+/** The list read the band's minute makes: Level 1's, with the project's work after session start. */
+export function listArgs(state: PaneState): Record<string, unknown> {
+  return readList(state).args
+}
+
+/** A list read taken in without moving whoever is browsing: the level stays where it is. */
+export function takeList(state: PaneState, data: any, at: string): PaneState {
+  const read = readList(state).take(state, data || {}, at)
+  return { ...read, level: state.level, calls: state.calls + 1 }
+}
+
+export type BandView = { cols: number; rows: number; narrow: boolean }
+
+/**
+ * The band: its summary line, then the pane's own levels (`frame`) at the
+ * band's width. Folded -- or with room for one row only -- the summary line
+ * alone. The first line leaves the engine's [-] (top right) four cells.
+ */
+export function bandFrame(state: PaneState, band: BandState, view: BandView): Line[] {
+  const cols = Math.max(20, view.cols)
+  const folded = band.folded || view.rows < 3
+  const control = band.folded ? button('Open', 'band:open', 'o') : button('Fold', 'band:fold', 'f')
+  // The summary gives way, never the control: a clipped button cannot be pressed.
+  const room = cols - 4 - width(control.text) - 1
+  const head = ends([plain(clip(' ' + summaryText(state), room))], [control], cols - 4)
+  if (folded) return [head]
+  return [head, ...frame(state, { cols, narrow: view.narrow, now: '' })]
 }

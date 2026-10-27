@@ -280,6 +280,51 @@ def test_a_prompt_with_a_repository_ends_with_the_publish_paragraph(tmp_path, mo
         assert phrase in cliagent.PUBLISH_PARAGRAPH
 
 
+def test_a_prompt_with_a_repository_says_how_to_end_with_no_change(tmp_path, monkeypatch):
+    """#2140: build-170 found its issue already built, wrote pr-body.md and no
+    verification.md, and failed `published_nothing`, cancelling its dependant.
+    The worker reads "no change plus verification.md" as SUCCEEDED no_change
+    (Proposal J); the prompt has to say so, under the name the worker reads."""
+    ctx = _ctx(tmp_path, {"prompt": "fix it"}, repo=True)
+    _install(tmp_path, monkeypatch, ctx, [{"answer": DONE}])
+    claude_code.body(ctx)
+    prompt = _runs(ctx)[0]["prompt"]
+    named = f"$SWARM_ARTIFACTS_DIR/{lifecycle.VERIFICATION_FILE}"
+    assert named == "$SWARM_ARTIFACTS_DIR/verification.md"
+    assert named in prompt, prompt[-800:]
+    assert named in cliagent.PUBLISH_PARAGRAPH
+    assert "commit nothing" in cliagent.PUBLISH_PARAGRAPH
+    assert "no change" in cliagent.PUBLISH_PARAGRAPH
+
+
+def test_a_prompt_with_a_repository_says_to_stay_on_the_cloned_line(tmp_path, monkeypatch):
+    # #2277: an agent that ran `git checkout -B fix-516 FETCH_HEAD` and committed
+    # there lost every commit to the moved-head harvest, which discards a HEAD
+    # that does not descend from the step's start. The prompt must say so.
+    ctx = _ctx(tmp_path, {"prompt": "fix it"}, repo=True)
+    _install(tmp_path, monkeypatch, ctx, [{"answer": DONE}])
+    claude_code.body(ctx)
+    prompt = _runs(ctx)[0]["prompt"].lower()
+    for phrase in ("keep your commits on the branch you were cloned onto",
+                   "merge it in", "git merge fetch_head",
+                   "never git checkout -b", "git switch", "git reset",
+                   "do not descend from the commit you started on", "discarded"):
+        assert phrase in prompt, phrase
+    markers = (*cliagent._RATE_LIMIT_MARKERS, *cliagent._CREDENTIAL_MARKERS)
+    assert [m for m in markers if m in prompt] == []
+
+
+def test_the_publish_paragraph_is_one_paragraph_with_no_line_an_agent_reads_as_a_write():
+    # Both sentences (#2140, #2277) join the one paragraph: it stays one line,
+    # and no line of the prompt starts "Write" (test_standalone_outputs).
+    paragraph = cliagent.PUBLISH_PARAGRAPH
+    assert "\n" not in paragraph
+    assert not paragraph.lower().startswith("write")
+    lowered = paragraph.lower()
+    markers = (*cliagent._RATE_LIMIT_MARKERS, *cliagent._CREDENTIAL_MARKERS)
+    assert [m for m in markers if m in lowered] == []
+
+
 def test_a_prompt_without_a_repository_has_no_publish_paragraph(tmp_path, monkeypatch):
     ctx = _ctx(tmp_path, {"prompt": "summarise the notes"}, repo=False)
     _install(tmp_path, monkeypatch, ctx, [{"answer": DONE}])

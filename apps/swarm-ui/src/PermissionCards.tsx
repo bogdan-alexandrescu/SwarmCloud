@@ -283,7 +283,7 @@ function PermCard({
     setOpen(!healthy)
   }
   const bodyId = useId()
-  const kindWord = kind === 'app' ? 'GitHub App' : kind === 'token' ? 'tenant token' : kind
+  const kindWord = kind === 'app' ? 'GitHub App' : kind === 'token' ? 'workspace token' : kind
   return (
     <Card
       level={3}
@@ -441,7 +441,21 @@ function checkedWords(checkedAt: string | null): string {
   return `Checked ${checkedAt === null ? 'at an unknown time' : timeAgo(checkedAt)}`
 }
 
-/** The needed-permissions table: a green check, a gap, or the neutral mark. */
+/**
+ * AN ACCEPTED PERMISSION IS A GREEN DOT (PERM-DOT, #1086; BGD 2026-10-27,
+ * "Green dot"). The issue asked for green, and the row drew the console's ok
+ * mark, the grey check -- healthy is quiet everywhere else. Here the owner
+ * chose the dot: a filled disc in `--ok`, the token the liveness dot already
+ * draws in, so both themes carry their own contrast-checked green. Its
+ * silhouette (a disc) still differs from the gap's diamond and the neutral
+ * row's flat bar, and the hidden word beside it says "enough", so the state is
+ * never the hue alone.
+ */
+function OkDot() {
+  return <span className="fp-ok-dot" aria-hidden="true" />
+}
+
+/** The needed-permissions table: a green dot, a gap, or the neutral mark. */
 function GrantsTable({ rows }: { rows: readonly GrantRow[] }) {
   if (rows.length === 0) return null
   return (
@@ -470,7 +484,7 @@ function GrantsTable({ rows }: { rows: readonly GrantRow[] }) {
               <td>{r.needs ?? '?'}</td>
               <td>{r.has ?? 'none'}</td>
               <td className="fp-mark">
-                <ToneMark tone={r.ok ? 'ok' : r.optional ? 'info' : 'bad'} hidden />
+                {r.ok ? <OkDot /> : <ToneMark tone={r.optional ? 'info' : 'bad'} hidden />}
                 <span className="fp-sr">{r.ok ? 'enough' : r.optional ? 'not needed yet' : 'not enough'}</span>
               </td>
               <td className="fp-for">
@@ -634,7 +648,7 @@ export function AppCard({
   )
 }
 
-/** A token-backed repository's own card: what the tenant token was measured to do there. */
+/** A token-backed repository's own card: what the workspace token was measured to do there. */
 function TokenCard({ row }: { row: ForgeRepoStatus }) {
   const lines: Line[] = row.blocked_by.map((g, n) => ({ key: `b:${n}`, words: g.needed_for, jargon: gapJargon(g) }))
   const status = repoStatus(row)
@@ -647,7 +661,7 @@ function TokenCard({ row }: { row: ForgeRepoStatus }) {
       lines={lines}
       error={row.error}
       sig={`${status.tone}:${lines.length}:${row.error ?? ''}`}
-      hint={lines.length > 0 ? 'This repository is reached through the tenant token, not the App: a token with more access fixes it (Git tokens).' : status.tone === 'unknown' && row.error === null ? status.tip : undefined}
+      hint={lines.length > 0 ? 'This repository is reached through the workspace token, not the App: a token with more access fixes it (Git tokens).' : status.tone === 'unknown' && row.error === null ? status.tip : undefined}
     />
   )
 }

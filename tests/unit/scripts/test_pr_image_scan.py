@@ -65,16 +65,40 @@ def test_the_build_step_scans_with_the_shared_policy():
     assert "--ignore-unfixed" in POLICY.read_text()
 
 
+# A trivy that keeps its argv in FAKE_TRIVY_LOG. FAKE_TRIVY_DB_FAILS=<n|all>:
+# the first n DB downloads fail as a ghcr.io outage does, and so does a scan
+# that would download the DB itself (one without --skip-db-update), which is
+# what a scan on main does. A finding (FAKE_TRIVY_FINDINGS=1) exits with the
+# --exit-code the policy asked for; trivy's own errors exit 1.
 FAKE_TRIVY = r'''#!{python}
 import json, os, sys
-with open(os.environ["FAKE_TRIVY_LOG"], "a") as fh:
-    fh.write(json.dumps(sys.argv[1:]) + "\n")
-sys.exit(int(os.environ.get("FAKE_TRIVY_EXIT", "0")))
+args = sys.argv[1:]
+log = os.environ["FAKE_TRIVY_LOG"]
+failed = 0
+if os.path.exists(log):
+    with open(log) as fh:
+        failed = sum(1 for line in fh if json.loads(line)[0] == "db-failed")
+with open(log, "a") as fh:
+    fh.write(json.dumps(args) + "\n")
+spec = os.environ.get("FAKE_TRIVY_DB_FAILS", "0")
+if "--download-db-only" in args or "--skip-db-update" not in args:
+    if spec == "all" or failed < int(spec):
+        with open(log, "a") as fh:
+            fh.write(json.dumps(["db-failed"]) + "\n")
+        print("2026-10-27T00:00:00Z FATAL Fatal error init error: DB error: failed to download "
+              "vulnerability DB: OCI artifact error: GET https://ghcr.io/v2/: TOOMANYREQUESTS",
+              file=sys.stderr)
+        sys.exit(1)
+    if "--download-db-only" in args:
+        sys.exit(0)
+if os.environ.get("FAKE_TRIVY_FINDINGS"):
+    print("libexpat CVE-0000-0000 HIGH fixed in 9.9.9")
+    sys.exit(int(args[args.index("--exit-code") + 1]))
+sys.exit(0)
 '''
 
 
-@pytest.mark.parametrize("exit_code", [0, 1])
-def test_the_layout_scan_passes_the_policy_and_fails_on_a_finding(tmp_path, exit_code):
+def _layout_scan(tmp_path: Path, **fakes: str):
     trivy = tmp_path / "trivy"
     trivy.write_text(FAKE_TRIVY.replace("{python}", sys.executable))
     trivy.chmod(0o755)
@@ -82,15 +106,58 @@ def test_the_layout_scan_passes_the_policy_and_fails_on_a_finding(tmp_path, exit
     layout.mkdir()
     log = tmp_path / "trivy.log"
     env = {**os.environ, "SWARM_TRIVY": str(trivy), "FAKE_TRIVY_LOG": str(log),
-           "FAKE_TRIVY_EXIT": str(exit_code), "SWARM_ENV_FILE": str(tmp_path / "none.env"),
-           "PROJECT_ID": "swarm-test-project", "REGION": "us-central1", "NO_COLOR": "1"}
+           "SWARM_ENV_FILE": str(tmp_path / "none.env"), "IMAGE_SCAN_DB_BACKOFF": "0",
+           "PROJECT_ID": "swarm-test-project", "REGION": "us-central1", "NO_COLOR": "1", **fakes}
     proc = subprocess.run(["bash", str(SCAN), str(layout), "swarm-api"], env=env,
                           capture_output=True, text=True, timeout=60)
-    assert proc.returncode == exit_code, proc.stderr
-    (argv,) = [json.loads(line) for line in log.read_text().splitlines()]
+    calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+    return proc, layout, calls
+
+
+def _scans(calls: list[list[str]]) -> list[list[str]]:
+    return [c for c in calls if c and c[0] == "image" and "--download-db-only" not in c]
+
+
+@pytest.mark.parametrize("findings, rc", [("", 0), ("1", 1)], ids=["clean", "findings"])
+def test_the_layout_scan_passes_the_policy_and_fails_on_a_finding(tmp_path, findings, rc):
+    proc, layout, calls = _layout_scan(tmp_path, FAKE_TRIVY_FINDINGS=findings)
+    assert proc.returncode == rc, proc.stderr
+    (argv,) = _scans(calls)
     assert argv[0] == "image" and "--ignore-unfixed" in argv and "--exit-code" in argv, argv
     assert argv[argv.index("--severity") + 1] == "HIGH,CRITICAL", argv
     assert argv[-2:] == ["--input", str(layout)], argv
+    out = proc.stdout + proc.stderr
+    assert ("found fixable" in out) == bool(findings), out[-2000:]
+    assert "could not scan" not in out, out[-2000:]
+
+
+def test_a_finding_has_an_exit_code_of_its_own_not_trivys_error_code(tmp_path):
+    # trivy exits 1 on its own errors, so --exit-code 1 made a failed DB
+    # download indistinguishable from a finding (#2379).
+    _, _, calls = _layout_scan(tmp_path)
+    (argv,) = _scans(calls)
+    assert argv[argv.index("--exit-code") + 1] not in ("0", "1"), argv
+
+
+def test_a_db_download_that_fails_is_a_scanner_error_not_a_finding(tmp_path):
+    # MUTATION: treat every non-zero trivy exit as findings again, and this fails.
+    proc, _, calls = _layout_scan(tmp_path, FAKE_TRIVY_DB_FAILS="all")
+    out = proc.stdout + proc.stderr
+    assert proc.returncode != 0, "the scan could not run and the gate passed: it must fail closed"
+    assert "found fixable" not in out, out[-2000:]
+    assert "trivy could not scan swarm-api" in out and "this is not a finding" in out, out[-2000:]
+    downloads = [c for c in calls if "--download-db-only" in c]
+    assert len(downloads) > 1, f"the DB download was not retried: {calls}"
+    assert not _scans(calls), f"scanned without a vulnerability DB: {calls}"
+
+
+def test_a_db_download_that_fails_once_is_retried_and_the_scan_runs(tmp_path):
+    proc, layout, calls = _layout_scan(tmp_path, FAKE_TRIVY_DB_FAILS="1")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    (argv,) = _scans(calls)
+    assert "--skip-db-update" in argv and argv[-2:] == ["--input", str(layout)], argv
+    downloads = [c for c in calls if "--download-db-only" in c]
+    assert len(downloads) == 2, calls
 
 
 FAKE_SCAN = r'''#!/bin/sh

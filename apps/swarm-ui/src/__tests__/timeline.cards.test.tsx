@@ -36,7 +36,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { ActivityScreen } = await import('../Activity')
+const { ActivityScreen, LEDGER_LATE_SECTIONS, LEDGER_SECTIONS } = await import('../Activity')
 
 // ---------------------------------------------------------------------------
 // What each part of the page may read -- stated here, not imported, so a card
@@ -44,7 +44,9 @@ const { ActivityScreen } = await import('../Activity')
 // ---------------------------------------------------------------------------
 
 const ALL = ['buckets', 'totals', 'retries', 'latency', 'groups', 'workflows_failed', 'coverage', 'previous']
-const LEDGER = ['buckets', 'coverage', 'previous', 'totals']
+const LEDGER = ['buckets', 'totals']
+/** The page's second read, after the headline lands (#2422): the two sections that cost reads of their own. */
+const LATE = ['coverage', 'previous']
 const CARDS: Record<string, string[]> = {
   failures: ['buckets', 'totals'],
   retries: ['buckets', 'retries', 'totals'],
@@ -147,20 +149,33 @@ function serve(): void {
   api.loadTenants.mockResolvedValue(ok({ tenants: [] }))
 }
 
-type Call = { query: URLSearchParams; sections: string[] | null }
+type Call = { query: URLSearchParams; sections: string[] | null; who: 'headline' | 'late' | 'card' }
+
+/**
+ * Who sent a read: the page's two lists by identity, because the failures,
+ * cost and cancels cards ask for the same two sections the headline does.
+ */
+function who(sections: unknown): Call['who'] {
+  return sections === LEDGER_SECTIONS ? 'headline' : sections === LEDGER_LATE_SECTIONS ? 'late' : 'card'
+}
 
 /** Every `loadOutcomes` call so far, with its sections sorted; null when it named none. */
 function calls(): Call[] {
   return api.loadOutcomes.mock.calls.map((c) => ({
     query: c[0] as URLSearchParams,
     sections: Array.isArray(c[1]) && c[1].length > 0 ? [...(c[1] as string[])].sort() : null,
+    who: who(c[1]),
   }))
 }
 
-/** The calls that were not the headline's own. */
+/** The calls that were not the page's own (the headline and its second read). */
 function cardCalls(): Call[] {
-  return calls().filter((c) => c.sections === null || c.sections.join() !== LEDGER.join())
+  return calls().filter((c) => c.who === 'card')
 }
+
+/** A card's ask for `id`'s sections -- never the headline's, which can name the same two. */
+const cardAsk = (sections: readonly string[] | undefined, id: string): boolean =>
+  who(sections) === 'card' && same(sections ? [...sections].sort() : null, CARDS[id]!)
 
 const same = (a: string[] | null, b: string[]) => a !== null && a.join() === b.join()
 
@@ -235,8 +250,10 @@ describe('with IntersectionObserver', () => {
   it('reads only the headline’s sections on open, and no card before it is in view', async () => {
     const root = await timeline()
     const all = calls()
-    expect(all.length, 'the headline was read more than once, or a card read on open').toBe(1)
+    expect(all.map((c) => c.who), 'the headline was read more than once, or a card read on open').toEqual(['headline', 'late'])
     expect(all[0]!.sections, 'the headline asked for more (or less) than it draws').toEqual(LEDGER)
+    expect(all[1]!.sections, 'the second read asked for more (or less) than coverage and previous').toEqual(LATE)
+    expect(all[1]!.query.toString(), 'the second read is the headline’s query').toBe(all[0]!.query.toString())
     // Drawn from the headline's sections alone.
     expect(root.querySelector('.ol-figure')!.textContent).toBe('90.7 %')
     for (const id of IDS) {
@@ -340,7 +357,7 @@ describe('with IntersectionObserver', () => {
   it('shows the skeleton in the card’s own frame while its read is pending', async () => {
     const pending = deferred<Result<Outcomes>>()
     api.loadOutcomes.mockImplementation((_q: URLSearchParams, sections?: readonly string[]) =>
-      same(sections ? [...sections].sort() : null, CARDS.retries!) ? pending.promise : Promise.resolve(ok(part(sections))),
+      cardAsk(sections, 'retries') ? pending.promise : Promise.resolve(ok(part(sections))),
     )
     const root = await timeline()
     scroll(box(root, 'retries'), true)
@@ -359,7 +376,7 @@ describe('with IntersectionObserver', () => {
   it.each(IDS)('%s shows a failure with a way to try again, and trying again reads again', async (id) => {
     let first = true
     api.loadOutcomes.mockImplementation((_q: URLSearchParams, sections?: readonly string[]) => {
-      if (first && same(sections ? [...sections].sort() : null, CARDS[id]!)) {
+      if (first && cardAsk(sections, id)) {
         first = false
         return Promise.resolve(failed('upstream timed out'))
       }
@@ -379,7 +396,7 @@ describe('with IntersectionObserver', () => {
     const late = deferred<Result<Outcomes>>()
     let first = true
     api.loadOutcomes.mockImplementation((_q: URLSearchParams, sections?: readonly string[]) => {
-      if (first && same(sections ? [...sections].sort() : null, CARDS.reliability!)) {
+      if (first && cardAsk(sections, 'reliability')) {
         first = false
         return late.promise
       }
@@ -404,7 +421,7 @@ describe('with IntersectionObserver', () => {
   it('drops a read that lands after the filters changed, so an old figure is never drawn as new', async () => {
     const old = deferred<Result<Outcomes>>()
     api.loadOutcomes.mockImplementation((q: URLSearchParams, sections?: readonly string[]) => {
-      if (same(sections ? [...sections].sort() : null, CARDS.retries!) && q.get('span') === '14d') return old.promise
+      if (cardAsk(sections, 'retries') && q.get('span') === '14d') return old.promise
       return Promise.resolve(ok(part(sections)))
     })
     const root = await timeline()
@@ -440,6 +457,94 @@ describe('with IntersectionObserver', () => {
     const { container } = render(<ActivityScreen />)
     await waitFor(() => expect(container.querySelector('.ctl-empty.is-failed')).not.toBeNull())
     expect(container.querySelector('[data-card]')).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The second read: coverage and previous, after first paint (#2422)
+// ---------------------------------------------------------------------------
+
+describe('the headline never waits on coverage or previous (#2422)', () => {
+  beforeEach(() => {
+    vi.stubGlobal('IntersectionObserver', FakeObserver)
+  })
+
+  /** The facts line's "sealed" item. */
+  function sealedFact(root: HTMLElement): HTMLElement {
+    const li = [...root.querySelectorAll<HTMLElement>('.ol-facts .ctl-fact')].find((el) => el.querySelector('b')?.textContent === 'sealed')
+    expect(li, 'no sealed fact').toBeDefined()
+    return li!
+  }
+
+  /** The foot's clauses, one per nowrap child of the run, as read. */
+  function footClauses(root: HTMLElement): string[] {
+    return [...root.querySelectorAll<HTMLElement>('.ol-prov > span')].map((el) => (el.textContent ?? '').trim())
+  }
+  /**
+   * The second read's own clauses only: the headline's cost clause is
+   * pre-existing and outside this check. The text includes the mark's pill, as
+   * drawn. The review measured the joined 57-character clause ("reading sealed
+   * days and the span before: still being read") running 57 px past a 390 px
+   * foot, cut at "still"; 40 characters leaves it well inside.
+   */
+  const FOOT_CLAUSE_MAX = 40
+  function longest(root: HTMLElement): number {
+    return Math.max(...footClauses(root).filter((t) => t.includes('sealed days') || t.includes('span before')).map((t) => t.length))
+  }
+
+  /** Serve every read at once except the second, which waits on `late`. */
+  function holdLate(late: Promise<Result<Outcomes>>): void {
+    api.loadOutcomes.mockImplementation((_q: URLSearchParams, sections?: readonly string[]) =>
+      who(sections) === 'late' ? late : Promise.resolve(ok(part(sections))),
+    )
+  }
+
+  it('draws the figure while the second read is out, and says what it is still reading', async () => {
+    // MUTATION: put 'coverage' and 'previous' back in LEDGER_SECTIONS, or draw `coverage.days` as 0 until it lands.
+    const late = deferred<Result<Outcomes>>()
+    holdLate(late.promise)
+    const root = await timeline()
+    expect(root.querySelector('.ol-figure')!.textContent, 'the figure waited on the second read').toBe('90.7 %')
+    const sealed = sealedFact(root)
+    expect(sealed.querySelector('.ctl-mark.is-pending'), 'sealed does not say it is reading').not.toBeNull()
+    expect(sealed.textContent).toContain('still being read')
+    expect(sealed.textContent, 'a count stood in for days not read yet').not.toMatch(/\d/)
+    expect(root.querySelector('.ol-delta.is-reading')?.textContent).toContain('still being read')
+    const foot = root.querySelector('.ol-prov')!
+    expect(foot.querySelector('.ctl-mark.is-pending')).not.toBeNull()
+    expect(foot.textContent).not.toContain('sealed ·')
+    // MUTATION: join the two back into one clause. A nowrap clause longer than a
+    // 390 px foot is cut by its clip (#2422 review: "still" kept, "being read" lost).
+    expect(footClauses(root)).toEqual(expect.arrayContaining(['reading sealed days: still being read', 'span before: still being read']))
+    expect(longest(root), 'a foot clause too long to fit a phone').toBeLessThanOrEqual(FOOT_CLAUSE_MAX)
+
+    const whole = ledgerFixture()
+    await act(async () => {
+      late.resolve(ok(part(LATE)))
+    })
+    await waitFor(() => expect(sealedFact(root).querySelector('.ctl-mark')).toBeNull())
+    expect(sealedFact(root).textContent).toContain(`${whole.coverage.days.sealed} of ${whole.coverage.days.total}`)
+    expect(root.querySelector('.ol-delta.is-reading')).toBeNull()
+    expect(root.querySelector('.ol-delta')?.textContent).toMatch(/^prev /)
+    expect(root.querySelector('.ol-prov')!.textContent).toContain(`${whole.coverage.days.sealed} UTC days sealed`)
+  })
+
+  it('says coverage and the span before were not read, and why, when the second read fails -- never 0', async () => {
+    // MUTATION: draw a failed second read as "0 of N", or as nothing at all.
+    holdLate(Promise.resolve(failed('count timed out')))
+    const root = await timeline()
+    await waitFor(() => expect(sealedFact(root).querySelector('.ctl-mark.is-unread')).not.toBeNull())
+    const sealed = sealedFact(root)
+    expect(sealed.textContent).toContain('not read')
+    expect(sealed.querySelector('.ctl-mark')!.getAttribute('aria-label')).toContain('count timed out')
+    expect(sealed.textContent).not.toMatch(/\d/)
+    const delta = root.querySelector('.ol-delta.is-unread')
+    expect(delta?.textContent).toContain('not read, no delta')
+    expect(delta?.querySelector('.ctl-mark')!.getAttribute('aria-label')).toContain('count timed out')
+    expect(root.querySelector('.ol-ledger')!.textContent).toContain('terminal agents without completed_at: not read')
+    expect(footClauses(root)).toEqual(expect.arrayContaining(['not read sealed days: not read', 'span before: not read']))
+    expect(longest(root), 'a foot clause too long to fit a phone').toBeLessThanOrEqual(FOOT_CLAUSE_MAX)
+    expect(root.querySelector('.ol-figure')!.textContent, 'a failed second read took the figure with it').toBe('90.7 %')
   })
 })
 

@@ -68,6 +68,14 @@ SHARD_TARGET_SECONDS = 600
 # arrive together; fewer puts a full run's shard back over the bound.
 MAX_SHARDS = 9
 
+# Below this share of the run's test files with a stored weight, `count`
+# warns that the weights are worth refreshing -- and only warns (#2364). It
+# was a hard floor in test_unit_shards.py, and new test files landing between
+# hand refreshes turned main and every pull request red at 1069 of 1337. An
+# unweighted file runs at the median weight, so staleness only unbalances the
+# split; it never drops a file (scripts/refresh-unit-weights.sh refreshes).
+WEIGHT_COVERAGE_WARN = 0.8
+
 MODES = ("all", "selected", "subset")
 
 
@@ -170,6 +178,16 @@ def count() -> int:
     _output(f"shards={json.dumps(list(range(1, n + 1)))}")
     print(f"{mode}: {len(tests)} test file(s), ~{total:.0f} s of measured test time: {n} shard(s) "
           f"(~{SHARD_TARGET_SECONDS} s a shard, at most {MAX_SHARDS})")
+    weighted = sum(1 for p in tests if str(p) in weights)
+    if tests and weighted < WEIGHT_COVERAGE_WARN * len(tests):
+        line = (f"the shard weights cover {weighted} of {len(tests)} test files "
+                f"({weighted / len(tests):.0%}, under {WEIGHT_COVERAGE_WARN:.0%}): the rest run at the "
+                f"median weight, so the split drifts out of balance; refresh them with "
+                f"scripts/refresh-unit-weights.sh (docs/ci.md, \"Refreshing the shard weights\")")
+        print(f"::warning::{line}")
+        if os.environ.get("GITHUB_STEP_SUMMARY"):
+            with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as out:
+                out.write(f"**Stale unit shard weights:** {line}.\n\n")
     return 0
 
 

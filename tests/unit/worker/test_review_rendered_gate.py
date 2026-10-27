@@ -222,6 +222,47 @@ def test_a_builds_on_steps_file_list_is_read_and_a_cut_one_is_unknown():
     assert verdict_mod.ui_paths_in_files(cut) == ([], True)
 
 
+# ---------------------------------------------------------------------------
+# Test files are not UI (#2322, fix 6 of the 2026-10-25 runtime audit)
+# ---------------------------------------------------------------------------
+
+TEST_ONLY_PATCH = UI_PATCH.replace(
+    "apps/swarm-ui/src/App.tsx", "apps/swarm-ui/src/__tests__/App.test.tsx")
+
+
+def test_a_lane_that_changes_only_ui_tests_keeps_its_merge(
+    db, store, worker_factory, runner_inputs
+):
+    doc = _review(db, worker_factory, TEST_ONLY_PATCH)
+
+    # MUTATION: count `__tests__/` as UI again and this reads NOT_YET.
+    assert _uploaded_verdict(store) == json.loads(MERGE)
+    assert "rendered_review" not in doc["result_summary"]
+    assert "claude-code-browser" not in runner_inputs[-1]["prompt"]
+
+
+def test_test_files_under_a_ui_prefix_are_not_ui_paths():
+    for path in (
+        "apps/swarm-ui/src/__tests__/App.test.tsx",
+        "apps/swarm-ui/src/components/Table.test.tsx",
+        "apps/swarm-ui/tests/e2e/login.spec.ts",
+        "docs/web-ui/tests/fixture.html",
+    ):
+        assert not verdict_mod.is_ui_path(path), path
+    for path in (
+        "apps/swarm-ui/src/App.tsx",
+        "apps/swarm-ui/src/testsuite/Panel.tsx",
+        "docs/web-ui/index.html",
+    ):
+        assert verdict_mod.is_ui_path(path), path
+    files = {"git": {"files": [{"path": "apps/swarm-ui/src/x.test.ts"}], "files_truncated": False}}
+    assert verdict_mod.ui_paths_in_files(files) == ([], False)
+
+
+# ---------------------------------------------------------------------------
+# A vitest file under apps/swarm-ui is not UI (#2379, F03)
+# ---------------------------------------------------------------------------
+
 TIMELINE_TEST = "apps/swarm-ui/src/__tests__/accounts.timeline.test.tsx"
 
 

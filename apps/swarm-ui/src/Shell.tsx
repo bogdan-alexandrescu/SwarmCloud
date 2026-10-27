@@ -15,7 +15,7 @@ import { HIDDEN_LINE_AFTER_MS, HiddenTabLine } from './AppStates'
 import { Banner, Button } from './components'
 import { chosenTenant, errorHeading, errorReassurance, isWriteFailure, pageReads, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, writeRefused, type ApiError, type ApiErrorKind, type Result } from './fetch'
 import { type TopicId } from './help'
-import { HelpCard } from './HelpCard'
+import { HelpCard, type HelpTopicsLead } from './HelpCard'
 import { Absent, type LinkOut } from './primitives'
 import { timeAgo } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
@@ -559,7 +559,7 @@ export function Screen<T>({
 }: {
   title: string
   /** The screen's one `?`, after its title, when it explains the whole screen. See `PageHead`. */
-  help?: TopicId
+  help?: TopicId | readonly TopicId[]
   load: () => Promise<Result<T>>
   /** The screen's count once data is in: a note over its first card (`CountNote`, #138). */
   summary?: (data: T) => ReactNode
@@ -955,7 +955,7 @@ export function PageHead({
   children,
 }: {
   title: string
-  help?: TopicId
+  help?: TopicId | readonly TopicId[]
   /** The `<h1>`'s id, for a region that is labelled by it. */
   headingId?: string
   /** The head's actions, right-aligned: the read control first, then anything the page offers. */
@@ -972,8 +972,13 @@ export function PageHead({
         {/* Two lines at most, the whole title in its tooltip (walkthrough C). */}
         <h1 id={headingId} title={title}>{title}</h1>
         {/* ONE `?` BY THE TITLE: the screen's own topic when it has one,
-            otherwise its section's question (Q2). */}
-        {help !== undefined ? <HelpCard topic={help} /> : sectionHelp}
+            otherwise its section's question (Q2). A LIST is the screen's
+            index of topics, the footer it replaced (VQ-033, BGD
+            2026-10-26): still one glyph, in the section question's place,
+            and one `<HelpCard>` in this file for the ration to count. The
+            list is LED BY THE SECTION'S QUESTION (Q2), so the head `?` is
+            still the section's: it joins the question, it does not hide it. */}
+        {help === undefined ? sectionHelp : <HelpCard {...(typeof help === 'string' ? { topic: help } : { topics: help, lead: sectionLead(sectionHelp) })} />}
       </div>
       <div className="c-acts">
         {takes && <span className="ctl-head-age">{headAge}</span>}
@@ -981,6 +986,18 @@ export function PageHead({
       </div>
     </div>
   )
+}
+
+/**
+ * The section's label and question, read off the `SectionHelp` value: App.tsx
+ * provides a `<SectionQuestion section={...}>` there, and its `section` carries
+ * both. Undefined outside the frame (a screen rendered alone, in a test), where
+ * there is no section to ask about and the index leads with its own title.
+ */
+function sectionLead(n: ReactNode): HelpTopicsLead | undefined {
+  if (!isValidElement<{ section?: { label?: unknown; question?: unknown } }>(n)) return undefined
+  const { label, question } = n.props.section ?? {}
+  return typeof label === 'string' && typeof question === 'string' ? { label, question } : undefined
 }
 
 /** The words a node draws, for a title: strings and numbers, through elements and fragments. */

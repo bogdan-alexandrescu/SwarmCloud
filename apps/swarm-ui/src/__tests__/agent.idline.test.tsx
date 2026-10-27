@@ -141,8 +141,8 @@ describe('#94: the id is printed under the name, without a hover', () => {
     expect(head.querySelector('.ag-head-title')?.textContent).toBe('scan-08')
     const line = head.querySelector('.ag-head-id')
     expect(line, 'no id line in the header').not.toBeNull()
-    // Directly under the title row.
-    expect(line!.previousElementSibling?.classList.contains('ag-head-row')).toBe(true)
+    // On the meta line under the title row (VQ-010: the header is two lines).
+    expect(line!.closest('.ag-head-facts')?.previousElementSibling?.classList.contains('ag-head-row')).toBe(true)
     expect(idLine(line!).text.textContent).toBe(ID)
     expect(painted(idLine(line!).text, 'font-family', WIDE)).toBe('var(--mono)')
   })

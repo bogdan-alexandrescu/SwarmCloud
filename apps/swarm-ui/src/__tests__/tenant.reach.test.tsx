@@ -77,7 +77,7 @@ describe("a platform admin's switcher", () => {
     // MUTATION: draw every entry under the one membership heading.
     liveApi([OWN, ENG, OPS, SEC], true)
     const pop = await openPicker()
-    expect(headings(pop)).toEqual(['Act as · 2 tenants you are a member of', 'Other workspaces (platform admin)'])
+    expect(headings(pop)).toEqual(['Act as · 2 workspaces you are a member of', 'Other workspaces (platform admin)'])
     const reach = pop.querySelector<HTMLElement>('[role="group"][aria-label="Other workspaces (platform admin)"]')!
     expect(reach, 'no reach group').not.toBeNull()
     expect(rowIds(reach)).toEqual(['ops', 'sec'])
@@ -111,7 +111,7 @@ describe("a non-admin's switcher", () => {
     // MUTATION: draw the reach heading even when there is no reach entry.
     liveApi([OWN, ENG], false)
     const pop = await openPicker()
-    expect(headings(pop)).toEqual(['Act as · 2 tenants you are a member of'])
+    expect(headings(pop)).toEqual(['Act as · 2 workspaces you are a member of'])
     expect(pop.querySelector('[role="group"]')).toBeNull()
     expect(rowIds(pop)).toEqual(['u-ana-b', 'eng'])
     fireEvent.click([...pop.querySelectorAll<HTMLButtonElement>('.sk-to')].find((b) => b.querySelector('small')?.textContent === 'eng')!)

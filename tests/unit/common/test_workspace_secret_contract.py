@@ -116,13 +116,28 @@ def test_secret_slots_default_empty_and_keep_profiles_hashable():
     hash(probe)
 
 
+#: Request 117: the one profile that declares a slot beside `files`.
+EXTRA_SLOTS = {"claude-code-browser": {"cf-access"}}
+
+
 @pytest.mark.parametrize("name", AGENT_PROFILES)
-def test_every_agent_profile_declares_files_and_nothing_else(name):
+def test_every_agent_profile_declares_files_and_only_the_slots_its_requests_add(name):
     slots = RUNNER_PROFILES[name].secret_slots
-    assert set(slots) == {"files"}
+    assert set(slots) == {"files"} | EXTRA_SLOTS.get(name, set())
     files = slots["files"]
     assert files.required is False
     assert set(files.kinds) == set(profiles.SECRET_KINDS) - {"forge_token"}
+
+
+def test_request_117_cf_access_is_an_optional_oauth_client_slot_on_the_browser_profile():
+    # MUTATION: widen its kinds, make it required, or declare it on a second
+    # profile and this fails.
+    cf = RUNNER_PROFILES["claude-code-browser"].secret_slots["cf-access"]
+    assert cf.kinds == ("oauth_client",)
+    assert cf.required is False
+    assert "CF-Access-Client-Id" in cf.means and "CF-Access-Client-Secret" in cf.means
+    assert [n for n, p in RUNNER_PROFILES.items() if "cf-access" in p.secret_slots] \
+        == ["claude-code-browser"]
 
 
 @pytest.mark.parametrize("name", NO_SLOT_PROFILES)

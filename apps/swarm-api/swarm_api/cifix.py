@@ -44,8 +44,10 @@ sweeper, every minute:
   * The comment is the task id, its console link, its state and one
     paragraph: what was pushed, or why nothing was, and the agent's own
     account cut to a paragraph. Every text the agent or the error wrote goes
-    through `issuecomments.neutral` with the token as a known literal:
-    redacted, `<`/`>` escaped, mentions and closing keywords broken. No log
+    through `issuecomments.prose` (a code span, `code`) with the token as a
+    known literal: redacted, an HTML opener backslash-escaped rather than
+    turned into an entity GitHub would print, mentions and closing keywords
+    broken. No log
     is quoted; the console has it.
   * It says when the per-PR cap is reached, so a reader knows the next red
     run gets the script's stop comment and no fix.
@@ -80,6 +82,14 @@ is answered 409 `ci_fix_lane_owns_pr` naming the merge step: the lane runs
 its own CI-fix rounds, and a standalone fix beside them lost the race for the
 branch (`_refuse_if_lane_owns` has the measurement). The read is the API's;
 the fixer's continuation-scoped identity never gets it.
+
+The same refusal holds while a CONFLICT FIX on that pull request is live
+(#2456): a non-terminal task continuing the same branch task with
+pr-shepherd's `metadata.pr_shepherd` or a merge step's `merge_conflict_round`
+naming it. Measured 2026-10-26 on PR #2381: a conflict fix and a CI fix both
+cloned 15cc7ea and the later push was rejected non-fast-forward. pr-shepherd
+holds its side the same way (`live_pr_writer`, read from `_plan_one`), so
+whichever fixer comes second stands down.
 
 EVERY FIX ROUND'S HEAD, AGAINST ITS PULL REQUEST (epic #1334). Measured
 2026-10-15 02:16Z: HANG-LEASE's merge step refused PR 1338 `head_moved` at
@@ -134,7 +144,7 @@ from .errors import ApiError, Conflict, NotFound
 from . import laneterritory
 from .forgewrite import GitHubWriter
 from .issueci import NO_CHANGE_MARKER
-from .issuecomments import bounded, neutral
+from .issuecomments import bounded, code, prose
 from .refusals import refuse
 from .repositories import parse_repository
 from .rollup import SKIPPED_SUMMARY_KEY
@@ -230,6 +240,13 @@ FIX_HEADS_KEPT = 20
 #: (`mergewake._on_red` / `_on_conflict`; `merge_fix_round` is written there
 #: as a literal).
 ROUND_KINDS = (CI_FIX_METADATA_FIELD, "merge_fix_round", CONFLICT_ROUND_METADATA_KEY)
+#: pr-shepherd's conflict fix's mark, `metadata.pr_shepherd` (`{run_id,
+#: repository, pull_request, head_sha, base_ref}`). Restated here because
+#: `schedtypes.pr_shepherd` imports this module; held equal to
+#: `pr_shepherd.METADATA_KEY` by tests/unit/control_plane/test_cifix_conflict_fix_live.py.
+CONFLICT_FIX_METADATA_KEY = "pr_shepherd"
+#: The marks `live_pr_writer` reads, each a `pull_request` under `metadata.<kind>`.
+PR_WRITER_KINDS = ROUND_KINDS + (CONFLICT_FIX_METADATA_KEY,)
 #: Keys only this module writes; refused from any caller.
 API_KEYS = (FIX_HEAD_FIELD, FIX_HEADS_FIELD)
 
@@ -458,6 +475,75 @@ def live_claim(db: Any, tenant_id: str, repository_url: str, pull_request: int,
     return None
 
 
+#: The most tasks one (branch task, mark, pull request) is read for. A pull
+#: request sees at most MAX_ATTEMPTS_CEILING PR-side fixes, one conflict fix
+#: per head and a merge step's few rounds; twenty is all of them with room,
+#: and a live one is the newest, so a read cut at twenty still finds it.
+LIVE_WRITERS_READ = 20
+
+
+def live_pr_writer(db: Any, tenant_id: str, root_task_id: str, pull_request: int, *,
+                   kinds: tuple[str, ...], now: datetime | None = None) -> dict[str, Any] | None:
+    """A live fix that pushes to `pull_request`'s branch -- the `swarm/<root_task_id>`
+    branch -- as `{task_id, workflow_id, kind}`; None when there is none.
+
+    ONE WRITER PER PULL REQUEST (#2456). A fix is a non-terminal task of this
+    tenant that continues `root_task_id` (`metadata.dispatch.continues`) and
+    carries one of `kinds` naming `pull_request`: `metadata.<kind>.pull_request`
+    for each of `PR_WRITER_KINDS`. One read per kind, equality filters only
+    (tenant, continuation, pull request -- `_attempts_made`'s shape, served by
+    the built-in single-field indexes, no composite index), so a branch whose
+    finished continuations outnumber the limit still shows its live one. Every
+    filter is checked again in the application: a fake or an index mistake
+    must not move the tenant boundary (invariant 9).
+
+    For `ci_fix`, a claim whose task is not written yet counts too while it
+    is inside `CLAIM_GRACE_SECONDS` (`_live_holder`): a fixer still
+    submitting when the shepherd fires. Claims are read by tenant, branch
+    task and pull request, of any head and run.
+    """
+    unknown = [kind for kind in kinds if kind not in PR_WRITER_KINDS]
+    if unknown:
+        raise ValueError(f"no pull-request writer mark {unknown}")
+    terminal = {s.value for s in TERMINAL_STATES}
+    for kind in kinds:
+        query = (
+            db.collection(TASKS)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter(f"metadata.{DISPATCH_METADATA_KEY}.continues", "==", root_task_id))
+            .where(filter=FieldFilter(f"metadata.{kind}.pull_request", "==", pull_request))
+            .limit(LIVE_WRITERS_READ)
+        )
+        for snap in query.stream():
+            doc = snap.to_dict() or {}
+            metadata = _mapping(doc.get("metadata"))
+            if (doc.get("tenant_id") == tenant_id
+                    and _mapping(metadata.get(DISPATCH_METADATA_KEY)).get("continues") == root_task_id
+                    and _mapping(metadata.get(kind)).get("pull_request") == pull_request
+                    and doc.get("state") not in terminal):
+                return {"task_id": str(doc.get("id") or snap.id),
+                        "workflow_id": doc.get("workflow_id"), "kind": kind}
+    if CI_FIX_METADATA_FIELD not in kinds:
+        return None
+    moment = now or datetime.now(timezone.utc)
+    claims = (
+        db.collection(CLAIMS)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter("root_task_id", "==", root_task_id))
+        .where(filter=FieldFilter("pull_request", "==", pull_request))
+        .limit(LIVE_CLAIMS_READ)
+    )
+    for snap in claims.stream():
+        held = snap.to_dict() or {}
+        if (held.get("tenant_id") != tenant_id or held.get("root_task_id") != root_task_id
+                or held.get("pull_request") != pull_request):
+            continue
+        live = _live_holder(_Reads(), db, tenant_id, held, moment)
+        if live is not None:
+            return {**live, "kind": CI_FIX_METADATA_FIELD}
+    return None
+
+
 def _claim(store: Any, tenant_id: str, continuation: Continuation,
            record: Mapping[str, Any]) -> str | None:
     """Take this failure's claim, or refuse `CiFixInFlight` naming the live fix
@@ -582,6 +668,37 @@ def _refuse_if_lane_owns(store: Any, tenant_id: str, continuation: Continuation,
     ))
 
 
+def _refuse_if_conflict_fix_live(store: Any, tenant_id: str, continuation: Continuation,
+                                 record: Mapping[str, Any]) -> None:
+    """Refuse `CiFixLaneOwnsPr` while a conflict fix on this pull request is live
+    (through `refusals.refuse`: switched off, the request goes on as before).
+
+    ONE WRITER PER PULL REQUEST (#2456). Measured 2026-10-26 on PR #2381:
+    pr-shepherd's conflict fix (task_2239a84774bf4bceaeb5, wf_eb9eb92c,
+    01:23Z) and a scripts/ci-fix.sh fix (task_2f5b70aa, wf_8bed3d10, 01:21Z)
+    both cloned 15cc7ea; the CI fix pushed 9c722e47 first and the conflict
+    fix's push was rejected non-fast-forward. A conflict fix -- pr-shepherd's
+    (`CONFLICT_FIX_METADATA_KEY`) or a merge step's conflict round -- merges
+    the base into the same branch, so the CI fix waits for it: CI runs again
+    at the head it pushes, and a red run there gets its own fix. The existing
+    refusal, because it is the same rule and scripts/ci-fix.sh already reads
+    it as a skip with no comment; `conflict_fix` in the detail says which.
+    """
+    writer = live_pr_writer(
+        store.db, tenant_id, continuation.root_task_id, record["pull_request"],
+        kinds=(CONFLICT_FIX_METADATA_KEY, CONFLICT_ROUND_METADATA_KEY),
+    )
+    if writer is None:
+        return
+    refuse(CiFixLaneOwnsPr(
+        f"pull request #{record['pull_request']} has a live conflict fix ({writer['task_id']}) "
+        "merging its base into the branch; no CI fix is made beside it.",
+        detail={"metadata": CI_FIX_METADATA_FIELD, "task_id": writer["task_id"],
+                "workflow_id": writer["workflow_id"], "pull_request": record["pull_request"],
+                "conflict_fix": True},
+    ))
+
+
 #: The fix rounds that run with their lane's territory (module docstring):
 #: the PR-side fixer's and the merge step's CI-fix round, never a conflict round.
 TERRITORY_ROUND_KINDS = (CI_FIX_METADATA_FIELD, "merge_fix_round")
@@ -643,7 +760,10 @@ def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
     Unchanged when there is neither. Raises `DispatchOptionError` (422
     `invalid_dispatch`) for every refusal, before anything is written,
     `CiFixLaneOwnsPr` (409) while the continued task's workflow has a live
-    merge step, and `CiFixInFlight` (409) when the failure already has a live fix.
+    merge step or a conflict fix on the pull request is live (on 2026-10-26
+    PR #2381 got both a conflict fix and a CI fix at 15cc7ea, and the second
+    push was rejected), and `CiFixInFlight` (409) when the failure already
+    has a live fix.
     """
     for step in spec.steps:
         if CI_FIX_METADATA_FIELD in (step.metadata or {}):
@@ -669,6 +789,8 @@ def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
     # Before the cap and the claim: a lane's live merge step is the reason,
     # whatever the count, and a refused request holds no claim.
     _refuse_if_lane_owns(store, tenant_id, continuation, record)
+    # The same place, the same reason: a live conflict fix on this pull request (#2456).
+    _refuse_if_conflict_fix_live(store, tenant_id, continuation, record)
     made = _attempts_made(
         store.db, tenant_id, continuation.root_task_id, record["pull_request"], MAX_ATTEMPTS_CEILING,
     )
@@ -696,11 +818,11 @@ def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
 # --------------------------------------------------------------------------
 
 def _paragraph(text: Any, limit: int, literals: tuple[str, ...]) -> str:
-    """The first paragraph of `text`, neutralised and on one line."""
+    """The first paragraph of `text`, neutralised, as prose, on one line."""
     if not isinstance(text, str) or not text.strip():
         return ""
     first = re.split(r"\n\s*\n", text.strip(), maxsplit=1)[0]
-    return neutral(first, limit, literals=literals, one_line=True)
+    return prose(first, limit, literals=literals, one_line=True)
 
 
 def _what_happened(doc: Mapping[str, Any], branch: str, literals: tuple[str, ...]) -> str:
@@ -723,7 +845,7 @@ def _what_happened(doc: Mapping[str, Any], branch: str, literals: tuple[str, ...
     if state == "CANCELLED":
         return "The step was cancelled; nothing it did was pushed."
     cause = doc.get("end_cause")
-    cause_text = f" (`{neutral(str(cause), 80, literals=literals, one_line=True)}`)" if cause else ""
+    cause_text = f" ({code(str(cause), 80, literals=literals)})" if cause else ""
     error = _paragraph(doc.get("last_error"), MAX_ERROR_CHARS, literals)
     return f"The step ended {state}{cause_text}; nothing it did was pushed." + (
         f" Its error: {error}" if error else ""

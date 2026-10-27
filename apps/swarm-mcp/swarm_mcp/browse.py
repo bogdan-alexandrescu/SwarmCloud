@@ -45,7 +45,7 @@ from . import session, workflows
 from .client import TERMINAL, SwarmClient, SwarmError
 from .follow import console_link
 from .patches import describe_task
-from .progress import _artifacts, _derived_totals, _duration, clip
+from .progress import _artifacts, _derived_totals, _duration, clip, questions_count
 from .render import parse_time
 
 LEVELS = ("workflows", "stages", "agents", "agent")
@@ -103,6 +103,9 @@ def workflow_row(envelope: dict[str, Any], now: datetime) -> dict[str, Any]:
                                 "depends_on": list(row.get("depends_on") or []), "state": row.get("state")}
         if row.get("park_reason"):
             step["park_reason"] = row["park_reason"]
+        phase = _park_phase(tasks.get(str(row.get("task_id"))))
+        if phase:
+            step["park_phase"] = phase
         steps.append(step)
     out: dict[str, Any] = {
         "workflow_id": workflow.get("workflow_id"),
@@ -132,10 +135,37 @@ def workflow_row(envelope: dict[str, Any], now: datetime) -> dict[str, Any]:
     out["duration_s"] = int((ended - created).total_seconds()) if created and ended and ended >= created else None
     if out["duration_s"] is None:
         out["duration_because"] = NOT_RECORDED
+    # SC-BAND: what the band counts and notices -- the pull requests its
+    # succeeded steps opened, and the owner questions its steps' agents asked
+    # (the worker's count in each task's result summary; no artifact read).
+    pulls: list[str] = []
+    for step in steps:
+        task = tasks.get(str(step.get("task_id")))
+        if task and step.get("state") == "SUCCEEDED":
+            pull = describe_task(task).get("pull_request")
+            if pull and pull not in pulls:
+                pulls.append(pull)
+    out["pull_requests"] = pulls
+    out["owner_questions"] = sum(questions_count(task) for task in tasks.values())
     link = console_link(workflow)
     if link is not None:
         out["console"] = link
     return out
+
+
+def _park_phase(task: dict[str, Any] | None) -> str | None:
+    """Why a HUMAN_REQUIRED task holds, as the API serves it (`blocked_by[].park_phase`,
+    else `waiting.detail.park_phase`): `owner_questions` is a merge held by them.
+    An AWAITING_INPUT park (a control_plane step waiting for a member's answer)
+    is never a merge held on owner questions, so it has no park phase here."""
+    if not task or task.get("park_reason") != "HUMAN_REQUIRED":
+        return None
+    for block in task.get("blocked_by") or []:
+        if isinstance(block, dict) and isinstance(block.get("park_phase"), str):
+            return block["park_phase"]
+    waiting = task.get("waiting") if isinstance(task.get("waiting"), dict) else {}
+    detail = waiting.get("detail") if isinstance(waiting.get("detail"), dict) else {}
+    return detail.get("park_phase") if isinstance(detail.get("park_phase"), str) else None
 
 
 def _owned(envelope: dict[str, Any], sid: str) -> bool:

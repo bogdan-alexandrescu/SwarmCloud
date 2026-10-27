@@ -59,6 +59,21 @@ a firing gains its `run_approval`, a run its `merge_approved`, a plan its
 approval -- whose workflow `_approve` submits through `SubmissionService`,
 QUEUED until admission leases it, exactly as an approval in Work › Runs.
 
+WHO MAY REJECT IS WHO MAY APPROVE (BGD 2026-10-26, #2417 A5f). `:reject`
+runs the same who-checks `:approve` does -- the gate's `approvers`, the
+hold, the last-editor rule, the `spec` rule (`_who_refusal`) -- and a caller
+they refuse is 403 `reject_approver_required`, through its switch, which
+ships on. Off (`REFUSAL_REJECT_APPROVER_REQUIRED=off`), any member rejects,
+as before; the log names the refusal it would have made.
+
+WHAT THE DECISION PAGE READS (AUTO-API-APPROVALS, part of #2417). Each item
+served carries `may_decide` -- `{approve, reject, why, deciders}` for the
+reader, computed by the routes' own checks without moving or logging
+anything -- and the detail adds, where its kind has them, `superseded_by` and
+`head_sha_now` (a superseded merge), `merge.checks` (a merge) and
+`reason_files` on a hold. Each is read, never stored, and absent when it
+cannot be read; `approvals.py` says how each is.
+
 NAMES BESIDE EMAILS (docs/design/user-profile.md §4.4). Each item served
 gains `decided_by_name` beside `decided_by` and `approver_names` beside
 `approvers` (index for index when `approvers` is a list of members, null when
@@ -76,13 +91,15 @@ from google.cloud import firestore
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 from swarm_common.admission import _snapshot
 
-from .. import approvals, schedaudit, schedules, scheduletypes
+from .. import approvals, refusals, roles, schedaudit, schedules, scheduletypes
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, tenant_scope
 from ..errors import ApiError, NotFound
-from ..issueruns import InvalidRunTransition, IssueRuns, RunState
+from ..issueruns import InvalidRunTransition, IssueRun, IssueRuns, RunState
 from ..issuesync import sync_issue
 from ..people import add_names, name_lookup
+from ..redaction import redact_detail
+from ..repositories import hard_stop_paths_of
 from ..schedules import GateIn, ScheduleConflict, ScheduleForbidden, ScheduleInvalid
 from . import runs as run_routes
 from . import schedules as schedule_routes
@@ -150,6 +167,153 @@ def _audit_run(ctx: AppContext, run: Any, action: str, by: str, detail: Mapping[
 
 
 # --------------------------------------------------------------------------
+# Who may decide, read (`may_decide`), and the reject rule
+# --------------------------------------------------------------------------
+
+
+def _who_refusal(ctx: AppContext, auth: AuthContext, tenant_id: str, item: Mapping[str, Any], *,
+                 run: IssueRun | None, schedule: Mapping[str, Any] | None) -> ApiError | None:
+    """The refusal an approve of `item` would meet from its kind's who-checks
+    -- the gate's `approvers`, the hold, the last-editor rule, the `spec`
+    rule -- or None. The same calls `approve` makes, in its order, with no
+    digest, no move and no log line. The role floor and the platform-scope
+    rule are asked apart, before this, by every decision.
+
+    `run` is the projected run, or a merge's run (None when it could not be
+    read: its hold is then not asked, and the gate still is)."""
+    kind = item.get("kind")
+    email, is_owner = auth.email, auth.is_owner
+    try:
+        if item.get("projected"):
+            if schedule is not None:
+                approvals.check_gate_approver(ctx, tenant_id, (schedule.get("gate") or {}).get("approvers"),
+                                              email=email, is_owner=is_owner, schedule=schedule, merge_tier=False)
+            return approvals.hold_refusal(ctx, run, email=email, is_owner=is_owner) if run is not None else None
+        if kind == approvals.SPEC:
+            if auth.is_admin or is_owner:
+                return None
+            return ScheduleForbidden("approver_not_allowed", "a custom-prompt spec is approved by a platform admin")
+        if kind == approvals.MERGE:
+            if run is not None:
+                found = approvals.hold_refusal(ctx, run, email=email, is_owner=is_owner)
+                if found is not None:
+                    return found
+            approvals.check_gate_approver(
+                ctx, tenant_id, ((schedule or {}).get("gate") or {}).get("approvers"), email=email,
+                is_owner=is_owner, schedule=schedule, merge_tier=True,
+                hold=run.approval_hold if run is not None else None, owner_waiver=True,
+            )
+            return None
+        approvals.check_gate_approver(ctx, tenant_id, item.get("approvers"), email=email, is_owner=is_owner,
+                                      schedule=schedule, merge_tier=bool(item.get("merge_tier")), owner_waiver=True)
+    except ScheduleForbidden as exc:
+        return exc
+    return None
+
+
+def _role_floor(ctx: AppContext, auth: AuthContext) -> tuple[bool, str | None]:
+    """`require_decider`, read: `(readable, why refused)`. Not readable when the
+    role could not be read and its switch is on (the route would answer an
+    error, not a decision). Read through the role cache, not fresh: this is a
+    page, and the decision itself reads it fresh."""
+    store = getattr(ctx, "roles", None)
+    if store is None:
+        return True, None
+    code = roles.RoleMemberRequired.code
+    me = store.try_resolve(auth)
+    if me is None:
+        return not refusals.enforced(code), None
+    if roles.at_least(me.role, roles.MEMBER) or not refusals.enforced(code):
+        return True, None
+    return True, f"Your role in {auth.tenant_id} is {me.role}; deciding needs member or above."
+
+
+def _still_open(item: Mapping[str, Any], now: Any) -> str | None:
+    """Why nothing is left to decide on `item`, or None while it is open."""
+    state = item.get("state")
+    if state != approvals.PENDING:
+        return f"This approval is already {state}; nothing is left to decide."
+    expires = approvals._aware(item.get("expires_at"))
+    if expires is not None and expires <= now:
+        return "This approval has expired; nothing is left to decide."
+    return None
+
+
+def may_decide(ctx: AppContext, auth: AuthContext, tenant_id: str, item: Mapping[str, Any], *,
+               run: IssueRun | None, schedule: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """`{approve, reject, why, deciders}` for the reader (#2417 A4, A5f).
+
+    `approve`: whether `:approve` would pass its who-checks for this reader
+    now -- the role floor, the platform-scope rule, and `_who_refusal`. A
+    one-person workspace's own hold counts as yes: the approve passes once
+    the matched paths are typed. `reject`: the same, while the
+    `reject_approver_required` switch is on (BGD 2026-10-26); off, any
+    member past the role floor and the platform-scope rule. `why`: one
+    sentence when either is false, else None. `deciders`: `approvals.deciders`.
+
+    None (absent) for an await-input step, which is answered on its own
+    route and never decided here, and when the reader's role cannot be read.
+    The decision routes still decide; this reads their rules out before the
+    click and never widens them."""
+    if item.get("kind") == approvals.INPUT:
+        return None
+    readable, why = _role_floor(ctx, auth)
+    if not readable:
+        return None
+    platform = schedule is not None and schedule_routes._platform_scope(schedule)
+    if why is None and platform and not (auth.is_admin or auth.is_owner):
+        why = "Only a platform admin may decide a platform-scope schedule's items."
+    if why is None:
+        why = _still_open(item, ctx.now())
+    approve = reject = False
+    if why is None:
+        found = _who_refusal(ctx, auth, tenant_id, item, run=run, schedule=schedule)
+        approve = found is None
+        reject = approve or not refusals.enforced(approvals.RejectApproverRequired.code)
+        why = None if approve else found.message
+    # The approvers `approve` asks: a projected run's and a merge's are its
+    # schedule's gate (the hold is asked beside them); a record's are its own.
+    by_gate = item.get("projected") or item.get("kind") == approvals.MERGE
+    return {
+        "approve": approve,
+        "reject": reject,
+        "why": redact_detail(why, limit=approvals.SUMMARY_CHARS) if why else None,
+        "deciders": approvals.deciders(
+            ctx, tenant_id, kind=str(item.get("kind")),
+            approvers=((schedule or {}).get("gate") or {}).get("approvers") if by_gate else item.get("approvers"),
+            hold=run.approval_hold if run is not None else item.get("hold"), schedule=schedule,
+            merge_tier=item.get("kind") == approvals.MERGE or bool(item.get("merge_tier")),
+            platform_scope=platform, run=run,
+        ),
+    }
+
+
+def _record_run(ctx: AppContext, tenant_id: str, doc: Mapping[str, Any]) -> IssueRun | None:
+    """A merge record's run, or None when it is not a merge or cannot be read."""
+    run_id = (doc.get("subject") or {}).get("run_id")
+    if doc.get("kind") != approvals.MERGE or not run_id:
+        return None
+    try:
+        return IssueRuns(ctx.db, now=ctx.now).get(tenant_id, str(run_id))
+    except NotFound:
+        return None
+
+
+def _reject_rule(ctx: AppContext, auth: AuthContext, tenant_id: str, item: Mapping[str, Any], *,
+                 run: IssueRun | None, schedule: Mapping[str, Any] | None) -> None:
+    """403 `reject_approver_required` when the caller may not approve `item`
+    (BGD 2026-10-26), through its switch: off, the rejection goes ahead and
+    the log names the refusal it would have made."""
+    found = _who_refusal(ctx, auth, tenant_id, item, run=run, schedule=schedule)
+    if found is None:
+        return
+    refusals.refuse(approvals.RejectApproverRequired(
+        f"only someone who may approve this item may reject it: {found.message}",
+        detail={"approve_refusal": found.code, **found.detail},
+    ))
+
+
+# --------------------------------------------------------------------------
 # The inbox
 # --------------------------------------------------------------------------
 
@@ -163,15 +327,34 @@ def _named(ctx: AppContext, item: dict) -> dict:
     return item
 
 
+def _with_may_decide(out: dict, decided: dict[str, Any] | None) -> dict:
+    if decided is not None:
+        out["may_decide"] = decided
+    return out
+
+
 @router.get("/v1/approvals")
 def list_approvals(
     kind: str | None = Query(default=None, max_length=20),
     tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     if kind is not None and kind not in approvals.KINDS:
         raise ScheduleInvalid("unknown_kind", f"kind is one of {', '.join(approvals.KINDS)}")
-    items = [approvals.to_api(i) for i in approvals.inbox(ctx, tenant_id, kind=kind)]
+    items = []
+    seen: dict[str, Mapping[str, Any] | None] = {}
+    for item in approvals.inbox(ctx, tenant_id, kind=kind):
+        run = None
+        if item.get("projected") and item.get("kind") != approvals.INPUT:
+            run = _projected_run(ctx, tenant_id, str(item["approval_id"]))
+        elif item.get("kind") == approvals.MERGE:
+            run = _record_run(ctx, tenant_id, item)
+        sid = (item.get("subject") or {}).get("schedule_id")
+        if sid and sid not in seen:
+            seen[sid] = approvals.read_schedule(ctx.db, tenant_id, sid)
+        decided = may_decide(ctx, auth, tenant_id, item, run=run, schedule=seen.get(sid) if sid else None)
+        items.append(_with_may_decide(approvals.to_api(item), decided))
     add_names(name_lookup(ctx), items, NAMED_FIELDS)
     return {"approvals": items, "tenant_id": tenant_id}
 
@@ -180,6 +363,7 @@ def list_approvals(
 def get_approval(
     item_id: str,
     tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     if item_id.startswith(approvals.PROJECTED_PREFIX):
@@ -187,13 +371,32 @@ def get_approval(
         if run.state != RunState.PLANNED:
             raise NotFound(f"approval {item_id[:80]!r} not found")
         schedule = approvals.read_schedule(ctx.db, tenant_id, (run.schedule or {}).get("schedule_id"))
-        return {"approval": _named(ctx, approvals.to_api(approvals.project_run(run, schedule))),
-                "run": run.to_api()}
+        item = approvals.project_run(run, schedule)
+        decided = may_decide(ctx, auth, tenant_id, item, run=run, schedule=schedule)
+        served = approvals.to_api(item)
+        if run.approval_hold:
+            served["hold"] = approvals.with_reason_files(
+                served.get("hold"), hard_stop_paths_of(run_routes._registration(ctx, tenant_id, run)))
+        return {"approval": _named(ctx, _with_may_decide(served, decided)), "run": run.to_api()}
     doc = approvals.get(ctx.db, tenant_id, item_id)
-    out: dict[str, Any] = {"approval": _named(ctx, approvals.to_api(doc))}
-    run_id = (doc.get("subject") or {}).get("run_id")
-    if doc.get("kind") == approvals.MERGE and run_id:
-        run = IssueRuns(ctx.db, now=ctx.now).get(tenant_id, str(run_id))
+    schedule = approvals.read_schedule(ctx.db, tenant_id, (doc.get("subject") or {}).get("schedule_id"))
+    run = _record_run(ctx, tenant_id, doc)
+    served = approvals.to_api(doc)
+    out: dict[str, Any] = {"approval": served}
+    if doc.get("kind") == approvals.MERGE and (doc.get("subject") or {}).get("run_id"):
+        if run is None:
+            # The run is gone or another tenant's: the detail's 404, as before.
+            raise NotFound(f"approval {item_id[:80]!r} not found")
+        pull = run.pull_request or {}
+        stop_paths = hard_stop_paths_of(run_routes._registration(ctx, tenant_id, run))
+        head_now = pull.get("head_sha") if isinstance(pull.get("head_sha"), str) else None
+        if head_now:
+            served["head_sha_now"] = head_now
+        newer = approvals.superseded_by(ctx.db, doc, head_now)
+        if newer is not None:
+            served["superseded_by"] = newer
+        if served.get("hold"):
+            served["hold"] = approvals.with_reason_files(served["hold"], stop_paths)
         out["merge"] = {
             "green_sha": run.green_sha,
             "pull_request": run.to_api()["pull_request"],
@@ -201,12 +404,17 @@ def get_approval(
             "requirements_unmet": list(run.requirements_unmet),
             # The changed files checked against the protected paths at this
             # head (`issueci.merge_gate`): what the hold says they matched.
-            "files_checked_head": (run.pull_request or {}).get("files_checked_head"),
-            "approval_hold": run.to_api()["approval_hold"],
+            "files_checked_head": pull.get("files_checked_head"),
+            "approval_hold": approvals.with_reason_files(run.to_api()["approval_hold"], stop_paths),
             # #2259: a hold the plan's prompt alone set, cleared there because
             # the pull request's own files and patches matched none of it.
-            "hold_cleared": _hold_cleared((run.pull_request or {}).get("hold_cleared")),
+            "hold_cleared": _hold_cleared(pull.get("hold_cleared")),
         }
+        checks = approvals.merge_checks(doc, pull)
+        if checks is not None:
+            out["merge"]["checks"] = checks
+    _with_may_decide(served, may_decide(ctx, auth, tenant_id, doc, run=run, schedule=schedule))
+    _named(ctx, served)
     return out
 
 
@@ -325,15 +533,20 @@ def reject(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    """Any member of the tenant may reject (§4.5): a rejection ends a hold, it never opens one.
-    A `viewer` may not (workspace-roles §4.1), nor anyone but a platform admin
-    an item of a platform-scope schedule (`_platform_only`)."""
+    """Only someone who may approve an item may reject it (BGD 2026-10-26,
+    §4.5): `_reject_rule`, 403 `reject_approver_required` through its switch,
+    on by default; off, any member rejects, as before. A `viewer` may not
+    (workspace-roles §4.1), nor anyone but a platform admin an item of a
+    platform-scope schedule (`_platform_only`), whatever the switch says."""
     verb: RejectIn = _verb(RejectIn, body)
     approvals.require_decider(ctx, auth)
     if item_id.startswith(approvals.PROJECTED_PREFIX):
         run = _projected_run(ctx, tenant_id, item_id)
-        _platform_only(auth, approvals.read_schedule(ctx.db, tenant_id, (run.schedule or {}).get("schedule_id")),
-                       "reject")
+        schedule = approvals.read_schedule(ctx.db, tenant_id, (run.schedule or {}).get("schedule_id"))
+        _platform_only(auth, schedule, "reject")
+        if run.state == RunState.PLANNED:
+            # A decided run is the 409 below, not a who-refusal.
+            _reject_rule(ctx, auth, tenant_id, approvals.project_run(run, schedule), run=run, schedule=schedule)
         try:
             moved = IssueRuns(ctx.db, now=ctx.now).transition(
                 tenant_id, run.id, RunState.REJECTED, by=auth.email, from_states={RunState.PLANNED},
@@ -347,8 +560,11 @@ def reject(
         return {"approval": {"approval_id": item_id, "state": approvals.REJECTED},
                 "run": sync_issue(ctx, moved).to_api()}
     doc = approvals.get(ctx.db, tenant_id, item_id)
-    _platform_only(auth, approvals.read_schedule(ctx.db, tenant_id, (doc.get("subject") or {}).get("schedule_id")),
-                   "reject")
+    schedule = approvals.read_schedule(ctx.db, tenant_id, (doc.get("subject") or {}).get("schedule_id"))
+    _platform_only(auth, schedule, "reject")
+    if doc.get("state") == approvals.PENDING:
+        # A decided item is `decide`'s 409 `already_decided`, not a who-refusal.
+        _reject_rule(ctx, auth, tenant_id, doc, run=_record_run(ctx, tenant_id, doc), schedule=schedule)
     now = ctx.now()
     move = approvals.firing_move(ctx.db, now, approve=False, by=auth.email) if doc.get("kind") == approvals.RUN else None
     decided = approvals.decide(ctx.db, now, tenant_id, item_id, approve=False, by=auth.email,

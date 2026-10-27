@@ -166,7 +166,9 @@ COPY --chmod=0555 images/agent-runtime-browser/swarm-test-browsers /usr/local/bi
 #     npm's `latest`.
 #   * Pillow, which `diff` decodes with (its standard-library decoder is the
 #     fallback the unit tests use, and is slow on a 3x phone capture) and which
-#     a review step crops a finding's evidence with. Pinned 2026-10-20 against
+#     a review step crops a finding's evidence with, and which
+#     `swarm-handoff compare` decodes a frame PNG with (IMPLEMENT-RENDER,
+#     part of #2442; a palette or 16-bit frame needs it). Pinned 2026-10-20 against
 #     PyPI's latest; 13.0.0 has a cp311 manylinux wheel, so nothing compiles.
 ARG PLAYWRIGHT_MCP_VERSION=0.0.83
 ARG AXE_CORE_VERSION=4.14.0

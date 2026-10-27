@@ -53,14 +53,16 @@ runs:
       # NO SECOND CLOUD BUILD ON A PUSH. `--reuse-ci only` waits for
       # application.yml's `build images` job for this exact commit (up to 45
       # minutes -- it is usually ~11 behind the push) and fetches the manifest
-      # it recorded. That run exists and is not stopped by later pushes:
-      # application.yml gives each commit on main a concurrency group of its
-      # own, because GitHub cancels a PENDING run when a newer one joins its
-      # group, and release.yml's path filter means the newer push may start
-      # no release to take this one's place. If that job FAILED, or never
-      # built this commit (someone cancelled it), this step fails and says
-      # which, with the URL and the re-runs that would ship THIS commit; it
-      # does not quietly build instead.
+      # it recorded. A newer push to main CAN stop that run: since #2438
+      # application.yml runs all of main in ONE group with cancel-in-progress,
+      # because one run per commit queued 27-78 runs at once and stalled every
+      # release. The newer commit's build then carries this one's change. If
+      # that job FAILED, or never built this commit (a newer push or someone
+      # cancelled it), this step fails and says which, with the URL and the
+      # re-runs that would ship THIS commit; it does not quietly build
+      # instead. Whether a cancelled build was superseded is the caller's
+      # question, asked of main: release.yml's and hotfix.yml's `after` steps
+      # read it as green, superseded, and ship nothing.
       #
       # ONE BUILD IT DOES MAKE, in both modes (lane REL-SKIP, part of #1194):
       # a digest in that record which CI re-tagged from an earlier commit,

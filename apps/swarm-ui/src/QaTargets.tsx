@@ -614,6 +614,11 @@ function TargetCard({
             <Button size="sm" onClick={onEdit}>
               Edit
             </Button>
+            {/* DELETE SITS WITH EDIT, NOT BESIDE RUN (visual QA VQ-043): in the run row the red Delete was the
+                next control after the primary "Run 5 environments". Its typed confirmation stays in the body. */}
+            <Button size="sm" kind="danger" disabled={busy} onClick={() => setConfirmDelete(true)}>
+              Delete
+            </Button>
           </span>
         ) : undefined
       }
@@ -780,11 +785,6 @@ function TargetCard({
         {t.discovers && (
           <Button size="sm" busy={discoveryBusy} disabled={runGate !== null || discoverable.length === 0} onClick={() => void discover()}>
             {anyDiscovered ? 'Run discovery again' : 'Run discovery'}
-          </Button>
-        )}
-        {admin && (
-          <Button size="sm" kind="danger" disabled={busy} onClick={() => setConfirmDelete(true)}>
-            Delete
           </Button>
         )}
       </div>

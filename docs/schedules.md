@@ -1371,13 +1371,18 @@ runs the legs it names
   application.
 * **Gate.** Run and plan auto, merge **off**, and the floor is the same. It
   files issues and changes no code, so there is no merge gate to set.
-* **Budget.** `BUDGET_CAPS` in the executor: `per_run_usd` 40 a leg,
-  `per_day_usd` 160, `max_concurrent` 2, set by BGD on 2026-10-23
-  ([design/qa-environments.md](design/qa-environments.md) §10, Q9 (a)).
-  `per_run_usd` is a tripwire per work item, and a leg is one, so $40 bounds
-  each leg as it bounded a run; `max_concurrent` 2 lets a two-leg firing
-  start both legs; $160 a day keeps the daily firing plus one run-now for
-  both legs. A schedule may set lower figures. The history: BGD first set
+* **Budget.** `BUDGET_CAPS` in the executor: `per_run_usd` 80 a leg,
+  `per_day_usd` 160, `max_concurrent` 2. `per_run_usd` is a tripwire per
+  work item, and a leg is one. BGD set it at $40 a leg on 2026-10-23
+  ([design/qa-environments.md](design/qa-environments.md) §10, Q9 (a)), as
+  it bounded a run, and BGD raised it to $80 on 2026-10-26 (QA-TRIPWIRE-MAC)
+  for the batched legs of up to 150 flows that QA-FLOWS-CAP (PR 2409)
+  brings: at the bench median of $0.14 a flow run, 132 flows at 2 widths
+  cost about $37 before capture, review and the report. `max_concurrent` 2
+  lets a two-leg firing start both legs; $160 a day, also set by BGD on
+  2026-10-23, holds both legs of one firing at the new cap, and is
+  unchanged. A schedule may set lower figures, never higher. The history:
+  BGD first set
   $40 a run, $80 a day and one at a time on 2026-10-22 (VQ7-CAPS, #1933)
   from the first measured run, the full-console QA run 5b
   (`wf_025ae735511546d99eff`, 17 steps, 362 screenshots), which cost $23.62,
@@ -1641,8 +1646,8 @@ of `plan_approval: auto` runs in `routes/runs.py::_advance_state`. So S5:
   the paths or the label that set it;
 * sets it where the plan is stored (`_from_planner`, `PLANNING` → `PLANNED`)
   and re-checks it on every plan edit. **An edit can add a hold but never
-  clears one**: only the hold's approver approving, or anyone rejecting, ends
-  it. Otherwise a member could edit the IAM file out of the plan and approve
+  clears one**: only the hold's approver approving or rejecting ends it
+  (rejecting was anyone's until 2026-10-26; see "Who may reject" below). Otherwise a member could edit the IAM file out of the plan and approve
   it, and the plan's files are advisory;
 * checks it **inside `_approve`**, the one function every approval goes
   through. An approval by someone the hold does not admit answers 403
@@ -1669,6 +1674,63 @@ Approving is one transaction:
 Two approvers racing produce one transition, and the loser gets 409
 `already_decided`.
 
+**Who may reject: only someone who may approve** (**BGD's decision
+2026-10-26**, #2417, frame A5f of the Automate design). Until then any member
+of the tenant could reject any item, on the reasoning that a rejection ends a
+hold and never opens one. It also ends the work: a rejected merge leaves a
+green pull request unmerged, and a rejected plan or firing is the run that
+will not happen. BGD's pick drew the decision page of a member who may not
+approve with neither Approve nor Reject offered, and a page that hides a
+button the server would honour is a page that lies. So `:reject` now runs the
+same who-checks `:approve` does -- the gate's `approvers`, the hold (as its
+own switch has it), the last-editor rule of a merge-tier item (SD5) and the
+`spec` rule -- and a caller they refuse is 403 `reject_approver_required`,
+whose `detail.approve_refusal` names the approve's own code. The role floor
+and the platform-scope rule apply first, as before. It is a new refusal, so
+it is behind its switch (`refusals.SWITCHES`, the 2026-10-08 rule), but it
+**ships on**, because BGD's pick showed the 403 and the console reads who may
+beforehand (below); `REFUSAL_REJECT_APPROVER_REQUIRED=off` lets any member
+reject again. A consequence to know: under a `second_member` hold the run's
+creator, its last plan editor and its schedule's last gate editor may no
+longer reject it either; a second member must, or a workspace admin (next
+paragraph). The run's own `POST /v1/runs/{id}/plan:reject` (Work › Runs) is
+not changed by this; BGD answered on 2026-10-26 that it follows the same rule,
+in a follow-up lane.
+
+**A workspace admin decides a `second_member` hold alone** (BGD, 2026-10-26:
+"let an admin approve it, no need for two approvers"), asked when the reject
+rule above made a held run's creator need a second member to reject it as
+well as to approve it. So the hold's exclusion -- the run's
+creator, its last plan editor and its schedule's last gate editor -- does
+not apply to an **admin of the run's workspace**: a person whose own role
+grant there is `admin`, or a platform admin acting there (`admin` in a group
+workspace, Q5). They approve alone, even as one of those people, and because
+`:reject` passes exactly the checks `:approve` does, they reject alone too.
+It holds on every approve path, because it lives in the hold check they all
+share (`approvals._hold_refusal`): the inbox, `plan:approve`, and a GitHub
+comment. The role is read fresh, past the role cache, so an admin demoted a
+moment ago is excluded again; a role that cannot be read is not admin, so the
+hold keeps its rule (`approvals.workspace_admin` fails closed). A non-admin
+keeps the second-member rule exactly, and an admin of another workspace is
+not an admin of this one. It changes only the hold: the gate's `approvers`
+(`owner_only`, a named list), a `NEEDS_OWNER` hold and a merge-tier item's
+last-editor rule (SD5) are asked as before. The refusal a non-admin meets
+says a second member or a workspace admin may decide, and `may_decide`'s
+`deciders` serves `["second_member", "workspace_admins"]`; for a named list
+under the hold, an admin the hold would have excluded stays in the list.
+
+**What the decision page reads** (lane AUTO-API-APPROVALS). Every field is
+derived on each read, stored nowhere, and **absent rather than invented**
+when what it is read from is not there:
+
+| field | where | read from |
+|---|---|---|
+| `may_decide {approve, reject, why, deciders}` | every item, list and detail (not an await-input step, which is answered on its own route) | the decision routes' own checks for the reader, run without a digest, a move or a log line: the role floor, the platform-scope rule, then `_who_refusal`. `reject` follows `approve` while the switch is on. `why` is one sentence when either is false, masked like the summary. `deciders` is the narrowest rule that applies: the named approvers still eligible, else `owner_only`, `platform_admins`, `second_member` (with `workspace_admins` beside it) or `members`. Absent when the reader's role cannot be read. A one-person workspace's own hold counts as `approve: true`: its approve passes once the matched paths are typed |
+| `superseded_by {approval_id, head_sha, at}` | a superseded merge, detail | a merge request's id is derived from its run and head, so the run's head now names the request made for it; served when that record exists in this tenant and is another one |
+| `head_sha_now` | a merge, detail | the run's `pull_request.head_sha` as read |
+| `merge.checks {passed, failed, pending}` | a merge, detail | the run's last CI reading (`pull_request.check_counts`), only while that reading is of the head the approval names |
+| `hold.reason_files {reason: [matched]}` | a held plan's and a merge's hold, detail (`approval.hold` and `merge.approval_hold`) | each reason's own path rule re-applied to the hold's `matched`; `protected_path` from the registration's `hard_stop_paths`, `security` from its `label:`/`severity:` entries. A reason found only in a patch or a prompt term pairs with no file by path and is left out |
+
 ### 4.6 Who may approve
 
 * **Default: any member of the schedule's tenant** (**Owner decision
@@ -1686,7 +1748,8 @@ Two approvers racing produce one transition, and the loser gets 409
   paths and security-class plans. In a one-person tenant (a `u-*` workspace)
   there is no second member, so that person approves their own after a typed
   confirmation that names the matched paths, and the audit records it.
-  **Owner decision 2026-10-08 (SD11).**
+  **Owner decision 2026-10-08 (SD11).** A workspace admin is never excluded:
+  they approve and reject alone (§4.5, BGD 2026-10-26).
 * **A named list.** Each name must be a member at creation **and** at approval,
   because membership is asked of the directory.
 * **A merge-tier approval needs a second person** (SD5). The member who last
@@ -1910,7 +1973,9 @@ Admin**. This is not the Work › Schedules tab this design first
 recommended.
 
 * **Automate holds two pages: Schedules and Approvals.** Approvals is a page of
-  its own at `/approvals`, not a second pane of Schedules, with a count badge on
+  its own at `/automate/approvals` (one item at `/automate/approvals/<id>`;
+  it was `/approvals` until APPROVALS-MOVE, below), not a second pane of
+  Schedules, with a count badge on
   the section and on the page. Its items cover issue runs as well as
   schedules. It is also on Overview, as a "Waiting on you" card that appears
   only when something is waiting.
@@ -2001,6 +2066,20 @@ and actions, mounted by `Schedules.tsx` as the All tenants view; the platform
 ticks are in `PlatformCounts.tsx`. Admin's question now reads "...how many
 tasks are in each state, what does the platform run on its own, and who is
 waiting for a workspace?", in `SECTIONS` and redesign.md §2 together.
+
+**Moved by APPROVALS-MOVE, 2026-10-26** (BGD's decision on VQ-030, "Move it,
+and redirect /approvals"; part of #2391). Approvals is at
+`/automate/approvals` and one item at `/automate/approvals/<id>`, the kind
+filter still riding as `?kind=`. Visual QA found the page at `/approvals`
+while its sibling was `/automate/schedules`, and `/automate/approvals`, the
+address a reader guesses from the nav, was a "No page" screen. A page's
+address now names its section, as every other section's pages do. The old
+`/approvals` and `/approvals/<id>` are not dropped: `pathToAddress` in
+`apps/swarm-ui/src/paths.ts` lands them on the new addresses with the id and
+the kind kept, and the app rewrites the bar once, because the API's
+notifications (`swarm_api/notifications.py`), issue comments and saved links
+already carry the old ones. The issue forms' "Where" option follows
+(`test_issue_forms.py` reads it from `paths.ts`).
 
 ### 6.2 Screens
 

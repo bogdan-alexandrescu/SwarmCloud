@@ -632,8 +632,8 @@ Agents have no reason to talk to Kubernetes and are given no way to.
   merge, by design, so after a release that rebuilds its image it lags. On a
   digest an earlier release promoted -- one carrying the
   `promoted-<channel>-<tag>` mark `scripts/push-images.sh` adds and never moves
-  (or its old form `<channel>-promoted-<tag>`, read until
-  `scripts/registry-remark.sh` has run; #1886) -- that lag is a warning, "awaiting owner re-pin", with the command, and the
+  (its old form `<channel>-promoted-<tag>` is no longer read:
+  `scripts/registry-remark.sh` gave every such digest the new one; #1886) -- that lag is a warning, "awaiting owner re-pin", with the command, and the
   summary says "1 owner action pending". On a digest no release promoted it
   still fails: that is an image nobody released running as a privileged
   account. The checkov image-reference checks (CKV_K8S_14/15/43) are still

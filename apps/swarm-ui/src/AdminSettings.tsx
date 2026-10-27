@@ -3,7 +3,7 @@ import {
   loadAdminPools, loadAdminQuota, loadCapacity, loadMe, loadModelClasses, loadModelPrices, loadPlatformSettings, priceRefusals, resetAdaptiveTarget, saveModelPrices, setPoolLimit,
   setQuotaHardMax, storeOwnerToken,
 } from './api'
-import { Button, Card } from './components'
+import { Button, Card, CIcon } from './components'
 import { errorHeading, isPaused, route, write, type ApiError, type Result } from './fetch'
 import { Refusal } from './GitHubConnect'
 import { ACCESS } from './Onboarding'
@@ -186,9 +186,12 @@ export function AdminSettingsScreen() {
         )}
       </Screen>
       {read.failed !== null && !read.held && read.failed.kind !== 'admin_required' && <PoolLeadView lead={null} unread={read.failed} />}
-      <AdditionalRepositoryLimitsCard />
-      <ModelPricesCard admin={admin} />
-      <FallbackTokenCard />
+      {/* FOLDED UNDER THE CEILINGS (VQ-054, part of #2391; config-e.html
+          S10b): the page is the ceilings table, and these three are opened
+          when wanted. Each card drawn on its own is open (`FoldCard`). */}
+      <AdditionalRepositoryLimitsCard fold />
+      <ModelPricesCard admin={admin} fold />
+      <FallbackTokenCard fold />
     </>
   )
 }
@@ -261,9 +264,19 @@ export function useLeadRead<T>(load: () => Promise<Result<T>>): {
 } {
   const [failed, setFailed] = useState<ApiError | null>(null)
   const [held, setHeld] = useState(false)
+  // A read that lands after the page has gone sets nothing: there is no lead
+  // left to draw, and a test's torn-down document has no window to schedule on.
+  const live = useRef(true)
+  useEffect(() => {
+    live.current = true
+    return () => {
+      live.current = false
+    }
+  }, [])
   const wrapped = useCallback(
     () =>
       load().then((r) => {
+        if (!live.current) return r
         if (r?.status === 'error') setFailed(r.error)
         else if (r?.status === 'ok' || r?.status === 'stale') {
           setFailed(null)
@@ -1556,7 +1569,8 @@ function PoolRow({
             }
             title={locked ? 'another pool has an unsaved value' : refused ? 'admins only' : undefined}
           >
-            edit
+            {/* Sentence case, as every other button in the console (VQ-054). */}
+            Edit
           </button>
           {/* OVER ITS CEILING, AND NEUTRAL (#133). A ceiling lowered below what
               is in use is a legal state Help explains
@@ -2246,6 +2260,52 @@ function isEditable(pool: Pool): boolean {
 }
 
 /**
+ * A CARD UNDER THE CEILINGS, FOLDED ON POOL LIMITS (VQ-054, part of #2391;
+ * config-e.html S10b: "The cards below it (Additional repositories, Model
+ * prices, GitHub fallback token) are unchanged and folded here"). Model
+ * prices drawn open was a long editable table under the one table the page
+ * is for.
+ *
+ * THE HEAD IS THE CARD'S OWN HEADING, a button inside its `h2` that says
+ * whether it is open (`aria-expanded`), as People's Recent admin actions is
+ * drawn (People.tsx `Audit`), so a folded card is one line with its title and
+ * its `?`, and an open one has no second heading. The body stays mounted and
+ * is `hidden`: a card's read lands while it is folded, and what is typed in
+ * it survives folding it again.
+ *
+ * `fold` is the page's to set. A card drawn on its own (its tests, and any
+ * page that wants it open) is the plain `Card` it was.
+ */
+function FoldCard({ fold, className, title, action, children }: {
+  fold: boolean
+  className: string
+  title: string
+  action?: ReactNode
+  children: ReactNode
+}) {
+  const [open, setOpen] = useState(false)
+  const bodyId = useId()
+  if (!fold) {
+    return <Card className={className} title={title} level={2} action={action}>{children}</Card>
+  }
+  return (
+    <Card
+      className={`${className} adm-fold-card${open ? ' is-open' : ''}`}
+      level={2}
+      action={action}
+      title={
+        <button type="button" className="adm-fold" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen((o) => !o)}>
+          <CIcon name="chevron" className="c-ic adm-fold-ic" />
+          {title}
+        </button>
+      }
+    >
+      <div id={bodyId} className="adm-fold-b" hidden={!open}>{children}</div>
+    </Card>
+  )
+}
+
+/**
  * GITHUB FALLBACK TOKEN (#780, D5; docs/onboarding.md §3.2). The owner's note
  * on D5: "lets also allow it to be done via the UI admin settings page" --
  * beside `uv run sc setup token --owner <org>`, for an org that will not
@@ -2273,7 +2333,7 @@ function isEditable(pool: Pool): boolean {
  * QA run 4, admin-009: a ghost `?` toggling an inline paragraph read as a
  * bare grey glyph beside them).
  */
-export function FallbackTokenCard() {
+export function FallbackTokenCard({ fold = false }: { fold?: boolean } = {}) {
   const id = useId()
   const tokenRef = useRef<HTMLInputElement>(null)
   const inFlight = useRef(false)
@@ -2307,10 +2367,10 @@ export function FallbackTokenCard() {
   }
 
   return (
-    <Card
+    <FoldCard
+      fold={fold}
       className="adm-fallback-token"
       title="GitHub fallback token"
-      level={2}
       action={<HelpCard topic="github-fallback-token" />}
     >
       {/* ITS OWN FORM ROW, NOT THE CEILING EDITOR'S (VQA V023). It reused
@@ -2353,7 +2413,7 @@ export function FallbackTokenCard() {
           and is not shown again. Choose its repositories on <a className="c-link" href={addressToPath(ACCESS)}>Access</a>.
         </p>
       )}
-    </Card>
+    </FoldCard>
   )
 }
 
@@ -2387,7 +2447,7 @@ function wholeAtLeastOne(typed: string): number | null {
  * What the save did is read off its RESPONSE -- the settings as stored -- not
  * off the form: the form says what was asked, the response what holds.
  */
-export function AdditionalRepositoryLimitsCard() {
+export function AdditionalRepositoryLimitsCard({ fold = false }: { fold?: boolean } = {}) {
   const id = useId()
   const inFlight = useRef(false)
   const [settings, setSettings] = useState<Result<PlatformSettings> | null>(null)
@@ -2455,7 +2515,7 @@ export function AdditionalRepositoryLimitsCard() {
     // above, not on screen. A failed read says "Not read", the console's mark
     // for it, with what failed and why one hover away in `title`, as the pool
     // editor's save error on this screen already keeps its message.
-    <Card className="adm-repo-limits" title="Additional repositories" level={2}>
+    <FoldCard fold={fold} className="adm-repo-limits" title="Additional repositories">
       {settings === null || settings.status === 'loading' ? (
         <p className="ur-small">Reading…</p>
       ) : data === null ? (
@@ -2497,7 +2557,7 @@ export function AdditionalRepositoryLimitsCard() {
           {savedAt.additional_repositories_budget_gib} GiB in total.
         </p>
       )}
-    </Card>
+    </FoldCard>
   )
 }
 
@@ -2591,7 +2651,7 @@ function settle<T>(load: () => Promise<Result<T>>): Promise<Result<T>> {
  * saved it and when -- not off the form. A refusal that names a figure
  * (`detail.errors[].loc`, `priceRefusals`) is printed at that figure.
  */
-export function ModelPricesCard({ admin }: { admin: boolean | null }) {
+export function ModelPricesCard({ admin, fold = false }: { admin: boolean | null; fold?: boolean }) {
   const id = useId()
   const inFlight = useRef(false)
   const phone = usePhoneTables()
@@ -2700,7 +2760,7 @@ export function ModelPricesCard({ admin }: { admin: boolean | null }) {
   }
 
   return (
-    <Card className="adm-prices" title="Model prices" level={2}>
+    <FoldCard fold={fold} className="adm-prices" title="Model prices">
       {settings === null || settings.status === 'loading' ? (
         <p className="ur-small">Reading…</p>
       ) : data === null ? (
@@ -2760,9 +2820,13 @@ export function ModelPricesCard({ admin }: { admin: boolean | null }) {
                       <td data-label="Source">{p === undefined ? <span className="is-absent">cost not reported</span> : p.source}</td>
                       <td className="mono" data-label="As of">{edits ? cell(m, 'as_of', 'As of') : p === undefined ? '—' : p.as_of}</td>
                       {/* Whole at 1440, and where a card is narrower it
-                          breaks after the `@` only (6:admin-006). */}
+                          breaks after the `@` only (6:admin-006). A writer
+                          that is not an address -- the seed's
+                          `agent_worker.lifecycle._LIST_PRICES` -- breaks
+                          after its dots: one unbreakable run of it ran past
+                          the card's right edge (VQ-054). */}
                       <td data-label="Set by" className="adm-price-by">
-                        {p?.updated_by == null ? '—' : addressBreaks(p.updated_by, '@', 'adm-addr-seg')}
+                        {p?.updated_by == null ? '—' : addressBreaks(p.updated_by, p.updated_by.includes('@') ? '@' : '.', 'adm-addr-seg')}
                       </td>
                     </tr>
                   )
@@ -2787,6 +2851,6 @@ export function ModelPricesCard({ admin }: { admin: boolean | null }) {
           {saved.settings.updated_at !== null ? ` · ${timeAgo(saved.settings.updated_at)}` : ''}
         </p>
       )}
-    </Card>
+    </FoldCard>
   )
 }

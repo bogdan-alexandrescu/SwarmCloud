@@ -3,6 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from
 import { childrenServed, offersChildren } from '../AgentChildren'
 import type { TaskPane } from '../App'
 import { checkpointsSay, type CheckpointCount } from '../CheckpointsPane'
+import { isLiveBrowser, ownerQuestionsHold } from '../Handoff'
 import { questionCount } from '../QuestionsCard'
 import { TERMINAL_STATES, type Task } from '../types'
 import { changesCount } from '../WorkflowChanges'
@@ -11,6 +12,11 @@ import { Tabs, type TabDef } from '../components'
 // THE SPLIT'S TAB BAR (moved out of AgentSplit.tsx by SPEED-D4A, 2026-10-14,
 // unchanged): each tab's name, which tabs the agent offers with their counts,
 // and the bar that fits them, with More for the ones that do not.
+//
+// The rules the bar keeps (BROWSER-TAB-TABS, #2423): the open tab is always
+// on it; the others keep their fixed order and their places whichever tab is
+// open, where the room allows; More is a short `More <n>` whose own width is
+// measured; and every browser agent, live or finished, has its Browser tab.
 
 /** Each tab's name, which is also its address segment (QA12-17): `/agents/<tab>/<id>/<name>`. */
 export const PANE_LABELS: Readonly<Record<TaskPane, string>> = {
@@ -65,7 +71,13 @@ export function paneTabs({
     },
     // DETAILS, BROWSER, LOGS (the mockup, owner decision 2026-10-12): Browser
     // sits second, and says LIVE while its session is open.
-    ...(hasBrowser
+    // EVERY BROWSER AGENT HAS ITS TAB (BT-007, #2423, 2026-10-26): on a
+    // finished agent the session is read only while Browser is open, so the
+    // split's `hasBrowser` held the tab only on `/browser`, and leaving it
+    // took Browser off the strip and out of More, with no way back but the
+    // address. The runner says it is a browser agent, live or finished; a
+    // merge held by its owner's questions is git-only and has none (#2313).
+    ...(hasBrowser || (task !== null && isLiveBrowser(task) && ownerQuestionsHold(task) === null)
       ? [
           {
             id: 'browser' as const,
@@ -164,6 +176,17 @@ export function tabStep(key: string, at: number, count: number): number | null {
  * browser agent at 1440 the tabs summed to 529 in a 533 strip, and the six
  * 2 px gaps between seven tabs made 541 -- `Artifacts` was cut under More
  * and the strip scrolled. `gap` is the strip's own gap between two tabs.
+ *
+ * THE BAR DOES NOT DEPEND ON WHICH TAB IS OPEN (BT-013, #2423, 2026-10-26):
+ * filled around the open tab, the bar changed with it -- picking Artifacts
+ * from More put Artifacts on the bar and Attempts in More, and opening Logs
+ * on a running browser agent sent Browser into More, so the tab just used
+ * was no longer where it was left. The bar is now filled once, from the
+ * fixed order and the room, with room kept for the widest tab in More, and
+ * the open tab is drawn in that room when it is not already on the bar. A
+ * ranked tab (`BAR_RANK`) is never given up to keep that room; only when the
+ * ranked tabs and the open one cannot all fit (a phone) does the
+ * lowest-ranked of them step into More, because the open tab must be seen.
  */
 export function fitTabs(
   keys: readonly string[],
@@ -175,17 +198,29 @@ export function fitTabs(
 ): string[] {
   const total = widths.reduce((n, w) => n + w, 0) + gap * Math.max(0, keys.length - 1)
   if (room <= 0 || total <= room) return [...keys]
-  const open = keys.indexOf(current)
-  const shown = new Set<string>(open === -1 ? [] : [current])
-  let used = open === -1 ? 0 : (widths[open] ?? 0)
+  const width = (i: number) => widths[i] ?? 0
+  const span = (set: readonly number[]) => set.reduce((n, i) => n + width(i), 0) + gap * Math.max(0, set.length - 1)
+  const free = room - moreWidth
+  // The bar as the order and the room fill it, whichever tab is open.
+  const base: number[] = []
   for (const i of byRank(keys)) {
-    if (i === open) continue
-    const w = (widths[i] ?? 0) + (shown.size > 0 ? gap : 0)
-    if (used + w > room - moreWidth) break
-    used += w
-    shown.add(keys[i]!)
+    if (span([...base, i]) > free) break
+    base.push(i)
   }
-  return keys.filter((k) => shown.has(k))
+  // Room for any tab in More to be drawn on the bar when it is opened: an
+  // unranked tab steps off the bar (the lowest-ranked first) until there is.
+  const reserve = () => Math.max(0, ...keys.map((_, i) => i).filter((i) => !base.includes(i)).map(width)) + gap
+  for (let at = base.length - 1; at >= 0 && span(base) + reserve() > free; at--) {
+    if (!BAR_RANK.includes(keys[base[at]!]!)) base.splice(at, 1)
+  }
+  const open = keys.indexOf(current)
+  if (open !== -1 && !base.includes(open)) {
+    // The open tab is always on the bar: on a phone a ranked tab gives way to it.
+    while (base.length > 0 && span([...base, open]) > free) base.pop()
+    base.push(open)
+  }
+  const shown = new Set(base)
+  return keys.filter((_, i) => shown.has(i))
 }
 
 /**
@@ -196,8 +231,13 @@ export function fitTabs(
  * depending on which tab was open. An overflowing bar is filled by this rank;
  * it is still DRAWN in the usual order, and a bar where every tab fits is
  * not ranked at all.
+ *
+ * BROWSER IS RANKED TOO (BT-013, #2423): it was already the first of the
+ * rest, so the order the bar fills in is unchanged; ranked, it is never
+ * moved into More to keep room for another tab, so opening Logs on a
+ * running browser agent no longer sends its Browser tab into More.
  */
-const BAR_RANK: readonly string[] = ['detail', 'logs', 'attempts']
+const BAR_RANK: readonly string[] = ['detail', 'logs', 'attempts', 'browser']
 
 /** The indexes of `keys` in the order the bar is filled: BAR_RANK's, then the rest as drawn. */
 function byRank(keys: readonly string[]): number[] {
@@ -254,6 +294,8 @@ export function AgTabsEdge({
   // count so a count that lands is measured again; and More's own.
   const widths = useRef(new Map<string, number>())
   const moreWidth = useRef(0)
+  // More's padding, border and gap: the stylesheet's, read once as the gap is.
+  const moreChrome = useRef<number | null>(null)
   // The strip's gap, read once: it is the stylesheet's, and `getComputedStyle`
   // on every fit -- which every strip mutation now runs -- held the panes'
   // first reads back by seconds in jsdom (walk.agent, reads.dedup).
@@ -282,8 +324,38 @@ export function AgTabsEdge({
       gapPx.current = parseFloat(getComputedStyle(strip).columnGap) || 0
     }
     const gap = gapPx.current ?? 0
+    // MORE IS MEASURED FROM WHAT IT DRAWS, NOT FROM ITS BOX (VQ-008 review,
+    // 2026-10-26; BT-004, #2423): the host gives way (agents.css), so its
+    // `offsetWidth` -- and the squeezed button's `scrollWidth` -- is the width
+    // it was already squeezed to: at 390 More was fitted at 32px and drawn
+    // `2 m`, its chevron off the page. The room it needs is its label
+    // (`More 7`, whose own `scrollWidth` is the whole text however it is cut),
+    // its chevron, and the button's padding, border and one gap between them;
+    // the names are read, not drawn (`.ag-tabs-more-names`), and take none.
     const m = b.querySelector<HTMLElement>(':scope > .ag-tabs-more-host')
-    if (m !== null) moreWidth.current = m.offsetWidth
+    const mb = m?.querySelector<HTMLElement>(':scope > .ag-tabs-more') ?? null
+    if (m !== null && mb !== null) {
+      if (moreChrome.current === null && b.clientWidth > 0) {
+        const cs = getComputedStyle(mb)
+        const px = (v: string) => parseFloat(v) || 0
+        moreChrome.current = px(cs.paddingLeft) + px(cs.paddingRight) + px(cs.borderLeftWidth) + px(cs.borderRightWidth) + px(cs.columnGap)
+      }
+      moreWidth.current = Math.ceil(
+        (moreChrome.current ?? 0) +
+          (mb.querySelector<HTMLElement>(':scope > .ag-tabs-more-label')?.scrollWidth ?? 0) +
+          (mb.querySelector<HTMLElement>(':scope > [aria-hidden]')?.offsetWidth ?? 0),
+      )
+    }
+    // THE OPEN TAB KEEPS ITS WIDTH (BT-004): at 390 the strip holding it was
+    // squeezed to 0 px beside More, and nothing said which tab was open. The
+    // strip is never narrower than its open tab, and a fitted strip
+    // (`is-fitted`) never shrinks at all; More gives way instead, its label
+    // cut with an ellipsis only when even `More 7` cannot fit beside the open
+    // tab. And the `›` the strip's end draws sits at the strip's end, not over
+    // More.
+    const on = barTabs.findIndex((t) => t.key === current)
+    if (strip !== null) strip.style.minWidth = on === -1 || drawn[on] === undefined ? '' : `${drawn[on]!.offsetWidth}px`
+    b.style.setProperty('--ag-more-w', `${m === null ? 0 : m.offsetWidth}px`)
     // A tab not drawn since its count changed keeps its last width (or its
     // label's), and is measured again the first time it is back on the bar.
     const last = (t: TabDef) =>
@@ -387,9 +459,19 @@ export function AgTabsEdge({
     drawn[to]!.focus()
     if (key !== current) onSelect(key)
   }
+  const stripClass = moreTabs.length === 0 ? 'ag-split-tabs' : 'ag-split-tabs is-fitted'
   return (
     <div className="ag-tabs-edge" ref={box} data-more={more || undefined} onKeyDown={onKey}>
-      <Tabs className="ag-split-tabs" label="Agent panes" current={current} tabs={barTabs} onSelect={onSelect} />
+      {/* A FITTED BAR NEVER SHRINKS (VQ-008): it holds only the tabs that
+          fit, the open one always, so More gives way and the open tab stays
+          drawn and marked (agents.css `.ag-split-tabs.is-fitted`). */}
+      <Tabs
+        className={stripClass}
+        label="Agent panes"
+        current={current}
+        tabs={barTabs}
+        onSelect={onSelect}
+      />
       {moreTabs.length > 0 && <MoreTabs tabs={moreTabs} onSelect={onSelect} />}
     </div>
   )
@@ -429,15 +511,17 @@ function MoreTabs({ tabs, onSelect }: { tabs: readonly TabDef[]; onSelect: (key:
     >
       {/* IT SAYS WHAT IT HOLDS (visual QA QA-116, run 2): `More 2 ▾` at 390
           read as two hidden tabs or as two checkpoints, and nothing said
-          Checkpoints was behind it. It reads `2 more tabs`, and its name and
-          its title list them.
-          AND THE GLASS NAMES THEM (visual QA run 6, flow-find-failure-phone-05,
-          box 6343793416): on a phone no one hovers, so a name and a title
-          were all that said what `2 more tabs` hid. It reads
-          `2 more: Artifacts, Checkpoints ▾`, keeping the count (c02/c20), and
-          it is named by that text, with no aria-label to drift from it. */}
+          Checkpoints was behind it. Its name and its title list them.
+          IT IS SHORT (BT-004, BT-005, #2423, 2026-10-26): it drew every name,
+          `7 more: Details, Logs, Changes, …`, and so was as wide as the tabs
+          it hid -- 420 px at 1024, beside one tab, and wider than a 390
+          drawer, where it covered the open tab. It draws `More 7`; the names
+          stay its title and the rest of its name (`More 7 tabs: Details,
+          Logs, …`), in text that is read but not drawn, so the name still starts
+          with what it shows and needs no aria-label to drift from it. */}
       <button type="button" className="ag-tabs-more" aria-expanded={open} title={names} onClick={() => setOpen((v) => !v)}>
-        {tabs.length} more: {names} <span aria-hidden="true">▾</span>
+        <span className="ag-tabs-more-label">More {tabs.length}</span>
+        <span className="ag-tabs-more-names"> tabs: {names}</span> <span aria-hidden="true">▾</span>
       </button>
       {open && (
         <div className="c-menu ag-tabs-menu" role="group" aria-label="More agent panes">

@@ -32,7 +32,7 @@ async function openAt(path: string): Promise<HTMLButtonElement> {
 describe('the Automate pages’ `?`', () => {
   for (const [path, topic] of [
     ['/automate/schedules', 'schedules'],
-    ['/approvals', 'approvals'],
+    ['/automate/approvals', 'approvals'],
   ] as const) {
     it(`on ${path}, says the ${topic} topic and links to it`, async () => {
       const glyph = await openAt(path)

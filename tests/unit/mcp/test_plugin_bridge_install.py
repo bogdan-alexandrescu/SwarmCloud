@@ -280,6 +280,36 @@ def test_the_pinned_bridge_asks_for_gzip():
     )
 
 
+#: The first plugin version whose pinned bridge knows the `band` layout
+#: (SC-BAND, part of #2318): `swarm_layout {layout: "band"}` and the launches
+#: that start no row in it.
+_FIRST_BAND_VERSION = (0, 5, 73)
+
+
+def test_the_pinned_bridge_knows_the_band_layout():
+    """The band lives in two halves: the hooks module, which ships with the
+    plugin, and the bridge's `band` layout, which installed copies fetch at the
+    tag `sc-v<version>`. A plugin that draws the band against a bridge pinned
+    below it gets "`band` is not a layout" from `/sc layout band`, and its
+    launches still start rows.
+
+    THE MUTATION THIS CATCHES: leave the version (and so the pin) where it was,
+    or drop `band` from the bridge's layouts the floor stands for.
+    """
+    from swarm_mcp import layout
+
+    assert "band" in layout.LAYOUTS, (
+        "the bridge no longer has the band layout, so the version floor below stands for nothing"
+    )
+    version = _manifest().get("version")
+    parts = tuple(int(part) for part in str(version).split("."))
+    assert parts >= _FIRST_BAND_VERSION, (
+        f"plugin.json is version {version!r}, below {'.'.join(map(str, _FIRST_BAND_VERSION))}: "
+        "installed bridges have no band layout"
+    )
+    assert _pinned(_server())["ref"] == f"{_TAG_PREFIX}{version}"
+
+
 def test_the_pin_is_written_down_exactly_once():
     """The mirrored-copy rule: one ref, in plugin.json, and nowhere else.
 

@@ -386,16 +386,40 @@ function DefaultRole({ roles }: { roles: UrRead<WorkspaceRoles> }) {
   return r.data.default_role === null ? <Dash why="The roles read names no default role" /> : <>{r.data.default_role}</>
 }
 
+/**
+ * YOUR ROLE IS THE ONE THE API ACTS ON (VQ-044; part of #2391), not the
+ * stored one. The profile's `role` is the person's stored grant (`member` by
+ * the default), but `RoleStore.resolve` answers `admin` for a platform admin
+ * in every group workspace, and that is what People and roles (`me` of
+ * `GET /v1/workspace/roles`), Profile and Workspaces you admin draw: so this
+ * card reads `me` too, and until that read answers, applies the same rule to
+ * the profile (`identity.is_admin` is the same `auth.is_admin` the API
+ * resolves with). A platform admin's role is drawn as Profile draws it,
+ * "admin (platform admin)".
+ */
+export function effectiveRole(
+  profile: Profile,
+  ws: Profile['workspaces'][number],
+  roles: UrRead<WorkspaceRoles>,
+): { name: string; source: string } {
+  const r = roles.state
+  const read = r.status === 'ok' || r.status === 'stale' ? r.data : null
+  if (read !== null && read.tenant_id === ws.tenant_id && read.me.role !== '') return { name: read.me.role, source: read.me.source }
+  if (ws.kind !== 'user' && profile.identity.is_admin === true) return { name: 'admin', source: 'platform_admin' }
+  return { name: ws.role.name, source: ws.role.source }
+}
+
 /** The workspace these settings are about: the profile's acting workspace, and its default role (S6a). */
 function ThisWorkspace({ profile, roles, go }: { profile: Profile; roles: UrRead<WorkspaceRoles>; go?: (to: string) => void }) {
   const ws = profile.workspaces.find((w) => w.is_acting) ?? null
+  const role = ws === null ? null : effectiveRole(profile, ws, roles)
   const me = useUrRead(loadThisMe, `me:${ws?.tenant_id ?? ''}`)
   const [renamed, setRenamed] = useState<string | null>(null)
   const [renaming, setRenaming] = useState(false)
   const read = me.state.status === 'ok' || me.state.status === 'stale' ? me.state.data : null
   const stored = read !== null && ws !== null && read.tenant.tenant_id === ws.tenant_id ? read.tenant.display_name || null : null
   const name = renamed ?? stored ?? ws?.display_name ?? ''
-  const mayRename = ws !== null && ws.kind === 'group' && ws.role.name === 'admin'
+  const mayRename = ws !== null && ws.kind === 'group' && role?.name === 'admin'
   return (
     <Card
       title="This workspace"
@@ -420,7 +444,9 @@ function ThisWorkspace({ profile, roles, go }: { profile: Profile; roles: UrRead
           <dt>Kind</dt>
           <dd>{ws.kind === 'user' ? 'personal' : ws.kind || 'unknown'}</dd>
           <dt>Your role</dt>
-          <dd>{ws.role.name || 'unknown'}</dd>
+          <dd data-testid="ws-your-role">
+            {role === null || role.name === '' ? 'unknown' : role.source === 'platform_admin' ? `${role.name} (platform admin)` : role.name}
+          </dd>
           {/* A personal workspace has nobody else in it, so no default to hold. */}
           {ws.kind !== 'user' && (
             <>

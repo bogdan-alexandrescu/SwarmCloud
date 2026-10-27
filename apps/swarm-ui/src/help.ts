@@ -70,6 +70,7 @@ import { SCOPE_WORDS, SHORTCUTS, shortcut } from './shortcuts'
  */
 export type TopicId =
   | 'absent-vs-zero'
+  | 'account-health'
   | 'account-label-rules'
   | 'account-owned-by-one-tenant'
   | 'account-removal-is-reversible'
@@ -173,6 +174,18 @@ export type TopicId =
   | 'withheld-total'
   | 'workflow-stages'
   | 'workspace-memory'
+  // VQ-055: the Config and Admin pages' own topics.
+  | 'add-a-secret'
+  | 'config-github-access'
+  | 'config-repositories'
+  | 'config-setup-strip'
+  | 'mcp-servers'
+  | 'platform-secrets'
+  | 'runner-sizes'
+  | 'secret-scopes'
+  | 'workspace-roles'
+  | 'workspace-settings'
+  | 'workspaces-you-admin'
 
 /** The Help section's headings, in the order it renders them. */
 export type HelpGroupId =
@@ -182,6 +195,9 @@ export type HelpGroupId =
   | 'the-catalogue'
   | 'submitting-work'
   | 'an-account'
+  | 'automating-work'
+  | 'configuring-a-workspace'
+  | 'administering-the-platform'
   | 'using-the-console'
 
 export const HELP_GROUPS: readonly { id: HelpGroupId; title: string }[] = [
@@ -191,6 +207,16 @@ export const HELP_GROUPS: readonly { id: HelpGroupId; title: string }[] = [
   { id: 'the-catalogue', title: 'The runtime catalogue' },
   { id: 'submitting-work', title: 'Submitting work' },
   { id: 'an-account', title: 'Running the account pool' },
+  // VQ-055 (visual QA 2026-10-26): Automate, Config and Admin had no group, so
+  // their pages' topics sat under How the platform behaves or had none, and
+  // each Config page's `?` led to the first group. In the panel's order. The
+  // ids are not section ids, so `/help/<group>` is never read as a section's
+  // old address (help.anchor.test.tsx). A title is at most 30 characters, the
+  // length of the Config one: a longer one overruns the rail's text track at
+  // 1440 and pushes its count out of the column (help.vq055.test.tsx).
+  { id: 'automating-work', title: 'Automate: schedules, approvals' },
+  { id: 'configuring-a-workspace', title: 'Config: setting up a workspace' },
+  { id: 'administering-the-platform', title: 'Admin: running the platform' },
   // G1-21: the keyboard had no topic, and belongs to none of the above.
   { id: 'using-the-console', title: 'Using the console' },
 ]
@@ -415,7 +441,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
   // `?` on Schedules and on Approvals led to the top of Help, which has
   // nothing on either.
   schedules: {
-    group: 'the-platform',
+    group: 'automating-work',
     title: 'A schedule makes ordinary work on a timetable',
     short:
       'A schedule fires on its cron, in its own timezone, and each firing makes ordinary work: an issue run, an agent or a workflow. Its gate says what waits for a person, its budget what a day may spend. A dry run records what a firing would make and makes nothing.',
@@ -429,7 +455,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
   },
 
   approvals: {
-    group: 'the-platform',
+    group: 'automating-work',
     title: 'What waits for a person holds nothing',
     short:
       'The inbox lists every item waiting for a person, oldest first: a firing waiting to run, a plan, a held plan, a merge, a proposal or a spec. A waiting item holds no capacity. Approve sends back what you read, so an item that changed since is refused, not approved.',
@@ -786,7 +812,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
   // `no monthly_budget_usd column · no cost attribution source`, from the 422
   // in swarm_api/routes/admin.py `set_tenant_limits`.
   'tenant-fields': {
-    group: 'the-platform',
+    group: 'administering-the-platform',
     title: 'What each Tenants column means',
     short:
       'Enforced is the ceiling admission applies to a tenant: its pool’s effective limit, which starts from the smaller of its two configured limits, Max active and Units, because both cap the same count of units and the smaller one binds. Configured shows the two as the tenant record holds them. No budget can be set, so none is shown.',
@@ -812,17 +838,17 @@ const SPECS: Record<TopicId, TopicSpec> = {
   // cost (list price, not a bill)" with its coverage -- and docs/outcomes.md
   // ("The nightly seal") for where the days come from.
   'platform-counts': {
-    group: 'the-platform',
+    group: 'administering-the-platform',
     title: 'What Platform counts returns',
     short:
-      'Two reads, each behind its own priced button. The state counts: one count() per state for your tenant, and across every tenant when you are an administrator. Over time: agents counted on the day they were submitted, retries apart, from the daily rollup, with an estimated cost at list price, not a bill.',
+      'Two reads behind one priced button, the page head’s Run: the state counts and Over time. The state counts: one count() per state for your tenant, and across every tenant for an administrator. Over time: agents counted on the day they were submitted, retries apart, from the daily rollup, with an estimated cost at list price, not a bill.',
     long: [
       'Each run of the state counts asks the stats route for the number of agent documents in each state, as they stand at that moment. An agent that has moved on since is counted where it is now, and nothing about how long any agent spent anywhere is in that answer; that is what Over time is for.',
       'The first set is scoped to the caller’s own tenant. An administrator also gets a second set across every tenant; anyone else sees that card as not entitled, which is a permission and not a fault.',
       'Every state the contract defines is counted, including the ones never written to an agent document, so a run costs one count() per state per scope. That query bills by the index entries it scans, and those grow with every agent ever written — so the price is printed before the control that spends it, and nothing re-runs it on a timer.',
       'A total is drawn only when every state came back. When one did not, the total is withheld and the missing states are named, because a sum over a partial response is not a count of anything.',
       'Over time counts agents, per day, week or month, across every workspace. An agent is counted once, in the bucket of the day it was submitted, wherever it is now; its retries — the attempts after its first — are a second figure in the same bucket, never added to the agents. It can be broken down by agent type, model, workspace or pool account, and every breakdown comes from the same read.',
-      'The figures come from the daily rollup, the same days the Timeline reads. Each ended day is sealed nightly by the rollup job, so a read of sealed days re-derives nothing; the newest days are derived at Run. The read is billed by the days it covers in each workspace, which is why its price is on its own Run and nothing reads it on a timer.',
+      'The figures come from the daily rollup, the same days the Timeline reads. Each ended day is sealed nightly by the rollup job, so a read of sealed days re-derives nothing; the newest days are derived at Run. The read is billed by the days it covers in each workspace, which is why its price is part of the one printed on the page head’s Run, with the state counts’, and nothing reads it on a timer.',
       'The cost is the list price of what the agent CLI reported, not a bill: no billing export is read, so no figure is what was charged. A cost nothing reported is “not reported”, never $0. When only some agents reported one, the total is “at least” that figure, with how many of how many reported under it. An agent stopped before it reported carries the worker’s list-price estimate instead, which is in the total and also shown apart as estimated. Run hours are a floor in the same way when some attempts never wrote an end, and tokens when some attempts reported none.',
     ],
     see: ['withheld-total', 'admin-gate-not-failure'],
@@ -1341,6 +1367,19 @@ const SPECS: Record<TopicId, TopicSpec> = {
     ],
   },
 
+  'account-health': {
+    group: 'an-account',
+    title: 'An account’s health is the broker’s word, counted',
+    short:
+      'Each subscription account keeps a record of its rate-limit hits, provider errors, refusals and re-auths over 7 days. Its status (healthy, limited, erroring, needs re-auth) is the broker’s, and this page only counts and sorts it. A dash is a figure this deployment did not give, never a zero.',
+    long: [
+      'The broker decides the status, first match wins: needs re-auth when the credential was refused; limited while a recorded rate-limit hit has not reset or the window readings keep the account from a new agent; erroring with three or more errors in the last hour; healthy otherwise. Erroring accounts are still assigned work; limited and re-auth ones are withheld.',
+      'The timeline draws one mark per event the record still holds, the last 50 per account. Older events still count in the hourly strip and the 7-day totals, and the page says how many when there are any.',
+      'On a phone the events are grouped into incidents: a rate-limit hit opens one that later limit events join until its window resets; errors or credential events of one family within 45 minutes of each other are one incident; a refusal that names no window belongs to the re-auth incident. Open ones come first, each with its fix.',
+    ],
+    see: ['absent-vs-zero', 'account-states'],
+  },
+
   lending: {
     group: 'an-account',
     title: 'What lending an account does',
@@ -1688,7 +1727,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
   // are this topic now; the terminal command is a value, so it is drawn as
   // code (mono) and not as a clause of the sentence.
   'github-fallback-token': {
-    group: 'the-platform',
+    group: 'configuring-a-workspace',
     title: 'A fallback token is your own access, for one owner',
     short:
       'For an org that will not install the SwarmCloud App: a personal access token of yours, for one owner. SwarmCloud reaches that owner with it, as you, for the repositories you choose on Config › GitHub access; removing the owner there revokes it. Make a fine-grained token whose resource owner is the org. The same from a terminal:',
@@ -1701,7 +1740,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
   },
 
   'ceiling-change-evicts-nothing': {
-    group: 'the-platform',
+    group: 'administering-the-platform',
     title: 'Lowering a ceiling evicts nothing',
     short:
       'A change writes the ceiling and nothing else. The in-use counter belongs to the admission transaction and is never touched here, so running work keeps its slots and the pool simply admits nothing new until it drains.',
@@ -1718,7 +1757,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
   // working, not as a fault. A role "from the default" is a sighting: the
   // platform cannot list a Google group's members (workspace-roles.md §4.3).
   'people-and-roles-scope': {
-    group: 'the-platform',
+    group: 'administering-the-platform',
     title: 'People and roles shows the workspaces you administer',
     short:
       'A platform admin sees every person against every group workspace. A workspace admin sees only the workspaces they administer and the people in them: whoever was last seen there or holds a role there. A personal workspace request and a Claude account loan are a platform admin’s to decide.',
@@ -1740,6 +1779,150 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'So the comparison is shown with the number of rows it was computed over, and the conclusion is left to a reader who can see both.',
     ],
   },
+
+  // -------------------------------------------------------------------------
+  // Config: setting up a workspace (VQ-055, visual QA 2026-10-26; config-e.html)
+  //
+  // Help had no group for Config, Automate or Admin, and each Config page's
+  // `?` led to Help's first group. One topic per Config page, each the topic
+  // its page's `?` opens (App.tsx `PAGE_TOPIC`).
+  // -------------------------------------------------------------------------
+
+  'config-setup-strip': {
+    group: 'configuring-a-workspace',
+    title: 'The setup strip says what the workspace still lacks',
+    short:
+      'Across the top of every Config page: GitHub connected, Repositories chosen, Secrets set and People invited. A personal workspace has no one to invite, so it has three steps. A step the platform could not read is a dash with its reason and never counts as done.',
+    long: [
+      'Each step links to the Config page that completes it. GitHub connected and Repositories chosen are done when the workspace’s setup checklist says so; Secrets set is done when nothing registered needs a secret that is not stored, and otherwise names how many are missing and the first of them; People invited is done when someone other than you holds a role.',
+      'When every step is done the strip folds to “Setup complete”, and Show steps opens it again. The full checklist, with what comes after it, is Workspace setup under Workspace Settings.',
+    ],
+  },
+
+  'config-github-access': {
+    group: 'configuring-a-workspace',
+    title: 'GitHub access is what SwarmCloud may reach as you',
+    short:
+      'Connection is your sign-in to the SwarmCloud GitHub App; Choose repositories is where the App is installed and each repository set to not chosen, read or write. Connected is not installed: with no installation, no owner or repository is listed.',
+    long: [
+      'An owner the App is not installed on offers Install, or Request install for an org you do not own; a request waits for that org’s owner. An owner reached through a fallback token instead of the App says “via token”.',
+      'A read grant is enforced by SwarmCloud, not by GitHub, and the App never pushes a change under the repository’s workflows folder. Verifying a connection only reads, unless you run the push test, which creates and deletes one branch of its own.',
+      'Disconnect asks before it acts, and stops every agent of yours reaching GitHub as you.',
+    ],
+    see: ['github-fallback-token', 'config-repositories'],
+  },
+
+  'config-repositories': {
+    group: 'configuring-a-workspace',
+    title: 'A repository is chosen on GitHub access and registered on Repositories',
+    short:
+      'Repositories lists the repositories registered in the workspace, and each one chosen on GitHub access but not yet registered as a dashed card with Register. Nothing is added from Repositories itself: Add new repository opens GitHub access.',
+    long: [
+      'Registering needs the member role. Remove unregisters a repository after you type its owner and name, and turns off the grants on that repository’s secrets; it deletes nothing on GitHub.',
+      'Inside a repository, Index queues an ordinary agent that holds capacity like any other.',
+    ],
+  },
+
+  'secret-scopes': {
+    group: 'configuring-a-workspace',
+    title: 'A secret lives in one of three scopes',
+    short:
+      'A workspace secret may be granted to any member’s agents and is set by a workspace admin. Yours is read only by your own submissions. A repository secret is released only to agents that clone that repository. The same name in several scopes: yours wins, then the repository’s, then the workspace’s.',
+    long: [
+      'Every member can read the names of the workspace’s secrets and what each is granted to; no one can read a value back, not even the person who set it.',
+      'A secret of yours is written only in your personal workspace. Workspace and repository secrets are set by a workspace admin or a platform admin; a member whom GitHub calls an admin of a repository may set that repository’s secrets too.',
+      'A repository secret can be for agents or for GitHub Actions. Writing an Actions secret needs you to manage the workspace and to be an admin of the repository on GitHub; an environment that is not limited to the main branch asks you to type its name first.',
+      'When one name is set in several scopes, each row says which scope wins and which it overrides.',
+    ],
+    see: ['add-a-secret', 'credential-names-not-values'],
+  },
+
+  'add-a-secret': {
+    group: 'configuring-a-workspace',
+    title: 'A secret’s value is typed once, into a one-time form',
+    short:
+      'Add a secret asks where it lives, who it is for and which agents or servers are granted it, then opens a one-time form. The form works once, for ten minutes, is never prefilled, and stores the value write-only: it is never shown again.',
+    long: [
+      'The wizard has four steps: Scope, Destination, Who reads it (the name, its kind and what it is granted to) and the one-time form. Set and Replace on an existing secret open the same form.',
+      'A form opened from a link a terminal minted works the same way. A link already used, older than ten minutes or minted for someone else writes nothing, and says so.',
+      'Keys for agents and MCP servers are set, replaced and deleted on the Secrets page the same way, and the GitHub token’s status shows its kind, state and expiry, never a character of the token.',
+    ],
+    see: ['secret-scopes'],
+  },
+
+  'mcp-servers': {
+    group: 'configuring-a-workspace',
+    title: 'An MCP server is reached through the worker, never with its credential in the agent',
+    short:
+      'A registered MCP server is a name an agent can attach. The worker’s relay holds its credential, and the agent never sees it. Every member reads the list; in a group workspace only a platform admin registers, edits or disables a server.',
+    long: [
+      'A server takes no credential, a per-run credential the caller sends with each agent, or the workspace secret granted to it by name.',
+      'A server is disabled, never deleted, so which address an earlier agent called always has an answer.',
+      'Every call to a server leaves the platform from a fixed set of addresses, listed with the servers, so a server’s owner can allow them.',
+    ],
+    see: ['secret-scopes'],
+  },
+
+  'workspace-roles': {
+    group: 'configuring-a-workspace',
+    title: 'A role is viewer, member or admin, and the default covers everyone else',
+    short:
+      'Every member reads People and roles; a workspace admin or a platform admin sets a person’s role or the workspace’s default. Only people with a role of their own are listed; everyone else has the default, which is viewer or member.',
+    long: [
+      'Membership is the workspace’s Google group, which SwarmCloud cannot list or change, so there is no invitation: a role given to someone not yet in the group applies when they join.',
+      'A personal workspace has one person, and nothing to change.',
+    ],
+    see: ['people-and-roles-scope'],
+  },
+
+  'workspace-settings': {
+    group: 'configuring-a-workspace',
+    title: 'Workspace Settings holds its name, its setup and its code intelligence',
+    short:
+      'This workspace shows its name, id, kind, your role and the default role; an admin of a group workspace may rename it. Code intelligence is off until the workspace’s owner or a platform admin turns it on. Workspace setup is the full checklist.',
+    long: [
+      'A name is one to sixty characters, and the id never changes.',
+      'Add a new workspace is for platform admins. Anyone else is sent to request a workspace instead.',
+    ],
+    see: ['config-setup-strip'],
+  },
+
+  // -------------------------------------------------------------------------
+  // Admin: running the platform (VQ-055). Pages with no topic until then.
+  // -------------------------------------------------------------------------
+
+  'runner-sizes': {
+    group: 'administering-the-platform',
+    title: 'A runner size applies from the next admission',
+    short:
+      'Each class’s CPU request, CPU limit and memory, set by a platform admin with a reason. A change applies from the next admission and never to an agent already running. Cutting memory below what the class used in the last seven days asks you to type the class name.',
+    long: [
+      'Every version is kept with who changed it and why, and any earlier version, or the code’s defaults, can be restored.',
+      'Hints from measured use appear once a class has enough attempts to describe it.',
+    ],
+    see: ['requests-are-ceilings'],
+  },
+
+  'platform-secrets': {
+    group: 'administering-the-platform',
+    title: 'Platform secrets are status only',
+    short:
+      'Each secret the platform itself needs, with whether it is set, how many versions are enabled and how old the newest is. No value is shown and nothing is written from the console: the operator’s script writes every one.',
+    long: [
+      'The lead says whether any needs a look. A rotation within the last day is expected, not a fault.',
+    ],
+  },
+
+  'workspaces-you-admin': {
+    group: 'administering-the-platform',
+    title: 'Workspaces you admin lists every group workspace whose role for you is admin',
+    short:
+      'Open to every workspace admin, not only platform admins. Each workspace shows how far its setup is and links its settings, MCP servers, people and secrets; following a link switches to that workspace first. The one furthest behind leads.',
+    long: [
+      'A personal workspace is not listed: it has one person, and that person reaches its pages from Config.',
+    ],
+    see: ['workspace-roles'],
+  },
 }
 
 /**
@@ -1760,11 +1943,21 @@ export const HELP_PLACES = {
   'capacity/catalogue': 'Runtimes',
   'capacity/holders': 'Holders',
   'capacity/accounts': 'Subscription accounts',
+  'capacity/account-health': 'Account health',
   'capacity/quota': 'Provider quota',
   'admin/limits': 'Pool limits',
   'admin/tenants': 'Tenants',
   'admin/counts': 'Platform counts',
   'admin/people': 'People and roles',
+  'admin/runner-sizes': 'Runner sizes',
+  'admin/platform-secrets': 'Platform secrets',
+  'admin/workspaces': 'Workspaces you admin',
+  'config/github': 'GitHub access',
+  'config/repositories': 'Repositories',
+  'config/secrets': 'Secrets',
+  'config/mcp-servers': 'MCP servers',
+  'config/people': 'People and roles',
+  'config/workspace': 'Workspace Settings',
   'automate/schedules': 'Schedules',
   'automate/approvals': 'Approvals',
   // A Capacity page since NAV-FOOT (#1672); `reference` still lands there.
@@ -2147,6 +2340,10 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
     subject: 'Account ownership',
     act: { say: 'Check the tenant the session names before starting a sign-in.', at: 'capacity/accounts' },
   },
+  'account-health': {
+    subject: 'Account health',
+    act: { say: 'Open the worst account first: sign in again where re-auth is needed, and wait out a limit until its window resets.', at: 'capacity/account-health' },
+  },
   lending: {
     subject: 'Lending an account',
     act: { say: 'Name the tenants to lend to on the account, and edit the list later as needed.', at: 'capacity/accounts' },
@@ -2214,6 +2411,50 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   'clipboard-secure-context': {
     subject: 'A refused clipboard',
     act: { say: 'Select the link on screen and copy it by hand.' },
+  },
+  'config-setup-strip': {
+    subject: 'The Config setup strip',
+    act: { say: 'Follow the first step not done; a dash is a read that failed, not a step left undone.', at: 'config/workspace' },
+  },
+  'config-github-access': {
+    subject: 'GitHub access',
+    act: { say: 'Connect, then install the App on each owner and choose read or write per repository.', at: 'config/github' },
+  },
+  'config-repositories': {
+    subject: 'Registered repositories',
+    act: { say: 'Choose a repository on GitHub access, then register it.', at: 'config/repositories' },
+  },
+  'secret-scopes': {
+    subject: 'Secret scopes',
+    act: { say: 'Pick the narrowest scope that reaches the agents that need it.', at: 'config/secrets' },
+  },
+  'add-a-secret': {
+    subject: 'Adding a secret',
+    act: { say: 'Open Add a secret and type the value into the one-time form within ten minutes.', at: 'config/secrets' },
+  },
+  'mcp-servers': {
+    subject: 'Registered MCP servers',
+    act: { say: 'Ask a platform admin to register a server; grant its secret on Secrets.', at: 'config/mcp-servers' },
+  },
+  'workspace-roles': {
+    subject: 'Roles in a workspace',
+    act: { say: 'Set a person’s role, or the default, if you administer the workspace.', at: 'config/people' },
+  },
+  'workspace-settings': {
+    subject: 'Workspace settings',
+    act: { say: 'Rename the workspace or turn code intelligence on, if you may.', at: 'config/workspace' },
+  },
+  'runner-sizes': {
+    subject: 'Runner sizes',
+    act: { say: 'Change a size with a reason; restore an earlier version if it was a mistake.', at: 'admin/runner-sizes' },
+  },
+  'platform-secrets': {
+    subject: 'Platform secret status',
+    act: { say: 'Run the operator’s secrets script for any secret that is not set.', at: 'admin/platform-secrets' },
+  },
+  'workspaces-you-admin': {
+    subject: 'Workspaces you administer',
+    act: { say: 'Open the workspace furthest behind and finish its setup.', at: 'admin/workspaces' },
   },
 }
 

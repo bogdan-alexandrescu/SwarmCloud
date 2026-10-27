@@ -169,7 +169,9 @@ describe('1. the caption says what page the device is on', () => {
     expect(deviceCaption(session({ origin: { ...session().origin!, path: null } }))).toBe(
       'iPhone 15 · 393×852 · path not reported',
     )
-    expect(deviceCaption(session({ origin: null }))).toBe('iPhone 15 · 393×852 · path not reported')
+    // No origin at all is a page with no web address -- about:blank, as the
+    // frame shows (BT-014, #2423) -- not a path the gate failed to report.
+    expect(deviceCaption(session({ origin: null }))).toBe('iPhone 15 · 393×852 · no web address')
   })
 })
 

@@ -148,7 +148,12 @@ describe('the Claude account section names the account they are using', () => {
   it('lists every lent account, each with its lender', async () => {
     await mount(people([lentTo('hal@example.com', 'w-4a1000', [LENT_ENG, LENT_OPS])]))
     const section = sectionOf(await manage('hal@example.com'))
-    expect(visible(section)).toContain('Now using acct-eng-1 (eng shared), lent by Engineering; acct-ops-1 (ops shared), lent by Operations')
+    // The grid's one line, the accounts behind it (rendered review of PR 2464).
+    expect(visible(section.querySelector('.pp-loan-sum'))).toBe('2 accounts · lent by Engineering, Operations')
+    expect([...section.querySelectorAll('.pp-loan-list > li')].map((li) => visible(li))).toEqual([
+      'acct-eng-1 (eng shared), lent by Engineering',
+      'acct-ops-1 (ops shared), lent by Operations',
+    ])
   })
 
   it('says an account without a label by its id alone, and own and provider key as before', async () => {

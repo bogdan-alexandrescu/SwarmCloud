@@ -344,8 +344,8 @@ def test_text_the_agent_wrote_pings_nobody_and_cannot_fake_a_marker():
     assert "@‍octocat" in body and "@octocat" not in body
     assert "＠‍hubot" in body
     assert "refs #7" in body and "Fixes #7" not in body
-    assert "&lt;!-- swarmcloud-issue-run" in body
-    assert body.count("<!-- swarmcloud-issue-run") == 1 and body.startswith("<!-- swarmcloud-issue-run:run_abc123:plan -->")
+    assert "\\<!-- swarmcloud-issue-run" in body  # a backslash escape, not an entity (#2391)
+    assert body.replace("\\<!--", "").count("<!-- swarmcloud-issue-run") == 1 and body.startswith("<!-- swarmcloud-issue-run:run_abc123:plan -->")
     assert "ops@example.com" in body
 
 

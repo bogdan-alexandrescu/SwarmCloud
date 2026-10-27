@@ -38,6 +38,7 @@ import {
   OUTCOMES_CACHE_S,
   SPANS,
   VERIFY_TENANT,
+  spanWords,
   cacheable,
   alignedWords,
   dayDocWords,
@@ -66,6 +67,7 @@ import {
   type LedgerView,
   type OutcomeBucket,
   type Outcomes,
+  type OutcomesHead,
   type RowOutcome,
   type Span,
 } from './outcomes'
@@ -237,10 +239,11 @@ export function ActivityScreen({
   const closeRows = useCallback(() => setView({ ...view, rows: null, at: null, rowsKey: null }), [view, setView])
 
   // ---- the ledger read ---------------------------------------------------
-  // THE HEADLINE'S OWN READ, AND ONLY ITS SECTIONS (#377). The success rate,
-  // the drawing, the facts line and the provenance foot are the page: they
-  // read eagerly, and only what they draw (`LEDGER_SECTIONS`). Every card
-  // below reads its own part when it scrolls into view (`LedgerPart`).
+  // THE HEADLINE'S OWN READ, AND ONLY ITS SECTIONS (#377). The success rate
+  // and the drawing are the page: they read eagerly, and only what they draw
+  // (`LEDGER_SECTIONS`); the facts line's sealed days, the delta and the
+  // provenance foot follow in a second read (`LEDGER_LATE_SECTIONS`, #2422).
+  // Every card below reads its own part when it scrolls into view (`LedgerPart`).
   const key = useMemo(() => outcomesQuery(view, tz).toString(), [view, tz])
   const [nonce, setNonce] = useState(0)
   const [pending, setPending] = useState(true)
@@ -249,22 +252,57 @@ export function ActivityScreen({
   const [good, setGood] = useState<{ key: string; data: Outcomes; continues: boolean } | null>(null)
   /** How many buckets the last read of this query had built, so a continuation that builds nothing stops. */
   const built = useRef<{ key: string; read: number } | null>(null)
+  /**
+   * THE SECOND READ: `coverage` and `previous` (#2422). The headline's own read
+   * used to carry them, and VQ-021 measured it at 22.6 s at p95 because both
+   * cost reads of their own -- the terminal count and the span before. Now
+   * the figure and the drawing paint from `LEDGER_SECTIONS`, and this read is
+   * sent when they land; the route serves it from the same cached fold, so it
+   * pays for those two sections and nothing else. Until it lands, every
+   * figure it carries says it is still being read; when it fails, it says it
+   * was not read, and why. `lateGood` keeps the last answer of this query,
+   * with its own `generated_at`, while a refresh reads again.
+   */
+  const [late, setLate] = useState<{ key: string; result: Result<Outcomes> | null } | null>(null)
+  const [lateGood, setLateGood] = useState<{ key: string; data: LedgerLateData } | null>(null)
   useEffect(() => {
     let live = true
     setPending(true)
     // The same cast as the cards' (`loadPart`): the payload is the envelope and
-    // `LEDGER_SECTIONS`, which is all the headline, the drawing, the facts and
-    // the foot read (timeline.cards.test.tsx draws them from nothing more).
+    // `LEDGER_SECTIONS`, which is all the headline and the drawing read; what
+    // the facts, the delta and the foot take from `coverage` and `previous`
+    // comes from the second read below (timeline.cards.test.tsx draws them
+    // from nothing more).
     const ledger = loadOutcomes(new URLSearchParams(key), LEDGER_SECTIONS) as Promise<Result<Outcomes>>
     ledger.then((r) => {
       if (!live) return
       setLatest({ key, result: r })
-      if (r.status === 'ok' || r.status === 'stale') {
-        const before = built.current?.key === key ? built.current.read : null
-        built.current = { key, read: r.data.totals.buckets_read }
-        setGood({ key, data: r.data, continues: buildContinues(r.data, before) })
-      }
       setPending(false)
+      if (r.status !== 'ok' && r.status !== 'stale') return
+      const head = r.data
+      const before = built.current?.key === key ? built.current.read : null
+      built.current = { key, read: head.totals.buckets_read }
+      setGood({ key, data: head, continues: buildContinues(head, before) })
+      // Sent only after the headline has landed, so it never competes with it.
+      setLate({ key, result: null })
+      const rest = loadOutcomes(new URLSearchParams(key), LEDGER_LATE_SECTIONS) as Promise<Result<Outcomes>>
+      rest.then((l) => {
+        if (!live) return
+        setLate({ key, result: l })
+        if (l.status !== 'ok' && l.status !== 'stale') return
+        const data: LedgerLateData = {
+          coverage: l.data.coverage,
+          previous: l.data.previous,
+          reads: l.data.reads,
+          cached: l.data.cached,
+          generated_at: l.data.generated_at,
+        }
+        setLateGood({ key, data })
+        // The span before can be what is still building: whether the next read
+        // continues is decided again with it.
+        const merged = { ...head, coverage: data.coverage, previous: data.previous }
+        setGood((g) => (g !== null && g.key === key && g.data === head ? { ...g, continues: buildContinues(merged, before) } : g))
+      })
     })
     return () => {
       live = false
@@ -279,6 +317,23 @@ export function ActivityScreen({
   // from it. A failed read is forgotten, so "try again" reads again; a filter
   // change or a refresh starts afresh.
   const parts = useRef(new Map<string, Promise<Result<Outcomes>>>())
+  // THE CHART DRAWS FROM THE FIRST CARD READ THAT LANDS (visual QA VQ-021,
+  // 2026-10-26). The headline's read then also asked for `coverage` and `previous`,
+  // which cost reads of their own (`CARD_SECTIONS`), and QA met it at ~25 s
+  // (read p95 22.6 s) while the cards below had long drawn "partial · 10 of
+  // 14 days" from the same fold: a grey sweep the chart's size, with no word
+  // on it, under cards that had their figures. The headline now asks for
+  // `buckets` and `totals` alone (#2422), but a card's read can still land
+  // first, from the same cached fold. Every card asks for `buckets`
+  // and `totals`, which are all the chart, the rate and the partial mark
+  // draw, so until the headline lands the chart draws from the first card
+  // read of this query -- no request of its own, so the headline is still
+  // the only read on open (#377) -- and the sealed days, the delta and the
+  // foot say they are still being read.
+  const [early, setEarly] = useState<{ key: string; data: Outcomes } | null>(null)
+  /** The query the headline has drawn, so a card landing after it re-renders nothing here. */
+  const drawnKey = useRef<string | null>(null)
+  drawnKey.current = good?.key ?? null
   const loadPart = useCallback((query: string, sections: readonly OutcomeSection[], ask: string) => {
     const k = `${ask}\n${sections.join(',')}`
     let p = parts.current.get(k)
@@ -296,7 +351,9 @@ export function ActivityScreen({
       parts.current.set(k, p)
       const mine = p
       void mine.then((r) => {
-        if (r.status !== 'ok' && r.status !== 'stale' && parts.current.get(k) === mine) parts.current.delete(k)
+        if (r.status === 'ok' || r.status === 'stale') {
+          if (drawnKey.current !== query) setEarly({ key: query, data: r.data })
+        } else if (parts.current.get(k) === mine) parts.current.delete(k)
       })
     }
     return p
@@ -474,7 +531,10 @@ export function ActivityScreen({
   // below it already reading the whole span. While a read is still building,
   // the next one is asked `CONTINUE_BUILD_MS` after it lands; it stops when a
   // read builds nothing more, and while the page is idle.
-  const continuing = !pending && !idle && good !== null && good.key === key && good.continues
+  // Not while the second read is in flight: a continuation would abandon it,
+  // and the route would build the span before again for nobody.
+  const lateReading = late !== null && late.key === key && late.result === null
+  const continuing = !pending && !idle && !lateReading && good !== null && good.key === key && good.continues
   useEffect(() => {
     if (!continuing) return
     const t = setTimeout(() => setNonce((n) => n + 1), CONTINUE_BUILD_MS)
@@ -497,6 +557,9 @@ export function ActivityScreen({
   const failure: ApiError | null = !pending && settled?.status === 'error' ? settled.error : null
   const data = good?.data ?? null
   const dim = pending || (good !== null && good.key !== key)
+  const lateView: LedgerLate = good === null ? { state: 'reading' } : lateOf(good.key, late, lateGood)
+  /** This query's first `buckets` + `totals`, while its headline has not drawn (VQ-021). */
+  const first = early !== null && early.key === key && (good === null || good.key !== key) ? early.data : null
 
   // A zoom changes the buckets, so an open bucket's rows (named by its start) close with it.
   const zoom = (b: OutcomeBucket) =>
@@ -567,17 +630,42 @@ export function ActivityScreen({
         <LedgerFailed error={failure} onRetry={refresh} onMine={mine} />
       ) : (
         <>
-          {data === null ? (
-            <div className="ol-body">
-              <LedgerFacts data={null} pending view={view} />
-              {/* STILL READING IS NOT NOTHING REPORTED (§8.7): the moving sweep, at the chart's own geometry. */}
+          {first !== null ? (
+            // THE CHART BEFORE ITS HEADLINE'S READ (VQ-021): the buckets and
+            // totals that landed, with what is still out said in words.
+            <div className="ol-body" aria-busy="true">
+              <LedgerFacts data={null} late={{ state: 'reading' }} first={first} pending view={view} />
+              <LedgerSection
+                data={first}
+                // `coverage` and `previous` come only with the headline's second read.
+                late={{ state: 'reading' }}
+                first
+                continuing={false}
+                // Its figures ARE a card's read, so there is no headline to set beside the cards'.
+                cardsWhole={null}
+                view={view}
+                picked={picked}
+                onPick={setPicked}
+                onZoom={zoom}
+                figureLink={figureLink}
+              />
+            </div>
+          ) : data === null ? (
+            <div className="ol-body" aria-busy="true">
+              <LedgerFacts data={null} late={{ state: 'reading' }} pending view={view} />
+              {/* STILL READING IS NOT NOTHING REPORTED (§8.7): the moving sweep,
+                  at the chart's own geometry, and beside it what is being read
+                  (VQ-021: a grey sweep with no word on it for ~25 s read as a
+                  broken page). The sweep carries no text; the caption is its sibling. */}
+              <p className="ol-reading">{`Reading the outcome ledger for ${spanWords(view)}…`}</p>
               <div className="ctl-pending ol-pending" aria-hidden="true" />
             </div>
           ) : (
             <div className={dim ? 'ol-body ctl-stale-body' : 'ol-body'} aria-busy={pending}>
-              <LedgerFacts data={data} pending={pending} view={view} />
+              <LedgerFacts data={data} late={lateView} pending={pending} view={view} />
               <LedgerSection
                 data={data}
+                late={lateView}
                 continuing={continuing}
                 cardsWhole={cardsRead.length === 0 ? null : { whole: cardsRead.filter(Boolean).length, of: cardsRead.length }}
                 view={view}
@@ -651,7 +739,7 @@ export function ActivityScreen({
               {(d) => <CancelCausesCard data={d} picked={picked} />}
             </LedgerPart>
           </div>
-          {data !== null && <Provenance data={data} />}
+          {data !== null && <Provenance data={data} late={lateView} />}
         </>
       )}
 
@@ -688,20 +776,59 @@ export function narrowedTo(view: LedgerView, by: GroupBy, key: string): LedgerVi
 const OPEN_SKELETON = [78, 56, 64, 30] as const
 
 /**
- * What the page itself reads, eagerly: the headline, the drawing (and its
- * Table), the facts line and the provenance foot. `previous` is the delta,
- * `coverage` the facts line's sealed days and the foot.
+ * What the page itself reads first, eagerly: the headline figure, the drawing
+ * (and its Table) and the facts line's range. The first paint waits on this
+ * and nothing more (#2422).
  */
-const LEDGER_SECTIONS = ['buckets', 'totals', 'coverage', 'previous'] as const satisfies readonly OutcomeSection[]
+export const LEDGER_SECTIONS = ['buckets', 'totals'] as const satisfies readonly OutcomeSection[]
+
+/**
+ * What the page reads SECOND, once the headline has landed (#2422): `previous`
+ * is the delta, `coverage` the facts line's sealed days, the terminal agents
+ * the drawing cannot place, and the foot. They are the two sections that cost
+ * reads of their own -- `previous` the span before's days, `coverage` the
+ * terminal count -- so the headline no longer waits on them.
+ */
+export const LEDGER_LATE_SECTIONS = ['coverage', 'previous'] as const satisfies readonly OutcomeSection[]
+
+/** The second read's answer: its two sections, and what that read cost and when its fold was made. */
+type LedgerLateData = Pick<Outcomes, 'coverage' | 'previous' | 'reads' | 'cached' | 'generated_at'>
+
+/**
+ * Where the second read is for the payload on screen. `reading` and `failed`
+ * carry no figure: every place that draws one of these says which, and none
+ * draws a 0 for it.
+ */
+export type LedgerLate =
+  | { state: 'reading' }
+  | { state: 'failed'; error: ApiError }
+  | ({ state: 'ok' } & LedgerLateData)
+
+/**
+ * The second read for the query `key`: its failure, if the newest read of it
+ * failed; else its last answer (kept, with its own age, while a refresh reads
+ * again); else still reading.
+ */
+export function lateOf(
+  key: string,
+  late: { key: string; result: Result<Outcomes> | null } | null,
+  kept: { key: string; data: LedgerLateData } | null,
+): LedgerLate {
+  if (late !== null && late.key === key && late.result !== null && late.result.status === 'error') {
+    return { state: 'failed', error: late.result.error }
+  }
+  if (kept !== null && kept.key === key) return { state: 'ok', ...kept.data }
+  return { state: 'reading' }
+}
 
 /**
  * WHAT EACH CARD READS, AND NOTHING MORE (#377). Every card says how much of
  * the span it covers (`spanCoverage`), which is `totals` and `buckets`, so
  * every card asks for those two; the rest is the card's own block. "Time to
  * result" prints `wait_excluded` from `latency`, which carries it so the card
- * need not ask for all of `coverage` (a count() per terminal state per
- * tenant). The route caches the FOLD, keyed by the query without its sections
- * (the review of #391), so every card of one query in the same minute is a
+ * need not ask for all of `coverage` (and its terminal count). The route
+ * caches the FOLD, keyed by the query without its sections (the review of
+ * #391), so every card of one query in the same minute is a
  * projection of one scan; only `previous`, `coverage` and `workflows_failed`
  * cost reads of their own, once per fold (`swarm_api.outcomes.Outcomes.read`),
  * so no card asks for `previous`.
@@ -861,17 +988,21 @@ export const CONTINUE_BUILD_MS = 5_000
  * read before it of the same query (`readBefore`, null on the first). A read
  * that built nothing will not build more on the next, so it is left to the poll.
  */
-export function buildContinues(d: Outcomes, readBefore: number | null): boolean {
+export function buildContinues(d: OutcomesHead, readBefore: number | null): boolean {
   if (cacheable(d) || d.cached) return false
+  // `previous` and `coverage` are absent until the second read lands (#2422):
+  // then only the span's own buckets decide, and the decision is made again
+  // with them when they arrive.
   const unbuilt =
     d.buckets.some((b) => b.state === 'unread' && b.unread_reason === 'derive_budget') ||
-    (d.previous !== null && !d.previous.complete)
+    (d.previous !== undefined && d.previous !== null && !d.previous.complete)
   if (!unbuilt) return false
-  return d.coverage.derived_now > 0 || readBefore === null || d.totals.buckets_read > readBefore
+  const builtDays = d.coverage !== undefined && d.coverage.derived_now > 0
+  return builtDays || readBefore === null || d.totals.buckets_read > readBefore
 }
 
 /** The span a delta compares with, in words. */
-function prevWords(d: Outcomes): string {
+function prevWords(d: Pick<Outcomes, 'requested'>): string {
   return d.requested.span !== null ? `prev ${d.requested.span}` : 'prev period'
 }
 
@@ -880,9 +1011,10 @@ function prevWords(d: Outcomes): string {
  * previous span with a bucket unread, or with nothing decided, gives no delta
  * -- and says why, so a missing delta is not read as "no change".
  */
-export function deltaWords(d: Outcomes): string | null {
+export function deltaWords(d: OutcomesHead): string | null {
   const p = d.previous
-  if (p === null) return null
+  // Not asked for, or not read yet: the caller says which (`LedgerSection`).
+  if (p === undefined || p === null) return null
   // Nothing of THIS span was read: there is nothing to compare, and the
   // headline says so with the not-read mark.
   if (d.totals.buckets_read === 0) return null
@@ -901,6 +1033,8 @@ export function deltaWords(d: Outcomes): string | null {
  */
 function LedgerSection({
   data,
+  late,
+  first = false,
   continuing,
   cardsWhole,
   view,
@@ -910,6 +1044,15 @@ function LedgerSection({
   figureLink,
 }: {
   data: Outcomes
+  /** The second read's `coverage` and `previous` (#2422), or where it is. */
+  late: LedgerLate
+  /**
+   * Drawn from a card's `buckets` + `totals` read while the headline's own
+   * read is still out (VQ-021), so its second read (`late`) has not been sent:
+   * no delta and no orphan count, which that read carries, and one clause
+   * saying so in place of the delta's own "still being read".
+   */
+  first?: boolean
   /** The next read is already scheduled to continue this partial build. */
   continuing: boolean
   /** How many of the cards read so far covered the whole span, or null before any did. */
@@ -921,9 +1064,13 @@ function LedgerSection({
   figureLink: (outcome: RowOutcome, at: string | null) => RowLink
 }) {
   const t = data.totals
-  const delta = deltaWords(data)
-  const orphans = data.coverage.terminal_without_completed_at
   const cov = spanCoverage(data)
+  // The delta and the terminal agents come with the second read (#2422).
+  // Until it lands they say they are still being read; if it failed, that
+  // they were not read and why. Neither is ever drawn as a 0.
+  const delta = late.state === 'ok' ? deltaWords({ ...data, previous: late.previous }) : null
+  const prev = prevWords(data)
+  const orphans = late.state === 'ok' ? late.coverage.terminal_without_completed_at : null
   return (
     <section className="section ol-ledger" aria-labelledby="ol-rate-title">
       <div className="ol-head">
@@ -995,10 +1142,28 @@ function LedgerSection({
           </span>
         )}
         {delta !== null && <span className="ol-delta">{delta}</span>}
+        {/* Nothing of this span read: no delta whatever the span before says (`deltaWords`). */}
+        {late.state === 'reading' && !first && !cov.none && (
+          <span className="ol-delta is-reading">
+            <Mark kind="pending" say={`The span before (${prev}) is still being read, so the change against it is not drawn yet.`} /> {prev}: still being read
+          </span>
+        )}
+        {late.state === 'failed' && !cov.none && (
+          <span className="ol-delta is-unread">
+            <Mark kind="unread" say={`The span before (${prev}) could not be read (${late.error.message}), so there is no delta.`} /> {prev} not read, no delta
+          </span>
+        )}
+        {first && <span className="ol-q ol-reading">still reading the sealed days and the span before</span>}
       </p>
-      {orphans === null ? (
+      {/* AN EXCEPTION NOTE, so nothing while the second read is in flight: the
+          facts line's "sealed" says that read is still out. */}
+      {late.state === 'reading' ? null : orphans === null ? (
         <p className="ctl-panel-note">
-          <Mark kind="unread" say="The count of terminal agents with no completed_at could not be read." /> terminal agents
+          <Mark
+            kind="unread"
+            say={`The count of terminal agents with no completed_at could not be read${late.state === 'failed' ? ` (${late.error.message})` : ''}.`}
+          />{' '}
+          terminal agents
           without completed_at: not read
         </p>
       ) : orphans > 0 ? (
@@ -1014,7 +1179,14 @@ function LedgerSection({
       {view.table ? (
         <LedgerTable data={data} />
       ) : (
-        <OutcomeLedger data={data} picked={picked} onPick={onPick} onZoom={onZoom} figureLink={figureLink} />
+        <OutcomeLedger
+          data={data}
+          sealGraceS={late.state === 'ok' ? late.coverage.seal_grace_s : null}
+          picked={picked}
+          onPick={onPick}
+          onZoom={onZoom}
+          figureLink={figureLink}
+        />
       )}
     </section>
   )
@@ -1025,13 +1197,34 @@ function LedgerSection({
  * how much is sealed, and whose figures these are. The server resolves and
  * echoes the range; nothing here re-derives it.
  */
-function LedgerFacts({ data, pending, view }: { data: Outcomes | null; pending: boolean; view: LedgerView }) {
+function LedgerFacts({
+  data,
+  late,
+  first = null,
+  pending,
+  view,
+}: {
+  data: Outcomes | null
+  /** `coverage` comes with the second read (#2422). */
+  late: LedgerLate
+  /** The `buckets` + `totals` drawn before the headline's read landed (VQ-021): how much of the span they cover. */
+  first?: Outcomes | null
+  pending: boolean
+  view: LedgerView
+}) {
   if (data === null) {
     return (
       <ul className="ctl-facts ol-facts">
         <li className="ctl-fact">
           <Mark kind="pending" say="The outcome ledger is still being read." /> {view.span ?? 'range'}
         </li>
+        {/* HOW FAR THE READ IS, in the buckets' own unit; the sealed days are
+            `coverage`'s and are not printed until it lands. */}
+        {first !== null && (
+          <li className="ctl-fact">
+            {first.totals.buckets_read} of {first.totals.buckets} {unitWord(first.bucket)} read
+          </li>
+        )}
       </ul>
     )
   }
@@ -1052,27 +1245,40 @@ function LedgerFacts({ data, pending, view }: { data: Outcomes | null; pending: 
         <code>{data.basis.outcomes}</code>
       </li>
       <li className="ctl-fact">
-        {/* THE ROLLUP'S UNIT, NOT THE VIEWER'S DAYS: tenant-days on the UTC
+        {/* THE ROLLUP'S UNIT, NOT THE VIEWER'S DAYS: workspace-days on the UTC
             calendar, so a 14-day span reads "14 of 15 UTC days" and a platform
             view counts every tenant's (`dayDocWords`). */}
         <b>sealed</b>
-        {data.coverage.days.sealed} of {data.coverage.days.total} {dayDocWords(data, data.coverage.days.total)}
+        {late.state === 'ok' ? (
+          <>
+            {late.coverage.days.sealed} of {late.coverage.days.total} {dayDocWords(data, late.coverage.days.total)}
+          </>
+        ) : late.state === 'reading' ? (
+          <>
+            <Mark kind="pending" say="Which days are sealed is still being read, in its own request after the headline." /> still
+            being read
+          </>
+        ) : (
+          <>
+            <Mark kind="unread" say={`Which days are sealed could not be read (${late.error.message}).`} /> not read
+          </>
+        )}
         {inProgress ? ' · today so far' : ''}
       </li>
       {s.kind === 'tenant' ? (
         <li className="ctl-fact">
-          <b>tenant</b>
+          <b>workspace</b>
           <Id>{s.tenant_id}</Id>
         </li>
       ) : (
         <li className="ctl-fact">
           <b>platform</b>
-          {s.tenants.length} tenants
+          {s.tenants.length} workspaces
           {s.excluded.length > 0 && ` · ${s.excluded.join(', ')} excluded`}
           {!s.tenants_complete && (
             <>
               {' '}
-              <Mark kind="partial" say="The tenant listing stopped at its limit, so tenants past it are not in these figures." />
+              <Mark kind="partial" say="The workspace listing stopped at its limit, so workspaces past it are not in these figures." />
             </>
           )}
         </li>
@@ -1104,18 +1310,64 @@ function LedgerFacts({ data, pending, view }: { data: Outcomes | null; pending: 
  * (epic #222). The days built are rollup documents too (tenant-days over this
  * span and, when there is one, the span before it), so they take
  * `dayDocWords` like the sealed ones.
+ *
+ * TWO READS (#2422). The days sealed, live and built, and the span before,
+ * come from the page's second read (`LEDGER_LATE_SECTIONS`). Until it lands
+ * the foot says they are still being read, and a failed one says not read --
+ * no count stands in for either. Its cost is printed beside the headline's,
+ * and its age too whenever its fold is not the headline's.
  */
-function Provenance({ data }: { data: Outcomes }) {
-  const c = data.coverage
-  const generated = new Date(data.generated_at).toLocaleTimeString(undefined, { timeZone: data.tz, hourCycle: 'h23' })
-  const built = `${c.derived_now} ${dayDocWords(data, c.derived_now)} built by ${data.cached ? `the ${generated} read` : 'this read'}`
+function Provenance({ data, late }: { data: Outcomes; late: LedgerLate }) {
+  const tz = data.tz
+  const clock = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { timeZone: tz, hourCycle: 'h23' })
+  const generated = clock(data.generated_at)
+  // The headline's read only (#377): each card reads its own part, and says so by its own skeleton.
+  const head = data.cached ? `from the ${OUTCOMES_CACHE_S} s cache · 0 reads this request` : `${data.reads} reads for the headline; each card reads its own`
+  if (late.state !== 'ok') {
+    // THE SECOND READ IS OUT OR FAILED (#2422): no day count, no build count,
+    // no zero standing in for either.
+    return (
+      // Two short clauses, not one: each child of the run is nowrap, and the
+      // joined 50-character clause was cut at "still" in a 390 px foot (#2422).
+      <p className="ol-prov ctl-foot-run">
+        {late.state === 'reading' ? (
+          <>
+            <span>
+              <Mark kind="pending" say="The sealed days and the span before are still being read, in their own request after the headline." /> sealed
+              days: still being read
+            </span>
+            <span>span before: still being read</span>
+          </>
+        ) : (
+          <>
+            <span>
+              <Mark kind="unread" say={`The sealed days and the span before could not be read (${late.error.message}).`} /> sealed days: not
+              read
+            </span>
+            <span>span before: not read</span>
+          </>
+        )}
+        <span>{head}</span>
+        <span>{cacheable(data) ? `cached ${OUTCOMES_CACHE_S} s` : 'not cached: partial, the next read continues the build'}</span>
+        <span>generated {generated}</span>
+      </p>
+    )
+  }
+  const c = late.coverage
+  const lateAt = clock(late.generated_at)
+  // `derived_now` is the FOLD's: this page's read built them only when the fold
+  // is the one its headline just made; otherwise name the read by its time.
+  const ownFold = !data.cached && late.generated_at === data.generated_at
+  const built = `${c.derived_now} ${dayDocWords(data, c.derived_now)} built by ${ownFold ? 'this read' : `the ${lateAt} read`}`
   const clauses: ReactNode[] = [
     `${c.days.sealed} ${dayDocWords(data, c.days.sealed)} sealed`,
     c.days.live > 0 ? `${c.days.live} live` : null,
-    // The headline's read only (#377): each card reads its own part, and says so by its own skeleton.
-    data.cached ? `from the ${OUTCOMES_CACHE_S} s cache · 0 reads this request` : `${data.reads} reads for the headline; each card reads its own`,
-    cacheable(data) ? `cached ${OUTCOMES_CACHE_S} s` : 'not cached: partial, the next read continues the build',
+    head,
+    // The second read's own cost, and its own age when its fold is not the headline's.
+    late.cached ? 'sealed days and the span before from the cache' : `${late.reads} reads for the sealed days and the span before`,
+    cacheable({ ...data, previous: late.previous }) ? `cached ${OUTCOMES_CACHE_S} s` : 'not cached: partial, the next read continues the build',
     `generated ${generated}`,
+    late.generated_at !== data.generated_at ? `sealed days and the span before generated ${lateAt}` : null,
     c.derived_now > 0 ? built : null,
     c.reopened > 0 ? `${c.reopened} re-ended agents counted once` : null,
   ]
@@ -1141,11 +1393,11 @@ function LedgerFailed({ error, onRetry, onMine }: { error: ApiError; onRetry: ()
       <Absent
         kind="admin"
         heading="Platform scope is for administrators"
-        say="The platform-wide ledger is served to administrators only. Nothing failed, and your own tenant's ledger is readable."
+        say="The platform-wide ledger is served to administrators only. Nothing failed, and your own workspace's ledger is readable."
       >
-        Your own tenant’s ledger is one click away:{' '}
+        Your own workspace’s ledger is one click away:{' '}
         <button type="button" className="c-link is-sm" onClick={onMine}>
-          my tenant
+          my workspace
         </button>
       </Absent>
     )
@@ -1289,9 +1541,9 @@ function SubmittedBy({ view, setView }: { view: LedgerView; setView: (v: LedgerV
  * only; profile, submitter and kind; the Table toggle at the end. Every
  * control writes the address, and the server applies every filter.
  *
- * AT 390 (§7.2) the span keeps its 44px segments, with 24h and the range moved
- * into the filter sheet; everything else collapses behind `Filters · N`, and
- * the Table toggle stays in view.
+ * AT 390 (§7.2) the span keeps its 44px segments, every one of them on one row
+ * (VQ-024); everything else collapses behind `Filters · N`, and the Table
+ * toggle stays in view.
  */
 function LedgerToolbar({
   view,
@@ -1327,23 +1579,25 @@ function LedgerToolbar({
           ? 'all'
           : `all ${tenants.length}`
   // THE SPAN CONTROL, the canonical segmented control (#503 swap): every span
-  // and `from–to` on a wide screen; on a phone 24h and `from–to` move to the
-  // sheet (`is-wide-only` here, `ol-span-more` there).
+  // and `from–to`, at every width. On a phone it is one row that scrolls
+  // sideways if it must (visual QA VQ-024, 2026-10-26): 24h and `from–to`
+  // used to move into the sheet, and the four left wrapped 3+1 with 90d
+  // alone, so a phone offered fewer periods than the desktop and hid two of
+  // them behind `Filters`.
   const pickSpan = (k: Span | 'range') => (k === 'range' ? setRange(!range) : choose(k))
   const aligned = data === null ? null : alignedWords(data)
-  const spanOptions = (sheet: boolean) => [
-    ...SPANS.filter((s) => !sheet || s === '24h').map((s) => ({
+  const spanOptions = [
+    ...SPANS.map((s) => ({
       key: s as Span | 'range',
       label: s,
-      ...(!sheet && s === '24h' ? { className: 'is-wide-only' } : {}),
       // THE CHOSEN SPAN SAYS HOW IT WAS ALIGNED (QA G3-08): `24h` here is whole hours, not Lanes' last 24 hours.
       ...(aligned !== null && data?.requested.span === s ? { title: aligned } : {}),
     })),
-    { key: 'range' as const, label: 'from–to', ...(sheet ? {} : { className: 'is-wide-only' }) },
+    { key: 'range' as const, label: 'from–to' },
   ]
   return (
     <div className="ctl-toolbar ol-toolbar" role="group" aria-label="Timeline filters">
-      <Segmented className="ol-span" label="Span" value={view.span ?? 'range'} options={spanOptions(false)} onChange={pickSpan} />
+      <Segmented className="ol-span" label="Span" value={view.span ?? 'range'} options={spanOptions} onChange={pickSpan} />
       {back !== null && (
         // A zoom is a span change, and the chip is the way back to the span it came from.
         <button type="button" className="c-link is-sm ol-back" onClick={() => setView(back)}>
@@ -1359,9 +1613,10 @@ function LedgerToolbar({
       >
         Filters · {n}
       </button>
+      {/* OUTSIDE THE SHEET, since `from–to` is in the span control at every
+          width (VQ-024): on a phone the sheet is closed when it is tapped. */}
+      {(range || view.span === null) && <RangeInputs view={view} setView={setView} />}
       <div className={sheet ? 'ol-sheet is-open' : 'ol-sheet'} id="ol-sheet">
-        <Segmented className="ol-span-more" label="More spans" value={view.span ?? 'range'} options={spanOptions(true)} onChange={pickSpan} />
-        {(range || view.span === null) && <RangeInputs view={view} setView={setView} />}
         <label className="ol-field">
           Group by{' '}
           <select
@@ -1387,7 +1642,7 @@ function LedgerToolbar({
             label="Scope"
             value={view.platform ? 'platform' : 'tenant'}
             options={[
-              { key: 'tenant', label: 'my tenant' },
+              { key: 'tenant', label: 'my workspace' },
               { key: 'platform', label: 'platform' },
             ]}
             onChange={(k) =>
@@ -1399,7 +1654,7 @@ function LedgerToolbar({
         )}
         {admin && view.platform && (
           <Picker
-            label="Tenant"
+            label="Workspace"
             options={tenants}
             selected={view.tenant}
             summary={tenantSummary}

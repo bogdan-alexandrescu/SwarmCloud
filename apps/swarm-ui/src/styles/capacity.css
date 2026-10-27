@@ -263,19 +263,46 @@
    is ~400px, the whole of `provider:anthropic:tenant:u-bogdan`. Run 2 shot
    1440 with the nav open, the ~1054 table, so the name still did not fit on
    one line there: it now wraps rather than being cut (`.quota-feeds a`).
-   EACH PX WIDTH IS CAPPED AT ITS OLD SHARE (`min(Npx, N%)`, QA-057 review).
+   EACH PX WIDTH IS CAPPED AT ITS OLD SHARE (QA-057 review; a container
+   query since the VQ-036 review, below).
    In bare px the bounded columns are 724px: a 1280px viewport with the nav
    open (a ~894px table) left Feeds pool ~27px, and below ~1250px the fixed
    table outgrew its card and pushed Reported past its edge -- the regression
    V005/V013 exist to prevent. Capped, a table narrower than 1054 gives every
    column its old percentage again, so Feeds pool never has less than 15%. */
-.quota-table col.quota-c-tenant { width: 16%; }
-.quota-table col.quota-c-state { width: min(168px, 16%); }
-.quota-table col.quota-c-cap { width: min(116px, 11%); }
-.quota-table col.quota-c-left { width: min(104px, 10%); }
-.quota-table col.quota-c-429s { width: min(124px, 12%); }
-.quota-table col.quota-c-last { width: min(136px, 13%); }
-.quota-table col.quota-c-rep { width: min(76px, 7%); }
+/* TENANT IS AS WIDE AS A TENANT ID (VQ-036, visual QA pass 1). Its 16% was
+   ~170px of mostly empty column beside a Feeds pool of ~160px that broke
+   every name over two or three lines and cut its ceiling note. A tenant id
+   is short (`u-or-9a0792`, ~90px in the mono face), and a longer one is
+   middle-cut with its last eight kept (`MiddleCut`), so 120px holds it; the
+   ~50px it gives back go to Feeds pool, the one flexible column. Capped at
+   its old share for the reason the px widths are (QA-057 review). */
+/* A <COL> WIDTH IS A PLAIN LENGTH, NEVER `min()` (VQ-036 review, rendered
+   2026-10-26). Chromium drops a `min(px, %)` width on a column of this
+   fixed table and sizes it as auto, so all eight columns came out an equal
+   130px at 1440 with the nav open and Feeds pool still broke every name over
+   three lines. The cap the `min()` meant is a container query instead: the
+   px widths hold while the table is at least 993px, where their 844px leave
+   Feeds pool its 15% (149px); below that each bounded column takes its old
+   share, which leaves the pool exactly 15% again, so the two meet at 993.
+   At the ~1054px table (1440, nav open) Feeds pool is ~210px. */
+.quota-table { container: quota-table / inline-size; }
+.quota-table col.quota-c-tenant { width: 120px; }
+.quota-table col.quota-c-state { width: 168px; }
+.quota-table col.quota-c-cap { width: 116px; }
+.quota-table col.quota-c-left { width: 104px; }
+.quota-table col.quota-c-429s { width: 124px; }
+.quota-table col.quota-c-last { width: 136px; }
+.quota-table col.quota-c-rep { width: 76px; }
+@container quota-table (max-width: 992px) {
+  .quota-table col.quota-c-tenant { width: 16%; }
+  .quota-table col.quota-c-state { width: 16%; }
+  .quota-table col.quota-c-cap { width: 11%; }
+  .quota-table col.quota-c-left { width: 10%; }
+  .quota-table col.quota-c-429s { width: 12%; }
+  .quota-table col.quota-c-last { width: 13%; }
+  .quota-table col.quota-c-rep { width: 7%; }
+}
 .quota-table thead th { white-space: normal; }
 /* THE POOL NAME WRAPS AT ITS COLONS, WHOLE (QA-057, visual QA run 2). At
    1440 the column is ~160px and the name up to ~265px, so a one-line name
@@ -320,7 +347,10 @@
 .quota-table td[data-label='Last 429'] > .ctl-mark { white-space: nowrap; }
 /* The fed pool's ceiling, under its name (G5-02). The ` · ` is for text and
    screen readers; the line break already separates the two on screen. */
-.quota-ceiling { display: block; font-size: var(--t-meta); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* IT WRAPS, NEVER CUT (VQ-036): `ceiling 50 (provide…` lost what sets the
+   ceiling and where it sits against the cap -- the two words the note exists
+   for. It breaks between words, onto a second line under the name. */
+.quota-ceiling { display: block; font-size: var(--t-meta); color: var(--text-dim); white-space: normal; overflow-wrap: normal; }
 .quota-ceiling .quota-sep { display: none; }
 /* `(at last report)` on a stale document's 429 count (G5-03), in the text
    face (V156): in the figures' mono `9 (at last report)` was wider than its
@@ -332,7 +362,10 @@
 .quota-state { display: inline-flex; align-items: center; gap: 7px; font-size: var(--t-micro); color: var(--text); }
 @media (max-width: 899px) {
   .quota-table > table { table-layout: auto; width: max-content; min-width: 100%; }
-  .quota-table col { width: auto; }
+  /* `[class]` so it outranks the px and container widths above: in the
+     auto layout a px column width is a floor, and the max-content table
+     would grow by it. */
+  .quota-table col[class] { width: auto; }
 }
 
 
@@ -942,6 +975,57 @@ p.muted.rt-reason { margin: 0 0 var(--ctl-s3); }
      V086's `display: block` is gone -- the 8px gap it removed sits between
      the bar and the figure again, not before an empty track. */
   .cap-pools.is-stacked .cap-use > .ctl-util-track { display: flex; }
+
+  /* ONE COMPACT ROW PER POOL (VQ-032, visual QA pass 1; capacity.html A
+     phone, "rows keep name, figure and state (§7.3)"). The shared record gave
+     every pool six keyed lines -- Leased, Ceiling, Use, State, Set by `·`,
+     Links -- ~220px each, so 36 pools took ~35 screens and a full pool looked
+     like an idle one. The row is now the frame's: the name and its key on the
+     left, `46/50` and the links on the right, then the use bar beside the
+     state, ~80px in all. The keys go (the figure is read as the frame reads
+     it, leased over ceiling), and Set by keeps a line only when something
+     other than the configured limit sets the ceiling (`cap-by-cfg` is the
+     configured case, Capacity.tsx). The cells stay cells: the column heads
+     are still in the accessibility tree (the shared visually-hidden thead). */
+  .cap-pools.is-stacked > table > tbody > tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) max-content max-content;
+    grid-template-areas:
+      'name leased ceil'
+      'name open open'
+      'use use state'
+      'by by by';
+    gap: 2px var(--ctl-s2);
+    align-items: center;
+    padding: var(--ctl-s2) var(--ctl-pad-chrome);
+  }
+  .cap-pools.is-stacked > table > tbody > tr > th[scope='row'] {
+    grid-area: name;
+    align-self: start;
+    min-width: 0;
+    padding: 0;
+    font-size: var(--t-body);
+    line-height: var(--lh-body);
+  }
+  .cap-pools.is-stacked > table > tbody > tr > td {
+    display: block;
+    min-width: 0;
+    padding: 0;
+  }
+  .cap-pools.is-stacked > table > tbody > tr > td[data-label]::before { content: none; }
+  .cap-pools.is-stacked > table > tbody > tr > td[data-label='Leased (units)'] {
+    grid-area: leased;
+    align-self: start;
+    font-weight: 600;
+  }
+  /* `46` then `/50`: the frame's figure, leased over ceiling. */
+  .cap-pools.is-stacked > table > tbody > tr > td[data-label='Ceiling (units)'] { grid-area: ceil; align-self: start; }
+  .cap-pools.is-stacked > table > tbody > tr > td[data-label='Ceiling (units)']::before { content: '/'; }
+  .cap-pools.is-stacked > table > tbody > tr > td[data-label='Use'] { grid-area: use; }
+  .cap-pools.is-stacked > table > tbody > tr > td[data-label='State'] { grid-area: state; justify-self: end; }
+  .cap-pools.is-stacked > table > tbody > tr > td[data-label='Set by'] { grid-area: by; }
+  .cap-pools.is-stacked > table > tbody > tr > td.cap-by-cfg { display: none; }
+  .cap-pools.is-stacked > table > tbody > tr > td[data-label='Links'] { grid-area: open; align-self: end; justify-self: end; }
   /* The open record and its detail are one block: the detail takes no top
      padding of its own, and its cell no gap above the Fits table. */
   .cap-mx .is-stacked > table > tbody > tr.cap-mx-exp { padding-top: 0; }

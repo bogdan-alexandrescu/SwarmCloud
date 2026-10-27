@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type Ref } from 'react'
 
 import { loadAttempts } from './api'
-import { DECLARED_WORDS, NEVER_STARTED_WORD, type DagShape, type ResultUsage, type StepInputs, type StrayInput } from './dag'
+import { DECLARED_WORDS, MONO_ADVANCE_EM, NEVER_STARTED_WORD, type DagShape, type ResultUsage, type StepInputs, type StrayInput } from './dag'
 import type { Result } from './fetch'
 import { NO_ATTEMPT_YET, durationText, type Absence, type Cell } from './measure'
 import type { MarkHue, MarkName } from './marks'
@@ -604,9 +604,10 @@ const COLUMNS: ReadonlyArray<{ col: string; label: string; sort: SortKey | null;
  *
  * At the sheet's 96px every name past nine characters was cut -- `cold-start`,
  * `scan-scr…` -- while all the slack went to Why. The column now asks for its
- * longest name: the name's characters at the pick's mono advance (0.6em of
- * `--t-body`, DM Mono's, rounded up) plus the cell's and the button's 22px of
- * chrome. It is capped at the floor plus whatever the table's box has over its
+ * longest name: the name's characters at the pick's mono advance (DM Mono's
+ * measured `MONO_ADVANCE_EM` of `--t-body`, 0.602em; at a rounded 0.6em the
+ * face's real advance overran the column and cut the name's tail) plus the
+ * cell's and the button's 22px of chrome. It is capped at the floor plus whatever the table's box has over its
  * 980px minimum (`100cqi`: the `wf-steps` container the table sits in), so Why
  * keeps what it has at the minimum and a name longer than that is still cut,
  * whole in its title. The 96px floor is the sheet's `min-width`, which this
@@ -615,7 +616,7 @@ const COLUMNS: ReadonlyArray<{ col: string; label: string; sort: SortKey | null;
  */
 export function stepColumnWidth(rows: readonly { step: { step_id: string } }[]): CSSProperties {
   const longest = rows.reduce((n, r) => Math.max(n, r.step.step_id.length), 0)
-  return { width: `min(calc(${longest} * 0.6 * var(--t-body) + 22px), calc(96px + 100cqi - 980px))` }
+  return { width: `min(calc(${longest} * ${MONO_ADVANCE_EM} * var(--t-body) + 22px), calc(96px + 100cqi - 980px))` }
 }
 
 /**
@@ -1215,6 +1216,21 @@ export function shapeWords(shape: Pick<DagShape, 'steps' | 'levels' | 'text'>): 
   return `${shape.steps} step${shape.steps === 1 ? '' : 's'}${shape.levels > 1 ? ` in ${shape.levels} stages (${shape.text})` : ''}`
 }
 
+/**
+ * The shape's words with its parenthetical in a span of its own, so a phone
+ * moves `(1 → 2 → 1 → 1)` to the next line whole rather than breaking inside
+ * it (review of U02, #2391 comment 58). The text reads exactly as before.
+ */
+export function ShapeWords({ words }: { words: string }) {
+  const at = words.indexOf(' (')
+  if (at < 0) return <>{words}</>
+  return (
+    <>
+      {words.slice(0, at)} <span className="wf-scrub-paren">{words.slice(at + 1)}</span>
+    </>
+  )
+}
+
 function FactList({ facts, cause = null }: { facts: readonly Fact[]; cause?: string | null }) {
   return (
     <ul className="ctl-facts wf-inspect-facts">
@@ -1341,6 +1357,7 @@ export function StepInspector({
   children = null,
   changes = null,
   stepHeading = false,
+  idInHead = false,
 }: {
   workflowId: string
   /**
@@ -1399,6 +1416,12 @@ export function StepInspector({
    * and the workflow's name and times (the page head's) are not repeated.
    */
   stepHeading?: boolean
+  /**
+   * THE PAGE HEAD CARRIES THE WORKFLOW'S ID (VQ-015 re-review), behind its
+   * Copy id, so the same-step row does not render it. False on a card with
+   * no such head, which keeps the id on that row.
+   */
+  idInHead?: boolean
 }) {
   const taskId = row.taskId
   const [read, setRead] = useState<AttemptsRead>({ kind: 'reading' })
@@ -1719,7 +1742,7 @@ export function StepInspector({
             `5 → 1 · 6 steps`, the bare widths PR 1719 had explained in the
             page head (QA-119) and left unexplained here. */}
         <span className="wf-scrub-shape" title={`Only workflows of this shape are compared. ${shape.label}`}>
-          shape: {shapeWords(shape)}
+          shape: <ShapeWords words={shapeWords(shape)} />
         </span>
         {/* THE STRIP: every occurrence, in scrub order, in its own state's
             silhouette, with this one ringed. Decoration for a sighted reader
@@ -1747,7 +1770,11 @@ export function StepInspector({
             +{siblings.length - strip.to}
           </span>
         )}
-        <Id title={workflowId}>{workflowId}</Id>
+        {/* THE ID ONCE ON A WORKFLOW'S PAGE (VQ-015 re-review): the page
+            head's Copy id carries it, so this row does not render it again.
+            The position names the workflow and the strip's titles name each
+            one. A card with no such head keeps it here. */}
+        {idInHead ? null : <Id title={workflowId}>{workflowId}</Id>}
       </div>
     </section>
   )

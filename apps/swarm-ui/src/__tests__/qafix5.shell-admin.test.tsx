@@ -95,9 +95,11 @@ describe('5b:QA-018: Model prices fits its card at 1440', () => {
       const day = (f.getAttribute('aria-label') ?? '').startsWith('As of')
       // MUTATION: drop the width and each field is the browser's 20
       // characters: five of them pushed Cache write /M, Currency, Source,
-      // As of and Set by past the card's edge.
+      // As of and Set by past the card's edge. The day is one character
+      // over its ten (VQ-054): at exactly ten its placeholder was cut to
+      // `YYYY-MM-DI`.
       expect(painted(f, 'width', WIDE), `${f.getAttribute('aria-label')} has no width`).toBe(
-        day ? 'calc(10ch + 20px)' : 'calc(7ch + 20px)',
+        day ? 'calc(11ch + 20px)' : 'calc(7ch + 20px)',
       )
     }
     const heads = within(table).getAllByRole('columnheader')

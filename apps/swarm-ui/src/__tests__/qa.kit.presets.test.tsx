@@ -20,7 +20,7 @@ describe('QA-KIT: the phone-390 preset has one name on every screen', () => {
   })
 
   it('the theater offers it as a chip, after iPhone 15, in the gate’s order', () => {
-    expect(DEVICE_CHIPS.map(([name]) => name)).toEqual(['desktop', 'iphone-15', 'phone-390', 'pixel-8', 'iphone-se', 'ipad-7'])
+    expect(DEVICE_CHIPS.map(([name]) => name)).toEqual(['desktop', 'iphone-15', 'phone-390', 'phone-380', 'pixel-8', 'iphone-se', 'ipad-7'])
     expect(DEVICE_CHIPS.find(([name]) => name === 'phone-390')?.[1]).toBe('Phone 390')
   })
 
@@ -28,5 +28,18 @@ describe('QA-KIT: the phone-390 preset has one name on every screen', () => {
     expect(
       actionWords({ at: '2026-10-19T22:00:00Z', kind: 'control', event: 'device_changed', preset: 'phone-390', orientation: 'portrait', touch: true }),
     ).toBe('A person switched the device to Phone 390, portrait, touch on')
+  })
+})
+
+// IMPLEMENT-RENDER (#2442, BGD 2026-10-26): `phone-380`, phone-390 ten pixels
+// narrower, for a repository whose frames are drawn at 380. Same rule: one
+// name on every screen.
+describe('IMPLEMENT-RENDER: the phone-380 preset has one name on every screen', () => {
+  it('the Browser tab, the theater and its timeline all say "Phone 380"', () => {
+    expect(presetLabel('phone-380')).toBe('Phone 380')
+    expect(DEVICE_CHIPS.find(([name]) => name === 'phone-380')?.[1]).toBe('Phone 380')
+    expect(
+      actionWords({ at: '2026-10-26T10:00:00Z', kind: 'control', event: 'device_changed', preset: 'phone-380', orientation: 'portrait', touch: true }),
+    ).toBe('A person switched the device to Phone 380, portrait, touch on')
   })
 })

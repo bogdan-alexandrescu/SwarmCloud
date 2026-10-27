@@ -631,6 +631,21 @@ describe('members (Access B, on People and roles)', () => {
     expect(visible(rows[2]!)).toContain('not started')
   })
 
+  it('an empty member list names the workspace, not the tenant (VQ-056, TENANT-WORDING-C)', async () => {
+    // MUTATION: put back "Nobody in tenant {d.tenant_id}" in WorkspacePeople.tsx.
+    api((m, url) => (m === 'GET' && url === '/v1/access/members' ? { status: 200, body: { tenant_id: 'eng', members: [] } } : null))
+    await mountMembers()
+    await waitFor(() => expect(visible(document.querySelector('.ac-members'))).toContain('Nobody in workspace eng has connected GitHub'))
+    expect(visible(document.querySelector('.ac-members'))).not.toMatch(/tenant/i)
+  })
+
+  it('a members route this API does not serve says the workspace\'s members, not the tenant\'s (VQ-056)', async () => {
+    // MUTATION: put back `what="The tenant's members"` in WorkspacePeople.tsx.
+    api((m, url) => (m === 'GET' && url === '/v1/access/members' ? { status: 501, body: { detail: 'Not Implemented' } } : null))
+    await mountMembers()
+    await waitFor(() => expect(visible(document.querySelector('.ac-members'))).toContain("The workspace's members are not served by this API yet"))
+  })
+
   it('tells a non-admin the view is for admins', async () => {
     api((m, url) => (m === 'GET' && url === '/v1/access/members' ? { status: 403, body: { code: 'admin_required', message: "the tenant's members view is for admins" } } : null))
     await mountMembers()
@@ -952,14 +967,24 @@ describe('visual QA (VQA-L06)', () => {
     }
   })
 
-  it('V122: on a desktop the policy is the whole list, unfolded', async () => {
+  it('V122, S2b: on a desktop the policy is the checklist, every headline and short line open, how each is held one fold away', async () => {
+    // GITHUB-ACCESS-S2B (VQ-038): the three long paragraphs became S2b's
+    // right-hand checklist; the sentences stay in the page under "How".
     media(false)
     api()
     await mount()
     await policyDrawn()
     const rules = document.querySelector<HTMLElement>('.ac-rules')!
     expect(rules.classList.contains('is-folded')).toBe(false)
-    expect(rules.querySelector('details')).toBeNull()
+    expect(rules.classList.contains('is-check')).toBe(true)
+    // MUTATION: fold the headline itself behind a summary on a desktop, as the phone does.
+    expect([...rules.querySelectorAll('summary')].map((s) => s.textContent)).toEqual(['How', 'How', 'How'])
+    expect([...rules.querySelectorAll('.ac-rule-t > b')].map((b) => b.textContent)).toEqual([
+      'Read means read, and SwarmCloud enforces it.',
+      'No workflow changes.',
+      'Verifying only reads.',
+    ])
+    expect(visible(document.querySelector('[data-rule="D9"]'))).toContain('GitHub itself would let the push through')
   })
 
   it('V123: on a phone every Access control is 44px tall, and a segment or chip in a row is as wide as its words', async () => {

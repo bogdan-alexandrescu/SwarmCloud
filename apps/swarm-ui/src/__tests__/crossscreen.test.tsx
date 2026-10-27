@@ -287,10 +287,10 @@ describe('#98: one read age per screen', () => {
   })
 
   it("labels Overview's lead count as the checks it counts", async () => {
-    // The ruling (#98, 2026-10-07): the lead count is `checks ran/total ·
-    // found found N problems` -- the fraction is allowed, but it says what it
-    // is a fraction of. MUTATION: an unlabelled `{n}/{m}` fraction, or drop
-    // the `found N problems` half (QA-013: the problems, one per card).
+    // The ruling (#98, 2026-10-07): the lead count says what it is a count
+    // of. Since VQ-004 (2026-10-26) it is `N problems · R of T checks ran`:
+    // the problems, one per card (QA-013), then the checks they came from.
+    // MUTATION: an unlabelled `{n}/{m}` fraction, or drop the problems.
     window.history.replaceState(null, '', '/')
     render(<App />)
     const line = await waitFor(() => {
@@ -298,10 +298,10 @@ describe('#98: one read age per screen', () => {
       expect(el).not.toBeNull()
       return el!
     })
-    expect(line.textContent).toMatch(/^(checks \d+\/\d+ · \d+ found \d+ problems?|\d+ of \d+ checks still reading)$/)
+    expect(line.textContent).toMatch(/^(\d+ problems? · \d+ of \d+ checks ran|\d+ of \d+ checks still reading)$/)
     // Once every check has run, the settled form, labelled.
-    await waitFor(() => expect(line.textContent).toMatch(/^checks (\d+)\/(\d+) · \d+ found \d+ problems?$/), { timeout: 5000 })
-    const [, ran, total] = /^checks (\d+)\/(\d+)/.exec(line.textContent ?? '')!
+    await waitFor(() => expect(line.textContent).toMatch(/^\d+ problems? · (\d+) of (\d+) checks ran$/), { timeout: 5000 })
+    const [, ran, total] = /· (\d+) of (\d+) checks ran$/.exec(line.textContent ?? '')!
     expect(Number(ran)).toBeLessThanOrEqual(Number(total))
     expect(line.textContent).not.toMatch(/^\d+\/\d+/)
   })
@@ -423,7 +423,11 @@ describe('#138: the breadcrumb is the trail to the page, in links, and never the
     // MUTATION: the cost beside the button again, or the button bare.
     window.history.replaceState(null, '', '/admin/counts')
     render(<App />)
-    const button = await screen.findByRole('button', { name: /^Run the count · \d+(–\d+)? reads$/ })
+    // Every price `runPrice` draws: the state counts alone, or with the
+    // over-time view's half (#2149) as a total or a per-workspace rate.
+    const button = await screen.findByRole('button', {
+      name: /^Run the count · (\d+(–\d+)? reads|(\d+ reads, or )?\d+ reads \+ ~\d+ a workspace|(\d+–)?~\d+ reads)$/,
+    })
     expect(button.querySelector('.counts-cost'), 'the price is not inside the control').not.toBeNull()
   })
 })

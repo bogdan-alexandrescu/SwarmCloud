@@ -64,6 +64,8 @@ DESIGN = {
     # QA-KIT (owner decision 2026-10-19): the 390-wide phone a visual QA sweep
     # names, with iPhone 15's mobile flags.
     "phone-390": (390, 844, 3.0, True, "iPhone OS"),
+    # IMPLEMENT-RENDER (#2442, BGD 2026-10-26): phone-390, ten pixels narrower.
+    "phone-380": (380, 844, 3.0, True, "iPhone OS"),
     "pixel-8": (412, 915, 2.625, True, "Android"),
     "iphone-se": (375, 667, 2.0, True, "iPhone OS"),
     "ipad-7": (810, 1080, 2.0, True, "Macintosh"),
