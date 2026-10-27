@@ -175,7 +175,8 @@ describe('Admin › People: the Workspace roles card', () => {
     expect(visible(ops)).toContain('as before roles')
     const reads = calls.filter((c) => c.method === 'GET' && c.url.startsWith('/v1/admin/workspaces/'))
     expect(reads.map((c) => c.url)).toEqual(['/v1/admin/workspaces/roles'])
-    expect(calls.some((c) => c.url === '/v1/tenants/mine')).toBe(false)
+    // One read of `/v1/tenants/mine`: the page's, for the workspaces' names (VQ-056). The card never lists it.
+    expect(calls.filter((c) => c.url === '/v1/tenants/mine')).toHaveLength(1)
   })
 
   it('reads the next page with its token on "Show more workspaces"', async () => {

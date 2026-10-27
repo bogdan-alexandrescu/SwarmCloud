@@ -7780,12 +7780,16 @@ const FIXTURE_PEOPLE_COLUMNS = [
 /**
  * `GET /v1/admin/people` as the `workspace-admin` persona reads it (S5f):
  * eng alone, its people's cells and when they were last seen, nothing else.
+ * ops, a platform owner, is marked `platform_admin` as `people.mark_platform_admin`
+ * marks them in either read, so the scoped read draws "(platform admin)" too
+ * (ROLE-MARK; part of #2391).
  */
 function fixtureScopedPeople(): unknown {
   const people = [
     { email: 'alice@example.com', display_name: null, roles: { eng: 'admin' }, last_active: fixtureAgo(5 * 60_000) },
     { email: 'bob@example.com', display_name: 'Bob', roles: { eng: 'member' }, last_active: fixtureAgo(3 * FIXTURE_HOUR) },
     { email: 'erin@example.com', display_name: null, roles: { eng: 'viewer' }, last_active: null },
+    { email: 'ops@example.com', display_name: null, roles: { eng: 'admin' }, last_active: fixtureAgo(FIXTURE_HOUR), platform_admin: true },
   ]
   return { scope: 'workspaces', workspaces: [FIXTURE_PEOPLE_COLUMNS[0]], workspaces_error: null, people, count: people.length, pending: 0 }
 }
@@ -7794,6 +7798,9 @@ function fixtureScopedPeople(): unknown {
  * `GET /v1/admin/people` (run-4 admin-003): four people -- three signed in
  * with a ready workspace, one pending (a requested workspace) -- and one
  * admin, the persona. `count` and `pending` are counted from the rows.
+ * alice and bogdan, on the admins list, are marked `platform_admin` with admin
+ * in every column, as `people.role_cell` and `people.mark_platform_admin`
+ * serve them: the page draws "(platform admin)" from the marker alone (ROLE-MARK).
  */
 function fixturePeople(): unknown {
   const ws = (state: string, id: string | null, extra: Record<string, unknown> = {}) => ({
@@ -7811,7 +7818,7 @@ function fixturePeople(): unknown {
       first_seen: fixtureAgo(45 * 60_000), last_seen: fixtureAgo(40 * 60_000), last_submitted: null, last_active: fixtureAgo(40 * 60_000),
     },
     {
-      email: 'alice@example.com', display_name: null, teams: [FIXTURE_GROUP.principal], github: 'connected', roles: { eng: 'admin', research: 'none' },
+      email: 'alice@example.com', display_name: null, teams: [FIXTURE_GROUP.principal], github: 'connected', roles: { eng: 'admin', research: 'admin' }, platform_admin: true,
       workspace: ws('ready', FIXTURE_TENANT, { ready_at: fixtureAgo(9 * 24 * FIXTURE_HOUR) }),
       claude_account: claude('own', ownAccounts.length, 1, [FIXTURE_GROUP.tenant_id]), loan_request: null,
       first_seen: fixtureAgo(9 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(5 * 60_000), last_submitted: fixtureAgo(20 * 60_000), last_active: fixtureAgo(5 * 60_000),
@@ -7823,7 +7830,7 @@ function fixturePeople(): unknown {
       first_seen: fixtureAgo(6 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(3 * FIXTURE_HOUR), last_submitted: fixtureAgo(4 * FIXTURE_HOUR), last_active: fixtureAgo(3 * FIXTURE_HOUR),
     },
     {
-      email: 'bogdan@example.com', display_name: 'Bogdan Alexandrescu', teams: [FIXTURE_GROUP.principal], github: 'connected', roles: { eng: 'admin', research: 'member' },
+      email: 'bogdan@example.com', display_name: 'Bogdan Alexandrescu', teams: [FIXTURE_GROUP.principal], github: 'connected', roles: { eng: 'admin', research: 'admin' }, platform_admin: true,
       workspace: ws('ready', 'u-bogdan', { ready_at: fixtureAgo(12 * 24 * FIXTURE_HOUR) }),
       claude_account: { source: 'lent', own: 0, lent: 7, lent_by: ['eng'], provider_key: false, lent_accounts: Array.from({ length: 7 }, (_, i) => ({ account_id: i === 0 ? 'ai-eng-1-max' : `ai-eng-${i + 1}`, label: i === 0 ? 'ai-eng-1-max' : `ai-eng-${i + 1}`, owner_tenant: 'eng', owner_name: 'Engineering', state: 'AVAILABLE' })) },
       loan_request: null,

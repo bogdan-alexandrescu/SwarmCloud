@@ -103,7 +103,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Collection, Iterable, Mapping
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -132,6 +132,7 @@ from .gittokens import COLLECTION as GIT_TOKENS
 from .groups import GroupLookupError, MembershipResolver, check_group_readable
 from .preferences import Preferences, key_versions
 from .publish_workspace import MODE_CREATE, MODE_LIMITS, WorkspacePublisher
+from .roles import ADMIN
 from .store import TENANTS
 
 log = logging.getLogger(__name__)
@@ -253,14 +254,24 @@ ROLE_REQUESTED = "requested"
 
 def role_cell(email: str, teams: set[str], column: Mapping[str, Any],
               grants: Mapping[str, dict[str, str] | None],
-              requested: Mapping[str, set[str]] | None = None) -> str | None:
+              requested: Mapping[str, set[str]] | None = None, *,
+              platform_admins: Collection[str] = ()) -> str | None:
     """One person's role in one workspace, as the grid draws it: their own
     role when they hold one, else the workspace's default when they were last
     seen in it, else `requested` when they have an open join request there
     (`requested`: tenant_id -> requesters), else `none`; None when the
     workspace's roles were not read. The platform cannot list a Google
     group's members (`searchTransitiveGroups` is 403 here), so "in it" is the
-    last sighting's `teams`."""
+    last sighting's `teams`.
+
+    A PLATFORM ADMIN (`platform_admins`) IS `admin`, first and whatever their
+    grant says: `RoleStore.resolve`'s rule (roles.py, Q5), which reads no
+    grant for them, so an unread column changes nothing either. Config ›
+    People and roles, This workspace and Profile answer the same; the grid
+    drawing the stored `member` was the fourth answer (VQ-044, BGD
+    2026-10-26). A grant naming them stays stored and editable, and inert."""
+    if email in platform_admins:
+        return ADMIN
     tenant_id = column["tenant_id"]
     over = grants.get(tenant_id)
     if over is None:
@@ -270,6 +281,17 @@ def role_cell(email: str, teams: set[str], column: Mapping[str, Any],
     if tenant_id in teams:
         return column["default_role"]
     return ROLE_REQUESTED if email in (requested or {}).get(tenant_id, ()) else ROLE_NONE
+
+
+def mark_platform_admin(row: dict[str, Any], platform_admins: Collection[str]) -> None:
+    """`platform_admin: true` on a grid row whose cells come from `role_cell`'s
+    platform-admin rule, and nothing on anyone else's row. The page draws
+    "(platform admin)" under the cell's `admin` from this marker, not from the
+    admins list, which a workspace admin's scoped read does not serve: every
+    reader of the grid sees where the cell came from (BGD 2026-10-26, "Mark
+    the source"; lane ROLE-MARK, part of #2391)."""
+    if row["email"] in platform_admins:
+        row["platform_admin"] = True
 
 
 def requesters(join_requests: Iterable[Mapping[str, Any]] | None) -> dict[str, set[str]]:
@@ -1596,13 +1618,18 @@ class People:
 
     def add_roles(self, rows: list[dict[str, Any]], columns: list[dict[str, Any]],
                   grants: Mapping[str, dict[str, str] | None],
-                  join_requests: list[dict[str, Any]] | None = None) -> None:
-        """Each of `everyone()`'s rows gains `roles`: its cell in every column."""
+                  join_requests: list[dict[str, Any]] | None = None, *,
+                  platform_admins: Collection[str] = ()) -> None:
+        """Each of `everyone()`'s rows gains `roles`: its cell in every column,
+        `admin` in each for one of `platform_admins` (`role_cell`), whose row
+        also carries `platform_admin: true` (`mark_platform_admin`)."""
         requested = requesters(join_requests)
         for row in rows:
             teams = set(row.get("teams") or [])
-            row["roles"] = {c["tenant_id"]: role_cell(row["email"], teams, c, grants, requested)
+            row["roles"] = {c["tenant_id"]: role_cell(row["email"], teams, c, grants, requested,
+                                                      platform_admins=platform_admins)
                             for c in columns}
+            mark_platform_admin(row, platform_admins)
 
     def join_rows(self, views: Iterable[Any], labels: Mapping[str, str]) -> list[dict[str, Any]]:
         """The open join requests as a decider is shown them (join-requests.md
@@ -1622,7 +1649,8 @@ class People:
 
     def in_workspaces(self, role_store: Any, workspaces: Mapping[str, str],
                       join_requests: list[dict[str, Any]] | None = None,
-                      join_requests_error: str | None = None) -> dict[str, Any]:
+                      join_requests_error: str | None = None, *,
+                      platform_admins: Collection[str] = ()) -> dict[str, Any]:
         """A WORKSPACE ADMIN'S READ (S5f): only `workspaces`, the group
         workspaces they administer, and only the people in them -- whoever was
         last seen in one (`people/{id}.teams`) or holds a role of their own in
@@ -1636,7 +1664,12 @@ class People:
         these workspaces, `join_requests` as the route read them, and each
         requester's row with the `requested` cell, so a person with nothing
         else here still appears. They are all `pending` counts: a personal
-        workspace request and a loan stay a platform admin's to decide."""
+        workspace request and a loan stay a platform admin's to decide.
+
+        A PLATFORM ADMIN'S CELL is `admin` here too (`platform_admins`, the
+        emails the route read; `role_cell`): this read serves no admins list,
+        so the cell, and the row's `platform_admin` marker, are the only place
+        it can say so (`mark_platform_admin`). Who is a row is unchanged."""
         columns, grants = self.role_columns(role_store, workspaces)
         wanted = set(workspaces)
         join_requests = None if join_requests is None else [
@@ -1657,7 +1690,8 @@ class People:
             sight = seen.get(email) or {"teams": set(), "last": None}
             rows.append({
                 "email": email,
-                "roles": {c["tenant_id"]: role_cell(email, sight["teams"], c, grants, requested)
+                "roles": {c["tenant_id"]: role_cell(email, sight["teams"], c, grants, requested,
+                                                    platform_admins=platform_admins)
                           for c in columns},
                 "last_active": _iso(sight["last"]),
                 "_last": sight["last"] if isinstance(sight["last"], datetime) else None,
@@ -1667,6 +1701,7 @@ class People:
         for row in rows:
             row.pop("_last")
             row["display_name"] = names.get(row["email"])
+            mark_platform_admin(row, platform_admins)
         return {"scope": SCOPE_WORKSPACES, "workspaces": columns, "workspaces_error": None,
                 "people": rows, "count": len(rows), "pending": len(join_requests or ()),
                 "join_requests": join_requests, "join_requests_error": join_requests_error}
