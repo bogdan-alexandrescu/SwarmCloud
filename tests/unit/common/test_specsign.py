@@ -251,8 +251,9 @@ def test_the_golden_vector():
     canonical = canonical_step_spec(GOLDEN_DOC, task_id="task_0123456789abcdef", spec_format=1)
     assert canonical == GOLDEN_BYTES
     assert spec_digest(canonical).hex() == GOLDEN_SHA256
-    assert specsign.SPEC_FORMAT == 5
-    assert specsign.SPEC_FORMATS == (1, 2, 3, 4, 5)
+    # Format 6 is contract request 120 (`Task.budget`, #2459).
+    assert specsign.SPEC_FORMAT == 6
+    assert specsign.SPEC_FORMATS == (1, 2, 3, 4, 5, 6)
     assert specsign.SPEC_PURPOSE == "swarm.step-spec"
 
 

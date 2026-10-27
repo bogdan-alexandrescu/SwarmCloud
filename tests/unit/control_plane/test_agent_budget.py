@@ -21,9 +21,10 @@ What these hold:
     2026-10-26: "enforce at once"), so with no `REFUSAL_*` variable set the
     422s are served; switched off, the step still runs under the lower limit
     and the default is still capped;
-  * the resolved budget is pinned inside the SIGNED dispatch block;
-  * with no default and no step budget the stored dispatch block has no
-    `budget` key at all.
+  * the resolved budget is pinned in the SIGNED `Task.budget` (contract
+    request 120), where each limit came from in the signed dispatch block;
+  * with no default and no step budget the task has no `budget` and the
+    stored dispatch block no budget key at all.
 
 No credentials, no network: an in-memory Firestore and the real app.
 """
@@ -220,6 +221,8 @@ def test_with_no_default_and_no_step_budget_the_dispatch_block_is_unchanged(clie
     # MUTATION: write an empty budget block for every task and this fails: a
     # task with no budget stores exactly the block it stored before #2459.
     assert budget.DISPATCH_KEY not in _dispatch(doc)
+    assert budget.PROVENANCE_KEY not in _dispatch(doc)
+    assert doc["budget"] is None and response.json()["task"]["budget"] is None
     assert "budget" not in response.json()["task"]["dispatch"]
 
 
@@ -227,9 +230,10 @@ def test_a_step_budget_in_a_workspace_with_no_default_is_pinned(client, db):
     response = _submit(client, budget={"usd": 1})
     assert response.status_code == 201, response.text
     (doc,) = _tasks(db)
-    pinned = _dispatch(doc)["budget"]
-    assert pinned["usd"] == 1.0 and "tokens" not in pinned
-    assert pinned["from"] == {"step": {"usd": 1.0}, "workspace": {}, "ceiling": {}}
+    pinned = doc["budget"]
+    assert pinned == {"usd": 1.0}
+    assert _dispatch(doc)[budget.PROVENANCE_KEY] == {
+        "step": {"usd": 1.0}, "workspace": {}, "ceiling": {}}
     # The task's read shows it, for the console's agent row.
     assert response.json()["task"]["dispatch"]["budget"]["usd"] == 1.0
 
@@ -239,14 +243,14 @@ def test_the_workspace_default_reaches_a_task_that_names_none(client, db):
     assert _submit(client).status_code == 201
     (doc,) = _tasks(db)
     # MUTATION: never read the workspace default and the task has no budget.
-    assert _dispatch(doc)["budget"]["tokens"] == 15_000_000
+    assert doc["budget"]["tokens"] == 15_000_000
 
 
 def test_mixed_units_are_both_pinned(client, db):
     assert _put_default(client, "eng", "root", {"unit": "tokens", "amount": 15_000_000}).status_code == 200
     assert _submit(client, budget={"usd": 2}).status_code == 201
     (doc,) = _tasks(db)
-    pinned = _dispatch(doc)["budget"]
+    pinned = doc["budget"]
     assert (pinned["usd"], pinned["tokens"]) == (2.0, 15_000_000)
 
 
@@ -307,7 +311,7 @@ def test_a_workflow_step_budget_is_checked_and_pinned_per_step(client, db, refus
     ]
     response = client.post("/v1/workflows", headers=auth_header("alice"), json={"steps": steps})
     assert response.status_code == 201, response.text
-    by_step = {doc["step_id"]: _dispatch(doc).get("budget") for doc in _tasks(db)}
+    by_step = {doc["step_id"]: doc.get("budget") for doc in _tasks(db)}
     assert by_step["a"]["usd"] == 1.0
     assert by_step["b"]["usd"] == 3.0
     raised = [{**steps[0], "budget": {"usd": 4}}, steps[1]]
@@ -324,7 +328,7 @@ def test_off_a_step_that_asks_for_more_still_runs_under_the_lower_limit(client, 
     assert response.status_code == 201, response.text
     (doc,) = _tasks(db)
     # MUTATION: take the step's figure over the min and this is 5.
-    assert _dispatch(doc)["budget"]["usd"] == 2.0
+    assert doc["budget"]["usd"] == 2.0
 
 
 def test_off_a_default_above_the_ceiling_is_saved_and_capped(client, db, refusals_off):
@@ -332,4 +336,4 @@ def test_off_a_default_above_the_ceiling_is_saved_and_capped(client, db, refusal
     assert _put_default(client, "eng", "root", {"unit": "usd", "amount": 25}).status_code == 200
     assert _submit(client).status_code == 201
     (doc,) = _tasks(db)
-    assert _dispatch(doc)["budget"]["usd"] == 10.0
+    assert doc["budget"]["usd"] == 10.0
