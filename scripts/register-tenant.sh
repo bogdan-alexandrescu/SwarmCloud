@@ -2255,7 +2255,7 @@ elif [[ "${ADD_PROVIDER_GIVEN}" -eq 1 && -n "${TENANT_ID}" ]]; then
   # the document instead.
   :
 else
-  die "give either --group <group@saga.xyz> or --user <person@saga.xyz>
+  die "give either --group <group@example.com> or --user <person@example.com>
   (or, to add one provider to a tenant already registered: --tenant <id> --add-provider <provider>)"
 fi
 

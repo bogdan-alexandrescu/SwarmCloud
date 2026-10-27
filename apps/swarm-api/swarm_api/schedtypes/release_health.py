@@ -71,7 +71,7 @@ from urllib.parse import quote
 from ..errors import ApiError
 from ..forge import GITHUB_API_HOST
 from ..forgewrite import ISSUES_WRITE, ForgeWriteError, ForgeWriteForbidden, ForgeWriteNotFound, GitHubWriter
-from ..issuecomments import bounded, neutral
+from ..issuecomments import bounded, code, plain
 from ..redaction import redact
 from ..repositories import Repositories
 from ..scheduletypes import BudgetCaps
@@ -427,7 +427,13 @@ def read(writer: GitHubWriter, reading: Reading, params: Any, token: str,
 
 
 def _name(text: str | None, token: str) -> str:
-    return neutral(text or "unknown", NAME_CHARS, literals=(token,), one_line=True).replace("`", "'")
+    """A job, step or branch name for the title, which GitHub shows as text (#2391)."""
+    return plain(text or "unknown", NAME_CHARS, literals=(token,), one_line=True)
+
+
+def _code_name(text: str | None, token: str) -> str:
+    """The same name as a code span in a body: shown as typed, never as HTML."""
+    return code(text or "unknown", NAME_CHARS, literals=(token,))
 
 
 def title(workflow: str, branch: str, run: Run, failure: Failure, token: str) -> str:
@@ -460,11 +466,11 @@ def failure_text(reading: Reading, log_tail: str | None, token: str) -> str:
     run, failure = reading.subject, reading.failure or Failure(None, None, None)
     assert run is not None and reading.branch is not None
     lines = [
-        f"**{reading.workflow}** failed on `{_name(reading.branch, token)}` at `{run.sha}` "
+        f"**{reading.workflow}** failed on {_code_name(reading.branch, token)} at `{run.sha}` "
         f"({_run_line(run)}, `{run.conclusion}`).",
         "",
-        f"* Job: `{_name(failure.job, token)}`",
-        f"* Step: `{_name(failure.step, token)}`",
+        f"* Job: {_code_name(failure.job, token)}",
+        f"* Step: {_code_name(failure.step, token)}",
         "",
         excerpt(log_tail, token),
     ]

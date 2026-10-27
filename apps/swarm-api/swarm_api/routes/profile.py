@@ -4,7 +4,8 @@
                                   your connections, your bell settings and your
                                   Claude accounts, in one read
     PUT /v1/profile/preferences   replace your display name, default workspace
-                                  and bell settings, at the revision you read
+                                  and bell settings, and set your time zone, at
+                                  the revision you read
 
 FOR PEOPLE. A caller `Authenticator._special` names -- the schedule tick, the
 rollup sweeper, a listed service account, any service identity -- has no
@@ -91,14 +92,20 @@ class NotificationPreferences(StrictModel):
 
 
 class PreferencesWrite(StrictModel):
-    """The whole preference set; every field is required, so a save replaces
-    rather than merges and a missing field is a 422, not a silent reset."""
+    """The whole preference set; every field but `time_zone` is required, so a
+    save replaces rather than merges and a missing field is a 422, not a silent
+    reset. A missing `time_zone` keeps the stored one (below)."""
 
     display_name: str | None = Field(max_length=256)
     default_workspace: str | None = Field(max_length=128)
     notifications: NotificationPreferences
     #: The `revision` the last read returned: a stale one is a 409.
     revision: int
+    #: An IANA zone (`preferences.check_time_zone`), else a 422. The one
+    #: field that may be left out, and left out it keeps the stored zone: the
+    #: name, default and bell saves were written before it, and resetting a
+    #: person's zone because a save did not mention it is a silent reset.
+    time_zone: str | None = Field(default=None, max_length=64)
 
 
 @router.get("")
@@ -136,5 +143,6 @@ def put_preferences(
         muted=body.notifications.muted,
         reminder=body.notifications.reminder,
         revision=body.revision,
+        time_zone=body.time_zone,
     )
     return saved_profile(ctx, auth, stored)

@@ -103,7 +103,15 @@ def test_the_variable_is_written_with_the_app_token_scoped_to_variables(workflow
     """GITHUB_TOKEN has no `variables` scope; the App token asks for only that."""
     [mint] = [s for s in workflow["jobs"]["judge"]["steps"] if "create-github-app-token" in str(s.get("uses"))]
     perms = {k: v for k, v in mint["with"].items() if k.startswith("permission-")}
-    assert perms == {"permission-variables": "write"}
+    assert perms == {"permission-actions-variables": "write"}
+
+
+def test_the_mint_never_asks_for_the_variables_key_github_does_not_have(workflow):
+    """#2220, 2026-10-27: the action turns permission-<name> into the API key <name>
+    (dashes as underscores). `permission-variables` asked for `variables`, which GitHub
+    refuses as "not granted" whatever the installation holds; the key is `actions_variables`."""
+    for step in workflow["jobs"]["judge"]["steps"]:
+        assert "permission-variables" not in (step.get("with") or {}), step.get("name")
 
 
 def test_it_flips_the_documented_variable_and_label(workflow):
@@ -127,7 +135,7 @@ def test_the_script_reads_the_thresholds_from_env_not_literals(workflow):
 def test_the_docs_describe_the_fallback():
     text = CI_DOC.read_text()
     assert "### CI falls back to GitHub-hosted runners on its own" in text
-    for needle in ("runner-fallback.yml", "10 minutes", "15 minutes", "30 minutes", "permission-variables"):
+    for needle in ("runner-fallback.yml", "10 minutes", "15 minutes", "30 minutes", "permission-actions-variables"):
         assert needle in text, needle
 
 

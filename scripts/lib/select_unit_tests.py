@@ -30,6 +30,12 @@ WHAT IT SELECTS, for a change it can reason about:
     every file under scripts/ that names a changed script, transitively: a
     change to scripts/lib/common.sh reaches every script that sources it, and
     so every test that runs one of those;
+  * every test whose text names a doc that cites a changed path (doc_closure):
+    a docs/**/*.md naming a changed non-doc path by its FULL repo-relative
+    path counts as changed, one level deep. PR #2267 moved PushTestCell out of
+    Access.tsx while docs/onboarding.md still cited it there; the tests that
+    resolve the citation name only onboarding.md, so nothing selected them and
+    main's push went red (#2299);
   * `areas` -- docs and swarm-ui -- for the pick step's own directory-reader
     selection, when the change touches docs/ or apps/swarm-ui/.
 
@@ -240,6 +246,27 @@ def script_closure(root: Path, changed: list[str]) -> list[str]:
     return out
 
 
+def doc_closure(root: Path, changed: list[str]) -> list[str]:
+    """`changed` plus every docs/**/*.md whose text cites a changed non-doc
+    path by its full repo-relative path (#2299). Only the full path: a basename
+    -- App.tsx, main.py -- is shared by many files. One level deep, and a
+    changed doc cites nothing in: 55 docs cite CLAUDE.md, and following them
+    would make a docs-only change select hundreds of files."""
+    out = list(dict.fromkeys(changed))
+    cited = [c for c in out if not c.startswith("docs/") and not c.endswith(".md")]
+    base = root / "docs"
+    if not cited or not base.is_dir():
+        return out
+    for p in sorted(base.rglob("*.md")):
+        rel = str(p.relative_to(root))
+        if rel in out or SKIP_PARTS.intersection(p.relative_to(root).parts) or not p.is_file():
+            continue
+        text = p.read_text(errors="replace")
+        if any(c in text for c in cited):
+            out.append(rel)
+    return out
+
+
 # Where the one guard list lives (CI-GUARDS-ALWAYS). A bash array of one
 # path a line; lanes run it through changed-guards.sh, pull requests here.
 GUARD_SCRIPT = "scripts/changed-guards.sh"
@@ -288,8 +315,9 @@ def select(root: Path, changed: list[str], guards: list[str] | None = None) -> d
     # Imports.
     changed_py = [c for c in changed if c.endswith(".py") and c.startswith(("apps/", "scripts/", "tests/unit/"))]
     chosen.update(r for r in import_closure(root, changed_py) if is_test(r) and r in all_tests)
-    # Text: a test that names a changed path, or a script that names one.
-    virtual = script_closure(root, changed)
+    # Text: a test that names a changed path, a script that names one, or a
+    # doc that cites one by its full path.
+    virtual = script_closure(root, doc_closure(root, changed))
     for t in all_tests:
         if t in chosen:
             continue

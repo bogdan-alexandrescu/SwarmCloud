@@ -387,8 +387,9 @@ step's and the review's channel) and `issue_closed` on a closed issue unless
 `-git-wf` slot of owner decision Q3, which is removed with IAM row L-2).
 Before every `git_push_branch` swarm-api lists the paths the bundle's new
 commits touch, in a scratch repository holding the forge's prerequisite
-commits at depth 1 and the bundle's objects (`git log --name-only -m
---no-renames`), never from a list the request carries. When any is under
+commits at depth 1 and the bundle's objects (`git log --name-only
+--no-renames --diff-merges=combined`), never from a list the request
+carries. When any is under
 `.github/workflows/` or `.github/actions/` and the agent's own repository's
 registration has its `workflow_files` switch on (off by default; only a
 stored `true` is on, `platform: true` alone is not), swarm-api mints a
@@ -408,6 +409,28 @@ no workflow file mints nothing. The audit row names `credential:
 app_installation` and the `workflow_paths`, never the token. Merging such a
 change stays the owner's (`NEEDS_OWNER`, `STOP_WORKFLOWS`, lane FR-1)
 whatever the run's merge gate says ([design/agent-autonomy.md](design/agent-autonomy.md) §3.3).
+
+**A merge is listed combined, not per parent** (#2452). With `-m` git diffs
+a merge against each of its parents, so a lane that merged `main` named
+every workflow file `main` had changed since the branch was cut, through the
+merge, as the branch's own. On 2026-10-26, after PR 2446 changed
+`application.yml` and `release.yml`, two steps that merged `main` and changed
+no workflow file (task_1297d8f4, task_f2b72856) were sent here as workflow
+pushes and ended FAILED with an empty `workflow-lines.patch`.
+`--diff-merges=combined` names a merge's path only where the merge's result
+differs from **every** parent: a conflict resolved in a workflow file, or an
+"evil" merge that edits one, is still a workflow push; `main`'s own change,
+carried in unchanged, is not. Non-merge commits list as before, a rename
+away from `.github/workflows/` included. The worker's
+`Worker._workflow_paths` runs the same listing over the same range, and the
+two change together: they decide which route a branch takes, and if they
+disagreed the worker would send swarm-api a push it refuses, or push on the
+tenant token what swarm-api would have called a workflow push. Both images
+run Debian bookworm's git (2.39), and `--diff-merges` needs 2.31. The one
+case the listing does not name: a merge that keeps the branch's version of a
+file `main` also changed, where that version is already on origin. It goes
+out on the worker's own push; if GitHub refuses that for the `workflow`
+scope, the publish fails as any refused push does, the work kept.
 
 ## 2. The credential
 

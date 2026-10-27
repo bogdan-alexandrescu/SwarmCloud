@@ -280,6 +280,7 @@ from swarm_common.models import (
 )
 
 from .. import browser_tools, graphstage
+from ..budget import NOTE_ENV as BUDGET_NOTE_ENV
 from ..children import git_shim_argv, search_shim_argv
 from ..mcp_attach import MAX_SERVERS as MAX_MCP_SERVERS
 from ..mcp_attach import RELAY_ENV as MCP_RELAY_ENV
@@ -327,6 +328,10 @@ STDIN_HOOK = Path(__file__).resolve().parent / STDIN_HOOK_NAME
 #: and named by absolute path, as the stdin hook is.
 GATE_WAIT_HOOK_NAME = "gate_wait_hook.py"
 GATE_WAIT_HOOK = Path(__file__).resolve().parent / GATE_WAIT_HOOK_NAME
+#: The budget's 80% note (#2459), handed to the agent once by a PostToolUse
+#: hook: the one way text reaches a headless run mid-turn. Registered only
+#: when the worker named a note file (`agent_worker.budget.NOTE_ENV`).
+BUDGET_NOTE_HOOK = Path(__file__).resolve().parent / "budget_note_hook.py"
 
 #: Where agent-runtime-browser installed Chromium (its Dockerfile's ENV). Set
 #: only in that image; the lifecycle passes it to this runner by name.
@@ -748,7 +753,7 @@ def write_headless_settings(directory: Path) -> Path:
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     hook = directory / "refuse-background.py"
     _write_private(hook, _HOOK)
-    settings = {
+    settings: dict[str, Any] = {
         "env": {
             NO_BACKGROUND_ENV: "1",
             # Observer P21, owner decision 2026-10-06: the CLI's 2-minute
@@ -796,9 +801,10 @@ def write_headless_settings(directory: Path) -> Path:
             ]
         },
     }
+    post_tool_use: list[dict[str, Any]] = []
     spool = os.environ.get(HANDOFF_ENV, "").strip()
     if spool:
-        settings["hooks"]["PostToolUse"] = [
+        post_tool_use += [
             {
                 # Every tool: the call the pause blocks is a browser_* tool,
                 # a Bash `swarm_browser` script or anything else. Two small
@@ -814,6 +820,23 @@ def write_headless_settings(directory: Path) -> Path:
                 ],
             }
         ]
+    budget_note = os.environ.get(BUDGET_NOTE_ENV, "").strip()
+    if budget_note:
+        # A budgeted attempt only (#2459): after every tool, one rename and
+        # at most one small read; fails open, and tells the note once.
+        post_tool_use.append({
+            "matcher": "*",
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": f"{shlex.quote(sys.executable)} -I {shlex.quote(str(BUDGET_NOTE_HOOK))} "
+                               f"{shlex.quote(budget_note)}",
+                    "timeout": 10,
+                }
+            ],
+        })
+    if post_tool_use:
+        settings["hooks"]["PostToolUse"] = post_tool_use
     path = directory / "settings.json"
     _write_private(path, json.dumps(settings, indent=2) + "\n")
     return path
@@ -1064,6 +1087,11 @@ SPEC = CliAgentSpec(
     # repository's own checks on what the diff touches, with one fix turn
     # (`agent_worker.prepublish`).
     prepublish=True,
+    # The context ceiling (TOKEN-CEILING, BGD 2026-10-27, #2524): a session
+    # past 200k tokens of context or 150 tool calls is stopped at a turn
+    # boundary and the task carried on in a fresh session from a handoff,
+    # never `--resume` (`ceiling`).
+    context_ceiling=True,
     # The CLI warns on EVERY headless run that it ignores the settings' allow
     # list because the workspace is untrusted ("Ignoring 23 permissions.allow
     # entries from .claude/settings.json: this workspace has not been trusted.

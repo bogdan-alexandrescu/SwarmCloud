@@ -97,6 +97,10 @@ def _white(_x, _y):
     return (255, 255, 255, 255)
 
 
+def _black(_x, _y):
+    return (0, 0, 0, 255)
+
+
 # --------------------------------------------------------------------------
 # A DOM under node, for the scripts the capture evaluates in the page
 # --------------------------------------------------------------------------
@@ -327,6 +331,10 @@ class FakePage:
         # (width, height) of every screenshot (run 5b's admin phone shots,
         # 394x852 against the reading); None is first_shot's rule.
         self.every_shot = None
+        # True: the app answers prefers-color-scheme: dark, so a dark shot is
+        # drawn dark; False draws every shot the same whatever the scheme (an
+        # app with no dark theme, #1981 comment 8).
+        self.dark_theme = False
 
     def set_viewport_size(self, *_a, **_kw):
         raise AssertionError("swarm_qa resized the page; the gate owns the size")
@@ -339,10 +347,11 @@ class FakePage:
         self.url = url
         self.elapsed = 0
         self.log.append(("goto", url, kw.get("wait_until")))
-        reset = getattr(self.qa, "reset_state_script", None)
         origin = "/".join(url.split("/")[:3])
-        if reset is not None and reset(origin) in self.init_scripts:
-            self.storage.clear()
+        # An init script runs on a new document only: a same-document
+        # navigation (a hash route) keeps what the route before it left.
+        if not same_document:
+            self._run_init_scripts(origin)
         self.loaded_with[url] = sorted(self.storage)
         self.storage["visited:" + url[len(origin):]] = "1"
         if same_document:
@@ -352,6 +361,22 @@ class FakePage:
             for handler in self.handlers.get("response", []):
                 handler(_Response(sub_url, status))
         return _Response(url, self.statuses.get(self._path(), 200))
+
+    def _run_init_scripts(self, origin):
+        reset = getattr(self.qa, "reset_state_script", None)
+        if reset is not None and reset(origin) in self.init_scripts:
+            self.storage.clear()
+
+    def reload(self, **kw):
+        """A full load of the document the page shows: its init scripts run."""
+        self.elapsed = 0
+        self.log.append(("reload", self.url, kw.get("wait_until")))
+        origin = "/".join(self.url.split("/")[:3])
+        self._run_init_scripts(origin)
+        self.loaded_with[self.url] = sorted(self.storage)
+        self.storage["visited:" + self.url[len(origin):]] = "1"
+        self.fresh = True
+        return _Response(self.url, self.statuses.get(self._path(), 200))
 
     def add_init_script(self, script=None, **_kw):
         self.init_scripts.append(script)
@@ -446,6 +471,8 @@ class FakePage:
             self.fresh = False
             return _png(*self.first_shot, _white)
         self.fresh = False
+        if self.dark_theme and (self.media or {}).get("color_scheme") == "dark":
+            return _png(3, 2, _black)
         return _png(3, 2, _white)
 
     def inner_text(self, selector, **_kw):
@@ -1938,6 +1965,73 @@ def test_a_same_document_navigation_with_no_response_is_captured(qa, world):
     assert code == 0
     # MUTATION: treat a None response as a failure and a hash route is never captured.
     assert [r["id"] for r in _manifest(bundle)["routes"]] == ["runs-active"]
+
+
+def _hash_routes(world) -> None:
+    routes = json.loads(world.routes.read_text(encoding="utf-8"))
+    routes["groups"]["work-a"] = [{"id": "active", "path": "/todo#/active", "ready": "main h1"},
+                                  {"id": "completed", "path": "/todo#/completed", "ready": "main h1"}]
+    world.routes.write_text(json.dumps(routes), encoding="utf-8")
+
+
+def test_a_hash_route_after_a_route_of_the_same_document_gets_a_full_load(qa, world):
+    """Epic #1981, the fifth comment: `goto` between two hash routes of one
+    document is a same-document navigation, so RESET_STATE_JS (an init
+    script, run on a new document only) never ran and the second route drew
+    what the first left in storage."""
+    _hash_routes(world)
+    code, out, bundle = _capture(qa, world, presets="desktop", themes="light")
+    assert code == 0
+    log = world.page.log
+    second = log.index(("goto", CONSOLE + "/todo#/completed", "load"))
+    # MUTATION: drop the forced load and the second hash route is never reloaded.
+    assert ("reload", CONSOLE + "/todo#/completed", "load") in log[second:], log[second:]
+    completed = (out / "work-a" / "completed--desktop--light.txt").read_text(encoding="utf-8")
+    # MUTATION: the same, seen from the page: what the first route stored is
+    # still there when the second is captured.
+    assert "visited:/todo#/active" not in completed.rsplit("storage at load ", 1)[1], completed
+    entries = {r["id"]: r for r in _manifest(bundle)["routes"]}
+    # MUTATION: force a load and never say so, and the reviewer cannot tell.
+    assert entries["active"]["reloaded"] is False and entries["completed"]["reloaded"] is True, entries
+
+
+def test_keep_storage_never_reloads_a_same_document_hash_route(qa, world):
+    """An own-login target's storage holds its session: a forced load would
+    keep it (no reset script), but the capture keeps the navigation it was
+    asked for."""
+    _hash_routes(world)
+    code, _out, bundle = _capture(qa, world, "--keep-storage", presets="desktop", themes="light")
+    assert code == 0
+    # MUTATION: force the load whatever --keep-storage says and a reload is logged.
+    assert not [e for e in world.page.log if e[0] == "reload"], world.page.log
+    assert {r["id"]: r["reloaded"] for r in _manifest(bundle)["routes"]} == {"active": False, "completed": False}
+
+
+def test_the_manifest_says_whether_the_dark_captures_differ_from_the_light(qa, world):
+    """Epic #1981, the eighth comment: an app with no dark theme draws its
+    dark capture the same as its light one, and "dark mode is ignored" was
+    filed against it. The manifest records the fact for the reviewer."""
+    code, _out, bundle = _capture(qa, world, presets="desktop")
+    assert code == 0
+    routes = _manifest(bundle)["routes"]
+    # MUTATION: never record the comparison and this key is missing.
+    assert routes and all(r["dark_differs"] is False for r in routes), routes
+    world.page.dark_theme = True
+    world.page.log.clear()
+    code, _out, bundle = _capture(qa, world, presets="desktop", group="other")
+    assert code == 0
+    routes = _manifest(bundle)["routes"]
+    # MUTATION: compare the light shots with themselves and a dark theme reads False.
+    assert routes and all(r["dark_differs"] is True for r in routes), routes
+
+
+def test_a_capture_in_one_theme_says_nothing_of_the_dark_one(qa, world):
+    code, _out, bundle = _capture(qa, world, presets="desktop", themes="light")
+    assert code == 0
+    routes = _manifest(bundle)["routes"]
+    # MUTATION: record False with no dark capture to compare and a light-only
+    # run claims the app has no dark theme.
+    assert routes and all(r["dark_differs"] is None for r in routes), routes
 
 
 def test_an_http_error_subresource_is_recorded_with_its_url_and_status(qa, world):

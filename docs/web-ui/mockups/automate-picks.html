@@ -1,0 +1,237 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="icon" href="data:,"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Automate: pick a design</title>
+<style>
+:root{--bg:#f3f6f9;--surface:#ffffff;--ink:#0d1724;--mute:#4f5d6e;--line:#d6e0ea;--accent:#0369a1;--soft:#e5f3fc;--code:#e9f0f6;--ctl:#7d8ea3;--warn:#805500;--warn-bg:#fbf1dc;
+--f-display:"Inter Tight",ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;--f-mono:"DM Mono",ui-monospace,SFMono-Regular,Menlo,monospace;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#06101e;--surface:#0c1a2e;--ink:#eef4fa;--mute:#9fb0c4;--line:#1e3350;--accent:#7cc8f8;--soft:#10294a;--code:#12233b;--ctl:#5f7087;--warn:#e0b04a;--warn-bg:#33270c;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#06101e;--surface:#0c1a2e;--ink:#eef4fa;--mute:#9fb0c4;--line:#1e3350;--accent:#7cc8f8;--soft:#10294a;--code:#12233b;--ctl:#5f7087;--warn:#e0b04a;--warn-bg:#33270c;color-scheme:dark}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 var(--f-display);overflow-x:hidden}
+code{font-family:var(--f-mono);font-size:13px;background:var(--code);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+a{color:var(--accent)}
+button,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 16px 160px}
+.topbar{background:var(--bg);border-bottom:1px solid var(--line)}
+.topbar .in{max-width:1180px;margin:0 auto;padding:8px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.topbar .in span{font-size:13px;color:var(--mute);flex:1;min-width:200px}
+.tseg{display:inline-flex;border:1px solid var(--ctl);border-radius:8px;overflow:hidden;background:var(--surface)}
+.tseg button{border:0;background:none;padding:4px 10px;font-size:12px;cursor:pointer;color:var(--mute)}
+.tseg button+button{border-left:1px solid var(--line)}
+.tseg button[aria-pressed="true"]{background:var(--soft);color:var(--accent);font-weight:600}
+.kick{font:500 13px var(--f-mono);color:var(--accent);margin:0}
+h1{font-size:clamp(28px,5vw,40px);line-height:1.1;margin:.3em 0 .4em}
+h2{font-size:24px;line-height:1.25;margin:56px 0 6px;padding-top:20px;border-top:1px solid var(--line)}
+h2 .n{font:500 14px var(--f-mono);color:var(--accent);margin-right:10px}
+.lede{font-size:17px;color:var(--mute);max-width:780px}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:20px 0 0;padding:0;list-style:none}
+.toc a{display:inline-block;padding:6px 12px;border:1px solid var(--line);border-radius:99px;color:var(--ink);text-decoration:none;font-size:13px;background:var(--surface)}
+.ex{font:500 12px var(--f-mono);color:var(--warn);background:var(--warn-bg);border-radius:99px;padding:0 6px;white-space:nowrap}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:14px}
+@media (max-width:760px){.grid{grid-template-columns:1fr}}
+.pc{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.pc.picked{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent)}
+.ph2{display:flex;align-items:center;gap:10px}
+.ph2 h3{margin:0;font-size:16px}
+.badge{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;background:var(--soft);color:var(--accent);font:650 14px var(--f-mono);flex:none}
+.pc p{margin:0;font-size:14px;color:var(--mute)}
+.pc h4{margin:4px 0 0;font-size:13px}
+.pc ul{margin:0;padding-left:18px;font-size:13px;color:var(--mute)}
+.pc ul li{margin:2px 0}
+.pacts{display:flex;gap:8px;flex-wrap:wrap;margin-top:auto;padding-top:6px}
+.btn{display:inline-flex;align-items:center;gap:7px;min-height:34px;padding:0 12px;border-radius:8px;border:1px solid var(--ctl);background:var(--surface);font-size:13px;font-weight:600;cursor:pointer;color:var(--ink);text-decoration:none;text-align:left}
+.btn.ghost{border-color:var(--line)}
+.btn[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--surface)}
+.need{font-size:14px;color:var(--mute);margin:0;max-width:880px}
+.tabs{display:flex;gap:0;margin-top:14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.tabs [role="tab"]{border:1px solid transparent;border-bottom:0;background:none;padding:8px 14px;font-size:14px;cursor:pointer;color:var(--mute);border-radius:8px 8px 0 0;margin-bottom:-1px;display:inline-flex;align-items:center;gap:8px}
+.tabs [role="tab"][aria-selected="true"]{background:var(--surface);border-color:var(--line);color:var(--ink);font-weight:600}
+.tabs [role="tab"] .mk{font-size:12px;color:var(--accent);font-weight:600}
+.panel{background:var(--surface);border:1px solid var(--line);border-top:0;border-radius:0 0 12px 12px;padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+.panel .take{margin:0;font-size:14px;color:var(--ink);max-width:900px}
+.pv{position:relative;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--bg)}
+.pv iframe{position:absolute;top:0;left:0;border:0;transform-origin:0 0;pointer-events:none;background:var(--bg)}
+.pv .pvload{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--mute);padding:12px;text-align:center}
+.links{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:13px;align-items:baseline}
+.links .lbl{color:var(--mute)}
+.pick{margin-top:14px;display:flex;flex-direction:column;gap:8px}
+.pick .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.pick .row .lbl{font-size:14px;font-weight:600;margin-right:4px}
+.pick label{font-size:13px;color:var(--mute)}
+.pick textarea{width:100%;min-height:56px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--surface);color:var(--ink);font-size:14px;resize:vertical}
+.tray{position:fixed;left:0;right:0;bottom:0;z-index:20;background:var(--surface);border-top:1px solid var(--line);box-shadow:0 -8px 24px rgba(11,58,122,.12)}
+.tray .in{max-width:1180px;margin:0 auto;padding:10px 16px;display:flex;align-items:center;gap:8px 14px;flex-wrap:wrap}
+.tray b.t{font-size:14px}
+.tray .chips{display:flex;gap:6px;flex-wrap:wrap;flex:1;min-width:0}
+.tray .tc{font-size:13px;padding:2px 9px;border-radius:99px;border:1px solid var(--line);background:var(--bg);white-space:nowrap}
+.tray .tc.set{border-color:var(--accent);color:var(--accent);font-weight:600;background:var(--soft)}
+.tray .done{font-size:13px;color:var(--mute)}
+.tray textarea{position:absolute;left:-9999px;width:1px;height:1px}
+.tray textarea.show{position:static;left:auto;flex-basis:100%;width:100%;height:120px;font:13px var(--f-mono);border:1px solid var(--line);border-radius:8px;padding:6px 8px;background:var(--bg);color:var(--ink)}
+@media (max-width:640px){.wrap{padding:20px 12px 220px}h2{margin-top:40px}.tray .in{padding:8px 12px}.tray .chips{flex-basis:100%;order:3}.tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))}.tabs [role="tab"]{padding:8px 4px;justify-content:center;font-size:13.5px}.tabs [role="tab"] .mk{display:none}.panel{padding:12px}}
+</style></head><body>
+<div class="topbar"><div class="in"><span>The picks page: four Automate proposals, seven frames</span><div class="tseg" role="group" aria-label="Theme"><button type="button" data-set="light">Light</button><button type="button" data-set="dark">Dark</button><button type="button" data-set="system">System</button></div></div></div>
+<div class="wrap">
+<p class="kick">SwarmCloud · Automate · the picks page · 2026-10-26 · part of #2417</p>
+<h1>Automate: pick a design</h1>
+<p class="lede">Four complete proposals for the console’s Automate section, each drawn in the Config E and Subscription accounts style. Every proposal draws the same seven frames, A1 to A7, from the same kind of example data, so any frame can be taken from any proposal. For each frame, pick one proposal or none of these, add a note if you want, then press <b>Copy my picks</b> and paste the text into #2417.</p>
+<p>Under each frame, the tabs switch between the four proposals’ versions. The preview is that proposal’s own frame, live and scaled down; it shows the top of the frame. To read a frame, open it at full size: the link opens the proposal at that frame. Every figure in the proposals is an <span class="ex">example</span>. Your picks and notes are kept in this browser for convenience; the copied text is the record.</p>
+<ul class="toc"><li><a href="#proposals">The four proposals</a></li><li><a href="#A1">A1 Landing</a></li><li><a href="#A2">A2 One schedule</a></li><li><a href="#A3">A3 New or edited schedule</a></li><li><a href="#A4">A4 Approvals</a></li><li><a href="#A5">A5 One approval</a></li><li><a href="#A6">A6 Empty and honest states</a></li><li><a href="#A7">A7 Phone</a></li></ul>
+
+<h2 id="proposals">The four proposals</h2>
+<p class="need">Each proposal’s idea, and the fields it needs that the API does not serve today, as its own “New fields” list names them. Every other figure it draws is served by <code>apps/swarm-api</code> today or derived from served fields.</p>
+<div class="grid">
+<article class="pc" data-p="a"><div class="ph2"><span class="badge">A</span><h3>List and side sheet</h3></div>
+<p>Automate keeps its two tabs, Schedules and Approvals. Each opens on a one-sentence lead that names what needs you, then one dense table. A schedule or an approval opens in a right side sheet over its list, as an account does on Subscription accounts, so the next row is one click away. Creating or editing a schedule is the same sheet in six steps, each showing the refusal the server would raise there. The State column shows six words that say what to do: active, paused, paused by its tripwire, waiting on approval, failing, never fired.</p>
+<h4>New fields it needs (5)</h4>
+<ul><li><code>approval.may_decide</code> {approve, reject, why}</li><li><code>approval.superseded_by</code> {approval_id, head_sha, at}</li><li><code>firing.work[].pull_request</code> {number, state}</li><li><code>firing.largest_run_usd</code></li><li><code>schedules.summary</code> on <code>GET /v1/schedules</code> {by_state, pending_approvals, oldest_expires_at}</li></ul>
+<div class="pacts"><button type="button" class="btn" data-all="a">Pick A for every frame</button><a class="btn ghost" href="automate-a.html" target="_blank" rel="noopener">Open A ↗</a></div></article>
+<article class="pc" data-p="b"><div class="ph2"><span class="badge">B</span><h3>One inbox, decision first</h3></div>
+<p>Automate opens on Waiting on you: one list of everything that needs a person (approvals to decide, schedules their spend tripwire paused, schedules that are failing), most urgent first. The schedules follow underneath. Every waiting row opens a decision page in one order: the question in one sentence, the evidence in numbered cards, then Approve or Deny with a reason in a bar pinned under the evidence. A schedule’s page is Config E cards instead of five tabs. The two tabs stand.</p>
+<h4>New fields it needs (4)</h4>
+<ul><li><code>merge.checks</code> {passed, failed, pending} at the head, on a merge approval</li><li><code>work[].pull_request</code> on a firing’s issue-run work item</li><li><code>superseded_by</code> and <code>head_sha_now</code> on a superseded approval</li><li><code>reason_files</code> on a hold: which matched file each reason came from</li></ul>
+<div class="pacts"><button type="button" class="btn" data-all="b">Pick B for every frame</button><a class="btn ghost" href="automate-b.html" target="_blank" rel="noopener">Open B ↗</a></div></article>
+<article class="pc" data-p="c"><div class="ph2"><span class="badge">C</span><h3>Time first</h3></div>
+<p>Automate is read against time. The landing is a swimlane, one lane per schedule on one shared axis: the last 7 days on the left, the next 24 hours magnified on the right of a “now” line. Past firings are dots coloured by outcome, next firings are rings, and a band under each lane shows each day’s spend against its cap. An approval that blocks a firing is pinned where it blocks. One approval shows where it sits in its schedule’s timeline and what each answer does to the next firing.</p>
+<h4>New fields it needs (10)</h4>
+<ul><li><code>spend_days[]</code> on each listed schedule, for the last 7 days</li><li><code>firings_since</code> on <code>GET /v1/schedules</code>: each schedule’s firings over the window</li><li><code>next_runs[]</code> on each schedule: the next firings within 24 hours</li><li><code>work[].pull_request</code> {number, state, head_sha} on a firing’s work item</li><li><code>blocks</code> on an approval: the firing it holds and its effect on the next firing</li><li><code>effect_on_decide</code> on an approval’s detail: what approve, reject and expiry each do</li><li><code>superseded_by</code> and <code>superseded_why</code> on an approval</li><li><code>merged</code> {head_sha, at} on an approved merge’s detail</li><li><code>owner_name</code> on an approval whose approvers are owner only</li><li><code>budget_use</code> on the list route</li></ul>
+<div class="pacts"><button type="button" class="btn" data-all="c">Pick C for every frame</button><a class="btn ghost" href="automate-c.html" target="_blank" rel="noopener">Open C ↗</a></div></article>
+<article class="pc" data-p="d"><div class="ph2"><span class="badge">D</span><h3>Config E sections</h3></div>
+<p>Automate is drawn the way Config E draws Config, and led by what it is waiting for. A setup strip runs across the top (schedule types enabled, approvers set, budget tripwires set, merge App set), each step read, never ticked by hand. Under it come fixed sections: Needs you (approvals waiting and schedules stuck), schedules as cards grouped by type, then today’s firings. Detail pages open with a lead that carries the question and its answers, then stack their cards.</p>
+<h4>New fields it needs (7)</h4>
+<ul><li><code>merge_app</code> {state, checked_at} on a new <code>GET /v1/automate/setup</code></li><li><code>types</code> {available, total, unavailable[]} on the same read</li><li><code>approval.may_decide</code> {allowed, why, deciders[]}</li><li><code>approval.superseded</code> {head_sha, at, superseded_by}</li><li><code>firing.failure</code> {code, detail}, and on <code>last_firing</code></li><li><code>policy.max_consecutive_failures</code>, served and writable</li><li><code>GET /v1/firings?since=&amp;limit=</code></li></ul>
+<div class="pacts"><button type="button" class="btn" data-all="d">Pick D for every frame</button><a class="btn ghost" href="automate-d.html" target="_blank" rel="noopener">Open D ↗</a></div></article>
+</div>
+
+<section class="frame" id="A1" data-f="A1" data-name="Automate’s landing"><h2><span class="n">A1</span>Automate’s landing</h2><p class="need">Schedules in every state (active, paused, paused by its spend tripwire, waiting on an approval, failing, never fired) and the approvals waiting.</p>
+<div class="takes" hidden>
+<p data-p="a">Schedules is a dense table, one row per schedule with its six-word state, under a one-sentence lead that names what needs you; the approvals waiting sit in a card below.</p>
+<p data-p="b">Waiting on you comes first: one list, most urgent first, of approvals to decide and schedules stopped by a tripwire or failing. The schedules table follows.</p>
+<p data-p="c">A swimlane per schedule on one time axis: seven days of firings as dots, the next 24 hours as rings, and the approval that holds a firing pinned on its lane.</p>
+<p data-p="d">A setup strip, then Needs you (approvals waiting, schedules stuck), then schedules as cards grouped by type, then today’s firings.</p>
+</div></section>
+
+<section class="frame" id="A2" data-f="A2" data-name="one schedule"><h2><span class="n">A2</span>One schedule</h2><p class="need">What it does, its type and target, next firings, its firing history and outcomes, spend against its tripwire, its gates and approvers, and its actions.</p>
+<div class="takes" hidden>
+<p data-p="a">A side sheet over the list, read top to bottom: what it does, cadence and next firings, the firings with their pull requests, spend today, gates and approvers.</p>
+<p data-p="b">A page of cards behind a lead that says what this schedule is waiting on: a fact strip, what it does, cadence and next firings, spend against the tripwire with per-run bars, gates, then the firing history.</p>
+<p data-p="c">The schedule’s own lane drawn tall beside the list: firings, cost and spend over 7 days and the next 24 hours, then the firing history and settings.</p>
+<p data-p="d">A lead with the one thing it waits on, then cards: what it does, when it fires, spend against the tripwire with five run bars, gates and approvers, firing history.</p>
+</div></section>
+
+<section class="frame" id="A3" data-f="A3" data-name="a new or edited schedule"><h2><span class="n">A3</span>A new or edited schedule</h2><p class="need">Type and template, target, cadence, gates, budget, validation, and a preview of the next firings.</p>
+<div class="takes" hidden>
+<p data-p="a">A side sheet in six steps (type, target, cadence, gates, budget, review); each step checks what the server checks there, so a refusal shows on the step that caused it.</p>
+<p data-p="b">One page of numbered cards with a side sheet that keeps the server’s refusals and the next five firings in view; an edit shows the change against the current revision.</p>
+<p data-p="c">The editor opens beside the list, and its cadence preview is a lane among the schedules already set; each refusal sits next to its field and is summed at the top.</p>
+<p data-p="d">Config E’s wizard: one side sheet, six steps, each drawn on its own; the review lists only what changed, and an edit that lost a race says so with the way out.</p>
+</div></section>
+
+<section class="frame" id="A4" data-f="A4" data-name="Approvals"><h2><span class="n">A4</span>Approvals</h2><p class="need">Waiting (oldest first, with expiry), decided (by whom), and expired, filtered by kind.</p>
+<div class="takes" hidden>
+<p data-p="a">The second tab, full width: waiting oldest first with time to expiry and who may decide, then decided with who, when and the reason, then expired and superseded; the kind filter is the API’s.</p>
+<p data-p="b">The record: waiting oldest first, decided (approved, denied or superseded) with who, when and the reason, then expired; a kind filter with every kind’s count.</p>
+<p data-p="c">Opens on time: each waiting approval is a bar from its request to its expiry against a “now” line; below, the list grouped waiting, decided and ended without a decision, filtered by kind.</p>
+<p data-p="d">An inbox: waiting oldest first with time left and who may decide, decided in the last seven days, then expired and superseded, with the built kind filter and its counts.</p>
+</div></section>
+
+<section class="frame" id="A5" data-f="A5" data-name="one approval" data-subs="A5a,A5b,A5c,A5d,A5e,A5f"><h2><span class="n">A5</span>One approval</h2><p class="need"><code>apr_31f74dc3dc84349da9b83697</code>, the merge of PR #2392, held for the owner: pending (A5a), approved (A5b), denied (A5c), expired (A5d), superseded (A5e), and as seen by someone who may not decide (A5f).</p>
+<div class="takes" hidden>
+<p data-p="a">The approval in the side sheet: the request, the hold with its matched files, the checks and verdict, who asked and when; Approve merge at the head or Reject in the sheet’s foot.</p>
+<p data-p="b">A decision page: the question in one sentence, the evidence in four numbered cards, then Approve or Deny with its reason in a bar pinned under the evidence.</p>
+<p data-p="c">Where it sits in its schedule’s timeline (the firing that asked, the firings it holds up, its expiry), then what Approve, Deny and no decision each do to the next firing.</p>
+<p data-p="d">A lead that asks the question and carries both answers, then cards: what it asks, why it is held, who may decide, where it came from, and a timeline.</p>
+</div></section>
+
+<section class="frame" id="A6" data-f="A6" data-name="empty and honest states" data-subs="A6a,A6b,A6c,A6d"><h2><span class="n">A6</span>Empty and honest states</h2><p class="need">No schedules (A6a); Automate not served by the deployment (A6b); an unreadable read, a dash with its reason and never 0 (A6c); nothing waiting (A6d).</p>
+<div class="takes" hidden>
+<p data-p="a">What the tabs say in each case: a count that was not read is a dash with its reason, and a 0 is drawn only when the list was read and is empty.</p>
+<p data-p="b">The inbox carries the state: type tiles to start the first schedule, a dash with the failed read’s reason, and 0 only when nothing waits.</p>
+<p data-p="c">Each state is the whole screen; the time axis stays when there is no lane, so the page reads as the same page with nothing on it, not as an error.</p>
+<p data-p="d">The setup strip leads a new workspace; not served takes over the content area with the nav still usable; a failed read is a dash with its reason in the panel and in Needs you.</p>
+</div></section>
+
+<section class="frame" id="A7" data-f="A7" data-name="the phone at 390" data-subs="A7a,A7b,A7c"><h2><span class="n">A7</span>Phone at 390</h2><p class="need">A1 (A7a), A2 (A7b) and A5 (A7c) at 390 px.</p>
+<div class="takes" hidden>
+<p data-p="a">The table’s rows become cards, and the side sheet becomes the whole screen with Back to the list; the sheet’s order does not change.</p>
+<p data-p="b">The header takes the spine colour, inbox rows stack, schedules become one compact row each, and A5’s decision bar sits at the foot with full-width buttons.</p>
+<p data-p="c">The lanes stack with each lane’s words above its track; master-detail becomes two pages, the list and then the chosen item with a way back.</p>
+<p data-p="d">The setup strip becomes a meter with its next step, sections stack, cards are one column, and firings become row cards.</p>
+</div></section>
+</div>
+
+<script>
+(function(){
+var K='automate-picks-theme',PK='automate-picks',NK='automate-picks-notes',FR=['A1','A2','A3','A4','A5','A6','A7'],PS=['a','b','c','d'],
+  NAMES={a:'A, list and side sheet',b:'B, one inbox, decision first',c:'C, time first',d:'D, Config E sections'};
+var picks={},notes={},tabs={};
+try{picks=JSON.parse(localStorage.getItem(PK)||'{}')}catch(_){picks={}}
+try{notes=JSON.parse(localStorage.getItem(NK)||'{}')}catch(_){notes={}}
+function theme(){return document.documentElement.getAttribute('data-theme')}
+function pushTheme(f){try{var r=f.contentDocument&&f.contentDocument.documentElement;if(!r)return;var t=theme();if(t)r.setAttribute('data-theme',t);else r.removeAttribute('data-theme')}catch(_){}}
+function apply(m){var r=document.documentElement;if(m==='system')r.removeAttribute('data-theme');else r.setAttribute('data-theme',m);
+  document.querySelectorAll('[data-set]').forEach(function(b){b.setAttribute('aria-pressed',String(b.getAttribute('data-set')===m))});
+  document.querySelectorAll('.pv iframe').forEach(pushTheme)}
+/* a preview shows the top 900 px of the proposal's frame, at 1440 wide, scaled to the panel */
+function fit(pv){var f=pv.querySelector('iframe');if(!f)return;var s=pv.clientWidth/1440;f.style.transform='scale('+s+')';pv.style.height=Math.round(900*s)+'px'}
+function show(sec,p){var f=sec.getAttribute('data-f'),panel=sec.querySelector('.panel');tabs[f]=p;
+  sec.querySelectorAll('[role="tab"]').forEach(function(t){var on=t.getAttribute('data-tab')===p;t.setAttribute('aria-selected',String(on));t.tabIndex=on?0:-1});
+  var take=sec.querySelector('.takes [data-p="'+p+'"]');panel.querySelector('.take').innerHTML=take?take.innerHTML:'';
+  panel.setAttribute('aria-label','Proposal '+p.toUpperCase()+', '+f);
+  var subs=(sec.getAttribute('data-subs')||'').split(',').filter(Boolean),u='automate-'+p+'.html';
+  panel.querySelector('.links').innerHTML='<a href="'+u+'#'+f+'" target="_blank" rel="noopener">Open '+p.toUpperCase()+'’s '+f+' at full size ↗</a>'+
+    (subs.length?'<span class="lbl">or one state:</span>'+subs.map(function(s){return '<a href="'+u+'#'+s+'" target="_blank" rel="noopener">'+s+'</a>'}).join(''):'');
+  var pv=panel.querySelector('.pv'),old=pv.querySelector('iframe');if(old)old.remove();
+  var ld=pv.querySelector('.pvload');ld.textContent='Loading '+p.toUpperCase()+'’s '+f+'…';ld.hidden=false;
+  var ifr=document.createElement('iframe');ifr.title='Proposal '+p.toUpperCase()+', '+sec.getAttribute('data-name')+', scaled preview';
+  ifr.setAttribute('loading','lazy');ifr.setAttribute('scrolling','no');ifr.tabIndex=-1;ifr.setAttribute('aria-hidden','true');ifr.width=1440;ifr.height=900;ifr.src=u;
+  ifr.addEventListener('load',function(){pushTheme(ifr);ld.hidden=true;try{var d=ifr.contentDocument,el=d&&d.getElementById(f);if(d)d.querySelectorAll('body *').forEach(function(x){var ps=ifr.contentWindow.getComputedStyle(x).position;if((ps==='sticky'||ps==='fixed')&&!x.closest('[data-f]'))x.style.position='static'});if(el)ifr.contentWindow.scrollTo(0,el.getBoundingClientRect().top+ifr.contentWindow.scrollY)}catch(_){}});
+  pv.appendChild(ifr);fit(pv)}
+document.querySelectorAll('section.frame').forEach(function(sec){var f=sec.getAttribute('data-f'),name=sec.getAttribute('data-name');
+  var tl=document.createElement('div');tl.className='tabs';tl.setAttribute('role','tablist');tl.setAttribute('aria-label',f+': the four proposals');
+  tl.innerHTML=PS.map(function(p){return '<button type="button" role="tab" data-tab="'+p+'" aria-controls="'+f+'-panel">Proposal '+p.toUpperCase()+'<span class="mk" data-mark="'+p+'"></span></button>'}).join('');
+  var panel=document.createElement('div');panel.className='panel';panel.id=f+'-panel';panel.setAttribute('role','tabpanel');
+  panel.innerHTML='<p class="take"></p><div class="pv"><span class="pvload"></span></div><div class="links"></div>';
+  var pk=document.createElement('div');pk.className='pick';
+  pk.innerHTML='<div class="row" role="group" aria-label="Your pick for '+f+'"><span class="lbl">Your pick for '+f+'</span>'+
+    PS.map(function(p){return '<button type="button" class="btn" data-pick="'+f+':'+p+'">Pick '+p.toUpperCase()+'</button>'}).join('')+
+    '<button type="button" class="btn ghost" data-pick="'+f+':none">None of these</button></div>'+
+    '<label for="note-'+f+'">Note on '+f+', '+name+' (optional)</label><textarea id="note-'+f+'" data-note="'+f+'" placeholder="What to keep, change or take from another proposal"></textarea>';
+  sec.appendChild(tl);sec.appendChild(panel);sec.appendChild(pk);
+  pk.querySelector('textarea').value=notes[f]||'';
+  show(sec,picks[f]&&picks[f]!=='none'?picks[f]:'a')});
+addEventListener('resize',function(){document.querySelectorAll('.pv').forEach(fit)});
+document.addEventListener('keydown',function(e){var t=e.target;if(!t.getAttribute||t.getAttribute('role')!=='tab')return;
+  if(e.key!=='ArrowRight'&&e.key!=='ArrowLeft')return;var sec=t.closest('section.frame'),i=PS.indexOf(t.getAttribute('data-tab'));
+  i=(i+(e.key==='ArrowRight'?1:PS.length-1))%PS.length;show(sec,PS[i]);sec.querySelector('[data-tab="'+PS[i]+'"]').focus();e.preventDefault()});
+/* picks and the tray */
+var tray=document.createElement('div');tray.className='tray';tray.setAttribute('role','region');tray.setAttribute('aria-label','Your picks');
+tray.innerHTML='<div class="in"><b class="t">Your picks</b><span class="chips"></span><button type="button" class="btn" data-copy="1">Copy my picks</button><button type="button" class="btn ghost" data-clear="1">Clear</button><span class="done" aria-live="polite"></span><textarea aria-hidden="true" tabindex="-1"></textarea></div>';
+document.body.appendChild(tray);
+function word(v){return v==='none'?'none of these':v?v.toUpperCase():'not picked'}
+function text(){var all=FR.map(function(f){return picks[f]}),same=all[0]&&all[0]!=='none'&&all.every(function(x){return x===all[0]});
+  var lines=['AUTOMATE-MOCKS picks (part of #2417)'];if(same)lines.push('Whole design: '+NAMES[all[0]]);
+  lines.push(FR.map(function(f){var n=(notes[f]||'').trim().replace(/\s+/g,' ');return f+': '+word(picks[f])+(n?' (note: '+n+')':'')}).join(' · '));
+  return lines.join('\n')}
+function render(){tray.querySelector('.chips').innerHTML=FR.map(function(f){var v=picks[f];return '<span class="tc'+(v?' set':'')+'">'+f+' '+(v==='none'?'none':v?v.toUpperCase():'—')+'</span>'}).join('');
+  document.querySelectorAll('[data-pick]').forEach(function(b){var v=b.getAttribute('data-pick').split(':');b.setAttribute('aria-pressed',String(picks[v[0]]===v[1]))});
+  document.querySelectorAll('section.frame').forEach(function(sec){var f=sec.getAttribute('data-f');sec.querySelectorAll('[data-mark]').forEach(function(m){m.textContent=picks[f]===m.getAttribute('data-mark')?'· picked':''})});
+  document.querySelectorAll('[data-all]').forEach(function(b){var p=b.getAttribute('data-all'),on=FR.every(function(f){return picks[f]===p});b.setAttribute('aria-pressed',String(on));b.closest('.pc').classList.toggle('picked',on)});
+  try{localStorage.setItem(PK,JSON.stringify(picks))}catch(_){}}
+document.addEventListener('input',function(e){var t=e.target;if(!t.hasAttribute||!t.hasAttribute('data-note'))return;notes[t.getAttribute('data-note')]=t.value;try{localStorage.setItem(NK,JSON.stringify(notes))}catch(_){}});
+document.addEventListener('click',function(e){var t=e.target.closest&&e.target.closest('button');if(!t)return;
+  if(t.hasAttribute('data-set')){var m=t.getAttribute('data-set');apply(m);try{localStorage.setItem(K,m)}catch(_){}return}
+  if(t.hasAttribute('data-tab')){show(t.closest('section.frame'),t.getAttribute('data-tab'));return}
+  if(t.hasAttribute('data-pick')){var v=t.getAttribute('data-pick').split(':');picks[v[0]]=picks[v[0]]===v[1]?undefined:v[1];
+    if(picks[v[0]]&&v[1]!=='none'){var sec=document.getElementById(v[0]);if(tabs[v[0]]!==v[1])show(sec,v[1])}render();return}
+  if(t.hasAttribute('data-all')){var p=t.getAttribute('data-all');FR.forEach(function(f){picks[f]=p;if(tabs[f]!==p)show(document.getElementById(f),p)});render();return}
+  if(t.hasAttribute('data-clear')){if(!confirm('Clear every pick and every note? The notes cannot be brought back.'))return;picks={};notes={};document.querySelectorAll('[data-note]').forEach(function(n){n.value=''});try{localStorage.setItem(NK,'{}')}catch(_){}render();tray.querySelector('.done').textContent='Cleared.';return}
+  if(t.hasAttribute('data-copy')){var s=text(),done=tray.querySelector('.done');
+    var fallback=function(){var ta=tray.querySelector('textarea');ta.value=s;ta.select();var ok=false;try{ok=document.execCommand('copy')}catch(_){}if(ok){done.textContent='Copied. Paste it into #2417.'}else{ta.classList.add('show');ta.removeAttribute('aria-hidden');ta.setAttribute('aria-label','Your picks as text');done.textContent='This browser would not copy. The text is in the box: select it and copy it.'}};
+    if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(s).then(function(){done.textContent='Copied. Paste it into #2417.'},fallback);else fallback();}});
+render();
+var m='system';try{m=localStorage.getItem(K)||'system'}catch(_){}apply(m);
+})();
+</script>
+</body></html>

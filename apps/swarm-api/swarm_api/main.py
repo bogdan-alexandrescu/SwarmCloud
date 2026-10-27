@@ -47,6 +47,7 @@ from .routes import (
     await_input,
     browser_logins,
     browser_slots,
+    budget_settings,
     checkpoints,
     children,
     credentials,
@@ -120,6 +121,9 @@ UNCAPTURED_ROUTES = frozenset({
     "/v1/tasks",
     "/v1/tasks/batch",
     "/v1/workflows",
+    # A workflow's per-run MCP credentials, re-stored by its caller
+    # (registered-mcp-servers.md §4.10, BGD 2026-10-26).
+    workflows.MCP_CREDENTIALS_ROUTE,
     # An await-input answer (docs/design/human-steps.md §4.6): a person's
     # form and up to 16 MiB of their files.
     await_input.INPUT_ROUTE,
@@ -400,6 +404,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # A workspace's visual-QA settings: how many flows one live-browser step
     # runs when a run names none (QA-FLOWS-CAP): its owner or admin, audited.
     app.include_router(qa_settings.router)
+    # A workspace's per-agent budget, which a step may only lower and the
+    # platform ceiling caps (BUDGET-CAP, #2459): its owner or admin, audited.
+    app.include_router(budget_settings.router)
     # Connect GitHub as yourself (docs/onboarding.md §3.2, lane OB3):
     # authorise, exchange, disconnect, and the refresh sweep the
     # swarm-forge-refresh job calls. No route returns a token.

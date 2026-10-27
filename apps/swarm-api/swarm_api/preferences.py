@@ -1,9 +1,18 @@
 """A person's preferences: `user_preferences/up_<32 hex>`.
 
 docs/design/user-profile.md §4.3 (Q1). One document per person, holding their
-display name (§4.4), default workspace (§4.5) and bell settings (§4.6), and
-nothing the scheduler, reconciler or worker reads. It holds no email and no
-credential.
+display name (§4.4), default workspace (§4.5), bell settings (§4.6) and time
+zone, and nothing the scheduler, reconciler or worker reads. It holds no email
+and no credential.
+
+THE TIME ZONE (lane TIMEZONE-SERVER, part of #2391). BGD decided on 2026-10-26
+that a person's zone is kept here, so it follows them to every browser and
+survives sign-out; before, the console kept it in one browser's local storage.
+It is an IANA name `zoneinfo` knows, or absent: absent reads as UTC, and is
+told apart from a saved UTC (`time_zone is None`) so the console can write a
+zone a browser kept before this field existed, once. A save that does not name
+a zone keeps the stored one: the name, default and bell saves predate the
+field, and a missing zone must never reset it.
 
 THE ID IS AN HMAC, NOT `user_hash`. It is `up_` + the first 32 hex digits of
 HMAC-SHA256(swarm-child-key, "user-prefs:" + lower(email)): the key that keys
@@ -37,8 +46,10 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import zoneinfo
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from typing import Any, Callable, Iterable
 
 from google.cloud import firestore
@@ -72,6 +83,11 @@ TOPICS = ("approval", "waiting_step", "question", "failed", "finished", "account
 REMINDERS = ("as_set", "every_4h", "daily", "never")
 DEFAULT_REMINDER = "as_set"
 
+#: The zone a person who never saved one sees every time in.
+DEFAULT_TIME_ZONE = "UTC"
+#: `detail.reason` of a save naming a zone that is not one.
+UNKNOWN_TIME_ZONE = "unknown_time_zone"
+
 #: How long authentication serves a read before reading again, per instance
 #: (§4.5): a save is seen by other instances within this.
 CACHE_SECONDS = 15.0
@@ -83,6 +99,30 @@ SAVE_UNAVAILABLE = "Your preferences could not be saved, and nothing changed. Re
 def preference_id(key: str, email: str) -> str:
     """`up_` + 32 hex of HMAC-SHA256(key, "user-prefs:" + lower(email))."""
     return ID_PREFIX + hmac_id(key, PURPOSE + email.strip().lower())
+
+
+@lru_cache(maxsize=1)
+def known_zones() -> frozenset[str]:
+    """Every IANA zone name this interpreter's database holds (the system's
+    on the bookworm image, else the `tzdata` package). Exact names only: a
+    path, an abbreviation such as `PDT` or a differently cased name is not
+    one, though `ZoneInfo` would open some of them."""
+    return frozenset(zoneinfo.available_timezones())
+
+
+def is_time_zone(value: Any) -> bool:
+    return isinstance(value, str) and value in known_zones()
+
+
+def check_time_zone(value: Any) -> str:
+    """`value` when it is an IANA zone, else a 422 in words."""
+    if not is_time_zone(value):
+        raise ValidationFailed(
+            "time_zone is not a time zone this server knows. Use an IANA name "
+            "such as America/Los_Angeles, Europe/London or UTC.",
+            detail={"reason": UNKNOWN_TIME_ZONE},
+        )
+    return value
 
 
 def key_versions(settings: Any) -> tuple[str, ...]:
@@ -108,6 +148,8 @@ class StoredPreferences:
     default_workspace: str | None = None
     muted: tuple[str, ...] = ()
     reminder: str = DEFAULT_REMINDER
+    #: None when none is saved: the person sees DEFAULT_TIME_ZONE.
+    time_zone: str | None = None
     revision: int = 0
     exists: bool = False
 
@@ -126,6 +168,7 @@ class StoredPreferences:
         muted = notifications.get("muted")
         muted = muted if isinstance(muted, list) else []
         reminder = notifications.get("reminder")
+        zone = doc.get("time_zone")
         revision = doc.get("revision")
         return cls(
             display_name=name if isinstance(name, str) and name else None,
@@ -133,6 +176,7 @@ class StoredPreferences:
             default_workspace=workspace if isinstance(workspace, str) and workspace else None,
             muted=tuple(t for t in TOPICS if t in muted),
             reminder=reminder if reminder in REMINDERS else DEFAULT_REMINDER,
+            time_zone=zone if is_time_zone(zone) else None,
             revision=revision if isinstance(revision, int) and not isinstance(revision, bool)
             and revision >= 0 else 0,
             exists=True,
@@ -144,6 +188,7 @@ class StoredPreferences:
             "display_name": self.display_name,
             "default_workspace": self.default_workspace,
             "notifications": {"muted": list(self.muted), "reminder": self.reminder},
+            "time_zone": self.time_zone,
             "revision": self.revision,
         }
 
@@ -257,6 +302,7 @@ class Preferences:
         muted: Any,
         reminder: Any,
         revision: Any,
+        time_zone: Any = None,
     ) -> StoredPreferences:
         """Replace the caller's whole preference set, in one transaction.
 
@@ -264,7 +310,8 @@ class Preferences:
         a 409 `preferences_changed` and nothing is stored. A display name
         passes `display_names.check` and rule 6; its claim, the deletion of its
         old claim and the `display_name_changed` audit entry are written in the
-        same transaction as the document."""
+        same transaction as the document. `time_zone` None keeps the stored
+        zone; any other value must be an IANA zone."""
         if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
             raise ValidationFailed("revision is the number the last read returned.")
         if default_workspace is not None and (
@@ -272,6 +319,7 @@ class Preferences:
         ):
             raise ValidationFailed("default_workspace is a workspace id, or null.")
         muted_list, reminder_value = _validate_notifications(muted, reminder)
+        zone = check_time_zone(time_zone) if time_zone is not None else None
         name = display_names.check(display_name) if display_name is not None else None
         new_folded = display_names.fold(name) if name is not None else None
         if not self.configured:
@@ -313,6 +361,7 @@ class Preferences:
                     "display_name_folded": new_folded,
                     "default_workspace": default_workspace,
                     "notifications": {"muted": muted_list, "reminder": reminder_value},
+                    "time_zone": zone if zone is not None else current.time_zone,
                     "revision": current.revision + 1,
                     "updated_at": at,
                 }
@@ -351,6 +400,7 @@ class Preferences:
                 ("default_workspace", current.default_workspace, saved.default_workspace),
                 ("muted", current.muted, saved.muted),
                 ("reminder", current.reminder, saved.reminder),
+                ("time_zone", current.time_zone, saved.time_zone),
             )
             if was != is_now
         ]

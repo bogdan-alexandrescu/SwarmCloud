@@ -5,7 +5,7 @@ docs/design/registered-mcp-servers.md §4.10 (lane MCP-SCHED, part of #1433).
 question, so admission (`loop.Scheduler._admit_one`) refuses before the capacity
 transaction (invariants 1, 2 and 3), and the credential sweep
 (`loop.Scheduler._promote_credentials`) returns a CREDENTIAL_MISSING park to
-READY once every named server answers yes again. Two outcomes, and they are not
+READY once every named server answers yes again. Three outcomes, and they are not
 the same kind of no:
 
   * A SERVER THE TASK MAY NOT USE NOW: its registration is disabled, absent, or
@@ -15,13 +15,23 @@ the same kind of no:
     park reason). Disabling is the kill switch, and a registration is never
     deleted, so an absent one is as good as disabled: a re-registration under
     the same name has the same id (`server_id_for`) and promotes it.
-  * A CREDENTIAL NOBODY CAN REPLACE: a `dispatch` server whose credential row
-    is `destroyed`, past `expires_at`, or not there at all. The caller supplied
-    the value at submission and is not online to supply another, so waiting
-    would wait for ever. The answer is TERMINAL (`McpAnswer.terminal`), code
-    `mcp_credential_expired` (or `mcp_credential_missing`), and it never turns
-    runnable, so the sweep never promotes it. §4.10 says FAILED, no lease, no
-    retry; see `McpAnswer.terminal` for what admission does with it today.
+  * A CREDENTIAL ITS CALLER CAN REPLACE: a `dispatch` server whose credential
+    row is past `expires_at`, `destroyed` (the swarm-api sweep destroys a row
+    once it expires) or not there at all, for a task whose credential is its
+    WORKFLOW's (a step, or a child of a step). BGD, 2026-10-26, for Product
+    Oracle's runs: the caller is online and can re-store it through
+    `PUT /v1/workflows/{id}/mcp-credentials`, so the task parks
+    CREDENTIAL_MISSING with `credential: "mcp"`, code `mcp_credential_expired`
+    (or `mcp_credential_missing`), the server's name and `expired_at`, and
+    the sweep promotes it once the row is live again. This reverses the
+    2026-10-18 rule that such a credential was one nobody could replace.
+    A park that waits past `MCP_CREDENTIAL_PARK_MAX_SECONDS` ends FAILED
+    with that code (`loop.Scheduler._promote_credentials`).
+  * A CREDENTIAL NOBODY CAN REPLACE: the same refusal for a task that is no
+    workflow's (a standalone task, or a child of one). Nothing re-stores a
+    task's own credential, so waiting would wait for ever. The answer is
+    TERMINAL (`McpAnswer.terminal`) and admission ends it FAILED, no lease,
+    no retry (§4.10, contract request 99).
 
 THE ATTACH IS THE AUTHORITY, ADMISSION IS THE CHEAP EARLY ANSWER (§4.10). The
 worker's attach route (§4.6 steps 5-6) re-reads both, because state moves
@@ -92,19 +102,34 @@ DISPATCH_MODE = "dispatch"
 #: `state` of a credential row the sweep has not destroyed.
 LIVE = "live"
 
+#: The `credential` a re-storable MCP park's detail names, which is what a
+#: caller watches for (§4.10): `detail.credential == "mcp"`.
+MCP_CREDENTIAL = "mcp"
+
+#: How long a park waiting for a re-stored MCP credential may wait before it
+#: ends FAILED. 24 hours: the longest a credential may live (§4.3,
+#: `swarm_api.mcp_credentials.MAX_EXPIRES_IN`), so a caller that is online
+#: has had a whole credential's lifetime to answer, and one that is not will
+#: never answer. The task holds nothing while it waits (invariant 1); the
+#: limit exists so a workflow whose caller went away ends rather than sits.
+#: Read through `getattr(settings, "mcp_credential_park_max_seconds")`, as
+#: `loop.HUMAN_PARK_MAX_SECONDS` is, so a settings field can override it.
+MCP_CREDENTIAL_PARK_MAX_SECONDS = 86_400
+
 
 class McpCode(str, Enum):
     """The code a CREDENTIAL_MISSING park records for a server."""
 
     #: Disabled, absent, or not allowed for the profile. Waits for an admin.
     SERVER_UNAVAILABLE = "mcp_server_unavailable"
-    #: The per-run credential was destroyed or has expired. Terminal.
+    #: The per-run credential was destroyed or has expired. A park for a
+    #: workflow's task (its caller re-stores it); terminal otherwise.
     CREDENTIAL_EXPIRED = "mcp_credential_expired"
-    #: A `dispatch` server with no credential row for this task. Terminal.
+    #: A `dispatch` server with no credential row for this task. As above.
     CREDENTIAL_MISSING = "mcp_credential_missing"
 
 
-_TERMINAL = frozenset({McpCode.CREDENTIAL_EXPIRED, McpCode.CREDENTIAL_MISSING})
+_CREDENTIAL = frozenset({McpCode.CREDENTIAL_EXPIRED, McpCode.CREDENTIAL_MISSING})
 
 
 @dataclass(frozen=True)
@@ -117,6 +142,16 @@ class McpRefusal:
     #: `disabled`, `unregistered`, `profile_refused`, `expired`, `destroyed`
     #: or `missing`.
     why: str
+    #: A credential refusal its caller can fix by re-storing the credential:
+    #: the task's credential is its workflow's (§4.10, BGD 2026-10-26).
+    restorable: bool = False
+    #: When the refused credential row expired; None for a row with no
+    #: readable expiry, a missing row, or a server refusal.
+    expired_at: datetime | None = None
+
+    @property
+    def credential(self) -> bool:
+        return self.code in _CREDENTIAL
 
     def to_detail(self) -> dict[str, str]:
         return {"name": self.name, "code": self.code.value, "why": self.why}
@@ -134,35 +169,52 @@ class McpAnswer:
 
     @property
     def terminal(self) -> bool:
-        """THE TASK CAN NEVER RUN: a credential nobody can replace. §4.10 ends
-        it FAILED `mcp_credential_expired` with no lease. The owner chose a
-        FAILED edge over a dead-letter (2026-10-18), and contract request 98
-        added QUEUED -> FAILED. But admission (`loop.py`) holds the task in
-        READY and the credential sweep in PARKED, and the frozen state machine
-        has neither READY -> FAILED nor PARKED -> FAILED
-        (`swarm_common.states._ALLOWED`; request 99 asks for both). So such a
-        task still parks CREDENTIAL_MISSING with this code and is never
-        promoted: no lease and no cost (invariant 1), but no end either: a
-        workflow step blocks its workflow and a parent waits on its child.
-        tests/unit/scheduler/test_mcp_admission.py pins the park, and goes red
-        the day either edge exists."""
-        return any(r.code in _TERMINAL for r in self.refusals)
+        """THE TASK CAN NEVER RUN: a credential nobody can replace, because the
+        task is no workflow's and nothing re-stores a task's own credential.
+        §4.10 ends it FAILED with the code, no lease (contract request 99:
+        READY -> FAILED and PARKED -> FAILED). A workflow's task with the same
+        refusal is NOT terminal: its caller can re-store the credential
+        (BGD 2026-10-26), so it parks (`waits_for_credential`)."""
+        return any(r.credential and not r.restorable for r in self.refusals)
+
+    @property
+    def waits_for_credential(self) -> tuple[McpRefusal, ...]:
+        """The credential refusals a re-store fixes, in the task's order."""
+        return tuple(r for r in self.refusals if r.credential and r.restorable)
 
     @property
     def code(self) -> McpCode | None:
-        """The code the park records: a terminal one when there is one, since
-        enabling a server would not make that task runnable."""
+        """The code the park records: a credential one when there is one,
+        since enabling a server would not make that task runnable."""
         for refusal in self.refusals:
-            if refusal.code in _TERMINAL:
+            if refusal.credential:
                 return refusal.code
         return self.refusals[0].code if self.refusals else None
 
     def to_detail(self) -> dict[str, Any]:
         code = self.code
-        return {
+        detail: dict[str, Any] = {
             "code": code.value if code is not None else None,
             "mcp_servers": [r.to_detail() for r in self.refusals],
         }
+        waiting = self.waits_for_credential
+        if waiting and not self.terminal:
+            detail.update(credential_block(waiting[0]))
+        return detail
+
+
+def credential_block(refusal: McpRefusal) -> dict[str, Any]:
+    """§4.10's park detail for a credential its caller can re-store, as a
+    caller reads it on the task: `credential`, `code`, `server` (the name the
+    workflow's `mcp_credentials` map and the re-store body key it by: never
+    the server id) and `expired_at` (ISO, or None for a missing row)."""
+    expired = refusal.expired_at
+    return {
+        "credential": MCP_CREDENTIAL,
+        "code": refusal.code.value,
+        "server": refusal.name,
+        "expired_at": expired.isoformat() if expired is not None else None,
+    }
 
 
 def server_id_for(tenant_id: str, name: str) -> str:
@@ -212,7 +264,7 @@ class McpRegistrations:
         if not names:
             return None
         moment = now or utcnow()
-        owners: list[str] | None = None
+        owners: tuple[list[str], bool] | None = None
         refusals: list[McpRefusal] = []
         for name in names:
             server_id = server_id_for(task.tenant_id, name)
@@ -230,17 +282,22 @@ class McpRegistrations:
                 continue
             if owners is None:
                 owners = self._owners(task)
-            why = self._credential_refusal(task, server_id, owners, moment)
+            chain, restorable = owners
+            why, expired_at = self._credential_refusal(task, server_id, chain, moment)
             if why is not None:
                 code = McpCode.CREDENTIAL_MISSING if why == "missing" else McpCode.CREDENTIAL_EXPIRED
-                refusals.append(McpRefusal(name, code, why))
+                refusals.append(McpRefusal(name, code, why, restorable, expired_at))
         return McpAnswer(tuple(refusals))
 
-    def _owners(self, task: Task) -> list[str]:
-        """Whose credential rows serve this task, in the order they are tried."""
+    def _owners(self, task: Task) -> tuple[list[str], bool]:
+        """Whose credential rows serve this task, in the order they are tried,
+        and whether one of them is a workflow: a workflow's credential is the
+        one `PUT /v1/workflows/{id}/mcp-credentials` re-stores."""
         owners = [task.id]
+        workflow_owned = False
         if task.workflow_id:
             owners.append(task.workflow_id)
+            workflow_owned = True
         if task.parent_task_id:
             owners.append(task.parent_task_id)
             parent = self._read(TASKS_COLLECTION, task.parent_task_id)
@@ -248,36 +305,40 @@ class McpRegistrations:
                 workflow = parent.get("workflow_id")
                 if isinstance(workflow, str) and workflow:
                     owners.append(workflow)
-        return list(dict.fromkeys(owners))
+                    workflow_owned = True
+        return list(dict.fromkeys(owners)), workflow_owned
 
     def _credential_refusal(
         self, task: Task, server_id: str, owners: list[str], now: datetime
-    ) -> str | None:
-        """None when the task's credential row for `server_id` is live and
-        unexpired; else why not."""
+    ) -> tuple[str | None, datetime | None]:
+        """`(None, None)` when the task's credential row for `server_id` is
+        live and unexpired; else why not, and when the row expired."""
         for owner in owners:
             row = self._read(CREDENTIALS_COLLECTION, f"{owner}~{server_id}")
             if row is None or row.get("tenant_id") != task.tenant_id \
                     or row.get("server_id") != server_id:
                 continue
-            if row.get("state") != LIVE:
-                return "destroyed"
             try:
                 expires_at = as_datetime(row.get("expires_at"))
             except (TypeError, ValueError):
                 expires_at = None
+            if row.get("state") != LIVE:
+                return "destroyed", expires_at
             # A row with no readable expiry is not evidence of a live value.
             if expires_at is None or expires_at <= now:
-                return "expired"
-            return None
-        return "missing"
+                return "expired", expires_at
+            return None, None
+        return "missing", None
 
 
 __all__ = [
+    "MCP_CREDENTIAL",
+    "MCP_CREDENTIAL_PARK_MAX_SECONDS",
     "McpAnswer",
     "McpCode",
     "McpRefusal",
     "McpRegistrations",
+    "credential_block",
     "named_servers",
     "names_mcp_servers",
     "server_id_for",

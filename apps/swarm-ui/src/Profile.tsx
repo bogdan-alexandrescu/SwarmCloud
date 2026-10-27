@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState, useSyncExternalStore, type FormEvent, type MouseEvent, type ReactNode } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type MouseEvent, type ReactNode } from 'react'
 import { loadMe, loadMyTenants, loadProfile, putPreferences, NOTIFICATION_TOPICS, REMINDER_CADENCES, type TenantChoice } from './api'
 import { Banner, Button, Card, CardLink, acknowledge } from './components'
 import { chooseTenant, chosenTenant, subscribeTenant, type ApiError } from './fetch'
@@ -9,7 +9,7 @@ import { displayNameOf, nameTenants, noteOwnName, type NamedTenantChoice } from 
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import { humaniseUntil, timeAgo } from './types'
 import { accountName } from './accountName'
-import { UTC, allZones, browserZone, canonicalZone, formatClock, notePerson, setZone } from './timezone'
+import { UTC, allZones, browserZone, canonicalZone, formatClock, notePerson, setZone, zoneSaved } from './timezone'
 import { useTimeZone } from './useTimeZone'
 import './styles/keys.css'
 import type {
@@ -717,9 +717,14 @@ function kindOf(zone: string, browser: string): ZoneKind {
  * THE PERSON'S TIME ZONE (VQ-023, owner decision 2026-10-26): UTC, this
  * browser's zone, or any IANA zone from a searchable list. Every time in the
  * console is shown in it, labelled, and Overview's "today" starts at its
- * midnight. Kept in this browser for this person (`timezone.ts` says why), so
- * it is not one of the preferences the server holds and is never disabled
- * with them: only a page that could not read who you are cannot keep it.
+ * midnight. Kept with the person's profile (`time_zone` in
+ * `PUT /v1/profile/preferences`), so it follows them to every browser they
+ * sign in to; this browser keeps a copy only to draw the first paint in it.
+ * The card says "Saved" only once the server has saved it (`zoneSaved`): a
+ * failed save is said, with the zone kept in this browser only and a way to
+ * try again (owner decision 2026-10-26, PR 2496). It is never disabled with
+ * the other preferences: a pick still applies here when they cannot be read,
+ * and only a page that could not read who you are cannot keep it.
  */
 function TimeZoneCard({ email }: { email: string }) {
   const id = useId()
@@ -728,8 +733,11 @@ function TimeZoneCard({ email }: { email: string }) {
   const zones = useMemo(allZones, [])
   const [kind, setKind] = useState<ZoneKind>(kindOf(zone, browser))
   const [other, setOther] = useState(kindOf(zone, browser) === 'other' ? zone : '')
-  const [saved, setSaved] = useState(false)
+  // Where the last pick is kept: on its way to the profile, in it, or in this browser only.
+  const [save, setSave] = useState<{ state: 'idle' | 'saving' | 'saved' | 'local'; zone: string }>({ state: 'idle', zone: UTC })
   const [refused, setRefused] = useState<string | null>(null)
+  // Only the latest pick's answer is said: an earlier save finishing late is not this one.
+  const latest = useRef(0)
   // The page learns the stored zone after its first draw: follow it.
   useEffect(() => {
     setKind(kindOf(zone, browser))
@@ -742,20 +750,28 @@ function TimeZoneCard({ email }: { email: string }) {
 
   function pick(next: ZoneKind) {
     setKind(next)
-    setSaved(false)
+    setSave({ state: 'idle', zone })
     setRefused(null)
+  }
+
+  function keep(z: string) {
+    const stored = setZone(z)
+    if (stored === null) {
+      setRefused(`\u201c${z}\u201d is not a time zone this browser knows. Pick one from the list, for example Europe/London.`)
+      return
+    }
+    setRefused(null)
+    const mine = ++latest.current
+    setSave({ state: 'saving', zone: stored })
+    void zoneSaved().then((ok) => {
+      if (mine === latest.current) setSave({ state: ok ? 'saved' : 'local', zone: stored })
+    })
   }
 
   function submit(e: FormEvent) {
     e.preventDefault()
     if (disabled) return
-    const stored = setZone(wanted)
-    if (stored === null) {
-      setRefused(`\u201c${wanted}\u201d is not a time zone this browser knows. Pick one from the list, for example Europe/London.`)
-      return
-    }
-    setRefused(null)
-    setSaved(true)
+    keep(wanted)
   }
 
   return (
@@ -763,8 +779,7 @@ function TimeZoneCard({ email }: { email: string }) {
       <form className="pk-form" aria-label="Change your time zone" onSubmit={(e) => submit(e)}>
         <p className="ur-small">
           Every time in the console is shown in this zone, with its name beside it, and &ldquo;today&rdquo; on Overview starts at
-          its midnight. Kept in this browser for you: another browser, or this one after you sign out, shows UTC until you pick
-          again.
+          its midnight. Kept with your profile, so it follows you to every browser you sign in to.
         </p>
         <fieldset className="jb-options" disabled={disabled}>
           <legend>Show times in</legend>
@@ -797,7 +812,7 @@ function TimeZoneCard({ email }: { email: string }) {
               disabled={disabled}
               onChange={(e) => {
                 setOther(e.target.value)
-                setSaved(false)
+                setSave({ state: 'idle', zone })
                 setRefused(null)
               }}
             />
@@ -809,7 +824,13 @@ function TimeZoneCard({ email }: { email: string }) {
           </>
         )}
         <div className="pk-form-row">
-          <Button kind="primary" size="sm" type="submit" disabled={disabled || !dirty || wanted === ''}>
+          <Button
+            kind="primary"
+            size="sm"
+            type="submit"
+            busy={save.state === 'saving' ? 'Saving…' : false}
+            disabled={disabled || !dirty || wanted === ''}
+          >
             Save time zone
           </Button>
           <span className="ur-small" aria-live="polite">
@@ -818,10 +839,24 @@ function TimeZoneCard({ email }: { email: string }) {
         </div>
         {disabled && <p className="ur-small">Your email could not be read, so a zone cannot be kept for you. Reload to try again.</p>}
       </form>
-      {saved && (
+      {save.state === 'saved' && (
         <p className="pk-saved" role="status">
-          {`Saved. Every time is now shown in ${zone}.`}
+          {`Saved. Every time is now shown in ${save.zone}.`}
         </p>
+      )}
+      {save.state === 'local' && (
+        <Banner
+          tone="warn"
+          role="alert"
+          title={`${save.zone} could not be saved with your profile, so it is kept in this browser only.`}
+          actions={
+            <Button size="sm" onClick={() => keep(save.zone)}>
+              Try again
+            </Button>
+          }
+        >
+          Times here are shown in it now; another browser shows the zone your profile holds until it is saved.
+        </Banner>
       )}
       {refused !== null && <Banner tone="bad" title={refused} role="alert" />}
     </Card>

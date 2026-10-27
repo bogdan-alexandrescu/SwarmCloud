@@ -30,6 +30,14 @@ Design: docs/design/registered-mcp-servers.md §4.4, and owner decision Q2 of
     attempt's signature, fence and signed spec. `credential_for` finds the
     row; `version_to_read` rebuilds the version name from a row it has
     checked, so a rewritten row can point only at its own tenant's `-mcpc-`.
+  * RE-STORED BY THE CALLER (BGD 2026-10-26, Product Oracle's runs).
+    `PUT /v1/workflows/{id}/mcp-credentials` (`restore_workflow`) replaces
+    a workflow's credential for each server its body names, through the
+    same `McpCredentials.store`: a new secret, a new live row with the new
+    `expires_at`. A step that waited past its credential's expiry parks
+    CREDENTIAL_MISSING with `credential: "mcp"` (the scheduler's
+    `mcp_admission`), and the re-store returns it to READY in the same
+    request, guarded on that park (`promote_restored`).
   * DESTROYED WHEN. `McpCredentials.sweep` (`POST /v1/admin/mcp-credentials/
     sweep`, every 10 minutes as the rollup sweeper): a row whose owner is
     terminal, or whose `expires_at` has passed, has its secret deleted and is
@@ -56,8 +64,17 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from swarm_common.admission import _snapshot
 from swarm_common.states import TERMINAL_STATES
 
-from .errors import UpstreamUnavailable, ValidationFailed
-from .mcp_servers import McpUnavailable
+from swarm_common.models import TaskEvent, new_id
+from swarm_common.states import EventType, ParkReason, TaskState, assert_transition
+
+from .errors import Conflict, UpstreamUnavailable, ValidationFailed
+from .mcp_servers import McpUnavailable, read_registration
+from .validation import (
+    MCP_DISPATCH_MODE,
+    McpCredentialUnexpected,
+    McpServerUnregistered,
+    mcp_server_names,
+)
 
 log = logging.getLogger(__name__)
 
@@ -503,3 +520,164 @@ class McpCredentials:
 
 def _terminal(state: Any) -> bool:
     return any(state == s.value for s in TERMINAL_STATES)
+
+
+# ---------------------------------------------------------------------------
+# The caller's re-store (PUT /v1/workflows/{id}/mcp-credentials)
+# ---------------------------------------------------------------------------
+
+#: The scheduler's `mcp_admission.MCP_CREDENTIAL`, restated (this image does
+#: not carry the scheduler): what a park waiting for a re-store names as its
+#: `blocked_by[].credential`. tests/unit/control_plane/test_mcp_restore.py
+#: holds the two equal.
+PARK_CREDENTIAL = "mcp"
+
+#: The `reason` of the READY event a re-store writes on a park it returns.
+RESTORED = "mcp_credential_restored"
+
+
+class WorkflowFinished(Conflict):
+    """The workflow has ended: no step of it will ever use a credential."""
+
+    code = "workflow_finished"
+
+
+def workflow_server_names(step_tasks: Iterable[Mapping[str, Any]]) -> set[str]:
+    """Every server a step task of the workflow names in `input.mcp_servers`."""
+    names: set[str] = set()
+    for doc in step_tasks:
+        names.update(mcp_server_names(doc.get("input") if isinstance(doc.get("input"), Mapping)
+                                      else None))
+    return names
+
+
+def check_restore(db: Any, tenant_id: str, credentials: Mapping[str, Any],
+                  step_tasks: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Every check a re-store makes, BEFORE anything is stored: each key a
+    server a step of the workflow names, an enabled `dispatch` registration
+    of this tenant, and each value the shape the create body's is
+    (`check_credential`). Answers each server's registration by name.
+    Every refusal names the server, never a value."""
+    if not credentials:
+        raise McpCredentialShape("mcp_credentials names no server; nothing was stored")
+    named = workflow_server_names(step_tasks)
+    unnamed = sorted(k for k in credentials if k not in named)
+    if unnamed:
+        raise McpCredentialUnexpected(
+            "mcp_credentials names a server no step of this workflow names in "
+            "input.mcp_servers; nothing was stored",
+            detail={"field": "mcp_credentials", "servers": unnamed})
+    registrations: dict[str, dict[str, Any]] = {}
+    for name in sorted(credentials):
+        registration = read_registration(db, tenant_id, name)
+        if registration is None or registration.get("enabled") is not True:
+            raise McpServerUnregistered(
+                "mcp_credentials names a server that is not an enabled MCP server "
+                "registered in this workspace; nothing was stored",
+                detail={"field": "mcp_credentials", "server": name})
+        if (registration.get("auth") or {}).get("mode") != MCP_DISPATCH_MODE:
+            raise McpCredentialUnexpected(
+                "mcp_credentials names a server whose auth mode is not `dispatch` "
+                "(its key is the workspace's, or it takes none); nothing was stored",
+                detail={"field": "mcp_credentials", "servers": [name]})
+        entry = credentials[name]
+        check_credential(getattr(entry, "value", None), getattr(entry, "expires_in", None))
+        registrations[name] = registration
+    return registrations
+
+
+def restore_workflow(store: "McpCredentials", db: Any, writer: McpCredentialWriter, *,
+                     tenant_id: str, workflow_id: str,
+                     registrations: Mapping[str, Mapping[str, Any]],
+                     credentials: Mapping[str, Any], by: str) -> list[dict[str, Any]]:
+    """Replace the workflow's credential for each checked server: a new
+    secret and a new live row (`McpCredentials.store`, which logs `mcp
+    credential stored ... owner=wf_...`), then the replaced row's own secret
+    deleted, best effort -- its Secret Manager TTL removes it otherwise.
+    Servers the body does not name are untouched. Answers
+    `{"server", "expires_at"}` per server, nothing about a value."""
+    stored: list[dict[str, Any]] = []
+    for name in sorted(registrations):
+        registration = registrations[name]
+        server = str(registration.get("server_id"))
+        snap = db.collection(COLLECTION).document(row_id(workflow_id, server)).get()
+        old = (snap.to_dict() or {}) if snap.exists else {}
+        entry = credentials[name]
+        stored.append(store.store(
+            tenant_id=tenant_id, owner_id=workflow_id, owner_kind=OWNER_WORKFLOW,
+            registration=registration, value=entry.value, expires_in=entry.expires_in, by=by))
+        secret_id = old.get("secret_id")
+        if old.get("state") == LIVE and isinstance(secret_id, str) \
+                and secret_id.startswith(secret_prefix(tenant_id)) \
+                and _HEX.fullmatch(secret_id[len(secret_prefix(tenant_id)):]):
+            try:
+                writer.delete_secret(secret_id)
+            except UpstreamUnavailable:
+                log.warning("mcp credential re-store: the replaced secret=%s was not deleted; "
+                            "its TTL removes it", secret_id)
+    return stored
+
+
+def _waits_on(doc: Mapping[str, Any], servers: set[str]) -> list[str]:
+    """The re-stored servers a CREDENTIAL_MISSING park waits on, by name."""
+    named: list[str] = []
+    for block in doc.get("blocked_by") or []:
+        if isinstance(block, Mapping) and block.get("credential") == PARK_CREDENTIAL \
+                and block.get("server") in servers and block["server"] not in named:
+            named.append(block["server"])
+    return named
+
+
+def step_task_docs(db: Any, tenant_id: str, workflow_id: str) -> dict[str, dict[str, Any]]:
+    """The workflow's step tasks in this tenant, by id: one query."""
+    query = db.collection("tasks").where(filter=FieldFilter("workflow_id", "==", workflow_id))
+    return {snap.id: doc for snap in query.stream()
+            if (doc := snap.to_dict() or {}).get("tenant_id") == tenant_id}
+
+
+def promote_restored(db: Any, *, tenant_id: str, workflow_id: str,
+                     task_ids: Iterable[str], servers: Iterable[str],
+                     now: datetime) -> int:
+    """Return to READY every step of the workflow PARKED CREDENTIAL_MISSING
+    on one of the re-stored `servers` (its `blocked_by[]` entry with
+    `credential: "mcp"`), each in its own transaction guarded on that park,
+    with a READY event naming the servers. READY holds nothing (invariant
+    1): admission, later, asks the whole credential question again before
+    any lease, so a park that also waits on something else is parked again
+    there. Answers how many it returned. A step parked meanwhile on another
+    server, or a child task the query does not reach, is the scheduler's
+    credential sweep's, on the drain this request wakes."""
+    wanted = set(servers)
+    promoted = 0
+    for task_id in task_ids:
+        ref = db.collection("tasks").document(task_id)
+
+        @firestore.transactional
+        def _apply(txn: Any) -> bool:
+            current = _snapshot(txn.get(ref))
+            doc = (current.to_dict() or {}) if current.exists else {}
+            if (doc.get("tenant_id") != tenant_id or doc.get("workflow_id") != workflow_id
+                    or doc.get("state") != TaskState.PARKED.value
+                    or doc.get("park_reason") != ParkReason.CREDENTIAL_MISSING.value):
+                return False
+            named = _waits_on(doc, wanted)
+            if not named:
+                return False
+            assert_transition(TaskState.PARKED, TaskState.READY)
+            txn.update(ref, {"state": TaskState.READY.value, "park_reason": None,
+                             "next_eligible_at": None, "blocked_by": [], "updated_at": now})
+            from .codec import event_to_firestore
+            from .store import EVENTS
+
+            event = TaskEvent(
+                event_id=new_id("ev"), task_id=task_id, tenant_id=tenant_id,
+                type=EventType.READY, at=now, attempt_id=None,
+                detail={"reason": RESTORED,
+                        "park_reason": ParkReason.CREDENTIAL_MISSING.value,
+                        "servers": named})
+            txn.set(ref.collection(EVENTS).document(event.event_id), event_to_firestore(event))
+            return True
+
+        if _apply(db.transaction()):
+            promoted += 1
+    return promoted

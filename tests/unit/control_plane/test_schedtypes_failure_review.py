@@ -35,6 +35,7 @@ import pytest
 from swarm_api import failurecauses, failuredigest, schedulefire, schedules, scheduletypes
 from swarm_api.errors import Forbidden, ValidationFailed
 from swarm_api.scheduletypes import BudgetCaps
+from swarm_api.routes import failurefindings
 from swarm_api.schedtypes import failure_review
 
 from .test_schedtypes_issue_sweep import (  # noqa: F401 -- fixtures
@@ -801,3 +802,62 @@ def test_prose_still_cannot_open_html_and_a_code_span_still_closes() -> None:
     _, body = failure_review.render_issue(_review(), _cause(cause="@octocat fixes #12 -> done"),
                                           "worker", held=False)
     assert "@octocat" not in body and "fixes #12" not in body and "-> done" in body
+
+
+# ---------------------------------------------------------------------------
+# What Firestore stores is plain too (FAILURE-STORE-PLAIN, part of #2391; the
+# owner's "Store plain", 2026-10-26). The console shows `failure_causes.title`
+# and a finding's `cause` and `fix` through React, which escapes them again, so
+# a stored `&gt;` read '-&gt;' on screen. Documents written before keep theirs.
+# ---------------------------------------------------------------------------
+
+STORED = "implement -> review"
+
+
+def test_a_tenant_finding_and_its_cause_record_store_and_serve_the_text_as_written(
+        db, ctx, writes, monkeypatch) -> None:
+    schedule, investigator, firing = first_firing(db, ctx)
+    end(db, investigator)
+    _artifacts(monkeypatch, ctx, {investigator["id"]: rca(firing.firing["firing_id"], cause(
+        where="tenant_repo", text=STORED, fix="Gate the review on the plan -> run edge, & test it."))})
+
+    failure_review.create(fire(ctx, schedule, NOW + timedelta(hours=6)))
+
+    (finding,) = [d for p, d in db.docs.items() if p.startswith(f"{failure_review.FINDINGS}/")]
+    # MUTATION: store `neutral(...)` again and these read 'implement -&gt; review'.
+    assert finding["cause"] == STORED
+    assert finding["fix"] == "Gate the review on the plan -> run edge, & test it."
+    assert records(db)[0]["title"] == STORED
+    assert failurefindings.tenant_view(finding)["cause"] == STORED
+
+
+def test_a_no_change_fix_is_stored_as_written(db, ctx, writes, monkeypatch) -> None:
+    schedule, investigator, firing = first_firing(db, ctx)
+    end(db, investigator)
+    why = "No change: implement -> review is gated on main, & tested."
+    _artifacts(monkeypatch, ctx, {investigator["id"]: rca(
+        firing.firing["firing_id"], cause(text=STORED, fix=why, action="none"))})
+
+    failure_review.create(fire(ctx, schedule, NOW + timedelta(hours=6)))
+
+    (record,) = records(db)
+    # MUTATION: store `neutral(cause.fix, ...)` and this reads 'implement -&gt; review'.
+    assert record["state"] == "no_change" and record["no_change"]["fix"] == why
+    assert record["title"] == STORED
+
+
+def test_the_stored_text_is_still_masked_and_neutralised(db, ctx, writes, monkeypatch) -> None:
+    """Plain is `neutral` without its HTML escaping only: a mention, a closing
+    keyword and a credential are still handled before anything is stored."""
+    schedule, investigator, firing = first_firing(db, ctx)
+    end(db, investigator)
+    token = "ghp_" + "x" * 36
+    _artifacts(monkeypatch, ctx, {investigator["id"]: rca(firing.firing["firing_id"], cause(
+        where="tenant_repo", text=f"@octocat fixes #12 -> {token}", fix=f"see <b>{token}</b>"))})
+
+    failure_review.create(fire(ctx, schedule, NOW + timedelta(hours=6)))
+
+    (finding,) = [d for p, d in db.docs.items() if p.startswith(f"{failure_review.FINDINGS}/")]
+    for text in (finding["cause"], finding["fix"], records(db)[0]["title"]):
+        assert token not in text and "@octocat" not in text and "fixes #12" not in text
+    assert "-> " in finding["cause"] and "<b>" in finding["fix"]
