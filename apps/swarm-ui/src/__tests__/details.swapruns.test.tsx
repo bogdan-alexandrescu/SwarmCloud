@@ -12,7 +12,7 @@
  * first case turns red; draw it for one run (`runs.length < 1`) -- the last.
  */
 import { renderToStaticMarkup } from 'react-dom/server'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { AgentRun } from '../api'
 import type { Task } from '../types'
@@ -67,7 +67,15 @@ function runOf(t: Task): AgentRun {
 }
 
 const hosts: HTMLElement[] = []
+// The tile writes an instant from another day with its date, so the clock is
+// held on the fixture's day: unpinned, the span read "10-26 09:07 → ..." from
+// 2026-10-27 on and both span assertions turned red with no code change.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-10-26T10:00:00Z'))
+})
 afterEach(() => {
+  vi.useRealTimers()
   for (const h of hosts.splice(0)) h.remove()
 })
 
