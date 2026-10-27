@@ -3085,6 +3085,16 @@ def rereview_step_for(
     review's task (`SubmissionService.submit_workflow`): the scheduler runs
     the re-review on the profile the review RESOLVED to, never re-deciding
     from the integrator's diff (`scheduler.runtime.resolve`).
+
+    A review PINNED to `claude-code`, with no block, gets one on its
+    re-review (#2275, BGD 2026-10-27, Q-2275): a `claude-code` review of a
+    UI lane can never say MERGE, and a re-review copying its profile could
+    not either, so no fix round reached the merge. The re-review is
+    submitted on the pair's browser profile with `browser_if_ui`, catalogue
+    names only (invariant 10), and the scheduler decides from the lane's own
+    files -- the browser only when they are UI, which is the #2322 cost
+    decision. It carries no `inherit`: the review it would inherit from was
+    pinned, not resolved (`SubmissionService.submit_workflow`).
     """
     sources = merge_sources(steps, strategy)
     if (
@@ -3104,9 +3114,16 @@ def rereview_step_for(
         verdict_file=sources.verdict_file,
         staged=paths,
     )
+    metadata = dict(review.get("metadata") or {})
+    profile = review.get("runner_profile")
+    if profile == RUNTIME_POLICY_PROFILES["code"] and RUNTIME_METADATA_KEY not in metadata:
+        profile = RUNTIME_POLICY_PROFILES["browser"]
+        metadata[RUNTIME_METADATA_KEY] = {
+            "policy": RUNTIME_POLICY_BROWSER_IF_UI, **RUNTIME_POLICY_PROFILES,
+        }
     step: dict[str, Any] = {
         "step_id": _free_step_id(REREVIEW_STEP_ID, {s.step_id for s in steps}),
-        "runner_profile": review.get("runner_profile"),
+        "runner_profile": profile,
         "input": {**original, "prompt": preamble + (prompt if isinstance(prompt, str) else "")},
         "depends_on": list(dict.fromkeys([sources.pull_request, *staged])),
         "builds_on": sources.pull_request,
@@ -3114,10 +3131,7 @@ def rereview_step_for(
         # The integrator's own gate: the re-review runs after a fix, and
         # passes the review's verdict on when there was none.
         "when": {"step": sources.review, "verdict_in": list(integrator.when_verdicts)},
-        "metadata": {
-            **dict(review.get("metadata") or {}),
-            INPUT_LAYOUT_METADATA_KEY: INPUT_LAYOUT_BY_PARENT,
-        },
+        "metadata": {**metadata, INPUT_LAYOUT_METADATA_KEY: INPUT_LAYOUT_BY_PARENT},
     }
     for name in ("resource_class", "timeout_seconds"):
         if review.get(name) is not None:

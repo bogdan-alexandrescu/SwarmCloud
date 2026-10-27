@@ -1524,8 +1524,14 @@ class SubmissionService:
             # The re-review runs on what its review RESOLVED to (#2322): the
             # review's task id beside the policy it copied, read by the
             # scheduler as the re-review is readied (`scheduler.runtime`).
+            # Only when the review itself asked for the policy: a review
+            # pinned to claude-code resolved nothing, and its re-review's
+            # block (#2275, `rereview_step_for`) decides from the lane's files.
             runtime_block = task.metadata.get(RUNTIME_METADATA_KEY)
-            if step_id == rereview_step_id and isinstance(runtime_block, dict) and source.when:
+            if (
+                step_id == rereview_step_id and isinstance(runtime_block, dict) and source.when
+                and RUNTIME_METADATA_KEY in (by_id[source.when.step].metadata or {})
+            ):
                 runtime_block["inherit"] = {
                     "step": source.when.step, "task_id": step_task_id[source.when.step],
                 }
