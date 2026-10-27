@@ -12996,18 +12996,26 @@ class Worker:
         ws = self.ws
         assert ws is not None
         cfg = self.cfg
-        publish_repo = prepare_publish_repo(
-            source_repo=repo,
-            # The clone's HEAD: the agent's last commit, or none at all in an
-            # empty repository it never committed in.
-            work_head=None,
-            base=floor,
-            private_dir=ws.private,
-            logs_dir=ws.logs,
-            timeout_seconds=cfg.git_clone_timeout_seconds,
-            logger=self.log,
-            allow_unknown_base=allow_unknown_base,
-        )
+        fenced: list[children_mod.ChildSubmitFenced] = []
+        try:
+            publish_repo = prepare_publish_repo(
+                source_repo=repo,
+                # The clone's HEAD: the agent's last commit, or none at all in an
+                # empty repository it never committed in.
+                work_head=None,
+                base=floor,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_clone_timeout_seconds,
+                logger=self.log,
+                allow_unknown_base=allow_unknown_base,
+                confirm_on_origin=self._origin_confirmer(fenced),
+            )
+        finally:
+            # `prepare_publish_repo` reads a confirmer that raised as "origin
+            # confirmed nothing"; a fence is still the fence (invariant 5).
+            if fenced:
+                raise fenced[0]
         mirror_worktree(
             source=repo,
             dest=publish_repo,
@@ -13019,6 +13027,29 @@ class Worker:
         )
         self._publish_config_seals[str(publish_repo)] = _config_seal(publish_repo)
         return publish_repo
+
+    def _origin_confirmer(
+        self, fenced: list[Any]
+    ) -> Callable[[list[str]], list[str]] | None:
+        """The question `prepare_publish_repo` puts to origin about the clone's
+        `.git/shallow` lines (#2559): the attempt's git tools relay's signed
+        `git_fetch` `confirm` (#2413), answered from the forge. None when this
+        attempt is not offered the git tools; the boundary is then the
+        recorded base alone, as before. A fence is appended to `fenced` for
+        the caller to raise."""
+        relay = self._workflow_broker()
+        if relay is None:
+            return None
+        request_id = f"publish-confirm-{os.urandom(6).hex()}"
+
+        def confirm(shas: list[str]) -> list[str]:
+            try:
+                return relay.confirm_on_origin(shas, request_id=request_id)
+            except children_mod.ChildSubmitFenced as exc:
+                fenced.append(exc)
+                raise
+
+        return confirm
 
     def _push_over_own_earlier_attempt(
         self,

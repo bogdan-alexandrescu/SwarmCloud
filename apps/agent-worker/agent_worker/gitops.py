@@ -56,6 +56,8 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlparse, urlunparse, quote
 
+from swarm_redaction import redact as redact_text
+
 from .egress import EGRESS_PROBE_CAP_SECONDS, target_of
 from .forge import may_receive_forge_token
 from .procman import run_child
@@ -3080,6 +3082,7 @@ def prepare_publish_repo(
     git_binary: str = "git",
     local_branch: str = "swarm-publish",
     allow_unknown_base: bool = False,
+    confirm_on_origin: Callable[[list[str]], list[str]] | None = None,
 ) -> Path:
     """Build the worker-owned CLEAN repository the publish decides and pushes from.
 
@@ -3123,7 +3126,13 @@ def prepare_publish_repo(
       a repository it does not own) with grafts, replacement and the
       commit-graph switched off and its SHALLOW boundary taken from a file
       the worker writes here, holding the recorded base -- never from the
-      agent's `.git/shallow`. `upload-pack` is the one git command git
+      agent's `.git/shallow` as such. That file is read only AS DATA, as a
+      question: its full-sha lines are put to `confirm_on_origin` (swarm-api's
+      `git_fetch` `confirm`, answered from the forge, #2413), and only the
+      shas ORIGIN says it has join the boundary (#2559). History under a
+      commit origin has is origin's, so cutting the walk there hides nothing
+      the agent wrote; a line origin does not confirm is never added, and the
+      fetch then fails as before. `upload-pack` is the one git command git
       documents as safe to run in an untrusted repository: it runs no hook,
       and `uploadpack.packObjectsHook` is honoured only from configuration
       the agent cannot write. Whatever the agent's store or config does to
@@ -3231,11 +3240,24 @@ def prepare_publish_repo(
     # walk into history the clone never had. The first only drops objects
     # (the connectivity check then fails the fetch), the second only fails
     # the pack -- but neither is the agent's to decide.
+    #
+    # ORIGIN may widen it (#2559). An agent whose swarm-git fetch went
+    # unanswered fetches a sibling `--depth=N` in its own shell and merges it;
+    # the clone then lacks the parents of that sibling's cut-off, and a
+    # boundary of the base alone sends the walk into history the clone never
+    # had, failing every such publish. A cut-off origin CONFIRMS it has is
+    # safe to stop at: everything under it is origin's history, and the
+    # agent's content descends from it, so the walk still reaches every
+    # commit the agent wrote. A line origin does not confirm -- one the agent
+    # forged to cut its own key commit out of the walk -- is never added.
     if empty:
         shallow_file = "/dev/null"
     else:
+        confirmed = _origin_confirmed_shallow(
+            source_repo, floor=floor, confirm_on_origin=confirm_on_origin, logger=logger
+        )
         boundary = publish_dir / ".git" / "swarm-source-shallow"
-        boundary.write_text(f"{floor}\n")
+        boundary.write_text("".join(f"{sha}\n" for sha in [floor, *confirmed]))
         shallow_file = str(boundary)
     upload_pack = " ".join(
         [
@@ -3267,10 +3289,13 @@ def prepare_publish_repo(
         "publish-fetch",
     )
     if fetch_code != 0:
+        # The fixed text first, verbatim: failure causes and the failure
+        # review fingerprint on it. Then git's own reason (#2559: six failures
+        # said only this, and which of the two it was had to be reproduced).
         raise GitError(
             "could not fetch the agent's work into the worker's clean repository "
             "(an object failed git's checks, or the clone's history is incomplete); "
-            "nothing was pushed"
+            "nothing was pushed" + _stderr_tail(logs_dir / "git-publish-fetch.err.log")
         )
 
     checkout_code, _ = run(
@@ -3282,6 +3307,73 @@ def prepare_publish_repo(
 
     logger.info("clean publish repository prepared", branch=local_branch)
     return publish_dir
+
+
+#: The most of the agent's `.git/shallow` the publish reads, and the most of
+#: its lines it asks origin about (#2559). A clone that fetched a few siblings
+#: `--depth=N` holds a handful of cut-offs; more is past any real one, and
+#: reading more would let the agent make the worker hold an arbitrary file.
+#: The line cap is swarm-api's `gitexec.MAX_HAVES`, which `confirm` answers
+#: (gittools.MAX_CONFIRM; not imported here, gittools imports this module).
+_SHALLOW_MAX_BYTES = 64 * 1024
+_SHALLOW_MAX_LINES = 16
+#: The most of git's stderr a publish-fetch failure carries.
+_STDERR_TAIL_CHARS = 500
+
+
+def _origin_confirmed_shallow(
+    source_repo: Path,
+    *,
+    floor: str,
+    confirm_on_origin: Callable[[list[str]], list[str]] | None,
+    logger: Any,
+) -> list[str]:
+    """The clone's shallow cut-offs that origin says it has (#2559).
+
+    `.git/shallow` is read AS DATA (`_read_in_git_dir`: O_NOFOLLOW at every
+    component, a regular file only, capped), never through git in the clone.
+    Only full 40-hex lines are asked, the floor and duplicates dropped, at
+    most `_SHALLOW_MAX_LINES`; the answer is kept only where it names a sha
+    that was asked. A confirmer that raises answers nothing."""
+    if confirm_on_origin is None:
+        return []
+    raw = _read_in_git_dir(source_repo, "shallow", cap=_SHALLOW_MAX_BYTES)
+    if not raw:
+        return []
+    asked: list[str] = []
+    for line in raw.decode("ascii", "replace").splitlines():
+        sha = line.strip()
+        if _FULL_SHA_RE.match(sha) and sha != floor and sha not in asked:
+            asked.append(sha)
+            if len(asked) == _SHALLOW_MAX_LINES:
+                break
+    if not asked:
+        return []
+    try:
+        answer = confirm_on_origin(list(asked))
+    except Exception as exc:  # noqa: BLE001 - an unanswered question widens nothing
+        logger.warning("origin did not confirm the clone's shallow lines",
+                       asked=len(asked), error=type(exc).__name__)
+        return []
+    said = set(answer) if isinstance(answer, (list, tuple, set)) else set()
+    confirmed = [sha for sha in asked if sha in said]
+    logger.info("clone shallow lines confirmed on origin", asked=len(asked),
+                confirmed=len(confirmed))
+    return confirmed
+
+
+def _stderr_tail(path: Path) -> str:
+    """`; git: <the redacted end of git's stderr>`, or "" when it said nothing."""
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - 4 * _STDERR_TAIL_CHARS))
+            text = handle.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+    tail = " ".join(redact_text(text).text.split())[-_STDERR_TAIL_CHARS:]
+    return f"; git: {tail}" if tail else ""
 
 
 def _empty_worktree(root: Path) -> None:

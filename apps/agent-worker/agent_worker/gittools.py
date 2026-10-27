@@ -60,6 +60,14 @@ the forge) and excludes exactly those and their history from the check, the
 scan and the bundle. The answer is read as a subset of the question. A
 commit origin does not have is refused as before, and the refusal says so.
 
+The same question widens the publish repository's BOUNDARY (#2559). A step
+that runs `git fetch --depth=N origin X` in its own shell and merges X leaves
+a clone cut off inside X, and a boundary of A alone sends the upload walk into
+X's history the clone never had: the fetch fails. So `prepare_push` hands
+`prepare_publish_repo` a confirmer (`confirm_on_origin`): the clone's
+`.git/shallow` lines, read there as data, are asked about, and only those
+origin confirms join the boundary, so a line the agent forged never does.
+
 Wiring this into `ChildPath`'s tick and naming the shim in the runners is lane
 G6; the route it calls is lane G5.
 """
@@ -763,16 +771,38 @@ class GitTools:
         if not head:
             raise GitToolRefused("nothing_to_push", "HEAD has no commit")
         self.private_dir.mkdir(parents=True, exist_ok=True)
+        # `prepare_publish_repo` reads a confirmer that raises as "origin
+        # confirmed nothing", so what it raised is kept here. The fence is
+        # raised whatever the fetch did (invariant 5: a superseded attempt
+        # stops); a retryable refusal becomes the push's answer if the fetch
+        # then fails, so the agent asks again rather than reading a
+        # missing-history failure.
+        unanswered: list[Exception] = []
+
+        def confirm(shas: list[str]) -> list[str]:
+            try:
+                return self.confirm_on_origin(shas, request_id=request_id)
+            except (GitToolRefused, GitToolFenced) as exc:
+                unanswered.append(exc)
+                raise
+
         try:
             repo = gitops.prepare_publish_repo(
                 source_repo=self.clone, work_head=head, private_dir=self.private_dir,
                 logs_dir=self.logs_dir, timeout_seconds=self.cfg.timeout_seconds,
                 logger=self.log, base=self.cfg.clone_base, git_binary=self._git,
-                local_branch=_PUBLISH_BRANCH,
+                local_branch=_PUBLISH_BRANCH, confirm_on_origin=confirm,
             )
         except GitError as exc:
-            raise GitToolRefused("push_failed", str(exc)[:300]) from None
+            if unanswered:
+                raise unanswered[-1] from None
+            # Long enough for the fixed text and the end of git's own reason
+            # (`prepare_publish_repo` appends it, redacted, #2559).
+            raise GitToolRefused("push_failed", str(exc)[:700]) from None
         prepared = PreparedPush(repo=repo, fields={})
+        if any(isinstance(exc, GitToolFenced) for exc in unanswered):
+            prepared.discard()
+            raise next(exc for exc in unanswered if isinstance(exc, GitToolFenced))
         try:
             negatives = [sha for sha in self.origin.haves if self._has_commit(repo, sha)]
             commits = self._new_commits(repo, negatives)
@@ -832,6 +862,33 @@ class GitTools:
         except BaseException:
             prepared.discard()
             raise
+
+    def confirm_on_origin(self, shas: list[str], *, request_id: str) -> list[str]:
+        """The shas of `shas` origin has, asked of swarm-api (`git_fetch` with
+        `confirm`, #2413), for `prepare_publish_repo`'s upload boundary (#2559).
+
+        At most `MAX_CONFIRM` are asked; the answer is kept only where it
+        names a sha that was asked, and each one kept is learnt as origin's.
+        A retryable refusal is the agent's to ask again, so it is raised (the
+        push is refused `api_unavailable`, as `_confirm_foreign` does); any
+        other refusal, or no answer, confirms nothing, and the boundary stays
+        the recorded base."""
+        asked = [sha for sha in shas if _FULL_SHA.match(sha)][:MAX_CONFIRM]
+        if not asked:
+            return []
+        try:
+            payload = self.call("git_fetch", {"confirm": asked}, request_id=request_id)
+        except GitToolRefused as exc:
+            if exc.retryable:
+                raise
+            return []
+        listed = payload.get("confirmed") if isinstance(payload, dict) else None
+        if not isinstance(listed, list):
+            return []
+        confirmed = [sha for sha in asked if sha in listed]
+        for sha in confirmed:
+            self.origin.learn(sha)
+        return confirmed
 
     def _has_commit(self, repo: Path, sha: str) -> bool:
         code, _ = self._git_in(repo, ["cat-file", "-e", f"{sha}^{{commit}}"], "gittools-have")
