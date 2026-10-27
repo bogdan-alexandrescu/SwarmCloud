@@ -220,6 +220,19 @@ def heartbeat_resumed(
     return (now - beat).total_seconds() <= grace_seconds
 
 
+@dataclass
+class WorkflowPage(WorkflowRead):
+    """One page of the stall check's workflow read, and where the next starts.
+
+    `next_after` is the last document id of a full page, or None after a short
+    one, which sends the next pass back to the top. It is the document id, not
+    `WorkflowView.workflow_id`, which a document may spell differently, and it
+    counts the malformed documents too: the cursor moves past everything read.
+    """
+
+    next_after: str | None = None
+
+
 class ControlStore:
     def __init__(
         self,
@@ -612,8 +625,18 @@ class ControlStore:
         return TaskView.from_doc(snap.to_dict() or {}, task_id) if snap.exists else None
 
     # -- workflows (#616) ------------------------------------------------
-    def workflows_for_stall_check(self, *, limit: int) -> WorkflowRead:
-        """Every non-terminal workflow (up to `limit`) and its step tasks.
+    def workflows_for_stall_check(self, *, limit: int, after: str | None = None) -> WorkflowPage:
+        """The next `limit` non-terminal workflows after `after`, and their step tasks.
+
+        IN DOCUMENT-ID ORDER, FROM A CURSOR (#1822). Unordered, Firestore
+        answered with the same first `limit` workflows on every pass, so past
+        `workflow_scan_limit` the rest were never checked and only `truncated`
+        said so. The caller (`Reconciler._check_workflows`) carries the last
+        id of a full page into the next pass's `after` and starts again from
+        the top after a short one, so every live workflow is checked within
+        ceil(live / limit) passes. An `in` filter ordered by document id is
+        served by the built-in single-field index; no composite index is
+        needed.
 
         NON-TERMINAL BY THE STORED STATE, which is the API's sweep rule too
         (`swarm_api.rollup.WorkflowRollups.sweep`): a stored terminal state is
@@ -632,17 +655,23 @@ class ControlStore:
         as `snapshot()` does for a task, so it cannot blind the check to every
         other tenant's workflows.
         """
+        from google.cloud.firestore_v1.field_path import FieldPath
+
         live = sorted(state.value for state in TaskState if state not in TERMINAL_STATES)
+        doc_id = FieldPath.document_id()
         query = (
             self._db.collection("workflows")
             .where(filter=self._filter("state", "in", live))
-            .limit(limit + 1)
+            .order_by(doc_id)
         )
-        read = WorkflowRead()
-        docs = list(query.stream())
+        if after is not None:
+            query = query.start_after({doc_id: after})
+        read = WorkflowPage()
+        docs = list(query.limit(limit + 1).stream())
         if len(docs) > limit:
             read.truncated = True
             docs = docs[:limit]
+            read.next_after = docs[-1].id
         for doc in docs:
             data = doc.to_dict() or {}
             try:

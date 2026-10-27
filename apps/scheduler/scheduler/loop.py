@@ -745,9 +745,12 @@ class Scheduler:
         # the next drain, so a sibling admitted in between starts, holds
         # capacity and runs to completion (docs/workflows.md says so).
         self._workflow_verdicts: dict[tuple[str, str], FailedWorkflow | None] = {}
-        # Where each paged park sweep resumes (`_parked_window`). Kept across
-        # drains on purpose: that is what moves the window.
-        self._park_cursors: dict[ParkReason, str | None] = {}
+        # Where each paged park sweep resumes (`_parked_window`), keyed by
+        # (sweep, reason): the account wake and the prewarm both read
+        # PROVIDER_QUOTA_EXHAUSTED, and one cursor between them would hand each
+        # only every other page. Kept across drains on purpose: that is what
+        # moves the window.
+        self._park_cursors: dict[tuple[str, ParkReason], str | None] = {}
         self._swept_workflows: set[tuple[str, str]] = set()
         # Tasks this run ended itself (`_note_ended`), whose dependants it
         # resolves before it returns (`_release_ended`, #636). Per run.
@@ -1051,9 +1054,7 @@ class Scheduler:
             return []
         now = self._now()
         woken: list[str] = []
-        for task in self._store.parked_tasks(
-            ParkReason.PROVIDER_QUOTA_EXHAUSTED, self._settings.dependency_sweep_size
-        ):
+        for task in self._parked_window(ParkReason.PROVIDER_QUOTA_EXHAUSTED, sweep="account_wake"):
             provider = account_park_provider(task)
             if provider is None or (task.tenant_id, provider) not in served:
                 continue
@@ -1968,9 +1969,7 @@ class Scheduler:
         next when a bound stops it.
         """
         promoted = 0
-        for task in self._store.parked_tasks(
-            ParkReason.DEPENDENCY_INCOMPLETE, self._settings.dependency_sweep_size
-        ):
+        for task in self._parked_window(ParkReason.DEPENDENCY_INCOMPLETE):
             if self._resolve_dependency(task, report):
                 promoted += 1
         return promoted
@@ -2158,9 +2157,7 @@ class Scheduler:
         """
         promoted = 0
         now = self._now()
-        for task in self._store.parked_tasks(
-            ParkReason.CREDENTIAL_MISSING, self._settings.dependency_sweep_size
-        ):
+        for task in self._parked_window(ParkReason.CREDENTIAL_MISSING):
             if self._stop_for_failed_workflow(task, report):
                 continue
             tenant = self._tenant(task.tenant_id)
@@ -2207,20 +2204,25 @@ class Scheduler:
                     promoted += 1
         return promoted
 
-    def _parked_window(self, reason: ParkReason) -> list[Task]:
+    def _parked_window(self, reason: ParkReason, *, sweep: str = "") -> list[Task]:
         """The next `dependency_sweep_size` parks on `reason`, resuming where the last drain stopped.
 
-        The two sweeps below leave a park in place while what parked it has not
-        cleared -- a retry not yet due, a tenant still disabled. With a fixed
+        Every park sweep reads through here (#1822). Each leaves a park in
+        place while what parked it has not cleared -- a retry not yet due, a
+        tenant still disabled, a parent still running. With a fixed
         window, that many such parks ahead in the index would hide every park
         behind them for ever, which is the defect these sweeps exist to end.
         So the window moves: a full page leaves its last id as the next drain's
         start, and a short page sends the next drain back to the top. Every
         park is looked at within ceil(parks / sweep size) drains.
+
+        `sweep` names the cursor when two sweeps read one reason, so each
+        moves its own window.
         """
         size = self._settings.dependency_sweep_size
-        page = self._store.parked_page(reason, size, self._park_cursors.get(reason))
-        self._park_cursors[reason] = page[-1].id if len(page) >= size else None
+        key = (sweep, reason)
+        page = self._store.parked_page(reason, size, self._park_cursors.get(key))
+        self._park_cursors[key] = page[-1].id if len(page) >= size else None
         return page
 
     def _promote_scheduled_retries(self, report: DrainReport) -> int:
@@ -2710,9 +2712,11 @@ class Scheduler:
         and looked at again on the next drain -- when no account can take it.
         A park whose tenant no account serves any more is promoted as before:
         its worker falls back to the tenant's own key. These parks are read
-        with `parked_tasks`, one fixed page of `dependency_sweep_size`; a
-        backlog of held parks larger than that page would hide the rest,
-        which `_parked_window` would cure if it ever grows that large.
+        through `_parked_window`, so a backlog of held parks larger than one
+        page of `dependency_sweep_size` no longer hides the rest (#1822). When
+        the budget stops a page part-way, the cursor goes back to the last
+        park looked at, so the next drain starts at the first one this drain
+        did not reach rather than a page beyond it.
         """
         budget = max(0, self._settings.core.prewarm_max_agents)
         if budget == 0:
@@ -2725,9 +2729,13 @@ class Scheduler:
         for reason in PREWARM_REASONS:
             if promoted >= budget:
                 break
-            for task in self._store.parked_tasks(reason, self._settings.dependency_sweep_size):
+            key = ("prewarm", reason)
+            resume = self._park_cursors.get(key)
+            for task in self._parked_window(reason, sweep="prewarm"):
                 if promoted >= budget:
+                    self._park_cursors[key] = resume
                     break
+                resume = task.id
                 if self._stop_for_failed_workflow(task, report):
                     continue
                 eligible_at = task.next_eligible_at
