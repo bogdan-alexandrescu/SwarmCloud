@@ -260,6 +260,15 @@ def _turn(inp: int, cached: int, out: int) -> list[dict[str, Any]]:
             {"type": "turn.completed", "usage": _usage(inp, cached, out)}]
 
 
+def _poll(watcher: budgetwatch.BudgetStreamWatcher, guard: BudgetGuard, n: int) -> None:
+    """The runner's poll; the channel's mtime set apart from the last one,
+    which a coarse filesystem clock could otherwise repeat (the guard reads
+    the channel when its mtime moves)."""
+    watcher.poll()
+    stamp = time.time_ns() + n * 1_000_000_000
+    os.utime(guard.channel, ns=(stamp, stamp))
+
+
 def test_codex_usage_drives_the_guard_to_warn_at_80_and_stop_at_100(tmp_path):
     guard, events = _guard(tmp_path, Limits(tokens=10_000))
     watcher = budgetwatch.BudgetStreamWatcher(guard.channel, guard.signal)
@@ -272,14 +281,14 @@ def test_codex_usage_drives_the_guard_to_warn_at_80_and_stop_at_100(tmp_path):
     assert guard.watch() is None and guard.tokens == 7_000 and events == []
 
     feed(_jsonl(_turn(1_000, 0, 500)).encode())
-    watcher.poll()
+    _poll(watcher, guard, 1)
     assert guard.watch() == "warn"
     (event,) = events
     assert event["cause"] == budget_mod.WARNING_CAUSE and event["percent"] == 85
     assert event["told"] is False, "codex exec takes no note mid-run"
 
     feed(_jsonl(_turn(1_000, 0, 500)).encode())
-    watcher.poll()
+    _poll(watcher, guard, 2)
     assert guard.watch() == budget_mod.ACTION_STOP and guard.tokens == 10_000
     assert guard.usage() == {budget_mod.UNNAMED_MODEL: {
         "input_tokens": 4_000, "output_tokens": 2_000,

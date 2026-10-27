@@ -55,7 +55,9 @@ from ..gitmcp.server import SERVER_NAME as GIT_MCP_SERVER_NAME
 from ..gitmcp.server import SPOOL_ENV as GIT_SPOOL_ENV
 from .base import RunnerContext, run_runner
 from .claude_code import RelayServer, mcp_servers_note, relay_servers
-from .cliagent import CliAgentSpec, run_cli_agent
+from . import codex_events
+from .cliagent import _SENSITIVE_PASSTHROUGH, CliAgentSpec, cli_stream_files, run_cli_agent
+from ..redact import collect_secrets, scrub_text
 
 #: The CLI child's variable holding the relay's LOCAL token, named by every
 #: relay server's `bearer_token_env_var` (never the caller's credential).
@@ -104,7 +106,11 @@ SPEC = CliAgentSpec(
     binary_env="CODEX_BIN",
     binary_default="codex",
     args_env="CODEX_ARGS",
-    args_default=("exec", "--skip-git-repo-check"),
+    # `--json` (CODEX-JSON, BGD's answer to BUDGET-CAP question 6, 2026-10-26):
+    # stdout is codex's event stream, whose `turn.completed` usage the budget
+    # meter counts. The capture is rendered readable when the run is done
+    # (`codex_events.finish_capture`); the raw stream is kept beside it.
+    args_default=("exec", "--json", "--skip-git-repo-check"),
     key_env="OPENAI_API_KEY",
     model_flag="--model",
     transcript_name="codex-transcript.json",
@@ -116,7 +122,9 @@ SPEC = CliAgentSpec(
     # again from the prompt (#626): `codex exec [flags] resume <id> -`, the
     # flags still the parent `exec`'s, the reload's message on stdin.
     resume_flag="resume",
-    # Its stdout does not name the session; its rollout does.
+    # Its rollout names the session. Under `--json` the stream's
+    # `thread.started` does too, as `thread_id`, which `cliagent` does not
+    # read; the rollout is read either way.
     session_locator=latest_session,
 )
 
@@ -194,9 +202,35 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         ctx.payload = {**ctx.payload, "prompt": prompt}
     if attached and isinstance(prompt, str) and prompt.strip():
         ctx.payload = {**ctx.payload, "prompt": f"{prompt.rstrip()}\n\n{mcp_servers_note(attached)}"}
-    if not extra_args and not extra_env:
-        return run_cli_agent(ctx, SPEC)
-    return run_cli_agent(ctx, SPEC, extra_args=extra_args, extra_env=extra_env)
+    try:
+        if not extra_args and not extra_env:
+            out = run_cli_agent(ctx, SPEC)
+        else:
+            out = run_cli_agent(ctx, SPEC, extra_args=extra_args, extra_env=extra_env)
+    finally:
+        # Every outcome, the budget's stop and every failure included: the
+        # Logs tab reads this capture whichever way the run ended.
+        answer = finish_log(ctx, extra_env.get(MCP_RELAY_TOKEN_ENV))
+    if answer:
+        # The agent's last message, not the tail of the event stream that
+        # `cliagent._summarise` falls back to for events it does not know.
+        out["summary"] = answer
+    return out
+
+
+def finish_log(ctx: RunnerContext, relay_token: str | None = None) -> str | None:
+    """Render the codex capture readable (`codex_events.finish_capture`) and
+    return the agent's last message, or None. The values `run_cli_agent`
+    redacts the capture of are redacted again from every decoded string."""
+    secrets = collect_secrets(
+        [os.environ.get(name) for name in (SPEC.key_env, *SPEC.alt_key_envs, *_SENSITIVE_PASSTHROUGH)]
+        + [relay_token]
+    )
+    files = cli_stream_files(SPEC)
+    return codex_events.finish_capture(
+        ctx.artifacts_dir, files.stdout, files.transcript or SPEC.transcript_name,
+        lambda text: scrub_text(text, secrets),
+    )
 
 
 def main() -> int:

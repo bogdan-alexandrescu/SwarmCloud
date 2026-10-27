@@ -12,7 +12,9 @@ WHAT IS COUNTED (BGD, 2026-10-26).
     reads, as reported. claude-code's stream-json carries each message's
     `usage` on its `assistant` events (the last copy of each message id
     counts, as `lifecycle._stream_usage` counts it); codex's `--json` stream
-    carries a `turn.completed` event's `usage`. Cache WRITES are not counted:
+    (the codex profile runs `codex exec --json` since CODEX-JSON, BGD's
+    answer to BUDGET-CAP question 6) carries a `turn.completed` event's
+    `usage`, once per start, cached input inside its input. Cache WRITES are not counted:
     the owner's rule names input, output and cache reads.
   * DOLLARS are the API-price estimate the worker already records as
     `cost_usd`. A live run has not reported its cost yet -- claude-code
@@ -112,6 +114,11 @@ _USAGE_FIELDS = (
     "cache_creation_input_tokens",
     "cache_read_input_tokens",
 )
+#: codex `--json` items that run something and hand its result back to the
+#: model (`UsageMeter.feed`): their completion is a turn boundary. Not
+#: `agent_message`, `reasoning`, `todo_list` or `error`, which return nothing
+#: to the model and so stop nothing halfway.
+CODEX_TOOL_ITEMS = frozenset({"command_execution", "file_change", "mcp_tool_call", "web_search"})
 #: The model a message that names none is counted under: swarm-api prices
 #: nothing for it, so the dollar figure reads "not known" rather than one
 #: that left those tokens out (as `lifecycle._UNNAMED_MODEL`).
@@ -170,7 +177,16 @@ class UsageMeter:
     `feed(event)` answers True when the event is a TURN BOUNDARY: a top-level
     `user` event of claude-code's stream (the tool results of a turn are in,
     the next model request not yet answered -- the boundary the account swap
-    uses), or a codex `turn.completed`.
+    uses); for codex, a completed tool item (`CODEX_TOOL_ITEMS`: the same
+    point, the tool's result in and the model not yet answering it) or its
+    `turn.completed`.
+
+    CODEX REPORTS USAGE ONCE A TURN, and `codex exec` runs ONE turn per start
+    (codex-cli 0.154.0, `--json`): its usage reaches the meter when the start
+    ends, not as it goes. So a codex step is measured per start, and a stop
+    the worker has asked -- the budget spent by an earlier start, folded in
+    by `BudgetGuard.runner_ended` -- is honoured at the next completed tool
+    item rather than after a whole further turn.
     """
 
     def __init__(self) -> None:
@@ -196,6 +212,13 @@ class UsageMeter:
         if kind == "user" and not event.get("parent_tool_use_id"):
             self.turns += 1
             return True
+        if kind == "item.completed":
+            # A codex tool's result is in and the model has not answered it:
+            # the codex form of claude-code's top-level `user` event. Not a
+            # turn of usage (codex reports usage only at `turn.completed`,
+            # once per `codex exec` start), so `turns` is not counted.
+            item = event.get("item")
+            return isinstance(item, Mapping) and item.get("type") in CODEX_TOOL_ITEMS
         if kind == "turn.completed":
             usage = event.get("usage")
             if isinstance(usage, Mapping):
@@ -483,6 +506,7 @@ __all__ = [
     "ACTION_STOP",
     "BudgetGuard",
     "CHANNEL_ENV",
+    "CODEX_TOOL_ITEMS",
     "DISPATCH_KEY",
     "END_CAUSE",
     "KILL_AT",
