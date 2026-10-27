@@ -10389,7 +10389,9 @@ class Worker:
             **summary,
         }
         with self._metrics_after_the_record():
-            self.control.park(
+            # Refunded within the server's bound when PROVIDER_QUOTA_EXHAUSTED
+            # (#2350); a CREDENTIAL_MISSING park refunds nothing.
+            refunded = self.control.park(
                 # PROVIDER_QUOTA_EXHAUSTED when the pool will recover on its own:
                 # the tenant HAS credentials, they are simply all spent or all
                 # unobserved, and sending an operator to look at that wastes their
@@ -10425,6 +10427,7 @@ class Worker:
                     )
                 ],
             )
+        self.log.info("parked without an account", attempt_refunded=bool(refunded))
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _park_credential_missing(self, exc: CredentialMissing) -> Outcome:
@@ -10528,8 +10531,11 @@ class Worker:
         # that landed during the uploads above was met by the park, which
         # refused, and the announcement of a park that never happened was
         # already in a stream that belonged to a newer generation.
+        # A PROVIDER_QUOTA_EXHAUSTED park refunds its attempt within the
+        # server's bound (#2350): parking is invariant 4's designed path, so it
+        # does not spend one of `max_attempts` until the bound is passed.
         with self._metrics_after_the_record():
-            self.control.park(
+            refunded = self.control.park(
                 reason=decision.reason,
                 next_eligible_at=decision.next_eligible_at,
                 detail={**decision.detail, "park_phase": source, **summary},
@@ -10544,6 +10550,8 @@ class Worker:
                     )
                 ],
             )
+        self.log.info("parked on provider quota", source=source,
+                      attempt_refunded=bool(refunded))
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _quota_from_child(self, result: ChildResult) -> Any:
