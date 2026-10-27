@@ -422,7 +422,7 @@ context, so a long session costs roughly the square of its length, and
   session stopped, the branch's `git diff --stat` against the step's base,
   the recent commits, the agent's own note if it wrote one
   (`$SWARM_ARTIFACTS_DIR/handoff.md`, which every claude-code prompt says it
-  may keep), and then the task prompt as the first session got it. The step
+  may keep), and then the prompt the first session got. The step
   continues inside its own timeout. An attempt starts at most
   `MAX_FRESH_SESSIONS` (4) fresh sessions. After that the ceiling stops
   nothing, and the last session runs to its end, so a lane stuck in a loop

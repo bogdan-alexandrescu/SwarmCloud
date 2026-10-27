@@ -40,7 +40,8 @@ from agent_worker.runners.cliagent import (
 #: `$HOME/starts.jsonl` and plays the next entry of `$HOME/plan.json`: one
 #: turn per `contexts` value (that turn's `input_tokens`), each with `tools`
 #: tool calls, a turn boundary after every turn but the last, and a marker per
-#: turn it got to print.
+#: turn it got to print. `pause` is slept before each boundary, `hold` instead
+#: from turn `hold_from` on.
 FAKE_CLI = r"""#!{python}
 import json, os, sys, time
 home = os.environ["HOME"]
@@ -67,7 +68,8 @@ for turn, context in enumerate(contexts, 1):
         flush=True)
     if turn == len(contexts):
         break
-    time.sleep(step.get("pause", 0.0))
+    held = step.get("hold_from") and turn >= step["hold_from"]
+    time.sleep(step["hold"] if held else step.get("pause", 0.0))
     print(json.dumps({{"type": "user", "session_id": sid,
                       "message": {{"content": [{{"type": "tool_result"}}]}}}}), flush=True)
 print(json.dumps({{"type": "result", "subtype": "success", "is_error": False,
@@ -139,7 +141,9 @@ def test_a_turn_past_200k_stops_at_that_boundary_and_a_fresh_session_follows(ctx
 
 
 def test_151_tool_calls_stop_the_session_the_same_way(ctx):
-    _plan(ctx, {"contexts": [1_000] * 170, "pause": 0.01}, SMALL)
+    # Quick turns, then a held boundary from turn 150 on, so the CLI is
+    # still running when the watcher reads the crossing.
+    _plan(ctx, {"contexts": [1_000] * 170, "pause": 0.0, "hold_from": 150, "hold": 1.0}, SMALL)
     out = run_cli_agent(ctx, _spec())
 
     first, second = _starts(ctx)
@@ -163,7 +167,7 @@ def test_a_session_under_both_limits_is_unchanged(ctx):
 
 
 def test_the_fresh_sessions_are_bounded(ctx):
-    over = {"contexts": [250_000] * 6, "pause": 0.4}
+    over = {"contexts": [250_000] * 6, "pause": 1.0}
     _plan(ctx, over)
     out = run_cli_agent(ctx, _spec())
 
@@ -249,7 +253,7 @@ def test_the_handoff_commits_the_tree_and_carries_the_branch_and_the_agents_note
     (repo / "b.txt").write_text("work in progress\n")
     (ctx.artifacts_dir / ceiling.AGENT_HANDOFF_NAME).write_text("Left: the docs section.")
     ctx.repo_dir = repo
-    _plan(ctx, {"contexts": [210_000, 1_000, 1_000], "pause": 0.5}, SMALL)
+    _plan(ctx, {"contexts": [210_000, 1_000, 1_000], "pause": 1.0}, SMALL)
     out = run_cli_agent(ctx, _spec())
 
     _, second = _starts(ctx)
