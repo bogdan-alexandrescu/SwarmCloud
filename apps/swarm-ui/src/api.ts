@@ -4961,6 +4961,10 @@ function fixtureBudgetTasks(listed: Task[]): Task[] {
       dispatch: dispatch as Task['dispatch'],
       ...over,
     })
+  // The budgeted blocks are the codec's four keys plus `budget`, kept as
+  // named values: an inline dispatch literal is held to exactly the four
+  // (test_dispatch_ui_surface.py), which predate the budget.
+  const warned = { ...dispatch, budget: FIXTURE_BUDGET } as unknown as Task['dispatch']
   const stopped = { ...dispatch, strategy: 'direct-pr', budget: FIXTURE_BUDGET } as unknown as Task['dispatch']
   const usage = FIXTURE_BUDGET_STOP_USAGE
   const exceeded = one(FIXTURE_BUDGET_EXCEEDED, 'FAILED', 50, 22, {
@@ -4973,7 +4977,7 @@ function fixtureBudgetTasks(listed: Task[]): Task[] {
   return [
     // A RUNNING agent past 80% of its budget: the amber warning.
     one(FIXTURE_BUDGET_WARN, 'RUNNING', 30, 0, {
-      dispatch: { ...dispatch, budget: FIXTURE_BUDGET } as unknown as Task['dispatch'],
+      dispatch: warned,
       heartbeat_at: at(1),
     }),
     // A FAILED agent the worker stopped on its budget (contract request 118),
