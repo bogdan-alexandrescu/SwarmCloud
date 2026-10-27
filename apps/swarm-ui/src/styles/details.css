@@ -23,6 +23,64 @@
 .dt > .dt-top:empty { display: none; }
 .dt > .dt-top { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 
+/* --- Building, Now and Resources: three lines, then the cards ------------ */
+/* BGD 2026-10-27 (DETAILS-BUILDING): "too much prose on this page ... more
+   useful to quickly understand exactly what the agent is currently doing and
+   building". The page opens with what it is building (one line at desktop,
+   two at most on a phone), the Now card leads with one line of what it is
+   doing, and resources are one row whose `details` opens the strip and the
+   Resources card unchanged. Labels share one width so the three values line
+   up, as the picked shape draws them. */
+.dt-building,
+.dt-res > summary { display: flex; align-items: baseline; gap: 10px; min-width: 0; margin: 0; }
+.dt-building-l,
+.dt-res-l { flex: none; width: 72px; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 550; }
+.dt-building { padding: 0 2px; }
+.dt-building-v {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--t-body);
+  line-height: var(--lh-body);
+  font-weight: 650;
+}
+.dt-building-v.is-none { color: var(--text-dim); font-weight: 400; }
+.dt-building-x { color: var(--text-dim); font-weight: 400; }
+/* A PHONE GETS TWO LINES, NEVER A SIDEWAYS SCROLL: the value may wrap once,
+   and is cut there. The hover still carries the prompt. */
+@container ag-pane (max-width: 479px) {
+  .dt-building-v {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+.dt-nowline { margin: 0; min-width: 0; font-size: var(--t-body); line-height: var(--lh-body); overflow-wrap: anywhere; }
+.dt-nowline-p:first-child { font-weight: 650; }
+.dt-nowline-p:last-child { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.dt-res {
+  min-width: 0;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.dt-res > summary { list-style: none; cursor: pointer; min-height: 24px; align-items: center; }
+.dt-res > summary::-webkit-details-marker { display: none; }
+.dt-res > summary:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 4px; }
+.dt-res-fs { flex: 1; min-width: 0; font-size: var(--t-body); line-height: var(--lh-body); font-variant-numeric: tabular-nums; }
+.dt-res-f { white-space: nowrap; }
+.dt-res-f.is-absent { color: var(--text-dim); }
+.dt-res-more { flex: none; color: var(--info); font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 550; white-space: nowrap; }
+.dt-res-more::after { content: " ▾"; display: inline-block; margin-inline-start: 3px; }
+.dt-res[open] .dt-res-more::after { transform: rotate(180deg); }
+.dt-res-body { display: flex; flex-direction: column; gap: 12px; min-width: 0; margin-top: 10px; }
+
 /* --- the card (components.html A: radius 12, hairline, surface) ---------- */
 .dt-card {
   display: flex;
@@ -181,14 +239,14 @@
   background: repeating-linear-gradient(135deg, transparent 0 3px, var(--line) 3px 5px);
 }
 
-/* --- Progress and Resources: two columns from a 640px pane --------------- */
-.dt-cols { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-items: start; }
-@container ag-pane (min-width: 640px) {
-  .dt-cols { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-}
-/* BELOW 640px THE COLUMNS STACK AND THE STRIP STICKS (agent-details-v3.html,
-   small choices: B's idea): the figures stay in view while the stacked cards
-   scroll under them. Sticky against the pane, the detail's one scroller.
+/* --- the strip, under the Resources row ---------------------------------- */
+/* PROGRESS IS ONE COLUMN NOW (DETAILS-BUILDING): the Resources card it sat
+   beside from a 640px pane is folded under the Resources row, so `.dt-cols`
+   is gone and Progress takes the pane's width.
+
+   BELOW 640px THE STRIP STICKS once the row is opened (agent-details-v3.html,
+   small choices: B's idea): the figures stay in view while the Resources card
+   scrolls under them. Sticky against the pane, the detail's one scroller.
 
    BUT ONLY WHERE THERE IS ROOM FOR IT (G2-01, QA 2026-10-07). At 390x844 the
    strip is two columns and 282px tall, stuck under a 373px header: about
@@ -198,7 +256,7 @@
    header scrolls away too, agents.css). */
 @container ag-pane (min-width: 480px) and (max-width: 639px) {
   @media (min-height: 700px) {
-    .dt > .dt-strip { position: sticky; top: 0; z-index: 2; }
+    .dt-res-body > .dt-strip { position: sticky; top: 0; z-index: 2; }
   }
   /* FIVE FIGURES IN ~115px EACH, AND NO TALLER THAN THEY NEED (V058, visual
      QA #1038). In a 600px pane `Peak memory` was cut to `26.7 Mi…`, Cost's

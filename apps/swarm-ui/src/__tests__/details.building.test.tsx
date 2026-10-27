@@ -16,13 +16,25 @@
  * again (drop `DtNowLine`); put `DtStrip` or `DtResources` back outside the
  * `.dt-res` disclosure. Each turns a case red.
  */
+import { render, waitFor } from '@testing-library/react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { AgentRun, ResourceClasses } from '../api'
-import { Run } from '../AgentDetail'
-import type { Task } from '../types'
+import type { Task, TaskInputCopy } from '../types'
 import { attempt, ev, task as runTask } from './runfixture'
+
+const api = vi.hoisted(() => ({
+  loadCheckpoints: vi.fn(),
+  loadTaskInputOnce: vi.fn(),
+}))
+
+vi.mock('../api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api')>()
+  return { ...actual, ...api }
+})
+
+const { Run, buildingOf } = await import('../AgentDetail')
 
 const MIN = 60_000
 
@@ -50,7 +62,6 @@ function running(over: Partial<Task> = {}): Task {
     workflow_id: 'wf_decided',
     step_id: 'secret-retention',
     metadata: { title: 'Secret retention keeps 3 versions', unit: 'DECIDED-A' },
-    input: { prompt: PROMPT, issue: 1819 },
     ...over,
   })
 }
@@ -101,35 +112,68 @@ function text(el: Element | null | undefined): string {
   return (el?.textContent ?? '').replace(/\s+/g, ' ').trim()
 }
 
+/** The masked copy `GET /v1/tasks/{id}/input` serves: the prompt, and the rest of the input as JSON. */
+function copyOf(prompt: string | null, rest: Record<string, unknown> | null = null): TaskInputCopy {
+  return {
+    task_id: 'task_building0123456789',
+    tenant_id: 'acme',
+    read_at: new Date().toISOString(),
+    prompt_key: prompt === null ? 'missing' : 'string',
+    prompt: prompt === null ? null : { text: prompt, redaction_count: 0 },
+    rest: rest === null ? null : { text: JSON.stringify(rest, null, 2), redaction_count: 0 },
+    full: { text: JSON.stringify({ prompt, ...rest }, null, 2), redaction_count: 0 },
+    redacted: false,
+    redaction_count: 0,
+    redaction: { applied_at_read_time: true, rules: 11 },
+  } as TaskInputCopy
+}
+
 describe('Building: what the agent is building, in one line, at the top of the page', () => {
   it('reads the workflow title, then its label, the step and the issue', () => {
-    const dt = host(runOf())
-    const b = dt.querySelector<HTMLElement>('.dt-building')
-    expect(b, 'no Building line').not.toBeNull()
-    // It is the page body's first line.
-    expect(dt.firstElementChild).toBe(b)
-    expect(text(b!.querySelector('.dt-building-l'))).toBe('Building')
-    expect(text(b!.querySelector('.dt-building-v'))).toBe('Secret retention keeps 3 versions (DECIDED-A · step secret-retention · #1819)')
+    const b = buildingOf(running(), copyOf(PROMPT, { issue: 1819 }))
+    expect(b.text).toBe('Secret retention keeps 3 versions')
+    expect(b.facts).toEqual(['DECIDED-A', 'step secret-retention', '#1819'])
     // Its hover carries the prompt's first 300 characters.
-    expect(b!.querySelector('.dt-building-v')!.getAttribute('title')).toBe(PROMPT.slice(0, 300))
+    expect(b.hover).toBe(PROMPT.slice(0, 300))
   })
 
   it('takes the issue from a #N in the prompt’s first line when the input names none', () => {
-    const t = running({ input: { prompt: 'Fix the lease heartbeat (part of #2401).\nThen the rest.' } })
-    const dt = host(runOf({ task: t }))
-    expect(text(dt.querySelector('.dt-building-v'))).toBe('Secret retention keeps 3 versions (DECIDED-A · step secret-retention · #2401)')
+    const b = buildingOf(running(), copyOf('Fix the lease heartbeat (part of #2401).\nThen the rest.'))
+    expect(b.facts).toEqual(['DECIDED-A', 'step secret-retention', '#2401'])
   })
 
   it('falls back to the prompt’s first sentence, cut at about 120 characters, when there is no title', () => {
-    const t = running({ metadata: null, step_id: null, workflow_id: null, input: { prompt: PROMPT } })
-    const dt = host(runOf({ task: t }))
-    expect(text(dt.querySelector('.dt-building-v'))).toBe('Keep three versions of every tenant secret and destroy the older ones.')
+    const lone = running({ metadata: null, step_id: null, workflow_id: null })
+    expect(buildingOf(lone, copyOf(PROMPT)).text).toBe('Keep three versions of every tenant secret and destroy the older ones.')
 
     const long = 'Rewrite ' + 'the very long retention clause '.repeat(10) + 'so it reads well. Then stop.'
-    const cut = text(host(runOf({ task: running({ metadata: null, step_id: null, input: { prompt: long } }) })).querySelector('.dt-building-v'))
+    const cut = buildingOf(lone, copyOf(long)).text!
     expect(cut.endsWith('…')).toBe(true)
-    expect(cut.length).toBeLessThanOrEqual(121)
+    expect(cut.length).toBeLessThanOrEqual(120)
     expect(long.startsWith(cut.slice(0, -1).trimEnd())).toBe(true)
+  })
+
+  it('is the page’s first line, and draws the masked copy’s prompt, never task.input', async () => {
+    api.loadCheckpoints.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+    api.loadTaskInputOnce.mockResolvedValue({ status: 'ok', data: copyOf('Masked: keep three versions.', { issue: 7 }), fetchedAt: Date.now() })
+    // What an API older than read-time masking serves on the task: drawn nowhere.
+    const raw = 'Raw: ' + 'x'.repeat(12) + ' keep three versions.'
+    const t = running({ metadata: null, step_id: null, workflow_id: null, input: { prompt: raw, issue: 9 } })
+    const { container } = render(<Run run={runOf({ task: t })} />)
+    const dt = container.querySelector<HTMLElement>('.dt')!
+    await waitFor(() => expect(text(dt.querySelector('.dt-building-v'))).toBe('Masked: keep three versions. (#7)'))
+    expect(dt.firstElementChild).toBe(dt.querySelector('.dt-building'))
+    expect(text(dt.querySelector('.dt-building-l'))).toBe('Building')
+    expect(dt.querySelector('.dt-building-v')!.getAttribute('title')).toBe('Masked: keep three versions.')
+    expect(dt.textContent).not.toContain(raw)
+  })
+
+  it('reads as the title with its facts at desktop, on one line', () => {
+    const dt = host(runOf())
+    const v = dt.querySelector('.dt-building-v')!
+    // Before the copy is read: the title, the label and the step.
+    expect(text(v)).toBe('Secret retention keeps 3 versions (DECIDED-A · step secret-retention)')
+    expect(dt.firstElementChild).toBe(dt.querySelector('.dt-building'))
   })
 })
 
