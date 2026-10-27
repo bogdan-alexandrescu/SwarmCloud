@@ -322,3 +322,11 @@ class EventType(str, Enum):
     #: lease or a pool for it. Contract request 74 (STARTUP-API), accepted by
     #: the owner 2026-10-13.
     STARTUP_PROGRESS = "startup_progress"
+    #: The attempt has used 80% of its per-agent budget (#2459); the agent was
+    #: told to wrap up when its runner can be told. `detail` carries
+    #: `percent`, `told`, `limit` and `used`. Written only by the worker. A
+    #: record only: nothing moves a state, a lease or a pool for it. Contract
+    #: request 121 (BUDGET-CAP), accepted by the owner 2026-10-26. Before it
+    #: the warning was written as RUNNING with `detail.cause:
+    #: "budget_warning"`, which readers accept for one release.
+    BUDGET_WARNING = "budget_warning"

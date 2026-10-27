@@ -719,13 +719,15 @@ class SubmissionService:
         # override the workflow's choice.
         metadata = dict(spec.metadata)
         metadata[DISPATCH_METADATA_KEY] = dispatch.to_metadata()
-        # Pinned inside the signed dispatch block, which no caller can write
-        # (`reject_reserved_metadata`), and only when there is a budget: with
-        # none, the block is byte for byte what it was before #2459.
+        # The limits go in the typed `Task.budget` below (contract request
+        # 120, signed at spec format 6); where each came from goes in the
+        # signed dispatch block, which no caller can write
+        # (`reject_reserved_metadata`). Only when there is a budget: with
+        # none, the task, its format and its block are byte for byte what
+        # they were before #2459.
         if resolved_budget is not None:
-            metadata[DISPATCH_METADATA_KEY][budget_mod.DISPATCH_KEY] = budget_mod.dispatch_block(
-                resolved_budget, step=step_budget, workspace=workspace_budget,
-                ceiling=budget_ceiling)
+            metadata[DISPATCH_METADATA_KEY][budget_mod.PROVENANCE_KEY] = budget_mod.provenance(
+                step=step_budget, workspace=workspace_budget, ceiling=budget_ceiling)
         # A `browser_if_ui` step (#2322): stored on the browser, with the
         # `code` profile's own fields beside it, each checked here exactly as
         # if the step had named that profile, so a swap at READY can only
@@ -794,6 +796,7 @@ class SubmissionService:
             repository_ref=repository_ref or spec.repository_ref,
             timeout_seconds=timeout,
             max_attempts=spec.max_attempts or 3,
+            budget=resolved_budget.as_dict() if resolved_budget is not None else None,
             park_reason=park_reason,
             workflow_id=workflow_id,
             step_id=step_id,
@@ -1533,6 +1536,9 @@ class SubmissionService:
                     task_id=step_task_id[source.step_id],
                     # Its task's stored class: None for the profile's default.
                     model_class=step_model_class[source.step_id],
+                    # What the step ASKED for (contract request 120); its
+                    # task's `budget` is what that resolved to.
+                    budget=budget_mod.step_limits(source.budget).as_dict() or None,
                 )
             )
 

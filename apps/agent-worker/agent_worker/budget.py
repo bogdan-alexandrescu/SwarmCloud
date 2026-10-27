@@ -2,10 +2,13 @@
 
 swarm-api resolves an attempt's budget at submission -- min(step, workspace,
 ceiling), each unit on its own (`swarm_api.budget`) -- and pins it in the
-signed dispatch block as `metadata.dispatch.budget`: `{usd?, tokens?, from}`.
-A task without the key has no budget, and this module is never built for it:
-its child environment, its CLI settings and its supervision are exactly what
-they were before #2459.
+task's typed `Task.budget`: `{usd?, tokens?}`, covered by the spec signature
+at format 6 (contract request 120). A task stored before that field carries
+it in the signed dispatch block as `metadata.dispatch.budget` instead, read
+here as the fallback for one release (`Limits.from_task`). A task with
+neither has no budget, and this module is never built for it: its child
+environment, its CLI settings and its supervision are exactly what they were
+before #2459.
 
 WHAT IS COUNTED (BGD, 2026-10-26).
   * TOKENS are the runner's own usage reports: input plus output plus cache
@@ -35,21 +38,21 @@ THE THRESHOLDS.
     mechanism claude-code allows mid-run -- a PostToolUse hook's
     `additionalContext` (`runners/budget_note_hook.py`), which reads the NOTE
     file once -- and a `budget_warning` event is recorded for the console
-    (`EventType.RUNNING` with that cause, as `account_assigned` rides on it,
-    until contract request 121 gives it a type). codex has no such mechanism
-    in `codex exec`: its event says `told: false`.
+    (`EventType.BUDGET_WARNING`, contract request 121; before it, a RUNNING
+    event with that cause, which readers accept for one release). codex has
+    no such mechanism in `codex exec`: its event says `told: false`.
   * 100% (STOP_AT): the runner stops the CLI at its next turn boundary; the
     lifecycle then checkpoints, publishes what the attempt has exactly as a
     timed-out step does, and ends the step FAILED with the end cause
-    `budget_exceeded` and the numbers (`summary`, `error`).
+    `EndCause.BUDGET_EXCEEDED` (contract request 118) and the numbers
+    (`summary`, `error`).
   * 120% (KILL_AT): the one case it stops mid-turn -- a single turn that runs
     past 120% of a limit is killed where it is.
 
-`budget_exceeded` IS NOT YET A FROZEN END CAUSE (contract request 118). Until
-it is, the step ends with `end_cause` null -- the contract's own rule for "a
-writer ended it for a reason with no value here" (`EndCause`'s docstring) --
-its `last_error` beginning `budget_exceeded:`, and `result_summary.budget`
-carrying `end_cause: "budget_exceeded"` and the numbers.
+The end carries the cause three ways: `end_cause` (the frozen field the
+ledger and the console branch on), `last_error` beginning `budget_exceeded:`,
+and `result_summary.budget.end_cause`, which a task ended before request 118
+was applied carries alone.
 
 Never raises into the supervision loop: a budget that cannot be read or
 priced leaves the agent running as it would without one, said in the log.
@@ -58,13 +61,21 @@ priced leaves the agent running as it would without one, said in the log.
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-#: `metadata.dispatch.budget`, as `swarm_api.budget.DISPATCH_KEY` writes it.
+from swarm_common.models import EndCause
+from swarm_common.states import EventType
+
+#: `Task.budget` (contract request 120), the typed field swarm-api writes.
+TASK_FIELD = "budget"
+#: `metadata.dispatch.budget`, where swarm-api pinned the budget before
+#: `Task.budget` existed (`swarm_api.budget.DISPATCH_KEY`). Read only as the
+#: fallback for a task stored then, for one release.
 DISPATCH_KEY = "budget"
 
 #: The files the worker and its runner talk through, named to the runner in
@@ -86,9 +97,12 @@ STOPPED_AT_BOUNDARY = "budget_turn_boundary"
 STOPPED_MID_TURN = "budget_mid_turn"
 STOPPED_FOR = (STOPPED_AT_BOUNDARY, STOPPED_MID_TURN)
 
-#: The end cause (contract request 118) and the event's cause.
-END_CAUSE = "budget_exceeded"
-WARNING_CAUSE = "budget_warning"
+#: The end cause (contract request 118) and the 80% event (request 121).
+END_CAUSE = EndCause.BUDGET_EXCEEDED.value
+WARNING_EVENT = EventType.BUDGET_WARNING
+#: The warning's `detail.cause`, which is all that marked it while it rode on
+#: a RUNNING event. Still written, so one predicate reads either form.
+WARNING_CAUSE = EventType.BUDGET_WARNING.value
 #: Where the numbers go in the step's result summary.
 SUMMARY_KEY = "budget"
 
@@ -126,17 +140,42 @@ class Limits:
     tokens: int | None = None
 
     @classmethod
+    def from_task(cls, task: Mapping[str, Any] | None) -> "Limits | None":
+        """The budget pinned on the verified task document, or None.
+
+        `Task.budget` when the document carries one (contract request 120).
+        Only when it carries none, `metadata.dispatch.budget`: a task stored
+        before the field, read for one release. A document never holds both
+        from swarm-api, and the typed field wins if it does.
+        """
+        task = task or {}
+        typed = task.get(TASK_FIELD)
+        if typed is not None:
+            return cls.from_block(typed)
+        metadata = task.get("metadata")
+        dispatch = metadata.get("dispatch") if isinstance(metadata, Mapping) else None
+        return cls.from_dispatch(dispatch if isinstance(dispatch, Mapping) else None)
+
+    @classmethod
     def from_dispatch(cls, dispatch: Mapping[str, Any] | None) -> "Limits | None":
-        """The pinned budget, or None for a task that has none. A unit that is
+        """The budget an older task pinned in its dispatch block, or None."""
+        return cls.from_block((dispatch or {}).get(DISPATCH_KEY))
+
+    @classmethod
+    def from_block(cls, block: Any) -> "Limits | None":
+        """`{usd?, tokens?}` as limits, or None for no budget. A unit that is
         not a positive number is no limit in that unit; a block with neither
-        is no budget at all."""
-        block = (dispatch or {}).get(DISPATCH_KEY)
+        is no budget at all. A token count stored as a whole float (`1000.0`)
+        is the count: JCS gives it the bytes of `1000`, so the signature
+        cannot tell them apart, and reading it as no limit would let a
+        rewrite that keeps the signature valid lift the limit."""
         if not isinstance(block, Mapping):
             return None
         usd, tokens = block.get("usd"), block.get("tokens")
+        whole = _positive(tokens) and (isinstance(tokens, int) or float(tokens).is_integer())
         limits = cls(
             usd=float(usd) if _positive(usd) else None,
-            tokens=int(tokens) if _positive(tokens) and isinstance(tokens, int) else None,
+            tokens=int(tokens) if whole else None,
         )
         return None if limits.usd is None and limits.tokens is None else limits
 
@@ -150,7 +189,8 @@ class Limits:
 
 
 def _positive(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value) and value > 0)
 
 
 def _count(usage: Mapping[str, Any], key: str) -> int:
@@ -493,8 +533,10 @@ __all__ = [
     "STOPPED_MID_TURN",
     "STOP_AT",
     "SUMMARY_KEY",
+    "TASK_FIELD",
     "UsageMeter",
     "WARNING_CAUSE",
+    "WARNING_EVENT",
     "WARN_AT",
     "action_for",
     "fraction",
