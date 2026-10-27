@@ -74,7 +74,7 @@ const COLUMNS = [
 // devops asked for a workspace 40 minutes ago, fay to borrow an account 10 minutes ago.
 const DEVOPS = person('devops@example.com', ws('requested', 'w-7f9285', { requested_at: ago(40) }), { eng: 'none', labs: 'none' })
 const FAY = person('fay@example.com', ws('ready', 'w-fa1000'), { eng: 'member', labs: 'none' }, { loan_request: { state: 'requested', requested_at: ago(10) } })
-const BOB = person('bob@example.com', ws('ready', 'w-91c0de'), { eng: 'admin', labs: 'viewer' })
+const BOB = person('bob@example.com', ws('ready', 'w-91c0de'), { eng: 'admin', labs: 'viewer' }, { platform_admin: true })
 
 function platform(rows: Json[], over: Json = {}): Json {
   return {
@@ -129,7 +129,7 @@ describe('a platform admin reads every person against every workspace (S5c)', ()
     await mount(platform([BOB, DEVOPS, FAY]))
     // MUTATION: draw the Teams column instead of one per workspace -> fails.
     expect(heads()).toEqual(['Person', 'Platform role', 'Engineering', 'Labs', 'Own workspace', 'Claude account', 'Ceiling', 'Last active', 'Manage'])
-    // bob is a platform admin (`admins`): admin in every workspace, whatever is stored (VQ-ROLES, BGD 2026-10-26).
+    // bob is a platform admin (the row's `platform_admin` marker): admin in every workspace, whatever is stored (VQ-ROLES, BGD 2026-10-26).
     expect(visible(cell('bob@example.com', 'eng'))).toBe('admin (platform admin)')
     expect(visible(cell('bob@example.com', 'labs'))).toBe('admin (platform admin)')
     expect(cell('fay@example.com', 'eng')?.textContent).toBe('member')

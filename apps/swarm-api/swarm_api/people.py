@@ -283,6 +283,17 @@ def role_cell(email: str, teams: set[str], column: Mapping[str, Any],
     return ROLE_REQUESTED if email in (requested or {}).get(tenant_id, ()) else ROLE_NONE
 
 
+def mark_platform_admin(row: dict[str, Any], platform_admins: Collection[str]) -> None:
+    """`platform_admin: true` on a grid row whose cells come from `role_cell`'s
+    platform-admin rule, and nothing on anyone else's row. The page draws
+    "(platform admin)" under the cell's `admin` from this marker, not from the
+    admins list, which a workspace admin's scoped read does not serve: every
+    reader of the grid sees where the cell came from (BGD 2026-10-26, "Mark
+    the source"; lane ROLE-MARK, part of #2391)."""
+    if row["email"] in platform_admins:
+        row["platform_admin"] = True
+
+
 def requesters(join_requests: Iterable[Mapping[str, Any]] | None) -> dict[str, set[str]]:
     """tenant_id -> the people with an open join request there."""
     out: dict[str, set[str]] = {}
@@ -1610,13 +1621,15 @@ class People:
                   join_requests: list[dict[str, Any]] | None = None, *,
                   platform_admins: Collection[str] = ()) -> None:
         """Each of `everyone()`'s rows gains `roles`: its cell in every column,
-        `admin` in each for one of `platform_admins` (`role_cell`)."""
+        `admin` in each for one of `platform_admins` (`role_cell`), whose row
+        also carries `platform_admin: true` (`mark_platform_admin`)."""
         requested = requesters(join_requests)
         for row in rows:
             teams = set(row.get("teams") or [])
             row["roles"] = {c["tenant_id"]: role_cell(row["email"], teams, c, grants, requested,
                                                       platform_admins=platform_admins)
                             for c in columns}
+            mark_platform_admin(row, platform_admins)
 
     def join_rows(self, views: Iterable[Any], labels: Mapping[str, str]) -> list[dict[str, Any]]:
         """The open join requests as a decider is shown them (join-requests.md
@@ -1655,7 +1668,8 @@ class People:
 
         A PLATFORM ADMIN'S CELL is `admin` here too (`platform_admins`, the
         emails the route read; `role_cell`): this read serves no admins list,
-        so the cell is the only place it can say so. Who is a row is unchanged."""
+        so the cell, and the row's `platform_admin` marker, are the only place
+        it can say so (`mark_platform_admin`). Who is a row is unchanged."""
         columns, grants = self.role_columns(role_store, workspaces)
         wanted = set(workspaces)
         join_requests = None if join_requests is None else [
@@ -1687,6 +1701,7 @@ class People:
         for row in rows:
             row.pop("_last")
             row["display_name"] = names.get(row["email"])
+            mark_platform_admin(row, platform_admins)
         return {"scope": SCOPE_WORKSPACES, "workspaces": columns, "workspaces_error": None,
                 "people": rows, "count": len(rows), "pending": len(join_requests or ()),
                 "join_requests": join_requests, "join_requests_error": join_requests_error}

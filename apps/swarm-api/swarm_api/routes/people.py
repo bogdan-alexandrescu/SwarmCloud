@@ -431,7 +431,10 @@ def list_people(
     A PLATFORM ADMIN'S CELL IS `admin` in every column, for both readers
     (`people.role_cell`, `RoleStore.resolve`'s rule; BGD 2026-10-26, part of
     #2391): the admin holders are read BEFORE the grid and their emails passed
-    to it. A workspace admin is not served the list itself. ADMIN_GROUPS
+    to it, and their rows carry `platform_admin: true`, which the page draws
+    as "(platform admin)" under the cell (`people.mark_platform_admin`; BGD
+    2026-10-26, "Mark the source"). A workspace admin is not served the list
+    itself, so for them the marker is the only place it shows. ADMIN_GROUPS
     members hold admin through a group nobody can list here
     (`AdminRoles.holders`), so their cells stay the stored role. When the
     holders cannot be read the grid is drawn from the stored roles, as before

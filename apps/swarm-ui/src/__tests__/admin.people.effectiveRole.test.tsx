@@ -7,6 +7,10 @@
 //     People and roles, This workspace and Profile give -- not the stored
 //     `member`; a plain member's cell is unchanged. The Manage drawer still
 //     edits the stored grant, so it is not asked here;
+//   * BGD 2026-10-26 ("Mark the source", ROLE-MARK): the suffix is drawn from
+//     the row's `platform_admin` marker, which both reads serve, not from the
+//     admins list, which a workspace admin's scoped read does not -- so a
+//     workspace admin sees "admin (platform admin)" too;
 //   * BGD 2026-10-26 (VQ-056): a column is headed by the workspace's name (the
 //     switcher's rule: `/v1/tenants/mine`'s stored name, an address counting
 //     as no name), else its id -- never its group email, which stays the
@@ -46,8 +50,9 @@ const COLUMNS = [
   { tenant_id: 'smoke', group: 'smoke@example.com', display_name: 'smoke@example.com', default_role: 'member', unavailable: false },
 ]
 
-// The platform admin, stored `member` in both (the grant the drawer edits).
-const OPS = person('ops@example.com', { eng: 'member', smoke: 'none' })
+// The platform admin, stored `member` in both (the grant the drawer edits),
+// marked as the API marks them (`people.mark_platform_admin`).
+const OPS = { ...person('ops@example.com', { eng: 'member', smoke: 'none' }), platform_admin: true }
 const FAY = person('fay@example.com', { eng: 'member', smoke: 'viewer' })
 
 function platform(rows: Json[], over: Json = {}): Json {
@@ -127,6 +132,34 @@ describe("a platform admin's cell is their effective role (VQ-ROLES)", () => {
   it('reads the platform admin as admin even where the API already said admin', async () => {
     await mount(platform([{ ...OPS, roles: { eng: 'admin', smoke: 'admin' } }]))
     expect(visible(cell('ops@example.com', 'eng'))).toBe('admin (platform admin)')
+  })
+})
+
+// A workspace admin's read (`people.in_workspaces`): no admins list at all.
+function scoped(rows: Json[]): Json {
+  return { scope: 'workspaces', workspaces: [COLUMNS[0]], workspaces_error: null, people: rows, count: rows.length, pending: 0 }
+}
+
+describe('the suffix comes from the row\'s marker, not the admins list (ROLE-MARK)', () => {
+  it("draws admin (platform admin) in a workspace admin's scoped read, which serves no admins list", async () => {
+    await mount(scoped([
+      { email: 'ops@example.com', display_name: null, roles: { eng: 'admin' }, last_active: ago(2), platform_admin: true },
+      { email: 'fay@example.com', display_name: null, roles: { eng: 'admin' }, last_active: ago(3) },
+    ]))
+    // MUTATION: draw the suffix from `admins` -> the scoped read has none, "admin" alone, and this fails.
+    expect(visible(cell('ops@example.com', 'eng'))).toBe('admin (platform admin)')
+    expect(cell('ops@example.com', 'eng')?.querySelector('br')).not.toBeNull()
+    expect(cell('ops@example.com', 'eng')?.dataset.source).toBe('platform_admin')
+    // fay holds admin by grant: no marker, no suffix.
+    expect(visible(cell('fay@example.com', 'eng'))).toBe('admin')
+    expect(cell('fay@example.com', 'eng')?.dataset.source).toBeUndefined()
+  })
+
+  it('draws no suffix for a row the API did not mark, even when the admins list names them', async () => {
+    // An unmarked row's cell is the API's answer: the list alone no longer decides it.
+    await mount(platform([person('ops@example.com', { eng: 'member', smoke: 'none' }), FAY]))
+    expect(visible(cell('ops@example.com', 'eng'))).toBe('member')
+    expect(visible(cell('ops@example.com', 'smoke'))).toBe('none')
   })
 })
 

@@ -1262,10 +1262,12 @@ function gridColumns(doc: { workspaces?: PeopleWorkspaceColumn[] | null }): Peop
  * admin in every group workspace and reads no grant for them, so Config ›
  * People and roles, This workspace and Profile all say admin, and the grid
  * saying their stored `member` was the odd answer out (VQ-044). The rule is
- * `people.role_cell`'s too; the page applies it from the admins this same
- * read serves, as the drawer's `platformAdmin` does, so it holds whichever
- * cell the API sent. The drawer still edits the stored grant, which stays
- * inert while they are one.
+ * `people.role_cell`'s too, and the API marks the row it applied it to,
+ * `platform_admin: true` (`people.mark_platform_admin`). The suffix is drawn
+ * from that marker, not from the admins list: a workspace admin's scoped read
+ * serves no admins list, and every reader is to see where the cell came from
+ * (BGD 2026-10-26, "Mark the source"; ROLE-MARK). The drawer still edits the
+ * stored grant, which stays inert while they are one.
  */
 function RoleCell({
   cell,
@@ -1323,8 +1325,16 @@ interface JoinGrid {
   members: Readonly<Record<string, MembersRead>>
 }
 
-/** `platformAdmin`: the row is a platform admin's, drawn admin in every column (`RoleCell`). */
-function roleCells(row: { email: string; roles?: Record<string, PeopleRoleCell> }, columns: readonly PeopleWorkspaceColumn[], grid: JoinGrid, platformAdmin = false): ReactNode[] {
+/**
+ * A row as the grid reads it. `platform_admin`: the API applied the
+ * platform-admin rule to this row's cells (`people.mark_platform_admin`), in
+ * either read; absent on everyone else's row and from an older API.
+ */
+type MarkedRow = { email: string; roles?: Record<string, PeopleRoleCell>; platform_admin?: boolean }
+
+/** Each column's cell; a marked row is drawn admin in every column (`RoleCell`). */
+function roleCells(row: MarkedRow, columns: readonly PeopleWorkspaceColumn[], grid: JoinGrid): ReactNode[] {
+  const platformAdmin = row.platform_admin === true
   return columns.map((c) => (
     <RoleCell
       key={c.tenant_id}
@@ -1485,7 +1495,7 @@ function Row({
       </th>
       {columns !== null && <PlatformRoleCell row={row} doc={doc} />}
       {columns !== null
-        ? roleCells(row, columns, grid, holderOf(doc, row.email) !== undefined)
+        ? roleCells(row, columns, grid)
         : !phone && (
             <td role="cell" data-label="Teams">
               {row.teams.length > 0 ? row.teams.join(', ') : <Dash why="Resolves to no team" />}
