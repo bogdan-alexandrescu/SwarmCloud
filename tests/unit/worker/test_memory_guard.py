@@ -409,3 +409,64 @@ def test_a_real_sleep_grandchild_is_killed_and_only_it():
     finally:
         os.killpg(runner.pid, signal.SIGKILL)
         runner.wait(timeout=10)
+
+
+def test_the_worker_logs_each_kill_when_it_reaps_the_runner(
+    db, worker_factory, monkeypatch, tmp_path: Path
+):
+    from agent_worker import metrics
+    from agent_worker.metrics import ResourceUsage
+
+    from worker_seeds import seed_attempt
+
+    monkeypatch.setattr(metrics, "CGROUP_ROOT", tmp_path / "no-cgroup-here")
+    seed_attempt(db)
+    worker, _, _ = worker_factory()
+    warnings: list[tuple[str, dict]] = []
+    monkeypatch.setattr(worker.log, "warning", lambda msg, **kw: warnings.append((msg, kw)))
+    kill = {
+        "pid": PYTEST,
+        "name": "pytest",
+        "rss_bytes": 4 * GIB,
+        "memory_current_bytes": int(LIMIT * 0.96),
+        "memory_max_bytes": LIMIT,
+    }
+
+    class Guarded:
+        usage = ResourceUsage(peak_rss_bytes=100, memory_guard_kills=1)
+
+        def __init__(self) -> None:
+            self.kills = [dict(kill)]
+
+        def stop(self):
+            return self.usage
+
+        def drain_points(self):
+            return []
+
+        def drain_guard_kills(self):
+            out, self.kills = self.kills, []
+            return out
+
+    worker._sampler = Guarded()
+    worker._stop_sampler()
+
+    logged = [kw for msg, kw in warnings if msg == "memory guard killed the agent's largest process"]
+    assert logged == [kill]
+    assert worker._attempt_usage().memory_guard_kills == 1
+
+
+def test_the_exported_usage_line_carries_the_kill_count():
+    import io
+    import json
+
+    from agent_worker.logs import StructuredLogger
+    from agent_worker.metrics import LoggingMetricsExporter, ResourceUsage
+
+    stream = io.StringIO()
+    LoggingMetricsExporter(StructuredLogger(stream=stream)).export(
+        ResourceUsage(memory_guard_kills=2), {"tenant_id": "eng"}
+    )
+
+    line = json.loads(stream.getvalue().strip().splitlines()[-1])
+    assert line["memory_guard_kills"] == 2
