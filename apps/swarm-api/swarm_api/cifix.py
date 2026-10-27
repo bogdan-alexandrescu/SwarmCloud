@@ -91,6 +91,21 @@ cloned 15cc7ea and the later push was rejected non-fast-forward. pr-shepherd
 holds its side the same way (`live_pr_writer`, read from `_plan_one`), so
 whichever fixer comes second stands down.
 
+ONE WRITER PER PULL REQUEST, FOR EVERY PUSHING REQUEST (#2535). The gates
+above read only a `metadata.ci_fix` request; anything else went straight
+through. Measured 2026-10-26 on PR #2473: wf_3bde5fa9's `implement` step,
+pushing onto task_577523f9's branch with `publish_to_pr`, was admitted at
+19:23:00Z, three seconds after the CI fixer task_b0abb81d started on the same
+red head 377c3010; both fixed the same test, and the step's publish was
+refused `head_moved`. So a pushing request that carries no writer mark of its
+own (`PR_WRITER_KINDS`, each with its own gate) is answered 409
+`pr_fix_in_flight` naming the live fix, its workflow and kind: a
+`continues_task` one while `live_pr_writer` finds one on the pull request its
+branch task recorded (`result_summary.git.pull_request.number`), a
+`publish_to_pr` one while `_live_writer_on_pull` finds one on that number in
+its repository. A merge-only request and a branch task with no recorded pull
+request are admitted as before.
+
 EVERY FIX ROUND'S HEAD, AGAINST ITS PULL REQUEST (epic #1334). Measured
 2026-10-15 02:16Z: HANG-LEASE's merge step refused PR 1338 `head_moved` at
 the head a fix task of ANOTHER workflow pushed; a merge step knew only its
@@ -141,7 +156,7 @@ from swarm_common.states import TERMINAL_STATES
 from .codec import agent_console_url
 from .continuation import TASK_ID_RE, Continuation
 from .errors import ApiError, Conflict, NotFound
-from . import laneterritory
+from . import laneterritory, publishtopr
 from .forgewrite import GitHubWriter
 from .issueci import NO_CHANGE_MARKER
 from .issuecomments import bounded, code, prose
@@ -296,6 +311,13 @@ class CiFixLaneOwnsPr(Conflict):
     this pull request's CI-fix rounds itself; `detail` names it."""
 
     code = "ci_fix_lane_owns_pr"
+
+
+class PrFixInFlight(Conflict):
+    """409: a plain continuation's pull request has a live CI fix or conflict
+    fix pushing to its branch; `detail` names it."""
+
+    code = "pr_fix_in_flight"
 
 
 # --------------------------------------------------------------------------
@@ -699,6 +721,133 @@ def _refuse_if_conflict_fix_live(store: Any, tenant_id: str, continuation: Conti
     ))
 
 
+def _branch_pull_request(db: Any, tenant_id: str, continuation: Continuation) -> int | None:
+    """The number of the pull request the continuation's root opened, from its
+    own record (`result_summary.git.pull_request.number`, the worker's), read
+    by id under the tenant; None when it recorded none, is another tenant's,
+    or the number is not a positive int. `mergewake._held_pull_request`'s
+    read, restated: mergewake imports this module."""
+    snap = db.collection(TASKS).document(continuation.root_task_id).get()
+    doc = (snap.to_dict() or {}) if snap.exists else {}
+    if doc.get("tenant_id") != tenant_id:
+        return None
+    git = _mapping(_mapping(doc.get("result_summary")).get("git"))
+    return _positive_int(_mapping(git.get("pull_request")).get("number"))
+
+
+#: The most tasks one (tenant, mark, pull request number) is read for when
+#: the branch task is not known yet (`publish_to_pr`, below): the number
+#: alone, of every repository the tenant fixes. Each repository's pull
+#: request sees `LIVE_WRITERS_READ` at most; fifty is a few repositories'
+#: worth, and every row is checked against the spec's repository in the
+#: application.
+PUBLISH_WRITERS_READ = 50
+
+
+def _live_writer_on_pull(db: Any, tenant_id: str, repository_url: str, pull_request: int,
+                         now: datetime) -> dict[str, Any] | None:
+    """`live_pr_writer`'s answer for a pull request named by number and
+    repository, before its branch task is known: a non-terminal task of this
+    tenant with any `PR_WRITER_KINDS` mark naming `pull_request` in
+    `repository_url`, or a live claim on it; else None.
+
+    For a `publish_to_pr` workflow, whose branch task `service` reads from
+    GitHub only after `stamp`. Equality filters on tenant and the mark's
+    number (the built-in single-field indexes, no composite index); the
+    repository and every filter are checked again here (invariant 9).
+    """
+    terminal = {s.value for s in TERMINAL_STATES}
+    repository = _claim_repository(repository_url)
+    for kind in PR_WRITER_KINDS:
+        query = (
+            db.collection(TASKS)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter(f"metadata.{kind}.pull_request", "==", pull_request))
+            .limit(PUBLISH_WRITERS_READ)
+        )
+        for snap in query.stream():
+            doc = snap.to_dict() or {}
+            if (doc.get("tenant_id") == tenant_id
+                    and _mapping(_mapping(doc.get("metadata")).get(kind)).get("pull_request")
+                    == pull_request
+                    and isinstance(doc.get("repository_url"), str)
+                    and _claim_repository(doc["repository_url"]) == repository
+                    and doc.get("state") not in terminal):
+                return {"task_id": str(doc.get("id") or snap.id),
+                        "workflow_id": doc.get("workflow_id"), "kind": kind}
+    claims = (
+        db.collection(CLAIMS)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter("repository", "==", repository))
+        .where(filter=FieldFilter("pull_request", "==", pull_request))
+        .limit(LIVE_CLAIMS_READ)
+    )
+    for snap in claims.stream():
+        held = snap.to_dict() or {}
+        if (held.get("tenant_id") != tenant_id or held.get("repository") != repository
+                or held.get("pull_request") != pull_request):
+            continue
+        live = _live_holder(_Reads(), db, tenant_id, held, now)
+        if live is not None:
+            return {**live, "kind": CI_FIX_METADATA_FIELD}
+    return None
+
+
+def _refuse_if_fix_live(store: Any, tenant_id: str, continuation: Continuation | None,
+                        spec: WorkflowCreate) -> None:
+    """Refuse `PrFixInFlight` while a CI fix or conflict fix pushes to the
+    branch this plain continuation -- or this `publish_to_pr` workflow --
+    would push to (through `refusals.refuse`: switched off, the request goes
+    on as before).
+
+    ONE WRITER PER PULL REQUEST, for every pushing request (#2535). Measured
+    2026-10-26 on PR #2473: wf_3bde5fa9's `implement` step (19:23:00Z, with
+    `publish_to_pr` 2473 onto task_577523f9's branch) was admitted three
+    seconds after the CI fixer task_b0abb81d (wf_cd10182a) started on the
+    same red head 377c3010; both fixed one test, the fixer pushed 6260cff5
+    first, and the step's publish was refused `head_moved`. A `continues_task`
+    request pushes to the same branch the same way. A merge-only request
+    pushes nothing, and a request carrying a writer's own mark has that
+    writer's gate (`_claim` and the two above for `ci_fix`,
+    `mergewake.live_claim` for a merge step's rounds, `live_pr_writer` in
+    pr-shepherd's `_plan_one`), so neither is read here. A continuation whose
+    root recorded no pull request has none to hold.
+    """
+    if all(is_merge_step(step.runner_profile) for step in spec.steps):
+        return
+    if any(kind in spec.metadata for kind in PR_WRITER_KINDS):
+        return
+    clock = getattr(store, "_now", None)
+    now = clock() if callable(clock) else datetime.now(timezone.utc)
+    if continuation is not None:
+        number = _branch_pull_request(store.db, tenant_id, continuation)
+        if number is None:
+            return
+        writer = live_pr_writer(store.db, tenant_id, continuation.root_task_id, number,
+                                kinds=PR_WRITER_KINDS, now=now)
+    else:
+        # `publish_to_pr` (#2183) beside `continues_task` is refused before
+        # `stamp`; a malformed one is refused by `service` after it.
+        try:
+            number = publishtopr.parse_number(spec.publish_to_pr, spec.repository_url)
+        except DispatchOptionError:
+            return
+        if number is None or not spec.repository_url:
+            return
+        writer = _live_writer_on_pull(store.db, tenant_id, spec.repository_url, number, now)
+    if writer is None:
+        return
+    task = writer.get("task_id")
+    refuse(PrFixInFlight(
+        f"pull request #{number} has a live {writer['kind']} fix "
+        + (f"({task})" if task else "still being submitted")
+        + " pushing to its branch; this workflow was not made. Resubmit it once "
+        "that fix ends: its push moves the head, and CI runs again there.",
+        detail={"task_id": task, "workflow_id": writer.get("workflow_id"),
+                "kind": writer["kind"], "pull_request": number},
+    ))
+
+
 #: The fix rounds that run with their lane's territory (module docstring):
 #: the PR-side fixer's and the merge step's CI-fix round, never a conflict round.
 TERRITORY_ROUND_KINDS = (CI_FIX_METADATA_FIELD, "merge_fix_round")
@@ -763,7 +912,12 @@ def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
     merge step or a conflict fix on the pull request is live (on 2026-10-26
     PR #2381 got both a conflict fix and a CI fix at 15cc7ea, and the second
     push was rejected), and `CiFixInFlight` (409) when the failure already
-    has a live fix.
+    has a live fix. A continuation or `publish_to_pr` workflow with no
+    `metadata.ci_fix` that pushes and carries no writer mark of its own is
+    refused `PrFixInFlight` (409) while a CI fix or conflict fix on its pull
+    request is live (on 2026-10-26 PR #2473 got a CI fix and a
+    `publish_to_pr` step at 377c3010, and the second publish was refused
+    `head_moved`).
     """
     for step in spec.steps:
         if CI_FIX_METADATA_FIELD in (step.metadata or {}):
@@ -775,6 +929,8 @@ def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
         _refuse_api_keys(step.metadata or {}, step_id=step.step_id)
     _refuse_api_keys(spec.metadata)
     if CI_FIX_METADATA_FIELD not in spec.metadata:
+        # First, so a refused request writes nothing (#2535).
+        _refuse_if_fix_live(store, tenant_id, continuation, spec)
         marker = _fix_head_marker(spec.metadata, continuation)
         if marker is None:
             return spec

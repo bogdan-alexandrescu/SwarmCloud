@@ -394,6 +394,27 @@ SWITCHES: dict[str, Switch] = {
         "the standalone fixer races the lane's round for the branch again",
         default=True,
     ),
+    # #2535 (cifix.py `_refuse_if_fix_live`): a `continues_task` or
+    # `publish_to_pr` request that pushes and carries no fix mark of its own,
+    # onto a pull request that has a live CI fix or conflict fix. SHIPS ON
+    # (default=True), pending the owner's answer to this lane's question
+    # (2026-10-27), unlike
+    # a new refusal's usual report-only start (the 2026-10-08 rule): on
+    # 2026-10-26 PR #2473 got a CI fix and a `publish_to_pr` `implement` step
+    # at one red head 377c3010, and the second publish was refused head_moved
+    # after its agent had done the whole fix. Off -- and nothing in
+    # terraform's api_refusals turns it on, as ci_fix_in_flight shows -- it
+    # refuses nothing in production. The issue run's own CI-fix round meets
+    # it too; #2535's second step makes issueci read it as "wait". Set
+    # REFUSAL_PR_FIX_IN_FLIGHT=off to admit such a request beside the fix again.
+    "pr_fix_in_flight": Switch(
+        code="pr_fix_in_flight",
+        why="a continues_task or publish_to_pr request that pushes to a pull request's "
+        "branch and is not itself a CI fix or conflict fix is refused 409 naming the live "
+        "CI fix or conflict fix on that pull request; off, both push to one branch and the later publish is refused "
+        "head_moved, as on PR #2473",
+        default=True,
+    ),
     # #1435 (docs/design/model-per-step.md §4.4, owner's Q4): a `model` that
     # is not the pin of the step's model class. It can refuse a caller that
     # exists today -- `swarm dispatch --model` sends attribution, and any
