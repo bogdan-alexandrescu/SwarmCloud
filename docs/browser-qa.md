@@ -88,6 +88,19 @@ which theme a page is shown at are commands the agent runs inside the agent:
 from `swarm_browser.live()`. The template below puts them in each step's
 prompt.
 
+### A flow is recorded with `record start` and `record stop`
+
+`swarm-handoff record start <name>` launches a recorder in the background that
+turns screenshots of the live browser into `$SWARM_ARTIFACTS_DIR/flows/<name>.gif`;
+`swarm-handoff record stop` stops it and prints what it wrote. A recorder
+otherwise stops only at its frame or size cap or after 15 minutes, so a script
+that crashes before its `record stop` leaves one running. The next
+`record start` does not refuse for that: it stops the earlier recorder as
+`record stop` would (the stop file, at most 30 s, then SIGTERM), keeps its
+GIF, names it in its answer as `replaced` with what it wrote in
+`replaced_result`, and starts the new one (#1981). One recorder runs at a time;
+started again under the same name, the new GIF is written over the old.
+
 ---
 
 ## 2. Which one for which job
@@ -128,8 +141,7 @@ To test a branch rather than `main`, change `repository_ref`; nothing else.
 | `review-<group>` | `claude-code`, `opus` | opens every PNG in its group's capture and writes `findings-<group>.json` (one entry per defect, with a crop PNG) and `review-<group>.tar`. `reviewed` is the number of images it opened |
 | `flow-find-failure`, `flow-workflow-graph` | `claude-code-browser`, `jev`, `sonnet` | a goal, reached as a person would, at desktop and then at `phone-390` or in dark mode; a GIF of each run under `flows/` |
 | `flow-submit-form` | `claude-code-browser`, `playwright`, `sonnet` | the submit form at desktop and at `phone-390`, at most 12 screenshots per preset, and what the model says each screenshot showed. It stops at 35 minutes, or at its first browser tool timeout, and bundles what it reached |
-| `a11y-keyboard` | `claude-code-browser`, `playwright`, `sonnet` | keyboard-only navigation of every section, unnamed controls, reduced motion and deuteranopia |
-| `report` | `claude-code`, `opus` | waits for the captures, the reviews and `a11y-keyboard` only; merges every finding into `findings.json` and writes `report.md`, with each finding's crop and the full-size screenshot it cites, and a check of every review's `reviewed` count against its capture's `manifest.json` (a missing tar is a finding about the run) |
+| `report` | `claude-code`, `opus` | waits for the captures and the reviews only; merges every finding into `findings.json` and writes `report.md`, with each finding's crop and the full-size screenshot it cites, and a check of every review's `reviewed` count against its capture's `manifest.json` (a missing tar is a finding about the run) |
 | `flow-report` | `claude-code`, `opus` | waits for the three flows only; writes `flows.md` and `flows.json`: each flow's GIFs, whether its goal was reached, and what the model said it saw in each `flow-submit-form` screenshot. A failed flow costs this report, never `report` (visual QA run 2 lost its whole report to one flow; [design §8](design/visual-qa.md#8-what-the-runs-taught)) |
 
 The six groups are the route list's: `overview-automate`, `work-a`, `work-b`,
@@ -178,6 +190,12 @@ tenant's default pool.
   captures. Every capture writes its tarball even when a route fails, because
   the review stages it by name and a missing file would fail the review.
 * **No `resource_class`** anywhere: each profile's own is the right one.
+* **No keyboard pass.** The `a11y-keyboard` step was dropped by the owner on
+  2026-10-21: in visual QA run 4 it went quiet for about 33 minutes, was
+  killed at 2700 s with nothing bundled, and `report`, which waited for it,
+  was cancelled over six finished reviews. The axe-core scan stays, in
+  `capture-task`. `tests/unit/mcp/test_qa_workflow_template.py` fails if the
+  step comes back.
 
 ### Comparing two runs
 
