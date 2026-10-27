@@ -55,6 +55,16 @@
 # stdout: the related test files, repo-relative, one a line; then one command
 # a line. `--run` also runs those commands in turn and stops at the first red.
 #
+# TEST-OUTPUT (TOKEN-A, part of #2524, BGD 2026-10-27). 97% of the pool's
+# tokens in 2026-10-20..27 were cache reads, and a whole test transcript in a
+# Bash result is re-read on every later turn. So with --run each run's full
+# output goes to a log -- under $SWARM_ARTIFACTS_DIR in a lane, else
+# ${TMPDIR:-/tmp} -- and only its last TAIL_LINES lines are printed, after the
+# failure blocks (pytest's FAILURES/ERRORS, vitest's Failed Tests/Suites, a
+# node:test `not ok`) when it failed, at most BLOCK_LINES of them; the log is
+# named. vitest runs with --reporter=dot: a dot a test, its failures in full.
+# changed-guards.sh already keeps its runs' logs and prints their tails.
+#
 #   exit 0  nothing related, or the selection was printed (and with --run, passed)
 #   exit 1  with --run, a run failed or ran out of time
 #   exit 2  usage error, or the diff could not be read
@@ -70,6 +80,10 @@ UI_DIR="apps/swarm-ui"
 # Each run's limit with --run: changed-guards.sh's PYTEST_SECONDS, under the
 # 10 minutes an agent's command may take.
 RUN_SECONDS=540
+# What --run prints of each run's log (TEST-OUTPUT above).
+TAIL_LINES=25
+BLOCK_LINES=200
+FAILURE_HEADER='^=+ (FAILURES|ERRORS) =+$|Failed (Tests|Suites) [0-9]+|^not ok '
 
 usage() {
   sed -n '5p' "${BASH_SOURCE[0]}" | sed 's/^# *//' >&2
@@ -168,7 +182,7 @@ command_of() {
   elif [[ "$1" == node ]]; then
     printf '(cd %s && npm run test:node)' "$2"
   else
-    printf '(cd %s && npx vitest run %s)' "${UI_DIR}" "$2"
+    printf '(cd %s && npx vitest run --reporter=dot %s)' "${UI_DIR}" "$2"
   fi
 }
 
@@ -185,25 +199,58 @@ limit=()
 if command -v timeout >/dev/null 2>&1; then
   limit=(timeout "${RUN_SECONDS}")
 fi
+log_dir="${SWARM_ARTIFACTS_DIR:-${TMPDIR:-/tmp}}"
+[[ -d "${log_dir}" && -w "${log_dir}" ]] || log_dir="${TMPDIR:-/tmp}"
+log_stem="$(mktemp "${log_dir}/related-tests.XXXXXX")"
+# Only its name is used: the logs are ${log_stem}.runN.log.
+trap 'rm -rf "${work}"; rm -f "${log_stem}"' EXIT
+
+show_log() {
+  # $1 the run's log, $2 its exit status. The failure blocks first (failed
+  # runs only, at most BLOCK_LINES), then the tail; a block that reaches the
+  # tail is printed once, to the end.
+  local total start
+  total="$(wc -l <"$1" | tr -d ' ')"
+  start=0
+  if [[ "$2" -ne 0 ]]; then
+    start="$(grep -n -m 1 -E "${FAILURE_HEADER}" "$1" | cut -d: -f1 || true)"
+    start="${start:-0}"
+  fi
+  if [[ "${start}" -gt 0 && $((total - start + 1)) -le $((BLOCK_LINES + TAIL_LINES)) ]]; then
+    tail -n "+${start}" "$1" | redact
+  else
+    if [[ "${start}" -gt 0 ]]; then
+      tail -n "+${start}" "$1" | head -n "${BLOCK_LINES}" | redact
+      printf '... (%s more line(s) in %s)\n' "$((total - start + 1 - BLOCK_LINES - TAIL_LINES))" "$1"
+    fi
+    tail -n "${TAIL_LINES}" "$1" | redact
+  fi
+}
+
 for i in "${!runs[@]}"; do
   read -r -a run_files <<<"${runs[$i]}"
   status=0
+  log="${log_stem}.run$((i + 1)).log"
   if [[ "${kinds[$i]}" == node ]]; then
     info "run $((i + 1)) of ${#runs[@]}: node, npm run test:node in ${runs[$i]}"
-    (cd "${REPO_ROOT}/${runs[$i]}" && ${limit[@]+"${limit[@]}"} npm run test:node) || status=$?
+    (cd "${REPO_ROOT}/${runs[$i]}" && ${limit[@]+"${limit[@]}"} npm run test:node) >"${log}" 2>&1 || status=$?
   elif [[ "${kinds[$i]}" == pytest ]]; then
     info "run $((i + 1)) of ${#runs[@]}: pytest, ${#run_files[@]} file(s)"
-    (cd "${REPO_ROOT}" && ${limit[@]+"${limit[@]}"} uv run pytest -q -n auto "${run_files[@]}") || status=$?
+    (cd "${REPO_ROOT}" && ${limit[@]+"${limit[@]}"} uv run pytest -q -n auto "${run_files[@]}") >"${log}" 2>&1 \
+      || status=$?
   else
     info "run $((i + 1)) of ${#runs[@]}: vitest, ${#run_files[@]} file(s)"
-    (cd "${REPO_ROOT}/${UI_DIR}" && ${limit[@]+"${limit[@]}"} npx vitest run "${run_files[@]}") || status=$?
+    (cd "${REPO_ROOT}/${UI_DIR}" && ${limit[@]+"${limit[@]}"} npx vitest run --reporter=dot "${run_files[@]}") \
+      >"${log}" 2>&1 || status=$?
   fi
+  show_log "${log}" "${status}"
   if [[ "${status}" -eq 124 ]]; then
-    err "run $((i + 1)) ran past ${RUN_SECONDS} s; it is not re-run as-is: narrow it to the files you changed"
+    err "run $((i + 1)) ran past ${RUN_SECONDS} s; it is not re-run as-is: narrow it to the files you changed; full output: ${log}"
     exit 1
   elif [[ "${status}" -ne 0 ]]; then
-    err "run $((i + 1)) failed (exit ${status}); fix it before the next run"
+    err "run $((i + 1)) failed (exit ${status}); fix it before the next run; full output: ${log}"
     exit 1
   fi
+  info "run $((i + 1)) passed; full output: ${log}"
 done
 ok "every related test passed (${#listed[@]} file(s), ${#runs[@]} run(s))"
