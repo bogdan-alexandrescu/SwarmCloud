@@ -160,6 +160,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 from urllib.parse import quote
 
+from google.cloud.firestore_v1.base_query import FieldFilter
+
 from swarm_common.states import TaskState
 
 from . import approvals, refusals
@@ -215,7 +217,7 @@ from .reviewcontext import EARLIER_FIXES, read_fix_context
 from .rollup import SKIPPED_SUMMARY_KEY
 from .schemas import WorkflowCreate
 from . import sessiontag
-from .validation import MERGE_METADATA_KEY, MERGE_STEP_ID, IssueRef
+from .validation import DISPATCH_METADATA_KEY, MERGE_METADATA_KEY, MERGE_STEP_ID, IssueRef
 
 log = logging.getLogger(__name__)
 
@@ -1438,9 +1440,12 @@ def merge_target_unbound(ctx: Any, tenant_id: str, run: IssueRun, pushed_by: str
     (#900): the worker verifies the task's signed spec against that
     workflow, not the merge's. This is what makes that workflow this run's
     to merge: the integrator is `run.pr_task_id` of `run.workflow_id`, and
-    any other pushing task is a CI-fix round of one of `run.ci_fix_workflows`.
-    Anything else -- a task of another workflow, a run that recorded no
-    workflow -- refuses the merge before it is submitted, fail closed.
+    any other pushing task is a CI-fix round of one of `run.ci_fix_workflows`
+    or one of this run's pr-shepherd conflict fixes (`_conflict_fix_tasks`:
+    marked for this run, continuing its integrator) whose own workflow is
+    that fix's one-step round. Anything else -- a task of another workflow,
+    a run that recorded no workflow -- refuses the merge before it is
+    submitted, fail closed.
     """
     try:
         task = ctx.store.get_task(tenant_id, pushed_by, submitted_by=None)
@@ -1449,14 +1454,100 @@ def merge_target_unbound(ctx: Any, tenant_id: str, run: IssueRun, pushed_by: str
     workflow_id = getattr(task, "workflow_id", None)
     if pushed_by == run.pr_task_id:
         bound = bool(run.workflow_id) and workflow_id == run.workflow_id
+    elif workflow_id and workflow_id in run.ci_fix_workflows:
+        bound = True
     else:
-        bound = bool(workflow_id) and workflow_id in run.ci_fix_workflows
+        bound = (bool(workflow_id) and pushed_by in _conflict_fix_tasks(ctx, tenant_id, run)
+                 and _conflict_fix_workflow(ctx, tenant_id, workflow_id, pushed_by))
     if bound:
         return ""
     return (
         f"its pushing task {pushed_by} belongs to workflow {workflow_id}, which is not this "
-        f"run's (workflow {run.workflow_id}, CI-fix rounds {list(run.ci_fix_workflows)})"
+        f"run's (workflow {run.workflow_id}, CI-fix rounds {list(run.ci_fix_workflows)}, "
+        f"nor one of its conflict fixes)"
     )
+
+
+def _conflict_mark(metadata: Any, run: IssueRun) -> Mapping[str, Any] | None:
+    """`metadata.pr_shepherd` when it marks a conflict fix of `run`'s pull request."""
+    from .cifix import CONFLICT_FIX_METADATA_KEY  # cifix imports this module
+
+    mark = metadata.get(CONFLICT_FIX_METADATA_KEY) if isinstance(metadata, Mapping) else None
+    number = (run.pull_request or {}).get("number")
+    if (not isinstance(mark, Mapping) or number is None or mark.get("run_id") != run.id
+            or mark.get("pull_request") != number
+            or str(mark.get("repository") or "").lower() != run.issue.repository.lower()):
+        return None
+    return mark
+
+
+def _conflict_fix_workflow(ctx: Any, tenant_id: str, workflow_id: str, task_id: str) -> bool:
+    """Whether `workflow_id`, read under `tenant_id`, is the conflict fix
+    `task_id`'s own: one step, and that step is `task_id`.
+
+    The frozen `Workflow` holds no metadata -- a submission stores the
+    workflow's metadata on each of its tasks -- so the run's mark is read off
+    the task (`_conflict_fix_tasks`) and the workflow is held to be that
+    task's one-step round, as `conflict_fix_workflow` submits it.
+    """
+    try:
+        workflow = ctx.store.get_workflow(tenant_id, workflow_id, submitted_by=None)
+    except NotFound:
+        return False
+    steps = getattr(workflow, "steps", None) or []
+    return [getattr(step, "task_id", None) for step in steps] == [task_id]
+
+
+def _conflict_fix_tasks(ctx: Any, tenant_id: str, run: IssueRun) -> dict[str, str | None]:
+    """This run's pr-shepherd conflict fixes, newest first: `{task id: pushed head}`.
+
+    A conflict fix (`pr_shepherd.conflict_fix_workflow`) is a `direct-pr`
+    continuation of the run's integrator that merges the base into the pull
+    request's branch, so the head it pushes is the run's to merge (#2537).
+    The run records no list of them, as it does `ci_fix_workflows`:
+    pr-shepherd's mark (`metadata.pr_shepherd`, with the run's id, repository
+    and pull request) already binds the round to the run, and a record kept
+    here would be a second writer of the IssueRun beside the loop.
+
+    Read the way `cifix.live_pr_writer` reads them: equality filters only
+    (tenant, continuation, pull request -- built-in single-field indexes),
+    limited to `cifix.LIVE_WRITERS_READ`, and every filter checked again in
+    the application along with the mark's run id and repository: a fake or
+    an index mistake must not make another tenant's or another run's task a
+    candidate (invariant 9).
+    """
+    from .cifix import CONFLICT_FIX_METADATA_KEY, LIVE_WRITERS_READ, TASKS
+
+    number = (run.pull_request or {}).get("number")
+    if not run.pr_task_id or number is None:
+        return {}
+    query = (
+        ctx.db.collection(TASKS)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter(
+            f"metadata.{DISPATCH_METADATA_KEY}.continues", "==", run.pr_task_id))
+        .where(filter=FieldFilter(
+            f"metadata.{CONFLICT_FIX_METADATA_KEY}.pull_request", "==", number))
+        .limit(LIVE_WRITERS_READ)
+    )
+    found: list[tuple[Any, str, str | None]] = []
+    for snap in query.stream():
+        doc = snap.to_dict() or {}
+        metadata = doc.get("metadata") if isinstance(doc.get("metadata"), Mapping) else {}
+        dispatch = metadata.get(DISPATCH_METADATA_KEY)
+        if (doc.get("tenant_id") != tenant_id
+                or not isinstance(dispatch, Mapping)
+                or dispatch.get("continues") != run.pr_task_id
+                or _conflict_mark(metadata, run) is None):
+            continue
+        summary = doc.get("result_summary")
+        git = summary.get("git") if isinstance(summary, Mapping) else None
+        pushed = git.get("pushed_head") if isinstance(git, Mapping) else None
+        found.append((doc.get("created_at"), str(doc.get("id") or snap.id),
+                      pushed if isinstance(pushed, str) and pushed else None))
+    found.sort(key=lambda item: _aware(item[0]) or datetime.min.replace(tzinfo=timezone.utc),
+               reverse=True)
+    return {task_id: pushed for _, task_id, pushed in found}
 
 
 def _pushed_head(task: Any) -> str | None:
@@ -1467,10 +1558,18 @@ def _pushed_head(task: Any) -> str | None:
 
 
 def _pushing_task(ctx: Any, tenant_id: str, run: IssueRun, head: str) -> str | None:
-    """The run's own task that pushed `head`: the newest fix round's, else the integrator."""
-    return pushing_task(
-        ctx, tenant_id, head, fix_workflows=run.ci_fix_workflows, root_task_id=run.pr_task_id
+    """The run's own task that pushed `head`: the newest CI-fix round's, else the
+    newest of its pr-shepherd conflict fixes' (`_conflict_fix_tasks`: a conflict
+    fix's head is the run's), else the integrator."""
+    found = pushing_task(
+        ctx, tenant_id, head, fix_workflows=run.ci_fix_workflows, root_task_id=None
     )
+    if found is not None:
+        return found
+    for task_id, pushed in _conflict_fix_tasks(ctx, tenant_id, run).items():
+        if pushed == head:
+            return task_id
+    return pushing_task(ctx, tenant_id, head, fix_workflows=[], root_task_id=run.pr_task_id)
 
 
 def pushing_task(
@@ -1790,6 +1889,11 @@ def _merge(
     merges on top of one (`through_base_merges`), and a merge whose head moved
     that way from the head it claimed is the same merge, still running, not
     a new one to submit. Any other head is still refused.
+
+    Its tasks are the integrator, its CI-fix rounds and its pr-shepherd
+    conflict fixes (#2537): a conflict fix merges the base into the pull
+    request's branch, so the head it pushes is the run's, and the merge
+    continues that fix (`_pushing_task`, `merge_target_unbound`).
     """
     runs = _runs(ctx)
     now = ctx.now()

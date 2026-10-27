@@ -1216,6 +1216,21 @@ export function shapeWords(shape: Pick<DagShape, 'steps' | 'levels' | 'text'>): 
   return `${shape.steps} step${shape.steps === 1 ? '' : 's'}${shape.levels > 1 ? ` in ${shape.levels} stages (${shape.text})` : ''}`
 }
 
+/**
+ * The shape's words with its parenthetical in a span of its own, so a phone
+ * moves `(1 → 2 → 1 → 1)` to the next line whole rather than breaking inside
+ * it (review of U02, #2391 comment 58). The text reads exactly as before.
+ */
+export function ShapeWords({ words }: { words: string }) {
+  const at = words.indexOf(' (')
+  if (at < 0) return <>{words}</>
+  return (
+    <>
+      {words.slice(0, at)} <span className="wf-scrub-paren">{words.slice(at + 1)}</span>
+    </>
+  )
+}
+
 function FactList({ facts, cause = null }: { facts: readonly Fact[]; cause?: string | null }) {
   return (
     <ul className="ctl-facts wf-inspect-facts">
@@ -1727,7 +1742,7 @@ export function StepInspector({
             `5 → 1 · 6 steps`, the bare widths PR 1719 had explained in the
             page head (QA-119) and left unexplained here. */}
         <span className="wf-scrub-shape" title={`Only workflows of this shape are compared. ${shape.label}`}>
-          shape: {shapeWords(shape)}
+          shape: <ShapeWords words={shapeWords(shape)} />
         </span>
         {/* THE STRIP: every occurrence, in scrub order, in its own state's
             silhouette, with this one ringed. Decoration for a sighted reader

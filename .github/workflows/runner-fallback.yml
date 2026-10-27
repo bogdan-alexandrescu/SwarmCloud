@@ -112,7 +112,12 @@ jobs:
           private-key: ${{ secrets.MERGE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
-          permission-variables: write
+          # GitHub's key for repository variables is `actions_variables`; the
+          # action turns permission-<name> into <name> with dashes as
+          # underscores. `permission-variables` asked for `variables`, a key
+          # GitHub does not have, so every mint was refused even after the
+          # owner's grant (#2220, 2026-10-27).
+          permission-actions-variables: write
 
       - name: judge the pool and flip SELF_HOSTED_CI
         env:

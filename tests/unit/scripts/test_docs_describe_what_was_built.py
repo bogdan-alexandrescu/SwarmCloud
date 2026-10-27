@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -1298,6 +1299,7 @@ QI_API_PY = "apps/swarm-api/swarm_api/qa_identity.py"
 QI_SESSION_PY = "apps/agent-worker/agent_worker/livegate/session.py"
 QI_FRONT_DOOR = "apps/swarm-api/swarm_api/main.py::FrontDoor.__call__"
 QI_DECIDED = "Amended 2026-10-20"
+QI_INSTRUCT_PY = "apps/agent-worker/agent_worker/runners/claude_code.py"
 
 
 def _qi_lanes() -> list[str]:
@@ -1315,8 +1317,12 @@ def _qi_entry(raw: str, lane: str) -> str:
 
 
 def _qi_built(lane: str) -> bool:
-    """Whether the lane's work is on this tree, read from the files its §6 row names."""
-    browser = _text(REPO / "images" / "agent-runtime-browser" / "swarm_browser.py")
+    """Whether the lane's work is on this tree, read from the files that hold it.
+
+    QI-INSTRUCT landed in the claude-code runner's live-browser note
+    (`QA_IDENTITY_NOTE`), not in the browser image's `swarm_browser.py` its
+    §6 row names, so it is read where it was built (#1649)."""
+    runner = _text(REPO / QI_INSTRUCT_PY)
     accept = _text(REPO / "tests" / "acceptance" / "test_live_browser.py")
     marks = {
         "QI-CONTRACT": (REPO / "tests/unit/common/test_qa_identity_contract.py").is_file(),
@@ -1326,9 +1332,9 @@ def _qi_built(lane: str) -> bool:
         "QI-WORKER": (REPO / QI_WORKER_PY).is_file(),
         "QI-UI": (REPO / "apps/swarm-ui/src/QaIdentityGrants.tsx").is_file(),
         "QI-MCP": (REPO / "tests/unit/mcp/test_qa_identity_details.py").is_file(),
-        "QI-INSTRUCT": "qa-identity.md" in browser or "QA identity" in browser,
+        "QI-INSTRUCT": "QA_IDENTITY_NOTE = (" in runner and "qa_identity_host" in runner,
         "QI-DOCS": True,
-        "QI-ACCEPT": "qa_identity" in accept,
+        "QI-ACCEPT": "QA_IDENTITY_CHECKS = (" in accept,
     }
     assert lane in marks, f"§6 names a lane {lane} this test does not know how to read"
     return marks[lane]
@@ -1338,6 +1344,40 @@ def test_qa_identity_design_no_longer_says_nothing_is_built():
     head = _flat(_text(QI_DESIGN).split("\n---\n", 1)[0])
     assert "Nothing in it is built" not in head
     assert "**Status: built" in head and "§8" in head
+    # The header names what is still missing from the tree, and nothing else.
+    missing = [lane for lane in _qi_lanes() if not _qi_built(lane)]
+    if not missing:
+        assert "except the agent's instructions" not in head, "every lane is built; the header says not"
+        assert "acceptance case" in head and "accept.yml" in head
+
+
+def test_qa_identity_design_8_cites_where_qi_instruct_was_built():
+    entry = _qi_entry(_section(_text(QI_DESIGN), QI_BUILT), "QI-INSTRUCT")
+    note = f"{QI_INSTRUCT_PY}::QA_IDENTITY_NOTE"
+    assert f"`{note}`" in entry
+    assert "qa_identity_host" in _cited_symbol(*note.split("::"))
+    assert "swarm_browser.py" in entry, "§8 says why the code is not where §6's row put it"
+
+
+def test_qa_identity_design_8_says_where_qi_accept_runs():
+    """The case runs in accept.yml after a release, never in a pull request's
+    CI, so §8 says so and names its checks as the acceptance file holds them."""
+    entry = _qi_entry(_section(_text(QI_DESIGN), QI_BUILT), "QI-ACCEPT")
+    if not _qi_built("QI-ACCEPT"):
+        return
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "acceptance_live_browser", REPO / "tests" / "acceptance" / "test_live_browser.py")
+    lb = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = lb  # its dataclasses resolve their module by name
+    try:
+        spec.loader.exec_module(lb)
+    finally:
+        sys.modules.pop(spec.name, None)
+    assert "accept.yml" in entry
+    for check in lb.QA_IDENTITY_CHECKS:
+        assert f"`{check}`" in entry, check
 
 
 def test_qa_identity_design_records_what_every_lane_built():
@@ -1450,6 +1490,100 @@ def test_workspaces_doc_describes_the_qa_identitys_service_workspace():
 @pytest.mark.parametrize("doc", (QI_DESIGN, LIVE_BROWSER, WORKSPACES_DOC), ids=lambda p: p.name)
 def test_qa_identity_docs_cite_only_what_resolves(doc: Path):
     _assert_cites_resolve(doc)
+
+
+# --------------------------------------------------------------------------
+# Stale status headers (#1384, #1649): graph-service.md and visual-qa.md
+# --------------------------------------------------------------------------
+#
+# Both documents were written as designs and still opened with "Nothing
+# described here is built" / "Nothing here is built" after their lanes had
+# landed. Each header now lists the lanes of its build plan, and a lane is
+# called built or not built by reading the files its row names, so the next
+# lane landing (GS-RETIRE) fails here until the header follows.
+
+GRAPH_SERVICE = DOCS / "design" / "graph-service.md"
+VISUAL_QA = DOCS / "design" / "visual-qa.md"
+
+
+def _head(path: Path) -> str:
+    return _flat(_text(path).split("\n---\n", 1)[0])
+
+
+def _gs_lanes() -> list[str]:
+    plan = _section(_text(GRAPH_SERVICE), "## 11. Lanes")
+    lanes = re.findall(r"^\| \*\*(GS-[A-Z]+)\*\*", plan, flags=re.M)
+    assert len(lanes) >= 12 and "GS-RETIRE" in lanes, lanes
+    return lanes
+
+
+def _gs_built(lane: str) -> bool:
+    """Whether the lane's work is on this tree, read from the files its §11 row names."""
+    def has(rel: str, needle: str | None = None) -> bool:
+        path = REPO / rel
+        if not path.exists():
+            return False
+        return needle is None or needle in _text(path)
+
+    marks = {
+        "GS-MEASURE": has("tests/unit/worker/test_graph_ready_mark.py"),
+        "GS-CORE": has("tests/unit/worker/test_graphmcp_call_graph_index.py"),
+        "GS-TICKET": has("apps/swarm-api/swarm_api/routes/graph_ticket.py"),
+        "GS-INDEXDOC": has("images/agent-runtime-indexer/repo-index/repo_graph_shards.py",
+                           "document_shards"),
+        "GS-PUSHAPI": has("tests/unit/control_plane/test_repository_index_push.py"),
+        "GS-SETTING": has("apps/swarm-api/swarm_api/codeintel.py", "graph_delivery"),
+        "GS-SVC": has("apps/swarm-graph/swarm_graph"),
+        "GS-HOOKS": has("apps/swarm-github-hooks"),
+        "GS-SHIM": has("apps/agent-worker/agent_worker/graphmcp/shim.py"),
+        "GS-PACK": has("apps/agent-worker/agent_worker/contextpack/build.py", "class ServiceSource"),
+        "GS-INFRA": has("terraform/infra/graph_service.tf"),
+        "GS-WORKER": has("apps/agent-worker/agent_worker/graph_ticket.py"),
+        # GS-RETIRE deletes staging: built once `write_snapshot` is gone.
+        "GS-RETIRE": not has("apps/agent-worker/agent_worker/graphstage.py", "def write_snapshot("),
+    }
+    assert lane in marks, f"§11 names a lane {lane} this test does not know how to read"
+    return marks[lane]
+
+
+def test_graph_service_header_no_longer_says_nothing_is_built():
+    head = _head(GRAPH_SERVICE)
+    assert "Nothing described here is built" not in head
+    assert "**Status: built" in head and "§11" in head
+    for lane in _gs_lanes():
+        assert lane in head, f"the status header does not name {lane}"
+        if _gs_built(lane):
+            assert f"{lane} (not built" not in head, f"{lane} is on this tree; the header says not"
+        else:
+            assert f"{lane} (not built" in head, f"{lane} is not on this tree; the header must say so"
+    # What remains past the lanes: §8.2 step 5's widening, which is the owner's.
+    assert "Widening" in head and "§8.2" in head
+
+
+def _vq_lanes() -> list[str]:
+    plan = _section(_text(VISUAL_QA), "## 6. Build plan")
+    lanes = re.findall(r"^\|[^|\n]*\| \*\*([A-Z]+-[A-Z]+)\*\*", plan, flags=re.M)
+    assert len(lanes) >= 7 and "QA-CAPTURE" in lanes and "QA-PROOF" in lanes, lanes
+    return lanes
+
+
+def test_visual_qa_header_no_longer_says_nothing_is_built():
+    head = _head(VISUAL_QA)
+    assert "Nothing here is built" not in head
+    assert "**Status: built" in head
+    for lane in _vq_lanes():
+        assert lane in head, f"the status header does not name {lane}"
+    built = {
+        "QA-CAPTURE": "images/agent-runtime-browser/swarm_qa.py",
+        "QA-TEMPLATE": "docs/qa/console-qa.workflow.json",
+        "QA-KIT": "tests/unit/worker/test_qa_kit.py",
+        "QA-FLOWS": "tests/unit/worker/test_qa_flows.py",
+    }
+    for lane, rel in built.items():
+        assert (REPO / rel).is_file(), f"{lane}'s {rel} is gone; the header calls it built"
+        assert f"`{rel}`" in head, f"the header does not cite where {lane} was built"
+    # The signed-in arm is QA-IDENTITY's build, and the header points there.
+    assert "qa-identity.md" in head and "§8" in head
 
 
 # --------------------------------------------------------------------------

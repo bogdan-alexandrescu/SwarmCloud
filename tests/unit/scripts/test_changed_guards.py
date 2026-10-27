@@ -199,6 +199,65 @@ def test_a_doc_beside_a_code_change_keeps_the_whole_guard_set():
     assert "check-contract-parity.sh" in result.stdout
 
 
+# DOC CLOSURE (#2299). A doc that cites a changed non-doc path by its full
+# path counts as changed, so the tests that read that doc are selected: PR
+# #2267 moved PushTestCell out of Access.tsx while docs/onboarding.md still
+# cited it, and the tests resolving that citation name only onboarding.md.
+def _doc_repo(tmp_path: Path) -> tuple[Path, dict[str, str]]:
+    (tmp_path / "scripts" / "lib").mkdir(parents=True)
+    shutil.copy(SCRIPT, tmp_path / "scripts" / "changed-guards.sh")
+    shutil.copy(REPO / "scripts" / "lib" / "common.sh", tmp_path / "scripts" / "lib" / "common.sh")
+    files = {
+        "apps/swarm-ui/src/A.tsx": "export const A = 1;\n",
+        "apps/swarm-ui/src/B.tsx": "export const B = 1;\n",
+        "docs/x.md": "`function A` lives in `apps/swarm-ui/src/A.tsx`.\n",
+        "docs/y.md": "`function B` lives in `apps/swarm-ui/src/B.tsx`.\n",
+        "docs/z.md": "`function A` lives in `A.tsx`.\n",
+        "tests/unit/scripts/test_x_docs.py": 'DOC = REPO / "docs" / "x.md"\n',
+        "tests/unit/scripts/test_y_docs.py": 'DOC = REPO / "docs" / "y.md"\n',
+        "tests/unit/scripts/test_z_docs.py": 'DOC = REPO / "docs" / "z.md"\n',
+        **{guard: "" for guard in GUARDS},
+    }
+    for rel, text in files.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text)
+    env = {k: v for k, v in os.environ.items()
+           if k not in {"PROJECT_ID", "IMAGE_REPO", "ENVIRONMENT", "REPO_ROOT", "SWARM_CLONE_BASE"}}
+    env.update(NO_COLOR="1", SWARM_ENV_FILE=str(tmp_path / "no.env"))
+    return tmp_path, env
+
+
+def test_a_doc_citing_a_changed_path_selects_the_tests_that_read_the_doc(tmp_path: Path):
+    root, env = _doc_repo(tmp_path)
+    result = subprocess.run(
+        ["bash", str(root / "scripts" / "changed-guards.sh"), "--list", "--files", "-"],
+        cwd=root, env=env, input="apps/swarm-ui/src/A.tsx\n", capture_output=True, text=True, timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    selected = _selected(result.stdout)
+    # MUTATION: drop the docs grep from changed-guards.sh and this is red.
+    assert "tests/unit/scripts/test_x_docs.py" in selected, selected
+    # The controls: a doc citing another file, and a doc citing A.tsx by its
+    # basename only, select none of their readers.
+    assert "tests/unit/scripts/test_y_docs.py" not in selected, selected
+    assert "tests/unit/scripts/test_z_docs.py" not in selected, selected
+
+
+def test_a_docs_only_change_follows_no_doc_citation(tmp_path: Path):
+    root, env = _doc_repo(tmp_path)
+    (root / "docs" / "w.md").write_text("See `docs/x.md`.\n")
+    (root / "tests" / "unit" / "scripts" / "test_w_docs.py").write_text('DOC = REPO / "docs" / "w.md"\n')
+    result = subprocess.run(
+        ["bash", str(root / "scripts" / "changed-guards.sh"), "--list", "--files", "-"],
+        cwd=root, env=env, input="docs/x.md\n", capture_output=True, text=True, timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    selected = _selected(result.stdout)
+    assert "tests/unit/scripts/test_x_docs.py" in selected, selected
+    # MUTATION: let a changed doc's citers count as changed and this is red.
+    assert "tests/unit/scripts/test_w_docs.py" not in selected, selected
+
+
 def test_a_changed_test_file_is_selected_itself():
     path = "tests/unit/scripts/test_issue_forms.py"
     result = _run("--list", "--files", "-", stdin=path + "\n")

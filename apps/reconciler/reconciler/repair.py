@@ -574,6 +574,12 @@ class Reconciler:
         #: (`_read_finished`). Reset every pass; `_admit` judges a
         #: lost-after-finish finding on the backend this attempt names.
         self._finished: dict[str, AttemptView] = {}
+        #: Where the next workflow stall check resumes (`_check_workflows`):
+        #: the last workflow id of a full page, None after a short one. Kept
+        #: across passes on purpose, as the scheduler's `_park_cursors` are:
+        #: that is what moves the window past `workflow_scan_limit` (#1822).
+        #: Per instance: a cold instance starts from the top.
+        self._workflow_cursor: str | None = None
         if self._finish is None:
             # Said once, here, for the same reason as the broker below: a
             # deployment missing DISPATCH_TOPIC rings no wake and would
@@ -1033,7 +1039,9 @@ class Reconciler:
         }
         report.workflow_check = check
         try:
-            read = self._store.workflows_for_stall_check(limit=self._config.workflow_scan_limit)
+            read = self._store.workflows_for_stall_check(
+                limit=self._config.workflow_scan_limit, after=self._workflow_cursor
+            )
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
             check["read_error"] = message[:500]
@@ -1045,6 +1053,10 @@ class Reconciler:
             return
         check["examined"] = len(read.workflows) + len(read.malformed)
         check["truncated"] = read.truncated
+        # A full page moves the window to its last document; a short page
+        # sends the next pass back to the top. A read that failed (above)
+        # leaves the cursor where it was.
+        self._workflow_cursor = read.next_after
         for stall in detect_stalled_workflows(read, snapshot.leases, self._config, now):
             try:
                 repaired, repair = self._repair_stall(stall)

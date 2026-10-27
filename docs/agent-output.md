@@ -364,18 +364,63 @@ pull request from the issue without saying so. The owner decided two things.
 
 **Proposal A: one fixed paragraph ends every prompt with a repository.** A
 claude-code or codex agent whose agent starts in a checkout gets, after the
-deliverables line and the questions sentence:
+deliverables line, the questions sentence and the time-limit line (below):
 
 ```
-You do not push or open a pull request; the worker publishes your committed branch. Commit your work. Write the pull request's title (one line) to $SWARM_ARTIFACTS_DIR/pr-title.txt and its body to $SWARM_ARTIFACTS_DIR/pr-body.md. Do not say in your answer that no pull request exists because you lack GitHub credentials: the worker opens it after you finish.
+You do not push or open a pull request; the worker publishes your committed branch. Commit your work. Write the pull request's title (one line) to $SWARM_ARTIFACTS_DIR/pr-title.txt and its body to $SWARM_ARTIFACTS_DIR/pr-body.md. Do not say in your answer that no pull request exists because you lack GitHub credentials: the worker opens it after you finish. If the work is already done and nothing needs changing, commit nothing and write $SWARM_ARTIFACTS_DIR/verification.md saying what you checked and what showed it is done; that ends the step as no change instead of a failure. Keep your commits on the branch you were cloned onto: to build on another branch, fetch it and merge it in (git merge FETCH_HEAD); never git checkout -B, git switch or git reset onto another line, because commits that do not descend from the commit you started on are discarded.
 ```
 
 It is `cliagent.PUBLISH_PARAGRAPH`, appended once in `run_cli_agent` for both
 CLIs, and fixed text, so a test holds it and it carries none of the rate-limit
 or credential markers a CLI that echoes its prompt would trip. An agent with no
 repository does not get it, and neither does a resumed session, which already
-holds it. It goes to every step with a repository, a review included: the
+holds it. In a claude-code prompt the context-ceiling note (#2524, below) sits
+between the questions sentence and the time-limit line. It goes to every step with a repository, a review included: the
 worker's strategy, not the agent, decides whether anything is pushed.
+
+**The no-change sentence (#2140)** names the file the worker reads as
+"nothing to change, and here is why": an agent that finds its work already
+done and writes only `pr-body.md` fails `published_nothing` and cancels its
+dependants, as build-170 did. See "Or the agent says why: `verification.md`
+(Proposal J)" under
+[An empty diff can succeed](workflows.md#an-empty-diff-can-succeed-allow_empty_diff).
+A CI-fix round (`scripts/ci-fix.sh`) is told the same file for "no change on
+this branch can fix it"; that ends the fix step `no_change`, and the pull
+request it was fixing stays red, so nothing merges it.
+
+**The last sentence is the descent rule (#2277).** The worker discards a moved
+HEAD that does not descend from the commit the step was cloned at
+(`Worker._head_moved`), and the paragraph used to say only that the worker
+publishes the committed branch: an agent ran `git checkout -B fix-516
+FETCH_HEAD`, committed there for 85 turns, and every commit was dropped (and
+task_7e644638 ran `git reset --hard` on 2026-10-26). The discard is right -- a
+branch that does not descend from the step's start is not this step's work --
+so the prompt states the rule instead: merge another branch in, never move
+onto it.
+
+**The step's wall clock comes just before the paragraph (#2139).** On
+2026-10-23 three claude-code agents started their tenant's whole pytest suite
+in the background, polled it with ~600 s `sleep` calls, and were killed
+mid-sleep at their 7200 s limit (exit 137); one had given its suite a
+`timeout 7000`, longer than its own step. Nothing had told them the limit:
+`run_cli_agent` resolved it only after building the prompt, at the deadline
+the runner terminates the CLI without a word, and the finish pass only follows
+a CLI that ended by itself. So every fresh claude-code and codex prompt
+carries one line from `cliagent.time_limit_line`, naming the limit in whole
+minutes and the UTC time it ends, and saying to commit and write the pull
+request's title and body well before then and not to run the whole suite in
+the background polled with sleep. It sits just before the paragraph above,
+which still ends the prompt, and is the last paragraph of a prompt with no
+repository.
+
+A run on a pool account, whose stream the runner reads as it is written, is
+also stopped at its first turn boundary once less than `wrap_up_margin` is
+left (ten minutes, or a quarter of a short limit), and resumed once with
+`WRAP_UP_PROMPT` followed by a limit line naming what is left. That pass is
+never armed again, and a run that reaches no turn boundary, or is not watched,
+is killed at the hard deadline exactly as before. A resumed session (an
+account move, a credential reload) and the finish pass are not given a limit
+line yet: the session still holds the end time it was first told.
 
 **Proposal B: an issue step is asked for its title, and a missing one is
 visible.** `pr-title.txt` is now an expected output of every step that opens a
@@ -393,6 +438,63 @@ for is the ordinary repair turn). Then:
 The prefix is the point: a fallback title is the worker's, and a reviewer has
 to be able to tell it from one the agent chose. A title a later step declared
 it will stage is never excused, issue or not: that step needs the file.
+
+## Sessions and resumes: the context ceiling (#2524)
+
+Nothing used to end a session as its context grew. In the week BGD measured
+(2026-10-20 to 10-27) the longest lanes ran 300-640 turns at a 250-390k mean
+context, the spend in the 60-150 and 150+ turn buckets was most of the week's
+total, and one account-swap resume (task_98d001a3) started at 452,706 tokens
+and wrote 1.33M tokens to cache in 8 turns. Every turn re-reads the whole
+context, so a long session costs roughly the square of its length, and
+`--resume` carries all of it over. BGD decided on 2026-10-27 (#2524 item 3):
+**200k tokens of context or 150 tool calls, whichever comes first.**
+
+* **The watch.** The claude-code runner reads its CLI's stream as it is
+  written (`runners/ceiling.py`, `CeilingWatcher`). A turn's context is its
+  top-level assistant message's `input_tokens + cache_read_input_tokens`; the
+  session's tool calls are its top-level `tool_use` blocks. A subagent's
+  messages are its own context and are not counted. When a turn passes
+  200,000 tokens, or the session passes 150 tool calls, the CLI is stopped at
+  the next turn boundary, when that turn's tool results are in, and never
+  mid-tool-call. `CONTEXT_CEILING_TOKENS` and `TOOL_CALL_CEILING` are the
+  values. A profile (`PROFILE_LIMITS`) or a step
+  (`input.context_ceiling = {"tokens", "tool_calls"}`) may lower them, and
+  nothing raises them past the hard caps the module states.
+* **A fresh session, never `--resume`.** On a stop the runner commits the
+  tree as work in progress (`git add --all`, the same as the publish), then
+  starts a new CLI session whose prompt begins with a handoff: why the last
+  session stopped, the branch's `git diff --stat` against the step's base,
+  the recent commits, the agent's own note if it wrote one
+  (`$SWARM_ARTIFACTS_DIR/handoff.md`, which every claude-code prompt says it
+  may keep), and then the prompt the first session got, less its
+  time-limit line (#2139): a handoff with nothing else to ask ends with a
+  limit line naming what is left of the step instead. The step
+  continues inside its own timeout. An attempt starts at most
+  `MAX_FRESH_SESSIONS` (4) fresh sessions. After that the ceiling stops
+  nothing, and the last session runs to its end, so a lane stuck in a loop
+  cannot restart forever. A stop with less than a minute of the step left
+  starts nothing, and the result stands.
+* **Resumes follow the same rule.** The runner keeps the last session's
+  context and tool calls in `context-ceiling.json` next to the worker's
+  session channel (in `private/`). A restart that asks it to `--resume` a
+  session that ended over the ceiling (an account swap, a credential reload)
+  starts a fresh session from a handoff instead. So do the runner's own
+  finish pass, wrap-up pass (#2139), repair turns and pre-publish gate
+  turns, whose handoff ends with what that pass was going to ask.
+* **The record.** `result_summary.runner.output.context_ceiling` holds the
+  limits, the fresh sessions started, and one entry per stop: where it
+  happened (`turn_boundary` or `resume`), why (`context_tokens` or
+  `tool_calls`), the turn, the context and peak context in tokens, the tool
+  calls, and the work-in-progress commit. The token extract counts the stops
+  from it.
+
+A stopped session never prints the CLI's `result` event, which is where its
+totals would be. So its spend is read from its stream instead
+(`CeilingWatcher.start_spend`): the tokens of each message and the turns, but
+no dollar figure. The fresh session's figures are added to that, never taken
+as a running total that already includes it. Checkpointing is unchanged,
+because the ceiling is a cost control and not a recovery path.
 
 ## Before the worker publishes: a rebase and the repository's own checks (SPEED-D1)
 
@@ -737,6 +839,39 @@ How a step gets its model, and what refuses it:
   by `model` and by `model_class` from these fields.
 * Changing a class's model is an edit to `local.runner_models` and a release;
   nothing a caller sends changes it.
+
+### The agent is told its memory budget (#2504)
+
+Five claude-code attempts (f-013, f-014, f-039, f-040, f-041) ran `pytest -n
+8`, `tsc` with `NODE_OPTIONS=--max-old-space-size=5000` and resident dev
+servers (`next dev`, `uvicorn`, `postgres`) inside 5 and 8 GiB containers. The
+kernel OOM-killed the whole container, the worker with it, and every one ended
+`lost_worker`. Nothing had told the agent what it had: `nproc` said 6, and
+neither its env nor its prompt named the memory.
+
+So `cliagent.run_cli_agent` reads the container's cgroup `memory.max` and
+`cpu.max` (through `metrics.cgroup_memory_max` and
+`metrics.cgroup_cpu_limit_cores`; the runner and the agent share the
+container) and the agent CLI's env carries:
+
+| variable | value |
+|---|---|
+| `SWARM_MEMORY_LIMIT_BYTES` | `memory.max`, in bytes |
+| `PYTEST_XDIST_AUTO_NUM_WORKERS` | max(1, min(floor(CPU limit), (limit − 2 GiB) // 1 GiB)): 6 at 8 GiB/6 CPU, 3 at 5 GiB/6 CPU, 2 at 5 GiB/2 CPU |
+
+The 2 GiB is what the worker, the CLI and the node toolchain keep resident
+(f-039's baseline was 1.47 GB before the agent ran anything); the 1 GiB is
+what one xdist worker of the api suite measured. With no CPU limit the cap is
+`os.cpu_count()`. Both are set after the runner's `extra_env` and are not
+passthroughs, so nothing a caller or the environment sends replaces them.
+
+`PYTEST_XDIST_AUTO_NUM_WORKERS` caps `-n auto` only, so a first start's prompt
+also carries one line (`cliagent.budget_line`), after the caller's prompt and
+before the platform's instructions, for an agent with a repository or without:
+the budget in GiB, stop the dev servers before tsc or the tests, never pass
+`pytest -n` above the worker count, never set `--max-old-space-size` above the
+budget. A resumed session is not told again; the session already holds the
+line. An unknown `memory.max` sets neither variable and adds no line.
 
 ## Two kinds of stdout, and the label that was wrong
 

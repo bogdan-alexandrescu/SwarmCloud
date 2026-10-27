@@ -141,6 +141,19 @@ session ids, connection ids and counts.
 THE CAPS (§5.10). 10 concurrent viewers per task, 50 per tenant. The relay is a
 single replica (§3.3), so these counts are global. The recorder's connection is
 not a viewer and is not counted.
+
+THE RECORDER'S CONNECTION IS OPENED AGAIN WHEN THE GATE ENDS IT (part of
+#1346). The gate's `StreamMux` sends CLOSE when the `RfbSession` serving a
+connection returns. For a viewer the relay drops the viewer and noVNC
+reconnects; the recorder has no one to reconnect it, and until this change
+its CLOSE was dropped on the floor, so the recorder kept the last frame it
+decoded and recorded it for the rest of the session. Now the recorder is given
+a new connection id and a fresh decoder (`Recorder.reopen`) and the gate an
+OPEN for it, after `RECORDER_REOPEN_DELAYS`: fast at first, longer while a
+reopened stream closes again before its first frame, back to the first once a
+frame arrives. Nothing is recorded between the CLOSE and that frame. #1346
+comment 5 holds a run's recorder view to 10 s unavailable, so the first tries
+fit well inside it.
 """
 
 from __future__ import annotations
@@ -220,6 +233,14 @@ _REPORT_KEYS = frozenset({"origin", "device"})
 #: Keys a report MAY carry besides those (LIVE-UNUSED, BSTATUS-API): passed
 #: on when present.
 _REPORT_OPTIONAL = frozenset({"agent", "browser"})
+
+#: The waits before the recorder's connection is opened again after the gate
+#: closed it (module docstring), the last repeated. A reopened stream that
+#: closes again before a frame takes the next; one that delivers a frame puts
+#: the next drop back at the first. Fast first, because a QA run fails at 10 s
+#: of recorder view unavailable (#1346 comment 5); longer later, so a gate that
+#: refuses every recorder stream is sent an OPEN every 5 s, not in a loop.
+RECORDER_REOPEN_DELAYS = (0.1, 0.5, 1.0, 2.0, 5.0)
 
 #: Websocket close codes. Every ticket refusal is CLOSE_REFUSED ("404").
 CLOSE_REFUSED = 4404
@@ -576,6 +597,9 @@ class Endpoint(Protocol):
 
 class Recording(Protocol):
     conn_id: str
+    @property
+    def ready(self) -> bool: ...
+    def reopen(self) -> None: ...
     async def feed(self, data: bytes) -> None: ...
     async def action(self, entry: Any) -> None: ...
     def set_viewers(self, count: int) -> None: ...
@@ -656,6 +680,11 @@ class Tunnel:
     granted: list[str] = field(default_factory=list)
     recording: Recording | None = None
     recording_task: asyncio.Task[None] | None = None
+    #: The wait before the recorder's connection is opened again, while one
+    #: runs, and how many reopens in a row have had no frame yet
+    #: (`RECORDER_REOPEN_DELAYS`).
+    recording_reopen: asyncio.Task[None] | None = None
+    recording_reopens: int = 0
     #: The gate's latest REPORT, as the text every viewer link is sent.
     report: str | None = None
     closed: bool = False
@@ -675,7 +704,8 @@ class Rendezvous:
                  recorder_factory: RecorderFactory | None = None,
                  max_viewers_per_task: int = MAX_VIEWERS_PER_TASK,
                  max_viewers_per_tenant: int = MAX_VIEWERS_PER_TENANT,
-                 queue_size: int = DEFAULT_QUEUE_SIZE) -> None:
+                 queue_size: int = DEFAULT_QUEUE_SIZE,
+                 recorder_reopen_delays: tuple[float, ...] = RECORDER_REOPEN_DELAYS) -> None:
         if len(key) < MIN_KEY_BYTES:
             raise ValueError(f"swarm-live-key must be at least {MIN_KEY_BYTES} bytes")
         self._key = key
@@ -684,6 +714,9 @@ class Rendezvous:
         self._max_task = max_viewers_per_task
         self._max_tenant = max_viewers_per_tenant
         self._queue_size = queue_size
+        if not recorder_reopen_delays:
+            raise ValueError("recorder_reopen_delays needs at least one delay")
+        self._reopen_delays = recorder_reopen_delays
         self._ledger = TicketLedger()
         self._tunnels: dict[str, Tunnel] = {}
         #: session_id -> when it may be forgotten (CLOSED_MEMORY_SECONDS).
@@ -814,6 +847,11 @@ class Rendezvous:
                     tunnel.outbox.put(True, encode_frame(OP_CLOSE, rec.conn_id))
                     tunnel.recording = None
                     await self._stop_recording(tunnel, rec)
+                    return
+                if rec.ready:
+                    tunnel.recording_reopens = 0
+            elif op == OP_CLOSE:
+                self._reopen_recording(tunnel, rec)
             return
         viewer = tunnel.viewers.get(conn_id)
         if viewer is None:
@@ -864,7 +902,30 @@ class Rendezvous:
         await tunnel.outbox.shut(code, reason, drain=drain and code != CLOSE_SLOW)
         log.info("live relay: session=%s tunnel closed: %s", tunnel.session.session_id, reason)
 
+    def _reopen_recording(self, tunnel: Tunnel, rec: Recording) -> None:
+        """The gate ended the recorder's connection: open another after the
+        backoff's next delay (module docstring). Never waits."""
+        if tunnel.recording_reopen is not None and not tunnel.recording_reopen.done():
+            return
+        delays = self._reopen_delays
+        delay = delays[min(tunnel.recording_reopens, len(delays) - 1)]
+        tunnel.recording_reopens += 1
+        log.info("live relay: session=%s recorder connection %s closed by the gate; reopening in %.1fs (try %d)",
+                 tunnel.session.session_id, rec.conn_id, delay, tunnel.recording_reopens)
+        tunnel.recording_reopen = asyncio.create_task(self._reopen_after(tunnel, rec, delay))
+
+    async def _reopen_after(self, tunnel: Tunnel, rec: Recording, delay: float) -> None:
+        await asyncio.sleep(delay)
+        if tunnel.closed or tunnel.recording is not rec:
+            return
+        rec.reopen()
+        tunnel.outbox.put(True, encode_frame(OP_OPEN, rec.conn_id))
+
     async def _stop_recording(self, tunnel: Tunnel, rec: Recording) -> None:
+        reopen, tunnel.recording_reopen = tunnel.recording_reopen, None
+        if reopen is not None:
+            reopen.cancel()
+            await asyncio.gather(reopen, return_exceptions=True)
         task, tunnel.recording_task = tunnel.recording_task, None
         if task is not None:
             task.cancel()
