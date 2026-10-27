@@ -11,7 +11,7 @@ SEC-UI-GRANTS, `apps/swarm-ui/src/WorkspaceSecrets.tsx`). Not built: the
 migrations and the retirement of §8's phases 4 and 5 are partial or open.
 SEC-MIGRATE-TYPESAFE is built behind `SWARM_TYPESAFE_INJECT`, which is off
 (§3.5 says what remains), and SEC-MIGRATE-FORGE and SEC-RETIRE are not
-built. Forge tokens appear only as Config › Secrets' status rows (SSC-OVERVIEW). The owner's answers are in §10; where they differ from §9's
+built. Forge tokens appear only as Config › Secrets' status rows (SSC-OVERVIEW). Phase 2, per-person signed submissions, is designed in §11 (2026-10-27) and not built; its owner questions P1–P10 are open. The owner's answers are in §10; where they differ from §9's
 recommendation (Q5, Q8), the answer wins.
 
 **Extended 2026-10-24 by [secrets-scopes.md](secrets-scopes.md) (#2158).**
@@ -1520,8 +1520,388 @@ The owner answered §9 in this session, and these answers bind the build plan in
 - a personal secret is released only to an agent whose spec carries a valid signature from the secret's owner, and a group-workspace secret needs a current member's signature;
 - headless jobs (schedules, issue runs, CI-fix rounds) use owner-signed standing grants.
 
-This comes after the attempt-signed release of phase 1, so the build plan gains a phase after SEC-RELEASE.
+This comes after the attempt-signed release of phase 1, so the build plan gains a phase after SEC-RELEASE. §11 designs it.
 
 **What Q5 and Q8 change in §8:**
 - **Q5:** SEC-STORE-API disables the old version 24 h after a rotation, from a scheduled sweep.
 - **Q8:** the TypeSafe forwarder becomes a lane of its own (SEC-INJECT-TYPESAFE) beside SEC-RELEASE. SEC-MIGRATE-TYPESAFE then moves jev to the forwarder, not to a key file.
+
+---
+
+## 11. Phase 2: per-person signed submissions (designed 2026-10-27, part of #1347)
+
+**Status: designed, nothing built.** No code in this change. §11.11 has the
+owner questions; each is also in this lane's `questions.json`. The build
+lanes in §11.10 start only after they are answered. Every file and symbol
+below was read on 2026-10-27 at `bce4b22`.
+
+The owner's phase 2 decision (§10, 2026-10-14 ~22:40 PDT) asks for four
+things. Each person gets a signing key. Every submission is signed by its
+person, building on #342. A personal secret is released only to a task whose
+spec the secret's owner signed. A group secret needs a current member's
+signature. Headless jobs run on owner-signed standing grants. The stated
+point: *a compromised scheduler or database, or another member of a group,
+cannot create a task that pulls someone's personal secrets.*
+
+### 11.1 What phase 1 proves, and the gap
+
+The release (`apps/swarm-api/swarm_api/routes/attempts_secrets.py::SecretRelease.release`)
+trusts the task only after `spec_refusal` verifies swarm-api's Cloud KMS
+signature over `apps/common/swarm_common/specsign.py::canonical_step_spec`.
+`submitted_by` is inside those bytes. **That signature proves that swarm-api
+wrote the spec. It does not prove that the person it names asked for it.**
+swarm-api writes `submitted_by` for a person who was not present on every
+path below:
+
+| path | whose name goes in `submitted_by` | who was present |
+|---|---|---|
+| console or `sc` submission | the authenticated caller (`ctx.email`) | the person |
+| child task (`apps/swarm-api/swarm_api/children.py::ChildService._build_child`) | the **parent's** `submitted_by` | an agent |
+| schedule fire (`apps/swarm-api/swarm_api/schedulefire.py::schedule_owner_auth`) | the schedule's stored `owner`, or a platform admin in a group (`tenant_via == "platform_admin"`) | nobody |
+| issue run, plan steps and CI-fix rounds | `created_by`, or `on_behalf_of` for a run the sweep created | nobody after creation |
+
+The issue run's own signature (`apps/swarm-api/swarm_api/issueruns.py::sign_owner`,
+under `apps/swarm-api/swarm_api/issueruns.py::OWNER_PURPOSE`) is the same KMS
+key again. It proves that swarm-api created the run, not that its owner did.
+
+So phase 1 leaves three ways to pull a person's secret without that person:
+
+1. **A Firestore writer** (any tenant agent, docs/multi-tenancy.md, "The
+   Firestore row, in full") rewrites a schedule's `owner`, or a run's
+   `on_behalf_of`, before swarm-api reads it. The run's signature catches a
+   rewritten run. A schedule document carries no signature.
+2. **A compromised scheduler** can start attempts of tasks that already exist.
+   It cannot create a task: the spec signature stops it. Phase 1 already holds
+   this case, and phase 2 keeps it held.
+3. **Another person acting through swarm-api**: a platform admin firing a
+   group schedule, an agent of Alice's task submitting a child "as Alice", or
+   a member editing a schedule Alice owns.
+
+Phase 2 closes all three with one rule: **a person's secret is released only
+against bytes that person signed, with a key that never leaves them.**
+
+**What phase 2 does not stop: a compromised swarm-api.** swarm-api holds the
+read grant (§3.3) and runs the check, so whoever controls it can skip the
+check. The owner did not name this threat. Q P8 asks whether to move the check
+and the read grant out of swarm-api, and says what that costs.
+
+### 11.2 Keys: two kinds, one registry
+
+A person can hold several keys, of either kind:
+
+* **A console passkey (WebAuthn).** ES256 or EdDSA, `userVerification:
+  "required"`, with the console's host as the relying party. The authenticator
+  signs `authenticatorData || SHA-256(clientDataJSON)`, and the statement
+  digest (§11.3) is `clientDataJSON.challenge`. The verifier checks all of
+  these: `type == "webauthn.get"`, the origin equals
+  `apps/swarm-api/swarm_api/codec.py::console_origin`'s configured console
+  origin, the rpIdHash, and the UP and UV flags. The verifier reads
+  `signCount` but does not gate on it, because synced passkeys report 0.
+* **An `sc` keychain key.** Ed25519, generated on the device by the plugin,
+  with the private key kept non-exportable in the OS keychain (macOS
+  Keychain, the Secret Service on Linux, Windows Credential Manager). It
+  signs `"swarm.person-submission/v1\n" || digest`. The plugin never writes
+  it to a file, an environment variable or a log.
+
+**The registry is where phase 2 succeeds or fails.** If a tenant agent can add
+a public key under Alice's name, it can sign as Alice. A Firestore document is
+writable by every tenant agent, and a MAC over it is replayable (SEC-GRANT-ATTEST,
+"Replaying a grant's own earlier state"). So the recommended registry
+(Q P2) is **Secret Manager**: one secret, `swarm-person-signing-keys`. Only
+swarm-api may add versions and read it. Each version is the whole registry as
+JSON: `{email: [{key_id, kind, public_key, enrolled_at, enrolled_via,
+revoked_at}]}`. Tenant workers hold no grant on it, so a Firestore writer
+cannot enrol or un-revoke a key. Writes are rare (enrolment and revocation),
+so one versioned secret is enough. A swarm-api instance reads it and caches it
+for at most 60 s. A revocation is in force within that minute.
+
+**Enrolment:**
+
+* **The first key** needs a fresh Google sign-in: an ID token whose
+  `auth_time` is under 5 minutes old, as the caller, plus proof of possession
+  (the new key signs a server challenge). The new key is the caller's only.
+  Nobody can enrol a key for someone else, platform admins included.
+* **Each later key** needs either a signature by an unrevoked existing key,
+  or a fresh sign-in plus **24 hours' delay** (recovery). During the delay the
+  person is notified and any existing key can cancel the enrolment. That
+  delay is Q P3.
+* **Revocation** takes any one of the person's keys or a fresh sign-in, and
+  is immediate. A revoked key's past statements stop verifying, so tasks still
+  queued under it get no personal secrets.
+* Every enrolment, cancellation and revocation writes an `admin_audit` row.
+  The row is for people to read; the release never trusts it.
+
+### 11.3 What a person signs: the submission statement
+
+A submission becomes two calls. That way the person signs the exact spec
+bytes that will run, under task ids swarm-api has already minted:
+
+1. **`POST /v1/tasks:prepare`** (and the workflow equivalent) takes today's
+   submission body. swarm-api validates it, builds the tasks, mints their
+   ids and runs `apps/swarm-api/swarm_api/specsigning.py::sign_task_specs`.
+   It does **not** write `tasks`. It stores the prepared tasks in
+   `prepared_submissions/{prepared_id}`, which expire after 10 minutes. A
+   prepared submission holds no lease and no capacity, and the scheduler
+   never sees it (invariant 1). The response is the statement:
+
+       {"purpose": "swarm.person-submission/v1", "prepared_id", "tenant_id",
+        "submitted_by", "issued_at", "expires_at",
+        "specs": [{"task_id", "spec_format", "spec_digest"}, ...]}
+
+   `specs` is sorted by `task_id`. It includes the second digest of a
+   `browser_if_ui` step's runtime alternate, so the scheduler's swap stays
+   covered. The digest that gets signed is `SHA-256(jcs(statement))`.
+2. **`POST /v1/submissions/{prepared_id}:commit`** with `{key_id,
+   signature}`, plus `authenticator_data` and `client_data_json` for a
+   passkey. swarm-api runs these checks in order:
+   * the key is the caller's own and unrevoked;
+   * the signature is over this statement's digest;
+   * `expires_at` has not passed.
+
+   Then it writes the tasks (QUEUED) and
+   `submission_signatures/{prepared_id}` = `{statement, key_id, signature,
+   ...}` in one transaction. That record is self-authenticating. A forged one
+   needs the person's private key, and deleting one only withholds
+   secrets, so it can live in Firestore.
+
+**The client checks what it signs.** `sc` recomputes every `spec_digest` from
+the prepared specs with `canonical_step_spec`. It refuses to sign if the
+tenant, profile, input or repository is not what it sent. The console shows
+the tenant, the steps and their profiles in the passkey prompt's dialog. A
+workflow is one statement and one prompt, however many steps it has.
+
+**Why not sign the request body (Q P1, option b)?** A request signature does
+not name a task id or the spec bytes. swarm-api would then decide which task
+the signature vouches for, and the same signed request could be presented
+again to create a second task. The statement binds both. Its cost is one extra
+round trip per submission.
+
+The statement's encoding is one definition that swarm-api, the plugin and the
+console all produce. `swarm_common` is frozen, so §11.9 asks for it as a
+contract change.
+
+### 11.4 The release rule
+
+The rule is a new step in `SecretRelease.release`, after `spec_refusal` and
+before `apps/swarm-api/swarm_api/workspace_secrets.py::release_plan`
+computes what is due. For the attempt's task, the release looks up the
+`submission_signatures` row whose statement lists this `task_id`, and accepts
+it only if all of these hold:
+
+* the signature verifies against a registry key of `statement.submitted_by`
+  that is unrevoked **now**;
+* the listed `spec_digest` equals the digest of the task as fetched, at its
+  own `spec_format`, so a rewritten task does not match;
+* `statement.tenant_id` and `statement.submitted_by` equal the signed spec's;
+* the signer is the task's `submitted_by`. A signature from someone else
+  never counts.
+
+Then, for each secret that is due:
+
+| secret | released when |
+|---|---|
+| **personal** (a `u-` tenant's record), in its own personal workspace or opted in to a group (Q3) | the task is person-signed, and the signer is the record's person |
+| **group workspace** secret | the task is person-signed, and the signer is a member of the group **now**, asked of the directory as `apps/swarm-api/swarm_api/routes/attempts_secrets.py::SecretRelease._membership_refusal` already asks |
+| **repository** secret (secrets-scopes.md) | as a group workspace secret (Q P6) |
+| headless task | §11.5's standing grant instead of a statement |
+| child task | §11.6 |
+
+A secret that fails its rule is **withheld by name**, the same way a lapsed
+membership is withheld today, with one of these reasons:
+`person_signature_missing`, `person_signature_invalid`, `person_key_revoked`,
+`signer_not_member`, `standing_grant_out_of_scope`. A required slot left empty
+parks `CREDENTIAL_MISSING` through the worker's existing path. No new
+`ParkReason` is added (request 83 stands).
+
+**Admission must not loop.** SEC-ADMIT-PARK's sweep promotes a park once its
+grant is ticked, but a missing signature never cures itself. So
+`credential_for` must also ask whether a signature row (or a standing grant)
+exists for the task and names the submitter. A task without one stays parked
+and is never leased. Admission only checks that the row exists; the release
+is where the signature is verified, as with grant attestation.
+
+**Retries and restarts.** A new attempt of the same task has the same id and
+spec, so the same statement covers it. The release stays once per attempt.
+`max_attempts` is inside the signed bytes, so the person signed how many
+attempts there can be.
+
+### 11.5 Headless jobs: owner-signed standing grants
+
+A standing grant is a statement signed once, by its person, ahead of the
+jobs it covers:
+
+    {"purpose": "swarm.standing-grant/v1", "grant_id", "grantor", "tenant_id",
+     "origin": {"kind": "schedule" | "issue_run" | "issue_sweep", "id"},
+     "profiles": [...], "secrets": [...names, never "all"],
+     "not_before", "expires_at"}
+
+It is stored in `standing_grants/{grant_id}`. Like a submission signature, a
+forged one needs the grantor's key. Revocation is by registry key (§11.2) or
+by the grantor signing a `swarm.standing-grant-revoke/v1` statement for the
+grant id. The revoke statement lives in the registry secret, so a Firestore
+writer cannot remove it. A headless task's secrets are released when all of
+these hold:
+
+* its spec ties it to the origin **inside the KMS-signed bytes**. Today
+  `metadata.issue_run` and the CI-fix markers sit outside
+  `SIGNED_METADATA_KEYS`, so the headless submitters write
+  `metadata.dispatch.origin = {kind, id}`. `dispatch` is signed already, so
+  this needs no new spec format;
+* a standing grant of the task's `submitted_by` names that origin, is in its
+  window and is not revoked;
+* the task's profile is in `profiles`, and each released secret's name is in
+  `secrets`;
+* §11.4's owner or membership rule holds for the grantor.
+
+The three headless kinds:
+
+* **Schedules.** The grant is signed in the console (or with `sc`) when the
+  schedule is created, with origin `schedule:<id>`. Changing the owner, the
+  profile or the secrets needs a new grant. A platform admin firing a group
+  schedule is not its owner, so the owner's personal secrets are withheld
+  from that fire.
+* **Issue runs and their CI-fix rounds.** The grant is signed at run creation
+  with origin `issue_run:<run_id>`. It covers the plan steps and up to
+  `fix_rounds` fix rounds, and `fix_rounds` is already in the run's signed
+  owner fields. The run's KMS signature stays: it vouches for the run, and
+  the grant vouches for the person.
+* **Runs the sweep creates.** The grant's origin is
+  `issue_sweep:<repository registration id>`, signed by the registration's
+  creator (`on_behalf_of`).
+
+`expires_at` is capped at **30 days** (Q P4). When a grant expires,
+`notifications.py` reminds the grantor before the schedule's next fire finds
+nothing.
+
+### 11.6 Children, continuations and the runtime alternate
+
+A child's spec is written by swarm-api from its parent agent's request. Its
+person never saw it. Recommended (Q P5, option b): **a person-signed root
+carries a child envelope** in its statement,
+`"children": {"profiles": [...], "max_depth": n}`, defaulting to the root's
+own profile and depth 1. A child's secrets are released when walking
+`parent_task_id` (inside the signed bytes from format 2) reaches a
+person-signed root, the child's profile is in the envelope, and its depth is
+within `max_depth`. The person already trusted the agent with these secrets,
+and the envelope stops the agent from carrying them into other kinds of
+runner. A continuation that creates a new task follows the same walk. Without
+a parent it gets nothing. The runtime alternate is covered by its second
+digest (§11.3).
+
+### 11.7 Rollout and audit
+
+* **`person_signature_mode`**: `off` (default), `report`, `enforce`, as
+  `grant_attestation_required` shipped off. `report` releases as today and
+  logs every reason §11.4 would withhold. `enforce` withholds.
+* **Enrolled means enforced, for that person's own secrets** (Q P7,
+  recommended). Once a person has enrolled a key, their personal secrets
+  require their signature even while the mode is `off`. Nobody else's flow
+  depends on it, so early adopters are protected at once.
+* Each release row (§4.4) gains `signature: {kind: "statement" |
+  "standing_grant" | "child_envelope", id, key_id}`. Nothing secret goes in
+  it, and it uses the same 90-day TTL.
+* The new refusal codes ship off (`test_new_refusals_ship_off.py`).
+
+### 11.8 Invariants
+
+* **1:** prepared submissions are not tasks. They hold nothing and cost
+  nothing. A parked task without a signature holds nothing.
+* **5:** unchanged. The generation fence runs before any signature work, and a
+  stale worker still gets 409 and nothing.
+* **9:** a statement names its tenant inside the signed bytes, and a key
+  belongs to one person, not a tenant. The release still bounds every query
+  by the task's tenant.
+* **10:** the caller still picks a profile by name. The statement signs
+  swarm-api's spec and adds no caller-supplied resource or image.
+
+### 11.9 Contract change requests (requests, not changes)
+
+* **Request E. `specsign.py`: the submission statement and the standing
+  grant, one definition.** Add `PERSON_SUBMISSION_PURPOSE`,
+  `STANDING_GRANT_PURPOSE`, and `canonical_submission_statement(...)` /
+  `canonical_standing_grant(...)`, both JCS over the fields in §11.3 and
+  §11.5. The plugin installs `swarm_common` from a git tag, so this is the
+  only way swarm-api, `sc` and the release read the same bytes.
+* **Not requested:** a new `SPEC_FORMAT`. The statement is stored beside the
+  task and signs the existing spec digest, so no spec field changes. The
+  origin goes in `metadata.dispatch`, which is already signed.
+
+These go to `docs/contract-change-requests.md` as a numbered request once the
+owner approves the design. That file is outside this lane's territory.
+
+### 11.10 Build plan
+
+| lane | territory | red-first tests |
+|---|---|---|
+| **P2-CONTRACT** (owner applies) | `apps/common/swarm_common/specsign.py`, `docs/contract-change-requests.md` | a statement's bytes change when any field changes; `specs` order is canonical |
+| **P2-REGISTRY** | `swarm_api/person_keys.py` (new), its routes, `terraform/infra` (the registry secret; swarm-api only) | a key enrolled without a fresh sign-in is refused; a second key without an existing key's signature waits 24 h; no tenant worker grant on the registry (a tftest) |
+| **P2-SUBMIT** | `service.py` (prepare/commit), `routes/` | a prepared submission is not in `tasks`; a commit signed over another statement, by another person's key or after expiry is refused and writes nothing |
+| **P2-RELEASE** | `routes/attempts_secrets.py`, `workspace_secrets.py::release_plan`, `scheduler/credentials.py` | a personal secret is withheld from a task signed by someone else, from an unsigned task, from a revoked key's task and from a rewritten task; a group secret is withheld when the signer left the group; an unsigned task with a required slot stays parked |
+| **P2-HEADLESS** | `schedulefire.py`, `issueruns.py`, `cifix.py`, `issuesweep.py` | a schedule fired by a platform admin gets none of its owner's personal secrets; a fix round past `fix_rounds` gets none; a grant outside its window gets none |
+| **P2-UI** | `apps/swarm-ui` (passkey enrolment, the prompt, schedule grant) | no private key or signature leaves the prompt except to the commit route |
+| **P2-SC** | `plugin/`, `apps/swarm-mcp` | the key is never written to a file or the environment; a prepared spec whose profile differs from the request is not signed |
+
+The review CLAUDE.md requires (credentials, isolation, IAM) applies to
+P2-REGISTRY, P2-SUBMIT and P2-RELEASE.
+
+### 11.11 Owner questions
+
+**P1. What does a person sign?** (a) **the submission statement over
+swarm-api's minted task ids and spec digests, by prepare then commit**
+(recommended: it binds the exact bytes that run and cannot be replayed into a
+second task); (b) the request body, in one call (no extra round trip, but
+swarm-api decides which task it vouches for, and it can be replayed); (c)
+the request body plus a client nonce that swarm-api marks used (replay is
+stopped only by a Firestore mark a tenant agent can delete).
+
+**P2. Where does the key registry live?** (a) **one Secret Manager secret that
+only swarm-api reads and versions** (recommended: a Firestore writer cannot
+enrol or un-revoke a key); (b) Firestore with a swarm-api MAC per key, like
+grants (a revoked key's earlier record can be replayed: SEC-GRANT-ATTEST's
+residual).
+
+**P3. How does a person add a second key, or recover after losing all keys?**
+(a) **signed by an existing key, or a fresh Google sign-in plus a 24 h delay
+the person is notified about and any existing key can cancel** (recommended);
+(b) a fresh sign-in alone, at once (a stolen Google session enrols a key);
+(c) a platform admin approves recovery.
+
+**P4. Standing grants for headless jobs: the longest window?** (a) **30 days,
+renewed from a reminder** (recommended); (b) 7 days; (c) no expiry, revoked by
+hand.
+
+**P5. Do children get the root's person-signed secrets?** (a) never, so a
+child that needs a personal secret parks; (b) **within a child envelope the
+person signs with the root: profiles and depth, defaulting to the root's own
+profile at depth 1** (recommended); (c) always, by walking to a signed root.
+
+**P6. What signature does a repository secret (secrets-scopes.md) need?**
+(a) **a current member of the workspace, as a group secret** (recommended);
+(b) only the repository registration's creator.
+
+**P7. How does enforcement switch on?** (a) **`person_signature_mode`
+off → report → enforce platform-wide, AND enforced for a person's own secrets
+from the moment they enrol a key** (recommended); (b) the platform switch
+only; (c) enforce at once (every unsigned path, schedules included, stops
+getting personal and group secrets the day it ships).
+
+**P8. A compromised swarm-api can skip the check, because it both verifies
+and reads. Close that too?** (a) **not in phase 2: the owner's stated threat
+is the scheduler, the database and other members, and swarm-api already has
+`secrets.setIamPolicy` reach** (recommended); (b) a small release service with
+its own identity holds the read grant and verifies both the KMS spec signature
+and the person's signature. swarm-api loses `versions.access` on `-wsec-`.
+That is a new service, a new IAM binding and a second hop on the start path.
+
+**P9. Does the same rule gate the other two credential routes?** The forge
+credential broker (`POST /v1/attempts/forge-credential`, user-scoped-secrets.md)
+serves a person's forge token on `submitted_by` alone, and `mcp:attach`
+serves MCP credentials. (a) **yes, the forge broker in P2-RELEASE's wave
+(a person's forge token is their most valuable secret), `mcp:attach` after**
+(recommended); (b) workspace secrets only; (c) both at once, in P2-RELEASE.
+
+**P10. Does a platform admin acting in a group (`tenant_via ==
+"platform_admin"`) count as a member for a group secret's signature?** (a)
+**no: a group secret needs a signature by a directory member** (recommended:
+the admin's reach is for running the platform, not for borrowing a group's
+credentials); (b) yes, audited.
