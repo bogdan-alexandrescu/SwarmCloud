@@ -10,6 +10,7 @@ import {
   type ResourceClasses,
 } from './api'
 import { ArtifactViewer, diffStat } from './ArtifactViewer'
+import { BudgetCard } from './AgentBudget'
 import { absTime, gapText } from './AttemptTimeline'
 import { classUnits } from './Blockers'
 import { AttemptDurations } from './charts/AttemptPhases'
@@ -462,6 +463,10 @@ export function Run({
         <DtNow run={run} now={now} listing={listing} checkpoints={checkpoints} lastLine={lastLine} stop={stop} />
       )}
       {lead !== 'failed' && <ErrorBanner run={run} />}
+      {/* THE BUDGET (#2459), under the leading card: its limit, where it came
+          from, what it used, when it was warned, and for a stop that the work
+          was kept. Nothing for an agent with no budget. */}
+      <BudgetCard task={task} events={events} now={now} />
       {/* RESOURCES ARE ONE ROW (BGD 2026-10-27, DETAILS-BUILDING): "too much
           prose on this page, we don't need so much text for showing resource
           consumption". The strip and the Resources card are unchanged, one
