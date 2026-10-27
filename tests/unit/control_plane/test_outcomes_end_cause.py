@@ -164,7 +164,8 @@ def test_the_fixed_orders_carry_the_new_classes_where_an_attempt_meets_them():
     # MUTATION: map BUDGET_EXCEEDED back to "runner_error" and this fails.
     assert dict(outcomes.FAILURE_CLASSES)["budget_exceeded"] == "budget exceeded"
     assert outcomes._FAILURE_OF_CAUSE["budget_exceeded"] == "budget_exceeded"
-    assert classify("FAILED", "budget_exceeded: stopped", 143, end_cause="budget_exceeded") == "budget_exceeded"
+    assert outcomes.classify_failure(
+        "FAILED", "budget_exceeded: stopped", 143, end_cause="budget_exceeded") == "budget_exceeded"
     # It is served in the vocab in its fixed place, after publish_refused.
     served = [c["key"] for c in outcomes.VOCAB["failure_classes"]]
     assert served.index("budget_exceeded") == served.index("publish_refused") + 1

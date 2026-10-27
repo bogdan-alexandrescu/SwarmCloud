@@ -79,6 +79,8 @@ export type FailureClassKey =
   | 'merge_refused'
   | 'merge_failed'
   | 'publish_refused'
+  /** Contract request 118 (BGD 2026-10-27): the worker stopped the agent on its budget. */
+  | 'budget_exceeded'
   | 'other'
   | 'no_reason'
   /** #631: the caller asked for this failure (the mock's `fail: true`). */
