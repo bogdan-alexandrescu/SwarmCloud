@@ -1,12 +1,20 @@
 /**
- * ONE SCHEDULE (docs/schedules.md §6.2, detail variant A): detail A's head --
- * the state pill and risk chip, one meta line, four figures (VQ-029) -- then tabs -- History first, because the run history is the reason to open
- * the page; then Budget, Gate, Settings and Audit, which are long and rarely
- * read. Every value is `GET /v1/schedules/{id}` as served, and the audit is
- * its own route, read when its tab is opened. Two things write: Edit, which
- * swaps the tabs for the form (ScheduleEdit.tsx), and the SD3 merge switch on
- * the Gate tab (§4.2). After either, the page reads the schedule again rather
- * than patching what it drew, so it shows the revision the server holds.
+ * ONE SCHEDULE, IN THE SIDE SHEET OVER THE LIST (Automate proposal A, frame
+ * A2, with A6's never-fired state and A7's phone for this sheet; lane
+ * AUTO-A2, part of #2417). The list stays in view on the left at desktop
+ * width; on a phone the sheet is the page. Top to bottom: the name with its
+ * state word, the actions, what it does with its type and target, its
+ * cadence and next five firings, its firings with each one's runs and pull
+ * requests and its largest run against the per-run tripwire, spend today
+ * against the day budget, the gate and who approves; Settings and Audit fold
+ * at the foot and open in place.
+ *
+ * Every value is `GET /v1/schedules/{id}` as served, except what the type
+ * does (the catalogue), the next five firings (`POST /v1/schedules:preview`,
+ * the tick's parser) and the audit (its own route, read when its fold is
+ * opened). Two things write: Edit, which opens the editor's page
+ * (ScheduleEdit.tsx), and the SD3 merge switch (§4.2). After either, the
+ * sheet reads the schedule again rather than patching what it drew.
  *
  * A schedule that has never fired shows the `Absent` state, not "0 runs"
  * (§6.2): no firing is a fact about the schedule, and a zero would read as a
@@ -20,8 +28,10 @@ import {
   loadScheduleAudit,
   loadScheduleTypes,
   loadRepositories,
+  previewSchedule,
   setMergeMode,
   type FiringOwnLive,
+  type FiringWork,
   type NothingStartedDetail,
   type Schedule,
   type ScheduleAuditEntry,
@@ -29,20 +39,22 @@ import {
   type ScheduleFiring,
   type ScheduleTypeRow,
 } from './api'
-import { Button, Chip, CIcon, Dialog, StatePill, Tabs } from './components'
+import { Button, CIcon, Dialog, ToneMark } from './components'
 import { WarnGlyph } from './components/glyphs'
 import type { ApiError, Result } from './fetch'
 import { usd } from './measure'
-import { pluralise, type TaskState } from './types'
+import { pluralise } from './types'
 import { Absent, Mark } from './primitives'
 import { addressToPath } from './paths'
 import { EditSchedule, plainValue } from './ScheduleEdit'
-import { HistoryPane, HistoryTimeline, workAddress } from './ScheduleHistoryTimeline'
+import { HistoryTimeline, workAddress } from './ScheduleHistoryTimeline'
 import {
   DryRunChip,
   InApp,
   SCHEDULES_ADDRESS,
   STATE_WORD,
+  STATE_WORD_SAID,
+  WORD_TONE,
   Said,
   ScheduleActions,
   SpendFigure,
@@ -51,10 +63,13 @@ import {
   slashBreaks,
   untilWords,
   type ActNotice,
+  type StateWord,
 } from './Schedules'
+import { APPROVALS_ADDRESS } from './Approvals'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import type { RepoRecord } from './RepositoriesData'
 import { useNow } from './useNow'
+import './styles/automate-sheet.css'
 
 export type DetailTab = 'history' | 'budget' | 'gate' | 'settings' | 'audit'
 
@@ -202,47 +217,149 @@ function FiringOutcome({ f }: { f: ScheduleFiring }) {
   )
 }
 
-function FiringRows({ firings, go }: { firings: ScheduleFiring[]; go: (to: string) => void }) {
+/**
+ * A FIRING AS PROPOSAL A's SHEET SERVES IT (AUTO-A2, part of #2417): every
+ * item of `work[]` that opened a pull request carries `pull_request {number,
+ * state}`, and `largest_run_usd` is its costliest run, null with
+ * `largest_run_unread` saying why (PR 2500). An API older than that serves
+ * neither, and the cells say so rather than drawing a figure.
+ */
+type ServedWork = FiringWork & { pull_request?: { number: number; state: string } }
+type ServedFiring = Omit<ScheduleFiring, 'work'> & {
+  work: ServedWork[]
+  largest_run_usd?: number | null
+  largest_run_unread?: string | null
+}
+
+/** A pull request's state in the words a person reads (`routes/schedules.py::_pr_state`). */
+const PR_WORDS: Readonly<Record<string, string>> = {
+  merged: 'merged',
+  waiting_on_approval: 'waiting to merge',
+  closed: 'closed unmerged',
+  open: 'open',
+}
+
+const TRIGGER_WORDS: Readonly<Record<string, string>> = {
+  cron: 'on its cadence',
+  catch_up: 'catch-up',
+  run_now: 'run now',
+  queued: 'queued',
+}
+
+const WORK_NOUN: Readonly<Record<string, string>> = { issue_run: 'run', task: 'task', workflow: 'workflow', api_action: 'action' }
+
+/** "3 runs", "1 run, 1 action": what a firing made, by kind, in the order first made. */
+function workCount(work: readonly FiringWork[]): string {
+  const n = new Map<string, number>()
+  for (const w of work) n.set(WORK_NOUN[w.kind] ?? w.kind, (n.get(WORK_NOUN[w.kind] ?? w.kind) ?? 0) + 1)
+  return [...n].map(([noun, k]) => pluralise(k, noun)).join(', ')
+}
+
+/** Minutes between the slot and the firing, when it fired a whole minute or more late. */
+function lateWords(f: ScheduleFiring): string | null {
+  if (f.slot === null || f.fired_at === null) return null
+  const late = Math.floor((Date.parse(f.fired_at) - Date.parse(f.slot)) / 60_000)
+  return Number.isFinite(late) && late >= 1 ? `${late} min late` : null
+}
+
+/**
+ * THE LARGEST RUN AGAINST THE PER-RUN TRIPWIRE (frame A2): the bar is drawn
+ * on a scale a third past the tripwire, so the tick sits at three quarters
+ * and a run over it is visibly past the line. Unknown is a dash with the
+ * server's reason, never $0.
+ */
+function LargestRun({ f, perRun }: { f: ServedFiring; perRun: number | undefined }) {
+  if (f.largest_run_usd === undefined) {
+    return <i className="ctl-em" title="This API serves no largest_run_usd.">&mdash; not served</i>
+  }
+  if (f.largest_run_usd === null) {
+    return <i className="ctl-em" data-largest="unknown">&mdash; {f.largest_run_unread ?? 'not known'}</i>
+  }
+  const largest = f.largest_run_usd
+  if (perRun === undefined || perRun <= 0) {
+    return (
+      <>
+        <span>{usd(largest)}</span>
+        <span className="sc-sub">no per-run tripwire</span>
+      </>
+    )
+  }
+  const whole = (perRun * 4) / 3
+  const over = largest > perRun
+  return (
+    <span className={`as-trip${over ? ' is-over' : ''}`} data-largest={over ? 'over' : 'under'}>
+      <span className="as-trip-bar" role="img" aria-label={`Largest run ${usd(largest)} of the ${usd(perRun)} per-run tripwire${over ? ', over it' : ''}`}>
+        <i style={{ width: share(largest, whole) }} />
+        <s style={{ left: '75%' }} />
+      </span>
+      <span className="sc-sub">
+        {usd(largest)} of {usd(perRun)}
+        {over ? ', over' : ''}
+      </span>
+    </span>
+  )
+}
+
+/** A firing's work, each item linked, with the pull request it opened. */
+function WorkCell({ f, go }: { f: ServedFiring; go: (to: string) => void }) {
+  if (f.work.length === 0) return <i className="ctl-em">nothing started</i>
+  return (
+    <>
+      <span>{workCount(f.work)}</span>
+      <ul className="as-work">
+        {f.work.map((w) => {
+          const to = workAddress(w)
+          const pr = w.pull_request
+          return (
+            <li key={`${w.kind}:${w.id}`} data-work={w.id}>
+              {to === null ? <span className="mono">{w.id}</span> : <InApp go={go} to={to} className="mono">{w.id}</InApp>}
+              {pr !== undefined ? (
+                <span data-pr={pr.state}>
+                  {' '}&rarr; PR #{pr.number} {PR_WORDS[pr.state] ?? pr.state}
+                </span>
+              ) : (
+                w.outcome !== null && w.outcome !== undefined && <span className="al-dim"> {w.outcome}</span>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+    </>
+  )
+}
+
+function FiringRows({ firings, perRun, go }: { firings: ServedFiring[]; perRun: number | undefined; go: (to: string) => void }) {
   const now = useNow()
   return (
     <div className="sc-table-wrap">
-      <table className="sc-table is-firings">
+      <table className="sc-table is-firings as-firings">
         <thead>
           <tr>
-            <th scope="col" data-col="slot">Fired</th>
-            <th scope="col" data-col="trigger">Trigger</th>
+            <th scope="col" data-col="slot">Firing</th>
             <th scope="col" data-col="outcome">Outcome</th>
-            <th scope="col" data-col="work">Work</th>
+            <th scope="col" data-col="work">Runs and pull requests</th>
             <th scope="col" data-col="cost">Cost</th>
+            <th scope="col" data-col="largest">Largest run vs tripwire</th>
           </tr>
         </thead>
         <tbody>
           {firings.map((f) => {
             const at = f.fired_at ?? f.slot
+            const late = lateWords(f as ScheduleFiring)
             return (
               <tr key={f.firing_id} className="sc-row" data-firing={f.firing_id}>
-                <td data-label="Fired">
+                <td data-label="Firing">
                   {at === null ? <i className="ctl-em">&mdash; not recorded</i> : <span title={localTime(at)}>{timeAgo(at, now)}</span>}
+                  <span className="sc-sub">
+                    {TRIGGER_WORDS[f.trigger] ?? f.trigger.replace(/_/g, ' ')}
+                    {late === null ? '' : ` · ${late}`}
+                  </span>
                 </td>
-                <td data-label="Trigger">{f.trigger.replace(/_/g, ' ')}</td>
                 <td data-label="Outcome">
-                  <FiringOutcome f={f} />
+                  <FiringOutcome f={f as ScheduleFiring} />
                 </td>
-                <td data-label="Work">
-                  {f.work.length === 0 ? (
-                    <i className="ctl-em">none created</i>
-                  ) : (
-                    <span className="sc-work">
-                      {f.work.map((w) => {
-                        const to = workAddress(w)
-                        return to === null ? (
-                          <span key={`${w.kind}:${w.id}`} className="mono">{w.id}</span>
-                        ) : (
-                          <InApp key={`${w.kind}:${w.id}`} go={go} to={to} className="mono">{w.id}</InApp>
-                        )
-                      })}
-                    </span>
-                  )}
+                <td data-label="Runs and pull requests">
+                  <WorkCell f={f} go={go} />
                 </td>
                 <td data-label="Cost">
                   {f.cost === null ? (
@@ -250,6 +367,9 @@ function FiringRows({ firings, go }: { firings: ScheduleFiring[]; go: (to: strin
                   ) : (
                     <SpendFigure usdReported={f.cost.reported_usd ?? 0} unreported={f.cost.unreported_attempts ?? 0} what="this firing" />
                   )}
+                </td>
+                <td data-label="Largest run vs tripwire">
+                  <LargestRun f={f} perRun={perRun} />
                 </td>
               </tr>
             )
@@ -292,29 +412,6 @@ function ScopeRepos({ ids }: { ids: readonly string[] }) {
   )
 }
 
-/**
- * A SCHEDULE'S STATE AS A PILL (schedules.html detail A, VQ-029): the mark and
- * hue of the task state it reads like -- an enabled schedule is live, a paused
- * one is parked and holds nothing, a disabled one is ended -- with the
- * schedule's own word, never the task state's.
- */
-const STATE_PILL: Readonly<Record<Schedule['state'], TaskState>> = {
-  enabled: 'RUNNING',
-  paused: 'PARKED',
-  auto_paused: 'PARKED',
-  disabled: 'CANCELLED',
-}
-
-/** One of the head's four figures (detail A: Next run, Last run, Live runs, Spend today). */
-function Figure({ name, children }: { name: string; children: ReactNode }) {
-  return (
-    <div className="sc-fig" data-fig={name}>
-      <dt>{name}</dt>
-      <dd>{children}</dd>
-    </div>
-  )
-}
-
 /** One fact of a tab: a name and its value. */
 function Fact({ name, children }: { name: string; children: ReactNode }) {
   return (
@@ -323,10 +420,6 @@ function Fact({ name, children }: { name: string; children: ReactNode }) {
       <dd>{children}</dd>
     </div>
   )
-}
-
-function money(v: number | undefined): string {
-  return v === undefined ? '— not set' : usd(v)
 }
 
 /** A share of the bar, as a CSS width: of the day's figure, or of the whole when the parts pass it. */
@@ -400,34 +493,6 @@ export function BurnBar({ use }: { use: ScheduleBudgetUse }) {
           : `A new firing needs what its runs would reserve free under today's ${usd(use.per_day_usd)}; ${usd(use.free_usd)} is free now.`}{' '}
         The day is {use.day}, in the schedule's own timezone.
       </p>
-    </div>
-  )
-}
-
-function Budget({ s }: { s: Schedule }) {
-  return (
-    <div className="sc-budget">
-      {s.budget_use === undefined || s.budget_use === null ? (
-        <p className="sb-note" data-testid="sc-burn-absent">
-          {s.budget_use === null
-            ? '— no burn bar: the budget has no per-run or per-day figure to count against.'
-            : '— no burn bar: this read did not serve today’s reservation.'}
-        </p>
-      ) : (
-        <BurnBar use={s.budget_use} />
-      )}
-    <dl className="sc-facts" data-testid="sc-budget">
-      <Fact name="Per run">{money(s.budget.per_run_usd)}</Fact>
-      <Fact name="Per day">{money(s.budget.per_day_usd)}</Fact>
-      <Fact name="Live runs at most">{s.budget.max_concurrent ?? '— not set'}</Fact>
-      <Fact name={`Spent ${s.spend_today.day}`}>
-        <SpendFigure usdReported={s.spend_today.reported_usd} unreported={s.spend_today.unreported_attempts} what="today's runs" />
-      </Fact>
-      <p className="sb-note sc-wide">
-        Cost is written when an attempt ends, so a run is not stopped at the per-run figure: a run that ends over it pauses this
-        schedule, and a day can end above the daily figure by what its live runs overspend.
-      </p>
-    </dl>
     </div>
   )
 }
@@ -803,39 +868,6 @@ function failuresToPause(s: Schedule): number {
   return Number.isFinite(n) ? Math.min(10, Math.max(1, Math.trunc(n))) : 3
 }
 
-function Gate({ s, onChanged, go }: { s: Schedule; onChanged: () => void; go: (to: string) => void }) {
-  const g = s.gate
-  const failures = failuresToPause(s)
-  return (
-    <div data-testid="sc-gate">
-      <dl className="sc-facts">
-        <Fact name="Tier">{s.tier ?? '— the type has left the catalogue'}</Fact>
-        <Fact name="Run">{g.run ?? '— not set'}</Fact>
-        <Fact name="Plan">{g.plan ?? '— not set'}</Fact>
-        <Fact name="Merge">{g.merge ?? '— not set'}</Fact>
-        <Fact name="Approvers">{g.approvers ?? '— not set'}</Fact>
-        <Fact name="Expiry">{g.approval_ttl_hours === undefined ? '— not set' : `${g.approval_ttl_hours} h`}</Fact>
-      </dl>
-      <h3 className="sc-h3">Hard stops, whatever the gate</h3>
-      <ul className="sc-stops">
-        <li>A plan naming .github/workflows/ is refused, not held: the credential cannot push it.</li>
-        <li>
-          IAM, terraform/bootstrap, CODEOWNERS and the repository’s own protected paths are held at plan and at merge for a second
-          member to approve; in a platform repository, for the owner.
-        </li>
-        <li>In a platform repository, a change to the frozen contract is held for the owner.</li>
-        <li>A security-class issue is not swept; if one is planned, its plan is held the same way and it never merges automatically.</li>
-        <li>
-          {failures === 1 ? 'A failed run pauses' : `${failures} failed runs in a row pause`} the schedule; a spent daily budget skips
-          firings until the next day.
-        </li>
-      </ul>
-      <h3 className="sc-h3">Merging</h3>
-      <MergeSwitch s={s} onChanged={onChanged} go={go} />
-    </div>
-  )
-}
-
 /**
  * ONE PARAMETER, READABLE (visual QA V171). A custom-prompt schedule's `spec`
  * was one minified `JSON.stringify` line in a 190px fact column: ~840px of
@@ -975,156 +1007,569 @@ function Audit({ scheduleId }: { scheduleId: string }) {
   )
 }
 
-function DetailBody({
+// ---------------------------------------------------------------------------
+// The sheet (Automate proposal A, frame A2; AUTO-A2, part of #2417)
+// ---------------------------------------------------------------------------
+
+/** How many firings the sheet draws at a time, of the last 50 served (frame A2: "ten drawn"). */
+export const SHEET_FIRINGS = 10
+
+/** The folds at the sheet's foot; either is named by the address's `tab=`, so a link lands on it open. */
+type Fold = 'settings' | 'audit'
+
+const RUN_GATE: Readonly<Record<string, string>> = { auto: 'starts by itself', approve: 'waits for an approval' }
+const PLAN_GATE: Readonly<Record<string, string>> = { auto: 'goes ahead by itself', approve: 'waits for an approval' }
+const MERGE_GATE: Readonly<Record<string, string>> = {
+  off: 'off: a pull request is left for a person to merge',
+  approve: 'waits for an approval at the green head',
+  auto: 'merges by itself once it is green',
+}
+
+/** Who a schedule's `gate.approvers` admits (`schedules.GateIn`). */
+function approversWords(a: unknown): string {
+  if (a === undefined || a === null || a === '') return '— not set'
+  if (a === 'members') return 'any member of this workspace'
+  if (a === 'owner_only') return 'the platform owner only'
+  if (Array.isArray(a)) return a.map(String).join(', ')
+  return String(a)
+}
+
+const OVERLAP_WORDS: Readonly<Record<string, string>> = {
+  skip: 'A firing while the last one is still running is skipped.',
+  queue_one: 'A firing while the last one is still running waits for it, one at most.',
+}
+const CATCH_UP_WORDS: Readonly<Record<string, string>> = {
+  skip: 'A slot missed in an outage is skipped.',
+  run_once: 'Slots missed in an outage fire once, when the platform is back.',
+}
+
+/** The policy's three cadence rules in words, each only when it is set. */
+function cadenceRules(s: Schedule): string[] {
+  const p = s.policy
+  const out: string[] = []
+  if (p.jitter === true) out.push('Each firing starts up to five minutes after its slot (jitter).')
+  if (p.jitter === false) out.push('Each firing starts at its slot.')
+  if (p.catch_up !== undefined) out.push(CATCH_UP_WORDS[p.catch_up] ?? `Catch-up: ${p.catch_up}.`)
+  if (p.overlap !== undefined) out.push(OVERLAP_WORDS[p.overlap] ?? `Overlap: ${p.overlap}.`)
+  return out
+}
+
+/** One name and its value in the sheet's two-column facts. */
+function Kv({ name, children }: { name: string; children: ReactNode }) {
+  return (
+    <>
+      <dt>{name}</dt>
+      <dd>{children}</dd>
+    </>
+  )
+}
+
+/** One section of the sheet: a ruled heading and what it says. */
+function Sec({ name, title, sub, children }: { name: string; title: string; sub?: ReactNode; children: ReactNode }) {
+  const id = useId()
+  return (
+    <section className="as-sec" data-sec={name} aria-labelledby={id}>
+      <h3 id={id}>
+        {title}
+        {sub !== undefined && <small>{sub}</small>}
+      </h3>
+      {children}
+    </section>
+  )
+}
+
+/** What the type does, from the catalogue (`GET /v1/schedule-types`); the type's name stands in until it answers. */
+function useTypeRow(type: string): ScheduleTypeRow | null | 'unread' {
+  const [row, setRow] = useState<ScheduleTypeRow | null | 'unread'>(null)
+  useEffect(() => {
+    let live = true
+    void loadScheduleTypes().then((r) => {
+      if (!live) return
+      if (r.status !== 'ok' && r.status !== 'stale') return setRow('unread')
+      setRow(r.data.types.find((t) => t.name === type) ?? 'unread')
+    })
+    return () => {
+      live = false
+    }
+  }, [type])
+  return row
+}
+
+/**
+ * THE NEXT FIVE FIRINGS from the tick's own parser (`POST
+ * /v1/schedules:preview`, the read the editor's preview makes). Only for a
+ * schedule that fires: a paused one has none, and says so in its word.
+ */
+function useNextFirings(s: Schedule, fires: boolean): string[] | 'reading' | 'unread' | null {
+  const [next, setNext] = useState<string[] | 'reading' | 'unread' | null>(fires ? 'reading' : null)
+  useEffect(() => {
+    if (!fires) return setNext(null)
+    let live = true
+    setNext('reading')
+    void previewSchedule({ cron: s.cron, timezone: s.timezone, type: s.type }).then((r) => {
+      if (!live) return
+      setNext(r.status === 'ok' || r.status === 'stale' ? r.data.preview.next : 'unread')
+    })
+    return () => {
+      live = false
+    }
+  }, [s.cron, s.timezone, s.type, fires])
+  return next
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/**
+ * A slot as its own wall time: the preview serves each in the schedule's zone
+ * with its offset, and the section's heading names the zone, so "Oct 28
+ * 02:00" is read off the string, never moved to the reader's zone. The
+ * reader's own time is the title.
+ */
+export function slotWords(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(iso)
+  if (m === null) return iso
+  return `${MONTHS[Number(m[2]) - 1] ?? m[2]} ${Number(m[3])} ${m[4]}:${m[5]}`
+}
+
+function Cadence({ s, word }: { s: Schedule; word: StateWord | undefined }) {
+  const now = useNow()
+  const fires = s.state === 'enabled'
+  const next = useNextFirings(s, fires)
+  const rules = cadenceRules(s)
+  return (
+    <Sec
+      name="cadence"
+      title="Cadence"
+      sub={
+        <>
+          {s.words ?? 'the tick could not read this cron'} · <code>{s.cron}</code> · {s.timezone}
+        </>
+      }
+    >
+      {!fires ? (
+        <p className="as-none" data-testid="as-next">
+          <i className="ctl-em">&mdash; {word === undefined ? STATE_WORD[s.state] : STATE_WORD_SAID[word]}, so no next firing</i>
+        </p>
+      ) : next === 'reading' ? (
+        <p className="sb-note">Reading the next firings…</p>
+      ) : next === 'unread' || next === null || next.length === 0 ? (
+        <p className="as-none" data-testid="as-next">
+          {s.next_run_at === null ? (
+            <i className="ctl-em">&mdash; the next firings could not be read</i>
+          ) : (
+            <>
+              Next <b title={localTime(s.next_run_at)}>{untilWords(s.next_run_at, now)}</b>
+              <span className="sc-sub">the firings after it could not be read</span>
+            </>
+          )}
+        </p>
+      ) : (
+        <ol className="as-fires" data-testid="as-next" aria-label="The next firings">
+          {next.map((at) => (
+            <li key={at} title={localTime(at)}>
+              {slotWords(at)}
+            </li>
+          ))}
+        </ol>
+      )}
+      {rules.length > 0 && <p className="as-note">{rules.join(' ')}</p>}
+    </Sec>
+  )
+}
+
+function Firings({ s, firings, go }: { s: Schedule; firings: ServedFiring[]; go: (to: string) => void }) {
+  const [page, setPage] = useState(0)
+  const [view, setView] = useState<'table' | 'timeline'>('table')
+  if (firings.length === 0) {
+    // A6: NEVER FIRED IS A FACT, NOT A ZERO (§6.2). No table, no "0 runs".
+    return (
+      <Sec name="firings" title="Firings">
+        <Absent kind="zero" heading="Never fired" say="This schedule has no firing recorded: it has not fired yet.">
+          {s.next_run_at === null ? 'Nothing is planned while it is paused.' : `Its first firing is ${localTime(s.next_run_at)}.`}
+        </Absent>
+      </Sec>
+    )
+  }
+  const pages = Math.ceil(firings.length / SHEET_FIRINGS)
+  const at = Math.min(page, pages - 1)
+  const shown = firings.slice(at * SHEET_FIRINGS, (at + 1) * SHEET_FIRINGS)
+  return (
+    <Sec name="firings" title="Firings" sub={`last ${firings.length} served · ${shown.length} drawn, newest first`}>
+      {view === 'table' ? (
+        <FiringRows firings={shown} perRun={s.budget.per_run_usd} go={go} />
+      ) : (
+        <HistoryTimeline scheduleId={s.schedule_id} firings={firings as ScheduleFiring[]} go={go} outcome={(f) => <FiringOutcome f={f} />} />
+      )}
+      <div className="as-pager">
+        {view === 'table' && pages > 1 && (
+          <>
+            <Button size="sm" disabled={at === 0} onClick={() => setPage(at - 1)}>
+              ‹ Newer
+            </Button>
+            <span className="as-dim">
+              firings {at * SHEET_FIRINGS + 1}–{at * SHEET_FIRINGS + shown.length} of {firings.length}
+            </span>
+            <Button size="sm" disabled={at === pages - 1} onClick={() => setPage(at + 1)}>
+              Older ›
+            </Button>
+          </>
+        )}
+        <Button size="sm" className="as-view" aria-pressed={view === 'timeline'} onClick={() => setView(view === 'table' ? 'timeline' : 'table')}>
+          {view === 'table' ? 'Timeline' : 'Table'}
+        </Button>
+      </div>
+    </Sec>
+  )
+}
+
+/**
+ * SPEND TODAY (frame A2): the day bar is `budget_use`'s four parts
+ * (`BurnBar`, which adds nothing up), then the day budget and the per-run
+ * tripwire as the tick holds them.
+ */
+function Spend({ s }: { s: Schedule }) {
+  const b = s.budget
+  return (
+    <Sec name="spend" title="Spend today" sub={`${s.spend_today.day} · the schedule’s own day`}>
+      {s.budget_use === undefined || s.budget_use === null ? (
+        <p className="sb-note" data-testid="sc-burn-absent">
+          {s.budget_use === null
+            ? '— no day bar: the budget has no per-run or per-day figure to count against.'
+            : '— no day bar: this read did not serve today’s reservation.'}{' '}
+          Spent so far:{' '}
+          <SpendFigure usdReported={s.spend_today.reported_usd} unreported={s.spend_today.unreported_attempts} what="today's runs" />
+        </p>
+      ) : (
+        <BurnBar use={s.budget_use} />
+      )}
+      <dl className="as-kv" data-testid="sc-budget">
+        <Kv name="Day budget">
+          {b.per_day_usd === undefined ? (
+            '— not set'
+          ) : (
+            <>
+              <b>{usd(b.per_day_usd)}</b> a day. When it is spent, the next firing is skipped.
+            </>
+          )}
+        </Kv>
+        <Kv name="Per-run tripwire">
+          {b.per_run_usd === undefined ? (
+            '— not set'
+          ) : (
+            <>
+              <b>{usd(b.per_run_usd)}</b> a run. A run that costs more fails its firing and pauses this schedule.
+            </>
+          )}
+        </Kv>
+        <Kv name="Live runs">{b.max_concurrent === undefined ? '— not set' : `at most ${b.max_concurrent} at once`}</Kv>
+      </dl>
+    </Sec>
+  )
+}
+
+function Gate({ s, onChanged, go }: { s: Schedule; onChanged: () => void; go: (to: string) => void }) {
+  const g = s.gate
+  const failures = failuresToPause(s)
+  const word = (map: Readonly<Record<string, string>>, v: string | undefined) => (v === undefined ? '— not set' : map[v] ?? v)
+  return (
+    <Sec name="gate" title="Gates and approvers">
+      <dl className="as-kv" data-testid="sc-gate">
+        <Kv name="Run">{word(RUN_GATE, g.run)}</Kv>
+        <Kv name="Plan">{word(PLAN_GATE, g.plan)}</Kv>
+        <Kv name="Merge">{g.merge === 'approve' ? <b>{MERGE_GATE.approve}</b> : word(MERGE_GATE, g.merge)}</Kv>
+        <Kv name="Who approves">{approversWords(g.approvers)}</Kv>
+        <Kv name="Expiry">{g.approval_ttl_hours === undefined ? '— not set' : `an approval nobody decides expires after ${g.approval_ttl_hours} h`}</Kv>
+        <Kv name="Waiting">
+          {s.pending_approvals === 0 ? (
+            'nothing waits on a person'
+          ) : (
+            <>
+              {pluralise(s.pending_approvals, 'approval')} waiting ·{' '}
+              <InApp go={go} to={APPROVALS_ADDRESS} className="ctl-link">
+                Open Approvals
+              </InApp>
+            </>
+          )}
+        </Kv>
+        <Kv name="Hard stops">
+          A change to IAM, the frozen contract, security, CODEOWNERS or a protected path is held for a second member, or in a platform
+          repository for the owner, whatever the gate; a change to <code>.github/workflows/</code> is refused.{' '}
+          {failures === 1 ? 'A failed run pauses' : `${failures} failed runs in a row pause`} the schedule.
+        </Kv>
+      </dl>
+      <h4 className="as-h4">Merging</h4>
+      <MergeSwitch s={s} onChanged={onChanged} go={go} />
+    </Sec>
+  )
+}
+
+/** Settings or Audit, folded at the sheet's foot; opened, it is drawn in place (frame A2). */
+function FoldSec({
+  name,
+  title,
+  folded,
+  open,
+  onToggle,
+  children,
+}: {
+  name: Fold
+  title: string
+  folded: string
+  open: boolean
+  onToggle: () => void
+  children: ReactNode
+}) {
+  const id = useId()
+  return (
+    <section className="as-sec as-fold" data-sec={name} data-open={open ? 'open' : 'shut'}>
+      <h3>
+        <button type="button" className="as-fold-b" aria-expanded={open} aria-controls={id} onClick={onToggle}>
+          <span>{title}</span>
+          <CIcon name={open ? 'up' : 'down'} />
+        </button>
+      </h3>
+      {open ? (
+        <div id={id} className="as-fold-body">
+          {children}
+        </div>
+      ) : (
+        <p id={id} className="as-note">
+          {folded}
+        </p>
+      )}
+    </section>
+  )
+}
+
+function SheetBody({
   schedule: s,
   firings,
   go,
-  tab,
-  editing,
+  fold,
   reread,
   notice,
   onDone,
 }: {
-  schedule: Schedule
-  firings: ScheduleFiring[]
+  schedule: Schedule & { state_word?: StateWord }
+  firings: ServedFiring[]
   go: (to: string) => void
-  tab: DetailTab
-  editing: boolean
+  fold: Fold | null
   reread: () => void
   notice: ActNotice | null
   onDone: (notice: ActNotice) => void
 }) {
+  const type = useTypeRow(s.type)
   const now = useNow()
-  // WHAT FOLDS INTO MORE ON A PHONE (VQ-029): every action but Run now, and
-  // Edit. A desktop draws them all and no More (schedules.css).
-  const foldId = useId()
-  const [more, setMore] = useState(false)
-  // THE TAB AND THE EDITOR ARE IN THE ADDRESS (AUT-11): a reload, Back and a
-  // pasted link land where the person was.
-  const at = (next: { tab?: DetailTab; edit?: boolean }) => go(scheduleAddress(s.schedule_id, next))
-  if (editing) {
-    return (
-      <EditSchedule
-        schedule={s}
-        onCancel={() => at({ tab })}
-        onSaved={() => {
-          at({ tab })
-          reread()
-        }}
-      />
-    )
-  }
+  // THE FOLD IS IN THE ADDRESS (AUT-11): a reload, Back and a pasted link land with it open.
+  const toggle = (f: Fold) => go(scheduleAddress(s.schedule_id, fold === f ? {} : { tab: f }))
+  const edited = s.updated_at && s.updated_by ? `; edited ${timeAgo(s.updated_at, now)} by ${s.updated_by}` : ''
   return (
     <>
-      <div className="sc-top">
-        <p className="sc-pills" data-testid="sc-pills">
-          <StatePill state={STATE_PILL[s.state]} label={STATE_WORD[s.state]} />
-          {s.tier !== null && (
-            <Chip title={`Risk tier ${s.tier}`}>{s.gate.merge === 'approve' ? `${s.tier} · merges need approval` : s.tier}</Chip>
-          )}
-          <DryRunChip s={s} />
-        </p>
-        <div className="sc-head-row" data-testid="sc-head-row" data-more={more ? 'open' : 'shut'}>
-          <ScheduleActions
-            s={s}
-            where="head"
-            foldId={foldId}
-            onDone={onDone}
-            onDeleted={() => go(SCHEDULES_ADDRESS)}
-          />
-          <Button className="sc-fold-edit" id={`${foldId}-edit`} onClick={() => at({ tab, edit: true })}>Edit</Button>
-          {/* Open, it says what pressing it does now (VQ-SCHEDULES re-review). */}
-          <Button className="sc-more" aria-expanded={more} aria-controls={`${foldId} ${foldId}-edit`} onClick={() => setMore((m) => !m)}>
-            {more ? 'Less' : 'More'}
-          </Button>
-        </div>
+      <div className="as-acts" data-testid="as-acts">
+        <ScheduleActions s={s} where="head" onDone={onDone} onDeleted={() => go(SCHEDULES_ADDRESS)} />
+        <Button onClick={() => go(scheduleAddress(s.schedule_id, { edit: true }))}>Edit</Button>
       </div>
       <Said notice={notice} />
-      <p className="sc-meta" data-testid="sc-meta">
-        <span>{s.type}</span>
-        <span>
-          {s.scope.mode === 'all' ? 'every registered repository' : s.scope.mode === 'platform' ? 'the platform' : <ScopeRepos ids={s.scope.repo_ids ?? []} />}
-        </span>
-        <span>
-          {s.words ?? s.cron} <code>{s.cron}</code> {s.timezone}
-        </span>
-        <span>
-          owner <b>{s.owner}</b>
-        </span>
-        {s.pause !== null && s.state !== 'enabled' && (s.pause.reason || s.pause.code) && <span>{s.pause.reason || s.pause.code}</span>}
-      </p>
-      <dl className="sc-figs" data-testid="sc-figs">
-        <Figure name="Next run">
-          {s.next_run_at === null ? (
-            <i className="ctl-em">&mdash; none while {STATE_WORD[s.state]}</i>
+      <Sec name="what" title="What it does">
+        <p data-testid="as-what">
+          {type === null ? <span className="as-dim">Reading what {s.type} does…</span> : type === 'unread' ? (
+            <i className="ctl-em">&mdash; what {s.type} does could not be read from the catalogue</i>
           ) : (
-            <span className="sc-fig-v" title={localTime(s.next_run_at)}>{untilWords(s.next_run_at, now)}</span>
+            type.description
           )}
-        </Figure>
-        <Figure name="Last run">
-          {s.last_firing === null ? (
-            <i className="ctl-em">&mdash; never fired</i>
-          ) : (
-            <>
-              <span className="sc-fig-v">{s.last_firing.outcome ?? 'in progress'}</span>
-              {(s.last_firing.ended_at ?? s.last_firing.slot) !== null && (
-                <span className="sc-sub" title={localTime(s.last_firing.ended_at ?? s.last_firing.slot ?? '')}>
-                  {timeAgo(s.last_firing.ended_at ?? s.last_firing.slot ?? '', now)}
-                </span>
-              )}
-            </>
+        </p>
+        <dl className="as-kv">
+          <Kv name="Type">
+            {s.type}
+            {s.tier === null ? ' · the type has left the catalogue' : ` · risk tier ${s.tier}`}
+          </Kv>
+          <Kv name="Target">
+            {s.scope.mode === 'all' ? 'every registered repository' : s.scope.mode === 'platform' ? 'the platform' : <ScopeRepos ids={s.scope.repo_ids ?? []} />}
+          </Kv>
+          <Kv name="Owner">
+            {s.owner} · <span title={localTime(s.created_at)}>created {timeAgo(s.created_at, now)}</span> by {s.created_by}
+            {edited}
+          </Kv>
+          {s.pause !== null && s.state !== 'enabled' && (s.pause.reason || s.pause.code) && (
+            <Kv name="Why paused">
+              {s.pause.reason || s.pause.code}
+              {s.pause.by ? ` · ${s.pause.by}` : ''}
+              {s.pause.at ? `, ${timeAgo(s.pause.at, now)}` : ''}
+            </Kv>
           )}
-        </Figure>
-        <Figure name="Live runs">
-          {s.budget_use === undefined || s.budget_use === null ? (
-            <i className="ctl-em">&mdash; not served with this schedule</i>
-          ) : (
-            <span className="sc-fig-v">
-              {s.budget_use.live_items}
-              {s.budget.max_concurrent !== undefined && <small> of {s.budget.max_concurrent}</small>}
-            </span>
-          )}
-          <span className="sc-sub">{s.pending_approvals > 0 ? `${s.pending_approvals} waiting for approval` : 'none waiting for approval'}</span>
-        </Figure>
-        <Figure name="Spend today">
-          <span className="sc-fig-v">
-            <SpendFigure usdReported={s.spend_today.reported_usd} unreported={s.spend_today.unreported_attempts} what="today's runs" />
-            {s.budget.per_day_usd !== undefined && <small> of {usd(s.budget.per_day_usd)}</small>}
-          </span>
-          {s.budget.per_day_usd === undefined && <span className="sc-sub">no daily budget set</span>}
-        </Figure>
-      </dl>
-      <Tabs
-        className="sc-tabs"
-        label="Views of this schedule"
-        current={tab}
-        onSelect={(k) => at({ tab: k as DetailTab })}
-        tabs={[
-          { key: 'history', label: 'History', count: firings.length },
-          { key: 'budget', label: 'Budget' },
-          { key: 'gate', label: 'Gate' },
-          { key: 'settings', label: 'Settings' },
-          { key: 'audit', label: 'Audit' },
-        ]}
-      />
-      <div className="sc-pane" role="tabpanel">
-        {tab === 'history' &&
-          (firings.length === 0 ? (
-            <Absent kind="zero" heading="Never fired" say="This schedule has no firing recorded: it has not fired yet." />
-          ) : (
-            // THE TIMELINE FIRST, THE TABLE BEHIND THE TOGGLE (#1109, BGD
-            // 2026-10-25): schedules.html detail A's History pane.
-            <HistoryPane
-              timeline={<HistoryTimeline scheduleId={s.schedule_id} firings={firings} go={go} outcome={(f) => <FiringOutcome f={f} />} />}
-              table={<FiringRows firings={firings} go={go} />}
-            />
-          ))}
-        {tab === 'budget' && <Budget s={s} />}
-        {tab === 'gate' && <Gate s={s} onChanged={reread} go={go} />}
-        {tab === 'settings' && <Settings s={s} />}
-        {tab === 'audit' && <Audit scheduleId={s.schedule_id} />}
-      </div>
+        </dl>
+      </Sec>
+      <Cadence s={s} word={s.state_word} />
+      <Firings s={s} firings={firings} go={go} />
+      <Spend s={s} />
+      <Gate s={s} onChanged={reread} go={go} />
+      <FoldSec
+        name="settings"
+        title="Settings"
+        folded={`Parameters, overlap, catch-up, jitter and dry run; revision ${s.revision}.`}
+        open={fold === 'settings'}
+        onToggle={() => toggle('settings')}
+      >
+        <Settings s={s} />
+      </FoldSec>
+      <FoldSec
+        name="audit"
+        title="Audit"
+        folded="Every change to this schedule, who made it and when, newest first. Read when opened."
+        open={fold === 'audit'}
+        onToggle={() => toggle('audit')}
+      >
+        <Audit scheduleId={s.schedule_id} />
+      </FoldSec>
     </>
+  )
+}
+
+type Read = Result<{ schedule: Schedule & { state_word?: StateWord }; firings: ServedFiring[] }>
+
+/**
+ * ONE SCHEDULE IN THE SIDE SHEET OVER THE LIST (frame A2). Its own read, so
+ * the list beside it keeps its rows and its age; a write (an action, the
+ * merge switch) reads the schedule again rather than patching what it drew.
+ * Escape and the close button go back to the list; on a phone the sheet is
+ * the page and `‹ Schedules` goes back (frame A7b).
+ */
+function ScheduleSheet({ scheduleId, go, fold }: { scheduleId: string; go: (to: string) => void; fold: Fold | null }) {
+  const [r, setR] = useState<Read>({ status: 'loading', since: Date.now() })
+  const [round, setRound] = useState(0)
+  const [notice, setNotice] = useState<ActNotice | null>(null)
+  // A 404 AFTER A READ THAT FOUND IT IS A DELETION (AUT-9), not a read failure.
+  const seen = useRef(false)
+  const [gone, setGone] = useState(false)
+  const headingId = useId()
+  const sheet = useRef<HTMLElement | null>(null)
+  useEffect(() => {
+    let live = true
+    void loadSchedule(scheduleId).then((next) => {
+      if (!live) return
+      if (next.status === 'ok' || next.status === 'stale') seen.current = true
+      else if (next.status === 'error' && next.error.kind === 'not_found' && seen.current) setGone(true)
+      setR(next as Read)
+    })
+    return () => {
+      live = false
+    }
+  }, [scheduleId, round])
+  // OPENED, IT STARTS AT ITS TOP WITH FOCUS ON CLOSE, so Escape and Tab start inside it.
+  useEffect(() => {
+    const el = sheet.current
+    if (el === null) return
+    el.scrollTop = 0
+    if (!el.contains(document.activeElement)) el.querySelector<HTMLElement>('.as-close, .as-back')?.focus({ preventScroll: true })
+  }, [scheduleId])
+  // ESCAPE CLOSES THE SHEET, unless a dialog on it (Delete's typed confirmation, Run now's) has it first.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented || document.querySelector('.c-dlg') !== null) return
+      go(SCHEDULES_ADDRESS)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [go])
+  const s = r.status === 'ok' || r.status === 'stale' ? r.data.schedule : null
+  const title = s?.name ?? scheduleId
+  const word = s?.state_word
+  return (
+    <aside className="as-sheet" ref={sheet} aria-labelledby={headingId} data-schedule={scheduleId}>
+      <InApp go={go} to={SCHEDULES_ADDRESS} className="as-back">
+        ‹ Schedules
+      </InApp>
+      <div className="as-head">
+        <div className="as-title">
+          <span className="as-crumb">Schedules ›</span>
+          <h1 id={headingId} title={title}>
+            {title}
+          </h1>
+          {s !== null && !gone && (
+            <p className="as-meta" data-testid="as-meta">
+              {word === undefined ? (
+                <i className="ctl-em" title="This API serves no state_word.">&mdash; not served</i>
+              ) : (
+                <ToneMark tone={WORD_TONE[word]} className="as-word">
+                  {STATE_WORD_SAID[word]}
+                </ToneMark>
+              )}
+              <DryRunChip s={s} />
+              <span>{s.tier === null ? s.type : `${s.type} · ${s.tier}`}</span>
+              <span className="mono">{s.schedule_id}</span>
+            </p>
+          )}
+        </div>
+        <Button className="as-close" size="sm" iconOnly icon={<CIcon name="close" />} onClick={() => go(SCHEDULES_ADDRESS)}>
+          Close this schedule
+        </Button>
+      </div>
+      {gone ? (
+        <Absent kind="zero" heading="This schedule was deleted" say="It was read here before, and the schedule is no longer there: someone deleted it.">
+          Its firings and audit are kept, and work it made carries on as ordinary work.
+        </Absent>
+      ) : r.status === 'loading' ? (
+        <p className="sb-note">Reading the schedule…</p>
+      ) : r.status === 'error' ? (
+        r.error.kind === 'not_found' ? (
+          <Absent kind="zero" heading="Not found" say="No schedule by this id is in this workspace.">
+            It may be another workspace’s, or it was deleted before this page read it.
+          </Absent>
+        ) : (
+          <FailedPanel error={r.error} onRetry={() => setRound((n) => n + 1)} />
+        )
+      ) : s === null ? (
+        <Absent kind="zero" heading="Not found" say="No schedule by this id is in this workspace." />
+      ) : (
+        <SheetBody
+          schedule={s}
+          firings={(r as Extract<Read, { data: unknown }>).data.firings}
+          go={go}
+          fold={fold}
+          reread={() => setRound((n) => n + 1)}
+          notice={notice}
+          onDone={(n) => {
+            setNotice(n)
+            setRound((k) => k + 1)
+          }}
+        />
+      )}
+    </aside>
+  )
+}
+
+/** The editor's page (`edit=1`): the A3 form, drawn on its own page as before this sheet. */
+function EditPage({ scheduleId, go, tab }: { scheduleId: string; go: (to: string) => void; tab: DetailTab }) {
+  // A local, not a literal: the page is headed by the schedule's own name.
+  const [name, setName] = useState<string | null>(null)
+  const pageTitle = name ?? scheduleId
+  const [round, setRound] = useState(0)
+  const back = scheduleAddress(scheduleId, { tab })
+  return (
+    <div className="sc-detail">
+      <InApp go={go} to={back} className="sc-back">‹ {pageTitle}</InApp>
+      <Screen
+        key={`schedule:${scheduleId}:${round}`}
+        title={pageTitle}
+        load={async () => {
+          const r = await loadSchedule(scheduleId)
+          if (r.status === 'ok' || r.status === 'stale') setName(r.data.schedule.name)
+          return r
+        }}
+        summary={(d) => `${d.schedule.schedule_id} · created by ${d.schedule.created_by}`}
+      >
+        {(d) => (
+          <EditSchedule
+            schedule={d.schedule}
+            onCancel={() => go(back)}
+            onSaved={() => {
+              go(back)
+              setRound((n) => n + 1)
+            }}
+          />
+        )}
+      </Screen>
+    </div>
   )
 }
 
@@ -1136,74 +1581,11 @@ export function ScheduleDetail({
 }: {
   scheduleId: string
   go: (to: string) => void
-  /** The tab the address names (`tab=`); a re-read after a write lands on it. */
+  /** The fold the address names (`tab=settings` or `tab=audit`); any other tab opens none. */
   tab?: DetailTab
   /** The address names the editor (`/automate/schedules/<id>/edit`). */
   editing?: boolean
 }) {
-  // A local, not a literal: the page is headed by the schedule's own name,
-  // which the nav-heading test skips as a per-object title. Until the read
-  // lands, the id is all this page knows to call it.
-  const [name, setName] = useState<string | null>(null)
-  const pageTitle = name ?? scheduleId
-  const [round, setRound] = useState(0)
-  const [notice, setNotice] = useState<ActNotice | null>(null)
-  // A 404 AFTER A READ THAT FOUND IT IS A DELETION (AUT-9), not a read
-  // failure: the stale record with Edit enabled is not drawn over it.
-  const seen = useRef(false)
-  const [gone, setGone] = useState(false)
-  if (gone) {
-    return (
-      <div className="sc-detail">
-        <InApp go={go} to={SCHEDULES_ADDRESS} className="sc-back">‹ All schedules</InApp>
-        <h1 className="sc-gone-h">{pageTitle}</h1>
-        <Absent
-          kind="zero"
-          heading="This schedule was deleted"
-          say="It was read here before, and the schedule is no longer there: someone deleted it."
-        >
-          Its firings and audit are kept, and work it made carries on as ordinary work.{' '}
-          <InApp go={go} to={SCHEDULES_ADDRESS} className="ctl-link">
-            Back to all schedules
-          </InApp>
-        </Absent>
-      </div>
-    )
-  }
-  return (
-    <div className="sc-detail">
-      <InApp go={go} to={SCHEDULES_ADDRESS} className="sc-back">‹ All schedules</InApp>
-      <Screen
-        key={`schedule:${scheduleId}:${round}`}
-        title={pageTitle}
-        load={async () => {
-          const r = await loadSchedule(scheduleId)
-          if (r.status === 'ok' || r.status === 'stale') {
-            seen.current = true
-            setName(r.data.schedule.name)
-          } else if (r.status === 'error' && r.error.kind === 'not_found' && seen.current) {
-            setGone(true)
-          }
-          return r
-        }}
-        summary={(d) => `${d.schedule.schedule_id} · created by ${d.schedule.created_by}`}
-      >
-        {(d) => (
-          <DetailBody
-            schedule={d.schedule}
-            firings={d.firings}
-            go={go}
-            tab={tab}
-            editing={editing}
-            reread={() => setRound((n) => n + 1)}
-            notice={notice}
-            onDone={(n) => {
-              setNotice(n)
-              setRound((r) => r + 1)
-            }}
-          />
-        )}
-      </Screen>
-    </div>
-  )
+  if (editing) return <EditPage scheduleId={scheduleId} go={go} tab={tab} />
+  return <ScheduleSheet scheduleId={scheduleId} go={go} fold={tab === 'settings' || tab === 'audit' ? tab : null} />
 }

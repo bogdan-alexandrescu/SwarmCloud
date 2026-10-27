@@ -46,7 +46,6 @@
   font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text-dim);
   white-space: nowrap;
 }
-.sc-gone-h { margin: 8px 0; font-size: var(--t-h2, var(--t-body)); font-weight: 600; }
 .sc-list-field { border: 0; padding: 0; margin: 0; min-width: 0; }
 .ap-filter { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 8px; }
 .ap-linked { margin: 0 0 12px; }
@@ -66,16 +65,6 @@
    Resume, Delete and Edit. What an action said sits under them. */
 .sc-table th[data-col='acts'] { width: 172px; }
 .sc-row-acts { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
-/* THE HEAD'S ACTIONS ARE ONE WRAPPING ROW (owner review 2026-10-11): Edit was
-   cut off at the right edge at 1440-1500px. Run now ... Delete... are a `.c-acts`
-   of their own, and Edit sat beside it as a second flex item, so the row was two
-   rows nested. `display: contents` makes every button a sibling of this one
-   row, which wraps them one by one; `min-width: 0` and `max-width: 100%` keep
-   the row, and a button wearing its disabled reason, inside the column. */
-.sc-head-row { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; align-items: center; min-width: 0; max-width: 100%; }
-.sc-head-row > .sc-head-acts { display: contents; }
-.sc-head-row .c-btn-wrap { min-width: 0; max-width: 100%; }
-.sc-head-row .c-why { min-width: 0; overflow-wrap: anywhere; }
 .sc-said { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); overflow-wrap: anywhere; }
 .sc-said.is-bad { color: var(--s-bad); }
 .sc-vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
@@ -84,7 +73,6 @@
 /* ---- the Budget tab's burn bar: reported, unreported at cap, live, free ---- */
 /* Hatching is the not-measured part, as the usage bar's rule has it: an
    attempt that never reported its cost, counted at the per-run cap. */
-.sc-budget { display: grid; gap: 12px; min-width: 0; }
 .sc-burn { display: grid; gap: 6px; min-width: 0; }
 .sc-burn-h { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; font-size: var(--t-meta); line-height: var(--lh-meta); }
 .sc-burn-h b { font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -117,43 +105,6 @@
 .sc-fact > dt { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 .sc-fact > dd { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
 .sc-wide { grid-column: 1 / -1; margin: 0; }
-/* DETAIL A'S HEAD (schedules.html detail-a, visual QA VQ-029). It was a 5+3
-   label grid (Type, When, Scope, Owner, State, Next run, Spend today,
-   Waiting) with no Last run and no budget, and on a phone its eight facts
-   stacked the History tab 650px down. Now: the state pill and the risk chip
-   under the title with the actions beside them, ONE meta line (type, scope,
-   cadence, owner), and the mock-up's four figures -- Next run, Last run,
-   Live runs, Spend today of its budget -- four across, two by two on a phone.
-   The figures sit 12px under the meta line (V241: flush, they touched it). */
-.sc-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-width: 0; }
-.sc-pills { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; min-width: 0; }
-.sc-pills > .sc-dry { margin-left: 0; }
-.sc-top > .sc-head-row { margin-left: auto; }
-.sc-meta {
-  display: flex; flex-wrap: wrap; gap: 2px 14px; margin: 8px 0 0; min-width: 0;
-  font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); overflow-wrap: anywhere;
-}
-.sc-meta b { font-weight: 600; color: var(--text); }
-.sc-meta code { font-family: var(--mono); font-size: var(--t-micro); }
-.sc-figs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 12px; margin-bottom: 0; min-width: 0; }
-.sc-fig { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; }
-.sc-fig > dt { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
-.sc-fig > dd { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
-.sc-fig-v { font-size: var(--t-body); font-weight: 600; font-variant-numeric: tabular-nums; }
-.sc-fig-v small { font-size: var(--t-micro); font-weight: 400; color: var(--text-dim); }
-/* WHAT FOLDS INTO MORE: a desktop draws every action in the row (the fold
-   is no box of its own) and no More button. */
-.sc-fold { display: contents; }
-.sc-head-row > .sc-more { display: none; }
-@media (max-width: 640px) {
-  /* A PHONE FOLDS ITS ACTIONS INTO MORE (VQ-029): five 44px buttons wrapped
-     to two rows with Edit alone on the second. Run now stays; Dry run, Pause
-     or Resume, Delete and Edit open under More, which comes last. */
-  .sc-top > .sc-head-row { margin-left: 0; justify-content: flex-start; }
-  .sc-head-row[data-more='shut'] .sc-fold, .sc-head-row[data-more='shut'] > .sc-fold-edit { display: none; }
-  .sc-head-row > .sc-more { display: inline-flex; order: 1; }
-  .sc-figs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
 /* A parameter with structure (a custom-prompt `spec`), one row per key, its
    text keeping its line breaks (visual QA V171). */
 .sc-pobj { display: grid; gap: 4px; margin: 2px 0 0; padding: 0; min-width: 0; }
@@ -165,9 +116,6 @@ ol.sc-pobj { padding-left: 18px; }
 @media (max-width: 560px) {
   .sc-pobj > div { grid-template-columns: minmax(0, 1fr); gap: 0; }
 }
-.sc-tabs { margin-top: 12px; }
-.sc-pane { padding-top: 8px; min-width: 0; }
-.sc-stops { margin: 0; padding-left: 18px; font-size: var(--t-meta); line-height: var(--lh-meta); }
 .sc-audit { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
 .sc-audit > li { font-size: var(--t-meta); line-height: var(--lh-meta); border-bottom: 1px solid var(--line); padding-bottom: 6px; }
 .sc-who { color: var(--text-dim); }
@@ -255,7 +203,7 @@ ol.sc-pobj { padding-left: 18px; }
     color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600;
   }
   .sc-row a { display: inline-flex; align-items: center; min-height: 44px; }
-  .sc-row-acts .c-btn, .sc-head-row .c-btn { min-height: 44px; }
+  .sc-row-acts .c-btn { min-height: 44px; }
   .sc-waiting-list > li { grid-template-columns: minmax(0, 1fr); gap: 0; }
   /* The detail's facts and the form's fields: one column, said rather than
      left to auto-fill, so a 180px minimum never puts two side by side. */
