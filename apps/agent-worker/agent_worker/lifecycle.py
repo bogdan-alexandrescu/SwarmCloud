@@ -9157,7 +9157,15 @@ class Worker:
             # caller's `input` asks for against these, so `input` can lower a
             # limit and never raise one -- which is invariant 10 for the one
             # execution parameter a caller is allowed to influence at all.
-            TIMEOUT_ENV: str(self.cfg.timeout_seconds),
+            #
+            # THE TIME LEFT, NOT THE STEP'S WHOLE LIMIT (#2363). This runs at
+            # every runner start, including the restart after a credential
+            # reload or an account swap; given the whole limit, a runner
+            # restarted 87 minutes in planned its wrap-up from all of it and
+            # was killed at `_runner_deadline` mid gate checks. Rounded up, so
+            # a first start is told its whole limit: the supervision loop, not
+            # this figure, is what kills at the deadline. Never below 1 s.
+            TIMEOUT_ENV: str(max(1, math.ceil(self._runner_deadline - time.monotonic()))),
             GRACE_ENV: str(self.cfg.termination_grace_seconds),
             STDOUT_ENV: str(self.cfg.max_stdout_bytes),
             STDERR_ENV: str(self.cfg.max_stderr_bytes),
