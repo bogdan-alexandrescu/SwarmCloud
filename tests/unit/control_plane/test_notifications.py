@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import quote
 
 import pytest
 
@@ -177,7 +178,11 @@ def test_approvals_list_the_tenants_pending_records_and_planned_runs(db):
     assert any(i.startswith("approval:run:run_a:") for i in ids)
     assert len(items) == 2
     run_item = next(i for i in items if "run_a" in i["id"])
-    assert run_item["href"] == "/approvals/run%3Arun_a"
+    # Approvals lives under Automate (APPROVALS-MOVE, PR 2486); the console's
+    # `/approvals/<id>` redirect is only for links already sent.
+    assert run_item["href"] == "/automate/approvals/run%3Arun_a"
+    assert next(i for i in items if i["id"] == f"approval:{mine}")["href"] \
+        == f"/automate/approvals/{quote(mine, safe='')}"
     assert "example-org/swarm#12" in run_item["title"]
 
 
@@ -199,6 +204,7 @@ def test_a_firing_awaiting_approval_without_a_record_has_the_records_id(db):
     before = dict(db.docs)
     items = notif.approval_items(_reading(db, _viewer()))
     assert _ids(items) == [f"approval:{approvals.approval_id(approvals.RUN, 'fir_9')}"]
+    assert items[0]["href"] == "/automate/approvals"
     assert db.docs == before  # derived: nothing is written by reading
 
 

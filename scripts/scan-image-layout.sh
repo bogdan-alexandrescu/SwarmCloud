@@ -13,8 +13,11 @@
 # installs it); no registry, no credential, nothing pushed.
 #
 #   exit 0  no fixable finding at the policy's severity
-#   exit 1  findings (listed above the exit), or trivy could not read the layout
+#   exit 1  findings (listed above the exit)
 #   exit 2  usage
+#   exit 3  trivy could not scan: its vulnerability DB would not download, or
+#           it could not read the layout. Not a finding, and still a refusal:
+#           an image nobody could scan is not a clean one (#2379)
 
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
@@ -36,8 +39,17 @@ TRIVY_BIN="$(trivy_bin || true)"
 
 image_scan_args
 step "Scan ${name} (${IMAGE_SCAN_SEVERITY}, fixable only)"
-if ! "${TRIVY_BIN}" "${IMAGE_SCAN_ARGS[@]}" --input "${layout}" 2>&1 | redact; then
+if ! image_scan_db; then
+  err "trivy could not scan ${name} (DB download/scanner error, see above); this is not a finding, and the image is refused until it can be scanned"
+  exit 3
+fi
+rc=0
+"${TRIVY_BIN}" "${IMAGE_SCAN_ARGS[@]}" --input "${layout}" 2>&1 | redact || rc=$?
+if [[ "${rc}" -eq "${IMAGE_SCAN_FINDINGS_RC}" ]]; then
   err "${name}: trivy found fixable ${IMAGE_SCAN_SEVERITY} vulnerabilities; the release would refuse to promote this image"
   exit 1
+elif [[ "${rc}" -ne 0 ]]; then
+  err "trivy could not scan ${name} (DB download/scanner error, see above; trivy exit ${rc}); this is not a finding, and the image is refused until it can be scanned"
+  exit 3
 fi
 ok "${name}: scan clean"

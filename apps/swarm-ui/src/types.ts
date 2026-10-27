@@ -6566,7 +6566,17 @@ export interface Profile {
   /** The preferences document's revision, which a save echoes; null when it could not be read. */
   revision: number | null
   unavailable: ProfileSection[]
+  /**
+   * The person's time zone (TIMEZONE-SERVER), an IANA name: UTC while none is
+   * saved. Null when the preferences could not be read, and absent from an API
+   * older than the field: unknown, never UTC (`timezone.ts` keeps its cache).
+   */
+  time_zone?: string | null
+  time_zone_source?: TimeZoneSource
 }
+
+/** `profile`: the person saved it; `default`: nothing saved, so UTC; `unavailable`: unread. */
+export type TimeZoneSource = 'profile' | 'default' | 'unavailable'
 
 /** `PUT /v1/profile/preferences`: the whole set, at the revision last read. */
 export interface PreferencesWrite {
@@ -6574,6 +6584,8 @@ export interface PreferencesWrite {
   default_workspace: string | null
   notifications: Preferences
   revision: number
+  /** An IANA zone, refused with a 422 when the server does not know it. Left out, the stored zone is kept. */
+  time_zone?: string
 }
 
 /** What a save answers: the GET's sections the save can change. */
@@ -6582,6 +6594,8 @@ export interface PreferencesSaved {
   default_workspace: ProfileDefault
   notifications: ProfileNotifications
   revision: number
+  time_zone?: string | null
+  time_zone_source?: TimeZoneSource
 }
 
 // ---------------------------------------------------------------------------

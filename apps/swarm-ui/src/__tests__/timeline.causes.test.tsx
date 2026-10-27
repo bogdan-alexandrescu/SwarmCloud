@@ -613,13 +613,13 @@ describe('the provenance foot of a cache hit (epic #222)', () => {
     expect(root.querySelector('.ol-prov')!.textContent).toContain('28 UTC days built by this read')
   })
 
-  it('counts them as tenant-days in platform scope, as it counts the sealed ones', async () => {
+  it('counts them as workspace-days in platform scope, as it counts the sealed ones', async () => {
     const d = ledgerFixture()
     d.scope = { kind: 'platform', tenants: ['eng', 'personal', 'verify'], excluded: [], tenants_complete: true }
     d.cached = true
     d.coverage.derived_now = 60
     const root = await timeline(d, { view: 'scope=platform' }, { admin: true })
-    expect(root.querySelector('.ol-prov')!.textContent).toContain(`60 tenant-days built by the ${at(d)} read`)
+    expect(root.querySelector('.ol-prov')!.textContent).toContain(`60 workspace-days built by the ${at(d)} read`)
   })
 })
 

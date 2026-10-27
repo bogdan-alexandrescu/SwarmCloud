@@ -373,6 +373,14 @@ def dispatch_of(task: Task) -> dict[str, Any]:
     # The step's empty-diff permission (2026-10-05), only when it was given.
     if block.get("allow_empty_diff") is True:
         out["allow_empty_diff"] = True
+    # The attempt's resolved budget (#2459), only on a budgeted task: the
+    # limits the worker enforces, `usd` and/or `tokens`, and where each came
+    # from. Platform-written inside the signed block, never the caller's.
+    budget = block.get("budget")
+    if isinstance(budget, dict):
+        limits = {k: budget[k] for k in ("usd", "tokens") if k in budget}
+        sources = budget.get("from")
+        out["budget"] = {**limits, "from": dict(sources) if isinstance(sources, dict) else {}}
     return out
 
 

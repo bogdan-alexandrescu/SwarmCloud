@@ -284,6 +284,17 @@ This should not happen: `requests == limits`, no bursting, no Spot. When it does
   editing).
 * Peaks well under the limit -> something else killed the container. Check for pod
   restarts in `make status`, and for GKE node events.
+* `memory guard killed the agent's largest process` in the worker's log -> the
+  sampler (`ResourceSampler._guard_memory` in `agent_worker/metrics.py`, #2504)
+  saw cgroup `memory.current` reach `MEMORY_GUARD_FRACTION` (95%) of
+  `memory.max` and SIGKILLed the agent's biggest descendant (its pytest, tsc or
+  dev server), never the worker, the runner or the agent CLI. It exists because
+  the kernel's OOM killer took the whole container, worker included, and the
+  attempt ended `lost_worker` with nothing recorded. The line carries the pid,
+  command name, RSS and both cgroup readings; `memory_guard_kills` on the
+  `attempt resource usage` line counts them. Repeated kills on one profile mean
+  the agent's workload, not the guard, needs to shrink -- or the class is too
+  small.
 
 For reference, the measured baseline for one Claude Code lane was ~2.5 GiB
 (claude 1,532 MB + pytest 769 MB + node 207 MB), and `standard` is 8 GiB.

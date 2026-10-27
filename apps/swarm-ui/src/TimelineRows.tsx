@@ -43,7 +43,7 @@ const OUTCOME_WORD: Readonly<Record<RowOutcome, string>> = {
 const GROUP_WORD: Readonly<Record<GroupBy, string>> = {
   runner_profile: 'profile',
   submitted_by: 'submitter',
-  tenant_id: 'tenant',
+  tenant_id: 'workspace',
   model: 'model',
   model_class: 'model class',
 }
@@ -210,7 +210,7 @@ export function EndedRowsCard({
             <thead>
               <tr>
                 <th scope="col">Agent</th>
-                {platform && <th scope="col">Tenant</th>}
+                {platform && <th scope="col">Workspace</th>}
                 <th scope="col">Profile</th>
                 <th scope="col">Submitted by</th>
                 <th scope="col">Ended</th>

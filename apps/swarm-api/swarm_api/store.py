@@ -159,11 +159,19 @@ SETTINGS_DOC = "settings"
 #:                     worker's `_LIST_PRICES` held, `source: code`: prices
 #:                     became data on 2026-10-17 and nothing was re-guessed in
 #:                     the move. A model with no entry prices nothing.
+#:   agent_budget_ceiling
+#:                     the most a workspace's per-agent budget or a step's
+#:                     may name, `{usd, tokens}`, either or both (#2459,
+#:                     `budget`). `{}`, no ceiling, by default: the owner's
+#:                     "off until an admin sets one" (2026-10-26), and a
+#:                     ceiling alone limits nothing until a workspace or a
+#:                     step sets a budget. A malformed unit reads as unset.
 PLATFORM_SETTINGS_DEFAULTS: dict[str, Any] = {
     "merge_by_default": False,
     "max_additional_repositories": 5,
     "additional_repositories_budget_gib": 6,
     "model_prices": modelprices.SEED,
+    "agent_budget_ceiling": {},
 }
 
 #: The accepted range of each integer setting, inclusive. A stored value
@@ -182,6 +190,10 @@ def _platform_setting(key: str, data: dict[str, Any]) -> Any:
         # A malformed ENTRY is dropped, never defaulted: a price is a figure,
         # and the seed's figure in place of an admin's typo is an invented one.
         return modelprices.table(data.get(key), present=key in data)
+    if key == "agent_budget_ceiling":
+        from .budget import ceiling_of  # lazy: budget imports auth, which imports this module
+
+        return ceiling_of(data.get(key)).as_dict()
     default = PLATFORM_SETTINGS_DEFAULTS[key]
     if key not in data:
         return default
@@ -2564,6 +2576,18 @@ class Store:
         if "model_prices" in changes:
             changes = {**changes, "model_prices": self._model_prices_after(
                 changes["model_prices"], by=by)}
+        if "agent_budget_ceiling" in changes:
+            from .budget import ceiling_problem  # lazy, as in `_platform_setting`
+
+            why = ceiling_problem(changes["agent_budget_ceiling"])
+            if why is not None:
+                raise ValueError(why)
+            # Both units, the one not named as null: a merge write merges a
+            # map key by key, so a unit left out would keep its old figure,
+            # and the ceiling is replaced whole.
+            ceiling = changes["agent_budget_ceiling"]
+            changes = {**changes, "agent_budget_ceiling": {
+                unit: ceiling.get(unit) for unit in ("usd", "tokens")}}
         payload = {**changes, "updated_at": self._now(), "updated_by": by}
         self._db.collection(CONTROL).document(SETTINGS_DOC).set(payload, merge=True)
         return self.get_platform_settings()

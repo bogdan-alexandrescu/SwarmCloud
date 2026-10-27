@@ -60,14 +60,17 @@
 #   * per listed job: a job whose image is pinned by digest and which already
 #     has a successful execution on that same image is skipped, by name, in
 #     the output. That is the per-digest import already paid, by the previous
-#     release's warm run or by a tenant task -- a premise still UNMEASURED on
-#     2026-10-09 (box 94, #888): docs/ci.md gives the one read-only command
-#     that settles whether an import survives a long idle gap, and what to
-#     change here if it does not. A job new in this release (a new
-#     tenant or profile) has none, and is warmed even when no digest changed,
-#     which a comparison of manifests alone would miss. A listing of
-#     executions that fails warms the job, as before. A job named on the
-#     command line is warmed as asked, without this check.
+#     release's warm run or by a tenant task, however long ago. Measured
+#     2026-10-27 (docs/ci-warm-jobs-measurement.md, box 94 of #888): after
+#     every same-digest idle gap that exists, 1 to 13.7 h on the runner
+#     images, a timed import read 1.0-2.5 s, never the 30-59 s of a fresh
+#     digest, and the cache is per digest across jobs. No runner digest has
+#     idled 24 h (a new commit almost always means a new digest), so no age
+#     bound is applied: there is no gap to set one from. A job new in this
+#     release (a new tenant or profile) has none, and is warmed even when no
+#     digest changed, which a comparison of manifests alone would miss. A
+#     listing of executions that fails warms the job, as before. A job named
+#     on the command line is warmed as asked, without this check.
 #
 # WARM_PARALLELISM (default 4) executions run at once. Every one occupies a
 # whole worker shape (up to 4 CPU / 8 GiB) in the region while Cloud Run

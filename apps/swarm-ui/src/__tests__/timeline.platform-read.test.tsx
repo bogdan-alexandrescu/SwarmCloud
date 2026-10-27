@@ -111,7 +111,7 @@ function openCard(root: HTMLElement): HTMLElement {
 }
 
 /** Pick a scope on the toolbar, as an admin does. */
-async function pick(root: HTMLElement, scope: 'platform' | 'my tenant'): Promise<void> {
+async function pick(root: HTMLElement, scope: 'platform' | 'my workspace'): Promise<void> {
   const seg = await waitFor(() => {
     const s = root.querySelector<HTMLElement>('.ol-scope')
     expect(s, 'no scope control').not.toBeNull()
@@ -184,7 +184,7 @@ describe('Not finished yet reads the platform half once per scope pick (#2149)',
     const root = await timeline(true)
     await pick(root, 'platform')
     await waitFor(() => expect(platformReads()).toBe(1))
-    await pick(root, 'my tenant')
+    await pick(root, 'my workspace')
     await waitFor(() => expect(openCard(root).querySelector('.ol-open-counts')?.textContent).toContain('3 parked'))
     expect(platformReads(), 'tenant scope asked for the platform half').toBe(1)
     await pick(root, 'platform')

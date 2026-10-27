@@ -535,6 +535,34 @@ def test_the_review_reads_the_apps_design_docs() -> None:
     assert "DESIGN.md" in default and "docs/design*/**" in default
 
 
+def test_a_target_naming_no_themes_is_captured_and_judged_in_light_only() -> None:
+    """Epic #1981, the eighth comment: a target with no dark theme was
+    captured in dark and "dark mode is ignored" was filed against it. Owner
+    pick 2026-10-27 (PR #2522): a target that names no `themes` is captured
+    in light only, and its review and report are told dark is never a
+    finding; one that names dark is captured in it and judged by the
+    manifest's `dark_differs`, a fact, instead of by eye."""
+    assert qaspec.DEFAULT_THEMES == ("light",)
+    spec = qaspec.render(_target())
+    steps = _steps(spec)
+    capture = next(s["prompt"] for name, s in steps.items() if name.startswith("capture-"))
+    # MUTATION: put dark back in DEFAULT_THEMES and the default capture asks for it.
+    assert "--themes light " in capture and "--themes light,dark" not in capture
+    for step in ("review-g1", "report"):
+        prompt = steps[step]["prompt"]
+        # MUTATION: drop the rule from either prompt and that prompt fails here.
+        assert "light only" in prompt and "never a finding" in prompt, step
+    declared = _steps(qaspec.render(_target(themes=["light", "dark"])))
+    declared_capture = next(s["prompt"] for name, s in declared.items() if name.startswith("capture-"))
+    assert "--themes light,dark " in declared_capture
+    for step in ("review-g1", "report"):
+        prompt = declared[step]["prompt"]
+        # MUTATION: give a target that names a dark theme the light-only
+        # rule and its ignored dark scheme is never filed.
+        assert "declares a dark theme" in prompt and "never a finding" not in prompt, step
+        assert "`dark_differs`" in prompt, step
+
+
 def test_the_file_step_carries_the_filing_rules() -> None:
     spec = qaspec.render(_target(file={"min_severity": "major", "max_issues": 5,
                                        "labels": ["qa"], "evidence": "console_link"}))

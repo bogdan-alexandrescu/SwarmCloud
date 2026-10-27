@@ -34,6 +34,7 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict
 from swarm_common.models import Task
 from swarm_common.states import TERMINAL_STATES
 
@@ -45,7 +46,19 @@ from ..children import PARENT_CANCELLED, ChildService
 from ..codec import task_to_api, workflow_claude_session, workflow_dispatch, workflow_to_api
 from ..waiting_detail import build_waiting, waiting_row
 from ..task_accounts import accounts_for
-from ..errors import ValidationFailed
+from ..errors import ApiError, Conflict, Forbidden, ValidationFailed
+from .. import refusals, roles
+from ..mcp_credentials import (
+    McpCredentials,
+    RowKeys,
+    SecretManagerMcpCredentials,
+    WorkflowFinished,
+    check_restore,
+    promote_restored,
+    restore_workflow,
+    step_task_docs,
+)
+from ..mcp_servers import McpUnavailable, require_enabled as require_mcp_enabled
 from ..people import add_names, name_lookup
 from ..deps import (
     AppContext,
@@ -56,7 +69,7 @@ from ..deps import (
     tenant_scope,
 )
 from ..rollup import RollupResult, SweepReport
-from ..schemas import WorkflowCreate
+from ..schemas import McpCredentialCreate, WorkflowCreate, _mcp_credentials_field
 from ..stalls import stalled_workflows
 from ..store import CancelContended, workflow_listing_token
 from ..waker import ring
@@ -656,3 +669,114 @@ def cancel_workflow(
             headers={"Retry-After": str(max(1, int(refused.retry_after_seconds) + 1))},
         )
     return result
+
+
+# --------------------------------------------------------------------------
+# A workflow's per-run MCP credentials, re-stored by its caller
+# --------------------------------------------------------------------------
+
+#: The re-store route (docs/design/registered-mcp-servers.md §4.10, BGD
+#: 2026-10-26). Its body carries credentials, so `main.UNCAPTURED_ROUTES`
+#: names it.
+MCP_CREDENTIALS_ROUTE = "/v1/workflows/{workflow_id}/mcp-credentials"
+
+
+class McpCredentialRestore(BaseModel):
+    """`{"mcp_credentials": {<server>: {"value", "expires_in"}}}`: the same
+    per-server object the workflow-create body takes, checked the same way
+    (`mcp_credentials.check_credential`), and never dumped or repr'd."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mcp_credentials: dict[str, McpCredentialCreate] | None = _mcp_credentials_field()
+
+
+class McpCredentialRestoreForbidden(Forbidden):
+    code = "mcp_credential_restore_forbidden"
+
+
+def _refused(error: ApiError, established: type[ApiError]) -> ApiError:
+    """A NEW refusal ships off (observer proposal I; `swarm_api.refusals`),
+    as `egress._refuse` does: the refusal is always made, and with its switch
+    off the caller gets the same status and message under the established
+    code (`conflict` 409, `forbidden` 403); on, `refuse` raises it whole."""
+    refusals.refuse(error)
+    return established(error.message, detail=error.detail)
+
+
+def _may_restore(ctx: AppContext, auth: AuthContext, submitted_by: str | None) -> bool:
+    """The workflow's submitter (a tenant's service identity included), or
+    an admin of this workspace (a platform admin is one, `roles.resolve`)."""
+    email = (auth.email or "").strip().lower()
+    if submitted_by and email and submitted_by.strip().lower() == email:
+        return True
+    if auth.is_admin:
+        return True
+    store = getattr(ctx, "roles", None)
+    me = store.try_resolve(auth) if store is not None else None
+    return me is not None and me.role == roles.ADMIN
+
+
+@router.put("/{workflow_id}/mcp-credentials")
+def restore_mcp_credentials(
+    workflow_id: str,
+    body: McpCredentialRestore,
+    background: BackgroundTasks,
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Replace the workflow's per-run credential for each server the body
+    names; servers it does not name are untouched (§4.10, BGD 2026-10-26).
+
+    A step that waited past its credential's expiry is PARKED
+    CREDENTIAL_MISSING with `blocked_by[].credential == "mcp"`; the re-store
+    returns each such step of this workflow to READY in this request, and
+    wakes the scheduler, whose admission asks the whole credential question
+    again before any lease (invariants 1-3). A child task of a step is
+    promoted by the scheduler's credential sweep on that drain.
+
+    404 for a workflow of another tenant, as GET answers; 403 for anyone but
+    its submitter or an admin of the workspace; 409 `workflow_finished` once
+    every step has ended; 422 for a server no step names, before anything
+    is stored. The answer names each server and its new `expires_at`, never
+    a value; so does the log."""
+    require_mcp_enabled()
+    workflow = ctx.store.get_workflow(tenant_id, workflow_id, submitted_by=None)
+    if not _may_restore(ctx, auth, workflow.submitted_by):
+        raise _refused(McpCredentialRestoreForbidden(
+            "only the identity that submitted this workflow, or an admin of the "
+            "workspace, may re-store its MCP credentials; nothing was stored",
+            detail={"workflow_id": workflow_id}), Forbidden)
+    docs = step_task_docs(ctx.db, tenant_id, workflow_id)
+    finished = (all(d.get("state") in _TERMINAL for d in docs.values()) if docs
+                else getattr(workflow.state, "value", workflow.state) in _TERMINAL)
+    if finished:
+        raise _refused(WorkflowFinished(
+            f"workflow {workflow_id!r} has finished, so no step of it will use a "
+            "credential; nothing was stored", detail={"workflow_id": workflow_id}), Conflict)
+    credentials = body.mcp_credentials or {}
+    registrations = check_restore(ctx.db, tenant_id, credentials, docs.values())
+    keys = RowKeys.from_settings(ctx.settings)
+    if not keys.configured:
+        raise McpUnavailable(
+            "this deployment has no swarm-child-key, so it can neither attest a per-run "
+            "MCP credential nor attach one; nothing was stored")
+    submissions = ctx.submissions
+    if submissions.mcp_credential_writer is None:
+        submissions.mcp_credential_writer = SecretManagerMcpCredentials(ctx.settings.project_id)
+    writer = submissions.mcp_credential_writer
+    store = McpCredentials(ctx.db, writer, now=ctx.now, keys=keys)
+    stored = restore_workflow(
+        store, ctx.db, writer, tenant_id=tenant_id, workflow_id=workflow_id,
+        registrations=registrations, credentials=credentials, by=auth.email)
+    promoted = promote_restored(
+        ctx.db, tenant_id=tenant_id, workflow_id=workflow_id, task_ids=list(docs),
+        servers=registrations, now=ctx.now())
+    log.info("mcp credentials re-stored workflow=%s tenant=%s by=%s servers=%s promoted=%d",
+             workflow_id, tenant_id, auth.email, sorted(registrations), promoted)
+    background.add_task(
+        ring, ctx.waker, ctx.metrics, "mcp_credential_restored",
+        tenant_id=tenant_id, workflow_id=workflow_id,
+    )
+    return {"stored": stored, "promoted": promoted}
