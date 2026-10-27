@@ -47,6 +47,7 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
@@ -391,6 +392,12 @@ class CliAgentSpec:
     #: (`codex.latest_session`); claude-code's stream-json names it on every
     #: event, so it needs none.
     session_locator: Callable[[Path, float], str | None] | None = None
+    #: The files, under the CLI's HOME, whose lines carry its running usage
+    #: when its stream reports usage only at the end of a start: the budget
+    #: watcher reads what each gains while the start runs. codex's rollouts
+    #: (`codex.rollout_files`, BGD's pick "Also read the rollout",
+    #: 2026-10-27); claude-code's stream reports every message, so it needs none.
+    usage_files: Callable[[Path], list[Path]] | None = None
     #: Directories put BEFORE `BASE_PATH` in the CLI's PATH, which its tools
     #: inherit. Platform constants from the runner module, never caller input.
     #: claude-code on the browser image puts /opt/venv/bin first, so the
@@ -859,6 +866,7 @@ def _run_watched(
     watcher: AccountStreamWatcher | None,
     stdin_data: bytes,
     budget: BudgetStreamWatcher | None = None,
+    usage_files: Callable[[], list[Path]] | None = None,
 ) -> ChildResult:
     """`run_child`, with the stream read as it is produced.
 
@@ -870,8 +878,12 @@ def _run_watched(
     `budget` (#2459) reads the same stream through the same tap: it stops the
     CLI at a turn boundary once the worker has asked, or at once when the
     worker asked for the mid-turn stop. Either watcher may be absent.
+    `usage_files` lists what else the budget reads this start's usage from
+    (`CliAgentSpec.usage_files`).
     """
-    taps = [w.tap() for w in (watcher, budget) if w is not None]
+    taps = [watcher.tap()] if watcher is not None else []
+    if budget is not None:
+        taps.append(budget.tap(usage_files))
 
     def tap(chunk: bytes) -> None:
         for feed in taps:
@@ -1823,6 +1835,9 @@ def run_cli_agent(
     # THE BUDGET (#2459), named by the worker only for a budgeted task: one
     # watcher for every start below, so a resumed pass adds to the usage.
     budget = budget_watcher()
+    usage_files = (
+        partial(spec.usage_files, Path(ctx.work_dir)) if spec.usage_files is not None else None
+    )
 
     def start(
         run_argv: list[str], run_log_argv: list[str], run_prompt: str, timeout_seconds: float
@@ -1874,6 +1889,7 @@ def run_cli_agent(
                 watcher=run_watcher,
                 stdin_data=stdin_data,
                 budget=budget,
+                usage_files=usage_files,
             )
         # Redact before anything is read back out. Everything below this
         # either becomes an artifact in GCS or a field in Firestore, and both
