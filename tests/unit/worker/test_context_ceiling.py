@@ -71,7 +71,8 @@ for turn, context in enumerate(contexts, 1):
     print(json.dumps({{"type": "user", "session_id": sid,
                       "message": {{"content": [{{"type": "tool_result"}}]}}}}), flush=True)
 print(json.dumps({{"type": "result", "subtype": "success", "is_error": False,
-                  "session_id": sid, "result": step.get("answer", "done")}}), flush=True)
+                  "session_id": sid, "result": step.get("answer", "done"),
+                  "usage": {{"input_tokens": sum(contexts)}}}}), flush=True)
 """
 
 
@@ -131,6 +132,10 @@ def test_a_turn_past_200k_stops_at_that_boundary_and_a_fresh_session_follows(ctx
     assert stop["turn"] == 3 and stop["context_tokens"] == 210_000
     assert out["context_ceiling"]["fresh_sessions"] == 1
     assert ctx.report["context_ceiling"]["stops"] == [stop]
+    # The stopped session printed no `result` event; its tokens still count,
+    # added to the fresh session's (1,000 + 2,000 + 3,000).
+    # MUTATION: keep only the `result` event's spend and this reads 6,000.
+    assert out["structured_output"]["usage"]["input_tokens"] == 410_000 + 6_000
 
 
 def test_151_tool_calls_stop_the_session_the_same_way(ctx):
@@ -151,6 +156,8 @@ def test_a_session_under_both_limits_is_unchanged(ctx):
 
     (only,) = _starts(ctx)
     assert "CONTEXT CEILING HANDOFF" not in only["stdin"]
+    # The platform's note: the agent may keep a handoff note.
+    assert ceiling.HANDOFF_NOTE in only["stdin"]
     assert (ctx.work_dir / "marks").read_text().split()[-1] == "0:21"
     assert out["context_ceiling"]["stops"] == []
 
@@ -207,7 +214,7 @@ def test_a_resume_under_the_ceiling_still_resumes(ctx, monkeypatch):
 
 
 def test_a_finish_pass_over_the_ceiling_is_a_fresh_session(ctx):
-    _plan(ctx, {"contexts": [1_000, 260_000], "answer": "I'll wait for the tests to finish."},
+    _plan(ctx, {"contexts": [1_000, 260_000], "answer": "The suite is still running in the background."},
           SMALL)
     out = run_cli_agent(ctx, _spec())
 
@@ -267,8 +274,6 @@ def test_a_profile_or_step_lowers_the_ceiling_and_never_raises_it():
 def test_claude_code_watches_the_ceiling_and_tells_the_agent_about_the_handoff_note():
     assert claude_code.SPEC.context_ceiling is True
     assert "$SWARM_ARTIFACTS_DIR/handoff.md" in ceiling.HANDOFF_NOTE
-    source = Path(claude_code.__file__).read_text()
-    assert "ceiling.HANDOFF_NOTE" in source
 
 
 def test_a_subagents_context_is_not_the_sessions():
