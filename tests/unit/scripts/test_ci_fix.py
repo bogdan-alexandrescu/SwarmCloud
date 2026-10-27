@@ -603,6 +603,37 @@ def test_a_red_swarm_pr_gets_one_fix_step_that_names_a_profile_and_nothing_else(
     assert GH_TOKEN_VALUE not in comment and PASSWORD_VALUE not in comment
 
 
+def _brief(fake) -> str:
+    _, state = fake
+    out = _run(fake, "run")
+    assert out.returncode == 0, out.stderr
+    return _prompt(state)
+
+
+def test_the_brief_tells_the_agent_to_write_verification_md_when_nothing_needs_changing(fake):
+    # The worker's no_change contract is $SWARM_ARTIFACTS_DIR/verification.md,
+    # not a sentence in the final message (#2276).
+    brief = _brief(fake)
+    assert "verification.md" in brief
+    assert "$SWARM_ARTIFACTS_DIR/verification.md" in brief
+    assert "say why in your final message" not in brief
+
+
+def test_the_brief_forbids_checking_out_or_resetting_onto_the_red_sha(fake):
+    brief = _brief(fake)
+    # The red commit is named, and the instruction around it forbids moving onto it.
+    forbidding = [line for line in brief.splitlines() if HEAD in line and "never" in line.lower()]
+    assert forbidding, brief
+    for verb in ("check out", "reset onto", "rebase onto"):
+        assert verb in forbidding[0]
+    assert "current tip" in brief
+
+
+def test_the_brief_does_not_say_the_agent_is_on_the_red_commit(fake):
+    # "You are on that branch" was read literally and moved HEAD onto the red sha (#2276).
+    assert "You are on that branch" not in _brief(fake)
+
+
 def test_the_next_attempt_is_numbered_from_the_comments_already_on_the_pr(fake):
     _, state = fake
     (state / "comments.json").write_text(_comments_json(["<!-- swarm-ci-fix:attempt -->\nattempt 1"]))
