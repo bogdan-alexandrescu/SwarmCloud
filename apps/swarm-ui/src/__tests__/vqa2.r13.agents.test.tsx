@@ -92,7 +92,8 @@ describe('V060: the park bar prints the instant the way the Waiting row does', (
     expect(a.textContent).toBe(` · eligible at ${clockTime(later, now)!.text}`)
     expect(a.querySelector('span')!.title).toContain('2026-10-16T18:10:00.000Z')
     const { container: b } = render(<ParkEligible iso={PAST} now={Date.parse('2026-10-16T19:00:00Z')} />)
-    expect(b.textContent).toMatch(/^ · eligible since \d{2}:\d{2}:\d{2}$/)
+    // The person's zone, UTC by default, labelled (TZ-CLOCKTIME, part of #2391).
+    expect(b.textContent).toMatch(/^ · eligible since \d{2}:\d{2}:\d{2} UTC$/)
     const { container: none } = render(<ParkEligible iso={null} />)
     expect(none.textContent).toBe('')
   })

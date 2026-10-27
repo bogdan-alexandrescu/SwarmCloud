@@ -102,14 +102,15 @@ async function list(tasks: Task[], taskId: string | null = null): Promise<HTMLEl
 }
 
 describe('V060: a parked row says when it is eligible in words, not ISO', () => {
-  it('prints a local clock time and the wait left, never the raw instant', () => {
+  it('prints a clock time in the person’s zone (UTC by default), labelled, and the wait left, never the raw instant', () => {
     const now = Date.parse('2026-10-11T02:40:00.000Z')
     const iso = '2026-10-11T02:50:58.413Z'
     const said = eligibleAgain(iso, now)!
     expect(said).not.toContain(iso)
     expect(said).not.toMatch(/\d{4}-\d{2}-\d{2}T/)
-    expect(said).toMatch(/^Eligible again at \d{2}:\d{2}:\d{2} \(in 10m\)\.$/)
-    expect(eligibleAgain('2026-10-11T02:30:00.000Z', now)).toMatch(/^Eligible again since \d{2}:\d{2}/)
+    // TZ-CLOCKTIME (part of #2391): `clockTime` is the person's zone, labelled.
+    expect(said).toBe('Eligible again at 02:50:58 UTC (in 10m).')
+    expect(eligibleAgain('2026-10-11T02:30:00.000Z', now)).toBe('Eligible again since 02:30:00 UTC.')
     expect(eligibleAgain(null, now)).toBeNull()
     const why = whyAgent(row(ID, { state: 'PARKED', park_reason: 'QUOTA_EXHAUSTED', next_eligible_at: iso }))
     expect(why).not.toContain(iso)

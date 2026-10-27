@@ -338,10 +338,15 @@ describe('the run group carries data, not prose', () => {
    * 386: the owner's design calls name the counts and clocks, so the cores
    * figure says `(cgroup limit)` and the Elapsed tile says `Run · attempt N`.
    * Those are labels the owner asked for, not prose growing back.
+   *
+   * 390 became 394 with TZ-CLOCKTIME (part of #2391), which measured 392:
+   * `clockTime` prints the person's zone label and an older day by name, so
+   * the head's `since` and `submitted` instants grew from `09-23 10:00` to
+   * `Sep 23 10:00 UTC`, two words each. A label, not prose.
    */
   const CEILING: Record<string, number> = {
     agents: 30,
-    detail: 390,
+    detail: 394,
     timeline: 100,
     viewer: 35,
   }

@@ -3,10 +3,11 @@
 // #376: a sortable STARTED column on Work > Agents for every state, finished
 // ones included; the start beside the state in the inspector's head with the
 // submit and end times; a workflow's start DERIVED from its earliest step on
-// the board row and in the open card. One formatter (`clockTime`): local
-// `HH:MM:SS` today, `MM-DD HH:MM` older, the UTC instant and its age in the
-// hover. A task that never started reads `never started` with its submit
-// time -- never blank, never a time borrowed from another field.
+// the board row and in the open card. One formatter (`clockTime`), in the
+// person's zone (UTC by default): `HH:MM:SS PDT` today there, `Oct 26 14:05
+// PDT` older, the UTC instant and its age in the hover. A task that never
+// started reads `never started` with its submit time -- never blank, never a
+// time borrowed from another field.
 //
 // #379: an ACCOUNT column, the inspector head, and each attempt's own account
 // with its swaps (`acct-eng-01 → 02 (swapped: unreadable)`). The words for
@@ -20,6 +21,7 @@ import type { Result } from '../fetch'
 import type { AgentRun } from '../api'
 import type { Task, TaskAccount, TaskPage, TaskState, Workflow, WorkflowStep } from '../types'
 import { accountText, clockTime, compareStarted, startedOf, workflowStart, workflowStartText } from '../types'
+import { resetTimeZone, setZone } from '../timezone'
 import { attempt, task as runTask } from './runfixture'
 
 const api = vi.hoisted(() => ({
@@ -46,19 +48,25 @@ afterEach(() => {
 // The formatter
 // ---------------------------------------------------------------------------
 
-const pad = (n: number) => String(n).padStart(2, '0')
+const LA = 'America/Los_Angeles'
 
 describe('clockTime: one formatter for every start and submit time', () => {
-  it('prints HH:MM:SS for an instant earlier today, in local time', () => {
-    const now = new Date(2026, 9, 1, 15, 0, 0).getTime()
-    const t = new Date(2026, 9, 1, 9, 4, 7)
-    expect(clockTime(t.toISOString(), now)?.text).toBe('09:04:07')
+  // THE PERSON'S ZONE, UTC BY DEFAULT (TZ-CLOCKTIME, part of #2391; BGD,
+  // 2026-10-26). These read the setting (`timezone.ts`), never the browser's
+  // clock: each test starts with nothing picked, so the zone is UTC.
+  beforeEach(() => resetTimeZone())
+  afterEach(() => resetTimeZone())
+
+  it('prints HH:MM:SS and the zone label for an instant earlier today, in UTC by default', () => {
+    const now = Date.parse('2026-10-01T15:00:00.000Z')
+    // MUTATION: drop the label, or read `getHours()` (the browser's clock).
+    expect(clockTime('2026-10-01T09:04:07.000Z', now)?.text).toBe('09:04:07 UTC')
   })
 
-  it('prints MM-DD HH:MM for an instant on an earlier day', () => {
-    const now = new Date(2026, 9, 1, 15, 0, 0).getTime()
-    const t = new Date(2026, 8, 28, 23, 41, 59)
-    expect(clockTime(t.toISOString(), now)?.text).toBe('09-28 23:41')
+  it('prints the date, HH:MM and the zone label for an instant on an earlier day', () => {
+    const now = Date.parse('2026-10-01T15:00:00.000Z')
+    // MUTATION: print `MM-DD`, or drop the label.
+    expect(clockTime('2026-09-28T23:41:59.000Z', now)?.text).toBe('Sep 28 23:41 UTC')
   })
 
   it('puts the full UTC instant and its age in the hover', () => {
@@ -75,20 +83,28 @@ describe('clockTime: one formatter for every start and submit time', () => {
     expect(clockTime('not a time')).toBeNull()
   })
 
-  it('reads the wall clock of the timezone it runs in, not UTC', () => {
+  it('reads the person’s zone and counts today from its midnight, whatever the browser’s clock', () => {
     const before = process.env.TZ
     try {
+      // The browser says Tokyo; nobody has picked a zone, so the page says UTC.
       process.env.TZ = 'Asia/Tokyo'
-      // 02:30 UTC is 11:30 in Tokyo, the same calendar day.
+      expect(new Date('2026-10-01T02:30:00.000Z').getHours(), 'the TZ switch did not take effect').toBe(11)
       const instant = '2026-10-01T02:30:00.000Z'
-      expect(new Date(instant).getHours(), 'the TZ switch did not take effect').toBe(11)
       const now = Date.parse('2026-10-01T05:00:00.000Z')
-      expect(clockTime(instant, now)?.text).toBe('11:30:00')
+      expect(clockTime(instant, now)?.text).toBe('02:30:00 UTC')
 
-      process.env.TZ = 'America/New_York'
-      // The same instant is 22:30 the PREVIOUS day in New York: not today.
-      expect(new Date(instant).getHours()).toBe(22)
-      expect(clockTime(instant, now)?.text).toBe('09-30 22:30')
+      // Picked Los Angeles: 02:30Z is 19:30 PDT on Sep 30, and so is now
+      // (22:00 PDT), so it is today there and reads as a time.
+      setZone(LA)
+      expect(clockTime(instant, now)?.text).toBe('19:30:00 PDT')
+      // 06:30Z on Oct 1 is 23:30 PDT on Sep 30: UTC's today, LA's yesterday
+      // once LA's clock has passed midnight (now = 08:00Z = 01:00 PDT Oct 1).
+      // MUTATION: count today from UTC's midnight.
+      expect(clockTime('2026-10-01T06:30:00.000Z', Date.parse('2026-10-01T08:00:00.000Z'))?.text).toBe('Sep 30 23:30 PDT')
+      // Winter time is labelled as such.
+      expect(clockTime('2026-12-01T18:00:00.000Z', Date.parse('2026-12-01T20:00:00.000Z'))?.text).toBe('10:00:00 PST')
+      // An explicit zone wins over the setting.
+      expect(clockTime(instant, now, 'UTC')?.text).toBe('02:30:00 UTC')
       // The hover keeps the UTC instant whatever the zone.
       expect(clockTime(instant, now)?.title).toContain(instant)
     } finally {
@@ -110,8 +126,8 @@ describe('startedOf and the STARTED sort', () => {
     const s = startedOf({ started_at: null, created_at: iso(30), attempt_count: 0 }, NOW)
     expect(s.text).toBe('never started')
     expect(s.never).toBe(true)
-    const sub = new Date(NOW - 30 * 60_000)
-    expect(s.submitted).toBe(`${pad(sub.getHours())}:${pad(sub.getMinutes())}:${pad(sub.getSeconds())}`)
+    // NOW is 12:00Z, so 30 minutes before is 11:30:00 in the default zone.
+    expect(s.submitted).toBe('11:30:00 UTC')
   })
 
   it('names a retried task’s start as the latest attempt’s, never the first', () => {

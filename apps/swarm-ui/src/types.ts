@@ -3,6 +3,8 @@
 // the copy that has to follow, and there is no check that notices. Keep the
 // comment references so the next person can find the source.
 
+import { currentZone, formatClock, formatDateTime, isToday } from './timezone'
+
 /** `pool_to_api` in codec.py. */
 export interface Pool {
   name: string
@@ -4264,30 +4266,40 @@ export function ageSpan(ms: number): string {
 // --------------------------------------------------------------------------
 
 /**
- * An instant as a reader scans a list for it: LOCAL wall-clock time,
- * `HH:MM:SS` when it is today and `MM-DD HH:MM` when it is older, with the
- * full ISO UTC timestamp and its age (`timeAgo`) for the hover.
+ * An instant as a reader scans a list for it, in THE PERSON'S ZONE
+ * (`timezone.ts`; UTC until they pick one in Profile), labelled:
+ * `14:05:09 PDT` when it is today there and `Oct 24 14:05 PDT` when it is
+ * older, with the full ISO UTC timestamp and its age (`timeAgo`) for the
+ * hover.
  *
  * ONE FORMATTER for every start and submit time on the Agents list, the agent
  * inspector, the workflow board and the step inspector (#376), so a row and
  * the drawer beside it can never print the same instant two ways. Null for a
  * missing or unparseable value: the caller says what the absence means
  * ("never started"), this never invents a time.
+ *
+ * THE ZONE, NOT THE BROWSER'S CLOCK (VQ-023; BGD, 2026-10-26, lane
+ * TZ-CLOCKTIME, part of #2391). This read `getHours()` until then: the
+ * browser's zone, unlabelled, beside an Overview and a Timeline that say UTC
+ * or the person's zone, so one instant read as two times a page apart.
+ * "Today" is the zone's day (`isToday`, from `startOfDay`), the same day
+ * Overview counts. The words are `timezone.ts`'s own: today keeps the
+ * second, as it always did, and an older instant is `formatDateTime`'s date
+ * before `formatClock`'s time -- the month by name, so `10-24` is never read
+ * the American way round. `zone` is for a caller that holds one (a test);
+ * every other caller follows the setting.
  */
 export function clockTime(
   iso: string | null | undefined,
   now: number = Date.now(),
+  zone: string = currentZone(),
 ): { text: string; title: string } | null {
   if (!iso) return null
   const t = new Date(iso)
   if (!Number.isFinite(t.getTime())) return null
-  const pad = (n: number) => String(n).padStart(2, '0')
-  const today = new Date(now)
-  const sameDay =
-    t.getFullYear() === today.getFullYear() && t.getMonth() === today.getMonth() && t.getDate() === today.getDate()
-  const text = sameDay
-    ? `${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}`
-    : `${pad(t.getMonth() + 1)}-${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}`
+  // "Oct 24 14:05:09 PDT": the date, the time to the second, then the label.
+  const [month, day, hms, ...label] = formatDateTime(t, zone).split(' ')
+  const text = isToday(t, now, zone) ? `${hms} ${label.join(' ')}` : `${month} ${day} ${formatClock(t, zone)}`
   return { text, title: `${t.toISOString()} (${timeAgo(t.getTime(), now)})` }
 }
 
@@ -4303,11 +4315,12 @@ export function clockTime(
 export function startedOf(
   task: Pick<Task, 'started_at' | 'created_at' | 'attempt_count'>,
   now: number = Date.now(),
+  zone: string = currentZone(),
 ): { text: string; title: string; never: boolean; submitted: string; submittedTitle: string } {
-  const sub = clockTime(task.created_at, now)
+  const sub = clockTime(task.created_at, now, zone)
   const submitted = sub?.text ?? 'not recorded'
   const submittedTitle = sub ? `submitted ${sub.title}` : 'no submit time was recorded'
-  const start = clockTime(task.started_at, now)
+  const start = clockTime(task.started_at, now, zone)
   if (start === null) {
     return { text: 'never started', title: `never started; ${submittedTitle}`, never: true, submitted, submittedTitle }
   }

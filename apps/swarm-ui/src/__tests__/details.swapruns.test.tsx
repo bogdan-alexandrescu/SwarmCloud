@@ -49,7 +49,14 @@ const TWO_RUNS = {
   swap_cost: { reread_seconds: 212.4, reread_tokens: { input_tokens: 300, cache_read_input_tokens: 1_500_000 }, measured_runs: 1, reached_action: 1 },
 }
 
-/** Local HH:MM, as the tile writes an instant. */
+/**
+ * The start → end span in the person's zone, UTC when none is set
+ * (TZ-CLOCKTIME, part of #2391): each time labelled, with its date when it is
+ * not today there.
+ */
+const SPAN = /^(Oct 26 )?09:07(:00)? UTC → (Oct 26 )?11:06(:52)? UTC$/
+
+/** Local HH:MM, as the swap's `at` writes an instant. */
 function hm(iso: string): string {
   const t = new Date(iso)
   return `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`
@@ -117,7 +124,7 @@ describe('the Run tile says every run and the account swap', () => {
     expect(text(runs)).toBe(`2 runs · 1 account swap (ai-eng-2 exhausted → ai-eng-1-max at ${hm(SWAPPED)})`)
     // Beside the start → end span, which is drawn exactly as on a one-run tile.
     const span = text(runTile(ended({ artifacts: [] })).querySelector('.dt-sc-s'))
-    expect(span).toMatch(new RegExp(`^${hm(STARTED)}(:\\d\\d)? → ${hm(ENDED)}(:\\d\\d)?$`))
+    expect(span).toMatch(SPAN)
     expect(text(tile.querySelector('.dt-sc-s'))).toBe(`${span} · ${text(runs)}`)
     expect(runs!.title).toContain('the duration counts every run')
     expect(runs!.title).toContain('3m 32s and 1,500,300 tokens before it acted again')
@@ -128,7 +135,7 @@ describe('the Run tile says every run and the account swap', () => {
   it('a one-run attempt: the tile is what it was', () => {
     const tile = runTile(ended({ artifacts: [], exit_code: 0, duration_seconds: 60.6 }))
     expect(tile.querySelector('.dt-runs')).toBeNull()
-    expect(text(tile.querySelector('.dt-sc-s'))).toMatch(new RegExp(`^${hm(STARTED)}(:\\d\\d)? → ${hm(ENDED)}(:\\d\\d)?$`))
+    expect(text(tile.querySelector('.dt-sc-s'))).toMatch(SPAN)
     expect(tile.classList.contains('is-whole')).toBe(false)
   })
 

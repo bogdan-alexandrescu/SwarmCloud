@@ -220,8 +220,13 @@
      there to reconcile the tile with the head's `4 vCPU`. AND PEAK MEMORY'S
      AND COST'S (#1680 comments 6343769495, 6343792637): two lines cut
      `worst 7.20 GiB, attempt…` and `cost 1 of 3 reported · last…` at 1440,
-     so those tiles are `whole` too (`DtStrip`). */
-  .dt-sc.is-whole > .dt-sc-s {
+     so those tiles are `whole` too (`DtStrip`). AND THE RAN TILE'S
+     START → END (TZ-CLOCKTIME, part of #2391): each time carries its zone
+     label, `Oct 19 04:40 PDT → Oct 19 04:47 PDT` needs three lines here, and
+     two cut it to `→ Oct 19 04:47…`. It is the one sub-line whose span is
+     titled `started … · ended …` (`DtStrip`). */
+  .dt-sc.is-whole > .dt-sc-s,
+  .dt-sc-s:has(> span[title*=' · ended ']) {
     display: block;
     -webkit-line-clamp: none;
     line-clamp: none;
