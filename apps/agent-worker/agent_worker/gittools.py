@@ -348,6 +348,37 @@ def branch_refusal(branch: str, cfg: GitToolsConfig) -> GitToolRefused | None:
 # --------------------------------------------------------------------------
 
 
+#: What of a ChildApiError's code or no-answer reason a refusal may quote:
+#: a bare identifier, never free text (#2452).
+_CAUSE_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9_.]{0,63}")
+
+
+def unavailable_message(exc: ChildApiError) -> str:
+    """`api_unavailable`'s message, naming why the platform did not answer (#2452).
+
+    On 2026-10-26 two publishes through `git_push_branch` failed with "the
+    platform did not answer; ask again" and nothing else: a 5xx, a 429, a
+    timeout and a refused connection all read the same, so nobody could tell
+    a swarm-api defect from the worker's own read timeout. This names the
+    HTTP status and swarm-api's code, or, when no response came, the reason
+    `ChildApi.call` recorded (the exception's class, or its own sentence for
+    a missing identity token). Never the response's message: that is body
+    text. The code and the reason are quoted only when they are a bare
+    identifier, and the result goes through the redaction filter anyway.
+    """
+    if exc.status is not None:
+        code = exc.code if _CAUSE_TOKEN.fullmatch(exc.code or "") else ""
+        cause = f"HTTP {int(exc.status)}" + (f" {code}" if code and code != f"http_{exc.status}"
+                                             else "")
+        text = f"the platform answered {cause}; ask again"
+    else:
+        reason = exc.message if _CAUSE_TOKEN.fullmatch(exc.message or "") else (
+            "no workload identity token" if exc.message == "no workload identity token"
+            else "no reason given")
+        text = f"the platform did not answer ({reason}, no HTTP status); ask again"
+    return str(redact_text(text).text)
+
+
 class GitTools:
     """The spool's relay, the push's preparation, the fetch's application.
 
@@ -595,8 +626,7 @@ class GitTools:
             if exc.status == 409 or exc.code in (GIT_FENCED, "child_submit_fenced"):
                 raise GitToolFenced(exc.status, GIT_FENCED, exc.message, retryable=False) from None
             if exc.retryable:
-                raise GitToolRefused("api_unavailable",
-                                     "the platform did not answer; ask again",
+                raise GitToolRefused("api_unavailable", unavailable_message(exc),
                                      retryable=True) from None
             raise GitToolRefused(exc.code, exc.message or exc.code) from None
         return payload
