@@ -14540,7 +14540,7 @@ to that workspace's attempts, and held by its gate, never by the agent.
 the grant, signed by swarm-api. **1-8** are untouched.
 ## 118. `models.py`: `EndCause.BUDGET_EXCEEDED` (BUDGET-CAP, part of #2459)
 
-**Status:** ACCEPTED by BGD 2026-10-26 (~22:15Z, on PR 2466) and APPLIED
+**Status:** ACCEPTED by the owner (BGD) 2026-10-26 (~22:15Z, on PR 2466) and APPLIED
 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part
 of #2459). Requested 2026-10-26 by lane BUDGET-CAP. "What is true today" below
 is the text as filed, the state before it was applied.
@@ -14591,7 +14591,7 @@ attempt's generation like every worker end. **2-4, 6-10** are untouched.
 
 ## 119. `specsign.py`: a `"budget"` block in `SETTINGS_MAC_FIELDS` (BUDGET-CAP, part of #2459)
 
-**Status:** ACCEPTED by BGD 2026-10-26 (~22:15Z, on PR 2466) and APPLIED
+**Status:** ACCEPTED by the owner (BGD) 2026-10-26 (~22:15Z, on PR 2466) and APPLIED
 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part
 of #2459). Requested 2026-10-26 by lane BUDGET-CAP. "What is true today" below
 is the text as filed, the state before it was applied.
@@ -14652,7 +14652,7 @@ never a resource. **1-8** are untouched.
 
 ## 120. `models.py` / `specsign.py`: `Task.budget` and `WorkflowStep.budget` (BUDGET-CAP, part of #2459)
 
-**Status:** ACCEPTED by BGD 2026-10-26 (~22:15Z, on PR 2466) and APPLIED
+**Status:** ACCEPTED by the owner (BGD) 2026-10-26 (~22:15Z, on PR 2466) and APPLIED
 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part
 of #2459). Requested 2026-10-26 by lane BUDGET-CAP. "What is true today" below
 is the text as filed, the state before it was applied.
@@ -14694,7 +14694,7 @@ holds no capacity. **2-9** are untouched.
 
 ## 121. `states.py`: `EventType.BUDGET_WARNING` (BUDGET-CAP, part of #2459)
 
-**Status:** ACCEPTED by BGD 2026-10-26 (~22:15Z, on PR 2466) and APPLIED
+**Status:** ACCEPTED by the owner (BGD) 2026-10-26 (~22:15Z, on PR 2466) and APPLIED
 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part
 of #2459). Requested 2026-10-26 by lane BUDGET-CAP. "What is true today" below
 is the text as filed, the state before it was applied.

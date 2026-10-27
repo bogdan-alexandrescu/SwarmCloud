@@ -117,4 +117,6 @@ def test_each_request_is_marked_applied():
         # MUTATION: leave a row "Not applied" and this names it.
         assert "APPLIED 2026-10-27" in row and "Not applied" not in row, number
         section = text.split(f"\n## {number}. ", 1)[1].split("\n## ", 1)[0]
-        assert section.splitlines()[2].startswith("**Status:** ACCEPTED by BGD"), number
+        # scripts/lib/check-frozen-contract.sh passes a swarm_common diff only on an
+        # added line saying "accepted by the owner"; this status line is that line.
+        assert section.splitlines()[2].startswith("**Status:** ACCEPTED by the owner (BGD)"), number
