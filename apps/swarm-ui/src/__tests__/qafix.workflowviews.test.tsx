@@ -27,6 +27,7 @@ import type { WorkflowBoard, WorkflowUsage } from '../api'
 import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
 import { ownFromBoard } from './workflowsById'
 import { attempt } from './runfixture'
+import { landed } from './reads'
 
 const api = vi.hoisted(() => ({
   loadWorkflowBoard: vi.fn(),
@@ -75,6 +76,9 @@ const TASKS = new Map<string, Task>([
 
 beforeEach(() => {
   vi.spyOn(Date, 'now').mockReturnValue(T0)
+  // MUTATION: answer this read 2.5 s late (past setup.ts's 2000 ms window)
+  // and a bare `waitFor` on the card reads aria-label undefined in all five
+  // cases, the QA-121 flake; `arrived` waits it out and stays green.
   api.loadWorkflowBoard.mockResolvedValue({
     status: 'ok',
     data: { workflows: [WF], taskById: TASKS, statesDetail: null },
@@ -95,15 +99,26 @@ function Routed({ initial }: { initial: string }) {
   return <WorkflowsScreen view={view} onView={setView} />
 }
 
+// THE CARD ARRIVES WITH THE READS IT IS DRAWN FROM (#2379 comment 19). A
+// bare `waitFor` on `section.wf-inspect` raced setup.ts's 2000 ms window, and
+// once on a loaded runner the card's aria-label still read undefined when it
+// expired. The page draws from its own read (`loadWorkflow`, which this
+// file's double answers from the board) and reads the board beside it, so
+// the wait is on those two (`landed`, reads.ts, #605), and the card is
+// queried once, after: no timeout can expire while the page catches up.
+async function arrived(): Promise<HTMLElement> {
+  await landed(api.loadWorkflow)
+  await landed(api.loadWorkflowBoard)
+  const el = document.querySelector<HTMLElement>('section.wf-inspect')
+  expect(el?.getAttribute('aria-label')).toBe('Step test of wf_tests')
+  return el!
+}
+
 describe('QA-121: a step card links to the step agent\'s logs', () => {
   it('offers Logs beside Open agent on the failed step the page opens on, to that agent\'s Logs tab', async () => {
     render(<Routed initial="wf=wf_tests" />)
     // The page picks the first failure on arrival.
-    const card = await waitFor(() => {
-      const el = document.querySelector<HTMLElement>('section.wf-inspect')
-      expect(el?.getAttribute('aria-label')).toBe('Step test of wf_tests')
-      return el!
-    })
+    const card = await arrived()
     const open = within(card).getByRole('link', { name: 'Open agent →' })
     // MUTATION: drop the Logs link from StepInspector's head and this is red.
     const logs = within(card).getByRole('link', { name: 'Logs ›' })
@@ -117,11 +132,7 @@ describe('QA-121: a step card links to the step agent\'s logs', () => {
 
 const openCard = async () => {
   render(<Routed initial="wf=wf_tests" />)
-  return waitFor(() => {
-    const el = document.querySelector<HTMLElement>('section.wf-inspect')
-    expect(el?.getAttribute('aria-label')).toBe('Step test of wf_tests')
-    return el!
-  })
+  return arrived()
 }
 
 describe('WG-4, WG-6: the step card says each figure in words', () => {

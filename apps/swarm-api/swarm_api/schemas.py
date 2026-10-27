@@ -18,6 +18,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StrictBool,
+    StrictFloat,
     StrictInt,
     StrictStr,
     field_validator,
@@ -129,6 +130,32 @@ def _additional_repositories_field() -> Any:
     return Field(default=None, max_length=MAX_ADDITIONAL_REPOSITORIES_IN_REQUEST)
 
 
+#: The largest budget a step, a workspace default or the platform ceiling may
+#: name (`budget`, #2459). Not a policy: a shape guard, so a typo of many
+#: zeros is refused rather than stored as "no limit" in all but name.
+#: $100,000 is far past any one agent's spend on a subscription pool; 10
+#: billion tokens is hundreds of times the 15M the owner gave as an example.
+BUDGET_MAX_USD = 100_000.0
+BUDGET_MAX_TOKENS = 10_000_000_000
+
+
+class StepBudget(StrictModel):
+    """`budget` on a task or a workflow step: `{usd: N}` or `{tokens: N}` (#2459).
+
+    It may only LOWER the attempt's limit: `budget.refuse_step_above` refuses
+    one above the workspace default or the platform ceiling, naming both. A
+    limit, never a resource (invariant 10), as `timeout_seconds` is."""
+
+    usd: StrictFloat | StrictInt | None = Field(default=None, gt=0, le=BUDGET_MAX_USD)
+    tokens: StrictInt | None = Field(default=None, ge=1, le=BUDGET_MAX_TOKENS)
+
+    @model_validator(mode="after")
+    def _one_unit(self) -> "StepBudget":
+        if (self.usd is None) == (self.tokens is None):
+            raise ValueError("a budget names exactly one of usd or tokens")
+        return self
+
+
 class TaskCreate(StrictModel):
     #: The ONLY execution knob a caller has. Image, command, resource spec and
     #: backend all come from the frozen catalogue keyed by this name.
@@ -140,6 +167,8 @@ class TaskCreate(StrictModel):
     repository_ref: str | None = Field(default=None, max_length=256)
     #: May only SHORTEN the profile's timeout; a longer value is clamped.
     timeout_seconds: int | None = Field(default=None, ge=1, le=86_400)
+    #: May only LOWER the attempt's spend limit (#2459): see `StepBudget`.
+    budget: StepBudget | None = None
     max_attempts: int | None = Field(default=None, ge=1, le=10)
     #: The model ID, a RECORD: swarm-api fills it with the pin of the task's
     #: `model_class` (WORKER_CLASS_MODELS), and a value that is not that pin is
@@ -227,6 +256,10 @@ class WorkflowStepCreate(StrictModel):
     #: upstream step_id -> artifact filename staged into this step's workspace.
     input_from: dict[str, str] = Field(default_factory=dict)
     timeout_seconds: int | None = Field(default=None, ge=1, le=86_400)
+    #: This step's spend limit, which may only LOWER the workspace's (#2459):
+    #: see `StepBudget`. Pinned, resolved, in the step task's signed
+    #: `metadata.dispatch.budget`.
+    budget: StepBudget | None = None
     #: Run this step's agent only when an upstream review's verdict says so
     #: (#264). See `StepVerdictGate`.
     when: StepVerdictGate | None = None
@@ -559,6 +592,14 @@ class ModelPriceRequest(StrictModel):
         return self
 
 
+class BudgetCeilingRequest(StrictModel):
+    """`agent_budget_ceiling` (#2459): the most any workspace default or step
+    budget may name, per unit. A unit left out has no ceiling, so `{}` clears it."""
+
+    usd: StrictFloat | StrictInt | None = Field(default=None, gt=0, le=BUDGET_MAX_USD)
+    tokens: StrictInt | None = Field(default=None, ge=1, le=BUDGET_MAX_TOKENS)
+
+
 class PlatformSettingsRequest(StrictModel):
     """`PUT /v1/admin/settings`: the settings to change; one omitted is left as it is."""
 
@@ -581,6 +622,10 @@ class PlatformSettingsRequest(StrictModel):
     model_prices: dict[
         Annotated[str, Field(pattern=modelprices.MODEL_NAME.pattern)], ModelPriceRequest
     ] | None = Field(default=None, min_length=1, max_length=modelprices.MAX_MODELS)
+    #: The platform's per-agent budget ceiling (#2459), replaced whole: a
+    #: workspace default above it in its unit is refused on save, and every
+    #: budgeted attempt's limit is at most it. Off by default.
+    agent_budget_ceiling: BudgetCeilingRequest | None = None
 
 
 #: A runner-size change, by class then field (docs/design/runner-sizes.md

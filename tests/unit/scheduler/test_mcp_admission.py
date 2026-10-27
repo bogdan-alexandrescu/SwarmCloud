@@ -8,8 +8,13 @@ existing credential park and before any lease,
     server's name, and the credential sweep returns it to READY once the
     registration is enabled again;
   * a `dispatch` server whose credential row is destroyed or past `expires_at`
-    is never leased: it ends FAILED `mcp_credential_expired` from READY or
-    PARKED (contract request 99), no lease, no reservation, no retry.
+    is never leased. On a WORKFLOW's task (a step, or a child of one) it parks
+    CREDENTIAL_MISSING with `credential: "mcp"`, the code, the server and
+    `expired_at`, because its caller can re-store the credential (BGD
+    2026-10-26, Product Oracle's runs); the sweep promotes it once the row is
+    live, and ends it FAILED past `MCP_CREDENTIAL_PARK_MAX_SECONDS`. On a task
+    that is no workflow's it ends FAILED `mcp_credential_expired` from READY
+    or PARKED (contract request 99), no lease, no reservation, no retry.
 
 and §4.6: the attach route is signed with the attempt key, so
 `dispatch.worker_env` issues the key's registration nonce to a task whose
@@ -341,7 +346,7 @@ def test_another_tenants_row_is_no_credential(db, make_scheduler, dispatcher):
 
 
 # --------------------------------------------------------------------------
-# An expired credential: no lease, and no promotion ever
+# A standalone task's expired credential: no lease, and no promotion ever
 # --------------------------------------------------------------------------
 
 
@@ -366,7 +371,8 @@ def test_a_waiting_task_may_end_failed_without_a_lease():
 @EXPIRED_ROWS
 @pytest.mark.parametrize("start", ["READY", "PARKED"])
 def test_an_expired_credential_is_never_leased(db, make_scheduler, dispatcher, why, row, start):
-    """§4.10: FAILED with the terminal code, no lease, no retry. From READY it
+    """§4.10, for a task that is no workflow's (nothing can re-store its own
+    credential): FAILED with the terminal code, no lease, no retry. From READY it
     is admission's write; from PARKED (a CREDENTIAL_MISSING park left before
     request 99, or one parked for a disabled server whose credential then
     expired) it is the credential sweep's. Either way one guarded write, no
@@ -411,6 +417,156 @@ def test_an_expired_credential_is_never_leased(db, make_scheduler, dispatcher, w
     assert events(db, "task_expired", "ready") == []
     assert len(events(db, "task_expired", "failed")) == 1
     assert_reserved_nothing(db, dispatcher)
+
+
+# --------------------------------------------------------------------------
+# A workflow's expired credential: a park its caller ends by re-storing it
+# --------------------------------------------------------------------------
+
+
+def mcp_parks(db, task_id: str) -> list[dict]:
+    return [b for b in db.docs[f"tasks/{task_id}"].get("blocked_by") or []
+            if b.get("credential") == "mcp"]
+
+
+@EXPIRED_ROWS
+@pytest.mark.parametrize("start", ["READY", "PARKED"])
+def test_a_workflow_steps_expired_credential_parks_and_never_fails(
+    db, make_scheduler, dispatcher, why, row, start
+):
+    """BGD 2026-10-26 (Product Oracle's five Code map runs, failed at once on
+    promotion at 22:45Z): a step whose workflow credential lapsed while it
+    waited parks CREDENTIAL_MISSING, before any lease, with the detail a
+    caller watches for, and stays parked drain after drain at no cost."""
+    world(db)
+    register(db)
+    if row is not None:
+        credential_row(db, "wf_oracle", **row)
+    parked = {"park_reason": "CREDENTIAL_MISSING"} if start == "PARKED" else {}
+    task(db, "task_step", state=start, workflow_id="wf_oracle", **parked)
+
+    for _ in range(2):
+        report = make_scheduler().drain()
+        assert report.failed_unrunnable == 0
+
+    code = "mcp_credential_missing" if why == "missing" else "mcp_credential_expired"
+    doc = db.docs["tasks/task_step"]
+    assert (doc["state"], doc["park_reason"]) == ("PARKED", "CREDENTIAL_MISSING"), doc
+    assert doc.get("last_error") is None and doc.get("completed_at") is None
+    assert events(db, "task_step", "failed") == []
+    assert_reserved_nothing(db, dispatcher)
+    if start == "READY":
+        # Admission's park: the event and the task's `blocked_by` both say it.
+        [event] = events(db, "task_step", "parked")
+        detail = event["detail"]
+        assert (detail["credential"], detail["code"], detail["server"]) == ("mcp", code, "kb")
+        [block] = mcp_parks(db, "task_step")
+        assert block["reason"] == "CREDENTIAL_MISSING"
+        assert (block["code"], block["server"]) == (code, "kb")
+        assert block["expired_at"] == detail["expired_at"]
+        if why == "missing":
+            assert block["expired_at"] is None
+        else:
+            expected = db.docs[f"mcp_dispatch_credentials/wf_oracle~{server_id(TENANT, 'kb')}"]
+            assert block["expired_at"] == expected["expires_at"].isoformat()
+        assert block["parked_at"]
+        # Names only: never a secret id or a server id.
+        assert "mcpc" not in repr(block) and server_id(TENANT, "kb") not in repr(block)
+
+
+def test_a_child_of_a_workflow_step_parks_on_the_workflows_expired_credential(
+    db, make_scheduler, dispatcher
+):
+    world(db)
+    register(db)
+    credential_row(db, "wf_parent", expires_in=-timedelta(minutes=5))
+    task(db, "task_parent", state="RUNNING", workflow_id="wf_parent")
+    child = task(db, "task_child")
+    child["parent_task_id"] = "task_parent"
+
+    make_scheduler().drain()
+
+    doc = db.docs["tasks/task_child"]
+    assert (doc["state"], doc["park_reason"]) == ("PARKED", "CREDENTIAL_MISSING"), doc
+    assert [b["server"] for b in mcp_parks(db, "task_child")] == ["kb"]
+    assert_reserved_nothing(db, dispatcher)
+
+
+def test_a_restored_workflow_credential_promotes_the_park_and_it_runs(
+    db, make_scheduler, dispatcher
+):
+    """What `PUT /v1/workflows/{id}/mcp-credentials` writes -- a new live row
+    with a new `expires_at` -- is what the credential sweep promotes on."""
+    world(db)
+    register(db)
+    credential_row(db, "wf_oracle", expires_in=-timedelta(hours=3))
+    task(db, "task_step", workflow_id="wf_oracle")
+    make_scheduler().drain()
+    assert db.docs["tasks/task_step"]["state"] == "PARKED"
+
+    credential_row(db, "wf_oracle", expires_in=timedelta(hours=2))
+    report = make_scheduler().drain()
+
+    assert report.promoted_credentials == 1
+    assert events(db, "task_step", "ready")[-1]["detail"]["mcp_servers"] == "available"
+    assert db.docs["tasks/task_step"]["state"] == "DISPATCHED"
+    assert [d["task_id"] for d in dispatcher.dispatched] == ["task_step"]
+    assert events(db, "task_step", "failed") == []
+
+
+@pytest.mark.parametrize("hours, ends", [(23, False), (25, True)])
+def test_a_park_past_the_limit_ends_failed_and_one_inside_it_waits(
+    db, make_scheduler, dispatcher, hours, ends
+):
+    """The limit (`MCP_CREDENTIAL_PARK_MAX_SECONDS`, 24 h): PARKED -> FAILED
+    exists (contract request 99), so a park nobody re-stored ends FAILED
+    `mcp_credential_expired`, no lease. Inside the limit it waits."""
+    assert mcp_admission.MCP_CREDENTIAL_PARK_MAX_SECONDS == 24 * 3600
+    world(db)
+    register(db)
+    credential_row(db, "wf_gone", expires_in=-timedelta(hours=hours + 1))
+    task(db, "task_step", workflow_id="wf_gone")
+    make_scheduler().drain()
+    doc = db.docs["tasks/task_step"]
+    assert doc["state"] == "PARKED"
+    began = datetime.now(timezone.utc) - timedelta(hours=hours)
+    doc["updated_at"] = began
+    for block in doc["blocked_by"]:
+        block["parked_at"] = began.isoformat()
+
+    report = make_scheduler().drain()
+
+    doc = db.docs["tasks/task_step"]
+    if ends:
+        assert (doc["state"], doc["last_error"]) == ("FAILED", "mcp_credential_expired"), doc
+        assert report.failed_unrunnable == 1
+        [failed] = events(db, "task_step", "failed")
+        assert failed["detail"]["limit_seconds"] == 24 * 3600
+        assert failed["detail"]["credential"] == "mcp"
+    else:
+        assert (doc["state"], doc["park_reason"]) == ("PARKED", "CREDENTIAL_MISSING"), doc
+        assert report.failed_unrunnable == 0
+    assert_reserved_nothing(db, dispatcher)
+
+
+def test_a_forged_later_park_instant_does_not_hold_the_park_past_the_limit(
+    db, make_scheduler, dispatcher
+):
+    """`blocked_by` is in a document an agent may be able to write: the
+    earliest instant is taken, so a forged one only ends the wait sooner."""
+    world(db)
+    register(db)
+    credential_row(db, "wf_gone", expires_in=-timedelta(days=3))
+    task(db, "task_step", workflow_id="wf_gone")
+    make_scheduler().drain()
+    doc = db.docs["tasks/task_step"]
+    doc["updated_at"] = datetime.now(timezone.utc) - timedelta(days=2)
+    for block in doc["blocked_by"]:
+        block["parked_at"] = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+
+    make_scheduler().drain()
+
+    assert db.docs["tasks/task_step"]["state"] == "FAILED"
 
 
 def test_the_store_never_promotes_a_failed_task(db):
@@ -492,9 +648,10 @@ def test_only_ready_or_parked_is_failed_before_a_lease(db, state):
 
 
 def test_the_expired_answer_is_terminal_and_the_disabled_one_is_not(db):
-    """The answer says which of the two §4.10 outcomes it is: a disabled
-    registration waits to be enabled (`terminal` False), an expired
-    credential can never become runnable (`terminal` True, FAILED in §4.10)."""
+    """The answer says which §4.10 outcome it is: a disabled registration
+    waits to be enabled (`terminal` False), an expired credential of a task
+    that is no workflow's can never become runnable (`terminal` True, FAILED
+    in §4.10)."""
     seed_tenant(db, TENANT, credentials=("anthropic",))
     tenant = _tenant()
     profile = RUNNER_PROFILES[PROFILE]
@@ -521,6 +678,27 @@ def test_the_expired_answer_is_terminal_and_the_disabled_one_is_not(db):
     assert answer.terminal
     assert answer.park_detail()["code"] == "mcp_credential_expired"
     assert [m["name"] for m in answer.park_detail()["mcp_servers"]] == ["docs", "kb"]
+
+
+def test_a_workflow_steps_expired_answer_waits_and_names_the_credential(db):
+    """The same expired row, owned by the step's workflow, is not terminal:
+    its caller can re-store it, so the answer waits, and its detail carries
+    what a caller watches for: `credential == "mcp"`, the code, the server
+    by name and `expired_at`."""
+    seed_tenant(db, TENANT, credentials=("anthropic",))
+    profile = RUNNER_PROFILES[PROFILE]
+    register(db)
+    path = credential_row(db, "wf_w", expires_in=-timedelta(minutes=1))
+    step = replace(_task("task_w"), workflow_id="wf_w")
+    answer = credential_for(profile, _tenant(), loop_mod.AccountPool.unwired(scheduler_settings()),
+                            task=step, forge=loop_mod.ForgeConnections(db),
+                            secrets=loop_mod.WorkspaceGrants(db))
+    assert not answer.runnable and not answer.terminal
+    detail = answer.park_detail()
+    assert {k: detail[k] for k in ("credential", "code", "server", "expired_at")} == {
+        "credential": "mcp", "code": "mcp_credential_expired", "server": "kb",
+        "expired_at": db.docs[path]["expires_at"].isoformat(),
+    }
 
 
 def test_a_credential_expiring_is_read_against_the_clock_it_is_given(db):

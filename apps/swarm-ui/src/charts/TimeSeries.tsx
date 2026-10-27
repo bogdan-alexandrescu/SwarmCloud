@@ -54,11 +54,15 @@ import { AxisBottom, AxisLeft } from '@visx/axis'
 import { Group } from '@visx/group'
 import { scaleLinear, scaleUtc } from '@visx/scale'
 import { LinePath } from '@visx/shape'
-import { useId } from 'react'
+import { useId, useSyncExternalStore } from 'react'
 
 import { HELP, helpAnchor } from '../help'
+import { currentZone, subscribeZone } from '../timezone'
 import { DRAWN, drawnClass, type Drawn } from './parts'
 import {
+  axisZone,
+  clockTickText,
+  clockTicks,
   coverageOf,
   inTimeOrder,
   measuredRuns,
@@ -104,14 +108,14 @@ export interface TimeSeriesProps {
 
 // Compact, per D2 (Lens / Nomad density): a 132px plot, 10.5px tick labels,
 // 12px caption. The margins are the smallest that still fit a "$0.0000" tick
-// label and a UTC time without the two colliding.
+// label and a time of day without the two colliding.
 const MARGIN = { top: 10, right: 14, bottom: 22, left: 56 }
 
 /**
  * How many time ticks each drawing asks d3 for (a hint, not a count).
  *
  * The wide drawing keeps the four it always asked for. The narrow one has a
- * 230-unit plot (300 less the margins above), and a UTC tick label at
+ * 230-unit plot (300 less the margins above), and an "HH:MM" tick label at
  * `--t-micro` is about 40 units wide, so it asks for two: d3 then picks an
  * interval at least as long as the wide drawing's, which can only give it the
  * same number of ticks or fewer -- never the wide axis squeezed.
@@ -131,6 +135,11 @@ export function TimeSeries({
   // id. The colons React puts in useId() are legal in an HTML id and in a
   // url(#...) reference, but they break document.querySelector, so they go.
   const hatchId = `ctl-hatch-${useId().replace(/:/g, '')}`
+  // THE TIME AXIS IS ON THE PERSON'S CLOCK (VQ-023; TIMEZONE-SHARED, part of
+  // #2391): its ticks, their words and the caption's zone all come from
+  // `series.ts`, which reads `timezone.ts`. Read here, before any early
+  // return, so a newly picked zone redraws the chart.
+  const zone = useSyncExternalStore(subscribeZone, currentZone, currentZone)
 
   const ordered = inTimeOrder(points)
   const cover = coverageOf(ordered)
@@ -212,6 +221,7 @@ export function TimeSeries({
           yScale={yScale}
           yTicks={yTicks}
           format={format}
+          zone={zone}
         />
       ))}
 
@@ -241,7 +251,7 @@ export function TimeSeries({
                 all {cover.points} {plural(noun, cover.points)}
               </>
             )}
-            . Times UTC.
+            . Times {axisZone(tExtent.lo, tExtent.hi, zone)}.
           </>
         )}
       </figcaption>
@@ -282,6 +292,7 @@ function Plot({
   yScale,
   yTicks,
   format,
+  zone,
 }: {
   d: Drawn
   height: number
@@ -296,6 +307,8 @@ function Plot({
   yScale: LinearScale
   yTicks: number[]
   format: (value: number) => string
+  /** The zone the time axis is drawn in (`currentZone()`). */
+  zone: string
 }) {
   const innerW = Math.max(1, d.w - MARGIN.left - MARGIN.right)
 
@@ -311,7 +324,13 @@ function Plot({
     range: tExtent.degenerate ? [innerW / 2, innerW / 2] : [0, innerW],
   })
 
-  const xTicks = tExtent.degenerate ? [new Date(tExtent.lo)] : undefined
+  // The ticks sit on the zone's wall clock (a day tick at its midnight),
+  // not d3's UTC ones. A span too short to hold a round minute carries its
+  // first instant, as a single point does.
+  const most = Math.min(TIME_TICKS[d.key], ordered.length)
+  const onClock = tExtent.degenerate ? [] : clockTicks(tExtent.lo, tExtent.hi, most, zone)
+  const tickMs = onClock.length > 0 ? onClock : [tExtent.lo]
+  const xTicks = tickMs.map((t) => new Date(t))
   // Wide enough to read as a region rather than as a mark, narrow enough that
   // two adjacent absences stay two.
   const bandW = Math.max(4, Math.min(14, innerW / Math.max(4, ordered.length * 2)))
@@ -434,7 +453,8 @@ function Plot({
           top={innerH}
           scale={xScale}
           tickValues={xTicks}
-          numTicks={Math.min(TIME_TICKS[d.key], ordered.length)}
+          tickFormat={(v) => clockTickText(v instanceof Date ? v.getTime() : Number(v), tickMs, zone)}
+          numTicks={xTicks.length}
           axisClassName="ctl-chart-axis"
           tickClassName="ctl-chart-tick"
           axisLineClassName="ctl-chart-axisline"

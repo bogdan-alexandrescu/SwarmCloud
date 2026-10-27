@@ -199,20 +199,77 @@ trap 'rm -f "${LOOKUP_OUT}" "${LOOKUP_ERR}"' EXIT
 # so on its own `tags:dev` also finds `dev-old`, and a 12-character SHA tag also
 # finds `pr-<run>-<sha>` -- two digests for one question, where the old code
 # silently took whichever came first.
+#
+# RETRIED, BOUNDED (#1822). One transient read used to refuse the image, and
+# so the whole release ("refusing to promote a partial release") over a 503
+# that the next request would have answered. A failed read is retried up to
+# REGISTRY_READ_ATTEMPTS times, waiting REGISTRY_READ_BACKOFF seconds and
+# doubling (2, 4, 8 s: under a quarter of a minute before the refusal). Not
+# retried: a dead session, which the caller's die_if_auth_failure must name at
+# once rather than after the backoff; an answer that is deterministic
+# (PERMISSION_DENIED, NOT_FOUND, INVALID_ARGUMENT, HTTP 400/403/404), which a
+# second identical request gets again; and a successful EMPTY answer -- an
+# absent tag is a fact, not a flake. LOOKUP_ATTEMPTS and LOOKUP_STATUS (the
+# HTTP status gcloud's error named, e.g. "HTTP 503", or empty) say what the
+# final refusal was, for its reason line (lookup_detail).
+REGISTRY_READ_ATTEMPTS=4
+REGISTRY_READ_BACKOFF="${REGISTRY_READ_BACKOFF:-2}"
 DIGEST=""
+LOOKUP_ATTEMPTS=0
+LOOKUP_STATUS=""
 digest_for() {
-  local image="$1" tag="$2"
+  local image="$1" tag="$2" delay="${REGISTRY_READ_BACKOFF}" reason
   DIGEST=""
-  if ! gcloud artifacts docker images list "${image}" \
-       --project "${PROJECT_ID}" --include-tags --filter="tags:${tag}" \
-       --format=json >"${LOOKUP_OUT}" 2>"${LOOKUP_ERR}"; then
-    return 1
-  fi
+  LOOKUP_ATTEMPTS=0
+  LOOKUP_STATUS=""
+  while :; do
+    LOOKUP_ATTEMPTS=$((LOOKUP_ATTEMPTS + 1))
+    if gcloud artifacts docker images list "${image}" \
+         --project "${PROJECT_ID}" --include-tags --filter="tags:${tag}" \
+         --format=json >"${LOOKUP_OUT}" 2>"${LOOKUP_ERR}"; then
+      break
+    fi
+    reason="$(lookup_error)"
+    LOOKUP_STATUS="$(registry_status "${reason}")"
+    if gcloud_auth_failure "${reason}" || registry_read_final "${reason}" \
+       || [[ "${LOOKUP_ATTEMPTS}" -ge "${REGISTRY_READ_ATTEMPTS}" ]]; then
+      return 1
+    fi
+    warn "${image}:${tag}: the registry read failed${LOOKUP_STATUS:+ (${LOOKUP_STATUS})}, attempt ${LOOKUP_ATTEMPTS} of ${REGISTRY_READ_ATTEMPTS}; retrying in ${delay}s"
+    sleep "${delay}"
+    delay=$((delay * 2))
+  done
   DIGEST="$(jq -r --arg t "${tag}" '
       [ .[]
         | select((.tags // []) | (if type == "string" then split(",") else . end) | any(.[]; . == $t))
         | .version ]
       | .[0] // ""' "${LOOKUP_OUT}")" || return 1
+}
+
+# The HTTP status a gcloud error names, as "HTTP 503", or nothing. gcloud
+# words it several ways ("HTTPError 503:", "status 429", "code=503").
+registry_status() {
+  local code
+  code="$(printf '%s\n' "$1" | grep -oiE '(http ?(error)?|status|code)[ =:]*[1-5][0-9][0-9]' | head -n 1 | grep -oE '[0-9]{3}$' || true)"
+  [[ -z "${code}" ]] || printf 'HTTP %s' "${code}"
+}
+
+# Is this failed read one that asking again cannot change?
+registry_read_final() {
+  case "$1" in
+    *PERMISSION_DENIED*|*NOT_FOUND*|*INVALID_ARGUMENT*) return 0 ;;
+  esac
+  case "$(registry_status "$1")" in
+    "HTTP 400"|"HTTP 403"|"HTTP 404") return 0 ;;
+  esac
+  return 1
+}
+
+# The last failed read, for a refusal: "HTTP 503, 4 attempts".
+lookup_detail() {
+  local plural="s"
+  [[ "${LOOKUP_ATTEMPTS}" -ne 1 ]] || plural=""
+  printf '%s%s attempt%s' "${LOOKUP_STATUS:+${LOOKUP_STATUS}, }" "${LOOKUP_ATTEMPTS}" "${plural}"
 }
 
 # gcloud's reason, without its "Listing items under ..." chatter.
@@ -295,9 +352,9 @@ for target in "${TARGETS[@]}"; do
     die_if_auth_failure "${reason}"
     # Say what actually went wrong. A permission problem and a missing image
     # need opposite responses, and only one of them is fixed by rebuilding.
-    err "${image}:${TAG}: could not resolve a digest"
+    err "${image}:${TAG}: could not resolve a digest ($(lookup_detail))"
     [[ -z "${reason}" ]] || printf '%s\n' "${reason}" | redact | sed -n '1,3s/^/     /p' >&2
-    refuse "${target}" "could not resolve :${TAG} (registry unreadable)"
+    refuse "${target}" "could not resolve :${TAG} (registry unreadable: $(lookup_detail))"
     continue
   elif [[ -z "${DIGEST}" ]]; then
     err "${image}:${TAG} not found in Artifact Registry -- build it first"
@@ -313,9 +370,9 @@ for target in "${TARGETS[@]}"; do
   if ! digest_for "${image}" "${CHANNEL}"; then
     reason="$(lookup_error)"
     die_if_auth_failure "${reason}"
-    err "${image}:${CHANNEL}: could not read what the channel points at now, so a failed promotion could not be undone"
+    err "${image}:${CHANNEL}: could not read what the channel points at now ($(lookup_detail)), so a failed promotion could not be undone"
     [[ -z "${reason}" ]] || printf '%s\n' "${reason}" | redact | sed -n '1,3s/^/     /p' >&2
-    refuse "${target}" "could not read the current :${CHANNEL}"
+    refuse "${target}" "could not read the current :${CHANNEL} ($(lookup_detail))"
     continue
   fi
   if [[ -n "${DIGEST}" ]]; then
@@ -337,12 +394,30 @@ if [[ "${SCAN}" -eq 1 ]]; then
   # dated, so one that outlives its date fails this scan again rather than
   # quietly becoming permanent.
   image_scan_args
+  # The DB once, retried, before the first scan (lib/image-scan.sh). Without it
+  # no image can be scanned, so every image is refused -- as a scanner error,
+  # not as findings: the fix is a re-run, not a dependency bump (#2379).
+  SCAN_DB=1
+  if [[ "${#R_NAME[@]}" -gt 0 ]]; then
+    step "Download trivy's vulnerability DB"
+    image_scan_db || SCAN_DB=0
+  fi
   for ((i = 0; i < ${#R_NAME[@]}; i++)); do
     target="${R_NAME[$i]}"
     step "Scan ${target} (${SEVERITY})"
-    if ! "${TRIVY_BIN}" "${IMAGE_SCAN_ARGS[@]}" "${R_IMAGE[$i]}@${R_DIGEST[$i]}" 2>&1 | redact; then
+    rc=0
+    if [[ "${SCAN_DB}" -eq 1 ]]; then
+      "${TRIVY_BIN}" "${IMAGE_SCAN_ARGS[@]}" "${R_IMAGE[$i]}@${R_DIGEST[$i]}" 2>&1 | redact || rc=$?
+    else
+      rc=1
+    fi
+    if [[ "${rc}" -eq "${IMAGE_SCAN_FINDINGS_RC}" ]]; then
       err "${target}: trivy found unfixed-excluded ${SEVERITY} vulnerabilities; refusing to promote"
       refuse "${target}" "trivy: fixable ${SEVERITY} findings"
+      continue
+    elif [[ "${rc}" -ne 0 ]]; then
+      err "trivy could not scan ${target} (DB download/scanner error, see above); this is not a finding, and an unscanned image is not promoted"
+      refuse "${target}" "trivy could not scan it (scanner error, not a finding)"
       continue
     fi
     ok "scan clean"

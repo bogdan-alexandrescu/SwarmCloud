@@ -87,6 +87,11 @@ CHILDREN_READ = 100
 #: Pending check names a summary names before "...".
 SUMMARY_NAMES = 3
 
+#: The `credential` of a park waiting for a workflow's caller to re-store an
+#: MCP credential: `mcp_credentials.PARK_CREDENTIAL`, spelled again so this
+#: pure module imports nothing that reads Firestore.
+MCP_PARK_CREDENTIAL = "mcp"
+
 #: Parks whose `next_eligible_at` is the time the scheduler may next act.
 _TIMED = frozenset({
     ParkReason.PROVIDER_QUOTA_EXHAUSTED.value,
@@ -694,6 +699,25 @@ def _credential(task: Task, facts: dict[str, Any]) -> dict[str, Any]:
     }
     summary = "Credential missing" + (f": {', '.join(names)}" if names else "")
     resumes = "the tenant registers the credential and the scheduler's credential sweep finds it"
+    if facts.get("credential") == MCP_PARK_CREDENTIAL:
+        # A workflow's per-run MCP credential lapsed while the step waited
+        # (registered-mcp-servers.md §4.10, BGD 2026-10-26): its caller
+        # re-stores it. What a caller reads, by name and never a value:
+        # `credential`, `code`, `server` (the name its re-store keys by) and
+        # `expired_at`, as the park's `blocked_by[]` entry holds them.
+        server = _str(facts.get("server"))
+        detail.update({
+            "reason": ParkReason.CREDENTIAL_MISSING.value,
+            "credential": MCP_PARK_CREDENTIAL,
+            "code": _str(facts.get("code")),
+            "server": server,
+            "expired_at": _as_dt(facts.get("expired_at")),
+            "restore_route": (f"PUT /v1/workflows/{task.workflow_id}/mcp-credentials"
+                              if task.workflow_id else None),
+        })
+        summary = f"MCP credential expired: {server}" if server else "MCP credential expired"
+        resumes = ("the workflow's caller re-stores the credential "
+                   "(PUT /v1/workflows/{id}/mcp-credentials)")
     return {"detail": detail, "summary": summary, "resumes_when": resumes, "since": None}
 
 

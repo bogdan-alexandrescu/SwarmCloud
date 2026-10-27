@@ -219,6 +219,23 @@ SWITCHES: dict[str, Switch] = {
         "naming the tenant the call resolved to, instead of a bare not found. On once swarm-mcp "
         "and the coordinator callers that re-read with the launch's tenant are deployed",
     ),
+    # Lane MCP-KEY-PARK (docs/design/registered-mcp-servers.md §4.10): the
+    # re-store of a workflow's MCP credentials. The refusals are ALWAYS made;
+    # off, each is answered with the same status and message under the
+    # established code (`conflict` 409, `forbidden` 403), as the egress codes
+    # below are.
+    "workflow_finished": Switch(
+        code="workflow_finished",
+        why="a re-store of a finished workflow's MCP credentials is answered 409 "
+        "workflow_finished instead of 409 conflict with the same message. On once Product "
+        "Oracle's re-store call reads the code",
+    ),
+    "mcp_credential_restore_forbidden": Switch(
+        code="mcp_credential_restore_forbidden",
+        why="a re-store of a workflow's MCP credentials by anyone but its submitter or a "
+        "workspace admin is answered 403 mcp_credential_restore_forbidden instead of 403 "
+        "forbidden with the same message. On once a caller reads the code",
+    ),
     # Lane EGRESS-SVC (docs/browser-egress.md §2.2): the attempt egress ticket
     # route. Off, each is answered with the same status and message under the
     # established code (`conflict` 409 or `forbidden` 403); egress_unavailable
@@ -440,6 +457,32 @@ SWITCHES: dict[str, Switch] = {
         why="enabling a grant on a repository secret where the deployment has no "
         "swarm-workspace-grant-key is refused 422 instead of writing a grant the release "
         "will never honour. On once every environment holds the grant key",
+    ),
+    # Lane BUDGET-CAP (#2459, `budget`): a step's budget above the workspace
+    # default or the platform ceiling, and a workspace default above the
+    # ceiling. SHIP ON (default=True) by BGD's answer of 2026-10-26 (~22:15Z,
+    # question 5, "enforce at once"), unlike a new refusal's usual
+    # report-only start (the 2026-10-08 rule): no caller sends a `budget`
+    # before this feature, so the first deploy refuses nobody who worked
+    # before it. Off loses no limit, which is why the switch stays: every
+    # attempt's limit is min(step, workspace, ceiling), so off, the step still
+    # runs under the lower limit and the default is still capped by the
+    # ceiling. Set REFUSAL_BUDGET_ABOVE_LIMIT=off or
+    # REFUSAL_BUDGET_ABOVE_CEILING=off to let the request through again.
+    "budget_above_limit": Switch(
+        code="budget_above_limit",
+        why="a task or workflow step whose `budget` is above the workspace's default or the "
+        "platform ceiling in the same unit is refused 422, naming both, instead of running "
+        "under the lower limit. Ships on by BGD's decision 2026-10-26 (enforce at once); "
+        "off, the step runs under the lower limit",
+        default=True,
+    ),
+    "budget_above_ceiling": Switch(
+        code="budget_above_ceiling",
+        why="a workspace budget default above the platform ceiling in its unit is refused 422 "
+        "naming the ceiling, instead of being saved and capped at every resolution. Ships on "
+        "by BGD's decision 2026-10-26 (enforce at once); off, the default is saved and capped",
+        default=True,
     ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",

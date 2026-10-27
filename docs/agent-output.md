@@ -364,10 +364,10 @@ pull request from the issue without saying so. The owner decided two things.
 
 **Proposal A: one fixed paragraph ends every prompt with a repository.** A
 claude-code or codex agent whose agent starts in a checkout gets, after the
-deliverables line and the questions sentence:
+deliverables line, the questions sentence and the time-limit line (below):
 
 ```
-You do not push or open a pull request; the worker publishes your committed branch. Commit your work. Write the pull request's title (one line) to $SWARM_ARTIFACTS_DIR/pr-title.txt and its body to $SWARM_ARTIFACTS_DIR/pr-body.md. Do not say in your answer that no pull request exists because you lack GitHub credentials: the worker opens it after you finish.
+You do not push or open a pull request; the worker publishes your committed branch. Commit your work. Write the pull request's title (one line) to $SWARM_ARTIFACTS_DIR/pr-title.txt and its body to $SWARM_ARTIFACTS_DIR/pr-body.md. Do not say in your answer that no pull request exists because you lack GitHub credentials: the worker opens it after you finish. If the work is already done and nothing needs changing, commit nothing and write $SWARM_ARTIFACTS_DIR/verification.md saying what you checked and what showed it is done; that ends the step as no change instead of a failure. Keep your commits on the branch you were cloned onto: to build on another branch, fetch it and merge it in (git merge FETCH_HEAD); never git checkout -B, git switch or git reset onto another line, because commits that do not descend from the commit you started on are discarded.
 ```
 
 It is `cliagent.PUBLISH_PARAGRAPH`, appended once in `run_cli_agent` for both
@@ -376,6 +376,50 @@ or credential markers a CLI that echoes its prompt would trip. An agent with no
 repository does not get it, and neither does a resumed session, which already
 holds it. It goes to every step with a repository, a review included: the
 worker's strategy, not the agent, decides whether anything is pushed.
+
+**The no-change sentence (#2140)** names the file the worker reads as
+"nothing to change, and here is why": an agent that finds its work already
+done and writes only `pr-body.md` fails `published_nothing` and cancels its
+dependants, as build-170 did. See "Or the agent says why: `verification.md`
+(Proposal J)" under
+[An empty diff can succeed](workflows.md#an-empty-diff-can-succeed-allow_empty_diff).
+A CI-fix round (`scripts/ci-fix.sh`) is told the same file for "no change on
+this branch can fix it"; that ends the fix step `no_change`, and the pull
+request it was fixing stays red, so nothing merges it.
+
+**The last sentence is the descent rule (#2277).** The worker discards a moved
+HEAD that does not descend from the commit the step was cloned at
+(`Worker._head_moved`), and the paragraph used to say only that the worker
+publishes the committed branch: an agent ran `git checkout -B fix-516
+FETCH_HEAD`, committed there for 85 turns, and every commit was dropped (and
+task_7e644638 ran `git reset --hard` on 2026-10-26). The discard is right -- a
+branch that does not descend from the step's start is not this step's work --
+so the prompt states the rule instead: merge another branch in, never move
+onto it.
+
+**The step's wall clock comes just before the paragraph (#2139).** On
+2026-10-23 three claude-code agents started their tenant's whole pytest suite
+in the background, polled it with ~600 s `sleep` calls, and were killed
+mid-sleep at their 7200 s limit (exit 137); one had given its suite a
+`timeout 7000`, longer than its own step. Nothing had told them the limit:
+`run_cli_agent` resolved it only after building the prompt, at the deadline
+the runner terminates the CLI without a word, and the finish pass only follows
+a CLI that ended by itself. So every fresh claude-code and codex prompt
+carries one line from `cliagent.time_limit_line`, naming the limit in whole
+minutes and the UTC time it ends, and saying to commit and write the pull
+request's title and body well before then and not to run the whole suite in
+the background polled with sleep. It sits just before the paragraph above,
+which still ends the prompt, and is the last paragraph of a prompt with no
+repository.
+
+A run on a pool account, whose stream the runner reads as it is written, is
+also stopped at its first turn boundary once less than `wrap_up_margin` is
+left (ten minutes, or a quarter of a short limit), and resumed once with
+`WRAP_UP_PROMPT` followed by a limit line naming what is left. That pass is
+never armed again, and a run that reaches no turn boundary, or is not watched,
+is killed at the hard deadline exactly as before. A resumed session (an
+account move, a credential reload) and the finish pass are not given a limit
+line yet: the session still holds the end time it was first told.
 
 **Proposal B: an issue step is asked for its title, and a missing one is
 visible.** `pr-title.txt` is now an expected output of every step that opens a
@@ -737,6 +781,39 @@ How a step gets its model, and what refuses it:
   by `model` and by `model_class` from these fields.
 * Changing a class's model is an edit to `local.runner_models` and a release;
   nothing a caller sends changes it.
+
+### The agent is told its memory budget (#2504)
+
+Five claude-code attempts (f-013, f-014, f-039, f-040, f-041) ran `pytest -n
+8`, `tsc` with `NODE_OPTIONS=--max-old-space-size=5000` and resident dev
+servers (`next dev`, `uvicorn`, `postgres`) inside 5 and 8 GiB containers. The
+kernel OOM-killed the whole container, the worker with it, and every one ended
+`lost_worker`. Nothing had told the agent what it had: `nproc` said 6, and
+neither its env nor its prompt named the memory.
+
+So `cliagent.run_cli_agent` reads the container's cgroup `memory.max` and
+`cpu.max` (through `metrics.cgroup_memory_max` and
+`metrics.cgroup_cpu_limit_cores`; the runner and the agent share the
+container) and the agent CLI's env carries:
+
+| variable | value |
+|---|---|
+| `SWARM_MEMORY_LIMIT_BYTES` | `memory.max`, in bytes |
+| `PYTEST_XDIST_AUTO_NUM_WORKERS` | max(1, min(floor(CPU limit), (limit − 2 GiB) // 1 GiB)): 6 at 8 GiB/6 CPU, 3 at 5 GiB/6 CPU, 2 at 5 GiB/2 CPU |
+
+The 2 GiB is what the worker, the CLI and the node toolchain keep resident
+(f-039's baseline was 1.47 GB before the agent ran anything); the 1 GiB is
+what one xdist worker of the api suite measured. With no CPU limit the cap is
+`os.cpu_count()`. Both are set after the runner's `extra_env` and are not
+passthroughs, so nothing a caller or the environment sends replaces them.
+
+`PYTEST_XDIST_AUTO_NUM_WORKERS` caps `-n auto` only, so a first start's prompt
+also carries one line (`cliagent.budget_line`), after the caller's prompt and
+before the platform's instructions, for an agent with a repository or without:
+the budget in GiB, stop the dev servers before tsc or the tests, never pass
+`pytest -n` above the worker count, never set `--max-old-space-size` above the
+budget. A resumed session is not told again; the session already holds the
+line. An unknown `memory.max` sets neither variable and adds no line.
 
 ## Two kinds of stdout, and the label that was wrong
 

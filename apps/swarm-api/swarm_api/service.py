@@ -47,6 +47,7 @@ from swarm_common.models import (
 from swarm_common.profiles import RUNNER_PROFILES, effective_size, resolve_backend
 from swarm_common.states import ParkReason, TaskState, assert_transition
 
+from . import budget as budget_mod
 from . import gitidentity, publishtopr, runnersizes
 from .auth import AuthContext
 from .codec import hard_limit_known, quota_to_api
@@ -616,6 +617,7 @@ class SubmissionService:
         mcp_credentials: Mapping[str, Any] | None = None,
         mcp_whole_submission: bool = True,
         mcp_inherited: McpInheritance | None = None,
+        budget_scope: tuple[budget_mod.Limits, budget_mod.Limits] | None = None,
     ) -> Task:
         # `submitted_by` is set only by the child route (swarm_api.children),
         # which has no person on the call: a child's submitter is its parent's,
@@ -689,6 +691,16 @@ class SubmissionService:
                    if resource_class_override is not None else None),
         )
         timeout = validate_timeout(profile, spec.timeout_seconds)
+        # THE BUDGET (#2459), for a task, a batch entry, a workflow step and a
+        # child alike: the step's own may only LOWER the limit, and the
+        # attempt's is min(step, workspace, ceiling), each unit on its own.
+        # `budget_scope` is (workspace default, ceiling), read once by a
+        # caller that builds many tasks; read here otherwise.
+        step_budget = budget_mod.step_limits(spec.budget)
+        workspace_budget, budget_ceiling = budget_scope or self.budget_scope(tenant.tenant_id)
+        budget_mod.refuse_step_above(step_budget, workspace_budget, budget_ceiling,
+                                     step_id=step_id)
+        resolved_budget = budget_mod.resolve(step_budget, workspace_budget, budget_ceiling)
         # The model class, by name, and `Task.model` from its pin (#1435,
         # docs/design/model-per-step.md §4.4). For a task, a batch entry, a
         # workflow step and a child alike: each reaches here with its own
@@ -707,6 +719,13 @@ class SubmissionService:
         # override the workflow's choice.
         metadata = dict(spec.metadata)
         metadata[DISPATCH_METADATA_KEY] = dispatch.to_metadata()
+        # Pinned inside the signed dispatch block, which no caller can write
+        # (`reject_reserved_metadata`), and only when there is a budget: with
+        # none, the block is byte for byte what it was before #2459.
+        if resolved_budget is not None:
+            metadata[DISPATCH_METADATA_KEY][budget_mod.DISPATCH_KEY] = budget_mod.dispatch_block(
+                resolved_budget, step=step_budget, workspace=workspace_budget,
+                ceiling=budget_ceiling)
         # A `browser_if_ui` step (#2322): stored on the browser, with the
         # `code` profile's own fields beside it, each checked here exactly as
         # if the step had named that profile, so a swap at READY can only
@@ -1016,6 +1035,7 @@ class SubmissionService:
         tenant = self.tenant_for(ctx)
         self.workspace_gate(ctx, tenant)
         now = self._now()
+        budget_scope = self.budget_scope(tenant.tenant_id)
         try:
             # Inside the try so a refused dispatch is counted like every other
             # rejected submission rather than being invisible to the metric.
@@ -1025,6 +1045,7 @@ class SubmissionService:
                     tenant=tenant,
                     ctx=ctx,
                     now=now,
+                    budget_scope=budget_scope,
                     dispatch=self._with_publish_target(
                         resolve_dispatch_options(
                             strategy=spec.strategy,
@@ -1360,6 +1381,9 @@ class SubmissionService:
         # Read once, at submission (#638): the gated step files its review's
         # minors on this issue, and a later change reaches later workflows.
         findings_epic = self._store.get_findings_epic(tenant.tenant_id)
+        # Read once for every step (#2459): each step resolves its budget
+        # against the same workspace default and ceiling.
+        budget_scope = self.budget_scope(tenant.tenant_id)
         # Lane MS1, read once at submission like the epic: the default branch
         # the tenant registered this repository with, which the merge step
         # refuses any other base against (`base_not_default`, MS3).
@@ -1441,6 +1465,7 @@ class SubmissionService:
                            and step_id == merge_plan.merge_step else {}),
                     },
                     timeout_seconds=source.timeout_seconds,
+                    budget=source.budget,
                     model_class=source.model_class,
                     # A merge step waits for CI by failing its attempt while a
                     # required check runs, so it gets more attempts than an
@@ -1464,6 +1489,7 @@ class SubmissionService:
                 # The workflow's map serves every step (§4.3); checked whole above.
                 mcp_credentials=spec.mcp_credentials,
                 mcp_whole_submission=False,
+                budget_scope=budget_scope,
             )
             if after_prs and not source.depends_on:
                 # SPEED-D3: a root step waits for the pull requests to merge,
@@ -1847,6 +1873,15 @@ class SubmissionService:
         """The `merge_policy` the tenant registered this repository with, or
         None when it is unregistered or set none (the platform default then)."""
         return merge_policy_of(self._registration(tenant_id, repository_url))
+
+    def budget_scope(self, tenant_id: str) -> tuple[budget_mod.Limits, budget_mod.Limits]:
+        """(the workspace's budget default, the platform ceiling), as they
+        read now (#2459): what `_build_task` resolves every step against."""
+        workspace = budget_mod.BudgetStore(
+            self._store.db, now=self._now, mac=settings_mac(self._settings)).default(tenant_id)
+        ceiling = budget_mod.ceiling_of(
+            self._store.get_platform_settings().get(budget_mod.CEILING_SETTING))
+        return workspace, ceiling
 
     def _merge_mode(self, tenant_id: str, repository_url: str | None) -> str:
         """The mode `tenant_id`'s merge step merges this repository in: the

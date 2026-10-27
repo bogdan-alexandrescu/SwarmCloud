@@ -497,3 +497,63 @@ def test_the_rows_kept_on_the_pass_are_bounded_and_the_rest_counted(db, config):
     assert report.workflow_check["rows_dropped"] == 1
     assert report.workflow_check["repaired"] == 3
     assert all(db.doc(f"workflows/wf_{n}")["state"] == "PARKED" for n in range(3))
+
+
+# --------------------------------------------------------------------------
+# More live workflows than one read takes (#1822 comment 10)
+# --------------------------------------------------------------------------
+
+
+class _RecordingStore(ControlStore):
+    """Notes which workflows each pass's stall check was handed."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.passes: list[set[str]] = []
+
+    def workflows_for_stall_check(self, **kwargs: Any) -> Any:
+        read = super().workflows_for_stall_check(**kwargs)
+        self.passes.append({w.workflow_id for w in read.workflows})
+        return read
+
+
+def test_every_live_workflow_is_checked_within_ceil_n_over_limit_passes(db, config):
+    """2 x the scan limit live workflows: the first page must not be the only one ever read."""
+    from dataclasses import replace
+
+    limit = 3
+    ids = [f"wf_{n:02d}" for n in range(2 * limit)]
+    for n, workflow_id in enumerate(ids):
+        seed_workflow(db, [(f"s{n}", f"task_{n}", ())], workflow_id=workflow_id)
+        seed_task(db, f"task_{n}", TaskState.RUNNING, ago=timedelta(minutes=1))
+    # A dry run writes nothing, so no workflow ever leaves the live set.
+    cfg = replace(config, workflow_scan_limit=limit, dry_run=True)
+    logger = build_logger(stream=io.StringIO())
+    store = _RecordingStore(db, logger=logger, txn_runner=FakeTransactionRunner(db))
+    rec = Reconciler(store=store, backends=[FakeBackend(journal=db.writes)], config=cfg,
+                     logger=logger, hold_releaser=None)
+
+    reports = [rec.run_once() for _ in range(-(-len(ids) // limit))]
+
+    assert set().union(*store.passes) == set(ids)
+    assert reports[0].workflow_check["truncated"] is True
+
+
+def test_the_workflow_window_returns_to_the_top_after_a_short_page(db, config):
+    from dataclasses import replace
+
+    limit = 3
+    ids = [f"wf_{n:02d}" for n in range(limit + 1)]
+    for n, workflow_id in enumerate(ids):
+        seed_workflow(db, [(f"s{n}", f"task_{n}", ())], workflow_id=workflow_id)
+        seed_task(db, f"task_{n}", TaskState.RUNNING, ago=timedelta(minutes=1))
+    cfg = replace(config, workflow_scan_limit=limit, dry_run=True)
+    logger = build_logger(stream=io.StringIO())
+    store = _RecordingStore(db, logger=logger, txn_runner=FakeTransactionRunner(db))
+    rec = Reconciler(store=store, backends=[FakeBackend(journal=db.writes)], config=cfg,
+                     logger=logger, hold_releaser=None)
+
+    for _ in range(3):
+        rec.run_once()
+
+    assert store.passes == [set(ids[:limit]), set(ids[limit:]), set(ids[:limit])]

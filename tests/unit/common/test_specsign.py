@@ -206,7 +206,7 @@ GOLDEN_DOC = {
     "tenant_id": "eng",
     "workflow_id": "wf_1",
     "step_id": "review",
-    "submitted_by": "alice@saga.xyz",
+    "submitted_by": "alice@example.com",
     "runner_profile": "claude-code",
     "resource_class": "standard",
     "timeout_seconds": 3600,
@@ -236,10 +236,16 @@ GOLDEN_BYTES = (
     b'"model":null,"provider":"anthropic","purpose":"swarm.step-spec",'
     b'"repository_ref":"main","repository_url":"https://github.com/acme/widgets.git",'
     b'"resource_class":"standard","runner_profile":"claude-code","step_id":"review",'
-    b'"submitted_by":"alice@saga.xyz","task_id":"task_0123456789abcdef","tenant_id":"eng",'
+    b'"submitted_by":"alice@example.com","task_id":"task_0123456789abcdef","tenant_id":"eng",'
     b'"timeout_seconds":3600,"workflow_id":"wf_1"}'
 )
-GOLDEN_SHA256 = "86d2a8f146e6f700c19d6ed76ca53fd0e861c43b2793eb76f5301d688f785f4e"
+#: Re-pinned 2026-10-27 (#1647), when the submitter moved from an address on
+#: the company's domain to `alice@example.com`. The projection did not change:
+#: the same code projected the old dict to the old digests (86d2a8f1... for
+#: format 1) in CI on bce4b22, and every PRE_FORMAT_N_DIGESTS pin below was
+#: re-derived from this dict by that same code, so each still pins exactly
+#: what format N projected before format N+1 existed.
+GOLDEN_SHA256 = "1cad639b899f653bf00a5b9217592ba3a5b177449503aad9997b8b7df26b6c32"
 
 
 def test_the_golden_vector():
@@ -255,6 +261,14 @@ def test_the_golden_vector():
     assert specsign.SPEC_FORMATS == (1, 2, 3, 4, 5)
     assert specsign.SPEC_PURPOSE == "swarm.step-spec"
 
+
+
+def test_the_golden_vector_names_an_example_identity():
+    """#1647: the vector's submitter is RFC 2606 example data, not an address
+    on the company's real domain, in the dict and in the bytes alike."""
+    assert GOLDEN_DOC["submitted_by"] == "alice@example.com"
+    assert b'"submitted_by":"alice@example.com"' in GOLDEN_BYTES
+    assert b"saga" not in GOLDEN_BYTES
 
 GOLDEN_BYTES_V2 = (
     GOLDEN_BYTES.replace(b'"format":1,', b'"format":2,')
@@ -328,9 +342,10 @@ def test_a_missing_key_reads_as_null_and_a_missing_metadata_as_empty():
 #: BEFORE format 3 existed (2026-10-07, at f7b22be) and pinned here, so this
 #: change cannot have moved them: a signature swarm-api made then is a
 #: signature over exactly these digests.
+#: Re-derived for the example.com submitter (#1647): see GOLDEN_SHA256.
 PRE_FORMAT_3_DIGESTS = {
-    1: "86d2a8f146e6f700c19d6ed76ca53fd0e861c43b2793eb76f5301d688f785f4e",
-    2: "6db82cf17b794a27ee4e975130d43fbc94ae957b443297c0597abb6a9f2e6ef3",
+    1: "1cad639b899f653bf00a5b9217592ba3a5b177449503aad9997b8b7df26b6c32",
+    2: "fe4f931bf84dd4f4ddccc1462050260174131f07276cbe0a9c82770282ee8362",
 }
 
 CHILD_DOC = {**GOLDEN_DOC, "parent_task_id": "task_parent", "parent_attempt_id": "att_parent"}
@@ -423,10 +438,11 @@ def test_a_forge_field_added_to_an_older_format_has_no_canonical_form(spec_forma
 #: SHA-256 of formats 1-3's canonical bytes, computed by the code BEFORE format
 #: 4 existed (2026-10-18, at 2c0d5a7) and pinned here: a signature swarm-api
 #: made then is over exactly these digests, so format 4 cannot have moved them.
+#: Re-derived for the example.com submitter (#1647): see GOLDEN_SHA256.
 PRE_FORMAT_4_DIGESTS = {
-    1: "86d2a8f146e6f700c19d6ed76ca53fd0e861c43b2793eb76f5301d688f785f4e",
-    2: "6db82cf17b794a27ee4e975130d43fbc94ae957b443297c0597abb6a9f2e6ef3",
-    3: "6467e402bcc8f904be57fb2a8588f8c6f0b4a7a04d12adfb53a5dfe430b5301f",
+    1: "1cad639b899f653bf00a5b9217592ba3a5b177449503aad9997b8b7df26b6c32",
+    2: "fe4f931bf84dd4f4ddccc1462050260174131f07276cbe0a9c82770282ee8362",
+    3: "8416ce0beb1b5d75dba6516146097fb5d2b0ba3bd6f2c8b83d42b96416a10109",
 }
 
 EXTRA = {
@@ -500,9 +516,10 @@ def test_additional_repositories_added_to_an_older_format_have_no_canonical_form
 #: SHA-256 of formats 1-4's canonical bytes, computed by the code BEFORE format
 #: 5 existed (2026-10-18, at a989111) and pinned here: a signature swarm-api
 #: made then is over exactly these digests, so format 5 cannot have moved them.
+#: Re-derived for the example.com submitter (#1647): see GOLDEN_SHA256.
 PRE_FORMAT_5_DIGESTS = {
     **PRE_FORMAT_4_DIGESTS,
-    4: "e5a3ee7efd9d9b7fe8d1bd1785739fc66ef7fe56dfbab715606087196fe38f30",
+    4: "da84e0f44fc9c029b3ca7c1b0a67a4a44af1673ef32519c63e6ef226ede54bb4",
 }
 
 MULTI_DOC = {**GOLDEN_DOC, **FORGE, "additional_repositories": [EXTRA]}

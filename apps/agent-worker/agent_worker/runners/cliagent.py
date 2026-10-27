@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import os
 import re
 import shutil
@@ -45,7 +46,8 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
@@ -54,6 +56,7 @@ from swarm_redaction import redact as redact_text
 from .. import expected_outputs as expected_mod
 from .. import indexspec
 from .. import issue as issue_mod
+from .. import metrics
 from ..cachedirs import AGENT_CACHE_ENV
 from ..gitidentity import GIT_IDENTITY_ENV
 from ..logs import StructuredLogger
@@ -66,6 +69,7 @@ from .base import (
     RunnerContext,
     RunnerFailure,
 )
+from .budgetwatch import BudgetStreamWatcher, budget_watcher
 from .limits import platform_ceilings, resolve_limits
 from .streams import AgentStreamFiles
 
@@ -104,6 +108,9 @@ _SENSITIVE_PASSTHROUGH: tuple[str, ...] = ("HTTPS_PROXY", "HTTP_PROXY", "TYPESAF
 #: node CPU and was OOM-killed at 8 GiB (task_45e9d3b7c0264ef78091). The
 #: worker sets it for this process (`lifecycle._build_child_env`); it is a
 #: task id, never a secret.
+#: The memory budget (MEMORY_LIMIT_ENV, XDIST_WORKERS_ENV, #2504) is NOT a
+#: passthrough: this process reads it from the cgroup and sets it after
+#: `extra_env`, so no environment value replaces it.
 _PLAIN_PASSTHROUGH: tuple[str, ...] = (
     "NO_PROXY",
     "NODE_EXTRA_CA_CERTS",
@@ -111,6 +118,65 @@ _PLAIN_PASSTHROUGH: tuple[str, ...] = (
     *(name for name in AGENT_CACHE_ENV if name != "TMPDIR"),
     "SWARM_TASK_ID",
 )
+
+# ---------------------------------------------------------------------------
+# The agent's memory budget (#2504)
+# ---------------------------------------------------------------------------
+#
+# Five claude-code attempts (f-013, f-014, f-039, f-040, f-041) ran `pytest -n
+# 8`, `tsc` with `--max-old-space-size=5000` and resident dev servers inside 5
+# and 8 GiB containers. The kernel OOM-killed the whole container, the worker
+# with it, and each attempt ended `lost_worker`. Nothing told the agent what it
+# had: `nproc` said 6 and no variable or prompt line named the memory. So the
+# agent's env carries the limit and a worker count, and its first prompt says
+# what to do with them. PYTEST_XDIST_AUTO_NUM_WORKERS caps `-n auto` only; the
+# prompt line is what covers an explicit `-n`.
+
+#: The container's `memory.max`, in bytes, as the agent's env carries it.
+MEMORY_LIMIT_ENV = "SWARM_MEMORY_LIMIT_BYTES"
+#: What pytest-xdist's `-n auto` uses instead of the CPU count.
+XDIST_WORKERS_ENV = "PYTEST_XDIST_AUTO_NUM_WORKERS"
+_GIB = 1 << 30
+#: Kept out of the test workers' share: the worker, the agent CLI and the node
+#: toolchain stay about 2 GiB resident (f-039's baseline was 1.47 GB before
+#: the agent ran anything).
+AGENT_MEMORY_HEADROOM_BYTES = 2 * _GIB
+#: What one xdist worker of the api suite measured, about 1 GiB resident.
+XDIST_WORKER_BYTES = 1 * _GIB
+
+
+def agent_resource_budget(memory_max: int | None, cpu_cores: float | None) -> dict[str, str]:
+    """The budget variables for the agent's env; empty when `memory.max` is unknown.
+
+    Workers: (limit - headroom) // per-worker, capped at the CPU limit (or,
+    when that is unknown, at `os.cpu_count()`), and never below 1.
+    """
+    if memory_max is None or memory_max <= 0:
+        return {}
+    cap = math.floor(cpu_cores) if cpu_cores else (os.cpu_count() or 1)
+    workers = max(1, min(cap, (memory_max - AGENT_MEMORY_HEADROOM_BYTES) // XDIST_WORKER_BYTES))
+    return {MEMORY_LIMIT_ENV: str(memory_max), XDIST_WORKERS_ENV: str(workers)}
+
+
+def container_limits() -> tuple[int | None, float | None]:
+    """This container's cgroup `memory.max` and `cpu.max` (cores), each None if unknown."""
+    return metrics.cgroup_memory_max(), metrics.cgroup_cpu_limit_cores()
+
+
+def _gib(size: int) -> str:
+    return f"{round(size / _GIB, 1):g} GiB"
+
+
+def budget_line(memory_max: int, workers: int) -> str:
+    """The one prompt line that states the budget, for a first start."""
+    return (
+        f"Memory budget: this container has {_gib(memory_max)} (${MEMORY_LIMIT_ENV}), and "
+        "at that limit the kernel kills the whole container, this attempt with it. Stop "
+        "any dev server you started (next dev, uvicorn, postgres) before running tsc or "
+        f"the tests; never pass pytest -n above {workers} (${XDIST_WORKERS_ENV}, which "
+        "-n auto already uses); never set --max-old-space-size above "
+        f"{memory_max // (1 << 20)} (MiB, the whole {_gib(memory_max)})."
+    )
 
 #: Substrings that mean "the provider said no, try later".
 _RATE_LIMIT_MARKERS = (
@@ -326,6 +392,12 @@ class CliAgentSpec:
     #: (`codex.latest_session`); claude-code's stream-json names it on every
     #: event, so it needs none.
     session_locator: Callable[[Path, float], str | None] | None = None
+    #: The files, under the CLI's HOME, whose lines carry its running usage
+    #: when its stream reports usage only at the end of a start: the budget
+    #: watcher reads what each gains while the start runs. codex's rollouts
+    #: (`codex.rollout_files`, BGD's pick "Also read the rollout",
+    #: 2026-10-27); claude-code's stream reports every message, so it needs none.
+    usage_files: Callable[[Path], list[Path]] | None = None
     #: Directories put BEFORE `BASE_PATH` in the CLI's PATH, which its tools
     #: inherit. Platform constants from the runner module, never caller input.
     #: claude-code on the browser image puts /opt/venv/bin first, so the
@@ -564,6 +636,9 @@ class AccountStreamWatcher:
         self.turns = 0
         self.exhausted = False
         self.stopped_for: str | None = None
+        #: Stopped at a turn boundary to wrap up before the limit (#2139).
+        #: Never `stopped_for`, which the worker reads as a swap.
+        self.stopped_to_wrap_up = False
         #: The provider error the run ended in, for the account's health
         #: (`classify_account_error`): {"kind", "message"}, set by `judge`.
         self.error: dict[str, str] | None = None
@@ -791,8 +866,11 @@ def _run_watched(
     limits: Any,
     log: Any,
     log_argv: list[str],
-    watcher: AccountStreamWatcher,
+    watcher: AccountStreamWatcher | None,
     stdin_data: bytes,
+    budget: BudgetStreamWatcher | None = None,
+    usage_files: Callable[[], list[Path]] | None = None,
+    wrap_up_seconds: float = 0.0,
 ) -> ChildResult:
     """`run_child`, with the stream read as it is produced.
 
@@ -800,7 +878,28 @@ def _run_watched(
     is the loop, which asks the watcher after every slice and stops the CLI at
     a turn boundary when it says so -- and stops it on a SIGTERM to this
     runner, which `run_child` leaves to the worker's SIGKILL.
+
+    `budget` (#2459) reads the same stream through the same tap: it stops the
+    CLI at a turn boundary once the worker has asked, or at once when the
+    worker asked for the mid-turn stop. Either watcher may be absent.
+    `usage_files` lists what else the budget reads this start's usage from
+    (`CliAgentSpec.usage_files`).
+
+    With `wrap_up_seconds` and an account watcher (#2139), once less than that
+    is left it also stops the CLI at the next turn boundary of a session it can
+    resume, and sets `watcher.stopped_to_wrap_up` for `run_cli_agent` to
+    resume it once with WRAP_UP_PROMPT. Not past the point where the pass
+    would get less than FINISH_MIN_SECONDS: from there the run goes on to the
+    hard deadline, which is unchanged.
     """
+    taps = [watcher.tap()] if watcher is not None else []
+    if budget is not None:
+        taps.append(budget.tap(usage_files))
+
+    def tap(chunk: bytes) -> None:
+        for feed in taps:
+            feed(chunk)
+
     child = ChildProcess(
         argv,
         cwd=cwd,
@@ -812,17 +911,35 @@ def _run_watched(
         logger=log,
         keep_tail=True,
         log_argv=log_argv,
-        stdout_tap=watcher.tap(),
+        stdout_tap=tap,
         stdin_data=stdin_data,
     )
     child.start()
     deadline = time.monotonic() + limits.timeout_seconds
+    soft_deadline = (
+        deadline - wrap_up_seconds if wrap_up_seconds > 0 and watcher is not None else None
+    )
+    # The turns already counted when the soft deadline passed: a boundary
+    # after them is the one the CLI is stopped at.
+    armed_at: int | None = None
     while True:
         exited = child.wait(_WATCH_SECONDS) is not None
-        stop = watcher.poll()
+        turns_before = watcher.turns if watcher is not None else 0
+        stop = watcher.poll() if watcher is not None else None
+        spent = budget.poll() if budget is not None else None
         if exited:
             break
+        if spent is not None:
+            log.info(
+                "stopping the agent: its budget is spent"
+                + (" (at a turn boundary)" if spent == "stop" else " (mid-turn, past 120%)"),
+                turns=budget.meter.turns,
+                tokens=budget.meter.tokens(),
+            )
+            child.terminate(limits.grace_seconds, reason=f"budget ({spent})")
+            break
         if stop is not None:
+            assert watcher is not None
             log.info(
                 "stopping the agent at a turn boundary to move it to another account",
                 reason=stop,
@@ -833,13 +950,36 @@ def _run_watched(
         if ctx.stop_requested:
             child.terminate(limits.grace_seconds, reason="runner asked to stop")
             break
-        if time.monotonic() >= deadline:
+        now = time.monotonic()
+        if now >= deadline:
             child.mark_timed_out()
             child.terminate(limits.grace_seconds, reason="timeout")
             break
+        if soft_deadline is not None and now >= soft_deadline:
+            assert watcher is not None
+            if armed_at is None:
+                armed_at = turns_before
+            if (
+                watcher.turns > armed_at
+                and watcher.session_id is not None
+                and deadline - now >= FINISH_MIN_SECONDS + limits.grace_seconds
+            ):
+                log.info(
+                    "stopping the agent at a turn boundary to wrap up before the step's limit",
+                    turns=watcher.turns,
+                    remaining_seconds=round(deadline - now, 1),
+                )
+                watcher.stopped_to_wrap_up = True
+                child.terminate(limits.grace_seconds, reason="wrap-up")
+                break
     result = child.finish()
-    watcher.poll()
-    watcher.write()
+    if watcher is not None:
+        watcher.poll()
+        watcher.write()
+    if budget is not None:
+        # The rest of the stream, counted; never a stop: the CLI has exited.
+        budget.poll(honour=False)
+        budget.write()
     return result
 
 
@@ -1081,6 +1221,42 @@ FINISH_PROMPT = "Finish: wait for every command you started, report its result, 
 #: timeout, which is worse for everyone reading the result.
 FINISH_MIN_SECONDS = 60.0
 
+# WRAPPED UP BEFORE THE LIMIT (#2139, the optional part of its proposed fix).
+# Measured 2026-10-23: three agents polling a background suite with ~600 s
+# `sleep` calls were killed mid-sleep at the step's 7200 s limit, their work
+# uncommitted -- and FINISH_PROMPT never ran, because it runs only after a CLI
+# that exited by itself. So a watched run (`_run_watched`, on a pool account)
+# is stopped at its first turn boundary once less than the wrap-up margin is
+# left, and resumed ONCE with WRAP_UP_PROMPT inside what is left of the
+# budget. A run that reaches no turn boundary, or is not watched, is killed at
+# the hard deadline exactly as before.
+
+#: The wrap-up margin: ten minutes is one commit, the pull request's two files
+#: and the turn that writes them, with room for a slow model turn -- and about
+#: one of the ~600 s sleeps the measured agents were killed in.
+WRAP_UP_SECONDS = 600.0
+#: At most this share of a short limit goes to the wrap-up, so a 20-minute
+#: step still gets three quarters of its time for the work itself.
+WRAP_UP_FRACTION = 0.25
+
+#: The one user message a session resumed to wrap up is given, followed by
+#: that pass's own `time_limit_line`. Fixed wording; it carries no rate-limit
+#: or credential marker for a CLI that echoes it.
+WRAP_UP_PROMPT = (
+    "Time is nearly up: you were stopped so you can wrap up. Commit what you "
+    "have now, write the pull request's title and body where you were told "
+    "to, start nothing that takes long, then end."
+)
+
+
+def wrap_up_margin(timeout_seconds: float) -> float:
+    """How long before the hard deadline a watched run is stopped to wrap up;
+    0 when the margin would be below FINISH_MIN_SECONDS and no wrap-up pass
+    could run in it."""
+    margin = min(WRAP_UP_SECONDS, timeout_seconds * WRAP_UP_FRACTION)
+    return margin if margin >= FINISH_MIN_SECONDS else 0.0
+
+
 #: Phrases that announce work still in flight, each in the shape a pending
 #: announcement takes rather than as a bare word, so a finished report that
 #: merely uses the words ("the suite was still running when I first checked;
@@ -1319,14 +1495,59 @@ def credential_lines(repo: Path) -> tuple[list[str], str | None]:
 #: agent exits. Fixed text, so it is the same in every prompt and a test can
 #: hold it; it carries no rate-limit or credential marker
 #: (`_RATE_LIMIT_MARKERS`, `_CREDENTIAL_MARKERS`) for a CLI that echoes it.
+#: The no-change sentence is #2140: build-170 found its issue already built,
+#: wrote pr-body.md and no verification.md, and failed `published_nothing`,
+#: cancelling its dependant -- the worker reads "no change plus
+#: `lifecycle.VERIFICATION_FILE`" as SUCCEEDED no_change (Proposal J), but no
+#: prompt said so. It asks only "what you checked", so a brief that wants a
+#: stricter verification.md (an issue run's table) still governs its format.
+#: The last sentence is the descent rule (#2277): fix-h9 lost 85 turns to a
+#: `git checkout -B fix-516 FETCH_HEAD`, because the harvest discards a HEAD
+#: that does not descend from the step's start (`lifecycle._head_moved`), and
+#: nothing had told the agent so.
 PUBLISH_PARAGRAPH = (
     "You do not push or open a pull request; the worker publishes your committed "
     "branch. Commit your work. Write the pull request's title (one line) to "
     "$SWARM_ARTIFACTS_DIR/pr-title.txt and its body to "
     "$SWARM_ARTIFACTS_DIR/pr-body.md. Do not say in your answer that no pull "
     "request exists because you lack GitHub credentials: the worker opens it "
-    "after you finish."
+    "after you finish. If the work is already done and nothing needs changing, "
+    "commit nothing and write $SWARM_ARTIFACTS_DIR/verification.md saying what "
+    "you checked and what showed it is done; that ends the step as no change "
+    "instead of a failure. Keep your commits on the branch you were cloned "
+    "onto: to build on another branch, fetch it and merge it in (git merge "
+    "FETCH_HEAD); never git checkout -B, git switch or git reset onto another "
+    "line, because commits that do not descend from the commit you started on "
+    "are discarded."
 )
+
+
+#: THE STEP'S WALL CLOCK, TOLD TO THE AGENT (#2139). Measured 2026-10-23 by the
+#: failure-review schedule: three claude-code agents (f-003, f-007, f-015)
+#: started the tenant's whole pytest suite in the background, polled it with
+#: ~600 s `sleep` calls, and were killed mid-sleep at the step's 7200 s limit
+#: (exit 137) -- one with a `timeout 7000` longer than its own step -- and a
+#: dependant review was cancelled `failed_parent` (f-004). Nothing told them
+#: the limit: at the deadline `_run_watched` terminates the CLI without a word,
+#: and FINISH_PROMPT runs only after the CLI exits by itself. Fixed wording, so
+#: a test can hold it; minutes rounded down and the end time in UTC, so it is
+#: never later than the deadline it names. It carries no rate-limit or
+#: credential marker for a CLI that echoes it -- the minutes are the one number
+#: in it, and only a 429-minute limit would spell one.
+def time_limit_line(timeout_seconds: float, now: datetime | None = None) -> str:
+    """The one platform line naming this run's limit and when it ends."""
+    start = now if now is not None else datetime.now(timezone.utc)
+    end = start.astimezone(timezone.utc) + timedelta(seconds=timeout_seconds)
+    minutes = int(timeout_seconds // 60)
+    return (
+        f"This step has a wall-clock limit of {minutes} minute{'' if minutes == 1 else 's'} "
+        f"and is stopped at "
+        f"{end.strftime('%Y-%m-%dT%H:%M:%SZ')} (UTC), whatever it is doing; work "
+        "that is not committed by then is lost. Commit your work and write the "
+        "pull request's title and body well before that time. Do not run the "
+        "whole test suite in the background and poll it with sleep: run the "
+        "tests related to your change, in the foreground."
+    )
 
 
 def _with_reason(entry: str) -> str:
@@ -1560,6 +1781,14 @@ def run_cli_agent(
         context_line = contextpack.prepare(ctx, cwd, judge=jev)
         if context_line:
             prompt = f"{prompt}\n\n{context_line}"
+    # THE MEMORY BUDGET (#2504), read from this container's cgroup: the runner
+    # and the agent share it. Its line follows the caller's prompt, with or
+    # without a repository; not on a resume, where the session already holds
+    # it. An unknown limit sets nothing and says nothing.
+    memory_max, cpu_cores = container_limits()
+    budget = agent_resource_budget(memory_max, cpu_cores)
+    if budget and memory_max is not None and not os.environ.get(RESUME_SESSION_ENV, "").strip():
+        prompt = f"{prompt}\n\n{budget_line(memory_max, int(budget[XDIST_WORKERS_ENV]))}"
     # A RESUMED SESSION (S13/S14). The worker moved this attempt to another
     # account at a turn boundary and restarted this runner to continue the
     # session it stopped: `--resume <id>` and one short user message, in the
@@ -1578,11 +1807,16 @@ def run_cli_agent(
     # and the agent killed its own CLI (exit 143). Every process listing shows
     # the argv; nothing caller-written is in it now. One argv string is also
     # capped at 128 KiB (MAX_ARG_STRLEN), which a long brief could pass.
+    # Resolved before the prompt, which names the limit (#2139).
+    limits = resolve_limits(payload, platform_ceilings())
     if resume:
         argv += [spec.resume_flag, resume]
         stdin_prompt = resume_prompt(os.environ.get(RESUME_REASON_ENV, "").strip())
     else:
         stdin_prompt = expected_mod.with_instructions(prompt, told, ctx.artifacts_dir, staged)
+        # The step's wall clock (#2139): last for a task with no repository,
+        # just before the platform paragraph for one with a repository.
+        stdin_prompt = f"{stdin_prompt}\n\n{time_limit_line(limits.timeout_seconds)}"
         if cwd != ctx.work_dir:
             # A task with a repository (Proposal A, owner decision 2026-10-08):
             # the platform paragraph, last. Not on a resume: the session
@@ -1594,7 +1828,6 @@ def run_cli_agent(
     # A resumed session's id is masked: it never reaches a log line.
     log_argv = [("<session>" if resume and arg == resume else arg) for arg in argv]
 
-    limits = resolve_limits(payload, platform_ceilings())
     log = StructuredLogger(stream=sys.stderr, component=f"{spec.name}-runner")
     log.info(
         "the agent starts in the repository checkout"
@@ -1636,6 +1869,8 @@ def run_cli_agent(
         log.register_secret(os.environ.get(passthrough))
     if resume:
         log.register_secret(resume)
+    if budget:
+        log.info("told the agent its memory budget", **budget)
     if limits.clamped:
         log.warning(
             "requested limits exceed the platform ceiling and were clamped",
@@ -1689,6 +1924,9 @@ def run_cli_agent(
     for name, value in (extra_env or {}).items():
         if name not in env:
             env[name] = value
+    # The memory budget is the platform's: after `extra_env`, which cannot
+    # replace it, and never a passthrough, so the environment cannot either.
+    env.update(budget)
     for passthrough in (*_SENSITIVE_PASSTHROUGH, *_PLAIN_PASSTHROUGH):
         if os.environ.get(passthrough):
             env[passthrough] = os.environ[passthrough]
@@ -1715,17 +1953,30 @@ def run_cli_agent(
                 Path(session_file), run_session(spec, parsed_run, ctx.work_dir, started_at[0])
             )
 
+    # THE BUDGET (#2459), named by the worker only for a budgeted task: one
+    # watcher for every start below, so a resumed pass adds to the usage.
+    budget = budget_watcher()
+    usage_files = (
+        partial(spec.usage_files, Path(ctx.work_dir)) if spec.usage_files is not None else None
+    )
+
     def start(
-        run_argv: list[str], run_log_argv: list[str], run_prompt: str, timeout_seconds: float
+        run_argv: list[str],
+        run_log_argv: list[str],
+        run_prompt: str,
+        timeout_seconds: float,
+        *,
+        wrap_up: bool = False,
     ) -> tuple[ChildResult, AccountStreamWatcher | None]:
         """One start of the CLI, `run_prompt` on its stdin, its captures redacted
-        before anything reads them."""
+        before anything reads them. `wrap_up` arms the stop before the limit
+        (#2139): the first start only, so the wrap-up runs at most once."""
         started_at[0] = time.time()
         stdin_data = run_prompt.encode("utf-8")
         run_limits = replace(limits, timeout_seconds=timeout_seconds)
         run_watcher = _account_watcher(spec, stdout_path, last_watcher[0])
         last_watcher[0] = run_watcher
-        if run_watcher is None:
+        if run_watcher is None and budget is None:
             run_result = run_child(
                 run_argv,
                 cwd=cwd,
@@ -1748,10 +1999,10 @@ def run_cli_agent(
                 keep_tail=True,
             )
         else:
-            # On a pool account: the same child, the stream read as it is
-            # written (see `AccountStreamWatcher`), so the readings reach the
-            # worker while the agent runs and a swap can happen at a turn
-            # boundary.
+            # On a pool account, or with a budget: the same child, the stream
+            # read as it is written (see `AccountStreamWatcher`), so the
+            # readings and the usage reach the worker while the agent runs and
+            # a swap or the budget's stop can happen at a turn boundary.
             run_result = _run_watched(
                 run_argv,
                 ctx=ctx,
@@ -1764,6 +2015,9 @@ def run_cli_agent(
                 log_argv=run_log_argv,
                 watcher=run_watcher,
                 stdin_data=stdin_data,
+                budget=budget,
+                usage_files=usage_files,
+                wrap_up_seconds=wrap_up_margin(timeout_seconds) if wrap_up else 0.0,
             )
         # Redact before anything is read back out. Everything below this
         # either becomes an artifact in GCS or a field in Firestore, and both
@@ -1779,6 +2033,23 @@ def run_cli_agent(
         combined: str,
     ) -> None:
         """Raise the signal or failure one start of the CLI ended in, if any."""
+        if budget is not None and budget.stopped_for is not None:
+            # STOPPED FOR THE BUDGET (#2459), at a turn boundary or past 120%
+            # mid-turn. Not judged as a rate limit or a refused credential, and
+            # no finish or repair pass follows: the worker reads the channel,
+            # checkpoints, publishes and ends the step `budget_exceeded`.
+            raise RunnerFailure(
+                f"{spec.name} was stopped by its budget ({budget.stopped_for})", spend=spend
+            )
+        if (
+            run_watcher is not None
+            and run_watcher.stopped_to_wrap_up
+            and not run_result.timed_out
+        ):
+            # STOPPED AT A TURN BOUNDARY TO WRAP UP (#2139): the exit status is
+            # this runner's SIGTERM, not the agent's outcome. The wrap-up pass
+            # below is judged instead.
+            return
         if (
             run_watcher is not None
             and run_watcher.stopped_for is not None
@@ -1854,7 +2125,7 @@ def run_cli_agent(
             + _without_capture_notices(_tail(stderr_path))
         )
 
-    result, watcher = start(argv, log_argv, stdin_prompt, limits.timeout_seconds)
+    result, watcher = start(argv, log_argv, stdin_prompt, limits.timeout_seconds, wrap_up=True)
     # Reported on every outcome from here on -- `write_result` carries it --
     # so a run that failed or parked after passing its cap still says so.
     capture = result.capture_report()
@@ -1940,9 +2211,39 @@ def run_cli_agent(
         stderr_bytes += result.stderr_bytes
         return pass_parsed
 
+    # RESUMED ONCE TO WRAP UP (#2139; see WRAP_UP_PROMPT). The watched run was
+    # stopped at a turn boundary with less than the wrap-up margin left;
+    # continue the session once, told to commit and end, inside what is left
+    # of the step's budget. Only the first start is armed, so this never runs
+    # twice, and the passes after it count every start's duration.
+    resumed_to_wrap_up = False
+    if watcher is not None and watcher.stopped_to_wrap_up and not result.timed_out:
+        remaining = limits.timeout_seconds - duration_seconds
+        session = _session_of(parsed) or watcher.session_id
+        if session is None or remaining < FINISH_MIN_SECONDS:
+            # `_run_watched` stops only with a session and the floor left, so
+            # this is a stop that overran its grace: what the hard deadline
+            # would have made of it.
+            raise RunnerFailure(
+                f"{spec.name} timed out after {limits.timeout_seconds:.0f}s", spend=spend
+            )
+        log.register_secret(session)
+        log.warning(
+            "the agent was stopped at a turn boundary before the step's limit; "
+            "resuming the session once to wrap up",
+            remaining_seconds=round(remaining, 1),
+        )
+        # Said before the pass starts, so a pass that fails or parks still
+        # reports that it was resumed (`write_result` merges it).
+        resumed_to_wrap_up = True
+        ctx.report["resumed_to_wrap_up"] = True
+        resume_pass(session, f"{WRAP_UP_PROMPT}\n\n{time_limit_line(remaining)}", remaining)
+
     pending = pending_work(parsed) if spec.finish_on_pending and spec.resume_flag else None
     if pending is not None:
-        remaining = limits.timeout_seconds - result.duration_seconds
+        # The whole step's starts, not the last one's: after a wrap-up pass
+        # the finish pass gets what both left, never more (#2139).
+        remaining = limits.timeout_seconds - duration_seconds
         session = _session_of(parsed)
         if session is None:
             finish_skipped = "no_session"
@@ -2215,6 +2516,9 @@ def run_cli_agent(
         # in flight, and, when that was called for but not done, why not.
         "resumed_to_finish": resumed_to_finish,
         "finish_skipped": finish_skipped,
+        # Whether the run was stopped at a turn boundary before its limit and
+        # resumed once to wrap up (#2139).
+        "resumed_to_wrap_up": resumed_to_wrap_up,
         # The repair turns taken after the checks the worker runs failed
         # (#624), what each was asked to fix and what it did; what still fails
         # after them; and, when a repair was called for but not taken, why

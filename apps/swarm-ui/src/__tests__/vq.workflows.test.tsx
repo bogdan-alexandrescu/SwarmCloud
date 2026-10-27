@@ -382,7 +382,7 @@ describe('VQ-013 re-review: the name and the runners both read at 1440', () => {
   // MUTATION: keep the mix on the name's line whatever the line's width: at
   // 1440 with the nav open the line is 319px and the name got 127px of it
   // ('Audit the operator s…').
-  it('moves the runners under the name, beside the current step, when the name would keep under 200px', async () => {
+  it('moves the runners under the name, above the current step, when the name would keep under 200px', async () => {
     viewport(1440)
     lineIs(319)
     render(<WorkflowsScreen />)
@@ -397,7 +397,8 @@ describe('VQ-013 re-review: the name and the runners both read at 1440', () => {
     expect([...sub.children].map((c) => c.className.split(' ')[0])).toEqual(['wfl-mix', 'wfl-why'])
     expect(sub.querySelector('.wf-mix')!.getAttribute('title')).toBe('Runner profiles: claude-code ×3')
     expect(painted(sub, 'display', { width: 1440 })).toBe('flex')
-    expect(painted(sub, 'flex-wrap', { width: 1440 })).toBe('nowrap')
+    // It wraps: the step is a line of its own under the runners (#2391 comment 58).
+    expect(painted(sub, 'flex-wrap', { width: 1440 })).toBe('wrap')
     const mix = sub.querySelector(':scope > .wfl-mix')!
     expect(painted(mix, 'display', { width: 1440 }), 'the runners are not drawn where the Runners column is hidden').toBe('block')
     expect(painted(mix, 'display', { width: 1680 }), 'the runners are drawn twice where the column is shown').toBe('none')
@@ -406,7 +407,7 @@ describe('VQ-013 re-review: the name and the runners both read at 1440', () => {
     const [grow, shrink, basis] = (painted(mix, 'flex', { width: 1440 }) ?? '').split(/\s+/)
     expect([grow, shrink]).toEqual(['0', '0'])
     expect(Number(/^([\d.]+)rem$/.exec(basis!)![1]) * 16).toBeGreaterThanOrEqual(oneChip)
-    // The step beside it is cut with its title, never wrapped.
+    // The step under it is one line, cut with its title, never wrapped.
     const why = sub.querySelector<HTMLElement>(':scope > .wfl-why')!
     expect(why.textContent).toBe('build running')
     expect(painted(why, 'white-space', { width: 1440 })).toBe('nowrap')

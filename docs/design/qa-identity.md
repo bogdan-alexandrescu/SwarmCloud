@@ -1,7 +1,11 @@
 # QA identity: a browser agent signs in to the console behind IAP without a person typing a password
 
-**Status: built on `main`, except the agent's instructions and the
-acceptance run (2026-10-20).** §8 records what each lane of §6 landed and where the code
+**Status: built on `main` (2026-10-27); the acceptance case is written and
+has not yet run on dev.** Every lane of §6 has landed, the agent's
+instructions (QI-INSTRUCT) included. The QI-ACCEPT acceptance case runs in
+`accept.yml`'s live-browser group after a release, never in a pull
+request's CI, and nothing is recorded as seen working end to end on dev
+until it has. §8 records what each lane landed and where the code
 departs from this design. Written 2026-10-19 as a design, lane QA-IDENTITY of
 [#1649](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/1649). The
 owner decided on 2026-10-19 that this lane designs first, and that the owner
@@ -1170,14 +1174,41 @@ each lane of §6 landed, in its order:
   "Signed in as QA identity" badge (`apps/swarm-ui/src/BrowserBadges.tsx`).
 * **QI-MCP (built).** A step that names the identity shows
   `QA identity: console` (`apps/swarm-mcp/swarm_mcp/details.py`).
-* **QI-INSTRUCT (not built on 2026-10-20).**
-  `images/agent-runtime-browser/swarm_browser.py` does not yet tell the
-  agent that the console is signed in, that it must not ask for a hand-off
-  there, or what `qa-identity.md` means. Until it does, an agent that asks
-  is refused `qa_identity_host` by the gate.
+* **QI-INSTRUCT (built, recorded 2026-10-27).** The instructions live in
+  the claude-code runner, not in
+  `images/agent-runtime-browser/swarm_browser.py` as §6's row planned:
+  `apps/agent-worker/agent_worker/runners/claude_code.py::QA_IDENTITY_NOTE`
+  is appended to the live-browser note only when the agent's signed input
+  names an identity the catalogue offers. It tells the agent the console is
+  signed in as the QA identity, that a hand-off there is refused
+  (`qa_identity_host`), never to type into a Google sign-in, and to read
+  `qa-identity.md` in the hand-off spool when the console is signed out.
 * **QI-DOCS (built, this record).** [live-browser.md](live-browser.md)
   §5.5.1 notes the excluded host, and [workspaces.md](../workspaces.md)
   §6.6 records the QA workspace.
-* **QI-ACCEPT (not built on 2026-10-20).** `tests/acceptance/test_live_browser.py`
-  has no QA identity case yet. No run as the QA account has been recorded,
-  so nothing above has been seen working end to end on dev.
+* **QI-ACCEPT (built 2026-10-27; not yet run on dev).**
+  `tests/acceptance/test_live_browser.py::run_qa_identity`, run as
+  `test_live_browser.py --qa-identity --console-url <console>` beside a
+  `claude-code-browser` agent whose input names `qa_identity: "console"`
+  (`tests/acceptance/test_live_browser.py::qa_identity_submission`). Its
+  checks, in order:
+  - `qa_signed_in`: the agent's first navigation to the console ends on the
+    console's own host, on the Overview, with no Google sign-in between;
+  - `qa_handoff_refused`: `swarm-handoff request` there exits 5 with
+    `qa_identity_host`, and the agent records no hand-off event;
+  - `qa_ungranted_refused`: the same submission from another tenant is
+    refused at submission, 403 `qa_identity_not_granted`;
+  - `qa_no_leak`: no JWT, Bearer value or `Proxy-Authorization` header is in
+    the agent's transcript, logs, outputs or recordings, its API documents or
+    its events. Checkpoints are read for values only, because they archive
+    the clone, whose documents name the header.
+
+  The case runs in `accept.yml`'s live-browser group after a release, never
+  in a pull request's CI. The group's own call
+  (`scripts/acceptance/groups/live-browser.sh`) still has to submit the agent
+  in a granted tenant and pass `--qa-identity`; until it does, the case does
+  not run. The design's redirect probe (a console URL that 302s to an echo
+  the test controls) is not part of it: the suite has no external echo
+  host, and QI-GATE's unit tests hold both redirect guards meanwhile
+  (`tests/unit/worker/test_livegate_qa_identity.py`). No run as the QA account has been recorded, so nothing
+  above has been seen working end to end on dev.
