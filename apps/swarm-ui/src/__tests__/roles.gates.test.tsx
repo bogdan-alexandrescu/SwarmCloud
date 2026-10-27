@@ -99,7 +99,10 @@ async function openApproval(role: { name: string; source: string } | null) {
     return d
   }, WAIT)
   const approve = await within(detail).findByRole('button', { name: 'Approve' }, WAIT)
-  const reject = within(detail).getByRole('button', { name: 'Reject…' })
+  // #2417 A5: Reject is one click, its reason box beside it; a reason is
+  // typed so only the role gate can be what disables it.
+  fireEvent.change(within(detail).getByRole('textbox', { name: /Reason/ }), { target: { value: 'not now' } })
+  const reject = within(detail).getByRole('button', { name: 'Reject' })
   return { calls, detail, approve: approve as HTMLButtonElement, reject: reject as HTMLButtonElement }
 }
 

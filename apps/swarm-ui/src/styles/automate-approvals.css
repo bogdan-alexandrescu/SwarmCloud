@@ -1,0 +1,157 @@
+/* AUTOMATE › APPROVALS (#2417): the list (proposal A's A4) and one item's
+   decision page (proposal B's A5). Approvals.tsx and ApprovalDecision.tsx
+   are its only readers. Every size is a token: the type floor is 12px
+   (--t-micro), and nothing is set in capitals. */
+
+/* ---- the list (A4) --------------------------------------------------------- */
+.apl-lead {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px;
+  margin: 0 0 12px; padding: 14px 16px; min-width: 0;
+  background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--s-warn); border-radius: 12px;
+}
+.apl-lead-t { flex: 1 1 320px; display: grid; gap: 2px; min-width: 0; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
+.apl-lead-t > b { font-size: var(--t-lead); line-height: var(--lh-lead); }
+.apl-lead-k { font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--warn-ink); }
+.apl-lead-s { color: var(--text-dim); }
+.apl-lead-a { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.apl-kinds { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 12px; }
+.apl-n { font-weight: 400; }
+
+.apl-card {
+  margin: 0 0 12px; padding: 12px 16px; min-width: 0;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+}
+.apl-card-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin: 0 0 8px; }
+.apl-card-h > h2 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; }
+.apl-card-h > span { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+
+.apl-t { width: 100%; border-collapse: collapse; table-layout: auto; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.apl-t th {
+  text-align: left; font-weight: 600; font-size: var(--t-micro); line-height: var(--lh-micro);
+  color: var(--text-dim); padding: 4px 8px 6px; border-bottom: 1px solid var(--line);
+}
+.apl-t td { padding: 8px; vertical-align: top; border-bottom: 1px solid var(--line); min-width: 0; overflow-wrap: anywhere; }
+.apl-t tbody tr:last-child > td { border-bottom: 0; }
+.apl-t td > small { display: block; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.apl-t td > small[data-you='yes'] { color: var(--ok-ink); }
+/* The oldest waiting row is the one to open first: its edge says so. */
+.apl-card[data-testid='apl-waiting'] tbody tr:first-child > td:first-child { box-shadow: inset 3px 0 0 var(--s-warn); }
+.apl-kind { font-weight: 600; white-space: nowrap; }
+.apl-open { color: var(--sk-ac); font-weight: 600; }
+.apl-dim { color: var(--text-dim); }
+.apl-state { font-weight: 600; }
+.apl-state.is-approved { color: var(--ok-ink); }
+.apl-state.is-rejected { color: var(--bad-ink); }
+.apl-state.is-expired, .apl-state.is-superseded { color: var(--text-dim); }
+
+/* ---- one item (A5) ---------------------------------------------------------- */
+.ad-back { margin: 0 0 8px; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.ad-back a { color: var(--sk-ac); }
+.ap-detail, .ad-page { min-width: 0; display: grid; gap: 12px; align-content: start; }
+.ad-linked { margin: 0 0 12px; }
+
+.ad-q {
+  display: grid; gap: 6px; padding: 14px 16px; min-width: 0;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+}
+.ad-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; }
+.ad-id { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
+.ad-chip {
+  display: inline-block; padding: 1px 8px; border-radius: 999px; white-space: nowrap;
+  font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600;
+  color: var(--text-dim); border: 1px solid var(--line);
+}
+.ad-chip.is-kind { color: var(--info-ink); background: color-mix(in srgb, var(--info) 14%, transparent); border-color: transparent; }
+.ad-chip.is-warn { color: var(--warn-ink); background: color-mix(in srgb, var(--warn) 14%, transparent); border-color: transparent; }
+.ad-chip.is-ok { color: var(--ok-ink); background: color-mix(in srgb, var(--ok) 18%, transparent); border-color: transparent; }
+.ad-chip.is-bad { color: var(--bad-ink); background: color-mix(in srgb, var(--bad) 18%, transparent); border-color: transparent; }
+.ad-sent { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; overflow-wrap: anywhere; }
+.ad-sent em { font-style: normal; color: var(--sk-ac); }
+.ad-say { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); overflow-wrap: anywhere; }
+.ad-qfacts { display: flex; flex-wrap: wrap; gap: 6px 24px; margin: 4px 0 0; }
+.ad-qfacts > div { min-width: 0; }
+.ad-qfacts dt { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.ad-qfacts dd { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
+
+/* The evidence: two columns on a desktop, one on a phone (below). */
+.ad-ev { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: start; min-width: 0; }
+.ad-col { display: grid; gap: 12px; min-width: 0; }
+.ad-card {
+  display: grid; gap: 8px; padding: 12px 16px; min-width: 0;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+}
+.ad-card-h { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; }
+.ad-p { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
+.ad-sub, .ad-sub-i { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
+.ad-sub { display: block; }
+.ad-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.ad-kv > dt { color: var(--text-dim); }
+.ad-kv > dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.ad-file { display: block; overflow-wrap: anywhere; }
+.ad-files { margin: 0; padding-left: 18px; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
+.ad-hold { display: grid; gap: 6px; min-width: 0; }
+
+/* The check counts at the head: a bar of passed, failed and pending, and the figures in words. */
+.ad-cbar { display: flex; gap: 2px; height: 8px; border-radius: 4px; overflow: hidden; background: var(--surface-2); }
+.ad-cbar > i { display: block; min-width: 4px; }
+.ad-cbar > .is-passed { background: var(--ok); }
+.ad-cbar > .is-failed { background: var(--bad); }
+.ad-cbar > .is-pending { background: var(--s-warn); }
+.ad-counts { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.ad-counts > .is-ok { color: var(--ok-ink); }
+.ad-counts > .is-bad { color: var(--bad-ink); }
+
+/* A merge's checklist: one row per check, its mark a glyph AND a hue, so a
+   greyscale reader still tells ✓ from ✗. An unmet row is said in the text
+   colour, never dimmed: it is the row the approver must read. */
+.ap-checks { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; min-width: 0; }
+.ap-check {
+  display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 0 8px; align-items: baseline;
+  padding: 4px 0; font-size: var(--t-meta); line-height: var(--lh-meta); min-width: 0;
+}
+.ap-check > .sc-sub { grid-column: 2; overflow-wrap: anywhere; }
+.ap-check-l { overflow-wrap: anywhere; }
+.ap-mark { font-weight: 700; text-align: center; }
+.ap-check.is-met > .ap-mark { color: var(--ok-ink); }
+.ap-check.is-unmet > .ap-mark { color: var(--bad-ink); }
+.ap-check.is-unread > .ap-mark { color: var(--text-faint); }
+
+/* THE DECISION BAR (B's A5): pinned to the bottom of a desktop screen while
+   the evidence scrolls, so the verbs are never a scroll away. Decided, it is
+   the outcome, in the outcome's hue. */
+.ad-bar {
+  position: sticky; bottom: 0; z-index: 1;
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 16px;
+  padding: 12px 16px; min-width: 0;
+  background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--line); border-radius: 12px;
+}
+.ad-bar.is-decide { border-left-color: var(--sk-ac); }
+.ad-bar.is-ok { border-left-color: var(--ok); }
+.ad-bar.is-bad { border-left-color: var(--bad); }
+.ad-bar.is-warn { border-left-color: var(--s-warn); }
+.ad-bar.is-info { border-left-color: var(--info); }
+.ad-bar-l { flex: 1 1 260px; display: grid; gap: 2px; min-width: 0; align-self: center; }
+.ad-bar-h { font-size: var(--t-body); line-height: var(--lh-body); overflow-wrap: anywhere; }
+.ad-why { flex: 1 1 260px; min-width: 0; margin: 0; }
+.ad-bar-acts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ad-refused { flex: 1 1 100%; margin: 0; }
+.ad-quote { display: block; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); overflow-wrap: anywhere; }
+
+/* ---- the phone (A7) --------------------------------------------------------- */
+@media (max-width: 560px) {
+  /* The tables stack: a row is a block, each cell under its column's name. */
+  .apl-t, .apl-t tbody, .apl-t tr, .apl-t td { display: block; width: 100%; }
+  .apl-t thead { display: none; }
+  .apl-t tr { padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .apl-t tbody tr:last-child { border-bottom: 0; }
+  .apl-t td { padding: 2px 0; border-bottom: 0; }
+  .apl-t td::before { content: attr(data-l); display: block; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+  .apl-card[data-testid='apl-waiting'] tbody tr:first-child > td:first-child { box-shadow: none; }
+  .apl-open { display: inline-block; min-height: 44px; padding: 10px 0; }
+  .ad-ev { grid-template-columns: minmax(0, 1fr); }
+  .ad-qfacts { display: grid; grid-template-columns: minmax(0, 1fr); }
+  /* On a phone the bar follows the evidence rather than covering it. */
+  .ad-bar { position: static; }
+  .ad-bar-acts .c-btn, .apl-lead-a .c-btn, .apl-kinds .c-btn { min-height: 44px; }
+}
