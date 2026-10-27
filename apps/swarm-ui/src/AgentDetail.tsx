@@ -10,6 +10,7 @@ import {
   type ResourceClasses,
 } from './api'
 import { ArtifactViewer, diffStat } from './ArtifactViewer'
+import { BudgetCard } from './AgentBudget'
 import { absTime, gapText } from './AttemptTimeline'
 import { classUnits } from './Blockers'
 import { AttemptDurations } from './charts/AttemptPhases'
@@ -459,6 +460,10 @@ export function Run({
         <DtNow run={run} now={now} listing={listing} checkpoints={checkpoints} lastLine={lastLine} stop={stop} />
       )}
       {lead !== 'failed' && <ErrorBanner run={run} />}
+      {/* THE BUDGET (#2459), under the leading card: its limit, where it came
+          from, what it used, when it was warned, and for a stop that the work
+          was kept. Nothing for an agent with no budget. */}
+      <BudgetCard task={task} events={events} now={now} />
       <DtStrip run={run} now={now} />
       <div className="dt-cols">
         <DtProgress run={run} now={now} links={links} />
