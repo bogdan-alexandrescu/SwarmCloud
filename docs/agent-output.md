@@ -738,6 +738,39 @@ How a step gets its model, and what refuses it:
 * Changing a class's model is an edit to `local.runner_models` and a release;
   nothing a caller sends changes it.
 
+### The agent is told its memory budget (#2504)
+
+Five claude-code attempts (f-013, f-014, f-039, f-040, f-041) ran `pytest -n
+8`, `tsc` with `NODE_OPTIONS=--max-old-space-size=5000` and resident dev
+servers (`next dev`, `uvicorn`, `postgres`) inside 5 and 8 GiB containers. The
+kernel OOM-killed the whole container, the worker with it, and every one ended
+`lost_worker`. Nothing had told the agent what it had: `nproc` said 6, and
+neither its env nor its prompt named the memory.
+
+So `cliagent.run_cli_agent` reads the container's cgroup `memory.max` and
+`cpu.max` (through `metrics.cgroup_memory_max` and
+`metrics.cgroup_cpu_limit_cores`; the runner and the agent share the
+container) and the agent CLI's env carries:
+
+| variable | value |
+|---|---|
+| `SWARM_MEMORY_LIMIT_BYTES` | `memory.max`, in bytes |
+| `PYTEST_XDIST_AUTO_NUM_WORKERS` | max(1, min(floor(CPU limit), (limit − 2 GiB) // 1 GiB)): 6 at 8 GiB/6 CPU, 3 at 5 GiB/6 CPU, 2 at 5 GiB/2 CPU |
+
+The 2 GiB is what the worker, the CLI and the node toolchain keep resident
+(f-039's baseline was 1.47 GB before the agent ran anything); the 1 GiB is
+what one xdist worker of the api suite measured. With no CPU limit the cap is
+`os.cpu_count()`. Both are set after the runner's `extra_env` and are not
+passthroughs, so nothing a caller or the environment sends replaces them.
+
+`PYTEST_XDIST_AUTO_NUM_WORKERS` caps `-n auto` only, so a first start's prompt
+also carries one line (`cliagent.budget_line`), after the caller's prompt and
+before the platform's instructions, for a task with a repository or without:
+the budget in GiB, stop the dev servers before tsc or the tests, never pass
+`pytest -n` above the worker count, never set `--max-old-space-size` above the
+budget. A resumed session is not told again; the session already holds the
+line. An unknown `memory.max` sets neither variable and adds no line.
+
 ## Two kinds of stdout, and the label that was wrong
 
 There are two processes, and each has its own streams:

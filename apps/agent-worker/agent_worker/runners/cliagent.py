@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import os
 import re
 import shutil
@@ -54,6 +55,7 @@ from swarm_redaction import redact as redact_text
 from .. import expected_outputs as expected_mod
 from .. import indexspec
 from .. import issue as issue_mod
+from .. import metrics
 from ..cachedirs import AGENT_CACHE_ENV
 from ..gitidentity import GIT_IDENTITY_ENV
 from ..logs import StructuredLogger
@@ -105,6 +107,9 @@ _SENSITIVE_PASSTHROUGH: tuple[str, ...] = ("HTTPS_PROXY", "HTTP_PROXY", "TYPESAF
 #: node CPU and was OOM-killed at 8 GiB (task_45e9d3b7c0264ef78091). The
 #: worker sets it for this process (`lifecycle._build_child_env`); it is a
 #: task id, never a secret.
+#: The memory budget (MEMORY_LIMIT_ENV, XDIST_WORKERS_ENV, #2504) is NOT a
+#: passthrough: this process reads it from the cgroup and sets it after
+#: `extra_env`, so no environment value replaces it.
 _PLAIN_PASSTHROUGH: tuple[str, ...] = (
     "NO_PROXY",
     "NODE_EXTRA_CA_CERTS",
@@ -112,6 +117,65 @@ _PLAIN_PASSTHROUGH: tuple[str, ...] = (
     *(name for name in AGENT_CACHE_ENV if name != "TMPDIR"),
     "SWARM_TASK_ID",
 )
+
+# ---------------------------------------------------------------------------
+# The agent's memory budget (#2504)
+# ---------------------------------------------------------------------------
+#
+# Five claude-code attempts (f-013, f-014, f-039, f-040, f-041) ran `pytest -n
+# 8`, `tsc` with `--max-old-space-size=5000` and resident dev servers inside 5
+# and 8 GiB containers. The kernel OOM-killed the whole container, the worker
+# with it, and each attempt ended `lost_worker`. Nothing told the agent what it
+# had: `nproc` said 6 and no variable or prompt line named the memory. So the
+# agent's env carries the limit and a worker count, and its first prompt says
+# what to do with them. PYTEST_XDIST_AUTO_NUM_WORKERS caps `-n auto` only; the
+# prompt line is what covers an explicit `-n`.
+
+#: The container's `memory.max`, in bytes, as the agent's env carries it.
+MEMORY_LIMIT_ENV = "SWARM_MEMORY_LIMIT_BYTES"
+#: What pytest-xdist's `-n auto` uses instead of the CPU count.
+XDIST_WORKERS_ENV = "PYTEST_XDIST_AUTO_NUM_WORKERS"
+_GIB = 1 << 30
+#: Kept out of the test workers' share: the worker, the agent CLI and the node
+#: toolchain stay about 2 GiB resident (f-039's baseline was 1.47 GB before
+#: the agent ran anything).
+AGENT_MEMORY_HEADROOM_BYTES = 2 * _GIB
+#: What one xdist worker of the api suite measured, about 1 GiB resident.
+XDIST_WORKER_BYTES = 1 * _GIB
+
+
+def agent_resource_budget(memory_max: int | None, cpu_cores: float | None) -> dict[str, str]:
+    """The budget variables for the agent's env; empty when `memory.max` is unknown.
+
+    Workers: (limit - headroom) // per-worker, capped at the CPU limit (or,
+    when that is unknown, at `os.cpu_count()`), and never below 1.
+    """
+    if memory_max is None or memory_max <= 0:
+        return {}
+    cap = math.floor(cpu_cores) if cpu_cores else (os.cpu_count() or 1)
+    workers = max(1, min(cap, (memory_max - AGENT_MEMORY_HEADROOM_BYTES) // XDIST_WORKER_BYTES))
+    return {MEMORY_LIMIT_ENV: str(memory_max), XDIST_WORKERS_ENV: str(workers)}
+
+
+def container_limits() -> tuple[int | None, float | None]:
+    """This container's cgroup `memory.max` and `cpu.max` (cores), each None if unknown."""
+    return metrics.cgroup_memory_max(), metrics.cgroup_cpu_limit_cores()
+
+
+def _gib(size: int) -> str:
+    return f"{round(size / _GIB, 1):g} GiB"
+
+
+def budget_line(memory_max: int, workers: int) -> str:
+    """The one prompt line that states the budget, for a first start."""
+    return (
+        f"Memory budget: this container has {_gib(memory_max)} (${MEMORY_LIMIT_ENV}), and "
+        "at that limit the kernel kills the whole container, this attempt with it. Stop "
+        "any dev server you started (next dev, uvicorn, postgres) before running tsc or "
+        f"the tests; never pass pytest -n above {workers} (${XDIST_WORKERS_ENV}, which "
+        "-n auto already uses); never set --max-old-space-size above "
+        f"{memory_max // (1 << 20)} (MiB, the whole {_gib(memory_max)})."
+    )
 
 #: Substrings that mean "the provider said no, try later".
 _RATE_LIMIT_MARKERS = (
@@ -1588,6 +1652,14 @@ def run_cli_agent(
         context_line = contextpack.prepare(ctx, cwd, judge=jev)
         if context_line:
             prompt = f"{prompt}\n\n{context_line}"
+    # THE MEMORY BUDGET (#2504), read from this container's cgroup: the runner
+    # and the agent share it. Its line follows the caller's prompt, with or
+    # without a repository; not on a resume, where the session already holds
+    # it. An unknown limit sets nothing and says nothing.
+    memory_max, cpu_cores = container_limits()
+    budget = agent_resource_budget(memory_max, cpu_cores)
+    if budget and memory_max is not None and not os.environ.get(RESUME_SESSION_ENV, "").strip():
+        prompt = f"{prompt}\n\n{budget_line(memory_max, int(budget[XDIST_WORKERS_ENV]))}"
     # A RESUMED SESSION (S13/S14). The worker moved this attempt to another
     # account at a turn boundary and restarted this runner to continue the
     # session it stopped: `--resume <id>` and one short user message, in the
@@ -1664,6 +1736,8 @@ def run_cli_agent(
         log.register_secret(os.environ.get(passthrough))
     if resume:
         log.register_secret(resume)
+    if budget:
+        log.info("told the agent its memory budget", **budget)
     if limits.clamped:
         log.warning(
             "requested limits exceed the platform ceiling and were clamped",
@@ -1717,6 +1791,9 @@ def run_cli_agent(
     for name, value in (extra_env or {}).items():
         if name not in env:
             env[name] = value
+    # The memory budget is the platform's: after `extra_env`, which cannot
+    # replace it, and never a passthrough, so the environment cannot either.
+    env.update(budget)
     for passthrough in (*_SENSITIVE_PASSTHROUGH, *_PLAIN_PASSTHROUGH):
         if os.environ.get(passthrough):
             env[passthrough] = os.environ[passthrough]

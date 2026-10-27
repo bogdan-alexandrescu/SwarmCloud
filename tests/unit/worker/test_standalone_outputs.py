@@ -118,6 +118,11 @@ LINE_START = "Files written to "
 LINE_END = "/artifacts ($SWARM_ARTIFACTS_DIR) are uploaded and shown in Artifacts."
 #: `contextpack.prepare`'s line when the stager staged nothing (§4.4).
 CONTEXT_LINE_START = "No repository context was staged for this step: "
+#: The memory budget line (#2504). The runner here is a real subprocess, which
+#: the worker conftest's cgroup patch does not reach: it is there where the
+#: container has a `memory.max` (a SwarmCloud container) and not where it has
+#: none.
+BUDGET_LINE_START = "Memory budget: this container has "
 
 
 #: A stand-in for `claude --print`. Its plan is the JSON value the prompt starts
@@ -948,6 +953,11 @@ def test_a_repository_task_is_unchanged(db, tmp_path, monkeypatch, worker_factor
     context = [line for line in lines if line.startswith(CONTEXT_LINE_START)]
     assert len(context) <= 1 and (not context or lines[0] == context[0]), lines
     rest = lines[len(context):]
+    # The memory budget line (#2504) follows it, when the container has a
+    # limit; it says how much memory there is, not where anything goes.
+    budget = [line for line in rest if line.startswith(BUDGET_LINE_START)]
+    assert len(budget) <= 1 and (not budget or rest[0] == budget[0]), rest
+    rest = rest[len(budget):]
     # The line, then the questions sentence (2026-10-05), which is about a
     # decision for the owner, not about where the deliverable goes; then the
     # publish paragraph (Proposal A, 2026-10-08), which says the worker
