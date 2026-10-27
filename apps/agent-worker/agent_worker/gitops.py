@@ -47,6 +47,7 @@ import re
 import shlex
 import shutil
 import stat
+import subprocess
 import tempfile
 import threading
 import time
@@ -1207,6 +1208,79 @@ def deepen_history(
         return head.duration_seconds
     logger.info("clone history deepened", days=days, seconds=round(seconds, 2))
     return head.duration_seconds + seconds
+
+
+#: How many commits back from the step's base `fetch_base_history` deepens a
+#: depth-1 clone so `graphstage` can prove the index commit an ancestor
+#: (lane GRAPH-ANCESTRY, part of #2540). The index is promoted from main's
+#: head and a lane clones main's head a little later, so the gap is the
+#: commits merged between the two: main takes about 70 a day here, and 200
+#: covers a promoted index up to roughly three days old. Deeper buys proofs
+#: for indexes that stale only at the price of every step's start-up.
+ANCESTRY_FETCH_DEPTH = 200
+#: The fetch's whole wall-clock limit: a step's start-up never waits longer
+#: for a proof than this, and a fetch cut off is a reason, not a failure.
+ANCESTRY_FETCH_TIMEOUT_SECONDS = 20.0
+
+
+class _QuietLog:
+    """The logger `fetch_base_history` hands `_clone_env`: its caller
+    records the outcome as a reason, so nothing here logs."""
+
+    def info(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    error = info
+
+
+def fetch_base_history(
+    checkout: Path,
+    *,
+    url: str,
+    base_sha: str,
+    private_dir: Path,
+    token: str | None = None,
+    depth: int = ANCESTRY_FETCH_DEPTH,
+    timeout_seconds: float = ANCESTRY_FETCH_TIMEOUT_SECONDS,
+    git_binary: str = "git",
+) -> str | None:
+    """Deepen a shallow `checkout` to `depth` commits behind `base_sha`. None
+    when the fetch landed, else a short reason (never git's own words, which
+    may name the URL).
+
+    `git fetch --depth=<n> <url> <base>`: base's own first `n` generations and
+    nothing else -- no other branch, no tags, no FETCH_HEAD, no ref moved, no
+    working file touched. `url` is the caller's, already validated
+    (`validate_repository_url`); this does not read the clone's `origin`,
+    which a restored checkpoint's `.git` could have rewritten.
+
+    `token`, when given, is held exactly as a clone holds it (`_clone_env`):
+    a 0600 file scoped to the forge's host, removed before this returns. The
+    helper list is reset first (`credential.helper=`), so a helper planted in
+    the clone's own `.git/config` is never handed it.
+    """
+    if not _FULL_SHA_RE.match(base_sha or ""):
+        return "the base is not a full commit sha"
+    private_dir = Path(private_dir)
+    private_dir.mkdir(parents=True, exist_ok=True)
+    env, config_args, cred_file = _clone_env(url, token, private_dir, _QuietLog())
+    if cred_file is not None:
+        config_args = ["-c", "credential.helper=", *config_args]
+    argv = [git_binary, *config_args, "-c", "core.hooksPath=/dev/null", "-c", "gc.auto=0",
+            "-C", str(checkout), "fetch", "--quiet", "--no-tags", "--no-write-fetch-head",
+            "--no-recurse-submodules", f"--depth={int(depth)}", "--", url, base_sha]
+    try:
+        done = subprocess.run(argv, capture_output=True, timeout=timeout_seconds,
+                              check=False, env=env, cwd=str(private_dir))
+    except subprocess.TimeoutExpired:
+        return f"the history fetch timed out after {timeout_seconds:g} s"
+    except OSError as exc:
+        return f"the history fetch did not start ({type(exc).__name__})"
+    finally:
+        _remove_credentials(cred_file, _QuietLog())
+    if done.returncode != 0:
+        return f"the history fetch failed (git exit {done.returncode})"
+    return None
 
 
 def clone_at_commit(
