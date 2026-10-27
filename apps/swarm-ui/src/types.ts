@@ -6448,6 +6448,71 @@ export interface DefaultRoleChange {
   granted_at: string
 }
 
+/*
+ * JOIN REQUESTS (lane JOIN-UI-PERSON; docs/design/join-requests.md §4.1,
+ * §4.2, §4.8; part of #2325). A person asks to join a group workspace with
+ * the code its join link carries; that workspace's admins, or a platform
+ * admin, decide. None of these carries a tenant id, a group, a document id or
+ * a code's hash: the API never serves them (§4.2), so the client has nothing
+ * to name them with.
+ */
+
+/** A request's state, derived by the API from its newest valid decision (§4.1). */
+export type JoinRequestState = 'requested' | 'approved' | 'denied' | 'withdrawn' | 'expired'
+
+/** `POST /v1/join/lookup`: what a working code shows, the workspace's display name and nothing else. */
+export interface JoinLookup {
+  display_name: string
+}
+
+/** One of the person's own requests (`POST /v1/join-requests`, `GET /v1/join-requests/mine`). */
+export interface JoinRequestMine {
+  /** `j-` and 12 hex: the handle a withdrawal names. Not a secret. */
+  ref: string
+  state: JoinRequestState
+  display_name: string
+  requested_at: string
+  expires_at: string
+  /** Set once a decision exists. */
+  decided_at?: string
+  /** A denial's reason, which the admin had to give and the person is shown. */
+  reason?: string
+}
+
+/** `GET`/`PUT /v1/workspace/join-link`: whether the link is on, and who set it when. Never the code's hash. */
+export interface JoinLinkState {
+  on: boolean
+  set_by: string
+  set_at: string
+  /** Only in the answer that made a new code: the one time it is ever shown (§4.2). */
+  link?: string
+}
+
+/** One platform membership (`GET /v1/workspace/members`): a person let in by an approved request. */
+export interface JoinedMember {
+  email: string
+  by: string
+  at: string
+  via: string
+  /** The workspace's group was replaced since: this membership admits nobody now (§4.10). */
+  group_changed: boolean
+  /** A fresh check finds them in the Google group too; null when the directory did not answer. */
+  still_in_group: boolean | null
+}
+
+/** `GET /v1/workspace/members`: the memberships, and whether approvals admit at all (the `platform_memberships` switch). */
+export interface JoinedMembers {
+  platform_memberships: boolean
+  members: JoinedMember[]
+}
+
+/** `DELETE /v1/workspace/members/person`'s answer. */
+export interface JoinedMemberRemoval {
+  email: string
+  state: string
+  still_in_group: boolean | null
+}
+
 export interface ProfileIdentity {
   email: string
   /** The stored name, or null: others then see the email alone. */
