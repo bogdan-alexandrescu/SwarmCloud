@@ -200,7 +200,7 @@ describe('A3a: a new schedule', () => {
     const probs = [...sheet().querySelectorAll('.ae-probs > li')].map((li) => visible(li))
     expect(probs).toEqual([
       'Name the schedule first.',
-      'Cadence: issue-sweep fires at most every 15 minutes',
+      'Cadence: this type refuses it.',
       'Per run $25.00 is over issue-sweep’s cap of $15.00.',
     ])
     const create = screen.getByRole('button', { name: 'Create schedule' }) as HTMLButtonElement
@@ -250,6 +250,24 @@ describe('A3a: a new schedule', () => {
     // MUTATION: drop the refused list's rule and the firings read as if they will happen.
     expect(painted(list, ['text-decoration', 'text-decoration-line'], WIDE)).toContain('line-through')
     expect(visible(screen.getByTestId('sc-preview'))).toContain('Struck through: the server refuses this cadence.')
+  })
+
+  it('says a refused cadence’s reason once in the sheet, where the preview already says it', async () => {
+    await mount('schedule=new', routes((m, url) => (m === 'POST' && url === '/v1/schedules:preview' ? { status: 200, body: REFUSED } : null)))
+    await form()
+    await waitFor(() => expect(visible(sheet())).toContain('This type would refuse it'), WAIT)
+    // MUTATION: put the reason back in the sheet's problem and it is said twice, 50px apart.
+    expect(visible(sheet()).split('issue-sweep fires at most every 15 minutes')).toHaveLength(2)
+    expect([...sheet().querySelectorAll('.ae-probs > li')].map((li) => visible(li))).toContain('Cadence: this type refuses it.')
+  })
+
+  it('says only the rule the API holds about a gate below the type’s default', async () => {
+    await mount('schedule=new', routes(() => null))
+    const f = await form()
+    const gates = [...f.querySelectorAll<HTMLElement>('.ae-card')].find((c) => visible(c.querySelector('h3')!) === '4 · Gates and approvers')!
+    // MUTATION: the mock-up's "Merge off is below the type's default" back; off is the strictest merge, so anyone may set it.
+    expect(visible(gates)).not.toContain('Merge off is below')
+    expect(visible(gates)).toContain('A gate below the type’s default needs a platform admin.')
   })
 
   it('reads no problems once everything is right, and Create is live', async () => {
@@ -330,5 +348,17 @@ describe('A3 at 390', () => {
     expect(lastCard.compareDocumentPosition(sheet()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     // One column takes the card padding down so 390 never scrolls sideways.
     expect(painted(f.querySelector('.ae-card')!, ['padding', 'padding-left'], PHONE)).toBe('12px')
+  })
+
+  it('says a refused cadence’s reason once in the Cadence card, by the preview under the field', async () => {
+    media(true)
+    await mount('schedule=new', routes((m, url) => (m === 'POST' && url === '/v1/schedules:preview' ? { status: 200, body: REFUSED } : null)))
+    const f = await form()
+    const cadence = [...f.querySelectorAll<HTMLElement>('.ae-card')].find((c) => visible(c.querySelector('h3')!) === '3 · Cadence')!
+    await waitFor(() => expect(visible(cadence)).toContain('This type would refuse it'), WAIT)
+    // MUTATION: draw the cron field's error at one column too and the card says it twice, 100px apart.
+    expect(visible(cadence).split('issue-sweep fires at most every 15 minutes')).toHaveLength(2)
+    expect(field('Cron expression').getAttribute('aria-invalid')).toBe('true')
+    expect(visible(sheet())).not.toContain('issue-sweep fires at most every 15 minutes')
   })
 })
