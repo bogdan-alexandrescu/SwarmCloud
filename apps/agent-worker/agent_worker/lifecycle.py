@@ -14378,9 +14378,24 @@ class Worker:
         """The workflow and action files the branch's new commits touch, sorted.
 
         The command swarm-api reads the pushed bundle with
-        (`swarm_api.gittools._workflow_paths`): `--name-only --no-renames -m`
-        over exactly the new commits, so a rename away from a workflow path
-        counts, and the two never disagree about which route a branch takes.
+        (`swarm_api.gittools._workflow_paths`): `--name-only --no-renames
+        --diff-merges=combined` over exactly the new commits, so a rename away
+        from a workflow path counts, and the two never disagree about which
+        route a branch takes.
+
+        COMBINED, NOT `-m` (#2452). `-m` diffs a merge against EACH parent, so
+        a lane's merge of main named every workflow file main changed since
+        the branch was cut: task_1297d8f4 and task_f2b72856 (2026-10-26),
+        after PR 2446 changed application.yml and release.yml, were sent to
+        the broker with no workflow change of their own and ended FAILED.
+        A combined listing names a merge's path only where the result differs
+        from EVERY parent -- a conflict resolution, an evil merge -- and lists
+        a non-merge commit exactly as before. Its one blind spot: a merge that
+        keeps the branch's version of a file main also changed, where that
+        version is already on origin (below the negatives), is not listed and
+        goes out on the worker's own push. Should GitHub refuse that push for
+        the `workflow` scope, the publish fails as any refused push does
+        (`PUBLISH_FAILED_FIELD`), the work kept (docs/runner-git-tools.md).
 
         A listing git could not make is no workflow paths, logged: the
         worker's own push then runs, as before AU-3, and GitHub refuses a
@@ -14392,8 +14407,8 @@ class Worker:
         assert ws is not None
         negatives = self._workflow_negatives(floor)
         code, text = _git_text(
-            ["git", *_NO_HOOKS, "log", "--format=", "--name-only", "--no-renames", "-m",
-             "HEAD", *(["--not", *negatives] if negatives else []),
+            ["git", *_NO_HOOKS, "log", "--format=", "--name-only", "--no-renames",
+             "--diff-merges=combined", "HEAD", *(["--not", *negatives] if negatives else []),
              "--", *WORKFLOW_PATHSPECS],
             repo=Path(publish_repo), private_dir=ws.private, logs_dir=ws.logs,
             slug="publish-workflow-paths",
