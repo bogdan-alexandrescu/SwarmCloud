@@ -124,6 +124,23 @@ with the proxy it is built on (`after_clipped_capture`). A page the gate
 holds no session on gets nothing: there is no device of the gate's on it to
 put back.
 
+THE PAGE ON SCREEN IS RELOADED WHEN THE USER AGENT CHANGES (DEVICE-RELOAD,
+2026-10-27; part of #1346). Visual QA 2026-10-15 (task_5e949434) saw
+Wikipedia's desktop layout squashed into an iPhone 15 frame. The user agent
+WAS set on the page's gate session; but a site picks its layout from the user
+agent when it serves the document, and a page loaded before the switch keeps
+the document it was served until it navigates again. So when a switch changes
+the user agent or the `mobile` flag, `select` reloads every page the gate
+holds that is shown (`document.visibilityState`, asked on the gate's own
+session, as `__main__.PageFollower` asks which tab is on screen) and not on
+about:blank, with `Page.reload` on that session, AFTER the new overrides are
+set, and records `device_reloaded`. A tab behind it keeps its document until
+it is shown and navigates: reloading a page nobody sees can only lose the
+agent's state on it. An orientation change keeps the user agent, so it reloads
+nothing: the layout reflows on its own. A probe or reload that fails is
+recorded (`device_reload_failed`) and does not fail the switch, whose
+overrides are already in force.
+
 NOTHING HERE IS LOGGED BUT NAMES. A device change records the preset name and
 orientation; a page's URL, a session id or a coordinate is never a log
 argument.
@@ -489,6 +506,7 @@ class DeviceController:
             raise
         async with self._lock:
             try:
+                reload = await self._serves_differently(self._device, device)
                 await self._apply_display(device)
                 for target in list(self._pages):
                     await self._apply_page_again(device, target)
@@ -497,6 +515,8 @@ class DeviceController:
                                                "cause": type(exc).__name__})
                 raise
             self._device = device
+            if reload:
+                await self._reload_shown(device)
         if self._on_change is not None:
             self._on_change(device)
         self._record("device_set", {"preset": device.name, "orientation": device.orientation})
@@ -664,6 +684,42 @@ class DeviceController:
         except Exception as exc:  # noqa: BLE001 -- the page closed; nothing to apply to
             self._pages.pop(target_id, None)
             self._record("device_page_lost", {"preset": device.name, "cause": type(exc).__name__})
+
+    async def _serves_differently(self, before: Device, after: Device) -> bool:
+        """Whether a site would serve `after` another document than `before`:
+        its user agent or its `mobile` flag differs (module docstring, THE PAGE
+        ON SCREEN IS RELOADED)."""
+        user_agent, version = await self._browser_version()
+        return (before.mobile != after.mobile
+                or before.user_agent(user_agent, version) != after.user_agent(user_agent, version))
+
+    async def _reload_shown(self, device: Device) -> None:
+        """`Page.reload` on the gate's session of every shown page not on
+        about:blank. Never raises: the switch is already in force."""
+        try:
+            infos = (await self._cdp.call("Target.getTargets", {})).get("targetInfos") or []
+        except Exception as exc:  # noqa: BLE001 -- a browser that would not answer
+            self._reload_failed(device, exc)
+            return
+        urls = {i.get("targetId"): i.get("url") for i in infos if isinstance(i, Mapping)}
+        for target, session in list(self._pages.items()):
+            url = urls.get(target)
+            if not isinstance(url, str) or url in ("", "about:blank"):
+                continue
+            try:
+                shown = await self._cdp.call("Runtime.evaluate", {
+                    "expression": "document.visibilityState", "returnByValue": True}, session)
+                if (shown.get("result") or {}).get("value") != "visible":
+                    continue
+                await self._cdp.call("Page.reload", {}, session)
+            except Exception as exc:  # noqa: BLE001 -- a page that went; its own events follow
+                self._reload_failed(device, exc)
+                continue
+            self._record("device_reloaded", {"preset": device.name, "orientation": device.orientation})
+
+    def _reload_failed(self, device: Device, exc: Exception) -> None:
+        self._record("device_reload_failed", {"preset": device.name, "cause": type(exc).__name__})
+        log.info("live device: page not reloaded (%s)", type(exc).__name__)
 
     async def _browser_version(self) -> tuple[str, str]:
         if self._browser is None:
