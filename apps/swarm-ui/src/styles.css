@@ -11069,26 +11069,18 @@ span.sk-ttile { cursor: default; }
      `auto` basis its whole one-line width was the claim, and the chip
      (`flex-shrink: 100`) was squeezed to pay for it. The floor stays. */
   .sk-pbar b { flex: 1 1 0%; white-space: normal; text-overflow: clip; line-height: var(--lh-figure); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
-  /* BESIDE THE ADMIN'S CHIP, ONE STEP DOWN AND A TWO-LINE FLOOR
-     (PHONE-BAR-LABEL review, part of #2391). In the admin's own workspace
-     the chip reads `Your workspace`, and the controls left the name only
-     its 5.5em floor, 77px: `Submit from a GitHub issue` needed four lines
-     and the clamp cut it to `Submit / from a…`, and `Workspaces` (80px)
-     lost its last letter. Beside the chip the name is `--t-meta` (13px, one
-     step down) and its floor is 8em, 104px: the longest name in SECTIONS
-     sets in two whole lines there even at tablefit's conservative widths.
-     The basis stays `0%`; past this floor the chip gives way, as above. */
-  .sk-pbar.has-chip b { font-size: var(--t-meta); min-width: 8em; }
-  /* THE CHIP KEEPS ITS WIDTH; THE NAME TAKES THE ROOM LEFT, THEN WRAPS
-     (PHONE-BAR-CHIP, the PHONE-BAR-LABEL render review, part of #2391;
-     BGD, 2026-10-26, "Room left, then wrap"). The 8em floor above took
-     27px from the chip, and the admin's own chip read `Your …` on every
-     page at 390. Beside the chip the name's floor is its widest word
-     (`min-content`): no word is cut, and below that the name asks the chip
-     for nothing. The chip, the env pill, the bell and `Top` keep their
-     widths. Said after the rule above so the cascade, not a deletion,
-     carries the change. */
-  .sk-pbar.has-chip b { min-width: min-content; }
+  /* BESIDE THE ADMIN'S CHIP, ONE STEP DOWN, AND THE CHIP KEEPS ITS WIDTH
+     (PHONE-BAR-LABEL review and PHONE-BAR-CHIP, part of #2391; BGD,
+     2026-10-26, "Room left, then wrap"). In the admin's own workspace the
+     chip reads `Your workspace`, and at 14px `Submit from a GitHub issue`
+     needed four lines and `Workspaces` lost its last letter. Beside the
+     chip the name is `--t-meta` (13px, one step down). An 8em floor here
+     took 27px from the chip, and it read `Your …` on every page at 390, so
+     the name's floor is its widest word (`min-content`): no word is cut,
+     and below that the name asks the chip for nothing. The chip, the env
+     pill, the bell and `Top` keep their widths; the name takes the room
+     left and wraps. The basis stays `0%`. */
+  .sk-pbar.has-chip b { font-size: var(--t-meta); min-width: min-content; }
   /* BESIDE THE SWITCHABLE CHIP THE TITLE GIVES WAY FIRST, ALL THE WAY
      (visual QA run 6, 6:admin-007, part of #1680). The floor above is for
      the member's bar, whose plain label is short. A platform admin's bar
@@ -11100,20 +11092,22 @@ span.sk-ttile { cursor: default; }
      Spine.tsx on the bar that holds `.sk-tchip`. The hidden `Top` slot keeps
      its width (N1, run 4 note 6329568327). */
   .sk-pbar.has-chip { gap: 6px; }
-  /* AND THE ROOM IT TAKES IS 20PX WIDER (PHONE-BAR-CHIP). Beside a whole
-     `Your workspace` the name had about 77px at 390, and `Submit from a
-     GitHub issue` at 13px needs 83px (`Submit from a`, Inter Tight 650) to
-     set in two lines: in three, the clamp cut it. The gaps close to 4px
-     and the side padding to 8px beside the chip only; the menu's and the
-     chip's 44px hit areas (`::after`, below) are unchanged. */
-  .sk-pbar.has-chip { gap: 4px; padding: 0 8px; }
+  /* AND THE ROOM IT TAKES IS 30PX WIDER (PHONE-BAR-CHIP and its render
+     review). Beside a whole `Your workspace` and a `Local` pill the render
+     measured 79px left for the name at 4px gaps and 8px padding, and
+     `Submit from a GitHub issue` at 13px needs 83px (`Submit from a`,
+     Inter Tight 650, 82.4px drawn) to set in two lines: in three, the
+     clamp cut `issue`. The gaps close to 3px and the side padding to 6px
+     beside the chip only, which leaves 89px; the menu's and the chip's
+     44px hit areas (`::after`, below) are unchanged. */
+  .sk-pbar.has-chip { gap: 3px; padding: 0 6px; }
   /* THE PAGE NAME FIRST, NOW THE CHIP HOLDS A KEY (visual QA VQ-001, part
      of #2391). The note above gave the chip the room while it held the
      workspace's whole name, and the page name went to `O…` on every page
      at 390. The chip now holds the short key (`eng`) and the admin tag has
      moved to the drawer, so the title keeps a floor beside the chip as
-     beside the plain label (5.5em; 8em at one step down beside the chip,
-     PHONE-BAR-LABEL above), and the workspace shrinks a hundred times
+     beside the plain label (5.5em; its widest word at one step down beside
+     the chip, PHONE-BAR-CHIP above), and the workspace shrinks a hundred times
      faster (`flex-shrink: 100`, after the chip's and the label's own rules
      below), so the key is cut before the page name is. The name's basis
      is `0%` since PHONE-BAR-LABEL: it wraps instead of claiming its
