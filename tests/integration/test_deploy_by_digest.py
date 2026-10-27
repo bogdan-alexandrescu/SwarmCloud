@@ -624,10 +624,10 @@ def test_a_revision_that_never_became_ready_is_caught(tmp_path):
 # after a release that rebuilds workspace-apply the job LAGS, by design, and
 # releases 38108979337, 38109627282 and 38110028000 (2026-10-11) all failed on
 # exactly that. Lag on a digest an earlier release promoted -- one carrying a
-# `promoted-dev-<tag>` mark, which push-images.sh adds and never moves, or the
-# old `dev-promoted-<tag>` form deploy.sh still reads until
-# scripts/registry-remark.sh has run (#1886) -- is a warning and an owner
-# action. Every other mismatch still fails.
+# `promoted-dev-<tag>` mark, which push-images.sh adds and never moves -- is a
+# warning and an owner action. The old `dev-promoted-<tag>` form is no longer
+# read (#1886): scripts/registry-remark.sh gave every such digest the new one.
+# Every other mismatch still fails.
 
 EARLIER = "c"  # the digest an earlier release promoted and the owner pinned
 
@@ -646,7 +646,7 @@ def promotion_marks(*rows: tuple[str, str, str]) -> list:
 def test_a_bootstrap_pinned_job_lagging_an_earlier_promotion_warns_and_passes(tmp_path):
     deployment = lagging_workspace_apply(healthy_deployment())
     deployment["tags"] = promotion_marks(
-        ("dev-promoted-0123abcd", "workspace-apply", EARLIER),
+        ("promoted-dev-0123abcd", "workspace-apply", EARLIER),
         ("dev", "workspace-apply", "7"),
     )
     code, text = verify(tmp_path, deployment)
@@ -668,8 +668,10 @@ def test_a_bootstrap_pinned_job_on_a_digest_no_release_promoted_fails(tmp_path):
     # digest says nothing about this one.
     deployment["tags"] = promotion_marks(
         ("0123abcd", "workspace-apply", EARLIER),
-        ("prod-promoted-0123abcd", "workspace-apply", EARLIER),
-        ("dev-promoted-89abcdef", "workspace-apply", "e"),
+        ("promoted-prod-0123abcd", "workspace-apply", EARLIER),
+        ("promoted-dev-89abcdef", "workspace-apply", "e"),
+        # The retired form of the dev mark, on this very digest (#1886).
+        ("dev-promoted-0123abcd", "workspace-apply", EARLIER),
     )
     code, text = verify(tmp_path, deployment)
     assert code != 0, text
@@ -702,7 +704,7 @@ def test_a_mismatch_on_a_release_pinned_job_still_fails_whatever_its_marks(tmp_p
     deployment["jobs"].append(job("swarm-verify", ref("swarm-verify", EARLIER)))
     # Promoted by an earlier release -- which excuses nothing on a job the
     # release itself pins.
-    deployment["tags"] = promotion_marks(("dev-promoted-0123abcd", "swarm-verify", EARLIER))
+    deployment["tags"] = promotion_marks(("promoted-dev-0123abcd", "swarm-verify", EARLIER))
     code, text = verify(tmp_path, deployment)
     assert code != 0, text
     assert "swarm-verify" in text and digest(EARLIER) in text, text
@@ -711,7 +713,7 @@ def test_a_mismatch_on_a_release_pinned_job_still_fails_whatever_its_marks(tmp_p
 
 def test_the_summary_counts_the_owner_action_apart_from_the_unresolved_issues(tmp_path):
     deployment = lagging_workspace_apply(healthy_deployment())
-    deployment["tags"] = promotion_marks(("dev-promoted-0123abcd", "workspace-apply", EARLIER))
+    deployment["tags"] = promotion_marks(("promoted-dev-0123abcd", "workspace-apply", EARLIER))
     deployment["services"]["swarm-ui"] = service("swarm-ui", ref("swarm-ui", "0"))
     code, text = verify(tmp_path, deployment)
     assert code != 0, "the stale swarm-ui must still fail the deploy\n" + text
@@ -722,7 +724,7 @@ def test_the_summary_counts_the_owner_action_apart_from_the_unresolved_issues(tm
 
 def test_the_summary_line_of_a_passing_deploy_names_the_pending_owner_action(tmp_path):
     deployment = lagging_workspace_apply(healthy_deployment())
-    deployment["tags"] = promotion_marks(("dev-promoted-0123abcd", "workspace-apply", EARLIER))
+    deployment["tags"] = promotion_marks(("promoted-dev-0123abcd", "workspace-apply", EARLIER))
     code, text = verify(tmp_path, deployment)
     assert code == 0, text
     summary = [line for line in text.splitlines() if "runs the digests promoted as" in line]
