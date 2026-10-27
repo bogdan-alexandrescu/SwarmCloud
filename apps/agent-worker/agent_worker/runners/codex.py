@@ -73,6 +73,14 @@ _ROLLOUT_NAME = re.compile(
 )
 
 
+def rollout_files(home: Path) -> list[Path]:
+    """Every rollout under `home`, by the name codex gives one. The budget
+    watcher reads the `token_count` records each gains while a start runs
+    (`budgetwatch`; BGD's pick "Also read the rollout", 2026-10-27): codex's
+    `--json` stream reports usage only when the start's one turn ends."""
+    return [path for path in home.glob(_ROLLOUT_GLOB) if _ROLLOUT_NAME.match(path.name)]
+
+
 def latest_session(home: Path, since: float) -> str | None:
     """The session of the newest rollout written at or after `since`, or None.
 
@@ -126,6 +134,9 @@ SPEC = CliAgentSpec(
     # `thread.started` does too, as `thread_id`, which `cliagent` does not
     # read; the rollout is read either way.
     session_locator=latest_session,
+    # The rollout's `token_count` records, read as the start runs: the
+    # running usage the stream reports only at `turn.completed`.
+    usage_files=rollout_files,
 )
 
 

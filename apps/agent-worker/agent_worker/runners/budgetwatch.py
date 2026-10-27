@@ -12,6 +12,14 @@ still read whole -- and does two things:
     the next TURN BOUNDARY (`budget.UsageMeter.feed`), so the agent loses no
     turn it took; `kill` at once, the one mid-turn stop (a turn past 120%).
 
+THE ROLLOUT, TOO (codex; BGD's pick "Also read the rollout", 2026-10-27).
+codex's stream reports usage once per start, when its one turn ends, so a
+start is also measured from the files `tap(usage_files)` lists -- codex's
+rollouts -- read from the size each had when the start began: what an
+earlier attempt or start wrote there is not this start's. Only lines naming
+`token_count` are parsed (`UsageMeter.feed_rollout`); a link or anything
+but a regular file is not read, since the agent owns its HOME.
+
 ONE WATCHER PER RUNNER, across every start of the CLI the runner makes (the
 finish pass, the repair turns): a resumed start's stream is the same
 session's, and its usage is added, never counted again from zero. It never
@@ -22,9 +30,10 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import threading
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from ..budget import (
     ACTION_KILL,
@@ -50,14 +59,70 @@ class BudgetStreamWatcher:
         self._lock = threading.Lock()
         self.stopped_for: str | None = None
         self._dirty = False
+        self._usage_files: Callable[[], Iterable[Path]] | None = None
+        #: Per usage file: the offset read to, and the half line after it.
+        self._offsets: dict[Path, int] = {}
+        self._file_partial: dict[Path, bytes] = {}
 
-    def tap(self) -> Callable[[bytes], None]:
+    def tap(self, usage_files: Callable[[], Iterable[Path]] | None = None) -> Callable[[bytes], None]:
         """The callable one start's stdout capture feeds. A new start begins
-        with no half line from the last."""
+        with no half line from the last. `usage_files` lists the files whose
+        later lines carry this start's running usage (codex's rollouts)."""
         with self._lock:
             self._fed = []
         self._partial = b""
+        self.meter.start()
+        self._usage_files = usage_files
+        self._offsets = {}
+        self._file_partial = {}
+        for path in self._listed():
+            size = _regular_size(path)
+            if size is not None:
+                self._offsets[path] = size
         return self._feed
+
+    def _listed(self) -> list[Path]:
+        if self._usage_files is None:
+            return []
+        try:
+            return list(self._usage_files())
+        except OSError:
+            return []
+
+    def _rollout_records(self) -> list[dict[str, Any]]:
+        """The `token_count` lines appended to the usage files since the last read."""
+        records: list[dict[str, Any]] = []
+        for path in self._listed():
+            size = _regular_size(path)
+            if size is None:
+                continue
+            offset = self._offsets.get(path, 0)
+            if size < offset:
+                # Replaced or cut short: not the file this start was reading.
+                offset = 0
+                self._file_partial.pop(path, None)
+            if size == offset:
+                continue
+            try:
+                fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                with os.fdopen(fd, "rb") as handle:
+                    handle.seek(offset)
+                    chunk = handle.read(size - offset)
+            except OSError:
+                continue
+            self._offsets[path] = offset + len(chunk)
+            lines = (self._file_partial.get(path, b"") + chunk).split(b"\n")
+            self._file_partial[path] = lines.pop()
+            for raw in lines:
+                if b'"token_count"' not in raw:
+                    continue
+                try:
+                    record = json.loads(raw)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+                if isinstance(record, dict):
+                    records.append(record)
+        return records
 
     def _feed(self, chunk: bytes) -> None:
         with self._lock:
@@ -103,6 +168,13 @@ class BudgetStreamWatcher:
                 stop = ACTION_STOP
                 # Nothing after this boundary is read: the CLI stops here.
                 break
+        # After the stream: a rollout line read once this start's
+        # `turn.completed` is in is that turn's, which the stream counted.
+        for record in self._rollout_records():
+            before = self.meter.tokens()
+            self.meter.feed_rollout(record)
+            if self.meter.tokens() != before:
+                self._dirty = True
         if honour and stop is None and self.stopped_for is None and self._asked() == ACTION_KILL:
             self.stopped_for = STOPPED_MID_TURN
             stop = ACTION_KILL
@@ -128,6 +200,15 @@ class BudgetStreamWatcher:
             os.replace(tmp, self._channel)
         except OSError:
             pass
+
+
+def _regular_size(path: Path) -> int | None:
+    """The size of a regular file not reached through a link, or None."""
+    try:
+        info = path.lstat()
+    except OSError:
+        return None
+    return info.st_size if stat.S_ISREG(info.st_mode) else None
 
 
 def budget_watcher() -> BudgetStreamWatcher | None:

@@ -9,7 +9,15 @@ MUTATIONS: drop `--json` from `codex.SPEC.args_default` (the argv test);
 skip `codex_events.finish_capture` in `codex.body` (the log, events and
 transcript tests read raw JSON); stop treating a completed tool item as a
 codex turn boundary in `budget.UsageMeter.feed` (the boundary tests run past
-the stop); stop counting `turn.completed` usage (the meter tests read 0).
+the stop); stop counting `turn.completed` usage (the meter tests read 0); skip
+`BudgetStreamWatcher._rollout_records` in `poll` or drop `usage_files` from
+`codex.SPEC` (the rollout tests see nothing until the turn ends, and the
+mid-turn stop never comes); count a rollout reading after `turn.completed`
+(the replacement test reads the turn twice).
+
+BGD, 2026-10-27 (CODEX-JSON question 0, "Also read the rollout"): a codex
+start's running usage is also read from its rollout's `token_count`
+records, so a step is stopped inside the one turn a `codex exec` start runs.
 """
 
 from __future__ import annotations
@@ -82,6 +90,7 @@ def _jsonl(events: list[dict[str, Any]]) -> str:
 #: A codex stand-in: records argv and stdin in `$HOME/runs.jsonl`, writes a
 #: rollout naming the session, then prints `$HOME/stream.jsonl` line by line,
 #: `$HOME/pause` seconds apart, appending each line's index to `$HOME/marks`.
+#: A line `{"_rollout": record}` is appended to the session's rollout instead.
 FAKE_CODEX = r'''#!{python}
 import json, os, pathlib, sys, time
 home = pathlib.Path(os.environ["HOME"])
@@ -91,7 +100,14 @@ pause = float((home / "pause").read_text()) if (home / "pause").exists() else 0.
 for index, line in enumerate((home / "stream.jsonl").read_text().splitlines()):
     with (home / "marks").open("a") as f:
         f.write(f"{{index}}\n")
-    print(line, flush=True)
+    event = json.loads(line)
+    if "_rollout" in event:
+        rollout = home / ".codex/sessions/2026/10/27" / "rollout-2026-10-27T00-00-00-{session}.jsonl"
+        rollout.parent.mkdir(parents=True, exist_ok=True)
+        with rollout.open("a") as f:
+            f.write(json.dumps(event["_rollout"]) + "\n")
+    else:
+        print(line, flush=True)
     time.sleep(pause)
 '''
 
@@ -108,7 +124,7 @@ def _ctx(tmp_path: Path) -> RunnerContext:
 def _install(tmp_path: Path, monkeypatch, ctx: RunnerContext, stream: list[dict[str, Any]],
              *, pause: float = 0.0) -> None:
     cli = tmp_path / "fake-codex"
-    cli.write_text(FAKE_CODEX.format(python=sys.executable))
+    cli.write_text(FAKE_CODEX.format(python=sys.executable, session=SESSION))
     cli.chmod(0o755)
     monkeypatch.setenv("CODEX_BIN", str(cli))
     monkeypatch.setenv("OPENAI_API_KEY", _openai_key())
@@ -391,3 +407,124 @@ def test_a_replayed_codex_stream_is_warned_then_stopped_by_the_worker(tmp_path, 
     assert printed[-1] < len(stream) - 3, printed
     assert guard.summary()["end_cause"] == "budget_exceeded"
     assert os.path.exists(ctx.artifacts_dir / codex_events.EVENTS_NAME)
+
+
+# --------------------------------------------------------------------------
+# 4. The rollout: the running usage of a start, before its turn ends
+# --------------------------------------------------------------------------
+
+
+def _token_count(last: tuple[int, int, int], total: tuple[int, int, int]) -> dict[str, Any]:
+    """A rollout `token_count` record, codex-cli 0.154.0's shape."""
+    return {"timestamp": "2026-10-27T00:00:00.000Z", "type": "event_msg",
+            "payload": {"type": "token_count", "info": {
+                "last_token_usage": _usage(*last), "total_token_usage": _usage(*total)}}}
+
+
+def test_rollout_readings_count_until_the_turn_completes_and_are_then_replaced():
+    meter = UsageMeter()
+    meter.start()
+    meter.feed_rollout(_token_count((3_000, 1_000, 200), (3_000, 1_000, 200)))
+    # MUTATION: stop reading the rollout and a running start reads 0.
+    assert meter.tokens() == 3_200
+    # A re-sent count (a rate-limit update) is not a new request.
+    meter.feed_rollout(_token_count((3_000, 1_000, 200), (3_000, 1_000, 200)))
+    meter.feed_rollout({"type": "response_item", "payload": {"type": "message"}})
+    assert meter.tokens() == 3_200
+    meter.feed_rollout(_token_count((4_000, 3_000, 300), (7_000, 4_000, 500)))
+    assert meter.tokens() == 7_500
+    assert meter.usage_by_model()[budget_mod.UNNAMED_MODEL]["cache_read_input_tokens"] == 4_000
+
+    # The turn's own figure replaces the rollout's, never adds to it.
+    assert meter.feed({"type": "turn.completed", "usage": _usage(7_000, 4_000, 600)}) is True
+    assert meter.tokens() == 7_600
+    # MUTATION: count a reading after turn.completed and the turn counts twice.
+    meter.feed_rollout(_token_count((1_000, 0, 100), (8_000, 4_000, 600)))
+    assert meter.tokens() == 7_600
+
+    # A start stopped mid-turn keeps what its rollout said: all there is of it.
+    meter.start()
+    meter.feed_rollout(_token_count((2_000, 0, 100), (10_000, 4_000, 700)))
+    meter.start()
+    assert meter.tokens() == 9_700
+
+
+def test_the_watcher_reads_only_what_a_rollout_gains_while_the_start_runs(tmp_path):
+    private = tmp_path / "private"
+    private.mkdir()
+    home = tmp_path / "work"
+    day = home / ".codex/sessions/2026/10/27"
+    day.mkdir(parents=True)
+    rollout = day / f"rollout-2026-10-27T00-00-00-{SESSION}.jsonl"
+    # An earlier attempt's session, restored with the workspace.
+    rollout.write_text(_jsonl([_token_count((50_000, 0, 5_000), (50_000, 0, 5_000))]))
+    elsewhere = tmp_path / "elsewhere.jsonl"
+    elsewhere.write_text(_jsonl([_token_count((90_000, 0, 0), (90_000, 0, 0))]))
+    (day / "rollout-2026-10-27T00-00-01-0aa17ac4-e427-7213-b3b6-75d33a4d17b7.jsonl").symlink_to(
+        elsewhere)
+
+    watcher = budgetwatch.BudgetStreamWatcher(private / "channel.json", private / "signal.json")
+    watcher.tap(lambda: codex.rollout_files(home))
+    assert watcher.poll() is None and watcher.meter.tokens() == 0
+
+    with rollout.open("a") as f:
+        f.write(json.dumps(_token_count((1_000, 0, 100), (51_000, 0, 5_100))) + "\n")
+        f.write('{"type": "event_msg", "payload": {"type": "token_count"')  # half a line
+    watcher.poll()
+    assert watcher.meter.tokens() == 1_100
+    assert json.loads((private / "channel.json").read_text())["tokens"] == 1_100
+    with rollout.open("a") as f:
+        f.write(', "info": {"last_token_usage": {"input_tokens": 500, "output_tokens": 50}, '
+                '"total_token_usage": {"input_tokens": 51500, "output_tokens": 5150}}}}\n')
+    watcher.poll()
+    # The rest of the line is read; the link is never followed.
+    assert watcher.meter.tokens() == 1_650
+
+
+def test_a_codex_start_is_stopped_inside_its_one_turn_from_its_rollout(tmp_path, monkeypatch):
+    """One `codex exec` start, one turn: the stream reports no usage until
+    the turn ends, but the rollout does after every model request. The
+    worker sees the budget spent mid-turn and the runner stops codex at the
+    next completed tool item, long before the turn's end."""
+    ctx = _ctx(tmp_path)
+    stream: list[dict[str, Any]] = [{"type": "thread.started", "thread_id": SESSION},
+                                    {"type": "turn.started"}]
+    total = 0
+    for step in range(10):
+        total += 1_100
+        stream += [{"_rollout": _token_count((1_000, 0, 100), (total, 0, total // 11))},
+                   {"type": "item.started", "item": _command(f"c{step}", f"step {step}")},
+                   {"type": "item.completed", "item": _command(f"c{step}", f"step {step}",
+                                                               exit_code=0, status="completed")}]
+    stream += [{"type": "item.completed", "item": {"id": "m", "type": "agent_message", "text": "done"}},
+               {"type": "turn.completed", "usage": _usage(10_000, 0, 1_000)}]
+    _install(tmp_path, monkeypatch, ctx, stream, pause=0.12)
+    guard, events = _guard(tmp_path, Limits(tokens=4_000))
+    for name, value in guard.env().items():
+        monkeypatch.setenv(name, value)
+
+    done = threading.Event()
+
+    def loop() -> None:
+        while not done.is_set():
+            guard.watch()
+            time.sleep(0.03)
+
+    thread = threading.Thread(target=loop, daemon=True)
+    thread.start()
+    try:
+        # MUTATION: stop reading the rollout and the run ends on its own.
+        with pytest.raises(RunnerFailure, match="stopped by its budget"):
+            codex.body(ctx)
+    finally:
+        done.set()
+        thread.join(5)
+    guard.runner_ended()
+
+    assert [e for e in events if e["cause"] == budget_mod.WARNING_CAUSE]
+    assert guard.exceeded and guard.stopped_for == budget_mod.STOPPED_AT_BOUNDARY
+    assert 4_000 <= guard.tokens <= 6_600, guard.tokens
+    printed = [int(m) for m in (ctx.work_dir / "marks").read_text().split()]
+    assert printed[-1] < len(stream) - 6, printed
+    log = (ctx.artifacts_dir / "codex.stdout.log").read_text()
+    assert "done" not in log.splitlines()
