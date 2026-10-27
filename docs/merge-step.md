@@ -2717,9 +2717,12 @@ identity `release.yml` runs the merge under, not just CI's own configuration.
      and refuses with `checks_pending`;
    * a required check with **no** run at `pinned` is pending too. GitHub treats
      it the same way, as pending for ever;
-   * `failure`, `cancelled`, `timed_out`, `action_required`, `neutral`,
+   * `failure`, `timed_out`, `action_required`, `neutral`,
      `stale` or `startup_failure` gives `checks_failed`. `neutral` is on this
      list deliberately: the owner's rule is "success or skipped".
+   * `cancelled` is pending, not failed (#1778, 2026-10-27): someone stopped
+     the run -- the operator cancelling stranded runs to re-run them -- so it
+     waits for its re-run. A red latest run of another event still fails.
 4. **Every other check run at `pinned`** (the unfiltered list, paginated): any
    one that is not completed, or completed with a conclusion other than
    `success`, `skipped` or `neutral`, also refuses. This is `auto-merge.yml`
@@ -3266,7 +3269,8 @@ step's Python from one table of cases (title prefixes, conclusions,
 pending states) and fail when they answer differently. Where they **deliberately**
 differ, the merge step is the stricter one and the table says why: a required
 check must be `success` or `skipped` (the owner's rule). Gate 5 holds the merge
-only on `failure`, `timed_out`, `action_required` and `cancelled`, and tolerates
+only on `failure`, `timed_out` and `action_required` (a `cancelled` run waits,
+#1778: gate 6 holds a required one), and tolerates
 every other conclusion. The merge step also refuses `touches_protected_paths`,
 a broader set than gate 1's placeholder-title check covers at all (M4) — the
 two gates are not required to agree here, since `auto-merge.yml` is the human
