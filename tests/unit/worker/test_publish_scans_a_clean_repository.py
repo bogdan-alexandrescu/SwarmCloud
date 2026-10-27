@@ -35,7 +35,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_worker import lifecycle
+from agent_worker import lifecycle, workspace as workspace_mod
 
 from test_agent_commits_are_kept import (
     KEY,
@@ -614,3 +614,127 @@ def test_a_forged_unconfirmable_or_malformed_shallow_line_never_joins_the_bounda
     assert _plain_git(repo, "rev-parse", "HEAD") == third
     # The key's commit was fetched: the walk was not stopped at C2.
     _plain_git(repo, "cat-file", "-e", f"{first}^{{commit}}")
+
+
+# -- the worker's final publish asks origin through its git tools relay -------
+#
+# The six fr-ffa78ac1ab9b failures were all at the worker's final publish, so
+# the confirmer is exercised there too: `Worker._origin_confirmer` hands
+# `prepare_publish_repo` the relay's `confirm_on_origin`. A confirmer that
+# raises reads as "origin confirmed nothing", so a broken wiring would only
+# show as the merge failing to publish -- which is what the first test pins.
+
+
+class _ConfirmingRelay:
+    """The attempt's git tools relay, answering `git_fetch` `confirm` from the
+    file:// origin, or refusing with a fence."""
+
+    def __init__(self, origin_repo: Path, *, fenced: bool = False) -> None:
+        self.asked: list[list[str]] = []
+        self.request_ids: list[str] = []
+        self._confirm = _origin_confirmer(origin_repo, self.asked)
+        self._fenced = fenced
+
+    def confirm_on_origin(self, shas: list[str], *, request_id: str) -> list[str]:
+        self.request_ids.append(request_id)
+        if self._fenced:
+            from agent_worker import children as children_mod
+
+            self.asked.append(list(shas))
+            raise children_mod.ChildSubmitFenced(
+                409, "child_submit_fenced", "", retryable=False
+            )
+        return self._confirm(shas)
+
+
+def _origin_with_a_sibling(origin_repo: Path, tmp_path: Path) -> list[str]:
+    """Give the bare `origin` a sibling X (x1..x5, off its base) and move main
+    on by m2, m3, so a depth-1 clone of main is cut off below the merge base.
+    Returns X's shas, oldest first."""
+    seed = tmp_path / "sibling-seed"
+    subprocess.run(["git", "clone", "-q", str(origin_repo), str(seed)],
+                   check=True, capture_output=True)
+    _git(seed, "checkout", "-q", "-b", "X")
+    xs = []
+    for i in range(1, 6):
+        (seed / f"x{i}.txt").write_text(f"x{i}\n")
+        _git(seed, "add", "-A")
+        _git(seed, "commit", "-q", "-m", f"x{i}")
+        xs.append(_rev(seed, "HEAD"))
+    _git(seed, "checkout", "-q", "main")
+    for i in (2, 3):
+        (seed / f"m{i}.txt").write_text(f"m{i}\n")
+        _git(seed, "add", "-A")
+        _git(seed, "commit", "-q", "-m", f"m{i}")
+    _git(seed, "push", "-q", "origin", "main", "X")
+    return xs
+
+
+def _fetch_sibling_with_depth_and_merge(origin_repo: Path, xs: list[str]):
+    """The agent's shell, as in the six failures: `git fetch --depth=3` of X,
+    then a `--no-ff` merge of it."""
+    def edit(repo: Path) -> None:
+        base = _rev(repo, "HEAD")
+        _git(repo, "fetch", "-q", "--depth=3", f"file://{origin_repo}",
+             "X:refs/remotes/origin/X")
+        _git(repo, "merge", "-q", "--no-ff", "--allow-unrelated-histories",
+             "-m", "merge X", "refs/remotes/origin/X")
+        shallow = (repo / ".git" / "shallow").read_text().split()
+        # The control: the clone is cut off on X (x3) as well as at the base.
+        assert sorted(shallow) == sorted([base, xs[2]]), (shallow, base, xs)
+    return edit
+
+
+def test_the_final_publish_of_a_depth_fetched_merge_asks_origin_through_the_relay(
+    worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
+):
+    xs = _origin_with_a_sibling(origin, tmp_path)
+    relay = _ConfirmingRelay(origin)
+    monkeypatch.setattr(lifecycle.Worker, "_workflow_broker", lambda self: relay,
+                        raising=False)
+
+    _, config, out = _attempt(
+        worker_factory, monkeypatch, origin, task_id="t-2559-merge",
+        edit=_fetch_sibling_with_depth_and_merge(origin, xs),
+    )
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    # MUTATION: `_origin_confirmer` returns None, or calls a renamed relay
+    # method -> the boundary is the base alone and the publish-fetch fails.
+    assert out["published"] is True, out.get("publish_reason")
+    assert relay.asked == [[xs[2]]], relay.asked
+    assert all(r.startswith("publish-confirm-") for r in relay.request_ids), relay.request_ids
+    files = tree_at(origin, branch)
+    assert {"x1.txt", "x5.txt", "m3.txt"} <= files, files
+
+
+def test_a_fence_from_the_publish_confirmer_is_raised_out_of_build_clean_repo(
+    worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
+):
+    """`prepare_publish_repo` reads any confirmer error as "origin confirmed
+    nothing"; a fence is still the fence (invariant 5), so the worker raises
+    it rather than going on to publish."""
+    from agent_worker import children as children_mod
+
+    xs = _origin_with_a_sibling(origin, tmp_path)
+    relay = _ConfirmingRelay(origin, fenced=True)
+    monkeypatch.setattr(lifecycle.Worker, "_workflow_broker", lambda self: relay,
+                        raising=False)
+    worker, config, _ = worker_factory(
+        task_id="t-2559-fenced", attempt_id="att-t-2559-fenced",
+        lease_id="lease-t-2559-fenced", repository_url=f"file://{origin}",
+    )
+    worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
+    task = {"task_id": "t-2559-fenced", "metadata": {"dispatch": {"strategy": "direct-pr"}}}
+    worker._task = task
+    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    assert worker._maybe_clone(task) is not None, "the clone did not land"
+    repo = worker.ws.work / lifecycle.REPO_DIR_NAME
+    base = _rev(repo, "HEAD")
+    _fetch_sibling_with_depth_and_merge(origin, xs)(repo)
+
+    # MUTATION: drop the `finally: raise fenced[0]` -> GitError (the fetch
+    # failure on the base-only boundary) is raised instead.
+    with pytest.raises(children_mod.ChildSubmitFenced):
+        worker._build_clean_repo(repo, floor=base)
+    assert relay.asked == [[xs[2]]], relay.asked
