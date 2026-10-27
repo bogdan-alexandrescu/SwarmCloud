@@ -697,7 +697,8 @@ def failing_run_ids(runs: list[Mapping[str, Any]],
                     green: frozenset[str] | set[str]) -> set[int] | None:
     """GitHub's ids of the runs that make ONE check red: each event's latest
     run (`latest_per_event`) that finished with a conclusion not in `green`,
-    and not `cancelled` (`cancelled_run`, #1778: pending, not red). None when one of them has no id -- a commit status, which no re-run
+    and not `cancelled` (`cancelled_run`, #1778: pending, not red). None
+    when one of them has no id -- a commit status, which no re-run
     replaces. What `_rerun_settling` matches against the jobs the tick
     re-ran: a re-run makes new ids, so a red one is no longer among them."""
     ids: set[int] = set()
