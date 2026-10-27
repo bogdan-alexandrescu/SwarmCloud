@@ -485,6 +485,85 @@ def test_the_shell_group_lists_one_check_per_verdict_key_in_order():
     assert all(line.startswith("live-browser: ") for line in listed.splitlines())
 
 
+def _qa_listed(text: str) -> list[str]:
+    return re.search(r"live_browser_qa_checks\(\) \{\n  cat <<'EOF2'\n(.*?)\nEOF2", text, re.S).group(1).splitlines()
+
+
+def test_the_shell_group_lists_one_qa_identity_check_per_verdict_key_in_order():
+    """QI-ACCEPT (docs/design/qa-identity.md §8, part of #1649): the group's QA
+    identity case reports the four verdicts `--qa-identity` writes, in its
+    order. MUTATION: drop qa_no_leak from LIVE_BROWSER_QA_KEYS."""
+    text = GROUP.read_text()
+    keys = re.search(r"LIVE_BROWSER_QA_KEYS=\(([^)]*)\)", text).group(1).split()
+    assert tuple(keys) == lb.QA_IDENTITY_CHECKS
+    listed = _qa_listed(text)
+    assert len(listed) == len(lb.QA_IDENTITY_CHECKS)
+    assert all(line.startswith("live-browser: ") for line in listed)
+    labels = dict(zip(lb.QA_IDENTITY_CHECKS, listed))
+    assert lb.QA_HOST_REFUSAL in labels["qa_handoff_refused"]
+    assert lb.QA_NOT_GRANTED in labels["qa_ungranted_refused"]
+
+
+def test_the_qa_identity_case_runs_after_the_group_s_own_checks():
+    """The case was drafted and never called (TRIAGE-B02, PR 2530): until the
+    group calls it, `--qa-identity` runs nowhere. MUTATION: remove the call."""
+    text = GROUP.read_text()
+    body = re.search(r"^run_live_browser\(\) \{\n(.*?)\n\}\n", text, re.S | re.M).group(1)
+    assert body.rstrip().endswith("run_live_browser_qa")
+    qa = re.search(r"^run_live_browser_qa\(\) \{\n(.*?)\n\}\n", text, re.S | re.M).group(1)
+    assert "--qa-identity" in qa and "qa-identity-submission" in qa
+    assert 'SWARM_API_TENANT="${SWARM_ACCEPTANCE_QA_TENANT}"' in qa
+    assert qa.rstrip().endswith('SWARM_API_TENANT="${saved}"'), "the suite's own tenant comes back"
+
+
+#: Stand-ins for what run.sh sources (common.sh, testlib.sh, lib.sh): each
+#: prints what it was asked, and anything that would reach a deployment says so.
+_QA_STUBS = """
+step() { printf 'STEP %s\\n' "$1"; }
+die() { printf 'DIE %s\\n' "$*"; exit 1; }
+acc_check() { printf 'CHECK %s\\n' "$1"; }
+acc_skip() { printf 'SKIP %s\\n' "$1"; }
+acc_pass() { printf 'PASS %s\\n' "$1"; }
+acc_fail() { printf 'FAIL %s\\n' "$1"; }
+acc_submit() { printf 'SUBMITTED\\n'; return 1; }
+python3() { printf 'PYTHON\\n'; return 1; }
+api_credential() { printf 'CREDENTIAL\\n'; }
+"""
+
+
+@pytest.mark.parametrize("tenant,console", [
+    ("", ""),
+    ("smoke", ""),
+    ("", "https://console.example.test"),
+])
+def test_the_qa_identity_case_skips_every_check_unless_both_settings_are_set(tmp_path, tenant, console):
+    """Without a granted tenant and the console's URL the case cannot be
+    measured: every check is a SKIP that names both settings, and nothing is
+    submitted. MUTATION: test only SWARM_ACCEPTANCE_QA_TENANT."""
+    if shutil.which("bash") is None:
+        pytest.skip("bash is required")
+    env = {"PATH": "/usr/bin:/bin", "SWARM_API_TENANT": "smoke", "ACC_WORK": str(tmp_path)}
+    # An unset setting is absent from the environment, as on a job that never declared it.
+    for name, value in (("SWARM_ACCEPTANCE_QA_TENANT", tenant), ("SWARM_ACCEPTANCE_CONSOLE_URL", console)):
+        if value:
+            env[name] = value
+    proc = subprocess.run(
+        ["bash", "-c", _QA_STUBS + 'source "$1"; run_live_browser_qa; printf "TENANT %s\\n" "${SWARM_API_TENANT}"',
+         "_", str(GROUP)],
+        capture_output=True, text=True, timeout=30, env=env)
+    assert proc.returncode == 0, proc.stderr
+    lines = proc.stdout.splitlines()
+    checks = [l[len("CHECK "):] for l in lines if l.startswith("CHECK ")]
+    skips = [l[len("SKIP "):] for l in lines if l.startswith("SKIP ")]
+    assert checks == _qa_listed(GROUP.read_text())
+    assert len(skips) == len(checks) == len(lb.QA_IDENTITY_CHECKS)
+    for reason in skips:
+        assert reason.startswith("not measured")
+        assert "SWARM_ACCEPTANCE_QA_TENANT" in reason and "SWARM_ACCEPTANCE_CONSOLE_URL" in reason
+    assert not [l for l in lines if l in ("SUBMITTED", "PYTHON", "CREDENTIAL") or l.startswith(("PASS", "FAIL", "DIE"))]
+    assert lines[-1] == "TENANT smoke"
+
+
 def test_the_frames_and_recording_labels_say_the_field_is_as_drawn():
     """The checks pass a field shown as Chromium drew it and fail one painted
     over (BGD, 2026-10-25: the live view paints nothing), so a label saying
