@@ -45,7 +45,10 @@
     "FLOORS -- adding a neighbour is expected and must not fail; losing one must.",
     "The 2026-10-21 read of the live project (service accounts, buckets, Cloud Run",
     "services) raised them to six buckets, nineteen service accounts and two Cloud",
-    "Run services, oracle-api and oracle-web (epic #1822).",
+    "Run services, oracle-api and oracle-web (epic #1822). On 2026-10-27 the",
+    "oracle-api@ service account left the list by BGD's decision (#1835): it is a",
+    "SwarmCloud principal, not another team's resource, so the floors are",
+    "eighteen service accounts and 31 in all. The Cloud Run service oracle-api stays.",
     "",
     "`patch` is a jq expression applied to that resource's `change.before`, with $e",
     "bound to the deny-list entry and $p to the project id. `expect_matched` is what",
@@ -56,8 +59,8 @@
     "network/subnetwork FIELD instead."
   ],
   "inventory_floor": {
-    "total": 32,
-    "sa": 19,
+    "total": 31,
+    "sa": 18,
     "bucket": 6,
     "run-service": 2,
     "cluster": 1,

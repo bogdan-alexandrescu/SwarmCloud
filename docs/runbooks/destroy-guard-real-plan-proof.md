@@ -16,9 +16,10 @@ runbook, and `scripts/verify-destroy-guard.sh` contains neither.
 
 **What it is protecting.** `saga-agents-staging` is shared. It holds another
 team's live GKE cluster `agents-staging`, their VPC `agents-staging-vpc`, two
-subnets, six buckets, nineteen service accounts, two Cloud Run services and
+subnets, six buckets, eighteen service accounts, two Cloud Run services and
 Firestore's `(default)` database (`SHARED_DENY_LIST` as of the 2026-10-21 read
-of the live project). `make destroy` aborting on all of those is the only control between
+of the live project, less the `oracle-api@` service account, which left it on
+2026-10-27 because it is a SwarmCloud principal, #1835). `make destroy` aborting on all of those is the only control between
 this repository and deleting their production.
 
 ---

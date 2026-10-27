@@ -750,10 +750,15 @@ token, never *accepted* from the request.
 ## Operating in a shared project
 
 `saga-agents-staging` holds another team's live GKE cluster (`agents-staging`),
-their VPC, six of their buckets, nineteen of their service accounts and two of
+their VPC, six of their buckets, eighteen of their service accounts and two of
 their Cloud Run services (`oracle-api`, `oracle-web`) — counted from
 `SHARED_DENY_LIST` after the 2026-10-21 read of the live project, which found
-twelve the 2026-09-15 list did not name. Protections:
+twelve the 2026-09-15 list did not name. One of those twelve, the
+`oracle-api@` service account, left the list on 2026-10-27 by the owner's
+decision (#1835): it is also this platform's principal (the service tenant
+`u-or-9a0792`, a front-door IAP member, `ALLOWED_USERS`), and on the list it made
+the guards refuse this platform's own tenant. The Cloud Run service `oracle-api`
+is a different resource and stays protected. Protections:
 
 * `SHARED_DENY_LIST` in `scripts/lib/common.sh` — one list, read by `destroy.sh`,
   `purge-data.sh` and `configure-kubectl.sh`;
