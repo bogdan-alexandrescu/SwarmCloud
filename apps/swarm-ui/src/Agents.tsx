@@ -477,61 +477,69 @@ export function AgentsScreen({
   }
 
   return (
-    <Screen
-      title="Agents"
-      load={loadAgentsPage}
-      // THE LIST RE-READS (AG-1). It read once and never again, while its
-      // clock went on adding to every row: a finished agent read `running`
-      // and was counted in Live. `Screen` owns the timer, the pause while the
-      // tab is hidden, the back-off and the stop on an answer only a person
-      // can change; this screen owns the cadence, which is a function of the
-      // rows it holds.
-      pollMs={pollInterval}
-      summary={(first) => {
-        const d = withMorePages(first, more)
-        const live = d.tasks.filter((t) => tabOf(t) === 'live').length
-        return (
-          <>
-            {d.tasks.length} loaded · {live} live
-            {d.tenant_id && ` · ${d.tenant_id}`}
-          </>
-        )
-      }}
-      // NO `empty` PANEL (V151): `loadAgentsPage` never answers `empty`, so
-      // a tenant with no agents keeps the tabs, search and filters, and each
-      // tab draws its own real zero below them.
-    >
-      {(d, reading) => (
-        <AgentsBody
-          onOpen={onOpen}
-          openTaskId={taskId}
-          page={withMorePages(d, more)}
-          onMore={() => void loadMore(withMorePages(d, more))}
-          moreRead={moreRead}
-          // WHEN THE ROWS ON SCREEN WERE READ, and the cadence in force, as
-          // `Screen` read them -- not recorded a second time here. A stale
-          // screen hands over the last GOOD read's time, which is the one the
-          // rows describe.
-          readAt={reading.fetchedAt}
-          interval={reading.pollMs ?? pollInterval(d)}
-          tab={tab}
-          setTab={setTab}
-          recentState={recentState}
-          setRecentState={setRecentState}
-          onList={onList}
-          profile={profile}
-          setProfile={setProfile}
-          grouped={grouped}
-          setGrouped={setGrouped}
-          query={query}
-          setQuery={setQuery}
-          failedFirst={failedFirst}
-          setFailedFirst={setFailedFirst}
-          browserUnused={browserUnused}
-          setBrowserUnused={setBrowserUnused}
-        />
-      )}
-    </Screen>
+    <>
+      <Screen
+        title="Agents"
+        load={loadAgentsPage}
+        // THE LIST RE-READS (AG-1). It read once and never again, while its
+        // clock went on adding to every row: a finished agent read `running`
+        // and was counted in Live. `Screen` owns the timer, the pause while the
+        // tab is hidden, the back-off and the stop on an answer only a person
+        // can change; this screen owns the cadence, which is a function of the
+        // rows it holds.
+        pollMs={pollInterval}
+        summary={(first) => {
+          const d = withMorePages(first, more)
+          const live = d.tasks.filter((t) => tabOf(t) === 'live').length
+          return (
+            <>
+              {d.tasks.length} loaded · {live} live
+              {d.tenant_id && ` · ${d.tenant_id}`}
+            </>
+          )
+        }}
+        // NO `empty` PANEL (V151): `loadAgentsPage` never answers `empty`, so
+        // a tenant with no agents keeps the tabs, search and filters, and each
+        // tab draws its own real zero below them.
+      >
+        {(d, reading) => (
+          <AgentsBody
+            onOpen={onOpen}
+            openTaskId={taskId}
+            page={withMorePages(d, more)}
+            onMore={() => void loadMore(withMorePages(d, more))}
+            moreRead={moreRead}
+            // WHEN THE ROWS ON SCREEN WERE READ, and the cadence in force, as
+            // `Screen` read them -- not recorded a second time here. A stale
+            // screen hands over the last GOOD read's time, which is the one the
+            // rows describe.
+            readAt={reading.fetchedAt}
+            interval={reading.pollMs ?? pollInterval(d)}
+            tab={tab}
+            setTab={setTab}
+            recentState={recentState}
+            setRecentState={setRecentState}
+            onList={onList}
+            profile={profile}
+            setProfile={setProfile}
+            grouped={grouped}
+            setGrouped={setGrouped}
+            query={query}
+            setQuery={setQuery}
+            failedFirst={failedFirst}
+            setFailedFirst={setFailedFirst}
+            browserUnused={browserUnused}
+            setBrowserUnused={setBrowserUnused}
+          />
+        )}
+      </Screen>
+      {/* A SCRIM WHILE AN AGENT IS OPEN (BT-017, #2423): from 760px to 1099px
+          the agent is an overlay on this list, and with no backdrop its edge
+          cut the rows mid-word (`…NOT_YET, not`) as if they were one page.
+          Drawn only in that band (agents.css `.ag-scrim`); it takes no pointer,
+          so a row under it still opens, as it did. */}
+      {taskId !== null && <div className="ag-scrim" aria-hidden="true" />}
+    </>
   )
 }
 
@@ -2061,6 +2069,27 @@ function CompactRow({
     .filter((p): p is string => p !== null && p !== undefined)
     .join(' · ')
 
+  // THE SUB-LINE'S WHOLE TEXT IS ITS TITLE (BT-017, #2423): on a desktop row
+  // the line is one line cut at its end, and the part cut is the owner, so
+  // `… · claude-opus-5-5 · b…` named nobody. Its facts in the line's order,
+  // with the owner's whole address where the line prints the name before @.
+  const subSaid = [
+    live && (wordOnly || task.state === 'STARTING') ? (startingBrowser ? 'starting' : wordOnly ? el.text : 'starting') : null,
+    live ? tries.text : null,
+    budgetSay,
+    profile,
+    browserMark !== null ? browserUseSay(browserMark) : null,
+    task.submitted_by ?? 'no owner recorded',
+    ran,
+    !live && wordOnly ? el.text : null,
+    !live && tries.over ? tries.text : null,
+    cancelling ? 'cancelling' : null,
+    waitsForYou ? 'needs you' : null,
+    cancelSpan ? CANCEL_SPAN : null,
+  ]
+    .filter((p): p is string => p !== null && p !== undefined && p !== '')
+    .join(' · ')
+
   // THE ROW IS NOT A BUTTON; IT HOLDS ONE (visual QA QA-032, 2026-10-20). It
   // was a `role="button"` div around the copy-id button, which axe reports as
   // nested-interactive: a screen reader flattens a button's content, so the
@@ -2149,7 +2178,7 @@ function CompactRow({
       {/* A BROWSER ROW WRAPS BETWEEN ITS FACTS AT EVERY WIDTH (review,
           dark-desktop-02-inspector-used): beside the inspector its mark cut
           the owner and the run time off the one line (agents.css `.has-bu`). */}
-      <span className={`cr-sub${browserMark !== null ? ' has-bu' : ''}`}>
+      <span className={`cr-sub${browserMark !== null ? ' has-bu' : ''}`} title={subSaid}>
         {task.state === 'RUNNING' && isLiveBrowser(task) && <DeviceThumb taskId={task.id} />}
         {/* A LIVE ROW LEADS WITH WHERE IT IS (visual QA run 2, work-a-007):
             the line is one line cut at its end (agents.css `.cr-sub`), and

@@ -3300,6 +3300,10 @@ function RecentWorkflows({ nav }: { nav: (to: string) => void }) {
         // with its amber ring -- `state not recorded` and no mark disagreed
         // with the table about the same row. A withheld mark still keeps its
         // slot (`.sk-recent .sk-st`, styles.css), so every name starts in line.
+        // AND THE SLOT IS DRAWN (BT-015, #2423): with no glyph it was 0px
+        // tall, so the row's state reached a screen reader only. A withheld
+        // mark is a dashed neutral ring (`.is-withheld`, styles.css) -- not a
+        // state's glyph -- and its title is the `last seen …` word.
         const current = workflowReadThisLoad(w.id)
         const look: { mark: MarkName | null; hue: MarkHue | 'warn' } | null =
           w.state === null ? (current ? { mark: 'queued', hue: 'warn' } : null) : current ? STATE_MARK[w.state] : null
@@ -3329,6 +3333,7 @@ function RecentWorkflows({ nav }: { nav: (to: string) => void }) {
                 hue={look === null ? 'neu' : look.hue}
                 word={word}
                 dataMark={!current ? (said !== null ? 'stale' : undefined) : said === null ? 'unknown' : undefined}
+                className={look === null ? 'is-withheld' : undefined}
                 bare
               />
               {/* THE WHOLE NAME AND ID ON THE SPAN THAT ELLIPSES (U11a D14):

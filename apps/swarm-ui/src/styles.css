@@ -11394,9 +11394,41 @@ span.sk-ttile { cursor: default; }
    a row not re-read this load draws no glyph, and its name started 12px left
    of its neighbours'. The glyph is 12px (`.sk-st svg`). */
 .sk-recent .sk-st { min-width: 12px; }
+/* AND THE SLOT IS DRAWN, NOT ONLY KEPT (BT-015, #2423). With no glyph and only
+   a visually-hidden word inside, the span was 12px wide and 0px tall: the
+   state of five Recent rows reached a screen reader and nobody else. The
+   stand-in is a dashed ring in the neutral hue, the glyph's 12px: no state's
+   mark is dashed, so it never reads as `queued` or `running`. Its title is
+   the `last seen …` word (Spine.tsx, `NamedMark`'s bare title). */
+.sk-recent .sk-st.is-withheld::before { content: ''; flex: none; box-sizing: border-box; width: 12px; height: 12px; border: 1.5px dashed currentColor; border-radius: 50%; }
 .sk-recent-id { overflow: hidden; text-overflow: ellipsis; }
 .sk-recent-all { color: var(--sk-ac); }
 /* (Workflows V2 rules go above this line.) */
+
+/* A SHORT SCREEN PACKS THE SPINE AND THE PANEL (BT-016, #2423). At 1024x625
+   the collapsed spine -- a platform admin's, with the tenant tile, the expand
+   control and the compact Sign out -- was 780px of items in a 625px column:
+   Help and Profile sat below the fold of a scroller that shows no bar on an
+   overlay-scrollbar system. At 1440x757 the Work panel's pages scrolled by
+   12px and Timeline sat under the Global pool card. From 800px tall down, the
+   spine items lose their padding (2px, not 7px: each is still 42px, over the
+   24px target) and the gaps, the mark and the tile shrink; the panel rows
+   lose 2px a side and the panel 6px. About 190px on the spine and 20-30px
+   on the panel; the spine keeps `overflow-y: auto` for anything shorter.
+   Written as shorthands, as the rules they override are. A phone (under
+   760px) has its own drawer and is left as it is. */
+@media (min-width: 760px) and (max-height: 800px) {
+  .sk-spine { padding: 8px 0 6px; gap: 2px; }
+  .sk-hive { padding: 0 0 4px; }
+  .sk-hive svg { width: 32px; height: 32px; }
+  .sk-ttile { height: 36px; margin: 0 0 4px; }
+  .sk-ri { padding: 2px 0; gap: 1px; }
+  .sk-rsep { margin: 3px 0; }
+  .sk-spine .sk-expand { height: 28px; margin: 0 0 2px; }
+  .sk-spine .sk-out { margin: 2px 0 0; }
+  .sk-panel { padding: 8px 0; }
+  .sk-pk { padding: 5px 9px; }
+}
 
 
 /* ======================================================================== */
