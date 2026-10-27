@@ -14423,6 +14423,21 @@ class Worker:
         registration's `workflow_files` switch is on (#2029),
         `workflow_scope_missing` otherwise. A fence (409) is a
         refusal too: nothing is pushed, and this worker touches no lease.
+
+        A refusal marked `retryable` -- `GitTools.call` turns every retryable
+        ChildApiError into `api_unavailable` -- is asked again in-process:
+        one swarm-api blip failed task_b7b69bce7da247e0afaf's finished
+        42-minute build with publish_failed (#2138). The bundle is built and
+        uploaded once and every try carries the same request_id and fields,
+        so the broker sees one logical call; a replay after a push whose
+        answer was lost is safe because swarm-api's `_push` leases on
+        `recorded_tip`, which that push already recorded. The tries are
+        `_forge_retry()`'s bound -- `cfg.forge_read_attempts`, one budget of
+        the smaller of `max_in_worker_retry_delay_seconds` and the step's
+        remaining deadline -- so this is never the long in-worker wait
+        invariant 4 forbids; past it the last refusal is returned as before.
+        A fence, a refusal not marked retryable, and any other failure are
+        tried once (invariant 5: a fence is never asked again).
         """
         from . import gittools as gittools_mod  # lazy: gittools imports this module
 
@@ -14486,7 +14501,25 @@ class Worker:
                     tenant=cfg.tenant_id, attempt=cfg.attempt_id, call=request_id)
                 self.store.upload_bytes(key, raw, "application/x-git-bundle")
                 fields["bundle_object"] = key
-            payload = relay.call("git_push_branch", fields, request_id=request_id)
+            policy = self._forge_retry()
+            started = policy.clock()
+            attempt = 1
+            while True:
+                try:
+                    payload = relay.call("git_push_branch", fields, request_id=request_id)
+                    break
+                except gittools_mod.GitToolRefused as refusal:
+                    if not refusal.retryable or attempt >= policy.attempts:
+                        raise
+                    wait = policy.base_delay_seconds * (2 ** (attempt - 1))
+                    if (policy.clock() - started) + wait > policy.budget_seconds:
+                        raise
+                    self.log.warning(
+                        "the broker could not answer the workflow publish; asking again",
+                        code=refusal.code, attempt=attempt, attempts=policy.attempts,
+                        wait_seconds=wait)
+                    policy.sleep(wait)
+                    attempt += 1
         except gittools_mod.GitToolFenced:
             self.log.warning("the broker fenced the workflow publish; nothing was pushed")
             return None, {"code": "fenced", "message": (
