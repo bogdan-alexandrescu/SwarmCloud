@@ -17,10 +17,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, waitFor } from '@testing-library/react'
 
+import STYLES from '../styles.css?raw'
 import { artifactRawUrl } from '../api'
-import { offersRawPatch } from '../ArtifactViewer'
+import { offersRawPatch, RawPatchDownload } from '../ArtifactViewer'
 import { isSubmitter } from '../Artifacts'
 import type { Task } from '../types'
+import { cascade } from './cssgate'
 import { task as baseTask } from './runfixture'
 
 vi.mock('../Agents', () => ({ AgentsScreen: () => null }))
@@ -312,5 +314,33 @@ describe('the Artifacts tab offers the raw patch to its submitter only', () => {
     await openPane(SUBMITTER, { submitted_by: null })
     await listed()
     expect(rawLinks(outputs())).toHaveLength(0)
+  })
+})
+
+// THE CONTROL MUST NOT WIDEN THE GET COLUMN (review of #1857, rendered at
+// desktop 1440): a table cell is `white-space: nowrap`, so the note drawn as
+// one unbounded line set the Get cell's minimum at ~505px and crushed every
+// row's File column from 306px to 40px. MUTATIONS: drop the `.art-rawpatch`
+// rule (the span stays inline-flex, unbounded) or the note's `white-space`
+// (it inherits nowrap).
+describe('the raw patch control wraps inside its cell', () => {
+  it('sits on its own bounded line, and its note wraps', () => {
+    const { container } = render(
+      <table className="ctl-table">
+        <tbody>
+          <tr>
+            <td>
+              <RawPatchDownload taskId={REF} name="fix-1.patch" />
+            </td>
+          </tr>
+        </tbody>
+      </table>,
+    )
+    const span = container.querySelector('.art-rawpatch')!
+    const note = span.querySelector('.ctl-sub')!
+    const env = { width: 1440, theme: 'light' as const }
+    expect(cascade(STYLES, span, 'display', env).winner?.value).toBe('flex')
+    expect(cascade(STYLES, span, 'max-width', env).winner?.value).toMatch(/^\d+ch$/)
+    expect(cascade(STYLES, note, 'white-space', env).winner?.value).toBe('normal')
   })
 })
