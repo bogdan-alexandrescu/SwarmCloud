@@ -112,6 +112,12 @@ def _launch_tab(w: World, target: str = "T-launch") -> str:
     return target
 
 
+async def _connect_seeing(w: World, target: str) -> None:
+    """The agent connects, and its client auto-attaches the launch tab too."""
+    await w.connect()
+    await w.attach_page(target)
+
+
 def _closed(w: World) -> list[str]:
     return [m["params"]["targetId"] for m in w.chromium.from_agent("Target.closeTarget")]
 
@@ -127,7 +133,7 @@ def test_the_untouched_blank_tab_is_closed_once_a_page_the_agent_opened_navigate
     async def body():
         w, _ = _world(tmp_path)
         launch = _launch_tab(w)
-        await w.connect()
+        await _connect_seeing(w, launch)
         created = await w.send("Target.createTarget", {"url": "about:blank"})
         mine = w.agent.response(created)["result"]["targetId"]
         session = await w.attach_page(mine)
@@ -136,6 +142,7 @@ def test_the_untouched_blank_tab_is_closed_once_a_page_the_agent_opened_navigate
         assert _closed(w) == [launch]
         # Once: a later navigation closes nothing more.
         later = _launch_tab(w, "T-later")
+        await w.attach_page(later)
         await _navigate(w, session, mine, "https://example.com/next")
         assert later not in _closed(w)
         assert _closed(w) == [launch]
@@ -148,7 +155,7 @@ def test_a_new_tab_opened_on_a_real_url_closes_the_blank_one(tmp_path):
     async def body():
         w, _ = _world(tmp_path)
         launch = _launch_tab(w)
-        await w.connect()
+        await _connect_seeing(w, launch)
         created = await w.send("Target.createTarget", {"url": "https://example.com/"})
         mine = w.agent.response(created)["result"]["targetId"]
         await settle()
@@ -178,7 +185,7 @@ def test_a_blank_tab_the_agent_opened_itself_is_kept(tmp_path):
     async def body():
         w, _ = _world(tmp_path)
         launch = _launch_tab(w)
-        await w.connect()
+        await _connect_seeing(w, launch)
         spare = await w.send("Target.createTarget", {"url": "about:blank"})
         kept = w.agent.response(spare)["result"]["targetId"]
         created = await w.send("Target.createTarget", {"url": "about:blank"})
@@ -192,11 +199,42 @@ def test_a_blank_tab_the_agent_opened_itself_is_kept(tmp_path):
     run(body)
 
 
+def test_the_blank_tab_is_kept_when_it_would_be_the_last(tmp_path):
+    """The page the agent navigated closed before the gate read the list."""
+
+    async def body():
+        w, _ = _world(tmp_path)
+        launch = _launch_tab(w)
+        await _connect_seeing(w, launch)
+        created = await w.send("Target.createTarget", {"url": "about:blank"})
+        mine = w.agent.response(created)["result"]["targetId"]
+        session = await w.attach_page(mine)
+        del w.chromium.targets[mine]
+        await w.send("Page.navigate", {"url": "https://example.com/"}, session)
+        assert w.chromium.from_agent("Target.getTargets")
+        assert _closed(w) == []
+        await w.chromium.stop()
+
+    run(body)
+
+
+def test_a_browser_with_one_known_tab_is_not_asked_for_its_list(tmp_path):
+    async def body():
+        w, _ = _world(tmp_path)
+        await w.connect()
+        page = await w.attach_page()
+        await _navigate(w, page, "T-agent", "https://example.com/")
+        assert w.chromium.from_agent("Target.getTargets") == []
+        assert w.chromium.received[-1]["method"] == "Page.navigate"
+        await w.chromium.stop()
+
+    run(body)
+
+
 def test_a_navigation_to_about_blank_closes_nothing(tmp_path):
     async def body():
         w, _ = _world(tmp_path)
-        _launch_tab(w)
-        await w.connect()
+        await _connect_seeing(w, _launch_tab(w))
         created = await w.send("Target.createTarget", {"url": "about:blank"})
         mine = w.agent.response(created)["result"]["targetId"]
         session = await w.attach_page(mine)
