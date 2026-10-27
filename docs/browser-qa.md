@@ -519,7 +519,7 @@ therefore pushes its branch before it sends the children.
 
 The parent keeps only those texts, plus the crop of any frame whose compare
 score is over threshold, and writes `verdict.json` and `review.md` from them.
-`review.md` lists every frame, with the child task that read it, so "every
+`review.md` lists every frame, with the child agent that read it, so "every
 frame reviewed" stays checkable. A child that failed leaves its frames
 unreviewed, and `review.md` says so for each of them; it never says "ok" for
 them.
