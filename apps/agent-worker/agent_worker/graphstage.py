@@ -512,9 +512,17 @@ def history_fetcher(repository_url: str | None, private_dir: Path, *,
             url = gitops.validate_repository_url(repository_url or "")
         except gitops.GitError:
             return "the repository URL is not one a fetch may use"
-        secret = token() if token is not None else None
-        return gitops.fetch_base_history(checkout, url=url, base_sha=base_sha,
-                                         private_dir=private_dir, token=secret or None)
+        # Asked here, only once a fetch is needed, so a step whose proof
+        # needs no fetch never reads the token at all. A read that fails is
+        # an anonymous fetch, and the reason says so if that fails too.
+        unread = ""
+        try:
+            secret = token() if token is not None else None
+        except Exception as exc:  # noqa: BLE001 -- a token read is a reason, never a failure
+            secret, unread = None, f" (forge token not read: {type(exc).__name__})"
+        why = gitops.fetch_base_history(checkout, url=url, base_sha=base_sha,
+                                        private_dir=private_dir, token=secret or None)
+        return f"{why}{unread}" if why is not None else None
     return fetch
 
 
@@ -1113,7 +1121,9 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
     `forge_token` is the tenant's forge token, asked for only when the
     ancestry proof has to deepen the clone (`history_fetcher`, lane
     GRAPH-ANCESTRY); None fetches anonymously, which proves a public
-    repository's steps and leaves a private one's a reason.
+    repository's steps and leaves a private one's a reason. It is used only
+    with a `private_dir` (lane GRAPH-TOKEN-2563): never written beside the
+    context dir the agent reads.
     """
     try:
         if profile_name == indexrun.INDEXER_PROFILE or not offers_graph(runner_argv) \
@@ -1129,9 +1139,14 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
                        task_id=task_id, checkout=checkout, base_sha=base_sha,
                        context_dir=context_dir, call_options=call_options, service=service,
                        graph_context=graph_context,
+                       # The token only ever lands in the worker's own
+                       # `private_dir`: with none, the fetch is anonymous and
+                       # its logs go to the context dir, which then holds no
+                       # credential to leak (lane GRAPH-TOKEN-2563).
                        fetch_history=history_fetcher(
                            repository_url, private_dir if private_dir is not None
-                           else context_dir, token=forge_token))
+                           else context_dir,
+                           token=forge_token if private_dir is not None else None))
         if not result.served:
             # A restored checkpoint's pin is not this attempt's decision either.
             remove_pin(context_dir)
