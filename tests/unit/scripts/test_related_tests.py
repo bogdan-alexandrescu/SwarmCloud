@@ -123,7 +123,7 @@ def _assert_every_command_names_files(commands: list[str]) -> None:
             for arg in args:
                 assert arg.endswith(".py") and (REPO / arg).is_file(), (arg, command)
         else:
-            args = command[len(VITEST_CMD):].rstrip(")").split()
+            args = [a for a in command[len(VITEST_CMD):].rstrip(")").split() if not a.startswith("-")]
             assert args, command
             for arg in args:
                 assert re.search(r"\.test\.tsx?$", arg) and (REPO / UI / arg).is_file(), (arg, command)
@@ -913,3 +913,89 @@ def test_a_red_node_run_stops_run_with_exit_1(tmp_path):
     # no-company-name.test.mjs.
     assert result.returncode == 1, (result.stdout, result.stderr)
     assert "failed (exit 3)" in result.stderr
+
+
+# --- the output of --run (TEST-OUTPUT, TOKEN-A lane-caps, part of #2524) ------
+#
+# Measured 2026-10-20..27: 97% of the pool's tokens were cache reads, and a
+# whole pytest or vitest transcript printed into a Bash result is re-read on
+# every later turn. So each run's full output goes to a log (under
+# $SWARM_ARTIFACTS_DIR in a lane), and the agent reads only the tail and, when
+# it failed, the failure blocks.
+
+
+def _loud_tools(bin_dir: Path, *, fail: bool) -> None:
+    """uv, npx and npm that print 400 numbered lines -- with a failure block
+    in the middle when `fail` -- and exit 1 when `fail`."""
+    block = (
+        'echo "=================================== FAILURES ==================================="\n'
+        'echo "___ test_the_thing ___"\n'
+        'echo "E       assert 1 == 2"\n'
+        if fail else ""
+    )
+    for tool in ("uv", "npx", "npm"):
+        fake = bin_dir / tool
+        fake.write_text(
+            "#!/usr/bin/env bash\n"
+            f'printf "%s\\n" "{tool} $*" >>"{bin_dir}/args.log"\n'
+            'for i in $(seq 1 200); do echo "noise line $i of the run"; done\n'
+            + block +
+            'for i in $(seq 201 400); do echo "noise line $i of the run"; done\n'
+            + ('echo "FAILED tests/test_x.py::test_the_thing"\nexit 1\n' if fail
+               else 'echo "400 passed in 1.00s"\n')
+        )
+        fake.chmod(0o755)
+
+
+def _run_loud(tmp_path: Path, *, fail: bool, changed: str) -> tuple[subprocess.CompletedProcess[str], Path]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _loud_tools(bin_dir, fail=fail)
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    diff = tmp_path / "diff.txt"
+    diff.write_text(changed + "\n")
+    result = _run("--run", "--files", str(diff), env_extra={
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "SWARM_ARTIFACTS_DIR": str(artifacts),
+    })
+    return result, artifacts
+
+
+def test_a_passing_run_prints_its_tail_not_its_whole_output(tmp_path):
+    result, artifacts = _run_loud(tmp_path, fail=False, changed="scripts/related-tests.sh")
+    assert result.returncode == 0, result.stderr
+    out = result.stdout + result.stderr
+    # MUTATION: let the runner write straight to the terminal -> line 1 is
+    # printed and this fails.
+    assert "noise line 1 of the run" not in out
+    assert "400 passed" in out
+    # The whole output is kept, in a log under the lane's artifacts.
+    logs = sorted(artifacts.glob("related-tests*"))
+    assert logs, list(artifacts.iterdir())
+    assert any("noise line 1 of the run\n" in p.read_text() for p in logs)
+
+
+def test_a_failing_run_prints_the_failure_block_and_the_tail(tmp_path):
+    result, artifacts = _run_loud(tmp_path, fail=True, changed="scripts/related-tests.sh")
+    assert result.returncode == 1
+    out = result.stdout + result.stderr
+    # MUTATION: print only the tail -> the assertion in the middle of the
+    # output is lost and this fails.
+    assert "E       assert 1 == 2" in out
+    assert "FAILED tests/test_x.py::test_the_thing" in out
+    assert "noise line 1 of the run" not in out
+    # The log is named, so the rest is one read away.
+    assert str(artifacts) in out
+
+
+def test_vitest_runs_with_the_dot_reporter(tmp_path):
+    result, _ = _run_loud(tmp_path, fail=False, changed=f"{UI}/src/vitestWorkers.ts")
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "bin" / "args.log").read_text().splitlines()
+    vitest = [c for c in calls if c.startswith("npx vitest run")]
+    # MUTATION: drop --reporter=dot -> vitest's default reporter prints a
+    # line per test file and this fails.
+    assert vitest and all("--reporter=dot" in c for c in vitest), calls
+    printed = [c for c in _commands(result.stdout) if c.startswith(VITEST_CMD)]
+    assert printed and all("--reporter=dot" in c for c in printed)
