@@ -9,7 +9,7 @@ import {
   type HealthStatus,
   type PoolHealth,
 } from './accountHealthModel'
-import { noteFixtureProbe, read, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
+import { chosenTenant, noteFixtureProbe, read, readGeneration, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
 // A VALUE import, not a type: the attempt fixture needs the terminal-state set
 // so a live task's newest attempt is rendered as live, and the task fixture
 // needs the concurrency set to decide which rows hold a lease -- invariant 1's
@@ -412,6 +412,73 @@ export interface AgentDetail {
   eventsDetail: string | null
 }
 
+/**
+ * HOW MANY OF THE CALLER'S OTHER TENANTS A TASK 404 ASKS (#1194 c15). The
+ * probes run one after another, so a caller in many groups costs this many
+ * reads at most, once per task and chosen tenant (`ELSEWHERE_KEEP_MS`, and
+ * until a write or sign-out: `readGeneration`), never a burst against the
+ * 20 rps per-principal budget. A chosen value: a task in a tenant past the
+ * eighth is drawn as today's 404, which is never a wrong answer.
+ */
+export const ELSEWHERE_PROBE_CAP = 8
+
+/**
+ * How long one probe's answer is kept for the same task under the same chosen
+ * tenant. The drawer re-reads a failed task on its back-off, and asking every
+ * other tenant again on each of those reads would multiply the probe by the
+ * poll; a minute covers the reads a person waits through before they act.
+ */
+export const ELSEWHERE_KEEP_MS = 60_000
+
+const elsewhereKept = new Map<string, { at: number; answer: Promise<TenantChoice | null> }>()
+
+/**
+ * THE ONE OTHER TENANT OF THE CALLER'S THAT HOLDS `taskId`, or null.
+ *
+ * `GET /v1/tasks/{id}` answers the same 404 for a task that does not exist and
+ * for one in another tenant (store.py), and this does not widen that answer:
+ * it asks ONLY under the tenants `GET /v1/tenants/mine` lists for this caller
+ * -- each with that tenant's own `X-Swarm-Tenant`, which the API honours only
+ * for a membership it confirmed -- one at a time and at most
+ * `ELSEWHERE_PROBE_CAP`. Exactly one 200 names the tenant; none, or more than
+ * one (a task id is unique, so that would be a confused API), is null and the
+ * 404 is drawn as it always was. The choice itself is never changed here.
+ */
+export function taskElsewhere(taskId: string): Promise<TenantChoice | null> {
+  const chosen = chosenTenant()
+  const key = `${readGeneration()}\n${chosen ?? ''}\n${taskId}`
+  const kept = elsewhereKept.get(key)
+  if (kept !== undefined && Date.now() - kept.at < ELSEWHERE_KEEP_MS) return kept.answer
+  const answer = (async (): Promise<TenantChoice | null> => {
+    const mine = await loadMyTenants()
+    if (mine.status !== 'ok' && mine.status !== 'stale') return null
+    // The chosen tenant already answered 404. With no choice the API applied
+    // the caller's default, which /v1/tenants/me names and this does not
+    // read; asking it again under its own header costs one read and is safe.
+    const others = mine.data.filter((t) => t.tenant_id !== chosen).slice(0, ELSEWHERE_PROBE_CAP)
+    const holders: TenantChoice[] = []
+    for (const t of others) {
+      const r = await read<unknown>(route('/v1/tasks/{id}', { id: taskId }), () => false, { tenant: t.tenant_id, frame: true })
+      if (r.status === 'ok') holders.push(t)
+    }
+    return holders.length === 1 ? (holders[0] ?? null) : null
+  })()
+  elsewhereKept.set(key, { at: Date.now(), answer })
+  return answer
+}
+
+/**
+ * A task read's failure, with `elsewhere` set when it was a 404 and one other
+ * tenant of the caller's holds the task (`taskElsewhere`). Every other failure
+ * is returned as it came.
+ */
+async function withElsewhere(taskId: string, failed: { status: 'error'; error: ApiError }): Promise<{ status: 'error'; error: ApiError }> {
+  if (failed.error.kind !== 'not_found') return failed
+  const found = await taskElsewhere(taskId)
+  if (found === null) return failed
+  return { ...failed, error: { ...failed.error, elsewhere: { tenant_id: found.tenant_id, display_name: found.display_name } } }
+}
+
 export async function loadAgentDetail(taskId: string): Promise<Result<AgentDetail>> {
   if (USE_FIXTURES) return fixtureAgentDetail(taskId)
 
@@ -421,7 +488,9 @@ export async function loadAgentDetail(taskId: string): Promise<Result<AgentDetai
     read<{ events: TaskEvent[] }>(route(`/v1/tasks/{id}/events?limit=${EVENT_PAGE_LIMIT}`, id), () => false),
   ])
 
-  if (task.status === 'loading' || task.status === 'error') return task
+  if (task.status === 'loading') return task
+  // A 404 asks the caller's other tenants whether one holds it (#1194 c15).
+  if (task.status === 'error') return withElsewhere(taskId, task)
   if (task.status === 'empty') {
     return {
       status: 'error',
@@ -2351,7 +2420,9 @@ export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
       ? d.attempts
       : d.attempts.map((a) => ({ ...a, account: d.accounts_by_attempt?.[a.attempt_id] ?? null }))
 
-  if (task.status === 'loading' || task.status === 'error') return task
+  if (task.status === 'loading') return task
+  // A 404 asks the caller's other tenants whether one holds it (#1194 c15).
+  if (task.status === 'error') return withElsewhere(taskId, task)
   if (task.status === 'empty') {
     return {
       status: 'error',
