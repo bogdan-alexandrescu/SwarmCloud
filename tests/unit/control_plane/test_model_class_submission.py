@@ -60,7 +60,6 @@ from swarm_api.objects import InMemoryObjectReader
 from swarm_api.schedtypes import custom_prompt
 from swarm_api.schemas import WorkflowCreate
 from swarm_api.waker import NullWaker
-from swarm_common import specsign
 from swarm_common.profiles import MODEL_CLASSES, RUNNER_PROFILES
 
 from .conftest import PROJECT, api_settings, auth_header, seed_tenant
