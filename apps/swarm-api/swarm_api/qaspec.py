@@ -179,7 +179,12 @@ MAX_ISSUES = 30
 PRESETS = ("desktop", "iphone-15", "phone-390", "phone-380", "pixel-8", "iphone-se", "ipad-7")
 THEMES = ("light", "dark")
 DEFAULT_WIDTHS = ("desktop", "phone-390")
-DEFAULT_THEMES = ("light", "dark")
+#: Owner pick 2026-10-27 (PR #2522, task_fa97c95c20ea43f7a656 question 0):
+#: "Light only by default". A target that names no `themes` is captured in
+#: light alone; dark is captured only for a target whose `themes` name it, so
+#: an app with no dark theme is never captured, or judged, in one (#1981
+#: comment 8). It also halves the default capture.
+DEFAULT_THEMES = ("light",)
 SEVERITIES = ("blocker", "major", "minor", "nit")
 ENVIRONMENTS = ("production", "non_production")
 #: VQ-Q3, owner decision 2026-10-22: "Console link by default; evidence branch
@@ -946,27 +951,27 @@ CHECKLIST = (
     "the widths that should not; broken or missing images; the console errors, page errors and failed "
     "requests the manifest counts; empty, loading and error states that read wrong; text that contradicts "
     "itself or the page's purpose; and every route the manifest lists as failed, which is itself a finding "
-    "(a dark capture identical to the light one is not: see below)"
+    "(how dark mode is judged for this target: see below)"
 )
 
 NO_CHANGE = "Change no file in the repository."
 
-#: #1981 comment 8: a target that names no themes is captured in light and
-#: dark (DEFAULT_THEMES), and an app with no dark theme draws its dark capture
-#: the same as its light one; a review judging by eye filed "dark mode is
-#: ignored" against it. The capture records the fact per screen
-#: (`dark_differs`, swarm_qa `_dark_differs`). Only a target that declares a
-#: dark theme in `themes` makes an unchanged dark capture a defect.
+#: #1981 comment 8: a target with no dark theme was captured in dark and a
+#: review judging by eye filed "dark mode is ignored" against it. A target
+#: that names no themes is now captured in light only (DEFAULT_THEMES), so
+#: dark is captured, and judged, only where the target declares it in
+#: `themes`; there an unchanged dark capture is a defect, read from the
+#: manifest's per-screen `dark_differs` (swarm_qa `_dark_differs`).
 NO_DARK_THEME = (
-    "A dark capture identical to its light one means the app offers no dark theme, and that is never a "
-    "finding (never \"dark mode is ignored\"): this target does not declare `themes` including dark. Each "
-    "screen's manifest.json entry says in `dark_differs` whether its dark images differ from its light ones; "
-    "read that fact instead of judging by eye, and judge contrast in dark only where it is true."
+    "This target is captured in light only (its `themes` do not include dark), so there are no dark images "
+    "and dark mode is never a finding (never \"dark mode is ignored\"): the app may offer no dark theme, and "
+    "this target does not ask for one to be judged."
 )
 DECLARED_DARK_THEME = (
     "This target declares a dark theme (its `themes` include dark), so a screen whose manifest.json entry "
     "says `dark_differs` false drew its dark capture the same as its light one: the app ignored the dark "
-    "scheme, and that is a finding."
+    "scheme, and that is a finding. Read `dark_differs` instead of judging by eye, and judge contrast in "
+    "dark only where the dark images differ."
 )
 
 
