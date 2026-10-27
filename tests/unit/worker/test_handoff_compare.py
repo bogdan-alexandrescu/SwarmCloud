@@ -351,3 +351,111 @@ def test_a_half_transparent_pixel_is_composited_over_white():
     qa = _command()
     pixels = bytes((0, 0, 0, 128, 255, 0, 0, 255, 10, 20, 30, 0))
     assert qa._opaque_rgb(3, 1, 4, pixels) == bytes((127, 127, 127, 255, 0, 0, 255, 255, 255))
+
+
+# -- where the change is (TOKEN-RENDER, BGD 2026-10-27, part of #2524) ------------
+#
+# A diff image Read into a lane stays in its context for the rest of the lane.
+# So compare says WHERE the frames differ, as boxes in the shot's CSS pixels,
+# and writes a small crop of that region beside the diff image: the one image
+# a parent reads, and only for a frame over the threshold.
+
+
+def test_a_different_image_prints_the_changed_boxes_and_writes_a_crop(tmp_path, monkeypatch, capsys):
+    qa = _command()
+    shot = _png(160, 120, _page)
+    frame = _png(160, 120, lambda x, y: _page(x, y, button=(220, 60, 40)))
+    code, report, artifacts = _run(qa, tmp_path, monkeypatch, shot, frame, "--name", "home--desktop--dark",
+                                   capsys=capsys)
+
+    assert code == qa.EXIT_DIFFERENT
+    # The button is x 40-120, y 40-64: one box, exactly the differing cells.
+    assert report["boxes"] == [{"x": 40, "y": 40, "width": 80, "height": 24, "cells": 20 * 6}]
+    assert report["boxes_total"] == 1
+    crop = artifacts / "compare" / "home--desktop--dark.crop.png"
+    assert report["crop"] == str(crop) and crop.is_file()
+    assert crop.parent == Path(report["diff"]).parent
+    width, height, _channels, _pixels = qa.decode_png(crop.read_bytes())
+    # The box with its margin, never the whole page.
+    assert width < 160 and height < 120
+    assert max(width, height) <= qa.COMPARE_CROP_MAX_SIDE
+    assert report["crop_box"]["x"] <= 40 and report["crop_box"]["y"] <= 40
+    assert _rgb_at(qa, crop, width // 2, height // 2) == MAGENTA, "the crop shows the marked cells"
+    written = json.loads((artifacts / "compare" / "home--desktop--dark.json").read_text())
+    assert written["boxes"] == report["boxes"] and written["crop"] == str(crop)
+    # The next step reads the crop, never the whole diff image.
+    assert "crop" in report["next"] and "Open the diff image" not in report["next"]
+
+
+def test_identical_images_have_no_boxes_and_no_crop(tmp_path, monkeypatch, capsys):
+    qa = _command()
+    shot = _png(160, 120, _page)
+    code, report, artifacts = _run(qa, tmp_path, monkeypatch, shot, shot, "--name", "same", capsys=capsys)
+
+    assert code == qa.EXIT_RETURNED
+    assert report["boxes"] == [] and report["boxes_total"] == 0
+    assert report["crop"] is None and report["crop_box"] is None
+    assert not (artifacts / "compare" / "same.crop.png").exists()
+
+
+def test_a_crop_left_by_an_earlier_compare_of_the_same_name_is_removed_once_it_matches(tmp_path, monkeypatch, capsys):
+    qa = _command()
+    shot = _png(160, 120, _page)
+    frame = _png(160, 120, lambda x, y: _page(x, y, button=(220, 60, 40)))
+    _run(qa, tmp_path, monkeypatch, shot, frame, "--name", "again", capsys=capsys)
+    crop = tmp_path / "artifacts" / "compare" / "again.crop.png"
+    assert crop.is_file()
+    _run(qa, tmp_path, monkeypatch, shot, shot, "--name", "again", capsys=capsys)
+    assert not crop.exists()
+
+
+def test_two_separate_changes_are_two_boxes_largest_first(tmp_path, monkeypatch, capsys):
+    qa = _command()
+    shot = _png(160, 120, _page)
+
+    def frame_pixel(x, y):
+        if 120 <= x < 128 and 100 <= y < 108:
+            return (220, 60, 40, 255)
+        return _page(x, y, button=(220, 60, 40))
+
+    code, report, _artifacts = _run(qa, tmp_path, monkeypatch, shot, _png(160, 120, frame_pixel), capsys=capsys)
+    assert code == qa.EXIT_DIFFERENT
+    assert [(b["x"], b["y"], b["width"], b["height"]) for b in report["boxes"]] == [
+        (40, 40, 80, 24), (120, 100, 8, 8)]
+    assert report["boxes_total"] == 2
+
+
+def test_a_large_changed_region_is_downscaled_in_the_crop(tmp_path, monkeypatch, capsys):
+    qa = _command()
+    shot = _png(1200, 40, lambda x, y: WHITE)
+    frame = _png(1200, 40, lambda x, y: BLUE)
+    code, report, _artifacts = _run(qa, tmp_path, monkeypatch, shot, frame, "--name", "wide", capsys=capsys)
+
+    assert code == qa.EXIT_DIFFERENT
+    assert report["boxes"][0]["width"] == 1200
+    assert report["crop_scale"] > 1
+    width, height, _channels, _pixels = qa.decode_png(Path(report["crop"]).read_bytes())
+    assert width <= qa.COMPARE_CROP_MAX_SIDE and height <= qa.COMPARE_CROP_MAX_SIDE
+
+
+def test_rows_only_the_frame_has_are_boxed_below_the_render(tmp_path, monkeypatch, capsys):
+    qa = _command()
+    shot = _png(160, 120, _page)
+    frame = _png(160, 160, _page)
+    _code, report, _artifacts = _run(qa, tmp_path, monkeypatch, shot, frame, capsys=capsys)
+    (box,) = report["boxes"]
+    assert (box["x"], box["y"], box["width"], box["height"]) == (0, 120, 160, 40)
+    assert Path(report["crop"]).is_file()
+
+
+def test_the_guide_reads_only_the_crop_of_a_frame_over_the_threshold():
+    text = GUIDE_DOC.read_text(encoding="utf-8")
+    start = text.index("### 6.5 ")
+    end = text.find("\n## ", start)
+    section = text[start:end if end != -1 else None]
+    assert "Open each diff image with `Read`" not in section
+    assert "Read only the crop of a frame over threshold" in section
+    assert "Sonnet child per screen" in section and "screen-review.md" in section
+    assert "model_class" in section and "sonnet" in section
+    # review.md names every frame and the child that read it.
+    assert "review.md" in section and "every frame" in section

@@ -1122,8 +1122,11 @@ def _review_prompt(target: Mapping[str, Any], base: str, group: str, design_docs
     return (
         f"Visual QA review of {target['name']} at {base}. First look in the repository for files matching "
         f"{', '.join(design_docs)}; if any exist, read them, and cite a deviation from them by file. Unpack "
-        f"capture-{group}.tar. For every PNG its manifest.json lists, open the image with the Read tool and "
-        f"look at it, against this checklist: {CHECKLIST}. One finding per defect. For each, write a crop "
+        f"capture-{group}.tar. For every PNG its manifest.json lists, open the image with the Read tool once and "
+        f"look at it, against this checklist: {CHECKLIST}. An image you open stays in your context for "
+        f"every later turn (TOKEN-RENDER, part of #2524), so write its verdict as text (the screen, width "
+        f"and theme, then ok or what is wrong) before you open the next, judge from those notes, and "
+        f"never open an image or a crop a second time. One finding per defect. For each, write a crop "
         f"PNG named <id>.png showing it (ids start `{group}-`), and an entry in findings-{group}.json, an "
         f'object {{"format": 1, "group": "{group}", "findings": [...], "about_run": [...], "reviewed": <the '
         f"number of images you opened>}}, each finding in exactly this shape:\n\n```json\n"

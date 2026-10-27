@@ -129,7 +129,13 @@ preset is not the page as laid out; swarm_qa.py `_shot` has the measurement),
 and a frame is often the whole page. Exit 0 when the score is at most --threshold (COMPARE_THRESHOLD by
 default), EXIT_DIFFERENT when over it, 5 when refused. The diff image is the
 shot faded towards white, with every differing cell in DIFF_MARK, at the shot's
-size (taller when the frame is).
+size (taller when the frame is). WHERE THE CHANGE IS (TOKEN-RENDER, BGD
+2026-10-27, part of #2524): the report's `boxes` group the differing cells that
+touch, in the shot's CSS pixels, and `<name>.crop.png`, beside the diff image,
+is the diff cut to the region they span and scaled down to at most
+COMPARE_CROP_MAX_SIDE: an image Read into a lane stays in its context for every
+later turn, so a lane reads only the crop of a frame over threshold. No crop is
+written when nothing differs, and an earlier one of that name is removed.
 
 It decodes with Pillow when Pillow imports (the image's venv pins it, and the
 agent's PATH puts the venv's python3 first), which also reads a palette,
@@ -247,6 +253,18 @@ COMPARE_DELTA_E = 6.0
 #: an exact match passes --threshold 0.
 COMPARE_THRESHOLD = 0.02
 COMPARE_FORMAT = 1
+#: TOKEN-RENDER (BGD 2026-10-27, part of #2524): WHERE the render and the
+#: frame differ, so a lane reads a small crop instead of the whole diff image.
+#: A box is a group of touching differing cells (8-connected), in the shot's
+#: CSS pixels; the report lists the largest COMPARE_MAX_BOXES and counts all.
+COMPARE_MAX_BOXES = 12
+#: The crop is the bounding box of every differing cell, with this margin of
+#: unchanged page around it for context, scaled down by a whole factor until
+#: neither side is over COMPARE_CROP_MAX_SIDE. 640 keeps a phone-width region
+#: at 1:1 and a whole 1440 desktop at a half, an image of a few hundred image
+#: tokens rather than the ~1,700 of a full 1440 x 900 diff.
+COMPARE_CROP_MARGIN = 16
+COMPARE_CROP_MAX_SIDE = 640
 #: The most pixels either image is scored at. The standard-library decoder
 #: and the grid are pure Python, the one loop here whose cost grows with its
 #: input: this lane's first continuation timed out at 7,200 s with four cores
@@ -1201,15 +1219,25 @@ def compare_images(shot, frame, threshold=COMPARE_THRESHOLD, top_only=False):
         "rows_left_out": max(len(a), len(b)) - rows,
         "decoder": decoder,
     }
-    return report, _diff_png(sw, sh, srgb, xs, min(len(b), rows), marked)
+    canvas, ys = _diff_canvas(sw, sh, srgb, xs, min(len(b), rows), marked)
+    groups = _changed_boxes(marked)
+    report["boxes"] = [_box(xs, ys, cells) for cells in groups[:COMPARE_MAX_BOXES]]
+    report["boxes_total"] = len(groups)
+    crop = None
+    report["crop_box"] = report["crop_scale"] = None
+    if marked:
+        crop_box, factor, crop = _crop(canvas, sw, ys[-1], xs, ys, marked)
+        report["crop_box"], report["crop_scale"] = crop_box, factor
+    return report, _encode_png(sw, ys[-1], canvas), crop
 
 
 #: Every channel of the shot, faded three quarters of the way to white.
 _FADE = bytes((v + 3 * 255) // 4 for v in range(256))
 
 
-def _diff_png(width, height, rgb, xs, frame_rows, marked):
-    """The shot faded, every differing cell in DIFF_MARK; taller by the frame's extra rows."""
+def _diff_canvas(width, height, rgb, xs, frame_rows, marked):
+    """`(RGB canvas, row edges)`: the shot faded, every differing cell in
+    DIFF_MARK; taller by the frame's extra rows, whose edges `ys` extends."""
     ys = _edges(height, 1.0)
     ys += [height + COMPARE_CELL * (i + 1) for i in range(max(0, frame_rows - (len(ys) - 1)))]
     total = ys[-1]
@@ -1221,13 +1249,80 @@ def _diff_png(width, height, rgb, xs, frame_rows, marked):
         for y in range(ys[j], ys[j + 1]):
             at = y * stride + xs[k] * 3
             canvas[at:at + len(run)] = run
-    raw = b"".join(b"\x00" + bytes(canvas[y * stride:(y + 1) * stride]) for y in range(total))
+    return canvas, ys
+
+
+def _encode_png(width, height, canvas):
+    """An 8-bit RGB PNG of `canvas`, unfiltered."""
+    stride = width * 3
+    raw = b"".join(b"\x00" + bytes(canvas[y * stride:(y + 1) * stride]) for y in range(height))
 
     def chunk(kind, body):
         return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF)
 
-    return (_PNG_SIGNATURE + chunk(b"IHDR", struct.pack(">IIBBBBB", width, total, 8, 2, 0, 0, 0))
+    return (_PNG_SIGNATURE + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
+
+
+def _changed_boxes(marked):
+    """The differing cells in groups that touch (8-connected), largest first,
+    then top to bottom and left to right."""
+    left = set(marked)
+    groups = []
+    while left:
+        start = left.pop()
+        group, todo = [start], [start]
+        while todo:
+            j, k = todo.pop()
+            for dj in (-1, 0, 1):
+                for dk in (-1, 0, 1):
+                    near = (j + dj, k + dk)
+                    if near in left:
+                        left.discard(near)
+                        group.append(near)
+                        todo.append(near)
+        groups.append(group)
+    groups.sort(key=lambda g: (-len(g), min(g)))
+    return groups
+
+
+def _box(xs, ys, cells):
+    """The cells' bounding box in the shot's CSS pixels, and how many cells it groups."""
+    rows = [j for j, _k in cells]
+    cols = [k for _j, k in cells]
+    top, bottom, first, last = min(rows), max(rows), min(cols), max(cols)
+    return {"x": xs[first], "y": ys[top], "width": xs[last + 1] - xs[first],
+            "height": ys[bottom + 1] - ys[top], "cells": len(cells)}
+
+
+def _crop(canvas, width, height, xs, ys, marked):
+    """`(crop box, factor, PNG bytes)`: the diff canvas around every marked
+    cell, with COMPARE_CROP_MARGIN, scaled down by the smallest whole factor
+    that brings both sides to COMPARE_CROP_MAX_SIDE. A pixel of the crop is the
+    region's pixel at its factor's stride, painted DIFF_MARK when any marked
+    cell falls in its block, so a single cell still shows at any factor."""
+    box = _box(xs, ys, marked)
+    x0, y0 = max(0, box["x"] - COMPARE_CROP_MARGIN), max(0, box["y"] - COMPARE_CROP_MARGIN)
+    x1 = min(width, box["x"] + box["width"] + COMPARE_CROP_MARGIN)
+    y1 = min(height, box["y"] + box["height"] + COMPARE_CROP_MARGIN)
+    factor = max(1, -(-max(x1 - x0, y1 - y0) // COMPARE_CROP_MAX_SIDE))
+    cw, ch = -(-(x1 - x0) // factor), -(-(y1 - y0) // factor)
+    stride = width * 3
+    out = bytearray()
+    for r in range(ch):
+        at = (y0 + r * factor) * stride + x0 * 3
+        line = canvas[at:at + (x1 - x0) * 3]
+        if factor == 1:
+            out += line
+        else:
+            for c in range(cw):
+                out += line[c * factor * 3:c * factor * 3 + 3]
+    mark = bytes(DIFF_MARK)
+    for j, k in marked:
+        for r in range((ys[j] - y0) // factor, (ys[j + 1] - 1 - y0) // factor + 1):
+            for c in range((xs[k] - x0) // factor, (xs[k + 1] - 1 - x0) // factor + 1):
+                out[(r * cw + c) * 3:(r * cw + c) * 3 + 3] = mark
+    return {"x": x0, "y": y0, "width": x1 - x0, "height": y1 - y0}, factor, _encode_png(cw, ch, out)
 
 
 def _compare_name(shot_path):
@@ -1253,25 +1348,36 @@ def cmd_compare(args):
         except OSError as exc:
             return _refuse("unreadable_image", "cannot read the %s %s (%s)" % (label, path, exc.strerror))
     try:
-        report, diff = compare_images(images[0], images[1], args.threshold, args.top_only)
+        report, diff, crop = compare_images(images[0], images[1], args.threshold, args.top_only)
     except ValueError as exc:
         which = args.frame if "frame" in str(exc).split(" is ", 1)[0] else args.shot
         return _refuse("too_large" if isinstance(exc, TooLarge) else "unreadable_image", "%s: %s" % (which, exc))
     out = Path(artifacts) / COMPARE_DIR_NAME
     out.mkdir(parents=True, exist_ok=True)
     diff_path, report_path = out / (name + ".diff.png"), out / (name + ".json")
+    crop_path = out / (name + ".crop.png")
     tmp = diff_path.with_name(diff_path.name + ".tmp")
     tmp.write_bytes(diff)
     os.replace(tmp, diff_path)
+    if crop is None:
+        # Nothing differs: a crop an earlier compare of this name left would
+        # show a change that is no longer there.
+        crop_path.unlink(missing_ok=True)
+    else:
+        tmp = crop_path.with_name(crop_path.name + ".tmp")
+        tmp.write_bytes(crop)
+        os.replace(tmp, crop_path)
     report.update({"shot": str(Path(args.shot).resolve()), "frame": str(Path(args.frame).resolve()),
-                   "diff": str(diff_path), "report": str(report_path)})
+                   "diff": str(diff_path), "report": str(report_path),
+                   "crop": None if crop is None else str(crop_path)})
     _write_atomic(report_path, report)
     if report["within_threshold"]:
         nxt = ("The render matches the frame within the threshold at this preset and theme. Name the frame, "
                "the preset, the theme and the score in your summary.")
     else:
-        nxt = ("Open the diff image with Read: the magenta cells differ from the frame. Fix them, render again "
-               "at the same preset and theme, and compare again.")
+        nxt = ("`boxes` says where the render differs from the frame, in the render's CSS pixels. Read only "
+               "the crop (`crop`, magenta cells where they differ), never the whole diff image. Fix them, "
+               "render again at the same preset and theme, and compare again.")
     if report["size_mismatch"] and not report["top_only"]:
         nxt += (" The heights differ, and the rows only one image has count as different: when the frame is "
                 "a whole page and the render one screen, compare again with --top-only, or take a full-page "

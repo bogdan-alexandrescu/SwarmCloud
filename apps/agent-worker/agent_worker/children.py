@@ -54,7 +54,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 from urllib.parse import quote, urlencode
 
 from swarm_common.profiles import RUNNER_PROFILES
@@ -207,6 +207,127 @@ means the platform could not list them this time.
 If you exit 0 while children are still running, you are made to wait anyway:
 a task never succeeds over running children. If you exit non-zero, this
 attempt fails as usual and the children keep running for the next attempt.
+"""
+
+
+#: TOKEN-RENDER (BGD 2026-10-27, #2524 item 2, "Yes, Sonnet child per
+#: screen"): a review, or an implement step that renders, judges its frames in
+#: ONE SONNET CHILD PER SCREEN, and a text verdict per frame from that child
+#: meets the rule that every frame is reviewed rendered. WHY: a screenshot or
+#: a diff image Read into a session stays in its context for every later turn
+#: (up to 15.7 MB of tool results in one lane, render lanes at a 164-382k mean
+#: context). The child reads the images in its own context and returns TEXT;
+#: the parent keeps those texts and the crop `swarm-handoff compare` writes for
+#: a frame over its threshold.
+#:
+#: The child renders the screen itself, from `repository_ref`: a request
+#: carries a prompt and a ref, never a file, so the parent's own shots cannot
+#: reach it (questions.json of the lane asks whether a file channel is wanted).
+#: The browser profile, because rendering needs the live browser; Sonnet,
+#: because judging a frame against a checklist is reading, not designing.
+SCREEN_REVIEW_PROFILE = "claude-code-browser"
+SCREEN_REVIEW_MODEL_CLASS = "sonnet"
+#: The guide `prepare` writes beside README.md, and the child's text verdict.
+SCREEN_REVIEW_GUIDE_NAME = "screen-review.md"
+SCREEN_VERDICT_NAME = "screen-verdict.md"
+#: The four renders of docs/browser-qa.md §6.3: two viewports, two themes.
+SCREEN_REVIEW_VIEWPORTS = ("desktop", "phone-390")
+SCREEN_REVIEW_THEMES = ("light", "dark")
+#: A screen's name: a file-name part, as the frames' `<screen>--<preset>--<theme>`.
+SCREEN_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
+
+
+def screen_review_request(
+    screen: str,
+    *,
+    frames: Sequence[str],
+    url_path: str,
+    repository_ref: str,
+    checklist: str,
+    viewports: Sequence[str] = SCREEN_REVIEW_VIEWPORTS,
+) -> dict[str, Any]:
+    """The child request that judges one screen: `model_class` sonnet on the
+    browser profile, at `repository_ref`, asking for TEXT only -- per frame,
+    theme and viewport, what is wrong or "ok" -- in SCREEN_VERDICT_NAME.
+
+    `frames` are the repository's frame PNGs for the screen, by path; a
+    render with no frame is still judged against the checklist. ValueError
+    for a screen name that is not a file-name part or an empty ref.
+    """
+    if not isinstance(screen, str) or not SCREEN_NAME.fullmatch(screen):
+        raise ValueError("a screen's name is lower-case letters, digits and '-', at most 48")
+    if not isinstance(repository_ref, str) or not repository_ref.strip():
+        raise ValueError("repository_ref names the branch or commit that holds the change")
+    renders = []
+    for viewport in viewports:
+        for theme in SCREEN_REVIEW_THEMES:
+            renders.append(
+                f"`swarm-handoff device {viewport}` and `swarm-handoff theme {theme}`, then the viewport "
+                f"to $SWARM_ARTIFACTS_DIR/render/{screen}--{viewport}--{theme}.png"
+            )
+    named = ", ".join(f"`{f}`" for f in frames) if frames else "none"
+    prompt = (
+        f"Judge the screen `{screen}` rendered, and return TEXT only. You are the one Sonnet child that "
+        f"reads this screen for a review (TOKEN-RENDER); the parent never sees your images. The checkout "
+        f"is at `{repository_ref.strip()}`, the change under review. Start the app on 127.0.0.1 as "
+        f"docs/browser-qa.md §6.2 says and open `{url_path}` in a tab of its own. Render four times, as "
+        f"§6.3 says (the viewport, never the full page): " + "; ".join(renders) + ". "
+        f"The frames for this screen: {named}. For each render whose frame is there (same viewport and "
+        f"theme in its name), run `swarm-handoff compare <render> <frame>` (§6.4). Read every render with "
+        f"the Read tool, and for a frame over the threshold the crop compare wrote, and judge it against "
+        f"this checklist: {checklist}. Write $SWARM_ARTIFACTS_DIR/{SCREEN_VERDICT_NAME}: one line per "
+        f"render, `<viewport> <theme> <frame path or 'no frame'> <score or '-'>: ` then \"ok\" or what is "
+        f"wrong and where on the page, in words. Put the same lines in your answer. TEXT only: no image in "
+        f"your answer and none embedded in the file; the compare reports and crops stay in your artifacts "
+        f"as they are. Change no file in the repository and push nothing."
+    )
+    return {
+        "request_id": f"screen-{screen}",
+        "runner_profile": SCREEN_REVIEW_PROFILE,
+        "model_class": SCREEN_REVIEW_MODEL_CLASS,
+        "repository_ref": repository_ref.strip(),
+        "input": {"prompt": prompt},
+    }
+
+
+_SCREEN_EXAMPLE = screen_review_request(
+    "settings",
+    frames=tuple(f"design/frames/settings--{v}--{t}.png"
+                 for v in SCREEN_REVIEW_VIEWPORTS for t in SCREEN_REVIEW_THEMES),
+    url_path="/settings", repository_ref="<the branch that holds the change>",
+    checklist="<the method's checklist, as your brief gives it>",
+)
+
+#: Written into the spool beside README.md by `prepare`; LIVE_BROWSER_NOTE
+#: (runners/claude_code.py) and docs/browser-qa.md §6.5 name it.
+SCREEN_REVIEW_GUIDE = f"""\
+# Judging rendered frames: one Sonnet child per screen
+
+A review, or an implement step that renders, judges its frames in children,
+one per screen, so no screenshot or diff image stays in your context. Each
+child renders its screen at both viewports and both themes, reads its own
+shots against the checklist, and returns TEXT: per frame, theme and
+viewport, what is wrong or "ok".
+
+1. The child renders `repository_ref`, never your working tree. A review
+   names the pull request's head branch. An implement step commits and pushes
+   its branch first (the swarm-git push tool) and names that.
+2. Write one request per screen, as README.md says, in this shape (only
+   `request_id`, `input.prompt` and `repository_ref` change from screen to
+   screen; keep `"model_class": "{SCREEN_REVIEW_MODEL_CLASS}"`):
+
+{json.dumps(_SCREEN_EXAMPLE, indent=2, ensure_ascii=False)}
+
+3. Write what you need to continue into your working files, then `await`.
+4. On resume, for each child in results/children.json, read
+   `results/<task_id>/{SCREEN_VERDICT_NAME}`. For a frame whose
+   `results/<task_id>/compare/<name>.json` says `within_threshold` false, Read
+   only the crop, `results/<task_id>/compare/<name>.crop.png`. Never Read a
+   render or a diff image.
+5. Write verdict.json and review.md from those texts. review.md lists every
+   frame, with its viewport, theme, score, verdict and the child task id that
+   read it, so "every frame reviewed" stays checkable. A child that did not
+   succeed leaves its frames unreviewed: say so for each, never "ok".
 """
 
 
@@ -891,6 +1012,11 @@ class ChildPath:
         tmp.unlink(missing_ok=True)
         tmp.write_text(AGENT_GUIDE, encoding="utf-8")
         os.replace(tmp, guide)
+        screens = root / SCREEN_REVIEW_GUIDE_NAME
+        tmp = root / f".{SCREEN_REVIEW_GUIDE_NAME}.tmp"
+        tmp.unlink(missing_ok=True)
+        tmp.write_text(SCREEN_REVIEW_GUIDE, encoding="utf-8")
+        os.replace(tmp, screens)
         return {CHILDREN_ENV: str(root)}
 
     def _prepare_git(

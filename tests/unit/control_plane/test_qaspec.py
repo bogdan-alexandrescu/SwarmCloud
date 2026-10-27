@@ -909,3 +909,15 @@ def test_a_flow_starting_on_an_excluded_path_under_the_base_is_refused() -> None
     with pytest.raises(qaspec.QaSpecError) as refused:
         qaspec.render(target)
     assert refused.value.code == "qa_screen_excluded"
+
+
+def test_the_review_keeps_a_text_verdict_per_image_and_opens_each_once() -> None:
+    """TOKEN-RENDER (part of #2524): an image a step opens stays in its context
+    for every later turn, so the review opens each capture image once, writes
+    its verdict as text before the next, and never opens an image or a crop
+    again."""
+    prompt = _steps(qaspec.render(_target()))["review-g1"]["prompt"]
+    # MUTATION: drop the sentence and this fails.
+    assert "open the image with the Read tool once" in prompt
+    assert "verdict as text" in prompt
+    assert "never open an image or a crop a second time" in prompt

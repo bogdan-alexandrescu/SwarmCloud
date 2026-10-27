@@ -39,7 +39,9 @@ judgment. See [browser-scripted-runner.md](browser-scripted-runner.md).
 agent beside a headed Chromium that a person can watch from the console. The
 agent clicks, types, snapshots the accessibility tree and takes screenshots.
 A `browser_take_screenshot` with no filename is saved under
-`$SWARM_ARTIFACTS_DIR/screenshots` and comes back to the model as an image.
+`$SWARM_ARTIFACTS_DIR/screenshots` and does not come back to the model as an
+image (`--image-responses omit`, §6.5): the model Reads the file when it must
+see it.
 **The size is a preset, never a resize**: `swarm-handoff device <preset>`
 switches between `desktop` (1440×900), `iphone-15` (393×852), `phone-390`
 (390×844), `phone-380` (380×800), `pixel-8` (412×915), `iphone-se` (375×667)
@@ -412,7 +414,7 @@ PY
 ```
 
 A `browser_take_screenshot` with no filename is also saved, under
-`$SWARM_ARTIFACTS_DIR/screenshots`, and the model sees it. The script above
+`$SWARM_ARTIFACTS_DIR/screenshots`, and returns no image to the model (§6.5). The script above
 puts the PNG at a name the compare step can use.
 
 **Take the viewport, never the full page, at any preset.** Through the gate
@@ -438,9 +440,14 @@ swarm-handoff compare "$SWARM_ARTIFACTS_DIR/render/settings--phone-390--dark.png
     design/frames/settings--phone-390--dark.png
 ```
 
-It prints one JSON line and writes two files under
+It prints one JSON line and writes its files under
 `$SWARM_ARTIFACTS_DIR/compare/`: `<name>.diff.png`, which is the render faded
-with every differing cell in magenta, and `<name>.json`, the report. The name
+with every differing cell in magenta; `<name>.json`, the report; and, when
+anything differs, `<name>.crop.png`, the diff cut to the changed region and
+scaled down to at most 640 px a side. The report's `boxes` say where the change
+is: each groups the differing cells that touch, as `x`, `y`, `width` and
+`height` in the render's CSS pixels, largest first (12 at most; `boxes_total`
+counts them all), and `crop_box` is the region the crop shows. The name
 defaults to the render's file name, and `--name` sets it. Exit codes:
 
 * **0**: the score is within the threshold;
@@ -482,11 +489,40 @@ docstring, `images/agent-runtime-browser/swarm-handoff`):
 
 ### 6.5 Fix, then finish, and name the frames
 
-Open each diff image with `Read`. The magenta cells are where the render and
-the frame disagree. Fix them, render again at the same preset and theme, and
-compare again. Finish when every frame you touched is within the threshold.
+Read only the crop of a frame over threshold: `<name>.crop.png`, which the
+report names as `crop`. Never Read the whole diff image or the render. An image
+Read into a step stays in its context for every turn after it; before this
+rule one lane carried 15.7 MB of tool results, browser implement steps averaged
+~159 turns, and render lanes ran at a 164-382k mean context (#2524, item 2).
+The screenshot tools agree: Playwright MCP runs with `--image-responses omit`,
+so `browser_take_screenshot` saves its file and returns no image.
+
+The magenta cells in the crop, and the report's `boxes`, are where the render
+and the frame disagree. Fix them, render again at the same preset and theme,
+and compare again. Finish when every frame you touched is within the threshold.
 If a frame cannot be matched, because the frame is wrong or because of a font
 the container lacks, say so for that frame.
+
+**Judging the frames is a Sonnet child per screen** (BGD, 2026-10-27, #2524
+item 2). A score says how much differs, not whether the screen is right
+against the method's checklist, and that judgement needs the images. So a
+review, and an implement step that renders, sends each screen to one child
+with `"model_class": "sonnet"` on `claude-code-browser`. The child renders that
+screen at both viewports in both themes from the branch that holds the change,
+compares each render with its frame, reads its own shots against the
+checklist, and returns TEXT only: for each frame, theme and viewport, what is
+wrong, or "ok". The request's shape and the steps are in
+`$SWARM_CHILDREN/screen-review.md`, which the worker writes beside the child
+guide. A child renders rather than receiving the parent's shots because a
+child request carries a prompt and a ref, never a file. An implement step
+therefore pushes its branch before it sends the children.
+
+The parent keeps only those texts, plus the crop of any frame whose compare
+score is over threshold, and writes `verdict.json` and `review.md` from them.
+`review.md` lists every frame, with the child agent that read it, so "every
+frame reviewed" stays checkable. A child that failed leaves its frames
+unreviewed, and `review.md` says so for each of them; it never says "ok" for
+them.
 
 The summary names every frame compared, with its preset, theme, score and
 diff image:

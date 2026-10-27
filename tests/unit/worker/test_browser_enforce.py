@@ -223,6 +223,7 @@ def test_the_runner_registers_playwright_mcp_on_the_live_browser(monkeypatch, tm
                 # The client tag (BSTATUS-API): the gate attributes and strips it.
                 # QA-KIT: auto-named screenshots land in the task's artifacts.
                 "args": ["--cdp-endpoint", ENDPOINT + "/client/playwright",
+                         "--image-responses", "omit",
                          "--output-dir", str(tmp_path / "artifacts" / "screenshots")],
             }
         }
