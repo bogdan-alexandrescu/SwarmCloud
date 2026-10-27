@@ -178,7 +178,12 @@ def test_a_fetch_that_times_out_leaves_a_reason_and_no_graph_and_the_attempt_goe
     _promote(db, store, lane.main[4])
     slow = tmp_path / "bin" / "git"
     slow.parent.mkdir()
-    slow.write_text("#!/bin/sh\nsleep 30\n")
+    # Holds `.git/shallow.lock` the way a `--depth` fetch does while its pack
+    # arrives, and removes it on SIGTERM as git's lockfile handler does;
+    # SIGKILL leaves it.
+    lock = lane.checkout / ".git" / "shallow.lock"
+    slow.write_text(f"#!/bin/sh\ntrap 'rm -f {lock}; exit 143' TERM\n"
+                    f": > {lock}\nsleep 30 &\nwait\n")
     slow.chmod(slow.stat().st_mode | stat.S_IXUSR)
 
     def fetch(checkout: Path, base_sha: str) -> str | None:
@@ -192,6 +197,26 @@ def test_a_fetch_that_times_out_leaves_a_reason_and_no_graph_and_the_attempt_goe
     assert "cannot be shown" in result.reason
     assert "the history fetch timed out after 0.5 s" in result.reason
     assert not (lane.checkout.parent / graphstage.CONTEXT_DIR_NAME / "snapshot").exists()
+    # MUTATION: `subprocess.run(timeout=)` SIGKILLs git with its shallow.lock
+    # held, and every deepen the agent tries afterwards fails on "File exists".
+    assert not lock.exists()
+
+
+def test_a_fetch_that_ignores_sigterm_leaves_no_shallow_lock(tmp_path, monkeypatch):
+    lane = _Lane(tmp_path)
+    stubborn = tmp_path / "bin" / "git"
+    stubborn.parent.mkdir()
+    lock = lane.checkout / ".git" / "shallow.lock"
+    stubborn.write_text(f"#!/bin/sh\ntrap '' TERM\n: > {lock}\nsleep 30\n")
+    stubborn.chmod(stubborn.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setattr(gitops, "ANCESTRY_FETCH_GRACE_SECONDS", 0.5)
+
+    why = lane.fetch(lane.checkout, lane.base, git_binary=str(stubborn), timeout_seconds=0.5)
+
+    assert why == "the history fetch timed out after 0.5 s"
+    # MUTATION: dropping the unlink after SIGKILL leaves the lock of a git
+    # that ignored SIGTERM, with the same "File exists" for the agent.
+    assert not lock.exists()
 
 
 def test_prepare_goes_on_with_the_reason_when_the_fetch_fails(db, store, tmp_path,

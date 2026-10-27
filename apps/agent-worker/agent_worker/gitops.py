@@ -47,7 +47,6 @@ import re
 import shlex
 import shutil
 import stat
-import subprocess
 import tempfile
 import threading
 import time
@@ -1221,6 +1220,9 @@ ANCESTRY_FETCH_DEPTH = 200
 #: The fetch's whole wall-clock limit: a step's start-up never waits longer
 #: for a proof than this, and a fetch cut off is a reason, not a failure.
 ANCESTRY_FETCH_TIMEOUT_SECONDS = 20.0
+#: How long a timed-out fetch has, after SIGTERM, to remove its own
+#: `.git/shallow.lock` before SIGKILL: git exits on SIGTERM at once.
+ANCESTRY_FETCH_GRACE_SECONDS = 5.0
 
 
 class _QuietLog:
@@ -1230,7 +1232,7 @@ class _QuietLog:
     def info(self, *_args: Any, **_kwargs: Any) -> None:
         return None
 
-    error = info
+    error = warning = info
 
 
 def fetch_base_history(
@@ -1269,17 +1271,31 @@ def fetch_base_history(
     argv = [git_binary, *config_args, "-c", "core.hooksPath=/dev/null", "-c", "gc.auto=0",
             "-C", str(checkout), "fetch", "--quiet", "--no-tags", "--no-write-fetch-head",
             "--no-recurse-submodules", f"--depth={int(depth)}", "--", url, base_sha]
+    # Through `run_child`, never `subprocess.run(timeout=)`: that SIGKILLs git,
+    # and a `--depth` fetch holds `.git/shallow.lock` while the pack arrives,
+    # which SIGKILL skips cleaning up -- every deepen the agent tried after a
+    # timed-out fetch then failed on "shallow.lock: File exists". SIGTERM to
+    # the group first lets git remove its own locks.
     try:
-        done = subprocess.run(argv, capture_output=True, timeout=timeout_seconds,
-                              check=False, env=env, cwd=str(private_dir))
-    except subprocess.TimeoutExpired:
-        return f"the history fetch timed out after {timeout_seconds:g} s"
+        done = run_child(argv, cwd=private_dir, env=env,
+                         stdout_path=private_dir / "git-ancestry.out.log",
+                         stderr_path=private_dir / "git-ancestry.err.log",
+                         timeout_seconds=timeout_seconds,
+                         grace_seconds=ANCESTRY_FETCH_GRACE_SECONDS,
+                         max_stdout_bytes=64 * 1024, max_stderr_bytes=64 * 1024,
+                         logger=_QuietLog())
     except OSError as exc:
         return f"the history fetch did not start ({type(exc).__name__})"
     finally:
         _remove_credentials(cred_file, _QuietLog())
-    if done.returncode != 0:
-        return f"the history fetch failed (git exit {done.returncode})"
+    if done.timed_out:
+        if done.killed:
+            # Git ignored SIGTERM, so its lock outlived it. The fetch's whole
+            # process group is reaped by now: nothing else holds that lock.
+            (Path(checkout) / ".git" / "shallow.lock").unlink(missing_ok=True)
+        return f"the history fetch timed out after {timeout_seconds:g} s"
+    if done.exit_code != 0:
+        return f"the history fetch failed (git exit {done.exit_code})"
     return None
 
 
