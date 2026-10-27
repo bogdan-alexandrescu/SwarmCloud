@@ -133,6 +133,9 @@ def test_every_metadata_key_the_worker_reads_is_signed():
         # The release waits refunded so far (AU7-REFUND), read by the
         # release-wait park exactly as `child_await_resumes` is by the await's.
         "release_wait_resumes",
+        # The quota parks refunded so far (#2350), read by the quota park the
+        # same way.
+        "quota_park_resumes",
     }
     assert not unsigned, (
         f"agent_worker reads metadata keys {sorted(unsigned)} that the step-spec signature "
@@ -167,6 +170,7 @@ def test_every_metadata_key_the_worker_reads_is_signed():
 #: to a task the run record names; no worker acts on the mark itself.
 #: And the release waits refunded so far (AU7-REFUND), written by the
 #: worker's release-wait park between attempts, as `child_await_resumes` is.
+#: And the quota parks refunded so far (#2350), written by the quota park.
 UNSIGNED_PLATFORM_KEYS = {
     "schedule",
     "human_wait_resumes",
@@ -185,6 +189,7 @@ UNSIGNED_PLATFORM_KEYS = {
     "after_prs",
     "qa_target",
     "release_wait_resumes",
+    "quota_park_resumes",
 }
 
 
@@ -209,6 +214,7 @@ def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
         OWNER_ANSWERS_METADATA_KEY,
         QA_TARGET_METADATA_KEY,
         RELEASE_WAIT_RESUMES_METADATA_KEY,
+        QUOTA_PARK_RESUMES_METADATA_KEY,
     )
 
     # MUTATION: drop QA_TARGET_METADATA_KEY from RESERVED_METADATA_KEYS and this is red.
@@ -232,6 +238,7 @@ def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
         AFTER_PRS_METADATA_KEY,
         QA_TARGET_METADATA_KEY,
         RELEASE_WAIT_RESUMES_METADATA_KEY,
+        QUOTA_PARK_RESUMES_METADATA_KEY,
     } == UNSIGNED_PLATFORM_KEYS
 
 
