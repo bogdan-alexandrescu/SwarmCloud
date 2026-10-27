@@ -337,6 +337,27 @@ CI_FIX_RUNNING = "ci_fix_running"
 #: The park code of a red reading whose failing jobs the tick re-ran at this
 #: head less than RERUN_SETTLE_SECONDS ago: the re-run has not answered yet.
 CI_RERUN_PENDING = "ci_rerun_pending"
+#: The park code of a red reading no CI-fix round can fix (#2046): the
+#: publish that wrote this head -- the opener's, or the CI-fix round's that
+#: ended at it -- touched `.github/workflows/` and swarm-api refused the push
+#: WORKFLOW_SCOPE_MISSING (the repository's registration does not have
+#: `workflow_files` switched on), so the workflow lines are in
+#: WORKFLOW_PATCH_FILE in that attempt's artifacts and the branch does not
+#: have them. CI is red by construction, and a round can only make the same
+#: edit and be refused again (task_58815d23, task_d91ca0c9: `checks_failed`
+#: after the round, at the unchanged head). The step parks for the operator
+#: instead, and swarm-api's tick waits for the head to move without reading
+#: the checks or asking for a round (`swarm_api.mergewake.
+#: WORKFLOW_PATCH_PENDING`, held equal by
+#: tests/unit/control_plane/test_mergewake_workflow_refused.py).
+WORKFLOW_PATCH_PENDING = "workflow_patch_pending"
+#: The broker's refusal code, and the patch's name
+#: (`agent_worker.lifecycle.WORKFLOW_PATCH_FILE`), restated: this module does
+#: not import the lifecycle.
+WORKFLOW_SCOPE_MISSING = "workflow_scope_missing"
+WORKFLOW_PATCH_FILE = "workflow-lines.patch"
+#: The most refused paths a park's message names.
+WORKFLOW_PATHS_NAMED = 10
 
 #: A CONFLICTING pull request is never waited on for checks: GitHub runs none
 #: on it (#1076, measured on PR 1028: `checks_timeout` after 366 min while
@@ -1440,6 +1461,9 @@ class _Run:
     #: The checks read at a head, as a CI park records them (`latest_reading`):
     #: (head, pending names, failed names). None until this attempt reads them.
     reading: tuple[str, list[str], list[str]] | None = None
+    #: The opener's refused workflow publish (#2046): (opener task, the head
+    #: it pinned, `_workflow_refusal`). None when it was not refused.
+    refused_publish: tuple[str, str, dict[str, Any]] | None = None
 
     def refuse(self, code: str, message: str) -> ActionOutcome:
         return refusal(self.summary, EndCause.MERGE_REFUSED, code, message)
@@ -1590,6 +1614,9 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
                           f"task {target.pull_request} recorded no pushed head to pin")
     summary["pull_request"] = number
     summary["pinned"] = pinned
+    refused = _workflow_refusal(opener)
+    if refused is not None:
+        run.refused_publish = (target.pull_request, pinned, refused)
     # The step's own record of its CI-fix rounds, and the heads they pushed:
     # task-store reads that need no credential, so before the token.
     unread: list[str] = []
@@ -3384,6 +3411,11 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
     reading is the one the re-run replaces. Once any of it answers red -- a
     failing run is a new id, inside the window or not -- or a check it did
     not re-run is red, this refuses (or hands it to a round) as before.
+
+    A head written by a publish swarm-api refused WORKFLOW_SCOPE_MISSING --
+    the opener's pinned head, or the head a round ended at -- parks
+    WORKFLOW_PATCH_PENDING for the operator instead (#2046): no round is
+    asked for, and none ended there is read as spent.
     """
     message = f"at {head}: " + ", ".join(sorted(failed))
     rounds = _fix_rounds(own)
@@ -3400,8 +3432,14 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
         if not _ended(run.ctx, task_id):
             return wait(CI_FIX_RUNNING, f"{message}; CI fix round {number} ({task_id}) is running",
                         [])
+        refused = _round_refusal(run.ctx, task_id)
+        if refused is not None:
+            return _await_workflow_patch(run, message, task_id, refused, wait)
         return run.refuse("checks_failed",
                           f"{message}, after CI fix round {number} ({task_id}) ended at this head")
+    if run.refused_publish is not None and run.refused_publish[1] == head:
+        opener, _, refused = run.refused_publish
+        return _await_workflow_patch(run, message, opener, refused, wait)
     requested_at = _rerun_settling(own, head, failing_ids)
     if requested_at is not None:
         return wait(CI_RERUN_PENDING,
@@ -3414,6 +3452,60 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
     if asked:
         message += f", after {len(rounds)} CI fix round(s)"
     return run.refuse("checks_failed", message)
+
+
+def _workflow_refusal(doc: Mapping[str, Any]) -> dict[str, Any] | None:
+    """A task's workflow publish swarm-api refused WORKFLOW_SCOPE_MISSING, with its patch.
+
+    Read from the task's `result_summary.git`, as the lifecycle's
+    `_workflow_push_refused` writes it: `workflow_refused.code`, the patch's
+    `workflow_patch` entry and `workflow_paths`. None for any other refusal
+    (`fenced` and `api_unavailable` are not a switch a round lacks) or with
+    no patch recorded, which would leave the operator nothing to push.
+    """
+    git = _mapping(_mapping(doc.get("result_summary")).get("git"))
+    refused = _mapping(git.get("workflow_refused"))
+    patch = _mapping(git.get("workflow_patch"))
+    if refused.get("code") != WORKFLOW_SCOPE_MISSING or not patch:
+        return None
+    paths = git.get("workflow_paths")
+    return {
+        "paths": [p for p in paths if isinstance(p, str)] if isinstance(paths, list) else [],
+        "patch": _str(patch.get("uri")),
+    }
+
+
+def _round_refusal(ctx: ActionContext, task_id: str) -> dict[str, Any] | None:
+    """`_workflow_refusal` of a CI-fix round's task that ended, when it is this tenant's.
+
+    The round's document is tenant-writable, so a forged refusal can at most
+    park the step for the operator instead of refusing: nothing on the forge
+    changes, and MERGE_CI_MAX_SECONDS still ends the wait.
+    """
+    try:
+        doc = _mapping(ctx.fetch_upstream(task_id))
+    except Exception:  # noqa: BLE001 - unreadable: no refusal to read
+        return None
+    if doc.get("tenant_id") != ctx.tenant_id:
+        return None
+    return _workflow_refusal(doc)
+
+
+def _await_workflow_patch(run: _Run, message: str, task_id: str, refused: Mapping[str, Any],
+                          wait: Any) -> ActionOutcome:
+    """Park WORKFLOW_PATCH_PENDING: the operator pushes the patch, and the head moves (#2046)."""
+    paths = list(refused.get("paths") or [])
+    named = ", ".join(paths[:WORKFLOW_PATHS_NAMED]) or "a workflow file"
+    if len(paths) > WORKFLOW_PATHS_NAMED:
+        named += f" and {len(paths) - WORKFLOW_PATHS_NAMED} more"
+    where = f" ({refused['patch']})" if refused.get("patch") else ""
+    run.summary["workflow_refused"] = {"task_id": task_id, "paths": paths,
+                                       "patch": refused.get("patch")}
+    return wait(WORKFLOW_PATCH_PENDING,
+                f"{message}; task {task_id}'s push of {named} was refused "
+                f"{WORKFLOW_SCOPE_MISSING}, so a CI fix round could only be refused again: "
+                f"an operator pushes {WORKFLOW_PATCH_FILE}{where} to the branch, and this "
+                "step reads the pull request again once its head moves", [])
 
 
 def _ci_wait_age(ctx: ActionContext) -> float | None:
