@@ -262,6 +262,7 @@ def test_the_claimed_merges_own_update_is_the_same_merge_not_a_second(
 
 
 ROUND_TASK = "task_" + "e7" * 10
+ROUND_WORKFLOW = "wf_" + "e8" * 10
 
 
 def _claimed(client, db, objects, writes, clock) -> tuple[dict, dict]:
@@ -284,20 +285,32 @@ def _agent_merge(writes: CommitWrites) -> str:
 
 
 def _round(db, merge_wf: dict, pushed: str, *, step_id: str = "conflict-fix:1",
-           tenant_id: str | None = None) -> dict:
-    """A round mergewake appended to the merge workflow as `step_id`, whose
-    task pushed `pushed`."""
+           tenant_id: str | None = None, task_workflow: str = ROUND_WORKFLOW) -> dict:
+    """A round mergewake submitted as its own workflow and appended to the
+    merge workflow as `step_id`, whose task pushed `pushed`.
+
+    The shape `mergewake._submit_round` writes: the round's task belongs to
+    ROUND_WORKFLOW, never to the merge workflow, and the appended step's
+    `input.merge_fix_round` names that workflow and the merge task."""
     merge_task = _merge_task(db, merge_wf)
     task = copy.deepcopy(merge_task)
     task.update({
         "id": ROUND_TASK, "tenant_id": tenant_id or merge_task["tenant_id"],
-        "workflow_id": merge_wf["workflow_id"], "state": "SUCCEEDED",
+        "workflow_id": task_workflow, "state": "SUCCEEDED",
         "result_summary": {"git": {"pushed_head": pushed}},
     })
     db.docs[f"tasks/{ROUND_TASK}"] = task
     stored = db.docs[f"workflows/{merge_wf['workflow_id']}"]
-    stored["steps"].append({"step_id": step_id, "task_id": ROUND_TASK,
-                            "runner_profile": "claude-code", "depends_on": ["merge"]})
+    stored["steps"].append({
+        "step_id": step_id, "task_id": ROUND_TASK, "runner_profile": "claude-code",
+        "input": {"merge_fix_round": {
+            "kind": step_id.split("-fix", 1)[0], "round": 1, "head_sha": SHA_A,
+            "pull_request": PR, "merge_task": merge_task["id"],
+            "workflow_id": ROUND_WORKFLOW,
+        }},
+        "depends_on": [], "resource_class": None, "input_from": {},
+        "timeout_seconds": None,
+    })
     return task
 
 
@@ -357,24 +370,28 @@ def test_a_ci_fix_round_of_the_merge_workflow_is_the_same_merge(
     _still_the_same_merge(client, db, writes, clock, running, merge_wf, head)
 
 
-@pytest.mark.parametrize("step_id, tenant_id", [
-    ("conflict-fix:1", "research"),
-    ("merge-again", None),
-    ("ci-fix", None),
-    ("conflict-fix:", None),
-    ("review-fix:1", None),
+@pytest.mark.parametrize("step_id, tenant_id, task_workflow", [
+    ("conflict-fix:1", "research", ROUND_WORKFLOW),
+    ("merge-again", None, ROUND_WORKFLOW),
+    ("ci-fix", None, ROUND_WORKFLOW),
+    ("conflict-fix:", None, ROUND_WORKFLOW),
+    ("review-fix:1", None, ROUND_WORKFLOW),
+    ("conflict-fix:1", None, "wf_" + "e9" * 10),
 ])
 def test_a_round_step_of_another_tenant_or_not_a_round_is_still_refused(
-    client, db, objects, writes, clock, step_id, tenant_id,
+    client, db, objects, writes, clock, step_id, tenant_id, task_workflow,
 ):
     """Invariant 9, and only mergewake's round steps: anything else pushed the
-    head as far as this run knows, so it is refused as before.
+    head as far as this run knows, so it is refused as before -- a task of
+    another tenant, a step that is not a round, or a task of a workflow other
+    than the one its round step names.
 
-    MUTATION: read the round tasks without the run's tenant, or match any step
-    id -- the run stays CHECKING."""
+    MUTATION: read the round tasks without the run's tenant, match any step
+    id, or skip the round workflow's binding -- the run stays CHECKING."""
     running, merge_wf = _claimed(client, db, objects, writes, clock)
     head = _agent_merge(writes)
-    _round(db, merge_wf, head, step_id=step_id, tenant_id=tenant_id)
+    _round(db, merge_wf, head, step_id=step_id, tenant_id=tenant_id,
+           task_workflow=task_workflow)
     _green_at(writes, head)
 
     run = _read(client, clock, running["id"])

@@ -1899,9 +1899,15 @@ def _merge_round_heads(ctx: Any, tenant_id: str, workflow: Any) -> set[str]:
 
     A round is a step mergewake appended as `mergewake.round_step_id` names
     it -- `ci-fix:<n>`, `conflict-fix:<n>` or `pick-fix:<n>` -- and its task
-    is read under the run's own tenant and must belong to this workflow
-    (invariant 9): another tenant's task, or another workflow's, pushed
-    nothing this merge knows.
+    is read under the run's own tenant (invariant 9): another tenant's task
+    pushed nothing this merge knows.
+
+    A round runs as ITS OWN workflow (`mergewake._submit_round` submits it
+    and only appends a step naming its task here), so the task's
+    `workflow_id` is the round's, never this one's. The step binds it: its
+    `input.merge_fix_round` names the round's workflow, which the task must
+    belong to, and the merge task that started the round, which must be one
+    of this workflow's own steps.
     """
     # Function-local: mergewake imports this module at module level.
     from .mergewake import ROUND_KIND
@@ -1909,18 +1915,33 @@ def _merge_round_heads(ctx: Any, tenant_id: str, workflow: Any) -> set[str]:
     round_step = re.compile(
         "(?:" + "|".join(re.escape(kind) for kind in ROUND_KIND.values()) + r")-fix:\d+"
     )
-    workflow_id = getattr(workflow, "workflow_id", None)
-    heads: set[str] = set()
-    for step in getattr(workflow, "steps", None) or []:
+    steps = list(getattr(workflow, "steps", None) or [])
+
+    def _is_round(step: Any) -> bool:
         step_id = getattr(step, "step_id", None)
+        return isinstance(step_id, str) and round_step.fullmatch(step_id) is not None
+
+    merge_tasks = {
+        getattr(step, "task_id", None) for step in steps if not _is_round(step)
+    } - {None}
+    heads: set[str] = set()
+    for step in steps:
         task_id = getattr(step, "task_id", None)
-        if not (isinstance(step_id, str) and round_step.fullmatch(step_id) and task_id):
+        if not (_is_round(step) and task_id):
+            continue
+        step_input = getattr(step, "input", None)
+        record = step_input.get("merge_fix_round") if isinstance(step_input, Mapping) else None
+        if not isinstance(record, Mapping):
+            continue
+        round_workflow = record.get("workflow_id")
+        if not (isinstance(round_workflow, str) and round_workflow
+                and record.get("merge_task") in merge_tasks):
             continue
         try:
             task = ctx.store.get_task(tenant_id, task_id, submitted_by=None)
         except NotFound:
             continue
-        if getattr(task, "workflow_id", None) != workflow_id:
+        if getattr(task, "workflow_id", None) != round_workflow:
             continue
         pushed = _pushed_head(task)
         if pushed:
