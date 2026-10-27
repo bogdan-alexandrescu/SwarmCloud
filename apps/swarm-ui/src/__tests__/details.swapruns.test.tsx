@@ -12,7 +12,7 @@
  * first case turns red; draw it for one run (`runs.length < 1`) -- the last.
  */
 import { renderToStaticMarkup } from 'react-dom/server'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { AgentRun } from '../api'
 import type { Task } from '../types'
@@ -66,8 +66,18 @@ function runOf(t: Task): AgentRun {
   }
 }
 
+// THE CLOCK IS THE FIXTURES' DAY: the tile writes an instant from another day
+// as `MM-DD HH:MM`, so on the real clock these cases went red on 2026-10-27,
+// the first day after the fixtures' (#2511's first CI run).
+const NOW = '2026-10-26T11:30:00Z'
+
 const hosts: HTMLElement[] = []
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date(NOW))
+})
 afterEach(() => {
+  vi.useRealTimers()
   for (const h of hosts.splice(0)) h.remove()
 })
 
