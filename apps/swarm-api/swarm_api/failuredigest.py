@@ -148,8 +148,9 @@ VERIFY_FENCE = "verify_fence"
 PERSON_CANCEL = "person_cancel"
 QUESTION_UNANSWERED = "question_unanswered"
 FIX_ROUND_LIVE = "fix_round_live"
+PERSON_PUSH = "person_push"
 SKIP_RULES = (SELF, ACCEPTANCE_DELIBERATE, VERIFY_FENCE, PERSON_CANCEL, QUESTION_UNANSWERED,
-              FIX_ROUND_LIVE)
+              FIX_ROUND_LIVE, PERSON_PUSH)
 
 #: `scripts/acceptance/lib.sh` marks every acceptance submission with this source.
 ACCEPTANCE_SOURCE = "acceptance"
@@ -165,6 +166,17 @@ QUESTION_UNANSWERED_ERROR = "owner question unanswered"
 # what it cancelled: its `fail_workflow` sweep and its `cancelled_parent`
 # cascade (`_question_unanswered`). A REFUSED declaration
 # (`awaitinput.AWAIT_INPUT_SPEC_REFUSED_ERROR`) is a defect, and reviewed.
+
+#: §2 `person_push` (#2505, BGD 2026-10-27): a merge step a person on its
+#: pull request pushed over. The worker's refusal code
+#: (`agent_worker.merge.SUPERSEDED_BY_PERSON_PUSH`, held equal by
+#: tests/unit/worker/test_merge_person_push.py) in `result_summary.merge.
+#: refusal.code` -- the step still ends FAILED merge_refused while `EndCause`
+#: has no member for it -- and the same string as the end cause, which is
+#: what contract request SUPERSEDED_BY_PERSON_PUSH asks for, so the rule
+#: needs no change when it lands. An unknown branch-mate's head is
+#: `head_moved`, and reviewed.
+SUPERSEDED_BY_PERSON_PUSH = "superseded_by_person_push"
 
 #: The events whose `detail.requested_by` names who cancelled.
 CANCEL_EVENTS = frozenset({EventType.CANCELLED.value, EventType.CANCEL_REQUESTED.value})
@@ -660,6 +672,13 @@ def _fix_round_live(task: Mapping[str, Any], docs: Documents) -> bool:
     return False
 
 
+def _person_push(task: Mapping[str, Any]) -> bool:
+    if task.get("end_cause") == SUPERSEDED_BY_PERSON_PUSH:
+        return True
+    merge = _mapping(_mapping(task.get("result_summary")).get("merge"))
+    return _mapping(merge.get("refusal")).get("code") == SUPERSEDED_BY_PERSON_PUSH
+
+
 def skip_rule(task: Mapping[str, Any], docs: Documents) -> str | None:
     """The first of §2's rules that skips `task`, by name; None when it is reviewed."""
     if _is_self(task, docs):
@@ -674,6 +693,8 @@ def skip_rule(task: Mapping[str, Any], docs: Documents) -> str | None:
         return QUESTION_UNANSWERED
     if _fix_round_live(task, docs):
         return FIX_ROUND_LIVE
+    if _person_push(task):
+        return PERSON_PUSH
     return None
 
 

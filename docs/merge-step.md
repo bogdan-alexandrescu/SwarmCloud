@@ -30,11 +30,68 @@ instead of a six-hour wait for checks -- the third section below.**
 **Revised 2026-10-14: a lane workflow's red or conflicting pull request runs
 bounded fix rounds by itself, two by default, re-running a flaky job before
 it spends an agent -- the second section below.**
+**Revised 2026-10-27: a person's push to the pull request ends the step
+`superseded_by_person_push`, which failure-review does not file -- the first
+section below.**
 **Revised 2026-10-26: a merge woken by the owner's answers does not merge an
 option its branch did not build -- it starts a bounded pick-fix round that
 builds it, and compares every answered question that names `built` -- and a
 merge held on owner questions whose pull request was merged or closed
-outside the workflow finishes on its own -- the first two sections below.**
+outside the workflow finishes on its own -- the second and third sections below.**
+
+## Revised 2026-10-27: a person's push supersedes the merge step (PERSON-PUSH-END, part of #2505)
+
+Owner decision (BGD), 2026-10-27, issue triage epic #2525: **"A distinct
+non-failure end: superseded_by_person_push (not FAILED) when the committer is
+not the platform identity, so failure-review stops filing it; a foreign head
+from an unknown branch-mate still refuses."**
+
+What happened. PR 2446's merge step parked `ci_fix_pending` at fba85696. The
+owner pushed 89507cfd, a single-parent commit carrying the workflow lines the
+lane could not push, and the step ended FAILED `merge_refused`/`head_moved`.
+failure-review filed it as a failure (#2505). #2366 records the same class --
+an owner's laptop push refused by `merge._accept` -- and calls the refusal
+**by design**. This decision settles that note: the refusal stays by design,
+and the ending is what changes. Nothing in `_accept` moved. A person's content
+commit is still never merged unreviewed; that is the merge step's guarantee.
+
+The rule (`merge._person_pusher`). At either place the step refuses a head it
+did not push -- the live head no candidate accepts, or a head that moved
+while mergeability was read -- the head commit is read. The step ends
+**`superseded_by_person_push`** instead of `head_moved` when all of these
+hold:
+
+* **it is not a merge.** The decision is about a person's content commit. A
+  person's two-parent merge that `_merge_impurity` does not show clean stays
+  `head_moved`: that proof may refuse what git accepts, and a refusal there
+  is the platform's to look at;
+* **the platform did not make it.** Not under one of the platform's own
+  committer addresses (`PLATFORM_COMMITTER_EMAILS`: the worker's default and
+  `BOT_GIT_IDENTITY`), and its message does not end with the worker's line,
+  "Made by the worker for task <id>." (`WORKER_COMMIT_LINE`). Since #765 the
+  worker publishes *as the person*, so the committer's address alone cannot
+  tell the owner's laptop from a lane. The worker's line can. A platform head
+  the step did not accept is a defect, and failure-review must see it;
+* **GitHub links it to a person on the pull request.** The `User` account
+  GitHub links the committer to -- or, for a web-UI edit GitHub committed,
+  the author -- is the pull request's author or one of its assignees. Anyone
+  else is the decision's "unknown branch-mate", and stays `head_moved`. So
+  does a commit GitHub links to no account, or to a bot.
+
+The step records `refusal.person` (the login) and `refusal.commit`
+(`_head_record`), and makes no merge call.
+
+**The end cause is frozen.** `EndCause` in `swarm_common/models.py` has no
+member for this, so until contract request SUPERSEDED_BY_PERSON_PUSH lands
+the step still ends `FAILED`/`MERGE_REFUSED`, with the new code in
+`result_summary.merge.refusal.code`. failure-review's `person_push` rule
+([failure-review.md](design/failure-review.md)) skips that code now, and the
+same string as an `end_cause`, so the rule needs no change when the request
+lands. `swarm_check`'s `merge_refused` STUCK flag reads only `head_moved`,
+`merge_conflict` and `checks_failed`, so it no longer flags these either. The
+request asks for `CANCELLED` with `end_cause: superseded_by_person_push`:
+`EndCause` is "why a task reached a FAILED or CANCELLED state", and a step
+taken over by a person is ended, not failed.
 
 ## Revised 2026-10-26: a held merge whose pull request ended outside the workflow finishes (MERGE-OUTSIDE-ENDS, part of #2441)
 
@@ -646,6 +703,7 @@ matches:
 | merged at the pinned head (another merger won) | close the issues (below); SUCCEEDED, `merged_by_this_task: false` |
 | merged at another head, or closed | MERGE_REFUSED `merged_at_other_head` / `pull_request_closed` |
 | the head moved, and the step did not move it, nor a CI-fix or conflict fix round of this workflow, nor the PR-side CI fixer for this pull request (Revised 2026-10-11, #1073) | MERGE_REFUSED `head_moved` |
+| the head is a person's non-merge commit, not the platform's, by the pull request's author or an assignee (Revised 2026-10-27, #2505) | MERGE_REFUSED `superseded_by_person_push`, skipped by failure-review; `CANCELLED` once contract request SUPERSEDED_BY_PERSON_PUSH lands |
 | `mergeable` false (`dirty`, GraphQL CONFLICTING), read BEFORE the checks (Revised 2026-10-11, #1076) | park `CI_PENDING` for a **conflict fix round**, at most 2; with them spent, MERGE_REFUSED `merge_conflict` at once. Never a wait for checks |
 | a required check **failed** | **if the workflow has CI-fix rounds left** (§6 MS7), the tick hands the red reading to the **CI-fix loop** first, so this row only runs once the rounds are spent or there were none. Otherwise MERGE_REFUSED `checks_failed`, naming every failing check and its conclusion |
 | still pending, and `first_parked_at` is older than `MERGE_CI_MAX_SECONDS` (proposed 6 h) | MERGE_REFUSED `checks_timeout`, naming the checks still pending |

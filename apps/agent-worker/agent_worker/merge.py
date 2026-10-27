@@ -416,6 +416,37 @@ MERGE_QUEUED = "merge_queued"
 #: (`_merge_impurity`, FIX-MERGE-PURE-BASE-MERGE).
 GITHUB_COMMITTER_EMAIL = "noreply@github.com"
 
+#: The refusal code of a step whose pull request a person on it pushed a
+#: commit to (#2505). BGD, 2026-10-27 (issue triage, epic #2525): "a distinct
+#: non-failure end: superseded_by_person_push (not FAILED) when the committer
+#: is not the platform identity, so failure-review stops filing it; a foreign
+#: head from an unknown branch-mate still refuses." The refusal is unchanged:
+#: `_accept` takes no head a person made of content, and nothing merges. The
+#: step's end cause is the frozen `EndCause`, which has no such member yet, so
+#: until contract request SUPERSEDED_BY_PERSON_PUSH lands the step ends
+#: FAILED/MERGE_REFUSED with this code, and failure-review's `person_push`
+#: rule (`swarm_api.failuredigest.SUPERSEDED_BY_PERSON_PUSH`, held equal by
+#: tests/unit/worker/test_merge_person_push.py) skips it.
+SUPERSEDED_BY_PERSON_PUSH = "superseded_by_person_push"
+
+#: The committer addresses the platform commits under when it names no
+#: person: `WorkerConfig.git_author_email`'s default and
+#: `gitidentity.BOT_GIT_IDENTITY`'s (held equal by
+#: tests/unit/worker/test_merge_person_push.py). Restated, not imported, so
+#: the merge action does not load the worker's whole configuration module.
+PLATFORM_COMMITTER_EMAILS = frozenset({
+    "swarmcloud-agent@users.noreply.github.com",
+    "swarmcloud@users.noreply.github.com",
+})
+
+#: How every commit the worker pushes ends its message
+#: (`Worker._worker_commit_message`: "Made by the worker for task <id>.").
+#: Since #765 the worker publishes AS the person who dispatched the work, so
+#: its commits' committer names that person; this line is what still says
+#: the platform made them. A platform head the step did not accept is a
+#: defect for failure-review, never a person's push.
+WORKER_COMMIT_LINE = "Made by the worker for task "
+
 #: The summary key listing every base merge the walk took that GitHub did not
 #: commit: a person's (or anyone's) clean merge of the base on top of an
 #: accepted head. BGD, 2026-10-26: "accept a pure base merge, and record who
@@ -715,6 +746,9 @@ class PullRequestFacts:
     #: GitHub says: what a merge made outside the workflow is recorded with.
     merged_by: str | None = None
     merged_at: str | None = None
+    #: The people on the pull request: its author and its assignees, each a
+    #: login GitHub says is a `User` account (`_person_pusher`, #2505).
+    people: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -781,6 +815,14 @@ class CommitFacts:
     #: The commit's tree, what a pure base merge's is compared by
     #: (`_merge_impurity`). None when GitHub did not say.
     tree: str | None = None
+    #: The GitHub accounts GitHub links the committer and the author to
+    #: (the response's top-level `committer`/`author`), each a login only
+    #: when the account is a `User`: who a person's push was made by
+    #: (`_person_pusher`). None when GitHub links none, or a bot.
+    committer_login: str | None = None
+    author_login: str | None = None
+    #: The message's last line is the worker's (`WORKER_COMMIT_LINE`).
+    by_worker: bool = False
 
     @property
     def by_github(self) -> bool:
@@ -902,6 +944,12 @@ def _str(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _user_login(account: Any) -> str | None:
+    """A GitHub account's login when GitHub says it is a person's (`User`)."""
+    account = _mapping(account)
+    return _str(account.get("login")) if account.get("type") == "User" else None
+
+
 def _int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
@@ -967,6 +1015,9 @@ class GitHubMerger:
             node_id=_str(data.get("node_id")),
             merged_by=_str(_mapping(data.get("merged_by")).get("login")),
             merged_at=_str(data.get("merged_at")),
+            people=tuple(login for login in (
+                _user_login(account) for account in
+                [data.get("user"), *(data.get("assignees") or [])]) if login),
         )
 
     def required_checks(self, branch: str) -> RequiredChecks:
@@ -1093,12 +1144,17 @@ class GitHubMerger:
             p for p in (_str(_mapping(parent).get("sha")) for parent in data.get("parents") or [])
             if p is not None
         )
+        message = detail.get("message") if isinstance(detail.get("message"), str) else ""
+        last = message.strip().splitlines()[-1] if message.strip() else ""
         return CommitFacts(
             sha=_str(data.get("sha")) or sha,
             parents=parents,
             committer_email=_str(_mapping(detail.get("committer")).get("email")),
             verified=_mapping(detail.get("verification")).get("verified") is True,
             tree=_str(_mapping(detail.get("tree")).get("sha")),
+            committer_login=_user_login(data.get("committer")),
+            author_login=_user_login(data.get("author")),
+            by_worker=last.startswith(WORKER_COMMIT_LINE),
         )
 
     def merge_base(self, first: str, second: str) -> str | None:
@@ -2220,6 +2276,10 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         unread = summary.get(FIX_RECORDS_UNREAD_KEY) or []
         record = None if head is None else _head_record(
             merger, head=head, pinned=pinned, fix_heads=fix_heads, base=default, proven=proven)
+        person = None if head is None else _person_push(merger, head=head, pr=pr)
+        if person is not None:
+            return _superseded(run, number=number, head=head, was=pinned, person=person,
+                               record=record)
         outcome = run.refuse(
             "head_moved",
             f"pull request #{number}'s head is {head}, not {pinned}, "
@@ -2340,6 +2400,9 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         ctx.sleep(MERGEABLE_REREAD_SECONDS)
         pr = merger.pull_request(number)
     if pr.head_sha != head:
+        person = None if pr.head_sha is None else _person_push(merger, head=pr.head_sha, pr=pr)
+        if person is not None:
+            return _superseded(run, number=number, head=pr.head_sha, was=head, person=person)
         return run.refuse("head_moved",
                           f"pull request #{number}'s head moved to {pr.head_sha} while its "
                           f"mergeability was read at {head}")
@@ -2616,6 +2679,56 @@ def _updates_onto(merger: ForgeMerger, *, head: str, pushed: str, base: str,
         head = commit.parents[0]
         steps += 1
     return steps, others
+
+
+def _person_pusher(commit: CommitFacts, pr: PullRequestFacts) -> str | None:
+    """The login of the person on `pr` who made `commit`, or None (#2505).
+
+    A person's push is a commit that is not a merge (BGD's decision is about
+    a person's content commit: a two-parent merge the purity proof refuses
+    stays `head_moved`, since the proof may refuse what git accepts and that
+    is the platform's to look at), that the platform did not make -- not
+    under one of its own committer addresses, nor ending with the worker's
+    line -- and that GitHub links to a `User` account which is the pull
+    request's author or one of its assignees. GitHub commits a web-UI edit
+    itself, so for those the person is the commit's author. Anyone else is
+    an unknown branch-mate, and their head is `head_moved` as before.
+    """
+    if len(commit.parents) >= 2 or commit.by_worker:
+        return None
+    email = (commit.committer_email or "").lower()
+    if email in PLATFORM_COMMITTER_EMAILS:
+        return None
+    login = commit.author_login if email == GITHUB_COMMITTER_EMAIL else commit.committer_login
+    if login is None:
+        return None
+    people = {p.lower() for p in pr.people}
+    return login if login.lower() in people else None
+
+
+def _person_push(merger: ForgeMerger, *, head: str, pr: PullRequestFacts) -> str | None:
+    """`_person_pusher` of the commit at `head`, read best-effort: a read that
+    fails names nobody, and the refusal stays `head_moved`."""
+    try:
+        return _person_pusher(merger.commit(head), pr)
+    except (forge_mod.ForgeError, ValueError):
+        return None
+
+
+def _superseded(run: _Run, *, number: int, head: str, was: str, person: str,
+                record: Mapping[str, Any] | None = None) -> ActionOutcome:
+    """A person on the pull request pushed `head` over the head this step
+    acts at: refused as `head_moved` is -- nothing merges -- and named
+    `SUPERSEDED_BY_PERSON_PUSH`, with who and, where read, the commit."""
+    outcome = run.refuse(
+        SUPERSEDED_BY_PERSON_PUSH,
+        f"pull request #{number}'s head is {head}, a commit {person} pushed, a person on "
+        f"the pull request, over {was}: the merge is theirs now, and this step merges "
+        "nothing a person pushed" + ("" if record is None else _named(record)))
+    run.summary["refusal"]["person"] = person
+    if record is not None:
+        run.summary["refusal"]["commit"] = record
+    return outcome
 
 
 def _named(record: Mapping[str, Any]) -> str:
