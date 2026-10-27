@@ -1290,13 +1290,17 @@ function RoleCell({
   return (
     <td role="cell" data-label={column.display_name} data-tenant={column.tenant_id} data-role={role} data-source={platformAdmin ? 'platform_admin' : undefined} className="pp-role">
       {platformAdmin ? (
-        <>
-          {/* Two lines: the cell is nowrap, and on one line it widened the grid
-              from 1009px to 1102px at 1440, pushing Manage behind the scroll
-              (rendered review, 2026-10-26). The space keeps the text one phrase. */}
-          <span className="pp-role-w is-admin">admin</span> <br />
-          <span className="pp-role-w">(platform admin)</span>
-        </>
+        // Two lines in one box (`.pp-role-pa`): the cell is nowrap, and on one
+        // line it widened the grid from 1009px to 1102px at 1440, pushing
+        // Manage behind the scroll; with every column marked even the
+        // two-line form measured 1018px (rendered reviews, 2026-10-26/27), so
+        // the suffix is the meta size and may break at its space. One box, so
+        // the phone's grid-laid card keeps the two lines together. The space
+        // keeps the text one phrase.
+        <span className="pp-role-pa">
+          <span className="pp-role-w is-admin">admin</span>{' '}
+          <span className="pp-role-src">(platform admin)</span>
+        </span>
       ) : role === 'unread' ? (
         <Dash why={`${column.display_name}’s roles could not be read`} />
       ) : role === 'none' ? (
