@@ -24,6 +24,15 @@
  * advances (INTER below); every other item keeps the conservative bound,
  * which can only shrink the room.
  *
+ * The PHONE-BAR-CHIP render review then measured the bar at 390 (fixture
+ * build, admin in their own workspace): menu 26, mark 22, chip 119, env
+ * pill 39, bell 36, `Top` 29, which left the name 79px, and `Submit from a`
+ * (82.4px) could not set its first line, so the clamp lost `issue`. This
+ * model had said 91px: it read the pill as `Dev` where the build served
+ * `Local`, and `↑` at 0.56em where Inter Tight's arrow is 0.912em. The pill
+ * and the arrow are measured now too, for every label the bar is drawn with
+ * (ENVS), and RENDERED holds every item's model at or above the render's.
+ *
  * Each `it` names the mutation that turns it red.
  */
 import { cleanup, render, waitFor } from '@testing-library/react'
@@ -56,10 +65,12 @@ const LONG_LABELS = [
  * `@fontsource-variable/inter-tight` latin file with fontTools
  * (`instancer.instantiateVariableFont(font, {'wght': w})`, `hmtx` over a
  * 2048 unitsPerEm): 650 is the bar's page name (`.sk-pbar b`), 500 the
- * chip (`.sk-tchip`). Kerning is left out; Inter's pairs only tighten.
+ * chip (`.sk-tchip`) and `Top`'s arrow. The env pill is 600 and is measured
+ * at 650: Inter only widens with weight, so that is an upper bound. Kerning
+ * is left out; Inter's pairs only tighten.
  */
 const INTER: Record<500 | 650, Record<string, number>> = {
-  500: { a: 0.529, b: 0.574, c: 0.528, d: 0.574, e: 0.543, f: 0.328, g: 0.575, h: 0.562, i: 0.208, j: 0.208, k: 0.515, l: 0.208, m: 0.843, n: 0.557, o: 0.561, p: 0.574, q: 0.574, r: 0.343, s: 0.494, t: 0.33, u: 0.553, v: 0.525, w: 0.783, x: 0.51, y: 0.525, z: 0.51, A: 0.658, B: 0.612, C: 0.694, D: 0.68, E: 0.561, F: 0.544, G: 0.708, H: 0.7, I: 0.228, J: 0.509, K: 0.623, L: 0.522, M: 0.859, N: 0.706, O: 0.727, P: 0.597, Q: 0.727, R: 0.604, S: 0.602, T: 0.609, U: 0.696, V: 0.658, W: 0.941, X: 0.624, Y: 0.643, Z: 0.597, ' ': 0.223 },
+  500: { '↑': 0.92, a: 0.529, b: 0.574, c: 0.528, d: 0.574, e: 0.543, f: 0.328, g: 0.575, h: 0.562, i: 0.208, j: 0.208, k: 0.515, l: 0.208, m: 0.843, n: 0.557, o: 0.561, p: 0.574, q: 0.574, r: 0.343, s: 0.494, t: 0.33, u: 0.553, v: 0.525, w: 0.783, x: 0.51, y: 0.525, z: 0.51, A: 0.658, B: 0.612, C: 0.694, D: 0.68, E: 0.561, F: 0.544, G: 0.708, H: 0.7, I: 0.228, J: 0.509, K: 0.623, L: 0.522, M: 0.859, N: 0.706, O: 0.727, P: 0.597, Q: 0.727, R: 0.604, S: 0.602, T: 0.609, U: 0.696, V: 0.658, W: 0.941, X: 0.624, Y: 0.643, Z: 0.597, ' ': 0.223 },
   650: { a: 0.546, b: 0.592, c: 0.548, d: 0.592, e: 0.559, f: 0.349, g: 0.594, h: 0.586, i: 0.232, j: 0.232, k: 0.541, l: 0.232, m: 0.872, n: 0.583, o: 0.576, p: 0.592, q: 0.592, r: 0.368, s: 0.521, t: 0.35, u: 0.581, v: 0.546, w: 0.809, x: 0.534, y: 0.546, z: 0.532, A: 0.701, B: 0.625, C: 0.713, D: 0.691, E: 0.575, F: 0.551, G: 0.723, H: 0.71, I: 0.243, J: 0.53, K: 0.649, L: 0.532, M: 0.878, N: 0.704, O: 0.744, P: 0.611, Q: 0.745, R: 0.619, S: 0.617, T: 0.629, U: 0.697, V: 0.701, W: 0.988, X: 0.667, Y: 0.68, Z: 0.625, ' ': 0.206 },
 }
 
@@ -108,7 +119,20 @@ const OWN = { tenant_id: 'u-ana', display_name: 'Ana B', kind: 'user' }
 type Who = 'admin in eng' | 'admin in their own workspace' | 'member'
 const WHO: readonly Who[] = ['admin in eng', 'admin in their own workspace', 'member']
 
-function liveApi(who: Who) {
+/**
+ * The environments the bar's pill names: `Dev` on the live deployment, and
+ * `Local`, the widest, which the render review's fixture build served.
+ */
+const ENVS = ['dev', 'local'] as const
+type Env = (typeof ENVS)[number]
+
+/**
+ * The render review's widths at 390 (PHONE-BAR-CHIP, admin in their own
+ * workspace, `Local`), by the item's class; the bell's slot is the `nt-bell`.
+ */
+const RENDERED: Record<string, number> = { 'sk-ibtn': 26, svg: 22, 'sk-tchip': 119, 'sk-pill': 39, 'nt-bell': 36, 'sk-top': 29 }
+
+function liveApi(who: Who, env: Env) {
   const admin = who !== 'member'
   const current = who === 'admin in their own workspace' ? OWN : ENG
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
@@ -118,7 +142,7 @@ function liveApi(who: Who) {
       return ok({
         tenant: current,
         principal: { email: 'ana.b@example.com', domain: 'example.com', groups: [], is_admin: admin },
-        environment: 'dev',
+        environment: env,
         environment_declared: true,
       })
     }
@@ -126,12 +150,12 @@ function liveApi(who: Who) {
   }) as unknown as typeof fetch
 }
 
-async function bar(who: Who): Promise<{ header: HTMLElement; retitle: (title: string) => void }> {
+async function bar(who: Who, env: Env): Promise<{ header: HTMLElement; retitle: (title: string) => void }> {
   const admin = who !== 'member'
   vi.stubEnv('VITE_LIVE', '1')
-  vi.stubEnv('VITE_SWARM_ENV', 'dev')
+  vi.stubEnv('VITE_SWARM_ENV', env)
   vi.resetModules()
-  liveApi(who)
+  liveApi(who, env)
   const { SkyShell } = await import('../Spine')
   window.history.replaceState(null, '', '/config/people')
   const shell = (title: string) => (
@@ -183,7 +207,9 @@ function itemPx(el: HTMLElement): number {
     // Measured, as the name beside it is: the chip's whole one-line width.
     return box + interPx(name.textContent ?? '', 500, el) + px(painted(el, 'gap', PHONE)) + px(painted(el.querySelector('.sk-ic')!, 'width', PHONE))
   }
-  if (el.classList.contains('sk-top')) return box + textPx('↑', el, PHONE)
+  // Measured: the arrow, and the pill's label at 650 (an upper bound for its 600).
+  if (el.classList.contains('sk-top')) return box + interPx(el.textContent ?? '', 500, el)
+  if (el.classList.contains('sk-pill')) return box + interPx(el.textContent ?? '', 650, el)
   // The workspace label and the environment pill: text in a box.
   return box + textPx(el.textContent ?? '', el, PHONE)
 }
@@ -193,16 +219,18 @@ function itemPx(el: HTMLElement): number {
  * carries and every other item, the workspace chip or label included, at
  * its whole width. `chipPx` is the workspace's own width.
  */
-function roomFor(header: HTMLElement): { room: number; chipPx: number } {
+function roomFor(header: HTMLElement): { room: number; chipPx: number; widths: Record<string, number> } {
   const items = [...header.children].filter((c) => c.tagName.toLowerCase() !== 'b') as HTMLElement[]
   // jsdom never matches the phone query, so the bell is not in this bar; the
   // live one is. Its slot, from the cascade, is budgeted all the same.
   const bell = build('div.sk-app > header.sk-pbar > span.sk-pbell > button.nt-bell', hosts)
-  const others = items.reduce((sum, el) => sum + itemPx(el), 0) + px(painted(bell, 'width', PHONE))
+  const widths: Record<string, number> = { 'nt-bell': px(painted(bell, 'width', PHONE)) }
+  for (const el of items) widths[el.tagName.toLowerCase() === 'svg' ? 'svg' : el.classList[0]!] = itemPx(el)
+  const others = Object.values(widths).reduce((sum, w) => sum + w, 0)
   const [l, r] = paddingX(header, PHONE)
   const gaps = (items.length + 1) * px(painted(header, 'gap', PHONE))
   const workspace = items.find((el) => el.classList.contains('sk-tchip') || el.classList.contains('sk-tn'))
-  return { room: 390 - l - r - gaps - others, chipPx: workspace === undefined ? 0 : itemPx(workspace) }
+  return { room: 390 - l - r - gaps - others, chipPx: workspace === undefined ? 0 : itemPx(workspace), widths }
 }
 
 /**
@@ -290,14 +318,25 @@ describe('PHONE-BAR-LABEL: a long page name reads whole at 390', () => {
     expect(tall, "two lines of the chip's name outgrow the compacted bar").toBeLessThanOrEqual(px(painted(chip.parentElement!, 'height', PHONE)))
   })
 
-  for (const who of WHO) {
-    it(`keeps the workspace whole and sets every long page name in at most two whole lines: ${who}`, async () => {
+  it("models every item in the admin's bar no narrower than the render review measured it", async () => {
+    // MUTATION: `Top`'s arrow back at tablefit's 0.56em, or the pill read as
+    // `Dev` only: the model's room is then wider than the real bar's, and the
+    // two-line test below passes while the clamp cuts `issue`.
+    const { header } = await bar('admin in their own workspace', 'local')
+    const { widths } = roomFor(header)
+    expect(Object.keys(widths).sort()).toEqual(Object.keys(RENDERED).sort())
+    // Half a pixel for the render's own rounding to whole pixels.
+    for (const [item, seen] of Object.entries(RENDERED)) expect(widths[item]!, `${item} modelled narrower than the ${seen}px rendered`).toBeGreaterThanOrEqual(seen - 0.5)
+  }, 15000)
+
+  for (const [who, env] of WHO.flatMap((w) => ENVS.map((e) => [w, e] as const))) {
+    it(`keeps the workspace whole and sets every long page name in at most two whole lines: ${who}, ${env}`, async () => {
       // MUTATION: an `em` floor on the name beside the chip wider than the
       // room (the chip pays the difference), the bar's gap or padding back up
       // beside the chip, or the title's font a step up, until the workspace
       // gives way, a word is wider than its box or a name needs a third line.
       let visited = 0
-      const { header, retitle } = await bar(who)
+      const { header, retitle } = await bar(who, env)
       expect(header.classList.contains('has-chip')).toBe(who !== 'member')
       // The room is the bar's less every item but the name, so one reading
       // serves every name; so does the title's face, size, wrap and clamp.
