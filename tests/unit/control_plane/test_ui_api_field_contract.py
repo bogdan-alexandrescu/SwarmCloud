@@ -306,6 +306,10 @@ UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
         "heartbeat": "what the heartbeat reading is (#179); declared by the UI lane after PR #432",
         "claude_session": "the Claude Code session that submitted it (SC-SESSION-SCOPE), read by the "
         "sc plugin's check, attach-all and watch; the console does not scope by it",
+        # Contract request 120 (BUDGET-CONTRACT, #2459): served ahead of the
+        # client. Remove when types.ts declares it.
+        "budget": "the attempt's resolved per-agent budget, {usd?, tokens?} (#2459); declared by "
+        "the budget console lane",
         # `browser_used` and `browser_use` (BROWSER-USE-FLAG, #2322) were
         # excused here while the API served them ahead of the client; types.ts
         # declares both since lane BROWSER-USE-UI.

@@ -144,6 +144,9 @@ _GIB = 1 << 30
 AGENT_MEMORY_HEADROOM_BYTES = 2 * _GIB
 #: What one xdist worker of the api suite measured, about 1 GiB resident.
 XDIST_WORKER_BYTES = 1 * _GIB
+#: Kept out of node's heap (#2507): `--max-old-space-size` set to the whole
+#: limit leaves nothing for the worker and the CLI that share the container.
+OLD_SPACE_HEADROOM_BYTES = _GIB + _GIB // 2
 
 
 def agent_resource_budget(memory_max: int | None, cpu_cores: float | None) -> dict[str, str]:
@@ -169,14 +172,24 @@ def _gib(size: int) -> str:
 
 
 def budget_line(memory_max: int, workers: int) -> str:
-    """The one prompt line that states the budget, for a first start."""
+    """The one prompt line that states the budget, for a first start.
+
+    With #2507's rules: two heavy commands at once, a test run backgrounded
+    and forgotten, and a timed-out command whose children outlived it are the
+    other ways the container reached its limit. Node's heap is capped
+    `OLD_SPACE_HEADROOM_BYTES` below the limit, never below 256 MiB.
+    """
+    old_space = max(256, (memory_max - OLD_SPACE_HEADROOM_BYTES) // (1 << 20))
     return (
         f"Memory budget: this container has {_gib(memory_max)} (${MEMORY_LIMIT_ENV}), and "
-        "at that limit the kernel kills the whole container, this attempt with it. Stop "
-        "any dev server you started (next dev, uvicorn, postgres) before running tsc or "
-        f"the tests; never pass pytest -n above {workers} (${XDIST_WORKERS_ENV}, which "
-        "-n auto already uses); never set --max-old-space-size above "
-        f"{memory_max // (1 << 20)} (MiB, the whole {_gib(memory_max)})."
+        "at that limit the kernel kills the whole container, this attempt with it. Run "
+        "one heavy command (a test run, tsc, a build) at a time, and never background a "
+        "test run with & or nohup; when a command times out, kill its process group "
+        "(kill -- -PGID) before starting another. Stop any dev server you started (next "
+        "dev, uvicorn, postgres) before running tsc or the tests; never pass pytest -n "
+        f"above {workers} (${XDIST_WORKERS_ENV}, which -n auto already uses); never set "
+        f"--max-old-space-size above {old_space} (MiB: the {_gib(memory_max)} less "
+        f"{_gib(OLD_SPACE_HEADROOM_BYTES)} for the worker and the CLI)."
     )
 
 #: Substrings that mean "the provider said no, try later".

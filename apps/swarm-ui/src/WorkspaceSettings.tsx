@@ -7,13 +7,16 @@ import {
   dismissOnboarding,
   loadMe,
   loadProfile,
+  loadQaSettings,
   loadWorkspaceBudget,
   loadWorkspaceRoles,
   parseBudgetAmount,
+  putQaSettings,
   putWorkspaceBudget,
   renameWorkspace,
   type BudgetLimits,
   type BudgetUnit,
+  type QaSettings,
   type WorkspaceBudget,
 } from './api'
 import { CodeIntelligenceCard } from './CodeIntelligence'
@@ -494,6 +497,111 @@ function ThisWorkspace({ profile, roles, go }: { profile: Profile; roles: UrRead
 }
 
 /**
+ * VISUAL QA (lane QA-FLOWS-UI over QA-FLOWS-CAP, part of #2136; BGD, 2026-10-26): the workspace's `qa_flows_per_step`,
+ * how many of a QA run's read-only flows one live-browser step runs when the run names none of its own (a run may,
+ * beside Run on the QA targets page). Its default and its 1-30 bound are the API's, served with it. Its owner or admin,
+ * or a platform admin, changes it (`can_edit`); the API is the gate, and anyone else sees it read-only, as Code
+ * intelligence's switch is drawn.
+ */
+function QaSettingsCard() {
+  const qa = useUrRead(loadQaSettings, 'qa-settings')
+  return (
+    <Card title="Visual QA" action={<UrRefresh reads={[qa]} />}>
+      <UrRegion state={qa.state} route="GET /v1/qa-settings" what="the Visual QA settings" onRetry={qa.reload}>
+        {(d) => <QaFlowsPerStep key={`${d.tenant_id}:${d.qa_flows_per_step}`} read={d} />}
+      </UrRegion>
+    </Card>
+  )
+}
+
+function QaFlowsPerStep({ read }: { read: QaSettings }) {
+  // What the PUT answered, drawn over the read until the next one.
+  const [saved, setSaved] = useState<QaSettings | null>(null)
+  const d = saved ?? read
+  const [typed, setTyped] = useState(String(d.qa_flows_per_step))
+  const [saving, setSaving] = useState(false)
+  const [refused, setRefused] = useState<ApiError | null>(null)
+  const value = /^\d+$/.test(typed.trim()) ? Number(typed.trim()) : null
+  const inBounds = value !== null && value >= d.min_flows_per_step && value <= d.max_flows_per_step
+  const bound = `${d.min_flows_per_step}-${d.max_flows_per_step}`
+  const submit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (saving || !inBounds || value === d.qa_flows_per_step) return
+    setSaving(true)
+    setRefused(null)
+    const r = await putQaSettings(d.tenant_id, value)
+    setSaving(false)
+    if (r.status === 'ok' || r.status === 'stale') {
+      setSaved(r.data)
+      setTyped(String(r.data.qa_flows_per_step))
+    } else if (r.status === 'error') setRefused(r.error)
+  }
+  return (
+    <>
+      <p className="ur-hint">
+        A QA run&rsquo;s read-only flows run in batches, one live-browser step to a batch. This is the batch size a run
+        uses when it names none of its own; a run may pick another beside Run on the QA targets page.
+      </p>
+      <dl className="ws-kv">
+        <dt>QA flows per step</dt>
+        <dd data-qa-flows-per-step="">
+          {d.qa_flows_per_step}
+          {d.set_by === null ? ' (the default)' : ` · default ${d.default_flows_per_step}`}
+        </dd>
+        {d.set_by !== null && (
+          <>
+            <dt>Set by</dt>
+            <dd>{`${d.set_by}${d.set_at !== null ? ` ${timeAgo(d.set_at)}` : ''}`}</dd>
+          </>
+        )}
+      </dl>
+      {d.can_edit ? (
+        <form className="ws-rename" aria-label="Change QA flows per step" onSubmit={(e) => void submit(e)}>
+          <label className="c-field">
+            <span className="c-lbl">QA flows per step</span>
+            <input
+              className="c-inp"
+              type="number"
+              inputMode="numeric"
+              name="qa_flows_per_step"
+              min={d.min_flows_per_step}
+              max={d.max_flows_per_step}
+              step={1}
+              value={typed}
+              disabled={saving}
+              aria-invalid={!inBounds || undefined}
+              onChange={(e) => setTyped(e.target.value)}
+            />
+          </label>
+          <p className="ur-hint">{`A whole number, ${bound}. The default is ${d.default_flows_per_step}.`}</p>
+          {/* Its own line: .ur-hint is declared after .ur-bad, so a hint carrying both stays grey. */}
+          {!inBounds && (
+            <small className="ur-bad" role="alert">{`QA flows per step is a whole number, ${bound}.`}</small>
+          )}
+          {refused !== null && (
+            <p className="ur-small ob-issue" role="alert" data-code={refused.code ?? undefined}>
+              {refused.code !== null && <b className="ur-bad">{refused.code}</b>} {refused.message}
+            </p>
+          )}
+          <div className="ws-rename-a">
+            <Button kind="primary" size="sm" type="submit" busy={saving ? 'Saving…' : false} disabled={!inBounds || value === d.qa_flows_per_step}>
+              Save
+            </Button>
+            {saved !== null && value === saved.qa_flows_per_step && (
+              <span className="pk-saved" role="status">
+                Saved.
+              </span>
+            )}
+          </div>
+        </form>
+      ) : (
+        <p className="ur-small">{`Only the workspace’s owner or admin, or a platform admin, can change this (${bound}).`}</p>
+      )}
+    </>
+  )
+}
+
+/**
  * PER-AGENT BUDGET (BUDGET-UI-SETTINGS; part of #2459, docs/design/agent-budget.md §2, §4). The most one agent may
  * spend on one attempt in this workspace, in dollars OR tokens, the unit chosen here for the whole workspace. OFF
  * UNTIL A WORKSPACE ADMIN SETS ONE (BGD, 2026-10-26): Off is drawn as the default, and a workspace that sets nothing
@@ -787,6 +895,7 @@ export function WorkspaceSettingsScreen({ part = 'settings', go }: { part?: Work
               {(p) => <ThisWorkspace profile={p} roles={roles} go={go} />}
             </UrRegion>
             <CodeIntelligenceCard />
+            <QaSettingsCard />
             <WorkspaceBudgetCard />
           </div>
         </>

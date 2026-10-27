@@ -12,6 +12,7 @@ rather than by this service.
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Mapping
@@ -236,7 +237,45 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         # decodes and writes again keeps the signed class it was submitted
         # with. None: the profile's default class.
         model_class=data.get("model_class") or None,
+        # Contract request 120 (#2459). Read back so a task this service
+        # decodes and writes again keeps the signed budget it was submitted
+        # with. Anything but a map is no budget.
+        budget=_budget_map(data.get("budget")),
     )
+
+
+def _budget_map(value: Any) -> dict[str, Any] | None:
+    """`Task.budget` / `WorkflowStep.budget` as stored, or None when it is not a map."""
+    return dict(value) if isinstance(value, dict) else None
+
+
+#: The units of a budget (`swarm_api.budget.UNITS`, not imported: that module
+#: reads Firestore and the role store, and this one is imported by both).
+_BUDGET_UNITS = ("usd", "tokens")
+
+
+def _budget_limits(value: Any) -> dict[str, Any] | None:
+    """`{usd?, tokens?}` from a stored budget, only its positive numbers;
+    None when it holds neither."""
+    if not isinstance(value, Mapping):
+        return None
+    out: dict[str, Any] = {}
+    for unit in _BUDGET_UNITS:
+        amount = value.get(unit)
+        if (isinstance(amount, (int, float)) and not isinstance(amount, bool)
+                and math.isfinite(amount) and amount > 0):
+            out[unit] = amount
+    return out or None
+
+
+def served_budget(stored: Any, metadata: Any) -> dict[str, Any] | None:
+    """A task's `budget` as the API serves it: the typed `Task.budget`, or
+    for a task stored before contract request 120 the limits it pinned in
+    `metadata.dispatch.budget`, read for one release. None: no budget."""
+    if stored is not None:
+        return _budget_limits(stored)
+    dispatch = metadata.get("dispatch") if isinstance(metadata, Mapping) else None
+    return _budget_limits(dispatch.get("budget") if isinstance(dispatch, Mapping) else None)
 
 
 def _human_wait(value: Any) -> dict[str, Any] | None:
@@ -375,11 +414,15 @@ def dispatch_of(task: Task) -> dict[str, Any]:
         out["allow_empty_diff"] = True
     # The attempt's resolved budget (#2459), only on a budgeted task: the
     # limits the worker enforces, `usd` and/or `tokens`, and where each came
-    # from. Platform-written inside the signed block, never the caller's.
-    budget = block.get("budget")
-    if isinstance(budget, dict):
-        limits = {k: budget[k] for k in ("usd", "tokens") if k in budget}
-        sources = budget.get("from")
+    # from. The limits are the typed `Task.budget` (contract request 120) and
+    # the sources `budget_from`, both platform-written and signed; a task
+    # stored before the field carries both in the block's `budget`, read for
+    # one release. Served in one shape either way.
+    limits = served_budget(task.budget, task.metadata)
+    if limits is not None:
+        legacy = block.get("budget")
+        sources = block.get("budget_from") if task.budget is not None else (
+            legacy.get("from") if isinstance(legacy, dict) else None)
         out["budget"] = {**limits, "from": dict(sources) if isinstance(sources, dict) else {}}
     return out
 
@@ -617,6 +660,10 @@ def task_to_api(
         "attempt_count": task.attempt_count,
         "max_attempts": task.max_attempts,
         "timeout_seconds": task.timeout_seconds,
+        # Contract request 120 (#2459): the attempt's resolved budget, or
+        # null for none. A task stored before the field serves what its
+        # dispatch block pinned (`served_budget`).
+        "budget": served_budget(task.budget, task.metadata),
         "next_eligible_at": task.next_eligible_at,
         "park_reason": task.park_reason.value if task.park_reason else None,
         "blocked_by": task.blocked_by,
@@ -868,6 +915,16 @@ def stored_event_type(data: dict[str, Any]) -> EventType:
         and detail.get("phase") == EventType.CANCEL_REQUESTED.value
     ):
         return EventType.CANCEL_REQUESTED
+    # The same for the budget's 80% warning (#2459): until contract request
+    # 121 gave it a type the worker wrote it as `running` with `detail.cause:
+    # "budget_warning"`. Read as BUDGET_WARNING for one release, so a reader
+    # of the type sees one vocabulary whichever worker wrote it.
+    if (
+        kind is EventType.RUNNING
+        and isinstance(detail, dict)
+        and detail.get("cause") == EventType.BUDGET_WARNING.value
+    ):
+        return EventType.BUDGET_WARNING
     return kind
 
 
@@ -1436,6 +1493,7 @@ def workflow_from_dict(data: dict[str, Any]) -> Workflow:
                 timeout_seconds=s.get("timeout_seconds"),
                 task_id=s.get("task_id"),
                 model_class=s.get("model_class") or None,
+                budget=_budget_map(s.get("budget")),
             )
             for s in (data.get("steps") or [])
         ],
@@ -1593,6 +1651,9 @@ def _step_to_api(
         # Contract request 102: the class the step runs, resolved as its
         # task's is (`served_model_class`).
         **served_model_class(step.runner_profile, step.model_class),
+        # Contract request 120: what the step asked for; its task's `budget`
+        # is what that resolved to. Null: it asked for none.
+        "budget": _budget_limits(step.budget),
         "links": {"console": agent_console_url(console_url, step.task_id)},
         # #1782: why a waiting step waits, in one line (`_step_waiting`).
         "waiting": waiting,

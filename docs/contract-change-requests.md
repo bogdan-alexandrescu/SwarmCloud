@@ -125,11 +125,12 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 115 | `models.py`: `Task.publish_to_pr`, the existing pull request a lane's commits are pushed onto instead of opening one, typed rather than carried in `metadata.dispatch` (PUBLISH-TO-PR, part of #2183) | open, REQUESTED 2026-10-24 by lane PUBLISH-TO-PR. Not applied, and not needed for the feature to work: the field ships in the signed `metadata.dispatch` block, as `strategy` and `continues` do |
 | 116 | `specsign.py`: `SETTINGS_MAC_FIELDS` gains a `"qa"` block, `("flows_per_step",)`, so the workspace's QA batch size is signed like `merge` and `code_intelligence` (QA-TRIPWIRE-MAC, part of #2136) | ACCEPTED by BGD 2026-10-26 (answering QA-FLOWS-CAP's question, task_23a1c31d528e450187b8). Not applied: `apps/common/swarm_common/` is frozen and a lane does not edit it |
 | 117 | `profiles.py`: a `cf-access` secret slot on `claude-code-browser`, kind `oauth_client`, whose value the live gate sends as Cloudflare Access service-token headers to the hosts its grant lists and the agent never holds (CF-ACCESS-TOKEN, part of #2442) | ACCEPTED 2026-10-26 by BGD (requested by lane CF-ACCESS-TOKEN as 116, renumbered: QA-TRIPWIRE-MAC took 116 first) and APPLIED by the pull request that adds this line (lane CF-ACCESS-CONTRACT, part of #2442): `_CF_ACCESS_SLOT` beside `_FILES_SLOT`, declared on `claude-code-browser` only. A grant into `cf-access` is accepted with a host list and refused without one |
-| 118 | `models.py`: `EndCause.BUDGET_EXCEEDED`, a step the worker stopped because it spent its budget (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). Not applied: a follow-up lane applies it after PR 2466 merges, and until then it is built behind with `end_cause` null and `last_error` `budget_exceeded: ...` |
-| 119 | `specsign.py`: a `"budget"` block in `SETTINGS_MAC_FIELDS`, `("unit", "amount")`, so the workspace's per-agent budget is signed (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). Not applied: a follow-up lane applies it after PR 2466 merges, and until then the settings block is unsigned; the writer and reader sign and verify the moment the block is listed |
-| 120 | `models.py` / `specsign.py`: `Task.budget` and `WorkflowStep.budget`, a step's budget as a typed, signed field (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). Not applied: a follow-up lane applies it after PR 2466 merges, and until then it is built behind in the signed `metadata.dispatch.budget` |
-| 121 | `states.py`: `EventType.BUDGET_WARNING`, the 80% warning as its own event type (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). Not applied: a follow-up lane applies it after PR 2466 merges, and until then it is built behind as `running` with `detail.cause: budget_warning` |
+| 118 | `models.py`: `EndCause.BUDGET_EXCEEDED`, a step the worker stopped because it spent its budget (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): the worker writes it on a budget stop; the outcome ledger classes it `runner_error`, as its text fallback did |
+| 119 | `specsign.py`: a `"budget"` block in `SETTINGS_MAC_FIELDS`, `("unit", "amount")`, so the workspace's per-agent budget is signed (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): `BudgetStore` signs every write and verifies every read for a tenant on the MAC cutover, and `judgment.WRITER_FIELDS` lists the block so the re-sign pass signs stored ones |
+| 120 | `models.py` / `specsign.py`: `Task.budget` and `WorkflowStep.budget`, a step's budget as a typed, signed field (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): spec format 6; submission writes `Task.budget` and `WorkflowStep.budget`, and the worker and the API read `metadata.dispatch.budget` as the fallback for one release |
+| 121 | `states.py`: `EventType.BUDGET_WARNING`, the 80% warning as its own event type (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): the worker writes it; `codec.stored_event_type` reads the old `running` form as it for one release |
 | 122 | `models.py`: `Tenant.principal`'s comment gives a fictional example on the company's real domain (EXAMPLE-IDENTITIES, part of #1647) | open |
+| 123 | `states.py` / `models.py`: `ParkReason.PLATFORM_REFUSED` and `Task.platform_refusals`, so a dispatch the platform refuses parks instead of spending attempts (PLATFORM-REFUSED, part of #1820) | PROPOSED for BGD |
 
 ---
 
@@ -14541,8 +14542,10 @@ to that workspace's attempts, and held by its gate, never by the agent.
 the grant, signed by swarm-api. **1-8** are untouched.
 ## 118. `models.py`: `EndCause.BUDGET_EXCEEDED` (BUDGET-CAP, part of #2459)
 
-**Status:** open, REQUESTED 2026-10-26 by lane BUDGET-CAP. Not applied:
-`apps/common/swarm_common/` is frozen. The feature ships without it.
+**Status:** ACCEPTED by the owner (BGD) 2026-10-26 (~22:15Z, on PR 2466) and APPLIED
+2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part
+of #2459). Requested 2026-10-26 by lane BUDGET-CAP. "What is true today" below
+is the text as filed, the state before it was applied.
 
 ### What is true today
 
@@ -14590,8 +14593,10 @@ attempt's generation like every worker end. **2-4, 6-10** are untouched.
 
 ## 119. `specsign.py`: a `"budget"` block in `SETTINGS_MAC_FIELDS` (BUDGET-CAP, part of #2459)
 
-**Status:** open, REQUESTED 2026-10-26 by lane BUDGET-CAP. Not applied:
-`apps/common/swarm_common/` is frozen.
+**Status:** ACCEPTED by the owner (BGD) 2026-10-26 (~22:15Z, on PR 2466) and APPLIED
+2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part
+of #2459). Requested 2026-10-26 by lane BUDGET-CAP. "What is true today" below
+is the text as filed, the state before it was applied.
 
 ### What is true today
 
@@ -14649,8 +14654,10 @@ never a resource. **1-8** are untouched.
 
 ## 120. `models.py` / `specsign.py`: `Task.budget` and `WorkflowStep.budget` (BUDGET-CAP, part of #2459)
 
-**Status:** open, REQUESTED 2026-10-26 by lane BUDGET-CAP. Not applied:
-`apps/common/swarm_common/` is frozen. The feature ships without it.
+**Status:** ACCEPTED by the owner (BGD) 2026-10-26 (~22:15Z, on PR 2466) and APPLIED
+2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part
+of #2459). Requested 2026-10-26 by lane BUDGET-CAP. "What is true today" below
+is the text as filed, the state before it was applied.
 
 ### What is true today
 
@@ -14689,8 +14696,10 @@ holds no capacity. **2-9** are untouched.
 
 ## 121. `states.py`: `EventType.BUDGET_WARNING` (BUDGET-CAP, part of #2459)
 
-**Status:** open, REQUESTED 2026-10-26 by lane BUDGET-CAP. Not applied:
-`apps/common/swarm_common/` is frozen. The feature ships without it.
+**Status:** ACCEPTED by the owner (BGD) 2026-10-26 (~22:15Z, on PR 2466) and APPLIED
+2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part
+of #2459). Requested 2026-10-26 by lane BUDGET-CAP. "What is true today" below
+is the text as filed, the state before it was applied.
 
 ### What is true today
 
@@ -14755,3 +14764,106 @@ the #1647 guard grep has a permanent known exception to explain.
 ### Invariants
 
 None is touched: a comment decides nothing.
+
+## 123. `states.py` / `models.py`: `ParkReason.PLATFORM_REFUSED` and `Task.platform_refusals` (PLATFORM-REFUSED, part of #1820)
+
+**Status:** PROPOSED 2026-10-27 for BGD by lane PLATFORM-REFUSED, on BGD's
+2026-10-27 triage decision on #1820 (epic #2525). Not applied:
+`apps/common/swarm_common/` is frozen, and a dedicated contract lane applies
+it after BGD accepts. The precise codes it parks on are built without it
+(`apps/scheduler/scheduler/dispatch.py` `forbidden_code`); the design is
+[docs/design/dispatch-refusals.md](design/dispatch-refusals.md).
+
+### What is true today
+
+A 403 on GKE Job create is a `DispatchError`, and the drain answers every
+`DispatchError` with `SchedulerStore.return_to_ready_after_failed_dispatch`:
+READY at `now + 30 s`, FAILED at `max_attempts`. On 2026-10-20 19:24-20:06Z
+the admission policy `swarm-worker-job-constraints` refused every CPU-burst
+Job; 54-56 dispatches failed, 11-13 agents ended FAILED `dispatch_failed`
+about two minutes after submission, and three merge agents used 10 of 10
+attempts without running once. A full Job quota (`count/jobs.batch`, 200 per
+tenant namespace) would do the same to every agent past the 200th.
+
+From this lane on, those 403s carry `gke_admission_refused` and
+`gke_job_quota_exceeded` instead of `gke_create_job_forbidden`
+(`PLATFORM_REFUSAL_CODES`), but they are still retried and failed as above:
+`ParkReason` has no member that says "the platform refused this dispatch, try
+later", and `Task` has nowhere to count how often it has.
+
+### The change
+
+```python
+# states.py, class ParkReason
+#: The platform refused this task's dispatch -- a cluster admission
+#: policy or webhook, or the tenant namespace's ResourceQuota
+#: (`gke_admission_refused`, `gke_job_quota_exceeded`). Written by the
+#: scheduler's failed-dispatch path with the lease released; promoted by
+#: the scheduler once `next_eligible_at` passes. Holds no capacity
+#: (invariant 1). Contract request 123.
+PLATFORM_REFUSED = "PLATFORM_REFUSED"
+
+# models.py, class Task (with to_dict/from_dict, default 0)
+#: Consecutive dispatches the platform refused (PLATFORM_REFUSED parks).
+#: Reset to 0 by a dispatch that succeeds. Contract request 123.
+platform_refusals: int = 0
+
+# models.py, beside retries_exhausted
+PLATFORM_REFUSED_MAX_PARKS = 5
+def platform_refusal_backoff(parks: int) -> timedelta:
+    """Park n (1-based) waits 2**(n-1) minutes: 1, 2, 4, 8, 16."""
+```
+
+The scheduler, once applied:
+
+* a `DispatchError` whose code is in `PLATFORM_REFUSAL_CODES`, on an agent
+  with `platform_refusals < PLATFORM_REFUSED_MAX_PARKS`, is written
+  PARKED/`PLATFORM_REFUSED` in the same transaction and under the same guards
+  as today's READY return, with the lease released, `attempt_count` restored
+  to its pre-lease value (the refusal spends no attempt), `platform_refusals`
+  incremented and `next_eligible_at = now + platform_refusal_backoff(n)`;
+* the sixth consecutive refusal ends the agent FAILED with the precise code in
+  `last_error` and `end_cause` `dispatch_failed`: 31 minutes of parks in all;
+* a sweep beside `_promote_scheduled_retries` promotes a due park through
+  `promote_to_ready`;
+* each park counts in `swarm_scheduler_platform_refusals_total{code}` and logs
+  at ERROR: that is the alert #1820 asks for.
+
+### Why parking keeps invariant 1
+
+A PARKED agent creates no infrastructure demand: it holds no lease, no pool
+count and no pod, and admission does not consider it. The lease is released in
+the transaction that parks, so the all-or-nothing reservation (invariant 2) is
+untouched, and concurrency, counted from LEASED (invariant 3), drops at once.
+Today's 30 s READY loop is the costlier one: every retry leases capacity for
+the length of a create that will be refused.
+
+### Who reads it
+
+* **the scheduler**: writes the park (`loop.py`'s failed-dispatch branch,
+  `store.py`) and promotes it (a new sweep);
+* **the reconciler**: nothing to do, a PARKED agent has no lease;
+* **swarm-api and the console**: `park_reason` and `next_eligible_at`, as for
+  every park; `platform_refusals` on the agent's detail;
+* **`scripts/lib/check-contract-parity.sh`**: any shell restatement of
+  `ParkReason` gains the member.
+
+### What it would break if accepted
+
+Nothing that reads today's values: a new enum member and a new defaulted
+field, so an old document decodes with `platform_refusals = 0`. A reader that
+switches over every `ParkReason` (the console's park label, swarm-mcp's
+compaction) needs a label for the new member; an unlabelled one shows the raw
+value.
+
+### If it is declined
+
+The two codes stay what the agent and the log carry, and a refusal keeps
+spending attempts on the fixed 30 s: a policy or quota fault fails every
+affected agent in about `30 s × max_attempts`.
+
+### Invariants
+
+1, 2 and 3 as above. 5 is untouched: the park is guarded on the lease and
+generation exactly as today's return is, and a later attempt carries a new
+generation.

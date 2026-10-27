@@ -153,6 +153,14 @@ def _edit_tests_then_fix_then_uncommitted(repo: Path) -> None:
     (repo / "notes.txt").write_text("left uncommitted\n")
 
 
+def _agent_text(message: str, task_id: str) -> str:
+    """A kept commit's message without the worker's line, which every kept
+    agent commit now ends with (#2505 review)."""
+    line = f"Made by the worker for task {task_id}."
+    assert message.rstrip().endswith(line), message
+    return message.rstrip()[: -len(line)].strip()
+
+
 def _files_at(bare: Path, sha: str) -> set[str]:
     return tree_at(bare, sha)
 
@@ -185,7 +193,9 @@ def test_each_agent_commit_is_kept_in_order_then_one_worker_commit(
     assert first["message"].splitlines()[0] == "Test that the widget refuses a negative size"
     assert "so CI shows it failing before the fix." in first["message"]
     assert "signed-off-by" not in first["message"].lower(), first["message"]
-    assert second["message"].strip() == "The widget refuses a negative size", second["message"]
+    assert _agent_text(second["message"], config.task_id) == "The widget refuses a negative size", (
+        second["message"])
+    assert _agent_text(first["message"], config.task_id), first["message"]
     assert "uncommitted" in last["message"], last["message"]
 
     # Each kept commit has ITS OWN tree: the tests commit has no fix in it,
@@ -214,7 +224,7 @@ def test_nothing_left_uncommitted_adds_no_worker_commit(
 
     branch = f"{config.git_branch_prefix}{config.task_id}"
     commits = list(reversed(pushed_commits(origin, branch)))
-    assert [c["message"].strip() for c in commits] == ["Add a", "Add b"], commits
+    assert [_agent_text(c["message"], config.task_id) for c in commits] == ["Add a", "Add b"], commits
     assert_only_the_worker_wrote(commits, config)
     assert out["auto_committed"] is False
 
@@ -278,7 +288,8 @@ def test_an_agent_merge_is_kept_as_one_commit_and_its_side_branch_is_not_pushed(
     branch = f"{config.git_branch_prefix}{config.task_id}"
     assert out["published"] is True, out.get("publish_reason")
     commits = list(reversed(pushed_commits(origin, branch)))
-    assert [c["message"].strip() for c in commits] == ["Main work", "Merge side"], commits
+    assert [_agent_text(c["message"], config.task_id) for c in commits] == ["Main work", "Merge side"], (
+        commits)
     assert all(len(c["parents"]) == 1 for c in commits), commits
     assert_only_the_worker_wrote(commits, config)
     assert {"side.txt", "main.txt"} <= tree_at(origin, branch)
@@ -312,7 +323,7 @@ def test_an_empty_repository_keeps_the_agents_commits_from_a_parentless_first(
     commits = list(reversed(pushed_commits(empty_origin, branch, since=None)))
     assert len(commits) == 2, [c["message"] for c in commits]
     assert commits[0]["parents"] == [], commits[0]
-    assert commits[1]["message"].strip() == "Add two"
+    assert _agent_text(commits[1]["message"], config.task_id) == "Add two"
     assert_only_the_worker_wrote(commits, config)
 
 

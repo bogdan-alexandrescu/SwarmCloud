@@ -1,0 +1,102 @@
+/* ==== AUTOMATE › A NEW OR EDITED SCHEDULE: PROPOSAL B (#2417, AUTO-A3) ====
+   docs/web-ui/mockups/automate-b.html #A3a and #A3b, picked by BGD
+   2026-10-26. One page of numbered cards in the Config E card style, beside
+   a sheet that keeps the problems, the change against the stored revision,
+   the next five firings and Create in view. Owned by the AUTO-A3 lane: the
+   other Automate lanes keep their own sheets, and schedules.css still holds
+   the form's shared parts (`.sc-facts`, `.sc-presets`, `.sc-edit-cols` and
+   the 360px side column, the template tiles and card, `.sc-next`).
+
+   Colours are the theme's tokens only, so dark is the same rules. */
+
+.ae-form .sc-edit-main { gap: 12px; }
+
+/* ---- the numbered cards ---------------------------------------------------- */
+.ae-card {
+  display: grid; gap: 10px; min-width: 0; padding: 16px;
+  border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface);
+}
+.ae-card-h { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.ae-card-h > h3 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; color: var(--text); }
+.ae-card > .c-hint { margin: 0; }
+.ae-card > .c-hint b { color: var(--text); }
+.ae-sub { margin: 4px 0 0; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; color: var(--text-dim); }
+/* Run, plan and merge; per run, per day and live: three abreast, as B draws
+   them, and one column on a phone. */
+.ae-g3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 16px; min-width: 0; }
+.ae-repo { min-width: 0; overflow-wrap: anywhere; }
+/* The template card sits in card 1 on one column and in the sheet beside the
+   cards: inside either it is a part of the surface, not a box in a box. */
+.ae-card .sc-tpl-card,
+.ae-sheet .sc-tpl-card { padding: 0; border: 0; border-radius: 0; background: none; }
+.ae-sheet .sc-tpl-card { padding-top: 12px; border-top: 1px solid var(--line-soft); }
+
+/* A field's own problem, under it, in the bad ink (A3a). */
+.ae-err {
+  display: block; color: var(--bad-ink); font-size: var(--t-micro); line-height: var(--lh-micro);
+  font-weight: 600; overflow-wrap: anywhere;
+}
+
+/* A refused cadence's firings, struck through: what the server will not do. */
+.sc-next.is-refused { text-decoration-line: line-through; color: var(--text-dim); }
+
+/* ---- the paused lead (A3b) -------------------------------------------------- */
+.ae-lead {
+  display: grid; gap: 2px; min-width: 0; padding: 12px 16px;
+  border: 1px solid color-mix(in srgb, var(--s-warn) 45%, transparent); border-radius: var(--r-card);
+  background: var(--s-warnb); color: var(--text);
+  font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere;
+}
+.ae-lead-k { font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--warn-ink); }
+.ae-lead > b { font-size: var(--t-body); line-height: var(--lh-body); }
+
+/* ---- the edit's head --------------------------------------------------------- */
+.ae-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.ae-head > .sc-h2 { margin: 0; overflow-wrap: anywhere; }
+.ae-rev { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+
+/* ---- the sheet: before you create / save ------------------------------------- */
+.ae-sheet {
+  padding: 16px; top: 12px;
+  border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface);
+}
+.ae-sheet-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.ae-sheet-h > b { font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; }
+.ae-count {
+  padding: 1px 8px; border: 1px solid var(--line); border-radius: var(--r-pill);
+  font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); white-space: nowrap;
+}
+.ae-count.is-bad {
+  color: var(--bad-ink); background: var(--s-badb); font-weight: 600;
+  border-color: color-mix(in srgb, var(--s-bad) 45%, transparent);
+}
+.ae-probs { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.ae-probs > li {
+  position: relative; padding-left: 14px; min-width: 0; overflow-wrap: anywhere;
+  font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--bad-ink);
+}
+.ae-probs > li::before {
+  content: ''; position: absolute; left: 0; top: 0.6em;
+  width: 6px; height: 6px; border-radius: 50%; background: var(--bad-ink);
+}
+.ae-diff { display: grid; gap: 6px; }
+.ae-diff > b { font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
+.ae-diff > dl { display: grid; gap: 4px; margin: 0; }
+.ae-diff > dl > div { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px; }
+.ae-diff dt { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.ae-diff dd { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
+.ae-next { display: grid; gap: 4px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+.ae-next > [data-testid='sc-preview'] > .c-hint,
+.ae-next > [data-testid='sc-preview'].c-hint { margin: 0; }
+.ae-refused { margin: 0; color: var(--bad-ink); }
+.ae-acts { justify-content: flex-start; margin: 0; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+.ae-acts > .c-btn-wrap { flex-basis: 100%; }
+
+/* ---- a phone: one column, no sideways scroll at 390 ------------------------ */
+@media (max-width: 560px) {
+  .ae-g3 { grid-template-columns: minmax(0, 1fr); }
+  .ae-card { padding: 12px; }
+  .ae-sheet { padding: 12px; }
+  .ae-diff > dl > div { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .ae-acts .c-btn { min-height: 44px; }
+}

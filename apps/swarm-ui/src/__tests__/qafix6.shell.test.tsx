@@ -193,18 +193,22 @@ describe('c: the admin phone header names the workspace as the desktop does, and
     name.className = 'sk-tcn'
     chip.appendChild(name)
     bar.appendChild(chip)
-    // The chip holds the short key now, so the title keeps its 5.5em floor
-    // beside it as beside the plain label (visual QA VQ-001, part of #2391).
+    // The chip holds the short key now, so the title keeps a floor beside
+    // it as beside the plain label (visual QA VQ-001, part of #2391): its
+    // widest word (`min-content`), so no word is cut and the chip keeps its
+    // width (PHONE-BAR-CHIP; the 8em of PHONE-BAR-LABEL took 27px from it).
     // MUTATION: drop the floor beside the chip again and the page name goes
     // to 'O…' at 390.
-    expect(painted(title, 'min-width', PHONE)).toBe('5.5em')
+    expect(painted(title, 'min-width', PHONE)).toBe('min-content')
     // The member's bar (a plain label, no chip) keeps the title's floor.
     const plain = build('div.sk-app > header.sk-pbar > b', hosts)
     expect(painted(plain, 'min-width', PHONE)).toBe('5.5em')
-    // The chip and its name still give way, and before the title (5b:QA-017, VQ-001).
+    // The chip and its name still give way, and before the title (5b:QA-017,
+    // VQ-001): the name by wrapping at its space, not cut (PHONE-BAR-CHIP).
     expect(painted(chip, 'min-width', PHONE)).toBe('0')
     expect(painted(chip, 'flex-shrink', PHONE)).toBe('100')
-    expect(painted(name, 'text-overflow', PHONE)).toBe('ellipsis')
+    expect(painted(name, 'white-space', PHONE)).toBe('normal')
+    expect(painted(name, 'text-overflow', PHONE)).not.toBe('ellipsis')
     // Every child's declared floor, with the bar's padding and gaps, inside the glass.
     const kids = [
       build('div.sk-app > header.sk-pbar.has-chip > button.sk-ibtn', hosts),
@@ -214,10 +218,15 @@ describe('c: the admin phone header names the workspace as the desktop does, and
       title,
       chip,
     ]
-    const floors = kids.map((k) => Math.max(px(painted(k, 'width', PHONE)), px(painted(k, 'min-width', PHONE))))
+    // The title's `min-content` floor is its widest word: `Workspaces`, the
+    // widest in SECTIONS, at tablefit's conservative 0.56em of 13px.
+    const floorOf = (k: Element) => (painted(k, 'min-width', PHONE) === 'min-content' ? 'Workspaces'.length * 0.56 * 13 : px(painted(k, 'min-width', PHONE)))
+    const floors = kids.map((k) => Math.max(px(painted(k, 'width', PHONE)), floorOf(k)))
     const gap = px(painted(bar, ['column-gap', 'gap'], PHONE))
-    // Seven children (these six and the 22px mark; the admin tag is in the drawer since VQ-001), so six gaps, and 12px of padding each side.
-    const total = floors.reduce((a, b) => a + b, 0) + 22 + gap * kids.length + 2 * 12
+    // The bar's side padding, from its `padding` shorthand (`0 8px` beside the chip).
+    const side = px(painted(bar, 'padding', PHONE)!.trim().split(/\s+/).pop()!)
+    // Seven children (these six and the 22px mark; the admin tag is in the drawer since VQ-001), so six gaps, and the padding each side.
+    const total = floors.reduce((a, b) => a + b, 0) + 22 + gap * kids.length + 2 * side
     expect(total, `floors ${floors.join(', ')}`).toBeLessThanOrEqual(390)
   })
 })

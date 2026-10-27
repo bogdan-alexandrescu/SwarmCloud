@@ -344,7 +344,10 @@ MAX_SEGMENTS = 12
 #: visual QA run 4 six phone captures stopped at their budget before the page
 #: ended, and the rows below were in no image. A route's `segments` governs
 #: every other preset (the desktop), where a page is a few viewports tall.
-TO_THE_END_PRESETS = frozenset({"phone-390"})
+#: phone-380 (PHONE-380, BGD 2026-10-26, part of #2136: AI Studio's phone
+#: mock-up frame) is narrower and shorter than phone-390, so a page takes at
+#: least as many of its viewports, and c49's reason holds for it.
+TO_THE_END_PRESETS = frozenset({"phone-390", "phone-380"})
 THEMES = ("light", "dark")
 NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
 #: Who the fixture build answers as, per route (QAFIX4-FIXTURE-A, run-4

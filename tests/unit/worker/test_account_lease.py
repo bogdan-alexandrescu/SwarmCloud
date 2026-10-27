@@ -294,7 +294,11 @@ def test_an_exhausted_pool_parks_the_task(db, worker_factory, secrets):
     task = db.doc("tasks/task_1")
     assert task["state"] == TaskState.PARKED.value
     assert task["park_reason"] == ParkReason.PROVIDER_QUOTA_EXHAUSTED.value
-    assert int(task.get("attempt_count", 1)) == 1, "a queue must not cost an attempt"
+    # The admission counted this attempt; the park gives it back, within the
+    # server's bound (#2350). It used to read 1 here, and four such parks
+    # took task_c61ee787 past max_attempts.
+    assert task["attempt_count"] == 0, "a queue must not cost an attempt"
+    assert task["metadata"]["quota_park_resumes"] == 1
     assert db.doc("leases/lease_1")["released_at"] is not None, "the slot goes back"
 
 

@@ -2555,11 +2555,58 @@ the skip, comments nothing, and passes. The check has to be the API's.
 (`deps.submission_scope`), so CI-FIXER-ONE's read from the script got a 404
 for every real lane. The API reads with its own access, and the fixer gains
 no read. An agent in no workflow, a workflow with no merge step, and a merge
-step that has finished are fixed as before. The refusal ships **on**
+step that has finished are fixed as before.
+
+**An issue run owns its pull request the same way** (#2216). An issue run's
+compiled workflow has no merge step, so the merge-step read never fired for
+its pull request, yet while it is CHECKING or FIXING it reads CI and submits
+its own CI-fix rounds from `issueci`. Measured 2026-10-23: on #2145 the
+standalone fixer ran 30 minutes and its push was rejected non-fast-forward
+because the run's round had pushed first; on #2147 it started 64 s after the
+run's round and published nothing while that round fixed the failure. So
+`cifix.stamp` also answers 409 `ci_fix_lane_owns_pr` while an issue run of the
+same tenant that is not terminal (any of PLANNING through FIXING: an APPROVED
+or RUNNING run reaches CHECKING next) has the continued agent as its
+`pr_task_id`, or the continued agent's workflow among its `ci_fix_workflows`.
+The detail names `issue_run_id` and `issue_run_state`, and the script's skip
+line names the run. The reads are two tenant-scoped equality reads on
+`issue_runs` that the automatic single-field indexes serve, so there is no
+composite index to build. The run's own rounds carry `metadata.issue_run`,
+not `metadata.ci_fix`, so they never reach this gate. A pull request whose
+issue run is DONE, FAILED or otherwise terminal is fixed as before. The
+refusal ships **on**
 (`REFUSAL_CI_FIX_LANE_OWNS_PR=off` turns it off). One gap remains: the
 script's own attempt cap is checked before it submits, so a pull request
 already at the cap gets the stop comment even while its lane's merge step is
 live.
+
+**A request that pushes to a pull request waits while a fix holds it**
+(#2535). The gates above read only a request that carries `metadata.ci_fix`.
+Anything else went straight through. On 2026-10-26 an `implement` step of
+wf_3bde5fa9 was admitted onto PR #2473 with `publish_to_pr`, three seconds
+after this fixer (task_b0abb81d) started on the same red head 377c3010. Both
+agents fixed the same test, the fixer pushed first, and the step's publish
+was refused `head_moved` after its agent had done the whole fix. So
+`cifix.stamp` now answers 409 `pr_fix_in_flight` to a request that pushes and
+is not itself a fix, while a live CI fix (an agent, or a claim still inside
+its two-minute grace) or a live conflict fix (pr-shepherd's, or a merge
+step's conflict round) holds that pull request. Two kinds of request meet it:
+
+* a `continues_task` continuation, against the pull request its branch's
+  agent recorded (`result_summary.git.pull_request.number`);
+* a `publish_to_pr` workflow, against that number in its repository. The
+  API reads that pull request's branch from GitHub only after `stamp`, so
+  this read goes by number, and the repository is checked on every row.
+
+The answer names the live agent, its workflow, its kind and the pull request,
+and nothing is written. Resubmit once that fix ends: its push moves the head,
+and CI runs again there. An issue run's own CI-fix round is such a
+continuation. The second step of #2535 makes it read this 409 as "wait";
+until that lands, the refused round fails its run. A merge-only request, a
+request that is itself a fix round (each has its own gate), and a branch agent
+with no recorded pull request are admitted as before. The refusal ships
+**on** (`REFUSAL_PR_FIX_IN_FLIGHT=off` turns it off). Shipped off, it would
+refuse nothing in production until terraform's `api_refusals` turned it on.
 
 ### The post-back, and the cap the API holds
 

@@ -149,13 +149,15 @@ PRESETS: Mapping[str, Preset] = {
         # (LiveBrowser.tsx, Theater.tsx, TheaterTimeline.tsx) change with it.
         Preset("phone-390", 390, 844, 3.0, True, True, _SAFARI_IOS, "iPhone",
                "iOS", "17.0", "arm", "iPhone"),
-        # IMPLEMENT-RENDER (BGD 2026-10-26, part of #2442): phone-390 ten
-        # pixels narrower, for a repository whose phone frames are drawn at
-        # 380 -- a UI lane renders its branch at its frames' width and
-        # compares the two (`swarm-handoff compare`). Only the width differs
-        # from phone-390, so the height a lane screenshots is the one it
-        # already knows; the display fits the Xvfb above, as phone-390's does.
-        Preset("phone-380", 380, 844, 3.0, True, True, _SAFARI_IOS, "iPhone",
+        # PHONE-380 (BGD, 2026-10-26, part of #2136): AI Studio's phone
+        # mock-up frame, 380 x 800, so a browser step or a QA target renders
+        # at the size the design was drawn at. IMPLEMENT-RENDER (part of #2442)
+        # renders a UI lane's branch at its frames' size with it and compares
+        # the two (`swarm-handoff compare`). phone-390 in every trait but the
+        # size; its display fits inside phone-390's, so MAX_DISPLAY_* is
+        # unchanged. Every copy of this list is held to it by
+        # tests/unit/control_plane/test_preset_lists_agree.py.
+        Preset("phone-380", 380, 800, 3.0, True, True, _SAFARI_IOS, "iPhone",
                "iOS", "17.0", "arm", "iPhone"),
         Preset("pixel-8", 412, 915, 2.625, True, True, _CHROME_ANDROID, "Linux armv81",
                "Android", "14.0.0", "arm", "Pixel 8"),

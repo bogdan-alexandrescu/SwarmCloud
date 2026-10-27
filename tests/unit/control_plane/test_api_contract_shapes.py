@@ -139,6 +139,10 @@ def _distinct(annotation: str, name: str, index: int, default: Any) -> Any:
             "display": {"cpu_request": 0.5, "cpu_limit": 0.5, "memory_gib": 1.0},
         }
 
+    # Contract request 120: a budget in either unit, served as its limits.
+    if name == "budget":
+        return {"usd": 1.25, "tokens": 40_000 + index}
+
     if base == "str":
         return f"{name}-value"
     if base == "int":

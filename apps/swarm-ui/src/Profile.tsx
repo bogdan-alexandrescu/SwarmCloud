@@ -5,7 +5,7 @@ import { chooseTenant, chosenTenant, subscribeTenant, type ApiError } from './fe
 import { atLeast, roleOf, type RoleName } from './roles'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
-import { noteOwnName } from './Spine'
+import { displayNameOf, nameTenants, noteOwnName, type NamedTenantChoice } from './Spine'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import { humaniseUntil, timeAgo } from './types'
 import { accountName } from './accountName'
@@ -106,8 +106,9 @@ export function storedRoleWords(choice: TenantChoice | undefined): string | null
  * Every workspace's `/v1/tenants/mine` entry, read once beside the profile.
  * Empty while it is read and when it failed: every row then draws its derived
  * role, which is what this page drew before the stored roles existed.
+ * Admin › People and roles reads it too, for the workspaces' names.
  */
-function useStoredRoles(): TenantChoice[] {
+export function useStoredRoles(): TenantChoice[] {
   const [choices, setChoices] = useState<TenantChoice[]>([])
   useEffect(() => {
     let live = true
@@ -119,6 +120,21 @@ function useStoredRoles(): TenantChoice[] {
     }
   }, [])
   return choices
+}
+
+/**
+ * A GROUP WORKSPACE'S NAME, AS THE SWITCHER DRAWS IT (visual QA VQ-056, BGD
+ * 2026-10-26; part of #2391). `GET /v1/profile` and `GET /v1/admin/people`
+ * name a workspace with no stored name by its group email, so Profile and
+ * Admin › People and roles read 'eng@…' where the switcher read 'Engineering'.
+ * The switcher's rule (`nameTenants`, `displayNameOf`): its `/v1/tenants/mine`
+ * name, an address counting as no name, else the name `served` here when it
+ * is not an address, else the workspace's id. The id alone is the switcher's
+ * own last resort, so it yields to a real name served here.
+ */
+export function groupWorkspaceName(tenantId: string, served: string | null | undefined, named: readonly NamedTenantChoice[]): string {
+  const switcher = named.find((c) => c.tenant_id === tenantId)?.display_name
+  return displayNameOf(switcher === tenantId ? null : switcher) ?? displayNameOf(served) ?? tenantId
 }
 
 /** `GET /v1/tenants/me` as this build reads it: the selected workspace's stored role, absent from an older API. */
@@ -273,6 +289,16 @@ export function ProfileCards({ profile, onReload }: { profile: Profile; onReload
   // The zone is kept per person (`timezone.ts`): this read says who.
   useEffect(() => notePerson(p.identity.email), [p.identity.email])
   const [changed, setChanged] = useState<string | null>(null)
+  // Each group workspace by its name (`groupWorkspaceName`), everywhere on the
+  // page; `p` stays as read, so a save sends nothing it did not read.
+  const choices = useStoredRoles()
+  const shown = useMemo(() => {
+    const named = nameTenants(choices, null)
+    return {
+      ...p,
+      workspaces: p.workspaces.map((w) => (w.kind === 'user' ? w : { ...w, display_name: groupWorkspaceName(w.tenant_id, w.display_name, named) })),
+    }
+  }, [p, choices])
 
   const prefsUnreadable = p.unavailable.includes('preferences') || p.revision === null || p.notifications === undefined
   const stored: Preferences = p.notifications?.preferences ?? { muted: [], reminder: 'as_set' }
@@ -320,11 +346,11 @@ export function ProfileCards({ profile, onReload }: { profile: Profile; onReload
       )}
       {changed !== null && <Banner tone="info" title={changed} role="alert" />}
       <div role="region" aria-label="You and your workspaces" data-profile-section="you">
-        <YouCard p={p} disabled={prefsUnreadable} save={save} />
+        <YouCard p={shown} choices={choices} disabled={prefsUnreadable} save={save} />
       </div>
       <div role="region" aria-label="Your connections" data-profile-section="connections">
-        <GitHubCard p={p} />
-        <TypeSafeCard p={p} />
+        <GitHubCard p={shown} />
+        <TypeSafeCard p={shown} />
       </div>
       <div role="region" aria-label="Notifications" data-profile-section="notifications">
         <NotificationsCard p={p} stored={stored} disabled={prefsUnreadable} save={save} />
@@ -390,11 +416,11 @@ function nameHint(value: string): string | null {
   return null
 }
 
-function YouCard({ p, disabled, save }: { p: Profile; disabled: boolean; save: Save }) {
-  const choices = useStoredRoles()
+function YouCard({ p, choices, disabled, save }: { p: Profile; choices: readonly TenantChoice[]; disabled: boolean; save: Save }) {
   // A platform admin's reach entries (§4.2.2): group workspaces they are not
   // in, so `GET /v1/profile` does not list them. Admin there by rule.
   const reach = choices.filter((c) => c.via === 'platform_admin' && !p.workspaces.some((w) => w.tenant_id === c.tenant_id))
+  const named = useMemo(() => nameTenants(choices, null), [choices])
   const id = useId()
   const initial = p.identity.display_name ?? p.identity.display_name_suggested ?? ''
   const [name, setName] = useState(initial)
@@ -469,7 +495,7 @@ function YouCard({ p, disabled, save }: { p: Profile; disabled: boolean; save: S
         })}
         {reach.map((c) => (
           <li key={c.tenant_id} data-tenant={c.tenant_id} data-via="platform_admin">
-            <b>{c.display_name}</b>
+            <b>{groupWorkspaceName(c.tenant_id, c.display_name, named)}</b>
             {' · '}
             <span className="pf-role">{storedRoleWords(c) ?? 'admin (platform admin)'}</span>
             <span className="ur-small"> · not a member; reached as a platform admin</span>
@@ -581,6 +607,9 @@ function keyWords(s: ProfileKeyStatus): string {
 
 function TypeSafeCard({ p }: { p: Profile }) {
   const ts = p.connections.typesafe
+  // A group workspace by its name, as the list above draws it; the personal one by its id, as before.
+  const actingRow = ts === undefined ? undefined : p.workspaces.find((w) => w.tenant_id === ts.acting_workspace.tenant_id)
+  const acting = actingRow !== undefined && actingRow.kind !== 'user' ? actingRow.display_name : (ts?.acting_workspace.tenant_id ?? '')
   return (
     <Card title="TypeSafe key" action={<CardLink href="/config/secrets">Config › Secrets</CardLink>}>
       {ts === undefined || p.unavailable.includes('typesafe') ? (
@@ -589,9 +618,9 @@ function TypeSafeCard({ p }: { p: Profile }) {
         <dl className="pf-facts">
           <dt>Your key</dt>
           <dd>{ts.personal === null ? 'No ready personal workspace to keep it in' : keyWords(ts.personal)}</dd>
-          <dt>{`The key for ${ts.acting_workspace.tenant_id}`}</dt>
+          <dt>{`The key for ${acting}`}</dt>
           <dd>{ts.acting_workspace.set ? 'Set' : 'Not set'}</dd>
-          <dt>{`Your agents in ${ts.acting_workspace.tenant_id} would use`}</dt>
+          <dt>{`Your agents in ${acting} would use`}</dt>
           <dd>{USES_WORDS[ts.uses]}</dd>
         </dl>
       )}

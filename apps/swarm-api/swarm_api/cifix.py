@@ -80,8 +80,13 @@ and the claim, `stamp` reads the workflow of the task whose branch the pull
 request is on; while that workflow's merge step is not terminal, the request
 is answered 409 `ci_fix_lane_owns_pr` naming the merge step: the lane runs
 its own CI-fix rounds, and a standalone fix beside them lost the race for the
-branch (`_refuse_if_lane_owns` has the measurement). The read is the API's;
-the fixer's continuation-scoped identity never gets it.
+branch (`_refuse_if_lane_owns` has the measurement). An issue run owns its
+pull request the same way (#2216): its compiled workflow has no merge step,
+but while it is not terminal it reads CI and submits its own rounds from
+`issueci`, so a non-terminal issue run of the tenant whose `pr_task_id` is
+the continuation's root -- or one of whose `ci_fix_workflows` is the root's
+workflow -- is answered 409 `ci_fix_lane_owns_pr` naming the run. The reads
+are the API's; the fixer's continuation-scoped identity never gets them.
 
 The same refusal holds while a CONFLICT FIX on that pull request is live
 (#2456): a non-terminal task continuing the same branch task with
@@ -90,6 +95,21 @@ naming it. Measured 2026-10-26 on PR #2381: a conflict fix and a CI fix both
 cloned 15cc7ea and the later push was rejected non-fast-forward. pr-shepherd
 holds its side the same way (`live_pr_writer`, read from `_plan_one`), so
 whichever fixer comes second stands down.
+
+ONE WRITER PER PULL REQUEST, FOR EVERY PUSHING REQUEST (#2535). The gates
+above read only a `metadata.ci_fix` request; anything else went straight
+through. Measured 2026-10-26 on PR #2473: wf_3bde5fa9's `implement` step,
+pushing onto task_577523f9's branch with `publish_to_pr`, was admitted at
+19:23:00Z, three seconds after the CI fixer task_b0abb81d started on the same
+red head 377c3010; both fixed the same test, and the step's publish was
+refused `head_moved`. So a pushing request that carries no writer mark of its
+own (`PR_WRITER_KINDS`, each with its own gate) is answered 409
+`pr_fix_in_flight` naming the live fix, its workflow and kind: a
+`continues_task` one while `live_pr_writer` finds one on the pull request its
+branch task recorded (`result_summary.git.pull_request.number`), a
+`publish_to_pr` one while `_live_writer_on_pull` finds one on that number in
+its repository. A merge-only request and a branch task with no recorded pull
+request are admitted as before.
 
 EVERY FIX ROUND'S HEAD, AGAINST ITS PULL REQUEST (epic #1334). Measured
 2026-10-15 02:16Z: HANG-LEASE's merge step refused PR 1338 `head_moved` at
@@ -141,10 +161,11 @@ from swarm_common.states import TERMINAL_STATES
 from .codec import agent_console_url
 from .continuation import TASK_ID_RE, Continuation
 from .errors import ApiError, Conflict, NotFound
-from . import laneterritory
+from . import laneterritory, publishtopr
 from .forgewrite import GitHubWriter
 from .issueci import NO_CHANGE_MARKER
 from .issuecomments import bounded, code, prose
+from .issueruns import RUNS_COLLECTION, TERMINAL_RUN_STATES, IssueRun
 from .refusals import refuse
 from .repositories import parse_repository
 from .rollup import SKIPPED_SUMMARY_KEY
@@ -296,6 +317,13 @@ class CiFixLaneOwnsPr(Conflict):
     this pull request's CI-fix rounds itself; `detail` names it."""
 
     code = "ci_fix_lane_owns_pr"
+
+
+class PrFixInFlight(Conflict):
+    """409: a plain continuation's pull request has a live CI fix or conflict
+    fix pushing to its branch; `detail` names it."""
+
+    code = "pr_fix_in_flight"
 
 
 # --------------------------------------------------------------------------
@@ -637,9 +665,48 @@ def _live_merge_step(db: Any, tenant_id: str, workflow_id: str) -> str | None:
     return None
 
 
+#: A run has one pull request, and a task is the `pr_task_id` of one run; a
+#: few more covers a re-run of the same issue that adopted the same task.
+ISSUE_RUNS_READ = 5
+
+
+def _live_issue_run(db: Any, tenant_id: str, continuation: Continuation,
+                    workflow_id: str) -> IssueRun | None:
+    """The tenant's non-terminal issue run that owns the pull request on the
+    continuation's root -- its `pr_task_id` is the root, or the root's
+    workflow (`workflow_id`, "" for none) is one of its `ci_fix_workflows`
+    -- or None.
+
+    Equality and `array_contains` filters only, so Firestore serves both
+    queries by merging the automatic single-field indexes: no composite
+    index, and nothing to fail while one builds after a release. Tenant and
+    state are checked again in the application, as `IssueRuns.live` does.
+    """
+    runs = db.collection(RUNS_COLLECTION).where(filter=FieldFilter("tenant_id", "==", tenant_id))
+    queries = [runs.where(filter=FieldFilter("pr_task_id", "==", continuation.root_task_id))]
+    if workflow_id:
+        queries.append(runs.where(filter=FieldFilter("ci_fix_workflows", "array_contains", workflow_id)))
+    for query in queries:
+        for snap in query.limit(ISSUE_RUNS_READ).stream():
+            data = snap.to_dict() or {}
+            try:
+                run = IssueRun.from_firestore(data)
+            except (KeyError, TypeError, ValueError):
+                log.warning("issue run %s is unreadable; not counted as owning a pull request",
+                            data.get("id") or snap.id)
+                continue
+            if run.tenant_id != tenant_id or run.state in TERMINAL_RUN_STATES:
+                continue
+            if run.pr_task_id == continuation.root_task_id or (
+                    workflow_id and workflow_id in run.ci_fix_workflows):
+                return run
+    return None
+
+
 def _refuse_if_lane_owns(store: Any, tenant_id: str, continuation: Continuation,
                          record: Mapping[str, Any]) -> None:
-    """Refuse `CiFixLaneOwnsPr` while the lane's merge step is live (through
+    """Refuse `CiFixLaneOwnsPr` while the lane's merge step is live, or while
+    a non-terminal issue run owns the pull request (through
     `refusals.refuse`: switched off, the request goes on as before).
 
     ONE FIXER PER PULL REQUEST (CI-FIXER-GATE, part of #1822). A lane whose
@@ -653,18 +720,41 @@ def _refuse_if_lane_owns(store: Any, tenant_id: str, continuation: Continuation,
     is live: a merge step QUEUED or PARKED on its CI wait is the one whose
     round starts next. A task in no workflow, a workflow with no merge step
     and a merge step that has finished are fixed as before.
+
+    AN ISSUE RUN OWNS ITS PULL REQUEST TOO (#2216). An issue run's compiled
+    workflow has no merge step: the run reads CI and submits its own CI-fix
+    rounds from `issueci` while CHECKING/FIXING, so the merge-step read never
+    fired for its pull request. Measured 2026-10-23: on #2145 the PR-side
+    fixer task_f08e3de5 ran 30 minutes on 2a34c62 and was rejected
+    non-fast-forward, the run's round task_7313192a having pushed first; on
+    #2147 task_75ae734c started 64 s after the run's round task_2b64bf8e and
+    ended published_nothing while that round fixed the failure. So a
+    non-terminal issue run of this tenant whose `pr_task_id` is the root, or
+    one of whose `ci_fix_workflows` is the root's workflow, refuses too --
+    every non-terminal state, since an APPROVED or RUNNING run reaches
+    CHECKING next. The run's own rounds carry `metadata.issue_run`, never
+    `metadata.ci_fix`, so they never reach this gate. A terminal run's pull
+    request is fixed as before.
     """
     workflow = _lane_workflow(store.db, tenant_id, continuation)
-    if not workflow:
+    merge_task = _live_merge_step(store.db, tenant_id, workflow) if workflow else None
+    if merge_task is not None:
+        refuse(CiFixLaneOwnsPr(
+            f"pull request #{record['pull_request']} belongs to a lane whose merge step "
+            f"({merge_task}) is live and runs its CI-fix rounds itself; no standalone fix is made.",
+            detail={"metadata": CI_FIX_METADATA_FIELD, "task_id": merge_task,
+                    "workflow_id": workflow, "pull_request": record["pull_request"]},
+        ))
         return
-    merge_task = _live_merge_step(store.db, tenant_id, workflow)
-    if merge_task is None:
+    run = _live_issue_run(store.db, tenant_id, continuation, workflow)
+    if run is None:
         return
     refuse(CiFixLaneOwnsPr(
-        f"pull request #{record['pull_request']} belongs to a lane whose merge step "
-        f"({merge_task}) is live and runs its CI-fix rounds itself; no standalone fix is made.",
-        detail={"metadata": CI_FIX_METADATA_FIELD, "task_id": merge_task,
-                "workflow_id": workflow, "pull_request": record["pull_request"]},
+        f"pull request #{record['pull_request']} belongs to issue run {run.id} "
+        f"({run.state.value}), which runs its own CI-fix rounds; no standalone fix is made.",
+        detail={"metadata": CI_FIX_METADATA_FIELD, "issue_run_id": run.id,
+                "issue_run_state": run.state.value, "pull_request": record["pull_request"],
+                "task_id": continuation.root_task_id},
     ))
 
 
@@ -696,6 +786,133 @@ def _refuse_if_conflict_fix_live(store: Any, tenant_id: str, continuation: Conti
         detail={"metadata": CI_FIX_METADATA_FIELD, "task_id": writer["task_id"],
                 "workflow_id": writer["workflow_id"], "pull_request": record["pull_request"],
                 "conflict_fix": True},
+    ))
+
+
+def _branch_pull_request(db: Any, tenant_id: str, continuation: Continuation) -> int | None:
+    """The number of the pull request the continuation's root opened, from its
+    own record (`result_summary.git.pull_request.number`, the worker's), read
+    by id under the tenant; None when it recorded none, is another tenant's,
+    or the number is not a positive int. `mergewake._held_pull_request`'s
+    read, restated: mergewake imports this module."""
+    snap = db.collection(TASKS).document(continuation.root_task_id).get()
+    doc = (snap.to_dict() or {}) if snap.exists else {}
+    if doc.get("tenant_id") != tenant_id:
+        return None
+    git = _mapping(_mapping(doc.get("result_summary")).get("git"))
+    return _positive_int(_mapping(git.get("pull_request")).get("number"))
+
+
+#: The most tasks one (tenant, mark, pull request number) is read for when
+#: the branch task is not known yet (`publish_to_pr`, below): the number
+#: alone, of every repository the tenant fixes. Each repository's pull
+#: request sees `LIVE_WRITERS_READ` at most; fifty is a few repositories'
+#: worth, and every row is checked against the spec's repository in the
+#: application.
+PUBLISH_WRITERS_READ = 50
+
+
+def _live_writer_on_pull(db: Any, tenant_id: str, repository_url: str, pull_request: int,
+                         now: datetime) -> dict[str, Any] | None:
+    """`live_pr_writer`'s answer for a pull request named by number and
+    repository, before its branch task is known: a non-terminal task of this
+    tenant with any `PR_WRITER_KINDS` mark naming `pull_request` in
+    `repository_url`, or a live claim on it; else None.
+
+    For a `publish_to_pr` workflow, whose branch task `service` reads from
+    GitHub only after `stamp`. Equality filters on tenant and the mark's
+    number (the built-in single-field indexes, no composite index); the
+    repository and every filter are checked again here (invariant 9).
+    """
+    terminal = {s.value for s in TERMINAL_STATES}
+    repository = _claim_repository(repository_url)
+    for kind in PR_WRITER_KINDS:
+        query = (
+            db.collection(TASKS)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter(f"metadata.{kind}.pull_request", "==", pull_request))
+            .limit(PUBLISH_WRITERS_READ)
+        )
+        for snap in query.stream():
+            doc = snap.to_dict() or {}
+            if (doc.get("tenant_id") == tenant_id
+                    and _mapping(_mapping(doc.get("metadata")).get(kind)).get("pull_request")
+                    == pull_request
+                    and isinstance(doc.get("repository_url"), str)
+                    and _claim_repository(doc["repository_url"]) == repository
+                    and doc.get("state") not in terminal):
+                return {"task_id": str(doc.get("id") or snap.id),
+                        "workflow_id": doc.get("workflow_id"), "kind": kind}
+    claims = (
+        db.collection(CLAIMS)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter("repository", "==", repository))
+        .where(filter=FieldFilter("pull_request", "==", pull_request))
+        .limit(LIVE_CLAIMS_READ)
+    )
+    for snap in claims.stream():
+        held = snap.to_dict() or {}
+        if (held.get("tenant_id") != tenant_id or held.get("repository") != repository
+                or held.get("pull_request") != pull_request):
+            continue
+        live = _live_holder(_Reads(), db, tenant_id, held, now)
+        if live is not None:
+            return {**live, "kind": CI_FIX_METADATA_FIELD}
+    return None
+
+
+def _refuse_if_fix_live(store: Any, tenant_id: str, continuation: Continuation | None,
+                        spec: WorkflowCreate) -> None:
+    """Refuse `PrFixInFlight` while a CI fix or conflict fix pushes to the
+    branch this plain continuation -- or this `publish_to_pr` workflow --
+    would push to (through `refusals.refuse`: switched off, the request goes
+    on as before).
+
+    ONE WRITER PER PULL REQUEST, for every pushing request (#2535). Measured
+    2026-10-26 on PR #2473: wf_3bde5fa9's `implement` step (19:23:00Z, with
+    `publish_to_pr` 2473 onto task_577523f9's branch) was admitted three
+    seconds after the CI fixer task_b0abb81d (wf_cd10182a) started on the
+    same red head 377c3010; both fixed one test, the fixer pushed 6260cff5
+    first, and the step's publish was refused `head_moved`. A `continues_task`
+    request pushes to the same branch the same way. A merge-only request
+    pushes nothing, and a request carrying a writer's own mark has that
+    writer's gate (`_claim` and the two above for `ci_fix`,
+    `mergewake.live_claim` for a merge step's rounds, `live_pr_writer` in
+    pr-shepherd's `_plan_one`), so neither is read here. A continuation whose
+    root recorded no pull request has none to hold.
+    """
+    if all(is_merge_step(step.runner_profile) for step in spec.steps):
+        return
+    if any(kind in spec.metadata for kind in PR_WRITER_KINDS):
+        return
+    clock = getattr(store, "_now", None)
+    now = clock() if callable(clock) else datetime.now(timezone.utc)
+    if continuation is not None:
+        number = _branch_pull_request(store.db, tenant_id, continuation)
+        if number is None:
+            return
+        writer = live_pr_writer(store.db, tenant_id, continuation.root_task_id, number,
+                                kinds=PR_WRITER_KINDS, now=now)
+    else:
+        # `publish_to_pr` (#2183) beside `continues_task` is refused before
+        # `stamp`; a malformed one is refused by `service` after it.
+        try:
+            number = publishtopr.parse_number(spec.publish_to_pr, spec.repository_url)
+        except DispatchOptionError:
+            return
+        if number is None or not spec.repository_url:
+            return
+        writer = _live_writer_on_pull(store.db, tenant_id, spec.repository_url, number, now)
+    if writer is None:
+        return
+    task = writer.get("task_id")
+    refuse(PrFixInFlight(
+        f"pull request #{number} has a live {writer['kind']} fix "
+        + (f"({task})" if task else "still being submitted")
+        + " pushing to its branch; this workflow was not made. Resubmit it once "
+        "that fix ends: its push moves the head, and CI runs again there.",
+        detail={"task_id": task, "workflow_id": writer.get("workflow_id"),
+                "kind": writer["kind"], "pull_request": number},
     ))
 
 
@@ -760,10 +977,16 @@ def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
     Unchanged when there is neither. Raises `DispatchOptionError` (422
     `invalid_dispatch`) for every refusal, before anything is written,
     `CiFixLaneOwnsPr` (409) while the continued task's workflow has a live
-    merge step or a conflict fix on the pull request is live (on 2026-10-26
-    PR #2381 got both a conflict fix and a CI fix at 15cc7ea, and the second
-    push was rejected), and `CiFixInFlight` (409) when the failure already
-    has a live fix.
+    merge step, a non-terminal issue run of the tenant owns the pull request
+    (`_refuse_if_lane_owns`) or a conflict fix on the pull request is live (on
+    2026-10-26 PR #2381 got both a conflict fix and a CI fix at 15cc7ea, and
+    the second push was rejected), and `CiFixInFlight` (409) when the failure
+    already has a live fix. A continuation or `publish_to_pr` workflow with no
+    `metadata.ci_fix` that pushes and carries no writer mark of its own is
+    refused `PrFixInFlight` (409) while a CI fix or conflict fix on its pull
+    request is live (on 2026-10-26 PR #2473 got a CI fix and a
+    `publish_to_pr` step at 377c3010, and the second publish was refused
+    `head_moved`).
     """
     for step in spec.steps:
         if CI_FIX_METADATA_FIELD in (step.metadata or {}):
@@ -775,6 +998,8 @@ def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
         _refuse_api_keys(step.metadata or {}, step_id=step.step_id)
     _refuse_api_keys(spec.metadata)
     if CI_FIX_METADATA_FIELD not in spec.metadata:
+        # First, so a refused request writes nothing (#2535).
+        _refuse_if_fix_live(store, tenant_id, continuation, spec)
         marker = _fix_head_marker(spec.metadata, continuation)
         if marker is None:
             return spec
@@ -786,8 +1011,8 @@ def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
             "only a workflow with continues_task pushes to.",
         )
     record = _checked_record(spec.metadata[CI_FIX_METADATA_FIELD])
-    # Before the cap and the claim: a lane's live merge step is the reason,
-    # whatever the count, and a refused request holds no claim.
+    # Before the cap and the claim: a lane's live merge step or a live issue
+    # run is the reason, whatever the count, and a refused request holds no claim.
     _refuse_if_lane_owns(store, tenant_id, continuation, record)
     # The same place, the same reason: a live conflict fix on this pull request (#2456).
     _refuse_if_conflict_fix_live(store, tenant_id, continuation, record)

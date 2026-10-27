@@ -1,4 +1,4 @@
-import { Button, CIcon, Count, ToneMark } from './components'
+import { Banner, Button, CIcon, Count, ToneMark } from './components'
 import { Children, Fragment, cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   EVENT_PAGE_LIMIT,
@@ -10,6 +10,7 @@ import {
   type ResourceClasses,
 } from './api'
 import { ArtifactViewer, diffStat } from './ArtifactViewer'
+import { BudgetCard } from './AgentBudget'
 import { absTime, gapText } from './AttemptTimeline'
 import { classUnits } from './Blockers'
 import { AttemptDurations } from './charts/AttemptPhases'
@@ -29,7 +30,7 @@ import { pullRequestOf } from './decision'
 import { PHASE_LABEL, attemptEnd, instant, phasesFor, spanText, type AttemptEnd, type AttemptPhases, type Segment } from './duration'
 import { eventKind, isTerminalEvent } from './events'
 import { backendWord, eventWord, parkWord, stateWord } from './words'
-import { num, type Result } from './fetch'
+import { chooseTenant, num, type ApiError, type Result } from './fetch'
 import { type TopicId } from './help'
 import { HelpCard, HelpNote } from './HelpCard'
 import { addressToPath } from './paths'
@@ -197,10 +198,18 @@ export function AgentDetailScreen({
       mounted.current = false
     }
   }, [])
+  // THE ONE OTHER TENANT OF THE CALLER'S THAT HOLDS THIS TASK (#1194 c15):
+  // set from a 404 whose probe found it (`taskElsewhere`), cleared by any
+  // other answer. Offered under the failed panel, never switched to unasked.
+  const [elsewhere, setElsewhere] = useState<NonNullable<ApiError['elsewhere']> | null>(null)
+  useEffect(() => setElsewhere(null), [taskId])
   const load = useCallback(
     () =>
       loadAgentRun(taskId).then((r) => {
-        if (mounted.current && shown.current === taskId && (r.status === 'ok' || r.status === 'stale')) setName(agentName(r.data.task))
+        if (mounted.current && shown.current === taskId) {
+          if (r.status === 'ok' || r.status === 'stale') setName(agentName(r.data.task))
+          if (r.status !== 'loading') setElsewhere(r.status === 'error' ? (r.error.elsewhere ?? null) : null)
+        }
         return r
       }),
     [taskId],
@@ -257,13 +266,50 @@ export function AgentDetailScreen({
         {(r, reading) => <Run run={r} reload={reload} reading={reading} headed={headed} checkpoints={checkpoints} links={links} lastLine={lastLine} />}
       </Screen>
   )
-  if (headed) return screenEl
+  // THE SWITCH IS OFFERED, NOT MADE: the person chose the tenant they are in,
+  // and a link must not move them out of it. Pressing it makes the choice
+  // (`chooseTenant`) and reads the task again under it. Its own top margin
+  // keeps it a separate notice: flush under the failed panel, the two
+  // bordered boxes read as one.
+  const switchEl =
+    elsewhere === null ? null : (
+      <div className="tenant-switch-offer" style={{ marginTop: 'var(--ctl-s3)' }}>
+      <Banner
+        tone="info"
+        role="status"
+        title={`This task is in ${elsewhere.display_name}`}
+        actions={
+          <Button
+            kind="primary"
+            onClick={() => {
+              setElsewhere(null)
+              chooseTenant(elsewhere.tenant_id)
+              reload()
+            }}
+          >
+            {`Switch to ${elsewhere.display_name}`}
+          </Button>
+        }
+      >
+        It is one of your workspaces, so it can be read there. This one answers as it would for a task that does not exist.
+      </Banner>
+      </div>
+    )
+  if (headed) {
+    return (
+      <>
+        {screenEl}
+        {switchEl}
+      </>
+    )
+  }
   return (
     <div className="drawer" role="dialog" aria-label={`Agent ${taskId}`}>
       <Button iconOnly icon={<CIcon name="close" />} className="drawer-close" onClick={onClose}>
         Close
       </Button>
       {screenEl}
+      {switchEl}
     </div>
   )
 }
@@ -462,6 +508,10 @@ export function Run({
         <DtNow run={run} now={now} listing={listing} checkpoints={checkpoints} lastLine={lastLine} stop={stop} />
       )}
       {lead !== 'failed' && <ErrorBanner run={run} />}
+      {/* THE BUDGET (#2459), under the leading card: its limit, where it came
+          from, what it used, when it was warned, and for a stop that the work
+          was kept. Nothing for an agent with no budget. */}
+      <BudgetCard task={task} events={events} now={now} />
       {/* RESOURCES ARE ONE ROW (BGD 2026-10-27, DETAILS-BUILDING): "too much
           prose on this page, we don't need so much text for showing resource
           consumption". The strip and the Resources card are unchanged, one
@@ -542,6 +592,7 @@ const END_CAUSE_SAY: Readonly<Record<EndCause, string>> = {
   verdict_failed: 'the verdict failed',
   publish_refused: 'publishing was refused',
   child_cascade: 'a child agent ended it',
+  budget_exceeded: 'it spent its budget',
 }
 
 /**

@@ -246,8 +246,8 @@ def trusted_block(tenant_id: str, block: str, fields: Mapping[str, Any] | None,
 
 
 #: The covered keys each block's swarm-api writer writes: this module's
-#: `set`, `mergesettings.MergeSettings.as_dict`, `codeintel.OWNED_FIELDS`
-#: (tests/unit/control_plane/test_settings_mac.py holds them equal). A covered
+#: `set`, `mergesettings.MergeSettings.as_dict`, `codeintel.OWNED_FIELDS`,
+#: `budget.COVERED` (tests/unit/control_plane/test_settings_mac.py holds them equal). A covered
 #: key outside its writer's list -- today only `code_intelligence.
 #: judgment_backend` -- is written by no swarm-api path, so it is present only
 #: through a direct Firestore write.
@@ -255,6 +255,8 @@ WRITER_FIELDS: Mapping[str, tuple[str, ...]] = {
     TOP_BLOCK: ("judgment_backend",),
     "merge": ("mode", "train_size", "max_train_age_minutes"),
     "code_intelligence": ("jev", "context", "context_ab", "graph_delivery"),
+    # Contract request 119 (#2459): `budget.BudgetStore.put` writes both.
+    "budget": ("unit", "amount"),
 }
 
 

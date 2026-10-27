@@ -118,6 +118,14 @@ at the old head with `BRANCH_UPDATE_PENDING`. That head's checks are green
 every CI_READ_SECONDS. The tick waits for the head to move instead, and
 the worker's fallback instant covers an update GitHub never makes.
 
+NOR IS A RED HEAD ONLY AN OPERATOR CAN FIX (#2046). A worker whose head was
+written by a publish swarm-api refused `workflow_scope_missing` parks at it
+with `WORKFLOW_PATCH_PENDING`: its checks are red because the branch lacks
+the workflow lines in `workflow-lines.patch`, and a CI-fix round could only
+be refused the same push. The tick waits for the head to move -- the
+operator's push -- exactly as for a pending update, never reading the
+checks, so no round is claimed for it.
+
 A PULL REQUEST IN ITS BASE'S MERGE QUEUE IS NOT A READING OF ITS CHECKS
 (lane C3H). A worker whose merge GitHub answered "Changes must be made
 through the merge queue" enqueued the pull request and parked MERGE_QUEUED.
@@ -305,6 +313,15 @@ MERGE_FIX_METADATA_KEY = "merge_fix"
 #: The worker's park code after an update-branch whose new head GitHub had
 #: not made yet (`agent_worker.merge.BRANCH_UPDATE_PENDING`).
 BRANCH_UPDATE_PENDING = "branch_update_pending"
+#: A red head written by a publish swarm-api refused `workflow_scope_missing`
+#: (#2046, `agent_worker.merge.WORKFLOW_PATCH_PENDING`): the branch lacks the
+#: workflow lines left in `workflow-lines.patch`, which only an operator can
+#: push, so a CI-fix round could only be refused the same push. The tick
+#: waits for the head to move, as for a pending update -- the checks are not
+#: read, so `_on_red` never claims a round -- and wakes the step then.
+WORKFLOW_PATCH_PENDING = "workflow_patch_pending"
+#: The park codes whose tick waits for the head to move without reading the checks.
+HEAD_MOVE_CODES = frozenset({BRANCH_UPDATE_PENDING, WORKFLOW_PATCH_PENDING})
 
 #: The worker's park code after it put the pull request in its base's merge
 #: queue (`agent_worker.merge.MERGE_QUEUED`).
@@ -1980,7 +1997,7 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
                         read = _read_pull(writer, ref, reading_token)
                     else:
                         read = _read(writer, ref, head, reading_token,
-                                     update_pending=wait.get("code") == BRANCH_UPDATE_PENDING,
+                                     update_pending=wait.get("code") in HEAD_MOVE_CODES,
                                      queued=wait.get("code") == MERGE_QUEUED)
                 reason = read.reason
                 if picking:

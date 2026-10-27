@@ -178,6 +178,16 @@ CHILD_CASCADE_METADATA_KEY = "child_cascade"
 RELEASE_WAIT_RESUMES_METADATA_KEY = "release_wait_resumes"
 RELEASE_WAIT_MAX_RESUMES = 4
 
+#: A provider-quota park (#2350, BGD 2026-10-27, "Refund, bounded"): the
+#: PROVIDER_QUOTA_EXHAUSTED parks whose attempt `park` refunded, and the bound
+#: on them. Restated as `swarm_api.attemptstate.QUOTA_PARK_RESUMES` and
+#: `QUOTA_MAX_RESUMES`, which say why 5, and reserved from callers by
+#: `swarm_api.validation`; tests/unit/worker/test_quota_park_refund.py holds
+#: them equal. A MODULE CONSTANT, NOT A PARAMETER: no caller of `park` picks
+#: the bound, and on the routes' path swarm-api's own value decides.
+QUOTA_PARK_RESUMES_METADATA_KEY = "quota_park_resumes"
+QUOTA_MAX_RESUMES = 5
+
 #: A merge step's CI wait (lane MS2, docs/merge-step.md "Revised 2026-10-06"
 #: §1): `metadata.merge_wait` on the task, written by `park_ci_pending`. Read by
 #: swarm-api's wake tick (`swarm_api.mergewake`), which adds the marker below,
@@ -2079,8 +2089,17 @@ class ControlPlane:
         next_eligible_at: datetime,
         detail: dict[str, Any] | None = None,
         announce: Sequence[tuple[EventType, dict[str, Any]]] = (),
-    ) -> None:
+    ) -> bool:
         """Quota path: checkpointed already, now give the slot back and exit.
+
+        A PROVIDER_QUOTA_EXHAUSTED PARK REFUNDS ITS ATTEMPT, WITHIN A BOUND
+        (#2350): invariant 4 makes the park the designed path, not a failure,
+        so -- inside the same fenced transaction -- `attempt_count` goes down by
+        one and `metadata.quota_park_resumes` up by one while fewer than
+        `QUOTA_MAX_RESUMES` have been. Past the bound the park spends an
+        attempt as before, so a task that only ever parks still ends at
+        `max_attempts`. Every other reason refunds nothing. Returns whether the
+        attempt was refunded.
 
         ONE FENCED TRANSACTION (#2064): the fence, PARKED, the lease release
         and the pools coming back down, the attempt's end, the uploads and the
@@ -2119,6 +2138,7 @@ class ControlPlane:
         uploads = (detail or {}).get("artifacts")
         uploads = uploads if isinstance(uploads, list) else None
         announced = [self._event_write(kind, d) for kind, d in announce]
+        quota = reason is ParkReason.PROVIDER_QUOTA_EXHAUSTED
         parked = self._event_write(
             EventType.PARKED,
             {"reason": reason.value, "next_eligible_at": next_eligible_at, **(detail or {})},
@@ -2126,32 +2146,57 @@ class ControlPlane:
         released_slot = self._event_write(EventType.LEASE_RELEASED)
         now = utcnow()
 
-        def _apply(txn: Any) -> list[dict[str, Any]]:
+        def _apply(txn: Any) -> tuple[bool, list[dict[str, Any]]]:
             task = self._fenced_task(txn, write=write)
             assert_transition(_as_state(task.get("state")), TaskState.PARKED)
             index = self._read_carry_index(txn) if uploads else None
+            payload: dict[str, Any] = {
+                "state": TaskState.PARKED.value,
+                "updated_at": now,
+                "park_reason": reason.value,
+                "next_eligible_at": next_eligible_at,
+                "current_lease_id": None,
+                "blocked_by": [{"reason": reason.value, **(detail or {})}],
+            }
+            refund = False
+            event = parked
+            if quota:
+                metadata = dict(task.get("metadata") or {})
+                used = _count(metadata.get(QUOTA_PARK_RESUMES_METADATA_KEY))
+                attempt_count = _count(task.get("attempt_count"))
+                refund = used < QUOTA_MAX_RESUMES and attempt_count > 0
+                if refund:
+                    metadata[QUOTA_PARK_RESUMES_METADATA_KEY] = used + 1
+                    payload["metadata"] = metadata
+                    payload["attempt_count"] = attempt_count - 1
+                event = self._filled(
+                    parked,
+                    EventType.PARKED,
+                    {
+                        "reason": reason.value,
+                        "next_eligible_at": next_eligible_at,
+                        "attempt_refunded": refund,
+                        QUOTA_PARK_RESUMES_METADATA_KEY: used + (1 if refund else 0),
+                        **(detail or {}),
+                    },
+                )
             written = self._end_in_transaction(
                 txn,
-                payload={
-                    "state": TaskState.PARKED.value,
-                    "updated_at": now,
-                    "park_reason": reason.value,
-                    "next_eligible_at": next_eligible_at,
-                    "current_lease_id": None,
-                    "blocked_by": [{"reason": reason.value, **(detail or {})}],
-                },
+                payload=payload,
                 release=release,
                 exit_code=ExitCode.PARKED,
                 error=reason.value,
-                events=[*announced, parked],
+                events=[*announced, event],
                 released_slot=released_slot,
                 now=now,
             )
             if uploads:
                 self._record_parked_uploads(txn, index, uploads, at=now)
-            return written
+            return refund, written
 
-        self._ended(TaskState.PARKED, self._run_transaction(_apply))
+        refunded, written = self._run_transaction(_apply)
+        self._ended(TaskState.PARKED, written)
+        return refunded
 
     def park_awaiting_children(
         self,
@@ -3435,10 +3480,15 @@ class RemoteControlPlane(ControlPlane):
         next_eligible_at: datetime,
         detail: dict[str, Any] | None = None,
         announce: Sequence[tuple[EventType, dict[str, Any]]] = (),
-    ) -> None:
+    ) -> bool:
+        """`ControlPlane.park` as one route call: whether the attempt was
+        refunded, which only a PROVIDER_QUOTA_EXHAUSTED park within
+        swarm-api's `attemptstate.QUOTA_MAX_RESUMES` is (#2350)."""
         uploads = (detail or {}).get("artifacts")
-        self._park(reason, detail=detail, uploads=uploads if isinstance(uploads, list) else None,
-                   next_eligible_at=next_eligible_at, announce=announce)
+        answer = self._park(reason, detail=detail,
+                            uploads=uploads if isinstance(uploads, list) else None,
+                            next_eligible_at=next_eligible_at, announce=announce)
+        return bool(answer.get("refunded"))
 
     def park_awaiting_children(
         self,

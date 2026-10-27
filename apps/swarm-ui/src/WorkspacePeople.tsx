@@ -1,14 +1,18 @@
 import { Fragment, useContext, useEffect, useId, useState, type FormEvent, type ReactNode } from 'react'
 import {
-  clearWorkspacePersonRole, loadAccessMembers, loadMe, loadWorkspaceRoles, setWorkspaceDefaultRole, setWorkspacePersonRole,
+  clearWorkspacePersonRole, loadAccessMembers, loadJoinedMembers, loadJoinLink, loadMe, loadWorkspaceRoles,
+  removeJoinedMember, setJoinLink, setWorkspaceDefaultRole, setWorkspacePersonRole,
   type ApiError, type Result,
 } from './api'
 import { Banner, Button, Card, Chip, Dash, EmptyState, Segmented, Tabs, ToneMark, type TabDef } from './components'
 import { SetupContext } from './ConfigSetup'
-import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
+import { UrCopy, UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { DEFAULT_ROLES, ROLES, sourceWords, type RoleName } from './roles'
 import { FailedPanel, PageHead } from './Shell'
-import { timeAgo, type AccessMember, type WorkspaceRoleEvent, type WorkspaceRoles } from './types'
+import {
+  timeAgo, type AccessMember, type JoinedMember, type JoinedMembers, type JoinLinkState, type WorkspaceRoleEvent,
+  type WorkspaceRoles,
+} from './types'
 import './styles/keys.css'
 import './styles/onboarding.css'
 import './styles/workspace-settings.css'
@@ -40,6 +44,11 @@ import './styles/workspace-settings.css'
  *
  * Membership is Google's (Q3): a role given to someone not in the group is
  * stored and applies when they join, and the write's answer says which.
+ *
+ * THE JOIN LINK AND JOINED BY REQUEST (lane JOIN-UI-PERSON;
+ * docs/design/join-requests.md §4.2, §4.6; part of #2325), for its admins
+ * only (`JoinCards` below): the link a person asks to join with, and the
+ * people an approved request let in.
  *
  * Not a SECTIONS tab: a Settings route beside Profile, so the issue forms'
  * "Where" list is unchanged (§4.8). (Since CONFIG-NAV it is Config › People
@@ -266,8 +275,8 @@ type Note = { at: NoteAt; text: string; bad: boolean }
  * "Role events", which `.ws-grid` stacks into one column under 900 px (S5e).
  * A member or viewer gets S5g: "read only for members" in the Roles card's
  * head and Role events as its own card, with no row because there is no form.
- * PR 2390's join-link card (docs/design/join-requests.md §4.6) is an admin's
- * card after the row; this lane does not build it.
+ * PR 2390's join-link and Joined by request cards (`JoinCards`,
+ * docs/design/join-requests.md §4.6) are an admin's cards after the row.
  *
  * Every card reads the one roles read. Each write's outcome is said in the
  * card that made it (`Note`), and every write re-reads.
@@ -334,6 +343,9 @@ function RolesPage() {
         </div>
       )}
       {readOnly && events}
+      {data !== null && group && data.can_manage && (
+        <JoinCards name={data.tenant_id || 'this workspace'} />
+      )}
     </>
   )
 }
@@ -725,5 +737,221 @@ function Events({ events }: { events: WorkspaceRoleEvent[] }) {
         )
       })}
     </ul>
+  )
+}
+
+/*
+ * THE JOIN LINK AND JOINED BY REQUEST (lane JOIN-UI-PERSON;
+ * docs/design/join-requests.md §4.2, §4.4, §4.6, §4.10; part of #2325).
+ *
+ * Drawn for the workspace's admins only (`can_manage`, which a platform admin
+ * holds in every group workspace): both routes answer anyone else 403, so the
+ * page reads neither for them. A personal workspace takes no join requests.
+ *
+ * THE LINK IS SHOWN ONCE (§4.2). The API stores only the code's hash, and
+ * answers it in exactly one place: the `PUT` that made a new code. It is held
+ * in this card's state from that answer and in nothing else -- never a read,
+ * a route, storage or a log -- so leaving the page, or turning the link off,
+ * is the last of it. Sharing it again means making a new one, which stops
+ * the old one working.
+ */
+
+/**
+ * The link as a person can open it. The API builds it on `console_url`,
+ * which is empty unless SWARM_CONSOLE_URL is set, and then answers a bare
+ * `/join#<code>`: this page is the console, so its own origin completes it.
+ */
+export function shareableLink(link: string, origin: string = window.location.origin): string {
+  return link.startsWith('/') ? `${origin}${link}` : link
+}
+
+function JoinCards({ name }: { name: string }) {
+  return (
+    <>
+      <JoinLinkCard name={name} />
+      <JoinedByRequestCard name={name} />
+    </>
+  )
+}
+
+function JoinLinkCard({ name }: { name: string }) {
+  const link = useUrRead(loadJoinLink, 'workspace-join-link')
+  const fieldId = useId()
+  // The link from the answer that made it: the one time it exists in this client.
+  const [made, setMade] = useState<string | null>(null)
+  const [busy, setBusy] = useState<'on' | 'off' | 'rotate' | null>(null)
+  const [done, setDone] = useState<string | null>(null)
+  const [failed, setFailed] = useState<string | null>(null)
+
+  async function change(kind: 'on' | 'off' | 'rotate') {
+    setBusy(kind)
+    setDone(null)
+    setFailed(null)
+    const r = await setJoinLink(kind !== 'off', kind === 'rotate')
+    setBusy(null)
+    if (r.status === 'error') {
+      setFailed(`The join link was not changed: ${refusal(r.error)}`)
+      return
+    }
+    const answer: JoinLinkState | null = r.status === 'ok' || r.status === 'stale' ? r.data : null
+    setMade(answer?.link === undefined ? null : shareableLink(answer.link))
+    if (kind === 'off') setDone(`The join link is off: nobody can ask to join ${name} with it.`)
+    else if (answer?.link === undefined) {
+      // On again with the code it had (`JoinStore.set_link` keeps it): the
+      // link shared before works again, and there is nothing new to show.
+      setDone('The join link is on again: the link shared before it was switched off works again. Make a new link to get one to share.')
+    }
+    link.reload()
+  }
+
+  return (
+    <Card title="Join link" action={<UrRefresh reads={[link]} />}>
+      <UrRegion state={link.state} route="GET /v1/workspace/join-link" what="The join link" onRetry={link.reload}>
+        {(d) => (
+          <section className="pk-row" aria-label="Join link">
+            {d.on ? (
+              <p className="pk-lead">
+                The join link is <b>on</b>: anyone holding it can ask to join {name}
+                {d.set_by !== '' && <>, turned on by {d.set_by}</>}
+                {d.set_at !== '' && <span title={d.set_at}> {timeAgo(d.set_at)}</span>}.
+              </p>
+            ) : (
+              <p className="pk-lead">
+                The join link is <b>off</b>: nobody can ask to join {name}. Turn it on to share a link a person asks to
+                join with.
+              </p>
+            )}
+            <p className="ur-small">
+              Nobody gets in by holding the link: each request waits in Admin &rsaquo; People and roles until one of
+              {' '}{name}&rsquo;s admins approves or denies it.
+            </p>
+            {made !== null && (
+              <div className="pk-form" aria-label="The new join link">
+                <Banner tone="warn" title="Copy the link now: it is shown this once." role="status">
+                  Only its fingerprint is kept, so it cannot be shown again. To share it later, make a new link, which
+                  stops this one working.
+                </Banner>
+                <div className="pk-form-row">
+                  <label htmlFor={`${fieldId}-link`}>Link to share</label>
+                  <input id={`${fieldId}-link`} className="ur-search pk-input" readOnly value={made} spellCheck={false}
+                    onFocus={(e) => e.currentTarget.select()} />
+                  <UrCopy text={made} label="Copy the join link" />
+                </div>
+              </div>
+            )}
+            {done !== null && <p className="pk-saved" role="status">{done}</p>}
+            {failed !== null && <Banner tone="bad" title={failed} role="alert" />}
+            <div className="pk-form-row">
+              {d.on ? (
+                <>
+                  <Button kind="secondary" size="sm" busy={busy === 'rotate'} disabled={busy !== null && busy !== 'rotate'}
+                    onClick={() => void change('rotate')}>
+                    Make a new link
+                  </Button>
+                  <Button kind="danger" size="sm" busy={busy === 'off'} disabled={busy !== null && busy !== 'off'}
+                    onClick={() => void change('off')}>
+                    Turn the link off
+                  </Button>
+                </>
+              ) : (
+                <Button kind="primary" size="sm" busy={busy === 'on'} disabled={busy !== null && busy !== 'on'}
+                  onClick={() => void change('on')}>
+                  Turn the link on
+                </Button>
+              )}
+            </div>
+          </section>
+        )}
+      </UrRegion>
+    </Card>
+  )
+}
+
+/** Where a joined person's access comes from, beside the platform membership. */
+function sourceOf(m: JoinedMember): string {
+  if (m.group_changed) return 'Joined by request, group changed: this admits nobody now'
+  if (m.still_in_group === true) return 'Joined by request, and in the Google group too'
+  if (m.still_in_group === false) return 'Joined by request only'
+  return 'Joined by request; the Google group could not be checked'
+}
+
+function removedSaid(email: string, name: string, stillInGroup: boolean | null | undefined): string {
+  if (stillInGroup === true) {
+    return `${email}'s membership by request is ended, but they are still in ${name}'s Google group, which the platform does not change: remove them there too.`
+  }
+  if (stillInGroup === false) return `${email} no longer reaches ${name}.`
+  return `${email}'s membership by request is ended; the Google group could not be checked just now.`
+}
+
+function JoinedByRequestCard({ name }: { name: string }) {
+  const members = useUrRead(loadJoinedMembers, 'workspace-joined-members')
+  const [busy, setBusy] = useState<string | null>(null)
+  const [done, setDone] = useState<string | null>(null)
+  const [failed, setFailed] = useState<string | null>(null)
+
+  async function remove(email: string) {
+    setBusy(email)
+    setDone(null)
+    setFailed(null)
+    const r = await removeJoinedMember(email)
+    setBusy(null)
+    if (r.status === 'error') {
+      setFailed(`${email} was not removed: ${refusal(r.error)}`)
+      return
+    }
+    setDone(removedSaid(email, name, r.status === 'ok' || r.status === 'stale' ? r.data?.still_in_group : null))
+    members.reload()
+  }
+
+  return (
+    <Card title="Joined by request" action={<UrRefresh reads={[members]} />}>
+      <UrRegion state={members.state} route="GET /v1/workspace/members" what="The people who joined by request" plural
+        onRetry={members.reload}>
+        {(d: JoinedMembers) => (
+          <section className="pk-row" aria-label="Joined by request">
+            {!d.platform_memberships && (
+              <p className="ur-small">
+                Approving a request does not let anyone into {name} yet: platform memberships are off, so an approved
+                person is added to its Google group by hand, and the approval names the command.
+              </p>
+            )}
+            {done !== null && <p className="pk-saved" role="status">{done}</p>}
+            {failed !== null && <Banner tone="bad" title={failed} role="alert" />}
+            {d.members.length === 0 ? (
+              <p className="ur-small">Nobody holds a membership of {name} by request: everyone here is in its Google group.</p>
+            ) : (
+              <table role="table" className="mcp-servers" aria-label="People who joined by request">
+                <thead>
+                  <tr>
+                    <th scope="col">Person</th>
+                    <th scope="col">Let in by</th>
+                    <th scope="col">When</th>
+                    <th scope="col">Access</th>
+                    <th scope="col" aria-label="Actions" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {d.members.map((m) => (
+                    <tr key={m.email}>
+                      <th scope="row" data-label="Person">{m.email}</th>
+                      <td data-label="Let in by">{m.by}{m.via === 'platform_admin' ? ' (platform admin)' : ''}</td>
+                      <td data-label="When" title={m.at}>{m.at === '' ? '' : timeAgo(m.at)}</td>
+                      <td data-label="Access">{sourceOf(m)}</td>
+                      <td data-label="Actions">
+                        <Button size="sm" kind="danger" aria-label={`Remove ${m.email}'s membership by request`}
+                          busy={busy === m.email} disabled={busy !== null && busy !== m.email}
+                          onClick={() => void remove(m.email)}>
+                          Remove
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </section>
+        )}
+      </UrRegion>
+    </Card>
   )
 }

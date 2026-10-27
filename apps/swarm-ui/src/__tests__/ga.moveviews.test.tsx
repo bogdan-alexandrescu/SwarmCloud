@@ -185,7 +185,7 @@ describe('Members is a tab of Config › People and roles', () => {
     return serve((_m, url) => {
       if (url.includes('/v1/tenants/me')) return { status: 200, body: ME(isAdmin) }
       if (url.includes('/v1/workspace/roles')) return { status: 200, body: { ...ROLES, can_manage: isAdmin } }
-      if (url.includes('/v1/access/members')) return isAdmin ? { status: 200, body: MEMBERS } : { status: 403, body: { detail: { code: 'forbidden', message: "the tenant's members view is for admins" } } }
+      if (url.includes('/v1/access/members')) return isAdmin ? { status: 200, body: MEMBERS } : { status: 403, body: { detail: { code: 'forbidden', message: "the workspace's members view is for admins" } } }
       return null
     })
   }

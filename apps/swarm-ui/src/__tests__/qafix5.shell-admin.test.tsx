@@ -77,9 +77,11 @@ describe('5b:QA-017: an admin phone header gives way inside 390px', () => {
     // its whole name again: with the admin tag beside it the row passes 390px
     // and `↑ Top` is cut at the glass.
     expect(painted(chip, 'min-width', PHONE)).toBe('0')
-    // ...and its name is what is cut, with an ellipsis.
+    // ...and its name is what gives way: wrapped at its space, never cut
+    // (PHONE-BAR-CHIP, part of #2391; it was an ellipsis, `Your …`).
     expect(painted(name, 'min-width', PHONE)).toBe('0')
-    expect(painted(name, 'text-overflow', PHONE)).toBe('ellipsis')
+    expect(painted(name, 'white-space', PHONE)).toBe('normal')
+    expect(painted(name, 'text-overflow', PHONE)).not.toBe('ellipsis')
     // The member's label already gave way: the two read alike now.
     expect(painted(label, 'min-width', PHONE)).toBe('0')
   })

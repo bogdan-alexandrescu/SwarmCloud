@@ -1,0 +1,98 @@
+/* AUTOMATE'S LANDING (proposal A, frame A1, with A6's empty states and A7's
+   phone for this page; lane AUTO-A1, part of #2417): the lead, the schedules
+   with each one's state word, and the approvals card beside the built-in
+   rows. Its own sheet because the other Automate lanes edit theirs in
+   parallel; the list's older rules stay in schedules.css, which the built-in
+   rows and Admin's cross-workspace table still use. Tokens only; the type
+   scale is the tokens' (the 12px floor). Every selector is `.al-`, so nothing
+   here reaches another page. */
+
+.al-page { gap: 14px; }
+
+/* ---- the lead: one sentence, what explains it, one button ---------------- */
+/* The tint names the lead's tone the way proposal A's `.lead.wn` does; the
+   words carry the meaning, so the tint is never the only signal. */
+.al-lead {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; min-width: 0;
+  padding: 12px 14px; border: 1px solid var(--line); border-left: 3px solid var(--sk-ac); border-radius: var(--r-card);
+  background: var(--sk-acs); color: var(--text);
+}
+.al-lead.is-warn { background: var(--s-warnb); border-left-color: var(--s-warn); }
+.al-lead.is-bad { background: var(--s-badb); border-left-color: var(--s-bad); }
+.al-lead.is-ok { background: var(--s-liveb); border-left-color: var(--s-live); }
+.al-lead-t { display: grid; gap: 2px; flex: 1 1 320px; min-width: 0; }
+.al-lead-k { font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text); }
+.al-lead-t > h2 { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; overflow-wrap: break-word; }
+.al-lead-t > p { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); overflow-wrap: break-word; }
+.al-lead-a { display: flex; flex-wrap: wrap; gap: 8px; flex: none; max-width: 100%; }
+
+/* ---- the filter: the state words with their counts ------------------------ */
+.al-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
+.al-filter > .c-seg { flex-wrap: wrap; max-width: 100%; }
+.al-order { margin-left: auto; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+
+/* ---- the schedules table: eight columns at 1440, the state word last ------ */
+.sc-table.al-table th[data-col='name'] { width: 18%; }
+.sc-table.al-table th[data-col='next'] { width: 104px; }
+.sc-table.al-table th[data-col='last'] { width: 112px; }
+.sc-table.al-table th[data-col='spend'] { width: 128px; }
+.sc-table.al-table th[data-col='waiting'] { width: 88px; }
+.sc-table.al-table th[data-col='state'] { width: 20%; }
+.sc-table.al-table th[data-col='expires'] { width: 96px; }
+.sc-table.al-table th[data-col='from'] { width: 32%; }
+/* A ROW THAT NEEDS A LOOK IS TINTED, and sorts first (frame A1): waiting on
+   approval, paused by its tripwire, failing. The word in its State cell says
+   which; the tint only gathers the eye. */
+.al-row.is-need > td { background: var(--s-warnb); }
+.al-row.is-need > td:first-child { box-shadow: inset 3px 0 0 var(--s-warn); }
+.al-name { display: block; min-width: 0; overflow-wrap: break-word; }
+.al-row > td { overflow-wrap: break-word; }
+.al-mono { font-family: var(--mono); }
+.al-word { font-weight: 600; }
+.al-track { display: block; margin: 4px 0 2px; max-width: 112px; }
+.al-fig { font-weight: 600; font-variant-numeric: tabular-nums; }
+.al-dim { color: var(--text-dim); font-weight: 400; }
+.al-ph { display: none; }
+
+/* ---- the cards under the table: approvals, then the built-in rows -------- */
+.al-g2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; min-width: 0; }
+.al-card .c-card-h > a { margin-left: auto; }
+.al-note { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); overflow-wrap: break-word; }
+.al-empty { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; overflow-wrap: break-word; }
+.al-empty > .al-dim { font-size: var(--t-meta); }
+
+@media (max-width: 1023px) {
+  .al-g2 { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---- the phone (frame A7a): each schedule a card ------------------------- */
+/* Name, type and cadence on top; then the state word, the next firing and
+   today's spend, each labelled. Target, the cron, the last firing and what
+   waits are on the schedule's own page; the word's line still says what
+   waits. Nothing is wider than the screen: every cell wraps. */
+@media (max-width: 560px) {
+  .al-lead-a { flex: 1 1 100%; }
+  .al-order { margin-left: 0; }
+  .al-table .sc-row.al-row {
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 4px 12px;
+    padding: 10px 12px; margin-bottom: 8px; border: 1px solid var(--line); border-radius: var(--r-card);
+  }
+  .al-table .sc-row.al-row > td { padding: 0; background: none; box-shadow: none; }
+  .al-table .sc-row.al-row.is-need { background: var(--s-warnb); border-left: 3px solid var(--s-warn); }
+  .al-table .sc-row.al-row > .al-c-name,
+  .al-table .sc-row.al-row > .al-c-state { grid-column: 1 / -1; }
+  .al-table .sc-row.al-row > .al-c-more { display: none; }
+  .al-table .sc-row.al-row > td::before { content: none; }
+  .al-table .sc-row.al-row > .al-c-next::before,
+  .al-table .sc-row.al-row > .al-c-spend::before {
+    content: attr(data-label); display: block;
+    font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim);
+  }
+  .al-ph { display: inline; }
+  .al-table.is-inbox .sc-row.al-row > td { grid-column: 1 / -1; }
+  .al-table.is-inbox .sc-row.al-row > td[data-label='From']::before,
+  .al-table.is-inbox .sc-row.al-row > td[data-label='Expires in']::before {
+    content: attr(data-label); display: block;
+    font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim);
+  }
+}

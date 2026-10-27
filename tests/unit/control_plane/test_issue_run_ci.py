@@ -32,7 +32,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from swarm_api import forge, forgechecks, forgewrite, issueci, issueruns
+from swarm_api import cifix, forge, forgechecks, forgewrite, issueci, issueruns
 from swarm_api.auth import StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import build_context
@@ -803,6 +803,103 @@ def test_an_unresolved_membership_spends_no_round_and_the_next_read_does(
     assert run["state"] == "FIXING" and run["ci_fix_round"] == 1
     assert len(_rounds(db, running["id"])) == 1
 
+
+
+
+# --------------------------------------------------------------------------
+# #2535: a live CI fix or conflict fix on the pull request is a wait, not a failure
+# --------------------------------------------------------------------------
+
+def _fix_live(api_context, monkeypatch, refusal) -> dict:
+    """`submit_workflow` refuses while `live["on"]`, as `cifix.stamp` does
+    while another writer holds the pull request; off, it submits as before."""
+    submit = api_context.submissions.submit_workflow
+    live = {"on": True, "calls": 0}
+
+    def gated(auth, spec, *args, **kwargs):
+        if live["on"]:
+            live["calls"] += 1
+            raise refusal
+        return submit(auth, spec, *args, **kwargs)
+
+    monkeypatch.setattr(api_context.submissions, "submit_workflow", gated)
+    return live
+
+
+def _pr_fix_in_flight() -> cifix.PrFixInFlight:
+    return cifix.PrFixInFlight(
+        f"pull request #{PR} has a live ci_fix fix (task_b0abb81d) pushing to its branch",
+        detail={"task_id": "task_b0abb81d", "workflow_id": "wf_cd10182a",
+                "kind": "ci_fix", "pull_request": PR},
+    )
+
+
+def test_a_round_refused_pr_fix_in_flight_stays_checking_and_the_next_read_submits_it(
+    client, db, objects, writes, clock, api_context, monkeypatch
+):
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "failure", output={"summary": "test_a"})
+    live = _fix_live(api_context, monkeypatch, _pr_fix_in_flight())
+
+    waiting = _read(client, clock, running["id"])
+
+    assert live["calls"] == 1  # MUTATION: the round was never offered for submission
+    assert waiting["state"] == "CHECKING"  # MUTATION: the stand-down failed the run
+    assert waiting["ci_fix_round"] == 0  # MUTATION: the refused round was spent
+    assert _rounds(db, running["id"]) == []  # MUTATION: a refused round recorded a workflow
+    assert not waiting.get("error")  # MUTATION: the stand-down recorded an error
+
+    # The fix ends: the next read claims and submits round one as before.
+    live["on"] = False
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "FIXING" and run["ci_fix_round"] == 1  # MUTATION: no retry
+    assert len(_rounds(db, running["id"])) == 1  # MUTATION: the retry recorded no workflow
+
+
+def test_a_later_round_refused_pr_fix_in_flight_keeps_the_last_rounds_head(
+    client, db, objects, writes, clock, api_context, monkeypatch
+):
+    # Round one pushed SHA_B and CI is red there; round two meets a live fix.
+    # The stand-down restores the round's head with its number, so the retry
+    # at SHA_B is round two, not "the last round pushed nothing".
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "failure")
+    _read(client, clock, running["id"])
+    (round_one,) = _rounds(db, running["id"])
+    _round_ends(db, round_one)
+    writes.open_pull(PR, SHA_B)
+    writes.check(SHA_B, "unit", "failure", output={"summary": "test_b"})
+    live = _fix_live(api_context, monkeypatch, _pr_fix_in_flight())
+
+    waiting = _read(client, clock, running["id"])
+
+    assert waiting["state"] == "CHECKING"  # MUTATION: the stand-down failed the run
+    assert waiting["ci_fix_round"] == 1  # MUTATION: round two was spent
+    assert _stored(db, running["id"])["ci_round_sha"] == SHA_A  # MUTATION: head not restored
+    assert _rounds(db, running["id"]) == [round_one]  # MUTATION: a refused round recorded
+
+    live["on"] = False
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "FIXING" and run["ci_fix_round"] == 2  # MUTATION: retry failed
+    assert len(_rounds(db, running["id"])) == 2  # MUTATION: the retry recorded no workflow
+
+
+def test_any_other_refusal_of_a_round_still_fails_the_run(
+    client, db, objects, writes, clock, api_context, monkeypatch
+):
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "failure")
+    _fix_live(api_context, monkeypatch, cifix.CiFixInFlight(
+        "this failure already has a live CI-fix task", detail={"task_id": "task_x"},
+    ))
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "FAILED"  # MUTATION: every refusal read as a wait
+    assert "CI fix round 1 was refused" in run["error"]  # MUTATION: the reason was lost
+    assert _rounds(db, running["id"]) == []  # MUTATION: a refused round recorded a workflow
 
 
 # --------------------------------------------------------------------------

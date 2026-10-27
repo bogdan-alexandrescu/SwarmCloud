@@ -193,6 +193,7 @@ from .issueruns import (
     MAX_VERIFICATION_BYTES,
     NO_CLOSING_KEYWORD,
     OUTCOME_ALREADY_ON_MAIN,
+    REREVIEW_STEP,
     REVIEW_STEP,
     STEP_PROFILE,
     VERDICT_FILE,
@@ -350,15 +351,25 @@ def keyword_pending(run: IssueRun) -> bool:
 
 
 def _review_task_id(ctx: Any, tenant_id: str, run: IssueRun, workflow: Any) -> str | None:
+    """The task whose verdict.json is the run's LATEST verdict (#2217).
+
+    The re-review's, when the workflow has one: after a fix it judged the
+    fixed head, and on MERGE its shut gate re-published the review's verdict
+    as its own, so it is the verdict on both paths. The review's for a
+    workflow compiled before the re-review was, which has none.
+    """
     if workflow is None and run.workflow_id:
         try:
             workflow = ctx.store.get_workflow(tenant_id, run.workflow_id, submitted_by=None)
         except NotFound:
             return None
-    for step in getattr(workflow, "steps", None) or []:
-        if getattr(step, "step_id", None) == REVIEW_STEP:
-            return getattr(step, "task_id", None)
-    return None
+    found = {
+        getattr(step, "step_id", None): getattr(step, "task_id", None)
+        for step in getattr(workflow, "steps", None) or []
+    }
+    if REREVIEW_STEP in found:
+        return found[REREVIEW_STEP]
+    return found.get(REVIEW_STEP)
 
 
 def _read_review_verdict(
@@ -1347,6 +1358,9 @@ def _start_round(
     who left fails the run with no round claimed and nothing submitted, and
     a lookup that failed leaves the run CHECKING for the next read.
     """
+    # `cifix` imports this module (NO_CHANGE_MARKER).
+    from .cifix import PrFixInFlight
+
     runs = _runs(ctx)
     round_no = run.ci_fix_round + 1
     try:
@@ -1389,6 +1403,18 @@ def _start_round(
         context = read_fix_context(ctx, tenant_id, claimed, excerpt)
         spec = ci_fix_workflow(claimed, round_no, excerpt, head, context)
         submission = ctx.submissions.submit_workflow(owner, spec)
+    except PrFixInFlight as exc:
+        # Another writer (the platform's CI fixer, a conflict fix) holds this
+        # pull request (#2535). That is a wait, not a failure: its push moves
+        # the head, CI runs again, and a red reading there is this run's. The
+        # round is handed back unspent -- its number AND the head the last
+        # round was given, or the retry would read "pushed nothing".
+        log.info("issue run %s: fix round %d waits: %s is live on the pull request",
+                 run.id, round_no, exc.detail.get("task_id"))
+        return runs.transition(
+            tenant_id, run.id, RunState.CHECKING, by=ACTOR, from_states={RunState.FIXING},
+            patch={"ci_fix_round": run.ci_fix_round, "ci_round_sha": run.ci_round_sha},
+        )
     except Exception as exc:
         reason = exc.message if isinstance(exc, ApiError) else type(exc).__name__
         log.warning("issue run %s: fix round %d refused (%s)", run.id, round_no, reason)

@@ -11055,7 +11055,32 @@ span.sk-ttile { cursor: default; }
      the row at 400px the title gave way to "Overvi…". It still gives way
      first, down to a short page name whole; past that the tenant chip and
      label (`min-width: 0` through their `overflow: hidden`) shrink instead. */
-  .sk-pbar b { font-size: var(--t-body); flex: 1 1 auto; min-width: 5.5em; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sk-pbar b { font-size: var(--t-body); min-width: 5.5em; font-weight: 650; }
+  /* A LONG PAGE NAME WRAPS ONTO A SECOND LINE, NEVER CUT (PHONE-BAR-LABEL,
+     part of #2391; BGD, 2026-10-26): one `nowrap` line read `People an…`,
+     and `Pe…` beside the admin's workspace chip. The name breaks at a space
+     only (`overflow-wrap`/`word-break` left normal, so never mid-word), at
+     the same 14px. Two lines at `--lh-figure` (1.10, the scale's tight
+     leading; `--lh-title`'s 1.30 would be 36.4px) are 31px: inside the
+     bar's 44px and its 36px once compacted, so the bar's height and its
+     controls stay where they were. The clamp is a stop, not a cut: the longest name in
+     SECTIONS (`Submit from a GitHub issue`) sets in two lines at 390.
+     `flex: 1 1 0%` gives the name the room the controls leave; with an
+     `auto` basis its whole one-line width was the claim, and the chip
+     (`flex-shrink: 100`) was squeezed to pay for it. The floor stays. */
+  .sk-pbar b { flex: 1 1 0%; white-space: normal; text-overflow: clip; line-height: var(--lh-figure); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+  /* BESIDE THE ADMIN'S CHIP, ONE STEP DOWN, AND THE CHIP KEEPS ITS WIDTH
+     (PHONE-BAR-LABEL review and PHONE-BAR-CHIP, part of #2391; BGD,
+     2026-10-26, "Room left, then wrap"). In the admin's own workspace the
+     chip reads `Your workspace`, and at 14px `Submit from a GitHub issue`
+     needed four lines and `Workspaces` lost its last letter. Beside the
+     chip the name is `--t-meta` (13px, one step down). An 8em floor here
+     took 27px from the chip, and it read `Your …` on every page at 390, so
+     the name's floor is its widest word (`min-content`): no word is cut,
+     and below that the name asks the chip for nothing. The chip, the env
+     pill, the bell and `Top` keep their widths; the name takes the room
+     left and wraps. The basis stays `0%`. */
+  .sk-pbar.has-chip b { font-size: var(--t-meta); min-width: min-content; }
   /* BESIDE THE SWITCHABLE CHIP THE TITLE GIVES WAY FIRST, ALL THE WAY
      (visual QA run 6, 6:admin-007, part of #1680). The floor above is for
      the member's bar, whose plain label is short. A platform admin's bar
@@ -11067,16 +11092,26 @@ span.sk-ttile { cursor: default; }
      Spine.tsx on the bar that holds `.sk-tchip`. The hidden `Top` slot keeps
      its width (N1, run 4 note 6329568327). */
   .sk-pbar.has-chip { gap: 6px; }
+  /* AND THE ROOM IT TAKES IS 30PX WIDER (PHONE-BAR-CHIP and its render
+     review). Beside a whole `Your workspace` and a `Local` pill the render
+     measured 79px left for the name at 4px gaps and 8px padding, and
+     `Submit from a GitHub issue` at 13px needs 83px (`Submit from a`,
+     Inter Tight 650, 82.4px drawn) to set in two lines: in three, the
+     clamp cut `issue`. The gaps close to 3px and the side padding to 6px
+     beside the chip only, which leaves 89px; the menu's and the chip's
+     44px hit areas (`::after`, below) are unchanged. */
+  .sk-pbar.has-chip { gap: 3px; padding: 0 6px; }
   /* THE PAGE NAME FIRST, NOW THE CHIP HOLDS A KEY (visual QA VQ-001, part
      of #2391). The note above gave the chip the room while it held the
      workspace's whole name, and the page name went to `O…` on every page
      at 390. The chip now holds the short key (`eng`) and the admin tag has
-     moved to the drawer, so the title keeps its 5.5em floor beside the chip
-     as beside the plain label, and takes its own width before either gives
-     way: `flex: 1 1 auto` (on the floor's rule above), and the workspace
-     shrinks a hundred times faster (`flex-shrink: 100`, after the chip's
-     and the label's own rules below), so the key is cut before the page
-     name is. */
+     moved to the drawer, so the title keeps a floor beside the chip as
+     beside the plain label (5.5em; its widest word at one step down beside
+     the chip, PHONE-BAR-CHIP above), and the workspace shrinks a hundred times
+     faster (`flex-shrink: 100`, after the chip's and the label's own rules
+     below), so the key is cut before the page name is. The name's basis
+     is `0%` since PHONE-BAR-LABEL: it wraps instead of claiming its
+     one-line width. */
   .sk-pbar .sk-tn { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-spine-ink); }
   /* THE TENANT GIVES WAY AFTER THE TITLE, NEVER PAST THE GLASS (#139). With
      no floor and no cap, a long tenant name -- a user tenant's is its email
@@ -11113,6 +11148,16 @@ span.sk-ttile { cursor: default; }
      `↑ Top` cut at the glass. The name gives way inside it, as above. */
   .sk-pbar > .sk-tchip { min-width: 0; }
   .sk-tchip > .sk-tcn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* IN THE BAR THE CHIP'S NAME WRAPS AT ITS SPACE, NEVER CUT (PHONE-BAR-CHIP,
+     part of #2391). The chip only gives way when a page name's widest word
+     (its floor, above) and every control outgrow the row; it then sets
+     `Your / workspace` in two lines rather than `Your …`. Two lines at
+     `--lh-figure` (1.10) of 12px are 26.4px, and with 3px of padding above
+     and below and its 1px border the chip is 34.4px, inside the bar's 36px
+     once compacted; one line is 21.2px, the env pill's height class. Its
+     44px hit area is the `::after` above, not its box. */
+  .sk-pbar.has-chip > .sk-tchip { padding-block: 3px; }
+  .sk-pbar > .sk-tchip > .sk-tcn { white-space: normal; text-overflow: clip; line-height: var(--lh-figure); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
   /* The workspace gives way before the page name (VQ-001, above). */
   .sk-pbar > .sk-tchip, .sk-pbar .sk-tn { flex-shrink: 100; }
   .sk-app.has-drawer .sk-dclose { width: 44px; height: 44px; }

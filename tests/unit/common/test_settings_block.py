@@ -91,6 +91,8 @@ def test_the_covered_fields_are_the_requests():
             "graph_delivery",
             "judgment_backend",
         ),
+        # Contract request 119 (#2459): the workspace's per-agent budget.
+        "budget": ("unit", "amount"),
     }
     with pytest.raises(TypeError):
         SETTINGS_MAC_FIELDS["top"] = ()  # type: ignore[index]

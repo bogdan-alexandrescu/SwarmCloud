@@ -42,7 +42,7 @@ A `browser_take_screenshot` with no filename is saved under
 `$SWARM_ARTIFACTS_DIR/screenshots` and comes back to the model as an image.
 **The size is a preset, never a resize**: `swarm-handoff device <preset>`
 switches between `desktop` (1440×900), `iphone-15` (393×852), `phone-390`
-(390×844), `phone-380` (380×844), `pixel-8` (412×915), `iphone-se` (375×667)
+(390×844), `phone-380` (380×800), `pixel-8` (412×915), `iphone-se` (375×667)
 and `ipad-7` (810×1080),
 and `browser_resize` is refused, so the person watching sees the device the
 page is laid out for. `swarm-handoff theme dark|light|system` sets the colour
@@ -390,8 +390,8 @@ command. Both are the gate's, and both hold across navigation and new tabs:
 | phone dark | `swarm-handoff device phone-390` · `swarm-handoff theme dark` |
 
 Use `phone-380` instead of `phone-390` when the repository's phone frames
-are drawn at 380. It is `phone-390` ten pixels narrower, with the same height,
-scale and user agent. `desktop` is 1440×900. `browser_resize` is refused:
+are drawn at 380. It is 380×800, the frame AI Studio draws its phone mock-ups
+in (PHONE-380), with `phone-390`'s scale and user agent. `desktop` is 1440×900. `browser_resize` is refused:
 the gate owns the size.
 
 Take each render to a known path, so that it can be compared:
