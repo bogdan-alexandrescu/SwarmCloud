@@ -318,6 +318,17 @@ def refusal_code(answer: dict[str, Any] | None) -> str | None:
     return None
 
 
+def refusal_message(answer: dict[str, Any] | None, limit: int = 400) -> str | None:
+    """A refused answer's sentence, on one line and cut (#1188): which read,
+    which HTTP status. swarm-api scrubs it of the call's token before it
+    leaves; it is a constant sentence about the forge, never a credential."""
+    refused = answer.get("refused") if isinstance(answer, dict) else None
+    message = refused.get("message") if isinstance(refused, dict) else None
+    if not isinstance(message, str) or not message.strip():
+        return None
+    return " ".join(message.split())[:limit]
+
+
 def result_of(answer: dict[str, Any] | None) -> dict[str, Any]:
     """A successful answer's result (`{"tool", "result"}`), else {}."""
     if isinstance(answer, dict) and isinstance(answer.get("result"), dict):
@@ -443,9 +454,12 @@ def check_rebase(lane: Role, rebase: Role) -> Verdict:
         # The audit rows and the agent's answer tell a forge_refused (the
         # sandbox credential's scope) from a call the agent never made.
         audited = [f"{r.get('result')} {r.get('code')}" for r in rebase.rows("pr_checks")]
+        answered = rebase.answer('pr-checks')
+        sentence = refusal_message(answered)
         problems.append(f"no pr_checks call succeeded (audited: {audited or 'none'}; "
                         f"the agent was answered "
-                        f"{refusal_code(rebase.answer('pr-checks')) or 'nothing'})")
+                        f"{refusal_code(answered) or 'nothing'})"
+                        + (f": {sentence}" if sentence else ""))
     else:
         if reading.get("pr") != number:
             problems.append(f"pr_checks read #{reading.get('pr')}, not the lane's #{number}")
@@ -463,7 +477,8 @@ def check_rebase(lane: Role, rebase: Role) -> Verdict:
         f"fetched {branch} at {own[0][:12]}, rebased onto main {main[-1][:12]} through the "
         f"planted conflict in {PLANTED}, pushed {push['new_sha'][:12]} as an audited rewrite, "
         f"and pr_checks read #{number} at that head "
-        f"({result_of(rebase.answer('pr-checks')).get('state') or 'state not recorded'}); the "
+        f"({result_of(rebase.answer('pr-checks')).get('state') or 'state not recorded'}, "
+        f"from {result_of(rebase.answer('pr-checks')).get('source') or 'an unnamed source'}); the "
         f"runner's {len(rebase.env['names'])} environment variables hold no forge credential"
     )
 
