@@ -744,6 +744,9 @@ class SubmissionService:
         )
         if review_gate is not None:
             metadata[REVIEW_GATE_METADATA_KEY] = review_gate
+        else:
+            # None for no block, and for a malformed one the switch let past.
+            metadata.pop(REVIEW_GATE_METADATA_KEY, None)
         if runtime is not None:
             metadata[RUNTIME_METADATA_KEY] = {
                 **runtime,

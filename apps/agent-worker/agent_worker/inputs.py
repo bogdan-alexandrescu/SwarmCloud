@@ -572,8 +572,8 @@ def inline_artifact(
 
     ONLY the one shape the scheduler writes, and only on the step it ends:
     `verdict.json`, `written_by: "scheduler"`, no `uri`, at most
-    `MAX_INLINE_BYTES`, on a task whose `result_summary.review_skipped` and
-    `metadata.review_gate.resolved` say its review gate skipped it. Every
+    `MAX_INLINE_BYTES`, on a task whose `result_summary.review_skipped` says
+    its review gate skipped it. Every
     other entry is located in the bucket as before. The task document is
     tenant-writable, so this admits nothing a tenant could not already write
     on its own task: a skipped review is a MERGE by design, and a review that
@@ -584,11 +584,7 @@ def inline_artifact(
             or entry.get("uri") or not isinstance(text, str)):
         return None
     summary = task_document.get("result_summary")
-    metadata = task_document.get("metadata")
-    gate = metadata.get("review_gate") if isinstance(metadata, Mapping) else None
-    resolved = gate.get("resolved") if isinstance(gate, Mapping) else None
-    if (not isinstance(summary, Mapping) or not isinstance(summary.get("review_skipped"), str)
-            or not isinstance(resolved, Mapping) or resolved.get("run") is not False):
+    if not isinstance(summary, Mapping) or not isinstance(summary.get("review_skipped"), str):
         return None
     data = text.encode("utf-8")
     return data if len(data) <= MAX_INLINE_BYTES else None

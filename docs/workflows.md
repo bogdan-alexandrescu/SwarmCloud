@@ -1707,7 +1707,8 @@ isolation, redaction, IAM including `terraform/**/iam*` and
 `terraform/bootstrap/`, and `apps/common/swarm_common/`). swarm-api refuses
 any other key, a `min_lines` that is not a whole number, and a `risk_paths`
 that is not a list of repository-relative globs, with a 422
-(`invalid_review_gate`). The compiled issue-run review carries
+(`invalid_review_gate`, a refusal switch that ships on; turned off, the block
+is dropped and the review always runs). The compiled issue-run review carries
 `{"min_lines": 300}`.
 
 As the step is readied, every parent has SUCCEEDED, so what they changed is
@@ -1732,8 +1733,8 @@ does): the changed paths (`own_files` when recorded, else `files`) and
   credential and gains none on its drain path, so the manifest entry for
   `verdict.json` carries the text under `inline`, with no `uri`, and the
   worker stages it from there (`agent_worker.inputs.inline_artifact`). Only
-  that shape is staged: `verdict.json`, `written_by: "scheduler"`, on a step
-  whose gate recorded that it skipped. Two readers go through the bucket and
+  that shape is staged: `verdict.json`, `written_by: "scheduler"`, no `uri`,
+  on a step whose `result_summary.review_skipped` is set. Two readers go through the bucket and
   so do not see it: swarm-api's control-plane publish of a MERGE (which then
   declines, and the integrator's worker publishes it after the hold, without
   an agent) and the issue run's per-requirement read (which then reads "not
@@ -1755,8 +1756,9 @@ does): the changed paths (`own_files` when recorded, else `files`) and
 
 * **A fix round whose pull request ended.** A merge step's appended
   `ci-fix:N`, `conflict-fix:N` and `pick-fix:N` rounds carry
-  `merge_fix_round.merge_task`. At admission, before a lease, the scheduler
-  reads that merge task: SUCCEEDED, or a `merge_wait.wake_reason` of merged
+  `merge_fix_round.merge_task` (`merge_conflict_round.merge_task` for a
+  conflict round). At admission, before a lease, the scheduler
+  reads that merge step: SUCCEEDED, or a `merge_wait.wake_reason` of merged
   or closed (written by the merge wake tick's own pull-request read, one per
   `CI_READ_SECONDS`), ends the round CANCELLED with
   `result_summary.skipped.reason` (the frozen table has no READY ->

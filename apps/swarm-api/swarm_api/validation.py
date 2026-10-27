@@ -282,6 +282,23 @@ def resolve_review_gate(
 ) -> dict[str, Any] | None:
     """A step's `review_gate` block, checked and normalised; None when it has none.
 
+    A switch (`refusals.SWITCHES["invalid_review_gate"]`), on by BGD's
+    decision of 2026-10-27. Turned off, a malformed block is not refused and
+    is not stored either (None): the step's review then always runs, as it
+    did before gates existed.
+    """
+    try:
+        return _checked_review_gate(metadata, step_id=step_id, workflow_step=workflow_step)
+    except ReviewGateInvalid as error:
+        refusals.refuse(error)
+        return None
+
+
+def _checked_review_gate(
+    metadata: Mapping[str, Any] | None, *, step_id: str | None, workflow_step: bool,
+) -> dict[str, Any] | None:
+    """`resolve_review_gate`, raising `ReviewGateInvalid` for every refusal.
+
     Refused: on anything but a workflow step (a task has no parent whose diff
     could decide for it); any key but `REVIEW_GATE_KEYS`; a `min_lines` that
     is not a whole number in 0..`REVIEW_GATE_MAX_MIN_LINES` (a bool is not);

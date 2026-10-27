@@ -36,7 +36,7 @@ from agent_worker import inputs as inputs_mod
 from agent_worker import verdict as verdict_mod
 from agent_worker.logs import build_logger
 from scheduler import reviewgate
-from swarm_api import validation
+from swarm_api import refusals, validation
 from swarm_api.issueruns import review_gate_block
 
 from .conftest import seed_pool, seed_task, seed_tenant
@@ -284,6 +284,14 @@ def test_a_malformed_gate_is_a_422(block):
                                        workflow_step=True)
     assert caught.value.status_code == 422
     assert caught.value.code == "invalid_review_gate"
+
+
+def test_the_refusal_is_a_switch_that_ships_on_and_off_drops_the_block(monkeypatch):
+    switch = refusals.SWITCHES["invalid_review_gate"]
+    assert switch.default is True
+    monkeypatch.setenv(switch.env, "off")
+    assert validation.resolve_review_gate({"review_gate": {"paths": []}}, step_id="r",
+                                          workflow_step=True) is None
 
 
 def test_a_gate_on_a_task_is_a_422():
