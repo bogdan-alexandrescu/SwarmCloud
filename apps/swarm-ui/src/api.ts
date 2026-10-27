@@ -594,9 +594,10 @@ function fixtureGit(task: Task): Record<string, unknown> {
 async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> {
   const page = await fixtureTasks()
   const listed = page.status === 'ok' ? page.data.tasks : []
-  // THE WAITING FIXTURES (#1782) are reached by id and kept off the list, so
-  // every count the list's fixtures pin stays where it was.
-  const task = listed.find((t) => t.id === taskId) ?? fixtureWaitingTasks(listed).find((t) => t.id === taskId)
+  // THE WAITING FIXTURES (#1782) and THE BUDGET ONES (#2459) are reached by
+  // id and kept off the list, so every count the list's fixtures pin stays
+  // where it was.
+  const task = listed.find((t) => t.id === taskId) ?? fixtureOffList(listed, taskId)
   if (!task) {
     return {
       status: 'error',
@@ -674,6 +675,11 @@ async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> 
           seq: 1,
         }))
         events.push(ev('heartbeat', begin + ran * 0.7, { elapsed_seconds: Math.round(ran * 0.7) / 1000, peak_rss_bytes: 1_842_000_000, checkpoints: 1 }))
+        // The budget agents' 80% warning (#2459): the live one's, and the
+        // stopped one's on its way to the stop.
+        if (task.id === FIXTURE_BUDGET_WARN || task.id === FIXTURE_BUDGET_EXCEEDED) {
+          events.push(ev('running', begin + ran * 0.8, FIXTURE_BUDGET_WARNING))
+        }
         // Deliberately NO matching event for ckpt_0002, which the attempt
         // lists: that is the real paging case -- an id with no size and no
         // uri, which must render as "the event is off this page", not as a
@@ -4879,6 +4885,134 @@ function fixtureWaitingTasks(listed: Task[]): Task[] {
   ]
 }
 
+/**
+ * THE BUDGET AGENTS (#2459, BUDGET-FIXTURES): one per state of the agent's
+ * Budget card (AgentBudget.tsx), so the card is drawn in development and a
+ * visual-QA run captures it (`budget-*` in qa/routes.json). Like the waiting
+ * agents they are reached BY ID AND KEPT OFF THE LISTS (BGD, 2026-10-27):
+ * the agents list, the task window, Outcomes and every count stay as other
+ * tests pin them.
+ *
+ * Their shapes are agent.budget.test.tsx's: a step's $1 under a $5 default,
+ * the warning a `running` event carrying `cause: budget_warning` at $0.81,
+ * and a stop at $1.02 on a turn boundary. The figures agree everywhere they
+ * are shown: the warning's and the stop's `used`, the attempt's usage
+ * (`fixtureUsage`), and the runner's report in the result summary.
+ */
+const FIXTURE_BUDGET_WARN = 'task_budget_warn'
+const FIXTURE_BUDGET_EXCEEDED = 'task_budget_exceeded'
+const FIXTURE_BUDGET_NONE = 'task_budget_none'
+
+/** `dispatch.budget` as `swarm_api.budget.dispatch_block` writes it: a step's $1 under a $5 default. */
+const FIXTURE_BUDGET = { usd: 1, from: { step: { usd: 1 }, workspace: { usd: 5 }, ceiling: { usd: 50 } } }
+
+/** The 80% warning's detail, on a `running` event as the worker writes it today (contract request 121 gives it its own type). */
+const FIXTURE_BUDGET_WARNING = {
+  cause: 'budget_warning',
+  percent: 80,
+  told: true,
+  limit: { usd: 1 },
+  used: { tokens: 812_000, usd: 0.81 },
+}
+
+/** What the stopped agent's runner reported: 1.02M tokens and $1.02, the `used` its stop says. */
+const FIXTURE_BUDGET_STOP_USAGE = {
+  input_tokens: 18_400, output_tokens: 21_600, cache_read_input_tokens: 920_000, cache_creation_input_tokens: 60_000, cost_usd: 1.02,
+}
+
+/** What each budget agent's runner reported: tokens summing to the `used` its warning or its stop says. */
+const FIXTURE_BUDGET_USAGE: Readonly<Record<string, NonNullable<ReturnType<typeof fixtureUsage>>>> = {
+  [FIXTURE_BUDGET_WARN]: {
+    input_tokens: 14_200, output_tokens: 17_800, cache_read_input_tokens: 732_000, cache_creation_input_tokens: 48_000, cost_usd: 0.81,
+  },
+  [FIXTURE_BUDGET_EXCEEDED]: FIXTURE_BUDGET_STOP_USAGE,
+}
+
+function fixtureBudgetTasks(listed: Task[]): Task[] {
+  const base = listed.find((t) => t.runner_profile === 'claude-code') ?? listed[0]
+  if (base === undefined) return []
+  const at = (minsAgo: number) => new Date(FIXTURE_NOW - minsAgo * 60_000).toISOString()
+  const dispatch = { strategy: 'collect', carrier: 'checkpoints', role: null, integrates: [] }
+  // One attempt each, submitted `since` minutes ago and last changed `last`
+  // minutes ago; `fixtureTimed` derives the rest, as every fixture task's.
+  const one = (id: string, state: TaskState, since: number, last: number, over: Partial<Task>): Task =>
+    fixtureTimed({
+      ...base,
+      id,
+      state,
+      runner_profile: 'claude-code',
+      resource_class: 'standard',
+      provider: 'anthropic',
+      model: 'claude-opus-5',
+      metadata: null,
+      input: null,
+      workflow_id: null,
+      step_id: null,
+      depends_on: null,
+      park_reason: null,
+      blocked_by: null,
+      next_eligible_at: null,
+      attempt_count: 1,
+      current_generation: 1,
+      current_lease_id: CONCURRENCY_STATES.has(state) ? `lease_${id.replace('task_', '')}` : null,
+      created_at: at(since),
+      updated_at: at(last),
+      end_cause: null,
+      last_error: null,
+      result_summary: null,
+      dispatch: dispatch as Task['dispatch'],
+      ...over,
+    })
+  // The budgeted blocks are the codec's four keys plus `budget`, kept as
+  // named values: an inline dispatch literal is held to exactly the four
+  // (test_dispatch_ui_surface.py), which predate the budget.
+  const warned = { ...dispatch, budget: FIXTURE_BUDGET } as unknown as Task['dispatch']
+  const stopped = { ...dispatch, strategy: 'direct-pr', budget: FIXTURE_BUDGET } as unknown as Task['dispatch']
+  const usage = FIXTURE_BUDGET_STOP_USAGE
+  const exceeded = one(FIXTURE_BUDGET_EXCEEDED, 'FAILED', 50, 22, {
+    dispatch: stopped,
+    end_cause: 'budget_exceeded',
+    last_error:
+      'budget_exceeded: the agent used $1.02 of a budget of $1.00 and was stopped at a turn boundary; ' +
+      'its work was checkpointed and published as it stood',
+  })
+  return [
+    // A RUNNING agent past 80% of its budget: the amber warning.
+    one(FIXTURE_BUDGET_WARN, 'RUNNING', 30, 0, {
+      dispatch: warned,
+      heartbeat_at: at(1),
+    }),
+    // A FAILED agent the worker stopped on its budget (contract request 118),
+    // its work published: a `direct-pr` step, so its pull request and the
+    // Changes pane's publish agree with the card's "published as it stood".
+    {
+      ...exceeded,
+      result_summary: {
+        budget: { limit: { usd: 1 }, used: { tokens: 1_020_000, usd: 1.02 }, warned: true, end_cause: 'budget_exceeded', stopped: 'turn_boundary' },
+        git: {
+          ...fixtureGit(exceeded),
+          pull_request: { number: 2470, url: 'https://github.com/bogdan-alexandrescu/SwarmCloud/pull/2470', state: 'open', created: true },
+        },
+        runner: {
+          usage: {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            total_cost_usd: usage.cost_usd,
+            models: ['claude-opus-5'],
+          },
+        },
+      } as unknown as Task['result_summary'],
+    },
+    // A SUCCEEDED agent with no budget: the card draws nothing.
+    one(FIXTURE_BUDGET_NONE, 'SUCCEEDED', 90, 80, {}),
+  ]
+}
+
+/** A task a per-task read answers and no list returns: a waiting one (#1782) or a budget one (#2459). */
+function fixtureOffList(listed: Task[], taskId: string): Task | undefined {
+  return fixtureWaitingTasks(listed).find((t) => t.id === taskId) ?? fixtureBudgetTasks(listed).find((t) => t.id === taskId)
+}
+
 // ---------------------------------------------------------------------------
 // THE FIXTURE TIMELINE (QAFIX4-FIXTURE-B, visual QA run 4 F12, F14a-c; part
 // of #1680). Every time a fixture read shows for a task -- its submission, its
@@ -4998,7 +5132,7 @@ function fixtureNewestSpan(task: Task): FixtureAttemptSpan | undefined {
  */
 function fixtureTaskDoc(taskId: string): Task | undefined {
   const listed = fixtureTaskRows()
-  const known = listed.find((t) => t.id === taskId) ?? fixtureWaitingTasks(listed).find((t) => t.id === taskId)
+  const known = listed.find((t) => t.id === taskId) ?? fixtureOffList(listed, taskId)
   if (known !== undefined) return known
   const stand = listed.find((t) => t.state === 'SUCCEEDED')
   return stand === undefined ? undefined : { ...stand, id: taskId }
@@ -5016,6 +5150,8 @@ function fixtureUsage(task: Task): Pick<
   'input_tokens' | 'output_tokens' | 'cache_read_input_tokens' | 'cache_creation_input_tokens' | 'cost_usd'
 > | null {
   if (task.runner_profile === 'mock' || task.runner_profile === 'generic') return null
+  const budgeted = FIXTURE_BUDGET_USAGE[task.id]
+  if (budgeted !== undefined) return budgeted
   if (task.id === 'task_wf_scan_a') {
     return { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cost_usd: 0 }
   }
@@ -9811,6 +9947,160 @@ export async function loadCodeIntelligence(): Promise<Result<CodeIntelligence>> 
 /** `PUT /v1/workspaces/{tenant_id}/code-intelligence`: the owner's or an admin's switch. */
 export async function putCodeIntelligence(tenantId: string, jev: boolean): Promise<Result<unknown>> {
   return writeTo(route('/v1/workspaces/{tenant_id}/code-intelligence', { tenant_id: tenantId }), 'PUT', { jev })
+}
+
+// The per-agent budget (BUDGET-UI-SETTINGS; part of #2459,
+// docs/design/agent-budget.md §2, §4). A workspace admin sets one default, in
+// dollars OR tokens (`PUT /v1/workspaces/{tenant_id}/budget`); a platform
+// admin sets the ceiling no default may exceed, in either unit or both
+// (`agent_budget_ceiling` in `PUT /v1/admin/settings`). Off until a workspace
+// admin sets one: the ceiling alone limits nothing (§4). The bounds and the
+// refusal are the API's (`swarm_api.budget`); this file only draws them.
+
+/** A budget's unit: `budget.UNITS`. Dollars are the `cost_usd` estimate; tokens the runner's own count. */
+export type BudgetUnit = 'usd' | 'tokens'
+
+/** A limit in either unit or both; null is "no limit in that unit" (`budget.Limits`). */
+export interface BudgetLimits {
+  usd: number | null
+  tokens: number | null
+}
+
+/** `GET /v1/budget` and the PUT's answer (`budget.view`). */
+export interface WorkspaceBudget {
+  tenant_id: string
+  /** The workspace default; null is off, the default. */
+  budget: { unit: BudgetUnit; amount: number } | null
+  /** The platform ceiling the default must stay under, per unit. */
+  ceiling: BudgetLimits
+  /** The largest amount the API takes in each unit; null when it was not served. */
+  max: BudgetLimits
+  set_at: string | null
+  set_by: string | null
+  /** The workspace's owner or admin, or a platform admin; the API is the gate. */
+  can_edit: boolean
+}
+
+const positive = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null)
+
+/** `{usd, tokens}` as served, a unit that is not a positive number read as no limit, never guessed. */
+export function normBudgetLimits(raw: unknown): BudgetLimits {
+  const r = (typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>
+  const tokens = positive(r.tokens)
+  return { usd: positive(r.usd), tokens: tokens !== null && Number.isInteger(tokens) ? tokens : null }
+}
+
+function normWorkspaceBudget(raw: unknown): WorkspaceBudget {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const b = (typeof r.budget === 'object' && r.budget !== null ? r.budget : null) as Record<string, unknown> | null
+  const unit = b?.unit === 'usd' || b?.unit === 'tokens' ? b.unit : null
+  const amount = positive(b?.amount)
+  const bounds = (typeof r.bounds === 'object' && r.bounds !== null ? r.bounds : {}) as Record<string, { max?: unknown } | undefined>
+  return {
+    tenant_id: keyField(r.tenant_id) ?? '',
+    budget: unit !== null && amount !== null ? { unit, amount } : null,
+    ceiling: normBudgetLimits(r.ceiling),
+    max: { usd: positive(bounds.usd?.max), tokens: positive(bounds.tokens?.max) },
+    set_at: keyField(r.set_at),
+    set_by: keyField(r.set_by),
+    can_edit: r.can_edit === true,
+  }
+}
+
+/** `GET /v1/budget`: the selected workspace's per-agent budget, its ceiling and whether the caller may change it. */
+export async function loadWorkspaceBudget(): Promise<Result<WorkspaceBudget>> {
+  return readAs(route('/v1/budget'), normWorkspaceBudget)
+}
+
+/**
+ * `PUT /v1/workspaces/{tenant_id}/budget`: the default, or null to turn it off. A default above the platform ceiling
+ * in its unit is refused 422 `budget_above_ceiling` with nothing changed (`budgetRefusalWords` says it in words).
+ */
+export async function putWorkspaceBudget(tenantId: string, budget: { unit: BudgetUnit; amount: number } | null): Promise<Result<WorkspaceBudget>> {
+  const r = await writeTo(route('/v1/workspaces/{tenant_id}/budget', { tenant_id: tenantId }), 'PUT', { budget })
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normWorkspaceBudget(r.data) }
+  return r as Result<WorkspaceBudget>
+}
+
+/** The platform ceiling in a platform settings read: `agent_budget_ceiling`, which `PlatformSettings` keeps as served. */
+export function budgetCeilingOf(settings: PlatformSettings): BudgetLimits {
+  return normBudgetLimits((settings as unknown as { agent_budget_ceiling?: unknown }).agent_budget_ceiling)
+}
+
+/**
+ * `PUT /v1/admin/settings` with `agent_budget_ceiling` and nothing else, so a save never rewrites another setting. The
+ * ceiling is replaced whole: a unit left out has none, and `{}` turns it off (`Store.set_platform_settings`).
+ */
+export async function saveBudgetCeiling(ceiling: BudgetLimits): Promise<Result<PlatformSettings>> {
+  const body: Record<string, number> = {}
+  if (ceiling.usd !== null) body.usd = ceiling.usd
+  if (ceiling.tokens !== null) body.tokens = ceiling.tokens
+  const r = await write(route('/v1/admin/settings'), 'PUT', { agent_budget_ceiling: body })
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normPlatformSettings(r.data) }
+  return r as Result<PlatformSettings>
+}
+
+/**
+ * What a budget does, in the console's words (#2459, BGD 2026-10-26), drawn by both settings cards so they cannot
+ * disagree: the worker's 80% note and its stop at the next turn boundary (docs/design/agent-budget.md §5).
+ */
+export const BUDGET_DOES =
+  'At 80% of its budget an agent is told to finish and publish. At 100% it stops at its next turn boundary, keeps its work and ends “stopped at its budget”.'
+
+/**
+ * A typed amount in its unit, or null: dollars a number above 0, tokens a whole number of at least 1. Commas, spaces
+ * and a leading `$` are allowed. The upper bound is the API's (`bounds`), which refuses past it with 422.
+ */
+export function parseBudgetAmount(unit: BudgetUnit, typed: string): number | null {
+  const t = typed.replace(/[,\s_]/g, '').replace(/^\$/, '')
+  if (unit === 'tokens') {
+    if (!/^\d+$/.test(t)) return null
+    const n = Number(t)
+    return Number.isSafeInteger(n) && n >= 1 ? n : null
+  }
+  if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(t)) return null
+  const n = Number(t)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+/** `$1.00`, as `budget.describe` writes dollars. */
+export function budgetDollars(n: number): string {
+  return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+/** `15,000,000 tokens`. */
+export function budgetTokens(n: number): string {
+  return `${n.toLocaleString('en-US')} ${n === 1 ? 'token' : 'tokens'}`
+}
+
+/** One amount in its unit. */
+export function budgetAmount(unit: BudgetUnit, n: number): string {
+  return unit === 'usd' ? budgetDollars(n) : budgetTokens(n)
+}
+
+/** A limit in words, both units joined by "and", or null when it names neither (`budget.describe`). */
+export function budgetLimitsWords(l: BudgetLimits): string | null {
+  const parts = [...(l.usd !== null ? [budgetDollars(l.usd)] : []), ...(l.tokens !== null ? [budgetTokens(l.tokens)] : [])]
+  return parts.length === 0 ? null : parts.join(' and ')
+}
+
+/**
+ * A refused save of a workspace default, in words, from `budget_above_ceiling`'s detail (`{budget, ceiling}`): what
+ * was asked, the ceiling it is above, and what may be saved instead. Null for any other refusal, which is drawn as
+ * the API wrote it.
+ */
+export function budgetRefusalWords(error: ApiError): string | null {
+  if (error.code !== 'budget_above_ceiling') return null
+  const d = (typeof error.detail === 'object' && error.detail !== null ? error.detail : {}) as Record<string, unknown>
+  const asked = normBudgetLimits(d.budget)
+  const ceiling = normBudgetLimits(d.ceiling)
+  const unit: BudgetUnit | null = asked.usd !== null ? 'usd' : asked.tokens !== null ? 'tokens' : null
+  const top = unit === null ? null : ceiling[unit]
+  if (unit === null || top === null) return error.message
+  return (
+    `${budgetAmount(unit, asked[unit]!)} is above the platform ceiling of ${budgetAmount(unit, top)}, so nothing was ` +
+    `changed. Save ${budgetAmount(unit, top)} or less, or ask a platform admin to raise the ceiling.`
+  )
 }
 
 /**

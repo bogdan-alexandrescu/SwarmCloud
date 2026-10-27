@@ -244,8 +244,16 @@ _RETRY_AFTER_MARKERS = ("retry-after", "retry_after")
 #: (a transcript discussing HTTP, a test fixture) and a false positive here
 #: silently restarts a healthy run. Every marker below names an authentication
 #: failure explicitly.
+#:
+#: AN EXPIRED TOKEN IS ONE TOO (#1855). A 6,160 s attempt failed on "Failed to
+#: authenticate. API Error: 401 OAuth access token has expired." -- no marker
+#: here matched it, so it failed as an ordinary error. The broker refreshes a
+#: held account's token before it expires (#626), so the reload this marker
+#: triggers reads the replacement; the two phrases below are that line's halves.
 _CREDENTIAL_MARKERS = (
     "oauth access token has been revoked",
+    "oauth access token has expired",
+    "failed to authenticate",
     "authentication_error",
     "invalid api key",
     "invalid_api_key",

@@ -44,6 +44,7 @@ const ZERO_CLASSES: Record<FailureClassKey, number> = {
   merge_refused: 0,
   merge_failed: 0,
   publish_refused: 0,
+  budget_exceeded: 0,
   other: 0,
   no_reason: 0,
   intended: 0,
@@ -84,7 +85,7 @@ export const DEV_DAYS: readonly Day[] = [
   { day: 24, s: 55, f: 2, sub: 84, c: { ...NONE, requested: 23, after_failure: 2 }, cls: { other: 2 }, cost: { sum: 70.2, attempts: 96, reporting: 40 } },
   {
     day: 25, s: 111, f: 9, sub: 192, c: { ...NONE, requested: 67, after_failure: 3 },
-    cls: { lost_worker: 1, outputs_missing: 6, other: 2 }, cost: { sum: 95.82, attempts: 148, reporting: 59 },
+    cls: { lost_worker: 1, outputs_missing: 6, budget_exceeded: 1, other: 1 }, cost: { sum: 95.82, attempts: 148, reporting: 59 },
   },
 ]
 
@@ -205,6 +206,7 @@ function cannedLedger(): Outcomes {
         { key: 'merge_refused', label: 'merge refused' },
         { key: 'merge_failed', label: 'merge failed' },
         { key: 'publish_refused', label: 'publish refused' },
+        { key: 'budget_exceeded', label: 'budget exceeded' },
         { key: 'other', label: 'other' },
         { key: 'no_reason', label: 'no reason recorded' },
         { key: 'intended', label: 'failed on purpose' },

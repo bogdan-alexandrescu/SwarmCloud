@@ -296,6 +296,18 @@ describe('the Now card leads, and becomes the outcome or the failure', () => {
     expect(lead.querySelector('pre')?.textContent).toBe(error)
   })
 
+  it('an agent the worker stopped on its budget says so in the Budget card\'s words (contract request 118)', () => {
+    const error = 'budget_exceeded: the agent used $1.02 of a budget of $1.00 and was stopped at a turn boundary'
+    const t = running({ state: 'FAILED', completed_at: ago(1), end_cause: 'budget_exceeded', last_error: error, attempt_count: 1 })
+    const el = host(runOf({ task: t, attempts: [attempt(1, { created_at: ago(15), started_at: ago(14), completed_at: ago(1) })] }))
+    const lead = el.querySelector<HTMLElement>('.dt > .dt-now')!
+    expect(lead.dataset.lead).toBe('failed')
+    // MUTATION: put back "it spent its budget" -> one end in two wordings,
+    // beside the Budget card's "stopped at its budget".
+    expect(lead.querySelector('.dt-card-head > h2')?.textContent).toBe('Failed: it was stopped at its budget')
+    expect(lead.querySelector('.dt-chip')?.textContent).toBe('budget_exceeded')
+  })
+
   it('a cancelled agent with no error leads with the neutral Cancelled card, not an Outcome', () => {
     const t = running({ state: 'CANCELLED', completed_at: ago(1), started_at: null, end_cause: null, last_error: null, attempt_count: 0 })
     const el = host(runOf({ task: t, attempts: [] }))

@@ -14550,6 +14550,16 @@ the grant, signed by swarm-api. **1-8** are untouched.
 of #2459). Requested 2026-10-26 by lane BUDGET-CAP. "What is true today" below
 is the text as filed, the state before it was applied.
 
+**As applied (ledger), 2026-10-27, lane LEDGER-BUDGET-CLASS (part of #2459).**
+The outcome ledger classes the member as its own failure class,
+`budget_exceeded` ("budget exceeded"), after `publish_refused` and before
+`other` in `swarm_api.outcomes.FAILURE_CLASSES`, not as `runner_error`: BGD's
+decision, 2026-10-27 (~01:30Z), on the owner question of PR 2519
+(BUDGET-CONTRACT). `DERIVE_VERSION` is 11, so every stored day counted under
+10 is re-derived. No text rule was added (`CLASSIFIER_VERSION` stays 3): an
+attempt with a null cause and a `budget_exceeded:` `last_error` still reads as
+`runner_error`.
+
 ### What is true today
 
 BGD's decision on #2459 (2026-10-26): at 100% of its budget the worker stops
