@@ -425,13 +425,12 @@ export function Run({
   ) : null
 
   return (
-    /* ONE CARD LEADS, THEN THE FIVE FIGURES, THEN TWO COLUMNS
-       (agent-details-v3.html A). The failure leads a failed agent and the
-       outcome a finished one; a running one leads with what it is doing now.
-       `Why` and the alerts stay above it: they render nothing when there is
-       nothing to say, so a healthy run pays no space for them. On a phone the
-       strip moves above the leading card (details.css), so the figures come
-       first on a small screen. */
+    /* BUILDING, THEN ONE CARD LEADS, THEN THE ONE RESOURCES ROW
+       (DETAILS-BUILDING). The failure leads a failed agent and the outcome a
+       finished one; a running one leads with what it is doing now. `Why` and
+       the alerts stay above it: they render nothing when there is nothing to
+       say, so a healthy run pays no space for them. The five figures' strip
+       and the Resources card sit inside the Resources row's `details`. */
     <div className="run-stack dt">
       {/* WHAT IT IS BUILDING, FIRST (BGD 2026-10-27, DETAILS-BUILDING): one
           line from the workflow's title, label, step and issue, or the
@@ -2064,7 +2063,11 @@ interface ResFigure {
  * THE RESOURCES ROW'S FOUR FIGURES (DETAILS-BUILDING): cores as request/limit,
  * memory, tokens, cost. Cores are what the newest attempt was SIZED at
  * (`sizedCpuWords`' record) -- Cloud Run applies the request alone, so it is
- * one number there -- else the class. Memory is the class's, where request
+ * one number there. An attempt from before contract request 108 has no sized
+ * record: its cores are the limit it recorded (`cpu_limit_cores`), the figure
+ * the strip and the card print, never the class's, which would bring back the
+ * unlabelled class-vs-limit contradiction FF-D5a (#1680) removed. With no
+ * attempt figure at all, the class's cores, saying so in the row. Memory is the class's, where request
  * equals limit (invariant 7). Tokens and cost are the strip's own sums
  * (`tokenKinds`, the attempts' `cost_usd`, then the API's served total), with
  * fewer decimals; the exact figures are one click down.
@@ -2076,14 +2079,21 @@ export function resourceFigures(run: AgentRun): ResFigure[] {
   const n = (v: number) => `${Number(v.toFixed(2))}`
   const req: unknown = latest?.sized_cpu_request
   const lim: unknown = latest?.sized_cpu_limit
+  const recorded: unknown = latest?.cpu_limit_cores
+  const limitWords = finite(recorded) ? cpuLimitWords(recorded, cls, latest?.cpu_limit_source ?? null) : null
   const coresFig: ResFigure =
     latest !== null && finite(req) && finite(lim)
       ? latest.backend === 'CLOUD_RUN_JOB'
         ? { text: `${n(req)} cores`, title: 'Cores the attempt was guaranteed; Cloud Run applies no burst.' }
         : { text: `${n(req)}/${n(lim)} cores`, title: 'Cores the attempt was guaranteed / the most it could burst to.' }
-      : cls !== null
-        ? { text: `${cores(cls.cpu)} cores`, title: `The ${task.resource_class} class's cores.` }
-        : { text: '— cores', title: 'No size was recorded and the class was not read.', absent: true }
+      : latest !== null && finite(recorded)
+        ? {
+            text: `${n(recorded)} cores`,
+            title: `The limit the attempt recorded${limitWords === null ? '' : `: ${limitWords}`}; no request was recorded.`,
+          }
+        : cls !== null
+          ? { text: `${cores(cls.cpu)} cores (class)`, title: `The ${task.resource_class} class's cores; the attempt recorded no size or limit.` }
+          : { text: '— cores', title: 'No size was recorded and the class was not read.', absent: true }
   const memFig: ResFigure =
     cls !== null
       ? { text: `${cls.memory_gib} GiB`, title: `The ${task.resource_class} class's memory: its request is its limit.` }

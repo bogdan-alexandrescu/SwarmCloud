@@ -29,13 +29,15 @@
    building". The page opens with what it is building (one line at desktop,
    two at most on a phone), the Now card leads with one line of what it is
    doing, and resources are one row whose `details` opens the strip and the
-   Resources card unchanged. Labels share one width so the three values line
-   up, as the picked shape draws them. */
+   Resources card unchanged. Building and Resources share one label width,
+   and Building is inset by the Resources card's padding and border (14px +
+   1px), so their two values start at one x, as the picked shape draws them.
+   Now has no label column: its line is the head of the Now card. */
 .dt-building,
 .dt-res > summary { display: flex; align-items: baseline; gap: 10px; min-width: 0; margin: 0; }
 .dt-building-l,
 .dt-res-l { flex: none; width: 72px; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 550; }
-.dt-building { padding: 0 2px; }
+.dt-building { padding: 0 15px; }
 .dt-building-v {
   flex: 1;
   min-width: 0;

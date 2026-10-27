@@ -237,6 +237,31 @@ describe('Resources: one row, the prose behind “details”', () => {
     }
   })
 
+  it('reads the limit an attempt recorded when it has no sized record, never the class’s cores unlabelled', () => {
+    // An attempt from before contract request 108: a cgroup limit of 2 cores
+    // and no sized_* fields, in a class of 4. The strip and the card say 2;
+    // the row must not say 4 (FF-D5a, #1680).
+    const four = { standard: { name: 'standard', cpu: 4, memory_gib: 8, disk_gib: 10, units: 4 } } as unknown as ResourceClasses
+    const legacy = attempt(1, {
+      backend: 'GKE_JOB',
+      created_at: ago(13),
+      started_at: ago(12),
+      completed_at: null,
+      exit_code: null,
+      peak_cpu_cores: 1.6,
+      cpu_limit_cores: 2,
+      cpu_limit_source: 'cgroup',
+    } as Parameters<typeof attempt>[1])
+    const dt = host(runOf({ classes: four, attempts: [legacy] }))
+    const cpu = dt.querySelector('details.dt-res > summary .dt-res-f')!
+    expect(text(cpu)).toBe('2 cores')
+    expect(cpu.getAttribute('title')).toContain('cgroup limit (class 4 vCPU)')
+    // With no attempt figure at all, the class's cores say whose they are.
+    const bare = attempt(1, { backend: 'GKE_JOB', completed_at: null, exit_code: null } as Parameters<typeof attempt>[1])
+    const dt2 = host(runOf({ classes: four, attempts: [bare] }))
+    expect(text(dt2.querySelector('details.dt-res > summary .dt-res-f'))).toBe('4 cores (class)')
+  })
+
   it('names what it could not read with a dash, never a 0', () => {
     const dt = host(runOf({ attempts: [], classes: null, task: running({ attempt_count: 0, started_at: null, state: 'QUEUED' }) }))
     const figures = [...dt.querySelectorAll('details.dt-res > summary .dt-res-f')].map(text)
