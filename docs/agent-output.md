@@ -364,10 +364,10 @@ pull request from the issue without saying so. The owner decided two things.
 
 **Proposal A: one fixed paragraph ends every prompt with a repository.** A
 claude-code or codex agent whose agent starts in a checkout gets, after the
-deliverables line and the questions sentence:
+deliverables line, the questions sentence and the time-limit line (below):
 
 ```
-You do not push or open a pull request; the worker publishes your committed branch. Commit your work. Write the pull request's title (one line) to $SWARM_ARTIFACTS_DIR/pr-title.txt and its body to $SWARM_ARTIFACTS_DIR/pr-body.md. Do not say in your answer that no pull request exists because you lack GitHub credentials: the worker opens it after you finish.
+You do not push or open a pull request; the worker publishes your committed branch. Commit your work. Write the pull request's title (one line) to $SWARM_ARTIFACTS_DIR/pr-title.txt and its body to $SWARM_ARTIFACTS_DIR/pr-body.md. Do not say in your answer that no pull request exists because you lack GitHub credentials: the worker opens it after you finish. If the work is already done and nothing needs changing, commit nothing and write $SWARM_ARTIFACTS_DIR/verification.md saying what you checked and what showed it is done; that ends the step as no change instead of a failure. Keep your commits on the branch you were cloned onto: to build on another branch, fetch it and merge it in (git merge FETCH_HEAD); never git checkout -B, git switch or git reset onto another line, because commits that do not descend from the commit you started on are discarded.
 ```
 
 It is `cliagent.PUBLISH_PARAGRAPH`, appended once in `run_cli_agent` for both
@@ -376,6 +376,50 @@ or credential markers a CLI that echoes its prompt would trip. An agent with no
 repository does not get it, and neither does a resumed session, which already
 holds it. It goes to every step with a repository, a review included: the
 worker's strategy, not the agent, decides whether anything is pushed.
+
+**The no-change sentence (#2140)** names the file the worker reads as
+"nothing to change, and here is why": an agent that finds its work already
+done and writes only `pr-body.md` fails `published_nothing` and cancels its
+dependants, as build-170 did. See "Or the agent says why: `verification.md`
+(Proposal J)" under
+[An empty diff can succeed](workflows.md#an-empty-diff-can-succeed-allow_empty_diff).
+A CI-fix round (`scripts/ci-fix.sh`) is told the same file for "no change on
+this branch can fix it"; that ends the fix step `no_change`, and the pull
+request it was fixing stays red, so nothing merges it.
+
+**The last sentence is the descent rule (#2277).** The worker discards a moved
+HEAD that does not descend from the commit the step was cloned at
+(`Worker._head_moved`), and the paragraph used to say only that the worker
+publishes the committed branch: an agent ran `git checkout -B fix-516
+FETCH_HEAD`, committed there for 85 turns, and every commit was dropped (and
+task_7e644638 ran `git reset --hard` on 2026-10-26). The discard is right -- a
+branch that does not descend from the step's start is not this step's work --
+so the prompt states the rule instead: merge another branch in, never move
+onto it.
+
+**The step's wall clock comes just before the paragraph (#2139).** On
+2026-10-23 three claude-code agents started their tenant's whole pytest suite
+in the background, polled it with ~600 s `sleep` calls, and were killed
+mid-sleep at their 7200 s limit (exit 137); one had given its suite a
+`timeout 7000`, longer than its own step. Nothing had told them the limit:
+`run_cli_agent` resolved it only after building the prompt, at the deadline
+the runner terminates the CLI without a word, and the finish pass only follows
+a CLI that ended by itself. So every fresh claude-code and codex prompt
+carries one line from `cliagent.time_limit_line`, naming the limit in whole
+minutes and the UTC time it ends, and saying to commit and write the pull
+request's title and body well before then and not to run the whole suite in
+the background polled with sleep. It sits just before the paragraph above,
+which still ends the prompt, and is the last paragraph of a prompt with no
+repository.
+
+A run on a pool account, whose stream the runner reads as it is written, is
+also stopped at its first turn boundary once less than `wrap_up_margin` is
+left (ten minutes, or a quarter of a short limit), and resumed once with
+`WRAP_UP_PROMPT` followed by a limit line naming what is left. That pass is
+never armed again, and a run that reaches no turn boundary, or is not watched,
+is killed at the hard deadline exactly as before. A resumed session (an
+account move, a credential reload) and the finish pass are not given a limit
+line yet: the session still holds the end time it was first told.
 
 **Proposal B: an issue step is asked for its title, and a missing one is
 visible.** `pr-title.txt` is now an expected output of every step that opens a
