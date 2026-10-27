@@ -765,7 +765,7 @@ passthroughs, so nothing a caller or the environment sends replaces them.
 
 `PYTEST_XDIST_AUTO_NUM_WORKERS` caps `-n auto` only, so a first start's prompt
 also carries one line (`cliagent.budget_line`), after the caller's prompt and
-before the platform's instructions, for a task with a repository or without:
+before the platform's instructions, for an agent with a repository or without:
 the budget in GiB, stop the dev servers before tsc or the tests, never pass
 `pytest -n` above the worker count, never set `--max-old-space-size` above the
 budget. A resumed session is not told again; the session already holds the
