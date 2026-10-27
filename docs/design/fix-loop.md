@@ -91,21 +91,21 @@ swarm-api parses the same file on its side as
 parked merge step. All three go through one path, `_hand_off` →
 `_submit_round`:
 
-1. **Claim.** The round is claimed in the merge task's `metadata.merge_fix`
+1. **Claim.** The round is claimed in the merge agent's `metadata.merge_fix`
    (`rounds`, `conflict_rounds`, `pick_rounds`) under a transaction guard
    (`_claim_round`), so two ticks never submit it twice.
 2. **Submit.** The round is submitted as **its own one-step workflow**,
-   **as the merge task's submitter**, and only while that person is still a
+   **as the merge agent's submitter**, and only while that person is still a
    member (`_submitter`, `SubmitterNotMember`). The workflow is a
    `continues_task` continuation on the pull request's branch:
    `issueci.ci_fix_continuation`, `conflict_fix_continuation`,
    `pick_fix_continuation`. These are `direct-pr` with one step,
    `merge: "off"`, no `pr-title.txt` and no closing keyword.
-3. **Append.** The round's task is appended to the merge's workflow as a step
+3. **Append.** The round's agent is appended to the merge's workflow as a step
    `ci-fix:<n>` / `conflict-fix:<n>` / `pick-fix:<n>`
    (`_append_round_step`, `round_step_id`). The append is guarded in the same
    way: the workflow must belong to this tenant, must not already have that
-   step id, and must hold the merge task. A caller can never submit a step id
+   step id, and must hold the merge agent. A caller can never submit a step id
    with a `:` (`WorkflowStepCreate.step_id`'s pattern), so the id alone marks
    a platform round. That is what `swarm_rollup.FIX_ROUND_STEP_RE` /
    `is_fix_round_step` read.
@@ -165,11 +165,11 @@ by the pushed head.
 
 | | Where the loop lives | For | Against |
 |---|---|---|---|
-| **A (recommended)** | Its own **control-plane step** (`fix-loop` profile, no pod). swarm-api drives it on task-finished wakes and appends rounds as `review-fix:<n>` / `re-review:<n>` steps. | Works with or without a merge step, so issue runs (whose workflow has no merge, §6.3) and Oracle's lanes can use it. One step kind, named in the spec, as #2509 asks. It costs no pod between rounds. It reuses `_submit_round` / `_append_round_step` / the rollup rule. | Needs contract requests: a catalogue profile, and a park reason (§9 Q2). The merge step must learn to read the loop's last review (§5.6). |
+| **A (recommended)** | Its own **control-plane step** (`fix-loop` profile, no pod). swarm-api drives it on `task_finished` wakes and appends rounds as `review-fix:<n>` / `re-review:<n>` steps. | Works with or without a merge step, so issue runs (whose workflow has no merge, §5.3) and Oracle's lanes can use it. One step kind, named in the spec, as #2509 asks. It costs no pod between rounds. It reuses `_submit_round` / `_append_round_step` / the rollup rule. | Needs contract requests: a catalogue profile, and a park reason (§9 Q2). The merge step must learn to read the loop's last review (§4.6). |
 | B | **Inside the merge step**, as a fourth kind of merge round beside ci/conflict/pick. The merge parks `CI_PENDING` code `review_fix_pending`. | No contract change. It is PR 2463's shape almost line for line. | Only a workflow with a merge step can loop. Issue runs compile `merge: "off"` (`issueruns.py`, the `auto_merge` paragraph) and would get nothing, and the same goes for Oracle lanes that leave the PR for a person. It mixes "is it good" with "merge it". `/sc check` flags `CI_PENDING` over 90 minutes as stuck (`swarm_mcp.check`, rule c), and a three-round loop can take longer than that. |
 | C | **Pre-declared**: unroll `max_rounds` fix/re-review pairs into the DAG at submission. | No runtime driver. | Needs gated non-integrator steps under `integrate`, which is exactly the publisher rule in §2.2. Every pair whose gate is shut still costs a pod to republish the verdict (`Worker._republish_staged_verdict`). That is the cost the #2322 audit counted 43 times in one day. |
 
-Also rejected: **creating the round tasks inside the same workflow as real
+Also rejected: **creating the round agents inside the same workflow as real
 steps** with `depends_on` / `input_from`. That would give staging for free.
 But a submitted workflow is fixed in several places: the integrator's
 `integrates` list, the spec signature of every step, and the
@@ -228,13 +228,13 @@ Rules checked at submission (each a 422 naming the step, nothing written):
   (`input_from`), because it writes no artifact (§2.5).
 * `metadata.merge: "on_merge_verdict"` with a loop: swarm-api appends **only
   the merge**, not the `re-review` (`rereview_step_for` is skipped). The
-  merge's signed `merge_target` names the loop (§5.6). The loop's
+  merge's signed `merge_target` names the loop (§4.6). The loop's
   `re-review:1` is the re-review `on_merge_verdict` would have run. Without a
   loop, `on_merge_verdict` is unchanged (§9 Q8).
 * `publish_to_pr` workflows may loop. Their integrator pushes onto the named
   pull request, and the rounds continue that integrator (§4.3).
 
-The block is stored in the loop task's signed `metadata.dispatch.fix_loop`,
+The block is stored in the loop agent's signed `metadata.dispatch.fix_loop`,
 as `verdict_gate` and `await_input` are. The frozen `WorkflowStep` carries
 neither, and `GET /v1/tasks/{id}` serves it in `dispatch`. Nothing in the
 frozen contract needs a new field for the block itself.
@@ -259,7 +259,7 @@ frozen contract needs a new field for the block itself.
 ### 4.3 How a round is made and where it publishes
 
 Each half of a round is its **own one-step workflow**. swarm-api submits it
-as the loop task's submitter while that person is still a member, the rule in
+as the loop agent's submitter while that person is still a member, the rule in
 `mergewake._submitter`. It is then appended to the loop's workflow as a
 pointer step. This is `_submit_round` / `_append_round_step` with a new
 round kind.
@@ -333,14 +333,14 @@ round kind.
   today's failed read does.
 
 **What drives it.** The loop needs no clock. It needs to know when a round's
-task ended. So it hangs off the `task_finished` wake that swarm-api already
+agent ended. So it hangs off the `task_finished` wake that swarm-api already
 receives as `POST /v1/admin/tasks/finished` (the `api_task_finished`
 subscription that drives `verdictpublish.on_task_finished`). A new
 `fixloop.on_task_finished` runs beside `verdictpublish.on_task_finished`:
 
-* When the ended task is a `fix_loop_round` of a live loop, or the loop's
+* When the ended agent is a `fix_loop_round` of a live loop, or the loop's
   `review` / `fix`, it reads the state and claims the next action.
-* The claim is a transaction on the loop task's
+* The claim is a transaction on the loop agent's
   `metadata.fix_loop_state.rounds`, guarded on `seen` exactly as
   `_claim_round` is.
 * A lost push is covered by a sweep in the per-tenant tick that already runs
@@ -370,7 +370,7 @@ After each `re-review:k` ends, swarm-api reads its `verdict.json`:
 | `re-review:k` says NOT_YET, k = `max_rounds` | records the last verdict | **PARKED `HUMAN_REQUIRED`, `park_phase: "fix_loop_exhausted"`** (§4.5) |
 | `review-fix:k` SUCCEEDED and pushed a head ≠ `start_head` | submits `re-review:k` at that head | stays parked |
 | `review-fix:k` SUCCEEDED and pushed nothing (head = `start_head`) | no re-review: the head the last NOT_YET judged is unchanged, so a review agent would only repeat it | PARKED `HUMAN_REQUIRED`, `park_phase: "fix_changed_nothing"` |
-| a round FAILED, was CANCELLED or DEAD_LETTERED (its own retries spent) | records it | PARKED `HUMAN_REQUIRED`, `park_phase: "round_failed"`, naming the task and its end cause |
+| a round FAILED, was CANCELLED or DEAD_LETTERED (its own retries spent) | records it | PARKED `HUMAN_REQUIRED`, `park_phase: "round_failed"`, naming the agent and its end cause |
 | `re-review:k` SUCCEEDED but its verdict does not read (not JSON, no or bad `verdict`, over 256 KiB, missing) | never read as MERGE (it would merge unreviewed work) and never as NOT_YET (it would fix findings that are not there), the §2.1 rule | PARKED `HUMAN_REQUIRED`, `park_phase: "review_unreadable"` |
 | the round's submission was refused (submitter left the tenant, or a 422) | recorded on the round as `error` | PARKED `HUMAN_REQUIRED`, `park_phase: "round_refused"` |
 | the pull request was merged or closed outside the workflow | read once per wake, the `_ended_outside` idea | SUCCEEDED ("merged outside") or CANCELLED |
@@ -405,8 +405,8 @@ execution. A person may then do one of three things:
 3. **Cancel the workflow**, as today. This cancels any live round
    (`Store.cancel_workflow`, §2.3).
 
-`human-ready` refuses a `fix-loop` task with 409, as it refuses await-input.
-A READY control-plane task would only be parked again by the scheduler.
+`human-ready` refuses a `fix-loop` agent with 409, as it refuses await-input.
+A READY control-plane agent would only be parked again by the scheduler.
 
 Two expiry choices for the park itself (§9 Q3):
 
@@ -428,7 +428,7 @@ The merge cannot stage a verdict file from the loop, which writes none
    `fix-loop`, and the same workflow.
 2. It reads `result_summary.fix_loop.final_review`, and for `rounds: 0` the
    loop's `review`.
-3. It verifies that review task:
+3. It verifies that review agent:
    * signed spec, same tenant;
    * its signed `fix_loop_round.loop_task` equals the loop, or it is the
      loop's own `review`;
@@ -451,24 +451,24 @@ head.
 
 1. **Only LEASED / DISPATCHED / STARTING / RUNNING create demand.** The loop
    step is `control_plane`, never leased, and PARKED throughout. Between
-   rounds no task is live: the next half is submitted only after the previous
+   rounds no agent is live: the next half is submitted only after the previous
    one's `task_finished`. Each half is QUEUED → READY → admitted like any
    agent. Nothing is pre-created as a pending pod.
-2. **All-or-nothing reservation.** Each round task is admitted by the
+2. **All-or-nothing reservation.** Each round agent is admitted by the
    scheduler's ordinary transaction. swarm-api writes no lease and no pool
    count, the same rule that was decided for #748.
-3. **Concurrency counts from LEASED.** The rounds are ordinary tasks, so they
+3. **Concurrency counts from LEASED.** The rounds are ordinary agents, so they
    count exactly as their profile does. A loop at most has one live round
-   task at a time.
+   agent at a time.
 4. **Workers never sleep through a long wait.** No worker waits for a round.
    The loop is a parked document, and the round agents are separate
    attempts.
-5. **Fencing.** Every round is a new task with its own lease and generation,
+5. **Fencing.** Every round is a new agent with its own lease and generation,
    and its worker fences as every worker does. A stale round attempt exits
    without running. A round's head is accepted only from its signed spec and
    recorded `pushed_head` (the pick-fix rule).
 6. **Spot.** No change.
-7. **Requests and limits.** No change: round tasks take their profile's
+7. **Requests and limits.** No change: round agents take their profile's
    class, or the continued step's class (`_round_resource_class`), never a
    bigger box.
 8. **Checkpointing.** Each round agent checkpoints as any agent does. The
@@ -481,7 +481,7 @@ head.
 
 ### 4.8 Cost and budget
 
-* **Per agent.** Each round task is submitted through
+* **Per agent.** Each round agent is submitted through
   `SubmissionService._build_task`, so `budget.resolve` pins its own
   min(step, workspace, ceiling) into its dispatch block (PR 2466). A round
   inherits the step `budget` of the step it repeats (`fix` or `review`), so a
@@ -612,7 +612,7 @@ the first review (§9 Q9).
   rounds`, or `waiting for you: <phase>` with the two actions **Add a
   round** and **Stop**.
 * Appended rounds render as the steps they already are, as `ci-fix:<n>`
-  rows do, each linking to its own task.
+  rows do, each linking to its own agent.
 * The last verdict's findings show beside the loop, using the existing
   verdict view (`pull_request_lines`'s rendering, and the diff viewer's pins
   when findings carry locations).
@@ -623,7 +623,7 @@ the first review (§9 Q9).
   for `re-review:2` follows the round workflow's step `re-review`. The round
   workflows' step ids must therefore be exactly `review-fix` and
   `re-review`. Lane FL-DRIVE holds that with a test against the constant.
-* The loop's own row follows a control-plane task. It shows the phase and
+* The loop's own row follows a control-plane agent. It shows the phase and
   the round counter from `result_summary.fix_loop` / `fix_loop_state`, the
   way an await-input row shows its wait (`swarm_mcp.progress`,
   `swarm_mcp.compact`).
@@ -638,7 +638,7 @@ the first review (§9 Q9).
   `swarm_fix_loop` tool, or `scripts/api.sh POST
   /workflows/<id>/fix-loop/rounds`).
 * A loop parked on a round in flight is the platform working, and is not
-  flagged. Only the round task can be flagged, by its own rules (a) and (b).
+  flagged. Only the round agent can be flagged, by its own rules (a) and (b).
 * Rule (d) `merge_refused` is unchanged. A merge that refused
   `verdict_not_merge` behind a stopped loop is flagged as today.
 
@@ -667,7 +667,7 @@ place, and §9 Q7 asks whether the loop files minors at all.
   swarm-api PARKED → SUCCEEDED / FAILED / CANCELLED, and moved to
   `HUMAN_REQUIRED` with a `park_phase` when a person is needed. All of those
   edges are already in `_ALLOWED`; changing a park reason is a field write on
-  a PARKED task, not a transition. The alternative,
+  a PARKED agent, not a transition. The alternative,
   `HUMAN_REQUIRED` from the start, would make `/sc check` and the console
   call every running loop "waiting for you".
 * **C.** None for the block itself: `fix_loop` lives in
@@ -686,11 +686,11 @@ FL-CONTRACT.
 | 0 | **FL-CONTRACT** (BGD applies) | `apps/common/swarm_common/states.py`, `profiles.py`, `terraform/infra/locals.tf`, `tests/terraform/catalogue.tftest.hcl`, `docs/contract-change-requests.md`, `tests/unit/common/test_fix_loop_contract.py` (new) | `fix-loop` is `control_plane`, unavailable, in `profiles_without_a_job`; the new park reason is in no capacity set; the parity script passes |
 | 1 | **FL-ROLLUP** | `apps/workflow-rollup/swarm_rollup/__init__.py`, `apps/reconciler/reconciler/model.py` (only if it restates the pattern), `tests/unit/control_plane/test_merge_auto_fix_rounds.py`, `tests/unit/control_plane/test_fix_loop_rollup.py` (new) | `re-review:2` and `review-fix:3` are rounds and `re-review` is not; a FAILED `review-fix:2` under a SUCCEEDED loop rolls up SUCCEEDED |
 | 1 | **FL-SUBMIT** | `apps/swarm-api/swarm_api/schemas.py`, `validation.py`, `service.py`, `tests/unit/control_plane/test_fix_loop_submission.py` (new) | each §4.1 refusal is a 422 naming the step; `max_rounds` 0 and 6 are refused, absent is 3; the block is in the signed dispatch and changes the digest; `on_merge_verdict` with a loop appends a merge with `review_loop` and no `re-review`; first, a measurement of a `direct-pr` no-change review with `allow_empty_diff` |
-| 1 | **FL-SCHED** | `apps/scheduler/scheduler/loop.py`, `apps/scheduler/scheduler/store.py`, `tests/unit/control_plane/test_fix_loop_scheduler.py` (new) | a READY `fix-loop` task is parked, never leased, with any headroom; `_expire_human_waits` spares `park_phase: fix_loop_*` (if Q3 is "no expiry") |
+| 1 | **FL-SCHED** | `apps/scheduler/scheduler/loop.py`, `apps/scheduler/scheduler/store.py`, `tests/unit/control_plane/test_fix_loop_scheduler.py` (new) | a READY `fix-loop` agent is parked, never leased, with any headroom; `_expire_human_waits` spares `park_phase: fix_loop_*` (if Q3 is "no expiry") |
 | 2 | **FL-DRIVE** | `apps/swarm-api/swarm_api/fixloop.py` (new), `mergewake.py` (move `_append_round_step` / `_submit_round` to a shared helper inside it, or export them), `cifix.py` (`ROUND_KINDS`), `routes/admin.py` (the finished hook), `routes/fix_loop.py` (new: add-round / end), `main.py`, `tests/unit/control_plane/test_fix_loop_drive.py` (new), `tests/unit/control_plane/test_fix_loop_routes.py` (new) | every row of §4.4's table; two wakes submit one round; `max_rounds` read from the signed block, not the tenant-writable list; a round refused for a submitter who left parks `round_refused`; the round step ids equal `followedStepId`'s expectation |
 | 2 | **FL-WORKER** | `apps/agent-worker/agent_worker/merge.py`, `verdict.py` (`rendered_review_paths`), `tests/unit/worker/test_fix_loop_merge.py` (new), `tests/unit/worker/test_fix_loop_rendered.py` (new) | a merge with `review_loop` merges on the final re-review's MERGE at the head it judged; refuses a `final_review` from another loop, a non-SUCCEEDED one, or one that judged another head; a re-review with UI paths in `rendered_review_paths` on `claude-code` reads NOT_YET |
 | 3 | **FL-ISSUE** | `apps/swarm-api/swarm_api/issueruns.py`, `issueci.py`, `tests/unit/control_plane/test_issue_run_fix_loop.py` (new) | a compiled plan carries a loop with `max_rounds = fix_rounds`; `Closes #N` and the CI loop's merge read the final review |
-| 3 | **FL-UI** | `apps/swarm-ui/src/WorkflowViews.tsx`, `apps/swarm-ui/src/components/StatePill.tsx`, `apps/swarm-ui/src/types.ts`, `apps/swarm-ui/src/__tests__/fixLoop.test.tsx` (new) | the loop row shows round k of N and the two actions on a parked loop; round rows link their tasks |
+| 3 | **FL-UI** | `apps/swarm-ui/src/WorkflowViews.tsx`, `apps/swarm-ui/src/components/StatePill.tsx`, `apps/swarm-ui/src/types.ts`, `apps/swarm-ui/src/__tests__/fixLoop.test.tsx` (new) | the loop row shows round k of N and the two actions on a parked loop; round rows link their agents |
 | 3 | **FL-PLUGIN** | `apps/swarm-mcp/swarm_mcp/check.py`, `progress.py`, `compact.py`, `server.py` (the `swarm_fix_loop` tool), `plugin/workflows/run.js`, `plugin/skills/sc/SKILL.md`, `tests/unit/mcp/test_fix_loop_check.py` (new), `plugin/hooks/band.test.ts` | `/sc check` flags an exhausted loop with its phase and the add-round command, and does not flag a loop with a round running |
 | 4 | **FL-DOCS** | `docs/workflows.md` ("What this does not do" and a new section), `docs/merge-step.md`, `docs/issue-runs.md`, `plugin/skills/delegate/SKILL.md` | `tests/unit/scripts/` doc guards that already read those files |
 | 5 | **FL-ACCEPT** | `scripts/acceptance/groups/workflow.sh` | a mock-profile workflow whose review says NOT_YET twice then MERGE ends SUCCEEDED with `re-review:1`, `review-fix:2`, `re-review:2` appended |
