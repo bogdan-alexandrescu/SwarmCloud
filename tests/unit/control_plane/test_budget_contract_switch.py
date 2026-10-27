@@ -258,10 +258,14 @@ def test_a_block_signed_for_one_tenant_does_not_verify_on_another():
 # --------------------------------------------------------------------------
 
 
-def test_a_budget_stop_is_classed_by_its_cause_as_its_text_was_classed():
+def test_a_budget_stop_is_classed_by_its_cause_as_its_own_class():
     text = ("budget_exceeded: the agent used $1.02 of a budget of $1.00 and was stopped "
             "at a turn boundary; its work was checkpointed and published as it stood")
     by_cause = outcomes.classify_failure("FAILED", text, 143, end_cause=EndCause.BUDGET_EXCEEDED)
     by_text = outcomes.classify_failure("FAILED", text, 143)
     # MUTATION: leave the member out of `_FAILURE_OF_CAUSE` and this is "other".
-    assert by_cause == by_text == "runner_error"
+    # BGD, 2026-10-27: its own class, not the runner error its text reads as.
+    assert by_cause == "budget_exceeded"
+    # No text rule was added (CLASSIFIER_VERSION stays): the cause is typed
+    # wherever a budget stop is written.
+    assert by_text == "runner_error"

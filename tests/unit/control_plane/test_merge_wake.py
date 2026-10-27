@@ -676,6 +676,64 @@ def test_with_no_live_pr_side_fix_at_this_head_the_round_proceeds(db, wake_clien
     assert claimed["workflow_id"] == workflow["workflow_id"]
 
 
+# A check red on the default branch's own head is not the pull request's to
+# fix (#2367): a round could only re-apply main's own fix by hand, and that
+# hand patch collides with main's real fix once GitHub updates the branch.
+# The tick keeps the merge waiting and spends nothing; a main it cannot read
+# changes nothing.
+
+MAIN_HEAD = "f" * 40
+OTHER_CHECK = "ci / lint"
+
+
+def test_a_check_red_on_the_default_branch_head_gets_no_round(db, wake_client, github):
+    fixable_merge(db, github, rounds=2)
+    github.branches["main"] = MAIN_HEAD
+    github.check(MAIN_HEAD, CHECK, "failure")
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["waiting"] == 1 and body["report"]["fixing"] == 0, body
+    assert body["report"]["woken"] == 0 and body["failures"] == []
+    task = db.docs["tasks/task_merge"]
+    assert task["state"] == "PARKED" and task["park_reason"] == ParkReason.CI_PENDING.value
+    assert mergewake.WAKE_MARKER not in _wait(db)
+    assert _fix_workflows(db) == [], "a round was spent re-applying main's own fix"
+    assert _fix_record(db) == {}, "no round, and no re-run, is claimed while main is red"
+    assert any(f"commits/{MAIN_HEAD}/check-runs" in url for url in _reads(github))
+
+
+def test_a_check_red_only_on_the_pull_request_still_gets_a_round(db, wake_client, github):
+    fixable_merge(db, github, rounds=2)
+    github.require(CHECK, OTHER_CHECK)
+    github.check(HEAD, OTHER_CHECK, "failure")
+    github.branches["main"] = MAIN_HEAD
+    # Main is red on one of the two, green on the other: the other is ours.
+    github.check(MAIN_HEAD, CHECK, "failure")
+    github.check(MAIN_HEAD, OTHER_CHECK, "success")
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["fixing"] == 1, body
+    (workflow,) = _fix_workflows(db)
+    (claimed,) = _fix_record(db)["rounds"]
+    assert claimed["workflow_id"] == workflow["workflow_id"]
+
+
+def test_an_unreadable_default_branch_still_gets_a_round(db, wake_client, github):
+    fixable_merge(db, github, rounds=2)
+    github.branches["main"] = MAIN_HEAD
+    github.check(MAIN_HEAD, CHECK, "failure")
+    github.refuse[("GET", "/repos/example-org/widgets")] = 500
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["fixing"] == 1, body
+    assert body["failures"] == []
+    (workflow,) = _fix_workflows(db)
+    assert len(_fix_record(db)["rounds"]) == 1
+
+
 # --------------------------------------------------------------------------
 # 7. update-branch is asynchronous (MS3 review finding, 2026-10-06)
 # --------------------------------------------------------------------------

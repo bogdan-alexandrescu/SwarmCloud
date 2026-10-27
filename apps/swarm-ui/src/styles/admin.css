@@ -328,8 +328,11 @@
    Additional repositories and Model prices carried no margin, so they sat
    ~2px apart, one box read as two. Every card under the families takes the
    same `--ctl-s5`. */
+/* AND THE AGENT BUDGET CEILING (BUDGET-UI-SETTINGS review, part of #2459):
+   the fold added after Additional repositories sat flush (0px) under it. */
 .adm-repo-limits,
 .adm-prices,
+.adm-budget-ceiling,
 .adm-fallback-token { margin-top: var(--ctl-s5); }
 /* FOLDED UNDER THE CEILINGS (VQ-054, part of #2391; config-e.html S10b). On
    Pool limits the three cards above are drawn folded (AdminSettings.tsx
@@ -399,7 +402,10 @@
 /* A LABEL IS 8px FROM ITS FIELD (visual QA run 6, 6:admin-010). Additional
    repositories wraps each field in its label, as inline text: `Size budget
    per step, GiB` ended where the input's edge began. */
-.adm-repo-limits .adm-token-form > label { display: inline-flex; align-items: center; gap: 8px; }
+/* The agent budget ceiling's two fields are drawn the same way
+   (BUDGET-UI-SETTINGS review): 'Dollars per agent, at most' touched its input. */
+.adm-repo-limits .adm-token-form > label,
+.adm-budget-ceiling .adm-token-form > label { display: inline-flex; align-items: center; gap: 8px; }
 /* THE SAME CONTROL EDGE (visual QA run 4, admin-008): on `--line` the
    fallback token's owner and token fields measured 1.37:1 on the dark card
    and 1.34:1 on the white one, their `--bg` fill 1.08-1.09:1 off it.

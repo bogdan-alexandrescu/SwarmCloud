@@ -268,6 +268,24 @@
         "address": "work/task/task_b40e5a1c/browser",
         "path": "/agents/live/task_b40e5a1c/browser",
         "ready": ".ag-split"
+      },
+      {
+        "id": "budget-warn",
+        "address": "work/task/task_budget_warn",
+        "path": "/agents/live/task_budget_warn",
+        "ready": ".ag-split section.dt-budget"
+      },
+      {
+        "id": "budget-exceeded",
+        "address": "work/task/task_budget_exceeded",
+        "path": "/agents/live/task_budget_exceeded",
+        "ready": ".ag-split section.dt-budget"
+      },
+      {
+        "id": "budget-none",
+        "address": "work/task/task_budget_none",
+        "path": "/agents/live/task_budget_none",
+        "ready": ".ag-split .dt-strip"
       }
     ]
   },

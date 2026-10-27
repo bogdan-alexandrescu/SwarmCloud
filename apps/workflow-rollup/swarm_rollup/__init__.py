@@ -62,11 +62,23 @@ SKIPPED_SUMMARY_KEY = "skipped"
 #: so the id alone marks a step only the platform appended. The id, not the
 #: step's input, because the reconciler decodes steps without their input
 #: (`reconciler.model.WorkflowView`) and must derive what this derives.
-FIX_ROUND_STEP_RE = re.compile(r"^(?:ci|conflict|pick)-fix:[1-9][0-9]{0,2}$")
+#:
+#: A FIX LOOP's rounds share the pattern (FL-ROLLUP, part of #2509;
+#: docs/design/fix-loop.md §4.2 and §6.1): `review-fix:<k>` and
+#: `re-review:<k>`, k >= 1, appended by the `fix-loop` step's driver. They are
+#: judged by the loop step, whose own ending (SUCCEEDED, or FAILED
+#: `fix_loop_exhausted`) is the verdict on them, exactly as the merge step's
+#: is on its rounds -- so `derive` needs no second rule. A bare `re-review`,
+#: the step `on_merge_verdict` appends (`validation.REREVIEW_STEP_ID`), is NOT
+#: a round: it is the lane's own review and fails the workflow like any step,
+#: and the required `:<n>` is what keeps it out.
+FIX_ROUND_STEP_RE = re.compile(
+    r"^(?:(?:ci|conflict|pick|review)-fix|re-review):[1-9][0-9]{0,2}$")
 
 
 def is_fix_round_step(step_id: str) -> bool:
-    """Whether `step_id` names a merge fix round the platform appended."""
+    """Whether `step_id` names a round the platform appended: a merge fix
+    round or a fix loop's review-fix / re-review round."""
     return bool(FIX_ROUND_STEP_RE.fullmatch(step_id or ""))
 
 
@@ -199,7 +211,7 @@ class WorkflowRollup:
     #: counted under SUCCEEDED in `counts`, because that is what it is in the
     #: frozen state machine and what a "done" count reads.
     skipped_steps: list[str] = field(default_factory=list)
-    #: The merge fix rounds among the steps (`is_fix_round_step`). Counted in
+    #: The merge and fix-loop rounds among the steps (`is_fix_round_step`). Counted in
     #: `counts` as what their tasks are; see `derive` for how they rank.
     fix_round_steps: list[str] = field(default_factory=list)
 
@@ -295,6 +307,11 @@ def derive(readings: Sequence[StepReading]) -> WorkflowRollup:
     merge that refused after its rounds is FAILED by its own state. The
     round still shows in `counts` as what its task is, and is named in
     `fix_round_steps`.
+
+    A FIX LOOP's rounds (`review-fix:<k>`, `re-review:<k>`) take the same
+    rule, judged by the loop step's own ending: a `review-fix:2` that FAILED
+    under a loop that ended SUCCEEDED is a SUCCEEDED workflow; a loop that
+    ended FAILED fails it.
     """
     if not readings:
         return WorkflowRollup(

@@ -51,7 +51,7 @@ from . import budget as budget_mod
 from . import gitidentity, publishtopr, runnersizes
 from .auth import AuthContext
 from .codec import hard_limit_known, quota_to_api
-from .cifix import stamp as stamp_ci_fix
+from .cifix import CI_FIX_METADATA_FIELD, stamp as stamp_ci_fix
 from .prgate import gate_for, resolve_after
 from .continuation import (
     NamedPull,
@@ -1213,6 +1213,16 @@ class SubmissionService:
                 # the round left the branch on the default branch's head.
                 if isinstance(spec.metadata.get(CONFLICT_ROUND_METADATA_KEY), dict):
                     dispatch = replace(dispatch, conflict_round=True)
+                # A CI fix's red head (#2276), inside the signed block so the
+                # worker may end the fix as superseded at attempt start when the
+                # pull request has moved past it. Only the two fields
+                # `stamp_ci_fix` checked above: no claim, no post-back state.
+                ci_fix = spec.metadata.get(CI_FIX_METADATA_FIELD)
+                if isinstance(ci_fix, dict) and ci_fix.get("head_sha"):
+                    dispatch = replace(dispatch, ci_fix_head={
+                        "pull_request": ci_fix["pull_request"],
+                        "head_sha": ci_fix["head_sha"],
+                    })
             # The merge step (contract request 47): appended here, once the
             # strategy is known and before anything is built or signed, then
             # checked with the rest of the graph.
@@ -1514,8 +1524,14 @@ class SubmissionService:
             # The re-review runs on what its review RESOLVED to (#2322): the
             # review's task id beside the policy it copied, read by the
             # scheduler as the re-review is readied (`scheduler.runtime`).
+            # Only when the review itself asked for the policy: a review
+            # pinned to claude-code resolved nothing, and its re-review's
+            # block (#2275, `rereview_step_for`) decides from the lane's files.
             runtime_block = task.metadata.get(RUNTIME_METADATA_KEY)
-            if step_id == rereview_step_id and isinstance(runtime_block, dict) and source.when:
+            if (
+                step_id == rereview_step_id and isinstance(runtime_block, dict) and source.when
+                and RUNTIME_METADATA_KEY in (by_id[source.when.step].metadata or {})
+            ):
                 runtime_block["inherit"] = {
                     "step": source.when.step, "task_id": step_task_id[source.when.step],
                 }

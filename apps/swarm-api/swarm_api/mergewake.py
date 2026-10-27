@@ -94,6 +94,17 @@ liveness `stamp` itself refuses on), the tick claims no round and asks for no
 re-run: the merge stays parked on CI_PENDING, as for any wait. Once that task
 is terminal the red reading is handed off as above.
 
+A CHECK RED ON THE DEFAULT BRANCH'S OWN HEAD IS NOT THE PULL REQUEST'S TO
+FIX (#2367). Four rounds on 2026-10-25 hand-patched main's stale unit-shard
+weights, which main's #2312 then rewrote; GitHub's "Update branch" merged
+that into their branches mid-round and every push was refused. Before a
+re-run or a round, the tick reads the default branch's head and its checks
+(`_red_on_default`, the same `evaluate` as `_read`): when every check
+failing at the pull request's head is failing there too, it claims nothing
+and stays parked on CI_PENDING. Main's fix moves main, the update moves the
+pull request's head, and the next red reading is the pull request's own. A
+main that cannot be read changes nothing: the round goes ahead as before.
+
 A CONFLICTING PULL REQUEST IS NEVER WAITED ON FOR CHECKS (#1076). GitHub
 runs no checks on a pull request that conflicts with its base, so a park
 that read them would wait out the worker's six hours for nothing (PR 1028:
@@ -1016,6 +1027,36 @@ def _conflicting_files(writer: GitHubWriter, ref: IssueRef, pull: PullSnapshot,
     return sorted(ours & theirs)[:MAX_CONFLICT_FILES]
 
 
+def _red_on_default(writer: GitHubWriter, ref: IssueRef, read: _Reading,
+                    token: str) -> tuple[list[str], str] | None:
+    """(the failing names, the default branch's head) when every check failing
+    in `read` also fails at the default branch's own head; else None (#2367).
+
+    A read that fails is None and logged: it never holds a round back.
+    """
+    failing = read.checks.failing_names() if read.checks is not None else []
+    if not failing:
+        return None
+    try:
+        branch = writer.default_branch(ref, token)
+        sha = writer.branch_head(ref, branch, token)
+        if sha is None or sha == read.pull.head_sha:
+            return None
+        rules = writer.branch_rules(ref, branch, token)
+        theirs = evaluate(
+            required_status_checks(rules),
+            writer.check_runs(ref, sha, token),
+            writer.commit_statuses(ref, sha, token),
+        ).failing_names()
+    except Exception as exc:  # noqa: BLE001 -- the round goes ahead as before
+        log.info("merge wake: the default branch of %s not read (%s); the round goes ahead",
+                 ref.repository, type(exc).__name__)
+        return None
+    if not set(failing) <= set(theirs):
+        return None
+    return failing, sha
+
+
 def _on_red(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], ref: IssueRef,
             head: str, read: _Reading, token: str, now: datetime) -> tuple[str, str | None]:
     """A red reading at `head`: (`_FIXING` | `_WAITING` | `_WAKE`, the wake reason)."""
@@ -1033,6 +1074,16 @@ def _on_red(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], ref: IssueRe
             log.info("merge wake %s tenant=%s: CI fix round waits: PR-side fix %s (%s) "
                      "holds pull request #%d at %s", task_id, tenant.tenant_id,
                      held.get("task_id"), held.get("workflow_id"), ref.number, head[:12])
+            return _WAITING, None
+        # Red on main's own head too (#2367): a round could only re-apply
+        # main's fix by hand. Wait for main to go green and the branch to be
+        # updated; the head moves, and the next red reading is ours.
+        mains = _red_on_default(ctx.forge_writer, ref, read, token)
+        if mains is not None:
+            names, sha = mains
+            log.info("merge wake %s tenant=%s: CI fix round waits: %s red at the default "
+                     "branch's head %s too", task_id, tenant.tenant_id,
+                     redact(", ".join(names)).text, sha[:12])
             return _WAITING, None
         return _rerun_first(ctx, db, tenant.tenant_id, doc, ref, head, read, token, now)
 
