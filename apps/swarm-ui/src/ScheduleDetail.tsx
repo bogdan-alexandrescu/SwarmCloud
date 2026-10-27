@@ -1047,7 +1047,7 @@ const CATCH_UP_WORDS: Readonly<Record<string, string>> = {
 function cadenceRules(s: Schedule): string[] {
   const p = s.policy
   const out: string[] = []
-  if (p.jitter === true) out.push('Each firing starts up to five minutes after its slot (jitter).')
+  if (p.jitter === true) out.push('Each firing starts a little after its slot (jitter): at most five minutes, and at most a tenth of the interval.')
   if (p.jitter === false) out.push('Each firing starts at its slot.')
   if (p.catch_up !== undefined) out.push(CATCH_UP_WORDS[p.catch_up] ?? `Catch-up: ${p.catch_up}.`)
   if (p.overlap !== undefined) out.push(OVERLAP_WORDS[p.overlap] ?? `Overlap: ${p.overlap}.`)
