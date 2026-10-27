@@ -14772,10 +14772,10 @@ A 403 on GKE Job create is a `DispatchError`, and the drain answers every
 `DispatchError` with `SchedulerStore.return_to_ready_after_failed_dispatch`:
 READY at `now + 30 s`, FAILED at `max_attempts`. On 2026-10-20 19:24-20:06Z
 the admission policy `swarm-worker-job-constraints` refused every CPU-burst
-Job; 54-56 dispatches failed, 11-13 tasks ended FAILED `dispatch_failed`
-about two minutes after submission, and three merge tasks used 10 of 10
+Job; 54-56 dispatches failed, 11-13 agents ended FAILED `dispatch_failed`
+about two minutes after submission, and three merge agents used 10 of 10
 attempts without running once. A full Job quota (`count/jobs.batch`, 200 per
-tenant namespace) would do the same to every task past the 200th.
+tenant namespace) would do the same to every agent past the 200th.
 
 From this lane on, those 403s carry `gke_admission_refused` and
 `gke_job_quota_exceeded` instead of `gke_create_job_forbidden`
@@ -14785,34 +14785,36 @@ later", and `Task` has nowhere to count how often it has.
 
 ### The change
 
-    # states.py, class ParkReason
-    #: The platform refused this task's dispatch -- a cluster admission
-    #: policy or webhook, or the tenant namespace's ResourceQuota
-    #: (`gke_admission_refused`, `gke_job_quota_exceeded`). Written by the
-    #: scheduler's failed-dispatch path with the lease released; promoted by
-    #: the scheduler once `next_eligible_at` passes. Holds no capacity
-    #: (invariant 1). Contract request 123.
-    PLATFORM_REFUSED = "PLATFORM_REFUSED"
+```python
+# states.py, class ParkReason
+#: The platform refused this task's dispatch -- a cluster admission
+#: policy or webhook, or the tenant namespace's ResourceQuota
+#: (`gke_admission_refused`, `gke_job_quota_exceeded`). Written by the
+#: scheduler's failed-dispatch path with the lease released; promoted by
+#: the scheduler once `next_eligible_at` passes. Holds no capacity
+#: (invariant 1). Contract request 123.
+PLATFORM_REFUSED = "PLATFORM_REFUSED"
 
-    # models.py, class Task (with to_dict/from_dict, default 0)
-    #: Consecutive dispatches the platform refused (PLATFORM_REFUSED parks).
-    #: Reset to 0 by a dispatch that succeeds. Contract request 123.
-    platform_refusals: int = 0
+# models.py, class Task (with to_dict/from_dict, default 0)
+#: Consecutive dispatches the platform refused (PLATFORM_REFUSED parks).
+#: Reset to 0 by a dispatch that succeeds. Contract request 123.
+platform_refusals: int = 0
 
-    # models.py, beside retries_exhausted
-    PLATFORM_REFUSED_MAX_PARKS = 5
-    def platform_refusal_backoff(parks: int) -> timedelta:
-        """Park n (1-based) waits 2**(n-1) minutes: 1, 2, 4, 8, 16."""
+# models.py, beside retries_exhausted
+PLATFORM_REFUSED_MAX_PARKS = 5
+def platform_refusal_backoff(parks: int) -> timedelta:
+    """Park n (1-based) waits 2**(n-1) minutes: 1, 2, 4, 8, 16."""
+```
 
 The scheduler, once applied:
 
-* a `DispatchError` whose code is in `PLATFORM_REFUSAL_CODES`, on a task
+* a `DispatchError` whose code is in `PLATFORM_REFUSAL_CODES`, on an agent
   with `platform_refusals < PLATFORM_REFUSED_MAX_PARKS`, is written
   PARKED/`PLATFORM_REFUSED` in the same transaction and under the same guards
   as today's READY return, with the lease released, `attempt_count` restored
   to its pre-lease value (the refusal spends no attempt), `platform_refusals`
   incremented and `next_eligible_at = now + platform_refusal_backoff(n)`;
-* the sixth consecutive refusal ends the task FAILED with the precise code in
+* the sixth consecutive refusal ends the agent FAILED with the precise code in
   `last_error` and `end_cause` `dispatch_failed`: 31 minutes of parks in all;
 * a sweep beside `_promote_scheduled_retries` promotes a due park through
   `promote_to_ready`;
@@ -14821,7 +14823,7 @@ The scheduler, once applied:
 
 ### Why parking keeps invariant 1
 
-A PARKED task creates no infrastructure demand: it holds no lease, no pool
+A PARKED agent creates no infrastructure demand: it holds no lease, no pool
 count and no pod, and admission does not consider it. The lease is released in
 the transaction that parks, so the all-or-nothing reservation (invariant 2) is
 untouched, and concurrency, counted from LEASED (invariant 3), drops at once.
@@ -14832,9 +14834,9 @@ the length of a create that will be refused.
 
 * **the scheduler**: writes the park (`loop.py`'s failed-dispatch branch,
   `store.py`) and promotes it (a new sweep);
-* **the reconciler**: nothing to do, a PARKED task has no lease;
+* **the reconciler**: nothing to do, a PARKED agent has no lease;
 * **swarm-api and the console**: `park_reason` and `next_eligible_at`, as for
-  every park; `platform_refusals` on the task's detail;
+  every park; `platform_refusals` on the agent's detail;
 * **`scripts/lib/check-contract-parity.sh`**: any shell restatement of
   `ParkReason` gains the member.
 
@@ -14848,9 +14850,9 @@ value.
 
 ### If it is declined
 
-The two codes stay what the task and the log carry, and a refusal keeps
+The two codes stay what the agent and the log carry, and a refusal keeps
 spending attempts on the fixed 30 s: a policy or quota fault fails every
-affected task in about `30 s × max_attempts`.
+affected agent in about `30 s × max_attempts`.
 
 ### Invariants
 
