@@ -890,7 +890,7 @@ def test_a_green_gate_says_whether_the_base_requires_a_merge_queue(run_gate, tmp
     assert outputs.get("queue") == queue, outputs
 
 
-@pytest.mark.parametrize("conclusion", ["timed_out", "action_required", "cancelled"])
+@pytest.mark.parametrize("conclusion", ["timed_out", "action_required"])
 def test_other_failing_conclusions_are_also_refused(run_gate, conclusion: str):
     proc, _calls, comments = run_gate(
         "A fact-style headline",
@@ -1220,7 +1220,10 @@ CHECK_PARITY = [
     ("completed", "failure", True, True, None),
     ("completed", "timed_out", True, True, None),
     ("completed", "action_required", True, True, None),
-    ("completed", "cancelled", True, True, None),
+    # #1778: a cancelled latest run is pending, not failed. Gate 5 no longer
+    # refuses it; gate 6 waits only on a REQUIRED one (`CANCELLED_PARITY`).
+    ("completed", "cancelled", False, True,
+     "#1778: cancelled is pending; the gate waits only on a required check, the merge step on any"),
     # The check here (`terraform`) is not a required one. Since #815 the gate
     # waits only on required checks still running -- native auto-merge waits
     # for those -- while the worker's one-shot merge step holds on any.
@@ -1445,6 +1448,91 @@ def test_every_implementation_judges_every_check_by_the_latest_run_of_each_event
     # group by name alone when no Actions run is passed -> "no event known,
     # two suites" reads green.
     assert (verdict != "green") is holds, (case, verdict)
+
+
+#: #1778's second expectation (BGD released bundle H09, 2026-10-27): "a check
+#: whose LATEST run is cancelled is still not green and waits, rather than
+#: failing the merge". Each judge's own answer, one row each, as STUCK_PARITY
+#: below: gate 5 refuses only a red latest run, and gate 6 waits on a
+#: required check whose latest run is cancelled, as on one still running; a
+#: red latest run of another event still wins everywhere. A check nothing
+#: requires is pending in the worker and swarm-api and, like one still
+#: running (#815), holds neither the gate nor the train.
+#:
+#: The gate is read from the tree's auto-merge.yml: its rows are red until the
+#: operator applies this lane's workflow-lines.patch.
+#: (case, required, runs as (run id, event, status, conclusion),
+#:  gate, worker, swarm-api, train)
+CANCELLED_PARITY = [
+    ("required, latest cancelled", True,
+     [(1, "push", "completed", "cancelled")], "wait", "pending", "pending", "pending"),
+    ("required, green then cancelled in one event", True,
+     [(1, "push", "completed", "success"), (2, "push", "completed", "cancelled")],
+     "wait", "pending", "pending", "pending"),
+    ("required, cancelled push, red pull_request", True,
+     [(1, "push", "completed", "cancelled"), (2, "pull_request", "completed", "failure")],
+     "refuse", "failed", "red", "red"),
+    ("required, cancelled then green (control)", True,
+     [(1, "push", "completed", "cancelled"), (2, "push", "completed", "success")],
+     "merge", "green", "green", "green"),
+    ("not required, latest cancelled", False,
+     [(1, "push", "completed", "cancelled")], "merge", "pending", "pending", "green"),
+    ("not required, cancelled push, red pull_request", False,
+     [(1, "push", "completed", "cancelled"), (2, "pull_request", "completed", "failure")],
+     "refuse", "failed", "red", "red"),
+]
+
+
+@pytest.mark.parametrize(("case", "required", "runs", "gate", "worker", "api", "train"),
+                         CANCELLED_PARITY, ids=[c[0] for c in CANCELLED_PARITY])
+def test_every_judge_waits_on_a_cancelled_latest_run_and_red_still_wins(
+    run_gate, tmp_path, case, required, runs, gate, worker, api, train
+):
+    name = "ci-gate" if required else "terraform"
+    check_runs, workflow_runs = _parity_runs(name, runs)
+
+    # Gate 5 and gate 6, the gate step's shell.
+    rules, branch = (RULESET_RULES, RULESET_ONLY_BRANCH) if required else (None, PROTECTED)
+    proc, _calls, comments = run_gate("A fact-style headline", branch, rules=rules,
+                                      check_runs=check_runs, workflow_runs=workflow_runs)
+    decision = "refuse" if proc.returncode != 0 else _outputs(tmp_path / "output.txt").get("decision")
+    # MUTATION (auto-merge.yml gate 5): refuse a cancelled run -> the
+    # "latest cancelled" rows refuse. MUTATION (gate 6): wait only on a run
+    # with no conclusion -> the required cancelled rows merge.
+    assert decision == gate, (case, decision, proc.stderr, comments)
+
+    # The worker's merge step.
+    facts = [worker_merge.CheckFacts(name=name, status=status, conclusion=conclusion, app_id=15368,
+                                     run_id=run_id, event=event, check_suite_id=100 + run_id)
+             for run_id, event, status, conclusion in runs]
+    if required:
+        got = worker_merge.required_check_state([f.as_run() for f in facts])
+    else:
+        pending, failed = worker_merge.judge_other_checks(facts)
+        got = "failed" if failed else "pending" if pending else "green"
+    # MUTATION (merge.py): read cancelled as failed -> the cancelled rows "failed".
+    assert got == worker, (case, got)
+
+    # swarm-api's reading.
+    api_runs = [{**run, "event": event} for run, (_id, event, _s, _c) in zip(check_runs, runs)]
+    reading = api_forgechecks.evaluate(
+        [api_forgechecks.RequiredCheck(name, None)] if required else [], api_runs, [])
+    # MUTATION (forgechecks.py): read cancelled as red -> those rows "red".
+    assert reading.state == api, (case, reading)
+
+    # The merge train's judge, beside one green required check when the row
+    # is a check nothing requires.
+    judged = check_runs if required else check_runs + [
+        {"id": 50, "name": "ci-gate", "status": "completed", "conclusion": "success",
+         "check_suite": {"id": 150}}]
+    verdict = _train_judge(tmp_path, judged, workflow_runs, ["ci-gate"])
+    # MUTATION (merge-train.sh `cmd_judge`): keep cancelled in `bad` -> the
+    # cancelled rows read "red".
+    assert verdict == train, (case, verdict)
+
+    # §8: the merge may be stricter than the gate, never looser.
+    if gate != "merge":
+        assert worker != "green", case
 
 
 #: CHECK-STUCK (BGD, 2026-10-23, part of #2031): a check run that carries a
