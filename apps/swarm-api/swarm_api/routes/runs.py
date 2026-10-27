@@ -48,6 +48,15 @@ request -- names a schedule whose stored `scope.mode` is `platform` are 403
 the run moves: the inbox's own check (`routes.approvals._platform_only`),
 with its log line. A run of a workspace-scope schedule, or of none, keeps
 the rules above exactly.
+
+ONLY SOMEONE WHO MAY APPROVE A PLAN MAY REJECT IT (BGD 2026-10-26,
+PLAN-REJECT-RULE, part of #2417). `plan:reject` of a PLANNED run asks the
+approvals inbox's own reject rule (`reject_rule`, over
+`routes.approvals._reject_rule`): the who-checks `plan:approve` makes -- the
+hold, a workspace admin deciding a `second_member` hold alone, the
+schedule's approvers -- else 403 `reject_approver_required`, behind the same
+switch, on by default. Off (`REFUSAL_REJECT_APPROVER_REQUIRED=off`), any
+member rejects, as before.
 """
 
 from __future__ import annotations
@@ -354,6 +363,17 @@ def platform_only(ctx: AppContext, auth: AuthContext, tenant_id: str, run: Issue
 
     _platform_only(auth, approvals.read_schedule(ctx.db, tenant_id, (run.schedule or {}).get("schedule_id")),
                    action)
+
+
+def reject_rule(ctx: AppContext, auth: AuthContext, tenant_id: str, run: IssueRun) -> None:
+    """`routes.approvals._reject_rule` over `run` as the inbox projects it
+    (PLAN-REJECT-RULE, part of #2417): 403 `reject_approver_required` when
+    `_approve` would refuse the caller, through the same switch, on by
+    default. Imported here, not at the top: that module imports this one."""
+    from .approvals import _reject_rule
+
+    schedule = approvals.read_schedule(ctx.db, tenant_id, (run.schedule or {}).get("schedule_id"))
+    _reject_rule(ctx, auth, tenant_id, approvals.project_run(run, schedule), run=run, schedule=schedule)
 
 
 def _approve(
@@ -1227,7 +1247,11 @@ def reject_plan(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     approvals.require_decider(ctx, auth)
-    platform_only(ctx, auth, tenant_id, _runs(ctx).get(tenant_id, run_id), "reject")
+    current = _runs(ctx).get(tenant_id, run_id)
+    platform_only(ctx, auth, tenant_id, current, "reject")
+    if current.state == RunState.PLANNED:
+        # A decided run is the transition's 409 below, not a who-refusal.
+        reject_rule(ctx, auth, tenant_id, current)
     run = _runs(ctx).transition(
         tenant_id, run_id, RunState.REJECTED, by=auth.email, digest=body.plan_digest,
         from_states=_PLANNED_ONLY,
