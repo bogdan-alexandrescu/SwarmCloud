@@ -13,6 +13,17 @@
  * padding, its gaps and every other item in it, is the width the name has;
  * the name's words are set greedily into lines of that width.
  *
+ * PHONE-BAR-CHIP (the PHONE-BAR-LABEL review, part of #2391): an 8em floor
+ * beside the chip took 27px from it, and the admin's own chip read `Your …`
+ * on every page. BGD's rule (2026-10-26, "Room left, then wrap"): the chip,
+ * the env pill, the bell and the arrow keep their widths; the name takes the
+ * room left and wraps at a space; no word is cut. tablefit's 0.56em is an
+ * upper bound made for "if the model says it fits, it fits"; beside the
+ * chip, where the room is ~80px, it cannot tell two lines from four. The
+ * name and the chip's text are therefore measured with Inter Tight's own
+ * advances (INTER below); every other item keeps the conservative bound,
+ * which can only shrink the room.
+ *
  * Each `it` names the mutation that turns it red.
  */
 import { cleanup, render, waitFor } from '@testing-library/react'
@@ -21,7 +32,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CascadeEnv } from './cssgate'
 import { build, painted, TABLES } from './marks'
 import { resolveVars } from './spaceprobe'
-import { lengthPx, paddingX, textPx } from './tablefit'
+import { fontPx, lengthPx, paddingX, textPx } from './tablefit'
 
 const PHONE: CascadeEnv = { width: 390 }
 const WIDE: CascadeEnv = { width: 1440 }
@@ -39,6 +50,31 @@ const LONG_LABELS = [
   'Profile headroom',
   'Provider quota',
 ] as const
+
+/**
+ * Inter Tight's advance widths in em, rounded up, read from the shipped
+ * `@fontsource-variable/inter-tight` latin file with fontTools
+ * (`instancer.instantiateVariableFont(font, {'wght': w})`, `hmtx` over a
+ * 2048 unitsPerEm): 650 is the bar's page name (`.sk-pbar b`), 500 the
+ * chip (`.sk-tchip`). Kerning is left out; Inter's pairs only tighten.
+ */
+const INTER: Record<500 | 650, Record<string, number>> = {
+  500: { a: 0.529, b: 0.574, c: 0.528, d: 0.574, e: 0.543, f: 0.328, g: 0.575, h: 0.562, i: 0.208, j: 0.208, k: 0.515, l: 0.208, m: 0.843, n: 0.557, o: 0.561, p: 0.574, q: 0.574, r: 0.343, s: 0.494, t: 0.33, u: 0.553, v: 0.525, w: 0.783, x: 0.51, y: 0.525, z: 0.51, A: 0.658, B: 0.612, C: 0.694, D: 0.68, E: 0.561, F: 0.544, G: 0.708, H: 0.7, I: 0.228, J: 0.509, K: 0.623, L: 0.522, M: 0.859, N: 0.706, O: 0.727, P: 0.597, Q: 0.727, R: 0.604, S: 0.602, T: 0.609, U: 0.696, V: 0.658, W: 0.941, X: 0.624, Y: 0.643, Z: 0.597, ' ': 0.223 },
+  650: { a: 0.546, b: 0.592, c: 0.548, d: 0.592, e: 0.559, f: 0.349, g: 0.594, h: 0.586, i: 0.232, j: 0.232, k: 0.541, l: 0.232, m: 0.872, n: 0.583, o: 0.576, p: 0.592, q: 0.592, r: 0.368, s: 0.521, t: 0.35, u: 0.581, v: 0.546, w: 0.809, x: 0.534, y: 0.546, z: 0.532, A: 0.701, B: 0.625, C: 0.713, D: 0.691, E: 0.575, F: 0.551, G: 0.723, H: 0.71, I: 0.243, J: 0.53, K: 0.649, L: 0.532, M: 0.878, N: 0.704, O: 0.744, P: 0.611, Q: 0.745, R: 0.619, S: 0.617, T: 0.629, U: 0.697, V: 0.701, W: 0.988, X: 0.667, Y: 0.68, Z: 0.625, ' ': 0.206 },
+}
+
+/** `text` in Inter Tight at `weight`, in px at the element's own font size. */
+function interPx(text: string, weight: 500 | 650, el: Element): number {
+  const size = fontPx(el, PHONE)
+  return [...text].reduce((sum, c) => {
+    const em = INTER[weight][c]
+    if (em === undefined) throw new Error(`no measured advance for ${JSON.stringify(c)}`)
+    return sum + em * size
+  }, 0)
+}
+
+/** The widest single word of a name, in px: the floor below which a word is cut. */
+const widestWord = (text: string, el: Element): number => Math.max(...text.split(' ').map((w) => interPx(w, 650, el)))
 
 const hosts: HTMLElement[] = []
 const realFetch = globalThis.fetch
@@ -121,6 +157,8 @@ function floorPx(el: Element): number {
   const v = painted(el, 'min-width', PHONE)
   const m = v === null ? null : /^([\d.]+)em$/.exec(v.trim())
   if (m !== null) return Number(m[1]) * px(painted(el, 'font-size', PHONE))
+  // The widest word: measured per name by `widestWord`, not a length here.
+  if (v !== null && v.trim() === 'min-content') return 0
   return lengthPx(v, 0) ?? 0
 }
 
@@ -142,7 +180,8 @@ function itemPx(el: HTMLElement): number {
   if (el.classList.contains('sk-ibtn')) return box + px(painted(el.querySelector('.sk-ic')!, 'width', PHONE))
   if (el.classList.contains('sk-tchip')) {
     const name = el.querySelector<HTMLElement>('.sk-tcn')!
-    return box + textPx(name.textContent ?? '', name, PHONE) + px(painted(el, 'gap', PHONE)) + px(painted(el.querySelector('.sk-ic')!, 'width', PHONE))
+    // Measured, as the name beside it is: the chip's whole one-line width.
+    return box + interPx(name.textContent ?? '', 500, el) + px(painted(el, 'gap', PHONE)) + px(painted(el.querySelector('.sk-ic')!, 'width', PHONE))
   }
   if (el.classList.contains('sk-top')) return box + textPx('↑', el, PHONE)
   // The workspace label and the environment pill: text in a box.
@@ -151,9 +190,8 @@ function itemPx(el: HTMLElement): number {
 
 /**
  * The width the bar leaves its page name at 390, with the bell the live bar
- * carries and every other item at its whole width. Below the name's floor the
- * chip or label gives way (`flex-shrink: 100`, `min-width: 0`) and the name
- * holds its floor; `chipPx` is how much the workspace has to give.
+ * carries and every other item, the workspace chip or label included, at
+ * its whole width. `chipPx` is the workspace's own width.
  */
 function roomFor(header: HTMLElement): { room: number; chipPx: number } {
   const items = [...header.children].filter((c) => c.tagName.toLowerCase() !== 'b') as HTMLElement[]
@@ -169,11 +207,9 @@ function roomFor(header: HTMLElement): { room: number; chipPx: number } {
 
 /**
  * The name's words set greedily into lines `room` wide; a word wider than the
- * line is reported. `perChar` is tablefit's conservative advance for the
- * title's face and size (`textPx` of one character), read once.
+ * line is reported. `width` is the title's text width at its face and size.
  */
-function lines(text: string, perChar: number, room: number): string[] {
-  const width = (t: string) => [...t].length * perChar
+function lines(text: string, width: (t: string) => number, room: number): string[] {
   const out: string[] = []
   for (const word of text.split(' ')) {
     expect(width(word), `"${word}" alone is wider than the ${room.toFixed(0)}px the bar leaves`).toBeLessThanOrEqual(room)
@@ -223,45 +259,66 @@ describe('PHONE-BAR-LABEL: a long page name reads whole at 390', () => {
     expect(painted(plain, 'min-width', PHONE)).toBe('5.5em')
   })
 
-  it("holds beside the admin's chip a floor two whole lines of the longest name fit, one size step down", () => {
-    // MUTATION: drop `.sk-pbar.has-chip b`'s size step or its 8em floor: the
-    // name falls back to 77px beside `Your workspace`, where `Submit from a
-    // GitHub issue` needs four lines and `Workspaces` is wider than the box.
+  it("floors the name beside the admin's chip at its widest word, one size step down, not at a fixed width", () => {
+    // MUTATION: an `em` floor back on `.sk-pbar.has-chip b` (the 8em of the
+    // PHONE-BAR-LABEL fix took 27px from `Your workspace`), or drop the size step.
     const title = build('div.sk-app > header.sk-pbar.has-chip > b', hosts)
     const plain = build('div.sk-app > header.sk-pbar > b', hosts)
     expect(painted(title, 'font-size', PHONE)).toBe('var(--t-meta)')
     expect(painted(plain, 'font-size', PHONE)).toBe('var(--t-body)')
-    const perChar = textPx('x', title, PHONE)
-    const floor = floorPx(title)
-    expect(floor).toBeGreaterThan(floorPx(plain))
-    for (const label of LONG_LABELS) expect(lines(label, perChar, floor).length, `"${label}" in ${floor}px`).toBeLessThanOrEqual(2)
+    expect(painted(title, 'min-width', PHONE)).toBe('min-content')
+  })
+
+  it("wraps the chip's name at its space before cutting it, inside the compacted bar", () => {
+    // MUTATION: `nowrap`/`ellipsis` back on `.sk-tcn` in the bar: a single
+    // page-name word wider than the room would cut the chip to `Your …`; or
+    // the chip's own line-height or padding back up, so two lines outgrow 36px.
+    const chip = build('div.sk-app.is-scrolled > header.sk-pbar.has-chip > button.sk-tchip', hosts)
+    const name = document.createElement('span')
+    name.className = 'sk-tcn'
+    chip.appendChild(name)
+    expect(painted(name, 'white-space', PHONE)).toBe('normal')
+    expect(painted(name, 'text-overflow', PHONE)).not.toBe('ellipsis')
+    expect(painted(name, 'overflow-wrap', PHONE) ?? 'normal').toBe('normal')
+    expect(painted(name, 'word-break', PHONE) ?? 'normal').toBe('normal')
+    expect(painted(name, '-webkit-line-clamp', PHONE)).toBe('2')
+    const lh = Number(resolveVars(painted(name, 'line-height', PHONE)!, TABLES.dark))
+    expect(Number.isFinite(lh) && lh > 0, "the chip's name states a unitless line-height").toBe(true)
+    const size = fontPx(name, PHONE)
+    const block = px(painted(chip, 'padding-block', PHONE) ?? painted(chip, 'padding', PHONE)!.split(/\s+/)[0]!)
+    const tall = 2 * size * lh + 2 * block + bordersX(chip)
+    expect(tall, "two lines of the chip's name outgrow the compacted bar").toBeLessThanOrEqual(px(painted(chip.parentElement!, 'height', PHONE)))
   })
 
   for (const who of WHO) {
-    it(`sets every long page name in at most two whole lines: ${who}`, async () => {
-      // MUTATION: shrink the room (a wider gap or padding in the bar), or
-      // grow the title's font, or lower its floor beside the chip, until a
-      // name needs a third line or a word is wider than its box.
+    it(`keeps the workspace whole and sets every long page name in at most two whole lines: ${who}`, async () => {
+      // MUTATION: an `em` floor on the name beside the chip wider than the
+      // room (the chip pays the difference), the bar's gap or padding back up
+      // beside the chip, or the title's font a step up, until the workspace
+      // gives way, a word is wider than its box or a name needs a third line.
       let visited = 0
       const { header, retitle } = await bar(who)
       expect(header.classList.contains('has-chip')).toBe(who !== 'member')
       // The room is the bar's less every item but the name, so one reading
       // serves every name; so does the title's face, size, wrap and clamp.
       const title = [...header.children].find((c) => c.tagName.toLowerCase() === 'b') as HTMLElement
-      const { room: left, chipPx } = roomFor(header)
+      const { room, chipPx } = roomFor(header)
+      expect(chipPx).toBeGreaterThan(0)
+      // Past its floor the name takes from the workspace (`flex-shrink:
+      // 100`): a floor no wider than the room leaves the workspace whole.
       const floor = floorPx(title)
-      // Below its floor the name holds it and the workspace gives the rest,
-      // never more than its own width: the row stays inside the glass.
-      expect(left + chipPx, 'the workspace cannot give the name its floor').toBeGreaterThanOrEqual(floor)
-      const room = Math.max(left, floor)
+      expect(floor, `the name's floor takes ${(floor - room).toFixed(0)}px from the workspace`).toBeLessThanOrEqual(room)
       // A `nowrap` name has one line; a wrapping one as many as its clamp.
       const most = painted(title, 'white-space', PHONE) === 'nowrap' ? 1 : Number(painted(title, '-webkit-line-clamp', PHONE) ?? 1)
       expect(most).toBeLessThanOrEqual(2)
-      const perChar = textPx('x', title, PHONE)
+      const width = (t: string) => interPx(t, 650, title)
       for (const label of LONG_LABELS) {
         retitle(label)
         expect(title.textContent).toBe(label)
-        const set = lines(label, perChar, room)
+        // The name's floor is its widest word (`min-content`) where no
+        // length is said: that word fits the room, so the chip is not asked for it.
+        expect(widestWord(label, title), `"${label}"'s widest word takes from the workspace`).toBeLessThanOrEqual(room)
+        const set = lines(label, width, room)
         expect(set.length, `"${label}" needs ${set.length} lines in ${room.toFixed(0)}px, and the bar draws ${most}: ${JSON.stringify(set)}`).toBeLessThanOrEqual(most)
         expect(set.join(' ')).toBe(label)
         visited++

@@ -112,8 +112,9 @@ describe('VQ-001: the phone header names the page, and the workspace by its key'
     // MUTATION: `.sk-pbar.has-chip > b { min-width: 0 }` back, or drop the
     // chip's `flex-shrink: 100`.
     const title = build('div.sk-app > header.sk-pbar.has-chip > b', hosts)
-    // 8em at one size step down beside the chip (PHONE-BAR-LABEL review).
-    expect(painted(title, 'min-width', PHONE)).toBe('8em')
+    // Its widest word beside the chip, one size step down, so the chip keeps
+    // its width (PHONE-BAR-CHIP; 8em in PHONE-BAR-LABEL took 27px from it).
+    expect(painted(title, 'min-width', PHONE)).toBe('min-content')
     // The room the controls leave, not its one-line width (PHONE-BAR-LABEL:
     // the name wraps onto a second line instead).
     expect(painted(title, 'flex', PHONE)).toBe('1 1 0%')

@@ -11079,6 +11079,16 @@ span.sk-ttile { cursor: default; }
      sets in two whole lines there even at tablefit's conservative widths.
      The basis stays `0%`; past this floor the chip gives way, as above. */
   .sk-pbar.has-chip b { font-size: var(--t-meta); min-width: 8em; }
+  /* THE CHIP KEEPS ITS WIDTH; THE NAME TAKES THE ROOM LEFT, THEN WRAPS
+     (PHONE-BAR-CHIP, the PHONE-BAR-LABEL render review, part of #2391;
+     BGD, 2026-10-26, "Room left, then wrap"). The 8em floor above took
+     27px from the chip, and the admin's own chip read `Your …` on every
+     page at 390. Beside the chip the name's floor is its widest word
+     (`min-content`): no word is cut, and below that the name asks the chip
+     for nothing. The chip, the env pill, the bell and `Top` keep their
+     widths. Said after the rule above so the cascade, not a deletion,
+     carries the change. */
+  .sk-pbar.has-chip b { min-width: min-content; }
   /* BESIDE THE SWITCHABLE CHIP THE TITLE GIVES WAY FIRST, ALL THE WAY
      (visual QA run 6, 6:admin-007, part of #1680). The floor above is for
      the member's bar, whose plain label is short. A platform admin's bar
@@ -11090,6 +11100,13 @@ span.sk-ttile { cursor: default; }
      Spine.tsx on the bar that holds `.sk-tchip`. The hidden `Top` slot keeps
      its width (N1, run 4 note 6329568327). */
   .sk-pbar.has-chip { gap: 6px; }
+  /* AND THE ROOM IT TAKES IS 20PX WIDER (PHONE-BAR-CHIP). Beside a whole
+     `Your workspace` the name had about 77px at 390, and `Submit from a
+     GitHub issue` at 13px needs 83px (`Submit from a`, Inter Tight 650) to
+     set in two lines: in three, the clamp cut it. The gaps close to 4px
+     and the side padding to 8px beside the chip only; the menu's and the
+     chip's 44px hit areas (`::after`, below) are unchanged. */
+  .sk-pbar.has-chip { gap: 4px; padding: 0 8px; }
   /* THE PAGE NAME FIRST, NOW THE CHIP HOLDS A KEY (visual QA VQ-001, part
      of #2391). The note above gave the chip the room while it held the
      workspace's whole name, and the page name went to `O…` on every page
@@ -11137,6 +11154,16 @@ span.sk-ttile { cursor: default; }
      `↑ Top` cut at the glass. The name gives way inside it, as above. */
   .sk-pbar > .sk-tchip { min-width: 0; }
   .sk-tchip > .sk-tcn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* IN THE BAR THE CHIP'S NAME WRAPS AT ITS SPACE, NEVER CUT (PHONE-BAR-CHIP,
+     part of #2391). The chip only gives way when a page name's widest word
+     (its floor, above) and every control outgrow the row; it then sets
+     `Your / workspace` in two lines rather than `Your …`. Two lines at
+     `--lh-figure` (1.10) of 12px are 26.4px, and with 3px of padding above
+     and below and its 1px border the chip is 34.4px, inside the bar's 36px
+     once compacted; one line is 21.2px, the env pill's height class. Its
+     44px hit area is the `::after` above, not its box. */
+  .sk-pbar.has-chip > .sk-tchip { padding-block: 3px; }
+  .sk-pbar > .sk-tchip > .sk-tcn { white-space: normal; text-overflow: clip; line-height: var(--lh-figure); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
   /* The workspace gives way before the page name (VQ-001, above). */
   .sk-pbar > .sk-tchip, .sk-pbar .sk-tn { flex-shrink: 100; }
   .sk-app.has-drawer .sk-dclose { width: 44px; height: 44px; }
