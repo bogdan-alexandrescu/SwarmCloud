@@ -133,18 +133,39 @@ def _matches(doc: dict[str, Any], flt: Any) -> bool:
 
 
 class FakeQuery:
-    def __init__(self, db: "FakeFirestore", prefix: str, filters: list[Any], limit: int | None = None):
+    def __init__(
+        self,
+        db: "FakeFirestore",
+        prefix: str,
+        filters: list[Any],
+        limit: int | None = None,
+        after: str | None = None,
+    ):
         self._db = db
         self._prefix = prefix
         self._filters = filters
         self._limit = limit
+        self._after = after
 
     def where(self, *args: Any, filter: Any = None, **_kwargs: Any) -> "FakeQuery":
         flt = filter if filter is not None else _Filter(*args)
-        return FakeQuery(self._db, self._prefix, [*self._filters, flt], self._limit)
+        return FakeQuery(self._db, self._prefix, [*self._filters, flt], self._limit, self._after)
 
     def limit(self, count: int) -> "FakeQuery":
-        return FakeQuery(self._db, self._prefix, self._filters, count)
+        return FakeQuery(self._db, self._prefix, self._filters, count, self._after)
+
+    def order_by(self, field_path: Any, direction: str = "ASCENDING", **_kwargs: Any) -> "FakeQuery":
+        # Document-id order only, which `stream` already yields: a cursor read
+        # (`reconciler.store.workflows_for_stall_check`, #1822) needs no more.
+        if str(field_path) != "__name__" or direction != "ASCENDING":
+            raise ValueError(f"the fake orders by document id ascending only, not {field_path!r}")
+        return self
+
+    def start_after(self, document_fields: dict[Any, str]) -> "FakeQuery":
+        ((field_path, value),) = document_fields.items()
+        if str(field_path) != "__name__":
+            raise ValueError(f"the fake's cursor is a document id, not {field_path!r}")
+        return FakeQuery(self._db, self._prefix, self._filters, self._limit, value)
 
     def stream(self, **_call_options: Any) -> Iterator[FakeSnapshot]:
         seen = 0
@@ -153,6 +174,8 @@ class FakeQuery:
                 continue
             if path.count("/") != self._prefix.count("/") + 1:
                 continue  # documents directly in this collection only
+            if self._after is not None and path.rsplit("/", 1)[-1] <= self._after:
+                continue
             if all(_matches(doc, f) for f in self._filters):
                 yield FakeSnapshot(path, doc)
                 seen += 1

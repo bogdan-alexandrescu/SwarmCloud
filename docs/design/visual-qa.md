@@ -1,8 +1,28 @@
 # Visual QA: which browser agent type serves which job, and one workflow that sweeps the console
 
-**Status: design, 2026-10-19 (lane QA-GUIDE, part of #1649). Nothing here is
-built.** The owner reads it and picks the answers in §7 before any build lane
-starts. Its frozen-contract half (§5) is empty for the recommended design and
+**Status: built on `main` (recorded 2026-10-27), except the signed-in arm's
+proof.** Written 2026-10-19 as a design (lane QA-GUIDE, part of #1649); the
+owner's answers are in §7. What each lane of §6 landed:
+
+* **QA-KIT (built):** the 390×844 `phone-390` preset, the device and theme
+  commands in the agent's instructions, and a screenshot that reaches the
+  model as an image (`tests/unit/worker/test_qa_kit.py`).
+* **BROWSER-START (built, part of #1366):** the live browser is up before the
+  agent starts.
+* **QA-IDENTITY (built):** the signed-in arm, designed and built in
+  [qa-identity.md](qa-identity.md); its §8 records each lane.
+* **QA-FLOWS (built):** flows recorded as GIFs by `swarm-handoff record`
+  (`tests/unit/worker/test_qa_flows.py`).
+* **QA-CAPTURE (built):** the capture tool,
+  `images/agent-runtime-browser/swarm_qa.py`, and its route list.
+* **QA-TEMPLATE (built):** the workflow template,
+  `docs/qa/console-qa.workflow.json`.
+* **QA-PROOF (run, not yet clean):** runs 2 and 3 on dev are in §8, each
+  with what it taught the template. The signed-in sweep waits on the QA
+  identity's acceptance case (qa-identity.md §8, QI-ACCEPT) and one recorded
+  run as the QA account.
+
+Its frozen-contract half (§5) is empty for the recommended design and
 holds two requests for the alternative, written as requests here and not in
 [`docs/contract-change-requests.md`](../contract-change-requests.md); the
 operator files them there only once they are accepted (CLAUDE.md rule 1).
