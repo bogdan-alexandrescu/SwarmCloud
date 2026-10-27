@@ -808,7 +808,7 @@ own credential, and their own index under their own prefix (decision 3).
   "poll and push", and becomes the default for new registrations once the
   receiver is live. `poll` still means poll only, and `off` still means
   neither.
-* **Interval.** `min_change_interval_minutes` (default 30, range 10-1440)
+* **Interval.** `min_change_interval_minutes` (default 120 since #2524, was 30; range 10-1440)
   applies to pushes as well. Otherwise a busy default branch would queue a
   run per merge. Q4 asks whether the default should drop to 10 now that
   pushes arrive promptly.
@@ -1120,7 +1120,8 @@ them before its lane starts.
   * Alternative: an IAP-exempt path on swarm-api's load balancer.
   * Alternative: no receiver, with the poll at 1 minute instead.
 * **Q4, the change interval for pushes.** Keep the default 30 minutes, or
-  lower the default to 10.
+  lower the default to 10. **Superseded (BGD, 2026-10-27, #2524): the default went the
+  other way, to 120 minutes**, to cut index runs (845 in one week).
 * **Q5, warming. DECIDED (owner, 2026-10-15): warm on first sight, with no
   new IAM** (§5.4). Pub/Sub was the doc's first recommendation and is not
   built.
