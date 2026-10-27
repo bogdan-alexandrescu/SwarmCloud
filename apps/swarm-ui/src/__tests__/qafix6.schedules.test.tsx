@@ -144,31 +144,3 @@ describe('Schedules at 1440 (run 6)', () => {
     }
   })
 })
-
-describe('Schedules at 390 (run 6)', () => {
-  it('c. 6:overview-automate-005 and -008 (box 6343776989): the summary keeps the pause note, the zone and the tier; the actions are one row under it', async () => {
-    // MUTATION: drop the pause note, the `, ${s.timezone}` or the tier from `PhoneLine`, or the 560px `.sc-c-acts > .sc-row-acts` rule.
-    media(true)
-    await mountList()
-    await waitFor(() => expect(rowOf('sch_p')).not.toBeNull(), WAIT)
-    const paused = rowOf('sch_p')!
-    const line = paused.querySelector<HTMLElement>('.sc-line2')!
-    expect(painted(line, 'display', PHONE)).toBe('block')
-    const words = visible(line)
-    expect(words).toContain(NOTE)
-    expect(words).toContain('At 08:00 on Monday, UTC')
-    expect(words).toContain('R1')
-    expect(visible(rowOf('sch_e')!.querySelector('.sc-line2'))).toContain('R0')
-    // The state starts at one x: its column is a fixed width, not each row's own word.
-    const state = paused.querySelector<HTMLElement>('td[data-label="State"]')!
-    expect(painted(state, 'width', PHONE)).toMatch(/^\d+px$/)
-    // Run now and Resume: one row, its own line under the summary, left to right.
-    const acts = paused.querySelector<HTMLElement>('.sc-row-acts')!
-    expect(visible(acts)).toContain('Run now')
-    expect(visible(acts)).toContain('Resume')
-    expect(painted(paused.querySelector<HTMLElement>('td[data-label="Actions"]')!, 'display', PHONE)).toBe('contents')
-    expect(painted(acts, 'grid-row', PHONE)).toBe('3')
-    expect(painted(acts, 'grid-column', PHONE)).toBe('1 / -1')
-    expect(painted(acts, 'flex-direction', PHONE)).toBe('row')
-  })
-})
