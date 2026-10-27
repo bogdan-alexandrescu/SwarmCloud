@@ -523,6 +523,37 @@ def test_the_round_step_pattern_takes_each_kind_the_tick_writes_and_nothing_else
     assert not is_fix_round_step("other-fix:1")
 
 
+def test_merge_rounds_and_fix_loop_rounds_share_one_pattern_and_one_rule():
+    """FL-ROLLUP (part of #2509): the fix loop's `review-fix:<k>` /
+    `re-review:<k>` (docs/design/fix-loop.md §6.1) joined the merge's kinds
+    in `FIX_ROUND_STEP_RE`; neither family may push the other out, and the
+    bare `re-review` the `on_merge_verdict` lane appends stays a step."""
+    for key in mergewake.ROUND_KIND:
+        # MUTATION: rewrite FIX_ROUND_STEP_RE for the loop alone and the
+        # merge's own appends are refused again.
+        assert is_fix_round_step(mergewake.round_step_id(key, 2)), key
+    assert is_fix_round_step("review-fix:2")
+    assert is_fix_round_step("re-review:2")
+    # MUTATION: make `:<n>` optional and the on_merge_verdict step is excused.
+    assert not is_fix_round_step("re-review")
+    # MUTATION: accept any `<word>-fix:<n>` and a kind no tick writes passes.
+    assert not is_fix_round_step("re-review-fix:1")
+
+
+def test_a_lane_with_both_kinds_of_round_is_judged_by_its_merge_and_its_loop():
+    rollup = _derive(**{"fix": "SUCCEEDED", "loop": "SUCCEEDED", "merge": "SUCCEEDED",
+                        "re-review:1": "SUCCEEDED", "review-fix:2": "FAILED",
+                        "re-review:2": "SUCCEEDED", "ci-fix:1": "FAILED",
+                        "ci-fix:2": "SUCCEEDED"})
+    # MUTATION: drop `review` from the fix kinds and `review-fix:2` fails it.
+    assert rollup.state == "SUCCEEDED", rollup
+    assert rollup.fix_round_steps == ["re-review:1", "review-fix:2", "re-review:2",
+                                      "ci-fix:1", "ci-fix:2"]
+    # MUTATION: excuse the merge as well and its refusal reads SUCCEEDED.
+    assert _derive(**{"fix": "SUCCEEDED", "loop": "SUCCEEDED", "merge": "FAILED",
+                      "review-fix:2": "SUCCEEDED"}).state == "FAILED"
+
+
 def test_a_running_round_keeps_the_workflow_running_while_the_merge_is_parked():
     rollup = _derive(**{"fix": "SUCCEEDED", "merge": "PARKED", "conflict-fix:1": "RUNNING"})
     assert rollup.state == "RUNNING"
