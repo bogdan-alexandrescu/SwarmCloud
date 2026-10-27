@@ -183,7 +183,9 @@ def test_requests_a_and_b_are_filed_as_accepted_and_applied():
     for number, letter in (("124", "fix loop request A"), ("125", "fix loop request B")):
         row = _row(number)
         assert "FL-CONTRACT" in row and letter in row
-        assert "ACCEPTED by BGD 2026-10-27 (Q1, Q2, Q10" in row and "APPLIED" in row
+        # "accepted by the owner" is the mark scripts/lib/check-frozen-contract.sh
+        # looks for in an added line; without it the swarm_common diff is refused.
+        assert "ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10" in row and "APPLIED" in row
         assert re.search(rf"^## {number}\. .*\(FL-CONTRACT, {letter}\)$", text, re.M)
 
 
