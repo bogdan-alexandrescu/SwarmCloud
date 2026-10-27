@@ -267,9 +267,12 @@ export function AgentDetailScreen({
   )
   // THE SWITCH IS OFFERED, NOT MADE: the person chose the tenant they are in,
   // and a link must not move them out of it. Pressing it makes the choice
-  // (`chooseTenant`) and reads the task again under it.
+  // (`chooseTenant`) and reads the task again under it. Its own top margin
+  // keeps it a separate notice: flush under the failed panel, the two
+  // bordered boxes read as one.
   const switchEl =
     elsewhere === null ? null : (
+      <div className="tenant-switch-offer" style={{ marginTop: 'var(--ctl-s3)' }}>
       <Banner
         tone="info"
         role="status"
@@ -289,6 +292,7 @@ export function AgentDetailScreen({
       >
         It is one of your workspaces, so it can be read there. This one answers as it would for a task that does not exist.
       </Banner>
+      </div>
     )
   if (headed) {
     return (

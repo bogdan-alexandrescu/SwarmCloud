@@ -106,6 +106,9 @@ describe('a task 404 under the chosen tenant asks the caller’s other tenants',
 
     const offer = await screen.findByRole('button', { name: 'Switch to eng' }, WAIT)
     expect(document.body.textContent).toContain('This task is in eng')
+    // A separate notice under the failed panel, not fused to its border.
+    const notice = offer.closest('.tenant-switch-offer') as HTMLElement | null
+    expect(notice?.style.marginTop).toBe('var(--ctl-s3)')
     // Offered, never made: the choice is still the caller's own.
     expect(chosenTenant()).toBe('u-bogdan')
 
