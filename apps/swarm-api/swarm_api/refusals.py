@@ -219,6 +219,23 @@ SWITCHES: dict[str, Switch] = {
         "naming the tenant the call resolved to, instead of a bare not found. On once swarm-mcp "
         "and the coordinator callers that re-read with the launch's tenant are deployed",
     ),
+    # Lane MCP-KEY-PARK (docs/design/registered-mcp-servers.md §4.10): the
+    # re-store of a workflow's MCP credentials. The refusals are ALWAYS made;
+    # off, each is answered with the same status and message under the
+    # established code (`conflict` 409, `forbidden` 403), as the egress codes
+    # below are.
+    "workflow_finished": Switch(
+        code="workflow_finished",
+        why="a re-store of a finished workflow's MCP credentials is answered 409 "
+        "workflow_finished instead of 409 conflict with the same message. On once Product "
+        "Oracle's re-store call reads the code",
+    ),
+    "mcp_credential_restore_forbidden": Switch(
+        code="mcp_credential_restore_forbidden",
+        why="a re-store of a workflow's MCP credentials by anyone but its submitter or a "
+        "workspace admin is answered 403 mcp_credential_restore_forbidden instead of 403 "
+        "forbidden with the same message. On once a caller reads the code",
+    ),
     # Lane EGRESS-SVC (docs/browser-egress.md §2.2): the attempt egress ticket
     # route. Off, each is answered with the same status and message under the
     # established code (`conflict` 409 or `forbidden` 403); egress_unavailable

@@ -153,9 +153,10 @@ server its signed `mcp_servers` input names? `mcp_admission.py` states that
 rule and reads the registrations and credential rows. A disabled or refused
 server parks CREDENTIAL_MISSING, code `mcp_server_unavailable`, its event
 naming each server by name only; the sweep promotes it once every server says
-yes. A per-run credential that expired or was destroyed is TERMINAL
-(`CredentialAnswer.terminal`): it never turns runnable, so the sweep never
-promotes it. A task that names no server reads nothing and records nothing
+yes. A per-run credential that expired or was destroyed parks a workflow's
+task the same way, with `credential: "mcp"`, until its caller re-stores it
+(BGD 2026-10-26); for a task that is no workflow's it is TERMINAL
+(`CredentialAnswer.terminal`), since nothing can re-store it. A task that names no server reads nothing and records nothing
 new. The reader is built over the database the workspace grants already read
 (`_mcp_reader`), so admission and the sweep ask it with no new argument.
 """
@@ -285,7 +286,8 @@ class CredentialAnswer:
     @property
     def terminal(self) -> bool:
         """No change anyone can make will make this task runnable: a per-run
-        MCP credential expired or was destroyed (`McpAnswer.terminal`)."""
+        MCP credential of a task that is no workflow's expired or was
+        destroyed (`McpAnswer.terminal`). A workflow's waits for a re-store."""
         return self.mcp is not None and self.mcp.terminal
 
     def park_detail(self) -> dict[str, Any]:

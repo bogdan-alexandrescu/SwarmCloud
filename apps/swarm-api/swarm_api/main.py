@@ -121,6 +121,9 @@ UNCAPTURED_ROUTES = frozenset({
     "/v1/tasks",
     "/v1/tasks/batch",
     "/v1/workflows",
+    # A workflow's per-run MCP credentials, re-stored by its caller
+    # (registered-mcp-servers.md §4.10, BGD 2026-10-26).
+    workflows.MCP_CREDENTIALS_ROUTE,
     # An await-input answer (docs/design/human-steps.md §4.6): a person's
     # form and up to 16 MiB of their files.
     await_input.INPUT_ROUTE,

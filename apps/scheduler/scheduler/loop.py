@@ -80,7 +80,12 @@ from .credentials import (
     credential_for,
     task_model_class,
 )
-from .mcp_admission import McpCode
+from .mcp_admission import (
+    MCP_CREDENTIAL,
+    MCP_CREDENTIAL_PARK_MAX_SECONDS,
+    McpCode,
+    credential_block,
+)
 from .secret_slots import WorkspaceGrants
 from .dispatch import BackendRouter, DispatchError, live_display_on
 from .fairness import AgingConfig, round_robin_order
@@ -222,6 +227,46 @@ HUMAN_WAIT_EXPIRED = "human_wait_expired"
 #: settings field can be added without a change here. 24 hours: a person's
 #: day, and a parked task costs nothing while it waits (invariant 1).
 HUMAN_PARK_MAX_SECONDS = 86_400
+
+
+def mcp_park_blocked_by(credential: CredentialAnswer, now: datetime) -> list[dict[str, Any]] | None:
+    """The `blocked_by` a CREDENTIAL_MISSING park writes when it waits for
+    its caller to re-store a workflow's MCP credential (§4.10, BGD
+    2026-10-26): one entry naming `reason`, `credential` ("mcp"), `code`, `server`,
+    `expired_at` and `parked_at`, which is where the API serves a park's detail on
+    the task and what a caller watches. `parked_at` is what the sweep's limit
+    is measured from. None for every other park, which leaves the field as
+    it was."""
+    mcp = credential.mcp
+    waiting = mcp.waits_for_credential if mcp is not None else ()
+    if not waiting or mcp is None or mcp.terminal:
+        return None
+    return [{
+        "reason": ParkReason.CREDENTIAL_MISSING.value,
+        **credential_block(waiting[0]),
+        "parked_at": now.isoformat(),
+    }]
+
+
+def mcp_park_since(task: Task) -> datetime | None:
+    """When a park waiting for a re-stored MCP credential began: the
+    earliest of its `blocked_by` entry's `parked_at` and the task's
+    `updated_at`, which the park itself wrote. The entry sits in a document
+    a tenant's agent may be able to write, so the earliest is taken: a
+    forged instant can only end the wait sooner, never hold it longer."""
+    moments: list[datetime] = []
+    for block in task.blocked_by or ():
+        if not isinstance(block, dict) or block.get("credential") != MCP_CREDENTIAL:
+            continue
+        try:
+            parked = as_datetime(block.get("parked_at"))
+        except (TypeError, ValueError):
+            parked = None
+        if parked is not None:
+            moments.append(parked)
+    if task.updated_at is not None:
+        moments.append(task.updated_at)
+    return min(moments) if moments else None
 
 
 def held_for_control_publish(metadata: Any) -> bool:
@@ -1322,10 +1367,13 @@ class Scheduler:
             profile, tenant, self._pool, task=task, forge=self._forge,
             secrets=self._secrets, tenant_of=self._tenant,
         )
-        # A per-run MCP credential that expired or was revoked is not a park:
-        # nobody can hand this task a new value, so it ends FAILED here, from
-        # READY, in one guarded write that takes no lease and reserves nothing
-        # (registered-mcp-servers.md §4.10, contract request 99).
+        # A per-run MCP credential that expired or was revoked, on a task that
+        # is no workflow's, is not a park: nobody can hand it a new value, so
+        # it ends FAILED here, from READY, in one guarded write that takes no
+        # lease and reserves nothing (registered-mcp-servers.md §4.10,
+        # contract request 99). A WORKFLOW's task parks instead (BGD
+        # 2026-10-26): its caller re-stores the credential, and the park's
+        # `blocked_by` entry says which server and when it expired.
         if credential.terminal:
             self._fail_unrunnable(task, credential, report)
             return False
@@ -1335,6 +1383,7 @@ class Scheduler:
                 ParkReason.CREDENTIAL_MISSING,
                 report,
                 detail=credential.park_detail(),
+                blocked_by=mcp_park_blocked_by(credential, now),
             )
             return False
 
@@ -1633,7 +1682,8 @@ class Scheduler:
             self._count_stale(outcome, report)
 
     def _fail_unrunnable(
-        self, task: Task, credential: CredentialAnswer, report: DrainReport
+        self, task: Task, credential: CredentialAnswer, report: DrainReport,
+        *, extra: dict[str, Any] | None = None,
     ) -> None:
         """End a READY or PARKED task whose MCP credential answer is terminal.
 
@@ -1645,7 +1695,7 @@ class Scheduler:
         writes, and a workflow step drops the cached verdict so its siblings
         next in this pass see the failure.
         """
-        detail = credential.park_detail()
+        detail = {**credential.park_detail(), **(extra or {})}
         error = str(detail.get("code") or McpCode.CREDENTIAL_EXPIRED.value)
         outcome = self._store.fail_before_lease(task, error, detail=detail)
         if not outcome.applied:
@@ -2128,6 +2178,18 @@ class Scheduler:
                 # server an admin disabled while its credential then expired:
                 # either way it can never run, so it ends here, PARKED -> FAILED.
                 self._fail_unrunnable(task, credential, report)
+                continue
+            if credential.mcp is not None and credential.mcp.waits_for_credential:
+                # Waiting for its caller to re-store a workflow's MCP
+                # credential (§4.10, BGD 2026-10-26). Promoted below once the
+                # row is live; past the limit it ends PARKED -> FAILED with
+                # the credential's code. Either way nothing was leased.
+                limit = int(getattr(self._settings, "mcp_credential_park_max_seconds",
+                                    MCP_CREDENTIAL_PARK_MAX_SECONDS))
+                since = mcp_park_since(task)
+                if since is not None and now - since >= timedelta(seconds=limit):
+                    self._fail_unrunnable(task, credential, report, extra={
+                        "waited_since": since.isoformat(), "limit_seconds": limit})
                 continue
             if (
                 credential.source is CredentialSource.ACCOUNT_POOL
