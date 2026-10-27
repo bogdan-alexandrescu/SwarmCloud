@@ -15,6 +15,8 @@ worker's gate alike. What is held here:
     an unreadable or a cut file list resolves to the browser
     a test-only UI change is not UI, for the resolver and the worker's gate
     the re-review inherits its review's RESOLVED profile
+    a review pinned to claude-code gets a browser_if_ui re-review (#2275),
+        signed under both profiles and resolved from the lane's own files
     the resolution is recorded in the READY event and on the task
     the step is admitted on the resolved profile's pools, never the other's
     swarm-api refuses any pair but the one, and any shape but the block
@@ -464,6 +466,124 @@ def test_a_policy_step_carrying_a_browser_only_input_is_refused(signed_client, d
     response = signed_client.post("/v1/workflows", headers=auth_header("alice"), json=body)
     assert response.status_code == 422, response.text
     assert _tasks_by_step(db) == {}
+
+
+# ---------------------------------------------------------------------------
+# A review pinned to claude-code: its re-review asks for the policy (#2275)
+# ---------------------------------------------------------------------------
+# BGD, 2026-10-27 (Q-2275): the appended re-review of an on_merge_verdict
+# workflow whose review is pinned to claude-code carries browser_if_ui, by
+# catalogue names only, so a UI lane's fix round can reach a rendered MERGE
+# and a non-UI lane's still runs on claude-code.
+
+
+def _pinned_review_workflow(review_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    review: dict[str, Any] = {
+        "step_id": "review", "runner_profile": CODE, "depends_on": ["implement"],
+        "builds_on": "implement", "input_from": {"implement": "swarm-work.patch"},
+        "input": {"prompt": "review the change"},
+    }
+    if review_metadata is not None:
+        review = {**review, "runner_profile": BROWSER, "metadata": review_metadata}
+    return {
+        "strategy": "integrate",
+        "repository_url": "https://github.com/acme/widgets.git",
+        "metadata": {"merge": "on_merge_verdict"},
+        "steps": [
+            {"step_id": "implement", "runner_profile": CODE,
+             "input": {"prompt": "implement the change"}},
+            review,
+            {"step_id": "fix", "runner_profile": CODE, "depends_on": ["review"],
+             "builds_on": "implement", "input_from": {"review": "verdict.json"},
+             "when": {"step": "review", "verdict_in": ["NOT_YET"]},
+             "input": {"prompt": "fix every finding"}},
+        ],
+    }
+
+
+def _own(*paths: str) -> dict[str, Any]:
+    return {"git": {"own_files": list(paths), "files": [{"path": p} for p in paths]}}
+
+
+def test_a_claude_code_reviews_rereview_carries_the_browser_if_ui_block(
+    signed_client, db, signer
+):
+    response = signed_client.post(
+        "/v1/workflows", headers=auth_header("alice"), json=_pinned_review_workflow())
+    assert response.status_code == 201, response.text
+    tasks = _tasks_by_step(db)
+    # The review is what the caller pinned: claude-code, no policy.
+    _, review = tasks["review"]
+    assert review["runner_profile"] == CODE
+    assert "runtime" not in review["metadata"]
+
+    task_id, doc = tasks["re-review"]
+    # MUTATION: copy the review's profile alone (today's main) and this is
+    # claude-code with no block: no fix round of a UI lane can reach MERGE.
+    assert doc["runner_profile"] == BROWSER
+    block = doc["metadata"].get("runtime")
+    assert block is not None, "the re-review of a claude-code review carries no runtime"
+    assert {k: block[k] for k in POLICY} == POLICY
+    # Not inherited: the review it would inherit from was pinned, never resolved.
+    assert "inherit" not in block
+    # Signed under both profiles: as stored, and with the claude-code spec swapped in.
+    assert signer.verifies(doc, task_id)
+    alternate = block["alternate"]
+    assert alternate["runner_profile"] == CODE
+    swapped = {**doc, **{k: alternate[k] for k in (
+        *validation.RUNTIME_SWAP_FIELDS, "spec_signature", "spec_key_version", "spec_format")}}
+    assert signer.verifies(swapped, task_id)
+
+    # The scheduler decides from the lane's own files.
+    by_task = {tid: step for step, (tid, _) in tasks.items()}
+
+    def resolve(files: dict[str, tuple[str, ...]]) -> str:
+        def read(tid: str) -> dict[str, Any]:
+            return {"result_summary": _own(*files.get(by_task[tid], ()))}
+        return runtime_mod.resolve(list(doc["depends_on"]), block, read).profile
+
+    assert resolve({"implement": (SCHEDULER_FILE,), "fix": (SCHEDULER_FILE,)}) == CODE
+    assert resolve({"implement": (UI_FILE,), "fix": (SCHEDULER_FILE,)}) == BROWSER
+    assert resolve({"implement": (SCHEDULER_FILE,), "fix": (UI_FILE,)}) == BROWSER
+
+
+def test_a_browser_if_ui_reviews_rereview_still_inherits_its_resolution(signed_client, db):
+    response = signed_client.post(
+        "/v1/workflows", headers=auth_header("alice"),
+        json=_pinned_review_workflow({"runtime": dict(POLICY)}))
+    assert response.status_code == 201, response.text
+    tasks = _tasks_by_step(db)
+    review_id, _ = tasks["review"]
+    _, doc = tasks["re-review"]
+    assert doc["metadata"]["runtime"]["inherit"] == {"step": "review", "task_id": review_id}
+
+
+def test_rereview_step_for_adds_the_policy_only_to_a_claude_code_review():
+    steps = [
+        validation.StepSpec(step_id="implement", depends_on=(), runner_profile=CODE),
+        validation.StepSpec(step_id="review", depends_on=("implement",), builds_on="implement",
+                            input_from={"implement": "swarm-work.patch"}, runner_profile=CODE),
+        validation.StepSpec(step_id="fix", depends_on=("review",), builds_on="implement",
+                            input_from={"review": "verdict.json"}, when_step="review",
+                            when_verdicts=("NOT_YET",), runner_profile=CODE),
+    ]
+    review = {"step_id": "review", "runner_profile": CODE, "input": {"prompt": "r"},
+              "input_from": {"implement": "swarm-work.patch"}, "metadata": {"keep": "me"}}
+    rereview = validation.rereview_step_for(steps, review, "integrate")
+    assert rereview["runner_profile"] == BROWSER
+    assert rereview["metadata"]["runtime"] == POLICY
+    assert rereview["metadata"]["keep"] == "me"
+    # Any other profile is the caller's choice and is copied as it was.
+    for profile in ("mock", "codex", BROWSER):
+        other = validation.rereview_step_for(
+            steps, {**review, "runner_profile": profile}, "integrate")
+        assert other["runner_profile"] == profile
+        assert "runtime" not in other["metadata"]
+    # A review that already asked for the policy passes its own block on.
+    asked = validation.rereview_step_for(
+        steps, {**review, "runner_profile": BROWSER, "metadata": {"runtime": dict(POLICY)}},
+        "integrate")
+    assert asked["runner_profile"] == BROWSER and asked["metadata"]["runtime"] == POLICY
 
 
 # ---------------------------------------------------------------------------

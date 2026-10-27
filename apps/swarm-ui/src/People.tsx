@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { Fragment, useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import {
   approveWorkspace,
@@ -18,9 +18,11 @@ import { classifyFailure, route, TENANT_HEADER, write, type ApiError, type Error
 import { trapTab } from './focus'
 import { ApprovedWaiting, JobSteps, waitingOf } from './OnboardingWorkspace'
 import { PersonName } from './PersonName'
+import { groupWorkspaceName, useStoredRoles } from './Profile'
 import { Mark } from './primitives'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead, usePoll } from './Shell'
+import { nameTenants, type NamedTenantChoice } from './Spine'
 import { tableMode, usePhoneTables } from './capacityPoll'
 import { PersonWorkspaceRoles, WorkspaceRolesCard } from './WorkspaceRolesAdmin'
 import type {
@@ -1254,26 +1256,52 @@ function gridColumns(doc: { workspaces?: PeopleWorkspaceColumn[] | null }): Peop
  * (`people.role_cell`). `none` is a word, not a dash: it is a measurement --
  * not seen there and no role of their own. A dash is only for a workspace
  * whose roles were not read, and says why.
+ *
+ * A PLATFORM ADMIN'S CELL IS THEIR EFFECTIVE ROLE, "admin (platform admin)"
+ * (BGD 2026-10-26, VQ-ROLES; part of #2391): `RoleStore.resolve` makes them
+ * admin in every group workspace and reads no grant for them, so Config ›
+ * People and roles, This workspace and Profile all say admin, and the grid
+ * saying their stored `member` was the odd answer out (VQ-044). The rule is
+ * `people.role_cell`'s too, and the API marks the row it applied it to,
+ * `platform_admin: true` (`people.mark_platform_admin`). The suffix is drawn
+ * from that marker, not from the admins list: a workspace admin's scoped read
+ * serves no admins list, and every reader is to see where the cell came from
+ * (BGD 2026-10-26, "Mark the source"; ROLE-MARK). The drawer still edits the
+ * stored grant, which stays inert while they are one.
  */
 function RoleCell({
   cell,
   column,
   email,
+  platformAdmin,
   join,
   joined,
 }: {
   cell: JoinCell | undefined
   column: PeopleWorkspaceColumn
   email: string
+  platformAdmin: boolean
   /** Their open request to join this workspace, when `cell` is `requested` and the request was served. */
   join?: JoinRequestRow
   /** Their platform membership here, when this column's members list was read and names them. */
   joined?: WorkspaceMember
 }) {
-  const role = cell === undefined || cell === null || column.unavailable ? 'unread' : cell
+  const role = platformAdmin ? 'admin' : cell === undefined || cell === null || column.unavailable ? 'unread' : cell
   return (
-    <td role="cell" data-label={column.display_name} data-tenant={column.tenant_id} data-role={role} className="pp-role">
-      {role === 'unread' ? (
+    <td role="cell" data-label={column.display_name} data-tenant={column.tenant_id} data-role={role} data-source={platformAdmin ? 'platform_admin' : undefined} className="pp-role">
+      {platformAdmin ? (
+        // Two lines in one box (`.pp-role-pa`): the cell is nowrap, and on one
+        // line it widened the grid from 1009px to 1102px at 1440, pushing
+        // Manage behind the scroll; with every column marked even the
+        // two-line form measured 1018px (rendered reviews, 2026-10-26/27), so
+        // the suffix is the meta size and may break at its space. One box, so
+        // the phone's grid-laid card keeps the two lines together. The space
+        // keeps the text one phrase.
+        <span className="pp-role-pa">
+          <span className="pp-role-w is-admin">admin</span>{' '}
+          <span className="pp-role-src">(platform admin)</span>
+        </span>
+      ) : role === 'unread' ? (
         <Dash why={`${column.display_name}’s roles could not be read`} />
       ) : role === 'none' ? (
         <span className="pp-role-none">none</span>
@@ -1301,13 +1329,23 @@ interface JoinGrid {
   members: Readonly<Record<string, MembersRead>>
 }
 
-function roleCells(row: { email: string; roles?: Record<string, PeopleRoleCell> }, columns: readonly PeopleWorkspaceColumn[], grid: JoinGrid): ReactNode[] {
+/**
+ * A row as the grid reads it. `platform_admin`: the API applied the
+ * platform-admin rule to this row's cells (`people.mark_platform_admin`), in
+ * either read; absent on everyone else's row and from an older API.
+ */
+type MarkedRow = { email: string; roles?: Record<string, PeopleRoleCell>; platform_admin?: boolean }
+
+/** Each column's cell; a marked row is drawn admin in every column (`RoleCell`). */
+function roleCells(row: MarkedRow, columns: readonly PeopleWorkspaceColumn[], grid: JoinGrid): ReactNode[] {
+  const platformAdmin = row.platform_admin === true
   return columns.map((c) => (
     <RoleCell
       key={c.tenant_id}
       cell={row.roles?.[c.tenant_id]}
       column={c}
       email={row.email}
+      platformAdmin={platformAdmin}
       join={grid.joins.find((j) => j.tenant_id === c.tenant_id && j.requester === row.email)}
       joined={joinedIn(grid.members, c.tenant_id, row.email)}
     />
@@ -1315,23 +1353,15 @@ function roleCells(row: { email: string; roles?: Record<string, PeopleRoleCell> 
 }
 
 /**
- * A column's head is the workspace's group email, which may break before its
- * `@` and nowhere else: whole on one line, two of them pushed Manage behind
- * the table's scroll at 1440 (rendered review, 2026-10-25).
+ * A column's head is the workspace's NAME (`withWorkspaceNames`, VQ-056), its
+ * group email the title. It was the email, which had to break before its `@`
+ * because two of them whole pushed Manage behind the table's scroll at 1440
+ * (rendered review, 2026-10-25); a name or an id is shorter than either.
  */
 function ColumnHead({ column }: { column: PeopleWorkspaceColumn }) {
-  const at = column.display_name.indexOf('@')
   return (
     <th role="columnheader" scope="col" data-tenant={column.tenant_id} title={column.group} className="pp-wscol">
-      {at > 0 ? (
-        <>
-          {column.display_name.slice(0, at)}
-          <wbr />
-          {column.display_name.slice(at)}
-        </>
-      ) : (
-        column.display_name
-      )}
+      {column.display_name}
     </th>
   )
 }
@@ -2580,6 +2610,27 @@ function isScoped(doc: PeopleDoc | ScopedPeopleDoc): doc is ScopedPeopleDoc {
   return doc.scope === 'workspaces'
 }
 
+/**
+ * EACH WORKSPACE BY ITS NAME, NOT ITS GROUP EMAIL (visual QA VQ-056, BGD
+ * 2026-10-26; part of #2391). The API names a column, and a join request's
+ * workspace, by the group's address; the switcher calls the same workspace
+ * 'Engineering', or by its id when it has no name. Every place the page draws
+ * a workspace -- column heads, cells' labels, the filter, the lead, Waiting
+ * for you -- reads `display_name`, so it is renamed here once, by the
+ * switcher's rule (`groupWorkspaceName`). The address stays the head's title.
+ */
+function withWorkspaceNames<D extends { workspaces?: PeopleWorkspaceColumn[] | null } & JoinFields>(doc: D, named: readonly NamedTenantChoice[]): D {
+  return {
+    ...doc,
+    workspaces: Array.isArray(doc.workspaces)
+      ? doc.workspaces.map((c) => ({ ...c, display_name: groupWorkspaceName(c.tenant_id, c.display_name, named) }))
+      : doc.workspaces,
+    join_requests: Array.isArray(doc.join_requests)
+      ? doc.join_requests.map((j) => ({ ...j, display_name: groupWorkspaceName(j.tenant_id, j.display_name, named) }))
+      : doc.join_requests,
+  }
+}
+
 function PeopleBody({ doc, reload }: { doc: PeopleDoc & JoinFields; reload: () => void }) {
   const rows = pendingFirst(Array.isArray(doc.people) ? doc.people : [])
   const phone = usePhoneTables()
@@ -2706,6 +2757,8 @@ export function PeopleScreen() {
     Array.isArray(data.people) &&
     data.people.some((r) => IN_FLIGHT.has(r.workspace.state) && waitingOf(r.workspace) !== 'publishing_off')
   usePoll(PEOPLE_POLL_MS, people.reload, !moving)
+  const choices = useStoredRoles()
+  const named = useMemo(() => nameTenants(choices, null), [choices])
   return (
     <div className="ur-page pp-page">
       <PageHead title="People and roles">
@@ -2717,7 +2770,13 @@ export function PeopleScreen() {
           : 'Every person against every workspace, what they are waiting for, and who is an admin.'}
       </p>
       <UrRegion state={people.state} route="GET /v1/admin/people" what="People" plural onRetry={people.reload} lines={6}>
-        {(d) => (isScoped(d) ? <ScopedBody doc={d} reload={people.reload} /> : <PeopleBody doc={d} reload={people.reload} />)}
+        {(d) =>
+          isScoped(d) ? (
+            <ScopedBody doc={withWorkspaceNames(d, named)} reload={people.reload} />
+          ) : (
+            <PeopleBody doc={withWorkspaceNames(d, named)} reload={people.reload} />
+          )
+        }
       </UrRegion>
     </div>
   )

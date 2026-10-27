@@ -568,7 +568,7 @@ def _children(task: Task, related: Mapping[str, Task] | None) -> dict[str, Any]:
 
 
 def _who(task: Task) -> dict[str, Any]:
-    return {"tenant_id": task.tenant_id, "text": f"any member of tenant {task.tenant_id}"}
+    return {"tenant_id": task.tenant_id, "text": f"any member of workspace {task.tenant_id}"}
 
 
 def _awaiting_input(task: Task, facts: dict[str, Any], as_of: datetime) -> dict[str, Any]:
@@ -586,7 +586,7 @@ def _awaiting_input(task: Task, facts: dict[str, Any], as_of: datetime) -> dict[
         summary += f"; expires {_hhmm(expires, as_of)}"
     if command:
         summary += f"; {command}"
-    resumes = "a member of the tenant answers, or the window expires and its default applies"
+    resumes = "a member of the workspace answers, or the window expires and its default applies"
     return {"detail": detail, "summary": summary, "resumes_when": resumes, "since": opened}
 
 
@@ -652,7 +652,7 @@ def _owner_questions(task: Task, facts: dict[str, Any]) -> dict[str, Any]:
         detail["answer_route"] = f"POST /v1/tasks/{task.id}/human-ready"
         summary += (f"; {unreadable} entr{'y' if unreadable == 1 else 'ies'} the merge cannot "
                     f"read: say it is ready once {'it is' if n <= 1 else 'they are'} answered")
-        resumes = ("a member of the tenant calls human-ready once the questions are answered: "
+        resumes = ("a member of the workspace calls human-ready once the questions are answered: "
                    "the hold names an entry an answer cannot clear on its own")
     else:
         resumes = "the last named question is answered (it resumes on its own)"
@@ -669,7 +669,7 @@ def _human(task: Task, facts: dict[str, Any]) -> dict[str, Any]:
         "cause": _str(facts.get("cause")),
     }
     summary = "Waiting for a person: sign in on its console page, then say it is ready"
-    resumes = "a member of the tenant calls human-ready (the console's Ready button)"
+    resumes = "a member of the workspace calls human-ready (the console's Ready button)"
     return {"detail": detail, "summary": summary, "resumes_when": resumes, "since": None}
 
 
@@ -698,7 +698,7 @@ def _credential(task: Task, facts: dict[str, Any]) -> dict[str, Any]:
         "mcp_servers": servers,
     }
     summary = "Credential missing" + (f": {', '.join(names)}" if names else "")
-    resumes = "the tenant registers the credential and the scheduler's credential sweep finds it"
+    resumes = "the workspace registers the credential and the scheduler's credential sweep finds it"
     if facts.get("credential") == MCP_PARK_CREDENTIAL:
         # A workflow's per-run MCP credential lapsed while the step waited
         # (registered-mcp-servers.md §4.10, BGD 2026-10-26): its caller

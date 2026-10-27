@@ -94,6 +94,17 @@ liveness `stamp` itself refuses on), the tick claims no round and asks for no
 re-run: the merge stays parked on CI_PENDING, as for any wait. Once that task
 is terminal the red reading is handed off as above.
 
+A CHECK RED ON THE DEFAULT BRANCH'S OWN HEAD IS NOT THE PULL REQUEST'S TO
+FIX (#2367). Four rounds on 2026-10-25 hand-patched main's stale unit-shard
+weights, which main's #2312 then rewrote; GitHub's "Update branch" merged
+that into their branches mid-round and every push was refused. Before a
+re-run or a round, the tick reads the default branch's head and its checks
+(`_red_on_default`, the same `evaluate` as `_read`): when every check
+failing at the pull request's head is failing there too, it claims nothing
+and stays parked on CI_PENDING. Main's fix moves main, the update moves the
+pull request's head, and the next red reading is the pull request's own. A
+main that cannot be read changes nothing: the round goes ahead as before.
+
 A CONFLICTING PULL REQUEST IS NEVER WAITED ON FOR CHECKS (#1076). GitHub
 runs no checks on a pull request that conflicts with its base, so a park
 that read them would wait out the worker's six hours for nothing (PR 1028:
@@ -117,6 +128,14 @@ at the old head with `BRANCH_UPDATE_PENDING`. That head's checks are green
 -- it was only behind -- so reading them would wake the step for nothing,
 every CI_READ_SECONDS. The tick waits for the head to move instead, and
 the worker's fallback instant covers an update GitHub never makes.
+
+NOR IS A RED HEAD ONLY AN OPERATOR CAN FIX (#2046). A worker whose head was
+written by a publish swarm-api refused `workflow_scope_missing` parks at it
+with `WORKFLOW_PATCH_PENDING`: its checks are red because the branch lacks
+the workflow lines in `workflow-lines.patch`, and a CI-fix round could only
+be refused the same push. The tick waits for the head to move -- the
+operator's push -- exactly as for a pending update, never reading the
+checks, so no round is claimed for it.
 
 A PULL REQUEST IN ITS BASE'S MERGE QUEUE IS NOT A READING OF ITS CHECKS
 (lane C3H). A worker whose merge GitHub answered "Changes must be made
@@ -305,6 +324,15 @@ MERGE_FIX_METADATA_KEY = "merge_fix"
 #: The worker's park code after an update-branch whose new head GitHub had
 #: not made yet (`agent_worker.merge.BRANCH_UPDATE_PENDING`).
 BRANCH_UPDATE_PENDING = "branch_update_pending"
+#: A red head written by a publish swarm-api refused `workflow_scope_missing`
+#: (#2046, `agent_worker.merge.WORKFLOW_PATCH_PENDING`): the branch lacks the
+#: workflow lines left in `workflow-lines.patch`, which only an operator can
+#: push, so a CI-fix round could only be refused the same push. The tick
+#: waits for the head to move, as for a pending update -- the checks are not
+#: read, so `_on_red` never claims a round -- and wakes the step then.
+WORKFLOW_PATCH_PENDING = "workflow_patch_pending"
+#: The park codes whose tick waits for the head to move without reading the checks.
+HEAD_MOVE_CODES = frozenset({BRANCH_UPDATE_PENDING, WORKFLOW_PATCH_PENDING})
 
 #: The worker's park code after it put the pull request in its base's merge
 #: queue (`agent_worker.merge.MERGE_QUEUED`).
@@ -999,6 +1027,36 @@ def _conflicting_files(writer: GitHubWriter, ref: IssueRef, pull: PullSnapshot,
     return sorted(ours & theirs)[:MAX_CONFLICT_FILES]
 
 
+def _red_on_default(writer: GitHubWriter, ref: IssueRef, read: _Reading,
+                    token: str) -> tuple[list[str], str] | None:
+    """(the failing names, the default branch's head) when every check failing
+    in `read` also fails at the default branch's own head; else None (#2367).
+
+    A read that fails is None and logged: it never holds a round back.
+    """
+    failing = read.checks.failing_names() if read.checks is not None else []
+    if not failing:
+        return None
+    try:
+        branch = writer.default_branch(ref, token)
+        sha = writer.branch_head(ref, branch, token)
+        if sha is None or sha == read.pull.head_sha:
+            return None
+        rules = writer.branch_rules(ref, branch, token)
+        theirs = evaluate(
+            required_status_checks(rules),
+            writer.check_runs(ref, sha, token),
+            writer.commit_statuses(ref, sha, token),
+        ).failing_names()
+    except Exception as exc:  # noqa: BLE001 -- the round goes ahead as before
+        log.info("merge wake: the default branch of %s not read (%s); the round goes ahead",
+                 ref.repository, type(exc).__name__)
+        return None
+    if not set(failing) <= set(theirs):
+        return None
+    return failing, sha
+
+
 def _on_red(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], ref: IssueRef,
             head: str, read: _Reading, token: str, now: datetime) -> tuple[str, str | None]:
     """A red reading at `head`: (`_FIXING` | `_WAITING` | `_WAKE`, the wake reason)."""
@@ -1016,6 +1074,16 @@ def _on_red(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], ref: IssueRe
             log.info("merge wake %s tenant=%s: CI fix round waits: PR-side fix %s (%s) "
                      "holds pull request #%d at %s", task_id, tenant.tenant_id,
                      held.get("task_id"), held.get("workflow_id"), ref.number, head[:12])
+            return _WAITING, None
+        # Red on main's own head too (#2367): a round could only re-apply
+        # main's fix by hand. Wait for main to go green and the branch to be
+        # updated; the head moves, and the next red reading is ours.
+        mains = _red_on_default(ctx.forge_writer, ref, read, token)
+        if mains is not None:
+            names, sha = mains
+            log.info("merge wake %s tenant=%s: CI fix round waits: %s red at the default "
+                     "branch's head %s too", task_id, tenant.tenant_id,
+                     redact(", ".join(names)).text, sha[:12])
             return _WAITING, None
         return _rerun_first(ctx, db, tenant.tenant_id, doc, ref, head, read, token, now)
 
@@ -1980,7 +2048,7 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
                         read = _read_pull(writer, ref, reading_token)
                     else:
                         read = _read(writer, ref, head, reading_token,
-                                     update_pending=wait.get("code") == BRANCH_UPDATE_PENDING,
+                                     update_pending=wait.get("code") in HEAD_MOVE_CODES,
                                      queued=wait.get("code") == MERGE_QUEUED)
                 reason = read.reason
                 if picking:

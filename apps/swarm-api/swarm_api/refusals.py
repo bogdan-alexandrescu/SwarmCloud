@@ -375,7 +375,9 @@ SWITCHES: dict[str, Switch] = {
         "as that failure being handled",
     ),
     # CI-FIXER-GATE (cifix.py `_refuse_if_lane_owns`, part of #1822): a
-    # CI-fix submission for a pull request whose lane's merge step is live.
+    # CI-fix submission for a pull request whose lane's merge step is live, or
+    # whose issue run is not terminal (#2216, the same switch: an issue run
+    # runs its own CI-fix rounds from issueci and has no merge step).
     # SHIPS ON (default=True) by owner decision 2026-10-21 (~15:15Z, asked
     # after this lane was held), unlike a new refusal's usual report-only
     # start (the 2026-10-08 rule): about 20% of standalone ci-fix pushes were
@@ -389,9 +391,32 @@ SWITCHES: dict[str, Switch] = {
         code="ci_fix_lane_owns_pr",
         why="a CI-fix submission whose continued task's workflow has a merge step that is "
         "not terminal is refused 409 naming that merge step, which runs the pull request's "
-        "CI-fix rounds itself. Ships on by owner decision 2026-10-21: scripts/ci-fix.sh reads "
+        "CI-fix rounds itself, or while a non-terminal issue run of the tenant owns the pull "
+        "request (its pr_task_id is the continued root, or the root's workflow is one of its "
+        "ci_fix_workflows), refused naming the run, which runs its own rounds. Ships on by owner decision 2026-10-21: scripts/ci-fix.sh reads "
         "the 409 as a skip, and off "
         "the standalone fixer races the lane's round for the branch again",
+        default=True,
+    ),
+    # #2535 (cifix.py `_refuse_if_fix_live`): a `continues_task` or
+    # `publish_to_pr` request that pushes and carries no fix mark of its own,
+    # onto a pull request that has a live CI fix or conflict fix. SHIPS ON
+    # (default=True), pending the owner's answer to this lane's question
+    # (2026-10-27), unlike
+    # a new refusal's usual report-only start (the 2026-10-08 rule): on
+    # 2026-10-26 PR #2473 got a CI fix and a `publish_to_pr` `implement` step
+    # at one red head 377c3010, and the second publish was refused head_moved
+    # after its agent had done the whole fix. Off -- and nothing in
+    # terraform's api_refusals turns it on, as ci_fix_in_flight shows -- it
+    # refuses nothing in production. The issue run's own CI-fix round meets
+    # it too; #2535's second step makes issueci read it as "wait". Set
+    # REFUSAL_PR_FIX_IN_FLIGHT=off to admit such a request beside the fix again.
+    "pr_fix_in_flight": Switch(
+        code="pr_fix_in_flight",
+        why="a continues_task or publish_to_pr request that pushes to a pull request's "
+        "branch and is not itself a CI fix or conflict fix is refused 409 naming the live "
+        "CI fix or conflict fix on that pull request; off, both push to one branch and the later publish is refused "
+        "head_moved, as on PR #2473",
         default=True,
     ),
     # #1435 (docs/design/model-per-step.md §4.4, owner's Q4): a `model` that

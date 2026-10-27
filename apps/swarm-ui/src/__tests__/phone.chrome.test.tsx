@@ -268,9 +268,12 @@ describe('#139 at 390: the header row never widens the page', () => {
     expect(painted(tn, 'text-overflow', PHONE)).toBe('ellipsis')
     expect(painted(tn, 'white-space', PHONE)).toBe('nowrap')
     const bar = container.querySelector<HTMLElement>('.sk-pbar')!
-    // The title takes its own width before the workspace gives way (`flex: 1 1 auto`,
-    // and the label's `flex-shrink: 100`, visual QA VQ-001).
-    expect(painted(bar.querySelector('b')!, 'flex', PHONE), 'the title does not take its own width').toBe('1 1 auto')
+    // The title takes the room the controls leave, wrapping onto a second
+    // line rather than claiming its one-line width (`flex: 1 1 0%`,
+    // PHONE-BAR-LABEL); past its 5.5em floor the workspace gives way first
+    // (the label's `flex-shrink: 100`, visual QA VQ-001).
+    expect(painted(bar.querySelector('b')!, 'flex', PHONE), 'the title does not take the room left').toBe('1 1 0%')
+    expect(painted(bar.querySelector('b')!, 'min-width', PHONE), 'the title lost its floor').toBe('5.5em')
     expect(painted(tn, 'flex-shrink', PHONE), 'the workspace does not give way before the title').toBe('100')
     const fixed = [bar.querySelector(':scope > .sk-ibtn')!, bar.querySelector(':scope > svg')!, bar.querySelector(':scope > .sk-pill')!]
     expect(fixed.filter((el) => el !== null).length, 'the sweep did not find the menu, the mark and the env').toBe(3)

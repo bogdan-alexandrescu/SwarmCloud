@@ -129,6 +129,17 @@ CI_FALLBACK_SECONDS = 900
 #: wait's 60: a release wait is woken once per release, so each refund is a
 #: whole release, the child await's shape and its bound.
 RELEASE_WAIT_MAX_RESUMES = 4
+#: A PROVIDER_QUOTA_EXHAUSTED park-and-exit (#2350, BGD 2026-10-27, "Refund,
+#: bounded"): invariant 4's designed path, not a failed attempt, so it is
+#: refunded like a CI wait, counted in `metadata.quota_park_resumes`
+#: (`control.QUOTA_PARK_RESUMES_METADATA_KEY`, reserved by `validation`).
+#: 5 BECAUSE four 24-31 s `accounts_full` parks took task_c61ee787 to
+#: attempt_count 5 of 3, and its first real loss was then final: five rides
+#: out a full account pool's churn, and past it a task that only ever parks
+#: still ends at `max_attempts`. The worker restates it
+#: (`control.QUOTA_MAX_RESUMES`) for its direct path and sends no number here.
+QUOTA_PARK_RESUMES = "quota_park_resumes"
+QUOTA_MAX_RESUMES = 5
 #: `mergeslot.MERGE_SLOT_WAIT` and `mergetrain.TRAIN_WAITING`: the CI-park
 #: codes counted on their own counters and off the CI clock.
 MERGE_SLOT_WAIT = "merge_slot_wait"
@@ -1264,8 +1275,9 @@ class AttemptState:
         CHILDREN_INCOMPLETE is `park_awaiting_children`, CI_PENDING is
         `park_ci_pending` (which needs `ci`), HUMAN_REQUIRED is `handoff`'s
         human park, and DEPENDENCY_INCOMPLETE whose detail carries a
-        `release_wait` block is `park_release_wait` (AU7-REFUND); any other
-        reason is `ControlPlane.park`, no refund.
+        `release_wait` block is `park_release_wait` (AU7-REFUND),
+        PROVIDER_QUOTA_EXHAUSTED is `ControlPlane.park`'s quota refund
+        (#2350); any other reason is `ControlPlane.park`, no refund.
         """
         body: ParkBody = call.body
         attempt = call.attempt
@@ -1397,6 +1409,15 @@ class AttemptState:
             if body.next_eligible_at is None:
                 raise ValidationFailed(f"a {reason.value} park needs next_eligible_at")
             payload["next_eligible_at"] = body.next_eligible_at
+            if reason is ParkReason.PROVIDER_QUOTA_EXHAUSTED:
+                # #2350: refunded within the server's bound; past it the
+                # park spends an attempt, as every quota park did before.
+                used = _count(metadata.get(QUOTA_PARK_RESUMES))
+                refund = used < QUOTA_MAX_RESUMES and attempt_count > 0
+                if refund:
+                    metadata[QUOTA_PARK_RESUMES] = used + 1
+                    payload["metadata"] = metadata
+                extra = {QUOTA_PARK_RESUMES: used + (1 if refund else 0)}
         if refund:
             payload["attempt_count"] = attempt_count - 1
         kind = EventType.PARKED
@@ -1404,7 +1425,7 @@ class AttemptState:
             "reason": reason.value, "next_eligible_at": payload["next_eligible_at"],
             **({"attempt_refunded": refund} if release_wait or reason in (
                 ParkReason.CHILDREN_INCOMPLETE, ParkReason.CI_PENDING,
-                ParkReason.HUMAN_REQUIRED) else {}),
+                ParkReason.HUMAN_REQUIRED, ParkReason.PROVIDER_QUOTA_EXHAUSTED) else {}),
             **extra, **detail}
         release_reason = f"parked:{reason.value}"
         if reason is ParkReason.HUMAN_REQUIRED:

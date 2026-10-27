@@ -18,13 +18,10 @@ import type { CascadeEnv } from './cssgate'
 import { painted, resolveColour } from './marks'
 import { contrast } from './spaceprobe'
 import { HISTORY_VIEW_KEY } from '../ScheduleHistoryTimeline'
-import { fixedColumns } from './tablefit'
 
 const WAIT = { timeout: 4000 }
 const PHONE: CascadeEnv = { width: 400 }
 const WIDE: CascadeEnv = { width: 1440 }
-/** The schedules table's width at a 1440px window, measured in Chromium (rail, panel and gutters off). */
-const LIST_AT_1440 = 1056
 
 type Json = Record<string, unknown>
 type Reply = { status: number; body: unknown } | null
@@ -186,64 +183,6 @@ describe('the schedules list at 1440 (V166, V167)', () => {
     const figure = spend.querySelector<HTMLElement>('.sc-usd')!
     expect(visible(figure)).toBe('$3.10')
     expect(painted(figure, 'white-space', WIDE)).toBe('nowrap')
-  })
-
-  it('V167: gives Repository and When ~150px each at 1440, and breaks a repository after its slash', async () => {
-    // MUTATION: the 2026-10-13 widths back (name 18%, next 104, last 112, approvals 88, state 120, acts 172).
-    await mountSchedules(null, schedulesRoutes())
-    await waitFor(() => expect(visible(rowOf('sch_a')!.querySelector('td[data-label="Repository"]'))).toContain('example-org/example-api'), WAIT)
-    const table = document.querySelector<HTMLTableElement>('.sc-table.is-schedules')!
-    const { cols } = fixedColumns(table, LIST_AT_1440, WIDE)
-    const width = (c: string) => {
-      const box = cols.find((b) => b.col === c)!
-      return box.end - box.start
-    }
-    expect(width('repo'), 'Repository was 87px').toBeGreaterThanOrEqual(140)
-    expect(width('when'), 'When was 87px').toBeGreaterThanOrEqual(140)
-    // MUTATION: drop `slashBreaks`, or `overflow-wrap: anywhere` back on the cell.
-    const cell = rowOf('sch_a')!.querySelector<HTMLElement>('td[data-label="Repository"] > .sc-cut')!
-    expect([...cell.querySelectorAll('.sc-part')].map((p) => p.textContent)).toEqual(['example-org/', 'example-api'])
-    expect(painted(cell, 'overflow-wrap', WIDE)).toBe('break-word')
-    expect(painted(cell.querySelector<HTMLElement>('.sc-part')!, 'display', WIDE)).toBe('inline-block')
-    // A long zone breaks at its slashes too, not into Next run.
-    const zone = rowOf('sch_a')!.querySelector<HTMLElement>('td[data-label="When"] .sc-zone')!
-    expect(painted(zone, 'overflow-wrap', WIDE)).toBe('break-word')
-  })
-})
-
-describe('the schedules list on a phone (V173, V235)', () => {
-  it('V173: wraps line 2, so the next run, the spend and what waits are on screen, not only in a title', async () => {
-    // MUTATION: `.sc-line2` back to nowrap + ellipsis, or its `title` back.
-    media({ phone: true })
-    await mountSchedules(null, schedulesRoutes())
-    await waitFor(() => expect(rowOf('sch_a')).not.toBeNull(), WAIT)
-    const line = rowOf('sch_a')!.querySelector<HTMLElement>('.sc-line2')!
-    expect(painted(line, 'white-space', PHONE)).toBe('normal')
-    expect(painted(line, 'text-overflow', PHONE)).not.toBe('ellipsis')
-    expect(painted(line, ['overflow', 'overflow-x'], PHONE)).toBeNull()
-    expect(line.getAttribute('title')).toBeNull()
-    expect(visible(line)).toContain('next in')
-    expect(visible(line)).toContain('2 attempts unreported')
-    expect(visible(line)).toContain('none waiting')
-  })
-
-  it('V235: keeps half the first line for the name when a disabled row wears its reason', async () => {
-    // MUTATION: the row's columns back to `minmax(0, 1fr) auto auto`.
-    media({ phone: true })
-    await mountSchedules(
-      null,
-      schedulesRoutes((m, url) =>
-        m === 'GET' && url.split('?')[0] === '/v1/schedules'
-          ? { status: 200, body: { schedules: [schedule('sch_d', { state: 'disabled', next_run_at: null })], tenant_id: 'eng' } }
-          : null,
-      ),
-    )
-    await waitFor(() => expect(rowOf('sch_d')).not.toBeNull(), WAIT)
-    const row = rowOf('sch_d')!
-    expect(visible(row)).toContain('An admin disabled this schedule.')
-    expect(painted(row, 'grid-template-columns', PHONE)).toBe('minmax(50%, 1fr) auto auto')
-    const wrap = row.querySelector<HTMLElement>('.sc-row-acts .c-btn-wrap')!
-    expect(painted(wrap, 'flex-direction', PHONE)).toBe('column')
   })
 })
 

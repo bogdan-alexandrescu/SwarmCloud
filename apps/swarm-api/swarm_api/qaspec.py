@@ -175,7 +175,8 @@ MAX_ISSUES = 30
 
 #: The live gate's presets, by name (`agent_worker.livegate.presets.PRESETS`,
 #: which swarm-api cannot import; tests/unit/control_plane/test_qaspec.py
-#: holds the two equal). A viewport is never sent: the gate refuses one.
+#: holds the two equal, and test_preset_lists_agree.py every copy). A viewport
+#: is never sent: the gate refuses one, and a raw width here is refused too.
 PRESETS = ("desktop", "iphone-15", "phone-390", "phone-380", "pixel-8", "iphone-se", "ipad-7")
 THEMES = ("light", "dark")
 DEFAULT_WIDTHS = ("desktop", "phone-390")

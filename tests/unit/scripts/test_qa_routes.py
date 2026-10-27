@@ -48,6 +48,13 @@ DETAIL = "detail"
 BROWSER_PANE = "browser"
 #: The catalogue profile whose session reads `live_browser: true` in the fixture build.
 BROWSER_PROFILE = "claude-code-browser"
+#: The Budget card's agents (#2459, BUDGET-FIXTURES), route id -> task id: each
+#: captured on its Details only, and served by id and off the lists in api.ts.
+BUDGET_ROUTES = {
+    "budget-warn": "task_budget_warn",
+    "budget-exceeded": "task_budget_exceeded",
+    "budget-none": "task_budget_none",
+}
 
 
 def _routes() -> dict:
@@ -114,7 +121,7 @@ def test_every_route_path_is_the_routers_path():
         seg = address.split("/")
         if seg[:2] == ["work", "task"]:
             pane = seg[3] if len(seg) > 3 else None
-            task = _pane_task(pane)
+            task = BUDGET_ROUTES.get(route["id"]) or _pane_task(pane)
             assert seg[2] == task, f"{group}/{route['id']}: a task pane on {seg[2]}, not {task}"
             want = f"/agents/live/{task}" + (f"/{pane}" if pane else "")
         else:
@@ -159,6 +166,35 @@ def test_the_browser_route_is_on_the_fixture_build_live_browser_agent():
     assert re.search(rf"'{re.escape(task)}'", _live_session_fixture()), (
         f"the fixture branch of loadLiveSession never names {task}, so its Browser pane reads no live browser"
     )
+
+
+def test_the_budget_card_is_captured_on_its_three_by_id_agents():
+    """BUDGET-FIXTURES (part of #2459): the agent's Budget card is drawn only
+    for a budgeted agent, and no listed fixture task has a budget, so each of
+    its three states is captured on an agent the fixture build answers BY ID
+    and keeps OFF THE LISTS (BGD, 2026-10-27): other tests pin every count."""
+    routes = {r["id"]: r for _g, r in _all_routes()}
+    tasks = _fixture_tasks()
+    budget_tasks = _budget_fixture()
+    for rid, task in BUDGET_ROUTES.items():
+        # MUTATION: delete a budget route from routes.json -> fails.
+        route = routes.get(rid)
+        assert route is not None, f"routes.json has no {rid} route"
+        # MUTATION: point a budget route at a pane -> fails; the card is on Details.
+        assert route["address"] == f"work/task/{task}", f"{rid}: {route['address']}"
+        assert route["path"] == f"/agents/live/{task}", f"{rid}: {route['path']}"
+        # MUTATION: add the task as an mk(...) row of fixtureTasks -> fails.
+        assert task not in tasks, f"{task} is on the fixture build's task list; budget agents stay off it"
+        # MUTATION: rename the id in fixtureBudgetTasks -> fails.
+        assert re.search(rf"'{re.escape(task)}'", budget_tasks), f"fixtureBudgetTasks in api.ts never names {task}"
+
+
+def _budget_fixture() -> str:
+    """The budget agents' ids and `fixtureBudgetTasks`, in api.ts: the fixtures a per-task read answers."""
+    text = _read(API_TS)
+    start = text.index("const FIXTURE_BUDGET_WARN = ")
+    end = text.index("function fixtureOffList(", start)
+    return text[start:end]
 
 
 def _live_session_fixture() -> str:

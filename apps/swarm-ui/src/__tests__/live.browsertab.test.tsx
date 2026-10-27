@@ -459,3 +459,56 @@ describe('BT-010: the strip is the one place the tab says a plain-HTTP page refu
     expect(take.title).toBe(HTTP_SAY)
   })
 })
+
+// ---------------------------------------------------------------------------
+// TENANT-E-ASK (part of #2391): the member-control ask opens inside its pane
+// ---------------------------------------------------------------------------
+
+/** The `@media (max-width: 560px)` blocks of live.css, comments dropped. */
+function phoneBlocks(): string {
+  const css = LIVE_CSS.replace(/\/\*[\s\S]*?\*\//g, '')
+  const out: string[] = []
+  const re = /@media \(max-width: 560px\) \{/g
+  for (let m = re.exec(css); m !== null; m = re.exec(css)) {
+    let depth = 1
+    let i = m.index + m[0].length
+    for (; i < css.length && depth > 0; i++) depth += css[i] === '{' ? 1 : css[i] === '}' ? -1 : 0
+    out.push(css.slice(m.index, i))
+  }
+  return out.join('\n')
+}
+
+describe('TENANT-E-ASK: "Let any member take control?" opens inside the pane at every width', () => {
+  // RENDERED (review task_c00bd5af9cad483db21e, 2026-10-26): the 420 px ask
+  // was anchored right:0 to its checkbox, which sits at the toolbar's LEFT,
+  // so at 1440 it ran ~104 px past the pane's left edge and the heading read
+  // "er take control?"; at 390 it started at x=-110.
+  it('anchors the ask to the toolbar, not the checkbox, so its box is the pane’s width', () => {
+    expect(rulesFor('.live-toolbar').join('\n')).toMatch(/position:\s*relative/)
+    const wrap = rulesFor('.live-open-wrap').join('\n')
+    expect(wrap).not.toMatch(/position:\s*(relative|absolute|fixed|sticky)/)
+  })
+
+  it('opens from the left, where its checkbox is, and never wider than the toolbar', () => {
+    const ask = rulesFor('.live-ask.is-members').join('\n')
+    expect(ask).toMatch(/left:\s*0/)
+    expect(ask).toMatch(/right:\s*auto/)
+    expect(ask).toMatch(/width:\s*min\(420px,\s*100%\)/)
+    expect(ask).toMatch(/box-sizing:\s*border-box/)
+  })
+
+  it('spans the toolbar on a phone, inside the page’s gutters', () => {
+    const phone = phoneBlocks()
+    expect(phone).toMatch(/\.live-ask\.is-members\s*\{[^}]*left:\s*0[^}]*right:\s*0[^}]*width:\s*auto/)
+  })
+
+  it('renders the ask with the class that picks its side, its words unchanged', () => {
+    pane(session())
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Let any member take control' }))
+    const ask = screen.getByRole('dialog', { name: 'Let any member take control' })
+    expect(ask.classList.contains('live-ask')).toBe(true)
+    expect(ask.classList.contains('is-members')).toBe(true)
+    expect(within(ask).getByRole('heading', { name: 'Let any member take control?' })).toBeTruthy()
+    expect(toolbar().contains(ask)).toBe(true)
+  })
+})

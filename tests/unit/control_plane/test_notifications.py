@@ -222,6 +222,90 @@ def test_handoffs_are_the_callers_own_waiting_tasks_with_the_browser_tab(db):
     assert all(i["needs_you"] and i["group"] == "task" for i in items)
 
 
+def _held_merge(db, named: list[tuple[str, int]], *, unreadable: int = 0,
+                task_id: str = "task_merge") -> None:
+    """A workflow's merge step PARKED(HUMAN_REQUIRED) on the owner questions
+    its review named, as the worker records the hold in `blocked_by`
+    (`agent_worker.lifecycle._park_for_owner_questions`, #2070)."""
+    questions = [{"task_id": t, "step_id": t.removeprefix("task_"), "question_index": i,
+                  "question": f"question {i} of {t}?"} for t, i in named]
+    _task(db, task_id, state="PARKED", park_reason="HUMAN_REQUIRED", current_generation=1,
+          workflow_id="wf_lane", step_id="merge", runner_profile="merge",
+          metadata={"unit": "GA-MOVE-VIEWS"},
+          blocked_by=[{"reason": "HUMAN_REQUIRED", "park_phase": "owner_questions",
+                       "owner_questions": {"code": "owner_questions_open",
+                                           "questions": questions, "unreadable": unreadable}}])
+
+
+def _bell(db) -> list[dict[str, Any]]:
+    reading = _reading(db, _viewer())
+    return notif.handoffs(reading) + notif.agent_questions(reading)
+
+
+def test_a_merge_held_by_questions_that_already_ring_adds_no_hand_off_item(db):
+    """MERGE-PARK-BELL (part of #2313): each of the two questions holding the
+    merge rings from the step that asked it, so the merge adds nothing -- no
+    "take over its browser" for a step that has no browser, and no second
+    item for either question."""
+    _task(db, "task_implement", workflow_id="wf_lane", step_id="implement",
+          result_summary={"questions": 1})
+    _task(db, "task_fix", workflow_id="wf_lane", step_id="fix", result_summary={"questions": 1})
+    _held_merge(db, [("task_implement", 0), ("task_fix", 0)])
+    items = _bell(db)
+    assert sorted(_ids(items)) == ["task:questions:task_fix", "task:questions:task_implement"]
+    assert notif.handoffs(_reading(db, _viewer())) == []
+
+
+def test_a_merge_held_by_questions_that_do_not_ring_says_so_and_opens_details(db):
+    """An asking step that ended past `WINDOW`, and one that reported no question
+    count (`result_summary.questions`), ring nothing themselves: the merge's own item
+    names them, and opens the merge's Details, where the questions are."""
+    _task(db, "task_implement", workflow_id="wf_lane", step_id="implement",
+          result_summary={"questions": 1}, ended=_ago(days=8))
+    _task(db, "task_fix", workflow_id="wf_lane", step_id="fix", result_summary={"questions": 0})
+    _held_merge(db, [("task_implement", 0), ("task_fix", 0)])
+    items = _bell(db)
+    assert _ids(items) == ["task:handoff:task_merge:1"]
+    (item,) = items
+    assert item["title"] == "GA-MOVE-VIEWS needs your answers to 2 questions to merge"
+    assert item["href"] == "/agents/waiting/task_merge/details"
+    assert "browser" not in item["href"] and item["needs_you"] is True
+
+
+def test_a_merge_counts_only_the_questions_no_other_item_carries(db):
+    """One question rings from its step and one does not: one item each,
+    never two for the same question and never none for an open one."""
+    _task(db, "task_implement", workflow_id="wf_lane", step_id="implement",
+          result_summary={"questions": 1})
+    _task(db, "task_fix", workflow_id="wf_lane", step_id="fix",
+          result_summary={"questions": 1}, ended=_ago(days=8))
+    _held_merge(db, [("task_implement", 0), ("task_fix", 0)])
+    by_id = {i["id"]: i for i in _bell(db)}
+    assert set(by_id) == {"task:questions:task_implement", "task:handoff:task_merge:1"}
+    assert by_id["task:handoff:task_merge:1"]["title"] == (
+        "GA-MOVE-VIEWS needs your answers to 1 question to merge")
+
+
+def test_a_merge_whose_hold_cannot_be_read_whole_is_always_an_item(db):
+    """No answer wakes a hold with an entry it cannot read (fail closed,
+    `agent_questions.owner_questions_hold`): only a person's re-run does, so
+    the bell says so even when the readable questions ring elsewhere."""
+    _task(db, "task_implement", workflow_id="wf_lane", step_id="implement",
+          result_summary={"questions": 1})
+    _held_merge(db, [("task_implement", 0)], unreadable=1)
+    (item,) = notif.handoffs(_reading(db, _viewer()))
+    assert item["title"] == "GA-MOVE-VIEWS needs your answers to 1 question to merge"
+    assert item["href"] == "/agents/waiting/task_merge/details"
+
+
+def test_a_real_hand_off_park_keeps_its_browser_item(db):
+    _task(db, "task_parked", state="PARKED", park_reason="HUMAN_REQUIRED", current_generation=2,
+          blocked_by=[{"reason": "HUMAN_REQUIRED", "cause": "sign in to GitHub"}])
+    (item,) = notif.handoffs(_reading(db, _viewer()))
+    assert item["title"] == "Your agent parked until you take over its browser"
+    assert item["href"] == "/agents/waiting/task_parked/browser"
+
+
 def _waiting(db, task_id: str, *, by: str = ALICE, tenant_id: str = "eng",
              request_id: str = "signin-1", opened: bool | None = None) -> None:
     """A RUNNING task whose agent asked for a person, with its live session

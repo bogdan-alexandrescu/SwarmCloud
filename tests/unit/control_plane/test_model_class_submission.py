@@ -60,7 +60,6 @@ from swarm_api.objects import InMemoryObjectReader
 from swarm_api.schedtypes import custom_prompt
 from swarm_api.schemas import WorkflowCreate
 from swarm_api.waker import NullWaker
-from swarm_common import specsign
 from swarm_common.profiles import MODEL_CLASSES, RUNNER_PROFILES
 
 from .conftest import PROJECT, api_settings, auth_header, seed_tenant
@@ -296,7 +295,8 @@ def test_a_fable_step_is_stored_and_signs_at_the_format_that_covers_its_class(
     assert response.status_code == 201, response.text
     (task,) = _tasks(db)
     assert task["model_class"] == "fable"
-    assert task["spec_format"] == specsign.SPEC_FORMAT == 5
+    # Format 5: the class's own; 6 (request 120) covers a budget, set on none here.
+    assert task["spec_format"] == 5
     assert signer.verifies(task, task["id"])
     # The class is inside the signed bytes: rewriting it fails verification.
     rewritten = {**task, "model_class": "haiku"}

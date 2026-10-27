@@ -133,9 +133,9 @@ function handOff(): Task {
     blocked_by: [{ reason: 'HUMAN_REQUIRED' } as unknown as NonNullable<Task['blocked_by']>[number]],
     waiting: waiting({
       summary: 'Waiting for a person: sign in on its console page, then say it is ready',
-      resumes_when: "a member of the tenant calls human-ready (the console's Ready button)",
+      resumes_when: "a member of the workspace calls human-ready (the console's Ready button)",
       detail: {
-        who_may_answer: { tenant_id: 'acme', text: 'any member of tenant acme' },
+        who_may_answer: { tenant_id: 'acme', text: 'any member of workspace acme' },
         expires_at: null,
         answer_route: `POST /v1/tasks/${ID}/human-ready`,
         cause: 'hold_expired',

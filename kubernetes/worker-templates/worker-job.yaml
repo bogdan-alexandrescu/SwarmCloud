@@ -185,6 +185,12 @@ spec:
             # GkeJobDispatcher's CACHE_MOUNT / CACHE_ROOT_ENV.
             - name: SWARM_CACHE_ROOT
               value: /cache
+            # The pod's local disk emptyDirs, `<volume>=<mountPath>:<sizeLimit GiB>`,
+            # so the worker can say what filled one before kubelet evicts the pod
+            # (#2436). render.py fills it from the dispatcher's
+            # scratch_volumes_value; the cache and dshm are not in it.
+            - name: SWARM_SCRATCH_VOLUMES
+              value: "__SCRATCH_VOLUMES__"
             - name: CHECKPOINT_INTERVAL_SECONDS
               value: "__CHECKPOINT_INTERVAL_SECONDS__"
             - name: MAX_IN_WORKER_RETRY_DELAY_SECONDS

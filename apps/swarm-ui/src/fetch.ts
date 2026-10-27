@@ -73,6 +73,14 @@ export interface ApiError {
    * found. Absent everywhere else.
    */
   template?: string
+  /**
+   * THE ONE OTHER TENANT OF THE CALLER'S THAT HOLDS THIS ITEM (#1194 c15),
+   * set on a task read's `not_found` when the probe of the caller's own
+   * tenants (`api.ts` `taskElsewhere`) found exactly one answering 200. The
+   * 404 itself is unchanged -- the API's same answer for "missing" and
+   * "another tenant's" -- this only says where the caller can already see it.
+   */
+  elsewhere?: { tenant_id: string; display_name: string }
 }
 
 /** Whether a failure is a write's: see `ApiError.method`. */
@@ -864,9 +872,11 @@ export function subscribeTenantSwitch(fn: () => void): () => void {
   return () => switchListeners.delete(fn)
 }
 
-/** `base`, plus `X-Swarm-Tenant` when a tenant was chosen. THE one place. */
-export function apiHeaders(base: Record<string, string>): Record<string, string> {
-  const tenant = chosenTenant()
+/**
+ * `base`, plus `X-Swarm-Tenant` when a tenant was chosen. THE one place.
+ * `tenant` is the read's own (`FetchOptions.tenant`); omitted, the choice.
+ */
+export function apiHeaders(base: Record<string, string>, tenant: string | null = chosenTenant()): Record<string, string> {
   return tenant === null ? { ...base } : { ...base, [TENANT_HEADER]: tenant }
 }
 
@@ -907,6 +917,14 @@ export interface FetchOptions {
    * the screen's, so the head's age never counts it (CH-2).
    */
   frame?: boolean
+  /**
+   * Send THIS tenant's `X-Swarm-Tenant` instead of the chosen one, for this
+   * read only, without changing the choice: the task-404 probe (#1194 c15).
+   * Only ever a tenant `GET /v1/tenants/mine` listed -- the header selects,
+   * the API still refuses any tenant it did not confirm. A refusal of it
+   * never drops the stored choice, which it is not.
+   */
+  tenant?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -1004,11 +1022,11 @@ function copyOf<T>(v: T): T {
 /** A read's fetch options that never vary: the IAP cookie, same origin only. */
 const READ_INIT = { sameOrigin: 'same-origin' } as const satisfies Record<string, RequestCredentials>
 
-async function send(fetcher: typeof fetch, url: string, signal: AbortSignal): Promise<Arrival> {
+async function send(fetcher: typeof fetch, url: string, tenant: string | null, signal: AbortSignal): Promise<Arrival> {
   let res: Response
   try {
     res = await fetcher(url, {
-      headers: apiHeaders({ accept: 'application/json' }),
+      headers: apiHeaders({ accept: 'application/json' }, tenant),
       // Behind IAP the browser already holds the session cookie; nothing here
       // handles tokens, and nothing here should.
       credentials: READ_INIT.sameOrigin,
@@ -1049,7 +1067,7 @@ function arrive(url: string, tenant: string | null, signal: AbortSignal | undefi
   if (entry !== undefined && entry.fetcher !== fetcher) entry = undefined
   if (entry === undefined) {
     const controller = new AbortController()
-    const made: InFlight = { fetcher, controller, waiting: 0, handedOut: 0, promise: send(fetcher, url, controller.signal) }
+    const made: InFlight = { fetcher, controller, waiting: 0, handedOut: 0, promise: send(fetcher, url, tenant, controller.signal) }
     void made.promise.then((a) => {
       if (inFlight.get(key) === made) inFlight.delete(key)
       // Only a success is kept: a failure is asked again by whoever asks next.
@@ -1104,6 +1122,15 @@ export function forgetReads(): void {
   writes += 1
 }
 
+/**
+ * The read generation: bumped by every write and by `forgetReads`. A cache kept
+ * outside this file (`api.ts` `taskElsewhere`) keys on it, so sign-out or a
+ * change sent drops what it kept exactly as it drops the answers kept here.
+ */
+export function readGeneration(): number {
+  return writes
+}
+
 /** How many distinct GETs are in flight: for tests of the de-duplication. */
 export function readsInFlight(): number {
   return inFlight.size
@@ -1148,7 +1175,8 @@ export async function read<T>(
     settle(ok ? 'ok' : kind === 'admin_required' ? 'admin' : 'failed')
   }
 
-  const tenant = chosenTenant()
+  const probing = opts.tenant !== undefined
+  const tenant = opts.tenant ?? chosenTenant()
   const arrived = await arrive(target.url, tenant, opts.signal, REUSED_ROUTES.has(target.template))
   if (arrived.kind === 'threw') {
     // DNS, TLS, offline, CORS preflight, abort. Emphatically NOT "no data",
@@ -1198,12 +1226,13 @@ export async function read<T>(
     // Which route answered 404, for the copy (`ApiError.template`).
     const err: ApiError = classified.kind === 'not_found' ? { ...classified, template: target.template } : classified
     note(arrived.status, err.kind, false)
-    notePreferencesRefusal(arrived.status, err.code, tenant, err.message)
+    if (!probing) notePreferencesRefusal(arrived.status, err.code, tenant, err.message)
     // A stored tenant the caller is no longer in: dropped, and this READ asked
     // once more under the default. Only when the drop took: storage that
     // refused the removal still holds the refused value, and asking again with
     // it would be refused again, forever.
-    if (dropRefusedTenant(arrived.status, err.code, tenant) && chosenTenant() !== tenant) return read(target, isEmpty, opts)
+    // A probe's tenant is not the stored choice: its refusal drops nothing.
+    if (!probing && dropRefusedTenant(arrived.status, err.code, tenant) && chosenTenant() !== tenant) return read(target, isEmpty, opts)
     return asStale(err)
   }
 

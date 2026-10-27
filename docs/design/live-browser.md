@@ -2332,7 +2332,7 @@ for sign-ins that only work on mobile.
   - `desktop` 1440×900
   - `iphone-15` 393×852 @3
   - `phone-390` 390×844 @3 (QA-KIT, 2026-10-19; amendment below)
-  - `phone-380` 380×844 @3 (IMPLEMENT-RENDER, 2026-10-26; amendment below)
+  - `phone-380` 380×800 @3 (PHONE-380 and IMPLEMENT-RENDER, 2026-10-26; amendment below)
   - `pixel-8` 412×915 @2.625
   - `iphone-se` 375×667 @2
   - `ipad-7` 810×1080 @2
@@ -2362,9 +2362,9 @@ renders its own branch in the live browser and compares each render with the
 repository's frame PNG (`swarm-handoff compare`; the lane author's half is
 [browser-qa.md §6](../browser-qa.md#6-rendering-your-own-branch-in-another-repositorys-implement-step)).
 A repository whose phone frames are drawn at 380 needs a render at 380, and no
-preset was. `phone-380` is `phone-390` ten pixels narrower: the same height,
-scale, mobile flags, user agent and client hints, so the only thing a lane
-changes between the two is the width its frames were drawn at. It follows
+preset was. `phone-380` is 380×800, the size of AI Studio's phone frames (the
+PHONE-380 amendment below), with `phone-390`'s scale, mobile flags, user agent
+and client hints, so a lane changes only the size its frames were drawn at. It follows
 `phone-390` in every copy the QA-KIT amendment below lists (the gate, swarm-api's
 two restatements, the console's three label tables and its fixture), and its
 display fits in the Xvfb already started for the desktop preset.
@@ -2440,6 +2440,21 @@ QA-CAPTURE builds on them.
   transcript's 4,000,000-character cap. The transcript is then skipped (the
   stdout capture stays whole up to its own cap), and QA-CAPTURE should expect
   that.
+
+**Amendment, 2026-10-26: the 380-wide phone (PHONE-380, part of #2136).** BGD
+approved a `phone-380` preset, 380×800 @3, after `phone-390`: AI Studio's
+phone mock-ups are drawn in 380×800 frames, and a browser step or a QA target
+should render at the size the design was drawn at, not 10 px wider. It is
+`phone-390` in every trait but the size (touch, the mobile flag, iPhone 15's
+user agent and client hints), and its display fits inside `phone-390`'s, so the
+Xvfb size is unchanged. A raw width is still refused: 380 is reached by naming
+the preset, never by sending a viewport. The visual-QA capture runs it to the
+scroller's end as it does `phone-390` (`TO_THE_END_PRESETS`), because a page is
+at least as many of its viewports tall. The list is now held in one test,
+`tests/unit/control_plane/test_preset_lists_agree.py`, across the gate,
+swarm-api's two restatements (`qaspec.PRESETS`, `live.LIVE_PRESETS`), the
+`swarm-handoff device` help (now derived from the gate's list) and the two
+docs that write it out (docs/mirrored-values.md).
 
 ---
 

@@ -344,6 +344,10 @@ def test_every_service_written_key_is_reserved_in_one_place():
         # choose how many refunds the task has left.
         # MUTATION: drop it from RESERVED_METADATA_KEYS and this tuple is red.
         "release_wait_resumes",
+        # The quota parks whose attempt was refunded (#2350), written only by
+        # the quota park. A caller who set it would choose how many refunds
+        # the task has left.
+        "quota_park_resumes",
     )
 
 
@@ -363,6 +367,24 @@ def test_a_caller_supplied_release_wait_resumes_is_refused_and_creates_nothing(c
     assert body["code"] == RESERVED_CODE
     assert body["detail"]["reserved_metadata_keys"] == ["release_wait_resumes"]
     assert "metadata.release_wait_resumes" in body["message"]
+
+
+def test_a_caller_supplied_quota_park_resumes_is_refused_and_creates_nothing(client, db):
+    """#2350: the counter of refunded quota parks is the park's to write."""
+    response = client.post(
+        "/v1/tasks",
+        headers=auth_header("alice"),
+        json={"runner_profile": "mock",
+              "metadata": {"unit": "payments", "quota_park_resumes": -100}},
+    )
+
+    assert _created(db) == {"tasks": [], "workflows": []}
+    # MUTATION: leave the key out of RESERVED_METADATA_KEYS and this is a 201.
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert body["code"] == RESERVED_CODE
+    assert body["detail"]["reserved_metadata_keys"] == ["quota_park_resumes"]
+    assert "metadata.quota_park_resumes" in body["message"]
 
 
 def test_the_worker_reads_the_key_this_service_reserves():

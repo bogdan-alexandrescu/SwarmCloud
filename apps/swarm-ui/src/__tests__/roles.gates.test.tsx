@@ -269,7 +269,7 @@ function schedule(id: string): Json {
 }
 
 describe('Schedules, by role', () => {
-  it('offers a viewer no new schedule, no Run now and no Resume, each saying why', async () => {
+  it('offers a viewer no new schedule, saying why (the list draws no row actions since AUTO-A1)', async () => {
     live((m, url) => {
       const path = url.split('?')[0]!
       if (m === 'GET' && path === '/v1/schedules') return { status: 200, body: { schedules: [schedule('sch_a')], tenant_id: 'eng' } }
@@ -278,16 +278,10 @@ describe('Schedules, by role', () => {
     }, VIEWER)
     const { SchedulesScreen } = await import('../Schedules')
     render(<SchedulesScreen view={null} go={vi.fn()} />)
-    const row = await waitFor(() => {
-      const el = document.querySelector<HTMLElement>('[data-testid="sc-acts-row"]')
-      expect(el).not.toBeNull()
-      return el!
-    }, WAIT)
-    await waitFor(() => expect((within(row).getByRole('button', { name: 'Run now' }) as HTMLButtonElement).disabled).toBe(true), WAIT)
-    expect((within(row).getByRole('button', { name: 'Resume' }) as HTMLButtonElement).disabled).toBe(true)
-    expect(visible(row)).toContain('Your role in eng is viewer; members run and change schedules here.')
+    const button = await screen.findByRole('button', { name: 'New schedule' }, WAIT)
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(true), WAIT)
     expect(screen.queryByRole('link', { name: 'New schedule' })).toBeNull()
-    expect((screen.getByRole('button', { name: 'New schedule' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(document.querySelector('[data-testid="sc-acts-row"]')).toBeNull()
   })
 })
 
