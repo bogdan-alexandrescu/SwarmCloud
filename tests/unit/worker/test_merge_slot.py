@@ -137,7 +137,7 @@ class Repo:
         return merge.RequiredChecks(checks=(forge_mod.RequiredCheck("ci", None),),
                                     protected=True)
 
-    def checks_at(self, sha: str) -> list[merge.CheckFacts]:
+    def checks_at(self, sha: str, *, head_ref: str | None = None) -> list[merge.CheckFacts]:
         ready, conclusion = self.ci[sha]
         if self.clock() < ready:
             return [merge.CheckFacts("ci", "in_progress", None)]
