@@ -10,6 +10,7 @@
     swarm-handoff record start NAME [--interval-ms N]
     swarm-handoff record stop
     swarm-handoff serve DIR [--port N]
+    swarm-handoff compare SHOT.png FRAME.png [--name NAME] [--threshold F] [--top-only]
 
 It WRITES FILES and opens no socket: a request goes into the spool at
 $SWARM_HANDOFF (`requests/<id>.json`, written to a temporary name and renamed),
@@ -83,6 +84,12 @@ never shown for more than MAX_FRAME_DELAY_CS, so an idle minute plays as two
 seconds. While a person is in control the gate holds the recorder's CDP like
 the agent's, and a screenshot that completes in that window is withheld
 (cdppolicy.CONTENT_METHODS), so no frame shows what a person typed.
+One recorder runs at a time. A `record start` that finds one still alive --
+a script crashed before its `record stop` (#1981 c6) -- stops it as `record
+stop` does (the stop file, at most STOP_WAIT_SECONDS, then SIGTERM), keeps
+its GIF, names it in its answer as `replaced` with what it wrote in
+`replaced_result`, and starts the new one. Under the same name the new GIF
+is written over the old one, which is what a rerun of the script asks for.
 
 A MOCKUP BESIDE THE APP. `serve DIR` serves a directory over http on
 127.0.0.1 and nowhere else -- there is no option for another address -- in
@@ -94,6 +101,48 @@ is proxied (the bypass list never says `<-loopback>`). Only GET and HEAD, only
 inside DIR (a link out of it is not followed), and only for a Host of
 127.0.0.1 or localhost -- a site in the same browser that rebinds its own name
 to 127.0.0.1 is refused, as the CDP proxy refuses it.
+
+A RENDER AGAINST ITS FRAME (IMPLEMENT-RENDER, BGD 2026-10-26, part of #2442;
+docs/browser-qa.md §6). `compare SHOT FRAME` scores a screenshot of the live
+browser against the repository's frame PNG for the same preset and theme, and
+writes `<name>.diff.png` and `<name>.json` under $SWARM_ARTIFACTS_DIR/compare/,
+so the step's artifacts carry the evidence for every frame it touched. WHY: AI
+Studio's ~30 visual-conformance lanes checked their UI fixes only through
+rendered-HTML tests; a browser re-check after merge found 28 of 52 desktop rows
+and 12 of 34 phone rows still wrong, and 6 new regressions. A score is what
+lets the implement step see that before it finishes.
+
+The score is PERCEPTUAL, not a pixel count: a design tool and Chromium never
+draw a glyph's edge alike, and a pixel-exact ratio (swarm_qa's `diff`, built
+for two captures of the same build) would call every frame wholly different.
+Both images are composited over white (an exported frame's empty canvas is
+transparent; the browser paints white), averaged into the same grid of
+COMPARE_CELL x COMPARE_CELL cells of the SHOT's CSS pixels -- a frame exported
+at 2x is averaged over 2x the pixels, so it lands on the same grid -- and each
+pair of cells is compared in CIELAB. A cell differs when its colour difference
+(CIE76 delta E) is over COMPARE_DELTA_E. The score is the share of the cells
+that differ, 0 for the same picture; rows only one image has (a full-page frame
+against a viewport render) differ, so a short render can never pass for a long
+frame -- unless `--top-only` says to score only the rows both have: a phone
+render is a viewport shot (through the gate a full-document shot on a phone
+preset is not the page as laid out; swarm_qa.py `_shot` has the measurement),
+and a frame is often the whole page. Exit 0 when the score is at most --threshold (COMPARE_THRESHOLD by
+default), EXIT_DIFFERENT when over it, 5 when refused. The diff image is the
+shot faded towards white, with every differing cell in DIFF_MARK, at the shot's
+size (taller when the frame is).
+
+It decodes with Pillow when Pillow imports (the image's venv pins it, and the
+agent's PATH puts the venv's python3 first), which also reads a palette,
+16-bit or JPEG frame; otherwise with the standard-library decoder above, which
+reads what Chromium writes. Everything after decoding is the same code, and
+the unit tests run it with no Pillow. Neither image is scored at more than
+COMPARE_MAX_PIXELS: Pillow shrinks a larger one by a whole factor, the
+standard library refuses it (`too_large`) from its header, before
+decompressing. MEASURED 2026-10-26 (IMPLEMENT-RENDER-FINISH, Python 3.11,
+one core, synthetic unfiltered pages): a 1440x900 shot against its 2880x1800
+frame in 1.3 s of CPU on the standard-library path and 1.6 s with Pillow; a
+390x844 phone against its 2x RGBA frame in 1.2 s and 0.3 s; a 1440x4000 page
+against its 2880x8000 frame, shrunk by 2, in 5.3 s with Pillow.
 
 Standard library only: this runs in the agent's environment, under any Python
 the image carries. The recorder alone needs Playwright, and runs under the
@@ -119,6 +168,8 @@ EXIT_EXPIRED = 3
 EXIT_CANCELLED = 4
 EXIT_REFUSED = 5
 EXIT_STILL_WAITING = 75
+#: `compare`: the render and the frame differ by more than the threshold.
+EXIT_DIFFERENT = 1
 
 #: Under claude-code's 10-minute Bash limit, with a minute to spare.
 WAIT_SECONDS = 9 * 60
@@ -178,6 +229,40 @@ STOP_TIME_CAP = "time_cap"
 
 #: `serve`'s one address. A mockup is for the browser in this pod, nobody else.
 SERVE_HOST = "127.0.0.1"
+
+#: IMPLEMENT-RENDER (module docstring): where a comparison lands under the
+#: task's artifacts, and what it may be called -- a file name, never a path.
+COMPARE_DIR_NAME = "compare"
+COMPARE_NAME = re.compile(r"[a-z0-9][a-z0-9.-]{0,79}")
+#: A grid cell's side in the shot's CSS pixels. 4 is small enough that a
+#: 4 px padding error or a one-line shift shows, and large enough that a
+#: glyph's anti-aliased edge, drawn differently by a design tool, averages out.
+COMPARE_CELL = 4
+#: The colour difference (CIE76 delta E) over which a cell differs. 2.3 is a
+#: just-noticeable difference side by side; 6 is plainly visible, and is over
+#: what a 4 x 4 average of one font's rendering against another's comes to.
+COMPARE_DELTA_E = 6.0
+#: The share of the page that may differ and still match: 2%, about one
+#: misplaced line of body text across a 1440 x 900 desktop. A lane that wants
+#: an exact match passes --threshold 0.
+COMPARE_THRESHOLD = 0.02
+COMPARE_FORMAT = 1
+#: The most pixels either image is scored at. The standard-library decoder
+#: and the grid are pure Python, the one loop here whose cost grows with its
+#: input: this lane's first continuation timed out at 7,200 s with four cores
+#: busy (IMPLEMENT-RENDER-FINISH, 2026-10-26). 6 M admits the headline case,
+#: a 2x export of a 1440 x 900 desktop frame (5.2 M), and a 1440-wide page
+#: 4,000 px tall. Over it, Pillow box-averages the image by the smallest whole
+#: factor that fits (in C, before the grid); the standard library refuses,
+#: reading the size from the header before it decompresses anything.
+COMPARE_MAX_PIXELS = 6_000_000
+#: The most pixels Pillow is asked to decode at all, under its own
+#: decompression-bomb error (2 x Image.MAX_IMAGE_PIXELS, ~179 M): a 2x
+#: full-page frame 1440 wide may be 2880 x 20,000.
+COMPARE_DECODE_MAX_PIXELS = 64_000_000
+#: The colour a differing cell is painted in the diff image (swarm_qa's
+#: DIFF_MARK: a page never fades to magenta, so a mark is never the page).
+DIFF_MARK = (255, 0, 255)
 
 
 #: What the agent should do on each exit of `wait`, printed as `next`.
@@ -770,10 +855,14 @@ def cmd_record(args, root):
     why = _unavailable(root)
     if why or not endpoint or not artifacts:
         return _refuse(why or "no_live_path", "this attempt has no live browser to record")
+    # A recorder still alive is one a script started and never stopped -- it
+    # crashed before `record stop` (#1981 c6). It is finished as `record stop`
+    # would finish it, its GIF kept, and the answer names it: refusing would
+    # block every later `record start` until MAX_FLOW_SECONDS ran out.
     state = _recording(root)
+    replaced = None
     if state is not None and _alive(state["pid"]):
-        return _refuse("already_recording", "%s is being recorded: run `swarm-handoff record stop` first"
-                       % state.get("name"))
+        replaced = (state.get("name"), _finish_recording(root, state)[0])
     interval = max(MIN_INTERVAL_MS, min(MAX_INTERVAL_MS, int(args.interval_ms)))
     path = Path(artifacts) / FLOWS_DIR_NAME / (name + ".gif")
     for stale in (RECORDING_STOP, RECORDING_RESULT):
@@ -785,9 +874,12 @@ def cmd_record(args, root):
             stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, close_fds=True)
     _write_atomic(root / RECORDING_NAME, {"name": name, "pid": proc.pid, "path": str(path),
                                           "interval_ms": interval})
-    _out({"outcome": "recording", "name": name, "path": str(path), "interval_ms": interval,
-          "max_frames": MAX_FLOW_FRAMES, "max_bytes": MAX_FLOW_BYTES, "max_seconds": MAX_FLOW_SECONDS,
-          "next": "Do the flow, then run `swarm-handoff record stop`."})
+    answer = {"outcome": "recording", "name": name, "path": str(path), "interval_ms": interval,
+              "max_frames": MAX_FLOW_FRAMES, "max_bytes": MAX_FLOW_BYTES, "max_seconds": MAX_FLOW_SECONDS,
+              "next": "Do the flow, then run `swarm-handoff record stop`."}
+    if replaced is not None:
+        answer["replaced"], answer["replaced_result"] = replaced
+    _out(answer)
     return EXIT_RETURNED
 
 
@@ -812,6 +904,14 @@ def _record_stop(root):
     state = _recording(root)
     if state is None:
         return _refuse("not_recording", "nothing is being recorded: run `swarm-handoff record start <name>`")
+    answer, code = _finish_recording(root, state)
+    _out(answer)
+    return code
+
+
+def _finish_recording(root, state):
+    """Stop the recorder `state` names and say what it wrote: the stop file,
+    a wait of at most STOP_WAIT_SECONDS for its result, then SIGTERM."""
     (root / RECORDING_STOP).write_text("", encoding="utf-8")
     deadline = time.monotonic() + STOP_WAIT_SECONDS
     result = None
@@ -829,12 +929,11 @@ def _record_stop(root):
     if result is None:
         path = Path(state.get("path") or "")
         written = path.is_file()
-        _out({"outcome": "recorded" if written else "failed", "name": state.get("name"),
-              "path": str(path), "bytes": path.stat().st_size if written else 0,
-              "log": str(root / RECORDING_LOG)})
-        return EXIT_RETURNED if written else EXIT_REFUSED
-    _out({"outcome": "recorded", "name": state.get("name"), **result})
-    return EXIT_RETURNED
+        return ({"outcome": "recorded" if written else "failed", "name": state.get("name"),
+                 "path": str(path), "bytes": path.stat().st_size if written else 0,
+                 "log": str(root / RECORDING_LOG)},
+                EXIT_RETURNED if written else EXIT_REFUSED)
+    return {"outcome": "recorded", "name": state.get("name"), **result}, EXIT_RETURNED
 
 
 # -- a mockup beside the app (QA-FLOWS) -------------------------------------------
@@ -907,6 +1006,284 @@ def cmd_serve(args):
         os._exit(0)
 
 
+# -- a render against its frame (IMPLEMENT-RENDER) --------------------------------
+
+
+class TooLarge(ValueError):
+    """An image over the size this can score: refused, never decoded."""
+
+
+def reduction(width, height):
+    """The smallest whole factor that brings `width` x `height` to at most
+    COMPARE_MAX_PIXELS; TooLarge past COMPARE_DECODE_MAX_PIXELS."""
+    if width * height > COMPARE_DECODE_MAX_PIXELS:
+        raise TooLarge("%d x %d px, over the %d px this decodes" % (width, height, COMPARE_DECODE_MAX_PIXELS))
+    factor = 1
+    while (width // factor) * (height // factor) > COMPARE_MAX_PIXELS:
+        factor += 1
+    return factor
+
+
+def _png_size(data):
+    """`(width, height)` from a PNG's header, without decompressing it."""
+    if not data.startswith(_PNG_SIGNATURE) or data[12:16] != b"IHDR" or len(data) < 24:
+        raise ValueError("not a PNG")
+    return struct.unpack(">II", data[16:24])
+
+
+#: Every partly transparent run of pixels, by its alpha bytes.
+_PARTLY = re.compile(rb"[^\x00\xff]+")
+_CLEAR = re.compile(rb"\x00+")
+
+
+def _opaque_rgb(width, height, channels, pixels):
+    """RGB bytes of decoded pixels, composited over white. Opaque and wholly
+    clear runs are copied or painted white in C; only an anti-aliased edge's
+    pixels are blended one by one."""
+    if channels == 3:
+        return bytes(pixels)
+    pixels = bytes(pixels)
+    count = width * height
+    rgb = bytearray(count * 3)
+    rgb[0::3], rgb[1::3], rgb[2::3] = pixels[0::4], pixels[1::4], pixels[2::4]
+    alpha = pixels[3::4]
+    for run in _CLEAR.finditer(alpha):
+        rgb[3 * run.start():3 * run.end()] = b"\xff" * (3 * (run.end() - run.start()))
+    for run in _PARTLY.finditer(alpha):
+        for i in range(run.start(), run.end()):
+            a = alpha[i]
+            for c in range(3):
+                rgb[3 * i + c] = (pixels[4 * i + c] * a + 255 * (255 - a) + 127) // 255
+    return bytes(rgb)
+
+
+def _decode_rgb(data):
+    """`(width, height, RGB over white, decoder)`: Pillow when it imports,
+    shrunk to COMPARE_MAX_PIXELS; else the standard library, refusing over it."""
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+    except ImportError:
+        width, height = _png_size(data)
+        if width * height > COMPARE_MAX_PIXELS:
+            raise TooLarge("%d x %d px, over the %d px this scores without Pillow: crop it, or export the "
+                           "frame at 1x" % (width, height, COMPARE_MAX_PIXELS)) from None
+        width, height, channels, pixels = decode_png(data)
+        return width, height, _opaque_rgb(width, height, channels, pixels), "stdlib"
+    try:
+        with Image.open(BytesIO(data)) as image:
+            factor = reduction(*image.size)
+            rgba = image.convert("RGBA")
+    except TooLarge:
+        raise
+    except Exception as exc:  # Pillow raises several kinds for a file it cannot read
+        raise ValueError(str(exc) or type(exc).__name__) from exc
+    if factor > 1:
+        rgba = rgba.reduce(factor)
+    flat = Image.alpha_composite(Image.new("RGBA", rgba.size, (255, 255, 255, 255)), rgba).convert("RGB")
+    width, height = flat.size
+    return width, height, flat.tobytes(), "pillow" if factor == 1 else "pillow/%d" % factor
+
+
+def _edges(length, scale):
+    """Cell edges along one side of an image `length` pixels long whose CSS
+    pixel is `scale` of its pixels: every COMPARE_CELL CSS pixels, scaled and
+    rounded, then the end. The shot's are at scale 1; the frame's are the
+    shot's scaled, so a frame exported at 2x is cut at exactly twice the
+    shot's edges whatever the width (a 390 phone is not a multiple of 4)."""
+    edges = []
+    css = 0
+    while round(css * scale) < length:
+        edges.append(round(css * scale))
+        css += COMPARE_CELL
+    return edges + [length]
+
+
+def _grid(width, rgb, xs, ys):
+    """The image averaged over the cells `xs` x `ys` cut, as rows of (r, g, b) integers."""
+    stride = width * 3
+    grid = []
+    for j in range(len(ys) - 1):
+        sums = [[0, 0, 0] for _ in range(len(xs) - 1)]
+        for y in range(ys[j], ys[j + 1]):
+            line = rgb[y * stride:(y + 1) * stride]
+            for c in range(3):
+                channel = line[c::3]
+                for k, cell in enumerate(sums):
+                    cell[c] += sum(channel[xs[k]:xs[k + 1]])
+        band = ys[j + 1] - ys[j]
+        grid.append([tuple((s + n // 2) // n for s in cell)
+                     for cell, n in ((sums[k], band * (xs[k + 1] - xs[k])) for k in range(len(sums)))])
+    return grid
+
+
+def _linear(v):
+    v /= 255.0
+    return v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
+
+
+def _lab(rgb, cache):
+    """CIELAB (D65) of an sRGB triple."""
+    found = cache.get(rgb)
+    if found is not None:
+        return found
+    r, g, b = (_linear(v) for v in rgb)
+    x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047
+    y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883
+
+    def f(t):
+        return t ** (1 / 3) if t > 216 / 24389 else (24389 / 27 * t + 16) / 116
+
+    fx, fy, fz = f(x), f(y), f(z)
+    found = cache[rgb] = (116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz))
+    return found
+
+
+def compare_images(shot, frame, threshold=COMPARE_THRESHOLD, top_only=False):
+    """The comparison of two images' bytes: `(report, diff PNG bytes)`. ValueError names which is unreadable."""
+    decoded = []
+    for label, data in (("shot", shot), ("frame", frame)):
+        try:
+            decoded.append(_decode_rgb(data))
+        except TooLarge as exc:
+            raise TooLarge("the %s is too large to score (%s)" % (label, exc)) from exc
+        except (ValueError, zlib.error, struct.error) as exc:
+            raise ValueError("the %s is not an image this can read (%s)" % (label, exc)) from exc
+    (sw, sh, srgb, decoder), (fw, fh, frgb, _decoder) = decoded
+    scale = fw / sw
+    xs = _edges(sw, 1.0)
+    cols = len(xs) - 1
+    a = _grid(sw, srgb, xs, _edges(sh, 1.0))
+    # The frame's columns are the shot's scaled; its last may be a pixel
+    # short or long of the frame's width, which is rounding, not a defect.
+    fxs = [min(fw, round(x * scale)) for x in xs[:-1]] + [fw]
+    if any(fxs[k + 1] <= fxs[k] for k in range(cols)):
+        raise ValueError("the frame is too narrow for the shot (%d px against %d)" % (fw, sw))
+    b = _grid(fw, frgb, fxs, _edges(fh, scale))
+    both = min(len(a), len(b))
+    cache = {}
+    marked = set()
+    total_delta = 0.0
+    worst = 0.0
+    for j in range(both):
+        for k in range(cols):
+            if a[j][k] == b[j][k]:
+                continue
+            la, lb = _lab(a[j][k], cache), _lab(b[j][k], cache)
+            delta = ((la[0] - lb[0]) ** 2 + (la[1] - lb[1]) ** 2 + (la[2] - lb[2]) ** 2) ** 0.5
+            total_delta += delta
+            worst = max(worst, delta)
+            if delta > COMPARE_DELTA_E:
+                marked.add((j, k))
+    rows = both if top_only else max(len(a), len(b))
+    for j in range(both, rows):
+        marked.update((j, k) for k in range(cols))
+    cells = cols * rows
+    score = round(len(marked) / cells, 6)
+    report = {
+        "format": COMPARE_FORMAT,
+        "score": score,
+        "threshold": threshold,
+        "within_threshold": score <= threshold,
+        "differing_cells": len(marked),
+        "cells": cells,
+        "cell_css_px": COMPARE_CELL,
+        "delta_e": COMPARE_DELTA_E,
+        "mean_delta_e": round(total_delta / (cols * both), 3) if both else 0.0,
+        "max_delta_e": round(worst, 3),
+        "shot_size": [sw, sh],
+        "frame_size": [fw, fh],
+        "frame_scale": round(scale, 4),
+        "size_mismatch": len(a) != len(b),
+        "top_only": top_only,
+        "rows_left_out": max(len(a), len(b)) - rows,
+        "decoder": decoder,
+    }
+    return report, _diff_png(sw, sh, srgb, xs, min(len(b), rows), marked)
+
+
+#: Every channel of the shot, faded three quarters of the way to white.
+_FADE = bytes((v + 3 * 255) // 4 for v in range(256))
+
+
+def _diff_png(width, height, rgb, xs, frame_rows, marked):
+    """The shot faded, every differing cell in DIFF_MARK; taller by the frame's extra rows."""
+    ys = _edges(height, 1.0)
+    ys += [height + COMPARE_CELL * (i + 1) for i in range(max(0, frame_rows - (len(ys) - 1)))]
+    total = ys[-1]
+    stride = width * 3
+    canvas = bytearray(rgb.translate(_FADE)) + bytearray(b"\xff" * (stride * (total - height)))
+    mark = bytes(DIFF_MARK)
+    for j, k in marked:
+        run = mark * (xs[k + 1] - xs[k])
+        for y in range(ys[j], ys[j + 1]):
+            at = y * stride + xs[k] * 3
+            canvas[at:at + len(run)] = run
+    raw = b"".join(b"\x00" + bytes(canvas[y * stride:(y + 1) * stride]) for y in range(total))
+
+    def chunk(kind, body):
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF)
+
+    return (_PNG_SIGNATURE + chunk(b"IHDR", struct.pack(">IIBBBBB", width, total, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
+
+
+def _compare_name(shot_path):
+    """The default name: the shot's file name, lower-cased, as a file name this accepts."""
+    stem = re.sub(r"[^a-z0-9.-]+", "-", Path(shot_path).stem.lower()).strip("-.")[:80]
+    return stem if COMPARE_NAME.fullmatch(stem or "") else "compare"
+
+
+def cmd_compare(args):
+    name = args.name if args.name is not None else _compare_name(args.shot)
+    if not COMPARE_NAME.fullmatch(name):
+        return _refuse("invalid_name", "a comparison's name is lower-case letters, digits, '.' and '-', "
+                                       "at most 80, never a path")
+    if not 0 <= args.threshold <= 1:
+        return _refuse("invalid_threshold", "--threshold is a share of the page, from 0 to 1")
+    artifacts = os.environ.get("SWARM_ARTIFACTS_DIR", "")
+    if not artifacts:
+        return _refuse("no_artifacts_dir", "$SWARM_ARTIFACTS_DIR is not set: nowhere to write the diff image")
+    images = []
+    for label, path in (("shot", args.shot), ("frame", args.frame)):
+        try:
+            images.append(Path(path).read_bytes())
+        except OSError as exc:
+            return _refuse("unreadable_image", "cannot read the %s %s (%s)" % (label, path, exc.strerror))
+    try:
+        report, diff = compare_images(images[0], images[1], args.threshold, args.top_only)
+    except ValueError as exc:
+        which = args.frame if "frame" in str(exc).split(" is ", 1)[0] else args.shot
+        return _refuse("too_large" if isinstance(exc, TooLarge) else "unreadable_image", "%s: %s" % (which, exc))
+    out = Path(artifacts) / COMPARE_DIR_NAME
+    out.mkdir(parents=True, exist_ok=True)
+    diff_path, report_path = out / (name + ".diff.png"), out / (name + ".json")
+    tmp = diff_path.with_name(diff_path.name + ".tmp")
+    tmp.write_bytes(diff)
+    os.replace(tmp, diff_path)
+    report.update({"shot": str(Path(args.shot).resolve()), "frame": str(Path(args.frame).resolve()),
+                   "diff": str(diff_path), "report": str(report_path)})
+    _write_atomic(report_path, report)
+    if report["within_threshold"]:
+        nxt = ("The render matches the frame within the threshold at this preset and theme. Name the frame, "
+               "the preset, the theme and the score in your summary.")
+    else:
+        nxt = ("Open the diff image with Read: the magenta cells differ from the frame. Fix them, render again "
+               "at the same preset and theme, and compare again.")
+    if report["size_mismatch"] and not report["top_only"]:
+        nxt += (" The heights differ, and the rows only one image has count as different: when the frame is "
+                "a whole page and the render one screen, compare again with --top-only, or take a full-page "
+                "screenshot on the desktop preset.")
+    elif report["size_mismatch"]:
+        nxt += (" --top-only: %d grid rows of the taller image were not compared. Look at the rest of the "
+                "frame yourself, or crop it with Pillow (in the venv) and compare the next screen against it."
+                % report["rows_left_out"])
+    _out(dict({"outcome": "compared"}, **report, next=nxt))
+    return EXIT_RETURNED if report["within_threshold"] else EXIT_DIFFERENT
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="swarm-handoff", description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -938,6 +1315,15 @@ def build_parser():
     serve = sub.add_parser("serve", help="serve a directory on http://127.0.0.1:<port>/ for the live browser")
     serve.add_argument("directory")
     serve.add_argument("--port", type=int, default=0, help="a port (default: any free one)")
+    compare = sub.add_parser("compare", help="score a screenshot against a frame PNG; a diff image goes to "
+                                             "$SWARM_ARTIFACTS_DIR/compare/")
+    compare.add_argument("shot", help="the render: a screenshot of the live browser")
+    compare.add_argument("frame", help="the repository's frame PNG for the same preset and theme")
+    compare.add_argument("--name", help="the diff's file name (default: the shot's)")
+    compare.add_argument("--threshold", type=float, default=COMPARE_THRESHOLD,
+                         help="the share of the page that may differ, 0..1 (default %s)" % COMPARE_THRESHOLD)
+    compare.add_argument("--top-only", action="store_true",
+                         help="score only the rows both images have (a viewport render against a full-page frame)")
     return parser
 
 
@@ -947,6 +1333,8 @@ def main(argv=None):
         args.max_seconds = max(0.0, min(args.max_seconds, WAIT_SECONDS))
     if args.command == "serve":
         return cmd_serve(args)
+    if args.command == "compare":
+        return cmd_compare(args)
     root = _spool()
     if root is None:
         return _refuse("no_live_path", "this task has no live browser ($SWARM_HANDOFF is not set)")

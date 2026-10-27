@@ -8,6 +8,7 @@
  * client. `OverviewRegions.tsx` re-exports it for the screen.
  */
 import type { Task, TaskPage, TaskState } from './types'
+import { currentZone, formatClock } from './timezone'
 
 /**
  * ONE STATE, READ BY STATE (live QA OV-1/OV-2/OV-4, 2026-10-11).
@@ -103,10 +104,26 @@ export function stateView(page: OverviewTaskPage, states: readonly TaskState[]):
   }
 }
 
-/** HH:MM UTC of an ISO instant, the way this screen names a time of day. */
-export function hhmmUtc(iso: string): string {
-  const d = new Date(iso)
-  return Number.isFinite(d.getTime()) ? `${d.toISOString().slice(11, 16)} UTC` : iso
+/**
+ * HH:MM of an ISO instant in the person's zone, labelled ("09:06 PDT"), the
+ * way this screen names a time of day (VQ-023, `timezone.ts`). UTC until
+ * they pick a zone in Profile.
+ */
+export function hhmm(iso: string): string {
+  return formatClock(iso, currentZone())
+}
+
+/**
+ * HOW FAR BACK A PARTIAL READ REACHES, IN ONE FORM FOR EVERY FIGURE (visual QA
+ * VQ-005, 2026-10-26). Needs a look said "FAILED agents created since 06:04
+ * UTC read", Recent failures "partial: agents created since 09:06 UTC read"
+ * and Finished today "created since 18:46 UTC" on one page, so a reader
+ * could not tell three samples from three wordings of one. Every figure off a
+ * partial read now says its reach in these words; two figures off the same
+ * sample (`stateView` over the same states) print the same instant.
+ */
+export function readReach(since: string | null): string {
+  return since === null ? 'partial: not every agent was read' : `partial: agents created since ${hhmm(since)} read`
 }
 
 /** The three states Recent failures lists, and the Overview reads by state for it. */

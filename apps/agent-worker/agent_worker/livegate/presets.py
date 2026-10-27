@@ -151,8 +151,10 @@ PRESETS: Mapping[str, Preset] = {
                "iOS", "17.0", "arm", "iPhone"),
         # PHONE-380 (BGD, 2026-10-26, part of #2136): AI Studio's phone
         # mock-up frame, 380 x 800, so a browser step or a QA target renders
-        # at the size the design was drawn at. phone-390 in every trait but
-        # the size; its display fits inside phone-390's, so MAX_DISPLAY_* is
+        # at the size the design was drawn at. IMPLEMENT-RENDER (part of #2442)
+        # renders a UI lane's branch at its frames' size with it and compares
+        # the two (`swarm-handoff compare`). phone-390 in every trait but the
+        # size; its display fits inside phone-390's, so MAX_DISPLAY_* is
         # unchanged. Every copy of this list is held to it by
         # tests/unit/control_plane/test_preset_lists_agree.py.
         Preset("phone-380", 380, 800, 3.0, True, True, _SAFARI_IOS, "iPhone",

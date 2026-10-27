@@ -134,7 +134,8 @@ def test_the_steps_are_the_designs_shapes() -> None:
         _target(flows=[{"id": "find-docs", "goal": "find the API reference", "start_path": "/"}])
     )
     steps = _steps(spec)
-    assert set(steps) == {"capture-g1", "review-g1", "flow-find-docs", "flow-report", "report", "file"}
+    # QA-FLOWS-CAP: a read-only flow runs in a flow-batch step, `flows-<k>`.
+    assert set(steps) == {"capture-g1", "review-g1", "flows-1", "flow-report", "report", "file"}
     # MUTATION: run captures on claude-code and this fails.
     assert steps["capture-g1"]["runner_profile"] == "claude-code-browser"
     assert steps["capture-g1"]["model_class"] == "haiku"
@@ -143,10 +144,10 @@ def test_the_steps_are_the_designs_shapes() -> None:
     # MUTATION: stage the review from anything but its capture tar and this fails.
     assert steps["review-g1"]["input_from"] == {"capture-g1": "capture-g1.tar"}
     assert steps["review-g1"]["depends_on"] == ["capture-g1"]
-    assert steps["flow-find-docs"]["runner_profile"] == "claude-code-browser"
-    assert steps["flow-find-docs"]["model_class"] == "sonnet"
+    assert steps["flows-1"]["runner_profile"] == "claude-code-browser"
+    assert steps["flows-1"]["model_class"] == "sonnet"
     # MUTATION: hard-code `browser_tool="jev"` on the flow steps again and this fails.
-    assert steps["flow-find-docs"]["inputs"] == {"browser_tool": "playwright"}
+    assert steps["flows-1"]["inputs"] == {"browser_tool": "playwright"}
     # MUTATION: stage fewer than every capture and review tar into the report.
     assert steps["report"]["input_from"] == {
         "capture-g1": "capture-g1.tar",
@@ -155,7 +156,8 @@ def test_the_steps_are_the_designs_shapes() -> None:
     # A failed flow never costs the screen findings: the report does not wait
     # on any flow.
     assert not [d for d in steps["report"]["depends_on"] if d.startswith("flow")]
-    assert steps["flow-report"]["input_from"] == {"flow-find-docs": "flow-find-docs.tar"}
+    assert steps["flow-report"]["input_from"] == {"flows-1": "flows-1.tar"}
+    assert "flows-1.tar, holding flow-find-docs.tar" in steps["flow-report"]["prompt"]
     assert steps["file"]["input_from"] == {"report": "findings.json"}
     assert steps["file"]["model_class"] == "sonnet"
 
@@ -169,7 +171,8 @@ _FLOW = {"id": "find-docs", "goal": "find the API reference", "start_path": "/"}
 
 
 def _flow_steps(spec: dict[str, Any]) -> list[dict[str, Any]]:
-    return [s for s in spec["steps"] if s["step_id"].startswith("flow-") and s["step_id"] != "flow-report"]
+    # QA-FLOWS-CAP: a read-only flow's batch step, `flows-<k>`, or a mutating flow's own `flow-<id>`.
+    return [s for s in spec["steps"] if s["step_id"].startswith(("flow-", "flows-")) and s["step_id"] != "flow-report"]
 
 
 def test_a_target_without_the_field_renders_its_flows_with_playwright() -> None:
@@ -384,13 +387,14 @@ def test_a_mutating_flow_on_a_production_target_is_refused() -> None:
 
 def test_a_read_only_flow_is_told_it_is_read_only() -> None:
     spec = qaspec.render(_target(flows=[{"id": "look", "goal": "find pricing", "start_path": "/"}]))
-    prompt = _steps(spec)["flow-look"]["prompt"]
+    prompt = _steps(spec)["flows-1"]["prompt"]
     # MUTATION: render the mutating wording for every flow.
     assert "Submit no form" in prompt
     assert "may submit forms" not in prompt
-    # One recording per width.
-    assert "swarm-handoff record start flow-look-desktop" in prompt
-    assert "swarm-handoff record start flow-look-phone-390" in prompt
+    # One recording per width, named after the flow: the batch says the recipe once.
+    assert "at each width of desktop, phone-390" in prompt
+    assert "swarm-handoff record start flow-<id>-<width>" in prompt
+    assert "(1) `look`" in prompt
 
 
 def test_exclusions_are_merged_with_the_defaults_and_named() -> None:
@@ -467,15 +471,19 @@ def test_an_unknown_preset_is_refused(width: str) -> None:
 def test_a_target_may_name_phone_380_and_its_steps_carry_it() -> None:
     """PHONE-380 (BGD 2026-10-26, part of #2136): AI Studio's phone mock-up
     frame, 380 x 800, is a width a target names, as a preset."""
-    target = _target(widths=["desktop", "phone-380"],
+    # The target names both themes: since PR #2522 a target naming none is
+    # captured in light only.
+    target = _target(widths=["desktop", "phone-380"], themes=["light", "dark"],
                      flows=[{"id": "look", "goal": "find pricing", "start_path": "/"}])
     # MUTATION: leave phone-380 out of qaspec.PRESETS and render refuses it.
     spec = qaspec.render(target)
     steps = _steps(spec)
     assert "--presets desktop,phone-380 --themes light,dark" in steps["capture-g1"]["prompt"]
-    flow = steps["flow-look"]["prompt"]
-    assert "swarm-handoff device phone-380" in flow
-    assert "swarm-handoff record start flow-look-phone-380" in flow
+    # Read-only flows run batched in one `flows-<n>` step, which is told the
+    # widths and the commands' shape rather than one command per flow.
+    flow = steps["flows-1"]["prompt"]
+    assert "at each width of desktop, phone-380: run `swarm-handoff device <width>`" in flow
+    assert "`swarm-handoff record start flow-<id>-<width>`" in flow
 
 
 def test_the_preset_names_are_the_gates() -> None:
@@ -509,7 +517,7 @@ def test_the_metadata_names_the_target_and_its_browser_steps() -> None:
     spec = qaspec.render(_target(flows=[{"id": "f", "goal": "g", "start_path": "/"}]))
     # MUTATION: stamp the review step too, or drop the revision.
     assert qaspec.qa_target_metadata(_target()) == {"id": "qat_3f9a", "revision": 4}
-    assert qaspec.browser_steps(spec) == ["capture-g1", "flow-f"]
+    assert qaspec.browser_steps(spec) == ["capture-g1", "flows-1"]
 
 
 def test_no_credential_value_is_ever_rendered() -> None:
@@ -543,6 +551,34 @@ def test_the_review_reads_the_apps_design_docs() -> None:
     assert "STYLE.md" in prompt and "docs/ui/**" in prompt
     default = _steps(qaspec.render(_target()))["review-g1"]["prompt"]
     assert "DESIGN.md" in default and "docs/design*/**" in default
+
+
+def test_a_target_naming_no_themes_is_captured_and_judged_in_light_only() -> None:
+    """Epic #1981, the eighth comment: a target with no dark theme was
+    captured in dark and "dark mode is ignored" was filed against it. Owner
+    pick 2026-10-27 (PR #2522): a target that names no `themes` is captured
+    in light only, and its review and report are told dark is never a
+    finding; one that names dark is captured in it and judged by the
+    manifest's `dark_differs`, a fact, instead of by eye."""
+    assert qaspec.DEFAULT_THEMES == ("light",)
+    spec = qaspec.render(_target())
+    steps = _steps(spec)
+    capture = next(s["prompt"] for name, s in steps.items() if name.startswith("capture-"))
+    # MUTATION: put dark back in DEFAULT_THEMES and the default capture asks for it.
+    assert "--themes light " in capture and "--themes light,dark" not in capture
+    for step in ("review-g1", "report"):
+        prompt = steps[step]["prompt"]
+        # MUTATION: drop the rule from either prompt and that prompt fails here.
+        assert "light only" in prompt and "never a finding" in prompt, step
+    declared = _steps(qaspec.render(_target(themes=["light", "dark"])))
+    declared_capture = next(s["prompt"] for name, s in declared.items() if name.startswith("capture-"))
+    assert "--themes light,dark " in declared_capture
+    for step in ("review-g1", "report"):
+        prompt = declared[step]["prompt"]
+        # MUTATION: give a target that names a dark theme the light-only
+        # rule and its ignored dark scheme is never filed.
+        assert "declares a dark theme" in prompt and "never a finding" not in prompt, step
+        assert "`dark_differs`" in prompt, step
 
 
 def test_the_file_step_carries_the_filing_rules() -> None:
@@ -746,7 +782,7 @@ def test_the_capture_flow_and_discovery_prompts_name_the_start_clicks_in_order_o
     chooser = "If your tab shows the sign-in chooser, click 'Staging' then 'Sign in'; the sign-in completes"
     spec = qaspec.render(_with_clicks(_CHOOSER, flows=flows))
     browser = [s for s in spec["steps"] if (s.get("inputs") or {}).get("browser_tool")]
-    assert {s["step_id"].split("-")[0] for s in browser} == {"capture", "flow"}
+    assert {s["step_id"].split("-")[0] for s in browser} == {"capture", "flows"}
     for step in browser:
         # MUTATION: leave the clicks out of `_sign_in_note` (or a caller's call) and this fails.
         assert chooser in step["prompt"], step["step_id"]
@@ -850,12 +886,16 @@ def test_twenty_rules_of_ten_labels_are_accepted() -> None:
 )
 def test_a_flow_opens_its_start_path_under_the_base(base: str, start: str, opens: str) -> None:
     spec = qaspec.render(_target(base_url=base, flows=[{"id": "f", "goal": "g", "start_path": start}]))
-    prompt = _steps(spec)["flow-f"]["prompt"]
+    prompt = _steps(spec)["flows-1"]["prompt"]
     # MUTATION: join as f"{base}{start_path}" without one shared helper and a trailing-slash base opens `//`.
-    assert f"Open {opens} in the live browser" in prompt
+    assert f"(1) `f`: open {opens};" in prompt
     # MUTATION: join the start_path to the base's path twice and `/app/app/` is opened.
     assert "/app/app" not in prompt
-    assert "//" not in prompt.split("Open https://", 1)[1].split(" ", 1)[0]
+    assert "//" not in prompt.split("open https://", 1)[1].split(";", 1)[0]
+    # A mutating flow, on its own step (QA-FLOWS-CAP), opens through the same join.
+    own = qaspec.render(_target(base_url=base, environment="non_production",
+                                flows=[{"id": "f", "goal": "g", "start_path": start, "mutating": True}]))
+    assert f"Open {opens} in the live browser" in _steps(own)["flow-f"]["prompt"]
     # MUTATION: make `screen_url` anything but the one join `_flow_prompt` uses and this differs.
     assert qaspec.screen_url(qaspec.base_url({"base_url": base}), start) == opens
 

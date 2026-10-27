@@ -123,7 +123,7 @@ function linesIn(image: string): number[] {
 
 describe('N16: a lane gridline is a tick', () => {
   it('builds the gridlines from the ticks\' own positions', () => {
-    const until = new Date(2026, 9, 3, 18, 30, 0).getTime()
+    const until = Date.UTC(2026, 9, 3, 18, 30) // on the default zone's clock, UTC
     const ticks = axisLabels(until - 24 * HOUR, until, until)
     const lines = linesIn(gridlineImage(ticks))
     expect(lines.length).toBe(ticks.length)

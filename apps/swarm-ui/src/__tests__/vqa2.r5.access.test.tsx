@@ -249,13 +249,13 @@ describe('Access (VQA2-R5)', () => {
     api([ORG('example-org')])
     await mount()
     const lede = () => visible(document.querySelector('.ac-page > .ur-sub'))
-    await waitFor(() => expect(lede()).toContain('in tenant eng'))
+    await waitFor(() => expect(lede()).toContain('in workspace eng'))
     // The reach-as-you list left the page (GITHUB-ACCESS-PAGE), so no tab's lede promises it.
     // MUTATION: put "The orgs and repositories SwarmCloud may reach as you" back as Mine's lede.
-    expect(lede()).toMatch(/^How SwarmCloud acts as you on GitHub in tenant eng/)
+    expect(lede()).toMatch(/^How SwarmCloud acts as you on GitHub in workspace eng/)
 
     fireEvent.click(screen.getByRole('tab', { name: 'Choose repositories' }))
-    expect(lede()).toMatch(/^The owners the GitHub App is installed on in tenant eng/)
+    expect(lede()).toMatch(/^The owners the GitHub App is installed on in workspace eng/)
 
     fireEvent.click(screen.getByRole('tab', { name: 'Connection' }))
     expect(lede()).toMatch(/^How SwarmCloud acts as you on GitHub/)
@@ -298,7 +298,7 @@ describe('Setup (VQA2-R5)', () => {
     expect(main.querySelector(':scope > p.ob-line')).toBeNull()
     for (const p of el.querySelectorAll<HTMLElement>('p.ob-line')) expect(visible(p)).not.toBe('')
     // A step with a line keeps it.
-    expect(visible(document.querySelector('li.ob-step[data-step="signed_in"] > .ob-step-main > p.ob-line'))).toMatch(/tenant eng · checked /)
+    expect(visible(document.querySelector('li.ob-step[data-step="signed_in"] > .ob-step-main > p.ob-line'))).toMatch(/workspace eng · checked /)
 
     const acts = el.querySelector<HTMLElement>('.ob-ws .ob-acts')!
     const add = within(acts).getByRole('link', { name: 'Add key' })

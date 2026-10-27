@@ -128,23 +128,24 @@ describe('#139 at 390: the header collapses on scroll', () => {
     expect(painted(bar, 'display', WIDE)).toBe('none')
   })
 
-  it('draws an admin as a grey hairline tag in the phone header, like the env, on the one row', async () => {
-    // MUTATION: leave the admin tag out of `.sk-pbar`, or tint it with the
-    // accent, or let it wrap.
+  it('draws an admin as a grey hairline tag in the drawer foot, not in the phone header', async () => {
+    // The header's tag was one more fixed-width item the page name gave way
+    // to; on a phone the role lives in the drawer (visual QA VQ-001, part of
+    // #2391). MUTATION: put the admin tag back in `.sk-pbar`, or tint the
+    // foot's with the accent.
     const c = await shellAs(me(true))
     const tag = await waitFor(() => {
-      const el = c.querySelector<HTMLElement>('.sk-pbar .sk-adm')
-      expect(el, 'an admin is not marked in the phone header').not.toBeNull()
+      const el = c.querySelector<HTMLElement>('.sk-pfoot .sk-adm')
+      expect(el, 'an admin is not marked in the drawer foot').not.toBeNull()
       return el!
     })
+    expect(c.querySelector('.sk-pbar .sk-adm'), 'the phone header still carries the admin tag').toBeNull()
     expect(tag.textContent).toBe('admin')
     expect(painted(tag, ['border', 'border-width'], PHONE) ?? '').toMatch(/^1px/)
     const ink = painted(tag, 'color', PHONE) ?? ''
     expect(ink, `the admin tag is inked ${ink}`).not.toMatch(/--sk-ac\b|--info/)
     const fill = painted(tag, ['background', 'background-color'], PHONE)
     expect(fill === null || fill === 'none' || fill === 'transparent', `the admin tag is filled with ${fill}`).toBe(true)
-    expect(painted(tag, 'white-space', PHONE)).toBe('nowrap')
-    expect(painted(tag, 'flex', PHONE), 'the tag gives way to the title').toBe('none')
   })
 
   it('marks no one admin in the phone header who is not', async () => {
@@ -237,7 +238,7 @@ describe("#139 at 390: a section's sticky page strip sits flush under the header
 })
 
 describe('#139 at 390: the header row never widens the page', () => {
-  it("cuts a long tenant name with an ellipsis, after the title has given way, and keeps the whole name as its title", async () => {
+  it("cuts a long tenant name with an ellipsis, before the title gives way, and keeps the whole name as its title", async () => {
     // MUTATION: drop `min-width: 0` / `max-width` / `overflow: hidden` from
     // `.sk-pbar .sk-tn`, or let the menu, the mark or the env pill shrink.
     const long = me(false)
@@ -267,7 +268,10 @@ describe('#139 at 390: the header row never widens the page', () => {
     expect(painted(tn, 'text-overflow', PHONE)).toBe('ellipsis')
     expect(painted(tn, 'white-space', PHONE)).toBe('nowrap')
     const bar = container.querySelector<HTMLElement>('.sk-pbar')!
-    expect(painted(bar.querySelector('b')!, 'flex', PHONE), 'the title no longer gives way first').toBe('1')
+    // The title takes its own width before the workspace gives way (`flex: 1 1 auto`,
+    // and the label's `flex-shrink: 100`, visual QA VQ-001).
+    expect(painted(bar.querySelector('b')!, 'flex', PHONE), 'the title does not take its own width').toBe('1 1 auto')
+    expect(painted(tn, 'flex-shrink', PHONE), 'the workspace does not give way before the title').toBe('100')
     const fixed = [bar.querySelector(':scope > .sk-ibtn')!, bar.querySelector(':scope > svg')!, bar.querySelector(':scope > .sk-pill')!]
     expect(fixed.filter((el) => el !== null).length, 'the sweep did not find the menu, the mark and the env').toBe(3)
     for (const el of fixed) expect(painted(el, 'flex', PHONE), `${el.getAttribute('class')} shrinks`).toBe('none')
@@ -556,5 +560,8 @@ describe('#139 at 390: the first Agents row starts above the midpoint', () => {
     const total = blocks.reduce((a, b) => a + b.px, 0)
     const breakdown = blocks.map((b) => `  ${b.px.toFixed(1).padStart(6)}px  ${b.what}`).join('\n')
     expect(total, `the first Agents row starts by ${total.toFixed(1)}px of ${SCREEN_H}:\n${breakdown}`).toBeLessThan(SCREEN_H / 2)
-  })
+    // A fresh App after `resetModules` re-transforms the whole shell: it
+    // timed out at 30s on a ui shard whose spacing test took 659s (CI run
+    // 40279737042), so it gets the headroom the other full-App tests have.
+  }, 120_000)
 })

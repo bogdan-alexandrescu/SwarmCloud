@@ -36,6 +36,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from .test_release_reuses_ci_images import _evaluate, _render
+
 
 REPO = Path(__file__).resolve().parents[3]
 WORKFLOWS = REPO / ".github" / "workflows"
@@ -103,11 +105,16 @@ def test_the_ci_fixer_acts_only_on_a_pull_requests_run():
 
 
 def test_a_lane_push_is_cancelled_by_the_next_push_to_its_branch():
-    """Concurrency is the ref everywhere but main, so a newer push to a lane
-    branch cancels the older run. MUTATION: give every push a per-commit group."""
+    """Concurrency is the ref on a lane branch, so a newer push to it cancels
+    the older run. Main's own rule (one group, cancelled since 2026-10-26,
+    #2438) is held by test_release_newest_only.py, not here. MUTATION: give
+    every push a per-commit group."""
     concurrency = _workflow("application.yml")["concurrency"]
-    assert concurrency["cancel-in-progress"] == "${{ github.ref != 'refs/heads/main' }}"
-    assert "github.ref == 'refs/heads/main' && format(" in concurrency["group"]
+    lane = {"github.ref": "refs/heads/swarm/task_1"}
+    assert _evaluate(concurrency["cancel-in-progress"], **lane) is True
+    assert _render(concurrency["group"], **lane, **{"github.sha": "a" * 40}) == _render(
+        concurrency["group"], **lane, **{"github.sha": "b" * 40}
+    ) == "application-refs/heads/swarm/task_1"
     assert _workflow("security.yml")["concurrency"]["group"] == "security-${{ github.ref }}"
 
 

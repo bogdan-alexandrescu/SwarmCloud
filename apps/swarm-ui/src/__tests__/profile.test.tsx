@@ -1,7 +1,7 @@
 // SETTINGS › PROFILE, THE SCREEN (lane PROFILE-PAGE, part of #1505;
-// docs/design/user-profile.md §4.1, §4.2). Four sections from one read of
+// docs/design/user-profile.md §4.1, §4.2). Five sections from one read of
 // GET /v1/profile: you and your workspaces, your connections (exactly GitHub
-// and TypeSafe, Q6), your bell, your Claude accounts. Each section the API
+// and TypeSafe, Q6), your bell, your time zone (VQ-023), your Claude accounts. Each section the API
 // could not read says so; a save sends the whole set at the revision read.
 //
 // Fixtures only; no network. The planted secret-shaped fields hold a value
@@ -153,9 +153,10 @@ afterEach(() => {
 })
 
 describe('Settings › Profile', () => {
-  it('draws its four sections from one read', async () => {
+  it('draws its five sections from one read', async () => {
     const { calls } = await drawn()
-    expect(document.querySelectorAll('[data-profile-section]').length).toBe(4)
+    expect(document.querySelectorAll('[data-profile-section]').length).toBe(5)
+    expect(headings(region('Time zone'))).toEqual(['Time zone'])
     expect(headings(region('You and your workspaces'))).toEqual(['You'])
     expect(headings(region('Your connections'))).toEqual(['GitHub', 'TypeSafe key'])
     expect(headings(region('Notifications'))).toEqual(['Notifications'])
@@ -320,5 +321,158 @@ describe('Settings › Profile names the Config pages by their Config addresses 
     const request = claude.getByRole('link', { name: 'Request one on Config › Workspace Settings › Workspace setup.' })
     expect(request.getAttribute('href')).toBe('/config/workspace/setup')
     expect(request.parentElement?.lastChild).toBe(request)
+  })
+})
+
+describe('Settings › Profile › Time zone (VQ-023, part of #2391)', () => {
+  const LA = 'America/Los_Angeles'
+  const zoneRadio = (value: string) =>
+    region('Time zone').querySelector<HTMLInputElement>(`input[type="radio"][value="${value}"]`)
+
+  /** MUTATION: start the card on the browser's zone instead of UTC. */
+  it('starts on UTC, with UTC, the browser\u2019s zone and any other zone offered', async () => {
+    await drawn()
+    const { currentZone } = await import('../timezone')
+    expect(currentZone()).toBe('UTC')
+    expect(zoneRadio('utc')?.checked).toBe(true)
+    expect(zoneRadio('other')).not.toBeNull()
+    expect(visible(region('Time zone'))).toMatch(/Now \d\d:\d\d UTC/)
+    expect((screen.getByRole('button', { name: 'Save time zone' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  /** MUTATION: drop the datalist, or offer only a fixed handful of zones. */
+  it('searches every IANA zone the browser knows', async () => {
+    await drawn()
+    fireEvent.click(zoneRadio('other')!)
+    const input = within(region('Time zone')).getByLabelText(/Search \d+ zones/)
+    const list = document.getElementById(input.getAttribute('list') ?? '')
+    const options = [...(list?.querySelectorAll('option') ?? [])].map((o) => o.getAttribute('value'))
+    expect(options[0]).toBe('UTC')
+    expect(options).toContain(LA)
+    expect(options.length).toBeGreaterThan(300)
+  })
+
+  /** A server that holds the zone and saves it: each PUT moves the revision. */
+  const holding = () => {
+    let revision = 4
+    const puts: Json[] = []
+    const write = (body: Json) => {
+      puts.push(body)
+      revision += 1
+      return { status: 200, body: { ...saved(body, revision), time_zone: body.time_zone ?? 'UTC', time_zone_source: 'profile' } }
+    }
+    return { puts, write, start: fixture({ time_zone: 'UTC', time_zone_source: 'default' }) }
+  }
+
+  /** MUTATION: say the zone is kept in this browser, as before the server held it. */
+  it('says the zone is kept with the person’s profile and follows them to every browser', async () => {
+    await drawn()
+    const copy = visible(region('Time zone'))
+    expect(copy).toMatch(/Kept with your profile, so it follows you to every browser you sign in to\./)
+    expect(copy).not.toMatch(/in this browser for you|shows UTC until you pick/)
+  })
+
+  /** MUTATION: keep the pick in memory only, or key it by browser instead of by the signed-in person. */
+  it('keeps the picked zone for the signed-in person and applies it to the page', async () => {
+    const server = holding()
+    await drawn(server.start, server.write)
+    fireEvent.click(zoneRadio('other')!)
+    fireEvent.change(within(region('Time zone')).getByLabelText(/Search \d+ zones/), { target: { value: LA } })
+    expect(visible(region('Time zone'))).toMatch(/Now \d\d:\d\d P[DS]T/)
+    fireEvent.click(screen.getByRole('button', { name: 'Save time zone' }))
+    expect(window.localStorage.getItem('swarm.timezone:ada@example.com')).toBe(LA)
+    const { currentZone } = await import('../timezone')
+    expect(currentZone()).toBe(LA)
+    await waitFor(() =>
+      expect(within(region('Time zone')).getByRole('status').textContent).toBe(`Saved. Every time is now shown in ${LA}.`),
+    )
+    fireEvent.click(zoneRadio('utc')!)
+    fireEvent.click(screen.getByRole('button', { name: 'Save time zone' }))
+    expect(currentZone()).toBe('UTC')
+    expect(window.localStorage.getItem('swarm.timezone:ada@example.com')).toBeNull()
+    await waitFor(() => expect(server.puts.map((b) => b.time_zone)).toEqual([LA, 'UTC']))
+  })
+
+  /** MUTATION: say "Saved" as soon as the button is pressed, before the server has answered. */
+  it('says "Saved" only once the server has saved the zone with the profile', async () => {
+    const server = holding()
+    await drawn(server.start, server.write)
+    fireEvent.click(zoneRadio('other')!)
+    fireEvent.change(within(region('Time zone')).getByLabelText(/Search \d+ zones/), { target: { value: LA } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save time zone' }))
+    expect(visible(region('Time zone'))).not.toMatch(/Saved\./)
+    expect(visible(within(region('Time zone')).getByRole('button', { name: /Saving/ }))).toMatch(/^Saving\u2026$/)
+    await waitFor(() => expect(visible(region('Time zone'))).toMatch(`Saved. Every time is now shown in ${LA}.`))
+    expect(server.puts.map((b) => b.time_zone)).toEqual([LA])
+  })
+
+  /** MUTATION: say "Saved" when the server save failed, or drop the way to try again. */
+  it('says the zone is kept in this browser only when the server save failed, and tries again', async () => {
+    const server = holding()
+    let down = true
+    await drawn(server.start, (body) =>
+      down ? { status: 503, body: { code: 'preferences_unavailable', message: 'down' } } : server.write(body),
+    )
+    fireEvent.click(zoneRadio('other')!)
+    fireEvent.change(within(region('Time zone')).getByLabelText(/Search \d+ zones/), { target: { value: LA } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save time zone' }))
+    const alert = await within(region('Time zone')).findByRole('alert')
+    expect(visible(alert)).toMatch(`${LA} could not be saved with your profile, so it is kept in this browser only.`)
+    expect(visible(region('Time zone'))).not.toMatch(/Saved\./)
+    const { currentZone } = await import('../timezone')
+    expect(currentZone()).toBe(LA)
+    down = false
+    fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }))
+    await waitFor(() => expect(visible(region('Time zone'))).toMatch(`Saved. Every time is now shown in ${LA}.`))
+    expect(within(region('Time zone')).queryByRole('alert')).toBeNull()
+    expect(server.puts.map((b) => b.time_zone)).toEqual([LA])
+  })
+
+  /** MUTATION: send Profile's next save at the revision it read, before the zone pick moved it. */
+  it('saves notifications after a zone pick without a false "changed in another tab"', async () => {
+    // The API's revision rule: a PUT at any revision but the current one is a 409.
+    let revision = 4
+    const seen: Json[] = []
+    await drawn(fixture({ time_zone: 'UTC', time_zone_source: 'default' }), (body) => {
+      seen.push(body)
+      if (body.revision !== revision) return { status: 409, body: { code: 'preferences_changed', message: 'changed' } }
+      revision += 1
+      return { status: 200, body: saved(body, revision) }
+    })
+    fireEvent.click(zoneRadio('other')!)
+    fireEvent.change(within(region('Time zone')).getByLabelText(/Search \d+ zones/), { target: { value: LA } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save time zone' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /failed runs/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save notifications' }))
+    await waitFor(() => expect(visible(document.body)).toMatch(/Saved\. It applies to new sessions within a minute/))
+    expect(visible(document.body)).not.toMatch(/changed in another tab/i)
+    expect(seen.map((b) => [b.revision, b.time_zone ?? null])).toEqual([[4, LA], [5, null]])
+  })
+
+  /** MUTATION: save whatever was typed. */
+  it('refuses a name that is not a zone, and keeps the one in force', async () => {
+    await drawn()
+    fireEvent.click(zoneRadio('other')!)
+    fireEvent.change(within(region('Time zone')).getByLabelText(/Search \d+ zones/), { target: { value: 'Mars/Olympus_Mons' } })
+    expect(visible(region('Time zone'))).toMatch(/Not a zone this browser knows/)
+    fireEvent.click(screen.getByRole('button', { name: 'Save time zone' }))
+    expect(within(region('Time zone')).getByRole('alert').textContent).toMatch(/is not a time zone this browser knows/)
+    const { currentZone } = await import('../timezone')
+    expect(currentZone()).toBe('UTC')
+    expect(window.localStorage.getItem('swarm.timezone:ada@example.com')).toBeNull()
+  })
+
+  /** MUTATION: disable the zone with the server's preferences, which do not hold it. */
+  it('stays editable when the server preferences could not be read', async () => {
+    await drawn(fixture({ notifications: undefined, revision: null, unavailable: ['preferences'] }))
+    expect(zoneRadio('other')?.disabled).toBe(false)
+  })
+
+  it('opens on the zone this person stored', async () => {
+    window.localStorage.setItem('swarm.timezone:ada@example.com', LA)
+    await drawn()
+    await waitFor(() => expect(zoneRadio('other')?.checked ?? zoneRadio('browser')?.checked).toBe(true))
+    const { currentZone } = await import('../timezone')
+    expect(currentZone()).toBe(LA)
   })
 })

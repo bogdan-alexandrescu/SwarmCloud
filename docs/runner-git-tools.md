@@ -148,7 +148,7 @@ API's check holds either way.
 | `strategy_pushes_nothing` | push | The agent's strategy promises not to push: `collect` without `carrier: branches`, or a `single-pr` reader. This is the promise `Worker._publish_git` keeps at the end ("THE CALLER'S STRATEGY IS A PROMISE"). A mid-run tool must not break it either. |
 | `forge_write_refused` | push | The submitter's grant is read again before every push, as `Worker._forge_write_refusal` does at the end: no `can_push` grant, a revoked grant, or a read-only `forge_credential` (`apps/agent-worker/agent_worker/secrets.py::forge_read_only`). |
 | `leak_found` | push | The worker's own gate, before anything is uploaded. Each new commit's added text and the final tree go through the same scans as the end-of-agent publish (`_leaks_in_added_text`, `final_tree_leak`). The answer names `path:line rule`, never the match. |
-| `foreign_author` | push | `gitops.py::verify_worker_authorship`'s rule, as at the end, over exactly the commits the bundle carries (`GitTools._check_authorship`): every commit must be authored AND committed by one of the agent's own identities -- `commit_identity(task)`, and the worker's `git_author_*` -- as a whole pair. One more pair is accepted, because a rebase writes it: an author that is one of the agent's own identities under the committer the agent rebases as, `commit_identity(task)`. Without it a continuation of a lane that names nobody was refused: the lane's publish folds its work as the worker's `git_author_*` (`Worker._publish_identity`), the continuation's rebase re-commits it as `BOT_GIT_IDENTITY`, and the mixed pair read as foreign (#1805). It never admits an author outside the agent's own, so a rebased commit somebody else wrote is still refused. The refusal names the commit (12 hex), the `fields` at fault (`author`, `committer`, both for a mixed pair, `signature`, `message`), the identity `found` and the emails `expected`, scrubbed of the agent's registered secrets. |
+| `foreign_author` | push | `gitops.py::verify_worker_authorship`'s rule, as at the end, over exactly the commits the bundle carries (`GitTools._check_authorship`): every commit must be authored AND committed by one of the agent's own identities -- `commit_identity(task)`, and the worker's `git_author_*` -- as a whole pair. One more pair is accepted, because a rebase writes it: an author that is one of the agent's own identities under the committer the agent rebases as, `commit_identity(task)`. Without it a continuation of a lane that names nobody was refused: the lane's publish folds its work as the worker's `git_author_*` (`Worker._publish_identity`), the continuation's rebase re-commits it as `BOT_GIT_IDENTITY`, and the mixed pair read as foreign (#1805). It never admits an author outside the agent's own, so a rebased commit somebody else wrote is still refused. The refusal names the commit (12 hex), the `fields` at fault (`author`, `committer`, both for a mixed pair, `signature`, `message`), the identity `found` and the emails `expected`, scrubbed of the agent's registered secrets. COMMITS ORIGIN ALREADY HAS ARE NOT THE AGENT'S TO ANSWER FOR (#2413): a step that ran `git fetch origin B && git reset --hard B` in its shell, B off its clone base A, taught the relay nothing, and the publish repository is shallow at A, so `^A` excluded A alone and old origin/main history was refused. Before refusing, the push asks swarm-api (`git_fetch` with `confirm`) about the newest foreign commit of each line, at most 16, and excludes exactly the confirmed ones and their history from this check, the leak scan and the bundle. The answer counts only for shas that were asked. A ref the agent wrote under `refs/remotes/origin/` or `refs/swarm/fetched/` is never read. The refusal also says whether origin has the commit (`on_origin`: `false` when swarm-api said no, `null` when it was not or could not be asked), and a commit origin said no to is named first. |
 | `repo_not_allowlisted` | read_private | `repo` must be on the tenant's allowlist (§2.3). A repository that does not exist, or that the credential cannot read, gets **the same answer**, so the tool cannot be used to probe which repositories exist. |
 | `other_repository` | fetch, rebase, push, pr_checks | These four act on the agent's own repository only. `read_private` is the only tool that takes a repository. |
 | `bad_ref` / `bad_path` | all | `ref` goes through `gitops.py::validate_ref`. `path` is refused if it is absolute or contains `..`, an empty segment, a backslash or a control character (the rule `checkpoint_content.py` uses). |
@@ -240,6 +240,11 @@ agent ──MCP stdio──> swarm-git shim ──spool file──> worker (non-
      3. fetch `ref`; the shallow negotiation then sends only what the worker
         lacks;
      4. `git bundle create <ref> ^<haves>`.
+   * **confirm (#2413):** a `git_fetch` body that carries `confirm` (at most
+     16 shas) instead of `ref` is the worker's push asking which of those
+     commits origin has. Each is fetched at depth 1, as a have is, and the
+     answer `{"confirmed": [...]}` is the subset that resolved to itself as a
+     commit. Nothing is bundled. A rebase never takes one.
    * **push:** fetch the bundle's prerequisite commit at depth 1, verify and
      unbundle, re-check the fence, then run `git push --no-verify
      --no-follow-tags -- <url> <sha>:refs/heads/<derived branch>`, which is
@@ -382,8 +387,9 @@ step's and the review's channel) and `issue_closed` on a closed issue unless
 `-git-wf` slot of owner decision Q3, which is removed with IAM row L-2).
 Before every `git_push_branch` swarm-api lists the paths the bundle's new
 commits touch, in a scratch repository holding the forge's prerequisite
-commits at depth 1 and the bundle's objects (`git log --name-only -m
---no-renames`), never from a list the request carries. When any is under
+commits at depth 1 and the bundle's objects (`git log --name-only
+--no-renames --diff-merges=combined`), never from a list the request
+carries. When any is under
 `.github/workflows/` or `.github/actions/` and the agent's own repository's
 registration has its `workflow_files` switch on (off by default; only a
 stored `true` is on, `platform: true` alone is not), swarm-api mints a
@@ -403,6 +409,28 @@ no workflow file mints nothing. The audit row names `credential:
 app_installation` and the `workflow_paths`, never the token. Merging such a
 change stays the owner's (`NEEDS_OWNER`, `STOP_WORKFLOWS`, lane FR-1)
 whatever the run's merge gate says ([design/agent-autonomy.md](design/agent-autonomy.md) §3.3).
+
+**A merge is listed combined, not per parent** (#2452). With `-m` git diffs
+a merge against each of its parents, so a lane that merged `main` named
+every workflow file `main` had changed since the branch was cut, through the
+merge, as the branch's own. On 2026-10-26, after PR 2446 changed
+`application.yml` and `release.yml`, two steps that merged `main` and changed
+no workflow file (task_1297d8f4, task_f2b72856) were sent here as workflow
+pushes and ended FAILED with an empty `workflow-lines.patch`.
+`--diff-merges=combined` names a merge's path only where the merge's result
+differs from **every** parent: a conflict resolved in a workflow file, or an
+"evil" merge that edits one, is still a workflow push; `main`'s own change,
+carried in unchanged, is not. Non-merge commits list as before, a rename
+away from `.github/workflows/` included. The worker's
+`Worker._workflow_paths` runs the same listing over the same range, and the
+two change together: they decide which route a branch takes, and if they
+disagreed the worker would send swarm-api a push it refuses, or push on the
+tenant token what swarm-api would have called a workflow push. Both images
+run Debian bookworm's git (2.39), and `--diff-merges` needs 2.31. The one
+case the listing does not name: a merge that keeps the branch's version of a
+file `main` also changed, where that version is already on origin. It goes
+out on the worker's own push; if GitHub refuses that for the `workflow`
+scope, the publish fails as any refused push does, the work kept.
 
 ## 2. The credential
 

@@ -420,6 +420,28 @@ class SchedulerStore:
             return None
         return task_from_dict(snap.to_dict())
 
+    def task_document(self, task_id: str, *, tenant_id: str) -> dict[str, Any] | None:
+        """One task document as stored, or None when it is missing or another tenant's.
+
+        Through the tenant gate `parent_ends` applies (#453): a review's
+        runtime is resolved from its own tenant's parents only (#2322), so a
+        document rewritten to name another tenant reads as unreadable, which
+        resolves to the browser.
+        """
+        if not isinstance(task_id, str) or not task_id:
+            return None
+        snap = self._db.collection(TASKS).document(task_id).get()
+        if not snap.exists:
+            return None
+        data = snap.to_dict() or {}
+        if data.get("tenant_id") != tenant_id:
+            log.warning(
+                "a runtime resolution names a task of another tenant; not read",
+                extra={"tenant_id": tenant_id, "parent_task_id": task_id},
+            )
+            return None
+        return data
+
     def parent_ends(self, task_ids: Sequence[str], *, tenant_id: str) -> dict[str, ParentEnd]:
         """A task's parents: each one's state and, for one that ended, why.
 
@@ -606,8 +628,14 @@ class SchedulerStore:
         patch: dict[str, Any],
         *,
         same_park_reason: bool = False,
+        patch_from: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> GuardedWrite:
         """Apply `patch` only if the task is still in `task.state`.
+
+        `patch_from(stored)` adds fields computed from the document AS READ
+        INSIDE the transaction, so a field it rewrites whole (a review's
+        `metadata`, #2322) cannot drop a key written between the caller's
+        read and this write.
 
         One transaction: the re-read and the write commit together or not at
         all. A concurrent writer either commits first -- and this re-runs, sees
@@ -643,7 +671,8 @@ class SchedulerStore:
             elif same_park_reason and (stored.get("park_reason") or None) != expected_reason:
                 reason = PARK_REASON_CHANGED
             else:
-                txn.update(task_ref, patch)
+                written = {**patch, **patch_from(stored)} if patch_from is not None else patch
+                txn.update(task_ref, written)
                 return GuardedWrite(write, True, expected, found, None, patch.get("state"))
             return GuardedWrite(write, False, expected, found, reason)
 
@@ -785,8 +814,21 @@ class SchedulerStore:
         )
         return outcome
 
-    def promote_to_ready(self, task: Task, *, detail: dict[str, Any] | None = None) -> GuardedWrite:
+    def promote_to_ready(
+        self,
+        task: Task,
+        *,
+        detail: dict[str, Any] | None = None,
+        patch_from: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        event_detail: Callable[[], dict[str, Any]] | None = None,
+    ) -> GuardedWrite:
         """PARKED -> READY, guarded on the state and the park reason read.
+
+        `patch_from` adds fields to the same guarded write, computed from the
+        stored document inside the transaction (a `browser_if_ui` step's
+        resolved profile, #2322: resolved before it is admitted, never
+        after). `event_detail()`, read once the write applied, is merged into
+        the READY event's detail, so the event says what was written.
 
         PARKED ONLY. The table also allows FAILED -> READY, and this guard
         would happily match a FAILED snapshot (its park reason is None both
@@ -808,9 +850,11 @@ class SchedulerStore:
                 "updated_at": self._now(),
             },
             same_park_reason=True,
+            patch_from=patch_from,
         )
         if outcome.applied:
-            self.append_event(task, EventType.READY, detail or {})
+            extra = event_detail() if event_detail is not None else {}
+            self.append_event(task, EventType.READY, {**(detail or {}), **extra})
         return outcome
 
     def dead_letter_parked(

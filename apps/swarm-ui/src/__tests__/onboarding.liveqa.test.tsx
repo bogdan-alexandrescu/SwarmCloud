@@ -5,7 +5,7 @@
 //     copy, and stays only on `data-step`; a step with nothing on its line
 //     (the workspace step draws its own detail) says when it was checked
 //     without a separator before it;
-//   * RSA-26: the summary chip, which names the optional steps, may wrap
+//   * RSA-26: the summary, which names the optional steps, may wrap
 //     rather than being cut on a phone.
 //
 // Fixtures only; nothing token-shaped.
@@ -67,15 +67,17 @@ describe('RSA-25: a step row is written for a person', () => {
     const line = visible(stepEl('workspace').querySelector('.ob-line'))
     expect(line).toMatch(/^checked /)
     // A step with a line keeps the separator between the line and the time.
-    expect(visible(stepEl('signed_in').querySelector('.ob-line'))).toMatch(/tenant eng · checked /)
+    expect(visible(stepEl('signed_in').querySelector('.ob-line'))).toMatch(/workspace eng · checked /)
   })
 })
 
-describe('RSA-26: the summary chip wraps instead of being cut', () => {
-  it('the count chip, at a phone width, may wrap', async () => {
+describe('RSA-26: the summary wraps instead of being cut', () => {
+  it('the count, at a phone width, may wrap', async () => {
     await mount()
-    const chip = document.querySelector('.ob-card .c-card-h .c-chip')!
-    expect(visible(chip)).toContain('optional')
-    expect(cascade(ALL_CSS, chip, 'white-space', { width: 400 }).winner?.value).toBe('normal')
+    // VQ-048 moved it from a chip in the card's head to a line of its body.
+    const summary = document.querySelector('.ob-card > .ob-summary')!
+    expect(visible(summary)).toContain('optional')
+    // MUTATION: give `.ob-summary` `white-space: nowrap` -> fails.
+    expect(cascade(ALL_CSS, summary, 'white-space', { width: 400 }).winner?.value ?? 'normal').toBe('normal')
   })
 })

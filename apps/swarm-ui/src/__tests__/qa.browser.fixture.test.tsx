@@ -26,10 +26,11 @@ vi.mock('@novnc/novnc/core/rfb.js', () => ({
   },
 }))
 
-const { USE_FIXTURES, loadLiveSession, loadTasks } = await import('../api')
+const { USE_FIXTURES, loadLiveSession, loadTasks, loadTranscript } = await import('../api')
 const { LiveBrowserPane, useLiveSession } = await import('../LiveBrowser')
 
 const ORDINARY = 'task_a073aff5'
+const FINISHED = 'task_f523c160'
 
 async function fixtureTasks(): Promise<Task[]> {
   const page = await loadTasks()
@@ -37,10 +38,10 @@ async function fixtureTasks(): Promise<Task[]> {
   return page.data.tasks
 }
 
-/** The one fixture agent on `claude-code-browser`, asserted present rather than assumed. */
+/** The one RUNNING fixture agent on `claude-code-browser`, asserted present rather than assumed. */
 function browserTask(tasks: Task[]): Task {
-  const found = tasks.find((t) => t.runner_profile === 'claude-code-browser')
-  expect(found, 'the fixture task list has no claude-code-browser task').toBeDefined()
+  const found = tasks.find((t) => t.runner_profile === 'claude-code-browser' && t.state === 'RUNNING')
+  expect(found, 'the fixture task list has no running claude-code-browser task').toBeDefined()
   return found!
 }
 
@@ -70,14 +71,37 @@ describe('the fixture build has one live-browser agent', () => {
   it('lists exactly one RUNNING claude-code-browser task, and keeps task_a073aff5 the ordinary running agent', async () => {
     expect(USE_FIXTURES).toBe(true)
     const tasks = await fixtureTasks()
-    const browsers = tasks.filter((t) => t.runner_profile === 'claude-code-browser')
+    const running = tasks.filter((t) => t.runner_profile === 'claude-code-browser' && t.state === 'RUNNING')
     // MUTATION: drop the new mk(..., 'RUNNING', 'claude-code-browser', ...) row from fixtureTasks -> fails.
-    expect(browsers.map((t) => t.state)).toEqual(['RUNNING'])
-    expect(browsers[0]!.resource_class).toBe('browser')
+    expect(running.map((t) => t.id)).toEqual(['task_b40e5a1c'])
+    expect(running[0]!.resource_class).toBe('browser')
     const ordinary = tasks.find((t) => t.id === ORDINARY)
     // MUTATION: turn task_a073aff5 into the browser agent instead of adding one -> fails.
     expect(ordinary?.runner_profile).toBe('claude-code')
     expect(ordinary?.state).toBe('RUNNING')
+  })
+
+  // FIXTURE-BROWSER-DONE (part of #2423, BGD 2026-10-26 "Convert one"): the
+  // fixture build also carries a FINISHED browser agent, so the finished
+  // Browser tab (BT-006, BT-007) can be rendered from fixtures. It is
+  // task_f523c160 converted, not a row added: the fixture totals stand.
+  it('carries one finished claude-code-browser task, task_f523c160, with a short finished browsing log', async () => {
+    const tasks = await fixtureTasks()
+    const finished = tasks.filter((t) => t.runner_profile === 'claude-code-browser' && t.state !== 'RUNNING')
+    // MUTATION: leave task_f523c160 on claude-code -> no finished browser agent, fails.
+    expect(finished.map((t) => [t.id, t.state])).toEqual([[FINISHED, 'SUCCEEDED']])
+    expect(finished[0]!.resource_class).toBe('browser')
+    expect(finished[0]!.completed_at).not.toBeNull()
+    const read = await loadTranscript(FINISHED)
+    if (read.status !== 'ok') throw new Error(`the transcript of ${FINISHED} read ${read.status}`)
+    expect(read.data.complete).toBe(true)
+    const steps = read.data.steps ?? []
+    const calls = steps.filter((s) => s.kind === 'tool_call' && (s.tool?.name ?? '').startsWith('browser_'))
+    // MUTATION: give it no browser steps, or the running agent's forty -> fails.
+    expect(calls.length).toBeGreaterThan(0)
+    expect(calls.length).toBeLessThanOrEqual(10)
+    // It ends as a finished log does: its result last.
+    expect(steps.at(-1)?.kind).toBe('result')
   })
 
   it('answers live_browser true with an open session for that task only', async () => {

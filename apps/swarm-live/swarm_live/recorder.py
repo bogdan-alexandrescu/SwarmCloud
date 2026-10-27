@@ -47,8 +47,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
+import shutil
 import struct
+import tempfile
 import time
 import zlib
 from typing import Any, Awaitable, Callable, Protocol
@@ -150,30 +153,44 @@ class Encoder(Protocol):
 class FfmpegVp8Encoder:
     """VP8 in WebM through an `ffmpeg` binary on the relay's image.
 
-    Frames go in as raw RGB24 on stdin; the segment comes back on stdout, read
-    concurrently so neither pipe can fill and stall the other.
+    Frames go in as raw RGB24 on stdin. THE SEGMENT IS WRITTEN TO A FILE, NOT
+    TO stdout (BT-012, part of #2423): ffmpeg's WebM muxer writes the
+    segment's Duration and its Cues by seeking back once the last frame is in,
+    and a pipe cannot seek, so a segment muxed to `pipe:1` carried neither. A
+    browser then reads its duration as Infinity, draws a scrubber with no
+    total and cannot seek it (measured on swarm.saga.xyz, 2026-10-26). The file
+    lives in a private directory under the relay's temp dir (`/tmp`, a memory
+    emptyDir in kubernetes/swarm-system/swarm-live.yaml, since the root
+    filesystem is read-only), is read whole when the segment ends, and is
+    removed whatever happens.
     """
 
     def __init__(self, binary: str = "ffmpeg") -> None:
         self._binary = binary
 
     async def open(self, width: int, height: int, fps: int) -> EncoderStream:
-        proc = await asyncio.create_subprocess_exec(
-            self._binary, "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}", "-r", str(fps),
-            "-i", "pipe:0",
-            "-c:v", "libvpx", "-deadline", "realtime", "-cpu-used", "8",
-            "-b:v", "0", "-crf", "30", "-pix_fmt", "yuv420p", "-f", "webm", "pipe:1",
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL)
-        return _FfmpegStream(proc)
+        workdir = tempfile.mkdtemp(prefix="swarm-rec-")
+        out = os.path.join(workdir, "segment.webm")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self._binary, "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}", "-r", str(fps),
+                "-i", "pipe:0",
+                "-c:v", "libvpx", "-deadline", "realtime", "-cpu-used", "8",
+                "-b:v", "0", "-crf", "30", "-pix_fmt", "yuv420p", "-f", "webm", out,
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL)
+        except BaseException:
+            shutil.rmtree(workdir, ignore_errors=True)
+            raise
+        return _FfmpegStream(proc, workdir, out)
 
 
 class _FfmpegStream:
-    def __init__(self, proc: asyncio.subprocess.Process) -> None:
+    def __init__(self, proc: asyncio.subprocess.Process, workdir: str, out: str) -> None:
         self._proc = proc
-        assert proc.stdout is not None
-        self._out = asyncio.create_task(proc.stdout.read())
+        self._workdir = workdir
+        self._out = out
 
     async def write(self, rgb: bytes) -> None:
         assert self._proc.stdin is not None
@@ -182,12 +199,19 @@ class _FfmpegStream:
 
     async def finish(self) -> bytes:
         assert self._proc.stdin is not None
-        self._proc.stdin.close()
-        data = await self._out
-        code = await self._proc.wait()
-        if code != 0:
-            raise RecordingError(f"ffmpeg exited {code}")
-        return data
+        try:
+            self._proc.stdin.close()
+            code = await self._proc.wait()
+            if code != 0:
+                raise RecordingError(f"ffmpeg exited {code}")
+            return await asyncio.to_thread(_read_bytes, self._out)
+        finally:
+            shutil.rmtree(self._workdir, ignore_errors=True)
+
+
+def _read_bytes(path: str) -> bytes:
+    with open(path, "rb") as f:
+        return f.read()
 
 
 # ---------------------------------------------------------------- the RFB client
@@ -371,6 +395,8 @@ class Recorder:
         live_prefix(tenant_id, task_id, attempt_id)  # refuse a bad id before anything streams
         self.tenant_id, self.task_id, self.attempt_id = tenant_id, task_id, attempt_id
         self.conn_id = conn_id or "rec-" + f"{int(clock() * 1000):x}"
+        self._first_conn_id = self.conn_id
+        self._reopens = 0
         self._send = send
         self._writer = writer
         self._encoder = encoder
@@ -391,6 +417,15 @@ class Recorder:
     @property
     def fps(self) -> int:
         return WATCHED_FPS if self._viewers > 0 else IDLE_FPS
+
+    def reopen(self) -> None:
+        """The gate ended this recorder's connection: take a new id and a fresh
+        decoder for the one the relay opens next (rendezvous.py, part of #1346).
+        The new id keeps a late byte of the old stream out of the new decoder.
+        Nothing is added to the segment until the new stream has a frame."""
+        self._reopens += 1
+        self.conn_id = f"{self._first_conn_id}-{self._reopens}"
+        self._decoder = RfbDecoder()
 
     def set_viewers(self, count: int) -> None:
         self._viewers = max(0, count)

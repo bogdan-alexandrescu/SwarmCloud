@@ -771,6 +771,7 @@ def test_the_new_phone_preset_is_passed_to_the_gate_by_name(tmp_path, db, trace,
                                    "preset": preset}
     assert ("device", {"preset": preset}) in gate.ops
     assert preset in handoff_mod.AGENT_GUIDE
+    assert "swarm-handoff compare" in handoff_mod.AGENT_GUIDE
 
 
 def test_the_guide_names_the_gates_presets_in_its_order():

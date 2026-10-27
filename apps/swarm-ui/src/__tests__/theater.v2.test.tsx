@@ -115,6 +115,9 @@ const PRESETS: LiveSession['presets'] = [
   { name: 'iphone-15', width: 393, height: 852, scale: 3, mobile: true },
   // QA-KIT: swarm_api.live.LIVE_PRESETS serves it, after iPhone 15.
   { name: 'phone-390', width: 390, height: 844, scale: 3, mobile: true },
+  // IMPLEMENT-RENDER (#2442) and PHONE-380 (#2136): AI Studio's 380 x 800
+  // phone frame, after phone-390.
+  { name: 'phone-380', width: 380, height: 800, scale: 3, mobile: true },
   { name: 'pixel-8', width: 412, height: 915, scale: 2.625, mobile: true },
   { name: 'iphone-se', width: 375, height: 667, scale: 2, mobile: true },
   { name: 'ipad-7', width: 810, height: 1080, scale: 2, mobile: true },
@@ -281,6 +284,7 @@ describe('B4: the DEVICE column is a vertical list, nothing clipped', () => {
       ['Desktop', 'desktop'],
       ['iPhone 15', 'phone'],
       ['Phone 390', 'phone'],
+      ['Phone 380', 'phone'],
       ['Pixel 8', 'phone'],
       ['iPhone SE', 'phone'],
       ['iPad', 'tablet'],

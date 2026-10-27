@@ -106,11 +106,41 @@ waits for a person's `human-ready`, as before. A review re-running wakes
 nothing. Either way the next attempt reads every answer again. The
 scheduler's human-wait expiry (`_expire_human_waits`) spares this park, as
 it spares a `question_wait` or `release_wait` one, so it never dead-letters
-at `human_park_max_seconds`. The review's `open_questions`, the ones it
+at `human_park_max_seconds`. Its pull request merged or closed outside the
+workflow ends it instead (MERGE-OUTSIDE-ENDS, #2441): swarm-api's wake tick
+marks the hold, the scheduler wakes it, and `_ended_outside` reads the pull
+request before any question and ends the step SUCCEEDED or CANCELLED. The review's `open_questions`, the ones it
 judged need not hold, never stop the merge; those still unanswered are
 listed, in the asking task's own words, in the comment that records the
 merge -- so a merge made by `auto-merge.yml` rather than this step lists
 none.
+
+ANSWERED IS NOT ENOUGH: THE PICK MUST BE WHAT THE BRANCH BUILT
+(ANSWER-CONTENT-CHECK, part of #2441; owner decision 2026-10-26). Once every
+`needs_owner` question is answered, the step reads the validated
+`questions.json` of every step of its workflow it depends on and compares
+each ANSWERED question's `choice` with its `built`, the option label the
+asking agent said its branch implements -- the `needs_owner` ones and every
+other answered one, such as a question the owner answered before the review
+ran, which the review lists nowhere (PICK-FIX-ROUND, BGD 2026-10-26). A
+different option, or free text that names none, is an unbuilt pick
+(`unbuilt_picks`), found before any credential. `built: null` (the answer
+changes nothing the branch builds) passes, and so does a question with no
+`built` at all, written before this check, so a lane parked on its answers is
+not stranded. On 2026-10-26 three lanes (VQ-CAPACITY, VQ-CONFIG-B,
+BROWSER-POOL-100) would have merged the opposite of the owner's pick without
+it.
+
+AN UNBUILT PICK IS A PICK-FIX ROUND'S TO BUILD (PICK-FIX-ROUND, part of
+#2441; BGD 2026-10-26), not the operator's. The step parks CI_PENDING on
+`owner_pick_fix_pending`, one `pending` line per pick; swarm-api's wake tick
+reads that park as it reads a CI or conflict park and submits a claude-code
+round on the pull request's branch whose brief names each pick. The round
+builds it, pushes to the same pull request and writes `picks-built.json`;
+the merge then runs again. A round counts only for the picks its report says
+it built, at a head it pushed; one that pushed nothing, did not succeed, or
+left a pick it was sent for unbuilt refuses `owner_pick_not_built`, and at
+most MERGE_PICK_ROUNDS_MAX are run, so the step never loops (`_pick_fix`).
 
 THE RULES `auto-merge.yml` ALSO STATES are the module-level functions
 `title_is_placeholder`, `other_check_blocks` and `required_check_state`, so
@@ -158,6 +188,44 @@ MERGE_TARGET_FIELD = "merge_target"
 
 #: The code an owner-question hold parks with (#2070).
 OWNER_QUESTIONS_OPEN = "owner_questions_open"
+#: The code a merge refuses with when the owner picked an option the asking
+#: branch did not build (ANSWER-CONTENT-CHECK, owner decision 2026-10-26), the
+#: `result_summary` key naming each such pick, and the code for a counted
+#: `questions.json` the check could not read.
+OWNER_PICK_NOT_BUILT = "owner_pick_not_built"
+UNBUILT_PICKS_KEY = "unbuilt_picks"
+OWNER_QUESTIONS_UNREADABLE = "owner_questions_unreadable"
+#: A pick the branch did not build is a pick-fix round's to build
+#: (PICK-FIX-ROUND, part of #2441; BGD 2026-10-26), not a refusal: the step
+#: parks CI_PENDING on one of these codes, which swarm-api's wake tick reads
+#: as it reads a CI or a conflict park. PENDING asks for the next round;
+#: RUNNING waits on the one claimed. The rounds are `merge_fix.pick_rounds`,
+#: beside the CI and conflict rounds and counted apart from them, each
+#: `{round, head, claimed_at, pull_head, picks}` then `workflow_id` and
+#: `task_id`, or `error`. TWO at most, the conflict rounds' bound: one for the
+#: answers that woke the merge, one for a question answered after it; a pick a
+#: round was sent for and left unbuilt is never sent again. Each `pending`
+#: line of the park names one pick and starts with PICK_LINE_PREFIX, which is
+#: how the tick finds the picks a round is sent for. Held equal to
+#: `swarm_api.mergewake` by tests/unit/worker/test_merge_pick_fix_round.py.
+OWNER_PICK_FIX_PENDING = "owner_pick_fix_pending"
+OWNER_PICK_FIX_RUNNING = "owner_pick_fix_running"
+PICK_FIX_CODES = frozenset({OWNER_PICK_FIX_PENDING, OWNER_PICK_FIX_RUNNING})
+PICK_ROUNDS_KEY = "pick_rounds"
+MERGE_PICK_ROUNDS_MAX = 2
+PICK_LINE_PREFIX = "pick "
+#: The most characters of a question's text a `pending` line carries.
+PICK_LINE_QUESTION_MAX = 400
+
+#: swarm-api's wake tick's record of an owner-question hold
+#: (`swarm_api.mergewake.OWNER_HOLD_KEY`), inside `metadata.merge_wait`, and
+#: the two wake reasons it writes when the hold's pull request was merged or
+#: closed outside the workflow (MERGE-OUTSIDE-ENDS, part of #2441). Held equal
+#: by tests/unit/control_plane/test_merge_outside_ends.py.
+OWNER_HOLD_KEY = "owner_hold"
+PULL_REQUEST_MERGED = "pull_request_merged"
+PULL_REQUEST_CLOSED = "pull_request_closed"
+OUTSIDE_WAKE_REASONS = frozenset({PULL_REQUEST_MERGED, PULL_REQUEST_CLOSED})
 #: `metadata.owner_answers`, swarm-api's record of each answer
 #: (`questions.OWNER_ANSWERS_KEY`).
 OWNER_ANSWERS_KEY = questions_mod.OWNER_ANSWERS_KEY
@@ -343,8 +411,18 @@ MERGE_QUEUED = "merge_queued"
 
 #: Who commits GitHub's own merge commits -- `update-branch`, the web UI --
 #: and signs them, so `verification.verified` is true. A two-parent commit
-#: anyone else made can carry any tree, so the walk accepts only these.
+#: anyone else made can carry any tree, so the walk takes one of those only
+#: once its tree is shown to be the clean merge of its parents
+#: (`_merge_impurity`, FIX-MERGE-PURE-BASE-MERGE).
 GITHUB_COMMITTER_EMAIL = "noreply@github.com"
+
+#: The summary key listing every base merge the walk took that GitHub did not
+#: commit: a person's (or anyone's) clean merge of the base on top of an
+#: accepted head. BGD, 2026-10-26: "accept a pure base merge, and record who
+#: made it" -- F05 of #2379, where a person's merge of main ended a parked
+#: merge step FAILED head_moved that auto-merge.yml's `is_pure_base_merge`
+#: accepts from anyone. Each entry is `_commit_record`'s.
+PURE_BASE_MERGES_KEY = "pure_base_merges"
 
 #: A 405/422 from the merge call that means the branch is behind: the
 #: update row, not a refusal.
@@ -633,6 +711,10 @@ class PullRequestFacts:
     mergeable_state: str | None = None
     #: GraphQL's id for the pull request, which `enqueuePullRequest` takes.
     node_id: str | None = None
+    #: Who merged it (GitHub's `merged_by.login`) and when (`merged_at`), as
+    #: GitHub says: what a merge made outside the workflow is recorded with.
+    merged_by: str | None = None
+    merged_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -696,11 +778,25 @@ class CommitFacts:
     parents: tuple[str, ...]
     committer_email: str | None
     verified: bool
+    #: The commit's tree, what a pure base merge's is compared by
+    #: (`_merge_impurity`). None when GitHub did not say.
+    tree: str | None = None
 
     @property
     def by_github(self) -> bool:
         """Committed and signed by GitHub itself, as `update-branch` commits are."""
         return self.verified and (self.committer_email or "").lower() == GITHUB_COMMITTER_EMAIL
+
+
+@dataclass(frozen=True)
+class TreeFacts:
+    """A recursive tree: every path that is not a directory, as (mode, object sha).
+
+    `truncated` is GitHub saying it served only part of the tree, which then
+    proves nothing about the rest."""
+
+    entries: Mapping[str, tuple[str, str]]
+    truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -762,6 +858,10 @@ class ForgeMerger(Protocol):
     def commit(self, sha: str) -> CommitFacts: ...
 
     def on_base(self, base: str, sha: str) -> bool: ...
+
+    def merge_base(self, first: str, second: str) -> str | None: ...
+
+    def tree(self, sha: str) -> TreeFacts: ...
 
     def update_branch(self, number: int, *, expected_head_sha: str) -> UpdateAnswer: ...
 
@@ -865,6 +965,8 @@ class GitHubMerger:
             merge_commit_sha=_str(data.get("merge_commit_sha")),
             mergeable_state=_str(data.get("mergeable_state")),
             node_id=_str(data.get("node_id")),
+            merged_by=_str(_mapping(data.get("merged_by")).get("login")),
+            merged_at=_str(data.get("merged_at")),
         )
 
     def required_checks(self, branch: str) -> RequiredChecks:
@@ -996,7 +1098,28 @@ class GitHubMerger:
             parents=parents,
             committer_email=_str(_mapping(detail.get("committer")).get("email")),
             verified=_mapping(detail.get("verification")).get("verified") is True,
+            tree=_str(_mapping(detail.get("tree")).get("sha")),
         )
+
+    def merge_base(self, first: str, second: str) -> str | None:
+        """The commit `compare` says `first` and `second` both descend from."""
+        data = _mapping(self._client.get_ok(
+            f"{self._base}/compare/{quote(first, safe='')}...{quote(second, safe='')}"
+        ))
+        return _str(_mapping(data.get("merge_base_commit")).get("sha"))
+
+    def tree(self, sha: str) -> TreeFacts:
+        """The tree `sha`, recursively: blobs and submodules, never directories."""
+        data = _mapping(self._client.get_ok(f"{self._base}/git/trees/{quote(sha, safe='')}",
+                                            query={"recursive": "1"}))
+        entries: dict[str, tuple[str, str]] = {}
+        for raw in data.get("tree") or []:
+            entry = _mapping(raw)
+            path, kind = _str(entry.get("path")), _str(entry.get("type"))
+            if path is None or kind == "tree":
+                continue
+            entries[path] = (_str(entry.get("mode")) or "", _str(entry.get("sha")) or "")
+        return TreeFacts(entries=entries, truncated=data.get("truncated") is True)
 
     def on_base(self, base: str, sha: str) -> bool:
         """Whether `sha` is already on `base`: `compare` says the commit is
@@ -1397,11 +1520,30 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
                 f"the review's verdict is {verdict.verdict}, not MERGE"
                 + (f" ({len(verdict.findings)} finding(s))" if verdict.findings else ""),
             )
+        # #2441: a hold woken because its pull request was merged or closed
+        # outside the workflow ends here, before any question is read again:
+        # a merged pull request needs no answers.
+        ended = _ended_outside(run, target, opener)
+        if ended is not None:
+            return ended
         # #2070: the owner questions the review said hold the merge, each
         # answer re-read; then the ones it said need not, listed if open.
         held = _unanswered(ctx, verdict.needs_owner)
         if held or verdict.needs_owner_unreadable:
             return run.wait_for_owner(held, unreadable=verdict.needs_owner_unreadable)
+        # ANSWER-CONTENT-CHECK: answered is not enough; the pick must be
+        # the option the asking branch built -- for every answered question
+        # that names `built`, held or not (PICK-FIX-ROUND). One it did not
+        # build is a pick-fix round's to build, bounded.
+        try:
+            unbuilt = _unbuilt_picks(ctx, target, verdict.needs_owner)
+        except InputUnavailable as exc:
+            summary["refusal"] = {"code": OWNER_QUESTIONS_UNREADABLE, "message": str(exc)}
+            return _outcome(TaskState.FAILED, EndCause.INPUTS_UNAVAILABLE, summary, str(exc))
+        if unbuilt:
+            fixing = _pick_fix(run, target, opener, unbuilt)
+            if fixing is not None:
+                return fixing
         still_open = _unanswered(ctx, verdict.open_questions, asked_text=True)
         if still_open:
             summary["open_questions"] = still_open
@@ -1433,6 +1575,85 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
     )
 
 
+def _ended_outside(run: _Run, target: MergeTarget,
+                   opener: Mapping[str, Any]) -> ActionOutcome | None:
+    """The end of a hold whose pull request was merged or closed outside the workflow.
+
+    MERGE-OUTSIDE-ENDS (part of #2441): JOIN-UI-ADMIN's merge step stayed
+    PARKED on an owner question after its PR 2387 was merged by hand, and
+    nothing would ever have ended it. swarm-api's wake tick reads a held
+    step's pull request and marks the hold `pull_request_merged` or
+    `pull_request_closed` (`swarm_api.mergewake`); the scheduler returns it
+    to READY on that mark. Only then -- the mark is on a tenant-writable
+    document, so it is a reason to look, never a fact -- this reads the pull
+    request again with the tenant's token:
+
+      * merged, by anyone: SUCCEEDED, naming the merge commit, who merged it
+        and when. Nothing is merged and no question is asked again;
+      * closed unmerged: CANCELLED, saying so;
+      * open (a forged or stale mark), not this workflow's pull request, or
+        unreadable: None, and the hold parks again exactly as before.
+
+    No mark, no read: an ordinary hold stays credential-free.
+    """
+    ctx, summary = run.ctx, run.summary
+    wait = _mapping(_mapping(_own_doc(ctx).get("metadata")).get(MERGE_WAIT_METADATA_KEY))
+    # A pick-fix park (PICK-FIX-ROUND) is marked by the tick in `merge_wait`
+    # itself, as any CI_PENDING park is; an owner hold in its `owner_hold`.
+    picked = wait.get("wake_reason") if wait.get("code") in PICK_FIX_CODES else None
+    if (_mapping(wait.get(OWNER_HOLD_KEY)).get("wake_reason") not in OUTSIDE_WAKE_REASONS
+            and picked not in OUTSIDE_WAKE_REASONS):
+        return None
+    assert target.pull_request is not None
+    number = pull_request_number(opener)
+    if number is None or mergeable_repository(ctx.repository_url) is None \
+            or ctx.read_git_token is None:
+        return None
+    try:
+        token = ctx.read_git_token()
+    except Exception as exc:  # noqa: BLE001 - never the value; the type is enough
+        summary["outside_unread"] = f"the forge token could not be read ({type(exc).__name__})"
+        return None
+    ctx.register_secret(token)
+    try:
+        merger = merger_for(ctx.repository_url, token=token, transport=ctx.transport,
+                            retry=forge_retry(ctx))
+        pr = merger.pull_request(number)
+    except Exception as exc:  # noqa: BLE001 - unread is not ended: the hold parks again
+        summary["outside_unread"] = (f"pull request #{number} could not be read "
+                                     f"({type(exc).__name__})")
+        return None
+    finally:
+        del token
+    branch = f"{ctx.branch_prefix}{_branch_task(opener, target.pull_request)}"
+    if not pull_request_belongs(
+        {"head": {"ref": pr.head_ref, "repo": {"full_name": pr.head_repo}},
+         "base": {"repo": {"full_name": pr.base_repo}}},
+        author_branch=branch,
+    ):
+        return None
+    summary["pull_request"] = number
+    if pr.merged:
+        words = f"pull request #{number} was merged outside the workflow"
+        if pr.merged_by:
+            words += f" by {pr.merged_by}"
+        if pr.merged_at:
+            words += f" at {pr.merged_at}"
+        if pr.merge_commit_sha:
+            words += f" as {pr.merge_commit_sha}"
+        summary.update({"merged_outside_workflow": True, "merge_commit": pr.merge_commit_sha,
+                        "merged_by": pr.merged_by, "merged_at": pr.merged_at,
+                        "outcome": words})
+        return _outcome(TaskState.SUCCEEDED, None, summary, words)
+    if pr.state == "closed":
+        message = (f"pull request #{number} was closed without merging, outside the "
+                   "workflow; there is nothing left to merge")
+        summary["refusal"] = {"code": "pull_request_closed", "message": message}
+        return _outcome(TaskState.CANCELLED, EndCause.MERGE_REFUSED, summary,
+                        f"pull_request_closed: {message}", exit_code=ExitCode.CANCELLED)
+    return None
+
+
 def _answered(doc: Mapping[str, Any], index: int) -> bool:
     """Whether the task's `metadata.owner_answers` holds an answer to question `index`."""
     for entry in _mapping(doc.get("metadata")).get(OWNER_ANSWERS_KEY) or ():
@@ -1440,6 +1661,272 @@ def _answered(doc: Mapping[str, Any], index: int) -> bool:
                 and entry.get("question_index") == index:
             return True
     return False
+
+
+def _unbuilt_picks(ctx: ActionContext, target: MergeTarget,
+                   refs: tuple[verdict_mod.OwnerQuestionRef, ...]) -> list[dict[str, Any]]:
+    """Each answered question whose pick is not the option its branch built.
+
+    Which questions: every `refs` question -- the review's `needs_owner`,
+    each answered by now (`_unanswered` found none held) -- and every other
+    question a step of this workflow that this one depends on asked and the
+    owner answered (`owner_questions.workflow_questions`, from the step's own
+    task document, or from its signed target's review and opener when that
+    cannot be read): one answered before the review ran is in neither of the
+    review's lists, and its pick binds the merge all the same (PICK-FIX-ROUND,
+    BGD 2026-10-26). Each step's validated `questions.json` is read again
+    (`owner_questions.questions_of`, which raises `InputUnavailable` for a
+    counted file it cannot read, as the walk does for a parent it cannot).
+
+    A question passes when its asker wrote no `built` (a file from before this
+    check), `built: null` (the answer changes nothing the branch builds), or
+    the answer's `choice` is `built`. Anything else -- another option, or free
+    text with no option -- is a row naming the question, the pick (None for
+    free text, with the answer's `text`) and the build.
+    """
+    asked: dict[str, dict[int, Mapping[str, Any]]] = {}
+    keys: list[tuple[str, int]] = []
+    steps: dict[tuple[str, int], str | None] = {}
+    for ref in refs:
+        if ref.task_id not in asked:
+            doc = ctx.fetch_upstream(ref.task_id)
+            rows = owner_questions_mod.questions_of(
+                ref.task_id, doc, store=ctx.store, tenant_id=ctx.tenant_id)
+            asked[ref.task_id] = {row["question_index"]: row for row in rows}
+        key = (ref.task_id, ref.question_index)
+        if key not in keys:
+            keys.append(key)
+            steps[key] = ref.step_id
+    # From the step's own document; where that cannot be read (#2373), from
+    # the steps its signed target names, which this attempt has read already.
+    start = _own_doc(ctx)
+    if not start.get("depends_on"):
+        start = {"workflow_id": ctx.workflow_id,
+                 "depends_on": [t for t in (target.review, target.pull_request) if t]}
+    for row in owner_questions_mod.workflow_questions(
+            start, fetch=ctx.fetch_upstream, store=ctx.store, tenant_id=ctx.tenant_id):
+        asked.setdefault(row["task_id"], {}).setdefault(row["question_index"], row)
+        key = (row["task_id"], row["question_index"])
+        if row.get("answer") is not None and key not in keys:
+            keys.append(key)
+    out: list[dict[str, Any]] = []
+    for task_id, index in keys:
+        row = asked.get(task_id, {}).get(index)
+        built = row.get(owner_questions_mod.BUILT_KEY) if row is not None else None
+        if row is None or not isinstance(built, str):
+            continue
+        answer = _mapping(row.get("answer"))
+        choice = answer.get("choice")
+        if choice == built:
+            continue
+        found: dict[str, Any] = {
+            "task_id": task_id,
+            "step_id": row.get("step_id") or steps.get((task_id, index)),
+            "question_index": index,
+            "question": row.get("question"),
+            "picked": choice if isinstance(choice, str) else None,
+            "built": built,
+        }
+        if found["picked"] is None and isinstance(answer.get("text"), str):
+            found["text"] = answer["text"]
+        out.append(found)
+    return out
+
+
+def _picks_named(rows: list[Mapping[str, Any]]) -> str:
+    """Each question, what the owner picked, what the branch built, `; `-joined."""
+    named = []
+    for row in rows:
+        where = f"step {row.get('step_id') or row.get('task_id')} question {row.get('question_index')}"
+        picked = row.get("picked")
+        pick = (f"picked {picked!r}" if picked is not None
+                else "answered in free text that names no option")
+        named.append(f"{where}: {pick}, the branch builds {row.get('built')!r}")
+    return "; ".join(named)
+
+
+def unbuilt_picks_message(rows: list[Mapping[str, Any]]) -> str:
+    """The reason a merge does not merge: each question, the pick, the build."""
+    return "the owner picked an option this pull request does not build: " + _picks_named(rows)
+
+
+def _one_line(value: Any, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[:limit - 3] + "..."
+
+
+def pick_line(row: Mapping[str, Any]) -> str:
+    """One unbuilt pick as a `pending` line of the pick-fix park.
+
+    What the tick puts in the round's brief, fenced as data: the asking task
+    and question index first (`PICK_LINE_PREFIX`, which the tick parses to
+    record which picks a round was sent for), then the step, the pick (or the
+    owner's free text), the build, and the question as the asker wrote it.
+    """
+    picked = row.get("picked")
+    pick = (f"picked {picked!r}" if picked is not None
+            else f"answered in free text: {_one_line(row.get('text'), PICK_LINE_QUESTION_MAX)!r}")
+    return (f"{PICK_LINE_PREFIX}{row.get('task_id')} question {row.get('question_index')} "
+            f"(step {row.get('step_id') or row.get('task_id')}): {pick}, the branch builds "
+            f"{row.get('built')!r}; question: "
+            f"{_one_line(row.get('question'), PICK_LINE_QUESTION_MAX)}")
+
+
+def _pick_round_doc(ctx: ActionContext, entry: Mapping[str, Any], *, root: str,
+                    target: str) -> Mapping[str, Any] | None:
+    """The task of pick-fix round `entry`, when it is a round of this branch; else None.
+
+    `merge_fix` is tenant-writable, so the round is held to what
+    `_fix_round_heads` holds a CI or conflict round to: read through the
+    tenant-gated upstream read, this tenant's, its signed spec verifying
+    against the round's own workflow, and its SIGNED `continues` the root
+    whose branch the pull request is on.
+    """
+    task_id = _task_id(entry.get("task_id"))
+    if task_id is None or task_id in (target, root, ctx.task_id):
+        return None
+    try:
+        doc = _mapping(ctx.fetch_upstream(task_id))
+        workflow = _task_id(entry.get("workflow_id")) or _task_id(doc.get("workflow_id"))
+        if workflow is None:
+            return None
+        ctx.verify_upstream(task_id, doc, of_workflow=workflow)
+    except Exception:  # noqa: BLE001 - unreadable or unsigned: not this branch's round
+        return None
+    if doc.get("tenant_id") != ctx.tenant_id:
+        return None
+    if _task_id(_mapping(_mapping(doc.get("metadata")).get("dispatch")).get("continues")) != root:
+        return None
+    return doc
+
+
+def _round_pushed(doc: Mapping[str, Any], entry: Mapping[str, Any]) -> str | None:
+    """The head round `doc` pushed, unless it pushed nothing or the head it started at."""
+    pushed = _pushed_head(doc)
+    start = entry.get("pull_head") or entry.get("head")
+    return pushed if pushed is not None and pushed != start else None
+
+
+def _pick_fix(run: _Run, target: MergeTarget, opener: Mapping[str, Any],
+              unbuilt: list[dict[str, Any]]) -> ActionOutcome | None:
+    """Picks the branch did not build: a pick-fix round's, or `owner_pick_not_built`.
+
+    PICK-FIX-ROUND (part of #2441; BGD 2026-10-26). None when the step's
+    pick-fix rounds built every pick in `unbuilt`, so the merge goes on;
+    otherwise the park or the refusal. The shape is `_conflicted`'s:
+
+      * a round claimed and not yet submitted, or still running, parks
+        OWNER_PICK_FIX_RUNNING; one whose submission was refused is
+        `owner_pick_not_built`;
+      * a round counts as building a pick only when its task is this
+        branch's round (`_pick_round_doc`), SUCCEEDED, pushed a head other
+        than the one it started at, and its `picks-built.json`
+        (`owner_questions.picks_built`) says it builds THAT pick -- the
+        owner's option as now answered, or the free text -- and the head it
+        pushed is accepted by the merge like any round's (`_fix_round_heads`);
+      * once the last round has ended, a round that did not succeed, pushed
+        nothing, or left a pick it was sent for unbuilt, refuses: no pick is
+        sent to a second round, so the step never loops;
+      * a pick no round was sent for (answered after the last one) parks
+        OWNER_PICK_FIX_PENDING for the next round, at most
+        MERGE_PICK_ROUNDS_MAX of them; past that, `owner_pick_not_built`.
+
+    Before any credential, as the hold is. The park is CI_PENDING at the
+    opener's pushed head: it holds nothing (invariant 1), and the next
+    attempt is admitted and fenced like any other (invariant 5).
+    """
+    ctx, summary = run.ctx, run.summary
+    assert target.pull_request is not None
+    number = pull_request_number(opener)
+    if number is None:
+        return run.refuse("pull_request_unknown",
+                          f"task {target.pull_request} recorded no pull request")
+    pinned = _pushed_head(opener)
+    if pinned is None:
+        return run.refuse("head_unknown",
+                          f"task {target.pull_request} recorded no pushed head to pin")
+    root = _branch_task(opener, target.pull_request)
+    own = _own_doc(ctx)
+    rounds = _fix_rounds(own, PICK_ROUNDS_KEY)
+    last = rounds[-1] if rounds else None
+
+    def refuse(rows: list[dict[str, Any]], why: str) -> ActionOutcome:
+        summary[UNBUILT_PICKS_KEY] = rows
+        return run.refuse(OWNER_PICK_NOT_BUILT, f"{unbuilt_picks_message(rows)}; {why}")
+
+    def wait(code: str, rows: list[dict[str, Any]], why: str) -> ActionOutcome:
+        summary[UNBUILT_PICKS_KEY] = rows
+        waited = _ci_wait_age(ctx)
+        if waited is not None:
+            return refuse(rows, f"{why}, and the step has waited {int(waited // 60)} min, "
+                                f"past {MERGE_CI_MAX_SECONDS // 3600} h")
+        return run.wait(code, f"{unbuilt_picks_message(rows)}; {why}", head=pinned,
+                        pull_request=number, pending=[pick_line(row) for row in rows])
+
+    if last is not None:
+        n = last.get("round")
+        if last.get("error"):
+            return refuse(unbuilt, f"pick fix round {n} was not run: {str(last['error'])[:300]}")
+        task_id = _task_id(last.get("task_id"))
+        if task_id is None:
+            return wait(OWNER_PICK_FIX_RUNNING, unbuilt, f"pick fix round {n} is being submitted")
+        if not _ended(ctx, task_id):
+            return wait(OWNER_PICK_FIX_RUNNING, unbuilt,
+                        f"pick fix round {n} ({task_id}) is running")
+
+    # Every ended round's report, oldest first, so a later round's word wins.
+    reports: dict[tuple[str, int], tuple[str | None, bool]] = {}
+    for entry in rounds:
+        doc = _pick_round_doc(ctx, entry, root=root, target=target.pull_request)
+        if (doc is None or doc.get("state") != TaskState.SUCCEEDED.value
+                or _round_pushed(doc, entry) is None):
+            continue
+        round_task = str(_task_id(entry.get("task_id")))
+        try:
+            reports.update(owner_questions_mod.picks_built(
+                round_task, doc, store=ctx.store, tenant_id=ctx.tenant_id))
+        except Exception as exc:  # noqa: BLE001 - an unread report built nothing
+            why = str(exc)[:300] if isinstance(exc, InputUnavailable) else type(exc).__name__
+            summary.setdefault("pick_reports_unread", []).append(f"{round_task}: {why}")
+
+    def built(row: Mapping[str, Any]) -> bool:
+        reported = reports.get((row["task_id"], row["question_index"]))
+        return reported is not None and reported[1] is True and reported[0] == row.get("picked")
+
+    still = [row for row in unbuilt if not built(row)]
+    if not still:
+        summary["picks_built_by_rounds"] = [
+            {"task_id": row["task_id"], "question_index": row["question_index"],
+             "picked": row.get("picked")} for row in unbuilt]
+        return None
+
+    if last is not None:
+        n = last.get("round")
+        task_id = _task_id(last.get("task_id"))
+        doc = _pick_round_doc(ctx, last, root=root, target=target.pull_request)
+        if doc is None:
+            return refuse(still, f"pick fix round {n} ({task_id}) is not a round of this "
+                                 "pull request's branch")
+        state = doc.get("state")
+        if state != TaskState.SUCCEEDED.value:
+            return refuse(still, f"pick fix round {n} ({task_id}) ended {state} without "
+                                 "building it")
+        if _round_pushed(doc, last) is None:
+            return refuse(still, f"pick fix round {n} ({task_id}) changed nothing: it pushed "
+                                 "no new head")
+        picks = last.get("picks")
+        sent = None if not isinstance(picks, list) else {
+            (_mapping(p).get("task_id"), _mapping(p).get("question_index")) for p in picks}
+        repeated = [row for row in still
+                    if sent is None or (row["task_id"], row["question_index"]) in sent]
+        if repeated:
+            return refuse(repeated, f"still not built after pick fix round {n} ({task_id}), "
+                                    "which was sent to build it")
+    if len(rounds) >= MERGE_PICK_ROUNDS_MAX:
+        return refuse(still, f"after {len(rounds)} pick fix round(s), the most a merge step "
+                             "gets")
+    return wait(OWNER_PICK_FIX_PENDING, still,
+                f"pick fix round {len(rounds) + 1} of {MERGE_PICK_ROUNDS_MAX} is due to build it")
 
 
 def _unanswered(ctx: ActionContext,
@@ -1725,23 +2212,33 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     if pr.draft:
         return run.refuse("draft", f"pull request #{number} is a draft")
     head = pr.head_sha
+    proven: dict[str, str | None] = {}
     accepted = None if head is None else _accept(
-        merger, head=head, pinned=pinned, fix_heads=fix_heads, base=default
+        merger, head=head, pinned=pinned, fix_heads=fix_heads, base=default, proven=proven
     )
     if head is None or accepted is None:
         unread = summary.get(FIX_RECORDS_UNREAD_KEY) or []
-        return run.refuse("head_moved",
-                          f"pull request #{number}'s head is {head}, not {pinned}, "
-                          "the head this workflow pushed, nor one of its CI-fix or conflict "
-                          "fix rounds' heads, nor a head the platform's CI fixer recorded "
-                          "for this pull request, nor GitHub's own update of any of them"
-                          + (f"; and this step could not read {'; '.join(unread)}, so a "
-                             "round's head there was never a candidate" if unread else ""))
-    updates, pushed_by = accepted
+        record = None if head is None else _head_record(
+            merger, head=head, pinned=pinned, fix_heads=fix_heads, base=default, proven=proven)
+        outcome = run.refuse(
+            "head_moved",
+            f"pull request #{number}'s head is {head}, not {pinned}, "
+            "the head this workflow pushed, nor one of its CI-fix or conflict "
+            "fix rounds' heads, nor a head the platform's CI fixer recorded "
+            "for this pull request, nor a clean merge of the base into any of them"
+            + (f"; and this step could not read {'; '.join(unread)}, so a "
+               "round's head there was never a candidate" if unread else "")
+            + ("" if record is None else _named(record)))
+        if record is not None:
+            summary["refusal"]["commit"] = record
+        return outcome
+    updates, pushed_by, others = accepted
     summary["head"] = head
     summary["updates"] = updates
     if pushed_by is not None:
         summary["head_pushed_by"] = pushed_by
+    if others:
+        summary[PURE_BASE_MERGES_KEY] = others
     if title_is_placeholder(pr.title):
         return run.refuse("title_placeholder",
                           "the pull request's title is the worker's placeholder")
@@ -2076,27 +2573,41 @@ def queued_provenance(ctx: ActionContext, merger: ForgeMerger, *, number: int,
     ])
 
 
-def _updates_onto(merger: ForgeMerger, *, head: str, pushed: str, base: str) -> int | None:
-    """How many of GitHub's base merges lead from `pushed` to `head`, or None.
+def _updates_onto(merger: ForgeMerger, *, head: str, pushed: str, base: str,
+                  proven: dict[str, str | None] | None = None
+                  ) -> tuple[int, list[dict[str, Any]]] | None:
+    """How many base merges lead from `pushed` to `head`, and the record of
+    each GitHub did not commit, or None.
 
     The first-parent walk (docs/merge-step.md "Revised 2026-10-06" §1): from
-    the live head, each step down must be a two-parent commit GitHub itself
-    committed and signed, whose second parent is already on `base`; its first
-    parent is the next step. It must reach `pushed` within
-    MERGE_MAX_HEAD_UPDATES steps. A fact about GitHub, never about the
-    tenant-writable task document, so a lost attempt's update is re-derived
-    here and a forged count changes nothing. Anything else is `head_moved`.
+    the live head, each step down must be a two-parent commit whose second
+    parent is already on `base`, and either GitHub itself committed and
+    signed it or its tree is the clean merge of its two parents
+    (`_merge_impurity`; BGD 2026-10-26, F05 of #2379). Its first parent is
+    the next step. It must reach `pushed` within MERGE_MAX_HEAD_UPDATES
+    steps. A fact about GitHub, never about the tenant-writable task
+    document, so a lost attempt's update is re-derived here and a forged
+    count changes nothing. Anything else is `head_moved`. `proven` caches
+    `_merge_impurity` by commit across the candidates `_accept` walks.
     """
+    proven = {} if proven is None else proven
     steps = 0
+    others: list[dict[str, Any]] = []
     while head != pushed:
         if steps >= MERGE_MAX_HEAD_UPDATES:
             return None
         try:
             commit = merger.commit(head)
-            if len(commit.parents) != 2 or not commit.by_github:
+            if len(commit.parents) != 2:
                 return None
             if not merger.on_base(base, commit.parents[1]):
                 return None
+            if not commit.by_github:
+                if commit.sha not in proven:
+                    proven[commit.sha] = _merge_impurity(merger, commit)
+                if proven[commit.sha] is not None:
+                    return None
+                others.append(_commit_record(commit))
         except forge_mod.ForgeAnswered as exc:
             # A commit or comparison GitHub does not have is not an update.
             if getattr(exc, "status", None) in (404, 422):
@@ -2104,7 +2615,110 @@ def _updates_onto(merger: ForgeMerger, *, head: str, pushed: str, base: str) -> 
             raise
         head = commit.parents[0]
         steps += 1
-    return steps
+    return steps, others
+
+
+def _named(record: Mapping[str, Any]) -> str:
+    """`_head_record`, as the clause a `head_moved` message ends with."""
+    if "unreadable" in record:
+        return f"; {record['sha']} could not be read ({record['unreadable']})"
+    parents = ", ".join(str(p)[:12] for p in record.get("parents") or []) or "none"
+    signed = "signed" if record.get("verified") else "unsigned"
+    return (f"; {record['sha']} was committed by {record.get('committer_email') or 'nobody named'} "
+            f"({signed}), parents {parents}: {record.get('why') or 'not taken'}")
+
+
+def _commit_record(commit: CommitFacts) -> dict[str, Any]:
+    """Who made a commit the walk read, as the step's summary records it."""
+    return {"sha": commit.sha, "parents": list(commit.parents),
+            "committer_email": commit.committer_email, "verified": commit.verified}
+
+
+def _merge_impurity(merger: ForgeMerger, commit: CommitFacts) -> str | None:
+    """None when `commit`'s tree is the clean merge of its two parents; else why not.
+
+    What auto-merge.yml's `is_pure_base_merge` asks of `git merge-tree`,
+    asked of GitHub's tree API, since the merge step has no clone. Path by
+    path over the merge base B, the first parent O and the second T (each a
+    (mode, sha), or absent): O and T agree, or one of them is B and the other
+    is taken, and the merge must carry exactly that. Then `_rename_risk`.
+
+    THIS PROOF MAY REFUSE WHAT GIT ACCEPTS, NEVER ACCEPT WHAT GIT REFUSES. So a
+    path both parents changed differently is not shown clean, even on lines
+    apart: a line merge here (difflib) aligned lines differently from git's
+    diff and took merges git conflicts on or merges to other bytes (the
+    review of FIX-MERGE-PURE-BASE-MERGE measured 107 of 1427). Nor is a tree
+    GitHub truncated. A merge not shown clean stays head_moved.
+    """
+    ours, theirs = commit.parents
+    base = merger.merge_base(ours, theirs)
+    if base is None:
+        return "its parents share no merge base"
+    tree_of: dict[str, TreeFacts] = {}
+    for name, sha in (("the merge base", base), ("its first parent", ours),
+                      ("its second parent", theirs), ("the merge", commit.sha)):
+        tree = commit.tree if sha == commit.sha else merger.commit(sha).tree
+        if tree is None:
+            return f"{name}'s tree is unreadable"
+        facts = merger.tree(tree)
+        if facts.truncated:
+            return f"GitHub truncated {name}'s tree"
+        tree_of[sha] = facts
+    b, o, t, m = (tree_of[sha].entries for sha in (base, ours, theirs, commit.sha))
+    for path in sorted(set(b) | set(o) | set(t) | set(m)):
+        at_b, at_o, at_t, at_m = b.get(path), o.get(path), t.get(path), m.get(path)
+        if at_o == at_t:
+            want = at_o
+        elif at_o == at_b:
+            want = at_t
+        elif at_t == at_b:
+            want = at_o
+        else:
+            return f"both parents change {path}"
+        if at_m != want:
+            return f"{path} is not the clean merge of its parents"
+    return _rename_risk(b, o, t)
+
+
+def _rename_risk(base: Mapping[str, Any], *sides: Mapping[str, Any]) -> str | None:
+    """Why git's rename detection might merge these trees differently from
+    the path-wise walk, or None.
+
+    The walk merges path by path; git pairs a side's deleted path with one
+    it added as a rename, and a directory a side removes entirely as a
+    directory rename. A rename on one side meets the other only through its
+    source, its target or that directory, so the trees are refused when one
+    side both deletes and adds paths (it may have renamed) and the other
+    changes or deletes a path it deleted (rename/delete, rename/rename) or
+    adds a path it added (rename/add); or when one side adds a path under a
+    directory the other removed entirely (git moves it, and merge-tree
+    reports the move as a conflict).
+    """
+    for side, other in ((sides[0], sides[1]), (sides[1], sides[0])):
+        removed = sorted(p for p in base if p not in side)
+        added = sorted(p for p in side if p not in base)
+        if removed and added:
+            for path in removed:
+                if other.get(path) != base[path]:
+                    return (f"{path} is deleted by one parent, which may have renamed it, "
+                            "and changed or deleted by the other")
+            for path in added:
+                if path in other:
+                    return (f"{path} is added by one parent, which may have renamed a file "
+                            "to it, and by the other")
+        gone = {d for p in base for d in _dirs(p)} - {d for p in side for d in _dirs(p)}
+        for path in sorted(p for p in other if p not in base):
+            for d in _dirs(path):
+                if d in gone:
+                    return (f"{path} is added in {d}/, which the other parent removes "
+                            "entirely, so git may move it as a directory rename")
+    return None
+
+
+def _dirs(path: str) -> list[str]:
+    """Every directory `path` sits under, outermost first."""
+    parts = path.split("/")
+    return ["/".join(parts[:i]) for i in range(1, len(parts))]
 
 
 def _update_branch(run: _Run, merger: ForgeMerger, *, number: int, head: str, updates: int,
@@ -2189,23 +2803,61 @@ def _update_branch(run: _Run, merger: ForgeMerger, *, number: int, head: str, up
 
 
 def _accept(merger: ForgeMerger, *, head: str, pinned: str,
-            fix_heads: list[tuple[str, str]], base: str) -> tuple[int, str | None] | None:
-    """(GitHub's base merges on top, the CI-fix round's task or None), or None.
+            fix_heads: list[tuple[str, str]], base: str,
+            proven: dict[str, str | None] | None = None
+            ) -> tuple[int, str | None, list[dict[str, Any]]] | None:
+    """(base merges on top, the CI-fix round's task or None, the record of each
+    base merge GitHub did not commit), or None.
 
     The live head is accepted when it is the pinned head or a head one of
     this workflow's CI-fix rounds pushed (`fix_heads`, newest first), itself
-    or under GitHub's own base merges (`_updates_onto`). Exact matches are
-    tried first, so the common case reads nothing more from GitHub.
+    or under clean base merges (`_updates_onto`). Exact matches are tried
+    first, so the common case reads nothing more from GitHub. `proven` caches
+    `_merge_impurity` by commit, and is shared with `_head_record`.
     """
     candidates: list[tuple[str | None, str]] = [(None, pinned), *fix_heads]
     for task_id, pushed in candidates:
         if head == pushed:
-            return 0, task_id
+            return 0, task_id, []
+    proven = {} if proven is None else proven
     for task_id, pushed in candidates:
-        updates = _updates_onto(merger, head=head, pushed=pushed, base=base)
-        if updates is not None:
-            return updates, task_id
+        walked = _updates_onto(merger, head=head, pushed=pushed, base=base, proven=proven)
+        if walked is not None:
+            return walked[0], task_id, walked[1]
     return None
+
+
+def _head_record(merger: ForgeMerger, *, head: str, pinned: str,
+                 fix_heads: list[tuple[str, str]], base: str,
+                 proven: dict[str, str | None] | None = None) -> dict[str, Any]:
+    """The commit a `head_moved` refusal names: its parents, who committed it,
+    whether it is signed, whether its first parent is an accepted head, and
+    the first reason the walk did not take it. Read best-effort: a read that
+    fails says so in `unreadable`, and the refusal stands either way.
+    `proven` is the walk's `_merge_impurity` cache, so no tree is proved twice."""
+    proven = {} if proven is None else proven
+    record: dict[str, Any] = {"sha": head}
+    try:
+        commit = merger.commit(head)
+        record.update(_commit_record(commit))
+        first = commit.parents[0] if commit.parents else None
+        accepted = first is not None and _accept(
+            merger, head=first, pinned=pinned, fix_heads=fix_heads, base=base,
+            proven=proven) is not None
+        record["first_parent_accepted"] = accepted
+        if len(commit.parents) != 2:
+            record["why"] = "it is not a two-parent merge"
+        elif not accepted:
+            record["why"] = "its first parent is not an accepted head"
+        elif not merger.on_base(base, commit.parents[1]):
+            record["why"] = f"its second parent is not on {base}"
+        elif not commit.by_github:
+            if commit.sha not in proven:
+                proven[commit.sha] = _merge_impurity(merger, commit)
+            record["why"] = proven[commit.sha] or "it is the clean merge of its parents"
+    except (forge_mod.ForgeError, ValueError) as exc:
+        record["unreadable"] = f"{type(exc).__name__}: {getattr(exc, 'status', None) or exc}"[:200]
+    return record
 
 
 # ---------------------------------------------------------------------------
@@ -2407,7 +3059,7 @@ def _rounds_asked(own: Mapping[str, Any]) -> int:
 
 def _fix_round_heads(ctx: ActionContext, own: Mapping[str, Any], opener: Mapping[str, Any],
                      target: str, unread: list[str] | None = None) -> list[tuple[str, str]]:
-    """(task, pushed head) of each CI-fix and conflict fix round of this merge, newest first.
+    """(task, pushed head) of each CI-fix, conflict fix and pick-fix round of this merge, newest first.
 
     The rounds are named by the tenant-writable `merge_fix` record, so each
     is held to facts the record cannot forge, the rule swarm-api's
@@ -2430,7 +3082,8 @@ def _fix_round_heads(ctx: ActionContext, own: Mapping[str, Any], opener: Mapping
     """
     root = _branch_task(opener, target)
     heads: list[tuple[str, str]] = []
-    entries = [*reversed(_fix_rounds(own, CONFLICT_ROUNDS_KEY)), *reversed(_fix_rounds(own))]
+    entries = [*reversed(_fix_rounds(own, CONFLICT_ROUNDS_KEY)),
+               *reversed(_fix_rounds(own, PICK_ROUNDS_KEY)), *reversed(_fix_rounds(own))]
     for entry in entries:
         task_id = _task_id(entry.get("task_id"))
         if task_id is None or task_id in (target, root, ctx.task_id):

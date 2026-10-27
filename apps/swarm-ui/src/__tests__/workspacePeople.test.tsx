@@ -139,12 +139,15 @@ describe('Settings › People and roles', () => {
     const calls = api(() => VIEWER)
     const { WorkspacePeopleScreen } = await load()
     render(<WorkspacePeopleScreen />)
-    const roster = await screen.findByRole('table', { name: /people with their own role/i })
+    const roster = await screen.findByRole('table', { name: /who holds which role in eng/i })
     const rows = visible(roster)
     expect(rows).toContain('alice@example.com')
     expect(rows).toContain('admin')
     expect(rows).toContain('dave@example.com')
     expect(rows).toContain('viewer')
+    // The caller's own row (S5b, CONFIG-PEOPLE-S5): their role, read for them too.
+    const mine = within(roster).getAllByRole('row').find((r) => visible(r).includes('carol@example.com'))
+    expect(mine && visible(mine)).toMatch(/you.*viewer/)
     // The default, and that it is the migration's, not a grant's.
     expect(visible(screen.getByLabelText('Default role'))).toMatch(/member/)
     // The caller's own role, and its source.
@@ -161,6 +164,7 @@ describe('Settings › People and roles', () => {
     expect(screen.queryByRole('button', { name: /return .* to the default/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /set default/i })).toBeNull()
     expect(screen.queryByRole('combobox')).toBeNull()
+    expect(screen.queryByRole('group', { name: 'Role' })).toBeNull()
     expect(screen.queryByRole('textbox')).toBeNull()
     expect(screen.getByText(/only this workspace.s admins change roles/i)).toBeTruthy()
     expect(calls.filter((c) => c.method !== 'GET')).toHaveLength(0)
@@ -170,10 +174,11 @@ describe('Settings › People and roles', () => {
     api(() => ADMIN)
     const { WorkspacePeopleScreen } = await load()
     render(<WorkspacePeopleScreen />)
-    await screen.findByRole('table', { name: /people with their own role/i })
+    await screen.findByRole('table', { name: /who holds which role in eng/i })
     expect(screen.getByRole('button', { name: 'Set role' })).toBeTruthy()
     expect(screen.getByRole('textbox', { name: 'Email' })).toBeTruthy()
-    expect(screen.getByRole('combobox', { name: 'Role' })).toBeTruthy()
+    // S5b's segmented control, not a <select> (CONFIG-PEOPLE-S5).
+    expect(screen.getByRole('group', { name: 'Role' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Return alice@example.com to the default' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Return dave@example.com to the default' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Set default' })).toBeTruthy()
@@ -188,8 +193,8 @@ describe('Settings › People and roles', () => {
     const offered = within(select).getAllByRole('option').map((o) => (o as HTMLOptionElement).value)
     expect(offered).toEqual(['viewer', 'member'])
     // A person's role may be any of the three.
-    const personal = screen.getByRole('combobox', { name: 'Role' })
-    expect(within(personal).getAllByRole('option').map((o) => (o as HTMLOptionElement).value)).toEqual(['viewer', 'member', 'admin'])
+    const personal = screen.getByRole('group', { name: 'Role' })
+    expect(within(personal).getAllByRole('button').map((o) => o.textContent)).toEqual(['viewer', 'member', 'admin'])
   })
 
   it("shows a personal workspace's fixed-admin line and no control", async () => {
@@ -197,7 +202,7 @@ describe('Settings › People and roles', () => {
     const { WorkspacePeopleScreen } = await load()
     render(<WorkspacePeopleScreen />)
     await screen.findByText(/^You are this workspace.s admin; a personal workspace has only you\.$/)
-    expect(screen.queryByRole('table', { name: /people with their own role/i })).toBeNull()
+    expect(screen.queryByRole('table', { name: /who holds which role/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /set role|set default|return/i })).toBeNull()
     expect(screen.queryByRole('combobox')).toBeNull()
   })
@@ -217,13 +222,13 @@ describe('Settings › People and roles', () => {
     const { WorkspacePeopleScreen } = await load()
     render(<WorkspacePeopleScreen />)
     fireEvent.change(await screen.findByRole('textbox', { name: 'Email' }), { target: { value: ' erin@example.com ' } })
-    fireEvent.change(screen.getByRole('combobox', { name: 'Role' }), { target: { value: 'viewer' } })
+    fireEvent.click(within(screen.getByRole('group', { name: 'Role' })).getByRole('button', { name: 'viewer' }))
     fireEvent.click(screen.getByRole('button', { name: 'Set role' }))
     await screen.findByText(/erin@example\.com is now viewer/i)
     const put = calls.find((c) => c.method === 'PUT')
     expect(put?.url).toBe('/v1/workspace/roles/person')
     expect(put?.body).toEqual({ email: 'erin@example.com', role: 'viewer', via: 'console' })
-    await waitFor(() => expect(visible(screen.getByRole('table', { name: /people with their own role/i }))).toContain('erin@example.com'))
+    await waitFor(() => expect(visible(screen.getByRole('table', { name: /who holds which role in eng/i }))).toContain('erin@example.com'))
   })
 
   it('returns a person to the default with a DELETE whose body names them', async () => {

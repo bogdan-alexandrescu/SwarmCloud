@@ -208,3 +208,21 @@ def _the_cdp_endpoint_answers(monkeypatch):
     from agent_worker import handoff
 
     monkeypatch.setattr(handoff, "_probe_cdp", lambda endpoint, timeout: True, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_container_budget_from_the_environment(monkeypatch):
+    """No worker test inherits the memory budget of the container it runs in (#2504).
+
+    `cliagent.run_cli_agent` reads the cgroup's `memory.max` and `cpu.max`
+    and, when the limit is known, adds a budget line to the agent's prompt.
+    A SwarmCloud container has one (8 GiB), CI's runner may not, so every
+    test that compares a prompt exactly would pass in one and fail in the
+    other. Here the limits are unknown; test_agent_env_resource_budget.py
+    overrides this fixture and patches the cgroup readers itself. A runner
+    started as a real subprocess is out of this patch's reach, so a test of
+    one sets the line aside (test_standalone_outputs.py, BUDGET_LINE_START).
+    """
+    from agent_worker.runners import cliagent
+
+    monkeypatch.setattr(cliagent, "container_limits", lambda: (None, None))

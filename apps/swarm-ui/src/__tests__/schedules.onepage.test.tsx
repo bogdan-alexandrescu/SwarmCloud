@@ -3,7 +3,7 @@
 // "why do I have schedules in Admin and also in Automate?" and chose one page
 // with an admin toggle:
 //
-//   * Automate › Schedules carries a "Mine | All tenants" switch, drawn only
+//   * Automate › Schedules carries a "Mine | All workspaces" switch, drawn only
 //     for an admin (the session's `principal.is_admin`); a non-admin never
 //     sees it, and the server still decides `GET /v1/admin/schedules`;
 //   * All tenants is the cross-tenant table (a Tenant column), the schedule
@@ -17,20 +17,19 @@
 
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 import { Routed } from './screenroute'
 import { SECTIONS, canonical, fromAddress } from '../App'
 import { addressToPath, pathToAddress } from '../paths'
 import { PANEL_PAGES } from '../Spine'
+import { holdScheduleClock, hoursFromNow } from './scheduleclock'
 
 const WAIT = { timeout: 4000 }
 
 type Json = Record<string, unknown>
 type Reply = { status: number; body: unknown } | null
-
-const hoursFromNow = (h: number) => new Date(Date.now() + h * 3_600_000).toISOString()
 
 function adminRow(id: string, over: Json = {}): Json {
   return {
@@ -95,18 +94,25 @@ const SWITCH = { name: 'Whose schedules' }
 const rowOf = (id: string) => document.querySelector<HTMLElement>(`tr[data-schedule="${id}"]`)
 const sent = (calls: { method: string; url: string }[], path: string) => calls.filter((c) => c.method === 'GET' && c.url.split('?')[0] === path)
 
+// One instant for the fixture and the page (CLOCK-ONCE).
+beforeEach(() => holdScheduleClock())
+
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllEnvs()
   vi.unstubAllGlobals()
 })
 
 describe('one Schedules page, with an admin switch', () => {
-  it('draws "Mine | All tenants" for an admin, with Mine chosen on the bare page', async () => {
+  it('draws "Mine | All workspaces" for an admin, with Mine chosen on the bare page', async () => {
     await mount(true, null)
     // MUTATION: draw the switch for nobody, or for everyone.
     const nav = await screen.findByRole('navigation', SWITCH, WAIT)
     const links = [...nav.querySelectorAll('a')]
-    expect(links.map((a) => a.textContent)).toEqual(['Mine', 'All tenants'])
+    // VQ-030: BGD on #2157 (2026-10-23) kept the "All workspaces" switch; the
+    // console says workspace, never tenant, in its words and its titles.
+    expect(links.map((a) => a.textContent)).toEqual(['Mine', 'All workspaces'])
+    for (const a of links) expect(a.getAttribute('title') ?? '').not.toMatch(/tenant/i)
     expect(links.map((a) => a.getAttribute('href'))).toEqual(['/automate/schedules', '/automate/schedules?scope=all'])
     expect(links[0]!.getAttribute('aria-current')).toBe('page')
   })
@@ -141,7 +147,7 @@ describe('one Schedules page, with an admin switch', () => {
     const nav = screen.getByRole('navigation', SWITCH)
     expect([...nav.querySelectorAll('a')][1]!.getAttribute('aria-current')).toBe('page')
     expect(document.querySelector('th[data-col="tenant"]')).not.toBeNull()
-    expect(visible(rowOf('sch_b')!.querySelector('td[data-label="Tenant"]'))).toBe('research')
+    expect(visible(rowOf('sch_b')!.querySelector('td[data-label="Workspace"]'))).toBe('research')
     expect(visible(screen.getByTestId('as-tick'))).toContain('60 ticks, 4 fired, 0 errors')
     expect(screen.getByRole('button', { name: /Pause all of eng’s schedules/ })).toBeTruthy()
     // The platform's own ticks are Admin › Platform counts' now, not this page's.

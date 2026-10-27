@@ -821,9 +821,9 @@ describe('U3: an edge that carries a file', () => {
   })
 
   it('makes the node tall enough for the longer dependency line it now prints', () => {
-    // Two roots, so it is not a linear chain: a chain's nodes are widened to
-    // the column (QA G3-27, `chainNodeW`), and this filename then fits on the
-    // one line the plain list uses -- which is that fix working.
+    // Two roots. A linear chain's nodes were once widened to the column (QA
+    // G3-27), which this shape kept out of; VQ-014 dropped that widening, so
+    // a chain now wraps the same way (qa.g3.workflow.test.tsx, VQ-014).
     const plain = layoutOf([step('a', []), step('c', []), step('b', ['a'])])
     const withFile = layoutOf([
       step('a', []),

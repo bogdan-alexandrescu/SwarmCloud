@@ -1564,9 +1564,19 @@ def _duration(task: dict[str, Any]) -> dict[str, Any]:
             # so this span is the LAST attempt's; `duration_s_total` is all of them.
             "duration_basis": "the last attempt's started_at to completed_at",
         }
-    seconds = (task.get("result_summary") or {}).get("duration_seconds")
+    summary = task.get("result_summary") or {}
+    seconds = summary.get("duration_seconds")
     if isinstance(seconds, (int, float)) and not isinstance(seconds, bool):
-        return {"duration_s": round(float(seconds), 1), "duration_basis": "the last attempt's runner"}
+        # An attempt that ran the agent more than once (an account swap
+        # restarts it) records `runs`, and its duration is their sum
+        # (SWAP-RUNS, #2457): said, so it is not read as one run's.
+        runs = summary.get("runs")
+        basis = (
+            f"the last attempt's {len(runs)} agent runs, summed"
+            if isinstance(runs, list) and len(runs) > 1
+            else "the last attempt's runner"
+        )
+        return {"duration_s": round(float(seconds), 1), "duration_basis": basis}
     return {"duration_s": None, "duration_basis": "not recorded"}
 
 

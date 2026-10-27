@@ -2332,7 +2332,7 @@ for sign-ins that only work on mobile.
   - `desktop` 1440×900
   - `iphone-15` 393×852 @3
   - `phone-390` 390×844 @3 (QA-KIT, 2026-10-19; amendment below)
-  - `phone-380` 380×800 @3 (PHONE-380, 2026-10-26; amendment below)
+  - `phone-380` 380×800 @3 (PHONE-380 and IMPLEMENT-RENDER, 2026-10-26; amendment below)
   - `pixel-8` 412×915 @2.625
   - `iphone-se` 375×667 @2
   - `ipad-7` 810×1080 @2
@@ -2355,6 +2355,19 @@ for sign-ins that only work on mobile.
 * **Who switches the device** is question Q13. The recommendation is the agent,
   plus the person in control. A viewer's switcher shows the current device and
   is disabled.
+
+**Amendment, 2026-10-26: `phone-380` (IMPLEMENT-RENDER, part of #2442).** BGD
+decided on 2026-10-26 that a UI lane's implement step, in any repository,
+renders its own branch in the live browser and compares each render with the
+repository's frame PNG (`swarm-handoff compare`; the lane author's half is
+[browser-qa.md §6](../browser-qa.md#6-rendering-your-own-branch-in-another-repositorys-implement-step)).
+A repository whose phone frames are drawn at 380 needs a render at 380, and no
+preset was. `phone-380` is 380×800, the size of AI Studio's phone frames (the
+PHONE-380 amendment below), with `phone-390`'s scale, mobile flags, user agent
+and client hints, so a lane changes only the size its frames were drawn at. It follows
+`phone-390` in every copy the QA-KIT amendment below lists (the gate, swarm-api's
+two restatements, the console's three label tables and its fixture), and its
+display fits in the Xvfb already started for the desktop preset.
 
 **Amendment, 2026-10-19: the QA kit (QA-KIT, part of #1649).** The owner
 decided on 2026-10-19 that a live-browser agent should be able to run a visual

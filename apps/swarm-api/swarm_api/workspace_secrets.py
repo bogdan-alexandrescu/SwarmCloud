@@ -62,6 +62,21 @@ workspace's (Q1, `_resolve_shadowing`); each other item is withheld with
 (`routes/repository_secrets.py`): `require_manager`, or a member GitHub calls
 admin of that repository, asked live (`github_repo_admin`).
 
+HOST-SCOPED SLOTS (CF-ACCESS-TOKEN, part of #2442; docs/design/workspace-
+secrets.md, "The cf-access slot"). A grant into a slot of `HOST_SCOPED_SLOTS`
+-- `cf-access`, a Cloudflare Access service token the live gate sends as two
+request headers -- carries the HOSTS it may be sent to, set by the workspace
+admin beside the slot (`set_grant(hosts=...)`): exact host names
+(`SLOT_HOST`), at most `MAX_SLOT_HOSTS`, stored sorted. Such a grant is signed
+in form "v3", which covers the list, is written only when this deployment
+has a grant key, and is released only when that attestation verifies,
+whatever `grant_attestation_required` says (`_host_grant_admitted`). The
+release answers the item with its `hosts`; the worker never writes it to a
+file and hands it to the gate, which sends it to those hosts and no other.
+Today no catalogue entry declares the slot: contract request 117 asks for it
+on `claude-code-browser`, and until it is applied a grant into it is refused
+by `check_grant` as a slot the consumer does not have.
+
 The consumer catalogue (§2.3) lives at the end of this module. Its names,
 kinds and slots are the frozen contract's (requests 80-82): profiles and their
 slots from `RUNNER_PROFILES[...].secret_slots`, tools and theirs from
@@ -102,7 +117,9 @@ from .codec import console_origin
 from .errors import ApiError, Conflict, Forbidden, NotFound, UpstreamUnavailable, ValidationFailed
 from .grant_attest import (
     ATTESTATION_FIELD,
+    FORM_HOSTS,
     FORM_REPOSITORY,
+    HOSTS_FIELD,
     REPO_ID_FIELD,
     VALID,
     GrantKeys,
@@ -194,6 +211,19 @@ STRUCTURED_FIELDS: dict[str, tuple[str, ...]] = {
 }
 #: Kinds whose value is one line: a header value cannot carry a newline.
 SINGLE_LINE = (API_KEY, BEARER_TOKEN)
+#: Slots whose grant carries the hosts its secret may be sent to (module
+#: docstring, HOST-SCOPED SLOTS). The worker restates it
+#: (`agent_worker.secretrelease.GATE_SLOTS`); a worker test holds them equal.
+HOST_SCOPED_SLOTS: tuple[str, ...] = ("cf-access",)
+#: One grant's host list: a site and its API or a staging and a production
+#: are a handful; 16 is room without being a way to list the web.
+MAX_SLOT_HOSTS = 16
+#: A listed host: a lower-case DNS name with at least one dot, no port, no IP
+#: literal, no wildcard, no scheme or path. The gate compares a request's
+#: host to it EXACTLY, so `example.com` does not cover `www.example.com`.
+#: The gate restates it (`livegate.cfaccess.HOST`); a worker test holds them equal.
+SLOT_HOST = re.compile(r"(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
 #: The store's shape check (`credentials.validate_key_material`'s bounds):
 #: under 8 bytes is not a credential; over 8 KiB is a file, not a key.
 MIN_VALUE_BYTES = 8
@@ -585,6 +615,36 @@ CONSUMERS: tuple[Consumer, ...] = _catalogue()
 CONSUMERS_BY_NAME: dict[str, Consumer] = {c.consumer: c for c in CONSUMERS}
 
 
+def slot_hosts(slot: str, hosts: Any, *, enabled: bool) -> list[str] | None:
+    """The host list a grant into `slot` stores, or a 422 that says which rule.
+
+    A host-scoped slot's ENABLED grant names 1 to MAX_SLOT_HOSTS hosts, each
+    `SLOT_HOST`; a disabled one may keep its list or name none. Every other
+    slot takes no list. The answer is sorted and without duplicates, the
+    order form "v3" signs."""
+    if slot not in HOST_SCOPED_SLOTS:
+        if hosts is not None:
+            raise ValidationFailed(
+                f"only the {', '.join(HOST_SCOPED_SLOTS)} slot carries a host list; "
+                f"the {slot} slot takes none")
+        return None
+    if hosts is None or hosts == []:
+        if enabled:
+            raise ValidationFailed(
+                f"a grant into the {slot} slot names the hosts its secret may be sent to "
+                f"(`hosts`, 1 to {MAX_SLOT_HOSTS} host names); it is sent to no other")
+        return None
+    if not isinstance(hosts, list) or len(hosts) > MAX_SLOT_HOSTS:
+        raise ValidationFailed(f"`hosts` is a list of 1 to {MAX_SLOT_HOSTS} host names")
+    bad = [h for h in hosts if not isinstance(h, str) or not SLOT_HOST.fullmatch(h)]
+    if bad:
+        raise ValidationFailed(
+            "each host is a lower-case DNS name with a dot, matched exactly: no scheme, "
+            "port, path, wildcard or IP address",
+            detail={"refused": [h if isinstance(h, str) else None for h in bad][:MAX_SLOT_HOSTS]})
+    return sorted(set(hosts))
+
+
 def check_grant(consumer: str, slot: str | None, kind: str) -> tuple[Consumer, Slot]:
     """The consumer and slot a grant names, or a 422 that says which rule."""
     entry = CONSUMERS_BY_NAME.get(consumer)
@@ -779,6 +839,12 @@ def _with_repo(fields: dict[str, Any], repo_id: str | None) -> dict[str, Any]:
     return fields if repo_id is None else {**fields, REPO_ID_FIELD: repo_id}
 
 
+def _with_hosts(fields: dict[str, Any], hosts: list[str] | None) -> dict[str, Any]:
+    """A grant (or its audit detail) with its host list when it has one. A
+    grant with none carries no `hosts` key at all, so its form is unchanged."""
+    return fields if hosts is None else {**fields, HOSTS_FIELD: list(hosts)}
+
+
 def _digest(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
@@ -824,7 +890,9 @@ def record_api(doc: Mapping[str, Any], grants: Iterable[Mapping[str, Any]]) -> d
         "grants": sorted(
             ({"consumer": g.get("consumer"), "slot": g.get("slot"),
               "enabled": bool(g.get("enabled")), "changed_at": _iso(g.get("changed_at")),
-              "changed_by": g.get("changed_by")} for g in grants),
+              "changed_by": g.get("changed_by"),
+              **({HOSTS_FIELD: list(g[HOSTS_FIELD])} if isinstance(g.get(HOSTS_FIELD), list) else {})}
+             for g in grants),
             key=lambda g: str(g["consumer"])),
     }
 
@@ -1081,7 +1149,8 @@ class WorkspaceSecrets:
     # -- grants and Q3's list ------------------------------------------------------
 
     def set_grant(self, *, tenant_id: str, name: str, consumer: str, slot: str | None,
-                  enabled: bool, by: str, repo_id: str | None = None) -> dict[str, Any]:
+                  enabled: bool, by: str, repo_id: str | None = None,
+                  hosts: list[str] | None = None) -> dict[str, Any]:
         found = self.find(tenant_id, name, repo_id)
         secret_id = found["secret_id"]
         if repo_id is not None and is_mcp_consumer(consumer):
@@ -1096,6 +1165,7 @@ class WorkspaceSecrets:
                                         str(found.get("kind")))
         else:
             _, chosen = check_grant(consumer, slot, str(found.get("kind")))
+        listed = slot_hosts(chosen.name, hosts, enabled=enabled)
         now = self._now()
         ref = self._db.collection(SECRETS_COLLECTION).document(secret_id)
         grant_ref = self._db.collection(GRANTS_COLLECTION).document(_grant_id(secret_id, consumer))
@@ -1104,15 +1174,23 @@ class WorkspaceSecrets:
             refuse(GrantKeyRequired(
                 "this deployment has no swarm-workspace-grant-key, and a repository "
                 "secret's grant is released only when signed; nothing was written"))
+        if enabled and listed is not None and not self._grants.keys.configured:
+            # A host list is honoured only under a "v3" attestation (module
+            # docstring). Never report-only, as `refuse` can be: a new slot has
+            # no earlier writes to keep working, and an unsigned list must not
+            # read as written.
+            raise UpstreamUnavailable(
+                "this deployment has no swarm-workspace-grant-key, and a host-scoped "
+                "slot's grant is released only when signed; nothing was written")
         if enabled and self._grants.required and not self._grants.keys.configured:
             raise UpstreamUnavailable(
                 "this deployment requires attested grants and has no "
                 "swarm-workspace-grant-key, so an enabled grant could never be "
                 "released; nothing was written")
-        grant = self._attested(_with_repo({
+        grant = self._attested(_with_hosts(_with_repo({
             "secret_id": secret_id, "tenant_id": tenant_id, "consumer": consumer,
             "slot": chosen.name, "enabled": enabled, "changed_at": now, "changed_by": by},
-            repo_id))
+            repo_id), listed))
 
         @firestore.transactional
         def _write(txn: Any) -> None:
@@ -1133,9 +1211,9 @@ class WorkspaceSecrets:
                     raise NotFound(f"repository {repo_id!r} not found")
             txn.set(grant_ref, grant)
             self._audit(txn, AUDIT_GRANT_ENABLED if enabled else AUDIT_GRANT_DISABLED,
-                        by=by, at=now, secret_id=secret_id, detail=_with_repo({
+                        by=by, at=now, secret_id=secret_id, detail=_with_hosts(_with_repo({
                             "tenant_id": tenant_id, "secret_id": secret_id, "name": name,
-                            "consumer": consumer, "slot": chosen.name}, repo_id))
+                            "consumer": consumer, "slot": chosen.name}, repo_id), listed))
 
         _write(self._db.transaction())
         log.info("workspace secret grant tenant=%s secret=%s consumer=%s enabled=%s",
@@ -1538,6 +1616,10 @@ RELEASE_RETENTION = timedelta(days=90)
 #: release, by name, with this reason.
 INJECT_ONLY_SLOTS: tuple[str, ...] = ("typesafe",)
 INJECT_ONLY = "inject_only"
+#: Withheld: a host-scoped item whose consumers' lists leave no host in common.
+NO_HOSTS = "no_hosts"
+#: Logged when a host-scoped grant is dropped for its list or attestation.
+HOST_GRANT_DROPPED = "host_grant_dropped"
 
 _WSEC_HEX = re.compile(r"[0-9a-f]{16}")
 _VERSION_TAIL = re.compile(r"[0-9]+")
@@ -1701,6 +1783,9 @@ class Due:
     #: Among repository items: the position of its repository in the
     #: attempt's set, so the primary repository's wins over an additional one's.
     order: int = 0
+    #: A host-scoped slot's hosts (HOST-SCOPED SLOTS), from its signed grant;
+    #: empty for every other slot.
+    hosts: tuple[str, ...] = ()
 
     @property
     def name(self) -> str:
@@ -1745,11 +1830,32 @@ def _repository_grant_admitted(grant: Mapping[str, Any], grant_id: str, bound: s
         reason = "a repository-bound grant on a record that names no repository"
     elif grant_repo != bound:
         reason = "the grant's repository is not the record's"
-    elif attested_form(grant) != FORM_REPOSITORY or grants.keys.check(grant) != VALID:
+    elif attested_form(grant) not in (FORM_REPOSITORY, FORM_HOSTS) \
+            or grants.keys.check(grant) != VALID:
+        # "v3" covers `repo_id` too, so it vouches for a binding as "v2" does.
         reason = "not attested in form v2"
     else:
         return True
     log.warning("%s grant=%r tenant=%r secret=%r: %s", REPOSITORY_GRANT_DROPPED, grant_id,
+                grant.get("tenant_id"), grant.get("secret_id"), reason)
+    return False
+
+
+def _host_grant_admitted(grant: Mapping[str, Any], grant_id: str, grants: GrantPolicy) -> bool:
+    """HOST-SCOPED SLOTS: a grant into one is honoured only with a host list
+    of the stored shape under a "v3" attestation that VERIFIES, whatever
+    `grant_attestation_required` says. No grant into one was ever written
+    unsigned, so the migration window does not apply."""
+    hosts = grant.get(HOSTS_FIELD)
+    if not (isinstance(hosts, list) and 0 < len(hosts) <= MAX_SLOT_HOSTS
+            and all(isinstance(h, str) and SLOT_HOST.fullmatch(h) for h in hosts)
+            and hosts == sorted(set(hosts))):
+        reason = "no host list of the stored shape"
+    elif attested_form(grant) != FORM_HOSTS or grants.keys.check(grant) != VALID:
+        reason = "not attested in form v3"
+    else:
+        return True
+    log.warning("%s grant=%r tenant=%r secret=%r: %s", HOST_GRANT_DROPPED, grant_id,
                 grant.get("tenant_id"), grant.get("secret_id"), reason)
     return False
 
@@ -1765,6 +1871,7 @@ def _plan(db: Any, records: Iterable[Mapping[str, Any]], consumers: tuple[str, .
             .where(filter=FieldFilter("secret_id", "==", secret_id)) \
             .where(filter=FieldFilter("enabled", "==", True))
         slots: dict[str, list[str]] = {}
+        hosts: dict[str, set[str]] = {}
         for snap in query.stream():
             grant = snap.to_dict() or {}
             if (grant.get("secret_id") != secret_id or grant.get("tenant_id") != grant_tenant
@@ -1777,14 +1884,25 @@ def _plan(db: Any, records: Iterable[Mapping[str, Any]], consumers: tuple[str, .
             if not _repository_grant_admitted(grant, snap.id, bound, grants):
                 continue
             slot = _deliverable(grant, record.get("kind"))
+            if slot in HOST_SCOPED_SLOTS:
+                if not _host_grant_admitted(grant, snap.id, grants):
+                    continue
+                # Two consumers granted one secret into the slot: it goes only
+                # where BOTH lists allow.
+                listed = set(grant[HOSTS_FIELD])
+                hosts[slot] = hosts[slot] & listed if slot in hosts else listed
             if slot is not None:
                 slots.setdefault(slot, []).append(str(grant["consumer"]))
         for slot, by in sorted(slots.items()):
             if slot in INJECT_ONLY_SLOTS:
                 plan.withheld.append((str(record.get("name")), INJECT_ONLY))
                 continue
+            if slot in HOST_SCOPED_SLOTS and not hosts.get(slot):
+                plan.withheld.append((str(record.get("name")), NO_HOSTS))
+                continue
             plan.due.append(Due(record, slot, tuple(sorted(by)), scope=scope,
-                                order=(order or {}).get(str(bound), 0)))
+                                order=(order or {}).get(str(bound), 0),
+                                hosts=tuple(sorted(hosts.get(slot, ())))))
 
 
 def _resolve_shadowing(plan: ReleasePlan) -> None:

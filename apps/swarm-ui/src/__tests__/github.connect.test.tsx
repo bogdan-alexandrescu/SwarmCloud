@@ -81,7 +81,7 @@ function routes(onboarding: () => unknown, extra: (m: string, url: string) => { 
 }
 
 describe('the card says how your tasks reach GitHub', () => {
-  it('through the tenant token: says so and offers Connect, which opens GitHub', async () => {
+  it('through the workspace token: says so and offers Connect, which opens GitHub', async () => {
     const calls = routes(
       () => TENANT,
       (m, url) =>
@@ -92,8 +92,10 @@ describe('the card says how your tasks reach GitHub', () => {
     const mod = await mount()
     const assign = vi.spyOn(mod.browser, 'assign').mockImplementation(() => {})
     const c = await card()
-    await waitFor(() => expect(c.textContent).toContain('through the tenant token'))
+    await waitFor(() => expect(c.textContent).toContain('through the workspace token'))
     expect(c.textContent).toContain('@eng-bot')
+    // TENANT-WORDING-G (#2391): the reader is told about a workspace, never a tenant.
+    expect(c.textContent).not.toMatch(/tenant/i)
     expect(within(c).queryByRole('button', { name: 'Disconnect' })).toBeNull()
     fireEvent.click(within(c).getByRole('button', { name: 'Connect GitHub' }))
     await waitFor(() => expect(assign).toHaveBeenCalledWith('https://github.com/login/oauth/authorize?client_id=Iv1.example'))
@@ -176,7 +178,7 @@ describe('Disconnect asks first', () => {
     expect(within(c).getByText('revoked at GitHub')).toBeTruthy()
     // The card and the page's token records are read again.
     await waitFor(() => expect(reads()).toBeGreaterThanOrEqual(before + 2))
-    await waitFor(() => expect(c.textContent).toContain('through the tenant token'))
+    await waitFor(() => expect(c.textContent).toContain('through the workspace token'))
   })
 })
 

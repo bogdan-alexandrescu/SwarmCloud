@@ -3,8 +3,11 @@
 Owner decisions 2026-10-14. A workspace chooses `internal-jev` (the default),
 `internal-laya` or `typesafe` (swarm-api `swarm_api.judgment`, which owns the
 setting, its audit and the console's view of it). The dispatcher reads the
-choice at dispatch -- `workspace_settings/{tenant}.judgment_backend` -- and
-turns it into what the pod carries:
+choice at dispatch -- `workspace_settings/{tenant}`'s
+`code_intelligence.judgment_backend` when that block carries one, else its
+top-level `judgment_backend`, the worker judge's precedence
+(`dispatch.pod_judge_backend`; #1334 c31) -- and turns it into what the pod
+carries:
 
   * SWARM_JEV_BACKEND, always, on a live-browser pod: the choice itself, so
     the jev wrapper can refuse an internal backend it has no URL for instead
@@ -238,8 +241,12 @@ def read_settings(db: Any, tenant_id: str, *, mac_key: str | None = None) -> dic
 
 
 def read_backend(db: Any, tenant_id: str, *, mac_key: str | None = None) -> str:
-    """The tenant's stored choice; the default when none, unknown, unreadable
-    or, with `mac_key` (`settings_mac_key`), not signed by swarm-api."""
+    """The tenant's stored TOP-LEVEL choice; the default when none, unknown,
+    unreadable or, with `mac_key` (`settings_mac_key`), not signed by swarm-api.
+
+    Not what the GKE pod reads: that is `dispatch.pod_judge_backend`, which
+    prefers `code_intelligence.judgment_backend` as the router and the worker's
+    judge do (#1334 c31)."""
     try:
         doc = read_settings(db, tenant_id, mac_key=mac_key)
     except Exception as exc:  # noqa: BLE001 - a dispatch never fails on this read

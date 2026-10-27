@@ -232,8 +232,11 @@ def test_the_plugin_moved_to_a_bridge_that_shows_images():
     manifest = json.loads(
         (Path(__file__).resolve().parents[3] / "plugin" / ".claude-plugin" / "plugin.json").read_text()
     )
-    assert manifest["version"] == "0.5.70", manifest["version"]
-    assert any("@sc-v0.5.70#" in arg for arg in manifest["mcpServers"]["swarmcloud"]["args"])
+    version = manifest["version"]
+    # At least the bump this change made; a later bump moves it on (0.5.71,
+    # PLAYWRIGHT-GATE, pins its own exact version in test_suite_gate.py).
+    assert tuple(int(part) for part in version.split(".")) >= (0, 5, 70), version
+    assert any(f"@sc-v{version}#" in arg for arg in manifest["mcpServers"]["swarmcloud"]["args"])
 
 
 def test_as_image_reads_the_image_without_the_text_read_first(swarm, world, seen):

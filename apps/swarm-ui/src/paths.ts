@@ -237,15 +237,19 @@ export const FIXED: Readonly<Record<string, string>> = {
   // docs/schedules.md §6.1 (SD1): Automate › Schedules. One schedule is
   // `/automate/schedules/<id>`, below.
   'automate/schedules': '/automate/schedules',
-  // §6.1: "Approvals is a page of its own at `/approvals`". One item is
-  // `/approvals/<id>`, below.
-  'automate/approvals': '/approvals',
+  // §6.1: Approvals is Automate's second page, at `/automate/approvals` beside
+  // `/automate/schedules` (APPROVALS-MOVE, BGD 2026-10-26, VQ-030). One item is
+  // `/automate/approvals/<id>`, below; the old `/approvals` and
+  // `/approvals/<id>` land on them (`pathToAddress`).
+  'automate/approvals': '/automate/approvals',
   submit: '/submit',
   'capacity/pools': '/capacity/pools',
   'capacity/profiles': '/capacity/pools/profiles',
   'capacity/catalogue': '/capacity/runtimes',
   'capacity/holders': '/capacity/holders',
   'capacity/accounts': '/capacity/accounts',
+  // ACCOUNT-HEALTH-PAGE (part of #2302): Capacity › Account health.
+  'capacity/account-health': '/capacity/account-health',
   'capacity/quota': '/capacity/accounts/quota',
   // NAV-FOOT (#1672): API reads, Capacity's last page. It was `/api-reads`
   // at the spine's foot; that path and `/reference` still land here.
@@ -536,14 +540,14 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
       return tab === null || tab === '' ? base : `${base}?${new URLSearchParams({ tab }).toString()}`
     }
   }
-  // One inbox item rides on the page's query as `approval=<id>`: `/approvals/<id>`,
+  // One inbox item rides on the page's query as `approval=<id>`: `/automate/approvals/<id>`,
   // keeping the inbox's kind filter as `?kind=` (AUT-15).
   if (bare === 'automate/approvals' && query !== '') {
     const q = new URLSearchParams(query)
     const id = q.get('approval')
     if (id !== null && id !== '') {
       const kind = q.get('kind')
-      const base = `/approvals/${encodeURIComponent(id)}`
+      const base = `/automate/approvals/${encodeURIComponent(id)}`
       return kind === null || kind === '' ? base : `${base}?${new URLSearchParams({ kind }).toString()}`
     }
   }
@@ -681,8 +685,12 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
     return plain(`automate/schedules?${q.toString()}`)
   }
 
-  if (seg[0] === 'approvals' && seg.length === 2 && seg[1] !== '') {
-    const q = new URLSearchParams({ approval: decodeURIComponent(seg[1]!) })
+  // One inbox item, `/automate/approvals/<id>`, and the same item at its old
+  // address, `/approvals/<id>` (APPROVALS-MOVE, VQ-030): a notification or a
+  // saved link still opens the item, the bar rewritten once by App's normalise.
+  const approvalId = seg[0] === 'automate' && seg[1] === 'approvals' && seg.length === 3 ? seg[2] : seg[0] === 'approvals' && seg.length === 2 ? seg[1] : undefined
+  if (approvalId !== undefined && approvalId !== '') {
+    const q = new URLSearchParams({ approval: decodeURIComponent(approvalId) })
     const kind = new URLSearchParams(query).get('kind')
     if (kind !== null && kind !== '') q.set('kind', kind)
     return plain(`automate/approvals?${q.toString()}`)
@@ -747,6 +755,9 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
   // every tenant's schedules are Automate › Schedules' All tenants view, and
   // its old path lands there, the bar rewritten once by App's normalise.
   if (path === '/admin/schedules') return plain('automate/schedules?scope=all')
+  // Approvals' old page (APPROVALS-MOVE, VQ-030): `/approvals` lands on
+  // `/automate/approvals`, its `?kind=` kept.
+  if (path === '/approvals') return plain(query === '' ? 'automate/approvals' : `automate/approvals?${query}`)
   // API reads' old paths, and anything under them (NAV-FOOT, #1672).
   if (OLD_API_READS_PATHS.some((old) => path === old || path.startsWith(`${old}/`))) return plain(REFERENCE_ADDRESS)
 

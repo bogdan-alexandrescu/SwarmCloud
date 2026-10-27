@@ -40,7 +40,14 @@ import pytest
 from swarm_common.models import Tenant
 from swarm_common.profiles import RUNNER_PROFILES
 
-from scheduler.dispatch import GkeJobDispatcher, GkeTarget
+from scheduler.dispatch import (
+    TYPESAFE_INJECT_ENV,
+    TYPESAFE_POD_LABEL,
+    GkeJobDispatcher,
+    GkeTarget,
+    build_router,
+    read_judge_backend,
+)
 from scheduler.judgment import (
     BACKENDS,
     DECISION_API_CLUSTER_IP,
@@ -51,6 +58,7 @@ from scheduler.judgment import (
     JEV_BACKEND_ENV,
     JUDGE_POD_LABEL,
     SETTINGS_COLLECTION,
+    TYPESAFE_BACKEND,
     jev_dispatch,
     read_backend,
 )
@@ -300,3 +308,56 @@ def test_terraforms_url_is_the_origin_built_from_the_egress_target():
 def test_the_jev_wrapper_accepts_the_same_origin():
     (stated,) = re.findall(r'^DECISION_SERVICE="([^"]+)"$', WRAPPER.read_text(), re.M)
     assert stated == INTERNAL_DECISION_ORIGIN
+
+
+# -- the pod reads the backend the router reads (#1334 c31) ------------------------
+
+@pytest.mark.parametrize("doc", [
+    pytest.param({"code_intelligence": {"judgment_backend": "typesafe"},
+                  "judgment_backend": "internal-jev"}, id="nested-typesafe-top-internal"),
+    pytest.param({"code_intelligence": {"judgment_backend": "internal-laya"},
+                  "judgment_backend": "typesafe"}, id="nested-internal-top-typesafe"),
+    pytest.param({"code_intelligence": {"judgment_backend": "typesafe"}},
+                 id="nested-typesafe-no-top"),
+])
+def test_the_gke_pod_reads_the_backend_the_router_reads(monkeypatch, tenant, doc):
+    """`build_router` wires one reading into both halves: the router's
+    `typesafe_judge_needs_gke` and the GKE pod's SWARM_JEV_BACKEND, swarm-judge
+    and swarm-typesafe label. Read with two precedences, a workspace whose
+    `code_intelligence.judgment_backend` is typesafe was routed to GKE for a
+    TypeSafe judge and then rendered a pod that judges internally (and the
+    reverse).
+
+    MUTATION: wire GkeJobDispatcher's `judgment` back to `read_backend`
+    (top-level only) and every case fails on SWARM_JEV_BACKEND."""
+    for name in ("GKE_ENDPOINT", "GKE_CA_CERT_B64"):
+        monkeypatch.delenv(name, raising=False)
+    settings = scheduler_settings(
+        live_browser_sidecar=True, internal_decision_api_url=INTERNAL_DECISION_ORIGIN,
+        typesafe_forwarder_enabled=True, typesafe_forwarder_tenants=("eng",))
+    db = FakeFirestore()
+    db.docs[f"{SETTINGS_COLLECTION}/eng"] = doc
+    router_reads = read_judge_backend(db, "eng")
+    gke = build_router(settings, db=db)._gke
+    task = make_task(LIVE)
+    job = gke._manifest(task=task, lease=make_lease(task), profile=RUNNER_PROFILES[LIVE],
+                        tenant=tenant)
+    env, labels = _worker_env(job), _pod_labels(job)
+    assert env[JEV_BACKEND_ENV] == router_reads
+    internal = router_reads != TYPESAFE_BACKEND
+    assert (labels.get(JUDGE_POD_LABEL[0]) == JUDGE_POD_LABEL[1]) is internal
+    assert (labels.get(TYPESAFE_POD_LABEL[0]) == TYPESAFE_POD_LABEL[1]) is not internal
+    assert (env.get(TYPESAFE_INJECT_ENV[0]) == TYPESAFE_INJECT_ENV[1]) is not internal
+
+
+def test_an_unreadable_document_is_the_default_on_the_pod(monkeypatch, tenant):
+    """`read_judge_backend` says None for an unreadable document (the router
+    fails closed on it); the pod renders the default, as before."""
+    class Broken:
+        def collection(self, name):
+            raise RuntimeError("firestore down")
+
+    for name in ("GKE_ENDPOINT", "GKE_CA_CERT_B64"):
+        monkeypatch.delenv(name, raising=False)
+    gke = build_router(scheduler_settings(live_browser_sidecar=True), db=Broken())._gke
+    assert gke._judgment("eng") == DEFAULT_BACKEND

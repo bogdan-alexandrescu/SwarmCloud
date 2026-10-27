@@ -138,8 +138,9 @@ export const LIVE_AGENTS_POLL_MS = 30_000
  * the first read answers, and after a failed one -- prev and next then wait,
  * rather than walk a list nobody read.
  */
-function useLiveAgents(enabled: boolean): LiveAgentRef[] | null {
+function useLiveAgents(enabled: boolean): { agents: LiveAgentRef[] | null; failed: boolean } {
   const [agents, setAgents] = useState<LiveAgentRef[] | null>(null)
+  const [failed, setFailed] = useState(false)
   useEffect(() => {
     if (!enabled) return
     let live = true
@@ -148,8 +149,12 @@ function useLiveAgents(enabled: boolean): LiveAgentRef[] | null {
       if (!live) return
       if (r.status === 'ok' || r.status === 'stale') {
         setAgents(liveBrowserRows(r.data.tasks).map((t) => ({ taskId: t.id, label: agentName(t), needsYou: needsYou(t) })))
+        setFailed(false)
       } else if (r.status === 'empty') {
         setAgents([])
+        setFailed(false)
+      } else {
+        setFailed(true)
       }
     }
     void tick()
@@ -159,7 +164,7 @@ function useLiveAgents(enabled: boolean): LiveAgentRef[] | null {
       clearInterval(id)
     }
   }, [enabled])
-  return agents
+  return { agents, failed }
 }
 
 /**
@@ -183,6 +188,7 @@ export const DEVICE_CHIPS: ReadonlyArray<readonly [string, string]> = [
   ['desktop', 'Desktop'],
   ['iphone-15', 'iPhone 15'],
   ['phone-390', 'Phone 390'],
+  ['phone-380', 'Phone 380'],
   ['pixel-8', 'Pixel 8'],
   ['iphone-se', 'iPhone SE'],
   ['ipad-7', 'iPad'],
@@ -197,7 +203,7 @@ type Outline = 'desktop' | 'phone' | 'tablet' | 'unknown'
 function outlineOf(preset: string | null | undefined): Outline {
   if (preset === 'desktop') return 'desktop'
   if (preset === 'ipad-7') return 'tablet'
-  if (preset === 'iphone-15' || preset === 'phone-390' || preset === 'pixel-8' || preset === 'iphone-se') return 'phone'
+  if (preset === 'iphone-15' || preset === 'phone-390' || preset === 'phone-380' || preset === 'pixel-8' || preset === 'iphone-se') return 'phone'
   return 'unknown'
 }
 
@@ -426,7 +432,12 @@ export function TheaterHost({ session, initiallyOpen = false, children, ...slots
   const [open, setOpen] = useState(initiallyOpen)
   const selfRead = slots.agents === undefined
   const loaded = useLiveAgents(open && selfRead)
-  const agents = selfRead ? loaded ?? [] : slots.agents
+  // NOT READ YET IS NOT NONE (BT-008, #2423): this was `loaded ?? []`, so the
+  // theater said "No other live browser agent." for the seconds before the
+  // first read answered, while four were running. The theater is handed the
+  // null and says it is reading.
+  const agents = selfRead ? loaded.agents : slots.agents
+  const agentsFailed = selfRead && loaded.failed
   const onNavigate = useMemo(
     () => slots.onNavigate ?? ((taskId: string) => openTheaterOf(taskId, !selfRead)),
     [slots.onNavigate, selfRead],
@@ -488,7 +499,7 @@ export function TheaterHost({ session, initiallyOpen = false, children, ...slots
       <div ref={hostRef} className="th-host">
         {children}
       </div>
-      {open ? <Theater session={session} onClose={close} {...slots} agents={agents} onNavigate={onNavigate} /> : null}
+      {open ? <Theater session={session} onClose={close} {...slots} agents={agents} agentsFailed={agentsFailed} onNavigate={onNavigate} /> : null}
     </TheaterContext.Provider>
   )
 }
@@ -528,12 +539,20 @@ function focusables(root: HTMLElement): HTMLElement[] {
   return [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => el.closest('[hidden]') === null)
 }
 
-export interface TheaterProps extends TheaterSlots {
+export interface TheaterProps extends Omit<TheaterSlots, 'agents'> {
   session: TheaterSession
   onClose: () => void
+  /**
+   * The live browser agents, ordered here; `null` while the host's own read
+   * has not answered yet (BT-008): OTHER LIVE then says it is reading, never
+   * that there is none.
+   */
+  agents?: readonly LiveAgentRef[] | null
+  /** The host's last read of the live agents failed; with `agents` null nothing was ever read. */
+  agentsFailed?: boolean
 }
 
-export function Theater({ session, onClose, agents, onNavigate, logs, device, control, take, strip, handoff }: TheaterProps) {
+export function Theater({ session, onClose, agents, agentsFailed = false, onNavigate, logs, device, control, take, strip, handoff }: TheaterProps) {
   const rootRef = useRef<HTMLDivElement>(null)
   const stageRef = useRef<HTMLDivElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -733,6 +752,7 @@ export function Theater({ session, onClose, agents, onNavigate, logs, device, co
   }, [listed, session.taskId, session.label, handoff])
   const { prev, next } = neighbours(ordered, session.taskId)
   const others = ordered.filter((a) => a.taskId !== session.taskId)
+  const unread = agents === null
   // "LIVE <agent name>" (LB-V2, visual QA pass 5 read "LIVE task_…"): the
   // tab passes no label, and the self-read list answers after the first paint
   // (or not at all, past its page), so the name the split recorded when it
@@ -821,7 +841,7 @@ export function Theater({ session, onClose, agents, onNavigate, logs, device, co
           type="button"
           className="ctl-btn"
           disabled={!prev || !onNavigate}
-          title={prev ? prev.label : 'No live agent before this one'}
+          title={prev ? prev.label : unread ? 'Reading the live browser agents' : 'No live agent before this one'}
           onClick={() => prev && onNavigate?.(prev.taskId)}
         >
           ‹ prev agent
@@ -830,7 +850,7 @@ export function Theater({ session, onClose, agents, onNavigate, logs, device, co
           type="button"
           className="ctl-btn"
           disabled={!next || !onNavigate}
-          title={next ? next.label : 'No live agent after this one'}
+          title={next ? next.label : unread ? 'Reading the live browser agents' : 'No live agent after this one'}
           onClick={() => next && onNavigate?.(next.taskId)}
         >
           next ›
@@ -965,6 +985,12 @@ export function Theater({ session, onClose, agents, onNavigate, logs, device, co
                 </li>
               ))}
             </ul>
+          ) : unread ? (
+            <p className="th-note" role="status">
+              {agentsFailed
+                ? `The live browser agents could not be read; reading again every ${LIVE_AGENTS_POLL_MS / 1000} s.`
+                : 'Reading the live browser agents…'}
+            </p>
           ) : (
             <p className="th-note">No other live browser agent.</p>
           )}

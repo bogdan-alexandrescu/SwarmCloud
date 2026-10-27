@@ -42,6 +42,18 @@
 # again. Now application.yml builds once per commit on main and records the
 # digests, and this workflow waits for that job and promotes what it built.
 #
+# ONLY THE NEWEST COMMIT IS RELEASED (owner decision, BGD, 2026-10-26, #2438:
+# "Release only the newest"; docs/ci.md). From 2026-10-25 23:32Z to past
+# 08:00Z nothing deployed: every merge queued a full application run on the
+# GitHub-hosted runners, and every release timed out after 2700s waiting for
+# its own commit's build behind 27-78 queued runs. Now a push to main cancels
+# main's older application run, this workflow runs on every push to main, and
+# a release whose commit main has moved past -- before its images are found,
+# or because the newer push cancelled its commit's build -- ends GREEN,
+# superseded, and promotes nothing: the newer commit's release ships its
+# change. A release that has reached `approval` is never stopped by a newer
+# push (the `concurrency:` below).
+#
 # Two properties this workflow exists to guarantee:
 #
 #   1. Everything deployed is an immutable sha256 DIGEST that was built from a
@@ -109,20 +121,18 @@ name: release
 run-name: ${{ github.event_name == 'workflow_dispatch' && format('release {0} {1}', inputs.environment, github.ref_name) || '' }}
 
 on:
+  # EVERY PUSH TO MAIN, WITH NO PATH FILTER (2026-10-26, #2438). The filter
+  # (apps/, images/, terraform/, kubernetes/, scripts/, .trivyignore.yaml and
+  # this workflow) went when main's application runs started cancelling each
+  # other: a docs- or tests-only push cancels the previous commit's build, so
+  # it must start the release that ships that commit's change, or the change
+  # waits for the next push that touches a release path -- the 2026-09-24
+  # stranding (docs/ci.md). A release whose tree changed nothing deployable
+  # promotes the same digests (CI re-tags every unchanged image) and plans no
+  # change. GitHub keeps one pending run per group, so a burst of merges
+  # costs one release in progress and one pending, not one each.
   push:
     branches: [main]
-    paths:
-      - "apps/**"
-      - "images/**"
-      - "terraform/**"
-      - "kubernetes/**"
-      - "scripts/**"
-      # The image scan's accept-list decides what promotes, so changing it is
-      # a release: on 2026-10-17 PR 1497 accepted the CVE every release had
-      # been refused on, and no release ran until one was dispatched by hand.
-      - ".trivyignore.yaml"
-      - ".github/workflows/release.yml"
-      - ".github/actions/release-*/**"
   workflow_dispatch:
     inputs:
       environment:
@@ -147,6 +157,16 @@ permissions:
 concurrency:
   # Never two releases to the same environment at once: they would contend for
   # the Terraform state lock and could interleave two different digests.
+  #
+  # A PENDING RELEASE IS SUPERSEDED BY THE NEXT ONE; A RUNNING ONE IS NEVER
+  # CANCELLED (2026-10-26, #2438). GitHub keeps one pending run per group and
+  # cancels the older pending run when a newer one queues, whatever
+  # cancel-in-progress says, so only the newest push waits here. The release
+  # in progress is left to finish: once past `approval` it may be half-way
+  # through a promote, an apply or a deploy, and cancelling it there leaves
+  # the release lock to go stale and dev between two releases. Before
+  # `approval` it does not need cancelling -- `images and scan` ends it green,
+  # superseded, as soon as main has moved past its commit.
   group: release-${{ github.event.inputs.environment || 'dev' }}
   cancel-in-progress: false
 
@@ -261,10 +281,10 @@ jobs:
   # deal of code and none of it needs to write to the repository. This job is
   # the only one here holding it, and runs nothing but checkout, jq and git.
   #
-  # A bump that touches ONLY plugin/ starts no release (plugin/** is not in
-  # `on.push.paths`). It is tagged by the next release whose commit descends
-  # from it -- the tag then lands on that later commit, whose plugin.json
-  # says the same version. Until then application.yml's shell job warns.
+  # A release a newer commit superseded tags nothing: it holds no proof of
+  # its commit (it may never have found CI's record), and the newer release
+  # tags the same version on the commit it ships. Until then
+  # application.yml's shell job warns.
   # -------------------------------------------------------------------------
   plugin-tag:
     name: tag the plugin's bridge (sc-v<version>)
@@ -275,7 +295,7 @@ jobs:
     # record for this SHA, which application.yml writes only after its unit
     # tests, shellcheck and manifests passed. `!cancelled()` only so the job
     # can run past that skip; each branch still demands a success.
-    if: ${{ !cancelled() && (needs.verify.result == 'success' || (github.event_name == 'push' && needs.verify.result == 'skipped' && needs.build.result == 'success')) }}
+    if: ${{ !cancelled() && (needs.verify.result == 'success' || (github.event_name == 'push' && needs.verify.result == 'skipped' && needs.build.result == 'success' && needs.build.outputs.superseded != 'true')) }}
     # MAIN ONLY, said on each STEP rather than on the job. A job-level
     # `github.ref` is outside what tests/unit/scripts/test_release_prod_gate.py
     # can evaluate (its release contexts carry no ref), and a job-level `if:`
@@ -364,6 +384,22 @@ jobs:
   # It MOVES NOTHING: it runs before the approval, so everything it does is
   # read-only toward the environment. The promotion is the `promote` job,
   # after the approval.
+  #
+  # ON A PUSH IT ALSO DECIDES WHETHER THIS RELEASE IS STILL THE NEWEST
+  # (2026-10-26, #2438; see the header). Main has moved past this commit when
+  # GitHub's compare of this commit with main says `ahead`. Then this release
+  # is SUPERSEDED: it ends green, says so in the summary, outputs
+  # superseded=true, and `approval` -- so promote, apply and deploy -- and
+  # the plugin tag do not run. It is asked twice: before the wait, so a
+  # release that starts behind main never waits at all, and after it,
+  # because a newer push cancels this commit's application run (its
+  # `concurrency:`) and the wait then ends "never built". That failure is
+  # read as superseded only when main has moved on AND application's push
+  # run for this commit was cancelled without its `build images` job
+  # succeeding or failing; any other failure stays red. An unreadable API is
+  # never "superseded": the release proceeds, or fails, as it did before.
+  # A dispatch is never superseded -- it ships main's head by construction.
+  # tests/unit/scripts/test_release_newest_only.py runs both steps.
   # -------------------------------------------------------------------------
   build:
     name: images and scan (${{ github.event.inputs.environment || 'dev' }})
@@ -381,6 +417,7 @@ jobs:
       actions: read
     outputs:
       tag: ${{ steps.stage.outputs.tag }}
+      superseded: ${{ steps.newest.outputs.superseded == 'true' || steps.after.outputs.superseded == 'true' }}
     env:
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -388,16 +425,45 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: is this commit still main's newest?
+        id: newest
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # `ahead`: main holds this commit and more. `identical`, anything
+          # else, or an unreadable API: release this commit as before.
+          status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${GITHUB_SHA}...main" --jq '.status' 2>/dev/null)" || status=""
+          if [ "${status}" = ahead ]; then
+            echo "::notice title=Superseded::main has moved past ${GITHUB_SHA}; the newer commit's release ships this one's change, so this release promotes, applies and deploys nothing."
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Superseded: main has moved past this commit"
+              echo
+              echo "Commit \`${GITHUB_SHA}\` is no longer main's newest. The release of the newer commit ships this one's change; this run promoted, applied and deployed nothing."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            [ -n "${status}" ] || echo "::warning::could not compare ${GITHUB_SHA} with main; releasing this commit"
+            echo "superseded=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - id: auth
+        if: steps.newest.outputs.superseded != 'true'
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOY_SA }}
 
       - uses: google-github-actions/setup-gcloud@v3
+        if: steps.newest.outputs.superseded != 'true'
 
       - name: the images CI built for this commit, scanned (nothing is promoted yet)
         id: stage
+        if: steps.newest.outputs.superseded != 'true'
+        # On a push a failure here is judged by the next step, which fails
+        # the job unless a newer commit superseded this one.
+        continue-on-error: ${{ github.event_name == 'push' }}
         # .github/actions/release-images, shared with hotfix.yml: the record
         # application.yml built for this commit (`--reuse-ci`: NO SECOND
         # CLOUD BUILD ON A PUSH -- `only`; dispatched by hand, `or-build`),
@@ -409,6 +475,52 @@ jobs:
           environment: ${{ env.ENVIRONMENT }}
           lane: release
           reuse_ci: ${{ github.event_name == 'workflow_dispatch' && 'or-build' || 'only' }}
+
+      - name: superseded while it waited?
+        id: after
+        if: github.event_name == 'push' && steps.newest.outputs.superseded != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGE: ${{ steps.stage.outcome }}
+        run: |
+          set -euo pipefail
+          superseded() {
+            echo "::notice title=Superseded::$1"
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Superseded: main has moved past this commit"
+              echo
+              echo "$1"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          }
+          status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${GITHUB_SHA}...main" --jq '.status' 2>/dev/null)" || status=""
+          if [ "${STAGE}" = success ]; then
+            if [ "${status}" = ahead ]; then
+              superseded "Commit \`${GITHUB_SHA}\` was built and scanned, but main moved past it meanwhile. The newer commit's release ships its change; this run promoted, applied and deployed nothing."
+            fi
+            echo "superseded=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The stage failed. Superseded only when main has moved on AND the
+          # newer push cancelled this commit's build: its application push
+          # run concluded `cancelled` and `build images` neither succeeded nor
+          # failed in it.
+          if [ "${status}" = ahead ]; then
+            run="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/application.yml/runs?head_sha=${GITHUB_SHA}&branch=main&event=push&per_page=1" \
+              --jq '.workflow_runs[0] // {} | "\(.id // "") \(.conclusion // "")"' 2>/dev/null)" || run=""
+            run_id="${run%% *}"
+            if [ -n "${run_id}" ] && [ "${run#* }" = cancelled ]; then
+              build="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?per_page=100" \
+                --jq '[.jobs[] | select(.name == "build images")][0].conclusion // "none"' 2>/dev/null)" || build=""
+              case "${build}" in
+                cancelled|skipped|none)
+                  superseded "A newer push to main cancelled application run ${run_id}, the build of \`${GITHUB_SHA}\`, before it built. The newer commit's build includes this commit's change and its release ships it; this run promoted, applied and deployed nothing." ;;
+              esac
+            fi
+          fi
+          echo "::error title=images and scan failed::the images stage failed for ${GITHUB_SHA} (its error is above) and no newer commit superseded it, so this release ships nothing"
+          exit 1
 
   # -------------------------------------------------------------------------
   # THE APPROVAL. The only job in this workflow that names prod or dev, so
@@ -430,7 +542,8 @@ jobs:
     # !cancelled(), not always(): it runs past a `build` that skip_build
     # skipped, and a cancelled run asks nobody to approve anything.
     # `verify` succeeded, or a push skipped it (see its header).
-    if: ${{ !cancelled() && (needs.verify.result == 'success' || (needs.verify.result == 'skipped' && github.event_name == 'push')) && (needs.build.result == 'success' || (needs.build.result == 'skipped' && github.event.inputs.skip_build == 'true')) }}
+    # Never for a release a newer commit superseded (`build`'s header).
+    if: ${{ !cancelled() && (needs.verify.result == 'success' || (needs.verify.result == 'skipped' && github.event_name == 'push')) && (needs.build.result == 'success' || (needs.build.result == 'skipped' && github.event.inputs.skip_build == 'true')) && needs.build.outputs.superseded != 'true' }}
     environment: ${{ github.event.inputs.environment || 'dev' }}
     # THE ATTEMPT THIS APPROVAL CLEARED. A partial re-run keeps this job, and
     # this output with it, from the attempt it ran in; every prod job after

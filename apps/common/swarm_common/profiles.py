@@ -1147,6 +1147,18 @@ _FILES_SLOT = SecretSlot(
           "the manifest at $SWARM_SECRETS_MANIFEST; never in the environment",
 )
 
+#: CONTRACT REQUEST 117, accepted by BGD 2026-10-26 (CF-ACCESS-TOKEN, #2442):
+#: a Cloudflare Access service token, declared on `claude-code-browser` only.
+#: Optional: a step whose workspace granted none starts and reaches the site
+#: signed out.
+_CF_ACCESS_SLOT = SecretSlot(
+    kinds=("oauth_client",),
+    means="a Cloudflare Access service token ({client_id, client_secret}); the live "
+          "gate sends it as CF-Access-Client-Id and CF-Access-Client-Secret to the "
+          "hosts its grant lists and to no other; never a file, never in the "
+          "agent's environment",
+)
+
 
 @dataclass(frozen=True)
 class RunnerProfile:
@@ -2095,7 +2107,8 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         inputs=_CLAUDE_CODE_BROWSER_INPUTS,
         # Contract request 71 (LB-D): the one live-browser profile.
         live_browser=True,
-        secret_slots={"files": _FILES_SLOT},   # contract request 80
+        # Contract requests 80 and 117.
+        secret_slots={"files": _FILES_SLOT, "cf-access": _CF_ACCESS_SLOT},
         # Contract request 101 (owner's Q3): claude-code's classes and default.
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",

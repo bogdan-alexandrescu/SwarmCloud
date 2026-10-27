@@ -147,8 +147,19 @@ function Split() {
 }
 
 const toolbar = () => screen.getByRole('toolbar', { name: 'Browser view' })
-const chip = (name: string) => within(within(toolbar()).getByRole('group', { name: 'Device' })).getByRole('button', { name })
-const rotate = () => within(toolbar()).getByRole('button', { name: '⟲ rotate' })
+/** The toolbar's Device menu (BT-003), opened if it is not: the chips, rotate and touch are in it. */
+const openDevice = () => {
+  const menu = within(toolbar()).getByRole('button', { name: /^Device:/ })
+  if (menu.getAttribute('aria-expanded') !== 'true') fireEvent.click(menu)
+}
+const chip = (name: string) => {
+  openDevice()
+  return within(within(toolbar()).getByRole('group', { name: 'Device' })).getByRole('button', { name })
+}
+const rotate = () => {
+  openDevice()
+  return within(toolbar()).getByRole('button', { name: '⟲ rotate' })
+}
 
 /** Move the clock, letting every read it starts land. */
 async function advance(ms: number): Promise<void> {

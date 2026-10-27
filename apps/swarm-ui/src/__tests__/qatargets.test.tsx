@@ -166,6 +166,19 @@ describe('QA targets: the page and who sees what', () => {
     expect(button(document, 'Register QA target')).not.toBeNull()
   })
 
+  it('an admin’s Delete is in the card head with Edit, never in the row with Run (VQ-043)', async () => {
+    live('admin')
+    await mountPage()
+    await waitFor(() => expect(button(card(APPROVED), 'Delete')).not.toBeNull(), WAIT)
+    const del = button(card(APPROVED), 'Delete')!
+    const run = button(card(APPROVED), 'Run')!
+    // MUTATION: put Delete back in the run row -> fails.
+    expect(del.closest('.c-card-h')).not.toBeNull()
+    expect(del.parentElement).toBe(button(card(APPROVED), 'Edit')!.parentElement)
+    expect(run.closest('.c-card-h')).toBeNull()
+    expect(run.parentElement!.contains(del)).toBe(false)
+  })
+
   it('a member sees Run and not Edit', async () => {
     const calls = live('member')
     await mountPage()

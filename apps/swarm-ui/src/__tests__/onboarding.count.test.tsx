@@ -125,6 +125,36 @@ describe('the setup count counts required steps only', () => {
   })
 })
 
+describe('VQ-048: Workspace setup says the count once, in the card body, and marks optional rows', () => {
+  it('draws the count as a line of the card body, never a chip in its head', async () => {
+    answer(OPTIONAL_UNDONE)
+    const { OnboardingScreen } = await load()
+    render(<OnboardingScreen />)
+    await screen.findByRole('list', { name: 'Setup steps' })
+    const line = screen.getByText('8 of 8 required done · 1 optional (Request your workspace)')
+    // MUTATION: put the count back in a `Chip` in the card's head -> fails.
+    expect(line.tagName).toBe('P')
+    expect(line.classList.contains('c-chip')).toBe(false)
+    expect(line.closest('.c-card-h')).toBeNull()
+    expect(line.parentElement?.classList.contains('ob-card')).toBe(true)
+  })
+
+  it('marks each optional step "optional" on its own row, and no required one', async () => {
+    answer(OPTIONAL_UNDONE)
+    const { OnboardingScreen } = await load()
+    render(<OnboardingScreen />)
+    await screen.findByRole('list', { name: 'Setup steps' })
+    const word = (step: string) => visible(stepEl(step).querySelector('.ob-state'))
+    // MUTATION: drop the row's optional mark -> fails.
+    expect(word('workspace')).toBe('to do · optional')
+    // A null `required` is required (`stepRequired`), so it carries no mark.
+    expect(word('claude_account')).toBe('done')
+    expect(word('signed_in')).toBe('done')
+    const marked = [...document.querySelectorAll<HTMLElement>('li.ob-step')].filter((li) => visible(li.querySelector('.ob-state')).includes('optional'))
+    expect(marked.map((li) => li.dataset.step)).toEqual(['workspace'])
+  })
+})
+
 describe('an incomplete probe shows its error with its age', () => {
   it('names the error, the time it was seen, and that it is re-checked hourly', async () => {
     const at = new Date(2026, 9, 7, 22, 55).toISOString()

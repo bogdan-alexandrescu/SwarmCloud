@@ -26,10 +26,192 @@ the "Revised 2026-10-06" section below is that design and its build plan
 one at a time, in submission order -- the section after the next.**
 **Revised 2026-10-11: a head the PR-side CI fixer pushed for the pull request
 is a fix round's, and a conflicting pull request goes to a conflict fix round
-instead of a six-hour wait for checks -- the second section below.**
+instead of a six-hour wait for checks -- the third section below.**
 **Revised 2026-10-14: a lane workflow's red or conflicting pull request runs
 bounded fix rounds by itself, two by default, re-running a flaky job before
-it spends an agent -- the first section below.**
+it spends an agent -- the second section below.**
+**Revised 2026-10-26: a merge woken by the owner's answers does not merge an
+option its branch did not build -- it starts a bounded pick-fix round that
+builds it, and compares every answered question that names `built` -- and a
+merge held on owner questions whose pull request was merged or closed
+outside the workflow finishes on its own -- the first two sections below.**
+
+## Revised 2026-10-26: a held merge whose pull request ended outside the workflow finishes (MERGE-OUTSIDE-ENDS, part of #2441)
+
+Owner decision (BGD), 2026-10-26: **a parked merge step whose pull request
+was merged or closed outside the workflow finishes on its own. It must never
+stay parked forever.**
+
+What happened. JOIN-UI-ADMIN's merge step parked PARKED `HUMAN_REQUIRED` at
+01:52Z on one owner question its review named in `verdict.needs_owner`
+(#2070). Its PR 2387 was merged by hand at 07:25Z, and the step stayed
+parked. That park is woken only by the answer that leaves no named question
+open, and the scheduler's human-wait expiry (`_expire_human_waits`) spares
+it on purpose ("Resume on answer, no expiry", 2026-10-23), so nothing would
+ever have ended it. It was cancelled by hand.
+
+The rule, in three places, each for the reason given:
+
+* **swarm-api's merge wake tick reads the hold's pull request**
+  (`mergewake.wake_owner_holds`). The scheduler holds no forge token and must
+  not, and the tick already reads CI parks every minute per tenant with the
+  tenant's own `-git` token -- so it is the place, as for CI. One indexed
+  equality query for the named tenant's PARKED `HUMAN_REQUIRED` agents, kept
+  only where `blocked_by` carries `park_phase: "owner_questions"`; at most
+  one read per `CI_READ_SECONDS`; the same quota deferral and refused-quota
+  hold; the tenant's own token, never another tenant's agent (invariant 9).
+  It reads only whether the pull request is open, closed or merged -- the
+  number the merge's signed target's opener recorded -- and never its checks.
+  Merged or closed, it writes `merge_wait.wake_requested_at` / `wake_reason`
+  (`pull_request_merged`, `pull_request_closed`) and the same mark in
+  `merge_wait.owner_hold`, beside `parked_at`, the park instant it read. All
+  in one transaction guarded on the agent still being this tenant's and still
+  parked the same way. It never moves the agent and takes no capacity
+  (invariant 1).
+* **The scheduler returns the hold to READY on that mark** (`_wake_owner_hold`,
+  reached from `_expire_human_waits`, which still never expires the hold),
+  and only on a mark whose `parked_at` is the instant the agent is parked at
+  now. A mark outlives its park on the document; without that binding a step
+  parked again on an open pull request would be woken by its old mark on
+  every drain. Promotion writes READY alone; the next attempt is admitted
+  all-or-nothing and fenced under a new generation like any other
+  (invariant 5).
+* **The woken merge step re-reads the pull request before the hold**
+  (`merge._ended_outside`), because a merged pull request needs no answers.
+  The mark is on a tenant-writable document, so it is a reason to look and
+  never a fact. Merged, by anyone: SUCCEEDED, the summary saying "merged
+  outside the workflow" with the merge commit, who merged it and when;
+  nothing is merged and no question is asked again. Closed unmerged:
+  CANCELLED (`MERGE_REFUSED`, `pull_request_closed`). Still open (a forged or
+  stale mark), not this workflow's branch, or unreadable: it parks on the
+  hold again exactly as before. An unmarked hold reads no credential, as
+  #2070 made it.
+
+A forged mark costs one early wake, whose worker reads GitHub and parks
+again. A hold whose pull request stays open is untouched: it waits for the
+answer, and never expires.
+
+## Revised 2026-10-26: a woken merge merges only the option its branch built (ANSWER-CONTENT-CHECK)
+
+Owner decision 2026-10-26, part of #2441 (finding 5). A merge step parks on
+the owner questions its review names (`verdict.needs_owner`, #2070), and an
+answer to the last of them wakes it (QUESTION-WAKE). Until this it then
+checked only THAT each question was answered (`metadata.owner_answers` holds
+its index), not WHAT was picked. On 2026-10-26 the owner picked options the
+branch had not built on three lanes -- VQ-CAPACITY ("Needs a look" where the
+pull request built "Needs action"), VQ-CONFIG-B ("Show state only on the
+card" where it kept the switches) and BROWSER-POOL-100 ("Raise
+provider_tenant" where it left it) -- and the operator cancelled each
+workflow by hand so it would not merge the opposite of the choice.
+
+**The asking agent records what its branch builds.** Each question in
+`questions.json` may carry `built`: the label of the option the branch
+implements, or `null` when the answer changes nothing it builds. The worker's
+validator (`agent_worker.questions`) takes the key, and refuses the file when
+`built` is neither null nor one of the question's labels. The sentence that
+tells an agent how to write the file (`expected_outputs.questions_line`) asks
+for it. The shape is the worker's, not the frozen contract's, so no contract
+request is needed; swarm-api serves the questions as before and does not
+read `built`.
+
+**The merge compares the pick with the build.** Once every `needs_owner`
+question is answered, the step reads the validated `questions.json` of every
+step of its workflow it depends on (`owner_questions.workflow_questions`,
+walked from its own task document, or from its signed target's review and
+opener when that cannot be read) and, for every ANSWERED question that names
+a `built` label, compares the answer's `choice` with it. Another option, or
+free text with no option, is an unbuilt pick, found before any credential is
+read. `result_summary.merge.unbuilt_picks` lists each one as `{task_id,
+step_id, question_index, question, picked, built}` (`picked` null for free
+text, with the owner's `text`). A counted `questions.json` the check cannot
+read ends `INPUTS_UNAVAILABLE`, code `owner_questions_unreadable`, as an
+unreadable upstream does.
+
+**Every answered question, not only `needs_owner` (PICK-FIX-ROUND, BGD
+2026-10-26).** A question the owner answered before the review ran goes in
+neither of the review's lists (`owner_questions.guidance`: "an answered
+question goes in neither"), so PR 2451, which compared only `needs_owner`,
+merged past a pick made then. The pick binds the merge whether or not a
+review held for it. An unanswered question the review judged need not hold
+still holds nothing: there is no pick to compare.
+
+**What passes as before.** A pick equal to `built`; `built: null`; and a
+question with no `built` key at all -- a file written before this check -- so
+a lane parked on its answers today is not stranded behind a field its agent
+was never asked for.
+
+**An unbuilt pick starts a pick-fix round (PICK-FIX-ROUND, part of #2441).**
+BGD's answer to PR 2451, 2026-10-26: "yes, a follow-up lane. The merge parks
+on `owner_pick_not_built`, and swarm-api's tick runs a round that builds the
+picked option, then merges again." Until this the step refused and the
+operator sent the lane back by hand. The workflow is a DAG fixed at
+submission, so the round is the kind the merge already has: a continuation
+on the pull request's branch that swarm-api's wake tick starts from a park
+code, as it starts CI and conflict rounds.
+
+* **The park.** The step parks CI_PENDING, code `owner_pick_fix_pending`, at
+  the opener's pushed head, with one `pending` line per unbuilt pick:
+
+      pick task_... question 0 (step implement): picked 'Needs a look', the
+      branch builds 'Needs action'; question: Which tile does a full pool show?
+
+  The line starts with the asking agent's id and the question index, which is how
+  the tick records the picks a round is sent for. A free-text answer's line
+  carries the owner's text instead of a label. No credential is read. The
+  park holds nothing (invariant 1).
+* **The tick** (`mergewake._on_pick`) reads only the pull request, never its
+  checks. Merged or closed outside the workflow, it wakes the step with
+  `pull_request_merged` / `pull_request_closed`, which `_ended_outside`
+  finishes on, as for an owner hold. Open, it claims the next round in
+  `merge_fix.pick_rounds` under the guard the CI and conflict rounds are
+  claimed under, recording `pull_head` (the head the round starts from) and
+  `picks`. Only for a pull request on the root's own branch, as the merge
+  agent's submitter while still a member, it submits a one-step **claude-code**
+  continuation (`pick_fix_continuation`, step `pick-fix`). Its brief names
+  each pick, nonce-fenced as data, and asks for `picks-built.json`. The park
+  stays the same document until the worker parks again, so a round claimed at
+  or after its `parked_at` is this park's: it is waited on, never claimed
+  twice, and its end wakes the step `fix_round_ended`. The round's record is
+  `merge_fix_round` with `kind: "pick"`, so it is a merge round to the rest
+  of swarm-api (`cifix.ROUND_KINDS`): it runs with its lane's territory, it
+  is the pull request's one live writer, and its pushed head is recorded
+  against the pull request.
+* **The report.** The round writes `$SWARM_ARTIFACTS_DIR/picks-built.json`,
+  one `{task_id, question_index, picked, builds_pick}` per pick. The merge
+  counts a pick as built only when the round's agent is this branch's round
+  (signed spec verified against the round's own workflow, signed `continues`
+  the root) and SUCCEEDED, it pushed a head other than `pull_head`, and its
+  report says `builds_pick: true` for the pick as the owner now answers it.
+  The pushed head is then a fix round's head to the merge
+  (`_fix_round_heads`), and the merge goes on to CI as before.
+* **Bounded; it never loops.** A round that did not succeed, pushed nothing
+  (changed nothing), or whose submission was refused refuses
+  `owner_pick_not_built`, end cause `MERGE_REFUSED`, with the reason. So does a
+  round that left a pick it was sent for unbuilt. A pick is never sent to a
+  second round. A pick no round was sent for (a question answered after the
+  last round) gets the next round, at most `MERGE_PICK_ROUNDS_MAX` = 2, the
+  conflict rounds' bound. Past that, it refuses. The park is on the CI clock,
+  so `MERGE_CI_MAX_SECONDS` bounds a round that never ends:
+
+      owner_pick_not_built: the owner picked an option this pull request does
+      not build: step implement question 0: picked 'Needs a look', the branch
+      builds 'Needs action'; pick fix round 1 (task_...) changed nothing: it
+      pushed no new head
+
+**Invariants.** 1: the pick park holds no lease, pool count or execution,
+and the round is an ordinary agent admitted all-or-nothing like any other.
+5: the next merge attempt is fenced under a new generation, and the round is
+fenced as any agent is. The worker accepts its head only from its signed
+spec. 9: the tick reads with the merge agent's own tenant's token, and the
+round is submitted as the merge's submitter while a member. 10: the round's
+profile is `claude-code`, chosen by the platform.
+
+**The round is a step of the lane.** Since ROLLUP-PICK-FIX (BGD,
+2026-10-26), `swarm_rollup.FIX_ROUND_STEP_RE` accepts `pick-fix:<n>` beside
+`ci-fix:<n>` and `conflict-fix:<n>`, so `_append_round_step` appends the
+round to the lane's workflow, and the rollup ranks it as it ranks the other
+rounds: a failed pick round under a merge that then SUCCEEDED leaves the
+workflow SUCCEEDED.
 
 ## Revised 2026-10-14: auto fix rounds (lane SPEED-D2)
 
@@ -89,8 +271,8 @@ defaulted to 0. What this lane changed, and why:
 * **Each round is a step of the lane's workflow.** The round is still its
   own one-step continuation workflow (it must be: it is submitted, signed and
   admitted like any other). After it is submitted the tick appends a step to
-  the merge agent's workflow -- `ci-fix:<n>` or `conflict-fix:<n>`, naming the
-  round's agent -- so `GET /v1/workflows/<id>` and the console show it beside
+  the merge agent's workflow -- `ci-fix:<n>` or `conflict-fix:<n>` (and,
+  since ROLLUP-PICK-FIX, `pick-fix:<n>`), naming the round's agent -- so `GET /v1/workflows/<id>` and the console show it beside
   implement, review, fix and merge. A caller's step id cannot hold `:`, so the
   id alone marks a step only the platform appended; the append is guarded on
   the workflow being the tenant's and holding the merge agent.

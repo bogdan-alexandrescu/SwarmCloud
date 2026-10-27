@@ -152,7 +152,7 @@ describe('holding now', () => {
     // Agent · Attempt · Since, the mock-up's table (G5-16).
     const rows = [...document.querySelectorAll('.acct-holding-now tbody tr')]
     expect(rows[0]!.querySelectorAll('td')[1]!.textContent).toBe('2')
-    expect(screen.getAllByText(/^\d\d:\d\d \(38m\)$/).length).toBe(2)
+    expect(screen.getAllByText(/^\d\d:\d\dZ \(38m\)$/).length).toBe(2)
     expect(screen.getByText('agent not recorded')).toBeTruthy()
     // NOT RECORDED IS NOT UNVERIFIED. A regression that folds the two would
     // tell the reader a worker lied when it merely did not say.

@@ -70,14 +70,17 @@ def plain_change(repo: Path) -> None:
 class FakeBroker:
     """swarm-api's `git_push_branch`, standing in for `GitTools.call`.
 
-    `refuse` raises what the relay raises for a refusal; otherwise the bundle
-    is fetched into the bare remote at the branch it names, as swarm-api's
-    `push_bundle` would push it."""
+    `refuse` raises what the relay raises for a refusal, on every call;
+    `blips` are raised one per call, in order, before the push is made (#2138).
+    Otherwise the bundle is fetched into the bare remote at the branch it
+    names, as swarm-api's `push_bundle` would push it."""
 
-    def __init__(self, remote: Path, tmp: Path, *, refuse: Exception | None = None) -> None:
+    def __init__(self, remote: Path, tmp: Path, *, refuse: Exception | None = None,
+                 blips: list[Exception] | None = None) -> None:
         self.remote = remote
         self.tmp = tmp
         self.refuse = refuse
+        self.blips = list(blips or [])
         self.calls: list[tuple[str, dict, str]] = []
         self.cfg = type("Cfg", (), {"inline_bundle_bytes": gittools.INLINE_BUNDLE_BYTES})()
 
@@ -85,6 +88,8 @@ class FakeBroker:
         self.calls.append((tool, dict(fields), request_id))
         if self.refuse is not None:
             raise self.refuse
+        if self.blips:
+            raise self.blips.pop(0)
         raw = base64.b64decode(fields["bundle"])
         assert hashlib.sha256(raw).hexdigest() == fields["bundle_sha256"]
         bundle = self.tmp / "broker.bundle"
@@ -246,6 +251,89 @@ def test_a_refused_workflow_publish_never_ends_succeeded(
     # MUTATION: return the refusal with `published: True` -> `_publish_failed` answers None.
     assert why is not None
     assert "workflow-lines.patch" in why and "workflow_scope_missing" in why
+
+
+# -- a retryable refusal is asked again, bounded (#2138) ---------------------
+
+
+def _unanswered() -> gittools.GitToolRefused:
+    """What `GitTools.call` raises for every retryable ChildApiError."""
+    return gittools.GitToolRefused(
+        "api_unavailable", "the platform did not answer; ask again", retryable=True)
+
+
+def _sleeping_into(worker_factory, slept: list[float]):
+    """`worker_factory`, its workers sleeping into `slept` instead of the clock."""
+    def factory(**kwargs):
+        worker, config, rest = worker_factory(**kwargs)
+        worker.forge_sleep = slept.append
+        return worker, config, rest
+    return factory
+
+
+def test_a_retryable_broker_refusal_is_retried_with_the_same_request_id(
+    worker_factory, monkeypatch, origin, local_urls, forge, own_pushes, tmp_path
+):
+    # task_b7b69bce7da247e0afaf: one swarm-api blip failed a finished 42-minute build.
+    broker = FakeBroker(origin, tmp_path, blips=[_unanswered()])
+    _with_broker(monkeypatch, broker)
+    slept: list[float] = []
+    _, config, out = run_attempt(_sleeping_into(worker_factory, slept), monkeypatch, origin,
+                                 task_id="t-blip", dispatch=DIRECT, edit=adds_a_workflow)
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    # MUTATION: return the retryable refusal as final -> one call, publish_failed.
+    assert len(broker.calls) == 2
+    (_, first, first_id), (_, second, second_id) = broker.calls
+    # MUTATION: mint a fresh request_id per try -> the broker sees two logical calls.
+    assert first_id == second_id
+    # MUTATION: rebuild the bundle or re-upload per try -> the fields differ.
+    assert first == second
+    assert out["published"] is True and out.get(lifecycle.PUBLISH_FAILED_FIELD) is None
+    assert out["workflow_publish"] == "broker"
+    assert refs(origin)[branch] == second["new_sha"]
+    # MUTATION: call time.sleep directly -> nothing is recorded here.
+    assert len(slept) == 1 and slept[0] > 0
+    assert own_pushes == []
+
+
+def test_a_broker_that_never_answers_is_tried_within_the_bound_then_refused(
+    worker_factory, monkeypatch, origin, local_urls, forge, own_pushes, store, tmp_path
+):
+    broker = FakeBroker(origin, tmp_path, refuse=_unanswered())
+    _with_broker(monkeypatch, broker)
+    slept: list[float] = []
+    worker, config, out = run_attempt(_sleeping_into(worker_factory, slept), monkeypatch,
+                                      origin, task_id="t-silent", dispatch=DIRECT,
+                                      edit=adds_a_workflow)
+    _assert_failed_with_patch(worker, config, out, origin, forge, store, own_pushes, tmp_path)
+    assert out["workflow_refused"]["code"] == "api_unavailable"
+    # MUTATION: retry without a count -> the call loops past forge_read_attempts.
+    assert 1 < len(broker.calls) <= config.forge_read_attempts
+    assert len({call[2] for call in broker.calls}) == 1
+    # MUTATION: a fixed wait -> the waits do not grow.
+    assert slept == sorted(slept) and len(set(slept)) == len(slept)
+    budget = min(config.max_in_worker_retry_delay_seconds, worker._remaining_seconds())
+    # MUTATION: sleep past the budget -> invariant 4's in-worker wait is exceeded.
+    assert sum(slept) <= budget and all(0 < wait <= budget for wait in slept)
+    assert len(slept) == len(broker.calls) - 1
+
+
+@pytest.mark.parametrize("answer", [
+    gittools.GitToolRefused("workflow_scope_missing", "no workflow scope"),
+    gittools.GitToolFenced(409, gittools.GIT_FENCED, "superseded", retryable=False),
+], ids=["not-retryable", "fenced"])
+def test_a_non_retryable_or_fenced_broker_answer_is_tried_once(
+    worker_factory, monkeypatch, origin, local_urls, forge, own_pushes, store, tmp_path, answer
+):
+    broker = FakeBroker(origin, tmp_path, refuse=answer)
+    _with_broker(monkeypatch, broker)
+    slept: list[float] = []
+    worker, config, out = run_attempt(_sleeping_into(worker_factory, slept), monkeypatch,
+                                      origin, task_id="t-once", dispatch=DIRECT,
+                                      edit=adds_a_workflow)
+    _assert_failed_with_patch(worker, config, out, origin, forge, store, own_pushes, tmp_path)
+    # MUTATION: retry every refusal, or a fence -> the broker is asked again (invariant 5).
+    assert len(broker.calls) == 1 and slept == []
 
 
 # -- the patch is in the manifest, and the reason is whole (#2023) -----------

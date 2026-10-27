@@ -613,7 +613,13 @@ describe('the Agents list reads the phone page at phone width (§2.5)', () => {
    * only code naming the field does. The control is the probe's own first
    * half: a direct read IS recorded, so the empty list below is a reading.
    *
-   * MUTATION: read `t.result_summary` or `t.metadata` in a list row.
+   * `metadata` is served, cut to `title` (SUMMARY-TITLE,
+   * `codec.SUMMARY_METADATA_KEYS`), so `ownTitle` may read `metadata.title`;
+   * the row's `metadata` is a proxy that answers `title` and records a read
+   * of any other key, which the summary does not serve.
+   *
+   * MUTATION: read `t.result_summary`, or a `t.metadata` key other than
+   * `title`, in a list row.
    */
   it('draws the list from summary rows without reading input, metadata or result_summary', async () => {
     fakeClock()
@@ -621,7 +627,13 @@ describe('the Agents list reads the phone page at phone width (§2.5)', () => {
     const touched: string[] = []
     const trap = (row: Task): Task => {
       const out: Record<string, unknown> = { ...row }
-      for (const key of ['input', 'input_redaction_count', 'metadata', 'metadata_redaction_count', 'result_summary', 'result_summary_redaction_count']) {
+      out.metadata = new Proxy({} as Record<string, unknown>, {
+        get: (target, key) => {
+          if (typeof key === 'string' && key !== 'title') touched.push(`${row.id}.metadata.${key}`)
+          return target[key as string]
+        },
+      })
+      for (const key of ['input', 'input_redaction_count', 'result_summary', 'result_summary_redaction_count']) {
         delete out[key]
         Object.defineProperty(out, key, {
           enumerable: false,
@@ -635,7 +647,12 @@ describe('the Agents list reads the phone page at phone width (§2.5)', () => {
     }
     const probe = trap(task('RUNNING', { id: 'task_probe00000000000000' }))
     void probe.result_summary
-    expect(touched, 'the trap does not record a read').toEqual(['task_probe00000000000000.result_summary'])
+    void probe.metadata?.title
+    void probe.metadata?.unit
+    expect(touched, 'the trap does not record a read').toEqual([
+      'task_probe00000000000000.result_summary',
+      'task_probe00000000000000.metadata.unit',
+    ])
     touched.length = 0
 
     const rows = [

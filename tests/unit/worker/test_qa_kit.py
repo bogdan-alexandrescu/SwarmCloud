@@ -86,6 +86,19 @@ def test_phone_390_is_a_preset_with_iphone_15s_mobile_flags():
         assert getattr(phone, flag) == getattr(iphone, flag), flag
 
 
+def test_phone_380_is_phone_390_at_ai_studios_frame_size():
+    """IMPLEMENT-RENDER (#2442) and PHONE-380 (#2136), BGD 2026-10-26: a
+    repository whose phone frames are drawn at 380 x 800 (AI Studio's mock-up
+    frame) renders at that size. Only the size differs from phone-390, so a
+    render at either compares with the frame drawn for it."""
+    narrow, phone = PRESETS["phone-380"], PRESETS["phone-390"]
+    assert (narrow.width, narrow.height) == (380, 800)
+    for flag in ("scale", "mobile", "touch", "user_agent", "platform", "hints_platform", "natural"):
+        assert getattr(narrow, flag) == getattr(phone, flag), flag
+    names = list(PRESETS)
+    assert names.index("phone-380") == names.index("phone-390") + 1
+
+
 # ------------------------------------------------------------- the theme, gate
 
 

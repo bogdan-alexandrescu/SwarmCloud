@@ -26,6 +26,7 @@ import type { WorkflowRead } from '../api'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 import { byIdVia } from './workflowsById'
+import { formatDateTime, notePerson, resetTimeZone, setZone } from '../timezone'
 
 const api = vi.hoisted(() => ({
   loadAttemptsPage: vi.fn(),
@@ -136,7 +137,7 @@ describe('D4: a day tick says its date', () => {
   }
 
   it('labels hours inside a day, and a midnight tick inside a day by its date', () => {
-    const midnight = new Date(2026, 9, 2, 0, 0, 0).getTime()
+    const midnight = Date.UTC(2026, 9, 2) // UTC: the zone setting's default
     const labels = axisLabels(midnight - 12 * HOUR, midnight + 11 * HOUR, 0).map((l) => l.label)
     expect(labels).toContain('Oct 2')
     expect(labels.filter((l) => /^\d\d:\d\d$/.test(l)).length).toBeGreaterThanOrEqual(2)
@@ -147,7 +148,7 @@ describe('D5: the last tick never overprints now', () => {
   it('drops a tick that sits within the now label of the right edge', () => {
     // A 24h window whose end lands 30 minutes after a 3-hour tick: the owner's
     // "18:00" 10px left of "now".
-    const until = new Date(2026, 9, 3, 18, 30, 0).getTime()
+    const until = Date.UTC(2026, 9, 3, 18, 30) // on the default zone's clock, UTC
     const ticks = axisLabels(until - DAY, until, until)
     expect(ticks.length).toBeGreaterThanOrEqual(3)
     for (const t of ticks) expect(t.pct, `${t.label} at ${t.pct.toFixed(1)}%`).toBeLessThanOrEqual(94)
@@ -193,10 +194,70 @@ describe('D37: the footer carries dates', () => {
 
 describe('D10: a stale read dims the lanes, not the open summary', () => {
   it('leaves the summary drawn inside the chart at full strength', () => {
-    document.body.innerHTML =
+    // A HOST OF ITS OWN, REMOVED AFTER (VQ-TIMELINE, 2026-10-26): written into
+    // `document.body` and left there, this `.tl` was the first one the next
+    // file in the same worker found (qa.u11b's N16 read it for the chart's
+    // and found no lane in it).
+    const host = document.createElement('div')
+    host.innerHTML =
       '<div class="tl-chart is-stale"><div class="tl"><div class="tl-row"></div><section class="tl-detail"></section></div></div>'
-    const env: CascadeEnv = { width: 1440 }
-    expect(painted(document.querySelector('.tl-row')!, 'opacity', env)).toBe('0.5')
-    expect(painted(document.querySelector('.tl-detail')!, 'opacity', env)).toBeNull()
+    document.body.appendChild(host)
+    try {
+      const env: CascadeEnv = { width: 1440 }
+      expect(painted(host.querySelector('.tl-row')!, 'opacity', env)).toBe('0.5')
+      expect(painted(host.querySelector('.tl-detail')!, 'opacity', env)).toBeNull()
+    } finally {
+      host.remove()
+    }
+  })
+})
+
+// ONE ZONE ON THE PAGE, THE PERSON'S (VQ-023; TIMEZONE-SHARED, part of #2391,
+// review of 2026-10-26): the axis followed the setting while the header's
+// window and the "times …" footnote stayed on the browser's clock, and
+// nothing said which zone the axis was in. MUTATIONS: drop the axis's
+// `.tl-zone` line, put the footnote back on `viewerZone()`, or put `clock()`
+// back on a zone-less `Intl.DateTimeFormat` -- each turns a case red.
+describe('VQ-023: the axis, the header and the footnote read one zone', () => {
+  const LA = 'America/Los_Angeles'
+  const cov = () => document.querySelector('.tl-cov')!.textContent!
+  /** "Oct 26 09:05" in `z`: the footnote's own words for an instant. */
+  const said = (t: number, z: string) => formatDateTime(t, z).split(' ').slice(0, 3).join(' ').slice(0, -3)
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    resetTimeZone()
+  })
+  afterEach(() => {
+    window.localStorage.clear()
+    resetTimeZone()
+  })
+
+  async function drawn(): Promise<{ before: number; after: number }> {
+    const before = Date.now()
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(document.querySelector('.tl-cov')).not.toBeNull())
+    return { before, after: Date.now() }
+  }
+
+  it('names the picked zone under the axis and in the footnote, and draws the window on its clock', async () => {
+    notePerson('pat@example.com')
+    setZone(LA)
+    const { before, after } = await drawn()
+    expect(document.querySelector('.tl-axis .tl-zone')!.textContent).toMatch(/^times P[DS]T$/)
+    expect(cov()).toContain(`times ${LA}`)
+    expect(cov()).not.toContain('times UTC')
+    const until = cov().match(/until ([A-Z][a-z]{2} \d{1,2} \d\d:\d\d)/)![1]
+    expect([said(before, LA), said(after, LA)]).toContain(until)
+    // The outcome strip buckets its days in the same zone.
+    expect(String(api.loadOutcomes.mock.calls[0]![0])).toContain(`tz=${encodeURIComponent(LA)}`)
+  })
+
+  it('says UTC on the axis and in the footnote when nothing is picked', async () => {
+    const { before, after } = await drawn()
+    expect(document.querySelector('.tl-axis .tl-zone')!.textContent).toBe('times UTC')
+    expect(cov()).toContain('times UTC')
+    const until = cov().match(/until ([A-Z][a-z]{2} \d{1,2} \d\d:\d\d)/)![1]
+    expect([said(before, 'UTC'), said(after, 'UTC')]).toContain(until)
   })
 })

@@ -600,6 +600,38 @@ describe("the repository page shows its own org's card", () => {
   })
 })
 
+describe("TENANT-WORDING-G: a token-backed repository's card says workspace token (#2391)", () => {
+  it('names the card and its hint for the workspace token, never the tenant token', async () => {
+    // MUTATION: put back 'tenant token' in PermCard's kindWord or TokenCard's hint.
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const perms = answer()
+    perms.repositories.push({
+      repo_id: TOKEN_REPO,
+      repo: 'example-org/example-infra',
+      credential: 'token',
+      installation_id: null as unknown as number,
+      capabilities: { ...ALL_TRUE, merge: false, ci: false },
+      blocked_by: [{ ...STATUSES, granted: null }],
+      error: null,
+    })
+    serve((m, url) => {
+      if (m !== 'GET') return null
+      if (url === `/v1/repositories/${TOKEN_REPO}`)
+        return { status: 200, body: { repository: repo({ repo_id: TOKEN_REPO, repo: 'example-infra' }), index_runs: [], used_by: [] } }
+      if (url === '/v1/forge/permissions') return { status: 200, body: perms }
+      return null
+    })
+    const { RepositoriesScreen } = await import('../Repositories')
+    render(<RepositoriesScreen view={`repo=${TOKEN_REPO}`} go={vi.fn()} />)
+    await waitFor(() => expect(cardNamed('example-org/example-infra')).toBeDefined(), WAIT)
+    const card = cardNamed('example-org/example-infra')!
+    expect(visible(card.querySelector('h3 small'))).toBe('workspace token')
+    expect(visible(card)).toContain('This repository is reached through the workspace token, not the App')
+    expect(visible(card)).not.toMatch(/tenant/i)
+  })
+})
+
 describe('visual QA VQA2-R5', () => {
   it('V231: Setup › GitHub says when it was checked once, in its head, not again in its lede', async () => {
     // MUTATION: call `checkedLine(doc)` (with the time) for the section's lede again.
@@ -616,5 +648,39 @@ describe('visual QA VQA2-R5', () => {
     const said = visible(section).match(/Checked at an unknown time/g) ?? []
     const folded = [...section.querySelectorAll('.fp-detail')].reduce((n, d) => n + (visible(d).match(/Checked at an unknown time/g) ?? []).length, 0)
     expect(said.length - folded).toBe(1)
+  })
+})
+
+// PERM-DOT (#1086; BGD 2026-10-27, "Green dot"). An accepted permission draws
+// the green dot the issue asked for, in the `--ok` token the liveness dot
+// already uses, where it drew the grey check; a gap keeps its red diamond and
+// its Review link, and a neutral row its flat bar.
+describe('PERM-DOT: an accepted permission draws a green dot, not the grey check', () => {
+  it('draws the dot on every ok row of the grants table, and no check', async () => {
+    routes(() => answer())
+    await mountSection()
+    await waitFor(() => expect(cardNamed('example-org')).toBeDefined(), WAIT)
+    const card = cardNamed('example-org')!
+    fireEvent.click(card.querySelector('button[aria-expanded]')!)
+    const rows = Array.from(card.querySelectorAll<HTMLElement>('.fp-grants tbody tr[data-ok="true"]'))
+    expect(rows.length).toBe(7)
+    for (const r of rows) {
+      const mark = r.querySelector<HTMLElement>('td.fp-mark')!
+      expect(mark.querySelector('.fp-ok-dot')).not.toBeNull()
+      expect(mark.querySelector('[data-mark="succeeded"]')).toBeNull()
+      expect(visible(mark.querySelector('.fp-sr'))).toBe('enough')
+    }
+  })
+
+  it('keeps the red mark and the Review link on a row that is not accepted', async () => {
+    routes(() => answer({ gap: true }))
+    await mountSection()
+    await waitFor(() => expect(cardNamed('example-org')?.querySelector('.fp-body')).not.toBeNull(), WAIT)
+    const card = cardNamed('example-org')!
+    const mark = card.querySelector<HTMLElement>('.fp-grants tr[data-permission="statuses"] td.fp-mark')!
+    expect(mark.querySelector('.fp-ok-dot')).toBeNull()
+    expect(mark.querySelector('[data-tone="bad"]')?.getAttribute('data-hue')).toBe('bad')
+    expect(card.querySelector('.fp-grants tr[data-permission="contents"] td.fp-mark .fp-ok-dot')).not.toBeNull()
+    expect(Array.from(card.querySelectorAll('a')).find((a) => visible(a) === 'Review on GitHub')?.getAttribute('href')).toBe(REVIEW)
   })
 })

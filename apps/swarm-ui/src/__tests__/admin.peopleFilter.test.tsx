@@ -138,7 +138,7 @@ describe('the workspace filter (S5c, S5f)', () => {
     expect(emails()).toEqual(['bob@example.com', 'fay@example.com', 'lee@example.com'])
     fireEvent.click(within(filter()).getByRole('button', { name: 'Labs' }))
     // MUTATION: narrow the rows only, keeping every column -> the heads fail.
-    expect(heads()).toEqual(['Person', 'Labs', 'Own workspace', 'Claude account', 'Ceiling', 'Last active', 'Manage'])
+    expect(heads()).toEqual(['Person', 'Platform role', 'Labs', 'Own workspace', 'Claude account', 'Ceiling', 'Last active', 'Manage'])
     // fay holds no role in Labs; bob (viewer) and lee (member) do.
     // MUTATION: count `none` as being in the workspace -> fay stays and this fails.
     expect(emails()).toEqual(['bob@example.com', 'lee@example.com'])
@@ -277,7 +277,7 @@ describe('Recent admin actions', () => {
     expect(visible(card.querySelector('.c-card-h'))).toContain('2 this week')
     fireEvent.click(toggle)
     expect(toggle.getAttribute('aria-expanded')).toBe('true')
-    expect(visible(card.querySelector('.pp-audit-list'))).toContain('approve w-3f9a2c by bob@example.com')
+    expect(visible(card.querySelector('.pp-audit-list'))).toContain('Workspace approved w-3f9a2c by bob@example.com')
   })
 })
 

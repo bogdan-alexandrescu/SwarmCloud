@@ -194,19 +194,30 @@ def test_drawing_reads_nothing_and_the_module_starts_no_timer_and_reaches_no_mod
     # `frame` takes no way to call anything: drawing cannot read.
     assert re.search(r"export function frame\(state: PaneState, view: View\): Line\[\]", model)
     for source in (model, pane):
-        for forbidden in ("$.clock.every", "$.clock.after", "$.clock.sleep", "setTimeout", "setInterval",
+        for forbidden in ("$.clock.after", "$.clock.sleep", "setTimeout", "setInterval",
                           "$.model.", "$.agent.", "$.prompt.submit", "$.tool."):
             assert forbidden not in source, f"{forbidden} would read on a timer or reach the model"  # MUTATION: a 30 s refresh timer.
-    # The one command it runs is the re-attach after the pane's Layout control
-    # saves (SC-BROWSER-FOLLOWUP, test_sc_browser_followup.py): a chat turn the
-    # person's switch asked for, never a timer's.
-    assert pane.count("$.command.run(") <= 1
-    # The only MCP calls are the click runner's and /sc layout's.
-    assert pane.count("$.mcp.call(") == 2
-    # `run` is called from a press and from the two commands that open the pane -- never at session start.
+    # THE ONE TIMER IS THE BAND'S (SC-BAND, BGD 2026-10-26: "re-reads ... every
+    # 60 s ... stop when nothing runs"): the model has none, and the module's
+    # one `$.clock.every` is `startMinute`'s, called only from `afterList`,
+    # which returns at once unless the band is on -- so the pane layout, and
+    # the rows layout, still run no timer at all (test_sc_band.py, band.test.ts).
+    assert "$.clock.every" not in model
+    assert pane.count("$.clock.every(") == 1 and pane.count("startMinute(") == 2  # MUTATION: a pane refresh timer -- 2.
+    after_list = pane[pane.index("async function afterList("):]
+    assert after_list.index("if (!state.on) return") < after_list.index("startMinute(")
+    # The commands it runs: the re-attach after the Layout control saves
+    # (SC-BROWSER-FOLLOWUP, test_sc_browser_followup.py), and the band's one
+    # turn per noticed change (`queue`).
+    assert pane.count("$.command.run(") == 2
+    # The only MCP calls are the click runner's, /sc layout's and the band's minute.
+    assert pane.count("$.mcp.call(") == 3
+    # `run` is called from a press -- the pane's and the band's -- from the two
+    # commands that open the pane, and when the band starts -- never in the
+    # session.start hook itself.
     start = pane.index("on('session.start'")
     assert "run(" not in pane[start:pane.index("})", start)]  # MUTATION: read the list when the session starts.
-    assert re.findall(r"run\(\$, ([a-z']+)\)", pane) == ["'open'", "'open'", "press"]
+    assert re.findall(r"run\(\$, ([a-z']+)\)", pane) == ["'open'", "'open'", "press", "action", "'open'"]
 
 
 def test_the_hooks_json_loads_the_pane_module_beside_the_session_start_hook():
@@ -318,7 +329,9 @@ def test_claude_plugin_validate_passes_and_lists_only_the_calls_the_pane_needs()
     assert done.returncode == 0, done.stdout + done.stderr
     calls = next(line for line in done.stdout.splitlines() if "./pane.tsx calls:" in line)
     assert "$.mcp.call" in calls
-    assert "$.clock.every" not in calls and "$.model" not in calls and "$.prompt" not in calls
+    # The band's minute is the module's one timer, reached only through startMinute (SC-BAND).
+    assert "$.clock.every (via startMinute)" in calls
+    assert "$.model" not in calls and "$.prompt" not in calls
 
 
 def test_claude_plugin_test_runs_the_pane_against_the_engine(tmp_path):
@@ -336,5 +349,6 @@ def test_claude_plugin_test_runs_the_pane_against_the_engine(tmp_path):
     done = subprocess.run([claude, "plugin", "test", str(copy)], capture_output=True, text=True, timeout=300,
                           check=False, env=env, cwd=copy)
     assert done.returncode == 0, done.stdout + done.stderr
-    # SC-BROWSER-FOLLOWUP's seven beside the four: the re-attach, and the pane at session start.
-    assert re.search(r"\b11 pass\b", done.stdout + done.stderr), done.stdout + done.stderr
+    # SC-BROWSER-FOLLOWUP's seven beside the four: the re-attach, and the pane
+    # at session start; and SC-BAND's nine in band.test.ts.
+    assert re.search(r"\b20 pass\b", done.stdout + done.stderr), done.stdout + done.stderr

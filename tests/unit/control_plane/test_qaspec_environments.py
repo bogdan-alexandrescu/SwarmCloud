@@ -97,7 +97,10 @@ def test_a_production_leg_renders_no_mutating_flow():
     steps = {step["step_id"] for step in spec["steps"]}
     # MUTATION: keep mutating flows on a production leg and this renders flow-checkout
     # (or the renderer refuses the run outright).
-    assert "flow-browse" in steps and "flow-checkout" not in steps
+    # QA-FLOWS-CAP: the read-only flow runs in the batch step `flows-1`.
+    assert "flows-1" in steps and "flow-checkout" not in steps
+    batch = next(step for step in spec["steps"] if step["step_id"] == "flows-1")
+    assert "`browse`" in batch["prompt"] and "`checkout`" not in batch["prompt"]
 
 
 def test_a_non_production_leg_on_its_own_origin_renders_its_mutating_flow():

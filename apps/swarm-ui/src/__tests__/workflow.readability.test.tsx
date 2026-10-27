@@ -305,6 +305,10 @@ describe('#110: the workflow step inspector opens next to the picked step', () =
   it('opens directly under the picked row below 1100, in the Table', async () => {
     viewport(1099)
     render(<Routed initial="wf=wf_one&tab=table" />)
+    // The page's own pick on arrival opens no card under its row (VQ-016):
+    // the reader's click on it does.
+    await waitFor(() => expect(document.querySelector('.wf-pick[data-step="fix"]')?.getAttribute('aria-pressed')).toBe('true'))
+    fireEvent.click(document.querySelector<HTMLButtonElement>('.wf-pick[data-step="fix"]')!)
     const row = await waitFor(() => {
       const r = document.querySelector<HTMLElement>('.wf-table tr[data-step="fix"]')
       expect(r?.nextElementSibling?.querySelector('.wf-inspect')).toBeTruthy()
@@ -321,6 +325,8 @@ describe('#110: the workflow step inspector opens next to the picked step', () =
   it('opens directly under the picked track below 1100, in the Timeline, across the whole grid', async () => {
     viewport(390)
     render(<Routed initial="wf=wf_one&tab=timeline" />)
+    await waitFor(() => expect(document.querySelector('.wf-pick[data-step="fix"]')?.getAttribute('aria-pressed')).toBe('true'))
+    fireEvent.click(document.querySelector<HTMLButtonElement>('.wf-pick[data-step="fix"]')!)
     const track = await waitFor(() => {
       const t = document.querySelector<HTMLElement>('.wf-tl-track[data-step="fix"]')
       expect(t?.nextElementSibling?.querySelector('.wf-inspect')).toBeTruthy()
@@ -335,6 +341,8 @@ describe('#110: the workflow step inspector opens next to the picked step', () =
   it('moves the inspector when another row is picked, and puts it down when the row is picked again', async () => {
     viewport(800)
     render(<Routed initial="wf=wf_one&tab=table" />)
+    await waitFor(() => expect(document.querySelector('.wf-pick[data-step="fix"]')?.getAttribute('aria-pressed')).toBe('true'))
+    fireEvent.click(document.querySelector<HTMLButtonElement>('.wf-pick[data-step="fix"]')!)
     await waitFor(() => expect(document.querySelector('.wf-inline-row .wf-inspect')).toBeTruthy())
     fireEvent.click(document.querySelector<HTMLButtonElement>('.wf-pick[data-step="scan"]')!)
     const scan = document.querySelector<HTMLElement>('.wf-table tr[data-step="scan"]')!
