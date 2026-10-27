@@ -2580,6 +2580,34 @@ script's own attempt cap is checked before it submits, so a pull request
 already at the cap gets the stop comment even while its lane's merge step is
 live.
 
+**A request that pushes to a pull request waits while a fix holds it**
+(#2535). The gates above read only a request that carries `metadata.ci_fix`.
+Anything else went straight through. On 2026-10-26 an `implement` step of
+wf_3bde5fa9 was admitted onto PR #2473 with `publish_to_pr`, three seconds
+after this fixer (task_b0abb81d) started on the same red head 377c3010. Both
+agents fixed the same test, the fixer pushed first, and the step's publish
+was refused `head_moved` after its agent had done the whole fix. So
+`cifix.stamp` now answers 409 `pr_fix_in_flight` to a request that pushes and
+is not itself a fix, while a live CI fix (an agent, or a claim still inside
+its two-minute grace) or a live conflict fix (pr-shepherd's, or a merge
+step's conflict round) holds that pull request. Two kinds of request meet it:
+
+* a `continues_task` continuation, against the pull request its branch's
+  agent recorded (`result_summary.git.pull_request.number`);
+* a `publish_to_pr` workflow, against that number in its repository. The
+  API reads that pull request's branch from GitHub only after `stamp`, so
+  this read goes by number, and the repository is checked on every row.
+
+The answer names the live agent, its workflow, its kind and the pull request,
+and nothing is written. Resubmit once that fix ends: its push moves the head,
+and CI runs again there. An issue run's own CI-fix round is such a
+continuation. The second step of #2535 makes it read this 409 as "wait";
+until that lands, the refused round fails its run. A merge-only request, a
+request that is itself a fix round (each has its own gate), and a branch agent
+with no recorded pull request are admitted as before. The refusal ships
+**on** (`REFUSAL_PR_FIX_IN_FLIGHT=off` turns it off). Shipped off, it would
+refuse nothing in production until terraform's `api_refusals` turned it on.
+
 ### The post-back, and the cap the API holds
 
 The script comments when it SUBMITS; it ends before the step does, and
