@@ -34,7 +34,11 @@ and while its session can still be continued, the claude-code runner
    `scripts/refresh-build-mirror.sh --check` needs gcloud and the mirror
    bucket, which this container has no credential for.
 3. On a failure, resumes the session for ONE fix turn with each failing
-   check's output, then runs the set again.
+   check's output, then runs the set again. When that fix turn itself broke
+   a check that had passed (F07, #2379: vitest failed, the fix turn cleared
+   it and broke tsc), ONE more turn with what fails now, then the set again
+   -- only with `MIN_GATE_SECONDS` of the step's budget left, the bound the
+   gate starts under. Never a third.
 4. If anything still fails, publishes anyway -- work is never dropped -- and
    writes `PR_SECTION_NAME` into the artifacts directory, which the worker
    appends to the pull request's body under "Pre-publish checks failed"
@@ -61,8 +65,12 @@ vitest, no `tsc` and no `terraform fmt`. So the check set also holds:
   applies. Blocking, with the same one fix turn as every other check.
 * `tsc`, when a TypeScript file of a package with a `tsconfig.json` changed
   (the package's `typecheck` script's arguments, with its own tsc; a Next.js
-  package's own `next typegen` first, #1856), and
-  `terraform fmt -check` over changed `.tf` files (#1217).
+  package's own `next typegen` first, #1856),
+* `node-tests`, a changed package's own `npm run test:node` when its
+  package.json declares one (#2455): its node:test `.mjs` files run nowhere
+  else before publish, and four lanes went red in CI's ui-build on one that
+  checks no source names the company (#2429, #2430, #2433, #2437), and
+* `terraform fmt -check` over changed `.tf` files (#1217).
 
 AND AN ADVISORY SECTION NO MERGE PATH READS (`ADVISORY_SECTION_NAME`, appended
 to the pull request by `lifecycle.Worker._prepublish_advisory`): test reach
@@ -115,6 +123,34 @@ address (`unreachable_services`). Anything else -- one assertion failure, one
 pass, an ImportError, a fixture bug -- stays failed. tflint is the expected case: agent-runtime-base
 installs it only with `INSTALL_TFLINT=1`, which is off because no tflint
 release passes the image promote gate (images/agent-runtime-base/Dockerfile).
+
+A CHECK GETS WHAT IS LEFT OF THE STEP WHEN IT STARTS (#2274). Each check's
+limit is `min(CHECK_TIMEOUT_SECONDS, deadline - now - CHECK_MARGIN_SECONDS)`,
+read from the clock as it starts, never one value computed for the round: with
+640 s left after the agent's end_turn, three checks each given that one 610 s
+limit ran ~1,800 s, the runner was SIGKILLed at the step's deadline, and no
+pre-publish record was written. A check the budget cannot cover (under
+`MIN_CHECK_SECONDS` left) is not started: it and every check after it are
+`skipped` for budget -- advisory, never sent to the agent to fix.
+
+ANY CHECK THE RUNNER KILLED AT ITS LIMIT IS A TIMEOUT (#2503), not only the
+guard script: graph-pytest killed at `CHECK_TIMEOUT_SECONDS` was sent to the
+agent as a failure to fix. A check whose output ends in `run_command`'s
+`[timed out after Ns]` marker is `timed_out` and left out of the fix prompt --
+unless its output shows a failure of its own before the kill
+(`failed_before_timeout`), which the agent can fix and so still reads. Only a
+timed-out GUARD run is split into parts; any other runs again as-is after a
+fix turn, under the same limit. The fix prompt names the budget left.
+
+AFTER A MERGE OF MAIN, THE BASE IS THE MERGE BASE (#1694). A fix or
+conflict-fix step clones its branch at the pre-merge head (`SWARM_CLONE_BASE`)
+and merges origin/main in; diffing from the clone base counted every file main
+had changed as the lane's (PR 1696: 59 of main's files selected 154 test
+files, and the guard script ran out of time with no test failing). When no
+pre-publish rebase moved the base and HEAD holds commits of the default branch
+the clone base lacks, the gate diffs from `git merge-base <default> HEAD`, what
+the pull request shows (`merged_main_base`); the guard script and the related
+tests take that base through their `--base`.
 
 A DECLARED SERVICE'S TESTS RUN FOR REAL (TS-GATE, #1627;
 docs/design/test-services.md §5, owner decisions of 2026-10-23 in §10). A
@@ -216,6 +252,9 @@ PR_SECTION_HEADING = "## Pre-publish checks failed"
 
 #: One fix turn and one conflict turn (owner decision 2026-10-14): a second
 #: start rarely clears what one named failure did not, and each costs a turn.
+#: The exception is a check the fix turn itself broke after it had passed
+#: (owner decision 2026-10-26, #2379 F07): that failure was never named to
+#: the agent, so it gets one more turn, and only one (`Gate._second_turn`).
 FIX_TURNS = 1
 CONFLICT_TURNS = 1
 #: Below this much of the step's budget the gate does not start: a check set
@@ -223,6 +262,15 @@ CONFLICT_TURNS = 1
 MIN_GATE_SECONDS = 120.0
 #: Any one check. changed-guards.sh holds itself under ten minutes.
 CHECK_TIMEOUT_SECONDS = 600.0
+#: Kept back from the step's deadline by every check (#2274): after the last
+#: check the gate still restores the tree, measures test reach and writes its
+#: record and sections, and the runner uploads the transcript, all before the
+#: step's SIGKILL.
+CHECK_MARGIN_SECONDS = 30.0
+#: Below this much budget left a check is not started but skipped for budget:
+#: even the quickest check (shellcheck or ruff on a few files) needs seconds to
+#: start, and one killed at its limit is only a timeout nobody can fix.
+MIN_CHECK_SECONDS = 10.0
 #: How long the runner waits for the worker to answer the rebase. The worker
 #: answers on its control poll; a fetch of a large repository is the slow case.
 REBASE_WAIT_SECONDS = 300.0
@@ -398,6 +446,37 @@ def changed_files(repo: Path, base: str, *, runner: Runner = run_command,
     return sorted(paths)
 
 
+#: Where the default branch is looked for, in order, after the pre-publish
+#: base branch: the clone's remote HEAD, then the two usual names.
+_DEFAULT_REFS = ("refs/remotes/origin/HEAD", "refs/remotes/origin/main",
+                 "refs/remotes/origin/master")
+
+
+def merged_main_base(repo: Path, base: str, *, runner: Runner = run_command,
+                     env: Mapping[str, str] | None = None) -> str | None:
+    """`git merge-base <default branch> HEAD`, when HEAD holds commits of the
+    default branch that `base` lacks -- a merge of main after the clone (#1694)
+    -- else None: `base` stands. The one place the rule lives; the guard
+    script and the related tests take its answer through `--base`."""
+    env = dict(os.environ if env is None else env)
+    named = (env.get(PREPUBLISH_BASE_ENV) or "").strip()
+    refs = ((f"refs/remotes/origin/{named}",) if named else ()) + _DEFAULT_REFS
+    for ref in refs:
+        if _git(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}",
+                runner=runner, env=env).code != 0:
+            continue
+        ran = _git(repo, "merge-base", ref, "HEAD", runner=runner, env=env)
+        merge_base = ran.output.strip()
+        if ran.code != 0 or not merge_base:
+            return None
+        # The merge base already in `base`: nothing of main came in after it.
+        if _git(repo, "merge-base", "--is-ancestor", merge_base, base,
+                runner=runner, env=env).code == 0:
+            return None
+        return merge_base
+    return None
+
+
 # ---------------------------------------------------------------------------
 # The check set
 # ---------------------------------------------------------------------------
@@ -458,6 +537,28 @@ def _simple(argv: Sequence[str]) -> Callable[[Runner, Path, Mapping[str, str], f
 def guards_timed_out(output: str) -> bool:
     """Whether a guard run's output says it ran out of time."""
     return bool(_GUARDS_TIMEOUT.search(output))
+
+
+#: `run_command`'s line when it killed a command at its limit, at the end.
+_KILLED_AT_LIMIT = re.compile(r"\[timed out after \d+s\]\s*\Z")
+#: A failure a check reported before it was killed: pytest's summary line
+#: (`FAILED`/`ERROR <test>`) or an F/E in its progress dots, vitest's `FAIL`.
+_FAILED_BEFORE = re.compile(
+    r"^\s*(?:FAILED|ERROR|FAIL)\s|^[.sxXFE]*[FE][.sxXFE]*(?:\s+\[\s*\d+%\])?\s*$"
+    r"|^\S+\.py [.sxXFE]*[FE][.sxXFE]*(?:\s+\[\s*\d+%\])?\s*$",
+    re.MULTILINE)
+
+
+def failed_before_timeout(output: str) -> bool:
+    """Whether a killed check had already reported a failure of its own:
+    one the agent can fix, so it still goes to the fix turn."""
+    return bool(_FAILED_BEFORE.search(output))
+
+
+def killed_at_limit(output: str) -> bool:
+    """Whether a check's output ends in the runner's kill at its limit, with
+    no failure of its own before it (#2503)."""
+    return bool(_KILLED_AT_LIMIT.search(output)) and not failed_before_timeout(output)
 
 
 def guards_parts(output: str) -> int:
@@ -765,6 +866,15 @@ def _package_root(repo: Path, path: str, marker: str = "package.json") -> str | 
 def _node_bin(repo: Path, package: str, tool: str) -> Path | None:
     candidate = repo / package / "node_modules" / ".bin" / tool
     return candidate if candidate.is_file() and os.access(candidate, os.X_OK) else None
+
+
+def _has_test_node(repo: Path, package: str) -> bool:
+    """Whether the package's package.json declares a `test:node` script."""
+    try:
+        scripts = json.loads((repo / package / "package.json").read_text()).get("scripts")
+    except (OSError, ValueError, AttributeError):
+        return False
+    return isinstance(scripts, dict) and bool(scripts.get("test:node"))
 
 
 def _relative(package: str, path: str) -> str:
@@ -1116,7 +1226,8 @@ def _terraform_fmt(files: Sequence[str]
 
 def graph_checks(repo: Path, files: Sequence[str], *, base: str, env: Mapping[str, str],
                  snapshot: Snapshot | None) -> list[Check]:
-    """graph-pytest, vitest, tsc and terraform-fmt for this diff (CTXQ-G)."""
+    """graph-pytest, vitest, tsc, node-tests and terraform-fmt for this diff
+    (CTXQ-G; node-tests #2455)."""
     present = [f for f in files if (repo / f).is_file()]
     checks: list[Check] = []
     tests = list(select_tests(repo, files, snapshot))[:GRAPH_TESTS_MAX]
@@ -1176,6 +1287,32 @@ def graph_checks(repo: Path, files: Sequence[str], *, base: str, env: Mapping[st
         else:
             checks.append(Check("tsc", tuple(members), f"tsc {' '.join(args)} (in {where})",
                                 run=_in_package(repo, package, binary, args)))
+
+    # A package's node:test files (`.mjs`, which the vitest selection above
+    # drops) run only through its own `test:node` script -- CI's ui-build
+    # runs it, and four lanes went red there on a company-name test the gate
+    # never ran (#2429, #2430, #2433, #2437; #2455). A deleted file counts:
+    # removing one can break a test that walks the tree.
+    node_packages: dict[str, list[str]] = {}
+    for path in files:
+        package = _package_root(repo, path)
+        if package is not None and _has_test_node(repo, package):
+            node_packages.setdefault(package, []).append(path)
+    for package, members in sorted(node_packages.items()):
+        where = package or "."
+        command = f"npm run test:node (in {where})"
+        npm = _which("npm", env)
+        if npm is None:
+            checks.append(Check("node-tests", tuple(members), command,
+                                skipped="npm is not on PATH in this image; CI runs it"))
+        elif not (repo / package / "node_modules").is_dir():
+            checks.append(Check(
+                "node-tests", tuple(members), command,
+                skipped=f"{where} has no node_modules (the gate does not run npm install); "
+                        "CI runs it"))
+        else:
+            checks.append(Check("node-tests", tuple(members), command,
+                                run=_in_package(repo, package, Path(npm), ["run", "test:node"])))
 
     tf = [f for f in present if f.endswith(_TF_SUFFIX)]
     if tf:
@@ -1497,25 +1634,42 @@ def select_checks(repo: Path, files: Sequence[str], *, base: str,
 
 def run_checks(repo: Path, checks: Sequence[Check], *, env: Mapping[str, str],
                runner: Runner = run_command, timeout: float = CHECK_TIMEOUT_SECONDS,
-               clock: Callable[[], float] = time.monotonic) -> list[Outcome]:
+               clock: Callable[[], float] = time.monotonic,
+               deadline: float | None = None) -> list[Outcome]:
+    """Run `checks` in order, each under `timeout` -- and, given `deadline`
+    (an instant on `clock`), under what is left of it when the check starts."""
     # uv's project environments live outside the clone, and go with the round (#1964).
     with tempfile.TemporaryDirectory(prefix="prepublish-uv-", dir=_outside(repo, env),
                                      ignore_cleanup_errors=True) as uv_root:
         return _run_checks(repo, checks, env=env, runner=uv_outside(runner, Path(uv_root)),
-                           timeout=timeout, clock=clock)
+                           timeout=timeout, clock=clock, deadline=deadline)
 
 
 def _run_checks(repo: Path, checks: Sequence[Check], *, env: Mapping[str, str],
-                runner: Runner, timeout: float, clock: Callable[[], float]) -> list[Outcome]:
+                runner: Runner, timeout: float, clock: Callable[[], float],
+                deadline: float | None = None) -> list[Outcome]:
     outcomes: list[Outcome] = []
+    out_of_budget: str | None = None
     for check in checks:
         if check.run is None:
             outcomes.append(Outcome(check.name, SKIPPED, 0.0, check.files, check.command,
                                     reason=check.skipped))
             continue
+        limit = timeout
+        if deadline is not None and out_of_budget is None:
+            left = deadline - clock() - CHECK_MARGIN_SECONDS
+            if left < MIN_CHECK_SECONDS:
+                out_of_budget = (f"the step's budget ran out before this check "
+                                 f"({max(0, int(left))} s left)")
+            limit = min(timeout, left)
+        if out_of_budget is not None:
+            # Once out of budget, no later check starts either (#2274).
+            outcomes.append(Outcome(check.name, SKIPPED, 0.0, check.files, check.command,
+                                    reason=out_of_budget))
+            continue
         started = clock()
         try:
-            status, output = check.run(runner, repo, env, timeout)
+            status, output = check.run(runner, repo, env, limit)
         except OSError as exc:
             status, output = ERROR, f"{type(exc).__name__}: the check could not run"
         # A check that finds at run time it cannot run (graph-pytest's
@@ -1523,8 +1677,11 @@ def _run_checks(repo: Path, checks: Sequence[Check], *, env: Mapping[str, str],
         first = next((line for line in output.strip().splitlines() if line.strip()), "")
         reason = {ERROR: first or "the check could not run",
                   SKIPPED: output.strip() or None}.get(status)
-        timed_out = (check.name == GUARDS_CHECK and status == FAILED
-                     and guards_timed_out(output))
+        # The guard script says it ran past its own limit; any check, the
+        # guard script too, may end in the runner's kill (#2503).
+        timed_out = status == FAILED and (
+            guards_timed_out(output) if check.name == GUARDS_CHECK
+            else killed_at_limit(output))
         if timed_out:
             reason = "ran out of time"
         outcomes.append(Outcome(check.name, status, clock() - started, check.files,
@@ -1755,18 +1912,41 @@ def _files_line(files: Sequence[str], cap: int = 20) -> str:
 
 
 def fix_prompt(failed: Sequence[Outcome], secrets: Sequence[str],
-               timed_out: Sequence[Outcome] = ()) -> str:
-    lines = [
+               timed_out: Sequence[Outcome] = (), broke: Sequence[str] = (),
+               remaining: float | None = None) -> str:
+    """The fix turn's prompt; `broke` names the checks that passed before the
+    previous fix turn and fail after it, which makes this the second turn.
+    `remaining` is the step's budget left, in seconds, when it is known."""
+    lines = []
+    if broke:
+        lines += [
+            "Your fix turn broke " + ", ".join(broke) + ", which passed before it. You have "
+            "ONE more turn, the last: fix every check below without breaking the others "
+            "again, commit, and end with a short report.",
+            "",
+        ]
+    lines += [
         "Before publishing your branch, the worker ran the repository's own checks on the "
         "files you changed, and these failed. You have ONE turn to fix them: fix the cause "
         "in the code (not the check), commit, and end with a short report. The checks run "
         "again after this turn; whatever still fails is published with its output in the "
         "pull request body for the operator.",
     ]
+    if remaining is not None:
+        lines += ["", f"About {max(0, int(remaining))} s of this step's budget is left, for "
+                  "this turn and the checks after it."]
     if timed_out:
+        guards = [o.name for o in timed_out if o.name == GUARDS_CHECK]
+        others = [o.name for o in timed_out if o.name != GUARDS_CHECK]
+        again = []
+        if guards:
+            again.append("the guard script in parts")
+        if others:
+            again.append(", ".join(others) + " as-is, under the same time limit")
         lines += ["", "Not yours to fix: " + ", ".join(o.name for o in timed_out)
-                  + " ran out of time, which no change of yours fixes. The worker runs it "
-                  "again in parts after this turn; do not run it yourself."]
+                  + " ran out of time, which no change of yours fixes. The worker runs "
+                  + " and ".join(again) + " again after this turn; do not run a timed-out "
+                  "check or its test selection yourself."]
     for outcome in failed:
         lines += ["", f"## {outcome.name} ({outcome.command})",
                   f"Files: {_files_line(outcome.files)}",
@@ -1801,7 +1981,7 @@ def pr_section(rebase: Mapping[str, Any] | None, outcomes: Sequence[Outcome],
     parts = [
         PR_SECTION_HEADING, "",
         "The worker ran these checks on the files this branch changes before publishing, "
-        "gave the agent one turn to fix them, and they still did not pass. The branch was "
+        "gave the agent a turn to fix them, and they still did not pass. The branch was "
         "published anyway so no work is lost; read this before merging.",
     ]
     if conflicted and rebase is not None:
@@ -1856,7 +2036,8 @@ def advisory_section(*, graph: Mapping[str, Any], outcomes: Sequence[Outcome],
                      f"{', '.join(shown)}{more}.")
     else:
         parts.append("No test file was found covering the changed files.")
-    ran = [o for o in outcomes if o.name in ("graph-pytest", "vitest", "tsc", "terraform-fmt")]
+    ran = [o for o in outcomes if o.name in ("graph-pytest", "vitest", "tsc", "node-tests",
+                                                "terraform-fmt")]
     if ran:
         parts.append("Ran: " + ", ".join(
             f"{o.name} {o.status}" + (f" ({o.reason})" if o.status == SKIPPED and o.reason
@@ -2001,6 +2182,7 @@ class Gate:
     def run(self) -> dict[str, Any]:
         record = self.record
         record.update({"rebase": None, "rounds": [], "fix_turn": False,
+                       "second_turn": False, "broken_by_fix_turn": [],
                        "conflict_turn": False, "failed": [], "pr_section": False,
                        "guards": self._guards, "restored": []})
         if self.remaining() < MIN_GATE_SECONDS:
@@ -2014,6 +2196,12 @@ class Gate:
         record["rebase"] = rebase
         if rebase and rebase.get("status") in ("rebased", "conflict_resolved"):
             base = str(rebase["onto"])
+        elif base and base != EMPTY_BASE:
+            merged = merged_main_base(self.repo, base, runner=self.runner, env=self.env)
+            if merged is not None:
+                self.log.info("HEAD holds a merge of the default branch; diffing from the "
+                              "merge base", clone_base=base[:12], merge_base=merged[:12])
+                base = merged
         record["base"] = base or None
         self._snapshot, graph_status = load_snapshot(
             self.context if self.context is not None else context_dir(self.repo, self.env))
@@ -2026,15 +2214,21 @@ class Gate:
             outcomes = self._round(base)
             # A timed-out guard run is no fix turn's to fix, and never runs
             # as-is again: the next round runs it in the parts it advised.
+            # Only the guard script is split; any other timed-out check runs
+            # as-is again after a fix turn (#2503).
             timed_out = [o for o in outcomes if o.timed_out]
-            parts = max((guards_parts(o.output) for o in timed_out), default=0)
+            parts = max((guards_parts(o.output) for o in timed_out
+                         if o.name == GUARDS_CHECK), default=0)
             failed = [o for o in outcomes if o.status == FAILED and not o.timed_out]
             if failed:
                 self.log.warning("pre-publish checks failed; one fix turn",
                                  failed=[o.name for o in failed])
-                if self.resume(fix_prompt(failed, self.secrets, timed_out)):
+                if self.resume(fix_prompt(failed, self.secrets, timed_out,
+                                          remaining=self.remaining())):
                     record["fix_turn"] = True
+                    before = {o.name: o.status for o in outcomes}
                     outcomes = self._round(base, guard_parts=parts)
+                    outcomes = self._second_turn(base, before, outcomes, parts)
                     parts = 0
                 else:
                     record["fix_skipped"] = "no_session_or_budget"
@@ -2059,6 +2253,34 @@ class Gate:
             target.unlink(missing_ok=True)
         self._advise(outcomes)
         return record
+
+    def _second_turn(self, base: str, before: Mapping[str, str],
+                     outcomes: list[Outcome], parts: int) -> list[Outcome]:
+        """F07 (#2379): a check that passed before the fix turn and fails
+        after it was broken BY that turn, and published as-is it is a red CI
+        run the gate saw coming. One more turn, with what fails now, when the
+        step's budget still holds a round (`MIN_GATE_SECONDS`, the bound the
+        gate starts under); otherwise what the fix turn left is published."""
+        failed = [o for o in outcomes if o.status == FAILED and not o.timed_out]
+        broke = [o.name for o in failed if before.get(o.name) == PASSED]
+        self.record["broken_by_fix_turn"] = broke
+        if not broke:
+            return outcomes
+        if self.remaining() < MIN_GATE_SECONDS:
+            self.record["second_turn_skipped"] = "budget"
+            self.log.warning("the fix turn broke a check that had passed; too little of the "
+                             "step's budget is left for another turn", broke=broke,
+                             remaining_seconds=round(self.remaining(), 1))
+            return outcomes
+        self.log.warning("the fix turn broke a check that had passed; one more turn",
+                         broke=broke, failed=[o.name for o in failed])
+        timed_out = [o for o in outcomes if o.timed_out]
+        if not self.resume(fix_prompt(failed, self.secrets, timed_out, broke=broke,
+                                      remaining=self.remaining())):
+            self.record["second_turn_skipped"] = "no_session_or_budget"
+            return outcomes
+        self.record["second_turn"] = True
+        return self._round(base, guard_parts=parts)
 
     def _advise(self, outcomes: Sequence[Outcome]) -> None:
         """The advisory section: never a failure, never sent to the agent."""
@@ -2133,11 +2355,13 @@ class Gate:
                       for c in checks]
         else:
             env = {k: v for k, v in self.env.items() if k != TEST_SERVICES_ENV}
-        timeout = max(30.0, min(CHECK_TIMEOUT_SECONDS, self.remaining() - 30.0))
+        # Each check's limit is read as it starts, from this deadline (#2274).
+        deadline = self.clock() + self.remaining()
         state = record_tree(self.repo, runner=self.runner, env=self.env)
         try:
             outcomes = run_checks(self.repo, checks, env=env, runner=self.runner,
-                                  timeout=timeout, clock=self.clock)
+                                  timeout=CHECK_TIMEOUT_SECONDS, clock=self.clock,
+                                  deadline=deadline)
         finally:
             # §5.2 step 5: what the gate started goes with the round, so a
             # fix round starts it afresh. The worker's own runs on (Q4).

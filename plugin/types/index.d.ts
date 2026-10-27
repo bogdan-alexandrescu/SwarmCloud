@@ -1,11 +1,16 @@
-// The sc plugin's state contract: the one value its hooks module (hooks/pane.tsx)
-// keeps in `$.state`, the SwarmCloud pane's, so a hot reload keeps what the
-// pane last read. `claude plugin validate` holds every `$.state` key the module
+// The sc plugin's state contract: the values its hooks module (hooks/pane.tsx,
+// with hooks/band.tsx) keeps in `$.state` -- the SwarmCloud pane's browsing,
+// which the band above the prompt draws too, and the band's own -- so a hot
+// reload keeps what was last read. `claude plugin validate` holds every `$.state` key the module
 // names to this file. Shapes are swarm_browse's answers (apps/swarm-mcp/
 // swarm_mcp/browse.py), kept as the bridge served them: a figure nobody
 // recorded is null, never 0.
 
-export type ScStep = { step_id: string; task_id?: string | null; depends_on?: string[]; state?: string | null; park_reason?: string }
+export type ScStep = {
+  step_id: string; task_id?: string | null; depends_on?: string[]; state?: string | null; park_reason?: string
+  /** Why a HUMAN_REQUIRED step holds, where swarm_browse serves it: `owner_questions` is a merge held by them. */
+  park_phase?: string
+}
 
 export type ScWorkflowRow = {
   workflow_id: string
@@ -17,6 +22,10 @@ export type ScWorkflowRow = {
   cost_usd?: number | null
   console?: string
   read_error?: string
+  /** The pull requests its finished steps opened, where swarm_browse serves them (the band counts and names them). */
+  pull_requests?: string[]
+  /** The owner questions its steps' agents asked, where swarm_browse serves the count (the band notices a new one). */
+  owner_questions?: number
 }
 
 export type ScSingleTask = { task_id: string; label?: string | null; state?: string | null; age_seconds?: number | null }
@@ -40,7 +49,7 @@ export type ScAgentDetail = {
   console?: string
 }
 
-export type ScLayout = 'rows' | 'pane'
+export type ScLayout = 'rows' | 'pane' | 'band'
 export type ScLevel = 'workflows' | 'stages' | 'agents' | 'agent' | 'settings'
 
 /** A read that failed: which tool, why, when, and the action Retry runs again. */
@@ -75,8 +84,25 @@ export type ScPaneState = {
   started: boolean
 }
 
+/**
+ * The band above the prompt (SC-BAND, BGD 2026-10-26): whether it is on (the
+ * project's layout is `band`), folded to its one summary line, and what the
+ * last list read showed of each workflow, so the next read queues a chat turn
+ * only for what changed.
+ */
+export type ScBandState = {
+  on: boolean
+  folded: boolean
+  /** Per workflow id, the facts a turn is queued for (`noticesOf`); null until the first read, which queues nothing. */
+  seen: Record<string, string[]> | null
+  /** The summary line as last drawn, `SwarmCloud · 6 running · 1 waits on you · 2 PRs`. */
+  summary: string | null
+  /** Chat turns this band queued in this session. */
+  turns: number
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    sc: { pane: ScPaneState }
+    sc: { pane: ScPaneState; band: ScBandState }
   }
 }

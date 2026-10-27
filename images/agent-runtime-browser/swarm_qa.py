@@ -40,6 +40,9 @@ What `capture` does, and why each:
    which is the one the person watches. Every load of the console in that tab
    starts with the console's local and session storage emptied
    (RESET_STATE_JS), so a route never draws what the route before it left.
+   A hash route whose `goto` stayed on the document before it is reloaded so
+   that holds for it too (its manifest entry's `reloaded`), but not under
+   `--keep-storage`.
 3. THE DEVICE IS THE GATE'S, BY NAME: `swarm-handoff device <preset>` per
    preset, which blocks until the worker answers. It never calls
    `set_viewport_size`: the gate refuses the metrics override that sends.
@@ -51,6 +54,9 @@ What `capture` does, and why each:
    whichever session wins, the page sees the scheme asked for. emulate_media
    also sets `reduced_motion="reduce"`, which the gate's command does not
    carry. When the capture ends the gate's theme goes back to `system`.
+   Each route's manifest entry says in `dark_differs` whether its dark images
+   differ from its light ones at that preset (None with one scheme only): an
+   app with no dark theme draws both the same, which is no defect (#1981).
 5. Per route: sets the route's PERSONA (`persona` in the route list:
    `member`, today's fixture identity, when absent, or `platform-admin`) as
    the cookie PERSONA_COOKIE on the console's origin, on EVERY route, so no
@@ -125,7 +131,7 @@ default only the console's route list and template rely on:
 
 * `--keep-storage` adds no RESET_STATE_JS: an own-login target keeps its
   session in its storage, and emptying it on every load signs the capture out
-  after its first route.
+  after its first route. It forces no reload of a same-document hash route either.
 * `--settle generic` never evaluates PENDING_JS (or TEXT_JS): someone else's
   app draws none of the console's markers, and its own "reading…" is content.
   It waits for network idle, as every capture does, and then until the DOM
@@ -262,6 +268,17 @@ outside_base, excluded, robots, http_error, failed, write_attempting (the
 controls, {path, text})}, crawl: {pages, depth, seconds, stopped_by: done |
 pages | depth | time}}`. A capture aborted mid-walk still writes it, stopped
 by `time`, so a route it did not reach is never read as gone.
+
+A DISMISSED ROUTE IS NEVER CRAWLED (lane QA-CRAWL-SKIP; BGD 2026-10-25, part
+of #2157). The run list's optional `dismissed` holds the routes a workspace
+admin removed (S9b), each as the sha256 hex of its `state_key`, the way
+swarm-api's qaspec writes them: hashes, so no path a crawl found reaches the
+prompt that carries the list. The walk bars a dismissed route as it bars an
+excluded one: never listed, so it takes no `--max-pages` slot, never loaded,
+never captured, and never counted toward `--found-per-step`; found.json's
+`skipped.dismissed` counts them, and is absent from a run list with none, so
+that run's found.json is what it was. The key is the state's: a dismissed tab
+bars that state, not its path. A stored route is stored whatever is dismissed.
 
 `diff` compares two tarballs image by image: a changed-pixel ratio per image
 present in both, a `<name>.diff.png` where the ratio is over the threshold
@@ -677,8 +694,10 @@ SCROLL_JS = """(y) => {
 #: profile, so what a route left in storage drew the next route: the sidebar's
 #: Recent workflows (Spine.tsx RecentWorkflows, filled from localStorage once
 #: /workflows had been opened) appeared on every route after that one and on
-#: none before it. Each route is its own load (`goto`), so the page's memory
-#: starts empty; this, run before the console's own scripts on every load of
+#: none before it. Each route is its own load (`goto`, or, for a hash route
+#: whose `goto` stayed on the document before it, `reload`: #1981 comment 5),
+#: so the page's memory starts empty; this, run before the console's own
+#: scripts on every load of
 #: the console's origin in the capture's tab, empties its local and session
 #: storage too, so every route starts from the state a first visit has. A
 #: fresh browser context per route would do it as well, but opens a window
@@ -1056,6 +1075,10 @@ def load_routes(path: str | os.PathLike, *, allow_empty: bool = False) -> dict:
                     route["reveal"] = check_reveal(route["reveal"])
                 except UsageError as exc:
                     raise UsageError(f"route {rid}: {exc}") from exc
+    dismissed = document.get("dismissed", [])
+    if not isinstance(dismissed, list) or not all(isinstance(d, str) and SHA256_HEX.fullmatch(d)
+                                                  for d in dismissed):
+        raise UsageError("dismissed must be a list of route keys as lowercase sha256 hex")
     mockups = document.setdefault("mockups", [])
     if not isinstance(mockups, list) or not all(
         isinstance(m, dict) and isinstance(m.get("id"), str) and isinstance(m.get("path"), str) for m in mockups
@@ -1648,9 +1671,10 @@ def _shot(page, segment: int, preset: str | None = None) -> tuple[bytes, list[di
 def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict, preset: str, theme: str,
                    out: Path, axe_source: str | None, settle: str = "console",
                    persona_cookie: bool = True, gate: _GateRefusals | None = None,
-                   links: dict[str, list] | None = None) -> dict:
+                   links: dict[str, list] | None = None, keep_storage: bool = False) -> dict:
     """One route at one preset and theme. Raises with the step that failed.
-    `persona_cookie` False (sets_persona) sets no PERSONA_COOKIE. `gate`
+    `persona_cookie` False (sets_persona) sets no PERSONA_COOKIE. `keep_storage`
+    True never forces a full load of a same-document (hash) route. `gate`
     gives the route the refusals the live gate made while it loaded. A route
     state's `reveal` clicks are made, in order, once it is ready (CLICK_JS).
     `links` (a crawling capture) collects the links the page shows, by path."""
@@ -1676,6 +1700,20 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
         response = page.goto(base + route["path"], wait_until="load", timeout=NAV_TIMEOUT_MS)
         # None for a same-document navigation (a hash route from the route
         # before it): no document answered, so there is no status to read.
+        # Playwright returns None for every same-document navigation, and the
+        # forced load below relies on that rather than comparing page.url with
+        # the target by fragment.
+        # #1981 comment 5: nor did a new document start, so RESET_STATE_JS (an
+        # init script, run on a new document only) did not empty what the
+        # route before it stored, and the app kept its memory. A reload is the
+        # full load the route needs, at the same address. Not under
+        # --keep-storage: nothing is to be emptied, and an own-login app is
+        # captured as it navigates.
+        reloaded = False
+        if response is None and not keep_storage:
+            step = "reload"
+            response = page.reload(wait_until="load", timeout=NAV_TIMEOUT_MS)
+            reloaded = True
         status = getattr(response, "status", None) if response is not None else None
         if isinstance(status, int) and status >= 400:
             raise _RouteFailed(f"navigate: the main document answered HTTP {status}")
@@ -1766,7 +1804,7 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
             # A segment still off the viewport's size after the device reset
             # (`_shot`) is no capture of the route as it stands.
             "status": "unsettled" if pending or off_size else "captured",
-            "path": route["path"], "images": images, "network_idle": idle,
+            "path": route["path"], "images": images, "network_idle": idle, "reloaded": reloaded,
             "settled": not pending, "pending": pending, "scroller": measured[2] if len(measured) > 2 else None,
             "overlaps": overlaps, "covers": covers,
             "truncated": truncated, "reached": reached, "total": total, "duplicate": duplicate,
@@ -1875,7 +1913,7 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
                         entry = _capture_route(page, errors, base=base, group=group, route=route,
                                                preset=preset, theme=theme, out=out, axe_source=axe_source,
                                                settle=settle, persona_cookie=persona_cookie, gate=gate,
-                                               links=harvested)
+                                               links=harvested, keep_storage=keep_storage)
                         manifest["routes"].append(entry)
                         why = []
                         if entry["pending"]:
@@ -1936,9 +1974,54 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
             manifest["found"] = "found.json"
             manifest["crawl"] = {**found["crawl"], **{k: len(found[k]) for k in ("captured_new", "not_owned",
                                                                                   "over_cap")}}
+        _dark_differs(manifest["routes"], out)
         _write(out / "manifest.json", json.dumps(manifest, indent=1))
         _bundle(out, bundle)
     return manifest
+
+
+def _differs(a: bytes, b: bytes) -> bool:
+    """Whether two PNGs differ in more than DIFF_THRESHOLD of their pixels
+    (or in size). Stops at the first row that settles it: a dark theme
+    differs on nearly every row, an absent one on none."""
+    if a == b:
+        return False
+    wa, ha, pa = _decode(a)
+    wb, hb, pb = _decode(b)
+    if (wa, ha) != (wb, hb):
+        return True
+    allowed, changed, stride = DIFF_THRESHOLD * wa * ha, 0, wa * 4
+    for y in range(ha):
+        row = slice(y * stride, (y + 1) * stride)
+        if pa[row] == pb[row]:
+            continue
+        ra, rb = memoryview(pa)[row].cast("I"), memoryview(pb)[row].cast("I")
+        changed += sum(1 for x in range(wa) if ra[x] != rb[x])
+        if changed > allowed:
+            return True
+    return False
+
+
+def _dark_differs(entries: list[dict], out: Path) -> None:
+    """#1981 comment 8: an app with no dark theme draws its dark capture the
+    same as its light one, and a reviewer judging by eye filed "dark mode is
+    ignored" against it. Each captured route records `dark_differs`: whether
+    its dark images differ from its light ones at the same preset (a
+    different number of segments is a difference), so the review reads a
+    fact. None when the other scheme was not captured or an image could not
+    be read."""
+    shots = {(e["id"], e["preset"], e["theme"]): e["images"] for e in entries}
+    for entry in entries:
+        light = shots.get((entry["id"], entry["preset"], "light"))
+        dark = shots.get((entry["id"], entry["preset"], "dark"))
+        verdict = None
+        if light is not None and dark is not None:
+            try:
+                verdict = len(light) != len(dark) or any(
+                    _differs((out / a).read_bytes(), (out / b).read_bytes()) for a, b in zip(light, dark))
+            except (OSError, ValueError, zlib.error):
+                verdict = None
+        entry["dark_differs"] = verdict
 
 
 def _stored(routes: dict) -> list[dict]:
@@ -1961,7 +2044,8 @@ def _crawl_walk(routes: dict, base: str, crawl: dict, gate: _GateRefusals, harve
                  max_depth=crawl.get("max_depth", DISCOVER_MAX_DEPTH), hash_routes=True, clicks=True,
                  words=words, selectors=crawl.get("selectors", []),
                  seconds=crawl.get("seconds", CRAWL_SECONDS),
-                 navigation_ms=crawl.get("navigation_ms", NAVIGATION_MS), gate=gate, harvested=harvested)
+                 navigation_ms=crawl.get("navigation_ms", NAVIGATION_MS), gate=gate, harvested=harvested,
+                 dismissed=set(routes.get("dismissed", [])))
     for route in _stored(routes):
         walk.seed(route["path"], route.get("reveal"))
     # The start path heads the walk; listed after the stored routes, so one
@@ -1977,7 +2061,7 @@ def _found_empty(routes: dict) -> dict:
     return {"format": FOUND_FORMAT, "stored": [state_key(r["path"], r.get("reveal")) for r in _stored(routes)],
             "captured_new": [], "not_owned": [], "over_cap": [],
             "skipped": {"off_origin": 0, "outside_base": 0, "excluded": 0, "robots": 0, "http_error": 0,
-                        "failed": 0, "write_attempting": []},
+                        "failed": 0, "write_attempting": [], **({"dismissed": 0} if routes.get("dismissed") else {})},
             "crawl": {"pages": 0, "depth": 0, "seconds": 0.0, "stopped_by": "time"}}
 
 
@@ -2177,6 +2261,10 @@ def found_ids(keys: list[str], taken: set[str]) -> dict[str, str]:
             for key, slug in slugs.items()}
 
 
+#: A dismissed route in the run list (QA-CRAWL-SKIP): its key's sha256 (`_sha`).
+SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+
+
 def state_key(path: str, reveal: list[dict] | None) -> str:
     """What identifies a route, and what the owner rule hashes: its path, and
     for a route state the texts it reveals by."""
@@ -2246,8 +2334,10 @@ class _Walk:
                  clicks: bool = False, words: list[str] | tuple[str, ...] = DEFAULT_EXCLUDED_CONTROLS,
                  selectors: list[str] | None = None, seconds: float = CRAWL_SECONDS,
                  navigation_ms: int = NAVIGATION_MS, gate: _GateRefusals | None = None,
-                 harvested: dict[str, list] | None = None) -> None:
+                 harvested: dict[str, list] | None = None, dismissed: set[str] | None = None) -> None:
         self.root, self.origin, self.start = root, origin, start
+        #: The run's dismissed routes, as `_sha(state_key)` (QA-CRAWL-SKIP).
+        self.dismissed = set(dismissed or ())
         self.globs, self.rules = globs, rules
         self.max_pages, self.max_depth, self.hash_routes = max_pages, max_depth, hash_routes
         self.clicks, self.words, self.selectors = clicks, list(words), list(selectors or [])
@@ -2259,6 +2349,8 @@ class _Walk:
         self.seen: set[str] = set()
         self.skipped: dict[str, Any] = {"off_origin": 0, "outside_base": 0, "excluded": 0, "robots": 0,
                                         "failed": 0, "http_error": 0, "write_attempting": []}
+        if self.dismissed:
+            self.skipped["dismissed"] = 0
         self.off: set[str] = set()
         self.outside: set[str] = set()
         self.failed: list[str] = []
@@ -2296,7 +2388,7 @@ class _Walk:
         if key in self.seen:
             return
         self.seen.add(key)
-        barred = self._barred(path)
+        barred = "dismissed" if self.dismissed and _sha(key) in self.dismissed else self._barred(path)
         if barred is not None:
             self.skipped[barred] += 1
         elif depth > self.max_depth:

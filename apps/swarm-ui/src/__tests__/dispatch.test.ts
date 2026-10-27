@@ -302,7 +302,7 @@ describe('DispatchChoice, the control', () => {
 
   it('TS-21: spaces its fields from the sheet, with no inline margin', () => {
     const { container } = choice('')
-    const labels = [...container.querySelectorAll('label.t-label')]
+    const labels = [...container.querySelectorAll('label.dsp-label')]
     expect(labels.length).toBeGreaterThan(0)
     for (const label of labels) expect(label.getAttribute('style'), label.textContent ?? '').toBeNull()
   })
@@ -369,7 +369,7 @@ describe('TS-6: the carrier is a workflow question, asked once, and its caveat i
   it('is not asked on the single-task form, where there are no steps to carry work between', () => {
     const { container } = control('task')
     expect(container.querySelector('#dsp-carrier'), 'the carrier select is on the single-task form').toBeNull()
-    expect(container.textContent).not.toContain('what carries work between steps')
+    expect(container.textContent).not.toContain('What carries work between steps')
     expect(container.textContent).not.toContain('not acted on')
   })
 

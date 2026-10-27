@@ -144,7 +144,7 @@ describe('CAP-2: lending is checked against the tenants and confirmed', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Edit lending' }))
     const field = await screen.findByRole('combobox', { name: /is lent to$/ }, WAIT)
     fireEvent.change(field, { target: { value: 'no-such-tenant, BAD ID!' } })
-    const save = screen.getByRole('button', { name: 'save lending' }) as HTMLButtonElement
+    const save = screen.getByRole('button', { name: 'Save lending' }) as HTMLButtonElement
     expect(save.disabled, 'an unknown tenant armed the save').toBe(true)
     fireEvent.click(save)
     expect(api.setAccountLending).not.toHaveBeenCalled()
@@ -157,11 +157,11 @@ describe('CAP-2: lending is checked against the tenants and confirmed', () => {
     openFirst()
     fireEvent.click(screen.getByRole('button', { name: 'Edit lending' }))
     fireEvent.change(await screen.findByRole('combobox', { name: /is lent to$/ }, WAIT), { target: { value: 'smoke' } })
-    fireEvent.click(screen.getByRole('button', { name: 'save lending' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save lending' }))
     expect(api.setAccountLending, 'the first click lent the account').not.toHaveBeenCalled()
     const dialog = await screen.findByRole('dialog', undefined, WAIT)
     expect(dialog.querySelector('h2')!.textContent).toBe('Lend alice-personal to smoke?')
-    fireEvent.click(within(dialog).getByRole('button', { name: 'save lending' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save lending' }))
     await waitFor(() => expect(api.setAccountLending).toHaveBeenCalledWith('eng:alice-personal', ['smoke']), WAIT)
   })
 
@@ -251,10 +251,11 @@ describe('CAP-12: a link to an account this read does not hold says so', () => {
 
 describe('CAP-13: a hand-out on another day carries its date', () => {
   it('prints the date for yesterday evening, even under 24 hours ago', () => {
-    const now = new Date(2026, 9, 11, 5, 30).getTime()
-    const yesterday = new Date(2026, 9, 10, 20, 0).toISOString()
-    expect(givenAt(yesterday, now)).not.toMatch(/^\d\d:\d\d$/)
-    expect(givenAt(yesterday, now)).toMatch(/10/)
-    expect(givenAt(new Date(2026, 9, 11, 4, 0).toISOString(), now)).toMatch(/^\d\d:\d\d$/)
+    // UTC since VQ-035: the day is the UTC day its Z names.
+    const now = Date.UTC(2026, 9, 11, 5, 30)
+    const yesterday = new Date(Date.UTC(2026, 9, 10, 20, 0)).toISOString()
+    expect(givenAt(yesterday, now)).not.toMatch(/^\d\d:\d\dZ$/)
+    expect(givenAt(yesterday, now)).toBe('Oct 10 20:00Z')
+    expect(givenAt(new Date(Date.UTC(2026, 9, 11, 4, 0)).toISOString(), now)).toBe('04:00Z')
   })
 })

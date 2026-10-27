@@ -1779,6 +1779,9 @@ def produced_lines(
             + style.sep
             + (style.dash if seconds is None else f"{seconds}s")
         )
+    runs_text = runs_line(produced)
+    if runs_text is not None:
+        lines.append(label("runs") + runs_text)
     for item in produced.get("staged_inputs") or []:
         lines.append(
             label("input")
@@ -1786,6 +1789,45 @@ def produced_lines(
             + f"  from {item.get('from_task') or style.dash}"
         )
     return lines
+
+
+def _account_name(account: Any) -> str:
+    """`ai-eng-2` for `eng:ai-eng-2`: the account's label, without its tenant."""
+    text = str(account or "")
+    return text.split(":", 1)[1] if ":" in text else (text or "?")
+
+
+def runs_line(produced: dict[str, Any]) -> str | None:
+    """`2 runs · 1 account swap (ai-eng-2 exhausted → ai-eng-1-max at 09:50)`, or None.
+
+    The worker records `runs` only for an attempt that started more than one
+    agent run (SWAP-RUNS, #2457); the duration beside it is their sum. The
+    swap's time is UTC, as every instant in a summary is. The re-read cost
+    follows when it was measured.
+    """
+    runs = produced.get("runs")
+    if not isinstance(runs, list) or len(runs) < 2:
+        return None
+    swaps = [s for s in produced.get("swaps") or [] if isinstance(s, dict)]
+    text = f"{len(runs)} runs"
+    if swaps:
+        noun = "account swap" if len(swaps) == 1 else "account swaps"
+        moves = ", ".join(
+            f"{_account_name(s.get('from'))} {s.get('reason') or '?'} → "
+            f"{_account_name(s.get('to'))}"
+            + (f" at {str(s['at'])[11:16]} UTC" if isinstance(s.get("at"), str) and len(s["at"]) >= 16 else "")
+            for s in swaps
+        )
+        text += f" · {len(swaps)} {noun} ({moves})"
+    cost = produced.get("swap_cost")
+    if isinstance(cost, dict) and isinstance(cost.get("reread_seconds"), (int, float)):
+        tokens = cost.get("reread_tokens") if isinstance(cost.get("reread_tokens"), dict) else {}
+        total = sum(v for v in tokens.values() if isinstance(v, int) and not isinstance(v, bool))
+        text += f" · re-read {round(float(cost['reread_seconds']))}s, {total:,} tokens"
+    last = produced.get("last_run_duration_s")
+    if isinstance(last, (int, float)) and not isinstance(last, bool):
+        text += f" · last run {last}s"
+    return text
 
 
 #: How much of the merge commit's sha a merge row shows.

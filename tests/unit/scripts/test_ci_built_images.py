@@ -518,8 +518,10 @@ def cancelled_before_it_started(run_id: int) -> dict:
 NEVER_BUILT = {
     # No application.yml run for the commit at all (CI_BUILD_APPEAR is 1s here).
     "no-run": lambda: {"runs": []},
-    # Its build job was cancelled part-way -- by hand: on main a newer push
-    # neither cancels nor replaces the run (application.yml's concurrency).
+    # Its build job was cancelled part-way -- by hand, or since 2026-10-26 by
+    # a newer push to main (application.yml's concurrency). The script still
+    # says "never built"; release.yml reads that as superseded only when main
+    # has moved on (test_release_newest_only.py).
     "cancelled": lambda: {"runs": [ci_run(104, job_conclusion="cancelled")]},
     # The run was cancelled before any job started: no jobs listed at all.
     "cancelled-before-it-started": lambda: {"runs": [cancelled_before_it_started(113)]},

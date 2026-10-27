@@ -62,36 +62,41 @@ permissions:
   contents: read
 
 concurrency:
-  # ON MAIN, ONE GROUP PER COMMIT. A run on main is the only build of its
-  # commit: release.yml waits for this workflow's `build images` job and
-  # promotes what it built (docs/ci.md). So nothing may stop that run before
-  # it builds -- and turning cancel-in-progress off is not enough on its own.
-  # GitHub keeps ONE pending run per group and cancels the older pending run
-  # when a newer one queues, whatever cancel-in-progress says (measured
-  # 2026-09-24: release run 36035365877 was cancelled that way, with zero
-  # jobs, two seconds after 36036058352 queued). With one group for all of
-  # main, a push made while the previous commit's run was queued cancelled
-  # it; and because this workflow runs on EVERY push to main while release.yml
-  # has a path filter, a docs-, tests- or README-only push started no release
-  # to replace that commit's, which then found its commit never built and
-  # went red.
+  # ONE GROUP FOR ALL OF MAIN, AND THE NEWEST COMMIT WINS (owner decision,
+  # BGD, 2026-10-26, #2438: "Release only the newest"). A push to main cancels
+  # main's older run that has not finished, queued or in progress, and
+  # release.yml ships the newest commit only.
   #
-  # The price: runs on main are no longer serialised. A burst of merges builds
-  # every commit, in parallel -- each run bounded to 4 Cloud Builds at once
-  # (BUILD_PARALLELISM, build-images.sh) in a project whose build quota is
-  # shared. Each commit is still built exactly once.
+  # WHY. Main used to run one group PER COMMIT, never cancelled, so that a
+  # release could always find its own commit built (the 2026-09-24 decision
+  # below). On 2026-10-25/26 that stalled every deploy: nothing deployed from
+  # 23:32Z to past 08:00Z. Each merge added a run of about 25 jobs to the
+  # GitHub-hosted queue main's push jobs use (PR 1720), 27 to 78 of them were
+  # queued at once, and every release timed out after 2700s waiting for its
+  # own commit's `build images` job, which had not reached a runner. 34 merges
+  # were waiting to deploy.
   #
-  # Everywhere else -- pull requests, other branches -- the group is the ref,
-  # and a newer push cancels the older run as it always did.
-  group: application-${{ github.ref == 'refs/heads/main' && format('{0}@{1}', github.ref, github.sha) || github.ref }}
-  # NOT CANCELLED ON MAIN, even though a per-commit group means no newer push
-  # shares it: a second run of the SAME commit (a workflow_dispatch while main
-  # still points at it) must queue behind the first, not kill a build a
-  # release may be waiting for.
-  # Cancelling part-way never saved the Cloud Build anyway, because stopping
-  # `gcloud builds submit` does not stop the build it submitted
-  # (build-images.sh, on_interrupt).
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # WHY CANCELLING IS NOW SAFE. Main is linear, so a newer commit contains
+  # every older one: a cancelled commit's change ships inside the newer
+  # commit's build. That build is incremental from the newest RECORDED build
+  # of an ancestor (ci-built-images.sh --previous skips a run that recorded
+  # nothing) and diffs from the commit each reused digest was built from, so
+  # an image a cancelled commit changed is rebuilt, not skipped. Every
+  # intermediate commit was already tested on its pull request (or its
+  # identical tree, docs/ci.md "Main reuses the tested tree"). And the
+  # 2026-09-24 stranding -- a docs-only push cancelled a build whose release
+  # then went red, because it started no release of its own -- cannot recur:
+  # release.yml now runs on EVERY push to main, and a release whose commit
+  # main has moved past ends green, superseded, instead of failing.
+  #
+  # The price: a Cloud Build a cancelled run submitted carries on (stopping
+  # `gcloud builds submit` does not stop it; build-images.sh on_interrupt),
+  # at most BUILD_PARALLELISM of them per cancelled run.
+  #
+  # Pull requests and other branches are unchanged: the group is the ref, and
+  # a newer push cancels the older run.
+  group: application-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   PYTHON_VERSION: "3.11"
@@ -2083,8 +2088,9 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [python, shell, manifests]
     # THE ONE BUILD OF A COMMIT. Owner decision, 2026-09-24 (docs/ci.md): this
-    # job builds every image once per commit on main and uploads the manifest it
-    # writes -- each image's digest, the tag, the commit and the environment --
+    # job builds every image once per commit on main -- each commit main has
+    # not moved past by the time it runs, since 2026-10-26 (the workflow's
+    # `concurrency:`) -- and uploads the manifest it writes -- each image's digest, the tag, the commit and the environment --
     # as the artifact `images-dev`. release.yml waits for THIS job for the same
     # commit and promotes exactly those digests; it no longer builds its own.
     # Until then every push to main built all eight images twice, the two

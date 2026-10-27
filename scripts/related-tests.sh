@@ -21,9 +21,31 @@
 # selects the stylesheet guards, once (STYLESHEET_GUARDS there, the one list):
 # they read every sheet from disk, so no import reaches them, and PR 1905's
 # lane passed this without running them (RELATED-CSS-GUARDS, part of #1914).
+# Any change under apps/swarm-ui/ also runs the package's node:test runners,
+# `(cd apps/swarm-ui && npm run test:node)`, once and after the vitest runs:
+# test/*.test.mjs and tests/run.mjs read the tree from disk, so no import
+# reaches them, and CI's ui-build runs them. Four lanes (PRs #2429, #2430,
+# #2433, #2437) never ran them and went red there on no-company-name.test.mjs
+# (#2455).
 # A selection too big for one run comes
-# back as a few runs of named files (at most ~540 CI-seconds of pytest, or 50
-# vitest files, each), printed to run ONE AFTER ANOTHER in the foreground.
+# back as a few runs of named files, printed to run ONE AFTER ANOTHER in the
+# foreground: at most ~540 CI-seconds of pytest (unit_test_durations.json), and
+# at most ~540 CI-seconds and 50 files of vitest, by
+# tests/unit/scripts/ui_test_durations.json; a file it does not record weighs
+# 2.9 s (the whole UI suite, 463 files in ~22 min on 4 cores), and a file
+# heavier than 540 s runs alone. WEIGHTED-VITEST (part of #2362): cut by file
+# count alone, the nine spacing.*.test.tsx slices (252-485 s each) shared one
+# 50-file run that could not finish inside RUN_SECONDS, and 40+ agents timed
+# out in 2026-10-25/26. scripts/refresh-ui-weights.sh rewrites the weights
+# from the logs of main's latest green application.yml run.
+#
+# SPACING-NARROW (part of #2362): by import, every change under App.tsx reached
+# every spacing slice, since spacingsweep.tsx imports {App, SECTIONS} from
+# '../App'. A slice renders only its SPACING_GROUPS routes, so it is kept when
+# the change reaches a module one of its routes' SectionBody cases renders, or
+# reaches the slice other than through an App -> screen import (App.tsx, the
+# shell, the sweep, spaceprobe). A changed sheet, or an App.tsx or sweep that
+# does not parse, keeps every slice. docs/ci.md says how the routes are read.
 #
 # The diff is changed-guards.sh's: `git diff --name-only <base>...HEAD` (the
 # merge base) plus uncommitted and untracked files. <base> is --base, else
@@ -126,6 +148,10 @@ while IFS=$'\t' read -r kind rest; do
           listed+=("${f}")
         fi
       done ;;
+    node)
+      # rest is the package directory; the runner picks its own files.
+      kinds+=("${kind}")
+      runs+=("${rest}") ;;
   esac
 done <"${work}/runs"
 
@@ -135,9 +161,12 @@ if [[ "${#runs[@]}" -eq 0 ]]; then
 fi
 
 command_of() {
-  # $1 kind, $2 space-separated files. Paths in this repository hold no spaces.
+  # $1 kind, $2 space-separated files (for node, the package directory).
+  # Paths in this repository hold no spaces.
   if [[ "$1" == pytest ]]; then
     printf 'uv run pytest -q -n auto %s' "$2"
+  elif [[ "$1" == node ]]; then
+    printf '(cd %s && npm run test:node)' "$2"
   else
     printf '(cd %s && npx vitest run %s)' "${UI_DIR}" "$2"
   fi
@@ -158,11 +187,15 @@ if command -v timeout >/dev/null 2>&1; then
 fi
 for i in "${!runs[@]}"; do
   read -r -a run_files <<<"${runs[$i]}"
-  info "run $((i + 1)) of ${#runs[@]}: ${kinds[$i]}, ${#run_files[@]} file(s)"
   status=0
-  if [[ "${kinds[$i]}" == pytest ]]; then
+  if [[ "${kinds[$i]}" == node ]]; then
+    info "run $((i + 1)) of ${#runs[@]}: node, npm run test:node in ${runs[$i]}"
+    (cd "${REPO_ROOT}/${runs[$i]}" && ${limit[@]+"${limit[@]}"} npm run test:node) || status=$?
+  elif [[ "${kinds[$i]}" == pytest ]]; then
+    info "run $((i + 1)) of ${#runs[@]}: pytest, ${#run_files[@]} file(s)"
     (cd "${REPO_ROOT}" && ${limit[@]+"${limit[@]}"} uv run pytest -q -n auto "${run_files[@]}") || status=$?
   else
+    info "run $((i + 1)) of ${#runs[@]}: vitest, ${#run_files[@]} file(s)"
     (cd "${REPO_ROOT}/${UI_DIR}" && ${limit[@]+"${limit[@]}"} npx vitest run "${run_files[@]}") || status=$?
   fi
   if [[ "${status}" -eq 124 ]]; then

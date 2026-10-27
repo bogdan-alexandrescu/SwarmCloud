@@ -58,6 +58,7 @@ import {
   PILL_MIN_PX,
   attemptWord,
   axisTicks,
+  axisTickText,
   buildLane,
   filterLanes,
   groupLanes,
@@ -80,13 +81,16 @@ import {
 } from './lanes'
 import { STATE_MARK, type MarkName } from './marks'
 import { Button, ButtonLink, Chip, MarkIcon, Segmented, StateMark } from './components'
-import { DEFAULT_VIEW, alignedWords, ledgerRange, outcomesQuery, viewerZone, type Outcomes } from './outcomes'
+import { DEFAULT_VIEW, alignedWords, ledgerRange, outcomesQuery, type Outcomes } from './outcomes'
+import { formatClock, formatDateTime } from './timezone'
+import { useTimeZone } from './useTimeZone'
 import { CountNote, PageHead, RefreshControl, useClaimPageAge, useIdleStop, usePoll } from './Shell'
 import type { AttemptRow, Task, TaskEvent, TaskState } from './types'
 import { formatDuration, TERMINAL_STATES } from './types'
 import { useInView } from './useInView'
 import { useEscapeLayer } from './escape'
 import { VALUE_LABEL_GAP_PX } from './charts/parts'
+import { axisZone } from './charts/series'
 import { SKIPPED_WORD } from './dag'
 import { gateVerdictOf, skippedByVerdict } from './wfreview'
 import { workflowLabel } from './stepviews'
@@ -181,12 +185,14 @@ export function TimelinePages({ at, otherTitle }: { at: 'lanes' | 'outcomes'; ot
 // Words
 // ---------------------------------------------------------------------------
 
-const CLOCK = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false })
-const CLOCK_S = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
-const DAY = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' })
+// On the person's clock, the axis's (VQ-023): the window header, a mark's
+// time and the axis must not read two zones on one screen. The zone is said
+// once, under the axis's lane count and in the footnote.
+const dayOf = (ms: number) => formatDateTime(ms).split(' ').slice(0, 2).join(' ')
 
 function clock(ms: number, wide = false): string {
-  return wide ? `${DAY.format(ms)} ${CLOCK.format(ms)}` : CLOCK.format(ms)
+  const hm = formatClock(ms).slice(0, 5)
+  return wide ? `${dayOf(ms)} ${hm}` : hm
 }
 
 /**
@@ -223,15 +229,11 @@ export function axisLabels(
   nowAt: number,
   trackPx: number | null = null,
 ): { t: number; pct: number; label: string }[] {
+  // On the person's clock, ticks and words alike (`lanes.ts`, VQ-023).
   const ticks = axisTicks(since, until)
-  const daily = ticks.length > 1 && ticks[1]! - ticks[0]! >= 23 * 3_600_000
   const nowShown = until >= nowAt - 60_000
   const placed = ticks
-    .map((t) => {
-      const d = new Date(t)
-      const midnight = d.getHours() === 0 && d.getMinutes() === 0
-      return { t, pct: pct(t, since, until), label: daily || midnight ? DAY.format(t) : CLOCK.format(t) }
-    })
+    .map((t) => ({ t, pct: pct(t, since, until), label: axisTickText(t, ticks) }))
     .filter((x) => !(nowShown && x.pct > 100 - NOW_GAP_PCT))
   if (trackPx === null || !(trackPx > 0)) return placed
   const limit = nowShown ? trackPx - NOW_LABEL_PX - VALUE_LABEL_GAP_PX : trackPx
@@ -495,7 +497,7 @@ export function panWindow(win: { since: number; until: number }, dir: -1 | 1, no
 }
 
 function rangeWords(since: number, until: number): string {
-  const wide = until - since > 36 * 3_600_000 || DAY.format(since) !== DAY.format(until)
+  const wide = until - since > 36 * 3_600_000 || dayOf(since) !== dayOf(until)
   return `${clock(since, wide)}–${clock(until, wide)}`
 }
 
@@ -648,6 +650,10 @@ export function TimelineLanesScreen({
   const [anchor, setAnchor] = useState(() => Date.now())
   /** The lane track's width, measured on the axis; null until it is (V039). */
   const [trackPx, setTrackPx] = useState<number | null>(null)
+  /** The phone's filter sheet, behind `Filters · N` (visual QA VQ-024). */
+  const [sheet, setSheet] = useState(false)
+  /** The phone's legend, behind `Key` (VQ-024, decided 2026-10-26). */
+  const [key, setKey] = useState(false)
   const lastSpan = useRef(spanKey)
   if (lastSpan.current !== spanKey) {
     lastSpan.current = spanKey
@@ -880,7 +886,7 @@ export function TimelineLanesScreen({
               one !== undefined
                 ? { status: 'ok', read: one }
                 : isData(r)
-                  ? { status: 'error', why: 'not found in this tenant', route, limited: false }
+                  ? { status: 'error', why: 'not found in this workspace', route, limited: false }
                   : r.status === 'error'
                     ? { status: 'error', why: failureWords(r.error), route, limited: r.error.httpStatus === 429 }
                     : { status: 'error', why: 'not read', route, limited: false },
@@ -1045,7 +1051,8 @@ export function TimelineLanesScreen({
   const neverRan = allLanes.filter((l) => l.neverRan).length
 
   // ---- the outcome strip -----------------------------------------------------
-  const tz = useMemo(viewerZone, [])
+  // The person's zone, so the strip's buckets and the footnote agree with the axis.
+  const tz = useTimeZone()
   const stripQuery = useMemo(
     () =>
       outcomesQuery(
@@ -1202,51 +1209,81 @@ export function TimelineLanesScreen({
             ›
           </Button>
         </span>
-        <TlPicker
-          label="State"
-          options={ALL_STATES}
-          selected={view.state}
-          word={(s) => s.toLowerCase().replace('_', '-')}
-          onChange={(next) => setView({ ...view, state: next as TaskState[] })}
-        />
-        {/* THE PROFILES ARE THE LANES' OWN (visual QA QA-095, run 2): until
-            the attempts are read there are none to count, and `all 0` read
-            as a measured zero. It says what the strip below says instead. */}
-        <TlPicker
-          label="Profile"
-          options={profiles}
-          read={shown !== null ? 'read' : att.status === 'error' ? 'failed' : 'reading'}
-          selected={view.profile}
-          onChange={(next) => setView({ ...view, profile: next })}
-        />
-        <label className={view.wf !== null ? 'tl-flt is-on' : 'tl-flt'}>
-          Workflow{' '}
-          <select className="tl-wf-sel" value={view.wf ?? ''} onChange={(e) => setView({ ...view, wf: e.target.value === '' ? null : e.target.value })}>
-            <option value="">any</option>
-            {[...workflowIds, ...(view.wf !== null && !workflowIds.includes(view.wf) ? [view.wf] : [])].map((w) => (
-              <option key={w} value={w}>
-                {wfNames.has(w) ? `${wfNames.get(w)!} · ${w}` : w}
-              </option>
-            ))}
-          </select>
-        </label>
-        <Segmented
-          label="Kind"
-          className="tl-kind"
-          value={view.kind}
-          options={LANE_KINDS.map((k) => ({ key: k, label: k === 'steps' ? 'workflow steps' : k }))}
-          onChange={(k) => setView({ ...view, kind: k })}
-        />
-        <label className="tl-flt">
-          Group by{' '}
-          <select value={view.by} onChange={(e) => setView({ ...view, by: e.target.value as LanesView['by'] })}>
-            {LANE_GROUPS.map((g) => (
-              <option key={g} value={g}>
-                {g}
-              </option>
-            ))}
-          </select>
-        </label>
+        {/* THE FILTERS FOLD ON A PHONE (visual QA VQ-024, 2026-10-26): the
+            controls and the strip filled the first screen at 390 and the
+            first lane was below the fold. Behind one `Filters · N`, as
+            Outcomes folds its own; on a wide screen the sheet is
+            `display: contents` and its controls sit in this row. */}
+        <button
+          type="button"
+          className="tl-sheet-toggle"
+          aria-expanded={sheet}
+          aria-controls="tl-sheet"
+          onClick={() => setSheet(!sheet)}
+        >
+          Filters · {lanesFiltersSet(view)}
+        </button>
+        {/* THE LEGEND FOLDS ON A PHONE TOO (VQ-024, "Fold the legend",
+            BGD 2026-10-26): with the filters folded, the legend's seven marks
+            still stood between the strip and the first lane at 390. Closed by
+            default there; a wide screen shows it always and has no button.
+            The outcome strip's counts are not folded with it. */}
+        <button
+          type="button"
+          className="tl-key-toggle"
+          aria-expanded={key}
+          aria-controls="tl-key"
+          onClick={() => setKey(!key)}
+        >
+          Key
+        </button>
+        <div className={sheet ? 'tl-sheet is-open' : 'tl-sheet'} id="tl-sheet">
+          <TlPicker
+            label="State"
+            options={ALL_STATES}
+            selected={view.state}
+            word={(s) => s.toLowerCase().replace('_', '-')}
+            onChange={(next) => setView({ ...view, state: next as TaskState[] })}
+          />
+          {/* THE PROFILES ARE THE LANES' OWN (visual QA QA-095, run 2): until
+              the attempts are read there are none to count, and `all 0` read
+              as a measured zero. It says what the strip below says instead. */}
+          <TlPicker
+            label="Profile"
+            options={profiles}
+            read={shown !== null ? 'read' : att.status === 'error' ? 'failed' : 'reading'}
+            selected={view.profile}
+            onChange={(next) => setView({ ...view, profile: next })}
+          />
+          <label className={view.wf !== null ? 'tl-flt is-on' : 'tl-flt'}>
+            Workflow{' '}
+            <select className="tl-wf-sel" value={view.wf ?? ''} onChange={(e) => setView({ ...view, wf: e.target.value === '' ? null : e.target.value })}>
+              <option value="">any</option>
+              {[...workflowIds, ...(view.wf !== null && !workflowIds.includes(view.wf) ? [view.wf] : [])].map((w) => (
+                <option key={w} value={w}>
+                  {wfNames.has(w) ? `${wfNames.get(w)!} · ${w}` : w}
+                </option>
+              ))}
+            </select>
+          </label>
+          <Segmented
+            label="Kind"
+            className="tl-kind"
+            value={view.kind}
+            options={LANE_KINDS.map((k) => ({ key: k, label: k === 'steps' ? 'workflow steps' : k }))}
+            onChange={(k) => setView({ ...view, kind: k })}
+          />
+          <label className="tl-flt">
+            Group by{' '}
+            <select value={view.by} onChange={(e) => setView({ ...view, by: e.target.value as LanesView['by'] })}>
+              {LANE_GROUPS.map((g) => (
+                <option key={g} value={g}>
+                  {g}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
       </div>
       {/* THE WAY BACK HAS ITS OWN LINE (QA G3-31, 2026-10-07): inserted
           among the controls, the chip moved every control after it, and the
@@ -1280,12 +1317,12 @@ export function TimelineLanesScreen({
         </p>
       )}
 
-      <Legend />
+      <Legend open={key} />
 
       {att.status === 'error' ? (
         <div className="tl-state is-bad" role="alert">
           <p>
-            The attempts could not be read: the read {failureWords(att.error)} at {CLOCK_S.format(att.at)}. Nothing is drawn, because nothing was read.
+            The attempts could not be read: the read {failureWords(att.error)} at {formatDateTime(att.at).split(' ')[2]}. Nothing is drawn, because nothing was read.
           </p>
           <Button size="sm" onClick={refresh}>
             Try again
@@ -1331,7 +1368,9 @@ export function TimelineLanesScreen({
               <Fragment key={b.key}>
                 <GroupHead
                   block={b}
-                  name={b.kind === 'workflow' ? (wfNames.get(b.key) ?? null) : null}
+                  since={win.since}
+                  until={win.until}
+                  name={b.kind === 'workflow' ? (wfNames.get(b.key) ?? lanesLabel(allLanes.filter((l) => l.task?.workflow_id === b.key))) : null}
                   workflow={b.kind === 'workflow' ? (workflows.get(b.key) ?? null) : null}
                   onRetry={() => retryWorkflow(b.key)}
                   ran={b.kind === 'workflow' ? allLanes.filter((l) => !l.neverRan && l.task?.workflow_id === b.key) : []}
@@ -1432,6 +1471,11 @@ const WORKFLOW_ENDED = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED'])
 
 function uniqSorted(xs: ReadonlyArray<string | null>): string[] {
   return Array.from(new Set(xs.filter((x): x is string => x !== null))).sort()
+}
+
+/** How many of the filters a lane must match are set: the `Filters · N` count (VQ-024). */
+export function lanesFiltersSet(v: LanesView): number {
+  return (v.state.length > 0 ? 1 : 0) + (v.profile.length > 0 ? 1 : 0) + (v.wf !== null ? 1 : 0) + (v.kind !== 'all' ? 1 : 0)
 }
 
 function filterWords(v: LanesView): string {
@@ -1541,9 +1585,9 @@ function TlPicker({
   )
 }
 
-function Legend() {
+function Legend({ open }: { open: boolean }) {
   return (
-    <p className="tl-legend">
+    <p className={open ? 'tl-legend tl-key is-open' : 'tl-legend tl-key'} id="tl-key">
       <span>
         <i className="tl-lg is-hold" /> held capacity (leased → running)
       </span>
@@ -1643,6 +1687,7 @@ function Axis({
     <div className="tl-row tl-axis">
       <div className="tl-lab">
         <small>{summary}</small>
+        <small className="tl-zone">times {axisZone(since, until)}</small>
       </div>
       <div
         ref={track}
@@ -1669,8 +1714,51 @@ function Axis({
   )
 }
 
+/**
+ * A WORKFLOW'S NAME FROM ITS OWN LANES (visual QA VQ-025, 2026-10-26): the
+ * group row printed the raw id and "workflow: reading…" for seconds, until the
+ * workflow read landed and `workflowLabel` named it from its steps' tasks --
+ * tasks the lanes already carry. The same rule (`unit` before `title`, the
+ * first that has one), over the lanes drawn; the workflow read's own label
+ * wins once it lands.
+ */
+export function lanesLabel(lanes: readonly Lane[]): string | null {
+  for (const key of ['unit', 'title'] as const) {
+    for (const l of lanes) {
+      const value = l.task?.metadata?.[key]
+      if (typeof value === 'string' && value.trim() !== '') return value.trim()
+    }
+  }
+  return null
+}
+
+/**
+ * Where a block's lanes draw, as a share of the window: the first segment or
+ * mark to the last (timeline.html A's bracket on a workflow's group row,
+ * VQ-025). Null for a block with nothing drawn in the window.
+ */
+export function blockSpan(lanes: readonly Lane[], since: number, until: number): { left: number; width: number } | null {
+  let from = Infinity
+  let to = -Infinity
+  for (const l of lanes) {
+    for (const s of l.segs) {
+      from = Math.min(from, s.from)
+      to = Math.max(to, s.to)
+    }
+    for (const m of l.marks) {
+      from = Math.min(from, m.at)
+      to = Math.max(to, m.at)
+    }
+  }
+  if (!(from <= to) || to < since || from > until) return null
+  const left = pct(from, since, until)
+  return { left, width: pct(to, since, until) - left }
+}
+
 function GroupHead({
   block,
+  since,
+  until,
   workflow,
   onRetry,
   name = null,
@@ -1678,6 +1766,9 @@ function GroupHead({
   empty = [],
 }: {
   block: LaneBlock
+  /** The window, so a workflow's bracket is placed on the lanes' own scale. */
+  since: number
+  until: number
   workflow: WorkflowState | null
   onRetry: () => void
   /** The workflow's label, when its steps carry one (RT-25); the id is then its title. */
@@ -1689,25 +1780,42 @@ function GroupHead({
 }) {
   let title: string
   let note: ReactNode
+  let noteTitle: string | undefined
   let gap: string | null = null
   if (block.kind === 'workflow') {
     title = name ?? block.key
+    // NAME, THEN STEPS · ID (timeline.html A; VQ-025): with a name in the
+    // title the id closes the subtitle, so the row still says which workflow
+    // it is; nameless, the id is the title and is not said twice. The id goes
+    // LAST, after the steps and the state (review of VQ-025): leading, a
+    // real-length id (`wf_5e5ad3b6f7da4299a839 · `) filled the 215px note cell
+    // at 1440 and cut the steps count and the state off. The whole note is the
+    // `<small>`'s title, so what the width cuts is read on hover.
+    const id = name === null ? '' : ` · ${block.key}`
     // A FAILED WORKFLOW READ IS SAID IN WORDS, with the route in the title
     // only (QA G3-07): the subtitle printed the raw route and status, which
     // the label's width cut to `steps — (/v1/workflows/wf_55…`.
-    note =
-      workflow === null ? (
-        'workflow: reading…'
-      ) : workflow.status === 'error' ? (
-        <span className="tl-wf-unread" title={`${workflow.route} ${workflow.why}`}>
-          steps not read: {workflow.limited ? 'rate-limited' : workflow.why} ·{' '}
-          <button type="button" className="c-link is-sm tl-wf-retry" onClick={onRetry}>
-            retry
-          </button>
-        </span>
-      ) : (
-        stepsNote(workflow.read, ran)
+    if (workflow === null) {
+      noteTitle = `steps: reading…${id}`
+      note = noteTitle
+    } else if (workflow.status === 'error') {
+      const why = `steps not read: ${workflow.limited ? 'rate-limited' : workflow.why}`
+      note = (
+        <>
+          <span className="tl-wf-unread" title={`${workflow.route} ${workflow.why}`}>
+            {why} ·{' '}
+            <button type="button" className="c-link is-sm tl-wf-retry" onClick={onRetry}>
+              retry
+            </button>
+          </span>
+          {id}
+        </>
       )
+      noteTitle = `${why}${id}`
+    } else {
+      noteTitle = `${stepsNote(workflow.read, ran)}${id}`
+      note = noteTitle
+    }
     if (workflow?.status === 'ok') gap = stepsGap(workflow.read, ran, empty)
   } else if (block.kind === 'standalone') {
     title = 'Standalone'
@@ -1723,6 +1831,8 @@ function GroupHead({
     note = `${block.lanes.length}`
   }
   const state = workflow?.status === 'ok' ? workflow.read.workflow.state : null
+  // Only a workflow is one thing with a span; a profile or the standalone block is a list.
+  const bracket = block.kind === 'workflow' ? blockSpan(block.lanes, since, until) : null
   return (
     <div className="tl-row is-group" data-group={block.key}>
       <div className="tl-lab">
@@ -1742,10 +1852,14 @@ function GroupHead({
             </span>
           )}
         </b>
-        <small>{note}</small>
+        <small title={noteTitle}>{note}</small>
         {gap !== null && <small className="tl-wf-gap">{gap}</small>}
       </div>
-      <div className="tl-trk" />
+      <div className="tl-trk">
+        {bracket !== null && (
+          <span className="tl-wf-span" aria-hidden="true" style={{ left: `${bracket.left}%`, width: `${bracket.width}%` }} />
+        )}
+      </div>
     </div>
   )
 }

@@ -122,6 +122,7 @@ router = APIRouter(prefix="/v1/accounts", tags=["accounts"])
 HOLDERS_PLATFORM_ROUTE = ("GET", "/v1/accounts/{account_id}/holders")
 HISTORY_PLATFORM_ROUTE = ("GET", "/v1/accounts/{account_id}/history")
 HEALTH_PLATFORM_ROUTE = ("GET", "/v1/accounts/{account_id}/health")
+HEALTH_POOL_PLATFORM_ROUTE = ("GET", "/v1/accounts/health")
 
 
 def account_pool(
@@ -1118,6 +1119,88 @@ def health_view(
         "counts": {span: _health_counts(counts_raw.get(span)) for span in ACCOUNT_HEALTH_SPANS},
         "hourly": series,
         "events": events,
+        "observed_at": data.get("observed_at") if isinstance(data.get("observed_at"), str) else None,
+    }
+
+
+def _pool_record(raw: Any) -> tuple[str, str, list[str]] | None:
+    """(account id, owner, loans) of one pool-wide record, or None."""
+    if not isinstance(raw, dict):
+        return None
+    account_id, owner = raw.get("account_id"), raw.get("owner_tenant")
+    if not (isinstance(account_id, str) and account_id and isinstance(owner, str)):
+        return None
+    loans = [t for t in raw.get("lend_to") or [] if isinstance(t, str)]
+    return account_id, owner, loans
+
+
+@router.get("/health")
+def accounts_health(
+    scope: str | None = Query(default=None, description="tenant | platform"),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """Every account's health in ONE read (ACCOUNT-HEALTH-PAGE, #2302): the
+    record `GET /v1/accounts/{id}/health` serves, for each account this tenant
+    may run on (owned or lent to it), or for every account with
+    `scope=platform` (a platform admin only, refused before the broker is
+    asked).
+
+    ONE BROKER CALL, never a listing plus one read per account: Capacity ›
+    Account health polls it, and a pool of 30 would otherwise be 31 calls a
+    poll. Each account is then shown by the per-account read's own viewer rule
+    (`health_view`, the section above): owner, borrower or platform, every
+    message redacted again. A record for an account this tenant neither owns
+    nor borrows is DROPPED here even if the broker sent it -- the broker
+    filters by the same rule, and this is the second line, as the redaction
+    is.
+    """
+    if scope not in (None, "", "tenant", "platform"):
+        raise ValidationFailed("scope must be 'tenant' or 'platform'")
+    tenant_id: str | None
+    if scope == "platform":
+        require_admin(auth, HEALTH_POOL_PLATFORM_ROUTE)
+        tenant_id = None
+    else:
+        tenant_id = _tenant_id(ctx, auth)
+    payload = pool.accounts_health(tenant_id)
+    data = payload if isinstance(payload, dict) else {}
+    check = _check(ctx)
+    kept: list[tuple[dict[str, Any], str, str, str]] = []
+    for raw in data.get("accounts") or []:
+        record = _pool_record(raw)
+        if record is None:
+            continue
+        account_id, owner, loans = record
+        if tenant_id is None:
+            viewer = "platform"
+        elif owner == tenant_id or tenant_id in loans:
+            viewer = viewer_of({"owner_tenant": owner}, tenant_id)
+        else:
+            continue
+        kept.append((raw, account_id, owner, viewer))
+    # One batched ownership read per tenant for every event's task, rather
+    # than one per event (`TaskCheck.prime`).
+    check.prime(
+        (str(e.get("tenant_id")), str(e.get("task_id")))
+        for raw, _a, _o, _v in kept
+        for e in raw.get("events") or []
+        if isinstance(e, dict) and isinstance(e.get("tenant_id"), str) and isinstance(e.get("task_id"), str)
+    )
+    accounts = []
+    for raw, account_id, owner, viewer in kept:
+        accounts.append({
+            **health_view(raw, account_id=account_id, viewer=viewer, tenant_id=tenant_id, check=check),
+            "label": raw.get("label") if isinstance(raw.get("label"), str) else "",
+            "owner_tenant": owner,
+        })
+    events_max = data.get("events_max")
+    return {
+        "tenant_id": tenant_id,
+        "accounts": accounts,
+        "events_max": events_max if isinstance(events_max, int) and not isinstance(events_max, bool) else None,
+        "truncated": data.get("truncated") is True,
         "observed_at": data.get("observed_at") if isinstance(data.get("observed_at"), str) else None,
     }
 

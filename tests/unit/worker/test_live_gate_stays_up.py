@@ -26,7 +26,7 @@ from typing import Any
 
 import pytest
 from test_live_browser_relaunch import Rig
-from test_live_cdp_proxy import FakeAgent, World, _Display, _Scale, settle
+from test_live_cdp_proxy import FakeAgent, World, _Display, settle
 from test_live_device_recover import _until
 
 from agent_worker.livegate import ctl
@@ -74,7 +74,7 @@ async def _refused_viewport_then_gone(w: World, agent: GoneAgent | StalledAgent)
     still has events for its page."""
     w.agent = agent
     await w.connect()
-    devices = DeviceController(w.proxy, _Display(), _Scale(), record=lambda k, f: None)
+    devices = DeviceController(w.proxy, _Display(), record=lambda k, f: None)
     page = await w.attach_page("T-page")
     await devices.attach_page("T-page")
     request = await w.send("Emulation.setDeviceMetricsOverride",

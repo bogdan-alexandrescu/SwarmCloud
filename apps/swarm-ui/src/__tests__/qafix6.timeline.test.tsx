@@ -251,7 +251,9 @@ describe('6:work-a-011: the lane count is shown at 390, in the sticky head above
       expect(el).not.toBeNull()
       return el!
     })
-    expect(text(lab)).toBe('0 workflows · 2 standalone')
+    // The count is the cell's first line; the zone the axis is drawn in is its second (VQ-023).
+    expect(text(lab.querySelector('small')!)).toBe('0 workflows · 2 standalone')
+    expect(text(lab.querySelector('.tl-zone')!)).toBe('times UTC')
     // MUTATION: put back `.tl-axis .tl-lab { display: none }` in the phone block.
     expect(painted(lab, 'display', PHONE)).not.toBe('none')
     // The axis row is the sticky head, so the count stays above the lanes.

@@ -59,6 +59,7 @@ from agent_worker.objectstore import LocalObjectStore
 from agent_worker.runners.base import RunnerContext, RunnerFailure
 from swarm_common.states import TaskState
 
+from test_cli_prompt_names_time_limit import without_limit_line
 from worker_seeds import TENANT, seed_attempt
 
 needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
@@ -106,8 +107,14 @@ def _warnings_naming(log_stream: io.StringIO, name: str) -> list[dict[str, Any]]
 QUESTIONS_LINE = (
     "If a decision is the owner's to make, ask instead of guessing: write "
     "questions.json there, a JSON list of {question, options: [{label, "
-    "description}], recommended, context}; it is shown to the owner and "
-    "never acted on."
+    "description}], recommended, context, built, blocking}, built being the label of "
+    "the option your branch implements, or null when the answer changes "
+    "nothing it builds; it is shown to the owner, and a merge does not go "
+    "ahead while the owner's pick differs from built. A question does not "
+    "stop your step; if your work cannot go on without the answer, mark it "
+    '"blocking": true, write an empty file named await-answers beside '
+    "questions.json and exit: the step is parked until the owner answers, "
+    "then resumed with the answers."
 )
 
 
@@ -283,7 +290,10 @@ def test_a_task_with_no_repository_gets_the_prompt_it_got_before(tmp_path, recor
 
     _out, record = _run(ctx)
 
-    assert record["prompt"] == f"merge the scans\n\n{_deliverables_line(ctx.artifacts_dir)}"
+    # Unchanged but for the step's time-limit line, last (#2139).
+    assert without_limit_line(record["prompt"]) == (
+        f"merge the scans\n\n{_deliverables_line(ctx.artifacts_dir)}"
+    )
 
 
 def test_an_unusable_staged_path_is_never_put_in_the_prompt(tmp_path, recording_cli):

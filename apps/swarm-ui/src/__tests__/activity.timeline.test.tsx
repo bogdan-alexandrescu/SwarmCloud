@@ -816,12 +816,13 @@ describe('the Table toggle', () => {
 // ---------------------------------------------------------------------------
 
 describe('scope and filters', () => {
-  it('gives a non-admin no scope control, and names their tenant in the facts line', async () => {
+  it('gives a non-admin no scope control, and names their workspace in the facts line', async () => {
     const root = await timeline()
     await waitFor(() => expect(api.loadMe).toHaveBeenCalled())
     expect(root.querySelector('.ol-scope')).toBeNull()
     const facts = [...root.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
-    expect(facts).toContain('tenanteng')
+    // The reader's word is workspace (VQ-056); the id is still the tenant id.
+    expect(facts).toContain('workspaceeng')
     expect(facts).toContain('bycompleted_at')
   })
 
@@ -836,6 +837,14 @@ describe('scope and filters', () => {
       return b!
     })
     expect(verify.textContent).toBe('exclude verify')
+    // THE READER'S WORD IS WORKSPACE (VQ-056): the scope, the picker and the
+    // platform fact say it; the hash and the query keep `tenant`.
+    const scope = [...root.querySelector('.ol-scope')!.querySelectorAll('button')].map((b) => b.textContent)
+    expect(scope).toEqual(['my workspace', 'platform'])
+    const picker = [...root.querySelectorAll<HTMLElement>('.ol-pick summary')].map((p) => p.textContent ?? '')
+    expect(picker).toContain('Workspace all 3')
+    expect(root.querySelector('.ol-toolbar')!.textContent).not.toMatch(/tenant/i)
+    expect(root.querySelector('.ol-facts')!.textContent).not.toMatch(/tenant/i)
     fireEvent.click(verify)
     // An exclusion, not an include list: a tenant created tomorrow is still counted.
     expect(onView).toHaveBeenLastCalledWith('exclude_tenant=verify')
@@ -862,6 +871,10 @@ describe('scope and filters', () => {
     const empty = root.querySelector('.ctl-empty')!
     expect(empty.classList.contains('is-admin')).toBe(true)
     expect(empty.classList.contains('is-failed')).toBe(false)
+    // The way back names the reader's own workspace, never a tenant (VQ-056).
+    expect(empty.querySelector('button.c-link')!.textContent).toBe('my workspace')
+    expect(empty.textContent).not.toMatch(/tenant/i)
+    expect(empty.innerHTML).not.toMatch(/tenant/i)
     expect(root.querySelector('.ol-ledger')).toBeNull()
   })
 })
@@ -935,7 +948,7 @@ describe('what the route serves, said as the route means it', () => {
     expect(prev.querySelector('.ol-prov')!.textContent).toContain('not cached')
   })
 
-  it('counts coverage.days in its own unit: UTC days in tenant scope, tenant-days in platform scope', async () => {
+  it('counts coverage.days in its own unit: UTC days in workspace scope, workspace-days in platform scope', async () => {
     // 12-25 Sep in Bucharest touches the UTC days 11-25: 15 rollup documents
     // for 14 local days, and in platform scope one per tenant per day.
     const root = await timeline()
@@ -950,8 +963,20 @@ describe('what the route serves, said as the route means it', () => {
     d.coverage = { ...d.coverage, days: { total: 45, sealed: 42, live: 3, unread: 0 } }
     const platform = await timeline(d, { view: 'scope=platform' }, { admin: true })
     const pf = [...platform.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
-    expect(pf, '45 tenant-days read as "45 days" over a 14-day span').toContain('sealed42 of 45 tenant-days · today so far')
-    expect(platform.querySelector('.ol-prov')!.textContent).toContain('42 tenant-days sealed')
+    expect(pf, '45 workspace-days read as "45 days" over a 14-day span').toContain('sealed42 of 45 workspace-days · today so far')
+    expect(platform.querySelector('.ol-prov')!.textContent).toContain('42 workspace-days sealed')
+  })
+
+  it('says a platform listing cut at its limit in workspaces, not tenants', async () => {
+    const d = ledgerFixture()
+    d.scope = { kind: 'platform', tenants: ['eng', 'personal'], excluded: ['verify'], tenants_complete: false }
+    const root = await timeline(d, { view: 'scope=platform' }, { admin: true })
+    const fact = [...root.querySelectorAll<HTMLElement>('.ol-facts .ctl-fact')].find((f) => f.querySelector('b')?.textContent === 'platform')!
+    expect(fact.textContent).toContain('2 workspaces · verify excluded')
+    expect(fact.querySelector('.ctl-mark')!.getAttribute('aria-label')).toBe(
+      'The workspace listing stopped at its limit, so workspaces past it are not in these figures.',
+    )
+    expect(fact.innerHTML).not.toMatch(/tenant/i)
   })
 
   it('prints each series’ basis in the route’s word, never its own', async () => {
@@ -1036,7 +1061,7 @@ describe('the eight cards', () => {
     expect(root.textContent, '"Token spend" survived the rename').not.toMatch(/Token spend/)
   })
 
-  it('Why agents failed: every class in the server’s fixed order, zeroes drawn as real zeroes', async () => {
+  it('Why agents failed: every class in the server’s fixed order, a zero drawn as its count with no bar', async () => {
     const root = await timeline()
     const c = card(root, /^Why agents failed/)
     const rows = [...c.querySelectorAll('.ol-row')]
@@ -1048,8 +1073,11 @@ describe('the eight cards', () => {
     expect(rows.map((r) => r.querySelector('.ol-row-n')!.textContent)).toEqual([
       '1', '0', '7', '0', '0', '6', '8', '0', '0', '0', '0', '0', '0', '6', '0', '0',
     ])
+    // A 0 ROW DRAWS NO BAR (visual QA VQ-022, 2026-10-26): the zero tick read
+    // as a small non-zero bar. The row and its "0" are drawn; the bar is not.
     const timeout = rows[1]!
-    expect(timeout.querySelector('.ctl-util-track.is-zero'), 'a zero class is an empty bar, not a real zero').not.toBeNull()
+    expect(timeout.querySelector('.ctl-util-track'), 'a zero class draws a bar stub').toBeNull()
+    expect(timeout.querySelector('.ol-row-none')).not.toBeNull()
     expect(c.querySelector('.ctl-card-note')!.textContent).toBe('28 · by class')
   })
 
@@ -1155,7 +1183,7 @@ describe('the eight cards', () => {
     const person = c.querySelector('.ol-person')!
     expect(person.classList.contains('is-warn')).toBe(true)
     // In words, not enums (QA G3-24): `reasonCopy`'s, with the token in the title.
-    expect(person.textContent).toContain('No provider key is registered for this tenant 2')
+    expect(person.textContent).toContain('No provider key is registered for this workspace 2')
     expect(c.textContent).toContain('clears itself The provider quota is spent. Parked until it resets 1')
     expect(c.textContent).not.toContain('PROVIDER_QUOTA_EXHAUSTED')
   })
@@ -1167,11 +1195,11 @@ describe('the eight cards', () => {
     expect(c.textContent).toContain('not filtered by profile')
   })
 
-  it('Not finished yet: says its platform counts are not filtered by tenant when the view excludes one', async () => {
+  it('Not finished yet: says its platform counts are not filtered by workspace when the view excludes one', async () => {
     const root = await timeline(ledgerFixture(), { view: 'exclude_tenant=verify' }, { admin: true })
     const c = card(root, /^Not finished yet/)
     await waitFor(() => expect(c.querySelector('.ol-open-counts')).not.toBeNull())
-    expect(c.querySelector('.ol-open-counts')!.textContent).toContain('not filtered by tenant')
+    expect(c.querySelector('.ol-open-counts')!.textContent).toContain('not filtered by workspace')
   })
 
   it('Not finished yet: re-reads its live counts when a filter changes, not only on refresh', async () => {
@@ -1483,6 +1511,23 @@ describe('a figure lists the tasks behind it (#116)', () => {
     expect(note).toMatch(/completed_at/)
     expect(note).toMatch(/newest 2 of 740 listed/)
     expect(c.querySelector('.ctl-card-title')!.textContent).toMatch(/^740 failed/)
+  })
+
+  it('heads a platform figure’s workspace column, and its row’s key, as workspace (VQ-056)', async () => {
+    const d = ledgerFixture()
+    d.scope = { kind: 'platform', tenants: ['eng', 'personal'], excluded: [], tenants_complete: true }
+    serve(d, { admin: true })
+    const rows = endedRows({ total: 1, group: 'tenant_id', key: 'eng', rows: [endedRow(3)] })
+    api.loadOutcomes.mockImplementation((q: URLSearchParams) => Promise.resolve(ok(q.has('rows') ? ({ ...d, ended_rows: rows } as Outcomes) : d)))
+    const { container } = render(
+      <ActivityScreen view="scope=platform&group=tenant_id&rows=failed&at=2026-09-22T00%3A00%3A00%2B03%3A00&rows_key=eng" onView={() => {}} />,
+    )
+    const c = await rowsCard(container as HTMLElement)
+    const heads = [...c.querySelectorAll('thead th')].map((th) => th.textContent)
+    expect(heads).toEqual(['Agent', 'Workspace', 'Profile', 'Submitted by', 'Ended', 'Why'])
+    expect(c.querySelector('tbody td')!.textContent).toBe('eng')
+    expect(c.querySelector('.ol-rows-note')!.textContent).toContain(' · workspace eng')
+    expect(c.textContent).not.toMatch(/tenant/i)
   })
 
   it('opens from the address, so the list behind a figure is a link', async () => {

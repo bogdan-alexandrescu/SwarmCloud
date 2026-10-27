@@ -38,7 +38,7 @@ function figures(agents: number, b: BrowserUsage | null | undefined): UsageFigur
     attempts: agents,
     run_s: { sum: agents * 1800, measured: agents, attempts: agents },
     tokens: { input_tokens: tok(agents), output_tokens: tok(agents), cache_read_input_tokens: tok(agents), cache_creation_input_tokens: tok(agents) },
-    cost: { sum_usd: agents, estimated_usd: null, agents, reporting: agents },
+    cost: { sum_usd: agents, estimated_usd: null, estimated: 0, agents, reporting: agents },
   }
   return b === undefined ? f : { ...f, browser: b }
 }
@@ -65,7 +65,13 @@ function payload(totals: UsageFigures, buckets: UsageBucket[]): Result<PlatformT
         cost_label: 'Estimated cost (list price, not a bill)',
         buckets,
         totals: { complete: true, ...totals },
-        groups: { by: 'runner_profile', rows_total: 0, rows: [] },
+        groups: { by: 'runner_profile', rows_total: 0, rows: [], series: [] },
+        breakdowns: {
+          runner_profile: { by: 'runner_profile', rows_total: 0, rows: [], series: [] },
+          model: { by: 'model', rows_total: 0, rows: [], series: [] },
+          tenant_id: { by: 'tenant_id', rows_total: 0, rows: [], series: [] },
+          pool_account: { by: 'pool_account', rows_total: 0, rows: [], series: [] },
+        },
       },
     },
   }

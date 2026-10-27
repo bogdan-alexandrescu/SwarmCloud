@@ -14,7 +14,8 @@
 //   G3-19  the pending review verdict is one sentence
 //   G3-25  the integrator is a task link, not a bare 8-character id
 //   G3-26  one run, one duration: the drawer's `took` and the table's `ran`
-//   G3-27  a linear chain's nodes use the column
+//   G3-27  a linear chain's nodes use the column -- REVERSED by VQ-014: they
+//          keep their tier's width
 //   G3-28  the page's own pick on arrival does not scroll the page
 //   G3-32  a stacked row with no why prints no `Why` label
 //   G3-33  the Tokens column sorts
@@ -40,7 +41,7 @@ vi.mock('../api', async (importOriginal) => {
 })
 
 const { WorkflowCard } = await import('../Workflows')
-const { workflowSpend, dueSteps, layoutOf, nodeWidthAt, CHAIN_NODE_W } = await import('../dag')
+const { workflowSpend, dueSteps, layoutOf, nodeWidthAt, autoTier, NODE_W } = await import('../dag')
 const { attemptFacts, attemptPhase, failureCause } = await import('../stepviews')
 const { TIMELINE_KEY } = await import('../WorkflowViews')
 const { durationText } = await import('../measure')
@@ -621,17 +622,43 @@ describe('G3-26: the drawer’s `took` and the table’s `ran` print one run onc
 })
 
 // ---------------------------------------------------------------------------
-// G3-27: a chain uses the column
+// G3-27, reversed on the workflow page (VQ-014, BGD 2026-10-26)
 // ---------------------------------------------------------------------------
 
-describe('G3-27: a linear chain’s nodes use the room beside them', () => {
-  it('widens a chain’s nodes up to CHAIN_NODE_W, and leaves a fan alone', () => {
-    const chain = [step('implement', []), step('review', ['implement']), step('fix', ['review'], { input_from: { review: 'swarm-work.patch' } } as Partial<WorkflowStep>)]
-    const l = layoutOf(chain)
-    expect(l.nodeW).toBeGreaterThan(nodeWidthAt('figures', chain))
-    expect(l.nodeW).toBeLessThanOrEqual(CHAIN_NODE_W)
+describe('VQ-014: a linear chain’s cards keep their tier’s own width', () => {
+  // G3-27 drew a chain's cards at up to twice NODE_W (about 510px), so a
+  // five-step chain showed one and a half steps at a time. BGD's decision
+  // (VQ-014, "Drop the chain widening on the page"): the tier's own width, and
+  // a long input_from name wraps inside its card.
+  // One line at the doubled card, more than one at the tier's.
+  const LONG = 'implementation-notes-for-the-reviewer.md'
+  const chainOf = (file: string | null) => [
+    step('plan', []),
+    step('implement', ['plan']),
+    step('review', ['implement'], file === null ? {} : ({ input_from: { implement: file } } as Partial<WorkflowStep>)),
+    step('fix', ['review']),
+    step('ship', ['fix']),
+  ]
+
+  it('draws a five-step chain at the tier width, at every tier and under Auto', () => {
+    const chain = chainOf(LONG)
+    for (const tier of ['names', 'details', 'figures'] as const) {
+      const l = layoutOf(chain, undefined, tier)
+      expect(l.nodeW).toBe(nodeWidthAt(tier, chain))
+    }
+    const auto = autoTier(chain)
+    expect(layoutOf(chain, undefined, auto).nodeW).toBe(nodeWidthAt(auto, chain))
+    // Never the doubled card G3-27 drew.
+    expect(layoutOf(chain, undefined, 'details').nodeW).toBeLessThan(NODE_W * 2)
+    // A fan was never widened, and still is not.
     const fan = [step('a', []), step('b', ['a']), step('c', ['a'])]
     expect(layoutOf(fan).nodeW).toBe(nodeWidthAt('figures', fan))
+  })
+
+  it('wraps a long input_from name inside its card, measured onto more lines', () => {
+    const hOf = (file: string | null) =>
+      layoutOf(chainOf(file), undefined, 'details').nodes.find((n) => n.step.step_id === 'review')!.h
+    expect(hOf(LONG)).toBeGreaterThan(hOf(null))
   })
 })
 

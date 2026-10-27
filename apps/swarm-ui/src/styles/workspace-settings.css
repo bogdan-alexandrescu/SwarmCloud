@@ -76,3 +76,18 @@
 .ws-rename { display: flex; flex-direction: column; gap: 8px; margin-top: var(--ctl-s3, 12px); padding-top: var(--ctl-s3, 12px); border-top: 1px solid var(--line); min-width: 0; }
 .ws-rename .ur-hint, .ws-rename .ur-small { margin: 0; }
 .ws-rename-a { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Config › People and roles as S5b's cards (CONFIG-PEOPLE-S5; part of #2391).
+   The Roles card's head carries its read-only chip (S5g) and the refresh,
+   right-aligned together; the row of Give a person their own role and Role
+   events is `.ws-grid` above, one column under 900px (S5e). */
+.wp-card-a { margin-left: auto; display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+/* The segmented role control's name, in the size and tone of `.pk-form label`. */
+.wp-label { font-size: var(--t-micro); color: var(--text-dim); }
+/* The caller's own roster row says "you" after the address, as S5g's does. */
+.wp-you { font-size: var(--t-micro); font-weight: 400; color: var(--text-dim); }
+@media (max-width: 719px) {
+  /* A stacked roster row (keys.css `.mcp-servers`) draws no column name over
+     an empty value: the caller's own row has no reason and nothing to return. */
+  .wp-page .mcp-servers > tbody > tr > td:empty { display: none; }
+}

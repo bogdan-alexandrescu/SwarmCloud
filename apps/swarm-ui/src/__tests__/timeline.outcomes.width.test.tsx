@@ -47,7 +47,7 @@ describe('the success-rate drawing fills its column', () => {
         disconnect() {}
       },
     )
-    const { container } = render(<OutcomeLedger data={ledgerFixture()} picked={null} onPick={() => {}} onZoom={() => {}} />)
+    const { container } = render(<OutcomeLedger data={ledgerFixture()} sealGraceS={900} picked={null} onPick={() => {}} onZoom={() => {}} />)
     const figure = container.querySelector('figure.ol-chart') as HTMLElement
     Object.defineProperty(figure, 'clientWidth', { configurable: true, get: () => 1050 })
     act(() => fire?.())

@@ -40,6 +40,7 @@ from swarm_common.profiles import RUNNER_PROFILES
 from swarm_common.models import EndCause
 from swarm_common.states import TaskState
 
+from test_cli_prompt_names_time_limit import without_limit_line
 from worker_seeds import TENANT, seed_attempt
 
 needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
@@ -50,8 +51,14 @@ REPO = "https://github.com/octo/widgets.git"
 QUESTIONS_LINE = (
     "If a decision is the owner's to make, ask instead of guessing: write "
     "questions.json there, a JSON list of {question, options: [{label, "
-    "description}], recommended, context}; it is shown to the owner and "
-    "never acted on."
+    "description}], recommended, context, built, blocking}, built being the label of "
+    "the option your branch implements, or null when the answer changes "
+    "nothing it builds; it is shown to the owner, and a merge does not go "
+    "ahead while the owner's pick differs from built. A question does not "
+    "stop your step; if your work cannot go on without the answer, mark it "
+    '"blocking": true, write an empty file named await-answers beside '
+    "questions.json and exit: the step is parked until the owner answers, "
+    "then resumed with the answers."
 )
 TOKEN = "ghp_issuefetchtoken0123456789abcdef"
 
@@ -503,7 +510,8 @@ def test_the_prompt_names_the_issue_file_between_the_callers_prompt_and_the_inst
     line = issue_mod.prompt_line(work / "issue.md")
     assert prompt.startswith(f"Fix the issue.\n\n{line}\n\n")
     assert str((work / "issue.md").resolve()) in prompt or str(work / "issue.md") in prompt
-    assert prompt.endswith(
+    # Then the step's time-limit line, last (#2139).
+    assert without_limit_line(prompt).endswith(
         f"Files written to {artifacts} ($SWARM_ARTIFACTS_DIR) are uploaded and shown in Artifacts."
         f"\n{QUESTIONS_LINE}"
     )
@@ -515,7 +523,7 @@ def test_the_prompt_names_the_issue_file_between_the_callers_prompt_and_the_inst
 def test_a_task_that_asks_for_no_issue_gets_the_prompt_it_got_before(tmp_path, monkeypatch):
     prompt, _, artifacts = _prompt(tmp_path, monkeypatch, {"prompt": "do it"}, issue_text="stray")
 
-    assert prompt == (
+    assert without_limit_line(prompt) == (
         f"do it\n\nFiles written to {artifacts} ($SWARM_ARTIFACTS_DIR) are uploaded and "
         f"shown in Artifacts.\n{QUESTIONS_LINE}"
     )

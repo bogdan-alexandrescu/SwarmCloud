@@ -121,19 +121,44 @@ describe('work-a-004: a workflow title is cut the way a lane name is', () => {
   })
 
   it('cuts a title that is not a link the same way', async () => {
-    // The workflow read fails, so the group is titled by its id in plain text.
+    // The workflow read fails, so the group is titled in plain text -- by the
+    // label its own lane carries (VQ-025), the id closing the note under it.
     api.loadWorkflow.mockResolvedValue({ status: 'error', error: { kind: 'server', httpStatus: 503, code: null, message: 'down' } })
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     const b = await waitFor(() => {
       const el = document.querySelector<HTMLElement>('.tl-row.is-group[data-group="wf_long"] .tl-lab b')
-      expect(el?.textContent).toContain('wf_long')
+      expect(el?.textContent).toContain(LABEL)
+      // The title shows before the read fails; until it does the note says
+      // "steps: reading…", so wait for the note too.
+      expect(document.querySelector('.tl-row.is-group[data-group="wf_long"] .tl-lab small')?.textContent).toMatch(/^steps not read: /)
       return el!
     })
+    expect(document.querySelector('.tl-row.is-group[data-group="wf_long"] .tl-lab small')!.textContent).toMatch(/^steps not read: .* · retry · wf_long$/)
     // MUTATION: leave the plain title as a bare text run in the flex `<b>` and
     // there is no element here to give way: it is sheared at the edge.
-    const title = [...b.children].find((c) => c.textContent === 'wf_long') as HTMLElement | undefined
+    const title = [...b.children].find((c) => c.textContent === LABEL) as HTMLElement | undefined
     expect(title, 'the plain title is an element of its own').toBeDefined()
     expect(painted(title!, 'min-width', WIDE)).toBe('0')
     expect(painted(title!, 'text-overflow', WIDE)).toBe('ellipsis')
+  })
+})
+
+// TENANT-WORDING-I (VQ-056, part of #2391): a workflow the batched read did
+// not serve is "not found in this workspace", the console's word for a tenant
+// (BGD, 2026-10-26). The route in the tooltip keeps its technical shape.
+describe('VQ-056: a workflow the batch did not serve is named against the workspace', () => {
+  it('says "not found in this workspace" in the note and its tooltip', async () => {
+    // A 404 from the single read is an id the batch double reports `missing`.
+    api.loadWorkflow.mockResolvedValue({ status: 'error', error: { kind: 'not_found', httpStatus: 404, code: null, message: 'no such workflow' } })
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    const note = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('.tl-row.is-group[data-group="wf_long"] .tl-lab small')
+      expect(el?.textContent).toMatch(/^steps not read: /)
+      return el!
+    })
+    // MUTATION: put "tenant" back in the `missing` branch and both are red.
+    expect(note.textContent).toMatch(/^steps not read: not found in this workspace · retry · wf_long$/)
+    expect(note.querySelector('.tl-wf-unread')?.getAttribute('title')).toBe('/v1/workflows?ids=wf_long not found in this workspace')
+    expect(note.textContent).not.toMatch(/tenant/i)
   })
 })

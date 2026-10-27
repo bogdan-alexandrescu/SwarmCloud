@@ -602,6 +602,76 @@ def worst_case_day_usd(budget: Mapping[str, Any], actual_run_cost_usd: float) ->
 
 
 # --------------------------------------------------------------------------
+# The state word (Automate proposal A, picked 2026-10-26, part of #2417)
+# --------------------------------------------------------------------------
+
+#: The six words Automate's landing and one-schedule sheet show in place of
+#: the stored `state`, each telling the reader what to do. Derived here, once,
+#: and served as `state_word` on every schedule and counted in the list's
+#: `summary`, so the list, the summary and the sheet cannot disagree.
+STATE_WORDS = ("active", "paused", "paused_by_tripwire", "waiting_on_approval", "failing", "never_fired")
+
+#: The auto-pause code of the per-run tripwire (§4.3): a run that cost more
+#: than `per_run_usd`. `schedulefire.RUN_OVER_BUDGET`, restated because that
+#: module imports this one; a unit test holds the two equal.
+TRIPWIRE_CODE = "RUN_OVER_BUDGET"
+
+
+def state_word(doc: Mapping[str, Any], *, waiting: int) -> str:
+    """One schedule's word, first match wins. `waiting` is how many approvals
+    in the tenant's inbox name this schedule.
+
+    A schedule that is not `enabled` fires nothing, so it reads paused before
+    anything else: an approval it is waiting on cannot run until it resumes
+    (`schedulefire` runs an approved cron firing only while enabled). The
+    tripwire's own auto-pause is told apart, because resuming it means first
+    reading why a run cost more than its cap. `disabled` (an admin's) reads
+    paused, with `state` and `pause` beside it saying whose. An enabled one
+    waiting on a person reads that before it reads failing: the approval is
+    the thing the reader can act on. `consecutive_failures` is the tick's own
+    count, reset by a success, and `last_firing` is null until the tick first
+    claims or skips a slot for it, or a run-now creates its work (§1.1).
+    """
+    if doc.get("state") != "enabled":
+        pause = doc.get("pause") or {}
+        if doc.get("state") == "auto_paused" and pause.get("code") == TRIPWIRE_CODE:
+            return "paused_by_tripwire"
+        return "paused"
+    if waiting > 0:
+        return "waiting_on_approval"
+    if int(doc.get("consecutive_failures") or 0) > 0:
+        return "failing"
+    if not doc.get("last_firing"):
+        return "never_fired"
+    return "active"
+
+
+def summarize(words: Iterable[str], waiting: list[Mapping[str, Any]] | None) -> dict[str, Any]:
+    """`GET /v1/schedules`'s `summary`: the listed schedules by word, every
+    word present (a zero is a count, not a gap), and the tenant's waiting
+    approvals as the Approvals tab lists them, oldest first.
+
+    `oldest_expires_at` is when the OLDEST waiting item expires -- the item
+    the landing's lead names -- not the soonest expiry; null when nothing
+    waits or the oldest never expires (a plan of a run made by hand). When the
+    inbox could not be read (`waiting` None) both are null and `unread` says
+    so: an unknown count is never 0.
+    """
+    by_state = dict.fromkeys(STATE_WORDS, 0)
+    for word in words:
+        by_state[word] += 1
+    if waiting is None:
+        return {"by_state": by_state, "pending_approvals": None, "oldest_expires_at": None,
+                "unread": "the approvals inbox could not be read"}
+    return {
+        "by_state": by_state,
+        "pending_approvals": len(waiting),
+        "oldest_expires_at": waiting[0].get("expires_at") if waiting else None,
+        "unread": None,
+    }
+
+
+# --------------------------------------------------------------------------
 # Policy and tier
 # --------------------------------------------------------------------------
 

@@ -17,6 +17,7 @@ import { AdminSettingsScreen } from './AdminSettings'
 import { AgentsScreen } from './Agents'
 import { TimelineLanesScreen } from './TimelineLanes'
 import { AgentSplit } from './AgentSplit'
+import { AccountHealthScreen } from './AccountHealthPage'
 import { CapacityScreen } from './Capacity'
 import { Dock } from './Dock'
 import {
@@ -71,7 +72,8 @@ import { ApprovalsScreen } from './Approvals'
 import { RepositoriesScreen } from './Repositories'
 import { qaCredentialLinkFrom, type QaLink } from './qaTargetsApi'
 import { AGE_TICK_MS, useNow } from './useNow'
-import { WorkflowsScreen } from './Workflows'
+import { useRecentName, WorkflowsScreen } from './Workflows'
+import { backLabel, filterQueryString, parseWorkflowQuery } from './workflowlist'
 
 /**
  * THE NAVIGATION, AND WHY IT IS AS FEW THINGS AS IT IS.
@@ -348,7 +350,8 @@ export const SECTIONS: SectionDef[] = [
     // docs/schedules.md §6.1 (SD1, owner decision 2026-10-08): the section
     // that holds what runs by itself. A LITERAL id for the reason given on
     // Work: test_nav_headings_agree.py reads this array with a regex.
-    // Approvals is its second page, `/approvals` (§6.1), and the question's
+    // Approvals is its second page, `/automate/approvals` (§6.1; moved from
+    // `/approvals` by APPROVALS-MOVE, VQ-030), and the question's
     // last clause is its. ONE SCHEDULES PAGE (SCHED-ONE-PAGE, owner decision
     // 2026-10-13, §6.1): an admin's every-tenant view is Schedules' "All
     // tenants" switch (`?scope=all`), not a second Schedules tab under Admin.
@@ -444,6 +447,12 @@ export const SECTIONS: SectionDef[] = [
       // and nobody looks under Settings for that. `#settings/accounts` still
       // works and lands here.
       { id: 'accounts', label: 'Accounts' },
+      // ACCOUNT HEALTH (ACCOUNT-HEALTH-PAGE, part of #2302; BGD's pick of
+      // proposal B, 2026-10-25): what has been going wrong on each
+      // subscription account, where and when -- rate-limit hits, provider
+      // errors, refusals, re-auths. Accounts answers "who can take work";
+      // this answers "what went wrong", so the two are two pages, side by side.
+      { id: 'account-health', label: 'Account health' },
       { id: 'quota', label: 'Provider quota', admin: true },
       // API READS, A PAGE OF CAPACITY SINCE NAV-FOOT (#1672, owner 2026-10-20).
       // It sat at the spine's foot as a utility, "deliberately NOT one of the
@@ -1153,7 +1162,7 @@ function keptKeys(sectionId: string, tab: string): readonly string[] {
   // paths.ts), with its tab and its editor (AUT-11).
   // `scope=all` is the admin's All tenants view (SCHED-ONE-PAGE), linkable.
   if (sectionId === AUTOMATE && tab === 'schedules') return ['schedule', 'tab', 'edit', 'scope']
-  // One inbox item rides on the page's address (`/approvals/<id>`, paths.ts),
+  // One inbox item rides on the page's address (`/automate/approvals/<id>`, paths.ts),
   // and the inbox's kind filter beside it (AUT-15).
   if (sectionId === AUTOMATE && tab === 'approvals') return ['approval', 'kind']
   // GitHub access' Choose repositories tab, and People and roles' Members'
@@ -1771,7 +1780,10 @@ function Head({
   const home = submitForm ? SUBMIT : section === null ? at.sectionId : `${section.id}/${firstTab(section)}`
   // The open agent by its name once its split has read it (walkthrough G).
   const named = useAgentName(at.taskId)
-  const crumbs = crumbsOf({ at, head, home, tab, tabs: section?.tabs.length ?? 0, title, closeTo, named })
+  // An open workflow by its name too, as its page title has it (VQ-015).
+  const object = openObjectOf(at)
+  const workflowName = useRecentName(at.taskId === null && at.tab === 'workflows' ? object : null)
+  const crumbs = crumbsOf({ at, head, home, tab, tabs: section?.tabs.length ?? 0, title, closeTo, named: named ?? workflowName })
 
   // A SECTION PAGE HAS NO ROW HERE (visual QA Q2/Q10, 2026-10-02): its title,
   // meta, freshness and `?` are one row (`PageHead`), and a breadcrumb above
@@ -1791,7 +1803,15 @@ function Head({
                 </span>
               )}
               {c.to === null ? (
-                <span className="id ctl-crumb-obj" aria-current="page" title={at.taskId ?? undefined}>
+                // A WORKFLOW'S NAME IS PROSE, NOT AN ID (VQ-015 review, #2391):
+                // 'Audit the operator scripts and the Terraform' was set in the
+                // id's monospace face. The id face stays for an id, and for an
+                // agent's name, which carries its hash.
+                <span
+                  className={named === null && workflowName !== null ? 'ctl-crumb-obj' : 'id ctl-crumb-obj'}
+                  aria-current="page"
+                  title={object ?? undefined}
+                >
                   {c.label}
                 </span>
               ) : (
@@ -1873,17 +1893,28 @@ export function crumbsOf({
   tabs: number
   title: string
   closeTo: string
-  /** The open agent's name (`agentName`), once read; its id until then. */
+  /** The open agent's or workflow's name (`agentName`, `recentName`), once read; its id until then. */
   named?: string | null
 }): Crumb[] {
   const out: Crumb[] = []
   const object = openObjectOf(at)
   const open = object !== null
+  // AN OPEN WORKFLOW'S TRAIL IS ITS ONE WAY BACK (visual QA VQ-015, #2391):
+  // the page drew a `‹ Workflows · Failed` link under this trail as well, and
+  // named itself here by its raw id under a title that was its name. The list
+  // segment now goes back to the list with the filters it was opened from and
+  // says them (`backLabel`), and the object is the name once one is known.
+  const workflowList = at.taskId === null && at.tab === 'workflows' && open ? parseWorkflowQuery(at.view ?? '') : null
   if (open || head !== title) out.push({ key: 'section', label: head, to: home })
   if (tab !== null && tabs > 1 && (open || tab.label !== title)) {
-    out.push({ key: 'tab', label: tab.label, to: at.taskId !== null ? closeTo : `${at.sectionId}/${tab.id}` })
+    const filters = workflowList === null ? '' : filterQueryString(workflowList)
+    out.push({
+      key: 'tab',
+      label: workflowList === null ? tab.label : backLabel(workflowList),
+      to: at.taskId !== null ? closeTo : `${at.sectionId}/${tab.id}${filters === '' ? '' : `?${filters}`}`,
+    })
   }
-  if (object !== null) out.push({ key: 'object', label: at.taskId !== null && named !== null ? named : object, to: null })
+  if (object !== null) out.push({ key: 'object', label: named ?? object, to: null })
   return out
 }
 
@@ -2037,6 +2068,21 @@ const PAGE_TOPIC: Readonly<Record<string, TopicId>> = {
   // its topic rides the section's `?` rather than a second glyph by the title,
   // which the console's glyph ceiling (tests/help.test.ts) has no room for.
   'admin/people': 'people-and-roles-scope',
+  // VQ-055 (visual QA 2026-10-26): every Config page's `?` opened the same
+  // section card, whose `Help →` led to Help's first group. Each page now
+  // says, and links, its own topic in Help's Config and Admin groups.
+  'config/github': 'config-github-access',
+  'config/repositories': 'config-repositories',
+  'config/secrets': 'secret-scopes',
+  'config/mcp-servers': 'mcp-servers',
+  'config/people': 'workspace-roles',
+  'config/workspace': 'workspace-settings',
+  'admin/limits': 'ceiling-change-evicts-nothing',
+  'admin/runner-sizes': 'runner-sizes',
+  'admin/tenants': 'tenant-fields',
+  'admin/counts': 'platform-counts',
+  'admin/platform-secrets': 'platform-secrets',
+  'admin/workspaces': 'workspaces-you-admin',
 }
 
 function SectionQuestion({ section, topic = null }: { section: SectionQuestionDef; topic?: TopicId | null }) {
@@ -2238,6 +2284,8 @@ function SectionBody({
       return <HoldersScreen />
     case 'capacity/accounts':
       return <AccountsScreen />
+    case 'capacity/account-health':
+      return <AccountHealthScreen />
     case 'capacity/api-reads':
       return <ReferenceScreen failuresOnly={apiFailuresOnly} />
     case 'capacity/quota':

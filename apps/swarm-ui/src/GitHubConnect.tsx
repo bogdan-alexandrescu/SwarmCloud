@@ -152,7 +152,7 @@ export type ConnectionView =
   | { kind: 'app'; login: string | null; failed: OnboardingStep | null }
   /** The caller's own slot holds a stored token, not the App's. */
   | { kind: 'own-token'; login: string | null }
-  /** Nothing of the caller's: tasks act through the tenant token. */
+  /** Nothing of the caller's: tasks act through the workspace token. */
   | { kind: 'tenant'; login: string | null }
   | { kind: 'none' }
 
@@ -447,7 +447,7 @@ function ConnectStep({ doc, read, onChange }: { doc: OnboardingDoc; read: UrRead
       </>
     ) : view.kind === 'tenant' ? (
       <>
-        Your agents act through the tenant token ({who(view.login)}), not as you. Connect your GitHub account so SwarmCloud
+        Your agents act through the workspace token ({who(view.login)}), not as you. Connect your GitHub account so SwarmCloud
         clones, pushes and opens pull requests as you.
       </>
     ) : (

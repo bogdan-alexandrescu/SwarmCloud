@@ -24,10 +24,20 @@
  * put "starts at once" back after approval; draw Progress from `history`
  * alone; print $0 for no cost; put the PR card back below the plan, or draw
  * the full green sha as its text -- each turns a case red.
+ *
+ * VQ-019 (visual QA #2391, 2026-10-26): give `.rn-srow` its own `auto`
+ * columns back, size the meta column to the widest row's content (`auto`),
+ * or leave the phone's state and links beside the title -- each turns a case
+ * red.
  */
 import { render, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import CHANGES_CSS from '../styles/changes.css?raw'
+import COMPONENTS_CSS from '../styles/components.css?raw'
+import RUNS_CSS from '../styles/runs.css?raw'
+import STYLES from '../styles.css?raw'
+import { cascade, type CascadeEnv } from './cssgate'
 import { task } from './runfixture'
 
 const WAIT = { timeout: 4000 }
@@ -407,5 +417,60 @@ describe('6: at DONE the card says what is known about the merge and the issue',
     expect(line).toMatch(/pull request merged, which ended the run/)
     expect(line).not.toMatch(/not reported/)
     expect(line).not.toMatch(/workflow succeeded/)
+  })
+})
+
+describe('VQ-019: the Steps card lines its titles up, and gives a phone its width', () => {
+  const SHEETS = [STYLES, COMPONENTS_CSS, CHANGES_CSS, RUNS_CSS].join('\n')
+  const DESKTOP: CascadeEnv = { width: 1440 }
+  const PHONE: CascadeEnv = { width: 390 }
+  const painted = (el: Element, prop: string, env: CascadeEnv) => {
+    const r = cascade(SHEETS, el, prop, env)
+    expect(r.unsupported).toEqual([])
+    return r.winner?.value ?? null
+  }
+
+  // Each row was its own grid with an `auto` state column, so 'succeeded'
+  // and 'parked' put the title at two different x. The list holds the
+  // columns; every row is a subgrid of them.
+  it('draws every row on the list\'s one set of columns at 1440', async () => {
+    const { container } = await mount(run(), { [WF]: workflow() })
+    const card = await stepsCard(container)
+    const list = card.querySelector('.rn-srows')!
+    expect(painted(list, 'display', DESKTOP)).toBe('grid')
+    // The meta track was `auto`: it took the widest row's max-content
+    // ('elapsed 6h 26m · attempt 1 of 3 · quota exhausted') on EVERY row and
+    // left each title 146px at 1440, so a title wrapped over three lines and
+    // its mono id broke. The title and the meta share the free width 2:1 and
+    // the meta wraps inside its share; only the links keep their own width.
+    const tracks = painted(list, 'grid-template-columns', DESKTOP)
+    expect(tracks).toBe('fit-content(180px) minmax(0, 2fr) minmax(0, 1fr) auto')
+    expect(tracks!.split(/\s(?![^(]*\))/).filter((t) => t === 'auto')).toHaveLength(1)
+    for (const step of ['impl', 'docs', 'wire', 'review']) {
+      const row = rowOf(card, step)
+      expect(painted(row, 'grid-template-columns', DESKTOP), step).toBe('subgrid')
+      expect(painted(row, 'grid-column', DESKTOP), step).toBe('1 / -1')
+      // The title is the row's second cell, after the state's mark.
+      expect(row.children[1]!.classList.contains('rn-srow-n'), step).toBe(true)
+    }
+  })
+
+  // At 390 the state and the links kept their columns beside the title, which
+  // had ~80px: 'impl-floor-report-only' broke over three lines.
+  it('puts the state and the links on one line and the title full width under them at 390', async () => {
+    const { container } = await mount(run(), { [WF]: workflow() })
+    const card = await stepsCard(container)
+    expect(painted(card.querySelector('.rn-srows')!, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr)')
+    const row = rowOf(card, 'impl')
+    expect(painted(row, 'grid-template-columns', PHONE)).toBe('auto minmax(0, 1fr)')
+    const mark = row.firstElementChild!
+    const links = row.querySelector('.rn-srow-links')!
+    expect(painted(mark, 'grid-row', PHONE)).toBe('1')
+    expect(painted(links, 'grid-row', PHONE)).toBe('1')
+    expect(painted(links, 'justify-self', PHONE)).toBe('end')
+    expect(painted(row.querySelector('.rn-srow-n')!, 'grid-column', PHONE)).toBe('1 / -1')
+    expect(painted(row.querySelector('.rn-srow-n')!, 'grid-row', PHONE)).toBe('2')
+    expect(painted(row.querySelector('.rn-srow-m')!, 'grid-column', PHONE)).toBe('1 / -1')
+    expect(painted(row.querySelector('.rn-srow-m')!, 'grid-row', PHONE)).toBe('3')
   })
 })

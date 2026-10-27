@@ -6,9 +6,10 @@
 // (`.cap-use`), and `Set by` is a faint `·` where the configured limit is
 // what applies (owner decision 2026-10-22, c14). What this file added:
 //
-//   * ABNORMAL ROWS FIRST, inside each family: a full pool is at the top of
-//     its family, then the rest in the one order every pool list shares
-//     since QA G5-22 (this tenant's own, then name) -- no longer by use.
+//   * ABNORMAL ROWS FIRST: a full pool leads the board, in Needs a look
+//     (BGD 2026-10-26, VQ-031; it led its own family before), and each
+//     family draws the rest in the one order every pool list shares since
+//     QA G5-22 (this tenant's own, then name) -- no longer by use.
 //   * `N holders` LINKS TO HOLDERS FILTERED TO THAT POOL
 //     (`#capacity/holders?pool=<name>`), and `limit` to that pool's Pool
 //     limits row (`#admin/limits?pool=<name>`), which #134 already lands on.
@@ -17,8 +18,8 @@
 //   * A ROW A LINK NAMED (`#capacity/pools?pool=<name>`, from Provider quota)
 //     is outlined, the way Pool limits outlines its linked row.
 //
-// BREAK IT: sort a family by name alone -- `runner:zeta` (full) drops below
-// `runner:alpha`. Or drop `?pool=` from the holders link -- the href no
+// BREAK IT: leave a full pool in its family -- `runner:zeta` (full) is not
+// at the top of the board. Or drop `?pool=` from the holders link -- the href no
 // longer names the pool. Or keep the router stripping `?pool=` off
 // `capacity/pools` / `capacity/holders` -- `canonical` loses it.
 
@@ -90,9 +91,11 @@ function rowOf(name: string): HTMLElement {
 }
 
 describe('Pools puts the abnormal row first and measures every row (#125)', () => {
-  it('sorts a family full first, then the rest by name (QA G5-22)', async () => {
+  it('puts the full pool first, in Needs a look, then the family by name (QA G5-22)', async () => {
     await renderPools()
-    expect(familyOrder('Runner profiles')).toEqual(['runner:zeta', 'runner:alpha', 'runner:beta', 'runner:gamma'])
+    expect(familyOrder('Needs a look · 1')).toEqual(['runner:zeta'])
+    expect(document.querySelector('.cap-families > section .ctl-card-title')?.textContent).toBe('Needs a look · 1')
+    expect(familyOrder('Runner profiles')).toEqual(['runner:alpha', 'runner:beta', 'runner:gamma'])
   })
 
   it('draws a utilisation track and a % on every row, and Set by on every row', async () => {

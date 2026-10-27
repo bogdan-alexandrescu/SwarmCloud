@@ -20,6 +20,7 @@ Q3 (a) and the `found_per_step` answer of 2026-10-23; part of #2136).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from typing import Any
@@ -327,3 +328,48 @@ def test_each_crawling_steps_sign_in_note_names_that_legs_start_clicks_only() ->
             # steps are told to click the staging toggle.
             assert f"click '{mine}' then 'Sign in'" in step["prompt"]
             assert theirs not in step["prompt"]
+
+
+# --------------------------------------------------------------------------
+# Dismissed routes (lane QA-CRAWL-SKIP; BGD 2026-10-25, part of #2157)
+# --------------------------------------------------------------------------
+
+
+def _dismissal(path: str, *reveals: str) -> dict[str, Any]:
+    route = {"path": path, **({"reveal": [{"text": t, "css": "[role=tab]"} for t in reveals]} if reveals else {})}
+    return {"key": qaspec.route_key(route), "id": "r-" + path.strip("/"), "path": path,
+            "by": "carol@example.com", "at": "2026-10-25T23:40:00Z"}
+
+
+def _sha(key: str) -> str:
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def test_every_capture_step_is_handed_the_targets_dismissed_routes_as_hashes() -> None:
+    dismissed = [_dismissal("/billing"), _dismissal("/", "Team")]
+    spec = qaspec.render(_target(screens=_screens(20), dismissed_routes=dismissed))
+    expected = sorted([_sha("/billing"), _sha("/" + qaspec.STATE_MARK + "Team")])
+    for step in _captures(spec):
+        # MUTATION: leave `dismissed_routes` out of the run list and the crawl captures them again.
+        assert _route_json(step["prompt"])["dismissed"] == expected, step["step_id"]
+    # A dismissed route's path, found by a crawl, never reaches a prompt (§3.1).
+    # MUTATION: hand the tool the keys themselves and /billing is in every capture prompt.
+    assert "/billing" not in json.dumps(spec)
+
+
+def test_a_steps_found_per_step_is_unchanged_by_dismissed_routes() -> None:
+    plain = qaspec.render(_target(screens=_screens(44)))
+    dismissing = qaspec.render(_target(screens=_screens(44), dismissed_routes=[_dismissal("/billing")]))
+    # MUTATION: count the dismissed routes into the leg's 60 and each step's cap shrinks.
+    assert [_flag(s["prompt"], "--found-per-step") for s in _captures(dismissing)] == \
+        [_flag(s["prompt"], "--found-per-step") for s in _captures(plain)]
+
+
+def test_a_target_with_no_dismissed_routes_renders_as_before() -> None:
+    plain = qaspec.render(_target())
+    # MUTATION: always write `dismissed` and a target with none renders another prompt.
+    assert qaspec.render(_target(dismissed_routes=[])) == plain
+    for step in _captures(plain):
+        assert "dismissed" not in _route_json(step["prompt"])
+    # A malformed entry (no key) is not a dismissal.
+    assert qaspec.render(_target(dismissed_routes=[{"id": "x", "path": "/x"}, "junk"])) == plain

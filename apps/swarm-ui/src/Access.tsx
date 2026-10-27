@@ -4,7 +4,7 @@ import {
   loadAccessRepositories, putAccessGrant, requestAccessInstall, revokeAccessGrant, typedRepoId,
 } from './api'
 import { Banner, Button, ButtonLink, Card, Chip, Dash, EmptyState, Tabs, ToneMark, type TabDef } from './components'
-import { useSetupSteps } from './ConfigSetup'
+import { setupCount, setupNext, useSetupSteps } from './ConfigSetup'
 import type { ApiError, Result } from './fetch'
 import { ConnectButton, Refusal } from './GitHubConnect'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
@@ -18,6 +18,7 @@ import type {
 import { humaniseUntil, timeAgo } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
 import './styles/repositories.css'
+import './styles/keys.css'
 import './styles/onboarding.css'
 
 /**
@@ -284,11 +285,12 @@ export function AccessRefusal({ error, title, onRetry }: { error: ApiError; titl
 // What SwarmCloud may do as you: the owner's decisions, stated (D6, D8, D9)
 // ---------------------------------------------------------------------------
 
-/** The owner's three rules: each one's headline, and the sentences under it. */
-const POLICY_RULES: ReadonlyArray<{ rule: string; head: string; body: ReactNode }> = [
+/** The owner's three rules: each one's headline, S2b's short line, and the sentences that say how it is held. */
+const POLICY_RULES: ReadonlyArray<{ rule: string; head: string; line: string; body: ReactNode }> = [
   {
     rule: 'D9',
     head: 'Read means read, and SwarmCloud enforces it.',
+    line: 'A read grant never pushes, whatever GitHub would allow.',
     body: (
       <>
         A repository granted Read is cloned and never pushed: submission refuses an agent that would push to it, and the
@@ -300,6 +302,7 @@ const POLICY_RULES: ReadonlyArray<{ rule: string; head: string; body: ReactNode 
   {
     rule: 'D8',
     head: 'No workflow changes.',
+    line: 'SwarmCloud never asks for the workflows permission.',
     body: (
       <>
         The SwarmCloud App asks GitHub for contents, pull requests, issues and checks (read). It does not ask for
@@ -310,6 +313,7 @@ const POLICY_RULES: ReadonlyArray<{ rule: string; head: string; body: ReactNode 
   {
     rule: 'D6',
     head: 'Verifying only reads.',
+    line: 'Push test is opt-in, per repository.',
     body: (
       <>
         Clone reads the upload-pack advertisement, Push the receive-pack advertisement and your push permission, Pull
@@ -324,7 +328,13 @@ const POLICY_RULES: ReadonlyArray<{ rule: string; head: string; body: ReactNode 
 /**
  * ON A PHONE THE RULES OPEN FOLDED (visual QA V122): each is its headline, a
  * summary that opens its sentences, so the card is three lines rather than
- * the first screen of every visit. Wider screens draw the whole list.
+ * the first screen of every visit.
+ *
+ * WIDER, THE RULES ARE S2B'S CHECKLIST (VQ-038, GITHUB-ACCESS-S2B): the
+ * right-hand column beside the GitHub card, each rule a check, its headline
+ * and one short line. Three bulleted paragraphs at full width were the page's
+ * longest block; how each rule is held stays one fold away ("How"), so no
+ * sentence leaves the page.
  */
 export function AccessPolicy() {
   const phone = usePhoneTables()
@@ -344,10 +354,18 @@ export function AccessPolicy() {
           ))}
         </ul>
       ) : (
-        <ul className="ac-rules">
+        <ul className="ac-rules is-check">
           {POLICY_RULES.map((r) => (
             <li key={r.rule} data-rule={r.rule}>
-              <b>{r.head}</b> {r.body}
+              <ToneMark tone="ok" />
+              <span className="ac-rule-t">
+                <b>{r.head}</b>
+                <small>{r.line}</small>
+                <details className="ac-rule-how">
+                  <summary>How</summary>
+                  <p>{r.body}</p>
+                </details>
+              </span>
             </li>
           ))}
         </ul>
@@ -360,7 +378,7 @@ export function AccessPolicy() {
 // The connection
 // ---------------------------------------------------------------------------
 
-function Connection({ connection, onChange }: { connection: GitHubConnection | null; onChange: () => void }) {
+function Connection({ connection, quota, onChange }: { connection: GitHubConnection | null; quota: GitHubQuota[]; onChange: () => void }) {
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [refused, setRefused] = useState<ApiError | null>(null)
@@ -451,6 +469,7 @@ function Connection({ connection, onChange }: { connection: GitHubConnection | n
           )}
         </>
       )}
+      <GitHubQuotaLines quota={quota} />
       {refused !== null && <Refusal error={refused} title="GitHub was not disconnected" />}
     </Card>
   )
@@ -460,12 +479,28 @@ function Connection({ connection, onChange }: { connection: GitHubConnection | n
 // Owners: chooser A's left column
 // ---------------------------------------------------------------------------
 
+function ownerKind(o: AccessOwner): string {
+  return o.owner_type === 'User' ? 'your account' : 'organisation'
+}
+
 function ownerWords(o: AccessOwner): string {
-  const kind = o.owner_type === 'User' ? 'your account' : 'organisation'
+  const kind = ownerKind(o)
   if (o.method === 'pat') return `${kind} · via token`
   if (o.install_state === 'requested') return `${kind} · install requested`
   if (o.install_state !== 'installed') return `${kind} · not installed`
   return `${kind} · ${o.repository_selection === 'all' ? 'all repositories' : 'selected repositories'}`
+}
+
+/**
+ * REQUEST INSTALL, from the chooser's owner card and from Where the App is
+ * installed. GitHub decides on its own page whether this person installs or
+ * requests; the page opens first, in the click, so no popup blocker stands
+ * between them, and the request is recorded beside it. An owner already
+ * enabled answers `recorded: false` and is drawn as it is on the re-read.
+ */
+function askToInstall(o: AccessOwner) {
+  if (isGitHubUrl(o.install_url)) window.open(o.install_url, '_blank', 'noopener,noreferrer')
+  return requestAccessInstall(o.owner)
 }
 
 /**
@@ -547,16 +582,11 @@ function Owners({
     onChange()
   }
 
-  // GitHub decides on its own page whether this person installs or requests;
-  // the page opens first, in the click, so no popup blocker stands between
-  // them, and the request is recorded beside it. An owner already enabled
-  // answers `recorded: false` and is drawn as it is on the re-read.
   async function request(o: AccessOwner) {
     if (busy !== null) return
-    if (isGitHubUrl(o.install_url)) window.open(o.install_url, '_blank', 'noopener,noreferrer')
     setBusy(o.owner)
     setRefused(null)
-    const res = await requestAccessInstall(o.owner)
+    const res = await askToInstall(o)
     setBusy(null)
     if (res.status === 'error') {
       setRefused({ owner: o.owner, error: res.error })
@@ -1004,7 +1034,7 @@ export function TypedRepository({ tenantId, onChange }: { tenantId: string; onCh
       setRefused(res.error)
       return
     }
-    setDone(res.status === 'ok' ? `${res.data.grant.repository} granted ${res.data.grant.mode}${res.data.registered ? ', and registered for the tenant' : ''}.` : null)
+    setDone(res.status === 'ok' ? `${res.data.grant.repository} granted ${res.data.grant.mode}${res.data.registered ? ', and registered for the workspace' : ''}.` : null)
     setValue('')
     onChange()
   }
@@ -1172,10 +1202,38 @@ function storeOwner(owner: string): void {
   }
 }
 
-function Choose({ overview, reloadOverview }: { overview: AccessOverview; reloadOverview: () => void }) {
+/**
+ * THE FOOT BAR (S2c): what this visit saved, and when. Choices save as they
+ * are made, so the count is of the grants written here -- a Read, Write or
+ * Not chosen in the list, or a typed owner/repo -- each counted once its
+ * write answered. Nothing is pending, so there is no Save: the bar carries
+ * Refresh, which left the card's head for it, and reads the owners and the
+ * overview again.
+ */
+function SavedFoot({ saved, reading, onRefresh }: { saved: { n: number; at: number } | null; reading: boolean; onRefresh: () => void }) {
+  const now = useNow(AGE_TICK_MS)
+  return (
+    <div className="ac-foot" role="group" aria-label="Changes on this page">
+      {/* Polite, not role="status": the chooser's own read already speaks as the card's status. */}
+      <span className="ur-mu ac-foot-n" aria-live="polite">
+        {saved === null
+          ? 'No changes saved yet · choices save as you make them'
+          : `${saved.n} ${saved.n === 1 ? 'change' : 'changes'} saved · ${timeAgo(saved.at, now)}`}
+      </span>
+      <Button size="sm" kind="ghost" busy={reading} onClick={onRefresh}>
+        Refresh
+      </Button>
+    </div>
+  )
+}
+
+function Choose({ overview, reloadOverview, startOwner = null }: { overview: AccessOverview; reloadOverview: () => void; startOwner?: string | null }) {
   const owners = useUrRead(loadAccessOwners, 'access-owners')
   const phone = usePhoneTables()
-  const [picked, setPickedState] = useState<string | null>(() => (phone ? storedOwner() : null))
+  // An owner named by Where the App is installed's Choose opens first.
+  const [picked, setPickedState] = useState<string | null>(() => startOwner ?? (phone ? storedOwner() : null))
+  const [saved, setSaved] = useState<{ n: number; at: number } | null>(null)
+  const noteSaved = () => setSaved((was) => ({ n: (was?.n ?? 0) + 1, at: Date.now() }))
   function setPicked(key: string) {
     setPickedState(key)
     if (phone) storeOwner(key)
@@ -1195,16 +1253,7 @@ function Choose({ overview, reloadOverview }: { overview: AccessOverview; reload
   useRereadOnFocus(reloadAll)
   const login = overview.connection?.forge_login ?? null
   return (
-    <Card
-      className="ac-choose"
-      title="Choose repositories"
-      id="ac-choose"
-      action={
-        <Button size="sm" kind="ghost" busy={owners.state.status === 'loading'} onClick={reloadAll}>
-          Refresh
-        </Button>
-      }
-    >
+    <Card className="ac-choose" title="Choose repositories" id="ac-choose">
       <p className="ur-hint ac-authz">
         Connecting and installing are two steps. Connect lets SwarmCloud act as you (GitHub › Authorized GitHub Apps);
         installing it on an account or org lets it reach that owner&apos;s repositories (Installed GitHub Apps).
@@ -1246,7 +1295,10 @@ function Choose({ overview, reloadOverview }: { overview: AccessOverview; reload
                     key={reposOf}
                     owner={reposOf}
                     chosen={overview.grants.filter((g) => g.owner.toLowerCase() === reposOf.toLowerCase())}
-                    onChange={reloadOverview}
+                    onChange={() => {
+                      noteSaved()
+                      reloadOverview()
+                    }}
                   />
                 ) : phone && enabled.length > 0 ? (
                   <EmptyState kind="empty" heading={`${o.owners.find((x) => x.owner.toLowerCase() === shown)?.owner ?? 'This owner'} is not enabled`}>
@@ -1268,7 +1320,14 @@ function Choose({ overview, reloadOverview }: { overview: AccessOverview; reload
           )
         }}
       </UrRegion>
-      <TypedRepository tenantId={overview.tenant_id} onChange={reloadAll} />
+      <TypedRepository
+        tenantId={overview.tenant_id}
+        onChange={() => {
+          noteSaved()
+          reloadAll()
+        }}
+      />
+      <SavedFoot saved={saved} reading={owners.state.status === 'loading'} onRefresh={reloadAll} />
     </Card>
   )
 }
@@ -1320,14 +1379,16 @@ function resetsAt(iso: string): string {
 function GitHubQuotaLines({ quota }: { quota: GitHubQuota[] }) {
   if (quota.length === 0) return null
   return (
-    <ul className="ur-small" aria-label="GitHub quota">
+    <ul className="ur-small ac-quota" aria-label="GitHub quota">
       {quota.map((q) => (
         <li key={`${q.kind}:${q.name}:${q.resource}`} data-low={q.low ? 'true' : undefined}>
           <ToneMark tone={q.low ? 'warn' : 'ok'} />
-          GitHub quota for {quotaFor(q)}: <b>{q.remaining.toLocaleString('en-US')}</b> /{' '}
-          {q.limit.toLocaleString('en-US')}
-          {q.reset_at !== null ? ` · resets ${resetsAt(q.reset_at)}` : ''}
-          {q.low ? ' · background reads wait until then' : ''}
+          <span>
+            GitHub quota for {quotaFor(q)}: <b>{q.remaining.toLocaleString('en-US')}</b> /{' '}
+            {q.limit.toLocaleString('en-US')}
+            {q.reset_at !== null ? ` · resets ${resetsAt(q.reset_at)}` : ''}
+            {q.low ? ' · background reads wait until then' : ''}
+          </span>
         </li>
       ))}
     </ul>
@@ -1339,41 +1400,66 @@ function GitHubQuotaLines({ quota }: { quota: GitHubQuota[] }) {
  * style (the tint in styles/config.css; its buttons' borders, which clear 3:1
  * on the tint, in styles.css after the button floor). CONFIG-LEAD-TINT;
  * measured in contrast.config-lead.test.tsx.
+ *
+ * S2B'S SHAPE (VQ-038 minor, GITHUB-ACCESS-S2B): the kicker over the title
+ * over the sentence on the left, the one button at the right, which wraps
+ * under the words when the row is too narrow for both.
  */
-function Lead({ kicker, title, actions, children }: { kicker?: string; title: string; actions: ReactNode; children: ReactNode }) {
+function Lead({ kicker, title, actions, children }: { kicker?: string; title: string; actions?: ReactNode; children: ReactNode }) {
   return (
     <section className="ac-lead" aria-label="Next step">
-      <Card title={title}>
-        <p className="ur-small">
-          {kicker !== undefined && <b className="ur-mu">{kicker}</b>} {children}
-        </p>
-        <div className="ur-gh-acts">{actions}</div>
+      <Card className="ac-lead-c">
+        <div className="ac-lead-t">
+          {kicker !== undefined && <b className="ac-lead-k">{kicker}</b>}
+          <h2>{title}</h2>
+          <p className="ur-small">{children}</p>
+        </div>
+        {actions !== undefined && <div className="ac-lead-a">{actions}</div>}
       </Card>
     </section>
   )
 }
 
 /**
+ * A later step's action, as the lead titles it and its one button names its
+ * page: the words the strip's next step reads as from GitHub access.
+ */
+const LATER: Readonly<Record<string, { title: string; button: string }>> = {
+  secrets: { title: 'Set the secrets your repositories need', button: 'Next: Secrets' },
+  people: { title: 'Invite the people who work here', button: 'Next: People and roles' },
+}
+
+/**
  * THE ONE NEXT ACTION THAT LEADS THE PAGE (proposal E: "one next-action
- * sentence and button leading each page"). It is read off this page's own
- * `GET /v1/access` -- the connection's state and how many repositories are
- * chosen -- so it never says a step is left that the read says is done. The
- * step's number is its place in the setup strip above (three steps in a
- * personal workspace, four in a group one).
+ * sentence and button leading each page").
+ *
+ * THE STEP IS THE STRIP'S (VQ-037, 2026-10-26). The lead built "Step 2 of 3 ·
+ * in progress" from this page's own grant count while the strip right above
+ * it, fed by the setup read (`useSetupSteps`), marked step 2 done and step 3
+ * next, and the Choose tab's button said "Next: Repositories". Now the step,
+ * its word and the button are read off the same steps the strip draws:
+ *   * GitHub not connected or not active: step 1, from this page's own
+ *     connection read, which is the fresher of the two for its own step;
+ *   * the strip's Repositories chosen not done: step 2, "next" or "in
+ *     progress" as the strip says it (no word while the read is unmeasured);
+ *   * done: the strip's next step, by its number, titled by its action, with
+ *     its page as the one button; with nothing next, setup is complete.
+ * The page's count is only in the sentence, as what this read shows.
  */
 function GitHubLead({ view, overview, open }: { view: 'mine' | 'choose'; overview: AccessOverview; open: (v: View) => void }) {
-  const steps = useSetupSteps().length
+  const steps = useSetupSteps()
+  const of = steps.length
   const c = overview.connection
   const chosen = overview.grants.length
   const login = c?.forge_login != null ? `@${c.forge_login}` : null
-  const lead = (kicker: string, title: string, sentence: ReactNode, actions: ReactNode) => (
+  const lead = (kicker: string, title: string, sentence: ReactNode, actions?: ReactNode) => (
     <Lead kicker={kicker} title={title} actions={actions}>
       {sentence}
     </Lead>
   )
   if (c === null || c.state === 'revoked') {
     return lead(
-      `Step 1 of ${steps} · start here.`,
+      `Step 1 of ${of} · start here.`,
       'Connect GitHub to start',
       'SwarmCloud lists the orgs and repositories you reach, and clones, pushes and opens pull requests as you. Choosing repositories waits for this one step.',
       <ConnectButton />,
@@ -1381,52 +1467,272 @@ function GitHubLead({ view, overview, open }: { view: 'mine' | 'choose'; overvie
   }
   if (c.state !== 'active') {
     return lead(
-      `Step 1 of ${steps} · needs you.`,
+      `Step 1 of ${of} · needs you.`,
       'Reconnect GitHub',
       `This connection is ${c.state ?? 'not active'}, so SwarmCloud cannot act as you until you reconnect.`,
       <ConnectButton label="Reconnect" />,
     )
   }
-  const counted = `${chosen} ${chosen === 1 ? 'repository' : 'repositories'} chosen`
-  const as = `GitHub is connected${login !== null ? ` as ${login}` : ''}.`
-  if (view === 'choose') {
+  const counted = `${chosen} ${chosen === 1 ? 'repository is' : 'repositories are'} chosen`
+  const as = `GitHub is connected${login !== null ? ` as ${login}` : ''}`
+  const chooseButton = (
+    <Button kind="primary" size="sm" onClick={() => open('choose')}>
+      Choose repositories
+    </Button>
+  )
+  const repos = steps.find((s) => s.key === 'repositories') ?? null
+  if (repos === null || repos.state !== 'done') {
+    const word = repos === null || repos.state === 'unknown' ? '' : repos.state === 'in_progress' ? ' · in progress' : ' · next'
+    const kicker = `Step ${repos === null ? 2 : steps.indexOf(repos) + 1} of ${of}${word}.`
+    if (view === 'choose') {
+      return lead(
+        kicker,
+        'Choose the repositories SwarmCloud may reach',
+        `${chosen === 0 ? 'Nothing is chosen yet.' : `${counted}.`} Choices save as you make them; Config › Repositories registers them and verifies each.`,
+        chosen === 0 ? undefined : (
+          <ButtonLink kind="primary" size="sm" href={addressToPath(REPOSITORIES_ADDRESS)}>
+            Next: Repositories
+          </ButtonLink>
+        ),
+      )
+    }
     return lead(
-      `Step 2 of ${steps} · ${chosen === 0 ? 'next' : 'in progress'}.`,
-      chosen === 0 ? 'Nothing chosen yet' : counted,
-      'Choices save as you make them. Config › Repositories lists every repository SwarmCloud may reach as you, and verifies each.',
-      <ButtonLink kind="primary" size="sm" href={addressToPath(REPOSITORIES_ADDRESS)}>
-        Next: Repositories
-      </ButtonLink>,
+      kicker,
+      'Choose the repositories SwarmCloud may reach',
+      chosen === 0 ? `${as}. Pick Read or Write for each repository.` : `${as} and ${counted}. Add more, or register them on Config › Repositories.`,
+      chooseButton,
+    )
+  }
+  const next = setupNext(steps)
+  const later = next === null ? undefined : LATER[next.key]
+  if (next === null || later === undefined) {
+    const { done } = setupCount(steps)
+    return lead(
+      done === of ? `Setup complete · ${done} of ${of}.` : `Step ${steps.indexOf(repos) + 1} of ${of} · done.`,
+      'GitHub access is set up',
+      `${as} and ${counted}. Choose more at any time; Config › Repositories lists and verifies them.`,
+      view === 'choose' ? (
+        <ButtonLink kind="primary" size="sm" href={addressToPath(REPOSITORIES_ADDRESS)}>
+          Open Repositories
+        </ButtonLink>
+      ) : (
+        chooseButton
+      ),
     )
   }
   return lead(
-    `Step 2 of ${steps} · ${chosen === 0 ? 'next' : 'in progress'}.`,
-    chosen === 0 ? 'Choose the repositories SwarmCloud may reach' : counted,
-    chosen === 0 ? `${as} Pick Read or Write for each repository.` : `${as} Add more on Choose repositories; Config › Repositories lists and verifies them.`,
-    <>
-      <Button kind="primary" size="sm" onClick={() => open('choose')}>
-        Choose repositories
-      </Button>
-      {chosen > 0 && (
-        <ButtonLink size="sm" href={addressToPath(REPOSITORIES_ADDRESS)}>
-          Repositories
-        </ButtonLink>
-      )}
-    </>,
+    `Step ${steps.indexOf(next) + 1} of ${of} · next.`,
+    later.title,
+    `${as} and ${counted}, so this page is done. Next: ${next.label}, ${next.line}.`,
+    <ButtonLink kind="primary" size="sm" href={addressToPath(next.to)}>
+      {later.button}
+    </ButtonLink>,
   )
 }
 
-/** The Connection tab: the lead, the connection, the GitHub quota and the rules (S2a, S2b). */
-function Mine({ overview, reloadOverview, open }: { overview: AccessOverview; reloadOverview: () => void; open: (v: View) => void }) {
+/** Opens a tab; Choose repositories may be opened on one owner. */
+type Open = (v: View, owner?: string) => void
+
+/**
+ * WHAT COMES AFTER (S2a): with GitHub not connected, the setup steps after
+ * this one, each with what it waits for, so the pages they live on read as
+ * waiting rather than broken. The steps are the setup strip's own
+ * (`useSetupSteps`): a personal workspace has no Invite people, so it is not
+ * listed there. Nothing here is a button: each step's page says what to do
+ * once its wait is over.
+ */
+const AFTER: Readonly<Record<string, { label: string; waits: string }>> = {
+  repositories: { label: 'Choose repositories', waits: 'Waits for GitHub: there is nothing to list until you connect and install the App.' },
+  secrets: { label: 'Set secrets', waits: 'Waits for repositories: what is needed depends on what you register.' },
+  people: { label: 'Invite people', waits: 'Any time after GitHub.' },
+}
+
+function WhatComesAfter() {
+  const steps = useSetupSteps()
+  return (
+    <Card className="ac-after is-dash" title="What comes after">
+      <ol className="ac-steps">
+        {steps.map((s, i) => {
+          const after = AFTER[s.key]
+          if (after === undefined) return null
+          return (
+            <li key={s.key} className="ac-step">
+              <span className="ac-step-m" aria-hidden="true" />
+              <span className="ac-step-t">
+                <b>
+                  {i + 1}. {after.label}
+                </b>{' '}
+                <small>{after.waits}</small>
+              </span>
+            </li>
+          )
+        })}
+      </ol>
+    </Card>
+  )
+}
+
+/**
+ * WHERE THE APP IS INSTALLED (S2b), on the Connection tab: every owner the
+ * connection reaches, whether the App is installed there and how, and how
+ * many repositories are chosen under it, from the same owners read Choose
+ * repositories makes (`GET /v1/access/orgs`). That read refreshes the
+ * person's token (access.py), so it is mounted only for an active connection,
+ * and read again on return from GitHub's install page, as the chooser is.
+ *
+ * Each row's one action is the step it is missing: Choose for an owner with
+ * the App (Choose repositories opens on it, where Enable is if it is not yet
+ * enabled), Re-check for a request GitHub has not answered, Request install
+ * for an organisation without the App -- GitHub's page and the record, as the
+ * chooser's owner card does it -- and Install for the person's own account.
+ * "Install on an organisation…" opens the App's install page, where GitHub
+ * asks which account.
+ */
+function Installs({ grants, open }: { grants: AccessGrant[]; open: Open }) {
+  const owners = useUrRead(loadAccessOwners, 'access-owners')
+  useRereadOnFocus(owners.reload)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [refused, setRefused] = useState<{ owner: string; error: ApiError } | null>(null)
+  const installUrl = dataOf(owners.state)?.install_url ?? null
+
+  async function request(o: AccessOwner) {
+    if (busy !== null) return
+    setBusy(o.owner)
+    setRefused(null)
+    const res = await askToInstall(o)
+    setBusy(null)
+    if (res.status === 'error') {
+      setRefused({ owner: o.owner, error: res.error })
+      return
+    }
+    owners.reload()
+  }
+
+  const chosenUnder = (o: AccessOwner) => grants.filter((g) => g.owner.toLowerCase() === o.owner.toLowerCase()).length
+  return (
+    <Card
+      className="ac-installs"
+      title="Where the App is installed"
+      action={
+        isGitHubUrl(installUrl) ? (
+          <ButtonLink size="sm" href={installUrl} target="_blank" rel="noreferrer">
+            Install on an organisation…
+          </ButtonLink>
+        ) : undefined
+      }
+    >
+      <UrRegion state={owners.state} route="GET /v1/access/orgs" what="The owners your connection reaches" onRetry={owners.reload} plural lines={3} reading={ASKING_GITHUB}>
+        {(d) =>
+          d.owners.length === 0 ? (
+            <EmptyState kind="empty" heading="No owner listed">
+              GitHub listed no account or organisation for your connection. Install {githubAppName(d.app_name)} on one, then
+              Refresh.
+            </EmptyState>
+          ) : (
+            <table role="table" className="mcp-servers ac-installs-t" aria-label="Where the App is installed">
+              <thead>
+                <tr>
+                  <th scope="col">Owner</th>
+                  <th scope="col">Install</th>
+                  <th scope="col">Chosen</th>
+                  <th scope="col">
+                    <span className="ac-vh">Action</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {d.owners.map((o) => {
+                  const reaches = o.method === 'pat' || o.install_state === 'installed'
+                  return (
+                    <tr key={o.owner.toLowerCase()} data-owner={o.owner}>
+                      <th scope="row" data-label="Owner">
+                        <b>{o.owner}</b> <small className="ur-mu ac-installs-k">{ownerKind(o)}</small>
+                      </th>
+                      <td data-label="Install">
+                        {o.method === 'pat' ? (
+                          'via token'
+                        ) : o.install_state === 'installed' ? (
+                          o.repository_selection === 'all' ? 'all repositories' : 'selected repositories'
+                        ) : (
+                          <ToneMark tone="warn">{o.install_state === 'requested' ? 'install requested' : 'not installed'}</ToneMark>
+                        )}
+                        {o.sso === 'required' && <small className="ur-mu"> · SSO not authorised</small>}
+                      </td>
+                      <td data-label="Chosen">
+                        {reaches ? (
+                          chosenUnder(o)
+                        ) : (
+                          <>
+                            <Dash why="Nothing to list until the App is installed" />{' '}
+                            <small className="ur-mu">nothing to list until it is</small>
+                          </>
+                        )}
+                      </td>
+                      <td className="ac-installs-a">
+                        {reaches ? (
+                          <Button size="sm" onClick={() => open('choose', o.owner)}>
+                            Choose
+                          </Button>
+                        ) : o.install_state === 'requested' ? (
+                          <Button size="sm" disabled={busy !== null} onClick={owners.reload}>
+                            Re-check
+                          </Button>
+                        ) : !isGitHubUrl(o.install_url) ? (
+                          <Dash why="The App's install page is not configured on this API" />
+                        ) : o.owner_type === 'Organization' ? (
+                          <Button
+                            size="sm"
+                            busy={busy === o.owner}
+                            disabled={busy !== null && busy !== o.owner}
+                            title={`Not an owner of ${o.owner}? GitHub lets you ask its owners to install the App`}
+                            onClick={() => void request(o)}
+                          >
+                            Request install
+                          </Button>
+                        ) : (
+                          <ButtonLink size="sm" href={o.install_url} target="_blank" rel="noreferrer">
+                            Install
+                          </ButtonLink>
+                        )}
+                        {refused !== null && refused.owner === o.owner && (
+                          <AccessRefusal error={refused.error} title={`${o.owner} was not changed`} onRetry={owners.reload} />
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )
+        }
+      </UrRegion>
+    </Card>
+  )
+}
+
+/** The Connection tab: the lead, then the connection (with the GitHub quota) and what comes after or where the App is installed beside the rules (S2a, S2b). */
+function Mine({ overview, reloadOverview, open }: { overview: AccessOverview; reloadOverview: () => void; open: Open }) {
   // `github_quota` is read here rather than added to types.ts's
   // AccessOverview: older servers do not send it, and absent is no lines.
   const quota = (overview as AccessOverview & { github_quota?: GitHubQuota[] }).github_quota ?? []
+  const c = overview.connection
   return (
     <>
       <GitHubLead view="mine" overview={overview} open={open} />
-      <Connection connection={overview.connection} onChange={reloadOverview} />
-      <GitHubQuotaLines quota={quota} />
-      <AccessPolicy />
+      {/* S2B'S TWO COLUMNS (VQ-038): the GitHub card, its quota lines inside
+          it, and what comes after or where the App is installed on the left;
+          the rules checklist on the right. One column on a phone. */}
+      <div className="ac-body">
+        <div className="ac-main">
+          <Connection connection={c} quota={quota} onChange={reloadOverview} />
+          {c === null || c.state === 'revoked' ? (
+            <WhatComesAfter />
+          ) : (
+            c.state === 'active' && <Installs grants={overview.grants} open={open} />
+          )}
+        </div>
+        <AccessPolicy />
+      </div>
     </>
   )
 }
@@ -1437,7 +1743,7 @@ function Mine({ overview, reloadOverview, open }: { overview: AccessOverview; re
  * not mounted to be refused: the tab says to connect first, and opens
  * Connection.
  */
-function ChooseTab({ overview, reloadOverview, open }: { overview: AccessOverview; reloadOverview: () => void; open: (v: View) => void }) {
+function ChooseTab({ overview, reloadOverview, open, startOwner }: { overview: AccessOverview; reloadOverview: () => void; open: Open; startOwner: string | null }) {
   const connected = overview.connection !== null && overview.connection.state === 'active'
   if (!connected) {
     return (
@@ -1456,7 +1762,7 @@ function ChooseTab({ overview, reloadOverview, open }: { overview: AccessOvervie
   return (
     <>
       <GitHubLead view="choose" overview={overview} open={open} />
-      <Choose overview={overview} reloadOverview={reloadOverview} />
+      <Choose overview={overview} reloadOverview={reloadOverview} startOwner={startOwner} />
     </>
   )
 }
@@ -1467,7 +1773,7 @@ function ChooseTab({ overview, reloadOverview, open }: { overview: AccessOvervie
  * they hold instead.
  */
 function accessLede(view: View, tenant: string | null): string {
-  const inTenant = tenant !== null ? ` in tenant ${tenant}` : ''
+  const inTenant = tenant !== null ? ` in workspace ${tenant}` : ''
   if (view === 'choose') {
     return `The owners the GitHub App is installed on${inTenant}, and the repositories you choose from them, each Read or Write.`
   }
@@ -1478,9 +1784,15 @@ function accessLede(view: View, tenant: string | null): string {
 export function AccessScreen() {
   const overview = useUrRead(loadAccess, 'access')
   const [view, setViewState] = useState<View>(viewFromUrl)
+  // The owner Where the App is installed's Choose named, for the chooser to open on.
+  const [startOwner, setStartOwner] = useState<string | null>(null)
   function setView(v: View) {
     setViewState(v)
     writeViewToUrl(v)
+  }
+  const open: Open = (v, owner) => {
+    setStartOwner(owner !== undefined ? owner.toLowerCase() : null)
+    setView(v)
   }
   const tenant = dataOf(overview.state)?.tenant_id ?? null
   return (
@@ -1495,14 +1807,14 @@ export function AccessScreen() {
       {/* `cfg-parts` (config.css, imported with the setup strip) is the Config
           pages' tab strip layout: never shrunk, never a vertical scroller --
           the underline's -1px margin made a bare strip draw a scroll arrow. */}
-      <Tabs tabs={GITHUB_TABS} current={view} label="GitHub access" className="cfg-parts" onSelect={(k) => setView(k === 'choose' ? 'choose' : 'mine')} />
+      <Tabs tabs={GITHUB_TABS} current={view} label="GitHub access" className="cfg-parts" onSelect={(k) => open(k === 'choose' ? 'choose' : 'mine')} />
       <p className="ur-sub">{accessLede(view, tenant)}</p>
       <UrRegion state={overview.state} route="GET /v1/access" what="Your access" onRetry={overview.reload} lines={4}>
         {(o) =>
           view === 'choose' ? (
-            <ChooseTab overview={o} reloadOverview={overview.reload} open={setView} />
+            <ChooseTab overview={o} reloadOverview={overview.reload} open={open} startOwner={startOwner} />
           ) : (
-            <Mine overview={o} reloadOverview={overview.reload} open={setView} />
+            <Mine overview={o} reloadOverview={overview.reload} open={open} />
           )
         }
       </UrRegion>

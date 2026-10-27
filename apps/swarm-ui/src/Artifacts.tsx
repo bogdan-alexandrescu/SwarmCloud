@@ -1587,10 +1587,18 @@ function WithRecords({
   onHide: () => void
 }) {
   const attempt = v.attemptId === null ? {} : { attemptId: v.attemptId }
+  // THE WINDOW THE STEPS WERE SHOWN FROM (BT-018): a finished transcript
+  // opens on its newest window, so records read from byte 0 swapped the
+  // reader's steps for the first window's. A final or artifact window past
+  // byte 0 is read again at its offset, as `readTranscriptWindow` read it;
+  // a live tail is the newest part on any read.
+  const s = v.transcript.status === 'ok' ? v.transcript.data.stream : null
+  const at = s !== null && s.status === 'ok' && s.source !== 'live' && s.offset > 0 ? s : null
+  const source: 'auto' | 'final' = at === null || at.source === 'artifact' ? 'auto' : 'final'
   const held = useRead<TaskTranscript>(
-    () => loadTranscript(v.task.id, { ...attempt, source: 'auto', includeRaw: true }),
+    () => loadTranscript(v.task.id, { ...attempt, source, ...(at === null ? {} : { offset: at.offset }), includeRaw: true }),
     v.task.id,
-    `${v.attemptId ?? 'latest'}:${reading.fetchedAt}`,
+    `${v.attemptId ?? 'latest'}:${at?.offset ?? 0}:${reading.fetchedAt}`,
     null,
   )
   if (held.state.status === 'loading') {
@@ -1876,7 +1884,14 @@ function TranscriptSteps({
         <p className="arts-window-note">
           <Mark
             kind="partial"
-            say="This window starts part-way through the stream: a live tail holds only the newest part. The whole transcript is read when the attempt ends."
+            say={
+              t.stream.source === 'live'
+                ? 'This window starts part-way through the stream: a live tail holds only the newest part. The whole transcript is read when the attempt ends.'
+                : // A FINISHED TRANSCRIPT OPENS ON ITS NEWEST WINDOW (BT-018,
+                  // AgentLogs.tsx `readTranscriptWindow`): this is no live
+                  // tail, and nothing more is coming.
+                  'This is the newest window of the finished transcript: it ends at the last step, and earlier steps are in the windows before it.'
+            }
           />{' '}
           earlier steps are not in this window
         </p>

@@ -680,8 +680,9 @@ def _overview_grids() -> list[tuple[str, int, int]]:
     O1 (overview.html, the owner's pick; built 2026-10-02) drew two `.ov-g21`
     grids of two panels each. RE-POINTED (owner QA N17/D19, 2026-10-04): the
     Overview is now ONE `.ov-g21 ov-cols` grid whose direct children are two
-    `.ov-col` stacks -- Running now, Waiting and Recent failures on the left,
-    Cost so far and Headroom on the right -- and the full-width Pools card.
+    `.ov-col` stacks -- Running now and Waiting on the left, Cost so far and
+    Headroom on the right -- and the full-width Recent failures (visual QA
+    VQ-006, 2026-10-26) and Pools cards.
     The property is unchanged and read from the new layout:
 
     * the grid items that take one track each (the `.ov-col` stacks) fill

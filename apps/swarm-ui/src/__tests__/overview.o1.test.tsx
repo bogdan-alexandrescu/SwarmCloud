@@ -28,6 +28,7 @@ import type { Result } from '../fetch'
 import type { SpendRollup } from '../api'
 import type { Account, AccountsPage, Capacity, Stats, Task, TaskPage } from '../types'
 import { task } from './runfixture'
+import { currentZone, notePerson, resetTimeZone, setZone } from '../timezone'
 
 const api = vi.hoisted(() => ({
   loadCapacity: vi.fn(),
@@ -232,20 +233,20 @@ describe('O1: Needs a look is a row of check cards', () => {
     expect(text(lead)).not.toMatch(/need(s)? attention/)
   })
 
-  it('says how many checks found how many problems, of how many, on this read', async () => {
+  it('says how many problems, then how many of the checks ran, on this read', async () => {
     const el = await mount()
-    // #98 (owner ruling 2026-10-07): the lead fraction is labelled `checks ran/total`, so it cannot be read as
-    // the reads tally or as a count of problems; "derived on this read" moved into its accessible name.
+    // #98 (owner ruling 2026-10-07): the checks are labelled as checks and as a share of all of them, so they
+    // cannot be read as the reads tally; "derived on this read" moved into its accessible name.
     // QA-013 (visual QA 2026-10-20): the problems figure is the cards drawn, so it is not mistaken for the checks that fired.
-    // MUTATION: drop the `checks` label or the `found N problems` clause, or put "derived on this read" back in the visible words.
+    // VQ-004 (visual QA 2026-10-26): one count -- "checks 8/8 · 3 found 3 problems" said it twice and did not parse.
+    // MUTATION: drop the `checks ran` label or the problems, or put "derived on this read" back in the visible words.
     const cnt = el.querySelector('#ov-needs .ov-lh .ov-cnt')!
-    const m = /^checks (\d+)\/(\d+) · (\d+) found (\d+) problems?$/.exec(text(cnt))
+    const m = /^(\d+) problems? · (\d+) of (\d+) checks ran$/.exec(text(cnt))
     expect(m, `the lead count reads ${JSON.stringify(text(cnt))}`).not.toBeNull()
-    const [ran, total, found] = [Number(m![1]), Number(m![2]), Number(m![3])]
+    const [ran, total] = [Number(m![2]), Number(m![3])]
     expect(ran).toBeLessThanOrEqual(total)
-    expect(found).toBeLessThanOrEqual(ran)
     // MUTATION: count the checks that fired as the problems.
-    expect(Number(m![4])).toBe(el.querySelectorAll('#ov-needs .ov-att:not(.is-skel)').length)
+    expect(Number(m![1])).toBe(el.querySelectorAll('#ov-needs .ov-att:not(.is-skel)').length)
     expect(text(cnt)).not.toMatch(/derived/i)
     expect(cnt.getAttribute('aria-label')).toMatch(new RegExp(`^${ran} of ${total} checks ran and found `))
     expect(cnt.getAttribute('aria-label')).toMatch(/Derived on every read from /)
@@ -285,8 +286,25 @@ describe('O1: the lifecycle band breaks each figure down by state', () => {
     // The failed and dead-lettered rows completed 25 and 58 minutes ago; today
     // is only certain for both when it is past 01:00 UTC.
     if (new Date().getUTCHours() >= 1) expect(text(done.querySelector('.ov-lc-n'))).toBe('2')
-    expect(text(done.querySelector('.ov-lc-h small'))).toMatch(/since 00:00 UTC/)
+    // THE SETTING, UTC BY DEFAULT (VQ-023, part of #2391): nobody here has
+    // picked a zone in Profile, so the day is counted, and named, in UTC.
+    expect(currentZone()).toBe('UTC')
+    expect(text(done.querySelector('.ov-lc-h small'))).toBe('since 00:00 UTC')
     expect(text(done)).toMatch(/of the 9 newest read/)
+  })
+
+  /** MUTATION: keep 'since 00:00 UTC' fixed in the band, whatever the person picked. */
+  it("names the person's zone once they pick one", async () => {
+    notePerson('ada@example.com')
+    setZone('America/Los_Angeles')
+    try {
+      const el = await mount()
+      const done = [...el.querySelectorAll('#ov-band .ov-lc')][2]!
+      expect(text(done.querySelector('.ov-lc-h small'))).toMatch(/^since 00:00 P[DS]T$/)
+    } finally {
+      window.localStorage.clear()
+      resetTimeZone()
+    }
   })
 
   it('draws a dash with its reason, never 0, when the counts are unread', async () => {
@@ -372,7 +390,7 @@ describe('O1: Headroom keeps its rows inside the card', () => {
     expect(text(tiles[0]!.querySelector('b'))).toBe('0')
     expect(tiles[0]!.querySelector('b')?.classList.contains('is-zero')).toBe(true)
     expect(text(tiles[1]!.querySelector('b'))).toBe('+6')
-    expect(text(tiles[1]!.querySelector('small'))).toBe('binds your tenant')
+    expect(text(tiles[1]!.querySelector('small'))).toBe('binds your workspace')
     // The pools are their own full-width card now (browser QA N17).
     expect(card.querySelectorAll('.ov-pl').length).toBe(0)
     // BUSIEST FIRST (live QA OV-15, 2026-10-11): by share of the ceiling used.

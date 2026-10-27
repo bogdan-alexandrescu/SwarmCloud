@@ -87,8 +87,10 @@ async function openRow(a: Account) {
   if (open.getAttribute('aria-current') !== 'true') fireEvent.click(open)
 }
 
+/** The sheet's clock: UTC with its Z since VQ-035. */
 function hhmm(iso: string): string {
-  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+  const d = new Date(iso)
+  return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}Z`
 }
 
 beforeEach(() => {
@@ -239,7 +241,7 @@ describe('G5-16: Holding now is the mock-up’s Agent · Attempt · Since table'
     vi.useFakeTimers({ toFake: ['Date'] })
     try {
       const noon = new Date()
-      noon.setHours(12, 0, 0, 0)
+      noon.setUTCHours(12, 0, 0, 0)
       vi.setSystemTime(noon)
       const at = new Date(Date.now() - 3 * 60 * MINUTES).toISOString()
       // The sheet reads who holds it as it opens (#2222): nobody, here.
@@ -247,14 +249,15 @@ describe('G5-16: Holding now is the mock-up’s Agent · Attempt · Since table'
         ok({ account_id: 'eng:laptop', viewer: 'owner', total: 0, holders: [], others: 0 } satisfies AccountHolders),
       )
       await openRow(account({ last_assigned_at: at }))
-      // The sheet's facts (#2222): `last given out 09:00 (3h ago)`.
+      // The sheet's facts (#2222): `last given out 09:00Z (3h ago)`.
       const fact = [...document.querySelectorAll('.acct-facts > .ctl-fact')].find(
         (t) => t.querySelector('b')?.textContent === 'last given out',
       )!
       const value = fact.querySelector('span')!
       // MUTATION: print `timeAgo` as the figure again.
       expect(value.textContent).toBe(`${hhmm(at)} (3h ago)`)
-      expect(value.getAttribute('title')).toBe(new Date(at).toLocaleString())
+      // The instant itself, in UTC, never the browser's zone (VQ-035).
+      expect(value.getAttribute('title')).toBe(at)
     } finally {
       vi.useRealTimers()
     }

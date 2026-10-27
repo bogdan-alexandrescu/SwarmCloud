@@ -35,6 +35,7 @@ import pytest
 
 from agent_worker.errors import ExitCode
 from agent_worker.objectstore import LocalObjectStore
+from agent_worker.runners import ceiling
 
 from test_standalone_outputs import (  # noqa: F401 - agent_cli is a fixture
     _agent_output,
@@ -143,8 +144,9 @@ def test_the_prompt_says_once_that_the_agent_may_ask(db, worker_factory, agent_c
     assert len(lines) == 1, prompt
     assert "owner" in lines[0] and "guess" in lines[0], lines[0]
     # It follows the deliverables line and does not name the folder again:
-    # "there" is the folder that line named.
-    assert prompt.count("$SWARM_ARTIFACTS_DIR") == 1, prompt
+    # "there" is the folder that line named. The context-ceiling note (#2524)
+    # names $SWARM_ARTIFACTS_DIR/handoff.md for the next session; set it aside.
+    assert prompt.replace(ceiling.HANDOFF_NOTE, "").count("$SWARM_ARTIFACTS_DIR") == 1, prompt
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +159,22 @@ def test_the_validator_takes_a_valid_list_and_an_empty_one():
 
     assert questions.validate(json.dumps(VALID).encode("utf-8")) == VALID
     assert questions.validate(b"[]") == []
+
+
+def test_built_names_one_of_the_options_or_is_null():
+    """ANSWER-CONTENT-CHECK (part of #2441): the asking agent says which option its
+    branch builds, so the merge can compare the owner's pick with it."""
+    from agent_worker import questions
+
+    taken = [_question(built="per workflow"), _question(built=None), _question()]
+    # MUTATION: leave `built` out of the allowed keys and this whole file is rejected.
+    assert questions.validate(json.dumps(taken).encode("utf-8")) == taken
+
+    # MUTATION: accept any string and a merge compares a pick with a label no option has.
+    with pytest.raises(questions.Rejected, match="question 1: `built`"):
+        questions.validate(json.dumps([_question(built="neither")]).encode("utf-8"))
+    with pytest.raises(questions.Rejected, match="question 1: `built`"):
+        questions.validate(json.dumps([_question(built=True)]).encode("utf-8"))
 
 
 def test_the_validator_refuses_deep_nesting_without_raising_anything_else():

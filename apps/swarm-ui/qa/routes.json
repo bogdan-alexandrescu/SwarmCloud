@@ -21,7 +21,7 @@
       {
         "id": "approvals",
         "address": "automate/approvals",
-        "path": "/approvals",
+        "path": "/automate/approvals",
         "ready": "main h1"
       },
       {
@@ -142,6 +142,12 @@
         "id": "accounts",
         "address": "capacity/accounts",
         "path": "/capacity/accounts",
+        "ready": "main h1"
+      },
+      {
+        "id": "account-health",
+        "address": "capacity/account-health",
+        "path": "/capacity/account-health",
         "ready": "main h1"
       },
       {

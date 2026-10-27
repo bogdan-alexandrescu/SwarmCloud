@@ -11,8 +11,9 @@
 //   * the Overview's "Needs a look" hand-off card offers Take control beside
 //     "browse →" only when the session read says you may (`can_control`),
 //     asks as the header's button asks, and then opens the Browser tab;
-//   * at phone width the Browser tab's device switcher, rotate, touch and
-//     logs sit under a "⋯" menu, not in the toolbar.
+//   * at phone width the Browser tab's device switcher, rotate and touch
+//     sit under a "⋯" menu, not in the toolbar (the logs toggle too, until
+//     BROWSER-TAB-LIVE, #2423, kept it with the view's controls).
 //
 // MUTATIONS, one per block: keep the checkbox (the switch is not found); count
 // every RUNNING row as N; drop the device read (every outline is "not
@@ -316,7 +317,7 @@ describe("the phone's Browser tab: the device switcher under ⋯", () => {
     <LiveBrowserPane task={agent} live={{ status: 'ok', liveBrowser: true, session: session() }} reload={() => {}} />
   )
 
-  it('at phone width, the toolbar holds ⋯, and the device, rotate, touch and logs are in its menu', () => {
+  it('at phone width, the toolbar holds ⋯, and the device, rotate and touch are in its menu; ◫ logs stays with the view’s controls', () => {
     atWidth(390)
     vi.stubGlobal('WebSocket', Socket)
     render(pane())
@@ -332,15 +333,20 @@ describe("the phone's Browser tab: the device switcher under ⋯", () => {
     expect(within(menu).getByRole('group', { name: /^device$/i })).toBeTruthy()
     expect(within(menu).getByRole('button', { name: /rotate/i })).toBeTruthy()
     expect(within(menu).getByRole('button', { name: /touch/i })).toBeTruthy()
-    expect(within(menu).getByRole('button', { name: /logs/i })).toBeTruthy()
+    // ◫ logs changes this view, not the agent's browser (BT-011, #2423): it stays in the view's group.
+    expect(within(menu).queryByRole('button', { name: /logs/i })).toBeNull()
+    expect(within(within(bar).getByRole('group', { name: 'This view' })).getByRole('button', { name: /logs/i })).toBeTruthy()
+    // No Device menu inside the ⋯ menu: a menu in a menu is one press too many.
+    expect(within(menu).queryByRole('button', { name: /^Device:/ })).toBeNull()
   })
 
-  it('at desktop width, there is no ⋯ and the device switcher is in the toolbar', () => {
+  it('at desktop width, there is no ⋯ and the device switcher is the toolbar’s Device menu', () => {
     atWidth(1440)
     vi.stubGlobal('WebSocket', Socket)
     render(pane())
     const bar = screen.getByRole('toolbar', { name: /browser view/i })
     expect(within(bar).queryByRole('button', { name: /browser view options/i })).toBeNull()
+    fireEvent.click(within(bar).getByRole('button', { name: /^Device:/ }))
     expect(within(bar).getByRole('group', { name: /^device$/i })).toBeTruthy()
   })
 })

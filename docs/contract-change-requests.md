@@ -123,6 +123,13 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 113 | `profiles.py`: a `claude-code-large` runner profile on the `large` class with a 14,400 s timeout, picked by name for heavy lanes (AUTONOMY-DESIGN, part of #1933) | ACCEPTED by the owner 2026-10-22 and APPLIED by the pull request that adds this line (lane AU9-PROFILE-LARGE, part of #1933; Q6 of `docs/design/agent-autonomy.md` §7: "Accept contract request 113: a claude-code-large profile") |
 | 114 | `CONTRACT.md` invariant 7: swarm-api alone starts with Cloud Run's startup CPU boost, the one recorded exception; every other Cloud Run service and every worker stays under invariant 7 as written (API-CPU-BOOST, part of #1816) | ACCEPTED by BGD 2026-10-23 (#1816 option (a)) and APPLIED by PR 2132; recorded here by lane FOLLOWUPS-1023 (part of #2150). The invariant's text is unchanged |
 | 115 | `models.py`: `Task.publish_to_pr`, the existing pull request a lane's commits are pushed onto instead of opening one, typed rather than carried in `metadata.dispatch` (PUBLISH-TO-PR, part of #2183) | open, REQUESTED 2026-10-24 by lane PUBLISH-TO-PR. Not applied, and not needed for the feature to work: the field ships in the signed `metadata.dispatch` block, as `strategy` and `continues` do |
+| 116 | `specsign.py`: `SETTINGS_MAC_FIELDS` gains a `"qa"` block, `("flows_per_step",)`, so the workspace's QA batch size is signed like `merge` and `code_intelligence` (QA-TRIPWIRE-MAC, part of #2136) | ACCEPTED by BGD 2026-10-26 (answering QA-FLOWS-CAP's question, task_23a1c31d528e450187b8). Not applied: `apps/common/swarm_common/` is frozen and a lane does not edit it |
+| 117 | `profiles.py`: a `cf-access` secret slot on `claude-code-browser`, kind `oauth_client`, whose value the live gate sends as Cloudflare Access service-token headers to the hosts its grant lists and the agent never holds (CF-ACCESS-TOKEN, part of #2442) | ACCEPTED 2026-10-26 by BGD (requested by lane CF-ACCESS-TOKEN as 116, renumbered: QA-TRIPWIRE-MAC took 116 first) and APPLIED by the pull request that adds this line (lane CF-ACCESS-CONTRACT, part of #2442): `_CF_ACCESS_SLOT` beside `_FILES_SLOT`, declared on `claude-code-browser` only. A grant into `cf-access` is accepted with a host list and refused without one |
+| 118 | `models.py`: `EndCause.BUDGET_EXCEEDED`, a step the worker stopped because it spent its budget (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). Not applied: a follow-up lane applies it after PR 2466 merges, and until then it is built behind with `end_cause` null and `last_error` `budget_exceeded: ...` |
+| 119 | `specsign.py`: a `"budget"` block in `SETTINGS_MAC_FIELDS`, `("unit", "amount")`, so the workspace's per-agent budget is signed (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). Not applied: a follow-up lane applies it after PR 2466 merges, and until then the settings block is unsigned; the writer and reader sign and verify the moment the block is listed |
+| 120 | `models.py` / `specsign.py`: `Task.budget` and `WorkflowStep.budget`, a step's budget as a typed, signed field (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). Not applied: a follow-up lane applies it after PR 2466 merges, and until then it is built behind in the signed `metadata.dispatch.budget` |
+| 121 | `states.py`: `EventType.BUDGET_WARNING`, the 80% warning as its own event type (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). Not applied: a follow-up lane applies it after PR 2466 merges, and until then it is built behind as `running` with `detail.cause: budget_warning` |
+| 122 | `models.py`: `Tenant.principal`'s comment gives a fictional example on the company's real domain (EXAMPLE-IDENTITIES, part of #1647) | open |
 
 ---
 
@@ -4437,7 +4444,7 @@ Unit, no credentials and no emulator:
     (`"swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com\n"`) does not
     match, where the earlier `.match()` with `$` in the pattern would have;
   - the listing wins over groups: the same account with
-    `groups=("other@saga.xyz",)` and `other@saga.xyz` first in priority still
+    `groups=("other@example.com",)` and `other@example.com` first in priority still
     resolves to `eng`;
   - no pattern and no domain: `swarm-ci-fix2@...`, `x-swarm-ci-fix@...`,
     `swarm-ci-fix@other-project.iam.gserviceaccount.com` and
@@ -14378,3 +14385,373 @@ already pays: a reader has to know the block to find it.
 branch, image, command or backend parameter. **9**: the pull request is read,
 and its branch pushed, with the tenant's own forge credential, and its head
 branch must be a lane branch of the submitting tenant. **1-8** are untouched.
+
+## 116. `specsign.py`: a `"qa"` block in `SETTINGS_MAC_FIELDS`, for the workspace's QA batch size (QA-TRIPWIRE-MAC, part of #2136)
+
+**Status:** ACCEPTED by BGD 2026-10-26, answering lane QA-FLOWS-CAP's
+question ("Should a 'qa' MAC block be added to the frozen contract?",
+task_23a1c31d528e450187b8, answered 08:26Z: "Request a 'qa' block").
+Filed by lane QA-TRIPWIRE-MAC. Not applied: `apps/common/swarm_common/` is
+frozen, and this lane does not edit it.
+
+### What is true today
+
+QA-FLOWS-CAP (PR 2409) adds a per-workspace default for how many read-only
+flows one live-browser step runs, `qa_flows_per_step` (1-30, default 15),
+stored in `workspace_settings/{tenant_id}` beside `judgment_backend`,
+`merge` and `code_intelligence`, and written by
+`apps/swarm-api/swarm_api/qasettings.py`. A QA run that names no
+`flows_per_step` of its own, and every scheduled `visual-qa` firing, reads
+it. No block of `SETTINGS_MAC_FIELDS` covers it, so it is not signed.
+
+### Why
+
+[tenant-settings-integrity.md](design/tenant-settings-integrity.md) §1.3:
+any tenant worker can write `workspace_settings/<B>` (rows 5-7 are the
+fields already there), and the QA batch size is now read from that
+document. So tenant A's worker can choose tenant B's batch size. The harm
+is bounded, because PR 2409's reader treats any stored value other than an
+int in 1-30 as unset, and a run's own value overrides the workspace's. A
+forger can choose only a batch size B's admin could have chosen. But that
+choice still changes B's runs: a batch of 30 gives each flow 240 s rather
+than 480 s (2409's timeout arithmetic), and it changes how many steps and
+how much spend a leg takes. It is the same kind of write as row 6's
+`merge.*`, which is signed for that reason.
+
+### The change
+
+```python
+SETTINGS_MAC_FIELDS: Mapping[str, tuple[str, ...]] = MappingProxyType({
+    "top": ("judgment_backend",),
+    "merge": ("mode", "train_size", "max_train_age_minutes"),
+    "code_intelligence": ("jev", "context", "context_ab", "graph_delivery",
+                          "judgment_backend"),
+    "qa": ("flows_per_step",),
+})
+```
+
+Nothing else in `specsign.py` changes: `canonical_settings_block` already
+takes any listed block, and the block name is inside the bytes, so a `qa`
+MAC cannot be replayed onto another block or tenant.
+`tests/unit/common/test_settings_block.py`, which pins the mapping, gains
+the entry in the same change.
+
+### The follow-up once it is applied
+
+* `qasettings` stores the value as a `qa` map, `qa: {flows_per_step, mac}`,
+  and signs it on every write with `judgment.sign_block(..., block="qa")`,
+  as `mergesettings.py` signs `merge`.
+* Its reader takes the block through `judgment.trusted_block(tenant_id,
+  "qa", ...)`, so a tenant on the MAC cutover whose `qa` block does not
+  verify gets the default, 15. The 1-30 bound stays as a second check.
+* `judgment.WRITER_FIELDS` gains `"qa": ("flows_per_step",)`
+  (`tests/unit/control_plane/test_settings_mac.py` holds it equal to the
+  contract's blocks), so `scripts/resign-workspace-settings.sh` signs a
+  stored `qa` block like the others.
+* The value PR 2409 stores at the top level, `qa_flows_per_step`, is read
+  as a fallback only for a tenant not yet on the cutover, then retired.
+* §1.3 of the design gains a row for `workspace_settings/<B>.qa.*`.
+
+### What it would break if accepted
+
+Nothing at once. A new block changes no other block's bytes, so every MAC
+stored today still verifies. Until the follow-up lands, no writer signs a
+`qa` block, and `trusted_block` is not called for it.
+
+### If it is declined
+
+The batch size stays unsigned, and the 1-30 bound is its only defence: a
+forger picks B's batch size within what B's admin could pick.
+
+### Invariants
+
+**9** is what this protects: one tenant's worker must not set another
+tenant's settings. **10** holds either way: a caller names a bounded
+integer, never a spec. **1-8** are untouched.
+
+## 117. `profiles.py`: a `cf-access` secret slot on `claude-code-browser` (CF-ACCESS-TOKEN, part of #2442)
+
+**Status:** ACCEPTED by the owner (BGD) 2026-10-26 (filed by lane CF-ACCESS-TOKEN
+as 116 and renumbered, since QA-TRIPWIRE-MAC took 116 on main first). APPLIED by lane
+CF-ACCESS-CONTRACT (part of #2442), in the pull request that rewrote row 117
+of the index above: `_CF_ACCESS_SLOT` in `profiles.py`, worded as below, and
+`claude-code-browser`'s `secret_slots` is `{"files": _FILES_SLOT,
+"cf-access": _CF_ACCESS_SLOT}`. Nothing beyond the request. The tests that
+added the slot for their own run now read it from the catalogue
+(`tests/unit/control_plane/test_cf_access_slot.py`,
+`tests/unit/worker/test_cf_access_worker.py`,
+`tests/unit/common/test_workspace_secret_contract.py`), and hold that no
+other profile takes it. "What is true today" below is the state the request
+was filed against.
+
+### What is true today
+
+BGD decided on 2026-10-26 that browser visual-QA agents reach a site behind
+Cloudflare Access with a Cloudflare Access service token
+(docs/runbooks/cf-access-service-token.md). The lane built every reader of
+it: swarm-api stores a host list on a grant into a host-scoped slot and signs
+it in grant form "v3" (`workspace_secrets.HOST_SCOPED_SLOTS`,
+`grant_attest.FORM_HOSTS`), the release answers the item with its `hosts`,
+the worker holds it in its heap and hands it to the live gate
+(`secretrelease.GATE_SLOTS`, `agent_worker/cf_access.py`), and the gate sends
+`CF-Access-Client-Id` / `CF-Access-Client-Secret` to listed hosts only
+(`livegate/cfaccess.py`). `claude-code-browser` declares one slot, `files`,
+so `check_grant` refuses a grant into `cf-access` and the worker refuses an
+item in it.
+
+### The requested change
+
+In `profiles.py`, beside `_FILES_SLOT`:
+
+    _CF_ACCESS_SLOT = SecretSlot(
+        kinds=("oauth_client",),
+        means="a Cloudflare Access service token ({client_id, client_secret}); the live "
+              "gate sends it as CF-Access-Client-Id and CF-Access-Client-Secret to the "
+              "hosts its grant lists and to no other; never a file, never in the "
+              "agent's environment",
+    )
+
+and on `claude-code-browser` only:
+`secret_slots={"files": _FILES_SLOT, "cf-access": _CF_ACCESS_SLOT}`. Optional
+(`required=False`): a step whose workspace granted none starts and reaches
+the site signed out.
+
+### What it would break if accepted
+
+Nothing that exists. The console's grant matrix gains a column for the slot;
+until the console has a host-list field, a grant into it is set through the
+API (`hosts` in `PUT .../grants/{consumer}`), and a tick without hosts is
+refused with a message saying why. `check-contract-parity.sh` is unaffected:
+no shell restates the slot list. `consumer_slots` in the worker and
+`attempt_consumers` in swarm-api pick the slot up from the catalogue.
+
+### If it is declined
+
+The headers are never sent and the platform admin stays unreachable to
+agents, as today. The alternatives are worse: the `files` slot would hand
+the token to the agent, and a slot declared outside the contract would be a
+second statement of the catalogue in swarm-api and the worker, the drift
+rule 1 exists to prevent.
+
+### Invariants
+
+**9** is the point: the token is the workspace's own secret, released only
+to that workspace's attempts, and held by its gate, never by the agent.
+**10** holds: a caller names nothing; the admin's host list is a property of
+the grant, signed by swarm-api. **1-8** are untouched.
+## 118. `models.py`: `EndCause.BUDGET_EXCEEDED` (BUDGET-CAP, part of #2459)
+
+**Status:** open, REQUESTED 2026-10-26 by lane BUDGET-CAP. Not applied:
+`apps/common/swarm_common/` is frozen. The feature ships without it.
+
+### What is true today
+
+BGD's decision on #2459 (2026-10-26): at 100% of its budget the worker stops
+the agent at its next turn boundary, checkpoints, publishes what it has, and
+ends the step FAILED "with the end cause `budget_exceeded`". `EndCause` has
+no such member. Until it does, the worker
+(`agent_worker/lifecycle.py::Worker._record_finalised`, `agent_worker/budget.py`)
+ends the step FAILED with `end_cause` null -- `EndCause`'s own docstring rule
+for "a writer ended it for a reason with no value here" -- with `last_error`
+beginning `budget_exceeded:` and `result_summary.budget` carrying
+`end_cause: "budget_exceeded"`, the limits and what was used.
+
+### The change
+
+```python
+class EndCause(str, Enum):
+    ...
+    BUDGET_EXCEEDED = "budget_exceeded"   # the worker stopped the agent: it spent its budget
+```
+
+written only by the worker, beside `TIMEOUT`, and listed in the docstring's
+worker line. Never retried by the worker: another attempt of the same step
+starts from the same budget, so a resume is a person's choice.
+
+### What it would break if accepted
+
+Nothing at once. The outcome ledger (`swarm_api.outcomes`) falls back to its
+text classifier for a null cause today, so a budget stop reads as a runner
+failure there; with the member it is its own class. The worker switches from
+null to the member in the same change, and the ledger and the console read
+`budget_exceeded` from the field instead of the summary.
+
+### If it is declined
+
+The cause stays in `last_error` and `result_summary.budget.end_cause`, and
+the ledger classifies the text. A reader that branches on `end_cause` sees
+null for a budget stop.
+
+### Invariants
+
+**1** holds either way: the stopped step is FAILED, its lease released in the
+same write, and it holds nothing. **5**: the end is written under the
+attempt's generation like every worker end. **2-4, 6-10** are untouched.
+
+## 119. `specsign.py`: a `"budget"` block in `SETTINGS_MAC_FIELDS` (BUDGET-CAP, part of #2459)
+
+**Status:** open, REQUESTED 2026-10-26 by lane BUDGET-CAP. Not applied:
+`apps/common/swarm_common/` is frozen.
+
+### What is true today
+
+A workspace's per-agent budget default is `workspace_settings/{tenant_id}.
+budget: {unit, amount, updated_at, updated_by}`, written by
+`apps/swarm-api/swarm_api/budget.py::BudgetStore` beside `merge`, `qa` and
+`code_intelligence`. No block of `SETTINGS_MAC_FIELDS` covers it, so it is
+not signed, and the reader acts on it only when it is a shape the writer
+could have written (a unit of `usd` or `tokens`, a positive amount in
+bounds); anything else is no default.
+
+### Why
+
+[tenant-settings-integrity.md](design/tenant-settings-integrity.md) §1.3:
+any tenant worker can write `workspace_settings/<B>`. A forger can remove
+B's default -- so B's agents run with no limit -- or move it anywhere under
+the platform ceiling. Bounded: a step's own budget is inside the step-spec
+signature, and the ceiling lives in `control/settings`, not B's document. It
+is the same kind of write `merge.*` is signed against.
+
+### The change
+
+```python
+SETTINGS_MAC_FIELDS = MappingProxyType({
+    ...,
+    "budget": ("unit", "amount"),
+})
+```
+
+Nothing else in `specsign.py` changes. `tests/unit/common/test_settings_block.py`
+gains the entry.
+
+### The follow-up once it is applied
+
+None in `budget.py`: `SIGNED = MAC_BLOCK in SETTINGS_MAC_FIELDS` turns the
+writer's `block_mac` and the reader's `trusted_block` on with the listing.
+`judgment.WRITER_FIELDS` gains `"budget": ("unit", "amount")` in the same
+change, so `scripts/resign-workspace-settings.sh` signs stored blocks, and
+§1.3 of the design gains a row.
+
+### What it would break if accepted
+
+Nothing at once: a new block changes no other block's bytes. A tenant on the
+MAC cutover whose stored `budget` block was written before the re-sign reads
+as no default until the re-sign pass signs it.
+
+### If it is declined
+
+The default stays unsigned and its shape check is its only defence.
+
+### Invariants
+
+**9** is what this protects. **10** holds either way: a unit and a number,
+never a resource. **1-8** are untouched.
+
+## 120. `models.py` / `specsign.py`: `Task.budget` and `WorkflowStep.budget` (BUDGET-CAP, part of #2459)
+
+**Status:** open, REQUESTED 2026-10-26 by lane BUDGET-CAP. Not applied:
+`apps/common/swarm_common/` is frozen. The feature ships without it.
+
+### What is true today
+
+An agent or a workflow step may send `budget: {usd: N}` or `{tokens: N}`
+(`swarm_api.schemas.StepBudget`). swarm-api resolves the attempt's budget at
+submission, min(step, workspace default, platform ceiling) per unit, and
+pins it in `metadata.dispatch.budget: {usd?, tokens?, from: {step,
+workspace, ceiling}}`, inside the block the step-spec signature covers
+(`SIGNED_METADATA_KEYS`). The worker reads it only from the verified
+document (`agent_worker.budget.Limits.from_dispatch`). `WorkflowStep`
+records no budget, so the workflow's own document does not say what each
+step asked for; the step's agent does.
+
+### The change
+
+`Task.budget: dict[str, float | int] | None = None` (the RESOLVED limits,
+`usd` and/or `tokens`) and `WorkflowStep.budget` (what the step asked for),
+with a spec format that covers `Task.budget`, signed at that format only
+when it is set -- as request 104 did for `model_class`.
+
+### What it would break if accepted
+
+Nothing at once: the dispatch block's key is read as a fallback for agents
+stored before the field, then retired.
+
+### If it is declined
+
+The budget stays in `metadata.dispatch`, beside `allow_empty_diff` and
+`publish_to_pr`, and nothing changes.
+
+### Invariants
+
+**10** holds either way: a budget only lowers a limit and chooses no image,
+command, resource or backend, as `timeout_seconds` does. **1** holds: it
+holds no capacity. **2-9** are untouched.
+
+## 121. `states.py`: `EventType.BUDGET_WARNING` (BUDGET-CAP, part of #2459)
+
+**Status:** open, REQUESTED 2026-10-26 by lane BUDGET-CAP. Not applied:
+`apps/common/swarm_common/` is frozen. The feature ships without it.
+
+### What is true today
+
+At 80% of its budget the worker records a `budget_warning` event the
+console can show (BGD, #2459). `EventType` has no such member, so it is
+written as `running` with `detail: {cause: "budget_warning", percent, told,
+limit, used}`, as `account_assigned` rides on `running` (request 44).
+
+### The change
+
+`EventType.BUDGET_WARNING = "budget_warning"`, written only by the worker.
+
+### What it would break if accepted
+
+Nothing at once: readers that look for `running` with the cause read the
+new type as well for one release, then only it.
+
+### If it is declined
+
+The warning stays a `running` event with a cause, which every reader of the
+timeline must know to look for.
+
+### Invariants
+
+None is touched: an event records, it decides nothing.
+
+## 122. `models.py`: `Tenant.principal`'s example is a fictional address on the company's real domain (EXAMPLE-IDENTITIES, part of #1647)
+
+**Status:** open, REQUESTED 2026-10-27 by lane EXAMPLE-IDENTITIES (bundle
+B03). Not applied: `apps/common/swarm_common/` is frozen. #1647's triage
+asked for this entry in place of the edit; the edit waits for a decision.
+
+### What is true today
+
+`apps/common/swarm_common/models.py`, `class Tenant`, field `principal`
+(line 832 on 2026-10-27) carries a trailing comment naming two examples:
+the deployment's real group `eng@saga.xyz`, and a fictional `alice@` on the
+same domain. The group stays. The person is fictional, and #1647's owner
+decision (2026-10-19) is that example data uses the RFC 2606 family: every
+other fictional `alice@` on that domain in `tests`, `docs`, `scripts` and
+`apps` has moved to `alice@example.com`, so this comment is the one place `grep -rnoiE
+'(alice|other|u-carol|u-eng|group)@saga\.xyz' tests docs scripts apps` still
+finds in the code (with `tests/terraform/tenancy_worker_firestore.tftest.hcl`
+outside this lane's territory, noted on the PR).
+
+### The change
+
+The comment only, nothing a program reads:
+
+    principal: str                          # eng@saga.xyz | alice@example.com
+
+### What it would break if accepted
+
+Nothing. It is a comment; no type, default, field or document shape moves,
+and `scripts/lib/check-contract-parity.sh` reads no comment.
+
+### If it is declined
+
+The frozen contract keeps one fictional person on the company's domain, and
+the #1647 guard grep has a permanent known exception to explain.
+
+### Invariants
+
+None is touched: a comment decides nothing.

@@ -125,18 +125,22 @@ function Row({
   strip?: ReactNode
   href?: string | undefined
 }) {
-  // A MEASURED ZERO IS THE TRACK'S TICK (§8.6), not an empty bar: the row is
-  // drawn, the tick says the scale starts here and the value is at its start.
-  const pctOf = count === 0 ? 0 : of === 0 ? 0 : (count / of) * 100
-  const label = href === undefined ? <span className="ol-row-name">{name}</span> : (
-    <a className="ctl-link ol-row-name" href={href}>
+  // A 0 ROW DRAWS NO BAR (visual QA VQ-022, 2026-10-26): the track's zero
+  // tick beside "0" read as a short bar, a small non-zero amount. The count
+  // says 0 -- a measured zero, in the row's own figure -- and the bar column
+  // keeps an empty cell so the counts stay in one column.
+  const pctOf = of === 0 ? 0 : (count / of) * 100
+  // THE LABEL CUTS BEFORE THE BAR COLUMN, its whole name in its title (VQ-022):
+  // "spec signature invalid" ran under its bar and was overprinted.
+  const label = href === undefined ? <span className="ol-row-name" title={name}>{name}</span> : (
+    <a className="ctl-link ol-row-name" href={href} title={name}>
       {name}
     </a>
   )
   return (
     <div className="ol-row" data-row={name}>
       {label}
-      <UsageTrack pct={pctOf} zeroTitle={`${name}: a measured zero`} />
+      {count === 0 ? <span className="ol-row-none" aria-hidden="true" /> : <UsageTrack pct={pctOf} />}
       <span className="ol-row-n">{count}</span>
       {strip}
     </div>
@@ -726,12 +730,16 @@ export function LatencyCard({ data }: { data: Outcomes }) {
 }
 
 // ---------------------------------------------------------------------------
-// 5. Reliability by profile, tenant or person
+// 5. Reliability by profile, workspace or person
 // ---------------------------------------------------------------------------
+
+// THE READER SEES "WORKSPACE", THE ROUTE STILL SAYS `tenant_id` (VQ-056,
+// BGD 2026-10-26): the console names a tenant a workspace wherever it prints
+// the word; the group's key, the query and the API field keep their names.
 
 const GROUP_LABEL: Record<GroupBy, string> = {
   runner_profile: 'runner profile',
-  tenant_id: 'tenant',
+  tenant_id: 'workspace',
   submitted_by: 'person',
   model: 'model',
   model_class: 'model class',
@@ -739,7 +747,7 @@ const GROUP_LABEL: Record<GroupBy, string> = {
 
 const GROUP_HEAD: Record<GroupBy, string> = {
   runner_profile: 'Profile',
-  tenant_id: 'Tenant',
+  tenant_id: 'Workspace',
   submitted_by: 'Person',
   model: 'Model',
   model_class: 'Model class',
@@ -797,11 +805,11 @@ const ABSENT_KEY: Partial<Record<GroupBy, string>> = { model: 'not recorded', mo
 
 const isAbsentKey = (by: GroupBy, key: string) => key === '' || ABSENT_KEY[by] === key
 
-/** `5 profiles`, `3 tenants`, `1 person`, `4 people`. */
+/** `5 profiles`, `3 workspaces`, `1 person`, `4 people`. */
 function rowsWord(by: GroupBy, n: number): string {
   if (by === 'submitted_by') return `${n} ${n === 1 ? 'person' : 'people'}`
   if (by === 'model_class') return `${n} ${n === 1 ? 'model class' : 'model classes'}`
-  return pluralise(n, by === 'tenant_id' ? 'tenant' : by === 'model' ? 'model' : 'profile')
+  return pluralise(n, by === 'tenant_id' ? 'workspace' : by === 'model' ? 'model' : 'profile')
 }
 
 function RateCell({ row }: { row: GroupRow }) {
@@ -847,7 +855,7 @@ function Spark({ series }: { series: GroupRow['series'] }) {
   )
 }
 
-/** Where a Reliability row leads: the page narrowed to that row's profile, tenant or person. */
+/** Where a Reliability row leads: the page narrowed to that row's profile, workspace or person. */
 /** A Reliability figure: a link to its tasks when it counts any and one is offered, else the bare number. */
 function Cell({ n, link }: { n: number; link: RowLink | null }) {
   if (n === 0 || link === null) return <>{n}</>
@@ -1169,7 +1177,7 @@ export interface OpenWork {
 export function unfiltered(view: LedgerView): string[] {
   const out: string[] = []
   if (view.profile.length > 0) out.push('profile')
-  if (view.platform && (view.tenant.length > 0 || view.exclude_tenant.length > 0)) out.push('tenant')
+  if (view.platform && (view.tenant.length > 0 || view.exclude_tenant.length > 0)) out.push('workspace')
   if (view.submitted_by.length > 0) out.push('person')
   if (view.kind !== 'all') out.push('kind')
   return out
@@ -1226,7 +1234,7 @@ export function OpenWorkCard({
   // over the platform (it read `platform_tasks_by_state` until 2026-09-25, so
   // "reasons for 50 of 120" set one tenant's list against every tenant's).
   const ownParked = s?.status === 'ok' ? s.data.tasks_by_state?.PARKED : undefined
-  const reasonScope = platform ? `park reasons: ${tenant === null ? 'your tenant' : `tenant ${tenant}`} only` : null
+  const reasonScope = platform ? `park reasons: ${tenant === null ? 'your workspace' : `workspace ${tenant}`} only` : null
   const running = [...CONCURRENCY_STATES].reduce((sum, st) => sum + n(st), 0)
   const parkedTasks = open.parked?.status === 'ok' ? open.parked.data.tasks : open.parked?.status === 'empty' ? [] : null
   const reasons = new Map<string, number>()

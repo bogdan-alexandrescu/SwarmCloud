@@ -253,7 +253,7 @@ def set_grant(
     name = check_name(name)
     record = _store(ctx, writer, authority).set_grant(
         tenant_id=tenant_id, name=name, consumer=consumer, slot=body.slot,
-        enabled=body.enabled, by=auth.email, repo_id=repo_id)
+        enabled=body.enabled, by=auth.email, repo_id=repo_id, hosts=body.hosts)
     return {"secret": record, "takes_effect": "at the next attempt", "authority": authority}
 
 

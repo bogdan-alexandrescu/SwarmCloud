@@ -168,13 +168,13 @@ function stepLine(step: OnboardingStep, doc: OnboardingDoc): ReactNode {
     case 'signed_in': {
       const email = str(ev.email)
       const tenant = str(ev.tenant_id) ?? doc.tenant_id
-      return email === null ? `tenant ${tenant}` : `${email} · tenant ${tenant}`
+      return email === null ? `workspace ${tenant}` : `${email} · workspace ${tenant}`
     }
     case 'github_connected': {
       const view = connectionOf(doc)
       if (view.kind === 'app') return `connected as @${view.login ?? '?'} · GitHub App`
       if (view.kind === 'own-token') return `your own stored token${view.login !== null ? ` (@${view.login})` : ''}`
-      if (view.kind === 'tenant') return `agents act through the tenant token${view.login !== null ? ` (@${view.login})` : ''}, not as you`
+      if (view.kind === 'tenant') return `agents act through the workspace token${view.login !== null ? ` (@${view.login})` : ''}, not as you`
       return 'no GitHub account connected'
     }
     case 'app_installed': {
@@ -359,7 +359,12 @@ export function Checklist({ doc, reload }: { doc: OnboardingDoc; reload: () => v
               <p className="ob-step-h">
                 {/* The title only: the step's id is the API's name for it, not copy (RSA-25). It stays on `data-step`. */}
                 <b>{STEP_LABEL[s.step] ?? s.step}</b>
-                <span className="ob-state">{STATE_WORD[s.state] ?? s.state}</span>
+                {/* An optional step says so on its own row, as S6b draws it ("done · optional"): the summary
+                    named it optional while the row read like any other (visual QA VQ-048). */}
+                <span className="ob-state">
+                  {STATE_WORD[s.state] ?? s.state}
+                  {!stepRequired(s) && ' · optional'}
+                </span>
                 {next && <Chip>next</Chip>}
               </p>
               {(said || at) && (
@@ -474,7 +479,6 @@ export function OnboardingScreen() {
               title={d.complete ? 'Setup is complete' : 'Set up SwarmCloud'}
               action={
                 <span className="ur-acts">
-                  <Chip className="ob-count">{countLabel(d)}</Chip>
                   {d.dismissed === true && !d.complete && <ShowOnOverview reload={doc.reload} />}
                   <UrRefresh reads={[doc]} />
                 </span>
@@ -482,10 +486,14 @@ export function OnboardingScreen() {
               foot={
                 <>
                   Derived {d.derived_at ? timeAgo(d.derived_at) : <Dash why="The read carried no time" />} for{' '}
-                  {d.user} in tenant {d.tenant_id}.
+                  {d.user} in workspace {d.tenant_id}.
                 </>
               }
             >
+              {/* THE COUNT IS A SENTENCE IN THE BODY, NOT A CHIP IN THE HEAD (visual QA VQ-048): the chip,
+                  which names the optional steps, wrapped under the title as a monospace pill set in from
+                  the card's edge. Here it reads in the card's own type, on its content's left edge. */}
+              <p className="ob-summary">{countLabel(d)}</p>
               <StepBar doc={d} />
               <Checklist doc={d} reload={doc.reload} />
             </Card>

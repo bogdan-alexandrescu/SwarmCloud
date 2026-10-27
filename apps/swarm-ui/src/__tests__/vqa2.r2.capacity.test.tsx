@@ -402,7 +402,7 @@ describe('V182: a finished sign-in shows its receipt, not the form', () => {
     // No empty form beside the receipt, Start disabled under it.
     expect(panel.querySelector('form.acct-add-form')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Start the sign-in' })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'done' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
     await waitFor(() => expect(document.querySelector('.acct-add-panel')).toBeNull(), WAIT)
     expect(document.activeElement).toBe(document.querySelector('.acct-add'))
   })
@@ -519,14 +519,15 @@ describe('V005/V013: the quota columns follow what they hold', () => {
         ['tenant', 'state', 'cap', 'feeds', 'left', '429s', 'last', 'rep'].map((c) => `<col class="quota-c-${c}">`).join('') +
         '</colgroup></table></div>',
     )
-    const widths = [...host.querySelectorAll('col')].map((c) => painted(c, 'width', WIDE))
-    // Tenant keeps its share; the bounded columns are as wide as what they
-    // hold; Feeds pool sets no width and takes what is left (QA-057).
-    // Each bounded column is capped at its old share, so a narrower table
-    // shrinks it back to the percentage instead of overflowing the card.
-    expect(widths).toEqual([
-      '16%', 'min(168px, 16%)', 'min(116px, 11%)', null, 'min(104px, 10%)', 'min(124px, 12%)', 'min(136px, 13%)', 'min(76px, 7%)',
-    ])
+    const widths = [...host.querySelectorAll('col')].map((c) => painted(c, 'width', { ...WIDE, container: 1054 }))
+    // Tenant is as wide as a tenant id since VQ-036; the bounded columns are
+    // as wide as what they hold; Feeds pool sets no width and takes what is
+    // left (QA-057). A table under 993px gives each bounded column its old
+    // share instead (a container query, since Chromium ignores `min()` on a
+    // column), so it never overflows the card.
+    expect(widths).toEqual(['120px', '168px', '116px', null, '104px', '124px', '136px', '76px'])
+    const narrow = [...host.querySelectorAll('col')].map((c) => painted(c, 'width', { ...WIDE, container: 894 }))
+    expect(narrow).toEqual(['16%', '16%', '11%', null, '10%', '12%', '13%', '7%'])
     // At the ~1054px table they were measured on, they leave Feeds pool its 15%.
     const at = (w: string, t: number): number => {
       const m = /^min\((.*)\)$/.exec(w)

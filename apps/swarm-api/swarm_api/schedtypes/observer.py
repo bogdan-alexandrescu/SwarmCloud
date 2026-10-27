@@ -52,8 +52,10 @@ label `epic`, NO task item in the body, and ONE COMMENT PER PROPOSAL, each a
 `- [ ]` box. It is written with the tenant's own forge credential
 (`ctx.forge_tokens`, the `-git` secret every forge write uses) through
 `forgewrite.GitHubWriter`; no new credential. Every field the agent wrote is
-masked and neutralised (`issuecomments.neutral`: redaction with the token as
-a literal, no mention, no closing keyword). Filing happens when the next
+masked and neutralised, and written plain (`issuecomments.plain` for the
+title, `prose` and `code` in the body: redaction with the token as a
+literal, no mention, no closing keyword, no live HTML, and no `&gt;` entity
+for GitHub to print as typed). Filing happens when the next
 firing takes a report's proposals in, with the inbox records, which stay:
 the inbox is where a person sees them either way.
 
@@ -95,7 +97,7 @@ from .. import approvals, refusals, scheduletypes
 from ..errors import ApiError, Forbidden, ValidationFailed
 from ..forgewrite import ForgeWriteError, GitHubWriter
 from ..issuecomments import bounded as bounded_body
-from ..issuecomments import neutral
+from ..issuecomments import code, plain, prose
 from ..repositories import Repositories
 from ..schemas import TaskCreate
 from ..validation import SCHEDULE_METADATA_KEY, IssueRef
@@ -585,8 +587,11 @@ def render_epic(schedule: Mapping[str, Any], task: Mapping[str, Any], count: int
     """The epic's title and body: the epic form's sections, in its order, and no task item."""
     task_id = str(task["id"])
     wave = (_aware(task.get("completed_at")) or datetime.now(timezone.utc)).date().isoformat()
-    name = neutral(schedule.get("name") or schedule["schedule_id"], 100, literals=literals, one_line=True)
-    title = f"[epic] Wave {wave} observer findings of schedule {name}"[:MAX_TITLE_CHARS]
+    raw_name = schedule.get("name") or schedule["schedule_id"]
+    # A title is shown as text, prose is Markdown: each gets its own form (#2391).
+    name = prose(raw_name, 100, literals=literals, one_line=True)
+    title = (f"[epic] Wave {wave} observer findings of schedule "
+             f"{plain(raw_name, 100, literals=literals, one_line=True)}")[:MAX_TITLE_CHARS]
     firing_id = ((task.get("metadata") or {}).get(SCHEDULE_METADATA_KEY) or {}).get("firing_id")
     body = "\n".join([
         epic_marker(task_id),
@@ -597,7 +602,7 @@ def render_epic(schedule: Mapping[str, Any], task: Mapping[str, Any], count: int
         "### Where these findings came from",
         "",
         f"The SwarmCloud observer schedule **{name}** (`{schedule['schedule_id']}`), report task "
-        f"`{task_id}`" + (f" of firing `{neutral(firing_id, 120, one_line=True)}`" if firing_id else "")
+        f"`{task_id}`" + (f" of firing {code(firing_id, 120)}" if firing_id else "")
         + f", over the last {int(window_hours)} hours of work. It made {int(count)} "
         f"proposal{'s' if count != 1 else ''}: each is one comment below.",
         "",
@@ -616,11 +621,11 @@ def render_proposal(task_id: str, position: int, proposal: Proposal, *,
                     literals: Sequence[str] = ()) -> str:
     """One proposal as one epic comment: a `- [ ]` box, then what was measured."""
     def text(value: str, one_line: bool = False) -> str:
-        return neutral(value, MAX_FIELD_CHARS, literals=literals, one_line=one_line)
+        return prose(value, MAX_FIELD_CHARS, literals=literals, one_line=one_line)
 
     lines = [
         proposal_marker(task_id, position),
-        f"- [ ] **{neutral(proposal.title, MAX_TITLE_CHARS, literals=literals, one_line=True)}** · "
+        f"- [ ] **{prose(proposal.title, MAX_TITLE_CHARS, literals=literals, one_line=True)}** · "
         f"observer report `{task_id}`, proposal {int(position) + 1} · "
         + (text(proposal.evidence, one_line=True) or "the report gave no figures"),
     ]

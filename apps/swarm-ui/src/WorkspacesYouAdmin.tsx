@@ -30,6 +30,12 @@
  * Settings pages (CONFIG-NAV): Workspace Settings, MCP servers, People and
  * roles, Secrets.
  *
+ * THE ROLE IS THE ONE THE API ACTS ON (VQ-044; part of #2391): each entry's
+ * `role` is `RoleStore.resolve`'s answer, which is `admin` for a platform admin
+ * in every group workspace they are in, whatever their stored grant says. So
+ * the page never calls it a stored role, and marks such a row "admin as a
+ * platform admin", the words People and roles uses for the same answer.
+ *
  * Personal workspaces are not listed: everyone administers their own, and its
  * settings are under Profile. Neither are a platform admin's reach entries,
  * which are workspaces they can reach, not ones they were made admin of.
@@ -89,7 +95,10 @@ function useWorkspaceSetups(ids: readonly string[]): Readonly<Record<string, Res
 const docOf = (r: Result<OnboardingDoc> | undefined): OnboardingDoc | null => (r !== undefined && (r.status === 'ok' || r.status === 'stale') ? r.data : null)
 
 function AdminList({ choices, open }: { choices: Parameters<typeof adminWorkspaces>[0]; open: (e: ReactMouseEvent, tenantId: string, to: string) => void }) {
-  const named = nameTenants(adminWorkspaces(choices), null)
+  const listed = adminWorkspaces(choices)
+  // `nameTenants` keeps no role, so whose admin role is a platform admin's is read before naming.
+  const asPlatformAdmin = new Set(listed.filter((c) => c.role?.source === 'platform_admin').map((c) => c.tenant_id))
+  const named = nameTenants(listed, null)
   const setups = useWorkspaceSetups(named.map((w) => w.tenant_id))
   if (named.length === 0) return <NoneToAdmin />
   // Every listed workspace is a group one, so each has four steps.
@@ -117,6 +126,7 @@ function AdminList({ choices, open }: { choices: Parameters<typeof adminWorkspac
             <span className="wya-name">
               <b>{w.display_name}</b>
               <small>{w.tenant_id}</small>
+              {asPlatformAdmin.has(w.tenant_id) && <small className="wya-reading" data-via="platform_admin">admin as a platform admin</small>}
             </span>
             <nav className="wya-links" aria-label={`${w.display_name} settings`}>
               {WORKSPACE_ADMIN_LINKS.map((l) => (
@@ -154,7 +164,7 @@ export function WorkspacesYouAdminScreen({ go }: { go: (to: string) => void }) {
       <PageHead title="Workspaces you admin">
         <UrRefresh reads={[mine]} />
       </PageHead>
-      <p className="ur-sub">Each group workspace whose stored role for you is admin, with its own setup progress. A link selects that workspace, then opens the page.</p>
+      <p className="ur-sub">Each group workspace where your role is admin, given to you by name or held as a platform admin, with its own setup progress. A link selects that workspace, then opens the page.</p>
       <UrRegion state={mine.state} route="GET /v1/tenants/mine" what="Your workspaces" plural onRetry={mine.reload} empty={<NoneToAdmin />}>
         {(choices) => <AdminList choices={choices} open={open} />}
       </UrRegion>

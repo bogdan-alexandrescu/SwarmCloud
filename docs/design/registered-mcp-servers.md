@@ -505,9 +505,11 @@ or a hash.
   `destroyed`. Not at the end of each attempt, because a retry is a new
   attempt of the same agent and needs it (Q2). The worker's copy dies with the
   attempt regardless (§4.7).
-* **Expiry in the queue.** An agent whose credential expires before it is
-  admitted fails `mcp_credential_expired` at admission, with no lease
-  (§4.10). It cannot park: no one can supply a new value to a queued agent.
+* **Expiry in the queue.** A workflow's step whose credential expires before
+  it is admitted parks `CREDENTIAL_MISSING` until its caller re-stores the
+  credential (`PUT /v1/workflows/{id}/mcp-credentials`); an agent that is no
+  workflow's fails `mcp_credential_expired` at admission, with no lease,
+  because nothing can re-store its own credential (§4.10).
 
 ### 4.5 Long-lived credentials: a workspace secret granted to `mcp:<name>`
 
@@ -789,14 +791,65 @@ lease:
   profile: **park `CREDENTIAL_MISSING`** with code `mcp_server_unavailable`
   and the server's name; the credential sweep returns it to `READY` when the
   registration is enabled again (invariant 1: parked costs nothing);
-* a `dispatch` server whose credential row is `destroyed` or past
-  `expires_at`: **`FAILED`** with `mcp_credential_expired`, no lease, no
-  retry. Nobody can hand a queued agent a new value, so parking would wait for
-  ever.
+* a `dispatch` server whose credential row is `destroyed`, past
+  `expires_at` or absent, on a **workflow's** step (or a child of one):
+  **park `CREDENTIAL_MISSING`** with `credential: "mcp"`, code
+  `mcp_credential_expired` (`mcp_credential_missing` for an absent row), the
+  server's name and `expired_at`, until the caller re-stores the credential;
+  past `MCP_CREDENTIAL_PARK_MAX_SECONDS` (24 hours) the park ends **`FAILED`**
+  with that code, no lease;
+* the same on an agent that is **no workflow's**: **`FAILED`** with
+  `mcp_credential_expired`, no lease, no retry. Nothing re-stores an agent's
+  own credential, so parking would wait for ever.
 
 The worker's attach (§4.6 step 5-6) repeats both checks, because state moves
 between admission and attach; the attach is the authority, admission is the
-cheap early answer.
+cheap early answer. An attach that withholds a workflow step's servers for
+their credential alone parks the step the same way (`expired_at` null:
+the attach does not say when), instead of failing the attempt.
+
+**Why a workflow's expired credential waits (BGD, 2026-10-26).** This
+reverses the rule of 2026-10-18, which held that a per-run credential was one
+"nobody can replace" because the caller who supplied it is not online. For a
+caller like Product Oracle that is not true: it is a service, online for the
+whole run, and it mints the credential. On 2026-10-26 its five Code map runs
+(tenant u-or-9a0792) each sent a 7200 s credential sized for the step, then
+waited about 4.7 hours parked `PROVIDER_QUOTA_EXHAUSTED` at `account_assign`,
+because the only account lent to the tenant was under its 7-day floor. The
+credentials lapsed at 20:00Z. When more accounts were lent at about 22:45Z, all
+five were promoted and FAILED `mcp_credential_expired` at once, on a wait that
+was nobody's fault. BGD picked this design over (a) SwarmCloud calling a
+tenant-registered refresh URL, and (b) the caller rotating when it sees the
+step leave `PARKED`, which races dispatch. The park holds nothing (invariant 1)
+and nothing is leased before the credential is live (invariants 2, 3). The
+24-hour limit is the longest a credential may live (§4.3): a caller that is
+online has had a whole credential's lifetime to answer.
+
+**What a caller must do.** Watch the workflow's step agents
+(`GET /v1/tasks/{id}` or `GET /v1/workflows/{id}`) for `park_reason ==
+"CREDENTIAL_MISSING"` with `waiting.detail.credential == "mcp"` (or a
+`blocked_by[]` entry with `credential == "mcp"`), and re-store the server it
+names:
+
+    PUT /v1/workflows/{workflow_id}/mcp-credentials
+    {"mcp_credentials": {"<server name>": {"value": "...", "expires_in": 7200}}}
+
+The body is the workflow-create body's `mcp_credentials`, checked the same
+way. It replaces the credential of each server it names (a new secret version
+and a new live row) and leaves the others alone; a server no step names is 422
+`mcp_credential_unexpected`. Only the workflow's submitter, a service identity
+included, or an admin of the workspace may call it (403 otherwise); another
+tenant's workflow is 404, as `GET` answers; a finished workflow is 409
+`workflow_finished`. Both refusals are always made; their codes are new, so
+they ship behind refusal switches (`swarm_api.refusals`, observer proposal I),
+and until `REFUSAL_WORKFLOW_FINISHED` and
+`REFUSAL_MCP_CREDENTIAL_RESTORE_FORBIDDEN` are on they answer the established
+`conflict` and `forbidden`, with the same message. A caller should branch on
+the status. It answers `{"stored": [{"server", "expires_at"}],
+"promoted": <steps returned to READY>}`. The steps parked on a re-stored
+server are returned to `READY` in the same request, and the scheduler is
+woken. A child of a step is returned by the credential sweep on that drain.
+No value is in the answer, a log or an event.
 
 ### 4.11 Console, plugin and API surfaces
 
@@ -1188,9 +1241,15 @@ contract request 98 added `QUEUED` -> `FAILED`, and request 99 added
 `READY` -> `FAILED` and `PARKED` -> `FAILED`, the two states admission and
 the sweep actually hold an agent in. Admission writes them, with no lease and
 no reservation, in
-`apps/scheduler/scheduler/loop.py::Scheduler._fail_unrunnable`. The
-`McpAnswer.terminal` docstring in `mcp_admission.py` still describes the
-park that preceded request 99; the code does not.
+`apps/scheduler/scheduler/loop.py::Scheduler._fail_unrunnable`.
+
+**MCP-KEY-PARK (#2498).** A workflow's expired, destroyed or missing
+credential parks instead (`McpRefusal.restorable`, `McpAnswer.
+waits_for_credential`); `Scheduler._promote_credentials` promotes it once
+the row is live and fails it past `MCP_CREDENTIAL_PARK_MAX_SECONDS`;
+swarm-api's `routes/workflows.py::restore_mcp_credentials` is the re-store;
+`waiting_detail._credential` serves the park's fields; the worker's
+`Worker._park_mcp_credential` parks at the attach.
 
 **MCP-WORKER (part of #1433).** `apps/agent-worker/agent_worker/mcp_attach.py`
 calls the attach once per attempt, after the secrets release and before the

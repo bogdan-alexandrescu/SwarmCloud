@@ -342,7 +342,7 @@ describe("People and roles' role list and overrides read as the house list and t
     vi.resetModules()
     const { WorkspacePeopleScreen } = await import('../WorkspacePeople')
     render(<WorkspacePeopleScreen />)
-    const table = await screen.findByRole('table', { name: 'People with their own role' })
+    const table = await screen.findByRole('table', { name: /^Who holds which role in / })
     const facts = screen.getByText('Sees everything.').closest('dl')!
     // MUTATION: drop `className="pf-facts"` from RoleTable's <dl> -> fails.
     expect(painted(facts, 'display', WIDE)).toBe('grid')

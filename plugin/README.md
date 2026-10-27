@@ -1266,7 +1266,7 @@ The full log is still there. `swarm_follow` with `format: "lines"` narrates
 it (`sc:remote` still uses that), and so do `swarm tail`, `swarm follow
 <task_id>` and the console.
 
-### Two layouts: rows, or the SwarmCloud pane (SC-BROWSER-BUILD)
+### Layouts: rows, the SwarmCloud pane (SC-BROWSER-BUILD), or the band
 
 BGD asked on 2026-10-25 (#2318) to follow SwarmCloud work from Claude Code
 without spending model tokens on it by default, and picked proposal B, Two
@@ -1323,6 +1323,63 @@ them the module does not load and nothing else changes. `claude plugin test
 plugin` runs `plugin/hooks/pane.test.ts` against the engine. How a live
 session seats the pane, and the `sc:finish` row's real token cost against
 today's `sc:summary` row, are measured in a live session, not here.
+
+### The third layout: a band above the prompt (SC-BAND)
+
+BGD decided on 2026-10-26 (part of #2318) that the SwarmCloud view moves out
+of the right-docked pane into a HORIZONTAL STRIP ABOVE THE PROMPT, with one
+summary line BELOW the prompt, and that in this layout the plugin starts no
+/workflows rows at all. Why: in Claude Code's fullscreen layout a Pane docks
+on the right and a plugin cannot choose otherwise, and /workflows is Claude
+Code's own background-task list, where a plugin can only add model-driven
+rows. A plugin can draw two horizontal things: the `AbovePrompt` band (many
+rows, scrolled by the engine, folded by the engine's [-], held to half the
+terminal) and `$.ui.status`, one pinned line under the prompt beside other
+plugins' lines.
+
+* **The strip** (`ui.render` on `AbovePrompt`, in `plugin/hooks/pane.tsx`)
+  draws the pane's own levels -- workflows, a workflow's stages, a stage's
+  agents, one agent's details, with Refresh and back -- at the band's
+  `bodyColumns` (two columns where there is room, one at a time on a narrow
+  terminal), under a summary line: `SwarmCloud · 6 running · 1 waits on you
+  · 2 PRs`. Its `[Fold]` leaves that line alone; a taller tree scrolls in the
+  engine's window; while a survey holds the band it yields. Every read is one
+  direct `swarm_browse` call, as the pane's are: no model tokens.
+* **The line under the prompt**: `SC 6 running · 1 waits on you · 2 PRs`,
+  refreshed after each list read and cleared when nothing of this session or
+  project runs.
+* **No rows.** With the layout at `band`, `swarm_workflow_launch` answers an
+  attach, `attach: "all"` and a dispatch's rows with `launches: []`,
+  `rows: "band"` and `followed_by: "band"`; a spec's run submits it and
+  starts no follow row. Arming the `/sc check` watch is unchanged.
+* **It notices what the rows did.** While anything listed runs, the strip
+  re-reads `swarm_browse {level: "workflows"}` once a minute (`$.clock.every`,
+  the plugin's one timer; it stops when nothing runs, when the layout leaves
+  `band`, and when the session ends). A workflow that finished, a step that
+  waits for a person, a merge parked on owner questions, or new owner
+  questions queues ONE chat turn, `/sc status wf_… · finished: succeeded · PR
+  #2463`, with `$.command.run`; an unchanged read, and the first read, queue
+  none.
+* **Session start.** In `band` the strip opens at session start with this
+  session's and this project's running work (one `swarm_layout` call, then
+  one `swarm_browse {level: "workflows", project: true}`), and the
+  SessionStart hook asks for nothing else: it reads the layout locally, as
+  the bridge does, and skips the attach listing (a remembered `/sc watch` is
+  still re-armed).
+
+To switch: update the plugin, then `/sc layout band` (or `[Layout]` in the
+pane or the strip). It saves the choice for the project, starts the strip and
+queues no attach; `/sc layout rows` or `/sc layout pane` stops the strip,
+clears the line under the prompt and re-attaches as before. Rows already
+running keep going until they end.
+
+What it needs and what was not measured: function hooks, as the pane does.
+`claude plugin test plugin` runs `plugin/hooks/band.test.ts` against the
+engine. The PR counts and the owner-question notices need `swarm_browse` to
+serve `pull_requests`, `owner_questions` and `park_phase` on its workflow
+rows; until it does, the summary leaves the PR count out and those notices
+do not fire. How a live fullscreen session lays the strip out is measured in
+a live session, not here.
 
 ### What differs from a local step — read before swapping one in
 
@@ -1487,6 +1544,18 @@ stops at a plan waiting for approval.
 `run --issue` and `plan approve|edit|reject` write, so no skill or command is
 granted them: `tests/unit/mcp/test_plugin_commands.py` holds them out of every
 grant, and `tests/unit/mcp/test_issue_runs.py` holds the digest rule.
+
+## A repository's Playwright suite as a gate
+
+`swarm_suite_gate` runs a registered repository's whole Playwright suite as
+`shards` steps on `claude-code` plus one `report` step that merges their blob
+reports. The caller names the repository, a ref, `suite: "playwright"`,
+`working_dir`, `shards` (1 to 20, default 8), and optionally `project` and a
+non-secret `env_file`. It never names an image, a command or resources. The
+report's `summary.md` (through `swarm_result`) and `summary.json` and
+`playwright-report.zip` (through `swarm_artifact`) are the answer. What it
+runs, what it costs and how a merge train reads it are in
+[docs/suite-gate.md](../docs/suite-gate.md).
 
 ## Schedules and the approval inbox
 

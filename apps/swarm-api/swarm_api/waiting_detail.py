@@ -87,6 +87,11 @@ CHILDREN_READ = 100
 #: Pending check names a summary names before "...".
 SUMMARY_NAMES = 3
 
+#: The `credential` of a park waiting for a workflow's caller to re-store an
+#: MCP credential: `mcp_credentials.PARK_CREDENTIAL`, spelled again so this
+#: pure module imports nothing that reads Firestore.
+MCP_PARK_CREDENTIAL = "mcp"
+
 #: Parks whose `next_eligible_at` is the time the scheduler may next act.
 _TIMED = frozenset({
     ParkReason.PROVIDER_QUOTA_EXHAUSTED.value,
@@ -694,6 +699,25 @@ def _credential(task: Task, facts: dict[str, Any]) -> dict[str, Any]:
     }
     summary = "Credential missing" + (f": {', '.join(names)}" if names else "")
     resumes = "the tenant registers the credential and the scheduler's credential sweep finds it"
+    if facts.get("credential") == MCP_PARK_CREDENTIAL:
+        # A workflow's per-run MCP credential lapsed while the step waited
+        # (registered-mcp-servers.md §4.10, BGD 2026-10-26): its caller
+        # re-stores it. What a caller reads, by name and never a value:
+        # `credential`, `code`, `server` (the name its re-store keys by) and
+        # `expired_at`, as the park's `blocked_by[]` entry holds them.
+        server = _str(facts.get("server"))
+        detail.update({
+            "reason": ParkReason.CREDENTIAL_MISSING.value,
+            "credential": MCP_PARK_CREDENTIAL,
+            "code": _str(facts.get("code")),
+            "server": server,
+            "expired_at": _as_dt(facts.get("expired_at")),
+            "restore_route": (f"PUT /v1/workflows/{task.workflow_id}/mcp-credentials"
+                              if task.workflow_id else None),
+        })
+        summary = f"MCP credential expired: {server}" if server else "MCP credential expired"
+        resumes = ("the workflow's caller re-stores the credential "
+                   "(PUT /v1/workflows/{id}/mcp-credentials)")
     return {"detail": detail, "summary": summary, "resumes_when": resumes, "since": None}
 
 
@@ -721,7 +745,40 @@ def _pause(facts: dict[str, Any], park: TaskEvent | None) -> dict[str, Any]:
 # History
 # --------------------------------------------------------------------------
 
-def _history_text(ev: TaskEvent) -> str:
+#: What woke a parked merge step, by the `merge_wait.wake_reason` its marker
+#: recorded: `mergewake`'s tick (`_read`'s readings, a fix round's ending),
+#: the merge slot (`mergeslot.SLOT_WAKE_REASON`) and the merge train
+#: (`train_<state>`). "The checks settled" is said only for a settled
+#: reading: on F05 (#2379) a head_moved wake was served as one.
+_WAKE_WORDS = {
+    "green": "swarm-api's tick read the checks settled",
+    "red": "swarm-api's tick read the checks settled",
+    "head_moved": "swarm-api's tick read that the head moved",
+    "merged": "swarm-api's tick read the pull request merged",
+    "closed": "swarm-api's tick read the pull request closed",
+    "conflicting": "swarm-api's tick read the pull request conflicting with its base",
+    "dequeued": "swarm-api's tick read the pull request out of the merge queue",
+    "fix_round_ended": "a fix round ended",
+    "fix_round_refused": "a fix round was refused",
+    "fix_round_lost": "a fix round was lost",
+    "merge_slot_granted": "the repository's merge slot was granted",
+}
+
+
+def _wake_words(wake_reason: Any) -> str:
+    """The cause of a wake, in words; a reason not recorded is said so, never guessed."""
+    reason = _str(wake_reason)
+    if reason is None:
+        return "swarm-api's tick marked the step (reason not recorded)"
+    if reason in _WAKE_WORDS:
+        return _WAKE_WORDS[reason]
+    if reason.startswith("train_"):
+        return f"the merge train went {reason[len('train_'):]}"
+    return f"swarm-api's tick marked the step: {reason}"
+
+
+def _history_text(ev: TaskEvent, wake_reason: Any = None) -> str:
+    """One history row; `wake_reason` is the one recorded for THIS wake, if any."""
     d = ev.detail or {}
     if ev.type is EventType.PARKED:
         text = f"parked: {d.get('reason') or 'reason not recorded'}"
@@ -737,7 +794,7 @@ def _history_text(ev: TaskEvent) -> str:
         why = d.get("reason")
         words = {
             "fallback_due": "woke on the fallback re-check",
-            "wake_requested": "woke: swarm-api's tick read the checks settled",
+            "wake_requested": f"woke: {_wake_words(wake_reason)}",
             "retry_due": "retry due",
         }
         text = f"ready: {words.get(why, why or 'promoted')}"
@@ -753,15 +810,24 @@ def _history_text(ev: TaskEvent) -> str:
 
 def _history(task: Task, events: Sequence[TaskEvent] | None, reason: str,
              as_of: datetime) -> list[dict[str, Any]]:
-    rows = [
-        {"at": ev.at, "kind": _HISTORY_KINDS[ev.type], "text": _history_text(ev)}
-        for ev in (events or ()) if ev.type in _HISTORY_KINDS
-    ]
     wait = _mapping(_mapping(task.metadata).get("merge_wait"))
     woke = _as_dt(wait.get("wake_requested_at"))
+    # merge_wait holds only the newest mark (a park replaces the record), so
+    # its wake_reason names the first wake_requested READY at or after that
+    # mark and no other: an older wake's reason went with its record.
+    marked = None
+    if woke is not None:
+        marked = next((ev for ev in sorted(events or (), key=lambda e: e.at)
+                       if ev.type is EventType.READY and ev.at >= woke
+                       and (ev.detail or {}).get("reason") == "wake_requested"), None)
+    rows = [
+        {"at": ev.at, "kind": _HISTORY_KINDS[ev.type],
+         "text": _history_text(ev, wait.get("wake_reason") if ev is marked else None)}
+        for ev in (events or ()) if ev.type in _HISTORY_KINDS
+    ]
     if reason == ParkReason.CI_PENDING.value and woke is not None:
         rows.append({"at": woke, "kind": "wake",
-                     "text": f"wake requested: {wait.get('wake_reason') or 'checks settled'}"})
+                     "text": f"wake requested: {_wake_words(wait.get('wake_reason'))}"})
     stuck = _still_parked(task, reason, as_of)
     if stuck is not None:
         rows.append({"at": task.next_eligible_at, "kind": "eligible",

@@ -629,3 +629,91 @@ def test_clearing_the_saved_default_returns_to_the_personal_workspace(client, se
     assert r.status_code == 200, r.text
     got = client.get("/v1/tenants/me", headers=as_("alice")).json()
     assert got["tenant"]["tenant_id"] == "u-alice"
+
+
+# -- the time zone (TIMEZONE-SERVER, part of #2391) -----------------------------------
+#
+# BGD, 2026-10-26: a person's zone is kept in their server-side preferences, so
+# it follows them to every browser and survives sign-out. Before this, the
+# console kept it in one browser's local storage (`swarm.timezone:<email>`).
+
+
+def test_the_time_zone_is_utc_from_the_default_until_one_is_saved(client, seeded) -> None:
+    got = client.get("/v1/profile", headers=as_("alice")).json()
+    assert got["time_zone"] == "UTC"
+    # The console writes a zone this browser kept before the server held one,
+    # once: it must tell "never saved" from "saved UTC".
+    assert got["time_zone_source"] == "default"
+
+
+def test_a_saved_time_zone_is_read_back_from_every_browser(client, seeded) -> None:
+    r = client.put("/v1/profile/preferences", headers=as_("alice"),
+                   json=body(time_zone="America/Los_Angeles"))
+    assert r.status_code == 200, r.text
+    assert r.json()["time_zone"] == "America/Los_Angeles"
+    assert r.json()["time_zone_source"] == "profile"
+    assert r.json()["revision"] == 1
+    got = client.get("/v1/profile", headers=as_("alice")).json()
+    assert got["time_zone"] == "America/Los_Angeles"
+    assert got["time_zone_source"] == "profile"
+    # Saved UTC is a pick, not the default.
+    r = client.put("/v1/profile/preferences", headers=as_("alice"),
+                   json=body(time_zone="UTC", revision=1))
+    assert r.status_code == 200, r.text
+    got = client.get("/v1/profile", headers=as_("alice")).json()
+    assert (got["time_zone"], got["time_zone_source"]) == ("UTC", "profile")
+
+
+def test_a_save_without_a_time_zone_keeps_the_saved_one(client, seeded) -> None:
+    """The name, default and bell saves predate the zone and do not send it:
+    they must not reset it."""
+    client.put("/v1/profile/preferences", headers=as_("alice"),
+               json=body(time_zone="Europe/Bucharest"))
+    r = client.put("/v1/profile/preferences", headers=as_("alice"),
+                   json=body(default_workspace="eng", revision=1))
+    assert r.status_code == 200, r.text
+    assert r.json()["time_zone"] == "Europe/Bucharest"
+    got = client.get("/v1/profile", headers=as_("alice")).json()
+    assert got["time_zone"] == "Europe/Bucharest"
+    assert got["default_workspace"]["tenant_id"] == "eng"
+
+
+@pytest.mark.parametrize("zone", [
+    "Mars/Olympus_Mons", "PDT", "America/Los Angeles", "", "../../etc/passwd",
+    "america/los_angeles",
+])
+def test_a_name_that_is_not_an_iana_zone_is_422_in_words_and_stores_nothing(
+    client, seeded, zone
+) -> None:
+    r = client.put("/v1/profile/preferences", headers=as_("alice"), json=body(time_zone=zone))
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["reason"] == "unknown_time_zone"
+    assert "time zone" in r.json()["message"]
+    assert "America/Los_Angeles" in r.json()["message"]
+    assert stored(seeded) == []
+
+
+def test_a_stored_time_zone_that_is_not_a_zone_reads_as_the_default(client, seeded) -> None:
+    client.put("/v1/profile/preferences", headers=as_("alice"), json=body(time_zone="Asia/Tokyo"))
+    (path,) = stored(seeded)
+    seeded.docs[path]["time_zone"] = "Mars/Olympus_Mons"
+    got = client.get("/v1/profile", headers=as_("alice")).json()
+    assert (got["time_zone"], got["time_zone_source"]) == ("UTC", "default")
+
+
+def test_unreadable_preferences_serve_no_time_zone_rather_than_utc(client, seeded) -> None:
+    """An unread zone is unknown, never UTC: the console then keeps the one it
+    has rather than switching every time on the page to UTC."""
+    real = seeded.get_all
+
+    def failing(refs, *a, **k):
+        refs = list(refs)
+        if any(ref.path.startswith(COLLECTION + "/") for ref in refs):
+            raise RuntimeError("firestore down")
+        return real(refs, *a, **k)
+
+    seeded.get_all = failing  # type: ignore[method-assign]
+    payload = client.get("/v1/profile", headers=as_("alice")).json()
+    assert payload["unavailable"] == ["preferences"]
+    assert payload["time_zone"] is None
+    assert payload["time_zone_source"] == "unavailable"

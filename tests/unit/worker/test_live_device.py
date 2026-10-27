@@ -24,6 +24,7 @@ a scripted X server on a unix socket. No Chromium, no Xvfb, no network.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import struct
 import tempfile
@@ -33,6 +34,7 @@ from typing import Any
 import pytest
 
 from agent_worker.livegate import cdppolicy
+from agent_worker.livegate import device as device_module
 from agent_worker.livegate.capture import Frame
 from agent_worker.livegate.cdppolicy import PolicyPaths
 from agent_worker.livegate.cdpproxy import CdpProxy
@@ -62,6 +64,8 @@ DESIGN = {
     # QA-KIT (owner decision 2026-10-19): the 390-wide phone a visual QA sweep
     # names, with iPhone 15's mobile flags.
     "phone-390": (390, 844, 3.0, True, "iPhone OS"),
+    # IMPLEMENT-RENDER (#2442, BGD 2026-10-26): phone-390, ten pixels narrower.
+    "phone-380": (380, 844, 3.0, True, "iPhone OS"),
     "pixel-8": (412, 915, 2.625, True, "Android"),
     "iphone-se": (375, 667, 2.0, True, "iPhone OS"),
     "ipad-7": (810, 1080, 2.0, True, "Macintosh"),
@@ -153,14 +157,6 @@ class FakeDisplay:
         self.sizes.append((width, height))
 
 
-class FakeScale:
-    def __init__(self) -> None:
-        self.scales: list[float] = []
-
-    def set_scale(self, scale: float) -> None:
-        self.scales.append(scale)
-
-
 class FakeLink:
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
@@ -230,8 +226,9 @@ def test_each_preset_sets_metrics_user_agent_and_touch_on_the_gate_owned_context
 
     async def main() -> None:
         proxy, chromium = _proxy(tmp_path, records)
-        display, mask = FakeDisplay(), FakeScale()
-        device = DeviceController(proxy, display, mask, record=lambda k, f: records.append((k, dict(f))))
+        display, resized = FakeDisplay(), []
+        device = DeviceController(proxy, display, record=lambda k, f: records.append((k, dict(f))),
+                                  on_resize=resized.append)
         await proxy.pause()
         fresh = await proxy.open_fresh_page("https://login.example.test/")
         await device.attach_page(fresh)
@@ -244,7 +241,7 @@ def test_each_preset_sets_metrics_user_agent_and_touch_on_the_gate_owned_context
         # device scale factor (presets.py, LB-R3), and the window one pixel
         # past the display (device.py).
         assert display.sizes[-1] == (width, height + BROWSER_UI_HEIGHT)
-        assert mask.scales[-1] == 1.0
+        assert resized[-1] == chosen and chosen.screen_scale == 1.0
         bounds = chromium.calls("Browser.setWindowBounds")[-1]["params"]["bounds"]
         assert (bounds["width"] - 1, bounds["height"] - 1) == display.sizes[-1]
 
@@ -294,7 +291,7 @@ def test_a_page_created_later_is_given_the_current_device(tmp_path):
 
     async def main() -> None:
         proxy, chromium = _proxy(tmp_path, records)
-        device = DeviceController(proxy, FakeDisplay(), FakeScale(), record=lambda k, f: None)
+        device = DeviceController(proxy, FakeDisplay(), record=lambda k, f: None)
         await device.start()
         assert chromium.calls("Target.setDiscoverTargets")[0]["params"] == {"discover": True}
         await device.select("pixel-8")
@@ -325,7 +322,7 @@ def test_reassert_clears_and_sets_the_active_presets_metrics_on_the_gates_own_se
     so the gate clears first and then sets the active preset again."""
     async def main() -> None:
         proxy, chromium = _proxy(tmp_path, [])
-        device = DeviceController(proxy, FakeDisplay(), FakeScale(), record=lambda k, f: None)
+        device = DeviceController(proxy, FakeDisplay(), record=lambda k, f: None)
         target = chromium.page()
         await device.attach_page(target)
         await device.select("phone-390")
@@ -353,7 +350,7 @@ def test_reassert_clears_and_sets_the_active_presets_metrics_on_the_gates_own_se
 def test_reassert_on_a_target_the_gate_holds_no_session_on_sends_nothing(tmp_path):
     async def main() -> None:
         proxy, chromium = _proxy(tmp_path, [])
-        device = DeviceController(proxy, FakeDisplay(), FakeScale(), record=lambda k, f: None)
+        device = DeviceController(proxy, FakeDisplay(), record=lambda k, f: None)
         held = chromium.page()
         await device.attach_page(held)
         await device.select("phone-390")
@@ -371,7 +368,7 @@ def test_a_device_controller_on_the_gates_proxy_is_what_a_clipped_capture_reasse
     `reassert` with it, so __main__.py needs no line of its own."""
     async def main() -> None:
         proxy, _chromium = _proxy(tmp_path, [])
-        device = DeviceController(proxy, FakeDisplay(), FakeScale(), record=lambda k, f: None)
+        device = DeviceController(proxy, FakeDisplay(), record=lambda k, f: None)
         # MUTATION: never register, and the proxy has nothing to call.
         assert proxy._after_clipped_capture == device.reassert
 
@@ -386,12 +383,13 @@ def test_an_unknown_preset_name_is_refused(tmp_path, name):
     records: list[tuple[str, dict[str, str]]] = []
 
     async def main() -> None:
-        cdp, display, mask = FakeCdp(), FakeDisplay(), FakeScale()
-        device = DeviceController(cdp, display, mask, record=lambda k, f: records.append((k, dict(f))))
+        cdp, display, resized = FakeCdp(), FakeDisplay(), []
+        device = DeviceController(cdp, display, record=lambda k, f: records.append((k, dict(f))),
+                                  on_resize=resized.append)
         with pytest.raises(UnknownPreset):
             await device.select(name)
         assert device.device.name == "desktop"
-        assert cdp.calls == [] and display.sizes == [] and mask.scales == []
+        assert cdp.calls == [] and display.sizes == [] and resized == []
 
     asyncio.run(main())
     assert records == [("device_refused", {"cause": "unknown_preset"})]
@@ -414,7 +412,7 @@ def test_a_device_request_carrying_anything_but_a_name_is_refused(args):
 
     async def main() -> None:
         cdp, display = FakeCdp(), FakeDisplay()
-        device = DeviceController(cdp, display, FakeScale(), record=lambda k, f: records.append((k, dict(f))))
+        device = DeviceController(cdp, display, record=lambda k, f: records.append((k, dict(f))))
         with pytest.raises(DeviceRefused):
             await device.handle_ctl(args)
         assert cdp.calls == [] and display.sizes == []
@@ -425,10 +423,22 @@ def test_a_device_request_carrying_anything_but_a_name_is_refused(args):
 
 def test_the_ctl_device_operation_selects_by_name():
     async def main() -> dict[str, Any]:
-        device = DeviceController(FakeCdp(), FakeDisplay(), FakeScale(), record=lambda k, f: None)
+        device = DeviceController(FakeCdp(), FakeDisplay(), record=lambda k, f: None)
         return await device.handle_ctl({"preset": "ipad-7", "orientation": "landscape"})
 
     assert asyncio.run(main()) == {"preset": "ipad-7", "orientation": "landscape"}
+
+
+def test_the_controller_takes_a_display_and_no_scale_sink():
+    """The scale sink's only user was the mask, gone with LIVE-NOMASK (#2298):
+    BGD, 2026-10-25, "remove it". The display change is observed through the
+    display and `on_resize`, which the tests above read."""
+    params = inspect.signature(DeviceController).parameters
+    positional = [n for n, p in params.items() if p.kind is not inspect.Parameter.KEYWORD_ONLY]
+    assert positional == ["cdp", "display"]
+    assert not hasattr(device_module, "ScaleSink")
+    with pytest.raises(TypeError):
+        DeviceController(FakeCdp(), FakeDisplay(), object(), record=lambda k, f: None)
 
 
 # ----------------------------------------- the agent's own Emulation calls
@@ -851,10 +861,11 @@ def test_the_default_device_is_applied_at_start_on_an_xvfb_started_at_the_larges
     server = FakeXServer()
 
     async def body(display: XRandrDisplay) -> list[float]:
-        mask = FakeScale()
-        device = DeviceController(FakeCdp(), display, mask, record=lambda k, f: records.append((k, dict(f))))
+        resized: list[Any] = []
+        device = DeviceController(FakeCdp(), display, record=lambda k, f: records.append((k, dict(f))),
+                                  on_resize=resized.append)
         await device.start()
-        return mask.scales
+        return [d.screen_scale for d in resized]
 
     assert _with_x(server, body) == [1.0]
     desktop = resolve("desktop")
@@ -867,11 +878,12 @@ def test_a_display_that_will_not_resize_fails_the_change_and_keeps_the_device(se
     records: list[tuple[str, dict[str, str]]] = []
 
     async def body(display: XRandrDisplay) -> str:
-        cdp, mask = FakeCdp(), FakeScale()
-        device = DeviceController(cdp, display, mask, record=lambda k, f: records.append((k, dict(f))))
+        cdp, resized = FakeCdp(), []
+        device = DeviceController(cdp, display, record=lambda k, f: records.append((k, dict(f))),
+                                  on_resize=resized.append)
         with pytest.raises(DisplayError):
             await device.select("iphone-15")
-        assert mask.scales == [] and not [c for c in cdp.calls if c[0].startswith("Emulation.")]
+        assert resized == [] and not [c for c in cdp.calls if c[0].startswith("Emulation.")]
         return device.device.name
 
     assert _with_x(server, body) == "desktop"
