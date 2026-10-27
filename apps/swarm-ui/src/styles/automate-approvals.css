@@ -40,7 +40,9 @@
 .apl-kind { font-weight: 600; white-space: nowrap; }
 .apl-open { color: var(--sk-ac); font-weight: 600; }
 .apl-dim { color: var(--text-dim); }
-.apl-state { font-weight: 600; }
+/* nowrap: the cell carries overflow-wrap:anywhere, and an auto-layout column
+   then shrinks to one character and breaks the word ("approve / d"). */
+.apl-state { font-weight: 600; white-space: nowrap; }
 .apl-state.is-approved { color: var(--ok-ink); }
 .apl-state.is-rejected { color: var(--bad-ink); }
 .apl-state.is-expired, .apl-state.is-superseded { color: var(--text-dim); }
@@ -150,6 +152,14 @@
   .apl-card[data-testid='apl-waiting'] tbody tr:first-child > td:first-child { box-shadow: none; }
   .apl-open { display: inline-block; min-height: 44px; padding: 10px 0; }
   .ad-ev { grid-template-columns: minmax(0, 1fr); }
+  /* One column reads the cards by their numbers: the side columns dissolve
+     into it, or they stack left then right (1, 3, 2, 4). */
+  .ad-col { display: contents; }
+  .ad-card[data-n='1'] { order: 1; }
+  .ad-card[data-n='2'] { order: 2; }
+  .ad-card[data-n='3'] { order: 3; }
+  .ad-card[data-n='4'] { order: 4; }
+  .ad-card[data-n='5'] { order: 5; }
   .ad-qfacts { display: grid; grid-template-columns: minmax(0, 1fr); }
   /* On a phone the bar follows the evidence rather than covering it. */
   .ad-bar { position: static; }

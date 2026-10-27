@@ -188,6 +188,9 @@ describe('the Approvals list (A4)', () => {
     expect(visible(within(decided).getByRole('heading'))).toBe('Decided · 2')
     const r = decided.querySelector<HTMLElement>('tr[data-approval="apr_r"]')!
     expect(visible(r.querySelector('td[data-l="Decision"]'))).toBe('rejected')
+    // MUTATION: let the decided word wrap, and an auto-layout cell under
+    // overflow-wrap:anywhere shrinks to one character ("approve / d").
+    expect(painted(r.querySelector<HTMLElement>('.apl-state')!, 'white-space', WIDE)).toBe('nowrap')
     expect(visible(r)).toContain('teammate@example.com')
     expect(visible(r)).toContain('split the workflow change out')
     const ended = screen.getByTestId('apl-ended')
@@ -324,6 +327,21 @@ describe('the layout', () => {
     // MUTATION: keep two evidence columns at 390px.
     expect(painted(d.querySelector<HTMLElement>('.ad-ev')!, 'grid-template-columns', WIDE)).toBe('minmax(0, 1fr) minmax(0, 1fr)')
     expect(painted(d.querySelector<HTMLElement>('.ad-ev')!, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr)')
+  })
+
+  it('reads the numbered evidence cards in their numbers’ order on one column at 390px', async () => {
+    await mount('approval=apr_oldest', routes(INBOX, { approval: item('apr_oldest'), merge: merge() }))
+    const d = await page()
+    await within(d).findByRole('region', { name: 'Why it is held' }, WAIT)
+    const cards = [...d.querySelectorAll<HTMLElement>('.ad-card')]
+    expect(cards.length).toBeGreaterThan(2)
+    expect(cards.map((c) => Number(c.getAttribute('data-n'))).sort((a, b) => a - b)).toEqual(cards.map((_, i) => i + 1))
+    const col = d.querySelector<HTMLElement>('.ad-col')!
+    expect(painted(col, 'display', WIDE)).toBe('grid')
+    // MUTATION: keep the two side columns as boxes at 390px, and the cards
+    // stack left column then right: 1, 3, 2, 4.
+    expect(painted(col, 'display', PHONE)).toBe('contents')
+    for (const c of cards) expect(painted(c, 'order', PHONE)).toBe(c.getAttribute('data-n'))
   })
 
   it('stacks the list’s rows at 390px, each cell under its column’s name, and the row’s link a 44px target', async () => {

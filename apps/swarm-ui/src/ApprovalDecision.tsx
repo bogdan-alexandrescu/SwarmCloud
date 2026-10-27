@@ -308,7 +308,7 @@ function CheckCounts({ d, head }: { d: Decision; head: string | null }) {
 /** One numbered evidence card. */
 function Card({ n, title, children }: { n: number; title: string; children: ReactNode }) {
   return (
-    <section className="ad-card" aria-label={title}>
+    <section className="ad-card" aria-label={title} data-n={n}>
       <h3 className="ad-card-h">
         {n} · {title}
       </h3>
