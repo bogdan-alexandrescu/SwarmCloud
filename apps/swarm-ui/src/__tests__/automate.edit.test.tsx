@@ -296,7 +296,7 @@ describe('A3b: editing a schedule', () => {
     // MUTATION: drop the lead and nothing says a save leaves it paused.
     expect(visible(lead)).toContain('Editing a paused schedule')
     expect(visible(lead)).toContain('Saving does not resume Bug sweep')
-    expect(visible(lead)).toContain('It was paused by its tripwire at 07:41Z. Save the change, then resume it from its page.')
+    expect(visible(lead)).toContain('It was paused by its tripwire at 26 Oct 07:41Z. Save the change, then resume it from its page.')
   })
 
   it('reads an admin’s disabled schedule as paused, never “disabled”', async () => {
@@ -304,7 +304,7 @@ describe('A3b: editing a schedule', () => {
     await form()
     const lead = screen.getByTestId('ae-lead')
     expect(visible(lead)).toContain('Saving does not resume Bug sweep')
-    expect(visible(lead)).toContain('It was paused at 06:00Z.')
+    expect(visible(lead)).toContain('It was paused at 26 Oct 06:00Z.')
     // MUTATION: say the stored state and the word is "disabled".
     expect(visible(lead)).not.toMatch(/disabled/i)
   })
