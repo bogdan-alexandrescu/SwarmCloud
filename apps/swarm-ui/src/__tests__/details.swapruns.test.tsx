@@ -12,7 +12,7 @@
  * first case turns red; draw it for one run (`runs.length < 1`) -- the last.
  */
 import { renderToStaticMarkup } from 'react-dom/server'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { AgentRun } from '../api'
 import type { Task } from '../types'
@@ -66,8 +66,17 @@ function runOf(t: Task): AgentRun {
   }
 }
 
+// The tile writes an instant as HH:MM only on the day it is read, and prefixes
+// MM-DD on any other day, so the clock is pinned to the fixture's day: unpinned,
+// this file went red the day after it was written.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-10-26T12:00:00Z'))
+})
+
 const hosts: HTMLElement[] = []
 afterEach(() => {
+  vi.useRealTimers()
   for (const h of hosts.splice(0)) h.remove()
 })
 
