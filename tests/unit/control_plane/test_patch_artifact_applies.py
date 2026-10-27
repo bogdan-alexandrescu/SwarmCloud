@@ -100,8 +100,34 @@ SECRET="${SWARM_SECRET:-}"
 export TOKEN SECRET
 """
 
-FILES_BEFORE = {"pkg/probe.py": MODULE_BEFORE, "scripts/login.sh": SCRIPT_BEFORE}
-FILES_AFTER = {"pkg/probe.py": MODULE_AFTER, "scripts/login.sh": SCRIPT_AFTER}
+#: The three shapes #2237 named, from CONFIG-NAV's patch: a CSS class that
+#: starts `sk-`, a dotted expression closing a JS object after `token:`, and an
+#: empty array and an opening brace after plural credential names. Each was
+#: served masked, so the patch read through the API did not apply. The class
+#: names are assembled: main's publish scan takes a written-out one for a key.
+_CLASS = _shape("s", "k-", "pscroll")
+_LONG_CLASS = _shape("s", "k-", "sidebar-collapsed-toggle")
+UI_BEFORE = """\
+export function Spine({ pages }) {
+  return (
+      <div className="CLASS">{pages}</div>
+  );
+}
+""".replace("CLASS", _CLASS)
+
+UI_AFTER = """\
+export function Spine({ pages, at, secretsLink }) {
+  const LIST = { tenant_id: 'eng', can_manage: true, secrets: [], platform_credentials: {
+    anthropic: false } };
+  return (
+      <div className="CLASS CLASS-wide">{pages}</div>
+      <WorkspaceSecretsScreen link={at.view ? { ...secretsLinkOf(at.view), token: secretsLink.current } : null} />
+  );
+}
+""".replace("CLASS", _CLASS)
+
+FILES_BEFORE = {"pkg/probe.py": MODULE_BEFORE, "scripts/login.sh": SCRIPT_BEFORE, "ui/Spine.tsx": UI_BEFORE}
+FILES_AFTER = {"pkg/probe.py": MODULE_AFTER, "scripts/login.sh": SCRIPT_AFTER, "ui/Spine.tsx": UI_AFTER}
 
 
 def _unified_diff(before: dict[str, str], after: dict[str, str]) -> str:
@@ -151,6 +177,9 @@ def test_the_patch_under_test_changes_every_line_370_named():
     assert any("token=token_value" in line for line in added)
     assert any("eye_tracking" in line for line in added)
     assert any('TOKEN="$(gh auth token' in line for line in removed)
+    assert any(f'className="{_CLASS}"' in line for line in removed)
+    for needle in (_CLASS, "token: secretsLink.current }", "secrets: [], platform_credentials: {"):
+        assert any(needle in line for line in added), needle
 
 
 def test_a_patch_of_code_that_names_credentials_is_served_whole_and_applies(
@@ -188,6 +217,28 @@ def test_the_shell_filter_leaves_the_same_patch_whole():
     """`redact` in scripts/lib/common.sh is the same rule in the terminal: a
     patch piped through it must apply too."""
     assert _house_filter_text(PATCH.rstrip("\n")) == PATCH.rstrip("\n")
+
+
+#: #2237: each line is code, and both filters serve it byte for byte.
+CODE_2237 = [
+    f'      <div className="{_CLASS}">{{pages}}</div>',
+    "<WorkspaceSecretsScreen link={at.view ? { ...secretsLinkOf(at.view), token: secretsLink.current } : null} />",
+    "  const LIST = { tenant_id: 'eng', can_manage: true, secrets: [], platform_credentials: {",
+    # A longer kebab-case class, and one glued onto a word past the glued
+    # rule's 32 characters: still a name, not a key.
+    f'className="{_LONG_CLASS}"',
+    _shape("ri", "sk-", "assessment-panel-collapsed-state"),
+    "x = { token: page.current}",
+    "token: [], secrets: {}, credentials: ( )",
+]
+
+
+@pytest.mark.parametrize("line", CODE_2237)
+def test_a_css_class_and_code_after_a_credential_name_are_served_whole(line):
+    python = redact(line)
+    assert python.text == line, python.text
+    assert python.count == 0
+    assert _house_filter_text(line) == line
 
 
 # --------------------------------------------------------------------------
@@ -297,6 +348,55 @@ def test_a_literal_secret_in_a_patch_is_still_masked(client, db, objects) -> Non
 
 @pytest.mark.parametrize("line,secret", LITERALS, ids=[s for _, s in LITERALS])
 def test_both_filters_mask_each_literal(line, secret):
+    python = redact(line)
+    shell = _house_filter_text(line)
+    assert secret not in python.text, python.text
+    assert secret not in shell, shell
+    assert python.text == shell, (python.text, shell)
+    assert python.count >= 1
+
+
+def _random_run(seed: int, alphabet: str, length: int) -> str:
+    """A key-shaped value made at runtime, so no tracked file holds one."""
+    import random
+
+    rng = random.Random(seed)
+    return "".join(rng.choice(alphabet) for _ in range(length))
+
+
+_BASE62 = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+#: #2237 tightened three rules; what each still masks. (line, never served).
+#: A provider-shaped `sk-` value -- 20 characters or more that do not read as
+#: a kebab-case name, or a `sk-proj-`/`sk-ant-` prefix -- and a literal after
+#: a credential name, however the code-shaped exemptions sit next to it.
+_LEGACY = _random_run(2237, _BASE62, 48)
+_HEX = _random_run(2238, "0123456789abcdef", 32)
+_PROJ = _random_run(2239, _BASE62, 40)
+_ANT = _random_run(2240, _BASE62, 30)
+STILL_MASKED_2237 = [
+    ("sk-" + _LEGACY, _LEGACY[6:30]),
+    ('className="sk-' + _LEGACY + '"', _LEGACY[6:30]),
+    ("sk-" + _HEX, _HEX[6:]),
+    ("sk-" + "q" * 40, "q" * 20),
+    ("sk-" + "proj-" + _PROJ, _PROJ[4:]),
+    ("sk-" + "ant-" + "oat01-" + _ANT, _ANT),
+    ("sk-" + "ant-" + "super-secret-value", "secret-value"),
+    ("sk-" + "test-" + "aaaa-bbbb", "aaaa-bbbb"),
+    ("sk-" + "live-" + "plain-words", "plain-words"),
+    ("X" + "sk-" + _LEGACY, _LEGACY[6:30]),
+    ("password: correct.horse.battery }", "horse"),
+    ("secret: corp.example.value", "example"),
+    ("token: settings.current", "current"),
+    ("token: {" + _HEX + "}", _HEX),
+    ("secrets: [" + _HEX + "]", _HEX),
+    ('secrets: [ "' + _HEX + '" ]', _HEX),
+    ('secrets: ["' + _HEX + '"]', _HEX),
+]
+
+
+@pytest.mark.parametrize("line,secret", STILL_MASKED_2237, ids=range(len(STILL_MASKED_2237)))
+def test_a_provider_shaped_key_and_a_literal_are_still_masked_after_2237(line, secret):
     python = redact(line)
     shell = _house_filter_text(line)
     assert secret not in python.text, python.text
