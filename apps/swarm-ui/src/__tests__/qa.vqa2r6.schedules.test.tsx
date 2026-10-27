@@ -485,31 +485,23 @@ const loaded = () =>
   }, WAIT)
 
 describe('the approvals inbox (V169, V248, V249)', () => {
-  it('V169: holds the detail pane in view while a long list scrolls', async () => {
-    // MUTATION: drop the sticky `.ap-inbox.is-split > .ap-pane` rule.
+  // #2417 (A4's rows open B's A5 decision page) retired the split pane these
+  // three findings were measured on. V169's want -- the decision in view
+  // however long the page -- is the pinned decision bar; V248's chosen row
+  // has no successor, since an item now opens on a page of its own; V249's
+  // Reject… form gave way to the reason box beside Reject, and its typed
+  // confirmation still takes focus.
+  it('V169: holds the decision bar in view while the evidence scrolls', async () => {
+    // MUTATION: drop the sticky `.ad-bar` rule.
     await mountApprovals('approval=apr_39', approvalRoutes())
-    await loaded()
-    const pane = document.querySelector<HTMLElement>('.ap-inbox.is-split > .ap-pane')!
-    expect(painted(pane, 'position', WIDE)).toBe('sticky')
-    expect(painted(pane, 'top', WIDE)).toBe('8px')
-    expect(painted(pane, 'max-height', WIDE)).toBe('calc(100vh - 16px)')
-    expect(painted(pane, ['overflow-y', 'overflow'], WIDE)).toBe('auto')
+    const detail = await loaded()
+    const bar = await within(detail).findByTestId('ad-decide', undefined, WAIT)
+    expect(painted(bar, 'position', WIDE)).toBe('sticky')
+    expect(painted(bar, 'bottom', WIDE)).toBe('0')
   })
 
-  it('V248: marks the chosen row with aria-current and the accent, not a faint surface tint', async () => {
-    // MUTATION: drop `current={on}`, or the rule back to `background: var(--surface-2)`.
-    await mountApprovals('approval=apr_1', approvalRoutes())
-    await loaded()
-    const picks = [...document.querySelectorAll<HTMLElement>('.ap-pick')]
-    expect(picks.filter((a) => a.getAttribute('aria-current') === 'true')).toHaveLength(1)
-    const on = document.querySelector<HTMLElement>('li[data-approval="apr_1"] > .ap-pick')!
-    expect(on.getAttribute('aria-current')).toBe('true')
-    expect(painted(on, ['background', 'background-color'], WIDE)).toBe('var(--sk-acs)')
-    expect(painted(on, 'box-shadow', WIDE)).toBe('inset 3px 0 0 var(--sk-ac)')
-  })
-
-  it('V249: focuses the reason on Reject…, closes the form on Escape back to Reject…, and the typed confirmation after a hold refusal', async () => {
-    // MUTATION: drop the focus effects or the Escape handler in `Decide`.
+  it('V249: focuses the typed confirmation after a hold refusal', async () => {
+    // MUTATION: drop the focus effect in `Decide`.
     let first = true
     await mountApprovals(
       'approval=apr_1',
@@ -522,15 +514,9 @@ describe('the approvals inbox (V169, V248, V249)', () => {
       }),
     )
     const detail = await loaded()
-    await waitFor(() => expect(within(detail).getByRole('button', { name: 'Reject…' })).toBeTruthy(), WAIT)
-    fireEvent.click(within(detail).getByRole('button', { name: 'Reject…' }))
-    const reason = within(detail).getByRole('textbox')
-    await waitFor(() => expect(document.activeElement).toBe(reason), WAIT)
-    fireEvent.keyDown(reason, { key: 'Escape' })
-    await waitFor(() => expect(within(detail).queryByRole('textbox')).toBeNull(), WAIT)
-    await waitFor(() => expect(document.activeElement).toBe(within(detail).getByRole('button', { name: 'Reject…' })), WAIT)
+    await waitFor(() => expect(within(detail).getByRole('button', { name: 'Approve' })).toBeTruthy(), WAIT)
     fireEvent.click(within(detail).getByRole('button', { name: 'Approve' }))
-    const typed = await within(detail).findByRole('textbox', undefined, WAIT)
+    const typed = await within(detail).findByRole('textbox', { name: /approve it yourself/ }, WAIT)
     await waitFor(() => expect(document.activeElement).toBe(typed), WAIT)
   })
 })

@@ -48,8 +48,6 @@
 }
 .sc-gone-h { margin: 8px 0; font-size: var(--t-h2, var(--t-body)); font-weight: 600; }
 .sc-list-field { border: 0; padding: 0; margin: 0; min-width: 0; }
-.ap-filter { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 8px; }
-.ap-linked { margin: 0 0 12px; }
 /* A SPEND WRAPS; ITS FIGURE DOES NOT (visual QA V166, V168). "partial $3.10 ·
    2 attempts unreported" was one nowrap line in a 96px column and printed
    over the State cell; in a firing's Cost cell it was clipped at "unreporte"
@@ -200,44 +198,6 @@ ol.sc-pobj { padding-left: 18px; }
 .sc-waiting-list a { color: var(--sk-ac); }
 .sc-kind { font-weight: 600; }
 
-/* ---- Automate › Approvals (§6.2 inbox: B split on a desktop, A on a phone) -- */
-.ap-inbox.is-split { display: grid; grid-template-columns: minmax(240px, 2fr) minmax(0, 3fr); gap: 16px; align-items: start; min-width: 0; }
-.ap-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; min-width: 0; }
-.ap-item { border-bottom: 1px solid var(--line); min-width: 0; }
-/* THE CHOSEN ITEM IS MARKED TWICE (visual QA V248): `--surface-2` alone was
-   barely a tint in the light theme. An accent bar on its edge and the accent
-   wash, and `aria-current` on the link for anyone not seeing either. */
-.ap-item.is-on > .ap-pick { background: var(--sk-acs); box-shadow: inset 3px 0 0 var(--sk-ac); }
-.ap-pick {
-  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: baseline;
-  padding: 6px 4px; min-height: 32px; color: inherit; text-decoration: none;
-  font-size: var(--t-meta); line-height: var(--lh-meta);
-}
-.ap-pane, .ap-detail { min-width: 0; display: grid; gap: 8px; align-content: start; }
-/* THE DETAIL STAYS IN VIEW (visual QA V169): with 40 items, choosing item 39
-   drew its detail at the top of the pane, ~575px above the viewport, and the
-   pane looked empty. The pane holds to the top of the scroller as the list
-   scrolls, and scrolls itself when the item is taller than the screen. */
-.ap-inbox.is-split > .ap-pane { position: sticky; top: 8px; max-height: calc(100vh - 16px); overflow-y: auto; overscroll-behavior: contain; }
-.ap-hold { border-left: 3px solid var(--s-warn); padding: 4px 8px; font-size: var(--t-meta); line-height: var(--lh-meta); display: grid; gap: 2px; }
-.ap-text { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
-.ap-files { margin: 0; padding-left: 18px; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
-.ap-decide { display: grid; gap: 6px; }
-/* A merge's checklist (inbox B): one row per check, its mark a glyph AND a
-   hue, so a greyscale reader still tells ✓ from ✗. An unmet row is said in
-   the text colour, never dimmed: it is the row the approver must read. */
-.ap-checks { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; min-width: 0; }
-.ap-check {
-  display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 0 8px; align-items: baseline;
-  padding: 4px 0; font-size: var(--t-meta); line-height: var(--lh-meta); min-width: 0;
-}
-.ap-check > .sc-sub { grid-column: 2; overflow-wrap: anywhere; }
-.ap-check-l { overflow-wrap: anywhere; }
-.ap-mark { font-weight: 700; text-align: center; }
-.ap-check.is-met > .ap-mark { color: var(--ok-ink); }
-.ap-check.is-unmet > .ap-mark { color: var(--bad-ink); }
-.ap-check.is-unread > .ap-mark { color: var(--text-faint); }
-
 /* ---- Automate › Schedules, All tenants (§5.3; was Admin › Schedules) ------ */
 .sc-table.is-admin th[data-col='tenant'] { width: 96px; }
 .sc-table.is-admin th[data-col='actions'] { width: 168px; }
@@ -260,10 +220,6 @@ ol.sc-pobj { padding-left: 18px; }
   /* The detail's facts and the form's fields: one column, said rather than
      left to auto-fill, so a 180px minimum never puts two side by side. */
   .sc-facts { grid-template-columns: minmax(0, 1fr); }
-  /* The inbox's chosen item opens under it (variant A), its tap target 44px. */
-  .ap-pick { min-height: 44px; grid-template-columns: auto minmax(0, 1fr); }
-  .ap-pick > .sc-sub { grid-column: 2; }
-  .ap-item > .ap-detail { padding: 4px 0 12px; }
   .as-acts .c-btn { min-height: 44px; }
 }
 

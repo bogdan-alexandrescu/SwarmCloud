@@ -57,6 +57,11 @@ const LINK_URL = '/v1/workspace/join-link'
 const MEMBERS_URL = '/v1/workspace/members'
 const ROLES_URL = '/v1/workspace/roles'
 
+// The first find after `openApp` waits for a whole App's first render from
+// freshly reset modules: a few seconds on a busy CI shard, past the 1s default
+// (shard 3/4 of CI run 40577702138 timed out on it while this file passed alone).
+const WAIT = { timeout: 5000 } as const
+
 afterEach(() => {
   cleanup()
   vi.unstubAllEnvs()
@@ -108,7 +113,7 @@ describe('/join: the code travels in a body, never a path', () => {
   it('lights Profile on the spine, not Submit, and marks no panel page current', async () => {
     personApi(() => [])
     await openApp(`/join#${CODE}`)
-    await screen.findByRole('heading', { name: 'Ask to join Example Labs' })
+    await screen.findByRole('heading', { name: 'Ask to join Example Labs' }, WAIT)
     const spine = screen.getByRole('navigation', { name: 'Sections' })
     const current = Array.from(spine.querySelectorAll('[aria-current="page"]'))
     expect(current.map((a) => a.getAttribute('data-sec'))).toEqual(['profile'])
@@ -118,7 +123,7 @@ describe('/join: the code travels in a body, never a path', () => {
   it('reads the code from the fragment, posts it in the lookup body, and takes it off the bar', async () => {
     const calls = personApi(() => [])
     await openApp(`/join#${CODE}`)
-    await screen.findByRole('heading', { name: 'Ask to join Example Labs' })
+    await screen.findByRole('heading', { name: 'Ask to join Example Labs' }, WAIT)
     const lookups = calls.filter((c) => c.url === LOOKUP_URL)
     expect(lookups.length).toBeGreaterThan(0)
     for (const c of lookups) {
@@ -182,7 +187,7 @@ describe('/join: the code travels in a body, never a path', () => {
   it('without a code reads only the person’s own requests and says how to ask', async () => {
     const calls = personApi(() => [])
     await openApp('/join')
-    await screen.findByRole('heading', { name: 'Ask with a join link' })
+    await screen.findByRole('heading', { name: 'Ask with a join link' }, WAIT)
     await screen.findByText('You have not asked to join a workspace.')
     expect(calls.filter((c) => c.url === LOOKUP_URL)).toHaveLength(0)
   })
