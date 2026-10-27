@@ -1686,6 +1686,92 @@ test files excluded), the step runs on `claude-code-browser`; otherwise on
   re-decided from the integrator's diff. A review that cannot be read sends it
   to the browser.
 
+### Reviews only where they matter, and no-op steps refused
+
+BGD decided on 2026-10-27 (#2524): "Risk paths + over 300 lines; reuse
+renders", and that a fix, CI-fix or pull-request step that can buy nothing
+ends before it is leased. The token analysis of 2026-10-20..27 found every
+change got a review however small, and fix rounds started for pull requests
+that had already merged. Both skips are decided by the scheduler as it
+readies the step (`scheduler/reviewgate.py`), so no pod starts for them.
+
+**The review gate.** A workflow step may carry
+
+```json
+"metadata": {"review_gate": {"min_lines": 300, "risk_paths": ["apps/redaction/", "terraform/**/iam*"]}}
+```
+
+Either key may be left out: `min_lines` is 300, and without `risk_paths` the
+platform's list applies (credentials and the git token path, tenant
+isolation, redaction, IAM including `terraform/**/iam*` and
+`terraform/bootstrap/`, and `apps/common/swarm_common/`). swarm-api refuses
+any other key, a `min_lines` that is not a whole number, and a `risk_paths`
+that is not a list of repository-relative globs, with a 422
+(`invalid_review_gate`). The compiled issue-run review carries
+`{"min_lines": 300}`.
+
+As the step is readied, every parent has SUCCEEDED, so what they changed is
+final. The scheduler reads the parents' `result_summary.git` (and, along each
+parent's `builds_on`, the steps it started from, as the runtime resolution
+does): the changed paths (`own_files` when recorded, else `files`) and
+`insertions + deletions`.
+
+* **The review runs** when any changed path matches a risk path, when the
+  lines total more than `min_lines`, or when the change cannot be told: a
+  parent that cannot be read, has no line counts, or whose file list was cut.
+  A gate that could not see the diff never waves it through.
+* **Otherwise it ends SUCCEEDED without an agent**, PARKED -> SUCCEEDED in
+  one guarded write (the edge contract request 52 added). It holds no lease,
+  no pool and no attempt at any point (invariants 1-3). Its
+  `result_summary.review_skipped` is the reason, and its `verdict.json` is
+  `{"verdict": "MERGE", "findings": [], "skipped": "<reason>"}`, so the
+  integrator's `when` gate, the re-review `on_merge_verdict` appends and the
+  merge step read it exactly as a MERGE. The decision is recorded under
+  `metadata.review_gate.resolved` and on the step's `succeeded` event.
+* **The verdict is written inline.** The scheduler holds no bucket
+  credential and gains none on its drain path, so the manifest entry for
+  `verdict.json` carries the text under `inline`, with no `uri`, and the
+  worker stages it from there (`agent_worker.inputs.inline_artifact`). Only
+  that shape is staged: `verdict.json`, `written_by: "scheduler"`, on a step
+  whose gate recorded that it skipped. Two readers go through the bucket and
+  so do not see it: swarm-api's control-plane publish of a MERGE (which then
+  declines, and the integrator's worker publishes it after the hold, without
+  an agent) and the issue run's per-requirement read (which then reads "not
+  all met", so the pull request says "part of #N" rather than closing it).
+* **Not `result_summary.skipped`.** That key means "did not run and left
+  nothing", which makes a step that stages anything from it skip as well: the
+  integrator would never publish.
+* **Renders reused: recorded, not yet acted on.** The decision records
+  whether a parent published images under `shots/` (`renders_published`,
+  `shots`); no runner writes a compare-report manifest, so the listing is the
+  check. A UI review still runs on `claude-code-browser`, because moving it
+  to `claude-code` needs two changes outside this one: the worker's rendered
+  review rule (above) downgrades a UI MERGE from any other profile to
+  NOT_YET, and the review's `input_from`, which would stage the PNGs, is
+  signed at submission before anyone knows their names. Both are asked of the
+  owner on the pull request that built this.
+
+**The no-op precheck.**
+
+* **A fix round whose pull request ended.** A merge step's appended
+  `ci-fix:N`, `conflict-fix:N` and `pick-fix:N` rounds carry
+  `merge_fix_round.merge_task`. At admission, before a lease, the scheduler
+  reads that merge task: SUCCEEDED, or a `merge_wait.wake_reason` of merged
+  or closed (written by the merge wake tick's own pull-request read, one per
+  `CI_READ_SECONDS`), ends the round CANCELLED with
+  `result_summary.skipped.reason` (the frozen table has no READY ->
+  SUCCEEDED). No GitHub call is added; the scheduler holds no forge token.
+* **A NOT_YET that lists no findings.** The gated integrator behind it has
+  nothing to fix. swarm-api, which already reads the verdict while the
+  scheduler holds the integrator PARKED (`verdictpublish`), publishes it as
+  for a MERGE, with `result_summary.noop_precheck.reason`. A NOT_YET with
+  any finding, kept or dropped, still runs the fix agent; the rendered-review
+  downgrade always writes its reason as a finding, so it is never read as
+  empty.
+* **A head that already holds the verdict's commit** is not checked: no
+  verdict names a commit today. It is asked of the owner on the same pull
+  request.
+
 ### What a MERGE verdict publishes
 
 On MERGE the fix step starts **no agent** (owner decision, 2026-10-05: a fix

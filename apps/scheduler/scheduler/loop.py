@@ -67,6 +67,7 @@ from swarm_common.states import (
 )
 
 from . import children as children_mod
+from . import reviewgate as reviewgate_mod
 from . import runtime as runtime_mod
 from . import sizes as sizes_mod
 from .awaitinput import is_control_plane
@@ -1277,6 +1278,16 @@ class Scheduler:
         if self._stop_for_failed_workflow(task, report):
             return False
 
+        # A fix round whose pull request already ended buys nothing (#2524).
+        skipped = reviewgate_mod.end_if_noop(self._store, task)
+        if skipped is not None:
+            if skipped.applied:
+                self._count_cancel(report, reason="noop_precheck")
+                self._note_ended(task.id)
+            else:
+                self._count_stale(skipped, report)
+            return False
+
         if task.next_eligible_at is not None and task.next_eligible_at > now:
             report.skipped += 1
             return False
@@ -1730,6 +1741,14 @@ class Scheduler:
         that one write and holds nothing during it. It is not returned as
         released, so the finish event's admission pass is never handed it.
         """
+        # A gated review whose parents' change buys none ends here (#2524).
+        skipped = reviewgate_mod.end_if_skipped(self._store, task, self._now())
+        if skipped is not None:
+            if skipped.applied:
+                self._note_ended(task.id)
+            else:
+                self._count_stale(skipped, report)
+            return False
         patch_from, event_detail = self._runtime_resolution(task)
         if not self._promote(task, kind="dependency", detail={"reason": reason}, report=report,
                              patch_from=patch_from, event_detail=event_detail):

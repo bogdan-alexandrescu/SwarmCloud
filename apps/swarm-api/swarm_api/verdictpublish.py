@@ -59,9 +59,11 @@ worker's way, unchanged:
   * every step it depends on SUCCEEDED, in its own tenant and workflow,
     and so did an implementer reached through the review;
   * the review's verdict file -- the `input_from` name the step stages from
-    it -- reads as a verdict OUTSIDE the gate's `verdict_in`, and has no
-    finding marked minor (filing those on the wave epic is the worker's,
-    #638). A file that does not read as a verdict is declined, and the
+    it -- reads as a verdict OUTSIDE the gate's `verdict_in`, or as a
+    NOT_YET that lists no finding at all (the no-op precheck, #2524:
+    `noop_verdict_reason`, recorded as `result_summary.noop_precheck`), and
+    has no finding marked minor (filing those on the wave epic is the
+    worker's, #638). A file that does not read as a verdict is declined, and the
     worker refuses it as before: an unreadable review is not a MERGE;
   * the implementer pushed a branch, did not end `no_change` or `skipped`,
     and wrote a usable `pr-title.txt`: one line, no control character, no
@@ -451,6 +453,26 @@ def parse_verdict(text: str) -> VerdictRead:
         findings_dropped=max(len(texts) - MAX_FINDINGS, 0),
         minors=sum(1 for item in items if _is_minor(item)),
     )
+
+
+#: Where a fix agent skipped by the no-op precheck records why (#2524,
+#: NOOP-PRECHECK). Not `skipped`: this step published, and `skipped` tells
+#: every dependant it left nothing (`agent_worker.expected_outputs.left_nothing`).
+NOOP_PRECHECK_KEY = "noop_precheck"
+NOOP_NOT_YET = "NOT_YET"
+
+
+def noop_verdict_reason(read: VerdictRead) -> str | None:
+    """Why the fix agent behind this verdict would buy nothing, or None (check (c), #2524).
+
+    A NOT_YET that lists no finding at all -- none kept, none dropped, no
+    minor -- gives the fix agent nothing to fix, so the step publishes as for
+    a MERGE. The worker's rendered-review downgrade always writes its reason
+    as the first finding, so it is never read as one.
+    """
+    if read.verdict != NOOP_NOT_YET or read.findings or read.findings_dropped or read.minors:
+        return None
+    return "the review's verdict is NOT_YET but lists no findings"
 
 
 def verdict_lines(record: Mapping[str, Any]) -> list[str]:
@@ -915,7 +937,8 @@ def _publish(ctx: Any, tenant: Any, doc: Mapping[str, Any],
     text = _read_text(ctx, tenant_id, review, staged, limit=MAX_VERDICT_BYTES,
                       required=True, what="verdict")
     read = parse_verdict(text or "")
-    if read.verdict in verdict_in:
+    noop = noop_verdict_reason(read)
+    if read.verdict in verdict_in and noop is None:
         raise Decline("agent_runs", f"the review's verdict is {read.verdict}, so the fix agent runs")
     if read.minors:
         raise Decline("minor_findings",
@@ -961,8 +984,11 @@ def _publish(ctx: Any, tenant: Any, doc: Mapping[str, Any],
                 f"- branch: `{branch}`",
                 f"- head commit: `{head}`",
                 "",
-                "No worker ran for this step: the review's verdict did not name it, so "
-                "there was no agent to run, and the branch is the implementer's as it was "
+                (f"No worker ran for this step: {noop}, so there was no agent to run, and "
+                 if noop else
+                 "No worker ran for this step: the review's verdict did not name it, so "
+                 "there was no agent to run, and ")
+                + "the branch is the implementer's as it was "
                 "pushed (and scanned) by the implementer's own worker.",
                 "",
                 "Integrates 1 contributor branch(es):",
@@ -984,7 +1010,8 @@ def _publish(ctx: Any, tenant: Any, doc: Mapping[str, Any],
     return {
         "published_by": PUBLISHED_BY,
         "verdict_gate": verdict_record,
-        "skipped_agent": f"review verdict {read.verdict}",
+        "skipped_agent": f"review verdict {read.verdict}" + (" with no findings" if noop else ""),
+        **({NOOP_PRECHECK_KEY: {"reason": noop}} if noop else {}),
         "pull_request_text_from": {"title": "implementer",
                                    "body": "implementer" if agent_body else None},
         "branch": {"name": branch, "head": head, "head_sha": head},

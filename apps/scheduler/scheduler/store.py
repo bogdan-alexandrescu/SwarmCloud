@@ -944,6 +944,83 @@ class SchedulerStore:
             self.append_event(task, EventType.FAILED, {"reason": error, **(detail or {})})
         return outcome
 
+    def succeed_without_worker(
+        self,
+        task: Task,
+        *,
+        patch_from: Callable[[dict[str, Any]], dict[str, Any]],
+        detail: dict[str, Any] | None = None,
+    ) -> GuardedWrite:
+        """PARKED -> SUCCEEDED for a gated review that buys nothing (#2524, `reviewgate`).
+
+        The transition is the one contract request 52 added for a step the
+        control plane finishes without a worker. The task holds no lease
+        while PARKED (invariant 1), so there is none to release; no pool is
+        read or moved (invariant 2); it never passes through LEASED, so
+        concurrency never counts it (invariant 3). `patch_from(stored)` gives
+        the `result_summary` and `metadata` from the document as read inside
+        the transaction, guarded on the state and park reason the caller read,
+        as `promote_to_ready` is. `attempt_count` is left alone: no attempt ran.
+        """
+        if task.state is not TaskState.PARKED:
+            raise InvalidTransition(task.state, TaskState.SUCCEEDED)
+        assert_transition(task.state, TaskState.SUCCEEDED)
+        now = self._now()
+        outcome = self._write_if_unchanged(
+            "succeed_without_worker",
+            task,
+            {
+                "state": TaskState.SUCCEEDED.value,
+                "park_reason": None,
+                "next_eligible_at": None,
+                "blocked_by": [],
+                "completed_at": now,
+                "last_error": None,
+                "end_cause": None,
+                "updated_at": now,
+            },
+            same_park_reason=True,
+            patch_from=patch_from,
+        )
+        if outcome.applied:
+            self.append_event(task, EventType.SUCCEEDED, dict(detail or {}))
+        return outcome
+
+    def skip_before_lease(
+        self, task: Task, reason: str, *, detail: dict[str, Any] | None = None
+    ) -> GuardedWrite:
+        """READY -> CANCELLED for a step that would buy nothing (#2524, NOOP-PRECHECK).
+
+        With `result_summary.skipped.reason`, the worker's own marker for a
+        step that did not run. CANCELLED, not SUCCEEDED: the frozen table has
+        no READY -> SUCCEEDED. The task holds nothing in READY, so, exactly as
+        `cancel`, there is no lease to release, and the write is guarded on
+        the state read: CANCELLED over LEASED would be a terminal task holding
+        a live lease. `end_cause` is None: no `EndCause` value names it.
+        """
+        if task.state is not TaskState.READY:
+            raise InvalidTransition(task.state, TaskState.CANCELLED)
+        assert_transition(task.state, TaskState.CANCELLED)
+        now = self._now()
+        outcome = self._write_if_unchanged(
+            "skip_before_lease",
+            task,
+            {
+                "state": TaskState.CANCELLED.value,
+                "park_reason": None,
+                "blocked_by": [],
+                "completed_at": now,
+                "last_error": reason[:1000],
+                "end_cause": None,
+                "result_summary": {"skipped": {"reason": reason[:1000]}},
+                "updated_at": now,
+            },
+        )
+        if outcome.applied:
+            self.append_event(task, EventType.CANCELLED,
+                              {"reason": reason, "skipped": True, **(detail or {})})
+        return outcome
+
     def mark_dispatched(
         self, task: Task, lease: Lease, execution_name: str, backend: str
     ) -> GuardedWrite:
