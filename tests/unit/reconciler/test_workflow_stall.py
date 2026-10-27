@@ -517,43 +517,10 @@ class _RecordingStore(ControlStore):
         return read
 
 
-def _paged_fake_query(query: Any) -> Any:
-    """The worker fake has no order_by/start_after; it already streams in id order."""
-
-    class _Paged:
-        def __init__(self, base: Any, after: str | None = None, limit: int | None = None):
-            self._base, self._after, self._limit = base, after, limit
-
-        def where(self, *args: Any, **kwargs: Any) -> "_Paged":
-            return _Paged(self._base.where(*args, **kwargs), self._after, self._limit)
-
-        def order_by(self, *_args: Any, **_kwargs: Any) -> "_Paged":
-            return self
-
-        def start_after(self, fields: dict[Any, str]) -> "_Paged":
-            return _Paged(self._base, next(iter(fields.values())), self._limit)
-
-        def limit(self, count: int) -> "_Paged":
-            return _Paged(self._base, self._after, count)
-
-        def stream(self, **_kwargs: Any) -> Any:
-            rows = [s for s in self._base.stream() if self._after is None or s.id > self._after]
-            return iter(rows if self._limit is None else rows[: self._limit])
-
-    return _Paged(query)
-
-
-class _PagedWorkflows(FakeFirestore):
-    def collection(self, name: str) -> Any:
-        ref = super().collection(name)
-        return _paged_fake_query(ref) if name == "workflows" else ref
-
-
-def test_every_live_workflow_is_checked_within_ceil_n_over_limit_passes(config):
+def test_every_live_workflow_is_checked_within_ceil_n_over_limit_passes(db, config):
     """2 x the scan limit live workflows: the first page must not be the only one ever read."""
     from dataclasses import replace
 
-    db = _PagedWorkflows()
     limit = 3
     ids = [f"wf_{n:02d}" for n in range(2 * limit)]
     for n, workflow_id in enumerate(ids):
@@ -572,10 +539,9 @@ def test_every_live_workflow_is_checked_within_ceil_n_over_limit_passes(config):
     assert reports[0].workflow_check["truncated"] is True
 
 
-def test_the_workflow_window_returns_to_the_top_after_a_short_page(config):
+def test_the_workflow_window_returns_to_the_top_after_a_short_page(db, config):
     from dataclasses import replace
 
-    db = _PagedWorkflows()
     limit = 3
     ids = [f"wf_{n:02d}" for n in range(limit + 1)]
     for n, workflow_id in enumerate(ids):
