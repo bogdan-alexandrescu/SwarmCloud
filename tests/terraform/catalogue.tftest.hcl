@@ -551,13 +551,14 @@ run "the_mirror_carries_each_profiles_model_classes" {
   }
 
   # Every other profile starts no Claude model: no classes, no default. The
-  # count is the control that this statement is about seven profiles.
+  # count is the control that this statement is about eight profiles; fix-loop
+  # (contract request 124) is the eighth.
   assert {
     condition = length([
       for name, p in local.runner_profiles : name
       if length(p.model_classes) == 0 && p.default_model_class == null
-    ]) == 7
-    error_message = "mock, generic, codex, browser, merge, post-verdict and await-input must carry no model class and no default"
+    ]) == 8
+    error_message = "mock, generic, codex, browser, merge, post-verdict, await-input and fix-loop must carry no model class and no default"
   }
 
   # A default is always one of the profile's own classes.
