@@ -9947,6 +9947,160 @@ export async function putCodeIntelligence(tenantId: string, jev: boolean): Promi
   return writeTo(route('/v1/workspaces/{tenant_id}/code-intelligence', { tenant_id: tenantId }), 'PUT', { jev })
 }
 
+// The per-agent budget (BUDGET-UI-SETTINGS; part of #2459,
+// docs/design/agent-budget.md §2, §4). A workspace admin sets one default, in
+// dollars OR tokens (`PUT /v1/workspaces/{tenant_id}/budget`); a platform
+// admin sets the ceiling no default may exceed, in either unit or both
+// (`agent_budget_ceiling` in `PUT /v1/admin/settings`). Off until a workspace
+// admin sets one: the ceiling alone limits nothing (§4). The bounds and the
+// refusal are the API's (`swarm_api.budget`); this file only draws them.
+
+/** A budget's unit: `budget.UNITS`. Dollars are the `cost_usd` estimate; tokens the runner's own count. */
+export type BudgetUnit = 'usd' | 'tokens'
+
+/** A limit in either unit or both; null is "no limit in that unit" (`budget.Limits`). */
+export interface BudgetLimits {
+  usd: number | null
+  tokens: number | null
+}
+
+/** `GET /v1/budget` and the PUT's answer (`budget.view`). */
+export interface WorkspaceBudget {
+  tenant_id: string
+  /** The workspace default; null is off, the default. */
+  budget: { unit: BudgetUnit; amount: number } | null
+  /** The platform ceiling the default must stay under, per unit. */
+  ceiling: BudgetLimits
+  /** The largest amount the API takes in each unit; null when it was not served. */
+  max: BudgetLimits
+  set_at: string | null
+  set_by: string | null
+  /** The workspace's owner or admin, or a platform admin; the API is the gate. */
+  can_edit: boolean
+}
+
+const positive = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null)
+
+/** `{usd, tokens}` as served, a unit that is not a positive number read as no limit, never guessed. */
+export function normBudgetLimits(raw: unknown): BudgetLimits {
+  const r = (typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>
+  const tokens = positive(r.tokens)
+  return { usd: positive(r.usd), tokens: tokens !== null && Number.isInteger(tokens) ? tokens : null }
+}
+
+function normWorkspaceBudget(raw: unknown): WorkspaceBudget {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const b = (typeof r.budget === 'object' && r.budget !== null ? r.budget : null) as Record<string, unknown> | null
+  const unit = b?.unit === 'usd' || b?.unit === 'tokens' ? b.unit : null
+  const amount = positive(b?.amount)
+  const bounds = (typeof r.bounds === 'object' && r.bounds !== null ? r.bounds : {}) as Record<string, { max?: unknown } | undefined>
+  return {
+    tenant_id: keyField(r.tenant_id) ?? '',
+    budget: unit !== null && amount !== null ? { unit, amount } : null,
+    ceiling: normBudgetLimits(r.ceiling),
+    max: { usd: positive(bounds.usd?.max), tokens: positive(bounds.tokens?.max) },
+    set_at: keyField(r.set_at),
+    set_by: keyField(r.set_by),
+    can_edit: r.can_edit === true,
+  }
+}
+
+/** `GET /v1/budget`: the selected workspace's per-agent budget, its ceiling and whether the caller may change it. */
+export async function loadWorkspaceBudget(): Promise<Result<WorkspaceBudget>> {
+  return readAs(route('/v1/budget'), normWorkspaceBudget)
+}
+
+/**
+ * `PUT /v1/workspaces/{tenant_id}/budget`: the default, or null to turn it off. A default above the platform ceiling
+ * in its unit is refused 422 `budget_above_ceiling` with nothing changed (`budgetRefusalWords` says it in words).
+ */
+export async function putWorkspaceBudget(tenantId: string, budget: { unit: BudgetUnit; amount: number } | null): Promise<Result<WorkspaceBudget>> {
+  const r = await writeTo(route('/v1/workspaces/{tenant_id}/budget', { tenant_id: tenantId }), 'PUT', { budget })
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normWorkspaceBudget(r.data) }
+  return r as Result<WorkspaceBudget>
+}
+
+/** The platform ceiling in a platform settings read: `agent_budget_ceiling`, which `PlatformSettings` keeps as served. */
+export function budgetCeilingOf(settings: PlatformSettings): BudgetLimits {
+  return normBudgetLimits((settings as unknown as { agent_budget_ceiling?: unknown }).agent_budget_ceiling)
+}
+
+/**
+ * `PUT /v1/admin/settings` with `agent_budget_ceiling` and nothing else, so a save never rewrites another setting. The
+ * ceiling is replaced whole: a unit left out has none, and `{}` turns it off (`Store.set_platform_settings`).
+ */
+export async function saveBudgetCeiling(ceiling: BudgetLimits): Promise<Result<PlatformSettings>> {
+  const body: Record<string, number> = {}
+  if (ceiling.usd !== null) body.usd = ceiling.usd
+  if (ceiling.tokens !== null) body.tokens = ceiling.tokens
+  const r = await write(route('/v1/admin/settings'), 'PUT', { agent_budget_ceiling: body })
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normPlatformSettings(r.data) }
+  return r as Result<PlatformSettings>
+}
+
+/**
+ * What a budget does, in the console's words (#2459, BGD 2026-10-26), drawn by both settings cards so they cannot
+ * disagree: the worker's 80% note and its stop at the next turn boundary (docs/design/agent-budget.md §5).
+ */
+export const BUDGET_DOES =
+  'At 80% of its budget an agent is told to finish and publish. At 100% it stops at its next turn boundary, keeps its work and ends “stopped at its budget”.'
+
+/**
+ * A typed amount in its unit, or null: dollars a number above 0, tokens a whole number of at least 1. Commas, spaces
+ * and a leading `$` are allowed. The upper bound is the API's (`bounds`), which refuses past it with 422.
+ */
+export function parseBudgetAmount(unit: BudgetUnit, typed: string): number | null {
+  const t = typed.replace(/[,\s_]/g, '').replace(/^\$/, '')
+  if (unit === 'tokens') {
+    if (!/^\d+$/.test(t)) return null
+    const n = Number(t)
+    return Number.isSafeInteger(n) && n >= 1 ? n : null
+  }
+  if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(t)) return null
+  const n = Number(t)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+/** `$1.00`, as `budget.describe` writes dollars. */
+export function budgetDollars(n: number): string {
+  return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+/** `15,000,000 tokens`. */
+export function budgetTokens(n: number): string {
+  return `${n.toLocaleString('en-US')} ${n === 1 ? 'token' : 'tokens'}`
+}
+
+/** One amount in its unit. */
+export function budgetAmount(unit: BudgetUnit, n: number): string {
+  return unit === 'usd' ? budgetDollars(n) : budgetTokens(n)
+}
+
+/** A limit in words, both units joined by "and", or null when it names neither (`budget.describe`). */
+export function budgetLimitsWords(l: BudgetLimits): string | null {
+  const parts = [...(l.usd !== null ? [budgetDollars(l.usd)] : []), ...(l.tokens !== null ? [budgetTokens(l.tokens)] : [])]
+  return parts.length === 0 ? null : parts.join(' and ')
+}
+
+/**
+ * A refused save of a workspace default, in words, from `budget_above_ceiling`'s detail (`{budget, ceiling}`): what
+ * was asked, the ceiling it is above, and what may be saved instead. Null for any other refusal, which is drawn as
+ * the API wrote it.
+ */
+export function budgetRefusalWords(error: ApiError): string | null {
+  if (error.code !== 'budget_above_ceiling') return null
+  const d = (typeof error.detail === 'object' && error.detail !== null ? error.detail : {}) as Record<string, unknown>
+  const asked = normBudgetLimits(d.budget)
+  const ceiling = normBudgetLimits(d.ceiling)
+  const unit: BudgetUnit | null = asked.usd !== null ? 'usd' : asked.tokens !== null ? 'tokens' : null
+  const top = unit === null ? null : ceiling[unit]
+  if (unit === null || top === null) return error.message
+  return (
+    `${budgetAmount(unit, asked[unit]!)} is above the platform ceiling of ${budgetAmount(unit, top)}, so nothing was ` +
+    `changed. Save ${budgetAmount(unit, top)} or less, or ask a platform admin to raise the ceiling.`
+  )
+}
+
 /**
  * The workspace's visual-QA settings (QA-FLOWS-UI over QA-FLOWS-CAP, part of #2136; `swarm_api.qasettings`). One
  * setting: `qa_flows_per_step`, how many read-only flows one live-browser step of a QA run runs when the run names
