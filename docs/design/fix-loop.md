@@ -413,7 +413,7 @@ scheduler's `_expire_human_waits` expires a `park_phase: fix_loop_*` park 7
 days after it opened and ends the loop FAILED `fix_loop_exhausted`, as a
 person's "stop" would, instead of sparing it as it spares `owner_questions`.
 
-`/sc check` flags the park as STUCK either way (§6.4).
+Until it expires, `/sc check` flags the park as STUCK (§6.4).
 
 ### 4.6 The merge step reads the loop's last review
 
@@ -801,9 +801,9 @@ BGD 2026-10-27: (a).
 **Recommended: (a).** It is short, and it follows `await-input` /
 `await_input`.
 
----
-
 BGD 2026-10-27: (a).
+
+---
 
 ## 10. What this design did not verify
 
