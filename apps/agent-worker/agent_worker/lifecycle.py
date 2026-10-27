@@ -13559,11 +13559,16 @@ class Worker:
             # read only what origin lacks, and origin's commits are pushed as
             # they are, never rewritten into a non-fast-forward. A HEAD that is
             # the tip, or behind it, pushes nothing: see below `commit_dirty`.
+            # Asked only of a publish that continues a branch origin may hold
+            # (`_publish_continues_a_branch`), or of a tool push's tip, which
+            # is not fetched again: a fresh lane's first attempt is not.
             remote_tip = (
                 self._read_publish_remote_tip(
                     publish_repo, url=url, token=token, branch=branch, tool_tip=tool_tip,
                 )
-                if carrier != "branches" and onto_pr is None else None
+                if carrier != "branches" and onto_pr is None
+                and (tool_tip is not None or self._publish_continues_a_branch())
+                else None
             )
             if remote_tip is not None and self._publish_is_ancestor(
                 publish_repo, remote_tip, "HEAD"
@@ -14292,6 +14297,34 @@ class Worker:
             if sha and _FULL_SHA_RE.fullmatch(sha) and sha not in out:
                 out.append(sha)
         return out
+
+    def _publish_continues_a_branch(self) -> bool:
+        """True when this publish may find its branch already on origin, so
+        `_read_publish_remote_tip` asks the forge (#2506): a round that
+        continues another task's branch (`dispatch.continues`, the ci-fix
+        round #2506 measured), or a later attempt of this task, whose earlier
+        one may have pushed. A fresh lane's first attempt publishes a branch
+        origin cannot hold yet, so it makes no token-bearing fetch for it.
+
+        `attempt_count` is counted with the refunded child-await and hand-off
+        resumes, as `_recorded_checkpoint` counts it.
+        """
+        task = self._task or {}
+        try:
+            if continuation_mod.continued_task(task.get("metadata")):
+                return True
+        except WorkerError:
+            return False
+        count = task.get("attempt_count")
+        if isinstance(count, bool) or not isinstance(count, int):
+            return False
+        metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+        resumes = 0
+        for key in (CHILD_AWAIT_RESUMES_METADATA_KEY, handoff_mod.HUMAN_WAIT_RESUMES_METADATA_KEY):
+            value = metadata.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                resumes += max(0, value)
+        return count + resumes > 1
 
     def _read_publish_remote_tip(
         self, publish_repo: Path, *, url: str, token: str, branch: str, tool_tip: str | None
