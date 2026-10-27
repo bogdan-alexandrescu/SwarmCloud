@@ -239,7 +239,7 @@ function ApprovalsList({ items, kind, go }: { items: InboxItem[]; kind: string |
       {waiting.length > 0 && <Lead waiting={waiting} kind={kind} go={go} />}
       <KindFilter kind={kind} items={items} go={go} />
       {waiting.length === 0 ? (
-        <Absent kind={kind} />
+        <EmptyInbox kind={kind} />
       ) : (
         <Card title={`Waiting · ${waiting.length}`} note="oldest first" testId="apl-waiting">
           <Table
@@ -319,7 +319,7 @@ function ApprovalsList({ items, kind, go }: { items: InboxItem[]; kind: string |
 }
 
 /** A measured empty inbox (A6d): said, never an empty table. */
-function Absent({ kind }: { kind: string | null }) {
+function EmptyInbox({ kind }: { kind: string | null }) {
   return (
     <AbsentState
       kind="zero"
