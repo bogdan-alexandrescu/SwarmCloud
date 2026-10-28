@@ -1757,7 +1757,7 @@ changed paths (`own_files` when recorded, else `files`) and
   worker stages it from there (`agent_worker.inputs.inline_artifact`), and
   swarm-api serves it through the same artifact read as any other
   (`InspectionService.read_artifact`, `reviewgate.inline_verdict`), masked
-  by the same JSON redaction with the task's literals, because the document
+  by the same JSON redaction with the agent's literals, because the document
   is tenant-writable. So swarm-api's own publish of the integrator reads it
   as a MERGE and opens the pull request without a pod, and an issue run's
   per-requirement read reads it. A lost wake or a swarm-api that is down
