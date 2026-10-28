@@ -224,16 +224,18 @@ describe('Admin › Workspaces you admin (NAV-ADMIN-ROLE)', () => {
     expect(rows()).toHaveLength(0)
   })
 
-  it('sends a member on a direct /admin/limits to Overview (CONFIG-NAV)', async () => {
+  it('refuses a member in place on a direct /admin/limits (admin-shell-23)', async () => {
     // The fixture build: its caller is a member who administers nothing. The
-    // page's own refusal and the API's 403 admin_required are unchanged; since
-    // CONFIG-NAV (part of #2157, BGD 2026-10-23 "Admin is shown only to
-    // admins") the console sends them to Overview before either is met.
+    // API's 403 admin_required is unchanged. CONFIG-NAV (BGD 2026-10-23) sent
+    // them to Overview; visual QA pass 1 admin-shell-23 (BGD 2026-10-28,
+    // part of #2596) keeps the address and says the refusal in its place.
     vi.resetModules()
     const { App } = await import('../App')
     window.history.replaceState(null, '', '/admin/limits')
     render(<App />)
-    await waitFor(() => expect(window.location.pathname).toBe('/overview'))
+    // MUTATION: keep the redirect to Overview and the refusal is never drawn.
+    await waitFor(() => expect(document.querySelector('[data-refused="admin"]')?.textContent).toContain('Pool limits is for platform admins'))
+    expect(window.location.pathname).toBe('/admin/limits')
     expect(adminItem(), 'the member was drawn an Admin item').toBeNull()
   })
 })

@@ -332,7 +332,7 @@ describe('N10: the list head fits its control beside an open agent', () => {
     expect(container.querySelector('.c-age, .c-age-say, .c-meta'), 'the old age line or meta pill is back').toBeNull()
     // Whole in its title and its accessible name, as the words the reader sees.
     const said = button.getAttribute('title')!
-    expect(said).toMatch(/^read \d+ s ago$/)
+    expect(said).toMatch(/^read once · \d+ s ago$/)
     expect(button.textContent).toBe(`⟳ ${said}`)
     expect(button.getAttribute('aria-label')).toBe(`${said} · refresh`)
     // It is what gives way, with an ellipsis; the title keeps its width.

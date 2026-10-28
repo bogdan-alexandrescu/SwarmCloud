@@ -925,16 +925,21 @@ export function heightOf(
   // exists to prevent, arriving through the one field that just got longer.
   // And the UNITS rather than the joined text, because they are what the
   // browser keeps whole (WF-19): `StepNode` draws exactly this list.
-  return (
-    base +
-    GAP +
-    depLines(
-      depUnits(step).map((u) => u.text),
-      depCharsPerLine(width),
-    ) *
-      DEP_LINE_H
-  )
+  // PAST `DEP_FILES_LISTED` FILES THE LINE IS A COUNT (visual QA pass 1
+  // overview-agents-64, #2596): `StepNode` draws `↑ 5 steps · 5 files`, so
+  // the height counts that line, not the list.
+  const units = depUnits(step)
+  const files = units.filter((u) => u.kind === 'file').length
+  const drawn = files > DEP_FILES_LISTED ? [`${step.depends_on.length} steps · ${files} files`] : units.map((u) => u.text)
+  return base + GAP + depLines(drawn, depCharsPerLine(width)) * DEP_LINE_H
 }
+
+/**
+ * How many files a node's dependency line names one by one; past it the line
+ * is a count (overview-agents-64). Workflows.tsx's `StepNode` draws by its own
+ * `DEP_FILES_LISTED`, which a test holds equal to this one.
+ */
+export const DEP_FILES_LISTED = 2
 
 // ---------------------------------------------------------------------------
 // Data edges -- which dependencies carry a file, and whether it arrived
