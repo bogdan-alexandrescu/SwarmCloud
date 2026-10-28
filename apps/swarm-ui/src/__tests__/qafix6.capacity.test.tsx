@@ -225,7 +225,7 @@ describe('e. box 6298212195: `← AUTO` reads beside its resolved backend', () =
     await renderRuntimes()
     const declared = screen.getByText('← AUTO')
     const value = declared.parentElement!
-    expect(value.querySelector('.rt-backend')?.textContent).toBe('CLOUD_RUN_JOB')
+    expect(value.querySelector('.rt-backend')?.textContent).toBe('Cloud Run')
     const fact = value.closest('li.ctl-fact')!
     expect(fact.querySelector(':scope > b')?.textContent).toBe('runs on')
     expect(value, 'the declared backend is its own item of the fact').not.toBe(fact)
