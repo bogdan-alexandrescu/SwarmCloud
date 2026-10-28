@@ -52,7 +52,7 @@ describe('a: Runs says whether a plan approval is pending or given (6:work-a-010
     issueRun({ id: 'run_auto0001', plan_approval: 'auto' }),
   ]
 
-  it("the Planned run with no workflow reads 'awaiting', the Running one 'approved', an automatic one a dash titled as automatic", async () => {
+  it("the Planned run with no workflow reads 'awaiting', the Running one 'approved', an automatic one 'automatic', titled as such", async () => {
     serve((m, url) => (m === 'GET' && url.startsWith('/v1/runs')
       ? { status: 200, body: { runs: RUNS, next_page_token: null, tenant_id: 'eng' } }
       : null))
@@ -68,7 +68,8 @@ describe('a: Runs says whether a plan approval is pending or given (6:work-a-010
     // MUTATION: print `{r.plan_approval}` in the cell again (both required runs
     // read "required"), or put back 'awaiting approval' / 'not required'
     // (QAFIX6-WORKPAGES-2: neither fits the column at the body size).
-    expect(cells.map(visible)).toEqual(['awaiting', 'approved', '\u2014'])
+    // QA1-FIX-24 (chrome-C13): an automatic approval is a word, not a dash.
+    expect(cells.map(visible)).toEqual(['awaiting', 'approved', 'automatic'])
     // MUTATION: drop the cell's `title` and the dash says nothing about why.
     expect(cells[2]!.getAttribute('title')).toBe("This run's plan is approved automatically.")
     expect(cells[0]!.getAttribute('title')).toBe("This run's plan needs a person's approval.")
