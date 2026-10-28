@@ -184,6 +184,7 @@ table.doct th:last-child,table.doct td:last-child{white-space:nowrap}
 .b.p{background:var(--info);color:var(--ctl-onac);border-color:var(--info)}
 .b.q{border-color:transparent;background:none;color:var(--info);padding:0 6px}
 .b.d{color:var(--bad-ink)}
+.b.d.p{background:var(--bad-ink);color:var(--surface);border-color:var(--bad-ink)}
 .b.s{height:28px;font-size:12.5px;padding:0 10px}
 .b[aria-disabled="true"]{opacity:.55}
 .c{font-size:12px;padding:2px 8px;border-radius:999px;background:var(--surface-2);color:var(--text-dim);white-space:nowrap;display:inline-flex;gap:4px;align-items:center;line-height:1.5}
@@ -689,7 +690,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <p>Everything the automatic runs propose, and what a person submitted by hand, in one list. Waiting on a person comes first, oldest first, each with its time to expiry. Decided items follow, newest first. Source and state filter it.</p>
 <div class="sub" id="P1a" data-frame="P1a"><h3><span class="n">P1a</span>All sources, all states</h3><p>Five wait on a person and five are decided. A plan row opens P2; a merge row opens the merge decision page (#2417 A5); a proposal row opens its issue draft.</p>
 <figure class="fr"><div class="scroller" data-f="p1"></div></figure></div>
-<div class="sub" id="P1b" data-frame="P1b"><h3><span class="n">P1b</span>Filtered: failure review, every state</h3><p>The filters narrow both sections and keep every source’s count on its chip. Failure review has one item this week: the canonical plan, waiting. Its merges need no person (its merge gate is auto), so none list here.</p>
+<div class="sub" id="P1b" data-frame="P1b"><h3><span class="n">P1b</span>Filtered: failure review, every state</h3><p>The filters narrow both sections. Each source chip keeps its own count; the state chips count within the source chosen. Failure review has one item this week: the canonical plan, waiting. Its merges need no person (its merge gate is auto), so none list here.</p>
 <figure class="fr"><div class="scroller" data-f="p1fr"></div></figure></div>
 </section>
 
@@ -697,7 +698,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <span class="flab">P2</span>
 <h2><span class="n">P2</span>One plan to decide: run_fba2dc8f6ec9494dae2f</h2>
 <p>The review page. The head stays pinned as the page scrolls; the decision names the digest it approves.</p>
-<div class="sub" id="P2a" data-frame="P2a"><h3><span class="n">P2a</span>Waiting, as the platform owner sees it</h3><p>Reject needs a reason, so the reason box opens in the head beside the buttons. Approve sends <code>plan_digest</code> sha256:be162b53886ee2620… (D3); a mismatch is 409 <code>plan_changed</code>.</p>
+<div class="sub" id="P2a" data-frame="P2a"><h3><span class="n">P2a</span>Waiting, as the platform owner sees it</h3><p>Reject… opens a reason box in the head, beside the buttons (P2e). Approve sends <code>plan_digest</code> sha256:be162b53886ee2620… (D3); a mismatch is 409 <code>plan_changed</code>.</p>
 <figure class="fr"><div class="scroller" data-f="p2"></div></figure></div>
 <div class="sub" id="P2b" data-frame="P2b"><h3><span class="n">P2b</span>As seen by a member who may not approve</h3><p>The same evidence, no Approve, Edit or Reject. The head says who can decide, from <code>may_decide</code> (<code>approve: false</code>, <code>why</code>, <code>deciders</code>). Only someone who may approve may reject (BGD 2026-10-26). The panel foot shows the viewer: Sam Ortiz, a member.</p>
 <figure class="fr"><div class="scroller" data-f="p2member"></div></figure></div>
@@ -705,6 +706,8 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <figure class="fr"><div class="scroller" data-f="p2super"></div></figure></div>
 <div class="sub" id="P2d" data-frame="P2d"><h3><span class="n">P2d</span>A step that touches a risk path (example: P1's held plan)</h3><p>The canonical plan matches no stop. This example shows how a match is called out on the step it comes from, and in the head: the hold's reasons and matched paths, as <code>hold.reasons[]</code> and <code>hold.matched[]</code> serve them.</p>
 <figure class="fr"><div class="scroller" data-f="p2risk"></div></figure></div>
+<div class="sub" id="P2e" data-frame="P2e"><h3><span class="n">P2e</span>Rejecting: the reason is required</h3><p>Reject… swaps the decision bar for a reason box; the evidence stays below it. <code>plan:reject</code> takes <code>plan_digest</code> and <code>reason</code>; the API leaves the reason optional, this page does not. It is recorded as <code>rejected_by</code> with its reason (docs/issue-runs.md), and P1 shows it on the decided row.</p>
+<figure class="fr"><div class="scroller" data-f="p2reject"></div></figure></div>
 </section>
 
 <section class="frame" id="P3" data-frame="P3">
@@ -715,7 +718,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <figure class="fr"><div class="scroller" data-f="p3edit"></div></figure></div>
 <div class="sub" id="P3b" data-frame="P3b"><h3><span class="n">P3b</span>Removing a step (example: a two-step plan)</h3><p>A removed step stays drawn, struck through, until you save, and Undo brings it back. Today’s editor has no remove: this is new UI over the same <code>plan:edit</code>, which takes the whole plan. A step another step <code>depends_on</code> would say so before it could be removed.</p>
 <figure class="fr"><div class="scroller" data-f="p3remove"></div></figure></div>
-<div class="sub" id="P3c" data-frame="P3c"><h3><span class="n">P3c</span>Saved: the new revision, its digest, and approve the edited plan</h3><p>The head shows revision 1 by you, its digest as the save answered it, and a diff against revision 0. Approve carries the new digest. Under a <code>second_member</code> hold, the last plan editor may not approve (a workspace admin may), and the head would say so.</p>
+<div class="sub" id="P3c" data-frame="P3c"><h3><span class="n">P3c</span>Saved: the new revision, its digest, and approve the edited plan</h3><p>The head shows revision 1 by you, its digest as the save answered it, and a diff against revision 0. Approve carries the new digest. The edit unticked Requirements, which it changed, so the head reads 2 of 4. Under a <code>second_member</code> hold, the last plan editor may not approve (a workspace admin may), and the head would say so.</p>
 <figure class="fr"><div class="scroller" data-f="p3saved"></div></figure></div>
 </section>
 
@@ -746,7 +749,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <h2><span class="n">P6</span>Empty and honest states</h2>
 <div class="sub" id="P6a" data-frame="P6a"><h3><span class="n">P6a</span>Nothing waiting</h3><p>The waiting section folds to one line that says so and when it was read; decided items follow.</p>
 <figure class="fr"><div class="scroller" data-f="p6none"></div></figure></div>
-<div class="sub" id="P6b" data-frame="P6b"><h3><span class="n">P6b</span>A source paused</h3><p>Failure review is paused by its tripwire. Its waiting plan still waits (a pending approval holds nothing), and the list says the source will propose nothing new until it is resumed.</p>
+<div class="sub" id="P6b" data-frame="P6b"><h3><span class="n">P6b</span>A source paused</h3><p>Failure review is paused by its tripwire. Drawn filtered to failure review, as P1b. Its waiting plan still waits (a pending approval holds nothing), and the list says the source will propose nothing new until it is resumed.</p>
 <figure class="fr"><div class="scroller" data-f="p6paused"></div></figure></div>
 <div class="sub" id="P6c" data-frame="P6c"><h3><span class="n">P6c</span>A read that failed</h3><p>The approvals read answered 503. The count is a dash with its reason, never 0, and the plan page's overlaps read is drawn the same way when it fails.</p>
 <figure class="fr"><div class="scroller" data-f="p6fail"></div></figure></div>
@@ -772,7 +775,8 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
   <div><h3>2 · <code>plan.cost_estimate</code>: an expected spend range in dollars</h3><p><b>What:</b> <code>{low_usd, high_usd, basis}</code>, computed by the API from the steps' estimates and the runner's rates, not written by the planner. <b>Why:</b> P2's rail draws the expected cost. Today only the free-text <code>estimate</code> exists ("2 agent-hours"), so the cost is a dash with its reason.</p></div>
   <div><h3>3 · <code>hold_check</code> on a <code>PLANNED</code> run: which stop categories were checked</h3><p><b>What:</b> the categories <code>hard_stop_hold</code> checked for this repository (IAM, workflows, the frozen contract, secrets, tenancy, shared, cost) and whether the repository is <code>platform: true</code>. <b>Why:</b> P2's risk card says "checked, none matched" per category. Today a null <code>approval_hold</code> says nothing matched, but not which checks ran; without the field the card says only "no hold".</p></div>
   <div><h3>4 · <code>proposed_7d</code> and <code>approved_7d</code> on a schedule</h3><p><b>What:</b> counts of plans or proposals the schedule's firings produced in seven days, and how many were approved (by a person or its gate). <b>Why:</b> P5's two columns. Today they would need every firing's work read.</p></div>
-  <div><h3>5 · <code>plan_superseded</code>: the revision and editor of the newer plan, on a stale read</h3><p><b>What:</b> when the page holds digest A and the run now serves digest B, the API already serves B with <code>plan_revision</code> and <code>plan_edited_by</code>; P2c's "what changed" is a diff the browser computes between the plan it holds and the plan served. <b>Not new</b>, listed so nobody builds it twice.</p></div>
+  <div><h3>Not new: the newer revision on a stale read (P2c)</h3><p><b>What:</b> when the page holds digest A and the run now serves digest B, the API already serves B with <code>plan_revision</code> and <code>plan_edited_by</code>; P2c's "what changed" is a diff the browser computes between the plan it holds and the plan served. Listed so nobody builds a field for it.</p></div>
+  <div><h3>Not new: the "read" ticks and the required reason</h3><p>The per-section "read" ticks and the head's "read 3 of 4" are kept in the browser for the plan revision on screen; an edit unticks what it changed. They are a reading aid, not a gate, and nothing is sent. The reject reason is optional in <code>plan:reject</code>; this page requires it before it sends one.</p></div>
   <div><h3>Not new: the landing</h3><p>P1 is <code>GET /v1/approvals</code> (records and projected runs, with <code>kind</code>, <code>subject.schedule_id</code>, <code>subject.firing_id</code>, <code>state</code>, <code>expires_at</code>, <code>may_decide</code>). A run made by hand has <code>expires_at: null</code> and its row says "no expiry". The source chip is derived from the schedule's type, or "by hand" without one.</p></div>
 </div>
 </section>
@@ -851,10 +855,10 @@ const DG=`<code>${P.digest}</code>`;
 /* waiting: oldest first. decided: newest first. Read 2026-10-28 02:40Z */
 const SRC={sweep:['Issue sweep','layers'],fr:['Failure review','warn'],obs:['Observer','eye-off'],flake:['CI flake hunter','qa'],hand:['By hand','person']};
 const ROWS=[
-  {w:1,src:'obs',ic:'flag',m:'in',k:'Proposal · file an issue',t:'Observer: three tenants’ pools sat at their ceiling for over an hour',s:'Observer “Platform health”, firing 02:00Z yesterday. Files to '+REPO+' with the bug form.',st:S('wn','waiting'),sts:'expires in 4 h 20 min<small>asked 27 Oct 07:00Z</small>',a:'Open draft'},
-  {w:1,src:'sweep',ic:'lock',m:'wn',k:'Plan, held for the owner · '+REPO+'#2571',t:'Plan touches <code>.github/workflows/</code>',s:'The sweep’s gate is plan auto, but the hold stops it: workflows matched <code>.github/workflows/unit.yml</code>.',st:S('wn','waiting · owner only'),sts:'expires in 22 h<small>asked 27 Oct 00:37Z</small>',a:'Review plan'},
+  {w:1,src:'sweep',ic:'lock',m:'wn',k:'Plan, held for the owner · '+REPO+'#2571',t:'Plan touches <code>.github/workflows/</code>',s:'The sweep’s gate is plan auto, but the hold stops it: workflows matched <code>.github/workflows/unit.yml</code>.',st:S('wn','waiting · owner only'),sts:'expires in 1 d 22 h<small>asked 27 Oct 00:37Z</small>',a:'Review plan'},
+  {w:1,src:'obs',ic:'flag',m:'in',k:'Proposal · file an issue',t:'Observer: three tenants’ pools sat at their ceiling for over an hour',s:'Observer “Platform health”, firing 02:00Z yesterday. Files to '+REPO+' with the bug form.',st:S('wn','waiting'),sts:'expires in 2 d 4 h<small>asked 27 Oct 07:00Z</small>',a:'Open draft'},
   {w:1,src:'hand',ic:'person',m:'in',k:'Plan · '+REPO+'#2580',t:'Submitted by BGD from Work › Submit from a GitHub issue',s:'2 steps · 3 agent-hours · 7 requirements · 0 overlaps.',st:S('wn','waiting'),sts:'no expiry<small>made by hand · planned 27 Oct 22:14Z</small>',a:'Review plan'},
-  {w:1,src:'sweep',ic:'pr',m:'in',k:'Merge · pull request #2576 for #2566',t:'Green and reviewed: MERGE',s:'Green at <code>4c1e0a9d7f22</code>. Merge gate: approve.',st:S('wn','waiting'),sts:'expires in 2 d 1 h<small>asked 28 Oct 01:07Z</small>',a:'Decide merge'},
+  {w:1,src:'sweep',ic:'pr',m:'in',k:'Merge · pull request #2576 for #2566',t:'Green and reviewed: MERGE',s:'Green at <code>4c1e0a9d7f22</code>. Merge gate: approve.',st:S('wn','waiting'),sts:'expires in 2 d 22 h<small>asked 28 Oct 01:07Z</small>',a:'Decide merge'},
   {w:1,src:'fr',ic:'check',m:'wn',k:'Plan · '+REPO+'#2583',t:"cifix.stamp's ci_fix branch refuses a PR-side CI fix while … never while a plain continuation is live",s:'1 step · 2 agent-hours · 7 requirements · 5 overlaps. Firing <code>'+P.firing+'</code>.',st:S('wn','waiting'),sts:'expires in 2 d 23 h<small>planned 28 Oct 02:21Z</small>',a:'Review plan',p:1,canon:1},
   {w:0,src:'sweep',ic:'check',m:'',k:'Plan · '+REPO+'#2569',t:'Auto-approved by Bug sweep’s gate',s:'approved_by: auto-approval · its pull request #2578 is checking.',st:S('ok','auto-approved'),sts:'28 Oct 01:37Z<small>gate: plan auto</small>',a:'Open'},
   {w:0,src:'hand',ic:'check',m:'',k:'Plan · '+REPO+'#2560',t:'Approved by BGD at revision 1, after one edit',s:'Workflow started; pull request #2574 merged with Closes #2560.',st:S('ok','approved'),sts:'27 Oct 18:02Z<small>by bgd</small>',a:'Open'},
@@ -868,10 +872,11 @@ function plRow(r){
     `<div class="src0">${srcChip(r.src)}</div><div class="stc">${r.st}<small>${r.sts.replace('<small>','</small><small>')}</small></div><div class="go">${B(r.a+' ›',r.p?'p s':'s')}</div></div>`;
 }
 function filters(rows,on){
-  const src=Object.keys(SRC).map(k=>[k,ROWS.filter(r=>r.src===k).length]);
+  const src=Object.keys(SRC).map(k=>[k,rows.filter(r=>r.src===k).length]);
   const stw=['waiting','auto-approved','approved','rejected','expired','superseded'];
-  const stc=stw.map(s=>[s,ROWS.filter(r=>strip(r.st).trim().startsWith(s)&&!(s==='approved'&&strip(r.st).trim().startsWith('auto'))).length]);
-  return `<div class="filt"><span class="lbl">Source</span><span class="chips">${C('All '+ROWS.length,on.src?'':'on')}${src.map(([k,n])=>C(SRC[k][0]+' '+n,on.src===k?'on':'')).join('')}</span></div>`+
+  const base=on.src?rows.filter(r=>r.src===on.src):rows;
+  const stc=stw.map(s=>[s,base.filter(r=>strip(r.st).trim().startsWith(s)&&!(s==='approved'&&strip(r.st).trim().startsWith('auto'))).length]);
+  return `<div class="filt"><span class="lbl">Source</span><span class="chips">${C('All '+rows.length,on.src?'':'on')}${src.map(([k,n])=>C(SRC[k][0]+' '+n,on.src===k?'on':'')).join('')}</span></div>`+
     `<div class="filt"><span class="lbl">State</span><span class="chips">${C('All','on')}${stc.map(([s,n])=>C(s+' '+n,'')).join('')}</span></div>`;
 }
 function plist(rows,o){
@@ -893,13 +898,15 @@ function srcLine(){
 }
 /* the head: title, source and the decision. kind: pending | member | super | approved | edited | held */
 function rhead(kind,ph){
-  const title=`<div class="r1"><div class="tt"><small>Plan from ${kind==='held'?'the issue-sweep schedule Bug sweep · example':'the failure-review schedule'} · ${kind==='edited'?'revision 1, edited by you':'revision 0'} · single agent · 1 step</small><b>Plan for ${kind==='held'?REPO+'#2571':P.issue}</b></div>${ph||kind==='member'||kind==='approved'?'':`<span class="pinned">${I('info')}pinned to the top as the page scrolls</span><span class="prog">read 3 of 4 sections<span class="bar"><i style="width:75%"></i></span></span>`}</div>`;
+  const title=`<div class="r1"><div class="tt"><small>Plan from ${kind==='held'?'the issue-sweep schedule Bug sweep · example':'the failure-review schedule'} · ${kind==='edited'?'revision 1, edited by you':'revision 0'} · single agent · 1 step</small><b>Plan for ${kind==='held'?REPO+'#2571':P.issue}</b></div>${ph||kind==='member'||kind==='approved'?'':`<span class="pinned">${I('info')}pinned to the top as the page scrolls</span><span class="prog">${kind==='edited'?'read 2 of 4 sections':'read 3 of 4 sections'}<span class="bar"><i style="width:${kind==='edited'?50:75}%"></i></span></span>`}</div>`;
   const src=kind==='held'?`<span class="src">${srcChip('sweep')}<a>schedule Bug sweep</a>·<span>an example firing</span>·<a>issue ${REPO}#2571</a></span>`:srcLine();
   let dec='';
   if(kind==='pending'||kind==='edited'){
     const dg=kind==='edited'?'<code>sha256:&lt;the save’s answer&gt;</code>':DG;
     dec=`<div class="dec"><div class="dl"><b>Waiting on you · expires in 2 d 23 h</b><small>Approve starts the workflow for exactly ${kind==='edited'?'revision 1':'revision 0'}, ${dg}. Decides: the platform owner, you (approvers: owner only).</small></div>`+
       `<div class="acts">${B('Reject…','d')}${kind==='edited'?'':B('Edit','','edit')}${B('Approve revision '+(kind==='edited'?'1':'0'),'p','check')}</div></div>`;
+  }else if(kind==='rejecting'){
+    dec=`<div class="dec"><div class="dl"><b>Reject revision 0</b><small>Sends ${DG} with the reason. Nothing is dispatched; the issue stays open.</small>`+F('Reason (required)','Wait for #2226 to close: it edits cifix.py too. Re-plan after.','v')+`</div><div class="acts">${B('Cancel')}${B('Reject revision 0','d p','x')}</div></div>`;
   }else if(kind==='member'){
     dec=`<div class="dec"><div class="dl"><b>You may not decide this plan</b><small>Its schedule’s approvers are owner only: the platform owner decides. Members read it and comment on ${P.issue}.</small></div>${C('decides: the platform owner','in','person')}</div>`;
   }else if(kind==='super'){
@@ -909,7 +916,7 @@ function rhead(kind,ph){
   }else if(kind==='approved'){
     dec=`<div class="dec"><div class="dl"><b>Approved by you at 02:52Z, revision 0</b><small>approved_digest ${DG}. The plan below is read-only; the trace is what it became.</small></div>${C('approved','ok','check')}</div>`;
   }
-  const cls={pending:'wn',edited:'wn',member:'',super:'bd',held:'wn',approved:'ok'}[kind]||'';
+  const cls={rejecting:'bd',pending:'wn',edited:'wn',member:'',super:'bd',held:'wn',approved:'ok'}[kind]||'';
   return `<section class="rhead ${cls}">${title}${src}${dec}</section>`;
 }
 const SUMMARY=(y)=>CARD('Summary',VW(y),`<p style="color:var(--text);font-size:14px">${P.summary}</p><p>${B('Read the whole summary','q s')} <span class="asserved">the brief quotes it to here</span></p>`);
@@ -945,7 +952,7 @@ const RAIL=(kind,short)=>`<div class="col">`+
   `</div>`);
 const p2body=(kind)=>ph=>rhead(kind,ph)+`<div class="rv"><div class="col">${SUMMARY(true)}${REQS({y:true})}${OVL(true)}${STEPS()}</div>${RAIL(kind)}</div>`;
 const P2HD={cr:'Automate › Approvals › plan',h:'',age:''};
-const p2short=(kind,extra)=>ph=>rhead(kind,ph)+(extra||'')+`<div class="rv"><div class="col">${SUMMARY(false)}${REQS({y:false})}</div>${RAIL(kind,true)}</div>`;
+const p2short=(kind,extra)=>ph=>rhead(kind,ph)+(extra||'')+`<div class="rv"><div class="col">${SUMMARY(kind!=='member')}${REQS({y:kind!=='member'})}</div>${RAIL(kind,true)}</div>`;
 const SUPDIFF=CARD('What changed: revision 0 → 1','',`<div class="diffh"><span>${DG}</span>${I('chev')}<span><code>sha256:&lt;served&gt;</code></span>${C('by sam.ortiz · 02:44Z','ln')}</div><p style="margin-top:8px">The browser compares the plan it holds with the plan served. Example change: requirement 8 added, the step’s tests changed.</p>`);
 const p2risk=ph=>rhead('held',ph)+`<div class="rv"><div class="col">${STEP({title:'Run the unit gate on the new test directory',id:'unit-gate-covers-tests-plans',files:['.github/workflows/unit.yml','tests/unit/plans/test_plan_review.py'],est:'1 agent-hour',tests:'<code>tests/unit/plans/test_plan_review.py</code>',risk:'hold.matched: <code>.github/workflows/unit.yml</code> · the worker cannot push it; a person pushes it from <code>workflow-lines.patch</code>.'})}</div><div class="col">${CARD('Risk paths','',`<div class="risk"><div><span>workflows</span>${S('wn','matched')}<small>.github/workflows/unit.yml · step 1</small></div>${['IAM','the frozen apps/common/swarm_common/','secrets and credentials','tenancy','the shared deny-list','cost'].map(r=>`<div><span>${r}</span>${S('ok','not matched')}</div>`).join('')}</div><p class="sm12 dim" style="margin-top:8px">hold.reasons: workflows · hold.matched: 1 path · approvers: owner only.</p>`)}</div></div>`;
 
@@ -953,8 +960,8 @@ const p2risk=ph=>rhead('held',ph)+`<div class="rv"><div class="col">${STEP({titl
 const p3edit=ph=>`<section class="rhead in"><div class="r1"><div class="tt"><small>Editing revision 0 · ${DG} · the save sends this digest as the one it replaces</small><b>Plan for ${P.issue}</b></div></div><div class="dec"><div class="dl"><b>2 changes not saved</b><small>Step 1’s title and prompt edited. Requirement 8 is typed: Add puts it in the plan.</small></div><div class="acts">${B('Discard')}${B('Save as revision 1','p')}</div></div></section>`+
   `<div class="rv"><div class="col">${REQS({input:'The refusal names the live continuation’s task id in its message.'})}`+
   `<section class="stp edit"><div class="sh0"><span class="nm">1</span><span class="tx"><b>Editing step 1</b><span class="mn dim">${P.step}</span></span>${B('Remove step','s d','trash').replace('role="button"','role="button" aria-disabled="true" title="A plan needs at least one step"')}<span class="sm12 dim">a plan needs at least one step</span></div>`+
-  `<div class="pb" style="padding:14px 16px">${F('Title','<span class="ins">ci_fix waits while a plain continuation is live</span>','v')}<label class="fld"><span>Files, one per line</span><div class="ta" style="min-height:0">${P.files.join('<br>')}</div></label>${F('Tests, one per line','as served','v')}${F('Step estimate',P.est,'v')}<label class="fld"><span>Prompt</span><div class="ta">${PH0(320)}<br>${PH0(280)}<br><span class="ins">Name the live continuation's task id in the refusal message.</span></div></label></div></section>`+
-  `</div><div class="col">${CARD('Not editable here','',`<p>The mode (<code>single</code>) and the 5 overlaps are the planner’s findings and are kept as found. Runner and model are resolved by the platform (invariant 10).</p>`)}${CARD('Saving','',`<p>The server validates the plan as the planner’s own <code>plan.json</code> is validated; an extra key is refused by name. If someone saved first, the answer is 409 <code>plan_changed</code> naming the current digest, and nothing you typed is lost.</p>`)}</div></div>`;
+  `<div class="pb" style="padding:14px 16px">${F('Title','<span class="ins">ci_fix waits while a plain continuation is live</span>','v')}<label class="fld"><span>Files, one per line</span><div class="ta" style="min-height:0">${P.files.join('<br>')}</div></label>${F('Tests, one per line',PH0(200)+'<span class="dim sm12">as served</span>','v')}${F('Step estimate',P.est,'v')}<label class="fld"><span>Prompt</span><div class="ta">${PH0(320)}<br>${PH0(280)}<br><span class="ins">Name the live continuation's task id in the refusal message.</span></div></label></div></section>`+
+  `</div><div class="col">${CARD('Not editable here','',`<p>The mode (<code>single</code>) and the 5 overlaps are the planner’s findings and are kept as found. Runner and model are resolved by the platform (invariant 10).</p>`)}${CARD('Saving','',`<p>The server checks the edited plan by the same rules as the planner’s own <code>plan.json</code>: an extra key is refused by name. If someone saved first, the answer is 409 <code>plan_changed</code> naming the current digest, and nothing you typed is lost.</p>`)}</div></div>`;
 const p3remove=ph=>`<div class="cd"><div class="ch"><b>Steps <span class="cnum">2 → 1</span></b><span class="dim sm12">example plan, revision 2 being edited</span></div>`+
   STEP({n:1,title:'Add the refusal and its test',id:'refusal-and-test',files:['apps/swarm-api/swarm_api/refusals.py'],est:'1 agent-hour',tests:'<code>tests/unit/api/test_refusals.py</code>',right:B('Remove step','s d','trash').replace('role="button"','role="button" aria-disabled="true"')+'<span class="sm12 dim">the last step left</span>'})+
   `<div style="height:10px"></div>`+STEP({n:2,cls:'gone',title:'<span class="del">Document the refusal in docs/ci.md</span>',id:'document-refusal',files:['docs/ci.md'],est:'0.5 agent-hours',tests:'<span class="dim">none</span>',right:C('removed on save','bd','trash')+B('Undo','q s')})+`</div>`;
@@ -982,14 +989,14 @@ const p5=ph=>LEAD('Sources that propose','4 schedules propose work; a person pro
     [`Failure review<small>failure-review · <code>${P.sch}</code></small>`,'issues for failures, then plans',GATE(C('approve','in'),C('auto','wn')+`<small>audited switch, by the owner</small>`),'owner only','$38.20<small>of $1,000 a day</small>',DASH('new field 4'),DASH('new field 4'),S('ok','active')],
     [`Platform health<small>observer · hourly</small>`,'issues to file (proposal)',`<span class="dim sm12">no plan, no merge: each proposal waits</span>`,'owner only','$4.10<small>of $40 a day</small>',DASH('new field 4'),DASH('new field 4'),S('ok','active')],
     [`CI flake hunter<small>ci-flake-hunter · every 6 h</small>`,'issues to file (proposal)',`<span class="dim sm12">no plan, no merge: each proposal waits</span>`,'members','$2.70<small>of $30 a day</small>',DASH('new field 4'),DASH('new field 4'),S('ok','active')],
-    [`By hand<small>Work › Submit from a GitHub issue</small>`,'one plan per issue',GATE(C('approve','in')+'<small>the run’s plan_approval</small>',C('off')+'<small>auto_merge off</small>'),'members',DASH('per run, on the run'),DASH('not a schedule'),DASH('not a schedule'),'<span class="dim">—</span>']
+    [`By hand<small>Work › Submit from a GitHub issue</small>`,'one plan per issue',GATE(C('approve','in')+'<small>the run’s plan_approval</small>',C('off')+'<small>auto_merge off</small>'),'members',DASH('per run, on the run'),DASH('not a schedule'),DASH('not a schedule'),DASH('no pause')]
   ]);
 const p5sheet=ph=>`<div class="ovr">${p5(ph)}<div class="scrim0"></div><aside class="sheet"><div class="sh">${I('lock')}<b>Merge without asking: Bug sweep</b>${I('x')}</div><p class="sm12 dim" style="margin:0">Today: merge <b>approve</b>. Switching to <b>auto</b> lets each run’s merge step merge on a MERGE verdict and green CI, with no person. Holds still stop it. In a <code>platform: true</code> repository only a platform admin makes this switch.</p>${SG(['off','approve','auto'],2)}<label class="fld"><span>Type the schedule’s name to confirm</span><span class="inp v">Bug sweep</span></label><p class="sm12 dim" style="margin:0">Recorded as <code>gate_merge_auto</code> in the schedule’s audit, naming you.</p><div class="acts">${B('Cancel')}${B('Switch merge to auto','p')}</div></aside></div>`;
 
 /* ---------- P6 ---------- */
 const DEC=ROWS.filter(r=>!r.w);
 const p6none=ph=>filters(ROWS.filter(r=>!r.w),{})+plist(DEC,{wcount:'0',wsub:'read 20 s ago',wbody:`<div class="ibf">${I('check')}<span>Nothing waits on a person. 5 decided in the last 7 days, below.</span></div>`});
-const p6paused=ph=>`<div class="bn wn">${I('pause')}<span><b>Failure review is paused by its tripwire</b>A run cost $1,040 against its $1,000 a day at 01:12Z. It proposes nothing new until someone resumes it. Its plan below still waits: a pending approval holds nothing.</span>${B('Open the schedule','s')}</div>`+plist(ROWS.filter(r=>r.src==='fr'),{});
+const p6paused=ph=>`<div class="bn wn">${I('pause')}<span><b>Failure review is paused by its tripwire</b>A run cost $1,040 against its $1,000 a day at 01:12Z. It proposes nothing new until someone resumes it. Its plan below still waits: a pending approval holds nothing.</span>${B('Open the schedule','s')}</div>`+filters(ROWS,{src:'fr'})+plist(ROWS.filter(r=>r.src==='fr'),{});
 const p6fail=ph=>`<div class="bn wn">${I('warn')}<span><b>The approvals read failed: 503 at 02:40Z</b>Nothing below is a count of 0. Reading again in 30 s.</span>${B('Read again','s')}</div>`+plist([],{wcount:'—',why:'approvals not read',wsub:'',wbody:`<div class="ibf">${DASH('not read: 503')}</div>`,decided:false})+`<div style="height:4px"></div>`+OVL(false,true);
 const p6off=ph=>LEAD('Not served here','This deployment does not serve issue runs, so there are no plans','GET /v1/runs answered 404 at 02:40Z: the API was built without the runs routes. Proposals to file issues still list here; plans and merges cannot exist without runs.',B('What plans are','s','help'),'nu')+plist(ROWS.filter(r=>r.src==='obs'||r.src==='flake'),{wsub:'proposals only'});
 
@@ -1000,6 +1007,7 @@ const FR={
   'p2':()=>desk(X(),null,p2body('pending')),
   'p2member':()=>desk(X({who:'member'}),null,p2short('member')),
   'p2super':()=>desk(X(),null,p2short('super',SUPDIFF)),
+  'p2reject':()=>desk(X(),null,p2short('rejecting')),
   'p2risk':()=>desk(X(),null,p2risk),
   'p3edit':()=>desk(X(),null,p3edit),
   'p3remove':()=>desk(X(),null,p3remove,'tall'),
