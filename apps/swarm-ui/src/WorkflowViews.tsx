@@ -32,6 +32,7 @@ import {
   MERGE_MAX_HEAD_UPDATES,
   type MergeCard,
 } from './stepviews'
+import './styles/workflow-views.css'
 import { TERMINAL_STATES, bytesLabel, timeAgo, type AttemptRow, type TaskState, type Tone, type WorkflowStep } from './types'
 
 /**
@@ -498,6 +499,10 @@ function Spans({ row, axis }: { row: StepRowModel; axis: TimelineAxis }) {
               style={{ left: `${left}%`, width: `${width}%`, minWidth: short ? SHORT_SPAN_MIN : undefined }}
             />
             {short && (
+              // PAST THE BAR'S DRAWN EDGE (review of QA1-FIX-29): the bar ends
+              // at the larger of its width and SHORT_SPAN_MIN, so their sum is
+              // never on it. `.wf-tl-short` drops the cut label's backdrop and
+              // its -0.5ch pull (styles/workflow-views.css), which covered it.
               <span className="wf-tl-cut wf-tl-short" style={{ left: `calc(${left + width}% + ${SHORT_SPAN_MIN})` }} aria-hidden>
                 {durationText(s.to - s.from)}
               </span>
@@ -1748,6 +1753,16 @@ export function StepInspector({
 
       {children}
 
+      {/* ITS OWN LINE, UNDER THE REASON IT QUALIFIES (review of QA1-FIX-29):
+          inside the attempt row it took `.wf-scrub`'s one line, clipped at
+          390, and on a wide card it sat beside the closed fold as its label.
+          A block of its own in the card's column wraps. */}
+      {ready !== null && at !== null && !newest && row.why !== null && row.why.kind === 'cause' && (
+        <span className="wf-scrub-note">
+          Why it failed is the step’s final reason, from attempt {ready.length}; the attempt {at + 1} figures below are its own.
+        </span>
+      )}
+
       <div
         className="wf-scrub"
         role="group"
@@ -1827,9 +1842,6 @@ export function StepInspector({
               // keeps its own error, and the card says whose reason that is.
               cause={newest && row.why !== null && row.why.kind === 'cause' ? row.why.full : null}
             />
-            {!newest && row.why !== null && row.why.kind === 'cause' && (
-              <p className="wf-scrub-note">Why it failed is the step’s final reason, from attempt {ready.length}; this attempt’s own figures are listed here.</p>
-            )}
           </>
         )}
       </div>

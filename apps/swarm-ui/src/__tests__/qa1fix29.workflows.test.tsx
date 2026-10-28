@@ -221,6 +221,18 @@ describe('77: a step that never started offers no changes', () => {
     // A step that ran keeps its link.
     expect(table.querySelector('th[data-step="checkpoints"] a.chg-mx-agent')).toBeTruthy()
   })
+
+  it('keeps its step name and "not started" whole, though the column has little else in it', async () => {
+    changes(null)
+    const table = await screen.findByRole('table', { name: 'Files by step' })
+    const head = table.querySelector<HTMLElement>('th[data-step="synthesis"]')!
+    // MUTATION: put back `overflow-wrap: anywhere` on `.chg-mx-step > .mono`
+    // -- the column shrinks below its name and reads 'synthe / sis'.
+    expect(painted(head.querySelector('.mono')!, 'overflow-wrap', WIDE)).toBe('break-word')
+    // MUTATION: drop `.chg-mx-say > .ctl-sub { white-space: nowrap }` --
+    // 'not / started'.
+    expect(painted(head.querySelector('.chg-mx-say > .ctl-sub')!, 'white-space', WIDE)).toBe('nowrap')
+  })
 })
 
 describe('78: the step chips keep their labels on one line', () => {
@@ -275,12 +287,20 @@ describe('68 and 74: the attempt stepper', () => {
   it('says Why it failed is the step’s final reason when an older attempt is picked', async () => {
     const el = await card()
     const scrub = el.querySelector<HTMLElement>('[data-scrub="attempt"]')!
-    expect(scrub.querySelector('.wf-scrub-note'), 'the newest attempt is the reason’s own').toBeNull()
+    expect(el.querySelector('.wf-scrub-note'), 'the newest attempt is the reason’s own').toBeNull()
     fireEvent.click(within(scrub).getByRole('button', { name: 'Previous attempt' }))
     await waitFor(() => expect(flat(scrub.querySelector('.wf-scrub-pos'))).toBe('attempt 2 of 3 made'))
     // MUTATION: drop the `!newest` note -- attempt 2 shows exit code 1 under
     // a Why it failed that is attempt 3's exit status 2, with nothing saying so.
-    expect(flat(scrub.querySelector('.wf-scrub-note'))).toContain('Why it failed is the step’s final reason, from attempt 3')
+    const note = el.querySelector<HTMLElement>('.wf-scrub-note')!
+    expect(flat(note)).toContain('Why it failed is the step’s final reason, from attempt 3')
+    // ITS OWN LINE, NOT A PIECE OF THE ATTEMPT ROW (review of QA1-FIX-29).
+    // MUTATION: render the note inside `[data-scrub="attempt"]` again -- it
+    // takes the row's one line, clipped at 390, and reads as the fold's label.
+    expect(scrub.contains(note)).toBe(false)
+    expect(note.parentElement?.classList.contains('wf-inspect')).toBe(true)
+    // MUTATION: drop `white-space: normal` from `.wf-inspect > .wf-scrub-note`.
+    expect(painted(note, 'white-space', PHONE)).toBe('normal')
     // Its own error is listed, not swallowed as a repeat of the final reason.
     expect(flat(scrub)).toContain('lint failed')
   })
@@ -388,7 +408,15 @@ describe('88: the timeline draws a short run readably and a parked step as parke
     // MUTATION: drop `minWidth` from the span's style -- a 0.004% sliver.
     expect(bar.style.minWidth).toBe('4px')
     // MUTATION: drop the `wf-tl-short` label -- no figure anywhere on the row.
-    expect(flat(track.querySelector('.wf-tl-short'))).toBe('30s')
+    const label = track.querySelector<HTMLElement>('.wf-tl-short')!
+    expect(flat(label)).toBe('30s')
+    // THE LABEL DOES NOT COVER THE BAR (review of QA1-FIX-29): it starts its
+    // width plus the 4px floor from the bar's start, past the drawn edge.
+    expect(label.style.left).toMatch(/% \+ 4px\)$/)
+    // MUTATION: drop `.wf-tl-cut.wf-tl-short` -- the cut label's surface
+    // backdrop and -0.5ch pull paint over the 4px bar in both themes.
+    expect(painted(label, 'transform', WIDE)).toBe('translateY(-50%)')
+    expect(painted(label, 'background', WIDE)).toBe('none')
     // A long run needs neither.
     expect(el.querySelector('.wf-tl-track[data-step="build"] .wf-tl-short')).toBeNull()
   })

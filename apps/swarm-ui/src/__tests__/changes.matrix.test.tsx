@@ -511,9 +511,12 @@ describe("WG-9: the matrix's step headers wrap, so six step columns fit a 1440 f
     // the label, its file count and its link side by side -- and six of them
     // ran past the 1440 frame, clipping `synthesis` and scrolling sideways.
     expect(painted(th, 'white-space', WIDE)).toBe('normal')
-    // MUTATION: drop `overflow-wrap: anywhere` and one long mono step id
-    // (`implement-logs-tab`) still holds its column at its own width.
-    expect(painted(th.querySelector('.mono')!, 'overflow-wrap', WIDE)).toBe('anywhere')
+    // `break-word`, NOT `anywhere` (review of QA1-FIX-29): a long id such as
+    // `implement-logs-tab` still breaks at its hyphens, and inside itself only
+    // when nothing else fits, but a short one is never split to narrow its
+    // column ('synthe / sis'). MUTATION: drop the rule and an id that cannot
+    // fit overflows its column instead of breaking.
+    expect(painted(th.querySelector('.mono')!, 'overflow-wrap', WIDE)).toBe('break-word')
     // The File column's header keeps its one line.
     // MUTATION: (control) unset nowrap on every header and this is red.
     expect(painted(table().querySelector('thead th:not([data-step])')!, 'white-space', WIDE)).toBe('nowrap')
