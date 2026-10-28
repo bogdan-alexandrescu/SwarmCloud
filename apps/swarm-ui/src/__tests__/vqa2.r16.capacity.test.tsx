@@ -13,11 +13,15 @@
 //         is cut, never its `(5/5) fits 0`.
 //   V091  A family's sticky head sits under the bell bar (`--ctl-bar-h`), not
 //         at the page's top edge where the bar covers it.
+//   FIT   (review of U01, 2026-10-27) The box and entry widths V090/V195 fix
+//         keep the matrix inside its 1039px scroller at 1440: at 9ch and 34ch
+//         the review measured the table at 1247px, Runs out first off-screen.
 //
 // BREAK IT: drop `max-width: 100%` from `.rt-pool-chips` -- V162 fails; put
 // `users.join(', ')` back in one span -- V194 fails; `min-width: 5ch` for the
 // box's width -- V090 fails; `white-space: normal` on `.cap-mx-bind` -- V195
-// fails; `top: 0` on the family head -- V091 fails.
+// fails; `top: 0` on the family head -- V091 fails; `inline-size: 9ch` on the
+// box or `34ch` on the entry -- FIT fails.
 
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -174,7 +178,7 @@ describe('V090: every "runs out first" outline is one width', () => {
     expect(boxes.length).toBeGreaterThanOrEqual(4)
     expect(document.querySelectorAll('.cap-mx td.is-binding > .cap-mx-v').length).toBe(3)
     for (const box of boxes) {
-      expect(painted(box, 'inline-size', WIDE), `${box.textContent}: the box has no fixed width`).toBe('9ch')
+      expect(painted(box, 'inline-size', WIDE), `${box.textContent}: the box has no fixed width`).toBe('5ch')
       expect(painted(box, 'box-sizing', WIDE), 'the padding would eat a border-box width').toBe('content-box')
       expect(painted(box, 'min-width', WIDE)).toBe('0')
       // A worded figure (`no limit set`) wraps inside the box rather than widening it.
@@ -192,7 +196,7 @@ describe('V195: a Runs out first entry holds one line at one width', () => {
       for (const e of entries) {
         expect(painted(e, 'white-space', env), `${e.textContent} wraps inside itself`).toBe('nowrap')
         expect(painted(e, 'display', env)).toBe('flex')
-        expect(painted(e, 'inline-size', env), 'entries are not one width').toBe('34ch')
+        expect(painted(e, 'inline-size', env), 'entries are not one width').toBe('21ch')
         expect(painted(e, 'max-inline-size', env)).toBe('100%')
         const name = e.querySelector<HTMLElement>(':scope > .cap-mx-bind-pool')
         expect(name, `${e.textContent}: the pool name is in no cuttable span`).not.toBeNull()
@@ -228,5 +232,50 @@ describe('V091: a sticky family head sits under the bell bar', () => {
     expect(painted(box, 'max-height', WIDE), 'the matrix is taller than the room under the bar').toBe(
       'calc(100vh - 180px - 48px)',
     )
+  })
+})
+
+describe('FIT: the matrix stays inside its scroller at 1440 (review of U01, 2026-10-27)', () => {
+  // jsdom lays nothing out, so this is the review's live measurement turned
+  // into arithmetic over what the sheet sets. Measured in the live browser at
+  // 1440 with the 10-27 sheet: the scroller is 1039px; the table was 1247px,
+  // its Runs out first column 276px (a 34ch entry and the cell's 2 x 10px
+  // padding) and every figure box 92px (9ch of content and 2 x 8px padding).
+  // So a `ch` is 76/9 px in a figure cell (DM Mono at --t-body) and 256/34 px
+  // in an entry (Inter Tight at --t-meta). A family column is as wide as the
+  // wider of its box and its one-line head (the head never wraps: the sticky
+  // head is one --row-h line, capacity-007); a head's width is estimated at
+  // 6.6px a character, Inter Tight 600 at --t-meta. The fixture draws all six
+  // families, so what the profile and Can start columns took is the rest of
+  // the measured 1247 under the old widths, and it does not change here.
+  const SCROLLER = 1039
+  const MEASURED_TABLE = 1247
+  const OLD = { box: 92, entry: 256 }
+  const MONO_CH = 76 / 9
+  const SANS_CH = 256 / 34
+  const CELL_PAD = 20
+  const BOX_PAD = 16
+  const HEADS = ['Global', 'Workspaces', 'Resource classes', 'Runner profiles', 'Backends', 'Providers']
+  const head = (title: string) => title.length * 6.6
+  const families = (box: number) => HEADS.reduce((sum, t) => sum + Math.max(head(t), box) + CELL_PAD, 0)
+  const REST = MEASURED_TABLE - (OLD.entry + CELL_PAD) - families(OLD.box)
+
+  const ch = (v: string | null | undefined) => {
+    const m = /^([\d.]+)ch$/.exec(v ?? '')
+    expect(m, `${v} is not a width in ch`).not.toBeNull()
+    return Number(m![1])
+  }
+
+  it('sums the six family columns, the Runs out first entry and the rest to no more than the scroller', () => {
+    render(<ProfileMatrix capacity={CAPACITY} />)
+    const box = document.querySelector<HTMLElement>('.cap-mx td > .cap-mx-v')!
+    const entry = document.querySelector<HTMLElement>('.cap-mx td.cap-mx-first > .cap-mx-bind')!
+    expect(painted(box, 'box-sizing', WIDE)).toBe('content-box')
+    const boxPx = ch(painted(box, 'inline-size', WIDE)) * MONO_CH + BOX_PAD
+    const entryPx = ch(painted(entry, 'inline-size', WIDE)) * SANS_CH
+    const table = REST + families(boxPx) + entryPx + CELL_PAD
+    expect(Math.round(table), `the matrix is ${Math.round(table)}px in a ${SCROLLER}px scroller`).toBeLessThanOrEqual(SCROLLER)
+    // The control: the 10-27 widths reproduce the review's measurement.
+    expect(Math.round(REST + families(OLD.box) + OLD.entry + CELL_PAD)).toBe(MEASURED_TABLE)
   })
 })
