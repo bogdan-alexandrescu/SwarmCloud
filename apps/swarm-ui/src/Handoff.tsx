@@ -373,6 +373,8 @@ export function HandoffBanner({
       : h.phase === 'parked' && request === null
         ? 'Reading why it asked…'
         : 'The agent gave no reason that could be read.'
+  // A park whose request has been read (or failed to be) and named no reason.
+  const unread = h.phase === 'parked' && reason === null && request !== null && ready.kind !== 'done'
 
   // WHAT THE TIME LEFT IS TIME UNTIL, said with the figure: a hold ends in a
   // park and the capacity goes back; a park ends in a dead letter.
@@ -427,6 +429,20 @@ export function HandoffBanner({
         {control !== null && <span className="ho-ctl"> · {control}</span>}
         {clock !== null && <span className="ho-left"> · {clock}</span>}
       </span>
+      {/* WHAT TO BE READY FOR, when the agent's reason could not be read
+          (visual QA pass 1, chrome-C28, part of #2596). The reason is what
+          normally says it; without one the banner read "no reason that could
+          be read … I'm ready" and left the person to guess. What the button
+          does is known whatever the reason: the browser comes back and the
+          agent asks again there, on a hold, with its reason. A second
+          `.ho-facts` line, so it takes that line's block layout without a rule
+          of its own. */}
+      {unread && (
+        <span className="ho-facts ho-unread">
+          When you say you are ready, its browser starts again and the agent asks you there for what it needs, so
+          say it when you can stay with its browser.
+        </span>
+      )}
       {ready.kind === 'done' && (
         <span className="ho-starting">
           Starting your browser. It is admitted like any agent and starts cold, so allow a minute or two; the agent

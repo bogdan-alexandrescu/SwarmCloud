@@ -5020,9 +5020,55 @@ function fixtureBudgetTasks(listed: Task[]): Task[] {
   ]
 }
 
-/** A task a per-task read answers and no list returns: a waiting one (#1782) or a budget one (#2459). */
+/**
+ * THE AGENT ANOTHER USER SUBMITTED (#1857, RAW-PATCH-FIXTURE; BGD's decision
+ * 2026-10-27). The raw patch is offered to a task's submitter only, and every
+ * other fixture task was submitted by the signed-in fixture user, so the
+ * console only ever showed the offer. This one finished agent was submitted by
+ * someone else: its Artifacts tab lists the same `diff.patch` with the
+ * redacted download alone, beside any of the user's own agents (for example
+ * `task_99284d38`), which also offer "Download raw patch".
+ *
+ * Reached BY ID AND KEPT OFF THE LISTS, as the budget agents are, so every
+ * list and count other tests pin stays where it was. Everything else is a
+ * finished claude-code agent's ordinary shape; only `submitted_by` differs.
+ */
+const FIXTURE_OTHER_SUBMITTER = 'task_patch_other_submitter'
+
+function fixtureOtherSubmitterTasks(listed: Task[]): Task[] {
+  const base = listed.find((t) => t.state === 'SUCCEEDED' && t.runner_profile === 'claude-code') ?? listed[0]
+  if (base === undefined) return []
+  const at = (minsAgo: number) => new Date(FIXTURE_NOW - minsAgo * 60_000).toISOString()
+  return [
+    fixtureTimed({
+      ...base,
+      id: FIXTURE_OTHER_SUBMITTER,
+      state: 'SUCCEEDED',
+      submitted_by: 'dave@example.com',
+      metadata: { title: 'Tidy the lease test fixtures' },
+      input: null,
+      workflow_id: null,
+      step_id: null,
+      depends_on: null,
+      attempt_count: 1,
+      current_generation: 1,
+      current_lease_id: null,
+      created_at: at(70),
+      // Its end: `fixtureTimed` derives the start and the completion from it.
+      updated_at: at(64),
+      last_error: null,
+      dispatch: { strategy: 'collect', carrier: 'checkpoints', role: null, integrates: [] },
+    }),
+  ]
+}
+
+/** A task a per-task read answers and no list returns: a waiting one (#1782), a budget one (#2459), or another user's (#1857). */
 function fixtureOffList(listed: Task[], taskId: string): Task | undefined {
-  return fixtureWaitingTasks(listed).find((t) => t.id === taskId) ?? fixtureBudgetTasks(listed).find((t) => t.id === taskId)
+  return (
+    fixtureWaitingTasks(listed).find((t) => t.id === taskId) ??
+    fixtureBudgetTasks(listed).find((t) => t.id === taskId) ??
+    fixtureOtherSubmitterTasks(listed).find((t) => t.id === taskId)
+  )
 }
 
 // ---------------------------------------------------------------------------

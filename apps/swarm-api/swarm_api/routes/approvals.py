@@ -1,6 +1,7 @@
 """Approval routes, and the SD3 merge switch (docs/schedules.md §4.2, §4.5-§4.7, §7.1, lane S5).
 
-    GET  /v1/approvals[?kind=]                 the inbox: records plus projected PLANNED runs
+    GET  /v1/approvals[?kind=&state=]          the inbox: records plus projected PLANNED runs;
+                                               `state=decided|expired|all`: the last 7 days' too
     GET  /v1/approvals/{id}                    one item, with what its kind needs to decide it
     POST /v1/approvals/{id}:approve            {digest, confirm?}
     POST /v1/approvals/{id}:reject             {reason}
@@ -333,30 +334,72 @@ def _with_may_decide(out: dict, decided: dict[str, Any] | None) -> dict:
     return out
 
 
+#: `GET /v1/approvals?state=`: which items one read serves (#2417 A4).
+STATE_PENDING, STATE_DECIDED, STATE_EXPIRED, STATE_ALL = "pending", "decided", "expired", "all"
+STATE_FILTERS = (STATE_PENDING, STATE_DECIDED, STATE_EXPIRED, STATE_ALL)
+_HISTORY_STATES = {
+    STATE_DECIDED: approvals.DECIDED_STATES,
+    STATE_EXPIRED: (approvals.EXPIRED,),
+    STATE_ALL: approvals.HISTORY_STATES,
+}
+
+
+def _served(ctx: AppContext, auth: AuthContext, tenant_id: str, item: Mapping[str, Any],
+            run: IssueRun | None, seen: dict[str, Mapping[str, Any] | None]) -> dict:
+    sid = (item.get("subject") or {}).get("schedule_id")
+    if sid and sid not in seen:
+        seen[sid] = approvals.read_schedule(ctx.db, tenant_id, sid)
+    decided = may_decide(ctx, auth, tenant_id, item, run=run, schedule=seen.get(sid) if sid else None)
+    return _with_may_decide(approvals.to_api(item), decided)
+
+
 @router.get("/v1/approvals")
 def list_approvals(
     kind: str | None = Query(default=None, max_length=20),
+    state: str = Query(default=STATE_PENDING, max_length=20),
     tenant_id: str = Depends(tenant_scope),
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    """The inbox, and on request the last 7 days' decisions (#2417 A4).
+
+    `state=pending`, THE DEFAULT, is the inbox exactly as it was before
+    `state` existed: what is waiting, oldest first, and the response is
+    `{approvals, tenant_id}` and nothing more, so no existing caller sees a
+    change. `state=decided` serves the tenant's items approved or rejected
+    (and await-input steps `answered`) in the last `approvals.HISTORY_DAYS`
+    days, `state=expired` those that expired, both NEWEST FIRST by
+    `decided_at`; `state=all` serves the inbox first, oldest first, then the
+    history, newest first. A history read is bounded
+    (`approvals.HISTORY_LIMIT` rows), adds `history_truncated` -- true when a
+    source's read was full, so rows may be missing -- and is the item's own
+    shape, `state`, `decided_by` (and `decided_by_name`), `decided_at` and
+    `reason` included, with `may_decide` saying nothing is left to decide.
+    Every row is the caller's tenant's (`tenant_scope`, invariant 9)."""
     if kind is not None and kind not in approvals.KINDS:
         raise ScheduleInvalid("unknown_kind", f"kind is one of {', '.join(approvals.KINDS)}")
+    if state not in STATE_FILTERS:
+        raise ScheduleInvalid("unknown_state", f"state is one of {', '.join(STATE_FILTERS)}")
     items = []
     seen: dict[str, Mapping[str, Any] | None] = {}
-    for item in approvals.inbox(ctx, tenant_id, kind=kind):
-        run = None
-        if item.get("projected") and item.get("kind") != approvals.INPUT:
-            run = _projected_run(ctx, tenant_id, str(item["approval_id"]))
-        elif item.get("kind") == approvals.MERGE:
-            run = _record_run(ctx, tenant_id, item)
-        sid = (item.get("subject") or {}).get("schedule_id")
-        if sid and sid not in seen:
-            seen[sid] = approvals.read_schedule(ctx.db, tenant_id, sid)
-        decided = may_decide(ctx, auth, tenant_id, item, run=run, schedule=seen.get(sid) if sid else None)
-        items.append(_with_may_decide(approvals.to_api(item), decided))
+    if state in (STATE_PENDING, STATE_ALL):
+        for item in approvals.inbox(ctx, tenant_id, kind=kind):
+            run = None
+            if item.get("projected") and item.get("kind") != approvals.INPUT:
+                run = _projected_run(ctx, tenant_id, str(item["approval_id"]))
+            elif item.get("kind") == approvals.MERGE:
+                run = _record_run(ctx, tenant_id, item)
+            items.append(_served(ctx, auth, tenant_id, item, run, seen))
+    out: dict[str, Any] = {"approvals": items, "tenant_id": tenant_id}
+    if state in _HISTORY_STATES:
+        closed, truncated = approvals.history(ctx, tenant_id, kind=kind, states=_HISTORY_STATES[state])
+        for item, run in closed:
+            if run is None and item.get("kind") == approvals.MERGE:
+                run = _record_run(ctx, tenant_id, item)
+            items.append(_served(ctx, auth, tenant_id, item, run, seen))
+        out["history_truncated"] = truncated
     add_names(name_lookup(ctx), items, NAMED_FIELDS)
-    return {"approvals": items, "tenant_id": tenant_id}
+    return out
 
 
 @router.get("/v1/approvals/{item_id}")
