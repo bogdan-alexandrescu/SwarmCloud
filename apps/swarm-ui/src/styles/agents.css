@@ -453,13 +453,18 @@
 /* THE META LINE: profile · class · workflow · account, then the dispatch
    chips. Sans; a `·` between facts, none before the copy
    button or the chips. */
-.ag-head-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; padding: 0; list-style: none; min-width: 0; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.ag-head-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; padding: 0; list-style: none; min-width: 0; overflow-x: clip; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
 .ag-head-facts > li { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
-/* THE SEPARATOR ENDS A FACT, IT DOES NOT START ONE (G2-20, QA 2026-10-07):
-   as each fact's `::before`, a fact that wrapped on a phone took its dot to
-   the head of the next line (`· workflow wf_…`). AgentSplit `AgHeadMeta`
-   marks every fact but the last with `data-sep`. */
-.ag-head-facts > li[data-sep]::after { content: "·"; margin-inline-start: 3px; color: var(--text-dim); }
+/* A SEPARATOR ONLY BETWEEN TWO FACTS ON ONE LINE (QA1-FIX-32,
+   overview-agents-27). As each fact's `::after` (G2-20) every wrapped line
+   ended on a dot (`account not read ·`); as a plain `::before` every wrapped
+   line began with one (`· workflow wf_…`). The dot opens every fact but the
+   first (`AgHeadMeta` marks them `data-sep`) and is hung in the 8px gap
+   before it: its width is that gap, and its margins take back the gap and
+   the fact's own 5px. A fact that opens a line has that gap outside the list,
+   which clips its inline overflow (`overflow-x: clip` above), so that dot is
+   not drawn and no line starts or ends with one. */
+.ag-head-facts > li[data-sep]::before { content: "·"; flex: none; width: 8px; margin-inline: -8px -5px; text-align: center; color: var(--text-dim); }
 /* The dispatch chips wrap as chips, and the `?` stays with the last one. */
 .ag-head-facts > li.ag-head-dispatch { flex-wrap: wrap; }
 .ag-head-dlast { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }

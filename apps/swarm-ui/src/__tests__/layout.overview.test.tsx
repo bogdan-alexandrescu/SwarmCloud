@@ -586,6 +586,10 @@ describe('OV-4, OV-14: the spend figure is a partial sum, and its foot is a run 
     // MUTATION: put back `countOf(s.tasksWithAttempts, 'task')` in SpendBody.
     expect(clauses).toEqual([
       '31 attempts, 12 newest of 40 agents',
+      // ITS OWN CLAUSE (QA1B-06 review): inside the first span it could not
+      // wrap (every `.ctl-foot-run > *` is nowrap) and was cut off at 390 and 1440.
+      // MUTATION: append it inside the coverage clause's span again.
+      'that have run (of the 60 newest read)',
       '2 unmeasured',
       '1 of 12 reads failed',
       // No age clause: the sum is fresh, and a fresh age is the head's (#98).

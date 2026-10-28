@@ -139,7 +139,7 @@ describe('6:work-a-001: the fenced and parks cells are busy exactly while an eve
     const answers: ((r: unknown) => void)[] = []
     api.loadTaskEventsPage.mockImplementation(() => new Promise((res) => answers.push(res)))
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
-    // Pending: the cells say 'events not read' and are marked busy.
+    // Pending: the cell says counting and is marked busy.
     await waitFor(() => {
       expect(cell(/fenced/)?.getAttribute('aria-busy')).toBe('true')
     })
@@ -162,11 +162,12 @@ describe('6:work-a-001: the fenced and parks cells are busy exactly while an eve
     api.loadTaskEventsPage.mockResolvedValue({ status: 'error', error: { kind: 'server', httpStatus: 500, code: null, message: 'boom' } })
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     await waitFor(() => {
-      expect(text(cell(/fenced/))).toMatch(/events not read on 2 lanes/)
+      // One cell for both, of how many (QA1-FIX-28, chrome-C17 and runs-submit-33).
+      expect(text(cell(/fenced/))).toMatch(/events not read on 2 of 2 lanes/)
       // MUTATION: mark the cells busy whenever a lane's events are unread, failed reads included.
       expect(cell(/fenced/)!.getAttribute('aria-busy')).not.toBe('true')
     })
-    expect(text(cell(/park/))).toMatch(/events not read on 2 lanes/)
+    expect(text(cell(/park/))).toMatch(/events not read on 2 of 2 lanes/)
     expect(cell(/park/)!.getAttribute('aria-busy')).not.toBe('true')
   })
 })

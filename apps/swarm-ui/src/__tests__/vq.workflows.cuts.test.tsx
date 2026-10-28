@@ -13,7 +13,7 @@
  *         at 390 (scrollWidth 317 > clientWidth 300).
  */
 import { cleanup, render, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useState } from 'react'
 
 import type { Result } from '../fetch'
@@ -187,57 +187,40 @@ const chOf = (v: string | null) => {
   return m === null ? Number.NaN : Number(m[1])
 }
 
-describe('ID: the list cuts every row’s id at one width', () => {
-  /** A list row's name line: a name of `name`'s length, then the id. */
-  function lineWith(name: string, id: string): HTMLElement {
+describe('ID: the list draws every row’s id under its name (visual QA pass 1 overview-agents-61, #2596)', () => {
+  /** A list row's name cell: a name of `name`'s length on its line, then the id under it. */
+  function nameWith(name: string, id: string): HTMLElement {
     const host = document.createElement('div')
     host.className = 'wfl'
-    host.innerHTML = `<table><tbody><tr><td class="wfl-name"><span class="wfl-line"><a>${name}</a><span class="id">${id}</span></span></td></tr></tbody></table>`
+    host.innerHTML = `<table><tbody><tr><td class="wfl-name"><span class="wfl-line"><a>${name}</a></span><span class="id">${id}</span></td></tr></tbody></table>`
     document.body.appendChild(host)
     hosts.push(host)
-    return host.querySelector<HTMLElement>('.wfl-line > .id')!
+    return host.querySelector<HTMLElement>('.wfl-name > .id')!
   }
 
-  // MUTATION: put back `flex: 0 100 auto; min-width: 0`: the id collapses to
-  // 0px under a long name, and each name length cuts it somewhere else.
-  it('floors and caps the id at the same width, of `wf_` and six characters, under names of every length', () => {
+  // MUTATION: put the id back on the name's line with `flex: 0 100 auto;
+  // max-width: 10ch`: every 45-character title is cut again at 1440, and this
+  // rule no longer matches the id at all.
+  it('draws the id as its own line, cut with an ellipsis and never wrapped, under names of every length', () => {
     const ids = [
-      lineWith('Audit the operator surface for every tenant', 'wf_audit7c52762aa41b9e0d3f'),
-      lineWith('Build', 'wf_b81f02c9e4d7a3b6150c'),
-      lineWith('Rotate the platform’s merge App key and verify the release', 'wf_0d9e3f41ac77b2e9d8f1'),
+      nameWith('Audit the operator surface for every tenant', 'wf_audit7c52762aa41b9e0d3f'),
+      nameWith('Build', 'wf_b81f02c9e4d7a3b6150c'),
     ]
-    const mins = ids.map((id) => painted(id, 'min-width', WIDE))
-    const maxes = ids.map((id) => painted(id, 'max-width', WIDE))
-    for (const m of mins) expect(chOf(m), `the id's floor is ${m}`).toBeGreaterThan(0)
-    expect(new Set(mins).size, 'rows floor the id at different widths').toBe(1)
-    // A floor alone lets a short name hand the id more room: the cap makes the cut one width.
-    expect(maxes, 'the id is not capped at its floor').toEqual(mins)
-    // `wf_` and six characters, then the ellipsis.
-    expect(chOf(mins[0]!)).toBe(10)
-    expect(painted(ids[0]!, 'text-overflow', WIDE)).toBe('ellipsis')
-    expect(painted(ids[0]!, 'white-space', WIDE)).toBe('nowrap')
+    for (const id of ids) {
+      expect(painted(id, 'display', WIDE)).toBe('block')
+      expect(painted(id, 'white-space', WIDE)).toBe('nowrap')
+      expect(painted(id, 'text-overflow', WIDE)).toBe('ellipsis')
+      // No 10ch cap: the id is cut by its cell, not at `wf_` and six characters.
+      expect(chOf(painted(id, 'max-width', WIDE))).toBeNaN()
+    }
   })
 
-  // MUTATION: leave `mixGoesUnder` counting the id as a gap only: a 420px
-  // line keeps the runners beside a name of 420 - 72 - 16 - 176 = 156px.
-  it('counts the id’s width when it decides whether the runners go under the name', async () => {
+  // MUTATION: draw the id inside `.wfl-line` again: `mixGoesUnder` counts its
+  // width and a 420px line sends the runners under a name it no longer shares.
+  it('leaves the id out of the name line’s sum, so the runners stay beside a name that has the line', async () => {
     viewport(1440)
-    const idW = monoW(10, 12)
     vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
       return this.classList.contains('wfl-line') ? 420 : 0
-    })
-    // Defined, not spied: a file before this one in the fork may have deleted
-    // jsdom's own getter, which `vi.spyOn` then cannot find.
-    const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth')
-    Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
-      configurable: true,
-      get(this: HTMLElement) {
-        return this.classList.contains('id') ? idW : 0
-      },
-    })
-    onTestFinished(() => {
-      if (own === undefined) delete (HTMLElement.prototype as unknown as Record<string, unknown>).offsetWidth
-      else Object.defineProperty(HTMLElement.prototype, 'offsetWidth', own)
     })
     render(<WorkflowsScreen />)
     const td = await waitFor(() => {
@@ -245,10 +228,10 @@ describe('ID: the list cuts every row’s id at one width', () => {
       expect(t).toBeTruthy()
       return t!
     })
-    expect(td.querySelector(':scope > .wfl-line > .id')?.getAttribute('title')).toBe(chain.workflow_id)
-    // 420 less the id (72), its gap and the mix's (16) and the mix (176) leaves the name 156px: under 200.
-    expect(420 - idW - 16 - 176).toBeLessThan(200)
-    await waitFor(() => expect(td.querySelector(':scope > .wfl-sub > .wfl-mix'), 'the runners stayed beside a 156px name').not.toBeNull())
+    expect(td.querySelector(':scope > .wfl-line > .id')).toBeNull()
+    expect(td.querySelector(':scope > .id')?.getAttribute('title')).toBe(chain.workflow_id)
+    // 420 less the mix's gap (8) and the mix (176) leaves the name 236px: over 200.
+    await waitFor(() => expect(td.querySelector(':scope > .wfl-line > .wfl-mix'), 'the runners went under a 236px name').not.toBeNull())
   })
 })
 

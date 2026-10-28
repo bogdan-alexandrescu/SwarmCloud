@@ -249,7 +249,7 @@ export function ActivityScreen({
   const [pending, setPending] = useState(true)
   const [latest, setLatest] = useState<{ key: string; result: Result<Outcomes> } | null>(null)
   /** The last payload that drew, kept (dimmed) while a filter change is being read. */
-  const [good, setGood] = useState<{ key: string; data: Outcomes; continues: boolean } | null>(null)
+  const [good, setGood] = useState<{ key: string; data: Outcomes; continues: boolean; fetchedAt: number } | null>(null)
   /** How many buckets the last read of this query had built, so a continuation that builds nothing stops. */
   const built = useRef<{ key: string; read: number } | null>(null)
   /**
@@ -282,7 +282,7 @@ export function ActivityScreen({
       const head = r.data
       const before = built.current?.key === key ? built.current.read : null
       built.current = { key, read: head.totals.buckets_read }
-      setGood({ key, data: head, continues: buildContinues(head, before) })
+      setGood({ key, data: head, continues: buildContinues(head, before), fetchedAt: Date.now() })
       // Sent only after the headline has landed, so it never competes with it.
       setLate({ key, result: null })
       const rest = loadOutcomes(new URLSearchParams(key), LEDGER_LATE_SECTIONS) as Promise<Result<Outcomes>>
@@ -580,11 +580,14 @@ export function ActivityScreen({
     <>
       {/* TITLE LEFT, ACTIONS RIGHT (#138): the refresh, with its ticking
           age and the cadence; the range and the cache are the note over the
-          first card. The age is the payload's (`generated_at`), which a
-          cached answer carries from when it was counted. */}
+          first card. THE AGE IS THE BROWSER'S READ (QA1-FIX-13,
+          runs-submit-12): it was the payload's `generated_at`, so a page
+          re-read every minute said "read 8 d ago" over a ledger counted long
+          before; when the answer came from the cache, the note under the tabs
+          says so. */}
       <PageHead title="Timeline">
         <RefreshControl
-          readAt={data === null ? null : Date.parse(data.generated_at)}
+          readAt={good === null ? null : good.fetchedAt}
           now={now}
           cadence={{ base: TIMELINE_POLL_MS, wait: TIMELINE_POLL_MS }}
           reading={pending}
@@ -1192,6 +1195,11 @@ function LedgerSection({
   )
 }
 
+/** The time basis in words: `completed_at` is "finish time"; a basis this console does not know is its field name. */
+function basisWords(field: string): string {
+  return field === 'completed_at' ? 'finish time' : field === 'created_at' ? 'submit time' : field
+}
+
 /**
  * THE FACTS LINE, under the controls: the resolved range, the zone, the basis,
  * how much is sealed, and whose figures these are. The server resolves and
@@ -1241,8 +1249,9 @@ function LedgerFacts({
         {data.tz}
       </li>
       <li className="ctl-fact">
+        {/* IN WORDS, NOT THE FIELD (QA1-FIX-13, runs-submit-39); the field is its title. */}
         <b>by</b>
-        <code>{data.basis.outcomes}</code>
+        <span title={data.basis.outcomes}>{basisWords(data.basis.outcomes)}</span>
       </li>
       <li className="ctl-fact">
         {/* THE ROLLUP'S UNIT, NOT THE VIEWER'S DAYS: workspace-days on the UTC
@@ -2386,7 +2395,10 @@ export function TenantsScreen() {
                 className="ctl-panel-note ten-budget"
                 aria-label="No budget column, and no budget can be set: the only route that could set a budget refuses it, so none is set for any tenant, and the column is left out rather than drawn empty."
               >
-                no budget column · no budget can be set
+                {/* A SENTENCE, IN THE BODY FONT (visual QA pass 1, admin-shell-18,
+                    part of #2596): the mono `no budget column · no budget can
+                    be set` read as debug output. */}
+                Tenants have no budget column: no budget can be set here.{' '}
                 <a href={helpHref(TENANT_HELP)}>Why &rarr;</a>
               </p>
               {/* THE HELP LINK AH-12 DECIDED FOR THE ENFORCED COLUMN: the footer
@@ -2504,7 +2516,8 @@ const OWN_TAIL = 12
 /**
  * One identity and its copy control. Wide, it is the three pieces above, cut
  * in the middle; on a PHONE (the stacked record) it is whole, as runs that
- * break after an `@` or a `.` only (visual QA run 6, 6:admin-008): the record
+ * break before the key and after an `@` or a `.` only (visual QA run 6,
+ * 6:admin-008; visual QA pass 1, admin-shell-02): the record
  * let `alice@example` / `.com` and `bogdan@exampl` / `e-` break anywhere.
  */
 export function TenantIdent({ value, noun, tenant, phone }: { value: string; noun: string; tenant: string; phone: boolean }) {
@@ -2534,7 +2547,21 @@ export function TenantIdent({ value, noun, tenant, phone }: { value: string; nou
     <span className="ten-ident-row">
       <span className="ten-ident" title={value}>
         {phone ? (
-          addressBreaks(value, '@.', 'ten-seg')
+          // AND A BREAK BEFORE THE KEY (visual QA pass 1, admin-shell-02, part
+          // of #2596). `swarm-agent-worker-u-bogdan@` was one run, 235px in a
+          // 186px value column, so every card cut it to `swarm-agent-worker-…`
+          // and hid the tenant's own part -- the one that tells the cards
+          // apart, with no hover on a phone to recover it. The record breaks
+          // where the wide row splits its pieces too: prefix, then key.
+          <>
+            {parts.head !== '' && (
+              <>
+                {addressBreaks(parts.head, '@.', 'ten-seg')}
+                <wbr />
+              </>
+            )}
+            {addressBreaks(value.slice(parts.head.length), '@.', 'ten-seg')}
+          </>
         ) : (
           <>
             {parts.head !== '' && <span className="ten-ident-head">{parts.head}</span>}

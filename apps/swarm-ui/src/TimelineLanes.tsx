@@ -94,6 +94,7 @@ import { axisZone } from './charts/series'
 import { SKIPPED_WORD } from './dag'
 import { gateVerdictOf, skippedByVerdict } from './wfreview'
 import { workflowLabel } from './stepviews'
+import { eventWord } from './words'
 import { AGE_TICK_MS, useNow } from './useNow'
 import './styles/timeline.css'
 
@@ -155,6 +156,16 @@ export function taskReadCovers(page: readonly Task[], since: number, prior: Read
 
 /** Past this many days the bars are slivers, and the page suggests Outcomes. */
 const SUGGEST_OUTCOMES_DAYS = 7
+
+/**
+ * The slivers note names the span on screen, "Over 30 days ...", not the
+ * threshold, which read as "the past 7 days" on a 30-day page (QA1
+ * runs-submit-34). A zoomed window is a fraction of a day long, so it is
+ * floored: "Over 7 days" is still true of 7.4.
+ */
+export function sliversNote(days: number): string {
+  return `Over ${Math.floor(days)} days the bars are slivers: counts over the span read better as a ledger.`
+}
 
 /** A drag shorter than this on the axis is a click, not a zoom. */
 const DRAG_MIN_PX = 4
@@ -654,6 +665,19 @@ export function TimelineLanesScreen({
   const [sheet, setSheet] = useState(false)
   /** The phone's legend, behind `Key` (VQ-024, decided 2026-10-26). */
   const [key, setKey] = useState(false)
+  // ESCAPE FOLDS THEM (visual QA pass 1, runs-submit-36): open, the sheet and
+  // the key stayed open through Escape. It folds the one open and hands focus
+  // back to its toggle, as a picker's Escape does.
+  const sheetBtn = useRef<HTMLButtonElement | null>(null)
+  const keyBtn = useRef<HTMLButtonElement | null>(null)
+  useEscapeLayer(sheet, () => {
+    setSheet(false)
+    sheetBtn.current?.focus()
+  })
+  useEscapeLayer(key, () => {
+    setKey(false)
+    keyBtn.current?.focus()
+  })
   const lastSpan = useRef(spanKey)
   if (lastSpan.current !== spanKey) {
     lastSpan.current = spanKey
@@ -1215,6 +1239,7 @@ export function TimelineLanesScreen({
             Outcomes folds its own; on a wide screen the sheet is
             `display: contents` and its controls sit in this row. */}
         <button
+          ref={sheetBtn}
           type="button"
           className="tl-sheet-toggle"
           aria-expanded={sheet}
@@ -1229,6 +1254,7 @@ export function TimelineLanesScreen({
             default there; a wide screen shows it always and has no button.
             The outcome strip's counts are not folded with it. */}
         <button
+          ref={keyBtn}
           type="button"
           className="tl-key-toggle"
           aria-expanded={key}
@@ -1312,7 +1338,7 @@ export function TimelineLanesScreen({
 
       {days > SUGGEST_OUTCOMES_DAYS && (
         <p className="tl-note tl-suggest">
-          <span>{`Past ${SUGGEST_OUTCOMES_DAYS} days the bars are slivers: counts over the span read better as a ledger.`}</span>{' '}
+          <span>{sliversNote(days)}</span>{' '}
           <a href={`/timeline/outcomes?${outcomesQueryFor(view)}`}>Open Outcomes ›</a>
         </p>
       )}
@@ -1403,6 +1429,7 @@ export function TimelineLanesScreen({
                       onClose={() => select(null)}
                       onOlder={() => readOlder(selected.taskId)}
                       onRead={() => ensureEvents(selected.taskId)}
+                      workflowName={selected.task?.workflow_id ? (wfNames.get(selected.task.workflow_id) ?? null) : null}
                     />
                   ),
                 ])}
@@ -1518,7 +1545,11 @@ function TlPicker({
         ? 'all · reading'
         : read === 'failed'
           ? 'all · not read'
-          : `all ${options.length}`
+          : // NO COUNT ON 'all' (visual QA pass 1, runs-submit-37): `all 0`
+            // and `all 1` counted the profiles seen in the span, and read as
+            // zero or one profile. Narrowed, a filter names its picks;
+            // unnarrowed it is all.
+            'all'
   // ESCAPE AND A PRESS OUTSIDE CLOSE IT (QA G3-18, 2026-10-07): the checklist
   // stayed open through Escape and across a `+` zoom until its own button was
   // pressed again. Escape hands focus back to the button that opened it.
@@ -2388,6 +2419,16 @@ function OutcomeStrip({
   // from 22:00, so its numbers matched neither page.
   const aligned = strip.status === 'ok' ? alignedWords(strip.data) : null
   const own = strip.status === 'ok' ? decidedWindow(strip.data, since, until) : null
+  // THE WINDOW LEADS ITS FIGURES (visual QA pass 1, runs-submit-10): after
+  // them, '91 % success, 272 of 300 decided Oct 6 – Oct 19' read as the
+  // lanes' own above lanes drawn over the last 24 hours. Before them, the
+  // reader meets "Outcomes Oct 6 – Oct 19:" first.
+  const lead =
+    own === null ? null : (
+      <span className="tl-xp">
+        Outcomes <b className="tl-win">{own}</b>:{' '}
+      </span>
+    )
   return (
     <div className="tl-strip">
       {strip.status === 'loading' ? (
@@ -2400,13 +2441,13 @@ function OutcomeStrip({
         <p className="tl-strip1">
           {strip.data.totals.rate === null ? (
             <span className="tl-x">
+              {lead}
               <b className="tl-dash">—</b> success: no agent was decided in this span
-              {own !== null && <b className="tl-win">{own}</b>}
             </span>
           ) : (
             <span className="tl-x">
+              {lead}
               <b>{Math.round(strip.data.totals.rate.p * 100)} %</b> success, {strip.data.totals.rate.k} of {strip.data.totals.rate.n} decided
-              {own !== null && <b className="tl-win">{own}</b>}
             </span>
           )}
           {/* THE FINISHED TOTAL, SPLIT INTO PARTS THAT ADD UP TO IT (#123):
@@ -2432,33 +2473,49 @@ function OutcomeStrip({
               <b className="tl-n-cancelled">{strip.data.totals.cancelled.total}</b> cancelled
             </span>
           </span>
-          {lanesRead !== 'read' ? (
-            <>
+          {/* ONE CELL WHILE COUNTING, ONE WHEN SHORT (visual QA pass 1,
+              runs-submit-33 and chrome-C17): the fenced and parks cells each
+              printed a dash, 'reading the lanes' while the read was out and
+              'events not read on 332 lanes' twice once it settled, which read
+              as a failure on every lane. While any read is out the counts'
+              place says counting; a read that settled short says of how many
+              lanes, once, and how to read the rest. A fence count already
+              seen stands as its floor. */}
+          {lanesRead === 'failed' ? (
+            <span className="tl-x">
+              fenced and parks <b className="tl-dash">—</b> the lanes were not read
+            </span>
+          ) : lanesRead === 'reading' || (unread > 0 && eventsReading) ? (
+            fenced > 0 ? (
               <span className="tl-x" aria-busy={busy}>
-                fenced <b className="tl-dash">—</b> {lanesRead === 'reading' ? 'reading the lanes' : 'the lanes were not read'}
+                <b>{fenced}+</b> generations fenced, counting…
               </span>
+            ) : (
               <span className="tl-x" aria-busy={busy}>
-                parks <b className="tl-dash">—</b> {lanesRead === 'reading' ? 'reading the lanes' : 'the lanes were not read'}
+                fenced and parks <b className="tl-dash">—</b> counting…
+              </span>
+            )
+          ) : unread > 0 ? (
+            <>
+              {fenced > 0 && (
+                <span className="tl-x" aria-busy={busy}>
+                  <b>{fenced}+</b> generations fenced
+                </span>
+              )}
+              <span className="tl-x" aria-busy={busy}>
+                {fenced > 0 ? 'parks and further fences' : 'fenced and parks'} <b className="tl-dash">—</b> events not read on {unread} of {drawn.length}{' '}
+                {drawn.length === 1 ? 'lane' : 'lanes'} · open a lane to read its events
               </span>
             </>
-          ) : unread > 0 && fenced === 0 ? (
-            <span className="tl-x" aria-busy={busy}>
-              fenced <b className="tl-dash">—</b> events not read on {unread} {unread === 1 ? 'lane' : 'lanes'}
-            </span>
           ) : (
-            <span className="tl-x" aria-busy={busy}>
-              <b>{unread > 0 ? `${fenced}+` : fenced}</b> {fenced === 1 && unread === 0 ? 'generation' : 'generations'} fenced
-              {unread > 0 && `, events not read on ${unread} ${unread === 1 ? 'lane' : 'lanes'}`}
-            </span>
-          )}
-          {lanesRead !== 'read' ? null : unread > 0 ? (
-            <span className="tl-x" aria-busy={busy}>
-              parks <b className="tl-dash">—</b> events not read on {unread} {unread === 1 ? 'lane' : 'lanes'}
-            </span>
-          ) : (
-            <span className="tl-x" aria-busy={busy}>
-              <b>{parks}</b> {parks === 1 ? 'park' : 'parks'}, {still} still parked
-            </span>
+            <>
+              <span className="tl-x" aria-busy={busy}>
+                <b>{fenced}</b> {fenced === 1 ? 'generation' : 'generations'} fenced
+              </span>
+              <span className="tl-x" aria-busy={busy}>
+                <b>{parks}</b> {parks === 1 ? 'park' : 'parks'}, {still} still parked
+              </span>
+            </>
           )}
           {link}
         </p>
@@ -2493,12 +2550,15 @@ function LaneDetail({
   onClose,
   onOlder,
   onRead,
+  workflowName = null,
 }: {
   lane: Lane
   events: EventsRead | null
   onClose: () => void
   onOlder: () => void
   onRead: () => void
+  /** The lane's workflow by its label (`workflowLabel`), null when it has none or was not read. */
+  workflowName?: string | null
 }) {
   useEffect(() => {
     if (!lane.neverRan) onRead()
@@ -2522,10 +2582,16 @@ function LaneDetail({
             ×
           </button>
         </div>
-        <p className="tl-q">
-          {lane.taskId}
-          {t !== null && ` · ${t.runner_profile} · ${t.resource_class} · current generation ${t.current_generation}`}
-          {t?.workflow_id ? ` · ${t.workflow_id}` : ''}
+        {/* BY NAME, THE GENERATION ONCE (visual QA pass 1, runs-submit-38):
+            the line printed `task_fan_0` under its own name and the workflow
+            as `wf_5e5ad3b6f7da4299a839`. The ids are the line's title, for a
+            reader who needs them; a workflow with no label is said as one. */}
+        <p className="tl-q" title={t?.workflow_id ? `${lane.taskId} · ${t.workflow_id}` : lane.taskId}>
+          {t === null
+            ? 'agent not read'
+            : `${t.runner_profile} · ${t.resource_class} · generation ${t.current_generation}${
+                t.workflow_id ? ` · workflow ${workflowName ?? 'with no name'}` : ''
+              }`}
         </p>
         <dl className="tl-kv">
           <dt>Attempts</dt>
@@ -2597,7 +2663,7 @@ function LaneDetail({
         ) : (
           <ol className="tl-evl">
             {events.events.map((e) => (
-              <EventRow key={e.event_id} e={e} />
+              <EventRow key={e.event_id} e={e} current={t?.current_generation ?? null} />
             ))}
           </ol>
         )}
@@ -2631,7 +2697,13 @@ const EVENT_MARK: Record<string, { mark: MarkName | 'warn'; hue: string }> = {
   submitted: { mark: 'queued', hue: 'neu' },
 }
 
-function EventRow({ e }: { e: TaskEvent }) {
+/**
+ * One event: its time, its mark, and its kind IN WORDS (`eventWord`, as
+ * Agents' events say it; visual QA pass 1, runs-submit-38: the rows printed
+ * `checkpoint_completed`). Its generation only where it is not the one the
+ * panel's header names, so an older attempt's events still say whose they are.
+ */
+function EventRow({ e, current }: { e: TaskEvent; current: number | null }) {
   const kind = eventKind(e)
   const m = EVENT_MARK[kind] ?? { mark: 'queued' as const, hue: 'neu' }
   const t = Date.parse(e.at)
@@ -2647,11 +2719,11 @@ function EventRow({ e }: { e: TaskEvent }) {
         <MarkIcon mark={m.mark} />
       </span>
       <span className="tl-evk">
-        {kind}
+        {eventWord(e)}
         {fence}
         {reason}
       </span>
-      <span className="tl-evg">{e.generation === null ? 'gen —' : `gen ${e.generation}`}</span>
+      {e.generation !== null && e.generation !== current && <span className="tl-evg">{`gen ${e.generation}`}</span>}
     </li>
   )
 }

@@ -119,7 +119,8 @@ def test_the_headless_settings_register_the_stdin_hook_for_bash(tmp_path):
 
 def test_the_background_refusal_stays_registered_beside_it(tmp_path):
     entries = _settings(tmp_path)["hooks"]["PreToolUse"]
-    assert len(entries) == 2
+    # The background refusal, this rewrite and the guards-repeat warning (#2524).
+    assert len(entries) == 3
     assert any("refuse-background.py" in h["command"] for e in entries for h in e["hooks"])
 
 

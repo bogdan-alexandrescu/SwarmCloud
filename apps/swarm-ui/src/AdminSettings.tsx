@@ -1011,9 +1011,9 @@ const BACKED_OFF = 'lowered automatically (back-off)'
 
 /**
  * SET BY IN A READER'S WORDS (visual QA pass 1, admin-shell-13, part of
- * #2596). `setBy` (types.ts) names the adaptive case `AIMD back-off`, the
- * quota broker's algorithm, which Capacity › Pools and Provider quota read as
- * an operator's term; on Pool limits the eng row read it beside rows that
+ * #2596). `setBy` (types.ts) named the adaptive case `AIMD back-off`, the
+ * quota broker's algorithm (since QA1B-13 it reads `lowered automatically
+ * after errors` there); on Pool limits the eng row read it beside rows that
  * said `configured` and nothing said what it was. Here it is what happened to
  * the ceiling, and the cell's title (its help on hover) says why and what
  * undoes it: the broker raises the target again as calls succeed
@@ -1021,7 +1021,10 @@ const BACKED_OFF = 'lowered automatically (back-off)'
  */
 export function setByWords(pool: Pool): { term: string; detail: string } {
   const by = setBy(pool)
-  if (by.term !== 'AIMD back-off') return by
+  // `setBy`'s adaptive case: `lowered automatically after errors` since
+  // QA1B-13 (#2660), which Capacity › Pools prints; Pool limits says which
+  // errors and that the target climbs back.
+  if (by.term !== 'lowered automatically after errors') return by
   return {
     term: BACKED_OFF,
     detail: `Lowered automatically to ${pool.adaptive_target} after the provider rate-limited it (back-off); configured is ${pool.hard_limit}. It climbs back as calls succeed.`,
@@ -1323,7 +1326,8 @@ function PoolEditor({
           the history. From 1280px it floats over the right of the families
           (VQA V024): it took a grid column of its own, which narrowed every
           family to ~660px and reflowed every row -- `edit` wrapped under its
-          figure and `AIMD back-off` broke in two -- the moment it opened.
+          figure and `AIMD back-off` (Set by's term then) broke in two -- the
+          moment it opened.
           Below 1280px it is drawn under the row it edits (VQA V025): placed
           after all six families, tapping `edit` on a phone's first record
           jumped ~5,000px down to it. */}

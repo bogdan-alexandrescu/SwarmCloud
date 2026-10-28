@@ -222,7 +222,10 @@ describe('the pure half: sections, stacking, facts and cells', () => {
     expect(columnFacts(col(null, null), undefined, undefined).kind).toBe('not-started')
     expect(columnFacts(col(null, 't_gone'), undefined, undefined).kind).toBe('not-in-read')
     expect(columnFacts(col(stepTask('t', null, { state: 'RUNNING' })), undefined, undefined)).toEqual({ kind: 'unsummarised', done: false })
-    expect(columnFacts(col(stepTask('t', null)), undefined, undefined)).toEqual({ kind: 'unsummarised', done: true })
+    expect(columnFacts(col(stepTask('t', null, { started_at: '2026-10-28T09:00:00Z' })), undefined, undefined)).toEqual({ kind: 'unsummarised', done: true })
+    // ENDED BEFORE IT STARTED (QA1-FIX-29, overview-agents-77): no patch could exist.
+    // MUTATION: drop the never-started branch in `columnFacts` -- 'unsummarised', 'patch not measured'.
+    expect(columnFacts(col(stepTask('t', null)), undefined, undefined).kind).toBe('not-started')
     expect(columnFacts(col(stepTask('t', ZERO_GIT)), undefined, undefined).kind).toBe('zero')
     // A patch: nothing listed until the attempts say it is not withheld.
     expect(columnFacts(col(stepTask('t', IMPL_GIT)), undefined, undefined).kind).toBe('checking')
@@ -423,19 +426,42 @@ describe('an issue run’s Changes tab', () => {
   // no way to read again.
   it('says an unread workflow once, in the panel, with its reason and Try again (V211)', async () => {
     api.loadWorkflow.mockReset()
-    api.loadWorkflow.mockResolvedValue({ status: 'error', error: { kind: 'not_found', httpStatus: 404, code: 'not_found', message: 'This workflow does not exist' } })
+    api.loadWorkflow.mockResolvedValue({ status: 'error', error: { kind: 'server_error', httpStatus: 503, code: null, message: 'The workflow store is unavailable' } })
     const run = issueRun({ state: 'RUNNING', workflow_id: 'wf_one' })
     const { container } = render(<RunChangesTab run={run as never} at={{ step: null, file: null }} onAt={() => {}} />)
     await waitFor(() => expect(container.querySelector('.chg-state')).not.toBeNull())
     expect(container.querySelector('.chg-note'), 'the failure was stated a second time above the panel').toBeNull()
     expect(container.querySelectorAll('.chg-state')).toHaveLength(1)
     const state = container.querySelector<HTMLElement>('.chg-state')!
-    expect(state.textContent).toMatch(/The workflow wf_one could not be read: This workflow does not exist/)
+    expect(state.textContent).toMatch(/The workflow wf_one could not be read: The workflow store is unavailable/)
     const again = within(state).getByRole('button', { name: 'Try again' })
     const asked = api.loadWorkflow.mock.calls.length
     fireEvent.click(again)
     await waitFor(() => expect(api.loadWorkflow.mock.calls.length).toBeGreaterThan(asked))
     expect(api.loadWorkflow.mock.calls.at(-1)![0]).toBe('wf_one')
+  })
+
+  // runs-submit-05 (console visual QA pass 1, part of #2596): a 404 said the
+  // workflow does not exist and the panel still offered Try again, with an
+  // amber `not read` chip on a red card.
+  it('a workflow the API answers not found: no Try again, one neutral tone, and the ways out', async () => {
+    api.loadWorkflow.mockReset()
+    api.loadWorkflow.mockResolvedValue({ status: 'error', error: { kind: 'not_found', httpStatus: 404, code: 'not_found', message: 'This workflow does not exist, or it belongs to another tenant.' } })
+    const run = issueRun({ id: 'run_4c1e09d2', state: 'RUNNING', workflow_id: 'wf_one' })
+    const { container } = render(<RunChangesTab run={run as never} at={{ step: null, file: null }} onAt={() => {}} />)
+    await waitFor(() => expect(container.querySelector('.chg-state')).not.toBeNull())
+    const state = container.querySelector<HTMLElement>('.chg-state')!
+    // MUTATION: drop the `answered` branch and Try again is back.
+    expect(within(state).queryByRole('button', { name: 'Try again' })).toBeNull()
+    // MUTATION: keep mark="unread" here and the red card carries the amber chip again.
+    expect(state.classList.contains('is-failed')).toBe(false)
+    expect(state.querySelector('.ctl-mark.is-unread')).toBeNull()
+    expect(state.querySelector('.ctl-mark.is-absent')).not.toBeNull()
+    expect(state.textContent).toMatch(/workflow not found/)
+    expect(state.textContent).toMatch(/The workflow wf_one: This workflow does not exist/)
+    // MUTATION: offer no way out and these links are missing.
+    expect(within(state).getByRole('link', { name: 'Back to the run' }).getAttribute('href')).toBe(addressToPath('work/runs?run=run_4c1e09d2'))
+    expect(within(state).getByRole('link', { name: 'Workflows' }).getAttribute('href')).toBe(addressToPath('work/workflows'))
   })
 
   it('links a step row to the tab filtered to that step', () => {
@@ -508,9 +534,12 @@ describe("WG-9: the matrix's step headers wrap, so six step columns fit a 1440 f
     // the label, its file count and its link side by side -- and six of them
     // ran past the 1440 frame, clipping `synthesis` and scrolling sideways.
     expect(painted(th, 'white-space', WIDE)).toBe('normal')
-    // MUTATION: drop `overflow-wrap: anywhere` and one long mono step id
-    // (`implement-logs-tab`) still holds its column at its own width.
-    expect(painted(th.querySelector('.mono')!, 'overflow-wrap', WIDE)).toBe('anywhere')
+    // `break-word`, NOT `anywhere` (review of QA1-FIX-29): a long id such as
+    // `implement-logs-tab` still breaks at its hyphens, and inside itself only
+    // when nothing else fits, but a short one is never split to narrow its
+    // column ('synthe / sis'). MUTATION: drop the rule and an id that cannot
+    // fit overflows its column instead of breaking.
+    expect(painted(th.querySelector('.mono')!, 'overflow-wrap', WIDE)).toBe('break-word')
     // The File column's header keeps its one line.
     // MUTATION: (control) unset nowrap on every header and this is red.
     expect(painted(table().querySelector('thead th:not([data-step])')!, 'white-space', WIDE)).toBe('nowrap')

@@ -681,6 +681,10 @@ export function columnFacts(col: StepColumn, attempts: readonly AttemptRow[] | n
   if (quick !== null) return { kind: 'withheld', files: quick }
   const git = gitOf(task)
   const src = sourceOf(task, git)
+  // ENDED BEFORE IT STARTED (visual QA pass 1, overview-agents-77): a step
+  // cancelled while queued ran nothing, and its column offered 'Agent’s
+  // changes ›' and 'patch not measured' as if a patch could have existed.
+  if (src.kind === 'unsummarised' && TERMINAL_STATES.has(task.state) && task.started_at === null) return { kind: 'not-started' }
   if (src.kind === 'unsummarised') return { kind: 'unsummarised', done: TERMINAL_STATES.has(task.state) }
   if (src.kind === 'zero') return { kind: 'zero' }
   if (attempts === undefined) return { kind: 'checking' }
@@ -1078,6 +1082,12 @@ export function ChangesMatrix({
           ))}
         </div>
         <p className="chg-sum">
+          {/* NO LIST IN HAND, NO TOTAL (visual QA pass 1, overview-agents-76):
+              '0 files across 6 steps' beside 'file lists known for 0 of 6
+              steps' printed an unknown as 0. */}
+          {anyUnknown && known === 0 && all.length === 0 ? (
+            <span className="chg-known">File lists not collected for any step</span>
+          ) : (
           <span>
             {all.length}
             {/* '0', NOT '0+' (visual QA run 6, F5): '+' is a partial count
@@ -1086,10 +1096,11 @@ export function ChangesMatrix({
                 beside it says how much is missing. */}
             {anyUnknown && all.length > 0 ? '+' : ''} {all.length === 1 && !anyUnknown ? 'file' : 'files'} across {cols.length} {cols.length === 1 ? 'step' : 'steps'}
           </span>
+          )}
           {/* HOW INCOMPLETE THE `+` IS (run 5b, L6). '0+ files' is the kept
               notation (run-1 QA-118: '+' is a list still incomplete), and it
               read as zero: this says how many steps' lists are in hand. */}
-          {anyUnknown && (
+          {anyUnknown && !(known === 0 && all.length === 0) && (
             <span className="chg-known">
               file lists known for {known} of {cols.length} {cols.length === 1 ? 'step' : 'steps'}
             </span>
@@ -1145,7 +1156,7 @@ export function ChangesMatrix({
                         this tab's own name, for the step agent's Changes tab, and
                         a page filtered to one step repeated it once per column,
                         dimmed ones included. */}
-                    {c.taskId !== null && (
+                    {c.taskId !== null && facts[i]!.kind !== 'not-started' && (
                       <a className="ctl-link chg-mx-agent" href={agentChangesHref(c.taskId, c.task ?? undefined)} title={`${c.label}'s own Changes tab, on its agent`}>
                         Agent’s changes ›
                       </a>
@@ -1585,6 +1596,38 @@ export function RunChangesTab({ run, at, onAt }: { run: IssueRun; at?: ChangesAt
   // not read", with no reason and no way to read again. With nothing drawn,
   // the panel is the one statement: which workflow, the API's reason, and
   // Try again.
+  // A 404 OR A 403 IS AN ANSWER, NOT A FAILURE TO READ (visual QA pass 1,
+  // runs-submit-05, part of #2596): the API said the workflow does not
+  // exist, or is not this tenant's, and reading it again gets the same
+  // answer. Try again offered a press that could only fail the same way, and
+  // the amber `not read` chip sat on a red card. It is the `not measured`
+  // mark on its own neutral card, as FailedPanel answers a 404 (V007), with
+  // the ways out: back to the run, or the workflow list.
+  const answered = failed.length > 0 && failed.every((l) => l.kind === 'not_found' || l.kind === 'forbidden')
+  if (cols.length === 0 && answered) {
+    return (
+      <section className="chg-tab chg-run" aria-label="Changes in this run">
+        <State
+          mark="absent"
+          heading={failed.every((l) => l.kind === 'not_found') ? 'workflow not found' : 'workflow not yours to read'}
+          say="The API answered that the run's workflow is not there, or is not this tenant's. Reading it again gets the same answer, so its steps and what they changed cannot be shown. This is not a zero."
+          action={(
+            <>
+              <a href={addressToPath(`work/runs?${new URLSearchParams({ run: run.id }).toString()}`)}>Back to the run</a>
+              {' · '}
+              <a href={addressToPath('work/workflows')}>Workflows</a>
+            </>
+          )}
+        >
+          {failed.map((l, i) => (
+            <span key={l.wf}>
+              {i > 0 && ' '}{whose(l)} <span className="mono">{l.wf}</span>: {l.error}
+            </span>
+          ))}
+        </State>
+      </section>
+    )
+  }
   if (cols.length === 0 && failed.length > 0) {
     return (
       <section className="chg-tab chg-run" aria-label="Changes in this run">

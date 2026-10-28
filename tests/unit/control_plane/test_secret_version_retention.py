@@ -36,6 +36,11 @@ from .conftest import PROJECT
 
 SECRET = "swarm-tenant-u-bogdan-anthropic"
 
+#: The number Secret Manager puts in every resource name it RETURNS, whatever
+#: the request was addressed with. Made up, as is the one beside it.
+PROJECT_NUMBER = "209012342332"
+FOREIGN_NUMBER = "998877665544"
+
 
 def _version_name(secret: str, number: int, *, project: str = PROJECT) -> str:
     return f"projects/{project}/secrets/{secret}/versions/{number}"
@@ -61,13 +66,16 @@ class _Client:
         *,
         list_error: Exception | None = None,
         destroy_error: Exception | None = None,
+        number: str = PROJECT_NUMBER,
     ) -> None:
         self.secrets = {k: list(v) for k, v in (secrets or {}).items()}
         self.counters = {k: len(v) for k, v in self.secrets.items()}
         self.list_error = list_error
         self.destroy_error = destroy_error
+        self.number = number
         self.listed: list[str] = []
         self.destroyed: list[str] = []
+        self.got: list[str] = []
 
     # -- the calls the store makes -----------------------------------------
 
@@ -81,6 +89,13 @@ class _Client:
         created = _Version(_version_name(secret, self.counters[secret]))
         self.secrets[secret].append(created)
         return created
+
+    def get_secret(self, request):
+        """Addressed by project ID, answered by project NUMBER, as the API does."""
+        self.got.append(request["name"])
+        project, secret = request["name"].split("/")[1], request["name"].split("/secrets/")[1]
+        assert project == PROJECT, "the number is resolved from the store's own project"
+        return _Version(f"projects/{self.number}/secrets/{secret}", state="")
 
     def list_secret_versions(self, request):
         self.listed.append(request["parent"])
@@ -367,3 +382,150 @@ def test_the_next_publish_retries_a_destroy_that_failed():
         _version_name(SECRET, 1),
     ]
     assert client.enabled(SECRET) == [_version_name(SECRET, n) for n in (5, 6, 7)]
+
+
+# -- the project NUMBER in the names Secret Manager returns (#1819) --------
+#
+# Secret Manager answers a request addressed as `projects/<id>/...` with names
+# that read `projects/<number>/...`. The pass compared that number with the
+# ID, refused every listing as "a version listed under one secret names
+# another", and in the live deployment never destroyed a version: about 1,300
+# superseded credentials across the ten account secrets on 2026-10-21.
+
+
+def _numbered(count: int, *, secret: str = SECRET, number: str = PROJECT_NUMBER) -> list[_Version]:
+    return [_Version(_version_name(secret, n, project=number)) for n in range(1, count + 1)]
+
+
+def _numbered_client(count: int, **kwargs) -> _Client:
+    client = _Client({SECRET: _numbered(count)}, **kwargs)
+    # add_secret_version names what it creates with the number too.
+    original = client.add_secret_version
+
+    def add(request):
+        created = original(request)
+        created.name = created.name.replace(f"projects/{PROJECT}/", f"projects/{PROJECT_NUMBER}/")
+        return created
+
+    client.add_secret_version = add
+    return client
+
+
+def test_versions_named_by_project_number_are_expired_and_the_newest_three_survive():
+    """The live shape: every name carries the number, and retention still runs.
+
+    Before #1819 this destroyed nothing. Asserted from both sides: the three
+    oldest go, and exactly the newest RETAINED_VERSIONS stay ENABLED.
+    """
+    client = _numbered_client(5)
+    _store(client).add_version(SECRET, "token")
+
+    assert client.destroyed == [
+        _version_name(SECRET, n, project=PROJECT_NUMBER) for n in (3, 2, 1)
+    ]
+    assert client.enabled(SECRET) == [
+        _version_name(SECRET, n, project=PROJECT_NUMBER) for n in (4, 5, 6)
+    ]
+    assert len(client.enabled(SECRET)) == RETAINED_VERSIONS
+
+
+def test_a_large_backlog_keeps_exactly_the_newest_three():
+    """The first pass after the fix meets ~130 versions on one secret at once."""
+    client = _numbered_client(132)
+    _store(client).add_version(SECRET, "token")
+
+    survivors = [_version_name(SECRET, n, project=PROJECT_NUMBER) for n in (131, 132, 133)]
+    assert client.enabled(SECRET) == survivors
+    assert not set(survivors) & set(client.destroyed)
+    assert len(client.destroyed) == 130
+
+
+def test_the_project_number_is_resolved_from_the_api_once():
+    """From the API's answer to a request addressed by the store's own ID.
+
+    Never from the version names: a number is accepted only because Secret
+    Manager said it is THIS project's, so a listing cannot vouch for itself.
+    """
+    client = _numbered_client(5)
+    store = _store(client)
+    store.add_version(SECRET, "token")
+    store.add_version(SECRET, "token")
+
+    assert client.got == [f"projects/{PROJECT}/secrets/{SECRET}"]
+
+
+def test_a_configured_project_number_needs_no_lookup():
+    client = _numbered_client(5)
+    SecretManagerStore(PROJECT, client=client, project_number=PROJECT_NUMBER).add_version(
+        SECRET, "token"
+    )
+
+    assert client.got == []
+    assert len(client.destroyed) == 3
+
+
+def test_a_version_naming_another_project_number_is_refused():
+    """A number is not a pass: it must be THIS project's number."""
+    client = _numbered_client(5)
+    client.secrets[SECRET][0] = _Version(_version_name(SECRET, 1, project=FOREIGN_NUMBER))
+
+    _store(client).add_version(SECRET, "token")
+
+    assert client.destroyed == []
+    assert len(client.enabled(SECRET)) == 6
+
+
+def test_a_lookup_answering_for_another_project_refuses_the_pass():
+    """If the API's own answer names a number the versions do not, nothing goes."""
+    client = _numbered_client(5, number=FOREIGN_NUMBER)
+
+    _store(client).add_version(SECRET, "token")
+
+    assert client.destroyed == []
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        f"projects/{PROJECT_NUMBER}/secrets/agents-staging-postgres",
+        f"projects/not-a-number/secrets/{SECRET}",
+        "",
+    ],
+)
+def test_a_lookup_that_does_not_name_this_secret_by_number_refuses_the_pass(answer):
+    client = _numbered_client(5)
+    client.get_secret = lambda request: _Version(answer, state="")
+
+    _store(client).add_version(SECRET, "token")
+
+    assert client.destroyed == []
+
+
+def test_a_failed_lookup_refuses_the_pass_without_failing_the_publish():
+    from google.api_core import exceptions as gexc
+
+    client = _numbered_client(5)
+
+    def denied(request):
+        raise gexc.PermissionDenied("secretmanager.secrets.get")
+
+    client.get_secret = denied
+    _store(client).add_version(SECRET, "token")  # must not raise
+
+    assert client.destroyed == []
+    assert len(client.enabled(SECRET)) == 6
+
+
+def test_the_pass_touches_only_the_secret_it_was_called_for():
+    """Another platform secret in the same project, past its own retention, is left alone."""
+    neighbour = "swarm-account-eng--devops-main-refresh"
+    client = _numbered_client(5)
+    client.secrets[neighbour] = _numbered(10, secret=neighbour)
+    client.counters[neighbour] = 10
+
+    _store(client).add_version(SECRET, "token")
+
+    assert client.listed == [f"projects/{PROJECT}/secrets/{SECRET}"]
+    assert all(f"/secrets/{SECRET}/versions/" in name for name in client.destroyed)
+    assert len(client.destroyed) == 3
+    assert len(client.enabled(neighbour)) == 10

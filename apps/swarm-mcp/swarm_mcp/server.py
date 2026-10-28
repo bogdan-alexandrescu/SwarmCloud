@@ -1328,7 +1328,11 @@ TOOLS: list[dict[str, Any]] = [
                                     "The step may end SUCCEEDED with no change "
                                     "(result_summary.no_change) instead of "
                                     "failing on an empty diff; dependants that "
-                                    "need its patch are SKIPPED."
+                                    "need its patch are SKIPPED. Under "
+                                    "direct-pr the API sets it itself for a "
+                                    "reader step (one a dependant depends on "
+                                    "and no step builds_on), so a review "
+                                    "feeding a fix need not."
                                 ),
                             },
                             "runtime": {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import {
   disableAccessOwner, disconnectGitHub, enableAccessOwner, githubAppName, loadAccess, loadAccessOwners,
   loadAccessRepositories, putAccessGrant, requestAccessInstall, revokeAccessGrant, typedRepoId,
@@ -9,7 +9,7 @@ import type { ApiError, Result } from './fetch'
 import { ConnectButton, Refusal } from './GitHubConnect'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import { UrCap, UrRadio, UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
-import type { CapCell } from './RepositoriesData'
+import { notServed, type CapCell } from './RepositoriesData'
 import { PageHead } from './Shell'
 import { usePhoneTables } from './capacityPoll'
 import type {
@@ -99,7 +99,7 @@ const GITHUB_TABS: readonly TabDef[] = [
 
 /**
  * WHERE A NEW REPOSITORY IS ADDED: Choose repositories, opened directly.
- * Config › Repositories' "Add new repository" links here. It rides on `view`
+ * Config › Repositories' "Choose more on GitHub" ("Choose on GitHub" while nothing is chosen) links here. It rides on `view`
  * because `view` is the one query key App's `keptKeys` keeps on GitHub
  * access; an `?add=1` would be cut off the address before the page read it.
  */
@@ -190,6 +190,23 @@ export function AskFirst({
       </Banner>
     </div>
   )
+}
+
+/**
+ * FOCUS GOES BACK TO THE OPENER (QA1-FIX-01 config-05). The button that opens
+ * an AskFirst is unmounted while it asks, so Esc or Keep left focus on <body>
+ * and threw a keyboard user to the top of the page. The box this ref is put on
+ * holds the opener; when the ask closes (Esc, Keep, or the action answered and
+ * the opener is drawn again), its first button takes focus.
+ */
+function useFocusBack(asking: boolean) {
+  const box = useRef<HTMLDivElement>(null)
+  const was = useRef(asking)
+  useEffect(() => {
+    if (was.current && !asking) box.current?.querySelector<HTMLButtonElement>('button')?.focus()
+    was.current = asking
+  }, [asking])
+  return box
 }
 
 /**
@@ -384,6 +401,7 @@ function Connection({ connection, quota, onChange }: { connection: GitHubConnect
   const [refused, setRefused] = useState<ApiError | null>(null)
   const [said, setSaid] = useState<string | null>(null)
   const now = useNow(AGE_TICK_MS)
+  const opener = useFocusBack(confirming)
 
   async function disconnect() {
     setBusy(true)
@@ -400,6 +418,12 @@ function Connection({ connection, quota, onChange }: { connection: GitHubConnect
   }
 
   const active = connection !== null && connection.state === 'active'
+  // An expiry already past is not "renewed automatically" (QA1-FIX-01
+  // config-01): the 15-minute sweep did not reach it, and forgeapp.py renews a
+  // token on its next use, so that is what the card says, in warn tone.
+  const expiresAt = connection?.access_expires_at ?? null
+  const expiresMs = expiresAt === null ? NaN : new Date(expiresAt).getTime()
+  const expired = Number.isFinite(expiresMs) && expiresMs <= now
   return (
     <Card className="ac-conn" title="GitHub" action={<Chip>acts as you</Chip>}>
       {said !== null && (
@@ -431,9 +455,16 @@ function Connection({ connection, quota, onChange }: { connection: GitHubConnect
           </p>
           <p className="ur-cmeta">
             <span>
-              Token {connection.access_expires_at !== null ? <b>{tokenExpiry(connection.access_expires_at, now)}</b> : <Dash why="No expiry recorded" />}
+              Token{' '}
+              {connection.access_expires_at === null ? (
+                <Dash why="No expiry recorded" />
+              ) : expired ? (
+                <ToneMark tone="warn">{tokenExpiry(connection.access_expires_at, now)}</ToneMark>
+              ) : (
+                <b>{tokenExpiry(connection.access_expires_at, now)}</b>
+              )}
             </span>
-            <span>renewed automatically</span>
+            <span>{expired ? 'the next use renews it' : 'renewed automatically'}</span>
             {connection.refreshed_at !== null && <span>last renewed {timeAgo(connection.refreshed_at)}</span>}
           </p>
           {!active && (
@@ -461,7 +492,7 @@ function Connection({ connection, quota, onChange }: { connection: GitHubConnect
               </p>
             </AskFirst>
           ) : (
-            <div className="ur-gh-acts">
+            <div className="ur-gh-acts" ref={opener}>
               <Button kind="danger" size="sm" onClick={() => setConfirming(true)}>
                 Disconnect GitHub
               </Button>
@@ -667,8 +698,10 @@ function Owners({
                       </p>
                     </AskFirst>
                   ) : (
-                    <Button size="sm" kind="ghost" onClick={() => setRemoving(key)}>
-                      Remove
+                    // Its scope in its words (QA1-FIX-01 config-06): plain "Remove"
+                    // did not say every grant under the owner goes with it.
+                    <Button size="sm" kind="danger" onClick={() => setRemoving(key)}>
+                      {granted === 0 ? 'Remove' : granted === 1 ? 'Remove its 1 grant' : `Remove all ${granted}`}
                     </Button>
                   )
                 ) : o.install_state === 'requested' ? (
@@ -690,25 +723,27 @@ function Owners({
                   >
                     Enable
                   </Button>
-                ) : isGitHubUrl(o.install_url) ? (
-                  <>
-                    <ButtonLink size="sm" kind="primary" href={o.install_url} target="_blank" rel="noreferrer">
-                      Install on {o.owner}
-                    </ButtonLink>
-                    {o.owner_type === 'Organization' && (
-                      <Button
-                        size="sm"
-                        busy={busy === o.owner}
-                        disabled={busy !== null && busy !== o.owner}
-                        title={`Not an owner of ${o.owner}? GitHub lets you ask its owners to install the App`}
-                        onClick={() => void request(o)}
-                      >
-                        Request install
-                      </Button>
-                    )}
-                  </>
-                ) : (
+                ) : !isGitHubUrl(o.install_url) ? (
                   <Dash why="The App's install page is not configured on this API" />
+                ) : o.owner_type === 'Organization' ? (
+                  // ONE ACTION PER OWNER STATE, the same as Where the App is
+                  // installed draws (QA1-FIX-01 config-04): an organisation is
+                  // asked for, and askToInstall opens the install page too, where
+                  // an owner of it installs instead.
+                  <Button
+                    size="sm"
+                    kind="primary"
+                    busy={busy === o.owner}
+                    disabled={busy !== null && busy !== o.owner}
+                    title={`Not an owner of ${o.owner}? GitHub lets you ask its owners to install the App`}
+                    onClick={() => void request(o)}
+                  >
+                    Request install
+                  </Button>
+                ) : (
+                  <ButtonLink size="sm" kind="primary" href={o.install_url} target="_blank" rel="noreferrer">
+                    Install on {o.owner}
+                  </ButtonLink>
                 )}
               </div>
               {o.install_state === 'requested' && typeof o.copy === 'string' && (
@@ -833,6 +868,22 @@ export function RepoChooser({ owner, chosen = [], onChange }: { owner: string; c
   const [asking, setAsking] = useState<{ repo: string; from: Choice; to: Choice } | null>(null)
   const [settling, setSettling] = useState(false)
   const read = useUrRead(() => onceMoreOnConflict(() => loadAccessRepositories(owner, page, query), setSettling), `${owner}|${page}|${query}|${nonce}`)
+  // AN UNSERVED LIST (QA1-FIX-01 config-03). Search over a list this API does
+  // not serve did nothing, and Chosen drew nothing though the owner's card
+  // counted its grants. So Search is disabled with its reason, and Chosen is
+  // drawn from the grants the page already holds, as an empty first page.
+  const unserved = read.state.status === 'error' && notServed(read.state.error)
+  // Its time is when the refusing read came back, held across renders: a
+  // fresh Date.now() on each one called the list "just read" forever.
+  const unservedAt = useMemo(() => Date.now(), [read.state])
+  const state: typeof read.state =
+    unserved && only === 'chosen'
+      ? {
+          status: 'ok',
+          fetchedAt: unservedAt,
+          data: { owner, repositories: [], page: 1, per_page: 100, max_pages: 1, next_page: null, capped: false, q: null, total_count: null, tenant_id: '' },
+        }
+      : read.state
 
   async function choose(r: AccessRepository, c: Choice) {
     setAsking(null)
@@ -865,9 +916,10 @@ export function RepoChooser({ owner, chosen = [], onChange }: { owner: string; c
             placeholder={`Search ${owner}`}
             value={typed}
             maxLength={100}
+            disabled={unserved}
             onChange={(e) => setTyped(e.target.value)}
           />
-          <Button size="sm" type="submit">
+          <Button size="sm" type="submit" disabled={unserved}>
             Search
           </Button>
         </form>
@@ -881,13 +933,16 @@ export function RepoChooser({ owner, chosen = [], onChange }: { owner: string; c
           ]}
         />
       </div>
+      {/* One line, never two: under All the "Not served yet" box below says
+          it, so this line is drawn under Chosen only, where no box is. */}
+      {unserved && only === 'chosen' && <p className="ur-hint">Search needs the repository list, which this API does not serve yet; Chosen lists your grants.</p>}
       {settling && read.state.status !== 'loading' && (
         <p className="ur-reading-why" role="status">
           {STILL_SETTING_UP}
         </p>
       )}
       <UrRegion
-        state={read.state}
+        state={state}
         route="GET /v1/access/orgs/{owner}/repositories"
         what={`${owner}'s repositories`}
         onRetry={read.reload}
@@ -1480,6 +1535,20 @@ function GitHubLead({ view, overview, open }: { view: 'mine' | 'choose'; overvie
       Choose repositories
     </Button>
   )
+  // config-08: a checklist step done on this page failed or went stale (the
+  // strip's step 1 says which, e.g. "Enable orgs failed"), so this page is not
+  // set up, whatever the grant count says.
+  const github = steps.find((s) => s.key === 'github') ?? null
+  if (github !== null && (github.state === 'failed' || github.state === 'stale')) {
+    return lead(
+      `Step ${steps.indexOf(github) + 1} of ${of} · needs you.`,
+      github.line,
+      `${as}, but Workspace setup's checklist says ${github.line}; its fix is on this page. Workspace setup names what to do.`,
+      <ButtonLink kind="primary" size="sm" href={addressToPath(WORKSPACE_SETUP_ADDRESS)}>
+        Open Workspace setup
+      </ButtonLink>,
+    )
+  }
   const repos = steps.find((s) => s.key === 'repositories') ?? null
   if (repos === null || repos.state !== 'done') {
     const word = repos === null || repos.state === 'unknown' ? '' : repos.state === 'in_progress' ? ' · in progress' : ' · next'
@@ -1633,7 +1702,9 @@ function Installs({ grants, open }: { grants: AccessGrant[]; open: Open }) {
               <thead>
                 <tr>
                   <th scope="col">Owner</th>
-                  <th scope="col">Install</th>
+                  {/* "Installed", not "Install" (QA1-FIX-01 config-07): stacked at
+                      390, the label sat above an Install button meaning the other thing. */}
+                  <th scope="col">Installed</th>
                   <th scope="col">Chosen</th>
                   <th scope="col">
                     <span className="ac-vh">Action</span>
@@ -1644,11 +1715,12 @@ function Installs({ grants, open }: { grants: AccessGrant[]; open: Open }) {
                 {d.owners.map((o) => {
                   const reaches = o.method === 'pat' || o.install_state === 'installed'
                   return (
-                    <tr key={o.owner.toLowerCase()} data-owner={o.owner}>
+                    <Fragment key={o.owner.toLowerCase()}>
+                    <tr data-owner={o.owner}>
                       <th scope="row" data-label="Owner">
                         <b>{o.owner}</b> <small className="ur-mu ac-installs-k">{ownerKind(o)}</small>
                       </th>
-                      <td data-label="Install">
+                      <td data-label="Installed">
                         {o.method === 'pat' ? (
                           'via token'
                         ) : o.install_state === 'installed' ? (
@@ -1694,11 +1766,19 @@ function Installs({ grants, open }: { grants: AccessGrant[]; open: Open }) {
                             Install
                           </ButtonLink>
                         )}
-                        {refused !== null && refused.owner === o.owner && (
-                          <AccessRefusal error={refused.error} title={`${o.owner} was not changed`} onRetry={owners.reload} />
-                        )}
                       </td>
                     </tr>
+                    {/* A refusal is a full-width row under its owner (QA1-FIX-01
+                        config-02): inside the Action cell it squeezed the Owner
+                        column to a word per line. */}
+                    {refused !== null && refused.owner === o.owner && (
+                      <tr className="ac-installs-err" data-refused={o.owner}>
+                        <td colSpan={4}>
+                          <AccessRefusal error={refused.error} title={`${o.owner} was not changed`} onRetry={owners.reload} />
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   )
                 })}
               </tbody>

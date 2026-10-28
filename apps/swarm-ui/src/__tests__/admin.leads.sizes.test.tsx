@@ -6,7 +6,8 @@
 //
 // WHAT EACH CASE HOLDS:
 //   * a class a platform-wide pool admits none of (its units above the pool's
-//     ceiling, the row Pools marks `too small`) leads, named with the pool,
+//     ceiling, the row Pools marks `too small`) leads, named with the pool
+//     in words (`the large class’s pool`), never its key,
 //     and its one button takes the reader to that class's fields;
 //   * a stored version that could not be read leads, in the words the
 //     banner used to say, and the banner is not drawn a second time;
@@ -113,9 +114,23 @@ describe('Runner sizes leads with the size that needs an admin (S10c)', () => {
   it('names a class its pool admits none of, with the pool', async () => {
     const { lead } = await mount(() => ({ status: 200, body: doc() }), () => ({ status: 200, body: preview(TOO_SMALL) }))
     expect(lead.dataset.lead).toBe('warn')
-    expect(text(lead)).toContain('Pool resource:large admits no large agent')
-    expect(text(lead)).toContain('large takes 6 units and resource:large’s ceiling is 4')
+    // The pool is named as Pool limits names it, never by its key
+    // (QA1-FIX-23, admin-shell-04: the lead read `Pool resource:large`).
+    // MUTATION: print `small.pool` in the title or the body again.
+    expect(text(lead)).toContain('The large class’s pool admits no large agent')
+    expect(text(lead)).toContain('A large agent takes 6 units and the pool’s ceiling is 4.')
+    expect(text(lead)).not.toContain('resource:')
     expect(within(lead).getAllByRole('button')).toHaveLength(1)
+  })
+
+  it('names a pool that is not a class’s own in words too', async () => {
+    const GLOBAL_TOO_SMALL = [
+      { pool: 'global', hard_limit: 4, admits_before: { standard: 4, browser: 2, large: 0 }, admits_after: { standard: 4, browser: 2, large: 0 } },
+    ]
+    const { lead } = await mount(() => ({ status: 200, body: doc() }), () => ({ status: 200, body: preview(GLOBAL_TOO_SMALL) }))
+    // MUTATION: call every pool "the <x> class’s pool", `global` included.
+    expect(text(lead)).toContain('The platform-wide pool admits no large agent')
+    expect(text(lead)).toContain('A large agent takes 6 units and the pool’s ceiling is 4.')
   })
 
   it('takes the reader to that class’s fields from its one button', async () => {

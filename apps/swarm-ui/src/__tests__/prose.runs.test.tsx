@@ -433,10 +433,12 @@ describe('Agents, with every help card closed', () => {
     // beyond this page. Counts and grouping above describe only what is
     // loaded." were two sentences. Both are now one `.ctl-card-note`-shaped
     // qualifier carrying the two figures, with the full sentence in its
-    // accessible name.
+    // accessible name. The figure itself, `N loaded`, is the header's alone
+    // since visual QA pass 1 (overview-agents-13); the qualifier is drawn for
+    // what the header does not say: that rows exist beyond this page.
     const note = el.querySelector('.ag-scope')
     expect(note, 'the client-side scope qualifier is gone').not.toBeNull()
-    expect(note!.textContent).toMatch(/\d/)
+    expect(note!.textContent).toBe('more beyond')
     expect(note!.getAttribute('aria-label') ?? '').toMatch(/loaded/i)
   })
 

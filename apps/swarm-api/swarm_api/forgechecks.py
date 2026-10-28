@@ -32,7 +32,12 @@ are restated here and held to the same rules:
   * green is `success` or `skipped`, nothing else, `neutral` included;
   * no runs, or an event's latest run not completed, is pending; so is a
     check whose every latest run not green is `cancelled` (#1778): a run
-    someone stopped waits for its re-run, and red in another event wins.
+    someone stopped waits for its re-run, and red in another event wins;
+  * a check run that finished other than `success` inside an Actions run that concluded
+    `cancelled` is read as `cancelled` when a newer run of its workflow and
+    event is at the sha or another event passed the check
+    (`cancelled_by_its_workflow`, #2582). The Actions run's conclusion is
+    what `mark_workflow_runs` puts on each check run.
 
 WHERE THIS IS DELIBERATELY WIDER than the merge step:
 
@@ -68,6 +73,9 @@ REQUIRED_GREEN = frozenset({"success", "skipped"})
 #: A run someone stopped: pending, never red (#1778; `cancelled_run`,
 #: agent_worker.merge.CANCELLED_CONCLUSION).
 CANCELLED_CONCLUSION = "cancelled"
+#: The one conclusion a check run keeps inside a cancelled Actions run
+#: (`cancelled_by_its_workflow`, #2582; agent_worker.merge.PASSED_IN_ITS_RUN).
+PASSED_IN_ITS_RUN = "success"
 #: What any OTHER check run may conclude and still not hold the run
 #: (agent_worker.merge.OTHER_TOLERATED).
 OTHER_TOLERATED = frozenset({"success", "skipped", "neutral"})
@@ -144,7 +152,73 @@ def latest_per_event(runs: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any
     latest: dict[str | None, tuple[int, Mapping[str, Any]]] = {}
     for rank, (_position, run) in enumerate(ordered):
         latest[_event_group(run)] = (rank, run)
-    return [run for _rank, run in sorted(latest.values(), key=lambda item: item[0])]
+    deciding = [run for _rank, run in sorted(latest.values(), key=lambda item: item[0])]
+    return [{**run, "conclusion": CANCELLED_CONCLUSION}
+            if cancelled_by_its_workflow(run, deciding) else run for run in deciding]
+
+
+def cancelled_by_its_workflow(run: Mapping[str, Any], deciding: Sequence[Mapping[str, Any]]) -> bool:
+    """Whether a check run that finished red is read as `cancelled` because
+    its Actions run was (#2582, BGD 2026-10-28).
+
+    `ci-gate` and security.yml's folded name-keepers run under `if:
+    always()`, so in a workflow run concurrency cancelled they conclude
+    `failure` over needs that were only cancelled (PR #2565 at 968d9949). A
+    check run finished with any conclusion but `success` (`PASSED_IN_ITS_RUN`;
+    `skipped` too, which a gate under `!cancelled()` may say there), whose
+    Actions run concluded `cancelled` (`workflow_conclusion`), is read as
+    cancelled -- pending, never green -- when a newer run of the same
+    workflow and event is at the sha (`workflow_superseded`) or another
+    event's deciding run passed the check. A red check in a run nobody
+    cancelled stays red, as does one in a cancelled run with neither. The
+    worker's `merge.cancelled_by_its_workflow` is the same rule, held equal by
+    tests/unit/control_plane/test_forgechecks_cancelled_workflow_run.py.
+    """
+    if run.get("workflow_conclusion") != CANCELLED_CONCLUSION or not check_run_finished(run):
+        return False
+    if (run.get("conclusion") or "") in (PASSED_IN_ITS_RUN, CANCELLED_CONCLUSION):
+        return False
+    if run.get("workflow_superseded") is True:
+        return True
+    return any(other is not run and check_run_finished(other)
+               and (other.get("conclusion") or "") in REQUIRED_GREEN for other in deciding)
+
+
+def _int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def mark_workflow_runs(runs: Sequence[Mapping[str, Any]],
+                       workflow_runs: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Copies of `runs` (check runs), each whose check suite an Actions run
+    in `workflow_runs` (`GET actions/runs?head_sha=`) made carrying that
+    run's `workflow_conclusion` and `workflow_superseded`: whether another
+    run at the sha has the same `workflow_id`, event and head branch and a
+    larger id -- the run a concurrency group cancelled this one for, which
+    may not have created this check yet (#2582). The worker's
+    `merge.actions_suites` reads Actions runs the same way.
+    """
+    rows = [row for row in workflow_runs if isinstance(row, Mapping)]
+    marks: dict[int, tuple[Any, bool]] = {}
+    for row in rows:
+        suite, workflow, run_id = (_int(row.get("check_suite_id")), _int(row.get("workflow_id")),
+                                   _int(row.get("id")))
+        if suite is None:
+            continue
+        superseded = workflow is not None and run_id is not None and any(
+            _int(other.get("workflow_id")) == workflow
+            and other.get("event") == row.get("event")
+            and other.get("head_branch") == row.get("head_branch")
+            and (_int(other.get("id")) or 0) > run_id
+            for other in rows)
+        marks[suite] = (row.get("conclusion"), superseded)
+    out: list[dict[str, Any]] = []
+    for run in runs:
+        suite = run.get("check_suite")
+        mark = marks.get(_int(suite.get("id"))) if isinstance(suite, Mapping) else None
+        out.append(dict(run) if mark is None else
+                   {**run, "workflow_conclusion": mark[0], "workflow_superseded": mark[1]})
+    return out
 
 
 def check_run_finished(run: Mapping[str, Any]) -> bool:

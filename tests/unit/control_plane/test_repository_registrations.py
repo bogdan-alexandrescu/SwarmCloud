@@ -88,7 +88,7 @@ def test_registration_reads_the_forge_once_and_stores_the_record(make, db):
     index = record["index"]
     assert index["interval_hours"] == 24
     assert index["on_change"] == "poll"
-    assert index["min_change_interval_minutes"] == 30
+    assert index["min_change_interval_minutes"] == 120  # #2524: was 30
     assert index["full_every_days"] == 7
     assert index["paused"] is False
     assert index["current_sha"] is None and index["in_flight_task_id"] is None

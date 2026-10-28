@@ -22,8 +22,9 @@
  *
  * A waiting item holds no capacity (invariant 1): nothing here is running.
  */
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { loadApprovals } from './api'
+import type { Result } from './fetch'
 import { Button, Dash } from './components'
 import { PersonName } from './PersonName'
 import { Absent as AbsentState } from './primitives'
@@ -79,7 +80,7 @@ const isWaiting = (i: InboxItem) => i.state === 'pending' || i.state === undefin
 /** A stored `approvers` value, short, for a row: the decision page says it in full. */
 function approversShort(a: unknown): string | null {
   if (a === undefined || a === null || a === '') return null
-  if (a === 'members') return 'any member of this tenant'
+  if (a === 'members') return 'any member of this workspace'
   if (a === 'owner_only') return 'the platform owner'
   if (a === 'second_member') return 'a second member'
   if (Array.isArray(a)) return a.map(String).join(', ')
@@ -91,7 +92,7 @@ function whoCell(item: InboxItem): ReactNode {
   if (item.kind === 'input') {
     return (
       <>
-        any member of this tenant<small>answered on its step</small>
+        any member of this workspace<small>answered on its step</small>
       </>
     )
   }
@@ -196,21 +197,29 @@ function Lead({ waiting, kind, go }: { waiting: InboxItem[]; kind: string | null
 
 /**
  * The kind filter: every kind, or one (`?kind=`, the route's own filter). A
- * chip carries its count where the read measured it -- every chip on the
- * whole inbox, only the chosen one on a filtered read, which serves no other
- * kind's items -- and no figure where it did not.
+ * chip carries its count where a read measured it: every chip on the whole
+ * inbox, which a filtered page reads beside its own (`every`), so choosing a
+ * kind does not strip the other chips of their numbers (visual QA
+ * automate-05, 2026-10-28). Only the chosen chip has no figure when that
+ * second read failed.
+ *
+ * A KIND WITH NOTHING WAITING HAS NO CHIP (automate-22): eight chips, five at
+ * 0, took two rows above the list on a phone. The chosen kind keeps its chip
+ * at 0, so the filter in force is always shown; a kind whose count was not
+ * read keeps its chip, since nobody measured it empty.
  */
-function KindFilter({ kind, items, go }: { kind: string | null; items: InboxItem[]; go: (to: string) => void }) {
+function KindFilter({ kind, items, every, go }: { kind: string | null; items: InboxItem[]; every: InboxItem[] | null; go: (to: string) => void }) {
   const kinds: [string | null, string][] = [[null, 'Every kind'], ...Object.entries(APPROVAL_KIND)]
-  const waiting = items.filter(isWaiting)
+  const waiting = (kind === null ? items : (every ?? [])).filter(isWaiting)
   const count = (k: string | null): number | null => {
-    if (kind === null) return k === null ? waiting.length : waiting.filter((i) => i.kind === k).length
-    return k === kind ? waiting.length : null
+    if (kind === null || every !== null) return k === null ? waiting.length : waiting.filter((i) => i.kind === k).length
+    return k === kind ? items.filter(isWaiting).length : null
   }
   return (
     <div className="apl-kinds" role="group" aria-label="Kind">
       {kinds.map(([k, word]) => {
         const n = count(k)
+        if (n === 0 && k !== null && k !== kind) return null
         return (
           <Button key={k ?? 'all'} size="sm" kind={k === kind ? 'primary' : 'secondary'} aria-pressed={k === kind} onClick={() => go(approvalsAddress(k))}>
             {word}
@@ -228,7 +237,7 @@ function KindFilter({ kind, items, go }: { kind: string | null; items: InboxItem
  * nothing served in it is not drawn at all, rather than drawn as an empty
  * table that reads as "nothing was decided".
  */
-function ApprovalsList({ items, kind, go }: { items: InboxItem[]; kind: string | null; go: (to: string) => void }) {
+function ApprovalsList({ items, every, kind, go }: { items: InboxItem[]; every: InboxItem[] | null; kind: string | null; go: (to: string) => void }) {
   const now = useNow()
   const waiting = items.filter(isWaiting)
   const decided = items.filter((i) => i.state === 'approved' || i.state === 'rejected')
@@ -237,9 +246,9 @@ function ApprovalsList({ items, kind, go }: { items: InboxItem[]; kind: string |
   return (
     <>
       {waiting.length > 0 && <Lead waiting={waiting} kind={kind} go={go} />}
-      <KindFilter kind={kind} items={items} go={go} />
+      <KindFilter kind={kind} items={items} every={every} go={go} />
       {waiting.length === 0 ? (
-        <EmptyInbox kind={kind} />
+        <EmptyInbox kind={kind} elsewhere={every === null ? null : every.filter(isWaiting).length} go={go} />
       ) : (
         <Card title={`Waiting · ${waiting.length}`} note="oldest first" testId="apl-waiting">
           <Table
@@ -318,17 +327,33 @@ function ApprovalsList({ items, kind, go }: { items: InboxItem[]; kind: string |
   )
 }
 
-/** A measured empty inbox (A6d): said, never an empty table. */
-function EmptyInbox({ kind }: { kind: string | null }) {
+/**
+ * A measured empty inbox (A6d): said, never an empty table. An empty kind
+ * says how many wait under the other kinds, from the whole inbox's read
+ * (`elsewhere`), and links to Every kind (automate-05): "Nothing waiting"
+ * alone, beside a spine badge of 3, read as an empty inbox.
+ */
+function EmptyInbox({ kind, elsewhere, go }: { kind: string | null; elsewhere: number | null; go: (to: string) => void }) {
   return (
     <AbsentState
       kind="zero"
       heading="Nothing waiting"
       say={kind === null ? 'The inbox was read and nothing is waiting' : `The inbox was read and no ${APPROVAL_KIND[kind] ?? kind} item is waiting`}
     >
-      {kind === null
-        ? `No ${EVERY_KIND} in this tenant is waiting for a person: the inbox was read and is empty.`
-        : `Nothing of this kind is waiting for a person. Choose Every kind to read the whole inbox.`}
+      {kind === null ? (
+        `No ${EVERY_KIND} in this workspace is waiting for a person: the inbox was read and is empty.`
+      ) : elsewhere !== null && elsewhere > 0 ? (
+        <span data-testid="apl-elsewhere">
+          Nothing of this kind is waiting for a person. {pluralise(elsewhere, 'item')} {elsewhere === 1 ? 'waits' : 'wait'} under other kinds.{' '}
+          <InApp go={go} to={approvalsAddress(null)}>
+            Read every kind ›
+          </InApp>
+        </span>
+      ) : elsewhere === 0 ? (
+        'Nothing of any kind is waiting for a person: the whole inbox was read and is empty.'
+      ) : (
+        'Nothing of this kind is waiting for a person. Choose Every kind to read the whole inbox.'
+      )}
     </AbsentState>
   )
 }
@@ -372,7 +397,7 @@ function InputItemDetail({ item, go }: { item: InboxItem; go: (to: string) => vo
           </div>
           <div>
             <dt>Who may answer</dt>
-            <dd>any member of this tenant, checked when the answer arrives</dd>
+            <dd>any member of this workspace, checked when the answer arrives</dd>
           </div>
           {form !== null && (
             <div>
@@ -437,11 +462,29 @@ function InputScreen({ itemId, kind, round, go }: { itemId: string; kind: string
   )
 }
 
+/** The list's read: the inbox as filtered, and on a filtered page the whole inbox beside it, or null when unread. */
+type ListRead = { approvals: InboxItem[]; every: InboxItem[] | null }
+
+async function readList(kind: string | null): Promise<Result<ListRead>> {
+  const [r, all] = await Promise.all([loadApprovals(kind === null ? {} : { kind }), kind === null ? null : loadApprovals()])
+  const every = all === null ? null : all.status === 'ok' ? (all.data.approvals as InboxItem[]) : all.status === 'empty' ? [] : null
+  if (r.status === 'empty') return { status: 'ok', data: { approvals: [], every }, fetchedAt: r.fetchedAt }
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: { approvals: r.data.approvals as InboxItem[], every } }
+  return r
+}
+
 export function ApprovalsScreen({ view, go }: { view: string | null; go: (to: string) => void }) {
   const selected = approvalOf(view)
   const kind = kindOf(view)
   const [round, setRound] = useState(0)
   const [said, setSaid] = useState<string | null>(null)
+  // WHAT A DECISION SAID TAKES FOCUS (QA1 automate-15): Reject's button is
+  // disabled while busy and gone once the item is read again, so focus fell
+  // to <body> and a keyboard reader started again from the top of the page.
+  const saidLine = useRef<HTMLParagraphElement | null>(null)
+  useEffect(() => {
+    if (said !== null) saidLine.current?.focus()
+  }, [said])
   const decided = (word: string) => {
     setSaid(`${word}. The inbox was read again.`)
     go(approvalsAddress(kind))
@@ -450,7 +493,7 @@ export function ApprovalsScreen({ view, go }: { view: string | null; go: (to: st
   return (
     <>
       {said !== null && (
-        <p className="sb-note" role="status">
+        <p ref={saidLine} tabIndex={-1} className="sb-note" role="status">
           {said}
         </p>
       )}
@@ -463,13 +506,13 @@ export function ApprovalsScreen({ view, go }: { view: string | null; go: (to: st
           key={`approvals:${kind ?? ''}:${round}`}
           title="Approvals"
           // An empty inbox is drawn by the body (A6d), under the kind filter,
-          // so the filter does not vanish on a kind with nothing waiting.
-          load={async () => {
-            const r = await loadApprovals(kind === null ? {} : { kind })
-            return r.status === 'empty' ? { status: 'ok' as const, data: { approvals: [] }, fetchedAt: r.fetchedAt } : r
-          }}
+          // so the filter does not vanish on a kind with nothing waiting. A
+          // filtered page also reads the whole inbox, for the other chips'
+          // counts and what waits elsewhere (automate-05); that read failing
+          // costs only those figures, never the page.
+          load={() => readList(kind)}
         >
-          {(d) => <ApprovalsList items={d.approvals as InboxItem[]} kind={kind} go={go} />}
+          {(d) => <ApprovalsList items={d.approvals} every={d.every} kind={kind} go={go} />}
         </Screen>
       )}
     </>

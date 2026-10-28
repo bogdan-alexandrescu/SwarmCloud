@@ -116,7 +116,12 @@ describe('R15: your recent submissions', () => {
     expect(link.getAttribute('href')).toBe('/runs/run_mine')
     link.click()
     expect(go).toHaveBeenCalledWith('work/runs?run=run_mine')
-    expect(visible(recent.querySelector('.sb-recent-scope'))).toBe('Among your newest 4 agents, the tenant’s newest 2 workflows, its newest 2 issue runs.')
+    // QA1 runs-submit-26: each row carries its state beside its age; a row
+    // that carried none (these workflows) says its age alone. MUTATION: draw
+    // `timeAgo(it.at)` alone again and the first two lose their state.
+    expect([...recent.querySelectorAll('.sb-recent-at')].map((el) => visible(el).replace(/ · .*$/, ' ·'))).toEqual(['done ·', 'succeeded ·', expect.not.stringContaining('·')])
+    // QA1 runs-submit-26: what is listed is counted before the windows it was found in.
+    expect(visible(recent.querySelector('.sb-recent-scope'))).toBe('Listed: 1 agent, 1 workflow, 1 issue run, newest first. Found among your newest 4 agents, the tenant’s newest 2 workflows, its newest 2 issue runs.')
   })
 
   it('lists nothing, and says why, when who you are was not read', async () => {

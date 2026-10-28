@@ -33,6 +33,7 @@ import { AgentCap, SheetAccount, SheetDuplicate, SheetForecast, SheetHealth, She
 import { AccountsTimeline, ViewToggle } from './AccountsTimeline'
 import { VIEW_KEY, viewOf, type AccountsView } from './accountsLanes'
 import { safeStorage } from './panes'
+import { trapTab } from './focus'
 import {
   FIVE_HOUR,
   SEVEN_DAY,
@@ -729,18 +730,24 @@ function Pool({
   }, [opened])
   // ESCAPE CLOSES THE SHEET, unless a dialog on it is open: Remove's typed
   // confirmation and lending's are `Dialog`s, and Escape is theirs first.
+  // TAB STAYS IN THE DESKTOP SHEET (visual QA pass 1 capacity-07): it dims the
+  // page like a modal, and after its last control Tab walked to the Reads dock
+  // and the rail behind the scrim. It wraps at the sheet's ends now
+  // (focus.ts `trapTab`), as People's drawer does. A phone's sheet is the
+  // screen under the app bar, not a layer over a page, so it traps nothing.
   const closeRef = useRef<() => void>(() => {})
   const sheetOpen = shown !== null && (shown.explicit || addOpen(ui))
   useEffect(() => {
     if (!sheetOpen || typeof document === 'undefined') return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || e.defaultPrevented) return
+      if (e.defaultPrevented) return
       if (document.querySelector('.c-dlg') !== null) return
-      closeRef.current()
+      if (e.key === 'Escape') closeRef.current()
+      else if (!phone) trapTab(e, paneRef.current)
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [sheetOpen])
+  }, [sheetOpen, phone])
 
   // THE TIMELINE (#2222, proposal B): every account on one axis. Pressing a
   // lane opens THE SAME SIDE SHEET a Table row opens -- the whole screen on a
@@ -861,16 +868,23 @@ function Pool({
   const sheet = sheetOpen ? (
       <>
         <div className="acct-scrim" aria-hidden="true" onClick={() => closeRef.current()} />
+        {/* A DIALOG ON A DESKTOP (capacity-07): it is drawn over a scrim, so a
+            screen reader is told the page behind is not the place to be. */}
         <aside
           className="acct-pane acct-sheet"
           ref={paneRef}
+          role={phone ? undefined : 'dialog'}
+          aria-modal={phone ? undefined : true}
           aria-label={shown.explicit ? `Account ${accountName(a)}` : 'Add an account'}
         >
           <div className="acct-sheet-head">
             <button type="button" className="acct-back" onClick={() => closeRef.current()}>
               <span aria-hidden="true">‹</span> Accounts
             </button>
-            <span className="acct-sheet-crumb">{shown.explicit ? 'Accounts ›' : 'Accounts › Add an account'}</span>
+            {/* The crumb names where it is (capacity-22: it read `Accounts ›` and nothing). */}
+            <span className="acct-sheet-crumb">
+              {shown.explicit ? `Accounts › ${accountName(a)}` : 'Accounts › Add an account'}
+            </span>
             {closable && (
               <Button
                 iconOnly
@@ -1118,7 +1132,7 @@ function PoolFindings({
     <ul className="ctl-facts">
       {unreadableDocumentCount > 0 && (
         <li className="ctl-fact">
-          <b>unread docs</b>
+          <b>unreadable account records</b>
           <span className="acct-flags">
             <span
               className="ctl-mark is-partial"

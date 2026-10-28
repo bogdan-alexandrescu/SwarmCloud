@@ -444,7 +444,11 @@ describe('G2-14: the Progress total never wraps', () => {
 })
 
 describe('G2-20: a wrapped line of the header never starts with a middot', () => {
-  it('puts each separator after its fact, never before one', async () => {
+  // QA1-FIX-32 (overview-agents-27): the `::after` this pinned ended every
+  // wrapped line on a dot. The dot opens each fact but the first, hung in the
+  // gap before it, and the list clips it where a fact opens a line, so a line
+  // neither starts nor ends with one (qa1fix32.head.test.tsx).
+  it('puts each separator in the gap before its fact, clipped at a line’s start', async () => {
     const t = running({
       account: { status: 'assigned', account_id: 'eng:team', provider: 'anthropic', attempt_id: 'att_1', generation: 1, swapped_from: null, swaps: [] },
     } as Partial<Task>)
@@ -453,11 +457,13 @@ describe('G2-20: a wrapped line of the header never starts with a middot', () =>
     expect(facts.length).toBeGreaterThanOrEqual(3)
     const env: CascadeEnv = PHONE
     facts.forEach((li, i) => {
-      expect(painted(li, 'content', env, 'before') ?? 'none', `fact ${i} opens with a separator`).toBe('none')
-      const after = painted(li, 'content', env, 'after')
-      if (i < facts.length - 1) expect(after, `fact ${i} has no separator after it`).toBe('"·"')
-      else expect(after ?? 'none', 'the last fact trails a separator').toBe('none')
+      expect(painted(li, 'content', env, 'after') ?? 'none', `fact ${i} trails a separator`).toBe('none')
+      const before = painted(li, 'content', env, 'before') ?? 'none'
+      if (i > 0) expect(before, `fact ${i} has no separator before it`).toBe('"·"')
+      else expect(before, 'the first fact opens with a separator').toBe('none')
     })
+    // MUTATION: drop the list's clip and a wrapped fact's dot opens its line again.
+    expect(painted(document.querySelector('.ag-head-facts')!, 'overflow-x', env)).toBe('clip')
     // The `?` is held to the last dispatch chip, so it never sits alone.
     const last = document.querySelector('.ag-head-dispatch .ag-head-dlast')!
     expect(last.querySelector('.ag-head-dchip')).not.toBeNull()
