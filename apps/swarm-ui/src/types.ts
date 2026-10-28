@@ -4929,6 +4929,19 @@ export type TranscriptStepKind =
   | 'result'
   | 'rate_limit'
   | 'system'
+  /**
+   * A codex turn's token usage (CODEX-ROWS, part of #2459). `meta` carries
+   * `input_tokens`, `cached_input_tokens`, `output_tokens` and `turn` as
+   * numbers; a figure codex did not report is ABSENT, never 0. `text` is the
+   * same usage in words, for a reader that does not know the kind.
+   */
+  | 'usage'
+  /**
+   * A codex error (CODEX-ROWS): `text` is the message; `meta.subtype` is
+   * `turn_failed` or `error`; a reconnect carries `meta.retry_attempt` and
+   * `meta.retry_limit`.
+   */
+  | 'error'
   | 'other'
 
 /**
@@ -4960,7 +4973,7 @@ export interface TranscriptStep {
   raw: string | null
 }
 
-export type TranscriptFormat = 'claude-stream-json' | 'claude-json' | 'ndjson' | 'text'
+export type TranscriptFormat = 'claude-stream-json' | 'claude-json' | 'codex-exec-json' | 'ndjson' | 'text'
 
 /** The object a transcript read parsed: the same one `/logs?stream=agent_stdout` would choose. */
 export interface TranscriptStream {

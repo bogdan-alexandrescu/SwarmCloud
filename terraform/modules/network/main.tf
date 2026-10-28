@@ -115,8 +115,14 @@ resource "google_compute_router_nat" "this" {
 
   # Dynamic port allocation lets a busy worker burst past min_ports_per_vm
   # instead of silently failing to open new provider connections.
-  enable_dynamic_port_allocation      = true
-  max_ports_per_vm                    = 8192
+  enable_dynamic_port_allocation = true
+  max_ports_per_vm               = var.nat_max_ports_per_vm
+  # Endpoint-independent mapping stays off. Cloud NAT does not allow it with
+  # dynamic port allocation. It is also the only setting that produces
+  # ENDPOINT_INDEPENDENCE_CONFLICT drops, so with it off every drop swarm-nat
+  # logs is OUT_OF_RESOURCES: a VM ran out of ports before allocation
+  # doubled them. Nothing here needs a fixed mapping. Workers make outbound
+  # connections and serve none (#1334 c24).
   enable_endpoint_independent_mapping = false
 
   udp_idle_timeout_sec             = 30

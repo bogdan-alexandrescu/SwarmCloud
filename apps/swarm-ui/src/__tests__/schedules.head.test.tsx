@@ -1,34 +1,30 @@
-// ONE SCHEDULE'S HEAD IS DETAIL A'S (visual QA VQ-029, part of #2391;
-// schedules.html "4 · Schedule detail", variant A).
+// ONE SCHEDULE'S HEAD, NOW THE SIDE SHEET'S (visual QA VQ-029, part of
+// #2391; rewritten for frame A2, lane AUTO-A2-TESTS, part of #2417).
 //
 // WHAT EACH CASE HOLDS:
-//   * the state is a pill beside the title, with the risk chip, never a
-//     "State" label in a grid of facts;
-//   * one meta line says the type, the scope, the cadence and the owner;
-//   * four figures follow, in the mock-up's order -- Next run, Last run, Live
-//     runs, Spend today -- and Spend today carries its budget ("of $120.00");
-//     a figure the server did not serve is a dash with its reason, never 0;
-//   * the figures are four across on a desktop and two by two on a phone
-//     (390), so the History tab no longer starts 650px down;
-//   * on a phone every action but Run now folds into More, which opens them
-//     and then reads Less, aria-expanded following;
-//     a desktop draws them all and no More. Asked of `painted` (cssgate's
-//     cascade), because jsdom applies no `@media` block.
+//   * the state is the sheet's state word beside the title, with the type's
+//     risk tier, never a "State" label in a grid of facts;
+//   * what the old head's one meta line said -- the type, the scope, the
+//     cadence and the owner -- is each said once, in the sheet's sections;
+//   * what the old head's four figures said is in the section it belongs to:
+//     the next firing under Cadence, Spend today against its day budget under
+//     Spend, and the approvals waiting under the gate;
+//   * a figure the server did not serve is a dash with its reason, never 0.
+//
+// RETIRED with frame A2 (pr-comment.md): the four-across figure strip and its
+// phone grid, and the phone's More/Less fold of the head's actions: the sheet
+// draws neither.
 //
 // The bodies are `routes/schedules.py::schedule_to_api`'s shapes.
 // Placeholders only; nothing is token-shaped.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 import { Routed } from './screenroute'
-import type { CascadeEnv } from './cssgate'
-import { painted } from './marks'
 import { holdScheduleClock, minutesAgo } from './scheduleclock'
 
 const WAIT = { timeout: 4000 }
-const WIDE: CascadeEnv = { width: 1440 }
-const PHONE: CascadeEnv = { width: 390 }
 
 type Json = Record<string, unknown>
 
@@ -63,11 +59,18 @@ async function mount(s: Json) {
   const { SchedulesScreen } = await import('../Schedules')
   const utils = render(<Routed Screen={SchedulesScreen} section="automate/schedules" start="schedule=sch_a" spy={vi.fn()} />)
   await screen.findByRole('heading', { name: String(s.name), level: 1 }, WAIT)
+  await waitFor(() => expect(document.querySelector('aside.as-sheet [data-sec="gate"]')).not.toBeNull(), WAIT)
   return utils
 }
 
-const figs = () => [...document.querySelectorAll<HTMLElement>('[data-testid="sc-figs"] > [data-fig]')]
-const fig = (name: string) => figs().find((f) => f.dataset.fig === name)!.querySelector('dd')!
+const sheet = () => document.querySelector<HTMLElement>('aside.as-sheet')!
+const sec = (name: string) => sheet().querySelector<HTMLElement>(`[data-sec="${name}"]`)!
+/** A `dl.as-kv`'s value for a name, inside a section. */
+function kv(root: HTMLElement, name: string): string {
+  const dt = [...root.querySelectorAll('dt')].find((d) => visible(d) === name)
+  expect(dt, `no ${name}`).toBeTruthy()
+  return visible(dt!.nextElementSibling)
+}
 
 // One instant for the fixture and the page: "in 1h" is not a race (CLOCK-ONCE).
 beforeEach(() => holdScheduleClock())
@@ -79,92 +82,48 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe("a schedule's head (VQ-029)", () => {
-  it('draws the state pill and the risk chip, one meta line, and no grid of labelled facts', async () => {
-    await mount(schedule())
-    const pills = screen.getByTestId('sc-pills')
-    // MUTATION: the "State" fact back in a grid and there is no pill.
-    const pill = pills.querySelector<HTMLElement>('.c-pill')
-    expect(pill, 'the state is not a pill').not.toBeNull()
-    expect(visible(pill)).toBe('enabled')
-    expect(visible(pills)).toContain('R2 · merges need approval')
-    const meta = screen.getByTestId('sc-meta')
-    for (const part of ['issue-sweep', 'every registered repository', 'at 09:00, Monday through Friday', '0 9 * * 1-5', 'Europe/London', 'owner operator@example.com']) {
-      expect(visible(meta)).toContain(part)
-    }
+describe("a schedule's head, on the sheet (VQ-029)", () => {
+  it('says the state word and the risk tier beside the title, one meta line, and no grid of labelled facts', async () => {
+    await mount(schedule({ state_word: 'active' }))
+    const meta = screen.getByTestId('as-meta')
+    // MUTATION: the "State" fact back in a grid and there is no state word in the head.
+    expect(visible(meta.querySelector('.as-word'))).toBe('active')
+    expect(visible(meta)).toContain('issue-sweep · R2')
+    expect(sheet().querySelectorAll('[data-testid="as-meta"]')).toHaveLength(1)
+    // What the old meta line said, each said once in its section.
+    expect(kv(sec('what'), 'Target')).toBe('every registered repository')
+    expect(kv(sec('what'), 'Owner')).toContain('operator@example.com')
+    const cadence = visible(sec('cadence').querySelector('h3'))
+    for (const part of ['at 09:00, Monday through Friday', '0 9 * * 1-5', 'Europe/London']) expect(cadence).toContain(part)
     expect([...document.querySelectorAll('dt')].map((d) => d.textContent)).not.toContain('State')
     expect(document.querySelector('.sc-facts.sc-head')).toBeNull()
   })
 
-  it('draws detail A’s four figures, Spend today of its budget', async () => {
-    await mount(schedule())
-    // MUTATION: drop Last run, or the budget, and the head is the old one.
-    expect(figs().map((f) => visible(f.querySelector('dt')))).toEqual(['Next run', 'Last run', 'Live runs', 'Spend today'])
-    expect(visible(fig('Next run'))).toBe('in 1h')
-    expect(visible(fig('Last run').querySelector('.sc-fig-v'))).toBe('partial')
-    expect(visible(fig('Last run').querySelector('.sc-sub'))).toMatch(/ ago$/)
-    expect(visible(fig('Live runs').querySelector('.sc-fig-v'))).toBe('2 of 8')
-    expect(visible(fig('Live runs').querySelector('.sc-sub'))).toBe('1 waiting for approval')
-    expect(visible(fig('Spend today'))).toBe('$41.20 of $120.00')
+  it('says the next firing, Spend today of its budget and the approvals waiting, each in its section', async () => {
+    await mount(schedule({ state_word: 'active' }))
+    // MUTATION: drop the next firing when the preview is not read, and Cadence says nothing about when.
+    await waitFor(() => expect(visible(screen.getByTestId('as-next'))).toContain('in 1h'), WAIT)
+    // MUTATION: drop the budget and Spend today reads with nothing to measure it against.
+    expect(sec('spend').querySelector('[data-testid="sc-burn"]')).not.toBeNull()
+    expect(kv(sec('spend'), 'Day budget')).toBe('$120.00 a day. When it is spent, the next firing is skipped.')
+    // The old "Live runs 2 of 8": the live runs are the bar's reserved part, the ceiling beside it.
+    expect(visible(sec('spend').querySelector('.sc-burn-key'))).toContain('2 live runs reserved at $15.00 each: $30.00')
+    expect(kv(sec('spend'), 'Live runs')).toBe('at most 8 at once')
+    expect(kv(sec('gate'), 'Waiting')).toBe('1 approval waiting · Open Approvals')
   })
 
   it('says why a figure is missing, never 0', async () => {
-    await mount(schedule({ last_firing: null, budget_use: null, state: 'paused', next_run_at: null, pending_approvals: 0, budget: {} }))
-    expect(visible(fig('Next run'))).toBe('— none while paused')
-    expect(visible(fig('Last run'))).toBe('— never fired')
-    // MUTATION: `live_items ?? 0` and a schedule whose use was not served reads as idle.
-    expect(fig('Live runs').querySelector('.sc-fig-v')).toBeNull()
-    expect(visible(fig('Live runs').querySelector('.ctl-em'))).toBe('— not served with this schedule')
-    expect(visible(fig('Live runs').querySelector('.sc-sub'))).toBe('none waiting for approval')
-    expect(visible(fig('Spend today').querySelector('.sc-fig-v'))).toBe('$41.20')
-    expect(visible(fig('Spend today').querySelector('.sc-sub'))).toBe('no daily budget set')
-    expect(visible(screen.getByTestId('sc-pills').querySelector('.c-pill'))).toBe('paused')
-  })
-
-  it('sets the figures four across on a desktop and two by two on a phone, 12px under the meta line', async () => {
-    await mount(schedule())
-    const strip = screen.getByTestId('sc-figs')
-    // MUTATION: leave the strip on `.sc-facts` and a phone stacks the figures one per row.
-    expect(painted(strip, 'grid-template-columns', WIDE)).toBe('repeat(4, minmax(0, 1fr))')
-    expect(painted(strip, 'grid-template-columns', PHONE)).toBe('repeat(2, minmax(0, 1fr))')
-    expect(painted(strip, 'margin-top', WIDE)).toBe('12px')
-    expect(painted(strip, 'margin-top', PHONE)).toBe('12px')
-  })
-
-  it('folds every action but Run now into More on a phone, and draws them all on a desktop', async () => {
-    await mount(schedule())
-    const row = screen.getByTestId('sc-head-row')
-    // jsdom applies the base sheet, where a desktop has no More, so More has
-    // no accessible name there: it is found by its class and its words.
-    const more = row.querySelector<HTMLButtonElement>('button.sc-more')!
-    expect(visible(more)).toBe('More')
-    const fold = row.querySelector<HTMLElement>('.sc-fold')!
-    const edit = within(row).getByRole('button', { name: 'Edit' })
-    const run = within(row).getByRole('button', { name: 'Run now' })
-    expect(fold.contains(run)).toBe(false)
-    expect(within(fold).getAllByRole('button').map((b) => visible(b))).toEqual(['Dry run', 'Pause', 'Delete…'])
-    expect(more.getAttribute('aria-controls')?.split(' ')).toEqual([fold.id, edit.id])
-    // A desktop: everything in the row, no More.
-    expect(painted(more, 'display', WIDE)).toBe('none')
-    expect(painted(fold, 'display', WIDE)).toBe('contents')
-    expect(painted(edit, 'display', WIDE)).toBe('inline-flex')
-    // A phone: Run now and More; the rest folded.
-    // MUTATION: drop the 640px block and five 44px buttons wrap Edit to a row of its own.
-    expect(more.getAttribute('aria-expanded')).toBe('false')
-    expect(painted(more, 'display', PHONE)).toBe('inline-flex')
-    expect(painted(fold, 'display', PHONE)).toBe('none')
-    expect(painted(edit, 'display', PHONE)).toBe('none')
-    expect(painted(run, 'display', PHONE)).toBe('inline-flex')
-    fireEvent.click(more)
-    expect(more.getAttribute('aria-expanded')).toBe('true')
-    expect(painted(fold, 'display', PHONE)).toBe('contents')
-    expect(painted(edit, 'display', PHONE)).toBe('inline-flex')
-    // Open, it says what it does now (VQ-SCHEDULES re-review minor).
-    // MUTATION: a fixed "More" label and this fails.
-    expect(visible(more)).toBe('Less')
-    fireEvent.click(more)
-    expect(more.getAttribute('aria-expanded')).toBe('false')
-    expect(visible(more)).toBe('More')
-    expect(painted(fold, 'display', PHONE)).toBe('none')
+    await mount(schedule({ last_firing: null, budget_use: null, state: 'paused', state_word: 'paused', next_run_at: null, pending_approvals: 0, budget: {} }))
+    expect(visible(screen.getByTestId('as-next'))).toBe('— paused, so no next firing')
+    expect(visible(sec('firings'))).toContain('Never fired')
+    // MUTATION: `?? 0` on the budget and a schedule with none reads as a $0.00 budget.
+    const absent = visible(screen.getByTestId('sc-burn-absent'))
+    expect(absent).toContain('— no day bar')
+    expect(absent).toContain('$41.20')
+    expect(kv(sec('spend'), 'Day budget')).toBe('— not set')
+    expect(kv(sec('spend'), 'Live runs')).toBe('— not set')
+    expect(kv(sec('gate'), 'Waiting')).toBe('nothing waits on a person')
+    expect(visible(sheet())).not.toContain('$0.00')
+    expect(visible(screen.getByTestId('as-meta').querySelector('.as-word'))).toBe('paused')
   })
 })

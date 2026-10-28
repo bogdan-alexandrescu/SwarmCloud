@@ -510,6 +510,91 @@ function Choice<T extends string>({
   )
 }
 
+/**
+ * A SEGMENTED CONTROL, AS PROPOSAL B DRAWS SCOPE, RUN, PLAN, MERGE AND WHO MAY
+ * APPROVE (A3a cards 2 and 4; BGD picked it over dropdowns, 2026-10-28). One
+ * radio group named by its label, every value visible at once and the chosen
+ * one checked, in the shared `.c-seg` the Cadence presets and Start already
+ * draw. A value the API refuses carries its reason, under the group and as
+ * the button's description. Arrows move and choose within the group, as a
+ * radio group does; Tab enters on the checked value and leaves the group.
+ * The wrapper is not a `<label>`: a label around several buttons hands every
+ * click on its words to the first of them. `wide` spans every column of a
+ * `.sc-facts` grid, as Scope's row does in A3a card 2.
+ */
+function Segmented<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+  hint,
+  wide = false,
+}: {
+  label: string
+  value: T | undefined
+  options: readonly { value: T; label: string; disabled?: string }[]
+  onChange: (v: T) => void
+  hint?: ReactNode
+  wide?: boolean
+}) {
+  const id = useId()
+  const refs = useRef<(HTMLButtonElement | null)[]>([])
+  const live = options.map((o, i) => (o.disabled === undefined ? i : -1)).filter((i) => i >= 0)
+  const checked = options.findIndex((o) => o.value === value)
+  // The checked value takes the Tab stop; with none checked, the first live one.
+  const stop = checked >= 0 && options[checked]!.disabled === undefined ? checked : (live[0] ?? -1)
+  const refused = options.filter((o) => o.disabled !== undefined)
+  const move = (from: number, step: 1 | -1) => {
+    const next = live[(live.indexOf(from) + step + live.length) % live.length]
+    if (next === undefined) return
+    onChange(options[next]!.value)
+    refs.current[next]?.focus()
+  }
+  const hinted = hint !== undefined && hint !== ''
+  return (
+    <div className={wide ? 'c-field sc-wide' : 'c-field'}>
+      <span className="c-lbl" id={`${id}-l`}>
+        {label}
+      </span>
+      <div className="c-seg ae-seg" role="radiogroup" aria-labelledby={`${id}-l`} {...(hinted ? { 'aria-describedby': `${id}-h` } : {})}>
+        {options.map((o, i) => (
+          <button
+            key={o.value}
+            ref={(el) => {
+              refs.current[i] = el
+            }}
+            type="button"
+            role="radio"
+            aria-checked={i === checked}
+            disabled={o.disabled !== undefined}
+            tabIndex={i === stop ? 0 : -1}
+            {...(o.disabled === undefined ? {} : { 'aria-describedby': `${id}-r${i}`, title: o.disabled })}
+            onClick={() => onChange(o.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowRight' || e.key === 'ArrowDown') move(i, 1)
+              else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') move(i, -1)
+              else return
+              e.preventDefault()
+            }}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+      {refused.map((o) => (
+        <span key={o.value} className="c-hint" id={`${id}-r${options.indexOf(o)}`}>
+          {o.label}: {o.disabled}
+        </span>
+      ))}
+      {hinted && (
+        <span className="c-hint" id={`${id}-h`}>
+          {hint}
+        </span>
+      )}
+    </div>
+  )
+}
+
 /** "security, needs-owner" -- a served list default, in the words a blank field means. */
 function listWords(v: unknown): string {
   return Array.isArray(v) ? v.map(String).join(', ') : ''
@@ -625,6 +710,34 @@ const RUN_PLAN: readonly { value: 'auto' | 'approve'; label: string }[] = [
   { value: 'auto', label: 'auto' },
   { value: 'approve', label: 'approve' },
 ]
+
+/** Each gate point's values, least strict first, as `scheduletypes.GATE_POINTS` orders them. */
+const GATE_ORDER: Readonly<Record<'run' | 'plan' | 'merge', readonly string[]>> = {
+  run: ['auto', 'approve'],
+  plan: ['auto', 'approve'],
+  merge: ['auto', 'approve', 'off'],
+}
+
+/**
+ * WHY A GATE VALUE IS OFF, OR NOTHING. A value below the type's floor is
+ * refused for everyone, an admin included (422 `gate_below_floor`), so it is
+ * drawn disabled with that reason. Below the default is not disabled: an
+ * admin may set it, and the card's caption says so.
+ */
+function floorWhy(t: ScheduleTypeRow | null, point: 'run' | 'plan' | 'merge', value: string): string | undefined {
+  const floor = t?.floor_gate?.[point]
+  if (t === null || floor === undefined) return undefined
+  const order = GATE_ORDER[point]
+  return order.indexOf(value) < order.indexOf(floor) ? `below ${t.name}’s floor (${floor}), refused for everyone` : undefined
+}
+
+/** A gate point's segments, each value below the type's floor disabled with its reason. */
+function gateOptions<V extends string>(t: ScheduleTypeRow | null, point: 'run' | 'plan' | 'merge', options: readonly { value: V; label: string }[]) {
+  return options.map((o) => {
+    const why = floorWhy(t, point, o.value)
+    return why === undefined ? o : { ...o, disabled: why }
+  })
+}
 
 /**
  * WHAT THE PARAMETERS STILL NEED (AUT-5). A type whose required parameter
@@ -1009,11 +1122,12 @@ function ScheduleForm({
               <Field label="Name">
                 <input className="c-inp" value={d.name} maxLength={80} onChange={(e) => set({ name: e.target.value })} />
               </Field>
-              <Choice<Scope>
+              <Segmented<Scope>
+                wide
                 label="Scope"
                 value={d.scopeMode}
                 options={scopes.map((m) => ({ value: m as Scope, label: SCOPE_WORD[m as Scope] }))}
-                onChange={(v) => set({ scopeMode: v ?? 'repos' })}
+                onChange={(v) => set({ scopeMode: v })}
               />
             </div>
             {d.scopeMode === 'repos' && (
@@ -1131,22 +1245,22 @@ function ScheduleForm({
 
           <Card title="4 · Gates and approvers">
             <div className="ae-g3">
-              <Choice label="Run" value={d.gate.run as 'auto' | 'approve' | undefined} options={RUN_PLAN} onChange={(v) => set({ gate: { ...d.gate, run: v } })}
+              <Segmented label="Run" value={d.gate.run as 'auto' | 'approve' | undefined} options={gateOptions(t, 'run', RUN_PLAN)} onChange={(v) => set({ gate: { ...d.gate, run: v } })}
                 hint={t?.default_gate.run === undefined ? undefined : `type default: ${t.default_gate.run}`} />
-              <Choice label="Plan" value={d.gate.plan as 'auto' | 'approve' | undefined} options={RUN_PLAN} onChange={(v) => set({ gate: { ...d.gate, plan: v } })}
+              <Segmented label="Plan" value={d.gate.plan as 'auto' | 'approve' | undefined} options={gateOptions(t, 'plan', RUN_PLAN)} onChange={(v) => set({ gate: { ...d.gate, plan: v } })}
                 hint={t?.default_gate.plan === undefined ? undefined : `type default: ${t.default_gate.plan}`} />
               {d.gate.merge === 'auto' ? (
                 <Field label="Merge" hint="Automatic, set by the audited switch on the schedule’s page; it is changed back there.">
                   <input className="c-inp" value="auto" readOnly />
                 </Field>
               ) : (
-                <Choice<'off' | 'approve'>
+                <Segmented<'off' | 'approve'>
                   label="Merge"
                   value={d.gate.merge as 'off' | 'approve' | undefined}
-                  options={[
+                  options={gateOptions(t, 'merge', [
                     { value: 'off', label: 'off' },
                     { value: 'approve', label: 'approve' },
-                  ]}
+                  ] as const)}
                   onChange={(v) => set({ gate: { ...d.gate, merge: v } })}
                   hint={t?.default_gate.merge === undefined ? undefined : `type default: ${t.default_gate.merge}`}
                 />
@@ -1159,8 +1273,8 @@ function ScheduleForm({
             </p>
             <div className="sc-facts">
               {typeof d.gate.approvers === 'string' || d.gate.approvers === undefined ? (
-                <Choice<'members' | 'owner_only'>
-                  label="Approvers"
+                <Segmented<'members' | 'owner_only'>
+                  label="Who may approve"
                   value={d.gate.approvers as 'members' | 'owner_only' | undefined}
                   options={[
                     { value: 'members', label: 'any member' },
@@ -1169,7 +1283,7 @@ function ScheduleForm({
                   onChange={(v) => set({ gate: { ...d.gate, approvers: v } })}
                 />
               ) : (
-                <Field label="Approvers" hint="A named list, set through the API; unchanged here.">
+                <Field label="Who may approve" hint="A named list, set through the API; unchanged here.">
                   <input className="c-inp" value={(d.gate.approvers as unknown as string[]).join(', ')} readOnly />
                 </Field>
               )}

@@ -354,6 +354,17 @@ holding the value.
 | returned | after Return control, the agent `SUCCEEDED`, its answer and its `session-code.txt` output carry the code only the typed password makes, and `human_handoff_requested`, `human_control_taken`, `human_control_returned` and `human_handoff_resolved` are among its events | control came back and the agent carried on from the signed-in page, rather than the agent ending some other way |
 | no password | the password is in no object under `tenants/<t>/tasks/<task>/`, read from the bucket itself (not through the API, which redacts on the way out), gzip members decompressed: the transcript (`logs/agent_stdout.log`), every other log, every checkpoint archive, every output and the recording. Nor in the task document, its events, its live audit and session, or its answer. Each of transcript, logs, checkpoints and outputs must have at least one object read, and an object that could not be read FAILS the check | section 5.4: the agent's CDP is paused while a person types and the fields are cleared before it resumes. An unread category is not a clean one |
 
+**Then the QA identity case** (docs/design/qa-identity.md §8, QI-ACCEPT):
+`run_live_browser_qa` submits a `claude-code-browser` agent naming
+`qa_identity: "console"` in `SWARM_ACCEPTANCE_QA_TENANT` and runs
+`test_live_browser.py --qa-identity` beside it, for four more checks
+(`qa_signed_in`, `qa_handoff_refused`, `qa_ungranted_refused`, `qa_no_leak`).
+It starts after the first agent is cancelled, so the group's peak stays 1.
+It SKIPs all four unless the `swarm-verify` job carries both
+`SWARM_ACCEPTANCE_QA_TENANT` and `SWARM_ACCEPTANCE_CONSOLE_URL`, which
+Terraform renders from `acceptance_qa_tenant` and `acceptance_console_url`
+(set in dev only).
+
 **SKIP, not PASS:** an agent the platform holds (closed pool, no credential);
 a deployment that dispatches the profile with no live path, recognised by the
 agent's own report of `swarm-handoff`'s refusal code `no_live_path`
