@@ -209,7 +209,13 @@ const BUDGET = {
   // longest branch -- the kicker, "Pool <name> is at 100% of its ceiling",
   // "5 of 5 units in use." and the Open button, 15 tokens. The green lead is 6.
   // The margin is three tokens: a renamed word fits, a second sentence does not.
-  'Pool limits': 60,
+  // RAISED 60 -> 67, 2026-10-28, BY BGD'S VISUAL QA PASS 1 (admin-shell-03,
+  // part of #2596; lane QA1-FIX-04): the lead names the pool as its row does,
+  // "anthropic · u-bogdan" (three tokens where the key was one), in the
+  // headline and the button, with the key on a mono line of its own. Measured
+  // 60 before (main, at the ceiling) and 64 with it: a name and an id, no
+  // sentence. The margin stays three tokens.
+  'Pool limits': 67,
   // RAISED 32 -> 46, 2026-10-25, BY BGD'S DECISION OF 2026-10-25 (COUNTS-ONE-RUN,
   // #2149): the page in mock-up F1's order, Over time first and the state
   // counts under F1's own heading, "Right now: agents in each state", with

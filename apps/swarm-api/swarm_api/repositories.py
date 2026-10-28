@@ -186,7 +186,14 @@ ON_CHANGE_PUSHED = "webhook"
 #: pushes that nothing delivers (§6.2: it "becomes the default ... once the
 #: receiver is live").
 ON_CHANGE_DEFAULT = "poll"
-MIN_CHANGE_INTERVAL_DEFAULT = 30
+#: 120 since #2524 (BGD, 2026-10-27; was 30): the index runs of one week
+#: (2026-10-20..27) were 845, most of them change-triggered on the platform's
+#: own busy repository, and an index up to two hours behind its head was
+#: accepted as the price. Reads stay LITERAL (BGD, 2026-10-28): a stored 30
+#: reads 30. Every registration before #2524 stored 30 at creation
+#: (`_index_defaults`); those are moved to 120 by the one-time
+#: `scripts/migrate-index-interval.sh`, not by a read-time rule.
+MIN_CHANGE_INTERVAL_DEFAULT = 120
 MIN_CHANGE_INTERVAL_RANGE = (10, 1440)
 FULL_EVERY_DAYS_DEFAULT = 7
 FULL_EVERY_DAYS_RANGE = (1, 30)
@@ -422,6 +429,17 @@ def keep_versions_of(index: Mapping[str, Any] | None) -> int:
     if isinstance(value, int) and not isinstance(value, bool) and low <= value <= high:
         return value
     return KEEP_VERSIONS_DEFAULT
+
+
+def min_change_interval_of(index: Mapping[str, Any] | None) -> int:
+    """The registration's `index.min_change_interval_minutes`, read literally:
+    the stored value, or the default only where none (or a non-integer) is
+    stored. A stored 30 reads 30 (BGD, 2026-10-28: the old default is moved
+    by `scripts/migrate-index-interval.sh`, never reinterpreted on read)."""
+    value = (index or {}).get("min_change_interval_minutes")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return MIN_CHANGE_INTERVAL_DEFAULT
 
 
 def platform_of(data: Mapping[str, Any]) -> bool:
@@ -836,6 +854,8 @@ def to_api(data: Mapping[str, Any]) -> dict[str, Any]:
     # Served as what retention uses, so a registration from before the
     # setting reads 20, not a gap (lane INDEX-RETENTION).
     index["keep_versions"] = keep_versions_of(index)
+    # Served as the poll applies it: the stored value, literally (#2524).
+    index["min_change_interval_minutes"] = min_change_interval_of(index)
     retention = index.get("retention")
     if isinstance(retention, Mapping) and "at" in retention:
         index["retention"] = {**retention, "at": _iso(retention["at"])}
@@ -1453,7 +1473,7 @@ __all__ = [
     "COLLECTION", "DEFAULT_ALLOWED_PROFILES", "FORGE", "MAX_READABLE_PAGES",
     "SCOPE_TENANT", "SCOPE_USER", "CredentialSource", "HeldCredential",
     "IndexSettings", "KEEP_VERSIONS_DEFAULT", "KEEP_VERSIONS_RANGE", "Repositories",
-    "RepositoryCreate", "RepositoryNoAccess", "keep_versions_of",
+    "RepositoryCreate", "RepositoryNoAccess", "keep_versions_of", "min_change_interval_of",
     "RepositoryPatch", "check_branch", "check_profiles", "parse_repository",
     "read_repository", "read_repository_as", "readable", "register",
     "registration_record", "repo_id_for", "repository_url", "tenant_credential",

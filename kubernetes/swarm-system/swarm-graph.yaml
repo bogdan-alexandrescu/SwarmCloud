@@ -35,12 +35,23 @@
 # impersonate, no Kubernetes RBAC, no API token, no Firestore. A tenant pod
 # cannot present this KSA: it cannot create a pod in swarm-system.
 #
-# WHO REACHES IT. TCP 8080 from any pod in a tenant namespace, and from
+# WHO REACHES IT. TCP 8080 (/mcp) from any pod in a tenant namespace, and from
 # nothing else (the NetworkPolicy below; the tenant side is
 # network-policies/allow-graph-service.yaml). No pod label: any agent pod may
 # hold a graph ticket, and the ticket, not the network, is what admits a read.
 # Plain HTTP inside the VPC, as swarm-typesafe-fwd's is: the ticket is the
 # only credential on that hop, one attempt's, for minutes.
+#
+# TCP 8081 (/v1/stats and /v1/stats/local, the console's Cache section;
+# docs/design/graph-answer-cache.md §5.3, lane CACHE-2-NETWORK) from two
+# sources and nothing else: swarm-api's Direct VPC egress range, through the
+# internal load balancer `swarm-graph-stats` below, and the swarm-graph pods
+# themselves, so the replica that receives /v1/stats can read each peer's
+# /v1/stats/local (BGD, 2026-10-28: without it every peer is a `timeout`). A
+# separate port because a NetworkPolicy admits by port, not by path: swarm-api
+# never reaches /mcp, and a tenant pod never reaches the stats. The stats
+# route takes a stats ticket under its own HMAC domain, so the network is
+# still not what admits a read.
 #
 # THE SIZE (§2.1, §5.1). requests == limits (invariant 7): one vCPU, 3 GiB,
 # 1 GiB of ephemeral storage. 3 GiB is apps/swarm-graph/swarm_graph/cache.py
@@ -71,12 +82,20 @@ metadata:
 # answers it as this KSA, which is all Workload Identity needs.
 automountServiceAccountToken: false
 ---
-# Who may reach it, from the moment it exists: any pod in a tenant namespace,
-# on 8080. ONE peer, a namespace selector carrying both the part-of label and
-# swarm-tenant. swarm-system-default-deny-ingress
-# (network-policies/swarm-system-live.yaml) closes every other port and
-# source. Before the Service and the Deployment, so the pods are never
-# selected by no policy at all.
+# Who may reach it, from the moment it exists (WHO REACHES IT above): three
+# rules, each one port.
+#   1. any pod in a tenant namespace, on 8080: ONE peer, a namespace selector
+#      carrying both the part-of label and swarm-tenant;
+#   2. swarm-api's Direct VPC egress range, on 8081: the placeholder
+#      swarm-live.yaml's swarm-live-ingress uses for the same range, filled by
+#      graph_service.tf from the same local;
+#   3. the swarm-graph pods of this namespace (a bare podSelector, so this
+#      namespace only), on 8081: the peer fan-out.
+# The tenant rule never gains 8081 and the other two never gain 8080;
+# kubernetes/network_parity.py's check_graph_ingress holds that exact shape.
+# swarm-system-default-deny-ingress (network-policies/swarm-system-live.yaml)
+# closes every other port and source. Before the Services and the Deployment,
+# so the pods are never selected by no policy at all.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -101,6 +120,19 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+    - from:
+        - ipBlock:
+            cidr: __SWARM_API_EGRESS_CIDR__
+      ports:
+        - protocol: TCP
+          port: 8081
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: swarm-graph
+      ports:
+        - protocol: TCP
+          port: 8081
 ---
 # The kill switch (§2.1), rendered by graph_service.tf from
 # var.graph_service.enabled: EXACTLY {"enabled": <bool>}. Mounted as a
@@ -141,6 +173,38 @@ spec:
       protocol: TCP
       port: 8080
       targetPort: 8080
+---
+# swarm-api's address for the stats: SWARM_GRAPH_STATS_URL,
+# http://<this address>:8081 (graph-answer-cache.md §5.3). swarm-api is Cloud
+# Run and cannot resolve a cluster Service; it reaches the VPC by Direct VPC
+# egress, and this internal passthrough load balancer puts one replica's 8081
+# on the address graph_service.tf reserved. 8081 ONLY: /mcp is never behind
+# it. The peer fan-out does not use it: a replica dials its peers' pod
+# addresses, which the headless Service above resolves to.
+# externalTrafficPolicy Cluster, as swarm-live-internal: the load balancer
+# health-checks the nodes, not the pod, so the ingress policy needs no
+# health-check range.
+apiVersion: v1
+kind: Service
+metadata:
+  name: swarm-graph-stats
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-graph
+  annotations:
+    networking.gke.io/load-balancer-type: "Internal"
+spec:
+  type: LoadBalancer
+  loadBalancerIP: __GRAPH_STATS_ADDRESS__
+  externalTrafficPolicy: Cluster
+  selector:
+    app.kubernetes.io/name: swarm-graph
+  ports:
+    - name: stats
+      protocol: TCP
+      port: 8081
+      targetPort: 8081
 ---
 # Never fewer than one serving pod through a node drain or an Autopilot
 # upgrade.
@@ -206,6 +270,10 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+              protocol: TCP
+            # swarm_graph.stats.STATS_PORT: /v1/stats and /v1/stats/local.
+            - name: stats
+              containerPort: 8081
               protocol: TCP
           env:
             # A Secret Manager version REFERENCE and a bucket name, read at run

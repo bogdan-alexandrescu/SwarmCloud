@@ -219,6 +219,8 @@ from .validation import (
     MERGE_ON_VERDICT,
     MERGE_STEP_ID,
     REREVIEW_STEP_ID,
+    REVIEW_GATE_DEFAULT_MIN_LINES,
+    REVIEW_GATE_METADATA_KEY,
     RUNTIME_METADATA_KEY,
     RUNTIME_POLICY_BROWSER_IF_UI,
     RUNTIME_POLICY_PROFILES,
@@ -244,6 +246,18 @@ STEP_PROFILE = "claude-code"
 REVIEW_PROFILE = RUNTIME_POLICY_PROFILES["browser"]
 REVIEW_RUNTIME: Mapping[str, str] = MappingProxyType(
     {"policy": RUNTIME_POLICY_BROWSER_IF_UI, **RUNTIME_POLICY_PROFILES})
+
+# The compiled review runs only where it matters (#2524, BGD 2026-10-27:
+# "Risk paths + over 300 lines; reuse renders"): when what the implementer
+# steps changed touches a risk path or more than 300 lines. Otherwise
+# swarm-api ends it SUCCEEDED without an agent, with a MERGE verdict.json
+# naming the reason (`reviewgate`), and the fix step publishes as for any
+# MERGE. No `risk_paths`: the default list applies, the one list BGD's
+# decision names.
+def review_gate_block() -> dict[str, Any]:
+    """The `metadata.review_gate` every compiled review step carries."""
+    return {"min_lines": REVIEW_GATE_DEFAULT_MIN_LINES}
+
 
 #: The one file the planner writes, read back out of its artifacts.
 PLAN_FILE = "plan.json"
@@ -303,6 +317,15 @@ IMPLEMENT_PREFIX = "impl-"
 FINDINGS_SHAPE = (
     '"findings": [{"summary": "one blocker per entry", "file": "its repository-relative '
     'path", "line": <its line number>, "side": "new" or "old"}]'
+)
+#: The head the review judged, written beside `verdict` (#2524 check (b), BGD
+#: 2026-10-28). The worker reads it (`agent_worker.verdict.Verdict.commit`) and
+#: skips a NOT_YET-gated fix whose branch head already contains a commit a
+#: review gave MERGE: that fix would be paid for to change reviewed work.
+#: Anything but 7-40 lowercase hex is read as no commit, so a review that
+#: leaves it out only loses the skip.
+COMMIT_SHAPE = (
+    '"commit": "<the full SHA of HEAD you reviewed, from git rev-parse HEAD>", '
 )
 FINDINGS_LOCATION_NOTE = (
     "Give file, line and side only for a blocker at one line of the diff: side is new "
@@ -2336,7 +2359,8 @@ def compile_plan(run: "IssueRun", review_context: str | None = None) -> Workflow
     steps.append({
         "step_id": REVIEW_STEP,
         "runner_profile": REVIEW_PROFILE,
-        "metadata": {RUNTIME_METADATA_KEY: dict(REVIEW_RUNTIME)},
+        "metadata": {RUNTIME_METADATA_KEY: dict(REVIEW_RUNTIME),
+                     REVIEW_GATE_METADATA_KEY: review_gate_block()},
         "depends_on": [last],
         "builds_on": last,
         "input_from": {last: PATCH_FILE},
@@ -2349,7 +2373,7 @@ def compile_plan(run: "IssueRun", review_context: str | None = None) -> Workflow
                 + f"{PATCH_FILE} holds the last step's diff; "
                 "the whole change is this branch against the default branch. Do not edit "
                 f"files. Write $SWARM_ARTIFACTS_DIR/{VERDICT_FILE}: "
-                '{"verdict": "MERGE" or "NOT_YET", ' + FINDINGS_SHAPE
+                '{"verdict": "MERGE" or "NOT_YET", ' + COMMIT_SHAPE + FINDINGS_SHAPE
                 + _requirements_shape(plan) + "}. " + FINDINGS_LOCATION_NOTE
                 + NO_CLOSING_KEYWORD
             ),
@@ -2523,7 +2547,8 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
         "builds_on": last,
         "input_from": {sid: PATCH_FILE for sid in impl},
         "metadata": {INPUT_LAYOUT_METADATA_KEY: INPUT_LAYOUT_BY_PARENT,
-                     RUNTIME_METADATA_KEY: dict(REVIEW_RUNTIME)},
+                     RUNTIME_METADATA_KEY: dict(REVIEW_RUNTIME),
+                     REVIEW_GATE_METADATA_KEY: review_gate_block()},
         "input": {
             "issue": ref.number,
             "prompt": (
@@ -2540,7 +2565,7 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
                 "the integrated change -- every diff together, including where "
                 "two of them touch the same code. Do not edit files. Write "
                 f"$SWARM_ARTIFACTS_DIR/{VERDICT_FILE}: "
-                '{"verdict": "MERGE" or "NOT_YET", ' + FINDINGS_SHAPE
+                '{"verdict": "MERGE" or "NOT_YET", ' + COMMIT_SHAPE + FINDINGS_SHAPE
                 + _requirements_shape(plan) + "}. " + FINDINGS_LOCATION_NOTE
                 + NO_CLOSING_KEYWORD
             ),

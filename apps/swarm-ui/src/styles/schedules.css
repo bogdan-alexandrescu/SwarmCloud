@@ -59,12 +59,14 @@
 .sc-h3 { margin: 12px 0 4px; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
 
 /* ---- the actions (owner decisions 2026-10-11) ------------------------------ */
-/* A row's Run now and Resume; the page head's Run now, Dry run, Pause,
-   Resume, Delete and Edit. What an action said sits under them. */
+/* The sheet head's Run now, Dry run, Pause, Resume, Delete and Edit (no list
+   row draws actions, frame A1). What an action said sits under them; it takes
+   focus when it arrives, and is outlined as a target, not a control. */
 .sc-table th[data-col='acts'] { width: 172px; }
-.sc-row-acts { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
 .sc-said { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); overflow-wrap: anywhere; }
 .sc-said.is-bad { color: var(--s-bad); }
+.sc-said:focus { outline: none; }
+.sc-said:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: var(--r-xs); }
 .sc-vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 /* The phone's second line of a row (below); the desktop row has a cell for each. */
 
@@ -163,7 +165,15 @@ ol.sc-pobj { padding-left: 18px; }
     color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600;
   }
   .sc-row a { display: inline-flex; align-items: center; min-height: 44px; }
-  .sc-row-acts .c-btn { min-height: 44px; }
+  /* A FIRING'S RUN LINKS KEEP THEIR TEXT HEIGHT (QA1 automate-18): the 44px
+     above made each one-line link a 44px row, so the runs floated in blank
+     bands. A 44px box centred on each link was tried next, and it covered
+     the link above it: the links stand 18px apart, so a tap on run_1 opened
+     run_2 (review of QA1-FIX-37). So each link is its own 24px target
+     (WCAG 2.5.8's minimum) and the list sets no gap, which makes the pitch
+     equal to the target: no target overlaps its neighbour. */
+  .sc-row .as-work { gap: 0; }
+  .sc-row .as-work a { min-height: 24px; }
   .sc-waiting-list > li { grid-template-columns: minmax(0, 1fr); gap: 0; }
   /* The detail's facts and the form's fields: one column, said rather than
      left to auto-fill, so a 180px minimum never puts two side by side. */
@@ -221,6 +231,10 @@ ol.sc-pobj { padding-left: 18px; }
 /* Greyed by a dashed edge and the dim ink, never by opacity: the reason on the
    tile is the one thing it says, so it keeps its contrast. */
 .sc-tile.is-off { cursor: not-allowed; border-style: dashed; background: none; color: var(--text-dim); }
+/* NOT FADED BY THE APP'S DISABLED BUTTON EITHER (QA1 automate-11): the tile
+   is a disabled <button>, and `:where(.app button:disabled)` in styles.css
+   set it to opacity .45, which took the reason to about 2.1:1 on white. */
+.sc-tile.is-off:disabled { opacity: 1; }
 /* READ-ONLY IS DRAWN AS READ-ONLY (visual QA V247): Type on an edit, Plan
    approval, Merge "auto" and a parameter the form cannot write were boxes
    exactly like the editable ones. No fill and a dashed edge, the greyed

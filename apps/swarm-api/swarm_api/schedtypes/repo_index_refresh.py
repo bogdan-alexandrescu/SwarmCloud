@@ -91,6 +91,7 @@ def _index(firing: Any) -> RepoIndex:
     return RepoIndex(
         ctx.db, store=ctx.store, submissions=MarkedSubmissions(ctx.submissions, firing.mark),
         inspection=ctx.inspection, tokens=ctx.forge_tokens, forge=ctx.forge, now=ctx.now,
+        class_models=getattr(getattr(ctx, "settings", None), "worker_class_models", None),
     )
 
 
@@ -128,6 +129,10 @@ def create(firing: Any) -> list[dict[str, Any]]:
             outcomes[repo_id] = f"failed: {exc.code}"
             continue
         run = answer.get("run") or {}
+        if answer.get("skipped"):
+            # The head is the promoted index: nothing was started (#2524).
+            outcomes[repo_id] = "current"
+            continue
         if answer.get("coalesced") or not run.get("task_id"):
             outcomes[repo_id] = "in_flight"
             continue

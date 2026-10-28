@@ -67,6 +67,7 @@ from swarm_common.states import (
 )
 
 from . import children as children_mod
+from . import reviewgate as reviewgate_mod
 from . import runtime as runtime_mod
 from . import sizes as sizes_mod
 from .awaitinput import is_control_plane
@@ -270,14 +271,17 @@ def mcp_park_since(task: Task) -> datetime | None:
 
 
 def held_for_control_publish(metadata: Any) -> bool:
-    """`swarm_api.verdictpublish.held_by_scheduler`, restated: `integrate`'s gated integrator."""
+    """`swarm_api.verdictpublish.held_by_scheduler`, restated: `integrate`'s gated
+    integrator, and a step carrying a review gate, which swarm-api decides and
+    may end SUCCEEDED without a worker (#2524, `swarm_api.reviewgate`)."""
     block = (metadata or {}).get("dispatch") if isinstance(metadata, dict) else None
     return (
         isinstance(block, dict)
         and block.get("strategy") == "integrate"
         and block.get("role") == "integrator"
         and isinstance(block.get("verdict_gate"), dict)
-    )
+    ) or (isinstance(metadata, dict)
+          and isinstance(metadata.get(reviewgate_mod.REVIEW_GATE_METADATA_KEY), dict))
 
 def accounts_held_by(db: Any, task_id: str) -> set[str]:
     """The accounts any attempt of `task_id` held, from the broker's hold records.
@@ -1276,6 +1280,16 @@ class Scheduler:
         # check would ever stop it. It sees failures as of this drain's verdict
         # (see `_stop_for_failed_workflow` for the window that leaves).
         if self._stop_for_failed_workflow(task, report):
+            return False
+
+        # A fix round whose pull request already ended buys nothing (#2524).
+        skipped = reviewgate_mod.end_if_noop(self._store, task)
+        if skipped is not None:
+            if skipped.applied:
+                self._count_cancel(report, reason="noop_precheck")
+                self._note_ended(task.id)
+            else:
+                self._count_stale(skipped, report)
             return False
 
         if task.next_eligible_at is not None and task.next_eligible_at > now:

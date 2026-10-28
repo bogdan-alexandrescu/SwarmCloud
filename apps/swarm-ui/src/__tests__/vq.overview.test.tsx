@@ -131,13 +131,18 @@ const RUNNING: Task[] = [
 ]
 
 const WF_TITLE = 'Audit every script and Terraform module in the repository for drift against main'
+const LONE_TITLE = 'Fix flaky lease renewal test'
+const LONE: Task[] = [
+  task({ id: 'tsk_lone8e01', tenant_id: 'eng', state: 'RUNNING', step_id: null, workflow_id: null, runner_profile: 'claude-code', created_at: ago(30), updated_at: ago(1), started_at: ago(20), attempt_count: 1, metadata: null }),
+]
+const TITLES: Record<string, string> = { tsk_run_0: WF_TITLE, tsk_lone8e01: LONE_TITLE }
 
-function serve(): void {
+function serve(running: Task[] = RUNNING): void {
   api.loadTasks.mockImplementation(async (limit: number) => ok({ tasks: PAGE().slice(0, limit), next_page_token: 'more', tenant_id: 'eng' } satisfies TaskPage))
   const reads: Partial<Record<TaskState, { tasks: Task[]; more: boolean }>> = {
     FAILED: { tasks: FAILED, more: true },
     CANCELLED: { tasks: CANCELLED, more: true },
-    RUNNING: { tasks: RUNNING, more: false },
+    RUNNING: { tasks: running, more: false },
   }
   api.loadTasksInState.mockImplementation(async (state: TaskState) => {
     const r = reads[state]
@@ -145,8 +150,8 @@ function serve(): void {
   })
 }
 
-async function mount(providers: Result<ProvidersPage> = empty): Promise<HTMLElement> {
-  serve()
+async function mount(providers: Result<ProvidersPage> = empty, running: Task[] = RUNNING): Promise<HTMLElement> {
+  serve(running)
   api.loadCapacity.mockResolvedValue(ok(CAPACITY))
   api.loadLeases.mockResolvedValue(empty)
   api.loadProviders.mockResolvedValue(providers)
@@ -155,11 +160,13 @@ async function mount(providers: Result<ProvidersPage> = empty): Promise<HTMLElem
   api.loadAccountPool.mockResolvedValue(empty)
   api.loadSpend.mockResolvedValue(ok(SPEND))
   // The running step's workflow has a long title, read once a session.
-  api.loadTask.mockImplementation(async (id: string) =>
-    id === 'tsk_run_0'
-      ? ok({ ...RUNNING[0]!, metadata: { title: WF_TITLE, unit: 'vq' } })
-      : { status: 'error', error: { kind: 'not_found', httpStatus: 404, code: null, message: 'gone' } },
-  )
+  // A lone agent's own title is read the same way.
+  api.loadTask.mockImplementation(async (id: string) => {
+    const t = running.find((r) => r.id === id)
+    return t !== undefined && TITLES[id] !== undefined
+      ? ok({ ...t, metadata: { title: TITLES[id], unit: 'vq' } })
+      : { status: 'error', error: { kind: 'not_found', httpStatus: 404, code: null, message: 'gone' } }
+  })
   const { container } = render(<OverviewScreen />)
   for (let i = 0; i < 60; i++) await new Promise((r) => setTimeout(r, 5))
   return container
@@ -327,6 +334,19 @@ describe('VQ-002: a phone draws a check as one line and an agent as one line', (
     // MUTATION: let `.ov-prun-s` shrink with the title.
     expect(at(step, 'flex')).toBe('none')
     expect(text(name)).toBe(`${WF_TITLE} · scan-terraform`)
+  })
+
+  it('gives a lone agent’s title the line and moves its short id to the second (overview-agents-08)', async () => {
+    const el = await mount(empty, LONE)
+    const name = el.querySelector('#ov-running .ov-prun li a.ov-prun-n')!
+    expect(name, 'no phone Running row').not.toBeNull()
+    // Run 1 at 390 read "Fix flaky lea… · claude-code agent · 8e…": the generic suffix kept, the title cut.
+    // MUTATION: draw `title · agentName(t)` for a row with no step again.
+    expect(name.querySelector('.ov-prun-s')).toBeNull()
+    expect(text(name)).toBe(LONE_TITLE)
+    // MUTATION: drop the short id from the second line.
+    expect(text(name.closest('li')!.querySelector('.ov-prun-sub'))).toBe('running · claude-code · lone8e01')
+    expect(name.getAttribute('title')).toContain('tsk_lone8e01')
   })
 })
 

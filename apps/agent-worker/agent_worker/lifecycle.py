@@ -255,6 +255,7 @@ from .gitops import (
     is_branch_ref_name,
     merge_branches,
     mirror_worktree,
+    moved_branch_tip,
     origin_tips_as_data,
     own_branch_tip,
     prepare_publish_repo,
@@ -569,6 +570,12 @@ BASE_MERGE_SUPERSEDED_FIELD = "base_merge_superseded"
 #: Enough to name what main rewrote under a round -- one file, measured --
 #: without a vendored-tree conflict filling the record.
 BASE_MERGE_SUPERSEDED_MAX = 20
+#: The `result_summary.git` key `_push_onto_base_merge` sets when a continued
+#: branch was moved by something other than merges of the default branch --
+#: another fix round's commit, a conflict fix -- and this round's commits were
+#: replayed onto that tip (#1821, owner decision 2026-10-27): the tip's sha.
+#: `moved_tip_from` beside it holds the clone base the round started from.
+MOVED_TIP_FIELD = "moved_tip"
 #: The paths a push may touch only with the `workflow` scope (AU-3,
 #: docs/design/agent-autonomy.md §3.3): `_publish_git` hands a branch whose
 #: new commits touch either to swarm-api's `git_push_branch`. Restated from
@@ -4410,6 +4417,11 @@ class Worker:
                 # The owner's words for it (2026-10-05): on MERGE, no fix
                 # agent; the step only published the reviewed work.
                 summary["skipped_agent"] = f"review verdict {self._verdict['verdict']}"
+                noop = self._verdict.get(verdict_mod.NOOP_PRECHECK_KEY)
+                if noop is not None:
+                    # #2524 check (b): a NOT_YET whose head a MERGE already covers.
+                    summary[verdict_mod.NOOP_PRECHECK_KEY] = dict(noop)
+                    summary["skipped_agent"] = f"no-op precheck (b): {noop['reason']}"
             if result.exit_code != EXIT_TERMINATED:
                 # After the publish, so the epic hears of a review only once
                 # the step it gated has done its own work; never on a stop.
@@ -7257,7 +7269,15 @@ class Worker:
             ws.work / source.path, task_id=gate.task_id, filename=source.filename
         )
         runs = read.verdict in gate.verdict_in
-        self._verdict_staged = (ws.work / source.path, source.filename)
+        passed_on = ws.work / source.path
+        # The no-op precheck, check (b) (#2524, BGD 2026-10-28): a NOT_YET
+        # that would run the agent does not when this head already holds a
+        # commit a review gave MERGE. The MERGE is then the verdict passed on.
+        noop = self._noop_precheck_b(staged, source, read) if (
+            runs and read.verdict == "NOT_YET") else None
+        if noop is not None:
+            runs, passed_on = False, noop[1]
+        self._verdict_staged = (passed_on, source.filename)
         self._verdict = {
             "task_id": gate.task_id,
             "file": source.filename,
@@ -7276,6 +7296,8 @@ class Worker:
             self._verdict["reviewed_patches"] = self._reviewed_patches(gate.task_id)
         if read.locations_dropped:
             self._verdict["locations_dropped"] = read.locations_dropped
+        if noop is not None:
+            self._verdict[verdict_mod.NOOP_PRECHECK_KEY] = noop[0].as_record()
         self._verdict_minors = read.minors
         self._verdict_minors_dropped = read.minors_dropped
         self.log.info(
@@ -7287,6 +7309,56 @@ class Worker:
             findings=len(read.findings) + read.findings_dropped,
         )
         return runs
+
+    def _noop_precheck_b(
+        self,
+        staged: list[inputs_mod.StagedInput],
+        source: inputs_mod.StagedInput,
+        read: verdict_mod.Verdict,
+    ) -> tuple[verdict_mod.ContainedMerge, Path] | None:
+        """A MERGE verdict this step stages whose `commit` its head holds, and its file.
+
+        Every staged `verdict.json` is read (the gate's own and any other a
+        step stages from a review), and one that cannot be read is passed
+        over: the gate's own verdict already decided the step. Only on a fresh
+        clone, before any agent wrote to it; the ancestry is asked with hooks
+        off. A git that fails or times out reads as "not contained", so the
+        agent runs (`verdict.merged_commit_contained`).
+        """
+        ws = self.ws
+        assert ws is not None
+        repo = ws.checkout()
+        if self._restored_from is not None or not (repo / ".git").exists():
+            return None
+        found: list[tuple[str, verdict_mod.Verdict, Path]] = [
+            (source.upstream_task_id, read, ws.work / source.path)]
+        for item in staged:
+            if item is source or Path(item.filename).name != owner_questions_mod.REVIEW_OUTPUT:
+                continue
+            try:
+                other = verdict_mod.read_verdict(
+                    ws.work / item.path, task_id=item.upstream_task_id, filename=item.filename)
+            except InputUnavailable:
+                continue
+            found.append((item.upstream_task_id, other, ws.work / item.path))
+
+        def is_ancestor(commit: str) -> bool:
+            code, _ = _git_text(
+                ["git", *_NO_HOOKS, "merge-base", "--is-ancestor", commit, "HEAD"],
+                repo=repo, private_dir=ws.private, logs_dir=ws.logs,
+                slug="noop-precheck-ancestor",
+                timeout_seconds=self.cfg.git_harvest_timeout_seconds, logger=self.log,
+            )
+            return code == 0
+
+        hit = verdict_mod.merged_commit_contained(
+            ((task_id, v) for task_id, v, _path in found), is_ancestor)
+        if hit is None:
+            return None
+        path = next(p for task_id, v, p in found
+                    if task_id == hit.task_id and v.commit == hit.commit)
+        self.log.info("no-op precheck (b): the agent does not run", reason=hit.reason)
+        return hit, path
 
     def _reviewed_patches(self, review_task_id: str) -> list[dict[str, str]]:
         """The patches the review read, with digests (`verdict.reviewed_patches`).
@@ -7430,6 +7502,10 @@ class Worker:
                 {
                     "status": "skipped",
                     "summary": (
+                        f"no-op precheck (b): the "
+                        f"{self._verdict[verdict_mod.NOOP_PRECHECK_KEY]['reason']}; the "
+                        "agent was not started and the step published the reviewed work"
+                        if verdict_mod.NOOP_PRECHECK_KEY in self._verdict else
                         f"the review verdict was {self._verdict['verdict']}, and this "
                         f"step's agent runs only on "
                         f"{', '.join(self._verdict['verdict_in'])}; the agent was not "
@@ -8590,6 +8666,13 @@ class Worker:
                 + (f" ({git['patch_note']})" if git.get("patch_note") else "")
                 + "; the work is in the attempt's final checkpoint."
             )
+        located = credential_locator(cause)
+        if located:
+            # A REFUSAL A BRIEF CAN BE CORRECTED FROM (part of #2524): which
+            # scan rule fired and at which `path:line`, said first and in the
+            # shape `scripts/publish-scan.sh` prints, so it survives whatever
+            # cut the cause meets downstream. Never the matched text.
+            cause = f"the pre-publish credential scan refused it ({located}): {cause}"
         return f"publish_failed: {why} and its branch was not pushed: {cause}. {where}"
 
     def _skipped_publish_missing(self, summary: dict[str, Any]) -> str | None:
@@ -13433,6 +13516,20 @@ class Worker:
         reason naming the paths and the tip, so the round ends `no_change`,
         not publish_failed; with something left, it is checked and pushed
         exactly as above. A conflict in any other path still raises.
+
+        ANY OTHER MOVER, REPLAYED ONTO TOO (#1821, owner decision 2026-10-27).
+        MEASURED 2026-10-21: 14 of 69 ci-fix rounds in 48 h failed
+        publish_failed because another fix round, a conflict fix or the merge
+        step moved the pull request's branch before their push. When the tip
+        is not base merges alone but still descends from the clone base
+        (`gitops.moved_branch_tip`), the round's commits are replayed onto it
+        with no tip-side resolution of any conflict -- the mover is another
+        writer's work, not main's published change -- and the same checks
+        run again, the fence among them, before one fast-forward push, never
+        forced. A conflict raises a GitError naming the moved tip, and the
+        attempt ends publish_failed with nothing pushed; a rewritten branch
+        (the clone base no longer under it) re-raises `rejected` as before.
+        The tip is recorded in `MOVED_TIP_FIELD`.
         """
         cfg = self.cfg
         ws = self.ws
@@ -13451,18 +13548,36 @@ class Worker:
             logger=self.log,
             branch_prefix=cfg.git_branch_prefix,
         )
+        by_base_merge = tip is not None
+        if tip is None and base is not None:
+            tip, other_why = moved_branch_tip(
+                repo=publish_repo,
+                url=url,
+                branch=branch,
+                token=token,
+                base=base,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_clone_timeout_seconds,
+                logger=self.log,
+                branch_prefix=cfg.git_branch_prefix,
+            )
+            why = f"{why}; {other_why}" if tip is None else why
         if tip is None or base is None:
             self.log.warning(
-                "the push was refused and the branch did not move by a merge of the "
-                "default branch alone; publishing nothing",
+                "the push was refused and the branch did not move on top of the clone "
+                "base; publishing nothing",
                 branch=branch,
                 reason=str(self._scrub(why)),
             )
             raise rejected
-        moved = (
-            f"{branch} moved to {tip[:12]} by a base merge of "
-            f"{default_branch or 'the default branch'} only"
-        )
+        if by_base_merge:
+            moved = (
+                f"{branch} moved to {tip[:12]} by a base merge of "
+                f"{default_branch or 'the default branch'} only"
+            )
+        else:
+            moved = f"{branch} moved to {tip[:12]} by commits this round did not write"
         superseded: list[str] = []
         try:
             head = replay_onto_tip(
@@ -13476,6 +13591,7 @@ class Worker:
                 timeout_seconds=cfg.git_harvest_timeout_seconds,
                 logger=self.log,
                 superseded=superseded,
+                take_base_paths=by_base_merge,
             )
         except GitError as exc:
             raise GitError(
@@ -13483,8 +13599,12 @@ class Worker:
                 f"it conflicted or failed ({str(self._scrub(str(exc)[:200]))}); nothing was "
                 "pushed or forced"
             ) from rejected
-        out["base_merge_from"] = base
-        out["base_merge_tip"] = tip
+        if by_base_merge:
+            out["base_merge_from"] = base
+            out["base_merge_tip"] = tip
+        else:
+            out["moved_tip_from"] = base
+            out[MOVED_TIP_FIELD] = tip
         if superseded:
             out[BASE_MERGE_SUPERSEDED_FIELD] = [
                 str(self._scrub(path[:300])) for path in superseded[:BASE_MERGE_SUPERSEDED_MAX]
@@ -13546,6 +13666,14 @@ class Worker:
             self.log.warning("the replay onto the moved tip touches workflow files; "
                              "publishing nothing", branch=branch)
             raise rejected
+        # The fence, read again after the replay and before the second push
+        # (invariant 5, #1821): a superseded attempt raises FencedError here
+        # and stands down with the branch as the mover left it.
+        try:
+            self.control.validate_generation()
+        except BaseException:
+            self._publish_base = base
+            raise
         try:
             # No lease: HEAD descends from the tip just fetched, so this is
             # a fast-forward, and a branch moved again is refused.
@@ -13566,7 +13694,10 @@ class Worker:
             raise
         self.log.info(
             "the continued branch moved only by a merge of the default branch; "
-            "pushed this round's commits onto it as a fast-forward",
+            "pushed this round's commits onto it as a fast-forward"
+            if by_base_merge else
+            "the continued branch moved by another writer's commits; pushed this "
+            "round's commits onto it as a fast-forward",
             branch=branch,
             moved_tip=tip,
             head=pushed or "unknown",
@@ -18644,6 +18775,30 @@ def credential_refusal(hit: ScanHit) -> str:
     )
 
 
+#: `credential_refusal`'s file, rule and line, read back out of a reason that
+#: has since been wrapped (`refusing to push: ...`) and scrubbed. The path is
+#: already `_reason_path`'s masked form, and nothing here reads past `line N)`,
+#: where the value would be if a refusal ever carried one.
+_REFUSAL_LOCATOR_RE = re.compile(
+    r"the final tree adds a credential in (?P<path>.+?) "
+    r"\(rule (?P<rule>[A-Za-z0-9_]+), line (?P<line>[0-9]+)\)"
+)
+
+
+def credential_locator(reason: str) -> str | None:
+    """`rule <rule> at <path>:<line>` for a credential refusal in `reason`, or
+    None when `reason` holds none. Pure.
+
+    The `path:line rule` pair is what `scripts/publish-scan.sh` prints, so the
+    author of a brief reads the refusal and the local scan the same way. The
+    matched text is never part of it: `credential_refusal` never wrote it.
+    """
+    found = _REFUSAL_LOCATOR_RE.search(reason or "")
+    if found is None:
+        return None
+    return f"rule {found['rule']} at {found['path']}:{found['line']}"
+
+
 #: The longest a refusal shows a file's path, in characters (#361 box 71).
 REASON_PATH_MAX_CHARS = 160
 #: A run of token characters in a path, judged as a possible credential.
@@ -19421,7 +19576,8 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 _USAGE_KEYS = SPEND_KEYS
 
 #: The fields of a usage summary that ADD UP across the runs of one attempt.
-#: Everything `_usage_summary` emits except `models`, which is a set.
+#: Everything `_usage_summary` emits except `models`, which is a set, and the
+#: per-model rows and sub-agent share, which `_add_spend` merges by model.
 _SUMMED_SPEND = (
     "input_tokens",
     "output_tokens",
@@ -19457,6 +19613,9 @@ def _add_spend(
     later total below the session's earlier one was not carried over
     (`cliagent.carries_session_totals`), and is added like any other.
     Tokens, turns and `duration_ms` are each invocation's own and always add.
+    Per-model rows (`MODEL_USAGE_KEY`) add model by model, and are a session's
+    running totals like its cost; the sub-agent share (`SUBAGENT_COST_KEY`)
+    adds, and for a resumed session is read over the session as a whole.
 
     A key absent from BOTH stays absent. "Not reported" is not zero (see
     `control.record_spend`), and a sum must not turn the one into the other.
@@ -19484,6 +19643,35 @@ def _add_spend(
     models = set(out.get("models") or ()) | set(more.get("models") or ())
     if models:
         out["models"] = sorted(models)
+    more_rows = more.get(MODEL_USAGE_KEY)
+    if isinstance(more_rows, list) and more_rows:
+        if session and session_base is not None:
+            # `modelUsage` is a session running total like the cost
+            # (`cliagent.SESSION_SPEND_KEYS`), so the resumed runner's rows
+            # replace the session's earlier ones; and its sub-agent share is
+            # read against the parent's tokens over the WHOLE session, since
+            # `usage` is per invocation and the rows are not.
+            out[MODEL_USAGE_KEY] = _add_model_usage(
+                session_base.get(MODEL_USAGE_KEY) or [], more_rows)
+            session_tokens = {
+                key: out[key] - session_base.get(key, 0)
+                for key, _ in _TOKEN_WEIGHTS
+                if key in out
+            }
+            subagent = _subagent_cost_usd(
+                session_tokens, more_rows, more.get("total_cost_usd"))
+            if subagent is not None:
+                out[SUBAGENT_COST_KEY] = round(
+                    session_base.get(SUBAGENT_COST_KEY, 0) + subagent, 10)
+            else:
+                out.pop(SUBAGENT_COST_KEY, None)
+                if SUBAGENT_COST_KEY in session_base:
+                    out[SUBAGENT_COST_KEY] = session_base[SUBAGENT_COST_KEY]
+        else:
+            out[MODEL_USAGE_KEY] = _add_model_usage(out.get(MODEL_USAGE_KEY) or [], more_rows)
+            if SUBAGENT_COST_KEY in more:
+                out[SUBAGENT_COST_KEY] = round(
+                    out.get(SUBAGENT_COST_KEY, 0) + more[SUBAGENT_COST_KEY], 10)
     return out
 
 
@@ -19720,8 +19908,141 @@ def _usage_summary(output: Any) -> dict[str, Any]:
     models = source.get("modelUsage")
     if isinstance(models, dict) and models:
         summary["models"] = sorted(str(m) for m in models)
+        # SUBAGENT-SPEND (part of #2524, item 8): each model's own counts and
+        # cost, not only the list of names. `usage` above is the parent
+        # agent's alone; `modelUsage` is every call the session paid for,
+        # sub-agents and the CLI's own housekeeping included.
+        rows = _model_usage_rows(models)
+        if rows:
+            summary[MODEL_USAGE_KEY] = rows
+            subagent = _subagent_cost_usd(summary, rows, summary.get("total_cost_usd"))
+            if subagent is not None:
+                summary[SUBAGENT_COST_KEY] = subagent
 
     return summary
+
+
+#: SUBAGENT-SPEND (part of #2524, item 8; BGD, 2026-10-27). The usage summary's
+#: per-model rows -- `[{model, input_tokens, output_tokens,
+#: cache_read_input_tokens, cache_creation_input_tokens, cost_usd}]`, sorted by
+#: model -- and the share of `total_cost_usd` the parent agent's own token
+#: counts do not explain. Both land in `result_summary.runner.usage`, which
+#: swarm-api serves as written; neither is an `Attempt` field
+#: (`control.record_spend` writes only the frozen columns). Measured over
+#: 2026-10-20..27: about 11% of cost had no token count behind it, because
+#: `usage` counts the parent alone while `total_cost_usd` pays for every
+#: sub-agent the parent started.
+MODEL_USAGE_KEY = "model_usage"
+SUBAGENT_COST_KEY = "subagent_cost_usd"
+
+#: A CLI `modelUsage` entry's key -> the usage summary's name for it.
+_MODEL_USAGE_FIELDS = (
+    ("inputTokens", "input_tokens"),
+    ("outputTokens", "output_tokens"),
+    ("cacheReadInputTokens", "cache_read_input_tokens"),
+    ("cacheCreationInputTokens", "cache_creation_input_tokens"),
+    ("costUSD", "cost_usd"),
+)
+
+#: What one token of each kind costs relative to an input token, on every
+#: Claude model's price list (output 5x, a cache write 1.25x, a cache read
+#: 0.1x). The worker holds no price table (#1481); these ratios are all it
+#: needs to split ONE model's cost between the parent's tokens and the rest,
+#: because that model's own `costUSD` fixes the scale. A one-hour cache write
+#: costs 2x, not 1.25x, so a parent writing those is credited slightly less
+#: than it spent and the sub-agent share reads that much high.
+_TOKEN_WEIGHTS = (
+    ("input_tokens", 1.0),
+    ("output_tokens", 5.0),
+    ("cache_creation_input_tokens", 1.25),
+    ("cache_read_input_tokens", 0.1),
+)
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _model_usage_rows(models: dict[str, Any]) -> list[dict[str, Any]]:
+    """A CLI's `modelUsage` as the usage summary's per-model rows. Pure.
+
+    A field the CLI did not report, or reported as something other than a
+    number, is left out of its row rather than written as zero; a model with
+    no number at all has no row.
+    """
+    rows = []
+    for name in sorted(models, key=str):
+        entry = models[name]
+        if not isinstance(entry, dict):
+            continue
+        row: dict[str, Any] = {}
+        for source, target in _MODEL_USAGE_FIELDS:
+            value = entry.get(source)
+            if target == "cost_usd" and _is_number(value):
+                row[target] = round(float(value), 10)
+            elif isinstance(value, int) and not isinstance(value, bool):
+                row[target] = value
+        if row:
+            rows.append({"model": str(name), **row})
+    return rows
+
+
+def _weighted_tokens(counts: dict[str, Any]) -> float:
+    return sum(float(counts.get(key) or 0) * weight for key, weight in _TOKEN_WEIGHTS)
+
+
+def _subagent_cost_usd(
+    parent: dict[str, Any], rows: list[dict[str, Any]], total_cost: Any
+) -> float | None:
+    """The share of `total_cost` the parent's token counts do not explain. Pure.
+
+    `parent` carries the parent agent's own token counts (the CLI's `usage`),
+    `rows` every model's counts and cost (`_model_usage_rows`). The parent's
+    model is the row whose four counts each reach the parent's, the costliest
+    if several do; the parent is credited that row's cost in proportion to
+    its share of the row's tokens, weighted by `_TOKEN_WEIGHTS`. Everything
+    else -- the rest of that row, every other model's row, and any of
+    `total_cost` the rows do not account for -- is spend with no parent token
+    behind it: sub-agents, and the small model the CLI runs for its own
+    housekeeping.
+
+    None, "not known", when there is no total, the parent reported no token,
+    or no row is complete enough to hold the parent: a guess is not a figure.
+    """
+    if not _is_number(total_cost):
+        return None
+    keys = [key for key, _ in _TOKEN_WEIGHTS]
+    if not any(_is_number(parent.get(key)) for key in keys):
+        return None
+    candidates = [
+        row for row in rows
+        if _is_number(row.get("cost_usd"))
+        and all(_is_number(row.get(key)) for key in keys)
+        and all(row[key] >= (parent.get(key) or 0) for key in keys)
+    ]
+    if not candidates:
+        return None
+    home = max(candidates, key=lambda row: row["cost_usd"])
+    row_weight = _weighted_tokens(home)
+    explained = home["cost_usd"] * (_weighted_tokens(parent) / row_weight) if row_weight else 0.0
+    return round(min(max(float(total_cost) - explained, 0.0), float(total_cost)), 10)
+
+
+def _add_model_usage(
+    earlier: list[dict[str, Any]], later: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Two runs' per-model rows as one: each model's numbers summed. Pure."""
+    by_model: dict[str, dict[str, Any]] = {}
+    for row in [*earlier, *later]:
+        if not isinstance(row, dict) or "model" not in row:
+            continue
+        into = by_model.setdefault(str(row["model"]), {"model": str(row["model"])})
+        for _, key in _MODEL_USAGE_FIELDS:
+            if _is_number(row.get(key)):
+                into[key] = into.get(key, 0) + row[key]
+        if _is_number(into.get("cost_usd")):
+            into["cost_usd"] = round(into["cost_usd"], 10)
+    return [by_model[name] for name in sorted(by_model)]
 
 
 #: BROWSER-USE-FLAG (part of #2322): the `result_summary` keys the worker

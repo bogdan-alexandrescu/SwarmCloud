@@ -198,13 +198,13 @@ describe('G2-30: the folded plan counts what the Steps card counts', () => {
 })
 
 describe('G2-31: Progress prints clock times with the gap from the line above', () => {
-  it('draws HH:MM:SS (or MM-DD HH:MM:SS), +Δ, and the full timestamp in the title', async () => {
+  it('draws HH:MM:SSZ (or MM-DD HH:MM:SSZ), +Δ, and the full timestamp in the title', async () => {
     const { container } = await mountRun()
     const items = [...container.querySelectorAll<HTMLElement>('.rn-history li:not(.rn-hstep)')]
     expect(items.length).toBe(3)
     const times = items.map((li) => li.querySelector<HTMLElement>('time')!)
     for (const t of times) {
-      expect(visible(t)).toMatch(/^(\d{2}-\d{2} )?\d{2}:\d{2}:\d{2}( \+\S.*)?$/)
+      expect(visible(t)).toMatch(/^(\d{2}-\d{2} )?\d{2}:\d{2}:\d{2}Z( \+\S.*)?$/)
       expect(visible(t)).not.toMatch(/ago/)
     }
     expect(times[0]!.getAttribute('title')).toContain('2026-10-04T20:00:00.000Z')

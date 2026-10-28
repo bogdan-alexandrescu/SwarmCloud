@@ -248,9 +248,12 @@ export function TypedConfirm({
   busy = false,
   error,
   children,
+  noun = 'name',
 }: {
   title: string
   name: string
+  /** What `name` is, in the hint: `name` by default, `id` where the reader types an id (overview-agents-85). */
+  noun?: 'name' | 'id'
   verb: string
   /** The cancel action's words ("Keep it running"). */
   keep: string
@@ -305,7 +308,7 @@ export function TypedConfirm({
           }}
         />
         <p className="c-hint" id={hintId}>
-          {match ? 'The name matches.' : 'The button unlocks when the name matches exactly.'}
+          {match ? `The ${noun} matches.` : `The button unlocks when the ${noun} matches exactly.`}
         </p>
       </div>
       {error !== undefined && error !== null && (

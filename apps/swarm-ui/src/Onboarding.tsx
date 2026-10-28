@@ -6,7 +6,6 @@ import { connectionOf, Refusal } from './GitHubConnect'
 import { WorkspaceStepDetail, waitingOf } from './OnboardingWorkspace'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
-import { GitHubPermissions } from './PermissionCards'
 import type { AppInstalledEvidence, OnboardingDoc, OnboardingIssue, OnboardingStep, OnboardingStepName, OnboardingStepState, WorkspaceView } from './types'
 import { timeAgo } from './types'
 import './styles/repositories.css'
@@ -262,14 +261,22 @@ function stepLine(step: OnboardingStep, doc: OnboardingDoc): ReactNode {
   return null
 }
 
-/** A §2.3 problem: the server's copy, word for word, and the GitHub page it names. */
+/**
+ * A §2.3 problem: the server's copy and the GitHub page it names.
+ *
+ * NO RAW CODE, NO URL TWICE (visual QA pass 1, overview-agents-03,
+ * 2026-10-28): the card printed `SSO_NOT_AUTHORISED` before the copy, and the
+ * copy's "Open https://github.com/orgs/…/sso" beside an "Open on GitHub" link
+ * to the same place. The code stays on the element (`data-code`, the title)
+ * for support; the URL in the copy reads as the link under it.
+ */
 function IssueCopy({ code, copy, url }: { code: string; copy: string; url?: string | null }) {
+  const linked = typeof url === 'string' && url.startsWith('https://github.com/')
+  const words = linked ? copy.split(url).join('the GitHub page linked below') : copy
   return (
-    <div className="ob-issue" data-code={code}>
-      <p className="ur-small">
-        <b className="ur-bad">{code}</b> {copy}
-      </p>
-      {typeof url === 'string' && url.startsWith('https://github.com/') && (
+    <div className="ob-issue" data-code={code} title={code}>
+      <p className="ur-small">{words}</p>
+      {linked && (
         <a className="c-link" href={url} target="_blank" rel="noreferrer">
           Open on GitHub
         </a>
@@ -535,8 +542,6 @@ export function OnboardingScreen() {
           )
         }
       </UrRegion>
-      {/* Setup › GitHub (#1086, design 2 "Org cards"): what the App and each org grant, below the checklist. */}
-      <GitHubPermissions />
     </div>
   )
 }

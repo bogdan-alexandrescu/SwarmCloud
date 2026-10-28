@@ -19,7 +19,10 @@
  *   Recent failures            the last 24 hours of the page AND of the
  *                              FAILED, DEAD_LETTERED and CANCELLED state
  *                              reads (`stateView`), which a page with more
- *                              behind it takes beside it (live QA OV-1).
+ *                              behind it takes beside it (live QA OV-1); a
+ *                              page that is every agent is listed whole, at
+ *                              any age, as Needs a look counts it
+ *                              (`failureWindow`, overview-agents-01).
  *
  * An unread count is an em dash with its reason as the title -- never a 0.
  */
@@ -37,7 +40,7 @@ import { staleFoot } from './Shell'
 import { usePageClock } from './useNow'
 import { formatDateTime, isToday, startOfDay, zoneLabel } from './timezone'
 import { useTimeZone } from './useTimeZone'
-import { ENDED_BADLY, WHOLE, hhmm, readReach, stateView, type Coverage, type OverviewTaskPage, type StateView } from './overviewReads'
+import { ENDED_BADLY, WHOLE, hhmm, readReach, stateView as readStateView, type Coverage, type OverviewTaskPage, type StateView } from './overviewReads'
 import { CONCURRENCY_STATES, TERMINAL_STATES, clockTime, reasonCopy, timeAgo, whyAgent, type Stats, type Task, type TaskPage, type TaskState } from './types'
 
 /**
@@ -292,6 +295,8 @@ export interface WaitGroup {
   title: string
   detail: string
   n: number
+  /** The workflows the detail names, by id, for the line's `title`. */
+  ids: string[]
 }
 
 /**
@@ -303,8 +308,12 @@ export interface WaitGroup {
  * The reason words are `reasonCopy` and `whyAgent`, the same ones the Agents
  * list prints, so a group here and a row there say the same thing.
  */
-export function waitGroups(all: readonly Task[], now: number = Date.now()): WaitGroup[] {
-  const groups = new Map<string, WaitGroup & { eligible: string | null; workflows: Map<string, number> }>()
+export function waitGroups(
+  all: readonly Task[],
+  now: number = Date.now(),
+  wfTitle: (workflowId: string) => string | null = () => null,
+): WaitGroup[] {
+  const groups = new Map<string, Omit<WaitGroup, 'ids'> & { eligible: string | null; workflows: Map<string, number> }>()
   for (const t of all) {
     let key: string
     let title: string
@@ -333,7 +342,11 @@ export function waitGroups(all: readonly Task[], now: number = Date.now()): Wait
       const ranked = [...workflows.entries()].sort((a, b) => b[1] - a[1])
       // THE COUNT CANNOT READ AS PART OF THE ID (visual QA V258, 2026-10-16):
       // "wf_audit_01 1" read as `wf_audit_011`. A times sign sets it apart.
-      const wfs = ranked.slice(0, 3).map(([w, n]) => `${w} ×${n}`)
+      // A WORKFLOW BY ITS TITLE (visual QA pass 1, overview-agents-02,
+      // 2026-10-28): the row read "wf_audit_01 ×1". It names the workflow
+      // as Workflows and Agents rows do, once its title is read; the ids are
+      // the line's `title`. Until then, or with no title, the id stands.
+      const wfs = ranked.slice(0, 3).map(([w, n]) => `${wfTitle(w) ?? w} ×${n}`)
       // EVERY CONTRIBUTOR ACCOUNTED FOR (live QA OV-10, 2026-10-11): a row
       // counting 7 named three workflows of 2 each and dropped the seventh --
       // a fourth workflow, or a task in none. What the names leave is said.
@@ -355,7 +368,7 @@ export function waitGroups(all: readonly Task[], now: number = Date.now()): Wait
         ...(rest > 0 && wfs.length > 0 ? [`+${rest} more`] : []),
         why,
       ]
-      return { ...g, detail: clauses.join(' · ') }
+      return { ...g, detail: clauses.join(' · '), ids: ranked.slice(0, 3).map(([w]) => w) }
     })
     .sort((a, b) => b.n - a.n || a.key.localeCompare(b.key))
 }
@@ -417,11 +430,23 @@ function NoneAmong({ heading, n }: { heading: string; n: number }) {
   )
 }
 
+/** The states `waitGroups` groups. */
+const WAITING: ReadonlySet<TaskState> = new Set<TaskState>(['PARKED', 'READY', 'QUEUED'])
+
 /** "Waiting, and why": one row per reason, with its count (O1 `.wlist`). */
 export function WaitingWhy({ tasks }: { tasks: Result<TaskPage> }) {
   const all = rows(tasks)
+  // ONE TASK PER WAITING WORKFLOW, so `useRowTitles` reads each title once.
+  const perWorkflow = new Map<string, Task>()
+  for (const t of all ?? []) {
+    if (t.workflow_id !== null && WAITING.has(t.state) && !perWorkflow.has(t.workflow_id)) perWorkflow.set(t.workflow_id, t)
+  }
+  const titleOf = useRowTitles([...perWorkflow.values()])
   if (all === null) return <TaskListAbsent tasks={tasks} />
-  const groups = waitGroups(all)
+  const groups = waitGroups(all, Date.now(), (w) => {
+    const t = perWorkflow.get(w)
+    return t === undefined ? null : titleOf(t)
+  })
   if (groups.length === 0) return <NoneAmong heading={`None among the ${all.length} newest`} n={all.length} />
   return (
     <div className="ov-wlist">
@@ -432,7 +457,7 @@ export function WaitingWhy({ tasks }: { tasks: Result<TaskPage> }) {
           </span>
           <span className="ov-wt">
             <b>{g.title}</b>
-            <small>{g.detail}</small>
+            <small title={g.ids.length > 0 ? g.ids.join(', ') : undefined}>{g.detail}</small>
           </span>
           <span className="ov-wn">{g.n}</span>
         </div>
@@ -446,11 +471,28 @@ const DAY_MS = 24 * 60 * 60 * 1000
 
 // The state reads and their coverage live in `overviewReads.ts`, which the
 // pure check layer imports too; re-exported for the screen and its tests.
-export { ENDED_BADLY, WHOLE, hhmm, readReach, stateView, type Coverage, type OverviewTaskPage, type StateRead, type StateView } from './overviewReads'
+export { ENDED_BADLY, WHOLE, hhmm, readReach, type Coverage, type OverviewTaskPage, type StateRead, type StateView } from './overviewReads'
+
+/** A coverage that also names the window its failures are counted over (`failureWindow`). */
+export type WindowedCoverage = Coverage & { window?: FailureWindow }
 
 /**
- * The failed, dead-lettered and cancelled rows of the last 24 hours, newest
- * first. THE WINDOW AND THE ORDER READ `completed_at` ONLY (browser QA N4,
+ * `overviewReads.ts`'s `stateView`, carrying the page's failure window
+ * (overview-agents-01 review, 2026-10-28). Overview.tsx draws Recent
+ * failures' head note and the panel's count as `failuresOf(ended.rows, now,
+ * ended)`, with no window, so they read "last 24h · 0 failed" above two
+ * FAILED rows from 9 days ago that the body, on the check's window, listed.
+ * The view now carries the window and `failuresOf` takes it when none is
+ * passed, so every caller counts what Needs a look counts.
+ */
+export function stateView(page: OverviewTaskPage, states: readonly TaskState[]): StateView & { window: FailureWindow } {
+  return { ...readStateView(page, states), window: failureWindow(page) }
+}
+
+/**
+ * The failed, dead-lettered and cancelled rows of the window -- the one
+ * passed, else the one `cover` carries (`stateView`), else the last 24 hours
+ * -- newest first. THE WINDOW AND THE ORDER READ `completed_at` ONLY (browser QA N4,
  * 2026-10-04): `updated_at` is bumped by any later write, so a task that ended
  * days ago with no recorded end was listed and counted as "last 24h". A
  * terminal task with no recorded end is listed after the dated rows and
@@ -473,7 +515,8 @@ export { ENDED_BADLY, WHOLE, hhmm, readReach, stateView, type Coverage, type Ove
 export function failuresOf(
   all: readonly Task[],
   now: number,
-  cover: Coverage = WHOLE,
+  cover: WindowedCoverage = WHOLE,
+  window: FailureWindow = cover.window ?? LAST_DAY,
 ): { rows: Task[]; note: string; partial: boolean } {
   const ended = (t: Task): number | null => {
     if (t.completed_at === null) return null
@@ -484,14 +527,14 @@ export function failuresOf(
   const dated = terminal
     .filter((t) => {
       const ms = ended(t)
-      return ms !== null && now - ms <= DAY_MS
+      return ms !== null && (window.newest !== null || now - ms <= DAY_MS)
     })
     .sort((a, b) => cancelledLast(a) - cancelledLast(b) || (ended(b) ?? 0) - (ended(a) ?? 0))
   const undated = terminal.filter((t) => ended(t) === null)
   const partial = ENDED_BADLY.some((s) => !cover.whole(s))
   const n = (s: TaskState) => `${cover.whole(s) ? '' : '≥'}${dated.filter((t) => t.state === s).length}`
   const note = [
-    'last 24h',
+    window.newest === null ? 'last 24h' : `of the ${window.newest} newest`,
     `${n('FAILED')} failed`,
     `${n('DEAD_LETTERED')} dead-lettered`,
     ...(dated.some((t) => t.state === 'CANCELLED') || !cover.whole('CANCELLED') ? [`${n('CANCELLED')} cancelled`] : []),
@@ -499,6 +542,31 @@ export function failuresOf(
     ...(partial ? [readReach(cover.since)] : []),
   ].join(' · ')
   return { rows: [...dated, ...undated], note, partial }
+}
+
+/**
+ * WHICH FAILURES THE CARD LISTS: THE ONES NEEDS A LOOK COUNTS (visual QA pass
+ * 1, overview-agents-01, 2026-10-28). Needs a look said "2 failed agents among
+ * the 27 most recent" while this card, over the same 27, said "None among the
+ * 27 newest": the check (`checks.ts` `failureCheck`) counts every failure on a
+ * page that is every agent, at any age, and windows to the last 24 hours only
+ * when the page has more behind it and the FAILED state read landed; the card
+ * windowed to 24 hours always, so two failures that ended two days earlier were
+ * counted there and dropped here. The card now takes the check's window:
+ * `newest` is the page's length when it reads the page whole, null for the
+ * last 24 hours.
+ */
+export interface FailureWindow {
+  newest: number | null
+}
+
+export const LAST_DAY: FailureWindow = { newest: null }
+
+/** The check's window for this read, so Recent failures and Needs a look count the same rows. */
+export function failureWindow(page: OverviewTaskPage): FailureWindow {
+  const pageWhole = (page.next_page_token ?? null) === null
+  const failedRead = page.byState?.some((r) => r.state === 'FAILED') ?? false
+  return !pageWhole && failedRead ? LAST_DAY : { newest: page.tasks.length }
 }
 
 /** 1 for a cancelled agent, 0 for a failure: the sort key that lists failures first. */
@@ -549,8 +617,9 @@ export function RecentFailures({ tasks, now = Date.now() }: { tasks: Result<Over
   // 2026-10-26), so this card's 24 hours and Needs a look's end at the same
   // moment and count the same failures.
   const all = rows(tasks)
-  const view = tasks.status === 'ok' || tasks.status === 'stale' ? stateView(tasks.data, ENDED_BADLY) : null
-  const found = view === null ? null : failuresOf(view.rows, now, view)
+  const read = tasks.status === 'ok' || tasks.status === 'stale' ? tasks.data : null
+  const view = read === null ? null : stateView(read, ENDED_BADLY)
+  const found = read === null || view === null ? null : failuresOf(view.rows, now, view)
   // `failuresOf` lists each kind newest first, so a split keeps both orders.
   const ended = found === null ? [] : found.rows
   const failed = ended.filter((t) => t.state !== 'CANCELLED')
@@ -684,6 +753,14 @@ function failureTable(
           const title = titleOf(t)
           const wf = title === null ? t.workflow_id : null
           const label = rowLabel(t, title)
+          // THE TOOLTIP HOLDS WHAT THE LINK SAYS, THEN THE WHOLE ID (CIFIX-2632,
+          // 2026-10-28): a step's link ends in its short id, `fan_3`, and a
+          // tooltip of `<label> · task_fan_3` did not contain it, so the
+          // clamped name was not whole in its title (walk.long C). The short
+          // id stays in the words; the full id still ends the tooltip.
+          const short = (t.step_id ?? null) !== null ? shortTaskId(t.id) : null
+          const words = [label, ...(wf === null ? [] : [wf]), ...(short === null ? [] : [short])].join(' · ')
+          const tip = short === t.id ? words : `${words} · ${t.id}`
           return (
             <tr key={t.id}>
               {/* THE MARK ALONE (browser QA N3, 2026-10-04): the 68px badge
@@ -693,7 +770,7 @@ function failureTable(
                 <StateMark state={t.state} bare />
               </td>
               <th scope="row">
-                <a className="ov-name" href={href} title={`${wf === null ? label : `${label} · ${wf}`} · ${t.id}`}>
+                <a className="ov-name" href={href} title={tip}>
                   {label}
                   {wf !== null && (
                     <>
@@ -710,10 +787,10 @@ function failureTable(
                       `<title> · <step> · <id>`, in an element of its own:
                       drawn as an id, it is the user's data, not a code
                       identifier (walk.copy E). */}
-                  {(t.step_id ?? null) !== null && (
+                  {short !== null && (
                     <>
                       {' · '}
-                      <span className="mono">{shortTaskId(t.id)}</span>
+                      <span className="mono">{short}</span>
                     </>
                   )}
                 </a>

@@ -94,7 +94,7 @@ describe('"+ Add setting ▾" is one menu, and it adds a setting', () => {
     fireEvent.click(item)
     const fields = [...container.querySelectorAll('.sbf-input .sbf-field')]
     expect(fields).toHaveLength(before + 1)
-    expect(visible(fields.at(-1)!.querySelector('.sbf-name'))).toBe('sleep_seconds')
+    expect(visible(fields.at(-1)!.querySelector('.sbf-name'))).toBe('Sleep seconds')
     // Picking closes it, and a key already on the form is not offered again.
     expect(screen.queryByRole('group', { name: 'settings to add' })).toBeNull()
     fireEvent.click(add)
@@ -125,7 +125,7 @@ describe('"+ Add setting ▾" is one menu, and it adds a setting', () => {
     fireEvent.change(step.querySelector<HTMLSelectElement>('select.sb-runner-select')!, { target: { value: 'browser' } })
     fireEvent.click(within(step).getByRole('button', { name: /Add setting/ }))
     fireEvent.click(within(within(step).getByRole('group', { name: 'settings to add' })).getByRole('button', { name: /^url/ }))
-    expect([...step.querySelectorAll('.sbf-field .sbf-name')].map(visible)).toContain('url')
+    expect([...step.querySelectorAll('.sbf-field .sbf-name')].map(visible)).toContain('URL')
   })
 })
 
