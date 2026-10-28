@@ -121,7 +121,11 @@ describe('D32: Set by is never blank, and a unit is a unit', () => {
     const { container } = render(<AdmSetBy pool={pool('global', 1, 40)} />)
     expect(container.textContent).toBe('configured')
     const { container: c2 } = render(<AdmSetBy pool={pool('runner:a', 1, 10, { hard_limit: 20, adaptive_target: 10 })} />)
-    expect(c2.textContent).toBe('AIMD back-off')
+    // Pool limits says the back-off in words, not the broker's algorithm
+    // (visual QA pass 1, admin-shell-13, part of #2596; `setByWords`); the
+    // Pools assertion above still reads `AIMD back-off`, Capacity's term.
+    expect(c2.textContent).toBe('lowered automatically (back-off)')
+    expect(c2.textContent).not.toContain('AIMD')
   })
 
   it('counts one unit as a unit', () => {
