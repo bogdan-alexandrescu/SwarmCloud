@@ -699,14 +699,15 @@ ARG GCLOUD_SHA256=117c7a96c43ecf649f91d7f775f54ff83134caeb42df4cfed8a7b92c2b701c
 # Named GKE_PLUGIN_*, not GKE_AUTH_PLUGIN_*: Trivy DS-0031 reads "AUTH" in an ARG name as a secret and fails the PR; these are public package pool ids and checksums.
 ARG GKE_PLUGIN_POOL_ID=207adf5dccdc107f7d16bf1e01bd1398
 ARG GKE_PLUGIN_SHA256=c572f6cf9b401820032e8459b2bade792442dfbbce30e53d3b1b0d7be1bf9e24
-# kubectl 1.36.5: the newest 1.36 patch (https://dl.k8s.io/release/stable-1.36.txt
-# on 2026-10-01), one minor ahead of the 1.35 control plane as kubectl's skew
+# kubectl 1.36.6: the newest 1.36 patch (https://dl.k8s.io/release/stable-1.36.txt
+# on 2026-10-28), built on go1.26.10, which fixes CVE-2026-111943 and
+# CVE-2026-56857 in kubectl (1.36.5 was go1.26.8), one minor ahead of the 1.35 control plane as kubectl's skew
 # policy allows and the line docs/versions.md pins for operators. The static
 # binary from dl.k8s.io rather than Google's `kubectl` .deb, which is 141 MB
 # of several bundled versions. Checksum:
-# https://dl.k8s.io/release/v1.36.5/bin/linux/amd64/kubectl.sha256. Scan: clean.
-ARG KUBECTL_VERSION=1.36.5
-ARG KUBECTL_SHA256=33bc88a24c3b09cf55bfd59e6ca977881b61fc3f25ab65bc80c65b430248648e
+# https://dl.k8s.io/release/v1.36.6/bin/linux/amd64/kubectl.sha256.
+ARG KUBECTL_VERSION=1.36.6
+ARG KUBECTL_SHA256=29818b6729dc9262b692307470d0558d027725e738be5dd47c760261868a2634
 # dpkg runs with /usr/sbin on PATH because it refuses to start without
 # ldconfig and start-stop-daemon, which live there and which the runtime PATH
 # deliberately omits; /usr/local/bin is there for the postinst's python3.
