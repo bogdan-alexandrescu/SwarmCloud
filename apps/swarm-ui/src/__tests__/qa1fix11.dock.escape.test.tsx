@@ -43,21 +43,20 @@ describe('the Reads dock closes on Escape (overview-agents-06)', () => {
   it('collapses from the toggle itself and keeps the key from closing anything behind it', () => {
     const { line } = openDock()
     line.focus()
-    const ev = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
-    line.dispatchEvent(ev)
+    // fireEvent returns false when a handler cancelled the event.
+    const notCancelled = fireEvent.keyDown(line, { key: 'Escape' })
     expect(line.getAttribute('aria-expanded')).toBe('false')
     // MUTATION: drop the preventDefault() and a document-level Escape
     // listener (Spine's sheet, AgentSplit) reads this key as its own too.
-    expect(ev.defaultPrevented).toBe(true)
+    expect(notCancelled).toBe(false)
   })
 
   it('leaves a collapsed dock alone, so Escape still reaches what is behind it', () => {
     noteFixtureProbe(route('/v1/capacity'), 120, true)
     const { container } = render(<Dock />)
     const line = container.querySelector<HTMLButtonElement>('.ctl-dock-line')!
-    const ev = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
-    line.dispatchEvent(ev)
+    const notCancelled = fireEvent.keyDown(line, { key: 'Escape' })
     expect(line.getAttribute('aria-expanded')).toBe('false')
-    expect(ev.defaultPrevented).toBe(false)
+    expect(notCancelled).toBe(true)
   })
 })
