@@ -1,5 +1,6 @@
-import { useState, type ReactNode } from 'react'
-import { loadHolders, type HoldersBoard } from './api'
+import { useEffect, useState, type ReactNode } from 'react'
+import { agentName } from './agentlist'
+import { loadHolders, loadTask, type HoldersBoard } from './api'
 import { Segmented, ToneMark } from './components'
 import { HelpCard } from './HelpCard'
 import { StateMark, WarnMark } from './marks'
@@ -134,6 +135,11 @@ function coverageSay(rows: number, c: LeaseCoverage, what: string): string {
  * `#help/units-not-agents`, where they were already written.
  */
 export function HoldersScreen() {
+  // THE HEAD NAMES THE TENANT FILTER (visual QA capacity-17, 2026-10-28):
+  // under `?tenant=u-bogdan` it read "4 unreleased leases · 4 units held ·
+  // every tenant". The table applies the filter only when a loaded row is that
+  // tenant's (`HolderTable`), and the head follows the same rule.
+  const linkedTenant = useLinkedParam('tenant')
   // "Holders", matching the tab, and the two are not allowed to differ:
   // test_nav_headings_agree.py asserts every screen's heading IS the label of
   // the tab that opens it. It was "Capacity holders", and it had to be while
@@ -149,6 +155,19 @@ export function HoldersScreen() {
       summary={(b) => {
         const coverage = leaseCoverage(b.page)
         const rows = b.page.leases.length
+        const tenant = linkedTenant !== null && b.page.leases.some((l) => l.tenant_id === linkedTenant) ? linkedTenant : null
+        if (tenant !== null) {
+          // The tenant's own rows and units. How many of ITS leases a cut
+          // window left out is not served, so a partial read says `listed`.
+          const mine = b.page.leases.filter((l) => l.tenant_id === tenant)
+          const units = mine.reduce((sum, l) => sum + (typeof l.units === 'number' && Number.isFinite(l.units) ? l.units : 0), 0)
+          return (
+            <>
+              {mine.length} unreleased lease{mine.length === 1 ? '' : 's'}
+              {coverage.kind === 'complete' ? '' : ' listed'} · {units} units held · tenant {tenant}
+            </>
+          )
+        }
         return (
           <>
             {/* THE COUNT SAYS WHAT IT IS OUT OF. "200 unreleased leases" over a
@@ -311,11 +330,26 @@ function driftRows(board: HoldersBoard, coverage: LeaseCoverage): DriftRow[] | n
       const pool = pools.find((p) => p.name === name)
       return { name, held, active: pool ? pool.active : null }
     })
-    .sort((a, b) => b.held - a.held || a.name.localeCompare(b.name))
+    // DRIFTED POOLS FIRST, THE LARGEST DELTA FIRST (visual QA capacity-16,
+    // 2026-10-28). By units held, 20 pools read in catalogue order with
+    // GKE_AUTOPILOT's 0 between CLOUD_RUN_JOB's +5 and anthropic's +5. Then a
+    // pool whose counter was not read, then the ones that agree.
+    .sort((a, b) => driftRank(b) - driftRank(a) || b.held - a.held || a.name.localeCompare(b.name))
 }
 
 function disagrees(r: DriftRow): boolean {
   return r.active !== null && r.active !== r.held
+}
+
+/** A measured agreement: a counter was read and it equals the leases' sum. */
+function agrees(r: DriftRow): boolean {
+  return r.active !== null && r.active === r.held
+}
+
+/** Sort key: a delta's size (above 1), an unread counter (0.5), an agreement (0). */
+function driftRank(r: DriftRow): number {
+  if (r.active === null) return 0.5
+  return r.active === r.held ? 0 : 1 + Math.abs(r.active - r.held)
 }
 
 /**
@@ -344,7 +378,10 @@ function DriftCallout({
           const d = (r.active as number) - r.held
           return (
             <p key={r.name}>
-              <b className="mono">{r.name}</b> counts {Math.abs(d)} {d > 0 ? 'more' : 'fewer'} than its leases.
+              {/* THE TABLE'S NAME FOR THE POOL (capacity-16): the banner said
+                  `provider:anthropic:tenant:u-bogdan` above a row that says
+                  `anthropic · u-bogdan`. The raw id is the title. */}
+              <b title={r.name}>{poolLabel(r.name)}</b> counts {Math.abs(d)} {d > 0 ? 'more' : 'fewer'} than its leases.
             </p>
           )
         })}
@@ -358,6 +395,10 @@ function DriftCallout({
 
 function Drift({ board, coverage, rows }: { board: HoldersBoard; coverage: LeaseCoverage; rows: DriftRow[] | null }) {
   const rowsRead = board.page.leases.length
+  // THE AGREEING POOLS FOLD BEHIND A COUNT (capacity-16): 13 of 20 rows read
+  // 0/0/0, and at 390 that was 13 four-line cards around the seven that
+  // differ. Opened, they follow the drifted ones in the same table.
+  const [agreeingOpen, setAgreeingOpen] = useState(false)
 
   /* THE COUNTERS ARE GONE, SO THERE IS NO FIGURE AT ALL.
      Not a zero, not an empty table: `.ctl-mark.is-unread` plus a dash in the
@@ -391,6 +432,8 @@ function Drift({ board, coverage, rows }: { board: HoldersBoard; coverage: Lease
   }
 
   const disagreeing = rows.filter(disagrees)
+  const agreeing = rows.filter(agrees)
+  const drawn = agreeingOpen ? rows : rows.filter((r) => !agrees(r))
   const compared = rows.filter((r) => r.active !== null).length
   // A DELTA IS EVIDENCE ONLY OVER EVERY LIVE LEASE. Over a cut window the
   // lease side is short by whatever the window left out, so a counter above it
@@ -413,7 +456,7 @@ function Drift({ board, coverage, rows }: { board: HoldersBoard; coverage: Lease
           </>
         }
       />
-      {rows.length > 0 && (
+      {drawn.length > 0 && (
         <div className="ctl-card-body is-flush">
           <div className="ctl-table is-stacked">
             <table role="table">
@@ -426,7 +469,7 @@ function Drift({ board, coverage, rows }: { board: HoldersBoard; coverage: Lease
                 </tr>
               </thead>
               <tbody role="rowgroup">
-                {rows.map((r) => (
+                {drawn.map((r) => (
                   <tr role="row" key={r.name} className={disagrees(r) ? 'is-warn' : undefined}>
                     <th role="rowheader" scope="row" title={r.name}>
                       {poolLabel(r.name)}
@@ -456,10 +499,18 @@ function Drift({ board, coverage, rows }: { board: HoldersBoard; coverage: Lease
           </div>
         </div>
       )}
+      {agreeing.length > 0 && (
+        <p className="hold-agree">
+          <button type="button" className="hold-pool-clear" aria-expanded={agreeingOpen} onClick={() => setAgreeingOpen((o) => !o)}>
+            {agreeing.length} pool{agreeing.length === 1 ? ' agrees' : 's agree'} · {agreeingOpen ? 'hide' : 'show'}
+          </button>
+        </p>
+      )}
 
-      {/* THE SAMPLE SIZE IS THE MARKER, and the tool that settles a
-          disagreement is an ACTION, so both stay -- as provenance and as a
-          command, not as two sentences. A comparison computed over a truncated
+      {/* THE SAMPLE SIZE IS THE MARKER. The Makefile target that settles a
+          disagreement (`make pool-check`) was printed here too; it is an
+          operator's command, not reader copy (capacity-16), and the help
+          topic behind the heading's `?` is where the long form lives. A comparison computed over a truncated
           page is not the same claim as one computed over the fleet, and the
           row count -- out of the total, when the route said there was more --
           is what says which this is. AGREEMENT OVER EVERY LIVE LEASE is a
@@ -475,8 +526,6 @@ function Drift({ board, coverage, rows }: { board: HoldersBoard; coverage: Lease
           ))}{' '}
         over {ofTotal(rowsRead, coverage)} row{rowsRead === 1 && coverage.kind !== 'cut' ? '' : 's'}
         {coverage.kind === 'cut' && coverage.beyond !== null && ` · ${coverage.beyond} live not listed`}
-        {' · '}
-        <code>make pool-check</code>
       </div>
     </section>
   )
@@ -645,10 +694,11 @@ function HolderTable({
               {sorted.map((l) => (
                 <tr role="row" key={l.lease_id}>
                   <th role="rowheader" scope="row">
-                    {/* ONE TASK REFERENCE (QA G5-15): `task_…` and the last
-                        eight, as Accounts prints the same task, and the lease
-                        under it says it is a lease. */}
-                    <TaskRef id={l.task_id} />
+                    {/* ONE TASK REFERENCE (QA G5-15): the agent's name, or
+                        `task_…` and the last eight until it is known, as
+                        Accounts prints the same task, and the lease under it
+                        says it is a lease. */}
+                    <HolderAgent taskId={l.task_id} />
                     <LeaseRef id={l.lease_id} />
                   </th>
                   <td role="cell" data-label="Tenant">{l.tenant_id}</td>
@@ -679,6 +729,39 @@ function HolderTable({
       </div>
     </section>
   )
+}
+
+/**
+ * ONE HOLDER'S AGENT, BY NAME (visual QA chrome-C25, 2026-10-28): every row
+ * was `task_…4806a6ff` over its lease id, with nothing a reader would know the
+ * agent by. The lease carries no name, so the task is read -- the read the
+ * agent's own page makes, and the one Accounts' holders name a row with
+ * (`HolderAgent` there, G5-16) -- and named the way every screen names an
+ * agent (`agentName`). Until it lands, or when it fails, the short id stands:
+ * the whole id is the link's title and its copy either way.
+ *
+ * Keyed by the task id, so a poll that redraws the table keeps the name it
+ * has and does not read again. A read that throws is the same as one that
+ * failed: the short id, never a blank cell.
+ */
+function HolderAgent({ taskId }: { taskId: string }) {
+  const [name, setName] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    setName(null)
+    void Promise.resolve()
+      .then(() => loadTask(taskId))
+      .then(
+        (r) => {
+          if (live && (r.status === 'ok' || r.status === 'stale')) setName(agentName(r.data))
+        },
+        () => {},
+      )
+    return () => {
+      live = false
+    }
+  }, [taskId])
+  return <TaskRef id={taskId} title={name} />
 }
 
 /**

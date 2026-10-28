@@ -1,0 +1,10 @@
+/* "Repositories SwarmCloud may reach as you" (ReachableRepositories.tsx), on
+   Config › Repositories. */
+
+/* THE FOOTNOTE IS A SENTENCE, IN THE BODY FACE (QA1 config-19). `.c-card-foot`
+   (components.css) sets every card's foot in mono, the face this console keeps
+   for identifiers and figures; this foot is prose -- "Last verified 9d ago. An
+   agent for a repository not on this list is refused at submission." -- and in
+   mono it read as a value. Only the face moves: size, colour and rule are the
+   foot's own. */
+.c-card.ac-grants > .c-card-foot { font-family: var(--font); }

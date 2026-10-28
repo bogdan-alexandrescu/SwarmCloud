@@ -115,3 +115,15 @@
   .ae-diff > dl > div { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .ae-acts .c-btn { min-height: 44px; }
 }
+/* A problem is a way to its field (QA1 automate-24): a button in the line's
+   own bad ink, underlined as a link is, so it never relies on colour alone. */
+.ae-prob-jump {
+  margin: 0; padding: 0; border: 0; background: none; text-align: left; cursor: pointer;
+  font: inherit; color: inherit; overflow-wrap: anywhere;
+  text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px;
+  border-radius: var(--ctl-radius-sm);
+}
+.ae-prob-jump:hover { text-decoration-color: currentColor; }
+.ae-prob-jump:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+/* A jump target that draws no box of its own: what it wraps stays the grid's item. */
+.ae-jump { display: contents; }

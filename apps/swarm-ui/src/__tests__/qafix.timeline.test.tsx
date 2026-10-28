@@ -101,20 +101,18 @@ describe('QA-093: no fence or park count is printed before a lane is drawn', () 
     // these two are red: it prints '0 generations fenced' and '0 parks'.
     expect(text).not.toMatch(/\d+\+? generations? fenced/)
     expect(text).not.toMatch(/\d+ parks?, \d+ still parked/)
-    // MUTATION: drop the 'reading the lanes' branch and print nothing in
-    // the counts' place, and these are red.
-    expect(text).toMatch(/fenced — reading the lanes/)
-    expect(text).toMatch(/parks — reading the lanes/)
+    // MUTATION: drop the counting branch and print nothing in the counts'
+    // place, and this is red. One cell for both (QA1-FIX-28, runs-submit-33).
+    expect(text).toMatch(/fenced and parks — counting…/)
   })
 
   it('says the lanes were not read when the attempts read failed', async () => {
     api.loadAttemptsPage.mockResolvedValue(failed(503, 'unavailable'))
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     await waitFor(() => expect(strip().textContent).toMatch(/% success/))
-    await waitFor(() => expect(strip().textContent).toMatch(/fenced — the lanes were not read/))
+    await waitFor(() => expect(strip().textContent).toMatch(/fenced and parks — the lanes were not read/))
     // MUTATION: treat a failed read as a read of no lanes, and this is red.
     expect(strip().textContent).not.toMatch(/\d+ parks?, \d+ still parked/)
-    expect(strip().textContent).toMatch(/parks — the lanes were not read/)
   })
 
   it('prints the measured counts once the lanes are drawn', async () => {
@@ -158,31 +156,31 @@ describe('QA-095: the Profile filter counts no profiles before the lanes are rea
   it('says no count while the attempts read is out', async () => {
     api.loadAttemptsPage.mockImplementation(() => new Promise(() => {}))
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
-    await waitFor(() => expect(strip().textContent).toMatch(/fenced — reading the lanes/))
+    await waitFor(() => expect(strip().textContent).toMatch(/fenced and parks — counting…/))
     // MUTATION: summarise the Profile picker as `all ${options.length}` with no regard
     // for the read, and this reads 'Profile all 0' again.
     expect(profileSummary()).not.toMatch(/\d/)
     // MUTATION: drop the reading word and the picker says only 'Profile all', a claim of a filter over nothing.
     expect(profileSummary()).toBe('Profile all · reading')
-    // The State picker's options are the fixed list of states, not read, so it keeps its count.
+    // The State picker's options are the fixed list of states, not read: it says all, with no count (QA1-FIX-28, runs-submit-37).
     const state = [...document.querySelectorAll<HTMLElement>('details.tl-pick > summary')].find((el) => el.textContent?.startsWith('State'))
-    expect(state?.textContent).toMatch(/all \d+/)
+    expect(state?.textContent).toMatch(/all$/)
   })
 
   it('says the lanes were not read when the attempts read failed', async () => {
     api.loadAttemptsPage.mockResolvedValue(failed(503, 'unavailable'))
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
-    await waitFor(() => expect(strip().textContent).toMatch(/fenced — the lanes were not read/))
-    // MUTATION: treat a failed read as a read of no lanes and this reads 'Profile all 0'.
+    await waitFor(() => expect(strip().textContent).toMatch(/fenced and parks — the lanes were not read/))
+    // MUTATION: treat a failed read as a read of no lanes and this reads 'Profile all'.
     expect(profileSummary()).toBe('Profile all · not read')
   })
 
-  it('counts the profiles the drawn lanes carry once they are read', async () => {
+  it('says all, with no count, once they are read (QA1-FIX-28, runs-submit-37)', async () => {
     api.loadAttemptsPage.mockResolvedValue(ok(page([ATTEMPT])))
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     await waitFor(() => expect(strip().textContent).toMatch(/0 generations fenced/))
     // MUTATION: keep the reading word after the lanes land and this is red.
-    await waitFor(() => expect(profileSummary()).toBe('Profile all 1'))
+    await waitFor(() => expect(profileSummary()).toBe('Profile all'))
   })
 })
 
