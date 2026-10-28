@@ -13,17 +13,31 @@
  *        past TTL" card as tall as the card beside it: the grid stretched it.
  *        The cards size to their content (`align-items: start`).
  *
+ *   overview-agents-02 (Waiting, and why)  a waiting row read "wf_audit_01 ×1":
+ *        the workflow by its id. It is named by its title once read, as the
+ *        Workflows and Agents rows name it, with the id in the line's title.
+ *
  * Fixtures from `runfixture`; nothing here is token-shaped.
  */
-import { cleanup, render } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { cleanup, render, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
-import { RecentFailures, failureWindow, failuresOf, type OverviewTaskPage } from '../OverviewRegions'
+import { RecentFailures, WaitingWhy, failureWindow, failuresOf, type OverviewTaskPage } from '../OverviewRegions'
 import type { Task } from '../types'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 import { task } from './runfixture'
+
+// A full read of a waiting step names its workflow; any other read names nothing.
+vi.mock('../api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../api')>()),
+  loadTask: vi.fn(async (id: string) =>
+    id === 'tsk_wait_1'
+      ? { status: 'ok', data: { id, metadata: { title: 'Audit the operator scripts' } }, fetchedAt: Date.now() }
+      : { status: 'error', error: { kind: 'not_found', message: 'Not Found' }, fetchedAt: Date.now() },
+  ),
+}))
 
 const MIN = 60_000
 const ago = (m: number): string => new Date(Date.now() - m * MIN).toISOString()
@@ -88,5 +102,19 @@ describe('overview-agents-07: a Needs a look card is as tall as its own content'
       // MUTATION: drop `align-items: start` from `.ov-atts` -> the default stretch is back.
       expect(painted(grid, 'align-items', env)).toBe('start')
     }
+  })
+})
+
+describe('overview-agents-02: a waiting row names its workflow by its title', () => {
+  it('reads "Audit the operator scripts ×1", with the id in the line\'s title', async () => {
+    const rows = [task({ id: 'tsk_wait_1', state: 'QUEUED', workflow_id: 'wf_audit_01', depends_on: ['plan'], completed_at: null })]
+    const data = { tasks: rows, next_page_token: null } as unknown as OverviewTaskPage
+    const { container } = render(<WaitingWhy tasks={ok(data)} />)
+    const line = container.querySelector('.ov-wt small')!
+    // MUTATION: print the id (`${w} ×${n}`) whatever the title -> fails.
+    await waitFor(() => expect(text(line)).toContain('Audit the operator scripts ×1'))
+    expect(text(line)).not.toContain('wf_audit_01')
+    // MUTATION: drop the line's `title` -> the id is nowhere on the row.
+    expect(line.getAttribute('title')).toBe('wf_audit_01')
   })
 })

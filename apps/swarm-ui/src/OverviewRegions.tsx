@@ -295,6 +295,8 @@ export interface WaitGroup {
   title: string
   detail: string
   n: number
+  /** The workflows the detail names, by id, for the line's `title`. */
+  ids: string[]
 }
 
 /**
@@ -306,8 +308,12 @@ export interface WaitGroup {
  * The reason words are `reasonCopy` and `whyAgent`, the same ones the Agents
  * list prints, so a group here and a row there say the same thing.
  */
-export function waitGroups(all: readonly Task[], now: number = Date.now()): WaitGroup[] {
-  const groups = new Map<string, WaitGroup & { eligible: string | null; workflows: Map<string, number> }>()
+export function waitGroups(
+  all: readonly Task[],
+  now: number = Date.now(),
+  wfTitle: (workflowId: string) => string | null = () => null,
+): WaitGroup[] {
+  const groups = new Map<string, Omit<WaitGroup, 'ids'> & { eligible: string | null; workflows: Map<string, number> }>()
   for (const t of all) {
     let key: string
     let title: string
@@ -336,7 +342,11 @@ export function waitGroups(all: readonly Task[], now: number = Date.now()): Wait
       const ranked = [...workflows.entries()].sort((a, b) => b[1] - a[1])
       // THE COUNT CANNOT READ AS PART OF THE ID (visual QA V258, 2026-10-16):
       // "wf_audit_01 1" read as `wf_audit_011`. A times sign sets it apart.
-      const wfs = ranked.slice(0, 3).map(([w, n]) => `${w} ×${n}`)
+      // A WORKFLOW BY ITS TITLE (visual QA pass 1, overview-agents-02,
+      // 2026-10-28): the row read "wf_audit_01 ×1". It names the workflow
+      // as Workflows and Agents rows do, once its title is read; the ids are
+      // the line's `title`. Until then, or with no title, the id stands.
+      const wfs = ranked.slice(0, 3).map(([w, n]) => `${wfTitle(w) ?? w} ×${n}`)
       // EVERY CONTRIBUTOR ACCOUNTED FOR (live QA OV-10, 2026-10-11): a row
       // counting 7 named three workflows of 2 each and dropped the seventh --
       // a fourth workflow, or a task in none. What the names leave is said.
@@ -358,7 +368,7 @@ export function waitGroups(all: readonly Task[], now: number = Date.now()): Wait
         ...(rest > 0 && wfs.length > 0 ? [`+${rest} more`] : []),
         why,
       ]
-      return { ...g, detail: clauses.join(' · ') }
+      return { ...g, detail: clauses.join(' · '), ids: ranked.slice(0, 3).map(([w]) => w) }
     })
     .sort((a, b) => b.n - a.n || a.key.localeCompare(b.key))
 }
@@ -420,11 +430,23 @@ function NoneAmong({ heading, n }: { heading: string; n: number }) {
   )
 }
 
+/** The states `waitGroups` groups. */
+const WAITING: ReadonlySet<TaskState> = new Set<TaskState>(['PARKED', 'READY', 'QUEUED'])
+
 /** "Waiting, and why": one row per reason, with its count (O1 `.wlist`). */
 export function WaitingWhy({ tasks }: { tasks: Result<TaskPage> }) {
   const all = rows(tasks)
+  // ONE TASK PER WAITING WORKFLOW, so `useRowTitles` reads each title once.
+  const perWorkflow = new Map<string, Task>()
+  for (const t of all ?? []) {
+    if (t.workflow_id !== null && WAITING.has(t.state) && !perWorkflow.has(t.workflow_id)) perWorkflow.set(t.workflow_id, t)
+  }
+  const titleOf = useRowTitles([...perWorkflow.values()])
   if (all === null) return <TaskListAbsent tasks={tasks} />
-  const groups = waitGroups(all)
+  const groups = waitGroups(all, Date.now(), (w) => {
+    const t = perWorkflow.get(w)
+    return t === undefined ? null : titleOf(t)
+  })
   if (groups.length === 0) return <NoneAmong heading={`None among the ${all.length} newest`} n={all.length} />
   return (
     <div className="ov-wlist">
@@ -435,7 +457,7 @@ export function WaitingWhy({ tasks }: { tasks: Result<TaskPage> }) {
           </span>
           <span className="ov-wt">
             <b>{g.title}</b>
-            <small>{g.detail}</small>
+            <small title={g.ids.length > 0 ? g.ids.join(', ') : undefined}>{g.detail}</small>
           </span>
           <span className="ov-wn">{g.n}</span>
         </div>
