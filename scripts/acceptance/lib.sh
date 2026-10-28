@@ -578,6 +578,62 @@ acc_runner_field() { task_field "$1" ".result_summary.runner | $2"; }
 acc_events() { task_events "$1"; }
 
 # ---------------------------------------------------------------------------
+# A second identity: the roles probe's platform admin (groups/roles.sh).
+# ---------------------------------------------------------------------------
+
+# acc_mint_id_token SA_EMAIL OUTFILE -> an ID token for SA_EMAIL, for the
+# API's audience, in OUTFILE (0600); returns 1 and says why otherwise.
+#
+# Through iamcredentials generateIdToken with this job's own access token,
+# not `gcloud --impersonate-service-account`: the swarm-verify image is built
+# to need no gcloud (common.sh's id_token). It needs
+# roles/iam.serviceAccountOpenIdTokenCreator on SA_EMAIL alone. The token is
+# written to a file and never printed: a command substitution of it would put
+# it in the trace of any `bash -x` run of this suite.
+acc_mint_id_token() {
+  local sa="$1" out="$2" resp code body
+  resp="$(mktemp "${ACC_WORK:-${TMPDIR:-/tmp}}/acc-mint.XXXXXX")"
+  : >"${out}"
+  chmod 600 "${out}" "${resp}"
+  body="$(jq -nc --arg a "${API_AUDIENCE:-$(api_url)}" '{audience: $a, includeEmail: true}')"
+  code="$(auth_config "$(access_token)" \
+    | curl -K - -sS -m "${HTTP_TIMEOUT:-30}" -o "${resp}" -w '%{http_code}' -X POST \
+      -H "Content-Type: application/json" --data-binary "${body}" \
+      "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${sa}:generateIdToken")" \
+    || code="000"
+  if [[ "${code}" != "200" ]] || ! jq -er '.token // empty' <"${resp}" >"${out}" 2>/dev/null; then
+    err "could not mint an ID token for ${sa} (HTTP ${code}); swarm-verify needs roles/iam.serviceAccountOpenIdTokenCreator on it"
+    jq -r '.error.message // empty' <"${resp}" 2>/dev/null | redact | head -n 2 >&2 || true
+    rm -f "${resp}"
+    : >"${out}"
+    return 1
+  fi
+  rm -f "${resp}"
+}
+
+# acc_api_as TOKEN_FILE TENANT METHOD PATH OUTFILE [BODY] -> the response body
+# in OUTFILE and its HTTP status in ACC_API_STATUS, with X-Swarm-Tenant:
+# TENANT. TOKEN_FILE empty ("") is this job's own identity; otherwise the ID
+# token in it is sent for this one request and this job's own is put back.
+# Never fails on a non-2xx: the status is the answer a check judges.
+#
+# Status in a variable of this shell, the body in a file: api_request's
+# API_STATUS dies with a $(...) subshell (CLAUDE.md's command-substitution
+# trap), and every refusal here is a status worth reading.
+ACC_API_STATUS=0
+acc_api_as() {
+  local token_file="$1" tenant="$2" method="$3" path="$4" out="$5" body="${6:-}"
+  local saved="${_ID_TOKEN}"
+  if [[ -n "${token_file}" ]]; then
+    IFS= read -r _ID_TOKEN <"${token_file}" || true
+  fi
+  API_STATUS=0
+  SWARM_API_TENANT="${tenant}" api_request "${method}" "${API_PREFIX}${path}" "${body}" >"${out}" || true
+  _ID_TOKEN="${saved}"
+  ACC_API_STATUS="${API_STATUS}"
+}
+
+# ---------------------------------------------------------------------------
 # GitHub: read a pull request back, and clean up after one.
 # ---------------------------------------------------------------------------
 

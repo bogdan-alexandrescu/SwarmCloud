@@ -136,6 +136,12 @@ env:
   PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
   REGION: ${{ vars.GCP_REGION }}
   TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+  # Every swarm-verify execution this run starts carries it, as an
+  # environment override verify-remote.sh sets (`gcloud run jobs execute`
+  # takes no labels). The quiesce cancels executions marked by an accept run
+  # and nothing else; an operator's `make verify-remote` is marked `operator`
+  # and left running (#1822, comment 31).
+  SWARM_VERIFY_ORIGIN: accept-run-${{ github.run_id }}
 
 # RUNNERS (owner decision 2026-10-14). A job that holds no cloud identity
 # (id-token) runs on the self-hosted `bogdan-ci` VMs through the one guarded
@@ -256,30 +262,11 @@ jobs:
           done
 
       - name: cancel the swarm-verify executions still running
-        run: |
-          set -euo pipefail
-          gcloud run jobs executions list --job swarm-verify --region "${REGION}" --project "${PROJECT_ID}" \
-            --filter 'status.runningCount>0' --format 'value(metadata.name)' > running.txt
-          n=0
-          while read -r name; do
-            [ -n "${name}" ] || continue
-            echo "cancelling swarm-verify execution ${name}"
-            # An execution can finish between the list above and this cancel;
-            # gcloud then answers "Failed to cancel" for one that is already
-            # done (run 38072148450, 2026-10-10: swarm-verify-zkzcx). A failed
-            # cancel is fine only if the execution is no longer running.
-            if ! gcloud run jobs executions cancel "${name}" --region "${REGION}" --project "${PROJECT_ID}" --quiet; then
-              running="$(gcloud run jobs executions describe "${name}" --region "${REGION}" --project "${PROJECT_ID}" \
-                --format 'value(status.runningCount)')"
-              if [ -n "${running}" ] && [ "${running}" != "0" ]; then
-                echo "::error::swarm-verify execution ${name} is still running (${running}) and would not cancel"
-                exit 1
-              fi
-              echo "${name} had already finished; nothing to cancel"
-            fi
-            n=$((n + 1))
-          done < running.txt
-          echo "cancelled ${n} running swarm-verify execution(s)"
+        # Only those another accept run started (SWARM_VERIFY_ORIGIN
+        # accept-run-<id>, above); an operator's and an unmarked one are
+        # named as skipped and left running (#1822). verify-remote.sh says
+        # how a finished-before-cancel execution is told from a stuck one.
+        run: ./scripts/verify-remote.sh --cancel-accept-runs
 
   # -------------------------------------------------------------------------
   # Warm, smoke and the GKE proof: release.yml's dev deploy steps until
@@ -349,20 +336,15 @@ jobs:
 
       - name: cancel the executions this job started
         # A cancel stops the client, not the Cloud Run execution (header).
-        # Cancels the swarm-verify executions created since this job started.
+        # Cancels this run's own swarm-verify executions (SWARM_VERIFY_ORIGIN)
+        # created since this job started: not a sibling job's, not an operator's.
         if: ${{ cancelled() }}
         continue-on-error: true
         env:
           STARTED: ${{ steps.started.outputs.at }}
         run: |
           [ -n "${STARTED}" ] || exit 0
-          gcloud run jobs executions list --job swarm-verify --region "${REGION}" --project "${PROJECT_ID}" \
-            --filter 'status.runningCount>0' --format 'value(metadata.name,metadata.creationTimestamp)' \
-            | while read -r name created; do
-                if [ -n "${name}" ] && [[ "${created}" > "${STARTED}" ]]; then
-                  gcloud run jobs executions cancel "${name}" --region "${REGION}" --project "${PROJECT_ID}" --quiet || true
-                fi
-              done
+          ./scripts/verify-remote.sh --cancel-this-run "${STARTED}"
 
   # -------------------------------------------------------------------------
   # THE SANDBOX'S TOKEN, the repository secret SWARM_SANDBOX_GITHUB_TOKEN, is
@@ -461,20 +443,15 @@ jobs:
 
       - name: cancel the executions this job started
         # A cancel stops the client, not the Cloud Run execution (header).
-        # Cancels the swarm-verify executions created since this job started.
+        # Cancels this run's own swarm-verify executions (SWARM_VERIFY_ORIGIN)
+        # created since this job started: not a sibling job's, not an operator's.
         if: ${{ cancelled() }}
         continue-on-error: true
         env:
           STARTED: ${{ steps.started.outputs.at }}
         run: |
           [ -n "${STARTED}" ] || exit 0
-          gcloud run jobs executions list --job swarm-verify --region "${REGION}" --project "${PROJECT_ID}" \
-            --filter 'status.runningCount>0' --format 'value(metadata.name,metadata.creationTimestamp)' \
-            | while read -r name created; do
-                if [ -n "${name}" ] && [[ "${created}" > "${STARTED}" ]]; then
-                  gcloud run jobs executions cancel "${name}" --region "${REGION}" --project "${PROJECT_ID}" --quiet || true
-                fi
-              done
+          ./scripts/verify-remote.sh --cancel-this-run "${STARTED}"
 
   # Wave 2: starts when wave 1 has finished, whatever it concluded, so a red
   # group in wave 1 still lets wave 2 report its own.
@@ -518,20 +495,15 @@ jobs:
 
       - name: cancel the executions this job started
         # A cancel stops the client, not the Cloud Run execution (header).
-        # Cancels the swarm-verify executions created since this job started.
+        # Cancels this run's own swarm-verify executions (SWARM_VERIFY_ORIGIN)
+        # created since this job started: not a sibling job's, not an operator's.
         if: ${{ cancelled() }}
         continue-on-error: true
         env:
           STARTED: ${{ steps.started.outputs.at }}
         run: |
           [ -n "${STARTED}" ] || exit 0
-          gcloud run jobs executions list --job swarm-verify --region "${REGION}" --project "${PROJECT_ID}" \
-            --filter 'status.runningCount>0' --format 'value(metadata.name,metadata.creationTimestamp)' \
-            | while read -r name created; do
-                if [ -n "${name}" ] && [[ "${created}" > "${STARTED}" ]]; then
-                  gcloud run jobs executions cancel "${name}" --region "${REGION}" --project "${PROJECT_ID}" --quiet || true
-                fi
-              done
+          ./scripts/verify-remote.sh --cancel-this-run "${STARTED}"
 
   # -------------------------------------------------------------------------
   # THE CROSS-TENANT FIRESTORE PROBE (owner decision 2026-10-20, lane
@@ -581,6 +553,37 @@ jobs:
         continue-on-error: ${{ vars.ISO_PROBE_REQUIRED != 'true' }}
         run: ./scripts/verify-remote.sh "acceptance/tenant-isolation"
 
+      - name: the workspace roles probe (inside the VPC)
+        # ROLES-ACCEPT (docs/design/workspace-roles.md §6 row 6, #1518): a
+        # viewer is 403 role_member_required on a submit and 200 on a read,
+        # the narrowing and its revocation are audited, a platform admin's
+        # reach is platform_admin_acted, and another identity's u- workspace
+        # is tenant_not_member. One check-only group beside tenant-isolation,
+        # in this job rather than a new matrix group: it submits nothing that
+        # runs. Report-only until the owner sets ROLES_PROBE_REQUIRED, after
+        # the three SWARM_ACCEPTANCE_ROLES_* variables name a test workspace,
+        # a platform-admin service account swarm-verify may mint an ID token
+        # for, and another identity's personal workspace
+        # (scripts/acceptance/config.sh); unset, every check FAILs saying which.
+        id: roles
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ vars.ROLES_PROBE_REQUIRED != 'true' }}
+        env:
+          SWARM_ACCEPTANCE_ROLES_TENANT: ${{ vars.SWARM_ACCEPTANCE_ROLES_TENANT }}
+          SWARM_ACCEPTANCE_ROLES_ADMIN_SA: ${{ vars.SWARM_ACCEPTANCE_ROLES_ADMIN_SA }}
+          SWARM_ACCEPTANCE_ROLES_OTHER_PERSONAL: ${{ vars.SWARM_ACCEPTANCE_ROLES_OTHER_PERSONAL }}
+        run: ./scripts/verify-remote.sh "acceptance/roles"
+
+      - name: the roles probe is report-only until ROLES_PROBE_REQUIRED is true
+        if: ${{ !cancelled() && steps.roles.outcome == 'failure' && vars.ROLES_PROBE_REQUIRED != 'true' }}
+        run: |
+          echo "::warning title=Workspace roles probe red (report-only)::The ROLES-ACCEPT probe did not pass; the step above says which check and why. Not filed: ROLES_PROBE_REQUIRED is not true."
+          {
+            echo "### Workspace roles probe: red, report-only"
+            echo
+            echo "The ROLES-ACCEPT probe (scripts/acceptance/groups/roles.sh) did not pass. This job stays green and files nothing until the repository variable \`ROLES_PROBE_REQUIRED\` is \`true\`, which the owner sets once the probe's identities exist and it has passed (docs/design/workspace-roles.md §8)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: report-only until ISO_PROBE_REQUIRED is true
         if: ${{ !cancelled() && steps.probe.outcome == 'failure' && vars.ISO_PROBE_REQUIRED != 'true' }}
         run: |
@@ -593,20 +596,15 @@ jobs:
 
       - name: cancel the executions this job started
         # A cancel stops the client, not the Cloud Run execution (header).
-        # Cancels the swarm-verify executions created since this job started.
+        # Cancels this run's own swarm-verify executions (SWARM_VERIFY_ORIGIN)
+        # created since this job started: not a sibling job's, not an operator's.
         if: ${{ cancelled() }}
         continue-on-error: true
         env:
           STARTED: ${{ steps.started.outputs.at }}
         run: |
           [ -n "${STARTED}" ] || exit 0
-          gcloud run jobs executions list --job swarm-verify --region "${REGION}" --project "${PROJECT_ID}" \
-            --filter 'status.runningCount>0' --format 'value(metadata.name,metadata.creationTimestamp)' \
-            | while read -r name created; do
-                if [ -n "${name}" ] && [[ "${created}" > "${STARTED}" ]]; then
-                  gcloud run jobs executions cancel "${name}" --region "${REGION}" --project "${PROJECT_ID}" --quiet || true
-                fi
-              done
+          ./scripts/verify-remote.sh --cancel-this-run "${STARTED}"
 
   # -------------------------------------------------------------------------
   # The suite cannot read the private sandbox back (swarm-verify holds no
@@ -759,20 +757,15 @@ jobs:
 
       - name: cancel the executions this job started
         # A cancel stops the client, not the Cloud Run execution (header).
-        # Cancels the swarm-verify executions created since this job started.
+        # Cancels this run's own swarm-verify executions (SWARM_VERIFY_ORIGIN)
+        # created since this job started: not a sibling job's, not an operator's.
         if: ${{ cancelled() }}
         continue-on-error: true
         env:
           STARTED: ${{ steps.started.outputs.at }}
         run: |
           [ -n "${STARTED}" ] || exit 0
-          gcloud run jobs executions list --job swarm-verify --region "${REGION}" --project "${PROJECT_ID}" \
-            --filter 'status.runningCount>0' --format 'value(metadata.name,metadata.creationTimestamp)' \
-            | while read -r name created; do
-                if [ -n "${name}" ] && [[ "${created}" > "${STARTED}" ]]; then
-                  gcloud run jobs executions cancel "${name}" --region "${REGION}" --project "${PROJECT_ID}" --quiet || true
-                fi
-              done
+          ./scripts/verify-remote.sh --cancel-this-run "${STARTED}"
 
   # On red, ONE issue labelled bug for the scheduled live-browser group, found
   # by its own marker -- never the post-release acceptance issue

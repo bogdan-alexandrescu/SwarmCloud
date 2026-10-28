@@ -7,9 +7,9 @@ nothing is open.
 
 **Status: built (read 2026-10-19 at `24b0533`); the viewer gate and the
 reach switched on in dev only (ROLES-ON-DEV, 2026-10-19).** Every build lane
-but ROLES-ACCEPT has merged (ROLES-DOCS is the lane that wrote this note),
-and §8 records what each landed and where the code departs from this
-design. Both refusal switches and
+has merged; ROLES-ACCEPT, the last, on 2026-10-28, report-only until its
+identities exist (§8). §8 records what each landed and where the code
+departs from this design. Both refusal switches and
 `PLATFORM_ADMIN_REACH` ship off. **Amended 2026-10-19 (ROLES-ON-DEV):** dev
 now runs with `role_member_required` and the reach on, both set in
 `dev.tfvars` (§4.9's amendment); `role_admin_required` stays off in dev, and
@@ -1547,13 +1547,45 @@ a platform admin's reach", and the reach in "Authentication"),
 workspaces) and this section, held by
 `tests/unit/scripts/test_docs_describe_what_was_built.py`.
 
-**ROLES-ACCEPT (not built on 2026-10-19).** No acceptance probe asserts
-`role_member_required` or `platform_admin_acted`. Since ROLES-ON-DEV
-(2026-10-19) dev has `role_member_required` and the reach on, so a probe
-there would now meet the gated behaviour; `role_admin_required` is still off
-in dev (§4.9's amendment).
+**ROLES-ACCEPT (built 2026-10-28, report-only; part of #1518).** The probe
+is `scripts/acceptance/groups/roles.sh`, six checks: a platform admin
+narrows a test workspace to `viewer`; swarm-verify, a member there, is then
+403 `role_member_required` on `POST /v1/tasks` and 200 on `GET /v1/tasks`;
+the narrowing and its revocation are both in `GET /v1/workspace/roles`
+`audit`; the admin's reach is there as `platform_admin_acted`; and the
+admin selecting another identity's `u-` workspace is 403
+`tenant_not_member`. `roles_judge` is the one place each response is judged,
+and `tests/unit/scripts/test_acceptance_roles.py` holds it to swarm_api's
+own codes and audit actions. accept.yml runs it in the tenant-isolation job
+(`verify-remote.sh acceptance/roles`), report-only until the
+repository variable `ROLES_PROBE_REQUIRED` is `true`.
 
-**What is left, in order.** ROLES-ACCEPT; a named workspace admin in every
-group workspace that manages secrets (eng, smoke), then
-`role_admin_required` on in dev; the registry gap above; a week of
-report-only lines in prod; then prod.
+Two departures from §6 row 6, both forced:
+
+* **The narrowing is the workspace's default, not a person's grant.** Every
+  identity acceptance can act as is a service account, and a role write
+  naming one is 403 `role_person_required` (`roles.subject_for_write`, §4.4).
+  A service account in a group workspace holds the default, so narrowing the
+  default narrows it; the revocation is the default put back to `member`.
+  That is why the test workspace must be one nothing else works in, never
+  `smoke`. A person's grant is measured only with a person's credential,
+  which acceptance does not hold.
+* **It lives under `scripts/acceptance/`, not `tests/acceptance/`.** It is
+  a suite check run in the swarm-verify job, like every other acceptance
+  group; `tests/acceptance/fixtures/` is what agents run.
+
+It runs once three repository variables name what it needs
+(`scripts/acceptance/config.sh`): `SWARM_ACCEPTANCE_ROLES_TENANT`, a group
+workspace whose group holds swarm-verify; `SWARM_ACCEPTANCE_ROLES_ADMIN_SA`,
+a platform admin's service account, outside that group, that swarm-verify
+may mint an ID token for (`roles/iam.serviceAccountOpenIdTokenCreator` on it
+alone; swarm-verify itself must not be a platform admin, the owner's
+reversal of 2026-09-24); and `SWARM_ACCEPTANCE_ROLES_OTHER_PERSONAL`.
+Until then every check FAILs saying which is missing, and the job stays
+green. `role_admin_required` is still off in dev (§4.9's amendment).
+
+**What is left, in order.** The probe's identities and its test workspace
+(the owner's: an account, a grant and a group), then a green run and
+`ROLES_PROBE_REQUIRED`; a named workspace admin in every group workspace
+that manages secrets (eng, smoke), then `role_admin_required` on in dev; the
+registry gap above; a week of report-only lines in prod; then prod.

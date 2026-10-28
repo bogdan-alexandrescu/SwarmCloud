@@ -225,7 +225,7 @@ def test_the_roles_probes_settings_reach_the_job_only_when_set(tmp_path) -> None
     # The swarm-verify job reads no environment of the runner's: what the
     # roles probe needs (scripts/acceptance/groups/roles.sh) goes in the
     # execution's own overrides, and an unset one is not sent as empty.
-    proc, calls = _run(tmp_path, "acceptance/groups/roles",
+    proc, calls = _run(tmp_path, "acceptance/roles",
                        env_extra={"SWARM_ACCEPTANCE_ROLES_TENANT": "roles-probe"})
     assert proc.returncode == 0, proc.stderr
     (execute,) = [c for c in calls if c.startswith("run jobs execute")]

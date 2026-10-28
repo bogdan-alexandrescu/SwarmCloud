@@ -47,9 +47,10 @@ ACC_TENANT="${SWARM_ACCEPTANCE_TENANT:-smoke}"
 ACC_REPOSITORY_URL="${SWARM_ACCEPTANCE_REPOSITORY_URL:-${ACC_SANDBOX_REPOSITORY_URL}}"
 #: The ref cloned. `main` because the release deploys main and sandbox-sync.sh
 #: writes that commit's fixtures to the sandbox's main just before the suite
-#: runs. verify-remote.sh cannot pass an environment variable into the
-#: swarm-verify job, so a release run always reads main; set it by hand to
-#: prove a branch you pushed to the sandbox yourself.
+#: runs. verify-remote.sh passes the swarm-verify job no environment but
+#: SWARM_VERIFY_ORIGIN and the roles probe's three settings below, so a
+#: release run always reads main; set it by hand to prove a branch you pushed
+#: to the sandbox yourself.
 ACC_REF="${SWARM_ACCEPTANCE_REF:-main}"
 #: owner/repo on GitHub, derived from the URL: where pull requests open, and
 #: where the suite reads them back from.
@@ -61,6 +62,31 @@ ACC_GITHUB_API="${SWARM_ACCEPTANCE_GITHUB_API:-https://api.github.com}"
 #: whose issue #ACC_ISSUE says something else.
 ACC_ISSUE="${SWARM_ACCEPTANCE_ISSUE:-1}"
 ACC_ISSUE_EXPECT="${SWARM_ACCEPTANCE_ISSUE_EXPECT:-sandbox-probe.sh}"
+
+# THE WORKSPACE ROLES PROBE (scripts/acceptance/groups/roles.sh; ROLES-ACCEPT,
+# docs/design/workspace-roles.md §6 row 6, #1518). It needs three things the
+# smoke tenant cannot be, so each is named here and none has a default: an
+# unset one makes every roles check a FAIL that says which, never a pass.
+# accept.yml passes them from repository variables of the same names, and
+# verify-remote.sh puts each one set into the swarm-verify execution.
+#
+#: A GROUP workspace whose registered group holds swarm-verify and which
+#: nothing else works in: the probe narrows its DEFAULT role to viewer and
+#: back. Never `smoke` -- six groups submit there at once -- and never a `u-`
+#: workspace, whose person is its fixed admin (§4.5). The default, not a
+#: per-person grant, because swarm-verify is a service account and a role
+#: write naming one is 403 `role_person_required` (§4.4).
+ACC_ROLES_TENANT="${SWARM_ACCEPTANCE_ROLES_TENANT:-}"
+#: A platform admin's SERVICE ACCOUNT EMAIL, not in that workspace's group,
+#: that swarm-verify may mint an ID token for (iamcredentials generateIdToken:
+#: roles/iam.serviceAccountOpenIdTokenCreator on that account alone). It makes
+#: the narrowing and the revocation, so its reach is what is audited
+#: `platform_admin_acted`.
+ACC_ROLES_ADMIN_SA="${SWARM_ACCEPTANCE_ROLES_ADMIN_SA:-}"
+#: Another identity's personal workspace (`u-<someone>`), which the platform
+#: admin must be refused `tenant_not_member`: the reach covers group
+#: workspaces only (§4.2).
+ACC_ROLES_OTHER_PERSONAL="${SWARM_ACCEPTANCE_ROLES_OTHER_PERSONAL:-}"
 
 # _acc_owner_repo URL -> "owner/repo" in lower case, from an https or ssh
 # GitHub remote; empty for anything else.

@@ -1183,8 +1183,13 @@ def test_roles_design_records_what_every_lane_built():
     if not _mentions(REPO / "terraform", "PLATFORM_ADMIN_REACH", "*.tf*"):
         assert "no Terraform variable sets `PLATFORM_ADMIN_REACH`" in body
     # The acceptance probe: until one asserts the code, its lane is not built.
-    if not _mentions(REPO / "tests" / "acceptance", "role_member_required", "*.py"):
+    # It is a suite group (scripts/acceptance/groups/roles.sh, ROLES-ACCEPT).
+    probe = REPO / "scripts" / "acceptance" / "groups" / "roles.sh"
+    if not _mentions(REPO / "tests" / "acceptance", "role_member_required", "*.py") \
+            and not (probe.is_file() and "role_member_required" in probe.read_text()):
         assert "**ROLES-ACCEPT (not built" in raw
+    else:
+        assert "**ROLES-ACCEPT (built" in raw and "`scripts/acceptance/groups/roles.sh`" in raw
     # Storage, read from roles.py.
     assert roles._MAC_DOMAIN == b"swarm-workspace-role-grant/v1\n"
     assert f"`{ROLES_PY}::_MAC_DOMAIN`" in raw and "`swarm-workspace-role-grant/v1`" in body

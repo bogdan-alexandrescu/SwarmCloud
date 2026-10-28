@@ -158,7 +158,7 @@ def test_an_unconfigured_probe_says_what_is_missing(tenant, personal, admin, why
 
 def test_accept_runs_the_probe_report_only_beside_tenant_isolation() -> None:
     job = yaml.safe_load(ACCEPT.read_text())["jobs"]["tenant-isolation"]
-    (step,) = [s for s in job["steps"] if "acceptance/groups/roles" in str(s.get("run", ""))]
+    (step,) = [s for s in job["steps"] if "verify-remote.sh \"acceptance/roles\"" in str(s.get("run", ""))]
     assert step["continue-on-error"] == "${{ vars.ROLES_PROBE_REQUIRED != 'true' }}", step
     assert step["if"] == "${{ !cancelled() }}", step
     for name in ("SWARM_ACCEPTANCE_ROLES_TENANT", "SWARM_ACCEPTANCE_ROLES_ADMIN_SA",
@@ -172,3 +172,91 @@ def test_the_design_says_roles_accept_is_built_and_where() -> None:
     assert "**ROLES-ACCEPT (built" in text
     assert "scripts/acceptance/groups/roles.sh" in text
     assert "`role_person_required`" in text
+
+
+# ---------------------------------------------------------------------------
+# run_roles end to end, against a stubbed API
+# ---------------------------------------------------------------------------
+
+_HARNESS = r'''
+set -euo pipefail
+source "$GROUP"
+step() { :; }
+t_info() { :; }
+redact() { cat; }
+sleep() { :; }
+acc_check() { ACC_CHECK="$1"; }
+acc_pass() { printf 'PASS %s: %s\n' "${ACC_CHECK}" "$1"; }
+acc_fail() { printf 'FAIL %s: %s\n' "${ACC_CHECK}" "$1"; }
+acc_extra() { echo '{"priority": 10}'; }
+acc_record_task() { echo "RECORDED ${SWARM_API_TENANT} $1" >>"$WORK/calls"; }
+acc_mint_id_token() { [[ "$FAKE_MINT" == ok ]] || return 1; echo minted >"$2"; }
+api_is_front_door() { return 1; }
+ACC_TENANT=smoke ACC_RUN_ID=run ACC_WORK="$WORK"
+ACC_ROLES_TENANT=roles-probe ACC_ROLES_OTHER_PERSONAL=u-someone ACC_ROLES_ADMIN_SA="$ADMIN"
+acc_api_as() {
+  local who=self key
+  [[ -z "$1" ]] || who=admin
+  key="$who $2 $3 ${4%%\?*}"
+  echo "$key" >>"$WORK/calls"
+  case "$key" in
+    "admin roles-probe PUT /workspace/roles/default")
+      if [[ "$6" == *'"viewer"'* ]]; then ACC_API_STATUS=200; echo '{"default_role":"viewer"}' >"$5"
+      elif [[ -f "$WORK/narrowed" ]]; then ACC_API_STATUS=200; echo '{"default_role":"member"}' >"$5"
+      else ACC_API_STATUS=409; echo '{"code":"role_unchanged"}' >"$5"; fi
+      [[ "$6" != *'"viewer"'* ]] || touch "$WORK/narrowed" ;;
+    "self roles-probe GET /workspace/roles") ACC_API_STATUS=200; cat "$WORK/roles.json" >"$5" ;;
+    "self roles-probe POST /tasks") ACC_API_STATUS="$SUBMIT_STATUS"; cat "$WORK/submit.json" >"$5" ;;
+    "self roles-probe GET /tasks") ACC_API_STATUS=200; echo '{"tasks":[]}' >"$5" ;;
+    "admin u-someone GET /tasks") ACC_API_STATUS=403; echo "{\"code\":\"$NOT_MEMBER\"}" >"$5" ;;
+    *) ACC_API_STATUS=599; echo '{}' >"$5" ;;
+  esac
+}
+run_roles
+'''
+
+
+def _run_roles(tmp_path: Path, *, submit_status: int, submit_body: dict, mint: str = "ok"):
+    from swarm_api import roles
+
+    member_required, not_member, _ = _codes()
+    now = "2099-01-01T00:00:00+00:00"
+    audit = [
+        _row(roles.AUDIT_DEFAULT_SET, now, **{"from": "viewer", "to": "member"}),
+        _row(roles.AUDIT_PLATFORM_ADMIN_ACTED, now, method="PUT"),
+        _row(roles.AUDIT_DEFAULT_SET, now, **{"from": "member", "to": "viewer"}),
+    ]
+    (tmp_path / "roles.json").write_text(json.dumps({"me": {"role": "viewer"}, "audit": audit}))
+    (tmp_path / "submit.json").write_text(json.dumps(submit_body))
+    env = {"GROUP": str(GROUP), "WORK": str(tmp_path), "ADMIN": ADMIN, "FAKE_MINT": mint,
+           "SUBMIT_STATUS": str(submit_status), "NOT_MEMBER": not_member, "PATH": "/usr/bin:/bin:/usr/local/bin"}
+    proc = subprocess.run(["bash", "-c", _HARNESS], env=env, capture_output=True, text=True, timeout=60)
+    calls = (tmp_path / "calls").read_text().splitlines() if (tmp_path / "calls").exists() else []
+    return proc, calls
+
+
+def test_run_roles_passes_all_six_against_an_api_that_gates(tmp_path) -> None:
+    member_required, _, _ = _codes()
+    proc, calls = _run_roles(tmp_path, submit_status=403, submit_body={"code": member_required})
+    assert proc.returncode == 0, proc.stderr
+    lines = proc.stdout.splitlines()
+    assert len(lines) == 6 and all(l.startswith("PASS roles: ") for l in lines), proc.stdout
+    # Put back first, narrowed, and put back again after the checks.
+    puts = [c for c in calls if c.endswith("PUT /workspace/roles/default")]
+    assert len(puts) == 3, calls
+
+
+def test_run_roles_fails_an_accepted_submit_cancels_it_and_still_revokes(tmp_path) -> None:
+    proc, calls = _run_roles(tmp_path, submit_status=201, submit_body={"id": "task_9"})
+    assert proc.returncode == 0, proc.stderr
+    assert "FAIL roles: submit: a viewer's POST /v1/tasks is 403 role_member_required: HTTP 201" in proc.stdout
+    assert "RECORDED roles-probe task_9" in calls, calls
+    assert sum(c.endswith("PUT /workspace/roles/default") for c in calls) == 3, calls
+
+
+def test_run_roles_without_an_admin_token_fails_every_check_and_writes_nothing(tmp_path) -> None:
+    member_required, _, _ = _codes()
+    proc, calls = _run_roles(tmp_path, submit_status=403, submit_body={"code": member_required}, mint="no")
+    lines = proc.stdout.splitlines()
+    assert len(lines) == 6 and all(l.startswith("FAIL roles: ") and "not measured" in l for l in lines), proc.stdout
+    assert calls == [], calls
