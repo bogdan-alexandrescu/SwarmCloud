@@ -553,15 +553,16 @@ def find_ci_fix_tasks(
     return found
 
 
-#: A skipped review's verdict, written into the manifest by the scheduler
-#: (#2524, `scheduler.reviewgate`), which holds no bucket credential. The
-#: entry carries the text under `inline` and no `uri`. Held equal to
-#: `scheduler.reviewgate.INLINE_ARTIFACT_KEY` by
+#: A skipped review's verdict, written into the manifest by swarm-api as it
+#: ends the review without a worker (#2524, `swarm_api.reviewgate`): no
+#: attempt ran, so there is no attempt prefix to upload it under. The entry
+#: carries the text under `inline` and no `uri`. Held equal to
+#: `swarm_api.reviewgate.INLINE_ARTIFACT_KEY` / `INLINE_WRITER` by
 #: tests/unit/control_plane/test_review_gate.py.
 INLINE_ARTIFACT_KEY = "inline"
-INLINE_WRITER = "scheduler"
+INLINE_WRITER = "control_plane"
 INLINE_ARTIFACT_NAMES = frozenset({"verdict.json"})
-#: A verdict and its reason; anything larger is not one the scheduler wrote.
+#: A verdict and its reason; anything larger is not one the platform wrote.
 MAX_INLINE_BYTES = 4096
 
 
@@ -570,8 +571,8 @@ def inline_artifact(
 ) -> bytes | None:
     """The bytes of a platform-written inline entry, or None for any other entry.
 
-    ONLY the one shape the scheduler writes, and only on the step it ends:
-    `verdict.json`, `written_by: "scheduler"`, no `uri`, at most
+    ONLY the one shape swarm-api writes, and only on the step it ends:
+    `verdict.json`, `written_by: "control_plane"`, no `uri`, at most
     `MAX_INLINE_BYTES`, on a task whose `result_summary.review_skipped` says
     its review gate skipped it. Every
     other entry is located in the bucket as before. The task document is

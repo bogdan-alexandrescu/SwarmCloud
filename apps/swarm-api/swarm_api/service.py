@@ -739,8 +739,8 @@ class SubmissionService:
             spec.metadata, runner_profile=profile.name, step_id=step_id,
             workflow_step=workflow_id is not None,
         )
-        # A review step's gate (#2524), stored normalised: the scheduler reads
-        # it as it readies the step (`scheduler.reviewgate`).
+        # A review step's gate (#2524), stored normalised: the scheduler holds
+        # the step and swarm-api decides it (`reviewgate`).
         review_gate = resolve_review_gate(
             spec.metadata, step_id=step_id, workflow_step=workflow_id is not None,
         )

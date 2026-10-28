@@ -1696,8 +1696,13 @@ BGD decided on 2026-10-27 (#2524): "Risk paths + over 300 lines; reuse
 renders", and that a fix, CI-fix or pull-request step that can buy nothing
 ends before it is leased. The token analysis of 2026-10-20..27 found every
 change got a review however small, and fix rounds started for pull requests
-that had already merged. Both skips are decided by the scheduler as it
-readies the step (`scheduler/reviewgate.py`), so no pod starts for them.
+that had already merged. No pod starts for either skip. On 2026-10-28 BGD
+decided who ends a skipped review: "No contract change. The scheduler holds
+the review PARKED (as the #748 control-publish hold does) and swarm-api ends
+it PARKED -> SUCCEEDED on a wake." `swarm_common.states` says of that edge
+"only swarm-api writes it", and it stays true: the review gate is decided in
+`swarm_api/reviewgate.py`, the fix-round precheck in
+`scheduler/reviewgate.py`.
 
 **The review gate.** A workflow step may carry
 
@@ -1715,46 +1720,64 @@ that is not a list of repository-relative globs, with a 422
 is dropped and the review always runs). The compiled issue-run review carries
 `{"min_lines": 300}`.
 
-As the step is readied, every parent has SUCCEEDED, so what they changed is
-final. The scheduler reads the parents' `result_summary.git` (and, along each
-parent's `builds_on`, the steps it started from, as the runtime resolution
-does): the changed paths (`own_files` when recorded, else `files`) and
+When every parent has SUCCEEDED, what they changed is final. The scheduler
+does not promote a step carrying `review_gate`: it holds it PARKED under the
+same rule as `integrate`'s integrator ("What a MERGE verdict publishes"
+below: `loop.held_for_control_publish`, `CONTROL_PUBLISH_HOLD_SECONDS`).
+swarm-api receives the parent's `task_finished` wake, claims the step under
+the same `metadata.control_publish` marker, and reads the parents'
+`result_summary.git` (and, along each parent's `builds_on`, the steps it
+started from, as the runtime resolution does), each read tenant-checked: the
+changed paths (`own_files` when recorded, else `files`) and
 `insertions + deletions`.
 
 * **The review runs** when any changed path matches a risk path, when the
   lines total more than `min_lines`, or when the change cannot be told: a
   parent that cannot be read, has no line counts, or whose file list was cut.
-  A gate that could not see the diff never waves it through.
-* **Otherwise it ends SUCCEEDED without an agent**, PARKED -> SUCCEEDED in
-  one guarded write (the edge contract request 52 added). It holds no lease,
+  A gate that could not see the diff never waves it through. swarm-api
+  declines the claim (`control_publish.state: declined`, code
+  `review_runs`, the decision as the reason) and rings the parent's wake
+  again, and the scheduler promotes the review on it. A gate block that
+  cannot be read is declined the same way (`review_gate_unreadable`).
+* **Otherwise swarm-api ends it SUCCEEDED without an agent**, PARKED ->
+  SUCCEEDED in the guarded write that publishes an integrator (the edge
+  contract request 52 added), and rings `task_finished` for it so its
+  dependants are released. It holds no lease,
   no pool and no attempt at any point (invariants 1-3). Its
   `result_summary.review_skipped` is the reason, and its `verdict.json` is
   `{"verdict": "MERGE", "findings": [], "skipped": "<reason>"}`, so the
   integrator's `when` gate, the re-review `on_merge_verdict` appends and the
   merge step read it exactly as a MERGE. The decision is recorded under
   `metadata.review_gate.resolved` and on the step's `succeeded` event.
-* **The verdict is written inline.** The scheduler holds no bucket
-  credential and gains none on its drain path, so the manifest entry for
-  `verdict.json` carries the text under `inline`, with no `uri`, and the
-  worker stages it from there (`agent_worker.inputs.inline_artifact`). Only
-  that shape is staged: `verdict.json`, `written_by: "scheduler"`, no `uri`,
-  on a step whose `result_summary.review_skipped` is set. Two readers go through the bucket and
-  so do not see it: swarm-api's control-plane publish of a MERGE (which then
-  declines, and the integrator's worker publishes it after the hold, without
-  an agent) and the issue run's per-requirement read (which then reads "not
-  all met", so the pull request says "part of #N" rather than closing it).
+* **The verdict is written inline.** No attempt ran, so there is no attempt
+  prefix in the bucket to put it under: the manifest entry for
+  `verdict.json` carries the text under `inline`, with no `uri`. Only that
+  shape is read: `verdict.json`, `written_by: "control_plane"`, no `uri`, at
+  most 4 KiB, on a step whose `result_summary.review_skipped` is set. The
+  worker stages it from there (`agent_worker.inputs.inline_artifact`), and
+  swarm-api serves it through the same artifact read as any other
+  (`InspectionService.read_artifact`, `reviewgate.inline_verdict`), masked
+  by the same JSON redaction with the task's literals, because the document
+  is tenant-writable. So swarm-api's own publish of the integrator reads it
+  as a MERGE and opens the pull request without a pod, and an issue run's
+  per-requirement read reads it. A lost wake or a swarm-api that is down
+  ends the scheduler's hold, and the review is promoted and RUNS: the
+  fallback spends a review, it never invents a MERGE.
+* **A skipped review confirms no requirement.** Its verdict carries no
+  `requirements` list, so an issue run behind it reads "not all met" and its
+  pull request says "part of #N" (the #454 rule: never Closes without
+  evidence). Whether a skipped review should instead leave the issue run's
+  review ungated is asked of the owner on the pull request that built this.
 * **Not `result_summary.skipped`.** That key means "did not run and left
   nothing", which makes a step that stages anything from it skip as well: the
   integrator would never publish.
 * **Renders reused: recorded, not yet acted on.** The decision records
   whether a parent published images under `shots/` (`renders_published`,
   `shots`); no runner writes a compare-report manifest, so the listing is the
-  check. A UI review still runs on `claude-code-browser`, because moving it
-  to `claude-code` needs two changes outside this one: the worker's rendered
-  review rule (above) downgrades a UI MERGE from any other profile to
-  NOT_YET, and the review's `input_from`, which would stage the PNGs, is
-  signed at submission before anyone knows their names. Both are asked of the
-  owner on the pull request that built this.
+  check. A UI review still runs on `claude-code-browser`: BGD, 2026-10-28,
+  moved acting on it to a follow-up lane, because it needs the worker's
+  rendered-review rule (above), which downgrades a UI MERGE from any other
+  profile to NOT_YET, and the review's signed `input_from` to change.
 
 **The no-op precheck.**
 

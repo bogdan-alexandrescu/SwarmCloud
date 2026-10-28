@@ -252,17 +252,16 @@ def resolve_runtime_policy(
 
 #: A review step's gate (#2524, BGD 2026-10-27: "Risk paths + over 300 lines;
 #: reuse renders"). A WORKFLOW STEP may carry `metadata.review_gate =
-#: {"min_lines": 300, "risk_paths": [...]}`: as the scheduler readies it, it
-#: reads what its parents changed (`scheduler.reviewgate`) and the review
-#: runs only when that touches a risk path or changes more than `min_lines`
-#: lines; otherwise the step ends SUCCEEDED without an agent and its
-#: verdict.json reads MERGE, with the reason. Either key may be left out
-#: (`min_lines` 300, `risk_paths` the scheduler's default list). Not a typed
+#: {"min_lines": 300, "risk_paths": [...]}`: the scheduler holds it PARKED
+#: when its parents end, swarm-api reads what they changed (`reviewgate`) and
+#: the review runs only when that touches a risk path or changes more than
+#: `min_lines` lines; otherwise swarm-api ends the step SUCCEEDED without an
+#: agent and its verdict.json reads MERGE, with the reason. Either key may be
+#: left out (`min_lines` 300, `risk_paths` `reviewgate.DEFAULT_RISK_PATHS`). Not a typed
 #: field, for the reason `metadata.runtime` is not: `swarm_common` is frozen.
 REVIEW_GATE_METADATA_KEY = "review_gate"
 REVIEW_GATE_KEYS = ("min_lines", "risk_paths")
-#: BGD's value. `scheduler.reviewgate.DEFAULT_MIN_LINES` restates it, held
-#: equal by tests/unit/control_plane/test_review_gate.py.
+#: BGD's value, read by `reviewgate.DEFAULT_MIN_LINES`.
 REVIEW_GATE_DEFAULT_MIN_LINES = 300
 #: Bounds on what a caller may write: a gate is a short list of globs, and
 #: the whole block sits in a task document read on every promotion.

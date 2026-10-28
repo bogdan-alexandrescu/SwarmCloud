@@ -249,11 +249,11 @@ REVIEW_RUNTIME: Mapping[str, str] = MappingProxyType(
 
 # The compiled review runs only where it matters (#2524, BGD 2026-10-27:
 # "Risk paths + over 300 lines; reuse renders"): when what the implementer
-# steps changed touches a risk path or more than 300 lines. Otherwise the
-# scheduler ends it SUCCEEDED without an agent, with a MERGE verdict.json
-# naming the reason (`scheduler.reviewgate`), and the fix step publishes as
-# for any MERGE. No `risk_paths`: the scheduler's default list applies, the
-# one list BGD's decision names.
+# steps changed touches a risk path or more than 300 lines. Otherwise
+# swarm-api ends it SUCCEEDED without an agent, with a MERGE verdict.json
+# naming the reason (`reviewgate`), and the fix step publishes as for any
+# MERGE. No `risk_paths`: the default list applies, the one list BGD's
+# decision names.
 def review_gate_block() -> dict[str, Any]:
     """The `metadata.review_gate` every compiled review step carries."""
     return {"min_lines": REVIEW_GATE_DEFAULT_MIN_LINES}
