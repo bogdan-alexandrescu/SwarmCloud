@@ -2896,21 +2896,22 @@ function waitingNeedsAPerson(w: WaitingFor | null | undefined): boolean {
  * FAILED or CANCELLED. Held to the enum by section 5 of
  * scripts/lib/check-contract-parity.sh, so a value added there (contract
  * request 29 added `publish_refused` and request 41 `child_cascade`,
- * 2026-10-02; request 118 `budget_exceeded`, 2026-10-27) is added here too.
+ * 2026-10-02; request 118 `budget_exceeded`, 2026-10-27; request 126
+ * `fix_loop_exhausted`, 2026-10-28) is added here too.
  */
 export type EndCause =
   | 'timeout' | 'cannot_start' | 'lost_worker' | 'outputs_missing'
   | 'inputs_unavailable' | 'dispatch_failed' | 'runner_error' | 'cancel_requested'
   | 'failed_parent' | 'cancelled_parent' | 'workflow_sweep' | 'spec_signature_invalid'
   | 'merge_refused' | 'merge_failed' | 'verdict_refused' | 'verdict_failed'
-  | 'publish_refused' | 'child_cascade' | 'budget_exceeded'
+  | 'publish_refused' | 'child_cascade' | 'budget_exceeded' | 'fix_loop_exhausted'
 
 export const END_CAUSES: readonly EndCause[] = [
   'timeout', 'cannot_start', 'lost_worker', 'outputs_missing',
   'inputs_unavailable', 'dispatch_failed', 'runner_error', 'cancel_requested',
   'failed_parent', 'cancelled_parent', 'workflow_sweep', 'spec_signature_invalid',
   'merge_refused', 'merge_failed', 'verdict_refused', 'verdict_failed',
-  'publish_refused', 'child_cascade', 'budget_exceeded',
+  'publish_refused', 'child_cascade', 'budget_exceeded', 'fix_loop_exhausted',
 ]
 
 /**

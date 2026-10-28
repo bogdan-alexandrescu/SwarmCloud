@@ -133,7 +133,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 123 | `states.py` / `models.py`: `ParkReason.PLATFORM_REFUSED` and `Task.platform_refusals`, so a dispatch the platform refuses parks instead of spending attempts (PLATFORM-REFUSED, part of #1820) | PROPOSED for BGD |
 | 124 | `profiles.py`: a `fix-loop` catalogue profile, `control_plane: true`, shipped unavailable until FL-ACCEPT passes, as `await-input` was (FL-CONTRACT, fix loop request A, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT): mirrored in `terraform/infra/locals.tf` and listed in `profiles_without_a_job` |
 | 125 | `states.py`: `ParkReason.FIX_ROUNDS_RUNNING`, a fix loop's step while its rounds run: never promoted by the scheduler, in no capacity set, ended by swarm-api (FL-CONTRACT, fix loop request B, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT), with the console's and swarm-mcp's park-reason lists |
-| 126 | `models.py`: `EndCause.FIX_LOOP_EXHAUSTED`, a fix loop that ended without a MERGE (FL-CONTRACT, fix loop request C, part of #2509) | open, REQUESTED 2026-10-27 by lane FL-CONTRACT for BGD (Q3 (c) needs an end cause). Not applied |
+| 126 | `models.py`: `EndCause.FIX_LOOP_EXHAUSTED`, a fix loop that ended without a MERGE (FL-CONTRACT, fix loop request C, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 ('accept-126', answering FL-CONTRACT's question on PR 2570; requested by lane FL-CONTRACT the same day, Q3 (c) needs an end cause). APPLIED 2026-10-28 by the pull request that adds this line (lane FL-CONTRACT-126): appended to `EndCause`; the outcome ledger classes it `fix_loop_exhausted`, its own failure class (DERIVE_VERSION 12), and the console's `EndCause`, `END_CAUSES` and `END_CAUSE_SAY` carry it |
 
 ---
 
@@ -15008,10 +15008,18 @@ of their own, each with its own worker, and the loop's step waits parked.
 
 ## 126. `models.py`: `EndCause.FIX_LOOP_EXHAUSTED`, a fix loop that ended without a MERGE (FL-CONTRACT, fix loop request C)
 
-**Status:** open, REQUESTED 2026-10-27 by lane FL-CONTRACT (part of #2509)
-for BGD. Not applied: `apps/common/swarm_common/` is frozen, and BGD's Q3
+**Status:** ACCEPTED by the owner (BGD) 2026-10-27 ('accept-126',
+answering the question lane FL-CONTRACT put on PR 2570) and APPLIED
+2026-10-28 by the pull request that adds this line (lane FL-CONTRACT-126,
+part of #2509). Requested 2026-10-27 by lane FL-CONTRACT, because BGD's Q3
 pick (c) did not decide whether the end is a new end cause or text under an
-existing one. The question is in the FL-CONTRACT pull request.
+existing one. Applied as written below: the member is appended after
+`BUDGET_EXCEEDED`, the outcome ledger classes it `fix_loop_exhausted`, its
+own failure class after `budget_exceeded` (DERIVE_VERSION 12, so every
+stored day is re-derived), and the console's `EndCause` union, `END_CAUSES`
+and `END_CAUSE_SAY` ("its fix loop ended without a merge") carry it, held to
+the enum by `scripts/lib/check-contract-parity.sh`. "What is true today"
+below is the state before it was applied.
 
 ### What is true today
 
