@@ -196,7 +196,9 @@ def test_accept_yml_runs_it_in_the_existing_smoke_job():
     steps = [s for s in jobs["smoke"]["steps"] if TARGET in _code(s.get("run", ""))]
     assert len(steps) == 1
     step = steps[0]
-    assert _code(step["run"]).strip() == f'./scripts/verify-remote.sh "{TARGET}"'
+    # Unquoted: the probe clones no fixture, so it is not one of the suites
+    # test_acceptance_target.py makes wait for the sandbox sync.
+    assert _code(step["run"]).strip() == f"./scripts/verify-remote.sh {TARGET}"
     assert "!cancelled()" in str(step.get("if"))
     for name in SETTINGS:
         assert step["env"][name] == f"${{{{ vars.{name.removeprefix('SWARM_ACCEPTANCE_')} }}}}"

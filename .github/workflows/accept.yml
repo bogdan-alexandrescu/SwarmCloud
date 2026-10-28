@@ -373,14 +373,17 @@ jobs:
         # identity's u- workspace is 403 tenant_not_member. Its identities and
         # test workspace are the owner's to provision; until these variables
         # name them, every check SKIPs and says which is missing.
-        # verify-remote.sh carries them into the execution.
+        # verify-remote.sh carries them into the execution. It clones no
+        # fixture, so unlike the acceptance groups it does not wait for the
+        # sandbox sync (the target is unquoted: test_acceptance_target.py
+        # reads a quoted "acceptance/..." target as a fixture-cloning suite).
         if: ${{ !cancelled() }}
         env:
           SWARM_ACCEPTANCE_ROLES_TENANT: ${{ vars.ROLES_TENANT }}
           SWARM_ACCEPTANCE_ROLES_VIEWER_SA: ${{ vars.ROLES_VIEWER_SA }}
           SWARM_ACCEPTANCE_ROLES_ADMIN_SA: ${{ vars.ROLES_ADMIN_SA }}
           SWARM_ACCEPTANCE_ROLES_OTHER_WORKSPACE: ${{ vars.ROLES_OTHER_WORKSPACE }}
-        run: ./scripts/verify-remote.sh "acceptance/groups/roles"
+        run: ./scripts/verify-remote.sh acceptance/groups/roles
 
       - name: cancel the executions this job started
         # A cancel stops the client, not the Cloud Run execution (header).
