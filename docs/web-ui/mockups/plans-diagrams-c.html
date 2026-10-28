@@ -323,7 +323,8 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
   .ph{border-radius:0;border-left:0;border-right:0}
   .g2.fail2{grid-template-columns:minmax(0,1fr)}
   .solo .revs{min-width:0}.solo .revs span{white-space:normal;border-radius:10px}
-  .dt table.doct{min-width:0}.dt thead{display:none}.dt tr,.dt td{display:block}.dt td{border-bottom:0;padding:2px 12px}.dt td:first-child{font-weight:600;padding-top:10px}.dt td:last-child{padding-bottom:10px;border-bottom:1px solid var(--line)}
+  .dt table.doct{min-width:0}.dt thead{display:none}.dt tr,.dt td{display:block}.dt table.doct td{border-bottom:0;padding:2px 12px}.dt table.doct td:first-child{font-weight:600;padding-top:10px}.dt table.doct td:last-child{padding-bottom:10px;border-bottom:1px solid var(--line)}.dt table.doct tr:last-child td:last-child{border-bottom:0}
+  .dt table.doct td:nth-child(n+2)::before{display:block;font-size:13px;font-weight:600;color:var(--text-dim);margin-top:6px}.dt table.doct td:nth-child(2)::before{content:"What it is"}.dt table.doct td:nth-child(3)::before{content:"Why this proposal needs it"}.dt table.doct td:nth-child(4)::before{content:"Frames"}
 }
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 
@@ -452,6 +453,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 .cm.wk{border-style:dashed;border-color:color-mix(in srgb,var(--paused) 50%,var(--line))}
 .cm .av.ag{background:linear-gradient(135deg,#1a7f37,#0b3a7a)}
 .wkl{display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--text-dim);flex-wrap:wrap;margin-top:4px}
+.wkl{flex-wrap:nowrap}.wkl>span:not(.dots):not(.b){flex:0 1 auto;min-width:0}.wkl>.dots,.wkl>.b{flex:none}
 .dots{display:inline-flex;gap:3px}.dots i{width:6px;height:6px;border-radius:50%;background:var(--paused);opacity:.45}.dots i:nth-child(2){opacity:.7}.dots i:nth-child(3){opacity:1}
 .skel{margin-top:8px;border:1px dashed var(--line);border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:6px}
 .skel span{display:block;height:10px;border-radius:5px;background:var(--bar-bg)}
@@ -792,7 +794,8 @@ function flowV(){
   let s=box(12,8,170,40,'nd',['CI-fix request · ci-fix.sh'],20);
   s+=arr(97,48,97,78);
   CHECKS.forEach((c,i)=>{const y=78+i*72,last=i===4;
-    s+=box(12,y,170,46,last?'nw':'q',[c[0]+(c[1].startsWith('live')?' '+c[1].replace(' · new',''):''),...(last?[['new in this plan','sm']]:c[1].startsWith('live')?[]:[[c[1],'sm']])]);
+    const claim=c[0]==='claim on the';
+    s+=box(12,y,170,46,last?'nw':'q',[claim?'claim live?':c[0]+' live?',...(last?[['new in this plan','sm']]:claim?[['on the same failure','sm']]:[])]);
     s+=arr(182,y+23,220,y+23,'y')+tx(201,y+16,'yes','sm');
     if(i<4)s+=arr(97,y+46,97,y+72)+tx(105,y+63,'no','sm','start');
   });
@@ -915,7 +918,7 @@ function d2a(){
 
 /* ---------- D3 ---------- */
 const ASK=msg('me','Operator','<span class="anc">on step 1</span><span>03:04Z · revision 1</span>','<p>Show the failure path when the continuation finishes mid-check.</p><p class="sm12 dim">asked for a diagram</p>');
-const WORK_PL=(t,c)=>msg('pl','planner',`<span class="anc">on step 1</span><span>drawing</span>`,`<div class="wkl"><span class="dots"><i></i><i></i><i></i></span><span>reading cifix.py and drawing · ${t}</span><span>· ${c} so far</span>${B('Stop','s q','x')}</div><div class="skel"><span style="width:70%"></span><span style="width:90%"></span><span style="width:55%"></span><p>A sequence diagram, anchored to step 1, will appear here.</p></div>`,'wk');
+const WORK_PL=(t,c)=>msg('pl','planner',`<span class="anc">on step 1</span><span>drawing</span>`,`<div class="wkl"><span class="dots"><i></i><i></i><i></i></span><span>reading cifix.py and drawing · ${t} · ${c} so far</span>${B('Stop','s q','x')}</div><div class="skel"><span style="width:70%"></span><span style="width:90%"></span><span style="width:55%"></span><p>A sequence diagram, anchored to step 1, will appear here.</p></div>`,'wk');
 const ANS_TXT='<p>If the continuation finishes between the read and the refusal, the request is refused naming a task that has just ended. The next fix round asks again and stamps. No two writers ever hold the branch, so the plan needs no change.</p>';
 const ANS=(inner)=>msg('pl','planner','<span class="anc">on step 1</span><span>03:05Z · 52 s · $0.46</span>',ANS_TXT+inner);
 function d3a(){return solo(`<div class="mg" style="margin:0">${ASK}${WORK_PL('0:34','$0.31')}${composer()}</div>`,520)}
