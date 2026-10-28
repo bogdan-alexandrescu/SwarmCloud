@@ -1,7 +1,9 @@
 # swarm-graph's answer latency: a scheduled p95 report, and an answer cache that survives merges
 
-Status: **design, for the owner's review. Nothing here is built.** Part of
-#1840. Written 2026-10-27 against `main` at `17d6c5a`.
+Status: **design, answered by the owner on 2026-10-27 (§4). Nothing here is
+built yet.** Part of #1840. Written 2026-10-27 against `main` at `17d6c5a`;
+the body follows BGD's answers of the same day, and §5 specifies the console's
+Cache section BGD asked for then.
 
 #1840 measured this repository's graph answer p95 rising from 64-68 ms
 (2026-10-16, 49,058 symbols) to 152-165 ms (2026-10-21, 58,930 symbols), with the
@@ -17,23 +19,27 @@ The owner decided on 2026-10-27 (issue triage, epic #2525):
 * And: **"think of a caching for swarm-graph answers maybe with an invalidation
   on repo events like merges"**.
 
-This document designs both. The owner reviews it before anything is built.
-§4 holds the questions that are the owner's to answer.
+This document designs both. §4 holds the questions that were the owner's, with
+BGD's answer under each; the body below agrees with those answers. §5 is the
+console section BGD asked for on 2026-10-27 (mock-up proposal C).
 
 ---
 
 ## 0. The answer in one screen
 
-* **The measurement runs where the snapshot is born: in the indexer, before
-  upload** (§1.2). It answers a fixed battery of questions in a fresh,
+* **The measurement runs where the snapshot is born: in the indexer, at
+  promotion, before upload** (§1.2; BGD Q1). It is opt-in per registration and
+  runs at most once per 24 h. It answers a fixed battery of questions in a fresh,
   cold `python -m agent_worker.graphmcp`, as #1840 and PR 1838 did. It writes
   `latency.json` beside the manifest, never inside it, so taking a measurement
   never changes a manifest digest or a cache key. Promotion copies the
   measurement into the version's Firestore document.
-* **The report is a SwarmCloud schedule type, `graph-latency-report`** (§1.3).
-  It is an API type, built like `release-health`: it creates no agent and holds
-  no capacity. It reads the promoted versions' measurements and opens one issue,
-  or comments on the open one, when p95 reaches 240 ms. It is not GitHub cron,
+* **The report is a SwarmCloud schedule type, `graph-latency-report`, every
+  6 h** (§1.3; BGD Q2). It is an API type, built like `release-health`: it
+  creates no agent and holds no capacity. It reads the promoted versions'
+  measurements and opens one issue, or comments on the open one, when **p95
+  over the reference workload** reaches `ratio_threshold` (BGD Q3: a ratio, not
+  a fixed millisecond threshold). It is not GitHub cron,
   which fired 2-6% of this repository's frequent schedules. It is not a Cloud
   Scheduler job of its own either: the schedule tick already rides on one Cloud
   Scheduler job, and a report is then data, not infrastructure.
@@ -46,8 +52,10 @@ This document designs both. The owner reviews it before anything is built.
 * **So repository events do not delete anything. They do three useful things
   instead** (§2.3):
   1. **Warm**: the first ticket naming a newly promoted digest re-asks that
-     repository's most-asked questions against it.
-  2. **Carry forward**: an answer computed at the previous digest is reused at
+     repository's 200 most-asked questions against it, after decoding a
+     widened `HOT_LAYERS` (BGD Q5).
+  2. **Carry forward**, built only after warming and demotion have run for two
+     weeks (BGD Q4): an answer computed at the previous digest is reused at
      the new one **only when every manifest entry it read resolves to the same
      blob in the new manifest**. This is the literal "invalidation on merges":
      a merge invalidates exactly the answers whose inputs it changed, worked out
@@ -58,8 +66,13 @@ This document designs both. The owner reviews it before anything is built.
 * **Who benefits.** Only workspaces on `graph_delivery: service` get any of
   this. The default is still `staged` (`graphstage.py:262`,
   `codeintel.py:156`): a pod serves itself from a staged copy, and no cache is
-  shared between agents. Q7 asks whether to switch this repository's
-  workspace.
+  shared between agents. **The eng workspace moves to `graph_delivery:
+  service` now** (BGD Q7); the fallback to staging covers a service outage.
+* **Replicas keep round robin** (BGD Q6): each replica warms on its own.
+* **The shard growth waits for the report** (BGD Q8): #1840's option 3 is
+  designed only once the report opens its first issue.
+* **The console shows it** (§5): a Cache section in each indexed repository's
+  card, with live per-replica panels.
 * **Measuring it** (§3): the indexer's battery gives cold p95 per promoted
   commit, before and after. A new log-based distribution over swarm-graph's
   existing `graph_answer` events gives served p95 split by `cache`, and the hit
@@ -133,8 +146,9 @@ it (`measure_latency: true`; see "when" below):
 generated workload) and the report (on this repository) then ask the same
 questions, measured the same way, and cannot drift apart.
 
-**When.** Measuring every promotion would add up to 40 s to every incremental
-run of a busy repository. So swarm-api sets `measure_latency` when it queues a
+**When** (BGD Q1: opt-in, at most once per 24 h). Measuring every promotion
+would add up to 40 s to every incremental run of a busy repository. So
+swarm-api sets `measure_latency` when it queues a
 run (`RepoIndex._poll_one`, which already decides the run's `kind`) if both of
 these hold:
 
@@ -191,8 +205,8 @@ the catalogue (`scheduletypes.py`), and a §3.19 in docs/schedules.md.
 | risk | R1: no push, writes one issue |
 | default gate / floor | auto / auto |
 | creators | members, and the owner for the platform's own repository (as `release-health`) |
-| min interval | 6 h |
-| parameters | `threshold_ms` (default 240), `ratio_threshold` (default none), `window` (default 7 measured versions), `issue_label` (`bug`) |
+| cadence | every 6 h (BGD Q2); also its min interval |
+| parameters | `ratio_threshold` (p95 over `reference_ms`; see "The threshold" below for its starting value), `window` (default 7 measured versions), `issue_label` (`bug`). There is no millisecond threshold (BGD Q3) |
 
 **What a firing does, per repository in scope,** as the schedule's tenant, with
 that tenant's forge credential, through `ctx.forge_writer`. This is
@@ -201,29 +215,42 @@ that tenant's forge credential, through `ctx.forge_writer`. This is
 
 1. **Read** the newest `window` `index_versions` documents that carry
    `answer_latency`, newest first.
-2. **Near the target.** The newest measured p95 is at or over `threshold_ms`,
-   or the p95/reference ratio is at or over `ratio_threshold` when that is set.
+2. **Near the target.** The newest measured p95 over its run's
+   `reference_ms` is at or over `ratio_threshold`. The milliseconds are
+   reported beside the ratio, but never decide.
    * With no issue open, it **opens** one. The issue is found by the marker its
      body opens with (`graph-latency:<repo_id>`). The title states the fact:
-     "swarm-graph's cold answer p95 on <repo> reached 252 ms at <sha>, 84% of
-     the 300 ms target". The body holds the table of the window (sha, date,
+     "swarm-graph's cold answer p95 on <repo> reached 12.6x the reference
+     workload (252 ms) at <sha>". The body holds the table of the window (sha, date,
      symbols, p95, reference, ratio) and the five slowest answers. The label
      is `issue_label`.
    * With one open, it **comments** with the newest measured version, unless
      the issue already names that sha (its own run marker). A firing every 6
      hours reports a version once, not four times.
-3. **Back under** the threshold after an open issue: it comments "under again
+3. **Back under** the ratio after an open issue: it comments "under again
    at <sha>" once. **It never closes the issue**; a person does, as
    `release-health` does.
-4. **Anything else** writes nothing. That covers under the threshold with no
+4. **Anything else** writes nothing. That covers under the ratio with no
    open issue, and no measurement in the window. A window with no measurement
    for 3 days is itself reported, once, as "unmeasured since <date>": a report
    that has silently stopped measuring is the failure #1840 is about.
 
-**Why 240 ms** (Q3): 80% of the target. At #1840's measured rate (about
-+90 ms in five days, of which part is a step), a daily measurement crossing
-240 ms leaves days, not hours, before 300 ms. A threshold at 300 ms would
-report the miss rather than warn of it.
+**The threshold: a ratio** (BGD Q3). The report fires on p95 over the
+reference workload timed in the same run, not on milliseconds, because the
+indexer's node type is not the container #1840 measured in (§1.2, "The CPU
+caveat") and a loaded node slows the reference and the answers alike, as the CI
+gate's `P95_BUDGET_RATIO` already relies on. **The value is set from the first
+two weeks of readings**: the schedule is created with the proposal below, and
+the owner fixes `ratio_threshold` once fourteen daily measurements show where
+this repository sits on the indexer's node.
+
+* **Proposed starting value, a proposal and not a decision: `ratio_threshold`
+  = 12.** On 2026-10-16 this repository measured p95 64-68 ms at a ratio of
+  3.0-3.5 (`WORKLOAD_SHAPE`'s comment in `test_graphmcp_budgets.py`), so the
+  reference was about 20 ms. At that reference, 12x is about 240 ms, 80% of
+  the 300 ms target: a daily measurement crossing it leaves days, not hours,
+  at #1840's measured rate (about +90 ms in five days). A ratio at the target
+  itself (about 15x) would report the miss rather than warn of it.
 
 ---
 
@@ -301,6 +328,8 @@ been minted a ticket for it.
 
 #### (a) Warm on promotion: re-ask the popular questions
 
+BGD Q5: replay the top 200, **and** widen `HOT_LAYERS`. Built with §1.
+
 * **Today.** The first ticket naming a new digest starts a background
   `Warmer.saw(...)` that decodes `HOT_LAYERS`.
 * **Proposed.**
@@ -324,6 +353,10 @@ been minted a ticket for it.
 #### (b) Carry forward: reuse an answer whose inputs did not change
 
 This is the part that makes a merge **invalidate only what it changed**.
+
+**When it is built** (BGD Q4): after warming (a) and demotion (c) have run for
+two weeks, so §3.2's exact-hit baseline is measured before carry forward moves
+it. Until then the `carried` value of §3.2 never appears.
 
 * **What each entry records.** A `ResultCache` entry also records its **read
   set**: every manifest lookup its computation made. `Snapshot` is the only way
@@ -388,7 +421,7 @@ that were considered:
 
 | where | for | against |
 |---|---|---|
-| **replica memory** (proposed) | a hit is a dictionary read; nothing new to deploy, secure or pay for; a restart is a cold cache, never a wrong one | each replica warms separately |
+| **replica memory** (chosen; round robin kept, BGD Q6) | a hit is a dictionary read; nothing new to deploy, secure or pay for; a restart is a cold cache, never a wrong one | each replica warms separately |
 | Memorystore (Redis) shared by the replicas | one hit rate for both replicas | new infrastructure, a new IAM grant and a network hop per lookup; a cache shared across tenants is a new isolation surface (invariant 9), where today's per-key `tenant_id` lives inside one process |
 | GCS, beside the index | survives restarts | a GET (tens of ms) per lookup, which is the latency being saved; and the service is read-only on the store by design (graph-service.md §3.4) |
 | the pod (staged) | no service needed | one agent's lifetime; nothing is shared |
@@ -532,6 +565,9 @@ per-repository reading is a Logs Analytics query over the same events.
 
 ## 4. Questions for the owner
 
+Answered by BGD on 2026-10-27. Each answer is the line under its question;
+the body above follows them.
+
 1. **Where does the battery run?**
    * (a) In the indexer at promotion, opt-in per registration, at most once
      every 24 h (§1.2).
@@ -541,6 +577,8 @@ per-repository reading is a Logs Analytics query over the same events.
 
    **Recommended: (a).** It needs no contract change, no model, no GCS read and
    no new door, and it measures the snapshot at birth.
+
+   **BGD 2026-10-27: (a) indexer: the battery runs in the indexer at promotion, opt-in, at most once per 24 h, `latency.json` beside the manifest.**
 2. **What fires the report?**
    * (a) A SwarmCloud schedule type, `graph-latency-report`, every 6 h (§1.3).
    * (b) A dedicated Cloud Scheduler job and route.
@@ -549,6 +587,8 @@ per-repository reading is a Logs Analytics query over the same events.
    **Recommended: (a).** It inherits the tick's Cloud Scheduler reliability,
    plus exactly-once, catch-up and pause. (b) is a Terraform apply per change
    and a new identity. (c) fired 2-6% of the time.
+
+   **BGD 2026-10-27: (a) schedule type: `graph-latency-report`, API executor, every 6 h.**
 3. **The threshold.**
    * (a) 240 ms, 80% of the target.
    * (b) 270 ms.
@@ -557,6 +597,8 @@ per-repository reading is a Logs Analytics query over the same events.
 
    **Recommended: (a) for now.** Add (c) only if the indexer's node type makes
    the milliseconds noisy; the report records the ratio either way.
+
+   **BGD 2026-10-27: (c) ratio: the report fires on p95 over the reference workload, not a fixed ms threshold; the value is set from the first two weeks of readings (proposed start: 12, §1.3).**
 4. **Carry forward across digests (§2.3 b).**
    * (a) Build it after (a) and (c) of §2.3 have run for two weeks, so the
      exact-hit baseline is measured first.
@@ -565,6 +607,8 @@ per-repository reading is a Logs Analytics query over the same events.
 
    **Recommended: (a).** It is the only part of §2 with real complexity (the
    read-set recorder and its property test), and §3.2 says whether it would pay.
+
+   **BGD 2026-10-27: (a) after baseline: carry forward is built after warming and demotion have run two weeks.**
 5. **Pre-warming the popular questions (§2.3 a).**
    * (a) Replay the top 200 of the previous digest.
    * (b) Warm the shards only, with `HOT_LAYERS` widened to cover `context`.
@@ -572,6 +616,8 @@ per-repository reading is a Logs Analytics query over the same events.
 
    **Recommended: (a).** (b) alone fixes the cold `context` decode but not the
    `impact(depth 3)` computations, which are the expensive repeated ones.
+
+   **BGD 2026-10-27: (a) replay top 200, and widen `HOT_LAYERS`.**
 6. **Replica affinity.**
    * (a) Keep round robin; each replica warms on its own.
    * (b) The shim picks a replica by a hash of `(tenant_id, repo_id)` over the
@@ -581,6 +627,8 @@ per-repository reading is a Logs Analytics query over the same events.
    **Recommended: (a) until §3.2 measures the per-replica hit rate.** (b) is a
    shim change that also concentrates one busy repository's load on one
    replica. (c) is new infrastructure and a cross-tenant shared store.
+
+   **BGD 2026-10-27: (a) round robin: keep it; each replica warms on its own.**
 7. **Should this repository's workspace move to `graph_delivery: service`?**
    Without it, none of §2 reaches this repository's agents: the default is
    `staged`, and a staged pod shares no cache.
@@ -592,9 +640,191 @@ per-repository reading is a Logs Analytics query over the same events.
 
    **Recommended: (a).** This repository is the one whose latency #1840
    measured, and the switch is reversible by one setting.
+
+   **BGD 2026-10-27: (a) now: the eng workspace moves to `graph_delivery: service` now; the fallback to staging covers outages.**
 8. **The shard growth itself** (#1840's option 3, not chosen on 2026-10-27).
    * (a) Leave it until the report opens its first issue.
    * (b) Design the per-module shard split now as well.
 
    **Recommended: (a).** The report exists to say when, and the slowest-answers
    list it carries names the modules to split.
+
+   **BGD 2026-10-27: (a) wait for the report.**
+
+---
+
+## 5. Console: the Cache section under each indexed repository
+
+BGD asked on 2026-10-27 for the cache to be visible where the repository is,
+and picked mock-up proposal **C, live replicas (v2 from the start)**: the
+section reads each swarm-graph replica live, not a daily summary. Nothing here
+is built. This section is what the build lanes of §5.6 follow.
+
+### 5.1 Where it appears
+
+* **Config › Repositories, inside the card of each repository that has
+  indexing on.** A repository without indexing gets **no** section, not an
+  empty one: there is no index to cache.
+* **Folded by default**, titled "Cache". Opening it starts the reads (§5.5).
+* **Indexing on but nothing promoted yet** (`index.current_sha` is null): the
+  section says "No index promoted yet" and reads nothing.
+
+### 5.2 What it shows
+
+**Repository facts, four tiles:**
+
+| tile | value | source |
+|---|---|---|
+| **Answer hit rate, 24 h** | `(hit + carried) / (hit + carried + miss)` (§3.2), with the answer count beside it ("91% of 1,284 answers") | every replica's `graph_answer` outcomes for this repository, summed (§5.3) |
+| **Reused from the last index** | the share of hits that were `carried` (§2.3 b) | the same counts. **A dash ("—") until carry forward exists** (BGD Q4), never 0%: 0% would say carry forward ran and reused nothing |
+| **p95 served / uncached** | served p95 over 24 h, then the uncached (cold) p95 of the current version, then that cold p95 over the reference workload ("38 ms / 152 ms · 7.4× reference") | served: the replicas' answer timings; uncached and ratio: `latency.json` (§1.2) as copied to `index_versions/{sha}.answer_latency`. "Not measured" when that version has no measurement |
+| **Last promotion warm-up** | how long the warm of the current digest took and how many questions it replayed ("2.1 s · 200 questions replayed") | the replicas' `graph_warmed` and `graph_prewarmed` records for the current digest; the slowest replica's time is the one shown |
+
+A window shorter than 24 h (a replica restarted in it) is labelled with the
+window it covers ("over 5 h"), never presented as 24 h.
+
+**One panel per swarm-graph replica:**
+
+* the replica's name, its **uptime**, and the time it last (re)started;
+* **answers: MiB used of 256** (`ResultCache`, `RESULT_CACHE_BYTES`);
+* **shards: MiB used of 512** (`ShardCache`, `SHARD_CACHE_RAW_BYTES`);
+* **for THIS repository**: how many answers and how many shards it holds hot.
+
+The two MiB figures are the replica's totals across every tenant. They are
+numbers, not keys or names, and are shown because a full cache is what makes
+this repository's answers miss. Nothing else about another tenant is ever
+returned (§5.4).
+
+**The shard list, folded by default:** "Shards (N) · K changed by the last
+merge". Unfolded, **changed shards first**, then the rest by hits. One row per
+shard:
+
+| column | value |
+|---|---|
+| layer | `symbols`, `callers`, `callees`, `tests`, `signatures`, `files`, `terms` |
+| module | the shard's manifest key |
+| size | its raw bytes, from the manifest |
+| last merge | **changed** or **unchanged**, from comparing the current manifest with the previous version's: changed when the key's blob differs or the key is new |
+| content hash | the blob's sha256, shortened, the full value on hover |
+| per replica | **hot** or **cold**, one mark per replica |
+| hits, 24 h | summed over the replicas |
+| last read | the latest read on any replica |
+
+The list is read only when it is unfolded, a page of 100 rows at a time, so an
+index of thousands of shards costs nothing while the list is closed.
+
+### 5.3 Data path
+
+```
+console ── GET /v1/repositories/{repo_id}/graph-cache[?shards=1&page=N] ──▶ swarm-api
+swarm-api ── GET http://<graph-stats ILB>:8081/v1/stats (stats ticket) ──▶ one swarm-graph replica
+that replica ── GET http://<peer pod>:8081/v1/stats/local (same ticket) ──▶ every peer, via the headless Service
+```
+
+**swarm-graph: a new read-only stats endpoint on every replica.**
+
+* `GET /v1/stats/local` answers for the replica itself. `GET /v1/stats` answers
+  for the receiving replica and every peer the headless Service `swarm-graph`
+  resolves to (the same peer discovery as warming, graph-service.md §5.4),
+  each peer read with a 2 s timeout. A peer that does not answer is an entry
+  `{replica, state: "not_read", reason}` (`timeout`, `refused`, `disabled`,
+  `ticket_refused`, `bad_response`), **never** a panel of zeros.
+* **A separate port, 8081**, so the stats route never shares a port with
+  `/mcp`. A NetworkPolicy admits by port, not by path, and swarm-api must not be
+  able to reach `/mcp`.
+* **Per replica it returns**: `replica`, `started_at`, `result_bytes` and
+  `result_bound`, `shard_bytes` and `shard_bound`; and for the ticket's
+  `(tenant_id, repo_id)` only: answer outcomes in 24 hourly buckets (`hit`,
+  `carried`, `miss`), a served-ms histogram for the p95, the answers and shards
+  held hot, the last warm (`digest`, `ms`, `shards`, `replayed`), and, when
+  asked for shards, `{blob_sha256: {hot, hits_24h, last_read}}` for the blobs
+  of the ticket's digest.
+* **The counters are kept where the events are logged.** `GraphService.answer`
+  counts the outcome at the line that logs `graph_answer`, so the tile and the
+  log-based metric of §3.1 cannot disagree. `ShardCache` counts reads per blob
+  in hourly buckets. All of it is memory; a restart starts it at zero, which is
+  why §5.2 labels a short window.
+* **Tenant-scoped.** The endpoint takes a **stats ticket**: an HMAC under the
+  existing `swarm-graph-ticket-key` with its own domain,
+  `swarm-graph-stats/v1\0` (never the attempt ticket's
+  `swarm-graph-ticket/v1\0`, so neither can stand in for the other), carrying
+  `tenant_id`, `repo_id`, the current and previous `manifest_digest`, and an
+  `exp` 60 s ahead. It answers **only for the tenant the ticket names**: every
+  per-repository figure is filtered on the cache key's leading `tenant_id`
+  (invariant 9), and the response carries no other tenant's keys, repository
+  ids, digests or names. A ticket that does not verify is a 401 with no body
+  beyond the reason.
+
+**swarm-api: one route the console calls.**
+
+* `GET /v1/repositories/{repo_id}/graph-cache`, tenant-scoped through the same
+  authenticator as every route: the tenant is derived from the caller's token,
+  never accepted from the request (invariant 10), and a `repo_id` the tenant
+  has not registered is a 404.
+* It reads the registration (current and previous digest), the current
+  version's `answer_latency`, mints the stats ticket, calls `/v1/stats` once,
+  and returns `{facts, replicas[], shards?}`. With `shards=1` it also compares
+  the two manifests (read from the index store as the index route reads them;
+  immutable by digest, so cached per digest pair) and merges each blob's
+  replica marks into the rows of §5.2.
+* **swarm-graph not answering at all** (the ILB refuses or times out at 3 s) is
+  a 200 with `replicas: []` and `stats: {state: "not_read", reason}`. The
+  latency tile, read from Firestore, still shows.
+
+**The NetworkPolicy and service change — BGD's review, not built here:**
+
+* **`kubernetes/swarm-system/swarm-graph.yaml`, NetworkPolicy
+  `swarm-graph-ingress`** gains a second ingress rule:
+  `from: [{ipBlock: {cidr: __SWARM_API_EGRESS_CIDR__}}]`, `ports: [{protocol:
+  TCP, port: 8081}]`. Today the policy admits only namespaces labelled
+  `app.kubernetes.io/part-of: swarm` with `swarm-tenant` Exists, on 8080. The
+  tenant rule stays exactly as it is and does **not** gain 8081; swarm-api's
+  range does **not** gain 8080. `__SWARM_API_EGRESS_CIDR__` is the placeholder
+  `swarm-live.yaml`'s `swarm-live-ingress` already uses for the same range
+  (swarm-api's Direct VPC egress subnet), and `kubernetes/network_parity.py`
+  gains the matching check.
+* **A new Service in the same file, `swarm-graph-stats`**: `type:
+  LoadBalancer`, annotation `networking.gke.io/load-balancer-type: "Internal"`,
+  selector `app.kubernetes.io/name: swarm-graph`, port 8081 only, on a reserved
+  internal address. swarm-api is Cloud Run and cannot resolve cluster DNS, so it
+  reaches the cluster the way it reaches swarm-live: an internal load balancer
+  on a reserved address.
+* **`terraform/infra/graph_service.tf`**: a `google_compute_address`
+  `graph_stats` (internal, `managed-by=swarm-terraform`), rendered into the
+  manifest with the egress CIDR, and `SWARM_GRAPH_STATS_URL` on swarm-api.
+* **IAM: no new grant.** swarm-api already holds `roles/secretmanager.
+  secretAccessor` on `swarm-graph-ticket-key`
+  (`google_secret_manager_secret_iam_binding.graph_ticket_key_accessor`), and
+  swarm-graph's principal already reads it. The stats ticket uses that key under
+  its own domain. No Kubernetes RBAC: the service still never calls the
+  Kubernetes API.
+
+### 5.4 What it must never do
+
+* Return another tenant's cache keys, repository ids, digests or shard hashes.
+* Show a replica it could not read as zeros, or as missing without a reason.
+* Read anything while the section is folded or the page is hidden.
+* Reach `/mcp` from swarm-api, or `/v1/stats` from a tenant namespace.
+
+### 5.5 Refresh
+
+* **Every 30 s while the section is open**, and once when it opens.
+* **Nothing read while it is folded or while the page is hidden**
+  (`document.visibilityState` is `hidden`). Reopening, or the page becoming
+  visible again, reads once at once and resumes the 30 s cadence.
+* Each read shows its own time ("read 12 s ago"). A failed read keeps the last
+  good values, marked with the time they were read and the reason the new read
+  failed; it never blanks them and never shows zeros.
+
+### 5.6 Build lanes
+
+Four lanes; **no file appears in two of them**. The response shapes in §5.3 are
+the interface between them, so lanes 1, 3 and 4 can run side by side; lane 2
+waits for BGD's review.
+
+| lane | files | tests |
+|---|---|---|
+| **1. stats endpoint, swarm-graph** | `apps/swarm-graph/swarm_graph/stats.py` (new: counters, the per-replica document, the peer fan-out); `server.py` (the 8081 routes, counting at the `graph_answer` line); `cache.py` (per-blob read buckets, per-tenant hot counts); `warm.py` (the last warm record); `ticket.py` (verify the stats ticket under its own domain) | `tests/unit/graphsvc/test_graphsvc_stats.py` (new): a second tenant's entries never appear; a peer that times out is `not_read` with its reason; an attempt ticket is refused on the stats route and a stats ticket on `/mcp` |
+| **2. NetworkPolicy and service (BGD reviews)** | `kubernetes/swarm-system/swarm-graph.yaml`; `kubernetes/network_parity.py`; `terraform/infra/graph_service.tf` | `tests/unit/scripts/test_graph_service_manifest.py`: 8081 admitted only from the swarm-api range, 8080 only from tenant namespaces; a `terraform test` case for the address's label |
+| **3. swarm-api route** | `apps/swarm-api/swarm_api/routes/graph_cache.py` (new); `apps/swarm-api/swarm_api/graph_ticket.py` (mint the stats ticket); `apps/swarm-api/swarm_api/main.py` (register the router) | `tests/unit/control_plane/test_graph_cache_route.py` (new): another tenant's `repo_id` is a 404; swarm-graph down is a 200 `not_read`; the manifest comparison marks a changed blob and a new key as changed |
+| **4. console section** (at most 3 UI files) | `apps/swarm-ui/src/RepoGraphCache.tsx` (new: the tiles, the replica panels, the shard list); `apps/swarm-ui/src/RepositoriesParts.tsx` (mounts it in the card when indexing is on); `apps/swarm-ui/src/api.ts` (the fetcher and its mock) | `apps/swarm-ui/src/__tests__/repo-graph-cache.test.tsx` (new): no read while folded or hidden; a 30 s refresh while open; a `not_read` replica shows its reason and no zeros; the reuse tile is a dash with no `carried` count |
