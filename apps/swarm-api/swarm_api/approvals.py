@@ -56,6 +56,11 @@ task has already ended. Expiry (§4.7) tidies the inbox; it releases nothing.
 
 TENANT-SCOPED (invariant 9). Every read compares the stored `tenant_id` with
 the caller's and answers a mismatch with the same 404 as a missing id.
+
+THE LAST 7 DAYS STAY READABLE (BGD 2026-10-27, #2417 A4). `history` serves
+what was approved, rejected, answered or expired in the last HISTORY_DAYS,
+newest first, each kind from its own source of truth -- a record, a run, a
+task -- with one bounded read per source and nothing written.
 """
 
 from __future__ import annotations
@@ -870,6 +875,164 @@ def inbox(ctx: Any, tenant_id: str, *, kind: str | None = None) -> list[dict[str
         items = [i for i in items if i.get("kind") == kind]
     items.sort(key=lambda i: (_aware(i.get("requested_at")) or _EPOCH, str(i.get("approval_id"))))
     return items
+
+
+# --------------------------------------------------------------------------
+# The history: what was decided or expired lately (#2417 A4)
+# --------------------------------------------------------------------------
+
+#: How far back the history reaches. BGD 2026-10-27 (AUTO-A4A5): "the
+#: approvals API returns recent decisions", the last 7 days of them.
+HISTORY_DAYS = 7
+#: Decided and expired rows one history read serves at most, and what each of
+#: its three sources (records, runs, await-input steps) reads at most.
+HISTORY_LIMIT = 200
+#: An await-input step a member answered. It is the step's decision, but
+#: neither an approval nor a rejection, so it keeps its own word.
+ANSWERED = "answered"
+#: The history's states. `superseded` is not one: nothing was decided, the
+#: subject moved on (`_live_merge`).
+DECIDED_STATES = (APPROVED, REJECTED, ANSWERED)
+HISTORY_STATES = DECIDED_STATES + (EXPIRED,)
+
+
+def _recent(moment: Any, cutoff: datetime) -> datetime | None:
+    at = _moment(moment)
+    return at if at is not None and at >= cutoff else None
+
+
+def decided_records(db: Any, tenant_id: str, now: datetime, *,
+                    limit: int | None = None) -> tuple[list[dict[str, Any]], bool]:
+    """The tenant's records decided or expired in the last HISTORY_DAYS, and
+    whether the read was full (so rows may be missing).
+
+    ONE QUERY, ON AN INDEX THAT EXISTS: approvals-tenant-state-requested
+    (tenant_id, state, requested_at ASC), with `state in` the closed states
+    and `requested_at` no older than the window plus the longest TTL -- a
+    record is decided or expired at most APPROVAL_TTL_MAX_HOURS after it was
+    asked for. That index runs ascending, so a full read is the OLDEST
+    `limit` of the window and the caller is told (`history_truncated`). The
+    exact read -- `decided_at >= cutoff order by decided_at desc` -- needs a
+    new index, (tenant_id, state, decided_at DESC), proposed beside the PR
+    that added this rather than made here. Filtered again in the application:
+    the tenant, the state, and `decided_at` inside the window.
+    """
+    limit = HISTORY_LIMIT if limit is None else limit
+    cutoff = now - timedelta(days=HISTORY_DAYS)
+    since = cutoff - timedelta(hours=schedules.APPROVAL_TTL_MAX_HOURS)
+    query = (
+        db.collection(COLLECTION)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter("state", "in", [APPROVED, REJECTED, EXPIRED]))
+        .where(filter=FieldFilter("requested_at", ">=", since))
+        .order_by("requested_at")
+        .limit(limit)
+    )
+    read = [snap.to_dict() or {} for snap in query.stream()]
+    rows = [r for r in read if r.get("tenant_id") == tenant_id and r.get("state") in HISTORY_STATES
+            and _recent(r.get("decided_at"), cutoff)]
+    return rows, len(read) >= limit
+
+
+def project_decided_run(run: IssueRun, schedule: Mapping[str, Any] | None,
+                        cutoff: datetime) -> dict[str, Any] | None:
+    """A run whose plan a person approved or rejected, or expiry rejected,
+    since `cutoff`, as a history item; None otherwise. The run is the source
+    of truth, as it is for the pending item: `approved_by`/`approved_at`, or
+    its PLANNED -> REJECTED history entry with `rejected_by` and
+    `rejection_reason`. A plan the tick approved (`plan_approval: auto`) was
+    never waiting on anyone and is not served."""
+    item = project_run(run, schedule)
+    if run.approved_by and run.approved_by != AUTO_APPROVER:
+        at = _recent(run.approved_at, cutoff)
+        if at is None:
+            return None
+        decided = {"state": APPROVED, "decided_by": run.approved_by, "decided_at": at, "reason": None}
+    elif run.state == RunState.REJECTED:
+        entry = next((e for e in reversed(run.history) if e.get("to") == RunState.REJECTED.value
+                      and e.get("from") == RunState.PLANNED.value), None)
+        at = _recent((entry or {}).get("at"), cutoff)
+        if at is None:
+            return None
+        expired = run.rejected_by == EXPIRY_ACTOR
+        decided = {"state": EXPIRED if expired else REJECTED,
+                   "decided_by": run.rejected_by or (entry or {}).get("by"), "decided_at": at,
+                   "reason": None if expired else run.rejection_reason}
+    else:
+        return None
+    return {**item, **decided}
+
+
+def project_closed_input(task: Any, cutoff: datetime) -> dict[str, Any] | None:
+    """An await-input step answered or expired since `cutoff`, as a history
+    item; None otherwise. The step's `metadata.await_input` is the source of
+    truth: `answer` (`answered_by`, `answered_at`) or `expired.at`."""
+    if not await_input_declaration(task):
+        return None
+    window = await_input_window(task)
+    answer = window.get("answer") if isinstance(window.get("answer"), Mapping) else None
+    expired = window.get("expired") if isinstance(window.get("expired"), Mapping) else None
+    if answer is not None:
+        at = _recent(answer.get("answered_at"), cutoff)
+        decided = {"state": ANSWERED, "decided_by": answer.get("answered_by"), "decided_at": at}
+    elif expired is not None:
+        at = _recent(expired.get("at"), cutoff)
+        decided = {"state": EXPIRED, "decided_by": EXPIRY_ACTOR, "decided_at": at}
+    else:
+        return None
+    if at is None:
+        return None
+    return {**project_input(task), **decided, "reason": None}
+
+
+def history(ctx: Any, tenant_id: str, *, kind: str | None = None, states: tuple[str, ...] = HISTORY_STATES,
+            limit: int | None = None) -> tuple[list[tuple[dict[str, Any], IssueRun | None]], bool]:
+    """The tenant's items decided or expired in the last HISTORY_DAYS, NEWEST
+    FIRST by `decided_at`, at most `limit`, each beside its run when it is a
+    projected one; and whether a source's read was full, so rows may be
+    missing (`history_truncated`).
+
+    Three sources, each read once and bounded, each its own source of truth:
+    the records (`decided_records`); the tenant's newest `limit` issue runs
+    (`IssueRuns.list`, index issue-runs-tenant-created) for projected plans;
+    the tenant's newest `limit` tasks (`list_tasks`, tasks-tenant-created)
+    for await-input steps. Every one is tenant-scoped in the query and again
+    here (invariant 9). Reads only: nothing is synced, closed or expired.
+    """
+    limit = HISTORY_LIMIT if limit is None else limit
+    now = ctx.now()
+    cutoff = now - timedelta(days=HISTORY_DAYS)
+    records, truncated = decided_records(ctx.db, tenant_id, now, limit=limit)
+    found: list[tuple[dict[str, Any], IssueRun | None]] = [(doc, None) for doc in records]
+    runs, more_runs = IssueRuns(ctx.db, now=ctx.now).list(tenant_id, limit=limit)
+    schedules_seen: dict[str, dict[str, Any] | None] = {}
+    for run in runs:
+        if run.tenant_id != tenant_id:
+            continue
+        sid = (run.schedule or {}).get("schedule_id")
+        if sid and sid not in schedules_seen:
+            schedules_seen[sid] = read_schedule(ctx.db, tenant_id, sid)
+        item = project_decided_run(run, schedules_seen.get(sid) if sid else None, cutoff)
+        if item is not None:
+            found.append((item, run))
+    page = ctx.store.list_tasks(tenant_id, limit=limit, submitted_by=None)
+    for task in page.items:
+        item = project_closed_input(task, cutoff) if task.tenant_id == tenant_id else None
+        if item is not None:
+            found.append((item, None))
+    found = [(i, r) for i, r in found if i.get("state") in states and (kind is None or i.get("kind") == kind)]
+    found.sort(key=lambda pair: (_aware(pair[0].get("decided_at")) or _EPOCH, str(pair[0].get("approval_id"))),
+               reverse=True)
+    # A full read of runs or tasks says rows may be missing only while what it
+    # reached is still inside the window: past it, what was not read was made
+    # earlier than anything this history can hold, but for a plan made by
+    # hand and decided weeks later, which is not served.
+    since = cutoff - timedelta(hours=schedules.APPROVAL_TTL_MAX_HOURS)
+    truncated = (truncated or len(found) > limit
+                 or (more_runs is not None and bool(runs) and _aware(runs[-1].created_at) >= since)
+                 or (page.next_page_token is not None and bool(page.items)
+                     and (_moment(page.items[-1].created_at) or _EPOCH) >= since))
+    return found[:limit], truncated
 
 
 # --------------------------------------------------------------------------
