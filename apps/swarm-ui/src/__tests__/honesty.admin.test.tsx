@@ -555,8 +555,8 @@ describe('Provider quota says what its cap is and which pool it feeds (CP-8)', (
     expect(link, 'the pool is not a link').not.toBeNull()
     // To THAT pool's row on Pools (#128), not to the top of the screen.
     expect(link!.getAttribute('href')).toBe(`#capacity/pools?pool=${encodeURIComponent('provider:anthropic:tenant:eng')}`)
-    expect(link!.textContent).toBe('provider:anthropic:tenant:eng')
-    // The full name survives an ellipsis below 900px (CH-13).
+    // The pool's name as Pools prints it, its id in the title (QA1 capacity-18).
+    expect(link!.textContent).toBe('anthropic · eng')
     expect(link!.getAttribute('title')).toBe('provider:anthropic:tenant:eng')
     expect(link!.className).toContain('ctl-link')
   })

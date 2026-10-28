@@ -2,6 +2,7 @@ import { Fragment, useState } from 'react'
 import { isPaused } from './fetch'
 import { tableMode, usePhoneTables } from './capacityPoll'
 import { WarnMark } from './marks'
+import './styles/profile-matrix.css'
 import {
   FAMILY_TITLE,
   POOL_FAMILY_ORDER,
@@ -258,8 +259,11 @@ export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
                           // ONE LINE AT ONE WIDTH (visual QA V090/V195,
                           // 2026-10-27): beside a 70-character profile name the
                           // entry wrapped inside itself, `(5/5) fits ⏎0`. The
-                          // name is its own span, so the sheet cuts the NAME
-                          // (whole in the title) and never the figures.
+                          // name is its own span, so where the table is
+                          // cramped the sheet wraps the NAME, whole, and
+                          // breaks the entry only between its pieces, never
+                          // inside the figures (capacity-15,
+                          // styles/profile-matrix.css).
                           return (
                             <span key={b} className="cap-mx-bind" data-pool={b} title={b}>
                               <span className="cap-mx-bind-pool">{poolLabelAmong(b, among)}</span>

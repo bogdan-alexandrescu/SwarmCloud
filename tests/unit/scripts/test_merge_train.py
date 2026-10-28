@@ -270,9 +270,16 @@ def test_judge_red_names_the_failing_job_with_its_link(tmp_path):
     assert failed == [("python-unit (3)", url)]
 
 
-@pytest.mark.parametrize("conclusion", ["failure", "timed_out", "cancelled", "action_required", "startup_failure"])
+@pytest.mark.parametrize("conclusion", ["failure", "timed_out", "action_required", "startup_failure"])
 def test_judge_red_on_any_failed_conclusion_required_or_not(tmp_path, conclusion: str):
     assert _judge(tmp_path, [_cr("ci-gate"), _cr("secret scan"), _cr("Trivy", conclusion=conclusion)])[0] == "red"
+
+
+def test_judge_reads_a_cancelled_latest_run_as_neither_red_nor_green(tmp_path):
+    """#1778: a cancelled run waits for its re-run. Required, it leaves the
+    verdict pending; nothing requiring it, it holds nothing."""
+    assert _judge(tmp_path, [_cr("ci-gate"), _cr("secret scan"), _cr("Trivy", conclusion="cancelled")])[0] == "green"
+    assert _judge(tmp_path, [_cr("ci-gate", conclusion="cancelled"), _cr("secret scan")])[0] == "pending"
 
 
 def test_judge_red_on_a_failed_commit_status(tmp_path):

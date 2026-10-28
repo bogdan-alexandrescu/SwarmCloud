@@ -31,13 +31,33 @@ export const QUOTA_POLL_MS = 30_000
 export const CAPACITY_PHONE_POLL_MS = 60_000
 
 /**
+ * WHY A PHONE'S CADENCE IS SLOWER, IN THE WORDS ITS HEAD ADDS (admin-shell-19,
+ * visual QA pass 1): Pool limits' head read `every 30 s` at 1440 and `every 1
+ * min` at 390 for the same page and data, and nothing said the phone polls
+ * slower on purpose (#117), so the two read as a fault. Below the phone
+ * breakpoint the head says `every 1 min on a phone`.
+ */
+export const CAPACITY_PHONE_NOTE = 'on a phone'
+
+/** A capacity screen's `pollMs`, with the words that explain its cadence where it differs. */
+export type CapacityPoll = ((data: unknown) => number) & {
+  /** `CAPACITY_PHONE_NOTE` while the phone's slower cadence is the one in force; null otherwise. */
+  note: () => string | null
+}
+
+/**
  * A capacity screen's `pollMs`: `desktopMs` on a desktop, and
  * `CAPACITY_PHONE_POLL_MS` below the phone breakpoint. A function, so the
  * width is asked at each read (`Screen` plans every read through it) and a
- * rotated or resized window takes the right cadence on its next read.
+ * rotated or resized window takes the right cadence on its next read. Its
+ * `note` says why, at the same width, when the phone's cadence is the slower
+ * one (a screen whose desktop cadence is already a minute has nothing to say).
  */
-export function capacityPoll(desktopMs: number): (data: unknown) => number {
-  return () => (phoneWidth() ? CAPACITY_PHONE_POLL_MS : desktopMs)
+export function capacityPoll(desktopMs: number): CapacityPoll {
+  const poll = () => (phoneWidth() ? CAPACITY_PHONE_POLL_MS : desktopMs)
+  return Object.assign(poll, {
+    note: () => (phoneWidth() && CAPACITY_PHONE_POLL_MS > desktopMs ? CAPACITY_PHONE_NOTE : null),
+  })
 }
 
 /**

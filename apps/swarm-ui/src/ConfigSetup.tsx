@@ -2,8 +2,9 @@ import { createContext, useContext, useState, type MouseEvent } from 'react'
 import { Dash, routedClick } from './components'
 import type { Result } from './fetch'
 import { configSetupOf, itemName, secretsUnreadReason, type ConfigSetup } from './configSetupApi'
+import { STEP_LABEL, countLabel } from './Onboarding'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
-import type { OnboardingDoc, OnboardingStepState } from './types'
+import type { OnboardingDoc, OnboardingStepName, OnboardingStepState } from './types'
 import { ageSpan } from './types'
 import { useNow } from './useNow'
 import './styles/config.css'
@@ -34,6 +35,16 @@ import './styles/config.css'
  *
  * THE PANEL'S ROW BADGES (S1a) are derived from these same steps
  * (`configBadges`), so a row can never say what the strip does not.
+ *
+ * A CHECKLIST STEP THAT FAILED IS NEVER HIDDEN BY THE STRIP (QA1-FIX-10,
+ * config-08, chrome-C20). The strip has three or four steps and Workspace
+ * setup's checklist seven, so their counts differ by design; the strip names
+ * the checklist's count beside its own link rather than pretending they are
+ * one. But GitHub connected read done from `github_connected` alone while
+ * the checklist's Enable orgs had failed, so the strip, the panel's meter and
+ * GitHub access's lead all called GitHub finished over a failure. The
+ * checklist steps done on the GitHub access page (`GITHUB_SIDE`) now hold
+ * the strip's step 1 at their own failed or stale state, named.
  */
 
 /** A strip step's state: the onboarding derivation's, or unknown where nothing measured it. */
@@ -66,6 +77,23 @@ const STATE_LINE: Readonly<Record<OnboardingStepState, string>> = {
   todo: 'not yet',
 }
 
+/** The checklist steps whose fix is on GitHub access, after Connect GitHub: a failed or stale one holds strip step 1. */
+const GITHUB_SIDE: readonly OnboardingStepName[] = ['app_installed', 'orgs_enabled']
+
+/**
+ * A done strip step held back by the checklist: the first of `names` that
+ * failed, else the first that is stale, named as the checklist names it
+ * ("Enable orgs failed"). Anything else leaves the step as measured: a step
+ * still to do or in progress there is the checklist's to show, not a fault.
+ */
+function heldBy(doc: OnboardingDoc | null, measured: Pick<SetupStep, 'state' | 'line'>, names: readonly OnboardingStepName[]): Pick<SetupStep, 'state' | 'line'> {
+  if (measured.state !== 'done' || doc === null || !Array.isArray(doc.steps)) return measured
+  const side = doc.steps.filter((s) => names.includes(s.step))
+  const held = side.find((s) => s.state === 'failed') ?? side.find((s) => s.state === 'stale')
+  if (held === undefined) return measured
+  return { state: held.state, line: `${STEP_LABEL[held.step] ?? held.step} ${STATE_LINE[held.state]}` }
+}
+
 function str(v: unknown): string | null {
   return typeof v === 'string' && v !== '' ? v : null
 }
@@ -86,10 +114,15 @@ export function setupSteps(doc: OnboardingDoc | null, personal: boolean): SetupS
       key: 'github',
       label: 'GitHub connected',
       to: 'config/github',
-      ...measured('github_connected', (e) => {
-        const login = str(e.login) ?? str(e.github_login)
-        return login === null ? null : `@${login}`
-      }),
+      ...heldBy(
+        doc,
+        measured('github_connected', (e) => {
+          // `forge_login` is the name onboarding.py's github_connected evidence serves it under.
+          const login = str(e.forge_login) ?? str(e.login) ?? str(e.github_login)
+          return login === null ? null : `@${login}`
+        }),
+        GITHUB_SIDE,
+      ),
     },
     {
       key: 'repositories',
@@ -314,6 +347,18 @@ function writeShowSteps(shown: boolean) {
 }
 
 /**
+ * THE CHECKLIST'S OWN COUNT, NAMED (config-08, chrome-C20): "Workspace setup:
+ * 4 of 7 done", Workspace setup's checklist count in its own words
+ * (Onboarding's `countLabel`), on the strip's link to it. The strip counts
+ * its three or four steps; without this the two counts on one screen read as
+ * one count that disagrees with itself. Null while the read has no steps.
+ */
+export function checklistCount(doc: OnboardingDoc | null): string | null {
+  if (doc === null || !Array.isArray(doc.steps) || doc.steps.length === 0) return null
+  return `Workspace setup: ${countLabel(doc)}`
+}
+
+/**
  * The strip across the top of a Config page.
  *
  * FINISHED, IT FOLDS (config-e.html `stripD`): with every step done, measured,
@@ -335,6 +380,7 @@ export function SetupStrip({ go }: { go: (to: string) => void }) {
   // and a step the read did not measure draws no age on its line either.
   const age = data === null ? null : readingAge(data.derived_at, now)
   const complete = of > 0 && done === of
+  const checklist = checklistCount(data)
   const show = (v: boolean) => {
     setShown(v)
     writeShowSteps(v)
@@ -365,6 +411,12 @@ export function SetupStrip({ go }: { go: (to: string) => void }) {
           <button type="button" className="ctl-link" aria-expanded={false} onClick={() => show(true)}>
             Show steps
           </button>
+          {/* The strip's steps are done but the checklist's are not: say whose count is behind. */}
+          {checklist !== null && data?.complete !== true && (
+            <a className="ctl-link" {...link(WORKSPACE_SETUP_ADDRESS)}>
+              {checklist}
+            </a>
+          )}
         </div>
       </section>
     )
@@ -433,7 +485,7 @@ export function SetupStrip({ go }: { go: (to: string) => void }) {
         {unknown > 0 && <small>{unknown} not measured</small>}
         {hide}
         <a className="ctl-link" {...link(WORKSPACE_SETUP_ADDRESS)}>
-          Workspace setup
+          {checklist ?? 'Workspace setup'}
         </a>
       </div>
     </section>

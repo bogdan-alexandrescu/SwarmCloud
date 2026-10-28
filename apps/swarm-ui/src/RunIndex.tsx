@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { loadRepositories, loadRepositoryIndex, queryRepositoryImpact } from './api'
 import { Card, Chip, Dash, ToneMark } from './components'
 import type { ApiError, Result } from './fetch'
@@ -75,11 +75,78 @@ export function useRunIndex(run: IssueRun): RunIndexRead {
     () => (repoId === null ? EMPTY<IndexDoc | null>() : loadRepositoryIndex(repoId)),
     `run-index:index:${repoId ?? ''}`,
   )
-  const impact = useUrRead<ImpactPlan | null>(
-    () => (repoId === null || pr === null ? EMPTY<ImpactPlan | null>() : queryRepositoryImpact(repoId, { pull_request: pr })),
-    `run-index:impact:${repoId ?? ''}:${pr ?? ''}:${head}`,
-  )
-  return { reg, index: index.state, impact: impact.state, pr }
+  const impact = useImpactRead(repoId, pr, head)
+  return { reg, index: index.state, impact, pr }
+}
+
+/**
+ * THE IMPACT ASKS OF THIS TAB, by repository, pull request and head: the one
+ * in flight is shared, and a failed one is forgotten so the next look asks
+ * again. The query walks the diff through the graph and took 19.6 s live
+ * (C-15, 2026-10-28), so leaving the Run tab for Changes and coming back
+ * must take the ask already out, not start another 20 s one.
+ */
+const IMPACT_ASKS = new Map<string, Promise<Result<ImpactPlan | null>>>()
+/** Plenty for the runs one tab opens; the oldest ask is dropped past it. */
+const IMPACT_ASKS_KEPT = 32
+
+function askImpact(repoId: string, pr: number, head: string): Promise<Result<ImpactPlan | null>> {
+  const key = `${repoId}:${pr}:${head}`
+  const held = IMPACT_ASKS.get(key)
+  if (held !== undefined) return held
+  const ask = queryRepositoryImpact(repoId, { pull_request: pr }).then((r) => {
+    if (r.status === 'error') IMPACT_ASKS.delete(key)
+    return r
+  })
+  IMPACT_ASKS.set(key, ask)
+  const oldest = IMPACT_ASKS.size > IMPACT_ASKS_KEPT ? IMPACT_ASKS.keys().next().value : undefined
+  if (oldest !== undefined) IMPACT_ASKS.delete(oldest)
+  return ask
+}
+
+/**
+ * The pull request's impact, asked once per head, and AN ANSWER THAT ARRIVES
+ * IS DRAWN (C-15). Keyed by head alone, a head that moved while the ~20 s
+ * query was out threw its 200 away and asked again, and the page said
+ * "reading the impact…" through answers it had been given. Now the newest
+ * ASK's answer wins: an earlier head's is drawn until the newer head's
+ * lands, and never replaces it. Another pull request's answer is never kept.
+ */
+function useImpactRead(repoId: string | null, pr: number | null, head: string): Result<ImpactPlan | null> {
+  const prKey = repoId === null || pr === null ? null : `${repoId}:${pr}`
+  const [got, setGot] = useState<{ prKey: string; seq: number; r: Result<ImpactPlan | null> } | null>(null)
+  const asked = useRef(0)
+  const since = useRef(Date.now())
+  const current = useRef(prKey)
+  current.current = prKey
+  const alive = useRef(true)
+  useEffect(() => {
+    alive.current = true
+    return () => {
+      alive.current = false
+    }
+  }, [])
+  useEffect(() => {
+    if (repoId === null || pr === null || prKey === null) return
+    const seq = ++asked.current
+    // No cleanup drops this answer: a moved head keeps the earlier ask live,
+    // and an unmount or another pull request is checked when it lands.
+    void askImpact(repoId, pr, head).then((r) => {
+      if (!alive.current || current.current !== prKey) return
+      setGot((was) => {
+        const mine = was !== null && was.prKey === prKey
+        if (mine && was.seq > seq) return was
+        // A failed re-ask with an answer in hand keeps the answer, said stale (fetch.ts's `Result` rule).
+        if (r.status === 'error' && mine && (was.r.status === 'ok' || was.r.status === 'stale')) {
+          return { prKey, seq, r: { status: 'stale', data: was.r.data, fetchedAt: was.r.fetchedAt, error: r.error } }
+        }
+        return { prKey, seq, r }
+      })
+    })
+  }, [repoId, pr, prKey, head])
+  if (prKey === null) return { status: 'empty', fetchedAt: since.current }
+  if (got === null || got.prKey !== prKey) return { status: 'loading', since: since.current }
+  return got.r
 }
 
 function NotServedYet({ route }: { route: string }) {
@@ -110,7 +177,7 @@ export function RunContextCard({ run, ctx, go }: { run: IssueRun; ctx: RunIndexR
           {run.issue_read ? ` with ${run.issue_read.comments} ${run.issue_read.comments === 1 ? 'comment' : 'comments'}` : (
             <>
               {' '}
-              <Dash why="The issue was not read when the run was created" />
+              <NotRead why="The issue was not read when the run was created" />
             </>
           )}
         </li>
@@ -119,7 +186,7 @@ export function RunContextCard({ run, ctx, go }: { run: IssueRun; ctx: RunIndexR
           {run.open_work ? (
             `${plural(run.open_work.issues.length, 'issue')}${run.open_work.issues_truncated ? '+' : ''}, ${plural(run.open_work.pull_requests.length, 'pull request')}${run.open_work.pull_requests_truncated ? '+' : ''}, read when the run was created`
           ) : (
-            <Dash why="Open work was not read for this run: it was created before the open-work read, or the read failed" />
+            <NotRead why="Open work was not read for this run: it was created before the open-work read, or the read failed" />
           )}
         </li>
       </ul>
@@ -129,6 +196,19 @@ export function RunContextCard({ run, ctx, go }: { run: IssueRun; ctx: RunIndexR
         </UrLink>
       )}
     </Card>
+  )
+}
+
+/**
+ * A row the run holds nothing for: the dash AND its reason in words (QA
+ * runs-submit-27, 2026-10-28). A bare dash ended "Issue #512 —" with the
+ * reason only on hover; the Planner fact beside it says "— not recorded".
+ */
+function NotRead({ why }: { why: string }) {
+  return (
+    <i className="ctl-em" title={why}>
+      &mdash; not read
+    </i>
   )
 }
 

@@ -155,7 +155,7 @@ describe('the Approvals list (A4)', () => {
     const who = (r: HTMLElement) => visible(r.querySelector('td[data-l="Who may decide"]'))
     expect(who(rows[0]!)).toMatch(/^the platform owner\s*you may decide$/)
     expect(who(rows[1]!)).toMatch(/^the platform owner\s*not you$/)
-    expect(who(rows[2]!)).toMatch(/^any member of this tenant\s*you may decide$/)
+    expect(who(rows[2]!)).toMatch(/^any member of this workspace\s*you may decide$/)
     expect(visible(rows[1]!)).toContain('held for the platform owner')
     // MUTATION: open the item in a pane beside the list again.
     expect(rows[1]!.querySelector('a')!.getAttribute('href')).toBe('/automate/approvals/run%3Arun_4f0c')
@@ -164,13 +164,14 @@ describe('the Approvals list (A4)', () => {
     expect(screen.queryByTestId('apl-ended')).toBeNull()
   })
 
-  it('counts each kind on its chip from the whole inbox, and only the chosen kind on a filtered read', async () => {
+  it('counts each kind on its chip from the whole inbox, and draws no chip for a kind with nothing waiting', async () => {
     await mount('', routes(INBOX))
     await screen.findByTestId('apl-waiting', undefined, WAIT)
     const chips = within(screen.getByRole('group', { name: 'Kind' }))
     expect(visible(chips.getByRole('button', { name: /^Every kind/ }))).toBe('Every kind · 3')
     expect(visible(chips.getByRole('button', { name: /^Merge/ }))).toBe('Merge · 1')
-    expect(visible(chips.getByRole('button', { name: /^Spec/ }))).toBe('Spec · 0')
+    // Visual QA automate-22: a zero chip is not drawn unless it is the chosen kind.
+    expect(chips.queryByRole('button', { name: /^Spec/ })).toBeNull()
   })
 
   it('draws decided and expired items the read serves in their own cards, with who decided and the reason', async () => {
@@ -289,7 +290,7 @@ describe('one approval’s decision page (A5)', () => {
     expect(go).toHaveBeenCalledWith('automate/approvals?approval=apr_newer')
   })
 
-  it('draws the check counts when served and a dash with its reason when not, and pairs each reason with its files', async () => {
+  it('draws the check counts when served and, not served at a green head, says so on the green row; pairs each reason with its files', async () => {
     const view = await mount('approval=apr_oldest', routes(INBOX, detail()))
     let d = await page()
     await waitFor(() => expect(within(d).getByTestId('ad-check-counts')).toBeTruthy(), WAIT)
@@ -301,11 +302,13 @@ describe('one approval’s decision page (A5)', () => {
     view.unmount()
     await mount('approval=apr_oldest', routes(INBOX, detail({}, { checks: undefined })))
     d = await page()
-    await waitFor(() => expect(within(d).getByTestId('ad-check-counts')).toBeTruthy(), WAIT)
+    await waitFor(() => expect(d.querySelector('li[data-check="ci"]')).not.toBeNull(), WAIT)
     // MUTATION: draw "0 passed" for counts nobody read.
-    const unread = visible(within(d).getByTestId('ad-check-counts'))
-    expect(unread).not.toMatch(/\b0 passed/)
-    expect(unread).toContain('no check counts are served')
+    expect(visible(d)).not.toMatch(/\b0 passed/)
+    // Visual QA automate-23: the head is green, so the green row says the
+    // counts are not served, and no dash line sits above it.
+    expect(within(d).queryByTestId('ad-check-counts')).toBeNull()
+    expect(visible(d.querySelector('li[data-check="ci"]'))).toContain('per-check counts not served')
     expect(d.querySelector('.ad-cbar')).toBeNull()
   })
 
