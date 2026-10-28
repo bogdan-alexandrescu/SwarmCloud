@@ -25,7 +25,6 @@ CLI and fake broker of `test_account_hot_swap`.
 from __future__ import annotations
 
 import json
-import secrets as pysecrets
 import uuid
 from datetime import datetime, timezone
 
