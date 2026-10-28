@@ -99,7 +99,7 @@ const GITHUB_TABS: readonly TabDef[] = [
 
 /**
  * WHERE A NEW REPOSITORY IS ADDED: Choose repositories, opened directly.
- * Config › Repositories' "Add new repository" links here. It rides on `view`
+ * Config › Repositories' "Choose more on GitHub" ("Choose on GitHub" while nothing is chosen) links here. It rides on `view`
  * because `view` is the one query key App's `keptKeys` keeps on GitHub
  * access; an `?add=1` would be cut off the address before the page read it.
  */
@@ -1535,6 +1535,20 @@ function GitHubLead({ view, overview, open }: { view: 'mine' | 'choose'; overvie
       Choose repositories
     </Button>
   )
+  // config-08: a checklist step done on this page failed or went stale (the
+  // strip's step 1 says which, e.g. "Enable orgs failed"), so this page is not
+  // set up, whatever the grant count says.
+  const github = steps.find((s) => s.key === 'github') ?? null
+  if (github !== null && (github.state === 'failed' || github.state === 'stale')) {
+    return lead(
+      `Step ${steps.indexOf(github) + 1} of ${of} · needs you.`,
+      github.line,
+      `${as}, but Workspace setup's checklist says ${github.line}; its fix is on this page. Workspace setup names what to do.`,
+      <ButtonLink kind="primary" size="sm" href={addressToPath(WORKSPACE_SETUP_ADDRESS)}>
+        Open Workspace setup
+      </ButtonLink>,
+    )
+  }
   const repos = steps.find((s) => s.key === 'repositories') ?? null
   if (repos === null || repos.state !== 'done') {
     const word = repos === null || repos.state === 'unknown' ? '' : repos.state === 'in_progress' ? ' · in progress' : ' · next'
