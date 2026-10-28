@@ -170,6 +170,10 @@
   font-size: var(--t-micro);
 }
 .ol-table th.ol-th-group { text-align: center; }
+/* The Rate cell's 95 % range is its second line: one run-on "100.0 % · 18 of
+   18 · 82.4–100.0 %" was 297 px, most of why the table still overran its
+   scroller at 1440 (the review of runs-submit-40). */
+.ol-rate-range { display: block; }
 
 /* ---- notes, strip, legend ---- */
 .tl-note,

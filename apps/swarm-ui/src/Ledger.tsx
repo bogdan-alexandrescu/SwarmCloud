@@ -280,7 +280,10 @@ function Sub({ children }: { children: ReactNode }) {
  * failure / after a cancel" alone was wider than four figures -- and the table
  * scrolled at 1440 with a column cut at the edge. Each qualifier is now a second
  * line under its name (`.ol-th-sub`, timeline.css), and the Cancelled cell
- * "0 · 0 / 0 / 0" is four columns under one group head, one figure each. Where
+ * "0 · 0 / 0 / 0" is four columns under one group head, one figure each. The
+ * Rate cell, one 297 px run-on "100.0 % · 18 of 18 · 82.4–100.0 %" that still
+ * overran the scroller at 1440 (the review's measure), puts its 95 % range on a
+ * second line (`.ol-rate-range`), as the heads do their qualifiers. Where
  * columns are still off the right edge (a phone), the fade is not the only cue:
  * a line under the table says so in words.
  */
@@ -351,7 +354,10 @@ export function LedgerTable({ data }: { data: Outcomes }) {
                       {b.rate === null ? (
                         <span className="ol-phrase">nothing decided</span>
                       ) : (
-                        `${pct(b.rate.p)} · ${b.rate.k} of ${b.rate.n} · ${interval(b.rate)}`
+                        <>
+                          <span>{`${pct(b.rate.p)} · ${b.rate.k} of ${b.rate.n}`}</span>{' '}
+                          <span className="ol-rate-range">{interval(b.rate)}</span>
+                        </>
                       )}
                     </td>
                     <td className="is-num">{b.cancelled?.total}</td>

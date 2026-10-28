@@ -73,6 +73,27 @@ describe('the Outcomes day table (runs-submit-40)', () => {
     expect(rate.querySelector('.ol-th-sub')?.textContent).toBe('k of n, 95 % range')
   })
 
+  it('splits the Rate cell into two lines, never one run-on that sets the column width (review of runs-submit-40)', () => {
+    // MEASURED by the review on the rendered fixture console at 1440: the Rate
+    // column was 297 px of one run-on "100.0 % · 18 of 18 · 82.4-100.0 %", most
+    // of why the table (1125 px) overran its 1039 px scroller.
+    const d = ledgerFixture()
+    const { container } = render(<LedgerTable data={d} />)
+    const at = leaves(container).map((th) => th.firstChild?.textContent).indexOf('Rate')
+    const i = d.buckets.findIndex((b) => b.state !== 'unread' && b.rate !== null)
+    const b = d.buckets[i]!
+    const cell = container.querySelectorAll('.ol-table tbody tr')[i]!.children[at]!
+    const range = cell.querySelector('.ol-rate-range')
+    // MUTATION: put back the one `${pct} · ${k} of ${n} · ${interval}` string and this is null.
+    expect(range, 'the Rate cell is one run-on string').not.toBeNull()
+    expect(words(cell)).toBe(`${words(cell.firstElementChild!)} ${words(range!)}`)
+    expect(words(cell.firstElementChild!)).toMatch(new RegExp(`^\\S+ % · ${b.rate!.k} of ${b.rate!.n}$`))
+    expect(words(range!)).toMatch(/%$/)
+    for (const r of container.querySelectorAll('.ol-table tbody tr')) {
+      for (const c of r.children) expect(words(c)).not.toMatch(/ of \d+ · \d/)
+    }
+  })
+
   it('says in words that more columns are to the right while the scroller hides some, and only then', () => {
     const proto = HTMLElement.prototype
     const sw = Object.getOwnPropertyDescriptor(proto, 'scrollWidth')
