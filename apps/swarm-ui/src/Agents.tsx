@@ -1058,8 +1058,11 @@ function AgentsBody({
 
           {/* ⤢ THEATER ALL (§6): the first row's Browser tab in the theater,
               whose prev and next walk the live browsers from there. The first
-              row is the one waiting for a person, when one is. */}
-          {browsers && rows.length > 0 && (
+              row is the one waiting for a person, when one is. Not in the
+              fixture build, which serves no live session, actions or
+              recordings: there it opened on 'Not found' (visual QA pass 1,
+              overview-agents-17). */}
+          {browsers && rows.length > 0 && !USE_FIXTURES && (
             <a className="ag-theater-all" href={theaterPath(rows[0]!.id, null)}>
               ⤢ theater all
             </a>

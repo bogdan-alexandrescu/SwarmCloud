@@ -134,8 +134,12 @@ export function AgHead({
           <span role="status" aria-live="polite" className="ag-head-copied">
             {copied === 'yes' ? 'copied' : copied === 'no' ? 'could not copy' : ''}
           </span>
+          {/* THE REFUSAL IS THE BROWSER TAB'S LINE (BT-010, QA1-FIX-13 chrome-C06):
+              drawn here as well, a plain-HTTP page's sentence was said twice on
+              one screen, in this head and in the strip under the tabs. Here it
+              is the disabled button's title. */}
           {live.status === 'ok' && live.session !== null && (
-            <LiveControl taskId={taskId} session={live.session} reload={reloadLive} />
+            <LiveControl taskId={taskId} session={live.session} reload={reloadLive} refusal="title" />
           )}
           {task !== null && (
             <span className="ag-head-stop">
