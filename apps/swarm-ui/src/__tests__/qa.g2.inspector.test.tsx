@@ -214,16 +214,120 @@ describe('G2-01: on a phone the inspector scrolls, and the strip sticks only whe
     expect(padTop, 'the column declares a top padding').toMatch(/^[1-9]\d*px$/)
     // MUTATION: put `top: 0` back on `.ag-split:not(.on-logs) > .ag-tabs-edge` and the strip sticks a padding's height down.
     expect(painted(tabs, 'top', PHONE)).toBe(`-${padTop}`)
-    // At 1440 the pane is still the one scroller (details.v3.test.tsx).
+    // At 1440 the column is the one scroller too (AGENT-HEAD-B, below; details.v3.test.tsx).
     const wide: CascadeEnv = { width: 1440, container: 700 }
-    expect(painted(el, ['overflow-y', 'overflow'], wide)).toBe('hidden')
-    expect(painted(pane, ['overflow-y', 'overflow'], wide)).toBe('auto')
+    expect(painted(el, ['overflow-y', 'overflow'], wide)).toBe('auto')
+    expect(painted(pane, ['overflow-y', 'overflow'], wide) ?? 'visible').not.toMatch(/auto|scroll/)
   })
 
   it('leaves the Logs tab its own scroller on a phone, under a column that does not move', async () => {
     const el = await split('logs', running())
     expect(el.classList.contains('on-logs')).toBe(true)
     expect(painted(el, ['overflow-y', 'overflow'], PHONE)).toBe('hidden')
+  })
+})
+
+/*
+ * AGENT-HEAD-B (BGD's pick AH1 B, 2026-10-28; QA pass 1 overview-agents-30,
+ * part of #2596). On desktop the head -- state, title, facts, Copy link, Take
+ * control, Stop -- held about 569px of a 1440x900 window's column and never
+ * moved. G2-01's phone rule now holds at every width: the column is the one
+ * scroller, the head scrolls away and the tab strip sticks at its top. The
+ * viewers that scroll themselves (Logs, Changes, Browser) keep their own
+ * scroller, one column less the stuck strip tall, so once the head has gone
+ * they fill the column. MUTATIONS: put `overflow: hidden` back on the desktop
+ * column, or `overflow-y: auto` on its pane; drop the strip's `sticky`; drop
+ * the viewer panes' height; stop measuring the strip into `--ag-tabs-h`; open
+ * More upward on desktop Logs again. Each turns a case red.
+ */
+describe('AGENT-HEAD-B: on desktop the head scrolls away with the body and the tab strip sticks', () => {
+  const DESKTOPS: readonly CascadeEnv[] = [
+    { width: 1440, height: 900, container: 700 },
+    { width: 1280, height: 800, container: 560 },
+    // The overlay over the list, from 561 to 1099px.
+    { width: 800, height: 900, container: 560 },
+  ]
+
+  it('makes the column the one scroller, with the head inside it and the tabs stuck at its edge', async () => {
+    const el = await split('attempts', running())
+    const pane = el.querySelector<HTMLElement>(':scope > .ag-split-pane')!
+    const tabs = el.querySelector<HTMLElement>(':scope > .ag-tabs-edge')!
+    const head = el.querySelector<HTMLElement>(':scope > .ag-head')!
+    expect(head.parentElement, 'the head is not a row of the scrolling column').toBe(el)
+    for (const env of DESKTOPS) {
+      const at = `${env.width}x${env.height}`
+      expect(painted(el, ['overflow-y', 'overflow'], env), `the column does not scroll at ${at}`).toBe('auto')
+      expect(painted(pane, ['overflow-y', 'overflow'], env) ?? 'visible', `the pane is a second scroller at ${at}`).not.toMatch(/auto|scroll/)
+      expect(painted(head, 'position', env) ?? 'static', `the head is held in view at ${at}`).toBe('static')
+      expect(painted(tabs, 'position', env), `the tab strip scrolls away at ${at}`).toBe('sticky')
+      const padTop = painted(el, ['padding-top', 'padding'], env)?.trim().split(/\s+/)[0]
+      expect(painted(tabs, 'top', env), `the strip sticks a padding's height down at ${at}`).toBe(`-${padTop}`)
+      // Over what scrolls under it, and over the log's bar (z-index 5), so More's menu drops over the bar.
+      expect(Number(painted(tabs, 'z-index', env)), `the strip is under the pane's own layers at ${at}`).toBeGreaterThan(5)
+    }
+  })
+
+  it('scrolls the column on Logs too, the log keeping its own scroller one column less the strip tall', async () => {
+    const el = await split('logs', running())
+    expect(el.classList.contains('on-logs')).toBe(true)
+    const pane = el.querySelector<HTMLElement>(':scope > .ag-split-pane.is-logs')!
+    for (const env of DESKTOPS) {
+      expect(painted(el, ['overflow-y', 'overflow'], env), `the column does not scroll on Logs at ${env.width}`).toBe('auto')
+      // The log's body scrolls, not its pane: the column and the log never take the same wheel.
+      expect(painted(pane, ['overflow-y', 'overflow'], env)).toBe('hidden')
+      expect(painted(pane, 'flex', env)).toBe('none')
+      // The column's content box, plus its 18px top padding, less the stuck strip.
+      expect(painted(pane, 'height', env), `the log is not the column's height less the strip at ${env.width}`).toBe('calc(100% + 18px - 57px)')
+    }
+    // The phone is G2-01 as it was: on Logs the column does not move.
+    expect(painted(el, ['overflow-y', 'overflow'], PHONE)).toBe('hidden')
+    expect(painted(pane, 'height', PHONE) ?? 'auto').toBe('auto')
+  })
+
+  it('opens More downward on desktop Logs, where the head may have scrolled away, and upward only on a phone', async () => {
+    const el = await split('logs', running())
+    const menu = document.createElement('div')
+    menu.className = 'c-menu ag-tabs-menu'
+    el.querySelector<HTMLElement>(':scope > .ag-tabs-edge')!.appendChild(menu)
+    expect(painted(menu, 'bottom', PHONE)).toBe('calc(100% + 4px)')
+    for (const env of DESKTOPS) expect(painted(menu, 'bottom', env) ?? 'auto', `More opens upward at ${env.width}`).not.toBe('calc(100% + 4px)')
+  })
+
+  it('measures the tab strip into --ag-tabs-h, and again when it changes height', async () => {
+    const observed: { cb: ResizeObserverCallback; targets: Element[] }[] = []
+    class FakeObserver {
+      private rec: { cb: ResizeObserverCallback; targets: Element[] }
+      constructor(cb: ResizeObserverCallback) {
+        this.rec = { cb, targets: [] }
+        observed.push(this.rec)
+      }
+      observe(t: Element) {
+        this.rec.targets.push(t)
+      }
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', FakeObserver)
+    const heights = [61, 104]
+    const proto = HTMLElement.prototype.getBoundingClientRect
+    const spy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.classList.contains('ag-tabs-edge')) return { top: 0, height: heights[0], width: 600, bottom: heights[0] } as DOMRect
+      return proto.call(this)
+    })
+    try {
+      const el = await split('attempts', running())
+      const tabs = el.querySelector<HTMLElement>(':scope > .ag-tabs-edge')!
+      await waitFor(() => expect(el.style.getPropertyValue('--ag-tabs-h')).toBe('61px'))
+      const watcher = observed.find((o) => o.targets.includes(tabs))
+      expect(watcher, 'nothing watches the tab strip for a change of height').toBeDefined()
+      // A More-fitted or wrapped strip: the variable follows it.
+      heights.shift()
+      watcher!.cb([], {} as ResizeObserver)
+      expect(el.style.getPropertyValue('--ag-tabs-h')).toBe('104px')
+    } finally {
+      spy.mockRestore()
+      vi.unstubAllGlobals()
+    }
   })
 })
 
