@@ -12956,6 +12956,12 @@ class Worker:
                 # Fails closed, and says so where a reader of the publish looks.
                 out["published"] = False
                 out["publish_reason"] = f"nothing was published: {out['error']}"
+            # THE WORK IS STILL RECOVERABLE (#2544, owner decision 2026-10-28).
+            # The publish-fetch that failed here took the patch with it: TOKEN-A
+            # and U01 lost their integrator's whole run to it. The patch is the
+            # agent's TREE against the base, so it is taken from a repository
+            # holding the base alone, whatever the clone's history lacks.
+            out.update(self._harvest_tree_patch(repo, fetched_base))
             return out
 
         out.update(
@@ -13113,6 +13119,105 @@ class Worker:
             and not self._verdict.get("agent_ran", True)
             and self._opens_pull_request()
         )
+
+    def _harvest_tree_patch(self, repo: Path, base: str | None) -> dict[str, Any]:
+        """`swarm-work.patch` from the agent's final tree, for a harvest whose
+        clean repository could not be built (#2544). Never raises.
+
+        THE TREES, NOT THE COMMIT GRAPH. The #2559 shape -- a merge of a
+        branch the agent fetched `--depth=N` -- fails the publish-fetch
+        because the walk from HEAD crosses into history the clone never had.
+        A patch needs none of that history: only the base's tree, which the
+        clone holds because it was cloned at the base. So a second clean
+        repository fetches the base ALONE (`work_head=base`, its shallow
+        boundary the base, the same object checks and no confirmer), the
+        agent's working tree is mirrored onto it exactly as the publish does,
+        and `summarize_work` takes `git diff --binary <base>` there: committed
+        and uncommitted work in one patch, untracked files included, under
+        the same cap. `git apply` of it onto the base reproduces the agent's
+        tree. No git runs in the clone, as everywhere in the harvest (#259).
+
+        Returns the patch fields for `result_summary["git"]`, with
+        `patch_note` saying why when no patch was written.
+        """
+        ws = self.ws
+        assert ws is not None
+        cfg = self.cfg
+        out: dict[str, Any] = {"patch": None, "patch_bytes": 0, "patch_omitted": False}
+        if base is None:
+            out["patch_note"] = (
+                "the publish repository could not be built and the clone base is "
+                "unknown, so there was no tree to diff the agent's work against"
+            )
+            return out
+        try:
+            base_repo = prepare_publish_repo(
+                source_repo=repo,
+                work_head=base,
+                base=base,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_clone_timeout_seconds,
+                logger=self.log,
+                local_branch="swarm-tree-patch",
+            )
+            mirror_worktree(
+                source=repo,
+                dest=base_repo,
+                logger=self.log,
+                hidden_names=self._hidden_checkout_names(repo),
+                agent_excludes=read_agent_excludes(
+                    clone=repo, workspace_root=ws.root, home=ws.work, logger=self.log
+                ),
+            )
+            work = summarize_work(
+                repo=base_repo,
+                base=base,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                patch_path=ws.artifacts / PATCH_NAME,
+                max_patch_bytes=cfg.max_patch_bytes,
+                timeout_seconds=cfg.git_harvest_timeout_seconds,
+                logger=self.log,
+            )
+        except Exception as exc:  # noqa: BLE001 - the teardown path never raises
+            reason = self._scrub(str(exc)[:300])
+            self.log.warning("could not take the patch from the agent's tree", error=reason)
+            out["patch_note"] = (
+                "the publish repository could not be built, and the patch could not "
+                f"be taken from the agent's tree either: {reason}"
+            )
+            return out
+        out.update(
+            {
+                "patch": work.patch_name,
+                "patch_bytes": work.patch_bytes,
+                "patch_omitted": work.patch_omitted,
+                # Where the patch came from: the tree, so there is no commit
+                # list or own-files row beside it.
+                "patch_from": "tree",
+            }
+        )
+        if work.files is not None:
+            out["files"] = [f.as_record(self._scrub) for f in work.files]
+            out["files_truncated"] = work.files_truncated
+        if work.patch_omitted:
+            out["patch_note"] = (
+                f"the diff was {work.patch_bytes} bytes, over the "
+                f"{cfg.max_patch_bytes} cap, and was discarded rather than "
+                "truncated -- a truncated patch applies cleanly and silently "
+                "drops the rest of the change"
+            )
+        elif work.patch_name is None:
+            out["patch_note"] = (
+                "the agent's final tree is the clone base's tree, so there was "
+                "no change to write a patch of"
+            )
+        self.log.info(
+            "took the patch from the agent's tree after the publish repository failed",
+            patch=work.patch_name, patch_bytes=work.patch_bytes,
+        )
+        return out
 
     def _build_clean_repo(
         self, repo: Path, *, floor: str | None, allow_unknown_base: bool = False
