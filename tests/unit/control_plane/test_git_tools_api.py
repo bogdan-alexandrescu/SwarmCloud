@@ -155,6 +155,9 @@ class Forge(GitHubWrites):
         self.files: dict[tuple[str, str, str], str] = {}
         #: (status, body) the rules read answers instead of `self.rules`.
         self.rules_answer: tuple[int, dict[str, Any]] | None = None
+        #: The Actions runs (`actions/runs?head_sha=`) and each run's jobs.
+        self.actions_runs: list[dict[str, Any]] = []
+        self.run_jobs: dict[int, list[dict[str, Any]]] = {}
 
     def __call__(self, method, url, headers, body, timeout):
         parsed = urlparse(url)
@@ -167,6 +170,16 @@ class Forge(GitHubWrites):
         if method == "GET" and repository not in self.repos:
             self.calls.append((method, url, dict(headers), body))
             return 404, json.dumps({"message": "Not Found"}).encode()
+        if method == "GET" and rest == ["actions", "runs"] \
+                and ("GET", parsed.path) not in self.refuse:
+            self.calls.append((method, url, dict(headers), body))
+            sha = parse_qs(parsed.query).get("head_sha", [""])[0]
+            runs = [r for r in self.actions_runs if r["head_sha"] == sha]
+            return 200, json.dumps({"total_count": len(runs), "workflow_runs": runs}).encode()
+        if method == "GET" and rest[:2] == ["actions", "runs"] and rest[3:] == ["jobs"]:
+            self.calls.append((method, url, dict(headers), body))
+            jobs = self.run_jobs.get(int(rest[2]), [])
+            return 200, json.dumps({"total_count": len(jobs), "jobs": jobs}).encode()
         if method == "GET" and rest == ["commits"]:
             self.calls.append((method, url, dict(headers), body))
             wanted = parse_qs(parsed.query).get("sha", [""])[0]
@@ -907,6 +920,87 @@ def test_pr_checks_with_no_pull_request_is_none(client, db):
     response = call(client, attempt, "pr_checks", {"pr": None})
     assert response.status_code == 200, response.text
     assert response.json()["state"] == "none" and response.json()["rows"] == []
+
+
+def _actions_at(forge: "Forge", head: str, jobs: list[tuple[str, str]], *,
+                event: str = "pull_request") -> dict[str, int]:
+    """One Actions run at `head` whose latest attempt ran `jobs` (name,
+    conclusion); the job ids by name. Its check suite and event are GitHub's."""
+    forge._next += 1
+    run_id = forge._next
+    forge.actions_runs.append({"id": run_id, "head_sha": head, "event": event,
+                               "check_suite_id": run_id + 50000, "name": "application"})
+    ids: dict[str, int] = {}
+    for name, conclusion in jobs:
+        forge._next += 1
+        ids[name] = forge._next
+        forge.run_jobs.setdefault(run_id, []).append({
+            "id": forge._next, "run_id": run_id, "name": name, "head_sha": head,
+            "status": "completed", "conclusion": conclusion,
+        })
+    return ids
+
+
+def test_pr_checks_with_a_credential_that_cannot_read_check_runs_reads_the_actions_jobs(
+        client, db, forge, slots):
+    """#1188, measured: every git-tools acceptance run from 2026-10-23 to
+    2026-10-27 15:52Z (40405103079, 40459142385, 40509804564, ...) answered
+    pr_checks `forge_refused` on the private sandbox, while the same slot
+    pushed the branch and the platform opened its pull request. GitHub's
+    fine-grained personal access tokens have no "Checks" permission at all
+    (docs.github.com, "Permissions required for fine-grained personal access
+    tokens", read 2026-10-27), so `commits/{sha}/check-runs` on a private
+    repository answers them 403 whatever they are granted. The Actions jobs
+    at the head -- `actions: read`, which such a token can hold -- are the
+    same checks under the same names: an Actions check run IS its job."""
+    attempt, _ = running_task(client, db)
+    head = "d" * 40
+    forge.open_pull(11, head, ref=OWN_BRANCH)
+    forge.require("unit")
+    forge.refuse[("GET", f"/repos/{OWNER}/{REPO}/commits/{head}/check-runs")] = 403
+    ids = _actions_at(forge, head, [("lint", "success"), ("unit", "failure")])
+    forge.job_logs[ids["unit"]] = b"FAILED tests/test_x.py::test_y - assert 1 == 2\n"
+    response = call(client, attempt, "pr_checks", {"pr": None})
+    # On main this is 422 forge_refused: the check-runs 403 refuses the whole call.
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["pr"] == 11 and body["head_sha"] == head
+    assert body["state"] == "red", body
+    rows = {row["name"]: row for row in body["rows"]}
+    assert rows["unit"]["conclusion"] == "failure" and rows["unit"]["required"] is True
+    assert rows["lint"]["conclusion"] == "success" and rows["lint"]["required"] is False
+    assert "FAILED tests/test_x.py::test_y" in rows["unit"]["log_tail"]
+    # The answer says where it read them, so a reader knows a non-Actions
+    # check run (another App's) is not in it.
+    assert body["source"] == "actions_jobs", body
+    row = audit_rows(db)[-1]
+    assert row["result"] == "ok" and row["pr"] == 11 and row["resolved_sha"] == head
+
+
+def test_pr_checks_still_refuses_when_neither_check_runs_nor_actions_can_be_read(
+        client, db, forge):
+    """The control: the fallback is a second read, not a pass. A credential
+    that can read neither still answers forge_refused, naming checks: read."""
+    attempt, _ = running_task(client, db)
+    head = "e" * 40
+    forge.open_pull(12, head, ref=OWN_BRANCH)
+    forge.refuse[("GET", f"/repos/{OWNER}/{REPO}/commits/{head}/check-runs")] = 403
+    forge.refuse[("GET", f"/repos/{OWNER}/{REPO}/actions/runs")] = 403
+    response = call(client, attempt, "pr_checks", {"pr": None})
+    assert response.json()["code"] == "forge_refused", response.text
+    assert "checks: read" in response.json()["message"], response.text
+
+
+def test_pr_checks_reads_check_runs_first_and_never_the_actions_jobs_when_it_can(
+        client, db, forge):
+    attempt, _ = running_task(client, db)
+    head = "f" * 40
+    forge.open_pull(13, head, ref=OWN_BRANCH)
+    forge.check(head, "lint", "success")
+    response = call(client, attempt, "pr_checks", {"pr": None})
+    assert response.status_code == 200, response.text
+    assert response.json()["source"] == "check_runs"
+    assert not [u for _, u, _, _ in forge.calls if "/actions/runs" in u]
 
 
 # --------------------------------------------------------------------------

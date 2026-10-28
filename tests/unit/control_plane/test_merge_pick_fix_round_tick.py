@@ -12,7 +12,9 @@ The tick reads the park as it reads a CI or a conflict park, and:
   2. waits on that round while it runs -- the park is the same, so a second
      tick claims nothing -- and wakes the step once it ends;
   3. with every round spent, or a pull request off the root's branch, wakes
-     the step to refuse; merged or closed outside, wakes it to finish.
+     the step to refuse; merged or closed outside, wakes it to finish;
+  4. claims no round while another writer is live on the branch -- an earlier
+     round of any kind at another head, or a PR-side fix (#2577) -- and waits.
 
 No credentials, no network, no emulator. Every token is built at runtime.
 """
@@ -21,11 +23,14 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from swarm_api import issueci, mergewake
+import pytest
+
+from swarm_api import cifix, issueci, mergewake
 from swarm_common.models import WorkflowStep
 from swarm_common.states import ParkReason, TaskState
 from swarm_rollup import derive, read_steps
 
+from .conftest import seed_task
 from .test_merge_wake import (  # noqa: F401 -- fixtures, used by name
     HEAD, NOW, NUMBER, ROOT, _check_reads, _fix_record, _tick, _wait, clock, fixable_merge,
     github, tenant_tokens, wake_client,
@@ -185,6 +190,58 @@ def test_a_submitter_who_left_the_tenant_gets_no_pick_round(db, wake_client, git
     assert _wait(db)["wake_reason"] == mergewake.FIX_ROUND_REFUSED
     (claimed,) = _fix_record(db)[mergewake.PICK_ROUNDS_KEY]
     assert "no longer a member" in claimed["error"]
+
+
+# ONE WRITER PER MERGE STEP'S PULL REQUEST (#2577). A PENDING pick park newer
+# than every pick round asks for the next one, but not while another writer is
+# live on the branch: an earlier round of any kind at another head, or a
+# PR-side fix continuing the root. The tick waits and submits nothing.
+
+WRITER = "task_" + "7" * 20
+ELSEWHERE = "c" * 40
+
+
+def _live_entry() -> dict:
+    return {"round": 1, "head": ELSEWHERE, "claimed_at": NOW - timedelta(seconds=60),
+            "task_id": WRITER}
+
+
+@pytest.mark.parametrize("writer", ["conflict_round", "ci_round_after_a_pick_round", "pr_side"])
+def test_a_pending_pick_park_waits_on_a_live_writer_and_submits_no_round(
+    db, wake_client, github, writer
+):
+    doc = pick_merge(db, github)
+    task = seed_task(db, task_id=WRITER, tenant_id="eng", state="RUNNING",
+                     runner_profile="claude-code")
+    if writer == "conflict_round":
+        doc["metadata"][mergewake.MERGE_FIX_METADATA_KEY] = {
+            mergewake.CONFLICT_ROUNDS_KEY: [_live_entry()]}
+    elif writer == "ci_round_after_a_pick_round":
+        # Pick round 1 ended before this park, so the park asks for round 2.
+        ended = "task_" + "8" * 20
+        seed_task(db, task_id=ended, tenant_id="eng", state="SUCCEEDED",
+                  runner_profile="claude-code")
+        doc["metadata"][mergewake.MERGE_FIX_METADATA_KEY] = {
+            "rounds": [_live_entry()],
+            mergewake.PICK_ROUNDS_KEY: [
+                {"round": 1, "head": ELSEWHERE, "claimed_at": NOW - timedelta(hours=1),
+                 "task_id": ended}]}
+    else:
+        task["metadata"] = {"dispatch": {"continues": ROOT},
+                            cifix.CONFLICT_FIX_METADATA_KEY: {"pull_request": NUMBER,
+                                                              "head_sha": ELSEWHERE}}
+    picks_before = len(_fix_record(db).get(mergewake.PICK_ROUNDS_KEY) or [])
+
+    body = _tick(wake_client).json()
+
+    # MUTATION: drop `_waits_on_writer` from `_on_pick` and this tick claims
+    # a pick round and submits a second writer onto the live one's branch.
+    assert body["report"]["waiting"] == 1 and body["report"]["fixing"] == 0, body
+    assert body["report"]["woken"] == 0, body
+    assert _pick_workflows(db) == [], "a pick round was submitted beside a live writer"
+    assert len(_fix_record(db).get(mergewake.PICK_ROUNDS_KEY) or []) == picks_before
+    assert mergewake.WAKE_MARKER not in _wait(db)
+    assert "wake_reason" not in _wait(db)
 
 
 def test_the_brief_takes_only_well_formed_pick_lines():

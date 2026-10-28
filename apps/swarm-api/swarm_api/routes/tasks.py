@@ -850,8 +850,10 @@ def read_artifact_raw(
     task_id: str,
     name: str = Query(..., min_length=1, max_length=512),
     disposition: str | None = Query(default=None),
+    redaction: str | None = Query(default=None),
     tenant_id: str = Depends(tenant_scope),
     submitted_by: str | None = Depends(submission_scope),
+    auth: AuthContext = Depends(current_auth),
     service: AgentOutputService = Depends(agent_output_service),
 ) -> StreamingResponse:
     """ONE artifact's BYTES: for an `<img>`, an "open full", and a download (#184).
@@ -880,9 +882,31 @@ def read_artifact_raw(
     is not a parameter of this function: `current_auth` reads it and puts it
     through the header's own membership check, so `tenant_scope` below is
     still the only tenant this body sees.
+
+    `redaction` is `applied` (the default; the answer above, unchanged) or
+    `none`: the OWNER-ONLY RAW PATCH (BGD's decision on #1857, 2026-10-27).
+    A served `.patch` is redacted like any text, so its credential-shaped
+    test fixtures come back masked and it no longer applies; the masking
+    rules stay as they are and the person who SUBMITTED the task may take the
+    bytes as stored. Honoured only for a top-level `.patch` name and a caller
+    whose email is `Task.submitted_by` (compared as `submission_scope`
+    compares it); anyone else -- another member, a tenant admin, a platform
+    admin -- gets the 403 envelope naming the rule (`detail.rule`
+    `patch_only` or `submitter_only`), and another tenant's id the same 404
+    as before. Served `text/x-diff; charset=utf-8`, ALWAYS an attachment
+    whatever `disposition` asked, `Cache-Control: no-store`,
+    `X-Swarm-Redaction: not-applied`; every such read writes one
+    `artifact_audit` record (who, which artifact, when -- never the content)
+    before the first byte, and is refused 503 when it cannot.
     """
     raw = service.raw_artifact(
-        tenant_id, task_id, name=name, disposition=disposition, submitted_by=submitted_by
+        tenant_id,
+        task_id,
+        name=name,
+        disposition=disposition,
+        submitted_by=submitted_by,
+        redaction=redaction,
+        caller=auth.email,
     )
     return StreamingResponse(raw.chunks, media_type=raw.media_type, headers=raw.headers)
 

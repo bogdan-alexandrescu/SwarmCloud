@@ -219,6 +219,14 @@ WORKER_ARTIFACTS_DIR = f"{WORKSPACE_MOUNT}/artifacts"
 CACHE_MOUNT = "/cache"
 CACHE_ROOT_ENV = "SWARM_CACHE_ROOT"
 
+#: THE GKE POD'S LOCAL SCRATCH VOLUMES, and the variable that tells the worker
+#: which they are (#2436): `scratch_volumes_value`. kubelet evicts the pod with
+#: no grace period when one passes its sizeLimit, so the worker reads their
+#: sizes on each heartbeat to report what filled one and to warn before it
+#: does (agent_worker's scratch module, whose SCRATCH_VOLUMES_ENV is this
+#: name). GKE only, as CACHE_ROOT_ENV: Cloud Run has no such volumes.
+SCRATCH_VOLUMES_ENV = "SWARM_SCRATCH_VOLUMES"
+
 #: THE CACHE VOLUME IS A NETWORK DISK (CACHE-PVC, owner decision 2026-10-15
 #: ~04:00 PDT, "Network-disk cache"): a generic ephemeral volume, i.e. a
 #: PersistentVolumeClaim the ephemeral-volume controller creates from the pod
@@ -428,6 +436,27 @@ GKE_DISK: dict[str, GkeDisk] = {
     "browser": GkeDisk(workspace_gib=4, tmp_gib=3, home_gib=3),
     "large": GkeDisk(workspace_gib=5, tmp_gib=3, home_gib=2),
 }
+
+
+def scratch_volumes_value(disk: GkeDisk, *, home_volume: str = "home",
+                          home_mount: str = WORKER_HOME) -> str:
+    """SCRATCH_VOLUMES_ENV's value: `<volume>=<mountPath>:<sizeLimit GiB>`, comma separated.
+
+    `workspace=/workspace:5,tmp=/tmp:3,home=/home/swarm:2` for `standard`.
+    The volume is the emptyDir's `name`, which is what kubelet's eviction
+    message says (`Usage of EmptyDir volume "tmp" exceeds the limit "3Gi"`),
+    so the worker can match a reading to an eviction. Built from the constants
+    `GkeJobDispatcher._manifest` builds the volumes from, so it cannot drift.
+    The LOCAL disk volumes only: not the cache, a network disk that is never
+    an eviction, and not dshm, a memory tmpfs charged to the memory limit.
+    `home_volume`/`home_mount` are for kubernetes/render.py's gvisor template,
+    whose HOME is a volume named `work` at /work.
+    """
+    return ",".join((
+        f"workspace={WORKSPACE_MOUNT}:{disk.workspace_gib}",
+        f"tmp=/tmp:{disk.tmp_gib}",
+        f"{home_volume}={home_mount}:{disk.home_gib}",
+    ))
 
 
 def gke_disk(rc: Any) -> GkeDisk:
@@ -2993,6 +3022,11 @@ class GkeJobDispatcher:
         # FROM THIS SAME RENDER, so the comparison proves only that this
         # dispatcher agrees with itself; GKE injects no Job name of its own.
         env.append({"name": "RUNNER_JOB_NAME", "value": job_name})
+        # The pod's local scratch volumes and their limits (SCRATCH_VOLUMES_ENV,
+        # #2436). Here and not in `gke_worker_env`, which sets CACHE_ROOT_ENV
+        # for the same GKE-only reason, because the sizes are the resource
+        # class's (`disk`, above) and that function is not given the class.
+        env.append({"name": SCRATCH_VOLUMES_ENV, "value": scratch_volumes_value(disk)})
         # The attempt's execution name, from THIS render: the namespace below
         # is `metadata.namespace` and `dispatch` returns this very string, so
         # what the worker records and what the dispatcher records are one value

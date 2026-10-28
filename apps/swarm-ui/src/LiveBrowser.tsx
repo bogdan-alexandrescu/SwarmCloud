@@ -794,6 +794,23 @@ export function LiveBrowserPane({
   const returned = useControlReturned(open?.session_id ?? null, open !== null && isController(open), open?.controller ?? null)
   const unused = useAgentUnused(open, task.state)
 
+  // THE THEATER ASKED FOR IS HELD THROUGH START-UP (part of #1346, comment
+  // 3). The router reads `?theater=1` on arrival only and writes the bar back
+  // without it (App.tsx `Route.theater`), and <TheaterHost> is drawn only
+  // once a session exists: a tab opened while the browser was starting read
+  // `openTheater` after the route had dropped it, and opened without the
+  // theater. The request is kept here from arrival (or a later ask) and
+  // spent on the first host drawn, so a browser that restarts does not
+  // reopen a theater the person closed.
+  const theaterAsked = useRef(openTheater)
+  const theaterWas = useRef(openTheater)
+  if (openTheater && !theaterWas.current) theaterAsked.current = true
+  theaterWas.current = openTheater
+  const hosted = session !== null && session.state !== 'closed'
+  useEffect(() => {
+    if (hosted) theaterAsked.current = false
+  }, [hosted])
+
   // One object per hand-off, not per poll: the theater turns its left column
   // to the checklist whenever this changes, and a fresh object every
   // `LIVE_POLL_MS` would take the column back from someone reading the logs.
@@ -938,7 +955,7 @@ export function LiveBrowserPane({
   return (
     <TheaterHost
       session={theater}
-      initiallyOpen={openTheater}
+      initiallyOpen={theaterAsked.current}
       strip={strip}
       handoff={handoff}
       logs={<AgentLogs task={task} />}
