@@ -255,9 +255,14 @@ export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
                           // family cell, which a phone card does not draw.
                           const use =
                             row === null ? null : `(${row.active}/${row.effective_limit === null ? '—' : row.effective_limit})`
+                          // ONE LINE AT ONE WIDTH (visual QA V090/V195,
+                          // 2026-10-27): beside a 70-character profile name the
+                          // entry wrapped inside itself, `(5/5) fits ⏎0`. The
+                          // name is its own span, so the sheet cuts the NAME
+                          // (whole in the title) and never the figures.
                           return (
                             <span key={b} className="cap-mx-bind" data-pool={b} title={b}>
-                              {poolLabelAmong(b, among)}
+                              <span className="cap-mx-bind-pool">{poolLabelAmong(b, among)}</span>
                               {use !== null && <span className="cap-mx-bind-use"> {use}</span>}{' '}
                               <small>{fits === null ? 'fits —' : `fits ${fits}`}</small>
                             </span>
