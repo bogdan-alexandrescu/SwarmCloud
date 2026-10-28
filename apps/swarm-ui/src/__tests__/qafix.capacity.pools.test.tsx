@@ -293,7 +293,10 @@ describe('QA-049 on Provider quota: a partial mark there has the squared dashed 
 // the slack PR 1714 gave Feeds pool does not exist at 1440 -- the table is
 // ~1054px and the column still ~160px -- so the middle cut ran: `…opic:tenant:eng`,
 // and `…:ten… u-bogdan` with two ellipses once the tail split too.
-describe('QA-057 (run 2): the Feeds pool name reads whole, wrapping at its colons', () => {
+// Since QA1 capacity-18 the link prints the pool's name (`anthropic · eng`),
+// its id in the title, so the colon breaks QA-057 offered are gone; the name
+// still reads whole and still wraps rather than being cut.
+describe('QA-057 (run 2): the Feeds pool name reads whole, wrapping rather than cut', () => {
   function quota(tenant: string, provider = 'anthropic'): QuotaState {
     return {
       provider, tenant_id: tenant, state: 'AVAILABLE', updated_at: new Date().toISOString(),
@@ -303,19 +306,19 @@ describe('QA-057 (run 2): the Feeds pool name reads whole, wrapping at its colon
     }
   }
 
-  it('prints every pool whole, with a break offered only after each colon', async () => {
+  it('prints every pool whole, as its name, the id in its title', async () => {
     api.loadAdminQuota.mockResolvedValue(ok({ quota: [quota('eng'), quota('u-bogdan'), quota('eng', 'openai'), quota('u-bogdan', 'openai')] }))
     render(<QuotaDetailScreen />)
     await screen.findAllByRole('rowheader', { name: 'u-bogdan' }, WAIT)
     const names = ['provider:anthropic:tenant:eng', 'provider:anthropic:tenant:u-bogdan', 'provider:openai:tenant:eng', 'provider:openai:tenant:u-bogdan']
     for (const name of names) {
-      const link = screen.getByRole('link', { name })
-      expect(link.textContent).toBe(name)
+      const [, provider, , tenant] = name.split(':')
+      const link = screen.getByRole('link', { name: `${provider} · ${tenant}` })
+      expect(link.textContent).toBe(`${provider} · ${tenant}`)
+      expect(link.getAttribute('title')).toBe(name)
       // MUTATION: put MiddleCut back on the pool -- its head and tail boxes
       // each ellipsize, which is the double cut `…:ten… u-bogdan`.
       expect(link.querySelector('.quota-cut'), `${name} is still cut`).toBeNull()
-      // MUTATION: drop the `<wbr>`s -- the name has no break but its hyphen.
-      expect(link.querySelectorAll('wbr')).toHaveLength(3)
       for (const env of [WIDE, PHONE]) {
         // MUTATION: leave the link `nowrap` with `text-overflow: ellipsis` --
         // at 1440 the ~160px column cuts the name to `…opic:tenant:eng`.

@@ -3,7 +3,7 @@ import { loadRuntimeTopology, type ResourceClasses, type RuntimeTopology } from 
 import { isPaused } from './fetch'
 import type { TopicId } from './help'
 import { POOLS_POLL_MS, capacityPoll, poolHref, tableMode, usePhoneTables } from './capacityPoll'
-import { HelpCard, HelpLinks } from './HelpCard'
+import { HelpCard } from './HelpCard'
 import { Id, Screen } from './Shell'
 import './styles/capacity.css'
 import { Chip, ToneMark } from './components'
@@ -58,7 +58,7 @@ import {
  *
  *   "a caller picks a runtime by NAME and supplies nothing else" -- this is
  *   invariant 10 and it is the reason the screen exists, so it did not get
- *   deleted. It is `#help/runner-profile-by-name`, in the footer index below
+ *   deleted. It is `#help/runner-profile-by-name`, in the title's topic index
  *   and on the submit form's first step, where a caller meets the constraint.
  *   It had the `?` beside the catalogue's own heading until B7.4, which gave
  *   that glyph to `catalogue-from-route` instead: with one `?` to spend on
@@ -66,7 +66,7 @@ import {
  *   the second is stated by the submit form at the moment it matters. It is an
  *   argument, not a datum, and §8.4(5) is where arguments live. #126 moved
  *   the glyph on again, to `what-sets-it-apart-is-arithmetic`, and put
- *   `catalogue-from-route` in the footer index beside this one.
+ *   `catalogue-from-route` in the topic index beside this one.
  *
  *   "up to N GiB of that memory may go to the workspace, leaving M GiB" --
  *   the WORKSPACE COLUMN IS NAMED `Workspace (of memory)`. §8.4(3). The clause
@@ -92,6 +92,14 @@ export function RuntimesScreen() {
   return (
     <Screen
       title="Runtimes"
+      // THE PAGE'S ONE `?` OPENS THE SCREEN'S TOPICS (QA1-FIX-24, capacity-13,
+      // part of #2596), AS POOLS, ACCOUNTS AND PROVIDER QUOTA'S HAVE SINCE
+      // VQ-033 (BGD 2026-10-26: "Move the topics behind the page's one ?").
+      // Runtimes was the last Capacity tab still ending in the `Reading this
+      // screen:` row of underlined monospace links; the `?` beside the title
+      // takes the section question's place and lists every topic the row did,
+      // so the page still draws one glyph by its title. See RUNTIME_TOPICS.
+      help={RUNTIME_TOPICS}
       load={loadRuntimeTopology}
       // POOLS' CADENCE (visual QA V092, 2026-10-11). Backends' In use and
       // Headroom are the same pool counts Pools re-reads every 30s, and this
@@ -137,14 +145,15 @@ function Topology({ data }: { data: RuntimeTopology }) {
               It was ten: invariant 10 here, the resolved-backend rule on the
               Backends heading, the unit on a column whose own header already
               said `(units)`, the workspace basis on a column that already said
-              `(of memory)`, and five more. All ten are the footer index below.
+              `(of memory)`, and five more. All ten are the topic index the
+              title's `?` opens (a footer index until QA1-FIX-24, capacity-13).
               IT OPENS WHAT THE CARDS' OWN WORDS DO NOT SAY (#126). It opened
-              `catalogue-from-route`, which the footer index already carries --
+              `catalogue-from-route`, which the title's index already carries --
               where this list comes from -- while the two words every card draws
               and none explains, `Sets it apart` (arithmetic against the rest of
               the catalogue) and the `disabled` chip, had no glyph at all. So it
               opens that topic, and where the list comes from stays in the
-              footer.
+              title's index.
               It sits after the eyebrow, a label, because the eyebrow renders on
               every path through this screen -- a rationed `?` is only learnable
               if it is in the same place every time, and a glyph that appears only
@@ -177,8 +186,6 @@ function Topology({ data }: { data: RuntimeTopology }) {
         classes={data.classes}
         classesDetail={data.classesDetail}
       />
-
-      <HelpLinks topics={RUNTIME_TOPICS} />
     </>
   )
 }
@@ -258,7 +265,7 @@ function Backends({
             one. In the heading it was a claim about the whole card; in the
             column name it cannot be scrolled away from the rows it governs and
             cannot be read as qualifying the next column along.
-            `#help/declared-vs-resolved-backend` is in the footer index. */}
+            `#help/declared-vs-resolved-backend` is in the title's topic index. */}
         {/* AH-24: THE UNREAD ROW'S `?` FOLLOWS THIS HEADING, the slot Pools'
             `Headroom ?` uses. It trailed the server's own words inside the
             one-line `.rt-unread-detail` -- after a value, and clipped with it
@@ -528,23 +535,28 @@ function distinguishing(r: Runtime, all: Runtime[]): Distinction[] {
   // THE CREDENTIAL IS THE PROVIDER (visual QA QA-011, 2026-10-20). This keyed
   // on the provider AND its secret names, so two runtimes of one vendor that
   // mount different secrets were each "the only runtime that needs this
-  // credential" while their cred rows both named that vendor. Which secrets a
-  // runtime mounts is its cred row's business; the credential it needs is
+  // credential" while their credential rows both named that vendor. Which secrets a
+  // runtime mounts is its credential row's business; the credential it needs is
   // whose it is. A runtime that needs none is told apart only when it is the
   // only one that needs none -- and then it is said as that, because "needs
   // this credential" under a row reading `none needed` contradicted the row.
   if (sole((x) => x.provider)) {
     facts.push({
-      key: 'cred',
+      key: 'credential',
       value: r.provider === null ? 'the only runtime that needs no credential' : 'the only runtime that needs this credential',
     })
   } else if (eitherSecret(r) && all.filter(eitherSecret).length === 1) {
     // HOW IT TAKES ITS SECRETS, WHEN NOTHING ELSE TAKES THEM THAT WAY (visual
-    // QA run 2, capacity-006). Its cred row reads `any one of A, B` where every
+    // QA run 2, capacity-006). Its credential row reads `any one of A, B` where every
     // other runtime's names one secret or needs all of them; that is the fact
     // a tenant with only a subscription is looking for. Under the provider's
     // line when both hold, so one key never says two things.
-    facts.push({ key: 'cred', value: 'the only runtime that takes any one of its secrets' })
+    //
+    // SAID IN THE READER'S WORDS (QA1-FIX-24, capacity-23, part of #2596).
+    // `takes any one of its secrets` read as a runtime taking secrets; what
+    // it means is that ANY ONE of the credentials it names will do. The key
+    // is `credential`, spelled out, as the card's row above it now is.
+    facts.push({ key: 'credential', value: 'the only runtime that accepts any one of its credentials' })
   }
 
   // THE CLASSES NOTHING ELSE OFFERS (capacity-006). A step names a class, so a
@@ -552,7 +564,15 @@ function distinguishing(r: Runtime, all: Runtime[]): Distinction[] {
   // runtime also offers tells nothing apart. Listed in the card's own order.
   const elsewhere = new Set(all.filter((x) => x !== r).flatMap((x) => x.model_classes ?? []))
   const own = (r.model_classes ?? []).filter((c) => !elsewhere.has(c))
-  if (own.length > 0) facts.push({ key: 'model classes', value: `the only runtime offering ${own.join(', ')}` })
+  //
+  // A SENTENCE, NOT A LABEL FOLLOWED BY NAMES (QA1-FIX-24, capacity-23, part
+  // of #2596). `the only runtime offering demo-quick, demo-later` dropped the
+  // noun the names are instances of, so the class IDs read as products the
+  // runtime sells. It says which kind of thing they are, singular for one.
+  if (own.length > 0) {
+    const noun = own.length === 1 ? 'the model class' : 'the model classes'
+    facts.push({ key: 'model classes', value: `the only runtime with ${noun} ${own.join(', ')}` })
+  }
 
   const timeouts = all.map((x) => x.timeout_seconds)
   if (soleExtreme(r.timeout_seconds, timeouts, 'max')) {
@@ -660,7 +680,7 @@ function RuntimeCard({
             as a justified blob -- `max run 5m size demo-small cpu 3 vCPU` on
             one line -- with every key starting wherever the previous value
             ended. The pairs are unchanged; what they gain is a key COLUMN, so
-            finding `mem` is a glance down an edge rather than reading a line. */}
+            finding `memory` is a glance down an edge rather than reading a line. */}
         <ul className="ctl-facts is-rows">
           {/* `rt-runs-on` / `rt-backend` (QA-010): the backend is one token
               and the declared backend beside it wraps under it, never the other way round.
@@ -698,20 +718,28 @@ function RuntimeCard({
             {spec.cpu} vCPU
           </li>
           <li className="ctl-fact">
-            <b>mem</b>
+            {/* WORDS, NOT ABBREVIATIONS (QA1-FIX-24, capacity-23, part of
+                #2596): `mem` and `cred` were the last two keys on the card a
+                reader had to decode, beside `workspace` and `model classes`
+                spelled out. The key column is 9ch (`--fact-key`'s default)
+                in the sans face; `credential` is ten letters, four of them
+                narrow (r, t, i, l), so it is not expected to overrun it --
+                an estimate, not a measurement: no test reads the key's
+                rendered width. */}
+            <b>memory</b>
             {spec.memory_gib} GiB
           </li>
           <li className={`ctl-fact${coherent ? '' : ' is-absent'}`}>
             {/* THE WORKSPACE IS A SLICE OF THE MEMORY BESIDE IT, not storage
                 on top of it -- the workspace is a memory-backed tmpfs because
                 the Terraform google provider cannot express Cloud Run's
-                disk-backed empty_dir. `of mem`, after the figure, is what
+                disk-backed empty_dir. `of memory`, after the figure, is what
                 stops the two being added together. The KEY is the word
                 `workspace` (QA G5-23): `ws of mem` was an abbreviation a
                 reader had to decode, as the table's `Workspace (of memory)`
                 head is not. */}
             <b>workspace</b>
-            {spec.disk_gib} GiB of mem
+            {spec.disk_gib} GiB of memory
           </li>
           <li className="ctl-fact">
             <b>weight</b>
@@ -728,11 +756,12 @@ function RuntimeCard({
             <span className="mono rt-image">{runtime.image}</span>
           </li>
           <li className="ctl-fact rt-fact-wide">
-            {/* `cred` NAMES WHAT IT SHOWS, which is why the `?` here could go
+            {/* `credential` NAMES WHAT IT SHOWS, which is why the `?` here could go
                 (B7.4). `<Credential>` below renders secret NAMES and never a
                 value -- it cannot render a value, because the route does not
                 serve one -- so the topic was explaining a guarantee the reader
-                can see being kept. It is one line in the footer index now.
+                can see being kept. It is one line in the title's topic index
+                now (a footer index until QA1-FIX-24, capacity-13).
                 If a `?` is ever put back on a key like this one, it belongs
                 INSIDE the `<b>`, not after the value: `spaceprobe.ts:545`
                 short-circuits at the first element carrying direct text, so a
@@ -740,7 +769,7 @@ function RuntimeCard({
                 measured, while one placed as a bare sibling of element-only
                 children is. That convention is load-bearing; see the note at
                 the foot of this file. */}
-            <b>cred</b>
+            <b>credential</b>
             <Credential runtime={runtime} />
           </li>
           {/* THE MODEL CLASSES A STEP ON THIS RUNTIME MAY NAME (docs/design/
@@ -797,7 +826,7 @@ function RuntimeCard({
               not an editorial judgement about this runtime. The eyebrow sits
               inside a card headed by that runtime's name, one scroll under a
               list of every other one, so the comparison it is making is on the
-              screen; the topic is in the footer index. */}
+              screen; the topic is in the title's topic index. */}
           <span className="ctl-eyebrow">Sets it apart</span>
           {facts.length === 0 ? (
             /* A MEASURED "nothing", not a blank. The comparison ran and found
@@ -835,7 +864,7 @@ function RuntimeCard({
  * What DID go is the trailing "· names only, never values". It is a promise
  * about this client rather than a fact about this runtime, it was repeated on
  * every card, and it is `#help/credential-names-not-values` -- linked from the
- * column and from the footer.
+ * column and from the title's topic index.
  */
 /**
  * The longest secret name drawn as one unbreakable word.
@@ -1073,7 +1102,7 @@ function Sizing({
                     file for the frozen catalogue's entries and fails on one,
                     because every value on this screen has to come from the
                     response or a resized class renders its old figure forever.
-                    `#help/units-not-agents` is in the footer index. */}
+                    `#help/units-not-agents` is in the title's topic index. */}
                 <th role="columnheader" scope="col" className="is-num">Weight (units)</th>
                 <th role="columnheader" scope="col">Resolves from</th>
               </tr>
@@ -1147,6 +1176,12 @@ function Sizing({
  * and shared with every other screen that used to argue the same point --
  * `workspace-memory` and `requests-are-ceilings` were also spelled out on
  * the agent screen, and `units-not-agents` on four more.
+ *
+ * NO LONGER A FOOTER: THE TITLE'S `?` OPENS IT (QA1-FIX-24, capacity-13, part
+ * of #2596). The row of underlined monospace links was the last `Reading this
+ * screen:` footer on a Capacity tab after VQ-033 moved Pools', Accounts' and
+ * Provider quota's behind their titles. Same ten topics, same order, behind
+ * the one glyph beside `Runtimes` (`help` on the `Screen` above).
  */
 const RUNTIME_TOPICS: readonly TopicId[] = [
   'catalogue-from-route',

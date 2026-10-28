@@ -615,6 +615,9 @@ jobs:
           #    GitHub left PR 2006's `secret scan` at in_progress with
           #    conclusion success and a completed_at. The worker's
           #    `check_run_finished` and `merge-train.sh judge` say the same.
+          #    A latest run that was CANCELLED is not failing (#1778, BGD
+          #    bundle H09, 2026-10-27): it is pending, and gate 6 waits on it
+          #    when the check is required, as on one still running.
           runs="$(mktemp)"
           gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs?per_page=100" >"${runs}"
           wf_runs="$(mktemp)"
@@ -643,7 +646,7 @@ jobs:
                 | select(finished)
                 | select((.conclusion // "") as $c |
                          $c == "failure" or $c == "timed_out" or
-                         $c == "action_required" or $c == "cancelled")
+                         $c == "action_required")
                 | .name
               ] | unique | join(", ")' "${latest}")"
           if [[ -n "${failing}" ]]; then
@@ -695,13 +698,16 @@ jobs:
           #    event replaced does not hold the merge. A run is still
           #    running until it has finished as gate 5 reads it (CHECK-STUCK,
           #    part of #2031) AND carries a conclusion: one `completed` with
-          #    none is not green, so it waits too.
+          #    none is not green, so it waits too, and so does one whose
+          #    latest run was cancelled (#1778): a re-run, not a fix, is what
+          #    it is waiting for.
           required_json="$(jq -Rs 'split("\n") | map(select(length > 0)) | unique' "${required_names}")"
           unfinished="$(jq -r --argjson required "${required_json}" '
               def finished: .status == "completed"
                             or ((.conclusion // "") != "" and (.completed_at // "") != "");
               [ .[]
-                | select((finished | not) or (.conclusion // "") == "")
+                | select((finished | not) or (.conclusion // "") == ""
+                         or .conclusion == "cancelled")
                 | .name
                 | select(. as $name | $required | index($name))
               ] | unique | join(", ")' "${latest}")"

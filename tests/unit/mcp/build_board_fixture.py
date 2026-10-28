@@ -104,7 +104,8 @@ def build() -> dict[str, Any]:
     def add(wid: str, state: str, created: str, tasks: list[dict[str, Any]], **kw: Any) -> None:
         wfs.append((_workflow(wid, state, created, tasks, **kw), tasks))
 
-    # #101: an issue run, merged, whose implement step asked two questions.
+    # #101: an issue run, merged, whose implement step asked two questions --
+    # merged, so they wait on no one (#1812).
     add("wf_a1", "SUCCEEDED", ago(days=3), [
         _task("t_a1_impl", "SUCCEEDED", wf="wf_a1", step="implement", created=ago(days=3),
               started=ago(days=3), completed=ago(days=2, hours=20), issue=101, pr=501, questions=2,
@@ -118,10 +119,12 @@ def build() -> dict[str, Any]:
         _task("t_a2_impl", "RUNNING", wf="wf_a2", step="implement", created=ago(hours=2),
               started=ago(hours=1), title="Cache the session lookup (#101)", unit="LOGIN-CACHE"),
     ])
-    # #202: merge parked on CI for two hours -- In CI, and listed.
+    # #202: merge parked on CI for two hours -- In CI, and listed. Its
+    # implement step asked two questions, waiting while the lane is open (#1812).
     add("wf_b1", "RUNNING", ago(hours=5), [
         _task("t_b1_impl", "SUCCEEDED", wf="wf_b1", step="implement", created=ago(hours=5),
-              started=ago(hours=5), completed=ago(hours=3), issue=202, pr=612, title=LONG_TITLE),
+              started=ago(hours=5), completed=ago(hours=3), issue=202, pr=612, questions=2,
+              title=LONG_TITLE),
         _task("t_b1_merge", "PARKED", wf="wf_b1", step="merge", profile="merge", created=ago(hours=5),
               park="CI_PENDING", issue=202, pr=612, title=LONG_TITLE),
     ], deps={"merge": ["implement"]})
@@ -203,16 +206,18 @@ def build() -> dict[str, Any]:
                   "url": f"{OTHER_REPO}/issues/101", "repository_url": OTHER_REPO},
         "issue_read": {"title": "Not this project's issue"},
     }]
+    asked = [
+        {"question": "Keep the old login cache for one release?",
+         "options": [{"label": "Keep it", "description": "one more release"},
+                     {"label": "Drop it", "description": "now"}],
+         "recommended": "Drop it", "context": "the new cache covers every caller"},
+        {"question": "Which metric gates the rollout?",
+         "options": [{"label": "p95", "description": ""}, {"label": "p99", "description": ""}],
+         "recommended": "p95", "context": ""},
+    ]
     questions = {
-        "t_a1_impl": [
-            {"question": "Keep the old login cache for one release?",
-             "options": [{"label": "Keep it", "description": "one more release"},
-                         {"label": "Drop it", "description": "now"}],
-             "recommended": "Drop it", "context": "the new cache covers every caller"},
-            {"question": "Which metric gates the rollout?",
-             "options": [{"label": "p95", "description": ""}, {"label": "p99", "description": ""}],
-             "recommended": "p95", "context": ""},
-        ],
+        "t_a1_impl": [dict(q) for q in asked],
+        "t_b1_impl": [dict(q) for q in asked],
         "t_s1": [
             {"question": "Also fix the same typo in the docs?",
              "options": [{"label": "Yes", "description": ""}, {"label": "No", "description": ""}],

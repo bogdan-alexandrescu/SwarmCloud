@@ -8,7 +8,9 @@ Owner requirements and decisions, 2026-10-20 (#1773):
 * GROUPING: by the issue each lane names (`input.issue`, else `(#N)` in its
   title), labelled with the issue's title where SwarmCloud has it; "No issue"
   for the rest.
-* WAITING ON SOMEONE: owner questions (recommended option marked); steps in
+* WAITING ON SOMEONE: owner questions of a lane that is neither merged nor
+  finished, unanswered, once per lane (recommended option marked; #1812,
+  owner decision 2026-10-27, "Yes, narrow it"); steps in
   AWAITING_INPUT and HUMAN_REQUIRED parks, each with `/sc answer WF STEP`;
   merges refused (head_moved, merge_conflict, checks_failed) and CI parks over
   90 minutes. Failed steps in general are NOT listed. Nothing is read from
@@ -140,9 +142,8 @@ def test_waiting_on_someone_lists_exactly_the_three_kinds():
         ("ci_pending", "wf_b1"),
         ("human_required", "wf_c2"),
         ("merge_refused", "wf_b2"),
-        ("question", "t_s1"),
-        ("question", "wf_a1"), ("question", "wf_a1"),
-    ]  # MUTATION: list wf_f's failed step, the 30-minute CI park of wf_b3, or drop a kind -- the list differs.
+        ("question", "wf_b1"), ("question", "wf_b1"),
+    ]  # MUTATION: list wf_f's failed step, the 30-minute CI park of wf_b3, a finished lane's questions, or drop a kind -- the list differs.
     awaiting = next(w for w in waiting if w["kind"] == "awaiting_input")
     assert awaiting["next"] == "/sc answer wf_c1 review"  # MUTATION: no answer command -- None.
     assert awaiting["since"] == fx.ago(hours=3)  # MUTATION: date it from the task's creation -- 4 hours ago.
@@ -153,7 +154,7 @@ def test_waiting_on_someone_lists_exactly_the_three_kinds():
     assert ci["since"] == fx.ago(hours=2)  # MUTATION: age a CI park from its creation -- 5 hours ago.
     refused = next(w for w in waiting if w["kind"] == "merge_refused")
     assert "checks_failed" in refused["detail"] and "#613" in refused["item"]  # MUTATION: drop the refusal code or the PR -- absent.
-    question = next(w for w in waiting if w["kind"] == "question" and w["lane"] == "wf_a1")
+    question = next(w for w in waiting if w["kind"] == "question" and w["lane"] == "wf_b1")
     marked = [o["label"] for o in question["options"] if o["recommended"]]
     assert marked == ["Drop it"]  # MUTATION: mark no option, or the first one -- [] or ["Keep it"].
 
@@ -161,7 +162,8 @@ def test_waiting_on_someone_lists_exactly_the_three_kinds():
 def test_a_finished_tasks_questions_and_pr_are_cached_and_not_read_again():
     cache: dict = {}
     first, client = _model(cache=cache)
-    assert any(r.startswith("artifact t_a1_impl") for r in client.reads)  # MUTATION: never read the questions -- no artifact read.
+    assert any(r.startswith("artifact t_b1_impl") for r in client.reads)  # MUTATION: never read the questions -- no artifact read.
+    assert not any(r.startswith(("artifact t_a1_", "artifact t_s1")) for r in client.reads)  # MUTATION: read a finished lane's questions, which wait on no one -- an artifact read.
     again = fx.FakeClient()
     second, _ = _model(again, cache=json.loads(json.dumps(cache)))
     assert not [r for r in again.reads if r.startswith("artifact")]  # MUTATION: no cache -- the questions are read again.
@@ -174,14 +176,113 @@ def test_a_finished_tasks_questions_and_pr_are_cached_and_not_read_again():
 def test_a_lane_whose_questions_could_not_be_read_is_read_again_on_the_next_refresh():
     cache: dict = {}
     first, _ = _model(fx.FakeClient(fail="artifacts"), cache=cache)
-    unread = [w for w in first["waiting"] if w["lane"] == "wf_a1" and w["kind"] == "question"]
+    unread = [w for w in first["waiting"] if w["lane"] == "wf_b1" and w["kind"] == "question"]
     assert [w["item"] for w in unread] == ["Questions that could not be read"]  # MUTATION: hide the failed read -- no item.
-    assert "wf_a1" not in cache["lanes"]  # MUTATION: cache the lane anyway -- it is kept with only the 'could not be read' item.
+    assert "t_b1_impl" not in cache["tasks"]  # MUTATION: cache the failed read -- the task is kept with no questions.
     again = fx.FakeClient()
     second, _ = _model(again, cache=json.loads(json.dumps(cache)))
-    assert any(r.startswith("artifact t_a1_impl") for r in again.reads)  # MUTATION: take the lane from the cache -- no artifact read.
-    asked = [w["item"] for w in second["waiting"] if w["lane"] == "wf_a1" and w["kind"] == "question"]
+    assert any(r.startswith("artifact t_b1_impl") for r in again.reads)  # MUTATION: take the task from the cache -- no artifact read.
+    asked = [w["item"] for w in second["waiting"] if w["lane"] == "wf_b1" and w["kind"] == "question"]
     assert len(asked) == 2 and "Questions that could not be read" not in asked  # MUTATION: cache the lane anyway -- only the 'could not be read' item.
+
+
+# --------------------------------------------------------------------------
+# Which owner questions wait (#1812, owner decision 2026-10-27, "Yes, narrow it")
+# --------------------------------------------------------------------------
+
+
+def _relaned(data, wid, state, tasks):
+    """`data` with workflow `wid` replaced by one of `tasks` in `state`."""
+    deps = {"merge": [t["step_id"] for t in tasks if t["runner_profile"] != "merge"]}
+    data["workflows"] = [(fx._workflow(wid, state, row["created_at"], tasks, deps=deps), tasks)
+                         if row["workflow_id"] == wid else (row, ts) for row, ts in data["workflows"]]
+    return data
+
+
+def _b1(data):
+    return next(ts for row, ts in data["workflows"] if row["workflow_id"] == "wf_b1")
+
+
+def _asked(model, lane):
+    return [w for w in model["waiting"] if w["kind"] == "question" and w["lane"] == lane]
+
+
+def test_a_merged_or_finished_lanes_questions_are_not_waiting():
+    model, _ = _model()
+    assert _asked(model, "wf_a1") == []  # MUTATION: list a merged, finished workflow's old questions -- two items.
+    assert _asked(model, "t_s1") == []  # MUTATION: list a finished single task's questions -- one item.
+    data = fx.build()
+    impl, merge = _b1(data)
+    merge.update(state="SUCCEEDED", park_reason=None, completed_at=fx.ago(hours=1))
+    still_running = _relaned(data, "wf_b1", "RUNNING", [impl, merge])
+    model, _ = _model(fx.FakeClient(still_running))
+    assert _asked(model, "wf_b1") == []  # MUTATION: count only a finished workflow as done -- its merged PR's questions are listed.
+
+
+def test_a_version_1_caches_finished_lane_questions_are_not_listed():
+    cache: dict = {}
+    _model(cache=cache)
+    old = json.loads(json.dumps(cache))
+    old["version"] = 1
+    lane = old["lanes"]["wf_a1"]
+    lane["waiting"] = [{"kind": "question", "lane": "wf_a1", "item": item, "detail": "implement"}
+                       for item in ("Keep the old login cache for one release?", "Which metric gates the rollout?")]
+    model, _ = _model(cache=old)
+    assert _asked(model, "wf_a1") == []  # MUTATION: keep CACHE_VERSION at 1 -- the pre-#1812 cache's two questions are listed.
+    assert old["version"] == buildboard.CACHE_VERSION == 2  # MUTATION: reuse a version-1 cache -- its version stays 1.
+
+
+def test_an_answered_question_is_not_waiting():
+    data = fx.build()
+    impl, _ = _b1(data)
+    impl["owner_answers"] = [{"question_index": 0, "question": "Keep the old login cache for one release?",
+                              "choice": "Drop it", "text": "", "by": fx.ME, "at": fx.ago(hours=1)}]
+    model, _ = _model(fx.FakeClient(data))
+    assert [w["item"] for w in _asked(model, "wf_b1")] == ["Which metric gates the rollout?"]  # MUTATION: ignore the task's answers -- both questions.
+
+
+def test_a_question_asked_by_two_steps_of_one_lane_is_shown_once():
+    data = fx.build()
+    impl, merge = _b1(data)
+    review = fx._task("t_b1_review", "SUCCEEDED", wf="wf_b1", step="review", created=fx.ago(hours=5),
+                      started=fx.ago(hours=3), completed=fx.ago(hours=2, minutes=30), issue=202,
+                      questions=1, title=fx.LONG_TITLE)
+    data["questions"]["t_b1_review"] = [dict(data["questions"]["t_b1_impl"][0])]
+    review["owner_answers"] = []
+    model, _ = _model(fx.FakeClient(_relaned(data, "wf_b1", "RUNNING", [impl, review, merge])))
+    items = [w["item"] for w in _asked(model, "wf_b1")]
+    assert sorted(items) == ["Keep the old login cache for one release?", "Which metric gates the rollout?"]  # MUTATION: one item per step that asked -- the first question twice.
+    kept = next(w for w in _asked(model, "wf_b1") if w["item"].startswith("Keep"))
+    assert "implement" in kept["detail"] and "review" in kept["detail"]  # MUTATION: name only the first step that asked -- "review" absent.
+
+
+def test_an_answer_on_one_step_answers_the_same_question_of_another():
+    data = fx.build()
+    impl, merge = _b1(data)
+    review = fx._task("t_b1_review", "SUCCEEDED", wf="wf_b1", step="review", created=fx.ago(hours=5),
+                      started=fx.ago(hours=3), completed=fx.ago(hours=2, minutes=30), issue=202,
+                      questions=1, title=fx.LONG_TITLE)
+    data["questions"]["t_b1_review"] = [dict(data["questions"]["t_b1_impl"][1])]
+    review["owner_answers"] = [{"question_index": 0, "choice": "p95", "text": "", "by": fx.ME,
+                                "at": fx.ago(hours=1)}]
+    model, _ = _model(fx.FakeClient(_relaned(data, "wf_b1", "RUNNING", [impl, review, merge])))
+    assert [w["item"] for w in _asked(model, "wf_b1")] == ["Keep the old login cache for one release?"]  # MUTATION: match an answer to its own step only -- the metric question stays.
+
+
+def test_could_not_be_read_only_when_no_step_of_the_lane_read_its_questions():
+    data = fx.build()
+    impl, merge = _b1(data)
+    review = fx._task("t_b1_review", "SUCCEEDED", wf="wf_b1", step="review", created=fx.ago(hours=5),
+                      started=fx.ago(hours=3), completed=fx.ago(hours=2, minutes=30), issue=202,
+                      questions=1, title=fx.LONG_TITLE)  # counted, but the route says absent
+    lane = _relaned(data, "wf_b1", "RUNNING", [impl, review, merge])
+    model, _ = _model(fx.FakeClient(lane))
+    items = [w["item"] for w in _asked(model, "wf_b1")]
+    assert "Questions that could not be read" not in items and len(items) == 2  # MUTATION: list the review step's unread file beside the questions implement read -- three items.
+    model, _ = _model(fx.FakeClient(json.loads(json.dumps(lane)), fail="artifacts"))
+    unread = _asked(model, "wf_b1")
+    assert [w["item"] for w in unread] == ["Questions that could not be read"]  # MUTATION: one item per step -- two items.
+    assert "implement" in unread[0]["detail"] and "review" in unread[0]["detail"]  # MUTATION: name one step only -- "review" absent.
 
 
 # --------------------------------------------------------------------------
@@ -216,7 +317,7 @@ def test_the_page_has_its_sections_in_order():
     for label in ("lanes", "merged/done", "in flight", "queued", "needs you"):
         assert f'<span class="tile-label">{label}</span>' in page  # MUTATION: drop a tile -- absent.
     assert '<b class="tile-n">12</b><span class="tile-label">lanes</span>' in page  # MUTATION: count something else -- another number.
-    assert '<b class="tile-n">7</b><span class="tile-label">needs you</span>' in page  # MUTATION: count waiting lanes rather than items -- another number.
+    assert '<b class="tile-n">6</b><span class="tile-label">needs you</span>' in page  # MUTATION: count waiting lanes rather than items -- another number.
     assert 'id="hide-finished" checked' in page  # MUTATION: hide finished off by default -- not checked.
     assert 'id="lane-filter"' in page  # MUTATION: no text filter -- absent.
     assert 'href="https://github.com/acme/app/pull/501"' in page  # MUTATION: no PR link, or one built from something but the origin -- absent.
@@ -272,8 +373,8 @@ def test_a_refresh_writes_the_page_and_reports_it(project):
     path = project / ".claude" / "build-board" / "index.html"
     assert got["path"] == str(path) and path.is_file()  # MUTATION: report a path not written -- missing.
     assert got["written_at"] == "2026-10-21T12:00:00Z"  # MUTATION: another stamp -- differs.
-    assert got["counts"] == {"lanes": 12, "done": 2, "in_flight": 6, "queued": 1, "needs_you": 7}  # MUTATION: count otherwise -- differs.
-    assert got["waiting"] == 7  # MUTATION: report the waiting list itself or its lanes -- differs.
+    assert got["counts"] == {"lanes": 12, "done": 2, "in_flight": 6, "queued": 1, "needs_you": 6}  # MUTATION: count otherwise -- differs.
+    assert got["waiting"] == 6  # MUTATION: report the waiting list itself or its lanes -- differs.
     cache = json.loads((path.parent / "cache.json").read_text())
     assert "wf_a1" in cache["lanes"] and "wf_a2" not in cache["lanes"]  # MUTATION: no cache, or cache a running lane -- differs.
     assert _git(project, "status", "--porcelain") == ""  # MUTATION: a cache file git sees -- listed.
@@ -339,7 +440,7 @@ def test_the_tool_is_registered_read_only_and_answers_path_counts_and_waiting(pr
     client = fx.FakeClient()
     got = json.loads(server._call(client, "swarm_build_board", {}))
     assert set(got) == {"path", "written_at", "counts", "waiting"}  # MUTATION: answer more or less -- the keys differ.
-    assert got["waiting"] == 7  # MUTATION: another count -- differs.
+    assert got["waiting"] == 6  # MUTATION: another count -- differs.
 
 
 def test_the_tool_says_why_it_could_not(project):

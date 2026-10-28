@@ -119,6 +119,11 @@ _VERSION_NAME = re.compile(
     r"\Aprojects/(?P<project>[^/]+)/secrets/(?P<secret>[^/]+)/versions/(?P<number>[0-9]+)\Z"
 )
 
+#: A secret's own resource name as `get_secret` returns it: always with the
+#: project NUMBER, whatever the request was addressed with. How the store learns
+#: its project's number when it was not configured (#1819).
+_SECRET_NAME_BY_NUMBER = re.compile(r"\Aprojects/(?P<number>[0-9]+)/secrets/(?P<secret>[^/]+)\Z")
+
 
 def owned_by_this_platform(name: str) -> bool:
     """Whether `name` is a secret this platform created and may expire.
@@ -154,11 +159,27 @@ class SecretMissing(KeyError):
 
 
 class SecretManagerStore:
-    def __init__(self, project_id: str, *, client: Any | None = None) -> None:
+    def __init__(
+        self,
+        project_id: str,
+        *,
+        client: Any | None = None,
+        project_number: str | None = None,
+    ) -> None:
         if not project_id:
             raise ValueError("project_id is required")
+        if project_number is not None and not project_number.isdigit():
+            raise ValueError("project_number must be the project's numeric id")
         self._project_id = project_id
         self._client = client
+        #: Secret Manager RETURNS resource names with the project NUMBER --
+        #: `projects/209012342332/secrets/...` -- even for a request addressed
+        #: by ID, so retention has to recognise both. Until #1819 it compared
+        #: the number with the ID, refused every pass, and in the live
+        #: deployment never destroyed a version. Configured, or resolved once
+        #: from the API by `_this_project_number`; never read off a listing,
+        #: because a listing cannot vouch for itself.
+        self._project_number = project_number
         #: secret name -> the error type the retention warning was last emitted
         #: for. A missing IAM binding is ONE fact, not one fact per publish, and
         #: `_warned` in `quota_broker.credentials` makes the same choice for the
@@ -415,7 +436,9 @@ class SecretManagerStore:
           2. every version's own resource name parses, and names THIS project
              and THIS secret -- re-derived from the API's answer rather than
              from the local variable, so a wrong parent or a paging bug is
-             caught here instead of in another team's audit log;
+             caught here instead of in another team's audit log. THIS project
+             is its ID or its NUMBER, and the number is the one the API gave
+             for the ID (`_this_project_number`), never one a listing names;
           3. the version this publish just wrote is not in the destroy set;
           4. at least one enabled version survives.
 
@@ -457,11 +480,19 @@ class SecretManagerStore:
                     extra={"secret": secret},
                 )
                 return
-            if match.group("project") != self._project_id or match.group("secret") != secret:
+            if match.group("secret") != secret:
                 log.error(
                     "a version listed under one secret names another, so "
                     "nothing was expired",
                     extra={"secret": secret, "listed_under": match.group("secret")},
+                )
+                return
+            project = match.group("project")
+            if project != self._project_id and project != self._this_project_number(secret):
+                log.error(
+                    "a version listed under this secret names another project, "
+                    "so nothing was expired",
+                    extra={"secret": secret, "listed_project": project},
                 )
                 return
             # DISABLED and DESTROYED versions are already unreadable, so they
@@ -497,6 +528,28 @@ class SecretManagerStore:
             "expired superseded secret versions",
             extra={"secret": secret, "destroyed": len(stale), "kept": len(keep)},
         )
+
+    def _this_project_number(self, secret: str) -> str:
+        """This project's number, from configuration or asked of the API once.
+
+        `get_secret` is addressed by the store's own project ID, and Secret
+        Manager answers with the secret's name in number form, so the number
+        it returns is the number OF THAT ID -- the API's word, not the
+        listing's. The answer must name exactly `secret` and a number, or the
+        pass is refused by the exception rather than guessed at. Cached: a
+        project's number never changes.
+        """
+        if self._project_number is None:
+            client = self._secret_client()
+            answer = client.get_secret(request={"name": f"{self.parent}/secrets/{secret}"})
+            match = _SECRET_NAME_BY_NUMBER.match(str(getattr(answer, "name", "") or ""))
+            if match is None or match.group("secret") != secret:
+                raise ValueError(
+                    "Secret Manager did not answer with this secret's name by "
+                    "project number, so the project number is unknown"
+                )
+            self._project_number = match.group("number")
+        return self._project_number
 
     def _warn_retention(self, secret: str, error: str) -> None:
         """Say once per process, per secret, per error type, what went wrong.

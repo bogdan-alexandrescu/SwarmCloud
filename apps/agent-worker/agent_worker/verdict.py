@@ -84,7 +84,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterable
 
 from .errors import InputUnavailable
 
@@ -113,6 +113,16 @@ VERIFY_BEFORE_ACTING = "verify before acting"
 #: The annotation's keys on a finding object.
 P_REAL_KEY = "p_real"
 TRIAGE_KEY = "triage"
+
+#: The no-op precheck's check (b) (#2524, BGD 2026-10-28): a review writes the
+#: head it judged under `commit`, and a NOT_YET-gated step whose checkout
+#: already contains a commit a review gave MERGE runs no agent. Lowercase hex,
+#: 7 to 40 characters, as `git rev-parse` prints it; anything else is no commit.
+COMMIT_KEY = "commit"
+_COMMIT = re.compile(r"^[0-9a-f]{7,40}$")
+#: Where the skip is recorded, and which check it was.
+NOOP_PRECHECK_KEY = "noop_precheck"
+NOOP_PRECHECK_CHECK = "b"
 
 _EXPECTED_SHAPE = (
     '{"verdict": "MERGE" | "NOT_YET", "findings": [...]}'
@@ -274,6 +284,9 @@ class Verdict:
     needs_owner_unreadable: int = 0
     #: The other unanswered owner questions, listed on the pull request.
     open_questions: tuple[OwnerQuestionRef, ...] = field(default=())
+    #: The head the review judged (`commit`, #2524 check (b)): 7-40 lowercase
+    #: hex, else None. Read for the no-op precheck only; never decides `verdict`.
+    commit: str | None = None
 
 
 def _normalise(value: Any) -> str | None:
@@ -579,7 +592,55 @@ def verdict_of_document(document: dict[str, Any]) -> Verdict | None:
         needs_owner=needs_owner,
         needs_owner_unreadable=needs_owner_unreadable,
         open_questions=open_questions,
+        commit=_commit(document.get(COMMIT_KEY)),
     )
+
+
+def _commit(value: Any) -> str | None:
+    return value if isinstance(value, str) and _COMMIT.fullmatch(value) else None
+
+
+@dataclass(frozen=True)
+class ContainedMerge:
+    """A MERGE verdict whose reviewed commit the step's head already holds."""
+
+    task_id: str
+    commit: str
+
+    @property
+    def reason(self) -> str:
+        return (
+            f"branch head already contains {self.commit[:12]}, which review "
+            f"{self.task_id} gave MERGE"
+        )
+
+    def as_record(self) -> dict[str, str]:
+        """`result_summary.noop_precheck`."""
+        return {"check": NOOP_PRECHECK_CHECK, "reason": self.reason}
+
+
+def merged_commit_contained(
+    verdicts: Iterable[tuple[str, Verdict]], is_ancestor: Callable[[str], bool]
+) -> ContainedMerge | None:
+    """The first MERGE verdict whose `commit` the head already contains, else None.
+
+    `verdicts` is `(review task id, verdict)` pairs; `is_ancestor(commit)`
+    answers whether the step's checkout HEAD contains `commit` (the worker's
+    `git merge-base --is-ancestor <commit> HEAD`). A NOT_YET, a MERGE that
+    names no commit, and an ancestry question that raised all read as "not
+    contained": the precheck only ever skips work it can show was reviewed,
+    and when it cannot show that, the agent runs as it always did.
+    """
+    for task_id, read in verdicts:
+        if read.verdict != "MERGE" or read.commit is None:
+            continue
+        try:
+            contained = bool(is_ancestor(read.commit))
+        except Exception:  # an unanswerable question never skips the agent
+            contained = False
+        if contained:
+            return ContainedMerge(task_id=task_id, commit=read.commit)
+    return None
 
 
 def pull_request_lines(record: dict[str, Any]) -> list[str]:

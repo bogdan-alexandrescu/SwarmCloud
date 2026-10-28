@@ -1,5 +1,5 @@
-import { useContext, useId, useState, type FormEvent, type MouseEvent, type MutableRefObject } from 'react'
-import { USE_FIXTURES, loadCapacity } from './api'
+import { useContext, useEffect, useId, useRef, useState, type FormEvent, type MouseEvent, type MutableRefObject } from 'react'
+import { USE_FIXTURES, loadCapacity, loadSecretsOverview, type SecretsRow } from './api'
 import { Banner, Button, ButtonLink, Card, routedClick } from './components'
 import { SetupContext } from './ConfigSetup'
 import { noteFixtureProbe, read, route, write, type ApiError, type ApiRoute, type Result } from './fetch'
@@ -64,8 +64,9 @@ import './styles/workspace-settings.css'
  * The list cannot say whether a `workspace_secret` server's secret is stored,
  * so the lead reads the setup read's `config_setup.secrets` (CONFIG-SETUP-READ,
  * `swarm_api.config_setup`), whose `mcp_server` items make the same test
- * Config › Secrets' MCP row makes. That source unread, or not served, is "—"
- * and why: never green.
+ * Config › Secrets' MCP row makes. That source unread, or not served, falls
+ * back to the workspace's secrets overview, the read Config › Secrets draws
+ * (`mcpLeadWith`); with neither able to say it is "—" and why: never green.
  *
  * THE ROWS (MCP-ROWS; part of #2157, S5a, S5d). A server the same read lists
  * as missing its credential says "needed, not set" in its Credential cell, so
@@ -202,6 +203,15 @@ async function fixtureMcpServers(target: ApiRoute): Promise<Result<McpServerList
         auth: { mode: 'dispatch' }, allowed_profiles: ['claude-code'], allowed_tools: ['search', 'fetch_page'],
         enabled: true, revision: 3, updated_at: ago(2 * 86_400_000), updated_by: 'alice@example.com', last_attached_at: ago(40 * 60_000),
       },
+      // kb is the server Config › Secrets lists as missing its credential
+      // (`mcp:kb`, unset, in the fixture's workspace overview): without it
+      // here the lead named a server the table did not draw (QA1-FIX-14,
+      // config-25).
+      {
+        name: 'kb', url: 'https://kb.example.com/mcp', description: 'Answers from the team knowledge base.',
+        auth: { mode: 'workspace_secret' }, allowed_profiles: [], allowed_tools: [],
+        enabled: true, revision: 1, updated_at: ago(86_400_000), updated_by: 'alice@example.com', last_attached_at: null,
+      },
       {
         name: 'status-board', url: 'https://status.example.com/mcp', description: 'Reads the public status page.',
         auth: { mode: 'none' }, allowed_profiles: [], allowed_tools: [],
@@ -313,6 +323,48 @@ export function mcpLeadOf(doc: Result<unknown>): McpLead | null {
   return { kind: 'missing', names, of: typeof step.needed === 'number' ? step.needed : null }
 }
 
+/** The MCP servers Config › Secrets' overview lists with their credential unset: its own "needed" test (Secrets.tsx `neededOf`). */
+export function mcpUnsetOf(rows: readonly SecretsRow[]): string[] {
+  return [...new Set(rows.filter((r) => r.section === 'keys' && r.store === 'mcp_servers' && r.status === 'unset').map((r) => r.name))]
+}
+
+/**
+ * WHAT THE CONSOLE ALREADY KNOWS, BEFORE "NOT KNOWN" (QA1-FIX-14, config-25).
+ * With the setup read unable to say, the lead said whether a server is missing
+ * its credential is not known -- on a page whose sibling, Config › Secrets,
+ * said kb's was not set. That page reads the workspace's secrets overview;
+ * so does this one, and only then. A server it lists unset is missing. It
+ * listing none leaves the answer unknown rather than green: the overview is
+ * the fallback, not the source the "nothing waiting" lead is measured from.
+ */
+export function mcpLeadWith(lead: McpLead | null, unset: readonly string[] | null): McpLead | null {
+  if (lead?.kind !== 'unknown' || unset === null || unset.length === 0) return lead
+  return { kind: 'missing', names: [...unset], of: null }
+}
+
+/** The overview's unset MCP servers, read only while `ask`; null while unread or when the read failed. */
+function useSecretsUnset(ask: boolean): string[] | null {
+  const [names, setNames] = useState<string[] | null>(null)
+  useEffect(() => {
+    if (!ask) return undefined
+    let live = true
+    void loadSecretsOverview('workspace').then((r) => {
+      if (live) setNames(r.status === 'ok' || r.status === 'stale' ? mcpUnsetOf(r.data.rows) : null)
+    })
+    return () => {
+      live = false
+    }
+  }, [ask])
+  return ask ? names : null
+}
+
+/** The page's one answer to "which server is missing its credential", for the lead and the rows alike. */
+function useMcpLead(): McpLead | null {
+  const { doc } = useContext(SetupContext)
+  const lead = mcpLeadOf(doc)
+  return mcpLeadWith(lead, useSecretsUnset(lead?.kind === 'unknown'))
+}
+
 function joined(names: readonly string[]): string {
   return names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
 }
@@ -326,9 +378,7 @@ function joined(names: readonly string[]): string {
  * "Nothing waiting" over an empty list. The list's own read says none is
  * registered, and the lead carries Register an MCP server for someone who may.
  */
-function McpServersLead({ list, onRegister }: { list: McpServerList | null; onRegister: () => void }) {
-  const { doc } = useContext(SetupContext)
-  const lead = mcpLeadOf(doc)
+function McpServersLead({ lead, list, onRegister }: { lead: McpLead | null; list: McpServerList | null; onRegister: () => void }) {
   if (list !== null && list.servers.length === 0) {
     return (
       <section className="ws-lead" aria-label="No MCP server yet">
@@ -354,10 +404,13 @@ function McpServersLead({ list, onRegister }: { list: McpServerList | null; onRe
   if (lead === null) return null
   if (lead.kind === 'unknown') {
     return (
-      <section className="ws-lead is-next" aria-label="Secrets set">
+      // The unknown count is the kicker's dash, as `Secrets set · 1 missing` is
+      // its figure; the sentence starts with a word (QA1-FIX-14, config-25:
+      // it began "— whether", a bold line opening on a dangling dash).
+      <section className="ws-lead is-next" aria-label="Secrets set · —">
         <div className="ws-lead-t">
-          <span className="ws-lead-k">Secrets set</span>
-          <b>— whether an MCP server is missing its credential is not known: {lead.reason}.</b>
+          <span className="ws-lead-k">Secrets set · —</span>
+          <b>Whether an MCP server is missing its credential is not known: {lead.reason}.</b>
         </div>
       </section>
     )
@@ -395,15 +448,11 @@ function McpServersLead({ list, onRegister }: { list: McpServerList | null; onRe
   )
 }
 
-/** The servers the setup read lists as missing their credential; empty when it is clear or unknown. */
-function useMissingCredentials(): ReadonlySet<string> {
-  const { doc } = useContext(SetupContext)
-  const lead = mcpLeadOf(doc)
-  return new Set(lead?.kind === 'missing' ? lead.names : [])
-}
-
 export function McpServersScreen() {
   const list = useUrRead(loadMcpServers, 'mcp-servers')
+  const lead = useMcpLead()
+  // The servers the lead names as missing their credential; empty when it is clear or unknown.
+  const missing: ReadonlySet<string> = new Set(lead?.kind === 'missing' ? lead.names : [])
   const [registering, setRegistering] = useState(false)
   const read = list.state.status === 'ok' || list.state.status === 'stale' ? list.state.data : null
   const manages = read !== null && read.can_manage
@@ -412,7 +461,7 @@ export function McpServersScreen() {
   return (
     <div className="pk-page">
       <PageHead title="MCP servers" />
-      <McpServersLead list={read} onRegister={() => setRegistering(true)} />
+      <McpServersLead lead={lead} list={read} onRegister={() => setRegistering(true)} />
       <Card
         title="Registered MCP servers"
         action={(
@@ -433,15 +482,19 @@ export function McpServersScreen() {
           addresses below.
         </p>
         <UrRegion state={list.state} route={`GET ${LIST}`} what="The workspace's MCP servers" plural onRetry={list.reload}>
-          {(d) => <Registrations data={d} registering={registering} onChange={list.reload} />}
+          {(d) => <Registrations data={d} missing={missing} registering={registering} onChange={list.reload} />}
         </UrRegion>
       </Card>
     </div>
   )
 }
 
-function Registrations({ data, registering, onChange }: { data: McpServerList; registering: boolean; onChange: () => void }) {
-  const missing = useMissingCredentials()
+function Registrations({ data, missing, registering, onChange }: {
+  data: McpServerList
+  missing: ReadonlySet<string>
+  registering: boolean
+  onChange: () => void
+}) {
   const [editing, setEditing] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
@@ -634,6 +687,21 @@ function ServerForm({ editing, named, onDone }: { editing: McpServer | null; nam
     : null
   const verb = editing === null ? 'Register' : 'Save'
 
+  // THE FORM OPENS WHERE IT IS READ (QA1-FIX-14, config-27). It is drawn under
+  // the table and the addresses, below the fold at 1440x900, and the press
+  // left focus on the button: nothing at the top of the page changed. On
+  // opening it scrolls into view and its first field -- Name, or URL for an
+  // edit -- takes focus. Once, on mount: a save keeps the form open, and a
+  // reader typing in it is not moved.
+  const top = useRef<HTMLElement>(null)
+  useEffect(() => {
+    const el = top.current
+    if (el === null) return
+    // jsdom draws nothing, so it has no `scrollIntoView`; a browser always does.
+    if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'start', behavior: 'smooth' })
+    el.querySelector<HTMLInputElement>('form input')?.focus({ preventScroll: true })
+  }, [])
+
   async function save(e: FormEvent) {
     e.preventDefault()
     if (busy) return
@@ -670,7 +738,7 @@ function ServerForm({ editing, named, onDone }: { editing: McpServer | null; nam
 
   const label = editing === null ? 'Register an MCP server' : `Change ${editing.name}`
   return (
-    <section className="pk-row" aria-labelledby={`${id}-h`}>
+    <section ref={top} className="pk-row" aria-labelledby={`${id}-h`}>
       <div className="pk-row-head">
         <h3 id={`${id}-h`}>{label}</h3>
       </div>

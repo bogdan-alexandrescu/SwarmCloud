@@ -160,19 +160,22 @@ describe('a grant is never removed or narrowed on one click (RSA-1)', () => {
     await screen.findByRole('list', { name: 'Your granted repositories, failures first' })
     const g = () => grantRow('example-org/example-service')
 
-    fireEvent.click(within(g()).getByRole('button', { name: 'Remove' }))
+    // The row's trigger is `Remove access` too (QA1 config-15); while the ask
+    // is open it steps aside, so the one `Remove access` is the ask's act.
+    fireEvent.click(within(g()).getByRole('button', { name: 'Remove access' }))
     await settle()
     expect(writes(calls)).toEqual([])
     fireEvent.click(within(g()).getByRole('button', { name: 'Keep Write' }))
-    expect(within(g()).queryByRole('button', { name: 'Remove access' })).toBeNull()
+    expect(within(g()).queryByRole('button', { name: 'Keep Write' })).toBeNull()
 
-    fireEvent.click(within(g()).getByRole('button', { name: 'Remove' }))
+    fireEvent.click(within(g()).getByRole('button', { name: 'Remove access' }))
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
-    expect(within(g()).queryByRole('button', { name: 'Remove access' })).toBeNull()
+    expect(within(g()).queryByRole('button', { name: 'Keep Write' })).toBeNull()
     await settle()
     expect(writes(calls)).toEqual([])
 
-    fireEvent.click(within(g()).getByRole('button', { name: 'Remove' }))
+    fireEvent.click(within(g()).getByRole('button', { name: 'Remove access' }))
+    expect(within(g()).getByRole('button', { name: 'Keep Write' })).toBeTruthy()
     fireEvent.click(within(g()).getByRole('button', { name: 'Remove access' }))
     await waitFor(() => expect(writes(calls).map((c) => `${c.method} ${c.url}`)).toEqual([`DELETE /v1/access/grants/${ID(2)}`]))
   })
@@ -226,7 +229,7 @@ describe('an ask-first banner is reachable from the keyboard (RSA-27)', () => {
     api()
     await mount()
     await screen.findByRole('list', { name: 'Your granted repositories, failures first' })
-    fireEvent.click(within(grantRow('example-org/example-service')).getByRole('button', { name: 'Remove' }))
+    fireEvent.click(within(grantRow('example-org/example-service')).getByRole('button', { name: 'Remove access' }))
     expect((document.activeElement as HTMLElement).textContent).toBe('Keep Write')
   })
 })

@@ -453,7 +453,7 @@ function ScheduleStep({
         <div className="ur-fl">Change trigger</div>
         <div>
           <UrRadio<ChangeTrigger> label="Change trigger" options={TRIGGER_OPTIONS} value={trigger} onChange={setTrigger} />
-          <p className="ur-hint">At most one change-triggered run every 30 min; ten pushes in a minute cost one run.</p>
+          <p className="ur-hint">At most one change-triggered run every 120 min; ten pushes in a minute cost one run.</p>
           <p className="ur-hint">{WEBHOOK_NOTE}</p>
         </div>
         <div className="ur-fl">First index</div>
