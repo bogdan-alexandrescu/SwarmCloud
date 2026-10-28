@@ -982,6 +982,9 @@ export function attemptLine(logs: Pick<TaskLogs, 'attempt' | 'attempt_id'>): str
  * streams keep their served names.
  */
 export function streamLabel(name: string): string {
+  // THE AGENT'S STREAMS IN WORDS TOO (QA1 overview-agents-38, 2026-10-28):
+  // the stdout window's heading was the raw name `agent_stdout`.
+  if (name === 'agent_stdout' || name === 'agent_stderr') return `agent ${name.slice('agent_'.length)}`
   return name === 'stdout' || name === 'stderr' ? `runner ${name}` : name
 }
 

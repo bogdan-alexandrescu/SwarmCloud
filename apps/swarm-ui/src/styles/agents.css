@@ -858,6 +858,10 @@
    the window below is flush with the log's body. */
 .ag-logmeta { margin: var(--ctl-s2) 0 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 .ag-logmeta > summary { cursor: pointer; padding: 2px 0; }
+/* NOTHING WRITTEN, SAID ABOVE THE FOLD (QA1 overview-agents-36): the body has
+   no top padding, so the sentence `Nothing on agent stderr yet.` sat on the
+   menu's rule. It takes the step the folded card under it takes. */
+.ag-logs-body .rf-empty { margin-top: var(--ctl-s2); }
 .ag-logs-body .logwin-body { max-height: none; }
 /* THE STREAM TABLE FITS THE LOG (owner QA R7, 2026-10-04): beside the 64px
    strip the detail is wide, the table is not stacked, and the row header's

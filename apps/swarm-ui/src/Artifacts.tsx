@@ -1548,6 +1548,28 @@ export function StreamsFrom({
       </div>
   )
   const drawn = (r: (typeof rows)[number]) => r.stream !== null && r.stream.status === 'ok' && r.stream.content !== null && r.stream.content !== ''
+  // NOTHING WRITTEN IS A SENTENCE, NOT A CARD (QA1 overview-agents-36,
+  // 2026-10-28): an empty agent stderr in the Logs tab drew the gs:// object
+  // card, `0 B real zero · live`, where a reader wanted to be told there is
+  // nothing on it. In the dock, when every stream is a measured empty object,
+  // the sentence leads and the card folds under it, as a stream with lines does.
+  const empty = (r: (typeof rows)[number]) => r.stream !== null && r.stream.status === 'ok' && r.stream.content === ''
+  if (docked && rows.every(empty)) {
+    const live = rows.some((r) => r.stream?.source === 'live')
+    return (
+      <>
+        <p className="art-fallback rf-empty">
+          {`Nothing on ${rows.map((r) => streamLabel(r.name)).join(' or ')}${live ? ' yet' : ''}.`}
+        </p>
+        <details className="ag-logmeta">
+          <summary>
+            {rows.map((r) => streamLabel(r.name)).join(' · ')} · size, age and location
+          </summary>
+          {table}
+        </details>
+      </>
+    )
+  }
   return (
     <>
       {/* IN THE LOG DOCK THE TABLE IS FOLDED when every stream has lines to
@@ -2131,6 +2153,7 @@ function StepRowBody({
           <details className="arts-more">
             <summary>
               tool · <b>{step.tool?.name ?? 'unnamed'}</b>
+              {inputGist(input) !== null && <span className="ctl-sub mono arts-tool-gist"> {inputGist(input)}</span>}
             </summary>
             {input === null ? (
               <p className="art-fallback">
@@ -2190,8 +2213,7 @@ function StepRowBody({
       return (
         <li className="arts-step is-result">
           <span className="arts-step-kind">
-            result
-            {typeof m.subtype === 'string' ? ` · ${m.subtype}` : ''}
+            {resultWords(m.subtype)}
             {turns !== null ? ` · ${turns} turns` : ''}
           </span>{' '}
           {m.is_error === true && <ToneMark tone="bad">the agent reported an error</ToneMark>} {capped}
@@ -2431,4 +2453,45 @@ function rateLimitWords(key: string, value: string | number | boolean): string {
       return `${name} ${moment ? localMoment(value as number) : String(value)}`
     }
   }
+}
+
+/**
+ * A TOOL CALL'S ONE-LINE GIST (QA1 overview-agents-31, 2026-10-28): forty
+ * rows of `tool · browser_click` could not be told apart without opening
+ * each. The first field a reader looks for -- where it went or what it
+ * touched -- else the first text field, on one line and cut at 80
+ * characters. Null for an input that is not a JSON object or holds no text.
+ */
+const GIST_KEYS = ['url', 'element', 'selector', 'ref', 'file_path', 'path', 'command', 'pattern', 'query', 'text'] as const
+
+export function inputGist(input: string | null): string | null {
+  if (input === null) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(input)
+  } catch {
+    return null
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  const o = parsed as Record<string, unknown>
+  const key = GIST_KEYS.find((k) => typeof o[k] === 'string' && (o[k] as string).trim() !== '') ?? Object.keys(o).find((k) => typeof o[k] === 'string' && (o[k] as string).trim() !== '')
+  if (key === undefined) return null
+  const line = (o[key] as string).replace(/\s+/g, ' ').trim()
+  return line.length > 80 ? `${line.slice(0, 79)}…` : line
+}
+
+/**
+ * A RESULT STEP IN WORDS (QA1 overview-agents-37, 2026-10-28): the row read
+ * `result · error_during_execution · 7 turns`, the CLI's enum. A subtype the
+ * console has no words for keeps its name after `result`.
+ */
+const RESULT_WORDS: Readonly<Record<string, string>> = {
+  error_during_execution: 'Stopped on an error',
+  error_max_turns: 'Stopped at its turn limit',
+  error_max_budget_usd: 'Stopped at its budget',
+}
+
+export function resultWords(subtype: unknown): string {
+  if (typeof subtype !== 'string') return 'result'
+  return RESULT_WORDS[subtype] ?? `result · ${subtype}`
 }
