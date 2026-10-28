@@ -493,6 +493,46 @@ variable "frontend_hostname" {
   default     = ""
 }
 
+variable "acceptance_qa_tenant" {
+  description = <<-EOT
+    The tenant the release acceptance's QA identity case submits in
+    (SWARM_ACCEPTANCE_QA_TENANT on the swarm-verify job;
+    scripts/acceptance/groups/live-browser.sh, run_live_browser_qa). It must
+    be a tenant a platform admin has granted the QA identity: an ungranted one
+    is refused qa_identity_not_granted at submission and the case FAILs.
+
+    Empty by default, and empty means the case SKIPs every check: the grant is
+    made in the console, not by Terraform, so an environment says it here only
+    once that grant exists (dev first, BGD 2026-10-19 Q8).
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.acceptance_qa_tenant == "" || can(regex("^[a-z0-9][a-z0-9-]{0,62}$", var.acceptance_qa_tenant))
+    error_message = "acceptance_qa_tenant is a tenant id (lower case letters, digits and hyphens), or empty to skip the QA identity case."
+  }
+}
+
+variable "acceptance_console_url" {
+  description = <<-EOT
+    The console the release acceptance's QA identity case signs in to
+    (SWARM_ACCEPTANCE_CONSOLE_URL on the swarm-verify job). The case judges
+    "signed in" by this URL's host, so it is the environment's own console,
+    https://<frontend_hostname>; tests/unit/scripts/
+    test_verify_job_qa_identity_settings.py holds dev's equal to that.
+
+    Empty by default: with no URL the case SKIPs every check.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.acceptance_console_url == "" || can(regex("^https://[a-z0-9.-]+/?$", var.acceptance_console_url))
+    error_message = "acceptance_console_url is https://<host> (the environment's console), or empty to skip the QA identity case."
+  }
+}
+
 variable "pr_console_links" {
   description = <<-EOT
     Whether a worker appends the workflow's and the agent's console links to

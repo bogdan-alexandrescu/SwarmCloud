@@ -9539,7 +9539,14 @@ class Worker:
                     graph_ticket=self.graph_ticket, private_dir=ws.private,
                     backend=self.cfg.backend, service_url=self.cfg.graph_service_url,
                     secret_env_names=self.cfg.profile.secrets,
-                    graph_context=self.graph_context)
+                    graph_context=self.graph_context,
+                    # A private repository's depth-1 clone is deepened for
+                    # the ancestry proof with the forge token, held as the
+                    # clone holds it (lane GRAPH-TOKEN-2563). The callable
+                    # is asked only when a fetch is needed, and never when
+                    # this worker must not hold the token at all. This runs
+                    # before the agent starts.
+                    forge_token=None if self._git_token_refusal() else self._git_token)
             except graph_ticket_mod.GraphTicketFenced as exc:
                 raise FencedWriteRefused(
                     self.cfg.generation, -1, str(exc), write="graph ticket"

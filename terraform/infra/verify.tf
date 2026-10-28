@@ -223,6 +223,26 @@ resource "google_cloud_run_v2_job" "verify" {
           name  = "ENVIRONMENT"
           value = var.environment
         }
+        # The live-browser group's QA identity case (QI-ACCEPT, part of
+        # #1649) SKIPs every check unless both are set. verify-remote.sh runs
+        # this job with --args only, so its environment is this template's:
+        # a setting not rendered here never reaches the group. Rendered only
+        # when set, so an environment that sets neither (prod) keeps the
+        # SKIP instead of carrying an empty value.
+        dynamic "env" {
+          for_each = var.acceptance_qa_tenant == "" ? [] : [var.acceptance_qa_tenant]
+          content {
+            name  = "SWARM_ACCEPTANCE_QA_TENANT"
+            value = env.value
+          }
+        }
+        dynamic "env" {
+          for_each = var.acceptance_console_url == "" ? [] : [var.acceptance_console_url]
+          content {
+            name  = "SWARM_ACCEPTANCE_CONSOLE_URL"
+            value = env.value
+          }
+        }
       }
     }
   }

@@ -20,7 +20,6 @@ import { contrast } from './spaceprobe'
 import { HISTORY_VIEW_KEY } from '../ScheduleHistoryTimeline'
 
 const WAIT = { timeout: 4000 }
-const PHONE: CascadeEnv = { width: 400 }
 const WIDE: CascadeEnv = { width: 1440 }
 
 type Json = Record<string, unknown>
@@ -190,7 +189,9 @@ describe('the schedules list at 1440 (V166, V167)', () => {
 // One schedule
 // ---------------------------------------------------------------------------
 
-describe("one schedule's page (V168, V171, V239, V241, V242, V243)", () => {
+// V241 (the figures 12px below the head's meta line) is retired with frame
+// A2, whose sheet draws no figure strip (pr-comment.md).
+describe("one schedule's sheet (V168, V171, V239, V242, V243)", () => {
   it('V168: lets a firing’s partial cost wrap in its cell instead of clipping it and scrolling the table', async () => {
     // MUTATION: `.sc-spend { white-space: nowrap }` back.
     // The firings' table, behind the History tab's toggle since #1109.
@@ -229,27 +230,16 @@ describe("one schedule's page (V168, V171, V239, V241, V242, V243)", () => {
   it('V239: names the scope’s repositories as owner/repo, as the list does', async () => {
     // MUTATION: `(s.scope.repo_ids ?? []).join(', ')` back in the head.
     await mountSchedules('schedule=sch_a', schedulesRoutes())
-    // The scope is the second part of the head's meta line (VQ-029).
+    // The scope is the sheet's Target, under What it does (frame A2).
     const scope = await waitFor(() => {
-      const f = document.querySelector<HTMLElement>('[data-testid="sc-meta"] > span:nth-child(2)')
+      const dt = [...document.querySelectorAll<HTMLElement>('aside.as-sheet [data-sec="what"] dt')].find((d) => visible(d) === 'Target')
+      const f = (dt?.nextElementSibling ?? null) as HTMLElement | null
       expect(f).toBeTruthy()
       expect(visible(f)).toContain('example-org/example-long-repository-name')
       return f!
     }, WAIT)
     expect(visible(scope)).toBe('example-org/example-api, example-org/example-long-repository-name')
     expect(visible(scope)).not.toContain('repo_a')
-  })
-
-  it('V241: sets the figures 12px below the head’s meta line', async () => {
-    // MUTATION: drop `.sc-figs { margin }`.
-    await mountSchedules('schedule=sch_a', schedulesRoutes())
-    const facts = await waitFor(() => {
-      const el = document.querySelector<HTMLElement>('[data-testid="sc-figs"]')
-      expect(el).not.toBeNull()
-      return el!
-    }, WAIT)
-    expect(painted(facts, ['margin-top', 'margin'], WIDE)).toBe('12px')
-    expect(painted(facts, ['margin-top', 'margin'], PHONE)).toBe('12px')
   })
 
   it('V242: says why the audit was not read, with its HTTP code, and reads it again on Try again', async () => {
@@ -259,7 +249,8 @@ describe("one schedule's page (V168, V171, V239, V241, V242, V243)", () => {
       schedulesRoutes((m, url) => (m === 'GET' && url === '/v1/schedules/sch_a/audit' ? { status: 500, body: { code: 'internal', message: 'firestore unavailable' } } : null)),
     )
     const pane = await waitFor(() => {
-      const el = document.querySelector<HTMLElement>('.sc-pane .state.failed')
+      // The audit is the sheet's Audit fold, opened by `tab=audit` (frame A2).
+      const el = document.querySelector<HTMLElement>('aside.as-sheet [data-sec="audit"] .state.failed')
       expect(el).not.toBeNull()
       return el!
     }, WAIT)
