@@ -24,7 +24,7 @@ variables {
     }
     "u-alice" = {
       kind      = "user"
-      principal = "alice@saga.xyz"
+      principal = "alice@example.com"
     }
   }
 
