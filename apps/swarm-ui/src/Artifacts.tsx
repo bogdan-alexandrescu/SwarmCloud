@@ -4,6 +4,7 @@ import {
   Fragment,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -17,6 +18,7 @@ import {
   artifactRawUrl,
   loadAnswer,
   loadArtifactListing,
+  loadMe,
   loadTask,
   loadTaskInputOnce,
   loadTaskLogs,
@@ -24,7 +26,7 @@ import {
   loadWorkflow,
   type WorkflowRead,
 } from './api'
-import { ArtifactViewer, Markdown } from './ArtifactViewer'
+import { ArtifactViewer, Markdown, offersRawPatch, RawPatchDownload } from './ArtifactViewer'
 import { DECLARED_WORDS, taskInputsOf, type TaskInputRow } from './dag'
 import { SkippedArtifactsNote } from './DecisionCard'
 import { errorHeading, num, type ApiError, type Result } from './fetch'
@@ -992,8 +994,38 @@ function skippedEntry(raw: unknown): SkippedArtifact | null {
   return null
 }
 
+/**
+ * THE SIGNED-IN EMAIL, read once per mount, or null until it is known (and
+ * when it cannot be read). The frame's read, as every pane that only needs to
+ * know who is looking marks it; the pane's 5 s poll does not repeat it.
+ */
+function useSignedInEmail(): string | null {
+  const [email, setEmail] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    void loadMe({ frame: true }).then((r) => {
+      if (live && (r.status === 'ok' || r.status === 'stale')) setEmail(r.data.principal.email)
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+  return email
+}
+
+/**
+ * WHETHER THE CALLER SUBMITTED THIS TASK, compared exactly as the server
+ * compares it for the raw patch (#1857: `Task.submitted_by`, as
+ * `submission_scope` resolves the caller). Unknown is no: the control is
+ * drawn only once the read says so, and the server decides again.
+ */
+export function isSubmitter(email: string | null, submittedBy: string | null | undefined): boolean {
+  return email !== null && email !== '' && typeof submittedBy === 'string' && submittedBy === email
+}
+
 function Files({ v }: { v: ArtifactsView }) {
   const { task, listing } = v
+  const submitter = isSubmitter(useSignedInEmail(), task.submitted_by)
   const routed = useContext(RoutedArtifact)
   const [local, setLocal] = useState<string | null>(null)
   const open = routed !== null ? routed.name : local
@@ -1145,6 +1177,7 @@ function Files({ v }: { v: ArtifactsView }) {
                   task={task.id}
                   entry={e}
                   unlisted={unlisted.has(e.name)}
+                  rawPatch={submitter}
                   open={e.name === open}
                   onOpen={() => setOpen(open === e.name ? null : e.name)}
                 />
@@ -1160,6 +1193,7 @@ function Files({ v }: { v: ArtifactsView }) {
           taskId={task.id}
           artifact={showing}
           kind={showing.kind ?? null}
+          rawPatch={submitter}
           onClose={() => setOpen(null)}
         />
       )}
@@ -1200,6 +1234,7 @@ function FileRow({
   task,
   entry,
   unlisted,
+  rawPatch,
   open,
   onOpen,
 }: {
@@ -1207,6 +1242,8 @@ function FileRow({
   entry: ArtifactEntry
   /** True when the listing route did not return this file and the row comes from the task's manifest. */
   unlisted: boolean
+  /** The caller submitted this task: a `.patch` row also offers it unredacted (#1857). */
+  rawPatch: boolean
   open: boolean
   onOpen: () => void
 }) {
@@ -1264,6 +1301,9 @@ function FileRow({
             copy gsutil
           </Button>
         </span>
+        {/* THE SUBMITTER'S RAW PATCH (#1857), beside the redacted download
+            above, with its one-line note. Nobody else is offered it. */}
+        {rawPatch && offersRawPatch(entry.name) && <RawPatchDownload taskId={task} name={entry.name} />}
       </td>
     </tr>
   )

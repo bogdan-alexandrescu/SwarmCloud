@@ -7187,6 +7187,16 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 }
 .arts-get { display: inline-flex; flex-wrap: wrap; gap: var(--ctl-s1); }
 .arts-get > .copy { margin-left: 0; }
+/* THE SUBMITTER'S RAW PATCH (#1857) sits on its own line under the row's
+   downloads, its note wrapping beneath the button. A table cell is nowrap, so
+   an unbounded one-line note set the Get column's minimum at ~500px and
+   crushed every row's File column to 40px; bounded at 30ch and wrapping, the
+   cell keeps the width the existing buttons give it. */
+.art-rawpatch {
+  display: flex; flex-direction: column; align-items: flex-start;
+  gap: var(--ctl-s1); margin-top: var(--ctl-s1); max-width: 30ch;
+}
+.art-rawpatch > .ctl-sub { white-space: normal; overflow-wrap: anywhere; }
 .arts-view-seg { flex-wrap: wrap; }
 .arts-gallery {
   display: grid; gap: var(--ctl-s3); margin-top: var(--ctl-s3);

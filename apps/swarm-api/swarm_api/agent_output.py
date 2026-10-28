@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Iterator
 
+from swarm_common.models import new_id
 from swarm_common.states import TERMINAL_STATES
 
 from . import agent_streams as agent_streams_mod
@@ -47,7 +48,7 @@ from .checkpoint_content import (
     DownloadAborted,
     artifact_kind,
 )
-from .errors import Gone, UpstreamUnavailable, ValidationFailed
+from .errors import Forbidden, Gone, UpstreamUnavailable, ValidationFailed
 from .inspect import (
     ARTIFACT_SNIFF_BYTES,
     InspectionService,
@@ -105,6 +106,27 @@ _RAW_HEADERS = {
 }
 
 _FILENAME_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
+
+#: `?redaction=` on `/artifacts/raw`: `applied` (the default, today's answer)
+#: or `none`, the owner-only raw patch (BGD's decision on #1857, 2026-10-27).
+REDACTION_APPLIED = "applied"
+REDACTION_NONE = "none"
+
+#: The only artifacts `redaction=none` serves. A served `.patch` is redacted at
+#: read time, so its credential-SHAPED test fixtures come back masked and the
+#: patch no longer applies (#1857); the masking rules stay as they are, and the
+#: submitter alone may take the bytes as stored.
+RAW_PATCH_SUFFIX = ".patch"
+
+#: One document per unredacted read: who, which artifact, when -- never a byte
+#: of the content. Top level, keyed by task, as `live_audit` is: a purge of the
+#: task deletes its events, and the record of who took its unredacted bytes is
+#: not one of them.
+RAW_PATCH_AUDIT = "artifact_audit"
+RAW_PATCH_ACTION = "artifact_raw_unredacted"
+
+#: What an unredacted patch carries instead of `_RAW_HEADERS`' Cache-Control.
+RAW_PATCH_MEDIA_TYPE = "text/x-diff; charset=utf-8"
 
 
 def download_filename(name: str) -> str:
@@ -235,6 +257,8 @@ class AgentOutputService:
         submitted_by: str | None,
         name: str,
         disposition: str | None = None,
+        redaction: str | None = None,
+        caller: str | None = None,
     ) -> RawArtifact:
         """An artifact's bytes, classified from its first 4096, streamed in bounded windows.
 
@@ -271,16 +295,174 @@ class AgentOutputService:
         NO Content-Length, for the reason `CheckpointContent.download` gives:
         Cloud Run refuses an unchunked HTTP/1 response over 32 MiB, and
         uvicorn chunks exactly when no length is declared.
+
+        `redaction="none"` IS THE OWNER-ONLY RAW PATCH (BGD, #1857): a `.patch`
+        whose credential-shaped test fixtures the masking would break, served
+        as stored to the one person who submitted the task. `caller` is the
+        verified caller's email. Refused 403, naming the rule, unless the name
+        is a top-level manifest name ending in `.patch` and `caller` equals
+        `Task.submitted_by` exactly -- no role widens it, an admin's included.
+        The tenant check runs first, so another tenant's id is still the 404 a
+        missing task gets. The read is audited before the first byte, and not
+        served when the record cannot be written. See `_raw_patch`.
         """
         if disposition not in (None, "inline", "attachment"):
             raise ValidationFailed(
                 "disposition must be inline or attachment",
                 detail={"disposition": disposition},
             )
+        if redaction not in (None, REDACTION_APPLIED, REDACTION_NONE):
+            raise ValidationFailed(
+                "redaction must be applied or none",
+                detail={"redaction": redaction},
+            )
         task, _prefix = self._ins._scoped(tenant_id, task_id, submitted_by=submitted_by)
+        if redaction == REDACTION_NONE:
+            return self._raw_patch(task, name=name, caller=caller)
         entry, attempt_id, key, reader = self._ins._resolve_artifact(task, name)
+        first = self._first_window(task, name, entry, attempt_id, key, reader)
+        head = first.data[:ARTIFACT_SNIFF_BYTES]
+        suffix = PurePosixPath(name).suffix.lower()
+        image_type = sniff_image(head) if suffix in IMAGE_EXTENSIONS else None
+        if image_type is not None:
+            kind, media_type, masked = "image", image_type, "not-applied"
+        elif b"\x00" not in head:
+            kind, media_type, masked = "text", "text/plain; charset=utf-8", "applied"
+        else:
+            kind, media_type, masked = "binary", "application/octet-stream", "not-applied"
+
+        chosen = disposition or "attachment"
+        if kind == "binary":
+            chosen = "attachment"
+        headers = {
+            **_RAW_HEADERS,
+            "Content-Disposition": f'{chosen}; filename="{download_filename(name)}"',
+            "X-Artifact-Bytes": str(first.total_bytes),
+            "X-Artifact-Kind": kind,
+            "X-Swarm-Redaction": masked,
+        }
+        if kind == "text":
+            # The task's own masker (the PR #229 review): a value only the
+            # task's input or metadata named as secret is masked in a text
+            # artifact's raw download too, the same literals `/artifacts/
+            # content` masks it with.
+            literals = masking_for(task).literals
+            chunks = self._redacted_text(reader, key, first, literals=literals)
+        else:
+            chunks = self._verbatim(reader, key, first)
+        return RawArtifact(chunks=chunks, media_type=media_type, headers=headers, kind=kind)
+
+    def _raw_patch(self, task: Any, *, name: str, caller: str | None) -> RawArtifact:
+        """A `.patch` as stored, for its submitter only, audited (#1857).
+
+        THE ORDER IS THE GUARANTEE. Both refusals come before the manifest is
+        read, so a caller who may not have the bytes learns nothing about
+        which names exist; the audit record is written after the object's
+        first window is read and before any byte leaves, so a read that fails
+        is not recorded as taken and a read that is not recorded is not
+        served.
+
+          * THE NAME: ends in `.patch` and is one segment. A name with a `/`
+            or a `\\` in it is refused even when the manifest lists it: the
+            harvested patch is a top-level artifact, and nothing else is
+            what the owner opened.
+          * THE CALLER: `caller == task.submitted_by`, exactly, the way
+            `submission_scope` compares an email. No admin -- of the tenant
+            or the platform -- and no other member qualifies; a task with no
+            recorded submitter has nobody who may. A staged input is read
+            through its upstream task, whose submitter is checked, so a
+            downstream submitter does not inherit it.
+
+        ALWAYS AN ATTACHMENT, `text/x-diff`, `nosniff`, `no-store`, the CSP
+        sandbox: the body never renders and no cache keeps it. Served
+        verbatim, so `X-Swarm-Redaction: not-applied` says so. No log line or
+        audit field carries a byte of it.
+        """
+        if (
+            not name.endswith(RAW_PATCH_SUFFIX)
+            or name == RAW_PATCH_SUFFIX
+            or "/" in name
+            or "\\" in name
+        ):
+            raise Forbidden(
+                "redaction=none serves only a top-level .patch artifact; every other "
+                "artifact is served redacted",
+                detail={"rule": "patch_only", "redaction": REDACTION_NONE},
+            )
+        submitter = task.submitted_by or ""
+        if not caller or not submitter or caller != submitter:
+            raise Forbidden(
+                "redaction=none serves a patch only to the person who submitted the "
+                "task; read it without redaction=none for the redacted copy",
+                detail={"rule": "submitter_only", "redaction": REDACTION_NONE},
+            )
+        entry, attempt_id, key, reader = self._ins._resolve_artifact(task, name)
+        first = self._first_window(task, name, entry, attempt_id, key, reader)
+        self._audit_raw_patch(task, name=name, attempt_id=attempt_id, caller=caller)
+        kind = "text" if b"\x00" not in first.data[:ARTIFACT_SNIFF_BYTES] else "binary"
+        headers = {
+            **_RAW_HEADERS,
+            "Cache-Control": "no-store",
+            "Content-Disposition": f'attachment; filename="{download_filename(name)}"',
+            "X-Artifact-Bytes": str(first.total_bytes),
+            "X-Artifact-Kind": kind,
+            "X-Swarm-Redaction": "not-applied",
+        }
+        return RawArtifact(
+            chunks=self._verbatim(reader, key, first),
+            media_type=RAW_PATCH_MEDIA_TYPE,
+            headers=headers,
+            kind=kind,
+        )
+
+    def _audit_raw_patch(
+        self, task: Any, *, name: str, attempt_id: str, caller: str
+    ) -> None:
+        """One `artifact_audit` document: who, which artifact, when. Never content.
+
+        A write that fails refuses the read (503): an unredacted read with no
+        record of who took it is the one outcome this route must not have.
+        """
+        store = self._ins._store
+        entry_id = new_id("aa")
         try:
-            first = reader.read_range(key, offset=0, length=self._chunk)
+            store._db.collection(RAW_PATCH_AUDIT).document(entry_id).set({
+                "id": entry_id,
+                "action": RAW_PATCH_ACTION,
+                "task_id": task.id,
+                "tenant_id": task.tenant_id,
+                "attempt_id": attempt_id,
+                "name": name,
+                "by": caller,
+                "at": store._now(),
+                "redaction": REDACTION_NONE,
+            })
+        except Exception as exc:  # noqa: BLE001 -- any failure refuses the read
+            log.error(
+                "unredacted patch read of task %s refused: its audit record could not "
+                "be written (%s)", task.id, type(exc).__name__,
+            )
+            raise UpstreamUnavailable(
+                "the unredacted read could not be audited, so nothing was served; "
+                "retry, or read the patch redacted"
+            ) from None
+        log.info(
+            "unredacted patch read: task=%s tenant=%s artifact=%s audit=%s",
+            task.id, task.tenant_id, download_filename(name), entry_id,
+        )
+
+    def _first_window(
+        self,
+        task: Any,
+        name: str,
+        entry: dict[str, Any],
+        attempt_id: str,
+        key: str,
+        reader: ObjectReader,
+    ) -> ObjectSlice:
+        """The object's first window, or the 410/503 envelope before any byte."""
+        try:
+            return reader.read_range(key, offset=0, length=self._chunk)
         except ObjectAbsent:
             raise Gone(
                 f"task {task.id!r} lists {name!r}, and its object is no longer in the "
@@ -298,37 +480,6 @@ class AgentOutputService:
                 "the artifact store could not be read, so nothing may be concluded "
                 "about this artifact: " + redact_detail(exc.reason)
             ) from None
-
-        head = first.data[:ARTIFACT_SNIFF_BYTES]
-        suffix = PurePosixPath(name).suffix.lower()
-        image_type = sniff_image(head) if suffix in IMAGE_EXTENSIONS else None
-        if image_type is not None:
-            kind, media_type, redaction = "image", image_type, "not-applied"
-        elif b"\x00" not in head:
-            kind, media_type, redaction = "text", "text/plain; charset=utf-8", "applied"
-        else:
-            kind, media_type, redaction = "binary", "application/octet-stream", "not-applied"
-
-        chosen = disposition or "attachment"
-        if kind == "binary":
-            chosen = "attachment"
-        headers = {
-            **_RAW_HEADERS,
-            "Content-Disposition": f'{chosen}; filename="{download_filename(name)}"',
-            "X-Artifact-Bytes": str(first.total_bytes),
-            "X-Artifact-Kind": kind,
-            "X-Swarm-Redaction": redaction,
-        }
-        if kind == "text":
-            # The task's own masker (the PR #229 review): a value only the
-            # task's input or metadata named as secret is masked in a text
-            # artifact's raw download too, the same literals `/artifacts/
-            # content` masks it with.
-            literals = masking_for(task).literals
-            chunks = self._redacted_text(reader, key, first, literals=literals)
-        else:
-            chunks = self._verbatim(reader, key, first)
-        return RawArtifact(chunks=chunks, media_type=media_type, headers=headers, kind=kind)
 
     def _next_window(self, reader: ObjectReader, key: str, at: int, total: int) -> ObjectSlice:
         """The window at `at`, or `DownloadAborted` -- the status is already sent."""
