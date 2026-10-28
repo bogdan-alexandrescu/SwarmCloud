@@ -235,6 +235,8 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 .solo{display:flex;flex-direction:column}
 .scroller.solo{width:max-content;max-width:100%}
 .solo .dsheet{border:1px solid var(--line);border-radius:12px;box-shadow:none}
+/* a drawer drawn alone is the desktop drawer: on a narrow page it keeps that width and scrolls in its box, as the 1440 frames do, instead of crushing the risk cards */
+.solo .dsheet{min-width:600px}
 .foot{display:flex;gap:8px;flex-wrap:wrap;align-items:center;border-top:1px solid var(--line);padding-top:12px}
 .foot .grow{flex:1}
 .quote{margin:0;font-size:13.5px;padding:8px 12px;border-left:3px solid var(--line);background:var(--surface-2);border-radius:0 8px 8px 0}
@@ -298,6 +300,8 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 .ph .rs td:first-child::before{display:none}
 .ph .rs td:empty{display:none}
 .ph .rs td small{text-align:right;flex-basis:100%}
+/* a sentence (a planner's note, what to do) wraps under its label, left-aligned: right-aligned prose reads ragged on the left */
+.ph .rs td>.sm12{text-align:left;flex-basis:100%}
 .ph .rs td:first-child small{text-align:left}
 .ph .rs td .bar{flex-basis:100%}
 .ph .hd:has(.acts) .tl{flex-basis:100%}
@@ -330,6 +334,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 .colh b{font-size:14px;font-weight:650;display:flex;gap:6px;align-items:baseline}
 .colh b .n{font:600 13px var(--mono);color:var(--text-dim);margin-left:auto}
 .colh small{font-size:12px;color:var(--text-dim);line-height:1.35}
+.nw{white-space:nowrap}
 .colh small.w{color:var(--warn-ink);font-weight:600}
 .kc{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:8px 10px;display:flex;flex-direction:column;gap:4px;font-size:12.5px;min-width:0}
 .kc.me{border-color:color-mix(in srgb,var(--warn-ink) 55%,var(--line));box-shadow:inset 3px 0 0 var(--warn-ink)}
@@ -536,7 +541,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
   <div class="flabel"><span class="fid">P4</span><h2>After approval: the plan traced to what it became</h2></div>
   <p>An approved card moves right. Its drawer becomes the trace: the plan revision approved, each step's task, the pull request, CI and its fix rounds, the review's verdict on every requirement, the merge, and the keyword it earned.</p>
   <figure class="sub" id="P4a" data-frame="P4a"><div class="sl"><span class="sid">P4a</span><b>#2583, merged, Closes #2583</b><span class="dim">desktop 1440 · over the board</span></div><div class="scroller" data-f="p4a"></div>
-  <figcaption>The run's own record, as its status comment on #2583 states it: <code>DONE</code>, pull request #2584 at <code>da75881a2270</code>, <code>Closes #2583</code> because the review confirmed every planned requirement, workflow <code>wf_e0fe6bf2c96f4a4082fa</code>. What this mock-up's author did not read (the task ids, CI's rounds, the merge time) is drawn as a dash with that reason, as the console would draw a read that has not landed.</figcaption></figure>
+  <figcaption>The run's own record, as its status comment on #2583 states it: <code>DONE</code>, pull request #2584 at <code>da75881a2270</code>, <code>Closes #2583</code> because the review confirmed every planned requirement, workflow <code>wf_e0fe6bf2c96f4a4082fa</code>. The step's task, the checks, the fix rounds and the merge time are the run record's own (<code>pr_task_id</code>, <code>pull_request.check_counts</code>, <code>ci_fix_round</code> of <code>fix_rounds</code>, <code>pull_request.merged_at</code>). The review step's task is not on the run record, so it is a dash with that reason.</figcaption></figure>
   <figure class="sub" id="P4b" data-frame="P4b"><div class="sl"><span class="sid">P4b</span><b>An example run (the board’s PR #2580) in its second fix round, the review leaving a requirement unmet</b><span class="dim">the drawer alone</span></div><div class="scroller solo" data-f="p4b"></div>
   <figcaption><code>part of #2567</code>, never <code>Closes</code>, while one requirement is unconfirmed: the keyword block names what is left (docs/issue-runs.md, "<code>Closes #N</code> only when the review confirmed every requirement").</figcaption></figure>
 </section>
@@ -654,8 +659,8 @@ const K=[
   {id:'k3',stg:1,src:'sweep',t:'#2579 Pin the checkov action by digest in security.yml',st:['waiting','wn'],me:1,kind:'hold',ex:'expires in 1 d 2 h',meta:'planned Oct 26 05:00Z · 3 steps · 3 agent-hours',why:'held: a step touches .github/workflows/; only the owner decides',age:46},
   {id:'k4',stg:1,src:'review',t:'#2583 cifix.stamp’s ci_fix branch refuses a PR-side CI fix while a plain continuation holds the PR',st:['waiting','wn'],me:1,kind:'plan',ex:'expires in 2 d 21 h',meta:'planned 00:06Z · 1 step · 2 agent-hours',canon:1,age:3},
   {id:'k5',stg:1,src:'hand',t:'#2581 The Runs list loses its filter when a run moves state',st:['waiting','wn'],me:1,kind:'plan',ex:'no expiry: a plan made by hand waits until decided',meta:'planned 01:40Z · 2 steps · 3 agent-hours',age:1.3},
-  {id:'k6',stg:2,src:'sweep',t:'#2574 Schedules’ history table drops the firing’s second page',st:['running','in'],meta:'auto-approved by its schedule’s gate (plan: auto) · step 2 of 2 running'},
-  {id:'k7',stg:2,src:'review',t:'#2572 The expiry sweep leaves a superseded merge pending',st:['approved','ok'],meta:'approved by Operator 02:31Z · workflow starting'},
+  {id:'k6',stg:2,src:'sweep',t:'#2574 Schedules’ history table drops the firing’s second page',st:['running','in'],meta:'approved by Operator 23:40Z yesterday · step 2 of 2 running'},
+  {id:'k7',stg:2,src:'review',t:'#2572 The expiry sweep leaves a superseded merge pending',st:['approved','ok'],meta:'auto-approved by its schedule’s gate (plan: auto) 02:31Z · workflow starting'},
   {id:'k8',stg:3,src:'sweep',t:'Merge PR #2577 for #2570',st:['waiting','wn'],me:1,kind:'merge',ex:'expires in 2 d 9 h',meta:'green at 9c1e40b27a55 · review MERGE · 7 of 7 requirements met',age:15},
   {id:'k9',stg:3,src:'review',t:'PR #2580 for #2567: CI red, fix round 2 of 3',st:['fixing','wn'],meta:'round 2 started 02:48Z · 1 check red: python (unit)'},
   {id:'k10',stg:4,src:'review',t:'#2559 merged as PR #2562, Closes #2559',st:['merged','ok'],meta:'merged automatically 22:40Z yesterday · every requirement confirmed'},
@@ -690,7 +695,7 @@ function board(o){
     const stall=oldest>=24&&!o.nostall;
     let sub=g.s;
     if(o.colnote&&o.colnote[i]) sub=o.colnote[i];
-    else if(wait.length) sub=`<small class="w">${wait.length} waiting on a person · oldest ${oldest>=24?Math.floor(oldest/24)+' d '+Math.round(oldest%24)+' h':Math.round(oldest)+' h'}</small>`;
+    else if(wait.length) sub=`<small class="w">${wait.length} waiting on a person · <span class="nw">oldest ${oldest>=24?Math.floor(oldest/24)+' d '+Math.round(oldest%24)+' h':Math.round(oldest)+' h'}</span></small>`;
     const hid=all.length-cs.length;
     const n=o.ncol&&o.ncol[i]!==undefined?o.ncol[i]:String(cs.length);
     return `<section class="colm ${stall&&!o.src?'stall':''}"><div class="colh"><b>${g.t}<span class="n">${n}</span></b>${sub.startsWith('<small')?sub:`<small>${sub}</small>`}</div>`+
@@ -741,14 +746,14 @@ function reqs(all,add){
 }
 function overlaps(){
   return `<section class="shs"><h5>Overlaps with work in flight <small>5 · the planner’s, with what it says to do</small></h5>`+
-    T(['With','Kind','The planner’s note','What to do'],[[`<a class="nw">#2226</a>`,'pull request',`<span class="sm12">${OV1}</span>`,`<span class="sm12">its <code>action</code>, as the planner set it</span><small>${B('Open #2226','s q','ext')}</small>`]])+
+    T(['With','Kind','The planner’s note','What to do'],[[`<a class="nw">#2226</a>`,'pull request',`<span class="sm12">${OV1}</span>`,`${C('action required','wn')}<span class="sm12"> An operator should close it as superseded by #2546.</span><small>${B('Open #2226','s q','ext')}</small>`]])+
     `<span class="fold">${I('chevd')}Show the other 4 overlaps</span></section>`;
 }
 function step(o){
   o=o||{};
   return `<div class="stp ${o.ed?'ed':''}"><div class="sh">${C('step 1','ln')}<b class="mn">ci-fix-waits-on-continuation</b><span class="r" style="margin-left:auto">${C('2 agent-hours','ln','clock')}</span></div>`+
     `<dl class="kv"><dt>Files</dt><dd>${(o.files||FILES).map(f=>`<code>${f}</code>`).join(' ')}</dd>`+
-    `<dt>Tests</dt><dd class="dim">tests/unit/control_plane, red first (requirement 7)</dd>`+
+    `<dt>Tests</dt><dd class="dim">6 named, red first: <code>test_cifix_waits_on_plain_continuation.py</code> (5) and <code>test_ci_fix.py</code> (1)</dd>`+
     `<dt>Runner</dt><dd>claude-code <span class="dim">· the default model class: a plan step cannot name one yet</span></dd>`+
     `<dt>Depends on</dt><dd class="dim">nothing</dd></dl>`+
     `<span class="fold">${I('chev')}Prompt, folded</span></div>`;
@@ -784,7 +789,7 @@ function editSheet(){
     `<section class="shs"><h5>Steps <small>1 · a plan keeps at least one</small></h5>`+
     `<div class="stp ed"><div class="sh">${C('step 1 · changed','in')}<b class="mn">ci-fix-waits-on-continuation</b><span style="margin-left:auto">${B('Remove','s d','trash',true)}</span></div><span class="hint">Remove is off: this is the plan’s only step.</span>`+
     `<div class="g2">${F('Estimate','3 agent-hours','v')}${F('Depends on','nothing','')}</div>`+
-    `<label class="fld"><span>Files</span><span class="inp v wr">apps/swarm-api/swarm_api/cifix.py · apps/swarm-api/swarm_api/refusals.py · scripts/ci-fix.sh · <ins style="background:var(--t-ok);color:var(--ok-ink);text-decoration:none">tests/unit/control_plane/test_cifix_continuation.py</ins></span></label>`+
+    `<label class="fld"><span>Files</span><span class="inp v wr">apps/swarm-api/swarm_api/cifix.py · apps/swarm-api/swarm_api/refusals.py · scripts/ci-fix.sh · <ins style="background:var(--t-ok);color:var(--ok-ink);text-decoration:none">tests/unit/control_plane/test_cifix_waits_on_plain_continuation.py</ins></span></label>`+
     `<label class="fld"><span>Prompt</span><div class="prompt ed"><span class="dim">… the planner’s prompt, unchanged lines folded (${I('chevd')}show) …</span>
 <ins>Also make scripts/ci-fix.sh’s skip line print the live task’s workflow id next to its task id.</ins></div></label></div></section>`+
     `<section class="shs"><h5>Requirements <small>7 + 1 added</small></h5><ol class="req" start="7"><li>${REQS[6]}</li><li class="new"><label class="fld" style="display:flex"><span>Requirement 8, new</span><span class="inp v ta">${ADDREQ}</span></label></li></ol>${B('Add a requirement','s q','plus')}</section>`+
@@ -804,7 +809,7 @@ function removeSheet(){
 function savedSheet(){
   return `<aside class="dsheet w6"><div class="shh"><div class="tt"><span class="cr">Failure review · plan for #2583</span><h4>Revision 2, saved</h4><span class="meta">${C('waiting on a person','wn')}<span>edited by Operator 03:02Z</span></span></div></div>`+
     `<div class="bn ok">${I('check')}<div><b>Saved as revision 2.</b><span class="dg">sha256:7d0c55e19a3b4f2e…</span> <span class="sm12 dim">(an example: the server computes it)</span> replaces <span class="dg">${DIGS}</span>.</div></div>`+
-    `<section class="shs"><h5>What changed from revision 1</h5><ul class="files"><li>${C('changed','in')} step 1 estimate: 2 → 3 agent-hours</li><li>${C('changed','in')} step 1 files: + tests/unit/control_plane/test_cifix_continuation.py</li><li>${C('changed','in')} step 1 prompt: 1 line added</li><li>${C('added','ok')} requirement 8</li></ul></section>`+
+    `<section class="shs"><h5>What changed from revision 1</h5><ul class="files"><li>${C('changed','in')} step 1 estimate: 2 → 3 agent-hours</li><li>${C('changed','in')} step 1 files: + tests/unit/control_plane/test_cifix_waits_on_plain_continuation.py</li><li>${C('changed','in')} step 1 prompt: 1 line added</li><li>${C('added','ok')} requirement 8</li></ul></section>`+
     `<section class="shs"><h5>Who may approve it</h5><p class="sm12">The plan is not held, so its editor may approve it. Had it carried a <code>second_member</code> hold, the last plan editor could not: the foot would name who can.</p></section>`+
     `<div class="foot"><span class="sm12 dim grow">Approves revision 2 only</span>${B('Reject','d','x')}${B('Edit','','edit')}${B('Approve revision 2','p','check')}</div></aside>`;
 }
@@ -815,11 +820,11 @@ function traceSheet(){
   return `<aside class="dsheet w7"><div class="shh"><div class="tt"><span class="cr">Failure review · #2583</span><h4>cifix.stamp’s ci_fix branch refuses a PR-side CI fix while a plain continuation holds the pull request</h4><span class="meta">${C('merged','ok')}<span>run_fba2dc8f6ec9494dae2f · done</span></span></div>${B('','q x','x')}</div>`+
     `<section class="shs"><h5>From plan to merge</h5><ol class="trace">`+
     li('ok','check','Plan revision 1 approved','auto-approved by its schedule’s gate (<code>plan_approval: auto</code>) at 2026-10-28 00:06:03Z · '+`<span class="dg">${DIGS}</span>`,`<span class="fold">${I('chev')}The plan as approved</span>`)+
-    li('ok','check','Workflow wf_e0fe6bf2c96f4a4082fa','the plan compiled to its step, then review, fix and re-review',T(['Step','Task','State'],[[`<span class="mn">ci-fix-waits-on-continuation</span>`,DASH('task id not read for this mock-up'),C('done','ok')],[`<span class="mn">review</span>`,DASH('not read'),C('done','ok')]]))+
+    li('ok','check','Workflow wf_e0fe6bf2c96f4a4082fa','the plan compiled to its step, then review, fix and re-review',T(['Step','Task','State'],[[`<span class="mn">ci-fix-waits-on-continuation</span>`,`<span class="mn">task_a5ddf372107c41e9ab7e</span>`,C('done','ok')],[`<span class="mn">review</span>`,DASH('the review task is not on the run record'),C('done','ok')]]))+
     li('ok','pr','Pull request #2584','opened by the step; the run checked it to a green head',`<span class="sm12">head <code>da75881a2270</code></span>`)+
-    li('ok','check','CI and fix rounds',`green at <code>da75881a2270</code> · fix rounds used: ${DASH('not read for this mock-up')}`)+
+    li('ok','check','CI and fix rounds',`green at <code>da75881a2270</code> · 10 checks passed, 0 failed · fix rounds used: 0 of 3`)+
     li('ok','check','Review: every requirement met','the review’s verdict answered all 7 requirements met',`<span class="ln2">${REQS.map((r,i)=>C('requirement '+(i+1)+' met','ok','check')).join(' ')}</span>`)+
-    li('ok','merge','Merged','the run read DONE; merged at '+DASH('the merge time is not read for this mock-up'))+
+    li('ok','merge','Merged','merged at 2026-10-28 01:23:31Z; the run read DONE at 01:24:06Z')+
     li('ok','check','Closes #2583','written into #2584’s body because the review confirmed every planned requirement; #2583 is closed')+
     `</ol></section></aside>`;
 }
@@ -842,14 +847,14 @@ function sourcesSheet(){
   const g=(r,p,m,a)=>`<span class="nw">run ${r} · plan ${p}</span><small>merge ${m} · ${a}</small>`;
   const rows=[
     [`<b class="nm">Nightly issue sweep</b><small>issue-sweep · sch_1a2b3c4d5e6f</small>`,C('active','ok'),g('auto','approve','approve','members'),'$22.60<small>of $120.00 a day</small>','6','4<small>1 rejected · 1 waiting</small>','3'],
-    [`<b class="nm">Failure review</b><small>failure-review · sch_54e9828e6772</small>`,C('active','ok'),g('auto','auto','auto, by the audited switch','owner only'),'$4.10<small>no day budget: the type sets none</small>','5','5<small>auto-approved by its gate</small>','2'],
+    [`<b class="nm">Failure review</b><small>failure-review · sch_54e9828e6772</small>`,C('active','ok'),g('auto','auto','auto, by the audited switch','owner only'),'$4.10<small>no day budget: the type sets none</small>','5','4<small>auto-approved by its gate; #2583 is drawn waiting for P2</small>','2'],
     [`<b class="nm">Platform observer</b><small>observer · proposals to file</small>`,C('active','ok'),`<span class="nw">run auto</span><small>plans: does not plan · merge: off</small>`,'$0.40<small>of $5.00 a day</small>','3','1<small>1 waiting · 1 expired</small>',DASH('it files issues; the sweep plans them')],
     [`<b class="nm">CI flake hunter</b><small>ci-flake-hunter · proposals to file</small>`,C('paused','pa'),`<span class="nw">run auto</span><small>plans: does not plan · merge: off</small>`,'$0.00<small>paused all day</small>','2','0<small>2 expired</small>',DASH('it files issues')],
     [`<b class="nm">By hand</b><small>Submit from a GitHub issue</small>`,'<span class="dim">always on</span>',`<span class="nw">plan: each run says</span><small>default required · merge by the repository’s merge_policy</small>`,DASH('no schedule budget: each run is its submitter’s'),'1','0<small>1 waiting</small>','0']
   ];
   return `<aside class="dsheet" style="width:900px"><div class="shh"><div class="tt"><span class="cr">Pipeline</span><h4>Sources</h4><span class="meta">what puts cards on this board, and its gate · last 7 days</span></div>${B('','q x','x')}</div>`+
     T(['Source','State','Gate','Spend today','#Proposed','#Approved','#Merged'],rows)+
-    `<p class="sm12 dim">Totals, 7 days: 17 proposed, 10 approved, 5 merged. Proposed counts a plan or a proposal once, at its first revision. A gate is changed on its schedule (Automate › Schedules), never here; this sheet links to it.</p>`+
+    `<p class="sm12 dim">Totals, 7 days: 17 proposed, 9 approved, 5 merged. Proposed counts a plan or a proposal once, at its first revision. A gate is changed on its schedule (Automate › Schedules), never here; this sheet links to it.</p>`+
     `<div class="bn in">${I('info')}<div><b>The gates drawn are the ones the API serves:</b> <code>gate.run</code> (auto, approve), <code>gate.plan</code> (auto, approve), <code>gate.merge</code> (off, approve, auto) and <code>gate.approvers</code>. A hold (<code>approval_hold</code>) overrides <code>plan: auto</code> and every merge gate. The 7-day counts are a new field.</div></div></aside>`;
 }
 function mergeSwitch(){
@@ -864,7 +869,7 @@ function mergeSwitch(){
 const emptyCol=t=>`<div class="empty" style="padding:6px 4px"><p style="font-size:12.5px">${t}</p></div>`;
 function p6a(){
   return desk({pbadge:'<span class="sm12 dim">0</span>'},PHEAD,LEAD('Nothing waiting','Nothing on this board waits on a person.','Read at 03:00Z. 2 cards are running and 1 is in CI; none needs you until it reaches its merge gate.',B('Open Sources',''),'ok')+filters('',0,[7,3,3,1,0])+
-    board({nostall:1,ncol:['0','0','2','1','4'],colnote:['nothing found since 00:00Z','nothing waits on a person',null,'fix rounds running; no merge waits'],body:[emptyCol('Failure review fired at 00:00Z and filed nothing new. The sweep fires at 02:00Z.'),emptyCol('A waiting plan holds no capacity; an empty column means no plan is waiting, not that something is stuck.'),K.filter(k=>k.stg===2).map(card).join(''),card(K[8]),K.filter(k=>k.stg===4).slice(0,4).map(card).join('')]}),'','short');
+    board({nostall:1,ncol:['0','0','2','1','4'],colnote:['nothing found since 00:00Z','nothing waits on a person',null,'fix rounds running; no merge waits'],body:[emptyCol('Failure review fired at 00:00Z and filed nothing new. The sweep next fires at 02:00Z tomorrow.'),emptyCol('A waiting plan holds no capacity; an empty column means no plan is waiting, not that something is stuck.'),K.filter(k=>k.stg===2).map(card).join(''),card(K[8]),K.filter(k=>k.stg===4).slice(0,4).map(card).join('')]}),'','short');
 }
 function p6b(){
   return desk({},PHEAD,`<div class="bn pa" style="background:var(--t-pa);border-color:color-mix(in srgb,var(--paused) 40%,var(--line))">${I('pause')}<div><b>Failure review is paused, by Operator at 01:30Z today: “until #2585’s plans view lands”.</b>Its 06:00Z firing will not run, so it adds nothing to Found until it is resumed. Its cards already on the board go on moving. ${B('Resume on its schedule','s q','ext')}</div></div>`+
@@ -873,7 +878,7 @@ function p6b(){
 function p6c(){
   const fail=`<div class="bn bd">${I('warn')}<div><b>Approvals not read: GET /v1/approvals answered 503 at 03:00Z.</b>Proposals, merges waiting and approval outcomes are not shown; plans are, from the runs read, which worked. Retrying in 30 s.</div></div>`;
   return desk({pbadge:'<span class="sm12 dim">—</span>',abadge:'<span class="sm12 dim">—</span>'},PHEAD,
-    LEAD('Needs you','3 plans wait on a person; proposals and merges are not known.','The approvals read failed, so what waits is at least 3, not 3.',B('Retry now',''),'wn')+fail+filters('',0,['—','—','—','—','—'])+
+    LEAD('Needs you','3 plans wait on a person; proposals and merges are not known.','The approvals read failed, so at least 3 cards wait; the full count is not known until it reads.',B('Retry now',''),'wn')+fail+filters('',0,['—','—','—','—','—'])+
     board({ncol:['—','3','2','—','—'],colnote:['proposals: — not read (approvals 503)',null,null,'merges waiting: — not read (approvals 503)','expired, superseded: — not read'],
     body:[card(K[1]),undefined,undefined,card(K[8]),card(K[9])+card(K[10])]}),'','short');
 }
@@ -887,13 +892,13 @@ function p7a(){
   return phone('Pipeline',`<div class="pb">`+LEAD('Needs you','5 wait on a person.','Oldest: #2579’s held plan, expires in 1 d 2 h.','','wn')+
     `<div class="stgs"><span>Found · 2</span><span class="on w">Waiting · 3</span><span>Running · 2</span><span class="w">PR and CI · 2</span><span>Ended · 4</span></div>`+
     `<div class="acts"><span class="b s">${I('filter')}Source: all</span><span class="b s">State: any</span></div>`+
-    `<div class="colh"><b>Planned, waiting<span class="n">3</span></b><small class="w">3 waiting on a person · oldest 1 d 22 h</small></div>`+
+    `<div class="colh"><b>Planned, waiting<span class="n">3</span></b><small class="w">3 waiting on a person · <span class="nw">oldest 1 d 22 h</span></small></div>`+
     w.map(k=>card(k)).join('')+`<p class="sm12 dim" style="margin:0">Also waiting on a person: 1 merge in PR and CI, and 1 proposal in Found.</p></div>`);
 }
 function p7b(){
   return phone('Plan for #2583',`<div class="pb"><span class="back">${I('back')}Pipeline</span>`+
     `<div class="F" style="display:flex;flex-direction:column;gap:12px"><div class="shh"><div class="tt"><span class="cr">Failure review · plan for #2583</span><h4 style="font-size:18px;margin:0">cifix.stamp’s ci_fix branch refuses a PR-side CI fix while a plain continuation holds the pull request</h4><span class="meta">${C('waiting on a person','wn')}<span>expires in 2 d 21 h</span></span></div></div>`+
-    why()+`<section class="shs"><h5>Summary</h5><p>${SUMMARY.slice(0,240)}… <span class="fold">Show all</span></p></section>`+figures()+reqs(false)+overlaps()+
+    why()+`<section class="shs"><h5>Summary</h5><p>${SUMMARY.slice(0,SUMMARY.indexOf(' (a <code>'))}… <span class="fold">Show all</span></p></section>`+figures()+reqs(false)+overlaps()+
     `<section class="shs"><h5>Steps <small>1</small></h5>${step()}</section><section class="shs"><h5>Risk paths <small>none touched</small></h5>${riskRow()}</section>`+
     `<div class="foot" style="background:var(--bg);padding-bottom:8px"><span class="sm12 dim" style="flex-basis:100%">Approves revision 1, <span class="dg">${DIGS}</span></span>${B('Reject','d','x')}${B('Edit','','edit')}<span class="grow"></span>${B('Approve','p','check')}</div></div></div>`);
 }
