@@ -19,7 +19,10 @@
  *   Recent failures            the last 24 hours of the page AND of the
  *                              FAILED, DEAD_LETTERED and CANCELLED state
  *                              reads (`stateView`), which a page with more
- *                              behind it takes beside it (live QA OV-1).
+ *                              behind it takes beside it (live QA OV-1); a
+ *                              page that is every agent is listed whole, at
+ *                              any age, as Needs a look counts it
+ *                              (`failureWindow`, overview-agents-01).
  *
  * An unread count is an em dash with its reason as the title -- never a 0.
  */
@@ -474,6 +477,7 @@ export function failuresOf(
   all: readonly Task[],
   now: number,
   cover: Coverage = WHOLE,
+  window: FailureWindow = LAST_DAY,
 ): { rows: Task[]; note: string; partial: boolean } {
   const ended = (t: Task): number | null => {
     if (t.completed_at === null) return null
@@ -484,14 +488,14 @@ export function failuresOf(
   const dated = terminal
     .filter((t) => {
       const ms = ended(t)
-      return ms !== null && now - ms <= DAY_MS
+      return ms !== null && (window.newest !== null || now - ms <= DAY_MS)
     })
     .sort((a, b) => cancelledLast(a) - cancelledLast(b) || (ended(b) ?? 0) - (ended(a) ?? 0))
   const undated = terminal.filter((t) => ended(t) === null)
   const partial = ENDED_BADLY.some((s) => !cover.whole(s))
   const n = (s: TaskState) => `${cover.whole(s) ? '' : '≥'}${dated.filter((t) => t.state === s).length}`
   const note = [
-    'last 24h',
+    window.newest === null ? 'last 24h' : `of the ${window.newest} newest`,
     `${n('FAILED')} failed`,
     `${n('DEAD_LETTERED')} dead-lettered`,
     ...(dated.some((t) => t.state === 'CANCELLED') || !cover.whole('CANCELLED') ? [`${n('CANCELLED')} cancelled`] : []),
@@ -499,6 +503,31 @@ export function failuresOf(
     ...(partial ? [readReach(cover.since)] : []),
   ].join(' · ')
   return { rows: [...dated, ...undated], note, partial }
+}
+
+/**
+ * WHICH FAILURES THE CARD LISTS: THE ONES NEEDS A LOOK COUNTS (visual QA pass
+ * 1, overview-agents-01, 2026-10-28). Needs a look said "2 failed agents among
+ * the 27 most recent" while this card, over the same 27, said "None among the
+ * 27 newest": the check (`checks.ts` `failureCheck`) counts every failure on a
+ * page that is every agent, at any age, and windows to the last 24 hours only
+ * when the page has more behind it and the FAILED state read landed; the card
+ * windowed to 24 hours always, so two failures that ended two days earlier were
+ * counted there and dropped here. The card now takes the check's window:
+ * `newest` is the page's length when it reads the page whole, null for the
+ * last 24 hours.
+ */
+export interface FailureWindow {
+  newest: number | null
+}
+
+export const LAST_DAY: FailureWindow = { newest: null }
+
+/** The check's window for this read, so Recent failures and Needs a look count the same rows. */
+export function failureWindow(page: OverviewTaskPage): FailureWindow {
+  const pageWhole = (page.next_page_token ?? null) === null
+  const failedRead = page.byState?.some((r) => r.state === 'FAILED') ?? false
+  return !pageWhole && failedRead ? LAST_DAY : { newest: page.tasks.length }
 }
 
 /** 1 for a cancelled agent, 0 for a failure: the sort key that lists failures first. */
@@ -549,8 +578,9 @@ export function RecentFailures({ tasks, now = Date.now() }: { tasks: Result<Over
   // 2026-10-26), so this card's 24 hours and Needs a look's end at the same
   // moment and count the same failures.
   const all = rows(tasks)
-  const view = tasks.status === 'ok' || tasks.status === 'stale' ? stateView(tasks.data, ENDED_BADLY) : null
-  const found = view === null ? null : failuresOf(view.rows, now, view)
+  const read = tasks.status === 'ok' || tasks.status === 'stale' ? tasks.data : null
+  const view = read === null ? null : stateView(read, ENDED_BADLY)
+  const found = read === null || view === null ? null : failuresOf(view.rows, now, view, failureWindow(read))
   // `failuresOf` lists each kind newest first, so a split keeps both orders.
   const ended = found === null ? [] : found.rows
   const failed = ended.filter((t) => t.state !== 'CANCELLED')
