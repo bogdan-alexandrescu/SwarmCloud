@@ -494,8 +494,9 @@
 }
 /* NO STICKY HEADER BAND IN THE SPLIT. `.drawer::before` is a 50px strip of
    `--bg` at z-index 3, there to seat a sticky ✕ over a drawer whose content
-   scrolls under it. This column does not scroll (its pane does) and its ✕
-   is in the actions row above, so the band only covered the header's top. */
+   scrolls under it. In this column only the tab strip sticks (AGENT-HEAD-B,
+   below) and its ✕ is in the actions row, which scrolls away with the head,
+   so the band would only cover the header's top. */
 .ag-split.ctl-drawer::before { display: none; }
 .ag-parent { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 
@@ -520,9 +521,10 @@
 .ag-split-tabs { margin: var(--ctl-s2) 0 var(--ctl-s3); scrollbar-width: thin; overflow-y: hidden; }
 
 /* --- the column: header, tabs, and the open tab -------------------------- */
-/* THE COLUMN DOES NOT SCROLL; ITS PANE DOES (walkthrough B, owner
-   2026-10-03). The header and tabs keep their height and the pane takes the
-   slack and scrolls inside it. Nothing is drawn under or over the pane: the
+/* ON A PHONE'S LOGS TAB THE COLUMN DOES NOT SCROLL; ITS PANE DOES
+   (walkthrough B, owner 2026-10-03; everywhere else the column scrolls as one
+   since G2-01 and AGENT-HEAD-B, below). The header and tabs keep their height
+   and the pane takes the slack and scrolls inside it. Nothing is drawn under or over the pane: the
    log that used to dock at the column's foot is the Logs tab (U11a, owner
    decision 2026-10-04). */
 .ag-split.ctl-drawer { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
@@ -533,6 +535,30 @@
    so the drawer's own `ctl-inspector` queries keep asking the drawer. */
 .ag-split > .ag-split-pane { container: ag-pane / inline-size; }
 .ag-split > .ctl-agent-back { align-self: flex-start; }
+/* THE HEAD SCROLLS AWAY ON DESKTOP TOO; THE TAB STRIP STICKS (AGENT-HEAD-B,
+   BGD's pick AH1 B, 2026-10-28; QA pass 1 overview-agents-30, part of #2596).
+   Held still above the pane, the head -- state, title, facts, Copy link,
+   Take control, Stop -- and the strip left 569px of tab at 1440x900 and 445
+   at 1280x800 (the AGENT-HEAD-MOCKS measures). G2-01's phone rule (below)
+   now holds above the phone: the COLUMN is the one scroller, the head goes
+   up with the tab, and the strip sticks at the column's edge (-18px, the
+   drawer's top padding, as QA-019 measured on the phone). Measured on the
+   mock, once the head has gone: 750px of tab at 1440x900, 650 at 1280x800.
+   The strip's layer is over the log's bar (`.ag-logs-bar`, 5), so More's
+   menu drops over it and nothing in the pane paints over the strip.
+   Logs, Changes and Browser keep their own scroller, one column less the
+   stuck strip tall: once the head has scrolled away they fill the column,
+   and the log's Follow moves only the log's body. The strip's height is
+   measured into `--ag-tabs-h` (AgentSplit.tsx); 57px, a one-row strip, is
+   the fallback until it is. The phone keeps G2-01 as it was, Logs and all. */
+@media (min-width: 561px) {
+  .ag-split.ctl-drawer { overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
+  .ag-split > .ag-split-pane { flex: none; overflow: visible; }
+  .ag-split > .ag-tabs-edge { position: sticky; top: -18px; z-index: 6; background: var(--bg); }
+  .ag-split > .ag-split-pane.is-logs,
+  .ag-split > .ag-split-pane.is-changes,
+  .ag-split > .ag-split-pane.is-browser { height: calc(100% + 18px - var(--ag-tabs-h, 57px)); }
+}
 /* THE COLUMN FITS THE SCROLLPORT, NOT THE VIEWPORT (U10a D7, owner QA
    2026-10-04). It was `100vh - dock-h` tall and sticky at top 0, but the
    page's `.app` has 16px of top padding (styles.css, `.sk-main > .ctl-scroll
@@ -1141,7 +1167,12 @@
    (`.on-logs`), so the agent's head is always above the bar, and the menu
    opens over it instead. Off Logs it still drops: on a phone the strip is
    stuck at the column's top there, with nothing above it to open into. */
-.ag-split.on-logs > .ag-tabs-edge .ag-tabs-menu { top: auto; bottom: calc(100% + 4px); }
+/* ONLY ON A PHONE (AGENT-HEAD-B): above it the column scrolls on Logs too, so
+   the head may be gone from above the stuck strip and an upward menu would
+   open past the column's top, cut off. There it drops, over the log's bar. */
+@media (max-width: 560px) {
+  .ag-split.on-logs > .ag-tabs-edge .ag-tabs-menu { top: auto; bottom: calc(100% + 4px); }
+}
 .ag-tabs-edge[data-more~='end']::after,
 .ag-tabs-edge[data-more~='start']::before {
   position: absolute;

@@ -218,6 +218,26 @@ export function AgentSplit({
 
   useSplitFocus(panel, close, taskId)
 
+  // THE TAB STRIP'S HEIGHT, MEASURED (AGENT-HEAD-B, BGD's pick AH1 B,
+  // 2026-10-28, part of #2596). The column scrolls and the strip sticks at its
+  // top, so Logs, Changes and Browser are one column less the strip tall and
+  // Details' stuck figures sit at the strip's foot (agents.css, details.css).
+  // A wrapped or More-fitted strip is not one row tall, so its height is read,
+  // and read again whenever it changes, into `--ag-tabs-h` on the column.
+  useEffect(() => {
+    const col = panel.current
+    const edge = col?.querySelector<HTMLElement>(':scope > .ag-tabs-edge') ?? null
+    if (col === null || edge === null || typeof ResizeObserver === 'undefined') return
+    const put = () => {
+      const h = edge.getBoundingClientRect().height
+      if (h > 0) col.style.setProperty('--ag-tabs-h', `${h}px`)
+    }
+    put()
+    const watch = new ResizeObserver(put)
+    watch.observe(edge)
+    return () => watch.disconnect()
+  }, [taskId])
+
   // "Running" is an attempt in flight -- LEASED/DISPATCHED/STARTING/RUNNING
   // (CONTRACT.md invariant 1). A QUEUED, READY or PARKED agent has no
   // attempt and usually no log yet; its Details say why it waits.

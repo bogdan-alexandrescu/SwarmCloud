@@ -35,7 +35,7 @@
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -318,11 +318,14 @@ describe('AGENT-HEAD-B: on desktop the head scrolls away with the body and the t
       const el = await split('attempts', running())
       const tabs = el.querySelector<HTMLElement>(':scope > .ag-tabs-edge')!
       await waitFor(() => expect(el.style.getPropertyValue('--ag-tabs-h')).toBe('61px'))
-      const watcher = observed.find((o) => o.targets.includes(tabs))
-      expect(watcher, 'nothing watches the tab strip for a change of height').toBeDefined()
+      // AgTabsEdge watches the strip too, to fit its tabs: every watcher is told, as a browser would.
+      const watchers = observed.filter((o) => o.targets.includes(tabs))
+      expect(watchers.length, 'nothing watches the tab strip for a change of height').toBeGreaterThan(0)
       // A More-fitted or wrapped strip: the variable follows it.
       heights.shift()
-      watcher!.cb([], {} as ResizeObserver)
+      act(() => {
+        for (const w of watchers) w.cb([], {} as ResizeObserver)
+      })
       expect(el.style.getPropertyValue('--ag-tabs-h')).toBe('104px')
     } finally {
       spy.mockRestore()
