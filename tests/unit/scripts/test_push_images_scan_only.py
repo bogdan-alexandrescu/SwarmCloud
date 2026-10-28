@@ -21,7 +21,9 @@ test_push_images_promotes_recorded_digests.py:
   * no channel tag moves, and no deploy manifest is written;
   * it refuses exactly what a promotion would refuse, naming the image;
   * it works for a first prod release, when `:prod` has never existed;
-  * `--scan-only --no-scan` is refused rather than checking nothing.
+  * `--scan-only --no-scan` is refused rather than checking nothing;
+  * a vulnerability DB that cannot be downloaded is a scanner error, not a
+    finding, and still refuses; one failed download is retried (#2379).
 
 WHAT THIS CANNOT PROVE: anything about the real registry or the real trivy
 beyond what the fakes model -- see the sibling file's own limits.
@@ -33,6 +35,7 @@ import json
 
 import pytest
 
+from . import test_push_images_promotes_recorded_digests as recorded_digests
 from .test_push_images_promotes_recorded_digests import (
     IMAGES,
     REGISTRY,
@@ -105,3 +108,77 @@ def test_scan_only_with_no_scan_is_refused_before_anything_is_read(tmp_path):
     assert not log, f"the registry or the scanner was used before the refusal: {json.dumps(log)[:500]}"
     last = _last_line(proc)
     assert "--scan-only" in last and "--no-scan" in last, f"the refusal does not say why: {last!r}"
+
+
+# The sibling's trivy, plus a vulnerability DB that can fail to download:
+# FAKE_TRIVY_DB_FAILS=<n|all> fails the first n downloads as a ghcr.io outage
+# does, and a scan that would fetch the DB itself (no --skip-db-update) fails
+# the same way -- which is what every scan on main did. Findings exit with the
+# --exit-code the policy asked for; trivy's own errors exit 1.
+DB_TRIVY = r'''#!{python}
+import json, os, sys
+
+args = sys.argv[1:]
+events = os.environ["FAKE_EVENTS"]
+failed = 0
+if os.path.exists(events):
+    with open(events) as fh:
+        failed = sum(1 for line in fh if json.loads(line)["event"] == "db-failed")
+spec = os.environ.get("FAKE_TRIVY_DB_FAILS", "0")
+if "--download-db-only" in args or "--skip-db-update" not in args:
+    if spec == "all" or failed < int(spec):
+        with open(events, "a") as fh:
+            fh.write(json.dumps({"event": "db-failed"}) + "\n")
+        print("FATAL Fatal error init error: DB error: failed to download vulnerability DB", file=sys.stderr)
+        sys.exit(1)
+    if "--download-db-only" in args:
+        with open(events, "a") as fh:
+            fh.write(json.dumps({"event": "db"}) + "\n")
+        sys.exit(0)
+ref = args[-1]
+image = ref.rsplit("/", 1)[-1].split("@", 1)[0]
+with open(events, "a") as fh:
+    fh.write(json.dumps({"event": "scan", "image": image, "ref": ref}) + "\n")
+if image in set(filter(None, os.environ.get("FAKE_TRIVY_FAIL", "").split(","))):
+    print(f"{image}: CVE-0000-0000 HIGH fixed in 9.9.9")
+    sys.exit(int(args[args.index("--exit-code") + 1]))
+sys.exit(0)
+'''
+
+
+@pytest.fixture
+def db_trivy(monkeypatch):
+    monkeypatch.setattr(recorded_digests, "FAKE_TRIVY", DB_TRIVY)
+
+
+def _out(proc) -> str:
+    return proc.stdout + proc.stderr
+
+
+def test_a_db_download_that_fails_refuses_as_a_scanner_error_not_a_finding(tmp_path, db_trivy):
+    """MUTATION: treat every non-zero trivy exit as findings, and this fails."""
+    before = _registry()
+    _, proc, registry, log = _run(tmp_path, before, _manifest(), flags=("--scan-only",),
+                                  FAKE_TRIVY_DB_FAILS="all", IMAGE_SCAN_DB_BACKOFF="0")
+    assert proc.returncode != 0, "nothing could be scanned and --scan-only passed: the gate must fail closed"
+    assert "fixable" not in _out(proc), _out(proc)[-3000:]
+    assert "trivy could not scan" in _out(proc) and "this is not a finding" in _out(proc), _out(proc)[-3000:]
+    assert len([e for e in log if e["event"] == "db-failed"]) > 1, "the DB download was not retried"
+    assert not [e for e in log if e["event"] == "scan"], "scanned without a vulnerability DB"
+    assert not [e for e in log if e["event"] == "tag"]
+    assert _channel(registry) == _channel(before)
+
+
+def test_a_db_download_that_fails_once_is_retried_and_every_image_is_scanned(tmp_path, db_trivy):
+    _, proc, _, log = _run(tmp_path, _registry(), _manifest(), flags=("--scan-only",),
+                           FAKE_TRIVY_DB_FAILS="1", IMAGE_SCAN_DB_BACKOFF="0")
+    assert proc.returncode == 0, _out(proc)[-3000:]
+    assert sorted(e["image"] for e in log if e["event"] == "scan") == sorted(IMAGES)
+
+
+def test_a_finding_keeps_the_findings_message(tmp_path, db_trivy):
+    _, proc, _, _ = _run(tmp_path, _registry(), _manifest(), flags=("--scan-only",),
+                         FAKE_TRIVY_FAIL="swarm-api", IMAGE_SCAN_DB_BACKOFF="0")
+    assert proc.returncode != 0
+    assert "swarm-api" in _last_line(proc)
+    assert "fixable" in _out(proc) and "could not scan" not in _out(proc), _out(proc)[-3000:]

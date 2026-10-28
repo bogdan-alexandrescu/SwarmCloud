@@ -262,6 +262,18 @@ before parsing; `configure-kubectl.sh` and `push-images.sh` pipe the commands
 whose output could carry one. It is *not* applied by every script in `scripts/`,
 and this document used to claim it was.
 
+**One read serves a text artifact unredacted: the raw patch, to its submitter.**
+`GET /v1/tasks/{id}/artifacts/raw?redaction=none` returns a top-level `.patch`
+artifact as stored only to the caller whose email is the agent's
+`Task.submitted_by` (not another member, a tenant admin or a platform admin, who
+get a 403), always as a `text/x-diff` attachment with `Cache-Control:
+no-store`, and writes an `artifact_audit` record (who, which artifact, when;
+never the content) before the first byte or serves nothing. BGD decided this
+on #1857 (2026-10-27) because read-time masking turned credential-shaped test
+fixtures in a diff into `***` and the served patch no longer applied; the
+masking rules were left unchanged, so every other read of the same patch is
+still redacted.
+
 `scripts/status.sh` prints no environment variables, no secret payloads and no
 tokens by construction — it reads control-plane documents and resource listings
 only. It is the command an operator runs while sharing a screen, so its
@@ -632,8 +644,8 @@ Agents have no reason to talk to Kubernetes and are given no way to.
   merge, by design, so after a release that rebuilds its image it lags. On a
   digest an earlier release promoted -- one carrying the
   `promoted-<channel>-<tag>` mark `scripts/push-images.sh` adds and never moves
-  (or its old form `<channel>-promoted-<tag>`, read until
-  `scripts/registry-remark.sh` has run; #1886) -- that lag is a warning, "awaiting owner re-pin", with the command, and the
+  (its old form `<channel>-promoted-<tag>` is no longer read:
+  `scripts/registry-remark.sh` gave every such digest the new one; #1886) -- that lag is a warning, "awaiting owner re-pin", with the command, and the
   summary says "1 owner action pending". On a digest no release promoted it
   still fails: that is an image nobody released running as a privileged
   account. The checkov image-reference checks (CKV_K8S_14/15/43) are still

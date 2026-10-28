@@ -22,6 +22,7 @@ network, no emulator.
 
 from __future__ import annotations
 
+import copy
 from datetime import timedelta
 
 import pytest
@@ -30,6 +31,7 @@ import json
 import urllib.error
 
 from swarm_api import issueci, issueruns
+from swarm_api.validation import REREVIEW_STEP_ID
 
 from .test_issue_run_ci import (  # noqa: F401  (fixtures, imported to be used)
     PR,
@@ -46,11 +48,15 @@ from .test_issue_run_ci import (  # noqa: F401  (fixtures, imported to be used)
     forge_tokens,
     writes,
 )
-from .test_issue_run_keyword import _review_writes, _verdict
+from .test_issue_run_keyword import SAME, _review_writes, _verdict
 from .test_issue_runs import FULL_PLAN, _approve, _create, _docs, _finish_planner, _run
 
 
-def _checking(client, db, objects, writes, *, verdict: str = "MERGE") -> dict:
+def _checking(client, db, objects, writes, *, verdict: str = "MERGE",
+              rereview: str | None = None) -> dict:
+    """A CHECKING `auto_merge` run whose review wrote `verdict`, and whose
+    re-review (#2217) wrote `rereview` -- by default the review's verdict,
+    passed on as a shut gate passes it."""
     created = _create(client, auto_merge=True)
     assert created.status_code == 201, created.text
     run = created.json()["run"]
@@ -61,8 +67,10 @@ def _checking(client, db, objects, writes, *, verdict: str = "MERGE") -> dict:
     writes.open_pull(PR, SHA_A)
     integrator = _workflow_ends(db, running["workflow_id"])
     integrator["result_summary"]["git"]["pushed_head"] = SHA_A
-    _review_writes(db, objects, running["workflow_id"],
-                   json.dumps(_verdict(True, True, verdict=verdict)))
+    _review_writes(
+        db, objects, running["workflow_id"], json.dumps(_verdict(True, True, verdict=verdict)),
+        rereview=SAME if rereview is None else json.dumps(_verdict(True, True, verdict=rereview)),
+    )
     return running
 
 
@@ -242,6 +250,73 @@ def test_a_review_verdict_of_not_yet_fails_the_merge_and_submits_none(
     assert _merge_workflows(db) == []
 
 
+def test_a_not_yet_review_whose_fix_the_rereview_passes_submits_the_merge(
+    client, db, objects, writes, clock,
+):
+    """#2217: the review said NOT_YET, the fix resolved it, the re-review of
+    the fixed head says MERGE. The merge reads the LATEST verdict.
+
+    MUTATION: make `issueci._review_task_id` return the 'review' step's task
+    -- the run fails "NOT_YET, not MERGE", as wf_3cc4026eb34a43a885a4 did."""
+    running = _checking(client, db, objects, writes, verdict="NOT_YET", rereview="MERGE")
+    writes.check(SHA_A, "unit", "success")
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "CHECKING", run.get("error")
+    (merge_wf,) = _merge_workflows(db)
+    assert run["merge"] == {"workflow_id": merge_wf["workflow_id"], "head_sha": SHA_A}
+
+
+def test_a_rereview_that_still_says_not_yet_fails_the_merge_and_submits_none(
+    client, db, objects, writes, clock,
+):
+    running = _checking(client, db, objects, writes, verdict="NOT_YET", rereview="NOT_YET")
+    writes.check(SHA_A, "unit", "success")
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "FAILED"
+    assert "NOT_YET, not MERGE" in run["error"]
+    assert _merge_workflows(db) == []
+
+
+def test_a_merge_review_passed_on_by_the_shut_rereview_merges(client, db, objects, writes, clock):
+    """On MERGE the re-review's agent does not run; its gate re-publishes the
+    review's verdict (`Worker._republish_staged_verdict`), and that is read."""
+    running = _checking(client, db, objects, writes, verdict="MERGE")
+    compiled = db.docs[f"workflows/{running['workflow_id']}"]
+    assert [s["step_id"] for s in compiled["steps"]][-3:] == [
+        issueruns.REVIEW_STEP, issueruns.FIX_STEP, REREVIEW_STEP_ID,
+    ]
+    rereview = _step_task(db, running["workflow_id"], REREVIEW_STEP_ID)
+    assert rereview["result_summary"]["artifacts"][0]["name"] == issueruns.VERDICT_FILE
+    writes.check(SHA_A, "unit", "success")
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "CHECKING", run.get("error")
+    assert len(_merge_workflows(db)) == 1
+
+
+def test_a_workflow_compiled_without_a_rereview_reads_the_review(
+    client, db, objects, writes, clock,
+):
+    """A run whose workflow was compiled before #2217 has no re-review step:
+    its review's verdict is still the one read, MERGE or NOT_YET."""
+    running = _checking(client, db, objects, writes, verdict="NOT_YET", rereview="MERGE")
+    compiled = db.docs[f"workflows/{running['workflow_id']}"]
+    compiled["steps"] = [s for s in compiled["steps"]
+                         if s["step_id"] != REREVIEW_STEP_ID]
+    writes.check(SHA_A, "unit", "success")
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "FAILED"
+    assert "NOT_YET, not MERGE" in run["error"]
+    assert _merge_workflows(db) == []
+
+
 def test_a_head_no_task_of_the_run_pushed_is_not_merged(client, db, objects, writes, clock):
     running = _checking(client, db, objects, writes)
     writes.open_pull(PR, SHA_B)
@@ -271,6 +346,125 @@ def test_a_refused_merge_fails_the_run_with_the_steps_reason_and_is_not_resubmit
     assert run["state"] == "FAILED"
     assert "token_lacks_rights" in run["error"]
     assert len(_merge_workflows(db)) == 1
+
+
+
+CONFLICT_FIX_TASK = "task_" + "c9" * 10
+CONFLICT_FIX_WORKFLOW = "wf_" + "c9" * 10
+
+
+def _conflict_fix(db, running: dict, *, run_id: str | None = None,
+                  continues: str | None = None, tenant_id: str | None = None,
+                  pull_request: int = PR) -> dict:
+    """A pr-shepherd conflict fix of this run's pull request that pushed SHA_B,
+    as `pr_shepherd.conflict_fix_workflow` submits it: a workflow of one
+    `conflict-fix` step continuing the integrator, whose task carries the
+    workflow's `metadata.pr_shepherd` (the run, repository, pull request and
+    head) -- a submission stores a workflow's metadata on its tasks."""
+    integrator = _step_task(db, running["workflow_id"], issueruns.FIX_STEP)
+    tenant = tenant_id or integrator["tenant_id"]
+    mark = {"run_id": run_id or running["id"], "repository": "Example-Org/Widgets",
+            "pull_request": pull_request, "head_sha": SHA_A, "base_ref": "main"}
+    workflow = copy.deepcopy(db.docs[f"workflows/{running['workflow_id']}"])
+    workflow.update({
+        "workflow_id": CONFLICT_FIX_WORKFLOW, "id": CONFLICT_FIX_WORKFLOW, "tenant_id": tenant,
+        "steps": [{"step_id": "conflict-fix", "task_id": CONFLICT_FIX_TASK,
+                   "runner_profile": "claude-code", "depends_on": []}],
+    })
+    db.docs[f"workflows/{CONFLICT_FIX_WORKFLOW}"] = workflow
+    task = copy.deepcopy(integrator)
+    task.update({
+        "id": CONFLICT_FIX_TASK, "tenant_id": tenant, "workflow_id": CONFLICT_FIX_WORKFLOW,
+        "state": "SUCCEEDED", "result_summary": {"git": {"pushed_head": SHA_B}},
+        "metadata": {
+            "merge": "off",
+            "dispatch": {"strategy": "direct-pr",
+                         "continues": continues or integrator["id"]},
+            "pr_shepherd": mark,
+        },
+    })
+    db.docs[f"tasks/{CONFLICT_FIX_TASK}"] = task
+    return task
+
+
+def test_a_head_a_conflict_fix_of_the_run_pushed_is_merged(client, db, objects, writes, clock):
+    """#2537: pr-shepherd's conflict fix pushed a merge of main onto the run's
+    pull request; that head is the run's, and the merge continues the fix.
+
+    MUTATION: drop the conflict-fix candidates from `issueci._pushing_task` --
+    the run FAILs "not pushed by any of this run's tasks". MUTATION: drop the
+    conflict-fix branch of `merge_target_unbound` -- it FAILs "which is not
+    this run's"."""
+    running = _checking(client, db, objects, writes)
+    fix = _conflict_fix(db, running)
+    writes.open_pull(PR, SHA_B)
+    writes.check(SHA_B, "unit", "success")
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "CHECKING", run.get("error")
+    (merge_wf,) = _merge_workflows(db)
+    task = _merge_task(db, merge_wf)
+    # `continues_task` named the fix; the stored `continues` is the branch's
+    # root, the integrator, and the signed target is the fix in its own round.
+    assert task["metadata"]["dispatch"]["continues"] == fix["metadata"]["dispatch"]["continues"]
+    assert task["metadata"]["dispatch"]["merge_target"] == {
+        "pull_request": fix["id"], "pull_request_workflow": CONFLICT_FIX_WORKFLOW,
+    }
+    assert run["merge"]["head_sha"] == SHA_B
+    assert _stored(db, running["id"])["merge"]["pushed_by"] == fix["id"]
+
+
+def _refused(client, db, writes, clock, running: dict) -> None:
+    writes.open_pull(PR, SHA_B)
+    writes.check(SHA_B, "unit", "success")
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "FAILED"
+    assert "not pushed by any of this run's tasks" in run["error"]
+    assert _merge_workflows(db) == []
+
+
+def test_a_conflict_fix_of_another_run_is_not_merged(client, db, objects, writes, clock):
+    """Another run's conflict fix of the same pull request is not this run's.
+
+    MUTATION: drop the `run_id` check from `issueci._conflict_fix_tasks`."""
+    running = _checking(client, db, objects, writes)
+    _conflict_fix(db, running, run_id="ir_" + "0" * 20)
+    _refused(client, db, writes, clock, running)
+
+
+def test_a_conflict_fix_of_another_pull_request_is_not_merged(client, db, objects, writes, clock):
+    """A fix marked for another pull request of the same branch is not this run's.
+
+    MUTATION: drop the mark's `pull_request` check from `issueci._conflict_mark`
+    and the `pull_request` filter from `issueci._conflict_fix_tasks`."""
+    running = _checking(client, db, objects, writes)
+    _conflict_fix(db, running, pull_request=PR + 1)
+    _refused(client, db, writes, clock, running)
+
+
+def test_a_conflict_fix_that_does_not_continue_the_integrator_is_not_merged(
+    client, db, objects, writes, clock,
+):
+    """A fix of another branch pushed nothing to this run's pull request.
+
+    MUTATION: drop the `metadata.dispatch.continues` filter and its recheck
+    from `issueci._conflict_fix_tasks`."""
+    running = _checking(client, db, objects, writes)
+    _conflict_fix(db, running, continues="task_" + "d" * 20)
+    _refused(client, db, writes, clock, running)
+
+
+def test_a_conflict_fix_of_another_tenant_is_not_merged(client, db, objects, writes, clock):
+    """Invariant 9: another tenant's task is never a candidate.
+
+    MUTATION: drop the `tenant_id` filter and its recheck from
+    `issueci._conflict_fix_tasks`."""
+    running = _checking(client, db, objects, writes)
+    _conflict_fix(db, running, tenant_id="research")
+    _refused(client, db, writes, clock, running)
 
 
 

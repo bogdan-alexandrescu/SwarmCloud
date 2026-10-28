@@ -655,15 +655,29 @@ def test_a_pr_side_claim_still_being_submitted_keeps_the_merge_parked(db, wake_c
     assert _fix_workflows(db) == []
 
 
+def test_a_live_pr_side_fix_at_another_head_keeps_the_merge_parked_too(db, wake_client, github):
+    # One writer per pull request (#2577): a fix still running from an older
+    # head pushes to the same branch, so a round beside it would collide.
+    fixable_merge(db, github, rounds=2)
+    pr_side_claim(db, head=MOVED)
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["waiting"] == 1 and body["report"]["fixing"] == 0, body
+    assert _fix_workflows(db) == []
+    assert _fix_record(db) == {}, "no round, and no re-run, beside a live PR-side fix"
+
+
 @pytest.mark.parametrize("claim", [
-    {"head": MOVED},
+    {"head": MOVED, "state": "SUCCEEDED"},
     {"state": "SUCCEEDED"},
     {"state": "FAILED"},
     {"tenant_id": "research"},
     {"task": False, "claimed_at": NOW - timedelta(hours=1)},
     None,
-], ids=["another-head", "succeeded", "failed", "another-tenant", "lapsed-grace", "no-claim"])
-def test_with_no_live_pr_side_fix_at_this_head_the_round_proceeds(db, wake_client, github, claim):
+], ids=["another-head-ended", "succeeded", "failed", "another-tenant", "lapsed-grace",
+        "no-claim"])
+def test_with_no_live_pr_side_fix_the_round_proceeds(db, wake_client, github, claim):
     fixable_merge(db, github, rounds=2)
     if claim is not None:
         pr_side_claim(db, **claim)
@@ -674,6 +688,64 @@ def test_with_no_live_pr_side_fix_at_this_head_the_round_proceeds(db, wake_clien
     (workflow,) = _fix_workflows(db)
     (claimed,) = _fix_record(db)["rounds"]
     assert claimed["workflow_id"] == workflow["workflow_id"]
+
+
+# A check red on the default branch's own head is not the pull request's to
+# fix (#2367): a round could only re-apply main's own fix by hand, and that
+# hand patch collides with main's real fix once GitHub updates the branch.
+# The tick keeps the merge waiting and spends nothing; a main it cannot read
+# changes nothing.
+
+MAIN_HEAD = "f" * 40
+OTHER_CHECK = "ci / lint"
+
+
+def test_a_check_red_on_the_default_branch_head_gets_no_round(db, wake_client, github):
+    fixable_merge(db, github, rounds=2)
+    github.branches["main"] = MAIN_HEAD
+    github.check(MAIN_HEAD, CHECK, "failure")
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["waiting"] == 1 and body["report"]["fixing"] == 0, body
+    assert body["report"]["woken"] == 0 and body["failures"] == []
+    task = db.docs["tasks/task_merge"]
+    assert task["state"] == "PARKED" and task["park_reason"] == ParkReason.CI_PENDING.value
+    assert mergewake.WAKE_MARKER not in _wait(db)
+    assert _fix_workflows(db) == [], "a round was spent re-applying main's own fix"
+    assert _fix_record(db) == {}, "no round, and no re-run, is claimed while main is red"
+    assert any(f"commits/{MAIN_HEAD}/check-runs" in url for url in _reads(github))
+
+
+def test_a_check_red_only_on_the_pull_request_still_gets_a_round(db, wake_client, github):
+    fixable_merge(db, github, rounds=2)
+    github.require(CHECK, OTHER_CHECK)
+    github.check(HEAD, OTHER_CHECK, "failure")
+    github.branches["main"] = MAIN_HEAD
+    # Main is red on one of the two, green on the other: the other is ours.
+    github.check(MAIN_HEAD, CHECK, "failure")
+    github.check(MAIN_HEAD, OTHER_CHECK, "success")
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["fixing"] == 1, body
+    (workflow,) = _fix_workflows(db)
+    (claimed,) = _fix_record(db)["rounds"]
+    assert claimed["workflow_id"] == workflow["workflow_id"]
+
+
+def test_an_unreadable_default_branch_still_gets_a_round(db, wake_client, github):
+    fixable_merge(db, github, rounds=2)
+    github.branches["main"] = MAIN_HEAD
+    github.check(MAIN_HEAD, CHECK, "failure")
+    github.refuse[("GET", "/repos/example-org/widgets")] = 500
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["fixing"] == 1, body
+    assert body["failures"] == []
+    (workflow,) = _fix_workflows(db)
+    assert len(_fix_record(db)["rounds"]) == 1
 
 
 # --------------------------------------------------------------------------

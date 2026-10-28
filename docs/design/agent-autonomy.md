@@ -460,7 +460,11 @@ question becomes **blocking** with `"blocking": true` on an item:
    exits 0. The worker uploads the questions and parks the agent
    **`HUMAN_REQUIRED`**, the frozen reason that is "promoted only by a person"
    (`swarm_common/states.py`), with `metadata.question_wait`. No lease, no
-   tokens.
+   tokens. The agent learns this from `expected_outputs.questions_line`, the
+   one sentence every claude-code and codex prompt carries: until #2180 it
+   named neither `blocking` nor `await-answers`, so a ci-fix agent that only
+   asked failed `published_nothing` instead of parking
+   (task_adb791a17d2e47d6985f).
 2. **Where the question goes:**
    * the console's question list (`QuestionsCard.tsx`) and the bell's "needs
      you", as today;

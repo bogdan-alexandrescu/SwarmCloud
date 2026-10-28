@@ -132,7 +132,6 @@ from .judgment import (
     DEFAULT_BACKEND,
     TYPESAFE_BACKEND,
     jev_dispatch,
-    read_backend,
     read_settings,
     settings_mac_key,
 )
@@ -219,6 +218,14 @@ WORKER_ARTIFACTS_DIR = f"{WORKSPACE_MOUNT}/artifacts"
 #: and a worker that is not told of one keeps its caches small in its tmpfs.
 CACHE_MOUNT = "/cache"
 CACHE_ROOT_ENV = "SWARM_CACHE_ROOT"
+
+#: THE GKE POD'S LOCAL SCRATCH VOLUMES, and the variable that tells the worker
+#: which they are (#2436): `scratch_volumes_value`. kubelet evicts the pod with
+#: no grace period when one passes its sizeLimit, so the worker reads their
+#: sizes on each heartbeat to report what filled one and to warn before it
+#: does (agent_worker's scratch module, whose SCRATCH_VOLUMES_ENV is this
+#: name). GKE only, as CACHE_ROOT_ENV: Cloud Run has no such volumes.
+SCRATCH_VOLUMES_ENV = "SWARM_SCRATCH_VOLUMES"
 
 #: THE CACHE VOLUME IS A NETWORK DISK (CACHE-PVC, owner decision 2026-10-15
 #: ~04:00 PDT, "Network-disk cache"): a generic ephemeral volume, i.e. a
@@ -429,6 +436,27 @@ GKE_DISK: dict[str, GkeDisk] = {
     "browser": GkeDisk(workspace_gib=4, tmp_gib=3, home_gib=3),
     "large": GkeDisk(workspace_gib=5, tmp_gib=3, home_gib=2),
 }
+
+
+def scratch_volumes_value(disk: GkeDisk, *, home_volume: str = "home",
+                          home_mount: str = WORKER_HOME) -> str:
+    """SCRATCH_VOLUMES_ENV's value: `<volume>=<mountPath>:<sizeLimit GiB>`, comma separated.
+
+    `workspace=/workspace:5,tmp=/tmp:3,home=/home/swarm:2` for `standard`.
+    The volume is the emptyDir's `name`, which is what kubelet's eviction
+    message says (`Usage of EmptyDir volume "tmp" exceeds the limit "3Gi"`),
+    so the worker can match a reading to an eviction. Built from the constants
+    `GkeJobDispatcher._manifest` builds the volumes from, so it cannot drift.
+    The LOCAL disk volumes only: not the cache, a network disk that is never
+    an eviction, and not dshm, a memory tmpfs charged to the memory limit.
+    `home_volume`/`home_mount` are for kubernetes/render.py's gvisor template,
+    whose HOME is a volume named `work` at /work.
+    """
+    return ",".join((
+        f"workspace={WORKSPACE_MOUNT}:{disk.workspace_gib}",
+        f"tmp=/tmp:{disk.tmp_gib}",
+        f"{home_volume}={home_mount}:{disk.home_gib}",
+    ))
 
 
 def gke_disk(rc: Any) -> GkeDisk:
@@ -1033,8 +1061,9 @@ def read_judge_backend(db: Any, tenant_id: str, *, mac_key: str | None = None) -
     switch), a block whose MAC does not verify counts as unset
     (`judgment.trusted_settings`): an unsigned `code_intelligence
     .judgment_backend` is ignored and the top level decides, and an unsigned
-    top level reads as the default. Read the same way as `read_backend`, so
-    the pod and the router never disagree on a forged value."""
+    top level reads as the default. `pod_judge_backend` is this reading for
+    the GKE pod, so the pod and the router never disagree on a value, forged
+    or not."""
     try:
         doc = read_settings(db, tenant_id, mac_key=mac_key)
     except Exception as exc:  # noqa: BLE001 - said by type, decided by the caller
@@ -1042,6 +1071,26 @@ def read_judge_backend(db: Any, tenant_id: str, *, mac_key: str | None = None) -
                     type(exc).__name__)
         return None
     return judge_backend(doc)
+
+
+def pod_judge_backend(db: Any, tenant_id: str, *, mac_key: str | None = None) -> str:
+    """`read_judge_backend` for the GKE pod's SWARM_JEV_BACKEND, swarm-judge
+    and swarm-typesafe label (`GkeJobDispatcher._with_judgment`), with an
+    unreadable document read as DEFAULT_BACKEND.
+
+    THE ROUTER'S PRECEDENCE, NOT THE TOP LEVEL ALONE (#1334 c31): the pod read
+    `judgment.read_backend`, the top-level `judgment_backend` only, while the
+    router and the worker's judge prefer `code_intelligence.judgment_backend`.
+    A workspace with `code_intelligence.judgment_backend: typesafe` was held on
+    GKE for a TypeSafe judge and then given a pod that judged internally, with
+    no forwarder label; the reverse got the forwarder label and the worker's
+    forwarder switch for a judge that never asks TypeSafe.
+
+    Unreadable is the default here, as it always was for the pod: the router
+    fails closed on None by sending the attempt to GKE, and on GKE the pod's
+    choice that sends nothing outside the network is internal-jev."""
+    backend = read_judge_backend(db, tenant_id, mac_key=mac_key)
+    return DEFAULT_BACKEND if backend is None else backend
 
 
 def typesafe_judge_needs_gke(settings: Any, *, tenant_id: str, profile: Any,
@@ -2723,6 +2772,71 @@ def _already_exists_name(exc: BaseException) -> str | None:
     return str(name) if name else None
 
 
+# ---------------------------------------------------------------------------
+# A 403 has three causes, and only one of them is ours (#1820)
+# ---------------------------------------------------------------------------
+#
+# On 2026-10-20 19:24-20:06Z the admission policy `swarm-worker-job-constraints`
+# refused every CPU-burst Job, and all 54-56 refusals read
+# `gke_create_job_forbidden`, the code for an RBAC or namespace fault. They
+# were neither: the platform said no to THIS manifest. A Job-quota refusal
+# (`count/jobs.batch`, 200 per tenant namespace) reads the same today. So the
+# API server's own Status message decides the code:
+#
+#   message                                          code
+#   -----------------------------------------------  ------------------------
+#   `ValidatingAdmissionPolicy '...' ... denied      gke_admission_refused
+#     request` / `admission webhook "..." denied
+#     the request`
+#   `exceeded quota: <quota>, requested: ...`        gke_job_quota_exceeded
+#   anything else (`User "..." cannot create`, a     gke_create_job_forbidden
+#     namespace that does not exist)
+#
+# The admission and quota texts are the API server's (apiserver
+# `validating/dispatcher.go`, `resourcequota/controller.go`), not ours, so they
+# are matched as the server spells them. Unrecognised text keeps
+# `gke_create_job_forbidden` and its namespace diagnosis: being wrong toward
+# that code costs an operator one sentence, while being wrong away from it
+# would hide an RBAC fault behind a "the platform refused" code.
+#
+# Once contract request 123 (PLATFORM_REFUSED) is applied, the two precise
+# codes are the ones the drain parks on instead of spending an attempt
+# (docs/design/dispatch-refusals.md). Until then they are only the code the
+# task and the log carry; the store retries them as it retries any other.
+
+GKE_ADMISSION_REFUSED = "gke_admission_refused"
+GKE_JOB_QUOTA_EXCEEDED = "gke_job_quota_exceeded"
+GKE_CREATE_JOB_FORBIDDEN = "gke_create_job_forbidden"
+
+#: The codes that are the platform refusing this dispatch rather than this
+#: dispatcher lacking a permission: what PLATFORM_REFUSED will park on.
+PLATFORM_REFUSAL_CODES = frozenset({GKE_ADMISSION_REFUSED, GKE_JOB_QUOTA_EXCEEDED})
+
+_ADMISSION_DENIAL = re.compile(
+    r"ValidatingAdmissionPolicy\b.*\bdenied request"
+    r"|admission webhook \"[^\"]*\" denied the request",
+    re.DOTALL,
+)
+_QUOTA_EXCEEDED = re.compile(r"\bexceeded quota:")
+
+
+def forbidden_code(exc: BaseException) -> str:
+    """The code for a 403 on Job create, from the API server's own reason.
+
+    Read from the Status body's `message` when the exception carries one
+    (`kubernetes.client.ApiException`), else from the exception's text, as
+    `_is_forbidden` does. Admission is checked before quota: a webhook whose
+    message happened to quote a quota is still the webhook refusing.
+    """
+    message = _kubernetes_status(exc).get("message")
+    text = message if isinstance(message, str) and message else str(exc)
+    if _ADMISSION_DENIAL.search(text):
+        return GKE_ADMISSION_REFUSED
+    if _QUOTA_EXCEEDED.search(text):
+        return GKE_JOB_QUOTA_EXCEEDED
+    return GKE_CREATE_JOB_FORBIDDEN
+
+
 @dataclass(frozen=True)
 class GkeTarget:
     endpoint: str
@@ -2768,8 +2882,8 @@ class GkeJobDispatcher:
         self._target = target
         self._batch_api = batch_api
         #: tenant id -> the workspace's Jev judgment backend (JUDGE-SELECT;
-        #: `judgment.read_backend` over Firestore in a deployment). None reads
-        #: as the default, internal-jev.
+        #: `pod_judge_backend` over Firestore in a deployment, the router's
+        #: reading). None reads as the default, internal-jev.
         self._judgment = judgment
         self._ca_file: str | None = None
         #: WHO THIS DISPATCHER AUTHENTICATES AS, for the failure message. Filled
@@ -2908,6 +3022,11 @@ class GkeJobDispatcher:
         # FROM THIS SAME RENDER, so the comparison proves only that this
         # dispatcher agrees with itself; GKE injects no Job name of its own.
         env.append({"name": "RUNNER_JOB_NAME", "value": job_name})
+        # The pod's local scratch volumes and their limits (SCRATCH_VOLUMES_ENV,
+        # #2436). Here and not in `gke_worker_env`, which sets CACHE_ROOT_ENV
+        # for the same GKE-only reason, because the sizes are the resource
+        # class's (`disk`, above) and that function is not given the class.
+        env.append({"name": SCRATCH_VOLUMES_ENV, "value": scratch_volumes_value(disk)})
         # The attempt's execution name, from THIS render: the namespace below
         # is `metadata.namespace` and `dispatch` returns this very string, so
         # what the worker records and what the dispatcher records are one value
@@ -3248,6 +3367,20 @@ class GkeJobDispatcher:
             # the real cause for two days. Both are now in one line.
             if self._is_forbidden(exc):
                 identity = self.presented_identity()
+                code = forbidden_code(exc)
+                if code != GKE_CREATE_JOB_FORBIDDEN:
+                    # The platform refused this manifest: the namespace and
+                    # the identity are fine, or nothing would have reached
+                    # admission or quota, so the 403-means-404 diagnosis
+                    # below would send the reader at the wrong thing.
+                    raise DispatchError(
+                        f"GKE refused the job in {namespace} ({code}): {exc} "
+                        f"-- the platform's admission policy or the namespace's "
+                        f"ResourceQuota said no to this manifest; RBAC and the "
+                        f"namespace are not the cause. See "
+                        f"docs/design/dispatch-refusals.md.",
+                        code=code,
+                    ) from exc
                 raise DispatchError(
                     f"could not create GKE job in {namespace} as {identity}: {exc} "
                     f"-- NOTE: a 403 here does not prove this is a permissions "
@@ -3264,7 +3397,7 @@ class GkeJobDispatcher:
                     f"list carrying the email alone applies cleanly and authorises "
                     f"nobody. See docs/gke-dispatch-403.md and "
                     f"docs/incidents/2026-09-24-gke-dispatch.md.",
-                    code="gke_create_job_forbidden",
+                    code=GKE_CREATE_JOB_FORBIDDEN,
                 ) from exc
             # A quota race that outlasted GKE_QUOTA_CONFLICT_RETRIES keeps
             # today's code (the loop, the runbook and the UI read it) and says
@@ -3466,9 +3599,11 @@ def build_router(settings: Any, *, pool: AccountPool | None = None,
         cloud_run=CloudRunJobDispatcher(settings, pool=pool),
         # `db` for the workspace's Jev judgment backend (JUDGE-SELECT), one
         # document read per live-browser dispatch; without it, the default.
+        # Read in the router's precedence (#1334 c31), so the pod judges where
+        # the router decided it would.
         gke=GkeJobDispatcher(
             settings, target=target,
-            judgment=(lambda tenant_id: read_backend(db, tenant_id, mac_key=mac_key))
+            judgment=(lambda tenant_id: pod_judge_backend(db, tenant_id, mac_key=mac_key))
             if db is not None else None),
         settings=settings,
         # The same document, read as the worker's judge reads it (JUDGE-GKE).

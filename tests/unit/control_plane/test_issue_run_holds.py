@@ -427,9 +427,17 @@ def test_an_edit_can_add_a_hold(client, db, objects, switch_on):
     assert response.json()["run"]["approval_hold"]["code"] == "NEEDS_SECOND_MEMBER"
 
 
-def test_rejecting_a_held_run_is_anyones(client, db, objects, switch_on):
+def test_rejecting_a_held_run_is_anyones_only_with_the_reject_rule_off(client, db, objects, switch_on,
+                                                                        monkeypatch):
+    """BGD 2026-10-26 (#2417): only someone who may approve may reject, so the
+    creator a second_member hold keeps out is refused; with the reject rule's
+    switch off, rejecting is anyone's, as it was (test_plan_reject_rule.py)."""
     _register(db, platform=True)
     run = _planned(client, db, objects, BOOTSTRAP_PLAN)
+    refused = client.post(f"/v1/runs/{run['id']}/plan:reject", headers=auth_header("alice"),
+                          json={"reason": "not now"})
+    assert refused.status_code == 403 and refused.json()["code"] == "reject_approver_required"
+    monkeypatch.setenv(refusals.env_name("reject_approver_required"), "off")
     response = client.post(f"/v1/runs/{run['id']}/plan:reject", headers=auth_header("alice"),
                            json={"reason": "not now"})
     assert response.status_code == 200 and response.json()["run"]["state"] == "REJECTED"

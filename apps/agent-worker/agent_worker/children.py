@@ -449,7 +449,11 @@ class ChildApi:
         *,
         body: bytes | None = None,
         headers: dict[str, str] | None = None,
+        timeout: float | None = None,
     ) -> tuple[int, dict[str, Any]]:
+        """`timeout`, when given, is this request's alone; the rest keep the
+        client's (the git tools swarm-api runs git for wait past its deadline,
+        #2576)."""
         try:
             token = self._fetch_token(self._audience)
         except BrokerUnavailable as exc:
@@ -462,8 +466,9 @@ class ChildApi:
             req.add_header("Content-Type", "application/json")
         for name, value in (headers or {}).items():
             req.add_header(name, value)
+        wait = self._timeout if timeout is None else timeout
         try:
-            with self._open(req, timeout=self._timeout) as response:
+            with self._open(req, timeout=wait) as response:
                 status = int(getattr(response, "status", 200))
                 raw = response.read()
         except urllib.error.HTTPError as exc:

@@ -115,7 +115,7 @@ repository URL for the agent's own repository, a token, a remote or a refspec.
 | `git_rebase_onto` | `ref`, as for `git_fetch` | `{onto, head, conflicts: [paths]}`. It is `git_fetch(ref)` followed by `git rebase <fetched>` in the agent's clone. On a conflict the rebase is **left in progress** with the conflicted paths listed, for the agent to resolve and `git rebase --continue` itself. |
 | `git_push_branch` | `branch`, optional. When given, it must be one of the branches this agent may push (§1.2); otherwise it is the agent's own branch. | `{branch, old_sha, new_sha}` |
 | `read_private` | `repo` (`owner/name`), `path`, `ref` (a sha is recommended; a branch or tag is resolved and the sha returned) | a file's text (at most 1 MiB), or a directory listing (names, types, sizes) |
-| `pr_checks` | `pr`, optional: a pull request number **in the agent's own repository**. Without it, the pull request whose head is this agent's branch. | `{head_sha, state: green\|pending\|red\|none, rows: [{name, status, conclusion, required}], log_tail?}`, where `log_tail` is up to 8 KiB of each red row's job log, redacted |
+| `pr_checks` | `pr`, optional: a pull request number **in the agent's own repository**. Without it, the pull request whose head is this agent's branch. | `{head_sha, state: green\|pending\|red\|none, rows: [{name, status, conclusion, required}], log_tail?, source: check_runs\|actions_jobs}`, where `log_tail` is up to 8 KiB of each red row's job log, redacted, and `source` says where the rows were read (§1.1, "Why pr_checks can read the Actions jobs") |
 
 **Why these five and no more.** These are #1225's operations, and the tools
 are the whole capability. In particular:
@@ -132,6 +132,24 @@ are the whole capability. In particular:
 * `log_tail` is part of `pr_checks` because #1225 asks that a lane "fix red
   rows". A red row's name alone does not say what failed.
   `GitHubWriter.job_log_tail` already reads it.
+* **Why `pr_checks` can read the Actions jobs (#1188, 2026-10-27).** Every
+  git-tools acceptance run from 2026-10-23 to 2026-10-27 15:52Z answered
+  `pr_checks` `forge_refused` on the private sandbox, while the same slot
+  pushed the branch and the platform opened the pull request on it. A
+  fine-grained personal access token has **no "Checks" permission**: GitHub's
+  list of the permissions those tokens can hold has none (docs.github.com,
+  "Permissions required for fine-grained personal access tokens", read
+  2026-10-27). So `commits/{sha}/check-runs` on a private repository answers
+  such a token 403, whatever it is granted. A public repository answers the
+  read without any permission, which is why this repository never showed it.
+  An Actions check run *is* its job: same id, name, status and conclusion. So
+  when the check-runs read alone is refused, `pr_checks` reads the jobs of the
+  newest 30 Actions runs at the head (`actions: read`,
+  `GitHubWriter.actions_check_runs`) and answers `source: actions_jobs`.
+  What it cannot see is a check run another App reports. A required check
+  only such an App reports therefore reads **pending**, never green. A
+  credential that can read neither still gets the check-runs read's own
+  `forge_refused` sentence.
 
 ### 1.2 What each tool refuses
 
@@ -253,7 +271,8 @@ agent ──MCP stdio──> swarm-git shim ──spool file──> worker (non-
      prepared.
    * **read_private:** `GET /repos/{o}/{r}/contents/{path}?ref=` with the
      credential §2.3 picks. No git is needed.
-   * **pr_checks:** `GitHubWriter.read_pull`, `branch_rules`, `check_runs`,
+   * **pr_checks:** `GitHubWriter.read_pull`, `branch_rules`, `check_runs`
+     (or, when that read alone is refused 403, `actions_check_runs`: §1.1),
      `commit_statuses`, then `forgechecks.evaluate`, exactly as
      `issueci._read_ci` does. `log_tail` comes from `job_log_tail` and is
      passed through swarm-api's redaction before it is returned.
@@ -387,8 +406,9 @@ step's and the review's channel) and `issue_closed` on a closed issue unless
 `-git-wf` slot of owner decision Q3, which is removed with IAM row L-2).
 Before every `git_push_branch` swarm-api lists the paths the bundle's new
 commits touch, in a scratch repository holding the forge's prerequisite
-commits at depth 1 and the bundle's objects (`git log --name-only -m
---no-renames`), never from a list the request carries. When any is under
+commits at depth 1 and the bundle's objects (`git log --name-only
+--no-renames --diff-merges=combined`), never from a list the request
+carries. When any is under
 `.github/workflows/` or `.github/actions/` and the agent's own repository's
 registration has its `workflow_files` switch on (off by default; only a
 stored `true` is on, `platform: true` alone is not), swarm-api mints a
@@ -408,6 +428,28 @@ no workflow file mints nothing. The audit row names `credential:
 app_installation` and the `workflow_paths`, never the token. Merging such a
 change stays the owner's (`NEEDS_OWNER`, `STOP_WORKFLOWS`, lane FR-1)
 whatever the run's merge gate says ([design/agent-autonomy.md](design/agent-autonomy.md) §3.3).
+
+**A merge is listed combined, not per parent** (#2452). With `-m` git diffs
+a merge against each of its parents, so a lane that merged `main` named
+every workflow file `main` had changed since the branch was cut, through the
+merge, as the branch's own. On 2026-10-26, after PR 2446 changed
+`application.yml` and `release.yml`, two steps that merged `main` and changed
+no workflow file (task_1297d8f4, task_f2b72856) were sent here as workflow
+pushes and ended FAILED with an empty `workflow-lines.patch`.
+`--diff-merges=combined` names a merge's path only where the merge's result
+differs from **every** parent: a conflict resolved in a workflow file, or an
+"evil" merge that edits one, is still a workflow push; `main`'s own change,
+carried in unchanged, is not. Non-merge commits list as before, a rename
+away from `.github/workflows/` included. The worker's
+`Worker._workflow_paths` runs the same listing over the same range, and the
+two change together: they decide which route a branch takes, and if they
+disagreed the worker would send swarm-api a push it refuses, or push on the
+tenant token what swarm-api would have called a workflow push. Both images
+run Debian bookworm's git (2.39), and `--diff-merges` needs 2.31. The one
+case the listing does not name: a merge that keeps the branch's version of a
+file `main` also changed, where that version is already on origin. It goes
+out on the worker's own push; if GitHub refuses that for the `workflow`
+scope, the publish fails as any refused push does, the work kept.
 
 ## 2. The credential
 
@@ -469,7 +511,8 @@ How each of those is held:
   `forge.may_receive_forge_token` accepts (#307).
 
 **A read-only slot:** `read_private` and `pr_checks` work with read
-permission alone. `git_push_branch` with a slot that cannot push is refused
+permission alone. For `pr_checks` that is `pull_requests`, `statuses` and
+either `checks` or, for a fine-grained token, `actions` (§1.1). `git_push_branch` with a slot that cannot push is refused
 `forge_write_refused` and names what the token lacks. It never falls back to
 another slot.
 
@@ -972,6 +1015,10 @@ The build therefore runs G1–G7 and G9 (§7), and no G8.
 ## 9. The frozen contract
 
 **No change is needed, and none is requested.**
+
+`pr_checks`' `source` field (#1188) is an answer field of swarm-api's own
+route, and the Actions fallback reads only GitHub. Neither touches
+`swarm_common`.
 
 * The attempt tuple, the key and the nonce are swarm-api's and the
   scheduler's own (`childkey.py`: "Not frozen; only swarm-api writes it").

@@ -196,7 +196,13 @@ _CACHE_MAX_ENTRIES = 256
 #: browser-runtime seconds (`browser_s`) and the worker's verdict on whether
 #: the browser was used (`browser_used`), for `usage.browser`. A stored day
 #: counted under 9 has neither column, so it is re-derived once.
-DERIVE_VERSION = 10
+#: 11 (2026-10-27, contract request 118, #2459): an attempt the worker stopped
+#: on its budget (`EndCause.BUDGET_EXCEEDED`) is its own failure class,
+#: `budget_exceeded` -- BGD's decision on the owner question of PR 2519. A
+#: stored day counted under 10 has no such key and counted those ends under
+#: `runner_error`, so every one is re-derived. CLASSIFIER_VERSION stays: no
+#: text rule was added, and a typed cause is read before any of them.
+DERIVE_VERSION = 11
 CLASSIFIER_VERSION = 3
 
 #: Firestore caps a document at 1 MiB. A day whose tuples pass this many bytes
@@ -294,6 +300,11 @@ FAILURE_CLASSES: tuple[tuple[str, str], ...] = (
     # the final tree, or an unusable pr-title.txt. A platform refusal, which
     # neither "runner error" nor "outputs missing" described.
     ("publish_refused", "publish refused"),
+    # Contract request 118 (#2459): the worker stopped the agent because it
+    # spent its budget, and kept its work. A platform limit doing its job, not
+    # a runner's defect, so not "runner error". After the platform's other
+    # refusals, because it is one: the last end the worker itself decides.
+    ("budget_exceeded", "budget exceeded"),
     ("other", "other"),
     ("no_reason", "no reason recorded"),
     # #631: a runner that failed because its caller asked it to (the mock's
@@ -384,6 +395,10 @@ _FAILURE_OF_CAUSE: dict[str, str] = {
     EndCause.VERDICT_REFUSED.value: "verdict_refused",
     EndCause.VERDICT_FAILED.value: "verdict_failed",
     EndCause.PUBLISH_REFUSED.value: "publish_refused",
+    # Contract request 118 (#2459): the worker stopped the agent on its
+    # budget. Its own class, not `runner_error`: BGD's decision, 2026-10-27,
+    # on the owner question of PR 2519 (DERIVE_VERSION 11).
+    EndCause.BUDGET_EXCEEDED.value: "budget_exceeded",
 }
 #: ... and as a cancel cause. The two maps partition `EndCause`.
 _CANCEL_OF_CAUSE: dict[str, str] = {

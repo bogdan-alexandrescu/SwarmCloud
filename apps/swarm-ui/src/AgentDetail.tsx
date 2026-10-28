@@ -1,4 +1,4 @@
-import { Button, CIcon, Count, ToneMark } from './components'
+import { Banner, Button, CIcon, Count, ToneMark } from './components'
 import { Children, Fragment, cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   EVENT_PAGE_LIMIT,
@@ -10,6 +10,7 @@ import {
   type ResourceClasses,
 } from './api'
 import { ArtifactViewer, diffStat } from './ArtifactViewer'
+import { BudgetCard } from './AgentBudget'
 import { absTime, gapText } from './AttemptTimeline'
 import { classUnits } from './Blockers'
 import { AttemptDurations } from './charts/AttemptPhases'
@@ -29,7 +30,7 @@ import { pullRequestOf } from './decision'
 import { PHASE_LABEL, attemptEnd, instant, phasesFor, spanText, type AttemptEnd, type AttemptPhases, type Segment } from './duration'
 import { eventKind, isTerminalEvent } from './events'
 import { backendWord, eventWord, parkWord, stateWord } from './words'
-import { num, type Result } from './fetch'
+import { chooseTenant, num, type ApiError, type Result } from './fetch'
 import { type TopicId } from './help'
 import { HelpCard, HelpNote } from './HelpCard'
 import { addressToPath } from './paths'
@@ -197,10 +198,18 @@ export function AgentDetailScreen({
       mounted.current = false
     }
   }, [])
+  // THE ONE OTHER TENANT OF THE CALLER'S THAT HOLDS THIS TASK (#1194 c15):
+  // set from a 404 whose probe found it (`taskElsewhere`), cleared by any
+  // other answer. Offered under the failed panel, never switched to unasked.
+  const [elsewhere, setElsewhere] = useState<NonNullable<ApiError['elsewhere']> | null>(null)
+  useEffect(() => setElsewhere(null), [taskId])
   const load = useCallback(
     () =>
       loadAgentRun(taskId).then((r) => {
-        if (mounted.current && shown.current === taskId && (r.status === 'ok' || r.status === 'stale')) setName(agentName(r.data.task))
+        if (mounted.current && shown.current === taskId) {
+          if (r.status === 'ok' || r.status === 'stale') setName(agentName(r.data.task))
+          if (r.status !== 'loading') setElsewhere(r.status === 'error' ? (r.error.elsewhere ?? null) : null)
+        }
         return r
       }),
     [taskId],
@@ -257,13 +266,50 @@ export function AgentDetailScreen({
         {(r, reading) => <Run run={r} reload={reload} reading={reading} headed={headed} checkpoints={checkpoints} links={links} lastLine={lastLine} />}
       </Screen>
   )
-  if (headed) return screenEl
+  // THE SWITCH IS OFFERED, NOT MADE: the person chose the tenant they are in,
+  // and a link must not move them out of it. Pressing it makes the choice
+  // (`chooseTenant`) and reads the task again under it. Its own top margin
+  // keeps it a separate notice: flush under the failed panel, the two
+  // bordered boxes read as one.
+  const switchEl =
+    elsewhere === null ? null : (
+      <div className="tenant-switch-offer" style={{ marginTop: 'var(--ctl-s3)' }}>
+      <Banner
+        tone="info"
+        role="status"
+        title={`This task is in ${elsewhere.display_name}`}
+        actions={
+          <Button
+            kind="primary"
+            onClick={() => {
+              setElsewhere(null)
+              chooseTenant(elsewhere.tenant_id)
+              reload()
+            }}
+          >
+            {`Switch to ${elsewhere.display_name}`}
+          </Button>
+        }
+      >
+        It is one of your workspaces, so it can be read there. This one answers as it would for a task that does not exist.
+      </Banner>
+      </div>
+    )
+  if (headed) {
+    return (
+      <>
+        {screenEl}
+        {switchEl}
+      </>
+    )
+  }
   return (
     <div className="drawer" role="dialog" aria-label={`Agent ${taskId}`}>
       <Button iconOnly icon={<CIcon name="close" />} className="drawer-close" onClick={onClose}>
         Close
       </Button>
       {screenEl}
+      {switchEl}
     </div>
   )
 }
@@ -425,14 +471,17 @@ export function Run({
   ) : null
 
   return (
-    /* ONE CARD LEADS, THEN THE FIVE FIGURES, THEN TWO COLUMNS
-       (agent-details-v3.html A). The failure leads a failed agent and the
-       outcome a finished one; a running one leads with what it is doing now.
-       `Why` and the alerts stay above it: they render nothing when there is
-       nothing to say, so a healthy run pays no space for them. On a phone the
-       strip moves above the leading card (details.css), so the figures come
-       first on a small screen. */
+    /* BUILDING, THEN ONE CARD LEADS, THEN THE ONE RESOURCES ROW
+       (DETAILS-BUILDING). The failure leads a failed agent and the outcome a
+       finished one; a running one leads with what it is doing now. `Why` and
+       the alerts stay above it: they render nothing when there is nothing to
+       say, so a healthy run pays no space for them. The five figures' strip
+       and the Resources card sit inside the Resources row's `details`. */
     <div className="run-stack dt">
+      {/* WHAT IT IS BUILDING, FIRST (BGD 2026-10-27, DETAILS-BUILDING): one
+          line from the workflow's title, label, step and issue, or the
+          prompt's first sentence. */}
+      <DtBuilding task={task} readAt={readAt} />
       <div className="dt-top">
         <Alerts task={task} />
         <WaitPanel task={task} now={now} />
@@ -459,11 +508,19 @@ export function Run({
         <DtNow run={run} now={now} listing={listing} checkpoints={checkpoints} lastLine={lastLine} stop={stop} />
       )}
       {lead !== 'failed' && <ErrorBanner run={run} />}
-      <DtStrip run={run} now={now} />
-      <div className="dt-cols">
-        <DtProgress run={run} now={now} links={links} />
+      {/* THE BUDGET (#2459), under the leading card: its limit, where it came
+          from, what it used, when it was warned, and for a stop that the work
+          was kept. Nothing for an agent with no budget. */}
+      <BudgetCard task={task} events={events} now={now} />
+      {/* RESOURCES ARE ONE ROW (BGD 2026-10-27, DETAILS-BUILDING): "too much
+          prose on this page, we don't need so much text for showing resource
+          consumption". The strip and the Resources card are unchanged, one
+          click down behind the row's `details`. */}
+      <DtResourceRow run={run}>
+        <DtStrip run={run} now={now} />
         <DtResources run={run} now={now} />
-      </div>
+      </DtResourceRow>
+      <DtProgress run={run} now={now} links={links} />
       {/* THE OUTPUT CARD ONLY ONCE THERE IS OUTPUT: a result summary, or a
           publish the worker refused. Before that the Now card says `Output
           none yet · written when the attempt ends`. */}
@@ -535,6 +592,7 @@ const END_CAUSE_SAY: Readonly<Record<EndCause, string>> = {
   verdict_failed: 'the verdict failed',
   publish_refused: 'publishing was refused',
   child_cascade: 'a child agent ended it',
+  budget_exceeded: 'it was stopped at its budget',
 }
 
 /**
@@ -801,6 +859,143 @@ function DtPhases({ run, now }: { run: AgentRun; now: number }) {
   )
 }
 
+/** `text` cut to at most `max` characters, at a word where one is near, with `…`. */
+function cutText(text: string, max: number): string {
+  if (text.length <= max) return text
+  const head = text.slice(0, max - 1)
+  const space = head.lastIndexOf(' ')
+  return `${(space > max * 0.6 ? head.slice(0, space) : head).trimEnd()}…`
+}
+
+function nonBlank(v: unknown): string | null {
+  return typeof v === 'string' && v.trim() !== '' ? v.trim().replace(/\s+/g, ' ') : null
+}
+
+/** The prompt's first sentence: its first line that holds words, up to its first full stop, cut at 120. */
+function firstSentence(prompt: string): string | null {
+  const line = prompt
+    .split('\n')
+    .map((l) => l.replace(/^\s*(#{1,6}\s+|>\s*|[-*]\s+)/, '').trim())
+    .find((l) => l !== '')
+  if (line === undefined) return null
+  const stop = /^(.+?[.!?])(?=\s|$)/.exec(line)
+  return cutText(stop === null ? line : stop[1]!, 120)
+}
+
+/** `input.issue` from the masked copy's JSON (the rest, else the whole input), as digits; null when it names none. */
+function copyIssue(copy: TaskInputCopy | null): string | null {
+  const text = copy === null ? null : (copy.rest ?? copy.full)?.text
+  if (typeof text !== 'string') return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return null
+  }
+  const given = typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>).issue : undefined
+  if (typeof given === 'number' && Number.isInteger(given) && given > 0) return `${given}`
+  return typeof given === 'string' && /^#?\d+$/.test(given.trim()) ? given.trim().replace(/^#/, '') : null
+}
+
+/**
+ * WHAT THE AGENT IS BUILDING, as one line (BGD 2026-10-27, DETAILS-BUILDING):
+ * `Secret retention keeps 3 versions (DECIDED-A · step secret-retention ·
+ * #1819)`. The workflow's title (`metadata.title`, which every step task
+ * carries, or a lone task's own), the workflow label (`metadata.unit`,
+ * swarm-api's `WORKFLOW_LABEL_KEYS`), the step and the issue the step was
+ * given -- `input.issue`, else a `#N` in the prompt's first line. With no
+ * title the prompt's first sentence says it, so the line reads as a sentence
+ * about the work and never as ids alone. The hover is the prompt's first 300
+ * characters.
+ *
+ * THE PROMPT AND `issue` ARE THE MASKED COPY'S (`GET /v1/tasks/{id}/input`,
+ * #184), the one Input draws and shares through `loadTaskInputOnce`, NEVER
+ * `task.input`: an API older than read-time masking serves that unmasked, and
+ * details.followup.test.tsx holds Details to never drawing it. Until the copy
+ * is read the line says what the task read gave.
+ */
+export function buildingOf(
+  task: Pick<Task, 'metadata' | 'step_id'>,
+  copy: TaskInputCopy | null,
+): { text: string | null; facts: string[]; hover: string | null } {
+  const title = nonBlank(task.metadata?.title)
+  const unit = nonBlank(task.metadata?.unit)
+  const prompt = copy?.prompt?.text ?? null
+  const issueNo = copyIssue(copy) ?? (/#(\d+)\b/.exec(prompt?.split('\n').find((l) => l.trim() !== '') ?? '')?.[1] ?? null)
+  const text = title ?? (prompt === null ? null : firstSentence(prompt))
+  const facts = [
+    unit !== null && unit !== title ? unit : null,
+    task.step_id ? `step ${task.step_id}` : null,
+    issueNo !== null && !(text ?? '').includes(`#${issueNo}`) ? `#${issueNo}` : null,
+  ].filter((f): f is string => f !== null)
+  const hover = prompt !== null && prompt.trim() !== '' ? prompt.slice(0, 300) : title
+  return { text, facts, hover }
+}
+
+function DtBuilding({ task, readAt }: { task: Task; readAt: number | null }) {
+  // THE SAME READ AS Input's (same loader, task and key), so one request.
+  const { state: copy } = useRead<TaskInputCopy>(() => loadTaskInputOnce(task.id), task.id, `input:${readAt ?? ''}`, null)
+  const b = buildingOf(task, copy.status === 'ok' || copy.status === 'stale' ? copy.data : null)
+  const facts = b.facts.join(' · ')
+  return (
+    <p className="dt-building">
+      <span className="dt-building-l">Building</span>
+      <span className={`dt-building-v${b.text === null ? ' is-none' : ''}`} title={b.hover ?? undefined}>
+        {b.text === null
+          ? facts !== ''
+            ? facts
+            : copy.status === 'loading'
+              ? 'reading the prompt'
+              : 'no title or prompt was given'
+          : b.text}
+        {b.text !== null && facts !== '' && <span className="dt-building-x"> ({facts})</span>}
+      </span>
+    </p>
+  )
+}
+
+/** What the open phase is doing, in the Now line's words. */
+const NOW_WORD: Readonly<Record<Segment['phase'], string>> = { queue: 'queued', cold: 'starting', run: 'running' }
+
+/**
+ * WHAT THE AGENT IS DOING NOW, in one line (DETAILS-BUILDING): the open phase
+ * of the newest attempt (`DtPhases`' data), the newest event that is news --
+ * a heartbeat is not -- in its own words, and the elapsed figure the strip
+ * and the header draw. The API serves no tool call and no changed files while
+ * an attempt runs (the events are lifecycle only), so the line says the
+ * phase and the event; the log's last line stays under the chips.
+ */
+export function nowParts(run: AgentRun, now: number): string[] {
+  const { task, attempts, events } = run
+  const row = attempts === null || attempts.length === 0 ? undefined : phasesFor(task, attempts, events).rows.at(-1)
+  const open = row === undefined ? undefined : [row.queue, row.cold, row.run].find((s) => s !== null && s.kind === 'open' && s.live)
+  const phase = open == null || TERMINAL_STATES.has(task.state) ? stateWord(task.state) : NOW_WORD[open.phase]
+  let newest: TaskEvent | null = null
+  for (const e of events ?? []) {
+    if (eventKind(e) === 'heartbeat') continue
+    if (newest === null || (instant(e.at) ?? 0) >= (instant(newest.at) ?? 0)) newest = e
+  }
+  const said = newest === null ? null : nonBlank(newest.detail?.message) ?? nonBlank(newest.detail?.summary)
+  const news = newest === null ? null : cutText(said === null ? eventWord(newest) : `${eventWord(newest)}: ${said}`, 80)
+  const el = elapsed(task, now)
+  return [phase, ...(news === null || news === phase ? [] : [news]), el.text]
+}
+
+function DtNowLine({ run, now }: { run: AgentRun; now: number }) {
+  const parts = nowParts(run, now)
+  return (
+    <p className="dt-nowline">
+      {parts.map((p, i) => (
+        <Fragment key={i}>
+          {i > 0 && <span className="dt-dot"> ·</span>}
+          {i > 0 && ' '}
+          <span className="dt-nowline-p">{p}</span>
+        </Fragment>
+      ))}
+    </p>
+  )
+}
+
 /** The Now card: the phase, the last log line, the heartbeat and the newest checkpoint. */
 function DtNow({
   run,
@@ -826,6 +1021,7 @@ function DtNow({
         {stop}
         <HelpCard topic="checkpoints" />
       </DtCardHead>
+      <DtNowLine run={run} now={now} />
       <DtPhases run={run} now={now} />
       {lastLine}
       <p className="dt-nfs">
@@ -1904,6 +2100,104 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
         <Attempts run={run} now={now} />
       </details>
     </section>
+  )
+}
+
+/** One figure of the Resources row; `absent` is a dash, never a 0. */
+interface ResFigure {
+  text: string
+  title: string
+  absent?: boolean
+}
+
+/**
+ * THE RESOURCES ROW'S FOUR FIGURES (DETAILS-BUILDING): cores as request/limit,
+ * memory, tokens, cost. Cores are what the newest attempt was SIZED at
+ * (`sizedCpuWords`' record) -- Cloud Run applies the request alone, so it is
+ * one number there. An attempt from before contract request 108 has no sized
+ * record: its cores are the limit it recorded (`cpu_limit_cores`), the figure
+ * the strip and the card print, never the class's, which would bring back the
+ * unlabelled class-vs-limit contradiction FF-D5a (#1680) removed. With no
+ * attempt figure at all, the class's cores, saying so in the row. Memory is the class's, where request
+ * equals limit (invariant 7). Tokens and cost are the strip's own sums
+ * (`tokenKinds`, the attempts' `cost_usd`, then the API's served total), with
+ * fewer decimals; the exact figures are one click down.
+ */
+export function resourceFigures(run: AgentRun): ResFigure[] {
+  const { task, attempts } = run
+  const cls = run.classes?.[task.resource_class] ?? null
+  const latest = orderedAttempts(attempts).latest
+  const n = (v: number) => `${Number(v.toFixed(2))}`
+  const req: unknown = latest?.sized_cpu_request
+  const lim: unknown = latest?.sized_cpu_limit
+  const recorded: unknown = latest?.cpu_limit_cores
+  const limitWords = finite(recorded) ? cpuLimitWords(recorded, cls, latest?.cpu_limit_source ?? null) : null
+  const coresFig: ResFigure =
+    latest !== null && finite(req) && finite(lim)
+      ? latest.backend === 'CLOUD_RUN_JOB'
+        ? { text: `${n(req)} cores`, title: 'Cores the attempt was guaranteed; Cloud Run applies no burst.' }
+        : { text: `${n(req)}/${n(lim)} cores`, title: 'Cores the attempt was guaranteed / the most it could burst to.' }
+      : latest !== null && finite(recorded)
+        ? {
+            text: `${n(recorded)} cores`,
+            title: `The limit the attempt recorded${limitWords === null ? '' : `: ${limitWords}`}; no request was recorded.`,
+          }
+        : cls !== null
+          ? { text: `${cores(cls.cpu)} cores (class)`, title: `The ${task.resource_class} class's cores; the attempt recorded no size or limit.` }
+          : { text: '— cores', title: 'No size was recorded and the class was not read.', absent: true }
+  const memFig: ResFigure =
+    cls !== null
+      ? { text: `${cls.memory_gib} GiB`, title: `The ${task.resource_class} class's memory: its request is its limit.` }
+      : { text: '— GiB', title: 'The class was not read.', absent: true }
+  const total = attempts === null ? null : tokenTotal(tokenKinds(task, attempts))
+  const tokFig: ResFigure =
+    total === null
+      ? { text: '— tokens', title: attempts === null ? 'The attempt read failed.' : 'No attempt reported tokens yet.', absent: true }
+      : { text: `${tokenCount(total)} tokens`, title: `${total.toLocaleString('en-US')} tokens, every kind and every attempt.` }
+  const spent = (attempts ?? []).filter((a) => a.cost_usd !== null)
+  const served = attempts !== null && spent.length === 0 ? stepCostOf(task, undefined) : null
+  const sum = spent.length > 0 ? spent.reduce((t, a) => t + (a.cost_usd ?? 0), 0) : (served?.usd ?? null)
+  const floor =
+    spent.length > 0 ? spent.length < (attempts ?? []).length : served?.from === 'total' && totalCostOf(task)?.incomplete === true
+  const costFig: ResFigure =
+    sum === null || !Number.isFinite(sum)
+      ? reportsSpend(task.runner_profile) || attempts === null
+        ? { text: '— cost', title: attempts === null ? 'The attempt read failed.' : 'Written when the attempt ends.', absent: true }
+        : { text: 'no model call', title: 'This profile reports no spend.', absent: true }
+      : {
+          text: `${floor ? '≥ ' : ''}${sum > 0 && sum < 0.005 ? '< $0.01' : `$${sum.toFixed(2)}`}`,
+          title: `$${sum.toFixed(4)}${floor ? ', at least: an attempt reported no cost' : ''}.`,
+        }
+  return [coresFig, memFig, tokFig, costFig]
+}
+
+/**
+ * RESOURCES, ONE ROW (BGD 2026-10-27, DETAILS-BUILDING): `4/8 cores · 8 GiB
+ * · 412k tokens · $3.10  details ▾`. Every number the strip and the
+ * Resources card drew is still on the page, unchanged, behind `details`;
+ * only the prose left the first screen.
+ */
+function DtResourceRow({ run, children }: { run: AgentRun; children: ReactNode }) {
+  const figures = resourceFigures(run)
+  return (
+    <details className="dt-res">
+      <summary>
+        <span className="dt-res-l">Resources</span>
+        <span className="dt-res-fs">
+          {figures.map((f, i) => (
+            <Fragment key={i}>
+              {i > 0 && <span className="dt-dot"> ·</span>}
+              {i > 0 && ' '}
+              <span className={`dt-res-f${f.absent ? ' is-absent' : ''}`} title={f.title}>
+                {f.text}
+              </span>
+            </Fragment>
+          ))}
+        </span>
+        <span className="dt-res-more">details</span>
+      </summary>
+      <div className="dt-res-body">{children}</div>
+    </details>
   )
 }
 

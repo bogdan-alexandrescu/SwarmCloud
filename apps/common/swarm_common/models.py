@@ -197,7 +197,7 @@ class EndCause(str, Enum):
       * the worker (`agent_worker.control`): TIMEOUT, OUTPUTS_MISSING,
         INPUTS_UNAVAILABLE, CANNOT_START, RUNNER_ERROR, CANCEL_REQUESTED,
         SPEC_SIGNATURE_INVALID, MERGE_REFUSED, MERGE_FAILED, VERDICT_REFUSED,
-        VERDICT_FAILED, PUBLISH_REFUSED;
+        VERDICT_FAILED, PUBLISH_REFUSED, and BUDGET_EXCEEDED beside TIMEOUT;
       * the reconciler (`repair_task_state`): LOST_WORKER, CANNOT_START,
         CANCEL_REQUESTED;
       * the scheduler: DISPATCH_FAILED, FAILED_PARENT, CANCELLED_PARENT,
@@ -266,6 +266,13 @@ class EndCause(str, Enum):
     CANCEL_REQUESTED, which the outcome ledger reads as a cancel somebody
     pressed. The specific reason (`parent_cancelled`, `parent_ended`,
     `await_expired`) is event detail, not a frozen vocabulary.
+
+    BUDGET_EXCEEDED is contract request 118 (BUDGET-CAP, #2459), accepted by
+    the owner 2026-10-26 and applied 2026-10-27: the worker stopped the agent
+    because it spent its per-agent budget, at a turn boundary after a
+    checkpoint, and published what it had. Written only by the worker, beside
+    TIMEOUT. Never retried by the worker: another attempt of the same step
+    starts from the same budget, so a resume is a person's choice.
     """
 
     TIMEOUT = "timeout"
@@ -286,6 +293,7 @@ class EndCause(str, Enum):
     VERDICT_FAILED = "verdict_failed"     # the post was allowed, and the forge did not do it
     PUBLISH_REFUSED = "publish_refused"   # the worker refused to publish: a credential in the final tree, or an unusable pr-title.txt
     CHILD_CASCADE = "child_cascade"   # the parent task was cancelled or ended, or its await expired
+    BUDGET_EXCEEDED = "budget_exceeded"   # the worker stopped the agent: it spent its budget
 
 
 #: The shape of `Task.forge_credential`: a provider suffix for
@@ -589,6 +597,15 @@ class Task:
     #: construction of a task changes meaning; every document written before
     #: it decodes exactly as it did.
     model_class: str | None = None
+    #: Contract request 120 (BUDGET-CAP, #2459), accepted by the owner
+    #: 2026-10-26: the attempt's RESOLVED per-agent budget, `usd` and/or
+    #: `tokens` -- min(step, workspace default, platform ceiling), each unit on
+    #: its own. Written by swarm-api at submission, only when the step or its
+    #: workspace sets a budget; signed at spec format 6. None: no budget,
+    #: today's behaviour. It only lowers a limit and chooses no resource
+    #: (invariant 10). Before this field the same figures were pinned in
+    #: `metadata.dispatch.budget`, which readers fall back to for one release.
+    budget: dict[str, float | int] | None = None
 
     def __post_init__(self) -> None:
         # Only the fields of requests 54 and 95: a document decoded before them
@@ -913,6 +930,10 @@ class WorkflowStep:
     #: Contract request 102 (#1435): the MODEL_CLASSES name this step asks
     #: for, carried to its task's `model_class`. None: its profile's default.
     model_class: str | None = None
+    #: Contract request 120 (#2459): the budget this step ASKED for, `usd`
+    #: and/or `tokens`, as submitted. Its task's `budget` is what it resolved
+    #: to. None: the step set none.
+    budget: dict[str, float | int] | None = None
 
 
 @dataclass

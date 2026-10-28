@@ -60,6 +60,14 @@ the forge) and excludes exactly those and their history from the check, the
 scan and the bundle. The answer is read as a subset of the question. A
 commit origin does not have is refused as before, and the refusal says so.
 
+The same question widens the publish repository's BOUNDARY (#2559). A step
+that runs `git fetch --depth=N origin X` in its own shell and merges X leaves
+a clone cut off inside X, and a boundary of A alone sends the upload walk into
+X's history the clone never had: the fetch fails. So `prepare_push` hands
+`prepare_publish_repo` a confirmer (`confirm_on_origin`): the clone's
+`.git/shallow` lines, read there as data, are asked about, and only those
+origin confirms join the boundary, so a line the agent forged never does.
+
 Wiring this into `ChildPath`'s tick and naming the shim in the runners is lane
 G6; the route it calls is lane G5.
 """
@@ -127,6 +135,20 @@ RELAYED_TOOLS = frozenset({"pr_view", "run_list", "run_view", "issue_view", "iss
 #: The tools that act on the task's own repository only.
 OWN_REPOSITORY_TOOLS = frozenset({"git_fetch", "git_rebase_onto", "git_push_branch",
                                   "pr_checks"}) | RELAYED_TOOLS
+#: The tools swarm-api runs git against the forge for, under its
+#: `gitexec.CALL_DEADLINE_SECONDS` (`git_rebase_onto` is served as the fetch it
+#: begins). The relay waits `GIT_CALL_TIMEOUT_SECONDS` for them; every other
+#: tool keeps `ChildApi`'s short timeout.
+GIT_CALL_TOOLS = frozenset({"git_push_branch", "git_fetch", "git_rebase_onto"})
+#: How long the relay waits for one of `GIT_CALL_TOOLS` (#2576): swarm-api's
+#: `gitexec.CALL_DEADLINE_SECONDS` (600) plus 60 s for the bundle upload and
+#: the answer, and below the agent's shim's `gitmcp.server.WAIT_SECONDS` (900)
+#: so the shim is still waiting when the answer comes. With ChildApi's 10 s a
+#: workflow-touching push (a fetch, then the workflow-path walk) came back
+#: `api_unavailable` while swarm-api was still pushing, and the step failed
+#: `publish_failed`. A mirrored value (docs/mirrored-values.md), held by
+#: tests/unit/worker/test_gittools_call_timeout.py.
+GIT_CALL_TIMEOUT_SECONDS = 660
 #: Each relayed argument's JSON type, checked before anything leaves.
 _RELAYED_TYPES: dict[str, tuple[type, ...]] = {
     "number": (int,), "run_id": (int,), "limit": (int,), "failed_only": (bool,),
@@ -589,14 +611,29 @@ class GitTools:
         }, sort_keys=True).encode("utf-8")
         route = self.route(tool)
         headers = self._key.headers("POST", route, body, now=self._wall())
+        started = self._clock()
         try:
-            _, payload = self._api.call("POST", route, body=body, headers=headers)
+            # Only the git tools name a timeout; the rest keep the client's.
+            if tool in GIT_CALL_TOOLS:
+                _, payload = self._api.call("POST", route, body=body, headers=headers,
+                                            timeout=GIT_CALL_TIMEOUT_SECONDS)
+            else:
+                _, payload = self._api.call("POST", route, body=body, headers=headers)
         except ChildApiError as exc:
             if exc.status == 409 or exc.code in (GIT_FENCED, "child_submit_fenced"):
                 raise GitToolFenced(exc.status, GIT_FENCED, exc.message, retryable=False) from None
             if exc.retryable:
+                # Named, so a step's summary says what the platform answered
+                # (#2452: two refusals read only "did not answer", and a
+                # timeout could not be told from a 503). The status and
+                # swarm-api's code, or with no answer the exception class
+                # `ChildApi` recorded and the seconds waited (#2576: a client
+                # timeout reads "after 660 s"); never swarm-api's free text.
+                waited = max(0, round(self._clock() - started))
+                cause = (f"no answer ({exc.message or exc.code} after {waited} s)"
+                         if exc.status is None else f"HTTP {exc.status} {exc.code}")
                 raise GitToolRefused("api_unavailable",
-                                     "the platform did not answer; ask again",
+                                     f"the platform did not answer: {cause}; ask again",
                                      retryable=True) from None
             raise GitToolRefused(exc.code, exc.message or exc.code) from None
         return payload
@@ -756,16 +793,38 @@ class GitTools:
         if not head:
             raise GitToolRefused("nothing_to_push", "HEAD has no commit")
         self.private_dir.mkdir(parents=True, exist_ok=True)
+        # `prepare_publish_repo` reads a confirmer that raises as "origin
+        # confirmed nothing", so what it raised is kept here. The fence is
+        # raised whatever the fetch did (invariant 5: a superseded attempt
+        # stops); a retryable refusal becomes the push's answer if the fetch
+        # then fails, so the agent asks again rather than reading a
+        # missing-history failure.
+        unanswered: list[Exception] = []
+
+        def confirm(shas: list[str]) -> list[str]:
+            try:
+                return self.confirm_on_origin(shas, request_id=request_id)
+            except (GitToolRefused, GitToolFenced) as exc:
+                unanswered.append(exc)
+                raise
+
         try:
             repo = gitops.prepare_publish_repo(
                 source_repo=self.clone, work_head=head, private_dir=self.private_dir,
                 logs_dir=self.logs_dir, timeout_seconds=self.cfg.timeout_seconds,
                 logger=self.log, base=self.cfg.clone_base, git_binary=self._git,
-                local_branch=_PUBLISH_BRANCH,
+                local_branch=_PUBLISH_BRANCH, confirm_on_origin=confirm,
             )
         except GitError as exc:
-            raise GitToolRefused("push_failed", str(exc)[:300]) from None
+            if unanswered:
+                raise unanswered[-1] from None
+            # Long enough for the fixed text and the end of git's own reason
+            # (`prepare_publish_repo` appends it, redacted, #2559).
+            raise GitToolRefused("push_failed", str(exc)[:700]) from None
         prepared = PreparedPush(repo=repo, fields={})
+        if any(isinstance(exc, GitToolFenced) for exc in unanswered):
+            prepared.discard()
+            raise next(exc for exc in unanswered if isinstance(exc, GitToolFenced))
         try:
             negatives = [sha for sha in self.origin.haves if self._has_commit(repo, sha)]
             commits = self._new_commits(repo, negatives)
@@ -825,6 +884,33 @@ class GitTools:
         except BaseException:
             prepared.discard()
             raise
+
+    def confirm_on_origin(self, shas: list[str], *, request_id: str) -> list[str]:
+        """The shas of `shas` origin has, asked of swarm-api (`git_fetch` with
+        `confirm`, #2413), for `prepare_publish_repo`'s upload boundary (#2559).
+
+        At most `MAX_CONFIRM` are asked; the answer is kept only where it
+        names a sha that was asked, and each one kept is learnt as origin's.
+        A retryable refusal is the agent's to ask again, so it is raised (the
+        push is refused `api_unavailable`, as `_confirm_foreign` does); any
+        other refusal, or no answer, confirms nothing, and the boundary stays
+        the recorded base."""
+        asked = [sha for sha in shas if _FULL_SHA.match(sha)][:MAX_CONFIRM]
+        if not asked:
+            return []
+        try:
+            payload = self.call("git_fetch", {"confirm": asked}, request_id=request_id)
+        except GitToolRefused as exc:
+            if exc.retryable:
+                raise
+            return []
+        listed = payload.get("confirmed") if isinstance(payload, dict) else None
+        if not isinstance(listed, list):
+            return []
+        confirmed = [sha for sha in asked if sha in listed]
+        for sha in confirmed:
+            self.origin.learn(sha)
+        return confirmed
 
     def _has_commit(self, repo: Path, sha: str) -> bool:
         code, _ = self._git_in(repo, ["cat-file", "-e", f"{sha}^{{commit}}"], "gittools-have")
@@ -1014,7 +1100,10 @@ class GitTools:
 
     def pr_checks(self, pr: int | None, *, request_id: str) -> dict[str, Any]:
         payload = self.call("pr_checks", {"pr": pr}, request_id=request_id)
-        return {k: payload[k] for k in ("pr", "head_sha", "state", "rows") if k in payload}
+        # `source`: where swarm-api read the check runs -- "actions_jobs" for a
+        # credential that may not read check runs, which omits other Apps' (#1188).
+        return {k: payload[k] for k in ("pr", "head_sha", "state", "rows", "source")
+                if k in payload}
 
     def relay(self, tool: str, args: dict[str, Any], *, request_id: str) -> dict[str, Any]:
         """An AU-1 tool: swarm-api reads or writes GitHub and answers; the

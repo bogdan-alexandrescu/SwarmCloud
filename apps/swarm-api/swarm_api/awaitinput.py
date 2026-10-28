@@ -456,19 +456,19 @@ def member_refusal(ctx: Any, auth: AuthContext, tenant_id: str) -> str:
         kind = SERVICE
     tenant = ctx.store.get_tenant(tenant_id)
     if tenant is None:
-        raise forbidden("not_a_member", f"you are not a member of tenant {tenant_id!r}")
+        raise forbidden("not_a_member", f"you are not a member of workspace {tenant_id!r}")
     try:
         how = ctx.authenticator.may_act_in(auth.email, tenant, fresh=True)
     except UpstreamUnavailable:
         raise MembershipUnavailable(
-            "your membership of this tenant could not be confirmed just now, so the "
+            "your membership of this workspace could not be confirmed just now, so the "
             "answer was not taken; retry shortly",
             detail=_detail("membership_unavailable"),
         ) from None
     if not how:
         raise forbidden(
             "not_a_member",
-            f"you are not a member of tenant {tenant_id!r}, the step's tenant, so you "
+            f"you are not a member of workspace {tenant_id!r}, the step's workspace, so you "
             "may not answer it",
         )
     store = getattr(ctx, "roles", None)
@@ -909,7 +909,7 @@ def _on_behalf_of(ctx_kind: str, body: Mapping[str, Any]) -> str | None:
         return None
     if ctx_kind != SERVICE:
         raise invalid("invalid_payload",
-                      "on_behalf_of is for a service tenant's principal answering for a "
+                      "on_behalf_of is for a service workspace's principal answering for a "
                       "person; a person answers as themselves",
                       position="on_behalf_of")
     value = body["on_behalf_of"]

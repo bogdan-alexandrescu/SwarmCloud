@@ -46,15 +46,16 @@ from typing import Any
 import pytest
 
 from agent_worker.expected_outputs import skipped_names
-from agent_worker import gitops
+from agent_worker import cachedirs, gitops
 from agent_worker import workspace as workspace_mod
 from agent_worker.checkpoint import CheckpointManager
 from agent_worker.errors import ExitCode
 from agent_worker.objectstore import LocalObjectStore
-from agent_worker.runners import cliagent
+from agent_worker.runners import ceiling, cliagent
 from agent_worker.runners.base import RunnerContext
 from swarm_common.states import TaskState
 
+from test_cli_prompt_names_time_limit import is_limit_line, without_limit_line
 from worker_seeds import TENANT, record_as_earlier_attempt, seed_attempt
 
 PROFILE = "claude-code"
@@ -106,10 +107,14 @@ def deliverables_line(artifacts_dir: Path | str) -> str:
 QUESTIONS_LINE = (
     "If a decision is the owner's to make, ask instead of guessing: write "
     "questions.json there, a JSON list of {question, options: [{label, "
-    "description}], recommended, context, built}, built being the label of "
+    "description}], recommended, context, built, blocking}, built being the label of "
     "the option your branch implements, or null when the answer changes "
     "nothing it builds; it is shown to the owner, and a merge does not go "
-    "ahead while the owner's pick differs from built."
+    "ahead while the owner's pick differs from built. A question does not "
+    "stop your step; if your work cannot go on without the answer, mark it "
+    '"blocking": true, write an empty file named await-answers beside '
+    "questions.json and exit: the step is parked until the owner answers, "
+    "then resumed with the answers."
 )
 
 
@@ -332,7 +337,10 @@ def test_the_deliverables_line_is_not_repeated_when_later_steps_expect_files(
     assert _run(worker_factory) == ExitCode.OK
     prompt = _agent_output(db)["prompt"]
     assert prompt.count(LINE_START) == 1, prompt
-    assert prompt.count("$SWARM_ARTIFACTS_DIR") == 1, prompt
+    # The context-ceiling note (#2524) names $SWARM_ARTIFACTS_DIR/handoff.md,
+    # a note for the next session and not a deliverable; set it aside.
+    assert prompt.count(ceiling.HANDOFF_NOTE) == 1, prompt
+    assert prompt.replace(ceiling.HANDOFF_NOTE, "").count("$SWARM_ARTIFACTS_DIR") == 1, prompt
     # The expected-output list is still there, with each file's full path.
     assert "Later steps of this workflow need these files from you: scan-01.md." in prompt
     assert "/artifacts/scan-01.md" in prompt
@@ -397,12 +405,18 @@ def test_both_cli_runners_end_the_prompt_with_the_line_once(tmp_path, monkeypatc
 
     assert prompt.startswith("compute primes\n\n"), prompt
     assert prompt.count(deliverables_line(ctx.artifacts_dir)) == 1, prompt
-    assert prompt.count("$SWARM_ARTIFACTS_DIR") == 1, prompt
+    # claude-code alone carries the context-ceiling note (#2524), which names
+    # $SWARM_ARTIFACTS_DIR/handoff.md for the next session, not a deliverable.
+    note = f"\n\n{ceiling.HANDOFF_NOTE}" if spec.context_ceiling else ""
+    assert prompt.count(ceiling.HANDOFF_NOTE) == (1 if note else 0), prompt
+    assert prompt.replace(ceiling.HANDOFF_NOTE, "").count("$SWARM_ARTIFACTS_DIR") == 1, prompt
     if "expected_outputs" not in payload:
         # Nothing else is appended when no later step expects a file: the
-        # line, and the questions sentence after it (2026-10-05).
-        assert prompt == (
-            f"compute primes\n\n{deliverables_line(ctx.artifacts_dir)}\n{QUESTIONS_LINE}"
+        # line, and the questions sentence after it (2026-10-05), then the
+        # ceiling note where the runner has one; then the step's time-limit
+        # line, last (#2139).
+        assert without_limit_line(prompt) == (
+            f"compute primes\n\n{deliverables_line(ctx.artifacts_dir)}\n{QUESTIONS_LINE}{note}"
         )
 
 
@@ -950,9 +964,16 @@ def test_a_repository_task_is_unchanged(db, tmp_path, monkeypatch, worker_factor
     # github.com, so the stager stages nothing and says so in one line. It
     # names no destination for a deliverable; it is set aside here, and the
     # "write" check below still reads it.
-    context = [line for line in lines if line.startswith(CONTEXT_LINE_START)]
-    assert len(context) <= 1 and (not context or lines[0] == context[0]), lines
-    rest = lines[len(context):]
+    # The claude-code runner's scratch note (issue #2436,
+    # `cachedirs.scratch_note`) comes first: where big scratch data goes --
+    # $TMPDIR, not /tmp -- never where a deliverable goes. Set aside the same
+    # way; the "write" check below still reads it.
+    notes = (cachedirs.scratch_note(own_volume=True), cachedirs.scratch_note(own_volume=False))
+    assert sum(line in notes for line in lines) == 1 and lines[0] in notes, lines
+    after_note = lines[1:]
+    context = [line for line in after_note if line.startswith(CONTEXT_LINE_START)]
+    assert len(context) <= 1 and (not context or after_note[0] == context[0]), lines
+    rest = after_note[len(context):]
     # The memory budget line (#2504) follows it, when the container has a
     # limit; it says how much memory there is, not where anything goes.
     budget = [line for line in rest if line.startswith(BUDGET_LINE_START)]
@@ -963,10 +984,15 @@ def test_a_repository_task_is_unchanged(db, tmp_path, monkeypatch, worker_factor
     # publish paragraph (Proposal A, 2026-10-08), which says the worker
     # publishes the committed branch -- the deliverable stays the diff, and
     # only the pull request's title and body go to the artifacts folder.
-    assert len(rest) == 3, appended
+    # Between them, the context-ceiling note (#2524): a note for the session
+    # that may carry the task on, not a destination for the deliverable. The
+    # step's time-limit line (#2139) comes just before the publish paragraph.
+    assert len(rest) == 5, appended
     assert rest[0].startswith(LINE_START) and rest[0].endswith(LINE_END), rest[0]
     assert rest[1] == QUESTIONS_LINE, rest[1]
-    assert rest[2] == cliagent.PUBLISH_PARAGRAPH, rest[2]
+    assert rest[2] == ceiling.HANDOFF_NOTE, rest[2]
+    assert is_limit_line(rest[3]), rest[3]
+    assert rest[4] == cliagent.PUBLISH_PARAGRAPH, rest[4]
     assert "Write deliverables" not in prompt, prompt
     assert not any(line.lstrip().lower().startswith("write") for line in lines), lines
 

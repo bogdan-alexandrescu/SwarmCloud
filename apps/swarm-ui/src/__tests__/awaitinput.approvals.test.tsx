@@ -64,7 +64,8 @@ describe('a waiting step in the inbox', () => {
       expect(d).toBeTruthy()
       return d!
     }, WAIT)
-    expect(document.querySelector('li[data-approval="input:task_review"] .sc-kind')!.textContent).toBe('Answer')
+    // #2417: the step opens on its own page, its kind said on the page's chip.
+    expect(detail.querySelector('.ad-chip.is-kind')!.textContent).toBe('answer')
     expect(detail.textContent).toContain('any member of this tenant')
     expect(within(detail).queryByRole('button', { name: /Approve|Reject/ })).toBeNull()
     // Never read as a record: the route has none.

@@ -27,17 +27,25 @@ looping fast spends more in the same two hours than one waiting on a build.
 ## 3. Resolved at submission, pinned in the signed spec
 
 The budget is resolved once, when the step is submitted, and written into
-`metadata.dispatch.budget` -- `{usd?, tokens?, from: {step, workspace,
-ceiling}}` -- inside the block the step-spec signature covers. The worker
-reads it only from the verified document.
+the typed `Task.budget` -- `{usd?, tokens?}` -- which the step-spec
+signature covers at format 6 (contract request 120, applied 2026-10-27 by
+lane BUDGET-CONTRACT). Where each limit came from is
+`metadata.dispatch.budget_from: {step, workspace, ceiling}`, inside the
+signed dispatch block, and a workflow's own document records what each step
+asked for as `WorkflowStep.budget`. The worker reads the budget only from the
+verified document. An agent stored before request 120 carries it in
+`metadata.dispatch.budget` (`{usd?, tokens?, from}`) instead; the worker
+(`Limits.from_task`) and the served `budget` (`codec.served_budget`) read that
+as the fallback for one release.
 
 Why not read the workspace setting in the worker at each attempt:
 
 * **The worker reads no key the signature does not cover.** The workspace
   settings document is one any tenant worker can write
   ([tenant-settings-integrity.md](tenant-settings-integrity.md) §1.3), and
-  the `budget` block is not yet signed (contract request 119). A worker
-  that read it live would enforce whatever another tenant's agent wrote.
+  the `budget` block is signed only since contract request 119, and only
+  for a tenant on the MAC cutover. A worker that read it live would enforce
+  whatever another tenant's agent wrote wherever it is not.
 * **Workers are moving off direct Firestore access** (#1457, design B).
 * **It is the platform's pattern.** `timeout_seconds` is pinned at
   submission, and so are `max_additional_repositories` and its budget:
@@ -111,10 +119,11 @@ the worker writes a note and `budget_note_hook.py` hands it on -- once,
 because the hook renames the note before it reads it. `codex exec` has no
 such mechanism: the warning event says `told: false`.
 
-**The event.** `budget_warning` is written as `running` with
-`detail.cause: "budget_warning"` (and `percent`, `told`, `limit`, `used`),
-as `account_assigned` rides on `running`, until contract request 121 gives
-it a type.
+**The event.** `EventType.BUDGET_WARNING` (contract request 121), with
+`detail` `{cause: "budget_warning", percent, told, limit, used}`. Before the
+type it was written as `running` with the same detail; the API's one event
+decoder (`codec.stored_event_type`) reads that form as `budget_warning` for
+one release, so every reader of the type sees one vocabulary.
 
 **The end.** The runner raises at once after a budget stop, so no finish or
 repair pass spends more. The lifecycle's `_record_finalised` checkpoints and
@@ -122,9 +131,11 @@ publishes exactly as it does for a timed-out step (the publish is withheld
 only from a run that finished cleanly and failed a check), then ends the
 step FAILED with `last_error` `budget_exceeded: ...` and
 `result_summary.budget: {limit, used, warned, end_cause: "budget_exceeded",
-stopped: "turn_boundary" | "mid_turn"}`. `end_cause` is null until contract
-request 118 adds `EndCause.BUDGET_EXCEEDED`: the contract's own rule for an
-end with no value of its own. An agent that ends on its own after the stop
+stopped: "turn_boundary" | "mid_turn"}`, and `end_cause`
+`EndCause.BUDGET_EXCEEDED` (contract request 118). An agent ended before the
+member was applied carries `end_cause` null and the cause in the summary
+alone. The outcome ledger classes the cause `runner_error`, as its text
+fallback classed those earlier ends, so its classes keep their meaning. An agent that ends on its own after the stop
 was asked, before it reached a boundary, has finished: it is judged as any
 finished run, not as a budget stop.
 
@@ -158,9 +169,9 @@ finished run, not as a budget stop.
 
 118 `EndCause.BUDGET_EXCEEDED`; 119 a `budget` block in
 `SETTINGS_MAC_FIELDS`; 120 `Task.budget` / `WorkflowStep.budget`; 121
-`EventType.BUDGET_WARNING`. BGD ACCEPTED all four on 2026-10-26 (~22:15Z); a
-follow-up lane applies them after this lands. Until then each is built
-behind, as above, and each is in
+`EventType.BUDGET_WARNING`. BGD ACCEPTED all four on 2026-10-26 (~22:15Z);
+lane BUDGET-CONTRACT applied them on 2026-10-27 and switched the readers and
+writers over, keeping the old forms readable for one release. Each is in
 [contract-change-requests.md](../contract-change-requests.md).
 
 ## 8. Invariants
@@ -173,7 +184,7 @@ behind, as above, and each is in
   worker end; the budget files are the attempt's own.
 * **9**: the ceiling is the platform's, in `control/settings`; the step's
   budget is inside its own signed spec; the workspace default is its own
-  document's (request 119 signs it).
+  document's, signed by request 119.
 * **10**: a caller names a number in a unit, which may only lower a limit,
   as `timeout_seconds` does; never an image, command, resource or backend.
 * **2, 3, 6, 7, 8** are untouched.

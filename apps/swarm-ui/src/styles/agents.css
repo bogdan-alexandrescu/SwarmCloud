@@ -191,6 +191,10 @@
   line-clamp: 2;
   overflow: hidden;
   overflow-wrap: anywhere;
+  /* AND IT SAYS IT WAS CUT (BT-017, #2423): the walk measured a failed row's
+     reason 42 of 63px with its second line ending mid-sentence and no mark.
+     The ellipsis is asked for, not left to the clamp's default. */
+  text-overflow: ellipsis;
 }
 /* A FAILED ROW'S REASON IS RED (V146), in the text-safe red its mark's word
    uses; it was --warn amber beside a red mark and a red rule. */
@@ -572,6 +576,21 @@
    log's foot is its last line, never under that line. */
 @media (max-width: 1099px) {
   .ag-split.ctl-drawer { bottom: var(--dock-h, 28px); }
+}
+/* THE LIST UNDER AN OPEN AGENT IS DIMMED (BT-017, #2423). From 760px to
+   1099px the agent is an overlay on the right of the list (`.drawer`,
+   z-index 40), and with nothing behind it the list ran on under its edge,
+   cut mid-word (`…NOT_YET, not`), as if both were one page. The scrim is the
+   menu's (`.sk-scrim`, styles.css) at a lighter step: the agent is not a
+   modal here, so the list is dimmed, not hidden, and the scrim takes no
+   pointer. Under the spine and panel (`.sk-side`, 10) and the trail bar
+   (`.ctl-bar`, 20), so the way out stays lit; it stops at the Reads line, as
+   the agent does. Above 1099px the agent is a column beside the list and on
+   a phone it is the whole screen: neither has a list to cover. Agents.tsx
+   draws the element only while an agent is open. */
+.ag-scrim { display: none; }
+@media (min-width: 760px) and (max-width: 1099px) {
+  .ag-scrim { display: block; position: fixed; inset: 0 0 var(--dock-h, 28px) 0; z-index: 9; background: rgba(6, 16, 30, .35); pointer-events: none; }
 }
 /* ON A PHONE THE OPEN TASK STARTS UNDER THE APP HEADER (QA-116, owner
    2026-10-20: "Start under the header"). Fixed at `top: 0` and z-index 40

@@ -745,11 +745,41 @@ _ANNOTATION = (
 _COLON_VALUE_PASSWORD = (
     r"(?-i:" + _BUILTIN_TYPE + r"|" + _DOTTED + _END + r"|[-+=?]\}(?=[\"\s]|$))"
 )
-_COLON_VALUE = r"(?-i:" + _COLON_VALUE_PASSWORD + r"|" + _ANNOTATION + r"|" + _CLOSED_CALL + r")"
+#: A DOTTED EXPRESSION THAT A BRACKET CLOSES (#2237). `{ ...linkOf(view),
+#: token: secretsLink.current }` was masked: `_DOTTED` serves an attribute
+#: only when its last part names a credential, because at the end of a line a
+#: dotted value is as likely YAML (`secret: corp.example.value`). Followed by
+#: a `}` or `)` -- a JS object or a call closing round it -- it is code. Every
+#: part is letters, `_` or camelCase humps (no digit: a random value is not
+#: shaped like this), the first of two letters or more (`s.<base62>` is a
+#: Vault token), and not under `password`/`passwd`/`passphrase`, where
+#: `{ password: correct.horse.battery }` is a human's choice.
+_ALPHA_HUMP = r"(?:[A-Z][a-z]{2,15}|Id)"
+_DOTTED_CLOSED = (
+    r"_*(?:[a-z][a-z_]{1,31}|[a-z]{1,16}" + _ALPHA_HUMP + r"+)"
+    r"(?:" + _DOT + r"_*(?:[a-z][a-z_]{0,31}|[a-z]{1,16}" + _ALPHA_HUMP + r"+))++"
+    r"(?=[ \t]*[)}])"
+)
+_COLON_VALUE = (
+    r"(?-i:" + _COLON_VALUE_PASSWORD + r"|" + _ANNOTATION + r"|" + _CLOSED_CALL
+    + r"|" + _DOTTED_CLOSED + r")"
+)
+#: AN EMPTY CONTAINER OR AN OPENING BRACKET IS NOT A VALUE (#2237), after
+#: any credential name and either separator: `secrets: [], credentials: {`
+#: in a test fixture had `[]` and `{` masked. `[]`, `{}` or `()` (spaces
+#: inside allowed) where a value ends; `[`, `{` or `(` at the end of the
+#: line; `{` and a blank, a JS or YAML flow object opening. `[` and a blank
+#: is NOT here: `secrets: [ "<v>" ]` is a list holding a literal, and the
+#: rule below skips the `[` and masks it. A `{` and a blank never masked
+#: more than the `{` itself, so serving it serves nothing new.
+_CONTAINER = (
+    r"(?:\[[ \t]*\]|\{[ \t]*\}|\([ \t]*\))" + _END
+    + r"|[\[{(][ \t]*(?=\n|$)|\{(?=[ \t])"
+)
 #: Not masked when the value starts with one of these (see above), and does
 #: not itself start a secret run.
 _NOT_A_LITERAL = (
-    _NO_SECRET + r"(?:" + _SHELL_SUBSTITUTION
+    _NO_SECRET + r"(?:" + _SHELL_SUBSTITUTION + r"|" + _CONTAINER
     + r"|(?(colon)(?(pw)" + _COLON_VALUE_PASSWORD + r"|" + _COLON_VALUE + r")"
     + r"|(?(lc)(?(pw)" + _EXPRESSION_PASSWORD + r"|" + _EXPRESSION + r")"
     r"|(?(sp)(?(pw)" + _EXPRESSION_PASSWORD + r"|" + _EXPRESSION + r")|(?!)))))"
@@ -909,10 +939,22 @@ def mask_code_literals(text: str) -> tuple[str, int]:
 #: fixture file).
 RULES: tuple[Rule, ...] = (
     _private_key_rule(),
+    # A PROVIDER-SHAPED VALUE ONLY (#2237). `sk-` and any six characters took
+    # a CSS class (`sk-` then `pscroll`) for a key, and a patch holding it no longer
+    # applied. A key is `sk-proj-`/`sk-ant-` and more (and `sk-test-`/
+    # `sk-live-`, the placeholder and live shapes the publish guard refuses
+    # outside tests), or `sk-` and 20
+    # characters or more (every provider's is longer) -- and never a
+    # kebab-case name, lowercase words of at most 16 letters joined by `-`,
+    # which a class is and a random key is not. Not "has a digit": that would
+    # serve `sk-` and 40 of one letter, a shape fixtures here use for a key.
+    # The shell filter protects the kebab name with a byte, then masks.
     _rule(
         "openai_key",
         "sk-",
-        r"(?:(?<![A-Za-z0-9_])|(?=sk-[A-Za-z0-9_-]{32}))(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+",
+        r"(?!(?!sk-(?:proj|ant|test|live)-)sk-[a-z]{1,16}(?:-[a-z]{1,16})*+(?![A-Za-z0-9_-]))"
+        r"(?:(?<![A-Za-z0-9_])(?=sk-(?:proj-|ant-|test-|live-|[A-Za-z0-9_-]{20}))|(?=sk-[A-Za-z0-9_-]{32}))"
+        r"(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+",
     ),
     _rule("google_oauth_access_token", "ya29", r"(ya29\.)[A-Za-z0-9._-]+"),
     # Any JWT: a Google ID token, an IAP assertion, a session cookie. This is

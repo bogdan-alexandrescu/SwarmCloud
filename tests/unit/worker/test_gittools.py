@@ -293,6 +293,59 @@ def test_a_commit_the_task_did_not_write_is_foreign_author(world: World):
         == [("git_fetch", [theirs])]
 
 
+def _merge_a_depth_fetched_sibling(world: World) -> tuple[str, str]:
+    """The #2559 clone: a sibling branch X, three commits on the base by
+    somebody else, fetched in the agent's own shell with `--depth=2` (the
+    swarm-git fetch had answered `api_unavailable`) and merged. Returns the
+    sibling's depth cut-off and the merge."""
+    _git(world.seed, "checkout", "-q", "-b", "X")
+    for i in range(1, 4):
+        _commit(world.seed, f"x{i}.txt", f"x{i}\n", f"x{i}",
+                who=("Someone Else", "else@example.invalid"))
+    xs = _git(world.seed, "rev-list", "--reverse", "X", "^main").split()
+    _git(world.seed, "push", "-q", str(world.origin), "X")
+    _git(world.clone, "fetch", "-q", "--depth=2", f"file://{world.origin}",
+         "X:refs/remotes/origin/X")
+    _git(world.clone, "-c", f"user.name={PERSON[0]}", "-c", f"user.email={PERSON[1]}",
+         "merge", "-q", "--no-ff", "--allow-unrelated-histories", "-m", "merge X",
+         "origin/X")
+    cut = xs[1]
+    assert cut in (world.clone / ".git" / "shallow").read_text().split()
+    return cut, _git(world.clone, "rev-parse", "HEAD")
+
+
+def test_prepare_push_asks_origin_to_confirm_the_clones_shallow_lines(tmp_path: Path):
+    world = World(tmp_path, shallow=True)
+    cut, merge = _merge_a_depth_fetched_sibling(world)
+    answer = world.spool("git_push_branch", {})
+    assert "refused" not in answer, answer
+    calls = [(c["path"].rsplit("/", 1)[1], c["body"].get("confirm")) for c in world.api.calls]
+    # First the boundary's question (#2559): the clone's cut-off on X, never
+    # its base, which the worker recorded itself.
+    assert calls[0] == ("git_fetch", [cut]), calls
+    assert calls[-1][0] == "git_push_branch", calls
+    assert _git(world.origin, "rev-parse", f"refs/heads/{OWN_BRANCH}") == merge
+
+
+def test_a_refused_shallow_confirm_leaves_the_boundary_at_the_floor(
+    tmp_path: Path, monkeypatch
+):
+    world = World(tmp_path, shallow=True)
+    _merge_a_depth_fetched_sibling(world)
+    real = world.tools.call
+
+    def refusing(tool, fields, *, request_id):
+        if "confirm" in fields:
+            raise gittools.GitToolRefused("request_invalid", "no confirm here")
+        return real(tool, fields, request_id=request_id)
+
+    monkeypatch.setattr(world.tools, "call", refusing)
+    answer = world.spool("git_push_branch", {})
+    assert answer["refused"]["code"] == "push_failed", answer
+    assert "could not fetch the agent's work" in answer["refused"]["message"]
+    assert world.api.calls == []
+
+
 # --------------------------------------------------------------------------
 # The leak scan
 # --------------------------------------------------------------------------
@@ -559,3 +612,19 @@ def test_a_refused_tool_calls_log_line_carries_its_scrubbed_message(world: World
     # MUTATION: log `refusal.message` unscrubbed and either value is in the log.
     assert registered not in stream.getvalue()
     assert shaped not in stream.getvalue()
+
+
+def test_pr_checks_passes_on_where_swarm_api_read_the_check_runs(world: World, monkeypatch):
+    """#1188: for a credential that may not read check runs (a fine-grained
+    token on a private repository), swarm-api reads the Actions jobs at the
+    head instead and says so in `source`. The agent must see it: such a
+    reading leaves out any other App's check runs."""
+    def pr_checks(self, body: dict[str, Any]) -> dict[str, Any]:
+        return {"pr": body.get("pr"), "head_sha": "0" * 40, "state": "red", "rows": [],
+                "source": "actions_jobs", "unasked": "dropped"}
+    monkeypatch.setattr(FakeApi, "pr_checks", pr_checks)
+    answer = world.spool("pr_checks", {"pr": 12})
+    # MUTATION: drop "source" from the worker's pass-through and this is a KeyError.
+    assert answer["result"]["source"] == "actions_jobs", answer
+    # The control: a field swarm-api's answer does not define is still not passed on.
+    assert "unasked" not in answer["result"]

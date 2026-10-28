@@ -39,6 +39,7 @@ from agent_worker.errors import ExitCode
 from agent_worker.runners import budgetwatch, claude_code
 from agent_worker.runners.base import RunnerContext, RunnerFailure
 from agent_worker.runners.cliagent import CliAgentSpec, run_cli_agent
+from swarm_common.models import EndCause
 from swarm_common.states import EventType, TaskState
 
 from worker_seeds import seed_attempt
@@ -106,6 +107,34 @@ def test_a_turn_boundary_is_a_top_level_user_event_or_a_codex_turn():
     # codex counts cached input inside its input: 400 + 600 + 50.
     assert meter.tokens() == 1_050
     assert meter.turns == 2
+
+
+def test_the_typed_budget_is_read_first_and_the_dispatch_block_is_the_fallback():
+    legacy = {"metadata": {"dispatch": {"budget": {"usd": 2, "from": {}}}}}
+    # MUTATION: read only the typed field and the legacy task has no budget.
+    assert Limits.from_task(legacy) == Limits(usd=2.0)
+    # MUTATION: read only the dispatch block and the typed field is ignored.
+    assert Limits.from_task({"budget": {"tokens": 5_000}}) == Limits(tokens=5_000)
+    assert Limits.from_task({**legacy, "budget": {"tokens": 5_000}}) == Limits(tokens=5_000)
+    # A typed field that holds nothing usable is no budget, never a fall back
+    # to a block swarm-api would not have written beside it.
+    assert Limits.from_task({**legacy, "budget": {"usd": 0}}) is None
+    assert Limits.from_task({"metadata": {"dispatch": {"strategy": "collect"}}}) is None
+    assert Limits.from_task(None) is None and Limits.from_task({}) is None
+
+
+def test_a_whole_float_token_count_is_the_count():
+    """JCS gives 1000.0 the bytes of 1000: reading it as no limit would let a
+    rewrite that keeps the signature valid lift the limit."""
+    assert Limits.from_block({"tokens": 1000.0}) == Limits(tokens=1000)
+    assert Limits.from_block({"tokens": 1000.5}) is None
+    assert Limits.from_block({"tokens": float("inf"), "usd": float("nan")}) is None
+
+
+def test_the_ends_and_the_events_are_the_contracts_own():
+    assert budget_mod.END_CAUSE == EndCause.BUDGET_EXCEEDED.value == "budget_exceeded"
+    assert budget_mod.WARNING_EVENT is EventType.BUDGET_WARNING
+    assert budget_mod.WARNING_CAUSE == EventType.BUDGET_WARNING.value
 
 
 def test_a_task_without_a_budget_block_has_no_budget():
@@ -385,12 +414,16 @@ PUBLISHED = {
 }
 
 
-def _seed(db: Any, *, budget: dict[str, Any] | None) -> None:
+def _seed(db: Any, *, budget: dict[str, Any] | None, typed: dict[str, Any] | None = None) -> None:
+    """`typed` is `Task.budget` (contract request 120); `budget` the
+    `metadata.dispatch.budget` a task stored before it carries."""
     seed_attempt(db, task_input={"prompt": "do the work", "steps": 1, "sleep_seconds": 0.01})
     dispatch: dict[str, Any] = {"strategy": "direct-pr"}
     if budget is not None:
         dispatch["budget"] = budget
     db.doc("tasks/task_1")["metadata"] = {"dispatch": dispatch}
+    if typed is not None:
+        db.doc("tasks/task_1")["budget"] = typed
 
 
 def _publishes(worker: Any, pushes: list[dict[str, Any]]) -> None:
@@ -430,8 +463,9 @@ def test_a_budget_stop_is_published_then_failed_budget_exceeded(db, worker_facto
     # MUTATION: drop the budget branch from `_record_finalised` and this is SUCCEEDED.
     assert task["last_error"].startswith("budget_exceeded: "), task["last_error"]
     assert "$1.02" in task["last_error"] and "$1.00" in task["last_error"]
-    # No frozen cause yet (contract request 118): null, the contract's own rule.
-    assert task.get("end_cause") is None
+    # Contract request 118: the frozen cause, beside the text and the summary.
+    # MUTATION: drop `end_cause=` from the budget branch and this is None.
+    assert task.get("end_cause") == "budget_exceeded"
     numbers = task["result_summary"]["budget"]
     assert numbers["end_cause"] == "budget_exceeded" and numbers["stopped"] == "turn_boundary"
     assert numbers["used"]["usd"] == 1.02 and numbers["limit"] == {"usd": 1.0}
@@ -471,3 +505,19 @@ def test_only_a_budgeted_cli_task_gets_the_budget_files(db, worker_factory):
     mock.ws = workspace_mod.create(mock.cfg.workspace_root, mock.cfg.attempt_id)
     # A profile with no CLI stream has nothing to enforce from.
     assert mock._budget_env() == {} and mock.budget is None
+
+
+def test_a_typed_budget_reaches_the_guard_and_its_warning_is_a_budget_warning(db, worker_factory):
+    _seed(db, budget=None, typed={"tokens": 15_000_000})
+    worker, _, _ = worker_factory(runner_profile="claude-code")
+    worker._task = db.doc("tasks/task_1")
+    from agent_worker import workspace as workspace_mod
+
+    worker.ws = workspace_mod.create(worker.cfg.workspace_root, worker.cfg.attempt_id)
+    assert worker._budget_env(), "a typed budget builds the guard"
+    assert worker.budget is not None and worker.budget.limits == Limits(tokens=15_000_000)
+
+    worker.budget._emit({"cause": budget_mod.WARNING_CAUSE, "percent": 80, "told": True})
+    warned = [e for e in db.events("task_1") if e["detail"].get("cause") == "budget_warning"]
+    # MUTATION: emit the warning as RUNNING (the old form) and this is "running".
+    assert [e["type"] for e in warned] == [EventType.BUDGET_WARNING.value]

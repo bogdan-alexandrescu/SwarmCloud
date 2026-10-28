@@ -148,6 +148,7 @@ from .forge_installation import (
     MINT_FAILED, MINT_NO_INSTALLATION, MINT_NOT_COVERED, MINT_NOT_GRANTED, WorkflowMintRefused,
 )
 from .forgewrite import (
+    ChecksForbidden,
     ForgeUnreachable,
     ForgeWriteError,
     ForgeWriteForbidden,
@@ -212,6 +213,11 @@ INLINE_BUNDLE_BYTES = 24 * 1024 * 1024
 #: Q6 = A: the largest file `read_private` returns, and each red row's log tail.
 MAX_FILE_BYTES = 1024 * 1024
 LOG_TAIL_BYTES = 8 * 1024
+#: Where a `pr_checks` answer's check runs were read (its `source`): GitHub's
+#: check runs, or -- for a credential that may not read those (#1188) -- the
+#: Actions jobs at the head, which leave out any other App's check runs.
+CHECKS_FROM_CHECK_RUNS = "check_runs"
+CHECKS_FROM_ACTIONS_JOBS = "actions_jobs"
 #: The most a directory listing carries; GitHub's contents API lists 1,000.
 MAX_ENTRIES = 1000
 #: A request body: a push carries its bundle base64'd, everything else a few names.
@@ -1288,7 +1294,7 @@ class GitTools:
         call.fields["resolved_sha"] = pull.head_sha
         rules = self.writer.branch_rules(ref, pull.base_ref, token) if pull.base_ref else []
         required = required_status_checks(rules)
-        runs = self.writer.check_runs(ref, pull.head_sha, token)
+        runs, source = self._check_runs(call, ref, pull.head_sha, token)
         statuses = self.writer.commit_statuses(ref, pull.head_sha, token)
         reading = evaluate(required, runs, statuses)
         needed = {check.context for check in required}
@@ -1314,7 +1320,30 @@ class GitTools:
                          "conclusion": None if state == "pending" else state,
                          "required": name in needed})
         return {"pr": pull.number, "head_sha": pull.head_sha, "state": reading.state,
-                "rows": rows}
+                "rows": rows, "source": source}
+
+    def _check_runs(self, call: _Call, ref: IssueRef, sha: str,
+                    token: str) -> tuple[list[dict[str, Any]], str]:
+        """The check runs at `sha`, and where they were read.
+
+        #1188: every git-tools acceptance run from 2026-10-23 to 2026-10-27
+        answered `pr_checks` forge_refused on the private sandbox, whose slot
+        pushed the branch fine. A fine-grained personal access token has no
+        "Checks" permission (docs.github.com, read 2026-10-27), so the
+        check-runs read is 403 on any private repository; the Actions jobs at
+        the sha are the same check runs (`actions_check_runs`). Only that
+        403 falls back, and a credential that can read neither still refuses
+        with the check-runs read's own sentence.
+        """
+        try:
+            return self.writer.check_runs(ref, sha, token), CHECKS_FROM_CHECK_RUNS
+        except ChecksForbidden as refused:
+            try:
+                runs = self.writer.actions_check_runs(ref, sha, token)
+            except (ForgeWriteForbidden, ForgeWriteNotFound, ForgeWriteUnauthorized):
+                raise refused from None
+        call.fields["source"] = CHECKS_FROM_ACTIONS_JOBS
+        return runs, CHECKS_FROM_ACTIONS_JOBS
 
     # -- workflow files (§3.3; #2029, the App token behind `workflow_files`) ----
 
@@ -1324,9 +1353,20 @@ class GitTools:
         The bundle is thin, so it is read where `gitexec.push_bundle` reads it:
         a scratch repository holding the forge's prerequisite commits at depth
         1 and the bundle's objects, with this call's own slot, deadline and
-        credential file. `git log --name-only -m --no-renames` over exactly
-        the new commits names every path they add, change, delete or rename
-        away, so a rename out of `.github/workflows/` counts as touching it.
+        credential file. `git log --name-only --no-renames
+        --diff-merges=combined` over exactly the new commits names every path
+        they add, change, delete or rename away, so a rename out of
+        `.github/workflows/` counts as touching it -- the worker's
+        `Worker._workflow_paths` runs the same listing, and the two must never
+        disagree about which route a branch takes.
+
+        A merge is listed COMBINED, not with `-m` (#2452): `-m` diffs it
+        against each parent, so a lane's merge of main named main's own
+        workflow changes as the branch's and was refused
+        `workflow_scope_missing` (or routed here at all). Combined, a merge
+        names a path only where its result differs from every parent. Both
+        parents' trees are what that reads: the prerequisites fetched at
+        depth 1 above carry them, as they did for `-m`.
         """
         gx = self.gitexec
         url, host = gx._check_url(url)
@@ -1353,7 +1393,8 @@ class GitTools:
                              token=token, extra=("-c", "protocol.file.allow=always")),
                      "unbundle", code="bad_bundle")
             run = gx._must(gx._git(scratch, repo, [
-                "log", "--format=", "--name-only", "--no-renames", "-m", header.tip,
+                "log", "--format=", "--name-only", "--no-renames", "--diff-merges=combined",
+                header.tip,
                 "--not", *header.prerequisites, "--", *WORKFLOW_PATHSPECS], token=token),
                 "listing the pushed range's paths", code="bad_bundle")
         return sorted({line.strip() for line in run.stdout.splitlines()

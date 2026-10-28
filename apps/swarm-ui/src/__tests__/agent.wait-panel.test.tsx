@@ -321,7 +321,7 @@ describe('each reason renders its own detail', () => {
         reason: 'AWAITING_INPUT',
         next_check_at: null,
         detail: {
-          who_may_answer: { tenant_id: 'u-bogdan', text: 'any member of tenant u-bogdan' },
+          who_may_answer: { tenant_id: 'u-bogdan', text: 'any member of workspace u-bogdan' },
           opened_at: at(60),
           expires_at: at(180),
           answer_command: '/sc answer wf_1 approve',
@@ -329,7 +329,7 @@ describe('each reason renders its own detail', () => {
       }),
     )
     // MUTATION: drop who may answer, the expiry, or the command.
-    expect(fact(p, 'who')).toBe('any member of tenant u-bogdan')
+    expect(fact(p, 'who')).toBe('any member of workspace u-bogdan')
     expect(fact(p, 'expires')).toBe(clockTime(at(180), NOW)!.text)
     expect(fact(p, 'answer')).toBe('/sc answer wf_1 approve')
   })
@@ -340,7 +340,7 @@ describe('each reason renders its own detail', () => {
         reason: 'HUMAN_REQUIRED',
         next_check_at: null,
         detail: {
-          who_may_answer: { tenant_id: 'u-bogdan', text: 'any member of tenant u-bogdan' },
+          who_may_answer: { tenant_id: 'u-bogdan', text: 'any member of workspace u-bogdan' },
           expires_at: null,
           answer_route: 'POST /v1/tasks/task_31c301ecb33940eeb278/human-ready',
           cause: null,

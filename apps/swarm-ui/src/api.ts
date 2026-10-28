@@ -9,7 +9,7 @@ import {
   type HealthStatus,
   type PoolHealth,
 } from './accountHealthModel'
-import { noteFixtureProbe, read, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
+import { chosenTenant, noteFixtureProbe, read, readGeneration, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
 // A VALUE import, not a type: the attempt fixture needs the terminal-state set
 // so a live task's newest attempt is rendered as live, and the task fixture
 // needs the concurrency set to decide which rows hold a lease -- invariant 1's
@@ -54,6 +54,7 @@ import type {
   ReminderCadence, WorkspaceRole,
   DefaultRoleChange, PersonRoleChange, PersonRoles, PersonWorkspaceRole, RoleSummary, WorkspaceRoleEvent, WorkspaceRoleMe,
   WorkspaceRoleOverride, WorkspaceRoles, WorkspaceRoster,
+  JoinedMember, JoinedMemberRemoval, JoinedMembers, JoinLinkState, JoinLookup, JoinRequestMine, JoinRequestState,
   AdminWorkspaceRoles, AdminWorkspaceRolesPage,
   QaIdentityGrantDoc, QaIdentityList, QaIdentityMine,
   RunnerRecentUse, RunnerSize, RunnerSizeChanges, RunnerSizesDoc, RunnerSizesPreview, RunnerSizeVersion,
@@ -411,6 +412,73 @@ export interface AgentDetail {
   eventsDetail: string | null
 }
 
+/**
+ * HOW MANY OF THE CALLER'S OTHER TENANTS A TASK 404 ASKS (#1194 c15). The
+ * probes run one after another, so a caller in many groups costs this many
+ * reads at most, once per task and chosen tenant (`ELSEWHERE_KEEP_MS`, and
+ * until a write or sign-out: `readGeneration`), never a burst against the
+ * 20 rps per-principal budget. A chosen value: a task in a tenant past the
+ * eighth is drawn as today's 404, which is never a wrong answer.
+ */
+export const ELSEWHERE_PROBE_CAP = 8
+
+/**
+ * How long one probe's answer is kept for the same task under the same chosen
+ * tenant. The drawer re-reads a failed task on its back-off, and asking every
+ * other tenant again on each of those reads would multiply the probe by the
+ * poll; a minute covers the reads a person waits through before they act.
+ */
+export const ELSEWHERE_KEEP_MS = 60_000
+
+const elsewhereKept = new Map<string, { at: number; answer: Promise<TenantChoice | null> }>()
+
+/**
+ * THE ONE OTHER TENANT OF THE CALLER'S THAT HOLDS `taskId`, or null.
+ *
+ * `GET /v1/tasks/{id}` answers the same 404 for a task that does not exist and
+ * for one in another tenant (store.py), and this does not widen that answer:
+ * it asks ONLY under the tenants `GET /v1/tenants/mine` lists for this caller
+ * -- each with that tenant's own `X-Swarm-Tenant`, which the API honours only
+ * for a membership it confirmed -- one at a time and at most
+ * `ELSEWHERE_PROBE_CAP`. Exactly one 200 names the tenant; none, or more than
+ * one (a task id is unique, so that would be a confused API), is null and the
+ * 404 is drawn as it always was. The choice itself is never changed here.
+ */
+export function taskElsewhere(taskId: string): Promise<TenantChoice | null> {
+  const chosen = chosenTenant()
+  const key = `${readGeneration()}\n${chosen ?? ''}\n${taskId}`
+  const kept = elsewhereKept.get(key)
+  if (kept !== undefined && Date.now() - kept.at < ELSEWHERE_KEEP_MS) return kept.answer
+  const answer = (async (): Promise<TenantChoice | null> => {
+    const mine = await loadMyTenants()
+    if (mine.status !== 'ok' && mine.status !== 'stale') return null
+    // The chosen tenant already answered 404. With no choice the API applied
+    // the caller's default, which /v1/tenants/me names and this does not
+    // read; asking it again under its own header costs one read and is safe.
+    const others = mine.data.filter((t) => t.tenant_id !== chosen).slice(0, ELSEWHERE_PROBE_CAP)
+    const holders: TenantChoice[] = []
+    for (const t of others) {
+      const r = await read<unknown>(route('/v1/tasks/{id}', { id: taskId }), () => false, { tenant: t.tenant_id, frame: true })
+      if (r.status === 'ok') holders.push(t)
+    }
+    return holders.length === 1 ? (holders[0] ?? null) : null
+  })()
+  elsewhereKept.set(key, { at: Date.now(), answer })
+  return answer
+}
+
+/**
+ * A task read's failure, with `elsewhere` set when it was a 404 and one other
+ * tenant of the caller's holds the task (`taskElsewhere`). Every other failure
+ * is returned as it came.
+ */
+async function withElsewhere(taskId: string, failed: { status: 'error'; error: ApiError }): Promise<{ status: 'error'; error: ApiError }> {
+  if (failed.error.kind !== 'not_found') return failed
+  const found = await taskElsewhere(taskId)
+  if (found === null) return failed
+  return { ...failed, error: { ...failed.error, elsewhere: { tenant_id: found.tenant_id, display_name: found.display_name } } }
+}
+
 export async function loadAgentDetail(taskId: string): Promise<Result<AgentDetail>> {
   if (USE_FIXTURES) return fixtureAgentDetail(taskId)
 
@@ -420,7 +488,9 @@ export async function loadAgentDetail(taskId: string): Promise<Result<AgentDetai
     read<{ events: TaskEvent[] }>(route(`/v1/tasks/{id}/events?limit=${EVENT_PAGE_LIMIT}`, id), () => false),
   ])
 
-  if (task.status === 'loading' || task.status === 'error') return task
+  if (task.status === 'loading') return task
+  // A 404 asks the caller's other tenants whether one holds it (#1194 c15).
+  if (task.status === 'error') return withElsewhere(taskId, task)
   if (task.status === 'empty') {
     return {
       status: 'error',
@@ -524,9 +594,10 @@ function fixtureGit(task: Task): Record<string, unknown> {
 async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> {
   const page = await fixtureTasks()
   const listed = page.status === 'ok' ? page.data.tasks : []
-  // THE WAITING FIXTURES (#1782) are reached by id and kept off the list, so
-  // every count the list's fixtures pin stays where it was.
-  const task = listed.find((t) => t.id === taskId) ?? fixtureWaitingTasks(listed).find((t) => t.id === taskId)
+  // THE WAITING FIXTURES (#1782) and THE BUDGET ONES (#2459) are reached by
+  // id and kept off the list, so every count the list's fixtures pin stays
+  // where it was.
+  const task = listed.find((t) => t.id === taskId) ?? fixtureOffList(listed, taskId)
   if (!task) {
     return {
       status: 'error',
@@ -604,6 +675,11 @@ async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> 
           seq: 1,
         }))
         events.push(ev('heartbeat', begin + ran * 0.7, { elapsed_seconds: Math.round(ran * 0.7) / 1000, peak_rss_bytes: 1_842_000_000, checkpoints: 1 }))
+        // The budget agents' 80% warning (#2459): the live one's, and the
+        // stopped one's on its way to the stop.
+        if (task.id === FIXTURE_BUDGET_WARN || task.id === FIXTURE_BUDGET_EXCEEDED) {
+          events.push(ev('running', begin + ran * 0.8, FIXTURE_BUDGET_WARNING))
+        }
         // Deliberately NO matching event for ckpt_0002, which the attempt
         // lists: that is the real paging case -- an id with no size and no
         // uri, which must render as "the event is off this page", not as a
@@ -1173,9 +1249,21 @@ export async function loadArtifactListing(taskId: string): Promise<Result<Artifa
  * rides as `?tenant=` (`tenantQuery`) -- without it every artifact of a task
  * listed under a switched tenant would 404. Computed at render; the shell
  * remounts the page on a switch, so a link never carries a stale choice.
+ *
+ * `redaction: 'none'` is the OWNER-ONLY RAW PATCH (#1857): the server serves
+ * a `.patch` as stored to the task's submitter, always as an attachment, and
+ * refuses everyone else 403. Only `ArtifactViewer`'s `RawPatchDownload` asks
+ * for it; every other link keeps the default, which is redacted.
  */
-export function artifactRawUrl(taskId: string, name: string, disposition: 'inline' | 'attachment'): string {
-  return route('/v1/tasks/{id}/artifacts/raw', { id: taskId }, tenantQuery(new URLSearchParams({ name, disposition }))).url
+export function artifactRawUrl(
+  taskId: string,
+  name: string,
+  disposition: 'inline' | 'attachment',
+  options: { redaction?: 'none' } = {},
+): string {
+  const query = new URLSearchParams({ name, disposition })
+  if (options.redaction === 'none') query.set('redaction', 'none')
+  return route('/v1/tasks/{id}/artifacts/raw', { id: taskId }, tenantQuery(query)).url
 }
 
 /**
@@ -2350,7 +2438,9 @@ export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
       ? d.attempts
       : d.attempts.map((a) => ({ ...a, account: d.accounts_by_attempt?.[a.attempt_id] ?? null }))
 
-  if (task.status === 'loading' || task.status === 'error') return task
+  if (task.status === 'loading') return task
+  // A 404 asks the caller's other tenants whether one holds it (#1194 c15).
+  if (task.status === 'error') return withElsewhere(taskId, task)
   if (task.status === 'empty') {
     return {
       status: 'error',
@@ -4735,9 +4825,9 @@ function fixtureWaitingTasks(listed: Task[]): Task[] {
     one(
       'AWAITING_INPUT',
       'Waiting for a member of u-bogdan to answer; /sc answer wf_sizes_sched_2 approve',
-      'a member of the tenant answers, or the window expires and its default applies',
+      'a member of the workspace answers, or the window expires and its default applies',
       {
-        who_may_answer: { tenant_id: 'u-bogdan', text: 'any member of tenant u-bogdan' },
+        who_may_answer: { tenant_id: 'u-bogdan', text: 'any member of workspace u-bogdan' },
         opened_at: at(47), expires_at: at(-240), answer_command: '/sc answer wf_sizes_sched_2 approve',
       },
       { next: null },
@@ -4746,9 +4836,9 @@ function fixtureWaitingTasks(listed: Task[]): Task[] {
     one(
       'HUMAN_REQUIRED',
       'Waiting for a person: sign in on its console page, then say it is ready',
-      "a member of the tenant calls human-ready (the console's Ready button)",
+      "a member of the workspace calls human-ready (the console's Ready button)",
       {
-        who_may_answer: { tenant_id: 'u-bogdan', text: 'any member of tenant u-bogdan' },
+        who_may_answer: { tenant_id: 'u-bogdan', text: 'any member of workspace u-bogdan' },
         expires_at: null, answer_route: 'POST /v1/tasks/task_wait_human_required/human-ready', cause: null,
       },
       { next: null, task: { runner_profile: 'claude-code-browser', resource_class: 'browser', blocked_by: [{ reason: 'HUMAN_REQUIRED' }] } },
@@ -4788,7 +4878,7 @@ function fixtureWaitingTasks(listed: Task[]): Task[] {
     one(
       'CREDENTIAL_MISSING',
       'Credential missing: anthropic key, github/token',
-      "the tenant registers the credential and the scheduler's credential sweep finds it",
+      "the workspace registers the credential and the scheduler's credential sweep finds it",
       {
         provider: 'anthropic', secret_names: ['anthropic key', 'github/token'], account_pool: null,
         forge_connection: null, workspace_secrets: [{ consumer: 'github', slot: 'token' }], mcp_servers: [],
@@ -4803,6 +4893,134 @@ function fixtureWaitingTasks(listed: Task[]): Task[] {
       { next: null },
     ),
   ]
+}
+
+/**
+ * THE BUDGET AGENTS (#2459, BUDGET-FIXTURES): one per state of the agent's
+ * Budget card (AgentBudget.tsx), so the card is drawn in development and a
+ * visual-QA run captures it (`budget-*` in qa/routes.json). Like the waiting
+ * agents they are reached BY ID AND KEPT OFF THE LISTS (BGD, 2026-10-27):
+ * the agents list, the task window, Outcomes and every count stay as other
+ * tests pin them.
+ *
+ * Their shapes are agent.budget.test.tsx's: a step's $1 under a $5 default,
+ * the warning a `running` event carrying `cause: budget_warning` at $0.81,
+ * and a stop at $1.02 on a turn boundary. The figures agree everywhere they
+ * are shown: the warning's and the stop's `used`, the attempt's usage
+ * (`fixtureUsage`), and the runner's report in the result summary.
+ */
+const FIXTURE_BUDGET_WARN = 'task_budget_warn'
+const FIXTURE_BUDGET_EXCEEDED = 'task_budget_exceeded'
+const FIXTURE_BUDGET_NONE = 'task_budget_none'
+
+/** `dispatch.budget` as `swarm_api.budget.dispatch_block` writes it: a step's $1 under a $5 default. */
+const FIXTURE_BUDGET = { usd: 1, from: { step: { usd: 1 }, workspace: { usd: 5 }, ceiling: { usd: 50 } } }
+
+/** The 80% warning's detail, on a `running` event as the worker writes it today (contract request 121 gives it its own type). */
+const FIXTURE_BUDGET_WARNING = {
+  cause: 'budget_warning',
+  percent: 80,
+  told: true,
+  limit: { usd: 1 },
+  used: { tokens: 812_000, usd: 0.81 },
+}
+
+/** What the stopped agent's runner reported: 1.02M tokens and $1.02, the `used` its stop says. */
+const FIXTURE_BUDGET_STOP_USAGE = {
+  input_tokens: 18_400, output_tokens: 21_600, cache_read_input_tokens: 920_000, cache_creation_input_tokens: 60_000, cost_usd: 1.02,
+}
+
+/** What each budget agent's runner reported: tokens summing to the `used` its warning or its stop says. */
+const FIXTURE_BUDGET_USAGE: Readonly<Record<string, NonNullable<ReturnType<typeof fixtureUsage>>>> = {
+  [FIXTURE_BUDGET_WARN]: {
+    input_tokens: 14_200, output_tokens: 17_800, cache_read_input_tokens: 732_000, cache_creation_input_tokens: 48_000, cost_usd: 0.81,
+  },
+  [FIXTURE_BUDGET_EXCEEDED]: FIXTURE_BUDGET_STOP_USAGE,
+}
+
+function fixtureBudgetTasks(listed: Task[]): Task[] {
+  const base = listed.find((t) => t.runner_profile === 'claude-code') ?? listed[0]
+  if (base === undefined) return []
+  const at = (minsAgo: number) => new Date(FIXTURE_NOW - minsAgo * 60_000).toISOString()
+  const dispatch = { strategy: 'collect', carrier: 'checkpoints', role: null, integrates: [] }
+  // One attempt each, submitted `since` minutes ago and last changed `last`
+  // minutes ago; `fixtureTimed` derives the rest, as every fixture task's.
+  const one = (id: string, state: TaskState, since: number, last: number, over: Partial<Task>): Task =>
+    fixtureTimed({
+      ...base,
+      id,
+      state,
+      runner_profile: 'claude-code',
+      resource_class: 'standard',
+      provider: 'anthropic',
+      model: 'claude-opus-5',
+      metadata: null,
+      input: null,
+      workflow_id: null,
+      step_id: null,
+      depends_on: null,
+      park_reason: null,
+      blocked_by: null,
+      next_eligible_at: null,
+      attempt_count: 1,
+      current_generation: 1,
+      current_lease_id: CONCURRENCY_STATES.has(state) ? `lease_${id.replace('task_', '')}` : null,
+      created_at: at(since),
+      updated_at: at(last),
+      end_cause: null,
+      last_error: null,
+      result_summary: null,
+      dispatch: dispatch as Task['dispatch'],
+      ...over,
+    })
+  // The budgeted blocks are the codec's four keys plus `budget`, kept as
+  // named values: an inline dispatch literal is held to exactly the four
+  // (test_dispatch_ui_surface.py), which predate the budget.
+  const warned = { ...dispatch, budget: FIXTURE_BUDGET } as unknown as Task['dispatch']
+  const stopped = { ...dispatch, strategy: 'direct-pr', budget: FIXTURE_BUDGET } as unknown as Task['dispatch']
+  const usage = FIXTURE_BUDGET_STOP_USAGE
+  const exceeded = one(FIXTURE_BUDGET_EXCEEDED, 'FAILED', 50, 22, {
+    dispatch: stopped,
+    end_cause: 'budget_exceeded',
+    last_error:
+      'budget_exceeded: the agent used $1.02 of a budget of $1.00 and was stopped at a turn boundary; ' +
+      'its work was checkpointed and published as it stood',
+  })
+  return [
+    // A RUNNING agent past 80% of its budget: the amber warning.
+    one(FIXTURE_BUDGET_WARN, 'RUNNING', 30, 0, {
+      dispatch: warned,
+      heartbeat_at: at(1),
+    }),
+    // A FAILED agent the worker stopped on its budget (contract request 118),
+    // its work published: a `direct-pr` step, so its pull request and the
+    // Changes pane's publish agree with the card's "published as it stood".
+    {
+      ...exceeded,
+      result_summary: {
+        budget: { limit: { usd: 1 }, used: { tokens: 1_020_000, usd: 1.02 }, warned: true, end_cause: 'budget_exceeded', stopped: 'turn_boundary' },
+        git: {
+          ...fixtureGit(exceeded),
+          pull_request: { number: 2470, url: 'https://github.com/bogdan-alexandrescu/SwarmCloud/pull/2470', state: 'open', created: true },
+        },
+        runner: {
+          usage: {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            total_cost_usd: usage.cost_usd,
+            models: ['claude-opus-5'],
+          },
+        },
+      } as unknown as Task['result_summary'],
+    },
+    // A SUCCEEDED agent with no budget: the card draws nothing.
+    one(FIXTURE_BUDGET_NONE, 'SUCCEEDED', 90, 80, {}),
+  ]
+}
+
+/** A task a per-task read answers and no list returns: a waiting one (#1782) or a budget one (#2459). */
+function fixtureOffList(listed: Task[], taskId: string): Task | undefined {
+  return fixtureWaitingTasks(listed).find((t) => t.id === taskId) ?? fixtureBudgetTasks(listed).find((t) => t.id === taskId)
 }
 
 // ---------------------------------------------------------------------------
@@ -4924,7 +5142,7 @@ function fixtureNewestSpan(task: Task): FixtureAttemptSpan | undefined {
  */
 function fixtureTaskDoc(taskId: string): Task | undefined {
   const listed = fixtureTaskRows()
-  const known = listed.find((t) => t.id === taskId) ?? fixtureWaitingTasks(listed).find((t) => t.id === taskId)
+  const known = listed.find((t) => t.id === taskId) ?? fixtureOffList(listed, taskId)
   if (known !== undefined) return known
   const stand = listed.find((t) => t.state === 'SUCCEEDED')
   return stand === undefined ? undefined : { ...stand, id: taskId }
@@ -4942,6 +5160,8 @@ function fixtureUsage(task: Task): Pick<
   'input_tokens' | 'output_tokens' | 'cache_read_input_tokens' | 'cache_creation_input_tokens' | 'cost_usd'
 > | null {
   if (task.runner_profile === 'mock' || task.runner_profile === 'generic') return null
+  const budgeted = FIXTURE_BUDGET_USAGE[task.id]
+  if (budgeted !== undefined) return budgeted
   if (task.id === 'task_wf_scan_a') {
     return { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cost_usd: 0 }
   }
@@ -7734,6 +7954,14 @@ function fixtureCodeIntelligence(): unknown {
   return { tenant_id: FIXTURE_TENANT, can_edit: true, jev: false, context: 'on', updated_at: null, updated_by: null }
 }
 
+/** `GET /v1/qa-settings` (QA-FLOWS-UI): no value stored, so the default 15; the owner may change it. */
+function fixtureQaSettings(): unknown {
+  return {
+    tenant_id: FIXTURE_TENANT, qa_flows_per_step: 15, defaults: { qa_flows_per_step: 15 },
+    bounds: { qa_flows_per_step: { min: 1, max: 30 } }, set_at: null, set_by: null, can_edit: true,
+  }
+}
+
 /** `GET /v1/workspace/roles`: u-bogdan is a personal workspace, which has only its owner, the admin. */
 function fixtureWorkspaceRoles(): unknown {
   return {
@@ -7771,12 +7999,16 @@ const FIXTURE_PEOPLE_COLUMNS = [
 /**
  * `GET /v1/admin/people` as the `workspace-admin` persona reads it (S5f):
  * eng alone, its people's cells and when they were last seen, nothing else.
+ * ops, a platform owner, is marked `platform_admin` as `people.mark_platform_admin`
+ * marks them in either read, so the scoped read draws "(platform admin)" too
+ * (ROLE-MARK; part of #2391).
  */
 function fixtureScopedPeople(): unknown {
   const people = [
     { email: 'alice@example.com', display_name: null, roles: { eng: 'admin' }, last_active: fixtureAgo(5 * 60_000) },
     { email: 'bob@example.com', display_name: 'Bob', roles: { eng: 'member' }, last_active: fixtureAgo(3 * FIXTURE_HOUR) },
     { email: 'erin@example.com', display_name: null, roles: { eng: 'viewer' }, last_active: null },
+    { email: 'ops@example.com', display_name: null, roles: { eng: 'admin' }, last_active: fixtureAgo(FIXTURE_HOUR), platform_admin: true },
   ]
   return { scope: 'workspaces', workspaces: [FIXTURE_PEOPLE_COLUMNS[0]], workspaces_error: null, people, count: people.length, pending: 0 }
 }
@@ -7785,6 +8017,9 @@ function fixtureScopedPeople(): unknown {
  * `GET /v1/admin/people` (run-4 admin-003): four people -- three signed in
  * with a ready workspace, one pending (a requested workspace) -- and one
  * admin, the persona. `count` and `pending` are counted from the rows.
+ * alice and bogdan, on the admins list, are marked `platform_admin` with admin
+ * in every column, as `people.role_cell` and `people.mark_platform_admin`
+ * serve them: the page draws "(platform admin)" from the marker alone (ROLE-MARK).
  */
 function fixturePeople(): unknown {
   const ws = (state: string, id: string | null, extra: Record<string, unknown> = {}) => ({
@@ -7802,7 +8037,7 @@ function fixturePeople(): unknown {
       first_seen: fixtureAgo(45 * 60_000), last_seen: fixtureAgo(40 * 60_000), last_submitted: null, last_active: fixtureAgo(40 * 60_000),
     },
     {
-      email: 'alice@example.com', display_name: null, teams: [FIXTURE_GROUP.principal], github: 'connected', roles: { eng: 'admin', research: 'none' },
+      email: 'alice@example.com', display_name: null, teams: [FIXTURE_GROUP.principal], github: 'connected', roles: { eng: 'admin', research: 'admin' }, platform_admin: true,
       workspace: ws('ready', FIXTURE_TENANT, { ready_at: fixtureAgo(9 * 24 * FIXTURE_HOUR) }),
       claude_account: claude('own', ownAccounts.length, 1, [FIXTURE_GROUP.tenant_id]), loan_request: null,
       first_seen: fixtureAgo(9 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(5 * 60_000), last_submitted: fixtureAgo(20 * 60_000), last_active: fixtureAgo(5 * 60_000),
@@ -7814,7 +8049,7 @@ function fixturePeople(): unknown {
       first_seen: fixtureAgo(6 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(3 * FIXTURE_HOUR), last_submitted: fixtureAgo(4 * FIXTURE_HOUR), last_active: fixtureAgo(3 * FIXTURE_HOUR),
     },
     {
-      email: 'bogdan@example.com', display_name: 'Bogdan Alexandrescu', teams: [FIXTURE_GROUP.principal], github: 'connected', roles: { eng: 'admin', research: 'member' },
+      email: 'bogdan@example.com', display_name: 'Bogdan Alexandrescu', teams: [FIXTURE_GROUP.principal], github: 'connected', roles: { eng: 'admin', research: 'admin' }, platform_admin: true,
       workspace: ws('ready', 'u-bogdan', { ready_at: fixtureAgo(12 * 24 * FIXTURE_HOUR) }),
       claude_account: { source: 'lent', own: 0, lent: 7, lent_by: ['eng'], provider_key: false, lent_accounts: Array.from({ length: 7 }, (_, i) => ({ account_id: i === 0 ? 'ai-eng-1-max' : `ai-eng-${i + 1}`, label: i === 0 ? 'ai-eng-1-max' : `ai-eng-${i + 1}`, owner_tenant: 'eng', owner_name: 'Engineering', state: 'AVAILABLE' })) },
       loan_request: null,
@@ -7916,6 +8151,7 @@ const FIXTURE_READS: Readonly<Record<string, (url: string) => FixtureBody | unde
   '/v1/provider-keys/{provider}': (url) => ({ body: fixtureProviderKeys(fixtureSegment(url, 3)) }),
   '/v1/judgment': () => ({ body: fixtureJudgment() }),
   '/v1/code-intelligence': () => ({ body: fixtureCodeIntelligence() }),
+  '/v1/qa-settings': () => ({ body: fixtureQaSettings() }),
   '/v1/profile': () => ({ body: fixtureProfile() }),
   '/v1/workspace/roles': () => ({ body: fixtureWorkspaceRoles() }),
   '/v1/admin/people': () => (fixtureIsAdmin ? { body: fixturePeople() } : fixtureIsWorkspaceAdmin ? { body: fixtureScopedPeople() } : 'admin'),
@@ -9723,6 +9959,216 @@ export async function putCodeIntelligence(tenantId: string, jev: boolean): Promi
   return writeTo(route('/v1/workspaces/{tenant_id}/code-intelligence', { tenant_id: tenantId }), 'PUT', { jev })
 }
 
+// The per-agent budget (BUDGET-UI-SETTINGS; part of #2459,
+// docs/design/agent-budget.md §2, §4). A workspace admin sets one default, in
+// dollars OR tokens (`PUT /v1/workspaces/{tenant_id}/budget`); a platform
+// admin sets the ceiling no default may exceed, in either unit or both
+// (`agent_budget_ceiling` in `PUT /v1/admin/settings`). Off until a workspace
+// admin sets one: the ceiling alone limits nothing (§4). The bounds and the
+// refusal are the API's (`swarm_api.budget`); this file only draws them.
+
+/** A budget's unit: `budget.UNITS`. Dollars are the `cost_usd` estimate; tokens the runner's own count. */
+export type BudgetUnit = 'usd' | 'tokens'
+
+/** A limit in either unit or both; null is "no limit in that unit" (`budget.Limits`). */
+export interface BudgetLimits {
+  usd: number | null
+  tokens: number | null
+}
+
+/** `GET /v1/budget` and the PUT's answer (`budget.view`). */
+export interface WorkspaceBudget {
+  tenant_id: string
+  /** The workspace default; null is off, the default. */
+  budget: { unit: BudgetUnit; amount: number } | null
+  /** The platform ceiling the default must stay under, per unit. */
+  ceiling: BudgetLimits
+  /** The largest amount the API takes in each unit; null when it was not served. */
+  max: BudgetLimits
+  set_at: string | null
+  set_by: string | null
+  /** The workspace's owner or admin, or a platform admin; the API is the gate. */
+  can_edit: boolean
+}
+
+const positive = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null)
+
+/** `{usd, tokens}` as served, a unit that is not a positive number read as no limit, never guessed. */
+export function normBudgetLimits(raw: unknown): BudgetLimits {
+  const r = (typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>
+  const tokens = positive(r.tokens)
+  return { usd: positive(r.usd), tokens: tokens !== null && Number.isInteger(tokens) ? tokens : null }
+}
+
+function normWorkspaceBudget(raw: unknown): WorkspaceBudget {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const b = (typeof r.budget === 'object' && r.budget !== null ? r.budget : null) as Record<string, unknown> | null
+  const unit = b?.unit === 'usd' || b?.unit === 'tokens' ? b.unit : null
+  const amount = positive(b?.amount)
+  const bounds = (typeof r.bounds === 'object' && r.bounds !== null ? r.bounds : {}) as Record<string, { max?: unknown } | undefined>
+  return {
+    tenant_id: keyField(r.tenant_id) ?? '',
+    budget: unit !== null && amount !== null ? { unit, amount } : null,
+    ceiling: normBudgetLimits(r.ceiling),
+    max: { usd: positive(bounds.usd?.max), tokens: positive(bounds.tokens?.max) },
+    set_at: keyField(r.set_at),
+    set_by: keyField(r.set_by),
+    can_edit: r.can_edit === true,
+  }
+}
+
+/** `GET /v1/budget`: the selected workspace's per-agent budget, its ceiling and whether the caller may change it. */
+export async function loadWorkspaceBudget(): Promise<Result<WorkspaceBudget>> {
+  return readAs(route('/v1/budget'), normWorkspaceBudget)
+}
+
+/**
+ * `PUT /v1/workspaces/{tenant_id}/budget`: the default, or null to turn it off. A default above the platform ceiling
+ * in its unit is refused 422 `budget_above_ceiling` with nothing changed (`budgetRefusalWords` says it in words).
+ */
+export async function putWorkspaceBudget(tenantId: string, budget: { unit: BudgetUnit; amount: number } | null): Promise<Result<WorkspaceBudget>> {
+  const r = await writeTo(route('/v1/workspaces/{tenant_id}/budget', { tenant_id: tenantId }), 'PUT', { budget })
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normWorkspaceBudget(r.data) }
+  return r as Result<WorkspaceBudget>
+}
+
+/** The platform ceiling in a platform settings read: `agent_budget_ceiling`, which `PlatformSettings` keeps as served. */
+export function budgetCeilingOf(settings: PlatformSettings): BudgetLimits {
+  return normBudgetLimits((settings as unknown as { agent_budget_ceiling?: unknown }).agent_budget_ceiling)
+}
+
+/**
+ * `PUT /v1/admin/settings` with `agent_budget_ceiling` and nothing else, so a save never rewrites another setting. The
+ * ceiling is replaced whole: a unit left out has none, and `{}` turns it off (`Store.set_platform_settings`).
+ */
+export async function saveBudgetCeiling(ceiling: BudgetLimits): Promise<Result<PlatformSettings>> {
+  const body: Record<string, number> = {}
+  if (ceiling.usd !== null) body.usd = ceiling.usd
+  if (ceiling.tokens !== null) body.tokens = ceiling.tokens
+  const r = await write(route('/v1/admin/settings'), 'PUT', { agent_budget_ceiling: body })
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normPlatformSettings(r.data) }
+  return r as Result<PlatformSettings>
+}
+
+/**
+ * What a budget does, in the console's words (#2459, BGD 2026-10-26), drawn by both settings cards so they cannot
+ * disagree: the worker's 80% note and its stop at the next turn boundary (docs/design/agent-budget.md §5).
+ */
+export const BUDGET_DOES =
+  'At 80% of its budget an agent is told to finish and publish. At 100% it stops at its next turn boundary, keeps its work and ends “stopped at its budget”.'
+
+/**
+ * A typed amount in its unit, or null: dollars a number above 0, tokens a whole number of at least 1. Commas, spaces
+ * and a leading `$` are allowed. The upper bound is the API's (`bounds`), which refuses past it with 422.
+ */
+export function parseBudgetAmount(unit: BudgetUnit, typed: string): number | null {
+  const t = typed.replace(/[,\s_]/g, '').replace(/^\$/, '')
+  if (unit === 'tokens') {
+    if (!/^\d+$/.test(t)) return null
+    const n = Number(t)
+    return Number.isSafeInteger(n) && n >= 1 ? n : null
+  }
+  if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(t)) return null
+  const n = Number(t)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+/** `$1.00`, as `budget.describe` writes dollars. */
+export function budgetDollars(n: number): string {
+  return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+/** `15,000,000 tokens`. */
+export function budgetTokens(n: number): string {
+  return `${n.toLocaleString('en-US')} ${n === 1 ? 'token' : 'tokens'}`
+}
+
+/** One amount in its unit. */
+export function budgetAmount(unit: BudgetUnit, n: number): string {
+  return unit === 'usd' ? budgetDollars(n) : budgetTokens(n)
+}
+
+/** A limit in words, both units joined by "and", or null when it names neither (`budget.describe`). */
+export function budgetLimitsWords(l: BudgetLimits): string | null {
+  const parts = [...(l.usd !== null ? [budgetDollars(l.usd)] : []), ...(l.tokens !== null ? [budgetTokens(l.tokens)] : [])]
+  return parts.length === 0 ? null : parts.join(' and ')
+}
+
+/**
+ * A refused save of a workspace default, in words, from `budget_above_ceiling`'s detail (`{budget, ceiling}`): what
+ * was asked, the ceiling it is above, and what may be saved instead. Null for any other refusal, which is drawn as
+ * the API wrote it.
+ */
+export function budgetRefusalWords(error: ApiError): string | null {
+  if (error.code !== 'budget_above_ceiling') return null
+  const d = (typeof error.detail === 'object' && error.detail !== null ? error.detail : {}) as Record<string, unknown>
+  const asked = normBudgetLimits(d.budget)
+  const ceiling = normBudgetLimits(d.ceiling)
+  const unit: BudgetUnit | null = asked.usd !== null ? 'usd' : asked.tokens !== null ? 'tokens' : null
+  const top = unit === null ? null : ceiling[unit]
+  if (unit === null || top === null) return error.message
+  return (
+    `${budgetAmount(unit, asked[unit]!)} is above the platform ceiling of ${budgetAmount(unit, top)}, so nothing was ` +
+    `changed. Save ${budgetAmount(unit, top)} or less, or ask a platform admin to raise the ceiling.`
+  )
+}
+
+/**
+ * The workspace's visual-QA settings (QA-FLOWS-UI over QA-FLOWS-CAP, part of #2136; `swarm_api.qasettings`). One
+ * setting: `qa_flows_per_step`, how many read-only flows one live-browser step of a QA run runs when the run names
+ * none of its own. Its default and bounds are the API's, served with it, so this file does not restate them; the
+ * fallbacks below are only for an answer that omits them (`qaspec.FLOWS_PER_STEP_DEFAULT`, `MIN_`/`MAX_FLOWS_PER_STEP`).
+ */
+export interface QaSettings {
+  tenant_id: string
+  /** The value in force: the stored one, else the default. */
+  qa_flows_per_step: number
+  /** The platform default (15). */
+  default_flows_per_step: number
+  min_flows_per_step: number
+  max_flows_per_step: number
+  /** The workspace's owner or admin, or a platform admin; the API is the gate. */
+  can_edit: boolean
+  set_at: string | null
+  set_by: string | null
+}
+
+function qaInt(v: unknown, fallback: number): number {
+  return typeof v === 'number' && Number.isInteger(v) ? v : fallback
+}
+
+function normQaSettings(raw: unknown): QaSettings {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const sub = (v: unknown) => (typeof v === 'object' && v !== null ? v : {}) as Record<string, unknown>
+  const bound = sub(sub(r.bounds).qa_flows_per_step)
+  const fallback = qaInt(sub(r.defaults).qa_flows_per_step, 15)
+  return {
+    tenant_id: keyField(r.tenant_id) ?? '',
+    qa_flows_per_step: qaInt(r.qa_flows_per_step, fallback),
+    default_flows_per_step: fallback,
+    min_flows_per_step: qaInt(bound.min, 1),
+    max_flows_per_step: qaInt(bound.max, 30),
+    can_edit: r.can_edit === true,
+    set_at: keyField(r.set_at),
+    set_by: keyField(r.set_by),
+  }
+}
+
+/** `GET /v1/qa-settings`: the selected workspace's QA settings (any role in it). */
+export async function loadQaSettings(): Promise<Result<QaSettings>> {
+  return readAs(route('/v1/qa-settings'), normQaSettings)
+}
+
+/**
+ * `PUT /v1/workspaces/{tenant_id}/qa-settings` `{qa_flows_per_step}`: its owner or admin, or a platform admin; anyone
+ * else is 403 `role_admin_required` with nothing written, and a value outside 1-30 is the API's 422. The answer is the
+ * settings as they now stand.
+ */
+export async function putQaSettings(tenantId: string, flowsPerStep: number): Promise<Result<QaSettings>> {
+  const r = await writeTo(route('/v1/workspaces/{tenant_id}/qa-settings', { tenant_id: tenantId }), 'PUT', { qa_flows_per_step: flowsPerStep })
+  return r.status === 'ok' || r.status === 'stale' ? { ...r, data: normQaSettings(r.data) } : (r as Result<QaSettings>)
+}
+
 /** A repository's `context` override; `inherit` is the absent field. */
 export type RepoContext = 'on' | 'off' | 'inherit'
 
@@ -10476,6 +10922,103 @@ export async function clearWorkspacePersonRole(email: string, reason = ''): Prom
 /** `PUT /v1/workspace/roles/default` (admin): `viewer` or `member`; `admin` is 409. */
 export async function setWorkspaceDefaultRole(role: string, reason = ''): Promise<Result<DefaultRoleChange>> {
   return writeTo(route('/v1/workspace/roles/default'), 'PUT', roleBody({ role }, reason)) as Promise<Result<DefaultRoleChange>>
+}
+
+// ---------------------------------------------------------------------------
+// Join requests (lane JOIN-UI-PERSON; docs/design/join-requests.md §4.2,
+// §4.8; part of #2325). The routes are swarm_api/routes/join_requests.py.
+//
+// THE CODE TRAVELS IN A BODY, NEVER A PATH OR A QUERY (§4.2). The shared link
+// carries it in the URL's fragment, which a browser never sends; the /join
+// page reads it there and posts it here, so it never reaches a request log or
+// a load balancer's access log. Every body is a closed model on the server (an
+// extra field is 422), so none of these carries the roles' `via`.
+// ---------------------------------------------------------------------------
+
+const JOIN_STATES: readonly JoinRequestState[] = ['requested', 'approved', 'denied', 'withdrawn', 'expired']
+
+export function normJoinRequest(raw: unknown): JoinRequestMine | null {
+  if (!isObj(raw) || str(raw.ref) === '') return null
+  const state = JOIN_STATES.find((s) => s === raw.state)
+  // A state this client does not know is dropped rather than drawn as one it does.
+  if (state === undefined) return null
+  const out: JoinRequestMine = {
+    ref: str(raw.ref), state, display_name: str(raw.display_name),
+    requested_at: str(raw.requested_at), expires_at: str(raw.expires_at),
+  }
+  if (strOrNull(raw.decided_at) !== null) out.decided_at = str(raw.decided_at)
+  if (strOrNull(raw.reason) !== null) out.reason = str(raw.reason)
+  return out
+}
+
+function normJoinLink(raw: unknown): JoinLinkState {
+  const r = isObj(raw) ? raw : {}
+  // Only an explicit true is on: an unread flag never claims a working link.
+  const out: JoinLinkState = { on: r.on === true, set_by: str(r.set_by), set_at: str(r.set_at) }
+  if (strOrNull(r.link) !== null) out.link = str(r.link)
+  return out
+}
+
+function normJoinedMember(raw: unknown): JoinedMember | null {
+  if (!isObj(raw) || str(raw.email) === '') return null
+  return {
+    email: str(raw.email), by: str(raw.by), at: str(raw.at), via: str(raw.via),
+    group_changed: raw.group_changed === true,
+    still_in_group: typeof raw.still_in_group === 'boolean' ? raw.still_in_group : null,
+  }
+}
+
+function asResult<T>(r: Result<unknown>, norm: (raw: unknown) => T): Result<T> {
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: norm(r.data) }
+  return r
+}
+
+/** `POST /v1/join/lookup {code}`: the workspace a working code names, by its display name; any code that does not work is the one 404 `join_link_unknown`. */
+export async function lookupJoinCode(code: string): Promise<Result<JoinLookup>> {
+  const r = await writeTo(route('/v1/join/lookup'), 'POST', { code })
+  return asResult(r, (raw) => ({ display_name: str(isObj(raw) ? raw.display_name : undefined) }))
+}
+
+/** `POST /v1/join-requests {code, message?}`: 202 with the new request, or 200 with the person's open one there. */
+export async function askToJoin(code: string, message = ''): Promise<Result<JoinRequestMine>> {
+  const note = message.trim()
+  const r = await writeTo(route('/v1/join-requests'), 'POST', note === '' ? { code } : { code, message: note })
+  return asResult(r, (raw) => normJoinRequest(raw) ?? { ref: '', state: 'requested', display_name: '', requested_at: '', expires_at: '' })
+}
+
+/** `GET /v1/join-requests/mine`: the caller's own requests, newest first, every state. */
+export async function loadMyJoinRequests(): Promise<Result<JoinRequestMine[]>> {
+  return readAs(route('/v1/join-requests/mine'), (raw) => list(isObj(raw) ? raw.requests : undefined, normJoinRequest), (d) => d.length === 0)
+}
+
+/** `POST /v1/join-requests/{ref}/withdraw`: the requester's own open request. */
+export async function withdrawJoinRequest(ref: string): Promise<Result<unknown>> {
+  return writeTo(route('/v1/join-requests/{ref}/withdraw', { ref }), 'POST')
+}
+
+/** `GET /v1/workspace/join-link` (admin): whether the selected workspace's link is on. Never the code. */
+export async function loadJoinLink(): Promise<Result<JoinLinkState>> {
+  return readAs(route('/v1/workspace/join-link'), normJoinLink)
+}
+
+/** `PUT /v1/workspace/join-link {on, rotate}` (admin): `link` is in the answer only when a code was just made. */
+export async function setJoinLink(on: boolean, rotate = false): Promise<Result<JoinLinkState>> {
+  return asResult(await writeTo(route('/v1/workspace/join-link'), 'PUT', { on, rotate }), normJoinLink)
+}
+
+/** `GET /v1/workspace/members` (admin): who holds a platform membership here, by an approved request. */
+export async function loadJoinedMembers(): Promise<Result<JoinedMembers>> {
+  return readAs(route('/v1/workspace/members'), (raw) => {
+    const r = isObj(raw) ? raw : {}
+    return { platform_memberships: r.platform_memberships === true, members: list(r.members, normJoinedMember) }
+  })
+}
+
+/** `DELETE /v1/workspace/members/person {email, reason?}` (admin): ends a platform membership; the email in the body. */
+export async function removeJoinedMember(email: string, reason = ''): Promise<Result<JoinedMemberRemoval>> {
+  const why = reason.trim()
+  const body = why === '' ? { email: email.trim() } : { email: email.trim(), reason: why }
+  return writeTo(route('/v1/workspace/members/person'), 'DELETE', body) as Promise<Result<JoinedMemberRemoval>>
 }
 
 /** `GET /v1/admin/workspaces/{tenant_id}/roles` (platform admin): any registered group workspace's roster, without selecting it. */
@@ -11339,7 +11882,7 @@ export async function loadLiveSession(taskId: string): Promise<Result<LiveRead>>
             { name: 'desktop', width: 1440, height: 900, scale: 1, mobile: false },
             { name: 'iphone-15', width: 393, height: 852, scale: 3, mobile: true },
             { name: 'phone-390', width: 390, height: 844, scale: 3, mobile: true },
-            { name: 'phone-380', width: 380, height: 844, scale: 3, mobile: true },
+            { name: 'phone-380', width: 380, height: 800, scale: 3, mobile: true },
             { name: 'pixel-8', width: 412, height: 915, scale: 2.625, mobile: true },
             { name: 'iphone-se', width: 375, height: 667, scale: 2, mobile: true },
             { name: 'ipad-7', width: 810, height: 1080, scale: 2, mobile: true },

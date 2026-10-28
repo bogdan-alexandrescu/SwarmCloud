@@ -317,6 +317,17 @@ describe('d. 6:admin-010: an Additional repositories label is 8px from its field
   })
 })
 
+describe('d. BUDGET-UI-SETTINGS review: an Agent budget ceiling label is 8px from its field', () => {
+  it('lays each label and its input out with a gap', () => {
+    const label = build('div.adm-budget-ceiling form.adm-token-form > label.ur-small', hosts)
+    // MUTATION: drop `.adm-budget-ceiling` from the rule: 'Dollars per agent,
+    // at most' runs into its input's border.
+    expect(painted(label, 'display', WIDE)).toBe('inline-flex')
+    expect(painted(label, 'gap', WIDE)).toBe('8px')
+    expect(painted(label, 'display', PHONE)).toBe('inline-flex')
+  })
+})
+
 // ---------------------------------------------------------------------------
 // e. The phone ceiling row
 // ---------------------------------------------------------------------------

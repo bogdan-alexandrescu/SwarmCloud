@@ -11,10 +11,11 @@ mark forever. `promoted-<channel>-<tag>` starts with neither channel.
 What is held here, against the SHIPPED scripts with a fake `gcloud` on PATH:
 
   * `promotion_mark_prefix dev` prints `promoted-dev-`; the old form is
-    `legacy_promotion_mark_prefix`, read during the transition only;
+    `legacy_promotion_mark_prefix`, which only registry-remark.sh reads;
   * deploy.sh's "did a release promote this digest?" check (`promoted_earlier`,
     lifted out of deploy.sh so the test cannot pass against a copy) accepts a
-    digest carrying either form, for its own channel and digest only;
+    digest carrying the new form, for its own channel and digest only (that
+    it refuses the old form is held in test_deploy_promotion_mark.py);
   * `scripts/registry-remark.sh` plans, for every version carrying an old mark,
     exactly the new mark on the same digest: it removes nothing, moves nothing,
     writes nothing without `--apply`, and touches no repository but
@@ -109,7 +110,7 @@ def test_the_mark_prefix_names_the_channel_after_the_word_promoted(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# deploy.sh's promoted_earlier: both forms, during the transition
+# deploy.sh's promoted_earlier: the new form, for its channel and digest
 # ---------------------------------------------------------------------------
 
 IMAGE = f"{IMAGE_REPO}/workspace-apply"
@@ -160,14 +161,6 @@ def _promoted_earlier(tmp_path: Path, rows: list[tuple[str, str, str]], channel:
 def test_a_digest_carrying_the_new_mark_was_promoted(tmp_path):
     rows = [("promoted-dev-0123abcd", "workspace-apply", PINNED)]
     # MUTATION: an awk that matches only the old prefix returns 1 here.
-    assert _promoted_earlier(tmp_path, rows) == 0
-
-
-def test_a_digest_carrying_only_the_old_mark_still_reads_as_promoted(tmp_path):
-    # Every digest promoted before REGISTRY-MARKS carries only this form until
-    # scripts/registry-remark.sh has run.
-    rows = [("dev-promoted-0123abcd", "workspace-apply", PINNED)]
-    # MUTATION: dropping the legacy prefix from deploy.sh's awk returns 1 here.
     assert _promoted_earlier(tmp_path, rows) == 0
 
 

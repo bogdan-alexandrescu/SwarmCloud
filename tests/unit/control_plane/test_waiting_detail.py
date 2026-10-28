@@ -15,6 +15,7 @@ would turn it red.
 from __future__ import annotations
 
 import json
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -444,7 +445,7 @@ def test_awaiting_input_says_who_may_answer_how_and_until_when():
     w = build_waiting(t, events=[], as_of=READ_AT)
     d = w["detail"]
     # MUTATION: naming anyone but the task's own tenant turns this red.
-    assert d["who_may_answer"] == {"tenant_id": "eng", "text": "any member of tenant eng"}
+    assert d["who_may_answer"] == {"tenant_id": "eng", "text": "any member of workspace eng"}
     # MUTATION: dropping the window's end turns this red.
     assert d["expires_at"] == expires
     # MUTATION: an answer command with the wrong workflow or step turns this red.
@@ -473,7 +474,7 @@ def test_human_required_says_a_person_resumes_it_from_the_console():
     assert "still parked" not in w["summary"]
     # MUTATION: a hand-off park described as an owner-question hold turns this red.
     assert w["summary"] == "Waiting for a person: sign in on its console page, then say it is ready"
-    assert w["resumes_when"] == "a member of the tenant calls human-ready (the console's Ready button)"
+    assert w["resumes_when"] == "a member of the workspace calls human-ready (the console's Ready button)"
     assert "park_phase" not in d
 
 
@@ -545,7 +546,9 @@ def test_an_owner_question_hold_the_answer_route_cannot_read_still_says_ready():
         "merge cannot read: say it is ready once it is answered")
     assert w["detail"]["answer_route"] == "POST /v1/tasks/task_w/human-ready"
     assert w["detail"]["unreadable"] == 1
-    assert "human-ready" in w["resumes_when"]
+    assert w["resumes_when"] == (
+        "a member of the workspace calls human-ready once the questions are answered: "
+        "the hold names an entry an answer cannot clear on its own")
 
 
 def test_a_malformed_owner_question_record_serves_no_invented_question():
@@ -591,6 +594,33 @@ def test_credential_missing_serves_names_and_never_a_value():
     # MUTATION: a summary without the missing names turns this red.
     assert w["summary"] == (
         "Credential missing: anthropic key, tool:figma/token, mcp:linear")
+    assert w["resumes_when"] == (
+        "the workspace registers the credential and the scheduler's credential sweep finds it")
+
+
+def test_no_waiting_text_a_person_reads_says_tenant():
+    """VQ-056 (BGD, 2026-10-26): the console speaks of workspaces. The
+    `tenant_id` field keeps its name; the words a person reads do not say
+    'tenant'."""
+    opened = READ_AT - timedelta(hours=1)
+    waits = [
+        build_waiting(task(park_reason=ParkReason.AWAITING_INPUT, next_eligible_at=opened,
+                           workflow_id="wf_review", step_id="approve",
+                           metadata={"await_input": {"opened_at": opened}}),
+                      events=[], as_of=READ_AT),
+        build_waiting(task(park_reason=ParkReason.HUMAN_REQUIRED, next_eligible_at=opened),
+                      events=[], as_of=READ_AT),
+        build_waiting(merge_task(), as_of=READ_AT, events=[
+            event(EventType.PARKED, opened, owner_park(HELD[:1], unreadable=1))]),
+        build_waiting(task(park_reason=ParkReason.CREDENTIAL_MISSING, provider="anthropic"),
+                      as_of=READ_AT, events=[
+                          event(EventType.PARKED, opened, {"reason": "CREDENTIAL_MISSING"})]),
+    ]
+    for w in waits:
+        read = [w["summary"], w["resumes_when"],
+                str((w["detail"].get("who_may_answer") or {}).get("text") or "")]
+        assert not [line for line in read if re.search(r"\btenants?\b", line, re.I)], read
+    assert len(waits) == 4
 
 
 # --------------------------------------------------------------------------

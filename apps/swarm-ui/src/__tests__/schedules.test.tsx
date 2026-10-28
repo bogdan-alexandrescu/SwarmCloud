@@ -67,6 +67,7 @@ function schedule(id: string, over: Json = {}): Json {
     tier: 'R2',
     spend_today: { day: '2026-10-11', reported_usd: 3.1, unreported_attempts: 0, coverage: 'complete' },
     pending_approvals: 0,
+    state_word: 'active',
     ...over,
   }
 }
@@ -182,16 +183,17 @@ describe('the list', () => {
       '/v1/repositories': { status: 200, body: { repositories: [REPO] } },
     })
     await waitFor(() => expect(rowOf('sch_a')).not.toBeNull(), WAIT)
-    const heads = [...document.querySelectorAll('.sc-table:not(.is-builtin) thead th')].map((th) => th.textContent)
-    expect(heads).toEqual(['Name · type', 'Repository', 'When', 'Next run', 'Last run', 'Spend today', 'Approvals', 'State', 'Actions'])
+    // Frame A1's columns (AUTO-A1, part of #2417): the actions moved to the schedule's own page.
+    const heads = [...document.querySelectorAll('.al-table:not(.is-inbox) thead th')].map((th) => th.textContent)
+    expect(heads).toEqual(['Schedule', 'Target', 'When', 'Next firing', 'Last firing', 'Spend today', 'Waiting', 'State'])
     const row = rowOf('sch_a')!
     expect(visible(row)).toContain('Schedule sch_a')
     expect(visible(row)).toContain('issue-sweep · R2')
     expect(visible(row)).toContain('at 09:00, Monday through Friday')
     expect(visible(row)).toContain('Europe/London')
     expect(visible(row)).toContain('$3.10')
-    expect(visible(row)).toContain('2 waiting')
-    expect(visible(row)).toContain('enabled')
+    expect(visible(row.querySelector('td[data-label="Waiting"] .al-fig'))).toBe('2')
+    expect(visible(row.querySelector('.al-word'))).toBe('active')
     await waitFor(() => expect(visible(row)).toContain('example-org/example-api'), WAIT)
   })
 
@@ -216,7 +218,7 @@ describe('the list', () => {
       '/v1/schedules': {
         status: 200,
         body: {
-          schedules: [schedule('sch_b', { state: 'paused', next_run_at: null, last_firing: null, pause: { by: 'a@example.com', reason: 'holiday' } })],
+          schedules: [schedule('sch_b', { state: 'paused', next_run_at: null, last_firing: null, pause: { by: 'a@example.com', reason: 'holiday' }, state_word: 'paused' })],
           tenant_id: 'eng',
         },
       },
@@ -224,8 +226,8 @@ describe('the list', () => {
     })
     await waitFor(() => expect(rowOf('sch_b')).not.toBeNull(), WAIT)
     const row = rowOf('sch_b')!
-    expect(visible(row.querySelector('td[data-label="Last run"]'))).toBe('never fired')
-    expect(visible(row.querySelector('td[data-label="Next run"]'))).toContain('paused')
+    expect(visible(row.querySelector('td[data-label="Last firing"]'))).toBe('— never fired')
+    expect(visible(row.querySelector('td[data-label="Next firing"]'))).toContain('paused')
     expect(visible(row.querySelector('td[data-label="State"]'))).toContain('holiday')
   })
 
@@ -264,61 +266,6 @@ describe('the list', () => {
     expect(link.getAttribute('href')).toBe('/automate/schedules/sch_a')
     fireEvent.click(link)
     expect(go).toHaveBeenCalledWith('automate/schedules?schedule=sch_a')
-  })
-
-  it('is two lines a row on a phone: name and state, then type · repository · when · last · next · spend · waiting', async () => {
-    // Owner decision 2026-10-11 (§6.2's "two lines a row on a phone"), replacing the record form.
-    // MUTATION: drop the `.sc-table.is-schedules` block from the 560px media query.
-    media(true)
-    await mountList({
-      '/v1/schedules': {
-        status: 200,
-        body: {
-          schedules: [
-            schedule('sch_a', {
-              pending_approvals: 2,
-              spend_today: { day: '2026-10-11', reported_usd: 3.1, unreported_attempts: 1, coverage: 'partial' },
-            }),
-          ],
-          tenant_id: 'eng',
-        },
-      },
-      '/v1/repositories': { status: 200, body: { repositories: [REPO] } },
-    })
-    await waitFor(() => expect(rowOf('sch_a')).not.toBeNull(), WAIT)
-    expect(painted(document.querySelector<HTMLElement>('.sc-table thead')!, 'display', PHONE)).toBe('none')
-    const row = rowOf('sch_a')!
-    expect(painted(row, 'display', PHONE)).toBe('grid')
-    expect(painted(row, 'grid-template-areas', PHONE)).toBe("'name state acts' 'line line line'")
-    // Line 1: the name (its cell hands it to the row's grid), the state and the actions.
-    const nameCell = row.querySelector<HTMLElement>('td[data-label="Name · type"]')!
-    expect(painted(nameCell, 'display', PHONE)).toBe('contents')
-    expect(painted(row.querySelector<HTMLElement>('.sc-name')!, 'grid-area', PHONE)).toBe('name')
-    expect(painted(row.querySelector<HTMLElement>('td[data-label="State"]')!, 'grid-area', PHONE)).toBe('state')
-    expect(painted(row.querySelector<HTMLElement>('td[data-label="Actions"]')!, 'grid-area', PHONE)).toBe('acts')
-    // Line 2: carrying what the hidden cells said, in the owner's order. It
-    // WRAPS (visual QA V173, 2026-10-16): cut to one line, everything after
-    // the cadence was off the screen, in a title a touch screen cannot open.
-    const line = row.querySelector<HTMLElement>('.sc-line2')!
-    expect(painted(line, 'grid-area', PHONE)).toBe('line')
-    expect(painted(line, 'display', PHONE)).toBe('block')
-    expect(painted(line, 'white-space', PHONE)).toBe('normal')
-    await waitFor(() => expect(visible(line)).toContain('example-org/example-api'), WAIT)
-    const words = visible(line)
-    const order = ['issue-sweep', 'example-org/example-api', 'at 09:00, Monday through Friday', 'last succeeded', 'next in 3h', '$3.10', '2 waiting']
-    const at = order.map((w) => words.indexOf(w))
-    expect(at.every((n) => n >= 0), words).toBe(true)
-    expect([...at].sort((a, b) => a - b)).toEqual(at)
-    // A partial spend keeps its mark and its count on the phone too (§6.2).
-    expect(line.querySelector('.ctl-mark.is-partial')).not.toBeNull()
-    expect(words).toContain('1 attempt unreported')
-    // Every cell line 2 repeats is not drawn; none is a labelled record any more.
-    for (const label of ['Repository', 'When', 'Next run', 'Last run', 'Spend today', 'Approvals']) {
-      expect(painted(row.querySelector<HTMLElement>(`td[data-label="${label}"]`)!, 'display', PHONE), label).toBe('none')
-    }
-    expect(painted(row.querySelector<HTMLElement>('td[data-label="State"]')!, 'content', PHONE, 'before')).toBe('none')
-    // On a desktop the second line is not drawn: each value has its cell.
-    expect(painted(line, 'display', { width: 1440 })).toBe('none')
   })
 
   it('keeps the built-in rows a record on a phone, every cell named', async () => {
@@ -362,99 +309,7 @@ const posts = (calls: { method: string; url: string; body: unknown }[], path: st
 const reads = (calls: { method: string; url: string }[], path: string) =>
   calls.filter((c) => c.method === 'GET' && c.url.split('?')[0] === path).length
 
-const LIST: Routes = {
-  '/v1/schedules': {
-    status: 200,
-    body: {
-      schedules: [
-        schedule('sch_a'),
-        schedule('sch_p', { state: 'paused', next_run_at: null, pause: { by: 'a@example.com', reason: 'holiday' } }),
-        schedule('sch_q', { state: 'auto_paused', next_run_at: null, pause: { code: 'CONSECUTIVE_FAILURES' } }),
-        schedule('sch_d', { state: 'disabled', next_run_at: null, pause: { by: 'admin:root@example.com', reason: 'runaway' } }),
-        schedule('sch_g', { gate: { plan: 'approve', run: 'approve', merge: 'approve' } }),
-      ],
-      tenant_id: 'eng',
-    },
-  },
-  '/v1/repositories': { status: 200, body: { repositories: [] } },
-}
-
 const created = (id: string) => firing(`${id}:now`, { trigger: 'run_now', state: 'created', outcome: null, cost: null, ended_at: null })
-
-describe('a row of the list', () => {
-  it('offers Run now on every row, and Resume only when paused or auto-paused', async () => {
-    // MUTATION: offer Resume on every row, or drop it for auto-paused.
-    await mountActing(null, LIST, () => null)
-    await waitFor(() => expect(rowOf('sch_d')).not.toBeNull(), WAIT)
-    const names = (id: string) => within(rowOf(id)!.querySelector<HTMLElement>('td[data-label="Actions"]')!).getAllByRole('button').map((b) => visible(b))
-    expect(names('sch_a')).toEqual(['Run now'])
-    expect(names('sch_p')).toEqual(['Run now', 'Resume'])
-    expect(names('sch_q')).toEqual(['Run now', 'Resume'])
-    // A disabled schedule is an admin's: Run now says why it is off, and Resume is not offered.
-    expect(names('sch_d')).toEqual(['Run now'])
-    const off = within(rowOf('sch_d')!).getByRole('button', { name: 'Run now' })
-    expect(off).toHaveProperty('disabled', true)
-    expect(visible(rowOf('sch_d'))).toContain('An admin disabled this schedule.')
-  })
-
-  it('resumes a paused row through :resume, without asking, and reads the list again', async () => {
-    const { calls } = await mountActing(null, LIST, (m, url) =>
-      m === 'POST' && url === '/v1/schedules/sch_p:resume'
-        ? { status: 200, body: { schedule: schedule('sch_p', { state: 'enabled', next_run_at: hoursFromNow(3) }) } }
-        : null,
-    )
-    await waitFor(() => expect(rowOf('sch_p')).not.toBeNull(), WAIT)
-    expect(reads(calls, '/v1/schedules')).toBe(1)
-    fireEvent.click(within(rowOf('sch_p')!).getByRole('button', { name: 'Resume' }))
-    await waitFor(() => expect(posts(calls, '/v1/schedules/sch_p:resume')).toHaveLength(1), WAIT)
-    expect(screen.queryByRole('dialog')).toBeNull()
-    const said = await screen.findByTestId('sc-said', undefined, WAIT)
-    expect(visible(said)).toContain('Schedule sch_p: Resumed: next run in 3h.')
-    await waitFor(() => expect(reads(calls, '/v1/schedules')).toBe(2), WAIT)
-  })
-
-  it('asks before a Run now that spends capacity, and sends nothing until confirmed', async () => {
-    // MUTATION: make `runSpends` return false and the POST goes out on the first click.
-    const { calls } = await mountActing(null, LIST, (m, url) =>
-      m === 'POST' && url === '/v1/schedules/sch_a:run' ? { status: 200, body: { firing: created('sch_a') } } : null,
-    )
-    await waitFor(() => expect(rowOf('sch_a')).not.toBeNull(), WAIT)
-    fireEvent.click(within(rowOf('sch_a')!).getByRole('button', { name: 'Run now' }))
-    const dialog = await screen.findByRole('dialog', undefined, WAIT)
-    expect(posts(calls, '/v1/schedules/sch_a:run')).toHaveLength(0)
-    // The budget it names is the schedule's as served.
-    expect(visible(dialog)).toContain('$15.00')
-    expect(visible(dialog)).toContain('$120.00')
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Run now' }))
-    await waitFor(() => expect(posts(calls, '/v1/schedules/sch_a:run')).toHaveLength(1), WAIT)
-    expect(posts(calls, '/v1/schedules/sch_a:run')[0]!.body).toEqual({ dry_run: false })
-    const said = await screen.findByTestId('sc-said', undefined, WAIT)
-    expect(visible(said)).toContain('created 1 work item')
-  })
-
-  it('runs at once, unasked, when the gate holds the run for approval, since it then spends nothing', async () => {
-    const { calls } = await mountActing(null, LIST, (m, url) =>
-      m === 'POST' && url === '/v1/schedules/sch_g:run'
-        ? { status: 200, body: { firing: firing('sch_g:now', { trigger: 'run_now', state: 'awaiting_approval', work: [], outcome: null, cost: null }) } }
-        : null,
-    )
-    await waitFor(() => expect(rowOf('sch_g')).not.toBeNull(), WAIT)
-    fireEvent.click(within(rowOf('sch_g')!).getByRole('button', { name: 'Run now' }))
-    await waitFor(() => expect(posts(calls, '/v1/schedules/sch_g:run')).toHaveLength(1), WAIT)
-    expect(screen.queryByRole('dialog')).toBeNull()
-    expect(visible(await screen.findByTestId('sc-said', undefined, WAIT))).toContain('waits for approval')
-  })
-
-  it('says which rule refused a run, as an alert', async () => {
-    await mountActing(null, LIST, (m, url) =>
-      m === 'POST' && url === '/v1/schedules/sch_g:run' ? { status: 409, body: { code: 'schedules_disabled', message: 'off' } } : null,
-    )
-    await waitFor(() => expect(rowOf('sch_g')).not.toBeNull(), WAIT)
-    fireEvent.click(within(rowOf('sch_g')!).getByRole('button', { name: 'Run now' }))
-    const said = await screen.findByRole('alert', undefined, WAIT)
-    expect(visible(said)).toContain('switched off platform-wide')
-  })
-})
 
 describe("a schedule's page head", () => {
   const ONE = (over: Json = {}): Routes => ({

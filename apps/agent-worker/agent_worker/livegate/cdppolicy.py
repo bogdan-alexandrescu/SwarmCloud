@@ -96,7 +96,17 @@ tests/unit/worker/fixtures/puppeteer-core-25.8.0-*.json). So:
   by URL pattern) but are `QUIET_REFUSALS`: Puppeteer sends them, catches the
   error and goes on, so each page it opened recorded a refusal that meant
   nothing (ANALYSIS issue 19, refusal noise). The proxy counts them and logs
-  them at debug instead of recording `cdp_method_refused`.
+  them at debug instead of recording `cdp_method_refused`, and writes no
+  refused action line either: that line is what the theater's timeline draws
+  as "was refused", so a quiet refusal that wrote it was not quiet;
+* `Emulation.setUserAgentOverride` and `Network.setUserAgentOverride` are quiet
+  only in the shape of the clients' page-setup probe (`quiet_refusal`): on a
+  page session, with an EMPTY `userAgent` and no other field set. Playwright
+  and Puppeteer send exactly that on every page they attach and swallow the
+  refusal (images/agent-runtime-browser/selftest.py reads it off Playwright's
+  protocol log), so each page dev-browser opened wrote a refusal that meant
+  nothing (#1346 comment 4). It stays refused -- the device is the gate's, by
+  preset name -- and a user agent the agent chose is recorded as before.
 
 A REFUSAL IS RECORDED BY METHOD NAME ONLY (`cdp_method_refused`), never with
 its parameters, which can carry page text.
@@ -373,6 +383,26 @@ DROPPED_EVENT_DOMAINS: tuple[str, ...] = ("Audits.",)
 # Refused like any method off the allowlist, but known probes a client
 # survives: counted and logged at debug, never recorded (module docstring).
 QUIET_REFUSALS: frozenset[str] = frozenset({"WebMCP.enable", "Network.emulateNetworkConditionsByRule"})
+
+# Refused always, quiet only as the clients' page-setup probe: an empty user
+# agent on a page session and nothing else (`quiet_refusal`, module docstring).
+QUIET_PROBES: frozenset[str] = frozenset({"Emulation.setUserAgentOverride", "Network.setUserAgentOverride"})
+
+
+def quiet_refusal(method: str, params: Mapping[str, Any] | None, *, page_session: bool) -> bool:
+    """Whether a refusal of `method` is counted and logged at debug instead of
+    recorded (module docstring): a `QUIET_REFUSALS` method, or a `QUIET_PROBES`
+    one sent on a page session with `userAgent` "" and no other field set."""
+    if method in QUIET_REFUSALS:
+        return True
+    if method not in QUIET_PROBES or not page_session:
+        return False
+    given = params if isinstance(params, Mapping) else {}
+    if given.get("userAgent") != "":
+        return False
+    # Playwright sends `acceptLanguage` and `userAgentMetadata` as undefined,
+    # which JSON drops; a value in either, or any other field, is a choice.
+    return all(value is None for key, value in given.items() if key != "userAgent")
 
 # A response carrying page content. One that completes while a person is in
 # control was sent before control and resolved during it -- an `awaitPromise`

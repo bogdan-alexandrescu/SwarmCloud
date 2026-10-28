@@ -337,6 +337,27 @@ CI_FIX_RUNNING = "ci_fix_running"
 #: The park code of a red reading whose failing jobs the tick re-ran at this
 #: head less than RERUN_SETTLE_SECONDS ago: the re-run has not answered yet.
 CI_RERUN_PENDING = "ci_rerun_pending"
+#: The park code of a red reading no CI-fix round can fix (#2046): the
+#: publish that wrote this head -- the opener's, or the CI-fix round's that
+#: ended at it -- touched `.github/workflows/` and swarm-api refused the push
+#: WORKFLOW_SCOPE_MISSING (the repository's registration does not have
+#: `workflow_files` switched on), so the workflow lines are in
+#: WORKFLOW_PATCH_FILE in that attempt's artifacts and the branch does not
+#: have them. CI is red by construction, and a round can only make the same
+#: edit and be refused again (task_58815d23, task_d91ca0c9: `checks_failed`
+#: after the round, at the unchanged head). The step parks for the operator
+#: instead, and swarm-api's tick waits for the head to move without reading
+#: the checks or asking for a round (`swarm_api.mergewake.
+#: WORKFLOW_PATCH_PENDING`, held equal by
+#: tests/unit/control_plane/test_mergewake_workflow_refused.py).
+WORKFLOW_PATCH_PENDING = "workflow_patch_pending"
+#: The broker's refusal code, and the patch's name
+#: (`agent_worker.lifecycle.WORKFLOW_PATCH_FILE`), restated: this module does
+#: not import the lifecycle.
+WORKFLOW_SCOPE_MISSING = "workflow_scope_missing"
+WORKFLOW_PATCH_FILE = "workflow-lines.patch"
+#: The most refused paths a park's message names.
+WORKFLOW_PATHS_NAMED = 10
 
 #: A CONFLICTING pull request is never waited on for checks: GitHub runs none
 #: on it (#1076, measured on PR 1028: `checks_timeout` after 366 min while
@@ -415,6 +436,38 @@ MERGE_QUEUED = "merge_queued"
 #: once its tree is shown to be the clean merge of its parents
 #: (`_merge_impurity`, FIX-MERGE-PURE-BASE-MERGE).
 GITHUB_COMMITTER_EMAIL = "noreply@github.com"
+
+#: The refusal code of a step whose pull request a person on it pushed a
+#: commit to (#2505). BGD, 2026-10-27 (issue triage, epic #2525): "a distinct
+#: non-failure end: superseded_by_person_push (not FAILED) when the committer
+#: is not the platform identity, so failure-review stops filing it; a foreign
+#: head from an unknown branch-mate still refuses." The refusal is unchanged:
+#: `_accept` takes no head a person made of content, and nothing merges. The
+#: step's end cause is the frozen `EndCause`, which has no such member yet, so
+#: until contract request SUPERSEDED_BY_PERSON_PUSH lands the step ends
+#: FAILED/MERGE_REFUSED with this code, and failure-review's `person_push`
+#: rule (`swarm_api.failuredigest.SUPERSEDED_BY_PERSON_PUSH`, held equal by
+#: tests/unit/worker/test_merge_person_push.py) skips it.
+SUPERSEDED_BY_PERSON_PUSH = "superseded_by_person_push"
+
+#: The committer addresses the platform commits under when it names no
+#: person: `WorkerConfig.git_author_email`'s default and
+#: `gitidentity.BOT_GIT_IDENTITY`'s (held equal by
+#: tests/unit/worker/test_merge_person_push.py). Restated, not imported, so
+#: the merge action does not load the worker's whole configuration module.
+PLATFORM_COMMITTER_EMAILS = frozenset({
+    "swarmcloud-agent@users.noreply.github.com",
+    "swarmcloud@users.noreply.github.com",
+})
+
+#: How every commit the worker pushes ends its message
+#: (`Worker._worker_commit_message`: "Made by the worker for task <id>.";
+#: `lifecycle.replay_agent_commits` ends each kept agent commit with it too).
+#: Since #765 the worker publishes AS the person who dispatched the work, so
+#: its commits' committer names that person; this line is what still says
+#: the platform made them. A platform head the step did not accept is a
+#: defect for failure-review, never a person's push.
+WORKER_COMMIT_LINE = "Made by the worker for task "
 
 #: The summary key listing every base merge the walk took that GitHub did not
 #: commit: a person's (or anyone's) clean merge of the base on top of an
@@ -542,6 +595,17 @@ def other_check_blocks(run: Mapping[str, Any]) -> bool:
     if not check_run_finished(run):
         return True
     return (run.get("conclusion") or "") not in OTHER_TOLERATED
+
+
+def _other_branch_push(suite: tuple[str | None, str | None] | None,
+                       head_ref: str | None) -> bool:
+    """Whether a check suite, (event, head branch), was triggered by a push
+    to a known branch that is not `head_ref` -- another branch's result at a
+    shared sha, not the pull request's (#2365). False when anything is unknown."""
+    if suite is None or head_ref is None:
+        return False
+    event, branch = suite
+    return event == "push" and branch is not None and branch != head_ref
 
 
 def _event_group(run: Mapping[str, Any]) -> str | None:
@@ -715,6 +779,9 @@ class PullRequestFacts:
     #: GitHub says: what a merge made outside the workflow is recorded with.
     merged_by: str | None = None
     merged_at: str | None = None
+    #: The people on the pull request: its author and its assignees, each a
+    #: login GitHub says is a `User` account (`_person_pusher`, #2505).
+    people: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -732,7 +799,8 @@ class CheckFacts:
     #: The event that triggered the run's check suite (push, pull_request,
     #: ...), read from the suite's Actions run: what a check's runs are
     #: grouped by (`latest_per_event`). None for a commit status, another
-    #: App's suite, or when it was not read.
+    #: App's suite, or when it was not read. A push suite from a branch other
+    #: than the pull request's head ref never reaches here (`checks_at`, #2365).
     event: str | None = None
     #: GitHub's id for the run's check suite: the group when no event is known.
     check_suite_id: int | None = None
@@ -781,6 +849,14 @@ class CommitFacts:
     #: The commit's tree, what a pure base merge's is compared by
     #: (`_merge_impurity`). None when GitHub did not say.
     tree: str | None = None
+    #: The GitHub accounts GitHub links the committer and the author to
+    #: (the response's top-level `committer`/`author`), each a login only
+    #: when the account is a `User`: who a person's push was made by
+    #: (`_person_pusher`). None when GitHub links none, or a bot.
+    committer_login: str | None = None
+    author_login: str | None = None
+    #: The message's last line is the worker's (`WORKER_COMMIT_LINE`).
+    by_worker: bool = False
 
     @property
     def by_github(self) -> bool:
@@ -853,7 +929,7 @@ class ForgeMerger(Protocol):
 
     def required_checks(self, branch: str) -> RequiredChecks: ...
 
-    def checks_at(self, sha: str) -> list[CheckFacts]: ...
+    def checks_at(self, sha: str, *, head_ref: str | None = None) -> list[CheckFacts]: ...
 
     def commit(self, sha: str) -> CommitFacts: ...
 
@@ -900,6 +976,12 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 
 def _str(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _user_login(account: Any) -> str | None:
+    """A GitHub account's login when GitHub says it is a person's (`User`)."""
+    account = _mapping(account)
+    return _str(account.get("login")) if account.get("type") == "User" else None
 
 
 def _int(value: Any) -> int | None:
@@ -967,6 +1049,9 @@ class GitHubMerger:
             node_id=_str(data.get("node_id")),
             merged_by=_str(_mapping(data.get("merged_by")).get("login")),
             merged_at=_str(data.get("merged_at")),
+            people=tuple(login for login in (
+                _user_login(account) for account in
+                [data.get("user"), *(data.get("assignees") or [])]) if login),
         )
 
     def required_checks(self, branch: str) -> RequiredChecks:
@@ -1024,13 +1109,26 @@ class GitHubMerger:
             source = CHECKS_NONE_ALL_CHECKS
         return RequiredChecks(checks=tuple(found.values()), protected=protected, source=source)
 
-    def checks_at(self, sha: str) -> list[CheckFacts]:
-        """Every check run, and every commit status, reported at `sha`.
+    def checks_at(self, sha: str, *, head_ref: str | None = None) -> list[CheckFacts]:
+        """Every check run, and every commit status, reported at `sha` for
+        the pull request whose head branch is `head_ref`.
 
         A check run carries the event that triggered its check suite, read
         from the Actions runs at `sha` -- ONE more read, made only when some
         check has more than one run there, since only then does the event
-        decide anything (`latest_per_event`).
+        decide anything (`latest_per_event`), or when some run finished
+        neither green nor tolerated, since that run may not be this pull
+        request's. A head whose every check has one green run costs nothing.
+
+        `commits/{sha}/check-runs` lists every check suite at the sha, from
+        whichever branch pushed it, and swarm/ lanes branch from one another:
+        at edb9c942 (PR #2340) a sibling branch's red push ci-gate stood as
+        the PR's push result while the PR branch's own push run was still
+        running, and the step refused `checks_failed` (#2365). So with a
+        `head_ref`, a run whose suite was triggered by a push to a KNOWN
+        branch other than `head_ref` is dropped. pull_request suites (a
+        fork's names the fork's branch), commit statuses, and suites whose
+        branch is unknown (no `actions: read`, another App) are kept.
         """
         out: list[CheckFacts] = []
         for run in self._client.paginate(f"{self._base}/commits/{sha}/check-runs",
@@ -1049,9 +1147,13 @@ class GitHubMerger:
                 check_suite_id=_int(_mapping(run.get("check_suite")).get("id")),
             ))
         names = [check.name for check in out]
-        if len(names) != len(set(names)):
-            events = self._suite_events(sha)
-            out = [replace(check, event=events.get(check.check_suite_id)) for check in out]
+        red = any(check_run_finished(run) and (run.get("conclusion") or "") not in OTHER_TOLERATED
+                  for run in (check.as_run() for check in out))
+        if len(names) != len(set(names)) or red:
+            suites = self._suite_events(sha)
+            out = [replace(check, event=suites.get(check.check_suite_id, (None, None))[0])
+                   for check in out
+                   if not _other_branch_push(suites.get(check.check_suite_id), head_ref)]
         combined = _mapping(self._client.get_ok(f"{self._base}/commits/{sha}/status"))
         for status in combined.get("statuses") or []:
             status = _mapping(status)
@@ -1064,12 +1166,14 @@ class GitHubMerger:
             out.append(CheckFacts(name=name, status=state, conclusion=conclusion))
         return out
 
-    def _suite_events(self, sha: str) -> dict[int | None, str]:
-        """The event of each Actions check suite at `sha`, by suite id.
+    def _suite_events(self, sha: str) -> dict[int | None, tuple[str | None, str | None]]:
+        """The (event, head branch) of each Actions check suite at `sha`, by
+        suite id; either is None when GitHub did not say.
 
         A credential without `actions: read` (403), or a repository with
-        Actions off (404), reads as no event: each check suite is then its
-        own group, so a green suite still never outvotes a red one.
+        Actions off (404), reads as no event and no branch: each check suite
+        is then its own group, so a green suite still never outvotes a red
+        one, and no suite is dropped as another branch's.
         """
         try:
             runs = self._client.paginate(f"{self._base}/actions/runs",
@@ -1078,13 +1182,14 @@ class GitHubMerger:
             if exc.status in (403, 404):
                 return {}
             raise
-        events: dict[int | None, str] = {}
+        suites: dict[int | None, tuple[str | None, str | None]] = {}
         for run in runs:
             run = _mapping(run)
-            suite, event = _int(run.get("check_suite_id")), _str(run.get("event"))
-            if suite is not None and event:
-                events[suite] = event
-        return events
+            suite = _int(run.get("check_suite_id"))
+            event, branch = _str(run.get("event")), _str(run.get("head_branch"))
+            if suite is not None and (event or branch):
+                suites[suite] = (event, branch)
+        return suites
 
     def commit(self, sha: str) -> CommitFacts:
         data = _mapping(self._client.get_ok(f"{self._base}/commits/{quote(sha, safe='')}"))
@@ -1093,12 +1198,17 @@ class GitHubMerger:
             p for p in (_str(_mapping(parent).get("sha")) for parent in data.get("parents") or [])
             if p is not None
         )
+        message = detail.get("message") if isinstance(detail.get("message"), str) else ""
+        last = message.strip().splitlines()[-1] if message.strip() else ""
         return CommitFacts(
             sha=_str(data.get("sha")) or sha,
             parents=parents,
             committer_email=_str(_mapping(detail.get("committer")).get("email")),
             verified=_mapping(detail.get("verification")).get("verified") is True,
             tree=_str(_mapping(detail.get("tree")).get("sha")),
+            committer_login=_user_login(data.get("committer")),
+            author_login=_user_login(data.get("author")),
+            by_worker=last.startswith(WORKER_COMMIT_LINE),
         )
 
     def merge_base(self, first: str, second: str) -> str | None:
@@ -1408,6 +1518,9 @@ class _Run:
     #: The checks read at a head, as a CI park records them (`latest_reading`):
     #: (head, pending names, failed names). None until this attempt reads them.
     reading: tuple[str, list[str], list[str]] | None = None
+    #: The opener's refused workflow publish (#2046): (opener task, the head
+    #: it pinned, `_workflow_refusal`). None when it was not refused.
+    refused_publish: tuple[str, str, dict[str, Any]] | None = None
 
     def refuse(self, code: str, message: str) -> ActionOutcome:
         return refusal(self.summary, EndCause.MERGE_REFUSED, code, message)
@@ -1558,6 +1671,9 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
                           f"task {target.pull_request} recorded no pushed head to pin")
     summary["pull_request"] = number
     summary["pinned"] = pinned
+    refused = _workflow_refusal(opener)
+    if refused is not None:
+        run.refused_publish = (target.pull_request, pinned, refused)
     # The step's own record of its CI-fix rounds, and the heads they pushed:
     # task-store reads that need no credential, so before the token.
     unread: list[str] = []
@@ -2220,6 +2336,10 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         unread = summary.get(FIX_RECORDS_UNREAD_KEY) or []
         record = None if head is None else _head_record(
             merger, head=head, pinned=pinned, fix_heads=fix_heads, base=default, proven=proven)
+        person = None if head is None else _person_push(merger, head=head, pr=pr)
+        if person is not None:
+            return _superseded(run, number=number, head=head, was=pinned, person=person,
+                               record=record)
         outcome = run.refuse(
             "head_moved",
             f"pull request #{number}'s head is {head}, not {pinned}, "
@@ -2272,7 +2392,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
 
     # The checks, at the head this attempt acts at.
     required = merger.required_checks(pr.base_ref or "")
-    checks = merger.checks_at(head)
+    checks = merger.checks_at(head, head_ref=pr.head_ref)
     summary["required_checks"] = sorted({c.context for c in required.checks})
     summary["required_checks_source"] = required.source
     pending: list[str] = []
@@ -2340,6 +2460,9 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         ctx.sleep(MERGEABLE_REREAD_SECONDS)
         pr = merger.pull_request(number)
     if pr.head_sha != head:
+        person = None if pr.head_sha is None else _person_push(merger, head=pr.head_sha, pr=pr)
+        if person is not None:
+            return _superseded(run, number=number, head=pr.head_sha, was=head, person=person)
         return run.refuse("head_moved",
                           f"pull request #{number}'s head moved to {pr.head_sha} while its "
                           f"mergeability was read at {head}")
@@ -2616,6 +2739,56 @@ def _updates_onto(merger: ForgeMerger, *, head: str, pushed: str, base: str,
         head = commit.parents[0]
         steps += 1
     return steps, others
+
+
+def _person_pusher(commit: CommitFacts, pr: PullRequestFacts) -> str | None:
+    """The login of the person on `pr` who made `commit`, or None (#2505).
+
+    A person's push is a commit that is not a merge (BGD's decision is about
+    a person's content commit: a two-parent merge the purity proof refuses
+    stays `head_moved`, since the proof may refuse what git accepts and that
+    is the platform's to look at), that the platform did not make -- not
+    under one of its own committer addresses, nor ending with the worker's
+    line -- and that GitHub links to a `User` account which is the pull
+    request's author or one of its assignees. GitHub commits a web-UI edit
+    itself, so for those the person is the commit's author. Anyone else is
+    an unknown branch-mate, and their head is `head_moved` as before.
+    """
+    if len(commit.parents) >= 2 or commit.by_worker:
+        return None
+    email = (commit.committer_email or "").lower()
+    if email in PLATFORM_COMMITTER_EMAILS:
+        return None
+    login = commit.author_login if email == GITHUB_COMMITTER_EMAIL else commit.committer_login
+    if login is None:
+        return None
+    people = {p.lower() for p in pr.people}
+    return login if login.lower() in people else None
+
+
+def _person_push(merger: ForgeMerger, *, head: str, pr: PullRequestFacts) -> str | None:
+    """`_person_pusher` of the commit at `head`, read best-effort: a read that
+    fails names nobody, and the refusal stays `head_moved`."""
+    try:
+        return _person_pusher(merger.commit(head), pr)
+    except (forge_mod.ForgeError, ValueError):
+        return None
+
+
+def _superseded(run: _Run, *, number: int, head: str, was: str, person: str,
+                record: Mapping[str, Any] | None = None) -> ActionOutcome:
+    """A person on the pull request pushed `head` over the head this step
+    acts at: refused as `head_moved` is -- nothing merges -- and named
+    `SUPERSEDED_BY_PERSON_PUSH`, with who and, where read, the commit."""
+    outcome = run.refuse(
+        SUPERSEDED_BY_PERSON_PUSH,
+        f"pull request #{number}'s head is {head}, a commit {person} pushed, a person on "
+        f"the pull request, over {was}: the merge is theirs now, and this step merges "
+        "nothing a person pushed" + ("" if record is None else _named(record)))
+    run.summary["refusal"]["person"] = person
+    if record is not None:
+        run.summary["refusal"]["commit"] = record
+    return outcome
 
 
 def _named(record: Mapping[str, Any]) -> str:
@@ -3007,6 +3180,26 @@ def _fix_rounds(own: Mapping[str, Any], key: str = "rounds") -> list[Mapping[str
     return [r for r in rounds if isinstance(r, Mapping)] if isinstance(rounds, list) else []
 
 
+_ROUND_KINDS = (("CI", "rounds"), ("conflict", CONFLICT_ROUNDS_KEY), ("pick", PICK_ROUNDS_KEY))
+
+
+def _live_round(ctx: ActionContext, own: Mapping[str, Any]) -> tuple[str, Mapping[str, Any]] | None:
+    """The first fix round of any kind whose task is still running, at any head (#2577).
+
+    One writer per pull request: while a round's task has not ended, the
+    next round would push onto the same branch and fail to replay over it.
+    A round without a task (claimed, not submitted yet) is the tick's to
+    hold for LOST_ROUND_SECONDS; an errored one never ran."""
+    for kind, key in _ROUND_KINDS:
+        for entry in _fix_rounds(own, key):
+            if entry.get("error"):
+                continue
+            task_id = _task_id(entry.get("task_id"))
+            if task_id is not None and not _ended(ctx, task_id):
+                return kind, entry
+    return None
+
+
 def _with_failing(ids: set[int] | None, more: set[int] | None) -> set[int] | None:
     """The union of two `failing_run_ids` answers; None when either is None."""
     return None if ids is None or more is None else ids | more
@@ -3284,6 +3477,12 @@ def _conflicted(run: _Run, own: Mapping[str, Any], *, head: str, number: int, ba
     (`fixable` False: a `merge_pr` target, whose branch no round may push
     to) -- the step fails fast with `merge_conflict`, naming the pull
     request. A park past MERGE_CI_MAX_SECONDS is `merge_conflict` too.
+
+    One writer per pull request (#2577): while an earlier round of any kind
+    (CI-fix, conflict or pick) is still running at another head, the step
+    parks CONFLICT_FIX_RUNNING, naming it, rather than _PENDING (which tells
+    the tick the next round is due) or the rounds-spent refusal: a second
+    round on the same branch cannot replay its merge over the first's.
     """
     message = f"pull request #{number} conflicts with {base} at {head}"
     if detail:
@@ -3317,6 +3516,12 @@ def _conflicted(run: _Run, own: Mapping[str, Any], *, head: str, number: int, ba
         return run.refuse("merge_conflict",
                           f"{message}, after conflict fix round {n} ({task_id}) ended at this "
                           "head")
+    live = _live_round(run.ctx, own)
+    if live is not None:
+        kind, entry = live
+        return wait(CONFLICT_FIX_RUNNING,
+                    f"{kind} fix round {entry.get('round')} ({_task_id(entry.get('task_id'))}) "
+                    f"is still running at {str(entry.get('head') or '?')[:12]}")
     if len(rounds) < MERGE_CONFLICT_ROUNDS_MAX:
         return wait(CONFLICT_FIX_PENDING,
                     f"conflict fix round {len(rounds) + 1} of {MERGE_CONFLICT_ROUNDS_MAX} is due")
@@ -3352,6 +3557,11 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
     reading is the one the re-run replaces. Once any of it answers red -- a
     failing run is a new id, inside the window or not -- or a check it did
     not re-run is red, this refuses (or hands it to a round) as before.
+
+    A head written by a publish swarm-api refused WORKFLOW_SCOPE_MISSING --
+    the opener's pinned head, or the head a round ended at -- parks
+    WORKFLOW_PATCH_PENDING for the operator instead (#2046): no round is
+    asked for, and none ended there is read as spent.
     """
     message = f"at {head}: " + ", ".join(sorted(failed))
     rounds = _fix_rounds(own)
@@ -3368,8 +3578,14 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
         if not _ended(run.ctx, task_id):
             return wait(CI_FIX_RUNNING, f"{message}; CI fix round {number} ({task_id}) is running",
                         [])
+        refused = _round_refusal(run.ctx, task_id)
+        if refused is not None:
+            return _await_workflow_patch(run, message, task_id, refused, wait)
         return run.refuse("checks_failed",
                           f"{message}, after CI fix round {number} ({task_id}) ended at this head")
+    if run.refused_publish is not None and run.refused_publish[1] == head:
+        opener, _, refused = run.refused_publish
+        return _await_workflow_patch(run, message, opener, refused, wait)
     requested_at = _rerun_settling(own, head, failing_ids)
     if requested_at is not None:
         return wait(CI_RERUN_PENDING,
@@ -3382,6 +3598,60 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
     if asked:
         message += f", after {len(rounds)} CI fix round(s)"
     return run.refuse("checks_failed", message)
+
+
+def _workflow_refusal(doc: Mapping[str, Any]) -> dict[str, Any] | None:
+    """A task's workflow publish swarm-api refused WORKFLOW_SCOPE_MISSING, with its patch.
+
+    Read from the task's `result_summary.git`, as the lifecycle's
+    `_workflow_push_refused` writes it: `workflow_refused.code`, the patch's
+    `workflow_patch` entry and `workflow_paths`. None for any other refusal
+    (`fenced` and `api_unavailable` are not a switch a round lacks) or with
+    no patch recorded, which would leave the operator nothing to push.
+    """
+    git = _mapping(_mapping(doc.get("result_summary")).get("git"))
+    refused = _mapping(git.get("workflow_refused"))
+    patch = _mapping(git.get("workflow_patch"))
+    if refused.get("code") != WORKFLOW_SCOPE_MISSING or not patch:
+        return None
+    paths = git.get("workflow_paths")
+    return {
+        "paths": [p for p in paths if isinstance(p, str)] if isinstance(paths, list) else [],
+        "patch": _str(patch.get("uri")),
+    }
+
+
+def _round_refusal(ctx: ActionContext, task_id: str) -> dict[str, Any] | None:
+    """`_workflow_refusal` of a CI-fix round's task that ended, when it is this tenant's.
+
+    The round's document is tenant-writable, so a forged refusal can at most
+    park the step for the operator instead of refusing: nothing on the forge
+    changes, and MERGE_CI_MAX_SECONDS still ends the wait.
+    """
+    try:
+        doc = _mapping(ctx.fetch_upstream(task_id))
+    except Exception:  # noqa: BLE001 - unreadable: no refusal to read
+        return None
+    if doc.get("tenant_id") != ctx.tenant_id:
+        return None
+    return _workflow_refusal(doc)
+
+
+def _await_workflow_patch(run: _Run, message: str, task_id: str, refused: Mapping[str, Any],
+                          wait: Any) -> ActionOutcome:
+    """Park WORKFLOW_PATCH_PENDING: the operator pushes the patch, and the head moves (#2046)."""
+    paths = list(refused.get("paths") or [])
+    named = ", ".join(paths[:WORKFLOW_PATHS_NAMED]) or "a workflow file"
+    if len(paths) > WORKFLOW_PATHS_NAMED:
+        named += f" and {len(paths) - WORKFLOW_PATHS_NAMED} more"
+    where = f" ({refused['patch']})" if refused.get("patch") else ""
+    run.summary["workflow_refused"] = {"task_id": task_id, "paths": paths,
+                                       "patch": refused.get("patch")}
+    return wait(WORKFLOW_PATCH_PENDING,
+                f"{message}; task {task_id}'s push of {named} was refused "
+                f"{WORKFLOW_SCOPE_MISSING}, so a CI fix round could only be refused again: "
+                f"an operator pushes {WORKFLOW_PATCH_FILE}{where} to the branch, and this "
+                "step reads the pull request again once its head moves", [])
 
 
 def _ci_wait_age(ctx: ActionContext) -> float | None:

@@ -10,6 +10,7 @@ import { createPortal } from 'react-dom'
 import { Em, Mark, timesRun, type ChipTone } from './AgentDetail'
 import { TaskIdLine } from './TaskIdLine'
 import { BrowserUseMark, browserUseOf, browserUseSay } from './BrowserUse'
+import { BudgetRowMark, budgetRowSay, budgetStopLine, stoppedAtBudgetRow, useBudgetWarning } from './AgentBudget'
 import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, agentKind, agentList, shortTaskId, workflowHref, type AgentList, type RecentState } from './agentlist'
 import { TASK_PAGE_LIMIT, USE_FIXTURES, loadAttempts, loadLiveSession, loadTask, loadTasks, loadTasksInState, type LiveSession, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
@@ -476,61 +477,69 @@ export function AgentsScreen({
   }
 
   return (
-    <Screen
-      title="Agents"
-      load={loadAgentsPage}
-      // THE LIST RE-READS (AG-1). It read once and never again, while its
-      // clock went on adding to every row: a finished agent read `running`
-      // and was counted in Live. `Screen` owns the timer, the pause while the
-      // tab is hidden, the back-off and the stop on an answer only a person
-      // can change; this screen owns the cadence, which is a function of the
-      // rows it holds.
-      pollMs={pollInterval}
-      summary={(first) => {
-        const d = withMorePages(first, more)
-        const live = d.tasks.filter((t) => tabOf(t) === 'live').length
-        return (
-          <>
-            {d.tasks.length} loaded · {live} live
-            {d.tenant_id && ` · ${d.tenant_id}`}
-          </>
-        )
-      }}
-      // NO `empty` PANEL (V151): `loadAgentsPage` never answers `empty`, so
-      // a tenant with no agents keeps the tabs, search and filters, and each
-      // tab draws its own real zero below them.
-    >
-      {(d, reading) => (
-        <AgentsBody
-          onOpen={onOpen}
-          openTaskId={taskId}
-          page={withMorePages(d, more)}
-          onMore={() => void loadMore(withMorePages(d, more))}
-          moreRead={moreRead}
-          // WHEN THE ROWS ON SCREEN WERE READ, and the cadence in force, as
-          // `Screen` read them -- not recorded a second time here. A stale
-          // screen hands over the last GOOD read's time, which is the one the
-          // rows describe.
-          readAt={reading.fetchedAt}
-          interval={reading.pollMs ?? pollInterval(d)}
-          tab={tab}
-          setTab={setTab}
-          recentState={recentState}
-          setRecentState={setRecentState}
-          onList={onList}
-          profile={profile}
-          setProfile={setProfile}
-          grouped={grouped}
-          setGrouped={setGrouped}
-          query={query}
-          setQuery={setQuery}
-          failedFirst={failedFirst}
-          setFailedFirst={setFailedFirst}
-          browserUnused={browserUnused}
-          setBrowserUnused={setBrowserUnused}
-        />
-      )}
-    </Screen>
+    <>
+      <Screen
+        title="Agents"
+        load={loadAgentsPage}
+        // THE LIST RE-READS (AG-1). It read once and never again, while its
+        // clock went on adding to every row: a finished agent read `running`
+        // and was counted in Live. `Screen` owns the timer, the pause while the
+        // tab is hidden, the back-off and the stop on an answer only a person
+        // can change; this screen owns the cadence, which is a function of the
+        // rows it holds.
+        pollMs={pollInterval}
+        summary={(first) => {
+          const d = withMorePages(first, more)
+          const live = d.tasks.filter((t) => tabOf(t) === 'live').length
+          return (
+            <>
+              {d.tasks.length} loaded · {live} live
+              {d.tenant_id && ` · ${d.tenant_id}`}
+            </>
+          )
+        }}
+        // NO `empty` PANEL (V151): `loadAgentsPage` never answers `empty`, so
+        // a tenant with no agents keeps the tabs, search and filters, and each
+        // tab draws its own real zero below them.
+      >
+        {(d, reading) => (
+          <AgentsBody
+            onOpen={onOpen}
+            openTaskId={taskId}
+            page={withMorePages(d, more)}
+            onMore={() => void loadMore(withMorePages(d, more))}
+            moreRead={moreRead}
+            // WHEN THE ROWS ON SCREEN WERE READ, and the cadence in force, as
+            // `Screen` read them -- not recorded a second time here. A stale
+            // screen hands over the last GOOD read's time, which is the one the
+            // rows describe.
+            readAt={reading.fetchedAt}
+            interval={reading.pollMs ?? pollInterval(d)}
+            tab={tab}
+            setTab={setTab}
+            recentState={recentState}
+            setRecentState={setRecentState}
+            onList={onList}
+            profile={profile}
+            setProfile={setProfile}
+            grouped={grouped}
+            setGrouped={setGrouped}
+            query={query}
+            setQuery={setQuery}
+            failedFirst={failedFirst}
+            setFailedFirst={setFailedFirst}
+            browserUnused={browserUnused}
+            setBrowserUnused={setBrowserUnused}
+          />
+        )}
+      </Screen>
+      {/* A SCRIM WHILE AN AGENT IS OPEN (BT-017, #2423): from 760px to 1099px
+          the agent is an overlay on this list, and with no backdrop its edge
+          cut the rows mid-word (`…NOT_YET, not`) as if they were one page.
+          Drawn only in that band (agents.css `.ag-scrim`); it takes no pointer,
+          so a row under it still opens, as it did. */}
+      {taskId !== null && <div className="ag-scrim" aria-hidden="true" />}
+    </>
   )
 }
 
@@ -1528,6 +1537,10 @@ function rowReason(
   // that needs a person.
   const silent = silentWorkerLine(task, now)
   if (silent !== null) return { text: silent, warn: true }
+  // A STOP AT ITS BUDGET IS NOT A PLAIN FAILURE (#2459): the worker kept and
+  // published the work, so the line says that and the amount, not the
+  // `budget_exceeded: ...` error text, and asks nobody to act.
+  if (stoppedAtBudgetRow(task)) return { text: budgetStopLine(task), warn: false }
   // THE TASK'S WEIGHT, FROM THE CATALOGUE (#66) -- never `RESOURCE_UNITS`,
   // which is what fed `whyAgent`/`whyNeedsAction` a `full` reading for a pool
   // too small to ever admit this task. `classUnits` is null exactly when the
@@ -2013,6 +2026,10 @@ function CompactRow({
   // A LIVE-BROWSER AGENT WAITING FOR A PERSON (live-browser.md §6): the row
   // is yellow and says so, held or parked, on whichever tab it is on.
   const waitsForYou = needsYou(task)
+  // THE BUDGET (#2459): a live agent past its 80% warning, or an ended one
+  // the budget stopped. No read and no mark for an agent with no budget.
+  const { warning: budgetWarning } = useBudgetWarning(task)
+  const budgetSay = budgetRowSay(task, budgetWarning, live)
   const cardId = `ag-card-${task.id}`
 
   const show = (row: HTMLElement) => {
@@ -2045,10 +2062,32 @@ function CompactRow({
     startingBrowser ? 'browser starting' : null,
     cancelling ? 'cancelling' : null,
     waitsForYou ? 'needs you' : null,
+    budgetSay,
     cancelSpan ? CANCEL_SPAN : null,
     why.text === '' ? null : whySaid(why),
   ]
     .filter((p): p is string => p !== null && p !== undefined)
+    .join(' · ')
+
+  // THE SUB-LINE'S WHOLE TEXT IS ITS TITLE (BT-017, #2423): on a desktop row
+  // the line is one line cut at its end, and the part cut is the owner, so
+  // `… · claude-opus-5-5 · b…` named nobody. Its facts in the line's order,
+  // with the owner's whole address where the line prints the name before @.
+  const subSaid = [
+    live && (wordOnly || task.state === 'STARTING') ? (startingBrowser ? 'starting' : wordOnly ? el.text : 'starting') : null,
+    live ? tries.text : null,
+    budgetSay,
+    profile,
+    browserMark !== null ? browserUseSay(browserMark) : null,
+    task.submitted_by ?? 'no owner recorded',
+    ran,
+    !live && wordOnly ? el.text : null,
+    !live && tries.over ? tries.text : null,
+    cancelling ? 'cancelling' : null,
+    waitsForYou ? 'needs you' : null,
+    cancelSpan ? CANCEL_SPAN : null,
+  ]
+    .filter((p): p is string => p !== null && p !== undefined && p !== '')
     .join(' · ')
 
   // THE ROW IS NOT A BUTTON; IT HOLDS ONE (visual QA QA-032, 2026-10-20). It
@@ -2139,7 +2178,7 @@ function CompactRow({
       {/* A BROWSER ROW WRAPS BETWEEN ITS FACTS AT EVERY WIDTH (review,
           dark-desktop-02-inspector-used): beside the inspector its mark cut
           the owner and the run time off the one line (agents.css `.has-bu`). */}
-      <span className={`cr-sub${browserMark !== null ? ' has-bu' : ''}`}>
+      <span className={`cr-sub${browserMark !== null ? ' has-bu' : ''}`} title={subSaid}>
         {task.state === 'RUNNING' && isLiveBrowser(task) && <DeviceThumb taskId={task.id} />}
         {/* A LIVE ROW LEADS WITH WHERE IT IS (visual QA run 2, work-a-007):
             the line is one line cut at its end (agents.css `.cr-sub`), and
@@ -2171,6 +2210,15 @@ function CompactRow({
             <span className={`cr-try${tries.over ? ' is-over' : ''}`} aria-label={tries.say}>
               {tries.text}
             </span>
+            {' · '}
+          </>
+        )}
+        {/* THE BUDGET MARK COMES BEFORE THE PROFILE (#2459): the line is cut
+            at its end on a desktop row, and this is what the row is watched
+            for once it is there; the profile and owner are constant facts. */}
+        {budgetSay !== null && (
+          <>
+            <BudgetRowMark task={task} live={live} warning={budgetWarning} />
             {' · '}
           </>
         )}
@@ -2239,9 +2287,10 @@ function CompactRow({
       {/* THE REASON IS CLAMPED AND WHOLE IN ITS TITLE (V061): a failed row
           printed its whole multi-line error. ON A FAILED ROW IT IS RED, as the
           mark and the rule beside it are (V146): it was --warn amber, a third
-          colour for one fact. */}
+          colour for one fact. A BUDGET STOP IS NOT (#2459): its line says the
+          work was kept and published, and it is drawn dim, not as an error. */}
       {why.text && !whyHidden && (
-        <span className={`why${why.warn ? ' is-warn' : ''}${failedRow(task) ? ' is-bad' : ''}`} title={whySaid(why)}>
+        <span className={`why${why.warn ? ' is-warn' : ''}${failedRow(task) && !stoppedAtBudgetRow(task) ? ' is-bad' : ''}`} title={whySaid(why)}>
           {why.text}
         </span>
       )}

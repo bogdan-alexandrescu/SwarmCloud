@@ -28,11 +28,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from swarm_common.states import ParkReason
 
 from scheduler.store import SchedulerStore
 
-from .conftest import scheduler_settings, seed_pool, seed_task, seed_tenant
+from .conftest import core_settings, scheduler_settings, seed_pool, seed_task, seed_tenant
 
 TENANT = "eng"
 NOW = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
@@ -402,3 +403,200 @@ def test_no_sweep_reads_budget_exhausted(db, make_scheduler):
     assert ParkReason.SCHEDULED_RETRY in asked
     assert ParkReason.MANUAL_PAUSE in asked
     assert ParkReason.BUDGET_EXHAUSTED not in asked
+
+
+# --------------------------------------------------------------------------
+# The four sweeps that read a fixed window (#1822 comment 10)
+# --------------------------------------------------------------------------
+#
+# The quota wake, the dependency and credential promotions and the prewarm
+# read `parked_tasks`, one unordered page of `dependency_sweep_size`, so the
+# same first page came back on every drain: SWEEP parks that never clear hid
+# every park behind them. Each sweep below is handed 2 * SWEEP parks that never
+# clear, and every one of them must be looked at within ceil(n / SWEEP) drains.
+# Only the PARKED -> READY order changes; nothing here can create demand
+# (invariant 1).
+
+
+def _visits(scheduler) -> dict[ParkReason, set[str]]:
+    """Every park a sweep was handed, per reason, whichever read it used."""
+    seen: dict[ParkReason, set[str]] = {}
+    real_tasks = scheduler.store.parked_tasks
+    real_page = scheduler.store.parked_page
+
+    def parked_tasks(reason, limit):
+        page = real_tasks(reason, limit)
+        seen.setdefault(reason, set()).update(t.id for t in page)
+        return page
+
+    def parked_page(reason, limit, after):
+        page = real_page(reason, limit, after)
+        seen.setdefault(reason, set()).update(t.id for t in page)
+        return page
+
+    scheduler.store.parked_tasks = parked_tasks
+    scheduler.store.parked_page = parked_page
+    return seen
+
+
+def _stuck_parks(db, reason: ParkReason, **fields) -> list[str]:
+    ids = [f"task_{reason.value.lower()}_{i:02d}" for i in range(2 * SWEEP)]
+    for task_id in ids:
+        seed_task(db, task_id=task_id, tenant_id=TENANT, state="PARKED",
+                  park_reason=reason.value, **fields)
+    return ids
+
+
+def _drains_needed(ids: list[str]) -> int:
+    return -(-len(ids) // SWEEP)
+
+
+def test_the_dependency_promotion_reaches_every_park_behind_a_full_window(db, make_scheduler):
+    from scheduler.loop import DrainReport
+
+    world(db, global_limit=0)
+    seed_task(db, task_id="task_parent", tenant_id=TENANT, state="RUNNING")
+    ids = _stuck_parks(db, ParkReason.DEPENDENCY_INCOMPLETE, depends_on=("task_parent",))
+    scheduler = make_scheduler(
+        now=at_now, settings=scheduler_settings(dependency_sweep_size=SWEEP)
+    )
+    seen = _visits(scheduler)
+
+    for _ in range(_drains_needed(ids)):
+        scheduler._promote_dependencies(DrainReport())
+
+    assert seen[ParkReason.DEPENDENCY_INCOMPLETE] == set(ids)
+    assert all(db.docs[f"tasks/{t}"]["state"] == "PARKED" for t in ids)
+
+
+def test_the_credential_promotion_reaches_every_park_behind_a_full_window(db, make_scheduler):
+    from scheduler.loop import DrainReport
+
+    world(db, global_limit=0)
+    # A tenant that does not exist: the sweep leaves every park where it is.
+    ids = [f"task_cred_{i:02d}" for i in range(2 * SWEEP)]
+    for task_id in ids:
+        seed_task(db, task_id=task_id, tenant_id="nobody", state="PARKED",
+                  park_reason=ParkReason.CREDENTIAL_MISSING.value)
+    scheduler = make_scheduler(
+        now=at_now, settings=scheduler_settings(dependency_sweep_size=SWEEP)
+    )
+    seen = _visits(scheduler)
+
+    for _ in range(_drains_needed(ids)):
+        scheduler._promote_credentials(DrainReport())
+
+    assert seen[ParkReason.CREDENTIAL_MISSING] == set(ids)
+    assert all(db.docs[f"tasks/{t}"]["state"] == "PARKED" for t in ids)
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [ParkReason.PROVIDER_QUOTA_EXHAUSTED, ParkReason.PROVIDER_COOLDOWN,
+     ParkReason.PROVIDER_OUTAGE],
+)
+def test_the_prewarm_reaches_every_park_behind_a_full_window(db, make_scheduler, reason):
+    from scheduler.loop import DrainReport
+
+    world(db, global_limit=0)
+    # A day away: outside the prewarm horizon, so none is promoted.
+    ids = _stuck_parks(db, reason, next_eligible_at=NOW + timedelta(days=1))
+    scheduler = make_scheduler(
+        now=at_now, settings=scheduler_settings(dependency_sweep_size=SWEEP)
+    )
+    seen = _visits(scheduler)
+
+    for _ in range(_drains_needed(ids)):
+        assert scheduler._prewarm(DrainReport()) == 0
+
+    assert seen[reason] == set(ids)
+
+
+def test_the_prewarm_budget_break_leaves_the_unread_rest_for_the_next_drain(
+    db, make_scheduler
+):
+    """A page the budget cut short resumes at the first park it did not look at."""
+    from scheduler.loop import DrainReport
+
+    world(db, global_limit=0)
+    reason = ParkReason.PROVIDER_COOLDOWN
+    # Due now: promoted whether or not a guard pool exists, one per budget slot.
+    ids = _stuck_parks(db, reason, next_eligible_at=NOW - timedelta(seconds=1))
+    scheduler = make_scheduler(
+        now=at_now,
+        settings=scheduler_settings(
+            dependency_sweep_size=SWEEP, core=core_settings(prewarm_max_agents=1)
+        ),
+    )
+
+    promoted = [scheduler._prewarm(DrainReport()) for _ in range(len(ids))]
+
+    assert promoted == [1] * len(ids)
+    assert all(db.docs[f"tasks/{t}"]["state"] == "READY" for t in ids)
+
+
+def test_the_account_wake_reaches_every_park_behind_a_full_window(
+    db, make_scheduler, monkeypatch
+):
+    from types import SimpleNamespace
+
+    import scheduler.loop as loop_mod
+    from scheduler.loop import DrainReport
+
+    world(db, global_limit=0)
+    # No account named on the park: the wake looks at each one and leaves it.
+    seed_task(db, task_id="task_done", tenant_id=TENANT, state="SUCCEEDED")
+    ids = _stuck_parks(db, ParkReason.PROVIDER_QUOTA_EXHAUSTED)
+    scheduler = make_scheduler(
+        now=at_now, settings=scheduler_settings(dependency_sweep_size=SWEEP)
+    )
+    account = SimpleNamespace(
+        account_id="acct_1", owner_tenant=TENANT, lend_to=(), provider="anthropic"
+    )
+    scheduler._pool = SimpleNamespace(configured=True, accounts=lambda: [account])
+    monkeypatch.setattr(loop_mod, "accounts_held_by", lambda _db, _task_id: {"acct_1"})
+    seen = _visits(scheduler)
+    ended = scheduler.store.get_task("task_done")
+
+    for _ in range(_drains_needed(ids)):
+        assert scheduler._wake_account_parks(ended, DrainReport()) == []
+
+    assert seen[ParkReason.PROVIDER_QUOTA_EXHAUSTED] == set(ids)
+
+
+def test_the_account_wake_and_the_prewarm_keep_their_own_windows(
+    db, make_scheduler, monkeypatch
+):
+    """Both read PROVIDER_QUOTA_EXHAUSTED: one cursor between them would halve each one's reach."""
+    from types import SimpleNamespace
+
+    import scheduler.loop as loop_mod
+    from scheduler.loop import DrainReport
+
+    world(db, global_limit=0)
+    seed_task(db, task_id="task_done", tenant_id=TENANT, state="SUCCEEDED")
+    reason = ParkReason.PROVIDER_QUOTA_EXHAUSTED
+    ids = _stuck_parks(db, reason, next_eligible_at=NOW + timedelta(days=1))
+    scheduler = make_scheduler(
+        now=at_now, settings=scheduler_settings(dependency_sweep_size=SWEEP)
+    )
+    account = SimpleNamespace(
+        account_id="acct_1", owner_tenant=TENANT, lend_to=(), provider="anthropic"
+    )
+    scheduler._pool = SimpleNamespace(configured=True, accounts=lambda: [account])
+    monkeypatch.setattr(loop_mod, "accounts_held_by", lambda _db, _task_id: {"acct_1"})
+    seen = _visits(scheduler)
+    ended = scheduler.store.get_task("task_done")
+    woke: set[str] = set()
+    warmed: set[str] = set()
+
+    for _ in range(_drains_needed(ids)):
+        seen.clear()
+        scheduler._wake_account_parks(ended, DrainReport())
+        woke |= seen.get(reason, set())
+        seen.clear()
+        scheduler._prewarm(DrainReport())
+        warmed |= seen.get(reason, set())
+
+    assert woke == set(ids)
+    assert warmed == set(ids)

@@ -323,7 +323,9 @@ repository.
 **Two tokens.** The GITHUB_TOKEN carries `actions: write` and nothing else:
 it reads runs and jobs, cancels and re-runs. It has no `variables` scope, so
 the variable is read and written with the merge App's installation token,
-minted with `permission-variables: write` only. That token draws on the App's
+minted with `permission-actions-variables: write` only (GitHub's API key for
+repository variables is `actions_variables`; its settings page calls it
+*Variables*). That token draws on the App's
 quota, not a person's. **Owner step, once:** give the merge App the
 repository permission *Variables: Read and write*
 ([runbook](runbooks/merge-app.md)). Until then the token mint fails and the
@@ -2491,8 +2493,25 @@ fixer by hand and push the fix-up from a laptop.
 `swarm/<task-id>` branch of this repository, and runs
 [`scripts/ci-fix.sh`](../scripts/ci-fix.sh) `run`:
 
-1. **Only the pull request's current head.** A red run for a commit the branch
-   has already moved past is ignored.
+1. **Only the pull request's current head, at submit and again at start.** A
+   red run for a commit the branch has already moved past is ignored. The
+   check at submit is not enough, because a fix waits for capacity before it
+   starts and the red head can be superseded while it waits. PR #2224's two
+   fixes started 1.5-2 h after submission, when the owner had already fixed
+   and merged the branch: one agent found nothing to change and failed
+   `published_nothing`, the other reset onto the red sha and failed with
+   HEAD moved (#2276). So swarm-api signs the red head into the dispatch
+   block (`ci_fix_head`, `swarm_api.validation.CI_FIX_HEAD_FIELD`; the
+   worker acts on no unsigned metadata), and the worker checks it again on
+   the attempt's fresh clone, before any runner starts
+   ([`agent_worker/cifixstart.py`](../apps/agent-worker/agent_worker/cifixstart.py),
+   `lifecycle.py::Worker._ci_fix_superseded`). A branch that moved past the
+   red commit, a merged or closed pull request, or a head the forge reports
+   moved ends the attempt SUCCEEDED as `no_change`, with a `no_change_reason`
+   starting `superseded:` (`lifecycle.py::Worker._finish_superseded_ci_fix`).
+   No agent runs and nothing is pushed. A forge that cannot be read leaves the
+   clone alone to decide. An attempt restored from a checkpoint is not
+   checked, because its agent already ran.
 2. **Every failed job is read, cut where it failed, redacted, then capped.**
    The script lists the run's jobs through the Actions API and reads each
    failed job's own log (`actions/jobs/<id>/logs`), not `gh run view
@@ -2553,11 +2572,58 @@ the skip, comments nothing, and passes. The check has to be the API's.
 (`deps.submission_scope`), so CI-FIXER-ONE's read from the script got a 404
 for every real lane. The API reads with its own access, and the fixer gains
 no read. An agent in no workflow, a workflow with no merge step, and a merge
-step that has finished are fixed as before. The refusal ships **on**
+step that has finished are fixed as before.
+
+**An issue run owns its pull request the same way** (#2216). An issue run's
+compiled workflow has no merge step, so the merge-step read never fired for
+its pull request, yet while it is CHECKING or FIXING it reads CI and submits
+its own CI-fix rounds from `issueci`. Measured 2026-10-23: on #2145 the
+standalone fixer ran 30 minutes and its push was rejected non-fast-forward
+because the run's round had pushed first; on #2147 it started 64 s after the
+run's round and published nothing while that round fixed the failure. So
+`cifix.stamp` also answers 409 `ci_fix_lane_owns_pr` while an issue run of the
+same tenant that is not terminal (any of PLANNING through FIXING: an APPROVED
+or RUNNING run reaches CHECKING next) has the continued agent as its
+`pr_task_id`, or the continued agent's workflow among its `ci_fix_workflows`.
+The detail names `issue_run_id` and `issue_run_state`, and the script's skip
+line names the run. The reads are two tenant-scoped equality reads on
+`issue_runs` that the automatic single-field indexes serve, so there is no
+composite index to build. The run's own rounds carry `metadata.issue_run`,
+not `metadata.ci_fix`, so they never reach this gate. A pull request whose
+issue run is DONE, FAILED or otherwise terminal is fixed as before. The
+refusal ships **on**
 (`REFUSAL_CI_FIX_LANE_OWNS_PR=off` turns it off). One gap remains: the
 script's own attempt cap is checked before it submits, so a pull request
 already at the cap gets the stop comment even while its lane's merge step is
 live.
+
+**A request that pushes to a pull request waits while a fix holds it**
+(#2535). The gates above read only a request that carries `metadata.ci_fix`.
+Anything else went straight through. On 2026-10-26 an `implement` step of
+wf_3bde5fa9 was admitted onto PR #2473 with `publish_to_pr`, three seconds
+after this fixer (task_b0abb81d) started on the same red head 377c3010. Both
+agents fixed the same test, the fixer pushed first, and the step's publish
+was refused `head_moved` after its agent had done the whole fix. So
+`cifix.stamp` now answers 409 `pr_fix_in_flight` to a request that pushes and
+is not itself a fix, while a live CI fix (an agent, or a claim still inside
+its two-minute grace) or a live conflict fix (pr-shepherd's, or a merge
+step's conflict round) holds that pull request. Two kinds of request meet it:
+
+* a `continues_task` continuation, against the pull request its branch's
+  agent recorded (`result_summary.git.pull_request.number`);
+* a `publish_to_pr` workflow, against that number in its repository. The
+  API reads that pull request's branch from GitHub only after `stamp`, so
+  this read goes by number, and the repository is checked on every row.
+
+The answer names the live agent, its workflow, its kind and the pull request,
+and nothing is written. Resubmit once that fix ends: its push moves the head,
+and CI runs again there. An issue run's own CI-fix round is such a
+continuation. The second step of #2535 makes it read this 409 as "wait";
+until that lands, the refused round fails its run. A merge-only request, a
+request that is itself a fix round (each has its own gate), and a branch agent
+with no recorded pull request are admitted as before. The refusal ships
+**on** (`REFUSAL_PR_FIX_IN_FLIGHT=off` turns it off). Shipped off, it would
+refuse nothing in production until terraform's `api_refusals` turned it on.
 
 ### The post-back, and the cap the API holds
 
@@ -3606,19 +3672,53 @@ from them.
 The weights go stale as tests are added and change — the split stays correct
 (every file still runs exactly once, an unknown one at the median weight) but
 drifts out of balance. Every shard on `main` uploads what it measured, per
-file, as the artifact `unit-durations-<k>` (30 days). To refresh, from a green
-push run on `main`:
+file, as the artifact `unit-durations-<k>` (30 days).
+
+**Stale weights warn; they do not fail (#2364).** `test_unit_shards.py` used to
+fail when fewer than 80 % of the test files had a weight. The file was
+refreshed only by hand, so the test files that landed between refreshes pushed
+coverage under the floor (1069 of 1337 weighted) and turned main and every
+pull request red — over a staleness that only unbalances the split. Now
+`scripts/lib/unit_shards.py count` compares the weighted share of the files the
+run selects with `WEIGHT_COVERAGE_WARN` (0.8) and, below it, writes a
+`::warning` and a step-summary line and carries on.
+`test_stale_weights_warn_and_still_split_within_budget` holds that a quarter
+unweighted still exits 0 with every shard within budget. The test still fails
+hard on a malformed file: a key that is not a `tests/unit/**.py` path, or a
+weight that is not a positive number. It also holds the split to within 10 % of
+an even share.
+
+**To refresh**, one command, then review the diff and open a pull request with
+the file:
 
 ```bash
-run="$(gh run list --workflow application.yml --branch main --event push --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
-gh run download "$run" -p 'unit-durations-*' -D /tmp/unit-durations
-jq -S -s 'add' /tmp/unit-durations/*/unit-durations.json > tests/unit/scripts/unit_test_durations.json
+scripts/refresh-unit-weights.sh            # or --run <id> for a given run
 ```
 
-and open a pull request with the file. Only the weights' ratios matter, so CI's
-seconds replacing a container's is fine. `test_unit_shards.py` fails when fewer
-than 80 % of the test files have a weight, and holds the split to within 10 %
-of an even share.
+It finds the newest successful `push` run of `application.yml` on `main` that
+has `unit-durations-*` artifacts. A push run that skipped `python-unit`,
+because a run of the identical tree had already passed, uploads none, so it
+walks back through the last 20 (`--limit`). It downloads them and hands them
+to `scripts/lib/merge_unit_weights.py`. That replaces the old
+`jq -S -s add`, which dropped every file the run had not measured and kept
+every deleted one:
+
+* a measured weight replaces the stored one;
+* a file that no longer exists is dropped;
+* a file that exists but was not measured keeps its stored weight;
+* a measured path that is not an existing `tests/unit/**.py` is ignored.
+
+The output is sorted, indent-1 JSON with a trailing newline, the shards' own
+artifact format, so a refresh with nothing new changes no byte (the first
+refresh after this rewrites the indentation from jq's two spaces). A download
+with no `unit-durations.json`, or a malformed one, exits 1 and writes nothing:
+an unread download is never "nothing to refresh". Only the weights' ratios
+matter, so CI's seconds replacing a container's is fine.
+
+Like `scripts/refresh-ui-weights.sh`, the script changes no workflow. A
+scheduled workflow that runs it and opens the pull request with the merge
+App's token lives under `.github/workflows/`, which only swarm-api can push,
+so it is proposed separately rather than here.
 
 ### Where pull-request CI time goes (2026-10-09)
 
@@ -4024,6 +4124,15 @@ says the change reaches, which are
   (a change to `scripts/lib/common.sh` reaches the tests of every script that
   sources it), and a generic basename (`Dockerfile`, `__init__.py`) only
   beside one of its directories' names;
+* every test naming a doc that cites a changed path (`doc_closure`): a
+  `docs/**/*.md` that names a changed non-doc path by its **full**
+  repo-relative path counts as changed, one level deep (#2299). PR #2267 moved
+  `PushTestCell` out of `Access.tsx` while `docs/onboarding.md` still cited it
+  there; the tests that resolve that citation name only `onboarding.md`, so no
+  rule picked them and main's push went red. Full path only, because a
+  basename (`App.tsx`, `main.py`) is shared by many files; never from a changed
+  doc, because 55 docs cite `CLAUDE.md` and following them would make a
+  docs-only change select hundreds of files;
 * when the change also touches `docs/` or `apps/swarm-ui/`, the pick step's
   own area readers, as a docs-only change picks them.
 
@@ -4754,7 +4863,10 @@ but only its doc guards for a docs-only diff, below), every
 changed `tests/unit/**/test_*.py`, and every `tests/unit/**/test_*.py` whose
 text names a changed path by repo-relative path or basename. A generic basename
 (`__init__.py`, `package.json`, …) selects by full path only, or it would pick
-half the suite. It runs them in **one** `pytest -q -n auto -p no:warnings` call
+half the suite. A `docs/**/*.md` that cites a changed non-doc path by its full
+path adds its own path and basename to what a test may name (#2299, the
+selector's `doc_closure` above): a test that resolves a doc's citations names
+the doc, not the file it cites. It runs them in **one** `pytest -q -n auto -p no:warnings` call
 (collecting `tests/unit/scripts` whole costs ~135 s, so files, not
 directories), then `scripts/lib/check-contract-parity.sh`, with 540 s and 60 s
 deadlines so one call stays under the ten minutes a lane allows a command. It

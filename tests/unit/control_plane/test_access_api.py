@@ -513,7 +513,11 @@ def test_the_members_view_is_an_admins_and_holds_no_value(api, github, db):
     _connect(api, github)
     _enable(api)
     assert _grant(api, f"{ORG}/repo-0001").status_code == 200
-    assert api.get("/v1/access/members", headers=auth_header("alice")).status_code == 403
+    refused = api.get("/v1/access/members", headers=auth_header("alice"))
+    assert refused.status_code == 403
+    # MUTATION: the refusal a member reads saying "tenant" again turns this red
+    # (VQ-056: the console speaks of workspaces).
+    assert refused.json()["message"] == "the workspace's members view is for admins"
     answer = api.get("/v1/access/members", headers=auth_header("root"))
     assert answer.status_code == 200, answer.text
     members = {m["user"]: m for m in answer.json()["members"]}
