@@ -242,8 +242,11 @@ describe('r2:FF-D5a: each CPU mean on Details says which mean it is', () => {
     const { container } = render(<UtilisationPanel taskId={ID} live={false} />)
     await act(async () => {})
     const head = container.querySelector('[data-testid="util-headline"]')?.textContent ?? ''
-    // MUTATION: leave the summary at `CPU: mean 1 of 2 cores` -- two means on one pane, neither named.
-    expect(head).toContain('CPU, 5 s samples: mean 1 of 2 cores (cgroup limit)')
+    // QA1 overview-agents-24/25: the title prints no mean at all, so the pane
+    // has one mean on its glass (Resources'); the samples' is the chart caption.
+    // MUTATION: leave the summary at `CPU: mean 1 of 2 cores` -- two means on one pane.
+    expect(head).not.toMatch(/mean/)
+    expect(container.querySelector('[data-testid="util-summary"]')?.textContent).toContain('mean 1 of 2 cores')
   })
 })
 
