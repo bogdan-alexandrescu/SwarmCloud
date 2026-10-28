@@ -413,3 +413,14 @@ describe('overview-agents-38: a phone opens the log wrapped', () => {
     expect(css).toMatch(/\.ag-logs-body\.is-wrap \.ag-logtext \.ag-logline \{ padding-inline-start: 5ch; \}/)
   })
 })
+
+describe('overview-agents-36: an empty stderr says so in a sentence', () => {
+  it('reads `Nothing on agent stderr yet.` over a folded object card', async () => {
+    render(<AgentLogs task={running()} />)
+    fireEvent.click(within(within(dock()).getByRole('group', { name: 'Which log' })).getByRole('button', { name: 'Agent stderr' }))
+    await waitFor(() => expect(dock().querySelector('.rf-empty')).not.toBeNull())
+    // MUTATION: drop the empty branch in `StreamsFrom` -- the gs:// card `0 B real zero · live` is all there is.
+    expect(dock().querySelector('.rf-empty')!.textContent).toBe('Nothing on agent stderr yet.')
+    expect(dock().querySelector('details.ag-logmeta')?.hasAttribute('open')).toBe(false)
+  })
+})
