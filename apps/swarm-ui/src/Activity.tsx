@@ -2507,7 +2507,8 @@ const OWN_TAIL = 12
 /**
  * One identity and its copy control. Wide, it is the three pieces above, cut
  * in the middle; on a PHONE (the stacked record) it is whole, as runs that
- * break after an `@` or a `.` only (visual QA run 6, 6:admin-008): the record
+ * break before the key and after an `@` or a `.` only (visual QA run 6,
+ * 6:admin-008; visual QA pass 1, admin-shell-02): the record
  * let `alice@example` / `.com` and `bogdan@exampl` / `e-` break anywhere.
  */
 export function TenantIdent({ value, noun, tenant, phone }: { value: string; noun: string; tenant: string; phone: boolean }) {
@@ -2537,7 +2538,21 @@ export function TenantIdent({ value, noun, tenant, phone }: { value: string; nou
     <span className="ten-ident-row">
       <span className="ten-ident" title={value}>
         {phone ? (
-          addressBreaks(value, '@.', 'ten-seg')
+          // AND A BREAK BEFORE THE KEY (visual QA pass 1, admin-shell-02, part
+          // of #2596). `swarm-agent-worker-u-bogdan@` was one run, 235px in a
+          // 186px value column, so every card cut it to `swarm-agent-worker-…`
+          // and hid the tenant's own part -- the one that tells the cards
+          // apart, with no hover on a phone to recover it. The record breaks
+          // where the wide row splits its pieces too: prefix, then key.
+          <>
+            {parts.head !== '' && (
+              <>
+                {addressBreaks(parts.head, '@.', 'ten-seg')}
+                <wbr />
+              </>
+            )}
+            {addressBreaks(value.slice(parts.head.length), '@.', 'ten-seg')}
+          </>
         ) : (
           <>
             {parts.head !== '' && <span className="ten-ident-head">{parts.head}</span>}

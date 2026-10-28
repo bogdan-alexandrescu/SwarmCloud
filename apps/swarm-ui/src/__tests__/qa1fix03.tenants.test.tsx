@@ -2,7 +2,8 @@
 // Activity.tsx `TenantIdent` and styles/admin.css.
 //
 //   admin-shell-02  at 390 the identity and its copy control ran past the
-//                   card to x=461 and the page scrolled sideways
+//                   card to x=461 and the page scrolled sideways; then, kept
+//                   in the card, its first run was cut and hid the key
 //   admin-shell-18  at 1440 the identity was cut twice, `sw…u-bogdan@ex…`
 //
 // Read through `cascade` (cssgate.ts), which weighs media conditions and
@@ -15,6 +16,7 @@ import { cleanup } from '@testing-library/react'
 import { TenantIdent } from '../Activity'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
+import { textPx } from './tablefit'
 
 const WIDE: CascadeEnv = { width: 1440 }
 const PHONE: CascadeEnv = { width: 390 }
@@ -37,6 +39,29 @@ describe('admin-shell-02: at 390 the identity stays inside the card', () => {
     expect(painted(ident, 'min-width', PHONE)).toBe('0')
     expect(painted(ident, 'max-width', PHONE)).toBe('100%')
   })
+
+  // The card's value column at 390, as the review measured it on the render.
+  const VALUE_COLUMN_390 = 186
+
+  for (const [tenant, key] of [
+    ['u-bogdan', 'u-bogdan@'],
+    ['eng', 'eng@'],
+    ['smoke', 'smoke@'],
+  ] as const) {
+    it(`cuts no run of ${tenant}'s identity, so its key is on the card whole`, () => {
+      const value = `swarm-agent-worker-${tenant}@example-project.iam.gserviceaccount.com`
+      render(<TenantIdent value={value} noun="service account" tenant={tenant} phone />)
+      const segs = [...document.querySelectorAll('.ten-ident .ten-seg')]
+      // MUTATION: drop the <wbr> before the key in `TenantIdent`: the run
+      // `swarm-agent-worker-u-bogdan@` is 235px in 186 and is cut to
+      // `swarm-agent-worker-…` on every card, the key gone.
+      expect(segs.map((s) => s.textContent)).toContain(key)
+      for (const seg of segs) {
+        const text = seg.textContent ?? ''
+        expect(textPx(text, seg, PHONE), `'${text}' is wider than the value column`).toBeLessThanOrEqual(VALUE_COLUMN_390)
+      }
+    })
+  }
 })
 
 describe('admin-shell-18: at 1440 the identity is cut once, in its domain', () => {

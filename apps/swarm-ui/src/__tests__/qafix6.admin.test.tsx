@@ -509,7 +509,7 @@ describe('j. 6:admin-009, 6:admin-008: Tenants shows principals whole at 1440 an
     expect(copy.getAttribute('title')).toContain('swarm-agent-worker-u-bogdan@example-project.iam.gserviceaccount.com')
   })
 
-  it("puts a <wbr> after each '@' and '.' and nowhere else at 390", () => {
+  it("puts a <wbr> before the key and after each '@' and '.', and nowhere else, at 390", () => {
     viewport(390)
     const value = 'swarm-agent-worker-u-bogdan@example-project.iam.gserviceaccount.com'
     render(<TenantIdent value={value} noun="service account" tenant="u-bogdan" phone />)
@@ -518,7 +518,17 @@ describe('j. 6:admin-009, 6:admin-008: Tenants shows principals whole at 1440 an
     expect(ident.textContent).toBe(value)
     const before = [...ident.querySelectorAll('wbr')].map((w) => (w.previousSibling?.textContent ?? '').slice(-1))
     // MUTATION: break the segments at hyphens too, or draw the value bare.
-    expect(before).toEqual(['@', '.', '.', '.'])
+    // The first break is before the key (visual QA pass 1, admin-shell-02):
+    // `swarm-agent-worker-` / `u-bogdan@` / `example-project.` / ...
+    expect(before).toEqual(['-', '@', '.', '.', '.'])
+    expect([...ident.querySelectorAll('.ten-seg')].map((s) => s.textContent)).toEqual([
+      'swarm-agent-worker-',
+      'u-bogdan@',
+      'example-project.',
+      'iam.',
+      'gserviceaccount.',
+      'com',
+    ])
     for (const seg of ident.querySelectorAll('.ten-seg')) {
       // Each run is unbroken; one wider than the line is cut, never broken.
       expect(painted(seg, 'white-space', PHONE)).toBe('nowrap')
