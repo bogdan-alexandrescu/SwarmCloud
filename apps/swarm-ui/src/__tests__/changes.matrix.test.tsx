@@ -222,7 +222,10 @@ describe('the pure half: sections, stacking, facts and cells', () => {
     expect(columnFacts(col(null, null), undefined, undefined).kind).toBe('not-started')
     expect(columnFacts(col(null, 't_gone'), undefined, undefined).kind).toBe('not-in-read')
     expect(columnFacts(col(stepTask('t', null, { state: 'RUNNING' })), undefined, undefined)).toEqual({ kind: 'unsummarised', done: false })
-    expect(columnFacts(col(stepTask('t', null)), undefined, undefined)).toEqual({ kind: 'unsummarised', done: true })
+    expect(columnFacts(col(stepTask('t', null, { started_at: '2026-10-28T09:00:00Z' })), undefined, undefined)).toEqual({ kind: 'unsummarised', done: true })
+    // ENDED BEFORE IT STARTED (QA1-FIX-29, overview-agents-77): no patch could exist.
+    // MUTATION: drop the never-started branch in `columnFacts` -- 'unsummarised', 'patch not measured'.
+    expect(columnFacts(col(stepTask('t', null)), undefined, undefined).kind).toBe('not-started')
     expect(columnFacts(col(stepTask('t', ZERO_GIT)), undefined, undefined).kind).toBe('zero')
     // A patch: nothing listed until the attempts say it is not withheld.
     expect(columnFacts(col(stepTask('t', IMPL_GIT)), undefined, undefined).kind).toBe('checking')

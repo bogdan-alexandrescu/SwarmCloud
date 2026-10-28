@@ -681,6 +681,10 @@ export function columnFacts(col: StepColumn, attempts: readonly AttemptRow[] | n
   if (quick !== null) return { kind: 'withheld', files: quick }
   const git = gitOf(task)
   const src = sourceOf(task, git)
+  // ENDED BEFORE IT STARTED (visual QA pass 1, overview-agents-77): a step
+  // cancelled while queued ran nothing, and its column offered 'Agent’s
+  // changes ›' and 'patch not measured' as if a patch could have existed.
+  if (src.kind === 'unsummarised' && TERMINAL_STATES.has(task.state) && task.started_at === null) return { kind: 'not-started' }
   if (src.kind === 'unsummarised') return { kind: 'unsummarised', done: TERMINAL_STATES.has(task.state) }
   if (src.kind === 'zero') return { kind: 'zero' }
   if (attempts === undefined) return { kind: 'checking' }
@@ -1078,6 +1082,12 @@ export function ChangesMatrix({
           ))}
         </div>
         <p className="chg-sum">
+          {/* NO LIST IN HAND, NO TOTAL (visual QA pass 1, overview-agents-76):
+              '0 files across 6 steps' beside 'file lists known for 0 of 6
+              steps' printed an unknown as 0. */}
+          {anyUnknown && known === 0 && all.length === 0 ? (
+            <span className="chg-known">File lists not collected for any step</span>
+          ) : (
           <span>
             {all.length}
             {/* '0', NOT '0+' (visual QA run 6, F5): '+' is a partial count
@@ -1086,10 +1096,11 @@ export function ChangesMatrix({
                 beside it says how much is missing. */}
             {anyUnknown && all.length > 0 ? '+' : ''} {all.length === 1 && !anyUnknown ? 'file' : 'files'} across {cols.length} {cols.length === 1 ? 'step' : 'steps'}
           </span>
+          )}
           {/* HOW INCOMPLETE THE `+` IS (run 5b, L6). '0+ files' is the kept
               notation (run-1 QA-118: '+' is a list still incomplete), and it
               read as zero: this says how many steps' lists are in hand. */}
-          {anyUnknown && (
+          {anyUnknown && !(known === 0 && all.length === 0) && (
             <span className="chg-known">
               file lists known for {known} of {cols.length} {cols.length === 1 ? 'step' : 'steps'}
             </span>
@@ -1145,7 +1156,7 @@ export function ChangesMatrix({
                         this tab's own name, for the step agent's Changes tab, and
                         a page filtered to one step repeated it once per column,
                         dimmed ones included. */}
-                    {c.taskId !== null && (
+                    {c.taskId !== null && facts[i]!.kind !== 'not-started' && (
                       <a className="ctl-link chg-mx-agent" href={agentChangesHref(c.taskId, c.task ?? undefined)} title={`${c.label}'s own Changes tab, on its agent`}>
                         Agent’s changes ›
                       </a>
