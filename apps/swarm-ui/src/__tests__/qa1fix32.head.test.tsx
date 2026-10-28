@@ -136,3 +136,27 @@ describe('admin-shell-10: a step nothing measured is drawn apart from a step not
     expect(painted(unknown!, 'box-sizing', WIDE)).toBe('border-box')
   })
 })
+
+describe('CIFIX-2616: the head reads the title without importing the Agents screen', () => {
+  it('names the agent as its Agents row does, for every shape of title', async () => {
+    const head = await import('../agent-split/head')
+    const { ownTitle: rowTitle } = await import('../Agents')
+    const shapes: Pick<Task, 'step_id' | 'metadata'>[] = [
+      { step_id: null, metadata: { title: '  Fix flaky lease heartbeat test ' } },
+      { step_id: 'implement', metadata: { title: 'Fix flaky lease heartbeat test' } },
+      { step_id: null, metadata: { title: '   ' } },
+      { step_id: null, metadata: { title: 42 } },
+      { step_id: null, metadata: {} },
+      { step_id: null },
+    ]
+    for (const s of shapes) expect(head.ownTitle(s)).toBe(rowTitle(s))
+  })
+
+  it('does not import ../Agents, which the drawer tests replace with a mock of AgentsScreen alone', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const src = readFileSync(join(__dirname, '..', 'agent-split', 'head.tsx'), 'utf8')
+    // MUTATION: import `ownTitle` from '../Agents' again and the 50 drawer tests in artifacts.pane, artifacts.rawpatch and decision.card throw on a missing mock export.
+    expect(src).not.toMatch(/from '\.\.\/Agents'/)
+  })
+})

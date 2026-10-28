@@ -2,7 +2,6 @@ import { useContext, useEffect, useState, type ReactNode } from 'react'
 
 import { AgParentLink } from '../AgentChildren'
 import { SplitClock } from '../AgentDetail'
-import { ownTitle } from '../Agents'
 import { agentName, rememberAgentName, workflowHref } from '../agentlist'
 import { useResourceClasses } from '../Blockers'
 import { BrowserUseFact, browserUseOf } from '../BrowserUse'
@@ -30,6 +29,21 @@ import { Button, CIcon, StateMark } from '../components'
 // control, Stop and ✕, the whole id, and the meta line under them.
 
 const COPY_SAID_MS = 4000
+
+/**
+ * A LONE AGENT'S OWN TITLE, read as its Agents row reads it (`ownTitle` in
+ * Agents.tsx, SUMMARY-TITLE): `metadata.title`, trimmed, and null for a step
+ * or for a title that is absent, blank or not a string. Restated here rather
+ * than imported because the head must not import the Agents screen: half the
+ * drawer's tests replace `../Agents` with a mock that has only `AgentsScreen`,
+ * and an import of `ownTitle` from it threw on every drawer they opened (50
+ * tests red on PR 2616's merge with main, CIFIX-2616).
+ */
+export function ownTitle(t: Pick<Task, 'step_id' | 'metadata'>): string | null {
+  if ((t.step_id ?? null) !== null) return null
+  const v = t.metadata?.title
+  return typeof v === 'string' && v.trim() !== '' ? v.trim() : null
+}
 
 /**
  * THE DETAIL'S HEADER, IN TWO LINES (agent-details-v3.html A, picked
