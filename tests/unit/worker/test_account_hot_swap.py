@@ -191,27 +191,32 @@ def cli(tmp_path, monkeypatch) -> Path:
 
 
 class _Secrets(FakeSecretClient):
-    """Secret Manager, with some secrets that cannot be read."""
+    """Secret Manager, with some secrets that cannot be read, and some
+    `rotating` ones that hold a new token on every read (the refresher wrote a
+    successor between two reads)."""
 
-    def __init__(self, values, unreadable=()):
+    def __init__(self, values, unreadable=(), rotating=()):
         super().__init__(values)
         self.unreadable = set(unreadable)
+        self.rotating = set(rotating)
 
     def access(self, secret_name, version="latest"):
         if secret_name in self.unreadable:
             self.accessed.append(secret_name)
             raise PermissionError("secretAccessor missing")
+        if secret_name in self.rotating:
+            self.values[secret_name] = _token()
         return super().access(secret_name, version)
 
 
 def _run(db, worker_factory, tmp_path, broker, *, modes, unreadable=(), timeout=60,
-         flood_lines=0, **overrides):
+         flood_lines=0, rotating=(), **overrides):
     tokens = {f"swarm-account-{TENANT}--{label}": _token()
               for label in ("first", "second", "third")}
     sessions = [str(uuid.uuid4()) for _ in modes]
     seed_attempt(db, runner_profile="claude-code", task_input={"prompt": "do the work"})
     seed_tenant(db, credentials=["anthropic"])
-    secrets = _Secrets(tokens, unreadable=unreadable)
+    secrets = _Secrets(tokens, unreadable=unreadable, rotating=rotating)
     worker, config, _ = worker_factory(
         runner_profile="claude-code", secret_client=secrets, timeout_seconds=timeout,
         **overrides,
@@ -500,10 +505,16 @@ def test_a_refused_credential_on_a_held_account_reloads_and_resumes_the_session(
     """The refresher revoked the token under a running agent. The worker
     re-reads the SAME account's secret and restarts the CLI with `--resume`, so
     the agent continues its conversation instead of starting it again (#626:
-    26 restarts, ~169 agent-minutes, every one of them from the top)."""
+    26 restarts, ~169 agent-minutes, every one of them from the top).
+
+    The secret ROTATES here: the refresher wrote a successor. A token that
+    came back unchanged moves the attempt instead
+    (`test_account_move_on_dead_token`, #1855)."""
     broker = FakeBroker()
+    secret = f"swarm-account-{TENANT}--first"
     code, worker, runs, tokens, sessions = _run(
-        db, worker_factory, tmp_path, broker, modes=["refused", "finish"]
+        db, worker_factory, tmp_path, broker, modes=["refused", "finish"],
+        rotating=(secret,),
     )
 
     assert code == ExitCode.OK, log_stream.getvalue()[-3000:]
@@ -513,7 +524,10 @@ def test_a_refused_credential_on_a_held_account_reloads_and_resumes_the_session(
     assert without_limit_line(runs[1]["message"]) == RELOAD_RESUME_PROMPT
     # The same account: a reload is not a move.
     assert broker.swaps == []
-    assert runs[1]["token"] == tokens[f"swarm-account-{TENANT}--first"]
+    # The successor the refresher wrote, on the SAME account.
+    assert runs[1]["token"] != runs[0]["token"]
+    assert runs[1]["token"] not in (tokens[f"swarm-account-{TENANT}--second"],
+                                    tokens[f"swarm-account-{TENANT}--third"])
     reloads = [e["detail"] for e in db.events("task_1")
                if (e.get("detail") or {}).get("cause") == "credential_reloaded"]
     assert len(reloads) == 1
