@@ -174,6 +174,11 @@ describe('a replica that was not read (§5.3, §5.4)', () => {
     // The replica that WAS read draws its figures.
     expect(panel('swarm-graph-0').textContent).toMatch(/64 \/ 256 MiB/)
     expect(panel('swarm-graph-0').textContent).toMatch(/128 \/ 512 MiB/)
+    // One bordered panel per replica; the one not read is drawn apart from the read ones.
+    expect(panel('swarm-graph-0').classList.contains('c-card')).toBe(true)
+    expect(p.classList.contains('c-card')).toBe(true)
+    expect(p.style.borderStyle).toBe('dashed')
+    expect(panel('swarm-graph-0').style.borderStyle).toBe('')
   })
 
   it('swarm-graph not answering at all still shows the latency tile, read from Firestore', async () => {
@@ -263,6 +268,8 @@ describe('the shard list (§5.2)', () => {
     expect(screen.getByRole('button', { name: /^Shards/ }).textContent).toMatch(/Shards \(2\) · 1 changed by the last merge/)
     const rows = Array.from(document.querySelectorAll('[data-shard-row]'))
     expect(rows.map((r) => r.getAttribute('data-last-merge'))).toEqual(['changed', 'unchanged'])
+    // The shared scrolling table (components.css .c-tbl), so a wide list scrolls inside the card.
+    expect(rows[0]!.closest('table')?.parentElement?.classList.contains('c-tbl')).toBe(true)
   })
 })
 
