@@ -556,6 +556,29 @@ function TrackMark({ times, axis }: { times: StepTimes; axis: TimelineAxis | nul
  *  placeholder while the read that would supply it is still in flight. A
  *  figure taken from the step's result carries the source note beside it
  *  (WF-5). */
+/** A step cost summed over only some attempts: `$0.253 · 1 of 3` (`figuresFor`, overview-agents-69). */
+const PARTIAL_COST = /^(.*) · (\d+ of \d+)$/
+
+/**
+ * THE COST CELL, WITH A PARTIAL SUM'S MARK ON A LINE OF ITS OWN (QA1B-08
+ * re-review, 2026-10-28). `$0.4230 · 1 of 2` is 127px of 12px mono and Cost's
+ * ceiling is 100px, so the ellipsis cut `of 2`, the part the mark is for.
+ * Widening the column would take Why under the 60px it keeps at the 980px
+ * minimum, so the mark wraps instead, as the workflow list's `10 of 12
+ * reported` does (V163): `wf-cost-of` is a block in the desktop table and
+ * inline in the stacked card, where the line has the room.
+ */
+function CostCellView({ cell, pending, from }: { cell: Cell; pending: boolean; from: 'result' | null }) {
+  const m = pending || from !== null ? null : PARTIAL_COST.exec(cell.text)
+  if (m === null) return <CellView cell={cell} pending={pending} from={from} />
+  return (
+    <>
+      <CellView cell={{ ...cell, text: m[1]! }} />{' '}
+      <span className="wf-cost-of" title={cell.note || undefined}>· {m[2]}</span>
+    </>
+  )
+}
+
 function CellView({
   cell,
   pending = false,
@@ -697,7 +720,12 @@ export function figureColumnWidths(
     waited: width('waited', mono(longest(rows.map((r) => waitedCell(r.times).text)))),
     ran: width('ran', mono(longest(rows.map((r) => r.ran.text)))),
     attempts: width('attempts', mono(longest(rows.map((r) => r.attempts.text)))),
-    cost: width('cost', mono(longest(rows.map((r) => figure(r.cost, r.costFrom, r.pending))))),
+    // A partial sum's mark is a line of its own (`CostCellView`): the longer line counts.
+    cost: width('cost', mono(longest(rows.flatMap((r) => {
+      const t = figure(r.cost, r.costFrom, r.pending)
+      const m = r.pending || r.costFrom !== null ? null : PARTIAL_COST.exec(t)
+      return m === null ? [t] : [m[1]!, `· ${m[2]}`]
+    })))),
     tokens: width('tokens', mono(longest(rows.map((r) => figure(r.tokens, r.tokensFrom, r.pending))))),
   }
 }
@@ -1074,7 +1102,7 @@ export function WorkflowTable({
                 <AttemptsView cell={r.attempts} over={r.attemptsOver} />
               </td>
               <td data-col="cost" data-label="Cost" className="is-num">
-                <CellView cell={r.cost} pending={r.pending} from={r.costFrom} />
+                <CostCellView cell={r.cost} pending={r.pending} from={r.costFrom} />
               </td>
               <td data-col="tokens" data-label="Tokens" className="is-num">
                 <CellView cell={r.tokens} pending={r.pending} from={r.tokensFrom} />

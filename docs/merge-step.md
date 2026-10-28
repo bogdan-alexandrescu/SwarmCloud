@@ -2734,6 +2734,30 @@ identity `release.yml` runs the merge under, not just CI's own configuration.
      in `merge_wait` (a CI park's record has no field for it, and
      swarm-api's park body is strict). A deciding run with no `completed_at`
      (a commit status) leaves the reading on `MERGE_CI_MAX_SECONDS`.
+   * **A check whose Actions run was cancelled is read as cancelled**, whatever
+     the check itself concluded, except `success` (#2582, BGD 2026-10-28).
+     `ci-gate` and security.yml's folded name-keepers ran under `if:
+     always()`, so inside a push run that concurrency cancelled they still
+     ran and concluded `failure` over needs that had only stopped. On PR
+     #2565 at 968d9949 that failure was the push event's latest run -- the
+     branch's newer push run had not created its own `ci-gate` yet -- and the
+     step refused `checks_failed` although every check had passed in the
+     pull_request run and no job had failed. So the step reads each Actions
+     run's own conclusion beside its event (`merge.actions_suites`), and
+     `merge.cancelled_by_its_workflow` reads a check run that finished other
+     than `success` in a run that concluded `cancelled` as `cancelled` -- so
+     the rule above applies, pending and never green -- when a newer run of
+     the same workflow and event, from the same branch, is at the head, or
+     another event's deciding run passed the check. Without either, nothing
+     says the failure was not real, and it stays red; a check that failed in
+     a run nobody cancelled is always red. `skipped` is converted too because
+     a job a cancelled run never ran can say it, and `skipped` reads green.
+     swarm-api's `forgechecks` states the same rule
+     (`test_forgechecks_cancelled_workflow_run.py` holds the two equal);
+     its wire, `forgewrite.GitHubWriter.check_runs`, has still to pass the
+     Actions runs through `forgechecks.mark_workflow_runs`. The workflow
+     half -- the three jobs on `if: ${{ !cancelled() }}`, which still runs
+     them, and fails them, after a failed need -- is pushed by hand.
 4. **Every other check run at `pinned`** (the unfiltered list, paginated): any
    one that is not completed, or completed with a conclusion other than
    `success`, `skipped` or `neutral`, also refuses. This is `auto-merge.yml`

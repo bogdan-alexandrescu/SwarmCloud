@@ -118,7 +118,35 @@ export function destinationOf(href: string): string[] {
   const section = head as keyof typeof PANEL_TITLE
   const at = `${head}/${rest[0] ?? ''}`
   const page = PANEL_PAGES[section].find((pg) => pg.to === at || (pg.kids ?? []).some((k) => k.to === at))
-  return page === undefined ? [PANEL_TITLE[section]] : [PANEL_TITLE[section], page.label]
+  // A page drawn under another names itself (Capacity › Provider quota, not
+  // Capacity › Accounts): the not-found page offers it by this name (QA1 admin-shell-11).
+  const kid = (page?.kids ?? []).find((k) => k.to === at)
+  return page === undefined ? [PANEL_TITLE[section]] : [PANEL_TITLE[section], (kid ?? page).label]
+}
+
+/**
+ * WHERE THE COUNT IS ANSWERED (QA1 C-27, live walk-through 2026-10-28): the
+ * bell said "14 need you" while Overview said "Needs a look 3" and Approvals
+ * "Nothing waiting", and nothing on screen said what the 14 were. The unread
+ * items that need you, by the page that answers each, in the panel's words
+ * and without an agent's id: "12 in Work › Agents · 2 in Admin › People and
+ * roles". The largest first, a tie in the order the list draws them.
+ */
+export function needsSplit(items: readonly NotificationItem[]): string {
+  const counts: { where: string; n: number }[] = []
+  for (const item of orderFeed(items).needs) {
+    if (item.read) continue
+    const dest = destinationOf(item.href)
+    const where = (dest[0] === 'Work' && dest[1] === 'Agents' ? dest.slice(0, 2) : dest).join(' › ')
+    const had = counts.find((c) => c.where === where)
+    if (had === undefined) counts.push({ where, n: 1 })
+    else had.n += 1
+  }
+  return counts
+    .map((c, i) => ({ ...c, i }))
+    .sort((a, b) => b.n - a.n || a.i - b.i)
+    .map((c) => `${c.n} in ${c.where}`)
+    .join(' · ')
 }
 
 export function NotificationBell({ go }: { go: (to: string) => void }) {
@@ -239,6 +267,7 @@ function NotificationPanel({
   const muted = mutedNeedsYou(data)
   const unread = data === null ? false : data.items.some((i) => !i.read)
   const { needs, updates } = orderFeed(data?.items ?? [])
+  const split = count > 0 ? needsSplit(needs) : ''
   const now = Date.now()
 
   return (
@@ -264,6 +293,7 @@ function NotificationPanel({
         </button>
       </div>
       {why !== null && <p className="nt-why">{why}</p>}
+      {split !== '' && <p className="nt-why nt-split">{split}</p>}
       {data !== null && needs.length === 0 && updates.length === 0 ? (
         <div className="nt-empty">
           <Icon name="check" className="nt-empty-ic" />

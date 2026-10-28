@@ -249,7 +249,7 @@ export function ActivityScreen({
   const [pending, setPending] = useState(true)
   const [latest, setLatest] = useState<{ key: string; result: Result<Outcomes> } | null>(null)
   /** The last payload that drew, kept (dimmed) while a filter change is being read. */
-  const [good, setGood] = useState<{ key: string; data: Outcomes; continues: boolean } | null>(null)
+  const [good, setGood] = useState<{ key: string; data: Outcomes; continues: boolean; fetchedAt: number } | null>(null)
   /** How many buckets the last read of this query had built, so a continuation that builds nothing stops. */
   const built = useRef<{ key: string; read: number } | null>(null)
   /**
@@ -282,7 +282,7 @@ export function ActivityScreen({
       const head = r.data
       const before = built.current?.key === key ? built.current.read : null
       built.current = { key, read: head.totals.buckets_read }
-      setGood({ key, data: head, continues: buildContinues(head, before) })
+      setGood({ key, data: head, continues: buildContinues(head, before), fetchedAt: Date.now() })
       // Sent only after the headline has landed, so it never competes with it.
       setLate({ key, result: null })
       const rest = loadOutcomes(new URLSearchParams(key), LEDGER_LATE_SECTIONS) as Promise<Result<Outcomes>>
@@ -580,11 +580,14 @@ export function ActivityScreen({
     <>
       {/* TITLE LEFT, ACTIONS RIGHT (#138): the refresh, with its ticking
           age and the cadence; the range and the cache are the note over the
-          first card. The age is the payload's (`generated_at`), which a
-          cached answer carries from when it was counted. */}
+          first card. THE AGE IS THE BROWSER'S READ (QA1-FIX-13,
+          runs-submit-12): it was the payload's `generated_at`, so a page
+          re-read every minute said "read 8 d ago" over a ledger counted long
+          before; when the answer came from the cache, the note under the tabs
+          says so. */}
       <PageHead title="Timeline">
         <RefreshControl
-          readAt={data === null ? null : Date.parse(data.generated_at)}
+          readAt={good === null ? null : good.fetchedAt}
           now={now}
           cadence={{ base: TIMELINE_POLL_MS, wait: TIMELINE_POLL_MS }}
           reading={pending}
@@ -1192,6 +1195,11 @@ function LedgerSection({
   )
 }
 
+/** The time basis in words: `completed_at` is "finish time"; a basis this console does not know is its field name. */
+function basisWords(field: string): string {
+  return field === 'completed_at' ? 'finish time' : field === 'created_at' ? 'submit time' : field
+}
+
 /**
  * THE FACTS LINE, under the controls: the resolved range, the zone, the basis,
  * how much is sealed, and whose figures these are. The server resolves and
@@ -1241,8 +1249,9 @@ function LedgerFacts({
         {data.tz}
       </li>
       <li className="ctl-fact">
+        {/* IN WORDS, NOT THE FIELD (QA1-FIX-13, runs-submit-39); the field is its title. */}
         <b>by</b>
-        <code>{data.basis.outcomes}</code>
+        <span title={data.basis.outcomes}>{basisWords(data.basis.outcomes)}</span>
       </li>
       <li className="ctl-fact">
         {/* THE ROLLUP'S UNIT, NOT THE VIEWER'S DAYS: workspace-days on the UTC

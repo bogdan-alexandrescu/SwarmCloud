@@ -70,6 +70,8 @@ describe('N10: the mock Headroom tile shows every pool that binds it', () => {
     const line = tile.querySelector('small')!
     // MUTATION: drop a pool from the binding list the tile renders.
     for (const label of ['global', 'standard', 'Cloud Run']) expect(text(line)).toContain(label)
+    // A backend in words, never its enum (overview-agents-05).
+    // MUTATION: print `poolLabel`'s CLOUD_RUN_JOB for a backend pool -> fails.
     expect(text(line)).toBe('binds global + standard + Cloud Run')
     // Run 4 saw "binds global + standard + C…" at 1440.
     // MUTATION: put `white-space: nowrap` back on the binding line (`.ov-hp small.ov-hp-binds`).

@@ -426,19 +426,42 @@ describe('an issue run’s Changes tab', () => {
   // no way to read again.
   it('says an unread workflow once, in the panel, with its reason and Try again (V211)', async () => {
     api.loadWorkflow.mockReset()
-    api.loadWorkflow.mockResolvedValue({ status: 'error', error: { kind: 'not_found', httpStatus: 404, code: 'not_found', message: 'This workflow does not exist' } })
+    api.loadWorkflow.mockResolvedValue({ status: 'error', error: { kind: 'server_error', httpStatus: 503, code: null, message: 'The workflow store is unavailable' } })
     const run = issueRun({ state: 'RUNNING', workflow_id: 'wf_one' })
     const { container } = render(<RunChangesTab run={run as never} at={{ step: null, file: null }} onAt={() => {}} />)
     await waitFor(() => expect(container.querySelector('.chg-state')).not.toBeNull())
     expect(container.querySelector('.chg-note'), 'the failure was stated a second time above the panel').toBeNull()
     expect(container.querySelectorAll('.chg-state')).toHaveLength(1)
     const state = container.querySelector<HTMLElement>('.chg-state')!
-    expect(state.textContent).toMatch(/The workflow wf_one could not be read: This workflow does not exist/)
+    expect(state.textContent).toMatch(/The workflow wf_one could not be read: The workflow store is unavailable/)
     const again = within(state).getByRole('button', { name: 'Try again' })
     const asked = api.loadWorkflow.mock.calls.length
     fireEvent.click(again)
     await waitFor(() => expect(api.loadWorkflow.mock.calls.length).toBeGreaterThan(asked))
     expect(api.loadWorkflow.mock.calls.at(-1)![0]).toBe('wf_one')
+  })
+
+  // runs-submit-05 (console visual QA pass 1, part of #2596): a 404 said the
+  // workflow does not exist and the panel still offered Try again, with an
+  // amber `not read` chip on a red card.
+  it('a workflow the API answers not found: no Try again, one neutral tone, and the ways out', async () => {
+    api.loadWorkflow.mockReset()
+    api.loadWorkflow.mockResolvedValue({ status: 'error', error: { kind: 'not_found', httpStatus: 404, code: 'not_found', message: 'This workflow does not exist, or it belongs to another tenant.' } })
+    const run = issueRun({ id: 'run_4c1e09d2', state: 'RUNNING', workflow_id: 'wf_one' })
+    const { container } = render(<RunChangesTab run={run as never} at={{ step: null, file: null }} onAt={() => {}} />)
+    await waitFor(() => expect(container.querySelector('.chg-state')).not.toBeNull())
+    const state = container.querySelector<HTMLElement>('.chg-state')!
+    // MUTATION: drop the `answered` branch and Try again is back.
+    expect(within(state).queryByRole('button', { name: 'Try again' })).toBeNull()
+    // MUTATION: keep mark="unread" here and the red card carries the amber chip again.
+    expect(state.classList.contains('is-failed')).toBe(false)
+    expect(state.querySelector('.ctl-mark.is-unread')).toBeNull()
+    expect(state.querySelector('.ctl-mark.is-absent')).not.toBeNull()
+    expect(state.textContent).toMatch(/workflow not found/)
+    expect(state.textContent).toMatch(/The workflow wf_one: This workflow does not exist/)
+    // MUTATION: offer no way out and these links are missing.
+    expect(within(state).getByRole('link', { name: 'Back to the run' }).getAttribute('href')).toBe(addressToPath('work/runs?run=run_4c1e09d2'))
+    expect(within(state).getByRole('link', { name: 'Workflows' }).getAttribute('href')).toBe(addressToPath('work/workflows'))
   })
 
   it('links a step row to the tab filtered to that step', () => {

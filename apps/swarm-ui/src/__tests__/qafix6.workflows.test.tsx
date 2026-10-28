@@ -494,11 +494,22 @@ describe('g. the policy chip reads as configuration', () => {
   it('carries a Policy label and is not the state chip’s sibling', async () => {
     await page()
     const head = document.querySelector<HTMLElement>('.wfp-head')!
-    const chip = within(head).getByText((_, el) => el?.classList.contains('c-chip') === true && flat(el) === 'on failure: fail the workflow')
+    // OVERVIEW-AGENTS-66 (visual QA pass 1, part of #2596): 'on failure: fail
+    // the workflow' was jargon. MUTATION: restore the old words and no chip matches.
+    const chip = within(head).getByText((_, el) => el?.classList.contains('c-chip') === true && flat(el) === 'if a step fails: stop the workflow')
     const state = head.querySelector<HTMLElement>('.wfp-chips')!.firstElementChild!
     // MUTATION: put the chip back as a bare child of `.wfp-chips`, beside the state.
     expect(chip.parentElement).not.toBe(state.parentElement)
-    expect(flat(chip.parentElement)).toMatch(/^Policy ?on failure: fail the workflow$/)
+    expect(flat(chip.parentElement)).toMatch(/^Policy ?if a step fails: stop the workflow$/)
+  })
+
+  it('says a workflow submitted to continue keeps going when a step fails', async () => {
+    const f = fan()
+    serve({ ...f, w: { ...f.w, on_step_failure: 'CONTINUE' } })
+    await page()
+    const head = document.querySelector<HTMLElement>('.wfp-head')!
+    // MUTATION: swap the two branches of the policy chip and this reads 'stop the workflow'.
+    expect(flat(head.querySelector('.wfp-policy'))).toMatch(/^Policy ?if a step fails: keep going$/)
   })
 })
 

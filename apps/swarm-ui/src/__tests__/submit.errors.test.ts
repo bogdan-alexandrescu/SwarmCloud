@@ -64,3 +64,25 @@ describe.each([
     expect(await kindOf()).toBe('tenant_disabled')
   })
 })
+
+// QA1 runs-submit-01 (QA1-FIX-26): a 404 answered with an HTML page (the dev
+// server for a route it does not serve) said "Your session expired ... Reload
+// to sign in again". A page instead of data is a sign-in only on a 2xx (the
+// sign-in redirect, followed); any other status is told by its status.
+// MUTATION: drop the `res.ok || res.redirected` check in postTask and the 404
+// case reads session_expired again.
+describe('submitting a task answered with a page', () => {
+  function page(status: number): void {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('<html>no</html>', { status, headers: { 'content-type': 'text/html' } })))
+  }
+
+  it('reads a 404 page as not_found, not as an expired session', async () => {
+    page(404)
+    expect(await kindOfTask()).toBe('not_found')
+  })
+
+  it('still reads a 200 page as an expired session', async () => {
+    page(200)
+    expect(await kindOfTask()).toBe('session_expired')
+  })
+})

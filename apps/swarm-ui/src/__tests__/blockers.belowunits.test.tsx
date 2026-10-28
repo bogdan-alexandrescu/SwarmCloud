@@ -132,8 +132,10 @@ describe('Submit, the right-now box for a large task', () => {
     serve(blocker({ limit: 4, active: 3 }))
     const b = blocker({ limit: 4, active: 3 })
     const { container } = render(<ProfileFacts name="heavy" profile={heavy(b)} pools={capacity(b).pools} />)
-    await waitFor(() => expect(container.querySelector('.blocker-list .tag.full')).not.toBeNull(), { timeout: 3000 })
-    expect(container.textContent).toMatch(/3 of 4 units in use/)
+    // Full is said once, in the sentence that names the pool (QA1
+    // runs-submit-20): no second `full` row repeats the same 3 of 4.
+    await waitFor(() => expect(container.textContent).toMatch(/held down by \S+, 3 of 4 weighted units in use/), { timeout: 3000 })
+    expect(container.querySelector('.blocker-list')).toBeNull()
     expect(container.textContent).not.toMatch(NEVER)
   })
 
@@ -159,7 +161,7 @@ describe('Submit, the right-now box for a large task', () => {
     })
     const b = blocker({})
     const { container } = render(<ProfileFacts name="heavy" profile={heavy(b)} pools={capacity(b).pools} />)
-    await waitFor(() => expect(container.querySelector('.blocker-list')).not.toBeNull(), { timeout: 3000 })
+    await waitFor(() => expect(container.textContent).toMatch(/held down by/), { timeout: 3000 })
     expect(container.textContent).not.toMatch(NEVER)
   })
 })

@@ -21,11 +21,12 @@ import {
 } from './api'
 import { CodeIntelligenceCard } from './CodeIntelligence'
 import { Banner, Button, ButtonLink, Card, Dash, Tabs, routedClick } from './components'
-import { SetupContext, useSetupSteps, type SetupStep } from './ConfigSetup'
+import { SetupContext, setupCount, useSetupSteps, type SetupStep } from './ConfigSetup'
 import type { ApiError } from './fetch'
 import { Refusal } from './GitHubConnect'
 import { NewWorkspaceForm, STEP_LABEL as JOB_STEP_LABEL, STEP_ORDER as JOB_STEP_ORDER } from './NewWorkspace'
 import { ACCESS as GITHUB_ACCESS_ADDRESS, OnboardingScreen, STEP_LABEL, countLabel } from './Onboarding'
+import { GitHubPermissions } from './PermissionCards'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import { notServed } from './RepositoriesData'
 import { UrRefresh, UrRegion, useUrRead, type UrRead } from './RepositoriesParts'
@@ -165,7 +166,8 @@ function SetupLead({ part, go }: { part: 'settings' | 'setup'; go?: (to: string)
     <Lead
       kicker={`Step ${at + 1} of ${d.steps.length} · next`}
       title={title}
-      body="The strip above summarises this checklist."
+      // config-08: the strip counts its own three or four steps, not these; say both counts, each named.
+      body={`The strip above counts its own ${strip.length} steps, ${setupCount(strip).done} of ${strip.length} done; this checklist counts ${countLabel(d)}.`}
       action={
         ON_GITHUB_ACCESS.has(next.step) ? (
           <ButtonLink kind="primary" size="sm" href={addressToPath(GITHUB_ACCESS_ADDRESS)} onClick={routed(GITHUB_ACCESS_ADDRESS, go)}>
@@ -931,6 +933,10 @@ export function WorkspaceSettingsScreen({ part = 'settings', go }: { part?: Work
               <OnOverview />
             </div>
           </div>
+          {/* Setup › GitHub (#1086, design 2 "Org cards"): what the App and each org grant, under the grid
+              and across both its columns (visual QA pass 1, config-12): inside the checklist's two-thirds
+              column it left the right-hand column empty for the GitHub section's whole height. */}
+          <GitHubPermissions />
         </>
       )}
       {part === 'new' &&

@@ -165,6 +165,15 @@ describe('the inspector draws the same fact beside the profile', () => {
     expect(fact.querySelector('.bu-detail')!.textContent).toMatch(/recorded when the agent ends/)
     expect(render(<AgHeadMeta task={PLAIN()} />).container.querySelector('[data-browser-use]')).toBeNull()
   })
+
+  it('says what is unknown beside the dash, not a bare "browser —" (QA1-FIX-13, chrome-C08)', () => {
+    const running = runTask({ id: 'task_ffffffffffffffffffff', state: 'RUNNING', runner_profile: BROWSER })
+    const words = (t: Task) =>
+      (render(<AgHeadMeta task={t} />).container.querySelector('[data-browser-use] .bu-toggle')!.textContent ?? '').replace(/\s+/g, ' ').trim()
+    // MUTATION: draw the head's fact as the list's bare "browser —" and both of these fail.
+    expect(words(running)).toBe('browser use — recorded when the agent ends')
+    expect(words(OLD())).toBe('browser use — not recorded')
+  })
 })
 
 describe('the link from Platform counts filters the Agents list', () => {

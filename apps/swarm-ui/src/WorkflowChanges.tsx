@@ -1596,6 +1596,38 @@ export function RunChangesTab({ run, at, onAt }: { run: IssueRun; at?: ChangesAt
   // not read", with no reason and no way to read again. With nothing drawn,
   // the panel is the one statement: which workflow, the API's reason, and
   // Try again.
+  // A 404 OR A 403 IS AN ANSWER, NOT A FAILURE TO READ (visual QA pass 1,
+  // runs-submit-05, part of #2596): the API said the workflow does not
+  // exist, or is not this tenant's, and reading it again gets the same
+  // answer. Try again offered a press that could only fail the same way, and
+  // the amber `not read` chip sat on a red card. It is the `not measured`
+  // mark on its own neutral card, as FailedPanel answers a 404 (V007), with
+  // the ways out: back to the run, or the workflow list.
+  const answered = failed.length > 0 && failed.every((l) => l.kind === 'not_found' || l.kind === 'forbidden')
+  if (cols.length === 0 && answered) {
+    return (
+      <section className="chg-tab chg-run" aria-label="Changes in this run">
+        <State
+          mark="absent"
+          heading={failed.every((l) => l.kind === 'not_found') ? 'workflow not found' : 'workflow not yours to read'}
+          say="The API answered that the run's workflow is not there, or is not this tenant's. Reading it again gets the same answer, so its steps and what they changed cannot be shown. This is not a zero."
+          action={(
+            <>
+              <a href={addressToPath(`work/runs?${new URLSearchParams({ run: run.id }).toString()}`)}>Back to the run</a>
+              {' · '}
+              <a href={addressToPath('work/workflows')}>Workflows</a>
+            </>
+          )}
+        >
+          {failed.map((l, i) => (
+            <span key={l.wf}>
+              {i > 0 && ' '}{whose(l)} <span className="mono">{l.wf}</span>: {l.error}
+            </span>
+          ))}
+        </State>
+      </section>
+    )
+  }
   if (cols.length === 0 && failed.length > 0) {
     return (
       <section className="chg-tab chg-run" aria-label="Changes in this run">

@@ -16,6 +16,13 @@ a `graph_answer` line with `cache: hit|miss`.
 
 The warmer reads through the snapshot's own `TenantSource`, so what it warms is
 keyed by the ticket's tenant like everything else (§3.3 step 5).
+
+THE LAST WARM (docs/design/graph-answer-cache.md §5.3). Each finished warm is
+also remembered per `(tenant_id, repo_id)`, with its digest, milliseconds and
+shards, for the console's "Last promotion warm-up" tile: `last_warm` returns it
+to a stats read of that same tenant only. `replayed` is None: this image
+replays no questions (§2.3 a, pre-warming, is a later lane), and None says
+"not built" where 0 would say "replayed nothing".
 """
 
 from __future__ import annotations
@@ -49,6 +56,20 @@ class Warmed:
     cause: str
 
 
+@dataclass(frozen=True)
+class LastWarm:
+    """One repository's most recent finished warm on this replica."""
+
+    manifest_digest: str
+    ms: int
+    shards: int
+    cause: str
+    #: When it finished, epoch seconds.
+    at: float
+    #: Questions replayed (§2.3 a); None until pre-warming is built.
+    replayed: int | None = None
+
+
 def warm(snapshot: Snapshot, *, budget: int = WARM_BYTES) -> Warmed:
     """Read the hot layers' shards through the snapshot's source, until the
     budget of stored bytes is spent. Stops at the first unreadable shard."""
@@ -79,6 +100,7 @@ class Warmer:
         self._budget = budget
         self._lock = threading.Lock()
         self._seen: OrderedDict[tuple[str, str, str], None] = OrderedDict()
+        self._last: OrderedDict[tuple[str, str], LastWarm] = OrderedDict()
         self._on_done = on_done
         self._pool: ThreadPoolExecutor | None = None
         if run is None:
@@ -108,16 +130,31 @@ class Warmer:
                 result = warm(snapshot, budget=self._budget)
             except Exception as exc:  # noqa: BLE001 - a warm never takes the replica down
                 result = Warmed(0, 0, type(exc).__name__)
+            ms = int((time.monotonic() - started) * 1000)
+            self._remember(tenant_id, repo_id,
+                           LastWarm(manifest_digest=manifest_digest, ms=ms, shards=result.shards,
+                                    cause=result.cause, at=time.time()))
             if self._on_done is not None:
-                self._on_done(tenant_id, repo_id, result,
-                              int((time.monotonic() - started) * 1000))
+                self._on_done(tenant_id, repo_id, result, ms)
 
         self._run(job)
         return True
+
+    def _remember(self, tenant_id: str, repo_id: str, last: LastWarm) -> None:
+        with self._lock:
+            self._last[(tenant_id, repo_id)] = last
+            self._last.move_to_end((tenant_id, repo_id))
+            while len(self._last) > SEEN_LIMIT:
+                self._last.popitem(last=False)
+
+    def last_warm(self, tenant_id: str, repo_id: str) -> LastWarm | None:
+        """This tenant's repository's last finished warm here, or None."""
+        with self._lock:
+            return self._last.get((tenant_id, repo_id))
 
     def close(self) -> None:
         if self._pool is not None:
             self._pool.shutdown(wait=False, cancel_futures=True)
 
 
-__all__ = ["HOT_LAYERS", "SEEN_LIMIT", "WARM_BYTES", "Warmed", "Warmer", "warm"]
+__all__ = ["HOT_LAYERS", "SEEN_LIMIT", "WARM_BYTES", "LastWarm", "Warmed", "Warmer", "warm"]
