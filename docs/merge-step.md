@@ -713,6 +713,7 @@ matches:
 | `mergeable` false (`dirty`, GraphQL CONFLICTING), read BEFORE the checks (Revised 2026-10-11, #1076) | park `CI_PENDING` for a **conflict fix round**, at most 2; with them spent, MERGE_REFUSED `merge_conflict` at once. Never a wait for checks |
 | a required check **failed** | **if the workflow has CI-fix rounds left** (§6 MS7), the tick hands the red reading to the **CI-fix loop** first, so this row only runs once the rounds are spent or there were none. Otherwise MERGE_REFUSED `checks_failed`, naming every failing check and its conclusion |
 | still pending, and `first_parked_at` is older than `MERGE_CI_MAX_SECONDS` (proposed 6 h) | MERGE_REFUSED `checks_timeout`, naming the checks still pending |
+| pending only because of **cancelled** runs -- nothing failed, nothing still running or missing -- for more than `MERGE_CI_CANCELLED_MAX_SECONDS` (60 min, BGD 2026-10-27, #1778) | MERGE_REFUSED `checks_cancelled`, naming the cancelled checks nobody re-ran. A re-run that goes green inside the bound merges as usual; one still running ends the bound, and the reading is back on `MERGE_CI_MAX_SECONDS` |
 | still pending, or mergeability unknown | park `CI_PENDING` again |
 | **behind** the base: GitHub's `mergeable_state` is `behind` (the base requires an up-to-date branch) | **update the branch** (below), then park `CI_PENDING` at the new head |
 | green at the pinned head and mergeable | **squash-merge** (below); SUCCEEDED |
@@ -821,6 +822,7 @@ the worker from GitHub and the task store.
 | a merge conflict, at merge time or on update, with its conflict fix rounds spent (Revised 2026-10-11) | `merge_conflict` (new, split out of `not_mergeable`) | `mergeable: false` / `mergeable_state: dirty`, update-branch's 422, or the merge call's 405/422 |
 | a failing required check, no fix rounds left | `checks_failed` (built) | the check runs and statuses at the pinned head |
 | CI never settled | `checks_timeout` (new) | `merge_wait.first_parked_at` and `MERGE_CI_MAX_SECONDS` |
+| the only checks not green were cancelled and nobody re-ran them (#1778) | `checks_cancelled` (new, 2026-10-27) | the newest `completed_at` of the reading's deciding runs (`merge.cancelled_since`) and `MERGE_CI_CANCELLED_MAX_SECONDS` |
 | the base moved under a held merge slot faster than CI, more than `MERGE_MAX_BRANCH_UPDATES` times | `behind_too_often` (new) | the first-parent walk's count, less the slot's `holder.updates_at_acquire` |
 
 The other built refusals stand, each with the same code: `verdict_not_merge`,
@@ -2717,9 +2719,21 @@ identity `release.yml` runs the merge under, not just CI's own configuration.
      and refuses with `checks_pending`;
    * a required check with **no** run at `pinned` is pending too. GitHub treats
      it the same way, as pending for ever;
-   * `failure`, `cancelled`, `timed_out`, `action_required`, `neutral`,
+   * `failure`, `timed_out`, `action_required`, `neutral`,
      `stale` or `startup_failure` gives `checks_failed`. `neutral` is on this
      list deliberately: the owner's rule is "success or skipped".
+   * `cancelled` is pending, not failed (#1778, 2026-10-27): someone stopped
+     the run -- the operator cancelling stranded runs to re-run them -- so it
+     waits for its re-run. A red latest run of another event still fails.
+     When cancelled runs are the reading's ONLY problem (nothing failed,
+     nothing still running), it waits at most `MERGE_CI_CANCELLED_MAX_SECONDS`
+     (60 min, BGD 2026-10-27) and then refuses `checks_cancelled`. The bound
+     starts at the first such reading, which is when the reading's last
+     deciding run finished: from then on nothing in it changes, so the
+     newest `completed_at` among them is read from GitHub rather than kept
+     in `merge_wait` (a CI park's record has no field for it, and
+     swarm-api's park body is strict). A deciding run with no `completed_at`
+     (a commit status) leaves the reading on `MERGE_CI_MAX_SECONDS`.
 4. **Every other check run at `pinned`** (the unfiltered list, paginated): any
    one that is not completed, or completed with a conclusion other than
    `success`, `skipped` or `neutral`, also refuses. This is `auto-merge.yml`
@@ -3266,7 +3280,8 @@ step's Python from one table of cases (title prefixes, conclusions,
 pending states) and fail when they answer differently. Where they **deliberately**
 differ, the merge step is the stricter one and the table says why: a required
 check must be `success` or `skipped` (the owner's rule). Gate 5 holds the merge
-only on `failure`, `timed_out`, `action_required` and `cancelled`, and tolerates
+only on `failure`, `timed_out` and `action_required` (a `cancelled` run waits,
+#1778: gate 6 holds a required one), and tolerates
 every other conclusion. The merge step also refuses `touches_protected_paths`,
 a broader set than gate 1's placeholder-title check covers at all (M4) — the
 two gates are not required to agree here, since `auto-merge.yml` is the human
