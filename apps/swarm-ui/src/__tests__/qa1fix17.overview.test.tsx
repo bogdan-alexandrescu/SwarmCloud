@@ -23,7 +23,7 @@ import { cleanup, render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
-import { RecentFailures, WaitingWhy, failureWindow, failuresOf, type OverviewTaskPage } from '../OverviewRegions'
+import { ENDED_BADLY, RecentFailures, WaitingWhy, failureWindow, failuresOf, stateView, type OverviewTaskPage } from '../OverviewRegions'
 import type { Task } from '../types'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
@@ -73,6 +73,21 @@ describe('overview-agents-01: Recent failures counts the failures Needs a look c
     // The head's note names the same window, not "last 24h".
     // MUTATION: leave the note's first clause at 'last 24h' -> fails.
     expect(failuresOf(rows, Date.now(), undefined, failureWindow(data)).note).toBe('of the 4 newest · 2 failed · 0 dead-lettered')
+  })
+
+  it("gives the head note and the panel count the body's window when the caller passes none", () => {
+    // Overview.tsx draws the head note and the panel's count as
+    // `failuresOf(ended.rows, checkedAt, ended)`, with no window: the review
+    // render read "last 24h · 0 failed" above two FAILED rows from 9d ago.
+    // The view `stateView` returns carries the page's window, and
+    // `failuresOf` takes it when no window is passed.
+    const rows = rowsOf()
+    const data = { tasks: rows, next_page_token: null } as unknown as OverviewTaskPage
+    const ended = stateView(data, ENDED_BADLY)
+    const found = failuresOf(ended.rows, Date.now(), ended)
+    // MUTATION: default `failuresOf`'s window back to LAST_DAY -> 'last 24h · 0 failed · 0 dead-lettered', no rows.
+    expect(found.note).toBe('of the 4 newest · 2 failed · 0 dead-lettered')
+    expect(found.rows.map((t) => t.id)).toEqual(['tsk_fail_a', 'tsk_fail_b'])
   })
 
   it('keeps the last 24 hours when the page has more behind it and the FAILED state read landed', () => {

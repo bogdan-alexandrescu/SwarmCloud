@@ -1650,10 +1650,10 @@ function AdminSwitch({ row, doc, reload }: { row: PersonRow; doc: PeopleDoc; rel
   const why = !read
     ? `The admin roles were not read (${doc.admins_error ?? 'not served'}), so this cannot be switched here.`
     : holder?.role === 'owner'
-      ? 'Platform owner: set by the platform owner setting in the deployment’s configuration, so it is not switched here.'
+      ? 'Platform owner: set in the deployment’s configuration, so it is not switched here.'
       : on
         ? `Granted by ${holder.granted_by ?? 'unknown'}${holder.granted_at !== null ? ` ${timeAgo(holder.granted_at)}` : ''}. The last admin cannot be removed; the API says so when it refuses.`
-        : 'Off. An admin through an admin group holds no admin role here, so they show as off.'
+        : 'Off. An admin through a group is an admin but has no role recorded here, so they show as off.'
   const go = async () => {
     if (busy) return
     setBusy(true)
@@ -1834,7 +1834,7 @@ function AdminList({ admins, onRemove }: { admins: AdminHolder[]; onRemove: (ema
           </span>
           <span className="ur-hint">
             {a.role === 'owner'
-              ? 'set by the platform owner setting'
+              ? 'set in the deployment’s configuration'
               : `granted by ${a.granted_by ?? 'unknown'}${a.granted_at !== null ? ` ${timeAgo(a.granted_at)}` : ''}`}
           </span>
           {/* The owner is not removable here: the API refuses it
@@ -1973,7 +1973,7 @@ function Admins({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
     <Card className="pp-admins" title="Admins">
       <p className="ur-hint">
         Any admin may grant or remove admin. The platform owner can be changed only by the owner, and the last admin cannot
-        be removed; the API says so when it refuses. An admin through an admin group holds no admin role here and is not
+        be removed; the API says so when it refuses. An admin through a group has no role recorded here and is not
         listed.
       </p>
       {admins !== null ? (

@@ -219,7 +219,7 @@ describe('admin-shell-08: Escape cancels a deny reason and returns focus to Deny
 })
 
 describe('admin-shell-17: no configuration variable names in reader-facing text', () => {
-  it('the Admins card names the platform owner setting and admin groups in words', async () => {
+  it('the Admins card names where the owner is set and admin groups in words', async () => {
     const doc = platform()
     doc.admins = [{ email: 'owner@example.com', role: 'owner', granted_by: 'config:' + 'PLATFORM_OWNER', granted_at: null }]
     await mount(people(doc))
@@ -230,8 +230,13 @@ describe('admin-shell-17: no configuration variable names in reader-facing text'
     }, WAIT)
     // MUTATION: restore 'set by PLATFORM_OWNER in configuration' -> fails.
     expect(visible(card)).not.toMatch(/PLATFORM_OWNER|ADMIN_GROUPS/)
-    expect(visible(card)).toContain('set by the platform owner setting')
-    expect(visible(card)).toContain('An admin through an admin group')
+    // The review's minor (2026-10-28): 'platform owner · set by the platform
+    // owner setting' repeated itself, and 'holds no admin role' read as if a
+    // group admin were not one.
+    // MUTATION: restore 'set by the platform owner setting' -> fails.
+    expect(visible(card)).toContain('set in the deployment’s configuration')
+    expect(visible(card)).not.toContain('set by the platform owner setting')
+    expect(visible(card)).toContain('An admin through a group has no role recorded here')
   })
 })
 

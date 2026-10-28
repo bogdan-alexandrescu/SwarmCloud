@@ -40,7 +40,7 @@ import { staleFoot } from './Shell'
 import { usePageClock } from './useNow'
 import { formatDateTime, isToday, startOfDay, zoneLabel } from './timezone'
 import { useTimeZone } from './useTimeZone'
-import { ENDED_BADLY, WHOLE, hhmm, readReach, stateView, type Coverage, type OverviewTaskPage, type StateView } from './overviewReads'
+import { ENDED_BADLY, WHOLE, hhmm, readReach, stateView as readStateView, type Coverage, type OverviewTaskPage, type StateView } from './overviewReads'
 import { CONCURRENCY_STATES, TERMINAL_STATES, clockTime, reasonCopy, timeAgo, whyAgent, type Stats, type Task, type TaskPage, type TaskState } from './types'
 
 /**
@@ -471,11 +471,28 @@ const DAY_MS = 24 * 60 * 60 * 1000
 
 // The state reads and their coverage live in `overviewReads.ts`, which the
 // pure check layer imports too; re-exported for the screen and its tests.
-export { ENDED_BADLY, WHOLE, hhmm, readReach, stateView, type Coverage, type OverviewTaskPage, type StateRead, type StateView } from './overviewReads'
+export { ENDED_BADLY, WHOLE, hhmm, readReach, type Coverage, type OverviewTaskPage, type StateRead, type StateView } from './overviewReads'
+
+/** A coverage that also names the window its failures are counted over (`failureWindow`). */
+export type WindowedCoverage = Coverage & { window?: FailureWindow }
 
 /**
- * The failed, dead-lettered and cancelled rows of the last 24 hours, newest
- * first. THE WINDOW AND THE ORDER READ `completed_at` ONLY (browser QA N4,
+ * `overviewReads.ts`'s `stateView`, carrying the page's failure window
+ * (overview-agents-01 review, 2026-10-28). Overview.tsx draws Recent
+ * failures' head note and the panel's count as `failuresOf(ended.rows, now,
+ * ended)`, with no window, so they read "last 24h · 0 failed" above two
+ * FAILED rows from 9 days ago that the body, on the check's window, listed.
+ * The view now carries the window and `failuresOf` takes it when none is
+ * passed, so every caller counts what Needs a look counts.
+ */
+export function stateView(page: OverviewTaskPage, states: readonly TaskState[]): StateView & { window: FailureWindow } {
+  return { ...readStateView(page, states), window: failureWindow(page) }
+}
+
+/**
+ * The failed, dead-lettered and cancelled rows of the window -- the one
+ * passed, else the one `cover` carries (`stateView`), else the last 24 hours
+ * -- newest first. THE WINDOW AND THE ORDER READ `completed_at` ONLY (browser QA N4,
  * 2026-10-04): `updated_at` is bumped by any later write, so a task that ended
  * days ago with no recorded end was listed and counted as "last 24h". A
  * terminal task with no recorded end is listed after the dated rows and
@@ -498,8 +515,8 @@ export { ENDED_BADLY, WHOLE, hhmm, readReach, stateView, type Coverage, type Ove
 export function failuresOf(
   all: readonly Task[],
   now: number,
-  cover: Coverage = WHOLE,
-  window: FailureWindow = LAST_DAY,
+  cover: WindowedCoverage = WHOLE,
+  window: FailureWindow = cover.window ?? LAST_DAY,
 ): { rows: Task[]; note: string; partial: boolean } {
   const ended = (t: Task): number | null => {
     if (t.completed_at === null) return null
@@ -602,7 +619,7 @@ export function RecentFailures({ tasks, now = Date.now() }: { tasks: Result<Over
   const all = rows(tasks)
   const read = tasks.status === 'ok' || tasks.status === 'stale' ? tasks.data : null
   const view = read === null ? null : stateView(read, ENDED_BADLY)
-  const found = read === null || view === null ? null : failuresOf(view.rows, now, view, failureWindow(read))
+  const found = read === null || view === null ? null : failuresOf(view.rows, now, view)
   // `failuresOf` lists each kind newest first, so a split keeps both orders.
   const ended = found === null ? [] : found.rows
   const failed = ended.filter((t) => t.state !== 'CANCELLED')
