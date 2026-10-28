@@ -46,7 +46,7 @@ import { usd } from './measure'
 import { pluralise } from './types'
 import { Absent, Mark } from './primitives'
 import { addressToPath } from './paths'
-import { EditSchedule, plainValue } from './ScheduleEdit'
+import { dayWords, EditSchedule, HardStops, plainValue } from './ScheduleEdit'
 import { HistoryTimeline, workAddress } from './ScheduleHistoryTimeline'
 import {
   DryRunChip,
@@ -1247,7 +1247,7 @@ function Firings({ s, firings, go }: { s: Schedule; firings: ServedFiring[]; go:
 function Spend({ s }: { s: Schedule }) {
   const b = s.budget
   return (
-    <Sec name="spend" title="Spend today" sub={`${s.spend_today.day} · the schedule’s own day`}>
+    <Sec name="spend" title="Spend today" sub={`${dayWords(s.spend_today.day)} · the schedule’s own day`}>
       {s.budget_use === undefined || s.budget_use === null ? (
         <p className="sb-note" data-testid="sc-burn-absent">
           {s.budget_use === null
@@ -1318,8 +1318,8 @@ function Gate({ s, type, onChanged, go }: { s: Schedule; type: ScheduleTypeRow |
           )}
         </Kv>
         <Kv name="Hard stops">
-          A change to IAM, the frozen contract, security, CODEOWNERS or a protected path is held for a second member, or in a platform
-          repository for the owner, whatever the gate; a change to <code>.github/workflows/</code> is refused.{' '}
+          {/* The same sentence as the form's Gates card (QA1 automate-09). */}
+          <HardStops />{' '}
           {failures === 1 ? 'A failed run pauses' : `${failures} failed runs in a row pause`} the schedule.
         </Kv>
       </dl>

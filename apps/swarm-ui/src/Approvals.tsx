@@ -22,7 +22,7 @@
  *
  * A waiting item holds no capacity (invariant 1): nothing here is running.
  */
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { loadApprovals } from './api'
 import type { Result } from './fetch'
 import { Button, Dash } from './components'
@@ -478,6 +478,13 @@ export function ApprovalsScreen({ view, go }: { view: string | null; go: (to: st
   const kind = kindOf(view)
   const [round, setRound] = useState(0)
   const [said, setSaid] = useState<string | null>(null)
+  // WHAT A DECISION SAID TAKES FOCUS (QA1 automate-15): Reject's button is
+  // disabled while busy and gone once the item is read again, so focus fell
+  // to <body> and a keyboard reader started again from the top of the page.
+  const saidLine = useRef<HTMLParagraphElement | null>(null)
+  useEffect(() => {
+    if (said !== null) saidLine.current?.focus()
+  }, [said])
   const decided = (word: string) => {
     setSaid(`${word}. The inbox was read again.`)
     go(approvalsAddress(kind))
@@ -486,7 +493,7 @@ export function ApprovalsScreen({ view, go }: { view: string | null; go: (to: st
   return (
     <>
       {said !== null && (
-        <p className="sb-note" role="status">
+        <p ref={saidLine} tabIndex={-1} className="sb-note" role="status">
           {said}
         </p>
       )}

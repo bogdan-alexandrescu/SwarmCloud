@@ -157,6 +157,16 @@ export function taskReadCovers(page: readonly Task[], since: number, prior: Read
 /** Past this many days the bars are slivers, and the page suggests Outcomes. */
 const SUGGEST_OUTCOMES_DAYS = 7
 
+/**
+ * The slivers note names the span on screen, "Over 30 days ...", not the
+ * threshold, which read as "the past 7 days" on a 30-day page (QA1
+ * runs-submit-34). A zoomed window is a fraction of a day long, so it is
+ * floored: "Over 7 days" is still true of 7.4.
+ */
+export function sliversNote(days: number): string {
+  return `Over ${Math.floor(days)} days the bars are slivers: counts over the span read better as a ledger.`
+}
+
 /** A drag shorter than this on the axis is a click, not a zoom. */
 const DRAG_MIN_PX = 4
 
@@ -1328,7 +1338,7 @@ export function TimelineLanesScreen({
 
       {days > SUGGEST_OUTCOMES_DAYS && (
         <p className="tl-note tl-suggest">
-          <span>{`Past ${SUGGEST_OUTCOMES_DAYS} days the bars are slivers: counts over the span read better as a ledger.`}</span>{' '}
+          <span>{sliversNote(days)}</span>{' '}
           <a href={`/timeline/outcomes?${outcomesQueryFor(view)}`}>Open Outcomes ›</a>
         </p>
       )}
