@@ -151,6 +151,10 @@ table.doct tr:last-child td{border-bottom:0}
 .b{height:32px;padding:0 12px;border-radius:8px;border:1px solid var(--ctl-bd);background:var(--surface);color:var(--text);font:600 13px var(--font);display:inline-flex;align-items:center;gap:6px;white-space:nowrap;cursor:default}
 .b.p{background:var(--info);color:var(--ctl-onac);border-color:var(--info)}
 .b.q{border-color:transparent;background:none;color:var(--info);padding:0 6px}
+.hint .b.q,.bn .b.q{display:inline;height:auto;padding:0 2px;white-space:normal}
+.hint .b.q svg,.bn .b.q svg{vertical-align:-2px;margin-right:3px}
+.lede code{white-space:nowrap}
+.bn code{white-space:nowrap}
 .b.d{color:var(--bad-ink)}
 .b.s{height:28px;font-size:12.5px;padding:0 10px}
 .b[aria-disabled="true"]{opacity:.55}
@@ -317,6 +321,8 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
   .frame>.flabel,.frame>p,.frame>.dt,.sub>.sl,.sub figcaption{margin-left:12px;margin-right:12px}
   .sub>.scroller{margin:0 12px;max-width:calc(100% - 24px)}
   .ph{border-radius:0;border-left:0;border-right:0}
+  .g2.fail2{grid-template-columns:minmax(0,1fr)}
+  .solo .revs{min-width:0}.solo .revs span{white-space:normal;border-radius:10px}
   .dt table.doct{min-width:0}.dt thead{display:none}.dt tr,.dt td{display:block}.dt td{border-bottom:0;padding:2px 12px}.dt td:first-child{font-weight:600;padding-top:10px}.dt td:last-child{padding-bottom:10px;border-bottom:1px solid var(--line)}
 }
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
@@ -659,7 +665,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 
 <section class="frame" id="D7" data-frame="D7">
   <div class="flabel"><span class="fid">D7</span><h2>Phone at 390: the plan, a diagram asked for, the chat</h2></div>
-  <p>On the phone the strip draws each diagram in a tall layout of the same source (the renderer is asked for top-to-bottom at this width), so nothing scrolls sideways. The thread sits under each part, as in D's P7. The chat opens as a sheet over the plan.</p>
+  <p>On the phone the strip draws each diagram in a tall layout of the same source (the renderer is asked for top-to-bottom at this width), so the page never scrolls sideways. A sequence diagram has no tall layout: in the thread it scrolls inside its own box, and Open large shows it whole. The thread sits under each part, as in D's P7. The chat opens as a sheet over the plan.</p>
   <div class="pair">
     <figure class="sub" id="D7a" data-frame="D7a"><div class="sl"><span class="sid">D7a</span><b>D1 on the phone</b><span class="dim">390</span></div><div class="scroller solo" data-f="d7a"></div></figure>
     <figure class="sub" id="D7b" data-frame="D7b"><div class="sl"><span class="sid">D7b</span><b>D3 on the phone</b><span class="dim">390 · example</span></div><div class="scroller solo" data-f="d7b"></div></figure>
@@ -810,7 +816,7 @@ function stepD(){
 }
 function seqD(){
   const L=[[70,'ci-fix.sh'],[230,'cifix.stamp'],[400,'tasks'],[560,'continuation']];
-  let s=`<rect class="zone" x="8" y="146" width="624" height="88"/>`+tx(624,200,'the window: between the read and the refusal','sm','end');
+  let s=`<rect class="zone" x="8" y="146" width="624" height="88"/>`+tx(480,198,'the window: between','sm')+tx(480,214,'the read and the refusal','sm');
   L.forEach(([x,n])=>{s+=box(x-62,8,124,32,'nd',[n],6)+`<line class="ll" x1="${x}" y1="40" x2="${x}" y2="296"/>`});
   const m=(x1,x2,y,t,c)=>arr(x1,y,x2,y,c)+tx((x1+x2)/2,y-6,t,'sm');
   s+=m(70,230,72,'CI-fix request')+m(230,400,106,'live continuation on root?')+m(400,230,138,'yes: task_c71… (example)','d');
@@ -875,7 +881,7 @@ function blkStep(o){
 }
 const blkRisk=()=>`<section class="blk"><h5>Risk paths <small>what the step’s files touch</small></h5><div>${C('none touched','ok','check')} <span class="dim sm12">credentials, IAM, .github/workflows, the frozen contract, the deny-list, tenancy, cost</span></div></section>`;
 const chatBtn=(n)=>B('Chat with the review agent'+(n?` · ${n}`:''),'','info');
-const P2HEAD=(o)=>({cr:'Automate › Approvals › plan',h:'Issue #2583 · plan from failure review',right:chatBtn(o&&o.chatN),age:'read 03:00Z'});
+const P2HEAD=(o)=>({cr:'Automate › Approvals › plan',h:'Issue #2583 · plan from failure review',right:chatBtn(o&&o.chatN),age:(o&&o.age)||'read 03:00Z'});
 function pdoc(o){
   o=o||{};
   const stepMg=o.stepMg||`<div class="mg">${why('Planner’s reason for one step · example','Why these three files and this estimate.')}${composer(o.off)}</div>`;
@@ -903,6 +909,7 @@ function d2a(){
     `<section class="pins"><div class="ph1"><b>Pinned to the plan</b><span class="dim sm12">none in revision 1</span></div><div class="bn">${I('info')}<div><b>The planner drew none</b>Its reason, from its first message and carried on the plan: “a one-line value change”. Diagrams are on for this schedule, so you can still ask for one in the thread or the chat.</div></div></section>`+
     decide(1,'sha256:5d0e93ab17c4… (example)')+
     `<div class="pdoc"><div class="row"><section class="blk"><h5>Summary</h5><p>Raise <code>max_concurrent_tasks</code> in <code>${tf}</code> from 8 to 12, so the dev pool matches the ceiling #2590 asks for. (example)</p></section><div class="mg">${first}</div></div>`+
+    `<div class="row"><section class="blk"><h5>Requirements <small>2 · what the review checks, and what decides Closes</small></h5><ol><li><code>max_concurrent_tasks</code> in the dev tfvars is 12. (example)</li><li><code>terraform plan</code> for dev changes that value and nothing else. (example)</li></ol></section><div class="mg"></div></div>`+
     `<div class="row"><section class="blk"><h5>Steps <small>1</small></h5><div class="stp"><div class="sh">${C('step 1','ln')}<b><code>dev-pool-ceiling</code></b><span class="dim sm12">0.5 agent-hours · runs as claude-code</span></div><dl class="kv"><dt>Files</dt><dd>${fileList([tf])}</dd><dt>Change</dt><dd><div class="diff"><div class="d">max_concurrent_tasks = 8</div><div class="a">max_concurrent_tasks = 12</div></div></dd></dl></div></section><div class="mg">${composer()}</div></div></div>`);
 }
 
@@ -914,7 +921,7 @@ const ANS=(inner)=>msg('pl','planner','<span class="anc">on step 1</span><span>0
 function d3a(){return solo(`<div class="mg" style="margin:0">${ASK}${WORK_PL('0:34','$0.31')}${composer()}</div>`,520)}
 function d3b(){return solo(`<div class="mg" style="margin:0">${ASK}${ANS(att(DGS.fp,`<div class="dgw">${seqD()}</div>`,B('Pin to the plan','s p','plus')+B('Open large','s','ext')+B('Text alternative','s q')))}${composer()}</div>`,790)}
 function d3c(){
-  return desk({},P2HEAD(),LEAD('Waiting on you · expires in 21 h','Revision 2: revision 1 with the thread’s diagram pinned','Same step, requirements and overlaps; 3 diagrams. Approve applies to revision 2.')+
+  return desk({},P2HEAD({age:'read 03:07Z'}),LEAD('Waiting on you · expires in 21 h','Revision 2: revision 1 with the thread’s diagram pinned','Same step, requirements and overlaps; 3 diagrams. Approve applies to revision 2.')+
     revbar('<span>revision 1 · planner · 2 diagrams</span><span class="on">revision 2 · Operator · 03:06Z · diagrams only</span>',DIG2,'<span class="dim">from '+DIG+' · diff: diagrams[2] added</span>')+
     pins(['ov','st','fp'],2,{rev:2,nw:'fp',note:'pinned by Operator 03:06Z'})+decide(2,DIG2)+
     pdoc({first:firstMsg(['ov','st']),stepDg:'diagrams 2 and 3',stepMg:`<div class="mg">${ASK}${ANS(pinnedRef(DGS.fp,2))}${composer()}</div>`}));
@@ -940,14 +947,14 @@ function d5a(){
     `<div class="setrow"><span class="sw on" role="switch" aria-checked="true" aria-label="Plan diagrams"></span><div><b>Planners draw flow diagrams and schematics in plans</b><small>On (default): for coding, design, research, issue and failure fixes the planner draws what helps and says why it drew none for a small change; reviewers can ask for a diagram in a plan’s thread or chat. Off: no diagrams, and no way to ask.</small></div></div>`+
     `<div class="setrow"><span>${I('cal')}</span><div><b>Overridden by 1 of 8 schedules</b><small>Terraform tidy (example): off. Each schedule’s Gates and approvers card says which it follows.</small></div>${B('Show them','s q')}</div>`+
     `<div class="setrow"><span>${I('github')}</span><div><b>Issues submitted by hand</b><small>Start at this default; the submitter can turn it off on Submit › From a GitHub issue.</small></div></div>`+
-    `<div class="foot"><span class="grow sm12 dim">Changed by Operator, Oct 28 10:20Z (example). Applies to plans drawn after the change.</span>${B('Turn off…','s')}</div></section>`;
+    `<div class="foot"><span class="grow sm12 dim">Changed by Operator, Oct 27 16:20Z (example). Applies to plans drawn after the change.</span>${B('Turn off…','s')}</div></section>`;
   return desk({sec:'config',short:true},{cr:'Config',h:'Workspace Settings',age:'read 03:00Z'},
     `<div class="g2"><section class="cd"><div class="ch"><b>Per-agent budget</b></div><p>Today’s card, unchanged.</p></section><section class="cd"><div class="ch"><b>Visual QA</b></div><p>Today’s card, unchanged.</p></section></div>`+card);
 }
 function d5b(){
   return solo(`<section class="dsheet" style="width:100%"><div class="shh"><div class="tt"><span class="cr">Automate › Schedules</span><h4>Terraform tidy (example)</h4><span class="sm12 dim">issue-sweep · plans issues labelled infra</span></div></div>`+
     `<div class="shs"><h5>Gates and approvers</h5><dl class="kv"><dt>Run</dt><dd>automatic</dd><dt>Plan</dt><dd>approve</dd><dt>Merge</dt><dd>approve</dd><dt>Who approves</dt><dd>members</dd><dt>Expiry</dt><dd>an approval nobody decides expires after 48 h</dd>`+
-    `<dt>Diagrams</dt><dd><div class="col4"><span class="inp v" style="justify-content:space-between">off · overrides the workspace default (on) ${I('chevd')}</span><span class="hint">Workspace default (on now) · on · off. Off here because its plans are one-line value changes (example). Changed by Operator, Oct 28 10:22Z.</span></div></dd></dl></div></section>`,560);
+    `<dt>Diagrams</dt><dd><div class="col4"><span class="inp v" style="justify-content:space-between">off · overrides the workspace default (on) ${I('chevd')}</span><span class="hint">Workspace default (on now) · on · off. Off here because its plans are one-line value changes (example). Changed by Operator, Oct 27 16:22Z.</span></div></dd></dl></div></section>`,560);
 }
 function d5c(){
   return solo(`<section class="cd"><div class="ch"><b>3 · Decide what it may do on its own</b></div>`+
@@ -956,7 +963,7 @@ function d5c(){
     `<div class="setrow"><span class="sw on" role="switch" aria-checked="true" aria-label="Diagrams in the plan"></span><div><b>Diagrams in the plan</b><small>On (the workspace default): the planner draws where it helps, and you can ask for one while you review.</small></div></div></section>`,560);
 }
 function d5d(){
-  return solo(LEAD('Waiting on you','Plan revision 1, from the Terraform tidy schedule (example)','1 step, 2 requirements.')+
+  return solo(LEAD('Waiting on you','Plan revision 1, from the Terraform tidy schedule (example)','1 step; this cut shows the line and the step.')+
     `<div class="bn">${I('eye-off')}<div><b>Diagrams are off for this plan</b>Its schedule, Terraform tidy, turns them off on its Gates and approvers card. No diagram was drawn and none can be asked for. ${B('Open the schedule','s q','chev')}</div></div>`+
     `<section class="blk"><h5>Steps <small>1</small></h5><div class="stp"><div class="sh">${C('step 1','ln')}<b><code>staging-log-retention</code></b><span class="dim sm12">0.5 agent-hours</span></div></div></section>`+
     `<div class="compose"><div class="box">Comment on this step…</div><div class="acts">${B('Comment','s')}</div></div>`,560);
@@ -972,7 +979,7 @@ function d6a(){
   const bad=SRC_OV.slice();bad[11]='  cont -- yes -> refuse';
   return solo(`<section class="pins"><div class="ph1"><b>Pinned to the plan</b><span class="dim sm12">2 diagrams in revision 1</span></div><div class="ptabs"><span class="on"><i>1</i>Overview · on the plan · did not render</span><span><i>2</i>Step 1 schematic · on step 1</span></div>`+
     `<div class="bn bd">${I('warn')}<div><b>Diagram 1 did not render</b>The renderer answered: line 12, expected <code>--&gt;</code> after <code>cont -- yes</code>. Its text alternative and source are below; the plan still carries it as source.</div></div>`+
-    `<div class="g2" style="margin-top:10px"><div><h5 style="margin:0 0 6px;font-size:13.5px">Text alternative</h5><ol class="alt">${ALT_OV.map(a=>`<li>${a}</li>`).join('')}</ol></div><div><h5 style="margin:0 0 6px;font-size:13.5px">Source <small class="dim" style="font-size:12px">line 12 marked</small></h5>${srcPre(bad,11)}</div></div>`+
+    `<div class="g2 fail2" style="margin-top:10px"><div><h5 style="margin:0 0 6px;font-size:13.5px">Text alternative</h5><ol class="alt">${ALT_OV.map(a=>`<li>${a}</li>`).join('')}</ol></div><div><h5 style="margin:0 0 6px;font-size:13.5px">Source <small class="dim" style="font-size:12px">line 12 marked</small></h5>${srcPre(bad,11)}</div></div>`+
     `<div class="acts" style="margin-top:8px">${B('Ask the planner to redraw it','s','refresh')}<span class="sm12 dim">a planner turn, with its cost, as in D3</span></div></section>`,860);
 }
 function d6b(){
@@ -1037,6 +1044,19 @@ const FR={d1a,d1b,d2a,d3a,d3b,d3c,d4a,d5a,d5b,d5c,d5d,d5e,d6a,d6b,d6c,d7a,d7b,d7
 let drawn=0;
 document.querySelectorAll('[data-f]').forEach(el=>{const f=FR[el.dataset.f];if(!f){el.textContent='Missing frame: '+el.dataset.f;return}el.innerHTML='<div class="F">'+f()+'</div>';drawn++});
 document.documentElement.dataset.frames=String(drawn);
+/* A diagram a little wider than its box is fitted to it; one much wider keeps its size (12px text) and scrolls inside the box, and says so, never the page. */
+function fitDiagrams(){
+  document.querySelectorAll('.dgw').forEach(d=>{
+    const g=d.querySelector('svg');if(!g)return;
+    g.style.width='';
+    const over=d.scrollWidth-d.clientWidth;
+    if(over>2&&d.scrollWidth<=d.clientWidth*1.15){g.style.width='100%';g.style.height='auto'}
+    const wide=d.scrollWidth>d.clientWidth+2,n=d.nextElementSibling,own=n&&n.classList.contains('wide-h'),said=n&&n.classList.contains('hint')&&!own;
+    if(wide&&!own&&!said){const h=document.createElement('span');h.className='hint wide-h';h.textContent='Wider than this box: the diagram scrolls sideways inside it; Open large shows it whole.';d.after(h)}
+    if(!wide&&own)n.remove();
+  });
+}
+fitDiagrams();addEventListener('resize',fitDiagrams);
 
 const root=document.documentElement;
 function apply(t){
