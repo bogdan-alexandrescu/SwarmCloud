@@ -2,8 +2,9 @@
  * VISUAL QA LANE L10 (#1038, 2026-10-11): the runner picker and the Submit chooser.
  *
  *   V126  "held by" named its pool at 14px mono (`.mono`) inside the 12px
- *         runner facts and broke the id mid-way at 1280. The holder is mono at
- *         the fact's own size and is kept whole.
+ *         runner facts and broke the id mid-way at 1280. The holder is now
+ *         the pool in words at the fact's own size, the key only in its
+ *         title (QA1-FIX-23, runs-submit-21: a key in mono was jargon).
  *   V135  "None of yours yet." sat above "Among the newest 0 tasks, 0
  *         workflows, 0 issue runs this tenant has." A window that held nothing
  *         is not named; a tenant with nothing at all says so in one line.
@@ -11,8 +12,8 @@
  *         unknown": the failed task read was not listed and there was no
  *         retry. Every failed read is listed and the card offers Try again.
  *
- * MUTATIONS: put `className="mono"` back on the holder, or drop its
- * `white-space: nowrap`; name a window of 0; drop `unread` from the
+ * MUTATIONS: put `className="mono"` (or the mono `.sbf-runner-holder`) back
+ * on the holder; name a window of 0; drop `unread` from the
  * who-unread state or the Try again button -- each turns a case red.
  */
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -80,21 +81,20 @@ afterEach(() => {
 })
 
 describe('V126: the pool holding a runner at zero', () => {
-  it('is mono at the fact\'s own size, kept whole, with its name in the title', async () => {
+  it('is named in words at the fact\'s own size, with its key in the title', async () => {
     const { container } = render(<SubmitScreen />)
     await screen.findByRole('button', { name: 'Start one agent' }, WAIT)
     const radio = container.querySelector<HTMLInputElement>('input[name="runner-profile"][value="claude-code"]')!
     const room = radio.closest('label')!.querySelector<HTMLElement>('.sbf-runner-room')!
     expect(visible(room)).toMatch(/^0 can start now · held by \S+/)
-    const holder = room.querySelector<HTMLElement>('.sbf-runner-holder')!
+    const holder = room.querySelector<HTMLElement>('[data-pool]')!
     expect(holder, 'the holder is not its own element').not.toBeNull()
     expect(holder.classList.contains('mono'), '`.mono` sets 14px').toBe(false)
-    expect(holder.getAttribute('title')).toBe(visible(holder))
-    expect(familyOf(holder, AT_1280)).toBe('mono')
+    expect(holder.getAttribute('title')).toBe(`${visible(holder)} (pool ${holder.dataset.pool})`)
+    expect(visible(holder)).not.toContain(':')
+    expect(familyOf(holder, AT_1280)).not.toBe('mono')
     expect(sizeOf(holder)).toBe(sizeOf(room))
     expect(sizeOf(holder)).not.toMatch(/--t-body/)
-    expect(painted(holder, 'white-space', AT_1280)).toBe('nowrap')
-    expect(painted(holder, 'overflow-wrap', AT_1280)).not.toBe('anywhere')
   })
 })
 

@@ -714,9 +714,10 @@ describe('the readout', () => {
     cleanup()
     const table = await timeline(ledgerFixture(), { view: 'table=1' })
     const row = table.querySelectorAll('.ol-table tbody tr')[10]!
-    expect(row.textContent).toContain(`${b.cancelled!.total} · ${flat} / ${outline}`)
+    // The Cancelled cell is four columns since QA1-FIX-13: all, requested or other, after a failure, after a cancel.
+    expect([...row.children].slice(4, 7).map((c) => (c.textContent ?? '').trim())).toEqual([String(b.cancelled!.total), flat, outline])
     const head = [...table.querySelectorAll('.ol-table thead th')].map((th) => th.textContent ?? '')
-    expect(head).toContain('Cancelled · requested or other / after a failure / after a cancel')
+    expect(head).toEqual(expect.arrayContaining(['Cancelled', 'requested or other', 'after a failure', 'after a cancel']))
   })
 
   it('is one tab stop, starting on the newest bucket, moved by the arrows, Home and End', async () => {
@@ -795,8 +796,8 @@ describe('the Table toggle', () => {
     expect(table.querySelectorAll('tbody tr')).toHaveLength(14)
     const heads = [...table.querySelectorAll('thead th')].map((th) => th.textContent)
     // The one submission-time column names its basis under Table too, where no lane label is drawn.
-    expect(heads).toContain('Submitted · by created_at')
-    expect(heads.some((h) => /Rate · k of n · 95 %/.test(h ?? ''))).toBe(true)
+    expect(heads).toContain('Submitted by created_at')
+    expect(heads).toContain('Rate k of n, 95 % range')
     const toggle = root.querySelector<HTMLButtonElement>('.ol-table-toggle')!
     expect(toggle.getAttribute('aria-pressed')).toBe('true')
     fireEvent.click(toggle)
@@ -993,7 +994,7 @@ describe('what the route serves, said as the route means it', () => {
     cleanup()
     const table = await timeline(d, { view: 'table=1' })
     const heads = [...table.querySelectorAll('.ol-table thead th')].map((th) => th.textContent)
-    expect(heads).toContain('Submitted · by arrived_at')
+    expect(heads).toContain('Submitted by arrived_at')
   })
 
   it('draws a submitter the route did not record as an absence, never as a blank', async () => {
@@ -1382,9 +1383,11 @@ describe('timeline figures open the rows behind them (#116) and add up (#123)', 
     const d = ledgerFixture()
     d.buckets[10] = { ...d.buckets[10]!, failed: 5, dead_lettered: 3 }
     const root = await timeline(d, { view: 'table=1' })
-    const heads = [...root.querySelectorAll('.ol-table thead th')].map((th) => (th.textContent ?? '').trim())
+    // The head's leaves, left to right: the Cancelled group head spans its four columns (QA1-FIX-13).
+    const [top, under] = [...root.querySelectorAll<HTMLTableRowElement>('.ol-table thead tr')].map((r) => [...r.cells])
+    const heads = top!.flatMap((th) => (th.colSpan > 1 ? under!.splice(0, th.colSpan) : [th])).map((th) => (th.textContent ?? '').trim())
     const at = (name: RegExp) => heads.findIndex((h) => name.test(h))
-    const [succeeded, failed, cancelled, finished] = [/^Succeeded$/, /^Failed · incl\. dead-lettered$/, /^Cancelled/, /^Finished$/].map(at)
+    const [succeeded, failed, cancelled, finished] = [/^Succeeded$/, /^Failed incl\. dead-lettered$/, /^all$/, /^Finished$/].map(at)
     expect(failed, `no single Failed column in ${heads.join(' | ')}`).toBeGreaterThan(-1)
     const rows = [...root.querySelectorAll('.ol-table tbody tr')].filter((r) => r.getAttribute('data-state') !== 'unread')
     expect(rows.length).toBeGreaterThan(0)

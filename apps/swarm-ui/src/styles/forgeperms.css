@@ -16,6 +16,15 @@
 .fp-title small { font-size: var(--t-micro); color: var(--text-dim); font-weight: 400; }
 .fp-card.is-bad { border-left: 3px solid var(--s-bad); }
 .fp-acts { flex: none; }
+/* THE COUNT CHIP IS ON THE TITLE ROW, IN THE CARD'S FACE (visual QA pass 1,
+   config-12). It was the head's action, and the summary's full-width line
+   pushed it onto a row of its own, right-aligned in mono beside a lone
+   Details. Now the head does not wrap above the phone width, so the title
+   (name, kind, chip, then the summary under them) takes the width and
+   Details stays at its right; the chip reads as the card's own words. */
+.fp-card > .c-card-h { flex-wrap: nowrap; align-items: flex-start; }
+.fp-card > .c-card-h > h3 { flex: 1 1 auto; min-width: 0; }
+.fp-card .c-chip.fp-count { font-family: var(--font); }
 .fp-body { display: flex; flex-direction: column; gap: 8px; }
 .fp-lines { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .fp-line { display: flex; flex-direction: column; gap: 2px; padding: 6px 0; border-top: 1px solid var(--line); min-width: 0; }
@@ -61,4 +70,35 @@ table.fp-grants tr.is-optional td { color: var(--text-dim); }  /* WF-APP-PERMS: 
   .fp-card .c-card-h { flex-wrap: wrap; }
   .fp-acts { margin-left: 0; }
   .fp-fix > .c-btn { flex: 1 1 100%; justify-content: center; min-height: 44px; }
+}
+
+/* THE GRANTS TABLE STACKS UNDER 600PX (visual QA pass 1, config-13). At 390
+   it was about 426px in a 326px card: it scrolled sideways with nothing
+   saying so and the For column was cut at the edge. Below 600px each
+   permission is a record, each value under its column's name (`data-label`,
+   set on every cell in PermissionCards.tsx), as the MCP servers table does
+   (keys.css); the head row leaves the layout and stays in the accessibility
+   tree, and the explicit roles keep what `display: block` takes away. */
+@media (max-width: 599px) {
+  .fp-grants-wrap { overflow-x: visible; }
+  table.fp-grants, table.fp-grants > tbody, table.fp-grants > tbody > tr,
+  table.fp-grants > tbody > tr > td { display: block; min-width: 0; }
+  table.fp-grants > thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  table.fp-grants > tbody > tr { padding: 6px 0; border-top: 1px solid var(--line); }
+  table.fp-grants > tbody > tr:first-child { border-top: 0; }
+  table.fp-grants > tbody > tr > td { padding: 2px 0; border-bottom: 0; overflow-wrap: anywhere; }
+  /* The rule above outranks `.fp-for`, so the For cell restates its column: its
+     words and the GitHub names under them stay two lines, not one run-on line. */
+  table.fp-grants > tbody > tr > td.fp-for { display: flex; flex-direction: column; gap: 2px; }
+  table.fp-grants > tbody > tr > td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-size: var(--t-micro);
+    line-height: var(--lh-micro);
+    font-weight: 400;
+    color: var(--text-dim);
+  }
+  /* The mark cell's key is its word: the dot or mark sits under "Enough". */
+  .fp-for { min-width: 0; }
+  .fp-perm { white-space: normal; }
 }

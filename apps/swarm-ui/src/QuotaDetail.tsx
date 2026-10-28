@@ -1,5 +1,3 @@
-import { Fragment } from 'react'
-
 import { loadAdminQuota } from './api'
 import { QUOTA_POLL_MS, capacityPoll, poolHref, tableMode, usePhoneTables } from './capacityPoll'
 import type { TopicId } from './help'
@@ -10,6 +8,7 @@ import { AGE_TICK_MS, useNow } from './useNow'
 import {
   ageSpan,
   pluralise,
+  poolLabel,
   providerTenantPool,
   providerTone,
   quotaReadingAge,
@@ -268,9 +267,7 @@ function Row({ q, now }: { q: QuotaState; now: number }) {
       {/* THE POOL THAT FIGURE FEEDS (CP-8), AND ITS CEILING (G5-02). Only
           admins read this screen, and `service.capacity()` lists every
           tenant's provider pool to them, so the row this links to exists on
-          Pools. The link lands on THAT pool's row, outlined (#128). Mono,
-          because it is an identifier; the full name is in `title` for the
-          width at which it ellipsizes.
+          Pools. The link lands on THAT pool's row, outlined (#128).
 
           The ceiling was left off because it would have been a second read
           with its own freshness -- and QA (2026-10-07) found the cost of
@@ -278,11 +275,22 @@ function Row({ q, now }: { q: QuotaState; now: number }) {
           read as "this tenant can run 50". `/v1/admin/quota` now serves the
           pool in the same response (`feeds_pool`), so the ceiling is the one
           admission enforces, of the same age as the cap. */}
+      {/* THE POOL'S NAME, ITS ID IN THE TITLE (QA1 capacity-18). The link
+          printed the raw id, `provider:anthropic:tenant:eng`, broken over two
+          lines mid-id in its column; Pools and Holders already name the same
+          pool `anthropic · eng` (`poolLabel`), so this row says it the same
+          way and keeps the id one hover away. A provider-tenant pool's label
+          is its provider and tenant, so two rows never share one.
+          ONE ELEMENT (V180): as two grid items a 390 record put its row gap
+          between the link and its ceiling note, an empty line under the
+          name. Wrapped, the note sits directly under it. */}
       <td role="cell" data-label={FEEDS_POOL} className="quota-feeds">
-        <a className="ctl-link mono" href={poolHref('capacity/pools', pool)} title={pool} aria-label={pool}>
-          <PoolName pool={pool} />
-        </a>
-        <PoolCeiling q={q} />
+        <div className="quota-feeds-val">
+          <a className="ctl-link" href={poolHref('capacity/pools', pool)} title={pool}>
+            {poolLabel(pool)}
+          </a>
+          <PoolCeiling q={q} />
+        </div>
       </td>
       {/* These genuinely can be absent, and absent is not zero. The em dash
           carries `.ctl-em`, which is this sheet's one mark for "nothing was
@@ -350,41 +358,6 @@ function MiddleCut({ text, tail }: { text: string; tail: number }) {
       )}
       <span className="quota-cut-tail">{text.slice(cut)}</span>
     </span>
-  )
-}
-
-/**
- * THE FEEDS POOL NAME IS PRINTED WHOLE, BROKEN ONLY AT ITS COLONS (visual QA
- * QA-057, run 2, 2026-10-20). It was cut in the middle (V020), and at 1440
- * with the nav open -- a ~1054px table, every other column as wide as what
- * it holds -- the column is ~160px, so the cut always ran: run 1 saw
- * `…anthropic:tenant:eng`, and run 2, after the slack went to this column,
- * still `…opic:tenant:eng`, and `…:ten… u-bogdan` once the tail split too:
- * two ellipses, and the slack of a cut box as a stray space. There is no
- * width to find for it at 1440: `provider:anthropic:tenant:u-bogdan` is
- * ~265px of mono. So the name wraps instead, the way Pool limits' row heads
- * do (`keyBreaks`, AdminSettings.tsx): a `<wbr>` after each colon is its
- * break, each segment is one run that does not split at a hyphen while it
- * fits a line (`.quota-pool-seg`, styles/capacity.css), and the text is the
- * pool's exactly, for a copy and for the link's name.
- */
-function PoolName({ pool }: { pool: string }) {
-  const parts = pool.split(':')
-  return (
-    <>
-      {parts.map((part, i) =>
-        i < parts.length - 1 ? (
-          <Fragment key={i}>
-            <span className="quota-pool-seg">{`${part}:`}</span>
-            <wbr />
-          </Fragment>
-        ) : (
-          <span className="quota-pool-seg" key={i}>
-            {part}
-          </span>
-        ),
-      )}
-    </>
   )
 }
 

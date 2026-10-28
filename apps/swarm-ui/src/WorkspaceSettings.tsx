@@ -27,6 +27,7 @@ import { Refusal } from './GitHubConnect'
 import { NewWorkspaceForm, STEP_LABEL as JOB_STEP_LABEL, STEP_ORDER as JOB_STEP_ORDER } from './NewWorkspace'
 import { ACCESS as GITHUB_ACCESS_ADDRESS, OnboardingScreen, STEP_LABEL, countLabel } from './Onboarding'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
+import { notServed } from './RepositoriesData'
 import { UrRefresh, UrRegion, useUrRead, type UrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
 import { timeAgo, type OnboardingDoc, type Profile, type WorkspaceRoles } from './types'
@@ -71,7 +72,9 @@ import './styles/workspace-settings.css'
 
 export type WorkspacePart = 'settings' | 'setup' | 'new'
 
-const SETTINGS_ADDRESS = 'config/workspace'
+/** Workspace Settings' own address; People and roles links a personal workspace back here. */
+export const WORKSPACE_SETTINGS_ADDRESS = 'config/workspace'
+const SETTINGS_ADDRESS = WORKSPACE_SETTINGS_ADDRESS
 /** The admin's part: a query on the tab, as Workspace setup's address was before it had a path of its own. */
 export const WORKSPACE_NEW_ADDRESS = 'config/workspace?part=new'
 
@@ -497,6 +500,15 @@ function ThisWorkspace({ profile, roles, go }: { profile: Profile; roles: UrRead
 }
 
 /**
+ * A CARD'S REFRESH, ONLY ON A ROUTE THIS API SERVES (visual QA pass 1, config-31; part of #2596). A card that says
+ * "Not served yet" offered a refresh beside it, and a re-read cannot serve a route the build does not have. The
+ * page head's refresh still re-reads the page; any other failure keeps the control, since a retry may answer.
+ */
+function servedRefresh(read: UrRead<unknown>): ReactNode {
+  return read.state.status === 'error' && notServed(read.state.error) ? undefined : <UrRefresh reads={[read]} />
+}
+
+/**
  * VISUAL QA (lane QA-FLOWS-UI over QA-FLOWS-CAP, part of #2136; BGD, 2026-10-26): the workspace's `qa_flows_per_step`,
  * how many of a QA run's read-only flows one live-browser step runs when the run names none of its own (a run may,
  * beside Run on the QA targets page). Its default and its 1-30 bound are the API's, served with it. Its owner or admin,
@@ -506,7 +518,7 @@ function ThisWorkspace({ profile, roles, go }: { profile: Profile; roles: UrRead
 function QaSettingsCard() {
   const qa = useUrRead(loadQaSettings, 'qa-settings')
   return (
-    <Card title="Visual QA" action={<UrRefresh reads={[qa]} />}>
+    <Card title="Visual QA" action={servedRefresh(qa)}>
       <UrRegion state={qa.state} route="GET /v1/qa-settings" what="the Visual QA settings" onRetry={qa.reload}>
         {(d) => <QaFlowsPerStep key={`${d.tenant_id}:${d.qa_flows_per_step}`} read={d} />}
       </UrRegion>
@@ -542,19 +554,28 @@ function QaFlowsPerStep({ read }: { read: QaSettings }) {
         A QA run&rsquo;s read-only flows run in batches, one live-browser step to a batch. This is the batch size a run
         uses when it names none of its own; a run may pick another beside Run on the QA targets page.
       </p>
-      <dl className="ws-kv">
-        <dt>QA flows per step</dt>
-        <dd data-qa-flows-per-step="">
-          {d.qa_flows_per_step}
-          {d.set_by === null ? ' (the default)' : ` · default ${d.default_flows_per_step}`}
-        </dd>
-        {d.set_by !== null && (
-          <>
-            <dt>Set by</dt>
-            <dd>{`${d.set_by}${d.set_at !== null ? ` ${timeAgo(d.set_at)}` : ''}`}</dd>
-          </>
-        )}
-      </dl>
+      {/* ONE LABELLED FIGURE (visual QA pass 1, config-30; part of #2596): for someone who may edit it, the field
+          below is the figure and its hint notes the default, so the read-out above it said both twice. It is
+          drawn for a reader only; Set by stays for both. */}
+      {(!d.can_edit || d.set_by !== null) && (
+        <dl className="ws-kv">
+          {!d.can_edit && (
+            <>
+              <dt>QA flows per step</dt>
+              <dd data-qa-flows-per-step="">
+                {d.qa_flows_per_step}
+                {d.set_by === null ? ' (the default)' : ` · default ${d.default_flows_per_step}`}
+              </dd>
+            </>
+          )}
+          {d.set_by !== null && (
+            <>
+              <dt>Set by</dt>
+              <dd>{`${d.set_by}${d.set_at !== null ? ` ${timeAgo(d.set_at)}` : ''}`}</dd>
+            </>
+          )}
+        </dl>
+      )}
       {d.can_edit ? (
         <form className="ws-rename" aria-label="Change QA flows per step" onSubmit={(e) => void submit(e)}>
           <label className="c-field">
@@ -623,7 +644,7 @@ const unitLabel = (u: BudgetUnit): string => (u === 'usd' ? 'Dollars' : 'Tokens'
 function WorkspaceBudgetCard() {
   const budget = useUrRead(loadWorkspaceBudget, 'workspace-budget')
   return (
-    <Card title="Per-agent budget" action={<UrRefresh reads={[budget]} />}>
+    <Card title="Per-agent budget" action={servedRefresh(budget)}>
       <p className="pk-lead">
         The most one agent may spend on a step in this workspace. {BUDGET_DOES} A step may set a lower budget, never a
         higher one.

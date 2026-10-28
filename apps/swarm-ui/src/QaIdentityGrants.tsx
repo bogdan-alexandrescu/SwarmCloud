@@ -42,7 +42,9 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { grantQaIdentity, loadQaIdentities, loadQaIdentityMine, revokeQaIdentity } from './api'
 import { Button } from './components'
 import type { ApiError, Result } from './fetch'
+import { formatDateTime } from './timezone'
 import type { QaIdentityAdminEntry, QaIdentityGrant, QaIdentityList, RunnerProfile } from './types'
+import { useTimeZone } from './useTimeZone'
 
 /** The task input the identity travels under (contract request 106). */
 export const QA_IDENTITY_KEY = 'qa_identity'
@@ -166,6 +168,7 @@ function saidOf<T>(r: Result<T>, text: string): Said {
 
 function GrantRow({ identity, grant, busy, onRevoke }: { identity: string; grant: QaIdentityGrant; busy: boolean; onRevoke: () => void }) {
   const granted = grant.state === 'granted'
+  const zone = useTimeZone()
   return (
     <li data-grant-tenant={grant.tenant_id} data-state={grant.state}>
       <p>
@@ -174,7 +177,16 @@ function GrantRow({ identity, grant, busy, onRevoke }: { identity: string; grant
           <span className="ur-small">
             {' '}
             · granted by {grant.granted_by}
-            {grant.granted_at !== null && grant.granted_at !== '' ? ` at ${grant.granted_at}` : ''}
+            {grant.granted_at !== null && grant.granted_at !== '' && (
+              // THE CONSOLE'S TIME, NOT THE STAMP (visual QA chrome-C22): the
+              // API's `2026-10-27T11:41:37.874308+00:00` was printed as given.
+              // It is the person's zone, labelled, as every page writes a
+              // time; the stamp stays machine-readable in `dateTime`.
+              <>
+                {' at '}
+                <time dateTime={grant.granted_at}>{formatDateTime(grant.granted_at, zone)}</time>
+              </>
+            )}
           </span>
         )}
       </p>
@@ -298,7 +310,9 @@ export function QaIdentityGrants({ tenants }: { tenants: readonly string[] }) {
     void reload()
   }, [reload])
   // An API without these routes (and the fixture build) answers 404 with no
-  // code: that is "not served here", information rather than a failure.
+  // code: that is "not served here", information rather than a failure. It is
+  // said for the admin reading it (visual QA admin-shell-09): what cannot be
+  // read, why, and what to do -- not "this API serves no routes".
   const notServed = unread !== null && unread.httpStatus === 404 && unread.code === null
   return (
     <section className="section" data-testid="qa-identity" aria-labelledby="ten-qa-identity">
@@ -307,7 +321,12 @@ export function QaIdentityGrants({ tenants }: { tenants: readonly string[] }) {
         A workspace granted here may ask for a browser agent signed in to this console as the QA account. Grant it only with a
         reason; a revoke takes effect at the agent’s next credential renewal.
       </p>
-      {notServed && <p className="ur-hint">This API serves no QA identity routes.</p>}
+      {notServed && (
+        <p className="ur-hint">
+          QA identity grants cannot be read from this deployment: its swarm-api is a release from before the QA identity, and
+          has none of its routes. Deploy the current release of swarm-api to grant it; until then no workspace can name it.
+        </p>
+      )}
       {unread !== null && !notServed && <SaidLine said={{ ok: false, error: unread }} />}
       {list === null && unread === null && <p className="ur-hint">Reading…</p>}
       {list !== null && list.identities.length === 0 && <p className="ur-hint">This API offers no QA identity.</p>}
