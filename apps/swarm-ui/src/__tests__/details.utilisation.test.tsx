@@ -222,9 +222,10 @@ describe('the panel polls while the task runs and stops when it finishes', () =>
     await act(async () => {})
     const head = container.querySelector('[data-testid="util-headline"]')
     expect(head?.closest('summary')).not.toBeNull()
-    // c05: the summary's limit is named as the enforced one, `(cgroup limit)`,
-    // and its mean as the 5 s samples' (FF-D5a, QAFIX5-TASK-DETAIL).
-    expect(head?.textContent).toContain('CPU, 5 s samples: mean 1.7 of 4 cores (cgroup limit) · at the limit 20% of the time · throttled 9%')
+    // A SHORT TITLE, ONE MEAN (QA1 overview-agents-24, owner pick
+    // 2026-10-28): the series' own figures, no second mean or limit.
+    // MUTATION: put `mean 1.7 of 4 cores` back in the title -> red.
+    expect(head?.textContent).toBe('CPU and memory over time · at the limit 20% of the time · throttled 9%')
   })
 
   // MUTATION: start an interval for a task that was already finished.

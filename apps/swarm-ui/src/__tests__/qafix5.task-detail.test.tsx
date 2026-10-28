@@ -220,7 +220,10 @@ describe('r2:FF-D5a: each CPU mean on Details says which mean it is', () => {
     expect(v).toBe('0.8 40% of 2 cores · CPU-seconds over runner time')
   })
 
-  it('names the over-time summary’s mean as the mean of its 5 s samples, and its limit as the cgroup’s', async () => {
+  // ONE MEAN ON THE FOLD (QA1 overview-agents-24, owner pick 2026-10-28):
+  // the over-time title no longer prints the samples' mean, so Resources'
+  // named mean is the only one; the title keeps the series' own figures.
+  it('prints no second mean on the over-time title', async () => {
     const p = (i: number, cpu: number) => ({ at: at(i / 12), cpu_cores: cpu, memory_bytes: 2 * GIB, throttled_share: 0 })
     const data: UtilisationRead = {
       task_id: ID,
@@ -242,8 +245,9 @@ describe('r2:FF-D5a: each CPU mean on Details says which mean it is', () => {
     const { container } = render(<UtilisationPanel taskId={ID} live={false} />)
     await act(async () => {})
     const head = container.querySelector('[data-testid="util-headline"]')?.textContent ?? ''
-    // MUTATION: leave the summary at `CPU: mean 1 of 2 cores` -- two means on one pane, neither named.
-    expect(head).toContain('CPU, 5 s samples: mean 1 of 2 cores (cgroup limit)')
+    // MUTATION: leave `mean 1 of 2 cores` in the title -- two means in one fold.
+    expect(head).not.toMatch(/mean/)
+    expect(head).toBe('CPU and memory over time · at the limit 0% of the time · throttled 0%')
   })
 })
 

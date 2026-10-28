@@ -466,7 +466,8 @@ describe('AgentDetail draws requested-vs-utilised through the shared track', () 
 
   it('keeps a failed attempt read on the unread tile, with no figure', async () => {
     await mountRun(agentRun({ attempts: null, attemptsDetail: 'HTTP 503' }))
-    const peak = tile('Peak memory')
+    // The strip's Peak memory tile was dropped (QA1 overview-agents-25); Cost reads the attempts too.
+    const peak = tile('Cost')
     expect(peak.classList.contains('is-unread')).toBe(true)
     expect(peak.querySelector('.dt-sc-v')?.textContent).not.toMatch(/\d/)
     const failed = document.querySelector('.ctl-empty.is-failed')

@@ -18,8 +18,9 @@
 //                              the pod's 4 / 8 is not what the agent got
 //   no sized fields            exactly as before this change
 //
-// The words appear in three places, from one helper: the CPU tile's sub-line,
-// the Resources card's CPU peak row, and each attempt's CPU strip.
+// The words appear in two places, from one helper: the Resources card's CPU
+// peak row and each attempt's CPU strip. The strip's CPU tile, a third, was
+// dropped (QA1 overview-agents-25, owner pick 2026-10-28).
 
 import { describe, expect, it, vi } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
@@ -93,13 +94,9 @@ async function mount(a: AttemptRow, t: Partial<Task> = {}): Promise<HTMLElement>
   return container as HTMLElement
 }
 
-/** The CPU tile's sub-line in the Details strip. */
-function tileSub(root: HTMLElement): string {
-  const cell = [...root.querySelectorAll<HTMLElement>('.dt-sc')].find((c) =>
-    (c.querySelector('.dt-sc-l')?.textContent ?? '').startsWith('CPU'),
-  )
-  expect(cell, 'no CPU tile').toBeTruthy()
-  return cell!.querySelector('.dt-sc-s')?.textContent ?? ''
+/** Whether the Details strip still draws a CPU tile. */
+function hasCpuTile(root: HTMLElement): boolean {
+  return [...root.querySelectorAll<HTMLElement>('.dt-strip .dt-sc-l')].some((l) => (l.textContent ?? '').startsWith('CPU'))
 }
 
 /** The Resources card's CPU peak row, its note. */
@@ -117,10 +114,10 @@ function strip(root: HTMLElement): string {
 }
 
 describe('Details says what an attempt was guaranteed and what it could burst to', () => {
-  it('reads a GKE attempt sized 4 / 8 as "4 cores guaranteed, bursts to 8" in the tile, the Resources row and the strip', async () => {
+  it('reads a GKE attempt sized 4 / 8 as "4 cores guaranteed, bursts to 8" in the Resources row and the strip', async () => {
     const root = await mount(row(SIZED))
-    // MUTATION: drop the sized words from `cpuCell`'s sub-line -> red.
-    expect(tileSub(root)).toContain('4 cores guaranteed, bursts to 8')
+    // MUTATION: push the CPU tile back into the Details strip -> red.
+    expect(hasCpuTile(root)).toBe(false)
     // MUTATION: drop them from the Resources card's CPU peak note -> red.
     expect(peakNote(root)).toContain('4 cores guaranteed, bursts to 8')
     // MUTATION: drop them from `CpuNote`'s extra list -> red.
@@ -132,55 +129,54 @@ describe('Details says what an attempt was guaranteed and what it could burst to
     // that made standard 6 / 12.
     const root = await mount(row({ ...SIZED, size_version: 2, sized_cpu_request: 6, sized_cpu_limit: 12 }))
     // MUTATION: take the request from `cls.cpu` instead of `sized_cpu_request` -> red.
-    expect(tileSub(root)).toContain('6 cores guaranteed, bursts to 12')
-    expect(tileSub(root)).not.toContain('4 cores guaranteed')
+    expect(peakNote(root)).toContain('6 cores guaranteed, bursts to 12')
+    expect(peakNote(root)).not.toContain('4 cores guaranteed')
   })
 
   it('says "no burst" when the recorded limit is the request', async () => {
     const root = await mount(row({ ...SIZED, sized_cpu_limit: 4 }))
     // MUTATION: always print "bursts to <limit>" -> red.
-    expect(tileSub(root)).toContain('4 cores guaranteed, no burst')
-    expect(tileSub(root)).not.toMatch(/bursts to/)
+    expect(peakNote(root)).toContain('4 cores guaranteed, no burst')
+    expect(peakNote(root)).not.toMatch(/bursts to/)
   })
 
   it('never claims a burst on Cloud Run, which renders the request as its only number', async () => {
     const root = await mount(row(SIZED, { backend: 'CLOUD_RUN_JOB' }))
     // MUTATION: ignore `backend` and print the record's limit -> red.
-    expect(tileSub(root)).toContain('4 cores guaranteed, no burst on Cloud Run')
-    expect(tileSub(root)).not.toMatch(/bursts to/)
+    expect(peakNote(root)).toContain('4 cores guaranteed, no burst on Cloud Run')
+    expect(peakNote(root)).not.toMatch(/bursts to/)
   })
 
   it('names the agent’s own container and the display’s on a live browser pod, never the pod’s 4 / 8', async () => {
     const root = await mount(row({ ...SIZED, sized_live_split: LIVE_SPLIT }))
     // MUTATION: ignore `sized_live_split` and print the pod's request and limit -> red.
-    expect(tileSub(root)).toContain('agent 2 cores guaranteed, bursts to 4 · display 2, bursts to 3')
-    expect(tileSub(root)).not.toContain('bursts to 8')
+    expect(peakNote(root)).toContain('agent 2 cores guaranteed, bursts to 4 · display 2, bursts to 3')
+    expect(peakNote(root)).not.toContain('bursts to 8')
   })
 
   it('shows the size on a running attempt before its first reading: it was pinned at admission', async () => {
     const a = row(SIZED, { completed_at: null, exit_code: null })
     Object.assign(a, { cpu_seconds: null, peak_cpu_cores: null, mean_cpu_cores: null, cpu_limit_cores: null, cpu_limit_source: null })
     const root = await mount(a, { state: 'RUNNING', current_lease_id: 'lse_1' })
-    // MUTATION: add the sized words only on the measured branch of `cpuCell` -> red.
-    expect(tileSub(root)).toContain('4 cores guaranteed, bursts to 8')
+    // MUTATION: add the sized words only on the measured branch of the CPU peak row -> red.
+    expect(peakNote(root)).toContain('4 cores guaranteed, bursts to 8')
   })
 
   it('reads an attempt without sized fields exactly as before', async () => {
     const before = await mount(row(null))
-    const sub = tileSub(before)
     const note = peakNote(before)
     const cpuStrip = strip(before)
     // MUTATION: fall back to the class's cpu when `sized_cpu_request` is absent -> red.
-    for (const text of [sub, note, cpuStrip]) {
+    for (const text of [note, cpuStrip]) {
       expect(text).not.toMatch(/guaranteed|burst/)
     }
     // The words of today, pinned so an addition anywhere in them is seen.
-    expect(sub).toBe('peak · mean 1.7 · cgroup limit (class 4 vCPU)')
+    expect(note).toMatch(/% of 8 cores · cgroup limit \(class 4 vCPU\)$/)
   })
 
   it('reads a malformed record as no record', async () => {
     const root = await mount(row({ ...SIZED, sized_cpu_request: 'four' }))
     // MUTATION: print `sized_cpu_request` without checking it is a finite number -> red.
-    expect(tileSub(root)).not.toMatch(/guaranteed|burst/)
+    expect(peakNote(root)).not.toMatch(/guaranteed|burst/)
   })
 })

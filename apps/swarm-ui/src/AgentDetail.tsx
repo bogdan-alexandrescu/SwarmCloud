@@ -83,6 +83,7 @@ import {
   type Task,
   type TaskEvent,
   type TaskInputCopy,
+  type TaskState,
   type Tone,
 } from './types'
 import './styles/details.css'
@@ -485,7 +486,7 @@ export function Run({
       <div className="dt-top">
         <Alerts task={task} />
         <WaitPanel task={task} now={now} />
-        <Why task={task} events={events} now={now} classes={run.classes} />
+        <Why task={task} classes={run.classes} />
       </div>
       {/* WHY THE AGENT RAN OR DID NOT (owner request 2026-10-07): a step with
           a verdict gate, or the review that gated one, leads with the rule,
@@ -527,7 +528,7 @@ export function Run({
       {lead !== 'outcome' && (task.result_summary != null || publishRefusals(task, run.attempts).length > 0) && (
         <Output run={run} readAt={readAt} links={links} />
       )}
-      <Input run={run} readAt={readAt} />
+      <Input run={run} readAt={readAt} now={now} />
     </div>
   )
 }
@@ -932,6 +933,21 @@ export function buildingOf(
   return { text, facts, hover }
 }
 
+/**
+ * THE LINE'S WORD FOLLOWS THE STATE (QA1 overview-agents-26, 2026-10-28):
+ * `Building` stood on an agent running for nine days, on one that failed nine
+ * days ago and on one still waiting for capacity. The word is what the agent
+ * is doing with the work the line names, from `task.state` alone.
+ */
+export function buildingWord(state: TaskState): string {
+  if (state === 'RUNNING') return 'Running'
+  if (CONCURRENCY_STATES.has(state)) return 'Starting'
+  if (state === 'SUCCEEDED') return 'Finished'
+  if (state === 'CANCELLED') return 'Cancelled'
+  if (TERMINAL_STATES.has(state)) return 'Failed'
+  return 'Waiting'
+}
+
 function DtBuilding({ task, readAt }: { task: Task; readAt: number | null }) {
   // THE SAME READ AS Input's (same loader, task and key), so one request.
   const { state: copy } = useRead<TaskInputCopy>(() => loadTaskInputOnce(task.id), task.id, `input:${readAt ?? ''}`, null)
@@ -939,7 +955,7 @@ function DtBuilding({ task, readAt }: { task: Task; readAt: number | null }) {
   const facts = b.facts.join(' · ')
   return (
     <p className="dt-building">
-      <span className="dt-building-l">Building</span>
+      <span className="dt-building-l">{buildingWord(task.state)}</span>
       <span className={`dt-building-v${b.text === null ? ' is-none' : ''}`} title={b.hover ?? undefined}>
         {b.text === null
           ? facts !== ''
@@ -1385,10 +1401,8 @@ export function runsLine(summary: ResultSummary | null | undefined): { text: str
 }
 
 function DtStrip({ run, now }: { run: AgentRun; now: number }) {
-  const { task, attempts, events } = run
+  const { task, attempts } = run
   const el = elapsed(task, now)
-  const cls = run.classes?.[task.resource_class] ?? null
-  const noCeiling = ceilingNote(run)
   // WHEN IT STARTED AND ENDED ARE THE ELAPSED FIGURE'S SUB-LINE (agent-
   // details-v3.html A: `since 14:02`, `13:18 → 13:41`), in the one formatter
   // (`clockTime`): local time, the UTC instant and its age in the title.
@@ -1443,8 +1457,6 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
   if (attempts === null) {
     cells.push(
       { label: 'Attempt', value: `${task.attempt_count}`, unit: `of ${task.max_attempts}`, sub: 'agent counter' },
-      { label: 'Peak memory', value: '— read failed', tone: 'unread', bar: null, sub: 'attempt query', help: 'read-failed' },
-      { label: 'CPU', value: '— read failed', tone: 'unread', bar: null, sub: 'attempt query' },
       { label: 'Cost', value: '— read failed', tone: 'unread', sub: 'attempt query' },
     )
     return <DtStripView cells={cells} />
@@ -1475,83 +1487,13 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
     tone: attempts.length >= task.attempt_count ? undefined : 'unread',
   })
 
-  // MEMORY, against the class's limit when the catalogue answered.
-  const mem = memoryOf(run)
-  const nearMiss = attempts.some((a) => a.oom_near_miss)
-  const limit = cls === null ? null : cls.memory_gib * GIB
-  const memPct = mem.bytes !== null && limit !== null ? pctOf(mem.bytes, limit) : null
-  const ofLimit = cls === null ? (noCeiling ?? 'limit unknown') : `of ${cls.memory_gib} GiB`
-  // THE WORST EARLIER ATTEMPT IS THE CAPTION (c06): `of 8 GiB · worst 7.20
-  // GiB, attempt 2 · OOM near miss`, in the alert tone, the owner's words.
-  // IT WRAPS, WHOLE (5b:QA-024, box comment 6343769495): the 480-639px
-  // pane's two-line clamp cut it to `worst 7.20 GiB, attempt…` at 1440, the
-  // half that names the attempt and the near miss lost. Every Peak memory
-  // cell is `whole`, as the CPU tile is; Resources' Memory row says it too,
-  // with the reading's age (`so far · 1m ago`).
-  const worst = worstWords(mem.worst)
-  const nearWords = nearMiss ? ' · OOM near miss' : ''
-  if (mem.bytes !== null) {
-    cells.push({
-      label: mem.kind === 'last' ? 'Memory · last reading' : 'Peak memory',
-      value: bytesLabel(mem.bytes),
-      unit: memPct === null ? undefined : `${memPct}%`,
-      bar: memPct,
-      sub:
-        worst !== null
-          ? `${ofLimit} · ${worst}${nearWords}`
-          : mem.kind === 'live'
-            ? `${ofLimit} · so far · ${timeAgo(mem.at ?? '', now)}`
-            : mem.kind === 'last'
-              ? `${ofLimit} · no peak was written`
-              : // A PEAK, WRITTEN AT EXIT (G2-11, QA 2026-10-07): `at exit` alone
-                // read as the value at exit, and 26.7 MiB for a Claude Code run
-                // looked like a residue. The worker records the high-water mark
-                // it sampled (`peak_rss_bytes`, agent_worker/metrics.py) and
-                // writes it when the attempt ends.
-                `${ofLimit} · peak, written at exit${nearWords}`,
-      // THE LIVE HIGH-WATER MARK IS NOT THE FINAL FIGURE (AG-4): full size,
-      // because it is a real measurement, but on its own tone and labelled
-      // `so far` with its age -- unless an earlier attempt was worse, whose
-      // warning takes the alert tone.
-      tone: worst !== null || nearMiss || mem.kind === 'last' ? 'alert' : mem.kind === 'live' ? 'live' : undefined,
-      help: 'peak-memory',
-      whole: true,
-    })
-  } else if (mem.kind === 'pending') {
-    cells.push({
-      label: 'Peak memory',
-      value: 'at exit',
-      tone: 'reading',
-      bar: null,
-      sub: worst !== null ? `${ofLimit} · ${worst}${nearWords} · no heartbeat reading yet` : `${ofLimit} · no heartbeat reading yet`,
-      help: 'peak-memory',
-      whole: true,
-    })
-  } else if (latest === null) {
-    // ONE CAUSE, ONE WORD (QA G2-28): with no attempt, Peak memory, CPU and
-    // Cost each say `no attempt`. They said `not recorded`, `no attempt yet`
-    // and `nothing ran yet` for the same fact, and `yet` on a cancelled task.
-    cells.push({ label: 'Peak memory', value: '— no attempt', tone: 'absent', bar: null, help: 'peak-memory' })
-  } else {
-    cells.push({
-      label: 'Peak memory',
-      value: '— not recorded',
-      tone: 'absent',
-      bar: null,
-      // The newest wrote none; an earlier one that did is still named.
-      sub: worst !== null ? `attempt ${attempts.length} wrote none · ${worst}${nearWords}` : 'no attempt wrote one',
-      help: 'peak-memory',
-      whole: true,
-    })
-  }
-
-  // CPU: the newest attempt's peak against its limit, the mean under it.
-  // THE CPU CAPTION IS NEVER CUT (task-012, visual QA run 3, #1680): it says
-  // the reading, whose limit the `/ 2 cores` is and the size the attempt was
-  // guaranteed (FF-D5a, SIZES-DETAIL), and the two-line clamp cut it to
-  // `cgroup limit (clas…` in the 1440 split's pane. Every other sub-line
-  // still clamps.
-  cells.push({ ...cpuCell(latest, open !== null, events, cls), whole: true })
+  // NO PEAK MEMORY OR CPU TILE (QA1 overview-agents-25, owner pick
+  // 2026-10-28, "Drop the tiles"). This strip and the Resources card are
+  // drawn together, inside the one Resources fold, and the tiles restated the
+  // card's Memory and CPU peak rows -- the same figure against the same limit,
+  // twice in one fold. The card keeps them, whole: the worst earlier attempt,
+  // an OOM near miss, whose limit the cores are and what the attempt was sized
+  // at. The strip keeps what only it says: the clock, the attempt and the cost.
 
   // COST, with tokens as its sub-line (#322: every kind summed on its own).
   const spent = attempts.filter((a) => a.cost_usd !== null)
@@ -1649,10 +1591,9 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
   // THE COST LINE WRAPS, WHOLE (5b:ff-desktop-05, box comment 6343792637).
   // The 480-639px pane's two-line clamp cut a failed task's line to `cost 1
   // of 3 reported · last...` at 1440: the coverage it opens with is the
-  // reason the figure says `at least`. Like CPU and Peak memory, the Cost
-  // tile's sub-line is never clamped; a taller strip is the price. Each Cost
-  // cell above says `whole` where it is pushed, as Peak memory and CPU do, so
-  // a renamed label cannot bring the clamp back.
+  // reason the figure says `at least`. The Cost tile's sub-line is never
+  // clamped; a taller strip is the price. Each Cost cell above says `whole`
+  // where it is pushed, so a renamed label cannot bring the clamp back.
   return <DtStripView cells={cells} />
 }
 
@@ -1664,41 +1605,6 @@ function DtStripView({ cells }: { cells: DtCell[] }) {
       ))}
     </div>
   )
-}
-
-/** The CPU cell: the newest attempt's peak against its limit, its mean in the sub-line. */
-function cpuCell(latest: AttemptRow | null, open: boolean, events: TaskEvent[] | null, cls: ResourceClassSpec | null): DtCell {
-  if (latest === null) return { label: 'CPU', value: '— no attempt', tone: 'absent', bar: null }
-  const from = cpuOf(latest, events)
-  if (from.kind === 'not_served') {
-    return { label: 'CPU', value: '— not served', tone: 'absent', bar: null, sub: 'this API sends no CPU fields', help: 'cpu-figures' }
-  }
-  if (from.kind === 'unread') {
-    return { label: 'CPU', value: '— events unread', tone: 'unread', bar: null, sub: 'heartbeat read failed', help: 'cpu-figures' }
-  }
-  const f = from.figures
-  const limit = f.cpu_limit_cores ?? cls?.cpu ?? null
-  // The size was pinned at admission, so it is known before the first reading.
-  const sized = sizedCpuWords(latest)
-  const withSize = (sub: string) => (sized === null ? sub : `${sub} · ${sized}`)
-  if (f.peak_cpu_cores === null) {
-    return open
-      ? { label: 'CPU', value: 'at exit', tone: 'reading', bar: null, sub: withSize('no reading yet'), help: 'cpu-figures' }
-      : { label: 'CPU', value: '— not measured', tone: 'absent', bar: null, sub: withSize('no figure was written'), help: 'cpu-figures' }
-  }
-  const pct = limit === null ? null : pctOf(f.peak_cpu_cores, limit)
-  const whose = cpuLimitWords(f.cpu_limit_cores, cls, from.kind === 'attempt' ? (latest.cpu_limit_source ?? null) : null)
-  return {
-    label: 'CPU',
-    value: cores(f.peak_cpu_cores),
-    unit: limit === null ? 'cores · limit unknown' : `/ ${cores(limit)} cores`,
-    bar: pct,
-    tone: pct !== null && pct >= 100 ? 'alert' : undefined,
-    sub: withSize(
-      `${from.kind === 'heartbeat' && !from.final ? 'last reading' : 'peak'}${f.mean_cpu_cores === null ? '' : ` · mean ${cores(f.mean_cpu_cores)}`}${whose === null ? '' : ` · ${whose}`}`,
-    ),
-    help: 'cpu-figures',
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1852,9 +1758,19 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
           <span>This is a failed read, not an empty history.{run.eventsDetail ? ` ${run.eventsDetail}` : ''}</span>
         </p>
       ) : events.length === 0 ? (
-        <p className="dt-empty is-err">
-          <b>0 events · an agent always has one</b>
-          <span>A submitted event is written with the agent itself, and the query returned none. This is a failed read.</span>
+        // AN ANSWER, NOT A FAILED READ (QA1 overview-agents-58, 2026-10-28):
+        // the route answered, with no event, so this is drawn as the attempts
+        // read's hole above is -- a partial mark, plain ink -- and never in
+        // the red a read that failed takes.
+        <p className="dt-empty" data-events="none-returned">
+          <b>
+            no event returned{' '}
+            <Mark
+              kind="partial"
+              say="A submitted event is written with the agent itself, so its history has at least one event. The events read answered with none: the history is missing from this answer, not empty."
+            />
+          </b>
+          <span>The event history is missing, not absent.</span>
         </p>
       ) : (
         <>
@@ -1880,9 +1796,12 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
           ) : (
             <p
               className="dt-note"
+              // PLAIN WORDS ON THE GLASS (QA1 overview-agents-29): `one page,
+              // cap unknown` was the route's paging in its own jargon. The
+              // caveat stays whole in the label.
               aria-label={`One page, as served. This screen asks for ${EVENT_PAGE_LIMIT} events and the server may clamp that lower, and it does not follow the page token the events route returns — so a page that looks complete is not evidence that it is.`}
             >
-              newest first · one page, cap unknown
+              newest first · the first page of events
             </p>
           )}
           {events.length > 5 && (
@@ -1979,10 +1898,12 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
   const { latest } = orderedAttempts(attempts)
   const open = latest !== null && !attemptEnd(latest, task, true).over
   const mem = memoryOf(run)
-  // THE WORST EARLIER ATTEMPT, WHOLE (c06): the strip's tile cuts its caption
-  // at two lines in a 480-639px pane; this row never does.
+  // THE WORST EARLIER ATTEMPT AND AN OOM NEAR MISS, WHOLE (c06): this row
+  // is where they are said since the strip's Peak memory tile was dropped
+  // (QA1 overview-agents-25), so the near miss is named here on its own too.
   const worst = worstWords(mem.worst)
-  const worstNote = worst === null ? '' : ` · ${worst}${attempts?.some((a) => a.oom_near_miss) ? ' · OOM near miss' : ''}`
+  const nearMiss = attempts?.some((a) => a.oom_near_miss) === true
+  const worstNote = (worst === null ? '' : ` · ${worst}`) + (nearMiss ? ' · OOM near miss' : '')
   const rows: { name: string; value: string; note: string; pct: number | null; warn?: boolean }[] = []
   const unknownLimit = noCeiling ?? 'limit unknown'
   if (attempts === null) {
@@ -1995,7 +1916,7 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
             value: '—',
             note: (latest === null ? 'no attempt' : mem.kind === 'pending' ? 'written at exit' : 'not recorded') + worstNote,
             pct: null,
-            warn: worst !== null,
+            warn: worst !== null || nearMiss,
           }
         : {
             name: 'Memory',
@@ -2003,9 +1924,12 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
             note:
               (cls === null ? unknownLimit : `of ${cls.memory_gib} GiB`) +
               (mem.kind === 'live' ? ` · so far · ${timeAgo(mem.at ?? '', now)}` : mem.kind === 'last' ? ' · last reading' : '') +
+              // A PEAK, WRITTEN AT EXIT (G2-11): the dropped Peak memory tile
+              // said so, because a small figure read as a residue at exit.
+              (mem.kind === 'peak' ? ' · peak, written at exit' : '') +
               worstNote,
             pct: cls === null ? null : pctOf(mem.bytes, cls.memory_gib * GIB),
-            warn: mem.kind === 'last' || worst !== null,
+            warn: mem.kind === 'last' || worst !== null || nearMiss,
           },
     )
     const disk = latest?.peak_disk_bytes ?? null
@@ -2039,21 +1963,29 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
               name,
               value: '—',
               note:
-                from === null ? 'no attempt' : from.kind === 'not_served' ? 'not served' : from.kind === 'unread' ? 'events unread' : open ? 'written at exit' : 'not measured',
+                (from === null ? 'no attempt' : from.kind === 'not_served' ? 'not served' : from.kind === 'unread' ? 'events unread' : open ? 'written at exit' : 'not measured') +
+                // The size was pinned at admission, so it is said before the
+                // first reading, as the dropped CPU tile said it.
+                (name === 'CPU peak' && sized !== null ? ` · ${sized}` : ''),
               pct: null,
             }
           : {
               name,
               value: cores(v),
               // WHICH MEAN THIS IS (FF-D5a, c05 "Name every count where it
-              // is printed", box comment 6298220484). The over-time summary
-              // under these rows prints a second mean, of its 5 s samples;
-              // this one is the attempt's CPU-seconds over the time its
-              // runners ran (help `cpu-figures`), so setup and retry waits
-              // are not in it and the two differ by design.
+              // is printed", box comment 6298220484): the attempt's
+              // CPU-seconds over the time its runners ran (help
+              // `cpu-figures`), so setup and retry waits are not in it. It is
+              // the fold's one mean: the over-time title under these rows
+              // dropped its 5 s samples' mean (QA1 overview-agents-24, owner
+              // pick 2026-10-28); only the chart's own caption, one click
+              // down, states it.
               note:
                 (limit === null ? unknownLimit : `of ${cores(limit)} cores${name === 'CPU peak' && whose !== null ? ` · ${whose}` : ''}`) +
                 (name === 'CPU peak' && sized !== null ? ` · ${sized}` : '') +
+                // A running attempt's heartbeat figure is its last reading, not
+                // its peak, as the dropped CPU tile said.
+                (name === 'CPU peak' && from?.kind === 'heartbeat' && !from.final ? ' · last reading' : '') +
                 (name === 'CPU mean' ? ' · CPU-seconds over runner time' : ''),
               pct: limit === null ? null : pctOf(v, limit),
             },
@@ -2073,8 +2005,13 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
             ? 'No figure was written at exit: these are the last readings.'
             : `Figures written at exit by attempt ${attempts.length}.`
   return (
-    <section className="dt-card dt-resources">
-      <DtCardHead title="Resources">
+    <section className="dt-card dt-resources" aria-label="Resources">
+      {/* NO SECOND `Resources` TITLE (QA1 overview-agents-25, 2026-10-28):
+          the card is drawn only inside the Resources row's fold, whose
+          summary already says `Resources`, so the row opened onto a card
+          headed the same. Its heading says what the bars add -- each figure
+          against its limit -- and its `?` still follows a heading (AH-24). */}
+      <DtCardHead title="Against each limit">
         {cls === null && <span className="dt-note">{unknownLimit}</span>}
         <HelpCard topic="requests-are-ceilings" />
       </DtCardHead>
@@ -2094,7 +2031,7 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
           newest attempt, against its limits, with the throttled windows
           shaded. It reads its own route, on its own clock while the task
           runs, and stops once it is finished. */}
-      <UtilisationPanel taskId={task.id} live={!TERMINAL_STATES.has(task.state)} limitCores={latest?.cpu_limit_cores ?? null} />
+      <UtilisationPanel taskId={task.id} live={!TERMINAL_STATES.has(task.state)} />
       <details className="dt-disc">
         <summary>Details: memory, spend and each attempt over time</summary>
         <Attempts run={run} now={now} />
@@ -2143,7 +2080,12 @@ export function resourceFigures(run: AgentRun): ResFigure[] {
             title: `The limit the attempt recorded${limitWords === null ? '' : `: ${limitWords}`}; no request was recorded.`,
           }
         : cls !== null
-          ? { text: `${cores(cls.cpu)} cores (class)`, title: `The ${task.resource_class} class's cores; the attempt recorded no size or limit.` }
+          ? // NAMED AS THE CLASS, NOT AS A LIMIT (QA1 overview-agents-24): the
+            // head says `standard class · 4 vCPU` and Resources' CPU peak row
+            // `cgroup limit (class 4 vCPU)`; `4 cores (class)` here read as
+            // a third limit beside the attempt's `2 cores`. A class's size is
+            // in vCPU everywhere on this page, a limit in cores.
+            { text: `class ${cls.cpu} vCPU`, title: `The ${task.resource_class} class's cores; the attempt recorded no size or limit.` }
           : { text: '— cores', title: 'No size was recorded and the class was not read.', absent: true }
   const memFig: ResFigure =
     cls !== null
@@ -2864,13 +2806,9 @@ function reasonText(reason: string): string {
  */
 function Why({
   task,
-  events,
-  now,
   classes,
 }: {
   task: Task
-  events: TaskEvent[] | null
-  now: number
   /**
    * The catalogue `Run` already read alongside this task (`loadAgentRun`,
    * api.ts) -- not a second fetch of `/v1/resource-classes`. `classUnits`
@@ -2884,15 +2822,19 @@ function Why({
   classes: ResourceClasses | null
 }) {
   // ONCE, IN THE BANNER (LB-V4, U1): a parked hand-off's sentence is the
-  // banner's, so it is not repeated here. See `Alerts`. This also skips
-  // `SilentWorker`, which is right: a PARKED task has no live worker.
+  // banner's, so it is not repeated here. See `Alerts`.
   if (handoffOf(task)?.phase === 'parked') return null
   // The wait panel's summary is this sentence, made from what was recorded
   // rather than a table of reasons (#1782); once is enough.
   if (fullWaiting(task) !== null) return null
   const units = classUnits(classes, task.resource_class)
   const why = whyAgent(task, units)
-  if (!why) return <SilentWorker task={task} events={events} now={now} />
+  // A SILENT WORKER IS THE NOW CARD'S LINE, NOT ALSO THIS ONE (QA1
+  // overview-agents-23, 2026-10-28). `whyAgent` writes nothing for a task
+  // that holds a slot, and every such task leads with the Now card, which
+  // draws `livenessOf`'s `silent` sentence itself: drawn here too, the same
+  // "No event for …m" stood twice, above the card and in it.
+  if (!why) return null
   // #362: the "waiting for" bar in `Alerts` already prints this line, with
   // "(holds no capacity)" beside it; once is enough, as for `last_error`.
   if (why === waitingLine(task)) return null
@@ -2907,41 +2849,6 @@ function Why({
   return (
     <section className="section">
       <p className={`why-full${whyNeedsAction(task, units) ? ' is-warn' : ''}`}>{why}</p>
-    </section>
-  )
-}
-
-/**
- * AG-14'S FOURTH KIND: A STUCK OR SILENT WORKER, which had no line to colour.
- *
- * The owner's decision names "stuck/silent workers" among the why lines that
- * need a person and so take `--warn`. `whyAgent` writes nothing for a task
- * that holds a slot -- it answers "why is this not running", and a leased or
- * running task is -- so the first pass had no line here and coloured none.
- *
- * The inspector reads the task's events, and `livenessOf` (Liveness.tsx)
- * already derives the answer the badge in the heading draws: a task in a
- * concurrency state with no event for seven minutes is `silent`, "the worker
- * may be gone". That sentence is the why line, in `--warn`, and nothing else
- * is -- not `quiet` (heartbeats are ~150s apart, so three to seven minutes is
- * not yet alarming), and not an event read that failed or a re-read that
- * stopped vouching (`now` stops with it, `rowClock` in `Run`): "could not
- * look" is never drawn as "nothing happened".
- *
- * NOT ON THE AGENTS LIST. A list row is a task document, and a worker's
- * heartbeat is written to its LEASE (control.py `heartbeat`), which no
- * tenant-scoped route serves; the admin leases route is the only reader. The
- * list half is a backend change, #179, rather than a guess from
- * `updated_at`, which a heartbeat does not move.
- */
-function SilentWorker({ task, events, now }: { task: Task; events: TaskEvent[] | null; now: number }) {
-  const live = livenessOf(task, events, now)
-  if (live.kind !== 'silent') return null
-  return (
-    <section className="section">
-      <p className="why-full is-warn" data-why="silent">
-        {live.say}
-      </p>
     </section>
   )
 }
@@ -3206,11 +3113,27 @@ export function AttemptModel({ a, task, isLatest }: { a: AttemptRow; task: Task 
   const modelClass = task?.model_class ?? null
   const ranOther = isLatest && task !== null ? modelMismatch(model, task) : null
   const why = modelAbsence(task, isLatest)
+  // THE MODEL THE AGENT ASKED FOR, SAID AS THAT (QA1 overview-agents-43,
+  // 2026-10-28): the card read `not recorded · the worker did not write it`
+  // while Input, a few lines below, said `model claude-opus-5`. With no
+  // record on the attempt, the task's own `model` stands in, labelled as the
+  // one requested -- never as the one the worker started.
+  const requested = model === null && task !== null && reportsSpend(task.runner_profile) ? nonBlank(task.model) : null
   return (
     <>
-      <li className={`ctl-fact${model === null ? ' is-absent' : ''}`}>
+      <li className={`ctl-fact${model === null && requested === null ? ' is-absent' : ''}`}>
         <b>model</b>
-        {model === null ? (
+        {model === null && requested !== null ? (
+          <>
+            <span className="mono">{requested}</span>{' '}
+            <small
+              className="att-model-why"
+              title={`The model the agent was submitted with. This attempt's worker recorded none of its own, so this is what was asked for, not a record of what ran.`}
+            >
+              requested
+            </small>
+          </>
+        ) : model === null ? (
           // NOT `not measured` (QA-113, run 5b, box comment 6283738266). A
           // model is a record, not a measurement, and the mark's word -- the
           // one `Mark kind="absent"` draws -- said nothing of why. The mark's
@@ -5431,8 +5354,9 @@ function PublishOutcome({ git, task }: { git: GitSummary; task: Task }) {
  * failed read is asked again with each re-read of the drawer (`readAt`), so a
  * copy that failed once is not `input not read` until the drawer is reopened.
  */
-function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
+function Input({ run, readAt, now }: { run: AgentRun; readAt: number | null; now: number }) {
   const { task } = run
+  const over = overTimeout(task, now)
   const { state: copy } = useRead<TaskInputCopy>(
     () => loadTaskInputOnce(task.id),
     task.id,
@@ -5450,7 +5374,7 @@ function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
   return (
     <section className="dt-card dt-input">
       <DtCardHead title="Input">
-        {prompt !== null && <MaskedNote count={prompt.redaction_count} />}
+        {prompt !== null && <MaskedNote count={prompt.redaction_count} plainZero />}
         {/* The input as submitted, read; `input-is-opaque` is the Submit
             form's ("whatever you type"), and nothing is typed here (G2-10). */}
         <HelpCard topic="input-as-submitted" />
@@ -5488,6 +5412,16 @@ function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
         <li className={`ctl-fact${task.timeout_seconds === null ? ' is-absent' : ''}`}>
           <b>timeout</b>
           {task.timeout_seconds !== null ? `${task.timeout_seconds}s` : <Em />}
+          {over !== null && (
+            <small
+              className="dt-over"
+              data-over="timeout"
+              title={`The worker stops its agent at this timeout, and this attempt has run ${over.ran}, ${over.past} longer. A worker that is still running past it has not applied it, or this page's clock is ahead of the task's.`}
+            >
+              {' '}
+              · running {over.ran}, past it
+            </small>
+          )}
         </li>
       </ul>
 
@@ -5503,7 +5437,10 @@ function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
                 : "This agent's input has no prompt string. That is legitimate — the field is a convention of the CLI and mock runners, not part of the submission schema. The full input is under Metadata."
             }
           />{' '}
-          {served.prompt_key === 'other' ? 'prompt is not text' : 'no prompt key'}
+          {/* Not `no prompt key` (QA1 overview-agents-29): the key is the
+              runner's convention, and the reader's fact is that there is no
+              prompt. */}
+          {served.prompt_key === 'other' ? 'prompt is not text' : 'no prompt'}
         </p>
       ) : prompt.text === '' ? (
         <p className="att-none">
@@ -5554,7 +5491,7 @@ function MaskedMetadataBlock({ served, copy }: { served: TaskInputCopy | null; c
     <div className="section" style={SUB}>
       <div className="ctl-toolbar att-sub-head">
         <span className="ctl-eyebrow">metadata</span>
-        {block !== null && <MaskedNote count={block.redaction_count} />}
+        {block !== null && <MaskedNote count={block.redaction_count} plainZero />}
       </div>
       {served === null ? (
         <InputNotRead copy={copy} />
@@ -5628,7 +5565,7 @@ function RestOfInput({ served }: { served: TaskInputCopy }) {
       <div className="section" style={SUB}>
         <div className="ctl-toolbar att-sub-head">
           <span className="ctl-eyebrow">full input</span>
-          <MaskedNote count={served.full.redaction_count} />
+          <MaskedNote count={served.full.redaction_count} plainZero />
         </div>
         <pre className="json" style={{ maxHeight: 320, overflowY: 'auto' }}>
           {served.full.text}
@@ -5640,7 +5577,7 @@ function RestOfInput({ served }: { served: TaskInputCopy }) {
     <div className="section" style={SUB}>
       <div className="ctl-toolbar att-sub-head">
         <span className="ctl-eyebrow">rest of the input</span>
-        {served.rest !== null && <MaskedNote count={served.rest.redaction_count} />}
+        {served.rest !== null && <MaskedNote count={served.rest.redaction_count} plainZero />}
       </div>
       {served.rest === null ? (
         <p className="att-none">
@@ -5661,12 +5598,39 @@ function RestOfInput({ served }: { served: TaskInputCopy }) {
  * API masked in what the block draws. A measured fact, drawn as the artifact
  * viewer draws its count (AG-5): no mark, and `--warn` ink above zero.
  */
-export function MaskedNote({ count }: { count: number }) {
+export function MaskedNote({ count, plainZero = false }: { count: number; plainZero?: boolean }) {
+  // `masked 0` IN WORDS ON DETAILS' INPUT (QA1 overview-agents-29,
+  // 2026-10-28): a reader read the count as jargon. A zero is still the
+  // measured fact, said as `nothing masked`; above zero the count stays, in
+  // its ink. The Artifacts pane keeps its `masked 0` beside its other counts.
+  if (plainZero && count === 0) {
+    return (
+      <span className="is-end ctl-card-note" title="The API masked no credential-shaped value in this block.">
+        nothing masked
+      </span>
+    )
+  }
   return (
     <span className="is-end ctl-card-note">
       masked <span className={`art-masked${count > 0 ? ' is-warn' : ''}`}>{count}</span>
     </span>
   )
+}
+
+/**
+ * A RUN PAST ITS TIMEOUT, SAID BESIDE THE TIMEOUT (QA1 overview-agents-28,
+ * 2026-10-28): Input read `timeout 3600s` on an agent running for 8 d 21 h,
+ * and nothing on the page reconciled the two. Measured as the page's own run
+ * figure is (`elapsed`, from `started_at`), so the two cannot disagree; null
+ * while it is within the timeout, has no timeout, or is not running.
+ */
+export function overTimeout(task: Task, now: number): { ran: string; past: string } | null {
+  const el = elapsed(task, now)
+  const started = instant(task.started_at)
+  if (el.phase !== 'running' || started === null || task.timeout_seconds === null) return null
+  const ran = now - started
+  const past = ran - task.timeout_seconds * 1000
+  return past > 0 ? { ran: el.text, past: formatDuration(past) } : null
 }
 
 /**

@@ -177,14 +177,17 @@ describe('V260: a Details sub-line never opens a line with its separator', () =>
     expect(container.querySelector('.dt-sc-k .dt-dot')).not.toBeNull()
   })
 
-  it('draws the strip’s memory sub-line with glued separators', async () => {
+  // The strip's Peak memory tile was dropped (QA1 overview-agents-25, owner
+  // pick 2026-10-28), so the Cost tile's sub-line is the one walked here.
+  it('draws the strip’s cost sub-line with glued separators', async () => {
     const c = await draw(
       run(task({ state: 'FAILED', started_at: at(1), completed_at: at(10) }), [
-        attempt(1, { peak_rss_bytes: 7 * 1024 ** 3, oom_near_miss: true, exit_code: 137 }),
+        attempt(1, { cost_usd: 0.42, exit_code: 1 }),
+        attempt(2, { cost_usd: null, exit_code: 137 }),
       ]),
     )
-    const sub = [...c.querySelectorAll<HTMLElement>('.dt-sc-s')].find((s) => s.textContent?.includes('OOM near miss'))
-    expect(sub, 'no memory sub-line').toBeTruthy()
+    const sub = [...c.querySelectorAll<HTMLElement>('.dt-sc-s')].find((s) => s.textContent?.includes('cost 1 of 2 reported'))
+    expect(sub, 'no cost sub-line').toBeTruthy()
     expect(sub!.querySelectorAll('.dt-dot').length).toBeGreaterThan(0)
     expect(sub!.title).toBe(sub!.textContent)
   })

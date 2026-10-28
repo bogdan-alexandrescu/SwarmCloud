@@ -36,6 +36,7 @@ const api = vi.hoisted(() => ({
   loadWorkflow: vi.fn(),
   loadWorkflowsById: vi.fn(),
   loadOutcomes: vi.fn(),
+  loadProfile: vi.fn(),
 }))
 vi.mock('../api', async (importOriginal) => {
   const real = await importOriginal<typeof import('../api')>()
@@ -114,6 +115,11 @@ beforeEach(() => {
   api.loadTask.mockImplementation(async (id: string) => failed(404, `no ${id}`))
   api.loadWorkflow.mockResolvedValue(ok({ workflow: { workflow_id: 'wf_7c1e', state: 'FAILED', steps: [{}, {}, {}] }, tasks: [TASKS[1]!, TASKS[2]!, NEVER_RAN] } as unknown as WorkflowRead))
   api.loadOutcomes.mockResolvedValue(ok(ledgerFixture()))
+  // The profile read is not served. The real one answers the fixture build's
+  // person (alice@example.com, zone UTC) 80 ms later, through `setZone`'s save
+  // and `learnPerson`, and that person's zone replaced the one VQ-023 picked on
+  // any runner slow enough to draw the page after it (red on #2621's CI only).
+  api.loadProfile.mockResolvedValue(failed(503, 'the profile is not served here'))
 })
 
 afterEach(() => {

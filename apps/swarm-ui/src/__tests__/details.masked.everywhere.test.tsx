@@ -194,14 +194,13 @@ describe('Details holds no log rows', () => {
 describe('the card foot’s index no longer says CPU is never sampled (#222 a)', () => {
   it('lists what the CPU rows are, and not the retired claim', async () => {
     const root = await mount(agentRun())
-    // The index of links is gone (agent-details-v3.html A); the CPU cell's
-    // label publishes the CPU topic itself, and what it says is the rows'.
-    const label = [...root.querySelectorAll<HTMLElement>('.dt-sc-l')].find((l) => l.firstChild?.textContent === 'CPU')
-    expect(label, 'no CPU cell').toBeTruthy()
-    const said = document.getElementById(label!.getAttribute('aria-describedby') ?? '')
-    expect(said, 'the CPU label publishes no explanation').not.toBeNull()
-    expect(said!.textContent, 'the CPU help contradicts the CPU figures').not.toMatch(/never sampled/i)
-    expect(said!.textContent).toBe(HELP['cpu-figures'].short)
+    // The index of links is gone (agent-details-v3.html A), and the strip's
+    // CPU tile with it (QA1 overview-agents-25, owner pick 2026-10-28): the
+    // Resources card's CPU rows say the figures, and nothing on the page or
+    // in the CPU topic says CPU is never sampled.
+    expect(root.querySelector('.dt-resources')?.textContent ?? '', 'no CPU rows').toMatch(/CPU peak/)
+    expect(root.textContent, 'the page says CPU is never sampled').not.toMatch(/never sampled/i)
+    expect(HELP['cpu-figures'].short, 'the CPU help contradicts the CPU figures').not.toMatch(/never sampled/i)
     expect(HELP['cpu-figures'].title).toMatch(/CPU is peak and mean cores/)
   })
 })

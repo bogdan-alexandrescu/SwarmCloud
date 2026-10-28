@@ -6,6 +6,8 @@
 //             480-639px pane every strip sub-line is clamped to two lines,
 //             and the CPU line carries three facts since FF-D5a and the
 //             sized words -- the reading, whose limit it is, and the size.
+//             The tile has since been dropped (QA1 overview-agents-25); the
+//             facts are on Resources' CPU peak row.
 //   task-015  The Progress card drew a failed attempt's run in red with no
 //             legend entry saying what red is.
 //   task-016  The Progress card's phase track (`--surface-2` on the card's
@@ -86,38 +88,41 @@ function cgroupAttempt(): AttemptRow {
   })
 }
 
-function cpuCell(root: HTMLElement): HTMLElement {
-  const cell = [...root.querySelectorAll<HTMLElement>('.dt-strip > .dt-sc')].find((c) =>
-    (c.querySelector('.dt-sc-l')?.textContent ?? '').startsWith('CPU'),
-  )
-  expect(cell, 'no CPU tile').toBeTruthy()
-  return cell!
+function tileLabels(root: HTMLElement): string[] {
+  return [...root.querySelectorAll<HTMLElement>('.dt-strip > .dt-sc .dt-sc-l')].map((l) => l.textContent ?? '')
+}
+
+function cpuPeakRow(root: HTMLElement): HTMLElement {
+  const r = [...root.querySelectorAll<HTMLElement>('.dt-resources .dt-rr')].find((x) => x.querySelector('.dt-rr-n')?.textContent === 'CPU peak')
+  expect(r, 'no CPU peak row').toBeTruthy()
+  return r!
 }
 
 /** The 1440 split's pane: 480-639px wide, on a window tall enough for the strip to stick. */
 const SPLIT_1440: CascadeEnv = { width: 1440, height: 900, container: 600 }
 
-describe('task-012: the CPU tile’s caption is never cut', () => {
-  it('draws the whole caption in the 480-639px pane where the other sub-lines clamp', () => {
+// The CPU tile itself was dropped (QA1 overview-agents-25, owner pick
+// 2026-10-28): its caption's facts are said on Resources' CPU peak row, which
+// has no clamp to cut them.
+describe('task-012: the CPU caption is never cut', () => {
+  it('draws the whole caption on Resources’ CPU peak row, and no CPU tile', () => {
     const root = host(runOf({ state: 'SUCCEEDED' }, [cgroupAttempt()]))
-    const sub = cpuCell(root).querySelector<HTMLElement>('.dt-sc-s')!
-    expect(sub.textContent).toContain('cgroup limit (class 4 vCPU)')
-    expect(sub.textContent).toContain('4 cores guaranteed, bursts to 8')
+    // MUTATION: push the CPU tile back into the strip.
+    expect(tileLabels(root).some((l) => l.startsWith('CPU'))).toBe(false)
+    const note = cpuPeakRow(root).querySelector<HTMLElement>('.dt-rr-v small')!
+    // MUTATION: drop the limit's words or the sized words from the CPU peak row.
+    expect(note.textContent).toContain('cgroup limit (class 4 vCPU)')
+    expect(note.textContent).toContain('4 cores guaranteed, bursts to 8')
     for (const theme of THEMES) {
-      const env = { ...SPLIT_1440, theme }
-      // MUTATION: drop the CPU tile's exemption from the two-line clamp -- the
-      // caption is cut to `cgroup limit (clas…` again, the size behind it gone.
-      expect(painted(sub, ['-webkit-line-clamp', 'line-clamp'], env) ?? 'none').toBe('none')
-      // MUTATION: keep `overflow: hidden` on the CPU sub-line -- a third line is clipped without an ellipsis.
-      expect(painted(sub, 'overflow', env) ?? 'visible').toBe('visible')
+      expect(painted(note, ['-webkit-line-clamp', 'line-clamp'], { ...SPLIT_1440, theme }) ?? 'none').toBe('none')
     }
   })
 
-  it('still clamps every other tile’s sub-line, which its title holds whole', () => {
+  it('still clamps the tiles’ sub-lines that are not drawn whole, which their title holds whole', () => {
     const root = host(runOf({ state: 'SUCCEEDED' }, [cgroupAttempt()]))
-    const others = [...root.querySelectorAll<HTMLElement>('.dt-strip > .dt-sc')].filter((c) => c !== cpuCell(root))
-    const sub = others.map((c) => c.querySelector<HTMLElement>('.dt-sc-s')).find((s) => s !== null)
-    expect(sub, 'no other tile draws a sub-line').toBeTruthy()
+    const tile = [...root.querySelectorAll<HTMLElement>('.dt-strip > .dt-sc')].find((c) => c.querySelector('.dt-sc-l')?.textContent === 'Attempt')
+    const sub = tile?.querySelector<HTMLElement>('.dt-sc-s')
+    expect(sub, 'the Attempt tile draws no sub-line').toBeTruthy()
     // MUTATION: lift the clamp from every tile -- the stuck strip grows back to ~220px (V058).
     expect(painted(sub!, ['-webkit-line-clamp', 'line-clamp'], SPLIT_1440)).toBe('2')
   })

@@ -369,6 +369,9 @@
 
 /* --- Input, folded --------------------------------------------------------- */
 .dt-ifacts { margin: 0; }
+/* A RUN PAST ITS TIMEOUT (QA1 overview-agents-28): beside the timeout, in the
+   ink a finding takes, at the micro size the facts' notes use. */
+.dt-ifacts .dt-over { color: var(--s-warn); font-size: var(--t-micro); line-height: var(--lh-micro); }
 /* THREE LINES OF THE PROMPT, in the sans face; the whole of it is behind
    "Show prompt", where it wraps in full -- no box of its own to scroll. */
 .dt-prev {
