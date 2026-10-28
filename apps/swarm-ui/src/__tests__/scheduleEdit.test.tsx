@@ -925,4 +925,21 @@ describe('A3: the five choices are segmented controls', () => {
       expect(['auto', 'scroll']).not.toContain(painted(seg(label), ['overflow', 'overflow-x'], PHONE))
     }
   })
+
+  // The review's render (2026-10-28): at 1440 Scope sat beside Name in the
+  // two-column `.sc-facts` grid, ~200px wide, and broke onto two rows with an
+  // empty slot beside "Chosen repositories". Proposal B draws it as one row.
+  it('gives Scope the card’s full width at desktop, and a wrapped segment fills its row', async () => {
+    const DESK: CascadeEnv = { width: 1440 }
+    await mount('schedule=new', routes(() => null, [sweepType({ creatable_scopes: ['repos', 'all'] })]))
+    await waitFor(() => seg('Scope'), WAIT)
+    const field = seg('Scope').parentElement!
+    // MUTATION: drop `sc-wide` from Scope's field and it is one ~200px cell of the Name | Scope grid again.
+    expect(field.parentElement!.classList.contains('sc-facts')).toBe(true)
+    expect(painted(field, 'grid-column', DESK)).toBe('1 / -1')
+    for (const r of within(seg('Scope')).getAllByRole('radio')) {
+      // MUTATION: drop `flex: 1 0 auto` from the desktop `.ae-seg` rule and a wrapped segment leaves an empty slot beside it.
+      expect(painted(r, 'flex', DESK), r.textContent ?? '').toBe('1 0 auto')
+    }
+  })
 })
