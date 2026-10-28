@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState, type KeyboardEvent, type MouseEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
 
 import { Mark } from './AgentDetail'
-import { USE_FIXTURES } from './api'
+import { USE_FIXTURES, loadCheckpoints } from './api'
 import { ArtifactViewer } from './ArtifactViewer'
 import { Button, ButtonLink } from './components'
 import { encoded, errorHeading, noteFixtureProbe, read, route, tenantQuery, type ApiError, type Result } from './fetch'
@@ -339,6 +339,22 @@ export function CheckpointBrowser({
     void load()
   }, [load])
 
+  // THE PANEL COMES INTO VIEW WHEN IT OPENS (QA1-FIX-09, overview-agents-46):
+  // the list draws every open browser below its table, so `files` on the
+  // first of several checkpoints opened this one under the LAST card, off a
+  // phone's screen, and nothing in view changed -- the button read as dead.
+  // It mounts only when opened, so on mount it scrolls itself into view and
+  // takes focus (`tabIndex={-1}`: focusable by script, not a tab stop), and a
+  // keyboard reader lands on the panel the button opened. `nearest` leaves a
+  // panel that is already on screen where it is.
+  const regionRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = regionRef.current
+    if (el === null) return
+    el.scrollIntoView?.({ block: 'nearest' })
+    el.focus({ preventScroll: true })
+  }, [])
+
   // THE TWO WAYS THE SERVER SAYS "NO ARCHIVE" (AG-10). A listing whose
   // `status` is `absent` is one; a 404 is the other -- the checkpoint, or its
   // attempt, is not there to list -- and it was drawn as a FAILED read, with
@@ -350,7 +366,7 @@ export function CheckpointBrowser({
     (state.status === 'error' && state.error.kind === 'not_found')
 
   return (
-    <div className="ckb" role="region" aria-label={`Checkpoint ${checkpointId} files`}>
+    <div ref={regionRef} tabIndex={-1} className="ckb" role="region" aria-label={`Checkpoint ${checkpointId} files`}>
       <div className="ckb-head">
         <h3 className="mono">{checkpointId}</h3>
         <span className="ckb-meta">attempt {attemptId}</span>
@@ -573,7 +589,15 @@ function Listing({
       <ul className="ctl-facts ckb-facts">
         <li className={`ctl-fact${data.truncated ? ' is-absent' : ''}`}>
           <b>entries</b>
-          {data.count}
+          {/* A CUT LISTING SAYS N OF M (QA1-FIX-09, overview-agents-47):
+              `entries 8 · entry cap` beside `manifest 184 files` did not say
+              that 8 of 184 were shown. The manifest counts FILES, so the
+              comparison is the listing's non-directory members against it;
+              with no readable manifest count there is no M, and none is
+              claimed. */}
+          {data.truncated ? `${data.count} shown` : data.count}
+          {data.truncated && data.manifest.status === 'present' && data.manifest.file_count !== null &&
+            ` · ${members.filter((m) => m.type !== 'dir').length} of ${data.manifest.file_count} files`}
           {data.truncated && (
             <>
               {' '}
@@ -919,6 +943,16 @@ async function fixtureFiles(
   noteFixtureProbe(route('/v1/tasks/{id}/checkpoints/{n}/files', { id: taskId, n: checkpointId }), 60, true)
   const prefix = `tenants/u-bogdan/tasks/${taskId}/attempts/${attemptId}/checkpoints/${checkpointId}`
   const absent = checkpointId === 'ckpt_0001'
+  // ONE AGE FOR ONE ARCHIVE (QA1-FIX-09, overview-agents-47): the archive was
+  // stamped `now - 4m` while the checkpoint listing dated the same checkpoint
+  // days earlier, so the row said `9d ago` and its panel `written 4m ago`.
+  // The bucket writes the archive when the worker writes the checkpoint, so
+  // the fixture takes the listing's own time for it.
+  const listed = await loadCheckpoints(taskId)
+  const writtenAt =
+    listed.status === 'ok' || listed.status === 'stale'
+      ? (listed.data.checkpoints.find((c) => c.checkpoint_id === checkpointId && c.attempt_id === attemptId)?.created_at ?? null)
+      : null
   const files: CheckpointMember[] = [
     { path: 'progress', size: 0, mode: 0o755, type: 'dir', link: null, unsafe: false, undecodable: false },
     { path: 'progress/step-0001.md', size: 612, mode: 0o644, type: 'file', link: null, unsafe: false, undecodable: false },
@@ -943,7 +977,7 @@ async function fixtureFiles(
         key: `${prefix}/archive.tar.gz`,
         uri: `gs://swarm-artifacts/${prefix}/archive.tar.gz`,
         bytes: absent ? null : 18_442_240,
-        object_updated_at: absent ? null : new Date(Date.now() - 4 * 60_000).toISOString(),
+        object_updated_at: absent ? null : writtenAt,
       },
       manifest: {
         status: absent ? 'unreadable' : 'present',
