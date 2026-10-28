@@ -1,5 +1,5 @@
-import { Fragment, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import { createRun, loadCapacity, loadIssuePreview } from './api'
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { createRun, loadCapacity, loadIssuePreview, loadRuns } from './api'
 import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
 import type { ApiError } from './fetch'
 import { Button, NamedMark, Tag, WarnMark } from './components'
@@ -7,7 +7,7 @@ import { RunnerPicker, useProviderKeys } from './RunnerPicker'
 import { FailedPanel, Screen } from './Shell'
 import { Move, OutcomeSlot } from './Submit'
 import { TASK_FORM } from './SubmitChooser'
-import { timeAgo, type Capacity, type IssuePreviewRead, type RunCreateBody, type RunnerProfile } from './types'
+import { timeAgo, type Capacity, type IssuePreviewRead, type IssueRunState, type IssueRunSummary, type RunCreateBody, type RunnerProfile } from './types'
 import { Markdown } from './ArtifactViewer'
 import { useNow } from './useNow'
 import './styles/submit.css'
@@ -35,11 +35,11 @@ import './styles/intake.css'
  *    offering a choice the API would refuse.
  *
  * 3. WHAT IT MAY DO ON ITS OWN, decided now and nowhere else (#454): plan
- *    approval (Required by default), auto-merge (drawn OFF and DISABLED,
- *    "Not available yet", with the why in a tooltip, unless the preview's `auto_merge`
- *    says POST /v1/runs would take it -- `issueruns.auto_merge_availability`,
- *    the same answer `refuse_auto_merge` enforces; a server that does not say
- *    is read as unavailable), and the fix-round cap (3, within 1-5).
+ *    approval (Required by default), auto-merge (drawn OFF and DISABLED until
+ *    the preview's `auto_merge` says POST /v1/runs would take it --
+ *    `issueruns.auto_merge_availability`, the same answer `refuse_auto_merge`
+ *    enforces; before a read it says the read decides it, and a server that
+ *    does not say is read as unavailable), and the fix-round cap (3, within 1-5).
  *
  * WHAT IT COSTS (invariant 1). The planner is one ordinary task; a PLANNED run
  * is a Firestore document and nothing else, so the time a person takes to
@@ -64,8 +64,17 @@ export const DEFAULT_FIX_ROUNDS = 3
  */
 const ONLY_RUNNER = `Issue runs always use ${ISSUE_RUN_PROFILE}`
 
-/** Why auto-merge is held back, in the switch's line and the summary. */
-export const AUTO_MERGE_REASON = 'not available yet'
+/**
+ * WHY AUTO-MERGE IS OFF, IN THE SUMMARY, by what the API has said (visual QA
+ * chrome-C29, 2026-10-28). One reason, "not available yet", was printed before
+ * any issue was read -- when nothing had been asked -- and its tooltip said the
+ * merge chain had not shipped, while issue runs merge on their own (contract
+ * request 47 enabled the merge step on 2026-10-04). Off now says which of the
+ * three it is.
+ */
+export const AUTO_MERGE_UNREAD = 'decided when the issue is read'
+export const AUTO_MERGE_UNSAID = 'not offered by this API'
+export const AUTO_MERGE_REFUSED = 'refused by the API'
 
 /**
  * TEXT WITH ITS INLINE CODE DRAWN AS CODE (browser QA N18, 2026-10-04): a
@@ -186,7 +195,14 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
   const roundsN = /^\d+$/.test(rounds.trim()) ? Number(rounds.trim()) : NaN
   const roundsOk = Number.isInteger(roundsN) && roundsN >= MIN_FIX_ROUNDS && roundsN <= MAX_FIX_ROUNDS
   const blocked = read === null || (closed && !closedOk) || !roundsOk || sending.kind === 'sending'
-  const tenant = read?.tenant_id ?? capacity.tenant_id ?? null
+  // ONE TENANT, FROM ONE SOURCE, BEFORE AND AFTER THE READ (visual QA
+  // runs-submit-13, 2026-10-28). It was the preview's tenant once an issue was
+  // read and the capacity read's before, so one submission showed two tenants
+  // -- beside a runner card whose pools are the capacity read's. That read is
+  // the page's, it names the tenant the run's pools and runner are admitted
+  // in, and POST /v1/runs resolves the same caller; the preview's is the
+  // fallback for a server that does not send it there.
+  const tenant = capacity.tenant_id ?? read?.tenant_id ?? null
   // Offered only on the API's word, for the issue on screen; off otherwise.
   const mergeServed = read?.auto_merge ?? null
   const mergeOffered = mergeServed?.available === true
@@ -197,6 +213,11 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
   const mergeOn = mergeOffered && (merge ?? mergeDefault)
 
   const parses = parseIssueRef(typed) !== null
+
+  // THE ISSUE'S OPEN RUNS (visual QA runs-submit-14, 2026-10-28): #512 had a
+  // Planned and a Running run and the page offered "Plan this issue" as if it
+  // were new. Read once per issue read, from the runs list Work › Runs draws.
+  const openRuns = useOpenRuns(read)
 
   async function readIssue() {
     const ref = typed.trim()
@@ -366,14 +387,21 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
                     ? `On${mergeDefault ? ' (default)' : ''}: once every required check is green, the merge step merges the pull request at the sha it proved.`
                     : `Off${mergeDefault ? '' : ' (default)'}: a person merges the run’s pull request.`}
                 </small>
+              ) : read === null ? (
+                /* NOTHING HAS BEEN ASKED YET (chrome-C29): the preview is what
+                   says whether POST /v1/runs takes auto-merge, so before it the
+                   switch says that, not "not available". */
+                <small>Decided when the issue is read: the API says then whether this run may merge its own pull request.</small>
+              ) : mergeServed === null ? (
+                <small>
+                  This API did not say whether it takes auto-merge, so the run is created with it off and a person merges
+                  its pull request.
+                </small>
               ) : (
-                /* What the submitter sees and can do (walkthrough E); why it is
-                   off -- the merge chain has not shipped and the API refuses
-                   auto-merge -- is the line's tooltip, and the API's own
-                   reason when the preview served one. */
-                <small title="The merge chain has not shipped yet, and the API refuses auto-merge until it does.">
-                  Not available yet. A person merges the run&rsquo;s pull request.
-                  {mergeServed?.reason && <> The API says: <i>{mergeServed.reason}</i></>}
+                /* The API's answer for the issue on screen, and its own reason. */
+                <small>
+                  Not available for this run: the API refuses auto-merge now, so a person merges the run&rsquo;s pull request.
+                  {mergeServed.reason && <> The API says: <i>{mergeServed.reason}</i></>}
                 </small>
               )}
             </div>
@@ -414,12 +442,17 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
                   and took the number with it -- "bogdan-alexandrescu/SwarmClou…" --
                   and the number is the one part that tells two issues apart. The
                   repository is the next row; the whole reference is the title. */}
-              {read === null ? <i className="ctl-em">&mdash; read one first</i>
+              {/* AN UNPARSEABLE REFERENCE IS NOT "READ ONE FIRST" (runs-submit-23):
+                  Read cannot read it, so the summary says what is wrong. */}
+              {read === null ? <i className="ctl-em">&mdash; {typed.trim() !== '' && !parses ? 'not an issue reference yet' : 'read one first'}</i>
                 : <span><code className="in-ref-code" title={read.issue.ref}>#{read.issue.number}</code> · {read.issue.state}{closed && !closedOk && <i className="sbf-bad"> · not confirmed</i>}</span>}
             </li>
             <li className={read === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>repository</b>
-              {read === null ? <i className="ctl-em">&mdash;</i> : <code title={`${read.issue.owner}/${read.issue.repo}`}>{read.issue.owner}/{read.issue.repo}</code>}
+              {/* WRAPPED, NOT CUT (visual QA runs-submit-24): `in-repo` lets the
+                  repository break across lines (intake.css), the whole name
+                  still its title. */}
+              {read === null ? <i className="ctl-em">&mdash;</i> : <code className="in-repo" title={`${read.issue.owner}/${read.issue.repo}`}>{read.issue.owner}/{read.issue.repo}</code>}
             </li>
             <li className="ctl-fact">
               <b>runner</b>
@@ -437,7 +470,7 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
             </li>
             <li className="ctl-fact">
               <b>auto-merge</b>
-              {mergeOn ? 'on' : mergeOffered ? 'off' : `off · ${AUTO_MERGE_REASON}`}
+              {mergeOn ? 'on' : mergeOffered ? 'off' : `off · ${read === null ? AUTO_MERGE_UNREAD : mergeServed === null ? AUTO_MERGE_UNSAID : AUTO_MERGE_REFUSED}`}
             </li>
             <li className={roundsOk ? 'ctl-fact' : 'ctl-fact is-absent'}>
               <b>fix rounds</b>
@@ -457,6 +490,7 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
                 : 'planning, then planned, approved on the next tick, then running · only the planner and the workflow\'s steps hold capacity'}
             </li>
           </ul>
+          <OpenRunsNote state={openRuns} go={go} />
           <Button type="submit" kind="primary" full disabled={blocked}>
             {sending.kind === 'sending' ? 'Planning…' : 'Plan this issue'}
           </Button>
@@ -492,6 +526,83 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
   )
 }
 
+
+type OpenRuns =
+  | { kind: 'none' }
+  | { kind: 'found'; runs: IssueRunSummary[] }
+  | { kind: 'unread'; message: string }
+
+/** `owner/repo#N`, lower-cased: GitHub's names are case-insensitive. */
+function issueKey(i: { owner: string; repo: string; number: number }): string {
+  return `${i.owner}/${i.repo}#${i.number}`.toLowerCase()
+}
+
+/**
+ * The read issue's runs that are not terminal, off `GET /v1/runs` (the first
+ * page, newest first: the one Work › Runs and Submit's recent list read).
+ * `none` before a read and when there are none; `unread` when the runs read
+ * failed, because "no open run" is a figure nobody measured then.
+ */
+function useOpenRuns(read: IssuePreviewRead | null): OpenRuns {
+  const [state, setState] = useState<OpenRuns>({ kind: 'none' })
+  const key = read === null ? null : issueKey(read.issue)
+  useEffect(() => {
+    setState({ kind: 'none' })
+    if (key === null) return
+    let live = true
+    void loadRuns().then((r) => {
+      if (!live) return
+      if (r.status === 'ok' || r.status === 'stale') {
+        const runs = r.data.runs.filter((x) => !x.terminal && x.issue !== undefined && x.issue !== null && issueKey(x.issue) === key)
+        setState(runs.length === 0 ? { kind: 'none' } : { kind: 'found', runs })
+      } else if (r.status === 'error') {
+        setState({ kind: 'unread', message: r.error.message })
+      }
+    })
+    return () => {
+      live = false
+    }
+  }, [key])
+  return state
+}
+
+/** A run's state in words, sentence case: `Runs.tsx`'s `runStateWord`, which imports this file. */
+function stateWord(state: IssueRunState): string {
+  return (state.charAt(0) + state.slice(1).toLowerCase()).replace(/_/g, ' ')
+}
+
+/**
+ * THE ISSUE'S OPEN RUNS, BEFORE THE BUTTON (runs-submit-14), so planning it
+ * again is a choice and not an accident. Each run is its id, as Work › Runs
+ * names it, linked to its page, with its state.
+ */
+function OpenRunsNote({ state, go }: { state: OpenRuns; go: (to: string) => void }) {
+  if (state.kind === 'none') return null
+  if (state.kind === 'unread') {
+    return (
+      <p className="sb-note in-open-runs-unread">
+        Whether this issue already has open runs was not checked: {state.message}
+      </p>
+    )
+  }
+  return (
+    <p className="warn-text in-open-runs" role="status">
+      Open runs for this issue:{' '}
+      {state.runs.map((r, i) => (
+        <Fragment key={r.id}>
+          {i > 0 && ', '}
+          <a href={`/runs/${encodeURIComponent(r.id)}`} className="mono" title={r.id} onClick={(e) => {
+            if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+            e.preventDefault()
+            go(runAddress(r.id))
+          }}>{r.id}</a>{' '}
+          ({stateWord(r.state)})
+        </Fragment>
+      ))}
+      . Planning it again starts another run.
+    </p>
+  )
+}
 
 /**
  * When the preview was read, as an age (`just now`, `3m ago`) with the
