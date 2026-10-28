@@ -145,10 +145,17 @@ export async function postTask(body: Record<string, unknown>): Promise<Outcome> 
   }
   // Checked before the body and on a 2xx too, for the reason fetch.ts gives: an
   // expired IAP session arrives as a 200 carrying sign-in HTML, and parsing it
-  // would report a submission that never happened.
+  // would report a submission that never happened. ONLY on a 2xx or a followed
+  // redirect, as fetch.ts reads it (QA1 runs-submit-01): a 404 page is a route
+  // nobody answered, not a sign-in, and "Reload to sign in again" sent the
+  // person to fix a session that had not expired. Any other status is told by
+  // its status.
   if (!(res.headers.get('content-type') ?? '').includes('application/json')) {
-    return fail('session_expired', res.status,
-      'The API answered with a page instead of data, which is how an expired sign-in arrives. Reload to sign in again.')
+    if (res.ok || res.redirected) {
+      return fail('session_expired', res.status,
+        'The API answered with a page instead of data, which is how an expired sign-in arrives. Reload to sign in again.')
+    }
+    return { kind: 'failed', error: { ...classifyFailure(res.status, null, undefined), method: 'POST' } }
   }
   let payload: unknown = null
   try { payload = await res.json() } catch { payload = null } // unreadable body, same diagnosis
@@ -584,6 +591,13 @@ export function unsentSettings(fields: InputField[]): string[] {
   })
 }
 
+/** A setting's key in words, for its label (QA1 runs-submit-18):
+ *  `timeout_seconds` reads "Timeout seconds". The key itself is unchanged. */
+export function settingWords(key: string): string {
+  const words = key.replace(/_/g, ' ').trim().replace(/\burl\b/g, 'URL')
+  return words === '' ? key : words.charAt(0).toUpperCase() + words.slice(1)
+}
+
 /** A row of one's own with neither a name nor a value: nothing to send. A
  *  yes / no always has a value, so it is never empty. */
 function emptyRow(f: InputField): boolean {
@@ -842,8 +856,11 @@ export function InputFields({ profile, fields, required, onChange, idPrefix, att
                 // labelable control. `flag` and `actions` wrap their controls
                 // in their own labels, and a second label pointing at the same
                 // checkbox concatenates into an accessible name nobody wrote.
+                // IN WORDS, THE KEY IN ITS TITLE (QA1 runs-submit-18): the
+                // label was the raw key in mono ("prompt", "timeout_ms"); the
+                // key is still what is sent, and the send panel names it.
                 <label className="sbf-name" htmlFor={f.kind === 'flag' || f.kind === 'actions' ? undefined : id}>
-                  <span className="mono">{f.name}</span>
+                  <span className="sbf-words" title={f.name}>{settingWords(f.name)}</span>
                   {f.required && <i className="sbf-req">required</i>}
                 </label>
               )}
@@ -868,7 +885,7 @@ export function InputFields({ profile, fields, required, onChange, idPrefix, att
             {!f.required && (
               <button type="button" className="c-link is-sm sbf-remove" aria-label={`remove ${key || 'this setting'}`}
                 onClick={() => onChange(fields.filter((_, j) => j !== i))}>
-                remove
+                Remove
               </button>
             )}
             {gap && (
@@ -1599,6 +1616,12 @@ function Form({ capacity }: { capacity: Capacity }) {
               <b>runner</b>
               {chosen === '' ? <i className="ctl-em">&mdash;</i> : <code>{chosen}</code>}
             </li>
+            {/* ONE STATEMENT ABOUT THE INPUT (QA1 runs-submit-18): an empty
+                input beside "not sent: prompt (blank)" said the same nothing
+                twice, once as "the runner gets no settings". The "not sent"
+                row says it, so this one is not drawn. */}
+            {!(chosen !== '' && built.ok && tooBig === null && missing.length === 0
+              && Object.keys(built.input).length === 0 && unsent.length > 0) && (
             <li className={chosen === '' ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>input</b>
               {/* THREE DIFFERENT NOTHINGS, AND THEY DO NOT SHARE A RENDERING.
@@ -1626,6 +1649,7 @@ function Form({ capacity }: { capacity: Capacity }) {
                     ? <i className="sbf-empty">empty — the runner gets no settings</i>
                     : <span className="mono">{Object.keys(built.input).join(', ')}</span>}
             </li>
+            )}
             <li className="ctl-fact">
               <b>result</b>
               {dispatch.strategy}
