@@ -116,7 +116,7 @@ def test_the_fan_out_answers_for_this_replica_first(world):
     key, raw, _blobs, store = world
     svc = service(key, store)
     whole = _doc(get(svc, "/v1/stats", mint_stats(key, raw=raw)))
-    assert set(whole) == {"replicas"}
+    assert whole["peers_resolved"] is True and set(whole) == {"replicas", "peers_resolved"}
     assert [r["replica"] for r in whole["replicas"]] == ["replica-0"]
     assert whole["replicas"][0] == _doc(get(svc, "/v1/stats/local", mint_stats(key, raw=raw)))
 
@@ -275,7 +275,7 @@ def test_peers_are_the_headless_services_addresses_but_this_replicas(monkeypatch
         raise socket.gaierror("no such host")
 
     monkeypatch.setattr(stats_mod.socket, "getaddrinfo", unresolvable)
-    assert stats_mod.Peers(own=lambda: set())() == []
+    assert stats_mod.Peers(own=lambda: set())() is None, "unresolved, never an empty list"
 
 
 # --- two tickets, two domains (§5.3) --------------------------------------------------------
