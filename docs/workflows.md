@@ -1342,6 +1342,16 @@ says which it is.
 * **The flag is stored where the worker reads it**, `metadata.dispatch.
   allow_empty_diff`, inside the block the spec signature covers, and served in
   the agent's `dispatch`. It must be a JSON boolean: `"yes"` is refused with 422.
+* **Under `direct-pr` swarm-api sets it on a reader** (#2662): an agent step
+  that another agent step `depends_on` or stages a file from, and that no step
+  `builds_on`, is stored with the flag whatever its spec says
+  (`validation.reader_step_ids`). Its dependants read its artifacts, not its
+  branch, so a read-only review that changes nothing succeeds `no_change`
+  instead of failing `published_nothing:` and sweeping the fix behind it; if
+  it commits, it still opens its pull request. A step another `builds_on`
+  (its branch is the deliverable, #1225), a step nothing depends on, a step
+  only the appended merge step depends on, and every step under any other
+  strategy store exactly the block they stored before.
 
 **Or the agent says why: `verification.md` (Proposal J, 2026-10-08).** A
 step's author cannot always know in advance that the work may already be done:
