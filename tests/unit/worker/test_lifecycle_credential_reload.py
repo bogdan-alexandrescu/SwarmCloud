@@ -28,6 +28,7 @@ from agent_worker.runners.cliagent import RELOAD_RESUME_PROMPT
 from swarm_common.states import TaskState
 
 from worker_seeds import seed_attempt, seed_tenant
+from test_cli_prompt_names_time_limit import without_limit_line
 
 #: Records each start in PLAN_DIR/runs.jsonl. Start i behaves per
 #: `plan.json`'s `modes[i]`: "expired" prints the observed text (as the
@@ -102,7 +103,8 @@ def test_an_expired_token_reloads_the_credential_and_resumes_the_session(
     )
     assert reloads[0]["resumed"] is True
     assert [r["resume"] for r in runs] == [None, session]
-    assert runs[1]["stdin"] == RELOAD_RESUME_PROMPT
+    # MUTATION: drop the resume's limit line in run_cli_agent -> red.
+    assert without_limit_line(runs[1]["stdin"]) == RELOAD_RESUME_PROMPT
     assert code == ExitCode.OK, log_stream.getvalue()[-3000:]
     task = db.doc("tasks/task_1")
     assert task["state"] == TaskState.SUCCEEDED.value

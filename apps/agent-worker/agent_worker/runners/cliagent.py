@@ -1906,7 +1906,13 @@ def run_cli_agent(
         first_prompt = f"{first_prompt}\n\n{PUBLISH_PARAGRAPH}"
     if resume:
         argv += [spec.resume_flag, resume]
-        stdin_prompt = resume_prompt(os.environ.get(RESUME_REASON_ENV, "").strip())
+        # A resumed session is told the time it has left, as a fresh start is
+        # (#2139, owner decision 2026-10-28): `limits` is what the worker
+        # handed this restart (#2363), the time left now, never the start's.
+        stdin_prompt = (
+            f"{resume_prompt(os.environ.get(RESUME_REASON_ENV, '').strip())}\n\n"
+            f"{time_limit_line(limits.timeout_seconds)}"
+        )
     else:
         stdin_prompt = first_prompt
     argv += spec.stdin_arg
@@ -2505,7 +2511,12 @@ def run_cli_agent(
             # still reports that it was resumed (`write_result` merges it).
             resumed_to_finish = True
             ctx.report["resumed_to_finish"] = True
-            finish_parsed = pass_within_ceiling(session, FINISH_PROMPT, step_remaining, "finish")
+            # Told what is left after every start so far (#2139), as a fresh
+            # start is told its whole limit.
+            finish_parsed = pass_within_ceiling(
+                session, f"{FINISH_PROMPT}\n\n{time_limit_line(remaining)}", step_remaining,
+                "finish",
+            )
             still = pending_work(finish_parsed)
             if still is not None:
                 log.warning(

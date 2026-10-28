@@ -1204,10 +1204,17 @@ each lane of §6 landed, in its order:
     the clone, whose documents name the header.
 
   The case runs in `accept.yml`'s live-browser group after a release, never
-  in a pull request's CI. The group's own call
-  (`scripts/acceptance/groups/live-browser.sh`) still has to submit the agent
-  in a granted tenant and pass `--qa-identity`; until it does, the case does
-  not run. The design's redirect probe (a console URL that 302s to an echo
+  in a pull request's CI. The group
+  (`scripts/acceptance/groups/live-browser.sh`, `run_live_browser_qa`, wired
+  by QA-IDENTITY-WIRE on 2026-10-27) runs it after its own checks: it submits
+  the agent in `SWARM_ACCEPTANCE_QA_TENANT` and passes `--qa-identity
+  --console-url "$SWARM_ACCEPTANCE_CONSOLE_URL"`, and SKIPs all four checks
+  when either is unset. Both reach the `swarm-verify` job from Terraform
+  (`acceptance_qa_tenant`, `acceptance_console_url`; dev sets `smoke` and its
+  own console, prod neither). BGD decided on 2026-10-27 that `smoke` is
+  granted the identity; until a platform admin makes that grant in the
+  console, the submission is refused `qa_identity_not_granted` and the first
+  check FAILs. The design's redirect probe (a console URL that 302s to an echo
   the test controls) is not part of it: the suite has no external echo
   host, and QI-GATE's unit tests hold both redirect guards meanwhile
   (`tests/unit/worker/test_livegate_qa_identity.py`). No run as the QA account has been recorded, so nothing

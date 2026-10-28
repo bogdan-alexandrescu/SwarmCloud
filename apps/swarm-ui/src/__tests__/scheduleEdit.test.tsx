@@ -147,6 +147,23 @@ function field(label: string): HTMLInputElement {
   return control
 }
 
+/** A segmented control (A3-SEGMENTED): the radio group its label alone names. */
+function seg(label: string): HTMLElement {
+  return screen.getByRole('radiogroup', { name: label })
+}
+
+/** Each value of a segmented control, in order, by the words it shows. */
+function words(label: string): string[] {
+  return within(seg(label))
+    .getAllByRole('radio')
+    .map((r) => r.textContent ?? '')
+}
+
+/** Choose a segment by its words. */
+function pick(label: string, word: string): void {
+  fireEvent.click(within(seg(label)).getByRole('radio', { name: word }))
+}
+
 afterEach(() => {
   vi.unstubAllEnvs()
   vi.unstubAllGlobals()
@@ -193,18 +210,21 @@ describe('the create form', () => {
   it('never offers automatic merging', async () => {
     await mount('schedule=new', routes(() => null))
     await screen.findByRole('heading', { name: 'New schedule', level: 1 }, WAIT)
-    const merge = await waitFor(() => field('Merge') as unknown as HTMLSelectElement, WAIT)
+    await waitFor(() => seg('Merge'), WAIT)
     // MUTATION: add `auto` to the form's merge options.
-    expect([...merge.options].map((o) => o.value)).toEqual(['off', 'approve'])
+    expect(words('Merge')).toEqual(['off', 'approve'])
     // No control anywhere in the form offers `auto` for merging: the
     // parameter that restates the gate is drawn read-only, not as its enum.
     const form = screen.getByTestId('sc-form')
     const mergeLabels = [...form.querySelectorAll('.c-lbl')].filter((e) => /merge/i.test(e.textContent ?? ''))
     expect(mergeLabels.length).toBe(2)
     for (const lbl of mergeLabels) {
-      const control = lbl.closest('label')!.querySelector('input, select')!
+      const field = lbl.closest('.c-field')!
+      const control = field.querySelector('input, select, [role="radiogroup"]')!
       // MUTATION: draw the restating parameters through `editable()` and this is a select offering `auto`.
       if (control.tagName === 'SELECT') expect([...(control as HTMLSelectElement).options].map((o) => o.value)).not.toContain('auto')
+      // MUTATION: add `auto` to the merge segments and one reads "auto".
+      else if (control.getAttribute('role') === 'radiogroup') expect(within(control as HTMLElement).getAllByRole('radio').map((r) => r.textContent)).not.toContain('auto')
       else expect((control as HTMLInputElement).readOnly).toBe(true)
     }
     expect((screen.getByTestId('sc-param-merge') as HTMLInputElement).value).toBe('approve')
@@ -218,8 +238,8 @@ describe('the create form', () => {
     )
     await waitFor(() => expect(field('Name')).toBeTruthy(), WAIT)
     fireEvent.change(field('Name'), { target: { value: 'Weekday sweep' } })
-    fireEvent.change(field('Plan'), { target: { value: 'approve' } })
-    fireEvent.change(field('Merge'), { target: { value: 'off' } })
+    pick('Plan', 'approve')
+    pick('Merge', 'off')
     expect((screen.getByTestId('sc-param-plan_approval') as HTMLInputElement).value).toBe('required')
     expect((screen.getByTestId('sc-param-merge') as HTMLInputElement).value).toBe('off')
     fireEvent.click(screen.getByRole('button', { name: 'Create schedule' }))
@@ -241,7 +261,7 @@ describe('the create form', () => {
     expect((create as HTMLButtonElement).disabled).toBe(true)
     fireEvent.change(field('Name'), { target: { value: 'Weekday sweep' } })
     fireEvent.change(field('Timezone'), { target: { value: 'Europe/London' } })
-    fireEvent.change(field('Plan'), { target: { value: 'approve' } })
+    pick('Plan', 'approve')
     fireEvent.click(screen.getByRole('button', { name: 'Create schedule' }))
     await waitFor(() => expect(sent(calls, 'POST', '/v1/schedules')).toHaveLength(1), WAIT)
     const body = sent(calls, 'POST', '/v1/schedules')[0]!.body as Json
@@ -317,7 +337,12 @@ describe('the edit form', () => {
     await waitFor(() => expect(sent(calls, 'PATCH', '/v1/schedules/sch_a')).toHaveLength(1), WAIT)
     // MUTATION: send the whole draft and the stored gate, budget and params ride along.
     expect(sent(calls, 'PATCH', '/v1/schedules/sch_a')[0]!.body).toEqual({ revision: 2, cron: '0 9 * * 1' })
-    await waitFor(() => expect(sent(calls, 'GET', '/v1/schedules/sch_a').length).toBe(2), WAIT)
+    // Frame A2 reads the schedule once for the sheet and once for the editor's
+    // page, so the count before the save is not fixed: what holds is a read
+    // AFTER the PATCH, back on the sheet.
+    // MUTATION: drop the re-read on save and no GET follows the PATCH.
+    const patched = calls.findIndex((c) => c.method === 'PATCH' && c.url === '/v1/schedules/sch_a')
+    await waitFor(() => expect(calls.slice(patched + 1).some((c) => c.method === 'GET' && c.url.split('?')[0] === '/v1/schedules/sch_a')).toBe(true), WAIT)
     await screen.findByRole('button', { name: 'Edit' }, WAIT)
   })
 
@@ -328,8 +353,8 @@ describe('the edit form', () => {
     )
     await screen.findByRole('heading', { name: 'Weekday sweep', level: 1 }, WAIT)
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
-    await waitFor(() => expect(field('Plan')).toBeTruthy(), WAIT)
-    fireEvent.change(field('Plan'), { target: { value: 'approve' } })
+    await waitFor(() => expect(seg('Plan')).toBeTruthy(), WAIT)
+    pick('Plan', 'approve')
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(sent(calls, 'PATCH', '/v1/schedules/sch_a')).toHaveLength(1), WAIT)
     expect(sent(calls, 'PATCH', '/v1/schedules/sch_a')[0]!.body).toEqual({ revision: 2, gate: { plan: 'approve' } })
@@ -361,7 +386,8 @@ describe('the SD3 merge switch', () => {
     }, types)
     const out = await mount('schedule=sch_a', handler)
     await screen.findByRole('heading', { name: 'Weekday sweep', level: 1 }, WAIT)
-    fireEvent.click(screen.getByRole('tab', { name: /Gate/ }))
+    // Frame A2 draws the gate as a section of the sheet, not a tab to open.
+    await waitFor(() => expect(document.querySelector('aside.as-sheet [data-sec="gate"]')).not.toBeNull(), WAIT)
     return out
   }
 
@@ -407,7 +433,7 @@ describe('the SD3 merge switch', () => {
     await waitFor(() => expect(sent(calls, 'POST', MODE)).toHaveLength(1), WAIT)
     expect(sent(calls, 'POST', MODE)[0]!.body).toEqual({ mode: 'auto', revision: 2, confirm: 'Weekday sweep' })
     await waitFor(() => expect(sent(calls, 'GET', '/v1/schedules/sch_a').length).toBe(2), WAIT)
-    // The re-read lands on the Gate tab it came from.
+    // The re-read lands on the sheet's Gate section it came from.
     await screen.findByTestId('sc-gate', undefined, WAIT)
   })
 
@@ -663,8 +689,8 @@ describe('edit A', () => {
 
   it('still never offers automatic merging among the tiles’ types', async () => {
     await openCreate(createRoutes())
-    const merge = field('Merge') as unknown as HTMLSelectElement
-    expect([...merge.options].map((o) => o.value)).toEqual(['off', 'approve'])
+    // MUTATION: add `auto` to the form's merge options.
+    expect(words('Merge')).toEqual(['off', 'approve'])
   })
 
   it('in an edit, keeps the type fixed, shows the schedule’s own tier and offers no Start', async () => {
@@ -724,9 +750,9 @@ describe('live QA: automate, the form', () => {
 
   it('defaults to chosen repositories wherever the type offers them, never every repository (AUT-2)', async () => {
     const { calls } = await mount('schedule=new', routes(created, [sweepType({ creatable_scopes: ['all', 'repos'] })]))
-    await waitFor(() => expect(field('Scope')).toBeTruthy(), WAIT)
+    await waitFor(() => expect(seg('Scope')).toBeTruthy(), WAIT)
     // MUTATION: take the first creatable scope and this is "all".
-    expect((field('Scope') as unknown as HTMLSelectElement).value).toBe('repos')
+    expect(within(seg('Scope')).getByRole('radio', { checked: true }).textContent).toBe('Chosen repositories')
     fireEvent.change(field('Name'), { target: { value: 'Weekday sweep' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create schedule' }))
     await waitFor(() => expect(sent(calls, 'POST', '/v1/schedules')).toHaveLength(1), WAIT)
@@ -803,12 +829,132 @@ describe('live QA: automate, the form', () => {
   it('names each control by its label alone and describes it by its hint (AUT-16)', async () => {
     await mount('schedule=new', routes(() => null))
     await waitFor(() => expect(field('Name')).toBeTruthy(), WAIT)
-    // MUTATION: drop `aria-labelledby` from `Field` and the name is every option and the hint.
-    const scope = screen.getByRole('combobox', { name: 'Scope' })
-    expect(scope).toBeTruthy()
-    const run = screen.getByRole('combobox', { name: 'Run' })
+    // MUTATION: drop `aria-labelledby` from `Segmented` and the group has no name, so none of these is found.
+    for (const label of ['Scope', 'Run', 'Plan', 'Merge', 'Who may approve']) expect(screen.getByRole('radiogroup', { name: label }), label).toBeTruthy()
+    // MUTATION: draw any of them as a `<select>` again and it is a combobox.
+    expect(screen.queryAllByRole('combobox', { name: /^(Scope|Run|Plan|Merge|Who may approve)$/ })).toEqual([])
+    const run = seg('Run')
     const hint = document.getElementById(run.getAttribute('aria-describedby') ?? '')
     expect(hint?.textContent).toBe('type default: auto')
     expect(screen.getByRole('textbox', { name: 'Cron expression' })).toBeTruthy()
+  })
+
+  it('names the approvers group "Who may approve", proposal B’s words (A3-LABEL)', async () => {
+    await mount('schedule=new', routes(() => null))
+    await waitFor(() => seg('Merge'), WAIT)
+    // MUTATION: label the group "Approvers" again and it is found by that name, not by BGD’s pick of 2026-10-28.
+    const group = screen.getByRole('radiogroup', { name: 'Who may approve' })
+    expect(within(group).getAllByRole('radio').map((r) => r.textContent)).toEqual(['any member', 'the owner only'])
+    expect(screen.queryByRole('radiogroup', { name: 'Approvers' })).toBeNull()
+  })
+})
+
+// A3-SEGMENTED (part of #2417): BGD picked proposal B's segmented controls
+// over dropdowns for Scope, Run, Plan, Merge and Approvers, 2026-10-28
+// (docs/web-ui/mockups/automate-b.html #A3a, cards 2 and 4).
+describe('A3: the five choices are segmented controls', () => {
+  const FIVE = ['Scope', 'Run', 'Plan', 'Merge', 'Who may approve'] as const
+
+  it('shows every value of each group without opening anything, in today’s order', async () => {
+    await mount('schedule=new', routes(() => null, [sweepType({ creatable_scopes: ['repos', 'all'] })]))
+    await waitFor(() => seg('Scope'), WAIT)
+    // MUTATION: draw any of the five as a `<select>` and its values are options behind a click, not radios.
+    expect(words('Scope')).toEqual(['Chosen repositories', 'Every registered repository'])
+    expect(words('Run')).toEqual(['auto', 'approve'])
+    expect(words('Plan')).toEqual(['auto', 'approve'])
+    expect(words('Merge')).toEqual(['off', 'approve'])
+    expect(words('Who may approve')).toEqual(['any member', 'the owner only'])
+    for (const label of FIVE) {
+      // MUTATION: put the unchosen segments behind a disclosure (a closed `<details>` or `hidden`) and one is found inside it.
+      for (const r of within(seg(label)).getAllByRole('radio')) expect(r.closest('[hidden], details:not([open]), select'), `${label}: ${r.textContent}`).toBeNull()
+      // MUTATION: drop the shared `.c-seg` and the group is drawn in a new visual language.
+      expect(seg(label).classList.contains('c-seg'), label).toBe(true)
+    }
+  })
+
+  it('checks the chosen value, starting at the type’s defaults, and a click moves the check', async () => {
+    await mount('schedule=new', routes(() => null))
+    await waitFor(() => seg('Merge'), WAIT)
+    const checked = (label: string) => within(seg(label)).getAllByRole('radio', { checked: true }).map((r) => r.textContent)
+    // MUTATION: compare against the label instead of the value and nothing is checked.
+    expect(checked('Scope')).toEqual(['Chosen repositories'])
+    expect(checked('Run')).toEqual(['auto'])
+    expect(checked('Plan')).toEqual(['auto'])
+    expect(checked('Merge')).toEqual(['approve'])
+    expect(checked('Who may approve')).toEqual(['any member'])
+    pick('Merge', 'off')
+    // MUTATION: drop `onClick` from the segments and the check stays on approve.
+    expect(checked('Merge')).toEqual(['off'])
+  })
+
+  it('moves and chooses with the arrow keys, wrapping, with one Tab stop per group', async () => {
+    await mount('schedule=new', routes(() => null))
+    await waitFor(() => seg('Plan'), WAIT)
+    const radios = () => within(seg('Plan')).getAllByRole('radio')
+    // MUTATION: leave every segment at tabIndex 0 and Tab walks each value.
+    expect(radios().map((r) => r.tabIndex)).toEqual([0, -1])
+    radios()[0]!.focus()
+    fireEvent.keyDown(radios()[0]!, { key: 'ArrowRight' })
+    // MUTATION: drop the `onKeyDown` and the check stays on auto.
+    expect(radios()[1]!.getAttribute('aria-checked')).toBe('true')
+    expect(document.activeElement).toBe(radios()[1])
+    expect(radios().map((r) => r.tabIndex)).toEqual([-1, 0])
+    // MUTATION: stop at the ends instead of wrapping and the check stays on approve.
+    fireEvent.keyDown(radios()[1]!, { key: 'ArrowDown' })
+    expect(radios()[0]!.getAttribute('aria-checked')).toBe('true')
+    fireEvent.keyDown(radios()[0]!, { key: 'ArrowLeft' })
+    expect(radios()[1]!.getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('draws a value below the type’s floor disabled, with its reason, and the arrows pass over it', async () => {
+    const strict = sweepType({
+      default_gate: { plan: 'auto', run: 'approve', merge: 'approve', approvers: 'members', approval_ttl_hours: 72 },
+      floor_gate: { plan: 'auto', run: 'approve', merge: 'auto', approvers: 'members', approval_ttl_hours: 72 },
+    })
+    await mount('schedule=new', routes(() => null, [strict]))
+    await waitFor(() => seg('Run'), WAIT)
+    const auto = within(seg('Run')).getByRole('radio', { name: 'auto' }) as HTMLButtonElement
+    // MUTATION: drop `gateOptions` from Run and auto is offered, for the API to refuse with gate_below_floor.
+    expect(auto.disabled).toBe(true)
+    const reason = document.getElementById(auto.getAttribute('aria-describedby') ?? '')
+    // MUTATION: drop the reason's line and the disabled value says nothing about why.
+    expect(reason?.textContent).toBe('auto: below issue-sweep’s floor (approve), refused for everyone')
+    expect(visible(seg('Run').parentElement!)).toContain('below issue-sweep’s floor (approve)')
+    // Plan's floor is auto, so neither of its values is off.
+    expect(within(seg('Plan')).getAllByRole('radio').map((r) => (r as HTMLButtonElement).disabled)).toEqual([false, false])
+    const approve = within(seg('Run')).getByRole('radio', { name: 'approve' })
+    fireEvent.keyDown(approve, { key: 'ArrowRight' })
+    // MUTATION: walk every segment instead of the live ones and the check lands on the disabled auto.
+    expect(approve.getAttribute('aria-checked')).toBe('true')
+    expect(auto.getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('wraps a group onto a second line at 390 and never scrolls sideways', async () => {
+    await mount('schedule=new', routes(() => null))
+    await waitFor(() => seg('Scope'), WAIT)
+    for (const label of FIVE) {
+      // MUTATION: drop the shared phone rule's `flex-wrap: wrap` and the group runs off the card.
+      expect(painted(seg(label), 'flex-wrap', PHONE), label).toBe('wrap')
+      expect(painted(seg(label), 'max-width', PHONE), label).toBe('100%')
+      // MUTATION: give the group `overflow-x: auto` (as `.pp-filter` does) and it scrolls sideways.
+      expect(['auto', 'scroll']).not.toContain(painted(seg(label), ['overflow', 'overflow-x'], PHONE))
+    }
+  })
+
+  // The review's render (2026-10-28): at 1440 Scope sat beside Name in the
+  // two-column `.sc-facts` grid, ~200px wide, and broke onto two rows with an
+  // empty slot beside "Chosen repositories". Proposal B draws it as one row.
+  it('gives Scope the card’s full width at desktop, and a wrapped segment fills its row', async () => {
+    const DESK: CascadeEnv = { width: 1440 }
+    await mount('schedule=new', routes(() => null, [sweepType({ creatable_scopes: ['repos', 'all'] })]))
+    await waitFor(() => seg('Scope'), WAIT)
+    const field = seg('Scope').parentElement!
+    // MUTATION: drop `sc-wide` from Scope's field and it is one ~200px cell of the Name | Scope grid again.
+    expect(field.parentElement!.classList.contains('sc-facts')).toBe(true)
+    expect(painted(field, 'grid-column', DESK)).toBe('1 / -1')
+    for (const r of within(seg('Scope')).getAllByRole('radio')) {
+      // MUTATION: drop `flex: 1 0 auto` from the desktop `.ae-seg` rule and a wrapped segment leaves an empty slot beside it.
+      expect(painted(r, 'flex', DESK), r.textContent ?? '').toBe('1 0 auto')
+    }
   })
 })

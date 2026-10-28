@@ -179,9 +179,10 @@ describe('A3a: a new schedule', () => {
     expect(cardTitles(f)).toEqual(['1 · Type and template', '2 · Target', '3 · Cadence', '4 · Gates and approvers', '5 · Budget and tripwire', '6 · Start'])
     const cards = [...f.querySelectorAll<HTMLElement>('.ae-card')]
     expect(within(cards[0]!).getByRole('radiogroup', { name: 'Type' })).toBeTruthy()
-    expect(within(cards[1]!).getByRole('combobox', { name: 'Scope' })).toBeTruthy()
+    // MUTATION: draw Scope or Merge as a `<select>` again and it is a combobox, not a radio group (A3-SEGMENTED).
+    expect(within(cards[1]!).getByRole('radiogroup', { name: 'Scope' })).toBeTruthy()
     expect(within(cards[2]!).getByRole('textbox', { name: 'Cron expression' })).toBeTruthy()
-    expect(within(cards[3]!).getByRole('combobox', { name: 'Merge' })).toBeTruthy()
+    expect(within(cards[3]!).getByRole('radiogroup', { name: 'Merge' })).toBeTruthy()
     expect(within(cards[4]!).getByRole('spinbutton', { name: 'Per run (USD)' })).toBeTruthy()
     expect(within(cards[5]!).getByRole('radiogroup', { name: 'Start' })).toBeTruthy()
     // A card is the surface and its line, never a bare heading.

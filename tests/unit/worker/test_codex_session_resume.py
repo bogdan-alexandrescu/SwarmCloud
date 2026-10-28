@@ -36,6 +36,7 @@ import pytest
 
 from agent_worker.runners import claude_code, cliagent, codex
 from agent_worker.runners.base import CredentialRevokedSignal, RunnerContext, RunnerFailure
+from test_cli_prompt_names_time_limit import without_limit_line
 
 
 def _openai_key() -> str:
@@ -184,7 +185,8 @@ def test_a_reloaded_codex_run_continues_its_session_with_exec_resume(tmp_path, m
     # `codex exec [flags] resume <id> -`: the session continues, the message
     # is on stdin, and the original prompt is not sent again.
     assert run["argv"] == [*codex.SPEC.args_default, "resume", session, "-"], run["argv"]
-    assert run["stdin"] == cliagent.RELOAD_RESUME_PROMPT
+    # MUTATION: drop the resume's limit line in run_cli_agent -> red.
+    assert without_limit_line(run["stdin"]) == cliagent.RELOAD_RESUME_PROMPT
 
 
 def test_a_codex_session_id_of_the_wrong_shape_is_refused(tmp_path, monkeypatch):

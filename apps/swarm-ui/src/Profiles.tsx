@@ -1,5 +1,5 @@
 import { loadCapacity } from './api'
-import { CapSeg } from './Capacity'
+import { CapSeg, NoPools, PoolsSkeleton, keepNoPools } from './Capacity'
 import type { TopicId } from './help'
 import { HelpLinks } from './HelpCard'
 import { POOLS_POLL_MS, capacityPoll } from './capacityPoll'
@@ -52,27 +52,27 @@ export function ProfilesScreen() {
          for a property of the whole screen -- because a `?` in each card
          head would be one per profile saying one thing. */
       help="pools-all-at-once"
-      load={loadCapacity}
+      load={loadProfilesView}
       // Part of Pools, so Pools' cadence (#117): every 30s, paused while the
       // tab is hidden (`Screen`).
       pollMs={capacityPoll(POOLS_POLL_MS)}
-      summary={(d) => {
-        const profiles = Object.values(d.runner_profiles)
-        const backends = new Set(profiles.map((p) => p.backend)).size
-        return `${profiles.length} profiles · ${backends} backend${backends === 1 ? '' : 's'}`
-      }}
-      /* loadCapacity calls a response empty when `pools` is empty, not when the
-         catalogue is — so this copy names THAT query. A response with pools and
-         no profiles never reaches here; Catalogue below renders that case. */
-      empty={{
-        heading: 'The capacity read returned no pools',
-        body: 'The read succeeded and its pool list was empty. Pools are created at provisioning time, so profiles cannot be priced against anything yet — this is a real absence, not a failed lookup.',
-      }}
+      skeleton={<PoolsSkeleton view="profiles" />}
+      /* THE READ IS SAID ABOVE THE MATRIX (visual QA V197, part of #1427).
+         Above 900px the matrix is its own vertical scroller, for its sticky
+         head (styles/capacity.css), and its box looks finished at its bottom
+         edge: the provenance line under it -- how many profiles, the whole
+         catalogue, when the counts were read -- went unread below a box
+         holding most of the page. It is the count note now, over the first
+         card, where every screen's count is (#138). */
+      summary={(d) => d.pools === 'some' && <CatalogueCount capacity={d.board} />}
+      /* AN EMPTY POOL LIST IS POOLS' ONE EMPTY STATE (V199): `NoPools`, worded
+         as Ceilings words it and under the same view strip. A response with
+         pools and no profiles is not this; Catalogue below renders that. */
     >
-      {(d) => (
+      {(d, reading) => (
         <>
           <CapSeg view="profiles" />
-          <Catalogue capacity={d} />
+          {d.pools === 'none' ? <NoPools reading={reading} /> : <Catalogue capacity={d.board} />}
         </>
       )}
     </Screen>
@@ -82,8 +82,8 @@ export function ProfilesScreen() {
 function Catalogue({ capacity }: { capacity: Capacity }) {
   const entries = Object.entries(capacity.runner_profiles).sort(([a], [b]) => a.localeCompare(b))
 
-  // A read that succeeded with an empty catalogue. Not the Screen's `empty`,
-  // which can only mean "no pools", and not a failure — so nothing here is red.
+  // A read that succeeded with an empty catalogue. Not `NoPools`, which means
+  // "no pools", and not a failure — so nothing here is red.
   if (entries.length === 0) {
     return (
       <section className="section panel">
@@ -107,14 +107,29 @@ function Catalogue({ capacity }: { capacity: Capacity }) {
           a minimum and never a sum -- is `#help/pools-all-at-once`, the `?`
           after this screen's title and in its footer. */}
       <ProfileMatrix capacity={capacity} />
-      {/* §8.4(4): PROVENANCE, ONCE, FOR THE WHOLE PAGE. Every figure above is
-          worked out from pool counts read at one instant, and the instant is
-          the server's `generated_at`. */}
-      <p className="provenance">
-        {entries.length} profiles · the whole catalogue this response carried, not a page of it ·{' '}
-        <CountsAge generatedAt={capacity.generated_at} />
-      </p>
       <HelpLinks topics={PROFILE_TOPICS} />
+    </>
+  )
+}
+
+const loadProfilesView = keepNoPools(() => loadCapacity())
+
+/**
+ * The count note (#138): `36 profiles · 2 backends · the whole catalogue ·
+ * counts read 2 m ago, one pool at a time`.
+ *
+ * §8.4(4): PROVENANCE, ONCE, FOR THE WHOLE PAGE. Every figure on it is worked
+ * out from pool counts read at one instant, and the instant is the server's
+ * `generated_at`. `the whole catalogue`: the response carries every profile,
+ * not a page of them.
+ */
+function CatalogueCount({ capacity }: { capacity: Capacity }) {
+  const profiles = Object.values(capacity.runner_profiles)
+  const backends = new Set(profiles.map((p) => p.backend)).size
+  return (
+    <>
+      {profiles.length} profiles · {backends} backend{backends === 1 ? '' : 's'} · the whole catalogue ·{' '}
+      <CountsAge generatedAt={capacity.generated_at} />
     </>
   )
 }

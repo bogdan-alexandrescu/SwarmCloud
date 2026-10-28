@@ -21,6 +21,11 @@ Owner decisions this module implements (the lane brief, 2026-10-15):
     is one `versions enable` away from use again. Only a delete destroys.
   * Q7. The runner provider keys and the pool accounts are LISTED, read-only,
     beside the store's own secrets, never their values (`legacy_rows`).
+  * §6.2 (SEC-MIGRATE-FORGE). So are the forge tokens, `-git` and
+    `-git-u-<hex>`, from the `git_tokens` records, with `component:git` as
+    their one consumer, ticked and locked. No store secret may take a forge
+    slot's name (`check_name`), so every write on a forge row is a 422, and
+    the release never serves a forge kind (`_deliverable`).
 
 What keeps a value out of everything but Secret Manager:
 
@@ -101,7 +106,13 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.admission import _snapshot
-from swarm_common.models import PLATFORM_COMPONENTS, Tenant, consumer_name, parse_consumer
+from swarm_common.models import (
+    FORGE_CREDENTIAL,
+    PLATFORM_COMPONENTS,
+    Tenant,
+    consumer_name,
+    parse_consumer,
+)
 from swarm_common.profiles import (
     MCP_SECRET_SLOTS,
     RUNNER_PROFILES,
@@ -115,6 +126,8 @@ from .admins import AUDIT_COLLECTION
 from .auth import AuthContext, require_admin
 from .codec import console_origin
 from .errors import ApiError, Conflict, Forbidden, NotFound, UpstreamUnavailable, ValidationFailed
+from .forge import GIT_PROVIDER
+from .gittokens import GitTokenRecord, Scope
 from .grant_attest import (
     ATTESTATION_FIELD,
     FORM_HOSTS,
@@ -374,12 +387,22 @@ class SecretManagerWorkspaceSecrets:
 
 
 def check_name(name: str) -> str:
+    """Every write route's name check. A forge slot's name (`git`,
+    `git-u-<hex>`, `git-r-<hex>`: the frozen FORGE_CREDENTIAL) is a forge row
+    on the Secrets page (§6.2), so a store secret may not take it and a
+    rotate, delete, grant, opt-in or link naming it is refused here, before
+    any record or Secret Manager is touched."""
     text = (name or "").strip()
     if not NAME_PATTERN.fullmatch(text):
         # Not echoed: a person can paste anything into a name field.
         raise ValidationFailed(
             "a secret's name is 1-64 characters of a-z, 0-9 and '-', starting with "
             "a letter or a digit")
+    if FORGE_CREDENTIAL.fullmatch(text):
+        raise ValidationFailed(
+            "a forge token is listed here read-only; it is written on the Git tokens "
+            "page, never in this store",
+            detail={"read_only": True, "page": FORGE_PAGE})
     return text
 
 
@@ -736,12 +759,16 @@ POOL_ACCOUNT_FIELDS = ("account_id", "owner_tenant", "label", "provider", "state
 
 
 def legacy_rows(tenant: Tenant, pool_payload: Mapping[str, Any] | None,
-                pool_error: str | None) -> dict[str, Any]:
-    """The runner provider keys and pool accounts, never a value (Q7: listed
-    read-only now, not moved). Their writers are unchanged: Settings › API
-    keys and the account pool."""
+                pool_error: str | None, *,
+                forge_records: Iterable[GitTokenRecord] | None = None,
+                viewer_email: str | None = None) -> dict[str, Any]:
+    """The runner provider keys, pool accounts and forge tokens, never a value
+    (Q7 and §6.2: listed read-only, not moved). Their writers are unchanged:
+    Settings › API keys, the account pool, and Access › Git tokens with
+    `scripts/create-secrets.sh --stdin`. The tenant's `git` slot is a forge
+    token, listed by `forge_rows`, never as a provider key."""
     keys = []
-    for provider in sorted(set(tenant.credentials or [])):
+    for provider in sorted(set(tenant.credentials or []) - {GIT_PROVIDER}):
         keys.append({
             "provider": provider,
             "secret_id": tenant.secret_name(provider),
@@ -759,7 +786,68 @@ def legacy_rows(tenant: Tenant, pool_payload: Mapping[str, Any] | None,
             "accounts": [{**{f: a.get(f) for f in POOL_ACCOUNT_FIELDS},
                           "managed": "legacy", "read_only": True} for a in listed],
         }
-    return {"runner_provider_keys": keys, "pool_accounts": accounts}
+    return {"runner_provider_keys": keys, "pool_accounts": accounts,
+            "forge_tokens": forge_rows(tenant, forge_records, viewer_email)}
+
+
+#: The kinds a forge row is: the `git` component's slot's, which the contract
+#: fixes to forge tokens (design §6.2). Read from the slot, not restated.
+FORGE_KINDS = _COMPONENT_SLOTS["git"][0].kinds
+#: Where a forge token is written: Access › Git tokens. The same page
+#: `secrets_overview.GIT_TOKENS_PAGE` links (a test holds them equal); it is
+#: restated because that module imports this one.
+FORGE_PAGE = "/repositories/tokens"
+#: The only consumer of a forge row, shown ticked and locked.
+FORGE_CONSUMER = consumer_name("component", "git")
+
+
+def _forge_row(*, name: str, secret_id: str, scope: str, status: str,
+               token_kind: str | None = None, set_at: Any = None, verified_at: Any = None,
+               expires_at: Any = None) -> dict[str, Any]:
+    return {
+        "name": name, "secret_id": secret_id, "kind": FORGE_KINDS[0],
+        "token_kind": token_kind, "scope": scope, "status": status,
+        "set_at": set_at, "verified_at": verified_at, "expires_at": expires_at,
+        "managed": "legacy", "read_only": True, "locked": True,
+        "consumers": [FORGE_CONSUMER],
+    }
+
+
+def forge_rows(tenant: Tenant, records: Iterable[GitTokenRecord] | None,
+               viewer_email: str | None = None) -> dict[str, Any]:
+    """The forge tokens, read-only (§6.2), never a value, `last4` or email.
+
+    From `records`, the tenant's `git_tokens` (`GitTokens.list`): the tenant
+    token, and the viewer's own user slots (app user token and owner
+    fallbacks), as `secrets_overview.personal_scope` shows them; another
+    person's slot is theirs to see. Repository slots are swarm-api's alone
+    (#1225) and are not listed. The record's tenant is checked again.
+
+    `records` None means the caller did not read them: the tenant token is
+    then listed from the tenant document's `credentials`, its status
+    `listed`, and `readable` says the records were not read."""
+    if records is None:
+        tokens = [_forge_row(name=GIT_PROVIDER, secret_id=tenant.secret_name(GIT_PROVIDER),
+                             scope=Scope.TENANT.value, status="listed")
+                  ] if GIT_PROVIDER in (tenant.credentials or []) else []
+        return {"readable": False, "page": FORGE_PAGE, "tokens": tokens,
+                "reason": "the git token records were not read; the tenant document's slots"}
+    viewer = (viewer_email or "").strip().lower()
+    tokens = []
+    for record in records:
+        if record.tenant_id != tenant.tenant_id:
+            continue
+        if record.scope is Scope.USER:
+            if not viewer or (record.user or "").strip().lower() != viewer:
+                continue
+        elif record.scope is not Scope.TENANT:
+            continue
+        tokens.append(_forge_row(
+            name=record.provider_suffix, secret_id=record.secret_name,
+            scope=record.scope.value, status=record.state.value, token_kind=record.kind,
+            set_at=_iso(record.rotated_at or record.registered_at),
+            verified_at=_iso(record.verified_at), expires_at=_iso(record.expires_at)))
+    return {"readable": True, "page": FORGE_PAGE, "tokens": tokens}
 
 
 # ---------------------------------------------------------------------------

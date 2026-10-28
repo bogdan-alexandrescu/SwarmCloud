@@ -2040,7 +2040,7 @@ function StepRow(props: {
   const paired = step.kind === 'tool_call' && step.tool?.id ? (results.get(step.tool.id) ?? null) : null
   const mk = stepMarks(marks, step, paired)
   return cloneElement(el, {
-    className: [el.props.className, mk.className].filter(Boolean).join(' '),
+    className: [...new Set(`${el.props.className ?? ''} ${mk.className}`.split(' ').filter(Boolean))].join(' '),
     'data-log-key': mk['data-log-key'],
   })
 }
@@ -2240,6 +2240,64 @@ function StepRowBody({
           {record}
         </li>
       )
+    case 'usage': {
+      // A CODEX TURN'S USAGE AS LABELLED FIGURES (CODEX-ROWS, part of #2459;
+      // BGD, 2026-10-28, proposal B "New kinds in the drawer"). Tabular
+      // figures, so the rows of a long run line up; a figure the server did
+      // not send is left out, never drawn as 0, because codex not reporting
+      // it is not a measured zero. With no figure at all the server's words
+      // are drawn instead.
+      const figures = usageFigures(m)
+      return (
+        <li className="arts-step is-meta is-usage">
+          <span className="arts-step-kind">usage</span>{' '}
+          {figures.length > 0 ? (
+            <span className="arts-usage" style={{ fontVariantNumeric: 'tabular-nums' }}>
+              {figures.map((f, i) => (
+                <span key={f.label} data-figure={f.label}>
+                  {/* The separator rides with the figure after it, unbroken,
+                      so a narrow drawer wraps before a ` · `, never after it
+                      (a dangling dot, or "turn" split from its number). */}
+                  {i > 0 ? ' ' : ''}
+                  <span style={{ whiteSpace: 'nowrap' }}>
+                    {i > 0 ? '· ' : ''}
+                    {f.label === 'turn' ? `turn ${f.value}` : `${f.value} ${f.label}`}
+                  </span>
+                </span>
+              ))}
+            </span>
+          ) : (
+            step.text !== null && step.text !== '' && <span className="ctl-sub">{step.text}</span>
+          )}{' '}
+          {capped}
+          {record}
+        </li>
+      )
+    }
+    case 'error': {
+      // A CODEX ERROR IN THE DRAWER'S BAD TONE (CODEX-ROWS): the row takes
+      // `is-err`, the class a failed tool result's row takes, so it is tinted
+      // the same and "jump to error" reaches it; the label is the bad mark a
+      // failed result already wears. The message comes first; codex's retry
+      // counter, lifted out of it by the server, follows it, muted.
+      const attempt = typeof m.retry_attempt === 'number' ? m.retry_attempt : null
+      const limit = typeof m.retry_limit === 'number' ? m.retry_limit : null
+      return (
+        <li className="arts-step is-meta is-error is-err">
+          <ToneMark tone="bad">{m.subtype === 'turn_failed' ? 'error · turn failed' : 'error'}</ToneMark> {capped}
+          {step.text !== null && step.text !== '' && <pre className="art-code">{step.text}</pre>}
+          {/* Muted by its own colour: `.ctl-sub` is styled only inside a
+              table and a few panels, so in a log row it drew at full ink. */}
+          {attempt !== null && (
+            <span className="arts-retry" data-retry="" style={{ color: 'var(--text-faint)' }}>
+              (retrying, {attempt}
+              {limit !== null ? ` of ${limit}` : ''})
+            </span>
+          )}
+          {record}
+        </li>
+      )
+    }
     case 'other':
       // `meta.oversize`: ONE LINE LONGER THAN THE WINDOW, which the server
       // does not decode and says so in the window's `stream.detail` (drawn
@@ -2268,7 +2326,40 @@ function StepRowBody({
           {record}
         </li>
       )
+    default: {
+      // A KIND THIS CONSOLE DOES NOT KNOW YET (CODEX-ROWS): a server newer
+      // than the console can serve one. Without this case the switch
+      // returned nothing and `StepRow`'s `cloneElement` threw, blanking the
+      // whole Logs tab. It draws as an `other` row, named by its kind.
+      const kind: string = (step as { kind: string }).kind
+      return (
+        <li className="arts-step is-meta">
+          <span className="arts-step-kind">other · {kind}</span> {capped}
+          {step.text !== null && <pre className="art-code">{step.text}</pre>}
+          {record}
+        </li>
+      )
+    }
   }
+}
+
+/**
+ * A `usage` step's figures in the order the drawer says them, each one only
+ * when the server sent it as a number: "48,210 input · 41,900 cached · 2,316
+ * output · turn 3".
+ */
+function usageFigures(m: Record<string, unknown>): { label: string; value: string }[] {
+  const out: { label: string; value: string }[] = []
+  for (const [key, label] of [
+    ['input_tokens', 'input'],
+    ['cached_input_tokens', 'cached'],
+    ['output_tokens', 'output'],
+    ['turn', 'turn'],
+  ] as const) {
+    const v = m[key]
+    if (typeof v === 'number' && Number.isFinite(v)) out.push({ label, value: v.toLocaleString('en-US') })
+  }
+  return out
 }
 
 /**
