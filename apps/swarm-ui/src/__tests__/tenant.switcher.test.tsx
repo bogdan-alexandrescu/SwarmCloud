@@ -363,7 +363,7 @@ describe('the spine tenant block', () => {
     await shell()
     await waitFor(() => expect(switcher()).not.toBeNull())
     expect(switcher()!.querySelector('b')?.textContent).toBe('Your workspace')
-    expect(switcher()!.querySelector('small')?.textContent).toBe('workspace · 1 of 2')
+    expect(switcher()!.querySelector('small')?.textContent).toBe('personal · 1 of 2')
     fireEvent.click(switcher()!)
     expect(rowFor('Your workspace')?.getAttribute('aria-current')).toBe('true')
     expect(rowFor('Your workspace')?.querySelector('small')?.textContent).toBe('u-ana-b')

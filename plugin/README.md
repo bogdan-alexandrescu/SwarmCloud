@@ -1193,8 +1193,10 @@ publishing involved.
   names (its `issue` input, else `(#N)` in its title), labelled with the
   issue's title where SwarmCloud has it; the rest are under "No issue".
   "Waiting on someone" lists owner questions (the recommended option
-  marked), steps waiting for a person (`AWAITING_INPUT`, `HUMAN_REQUIRED`
-  parks) with their `/sc answer` command, and refused merges and CI parks
+  marked) of lanes still open -- not merged, not finished -- that no
+  answer recorded on the task (`swarm_task_answer`, or the console)
+  answers, each once per lane; steps waiting for a person
+  (`AWAITING_INPUT`, `HUMAN_REQUIRED` parks) with their `/sc answer` command, and refused merges and CI parks
   over 90 minutes; a failed step in general is not listed. In-flight work
   always shows, finished work for 30 days. Nothing is read from GitHub.
 * **Where it lives.** `<project>/.claude/build-board/index.html`, one

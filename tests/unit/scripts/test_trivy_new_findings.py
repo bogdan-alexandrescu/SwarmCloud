@@ -243,3 +243,98 @@ def test_the_gate_with_no_base_fails_on_every_finding(tmp_path):
     result = _gate(tmp_path, repo, "--base", "")
     assert result.returncode == 1, result.stdout + result.stderr
     assert "CVE-2026-0001" in result.stdout
+
+
+# --- the vulnerability DB download: retried, then the upstream fallback ------
+# #2351: trivy (repo) read red when mirror.gcr.io answered 404 for the DB, a
+# transient fault with no finding behind it, and the merge step's free re-run
+# often read red again for the same reason. BGD, 2026-10-27 ("Both halves"):
+# the job retries the download, then falls back to ghcr.io/aquasecurity/trivy-db.
+# A real finding still fails the job, through the gate, exactly as before.
+
+MIRROR_DB = "mirror.gcr.io/aquasec/trivy-db:2"
+UPSTREAM_DB = "ghcr.io/aquasecurity/trivy-db:2"
+
+#: Fails a `--download-db-only` call for the first FAKE_DB_FAILS calls, and
+#: every call against FAKE_DB_DOWN (a repository that stays down); logs its
+#: arguments, one call a line.
+FAKE_DB_TRIVY = r"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"${FAKE_TRIVY_LOG:?}"
+calls="$(wc -l <"${FAKE_TRIVY_LOG}")"
+case " $* " in *" ${FAKE_DB_DOWN:-none} "*) echo "FATAL 404 Not Found" >&2; exit 1 ;; esac
+if [ "${calls}" -le "${FAKE_DB_FAILS:-0}" ]; then echo "FATAL 404 Not Found" >&2; exit 1; fi
+"""
+
+
+def _db_step() -> dict[str, Any]:
+    steps = _filesystem_steps()
+    found = [s for s in steps if "--download-db-only" in str(s.get("run", ""))]
+    assert len(found) == 1, "the filesystem job downloads the vulnerability DB in one step of its own"
+    return found[0]
+
+
+def _download(tmp_path: Path, *, fails: int = 0, down: str = "none") -> tuple[subprocess.CompletedProcess[str], list[str], list[str]]:
+    step = _db_step()
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "trivy").write_text(FAKE_DB_TRIVY)
+    # The backoff is real in CI; here `sleep` only records how long it would wait.
+    (bindir / "sleep").write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$1" >>"${FAKE_SLEEP_LOG:?}"\n')
+    for tool in ("trivy", "sleep"):
+        (bindir / tool).chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("SWARM_", "TRIVY_"))}
+    env.update({str(k): str(v) for k, v in (step.get("env") or {}).items()})
+    env.update(PATH=f"{bindir}{os.pathsep}{env.get('PATH', '')}", FAKE_TRIVY_LOG=str(tmp_path / "trivy.log"),
+               FAKE_SLEEP_LOG=str(tmp_path / "sleep.log"), FAKE_DB_FAILS=str(fails), FAKE_DB_DOWN=down)
+    result = subprocess.run(["bash", "-c", str(step["run"])], cwd=tmp_path, capture_output=True,
+                            text=True, env=env, timeout=60, check=False)
+    log = tmp_path / "trivy.log"
+    sleeps = tmp_path / "sleep.log"
+    return (result, log.read_text().splitlines() if log.exists() else [],
+            sleeps.read_text().splitlines() if sleeps.exists() else [])
+
+
+def test_the_db_download_takes_the_mirror_when_it_answers(tmp_path):
+    result, calls, sleeps = _download(tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert len(calls) == 1 and MIRROR_DB in calls[0], calls
+    assert sleeps == []
+
+
+def test_a_mirror_404_is_retried_with_a_short_backoff_before_it_fails(tmp_path):
+    result, calls, sleeps = _download(tmp_path, fails=2)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert len(calls) == 3 and all(MIRROR_DB in c for c in calls), calls
+    assert len(sleeps) == 2 and all(0 < int(s) <= 30 for s in sleeps), sleeps
+
+
+def test_a_mirror_down_for_three_attempts_falls_back_to_the_upstream_db(tmp_path):
+    result, calls, sleeps = _download(tmp_path, down=MIRROR_DB)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert [MIRROR_DB in c for c in calls] == [True, True, True, False], calls
+    assert UPSTREAM_DB in calls[3], calls
+    assert len(sleeps) == 2, "no wait after the last mirror attempt"
+
+
+def test_both_db_repositories_down_fails_the_job(tmp_path):
+    result, calls, _ = _download(tmp_path, fails=99)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert len(calls) == 4 and UPSTREAM_DB in calls[3], calls
+    assert "::error::" in result.stdout
+
+
+def test_the_scans_after_the_download_use_its_db_and_findings_still_fail_the_job():
+    steps = _filesystem_steps()
+    names = [s.get("name", s.get("uses", "")) for s in steps]
+    db = steps.index(_db_step())
+    scan = next(i for i, s in enumerate(steps) if "trivy fs --scanners" in str(s.get("run", "")))
+    gate = next(i for i, s in enumerate(steps) if "scripts/trivy-new-findings.sh gate" in str(s.get("run", "")))
+    assert db < scan < gate, names
+    # Neither scan downloads the DB again, so neither can meet the mirror's 404.
+    assert "--skip-db-update" in str(steps[scan]["run"]), steps[scan]
+    assert str((steps[gate].get("env") or {}).get("TRIVY_SKIP_DB_UPDATE")).lower() == "true", steps[gate]
+    # A finding still fails the job: no step is allowed to fail quietly, and
+    # the gate step is the script's exit status, unchanged.
+    assert all(not s.get("continue-on-error") for s in steps), names
+    assert str(steps[gate]["run"]).rstrip().endswith('scripts/trivy-new-findings.sh gate --base "${base}"')

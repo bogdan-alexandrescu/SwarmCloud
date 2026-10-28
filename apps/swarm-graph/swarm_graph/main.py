@@ -37,7 +37,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .server import PORT, GraphService, event, make_server
+from .server import PORT, GraphService, event, make_server, make_stats_server
+from .stats import STATS_PORT
 from .store import GcsStore
 from .ticket import KeyRing, mac_key
 
@@ -133,7 +134,8 @@ class _ConfigFile:
 
 def serve(env: Mapping[str, str] = os.environ,
           access: Callable[[str], bytes] = _access_secret,
-          store: Any = None, stop: threading.Event | None = None, port: int = PORT) -> None:
+          store: Any = None, stop: threading.Event | None = None, port: int = PORT,
+          stats_port: int = STATS_PORT) -> None:
     version, bucket, config_path = settings(env)
     keys = KeyRing(read_key(version, access))
     config = _ConfigFile(config_path)
@@ -154,6 +156,9 @@ def serve(env: Mapping[str, str] = os.environ,
                 event("graph_key_unreadable", cause=type(exc).__name__)
 
     server = make_server(service, "0.0.0.0", port)
+    # The read-only stats routes on their own port, never /mcp
+    # (graph-answer-cache.md §5.3).
+    stats_server = make_stats_server(service, "0.0.0.0", stats_port)
     for target in (watch_config, watch_key):
         threading.Thread(target=target, daemon=True).start()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -162,12 +167,15 @@ def serve(env: Mapping[str, str] = os.environ,
         except ValueError:  # not the main thread (a test)
             pass
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    event("graph_serving", port=server.server_address[1])
+    threading.Thread(target=stats_server.serve_forever, daemon=True).start()
+    event("graph_serving", port=server.server_address[1],
+          stats_port=stats_server.server_address[1])
     try:
         stop.wait()
     finally:
-        server.shutdown()
-        server.server_close()
+        for listener in (server, stats_server):
+            listener.shutdown()
+            listener.server_close()
         service.warmer.close()
         event("graph_stopped")
 

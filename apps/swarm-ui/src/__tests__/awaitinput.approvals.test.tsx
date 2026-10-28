@@ -66,7 +66,7 @@ describe('a waiting step in the inbox', () => {
     }, WAIT)
     // #2417: the step opens on its own page, its kind said on the page's chip.
     expect(detail.querySelector('.ad-chip.is-kind')!.textContent).toBe('answer')
-    expect(detail.textContent).toContain('any member of this tenant')
+    expect(detail.textContent).toContain('any member of this workspace')
     expect(within(detail).queryByRole('button', { name: /Approve|Reject/ })).toBeNull()
     // Never read as a record: the route has none.
     expect(calls.some((c) => c.url.startsWith('/v1/approvals/input'))).toBe(false)

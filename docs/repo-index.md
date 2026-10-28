@@ -596,6 +596,7 @@ behalf through the same signed `submit_tasks` path every agent takes:
 | `repository_url` / `repository_ref` | the registration's URL and the exact sha being indexed | the index describes a commit, not a moving branch |
 | `timeout_seconds` | 1,800 for a full run, 900 for an incremental one; since lane INDEX-BUDGETS (#1693) sized by the promoted index's source files, §3.5 | may only shorten the profile's timeout. A fixed 30 minutes held until the LSP pass existed; with it, pyright on a 3,795-file repository needed more than the 270 s a fixed run could give it (`repoindex.index_timeout_seconds`) |
 | `priority` | −50 | below the tenant's default-0 work: an index makes work better, it is not the work |
+| `model_class` | `sonnet` (#2524; the profile's default, `opus`, before) | BGD, 2026-10-27: indexing is extraction and summary over the tool's own output, and 845 Opus index runs in one week was the pool's to spend on work. Named only where the deployment pins a sonnet model (`WORKER_CLASS_MODELS`); where nothing is pinned (the local emulator) the run names no class and takes the profile's default instead of being refused (`repoindex.index_model_class`) |
 | `metadata` | `{"repo_index": "<repo_id>", "commit_sha": "<sha>", "index_kind": "full"}` | how the promotion path (§2.3) finds a finished index run |
 | prompt | fixed, composed by swarm-api; never a caller's text | invariant 10: the caller chooses a repository and a schedule, nothing that runs |
 
@@ -648,9 +649,34 @@ Each registration carries:
 |---|---|---|---|
 | `index.interval_hours` | 24 | 1-168, or `off` | the backstop: a repository whose pushes are never detected is still re-indexed |
 | `index.on_change` | `poll` | `poll`, `webhook` (phase 3), `off` | the default branch moving is the event the owner named |
-| `index.min_change_interval_minutes` | 30 | 10-1,440 | a busy repository merging every five minutes is indexed at most twice an hour by change; the interval still applies |
+| `index.min_change_interval_minutes` | 120 (30 until #2524) | 10-1,440 | a busy repository merging every five minutes is indexed by change at most once every two hours; the interval still applies. BGD, 2026-10-27 (#2524): 845 index runs in the week 2026-10-20..27, mostly change-triggered, so the default went to 120 and an index up to two hours behind its head is the accepted price. A value a registration sets wins, even 30. Reads are literal (BGD, 2026-10-28): a stored 30 reads 30 and is applied as 30 (`repositories.min_change_interval_of`); see *Moving the old default* below |
 | `index.full_every_days` | 7 | 1-30 | incremental runs drift; a weekly full run resets them |
 | `index.paused` | false | — | an operator stops all indexing of the repository without deleting the record |
+
+**Moving the old default: a one-time migration, not a read-time rule.**
+Every registration created before #2524 stored the then-default 30 in its
+document (`_index_defaults` writes the value, it does not leave a gap), so
+changing the constant moved only registrations created afterwards. A
+read-time rule that read a stored 30 as 120 was built and removed (BGD,
+2026-10-28: "a ONE-TIME MIGRATION, not a read-time rule. Reads of
+min_change_interval_minutes stay literal"). Such a rule makes the document
+lie about what the poll applies, cannot tell an old default from a person
+who chose 30, and has to be carried in every reader for ever; a migration
+changes the data once and leaves every reader trivial.
+
+`scripts/migrate-index-interval.sh` is that migration. With no argument it
+is a dry run: it lists every document in the `repositories` collection whose
+`index.min_change_interval_minutes` is exactly 30 (tenant, repo_id,
+repository) and prints the count; it writes nothing. `--apply` asks for a
+typed confirmation (`SWARM_ASSUME_YES` does not answer it) and then patches
+each listed document's `index.min_change_interval_minutes` to 120 with an
+`updateMask` naming only that field and a `currentDocument.updateTime`
+precondition, so a registration edited between the listing and the write is
+skipped and reported, not overwritten. A registration whose owner chose 30
+is indistinguishable in the data and is moved too; it can be set back by
+`PATCH /v1/repositories/{repo_id}`. **The operator run against a deployed
+environment waits for BGD's go-ahead**; until it runs, a pre-#2524
+registration reads, serves and polls at 30.
 
 **Polling the forge (phase 1).** A per-tenant Cloud Scheduler job,
 `repo_index_poll`, calls `POST /v1/admin/repositories/poll?tenant_id=<tenant>`
@@ -667,7 +693,17 @@ registration it read — the head is what staleness is measured against
 (§5) — and queues an index run where the head is not the **built** index
 (`current_sha`), the minimum change interval has passed since the newest run
 was queued, and no run is in flight. The interval trigger is checked in the
-same pass: `last_indexed_at + interval_hours` passed means queue one.
+same pass: `last_indexed_at + interval_hours` passed means queue one — of a
+head the index has not built. **An unchanged head starts nothing** (#2524,
+BGD 2026-10-27): where the head is the built index (`current_sha`), the
+interval used to rebuild it in full, the same index again; now `choose_kind`
+answers `none`, the claim is released, the tick holds it as `unchanged`, and
+the registration records `index.last_skip` (`at`, `head_sha`, `trigger`,
+`reason`). The interval counts from that skip too, so a quiet repository's
+skip happens once an interval, not on every tick. An "Index now" asking for
+`incremental` on the built head answers `skipped: "unchanged"`; asking for
+`full` (the default) still rebuilds it, which is how a person refreshes an
+index after an extractor upgrade.
 
 The comparison is against the built index, never against the ETag or the
 newest run's commit (live QA AUT-7, 2026-10-11). The ETag only decides how
@@ -679,8 +715,8 @@ later, which is how an index sat 20 commits behind for seven hours while
 every poll read the head and queued nothing. Each tick stores its decision on
 the registration as `index.last_poll` (`at`, `head_sha`, `outcome` —
 `queued`, `pending`, `held` or `failed` — and `reason`: the trigger, or
-`current`, `throttled`, `in_flight`, `paused`, `on_change_off`, `no_head`, or
-the failure's code), and the poll's answer counts the held ones by reason in
+`current`, `unchanged`, `throttled`, `in_flight`, `paused`, `on_change_off`,
+`no_head`, or the failure's code), and the poll's answer counts the held ones by reason in
 `report.held`, so "why is the index behind?" is answered by the document.
 
 **A webhook (phase 3, optional).** A GitHub `push` webhook would cut the

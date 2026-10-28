@@ -310,7 +310,7 @@ export function PlatformCountsScreen() {
           above rather than part of it. */}
       <section className="counts-now" aria-labelledby="counts-now-title">
         <h2 className="sc-h2" id="counts-now-title">Right now: agents in each state</h2>
-        <p className="sb-note">A snapshot, read by the same Run.</p>
+        <p className="sb-note">A snapshot, read by the same Run{runParts(admin, overPrice)}.</p>
         {/* BOTH CARDS BEFORE THE FIRST RUN (#135), each with `not run` in its
             figure slot: the page has its shape before the press, and an empty
             page is not mistaken for a platform with nothing on it. They stay
@@ -401,6 +401,22 @@ function runPrice(admin: boolean | null, over: OverTimePrice | null): string {
     return admin === null ? `${STATE_COUNT} reads, or ${admins}` : admins
   }
   return `${low}~${STATE_COUNT * 2 + over.total} reads`
+}
+
+/**
+ * WHAT THE BUTTON'S TOTAL IS MADE OF (visual QA pass 1, admin-shell-15). An
+ * admin's button said `~562 reads` and Over time's note `The price is ~538
+ * reads`, and nothing added the 24 between them up: the two snapshots here,
+ * one count per state for the workspace and one for the platform. Right
+ * now's note says so, in the button's terms: an admin's when nobody could say
+ * who is asking, per workspace while the roster is not known. A Run that
+ * reads the snapshot alone has nothing to add up, and the note stays short.
+ */
+function runParts(admin: boolean | null, over: OverTimePrice | null): string {
+  if (admin === false || over === null) return ''
+  const snapshots = `2 × ${STATE_COUNT}`
+  if (over.total === null) return `: ${snapshots} of its reads, the rest Over time’s ~${over.perWorkspace} a workspace`
+  return `: ${snapshots} reads, which with Over time’s ~${over.total} make ${admin === null ? 'an admin’s' : 'its'} ~${STATE_COUNT * 2 + over.total}`
 }
 
 /**

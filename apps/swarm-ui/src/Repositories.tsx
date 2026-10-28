@@ -10,7 +10,7 @@ import { REGISTER, GT_PAGE, TestsMapped, UrConfirmIndex, UrFreshPill, UrLink, Ur
 import { RegisterRepository } from './RepositoriesRegister'
 import { RepositoryDetail } from './RepositoriesDetail'
 import { GitTokensPage, PermissionsPage } from './GitTokens'
-import { RepoDot, useForgePermissions } from './PermissionCards'
+import { RepoDot, repoStatus, useForgePermissions } from './PermissionCards'
 import { QA_TARGETS_PAGE, QaTargetsScreen } from './QaTargets'
 import type { ForgeRepoStatus, RepoCounts } from './api'
 import type { AccessGrant } from './types'
@@ -50,8 +50,9 @@ import './styles/repositories.css'
  * page is led by what is missing, then "Repositories SwarmCloud may reach as
  * you" (ReachableRepositories.tsx, moved off GitHub access), then the
  * registry's cards with a dashed card for each chosen repository not yet
- * registered. Add new repository goes to GitHub access with Choose
- * repositories open; nothing is added to the person's reach from here.
+ * registered. Choose more on GitHub (Choose on GitHub while nothing is
+ * chosen) goes to GitHub access with Choose repositories open; nothing is
+ * added to the person's reach from here.
  * Remove on a reach row revokes the person's own grant, as it did on
  * Work › Access.
  *
@@ -165,11 +166,19 @@ function Lead({ kicker, title, actions, children }: { kicker: string; title: str
   )
 }
 
-/** Add new repository: GitHub access with Choose repositories open (GITHUB-ACCESS-PAGE's deep link). */
-function AddRepository({ go }: { go: (to: string) => void }) {
+/**
+ * GitHub access with Choose repositories open (GITHUB-ACCESS-PAGE's deep link).
+ *
+ * NAMED FOR WHAT IT DOES, NOT "ADD NEW REPOSITORY" (console visual QA pass 1,
+ * config-16, part of #2596). The head's Register repository registers a
+ * repository already chosen; this one leaves for GitHub to choose one, and as
+ * "Add new repository" the two read as two buttons for one job. "more" only
+ * once something is chosen: with nothing chosen there is nothing to add to.
+ */
+function AddRepository({ go, more }: { go: (to: string) => void; more: boolean }) {
   return (
     <UrNavButton to={ADD_REPOSITORY_ADDRESS} go={go} kind="primary" size="sm">
-      Add new repository
+      {more ? 'Choose more on GitHub' : 'Choose on GitHub'}
     </UrNavButton>
   )
 }
@@ -203,9 +212,9 @@ function RegisterButton({
  * page's two reads, so it never says a step is left that a read says is
  * done: nothing chosen is the strip's step 2 (its place counted from the
  * strip, three steps in a personal workspace and four in a group one); a
- * chosen repository not registered is Register; otherwise Add new
- * repository. Null while either read is not in hand: the head then carries
- * Add new repository, and nothing is claimed.
+ * chosen repository not registered is Register; otherwise Choose more on
+ * GitHub. Null while either read is not in hand: the head then carries the
+ * choose button, and nothing is claimed.
  */
 function RepositoriesLead({
   grants,
@@ -221,7 +230,7 @@ function RepositoriesLead({
   const steps = useSetupSteps().length
   if (grants.length === 0) {
     return (
-      <Lead kicker={`Step 2 of ${steps} · next.`} title="No repository chosen yet" actions={<AddRepository go={go} />}>
+      <Lead kicker={`Step 2 of ${steps} · next.`} title="No repository chosen yet" actions={<AddRepository go={go} more={false} />}>
         Choose repositories from an owner on GitHub access, or type owner/repo there.
       </Lead>
     )
@@ -241,9 +250,9 @@ function RepositoriesLead({
   }
   const n = grants.length
   return (
-    <Lead kicker="Repositories · nothing left." title="Every chosen repository is registered" actions={<AddRepository go={go} />}>
-      {n === 1 ? '1 repository chosen, and registered.' : `${n} repositories chosen, every one registered.`} Add new repository
-      opens GitHub access › Choose repositories.
+    <Lead kicker="Repositories · nothing left." title="Every chosen repository is registered" actions={<AddRepository go={go} more />}>
+      {n === 1 ? '1 repository chosen, and registered.' : `${n} repositories chosen, every one registered.`} Choose more on
+      GitHub opens GitHub access › Choose repositories.
     </Lead>
   )
 }
@@ -356,7 +365,7 @@ function RepositoryList({
       </a>
     )
   }
-  // ADD NEW REPOSITORY IS DRAWN ONCE (S3c: "its lead carries Add new
+  // THE CHOOSE BUTTON IS DRAWN ONCE (S3c: "its lead carries Add new
   // repository, so the header does not repeat it"): in the lead when the lead
   // offers it, in the head otherwise.
   const leadAdds = grants !== null && (grants.length === 0 || (missing !== null && missing.length === 0))
@@ -401,7 +410,7 @@ function RepositoryList({
               Register repository
             </Button>
           )}
-          {!leadAdds && <AddRepository go={go} />}
+          {!leadAdds && <AddRepository go={go} more={grants !== null && grants.length > 0} />}
         </span>,
       )}
       <RepositoriesTabs current="list" go={go} />
@@ -744,6 +753,38 @@ function SwitchStates({ r }: { r: RepoRecord }) {
   )
 }
 
+/**
+ * THE DOT'S WORDS, BESIDE IT (console visual QA pass 1, config-17, part of
+ * #2596). A red ◆ after the freshness chip on every card read as an
+ * unexplained mark: its words were only the tooltip and the accessible name.
+ * A dot that asks for something says what, in a word a person can read
+ * without hovering: how many GitHub permissions are missing (`blocked_by`'s
+ * permissions), or that they were not all checked. A green dot
+ * asks for nothing and stays a dot. The full reason stays the tooltip.
+ */
+function PermWord({ row }: { row: ForgeRepoStatus | undefined }) {
+  if (row === undefined) return null
+  const s = repoStatus(row)
+  if (s.tone === 'ok') return null
+  // A token's measured refusal names no permission (`permission: null`): each counts on its own.
+  const n =
+    new Set(row.blocked_by.flatMap((g) => (g.permission === null ? [] : [g.permission]))).size +
+    row.blocked_by.filter((g) => g.permission === null).length
+  const word =
+    s.tone === 'unknown'
+      ? 'GitHub permissions not all checked'
+      : n === 0
+        ? 'A GitHub permission is missing'
+        : n === 1
+          ? '1 GitHub permission missing'
+          : `${n} GitHub permissions missing`
+  return (
+    <span className="ur-mu" data-perm-word={s.tone} title={s.tip} aria-hidden="true">
+      {word}
+    </span>
+  )
+}
+
 function RepoCard({
   r,
   go,
@@ -799,6 +840,7 @@ function RepoCard({
       <div className="ur-cbadge" data-badge="">
         <UrFreshPill f={f} />
         <RepoDot row={perm} />
+        <PermWord row={perm} />
       </div>
       <div className="ur-cmeta">
         <span>

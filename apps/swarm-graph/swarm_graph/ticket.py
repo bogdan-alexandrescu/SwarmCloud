@@ -28,6 +28,21 @@ its last ticket reads only the graph the attempt was already entitled to
 read, for at most MAX_TICKET_SECONDS: the trade swarm-egress and
 swarm-typesafe-fwd make too.
 
+THE STATS TICKET (docs/design/graph-answer-cache.md §5.3) is the same wire
+under the same key with its OWN domain, STATS_DOMAIN, so neither kind can stand
+in for the other: an attempt ticket's MAC never verifies on the stats routes,
+and a stats ticket's never on `/mcp`. swarm-api mints it (lane 3) for the
+console's Cache section, pinning one tenant, one repository and the current and
+previous manifest digests, for MAX_STATS_TICKET_SECONDS. Its claims are exactly
+STATS_TICKET_FIELDS:
+
+    {"tenant_id", "repo_id", "manifest_digest",
+     "previous_manifest_digest" (null when there is no previous version), "exp"}
+
+`json.dumps(claims, sort_keys=True, separators=(",", ":"))`, base64url, as the
+attempt ticket's. It reads no object: it only selects which of this replica's
+in-memory figures are returned, every one filtered on its tenant.
+
 Nothing here puts a ticket, a key or any part of either in an exception.
 """
 
@@ -58,6 +73,14 @@ SKEW_SECONDS = 1
 #: minute more (§3.2, swarm-egress's KeyRing): a ticket a not-yet-rolled
 #: swarm-api minted just before the rotation lives out its life.
 PREVIOUS_KEY_SECONDS = MAX_TICKET_SECONDS + 60
+#: The stats ticket's domain (graph-answer-cache.md §5.3); swarm-api's mint
+#: (lane 3) is held to it.
+STATS_DOMAIN = b"swarm-graph-stats/v1\0"
+STATS_TICKET_FIELDS = frozenset({"tenant_id", "repo_id", "manifest_digest",
+                                 "previous_manifest_digest", "exp"})
+#: A stats ticket is minted for one read of the console's 30 s refresh (§5.5),
+#: so it lives a minute, not an attempt's quarter hour.
+MAX_STATS_TICKET_SECONDS = 60
 #: A ticket is a few hundred characters; anything far longer is not one.
 MAX_TICKET_CHARS = 2048
 #: What the 401 tells the caller (§10: `<expired | invalid>`); the finer
@@ -120,8 +143,8 @@ def _unb64(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
-def _mac(key: bytes, payload: str) -> bytes:
-    return hmac.new(key, TICKET_DOMAIN + payload.encode("ascii"), hashlib.sha256).digest()
+def _mac(key: bytes, payload: str, domain: bytes = TICKET_DOMAIN) -> bytes:
+    return hmac.new(key, domain + payload.encode("ascii"), hashlib.sha256).digest()
 
 
 def _count(value: Any) -> bool:
@@ -132,9 +155,9 @@ def _shaped(value: Any, pattern: re.Pattern[str]) -> bool:
     return isinstance(value, str) and pattern.fullmatch(value) is not None
 
 
-def verify_graph_ticket(keys: Sequence[bytes], raw: Any, *, now: float) -> GraphTicket:
-    """The ticket `raw` names, when one of `keys` made it, it is live, and every
-    claim a path is built from has its exact shape."""
+def _claims(keys: Sequence[bytes], raw: Any, domain: bytes) -> Any:
+    """The parsed payload of `raw` when one of `keys` MAC'd it under `domain`;
+    the MAC is checked before a byte of the payload is parsed."""
     if not isinstance(raw, str) or not raw or len(raw) > MAX_TICKET_CHARS:
         raise TicketRefused("malformed")
     parts = raw.split(".")
@@ -149,7 +172,7 @@ def verify_graph_ticket(keys: Sequence[bytes], raw: Any, *, now: float) -> Graph
     # Every key is compared, so the time taken does not say which one matched.
     matched = False
     for key in keys:
-        if key and hmac.compare_digest(_mac(key, payload), presented):
+        if key and hmac.compare_digest(_mac(key, payload, domain), presented):
             matched = True
     if not matched:
         raise TicketRefused("bad_mac")
@@ -157,6 +180,13 @@ def verify_graph_ticket(keys: Sequence[bytes], raw: Any, *, now: float) -> Graph
         claims = json.loads(_unb64(payload))
     except (binascii.Error, ValueError):
         raise TicketRefused("malformed") from None
+    return claims
+
+
+def verify_graph_ticket(keys: Sequence[bytes], raw: Any, *, now: float) -> GraphTicket:
+    """The ticket `raw` names, when one of `keys` made it, it is live, and every
+    claim a path is built from has its exact shape."""
+    claims = _claims(keys, raw, TICKET_DOMAIN)
     if not isinstance(claims, dict) or set(claims) != TICKET_FIELDS:
         raise TicketRefused("malformed")
     if not (_count(claims["generation"]) and _count(claims["exp"])):
@@ -180,6 +210,41 @@ def verify_graph_ticket(keys: Sequence[bytes], raw: Any, *, now: float) -> Graph
                        task_id=claims["task_id"], attempt_id=claims["attempt_id"],
                        generation=claims["generation"], index_sha=claims["index_sha"],
                        manifest_digest=claims["manifest_digest"], exp=exp)
+
+
+@dataclass(frozen=True)
+class StatsTicket:
+    """The claims of a verified stats ticket: the one tenant and repository
+    whose figures a stats read may return (§5.3, invariant 9)."""
+
+    tenant_id: str
+    repo_id: str
+    manifest_digest: str
+    previous_manifest_digest: str | None
+    exp: int
+
+
+def verify_stats_ticket(keys: Sequence[bytes], raw: Any, *, now: float) -> StatsTicket:
+    """The stats ticket `raw` names, when one of `keys` made it under
+    STATS_DOMAIN, it is live for at most MAX_STATS_TICKET_SECONDS, and every
+    claim has its exact shape."""
+    claims = _claims(keys, raw, STATS_DOMAIN)
+    if not isinstance(claims, dict) or set(claims) != STATS_TICKET_FIELDS \
+            or not _count(claims["exp"]):
+        raise TicketRefused("malformed")
+    exp = claims["exp"]
+    if exp <= now:
+        raise TicketRefused(EXPIRED)
+    if exp > now + MAX_STATS_TICKET_SECONDS + SKEW_SECONDS:
+        raise TicketRefused("too_long")
+    previous = claims["previous_manifest_digest"]
+    if not (_shaped(claims["tenant_id"], _TENANT) and _shaped(claims["repo_id"], _REPO_ID)
+            and _shaped(claims["manifest_digest"], _DIGEST)
+            and (previous is None or _shaped(previous, _DIGEST))):
+        raise TicketRefused("claims_refused")
+    return StatsTicket(tenant_id=claims["tenant_id"], repo_id=claims["repo_id"],
+                       manifest_digest=claims["manifest_digest"],
+                       previous_manifest_digest=previous, exp=exp)
 
 
 def bearer(authorization: str | None) -> str | None:
@@ -226,14 +291,19 @@ class KeyRing:
 __all__ = [
     "EXPIRED",
     "INVALID",
+    "MAX_STATS_TICKET_SECONDS",
     "MAX_TICKET_SECONDS",
     "PREVIOUS_KEY_SECONDS",
+    "STATS_DOMAIN",
+    "STATS_TICKET_FIELDS",
     "TICKET_DOMAIN",
     "TICKET_FIELDS",
     "GraphTicket",
     "KeyRing",
+    "StatsTicket",
     "TicketRefused",
     "bearer",
     "mac_key",
     "verify_graph_ticket",
+    "verify_stats_ticket",
 ]

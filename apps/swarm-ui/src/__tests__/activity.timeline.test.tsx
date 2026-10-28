@@ -714,9 +714,10 @@ describe('the readout', () => {
     cleanup()
     const table = await timeline(ledgerFixture(), { view: 'table=1' })
     const row = table.querySelectorAll('.ol-table tbody tr')[10]!
-    expect(row.textContent).toContain(`${b.cancelled!.total} · ${flat} / ${outline}`)
+    // The Cancelled cell is four columns since QA1-FIX-13: all, requested or other, after a failure, after a cancel.
+    expect([...row.children].slice(4, 7).map((c) => (c.textContent ?? '').trim())).toEqual([String(b.cancelled!.total), flat, outline])
     const head = [...table.querySelectorAll('.ol-table thead th')].map((th) => th.textContent ?? '')
-    expect(head).toContain('Cancelled · requested or other / after a failure / after a cancel')
+    expect(head).toEqual(expect.arrayContaining(['Cancelled', 'requested or other', 'after a failure', 'after a cancel']))
   })
 
   it('is one tab stop, starting on the newest bucket, moved by the arrows, Home and End', async () => {
@@ -785,6 +786,36 @@ describe('the readout', () => {
 // The Table twin
 // ---------------------------------------------------------------------------
 
+describe('the head and the facts line (QA1-FIX-13)', () => {
+  it('stamps the head with the browser’s read, not the ledger’s generated_at (runs-submit-12)', async () => {
+    const d = ledgerFixture()
+    d.generated_at = new Date(Date.now() - 8 * 86_400_000).toISOString()
+    const root = await timeline(d)
+    const head = root.querySelector('.c-refresh')!.textContent ?? ''
+    // MUTATION: feed RefreshControl `Date.parse(data.generated_at)` again and this reads "read 8 d ago".
+    expect(head).not.toMatch(/\bd ago/)
+    expect(head).toMatch(/read \d+ ?s ago/)
+  })
+
+  it('says the time basis in words, the field in its title (runs-submit-39)', async () => {
+    const root = await timeline()
+    const by = [...root.querySelectorAll('.ol-facts .ctl-fact')].find((f) => f.querySelector('b')?.textContent === 'by')!
+    // MUTATION: print `<code>{data.basis.outcomes}</code>` again.
+    expect(by.textContent).toBe('byfinish time')
+    expect(by.querySelector('[title="completed_at"]')).not.toBeNull()
+  })
+
+  it('says a submit-time basis in words too, the field in its title (runs-submit-39)', async () => {
+    const d = ledgerFixture()
+    d.basis = { ...d.basis, outcomes: 'created_at' }
+    const root = await timeline(d)
+    const by = [...root.querySelectorAll('.ol-facts .ctl-fact')].find((f) => f.querySelector('b')?.textContent === 'by')!
+    // MUTATION: drop the created_at branch from `basisWords` and this reads "bycreated_at".
+    expect(by.textContent).toBe('bysubmit time')
+    expect(by.querySelector('[title="created_at"]')).not.toBeNull()
+  })
+})
+
 describe('the Table toggle', () => {
   it('swaps the drawing for the same buckets as a scrolling table, and writes it to the hash', async () => {
     const onView = vi.fn()
@@ -795,8 +826,8 @@ describe('the Table toggle', () => {
     expect(table.querySelectorAll('tbody tr')).toHaveLength(14)
     const heads = [...table.querySelectorAll('thead th')].map((th) => th.textContent)
     // The one submission-time column names its basis under Table too, where no lane label is drawn.
-    expect(heads).toContain('Submitted · by created_at')
-    expect(heads.some((h) => /Rate · k of n · 95 %/.test(h ?? ''))).toBe(true)
+    expect(heads).toContain('Submitted by created_at')
+    expect(heads).toContain('Rate k of n, 95 % range')
     const toggle = root.querySelector<HTMLButtonElement>('.ol-table-toggle')!
     expect(toggle.getAttribute('aria-pressed')).toBe('true')
     fireEvent.click(toggle)
@@ -823,7 +854,7 @@ describe('scope and filters', () => {
     const facts = [...root.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
     // The reader's word is workspace (VQ-056); the id is still the tenant id.
     expect(facts).toContain('workspaceeng')
-    expect(facts).toContain('bycompleted_at')
+    expect(facts).toContain('byfinish time')
   })
 
   it('gives an admin the scope, and excludes the verify tenant in one click', async () => {
@@ -990,10 +1021,13 @@ describe('what the route serves, said as the route means it', () => {
     expect(root.querySelector('.ol-legend')!.textContent).toContain('by arrived_at')
     const facts = [...root.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
     expect(facts).toContain('byended_at')
+    // An unknown basis keeps its field name, and the field is its title too (QA1-FIX-13).
+    // MUTATION: drop the `title` from the facts line's basis span.
+    expect(root.querySelector('.ol-facts .ctl-fact [title="ended_at"]')?.textContent).toBe('ended_at')
     cleanup()
     const table = await timeline(d, { view: 'table=1' })
     const heads = [...table.querySelectorAll('.ol-table thead th')].map((th) => th.textContent)
-    expect(heads).toContain('Submitted · by arrived_at')
+    expect(heads).toContain('Submitted by arrived_at')
   })
 
   it('draws a submitter the route did not record as an absence, never as a blank', async () => {
@@ -1382,9 +1416,11 @@ describe('timeline figures open the rows behind them (#116) and add up (#123)', 
     const d = ledgerFixture()
     d.buckets[10] = { ...d.buckets[10]!, failed: 5, dead_lettered: 3 }
     const root = await timeline(d, { view: 'table=1' })
-    const heads = [...root.querySelectorAll('.ol-table thead th')].map((th) => (th.textContent ?? '').trim())
+    // The head's leaves, left to right: the Cancelled group head spans its four columns (QA1-FIX-13).
+    const [top, under] = [...root.querySelectorAll<HTMLTableRowElement>('.ol-table thead tr')].map((r) => [...r.cells])
+    const heads = top!.flatMap((th) => (th.colSpan > 1 ? under!.splice(0, th.colSpan) : [th])).map((th) => (th.textContent ?? '').trim())
     const at = (name: RegExp) => heads.findIndex((h) => name.test(h))
-    const [succeeded, failed, cancelled, finished] = [/^Succeeded$/, /^Failed · incl\. dead-lettered$/, /^Cancelled/, /^Finished$/].map(at)
+    const [succeeded, failed, cancelled, finished] = [/^Succeeded$/, /^Failed incl\. dead-lettered$/, /^all$/, /^Finished$/].map(at)
     expect(failed, `no single Failed column in ${heads.join(' | ')}`).toBeGreaterThan(-1)
     const rows = [...root.querySelectorAll('.ol-table tbody tr')].filter((r) => r.getAttribute('data-state') !== 'unread')
     expect(rows.length).toBeGreaterThan(0)

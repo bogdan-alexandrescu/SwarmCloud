@@ -248,7 +248,8 @@ describe('WG-4, WG-6: the step card says what its figures count', () => {
     // MUTATION: print `workflow 1 of 1` when the workflow is the only one of
     // its shape -- a position in a list of one, unexplained.
     expect(text).not.toContain('workflow 1 of 1')
-    expect(text).toContain('no other workflow of this shape')
+    // One sentence since QA1-FIX-29 (overview-agents-67).
+    expect(text).toContain('No other workflow of this shape on this board')
   })
 
   it('names the generation as the lease’s and says what it is for, and the cost as this attempt’s', async () => {
@@ -260,9 +261,11 @@ describe('WG-4, WG-6: the step card says what its figures count', () => {
     })
     const text = (facts.textContent ?? '').replace(/\s+/g, ' ')
     // MUTATION: label `gen` 'generation' again in `FACT_LABEL`.
-    expect(text).toMatch(/lease generation ?3/)
+    // Folded under More about this attempt since QA1-FIX-29 (overview-agents-66).
+    const more = (facts.parentElement!.querySelector('details.wf-inspect-more')?.textContent ?? '').replace(/\s+/g, ' ')
+    expect(more).toMatch(/lease generation ?3/)
     // MUTATION: drop the `FACT_HINT` line -- '3' with nothing saying what it counts.
-    expect(text).toContain('raised by every new lease')
+    expect(more).toContain('raised by every new lease')
     // MUTATION: label `cost` 'cost' -- '$0.253' read beside the head's
     // workflow total as a second figure for the same thing (D2).
     expect(text).toMatch(/this attempt’s cost ?\$0\.253/)
@@ -330,7 +333,9 @@ describe('L6: the Changes page narrows to a selected step and says what was not 
     // '0+ files' is the console's kept notation (run-1 QA-118): '+' is a list
     // still incomplete. What it lacked is how incomplete.
     // MUTATION: drop the `known` clause from the summary.
-    expect((sum.textContent ?? '').replace(/\s+/g, ' ')).toContain('file lists known for 0 of 6 steps')
+    // With NO list known the summary says so in one sentence, and prints no
+    // '0 files' total, since QA1-FIX-29 (overview-agents-76).
+    expect((sum.textContent ?? '').replace(/\s+/g, ' ')).toContain('File lists not collected for any step')
   })
 
   it('says, by count, why no file is known: nothing collected, not nothing changed', async () => {

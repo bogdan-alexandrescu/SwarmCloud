@@ -165,7 +165,7 @@ describe('GR1: the critical path on the canvas', () => {
     expect(caption!.querySelector('.ctl-mark')).toBeNull()
     const chain = caption!.querySelector('.wf-critical-chain')!.textContent!.split(' → ')
     expect(chain).toEqual(['plan', 'spec-ui', 'impl-ui-2', 'test-ui-2', 'review-ui', 'docs-ui', 'integrate', 'e2e-1', 'canary', 'release'])
-    expect(caption!.querySelector('.wf-critical-h')!.textContent).toBe('critical path · 38m 0s run time')
+    expect(caption!.querySelector('.wf-critical-h')!.textContent).toBe('longest chain · 38m 0s run time')
     // Every named step is one the workflow has, with a task that finished.
     for (const id of chain) {
       const st = workflow.steps.find((x) => x.step_id === id)!
@@ -186,7 +186,14 @@ describe('GR1: the critical path on the canvas', () => {
     const mark = container.querySelector('.wf-critical .ctl-mark.is-absent')
     expect(mark, 'no absent Mark on the critical-path caption').toBeTruthy()
     expect(mark!.textContent).toBe('not measured')
-    expect(mark!.getAttribute('aria-label')).toMatch(/^Critical path not measured: 32 of 48 steps have no measured duration \(impl-api-1, /)
+    expect(mark!.getAttribute('aria-label')).toMatch(/^Longest chain not measured: 32 of 48 steps have no measured duration \(impl-api-1, /)
+    // OVERVIEW-AGENTS-66 (visual QA pass 1, part of #2596): the caption read
+    // "critical path not measured", jargon with no reason. It says what it is
+    // and when it is drawn. MUTATION: put back `critical path <Mark/>` and
+    // this reads "critical path not measured" again.
+    const caption = container.querySelector<HTMLElement>('.wf-critical')!
+    expect(caption.textContent!.replace(/\s+/g, ' ').trim()).toBe('longest chain not measured until every step has run')
+    expect(caption.textContent).not.toMatch(/critical path/)
     expect(container.querySelector('.wf-critical-chain')).toBeNull()
     expect(container.querySelectorAll('.wf-link.is-critical')).toHaveLength(0)
   })

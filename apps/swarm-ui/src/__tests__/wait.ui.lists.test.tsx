@@ -147,7 +147,7 @@ describe('waitingShort: the one-line reason a list row has room for', () => {
     ).toBe('quota: anthropic until 04:00Z')
     expect(
       waitingShort({ reason: 'DEPENDENCY_INCOMPLETE', summary: 'Waiting on 2 upstream steps: plan (RUNNING), scan (QUEUED)' }),
-    ).toBe('upstream: 2 steps')
+    ).toBe('waiting on plan, scan')
     expect(waitingShort({ reason: 'CHILDREN_INCOMPLETE', summary: 'Waiting for 3 of 5 children to finish (2 RUNNING, 1 QUEUED)' })).toBe(
       'children: 3 of 5 open',
     )

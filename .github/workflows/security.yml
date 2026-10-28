@@ -87,13 +87,40 @@ jobs:
             | sh -s -- -b "${RUNNER_TEMP}/bin" "v${TRIVY_VERSION}"
           echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
 
+      - name: download the trivy vulnerability DB
+        # Its own step, retried, because the download is the flaky part
+        # (#2351): mirror.gcr.io answered 404 for the DB on a push run at
+        # d6a740b1 whose earlier run had passed, the job read red with no
+        # finding behind it, and the merge step's free re-run often read red
+        # again for the same reason. Three tries at the mirror with a short
+        # backoff, then the upstream repository the mirror copies (BGD,
+        # 2026-10-27, "Both halves"). Both down still fails the job: a scan
+        # with no DB reports no vulnerability, and that is not a pass.
+        env:
+          DB_MIRROR: mirror.gcr.io/aquasec/trivy-db:2
+          DB_UPSTREAM: ghcr.io/aquasecurity/trivy-db:2
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if trivy fs --download-db-only --db-repository "${DB_MIRROR}" --no-progress .; then
+              exit 0
+            fi
+            echo "::warning::trivy DB download from ${DB_MIRROR} failed (attempt ${attempt} of 3)"
+            if [ "${attempt}" -lt 3 ]; then sleep $((attempt * 10)); fi
+          done
+          echo "::warning::falling back to ${DB_UPSTREAM}"
+          trivy fs --download-db-only --db-repository "${DB_UPSTREAM}" --no-progress . \
+            || { echo "::error::the trivy vulnerability DB could not be downloaded from ${DB_MIRROR} or ${DB_UPSTREAM}"; exit 1; }
+
       - name: trivy filesystem scan
         # Report everything (exit 0); the gate is the step after the upload.
+        # --skip-db-update: the step above fetched the DB; a second download
+        # here would meet the mirror's 404 again, unretried.
         run: |
           set -euo pipefail
           trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL \
             --ignore-unfixed --format sarif --output trivy-fs.sarif \
-            --exit-code 0 --no-progress .
+            --exit-code 0 --skip-db-update --no-progress .
 
       - name: upload SARIF
         uses: github/codeql-action/upload-sarif@v4
@@ -114,10 +141,15 @@ jobs:
         # request will have: with no base, every finding main already carries
         # would fail it, and the merge step holds a red push run at the head
         # as red. A tip that cannot be read fails here, never "no base".
+        #
+        # TRIVY_SKIP_DB_UPDATE: the gate's head scan judges against the DB the
+        # download step fetched (with its retry and fallback), never a fresh,
+        # unretried download of its own (#2351).
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
+          TRIVY_SKIP_DB_UPDATE: "true"
         run: |
           set -euo pipefail
           base="${BASE_SHA}"

@@ -92,6 +92,14 @@
   cursor: pointer;
 }
 .tl-key-toggle:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+/* AN OPEN FOLD LOOKS PRESSED (visual QA pass 1, runs-submit-36): open and
+   closed were the same button. Open wears a set filter's colours (`.tl-flt.is-on`). */
+.tl-sheet-toggle[aria-expanded='true'],
+.tl-key-toggle[aria-expanded='true'] {
+  border-color: color-mix(in srgb, var(--info) 45%, transparent);
+  background: color-mix(in srgb, var(--info) 12%, var(--surface));
+  color: var(--info);
+}
 .tl-flt.is-on {
   border-color: color-mix(in srgb, var(--info) 45%, transparent);
   background: color-mix(in srgb, var(--info) 12%, var(--surface));
@@ -159,6 +167,21 @@
   -webkit-mask-image: linear-gradient(to left, transparent 0, #000 var(--ctl-s5));
   mask-image: linear-gradient(to left, transparent 0, #000 var(--ctl-s5));
 }
+/* THE DAY TABLE'S HEADS ARE A NAME AND A QUALIFIER, TWO LINES (QA1-FIX-13,
+   runs-submit-40). One nowrap string per head ("Cancelled · requested or
+   other / after a failure / after a cancel") set the column widths, and the
+   table scrolled at 1440. The qualifier is a second line in the meta face's
+   weight, and Cancelled is a group head over its four columns. */
+.ol-th-sub {
+  display: block;
+  font-weight: 400;
+  font-size: var(--t-micro);
+}
+.ol-table th.ol-th-group { text-align: center; }
+/* The Rate cell's 95 % range is its second line: one run-on "100.0 % · 18 of
+   18 · 82.4–100.0 %" was 297 px, most of why the table still overran its
+   scroller at 1440 (the review of runs-submit-40). */
+.ol-rate-range { display: block; }
 
 /* ---- notes, strip, legend ---- */
 .tl-note,
@@ -196,8 +219,13 @@
   font-weight: 650;
   color: var(--text);
   font-variant-numeric: tabular-nums;
+  /* A FIGURE AND ITS UNIT NEVER WRAP APART (visual QA pass 1,
+     runs-submit-11): at 390 '91 %' broke at its space, '91' above '%'. */
+  white-space: nowrap;
 }
-.tl-x { display: inline-flex; gap: 6px; align-items: baseline; }
+/* The cell wraps BETWEEN its parts, so at 390 the sentence goes under the
+   figure instead of squeezing into a column beside it (runs-submit-11). */
+.tl-x { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
 /* A finished total's parts wrap BETWEEN parts, each a figure, its word and
    its separator on one line (VQA V105: a bare "·" was orphaned per line). */
 .tl-ended { flex-wrap: wrap; }
@@ -379,9 +407,12 @@
   position: absolute;
   top: 13px;
   height: 9px;
+  /* A CLOSED BAR (visual QA pass 1, runs-submit-35): an outline with no
+     bottom edge read as a hollow shape, and one reaching now ran its right
+     edge into the track's clip. Four edges, inside its own box. */
+  box-sizing: border-box;
   border: 1.5px solid var(--text-dim);
-  border-bottom: 0;
-  border-radius: 4px 4px 0 0;
+  border-radius: 4px;
   pointer-events: none;
 }
 .tl-axis .tl-trk {
@@ -732,6 +763,10 @@
      `Key`, beside `Filters · N`, closed by default; open, it is the same
      legend in the same place. Desktop keeps it always shown. */
   .tl-key-toggle { display: inline-flex; align-items: center; min-height: 44px; }
+  /* A WORKFLOW'S NOTE WRAPS ON A PHONE (visual QA pass 1, runs-submit-35):
+     '4 of 5 steps have attempts in this span · ru…' was cut at 390. A wide
+     screen keeps it to one line, with the whole note in its title. */
+  .tl-row.is-group .tl-lab small { white-space: normal; overflow-wrap: anywhere; }
   .tl-legend.tl-key { display: none; }
   .tl-legend.tl-key.is-open { display: flex; }
 }

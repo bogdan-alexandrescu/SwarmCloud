@@ -104,13 +104,20 @@ export function browserUseSay(view: BrowserUseView): string {
   return `${view.kind === 'unknown' ? 'browser use' : view.word}: ${view.detail}`
 }
 
-/** The mark and its words; a null verdict is the word and a dash. */
-function Words({ view }: { view: BrowserUseView }) {
+/**
+ * The mark and its words; a null verdict is the word and a dash. With `why`
+ * the dash is followed by its reason's head words -- `not recorded`, `not
+ * known`, `recorded when the agent ends` -- as the agent's head draws it
+ * (QA1-FIX-13, chrome-C08): "browser —" between the profile and the class said
+ * nothing about what was unknown, and the reason was only a press away.
+ */
+function Words({ view, why = false }: { view: BrowserUseView; why?: boolean }) {
   return (
     <ToneMark tone={view.tone}>
       {view.kind === 'unknown' ? (
         <>
-          {view.word} <span className="ctl-em">—</span>
+          {why ? 'browser use' : view.word} <span className="ctl-em">—</span>
+          {why && ` ${view.detail.split(':')[0]}`}
         </>
       ) : (
         view.word
@@ -151,7 +158,7 @@ export function BrowserUseFact({ view }: { view: BrowserUseView }) {
         title={browserUseSay(view)}
         onClick={() => setOpen((o) => !o)}
       >
-        <Words view={view} />
+        <Words view={view} why />
       </button>
       <span id={id} className="bu-detail" hidden={!open}>
         {view.detail}

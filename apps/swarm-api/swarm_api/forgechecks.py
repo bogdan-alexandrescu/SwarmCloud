@@ -30,7 +30,14 @@ are restated here and held to the same rules:
     test_forgechecks_per_event.py runs this rule and the merge step's over
     one table;
   * green is `success` or `skipped`, nothing else, `neutral` included;
-  * no runs, or an event's latest run not completed, is pending.
+  * no runs, or an event's latest run not completed, is pending; so is a
+    check whose every latest run not green is `cancelled` (#1778): a run
+    someone stopped waits for its re-run, and red in another event wins;
+  * a check run that finished other than `success` inside an Actions run that concluded
+    `cancelled` is read as `cancelled` when a newer run of its workflow and
+    event is at the sha or another event passed the check
+    (`cancelled_by_its_workflow`, #2582). The Actions run's conclusion is
+    what `mark_workflow_runs` puts on each check run.
 
 WHERE THIS IS DELIBERATELY WIDER than the merge step:
 
@@ -53,7 +60,7 @@ count per bucket -- passed, failed, pending, skipped -- and one entry per check
 it evaluated (`{name, state, url}`), so the run page can say "5 passed · 7
 pending · 3 skipped" and link each check, where it once said only "pending".
 These are for DISPLAY: they never decide the state, which is the rule above,
-unchanged (a `cancelled` run counts as skipped here and is still red there).
+unchanged (a `cancelled` run counts as skipped here and pending there, #1778).
 """
 
 from __future__ import annotations
@@ -63,6 +70,12 @@ from typing import Any, Mapping, Sequence
 
 #: What counts as green for a REQUIRED check (agent_worker.merge.REQUIRED_GREEN).
 REQUIRED_GREEN = frozenset({"success", "skipped"})
+#: A run someone stopped: pending, never red (#1778; `cancelled_run`,
+#: agent_worker.merge.CANCELLED_CONCLUSION).
+CANCELLED_CONCLUSION = "cancelled"
+#: The one conclusion a check run keeps inside a cancelled Actions run
+#: (`cancelled_by_its_workflow`, #2582; agent_worker.merge.PASSED_IN_ITS_RUN).
+PASSED_IN_ITS_RUN = "success"
 #: What any OTHER check run may conclude and still not hold the run
 #: (agent_worker.merge.OTHER_TOLERATED).
 OTHER_TOLERATED = frozenset({"success", "skipped", "neutral"})
@@ -139,7 +152,73 @@ def latest_per_event(runs: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any
     latest: dict[str | None, tuple[int, Mapping[str, Any]]] = {}
     for rank, (_position, run) in enumerate(ordered):
         latest[_event_group(run)] = (rank, run)
-    return [run for _rank, run in sorted(latest.values(), key=lambda item: item[0])]
+    deciding = [run for _rank, run in sorted(latest.values(), key=lambda item: item[0])]
+    return [{**run, "conclusion": CANCELLED_CONCLUSION}
+            if cancelled_by_its_workflow(run, deciding) else run for run in deciding]
+
+
+def cancelled_by_its_workflow(run: Mapping[str, Any], deciding: Sequence[Mapping[str, Any]]) -> bool:
+    """Whether a check run that finished red is read as `cancelled` because
+    its Actions run was (#2582, BGD 2026-10-28).
+
+    `ci-gate` and security.yml's folded name-keepers run under `if:
+    always()`, so in a workflow run concurrency cancelled they conclude
+    `failure` over needs that were only cancelled (PR #2565 at 968d9949). A
+    check run finished with any conclusion but `success` (`PASSED_IN_ITS_RUN`;
+    `skipped` too, which a gate under `!cancelled()` may say there), whose
+    Actions run concluded `cancelled` (`workflow_conclusion`), is read as
+    cancelled -- pending, never green -- when a newer run of the same
+    workflow and event is at the sha (`workflow_superseded`) or another
+    event's deciding run passed the check. A red check in a run nobody
+    cancelled stays red, as does one in a cancelled run with neither. The
+    worker's `merge.cancelled_by_its_workflow` is the same rule, held equal by
+    tests/unit/control_plane/test_forgechecks_cancelled_workflow_run.py.
+    """
+    if run.get("workflow_conclusion") != CANCELLED_CONCLUSION or not check_run_finished(run):
+        return False
+    if (run.get("conclusion") or "") in (PASSED_IN_ITS_RUN, CANCELLED_CONCLUSION):
+        return False
+    if run.get("workflow_superseded") is True:
+        return True
+    return any(other is not run and check_run_finished(other)
+               and (other.get("conclusion") or "") in REQUIRED_GREEN for other in deciding)
+
+
+def _int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def mark_workflow_runs(runs: Sequence[Mapping[str, Any]],
+                       workflow_runs: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Copies of `runs` (check runs), each whose check suite an Actions run
+    in `workflow_runs` (`GET actions/runs?head_sha=`) made carrying that
+    run's `workflow_conclusion` and `workflow_superseded`: whether another
+    run at the sha has the same `workflow_id`, event and head branch and a
+    larger id -- the run a concurrency group cancelled this one for, which
+    may not have created this check yet (#2582). The worker's
+    `merge.actions_suites` reads Actions runs the same way.
+    """
+    rows = [row for row in workflow_runs if isinstance(row, Mapping)]
+    marks: dict[int, tuple[Any, bool]] = {}
+    for row in rows:
+        suite, workflow, run_id = (_int(row.get("check_suite_id")), _int(row.get("workflow_id")),
+                                   _int(row.get("id")))
+        if suite is None:
+            continue
+        superseded = workflow is not None and run_id is not None and any(
+            _int(other.get("workflow_id")) == workflow
+            and other.get("event") == row.get("event")
+            and other.get("head_branch") == row.get("head_branch")
+            and (_int(other.get("id")) or 0) > run_id
+            for other in rows)
+        marks[suite] = (row.get("conclusion"), superseded)
+    out: list[dict[str, Any]] = []
+    for run in runs:
+        suite = run.get("check_suite")
+        mark = marks.get(_int(suite.get("id"))) if isinstance(suite, Mapping) else None
+        out.append(dict(run) if mark is None else
+                   {**run, "workflow_conclusion": mark[0], "workflow_superseded": mark[1]})
+    return out
 
 
 def check_run_finished(run: Mapping[str, Any]) -> bool:
@@ -158,9 +237,22 @@ def check_run_finished(run: Mapping[str, Any]) -> bool:
     return bool(run.get("conclusion")) and bool(run.get("completed_at"))
 
 
+def cancelled_run(run: Mapping[str, Any]) -> bool:
+    """A run that finished `cancelled`: pending, never red.
+
+    #1778's second expectation (BGD released bundle H09, 2026-10-27): "a
+    check whose LATEST run is cancelled is still not green and waits, rather
+    than failing the merge". A red latest run of another event still wins.
+    The worker's `merge.cancelled_run` is the same rule, held equal by
+    tests/unit/control_plane/test_forgechecks_per_event.py.
+    """
+    return check_run_finished(run) and run.get("conclusion") == CANCELLED_CONCLUSION
+
+
 def required_check_state(runs: Sequence[Mapping[str, Any]]) -> str:
     """The runs of ONE required check by its pinned App: green, pending or red,
-    decided by the latest run of each event (`latest_per_event`)."""
+    decided by the latest run of each event (`latest_per_event`); pending when
+    every latest run not green is cancelled (`cancelled_run`)."""
     latest = latest_per_event(runs)
     if not latest:
         return PENDING
@@ -168,12 +260,15 @@ def required_check_state(runs: Sequence[Mapping[str, Any]]) -> str:
         return PENDING
     if all((run.get("conclusion") or "") in REQUIRED_GREEN for run in latest):
         return GREEN
+    if all(cancelled_run(run) or (run.get("conclusion") or "") in REQUIRED_GREEN for run in latest):
+        return PENDING
     return RED
 
 
 def other_check_state(run: Mapping[str, Any]) -> str:
-    """A check run nothing requires: pending until finished, then tolerated or red."""
-    if not check_run_finished(run):
+    """A check run nothing requires: pending until finished or when cancelled
+    (`cancelled_run`), then tolerated or red."""
+    if not check_run_finished(run) or cancelled_run(run):
         return PENDING
     return GREEN if (run.get("conclusion") or "") in OTHER_TOLERATED else RED
 
@@ -286,7 +381,7 @@ def evaluate(
                 if state == RED:
                     reading.failing_runs += [
                         run for run in deciding
-                        if check_run_finished(run)
+                        if check_run_finished(run) and not cancelled_run(run)
                         and (run.get("conclusion") or "") not in REQUIRED_GREEN
                     ]
                 elif state == PENDING:

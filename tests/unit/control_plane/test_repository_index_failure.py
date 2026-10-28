@@ -73,7 +73,7 @@ def _queued_then_failed(client, db, objects, clock, error: str, **kw) -> str:
     report = _poll(client).json()["report"]
     assert report["submitted"] == 1, report
     task_id = _fail_newest(db, objects, error, **kw)
-    clock.advance(minutes=31)
+    clock.advance(minutes=121)  # past the 120-minute change throttle (#2524)
     return task_id
 
 
@@ -149,7 +149,7 @@ def test_the_poll_stops_after_two_access_failures(client, db, objects, repo_id, 
         report = _poll(client).json()["report"]
         assert report["submitted"] == 0, "a repository it cannot read is not re-run"
         assert report["held"] == {"backoff": 1}
-        clock.advance(minutes=31)
+        clock.advance(minutes=121)  # past the 120-minute change throttle (#2524)
     assert len(_tasks(db)) == 2
 
     index = _index(db, repo_id)
@@ -189,7 +189,7 @@ def test_a_failure_after_index_now_stops_the_poll_again_at_once(
     _queued_then_failed(client, db, objects, clock, NOT_FOUND)
     client.post(f"/v1/repositories/{repo_id}/index", json={}, headers=auth_header("alice"))
     _fail_newest(db, objects, NOT_FOUND)
-    clock.advance(minutes=31)
+    clock.advance(minutes=121)  # past the 120-minute change throttle (#2524)
 
     report = _poll(client).json()["report"]
     assert report["submitted"] == 0 and report["held"] == {"backoff": 1}
@@ -200,7 +200,7 @@ def test_a_credential_change_lifts_the_backoff(client, db, objects, repo_id, clo
     _queued_then_failed(client, db, objects, clock, NOT_FOUND)
     _queued_then_failed(client, db, objects, clock, NOT_FOUND)
     assert _poll(client).json()["report"]["held"] == {"backoff": 1}
-    clock.advance(minutes=31)
+    clock.advance(minutes=121)  # past the 120-minute change throttle (#2524)
 
     # Setup > Git tokens: a token for this repository is registered.
     record = record_for_slot("eng", Scope.REPOSITORY, repo_id=repo_id,

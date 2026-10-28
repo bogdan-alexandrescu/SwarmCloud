@@ -207,7 +207,7 @@ describe('VQ-007: Overview\'s "On this page" carries the page\'s counts', () => 
       [...document.querySelectorAll<HTMLAnchorElement>('.sk-panel a.sk-pk')].find((a) => a.querySelector('.sk-pl')?.textContent === label)
     await waitFor(() => expect(jump('Running now')?.querySelector('.sk-cnt')).not.toBeNull(), { timeout: 10000 })
     const note = document.querySelector('#ov-running')?.textContent ?? ''
-    const held = /(\d+) hold capacity/.exec(note)?.[1]
+    const held = /(\d+) listed/.exec(note)?.[1]
     expect(held, `Running now's note: ${note}`).toBeDefined()
     expect(jump('Running now')!.querySelector('.sk-cnt')!.textContent!.replace('≥', '')).toBe(held)
     await waitFor(() => expect(jump('Waiting, and why')?.querySelector('.sk-cnt')).not.toBeNull(), { timeout: 10000 })
