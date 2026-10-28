@@ -249,6 +249,14 @@ load_env() {
 # buckets and two Cloud Run services. qa-console@ is NOT one of them -- it is
 # this platform's own (terraform/bootstrap/qa_identity.tf). Nothing this repo
 # runs may delete, modify or even point kubectl at anything in this list.
+#
+# Neither oracle-api entry is on it: BGD decided on 2026-10-27 (#1835, answer
+# "Both entries") to remove the oracle-api@ service account AND the bare
+# "oracle-api" Cloud Run service name. The account is a SwarmCloud principal
+# (the service workspace u-or-9a0792, a front-door IAP member, in
+# ALLOWED_USERS), and on this list the two made register-tenant.sh's S1 and the
+# plan guard refuse this platform's own tenant. Do not re-add either.
+# "oracle-web" and the other oracle-* service accounts stay.
 SHARED_DENY_LIST=(
   "agents-staging"
   "agents-staging-vpc"
@@ -276,11 +284,9 @@ SHARED_DENY_LIST=(
   "ai-studio-api@saga-agents-staging.iam.gserviceaccount.com"
   "ai-studio-deployer@saga-agents-staging.iam.gserviceaccount.com"
   "ai-studio-runner@saga-agents-staging.iam.gserviceaccount.com"
-  "oracle-api@saga-agents-staging.iam.gserviceaccount.com"
   "oracle-ticker@saga-agents-staging.iam.gserviceaccount.com"
   "oracle-web@saga-agents-staging.iam.gserviceaccount.com"
   "promptlab-api@saga-agents-staging.iam.gserviceaccount.com"
-  "oracle-api"
   "oracle-web"
 )
 

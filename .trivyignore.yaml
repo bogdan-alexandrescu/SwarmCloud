@@ -113,6 +113,16 @@ vulnerabilities:
   # expiry is shorter: replace each tool with a vendor release built on the
   # fixed Go as soon as one ships (docs/versions.md), re-scanning first.
   #
+  # Re-dated 2026-10-28 from that day's expiry, one more week, because no
+  # vendor had shipped yet. Measured 2026-10-28 ~03:00Z from each binary's
+  # embedded Go version: kubectl v1.37.1, the newest release
+  # (dl.k8s.io/release/stable.txt), is built with go1.26.8; google-cloud-cli
+  # 591.0.0, the newest in the rapid channel's components-2.json, ships
+  # gcloud-crc32c on go1.27.2 and gke-gcloud-auth-plugin on go1.27.1. All are
+  # below the fixed 1.26.10 / 1.27.3, so bumping a pin removes nothing. The
+  # expiry had refused workspace-apply on this id alone in PR 2548's build
+  # (run 40620118018).
+  #
   # Extended one week on 2026-10-28, the day it expired: every image build was
   # refused again (workspace-apply in PR 2592's build-check). Re-measured that
   # day from each binary's build info: kubectl 1.36.6 now ships on go1.26.10
