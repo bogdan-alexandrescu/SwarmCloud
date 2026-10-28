@@ -191,7 +191,9 @@ describe('on a phone the owner column is a select', () => {
 
     fireEvent.change(select, { target: { value: 'far-org' } })
     const far = document.querySelector('li.ac-owner[data-owner="far-org"]') as HTMLElement
-    expect(within(far).getByRole('link', { name: 'Install on far-org' })).toBeTruthy()
+    // An organisation not installed is asked for, as on the Connection tab (QA1-FIX-01 config-04).
+    expect(within(far).getByRole('button', { name: 'Request install' })).toBeTruthy()
+    expect(within(far).queryByRole('link', { name: 'Install on far-org' })).toBeNull()
   })
 
   it('keeps the selected owner across a reload, in this tab’s session', async () => {
