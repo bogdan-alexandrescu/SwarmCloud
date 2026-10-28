@@ -92,6 +92,18 @@
 .ae-acts { justify-content: flex-start; margin: 0; padding-top: 12px; border-top: 1px solid var(--line-soft); }
 .ae-acts > .c-btn-wrap { flex-basis: 100%; }
 
+/* ---- Scope, Run, Plan, Merge and Approvers: segmented (A3-SEGMENTED) ------ */
+/* The shared `.c-seg`, as Cadence's presets and Start draw it. Above a phone
+   it is held to its column too: "Chosen repositories | Every registered
+   repository" is wider than a sheet-narrowed column, and a `flex: none`
+   control would run out of the card. A segment that does not fit starts a
+   second row at the control's height, its top hairline drawn as the shared
+   phone rule draws it. On a phone that rule already wraps it. */
+@media (min-width: 561px) {
+  .ae-seg.c-seg { height: auto; flex-wrap: wrap; max-width: 100%; }
+  .ae-seg.c-seg > button { min-height: var(--h-ctl); border-top: 1px solid var(--line); margin-top: -1px; }
+}
+
 /* ---- a phone: one column, no sideways scroll at 390 ------------------------ */
 @media (max-width: 560px) {
   .ae-g3 { grid-template-columns: minmax(0, 1fr); }
