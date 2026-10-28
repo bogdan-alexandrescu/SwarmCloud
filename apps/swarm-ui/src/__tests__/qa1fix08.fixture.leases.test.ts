@@ -20,7 +20,7 @@ describe('the fixture build: every lease names its profile\'s pools', () => {
     expect(leases.status).toBe('ok')
     expect(capacity.status).toBe('ok')
     if (leases.status !== 'ok' || capacity.status !== 'ok') return
-    const want = [...capacity.data.runner_profiles['claude-code'].pools].sort()
+    const want = [...(capacity.data.runner_profiles['claude-code']?.pools ?? [])].sort()
     expect(want.length).toBe(7)
     // MUTATION: `pools: ['global', 'tenant:u-bogdan']` -- two of seven.
     for (const l of leases.data.leases) expect([...l.pools].sort(), l.lease_id).toEqual(want)
