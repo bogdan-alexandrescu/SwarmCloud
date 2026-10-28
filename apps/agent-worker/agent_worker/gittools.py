@@ -1100,7 +1100,10 @@ class GitTools:
 
     def pr_checks(self, pr: int | None, *, request_id: str) -> dict[str, Any]:
         payload = self.call("pr_checks", {"pr": pr}, request_id=request_id)
-        return {k: payload[k] for k in ("pr", "head_sha", "state", "rows") if k in payload}
+        # `source`: where swarm-api read the check runs -- "actions_jobs" for a
+        # credential that may not read check runs, which omits other Apps' (#1188).
+        return {k: payload[k] for k in ("pr", "head_sha", "state", "rows", "source")
+                if k in payload}
 
     def relay(self, tool: str, args: dict[str, Any], *, request_id: str) -> dict[str, Any]:
         """An AU-1 tool: swarm-api reads or writes GitHub and answers; the

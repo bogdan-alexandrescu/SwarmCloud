@@ -318,6 +318,17 @@ def refusal_code(answer: dict[str, Any] | None) -> str | None:
     return None
 
 
+def refusal_message(answer: dict[str, Any] | None, limit: int = 400) -> str | None:
+    """A refused answer's sentence, on one line and cut (#1188): which read,
+    which HTTP status. swarm-api scrubs it of the call's token before it
+    leaves; it is a constant sentence about the forge, never a credential."""
+    refused = answer.get("refused") if isinstance(answer, dict) else None
+    message = refused.get("message") if isinstance(refused, dict) else None
+    if not isinstance(message, str) or not message.strip():
+        return None
+    return " ".join(message.split())[:limit]
+
+
 def result_of(answer: dict[str, Any] | None) -> dict[str, Any]:
     """A successful answer's result (`{"tool", "result"}`), else {}."""
     if isinstance(answer, dict) and isinstance(answer.get("result"), dict):
@@ -443,9 +454,12 @@ def check_rebase(lane: Role, rebase: Role) -> Verdict:
         # The audit rows and the agent's answer tell a forge_refused (the
         # sandbox credential's scope) from a call the agent never made.
         audited = [f"{r.get('result')} {r.get('code')}" for r in rebase.rows("pr_checks")]
+        answered = rebase.answer('pr-checks')
+        sentence = refusal_message(answered)
         problems.append(f"no pr_checks call succeeded (audited: {audited or 'none'}; "
                         f"the agent was answered "
-                        f"{refusal_code(rebase.answer('pr-checks')) or 'nothing'})")
+                        f"{refusal_code(answered) or 'nothing'})"
+                        + (f": {sentence}" if sentence else ""))
     else:
         if reading.get("pr") != number:
             problems.append(f"pr_checks read #{reading.get('pr')}, not the lane's #{number}")
@@ -463,7 +477,8 @@ def check_rebase(lane: Role, rebase: Role) -> Verdict:
         f"fetched {branch} at {own[0][:12]}, rebased onto main {main[-1][:12]} through the "
         f"planted conflict in {PLANTED}, pushed {push['new_sha'][:12]} as an audited rewrite, "
         f"and pr_checks read #{number} at that head "
-        f"({result_of(rebase.answer('pr-checks')).get('state') or 'state not recorded'}); the "
+        f"({result_of(rebase.answer('pr-checks')).get('state') or 'state not recorded'}, "
+        f"from {result_of(rebase.answer('pr-checks')).get('source') or 'an unnamed source'}); the "
         f"runner's {len(rebase.env['names'])} environment variables hold no forge credential"
     )
 
@@ -648,6 +663,35 @@ def test_a_refused_pr_checks_call_is_named_by_its_code(tmp_path: Any) -> None:
     assert verdict == "FAIL", reason
     assert ("no pr_checks call succeeded (audited: ['refused forge_refused']; "
             "the agent was answered forge_refused)") in reason, reason
+
+
+def test_a_refused_pr_checks_call_names_the_refusals_sentence(tmp_path: Any) -> None:
+    """#1188: from 2026-10-23 to 2026-10-27 every red run of this group said
+    `forge_refused` and nothing more, and swarm-api's log -- where the
+    sentence was -- is not readable from the tenant that measured it. The
+    agent records the whole answer, sentence and all: check [1] names it,
+    so a 403 on the check-runs read is told from a 401 or another read."""
+    sentence = ("GitHub refused the tenant's forge credential for the check runs at "
+                "o/r@0123456789ab (HTTP 403): the credential needs `checks: read`")
+    files = {
+        "lane/task": "task_lane\n", "lane/state": "SUCCEEDED\n",
+        "lane/doc.json": json.dumps({"result_summary": {"git": {"pull_request": {"number": 7}}}}),
+        "lane/calls.json": json.dumps({"calls": []}),
+        "rebase/task": "task_rebase\n", "rebase/state": "SUCCEEDED\n",
+        "rebase/calls.json": json.dumps({"calls": [
+            {"tool": "pr_checks", "result": "refused", "code": "forge_refused", "at": "1"}]}),
+        f"rebase/{ANSWERS}": json.dumps({"step": "pr-checks", "answer": {
+            "refused": {"code": "forge_refused", "message": sentence}}}) + "\n",
+    }
+    for name, text in files.items():
+        path = os.path.join(str(tmp_path), name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    verdict, reason = check_rebase(Role(str(tmp_path), "lane"), Role(str(tmp_path), "rebase"))
+    assert verdict == "FAIL", reason
+    # MUTATION: name the code alone (as before) and the sentence is not in the reason.
+    assert "check runs at o/r@0123456789ab (HTTP 403)" in reason, reason
 
 
 def main(argv: Iterable[str] | None = None) -> int:
