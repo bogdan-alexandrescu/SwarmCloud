@@ -9,8 +9,10 @@
 //         span, so `demo-scribe` never breaks at its hyphen.
 //   V090  Every "runs out first" outline is ONE width, not a 5ch minimum a
 //         six-character figure grows past.
-//   V195  A Runs out first entry holds one line at one width: its pool name
-//         is cut, never its `(5/5) fits 0`.
+//   V195  A Runs out first entry never breaks its `(5/5) fits 0`. Its pool
+//         name was cut at 21ch until capacity-15 (QA1-FIX-19, 2026-10-28):
+//         the entry now sizes to its content and a name that does not fit
+//         wraps, whole, instead of ellipsizing.
 //   V091  A family's sticky head sits under the bell bar (`--ctl-bar-h`), not
 //         at the page's top edge where the bar covers it.
 //   FIT   (review of U01, 2026-10-27) The box and entry widths V090/V195 fix
@@ -20,7 +22,8 @@
 // BREAK IT: drop `max-width: 100%` from `.rt-pool-chips` -- V162 fails; put
 // `users.join(', ')` back in one span -- V194 fails; `min-width: 5ch` for the
 // box's width -- V090 fails; `white-space: normal` on `.cap-mx-bind` -- V195
-// fails; `top: 0` on the family head -- V091 fails; `inline-size: 9ch` on the
+// fails; `overflow-wrap: normal` on the entry's name, or `flex-wrap: nowrap`
+// on the entry -- FIT fails; `top: 0` on the family head -- V091 fails; `inline-size: 9ch` on the
 // box or `34ch` on the entry -- FIT fails.
 
 import { cleanup, render, screen } from '@testing-library/react'
@@ -187,8 +190,8 @@ describe('V090: every "runs out first" outline is one width', () => {
   })
 })
 
-describe('V195: a Runs out first entry holds one line at one width', () => {
-  it('cuts the pool name and never wraps its use and fits, beside a 70-character profile name', () => {
+describe('V195: a Runs out first entry never breaks its use and fits', () => {
+  it('wraps the pool name, whole, and never wraps its use and fits, beside a 70-character profile name', () => {
     render(<ProfileMatrix capacity={CAPACITY} />)
     const entries = [...document.querySelectorAll<HTMLElement>('.cap-mx td.cap-mx-first > .cap-mx-bind')]
     expect(entries.length).toBe(3)
@@ -196,13 +199,15 @@ describe('V195: a Runs out first entry holds one line at one width', () => {
       for (const e of entries) {
         expect(painted(e, 'white-space', env), `${e.textContent} wraps inside itself`).toBe('nowrap')
         expect(painted(e, 'display', env)).toBe('flex')
-        expect(painted(e, 'inline-size', env), 'entries are not one width').toBe('21ch')
+        // Sized to its content (capacity-15), held to its cell.
+        expect(painted(e, 'inline-size', env)).toBe('auto')
         expect(painted(e, 'max-inline-size', env)).toBe('100%')
         const name = e.querySelector<HTMLElement>(':scope > .cap-mx-bind-pool')
-        expect(name, `${e.textContent}: the pool name is in no cuttable span`).not.toBeNull()
+        expect(name, `${e.textContent}: the pool name is in no span of its own`).not.toBeNull()
         expect(painted(name!, 'min-width', env)).toBe('0')
-        expect(painted(name!, 'overflow', env)).toBe('hidden')
-        expect(painted(name!, 'text-overflow', env)).toBe('ellipsis')
+        expect(painted(name!, 'white-space', env)).toBe('normal')
+        expect(painted(name!, 'overflow-wrap', env)).toBe('anywhere')
+        expect(painted(name!, 'overflow', env)).toBe('visible')
         for (const tail of e.querySelectorAll<HTMLElement>(':scope > .cap-mx-bind-use, :scope > small')) {
           expect(painted(tail, 'flex-shrink', env), `${tail.textContent} gives way to the name`).toBe('0')
         }
@@ -266,13 +271,26 @@ describe('FIT: the matrix stays inside its scroller at 1440 (review of U01, 2026
     return Number(m![1])
   }
 
-  it('sums the six family columns, the Runs out first entry and the rest to no more than the scroller', () => {
+  it('sums the six family columns, the Runs out first floor and the rest to no more than the scroller', () => {
     render(<ProfileMatrix capacity={CAPACITY} />)
     const box = document.querySelector<HTMLElement>('.cap-mx td > .cap-mx-v')!
-    const entry = document.querySelector<HTMLElement>('.cap-mx td.cap-mx-first > .cap-mx-bind')!
+    const entries = [...document.querySelectorAll<HTMLElement>('.cap-mx td.cap-mx-first > .cap-mx-bind')]
+    expect(entries.length).toBe(3)
     expect(painted(box, 'box-sizing', WIDE)).toBe('content-box')
     const boxPx = ch(painted(box, 'inline-size', WIDE)) * MONO_CH + BOX_PAD
-    const entryPx = ch(painted(entry, 'inline-size', WIDE)) * SANS_CH
+    // NO FIXED ENTRY WIDTH SINCE capacity-15 (2026-10-28): an entry is as wide
+    // as its content, and the column gives width back down to its min-content.
+    // Its name may break anywhere and the entry wraps between its pieces, so
+    // that floor is its widest unbroken piece -- `(120000/125000)` or `fits
+    // 0` -- in ch.
+    const floor = entries.map((e) => {
+      const name = e.querySelector<HTMLElement>(':scope > .cap-mx-bind-pool')!
+      expect(painted(name, 'overflow-wrap', WIDE), 'the name cannot give width back').toBe('anywhere')
+      expect(painted(e, 'flex-wrap', WIDE), 'the use and the fits cannot part').toBe('wrap')
+      const pieces = [...e.querySelectorAll<HTMLElement>(':scope > .cap-mx-bind-use, :scope > small')]
+      return Math.max(1, ...pieces.map((t) => (t.textContent ?? '').trim().length))
+    })
+    const entryPx = Math.max(...floor) * SANS_CH
     const table = REST + families(boxPx) + entryPx + CELL_PAD
     expect(Math.round(table), `the matrix is ${Math.round(table)}px in a ${SCROLLER}px scroller`).toBeLessThanOrEqual(SCROLLER)
     // The control: the 10-27 widths reproduce the review's measurement.
