@@ -3004,6 +3004,53 @@ def validate_step_routing(
     return plan
 
 
+def _is_agent_step(step: StepSpec) -> bool:
+    """A step whose profile runs an agent: not a worker action (post-verdict,
+    merge) and not a control-plane step (`await-input`). An unknown profile
+    counts as an agent; `validate_runner_profile` has refused it already."""
+    profile = RUNNER_PROFILES.get(step.runner_profile or "")
+    return profile is None or (profile.worker_action is None and not profile.control_plane)
+
+
+def reader_step_ids(steps: Sequence[StepSpec], *, strategy: str) -> frozenset[str]:
+    """The `direct-pr` agent steps that are readers: stored with
+    `allow_empty_diff` so an empty diff ends them SUCCEEDED `no_change` (#2662).
+
+    Under `direct-pr` the worker holds every step to opening a pull request,
+    and only `allow_empty_diff` (or `verification.md`) lets one that committed
+    nothing succeed. A step that another agent step `depends_on` (or stages a
+    file from through `input_from`) and that no step `builds_on` is a reader:
+    its dependants consume its artifacts, never its branch. A read-only review
+    that writes `review.md` and changes nothing did its job; failing it
+    `published_nothing:` swept the fix behind it (wf_ea38b900). If it does
+    commit, it still opens its pull request: the flag covers an empty diff
+    and nothing else.
+
+    Left out, keeping today's obligation:
+
+    * a step another step `builds_on` -- its branch is the deliverable the
+      builder clones (#1225);
+    * a step nothing depends on -- its pull request is the workflow's result;
+    * a step only a worker action or a control-plane step depends on -- the
+      merge step `plan_merge` appends under `direct-pr` merges the pull
+      request this step opens, so that step must open one;
+    * every step under any other strategy, which stores the block it did.
+    """
+    if strategy != "direct-pr":
+        return frozenset()
+    agents = [step for step in steps if _is_agent_step(step)]
+    built_on = {step.builds_on for step in steps if step.builds_on}
+    read = {
+        upstream
+        for step in agents
+        for upstream in (*step.depends_on, *step.input_from)
+    }
+    return frozenset(
+        step.step_id for step in agents
+        if step.step_id in read and step.step_id not in built_on
+    )
+
+
 # --------------------------------------------------------------------------
 # The `merge` step (contract request 47)
 # --------------------------------------------------------------------------
