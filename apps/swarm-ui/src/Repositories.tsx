@@ -6,7 +6,7 @@ import { useSetupSteps } from './ConfigSetup'
 import { addressToPath } from './paths'
 import { ReachableRepositories } from './ReachableRepositories'
 import { HEAD_UNREAD, WORKFLOW_FILES_WHY, freshness, indexCredentialWords, repoName, scheduleWords, shortSha, type RepoRecord } from './RepositoriesData'
-import { REGISTER, GT_PAGE, TestsMapped, UrConfirmIndex, UrFreshPill, UrLink, UrNavButton, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
+import { REGISTER, GT_PAGE, TestsMapped, UrConfirmIndex, UrFreshPill, UrGraphCacheSection, UrLink, UrNavButton, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
 import { RegisterRepository } from './RepositoriesRegister'
 import { RepositoryDetail } from './RepositoriesDetail'
 import { GitTokensPage, PermissionsPage } from './GitTokens'
@@ -16,7 +16,7 @@ import type { ForgeRepoStatus, RepoCounts } from './api'
 import type { AccessGrant } from './types'
 import type { QaLink } from './qaTargetsApi'
 import { useRoleGate } from './Profile'
-import { CountNote, PageHead } from './Shell'
+import { PageHead } from './Shell'
 import { timeAgo } from './types'
 import './styles/repositories.css'
 
@@ -377,9 +377,9 @@ function RepositoryList({
     count !== null ? (
       // The dashed cards are drawn in the same grid, so the note counts them apart (S3a).
       missing !== null && missing.length > 0 ? (
-        `${count} registered · ${missing.length} chosen, not registered`
+        `Registered repositories · ${count} · ${missing.length} chosen, not registered`
       ) : (
-        `${count} registered`
+        `Registered repositories · ${count}`
       )
     ) : state.status === 'loading' ? (
       'Reading the registered repositories…'
@@ -436,7 +436,9 @@ function RepositoryList({
           {failed}
         </Banner>
       )}
-      <CountNote>{meta}</CountNote>
+      {/* THE COUNT HEADS THE CARD GRID (QA1 config-19). As a lone note,
+          `3 registered` floated between the reach table and the cards. */}
+      <h3 className="c-count-note">{meta}</h3>
       <UrRegion
         state={state}
         route="GET /v1/repositories"
@@ -886,7 +888,7 @@ function RepoCard({
         )}
         {onRemove !== undefined && (
           <Button size="sm" kind="danger" onClick={onRemove}>
-            Remove
+            Unregister
           </Button>
         )}
       </div>
@@ -900,6 +902,8 @@ function RepoCard({
           onCancel={onCancel}
         />
       )}
+      {/* THE CACHE SECTION, LAST AND FOLDED (graph-answer-cache.md §5.1): it reads nothing until opened. */}
+      <UrGraphCacheSection r={r} />
     </Card>
   )
 }

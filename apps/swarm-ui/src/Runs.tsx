@@ -370,14 +370,16 @@ export function breakAt(text: string, marks: RegExp = /::|[/#_]/g): ReactNode[] 
 }
 
 /** A link inside the app: an href for a new tab, `go` for a plain click. */
-function InApp({ to, href, go, children, cut = false }: {
+function InApp({ to, href, go, children, cut = false, words = false }: {
   to: string; href: string; go: (to: string) => void; children: string
   /** A single-token id: one line, cut with an ellipsis (`.rn-id`), whole in its title. */
   cut?: boolean
+  /** Words, not an id (`planner agent`, QA1 runs-submit-27): set in the page's face, not mono. */
+  words?: boolean
 }) {
   // Its whole text is its title: an id cut to its card says what it was (D3).
   return (
-    <a href={href} className={cut ? 'mono rn-id' : 'mono'} title={children} onClick={(e) => {
+    <a href={href} className={cut ? 'mono rn-id' : words ? undefined : 'mono'} title={children} onClick={(e) => {
       if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
       e.preventDefault()
       go(to)
@@ -1176,9 +1178,9 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
                 {' '}gated on its verdict · every step runs as claude-code
               </p>
               <p className="rn-plan-facts">
-                <Chip title="The planner's call: one agent, or a workflow of several steps">
-                  {run.plan.mode === 'single' ? 'single agent' : run.plan.mode === 'workflow' ? 'workflow' : 'mode not stated'}
-                </Chip>
+                {run.plan.mode === 'single' || run.plan.mode === 'workflow'
+                  ? <Chip title="The planner's call: one agent, or a workflow of several steps">{run.plan.mode === 'single' ? 'single agent' : 'workflow'}</Chip>
+                  : <span className="sb-note" title="The planner did not say whether this is one agent or a workflow">mode not stated</span>}
                 {run.plan.estimate
                   ? <Chip title="The planner's estimate for the whole plan">estimate {run.plan.estimate}</Chip>
                   : <span className="sb-note">no estimate given</span>}
@@ -1242,8 +1244,13 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
               <b>Planner</b>
               {run.planner_task_id === ''
                 ? <i className="ctl-em" title="The run records no planner agent.">&mdash; not recorded</i>
-                : <InApp go={go} cut to={`work/task/${encodeURIComponent(run.planner_task_id)}`}
-                  href={`/agents/recent/${encodeURIComponent(run.planner_task_id)}`}>{run.planner_task_id}</InApp>}
+                : <InApp go={go} words to={`work/task/${encodeURIComponent(run.planner_task_id)}`}
+                  href={`/agents/recent/${encodeURIComponent(run.planner_task_id)}`}>planner agent</InApp>}
+              {/* THE LINK NAMES THE PLANNER (QA1 runs-submit-27): its raw id was the
+                  link's text. The link is words now, so it wraps; the id follows
+                  on its own row as a note, cut to the card as the link was
+                  (`.rn-id`, D3), whole in its title. */}
+              {run.planner_task_id !== '' && <span className="sb-note rn-id" title={run.planner_task_id}>{run.planner_task_id}</span>}
             </li>
             <li className={run.workflow_id === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>Workflow</b>

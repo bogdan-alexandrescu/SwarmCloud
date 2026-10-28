@@ -259,6 +259,13 @@
 @container ag-pane (min-width: 480px) and (max-width: 639px) {
   @media (min-height: 700px) {
     .dt-res-body > .dt-strip { position: sticky; top: 0; z-index: 2; }
+    /* UNDER THE STUCK TAB STRIP, IN THE SPLIT (AGENT-HEAD-B, BGD's pick AH1 B,
+       2026-10-28, part of #2596). There the column, not the pane, is the
+       scroller (agents.css), and a sticky inset is measured from its content
+       edge, 18px inside its top: at `top: 0` the strip stuck behind the tabs.
+       It sticks at the tabs' foot: their measured height (`--ag-tabs-h`,
+       AgentSplit.tsx; 57px, one row, until measured) less those 18px. */
+    .ag-split .dt-res-body > .dt-strip { top: calc(var(--ag-tabs-h, 57px) - 18px); }
   }
   /* FIVE FIGURES IN ~115px EACH, AND NO TALLER THAN THEY NEED (V058, visual
      QA #1038). In a 600px pane `Peak memory` was cut to `26.7 Mi…`, Cost's

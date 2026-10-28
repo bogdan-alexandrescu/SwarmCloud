@@ -3590,6 +3590,11 @@ pre.err.full { max-height: none; white-space: pre-wrap; }
    Liveness.tsx's half.) */
 .lv-word { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text); }
 .lv-copy { color: var(--text-faint); font-size: var(--t-micro); }
+/* A STATE IS A WORD, NOT A VALUE (QA1-FIX-32, overview-agents-59): a task
+   outside a slot has no heartbeat to time, and its badge word is its state
+   (`ready`, Liveness.tsx `not-started`), which the mono 600 face above drew
+   as a reading (`ready not dispatched`). It is the line's plain sans. */
+.liveness[data-liveness="not-started"] .lv-word { font-family: var(--font); font-weight: 400; }
 /* THE LIVE PULSE, under its own name. It was a second `@keyframes pulse`,
    which silently replaced the skeleton's (see `.skeleton`); every live mark --
    this dot, `.ctl-dot.is-live`, `.ctl-chip.is-live > i` -- names it here.

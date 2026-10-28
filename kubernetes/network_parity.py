@@ -40,8 +40,17 @@ shape, judged by the same function, against the same range read from the
 service -- which is how a terraform subnet that is not the one swarm-api
 actually egresses from is caught.
 
-The shape rules for those policies -- `check_live_egress`, `check_live_ingress`
-and `check_system_deny` -- live here, once: tests/unit/scripts/test_live_netpol.py
+THE GRAPH SERVICE'S STATS PORT (docs/design/graph-answer-cache.md §5.3, lane
+CACHE-2-NETWORK), with `--graph-ingress`. `swarm-graph-ingress`
+(kubernetes/swarm-system/swarm-graph.yaml, rendered by
+terraform/infra/graph_service.tf from the same subnet as the relay's) admits
+tenant namespaces on TCP 8080 (/mcp), and swarm-api's range and the
+swarm-graph pods of swarm-system on TCP 8081 (the stats), each rule one port
+and nothing else: swarm-api never reaches /mcp and a tenant never reaches the
+stats. `check_graph_ingress` judges it, against the same `--live` input.
+
+The shape rules for those policies -- `check_live_egress`, `check_live_ingress`,
+`check_system_deny` and `check_graph_ingress` -- live here, once: tests/unit/scripts/test_live_netpol.py
 judges the RENDERED policies with the same functions, so a rule cannot be
 restated in the tests and drift from what is checked against the cluster.
 They compare exact shapes, not "allows at least": every widening -- a second
@@ -105,6 +114,21 @@ TENANT_NAMESPACE_SELECTOR = {
     "matchExpressions": [{"key": "swarm-tenant", "operator": "Exists"}],
 }
 TENANT_POD_PEER = {"namespaceSelector": TENANT_NAMESPACE_SELECTOR, "podSelector": LIVE_POD_SELECTOR}
+
+# -- the graph service's stats port (CACHE-2-NETWORK) ----------------------------
+
+#: kubernetes/swarm-system/swarm-graph.yaml's ingress policy.
+GRAPH_INGRESS_POLICY = "swarm-graph-ingress"
+#: /mcp (swarm_graph.server.PORT) and the stats (swarm_graph.stats.STATS_PORT);
+#: tests/unit/scripts/test_graph_service_manifest.py holds both to the service.
+GRAPH_PORT = 8080
+GRAPH_STATS_PORT = 8081
+GRAPH_POD_SELECTOR = {"matchLabels": {"app.kubernetes.io/name": "swarm-graph"}}
+#: Any pod of a tenant namespace (graph-service.md §2.1): a namespace selector
+#: alone, no pod selector.
+GRAPH_TENANT_PEER = {"namespaceSelector": TENANT_NAMESPACE_SELECTOR}
+#: The swarm-graph pods of the policy's own namespace: a bare pod selector.
+GRAPH_PEER_PODS = {"podSelector": GRAPH_POD_SELECTOR}
 
 
 def namespace_selector_matches(selector: dict[str, Any], labels: dict[str, str]) -> bool:
@@ -189,6 +213,39 @@ def check_live_ingress(policy: dict[str, Any], api_cidr: str, what: str = LIVE_I
     for wanted, name in ((TENANT_POD_PEER, "labelled tenant pods"), (api_peer, f"swarm-api's {api_cidr}")):
         if wanted not in peers:
             problems.append(f"{what}: does not admit {name}")
+    return problems
+
+
+def check_graph_ingress(policy: dict[str, Any], api_cidr: str) -> list[str]:
+    """`swarm-graph-ingress`: exactly three rules, each one peer on one port --
+    tenant namespaces on 8080, swarm-api's range `api_cidr` on 8081, the
+    swarm-graph pods of swarm-system on 8081 -- and nothing more."""
+    what = GRAPH_INGRESS_POLICY
+    metadata = policy.get("metadata") or {}
+    spec = policy.get("spec") or {}
+    problems: list[str] = []
+    if metadata.get("namespace") != SYSTEM_NAMESPACE:
+        problems.append(f"{what}: in namespace {metadata.get('namespace')}, not {SYSTEM_NAMESPACE}")
+    if spec.get("podSelector") != GRAPH_POD_SELECTOR:
+        problems.append(f"{what}: selects {spec.get('podSelector')}, not {GRAPH_POD_SELECTOR}")
+    if spec.get("policyTypes") != ["Ingress"]:
+        problems.append(f"{what}: policyTypes {spec.get('policyTypes')}, not ['Ingress']")
+    wanted = [
+        (GRAPH_TENANT_PEER, GRAPH_PORT, "tenant namespaces"),
+        ({"ipBlock": {"cidr": api_cidr}}, GRAPH_STATS_PORT, f"swarm-api's {api_cidr}"),
+        (GRAPH_PEER_PODS, GRAPH_STATS_PORT, "the swarm-graph pods"),
+    ]
+    expected = [{"from": [peer], "ports": [{"protocol": "TCP", "port": port}]} for peer, port, _ in wanted]
+    rules = spec.get("ingress") or []
+    # Exact rules, in any order: a second port, a second peer (an OR), a
+    # selector widened or dropped, or a rule with no ports or no peer (every
+    # port, every peer) is a rule that is not one of these three.
+    for i, rule in enumerate(rules):
+        if rule not in expected:
+            problems.append(f"{what}: rule {i} admits {json.dumps(rule, sort_keys=True)}, which is none of its three rules")
+    for rule, (_, port, name) in zip(expected, wanted):
+        if rules.count(rule) != 1:
+            problems.append(f"{what}: does not admit {name} on TCP {port} exactly once")
     return problems
 
 
@@ -338,6 +395,30 @@ def _main_live_ingress(live: dict[str, Any], items: list[dict[str, Any]]) -> int
     return 1 if differ else 0
 
 
+def _main_graph_ingress(live: dict[str, Any], items: list[dict[str, Any]]) -> int:
+    """The graph service's ingress in swarm-system, against swarm-api's live range."""
+    api_cidr = live.get("swarm_api_egress_cidr")
+    source = live.get("source", "swarm-api's subnet")
+    if not api_cidr:
+        print("FAIL the live input has no swarm_api_egress_cidr; nothing was compared")
+        return 1
+    where = f"{SYSTEM_NAMESPACE}/{GRAPH_INGRESS_POLICY}"
+    found = [
+        p for p in items
+        if (p.get("metadata") or {}).get("namespace") == SYSTEM_NAMESPACE
+        and (p.get("metadata") or {}).get("name") == GRAPH_INGRESS_POLICY
+    ]
+    # A missing policy is a failure, never a pass: nothing was compared.
+    problems = check_graph_ingress(found[0], api_cidr) if found else [f"{where} does not exist"]
+    if problems:
+        print(f"FAIL {where}")
+        for problem in problems:
+            print(f"       {problem}")
+        return 1
+    print(f"  ok {where} matches {api_cidr} ({source})")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--live", required=True, help="JSON: pod_cidr, service_cidr, cluster_dns_ip, node_local_dns_ip, source")
@@ -351,6 +432,14 @@ def main(argv: list[str] | None = None) -> int:
             "--live's swarm_api_egress_cidr instead of the tenant egress policies"
         ),
     )
+    parser.add_argument(
+        "--graph-ingress",
+        action="store_true",
+        help=(
+            f"compare {SYSTEM_NAMESPACE}'s {GRAPH_INGRESS_POLICY} with --live's swarm_api_egress_cidr "
+            "instead of the tenant egress policies"
+        ),
+    )
     args = parser.parse_args(argv)
 
     with open(args.live, encoding="utf-8") as handle:
@@ -358,6 +447,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.live_ingress:
         with open(args.policies, encoding="utf-8") as handle:
             return _main_live_ingress(live, _items(json.load(handle)))
+    if args.graph_ingress:
+        with open(args.policies, encoding="utf-8") as handle:
+            return _main_graph_ingress(live, _items(json.load(handle)))
     missing = [key for key, _ in RENDERED if not live.get(key)]
     if missing:
         print(f"FAIL the live network is incomplete: missing {', '.join(missing)}")

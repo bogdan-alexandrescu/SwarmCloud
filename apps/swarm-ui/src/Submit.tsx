@@ -997,7 +997,7 @@ export function SubmitScreen() {
     <Screen
       title="Start an agent"
       load={loadCapacity}
-      summary={(c) => `${Object.keys(c.runner_profiles).length} runner profiles · ${c.pools.length} pools you are admitted against`}
+      summary={(c) => { const n = Object.keys(c.runner_profiles).length; return `${n} runner${n === 1 ? '' : 's'} to choose from` }}
       empty={{ heading: 'No pools came back',
         body: 'The read of the pools this tenant is admitted against succeeded and returned none. The runner profiles arrive in that same response, so there is no name to choose and this screen cannot submit.' }}
     >
@@ -1185,10 +1185,22 @@ function Form({ capacity }: { capacity: Capacity }) {
   const [extraList, setExtraList] = useState<Result<TaskReadableList> | null>(null)
   const [extraPicks, setExtraPicks] = useState<AdditionalRepositoryPick[]>([])
   const extraAsked = useRef(false)
+  // The answer is kept while the form is mounted, not while the runner is
+  // unchanged: the list is asked for once. An answer landing after the form
+  // has gone sets nothing.
+  const extraLive = useRef(true)
+  useEffect(() => {
+    extraLive.current = true
+    return () => {
+      extraLive.current = false
+    }
+  }, [])
   useEffect(() => {
     if (!takesExtra || extraAsked.current) return
     extraAsked.current = true
-    void loadTaskReadableRepositories().then(setExtraList)
+    void loadTaskReadableRepositories().then((r) => {
+      if (extraLive.current) setExtraList(r)
+    })
   }, [takesExtra])
   const extraSent = takesExtra ? additionalRepositoriesBody(offeredPicks(extraPicks, extraList)) : []
 

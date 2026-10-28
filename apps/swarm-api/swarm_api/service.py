@@ -139,6 +139,7 @@ from .validation import (
     merge_step_for,
     mcp_server_names,
     plan_merge,
+    reader_step_ids,
     refuse_control_plane_integrator,
     refuse_control_plane_outside_workflow,
     refuse_missing_mcp_credentials,
@@ -1320,6 +1321,11 @@ class SubmissionService:
                 integrator_step_id=integrator_step_id,
                 rereview=rereview_step_id,
             )
+            # A `direct-pr` step that only feeds a dependant (#2662): stored
+            # with `allow_empty_diff`, so a read-only review that changes
+            # nothing succeeds `no_change` instead of failing
+            # `published_nothing:` and sweeping the step that reads it.
+            readers = reader_step_ids(step_specs, strategy=dispatch.strategy)
             merge_plan = plan_merge(
                 step_specs, dispatch.strategy,
                 continuation.task_id if continuation else None,
@@ -1465,7 +1471,7 @@ class SubmissionService:
                 builds_on=step_task_id[source.builds_on] if source.builds_on else None,
                 gate_task_id=step_task_id[source.when.step] if source.when else None,
                 gate_verdicts=source.when.verdict_in if source.when else (),
-                allow_empty_diff=source.allow_empty_diff,
+                allow_empty_diff=source.allow_empty_diff or step_id in readers,
                 # Kept on a gated step only (`with_routing`): the MERGE path's
                 # pull request title when the implementer wrote none.
                 # Not on the re-review, which is gated on the same review

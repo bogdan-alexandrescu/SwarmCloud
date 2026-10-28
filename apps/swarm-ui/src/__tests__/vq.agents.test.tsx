@@ -231,7 +231,7 @@ describe('VQ-009: a workflow step’s row is named by its workflow, as Overview 
     // One read names the workflow's steps; the lone agent is never read for a title.
     expect(api.loadTask).toHaveBeenCalledTimes(1)
     expect(steps.map((t) => t.id)).toContain(api.loadTask.mock.calls[0]![0])
-    expect(flat(name(lone.id))).toBe(`claude-code agent · ${lone.id.slice(5, 13)}`)
+    expect(flat(name(lone.id))).toBe('claude-code agent') // the id is the line under it (QA1-FIX-07, overview-agents-14)
   })
 })
 

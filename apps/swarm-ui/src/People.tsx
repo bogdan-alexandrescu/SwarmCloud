@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { Fragment, useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import {
   approveWorkspace,
@@ -337,6 +337,21 @@ function Approve({ row, reload, confirm, onSaid }: { row: PersonRow; reload: () 
   )
 }
 
+/**
+ * ESCAPE CANCELS A DENY REASON (visual QA pass 1, admin-shell-08,
+ * 2026-10-28): only Cancel closed the inline form, so Escape left it open and
+ * a keyboard user tabbed on and lost their place. Escape now does what Cancel
+ * does, and the form's effect hands focus back to Deny, as the Restore and
+ * Grant admin dialogs do. It stops there: inside the Manage drawer, Escape
+ * closes the reason, not the drawer.
+ */
+function cancelOnEscape(e: ReactKeyboardEvent<HTMLElement>, cancel: () => void): void {
+  if (e.key !== 'Escape') return
+  e.preventDefault()
+  e.stopPropagation()
+  cancel()
+}
+
 function Deny({ row, reload, onSaid }: { row: PersonRow; reload: () => void; onSaid?: (s: Said) => void }) {
   const id = row.workspace.workspace_id ?? ''
   const [open, setOpen] = useState(false)
@@ -380,7 +395,7 @@ function Deny({ row, reload, onSaid }: { row: PersonRow; reload: () => void; onS
     )
   }
   return (
-    <span className="pp-deny">
+    <span className="pp-deny" onKeyDown={(e) => cancelOnEscape(e, () => setOpen(false))}>
       <label className="c-field">
         <span className="c-lbl">Reason, shown to {row.email}</span>
         <textarea ref={reasonRef} className="c-inp" value={reason} maxLength={500} rows={2} onChange={(e) => setReason(e.target.value)} />
@@ -706,7 +721,10 @@ function LimitChips({ limits }: { limits: Record<string, number> | undefined }) 
   if (typeof l.quota_cpu === 'number') parts.push(`${l.quota_cpu} vCPU`)
   if (typeof l.quota_pods === 'number') parts.push(`${l.quota_pods} pods`)
   if (typeof l.capacity_units === 'number') parts.push(`${l.capacity_units} capacity units`)
-  if (parts.length === 0) return <span className="ur-hint">the record carries no limits</span>
+  // WHAT APPROVING DOES, NOT WHAT IS STORED (visual QA pass 1, admin-shell-20,
+  // 2026-10-28): "the record carries no limits" told the approver nothing.
+  // With none asked for, Approve creates the workspace at `DEFAULT_CEILING`.
+  if (parts.length === 0) return <span className="ur-hint">No ceiling was asked for: approving sets the default, {DEFAULT_CEILING} agents at once</span>
   return (
     <span className="pp-limits" aria-label="Limits it would get">
       {parts.map((p) => (
@@ -856,7 +874,7 @@ function useWorkspaceMembers(columns: readonly PeopleWorkspaceColumn[] | null, v
             : r.status === 'empty'
               ? { ok: true, members: new Map() }
               : r.status === 'error'
-                ? { ok: false, why: r.error.code ?? r.error.kind }
+                ? { ok: false, why: r.error.kind }
                 : null
         if (read === null) return
         setReads((was) => ({ ...was, [id]: read }))
@@ -873,16 +891,42 @@ function joinedIn(reads: Readonly<Record<string, MembersRead>>, tenant: string, 
   return read?.ok === true ? read.members.get(email.toLowerCase()) : undefined
 }
 
-/** Said once, above the grid: the columns whose members list was not read, so no mark is drawn in them. */
+/**
+ * WHY A MEMBERS LIST WAS NOT READ, IN WORDS (visual QA pass 1, admin-shell-05,
+ * 2026-10-28): the note printed the error's raw kind, "eng (not_found)". Only
+ * the kinds a reader can act on get their own words; the rest "could not be
+ * read". `plural` picks the verb for one list or several.
+ */
+export function membersUnreadWhy(kind: string, plural: boolean): string {
+  const was = plural ? 'were' : 'was'
+  if (kind === 'not_found') return `${was} not found`
+  if (kind === 'forbidden' || kind === 'admin_required') return `${was} refused to you`
+  return 'could not be read'
+}
+
+/**
+ * Said once, above the grid: the columns whose members list was not read, so
+ * no "joined by request" mark is drawn in them. THE ROLES IN THOSE COLUMNS ARE
+ * A SEPARATE READ (admin-shell-05): the note said "could not be read" above a
+ * column full of roles, and read as if the roles were unread too, so it says
+ * which mark is missing and that the roles stand.
+ */
 function MembersUnread({ columns, reads }: { columns: readonly PeopleWorkspaceColumn[]; reads: Readonly<Record<string, MembersRead>> }) {
   const failed = columns.flatMap((c) => {
     const read = reads[c.tenant_id]
-    return read !== undefined && !read.ok ? [`${c.display_name} (${read.why})`] : []
+    return read !== undefined && !read.ok ? [{ name: c.display_name, why: read.why }] : []
   })
-  if (failed.length === 0) return null
+  const first = failed[0]
+  if (first === undefined) return null
+  const one = failed.length === 1
+  const same = failed.every((f) => f.why === first.why)
+  const lists = same
+    ? `${one ? 'its members list' : 'their members lists'} ${membersUnreadWhy(first.why, !one)}`
+    : listed(failed.map((f) => `${f.name}’s members list ${membersUnreadWhy(f.why, false)}`))
   return (
     <p className="ur-hint pp-joined-unread">
-      No “joined by request” mark is drawn for {listed(failed)}: {failed.length === 1 ? 'its members list' : 'their members lists'} could not be read.
+      No “joined by request” mark can be drawn in the {listed(failed.map((f) => f.name))} {one ? 'column' : 'columns'}: {lists}. The roles shown{' '}
+      {one ? 'there' : 'in them'} are read separately and are not affected.
     </p>
   )
 }
@@ -999,7 +1043,7 @@ function JoinDeny({ join, reload, onSaid }: { join: JoinRequestRow; reload: () =
     )
   }
   return (
-    <span className="pp-deny">
+    <span className="pp-deny" onKeyDown={(e) => cancelOnEscape(e, () => setOpen(false))}>
       <label className="c-field">
         <span className="c-lbl">Reason, shown to {join.requester}</span>
         <textarea ref={reasonRef} className="c-inp" value={reason} maxLength={JOIN_REASON_MAX} rows={2} onChange={(e) => setReason(e.target.value)} />
@@ -1606,10 +1650,10 @@ function AdminSwitch({ row, doc, reload }: { row: PersonRow; doc: PeopleDoc; rel
   const why = !read
     ? `The admin roles were not read (${doc.admins_error ?? 'not served'}), so this cannot be switched here.`
     : holder?.role === 'owner'
-      ? 'Platform owner: set by PLATFORM_OWNER in configuration, so it is not switched here.'
+      ? 'Platform owner: set in the deployment’s configuration, so it is not switched here.'
       : on
         ? `Granted by ${holder.granted_by ?? 'unknown'}${holder.granted_at !== null ? ` ${timeAgo(holder.granted_at)}` : ''}. The last admin cannot be removed; the API says so when it refuses.`
-        : 'Off. An admin through an ADMIN_GROUPS group holds no role document and shows as off here.'
+        : 'Off. An admin through a group is an admin but has no role recorded here, so they show as off.'
   const go = async () => {
     if (busy) return
     setBusy(true)
@@ -1790,7 +1834,7 @@ function AdminList({ admins, onRemove }: { admins: AdminHolder[]; onRemove: (ema
           </span>
           <span className="ur-hint">
             {a.role === 'owner'
-              ? 'set by PLATFORM_OWNER in configuration'
+              ? 'set in the deployment’s configuration'
               : `granted by ${a.granted_by ?? 'unknown'}${a.granted_at !== null ? ` ${timeAgo(a.granted_at)}` : ''}`}
           </span>
           {/* The owner is not removable here: the API refuses it
@@ -1929,8 +1973,8 @@ function Admins({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
     <Card className="pp-admins" title="Admins">
       <p className="ur-hint">
         Any admin may grant or remove admin. The platform owner can be changed only by the owner, and the last admin cannot
-        be removed; the API says so when it refuses. An admin through an ADMIN_GROUPS group holds no role document and is
-        not listed.
+        be removed; the API says so when it refuses. An admin through a group has no role recorded here and is not
+        listed.
       </p>
       {admins !== null ? (
         <AdminList admins={admins} onRemove={setTarget} />

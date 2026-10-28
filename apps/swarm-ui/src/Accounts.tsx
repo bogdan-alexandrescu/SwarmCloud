@@ -1132,7 +1132,7 @@ function PoolFindings({
     <ul className="ctl-facts">
       {unreadableDocumentCount > 0 && (
         <li className="ctl-fact">
-          <b>unread docs</b>
+          <b>unreadable account records</b>
           <span className="acct-flags">
             <span
               className="ctl-mark is-partial"

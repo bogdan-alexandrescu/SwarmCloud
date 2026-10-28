@@ -259,8 +259,10 @@ describe('BT-017: the agent list beside the Browser tab says what it cuts', () =
     expect(title, 'span.cr-sub has no title').not.toBeNull()
     expect(title).toContain('claude-code-browser · claude-opus-5-5')
     expect(title).toContain(owner)
-    // The try, as the line prints it (`attempt … of 3` until the attempts are read, QA-026).
-    expect(title).toMatch(/^attempt \S+ of 3 · /)
+    // The row's state in words, then the try as the line prints it
+    // (`attempt … of 3` until the attempts are read, QA-026); every live row
+    // says its state since visual QA pass 1, overview-agents-11.
+    expect(title).toMatch(/^running · attempt \S+ of 3 · /)
   })
 
   it('a clamped failure reason ends in an ellipsis, at every window and theme', () => {

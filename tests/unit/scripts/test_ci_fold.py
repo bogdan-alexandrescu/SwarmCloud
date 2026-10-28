@@ -169,7 +169,12 @@ def test_a_name_keeper_runs_hosted_and_reads_only_its_own_verdict(file, job_id, 
     assert job.get("name") == check, (job_id, job.get("name"))
     assert job.get("runs-on") == HOSTED, f"{file}:{job_id} runs on {job.get('runs-on')!r} {PATCH_NOTE}"
     assert host in _needs(job), (job_id, _needs(job))
-    assert str(job.get("if") or "").startswith("always()"), (job_id, job.get("if"))
+    if file == "security.yml":
+        # A required check: `!cancelled()`, so a run concurrency cancelled
+        # never posts a `failure` for it (#2582).
+        assert job.get("if") == "${{ !cancelled() }}", (job_id, job.get("if"))
+    else:
+        assert str(job.get("if") or "").startswith("always()"), (job_id, job.get("if"))
     (step,) = job["steps"]
     assert "uses" not in step, step
     env = step.get("env") or {}

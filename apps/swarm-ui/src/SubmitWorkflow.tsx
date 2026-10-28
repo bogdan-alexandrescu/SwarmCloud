@@ -208,7 +208,11 @@ export async function postWorkflow(body: unknown): Promise<Submission> {
   // An expired IAP session is a 302 to a sign-in page that `fetch` follows, so it
   // lands as a 200 carrying HTML -- and on a POST it may have redirected either side
   // of the handler. Content-type is therefore checked first, as read() does.
-  if (!(res.headers.get('content-type') ?? '').includes('application/json')) {
+  // ONLY ON A 2xx (QA1 runs-submit-02): a 404 page read "We cannot say whether
+  // that workflow was created … expired sign-in", and a 404 is a definite
+  // refusal. A non-2xx page falls through to its status below, with no
+  // envelope: a 4xx created nothing, a 5xx stays unknown.
+  if (res.ok && !(res.headers.get('content-type') ?? '').includes('application/json')) {
     return unsure('session_expired', res.status,
       'The API answered with a page instead of data, which is how an expired sign-in arrives. Reload to sign in again.')
   }
@@ -523,7 +527,7 @@ export function OnFailureChoice({ value, onChange }: {
  */
 export function VisualQaEntry() {
   return (
-    <div className="sb-card" data-entry="visual-qa" style={{ marginBottom: 12 }}>
+    <div className="sb-card" data-entry="visual-qa">
       <b>Visual QA of a registered app</b>
       <p className="sb-note">
         Runs from the app&rsquo;s QA target: tick its environments on the target&rsquo;s card, and each runs as its own
@@ -645,10 +649,22 @@ function Form({ sources }: { sources: FormSources }) {
   const [extraList, setExtraList] = useState<Result<TaskReadableList> | null>(null)
   const [extraPicks, setExtraPicks] = useState<AdditionalRepositoryPick[]>([])
   const extraAsked = useRef(false)
+  // The answer is kept while the form is mounted, not while the runner is
+  // unchanged: the list is asked for once. An answer landing after the form
+  // has gone sets nothing.
+  const extraLive = useRef(true)
+  useEffect(() => {
+    extraLive.current = true
+    return () => {
+      extraLive.current = false
+    }
+  }, [])
   useEffect(() => {
     if (!extraDrawn || extraAsked.current) return
     extraAsked.current = true
-    void loadTaskReadableRepositories().then(setExtraList)
+    void loadTaskReadableRepositories().then((r) => {
+      if (extraLive.current) setExtraList(r)
+    })
   }, [extraDrawn])
   const extraSent = extraDrawn ? additionalRepositoriesBody(offeredPicks(extraPicks, extraList)) : []
   const withExtra = (body: Array<Record<string, unknown>>): Array<Record<string, unknown>> =>
@@ -702,7 +718,10 @@ function Form({ sources }: { sources: FormSources }) {
   const badRepo = repositorySchemeRefused(repo)
   // A `dispatch` server some step names, with no credential typed for it, is
   // refused 422 `mcp_credential_missing`; the button holds until it is given.
-  const blocked = plan.problems.length > 0 || noRepo || badRepo || mcpUnfilled.length > 0
+  // A PRIORITY THE API WILL REFUSE holds it as well (QA1 runs-submit-17): the
+  // button was disabled by `priorityOk` alone, so "Ready to send" headed a
+  // summary whose priority row said "out of range".
+  const blocked = plan.problems.length > 0 || noRepo || badRepo || mcpUnfilled.length > 0 || !priorityOk
   // WHAT THIS CLICK WOULD SEND, as one comparable value (VQA V048, owner
   // decision Q1 on #1038): after a 201 the button is "Submit another" for as
   // long as the form still says exactly what was sent.
@@ -825,8 +844,6 @@ function Form({ sources }: { sources: FormSources }) {
   return (
     <div className="sbf">
       <div className="sbf-build">
-        <VisualQaEntry />
-
         {/* THIS SCREEN'S ONE `?` (B7.4), AND IT OPENS WHAT THE STEP LAYS OUT
             (#120). It opened runner naming, a rule about what the form may not
             ask for; what a reader laying out a plan needs is how the plan
@@ -842,8 +859,11 @@ function Form({ sources }: { sources: FormSources }) {
               said three times over one step: on the stage header ("waits for
               everything above"), on the add-a-stage button, and on the step's
               own disclosure -- and only the last one is the control that
-              changes it. So a later stage's header reads `then`, plus how many
-              steps run together when there are two or more. */}
+              changes it. So a later stage's header is its number alone, plus
+              how many steps run together when there are two or more. */}
+          {/* "STAGE N", IN WORDS (QA1 runs-submit-22): the header was the raw
+              word `first` or `then` in bold mono, which read as a key; the
+              arrow between stages already says each waits for the one above. */}
           {/* TOP TO BOTTOM, WITH A DRAWN ARROW BETWEEN STAGES (#118, submit.html
               decided 2026-10-01). The connector was a stray 2x14px tick; the
               arrow is an element between two stages, which also ends the
@@ -859,7 +879,7 @@ function Form({ sources }: { sources: FormSources }) {
             )}
             <div className="wfb-stage" data-stage={i}>
               <div className="wfb-stage-h">
-                <span className="wfb-stage-n">{i === 0 ? 'first' : `then`}</span>
+                <span className="wfb-stage-n">Stage {i + 1}</span>
                 {i === 0 ? (
                   <span className="wfb-stage-say">
                     {inStage.length === 1 ? 'starts immediately' : `${inStage.length} steps start together`}
@@ -960,6 +980,12 @@ function Form({ sources }: { sources: FormSources }) {
             </small>
           </div>
         </Move>
+
+        {/* AFTER THE PLAN, NOT ABOVE STEP 1 (QA1 chrome-C30): the form opened
+            on a card for another form, so step 1 was the second thing on the
+            page. The entry stays on this screen (qa-environments.md §7), as
+            the way out for a reader who came for visual QA. */}
+        <VisualQaEntry />
       </div>
 
       <aside className="sbf-side">
@@ -1511,6 +1537,13 @@ function Outcome({ sub, refusal, onStep }: {
   // compiled (docs/workspaces.md §5.3), with the setup step that fixes it.
   if (sub.kind === 'rejected' && workspaceRefusal(error) !== null) return <WorkspaceRefusalBanner error={error} />
   const uncertain = sub.kind === 'uncertain'
+  // A 404 WITH NO REASON IS A MISSING ROUTE, NOT A BAD PLAN (QA1 runs-submit-02,
+  // re-review): no handler answered, so nothing judged the plan, and "Correct
+  // the plan and submit again" sent the reader to edit what nobody refused. Its
+  // message was the fallback "The API returned HTTP 404.", said again by the
+  // status line under it. A 404 that carries a code was a handler's, and keeps
+  // the server's words.
+  const unserved = !uncertain && error.kind === 'not_found' && error.code === null
   // A 403 is information -- you may not submit -- not a broken platform, so it gets
   // the gate treatment rather than the red one, exactly as FailedPanel does.
   return (
@@ -1532,7 +1565,7 @@ function Outcome({ sub, refusal, onStep }: {
       </h3>
       {/* VERBATIM: the cycle the server named is the only part that says where to
           look, and "invalid DAG" would throw it away. */}
-      <p>{error.message}</p>
+      <p>{unserved ? 'This deployment has no route that takes a workflow.' : error.message}</p>
       {/* THE SERVER'S DETAIL, READ (VQA V051): the steps it names, each a way
           to that step's card, which is marked with the same sentence; then
           whatever it said about no step, as facts. It was printed as JSON. */}
@@ -1559,7 +1592,9 @@ function Outcome({ sub, refusal, onStep }: {
           EXPLANATION OF IT: whether anything was created. */}
       <p>{uncertain
         ? 'The workflow may exist. Open the Workflows board and look before submitting again.'
-        : 'Nothing was created. Correct the plan and submit again.'}</p>
+        : unserved
+          ? 'Nothing was created, and the plan is not what was refused: changing it will not help.'
+          : 'Nothing was created. Correct the plan and submit again.'}</p>
       {error.httpStatus !== null && <p className="checked-at">HTTP {error.httpStatus}{error.code ? ` · ${error.code}` : ''}</p>}
     </div>
   )

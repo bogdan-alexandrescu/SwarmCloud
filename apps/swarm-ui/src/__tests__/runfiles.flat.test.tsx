@@ -326,6 +326,28 @@ describe('the Checkpoints panel is one table of checkpoints', () => {
     expect(rowFor(s, 'ckpt-00002').querySelector('th [data-testid="rf-resume"]')?.textContent).toMatch(/resume\s*yes/)
   })
 
+  /**
+   * QA1-FIX-09, overview-agents-49. MUTATION: draw `{record.file_count ===
+   * null ? <Em /> : record.file_count} files` again, with no mark and no
+   * `manifest unreadable` line. The count's dash has no reason beside it and
+   * the state is said only by a mark and the server's sentence.
+   */
+  it('says an unreadable manifest in words, and marks the file count it took away', async () => {
+    const s = await panel('Checkpoints', { checkpoints: ok(listing()) })
+    const name = rowFor(s, 'ckpt-00001').querySelector('th')!
+    const lines = [...name.querySelectorAll<HTMLElement>(':scope > .ctl-sub')].map((l) => l.textContent ?? '')
+    expect(lines).toContain('manifest unreadable')
+    // The state comes before the answer it explains.
+    expect(lines.indexOf('manifest unreadable')).toBeLessThan(lines.findIndex((l) => l.startsWith('resume')))
+    const facts = lines.find((l) => l.includes('files'))!
+    expect(facts).not.toMatch(/\d+ files/)
+    const counted = [...name.querySelectorAll<HTMLElement>(':scope > .ctl-sub')].find((l) => (l.textContent ?? '').includes('files'))!
+    expect(counted.querySelector('.ctl-em')).not.toBeNull()
+    expect(counted.querySelector('.ctl-mark.is-unread')?.getAttribute('aria-label') ?? '').toMatch(/count is unknown/)
+    // A readable manifest's count stays a bare figure.
+    expect(rowFor(s, 'ckpt-00002').querySelector('th')!.textContent).toContain('184 files')
+  })
+
   it('draws a checkpoint\'s objects as rows of the same table, each with a name, a size and an age', async () => {
     const s = await panel('Checkpoints', { checkpoints: ok(listing()) })
     const toggle = [...s.querySelectorAll('button')].find((b) => b.textContent === '2 objects')

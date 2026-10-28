@@ -230,9 +230,9 @@ describe('setBy', () => {
     expect(by.detail).toContain('10')
   })
 
-  it('names AIMD when back-off is the binding value', () => {
+  it('says lowered automatically when the adaptive target is the binding value', () => {
     const by = setBy(pool({ hard_limit: 10, adaptive_target: 3, effective_limit: 3 }))
-    expect(by.term).toBe('AIMD back-off')
+    expect(by.term).toBe('lowered automatically after errors')
   })
 
   it('prefers the quota when quota and AIMD agree', () => {

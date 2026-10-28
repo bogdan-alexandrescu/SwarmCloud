@@ -2365,10 +2365,16 @@ jobs:
     #     terraform.yml (CI_GATE_WORKFLOWS), since waiting here for this
     #     workflow's own run would wait for itself.
     #
-    # `if: always()` so it reports when something it needs failed -- skipped
-    # would read as passed. If this workflow fails to start at all, no
-    # `ci-gate` check exists and the ruleset holds the pull request: closed,
-    # not open.
+    # `if: ${{ !cancelled() }}` so it reports when something it needs failed
+    # -- skipped would read as passed -- and does NOT run in a run that was
+    # cancelled (#2582, BGD 2026-10-28). Under `always()` it ran inside push
+    # runs concurrency cancelled and concluded `failure` over needs that were
+    # only cancelled ("not passed: shell (cancelled), ..."), and the merge
+    # step refused PR #2565 `checks_failed` on it while the newer push run
+    # was still running. `!cancelled()` is still true after a failed need --
+    # a failure does not cancel the run -- so the step below still runs and
+    # fails naming it. If this workflow fails to start at all, no `ci-gate`
+    # check exists and the ruleset holds the pull request: closed, not open.
     #
     # EVERY JOB BUT THE TWO NAME-KEEPERS, `python` (`format / unit tests`) and
     # `ui` (`swarm-ui typecheck / component tests`) (2026-10-09). They run no
@@ -2384,7 +2390,7 @@ jobs:
     name: ci-gate
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: [shell, workflows, ruff, changes, quick-checks, python-checks, python-unit, ui-build, ui-tests, integration, manifests, build-check, build, tested-tree]
-    if: always()
+    if: ${{ !cancelled() }}
     # The script gives up at 90 minutes (CI_GATE_WAIT) and says what was still
     # pending; this is only the backstop behind it.
     timeout-minutes: 100

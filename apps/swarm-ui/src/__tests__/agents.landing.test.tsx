@@ -147,7 +147,8 @@ describe('the row id is one a person can use', () => {
   it('prints a prefix of the real id, not its tail', async () => {
     const realId = 'task_b5dc2568713a40158851'
     const container = await land([task(realId, 'RUNNING')])
-    const shown = container.querySelector('.row .agent .id')
+    // The whole id, printed once under the name (QA1-FIX-07, overview-agents-14).
+    const shown = container.querySelector('.row .agent .tid-text')
     expect(shown, 'the row prints no id').not.toBeNull()
     const displayed = (shown!.textContent ?? '').trim()
     expect(displayed.length, 'an id this short identifies nothing').toBeGreaterThanOrEqual(6)
@@ -159,7 +160,7 @@ describe('the row id is one a person can use', () => {
       `${displayed} is taken from the END of ${realId}; nothing else in the product prints that`,
     ).toBeLessThan(8)
     // The whole id stays one hover away.
-    expect(shown!.getAttribute('title')).toBe(realId)
+    expect(container.querySelector('.row .cr-name b')!.getAttribute('title')).toBe(realId)
   })
 })
 
@@ -258,7 +259,7 @@ describe('the row the inspector has open says so', () => {
     const current = container.querySelectorAll('.row > .cr-open[aria-current]')
     expect(current, 'no row, or more than one, is marked open').toHaveLength(1)
     expect(current[0]!.getAttribute('aria-current')).toBe('true')
-    expect(current[0]!.closest('.row')!.querySelector('.id')?.getAttribute('title')).toBe(open)
+    expect(current[0]!.closest('.row')!.querySelector('.tid-text')?.textContent).toBe(open)
   })
 
   it('marks none when nothing is open', async () => {
@@ -619,7 +620,9 @@ describe('Recent can be searched and put failures first (#99)', () => {
 
   it("keeps the search and the sort inside the loaded-rows qualifier", async () => {
     const c = await landRecent()
-    const say = c.querySelector('.ag-scope')!.getAttribute('aria-label') ?? ''
+    // The scope sentence is the search box's title: `N loaded` is the
+    // header's alone (QA1-FIX-07, overview-agents-13).
+    const say = c.querySelector('.ag-find input')!.getAttribute('title') ?? ''
     expect(say).toMatch(/search/)
     expect(say).toMatch(/sort/)
     expect(say).toMatch(/4 rows loaded/)
@@ -673,7 +676,7 @@ describe('a reason shared by neighbouring rows is said once (#100)', () => {
       // The row's opener, not its id line's copy button, whose name carries
       // the id too (#94). The opener is an empty button over the row
       // (visual QA QA-032), so the reason is in its name, not its text.
-      const named = screen.getAllByRole('button', { name: new RegExp(r.querySelector('.id')!.textContent!) }).filter((b) => b.classList.contains('cr-open'))
+      const named = screen.getAllByRole('button', { name: new RegExp(r.querySelector('.tid-text')!.textContent!) }).filter((b) => b.classList.contains('cr-open'))
       expect(named).toHaveLength(1)
       expect(named[0]!.getAttribute('aria-label')).toContain(WAIT)
       expect(r.textContent).toContain(WAIT)

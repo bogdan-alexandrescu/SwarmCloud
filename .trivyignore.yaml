@@ -163,3 +163,26 @@ vulnerabilities:
   - id: CVE-2026-116587
     statement: "go-jose v4 JWK parsing DoS inside vendor-built terraform and trivy; no vendor release carries go-jose 4.1.6 yet."
     expired_at: 2026-11-04
+
+  # Same class again (PROPOSED 2026-10-28 by CLD for the owner's decision;
+  # this entry is not accepted until BGD merges it): a Go standard library os
+  # fix (CVE-2026-56857, CRITICAL, fixed in Go 1.26.9 / 1.27.2) whose title is
+  # "Root.Mkdir(All) can follow junctions out of the root on Windows". PR
+  # 2673's build-check (run 40762235943) refused workspace-apply on this id
+  # alone, in three THIRD-PARTY Go binaries: gcloud-crc32c and
+  # gke-gcloud-auth-plugin (google-cloud-cli 587.0.0, go1.26.6) and kubectl
+  # (1.36.5, go1.26.8). The same binaries ship in agent-runtime-base and its
+  # children, so their builds are refused on it too. Bumping pins does not
+  # clear it: per the CVE-2026-111943 entry's 2026-10-28 measurement, the
+  # newest gke-gcloud-auth-plugin (590.0.1, 591.0.0) is go1.27.1, below the
+  # fixed 1.27.2.
+  #
+  # What bounds it: the flaw is in os.Root on Windows, where an NTFS junction
+  # can lead Mkdir out of the root. Every image here is Linux; there are no
+  # junctions to follow, so the vulnerable path is not reachable in any binary
+  # we ship. Expiry: take kubectl >= 1.36.6 (go1.26.10) and the first
+  # google-cloud-cli whose helpers are built on a fixed Go (docs/versions.md),
+  # re-scanning first.
+  - id: CVE-2026-56857
+    statement: "Go stdlib os.Root junction escape, Windows only, inside vendor-built gcloud helpers and kubectl on Linux images; no fixed gke-gcloud-auth-plugin build yet."
+    expired_at: 2026-11-28

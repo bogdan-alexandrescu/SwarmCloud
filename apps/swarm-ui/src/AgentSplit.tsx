@@ -218,6 +218,26 @@ export function AgentSplit({
 
   useSplitFocus(panel, close, taskId)
 
+  // THE TAB STRIP'S HEIGHT, MEASURED (AGENT-HEAD-B, BGD's pick AH1 B,
+  // 2026-10-28, part of #2596). The column scrolls and the strip sticks at its
+  // top, so Logs, Changes and Browser are one column less the strip tall and
+  // Details' stuck figures sit at the strip's foot (agents.css, details.css).
+  // A wrapped or More-fitted strip is not one row tall, so its height is read,
+  // and read again whenever it changes, into `--ag-tabs-h` on the column.
+  useEffect(() => {
+    const col = panel.current
+    const edge = col?.querySelector<HTMLElement>(':scope > .ag-tabs-edge') ?? null
+    if (col === null || edge === null || typeof ResizeObserver === 'undefined') return
+    const put = () => {
+      const h = edge.getBoundingClientRect().height
+      if (h > 0) col.style.setProperty('--ag-tabs-h', `${h}px`)
+    }
+    put()
+    const watch = new ResizeObserver(put)
+    watch.observe(edge)
+    return () => watch.disconnect()
+  }, [taskId])
+
   // "Running" is an attempt in flight -- LEASED/DISPATCHED/STARTING/RUNNING
   // (CONTRACT.md invariant 1). A QUEUED, READY or PARKED agent has no
   // attempt and usually no log yet; its Details say why it waits.
@@ -318,6 +338,7 @@ export function AgentSplit({
           // the theater, portalled out of this panel but still inside it to
           // React, and a key it already used is not this panel's.
           e.stopPropagation()
+          if (foldInner(e.target, e.currentTarget)) return
           close()
           return
         }
@@ -452,6 +473,30 @@ export function AgentSplit({
       </SplitTick>
     </div>
   )
+}
+
+/**
+ * ESCAPE FOLDS THE INNERMOST OPEN THING FIRST (QA1 overview-agents-48,
+ * 2026-10-28). With a checkpoint's `files` open, Escape closed the whole agent
+ * and left for the list: the disclosure has no Escape of its own, so the key
+ * came straight here. A disclosure the key was pressed on (`aria-expanded`
+ * true) is folded by its own control, and an open `<details>` around the
+ * key's target is closed with focus back on its summary. True when one was
+ * folded, so the agent stays open; the next Escape is the panel's again.
+ */
+function foldInner(target: EventTarget, panel: HTMLElement): boolean {
+  if (!(target instanceof HTMLElement) || !panel.contains(target)) return false
+  if (target.getAttribute('aria-expanded') === 'true' && (target instanceof HTMLButtonElement || target.getAttribute('role') === 'button')) {
+    target.click()
+    return true
+  }
+  const open = target.closest('details[open]')
+  if (open instanceof HTMLDetailsElement && panel.contains(open)) {
+    open.open = false
+    open.querySelector<HTMLElement>(':scope > summary')?.focus()
+    return true
+  }
+  return false
 }
 
 /**

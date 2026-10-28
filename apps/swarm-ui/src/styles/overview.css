@@ -47,7 +47,10 @@
    AUTO-FIT, NOT AUTO-FILL (browser QA D18 again, 2026-10-04): one card took
    one of two tracks, ~520px, with the other half of the row empty. An empty
    track collapses now, so the cards share the whole row. */
-.ov-atts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr)); gap: 10px; }
+/* CARDS SIZE TO THEIR OWN CONTENT (visual QA pass 1, overview-agents-07,
+   2026-10-28): the grid's default `stretch` drew "2 leases past TTL" as tall
+   as the six-line card beside it, a large empty block under two lines. */
+.ov-atts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr)); gap: 10px; align-items: start; }
 .ov-att { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: var(--radius); background-color: var(--surface); border: 1px solid var(--line); color: inherit; text-decoration: none; min-width: 0; }
 .ov-att:hover { border-color: var(--sk-acl); }
 /* A FAILED CHECK IS A ROW FORM, NOT ONLY A MARK (#96): the table row's edge

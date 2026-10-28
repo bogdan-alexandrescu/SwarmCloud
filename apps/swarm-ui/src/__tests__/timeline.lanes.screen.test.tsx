@@ -31,7 +31,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { TimelineLanesScreen, STRIP_DEADLINE_MS, MARK_GAP_PX, MARK_PX, SPAN_PAGES_READ, BAR_MIN_PX, BAR_WORDS_MIN_PX, PILL_COUNT_MIN_PX, laneLayout, markLefts } = await import('../TimelineLanes')
+const { TimelineLanesScreen, STRIP_DEADLINE_MS, MARK_GAP_PX, MARK_PX, SPAN_PAGES_READ, BAR_MIN_PX, BAR_WORDS_MIN_PX, PILL_COUNT_MIN_PX, laneLayout, markLefts, sliversNote } = await import('../TimelineLanes')
 
 // jsdom has no PointerEvent, and without one a pointer event carries no
 // clientX: a MouseEvent with a pointerId is what a browser hands the axis.
@@ -392,7 +392,15 @@ describe('Lanes: the outcome strip', () => {
 
   it('suggests Outcomes past 7 days', async () => {
     render(<TimelineLanesScreen view="span=30d" onView={() => {}} />)
-    expect(await screen.findByText(/bars are slivers/i)).toBeTruthy()
+    // QA1 runs-submit-34. MUTATION: restore `Past ${SUGGEST_OUTCOMES_DAYS} days` in TimelineLanes.tsx.
+    expect(await screen.findByText(/^Over 30 days the bars are slivers/)).toBeTruthy()
+    expect(screen.queryByText(/Past 7 days/)).toBeNull()
+  })
+
+  it('floors a zoomed span in the slivers note, so it never claims more days than are drawn', () => {
+    // MUTATION: round instead of floor and 7.6 days reads "Over 8 days".
+    expect(sliversNote(7.6)).toBe('Over 7 days the bars are slivers: counts over the span read better as a ledger.')
+    expect(sliversNote(30)).toMatch(/^Over 30 days /)
   })
 })
 

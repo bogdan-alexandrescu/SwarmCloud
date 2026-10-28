@@ -509,7 +509,9 @@ describe('the log’s controls fit one row', () => {
       expect(painted(bar, 'flex-wrap', SPLIT_380)).toBe('nowrap')
       expect(rowWidth(bar, SPLIT_380), 'the row is wider than its column').toBeLessThanOrEqual(630)
       expect(Number(bar.dataset.spill)).toBeLessThan(BAR_SPILL.error)
-      for (const name of [/^Following/, /^No error matched/]) {
+      // Measured before the read lands, so Error says it has not counted yet
+      // (QA1 overview-agents-32): `Errors · reading`, as long as `No error matched`.
+      for (const name of [/^Following/, /^Errors · reading/]) {
         expect(within(bar).getByRole('button', { name }).closest('details'), `${name} is under More`).toBeNull()
       }
       const group = within(bar).getByRole('group', { name: 'Which log' })
@@ -535,7 +537,7 @@ describe('the log’s controls fit one row', () => {
       expect(rowWidth(bar, PHONE), 'the row is wider than the phone').toBeLessThanOrEqual(360)
       // Every control is in the row or under More: none is lost.
       expect(within(bar).getAllByRole('button', { name: /^Following/ })).toHaveLength(1)
-      expect(within(bar).getAllByRole('button', { name: /^No error matched/ })).toHaveLength(1)
+      expect(within(bar).getAllByRole('button', { name: /^Errors · reading/ })).toHaveLength(1)
       expect(within(within(bar).getByRole('group', { name: 'Which log' })).getAllByRole('button')).toHaveLength(4)
     } finally {
       restore()

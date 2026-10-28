@@ -181,7 +181,7 @@ describe('V001: the stop confirmation on a graph node leaves the card', () => {
     const { w, tasks } = fanIn()
     const { container } = card(w, tasks, 'graph')
     const slot = container.querySelector<HTMLElement>('.node[data-step="merge"]')!.parentElement!
-    const stop = within(slot.querySelector<HTMLElement>('.node-stop')!).getByRole('button', { name: 'stop' })
+    const stop = within(slot.querySelector<HTMLElement>('.node-stop')!).getByRole('button', { name: 'Stop' })
     stop.focus()
     fireEvent.click(stop)
 
@@ -206,7 +206,7 @@ describe('V001: the stop confirmation on a graph node leaves the card', () => {
     const { w, tasks } = fanIn()
     const { container } = card(w, tasks, 'graph')
     const slot = container.querySelector<HTMLElement>('.node[data-step="merge"]')!.parentElement!
-    fireEvent.click(within(slot.querySelector<HTMLElement>('.node-stop')!).getByRole('button', { name: 'stop' }))
+    fireEvent.click(within(slot.querySelector<HTMLElement>('.node-stop')!).getByRole('button', { name: 'Stop' }))
     const dialog = screen.getByRole('dialog')
     const keep = within(dialog).getByRole('button', { name: 'keep running' })
     keep.focus()

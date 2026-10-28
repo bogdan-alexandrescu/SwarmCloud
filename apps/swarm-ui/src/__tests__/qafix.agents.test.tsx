@@ -212,7 +212,9 @@ describe('QA-079: Live’s right-hand column holds times only', () => {
     await mount()
     for (const t of [leased, dispatched]) {
       // MUTATION: print `elapsed().text` (the state word) in `.when` again.
-      expect(flat(rowEl(t.id).querySelector('.when'))).toBe('')
+      // The column holds the age since submission now (QA1-FIX-07,
+      // overview-agents-19): a figure, never the word.
+      expect(flat(rowEl(t.id).querySelector('.when'))).toMatch(/^\d+[dhms]/)
       // MUTATION: drop the word from line two -- the state is then said nowhere visible.
       expect(flat(rowEl(t.id).querySelector('.cr-sub'))).toContain(t.state.toLowerCase())
     }

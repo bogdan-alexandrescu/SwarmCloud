@@ -783,7 +783,9 @@ locals {
     # local.settings_mac_env / scheduler_settings_mac_env: the one
     # SETTINGS_MAC_TENANTS cutover list, and the scheduler's
     # SETTINGS_MAC_REQUIRED (settings_mac.tf).
-    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, local.api_grant_attestation_env, local.settings_mac_env, local.model_class_env, {
+    # local.api_graph_stats_env: SWARM_GRAPH_STATS_URL, the graph service's
+    # stats address (graph_service.tf).
+    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, local.api_grant_attestation_env, local.settings_mac_env, local.model_class_env, local.api_graph_stats_env, {
       # DISPATCH_TOPIC, not WAKE_TOPIC. Both apps read `DISPATCH_TOPIC`
       # (swarm_api.settings, scheduler.settings); terraform set `WAKE_TOPIC`,
       # which nothing has ever read. swarm_api.deps falls back to NullWaker()
