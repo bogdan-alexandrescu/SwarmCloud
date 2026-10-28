@@ -464,7 +464,7 @@ export function AgentSplit({
  * key's target is closed with focus back on its summary. True when one was
  * folded, so the agent stays open; the next Escape is the panel's again.
  */
-export function foldInner(target: EventTarget, panel: HTMLElement): boolean {
+function foldInner(target: EventTarget, panel: HTMLElement): boolean {
   if (!(target instanceof HTMLElement) || !panel.contains(target)) return false
   if (target.getAttribute('aria-expanded') === 'true' && (target instanceof HTMLButtonElement || target.getAttribute('role') === 'button')) {
     target.click()
