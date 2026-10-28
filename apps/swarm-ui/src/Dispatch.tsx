@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react'
+import { USE_FIXTURES, fixtureRead } from './api'
 import { read, route, type Result } from './fetch'
 import { helpAnchor, type TopicId } from './help'
 import {
@@ -656,10 +657,9 @@ export async function loadTaskReadableRepositories(): Promise<Result<TaskReadabl
   let token: string | null = null
   let fetchedAt = Date.now()
   for (let page = 0; page < REGISTRATION_PAGES; page++) {
-    const r: Result<unknown> = await read<unknown>(
-      route('/v1/repositories', {}, token === null ? undefined : new URLSearchParams({ page_token: token })),
-      () => false,
-    )
+    const target = route('/v1/repositories', {}, token === null ? undefined : new URLSearchParams({ page_token: token }))
+    // The fixture build answers from api.ts's table; `read` would ask the dev server, which serves no API.
+    const r: Result<unknown> = USE_FIXTURES ? await fixtureRead(target) : await read<unknown>(target, () => false)
     if (r.status === 'error' || r.status === 'loading') return r
     if (r.status === 'empty') break
     fetchedAt = r.fetchedAt
