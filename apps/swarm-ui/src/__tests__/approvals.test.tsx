@@ -314,6 +314,26 @@ describe('one item', () => {
     await waitFor(() => expect(sent(calls, 'POST', '/v1/approvals/run%3Arun_8f2a:reject')).toHaveLength(1), WAIT)
     expect(sent(calls, 'POST', '/v1/approvals/run%3Arun_8f2a:reject')[0]!.body).toEqual({ reason: 'the plan touches the wrong module' })
   })
+
+  it('puts focus on what the decision said once Reject answers (QA1 automate-15)', async () => {
+    await mount(
+      'approval=run%3Arun_8f2a',
+      routes((m, url) =>
+        m === 'POST' && url === '/v1/approvals/run%3Arun_8f2a:reject' ? { status: 200, body: { approval: { approval_id: 'run:run_8f2a', state: 'rejected' } } } : null,
+      ),
+    )
+    const detail = await loaded()
+    await within(detail).findByRole('button', { name: 'Reject' }, WAIT)
+    fireEvent.change(within(detail).getByRole('textbox', { name: /Reason/ }), { target: { value: 'the plan touches the wrong module' } })
+    const reject = within(detail).getByRole('button', { name: 'Reject' })
+    reject.focus()
+    fireEvent.click(reject)
+    const said = await screen.findByText(/Rejected\. The inbox was read again\./, undefined, WAIT)
+    // MUTATION: drop the focus effect in Approvals.tsx and focus falls to <body> as Reject turns disabled.
+    await waitFor(() => expect(document.activeElement).toBe(said), WAIT)
+    expect(said.getAttribute('tabindex')).toBe('-1')
+    expect(said.getAttribute('role')).toBe('status')
+  })
 })
 
 // A head built at runtime: a 40-character hex literal is not something this

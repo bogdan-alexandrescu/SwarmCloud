@@ -392,7 +392,9 @@ describe('Lanes: the outcome strip', () => {
 
   it('suggests Outcomes past 7 days', async () => {
     render(<TimelineLanesScreen view="span=30d" onView={() => {}} />)
-    expect(await screen.findByText(/bars are slivers/i)).toBeTruthy()
+    // QA1 runs-submit-34. MUTATION: restore `Past ${SUGGEST_OUTCOMES_DAYS} days` in TimelineLanes.tsx.
+    expect(await screen.findByText(/^Over 30 days the bars are slivers/)).toBeTruthy()
+    expect(screen.queryByText(/Past 7 days/)).toBeNull()
   })
 })
 
