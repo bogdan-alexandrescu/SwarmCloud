@@ -107,13 +107,20 @@
 /* THE OUTLINE IS ON THE FIGURES' BOX, NOT THE CELL (visual QA V090,
    2026-10-11). On the cell it was as wide as its column -- `Resource classes`
    outlined a wider box than `Global` -- and 4px from the next row's outline.
-   `.cap-mx-v` is one minimum width in every column, right-aligned where a
-   figure is, and the cell's padding is what now separates two rows' boxes. */
+   `.cap-mx-v` is one width in every column, right-aligned where a
+   figure is, and the cell's padding is what now separates two rows' boxes.
+   ONE WIDTH, NOT A MINIMUM (visual QA V090, 2026-10-27): at `min-width: 5ch`
+   a figure past five characters grew its box, 40px beside 44px. The box is
+   9ch of content -- `120000` and `999/1000` fit -- in `content-box`, so the
+   8px padding does not eat it, and a worded value (`no limit set`) wraps
+   inside it rather than widening it. The `used/ceiling` line never wraps. */
 .cap-mx td > .cap-mx-v {
   display: inline-flex; flex-direction: column; align-items: flex-end;
-  min-width: 5ch; padding: 2px 8px; border-radius: 6px;
-  vertical-align: middle;
+  box-sizing: content-box; inline-size: 9ch; min-width: 0;
+  padding: 2px 8px; border-radius: 6px;
+  vertical-align: middle; white-space: normal; text-align: right;
 }
+.cap-mx td > .cap-mx-v > small { white-space: nowrap; }
 .cap-mx td.is-binding > .cap-mx-v { outline: 2px solid var(--s-warn); outline-offset: -2px; background: var(--s-warnb); }
 .cap-mx td.cap-mx-na { color: var(--text-faint); }
 .cap-mx b.cap-mx-zero { color: var(--s-warn); }
@@ -141,7 +148,20 @@
    the rule above, so this column -- the answer -- could never give back any
    width, and the matrix overflowed 1440 by itself. */
 .cap-mx td.cap-mx-first { white-space: normal; }
-.cap-mx-bind { display: block; font-size: var(--t-meta); color: var(--text); }
+/* ONE LINE AT ONE WIDTH (visual QA V195 and V090's half of it, 2026-10-27).
+   The column's wrap above let an entry break INSIDE itself beside a long
+   profile name -- `(5/5) fits ⏎0` on every row. An entry is a one-line flex
+   row 34ch wide (`runner claude-code (12/20) fits 8` fits), held to its cell
+   on a phone record: the pool name gives way with an ellipsis, whole in the
+   entry's title, and the use and the fits never shrink. Entries still stack,
+   one per line, so the column wraps BETWEEN them. */
+.cap-mx-bind {
+  display: flex; align-items: baseline; gap: 0.5ch; font-size: var(--t-meta); color: var(--text);
+  inline-size: 34ch; max-inline-size: 100%; white-space: nowrap;
+}
+.cap-mx-bind > .cap-mx-bind-pool { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cap-mx-bind > .cap-mx-bind-use,
+.cap-mx-bind > small { flex-shrink: 0; }
 .cap-mx-bind small { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 .cap-mx-fits { margin-bottom: 8px; }
 .cap-mx-fits tr.is-binding > th[scope="row"] { box-shadow: inset 3px 0 0 var(--s-warn); }
@@ -155,11 +175,24 @@
    to the card's width -- a full-width dashed bar that read as an empty input.
    A mark is as wide as its words. */
 .rt-pools { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 10px; }
-.rt-pool-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+/* A LONG ID IS CUT INSIDE ITS CHIP, NOT PAST THE CARD (visual QA V162,
+   2026-10-27). `.rt-pools` sizes the row to its content (`flex-start`, V030),
+   so one unbreakable tenant id made the row as wide as itself: at 1440 the
+   chip ran ~40px past the card border, at 400 the card edge cut it mid-word.
+   The row is held to the card, a chip may shrink to it, and the id inside
+   ellipsizes -- whole in the chip's title. `nowrap` stays on the id: ids
+   are not broken (the pattern V153-V161 share). */
+.rt-pool-chips { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; max-width: 100%; }
+.rt-pool-chips > .c-chip { min-width: 0; max-width: 100%; }
+.rt-pool-chips > .c-chip > .rt-chip-id { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* SIZING FITS ITS CARD (#503): "Resolves from" lists every runtime that
    resolves to a class, and a nowrap list ran past the card's right edge. It
    is the one prose-shaped column in the table, so it wraps. */
 .rt-sizing td[data-label="Resolves from"] { white-space: normal; overflow-wrap: anywhere; }
+/* BETWEEN NAMES, NEVER INSIDE ONE (visual QA V194, 2026-10-27): the list
+   wrapped at a hyphen, `demo-⏎scribe`. Each runtime is its own span, its
+   comma inside, so the cell wraps only at the spaces between them. */
+.rt-resolves > .rt-resolves-id { white-space: nowrap; overflow-wrap: normal; }
 /* ON A PHONE IT HOLDS ONE LINE (QA G5-09, 2026-10-07). At 390 the column is
    off-screen in the scrolling table, and wrapping every runtime name into its
    narrow cell made a row about 200px tall with its visible cells floating in
@@ -923,7 +956,8 @@ p.muted.rt-reason { margin: 0 0 var(--ctl-s3); }
   .cap-families .ctl-table.is-scroll,
   .hold-drift .ctl-table.is-stacked { overflow: clip; }
   .cap-mx > .ctl-table.is-scroll {
-    max-height: calc(100vh - 180px); overflow: auto;
+    /* Short enough to sit whole below the bell bar (V091, 2026-10-27). */
+    max-height: calc(100vh - 180px - var(--ctl-bar-h, 0px)); overflow: auto;
     /* Its own scroller, so its rows clear its head here (capacity-007, below). */
     scroll-padding-top: var(--row-h);
   }
@@ -932,6 +966,16 @@ p.muted.rt-reason { margin: 0 0 var(--ctl-s3); }
   .hold-drift .ctl-table.is-stacked > table > thead {
     position: sticky; top: 0; z-index: 1;
   }
+  /* UNDER THE BELL BAR, NOT UNDER ITS EDGE (visual QA V091, 2026-10-27).
+     The families stick to the page's scroller, where the bell bar
+     (`.ctl-bar`, sticky at top 0, z-index 20) pins first: at `top: 0` their
+     heads slid under it with a live API, hidden exactly when needed. They
+     stick `--ctl-bar-h` lower -- 48px under a bar, 0 where App draws none
+     (notifications.css); the bare `0` is for a reader outside any frame.
+     The matrix is its own scroller, so its head stays at ITS top -- an
+     offset there opens a gap its rows show through -- and the scroller is
+     held short enough to sit below the bar. */
+  .cap-families .ctl-table.is-scroll > table > thead { top: var(--ctl-bar-h, 0); }
   /* A SCROLL STOPS A ROW BELOW THE HEAD, NOT UNDER IT (visual QA run 3,
      capacity-007, part of #1680). At 1440 the first Pools row sat under the
      stuck head -- of `runner:browser` only the descenders showed, its figures
