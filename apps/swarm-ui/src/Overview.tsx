@@ -714,7 +714,7 @@ function useSpend(tasks: Result<TaskPage>, heavy: number): Result<SpendRollup> {
   useEffect(() => {
     if (job === null) return
     let live = true
-    loadSpend(job.page).then((r) => {
+    loadSpend(spendSample(job.page)).then((r) => {
       if (live) setState(r)
     })
     return () => {
@@ -723,6 +723,19 @@ function useSpend(tasks: Result<TaskPage>, heavy: number): Result<SpendRollup> {
   }, [job])
 
   return state
+}
+
+/**
+ * THE PAGE THE SPEND CARD SAMPLES: every task on it that holds no capacity
+ * (visual QA C-02, 2026-10-28). An attempt records its cost when it ends, so
+ * a running attempt has no figure yet. With 20 agents running, the 12 newest
+ * that had run were all running ones, and the card read "12 of 12 attempts
+ * unmeasured": a sample of attempts that could not have been measured. A task
+ * holding no capacity has no attempt in flight (CONTRACT invariant 1), so
+ * each attempt it has is one that ended and could have reported.
+ */
+function spendSample(page: TaskPage): TaskPage {
+  return { ...page, tasks: page.tasks.filter((t) => !HOLDING.includes(t.state)) }
 }
 
 /**
@@ -1900,10 +1913,21 @@ function RunningCard({
           // A SILENT worker first (#92), then the longest-running.
           .sort((a, b) => Number(silent.has(b.id)) - Number(silent.has(a.id)) || startKey(a) - startKey(b))
   const titleOf = useRowTitles(running)
+  // THE HEAD COUNTS ROWS, NOT CAPACITY (visual QA C-03, 2026-10-28). The
+  // Holding capacity tile is `/v1/stats`'s count; this list is the state
+  // reads', taken at another moment, and the two can differ by an agent that
+  // moved between them. The head said "21 hold capacity" beside the tile's
+  // 20, one screen claiming two counts of one thing; it says what it lists,
+  // and the foot names the stats count when the two differ.
+  //
+  // COST SO FAR FILLS WHEN AN ATTEMPT ENDS (C-01): a running attempt has no
+  // figure yet, so a first attempt's row is a dash. The foot says so once,
+  // on the surface, rather than in each dash's title alone.
+  const unreported = running.filter((t) => totalCostOf(t) === null && t.attempts_read !== 'failed' && typeof t.attempts === 'number').length
   const head = (
     <CardHead
       title="Running now"
-      note={page === null ? undefined : `${running.length} hold capacity`}
+      note={page === null ? undefined : `${running.length} listed`}
       href="/agents/live"
       cta="All live"
     />
@@ -1965,6 +1989,7 @@ function RunningCard({
         <span>{whole ? `${running.length} read by state` : `${running.length} of ${page.tasks.length} newest`}</span>
         {counted !== null && counted !== running.length && <span>stats say {counted}</span>}
         {counted !== null && counted !== running.length && countedAge !== null && <span>counted {countedAge}</span>}
+        {unreported > 0 && <span>cost so far shows once an attempt ends</span>}
       </FootRun>
     </p>
   )
@@ -2309,6 +2334,20 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
         />
       )
     }
+    // Every agent that has run still holds capacity, so the sample
+    // (`spendSample`) left each one out: not "none has started".
+    const page = dataOf(tasks)
+    const running = page === null ? 0 : page.tasks.filter((t) => t.attempt_count > 0 && HOLDING.includes(t.state)).length
+    if (running > 0) {
+      return (
+        <CardAbsent
+          kind="zero"
+          heading="No attempt has ended"
+          say={`Every agent on the page that has run still holds capacity (${running}), and an attempt records its cost when it ends, so there is no figure to sum yet.`}
+          explain="attempt-documents"
+        />
+      )
+    }
     return (
       <CardAbsent
         kind="zero"
@@ -2349,7 +2388,7 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
           ) : (
             <Mark
               kind="partial"
-              say={`Summed from the ${countOf(s.attempts, 'attempt')} of the ${s.tasksSampled} newest of ${countOf(s.tasksWithAttempts, 'agent')} that have run on the ${s.tasksOnPage} most recently created. A sample of token cost, not a bill: older agents are outside it, and no billing integration records Cloud Run, Firestore or GCS spend.`}
+              say={`Summed from the ${countOf(s.attempts, 'attempt')} of the ${s.tasksSampled} newest of ${countOf(s.tasksWithAttempts, 'agent')} that have run, among the ${s.tasksOnPage} most recently created that hold no capacity. Agents holding capacity are left out: an attempt records its cost when it ends, so a running one would add an unmeasured attempt and no figure. A sample of token cost, not a bill: older agents are outside it, and no billing integration records Cloud Run, Firestore or GCS spend.`}
             />
           )}
         </span>
