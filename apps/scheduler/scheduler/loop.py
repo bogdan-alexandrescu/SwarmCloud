@@ -457,6 +457,26 @@ _FAILURE_SENT_CAUSES = frozenset({EndCause.FAILED_PARENT.value, EndCause.WORKFLO
 _CANCEL_SENT_CAUSES = frozenset({EndCause.CANCEL_REQUESTED.value, EndCause.CANCELLED_PARENT.value})
 
 
+def _dependency_states(task: Task, parents: dict[str, ParentEnd]) -> dict[str, TaskState]:
+    """Each parent's state as the dependency rule reads it.
+
+    A gated review's requirements check that FAILED or was DEAD_LETTERED
+    reads as SUCCEEDED here (#2524, `reviewgate.check_ended_without_list`):
+    it confirms nothing, so the review is held for swarm-api as after a
+    check that ran, and swarm-api skips it with no requirements list ("part
+    of #N") rather than the run losing its pull request.
+    """
+    gated = isinstance(task.metadata, dict) and isinstance(
+        task.metadata.get(reviewgate_mod.REVIEW_GATE_METADATA_KEY), dict)
+    return {
+        tid: (TaskState.SUCCEEDED
+              if gated and reviewgate_mod.check_ended_without_list(end.state,
+                                                                   end.requirements_check)
+              else end.state)
+        for tid, end in parents.items()
+    }
+
+
 def _parent_cause(parents: dict[str, ParentEnd], failed: list[str]) -> EndCause | None:
     """Why a dependant of `failed` is cancelled: after a failure, or after a cancel.
 
@@ -568,8 +588,14 @@ def read_workflow_failure(
         return None
     failed: list[Task] = []
     for state in _WORKFLOW_FAILING_STATES:
+        # A requirements check that failed is not the run's failure (#2524,
+        # `reviewgate.check_ended_without_list`): the review beside it ends as
+        # the gate decides, with no list.
         failed.extend(
-            store.workflow_steps_in_state(tenant_id, workflow_id, state, _FAILED_STEPS_NAMED)
+            step
+            for step in store.workflow_steps_in_state(
+                tenant_id, workflow_id, state, _FAILED_STEPS_NAMED)
+            if not reviewgate_mod.is_requirements_check(step.metadata)
         )
     if not failed:
         return None
@@ -1310,7 +1336,7 @@ class Scheduler:
 
         if task.depends_on:
             parents = self._store.parent_ends(task.depends_on, tenant_id=task.tenant_id)
-            states = {tid: end.state for tid, end in parents.items()}
+            states = _dependency_states(task, parents)
             failed = [tid for tid, state in states.items() if state in _FAILED_PARENT_STATES]
             if failed:
                 self._cancel(
@@ -2009,7 +2035,7 @@ class Scheduler:
             # so a dashboard built on the metric under-counted promotions.
             return self._promote_dependant(task, reason="no_dependencies", report=report)
         parents = self._store.parent_ends(task.depends_on, tenant_id=task.tenant_id)
-        states = {tid: end.state for tid, end in parents.items()}
+        states = _dependency_states(task, parents)
         failed = [tid for tid, state in states.items() if state in _FAILED_PARENT_STATES]
         if failed:
             self._cancel(

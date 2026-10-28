@@ -95,6 +95,7 @@ from .codec import (
     task_from_dict,
     tenant_from_dict,
 )
+from .reviewgate import is_requirements_check
 
 log = logging.getLogger(__name__)
 
@@ -208,6 +209,9 @@ class ParentEnd:
     #: When it ended: where the hold on a MERGE verdict's integrator starts
     #: (#748, `Scheduler._held_for_control_publish`).
     completed_at: datetime | None = None
+    #: An issue run's requirements check (#2524): when it FAILED, its
+    #: dependant review is not cancelled (`reviewgate.check_ended_without_list`).
+    requirements_check: bool = False
 
 
 @dataclass(frozen=True)
@@ -489,6 +493,7 @@ class SchedulerStore:
                     end_cause=str(cause) if cause is not None else None,
                     cancel_requested=bool(data.get("cancel_requested")),
                     completed_at=as_datetime(data.get("completed_at")),
+                    requirements_check=is_requirements_check(data.get("metadata")),
                 )
         return ends
 

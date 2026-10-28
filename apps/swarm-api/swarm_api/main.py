@@ -77,6 +77,7 @@ from .routes import (
     qa_settings,
     qatargets,
     repositories,
+    review_gate_settings,
     roles,
     runs,
     schedule_tick,
@@ -408,6 +409,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # A workspace's per-agent budget, which a step may only lower and the
     # platform ceiling caps (BUDGET-CAP, #2459): its owner or admin, audited.
     app.include_router(budget_settings.router)
+    # A workspace's default review gate, which every review step that names
+    # none follows (#2524, `reviewgate`): its owner or admin, audited.
+    app.include_router(review_gate_settings.router)
     # Connect GitHub as yourself (docs/onboarding.md §3.2, lane OB3):
     # authorise, exchange, disconnect, and the refresh sweep the
     # swarm-forge-refresh job calls. No route returns a token.

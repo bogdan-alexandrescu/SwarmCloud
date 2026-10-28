@@ -857,9 +857,9 @@ CHAIN_AS_BEFORE = {
             # Browser only if the change is UI (#2322): resolved at READY.
             "runner_profile": "claude-code-browser",
             "metadata": {"runtime": {"policy": "browser_if_ui",
-                                     "browser": "claude-code-browser", "code": "claude-code"},
-                         # Only on a risk path or over 300 lines (#2524): decided at READY.
-                         "review_gate": {"min_lines": 300}},
+                                     "browser": "claude-code-browser", "code": "claude-code"}},
+                         # No gate of its own: as a review step it is stored with
+                         # the default gate (#2524, test_review_gate_default*.py).
             "input": {
                 "issue": 42,
                 "prompt": (
@@ -977,8 +977,7 @@ def test_the_review_depends_on_every_implementation_step_and_the_fix_stays_gated
         "input_layout": "by_parent",
         "runtime": {"policy": "browser_if_ui", "browser": "claude-code-browser",
                     "code": "claude-code"},
-        # #2524, BGD 2026-10-27: the review runs only on a risk path or over 300 lines.
-        "review_gate": {"min_lines": 300},
+        # #2524: no gate of its own; stored with the default gate at submission.
     }
     assert by_id["review"].builds_on == "impl-wire"
     for sid in impl:

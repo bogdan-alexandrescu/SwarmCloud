@@ -1723,12 +1723,40 @@ it PARKED -> SUCCEEDED on a wake." `swarm_common.states` says of that edge
 Either key may be left out: `min_lines` is 300, and without `risk_paths` the
 platform's list applies (credentials and the git token path, tenant
 isolation, redaction, IAM including `terraform/**/iam*` and
-`terraform/bootstrap/`, and `apps/common/swarm_common/`). swarm-api refuses
+`terraform/bootstrap/`, `.github/workflows/` and `.github/actions/`, and
+`apps/common/swarm_common/`). swarm-api refuses
 any other key, a `min_lines` that is not a whole number, and a `risk_paths`
 that is not a list of repository-relative globs, with a 422
 (`invalid_review_gate`, a refusal switch that ships on; turned off, the block
-is dropped and the review always runs). The compiled issue-run review carries
-`{"min_lines": 300}`.
+is dropped and the review always runs). `"review_gate": false` switches the
+gate off for that one step: its review always runs.
+
+* **Every review step is gated by default** (BGD 2026-10-28, page M8:
+  "every review step"). A review step is one another step's `when` reads a
+  verdict from -- the step a fix, a gated integrator or a re-review is gated
+  on, the compiled issue run's review among them.
+  One that names no `review_gate` (nor does the workflow's metadata) is
+  stored with `{"default": true}` (`validation.default_review_gate_steps`),
+  which no caller may write, and is held and decided like any other gated
+  step. Why a default rather than an opt-in: the #2524 baseline week
+  reviewed every change, however small, and a gate a step has to ask for
+  is one almost nothing asks for. A step that names its own block keeps it.
+* **The default's values: 300 lines and the platform's risk paths**, the
+  values BGD decided on 2026-10-27 ("Risk paths + over 300 lines"), unless
+  the workspace sets its own: `GET`/`PUT
+  /v1/workspaces/{tenant_id}/review-gate`, `{"enabled", "min_lines",
+  "risk_paths"}`, each optional, its owner or admin (or a platform admin),
+  audited, as the workspace's QA and budget defaults are. Stored in
+  `workspace_settings/{tenant_id}.review_gate` and read when the step is
+  decided, so a change reaches reviews not yet decided. `enabled: false`
+  runs every review step that names no gate of its own. A value no
+  swarm-api path could have written is read as no setting.
+* **A risk path always runs the review.** Whatever `min_lines` and
+  `risk_paths` a step or a workspace names, the platform's risk paths stay
+  in the list (`reviewgate._gate_from`): a list adds to them and never
+  replaces them, so a one-line change to credentials, IAM, redaction,
+  tenant isolation, `.github/workflows/` or `apps/common/swarm_common/` is
+  never skipped on its line count.
 
 When every parent has SUCCEEDED, what they changed is final. The scheduler
 does not promote a step carrying `review_gate`: it holds it PARKED under the
@@ -1773,11 +1801,49 @@ changed paths (`own_files` when recorded, else `files`) and
   per-requirement read reads it. A lost wake or a swarm-api that is down
   ends the scheduler's hold, and the review is promoted and RUNS: the
   fallback spends a review, it never invents a MERGE.
-* **A skipped review confirms no requirement.** Its verdict carries no
-  `requirements` list, so an issue run behind it reads "not all met" and its
-  pull request says "part of #N" (the #454 rule: never Closes without
-  evidence). Whether a skipped review should instead leave the issue run's
-  review ungated is asked of the owner on the pull request that built this.
+* **A skipped issue-run review still confirms requirements** (BGD
+  2026-10-28 ~18:25Z: "Gate + cheap requirements check"). A skipped review
+  writes no `requirements` list of its own, and without one the run could
+  only say "part of #N" (the #454 rule: never Closes without evidence). So
+  an issue run whose plan lists requirements compiles a
+  `requirements-check` step beside its review: `claude-code` (no browser),
+  the `sonnet` class where the deployment pins it (a class with no pin is
+  refused at submission, so without one it runs the profile's default),
+  900 seconds and a 30-turn instruction (no profile field caps turns:
+  a contract request on the pull request that built this), read-only and
+  never merged by the integrator. It carries
+  `review_gate: {"requirements_check": true}`, is held like the review and
+  decided the other way round: it runs only when the review would be
+  skipped, and when the review runs it ends SUCCEEDED without an agent,
+  because the review then answers the requirements itself. It reads the
+  issue and the diff and writes only `requirements.json`,
+  `{"requirements": [{"index", "met", "note"}]}`, the shape a review's
+  verdict carries. When the review is then skipped, swarm-api folds that
+  list -- and nothing else from the file -- into the skipped review's
+  inline verdict (notes shortened to fit 4 KiB), so `requirements_finding`
+  reads it exactly as after a full review: `Closes #N` only when every
+  requirement is met, otherwise "part of #N". It never writes a verdict:
+  the verdict stays the gate's MERGE, whatever the file says, and no step
+  reads a verdict from the check. Its own change is not counted by the gate.
+* **A failed requirements check is "no list", never a lost pull request.**
+  The review lists the check in its `depends_on`, so that the review is
+  decided only once the check has ended. A check can still time out, run out
+  of attempts or fail with an agent error. If that made it an ordinary failed
+  parent, the scheduler would cancel the review, the fix and the integrator
+  (`failed_parent`), `fail_workflow` would end the run, and the issue would
+  get no pull request, where before the check existed it got one saying
+  "part of #N". So a check that ends FAILED or DEAD_LETTERED
+  (`reviewgate.check_ended_without_list`, restated in the scheduler) is
+  treated as follows:
+  * it is not a failed parent to the gated review, and
+    `read_workflow_failure` does not count it;
+  * its `task_finished` wake still has swarm-api decide the review;
+  * a skipped review then carries no requirements list, so "part of #N" --
+    any `requirements.json` it left is ignored, because a check that did
+    not succeed confirms nothing.
+
+  A check that somebody CANCELLED is a stop, and still takes the review
+  with it.
 * **Not `result_summary.skipped`.** That key means "did not run and left
   nothing", which makes a step that stages anything from it skip as well: the
   integrator would never publish.

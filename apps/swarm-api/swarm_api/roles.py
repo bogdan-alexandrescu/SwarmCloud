@@ -361,6 +361,7 @@ ADMIN_WRITES: frozenset[tuple[str, str]] = frozenset({
     ("PUT", "/v1/workspaces/{tenant_id}/merge-settings"),
     ("PUT", "/v1/workspaces/{tenant_id}/code-intelligence"),
     ("PUT", "/v1/workspaces/{tenant_id}/qa-settings"),
+    ("PUT", "/v1/workspaces/{tenant_id}/review-gate"),
     ("PUT", "/v1/workspaces/{tenant_id}/judgment-backend"),
     ("PUT", "/v1/workspaces/{tenant_id}/name"),
     ("PATCH", "/v1/repositories/{repo_id}"),
