@@ -3168,7 +3168,15 @@ async function fixtureLeases(): Promise<Result<LeasePage>> {
     attempt_id: `att_${id}`,
     tenant_id: 'u-bogdan',
     generation: 1,
-    pools: ['global', 'tenant:u-bogdan'],
+    // EVERY POOL ITS RUNNER PROFILE RESERVES (QA1 capacity-02, 2026-10-28):
+    // these are claude-code agents, and a lease names claude-code's seven
+    // pools, as runner_profiles['claude-code'].pools does. Naming two left
+    // five pools holding 5 units each with no lease on them, so Pools read
+    // `0 holders` beside a full anthropic · u-bogdan.
+    pools: [
+      'global', 'tenant:u-bogdan', 'resource:standard', 'runner:claude-code',
+      'backend:CLOUD_RUN_JOB', 'provider:anthropic', 'provider:anthropic:tenant:u-bogdan',
+    ],
     units: 1,
     dispatch_state: 'DISPATCHED',
     created_at: iso(600),

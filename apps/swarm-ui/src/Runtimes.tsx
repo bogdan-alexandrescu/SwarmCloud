@@ -5,6 +5,7 @@ import type { TopicId } from './help'
 import { POOLS_POLL_MS, capacityPoll, poolHref, tableMode, usePhoneTables } from './capacityPoll'
 import { HelpCard } from './HelpCard'
 import { Id, Screen } from './Shell'
+import { backendWord } from './words'
 import './styles/capacity.css'
 import { Chip, ToneMark } from './components'
 import {
@@ -397,11 +398,14 @@ function BackendRow({
   return (
     <tr role="row" className={over ? 'is-bad over' : paused ? 'is-paused paused' : unset ? 'is-paused limit-unset' : full || shut ? 'is-warn full' : undefined}>
       <th role="rowheader" scope="row">
-        {/* The identifier the API sent, verbatim. A prettified display name
-            would be a two-entry table keyed on a frozen enum, and a backend
-            this UI has never heard of would render as a blank instead of
-            naming itself. */}
-        <span className="mono">{backend}</span>
+        {/* THE WORD, THEN THE IDENTIFIER THE API SENT, VERBATIM (QA1
+            capacity-14, 2026-10-28): `CLOUD_RUN_JOB` alone was the API's enum
+            as a name. `backendWord` is the one table the runner picker and the
+            attempt cards read, and a backend it has never heard of names
+            itself in lower case rather than going blank; the id stays on the
+            mono line, the one a reader pastes. */}
+        {backendWord(backend)}
+        <span className="ctl-sub">{backend}</span>
       </th>
       {/* `data-label` is the column name, repeated nowhere else and rendered
           only by §B6.3's `::before` below 900px. It adds no DOM and no text
@@ -691,7 +695,7 @@ function RuntimeCard({
           <li className="ctl-fact rt-runs-on">
             <b>runs on</b>
             <span className="rt-runs-on-value">
-              <span className="mono rt-backend">{runtime.resolved_backend}</span>
+              <span className="rt-backend" title={runtime.resolved_backend}>{backendWord(runtime.resolved_backend)}</span>
               {platformChose && (
                 <span
                   className="rt-declared"

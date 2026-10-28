@@ -21,7 +21,12 @@ import type { Result } from '../fetch'
 import type { Capacity, Pool, ProfileAdmission, RunnerProfile } from '../types'
 
 const loadCapacity = vi.hoisted(() => vi.fn<() => Promise<Result<Capacity>>>())
-vi.mock('../api', () => ({ loadCapacity }))
+// `loadMe`: the opened row reads the session for its admin-only `Pool limits`
+// link (QA1 capacity-01); a member's read, so no admin link is drawn.
+vi.mock('../api', () => ({
+  loadCapacity,
+  loadMe: async () => ({ status: 'ok', data: { principal: { is_admin: false } }, fetchedAt: Date.now(), serverAt: null }),
+}))
 
 const { ProfilesScreen } = await import('../Profiles')
 const { disabledSentence } = await import('../ProfileMatrix')
