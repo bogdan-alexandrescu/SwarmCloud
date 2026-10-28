@@ -41,9 +41,18 @@ const api = vi.hoisted(() => ({
   openLiveToMembers: vi.fn(),
 }))
 
+// The fixture build is a flag the theater-all test turns on (overview-agents-17).
+const build = vi.hoisted(() => ({ fixtures: false }))
+
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()
-  return { ...actual, ...api, USE_FIXTURES: false }
+  return {
+    ...actual,
+    ...api,
+    get USE_FIXTURES() {
+      return build.fixtures
+    },
+  }
 })
 
 vi.mock('@novnc/novnc/core/rfb.js', () => ({
@@ -252,6 +261,25 @@ describe('the Agents list: All | Browsers N', () => {
     const theaterAll = screen.getByRole('link', { name: /theater all/i })
     expect(theaterAll.getAttribute('href')).toBe(theaterPath('task_needsyou00000000001', null))
     expect(theaterAll.getAttribute('href')).toMatch(/\/browser\?theater=1$/)
+  })
+
+  /**
+   * Visual QA pass 1, overview-agents-17 (QA1B-07). The fixture build serves
+   * no live session, actions or recordings, so '⤢ theater all' opened a
+   * theater on 'Not found' and 'No recording to play'. The owner's answer:
+   * hide the link in fixtures. MUTATION: drop `!USE_FIXTURES` from the
+   * link's condition in Agents.tsx and the link is found.
+   */
+  it('offers no theater all in the fixture build, which has no live browser to show', async () => {
+    build.fixtures = true
+    try {
+      const { container } = await mount()
+      fireEvent.click(within(screen.getByRole('group', { name: /browser agents/i })).getByRole('button', { name: /^Browsers/ }))
+      await waitFor(() => expect(container.querySelectorAll('.rows .row.clickable')).toHaveLength(4))
+      expect(screen.queryByRole('link', { name: /theater all/i })).toBeNull()
+    } finally {
+      build.fixtures = false
+    }
   })
 })
 
