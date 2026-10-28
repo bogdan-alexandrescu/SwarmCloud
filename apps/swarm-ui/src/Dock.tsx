@@ -81,6 +81,7 @@ export function Dock() {
   const [height, setHeight] = useState(() => readPane(DOCK))
   const dragging = useRef(false)
   const shell = useRef<HTMLDivElement | null>(null)
+  const toggle = useRef<HTMLButtonElement | null>(null)
   const s = summariseProbes(probes)
   const drawn = probes.length > 0
 
@@ -190,6 +191,21 @@ export function Dock() {
       ref={shell}
       className={`ctl-dock${open ? ' is-open' : ''}`}
       style={open ? { height } : undefined}
+      /*
+       * ESCAPE CLOSES THE OPEN DOCK (visual QA pass 1, overview-agents-06,
+       * part of #2596). Escape closes the innermost thing that is open
+       * everywhere else (shortcuts.ts), and here it left `aria-expanded` true.
+       * Focus goes back to the toggle, because the link or cell it was on has
+       * just unmounted. A collapsed dock lets the key through, and a key
+       * something inside already used is not this one's.
+       */
+      onKeyDown={(e) => {
+        if (e.key !== 'Escape' || !open || e.defaultPrevented) return
+        e.preventDefault()
+        e.stopPropagation()
+        setOpen(false)
+        toggle.current?.focus()
+      }}
     >
       {open && (
         <div
@@ -243,6 +259,7 @@ export function Dock() {
       )}
 
       <button
+        ref={toggle}
         type="button"
         className="ctl-dock-line"
         aria-expanded={open}

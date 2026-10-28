@@ -129,6 +129,17 @@ def test_discovery_is_capped_at_sixty_pages_and_depth_three() -> None:
         qaspec.render_discovery(_target(discover={"max_pages": 10, "max_depth": 4}))
 
 
+def test_a_qa_runs_review_steps_run_on_sonnet() -> None:
+    """QA-REVIEW-SONNET (part of #2524): BGD, 2026-10-27, a QA run's
+    `review-<group>` step runs on the Sonnet class, not Opus."""
+    steps = _steps(qaspec.render(_target()))
+    reviews = sorted(s for s in steps if s.startswith("review-"))
+    assert reviews, "the spec has no review-<group> step"
+    # MUTATION: set REVIEW_MODEL back to "opus" and this fails.
+    assert {steps[s]["model_class"] for s in reviews} == {"sonnet"}
+    assert qaspec.REVIEW_MODEL == "sonnet"
+
+
 def test_the_steps_are_the_designs_shapes() -> None:
     spec = qaspec.render(
         _target(flows=[{"id": "find-docs", "goal": "find the API reference", "start_path": "/"}])
@@ -140,7 +151,7 @@ def test_the_steps_are_the_designs_shapes() -> None:
     assert steps["capture-g1"]["runner_profile"] == "claude-code-browser"
     assert steps["capture-g1"]["model_class"] == "haiku"
     assert steps["review-g1"]["runner_profile"] == "claude-code"
-    assert steps["review-g1"]["model_class"] == "opus"
+    assert steps["review-g1"]["model_class"] == "sonnet"
     # MUTATION: stage the review from anything but its capture tar and this fails.
     assert steps["review-g1"]["input_from"] == {"capture-g1": "capture-g1.tar"}
     assert steps["review-g1"]["depends_on"] == ["capture-g1"]
