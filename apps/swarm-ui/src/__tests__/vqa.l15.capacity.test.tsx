@@ -251,7 +251,8 @@ describe('V012: a stacked capacity field is ONE grid item', () => {
     const row = document.getElementById('pool-tenant:eng')!
     const ceiling = row.querySelector('td[data-label="Ceiling (units)"]')!
     expect(ceiling.children.length, 'the figure and its `/10` are two grid items').toBe(1)
-    expect((ceiling.textContent ?? '').replace(/\s+/g, '')).toBe('6/10')
+    // Stacked, the configured limit is said in words (QA1 capacity-12).
+    expect((ceiling.textContent ?? '').replace(/\s+/g, ' ').trim()).toBe('6 lowered from 10')
     expect(row.querySelector('td[data-label="Links"]')!.children.length).toBe(1)
   })
 })

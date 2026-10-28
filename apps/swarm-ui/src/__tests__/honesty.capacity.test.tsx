@@ -31,7 +31,10 @@ const loadLeases = vi.hoisted(() =>
     error: { kind: 'admin_required' as const, httpStatus: 403, code: 'forbidden', message: 'admin group membership is required' },
   })),
 )
-vi.mock('../api', () => ({ loadCapacity, loadRuntimeTopology, loadLeases }))
+// Pools reads the session for whether to draw its admin-only `limit` links
+// (QA1 capacity-01); unanswered here, so none are drawn.
+const loadMe = vi.hoisted(() => vi.fn())
+vi.mock('../api', () => ({ loadCapacity, loadRuntimeTopology, loadLeases, loadMe }))
 
 const { CapacityScreen } = await import('../Capacity')
 const { ProfilesScreen } = await import('../Profiles')

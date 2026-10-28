@@ -1073,6 +1073,11 @@ p.muted.rt-reason { margin: 0 0 var(--ctl-s3); }
   /* `46` then `/50`: the frame's figure, leased over ceiling. */
   .cap-pools.is-stacked > table > tbody > tr > td[data-label='Ceiling (units)'] { grid-area: ceil; align-self: start; }
   .cap-pools.is-stacked > table > tbody > tr > td[data-label='Ceiling (units)']::before { content: '/'; }
+  /* A LOWERED CEILING SAYS ITS CONFIGURED LIMIT IN WORDS, UNDER THE FIGURE
+     (QA1 capacity-12, 2026-10-28): `0 /6 /10` ran three numbers together.
+     The row prints `lowered from 10` (Capacity.tsx), a muted line of its own,
+     so the figure stays `0/6` and the name column keeps its width. */
+  .cap-pools.is-stacked .cap-ceil > .cap-was { display: block; margin-left: 0; white-space: nowrap; }
   .cap-pools.is-stacked > table > tbody > tr > td[data-label='Use'] { grid-area: use; }
   .cap-pools.is-stacked > table > tbody > tr > td[data-label='State'] { grid-area: state; justify-self: end; }
   .cap-pools.is-stacked > table > tbody > tr > td[data-label='Set by'] { grid-area: by; }

@@ -1,5 +1,5 @@
-import { Fragment, useEffect, useId } from 'react'
-import { loadCapacity, loadLeases, type ResourceClasses } from './api'
+import { Fragment, useEffect, useId, useState } from 'react'
+import { loadCapacity, loadLeases, loadMe, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
 import { isPaused, type Result } from './fetch'
 import type { TopicId } from './help'
@@ -39,6 +39,7 @@ import {
   type Pool,
 } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
+import { backendWord } from './words'
 
 /**
  * Screen B -- the capacity board.
@@ -388,6 +389,7 @@ function CeilingTables({
   holders: HolderCounts
 }) {
   const classes = useResourceClasses()
+  const limitLinks = useViewerIsAdmin() === true
   // ONE POOL ORDER (QA G5-22): `comparePools`, the order Pool limits draws
   // the same pools in -- family, problems first, this tenant, name.
   const order = comparePools(viewer)
@@ -422,6 +424,7 @@ function CeilingTables({
           target={target}
           holders={holders}
           classes={classes}
+          limitLinks={limitLinks}
         />
       )}
       {POOL_FAMILY_ORDER.map((kind) => {
@@ -436,6 +439,7 @@ function CeilingTables({
             target={target}
             holders={holders}
             classes={classes}
+            limitLinks={limitLinks}
           />
         )
       })}
@@ -478,6 +482,7 @@ function Family({
   target,
   holders,
   classes,
+  limitLinks,
 }: {
   title: string
   className?: string
@@ -489,6 +494,8 @@ function Family({
   holders: HolderCounts
   /** The resource-class catalogue, for a `resource:` pool's `too small`; null unread. */
   classes: ResourceClasses | null
+  /** Whether the reader may open Pool limits: see `PoolRow`'s `limit` link. */
+  limitLinks: boolean
 }) {
   // Trap E: a number may only sit beside another number of the same scope, so
   // the scope is declared rather than left to be inferred -- ON EVERY ROW
@@ -505,7 +512,7 @@ function Family({
         <h2 className="ctl-card-title" id={titleId}>{title}</h2>
       </div>
       <div className="ctl-card-body is-flush">
-        <PoolTable pools={pools} viewer={viewer} target={target} holders={holders} classes={classes} labelledBy={titleId} />
+        <PoolTable pools={pools} viewer={viewer} target={target} holders={holders} classes={classes} limitLinks={limitLinks} labelledBy={titleId} />
       </div>
     </section>
   )
@@ -551,6 +558,7 @@ function PoolTable({
   target,
   holders,
   classes,
+  limitLinks,
   labelledBy,
 }: {
   pools: Pool[]
@@ -558,6 +566,7 @@ function PoolTable({
   target: string | null
   holders: HolderCounts
   classes: ResourceClasses | null
+  limitLinks: boolean
   /** The id of the family's heading, which names the table. */
   labelledBy: string
 }) {
@@ -588,6 +597,8 @@ function PoolTable({
               target={p.name === target}
               holders={holders}
               classes={classes}
+              limitLinks={limitLinks}
+              stacked={phone}
             />
           ))}
         </tbody>
@@ -597,13 +608,54 @@ function PoolTable({
 }
 
 /**
+ * A pool's name as the row prints it: `poolLabel`, except that a backend pool
+ * is named in words (QA1 capacity-14, 2026-10-28). `backend:CLOUD_RUN_JOB`
+ * printed as `CLOUD_RUN_JOB`, the API's enum; it reads `Cloud Run`, the word
+ * the runner picker and the attempt cards use (`backendWord`), and the id
+ * stays in the row's mono sub-line.
+ */
+function poolName(name: string): string {
+  return poolKind(name) === 'backend' ? backendWord(name.slice(name.indexOf(':') + 1)) : poolLabel(name)
+}
+
+/**
+ * Whether the reader is a platform admin, from the session read the frame
+ * already makes (as `useIsAdmin` in PermissionCards reads it). `null` is not
+ * known yet, or the read failed: no admin link is drawn on a guess, since the
+ * router would send a non-admin who followed it to Overview.
+ */
+export function useViewerIsAdmin(): boolean | null {
+  const [admin, setAdmin] = useState<boolean | null>(null)
+  useEffect(() => {
+    let live = true
+    Promise.resolve(loadMe({ frame: true })).then(
+      (r) => {
+        if (live && r !== undefined && (r.status === 'ok' || r.status === 'stale')) setAdmin(r.data.principal?.is_admin === true)
+      },
+      () => {},
+    )
+    return () => {
+      live = false
+    }
+  }, [])
+  return admin
+}
+
+/**
  * The holders link (capacity.html C1: `4 holders · limit`). The count is the
  * leases that name this pool, when `holderCounts` could vouch for every live
  * lease; otherwise the word alone, and the title says why -- never a 0 for a
  * count nobody made.
+ *
+ * NOR A 0 THE TWO READS DISAGREE ABOUT (QA1 capacity-02, 2026-10-28). The
+ * fixture's leases named only `global` and the tenant pool, so five pools
+ * holding 5 units each -- one of them full -- read `0 holders`: a full pool
+ * with nobody on it. A pool whose counter holds units and which no lease on
+ * a complete read names is drift (Holders' Accounting drift lists it), not a
+ * counted zero, so it takes the uncounted form with that reason.
  */
-function HoldersLink({ pool, holders }: { pool: string; holders: HolderCounts }) {
-  const href = poolHref('capacity/holders', pool)
+function HoldersLink({ pool, holders }: { pool: Pool; holders: HolderCounts }) {
+  const href = poolHref('capacity/holders', pool.name)
   if ('unknown' in holders) {
     // The reason is on the page once, above the families (`HoldersUncounted`),
     // and each link is described by it as well as titled with it.
@@ -613,7 +665,18 @@ function HoldersLink({ pool, holders }: { pool: string; holders: HolderCounts })
       </a>
     )
   }
-  const n = holders.byPool.get(pool) ?? 0
+  const n = holders.byPool.get(pool.name) ?? 0
+  if (n === 0 && pool.active > 0) {
+    return (
+      <a
+        className="ctl-link"
+        href={href}
+        title={`${pool.active} unit${pool.active === 1 ? ' is' : 's are'} leased on this pool, yet no live lease on the lease read names it, so its holders were not counted. Holders' Accounting drift shows the difference.`}
+      >
+        holders
+      </a>
+    )
+  }
   return (
     <a className="ctl-link" href={href} title="Unreleased leases that name this pool">
       {n} holder{n === 1 ? '' : 's'}
@@ -627,13 +690,19 @@ function PoolRow({
   target,
   holders,
   classes,
+  limitLinks,
+  stacked,
 }: {
   pool: Pool
   scope: string
   target: boolean
   holders: HolderCounts
   classes: ResourceClasses | null
+  limitLinks: boolean
+  /** The compact phone row (`usePhoneTables`), where Leased and Ceiling read as one figure. */
+  stacked: boolean
 }) {
+  const name = poolName(pool.name)
   // The weight `needsAction` weighed this pool against, so the row draws the
   // reason it was filed under Needs a look (QA-052).
   const marks = classifyPool(pool, poolWeight(pool, classes))
@@ -661,7 +730,7 @@ function PoolRow({
             the one a reader copies to point someone at a pool -- and who holds
             it stays one click away, in Open. */}
         <a className="ctl-link" href={poolHref('capacity/pools', pool.name)}>
-          {poolLabel(pool.name)}
+          {name}
         </a>
         {/* THE SCOPE, PER ROW (CP-2), under the name it qualifies: it says
             which other figures on this screen a row's numbers may be compared
@@ -692,9 +761,15 @@ function PoolRow({
           ) : (
             limit
           )}
+          {/* IN WORDS ON THE PHONE ROW (QA1 capacity-12, 2026-10-28). Stacked,
+              Leased and Ceiling read as one figure, `0` then `/6`, so a
+              second `/10` made `0 /6 /10` -- three numbers and no telling
+              which was the ceiling. The desktop table has them in columns
+              and keeps the frame's `6/10`. */}
+          {stacked && limit !== null && pool.hard_limit !== null && limit < pool.hard_limit && ' '}
           {limit !== null && pool.hard_limit !== null && limit < pool.hard_limit && (
             <span className="cap-was" title={`Configured hard limit is ${pool.hard_limit}`}>
-              /{pool.hard_limit}
+              {stacked ? `lowered from ${pool.hard_limit}` : `/${pool.hard_limit}`}
             </span>
           )}
         </span>
@@ -706,9 +781,9 @@ function PoolRow({
             tone={marks.track}
             meter={
               limit === null
-                ? { label: `${poolLabel(pool.name)}: ${pool.active} units leased, no limit set`, now: pool.active, max: 0 }
+                ? { label: `${name}: ${pool.active} units leased, no limit set`, now: pool.active, max: 0 }
                 : {
-                    label: `${poolLabel(pool.name)}: ${pool.active} of ${limit} units leased`,
+                    label: `${name}: ${pool.active} of ${limit} units leased`,
                     now: pool.active,
                     max: limit,
                   }
@@ -743,14 +818,22 @@ function PoolRow({
       </td>
       <td role="cell" data-label="Links" className="cap-links">
         {/* Both name the pool (#125): Holders filtered to it, and its own row
-            on Pool limits (#134), where an admin edits it and anyone else
-            reads it with Edit locked. */}
+            on Pool limits (#134), where an admin edits it.
+            POOL LIMITS IS AN ADMIN ROUTE (QA1 capacity-01, 2026-10-28): this
+            comment said anyone else read it with Edit locked, but the router
+            sends a member who opens `#admin/limits` to Overview with no word
+            of why, so 20 `limit` links on the page did nothing for them. The
+            link is drawn only for a reader the session read calls an admin. */}
         {/* ONE ELEMENT (visual QA V012): the bare ` · ` between the links
             was an anonymous grid item when stacked, a keyless row of its own. */}
         <span className="cap-open">
-          <HoldersLink pool={pool.name} holders={holders} />
-          {' · '}
-          <a className="ctl-link" href={poolHref('admin/limits', pool.name)}>limit</a>
+          <HoldersLink pool={pool} holders={holders} />
+          {limitLinks && (
+            <>
+              {' · '}
+              <a className="ctl-link" href={poolHref('admin/limits', pool.name)}>limit</a>
+            </>
+          )}
         </span>
       </td>
     </tr>
