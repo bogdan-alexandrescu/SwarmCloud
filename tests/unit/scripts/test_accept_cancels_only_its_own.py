@@ -11,10 +11,9 @@ cancelled target as `FAILED`, which reads as a regression.
 `gcloud run jobs execute` takes no labels (its only per-execution overrides
 are --args, --update-env-vars, --tasks and --task-timeout), so the mark is
 the environment override SWARM_VERIFY_ORIGIN: `accept-run-<run id>` for an
-accept run, `operator` otherwise. The cancelling is verify-remote.sh's own
-(`--cancel-accept-runs`, `--cancel-this-run`), run here against a fake
-gcloud, and accept.yml is held to calling it and to cancelling nothing
-itself.
+accept run, `operator` otherwise. accept.yml's quiesce and its
+`if: cancelled()` steps filter on it; their own scripts are read out of
+accept.yml and run here against a fake gcloud.
 """
 
 from __future__ import annotations
@@ -62,14 +61,19 @@ def _execution(name: str, origin: str | None, created: str = "2026-10-28T10:00:0
             "status": {"runningCount": 1}}
 
 
-def _run(tmp_path: Path, *args: str, env_extra: dict | None = None,
-         executions: list | None = None, describe: dict | None = None,
-         execute: str = "ok") -> tuple[subprocess.CompletedProcess, list[str]]:
+def _fake_gcloud(tmp_path: Path) -> Path:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     gcloud = bin_dir / "gcloud"
     gcloud.write_text(FAKE_GCLOUD)
     gcloud.chmod(gcloud.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return bin_dir
+
+
+def _run(tmp_path: Path, *args: str, env_extra: dict | None = None,
+         executions: list | None = None, describe: dict | None = None,
+         execute: str = "ok") -> tuple[subprocess.CompletedProcess, list[str]]:
+    bin_dir = _fake_gcloud(tmp_path)
     (tmp_path / "executions.json").write_text(json.dumps(executions or []))
     (tmp_path / "describe.json").write_text(json.dumps(describe or {}))
     tmpdir = tmp_path / "tmp"
@@ -146,45 +150,8 @@ def test_a_failed_execution_is_still_reported_failed(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# The quiesce cancels accept runs' executions only
-# ---------------------------------------------------------------------------
-
-
-def test_the_quiesce_cancels_only_accept_runs_and_names_what_it_skipped(tmp_path) -> None:
-    executions = [_execution("swarm-verify-acc01", "accept-run-111"),
-                  _execution("swarm-verify-op001", "operator"),
-                  _execution("swarm-verify-old01", None),
-                  _execution("swarm-verify-self1", "accept-run-999")]
-    proc, calls = _run(tmp_path, "--cancel-accept-runs",
-                       env_extra={"SWARM_VERIFY_ORIGIN": "accept-run-999"}, executions=executions)
-    out = proc.stdout + proc.stderr
-    assert proc.returncode == 0, out
-    assert _cancelled(calls) == ["swarm-verify-acc01"], calls
-    assert "skipped swarm-verify-op001 (operator)" in out, out
-    assert "skipped swarm-verify-old01 (unmarked)" in out, out
-
-
-def test_a_cancel_step_cancels_only_this_runs_executions_since_it_started(tmp_path) -> None:
-    executions = [_execution("swarm-verify-mine1", "accept-run-999", "2026-10-28T10:05:00.000000Z"),
-                  _execution("swarm-verify-early", "accept-run-999", "2026-10-28T09:55:00.000000Z"),
-                  _execution("swarm-verify-op001", "operator", "2026-10-28T10:06:00.000000Z"),
-                  _execution("swarm-verify-other", "accept-run-111", "2026-10-28T10:07:00.000000Z")]
-    proc, calls = _run(tmp_path, "--cancel-this-run", "2026-10-28T10:00:00Z",
-                       env_extra={"SWARM_VERIFY_ORIGIN": "accept-run-999"}, executions=executions)
-    out = proc.stdout + proc.stderr
-    assert proc.returncode == 0, out
-    assert _cancelled(calls) == ["swarm-verify-mine1"], calls
-
-
-def test_a_cancel_step_without_an_accept_origin_cancels_nothing(tmp_path) -> None:
-    executions = [_execution("swarm-verify-op001", "operator", "2026-10-28T10:06:00.000000Z")]
-    proc, calls = _run(tmp_path, "--cancel-this-run", "2026-10-28T10:00:00Z", executions=executions)
-    assert proc.returncode != 0
-    assert _cancelled(calls) == [], calls
-
-
-# ---------------------------------------------------------------------------
-# accept.yml: every execution is marked, and nothing cancels unfiltered
+# accept.yml: every execution is marked, and each cancel is filtered by it.
+# The step scripts are read out of the workflow and run against the fake.
 # ---------------------------------------------------------------------------
 
 
@@ -196,36 +163,81 @@ def _steps() -> list[tuple[str, dict]]:
     return [(name, step) for name, job in _workflow()["jobs"].items() for step in job.get("steps") or []]
 
 
+def _quiesce_run() -> str:
+    (step,) = [s for s in _workflow()["jobs"]["quiesce"]["steps"]
+               if "swarm-verify executions still running" in str(s.get("name", ""))]
+    return step["run"]
+
+
+def _cancel_steps() -> list[tuple[str, dict]]:
+    return [(j, s) for j, s in _steps() if str(s.get("if", "")).replace(" ", "") == "${{cancelled()}}"]
+
+
+def _run_step(tmp_path: Path, script: str, executions: list, env_extra: dict) -> tuple[subprocess.CompletedProcess, list[str]]:
+    bin_dir = _fake_gcloud(tmp_path)
+    (tmp_path / "gcloud.calls").unlink(missing_ok=True)
+    (tmp_path / "executions.json").write_text(json.dumps(executions))
+    env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(tmp_path),
+           "FAKE_DIR": str(tmp_path), "FAKE_EXECUTE": "ok", "REGION": "us-central1", "PROJECT_ID": "p"}
+    env.update(env_extra)
+    work = tmp_path / "work"
+    work.mkdir(exist_ok=True)
+    proc = subprocess.run(["bash", "-e", "-c", script], cwd=work, env=env,
+                          capture_output=True, text=True, timeout=60)
+    calls_file = tmp_path / "gcloud.calls"
+    return proc, calls_file.read_text().splitlines() if calls_file.exists() else []
+
+
 def test_accept_marks_every_execution_with_its_run_id() -> None:
     env = _workflow()["env"]
     assert env.get("SWARM_VERIFY_ORIGIN") == "accept-run-${{ github.run_id }}", env
-    # Nothing in the file executes swarm-verify except through verify-remote.sh.
+    # Nothing in the file executes swarm-verify except through verify-remote.sh,
+    # which sends the mark (test_an_accept_runs_execution_is_marked_with_its_run_id).
     for job, step in _steps():
         assert "jobs execute" not in str(step.get("run", "")), (job, step.get("name"))
 
 
-def test_no_step_in_accept_cancels_an_execution_unfiltered() -> None:
-    for job, step in _steps():
-        run = str(step.get("run", ""))
-        assert "executions cancel" not in run, (job, step.get("name"))
-        assert "runningCount" not in run, (job, step.get("name"))
+def test_every_cancel_in_accept_filters_on_the_mark() -> None:
+    cancelling = [(j, s) for j, s in _steps() if "executions cancel" in str(s.get("run", ""))]
+    assert len(cancelling) >= 6, [j for j, _ in cancelling]
+    for job, step in cancelling:
+        assert 'select(.name == "SWARM_VERIFY_ORIGIN")' in step["run"], (job, step.get("name"))
 
 
-def test_the_quiesce_and_every_cancel_step_go_through_verify_remote() -> None:
-    jobs = _workflow()["jobs"]
-    quiesce = [s for s in jobs["quiesce"]["steps"] if "swarm-verify executions" in str(s.get("name", ""))]
-    assert len(quiesce) == 1 and "verify-remote.sh --cancel-accept-runs" in quiesce[0]["run"], quiesce
-    cancel_steps = [(j, s) for j, s in _steps() if str(s.get("if", "")).replace(" ", "") == "${{cancelled()}}"]
-    assert len(cancel_steps) >= 5, [j for j, _ in cancel_steps]
-    for job, step in cancel_steps:
-        assert 'verify-remote.sh --cancel-this-run "${STARTED}"' in step["run"], (job, step["run"])
+def test_the_quiesce_cancels_only_other_accept_runs_and_names_what_it_skipped(tmp_path) -> None:
+    executions = [_execution("swarm-verify-acc01", "accept-run-111"),
+                  _execution("swarm-verify-op001", "operator"),
+                  _execution("swarm-verify-old01", None),
+                  _execution("swarm-verify-self1", "accept-run-999")]
+    proc, calls = _run_step(tmp_path, _quiesce_run(), executions, {"SWARM_VERIFY_ORIGIN": "accept-run-999"})
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    assert _cancelled(calls) == ["swarm-verify-acc01"], calls
+    assert "skipped swarm-verify execution swarm-verify-op001 (operator)" in out, out
+    assert "skipped swarm-verify execution swarm-verify-old01 (unmarked)" in out, out
+    assert "cancelled 1 running swarm-verify execution(s); left 2 not started by an accept run" in out, out
+
+
+def test_every_cancel_step_cancels_only_this_runs_executions_since_its_job_started(tmp_path) -> None:
+    executions = [_execution("swarm-verify-mine1", "accept-run-999", "2026-10-28T10:05:00.000000Z"),
+                  _execution("swarm-verify-early", "accept-run-999", "2026-10-28T09:55:00.000000Z"),
+                  _execution("swarm-verify-op001", "operator", "2026-10-28T10:06:00.000000Z"),
+                  _execution("swarm-verify-old01", None, "2026-10-28T10:06:30.000000Z"),
+                  _execution("swarm-verify-other", "accept-run-111", "2026-10-28T10:07:00.000000Z")]
+    steps = _cancel_steps()
+    assert len(steps) >= 5, [j for j, _ in steps]
+    for job, step in steps:
+        proc, calls = _run_step(tmp_path, step["run"], executions,
+                                {"SWARM_VERIFY_ORIGIN": "accept-run-999", "STARTED": "2026-10-28T10:00:00Z"})
+        assert proc.returncode == 0, (job, proc.stderr)
+        assert _cancelled(calls) == ["swarm-verify-mine1"], (job, calls)
 
 
 def test_the_roles_probes_settings_reach_the_job_only_when_set(tmp_path) -> None:
     # The swarm-verify job reads no environment of the runner's: what the
     # roles probe needs (scripts/acceptance/groups/roles.sh) goes in the
     # execution's own overrides, and an unset one is not sent as empty.
-    proc, calls = _run(tmp_path, "acceptance/roles",
+    proc, calls = _run(tmp_path, "acceptance/groups/roles",
                        env_extra={"SWARM_ACCEPTANCE_ROLES_TENANT": "roles-probe"})
     assert proc.returncode == 0, proc.stderr
     (execute,) = [c for c in calls if c.startswith("run jobs execute")]

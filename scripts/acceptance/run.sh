@@ -85,9 +85,8 @@ source "${REPO_ROOT}/scripts/acceptance/groups/git-tools.sh"
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=groups/tenant-isolation.sh
 source "${REPO_ROOT}/scripts/acceptance/groups/tenant-isolation.sh"
-source "${REPO_ROOT}/scripts/acceptance/groups/roles.sh"
 
-ALL_GROUPS=(mock generic claude-code workflow browser live-browser git-tools tenant-isolation roles)
+ALL_GROUPS=(mock generic claude-code workflow browser live-browser git-tools tenant-isolation)
 
 #: A group `--only` accepts that is NEVER in ALL_GROUPS and never appears in
 #: --list's output or a normal run's group list. It does no platform work and

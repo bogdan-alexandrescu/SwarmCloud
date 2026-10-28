@@ -1556,9 +1556,13 @@ the narrowing and its revocation are both in `GET /v1/workspace/roles`
 admin selecting another identity's `u-` workspace is 403
 `tenant_not_member`. `roles_judge` is the one place each response is judged,
 and `tests/unit/scripts/test_acceptance_roles.py` holds it to swarm_api's
-own codes and audit actions. accept.yml runs it in the tenant-isolation job
-(`verify-remote.sh acceptance/roles`), report-only until the
-repository variable `ROLES_PROBE_REQUIRED` is `true`.
+own codes and audit actions. accept.yml runs it in the smoke job, after the
+GKE proof (`verify-remote.sh acceptance/groups/roles`: executed, the file is
+its own one-group suite), report-only until the repository variable
+`ROLES_PROBE_REQUIRED` is `true`. Not a matrix group: `run.sh`'s groups are
+what the acceptance waves are held to, and the probe submits nothing that
+runs. Once it is required, a red probe fails the smoke job and so holds back
+both waves; that is the owner's choice to make with the variable.
 
 Two departures from §6 row 6, both forced:
 

@@ -33,13 +33,18 @@
 # Nothing here submits work that runs: the one submission is the refused
 # one, and a submission that is wrongly accepted is cancelled at exit.
 #
-# accept.yml runs it in the tenant-isolation job, as `verify-remote.sh
-# acceptance/roles` (scripts/acceptance/roles.sh), report-only until the
-# repository variable ROLES_PROBE_REQUIRED is true.
+# WHERE IT RUNS. Executed, this file is the whole suite for one group: it
+# sources what run.sh would and runs `roles` alone, so accept.yml's smoke job
+# runs it as `verify-remote.sh acceptance/groups/roles`, inside the VPC,
+# report-only until the repository variable ROLES_PROBE_REQUIRED is true. It
+# is not in run.sh's ALL_GROUPS: that list is what accept.yml's matrix waves
+# are held to (tests/unit/scripts/test_release_acceptance_job.py), and the
+# probe is check-only and needs no wave. Sourced, it only defines functions,
+# which is how tests/unit/scripts/test_acceptance_roles.py runs them.
 
-# Sourced by run.sh after common.sh, testlib.sh and lib.sh: CI shellchecks
-# this file on its own too, where the variables those set and the ones this
-# file sets for them read as unassigned and unused.
+# Sourced by the entry below (or a test) after common.sh, testlib.sh and
+# lib.sh: CI shellchecks this file on its own too, where the variables those
+# set and the ones this file sets for them read as unassigned and unused.
 # shellcheck disable=SC2034,SC2154
 set -euo pipefail
 
@@ -93,7 +98,7 @@ roles_config_problem() {
   elif [[ ! "${ACC_ROLES_ADMIN_SA}" =~ ^[a-z0-9-]+@[a-z0-9-]+\.iam\.gserviceaccount\.com$ ]]; then
     echo "SWARM_ACCEPTANCE_ROLES_ADMIN_SA is unset or not a service account's email: name a platform admin's service account swarm-verify may mint an ID token for"
   elif api_is_front_door; then
-    echo "the API is reached through its front door (IAP), which takes no minted ID token: run the probe inside the VPC (verify-remote.sh acceptance/roles)"
+    echo "the API is reached through its front door (IAP), which takes no minted ID token: run the probe inside the VPC (verify-remote.sh acceptance/groups/roles)"
   fi
   return 0
 }
@@ -300,3 +305,43 @@ run_roles() {
 
   rm -f "${admin}"
 }
+
+# Executed rather than sourced: the suite's harness for this one group, as
+# run.sh's for its own (require_platform, acc_init, and an exit trap that
+# cleans up and turns a crash into a non-zero exit, never a green one).
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  ROLES_REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"
+  # shellcheck source-path=SCRIPTDIR
+  # shellcheck source=../../lib/common.sh
+  source "${ROLES_REPO_ROOT}/scripts/lib/common.sh"
+  SUITE_NAME="acceptance"
+  # shellcheck source-path=SCRIPTDIR
+  # shellcheck source=../../lib/testlib.sh
+  source "${ROLES_REPO_ROOT}/scripts/lib/testlib.sh"
+  # shellcheck source-path=SCRIPTDIR
+  # shellcheck source=../lib.sh
+  source "${ROLES_REPO_ROOT}/scripts/acceptance/lib.sh"
+  [[ "${1:-}" != "--list" ]] || { printf 'roles\n'; roles_checks | sed 's/^/  /'; exit 0; }
+  [[ $# -eq 0 ]] || die "unknown argument: $1 (only --list)"
+  step "Acceptance: ${PROJECT_ID} / ${ENVIRONMENT} -- groups: roles"
+  require_platform
+  acc_init
+  ROLES_FINISHED=0
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly via the trap below
+  _roles_exit_trap() {
+    local ec=$?
+    acc_cleanup
+    if [[ "${ROLES_FINISHED}" != "1" ]]; then
+      [[ "${ec}" -ne 0 ]] || ec=1
+      err "${SUITE_NAME}: the roles probe did not finish -- crashed after ${TESTS_RUN} of $(roles_checks | wc -l | tr -d ' ') checks visited (exit ${ec})"
+    fi
+    exit "${ec}"
+  }
+  trap _roles_exit_trap EXIT
+  run_roles
+  ROLES_FINISHED=1
+  if t_summary; then
+    exit 0
+  fi
+  exit 1
+fi

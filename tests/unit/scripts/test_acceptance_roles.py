@@ -16,6 +16,7 @@ refusal as a regression. The run against a deployment is accept.yml's.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -156,9 +157,12 @@ def test_an_unconfigured_probe_says_what_is_missing(tenant, personal, admin, why
     assert ok.returncode == 0 and ok.stdout == "", ok.stdout + ok.stderr
 
 
-def test_accept_runs_the_probe_report_only_beside_tenant_isolation() -> None:
-    job = yaml.safe_load(ACCEPT.read_text())["jobs"]["tenant-isolation"]
-    (step,) = [s for s in job["steps"] if "verify-remote.sh \"acceptance/roles\"" in str(s.get("run", ""))]
+def test_accept_runs_the_probe_report_only_in_the_smoke_job() -> None:
+    # Not a matrix group: run.sh's groups are what the waves are held to, and
+    # the probe is check-only. The file runs itself (its entry at the end).
+    job = yaml.safe_load(ACCEPT.read_text())["jobs"]["smoke"]
+    run = "./scripts/verify-remote.sh acceptance/groups/roles"
+    (step,) = [s for s in job["steps"] if str(s.get("run", "")).strip() == run]
     assert step["continue-on-error"] == "${{ vars.ROLES_PROBE_REQUIRED != 'true' }}", step
     assert step["if"] == "${{ !cancelled() }}", step
     for name in ("SWARM_ACCEPTANCE_ROLES_TENANT", "SWARM_ACCEPTANCE_ROLES_ADMIN_SA",
@@ -260,3 +264,12 @@ def test_run_roles_without_an_admin_token_fails_every_check_and_writes_nothing(t
     lines = proc.stdout.splitlines()
     assert len(lines) == 6 and all(l.startswith("FAIL roles: ") and "not measured" in l for l in lines), proc.stdout
     assert calls == [], calls
+
+
+def test_the_group_file_runs_itself_and_lists_its_six_checks() -> None:
+    assert os.access(GROUP, os.X_OK), "verify-remote.sh runs scripts/acceptance/groups/roles.sh directly"
+    proc = subprocess.run(["bash", str(GROUP), "--list"], capture_output=True, text=True, timeout=30,
+                          env={**os.environ, "SWARM_ENV_FILE": "/nonexistent"})
+    assert proc.returncode == 0, proc.stderr
+    lines = proc.stdout.splitlines()
+    assert lines[0] == "roles" and len(lines) == 7, proc.stdout

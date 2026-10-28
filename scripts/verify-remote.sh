@@ -56,90 +56,17 @@ JOB="swarm-verify"
 # the mark is an environment override, SWARM_VERIFY_ORIGIN, which the
 # execution's spec keeps and `executions list --format json` reads back:
 # `accept-run-<GitHub run id>` when accept.yml runs this (it sets the
-# variable for the whole workflow), `operator` otherwise. The two cancel
-# modes below are the only cancelling accept.yml does, and each cancels an
-# accept run's executions only.
+# variable for the whole workflow), `operator` otherwise. accept.yml's
+# quiesce cancels only executions marked `accept-run-*` by another run, and
+# its `if: cancelled()` steps only their own run's; an operator's, and an
+# unmarked one from before the mark, are named as skipped and left running.
 #
 # A value is one --update-env-vars item, so it may hold no comma; anything
 # else is refused before an execution is created.
 # ---------------------------------------------------------------------------
 ORIGIN="${SWARM_VERIFY_ORIGIN:-operator}"
-#: An accept run's mark. The quiesce cancels these and nothing else.
-ACCEPT_ORIGIN_RE='^accept-run-[0-9]+$'
 [[ "${ORIGIN}" =~ ^[a-z0-9-]{1,63}$ ]] \
   || die "SWARM_VERIFY_ORIGIN must be lower-case letters, digits and hyphens (at most 63): operator, or accept-run-<run id>"
-
-# running_executions FILE -> one line per running swarm-verify execution:
-# name, origin ("" when unmarked) and creation time, separated by `|`. Not a
-# tab: IFS collapses a run of whitespace, so an unmarked execution's empty
-# origin would shift its creation time into the origin field.
-running_executions() {
-  local file="$1" raw
-  raw="$(mktemp "${TMPDIR:-/tmp}/swarm-verify-list.XXXXXX")"
-  gcloud run jobs executions list --job "${JOB}" --region "${REGION}" --project "${PROJECT_ID}" \
-    --filter 'status.runningCount>0' --format json >"${raw}"
-  jq -r '.[] | [.metadata.name,
-                ([.spec.template.spec.containers[]?.env[]? | select(.name == "SWARM_VERIFY_ORIGIN") | .value][0] // ""),
-                (.metadata.creationTimestamp // "")] | join("|")' <"${raw}" >"${file}"
-  rm -f "${raw}"
-}
-
-# cancel_execution NAME -> cancels it; an execution that finished between the
-# list and the cancel is fine (gcloud answers "Failed to cancel" for one that
-# is already done: run 38072148450, 2026-10-10, swarm-verify-zkzcx), one
-# still running that would not cancel is not.
-cancel_execution() {
-  local name="$1" running
-  info "cancelling ${JOB} execution ${name}"
-  if ! gcloud run jobs executions cancel "${name}" --region "${REGION}" --project "${PROJECT_ID}" --quiet; then
-    running="$(gcloud run jobs executions describe "${name}" --region "${REGION}" --project "${PROJECT_ID}" \
-      --format 'value(status.runningCount)')"
-    if [[ -n "${running}" && "${running}" != "0" ]]; then
-      die "${JOB} execution ${name} is still running (${running}) and would not cancel"
-    fi
-    info "${name} had already finished; nothing to cancel"
-  fi
-}
-
-# --cancel-accept-runs: accept.yml's quiesce. Cancels every running execution
-# another accept run started, and names each one it leaves: this run's own,
-# an operator's, or an unmarked one from before the mark existed.
-#
-# --cancel-this-run SINCE: an accept job's `if: cancelled()` step. Cancels
-# this run's own executions created after SINCE (the job's start), so a
-# sibling job's and an operator's are left alone.
-case "${1:-}" in
-  --cancel-accept-runs|--cancel-this-run)
-    mode="$1" since="${2:-}" listed="" n=0 skipped=0
-    if [[ "${mode}" == "--cancel-this-run" ]]; then
-      [[ -n "${since}" ]] || die "--cancel-this-run needs the time the job started"
-      [[ "${ORIGIN}" =~ ${ACCEPT_ORIGIN_RE} ]] \
-        || die "--cancel-this-run cancels an accept run's own executions; SWARM_VERIFY_ORIGIN is ${ORIGIN}"
-    fi
-    listed="$(mktemp "${TMPDIR:-/tmp}/swarm-verify-running.XXXXXX")"
-    running_executions "${listed}"
-    while IFS='|' read -r name origin created; do
-      [[ -n "${name}" ]] || continue
-      if [[ "${mode}" == "--cancel-accept-runs" ]]; then
-        if [[ "${origin}" =~ ${ACCEPT_ORIGIN_RE} && "${origin}" != "${ORIGIN}" ]]; then
-          cancel_execution "${name}"
-          n=$(( n + 1 ))
-        elif [[ "${origin}" == "${ORIGIN}" ]]; then
-          info "skipped ${name} (${origin}): this run's own"
-        else
-          info "skipped ${name} (${origin:-unmarked}): not started by an accept run"
-          skipped=$(( skipped + 1 ))
-        fi
-      elif [[ "${origin}" == "${ORIGIN}" && "${created}" > "${since}" ]]; then
-        cancel_execution "${name}"
-        n=$(( n + 1 ))
-      fi
-    done <"${listed}"
-    rm -f "${listed}"
-    ok "cancelled ${n} running ${JOB} execution(s); left ${skipped} not started by an accept run"
-    exit 0
-    ;;
-esac
 
 # The roles acceptance probe's settings (scripts/acceptance/config.sh): the
 # job reads no environment of this shell's, so each one set here goes in the
