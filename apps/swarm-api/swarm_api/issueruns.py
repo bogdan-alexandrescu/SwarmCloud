@@ -318,6 +318,15 @@ FINDINGS_SHAPE = (
     '"findings": [{"summary": "one blocker per entry", "file": "its repository-relative '
     'path", "line": <its line number>, "side": "new" or "old"}]'
 )
+#: The head the review judged, written beside `verdict` (#2524 check (b), BGD
+#: 2026-10-28). The worker reads it (`agent_worker.verdict.Verdict.commit`) and
+#: skips a NOT_YET-gated fix whose branch head already contains a commit a
+#: review gave MERGE: that fix would be paid for to change reviewed work.
+#: Anything but 7-40 lowercase hex is read as no commit, so a review that
+#: leaves it out only loses the skip.
+COMMIT_SHAPE = (
+    '"commit": "<the full SHA of HEAD you reviewed, from git rev-parse HEAD>", '
+)
 FINDINGS_LOCATION_NOTE = (
     "Give file, line and side only for a blocker at one line of the diff: side is new "
     "when the line number counts in the changed file, old when it counts in the file "
@@ -2365,7 +2374,7 @@ def compile_plan(run: "IssueRun", review_context: str | None = None) -> Workflow
                 + f"{PATCH_FILE} holds the last step's diff; "
                 "the whole change is this branch against the default branch. Do not edit "
                 f"files. Write $SWARM_ARTIFACTS_DIR/{VERDICT_FILE}: "
-                '{"verdict": "MERGE" or "NOT_YET", ' + FINDINGS_SHAPE
+                '{"verdict": "MERGE" or "NOT_YET", ' + COMMIT_SHAPE + FINDINGS_SHAPE
                 + _requirements_shape(plan) + "}. " + FINDINGS_LOCATION_NOTE
                 + NO_CLOSING_KEYWORD
             ),
@@ -2557,7 +2566,7 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
                 "the integrated change -- every diff together, including where "
                 "two of them touch the same code. Do not edit files. Write "
                 f"$SWARM_ARTIFACTS_DIR/{VERDICT_FILE}: "
-                '{"verdict": "MERGE" or "NOT_YET", ' + FINDINGS_SHAPE
+                '{"verdict": "MERGE" or "NOT_YET", ' + COMMIT_SHAPE + FINDINGS_SHAPE
                 + _requirements_shape(plan) + "}. " + FINDINGS_LOCATION_NOTE
                 + NO_CLOSING_KEYWORD
             ),

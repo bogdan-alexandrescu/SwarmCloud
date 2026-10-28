@@ -4410,6 +4410,11 @@ class Worker:
                 # The owner's words for it (2026-10-05): on MERGE, no fix
                 # agent; the step only published the reviewed work.
                 summary["skipped_agent"] = f"review verdict {self._verdict['verdict']}"
+                noop = self._verdict.get(verdict_mod.NOOP_PRECHECK_KEY)
+                if noop is not None:
+                    # #2524 check (b): a NOT_YET whose head a MERGE already covers.
+                    summary[verdict_mod.NOOP_PRECHECK_KEY] = dict(noop)
+                    summary["skipped_agent"] = f"no-op precheck (b): {noop['reason']}"
             if result.exit_code != EXIT_TERMINATED:
                 # After the publish, so the epic hears of a review only once
                 # the step it gated has done its own work; never on a stop.
@@ -7257,7 +7262,15 @@ class Worker:
             ws.work / source.path, task_id=gate.task_id, filename=source.filename
         )
         runs = read.verdict in gate.verdict_in
-        self._verdict_staged = (ws.work / source.path, source.filename)
+        passed_on = ws.work / source.path
+        # The no-op precheck, check (b) (#2524, BGD 2026-10-28): a NOT_YET
+        # that would run the agent does not when this head already holds a
+        # commit a review gave MERGE. The MERGE is then the verdict passed on.
+        noop = self._noop_precheck_b(staged, source, read) if (
+            runs and read.verdict == "NOT_YET") else None
+        if noop is not None:
+            runs, passed_on = False, noop[1]
+        self._verdict_staged = (passed_on, source.filename)
         self._verdict = {
             "task_id": gate.task_id,
             "file": source.filename,
@@ -7276,6 +7289,8 @@ class Worker:
             self._verdict["reviewed_patches"] = self._reviewed_patches(gate.task_id)
         if read.locations_dropped:
             self._verdict["locations_dropped"] = read.locations_dropped
+        if noop is not None:
+            self._verdict[verdict_mod.NOOP_PRECHECK_KEY] = noop[0].as_record()
         self._verdict_minors = read.minors
         self._verdict_minors_dropped = read.minors_dropped
         self.log.info(
@@ -7287,6 +7302,56 @@ class Worker:
             findings=len(read.findings) + read.findings_dropped,
         )
         return runs
+
+    def _noop_precheck_b(
+        self,
+        staged: list[inputs_mod.StagedInput],
+        source: inputs_mod.StagedInput,
+        read: verdict_mod.Verdict,
+    ) -> tuple[verdict_mod.ContainedMerge, Path] | None:
+        """A MERGE verdict this step stages whose `commit` its head holds, and its file.
+
+        Every staged `verdict.json` is read (the gate's own and any other a
+        step stages from a review), and one that cannot be read is passed
+        over: the gate's own verdict already decided the step. Only on a fresh
+        clone, before any agent wrote to it; the ancestry is asked with hooks
+        off. A git that fails or times out reads as "not contained", so the
+        agent runs (`verdict.merged_commit_contained`).
+        """
+        ws = self.ws
+        assert ws is not None
+        repo = ws.checkout()
+        if self._restored_from is not None or not (repo / ".git").exists():
+            return None
+        found: list[tuple[str, verdict_mod.Verdict, Path]] = [
+            (source.upstream_task_id, read, ws.work / source.path)]
+        for item in staged:
+            if item is source or Path(item.filename).name != owner_questions_mod.REVIEW_OUTPUT:
+                continue
+            try:
+                other = verdict_mod.read_verdict(
+                    ws.work / item.path, task_id=item.upstream_task_id, filename=item.filename)
+            except InputUnavailable:
+                continue
+            found.append((item.upstream_task_id, other, ws.work / item.path))
+
+        def is_ancestor(commit: str) -> bool:
+            code, _ = _git_text(
+                ["git", *_NO_HOOKS, "merge-base", "--is-ancestor", commit, "HEAD"],
+                repo=repo, private_dir=ws.private, logs_dir=ws.logs,
+                slug="noop-precheck-ancestor",
+                timeout_seconds=self.cfg.git_harvest_timeout_seconds, logger=self.log,
+            )
+            return code == 0
+
+        hit = verdict_mod.merged_commit_contained(
+            ((task_id, v) for task_id, v, _path in found), is_ancestor)
+        if hit is None:
+            return None
+        path = next(p for task_id, v, p in found
+                    if task_id == hit.task_id and v.commit == hit.commit)
+        self.log.info("no-op precheck (b): the agent does not run", reason=hit.reason)
+        return hit, path
 
     def _reviewed_patches(self, review_task_id: str) -> list[dict[str, str]]:
         """The patches the review read, with digests (`verdict.reviewed_patches`).
@@ -7430,6 +7495,10 @@ class Worker:
                 {
                     "status": "skipped",
                     "summary": (
+                        f"no-op precheck (b): the "
+                        f"{self._verdict[verdict_mod.NOOP_PRECHECK_KEY]['reason']}; the "
+                        "agent was not started and the step published the reviewed work"
+                        if verdict_mod.NOOP_PRECHECK_KEY in self._verdict else
                         f"the review verdict was {self._verdict['verdict']}, and this "
                         f"step's agent runs only on "
                         f"{', '.join(self._verdict['verdict_in'])}; the agent was not "

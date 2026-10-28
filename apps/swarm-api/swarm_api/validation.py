@@ -1033,7 +1033,8 @@ REREVIEW_PREAMBLE = (
     "only the fix. The earlier review's verdict is staged at {verdict_path}; "
     "check every finding in it is resolved. Write your OWN verdict to "
     "$SWARM_ARTIFACTS_DIR/{verdict_file} in the same shape: "
-    '{{"verdict": "MERGE" or "NOT_YET", "findings": [...]}}. '
+    '{{"verdict": "MERGE" or "NOT_YET", "commit": "<the full SHA of HEAD you '
+    'reviewed, from git rev-parse HEAD>", "findings": [...]}}. '
     "The merge step merges only on your MERGE. Do not edit files.\n\n"
     "The original review instructions follow, for reference; files they name "
     "are staged under the directory of the step that produced them ({staged}).\n\n"

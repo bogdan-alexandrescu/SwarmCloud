@@ -91,7 +91,13 @@ from ..forgewrite import (
     ForgeWriteForbidden,
     GitHubWriter,
 )
-from ..issueruns import FINDINGS_LOCATION_NOTE, FINDINGS_SHAPE, PATCH_FILE, VERDICT_FILE
+from ..issueruns import (
+    COMMIT_SHAPE,
+    FINDINGS_LOCATION_NOTE,
+    FINDINGS_SHAPE,
+    PATCH_FILE,
+    VERDICT_FILE,
+)
 from ..repositories import Repositories
 from ..scheduletypes import BudgetCaps
 from ..schemas import WorkflowCreate
@@ -430,7 +436,7 @@ def review_prompt(packages: Sequence[Package], paths: Sequence[str]) -> str:
         "that a package not bumped is explained in pr-body.md. The release builds and "
         "deploys these images, so a wrong pin reaches the platform. Do not edit files. "
         f"Write $SWARM_ARTIFACTS_DIR/{VERDICT_FILE}: "
-        '{"verdict": "MERGE" or "NOT_YET", ' + FINDINGS_SHAPE + "}. " + FINDINGS_LOCATION_NOTE
+        '{"verdict": "MERGE" or "NOT_YET", ' + COMMIT_SHAPE + FINDINGS_SHAPE + "}. " + FINDINGS_LOCATION_NOTE
     )
 
 

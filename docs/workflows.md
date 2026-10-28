@@ -1774,9 +1774,28 @@ does): the changed paths (`own_files` when recorded, else `files`) and
   any finding, kept or dropped, still runs the fix agent; the rendered-review
   downgrade always writes its reason as a finding, so it is never read as
   empty.
-* **A head that already holds the verdict's commit** is not checked: no
-  verdict names a commit today. It is asked of the owner on the same pull
-  request.
+* **A head that already holds a commit a review gave MERGE** (check (b),
+  BGD 2026-10-28). Every compiled review prompt (the issue run's review and
+  re-review, and the dependency CVE refresh's review) asks for
+  `"commit": "<the full SHA of HEAD you reviewed>"` in `verdict.json`
+  (`issueruns.COMMIT_SHAPE`), and the worker reads it as
+  `Verdict.commit` only when it is 7-40 lowercase hex; anything else is no
+  commit, and a review that leaves it out only loses the skip. This one is
+  the worker's, not the scheduler's: it needs the clone. When a gated step's
+  NOT_YET would run its agent, the worker reads every `verdict.json` the
+  step stages (its gate's and any other review's), and if one says MERGE and
+  names a commit that `git merge-base --is-ancestor <commit> HEAD` finds in
+  the step's fresh checkout, the agent does not run
+  (`verdict.merged_commit_contained`, `lifecycle._noop_precheck_b`). The
+  step ends as a shut gate ends it (`verdict_gate.agent_ran: false`, still
+  publishing), with `result_summary.noop_precheck` `{"check": "b",
+  "reason": "branch head already contains <sha12>, which review <task>
+  gave MERGE"}`, and the MERGE that decided is the verdict it re-publishes,
+  so a step that reads its verdict does not run a fixer either. A restored
+  attempt, a step with no checkout, and a git that fails or times out all
+  read as "not contained": the agent runs. In the shapes compiled today the
+  fix stages only its own review's verdict, which is the NOT_YET, so the
+  check fires only for a step that also stages a later review's verdict.
 
 ### What a MERGE verdict publishes
 
