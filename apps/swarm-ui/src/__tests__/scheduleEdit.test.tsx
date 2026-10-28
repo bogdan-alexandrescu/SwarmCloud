@@ -317,7 +317,12 @@ describe('the edit form', () => {
     await waitFor(() => expect(sent(calls, 'PATCH', '/v1/schedules/sch_a')).toHaveLength(1), WAIT)
     // MUTATION: send the whole draft and the stored gate, budget and params ride along.
     expect(sent(calls, 'PATCH', '/v1/schedules/sch_a')[0]!.body).toEqual({ revision: 2, cron: '0 9 * * 1' })
-    await waitFor(() => expect(sent(calls, 'GET', '/v1/schedules/sch_a').length).toBe(2), WAIT)
+    // Frame A2 reads the schedule once for the sheet and once for the editor's
+    // page, so the count before the save is not fixed: what holds is a read
+    // AFTER the PATCH, back on the sheet.
+    // MUTATION: drop the re-read on save and no GET follows the PATCH.
+    const patched = calls.findIndex((c) => c.method === 'PATCH' && c.url === '/v1/schedules/sch_a')
+    await waitFor(() => expect(calls.slice(patched + 1).some((c) => c.method === 'GET' && c.url.split('?')[0] === '/v1/schedules/sch_a')).toBe(true), WAIT)
     await screen.findByRole('button', { name: 'Edit' }, WAIT)
   })
 
@@ -361,7 +366,8 @@ describe('the SD3 merge switch', () => {
     }, types)
     const out = await mount('schedule=sch_a', handler)
     await screen.findByRole('heading', { name: 'Weekday sweep', level: 1 }, WAIT)
-    fireEvent.click(screen.getByRole('tab', { name: /Gate/ }))
+    // Frame A2 draws the gate as a section of the sheet, not a tab to open.
+    await waitFor(() => expect(document.querySelector('aside.as-sheet [data-sec="gate"]')).not.toBeNull(), WAIT)
     return out
   }
 
@@ -407,7 +413,7 @@ describe('the SD3 merge switch', () => {
     await waitFor(() => expect(sent(calls, 'POST', MODE)).toHaveLength(1), WAIT)
     expect(sent(calls, 'POST', MODE)[0]!.body).toEqual({ mode: 'auto', revision: 2, confirm: 'Weekday sweep' })
     await waitFor(() => expect(sent(calls, 'GET', '/v1/schedules/sch_a').length).toBe(2), WAIT)
-    // The re-read lands on the Gate tab it came from.
+    // The re-read lands on the sheet's Gate section it came from.
     await screen.findByTestId('sc-gate', undefined, WAIT)
   })
 
