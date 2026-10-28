@@ -46,6 +46,7 @@ import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenant
 import { HELP_GROUPS, HELP, TOPIC_IDS, helpAnchor } from './help'
 import { STATE_MARK, type MarkHue, type MarkName } from './marks'
 import { addressToPath } from './paths'
+import { AdminRoleRefusal } from './WorkspaceRefusal'
 import { shortcut, typedIntoField } from './shortcuts'
 import { poolLabelAmong, type Capacity, type Me, type Stats, type TaskState } from './types'
 import { ThemeToggle } from './ThemeToggle'
@@ -1652,13 +1653,19 @@ export function SkyShell({
   // A WORKSPACE ADMIN'S PLATFORM ADDRESS SENDS THEM TO WORKSPACES YOU ADMIN
   // (ADMIN-REDIRECT): an Admin page that is not among theirs. Only a page the
   // panel has: an address that is no page at all keeps its 404.
-  const adminRedirect = section !== 'admin' || !adminDecided
+  // SOMEONE WHO ADMINISTERS NOTHING IS TOLD SO IN PLACE (visual QA pass 1,
+  // admin-shell-23; part of #2596; BGD 2026-10-28, reversing CONFIG-NAV's
+  // redirect for this case): Overview in its place was the link silently
+  // becoming another page. The page's own address stays; the refusal names
+  // the page, the role and the workspace, and links Overview.
+  const adminRefused = section === 'admin' && adminDecided && landing === null && !missing
+  const refusedPage = PANEL_PAGES.admin.find((p) => p.to === `admin/${tab}`)?.label ?? 'Admin'
+  const refusedHere = (dataOf(mine) ?? []).find((c) => c.tenant_id === who?.tenant.tenant_id)
+  const adminRedirect = section !== 'admin' || !adminDecided || landing === null
     ? null
-    : landing === null
-      ? ''
-      : !missing && PANEL_PAGES.admin.some((p) => p.to === `admin/${tab}`) && !adminPages.some((p) => p.to === `admin/${tab}`)
-        ? landing.to
-        : null
+    : !missing && PANEL_PAGES.admin.some((p) => p.to === `admin/${tab}`) && !adminPages.some((p) => p.to === `admin/${tab}`)
+      ? landing.to
+      : null
   useEffect(() => {
     if (adminRedirect !== null) onAdminRedirect?.(adminRedirect)
   }, [adminRedirect, onAdminRedirect])
@@ -2104,7 +2111,11 @@ export function SkyShell({
 
   // ONE SPINE SECTION: the five after Submit, and Profile at the foot.
   const sectionLink = (s: { key: Exclude<SpineSection, null>; label: string; to: string }) => {
-    const on = section === s.key
+    // A 404 IS NEVER LIT AS OVERVIEW (visual QA pass 1, admin-shell-12):
+    // `nearestPath` falls back to /overview for a path near nothing, and
+    // Overview's panel has nothing for a 404 (`SectionPanel` draws none), so
+    // the rail marked a section the reader is not in over an empty panel.
+    const on = section === s.key && !(missing && s.key === 'overview')
     // A LINK, NOT A BUTTON (#503): a section opens in a new tab and copies
     // as a link, like every other place in the console.
     return (
@@ -2532,7 +2543,17 @@ export function SkyShell({
                   read of it made again with the new X-Swarm-Tenant -- except
                   a kept form, which re-reads in place. */}
               <Fragment key={`${keepOnSwitch ? 'kept' : (tenant ?? '')}:${attempt}`}>
-                <SetupContext.Provider value={setupRead}>{children}</SetupContext.Provider>
+                <SetupContext.Provider value={setupRead}>
+                  {adminRefused && who !== null ? (
+                    <AdminRoleRefusal
+                      page={refusedPage}
+                      role={refusedHere === undefined ? null : roleOf(refusedHere)}
+                      workspace={workspaceName(who.tenant, dataOf(mine) ?? [])}
+                    />
+                  ) : (
+                    children
+                  )}
+                </SetupContext.Provider>
               </Fragment>
             </>
           )}

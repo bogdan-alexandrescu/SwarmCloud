@@ -276,8 +276,8 @@ describe('V092: a screen read once says its age is a read age', () => {
     )
     await screen.findByText('rows')
     const refresh = document.querySelector<HTMLButtonElement>('.c-phead .c-acts .c-refresh')!
-    expect(refresh.textContent).toMatch(/^⟳ read \d+ s ago$/)
-    expect(refresh.getAttribute('title')).toMatch(/^read \d+ s ago$/)
+    expect(refresh.textContent).toMatch(/^⟳ read once · \d+ s ago$/)
+    expect(refresh.getAttribute('title')).toMatch(/^read once · \d+ s ago$/)
   })
 })
 

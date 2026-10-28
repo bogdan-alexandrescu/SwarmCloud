@@ -16,7 +16,9 @@
  *     `/settings/workspace/secrets?action=add&t=..`, still opens the add form,
  *     and its token still never enters the bar.
  *   * Admin is not drawn for a person who administers nothing, and its
- *     addresses send them to Overview once both reads say so; a workspace
+ *     addresses keep their path and say the refusal in place once both
+ *     reads say so (admin-shell-23, BGD 2026-10-28, reversing CONFIG-NAV's
+ *     redirect to Overview for this case); a workspace
  *     admin who is not a platform admin is sent from a platform Admin page
  *     to Workspaces you admin (ADMIN-REDIRECT, BGD 2026-10-24).
  *   * The setup strip runs across every Config page, measured from
@@ -255,19 +257,28 @@ describe('the workspace secrets one-time link', () => {
 })
 
 describe('Admin is drawn only for an admin (CONFIG-NAV)', () => {
-  it('sends a member from /admin/limits to Overview, and draws no Admin', async () => {
+  // SOMEONE WHO ADMINISTERS NOTHING IS TOLD SO IN PLACE (visual QA pass 1
+  // admin-shell-23, part of #2596; BGD 2026-10-28 reversed CONFIG-NAV's
+  // redirect to Overview for this case): the address stays, and the page's
+  // place says which page, the role and the workspace, with a link to Overview.
+  it('refuses a member in place at /admin/limits, and draws no Admin', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'member')])
     await app('/admin/limits')
-    // MUTATION: drop the redirect -> the member stays on /admin/limits and this fails.
-    await waitFor(() => expect(window.location.pathname).toBe('/overview'))
+    // MUTATION: keep the redirect to Overview (or drop the refusal) -> this is not found.
+    expect(await screen.findByText('Pool limits is for platform admins')).toBeTruthy()
+    expect(document.querySelector('[data-refused="admin"]')?.textContent).toMatch(/You are a member of \S+\./)
+    expect(screen.getByRole('link', { name: 'Open Overview' })).toBeTruthy()
+    expect(window.location.pathname).toBe('/admin/limits')
     expect(document.querySelector('.sk-spine a[data-sec="admin"]')).toBeNull()
   })
 
-  it('sends a member from every Admin address, deep links included', async () => {
+  it('refuses a member in place at every Admin address, deep links included', async () => {
     for (const path of ['/admin/tenants', '/admin/people', '/admin/workspaces', '/admin']) {
       serve(ME(false), [PERSONAL])
       await app(path)
-      await waitFor(() => expect(window.location.pathname, path).toBe('/overview'))
+      await waitFor(() => expect(document.querySelector('[data-refused="admin"]'), path).not.toBeNull())
+      // `/admin` is written as its first page; either way it stays in Admin.
+      expect(window.location.pathname, path).toBe(path === '/admin' ? '/admin/limits' : path)
       cleanup()
     }
   })
@@ -362,12 +373,13 @@ describe('a workspace admin on a platform Admin page goes to Workspaces you admi
     }
   })
 
-  it('keeps a member and a viewer on CONFIG-NAV\'s redirect to Overview', async () => {
+  it('refuses a member and a viewer in place, never sending them to Workspaces you admin', async () => {
     for (const role of ['member', 'viewer']) {
       serve(ME(false), [PERSONAL, group('eng', role)])
       await app('/admin/tenants')
       // MUTATION: send everyone refused to /admin/workspaces -> this fails.
-      await waitFor(() => expect(window.location.pathname, role).toBe('/overview'))
+      await waitFor(() => expect(document.querySelector('[data-refused="admin"]'), role).not.toBeNull())
+      expect(window.location.pathname, role).toBe('/admin/tenants')
       cleanup()
     }
   })

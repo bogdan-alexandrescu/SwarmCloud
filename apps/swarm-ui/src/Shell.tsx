@@ -232,6 +232,17 @@ interface Cadence {
   base: number
   /** The wait actually in force: the cadence, or longer while backing off. */
   wait: number
+  /**
+   * Why the cadence is what it is, where it differs by size: a capacity
+   * screen's `every 1 min on a phone` (capacityPoll `note`, admin-shell-19).
+   */
+  note?: string | null
+}
+
+/** A poll's own words for its cadence (`capacityPoll`'s `note`), or null. */
+function cadenceNote<T>(poll: ScreenPoll<T> | undefined): string | null {
+  const note = typeof poll === 'function' ? (poll as { note?: unknown }).note : undefined
+  return typeof note === 'function' ? ((note as () => string | null)() ?? null) : null
 }
 
 /**
@@ -474,11 +485,13 @@ export function RefreshControl({
       ? null
       : cadence.wait > cadence.base
         ? `every ${spacedAge(cadence.wait)}, backing off`
-        : `every ${spacedAge(cadence.base)}`
+        : `every ${spacedAge(cadence.base)}${cadence.note ? ` ${cadence.note}` : ''}`
   const lead = [stale ? 'not refreshed' : null, every].filter((p): p is string => p !== null)
   // A screen read once still says what the age is (V092): a bare `⟳ 0 s` beside
   // siblings that say `every 30 s · read 0 s ago` reads as a counter, not an age.
-  const said = lead.length === 0 ? `read ${age} ago` : `${lead.join(' · ')} · read ${age} ago`
+  // A screen that does not poll says so (visual QA pass 1 overview-agents-79,
+  // #2596): `read 1 min ago` alone, ageing, read as a cadence that had stalled.
+  const said = lead.length === 0 ? `read once · ${age} ago` : `${lead.join(' · ')} · read ${age} ago`
   return (
     <button
       ref={buttonRef}
@@ -676,7 +689,7 @@ export function Screen<T>({
         pauseUntil === null ? 0 : pauseUntil - Date.now(),
       )
       dueAt.current = Date.now() + wait
-      setCadence({ base, wait })
+      setCadence({ base, wait, note: cadenceNote(pollRef.current) })
       arm()
     },
     [arm, disarm],
@@ -851,8 +864,16 @@ export function Screen<T>({
       <PageHead title={title} help={help}>
         {/* An admin gate is not a read to renew: the panel says `admin only`
             (#138). The head keeps its height without it (`.c-phead`'s
-            min-height, visual QA V064), so the title does not move. */}
-        {!(state.status === 'error' && state.error.kind === 'admin_required') && (
+            min-height, visual QA V064), so the title does not move. NOR IS
+            AN ANSWER (QA1 automate-25): a 404 or a 403 on a read is the
+            API's answer, and the panel under it says "Reading it again gets
+            the same answer" and offers no Try again (`FailedPanel`'s
+            `answered`), so `⟳ refresh` above it offered the press the page
+            had just said could not help. */}
+        {!(
+          state.status === 'error' &&
+          (state.error.kind === 'admin_required' || (!isWriteFailure(state.error) && (state.error.kind === 'not_found' || state.error.kind === 'forbidden')))
+        ) && (
           <RefreshControl
             readAt={
               state.status === 'ok' || state.status === 'empty'
