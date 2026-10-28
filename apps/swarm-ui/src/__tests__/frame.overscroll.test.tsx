@@ -82,9 +82,15 @@ describe('item 3: no box escapes the app frame, so the window never scrolls', ()
     window.history.replaceState(null, '', '/workflows/wf_5e5ad3b6f7da4299a839/table')
     render(<App />)
     await waitFor(() => expect(document.querySelectorAll('.wf-card .wf-table tbody tr[data-step]').length).toBeGreaterThan(1))
+    // The Table tab's Steps table writes its state words out, so the hidden
+    // words on this page are the step inspector's (its head and its scrub
+    // strip), and the inspector can draw after the rows: on a loaded CI runner
+    // the rows were there and no absolute box yet (PR 2633's merge run). Wait
+    // for the boxes this case measures, not only for the table.
+    await waitFor(() => expect(document.querySelectorAll('.ctl-scroll .wf-inspect .sk-vh').length).toBeGreaterThan(0))
     frameHolds()
     const { checked, out } = escapes()
-    // The hidden state words in the Steps table are the boxes that escaped.
+    // The hidden state words in the step inspector are the boxes that escaped.
     expect(checked, 'no absolutely positioned element was visited').toBeGreaterThan(0)
     expect(out).toEqual([])
   }, 60_000)
