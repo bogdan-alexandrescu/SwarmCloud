@@ -69,8 +69,10 @@ describe('N10: the mock Headroom tile shows every pool that binds it', () => {
     const tile = container.querySelector('.ov-hp')!
     const line = tile.querySelector('small')!
     // MUTATION: drop a pool from the binding list the tile renders.
-    for (const label of ['global', 'standard', 'CLOUD_RUN_JOB']) expect(text(line)).toContain(label)
-    expect(text(line)).toBe('binds global + standard + CLOUD_RUN_JOB')
+    for (const label of ['global', 'standard', 'Cloud Run']) expect(text(line)).toContain(label)
+    // A backend in words, never its enum (overview-agents-05).
+    // MUTATION: print `poolLabel`'s CLOUD_RUN_JOB for a backend pool -> fails.
+    expect(text(line)).toBe('binds global + standard + Cloud Run')
     // Run 4 saw "binds global + standard + C…" at 1440.
     // MUTATION: put `white-space: nowrap` back on the binding line (`.ov-hp small.ov-hp-binds`).
     expect(painted(line, 'white-space', WIDE)).not.toBe('nowrap')
@@ -78,7 +80,7 @@ describe('N10: the mock Headroom tile shows every pool that binds it', () => {
     // A line break falls at ' + ', never inside a pool's name.
     // MUTATION: render the binding words as one string rather than one element per pool.
     const pools = [...line.querySelectorAll('.ov-hp-pool')]
-    expect(pools.map(text)).toEqual(['global', 'standard', 'CLOUD_RUN_JOB'])
+    expect(pools.map(text)).toEqual(['global', 'standard', 'Cloud Run'])
     // MUTATION: drop `white-space: nowrap` from `.ov-hp-pool`.
     for (const p of pools) expect(painted(p, 'white-space', WIDE), text(p)).toBe('nowrap')
     // The tile's title still holds the whole list, by full pool name.
