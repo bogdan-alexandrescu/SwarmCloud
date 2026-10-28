@@ -323,7 +323,8 @@ describe('lane 3 splits the cascade', () => {
     const d = withCancelCascade()
     const root = await timeline(d, { view: 'table=1' })
     const row = root.querySelectorAll('.ol-table tbody tr')[SEP22]!
-    expect(row.textContent).toContain(`${d.buckets[SEP22]!.cancelled!.total} · 297 / 8 / ${AFTER_CANCEL}`)
+    // Four columns since QA1-FIX-13: all, requested or other, after a failure, after a cancel.
+    expect([...row.children].slice(4, 8).map((c) => (c.textContent ?? '').trim())).toEqual([String(d.buckets[SEP22]!.cancelled!.total), '297', '8', String(AFTER_CANCEL)])
   })
 
   it('never draws a bar wider than 28px, however wide the drawing (was `.chart .col`, move 3)', async () => {

@@ -33,7 +33,7 @@ import { useId, type ReactNode } from 'react'
 
 import { Segmented, Tag, UsageTrack } from './components'
 import { HelpNote } from './HelpCard'
-import { MoreRight } from './WorkflowViews'
+import { MoreRight, useMoreRight } from './WorkflowViews'
 import { type TopicId } from './help'
 import {
   LOW_N,
@@ -260,77 +260,125 @@ function Nothing({ cov, heading, what }: { cov: SpanCoverage; heading: string; w
 // The Table twin
 // ---------------------------------------------------------------------------
 
+/** A head cell's qualifier, on a line of its own under its name (QA1-FIX-13). */
+function Sub({ children }: { children: ReactNode }) {
+  return (
+    <>
+      {' '}
+      <span className="ol-th-sub">{children}</span>
+    </>
+  )
+}
+
 /**
  * THE SAME BUCKETS AS A TABLE: the keyboard and screen-reader route to every
  * value, and the Table toggle's other half. A data table, so below 900px it
  * scrolls with the bucket column held (CH-13).
+ *
+ * IT FITS 1440, AND SAYS SO WHEN IT DOES NOT (QA1-FIX-13, runs-submit-40). The
+ * heads were run-on strings -- "Cancelled · requested or other / after a
+ * failure / after a cancel" alone was wider than four figures -- and the table
+ * scrolled at 1440 with a column cut at the edge. Each qualifier is now a second
+ * line under its name (`.ol-th-sub`, timeline.css), and the Cancelled cell
+ * "0 · 0 / 0 / 0" is four columns under one group head, one figure each. The
+ * Rate cell, one 297 px run-on "100.0 % · 18 of 18 · 82.4–100.0 %" that still
+ * overran the scroller at 1440 (the review's measure), puts its 95 % range on a
+ * second line (`.ol-rate-range`), as the heads do their qualifiers. Where
+ * columns are still off the right edge (a phone), the fade is not the only cue:
+ * a line under the table says so in words.
  */
 export function LedgerTable({ data }: { data: Outcomes }) {
   const { bucket, tz } = data
+  const more = useMoreRight<HTMLDivElement>()
+  // Day, Succeeded, Failed, Rate, the four Cancelled columns, Submitted, Finished.
+  const columns = 10
   return (
-    <MoreRight className="ctl-table is-scroll ol-table">
-      <table>
-        <thead>
-          <tr>
-            <th scope="col">{bucket === 'hour' ? 'Hour' : bucket === 'day' ? 'Day' : bucket === 'week' ? 'Week' : 'Month'}</th>
-            <th scope="col" className="is-num">Succeeded</th>
-            {/* ONE FAILED COLUMN, FAILED + DEAD_LETTERED (#123): the count the
-                drawing and the readout use, so Succeeded + Failed + Cancelled
-                is Finished on every row. */}
-            <th scope="col" className="is-num">Failed · incl. dead-lettered</th>
-            <th scope="col" className="is-num">Rate · k of n · 95 %</th>
-            <th scope="col" className="is-num">Cancelled · requested or other / after a failure / after a cancel</th>
-            {/* The one column on the submission-time basis says so, in the
-                route's word, as the throughput lane's label does. */}
-            <th scope="col" className="is-num">Submitted · by {data.basis.submitted}</th>
-            <th scope="col" className="is-num">Finished</th>
-          </tr>
-        </thead>
-        <tbody>
-          {data.buckets.map((b) => (
-            <tr key={b.start} data-state={b.state}>
-              <th scope="row">
-                {bucketName(b.start, bucket, tz)}
-                {b.in_progress && <span className="ctl-sub"> so far</span>}
+    <>
+      <div ref={more.ref} className={`ctl-table is-scroll ol-table${more.on ? ' has-more' : ''}`}>
+        <table>
+          <thead>
+            <tr>
+              <th scope="col" rowSpan={2}>
+                {bucket === 'hour' ? 'Hour' : bucket === 'day' ? 'Day' : bucket === 'week' ? 'Week' : 'Month'}
               </th>
-              {b.state === 'unread' ? (
-                <td colSpan={6}>
-                  <Mark
-                    kind="unread"
-                    say={`${bucketName(b.start, bucket, tz)} was not read: ${unreadWords(b.unread_reason)}. No count is shown for it.`}
-                  />{' '}
-                  {unreadWords(b.unread_reason)}
-                </td>
-              ) : (
-                <>
-                  <td className="is-num">{b.succeeded}</td>
-                  <td className="is-num">
-                    {(b.failed ?? 0) + (b.dead_lettered ?? 0)}
-                    {(b.dead_lettered ?? 0) > 0 && <span className="ctl-sub"> · {b.dead_lettered} dead-lettered</span>}
-                  </td>
-                  <td className="is-num">
-                    {b.rate === null ? (
-                      <span className="ol-phrase">nothing decided</span>
-                    ) : (
-                      `${pct(b.rate.p)} · ${b.rate.k} of ${b.rate.n} · ${interval(b.rate)}`
-                    )}
-                  </td>
-                  <td className="is-num">
-                    {/* The same three sums lane 3 draws: the flat bars, the outline,
-                        and the outlined bars. */}
-                    {b.cancelled?.total} · {(b.cancelled?.requested ?? 0) + (b.cancelled?.other ?? 0)} /{' '}
-                    {(b.cancelled?.after_failure ?? 0) + (b.cancelled?.workflow_sweep ?? 0)} /{' '}
-                    {b.cancelled?.after_cancel ?? 0}
-                  </td>
-                  <td className="is-num">{b.submitted}</td>
-                  <td className="is-num">{b.ended}</td>
-                </>
-              )}
+              <th scope="col" rowSpan={2} className="is-num">Succeeded</th>
+              {/* ONE FAILED COLUMN, FAILED + DEAD_LETTERED (#123): the count the
+                  drawing and the readout use, so Succeeded + Failed + Cancelled
+                  is Finished on every row. */}
+              <th scope="col" rowSpan={2} className="is-num">
+                Failed<Sub>incl. dead-lettered</Sub>
+              </th>
+              <th scope="col" rowSpan={2} className="is-num">
+                Rate<Sub>k of n, 95 % range</Sub>
+              </th>
+              <th scope="colgroup" colSpan={4} className="ol-th-group">Cancelled</th>
+              {/* The one column on the submission-time basis says so, in the
+                  route's word, as the throughput lane's label does. */}
+              <th scope="col" rowSpan={2} className="is-num">
+                Submitted<Sub>by {data.basis.submitted}</Sub>
+              </th>
+              <th scope="col" rowSpan={2} className="is-num">Finished</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </MoreRight>
+            <tr>
+              {/* The same three sums lane 3 draws -- the flat bars, the outline
+                  and the outlined bars -- after the total. */}
+              <th scope="col" className="is-num">all</th>
+              <th scope="col" className="is-num">requested or other</th>
+              <th scope="col" className="is-num">after a failure</th>
+              <th scope="col" className="is-num">after a cancel</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.buckets.map((b) => (
+              <tr key={b.start} data-state={b.state}>
+                <th scope="row">
+                  {bucketName(b.start, bucket, tz)}
+                  {b.in_progress && <span className="ctl-sub"> so far</span>}
+                </th>
+                {b.state === 'unread' ? (
+                  <td colSpan={columns - 1}>
+                    <Mark
+                      kind="unread"
+                      say={`${bucketName(b.start, bucket, tz)} was not read: ${unreadWords(b.unread_reason)}. No count is shown for it.`}
+                    />{' '}
+                    {unreadWords(b.unread_reason)}
+                  </td>
+                ) : (
+                  <>
+                    <td className="is-num">{b.succeeded}</td>
+                    <td className="is-num">
+                      {(b.failed ?? 0) + (b.dead_lettered ?? 0)}
+                      {(b.dead_lettered ?? 0) > 0 && <span className="ctl-sub"> · {b.dead_lettered} dead-lettered</span>}
+                    </td>
+                    <td className="is-num">
+                      {b.rate === null ? (
+                        <span className="ol-phrase">nothing decided</span>
+                      ) : (
+                        <>
+                          <span>{`${pct(b.rate.p)} · ${b.rate.k} of ${b.rate.n}`}</span>{' '}
+                          <span className="ol-rate-range">{interval(b.rate)}</span>
+                        </>
+                      )}
+                    </td>
+                    <td className="is-num">{b.cancelled?.total}</td>
+                    <td className="is-num">{(b.cancelled?.requested ?? 0) + (b.cancelled?.other ?? 0)}</td>
+                    <td className="is-num">{(b.cancelled?.after_failure ?? 0) + (b.cancelled?.workflow_sweep ?? 0)}</td>
+                    <td className="is-num">{b.cancelled?.after_cancel ?? 0}</td>
+                    <td className="is-num">{b.submitted}</td>
+                    <td className="is-num">{b.ended}</td>
+                  </>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {more.on && (
+        <p className="tl-note ol-table-more">
+          More columns to the right: scroll the table sideways to read all {columns}.
+        </p>
+      )}
+    </>
   )
 }
 
