@@ -418,6 +418,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 .dg .lgd i.ok{border-color:var(--ok-ink);background:var(--t-ok)}
 svg.dia text{fill:var(--text);font-family:var(--font);font-size:15px}
 svg.dia text.e{fill:var(--text-dim);font-size:14px}
+.ph svg.dia text.e,.ph svg.dia text.m{font-size:15px}
 svg.dia text.m{font-family:var(--mono);font-size:14px}
 svg.dia .n{fill:var(--surface);stroke:var(--ctl-bd);stroke-width:1.4}
 svg.dia .q{fill:var(--surface-2);stroke:var(--ctl-bd);stroke-width:1.4}
@@ -431,7 +432,7 @@ svg.dia .lane{stroke:var(--line);stroke-width:1.5;stroke-dasharray:3 5}
 .ahd{fill:var(--text-dim)}
 .dhead{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;margin:0 0 6px}
 .dhead b{font-size:13.5px;font-weight:600}
-.alt{font-size:12.5px;color:var(--text-dim);margin:6px 0 0}
+p.alt,.alt{font-size:12.5px;color:var(--text-dim);margin:10px 0 0}
 .tagd{font-size:12px;padding:1px 8px;border-radius:6px;border:1px solid var(--l-info);color:var(--info-ink);background:var(--t-info);white-space:nowrap}
 .dcard{border:1px solid color-mix(in srgb,var(--paused) 35%,var(--line));border-radius:10px;padding:8px 10px;background:var(--surface);display:flex;flex-direction:column;gap:8px;min-width:0}
 .dcard .acts{gap:6px}
@@ -959,7 +960,7 @@ function d5d(){
 }
 
 /* ---------- D6: honest states ---------- */
-const BADSRC=OVSRC.slice(0,6).concat(['  i -- no -->','  c -- yes --> refuse']);
+const BADSRC=OVSRC.slice(0,6).concat(['  i -- no -->'],OVSRC.slice(7));
 const d6a=()=>solo(blkHow(`<div class="dg w"><div class="dhead"><b>Overview: a CI-fix request through cifix.stamp’s refusal checks</b>${C('did not render','bd')}</div>`+
   `<div class="bn bd">${I('warn')}<div><b>The renderer stopped at line 7</b>“expected a node after <code>--&gt;</code>” (example). The source is below; the plan is unchanged and can still be approved, with this source in its digest.</div></div>`+
   `<div style="margin-top:8px">${srcPre(BADSRC,7)}</div><p class="alt">Text alternative: ${OVALT.slice(0,2).join(' ')} …</p>`+
