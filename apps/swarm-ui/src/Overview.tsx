@@ -2433,8 +2433,11 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
                 two totals on one page. 26 are the agents of those 27 that have
                 run; the page's count follows, so the two agree. */}
             {countOf(s.attempts, 'attempt')}, {s.tasksSampled} newest of {countOf(s.tasksWithAttempts, 'agent')}
-            {s.tasksOnPage > s.tasksWithAttempts ? ` that have run (of the ${s.tasksOnPage} newest read)` : ''}
           </span>
+          {/* ITS OWN CLAUSE (QA1B-06 review): every `.ctl-foot-run > *` is
+              nowrap, so inside the span above it could not wrap and was cut
+              off at 390 and 1440; as its own clause it wraps as a unit. */}
+          {s.tasksOnPage > s.tasksWithAttempts && <span>that have run (of the {s.tasksOnPage} newest read)</span>}
           {/* 2. THE HOLES: attempts that carried no cost figure... */}
           {unmeasured > 0 && <span className="ov-warn">{unmeasured} unmeasured</span>}
           {/* 3. ...and attempt reads that failed. THE COUNT OF WHAT IS
