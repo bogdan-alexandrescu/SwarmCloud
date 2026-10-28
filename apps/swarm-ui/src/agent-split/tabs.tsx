@@ -8,6 +8,7 @@ import { questionCount } from '../QuestionsCard'
 import { TERMINAL_STATES, type Task } from '../types'
 import { changesCount } from '../WorkflowChanges'
 import { Tabs, type TabDef } from '../components'
+import '../styles/agent-tabs.css'
 
 // THE SPLIT'S TAB BAR (moved out of AgentSplit.tsx by SPEED-D4A, 2026-10-14,
 // unchanged): each tab's name, which tabs the agent offers with their counts,
@@ -310,14 +311,27 @@ export function AgTabsEdge({
     if (b === null) return
     const strip = b.querySelector<HTMLElement>(':scope > .c-tabs')
     const drawn = b.querySelectorAll<HTMLElement>(':scope > .c-tabs > [role="tab"]')
-    barTabs.forEach((t, i) => {
-      const w = drawn[i]?.offsetWidth
-      if (w === undefined) return
-      // A LABEL THAT CHANGED REPLACES ITS OLD WIDTH (QA14-UI): Browser
-      // losing LIVE is a narrower tab, and the wider one must not be the
-      // width it falls back to once it is in More.
+    // A LABEL THAT CHANGED REPLACES ITS OLD WIDTH (QA14-UI): Browser
+    // losing LIVE is a narrower tab, and the wider one must not be the
+    // width it falls back to once it is in More.
+    const keep = (t: TabDef, w: number) => {
       for (const k of [...widths.current.keys()]) if (k.startsWith(`${t.key}\t`)) widths.current.delete(k)
       widths.current.set(sizeKey(t), w)
+    }
+    barTabs.forEach((t, i) => {
+      const w = drawn[i]?.offsetWidth
+      if (w !== undefined) keep(t, w)
+    })
+    // A TAB IN MORE IS MEASURED WITH THE COUNT IT HAS NOW (overview-agents-45,
+    // visual QA pass 1): measured only while it was on the bar, Checkpoints
+    // kept the width of the count it had at mount, the room kept for it was
+    // too small, and picking it from More pushed another tab (Attempts,
+    // Changes) off the bar. The hidden copy draws every tab; a copy not laid
+    // out (0) leaves the bar's own measure standing.
+    const copies = b.querySelectorAll<HTMLElement>(':scope > .ag-tabs-measure > .c-tabs > button')
+    tabs.forEach((t, i) => {
+      const w = copies[i]?.offsetWidth ?? 0
+      if (w > 0) keep(t, w)
     })
     // Nothing laid out (\`clientWidth\` 0) fits everything, so the gap is only read once there is a width to fit.
     if (gapPx.current === null && strip !== null && b.clientWidth > 0) {
@@ -443,6 +457,9 @@ export function AgTabsEdge({
     const on = drawn.findIndex((el) => el.getAttribute('aria-selected') === 'true')
     drawn.forEach((el, i) => {
       el.setAttribute('tabindex', i === (on === -1 ? 0 : on) ? '0' : '-1')
+      // Its bold width is reserved (agent-tabs.css), so opening it moves nothing (overview-agents-33).
+      const label = el.querySelector(':scope > .c-tab-label')
+      if (label !== null && label.getAttribute('data-label') !== label.textContent) label.setAttribute('data-label', label.textContent ?? '')
       const t = barTabs[i]
       if (t === undefined || t.count === undefined) el.removeAttribute('aria-label')
       else el.setAttribute('aria-label', tabName(t))
@@ -462,6 +479,22 @@ export function AgTabsEdge({
   const stripClass = moreTabs.length === 0 ? 'ag-split-tabs' : 'ag-split-tabs is-fitted'
   return (
     <div className="ag-tabs-edge" ref={box} data-more={more || undefined} onKeyDown={onKey}>
+      {/* EVERY TAB, HIDDEN, TO BE MEASURED (overview-agents-45): the widths
+          the bar is fitted to, the ones in More included. Drawn as the bar
+          draws them, with the bold width reserved, and never a stop. Its
+          words are the sheet's (`data-text`), not text: nothing reads or
+          finds them a second time. First, so More is still the box's last
+          child, at the bar's end. */}
+      <div className="ag-tabs-measure" aria-hidden="true">
+        <div className="c-tabs ag-split-tabs">
+          {tabs.map((t) => (
+            <button key={t.key} type="button" tabIndex={-1}>
+              <span className="c-tab-label" data-label={t.label} data-text={t.label} />
+              {t.count !== undefined && <em data-text={t.count === null ? '—' : String(t.count)} />}
+            </button>
+          ))}
+        </div>
+      </div>
       {/* A FITTED BAR NEVER SHRINKS (VQ-008): it holds only the tabs that
           fit, the open one always, so More gives way and the open tab stays
           drawn and marked (agents.css `.ag-split-tabs.is-fitted`). */}
@@ -479,36 +512,83 @@ export function AgTabsEdge({
 
 /**
  * MORE: the tabs that did not fit, as a disclosure like `Menu`
- * (components/Overlay.tsx) -- a labelled group of buttons, not an ARIA menu,
- * which would promise arrow-key roving. Each says its count as the bar does,
- * in the bar's badge and with the bar's name (`tabName`).
- * Escape and a press outside close it; choosing a tab opens it and closes.
+ * (components/Overlay.tsx) -- a labelled group of buttons, not an ARIA menu.
+ * Each says its count as the bar does, in the bar's badge and with the bar's
+ * name (`tabName`). Choosing a tab opens it and closes.
+ *
+ * THE KEYS REACH IT (overview-agents-44, visual QA pass 1): ArrowDown on
+ * `More 3` did nothing, and Escape pressed with the menu open and focus in
+ * the list column closed the whole agent pane, because only a key pressed
+ * inside More was More's. Now ArrowDown (ArrowUp) on More opens it at its
+ * first (last) tab, the arrows, Home and End move through its tabs, and
+ * while it is open its Escape is taken first, wherever focus is: it closes
+ * the menu and is spent (`defaultPrevented`, which the split's own Escape
+ * leaves alone, agent-split/focus.ts), so only a second Escape closes the
+ * pane. A press outside closes it too.
  */
 function MoreTabs({ tabs, onSelect }: { tabs: readonly TabDef[]; onSelect: (key: string) => void }) {
   const [open, setOpen] = useState(false)
+  // The tab to focus once the menu is drawn, from an arrow pressed on More.
+  const [focusAt, setFocusAt] = useState<number | null>(null)
   const host = useRef<HTMLSpanElement>(null)
   const names = tabs.map((t) => t.label).join(', ')
+  const items = () => [...(host.current?.querySelectorAll<HTMLButtonElement>(':scope > .ag-tabs-menu > .c-menu-item') ?? [])]
+  useEffect(() => {
+    if (!open || focusAt === null) return
+    const all = items()
+    all[(focusAt + all.length) % Math.max(1, all.length)]?.focus()
+    setFocusAt(null)
+  }, [open, focusAt])
   useEffect(() => {
     if (!open) return
     const away = (e: Event) => {
       if (e.target instanceof Node && host.current?.contains(e.target)) return
       setOpen(false)
     }
+    // Capture, so it is heard before the panel's and the split's own Escape.
+    const escape = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return
+      e.preventDefault()
+      const inside = document.activeElement !== null && host.current?.contains(document.activeElement) === true
+      setOpen(false)
+      if (inside) host.current?.querySelector<HTMLButtonElement>('.ag-tabs-more')?.focus()
+    }
     document.addEventListener('pointerdown', away)
-    return () => document.removeEventListener('pointerdown', away)
+    window.addEventListener('keydown', escape, true)
+    return () => {
+      document.removeEventListener('pointerdown', away)
+      window.removeEventListener('keydown', escape, true)
+    }
   }, [open])
+  const onKey = (e: KeyboardEvent<HTMLSpanElement>) => {
+    if (e.altKey || e.ctrlKey || e.metaKey) return
+    const all = items()
+    const at = all.indexOf(e.target as HTMLButtonElement)
+    if (at === -1) {
+      // On More itself: the arrows open it, at its first or its last tab.
+      if (!(e.target as HTMLElement).classList.contains('ag-tabs-more')) return
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+      e.preventDefault()
+      setOpen(true)
+      setFocusAt(e.key === 'ArrowDown' ? 0 : -1)
+      return
+    }
+    const to =
+      e.key === 'ArrowDown'
+        ? (at + 1) % all.length
+        : e.key === 'ArrowUp'
+          ? (at - 1 + all.length) % all.length
+          : e.key === 'Home'
+            ? 0
+            : e.key === 'End'
+              ? all.length - 1
+              : null
+    if (to === null) return
+    e.preventDefault()
+    all[to]!.focus()
+  }
   return (
-    <span
-      className="c-menu-host ag-tabs-more-host"
-      ref={host}
-      onKeyDown={(e) => {
-        if (e.key === 'Escape' && open) {
-          e.stopPropagation()
-          setOpen(false)
-          host.current?.querySelector<HTMLButtonElement>('.ag-tabs-more')?.focus()
-        }
-      }}
-    >
+    <span className="c-menu-host ag-tabs-more-host" ref={host} onKeyDown={onKey}>
       {/* IT SAYS WHAT IT HOLDS (visual QA QA-116, run 2): `More 2 ▾` at 390
           read as two hidden tabs or as two checkpoints, and nothing said
           Checkpoints was behind it. Its name and its title list them.

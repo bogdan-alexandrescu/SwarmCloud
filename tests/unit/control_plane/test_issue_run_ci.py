@@ -608,7 +608,9 @@ def test_an_unpinned_required_check_may_be_a_commit_status(statuses, state):
 def test_with_nothing_required_and_nothing_reported_the_reading_is_none():
     assert forgechecks.evaluate([], [], []).state == "none"
     assert forgechecks.evaluate([], [_run_doc("x", "neutral")], []).state == "green"
-    assert forgechecks.evaluate([], [_run_doc("x", "cancelled")], []).state == "red"
+    # #1778: a cancelled run waits for its re-run.
+    assert forgechecks.evaluate([], [_run_doc("x", "cancelled")], []).state == "pending"
+    assert forgechecks.evaluate([], [_run_doc("x", "timed_out")], []).state == "red"
 
 
 def test_red_wins_over_pending():
@@ -646,10 +648,10 @@ def test_evaluate_counts_each_check_into_its_bucket():
     reading = forgechecks.evaluate([], _seven_five_three(), [])
 
     assert reading.counts == {"passed": 5, "failed": 0, "pending": 7, "skipped": 3}
-    # The state rule is unchanged: a cancelled run is skipped in the count
-    # and still red in the reading, as the merge step reads it.
-    assert reading.state == "red" and reading.failing_names() == ["cancelled"]
-    assert len(reading.pending) == 7
+    # The count does not decide the state: a cancelled run is skipped in the
+    # count and pending in the reading (#1778), as the merge step reads it.
+    assert reading.state == "pending" and reading.failing_names() == []
+    assert len(reading.pending) == 8 and "cancelled" in reading.pending
     without_cancel = forgechecks.evaluate([], _seven_five_three()[:-1], [])
     assert without_cancel.state == "pending"
     assert without_cancel.counts == {"passed": 5, "failed": 0, "pending": 7, "skipped": 2}

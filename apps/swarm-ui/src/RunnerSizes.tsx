@@ -40,6 +40,7 @@ import { Banner, Button, Card, Dialog, ToneMark, TypedConfirm } from './componen
 import type { ApiError, Result } from './fetch'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
+import { poolLabel } from './types'
 import type {
   RunnerRecentUse, RunnerSize, RunnerSizeChanges, RunnerSizeRefusal, RunnerSizesDoc, RunnerSizesPreview, RunnerSizeVersion,
 } from './types'
@@ -336,6 +337,19 @@ export function tooSmall(doc: RunnerSizesDoc, preview: RunnerSizesPreview): { po
   return null
 }
 
+/**
+ * THE POOL IN THE LEAD, IN WORDS (QA1-FIX-23, admin-shell-04). The lead read
+ * `Pool resource:large admits no large agent` while Pool limits names the
+ * same row `large`: a key in prose. A class's own pool is that class's pool,
+ * `global` is the platform-wide one, and any other is `poolLabel`'s name.
+ */
+export function poolSubject(pool: string, classes: Record<string, unknown>): string {
+  if (pool === 'global') return 'The platform-wide pool'
+  const cls = pool.startsWith('resource:') ? pool.slice('resource:'.length) : null
+  if (cls !== null && cls in classes) return `The ${cls} class’s pool`
+  return `The ${poolLabel(pool)} pool`
+}
+
 /** The class card's memory field, which the lead's button lands on: memory is what moves a class's units most. */
 function openClass(cls: string): void {
   const card = document.querySelector<HTMLElement>(`.rs-class[data-class="${cls}"]`)
@@ -376,8 +390,8 @@ function SizesLead({ state, admits }: { state: Result<RunnerSizesDoc>; admits: A
       <AdminLead
         tone="warn"
         kicker="Needs a look"
-        title={`Pool ${small.pool} admits no ${small.cls} agent`}
-        body={`${small.cls} takes ${small.units} units and ${small.pool}’s ceiling is ${small.ceiling}.`}
+        title={`${poolSubject(small.pool, doc.classes)} admits no ${small.cls} agent`}
+        body={`A ${small.cls} agent takes ${small.units} units and the pool’s ceiling is ${small.ceiling}.`}
         action={
           <Button kind="primary" onClick={() => openClass(small.cls)}>
             {`Open ${small.cls}`}
@@ -448,6 +462,9 @@ function RunnerSizesBody({
   const [reason, setReason] = useState('')
   const [preview, setPreview] = useState<{ key: string; result: Result<RunnerSizesPreview> } | null>(null)
   const [recent, setRecent] = useState<Record<string, RunnerRecentUse>>({})
+  // Whether any preview has answered, and the last failure while none has: a
+  // class with no recent use is then a dash with its reason, not `reading…`.
+  const [recentRead, setRecentRead] = useState<{ read: boolean; failed: string | null }>({ read: false, failed: null })
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
   const [saved, setSaved] = useState<number | null>(null)
@@ -477,6 +494,10 @@ function RunnerSizesBody({
         if (result.status === 'ok' || result.status === 'stale') {
           const use = result.data.recent_use
           if (use && typeof use === 'object') setRecent((was) => ({ ...was, ...use }))
+          setRecentRead({ read: true, failed: null })
+        } else if (result.status === 'error') {
+          const message = result.error.message
+          setRecentRead((was) => (was.read ? was : { read: false, failed: message }))
         }
       })
     }, PREVIEW_DEBOUNCE_MS)
@@ -581,7 +602,7 @@ function RunnerSizesBody({
             refusals={refusals.filter((r) => r.class === name)}
             preview={fresh?.classes?.[name] ?? null}
             changes={changes[name]}
-            use={recent[name] ?? null}
+            use={recent[name] ?? (recentRead.read ? { kind: 'none' } : recentRead.failed !== null ? { kind: 'failed', message: recentRead.failed } : { kind: 'reading' })}
           />
         ))}
       </div>
@@ -645,7 +666,7 @@ function ClassCard({
   refusals: RunnerSizeRefusal[]
   preview: RunnerSizesPreview['classes'][string] | null
   changes: RunnerSizeChanges[string] | undefined
-  use: RunnerRecentUse | null
+  use: RunnerRecentUse | NoRecentUse
 }) {
   const b = doc.bounds
   const ratio = b.cpu_burst_max_ratio
@@ -704,10 +725,10 @@ function ClassCard({
       )}
       <dl className="rs-facts">
         <dt>Units</dt>
-        <dd className="rs-units">{preview ? `${preview.units_before} → ${preview.units_after ?? '—'}` : String(size.units)}</dd>
+        <dd className="rs-units">{preview ? moved(String(preview.units_before), typeof preview.units_after === 'number' ? String(preview.units_after) : '—') : String(size.units)}</dd>
         <dt>Per agent, an hour</dt>
         <dd className="rs-cost">
-          {preview ? `${dollars(preview.cost_hour_before)} → ${dollars(preview.cost_hour_after)}` : '—'}
+          {preview ? moved(dollars(preview.cost_hour_before), dollars(preview.cost_hour_after)) : '—'}
           {limitsOnly && <span className="rs-free"> · $0.00 more an hour: Autopilot bills requests</span>}
         </dd>
       </dl>
@@ -719,9 +740,19 @@ function ClassCard({
           Cloud Run, does not follow: {followers.fixed.join(', ')}. Cloud Run fixes resources on the Job and bills its limit, so these keep the code default.
         </p>
       )}
-      <RecentUse use={use} size={size} ratio={ratio} />
+      <RecentUse name={name} use={use} size={size} ratio={ratio} />
     </section>
   )
+}
+
+/**
+ * ONE VALUE UNTIL AN EDIT MOVES IT (QA1-FIX-23, admin-shell-16). The page
+ * previews the saved version on arrival, so with nothing edited every card
+ * read `Units 1 → 1`: a change arrow over no change. The arrow is drawn only
+ * when the two differ.
+ */
+function moved(before: string, after: string): string {
+  return before === after ? before : `${before} → ${after}`
 }
 
 function SizeField({ label, value, bound, onChange, refusals }: { label: string; value: string; bound: string; onChange: (v: string) => void; refusals: RunnerSizeRefusal[] }) {
@@ -755,8 +786,22 @@ const READINGS: readonly { key: keyof RunnerRecentUse; label: string }[] = [
   { key: 'throttled_share', label: 'Throttled' },
 ]
 
-function RecentUse({ use, size, ratio }: { use: RunnerRecentUse | null; size: RunnerSize; ratio: number }) {
-  if (use === null) return <p className="rs-recent">Recent use: reading…</p>
+/**
+ * A CLASS'S RECENT USE WHILE IT IS NOT ON SCREEN (QA1-FIX-23, chrome-C24).
+ * It arrives with the preview, which the live deployment answered in 6-30 s,
+ * and the card said only `reading…` meanwhile -- and for good when the
+ * preview failed or answered without the class. Reading says what it waits
+ * for; a failed read and a class with no record are each a dash with its
+ * reason (never 0 attempts).
+ */
+type NoRecentUse = { kind: 'reading' } | { kind: 'none' } | { kind: 'failed'; message: string }
+
+function RecentUse({ name, use, size, ratio }: { name: string; use: RunnerRecentUse | NoRecentUse; size: RunnerSize; ratio: number }) {
+  if ('kind' in use) {
+    if (use.kind === 'reading') return <p className="rs-recent">Recent use: reading the last 7 days of attempts with the preview…</p>
+    if (use.kind === 'failed') return <p className="rs-recent">Recent use: — could not be read ({use.message}).</p>
+    return <p className="rs-recent">Recent use: — the preview returned no record for {name}.</p>
+  }
   const hints = hintsFor(size, use, ratio)
   return (
     <div className="rs-use">

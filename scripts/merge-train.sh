@@ -233,10 +233,15 @@ cmd_judge() {
   # scan` at in_progress with conclusion success and a completed_at. A run
   # with no conclusion stays pending; the worker's `check_run_finished` and
   # auto-merge.yml's gates 5-6 state the same rule.
+  # A latest run that finished `cancelled` is neither bad nor good (#1778,
+  # BGD released bundle H09, 2026-10-27): someone stopped it, so a required
+  # one leaves the verdict pending until its re-run answers, and a red
+  # latest run of another event still makes the verdict red. The worker's
+  # `cancelled_run` and swarm-api's `forgechecks.cancelled_run` say the same.
   jq -rn --slurpfile cr "${check_runs}" --slurpfile st "${statuses}" \
     --slurpfile wf "${workflow_runs:-/dev/null}" --argjson required "${req}" '
     def good: . as $c | ["success", "skipped", "neutral"] | index($c) != null;
-    def bad: . as $c | ["failure", "timed_out", "cancelled", "action_required",
+    def bad: . as $c | ["failure", "timed_out", "action_required",
                         "startup_failure", "stale", "error"] | index($c) != null;
     def finished: .status == "completed"
                   or ((.conclusion // "") != "" and (.completed_at // "") != "");
