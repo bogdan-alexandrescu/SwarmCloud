@@ -267,9 +267,12 @@ DEFAULT_FILE: Mapping[str, Any] = {
 CAPTURE_PROFILE = "claude-code-browser"
 REVIEW_PROFILE = "claude-code"
 #: The console template's lesson (docs/browser-qa.md): haiku captures, opus
-#: reviews and reports, sonnet runs flows and files.
+#: reports, sonnet reviews, runs flows and files.
+#: REVIEW_MODEL: BGD 2026-10-27 (#2524, TOKEN-RENDER question 2), review on
+#: Sonnet: the review reads every capture, so it is the run's largest spend,
+#: and the children that judge its renders already run on Sonnet.
 CAPTURE_MODEL, REVIEW_MODEL, FLOW_MODEL, REPORT_MODEL, FILE_MODEL = (
-    "haiku", "opus", "sonnet", "opus", "sonnet")
+    "haiku", "sonnet", "sonnet", "opus", "sonnet")
 
 #: `swarm_qa.NAME`: a file-name-safe id. `--` separates a capture file's parts.
 _NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
