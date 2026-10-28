@@ -6853,6 +6853,7 @@ export function CancelWorkflow({
           <TypedConfirm
             title="Stop this workflow?"
             name={workflow.workflow_id}
+            noun="id"
             verb="Stop the workflow"
             keep="Keep it running"
             onConfirm={() => void send()}
