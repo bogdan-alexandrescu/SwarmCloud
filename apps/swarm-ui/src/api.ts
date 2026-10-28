@@ -7731,7 +7731,7 @@ function fixtureRepositories(): unknown {
       repository_url: `https://github.com/example-org/${r.repo}`, default_branch: 'main',
       allowed_profiles: ['claude-code'], created_by: 'alice@example.com', created_at: fixtureAgo((20 - i * 5) * 24 * FIXTURE_HOUR),
       index: {
-        interval_hours: r.interval_hours, on_change: r.on_change, min_change_interval_minutes: 30, paused: false,
+        interval_hours: r.interval_hours, on_change: r.on_change, min_change_interval_minutes: 120, paused: false,
         current_sha: fixtureSha(r.sha), last_indexed_at: fixtureAgo((i + 2) * FIXTURE_HOUR), head_sha: fixtureSha(r.sha),
         behind_by: 0, stale: false, in_flight_task_id: null,
         coverage: { modules: r.modules, modules_with_tests: r.tested, test_map_edges: r.edges, always_tests: 1 },

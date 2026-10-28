@@ -56,6 +56,7 @@ from typing import Any, Callable, Sequence
 from swarm_common.models import Attempt, Task, utcnow
 
 from . import agent_streams as agent_streams_mod
+from . import reviewgate
 from .errors import NotFound, UpstreamUnavailable, ValidationFailed
 from .json_masking import context_before, redact_json_window
 from .objects import (
@@ -1123,6 +1124,9 @@ class InspectionService:
         with their own credentials -- is the honest one for those.
         """
         task, _prefix = self._scoped(tenant_id, task_id, submitted_by=submitted_by)
+        inline = self._inline_artifact(task, name)
+        if inline is not None:
+            return inline
         entry, attempt_id, key, reader = self._resolve_artifact(task, name)
 
         window = self._default_artifact_bytes if limit_bytes is None else limit_bytes
@@ -1259,6 +1263,45 @@ class InspectionService:
                 f"{undecodable} bytes of this window are not UTF-8 and are shown as "
                 "U+FFFD; the raw route (/artifacts/raw) serves them exactly",
             )
+        return row
+
+    def _inline_artifact(self, task: Task, name: str) -> dict[str, Any] | None:
+        """A skipped review's inline verdict, served whole and redacted, or None (#2524).
+
+        The one entry with no object behind it: swarm-api ended the review
+        without a worker and wrote its verdict into the manifest
+        (`reviewgate.skip_summary`). Admitted only in the exact shape that
+        writes (`reviewgate.inline_verdict`); every other name goes through
+        `_resolve_artifact` as before. Masked by the same JSON redaction as a
+        bucket read, with the task's literals: the document is
+        tenant-writable, so this text is not trusted to be clean.
+        """
+        entry = self._store.artifact_manifest(task).find(name) if isinstance(name, str) else None
+        if entry is None:
+            return None
+        text = reviewgate.inline_verdict(task.result_summary, entry)
+        if text is None:
+            return None
+        scrubbed = redact_json_window(
+            text, inside_key=False, literals=masking_for(task).literals,
+            fragment=True, context="",
+        )
+        size = len(text.encode("utf-8"))
+        row = _artifact_row(task=task, entry=entry, attempt_id="")
+        row.update(
+            status="ok",
+            content=scrubbed.text,
+            total_bytes=size,
+            offset=0,
+            returned_bytes=size,
+            next_offset=None,
+            truncated=False,
+            redacted=scrubbed.any,
+            redaction_count=scrubbed.count,
+            invalid_utf8_bytes=0,
+            detail=("written by the platform: the review gate skipped this review, so no "
+                    "attempt ran and the verdict has no object in the bucket"),
+        )
         return row
 
     def _resolve_artifact(
