@@ -519,7 +519,8 @@ function Choice<T extends string>({
  * the button's description. Arrows move and choose within the group, as a
  * radio group does; Tab enters on the checked value and leaves the group.
  * The wrapper is not a `<label>`: a label around several buttons hands every
- * click on its words to the first of them.
+ * click on its words to the first of them. `wide` spans every column of a
+ * `.sc-facts` grid, as Scope's row does in A3a card 2.
  */
 function Segmented<T extends string>({
   label,
@@ -527,12 +528,14 @@ function Segmented<T extends string>({
   options,
   onChange,
   hint,
+  wide = false,
 }: {
   label: string
   value: T | undefined
   options: readonly { value: T; label: string; disabled?: string }[]
   onChange: (v: T) => void
   hint?: ReactNode
+  wide?: boolean
 }) {
   const id = useId()
   const refs = useRef<(HTMLButtonElement | null)[]>([])
@@ -549,7 +552,7 @@ function Segmented<T extends string>({
   }
   const hinted = hint !== undefined && hint !== ''
   return (
-    <div className="c-field">
+    <div className={wide ? 'c-field sc-wide' : 'c-field'}>
       <span className="c-lbl" id={`${id}-l`}>
         {label}
       </span>
@@ -1120,6 +1123,7 @@ function ScheduleForm({
                 <input className="c-inp" value={d.name} maxLength={80} onChange={(e) => set({ name: e.target.value })} />
               </Field>
               <Segmented<Scope>
+                wide
                 label="Scope"
                 value={d.scopeMode}
                 options={scopes.map((m) => ({ value: m as Scope, label: SCOPE_WORD[m as Scope] }))}

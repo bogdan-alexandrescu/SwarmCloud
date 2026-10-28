@@ -98,10 +98,13 @@
    repository" is wider than a sheet-narrowed column, and a `flex: none`
    control would run out of the card. A segment that does not fit starts a
    second row at the control's height, its top hairline drawn as the shared
-   phone rule draws it. On a phone that rule already wraps it. */
+   phone rule draws it, and the segments grow to fill their row, as there, so
+   a wrapped row leaves no empty slot and no short hairline. On a phone that
+   rule already wraps it. Scope takes the card's full width (`.sc-wide`), as
+   A3a card 2 draws it, so at desktop it is one row. */
 @media (min-width: 561px) {
   .ae-seg.c-seg { height: auto; flex-wrap: wrap; max-width: 100%; }
-  .ae-seg.c-seg > button { min-height: var(--h-ctl); border-top: 1px solid var(--line); margin-top: -1px; }
+  .ae-seg.c-seg > button { min-height: var(--h-ctl); flex: 1 0 auto; border-top: 1px solid var(--line); margin-top: -1px; }
 }
 
 /* ---- a phone: one column, no sideways scroll at 390 ------------------------ */
