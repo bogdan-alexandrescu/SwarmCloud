@@ -162,7 +162,7 @@ export function Verdict({
   now: number
   waiting: WaitRead
 }) {
-  const v = verdictOf(accounts, scope, shortfall)
+  const v = verdictOf(accounts, scope, shortfall, now)
   // An empty read with an unreadable document is not an empty pool: it is at
   // least that many accounts this page could not read (rendered 2026-10-25,
   // when the head said "this list is short" and the verdict "none registered").
