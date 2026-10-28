@@ -186,7 +186,7 @@ describe('the submit box tells a pool capped at zero from a full one', () => {
     expect(sentence(el)).toMatch(/held down by resource:large/)
     const rows = Array.from(el.querySelectorAll('.blocker-list .blocker-row'))
     expect(rows.map((r) => r.querySelector('code')?.textContent)).toEqual(['global'])
-    expect(rows[0].querySelector('.tag.full')).not.toBeNull()
+    expect(rows[0]!.querySelector('.tag.full')).not.toBeNull()
   })
 })
 
