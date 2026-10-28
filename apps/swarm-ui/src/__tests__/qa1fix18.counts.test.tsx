@@ -7,7 +7,7 @@
 // button's total, in the button's own terms for each kind of caller.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import type { PlatformTime } from '../platformTimeApi'
