@@ -261,7 +261,7 @@ function CacheBody({
         <StatTile label="Last promotion warm-up" tile={warmTile(doc.facts, doc.stats)} />
       </div>
       {doc.replicas.length > 0 && (
-        <div className="ur-cache-replicas" data-row="replicas">
+        <div className="ur-cache-replicas" data-row="replicas" style={REPLICA_GRID}>
           {doc.replicas.map((r) => (
             <ReplicaPanel key={r.replica} r={r} />
           ))}
@@ -331,11 +331,16 @@ function warmTile(f: GraphCacheFacts, stats: Stats): TileValue {
 // One panel per replica (§5.2)
 // ---------------------------------------------------------------------------
 
+// Each replica is the shared bordered .c-card; the panels stack with a gap, and a
+// replica that was not read gets a dashed border, as an unknown .c-tile does.
+const REPLICA_GRID = { display: 'grid', gap: 8 } as const
+const NOT_READ_PANEL = { borderStyle: 'dashed', borderColor: 'var(--ctl-absent)' } as const
+
 function ReplicaPanel({ r }: { r: GraphCacheReplica }) {
   if (r.state === 'not_read') {
     // No figure at all: a replica nobody read holds an unknown, not zero (§5.4).
     return (
-      <div className="ur-cache-replica is-not-read" data-replica={r.replica} data-state="not_read" data-reason={r.reason}>
+      <div className="c-card ur-cache-replica is-not-read" data-replica={r.replica} data-state="not_read" data-reason={r.reason} style={NOT_READ_PANEL}>
         <b>{r.replica}</b>
         <p className="ur-small">
           Not read: it {reasonWords(r.reason)} ({r.reason}).
@@ -345,7 +350,7 @@ function ReplicaPanel({ r }: { r: GraphCacheReplica }) {
   }
   const started = r.started_at === null ? null : new Date(r.started_at)
   return (
-    <div className="ur-cache-replica" data-replica={r.replica} data-state="read">
+    <div className="c-card ur-cache-replica" data-replica={r.replica} data-state="read">
       <b>{r.replica}</b>
       <p className="ur-small ur-mu">
         up {r.uptime_seconds === null ? <Dash why="Its start time was not served" /> : spanWords(r.uptime_seconds)}
@@ -423,8 +428,8 @@ function ShardRows({ shards, page, onPage }: { shards: GraphCacheShards | null; 
       {shards.comparison !== 'read' && (
         <p className="ur-small ur-mu">The previous index could not be opened ({shards.comparison}), so the last merge is not known.</p>
       )}
-      <div className="c-table-wrap">
-        <table className="c-table" aria-label="Shards of the current index">
+      <div className="c-tbl">
+        <table aria-label="Shards of the current index">
           <thead>
             <tr>
               <th>Layer</th>
