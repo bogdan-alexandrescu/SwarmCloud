@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+import urllib.error
 import urllib.request
 
 import pytest
@@ -78,7 +79,16 @@ def test_serve_answers_health_and_stops(tmp_path):
         ready.set()
         return httpd
 
+    real_stats = main.make_stats_server
+    stats_ports: list[int] = []
+
+    def capture_stats(service, host, port):
+        httpd = real_stats(service, "127.0.0.1", 0)
+        stats_ports.append(httpd.server_address[1])
+        return httpd
+
     main.make_server = capture
+    main.make_stats_server = capture_stats
     try:
         thread = threading.Thread(target=main.serve, kwargs=dict(
             env=env, access=lambda _v: key.encode(), store=object(), stop=stop), daemon=True)
@@ -95,8 +105,16 @@ def test_serve_answers_health_and_stops(tmp_path):
                 if time.time() > deadline:
                     raise
                 time.sleep(0.05)
+        # The stats port is listening too, and takes a stats ticket only.
+        with pytest.raises(urllib.error.HTTPError) as refused:
+            urllib.request.urlopen(f"http://127.0.0.1:{stats_ports[0]}/v1/stats", timeout=5)
+        assert refused.value.code == 401
+        with pytest.raises(urllib.error.HTTPError) as missing:
+            urllib.request.urlopen(f"http://127.0.0.1:{stats_ports[0]}/healthz", timeout=5)
+        assert missing.value.code == 404
     finally:
         stop.set()
         main.make_server = real
+        main.make_stats_server = real_stats
     thread.join(10)
     assert not thread.is_alive()
