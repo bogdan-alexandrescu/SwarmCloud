@@ -219,7 +219,8 @@ describe('Lanes: a selected lane', () => {
     await waitFor(() => expect(within(detail).getAllByRole('listitem').length).toBe(3))
     const items = within(detail).getAllByRole('listitem').map((li) => li.textContent ?? '')
     expect(items[0]).toContain('succeeded')
-    expect(items[1]).toContain('generation_fenced')
+    // In words, as Agents' events say it (QA1-FIX-28, runs-submit-38).
+    expect(items[1]).toContain('generation fenced')
   })
 
   it('follows the events page token for older events', async () => {
@@ -384,7 +385,9 @@ describe('Lanes: the outcome strip', () => {
     api.loadTaskEventsPage.mockImplementation(() => new Promise(() => {}))
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     await waitFor(() => expect(lanes().length).toBeGreaterThan(0))
-    await waitFor(() => expect(document.querySelector('.tl-strip')?.textContent).toMatch(/1\+ generations fenced, events not read on 3 lanes/))
+    await waitFor(() => expect(document.querySelector('.tl-strip')?.textContent).toMatch(/1\+ generations fenced, counting…/))
+    // While the reads are out it says counting, not that they failed (QA1-FIX-28, runs-submit-33).
+    expect(document.querySelector('.tl-strip')?.textContent).not.toMatch(/events not read/)
   })
 
   it('suggests Outcomes past 7 days', async () => {
