@@ -2133,6 +2133,31 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         inputs={},
         available=True,
     ),
+    # CONTRACT REQUEST 124, accepted by BGD 2026-10-27 (FL-CONTRACT,
+    # docs/design/fix-loop.md §7 request A, Q1 and Q10): a workflow step that
+    # runs review-fix rounds until the review says MERGE or `max_rounds`.
+    # control_plane (request 93): no container runs it, swarm-api drives its
+    # rounds as steps of their own and ends it, and Terraform makes no Job for
+    # it (`profiles_without_a_job`). SHIPPED UNAVAILABLE until every build
+    # lane of the design's §8 has merged and FL-ACCEPT is green on dev, as
+    # await-input was; enabling it is `available=True` and nothing else.
+    "fix-loop": RunnerProfile(
+        name="fix-loop",
+        image="agent-runtime-base",   # never pulled: control_plane
+        resource_class="standard",    # never reserved: control_plane
+        backend=Backend.CLOUD_RUN_JOB,
+        runner_argv=(),
+        control_plane=True,
+        provider=None,
+        secrets=(),
+        timeout_seconds=300,          # unused; the rounds are steps with their own
+        inputs={},
+        available=False,
+        disabled_reason=(
+            "fix-loop is not available yet: it ships unavailable until its "
+            "acceptance run passes, as docs/design/fix-loop.md says."
+        ),
+    ),
 }
 
 

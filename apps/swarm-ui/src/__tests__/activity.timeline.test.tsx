@@ -1102,12 +1102,15 @@ describe('the eight cards', () => {
     expect(rows.map((r) => r.getAttribute('data-row'))).toEqual([
       'runner error', 'timeout', 'lost worker', 'could not start', 'inputs unavailable', 'outputs missing',
       'dispatch failed', 'spec signature invalid', 'verdict refused', 'verdict failed', 'merge refused',
-      'merge failed', 'publish refused', 'budget exceeded', 'other', 'no reason recorded', 'failed on purpose',
+      'merge failed', 'publish refused', 'budget exceeded', 'fix loop exhausted', 'other', 'no reason recorded',
+      'failed on purpose',
     ])
     // Contract request 118 (BGD 2026-10-27): the fixture's one budget stop on
     // 25 Sep is its own row, after publish refused, and no longer an "other".
+    // Contract request 126 (BGD 2026-10-27): a fix loop that ended without a
+    // MERGE is its own row after it, drawn as 0 in a fixture that has none.
     expect(rows.map((r) => r.querySelector('.ol-row-n')!.textContent)).toEqual([
-      '1', '0', '7', '0', '0', '6', '8', '0', '0', '0', '0', '0', '0', '1', '5', '0', '0',
+      '1', '0', '7', '0', '0', '6', '8', '0', '0', '0', '0', '0', '0', '1', '0', '5', '0', '0',
     ])
     // A 0 ROW DRAWS NO BAR (visual QA VQ-022, 2026-10-26): the zero tick read
     // as a small non-zero bar. The row and its "0" are drawn; the bar is not.
@@ -1272,7 +1275,8 @@ describe('the eight cards', () => {
   it('draws a card’s mini strips in the band its bucket count needs, so the sheet can drop them where they do not fit', async () => {
     const root = await timeline(thirtyDays())
     const strips = [...card(root, /^Why agents failed/).querySelectorAll('.ol-strip')]
-    // One per class in the route's vocabulary: seventeen since "budget
+    // One per class in the route's vocabulary: eighteen since "fix loop
+    // exhausted" (contract request 126, BGD 2026-10-27), seventeen since "budget
     // exceeded" (contract request 118, BGD 2026-10-27), sixteen since "failed on
     // purpose" (#631, the caller asked for the failure), fifteen since "publish
     // refused" (contract request 29), fourteen since the worker actions'
@@ -1280,7 +1284,7 @@ describe('the eight cards', () => {
     // (contract request 34), nine since "inputs unavailable" (#185,
     // decision 4).
     expect(strips).toHaveLength(ledgerFixture().vocab.failure_classes.length)
-    expect(strips).toHaveLength(17)
+    expect(strips).toHaveLength(18)
     for (const s of strips) {
       expect(s.classList.contains('is-n31'), `a 30-bucket strip is not in the ≤31 band: ${s.getAttribute('class')}`).toBe(true)
       expect(Number(s.getAttribute('width'))).toBe(30 * 6)

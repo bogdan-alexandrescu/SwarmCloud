@@ -45,11 +45,13 @@ DOC = {
 }
 
 
-def test_118_the_end_cause_is_the_frozen_enums_last():
+def test_118_the_end_cause_was_appended_after_child_cascade():
     assert EndCause.BUDGET_EXCEEDED.value == "budget_exceeded"
     assert EndCause("budget_exceeded") is EndCause.BUDGET_EXCEEDED
-    # Appended, so no reader's order of the earlier causes moves.
-    assert list(EndCause)[-1] is EndCause.BUDGET_EXCEEDED
+    # Appended, so no reader's order of the earlier causes moves. Contract
+    # request 126 (`fix_loop_exhausted`) was appended after it, 2026-10-28.
+    causes = list(EndCause)
+    assert causes.index(EndCause.BUDGET_EXCEEDED) == causes.index(EndCause.CHILD_CASCADE) + 1
 
 
 def test_121_the_warning_is_its_own_event_type():

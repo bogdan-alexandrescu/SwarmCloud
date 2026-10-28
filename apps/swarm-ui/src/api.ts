@@ -4471,7 +4471,8 @@ const FIXTURE_INPUT_CONTRACTS: Record<string, FixtureInputContract> = {
   "indexer": {"required_keys": ["prompt"]},
   "claude-code-browser": {"required_keys": ["prompt"]},
   "claude-code-large": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}}},
-  "await-input": {"required_keys": []}
+  "await-input": {"required_keys": []},
+  "fix-loop": {"required_keys": []}
 }
 
 /**
@@ -4506,7 +4507,8 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
   "indexer": {"available": true, "disabled_reason": ""},
   "claude-code-browser": {"available": true, "disabled_reason": ""},
   "claude-code-large": {"available": true, "disabled_reason": ""},
-  "await-input": {"available": true, "disabled_reason": ""}
+  "await-input": {"available": true, "disabled_reason": ""},
+  "fix-loop": {"available": false, "disabled_reason": "fix-loop is not available yet: it ships unavailable until its acceptance run passes, as docs/design/fix-loop.md says."}
 }
 
 async function fixtureCapacity(): Promise<Result<Capacity>> {

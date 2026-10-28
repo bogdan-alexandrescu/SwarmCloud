@@ -306,6 +306,7 @@ def test_the_vocabulary_order_is_fixed():
         "merge_refused", "merge_failed",  # contract request 33
         "publish_refused",  # contract request 29
         "budget_exceeded",  # contract request 118, BGD 2026-10-27
+        "fix_loop_exhausted",  # contract request 126, BGD 2026-10-27
         "other", "no_reason",
         "intended",  # #631
     ]

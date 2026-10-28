@@ -81,6 +81,8 @@ export type FailureClassKey =
   | 'publish_refused'
   /** Contract request 118 (BGD 2026-10-27): the worker stopped the agent on its budget. */
   | 'budget_exceeded'
+  /** Contract request 126 (BGD 2026-10-27): a fix loop's rounds ended without a MERGE. */
+  | 'fix_loop_exhausted'
   | 'other'
   | 'no_reason'
   /** #631: the caller asked for this failure (the mock's `fail: true`). */

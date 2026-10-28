@@ -593,6 +593,7 @@ const END_CAUSE_SAY: Readonly<Record<EndCause, string>> = {
   publish_refused: 'publishing was refused',
   child_cascade: 'a child agent ended it',
   budget_exceeded: 'it was stopped at its budget',
+  fix_loop_exhausted: 'its fix loop ended without a merge',
 }
 
 /**

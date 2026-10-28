@@ -353,8 +353,11 @@ const SUGGESTED: Record<string, Suggestion[]> = {
   'post-verdict': [
   ],
   // A control_plane profile (contract request 93) runs nothing and declares
-  // no input; listed, empty, for the same reason.
+  // no input; listed, empty, for the same reason. fix-loop is the second
+  // (contract request 124).
   'await-input': [
+  ],
+  'fix-loop': [
   ],
   // runners/generic.py -- GENERIC_COMMANDS is the frozen argv catalogue, and
   // `command` NAMES an entry in it. That is invariant 10's own pattern, not an

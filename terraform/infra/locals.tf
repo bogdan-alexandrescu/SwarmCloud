@@ -264,6 +264,22 @@ locals {
       model_classes       = []
       default_model_class = null
     }
+    # Contract request 124 (FL-CONTRACT, docs/design/fix-loop.md §7 request
+    # A): `fix-loop`, a second `control_plane` profile. swarm-api drives its
+    # rounds and ends it; nothing runs it. Mirrored and listed in
+    # `profiles_without_a_job` exactly as await-input is. Shipped unavailable
+    # in the Python catalogue until FL-ACCEPT passes.
+    "fix-loop" = {
+      image           = "agent-runtime-base"
+      resource_class  = "standard"
+      backend         = "CLOUD_RUN_JOB"
+      provider        = null
+      secret_env      = {}
+      timeout_seconds = 300
+
+      model_classes       = []
+      default_model_class = null
+    }
   }
 
   # --- the retired #295 profiles: no Job for any tenant ----------------------
@@ -283,8 +299,9 @@ locals {
   # await-input is a `control_plane` profile (contract request 93): nothing
   # runs it on any backend, so a Job for it would be a resource nobody
   # executes. tests/unit/common/test_await_input_contract.py holds every
-  # control_plane profile of the catalogue to this list.
-  profiles_without_a_job = ["post-verdict", "claude-code-review", "await-input"]
+  # control_plane profile of the catalogue to this list; fix-loop (contract
+  # request 124) is the second.
+  profiles_without_a_job = ["post-verdict", "claude-code-review", "await-input", "fix-loop"]
 
   # --- GKE profiles that keep their Cloud Run Jobs as a rollback -------------
   #
@@ -348,7 +365,7 @@ locals {
   # every profile that has one: claude-code, claude-code-large,
   # claude-code-review, indexer and claude-code-browser, all opus, so exactly the map #226 wrote by hand.
   # codex is an OpenAI CLI, where a Claude name would fail every run, and
-  # mock, generic, browser, merge, post-verdict and await-input start no
+  # mock, generic, browser, merge, post-verdict, await-input and fix-loop start no
   # model, so none of them has a default and none is listed.
   #
   # It is the `MODEL` of each classed profile's Cloud Run Jobs below (the
