@@ -716,10 +716,12 @@ describe('overview-agents-69: a step’s cost summed over only some attempts say
     expect(cost('implement')).not.toMatch(/ of /)
   })
 
-  // The re-review (2026-10-28): at 1440 the Table's Cost column was its 100px
-  // ceiling, and '$0.4230 · 1 of 2' (127px) drew as '$0.4230 · 1…' -- the
-  // mark cut off was the part the finding asked for.
-  it('holds the mark whole in the Table’s Cost column at desktop', () => {
+  // The re-review (2026-10-28): at 1440 the Table's Cost column is 100px, and
+  // '$0.4230 · 1 of 2' (127px) drew on one line as '$0.4230 · 1…' -- the mark
+  // cut off was the part the finding asked for. Widening Cost takes Why under
+  // its 60px at the 980px minimum (walk.steps, qa.workflow Q3), so the mark
+  // is a line of its own, as the workflow list's coverage wraps (V163).
+  it('holds the mark whole in the Table’s Cost column at desktop, on a line of its own', () => {
     const { w, tasks, usage } = skippedRun()
     usage.byTaskId.set('t_rev', usageOf({ attempts: 3, attemptsWithCost: 1, costUsd: 0.253 }))
     const { container } = card(w, tasks, usage, 'table')
@@ -727,12 +729,23 @@ describe('overview-agents-69: a step’s cost summed over only some attempts say
     const th = container.querySelector<HTMLElement>('.wf-table th[data-col="cost"]')!
     const td = container.querySelector<HTMLElement>('.wf-table tr[data-step="review"] td[data-col="cost"]')!
     const st = cellStyle(td, env)
-    // The column's ceiling: the `min(..., Npx)` the head cell carries inline.
+    // The column's ceiling: the `min(..., Npx)` the head cell carries inline, and the sheet's.
     const cap = Number(/(\d+(?:\.\d+)?)px\)$/.exec(th.style.width)?.[1] ?? NaN)
-    // MUTATION: put the cost ceiling back at 100px and neither fits.
-    expect(cap - st.pl - st.pr).toBeGreaterThanOrEqual(textPx(td.textContent!, td, env))
-    expect(cap - st.pl - st.pr, 'the reviewer’s row').toBeGreaterThanOrEqual(textPx('$0.4230 · 1 of 2', td, env))
-    // The sheet's own width for the column agrees, so no cascade without the inline width cuts it either.
     expect(Number(/^(\d+)px$/.exec(painted(th, 'width', env) ?? '')?.[1] ?? NaN)).toBe(cap)
+    const room = cap - st.pl - st.pr
+    // The premise: on one line the reviewer's row does not fit, and the cell is nowrap and cut.
+    expect(textPx('$0.4230 · 1 of 2', td, env)).toBeGreaterThan(room)
+    expect(painted(td, 'text-overflow', env)).toBe('ellipsis')
+    // MUTATION: print the cell as one CellView again and there is no mark of its own.
+    const mark = td.querySelector<HTMLElement>('.wf-cost-of')!
+    expect(mark.textContent).toBe('· 1 of 3')
+    // MUTATION: drop the `.wf-cost-of { display: block }` rule and the mark
+    // shares the figure's line, where the ellipsis takes it.
+    expect(painted(mark, 'display', env)).toBe('block')
+    for (const line of ['$0.4230', '· 1 of 2', '$0.253', mark.textContent!]) {
+      expect(textPx(line, td, env), line).toBeLessThanOrEqual(room)
+    }
+    // The control: a cost every attempt reported has no mark.
+    expect(container.querySelector('.wf-table tr[data-step="implement"] td[data-col="cost"] .wf-cost-of')).toBeNull()
   })
 })
