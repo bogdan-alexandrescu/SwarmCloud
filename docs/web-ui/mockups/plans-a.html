@@ -52,7 +52,7 @@ button{font:inherit;color:inherit}
 .fid{font:600 14px var(--mono);color:var(--info-ink);background:var(--t-info);border:1px solid var(--l-info);padding:2px 10px;border-radius:99px;flex:none}
 .frame>p{font-size:14px;color:var(--text-dim);margin:8px 0 0}
 .sub{margin:20px 0 0;min-width:0}
-.sub>.sl{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin:0 0 8px;font-size:14px}
+.sub>.sl{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin:0 0 8px;padding-right:12px;font-size:14px}
 .sub>.sl .sid{font:500 13px var(--mono);color:var(--info-ink)}
 .sub>.sl b{font-weight:600}
 .sub>.sl span.dim{font-size:13px}
@@ -324,7 +324,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 .dsheet.w7{width:760px}
 .dbar{position:sticky;bottom:0;z-index:2;margin:6px -22px -26px;padding:12px 22px;background:var(--surface);border-top:1px solid var(--line);box-shadow:0 -10px 18px color-mix(in srgb,var(--text) 7%,transparent);display:flex;gap:8px;flex-wrap:wrap;align-items:center;border-radius:0 0 0 0}
 .solo .dbar{border-radius:0 0 12px 12px}
-.dbar .grow{flex:1 1 220px;min-width:0;font-size:12.5px;color:var(--text-dim)}
+.dbar .grow{flex:1 1 150px;min-width:0;font-size:12.5px;color:var(--text-dim)}
 .ph .dbar{margin:4px -14px -14px;padding:10px 14px}
 .ph .dbar .grow{flex-basis:100%}
 .ph .dbar .b{flex:1 1 auto;justify-content:center}
@@ -641,7 +641,7 @@ const KC=k=>C(KW[k],k==='hold'?'wn':'ln');
 const WAIT=[
   {id:'h2571',k:'hold',s:'fr',what:'Plan for #2571',ws:'3 steps · held for the owner',fs:'firing Oct 25 06:00Z',size:'3 steps',sizes:'6 agent-hours',risk:C('workflows','wn'),asked:'Oct 25 06:40Z',exp:'3 h 40 m',exps:'Oct 28 06:40Z',who:'the platform owner',urgent:true},
   {id:'p2615',k:'proposal',s:'ob',what:'File an issue: the Runs list’s state chip reads “PLANNED”',ws:'an observer proposal, to file in SwarmCloud',fs:'firing Oct 26 09:00Z',size:'<span class="dim">one issue</span>',sizes:'files no code',risk:'<span class="dim">none: files an issue</span>',asked:'Oct 26 09:05Z',exp:'1 d 6 h',exps:'Oct 29 09:05Z',who:'any member'},
-  {id:'p2577',k:'plan',s:'sw',what:'Plan for #2577',ws:'revision 1 · edited by Alex Pop',fs:'firing Oct 27 02:00Z',size:'2 steps',sizes:'3 agent-hours',risk:'<span class="dim">no hold</span>',asked:'Oct 27 08:05Z',exp:'2 d 5 h',exps:'Oct 30 08:05Z',who:'any member'},
+  {id:'p2577',k:'plan',s:'hd',what:'Plan for #2577',ws:'revision 1 · edited by Alex Pop',fs:'Work › Submit from a GitHub issue',size:'2 steps',sizes:'3 agent-hours',risk:'<span class="dim">no hold</span>',asked:'Oct 27 08:05Z',exp:'<span class="dim">no expiry</span>',exps:'a run made by hand waits',who:'any member'},
   {id:'m2579',k:'merge',s:'sw',what:'Merge PR #2579',ws:'#2574’s fix · green at 7d0c4e19a2b8',fs:'firing Oct 26 02:00Z',size:'<span class="dim">a merge</span>',sizes:'4 files',risk:'<span class="dim">no hold</span>',asked:'Oct 27 18:20Z',exp:'2 d 15 h',exps:'Oct 30 18:20Z',who:'any member'},
   {id:'p2580',k:'plan',s:'hd',what:'Plan for #2580',ws:'submitted by Operator',fs:'Work › Submit from a GitHub issue',size:'4 steps',sizes:'7 agent-hours',risk:'<span class="dim">no hold</span>',asked:'Oct 27 21:30Z',exp:'<span class="dim">no expiry</span>',exps:'a run made by hand waits',who:'any member'},
   {id:'p2583',k:'plan',s:'fr',what:'Plan for #2583',ws:'1 step · single · revision 0',fs:'firing sch_54e9828e6772:29885760',size:'1 step',sizes:'2 agent-hours',risk:'<span class="dim">no hold</span>',asked:'Oct 28 00:41Z',exp:'2 d 21 h',exps:'Oct 31 00:41Z',who:'the platform owner',whos:'the schedule’s gate'}
@@ -652,7 +652,7 @@ const DECIDED=[
   {k:'plan',s:'sw',what:'Plan for #2568',out:['rejected','bd'],by:'Alex Pop',at:'Oct 26 11:30Z',why:'“Two steps edit cifix.py at once. One step, please.”'}
 ];
 const ENDED=[
-  {k:'plan',s:'sw',what:'Plan for #2577, revision 0',out:['superseded','pa'],at:'Oct 27 08:05Z',why:'Alex Pop edited it; revision 1 waits above'},
+  {k:'plan',s:'hd',what:'Plan for #2577, revision 0',out:['superseded','pa'],at:'Oct 27 08:05Z',why:'Alex Pop edited it; revision 1 waits above'},
   {k:'proposal',s:'ob',what:'File an issue: Capacity’s legend overlaps at 390',out:['expired','ln'],at:'Oct 26 09:00Z',why:'nobody decided in 72 h; nothing was filed'}
 ];
 const WCOLS=['Kind','What','Source','Size','Risk','Asked','Expires in','Who may decide'];
@@ -663,12 +663,12 @@ function decRows(list){return list.map(a=>[KC(a.k),`<b class="nm">${a.what}</b>`
 function endRows(list){return list.map(a=>[KC(a.k),`<b class="nm">${a.what}</b>`,SRCC(a.s),C(a.out[0],a.out[1]),a.at,`<span class="sm12">${a.why}</span>`])}
 
 function filters(src,st,sc,so){
-  return `<div class="filters"><div class="row"><span class="lbl">Source</span>${SG(so||['All · 11','Nightly issue sweep · 5','Failure review · 3','Observer · console · 2','By hand · 1'],src)}</div>`+
+  return `<div class="filters"><div class="row"><span class="lbl">Source</span>${SG(so||['All · 11','Nightly issue sweep · 3','Failure review · 3','Observer · console · 2','By hand · 3'],src)}</div>`+
   `<div class="row"><span class="lbl">State</span>${SG(sc||['All','Waiting · 6','Auto-approved · 1','Approved · 1','Rejected · 1','Expired · 1','Superseded · 1'],st)}<span class="sm12 dim" style="margin-left:auto">Kind: plan, held plan, proposal, merge ${I('chevd')}</span></div></div>`;
 }
 const VIEW=on=>SG([`${I('inbox')}Inbox`,`${I('flag')}Sources`],on);
 const AHEAD=on=>({h:'Approvals',right:VIEW(on||0),age:'read 03:00Z · every 15 s'});
-const P1LEAD=LEAD('Needs you','6 wait on you. The oldest, the held plan for #2571, expires in 3 h 40 m.','It is held for the owner because a step edits a workflow file. Five plans and proposals and one merge wait behind it; nothing waiting holds capacity.',B('Open the oldest','p')+B('Next waiting','', 'chev'),'wn');
+const P1LEAD=LEAD('Needs you','6 wait on you. The oldest, the held plan for #2571, expires in 3 h 40 m.','It is held for the owner because a step edits a workflow file. Four plans and proposals and one merge wait behind it; nothing waiting holds capacity.',B('Open the oldest','p')+B('Next waiting','', 'chev'),'wn');
 function inbox(o){
   o=o||{};
   if(o.fr){
@@ -748,9 +748,9 @@ function memberSheet(){
 }
 function supSheet(){
   return `<aside class="dsheet w6" aria-label="Plan for #2583, superseded">`+sheetHead({st:['superseded','pa'],meta:'<span>revision 0</span>'})+
-  `<div class="bn wn">${I('refresh')}<div><b>This plan changed after you opened it.</b>Revision 1 was saved at 03:12Z from <code>sc plan edit</code> ${EX}. You are still reading revision 0, and it can no longer be approved: approving it would approve text that is not the plan.</div></div>`+
-  `<div class="shs"><h5>What revision 1 changed</h5><ul class="files"><li>${C('added','ok')}requirement 8</li><li>${C('changed','in')}step <span class="mn">ci-fix-waits-on-continuation</span>: its estimate and its prompt</li></ul>`+
-  `<div class="dg"><span class="mn old">${DIG}</span>${I('chev')}<span class="mn">sha256:71d9e03b58aa…</span>${EX}</div></div>`+
+  `<div class="bn wn">${I('refresh')}<div><b>This plan changed after you opened it.</b>Revision 1 was saved at 03:12Z by Operator, the edit drawn in P3. You are still reading revision 0, and it can no longer be approved: approving it would approve text that is not the plan.</div></div>`+
+  `<div class="shs"><h5>What revision 1 changed</h5><ul class="files"><li>${C('added','ok')}requirement 8</li><li>${C('changed','in')}<span style="flex:1;min-width:0">step <span class="mn">ci-fix-waits-on-continuation</span>: a test file added, its estimate and its prompt</span></li></ul>`+
+  `<div class="dg"><span class="mn old">${DIG}</span>${I('chev')}<span class="mn">sha256:4be1c07a93d2…</span>${EX}</div></div>`+
   `<div class="dbar"><span class="grow">Approve is off on revision 0.</span>${B('Approve and run','p','check',true)}${B('Read revision 1','p','refresh')}</div></aside>`;
 }
 function rejSheet(){
@@ -783,7 +783,7 @@ function savedSheet(){
   `<div class="bn ok">${I('check')}<div><b>Saved as revision 1 by Operator at 03:12Z ${EX}.</b>The plan comment on #2583 is updated, and the inbox row reads “revision 1”.</div></div>`+
   `<div class="shs"><h5>Digest and revision</h5><dl class="kv"><dt>Revision</dt><dd><span class="dim">0 →</span> <b>1</b>, edited by Operator</dd><dt>Digest</dt><dd><div class="dg"><span class="mn old">${DIG}</span>${I('chev')}<b class="mn">sha256:4be1c07a93d2…</b>${EX}</div></dd>`+
   `<dt>Changes</dt><dd>requirement 8 added · step 1’s estimate 2 → 3 agent-hours, a test file added, its prompt edited</dd></dl></div>`+
-  `<div class="dbar"><span class="grow">Approve carries <span class="mn">sha256:4be1c07a93d2…</span>, revision 1.</span>${B('Reject','d','x')}${B('Edit plan','','edit')}${B('Approve and run','p','check')}</div></aside>`;
+  `<div class="dbar"><span class="grow">Approve carries revision 1's digest.</span>${B('Reject','d','x')}${B('Edit plan','','edit')}${B('Approve and run','p','check')}</div></aside>`;
 }
 
 /* ---------- P4: after approval ---------- */
@@ -810,10 +810,10 @@ function traceSheet(full){
 /* ---------- P5: sources ---------- */
 const GT=(v,lock)=>v==='auto'?`<span class="gt">${I('play')}automatic${lock?` ${I('lock')}`:''}</span>`:`<span class="gt">${I('person')}a person approves</span>`;
 const SOURCES=[
-  {k:'sw',type:'issue-sweep · daily 02:00 UTC',st:C('active','ok'),plan:GT('auto'),merge:GT('approve'),who:'any member',ttl:'72 h',sp:'$22.60',sps:'of $120.00 a day',spb:19,pa:'3 plans, 1 merge',pas:'1 waiting · 1 auto-approved · 1 rejected · 1 revision superseded',pa2:1},
+  {k:'sw',type:'issue-sweep · daily 02:00 UTC',st:C('active','ok'),plan:GT('auto'),merge:GT('approve'),who:'any member',ttl:'72 h',sp:'$22.60',sps:'of $120.00 a day',spb:19,pa:'2 plans, 1 merge',pas:'1 auto-approved · 1 rejected · the merge waiting',pa2:1},
   {k:'fr',type:'failure-review · every 6 hours',st:C('active','ok'),plan:GT('approve'),merge:GT('auto',true)+'<small>audited switch, set by Operator</small>',who:'the platform owner',ttl:'72 h',sp:'$4.10',sps:DASH('the type sets no day budget'),spb:null,pa:'3 plans',pas:'2 waiting · 1 approved',sel:true},
   {k:'ob',type:'observer · daily 09:00 UTC',st:C('active','ok'),plan:'<span class="dim">no plan</span><small>a proposal is approved before it is filed</small>',merge:'<span class="dim">opens no pull request</span>',who:'any member',ttl:'72 h',sp:'$1.20',sps:'of $5.00 a day',spb:24,pa:'2 proposals',pas:'1 waiting · 1 expired'},
-  {k:'hd',type:'Work › Submit from an issue',st:'<span class="dim">always on</span>',plan:'<span class="gt">per run</span><small><code>plan_approval</code>: required by default</small>',merge:'<span class="gt">per run</span><small><code>auto_merge</code>: off by default</small>',who:'any member',ttl:'<span class="dim">no expiry</span>',sp:DASH('runs are not a schedule’s spend'),sps:'',spb:null,pa:'1 plan',pas:'1 waiting'}
+  {k:'hd',type:'Work › Submit from an issue',st:'<span class="dim">always on</span>',plan:'<span class="gt">per run</span><small><code>plan_approval</code>: required by default</small>',merge:'<span class="gt">per run</span><small><code>auto_merge</code>: off by default</small>',who:'any member',ttl:'<span class="dim">no expiry</span>',sp:DASH('runs are not a schedule’s spend'),sps:'',spb:null,pa:'2 plans',pas:'2 waiting · 1 revision superseded'}
 ];
 const SCOLS=['Source','State','Plan gate','Merge gate','Who may approve','Expires','Spend today','Proposed, 7 days'];
 function srcRows(o){return SOURCES.map(s=>({cls:o&&o.sel&&s.sel?'sel':'',c:[SRCC(s.k,s.type),s.st,s.plan,s.merge,s.who,s.ttl,`${s.sp}${s.spb!=null?BAR(s.spb):''}${s.sps?`<small>${s.sps}</small>`:''}`,`<b>${s.pa}</b><small>${s.pas}</small>`]}))}
@@ -846,14 +846,14 @@ function p6c(){
   const w=WAIT.map(a=>a.k==='merge'||a.k==='proposal'?a:Object.assign({},a,{ws:'<span class="dim">— the run could not be read</span>',size:'—',sizes:'the runs read failed',risk:DASH('the runs read failed')}));
   return desk({abadge:C('6 waiting','wn')},AHEAD(0),
   LEAD('A read failed','The runs read failed at 03:00Z, so plans show their inbox row but not their size, risk or plan.','GET /v1/runs answered 503 (unavailable). The inbox read fine: 6 items wait, and each can be opened; a plan’s sheet retries the run read. Retrying every 15 s.',B('Retry now','','refresh'),'bd')+
-  filters(0,0)+CARD('Waiting · 6','<span class="sm12 dim">oldest first</span>',T(WCOLS,waitRows(w)))+
+  filters(0,0,['All','Waiting · 6','Auto-approved · —','Approved · —','Rejected · —','Expired · 1','Superseded · —'],['All · —','Nightly issue sweep · —','Failure review · —','Observer · console · 2','By hand · —'])+CARD('Waiting · 6','<span class="sm12 dim">oldest first</span>',T(WCOLS,waitRows(w)))+
   CARD('Decided in the last 7 days · —','',`<p class="sm12" style="margin:0">${DASH('the decided plans are read from the runs, and that read failed: not 0')}</p>`),'','short');
 }
 function p6d(){
   const w=WAIT.filter(a=>a.k==='merge'||a.k==='proposal');
   return desk({abadge:C('2 waiting','wn')},AHEAD(0),
   LEAD('Not served here','This deployment does not serve plans: GET /v1/runs answers 404.','Issue runs are not deployed here, so no plan can be proposed, shown or approved, and the Sources view shows no plan gate. Merges and proposals still land here, because the inbox itself is served.',B('Open Help: issue runs',''),'')+
-  filters(0,0,['All · 2','Waiting · 2','Auto-approved · —','Approved · —','Rejected · —','Expired · 0','Superseded · 0'],['All · 2','Nightly issue sweep · 1','Failure review · 0','Observer · console · 1','By hand · —'])+CARD('Waiting · 2','<span class="sm12 dim">plans: not served</span>',T(WCOLS,waitRows(w)))+
+  filters(0,0,['All · 2','Waiting · 2','Auto-approved · —','Approved · —','Rejected · —','Expired · 0','Superseded · —'],['All · 2','Nightly issue sweep · 1','Failure review · 0','Observer · console · 1','By hand · —'])+CARD('Waiting · 2','<span class="sm12 dim">plans: not served</span>',T(WCOLS,waitRows(w)))+
   CARD('Plans · —','',`<p class="sm12" style="margin:0">${DASH('not served by this deployment (404), not 0')}</p>`),'','short');
 }
 
@@ -863,7 +863,7 @@ function p7a(){
   const rows=WAIT.map(a=>({cls:a.urgent?'need':'',c:[`${KC(a.k)} <b class="nm">${a.what}</b><small>${a.ws}</small>`,SRCC(a.s),`${a.size} · ${a.sizes}`,`<b>${a.exp}</b>`,a.who]}));
   return phone('Approvals',`<div class="pb"><div class="ct">${head({h:'Approvals',age:'read 03:00Z'})}`+
   LEAD('Needs you','6 wait on you. The oldest, the held plan for #2571, expires in 3 h 40 m.','',B('Open the oldest','p'),'wn')+
-  `<div class="acts">${SG(['Inbox','Sources'],0)}</div><div class="filters"><div class="row">${SG(['All · 11','Sweep · 5','Failure · 3','More'],0)}</div><div class="row">${SG(['Waiting · 6','Decided · 3','Ended · 2'],0)}</div></div>`+
+  `<div class="acts">${SG(['Inbox','Sources'],0)}</div><div class="filters"><div class="row">${SG(['All · 11','Sweep · 3','Failure · 3','More'],0)}</div><div class="row">${SG(['Waiting · 6','Decided · 3','Ended · 2'],0)}</div></div>`+
   `<div class="sm12 dim">Waiting · 6 · oldest first</div>`+T(cols,rows)+`</div></div>`);
 }
 function p7b(){return phone('Plan for #2583',`<div class="pb">${planSheet({ph:true}).replace('dsheet w7','dsheet')}</div>`)}
