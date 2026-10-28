@@ -37,6 +37,7 @@ import pytest
 
 from agent_worker.runners import claude_code, cliagent, codex
 from agent_worker.runners.base import RunnerContext
+from test_cli_prompt_names_time_limit import without_limit_line
 
 #: A distinctive brief, carrying the very pipeline that killed the CLI.
 MARKER = "quokka-lantern-" + "7f3e91"
@@ -153,7 +154,8 @@ def test_a_resumed_session_gets_its_message_on_stdin(tmp_path, monkeypatch):
     claude_code.body(ctx)
 
     (run,) = _runs(ctx)
-    assert run["stdin"] == cliagent.RESUME_PROMPT
+    # MUTATION: drop the resume's limit line in run_cli_agent -> red.
+    assert without_limit_line(run["stdin"]) == cliagent.RESUME_PROMPT
     argv = run["argv"]
     assert argv[argv.index("--resume") + 1] == SESSION
     assert argv[-1] == SESSION, "nothing follows the session id: the message is on stdin"
@@ -174,7 +176,8 @@ def test_a_finish_pass_gets_its_prompt_on_stdin(tmp_path, monkeypatch):
     first, finish = _runs(ctx)
     assert out.get("resumed_to_finish") is True, out
     assert first["stdin"].startswith(PROMPT)
-    assert finish["stdin"] == cliagent.FINISH_PROMPT
+    # MUTATION: drop the finish pass's limit line in run_cli_agent -> red.
+    assert without_limit_line(finish["stdin"]) == cliagent.FINISH_PROMPT
     argv = finish["argv"]
     assert argv[argv.index("--resume") + 1] == SESSION
     assert argv[-1] == SESSION

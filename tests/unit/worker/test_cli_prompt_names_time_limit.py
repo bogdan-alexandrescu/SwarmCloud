@@ -15,6 +15,8 @@ run the whole suite in the background and poll it with sleep. A fresh start
 with a repository has it just before PUBLISH_PARAGRAPH, which still ends the
 prompt; one without a repository has it last. A session resumed to wrap up
 before the limit is told what is left (test_cli_wrap_up_before_deadline.py).
+So is a resumed session (an account move, a credential reload) and the
+finish pass, from the time left at that moment (owner decision 2026-10-28).
 
 These run the real runner against a fake CLI that records what arrived on its
 stdin. `is_limit_line` and `without_limit_line` are imported by the tests that
