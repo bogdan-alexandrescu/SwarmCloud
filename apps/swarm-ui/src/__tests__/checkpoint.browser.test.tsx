@@ -824,6 +824,10 @@ describe('one age, a cut said as N of M, and a panel that comes into view (QA1-F
    * MUTATION: delete the mount effect that scrolls the region into view and
    * focuses it. `scrollIntoView` is never called and focus stays on the body
    * -- the panel opens off screen and the `files` button reads as dead.
+   * MUTATION: scroll with `{ block: 'nearest' }`. Only the panel's top edge
+   * comes into view (rendered at phone-390: heading and download button,
+   * the `entries` line half under the pane's bottom edge), so the call's
+   * argument is pinned to `start`.
    */
   it('scrolls the panel into view and moves focus to it when it opens', async () => {
     const scroll = vi.fn()
@@ -833,6 +837,7 @@ describe('one age, a cut said as N of M, and a panel that comes into view (QA1-F
     try {
       mount(loaders(ok(listing())))
       await waitFor(() => expect(scroll).toHaveBeenCalled())
+      expect(scroll).toHaveBeenCalledWith({ block: 'start' })
       expect(scroll.mock.contexts[0]).toBe(region())
       expect(document.activeElement).toBe(region())
     } finally {
