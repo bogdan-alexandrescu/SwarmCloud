@@ -916,11 +916,12 @@ function MembersUnread({ columns, reads }: { columns: readonly PeopleWorkspaceCo
     const read = reads[c.tenant_id]
     return read !== undefined && !read.ok ? [{ name: c.display_name, why: read.why }] : []
   })
-  if (failed.length === 0) return null
+  const first = failed[0]
+  if (first === undefined) return null
   const one = failed.length === 1
-  const same = failed.every((f) => f.why === failed[0].why)
+  const same = failed.every((f) => f.why === first.why)
   const lists = same
-    ? `${one ? 'its members list' : 'their members lists'} ${membersUnreadWhy(failed[0].why, !one)}`
+    ? `${one ? 'its members list' : 'their members lists'} ${membersUnreadWhy(first.why, !one)}`
     : listed(failed.map((f) => `${f.name}’s members list ${membersUnreadWhy(f.why, false)}`))
   return (
     <p className="ur-hint pp-joined-unread">

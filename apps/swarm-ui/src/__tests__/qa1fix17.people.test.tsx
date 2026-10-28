@@ -121,11 +121,6 @@ function platform(): Json {
   }
 }
 
-const MEMBERS_OK: Json = {
-  platform_memberships: true,
-  members: [{ email: 'kai@example.com', by: 'sam@example.com', at: ago(60 * 24), via: 'join_request', group_changed: false, still_in_group: false }],
-}
-
 /** A fetch stub that sees the tenant header, which the members read is keyed by. */
 function stub(handler: (method: string, url: string, body: unknown, tenant: string | null) => Answer | null): Call[] {
   const calls: Call[] = []
