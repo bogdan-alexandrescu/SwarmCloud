@@ -1820,6 +1820,15 @@ export function ProfileFacts({ name, profile, pools }: { name: string; profile: 
   // no tenant field; the tenant is the `tenant:<id>` pool it put in this list.
   const tenantPool = profile.pools.find((p) => p.startsWith('tenant:'))
   const tenant = tenantPool ? tenantPool.slice('tenant:'.length) : null
+  // THE POOL THE SENTENCE ALREADY TOLD, ONCE (QA1 runs-submit-20): "held down
+  // by X, 4 of 4 weighted units in use" and then a red `full` chip on X with
+  // the same 4 of 4 said one fact twice in one box, a third time under the
+  // button. Only that branch: a paused or limit-0 lead keeps its tag, whose
+  // title says who must act. Every OTHER refusing pool keeps its row.
+  const told = room.agents !== null && leadCopy === null && binding !== null && !isPaused(binding) && binding.effective_limit !== null
+    ? binding.name
+    : null
+  const others = room.blockers.filter((b) => b.pool !== told)
 
   return (
     <div className="sbf-room">
@@ -1879,9 +1888,9 @@ export function ProfileFacts({ name, profile, pools }: { name: string; profile: 
           Blockers.tsx's own (`CeilingTag`, `ceilingFigure`): this row was a
           second copy of that one, decided `full` on the reason alone, and
           kept printing "0 of 0" and "0 of 1000000" after the first stopped. */}
-      {room.blockers.length > 0 && (
+      {others.length > 0 && (
         <ul className="blocker-list compact">
-          {room.blockers.map((b) => (
+          {others.map((b) => (
             <li key={b.pool} className="blocker-row">
               <span className="tags">
                 <CeilingTag blocker={b} units={units} />

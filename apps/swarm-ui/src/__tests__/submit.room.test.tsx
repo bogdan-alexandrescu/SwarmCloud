@@ -165,12 +165,28 @@ describe('the submit box tells a pool capped at zero from a full one', () => {
   })
 
   /** The other half: the fix must not turn every refusal into a pause. */
-  it('keeps full, and the fraction, for a pool genuinely at a positive ceiling', () => {
+  //
+  // SAID ONCE (QA1 runs-submit-20): the sentence names the full pool and its
+  // fraction, so the box draws no second `full` row for the same pool.
+  // MUTATION: list `room.blockers` again instead of `others` in ProfileFacts
+  // and a `.blocker-row` for resource:large comes back.
+  it('keeps the fraction for a pool genuinely at a positive ceiling, and says it once', () => {
     const el = room([blocker({})], [pool({ name: 'global' }), pool({ name: 'resource:large', hard_limit: 4, effective_limit: 4, active: 4, available: 0 })])
-    const row = firstRow(el)
-    expect(row.querySelector('.tag.full')).not.toBeNull()
-    expect(row.textContent).toMatch(/4 of 4 units in use/)
     expect(sentence(el)).toMatch(/held down by resource:large, 4 of 4 weighted units in use/)
+    expect(el.querySelector('.blocker-list'), 'the sentence\'s pool was drawn again as a full row').toBeNull()
+    expect(el.textContent?.match(/4 of 4/g)).toHaveLength(1)
+  })
+
+  // The other half: a second full pool the sentence does not name keeps its row.
+  it('keeps a row for a full pool the sentence did not name', () => {
+    const el = room(
+      [blocker({}), blocker({ pool: 'global', reason: 'GLOBAL_CONCURRENCY_LIMIT', limit: 50, active: 50 })],
+      [pool({ name: 'global', active: 50, available: 0 }), pool({ name: 'resource:large', hard_limit: 4, effective_limit: 4, active: 4, available: 0 })],
+    )
+    expect(sentence(el)).toMatch(/held down by resource:large/)
+    const rows = Array.from(el.querySelectorAll('.blocker-list .blocker-row'))
+    expect(rows.map((r) => r.querySelector('code')?.textContent)).toEqual(['global'])
+    expect(rows[0].querySelector('.tag.full')).not.toBeNull()
   })
 })
 
