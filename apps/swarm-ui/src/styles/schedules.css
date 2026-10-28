@@ -167,10 +167,13 @@ ol.sc-pobj { padding-left: 18px; }
   .sc-row a { display: inline-flex; align-items: center; min-height: 44px; }
   /* A FIRING'S RUN LINKS KEEP THEIR TEXT HEIGHT (QA1 automate-18): the 44px
      above made each one-line link a 44px row, so the runs floated in blank
-     bands. The touch target is the link's own, 44px tall, drawn by a
-     transparent box centred on it that takes no room in the list. */
-  .sc-row .as-work a { position: relative; min-height: 0; }
-  .sc-row .as-work a::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 44px; transform: translateY(-50%); }
+     bands. A 44px box centred on each link was tried next, and it covered
+     the link above it: the links stand 18px apart, so a tap on run_1 opened
+     run_2 (review of QA1-FIX-37). So each link is its own 24px target
+     (WCAG 2.5.8's minimum) and the list sets no gap, which makes the pitch
+     equal to the target: no target overlaps its neighbour. */
+  .sc-row .as-work { gap: 0; }
+  .sc-row .as-work a { min-height: 24px; }
   .sc-waiting-list > li { grid-template-columns: minmax(0, 1fr); gap: 0; }
   /* The detail's facts and the form's fields: one column, said rather than
      left to auto-fill, so a 180px minimum never puts two side by side. */

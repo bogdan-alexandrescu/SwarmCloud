@@ -17,8 +17,9 @@
 //   * a gate the schedule leaves unset says what applies: the type's
 //     default, any member, the 72 h expiry, each marked as a default;
 //   * an unavailable type's tile is not faded, so its reason reads at 4.5:1;
-//   * a firing's run links on a phone keep their text height, with a 44px
-//     touch target that takes no room in the list.
+//   * a firing's run links on a phone keep near their text height, each a
+//     24px touch target no taller than the list's pitch, so no link's
+//     target covers its neighbour.
 //
 // The bodies are `routes/schedules.py`'s shapes. Placeholders only; nothing
 // is token-shaped.
@@ -315,7 +316,7 @@ describe('automate-11: an unavailable type’s tile keeps its reason readable', 
 })
 
 describe('automate-18: a firing’s run links on a phone keep their text height', () => {
-  it('puts the 44px target on the link, taking no room in the list', () => {
+  it('makes each link its own 24px target, no taller than the list’s pitch', () => {
     const host = document.createElement('div')
     host.innerHTML =
       '<table class="sc-table is-firings as-firings"><tbody><tr class="sc-row"><td data-label="Runs">' +
@@ -323,12 +324,24 @@ describe('automate-18: a firing’s run links on a phone keep their text height'
       '</td></tr></tbody></table>'
     document.body.appendChild(host)
     hosts.push(host)
+    const list = host.querySelector('.as-work')!
     const link = host.querySelector('.as-work a')!
-    // MUTATION: drop `.sc-row .as-work a { min-height: 0 }` and each one-line link is a 44px band again.
-    expect(painted(link, 'min-height', PHONE)).toBe('0')
-    expect(painted(link, 'position', PHONE)).toBe('relative')
-    expect(painted(link, 'height', PHONE, 'before')).toBe('44px')
-    expect(painted(link, 'position', PHONE, 'before')).toBe('absolute')
+    const px = (v: string | null): number => (v === null || v === '0' ? 0 : Number.parseFloat(v))
+    // The target: the link's own box, or a pseudo-element drawn round it.
+    const before = painted(link, 'content', PHONE, 'before')
+    const pseudo = before === null || before === 'none' ? 0 : px(painted(link, 'height', PHONE, 'before'))
+    const linkBox = px(painted(link, 'min-height', PHONE))
+    const target = Math.max(linkBox, pseudo)
+    // The pitch: one li (sized by its link) plus the list's gap.
+    const pitch = linkBox + px(painted(list, 'gap', PHONE))
+    // MUTATION: restore `.sc-row .as-work a::before { height: 44px }` centred
+    // on the link and the target (44) exceeds the pitch (24): run_2's box
+    // covers run_1, the review's tap that opened the wrong run.
+    expect(target).toBeLessThanOrEqual(pitch)
+    // MUTATION: drop `.sc-row .as-work a { min-height: 24px }` and the link
+    // takes the row's 44px again, a blank band round each one-line run.
+    expect(linkBox).toBe(24)
+    expect(target).toBeGreaterThanOrEqual(24)
     // The other links in a phone row keep their 44px (control).
     const other = document.createElement('a')
     host.querySelector('td')!.appendChild(other)
