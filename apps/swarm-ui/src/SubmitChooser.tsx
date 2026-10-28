@@ -9,9 +9,10 @@ import { runAddress } from './IssueSubmit'
 import { addressToPath } from './paths'
 import { ISSUE_FORM, TASK_FORM, WORKFLOW_FORM, shortcutsIn, typedIntoField } from './shortcuts'
 import { AGED_AFTER_MS, PageHead, RefreshControl, useClaimPageAge } from './Shell'
-import { workflowLabel } from './stepviews'
+import { firstLine, workflowLabel } from './stepviews'
 import { timeAgo, type Task } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
+import { stateWord } from './words'
 import './styles/submit.css'
 
 /**
@@ -201,8 +202,33 @@ export interface RecentSubmission {
   id: string
   name: string
   at: string
+  /**
+   * Where it stands, as a word (`stateWord`): what tells two rows apart when
+   * neither has a title. Null when the row carried no state, and then the row
+   * says only its age rather than a guessed state.
+   */
+  state: string | null
   /** The router address `go` takes, and the path a new tab opens. */
   to: string
+}
+
+/**
+ * WHAT A LONE AGENT WAS (QA1 runs-submit-26): five rows read
+ * "claude-code agent · <hex>" and nothing said what each did. Its title
+ * (`metadata.title`), else the first line of its prompt (`input.prompt`,
+ * which the API masks at read time), else `agentName` as before.
+ */
+function stateOf(state: unknown): string | null {
+  return typeof state === 'string' && state !== '' ? stateWord(state) : null
+}
+
+function taskWhat(t: Task): string {
+  const title = t.metadata?.title
+  if (typeof title === 'string' && title.trim() !== '') return title.trim()
+  const input = t.input
+  const prompt = typeof input === 'object' && input !== null ? (input as Record<string, unknown>).prompt : undefined
+  const line = typeof prompt === 'string' ? firstLine(prompt.trim()).trim() : ''
+  return line !== '' ? line : agentName(t)
 }
 
 type RecentRead =
@@ -234,20 +260,39 @@ export function recentSubmissions(
   const out: RecentSubmission[] = []
   for (const t of tasks ?? []) {
     if (!mine(t.submitted_by) || t.workflow_id !== null || t.step_id !== null || (t.parent_task_id ?? null) !== null) continue
-    out.push({ kind: 'task', id: t.id, name: agentName(t), at: t.created_at, to: `work/task/${t.id}` })
+    out.push({ kind: 'task', id: t.id, name: taskWhat(t), at: t.created_at, state: stateOf(t.state), to: `work/task/${t.id}` })
   }
   for (const w of workflows ?? []) {
     if (!mine(w.submitted_by)) continue
     out.push({
-      kind: 'workflow', id: w.workflow_id, name: workflowLabel(w, byId) ?? w.workflow_id, at: w.created_at,
+      kind: 'workflow', id: w.workflow_id, name: workflowLabel(w, byId) ?? w.workflow_id, at: w.created_at, state: stateOf(w.state),
       to: `work/workflows?${new URLSearchParams({ wf: w.workflow_id }).toString()}`,
     })
   }
   for (const r of runs ?? []) {
     if (!mine(r.created_by)) continue
-    out.push({ kind: 'issue run', id: r.id, name: r.issue_read?.title || r.issue.ref, at: r.created_at, to: runAddress(r.id) })
+    out.push({ kind: 'issue run', id: r.id, name: r.issue_read?.title || r.issue.ref, at: r.created_at, state: stateOf(r.state), to: runAddress(r.id) })
   }
   return out.sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, RECENT_SHOWN)
+}
+
+/**
+ * THE CARD'S FOOTNOTE (QA1 runs-submit-26): it said only the windows read --
+ * "Among your newest 30 agents, the tenant's newest 3 workflows, its newest 2
+ * issue runs" -- under a list of five agents, so it counted workflows and runs
+ * the list never showed. It counts what is listed first, then where it was
+ * found. With nothing listed it names the windows alone, as before (VQA V135);
+ * with no window, nothing. Pure, for the test.
+ */
+export function recentScope(items: readonly RecentSubmission[], looked: readonly string[]): string | null {
+  if (looked.length === 0) return null
+  if (items.length === 0) return `Among ${looked.join(', ')}.`
+  const kinds: RecentSubmission['kind'][] = ['task', 'workflow', 'issue run']
+  const listed = kinds.flatMap((k) => {
+    const n = items.filter((it) => it.kind === k).length
+    return n === 0 ? [] : [`${n} ${KIND_LABEL[k]}${n === 1 ? '' : 's'}`]
+  })
+  return `Listed: ${listed.join(', ')}, newest first. Found among ${looked.join(', ')}.`
 }
 
 /**
@@ -348,7 +393,7 @@ function RecentSubmissions({ go, read, reading, onRetry }: {
       </>
     )
   }
-  const scope = read.looked.length === 0 ? null : `Among ${read.looked.join(', ')}.`
+  const scope = recentScope(read.items, read.looked)
   return (
     <>
       {read.items.length === 0 ? (
@@ -370,7 +415,9 @@ function RecentSubmissions({ go, read, reading, onRetry }: {
                 e.preventDefault()
                 go(it.to)
               }}>{it.name}</a>
-              <span className="sb-recent-at" title={it.at}>{timeAgo(it.at)}</span>
+              {/* Its state beside its age (QA1 runs-submit-26): rows that
+                  share a name and an age are still told apart. */}
+              <span className="sb-recent-at" title={it.at}>{it.state === null ? '' : `${it.state} · `}{timeAgo(it.at)}</span>
             </li>
           ))}
         </ul>
