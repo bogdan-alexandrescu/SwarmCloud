@@ -597,6 +597,11 @@ class Task:
     #: construction of a task changes meaning; every document written before
     #: it decodes exactly as it did.
     model_class: str | None = None
+    #: Consecutive dispatches the platform refused (PLATFORM_REFUSED parks).
+    #: Reset to 0 by a dispatch that succeeds. Contract request 123, accepted
+    #: by BGD 2026-10-28. Before `budget`, which a test of request 120
+    #: holds to the last place.
+    platform_refusals: int = 0
     #: Contract request 120 (BUDGET-CAP, #2459), accepted by the owner
     #: 2026-10-26: the attempt's RESOLVED per-agent budget, `usd` and/or
     #: `tokens` -- min(step, workspace default, platform ceiling), each unit on
@@ -659,6 +664,16 @@ def retries_exhausted(attempt_count: int, max_attempts: int) -> bool:
     restatement: here.
     """
     return attempt_count >= max_attempts
+
+
+#: Consecutive PLATFORM_REFUSED parks after which a task is reported as
+#: trouble (contract request 123). Beside `retries_exhausted` because it is
+#: its counterpart for a refusal that spends no attempt: past it the task
+#: STAYS PARKED and keeps being retried at the longest backoff -- BGD's
+#: standing rule (2026-09-14) is that a quota pauses work and never fails
+#: it, and BGD's 2026-10-28 brief applies that to the platform's refusals.
+PLATFORM_REFUSED_MAX_PARKS = 5
+
 
 @dataclass
 class Attempt:

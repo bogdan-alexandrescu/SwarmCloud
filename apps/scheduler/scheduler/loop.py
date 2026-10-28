@@ -55,7 +55,15 @@ from quota_broker.accounts import (
     eligibility,
 )
 from swarm_common.admission import AdmissionConfig, AdmissionDenied
-from swarm_common.models import EndCause, Lease, Task, Tenant, pool_names_for, utcnow
+from swarm_common.models import (
+    PLATFORM_REFUSED_MAX_PARKS,
+    EndCause,
+    Lease,
+    Task,
+    Tenant,
+    pool_names_for,
+    utcnow,
+)
 from swarm_common.profiles import RUNNER_PROFILES, Backend, resolve_backend
 from swarm_common.states import (
     PENDING_STATES,
@@ -87,7 +95,7 @@ from .mcp_admission import (
     credential_block,
 )
 from .secret_slots import WorkspaceGrants
-from .dispatch import BackendRouter, DispatchError, live_display_on
+from .dispatch import PLATFORM_REFUSAL_CODES, BackendRouter, DispatchError, live_display_on
 from .fairness import AgingConfig, round_robin_order
 from .metrics import SchedulerMetrics
 from .settings import SchedulerSettings
@@ -640,6 +648,11 @@ class DrainReport:
     promoted_scheduled_retries: int = 0
     #: MANUAL_PAUSE parks returned to READY once what paused them cleared.
     promoted_manual_pauses: int = 0
+    #: Failed dispatches the platform refused, parked PLATFORM_REFUSED with no
+    #: attempt spent (contract request 123).
+    platform_refused: int = 0
+    #: PLATFORM_REFUSED parks returned to READY once `next_eligible_at` passed.
+    promoted_platform_refusals: int = 0
     #: SCHEDULED_RETRY parks on a task that had used its last attempt, ended
     #: DEAD_LETTERED instead of retried (`_promote_scheduled_retries`).
     dead_lettered: int = 0
@@ -821,6 +834,7 @@ class Scheduler:
         report.promoted_dependencies = self._promote_dependencies(report)
         report.promoted_credentials = self._promote_credentials(report)
         report.promoted_scheduled_retries = self._promote_scheduled_retries(report)
+        report.promoted_platform_refusals = self._promote_platform_refusals(report)
         report.promoted_manual_pauses = self._promote_manual_pauses(report)
         report.promoted_ci_waits = self._promote_ci_waits(report)
         report.dead_lettered += self._expire_human_waits(report)
@@ -1516,9 +1530,40 @@ class Scheduler:
             # errors routinely echo the resource they were handed -- the tenant
             # service account, the job name, the secret names -- and
             # `task.last_error` is returned to the caller verbatim.
+            # A refusal that is the PLATFORM's (an admission policy, the Job
+            # quota) parks PLATFORM_REFUSED and spends no attempt (contract
+            # request 123): BGD's rule is that a quota pauses work and never
+            # fails it. Any other code -- an RBAC 403 included -- is retried
+            # and capped as before.
+            refused = exc.code in PLATFORM_REFUSAL_CODES
             returned = self._store.return_to_ready_after_failed_dispatch(
-                task, lease, exc.code, correlation_id=lease.attempt_id
+                task, lease, exc.code, correlation_id=lease.attempt_id,
+                platform_refusal=refused,
             )
+            if refused:
+                self._metrics.platform_refusals.labels(code=exc.code).inc()
+            if returned.applied and returned.target == TaskState.PARKED.value:
+                report.platform_refused += 1
+                parks = task.platform_refusals + 1
+                # ERROR, every time: one refusal is a policy or quota refusing
+                # work this scheduler was allowed to admit. Past the bound it
+                # is trouble -- still parked, never FAILED, retried every ten
+                # minutes -- and says so.
+                log.error(
+                    "platform refused dispatch task=%s attempt=%s backend=%s code=%s "
+                    "parks=%s%s: %s",
+                    task.id,
+                    lease.attempt_id,
+                    backend.value,
+                    exc.code,
+                    parks,
+                    (
+                        f" (past {PLATFORM_REFUSED_MAX_PARKS}: trouble, stays parked)"
+                        if parks > PLATFORM_REFUSED_MAX_PARKS
+                        else ""
+                    ),
+                    exc,
+                )
             if not returned.applied:
                 self._count_stale(returned, report)
             elif returned.target in (TaskState.FAILED.value, TaskState.CANCELLED.value):
@@ -2263,6 +2308,62 @@ class Scheduler:
                 detail={
                     "reason": "retry_due",
                     "park_reason": ParkReason.SCHEDULED_RETRY.value,
+                    "was_eligible_at": eligible_at.isoformat() if eligible_at else None,
+                },
+                report=report,
+            ):
+                promoted += 1
+        return promoted
+
+    def _promote_platform_refusals(self, report: DrainReport) -> int:
+        """Return PLATFORM_REFUSED parks to READY once `next_eligible_at` has passed.
+
+        The failed-dispatch path writes this park when the platform refused
+        the dispatch (an admission policy, the namespace's Job quota), with
+        its lease released and `next_eligible_at` backed off
+        (`store.platform_refusal_backoff`: 30 s doubling, at most ten
+        minutes). Contract request 123, docs/design/dispatch-refusals.md.
+
+        THERE IS NO CAP HERE, ON PURPOSE. The refusal spent no attempt, and
+        BGD's rule (2026-09-14) is that a quota pauses work and never fails
+        it: a task refused past `PLATFORM_REFUSED_MAX_PARKS` times is still
+        promoted, every ten minutes, until the quota frees or the policy is
+        corrected, and is reported as trouble meanwhile. A park on a task
+        whose attempts were ALREADY spent before it was refused is ended as
+        `_end_exhausted_retry` ends one, since admission does not check the
+        cap.
+
+        Promotion is `promote_to_ready`, guarded on the state and park reason
+        this sweep read, so two drains racing promote it once. It writes the
+        task alone: no lease, no pool count. Only admission, later, takes
+        capacity (invariant 1).
+        """
+        promoted = 0
+        now = self._now()
+        for task in self._parked_window(ParkReason.PLATFORM_REFUSED):
+            if self._stop_for_failed_workflow(task, report):
+                continue
+            eligible_at = task.next_eligible_at
+            if eligible_at is not None and eligible_at > now:
+                continue
+            if task.retries_exhausted():
+                self._end_exhausted_retry(
+                    task,
+                    report,
+                    reason=ParkReason.PLATFORM_REFUSED,
+                    text=(
+                        f"refused by the platform with its attempts already spent "
+                        f"({task.attempt_count} of {task.max_attempts})"
+                    ),
+                )
+                continue
+            if self._promote(
+                task,
+                kind="platform_refused",
+                detail={
+                    "reason": "platform_refusal_retry_due",
+                    "park_reason": ParkReason.PLATFORM_REFUSED.value,
+                    "platform_refusals": task.platform_refusals,
                     "was_eligible_at": eligible_at.isoformat() if eligible_at else None,
                 },
                 report=report,

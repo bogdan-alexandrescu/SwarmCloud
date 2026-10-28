@@ -164,6 +164,27 @@ _EVENT_FOR_RETURN = {
     TaskState.CANCELLED: EventType.CANCELLED,
 }
 
+#: The first PLATFORM_REFUSED park's wait, and the longest any park waits
+#: (BGD's brief, 2026-10-28): 30 s, doubling per consecutive refusal, held at
+#: ten minutes. A quota slot frees when a finished Job's ten-minute TTL runs
+#: out (`dispatch.FINISHED_JOB_TTL_SECONDS`), so a longer cap would leave work
+#: parked behind a quota that has already freed; a shorter first wait would
+#: lease capacity again for a create the same full quota refuses.
+PLATFORM_REFUSAL_FIRST_SECONDS = 30
+PLATFORM_REFUSAL_MAX_SECONDS = 600
+
+
+def platform_refusal_backoff(parks: int) -> timedelta:
+    """Park n (1-based) waits 30 s x 2**(n-1), at most ten minutes:
+    30 s, 1, 2, 4, 8, then 10 min for every park after."""
+    n = max(1, int(parks))
+    if n > 16:  # 30 x 2**15 is already far past the cap; no huge integers.
+        return timedelta(seconds=PLATFORM_REFUSAL_MAX_SECONDS)
+    return timedelta(
+        seconds=min(PLATFORM_REFUSAL_FIRST_SECONDS * 2 ** (n - 1), PLATFORM_REFUSAL_MAX_SECONDS)
+    )
+
+
 #: What `return_to_ready_after_failed_dispatch` found when the reconciler had
 #: fenced this attempt and the task still points at its lease.
 _RECLAIM_PENDING = "pending"    # lease unreleased: left for the reconciler
@@ -226,6 +247,9 @@ class _Settled:
     reclaim: str | None = None
     #: The task's generation as the transaction read it, for the log line.
     task_generation: int | None = None
+    #: Set only when this write parked the task PLATFORM_REFUSED: the
+    #: consecutive refusals it now carries (contract request 123).
+    platform_refusals: int | None = None
 
 
 def _lease_refusal(stored: dict[str, Any] | None, lease: Lease) -> str | None:
@@ -994,7 +1018,16 @@ class SchedulerStore:
             found = stored.get("state") if stored is not None else None
             reason = _lease_refusal(stored, lease)
             if reason is None:
-                txn.update(task_ref, {"state": TaskState.DISPATCHED.value, "updated_at": now})
+                dispatched: dict[str, Any] = {
+                    "state": TaskState.DISPATCHED.value,
+                    "updated_at": now,
+                }
+                if stored and stored.get("platform_refusals"):
+                    # The platform took this one: the PLATFORM_REFUSED count is
+                    # of CONSECUTIVE refusals (contract request 123), so a
+                    # later refusal starts the backoff from 30 s again.
+                    dispatched["platform_refusals"] = 0
+                txn.update(task_ref, dispatched)
             held = (lease_snap.to_dict() or {}) if lease_snap.exists else None
             if (
                 held is not None
@@ -1056,8 +1089,25 @@ class SchedulerStore:
         *,
         correlation_id: str | None = None,
         retry_delay_seconds: int = 30,
+        platform_refusal: bool = False,
     ) -> GuardedWrite:
         """Dispatch failed after the lease was taken: give the capacity back.
+
+        `platform_refusal` is True when the PLATFORM refused the dispatch -- an
+        admission policy or webhook, or the namespace's Job quota
+        (`dispatch.PLATFORM_REFUSAL_CODES`). Then a task found LEASED on this
+        lease is PARKED/`PLATFORM_REFUSED` instead of READY, in the same
+        transaction and under the same guards, with the lease released: its
+        `attempt_count` is put back to its value before the lease (a refusal
+        says nothing about the agent, so it spends no attempt),
+        `platform_refusals` goes up by one and `next_eligible_at` is
+        `platform_refusal_backoff(platform_refusals)` away. It is NEVER FAILED
+        for this cause (BGD, 2026-09-14: "never fail workflows when quotas are
+        reached. just pause them and resume them when new quota is
+        refreshed"); past `PLATFORM_REFUSED_MAX_PARKS` it stays parked, at
+        the longest backoff, and is logged as trouble. A requested cancel
+        still ends it CANCELLED. Contract request 123,
+        docs/design/dispatch-refusals.md.
 
         The returned `GuardedWrite` is `applied` with `target == "FAILED"`
         exactly when this write left the task FAILED: its last attempt, or a
@@ -1264,9 +1314,28 @@ class SchedulerStore:
             `repair_task_state` applies one rule to every state it repairs."""
             attempt_count = int(stored.get("attempt_count", 0))
             max_attempts = int(stored.get("max_attempts", task.max_attempts))
+            # A platform refusal parks only from LEASED on this lease at this
+            # generation: the one state the refused create can have left the
+            # task in. A reclaim finished here takes the ordinary return: the
+            # reconciler's fence, not the refusal, decided that attempt.
+            parks = (
+                platform_refusal
+                and reclaim is None
+                and found == TaskState.LEASED.value
+                and not stored.get("cancel_requested")
+            )
+            refusals: int | None = None
+            if parks:
+                # The attempt admission counted is given back: the refused
+                # create started nothing, and counting it is how the merge
+                # steps of 2026-10-20 used 10 of 10 without running once.
+                attempt_count = max(0, attempt_count - 1)
+                refusals = int(stored.get("platform_refusals") or 0) + 1
             exhausted = retries_exhausted(attempt_count, max_attempts)
             if stored.get("cancel_requested"):
                 target = TaskState.CANCELLED
+            elif parks:
+                target = TaskState.PARKED
             elif exhausted:
                 target = TaskState.FAILED
             else:
@@ -1298,6 +1367,12 @@ class SchedulerStore:
                     if target is TaskState.CANCELLED
                     else EndCause.DISPATCH_FAILED
                 ).value
+            elif target is TaskState.PARKED:
+                assert refusals is not None
+                payload["park_reason"] = ParkReason.PLATFORM_REFUSED.value
+                payload["attempt_count"] = attempt_count
+                payload["platform_refusals"] = refusals
+                payload["next_eligible_at"] = now + platform_refusal_backoff(refusals)
             else:
                 payload["next_eligible_at"] = now + timedelta(
                     seconds=max(0, retry_delay_seconds)
@@ -1313,6 +1388,7 @@ class SchedulerStore:
                 exhausted,
                 reclaim,
                 int(stored.get("current_generation", 0)),
+                refusals,
             )
 
         @firestore.transactional
@@ -1433,6 +1509,24 @@ class SchedulerStore:
                 lease_id=lease.lease_id,
                 generation=lease.generation,
             )
+            if outcome.target == TaskState.PARKED.value:
+                refusals = settled.platform_refusals or 0
+                self.append_event(
+                    task,
+                    EventType.PARKED,
+                    {
+                        **failure,
+                        "park_reason": ParkReason.PLATFORM_REFUSED.value,
+                        "platform_refusals": refusals,
+                        "retry_in_seconds": int(
+                            platform_refusal_backoff(refusals).total_seconds()
+                        ),
+                        "attempt_spent": False,
+                        "from_state": TaskState.LEASED.value,
+                    },
+                    lease_id=lease.lease_id,
+                    generation=lease.generation,
+                )
             if outcome.target == TaskState.CANCELLED.value:
                 # The API's flag-only cancel wrote `cancelled` with
                 # phase=cancel_requested; this is the one that says it happened.

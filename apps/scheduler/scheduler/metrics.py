@@ -59,6 +59,16 @@ class SchedulerMetrics:
             ["backend"],
             registry=self.registry,
         )
+        self.platform_refusals = Counter(
+            "swarm_scheduler_platform_refusals_total",
+            "Dispatches the platform refused -- an admission policy or webhook, "
+            "or the tenant namespace's Job quota -- each parked "
+            "PLATFORM_REFUSED without spending an attempt (contract request "
+            "123). Any value above zero means a policy or quota is refusing "
+            "work the scheduler was allowed to admit.",
+            ["code"],
+            registry=self.registry,
+        )
         self.admission_rollbacks = Counter(
             "swarm_scheduler_admission_rollbacks_total",
             "Leases returned because the work AFTER a committed admission raised "

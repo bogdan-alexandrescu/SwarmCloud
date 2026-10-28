@@ -861,7 +861,7 @@ def tenant_values(args: argparse.Namespace) -> dict[str, str]:
         "QUOTA_EPHEMERAL": args.quota_ephemeral,
         # The cache's network disks (CACHE-PVC): one claim per Job, because the
         # claim is the pod's and a finished Job keeps its pod for
-        # ttlSecondsAfterFinished. Derived, not a flag: it is a consequence of
+        # ttlSecondsAfterFinished (ten minutes). Derived, not a flag: it is a consequence of
         # the jobs quota and the dispatcher's CACHE_VOLUME_GIB, never a third
         # number to keep in step with them.
         "QUOTA_CACHE_STORAGE": f"{args.quota_jobs * CACHE_VOLUME_GIB}Gi",
@@ -1613,9 +1613,13 @@ def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
     # flags, and kubernetes/apply.sh run by hand reads the record and passes
     # them, so these numbers never reach a workspace namespace.
     parser.add_argument("--quota-pods", type=int, default=100)
-    # owner 2026-10-07 -- 100 running pods plus an hour of finished Jobs awaiting
-    # ttlSecondsAfterFinished=3600. At 32 the quota refused new Jobs while pods
-    # were still free.
+    # owner 2026-10-07 -- 100 running pods plus the finished Jobs awaiting
+    # ttlSecondsAfterFinished. At 32 the quota refused new Jobs while pods
+    # were still free. The TTL was 3600 s when this was set and is 600 s
+    # (ten minutes) since BGD's decision of 2026-10-28, after finished Jobs
+    # filled eng's quota of 240 and refused dispatches (#1820); the value
+    # here is unchanged, so the same quota now covers six times the Jobs an
+    # hour.
     parser.add_argument("--quota-jobs", type=int, default=200)
     parser.add_argument("--quota-cpu", type=int, default=400)
     parser.add_argument("--quota-memory", default="800Gi")

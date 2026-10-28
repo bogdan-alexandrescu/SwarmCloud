@@ -107,7 +107,8 @@ spec:
     # counts it -- at "0", which this line was, every pod would wait Pending
     # for a claim the API server refused. One per JOB, not per running pod: the
     # claim is deleted with its pod, and a finished Job keeps its pod for
-    # ttlSecondsAfterFinished (an hour), which is why count/jobs.batch is
+    # ttlSecondsAfterFinished (ten minutes since BGD's 2026-10-28 decision;
+    # an hour before), which is why count/jobs.batch is
     # larger than pods. Storage is that many 20 GiB claims, on the cache's
     # class alone; every other class Autopilot ships is held to none, so "we
     # only ever make cache disks" is the API server's rule too.

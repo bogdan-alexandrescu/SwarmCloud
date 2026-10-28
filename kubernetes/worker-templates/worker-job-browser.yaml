@@ -62,7 +62,9 @@ spec:
   # template it mattered most: Autopilot provisions a node and pulls the
   # browser image before the worker starts its own clock.
   activeDeadlineSeconds: __ACTIVE_DEADLINE_SECONDS__
-  ttlSecondsAfterFinished: 3600
+  # Ten minutes (BGD 2026-10-28): a finished Job holds a count/jobs.batch
+  # slot until this expires. Same value as dispatch.FINISHED_JOB_TTL_SECONDS.
+  ttlSecondsAfterFinished: 600
   template:
     metadata:
       labels:
