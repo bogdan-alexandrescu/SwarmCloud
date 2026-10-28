@@ -161,7 +161,7 @@ describe('the verdict', () => {
       weekly('ai-eng-3', 0.97, Date.parse('2026-10-27T10:59:00Z'), AT),
       weekly('home-personal', 0.98, Date.parse('2026-10-26T07:59:00Z'), AT),
     ]
-    const v = pool.verdictOf(accounts, 'eng', 0)
+    const v = pool.verdictOf(accounts, 'eng', 0, AT)
     expect(v.n).toBe(0)
     expect(v.next?.account.label).toBe('aieng-claude1')
     expect(pool.utcAt(v.next!.at, AT)).toBe('10:10Z')
