@@ -24,7 +24,7 @@ from agent_worker import merge
 from swarm_common.models import EndCause
 from swarm_common.states import TaskState
 
-from merge_world import ACTIONS_APP, API, CHECK, PINNED, MergeWorld
+from merge_world import ACTIONS_APP, API, CHECK, PINNED, TASK, MergeWorld
 
 SIBLING_SUITE = 201
 OWN_SUITE = 202
@@ -105,6 +105,13 @@ def test_a_lone_red_push_suite_on_a_sibling_branch_with_no_required_check_is_no_
     assert world.merge_calls() == []
 
 
+def _rerun_spent(world: MergeWorld) -> None:
+    """The step already parked once `ci_rerun_due` at this head (#2351) and
+    the tick re-ran nothing: this red reading is the second, which refuses."""
+    world.docs[TASK].setdefault("metadata", {})[merge.MERGE_WAIT_METADATA_KEY] = {
+        "code": merge.CI_RERUN_DUE, "head": PINNED}
+
+
 def test_a_red_push_suite_on_the_pr_branch_still_refuses(tmp_path):
     """The control: the red push suite is the PR branch's own."""
     world = MergeWorld(tmp_path)
@@ -113,6 +120,7 @@ def test_a_red_push_suite_on_the_pr_branch_still_refuses(tmp_path):
     world.workflow_runs = [_suite(OWN_SUITE, "push", _head_ref(world)),
                            _suite(SIBLING_SUITE, "push", SIBLING)]
 
+    _rerun_spent(world)
     outcome = merge.run_merge(world.context())
 
     # MUTATION: drop every push suite (or compare against the base ref) ->
@@ -129,6 +137,7 @@ def test_a_pull_request_suite_is_never_dropped_by_branch(tmp_path):
     world.runs = [_gh_run(1, "failure", SIBLING_SUITE)]
     world.workflow_runs = [_suite(SIBLING_SUITE, "pull_request", "fork-owner/feature")]
 
+    _rerun_spent(world)
     outcome = merge.run_merge(world.context())
 
     # MUTATION: drop every suite whose branch is not the head ref, whatever
@@ -147,6 +156,7 @@ def test_without_the_actions_read_nothing_is_dropped(tmp_path):
     world.github.route("GET", f"{API}/actions/runs",
                        (403, {}, {"message": "Resource not accessible by integration"}))
 
+    _rerun_spent(world)
     outcome = merge.run_merge(world.context())
 
     # MUTATION: treat an unknown branch as another branch -> dropped -> checks_pending.
