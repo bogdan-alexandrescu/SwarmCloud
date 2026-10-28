@@ -1240,7 +1240,7 @@ export function adminPanelCounts(
  * again when the workspace in hand is the person's own personal one -- else
  * "Member". Null until both reads have answered: an unread list is not "not an admin".
  */
-export function roleLine(platformAdmin: boolean, mine: Result<TenantChoice[]>, tenantId: string | null): string | null {
+export function roleLine(platformAdmin: boolean, mine: Result<TenantChoice[]>, tenantId: string | null, personal = false): string | null {
   if (platformAdmin) return 'Platform admin'
   const choices = dataOf(mine) ?? (mine.status === 'empty' ? [] : null)
   if (choices === null) return null
@@ -1248,8 +1248,10 @@ export function roleLine(platformAdmin: boolean, mine: Result<TenantChoice[]>, t
   const here = choices.find((c) => c.tenant_id === tenantId)
   // THE OWNER OF A PERSONAL WORKSPACE IS ITS ADMIN (QA1 config-28): the foot
   // said "Member" while People and roles said "You are this workspace's
-  // admin" and This workspace "Your role: admin".
-  if (here !== undefined && here.kind === 'user') return 'Workspace admin'
+  // admin" and This workspace "Your role: admin". `personal` is `me`'s tenant
+  // kind, as the People page reads it: `/v1/tenants/mine` answers empty for
+  // someone in no group, so `here` alone missed the finding's own case.
+  if (personal || (here !== undefined && here.kind === 'user')) return 'Workspace admin'
   return here !== undefined && here.kind === 'group' && roleOf(here) === 'viewer' ? 'Viewer' : 'Member'
 }
 
@@ -1695,7 +1697,7 @@ export function SkyShell({
   const counts = waiting === null ? panelCounts(stats, cap, fromList, classes) : { ...panelCounts(stats, cap, fromList, classes), approvals: waiting }
   const adminCounts = adminPanelCounts(admin, feedData(notes), cap, mine)
   const jumpCounts = useSyncExternalStore(subscribeOverviewCounts, overviewCountsSnapshot, overviewCountsSnapshot)
-  const role = who === null ? null : roleLine(admin, mine, who.tenant.tenant_id)
+  const role = who === null ? null : roleLine(admin, mine, who.tenant.tenant_id, personal === true)
   const online = useOnline()
   const probes = useSyncExternalStore(subscribeProbes, probeSnapshot, probeSnapshot)
   const fault = wholeAppFault(me, probes)

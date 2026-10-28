@@ -138,6 +138,14 @@ describe('config-28: the foot calls the owner of a personal workspace its admin'
     expect(roleLine(false, mine as never, 'u-ana-b')).toBe('Workspace admin')
     expect(roleLine(false, mine as never, 'eng')).toBe('Member')
   })
+
+  // MUTATION: drop `personal ||` from roleLine's personal-workspace line.
+  it('says Workspace admin when mine is empty and me names a personal workspace', async () => {
+    const { roleLine } = await import('../Spine')
+    const empty = { status: 'empty' as const }
+    expect(roleLine(false, empty as never, 'u-ana-b', true)).toBe('Workspace admin')
+    expect(roleLine(false, empty as never, 'eng', false)).toBe('Member')
+  })
 })
 
 describe('capacity-11: the Pools badge counts what "Needs a look" counts', () => {
