@@ -345,13 +345,15 @@ export function CheckpointBrowser({
   // phone's screen, and nothing in view changed -- the button read as dead.
   // It mounts only when opened, so on mount it scrolls itself into view and
   // takes focus (`tabIndex={-1}`: focusable by script, not a tab stop), and a
-  // keyboard reader lands on the panel the button opened. `nearest` leaves a
-  // panel that is already on screen where it is.
+  // keyboard reader lands on the panel the button opened. `start`, not
+  // `nearest`: the panel is taller than the room left under the list, and
+  // `nearest` brought only its top edge into view (heading and download
+  // button, the `entries` line under the pane's bottom edge at phone-390).
   const regionRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const el = regionRef.current
     if (el === null) return
-    el.scrollIntoView?.({ block: 'nearest' })
+    el.scrollIntoView?.({ block: 'start' })
     el.focus({ preventScroll: true })
   }, [])
 
