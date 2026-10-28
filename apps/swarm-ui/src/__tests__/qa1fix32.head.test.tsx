@@ -147,7 +147,7 @@ describe('CIFIX-2616: the head reads the title without importing the Agents scre
       { step_id: null, metadata: { title: '   ' } },
       { step_id: null, metadata: { title: 42 } },
       { step_id: null, metadata: {} },
-      { step_id: null },
+      { step_id: null, metadata: null },
     ]
     for (const s of shapes) expect(head.ownTitle(s)).toBe(rowTitle(s))
   })
