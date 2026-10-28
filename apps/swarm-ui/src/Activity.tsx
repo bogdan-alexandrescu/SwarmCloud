@@ -77,7 +77,7 @@ import { QaIdentityGrants } from './QaIdentityGrants'
 import { WORKSPACE_POLL_MS } from './OnboardingWorkspace'
 import { AdminLead, UnreadLead, addressBreaks, useLeadRead } from './AdminSettings'
 import { Absent, Mark } from './primitives'
-import { CountNote, Id, PageHead, RefreshControl, Screen, useClaimPageAge, useIdleStop, usePoll } from './Shell'
+import { CountNote, FailedPanel, Id, PageHead, RefreshControl, Screen, useClaimPageAge, useIdleStop, usePoll } from './Shell'
 import { TIMELINE_POLL_MS, TimelinePages } from './TimelineLanes'
 import { EndedRowsCard } from './TimelineRows'
 import { useInView } from './useInView'
@@ -2156,11 +2156,33 @@ export function TenantsScreen() {
   // roster on screen `Screen` draws its failure panel and no children, so the
   // page draws the lead's dash under it.
   const read = useLeadRead(loadTenants)
+  // THE GATE'S PRESS, HANDED TO `Screen` (V064): the read a refresh on the
+  // gate started, which `Screen` takes as its first read when it mounts, so a
+  // gate that lifts reads the roster once rather than twice.
+  const pressed = useRef<Promise<Result<{ tenants: Tenant[] }>> | null>(null)
+  const load = useCallback(() => {
+    const p = pressed.current
+    pressed.current = null
+    return p ?? read.load()
+  }, [read.load])
+  const gate = read.failed !== null && read.failed.kind === 'admin_required' && !read.held ? read.failed : null
+  if (gate !== null) {
+    return (
+      <TenantsGate
+        error={gate}
+        read={() => {
+          const p = read.load()
+          pressed.current = p
+          return p
+        }}
+      />
+    )
+  }
   return (
     <>
     <Screen
       title="Tenants"
-      load={read.load}
+      load={load}
       // WHAT THE ROSTER IS SCANNED FOR, COUNTED (#134). `no tenant key` is a
       // tenant with no credential of its own registered; it is NOT "cannot
       // run" -- an account lent to it on Capacity › Accounts still runs its
@@ -2383,6 +2405,48 @@ export function TenantsScreen() {
     {caller?.admin === true && read.failed !== null && !read.held && read.failed.kind !== 'admin_required' && (
       <UnreadLead what="the tenants" error={read.failed} />
     )}
+    </>
+  )
+}
+
+/**
+ * THE TENANTS ADMIN GATE, WITH THE PAGE'S REFRESH (visual QA V064, owner
+ * decision Q1 2026-10-16: every admin-only gate shows the refresh control).
+ *
+ * `Screen` draws a 403 with no refresh -- a refusal is not a read to renew
+ * (#138) -- but a person added to an admin group after the page loaded had no
+ * way to read it again short of leaving it. So Tenants draws its gate here:
+ * the same head and the same `FailedPanel` `Screen` draws, plus the shared
+ * `RefreshControl`. It says `refresh · not read`, because nothing was read,
+ * and it stays the one mounted button through the read (`reading…`), so a
+ * press that is refused again keeps its focus. A press that is answered
+ * hands its read to `Screen` (`TenantsScreen`'s `pressed`), which draws the
+ * roster -- or any other failure -- the way it always has.
+ */
+function TenantsGate({ error, read }: { error: ApiError; read: () => Promise<Result<{ tenants: Tenant[] }>> }) {
+  const [reading, setReading] = useState(false)
+  // The head prints no frame age over a gate, as it prints none over a `Screen`.
+  useClaimPageAge(true)
+  const live = useRef(true)
+  useEffect(() => {
+    live.current = true
+    return () => {
+      live.current = false
+    }
+  }, [])
+  const refresh = () => {
+    setReading(true)
+    read().finally(() => {
+      if (live.current) setReading(false)
+    })
+  }
+  return (
+    <>
+      <PageHead title="Tenants">
+        <RefreshControl readAt={null} now={Date.now()} reading={reading} onRefresh={refresh} />
+      </PageHead>
+      {/* No Try again on the panel: the head's control is the one press. */}
+      <FailedPanel error={error} onRetry={refresh} page />
     </>
   )
 }

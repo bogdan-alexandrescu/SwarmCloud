@@ -6,9 +6,12 @@
 //     work items' attempts as `/spans` served them -- one bar an attempt;
 //   * the bars are the Timeline page's: a parked task is hatched (`is-park`),
 //     a running one solid (`is-hold`, open to now), a fenced generation cut;
-//   * Timeline is the default, the toggle switches to the table (S7's rows,
-//     unchanged), and the choice is remembered on the device -- and a storage
-//     that throws still opens the page, on the timeline;
+//   * frame A2's sheet draws the firings' table first (S7's rows, unchanged)
+//     and its Timeline button switches to the lanes and back (lane
+//     AUTO-A2-TESTS, part of #2417); every case below opens the lanes with
+//     it. RETIRED with frame A2 (pr-comment.md): Timeline as the default, the
+//     choice remembered on the device, and the throwing-storage case, since
+//     the sheet reads no stored choice;
 //   * a firing whose attempts could not be read draws a dash with its reason,
 //     never an empty lane; a failed read dashes every lane with the failure;
 //   * one read per page of firings: the page's ids, at most SPAN_PAGE, and
@@ -99,7 +102,8 @@ function item(id: string, tasks: Json[], over: Json = {}): Json {
 
 type Handler = (url: string) => { status: number; body: unknown } | null
 
-async function mount(firings: Json[], spans: Handler) {
+/** Mount the sheet and, unless `timeline` is false, open its firings on the Timeline (frame A2 draws the table first). */
+async function mount(firings: Json[], spans: Handler, timeline = true) {
   const calls = serve((m, url) => {
     if (m !== 'GET') return null
     const bare = url.split('?')[0]
@@ -113,6 +117,7 @@ async function mount(firings: Json[], spans: Handler) {
   const go = vi.fn()
   const utils = render(<Routed Screen={SchedulesScreen} section="automate/schedules" start="schedule=sch_a" spy={go} />)
   await screen.findByRole('heading', { name: 'Schedule sch_a', level: 1 }, WAIT)
+  if (timeline) fireEvent.click(await screen.findByRole('button', { name: 'Timeline' }, WAIT))
   return { ...utils, calls, go }
 }
 
@@ -223,31 +228,21 @@ describe("a schedule's History timeline", () => {
     expect(visible(wait)).toContain('plan waiting for approval')
   })
 
-  it('switches to the table, and remembers the choice on this device', async () => {
-    const first = await mount([firing(1), firing(2)], fiveSpans)
-    await waitFor(() => expect(lanes()).toHaveLength(2), WAIT)
-    expect(screen.getByRole('button', { name: 'Timeline' }).getAttribute('aria-pressed')).toBe('true')
-    fireEvent.click(screen.getByRole('button', { name: 'Table' }))
+  it('opens on the table, and its Timeline button switches to the lanes and back', async () => {
+    await mount([firing(1), firing(2)], fiveSpans, false)
     await waitFor(() => expect(document.querySelectorAll('tr[data-firing]')).toHaveLength(2), WAIT)
     expect(lanes()).toHaveLength(0)
-    expect(window.localStorage.getItem(KEY)).toBe('table')
-    first.unmount()
-    await mount([firing(1), firing(2)], fiveSpans)
+    const toTimeline = screen.getByRole('button', { name: 'Timeline' })
+    expect(toTimeline.getAttribute('aria-pressed')).toBe('false')
+    // MUTATION: draw both views at once and the table stays under the lanes.
+    fireEvent.click(toTimeline)
+    await waitFor(() => expect(lanes()).toHaveLength(2), WAIT)
+    expect(document.querySelectorAll('tr[data-firing]')).toHaveLength(0)
+    const toTable = screen.getByRole('button', { name: 'Table' })
+    expect(toTable.getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(toTable)
     await waitFor(() => expect(document.querySelectorAll('tr[data-firing]')).toHaveLength(2), WAIT)
-    expect(screen.getByRole('button', { name: 'Table' }).getAttribute('aria-pressed')).toBe('true')
-  })
-
-  it('opens on the timeline when storage throws', async () => {
-    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
-      throw new Error('storage is off')
-    })
-    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
-      throw new Error('storage is off')
-    })
-    await mount([firing(1)], fiveSpans)
-    await waitFor(() => expect(lanes()).toHaveLength(1), WAIT)
-    fireEvent.click(screen.getByRole('button', { name: 'Table' }))
-    await waitFor(() => expect(document.querySelectorAll('tr[data-firing]')).toHaveLength(1), WAIT)
+    expect(lanes()).toHaveLength(0)
   })
 
   it('draws a dash with its reason for a firing whose attempts could not be read, never an empty lane', async () => {
@@ -573,7 +568,10 @@ describe('what each firing made, by name (VQ-028)', () => {
       return el!
     }, WAIT)
     // MUTATION: drop either head and the list reads as one more lane.
-    expect(screen.getByRole('heading', { name: 'Firings, newest first', level: 3 })).toBeTruthy()
+    // Frame A2: the pane is the sheet's Firings section, headed with its order.
+    const head = document.querySelector<HTMLElement>('aside.as-sheet [data-sec="firings"] > h3')!
+    expect(screen.getByRole('heading', { name: /^Firings/, level: 3 })).toBe(head)
+    expect(visible(head)).toContain('newest first')
     expect(screen.getByRole('list', { name: 'What these firings made' })).toBe(list)
   })
 })
