@@ -118,6 +118,18 @@ variable "nat_static_ip_count" {
   default = 2
 }
 
+# The module's own defaults (128 and 8192). An environment raises them in its
+# tfvars, with the measurement that justified it (dev: #1334 c24).
+variable "nat_min_ports_per_vm" {
+  type    = number
+  default = 128
+}
+
+variable "nat_max_ports_per_vm" {
+  type    = number
+  default = 8192
+}
+
 variable "restrict_egress" {
   type    = bool
   default = false

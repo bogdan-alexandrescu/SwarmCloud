@@ -30,7 +30,27 @@ gke_master_cidr = "172.16.32.0/28"
 # served as MCP_EGRESS_ADDRESSES and is what model providers allow-list
 # (modules/network nat_addresses).
 nat_static_ip_count = 2
-restrict_egress     = false
+# 128 -> 512 and 8192 -> 16384: #1334 c24. swarm-nat logged 320 drops in 10
+# days, 216 of them in the 3 days to 2026-10-16, from 6 GKE nodes and none
+# from Cloud Run. They came in bursts to DigitalOcean and Vultr hosts on port
+# 44445 and to 151.101.0.223:443 (Fastly). Every drop is OUT_OF_RESOURCES.
+# ENDPOINT_INDEPENDENCE_CONFLICT needs endpoint-independent mapping, which is
+# off (modules/network main.tf). Port 44445 is the browser-egress vendor:
+# brd.superproxy.io resolves to those same DigitalOcean and Vultr addresses
+# (read 2026-10-27). swarm-egress has one replica, so one node, and it opens a
+# new upstream connection for every browser CONNECT. It is the platform's
+# forwarder, not an agent reaching unexpected hosts.
+#
+# A burst on that node starts at 128 ports per vendor address and has to wait
+# for allocation to double. 512 is two doublings closer, and 16384 lifts the
+# cap that busy node can reach. The floor is reserved on every VM: 2 addresses
+# x 64,512 ports / 512 = 252 VMs before a new one gets no port at all. That
+# covers today's GKE nodes plus Cloud Run, which runs only the mock and
+# fallback Jobs. Check it again before nat_static_ip_count is lowered or
+# Cloud Run takes real pools.
+nat_min_ports_per_vm = 512
+nat_max_ports_per_vm = 16384
+restrict_egress      = false
 
 # --- GKE Autopilot (browser / GPU / >32 GiB only) --------------------------
 enable_gke_autopilot        = true

@@ -66,12 +66,14 @@ module "network" {
   region      = var.region
   name_prefix = var.name_prefix
 
-  subnet_cidr         = var.subnet_cidr
-  pods_cidr           = var.pods_cidr
-  services_cidr       = var.services_cidr
-  gke_master_cidr     = var.gke_master_cidr
-  nat_static_ip_count = var.nat_static_ip_count
-  restrict_egress     = var.restrict_egress
+  subnet_cidr          = var.subnet_cidr
+  pods_cidr            = var.pods_cidr
+  services_cidr        = var.services_cidr
+  gke_master_cidr      = var.gke_master_cidr
+  nat_static_ip_count  = var.nat_static_ip_count
+  nat_min_ports_per_vm = var.nat_min_ports_per_vm
+  nat_max_ports_per_vm = var.nat_max_ports_per_vm
+  restrict_egress      = var.restrict_egress
 
   labels = local.labels
 
