@@ -118,6 +118,7 @@ from .validation import (
     MERGE_METADATA_KEY,
     MERGE_ON_VERDICT,
     MERGE_STEP_MAX_ATTEMPTS,
+    REVIEW_GATE_DEFAULT_BLOCK,
     REVIEW_GATE_METADATA_KEY,
     RUNTIME_METADATA_KEY,
     RuntimePolicyInvalid,
@@ -155,6 +156,8 @@ from .validation import (
     resolve_merge_choice,
     resolve_fix_rounds,
     resolve_merge_fix_rounds,
+    default_review_gate_steps,
+    requirements_check_steps,
     resolve_review_gate,
     resolve_runtime_policy,
     AFTER_PRS_METADATA_KEY,
@@ -1394,6 +1397,14 @@ class SubmissionService:
         not_integrated: frozenset[str] = frozenset(control_plane_steps)
         if integrator_step_id is not None and by_id[integrator_step_id].when is not None:
             not_integrated |= {by_id[integrator_step_id].when.step}
+        # An issue run's requirements check (#2524) is read-only: when it
+        # runs it writes requirements.json, and when the review runs it runs
+        # no agent and pushes nothing at all.
+        not_integrated |= requirements_check_steps(spec.steps)
+        # Every review step names a gate by default (#2524, BGD 2026-10-28):
+        # one that names none is stored with the platform's default block,
+        # which swarm-api resolves against the workspace's setting.
+        default_gated = default_review_gate_steps(spec.steps, spec.metadata)
         now = self._now()
         workflow_id = new_id("wf")
 
@@ -1548,6 +1559,8 @@ class SubmissionService:
                 runtime_block["inherit"] = {
                     "step": source.when.step, "task_id": step_task_id[source.when.step],
                 }
+            if step_id in default_gated:
+                task.metadata[REVIEW_GATE_METADATA_KEY] = dict(REVIEW_GATE_DEFAULT_BLOCK)
             step_task_id[step_id] = task.id
             step_model_class[step_id] = task.model_class
             tasks.append(task)

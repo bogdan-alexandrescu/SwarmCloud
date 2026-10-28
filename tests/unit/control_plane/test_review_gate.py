@@ -22,8 +22,8 @@ What these tests hold:
      would stage it, reads MERGE: the integrator's NOT_YET gate stays shut;
      swarm-api serves it through the redacted artifact read, so its own
      publish of the integrator opens the pull request without a pod.
-  5. swarm-api refuses a malformed gate with a 422 and stores a good one;
-     the compiled issue-run review carries it.
+  5. swarm-api refuses a malformed gate with a 422 and stores a good one
+     (the compiled issue-run review's default: test_review_gate_default.py).
   6. The restatements across images are equal.
 
 No credentials, no network, no emulator.
@@ -47,7 +47,6 @@ from scheduler import loop
 from scheduler import reviewgate as scheduler_gate
 from scheduler.store import SchedulerStore
 from swarm_api import refusals, reviewgate, validation, verdictpublish
-from swarm_api.issueruns import review_gate_block
 
 from .conftest import scheduler_settings, seed_pool, seed_task, seed_tenant
 # The verdict-publish world, reused whole: its client, fakes and workflow.
@@ -289,7 +288,9 @@ def test_a_step_with_no_gate_or_an_unreadable_one_is_promoted_as_before():
     assert reviewgate.policy_of({"review_gate": {"min_lines": True}}) is None
     assert reviewgate.policy_of({"review_gate": {"risk_paths": []}}) is None
     gate = reviewgate.policy_of({"review_gate": {"min_lines": 10, "risk_paths": ["x/"]}})
-    assert gate == reviewgate.Gate(10, ("x/",))
+    # A step's own list adds to the platform's, never narrows it (#2524,
+    # test_review_gate_default.py).
+    assert gate == reviewgate.Gate(10, (*reviewgate.DEFAULT_RISK_PATHS, "x/"))
 
 
 def test_published_renders_are_recorded_on_the_decision():
@@ -454,10 +455,6 @@ def test_a_good_gate_is_normalised():
         {"review_gate": {"min_lines": 50, "risk_paths": [" apps/x/ "]}}, step_id="r",
         workflow_step=True) == {"min_lines": 50, "risk_paths": ["apps/x/"]}
     assert validation.resolve_review_gate({}, step_id="r", workflow_step=True) is None
-
-
-def test_the_compiled_review_carries_bgds_value():
-    assert review_gate_block() == {"min_lines": 300}
 
 
 # ---------------------------------------------------------------------------

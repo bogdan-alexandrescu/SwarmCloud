@@ -1113,23 +1113,71 @@ def _consider(ctx: Any, tenant: Any, doc: Mapping[str, Any], report: FinishRepor
              state=TaskState.SUCCEEDED.value)
 
 
+def _workspace_review_gate(db: Any, tenant_id: str) -> Mapping[str, Any]:
+    """`workspace_settings/{tenant}.review_gate`, the workspace's default gate; {} when unset."""
+    snap = db.collection(reviewgate.WORKSPACE_SETTINGS).document(tenant_id).get()
+    data = snap.to_dict() if snap.exists else None
+    return _mapping(_mapping(data).get(reviewgate.WORKSPACE_FIELD))
+
+
+def _check_requirements(ctx: Any, tenant_id: str,
+                        parents: list[Mapping[str, Any]]) -> list[dict[str, Any]] | None:
+    """The requirements list of the requirements check among a skipped review's
+    parents (#2524), or None when there is none or it cannot be read whole."""
+    for parent in parents:
+        if not reviewgate.is_requirements_check(parent.get("metadata")):
+            continue
+        try:
+            text = _read_text(ctx, tenant_id, str(parent.get("id") or ""),
+                              reviewgate.REQUIREMENTS_FILE,
+                              limit=reviewgate.MAX_REQUIREMENTS_BYTES,
+                              required=False, what="requirements")
+        except Decline:
+            return None
+        return reviewgate.requirements_from(text)
+    return None
+
+
 def _consider_review(ctx: Any, doc: Mapping[str, Any], report: FinishReport,
                      parent_id: str, claim_id: str) -> None:
     """A claimed gated review: end it SUCCEEDED when its parents' change buys
-    none, else decline it so the scheduler promotes it (#2524, `reviewgate`)."""
+    none, else decline it so the scheduler promotes it (#2524, `reviewgate`).
+
+    A requirements check (`reviewgate.is_requirements_check`) is decided the
+    other way round: declined, so it runs, only when the review it stands
+    beside would be skipped; ended SUCCEEDED without an agent when that
+    review runs, because the review then answers the requirements itself.
+    A check whose gate cannot be decided runs: it is the cheap one.
+    """
     db = ctx.store.db
     tenant_id = str(doc.get("tenant_id") or "")
     task_id = str(doc.get("id") or "")
-    gate = reviewgate.policy_of(doc.get("metadata"))
+    metadata = doc.get("metadata")
+    check = reviewgate.is_requirements_check(metadata)
+    workspace: Mapping[str, Any] = {}
+    if reviewgate.is_default(metadata):
+        try:
+            workspace = _workspace_review_gate(db, tenant_id)
+        except Exception:  # never a reason to keep the review from running
+            log.exception("review gate %s tenant=%s: workspace setting unread", task_id, tenant_id)
+            workspace = {"enabled": False}
+    gate = reviewgate.policy_of(metadata, workspace)
     decision = None
-    if gate is None:
+    parents: list[Mapping[str, Any]] = []
+    if not reviewgate.workspace_enabled(workspace):
+        code = reviewgate.REASON_OFF
+        why = reviewgate.Decision(True, code).text
+    elif gate is None:
         code, why = "review_gate_unreadable", "the step's review gate cannot be read; the review runs"
     else:
         def read(upstream: str) -> Mapping[str, Any] | None:
             snap = db.collection(TASKS).document(str(upstream)).get()
             data = snap.to_dict() if snap.exists else None
             # Tenant-gated, as every read of this module (invariant 9).
-            return data if data is not None and data.get("tenant_id") == tenant_id else None
+            if data is None or data.get("tenant_id") != tenant_id:
+                return None
+            parents.append({**data, "id": str(upstream)})
+            return data
 
         try:
             decision = reviewgate.resolve(list(doc.get("depends_on") or []), gate, read)
@@ -1139,16 +1187,29 @@ def _consider_review(ctx: Any, doc: Mapping[str, Any], report: FinishReport,
         else:
             code, why = "review_runs", decision.text
     log.info("review gate decided", extra={
-        "task_id": task_id, "tenant_id": tenant_id,
+        "task_id": task_id, "tenant_id": tenant_id, "requirements_check": check,
         "run": decision.run if decision is not None else True, "reason": why})
-    if decision is not None and not decision.run:
-        now = ctx.now()
-        if _succeed(db, tenant_id, task_id, claim_id, now, reviewgate.skip_summary(decision),
-                    lambda stored: reviewgate.with_resolved(stored, decision, now)):
+    now = ctx.now()
+    summary: dict[str, Any] | None = None
+    if check and code in ("review_runs", reviewgate.REASON_OFF) and (
+            decision is None or decision.run):
+        # The review runs and answers the requirements: the check buys nothing.
+        summary = reviewgate.check_summary(decision, why)
+    elif check:
+        code, why = "requirements_check_runs", (
+            decision.text if decision is not None else why)
+    elif decision is not None and not decision.run:
+        summary = reviewgate.skip_summary(
+            decision, _check_requirements(ctx, tenant_id, parents))
+    if summary is not None:
+        resolved = decision if decision is not None else reviewgate.Decision(True, code)
+        if _succeed(db, tenant_id, task_id, claim_id, now, summary,
+                    lambda stored: reviewgate.with_resolved(stored, resolved, now)):
             report.reviews_skipped.append(task_id)
             ctx.store.append_event(
                 task_id=task_id, tenant_id=tenant_id, type=EventType.SUCCEEDED,
-                detail={"published_by": PUBLISHED_BY, "review_gate": decision.to_detail()},
+                detail={"published_by": PUBLISHED_BY, "review_gate": resolved.to_detail(),
+                        **({"requirements_check": "not needed"} if check else {})},
             )
             # Releases the review's own dependants: the scheduler promotes
             # them, and this module considers the integrator on the same wake.

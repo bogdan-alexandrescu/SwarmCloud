@@ -440,7 +440,10 @@ def _approve(
         # The review's IMPACT block from the run's own tenant's index (lane
         # KG6); None, and today's review prompt, when there is no v3 index.
         review = read_review_context(ctx, tenant_id, approved)
-        submission = ctx.submissions.submit_workflow(auth, compile_plan(approved, review))
+        # The deployment's pinned classes: the requirements check runs the
+        # cheap one only where it is pinned (#2524, `issueruns._check_class`).
+        submission = ctx.submissions.submit_workflow(auth, compile_plan(
+            approved, review, class_models=ctx.settings.worker_class_models))
     except Exception as exc:
         reason = exc.message if isinstance(exc, ApiError) else type(exc).__name__
         runs.transition(

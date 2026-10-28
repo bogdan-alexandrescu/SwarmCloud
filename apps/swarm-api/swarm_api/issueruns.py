@@ -219,8 +219,8 @@ from .validation import (
     MERGE_ON_VERDICT,
     MERGE_STEP_ID,
     REREVIEW_STEP_ID,
-    REVIEW_GATE_DEFAULT_MIN_LINES,
     REVIEW_GATE_METADATA_KEY,
+    REVIEW_GATE_REQUIREMENTS_CHECK,
     RUNTIME_METADATA_KEY,
     RUNTIME_POLICY_BROWSER_IF_UI,
     RUNTIME_POLICY_PROFILES,
@@ -252,11 +252,87 @@ REVIEW_RUNTIME: Mapping[str, str] = MappingProxyType(
 # steps changed touches a risk path or more than 300 lines. Otherwise
 # swarm-api ends it SUCCEEDED without an agent, with a MERGE verdict.json
 # naming the reason (`reviewgate`), and the fix step publishes as for any
-# MERGE. No `risk_paths`: the default list applies, the one list BGD's
-# decision names.
-def review_gate_block() -> dict[str, Any]:
-    """The `metadata.review_gate` every compiled review step carries."""
-    return {"min_lines": REVIEW_GATE_DEFAULT_MIN_LINES}
+# MERGE. It names no gate of its own: it is a review step (the fix's `when`
+# reads it), so it is stored with the default gate (BGD 2026-10-28, "every
+# review step"; `validation.default_review_gate_steps`), which follows the
+# workspace's setting.
+#
+# A SKIPPED REVIEW STILL CONFIRMS REQUIREMENTS (BGD 2026-10-28 ~18:25Z, "Gate
+# + cheap requirements check"). Beside the review, a plan that lists
+# requirements gets `requirements-check`: held like the review and run ONLY
+# when the review is skipped (`reviewgate.is_requirements_check`), on
+# `claude-code` (no browser) and the cheap class, read-only, its time capped.
+# It reads the issue and the diff and writes only requirements.json; swarm-api
+# folds that list into the skipped review's verdict, so `Closes #N` is
+# written only when every requirement is met, as after a full review. It
+# never writes a verdict: the verdict stays the gate's MERGE.
+REQUIREMENTS_CHECK_STEP = "requirements-check"
+#: The cheap class: confirming a list against a diff needs no Opus.
+REQUIREMENTS_CHECK_MODEL_CLASS = "sonnet"
+#: Its cap. No profile field caps turns (a contract request on the pull
+#: request that built this); the step's own timeout is the cap it has.
+REQUIREMENTS_CHECK_TIMEOUT_SECONDS = 900
+def _check_class(class_models: Mapping[str, str] | None) -> dict[str, Any]:
+    """`{"model_class": "sonnet"}` where this deployment pins it, else nothing.
+
+    A class with no pin is refused at submission
+    (`validation.check_model_class_available`): naming it there would fail
+    the whole issue run. Without the pin the check runs the profile's
+    default, still read-only and capped, and the run goes ahead.
+    """
+    if class_models is not None and REQUIREMENTS_CHECK_MODEL_CLASS in class_models:
+        return {"model_class": REQUIREMENTS_CHECK_MODEL_CLASS}
+    return {}
+
+
+#: What it writes, read by `verdictpublish` (`reviewgate.REQUIREMENTS_FILE`).
+REQUIREMENTS_FILE = "requirements.json"
+
+
+def _requirements_check(
+    ref: IssueRef, plan: Mapping[str, Any], parents: list[str], builds_on: str,
+    *, by_parent: bool, class_models: Mapping[str, str] | None,
+) -> dict[str, Any] | None:
+    """The requirements check standing beside the review; None for a plan with none."""
+    if not plan.get("requirements"):
+        return None
+    staged = (", ".join(f"{sid}/{PATCH_FILE}" for sid in parents) if by_parent
+              else PATCH_FILE)
+    metadata: dict[str, Any] = {REVIEW_GATE_METADATA_KEY: {REVIEW_GATE_REQUIREMENTS_CHECK: True}}
+    if by_parent:
+        metadata[INPUT_LAYOUT_METADATA_KEY] = INPUT_LAYOUT_BY_PARENT
+    return {
+        "step_id": REQUIREMENTS_CHECK_STEP,
+        "runner_profile": STEP_PROFILE,
+        **_check_class(class_models),
+        "timeout_seconds": REQUIREMENTS_CHECK_TIMEOUT_SECONDS,
+        # Read-only: it changes nothing, and no integrator merges it.
+        "allow_empty_diff": True,
+        "metadata": metadata,
+        "depends_on": list(parents),
+        "builds_on": builds_on,
+        "input_from": {sid: PATCH_FILE for sid in parents},
+        "input": {
+            "issue": ref.number,
+            "prompt": (
+                f"Confirm, for GitHub issue {ref.short}, whether the change on this branch "
+                "delivers each requirement of the approved plan. This is a requirements "
+                "check, not a review: do not judge the code, do not write a verdict, do not "
+                "edit, commit or push anything, and use at most 30 turns. Read the issue "
+                f"file and the diff ({staged}; the whole change is this branch against the "
+                "default branch).\n\n"
+                "The issue's requirements, as the approved plan lists them:\n"
+                + "".join(f"{n}. {item}\n"
+                          for n, item in enumerate(plan["requirements"], start=1))
+                + f"\nWrite only $SWARM_ARTIFACTS_DIR/{REQUIREMENTS_FILE}: "
+                '{"requirements": [{"index": n, "met": true or false, "note": "the evidence: '
+                'the file and line, or what is missing, one line"}]} -- exactly one entry '
+                f"for each numbered requirement above, n from 1 to {len(plan['requirements'])}; "
+                "met is true only for a requirement this branch delivers in full. "
+                + NO_CLOSING_KEYWORD
+            ),
+        },
+    }
 
 
 #: The one file the planner writes, read back out of its artifacts.
@@ -583,10 +659,11 @@ class PlanStep(_PlanModel):
     @field_validator("step_id")
     @classmethod
     def _not_reserved(cls, value: str) -> str:
-        if value in (REVIEW_STEP, FIX_STEP, REREVIEW_STEP):
+        if value in (REVIEW_STEP, FIX_STEP, REREVIEW_STEP, REQUIREMENTS_CHECK_STEP):
             raise ValueError(
                 f"step_id {value!r} is reserved: the compiled workflow's {REVIEW_STEP!r}, "
-                f"{FIX_STEP!r} and {REREVIEW_STEP!r} steps are added after the plan's own"
+                f"{FIX_STEP!r}, {REREVIEW_STEP!r} and {REQUIREMENTS_CHECK_STEP!r} steps are "
+                "added after the plan's own"
             )
         return value
 
@@ -2302,7 +2379,8 @@ def verification_text(readings: list[tuple[str, str | None, str | None]]) -> str
     return redact_detail("\n\n".join(parts), limit=MAX_VERIFICATION_CHARS)
 
 
-def compile_plan(run: "IssueRun", review_context: str | None = None) -> WorkflowCreate:
+def compile_plan(run: "IssueRun", review_context: str | None = None, *,
+                 class_models: Mapping[str, str] | None = None) -> WorkflowCreate:
     """The approved plan as a workflow: implementers, review, gated fix, re-review.
 
     A plan whose steps state no `depends_on` compiles to a chain; one that
@@ -2312,14 +2390,18 @@ def compile_plan(run: "IssueRun", review_context: str | None = None) -> Workflow
     carries its planned files and tests; the review's carries the plan's
     requirements, in both shapes, and `review_context` when there is one:
     `reviewcontext.read_review_context`'s IMPACT block (lane KG6), already
-    delimited and bounded. None is today's review prompt.
+    delimited and bounded. None is today's review prompt. `class_models` is
+    the deployment's pinned classes (`Settings.worker_class_models`): the
+    requirements check runs the cheap class only where it is pinned
+    (`_check_class`).
     """
     refuse_auto_merge(run.auto_merge)
     if run.plan is None:
         raise InvalidPlan("this run has no plan to compile")
     plan = parse_plan(run.plan, stored=True)
     if _uses_dependencies(plan["steps"]):
-        return _workflow(run, _compile_staged(run, plan, review_context))
+        return _workflow(run, _compile_staged(run, plan, review_context,
+                                              class_models=class_models))
     ref = run.issue
     steps: list[dict[str, Any]] = []
     previous: str | None = None
@@ -2356,12 +2438,15 @@ def compile_plan(run: "IssueRun", review_context: str | None = None) -> Workflow
         previous = step_id
     last = previous
     assert last is not None  # PlanSpec has at least one step
+    check = _requirements_check(ref, plan, [last], last, by_parent=False,
+                                class_models=class_models)
+    if check is not None:
+        steps.append(check)
     steps.append({
         "step_id": REVIEW_STEP,
         "runner_profile": REVIEW_PROFILE,
-        "metadata": {RUNTIME_METADATA_KEY: dict(REVIEW_RUNTIME),
-                     REVIEW_GATE_METADATA_KEY: review_gate_block()},
-        "depends_on": [last],
+        "metadata": {RUNTIME_METADATA_KEY: dict(REVIEW_RUNTIME)},
+        "depends_on": [last] + ([REQUIREMENTS_CHECK_STEP] if check is not None else []),
         "builds_on": last,
         "input_from": {last: PATCH_FILE},
         "input": {
@@ -2462,7 +2547,8 @@ def _review_impact(review_context: str | None) -> str:
 
 
 def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
-                    review_context: str | None = None) -> list[dict[str, Any]]:
+                    review_context: str | None = None, *,
+                    class_models: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
     """Implementers wired by the plan's `depends_on`, then review and the gated fix.
 
     A step with no dependency starts from the default branch at once. A step
@@ -2540,15 +2626,18 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
         steps.append(spec)
     impl = [_impl_id(sid) for sid in order]
     last = impl[-1]
+    check = _requirements_check(ref, plan, list(impl), last, by_parent=True,
+                                class_models=class_models)
+    if check is not None:
+        steps.append(check)
     steps.append({
         "step_id": REVIEW_STEP,
         "runner_profile": REVIEW_PROFILE,
-        "depends_on": list(impl),
+        "depends_on": list(impl) + ([REQUIREMENTS_CHECK_STEP] if check is not None else []),
         "builds_on": last,
         "input_from": {sid: PATCH_FILE for sid in impl},
         "metadata": {INPUT_LAYOUT_METADATA_KEY: INPUT_LAYOUT_BY_PARENT,
-                     RUNTIME_METADATA_KEY: dict(REVIEW_RUNTIME),
-                     REVIEW_GATE_METADATA_KEY: review_gate_block()},
+                     RUNTIME_METADATA_KEY: dict(REVIEW_RUNTIME)},
         "input": {
             "issue": ref.number,
             "prompt": (

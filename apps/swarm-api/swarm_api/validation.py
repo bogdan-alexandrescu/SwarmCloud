@@ -260,7 +260,26 @@ def resolve_runtime_policy(
 #: left out (`min_lines` 300, `risk_paths` `reviewgate.DEFAULT_RISK_PATHS`). Not a typed
 #: field, for the reason `metadata.runtime` is not: `swarm_common` is frozen.
 REVIEW_GATE_METADATA_KEY = "review_gate"
-REVIEW_GATE_KEYS = ("min_lines", "risk_paths")
+REVIEW_GATE_KEYS = ("min_lines", "risk_paths", "requirements_check")
+#: EVERY REVIEW STEP IS GATED BY DEFAULT (BGD 2026-10-28, page M8: "every
+#: review step"). A step another step's `when` reads a verdict from is a
+#: review; one whose metadata names no `review_gate` is stored with this
+#: block (`default_review_gate_steps`, stamped by `submit_workflow`), and
+#: swarm-api resolves it when it decides: the workspace's
+#: `workspace_settings/{tenant}.review_gate` when one is set, else the
+#: platform's (`min_lines` 300, `reviewgate.DEFAULT_RISK_PATHS`). Why a
+#: default and not opt-in: the #2524 week reviewed every change however
+#: small, and a review a step has to ask to have gated is one nobody gates.
+#: A step that names its own block keeps it; `"review_gate": false` switches
+#: the gate off for that step, and its review always runs. Never accepted
+#: from a caller (it is not in `REVIEW_GATE_KEYS`).
+REVIEW_GATE_DEFAULT_BLOCK: Mapping[str, Any] = MappingProxyType({"default": True})
+#: An issue run's requirements check (#2524, BGD 2026-10-28 ~18:25Z): a step
+#: carrying `review_gate.requirements_check` is held like a gated review and
+#: runs ONLY when the review it stands beside is skipped
+#: (`reviewgate.is_requirements_check`). It follows the default policy, as
+#: that review does, unless it names its own.
+REVIEW_GATE_REQUIREMENTS_CHECK = "requirements_check"
 #: BGD's value, read by `reviewgate.DEFAULT_MIN_LINES`.
 REVIEW_GATE_DEFAULT_MIN_LINES = 300
 #: Bounds on what a caller may write: a gate is a short list of globs, and
@@ -317,6 +336,10 @@ def _checked_review_gate(
             detail={**where, "field": field},
         )
     raw = metadata[REVIEW_GATE_METADATA_KEY]
+    if raw is False:
+        # The gate switched off for this step: nothing is stored, and the
+        # default is not stamped either (`default_review_gate_steps`).
+        return None
     if not isinstance(raw, Mapping) or not set(raw) <= set(REVIEW_GATE_KEYS):
         unknown = sorted(set(raw) - set(REVIEW_GATE_KEYS)) if isinstance(raw, Mapping) else None
         raise ReviewGateInvalid(
@@ -332,7 +355,18 @@ def _checked_review_gate(
             f"{REVIEW_GATE_MAX_MIN_LINES}",
             detail={**where, "field": f"{field}.min_lines"},
         )
+    check = raw.get(REVIEW_GATE_REQUIREMENTS_CHECK, False)
+    if not isinstance(check, bool):
+        raise ReviewGateInvalid(
+            "metadata.review_gate.requirements_check must be true or false",
+            detail={**where, "field": f"{field}.{REVIEW_GATE_REQUIREMENTS_CHECK}"},
+        )
+    if check and not set(raw) - {REVIEW_GATE_REQUIREMENTS_CHECK}:
+        # A check naming no policy follows the default, as its review does.
+        return {**REVIEW_GATE_DEFAULT_BLOCK, REVIEW_GATE_REQUIREMENTS_CHECK: True}
     out: dict[str, Any] = {"min_lines": min_lines}
+    if check:
+        out[REVIEW_GATE_REQUIREMENTS_CHECK] = True
     if "risk_paths" in raw:
         paths = raw["risk_paths"]
         if (not isinstance(paths, list) or not paths
@@ -347,6 +381,47 @@ def _checked_review_gate(
             )
         out["risk_paths"] = [p.strip() for p in paths]
     return out
+
+
+def default_review_gate_steps(
+    steps: Sequence[Any], workflow_metadata: Mapping[str, Any] | None = None,
+) -> frozenset[str]:
+    """The steps stored with `REVIEW_GATE_DEFAULT_BLOCK`: every review step that names no gate.
+
+    A review is a step another step's `when` reads a verdict from (#264):
+    the fix, the gated integrator, the re-review. Left out: a step whose own
+    metadata, or the workflow's, names `review_gate` at all -- its own block
+    wins, and `false` is the gate switched off. `steps` are
+    `WorkflowStepCreate`s (`step_id`, `when`, `metadata`).
+    """
+    targets = {
+        step.when.step for step in steps if getattr(step, "when", None) is not None
+    }
+    shared = REVIEW_GATE_METADATA_KEY in (workflow_metadata or {})
+    return frozenset(
+        step.step_id for step in steps
+        if step.step_id in targets and not shared
+        and REVIEW_GATE_METADATA_KEY not in (getattr(step, "metadata", None) or {})
+    )
+
+
+def requirements_check_steps(steps: Sequence[Any]) -> frozenset[str]:
+    """The steps that are an issue run's requirements check (`REVIEW_GATE_REQUIREMENTS_CHECK`).
+
+    Not merged by an integrator: the check is read-only, its deliverable is
+    `requirements.json`, and when the review runs it runs no agent and
+    pushes no branch at all.
+    """
+    return frozenset(
+        step.step_id for step in steps
+        if _mapping_or_empty(_mapping_or_empty(getattr(step, "metadata", None))
+                             .get(REVIEW_GATE_METADATA_KEY)).get(REVIEW_GATE_REQUIREMENTS_CHECK)
+        is True
+    )
+
+
+def _mapping_or_empty(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
 
 
 def validate_runner_profile(name: str) -> RunnerProfile:
