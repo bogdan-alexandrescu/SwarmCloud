@@ -1,5 +1,5 @@
 """ROLES-ACCEPT: the workspace roles acceptance probe
-(docs/design/workspace-roles.md §6 row 6 and §8; closes #1518).
+(docs/design/workspace-roles.md §6 row 6 and §8; #1518).
 
 scripts/acceptance/groups/roles.sh measures, against dev, what the unit tests
 in tests/unit/control_plane prove offline: a viewer is refused a submission
@@ -29,12 +29,9 @@ import stat
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-
-from swarm_api import roles
-from swarm_api.auth import TenantNotMember
-from swarm_api.errors import RoleMemberRequired
 
 from .test_release_reuses_ci_images import _code, _workflow
 
@@ -76,6 +73,18 @@ def _judge(check: str, status: int | str, body: object, extra: str = "") -> tupl
     return verdict, reason
 
 
+def _api() -> SimpleNamespace:
+    """The codes and audit actions as swarm_api spells them. Imported here,
+    not at module top: tests/unit/scripts collects without the service stack
+    (test_collection_stays_cheap.py)."""
+    from swarm_api import roles
+    from swarm_api.auth import TenantNotMember
+    from swarm_api.errors import RoleMemberRequired
+
+    return SimpleNamespace(member_required=RoleMemberRequired.code, not_member=TenantNotMember.code,
+                           default_set=roles.AUDIT_DEFAULT_SET, acted=roles.AUDIT_PLATFORM_ADMIN_ACTED)
+
+
 def _refusal(code: str) -> dict:
     return {"code": code, "message": "refused", "detail": {}}
 
@@ -85,13 +94,13 @@ def _audit(*rows: dict) -> dict:
 
 
 def _default_set(to: str, frm: str, reason: str = REASON) -> dict:
-    return {"action": roles.AUDIT_DEFAULT_SET, "by": "qa-admin@example.iam.gserviceaccount.com",
+    return {"action": _api().default_set, "by": "qa-admin@example.iam.gserviceaccount.com",
             "at": "2026-10-28T19:00:01.123456+00:00",
             "detail": {"from": frm, "to": to, "via": "platform_admin", "reason": reason}}
 
 
 def _acted(at: str = "2026-10-28T19:00:01.123456+00:00", route: str = "/v1/workspace/roles/default") -> dict:
-    return {"action": roles.AUDIT_PLATFORM_ADMIN_ACTED, "by": "qa-admin@example.iam.gserviceaccount.com",
+    return {"action": _api().acted, "by": "qa-admin@example.iam.gserviceaccount.com",
             "at": at, "detail": {"method": "PUT", "route": route, "path_params": {},
                                  "via": "platform_admin", "reach": "non_member"}}
 
@@ -112,8 +121,8 @@ def test_a_viewers_submission_passes_only_on_the_apis_role_code():
     """MUTATION: accept any 403. A viewer refused for another reason --
     tenant_not_member because the identity left the group -- proves nothing
     about roles."""
-    assert _judge("viewer-submit", 403, _refusal(RoleMemberRequired.code))[0] == "PASS"
-    assert _judge("viewer-submit", 403, _refusal(TenantNotMember.code))[0] == "FAIL"
+    assert _judge("viewer-submit", 403, _refusal(_api().member_required))[0] == "PASS"
+    assert _judge("viewer-submit", 403, _refusal(_api().not_member))[0] == "FAIL"
     assert _judge("viewer-submit", 403, _refusal("role_admin_required"))[0] == "FAIL"
     # The gate is off, or the viewer grant did not take: a task was created.
     verdict, reason = _judge("viewer-submit", 201, {"id": "t-1", "state": "QUEUED"})
@@ -122,7 +131,7 @@ def test_a_viewers_submission_passes_only_on_the_apis_role_code():
 
 def test_a_viewers_read_passes_only_on_200():
     assert _judge("viewer-read", 200, {"tasks": []})[0] == "PASS"
-    assert _judge("viewer-read", 403, _refusal(RoleMemberRequired.code))[0] == "FAIL"
+    assert _judge("viewer-read", 403, _refusal(_api().member_required))[0] == "FAIL"
 
 
 def test_the_audit_needs_both_the_grant_and_its_revocation_of_this_run():
@@ -150,9 +159,9 @@ def test_reach_passes_on_the_admins_write_and_its_platform_admin_acted_row():
 
 
 def test_another_identitys_personal_workspace_passes_only_on_tenant_not_member():
-    assert _judge("personal", 403, _refusal(TenantNotMember.code))[0] == "PASS"
+    assert _judge("personal", 403, _refusal(_api().not_member))[0] == "PASS"
     assert _judge("personal", 200, {"tenant_id": "u-someone"})[0] == "FAIL"
-    assert _judge("personal", 403, _refusal(RoleMemberRequired.code))[0] == "FAIL"
+    assert _judge("personal", 403, _refusal(_api().member_required))[0] == "FAIL"
 
 
 def test_the_judge_never_echoes_a_response_body_it_does_not_understand():
