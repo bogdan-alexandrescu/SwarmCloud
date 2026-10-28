@@ -119,6 +119,7 @@ describe('config-24: the head keeps the Config pages\' height', () => {
 
 describe('chrome-C21: a runner key says what is not recorded', () => {
   it('reads set with a dash whose reason names the missing time and setter', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW)
     api([
       { section: 'keys', store: 'provider_keys', name: 'typesafe', status: 'set', set_at: daysAgo(5), set_by: 'ana@example.com', consumers: [], can_manage: true },
       { section: 'keys', store: 'runner_provider_keys', name: 'anthropic', status: 'set', set_at: null, set_by: null, consumers: ['profile:claude-code'], can_manage: true },
