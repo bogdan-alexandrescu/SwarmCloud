@@ -399,8 +399,8 @@ function BackendRow({
     <tr role="row" className={over ? 'is-bad over' : paused ? 'is-paused paused' : unset ? 'is-paused limit-unset' : full || shut ? 'is-warn full' : undefined}>
       <th role="rowheader" scope="row">
         {/* THE WORD, THEN THE IDENTIFIER THE API SENT, VERBATIM (QA1
-            capacity-14, 2026-10-28): `CLOUD_RUN_JOB` alone was the API's enum
-            as a name. `backendWord` is the one table the runner picker and the
+            capacity-14, 2026-10-28): the Cloud Run job backend's bare enum token
+            alone was the API's enum as a name. `backendWord` is the one table the runner picker and the
             attempt cards read, and a backend it has never heard of names
             itself in lower case rather than going blank; the id stays on the
             mono line, the one a reader pastes. */}
