@@ -8,6 +8,7 @@ import type { AccessCheck, AccessCheckName, AccessGrant, AccessMode, AccessVerif
 import { timeAgo } from './types'
 import './styles/repositories.css'
 import './styles/onboarding.css'
+import './styles/reachable-repositories.css'
 
 /**
  * "REPOSITORIES SWARMCLOUD MAY REACH AS YOU" (GITHUB-ACCESS-PAGE; part of
@@ -270,9 +271,19 @@ export function ReachableRepositories({
                           Push test
                         </Button>
                       )}
-                      <Button size="sm" kind="ghost" disabled={busy === g.repo_id} onClick={() => setAsking({ repo: g.repo_id, to: 'none' })}>
-                        Remove
-                      </Button>
+                      {/* "REMOVE ACCESS", NOT "REMOVE" (QA1 config-15). Each
+                          registered card below has a Remove of its own, which
+                          unregisters the repository; this one deletes the
+                          person's grant, so the two controls for one
+                          repository said the same word for two different
+                          writes. It is the word the ask already acts with, so
+                          while that ask is open it holds the one Remove
+                          access in the row and this trigger steps aside. */}
+                      {!(asking !== null && asking.repo === g.repo_id && asking.to === 'none') && (
+                        <Button size="sm" kind="ghost" disabled={busy === g.repo_id} onClick={() => setAsking({ repo: g.repo_id, to: 'none' })}>
+                          Remove access
+                        </Button>
+                      )}
                     </span>
                     {asking !== null && asking.repo === g.repo_id && (
                       <div className="ac-fails">
