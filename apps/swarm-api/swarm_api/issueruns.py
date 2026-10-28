@@ -1164,8 +1164,8 @@ SHARED_PATTERNS: tuple[str, ...] = ("scripts/lib/common.sh",)
 #: `SHARED_DENY_LIST` of scripts/lib/common.sh, where it lives once (CLAUDE.md
 #: rule 2). Restated here because swarm-api's image carries no scripts/;
 #: tests/unit/control_plane/test_hold_categories.py fails the day the two
-#: differ. Keep the order of common.sh. oracle-api@ is off it since 2026-10-27
-#: (#1835): a SwarmCloud principal; common.sh says why.
+#: differ. Keep the order of common.sh. oracle-api@ and the bare oracle-api
+#: are off it since 2026-10-27 (#1835, BGD: both entries); common.sh says why.
 SHARED_DENY_LIST: tuple[str, ...] = (
     "agents-staging",
     "agents-staging-vpc",
@@ -1196,7 +1196,6 @@ SHARED_DENY_LIST: tuple[str, ...] = (
     "oracle-ticker@saga-agents-staging.iam.gserviceaccount.com",
     "oracle-web@saga-agents-staging.iam.gserviceaccount.com",
     "promptlab-api@saga-agents-staging.iam.gserviceaccount.com",
-    "oracle-api",
     "oracle-web",
 )
 #: A deny-list name, whole: not inside a longer name (`swarm-agents-staging-x`
