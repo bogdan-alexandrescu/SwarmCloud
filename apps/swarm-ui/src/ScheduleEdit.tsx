@@ -1274,7 +1274,7 @@ function ScheduleForm({
             <div className="sc-facts">
               {typeof d.gate.approvers === 'string' || d.gate.approvers === undefined ? (
                 <Segmented<'members' | 'owner_only'>
-                  label="Approvers"
+                  label="Who may approve"
                   value={d.gate.approvers as 'members' | 'owner_only' | undefined}
                   options={[
                     { value: 'members', label: 'any member' },
@@ -1283,7 +1283,7 @@ function ScheduleForm({
                   onChange={(v) => set({ gate: { ...d.gate, approvers: v } })}
                 />
               ) : (
-                <Field label="Approvers" hint="A named list, set through the API; unchanged here.">
+                <Field label="Who may approve" hint="A named list, set through the API; unchanged here.">
                   <input className="c-inp" value={(d.gate.approvers as unknown as string[]).join(', ')} readOnly />
                 </Field>
               )}
