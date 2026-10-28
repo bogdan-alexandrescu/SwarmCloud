@@ -3,12 +3,12 @@
  * (QAFIX-WORKFLOWS; part of #1680):
  *
  *   QA-036  the summary said `2 running` and the Running tab said 2 while one
- *           of the two rows said `state not derived`. A workflow whose state
+ *           of the two rows said `state unknown`. A workflow whose state
  *           this read could not derive is said apart from running work, as
  *           parked and waiting work already were (WF-10); the Running tab,
  *           which still lists it because nothing says it ended, says so.
  *           Run 2 (wf_b6e2441b419f423a84eb, work-a-003) still read `Running 2`
- *           beside `1 running · 1 state not derived`: the tab is now named
+ *           beside `1 running · 1 state unknown`: the tab is now named
  *           by what it counts, `Not ended` (QAFIX2-WORKFLOWS).
  *   QA-097  at 390 the owner, profile and sort selects started at 57, 56 and
  *           44 px, each after its own label's width. The labels now sit in one
@@ -114,8 +114,8 @@ const rowIds = () => [...document.querySelectorAll<HTMLElement>('.wfl-table tbod
 describe('QA-036: a workflow whose state was not derived is not counted as running', () => {
   it('the summary says it apart from the running one', () => {
     // MUTATION: count an underived workflow as running again in listSummary and this reads `2 running · 0 finished · 1 failed`.
-    expect(listSummary({ workflows: ROWS, nextPageToken: null })).toBe('1 running · 1 state not derived · 0 finished · 1 failed')
-    // MUTATION: say the part when there is none and this reads `· 0 state not derived ·`.
+    expect(listSummary({ workflows: ROWS, nextPageToken: null })).toBe('1 running · 1 state unknown · 0 finished · 1 failed')
+    // MUTATION: say the part when there is none and this reads `· 0 state unknown ·`.
     expect(listSummary({ workflows: [ROWS[0]!, ROWS[2]!], nextPageToken: null })).toBe('1 running · 0 finished · 1 failed')
   })
 
@@ -123,7 +123,7 @@ describe('QA-036: a workflow whose state was not derived is not counted as runni
     render(<WorkflowsScreen view="state=running" />)
     await waitFor(() => expect(rowIds()).toEqual(['wf_audit_01', 'wf_bcdc9180e4fb4a209f31']))
     // MUTATION: drop the underived part from listSummary and the page's own count line says `2 running` again.
-    expect(screen.getByText(/1 running · 1 state not derived · 0 finished · 1 failed/)).toBeTruthy()
+    expect(screen.getByText(/1 running · 1 state unknown · 0 finished · 1 failed/)).toBeTruthy()
     const seg = screen.getByRole('group', { name: 'Which workflows' })
     // The tab lists both rows, because nothing on this read says the underived one ended...
     const notEnded = within(seg).getByRole('button', { name: /^Not ended/, pressed: true })
@@ -140,9 +140,9 @@ describe('QA-036: a workflow whose state was not derived is not counted as runni
     const tabs = within(seg).getAllByRole('button').map((b) => b.textContent)
     // MUTATION: label the tab `BUCKET_LABEL.running` again and the strip reads `Running2` beside `1 running`.
     expect(tabs).toEqual(['Not ended2', 'Finished0', 'Failed1', 'All3'])
-    // MUTATION: drop the summary's `state not derived` part and the line no longer sums to the tab's 2.
-    const line = screen.getByText(/1 running · 1 state not derived/).textContent ?? ''
-    const parts = [...line.matchAll(/(\d+) (running|parked|waiting|state not derived)/g)].reduce((n, m) => n + Number(m[1]), 0)
+    // MUTATION: drop the summary's `state unknown` part and the line no longer sums to the tab's 2.
+    const line = screen.getByText(/1 running · 1 state unknown/).textContent ?? ''
+    const parts = [...line.matchAll(/(\d+) (running|parked|waiting|state unknown)/g)].reduce((n, m) => n + Number(m[1]), 0)
     expect(parts).toBe(2)
   })
 })

@@ -13,7 +13,8 @@
 //   V086  One key width in a mono cell and a sans cell; Use is the track and its % (run 3).
 //   V087  The disabled runtime's reason is spaced from its facts.
 //   V088  The image fact spans the facts grid, after the short facts; a row's cards share its height.
-//   V089  Set by is wide enough for `AIMD back-off`.
+//   V089  Set by is wide enough for its words (`AIMD back-off` then, `lowered
+//         automatically after errors` since QA1B-13, on two lines).
 //   V090  The binding outline is on a box of one minimum width, not the cell.
 //   V091  Pools' and the matrix's column heads stick above 900px.
 //   V092  Runtimes re-reads on Pools' cadence, so its refresh says `every 30 s`.

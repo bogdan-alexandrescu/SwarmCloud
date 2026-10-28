@@ -26,9 +26,8 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { WorkflowsScreen } = await import('../Workflows')
+const { WorkflowsScreen, utcStamp } = await import('../Workflows')
 const wl = await import('../workflowlist')
-const { clockTime } = await import('../types')
 
 const T0 = Date.parse('2026-10-07T12:00:00.000Z')
 const iso = (offsetSeconds: number) => new Date(T0 + offsetSeconds * 1000).toISOString()
@@ -268,7 +267,8 @@ describe('G3-09: the Workflow column holds at least 280px at 1440 and the id nev
   it('cuts the id on one line with an ellipsis', async () => {
     render(<WorkflowsScreen />)
     await waitFor(() => expect(rowIds()).toEqual(['wf_fresh', 'wf_old']))
-    const id = row('wf_fresh').querySelector('.wfl-line > .id')!
+    // The id is the name's second line since visual QA pass 1 (overview-agents-61, #2596).
+    const id = row('wf_fresh').querySelector('.wfl-name > .id')!
     expect(at(id, 'white-space')).toBe('nowrap')
     expect(at(id, 'overflow')).toBe('hidden')
     expect(at(id, 'text-overflow')).toBe('ellipsis')
@@ -328,7 +328,9 @@ describe('G3-20: the time column is the submission the newest-first order sorts 
     expect(heads).toContain('Submitted')
     expect(heads).not.toContain('Started')
     const cells = rowIds().map((id) => row(id).querySelector<HTMLElement>('td[data-col="submitted"]')!)
-    expect(cells.map((c) => c.textContent)).toEqual([b.created_at, a.created_at].map((t) => clockTime(t, T0)!.text))
+    expect(cells.map((c) => c.textContent)).toEqual([b.created_at, a.created_at].map((t) => utcStamp(t, T0)))
+    // UTC with Z, as the rest of the console writes it (visual QA pass 1 C-10, #2596).
+    expect(cells[0]!.textContent).toMatch(/Z$/)
     // The first step's start stays one hover away.
     expect(cells[0]!.getAttribute('title')).toMatch(/^submitted .*; first step started /)
   })

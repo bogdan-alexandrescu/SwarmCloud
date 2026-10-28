@@ -85,7 +85,10 @@ const GRANT = (n: number, repository: string, mode: 'read' | 'write') => ({
 
 const GRANTS = [GRANT(1, 'example-org/example-docs', 'read'), GRANT(2, 'octo-dev/example-api', 'write')]
 
+// A personal account: an organisation not installed offers Request install
+// alone since QA1-FIX-01 config-04, so the long Install on link is a user's.
 const UNINSTALLED = ORG(LONG, {
+  owner_type: 'User',
   installation_id: null,
   repository_selection: null,
   install_state: 'not_installed',

@@ -21,7 +21,7 @@
 //
 // The arithmetic is in accountHealthModel.ts; this file draws it.
 
-import { useLayoutEffect, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 
 import {
   FAMILIES,
@@ -38,6 +38,7 @@ import {
   hm,
   incidentSummary,
   incidentTitle,
+  incidents,
   laneMarks,
   limitBands,
   poolHours,
@@ -61,12 +62,13 @@ import {
   type StatusCell,
   type Tally,
 } from './accountHealthModel'
-import { verdictOf, type PoolAccount } from './accountsPool'
-import { HelpLinks } from './HelpCard'
+import { blocksOf, isDuplicateBlock, verdictOf, type PoolAccount } from './accountsPool'
+import { whyOf } from './AccountsTable'
 import type { TopicId } from './help'
 import { loadAccountHealthBoard, type AccountHealthBoard } from './api'
 import { capacityPoll, paneHref, usePhoneTables } from './capacityPoll'
 import { Screen } from './Shell'
+import { unreadableFor } from './types'
 import './styles/account-health.css'
 
 /**
@@ -83,9 +85,16 @@ export function sheetHref(accountId: string): string {
 }
 
 /**
- * The page's help, as a footer index rather than a `?` after the title: the
- * console's glyph count is capped (B7.4, `tests/help.test.ts`), and a new
- * screen explains itself through the footer index before it takes a glyph.
+ * The page's help, as the topic index the title's `?` opens.
+ *
+ * NO LONGER A FOOTER (QA1-FIX-24, capacity-13, part of #2596). It was a
+ * `Reading this screen:` row of underlined monospace links at the foot of
+ * both layouts, because the console's glyph count is capped (B7.4,
+ * `tests/help.test.ts`). VQ-033 (BGD 2026-10-26: "Move the topics behind the
+ * page's one ?") moved Pools', Accounts' and Provider quota's behind the `?`
+ * the title already draws -- the section's question, which a list joins
+ * rather than replaces -- so this costs no glyph, and Account health does the
+ * same.
  */
 const HEALTH_TOPICS: readonly TopicId[] = ['account-health', 'absent-vs-zero']
 
@@ -94,6 +103,7 @@ export function AccountHealthScreen() {
   return (
     <Screen
       title="Account health"
+      help={HEALTH_TOPICS}
       load={loadAccountHealthBoard}
       pollMs={capacityPoll(ACCOUNT_HEALTH_POLL_MS)}
     >
@@ -173,7 +183,6 @@ function DesktopBody({ m }: { m: Model }) {
       <Tiles m={m} />
       <AccountList m={m} />
       <Timeline m={m} />
-      <HelpLinks topics={HEALTH_TOPICS} />
     </div>
   )
 }
@@ -258,6 +267,26 @@ function nameOf(a: HealthAccount): string {
   return a.display_name || a.label || a.account_id
 }
 
+/**
+ * WHAT THE BROKER SAYS OF IT, BESIDE ITS HEALTH (QA1-FIX-01 capacity-04).
+ * Health is the provider's side; a paused account, one this workspace skips
+ * because it cannot read its secret, and one subscription registered twice
+ * are the broker's, and drawn Healthy or Limited alone they contradicted
+ * Accounts about the same account. The words are Accounts' own (`whyOf`). A
+ * signed-out account is left out: its status already says so.
+ */
+function BrokerNote({ m, a }: { m: Model; a: HealthAccount }) {
+  if (a.state === 'REAUTH_REQUIRED') return null
+  const held = a.state !== 'AVAILABLE' || unreadableFor(a, m.scope) || blocksOf(a).some(isDuplicateBlock)
+  if (!held) return null
+  const names = new Map(m.accounts.map((x) => [x.account_id, nameOf(x)]))
+  return (
+    <small className="ah-broker" data-broker={a.state}>
+      {whyOf(a, m.scope, m.now, names)}
+    </small>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // F4: the deployment does not serve it, or the read failed
 // ---------------------------------------------------------------------------
@@ -321,9 +350,12 @@ function ReauthCallouts({ m }: { m: Model }) {
   return (
     <>
       {dead.map((a) => {
+        // The open credential incident's start, the "since" its phone card
+        // prints (QA1-FIX-01 capacity-06): the newest auth or reauth event put
+        // the banner at 10:59Z and the card at 10:50Z for one incident.
         const r = m.records.get(a.account_id)
-        const mark = r?.events.find((e) => e.kind === 'reauth' || e.kind === 'auth')
-        const since = mark === undefined ? '' : ` since ${when(Date.parse(mark.at), m.now)}`
+        const open = r === undefined ? undefined : incidents(r, 'reauth_needed', m.now).find((x) => x.family === 'cred' && x.open)
+        const since = open === undefined || !Number.isFinite(open.from) ? '' : ` since ${when(open.from, m.now)}`
         return (
           <div key={a.account_id} className="ah-callout is-reauth" data-state="reauth" data-account={a.account_id}>
             <b>
@@ -351,9 +383,37 @@ function ReauthCallouts({ m }: { m: Model }) {
 
 const TILE_ORDER: readonly HealthStatus[] = ['healthy', 'limited', 'erroring', 'reauth_needed']
 
+/**
+ * Accounts with provider errors in the last 24 h that a worse status outranks
+ * (QA1-FIX-01 capacity-05): the Erroring tile counts statuses, so "Erroring 0"
+ * sat over a Limited row with 9 provider errors and nothing said why.
+ */
+function outranked(m: Model): HealthAccount[] {
+  return m.sorted.filter((a) => {
+    const s = m.cell(a).status
+    if (s === null || s === 'erroring') return false
+    const c = counts24h(a, m.records.get(a.account_id))
+    return c !== null && familyCount(c, 'err') > 0
+  })
+}
+
+function OutrankedLine({ m }: { m: Model }) {
+  const also = outranked(m)
+  if (also.length === 0) return null
+  const one = also.length === 1 ? also[0]! : null
+  const s = one === null ? null : m.cell(one).status
+  return (
+    <small className="ah-tile-also" data-outranked={also.length}>
+      {one !== null && s !== null
+        ? `${nameOf(one)} also had provider errors in 24 h; it counts as ${STATUS_WORD[s]}, which outranks Erroring`
+        : `${also.length} more had provider errors in 24 h, counted under a worse status: ${also.map(nameOf).join(', ')}`}
+    </small>
+  )
+}
+
 function Tiles({ m }: { m: Model }) {
   const t = tallyOf(m)
-  const v = verdictOf(m.accounts as PoolAccount[], m.scope, m.shortfall)
+  const v = verdictOf(m.accounts as PoolAccount[], m.scope, m.shortfall, m.now)
   return (
     <div className="ah-tiles" role="list" aria-label="Accounts by health status">
       {TILE_ORDER.map((s) => (
@@ -365,6 +425,7 @@ function Tiles({ m }: { m: Model }) {
             {m.served ? t[s] : <Dash why={NOT_SERVED_WHY} />}
           </div>
           <small>{m.served ? STATUS_HINT[s] : 'not served'}</small>
+          {m.served && s === 'erroring' && <OutrankedLine m={m} />}
         </div>
       ))}
       <div className="ah-tile is-verdict" role="listitem" data-tile="verdict">
@@ -410,6 +471,7 @@ function StatusCellView({ m, a }: { m: Model; a: HealthAccount }) {
     <>
       <StatusChip s={c.status} />
       {until && <small className="ah-st-until">{until}</small>}
+      <BrokerNote m={m} a={a} />
     </>
   )
 }
@@ -446,7 +508,9 @@ function LastEvent({ m, a }: { m: Model; a: HealthAccount }) {
       <small>
         {when(at, m.now)} · {span(m.now - at)} ago
       </small>
-      <small className="ah-msg is-one-line" title={e.message ?? undefined}>
+      {/* Whole, wrapping in its held column (QA1-FIX-01 chrome-C26): cut to
+          one line, the rest was a title no keyboard or touch could open. */}
+      <small className="ah-msg">
         {e.message ?? 'another workspace’s event: details withheld'}
       </small>
     </span>
@@ -882,13 +946,35 @@ function PhoneBody({ m, view, setView }: { m: Model; view: PhoneView; setView: (
           m.accounts.map((a) => ({ account_id: a.account_id, label: nameOf(a) })),
         )
       : null
+  // FOCUS STAYS ON THE SWITCH (QA1-FIX-01 capacity-09). Choosing Accounts
+  // dropped focus to <body> in the live browser, so the next Tab began again
+  // at the top. A choice made on the switch puts focus on the chosen button
+  // once the panels have swapped, and the arrow keys move between the two.
+  const sw = useRef<HTMLDivElement>(null)
+  const chose = useRef(false)
+  useEffect(() => {
+    if (!chose.current) return
+    chose.current = false
+    sw.current?.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')?.focus()
+  }, [view])
+  const choose = (v: PhoneView) => {
+    chose.current = true
+    if (v === view) sw.current?.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')?.focus()
+    else setView(v)
+  }
+  const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'ArrowLeft' || e.key === 'Home') choose('incidents')
+    else if (e.key === 'ArrowRight' || e.key === 'End') choose('accounts')
+    else return
+    e.preventDefault()
+  }
   return (
     <div className="ah-page" data-layout="phone">
-      <div className="ah-switch" role="group" aria-label="View">
-        <button type="button" aria-pressed={view === 'incidents'} onClick={() => setView('incidents')}>
+      <div className="ah-switch" role="group" aria-label="View" ref={sw} onKeyDown={onKey}>
+        <button type="button" aria-pressed={view === 'incidents'} onClick={() => choose('incidents')}>
           Incidents {inc === null ? <span className="ah-dash">—</span> : `· ${inc.open.length} open`}
         </button>
-        <button type="button" aria-pressed={view === 'accounts'} onClick={() => setView('accounts')}>
+        <button type="button" aria-pressed={view === 'accounts'} onClick={() => choose('accounts')}>
           Accounts
         </button>
       </div>
@@ -948,14 +1034,13 @@ function PhoneBody({ m, view, setView }: { m: Model; view: PhoneView; setView: (
           <Timeline m={m} />
         </>
       )}
-      <HelpLinks topics={HEALTH_TOPICS} />
     </div>
   )
 }
 
 function SummaryLine({ m, open }: { m: Model; open: Incident[] | null }) {
   const t = tallyOf(m)
-  const v = verdictOf(m.accounts as PoolAccount[], m.scope, m.shortfall)
+  const v = verdictOf(m.accounts as PoolAccount[], m.scope, m.shortfall, m.now)
   const on = open === null ? null : new Set(open.map((x) => x.account_id)).size
   return (
     <div className="ah-sumline" data-summary="">
@@ -1060,6 +1145,7 @@ function AccountCards({ m }: { m: Model }): ReactNode {
                 <b>{untilWord(r, m.now)}</b>
               </span>
             )}
+            <BrokerNote m={m} a={a} />
             <span className="ah-meta">
               {c === null ? (
                 <>

@@ -148,7 +148,7 @@ describe('the page is led by what is missing (proposal E)', () => {
     // MUTATION: match the registry by repo name alone and the registered one is drawn dashed too.
     expect(document.querySelectorAll('.ur-cards > .ur-card.is-chosen')).toHaveLength(1)
     // MUTATION: count the dashed card as registered, or leave it uncounted, and the note disagrees with the grid.
-    expect(visible(document.querySelector('.c-count-note'))).toContain('1 registered · 1 chosen, not registered')
+    expect(visible(document.querySelector('.c-count-note'))).toContain('Registered repositories · 1 · 1 chosen, not registered')
     const lead = document.querySelector<HTMLElement>('section[aria-label="Next step"]')
     expect(lead).not.toBeNull()
     expect(visible(lead!)).toContain('example-labs/console is chosen but not registered')

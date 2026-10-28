@@ -40,6 +40,10 @@ const { AccountsScreen, givenAt, stateNeedsReason, unknownTenants } = await impo
 
 const WAIT = { timeout: 5000 } as const
 
+// THE CONFIRMATION, NOT THE SHEET UNDER IT: the desktop account sheet is a
+// dialog itself (visual QA pass 1 capacity-07), so the page holds two.
+const CONFIRM = { name: (_: string, el: Element) => el.classList.contains('c-dlg') }
+
 afterEach(() => {
   // Unmount first: a dialog is portalled to <body>, and clearing <body> under
   // a mounted portal leaves React nothing to remove.
@@ -100,7 +104,7 @@ describe('CAP-1: a state change is confirmed before it is written', () => {
     openFirst()
     fireEvent.click(await screen.findByRole('button', { name: 'Drain' }, WAIT))
     expect(api.setAccountState, 'the first click wrote').not.toHaveBeenCalled()
-    const dialog = await screen.findByRole('dialog', undefined, WAIT)
+    const dialog = await screen.findByRole('dialog', CONFIRM, WAIT)
     expect(dialog.textContent).toContain('eng:alice-personal')
     expect(dialog.textContent).toMatch(/7 agents on it now will be moved off/)
   })
@@ -110,7 +114,7 @@ describe('CAP-1: a state change is confirmed before it is written', () => {
     await mount([account({})])
     openFirst()
     fireEvent.click(await screen.findByRole('button', { name: 'Pause' }, WAIT))
-    const dialog = await screen.findByRole('dialog', undefined, WAIT)
+    const dialog = await screen.findByRole('dialog', CONFIRM, WAIT)
     const verb = within(dialog).getByRole('button', { name: 'Pause' })
     expect((verb as HTMLButtonElement).disabled, 'pause with an empty reason is armed').toBe(true)
     fireEvent.click(verb)
@@ -124,9 +128,9 @@ describe('CAP-1: a state change is confirmed before it is written', () => {
     await mount([account({})])
     openFirst()
     fireEvent.click(await screen.findByRole('button', { name: 'Drain' }, WAIT))
-    const dialog = await screen.findByRole('dialog', undefined, WAIT)
+    const dialog = await screen.findByRole('dialog', CONFIRM, WAIT)
     fireEvent.click(within(dialog).getByRole('button', { name: /^Leave it/ }))
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull(), WAIT)
+    await waitFor(() => expect(screen.queryByRole('dialog', CONFIRM)).toBeNull(), WAIT)
     expect(api.setAccountState).not.toHaveBeenCalled()
   })
 
@@ -159,7 +163,7 @@ describe('CAP-2: lending is checked against the tenants and confirmed', () => {
     fireEvent.change(await screen.findByRole('combobox', { name: /is lent to$/ }, WAIT), { target: { value: 'smoke' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save lending' }))
     expect(api.setAccountLending, 'the first click lent the account').not.toHaveBeenCalled()
-    const dialog = await screen.findByRole('dialog', undefined, WAIT)
+    const dialog = await screen.findByRole('dialog', CONFIRM, WAIT)
     expect(dialog.querySelector('h2')!.textContent).toBe('Lend alice-personal to smoke?')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save lending' }))
     await waitFor(() => expect(api.setAccountLending).toHaveBeenCalledWith('eng:alice-personal', ['smoke']), WAIT)

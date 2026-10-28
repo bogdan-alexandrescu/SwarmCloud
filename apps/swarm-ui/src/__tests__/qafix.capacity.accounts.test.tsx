@@ -85,9 +85,9 @@ async function mount(accounts: Account[], unreadable = 0): Promise<void> {
 }
 
 describe('QA-049: the partial mark draws its dashed edge straight', () => {
-  it('squares the dashed side, beside `unread docs`, and keeps the solid side round', async () => {
+  it('squares the dashed side, beside `unreadable account records`, and keeps the solid side round', async () => {
     await mount([account({})], 1)
-    const fact = [...document.querySelectorAll('.ctl-fact')].find((f) => f.querySelector('b')?.textContent === 'unread docs')!
+    const fact = [...document.querySelectorAll('.ctl-fact')].find((f) => f.querySelector('b')?.textContent === 'unreadable account records')!
     const mark = fact.querySelector<HTMLElement>('.ctl-mark.is-partial')!
     expect(mark.textContent).toBe('partial')
     // Solid and transparent since run 2: the dashes are drawn over it (below).
@@ -174,7 +174,7 @@ describe('QA-049 (run 2): the partial mark\'s dashed side on Accounts is a rule 
     await mount([account({ stale: true, observed_at: new Date(Date.now() - 3 * 86_400_000).toISOString() })], 1)
     fireEvent.click(document.querySelector<HTMLButtonElement>('button.acct-open')!)
     const marks = [...document.querySelectorAll<HTMLElement>('.acct-page .ctl-mark.is-partial')]
-    // `unread docs` in the footer and the old reading's age in the sheet.
+    // `unreadable account records` in the footer and the old reading's age in the sheet.
     expect(marks.length, 'no partial marks on Accounts').toBeGreaterThanOrEqual(2)
     for (const mark of marks) {
       // MUTATION: leave the right border dashed in currentColor -- the browser's

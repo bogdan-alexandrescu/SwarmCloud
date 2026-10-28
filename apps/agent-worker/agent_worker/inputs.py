@@ -171,6 +171,9 @@ class ArtifactReference:
     #: The answer's files, when the entry lists any; empty for every entry a
     #: worker's own upload wrote.
     attachments: tuple[AttachmentReference, ...] = ()
+    #: The bytes, when the platform wrote the artifact into the manifest
+    #: itself (`inline_artifact`); None for every object in the bucket.
+    inline: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -550,6 +553,44 @@ def find_ci_fix_tasks(
     return found
 
 
+#: A skipped review's verdict, written into the manifest by swarm-api as it
+#: ends the review without a worker (#2524, `swarm_api.reviewgate`): no
+#: attempt ran, so there is no attempt prefix to upload it under. The entry
+#: carries the text under `inline` and no `uri`. Held equal to
+#: `swarm_api.reviewgate.INLINE_ARTIFACT_KEY` / `INLINE_WRITER` by
+#: tests/unit/control_plane/test_review_gate.py.
+INLINE_ARTIFACT_KEY = "inline"
+INLINE_WRITER = "control_plane"
+INLINE_ARTIFACT_NAMES = frozenset({"verdict.json"})
+#: A verdict and its reason; anything larger is not one the platform wrote.
+MAX_INLINE_BYTES = 4096
+
+
+def inline_artifact(
+    task_document: Mapping[str, Any], entry: Mapping[str, Any], *, filename: str
+) -> bytes | None:
+    """The bytes of a platform-written inline entry, or None for any other entry.
+
+    ONLY the one shape swarm-api writes, and only on the step it ends:
+    `verdict.json`, `written_by: "control_plane"`, no `uri`, at most
+    `MAX_INLINE_BYTES`, on a task whose `result_summary.review_skipped` says
+    its review gate skipped it. Every
+    other entry is located in the bucket as before. The task document is
+    tenant-writable, so this admits nothing a tenant could not already write
+    on its own task: a skipped review is a MERGE by design, and a review that
+    RAN uploads its verdict and records a `uri`.
+    """
+    text = entry.get(INLINE_ARTIFACT_KEY)
+    if (filename not in INLINE_ARTIFACT_NAMES or entry.get("written_by") != INLINE_WRITER
+            or entry.get("uri") or not isinstance(text, str)):
+        return None
+    summary = task_document.get("result_summary")
+    if not isinstance(summary, Mapping) or not isinstance(summary.get("review_skipped"), str):
+        return None
+    data = text.encode("utf-8")
+    return data if len(data) <= MAX_INLINE_BYTES else None
+
+
 def artifact_reference(
     task_document: dict[str, Any],
     *,
@@ -585,6 +626,10 @@ def artifact_reference(
         names.append(name)
         if name != filename:
             continue
+        inline = inline_artifact(task_document, entry, filename=filename)
+        if inline is not None:
+            return ArtifactReference(key="", uri=f"inline:{upstream_task_id}/{filename}",
+                                     size_bytes=len(inline), inline=inline)
         uri = entry.get("uri")
         if not isinstance(uri, str) or not uri:
             raise InputUnavailable(
@@ -930,11 +975,16 @@ def stage_inputs(
     # manifest is a claim, and the claim is checkable only here.
     downloaded = 0
 
-    def fetch(item: DeclaredInput, name: str, key: str, uri: str, destination: Path) -> int:
+    def fetch(item: DeclaredInput, name: str, key: str, uri: str, destination: Path,
+              inline: bytes | None = None) -> int:
         nonlocal downloaded
         destination.parent.mkdir(parents=True, exist_ok=True)
         try:
-            size = store.download_file(key, destination)
+            if inline is not None:
+                destination.write_bytes(inline)
+                size = len(inline)
+            else:
+                size = store.download_file(key, destination)
         except Exception as exc:
             raise InputUnavailable(
                 f"could not stage {name!r} from upstream task "
@@ -963,7 +1013,8 @@ def stage_inputs(
     for item in pending:
         reference = references[item]
         destination = destinations[item]
-        size = fetch(item, item.filename, reference.key, reference.uri, destination)
+        size = fetch(item, item.filename, reference.key, reference.uri, destination,
+                     reference.inline)
         staged.append(
             StagedInput(
                 upstream_task_id=item.upstream_task_id,

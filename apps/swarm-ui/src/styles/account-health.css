@@ -23,6 +23,13 @@
 /* A Limited row's reset time, under its word in the list: it may wrap, so the
    Status column gives way and the table fits its card at 1440. */
 .ah-st-until { display: block; margin-top: 2px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--warn-ink); }
+/* What the broker holds an account back for, under its status (QA1-FIX-01
+   capacity-04). A sentence, not a time: it wraps, and is held to 200 px, so the
+   Status column gives way. Without both it took the cell's nowrap, the column
+   grew to 573 px and the table ran 329 px past its card at 1440, pushing Last
+   event and "Sign in again ›" off the edge. 200 px keeps the table (793 px
+   without the column) inside the 1037 px card. */
+.ah-broker { display: block; margin-top: 2px; max-width: 200px; white-space: normal; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--warn-ink); }
 .ah-dash { color: var(--text-dim); font-weight: 600; cursor: help; }
 .ah-mu { color: var(--text-dim); }
 
@@ -71,6 +78,8 @@
 }
 .ah-tile-n > small { font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 500; color: var(--text-dim); }
 .ah-tile > small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+/* The accounts with provider errors a worse status outranks, under the Erroring tile (QA1-FIX-01 capacity-05). */
+.ah-tile > small.ah-tile-also { display: block; margin-top: 4px; }
 .ah-tile.is-verdict { border-left: 4px solid var(--info); }
 .ah-tiles-note { grid-column: 1 / -1; margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 
@@ -89,11 +98,12 @@
   overflow-wrap: anywhere;
 }
 .ah-open { text-align: right; white-space: nowrap; }
-/* The Last event column is held to a width and its message cut to one line
-   (the whole of it is the line's title), so the table fits its card at 1440:
-   unbounded, a long message pushed the row's "Sign in again ›" off the edge. */
+/* The Last event column is held to a width, so the table fits its card at
+   1440: unbounded, a long message pushed the row's "Sign in again ›" off the
+   edge. The message wraps inside it, whole: cut to one line with the rest as
+   its title, a keyboard or touch reader could not read it (QA1-FIX-01
+   chrome-C26). */
 .ah-last-td .ah-last { max-width: 280px; }
-.ah-msg.is-one-line { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }
 .ah-foot { margin: 8px 0 0; padding: 0 var(--ctl-pad-chrome) var(--ctl-pad-chrome); font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 .ah-empty-line { margin: 0; padding: var(--ctl-pad-chrome); font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
 

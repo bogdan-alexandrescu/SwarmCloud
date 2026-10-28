@@ -786,6 +786,36 @@ describe('the readout', () => {
 // The Table twin
 // ---------------------------------------------------------------------------
 
+describe('the head and the facts line (QA1-FIX-13)', () => {
+  it('stamps the head with the browser’s read, not the ledger’s generated_at (runs-submit-12)', async () => {
+    const d = ledgerFixture()
+    d.generated_at = new Date(Date.now() - 8 * 86_400_000).toISOString()
+    const root = await timeline(d)
+    const head = root.querySelector('.c-refresh')!.textContent ?? ''
+    // MUTATION: feed RefreshControl `Date.parse(data.generated_at)` again and this reads "read 8 d ago".
+    expect(head).not.toMatch(/\bd ago/)
+    expect(head).toMatch(/read \d+ ?s ago/)
+  })
+
+  it('says the time basis in words, the field in its title (runs-submit-39)', async () => {
+    const root = await timeline()
+    const by = [...root.querySelectorAll('.ol-facts .ctl-fact')].find((f) => f.querySelector('b')?.textContent === 'by')!
+    // MUTATION: print `<code>{data.basis.outcomes}</code>` again.
+    expect(by.textContent).toBe('byfinish time')
+    expect(by.querySelector('[title="completed_at"]')).not.toBeNull()
+  })
+
+  it('says a submit-time basis in words too, the field in its title (runs-submit-39)', async () => {
+    const d = ledgerFixture()
+    d.basis = { ...d.basis, outcomes: 'created_at' }
+    const root = await timeline(d)
+    const by = [...root.querySelectorAll('.ol-facts .ctl-fact')].find((f) => f.querySelector('b')?.textContent === 'by')!
+    // MUTATION: drop the created_at branch from `basisWords` and this reads "bycreated_at".
+    expect(by.textContent).toBe('bysubmit time')
+    expect(by.querySelector('[title="created_at"]')).not.toBeNull()
+  })
+})
+
 describe('the Table toggle', () => {
   it('swaps the drawing for the same buckets as a scrolling table, and writes it to the hash', async () => {
     const onView = vi.fn()
@@ -824,7 +854,7 @@ describe('scope and filters', () => {
     const facts = [...root.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
     // The reader's word is workspace (VQ-056); the id is still the tenant id.
     expect(facts).toContain('workspaceeng')
-    expect(facts).toContain('bycompleted_at')
+    expect(facts).toContain('byfinish time')
   })
 
   it('gives an admin the scope, and excludes the verify tenant in one click', async () => {
@@ -991,6 +1021,9 @@ describe('what the route serves, said as the route means it', () => {
     expect(root.querySelector('.ol-legend')!.textContent).toContain('by arrived_at')
     const facts = [...root.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
     expect(facts).toContain('byended_at')
+    // An unknown basis keeps its field name, and the field is its title too (QA1-FIX-13).
+    // MUTATION: drop the `title` from the facts line's basis span.
+    expect(root.querySelector('.ol-facts .ctl-fact [title="ended_at"]')?.textContent).toBe('ended_at')
     cleanup()
     const table = await timeline(d, { view: 'table=1' })
     const heads = [...table.querySelectorAll('.ol-table thead th')].map((th) => th.textContent)

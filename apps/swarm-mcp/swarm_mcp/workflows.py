@@ -394,6 +394,9 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
             # A real boolean only: `"true"` or 1 reaching the API as a 422 is a
             # worse place to learn it. Sent only when set, so every other
             # step's body reads exactly as it did before the key existed.
+            # Under direct-pr the API sets it itself for a reader step (one a
+            # dependant depends on and no step builds_on), so an author need
+            # not; this parser does not decide that.
             if not isinstance(raw["allow_empty_diff"], bool):
                 raise SwarmError(
                     f"{where}: allow_empty_diff must be true or false -- whether "

@@ -125,6 +125,9 @@ describe('VQ-055: each Config and Admin page’s `?` opens its own topic', () =>
       // MUTATION: drop the page from App.tsx `PAGE_TOPIC` and its card links #help, the first group.
       expect(card.querySelector(`[data-topic="${topic}"]`)?.textContent).toBe(HELP[topic].short)
       expect(card.querySelector('a')!.getAttribute('href')).toBe(`#${HELP[topic].anchor}`)
+      // QA1 config-32: the card is titled by its tab, never the section's one title.
+      // MUTATION: pass no `title` to SectionQuestion in App.tsx and it reads "Config answers".
+      expect(card.querySelector('.ctl-q-title')?.textContent).not.toMatch(/^(Config|Admin) answers$/)
     })
   }
 })

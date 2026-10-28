@@ -165,15 +165,6 @@ input.dsp-repo[aria-invalid='true'] { border-color: var(--warn); box-shadow: ins
 .sbf-runners.is-cards .sbf-runner-room {
   font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim);
 }
-/* THE POOL HOLDING A RUNNER AT ZERO (VQA V126): `.mono` set it at 14px inside
-   these 12px facts and `.id` would break it mid-id at 1280. Mono at the fact's
-   own size, kept whole -- it moves to the next line as one id, and a holder
-   longer than its card is cut with its full name in the title. */
-.sbf-runner-holder {
-  display: inline-block; max-width: 100%; vertical-align: bottom;
-  font-family: var(--mono); font-size: inherit;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
 /* AN UNREAD ROOM'S COUNT IS ONE UNIT (visual QA QA-069): "… pools could not
    be read" left "be read" alone on the card's last line. The clause breaks
    before its count or not at all; RunnerPicker.tsx's `UnreadRoom` says why it
@@ -363,6 +354,10 @@ input.dsp-repo[aria-invalid='true'] { border-color: var(--warn); box-shadow: ins
   background: transparent;
   padding: 10px;
 }
+/* "Stage 1" IS A NAME IN WORDS, NOT A KEY (QA1 runs-submit-22): styles.css
+   sets `.wfb-stage-n` in bold mono, which read `first` as a raw value. The
+   body face, at the same size and weight. (0,3,0) over (0,1,0). */
+.sbf-build .wfb-stage .wfb-stage-n { font-family: inherit; }
 .wfb-steps > .wfb-step {
   border: 1px solid var(--line);
   border-radius: var(--ctl-radius-sm);
@@ -465,6 +460,13 @@ input.dsp-repo[aria-invalid='true'] { border-color: var(--warn); box-shadow: ins
 .sb-recent-n:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
 .sb-recent-at { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); white-space: nowrap; }
 .sb-recent-scope { margin: 6px 0 0; }
+/* ON A PHONE THE STATE GOES UNDER THE NAME (QA1 runs-submit-26, re-review):
+   beside it, "dispatched · 9d ago" cut "claude-code agent · 19d91b82" to
+   "claude-code agent · 19…", and the id is what tells those rows apart. */
+@media (max-width: 560px) {
+  .sb-recent-i { grid-template-columns: auto minmax(0, 1fr); row-gap: 0; padding: 4px 0; }
+  .sb-recent-at { grid-column: 2; }
+}
 
 /* ---- a phone (submit.html's 390px frames) ------------------------------- */
 /* One column of runners; the choices stack (the grid already does); no key
@@ -562,3 +564,12 @@ input.dsp-repo[aria-invalid='true'] { border-color: var(--warn); box-shadow: ins
   .btp-opt { min-height: 44px; border-bottom: 1px solid var(--line); }
   .btp-opt:nth-child(2n) { border-right: 0; }
 }
+/* A GAP BETWEEN THE SETTINGS AND THE NEXT GROUP (QA1 runs-submit-19): the
+   "+ Add setting" button, the last thing in `.sbf-input`, sat on the
+   "Additional repositories" legend with no space. One step, the 12px `.btp`
+   already keeps below itself. */
+.sbf-input + .btp { margin-top: 12px; }
+/* A SETTING'S LABEL IN WORDS (QA1 runs-submit-18): `.sbf-name` is mono for a
+   key typed by the caller; an offered setting's label is a name, in the body
+   face at the size the key used to take. */
+.sbf-name > .sbf-words { font: var(--t-body)/var(--lh-body) var(--font); color: var(--text); }

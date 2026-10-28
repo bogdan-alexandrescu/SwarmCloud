@@ -511,7 +511,8 @@ def _start_index(
         raise
     log.info(
         "repository index run tenant=%s repo_id=%s by=%s outcome=%s", tenant_id, repo_id,
-        auth.email, "coalesced" if answer["coalesced"] else "submitted",
+        auth.email, "coalesced" if answer["coalesced"]
+        else "skipped" if answer.get("skipped") else "submitted",
     )
     return {**answer, "repo_id": repo_id, "tenant_id": tenant_id}
 

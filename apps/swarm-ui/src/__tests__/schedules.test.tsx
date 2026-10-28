@@ -33,6 +33,7 @@ import { SECTIONS, fromAddress, canonical, spineOf } from '../App'
 import { addressToPath, pathToAddress } from '../paths'
 import { PANEL_PAGES, approvalsBadge } from '../Spine'
 import { HISTORY_VIEW_KEY } from '../ScheduleHistoryTimeline'
+import SCHEDULE_DETAIL_TSX from '../ScheduleDetail.tsx?raw'
 
 const WAIT = { timeout: 4000 }
 const PHONE: CascadeEnv = { width: 390 }
@@ -328,7 +329,7 @@ describe("a schedule's page head", () => {
     expect(within(head()).getAllByRole('button').map((b) => visible(b))).toEqual(['Run now', 'Dry run', 'Resume', 'Delete…'])
   })
 
-  it('dry-runs and pauses without asking, through :run and :pause, then reads the schedule again', async () => {
+  it('dry-runs without asking and pauses after its reason dialog, through :run and :pause, then reads the schedule again', async () => {
     // MUTATION: route Dry run through the confirmation and the first click sends nothing.
     const { calls } = await mountActing('schedule=sch_a', ONE(), (m, url) => {
       if (m === 'POST' && url === '/v1/schedules/sch_a:run') {
@@ -348,7 +349,10 @@ describe("a schedule's page head", () => {
     await waitFor(() => expect(reads(calls, '/v1/schedules/sch_a')).toBe(2), WAIT)
     await screen.findByTestId('sc-acts-head', undefined, WAIT)
     fireEvent.click(within(head()).getByRole('button', { name: 'Pause' }))
+    // Pause asks for an optional reason (QA1 automate-12); none written sends none.
+    fireEvent.click(within(await screen.findByRole('dialog', undefined, WAIT)).getByRole('button', { name: 'Pause' }))
     await waitFor(() => expect(posts(calls, '/v1/schedules/sch_a:pause')).toHaveLength(1), WAIT)
+    expect(posts(calls, '/v1/schedules/sch_a:pause')[0]!.body).toEqual({})
     expect(screen.queryByRole('dialog')).toBeNull()
     await waitFor(() => expect(visible(screen.getByTestId('sc-said'))).toContain('Paused: no new firings'), WAIT)
     await waitFor(() => expect(reads(calls, '/v1/schedules/sch_a')).toBe(3), WAIT)
@@ -457,6 +461,13 @@ describe("the sheet's Spend today", () => {
     expect(width('free')).toBe(0)
     expect(parseFloat(bar.querySelector<HTMLElement>('.sc-burn-tick')!.style.left)).toBe(pct(120, 145))
     expect(visible(bar)).toContain('a new firing is skipped')
+  })
+
+  it('says its day as the console writes a day, "Oct 11", not as served (QA1 automate-21)', async () => {
+    await budgetTab(USE)
+    const sub = document.querySelector<HTMLElement>('aside.as-sheet [data-sec="spend"] small')!
+    // MUTATION: put back `${s.spend_today.day}` in ScheduleDetail.tsx's Spend and it reads "2026-10-11".
+    expect(visible(sub)).toBe('Oct 11 · the schedule’s own day')
   })
 
   it('draws no bar and invents no figure when the read did not serve the reservation', async () => {
@@ -623,6 +634,10 @@ describe('one schedule', () => {
     expect(stops).toMatch(/protected path/)
     expect(stops).toMatch(/frozen contract/)
     expect(stops).toMatch(/\b3 failed runs in a row pause/)
+    // QA1 automate-09: the sheet draws the form's own `HardStops`, so the two cannot drift apart.
+    // MUTATION: write the sentence out again in ScheduleDetail.tsx.
+    expect(SCHEDULE_DETAIL_TSX).toContain('<HardStops />')
+    expect(SCHEDULE_DETAIL_TSX).not.toMatch(/held for a second member, or in a platform/)
     const budget = await screen.findByTestId('sc-budget', undefined, WAIT)
     expect(visible(budget)).toContain('$15.00')
     expect(visible(budget)).toContain('$120.00')
@@ -772,6 +787,7 @@ describe('live QA: automate, the list and the page', () => {
     gone = true
     // The sheet reads itself again after an action (frame A2); the list's ⟳ re-reads the list.
     fireEvent.click(within(screen.getByTestId('sc-acts-head')).getByRole('button', { name: 'Pause' }))
+    fireEvent.click(within(await screen.findByRole('dialog', undefined, WAIT)).getByRole('button', { name: 'Pause' }))
     // MUTATION: drop `setGone` and the stale record stays, Edit enabled.
     await screen.findByText('This schedule was deleted', undefined, WAIT)
     expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()

@@ -112,7 +112,7 @@ describe('D32: Set by is never blank, and a unit is a unit', () => {
       // MUTATION: draw `.cap-setby-cfg` in `--text-dim` or `--text`.
       expect(painted(dot, 'color', { ...WIDE, theme }), theme).toBe('var(--text-faint)')
     }
-    expect(texts).toContain('AIMD back-off')
+    expect(texts).toContain('lowered automatically after errors')
     const heads = [...document.querySelectorAll('.cap-families thead th')].map((th) => (th.textContent ?? '').trim())
     for (const h of heads) expect(h, 'a column with no visible head').not.toBe('')
   })
@@ -121,7 +121,7 @@ describe('D32: Set by is never blank, and a unit is a unit', () => {
     const { container } = render(<AdmSetBy pool={pool('global', 1, 40)} />)
     expect(container.textContent).toBe('configured')
     const { container: c2 } = render(<AdmSetBy pool={pool('runner:a', 1, 10, { hard_limit: 20, adaptive_target: 10 })} />)
-    expect(c2.textContent).toBe('AIMD back-off')
+    expect(c2.textContent).toBe('lowered automatically after errors')
   })
 
   it('counts one unit as a unit', () => {

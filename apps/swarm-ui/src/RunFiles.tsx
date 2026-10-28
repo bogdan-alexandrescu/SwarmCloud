@@ -833,8 +833,24 @@ function CheckpointRow({
           {record.label !== null && ` · ${record.label}`}
           {' · '}
           {/* FROM THE MANIFEST, so a manifest that did not parse has no count:
-              the em dash, never a 0. */}
-          {record.file_count === null ? <Em /> : record.file_count} files
+              the em dash, never a 0 -- and the dash carries its reason, as
+              the Age cell's does (QA1-FIX-09, overview-agents-49: `— files`
+              sat bare beside the other row's `184 files`). */}
+          {record.file_count === null ? (
+            <>
+              <Em /> files{' '}
+              <Mark
+                kind={record.manifest === 'unreadable' ? 'unread' : 'absent'}
+                say={
+                  record.manifest === 'unreadable'
+                    ? 'The manifest carries how many files this checkpoint holds, and it could not be read, so the count is unknown.'
+                    : 'No file count was recorded for this checkpoint, so how many files it holds is unknown.'
+                }
+              />
+            </>
+          ) : (
+            `${record.file_count} files`
+          )}
         </span>
         {/* THREE VALUES. `resumable ?? false` here would turn "we could not
             tell" into "a retry cannot use this", which is a different and
@@ -853,6 +869,13 @@ function CheckpointRow({
             copy gsutil
           </Button>
         </span>
+        {/* THE STATE FIRST, AS WORDS (QA1-FIX-09, overview-agents-49): the
+            row read `resume — not read · The object is there and did not
+            parse as JSON`, a mark and a server string standing in for what
+            happened. `manifest unreadable` says it, as `manifest never
+            written` does; the server's detail stays its own line under it. */}
+        {record.manifest === 'unreadable' && <span className="ctl-sub">manifest unreadable</span>}
+        {record.manifest_detail !== null && <span className="ctl-sub">{record.manifest_detail}</span>}
         <span className="ctl-sub" data-testid="rf-resume">
           resume{' '}
           {record.resumable === null ? (
@@ -870,7 +893,6 @@ function CheckpointRow({
           )}
         </span>
         {record.manifest === 'absent' && <span className="ctl-sub">manifest never written</span>}
-        {record.manifest_detail !== null && <span className="ctl-sub">{record.manifest_detail}</span>}
         {record.resumable_detail !== null && <span className="ctl-sub">{record.resumable_detail}</span>}
       </th>
       <td role="cell" data-label="Size" className="is-num">
