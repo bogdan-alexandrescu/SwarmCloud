@@ -58,6 +58,12 @@ SECOND_SECRET = f"swarm-account-{TENANT}--second"
 TENANT_SECRET = f"swarm-tenant-{TENANT}-anthropic"
 
 
+#: The account state the real broker's hold-status route returns once its
+#: refresh failed: `quota_broker.accounts.AccountState.REAUTH_REQUIRED.value`.
+#: The lowercase `reauth_required` is a refresh-outcome reason, never a state.
+BROKER_STATE_REAUTH_REQUIRED = "REAUTH_REQUIRED"
+
+
 class _StateBroker(FakeBroker):
     """The hot-swap broker, with the held account's `state` on its hold status."""
 
@@ -183,7 +189,7 @@ def test_an_account_marked_reauth_required_moves_at_once(
     db, worker_factory, tmp_path, cli, log_stream
 ):
     """The broker says the account needs a person: no reload is tried."""
-    broker = _StateBroker(state="reauth_required")
+    broker = _StateBroker(state=BROKER_STATE_REAUTH_REQUIRED)
     code, worker, runs, tokens, sessions = _run(
         db, worker_factory, tmp_path, broker, modes=["refused", "finish"],
         rotating=(FIRST_SECRET,),
@@ -201,7 +207,7 @@ def test_a_running_agent_on_a_reauth_required_account_moves_at_its_turn_boundary
 ):
     """Before the token dies: the hold's status says reauth_required, and the
     agent moves at its next turn boundary as for a drain."""
-    broker = _StateBroker(state="reauth_required")
+    broker = _StateBroker(state=BROKER_STATE_REAUTH_REQUIRED)
     code, worker, runs, tokens, sessions = _run(
         db, worker_factory, tmp_path, broker, modes=["turns", "finish"]
     )
