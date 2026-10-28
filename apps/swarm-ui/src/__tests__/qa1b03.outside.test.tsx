@@ -51,12 +51,16 @@ const panelPressed = () => screen.getByRole('button', { name: 'Failures only' })
 const pagePressed = () => screen.getByRole('button', { name: 'failures only' }).getAttribute('aria-pressed')
 
 describe('capacity-10: API reads has one failures-only filter, on its address', () => {
-  it('presses the panel’s Failures only when the page’s own toggle is pressed, and writes ?failed=1', { timeout: 40_000 }, async () => {
+  // 90s, and 60s for the page's toggle: this is the file's first render of the
+  // whole <App />, so it pays the cold transform of every page it reaches --
+  // ~21s on an idle machine, and past 40s on a loaded CI shard (PR #2667's
+  // first run). A genuine hang still fails, just later.
+  it('presses the panel’s Failures only when the page’s own toggle is pressed, and writes ?failed=1', { timeout: 90_000 }, async () => {
     serve()
     window.history.replaceState(null, '', '/capacity/api-reads')
     render(<App />)
     await waitFor(() => expect(panelPressed()).toBe('false'))
-    await waitFor(() => expect(pagePressed()).toBe('false'), { timeout: 20_000 })
+    await waitFor(() => expect(pagePressed()).toBe('false'), { timeout: 60_000 })
     fireEvent.click(screen.getByRole('button', { name: 'failures only' }))
     // MUTATION: drop `onFailuresOnly?.(...)` from ReferenceScreen's toggle and the panel keeps "Every read" pressed.
     await waitFor(() => expect(panelPressed()).toBe('true'))
