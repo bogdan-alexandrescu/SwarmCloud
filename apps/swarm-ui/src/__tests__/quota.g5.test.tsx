@@ -62,7 +62,7 @@ describe('G5-02: the Feeds pool cell draws the ceiling admission enforces', () =
   it('names the pool\'s ceiling, what sets it, and that it is below the cap', async () => {
     const row = await renderRow(quota({ feeds_pool: pool() }))
     expect(cell(row, 'Quota cap (units)')).toBe('50')
-    expect(cell(row, 'Feeds pool')).toBe('provider:anthropic:tenant:eng · ceiling 40 (configured, below cap)')
+    expect(cell(row, 'Feeds pool')).toBe('anthropic · eng · ceiling 40 (configured, below cap)')
   })
 
   it('says when the pool is at the cap', async () => {
@@ -72,12 +72,12 @@ describe('G5-02: the Feeds pool cell draws the ceiling admission enforces', () =
 
   it('says a pool with no document is not there, rather than drawing a ceiling', async () => {
     const row = await renderRow(quota({ feeds_pool: null }))
-    expect(cell(row, 'Feeds pool')).toBe('provider:anthropic:tenant:eng · no pool document')
+    expect(cell(row, 'Feeds pool')).toBe('anthropic · eng · no pool document')
   })
 
   it('draws the link alone beside an API that does not serve the pool', async () => {
     const row = await renderRow(quota({}))
-    expect(cell(row, 'Feeds pool')).toBe('provider:anthropic:tenant:eng')
+    expect(cell(row, 'Feeds pool')).toBe('anthropic · eng')
   })
 })
 

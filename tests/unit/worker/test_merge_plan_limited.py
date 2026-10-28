@@ -74,7 +74,7 @@ def test_a_plan_limited_403_with_a_red_check_refuses_and_never_merges(tmp_path):
     assert world.merge_calls() == []
 
 
-@pytest.mark.parametrize("conclusion", ["cancelled", "timed_out", "action_required"])
+@pytest.mark.parametrize("conclusion", ["timed_out", "action_required"])
 def test_a_plan_limited_403_with_any_unsuccessful_conclusion_never_merges(tmp_path, conclusion):
     world = MergeWorld(tmp_path)
     _plan_limited(world)
@@ -82,6 +82,18 @@ def test_a_plan_limited_403_with_any_unsuccessful_conclusion_never_merges(tmp_pa
     outcome = merge.run_merge(world.context())
     assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
     assert conclusion in outcome.summary["refusal"]["message"]
+    assert world.merge_calls() == []
+
+
+def test_a_plan_limited_403_with_a_cancelled_check_waits_and_never_merges(tmp_path):
+    """#1778: a cancelled latest run is pending, not failed: it waits for its
+    re-run rather than refusing, and still never merges."""
+    world = MergeWorld(tmp_path)
+    _plan_limited(world)
+    world.runs[0].update(conclusion="cancelled")
+    outcome = merge.run_merge(world.context())
+    assert outcome.ci_wait is not None and outcome.ci_wait["code"] == "checks_pending", outcome.summary
+    assert "refusal" not in outcome.summary
     assert world.merge_calls() == []
 
 

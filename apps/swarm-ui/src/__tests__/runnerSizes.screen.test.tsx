@@ -341,3 +341,41 @@ describe('the readings and their hints (§4.9)', () => {
     expect(visible(card('standard')!.querySelector('[data-reading="share_at_limit"]'))).toContain('22%')
   })
 })
+
+// CONSOLE VISUAL QA PASS 1 (QA1-FIX-23; part of #2596). Each case is one
+// finding, held by the property the sweep found false.
+describe('visual QA pass 1 (QA1-FIX-23)', () => {
+  // admin-shell-16: with nothing edited, every card read `Units 1 → 1` and
+  // `$0.4176 → $0.4176`, a change arrow over no change.
+  it('draws one value until an edit moves it, and the arrow only when it differs', async () => {
+    await mount()
+    await waitFor(() => expect(visible(card('large')!.querySelector('.rs-cost'))).toContain('$0.5135'), WAIT)
+    // MUTATION: draw `before → after` whenever a preview answered.
+    expect(visible(card('large')!.querySelector('.rs-units'))).toBe('4')
+    expect(visible(card('large')!.querySelector('.rs-cost'))).toBe('$0.5135')
+    expect(visible(card('standard')!.querySelector('.rs-units'))).not.toContain('→')
+  })
+
+  // chrome-C24: `Recent use: reading…` stayed on screen with nothing to say
+  // what it waited for, and a preview that failed, or answered without the
+  // class, left it reading for good.
+  it('says what recent use waits for while it reads', async () => {
+    await mount()
+    // MUTATION: go back to the bare `Recent use: reading…`.
+    expect(visible(card('standard')!.querySelector('.rs-recent'))).toBe('Recent use: reading the last 7 days of attempts with the preview…')
+  })
+
+  it('reads a failed preview as a dash with its reason, never reading for good', async () => {
+    await mount({ preview: () => ({ status: 500, body: { error: { code: 'internal', message: 'preview broke' } } }) })
+    // MUTATION: leave the card at `reading…` when the preview answers with an error.
+    await waitFor(() => expect(visible(card('standard')!.querySelector('.rs-recent'))).toMatch(/^Recent use: — could not be read/), WAIT)
+    expect(visible(card('standard'))).not.toContain('reading')
+  })
+
+  it('reads a class the preview has no record for as a dash with its reason', async () => {
+    await mount({ preview: () => ({ status: 200, body: preview({ recent_use: { standard: use(41), browser: use(12) } }) }) })
+    await waitFor(() => expect(visible(card('standard')!.querySelector('.rs-recent'))).toContain('41 attempts'), WAIT)
+    // MUTATION: treat a class missing from `recent_use` as still reading.
+    expect(visible(card('large')!.querySelector('.rs-recent'))).toBe('Recent use: — the preview returned no record for large.')
+  })
+})

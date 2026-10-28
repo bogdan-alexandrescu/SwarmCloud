@@ -577,32 +577,25 @@ describe('V156/V180: a stale reading\'s cells', () => {
   })
 })
 
-describe('V020: the Feeds pool keeps its tenant and draws its underline under every part', () => {
+describe('V020: the Feeds pool keeps its tenant and draws its underline', () => {
   const POOL = `provider:anthropic:tenant:${LONG_TENANT}`
 
-  // Since QA-057 (run 2) the name wraps at its colons instead of being cut,
-  // so the tenant V020 kept is whole by construction.
-  it('keeps a long tenant whole, in a segment of its own that may wrap', async () => {
+  // Since QA-057 (run 2) the name wraps instead of being cut, and since QA1
+  // capacity-18 it is the pool's name, `anthropic · <tenant>`, the id in its
+  // title: the tenant V020 kept is whole by construction.
+  it('keeps a long tenant whole, in a name that may wrap', async () => {
     const row = await quotaRow({ tenant_id: LONG_TENANT })
     const link = row.querySelector('.quota-feeds a')!
-    expect(link.textContent).toBe(POOL)
-    expect(link.getAttribute('aria-label')).toBe(POOL)
-    const segs = [...link.querySelectorAll<HTMLElement>('.quota-pool-seg')].map((e) => e.textContent)
-    expect(segs).toEqual(['provider:', 'anthropic:', 'tenant:', LONG_TENANT])
-    // MUTATION: drop `max-width: 100%` -- a tenant wider than the column runs
-    // into Requests left instead of wrapping inside its own segment.
-    expect(painted(link.querySelector('.quota-pool-seg')!, 'max-width', WIDE)).toBe('100%')
+    expect(link.textContent).toBe(`anthropic · ${LONG_TENANT}`)
+    expect(link.getAttribute('title')).toBe(POOL)
+    // MUTATION: drop `overflow-wrap: anywhere` from `.quota-feeds a` -- a
+    // tenant wider than the column runs into Requests left instead of wrapping.
+    expect(painted(link, 'overflow-wrap', WIDE)).toBe('anywhere')
   })
 
-  it('underlines every segment with the link\'s own line', async () => {
+  it('underlines the name with the link\'s own line', async () => {
     const row = await quotaRow({ tenant_id: 'eng' })
     const link = row.querySelector('.quota-feeds a')!
     expect(painted(link, 'text-decoration', WIDE)).toBe('underline')
-    for (const seg of link.querySelectorAll('.quota-pool-seg')) {
-      // MUTATION: drop `text-decoration: inherit` -- an inline block takes no
-      // underline from its link, and the name reads as plain text.
-      expect(painted(seg, 'text-decoration', WIDE)).toBe('inherit')
-      expect(painted(seg, 'display', WIDE)).toBe('inline-block')
-    }
   })
 })

@@ -153,12 +153,20 @@ def test_the_merge_step_with_a_re_run_green_merges_without_a_fix_round(tmp_path)
     assert world.github.calls("GET", f"{API}/actions/runs"), "the event was never read"
 
 
+def _rerun_spent(world: MergeWorld) -> None:
+    """The step already parked once `ci_rerun_due` at this head (#2351) and
+    the tick re-ran nothing: this red reading is the second, which refuses."""
+    world.docs[TASK].setdefault("metadata", {})[merge.MERGE_WAIT_METADATA_KEY] = {
+        "code": merge.CI_RERUN_DUE, "head": PINNED}
+
+
 def test_the_merge_step_holds_a_red_push_run_beside_a_green_pull_request_run(tmp_path):
     """CI-EARLY: the green pull_request run does not outvote the red push run."""
     world = MergeWorld(tmp_path)
     world.runs = [_gh_run(1, "failure", PUSH_SUITE), _gh_run(2, "success", PR_SUITE)]
     _suites(world, push=PUSH_SUITE, pull_request=PR_SUITE)
 
+    _rerun_spent(world)
     outcome = merge.run_merge(world.context())
 
     # MUTATION: take the newest run overall -> merged.
@@ -177,6 +185,7 @@ def test_without_the_event_read_runs_are_grouped_by_check_suite(tmp_path):
     world.github.route("GET", f"{API}/actions/runs",
                        (403, {}, {"message": "Resource not accessible by integration"}))
 
+    _rerun_spent(world)
     outcome = merge.run_merge(world.context())
 
     # MUTATION: read every unknown event as one group -> merged.
@@ -252,6 +261,7 @@ def test_no_required_check_a_red_pull_request_run_beside_a_green_push_run_refuse
     world = MergeWorld(tmp_path)
     _unprotected(world, [_other_run(1, PUSH_SUITE), _other_run(2, PR_SUITE, conclusion="failure")],
                  **{str(PUSH_SUITE): "push", str(PR_SUITE): "pull_request"})
+    _rerun_spent(world)
     outcome = merge.run_merge(world.context())
     # MUTATION: take the newest run of the check whatever its event, or judge
     # only the first event -> one of the two cases merges.
@@ -266,6 +276,7 @@ def test_no_required_check_green_then_red_in_one_event_refuses(tmp_path):
     world = MergeWorld(tmp_path)
     _unprotected(world, [_other_run(1, PUSH_SUITE), _other_run(2, RERUN_SUITE, conclusion="failure")],
                  **{str(PUSH_SUITE): "push", str(RERUN_SUITE): "push"})
+    _rerun_spent(world)
     outcome = merge.run_merge(world.context())
     # MUTATION: take the OLDEST run of each event -> merged.
     assert outcome.end_cause is EndCause.MERGE_REFUSED, outcome.message
@@ -387,6 +398,7 @@ def test_the_merge_step_refuses_a_run_concluded_failure_but_left_in_progress(tmp
     world = MergeWorld(tmp_path)
     world.runs = [_stuck("failure")]
 
+    _rerun_spent(world)
     outcome = merge.run_merge(world.context())
 
     # MUTATION: read status alone -> parks CI_PENDING on a run that failed,
@@ -424,6 +436,7 @@ def test_no_required_check_a_run_concluded_failure_but_left_in_progress_refuses(
     world = MergeWorld(tmp_path)
     _unprotected(world, [{**_other_run(1, PUSH_SUITE, conclusion="failure", status="in_progress"),
                           "completed_at": STUCK_AT}])
+    _rerun_spent(world)
     outcome = merge.run_merge(world.context())
     # MUTATION: bucket by `status == "completed"` in `judge_other_checks` ->
     # checks_pending, a 6 h wait on a run that failed.

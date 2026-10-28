@@ -100,11 +100,12 @@ function card(name: string): HTMLElement {
   return head!.closest<HTMLElement>('section')!
 }
 
-/** The `cred` line under `Sets it apart`, or null when nothing is said there. */
+/** The `credential` line under `Sets it apart`, or null when nothing is said there. */
+// The key is `credential`, spelled out since QA1-FIX-24 (capacity-23, part of #2596).
 function apartCred(name: string): string | null {
   const facts = [...card(name).querySelectorAll('.rt-apart-facts > .ctl-fact')]
-  const f = facts.find((x) => x.querySelector('b')?.textContent === 'cred')
-  return f === undefined ? null : (f.textContent ?? '').replace(/^cred/, '').trim()
+  const f = facts.find((x) => x.querySelector('b')?.textContent === 'credential')
+  return f === undefined ? null : (f.textContent ?? '').replace(/^credential/, '').trim()
 }
 
 describe('QA-009: a model-class chip fits its card at 390', () => {
@@ -169,7 +170,7 @@ describe('QA-011: `Sets it apart` agrees with the cred row above it', () => {
     // these reads `the only runtime that needs this credential`. (scribe is
     // told apart by its any-one-of form instead -- capacity-006, run 2 --
     // which is about how it takes its secrets, not whose they are.)
-    expect(apartCred('scribe')).toBe('the only runtime that takes any one of its secrets')
+    expect(apartCred('scribe')).toBe('the only runtime that accepts any one of its credentials')
     expect(apartCred('viewport')).toBeNull()
   })
 
