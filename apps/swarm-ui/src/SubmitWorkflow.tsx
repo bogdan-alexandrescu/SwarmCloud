@@ -208,7 +208,11 @@ export async function postWorkflow(body: unknown): Promise<Submission> {
   // An expired IAP session is a 302 to a sign-in page that `fetch` follows, so it
   // lands as a 200 carrying HTML -- and on a POST it may have redirected either side
   // of the handler. Content-type is therefore checked first, as read() does.
-  if (!(res.headers.get('content-type') ?? '').includes('application/json')) {
+  // ONLY ON A 2xx (QA1 runs-submit-02): a 404 page read "We cannot say whether
+  // that workflow was created … expired sign-in", and a 404 is a definite
+  // refusal. A non-2xx page falls through to its status below, with no
+  // envelope: a 4xx created nothing, a 5xx stays unknown.
+  if (res.ok && !(res.headers.get('content-type') ?? '').includes('application/json')) {
     return unsure('session_expired', res.status,
       'The API answered with a page instead of data, which is how an expired sign-in arrives. Reload to sign in again.')
   }
@@ -523,7 +527,7 @@ export function OnFailureChoice({ value, onChange }: {
  */
 export function VisualQaEntry() {
   return (
-    <div className="sb-card" data-entry="visual-qa" style={{ marginBottom: 12 }}>
+    <div className="sb-card" data-entry="visual-qa">
       <b>Visual QA of a registered app</b>
       <p className="sb-note">
         Runs from the app&rsquo;s QA target: tick its environments on the target&rsquo;s card, and each runs as its own
@@ -702,7 +706,10 @@ function Form({ sources }: { sources: FormSources }) {
   const badRepo = repositorySchemeRefused(repo)
   // A `dispatch` server some step names, with no credential typed for it, is
   // refused 422 `mcp_credential_missing`; the button holds until it is given.
-  const blocked = plan.problems.length > 0 || noRepo || badRepo || mcpUnfilled.length > 0
+  // A PRIORITY THE API WILL REFUSE holds it as well (QA1 runs-submit-17): the
+  // button was disabled by `priorityOk` alone, so "Ready to send" headed a
+  // summary whose priority row said "out of range".
+  const blocked = plan.problems.length > 0 || noRepo || badRepo || mcpUnfilled.length > 0 || !priorityOk
   // WHAT THIS CLICK WOULD SEND, as one comparable value (VQA V048, owner
   // decision Q1 on #1038): after a 201 the button is "Submit another" for as
   // long as the form still says exactly what was sent.
@@ -825,8 +832,6 @@ function Form({ sources }: { sources: FormSources }) {
   return (
     <div className="sbf">
       <div className="sbf-build">
-        <VisualQaEntry />
-
         {/* THIS SCREEN'S ONE `?` (B7.4), AND IT OPENS WHAT THE STEP LAYS OUT
             (#120). It opened runner naming, a rule about what the form may not
             ask for; what a reader laying out a plan needs is how the plan
@@ -842,8 +847,11 @@ function Form({ sources }: { sources: FormSources }) {
               said three times over one step: on the stage header ("waits for
               everything above"), on the add-a-stage button, and on the step's
               own disclosure -- and only the last one is the control that
-              changes it. So a later stage's header reads `then`, plus how many
-              steps run together when there are two or more. */}
+              changes it. So a later stage's header is its number alone, plus
+              how many steps run together when there are two or more. */}
+          {/* "STAGE N", IN WORDS (QA1 runs-submit-22): the header was the raw
+              word `first` or `then` in bold mono, which read as a key; the
+              arrow between stages already says each waits for the one above. */}
           {/* TOP TO BOTTOM, WITH A DRAWN ARROW BETWEEN STAGES (#118, submit.html
               decided 2026-10-01). The connector was a stray 2x14px tick; the
               arrow is an element between two stages, which also ends the
@@ -859,7 +867,7 @@ function Form({ sources }: { sources: FormSources }) {
             )}
             <div className="wfb-stage" data-stage={i}>
               <div className="wfb-stage-h">
-                <span className="wfb-stage-n">{i === 0 ? 'first' : `then`}</span>
+                <span className="wfb-stage-n">Stage {i + 1}</span>
                 {i === 0 ? (
                   <span className="wfb-stage-say">
                     {inStage.length === 1 ? 'starts immediately' : `${inStage.length} steps start together`}
@@ -960,6 +968,12 @@ function Form({ sources }: { sources: FormSources }) {
             </small>
           </div>
         </Move>
+
+        {/* AFTER THE PLAN, NOT ABOVE STEP 1 (QA1 chrome-C30): the form opened
+            on a card for another form, so step 1 was the second thing on the
+            page. The entry stays on this screen (qa-environments.md §7), as
+            the way out for a reader who came for visual QA. */}
+        <VisualQaEntry />
       </div>
 
       <aside className="sbf-side">

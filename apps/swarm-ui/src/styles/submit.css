@@ -363,6 +363,10 @@ input.dsp-repo[aria-invalid='true'] { border-color: var(--warn); box-shadow: ins
   background: transparent;
   padding: 10px;
 }
+/* "Stage 1" IS A NAME IN WORDS, NOT A KEY (QA1 runs-submit-22): styles.css
+   sets `.wfb-stage-n` in bold mono, which read `first` as a raw value. The
+   body face, at the same size and weight. (0,3,0) over (0,1,0). */
+.sbf-build .wfb-stage .wfb-stage-n { font-family: inherit; }
 .wfb-steps > .wfb-step {
   border: 1px solid var(--line);
   border-radius: var(--ctl-radius-sm);
