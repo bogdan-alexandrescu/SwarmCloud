@@ -147,8 +147,13 @@ describe('the Setup page draws the server-derived checklist', () => {
     const orgs = stepEl('orgs_enabled')
     expect(orgs.dataset.state).toBe('failed')
     expect(orgs.getAttribute('aria-current')).toBe('step')
-    expect(within(orgs).getByText('SSO_NOT_AUTHORISED')).toBeTruthy()
-    expect(visible(orgs.querySelector('.ob-issue p'))).toBe(`SSO_NOT_AUTHORISED ${SSO_COPY}`)
+    // NO RAW CODE, NO URL TWICE (overview-agents-03): the code is the
+    // element's title, and the copy's URL reads as the link under it.
+    // MUTATION: print `<b>{code}</b>` again, or the URL in the copy -> fails.
+    expect(within(orgs).queryByText('SSO_NOT_AUTHORISED')).toBeNull()
+    expect(orgs.querySelector('.ob-issue')?.getAttribute('title')).toBe('SSO_NOT_AUTHORISED')
+    expect(visible(orgs.querySelector('.ob-issue p'))).toBe(SSO_COPY.split('https://github.com/orgs/example-org/sso').join('the GitHub page linked below'))
+    expect(visible(orgs.querySelector('.ob-issue p'))).not.toContain('https://')
     expect(within(orgs).getByRole('link', { name: 'Open on GitHub' }).getAttribute('href')).toBe('https://github.com/orgs/example-org/sso')
     expect(visible(orgs)).toContain('example-org (sso required)')
     // The fix is on Access, and Re-check is a fresh read.
