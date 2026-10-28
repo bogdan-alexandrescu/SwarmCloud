@@ -997,7 +997,7 @@ export function SubmitScreen() {
     <Screen
       title="Start an agent"
       load={loadCapacity}
-      summary={(c) => `${Object.keys(c.runner_profiles).length} runner profiles · ${c.pools.length} pools you are admitted against`}
+      summary={(c) => { const n = Object.keys(c.runner_profiles).length; return `${n} runner${n === 1 ? '' : 's'} to choose from` }}
       empty={{ heading: 'No pools came back',
         body: 'The read of the pools this tenant is admitted against succeeded and returned none. The runner profiles arrive in that same response, so there is no name to choose and this screen cannot submit.' }}
     >
