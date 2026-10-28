@@ -18,6 +18,12 @@ Pinned here:
      output is masked after decoding, and in an MCP call's arguments by
      their structure.
   4. A window cut mid-line counts the fragment in `skipped_lines`.
+  5. (CODEX-ROWS, part of #2459; BGD, 2026-10-28, proposal B) a
+     `turn.completed` is a `usage` row whose figures are in meta -- an absent
+     figure absent, never 0 -- and numbered only when the window can count
+     its turns; `turn.failed`, a top-level `error` and an `error` item are
+     `error` rows whose text is the message and whose `meta.subtype` names
+     the shape. A Claude window's rows are unchanged.
 
 MUTATIONS: drop `CODEX_EVENT_TYPES` from the sniff (the format reads
 `ndjson`); append every item event as its own step (the replacement test
@@ -34,6 +40,7 @@ import json
 import secrets
 from typing import Any
 
+from swarm_api.agent_streams import TRUNCATION_MARK
 from swarm_api.transcript import parse_window
 
 from .test_transcript_route import (
@@ -104,7 +111,7 @@ def test_a_codex_stream_sniffs_as_codex_exec_json_and_maps_to_steps_in_order(cli
     assert [(s["kind"], (s["meta"] or {}).get("subtype")) for s in steps] == [
         ("init", None),
         ("system", "turn_started"),
-        ("system", "error"),
+        ("error", "error"),
         ("thinking", None),
         ("tool_call", None), ("tool_result", None),
         ("system", "file_change"),
@@ -113,14 +120,17 @@ def test_a_codex_stream_sniffs_as_codex_exec_json_and_maps_to_steps_in_order(cli
         ("system", "web_search"),
         ("tool_call", None), ("tool_result", None),
         ("text", None),
-        ("system", "turn_completed"),
-        ("system", "turn_failed"),
+        ("usage", None),
+        ("error", "turn_failed"),
     ]
     assert len({s["id"] for s in steps}) == len(steps), "step ids are unique"
     assert not any(s["kind"] == "other" for s in steps), "no codex event is an empty row"
 
     assert steps[0]["meta"] == {"thread_id": SESSION}
-    assert steps[2]["text"] == "error: Reconnecting... 1/5 (stream disconnected before completion)"
+    # MUTATION: serve codex's retry notice whole as the text (no retry meta)
+    # and the drawer prints the counter twice, once before the message.
+    assert steps[2]["text"] == "stream disconnected before completion"
+    assert steps[2]["meta"] == {"subtype": "error", "retry_attempt": 1, "retry_limit": 5}
     assert steps[3]["text"] == "**Reading the repository layout**"
 
     call, result = steps[4], steps[5]
@@ -145,11 +155,14 @@ def test_a_codex_stream_sniffs_as_codex_exec_json_and_maps_to_steps_in_order(cli
 
     usage = steps[14]
     assert usage["text"] == "turn completed: 12,000 input tokens (9,000 cached), 800 output tokens"
+    # MUTATION: map `turn.completed` back onto a `system` row (the kind reads
+    # `system`, and meta carries a `subtype` and no `turn`).
     assert usage["meta"] == {
-        "subtype": "turn_completed", "input_tokens": 12_000, "cached_input_tokens": 9_000,
-        "output_tokens": 800,
+        "input_tokens": 12_000, "cached_input_tokens": 9_000, "output_tokens": 800, "turn": 1,
     }
-    assert steps[15]["text"] == "turn failed: usage limit reached"
+    # MUTATION: prefix the message with `turn failed: ` again (the drawer's
+    # label already says it).
+    assert steps[15]["text"] == "usage limit reached"
 
 
 def test_an_item_update_replaces_the_step_its_id_started():
@@ -226,4 +239,108 @@ def test_a_window_cut_mid_line_counts_the_fragment_as_skipped():
     parsed = parse_window(whole[cut_at:], base_offset=cut_at, whole_object=False)
     assert parsed.format == "codex-exec-json"
     assert parsed.skipped_lines == 1
-    assert [s["kind"] for s in parsed.steps] == ["system", "system", "thinking"]
+    assert [s["kind"] for s in parsed.steps] == ["system", "error", "thinking"]
+
+
+# --- CODEX-ROWS (part of #2459): usage and errors are kinds of their own -----
+
+
+def _one(events: list[dict[str, Any]], *, base_offset: int = 0) -> list[dict[str, Any]]:
+    parsed = parse_window(ndjson(events).encode(), base_offset=base_offset, whole_object=False)
+    assert parsed.format == "codex-exec-json"
+    return parsed.steps
+
+
+def test_a_turn_completed_is_a_usage_row_with_its_figures_and_turn_in_meta():
+    steps = _one([
+        {"type": "thread.started", "thread_id": SESSION},
+        {"type": "turn.started"},
+        {"type": "turn.completed", "usage": _usage(48_210, 41_900, 2_316)},
+        {"type": "turn.started"},
+        {"type": "turn.completed", "usage": _usage(1, 0, 2)},
+    ])
+    usage = [s for s in steps if s["kind"] == "usage"]
+    # MUTATION: emit `turn.completed` as `kind="system"` again: no `usage` rows.
+    assert len(usage) == 2
+    # MUTATION: drop a figure from meta (the reader has only the worded line).
+    assert usage[0]["meta"] == {
+        "input_tokens": 48_210, "cached_input_tokens": 41_900, "output_tokens": 2_316, "turn": 1,
+    }
+    # MUTATION: never increment the turn counter (the second turn reads 1).
+    assert usage[1]["meta"]["turn"] == 2
+    # MUTATION: blank the text (a reader not knowing `usage` draws nothing).
+    assert usage[0]["text"] == "turn completed: 48,210 input tokens (41,900 cached), 2,316 output tokens"
+    assert usage[0]["role"] == "system"
+
+
+def test_an_absent_usage_figure_is_absent_from_meta_never_zero():
+    steps = _one([
+        {"type": "turn.started"},
+        {"type": "turn.completed", "usage": {"input_tokens": 500, "output_tokens": 7}},
+        {"type": "turn.started"},
+        {"type": "turn.completed"},
+    ])
+    first, second = (s for s in steps if s["kind"] == "usage")
+    # MUTATION: write every figure, `None` or `or 0` for an absent one (meta
+    # gains `cached_input_tokens`).
+    assert first["meta"] == {"input_tokens": 500, "output_tokens": 7, "turn": 1}
+    assert "cached_input_tokens" not in first["meta"]
+    assert second["meta"] == {"turn": 2}
+
+
+def test_a_turn_is_numbered_only_when_the_window_can_count_its_turns():
+    events = [
+        {"type": "turn.started"},
+        {"type": "turn.completed", "usage": _usage(10, 0, 1)},
+    ]
+    # A page that starts mid-stream cannot know how many turns came before it.
+    # MUTATION: count turns whatever the window's offset (meta gains `turn: 1`).
+    (later,) = (s for s in _one(events, base_offset=4096) if s["kind"] == "usage")
+    assert later["meta"] == {"input_tokens": 10, "cached_input_tokens": 0, "output_tokens": 1}
+
+    # A capture notice dropped turns nobody can count: after it, no number.
+    data = (ndjson(events[:1]).encode() + TRUNCATION_MARK + b" 1024 bytes\n"
+            + ndjson(events).encode())
+    parsed = parse_window(data, base_offset=0, whole_object=False)
+    (after_cut,) = (s for s in parsed.steps if s["kind"] == "usage")
+    # MUTATION: keep counting across a capture notice (meta gains `turn`).
+    assert "turn" not in after_cut["meta"]
+
+
+def test_every_codex_error_shape_is_an_error_row_named_by_its_subtype():
+    steps = _one([
+        {"type": "turn.started"},
+        {"type": "error", "message": "Reconnecting... 2/5 (stream disconnected before completion)"},
+        {"type": "error", "message": "model overloaded"},
+        {"type": "item.completed", "item": {"id": "item_0", "type": "error",
+                                            "message": "command timed out"}},
+        {"type": "turn.failed", "error": {"message": "usage limit reached"}},
+        {"type": "turn.failed"},
+    ])
+    rows = [(s["kind"], s["text"], s["meta"]) for s in steps[1:]]
+    # MUTATION: map any one shape back to `system` (its kind reads `system`),
+    # or name an `error` item `turn_failed` (its subtype is wrong).
+    assert rows == [
+        ("error", "stream disconnected before completion",
+         {"subtype": "error", "retry_attempt": 2, "retry_limit": 5}),
+        ("error", "model overloaded", {"subtype": "error"}),
+        ("error", "command timed out", {"subtype": "error"}),
+        ("error", "usage limit reached", {"subtype": "turn_failed"}),
+        ("error", "(no message)", {"subtype": "turn_failed"}),
+    ]
+    assert all(s["role"] == "system" for s in steps[1:])
+
+
+def test_a_claude_window_keeps_its_rows_unchanged():
+    """No Claude event becomes a `usage` or an `error` row: those kinds are
+    codex's, and a Claude `result` still carries its usage in its own row."""
+    stray = {"type": "error", "message": "not a codex window"}
+    claude = parse_window(ndjson([INIT, A1, RESULT, stray]).encode(), base_offset=0,
+                          whole_object=False)
+    assert claude.format == "claude-stream-json"
+    # MUTATION: route a Claude window's events through `map_codex_event` (the
+    # stray `error` becomes an `error` row, and the kinds change).
+    assert [s["kind"] for s in claude.steps] == [
+        "init", "thinking", "text", "tool_call", "result", "other",
+    ]
+    assert claude.steps[-1]["meta"] == {"raw_type": "error"}

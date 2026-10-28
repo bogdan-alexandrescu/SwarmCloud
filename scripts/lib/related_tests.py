@@ -390,7 +390,9 @@ def python_related(root: Path, changed: list[str]) -> list[str]:
     # worth it when a Python file changed.
     if changed_py:
         chosen.update(r for r in sut.import_closure(root, changed_py) if r in known)
-    virtual = sut.script_closure(root, changed)
+    # The same text rule as CI and changed-guards.sh (#2299): a test naming a
+    # doc that cites a changed path reaches the change through the doc.
+    virtual = sut.script_closure(root, sut.doc_closure(root, changed))
     for test in all_tests:
         if test not in chosen:
             text = (root / test).read_text(errors="replace")
