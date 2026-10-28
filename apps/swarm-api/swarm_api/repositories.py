@@ -189,19 +189,11 @@ ON_CHANGE_DEFAULT = "poll"
 #: 120 since #2524 (BGD, 2026-10-27; was 30): the index runs of one week
 #: (2026-10-20..27) were 845, most of them change-triggered on the platform's
 #: own busy repository, and an index up to two hours behind its head was
-#: accepted as the price. A registration that set its own value keeps it
-#: (`min_change_interval_of`).
+#: accepted as the price. Reads stay LITERAL (BGD, 2026-10-28): a stored 30
+#: reads 30. Every registration before #2524 stored 30 at creation
+#: (`_index_defaults`); those are moved to 120 by the one-time
+#: `scripts/migrate-index-interval.sh`, not by a read-time rule.
 MIN_CHANGE_INTERVAL_DEFAULT = 120
-#: The defaults registrations stored before the current one: every
-#: registration document carries the value it was created with
-#: (`_index_defaults`), so a stored 30 from before #2524 is the old default,
-#: not a choice, and reads as today's default. Append the current value here
-#: when it changes again.
-FORMER_MIN_CHANGE_INTERVAL_DEFAULTS = (30,)
-#: Set on `index` when a caller names `min_change_interval_minutes` (at
-#: registration or by PATCH): that value is a choice and is kept, even one
-#: equal to a former default.
-MIN_CHANGE_INTERVAL_SET = "min_change_interval_set"
 MIN_CHANGE_INTERVAL_RANGE = (10, 1440)
 FULL_EVERY_DAYS_DEFAULT = 7
 FULL_EVERY_DAYS_RANGE = (1, 30)
@@ -440,28 +432,14 @@ def keep_versions_of(index: Mapping[str, Any] | None) -> int:
 
 
 def min_change_interval_of(index: Mapping[str, Any] | None) -> int:
-    """The registration's `index.min_change_interval_minutes` as the poll
-    applies it: a value a caller set (`MIN_CHANGE_INTERVAL_SET`), else the
-    default when the stored value is a former default or is missing or out
-    of range, else the stored value (one set before the marker existed)."""
-    index = index or {}
-    value = index.get("min_change_interval_minutes")
-    low, high = MIN_CHANGE_INTERVAL_RANGE
-    if not (isinstance(value, int) and not isinstance(value, bool) and low <= value <= high):
-        return MIN_CHANGE_INTERVAL_DEFAULT
-    chosen = index.get(MIN_CHANGE_INTERVAL_SET) is True
-    if not chosen and value in FORMER_MIN_CHANGE_INTERVAL_DEFAULTS:
-        return MIN_CHANGE_INTERVAL_DEFAULT
-    return value
-
-
-def _index_settings(changes: Mapping[str, Any]) -> dict[str, Any]:
-    """`IndexSettings.changes()` as stored: a named change interval is marked
-    as the caller's choice (`min_change_interval_of`)."""
-    stored = dict(changes)
-    if "min_change_interval_minutes" in stored:
-        stored[MIN_CHANGE_INTERVAL_SET] = True
-    return stored
+    """The registration's `index.min_change_interval_minutes`, read literally:
+    the stored value, or the default only where none (or a non-integer) is
+    stored. A stored 30 reads 30 (BGD, 2026-10-28: the old default is moved
+    by `scripts/migrate-index-interval.sh`, never reinterpreted on read)."""
+    value = (index or {}).get("min_change_interval_minutes")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return MIN_CHANGE_INTERVAL_DEFAULT
 
 
 def platform_of(data: Mapping[str, Any]) -> bool:
@@ -876,8 +854,7 @@ def to_api(data: Mapping[str, Any]) -> dict[str, Any]:
     # Served as what retention uses, so a registration from before the
     # setting reads 20, not a gap (lane INDEX-RETENTION).
     index["keep_versions"] = keep_versions_of(index)
-    # Served as what the poll applies, so a registration holding the old
-    # default reads 120, not 30 (#2524).
+    # Served as the poll applies it: the stored value, literally (#2524).
     index["min_change_interval_minutes"] = min_change_interval_of(index)
     retention = index.get("retention")
     if isinstance(retention, Mapping) and "at" in retention:
@@ -1145,7 +1122,7 @@ class Repositories:
                 raise self.not_found(repo_id)
             index = dict(data.get("index") or {})
             if body.index is not None:
-                index.update(_index_settings(body.index.changes()))
+                index.update(body.index.changes())
             if body.paused is not None:
                 index["paused"] = body.paused
             changes: dict[str, Any] = {"index": index, "updated_at": self._now()}
@@ -1361,7 +1338,7 @@ def registration_record(
         ) from None
     index = _index_defaults()
     if body.index is not None:
-        index.update(_index_settings(body.index.changes()))
+        index.update(body.index.changes())
     record: dict[str, Any] = {
         "repo_id": repo_id,
         "tenant_id": tenant.tenant_id,

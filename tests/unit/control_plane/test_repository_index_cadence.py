@@ -11,9 +11,11 @@ What is held here:
     interval tick holds it as `unchanged` and records `index.last_skip`, and
     does not try again on every tick; an incremental "Index now" answers
     `skipped`; only an explicit full request rebuilds it;
-  * the default change interval is 120 minutes; a value a caller set wins,
-    even one equal to the old default of 30, while the 30 every registration
-    stored at creation before #2524 reads as the new default.
+  * the default change interval for a new registration is 120 minutes; a
+    value a caller sets wins, even the old default of 30; and reads are
+    LITERAL (BGD 2026-10-28): the 30 every registration stored at creation
+    before #2524 reads 30 until the one-time
+    `scripts/migrate-index-interval.sh` rewrites it.
 
 No credentials, no network: GitHub is a fake transport under the real client.
 """
@@ -269,12 +271,31 @@ def test_the_default_change_interval_is_120_minutes(client, db):
     assert served.json()["repository"]["index"]["min_change_interval_minutes"] == 120
 
 
-def test_the_old_default_stored_at_registration_reads_as_the_new_one():
+def test_a_stored_interval_reads_literally_even_the_old_default():
     # Every registration before #2524 stored 30 at creation (`_index_defaults`).
-    assert min_change_interval_of({"min_change_interval_minutes": 30}) == 120
-    assert min_change_interval_of({}) == 120
-    # A value nobody would have got by default was a choice, and stays.
+    # It reads 30: the move to 120 is the one-time migration script's, never a
+    # read-time rule (BGD, 2026-10-28).
+    assert min_change_interval_of({"min_change_interval_minutes": 30}) == 30
     assert min_change_interval_of({"min_change_interval_minutes": 60}) == 60
+    # Only where nothing is stored does the default apply.
+    assert min_change_interval_of({}) == 120
+    assert min_change_interval_of(None) == 120
+
+
+def test_a_stored_30_is_served_and_polled_as_30(client, db, objects, github, clock):
+    repo_id = _register(client)
+    # A registration from before #2524, as stored then: 30, no marker.
+    _index(db, repo_id)["min_change_interval_minutes"] = 30
+    assert _index(db, repo_id)["min_change_interval_minutes"] == 30
+    served = client.get(f"/v1/repositories/{repo_id}", headers=auth_header("alice"))
+    assert served.json()["repository"]["index"]["min_change_interval_minutes"] == 30
+    assert "min_change_interval_set" not in _index(db, repo_id)
+    _poll(client)
+    [task] = _tasks(db)
+    finish_index_task(db, objects, task["id"], fixture_index(ONE))
+    github.heads["main"] = TWO
+    clock.advance(minutes=31)
+    assert _poll(client)["submitted"] == 1
 
 
 @pytest.mark.parametrize("minutes", [30, 45, 240])

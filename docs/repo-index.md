@@ -649,9 +649,34 @@ Each registration carries:
 |---|---|---|---|
 | `index.interval_hours` | 24 | 1-168, or `off` | the backstop: a repository whose pushes are never detected is still re-indexed |
 | `index.on_change` | `poll` | `poll`, `webhook` (phase 3), `off` | the default branch moving is the event the owner named |
-| `index.min_change_interval_minutes` | 120 (30 until #2524) | 10-1,440 | a busy repository merging every five minutes is indexed by change at most once every two hours; the interval still applies. BGD, 2026-10-27 (#2524): 845 index runs in the week 2026-10-20..27, mostly change-triggered, so the default went to 120 and an index up to two hours behind its head is the accepted price. A value a registration sets wins, even 30; the 30 every registration stored at creation before #2524 is read as the default, 120, because it was never a choice (`repositories.min_change_interval_of`) |
+| `index.min_change_interval_minutes` | 120 (30 until #2524) | 10-1,440 | a busy repository merging every five minutes is indexed by change at most once every two hours; the interval still applies. BGD, 2026-10-27 (#2524): 845 index runs in the week 2026-10-20..27, mostly change-triggered, so the default went to 120 and an index up to two hours behind its head is the accepted price. A value a registration sets wins, even 30. Reads are literal (BGD, 2026-10-28): a stored 30 reads 30 and is applied as 30 (`repositories.min_change_interval_of`); see *Moving the old default* below |
 | `index.full_every_days` | 7 | 1-30 | incremental runs drift; a weekly full run resets them |
 | `index.paused` | false | — | an operator stops all indexing of the repository without deleting the record |
+
+**Moving the old default: a one-time migration, not a read-time rule.**
+Every registration created before #2524 stored the then-default 30 in its
+document (`_index_defaults` writes the value, it does not leave a gap), so
+changing the constant moved only registrations created afterwards. A
+read-time rule that read a stored 30 as 120 was built and removed (BGD,
+2026-10-28: "a ONE-TIME MIGRATION, not a read-time rule. Reads of
+min_change_interval_minutes stay literal"). Such a rule makes the document
+lie about what the poll applies, cannot tell an old default from a person
+who chose 30, and has to be carried in every reader for ever; a migration
+changes the data once and leaves every reader trivial.
+
+`scripts/migrate-index-interval.sh` is that migration. With no argument it
+is a dry run: it lists every document in the `repositories` collection whose
+`index.min_change_interval_minutes` is exactly 30 (tenant, repo_id,
+repository) and prints the count; it writes nothing. `--apply` asks for a
+typed confirmation (`SWARM_ASSUME_YES` does not answer it) and then patches
+each listed document's `index.min_change_interval_minutes` to 120 with an
+`updateMask` naming only that field and a `currentDocument.updateTime`
+precondition, so a registration edited between the listing and the write is
+skipped and reported, not overwritten. A registration whose owner chose 30
+is indistinguishable in the data and is moved too; it can be set back by
+`PATCH /v1/repositories/{repo_id}`. **The operator run against a deployed
+environment waits for BGD's go-ahead**; until it runs, a pre-#2524
+registration reads, serves and polls at 30.
 
 **Polling the forge (phase 1).** A per-tenant Cloud Scheduler job,
 `repo_index_poll`, calls `POST /v1/admin/repositories/poll?tenant_id=<tenant>`

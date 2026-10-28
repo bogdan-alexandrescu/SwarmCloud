@@ -58,7 +58,8 @@
 # TEST-OUTPUT (TOKEN-A, part of #2524, BGD 2026-10-27). 97% of the pool's
 # tokens in 2026-10-20..27 were cache reads, and a whole test transcript in a
 # Bash result is re-read on every later turn. So with --run each run's full
-# output goes to a log -- under $SWARM_ARTIFACTS_DIR in a lane, else
+# output goes to a log, redacted (common.sh's redact: the artifacts outlive
+# the lane) -- under $SWARM_ARTIFACTS_DIR in a lane, else
 # ${TMPDIR:-/tmp} -- and only its last TAIL_LINES lines are printed, after the
 # failure blocks (pytest's FAILURES/ERRORS, vitest's Failed Tests/Suites, a
 # node:test `not ok`) when it failed, at most BLOCK_LINES of them; the log is
@@ -231,18 +232,25 @@ for i in "${!runs[@]}"; do
   read -r -a run_files <<<"${runs[$i]}"
   status=0
   log="${log_stem}.run$((i + 1)).log"
+  # The run writes to a private file under ${work} (removed on exit); only
+  # its redacted copy is kept at ${log}, because ${log} sits in the lane's
+  # artifacts, which outlive the lane and are read by others. Through
+  # common.sh's redact, the same filter the printed tail goes through.
+  raw="${work}/run$((i + 1)).raw"
   if [[ "${kinds[$i]}" == node ]]; then
     info "run $((i + 1)) of ${#runs[@]}: node, npm run test:node in ${runs[$i]}"
-    (cd "${REPO_ROOT}/${runs[$i]}" && ${limit[@]+"${limit[@]}"} npm run test:node) >"${log}" 2>&1 || status=$?
+    (cd "${REPO_ROOT}/${runs[$i]}" && ${limit[@]+"${limit[@]}"} npm run test:node) >"${raw}" 2>&1 || status=$?
   elif [[ "${kinds[$i]}" == pytest ]]; then
     info "run $((i + 1)) of ${#runs[@]}: pytest, ${#run_files[@]} file(s)"
-    (cd "${REPO_ROOT}" && ${limit[@]+"${limit[@]}"} uv run pytest -q -n auto "${run_files[@]}") >"${log}" 2>&1 \
+    (cd "${REPO_ROOT}" && ${limit[@]+"${limit[@]}"} uv run pytest -q -n auto "${run_files[@]}") >"${raw}" 2>&1 \
       || status=$?
   else
     info "run $((i + 1)) of ${#runs[@]}: vitest, ${#run_files[@]} file(s)"
     (cd "${REPO_ROOT}/${UI_DIR}" && ${limit[@]+"${limit[@]}"} npx vitest run --reporter=dot "${run_files[@]}") \
-      >"${log}" 2>&1 || status=$?
+      >"${raw}" 2>&1 || status=$?
   fi
+  redact <"${raw}" >"${log}"
+  rm -f "${raw}"
   show_log "${log}" "${status}"
   if [[ "${status}" -eq 124 ]]; then
     err "run $((i + 1)) ran past ${RUN_SECONDS} s; it is not re-run as-is: narrow it to the files you changed; full output: ${log}"

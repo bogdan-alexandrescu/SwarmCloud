@@ -21,6 +21,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
@@ -94,10 +95,16 @@ def _run(*args: str, env_extra: dict[str, str] | None = None) -> subprocess.Comp
     env = {k: v for k, v in os.environ.items() if k != "SWARM_CLONE_BASE"}
     env["NO_COLOR"] = "1"
     env.update(env_extra or {})
-    return subprocess.run(
-        ["bash", str(SCRIPT), *args],
-        cwd=REPO, env=env, capture_output=True, text=True, timeout=300,
-    )
+    # The --run logs go under SWARM_ARTIFACTS_DIR. Unless a test names its own,
+    # it is a throwaway directory, never the caller's: a lane running this file
+    # would otherwise collect related-tests.*.runN.log files from every test.
+    with tempfile.TemporaryDirectory(prefix="related-tests-artifacts.") as scratch:
+        if "SWARM_ARTIFACTS_DIR" not in (env_extra or {}):
+            env["SWARM_ARTIFACTS_DIR"] = scratch
+        return subprocess.run(
+            ["bash", str(SCRIPT), *args],
+            cwd=REPO, env=env, capture_output=True, text=True, timeout=300,
+        )
 
 
 def _commands(out: str) -> list[str]:
@@ -990,6 +997,62 @@ def test_a_passing_run_prints_its_tail_not_its_whole_output(tmp_path):
     logs = sorted(artifacts.glob("related-tests*"))
     assert logs, list(artifacts.iterdir())
     assert any("noise line 1 of the run\n" in p.read_text() for p in logs)
+
+
+def test_the_kept_log_is_redacted_like_the_printed_tail(tmp_path):
+    """The log under SWARM_ARTIFACTS_DIR outlives the lane; it goes through
+    common.sh's redact, not only the tail printed from it."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    # Built at runtime: nothing in this file may look like a credential.
+    value = "q" * 8 + "Z" * 24
+    for tool in ("uv", "npx", "npm"):
+        fake = bin_dir / tool
+        fake.write_text(
+            "#!/usr/bin/env bash\n"
+            f'echo "api_key={value}"\n'
+            'for i in $(seq 1 200); do echo "noise line $i of the run"; done\n'
+            'echo "400 passed in 1.00s"\n'
+        )
+        fake.chmod(0o755)
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    diff = tmp_path / "diff.txt"
+    diff.write_text("scripts/related-tests.sh\n")
+    result = _run("--run", "--files", str(diff), env_extra={
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "SWARM_ARTIFACTS_DIR": str(artifacts),
+    })
+    assert result.returncode == 0, result.stderr
+    logs = sorted(artifacts.glob("related-tests*.log"))
+    assert logs, list(artifacts.iterdir())
+    text = "".join(p.read_text() for p in logs)
+    # The log was written (the control), and the value is not in it.
+    # MUTATION: write the run straight to ${log} -> the value is kept.
+    assert "noise line 1 of the run" in text
+    assert "api_key" in text
+    assert value not in text
+    assert value not in result.stdout + result.stderr
+
+
+def test_run_keeps_its_logs_out_of_the_callers_artifacts(tmp_path, monkeypatch):
+    """`_run` without an explicit SWARM_ARTIFACTS_DIR does not write into the
+    one the caller (a lane) has set."""
+    callers = tmp_path / "callers-artifacts"
+    callers.mkdir()
+    monkeypatch.setenv("SWARM_ARTIFACTS_DIR", str(callers))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _loud_tools(bin_dir, fail=False)
+    diff = tmp_path / "diff.txt"
+    diff.write_text("scripts/related-tests.sh\n")
+    result = _run("--run", "--files", str(diff),
+                  env_extra={"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"})
+    assert result.returncode == 0, result.stderr
+    # The run did write a log (the control) -- just not here.
+    assert "full output:" in result.stderr
+    assert str(callers) not in result.stdout + result.stderr
+    assert list(callers.iterdir()) == []
 
 
 def test_a_failing_run_prints_the_failure_block_and_the_tail(tmp_path):
