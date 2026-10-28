@@ -35,6 +35,9 @@ from typing import Any, Callable, Mapping
 #: The task metadata key a review gate lives under.
 #: `swarm_api.validation.REVIEW_GATE_METADATA_KEY`, held equal by the test.
 REVIEW_GATE_METADATA_KEY = "review_gate"
+#: The block's flag naming an issue run's requirements check.
+#: `swarm_api.validation.REVIEW_GATE_REQUIREMENTS_CHECK`, held equal by the test.
+REVIEW_GATE_REQUIREMENTS_CHECK = "requirements_check"
 
 #: The merge task's recorded pull-request endings. `swarm_api.mergewake`'s
 #: `_Reading("merged"/"closed")` and `PULL_REQUEST_MERGED` / `_CLOSED`.
@@ -112,3 +115,29 @@ def end_if_noop(store: Any, task: Any) -> Any | None:
     if reason is None or getattr(getattr(task, "state", None), "value", None) != "READY":
         return None
     return store.skip_before_lease(task, reason)
+
+
+#: The ends of a requirements check that are not a failure of its run.
+_CHECK_ENDS_WITHOUT_LIST = ("FAILED", "DEAD_LETTERED")
+
+
+def is_requirements_check(metadata: Any) -> bool:
+    """`swarm_api.reviewgate.is_requirements_check`, restated: an issue run's
+    cheap requirements check, which stands beside the gated review (#2524)."""
+    block = _mapping(_mapping(metadata).get(REVIEW_GATE_METADATA_KEY))
+    return block.get(REVIEW_GATE_REQUIREMENTS_CHECK) is True
+
+
+def check_ended_without_list(state: Any, requirements_check: bool) -> bool:
+    """A requirements check that FAILED or was DEAD_LETTERED: it confirms nothing.
+
+    A FAILED CHECK IS NOT A FAILED RUN (#2524, the review of REVIEW-GATE-DEFAULT).
+    The check only confirms requirements; it neither reviews nor changes code.
+    When it times out, runs out of attempts or errors, it reads as "no list":
+    the review beside it still ends as the gate decides, and the pull request
+    says "part of #N" (`swarm_api.verdictpublish`). So the dependency rule does
+    not cancel the review over it, and `fail_workflow` does not count it. A
+    check CANCELLED by somebody's stop is still a cancel, and still cascades.
+    """
+    value = getattr(state, "value", state)
+    return requirements_check and value in _CHECK_ENDS_WITHOUT_LIST

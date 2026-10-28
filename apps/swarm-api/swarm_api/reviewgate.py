@@ -280,6 +280,25 @@ def is_requirements_check(metadata: Any) -> bool:
     return block.get(REVIEW_GATE_REQUIREMENTS_CHECK) is True
 
 
+#: The ends of a requirements check that confirm nothing and fail nothing.
+CHECK_ENDS_WITHOUT_LIST = ("FAILED", "DEAD_LETTERED")
+
+
+def check_ended_without_list(task: Mapping[str, Any]) -> bool:
+    """A requirements check that FAILED or was DEAD_LETTERED (#2524).
+
+    A FAILED CHECK IS NOT A FAILED RUN. It times out, runs out of attempts or
+    its agent errors: then it confirmed nothing, and reads as "no list". The
+    review beside it still ends as the gate decides, so a skipped review
+    publishes "part of #N" as it did before the check existed. The scheduler
+    agrees (`scheduler.reviewgate.check_ended_without_list`): it neither
+    cancels the review over it nor fails the workflow. A check somebody
+    CANCELLED is a stop, and still takes the review with it.
+    """
+    return (is_requirements_check(_mapping(task).get("metadata"))
+            and _mapping(task).get("state") in CHECK_ENDS_WITHOUT_LIST)
+
+
 def workspace_enabled(setting: Any) -> bool:
     """False only when the workspace switched the default gate off (`enabled: false`)."""
     return _mapping(setting).get("enabled") is not False

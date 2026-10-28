@@ -1061,11 +1061,13 @@ def _consider(ctx: Any, tenant: Any, doc: Mapping[str, Any], report: FinishRepor
     if CONTROL_PUBLISH_METADATA_KEY in _mapping(doc.get("metadata")):
         return
     parents: dict[str, Mapping[str, Any]] = {}
+    gated = reviewgate.gated(doc.get("metadata"))
     for upstream in doc.get("depends_on") or []:
         snap = db.collection(TASKS).document(str(upstream)).get()
         data = snap.to_dict() if snap.exists else None
         if (data is None or data.get("tenant_id") != tenant_id
-                or data.get("state") != TaskState.SUCCEEDED.value):
+                or (data.get("state") != TaskState.SUCCEEDED.value
+                    and not (gated and reviewgate.check_ended_without_list(data)))):
             # Not every parent has succeeded: the scheduler holds nothing
             # yet, and cancels the step if one failed.
             return
@@ -1074,7 +1076,7 @@ def _consider(ctx: Any, tenant: Any, doc: Mapping[str, Any], report: FinishRepor
     claim_id = uuid.uuid4().hex
     if not _claim(db, tenant_id, task_id, claim_id, ctx.now()):
         return
-    if reviewgate.gated(doc.get("metadata")):
+    if gated:
         _consider_review(ctx, doc, report, parent_id, claim_id)
         return
     started = time.monotonic()
@@ -1127,6 +1129,9 @@ def _check_requirements(ctx: Any, tenant_id: str,
     for parent in parents:
         if not reviewgate.is_requirements_check(parent.get("metadata")):
             continue
+        if parent.get("state") != TaskState.SUCCEEDED.value:
+            # It failed: it confirmed nothing, so nothing reads as met.
+            return None
         try:
             text = _read_text(ctx, tenant_id, str(parent.get("id") or ""),
                               reviewgate.REQUIREMENTS_FILE,
@@ -1242,7 +1247,10 @@ def on_task_finished(ctx: Any, task_id: str, *, tenant_id: str | None = None) ->
     db = ctx.store.db
     snap = db.collection(TASKS).document(task_id).get()
     parent = snap.to_dict() if snap.exists else None
-    if parent is None or parent.get("state") != TaskState.SUCCEEDED.value:
+    # A requirements check that failed still releases the review beside it
+    # (#2524): the review is skipped with no list, so "part of #N".
+    if parent is None or (parent.get("state") != TaskState.SUCCEEDED.value
+                          and not reviewgate.check_ended_without_list(parent)):
         report.skipped = "not_succeeded"
         return report
     owner = str(parent.get("tenant_id") or "")

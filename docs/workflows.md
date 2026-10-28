@@ -1815,6 +1815,25 @@ changed paths (`own_files` when recorded, else `files`) and
   requirement is met, otherwise "part of #N". It never writes a verdict:
   the verdict stays the gate's MERGE, whatever the file says, and no step
   reads a verdict from the check. Its own change is not counted by the gate.
+* **A failed requirements check is "no list", never a lost pull request.**
+  The review lists the check in its `depends_on`, so that the review is
+  decided only once the check has ended. A check can still time out, run out
+  of attempts or fail with an agent error. If that made it an ordinary failed
+  parent, the scheduler would cancel the review, the fix and the integrator
+  (`failed_parent`), `fail_workflow` would end the run, and the issue would
+  get no pull request, where before the check existed it got one saying
+  "part of #N". So a check that ends FAILED or DEAD_LETTERED
+  (`reviewgate.check_ended_without_list`, restated in the scheduler) is
+  treated as follows:
+  * it is not a failed parent to the gated review, and
+    `read_workflow_failure` does not count it;
+  * its `task_finished` wake still has swarm-api decide the review;
+  * a skipped review then carries no requirements list, so "part of #N" --
+    any `requirements.json` it left is ignored, because a check that did
+    not succeed confirms nothing.
+
+  A check that somebody CANCELLED is a stop, and still takes the review
+  with it.
 * **Not `result_summary.skipped`.** That key means "did not run and left
   nothing", which makes a step that stages anything from it skip as well: the
   integrator would never publish.

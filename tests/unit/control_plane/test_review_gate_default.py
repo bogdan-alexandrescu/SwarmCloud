@@ -20,15 +20,19 @@ No credentials, no network, no emulator.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
 
-from swarm_api import issueruns, reviewgate
+from scheduler import loop
+from scheduler import reviewgate as scheduler_gate
+from scheduler.store import SchedulerStore
+from swarm_api import issueruns, reviewgate, validation
 from swarm_api.issueruns import compile_plan, plan_digest
 from swarm_api.validation import parse_issue_ref
 
-from .conftest import seed_task
+from .conftest import scheduler_settings, seed_task
 from .test_review_gate import (  # noqa: F401 -- fixtures are used by name
     IMPL,
     REVIEW,
@@ -45,7 +49,7 @@ from .test_review_gate import (  # noqa: F401 -- fixtures are used by name
     store,
     waker,
 )
-from .test_verdict_publish import _finished
+from .test_verdict_publish import BUCKET, _finished, _push
 
 CHECK = "task_check00001"
 PLAN = {
@@ -225,6 +229,97 @@ def test_the_check_never_writes_a_verdict(db, objects, client):
     # Only the list is read from it: the verdict stays the gate's MERGE.
     assert verdict["verdict"] == "MERGE" and verdict["findings"] == []
     assert reviewgate.requirements_from(json.dumps({"verdict": "MERGE"})) is None
+
+
+# A FAILED check is "no list", never a lost pull request (review of
+# REVIEW-GATE-DEFAULT): the review beside it is still decided, and skipped
+# with no requirements, so the run says "part of #N".
+
+
+def _failed_check(db, state: str = "FAILED", end_cause: str | None = None) -> None:
+    _base(db)
+    _parent(db, _git(SMALL_FILE, insertions=12))
+    check = _check(db, state=state)
+    check["completed_at"] = datetime.now(timezone.utc)
+    if end_cause is not None:
+        check["end_cause"] = end_cause
+        check["cancel_requested"] = True
+    review = _review(db, gate={"default": True})
+    review["depends_on"] = [IMPL, CHECK]
+
+
+@pytest.mark.parametrize("state", ["FAILED", "DEAD_LETTERED"])
+def test_a_failed_check_still_skips_the_review_with_part_of(db, client, state):
+    _failed_check(db, state=state)
+    response = _push(client, CHECK)
+    assert response.status_code == 200, response.text
+    # MUTATION: drop `check_ended_without_list` from `on_task_finished` and the
+    # wake is `not_succeeded`: the review is never decided.
+    assert response.json()["report"]["reviews_skipped"] == [REVIEW]
+    doc = _review_doc(db)
+    assert doc["state"] == "SUCCEEDED"
+    (entry,) = doc["result_summary"]["artifacts"]
+    text = reviewgate.inline_verdict(doc["result_summary"], entry)
+    assert json.loads(text)["verdict"] == "MERGE"
+    met, unmet, _ = issueruns.requirements_finding(PLAN, text)
+    assert met is False and unmet == PLAN["requirements"]
+
+
+def test_a_failed_check_with_a_stray_list_confirms_nothing(db, objects, client):
+    _failed_check(db)
+    key = f"tenants/eng/tasks/{CHECK}/attempts/att_1/artifacts/requirements.json"
+    listed = json.dumps({"requirements": [{"index": 1, "met": True, "note": "a"},
+                                          {"index": 2, "met": True, "note": "b"}]})
+    objects.put(key, listed.encode())
+    db.docs[f"tasks/{CHECK}"]["result_summary"] = {"artifacts": [
+        {"name": "requirements.json", "bytes": len(listed), "uri": f"gs://{BUCKET}/{key}"}]}
+    _push(client, CHECK)
+    doc = _review_doc(db)
+    (entry,) = doc["result_summary"]["artifacts"]
+    text = reviewgate.inline_verdict(doc["result_summary"], entry)
+    # A check that did not succeed is not evidence: never Closes #N.
+    assert issueruns.requirements_finding(PLAN, text)[0] is False
+
+
+def test_the_scheduler_holds_the_review_behind_a_failed_check(db, make_scheduler, dispatcher):
+    _failed_check(db)
+    report = make_scheduler(
+        settings=scheduler_settings(control_publish_hold_seconds=60.0)
+    ).release_dependants(CHECK)
+    # MUTATION: read the check's state as is in `_dependency_states` and the
+    # review is CANCELLED as a failed parent's, and the run publishes nothing.
+    assert _review_doc(db)["state"] == "PARKED", report.to_dict()
+    assert report.held_dependencies == 1
+
+
+def test_a_check_somebody_cancelled_still_takes_the_review(db, make_scheduler, dispatcher):
+    _failed_check(db, state="CANCELLED", end_cause="cancel_requested")
+    make_scheduler(
+        settings=scheduler_settings(control_publish_hold_seconds=60.0)
+    ).release_dependants(CHECK)
+    assert _review_doc(db)["state"] == "CANCELLED"
+
+
+def test_a_failed_check_is_not_the_workflows_failure(db):
+    db.docs["workflows/wf_gate"] = {"tenant_id": "eng", "on_step_failure": "fail_workflow",
+                                    "created_at": datetime.now(timezone.utc)}
+    check = seed_task(db, task_id=CHECK, tenant_id="eng", state="FAILED", workflow_id="wf_gate")
+    check["step_id"] = "requirements-check"
+    check["metadata"] = {"review_gate": {"requirements_check": True}}
+    store = SchedulerStore(db)
+    # MUTATION: count every FAILED step in `read_workflow_failure` and the
+    # sweep cancels the review and the publish step with it.
+    assert loop.read_workflow_failure(store, "eng", "wf_gate", enforced_since=None) is None
+    seed_task(db, task_id="task_impl_failed", tenant_id="eng", state="FAILED",
+              workflow_id="wf_gate")
+    failed = loop.read_workflow_failure(store, "eng", "wf_gate", enforced_since=None)
+    assert failed is not None
+    assert [s["task_id"] for s in failed.failed_steps] == ["task_impl_failed"]
+
+
+def test_the_restated_check_words_are_equal():
+    assert scheduler_gate.REVIEW_GATE_REQUIREMENTS_CHECK == validation.REVIEW_GATE_REQUIREMENTS_CHECK
+    assert tuple(scheduler_gate._CHECK_ENDS_WITHOUT_LIST) == reviewgate.CHECK_ENDS_WITHOUT_LIST
 
 
 def test_a_long_list_still_fits_the_inline_bound():
