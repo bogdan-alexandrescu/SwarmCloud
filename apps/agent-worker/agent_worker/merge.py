@@ -153,7 +153,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import Any, Iterable, Mapping, Protocol
+from typing import Any, Iterable, Mapping, NamedTuple, Protocol
 from urllib.parse import quote
 
 from swarm_common.models import EndCause, utcnow
@@ -245,6 +245,10 @@ REQUIRED_GREEN = frozenset({"success", "skipped"})
 #: The conclusion of a run someone stopped: pending, never failed (#1778,
 #: `cancelled_run`).
 CANCELLED_CONCLUSION = "cancelled"
+#: The one conclusion a check run keeps inside an Actions run that was
+#: cancelled (`cancelled_by_its_workflow`, #2582): its job ran and passed.
+#: `skipped` is not kept -- a job a cancelled run never ran may say it.
+PASSED_IN_ITS_RUN = "success"
 #: What any OTHER check may conclude without holding the merge, and what
 #: every check must conclude on a base branch that requires none:
 #: auto-merge.yml gate 5's own tolerance plus nothing.
@@ -618,15 +622,55 @@ def other_check_blocks(run: Mapping[str, Any]) -> bool:
     return (run.get("conclusion") or "") not in OTHER_TOLERATED
 
 
-def _other_branch_push(suite: tuple[str | None, str | None] | None,
-                       head_ref: str | None) -> bool:
-    """Whether a check suite, (event, head branch), was triggered by a push
-    to a known branch that is not `head_ref` -- another branch's result at a
-    shared sha, not the pull request's (#2365). False when anything is unknown."""
+class ActionsSuite(NamedTuple):
+    """What the Actions run that made one check suite says (`actions_suites`)."""
+
+    event: str | None
+    branch: str | None
+    #: The Actions run's own conclusion (`cancelled_by_its_workflow`, #2582).
+    conclusion: str | None = None
+    #: A newer Actions run of the same workflow and event, from the same
+    #: branch, is at the sha: the run that concurrency cancelled this one.
+    superseded: bool = False
+
+
+_NO_SUITE = ActionsSuite(None, None)
+
+
+def actions_suites(runs: Iterable[Any]) -> dict[int | None, ActionsSuite]:
+    """`GET actions/runs?head_sha=` read as `ActionsSuite`s, by check suite id.
+
+    A run is superseded when another run at the sha has the same
+    `workflow_id`, event and head branch and a larger id (GitHub's run ids
+    grow), finished or not: a concurrency group cancels the older run when
+    the newer one starts, and the newer one may not have created a given
+    check run yet (#2582). A run with no `workflow_id` is never superseded.
+    """
+    rows = [_mapping(run) for run in runs]
+    suites: dict[int | None, ActionsSuite] = {}
+    for run in rows:
+        suite = _int(run.get("check_suite_id"))
+        event, branch = _str(run.get("event")), _str(run.get("head_branch"))
+        if suite is None or not (event or branch):
+            continue
+        workflow, run_id = _int(run.get("workflow_id")), _int(run.get("id"))
+        superseded = workflow is not None and run_id is not None and any(
+            _int(other.get("workflow_id")) == workflow
+            and _str(other.get("event")) == event
+            and _str(other.get("head_branch")) == branch
+            and (_int(other.get("id")) or 0) > run_id
+            for other in rows)
+        suites[suite] = ActionsSuite(event, branch, _str(run.get("conclusion")), superseded)
+    return suites
+
+
+def _other_branch_push(suite: ActionsSuite | None, head_ref: str | None) -> bool:
+    """Whether a check suite was triggered by a push to a known branch that
+    is not `head_ref` -- another branch's result at a shared sha, not the
+    pull request's (#2365). False when anything is unknown."""
     if suite is None or head_ref is None:
         return False
-    event, branch = suite
-    return event == "push" and branch is not None and branch != head_ref
+    return suite.event == "push" and suite.branch is not None and suite.branch != head_ref
 
 
 def _event_group(run: Mapping[str, Any]) -> str | None:
@@ -654,8 +698,46 @@ def latest_per_event(runs: list[Mapping[str, Any]]) -> list[tuple[str | None, Ma
     latest: dict[str | None, tuple[int, Mapping[str, Any]]] = {}
     for rank, (_position, run) in enumerate(ordered):
         latest[_event_group(run)] = (rank, run)
-    return [(event, run) for event, (_rank, run)
-            in sorted(latest.items(), key=lambda item: item[1][0])]
+    deciding = [(event, run) for event, (_rank, run)
+                in sorted(latest.items(), key=lambda item: item[1][0])]
+    others = [run for _event, run in deciding]
+    return [(event, {**run, "conclusion": CANCELLED_CONCLUSION}
+             if cancelled_by_its_workflow(run, others) else run)
+            for event, run in deciding]
+
+
+def cancelled_by_its_workflow(run: Mapping[str, Any],
+                              deciding: Iterable[Mapping[str, Any]]) -> bool:
+    """Whether a check run that finished red is read as `cancelled` because
+    its Actions run was (#2582, BGD 2026-10-28).
+
+    `ci-gate` and security.yml's folded name-keepers run under `if: always()`,
+    so inside a workflow run concurrency cancelled they still run and conclude
+    `failure` over needs that were only cancelled: PR #2565's push ci-gate at
+    968d9949 read red, the branch's newer push run had not created its own
+    yet, and the step refused `checks_failed` although no job had failed. So a
+    check run that finished with any conclusion but `success`
+    (`PASSED_IN_ITS_RUN`) -- `skipped` too, which is what a gate under
+    `!cancelled()` may conclude in a cancelled run, and which would otherwise
+    read green -- in an
+    Actions run that concluded `cancelled` (`workflow_conclusion`), is read
+    as cancelled -- pending, never green (`cancelled_run`) -- when a newer run
+    of the same workflow and event is at the head (`workflow_superseded`) or
+    another event's deciding run (`deciding`, the check's latest run of each
+    event) passed the check. A red check in a run nobody cancelled stays red,
+    and so does one in a cancelled run with neither: nothing then says the
+    failure was not real. swarm-api's `forgechecks.cancelled_by_its_workflow`
+    is the same rule, held equal by
+    tests/unit/control_plane/test_forgechecks_cancelled_workflow_run.py.
+    """
+    if run.get("workflow_conclusion") != CANCELLED_CONCLUSION or not check_run_finished(run):
+        return False
+    if (run.get("conclusion") or "") in (PASSED_IN_ITS_RUN, CANCELLED_CONCLUSION):
+        return False
+    if run.get("workflow_superseded") is True:
+        return True
+    return any(other is not run and check_run_finished(other)
+               and (other.get("conclusion") or "") in REQUIRED_GREEN for other in deciding)
 
 
 def cancelled_run(run: Mapping[str, Any]) -> bool:
@@ -899,11 +981,19 @@ class CheckFacts:
     #: run whatever `status` says (`check_run_finished`, CHECK-STUCK). None
     #: for a commit status, whose state alone says whether it finished.
     completed_at: str | None = None
+    #: The conclusion of the Actions run whose suite made this check run, and
+    #: whether a newer run of the same workflow and event, from the same
+    #: branch, is at the head: what `cancelled_by_its_workflow` reads
+    #: (#2582). None and False when the Actions runs were not read.
+    workflow_conclusion: str | None = None
+    workflow_superseded: bool = False
 
     def as_run(self) -> dict[str, Any]:
         return {"name": self.name, "status": self.status, "conclusion": self.conclusion,
                 "completed_at": self.completed_at, "run_id": self.run_id, "event": self.event,
-                "check_suite_id": self.check_suite_id}
+                "check_suite_id": self.check_suite_id,
+                "workflow_conclusion": self.workflow_conclusion,
+                "workflow_superseded": self.workflow_superseded}
 
 
 @dataclass(frozen=True)
@@ -1242,8 +1332,10 @@ class GitHubMerger:
                   for run in (check.as_run() for check in out))
         if len(names) != len(set(names)) or red:
             suites = self._suite_events(sha)
-            out = [replace(check, event=suites.get(check.check_suite_id, (None, None))[0])
+            out = [replace(check, event=suite.event, workflow_conclusion=suite.conclusion,
+                           workflow_superseded=suite.superseded)
                    for check in out
+                   for suite in (suites.get(check.check_suite_id, _NO_SUITE),)
                    if not _other_branch_push(suites.get(check.check_suite_id), head_ref)]
         combined = _mapping(self._client.get_ok(f"{self._base}/commits/{sha}/status"))
         for status in combined.get("statuses") or []:
@@ -1257,9 +1349,10 @@ class GitHubMerger:
             out.append(CheckFacts(name=name, status=state, conclusion=conclusion))
         return out
 
-    def _suite_events(self, sha: str) -> dict[int | None, tuple[str | None, str | None]]:
-        """The (event, head branch) of each Actions check suite at `sha`, by
-        suite id; either is None when GitHub did not say.
+    def _suite_events(self, sha: str) -> dict[int | None, ActionsSuite]:
+        """The Actions run of each check suite at `sha`, by suite id: its
+        event and head branch, either None when GitHub did not say, its own
+        conclusion, and whether it is superseded (`ActionsSuite`, #2582).
 
         A credential without `actions: read` (403), or a repository with
         Actions off (404), reads as no event and no branch: each check suite
@@ -1273,14 +1366,7 @@ class GitHubMerger:
             if exc.status in (403, 404):
                 return {}
             raise
-        suites: dict[int | None, tuple[str | None, str | None]] = {}
-        for run in runs:
-            run = _mapping(run)
-            suite = _int(run.get("check_suite_id"))
-            event, branch = _str(run.get("event")), _str(run.get("head_branch"))
-            if suite is not None and (event or branch):
-                suites[suite] = (event, branch)
-        return suites
+        return actions_suites(runs)
 
     def commit(self, sha: str) -> CommitFacts:
         data = _mapping(self._client.get_ok(f"{self._base}/commits/{quote(sha, safe='')}"))
