@@ -403,7 +403,7 @@ describe('U2: the view modes', () => {
     const seg = document.querySelector('nav[aria-label="Views of this workflow"]')
     expect(seg, 'the page has no view tabs').toBeTruthy()
     const buttons = [...seg!.querySelectorAll<HTMLAnchorElement>('a')]
-    expect(buttons.map((b) => b.firstChild?.textContent)).toEqual(['Graph', 'Table', 'Timeline', 'Changes'])
+    expect(buttons.map((b) => b.firstChild?.textContent)).toEqual(['Graph', 'Table', 'Steps over time', 'Changes'])
     expect(c.querySelector('.wf-viewbar .c-seg'), 'the boxed control is still in the card').toBeNull()
     // The Graph is what the page lands on.
     expect(c.querySelector('.wf-canvas')).toBeTruthy()
@@ -1269,7 +1269,7 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
     expect(mark()!.closest('.wf-card'), 'the mark is outside the card').not.toBeNull()
     expect(document.querySelector('.wf-chrome'), 'an empty strip above the card').toBeNull()
     // The Timeline draws times from the task read, not the sample.
-    chooseTab(c, 'Timeline')
+    chooseTab(c, 'Steps over time')
     expect(mark(), 'a caveat about figures nobody can see').toBeNull()
     // AH-24: the board's one `?` follows the screen's heading, never a value.
     chooseTab(cardOf('wf_new'), 'Table')
@@ -1659,7 +1659,7 @@ describe('the owner’s decisions: where a figure came from (WF-5)', () => {
     // floor rather than a total.
     const total = table.querySelector<HTMLElement>('.wf-spend')!
     expect(total.firstChild?.textContent, 'the row’s total counts a figure no step shows').toBe('$0.20')
-    expect(total.querySelector('.wf-spend-cov')?.textContent).toBe('1 of 2 reported')
+    expect(total.querySelector('.wf-spend-cov')?.textContent).toBe('1 of 2 steps that ran reported')
 
     // And the node agrees with the table.
     const node = nodeNamed(viewCard(steps, [done, retrying], 'graph', usage), 'again')
@@ -1676,7 +1676,7 @@ describe('the owner’s decisions: scrubbing across workflows (WF-10)', () => {
     // `wf_mid` and `wf_old` are the two workflows of one shape (#112); wf_mid
     // lands with its failed `plan` picked.
     const mid = await openPage('wf_mid')
-    chooseTab(mid, 'Timeline')
+    chooseTab(mid, 'Steps over time')
     await waitFor(() => inspector(cardOf('wf_mid')))
     expect(cardOf('wf_mid').querySelector('.wf-pick[data-step="plan"]')!.getAttribute('aria-pressed')).toBe('true')
     fireEvent.click(within(inspector(cardOf('wf_mid'))).getByRole('button', { name: 'Same step, older workflow' }))

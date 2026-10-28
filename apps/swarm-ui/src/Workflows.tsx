@@ -156,6 +156,7 @@ import {
   type WorkflowDrift,
   type WorkflowStep,
   workflowHeaderState,
+  workflowStart,
   workflowStartText,
   reasonCopy,
   TERMINAL_STATES,
@@ -315,6 +316,12 @@ function useBoardStores() {
   // inspector should take focus on when it arrives.
   const [pick, setPick] = useState<PickedStep | null>(null)
 
+  // WHAT EACH RECORDED STOP ANSWERED, keyed by workflow id (overview-agents-84),
+  // up here for the stages' reason: the stop's own reload remounts `Screen`,
+  // and the answer held inside it would be gone the moment it was given.
+  const [cancels, setCancels] = useState<Record<string, CancelSentRead>>({})
+  const recordCancel = useCallback((id: string, sent: CancelSentRead) => setCancels((c) => ({ ...c, [id]: sent })), [])
+
   const toggleStage = useCallback(
     (key: string, expanded: boolean) => setStages((s) => ({ ...s, [key]: !expanded })),
     [],
@@ -330,6 +337,8 @@ function useBoardStores() {
     chooseZoom,
     pick,
     choosePick: setPick,
+    cancels,
+    recordCancel,
   }
 }
 
@@ -508,7 +517,7 @@ function pageSummary(d: WorkflowBoard, id: string): ReactNode {
   const w = d.workflows.find((x) => x.workflow_id === id)
   if (w === undefined) return 'not in this read'
   const shape = shapeOf(w.steps)
-  const started = workflowStartText(w, d.taskById)
+  const started = workflowStartUtc(w, d.taskById)
   const owner = w.submitted_by === null || w.submitted_by === '' ? ownerShort(w.submitted_by) : PersonName({ email: w.submitted_by, name: w.submitted_by_name })
   return (
     <>
@@ -521,6 +530,40 @@ function pageSummary(d: WorkflowBoard, id: string): ReactNode {
       {` · ${startedPhrase(started)}`}
     </>
   )
+}
+
+/**
+ * AN INSTANT IN UTC, WRITTEN WITH Z (visual QA pass 1 C-10, #2596): the list's
+ * Submitted and the page's `started` were the browser's local clock with no
+ * date and no zone (`02:20:01`), where the rest of the console writes UTC with
+ * Z. `02:20:01Z` on the same UTC day as `now` -- the seconds kept, because the
+ * list sorts by submission and two rows a second apart must read in order --
+ * and `Oct 27 02:20Z` on any other. Null for a missing or unparseable instant.
+ */
+const UTC_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+export function utcStamp(iso: string | null | undefined, now: number = Date.now()): string | null {
+  if (!iso) return null
+  const t = Date.parse(iso)
+  if (!Number.isFinite(t)) return null
+  const d = new Date(t)
+  const n = new Date(now)
+  const pad = (v: number) => String(v).padStart(2, '0')
+  const hm = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`
+  const sameDay =
+    d.getUTCFullYear() === n.getUTCFullYear() && d.getUTCMonth() === n.getUTCMonth() && d.getUTCDate() === n.getUTCDate()
+  return sameDay ? `${hm}:${pad(d.getUTCSeconds())}Z` : `${UTC_MONTHS[d.getUTCMonth()]} ${d.getUTCDate()} ${hm}Z`
+}
+
+/** `workflowStartText`, with its two instants written in UTC (`utcStamp`); the titles keep the ISO instant and its age. */
+function workflowStartUtc(
+  workflow: Workflow,
+  taskById: ReadonlyMap<string, Task> | null,
+  now: number = Date.now(),
+): ReturnType<typeof workflowStartText> {
+  const t = workflowStartText(workflow, taskById, now)
+  const start = workflowStart(workflow, taskById)
+  const at = start.kind === 'started' ? utcStamp(start.at, now) : null
+  return { ...t, submitted: utcStamp(workflow.created_at, now) ?? t.submitted, text: t.kind === 'at' && at !== null ? at : t.text }
 }
 
 /**
@@ -559,7 +602,7 @@ export function listSummary(d: Pick<WorkflowBoard, 'workflows' | 'nextPageToken'
     if (bucketOf(w) !== 'running') continue
     const s = derivedStateOf(w)
     if (s === null) {
-      const word = workflowHeaderState(w).word
+      const word = markWord(workflowHeaderState(w).word)
       unknown.set(word, (unknown.get(word) ?? 0) + 1)
     } else if (s === 'PARKED') parked += 1
     else if (s === 'READY' || s === 'QUEUED' || s === 'SUBMITTED') waiting += 1
@@ -1145,6 +1188,14 @@ export function PullRequestWaitTag({ workflow }: { workflow: Workflow }) {
   return <span className="tag wait">{text}</span>
 }
 
+/**
+ * ONE VERB FOR ONE ACTION (visual QA pass 1 overview-agents-83, #2596): the
+ * graph's nodes said `stop`, the step card `Stop step`, the head `Cancel
+ * workflow` and Agents `Stop`. Every control on this screen says Stop, as
+ * Agents does; the API route is still `/cancel`.
+ */
+const CANCEL_PENDING_WORD = 'stop requested'
+
 function cancelPending(workflow: Workflow): boolean {
   if (!workflow.cancel_requested) return false
   const roll = workflow.rollup
@@ -1321,7 +1372,7 @@ export function WorkflowCard({
   const roll = rollupLine(workflow, taskById)
   // WHEN IT STARTED (#376): the earliest step task's `started_at` -- the
   // workflow document records no start -- with `created_at` as its submit.
-  const started = workflowStartText(workflow, taskById)
+  const started = workflowStartUtc(workflow, taskById)
   // WHAT THE WORKFLOW IS CALLED AND WHAT IT OPENED (#330), both off the step
   // tasks the board already joined -- see `workflowLabel` and `workflowPullRequest`.
   const label = workflowLabel(workflow, taskById)
@@ -1498,7 +1549,12 @@ export function WorkflowCard({
           </ul>
         )}
         {!page && <CensusFact roll={roll} />}
-        <StateDrift drift={workflow.drift} />
+        {/* NO STORED-STATE LINE ON THE PAGE (visual QA pass 1
+            overview-agents-81, #2596): `stored as queued · steps running ·
+            stored copy corrected` beside a head that says running was three
+            internal states for one fact. The page says the derived state;
+            the board's card keeps the check. */}
+        {!page && <StateDrift drift={workflow.drift} />}
         <WorkflowDispatchLine workflow={workflow} taskById={taskById} pr={pr} />
         {/* THE CARD'S OWN VIEW STRIP: which of the three drawings this is,
             and the one mark that belongs to the workflow rather than to any
@@ -1556,23 +1612,11 @@ export function WorkflowCard({
             )}
           </div>
         ) : null}
-        {/* ONE WORKFLOW'S PAGE: THE STEP TABLE UNDER THE GRAPH (workflows.html
-            B). The same rows the Table tab sorts, and a row picks the same
-            step into the card beside the graph. */}
-        {page && view === 'graph' && (
-          <div className="wfp-steps">
-            <WorkflowSteps
-              title="Steps"
-              workflow={workflow}
-              taskById={taskById}
-              classes={classes}
-              usage={usage}
-              view="table"
-              picked={picked}
-              onPick={pickStep}
-            />
-          </div>
-        )}
+        {/* NO STEP TABLE UNDER THE GRAPH (visual QA pass 1 overview-agents-73,
+            #2596). workflows.html B drew the Table's rows under the graph, and
+            the Table tab beside it drew the same rows again: each tab now
+            shows its own view, and the rows are one click away on Table. */}
+
         {/* THE TABLE AND THE TIMELINE, WITH THE INSPECTOR NEXT TO THE PICKED
             STEP (#110). It mounted under the whole view, about 650px below
             row 10 at 1440. At 1100px and up it docks in the right-hand column
@@ -1850,7 +1894,11 @@ function Mix({ steps }: { steps: WorkflowStep[] }) {
     <span className="wf-mix" ref={ref} title={`Runner profiles: ${all}`}>
       {shown.map((m) => (
         <Chip key={m.profile}>
-          {m.profile}{' '}
+          {/* THE PROFILE GIVES WAY, THE COUNT DOES NOT (visual QA pass 1
+              C-11, #2596): a one-step workflow's lone chip was cut to
+              `claude-code-browser …` and lost its step count. The profile is
+              its own box, cut with the chip's title; the count is whole. */}
+          <span className="wf-mix-p">{m.profile}</span>{' '}
           <span className="wf-mix-n">
             · {m.count} step{m.count === 1 ? '' : 's'}
           </span>
@@ -1936,10 +1984,16 @@ function Spend({ spend, short = false, reading = false }: { spend: WorkflowSpend
       {money(spend.usd)}
       {/* SPELLED OUT (live QA WF-25, 2026-10-11): a bare `1/2` beside a
           dollar figure read as a fraction of it, explained only on hover. */}
+      {/* THE UNIT AND A SPACE (visual QA pass 1 overview-agents-82, #2596):
+          `3 of 4 reported` named no unit, and with no space between the two
+          spans a copy read `$0.5183 of 4 reported`. */}
       {partial && (
-        <span className="wf-spend-cov">
-          {spend.covered} of {due} reported
-        </span>
+        <>
+          {' '}
+          <span className="wf-spend-cov">
+            {spend.covered} of {due} step{due === 1 ? '' : 's'} that ran reported
+          </span>
+        </>
       )}
     </span>
   )
@@ -2471,7 +2525,7 @@ function InspectorSlot({
       workflowId={workflow.workflow_id}
       workflowLabel={label}
       changes={changes}
-      workflowStarted={workflowStartText(workflow, taskById, now)}
+      workflowStarted={workflowStartUtc(workflow, taskById, now)}
       row={row}
       taskState={state.kind === 'state' ? state.state : null}
       siblings={refs}
@@ -2564,7 +2618,9 @@ function StepCardExtras({
             // panel variant is the danger outline at the head's size; the
             // card has the width for its in-place confirmation.
             variant="panel"
-            label="Stop step"
+            // `Stop`, AS EVERY STOP ON THE PAGE SAYS IT (overview-agents-83):
+            // the node's, the head's `Stop workflow`, and Agents'.
+            label="Stop"
           />
         </div>
       )}
@@ -3633,10 +3689,30 @@ function WorkflowGraph({
       to - from <= visible
         ? canvasLeft + (from + to) / 2 - railW - visible / 2
         : canvasLeft + from - railW - PAD
+    // A PICKED STEP IS BROUGHT ROUND FROM A STAGE'S START, NEVER CENTRED
+    // (visual QA pass 1 overview-agents-63, #2596): centring its stage in a
+    // 595px canvas, half the graph beside the open step card, scrolled 229px
+    // and cut the stage band and the first node mid-word (`ntzero`,
+    // `encing`). The canvas stays at its start when the picked card is whole
+    // from there, and otherwise opens on its stage's first column; `keep`
+    // below then moves only as far as the card needs.
+    if (keep !== null) left = canvasLeft + keep[1] + PAD <= el.clientWidth ? 0 : canvasLeft + from - railW - PAD
     if (keep !== null) {
       // The least scroll that shows the picked card whole from there.
       const past = canvasLeft + keep[1] + PAD - (left + el.clientWidth)
       if (past > 0) left += past
+      // NO CARD STRADDLES THE LEFT EDGE (overview-agents-63): one that
+      // would is scrolled wholly past, so the edge falls between cards and
+      // nothing reads cut mid-word. Forward only, so the picked card -- to
+      // the right of any card that straddles -- stays whole; one pass per
+      // card at most, since each moves the edge past one more.
+      for (let i = 0; i < layout.nodes.length; i += 1) {
+        const edge = left + railW - canvasLeft
+        const cut = layout.nodes.find((n) => n.x < edge && edge < n.x + layout.nodeW)
+        // Never past the picked card's own start.
+        if (cut === undefined || cut.x + layout.nodeW > keep[0]) break
+        left = canvasLeft + cut.x + layout.nodeW - railW
+      }
     }
     el.scrollLeft = Math.max(0, Math.min(left, el.scrollWidth - el.clientWidth))
     syncView()
@@ -4632,7 +4708,18 @@ function StepNode({
           its own box, so nothing is truncated. The list is `depUnits`, which is
           also what `heightOf` packs, so the line and the box it is measured
           into break in the same places. */}
-      {step.depends_on.length > 0 && (
+      {/* A STEP THAT READS MANY FILES SAYS HOW MANY (visual QA pass 1
+          overview-agents-64, #2596): a synthesis step's line named each
+          parent and its file, `cold-start (cold-start.md), …`, about 260px
+          of card that ran off the canvas. Past `DEP_FILES_LISTED` files the
+          line is a count, as the Table's Inputs column is, and the whole list
+          is its title and its accessible name. */}
+      {step.depends_on.length > 0 && depFileCount(step) > DEP_FILES_LISTED && (
+        <div className="node-dep is-count" title={`depends on ${depUnits(step).map((u) => u.text).join(' ')}`} aria-label={`depends on ${depUnits(step).map((u) => u.text).join(' ')}`}>
+          ↑ {step.depends_on.length} steps · {depFileCount(step)} files
+        </div>
+      )}
+      {step.depends_on.length > 0 && depFileCount(step) <= DEP_FILES_LISTED && (
         <div className="node-dep" title={`depends on ${step.depends_on.join(', ')}`}>
           ↑{' '}
           {depUnits(step).map((u, i) => (
@@ -4730,11 +4817,21 @@ function StepNode({
             reload={reload}
             variant="inline"
             overlay
+            // Capitalised, the one verb the step card and Agents use (overview-agents-83).
+            label="Stop"
           />
         </div>
       )}
     </div>
   )
+}
+
+/** How many files a node's dependency line names one by one; past it the line is a count (overview-agents-64). */
+export const DEP_FILES_LISTED = 2
+
+/** The files a step's dependencies hand it, as its dependency line would name them. */
+export function depFileCount(step: WorkflowStep): number {
+  return depUnits(step).filter((u) => u.kind === 'file').length
 }
 
 /**
@@ -5310,8 +5407,20 @@ function SampleNote(usage: WorkflowUsage, workflow: Workflow): ReactNode {
 function WorkflowStateMark({ workflow }: { workflow: Workflow }) {
   const s = derivedStateOf(workflow)
   if (s !== null) return <StateMark state={s} />
-  const h = workflowHeaderState(workflow)
+  const read = workflowHeaderState(workflow)
+  const h = { ...read, word: markWord(read.word) }
   return <NamedMark mark="queued" dataMark="unknown" hue="warn" word={h.word} title={h.title} />
+}
+
+/**
+ * `state unknown`, NOT `state not derived` (visual QA pass 1
+ * overview-agents-62, #2596): the API's account of why -- it did not derive
+ * the state from the steps -- was the mark's word and the row's second line
+ * both. The mark says the plain unknown; the why is its title.
+ */
+const NOT_DERIVED_WORD = 'state unknown'
+function markWord(word: string): string {
+  return word === 'state not derived' ? NOT_DERIVED_WORD : word
 }
 
 /**
@@ -5970,7 +6079,7 @@ function WorkflowListRow({
   // sorts by (QA G3-20), with the first step's start in its hover -- the
   // same words the open card's head uses (#376). DURATION is wall clock from
   // submission (`workflowDuration`), so the two columns share one origin.
-  const started = workflowStartText(workflow, taskById, now)
+  const started = workflowStartUtc(workflow, taskById, now)
   const read = workflowDuration(workflow, taskById, now)
   // NOT READ YET IS NOT A FAILED READ (live QA WF-11): the legend's `not read`
   // means the read failed, and a row whose read has not been made yet said it.
@@ -5987,11 +6096,10 @@ function WorkflowListRow({
         <WorkflowStateMark workflow={workflow} />
       </td>
       <td className="wfl-name" data-col="workflow">
-        {/* ONE LINE: THE NAME, ITS ID AND ITS RUNNERS (visual QA VQ-013,
-            #2391; workflows.html A). Name, id, runner chips and the current
-            step were four stacked lines, so a row was 3-4 lines tall. The id
-            sits beside the name, muted, cut first and whole in its title;
-            the runner mix follows on the same line where the Runners column
+        {/* ONE LINE: THE NAME AND ITS RUNNERS (visual QA VQ-013, #2391;
+            workflows.html A). Name, id, runner chips and the current step
+            were four stacked lines, so a row was 3-4 lines tall. The id is
+            the line under the name (overview-agents-61, below); the runner mix follows on the same line where the Runners column
             is not drawn (below 1680, QA G3-09). The current step, when there
             is one, is the row's only second line -- and the runners join it
             when the name would keep less than 200px beside them
@@ -6000,15 +6108,20 @@ function WorkflowListRow({
           <a href={workflowHref(workflow.workflow_id, query)} title={named.name}>
             {named.name}
           </a>
-          {named.showId && <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>}
           {!mixUnder && (
             <span className="wfl-mix">
               <Mix steps={workflow.steps} />
             </span>
           )}
           <PullRequestWaitTag workflow={workflow} />
-          {cancelPending(workflow) && <span className="tag wait">cancel requested</span>}
+          {cancelPending(workflow) && <span className="tag wait">{CANCEL_PENDING_WORD}</span>}
         </span>
+        {/* THE ID UNDER THE NAME, AT EVERY WIDTH (visual QA pass 1
+            overview-agents-61, #2596): beside the name it took a 10ch cut
+            of the line and every 45-character title read `Audit the operator
+            scripts and the Terr…` at 1440. Under it, in the small mono, as
+            the phone card already drew it, the name has the line. */}
+        {named.showId && <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>}
         {/* Drawn at ≤560 only, where the done, failed and age columns are
             off the right edge (#109); the cells say it wide, so hidden from
             assistive technology to keep one reading of each fact. */}
@@ -6112,6 +6225,9 @@ type ListWhy = RowWhy | { kind: 'running'; step: string }
 function listRowWhy(w: Workflow, taskById: ReadonlyMap<string, Task> | null, pending: boolean): ListWhy | null {
   const why = rowWhy(w, taskById)
   if (why === null) return null
+  // The state mark says `state unknown` with the API's why as its title
+  // (overview-agents-62): a second line saying it again is the same fact twice.
+  if (why.kind === 'unread' && (w.state_source !== 'derived' || !w.rollup)) return null
   if (why.kind === 'failed-unread' && pending) {
     return { kind: 'failed-unread', why: 'the failing step is read when this row scrolls into view' }
   }
@@ -6350,7 +6466,14 @@ function WorkflowPage({
   }
   return (
     <div className="wfp">
-      <WorkflowHead workflow={workflow} taskById={board.taskById} reload={stores.reload} usage={usage} />
+      <WorkflowHead
+        workflow={workflow}
+        taskById={board.taskById}
+        reload={stores.reload}
+        usage={usage}
+        sent={stores.cancels[workflow.workflow_id] ?? null}
+        onSent={(sent) => stores.recordCancel(workflow.workflow_id, sent)}
+      />
       <WfTabs id={workflow.workflow_id} query={query} view={query.tab} steps={workflow.steps.length} onView={focus.onView} />
       {/* THE CHANGES TAB (diff-viewer.md §2 variants 2 + 5) is drawn in
           place of the board: it is a reading of the steps' patches, not a
@@ -6416,6 +6539,10 @@ function WorkflowPageSkeleton({ id, query, choose }: { id: string; query: Workfl
           })}
         </div>
         <span className="wfp-actions">
+          {/* COPY ID TOO (visual QA pass 1 overview-agents-80, #2596): the
+              loaded head draws Copy id before Copy link, and the skeleton
+              drew Copy link alone, so the head shifted when the read landed. */}
+          <Button disabled>Copy id</Button>
           <Button disabled>Copy link</Button>
           {/* NO CANCEL BUTTON BEFORE THE STATE IS KNOWN (live QA WF-18a,
               2026-10-11): a disabled "Cancel workflow" was drawn on every
@@ -6437,6 +6564,14 @@ function WorkflowPageSkeleton({ id, query, choose }: { id: string; query: Workfl
 
 /** The page's tabs, in the frame's order: the Graph, the Table with its count, the Timeline, Changes. */
 const PAGE_TABS: readonly WorkflowView[] = ['graph', 'table', 'timeline', 'changes']
+
+/**
+ * `Steps over time`, NOT `Timeline` (visual QA pass 1 overview-agents-89,
+ * #2596): the nav's Work › Timeline is the platform's lanes, a different
+ * screen, and two screens one name apart sent a reader to the wrong one. The
+ * address keeps `/timeline`; only the tab's word changes.
+ */
+const PAGE_TAB_LABEL: Readonly<Record<WorkflowView, string>> = { ...VIEW_LABEL, timeline: 'Steps over time' }
 
 /**
  * UNDERLINE TABS UNDER THE TITLE (workflows.html B; components.html A
@@ -6466,7 +6601,7 @@ function WfTabs({
     <Tabs
       label="Views of this workflow"
       current={view}
-      tabs={PAGE_TABS.map((v) => ({ key: v, label: VIEW_LABEL[v], href: href(v), ...(v === 'table' && steps !== null ? { count: steps } : {}) }))}
+      tabs={PAGE_TABS.map((v) => ({ key: v, label: PAGE_TAB_LABEL[v], href: href(v), ...(v === 'table' && steps !== null ? { count: steps } : {}) }))}
       onGo={(to) => {
         const v = PAGE_TABS.find((t) => href(t) === to)
         if (v !== undefined) onView(v)
@@ -6496,12 +6631,17 @@ function WorkflowHead({
   taskById,
   reload,
   usage,
+  sent,
+  onSent,
 }: {
   workflow: Workflow
   taskById: ReadonlyMap<string, Task> | null
   reload: () => void
   /** The page's attempt read: the head totals from the figures the table does (WF-5). */
   usage: UsageRead
+  /** What a stop recorded from this page answered (`useBoardStores`). */
+  sent: CancelSentRead | null
+  onSent: (sent: CancelSentRead) => void
 }) {
   const spend = workflowSpend(workflow.steps, taskById, telemetryOf(usage))
   const pr = workflowPullRequest(workflow, taskById)
@@ -6541,7 +6681,7 @@ function WorkflowHead({
           </Chip>
         </span>
         <PullRequestWaitTag workflow={workflow} />
-        {cancelPending(workflow) && <span className="tag wait">cancel requested</span>}
+        {cancelPending(workflow) && <span className="tag wait">{CANCEL_PENDING_WORD}</span>}
       </div>
       <span className="wfp-actions">
         {/* THE ID ONCE, BEHIND ITS COPY (visual QA VQ-015 re-review;
@@ -6550,7 +6690,7 @@ function WorkflowHead({
             button's title and what it copies; the title above is the name. */}
         <CopyId id={workflow.workflow_id} />
         <CopyLink />
-        <CancelWorkflow workflow={workflow} taskById={taskById} onDone={reload} />
+        <CancelWorkflow workflow={workflow} taskById={taskById} onDone={reload} sent={sent} onSent={onSent} />
       </span>
     </div>
   )
@@ -6641,17 +6781,31 @@ export function CancelWorkflow({
   taskById,
   onDone,
   cancel = cancelWorkflow,
+  sent: heldSent,
+  onSent,
 }: {
   workflow: Workflow
   taskById: ReadonlyMap<string, Task> | null
   onDone: () => void
   /** Injectable for the tests; the API's otherwise. */
   cancel?: (id: string) => Promise<Result<CancelWorkflowResult>>
+  /** The answer a recorded stop gave, held above the page's reload (`useBoardStores`); this control's own state when absent. */
+  sent?: CancelSentRead | null
+  onSent?: (sent: CancelSentRead) => void
 }) {
   const [phase, setPhase] = useState<'idle' | 'asking' | 'sending' | 'failed'>('idle')
   const [error, setError] = useState<string | null>(null)
+  // THE ANSWER IS KEPT AND SAID (visual QA pass 1 overview-agents-84, #2596):
+  // the dialog closed on a recorded stop and nothing on the page moved -- the
+  // head still `running`, the button still there -- because `send` dropped
+  // the API's `tasks_cancelled` / `tasks_already_terminal`. The line below
+  // says them, and the pending tag stands in for the button until the read
+  // carries `cancel_requested`.
+  const [ownSent, setOwnSent] = useState<CancelSentRead | null>(null)
+  const sent = heldSent !== undefined ? heldSent : ownSent
   const derived = derivedStateOf(workflow)
   if (derived !== null && TERMINAL_STATES.has(derived)) return null
+  if (sent !== null) return <CancelSent sent={sent} pendingShown={cancelPending(workflow)} />
   if (cancelPending(workflow) && phase === 'idle') return null
   // THE ID IS TYPED WHILE A STEP RUNS (states.html §12, picked C): stopping a
   // step that holds capacity ends work in flight, so the confirm unlocks only
@@ -6664,6 +6818,9 @@ export function CancelWorkflow({
     const r = await cancel(workflow.workflow_id)
     if (r.status === 'ok' || r.status === 'empty') {
       setPhase('idle')
+      const answer: CancelSentRead = r.status === 'ok' ? r.data : 'recorded'
+      if (onSent !== undefined) onSent(answer)
+      else setOwnSent(answer)
       onDone()
       return
     }
@@ -6673,7 +6830,7 @@ export function CancelWorkflow({
 
   const trigger = (
     <Button kind="danger" onClick={() => setPhase('asking')}>
-      Cancel workflow
+      Stop workflow
     </Button>
   )
   const reset = () => {
@@ -6694,14 +6851,14 @@ export function CancelWorkflow({
         {trigger}
         {phase !== 'idle' && (
           <TypedConfirm
-            title="Cancel this workflow?"
+            title="Stop this workflow?"
             name={workflow.workflow_id}
-            verb="Cancel the workflow"
+            verb="Stop the workflow"
             keep="Keep it running"
             onConfirm={() => void send()}
             onClose={reset}
-            busy={phase === 'sending' ? 'Cancelling…' : false}
-            error={phase === 'failed' && error !== null ? `The cancel was not recorded: ${error}` : undefined}
+            busy={phase === 'sending' ? 'Stopping…' : false}
+            error={phase === 'failed' && error !== null ? `The stop was not recorded: ${error}` : undefined}
           >
             <p>{cancelConsequence(workflow, taskById)}</p>
           </TypedConfirm>
@@ -6714,18 +6871,45 @@ export function CancelWorkflow({
       <p>{cancelConsequence(workflow, taskById)}</p>
       {phase === 'failed' && error !== null && (
         <p className="wfp-confirm-err" role="alert">
-          The cancel was not recorded: {error}
+          The stop was not recorded: {error}
         </p>
       )}
       <span className="wfp-confirm-do">
-        <Button kind="danger-filled" busy={phase === 'sending' ? 'Cancelling…' : false} onClick={() => void send()}>
-          Yes, cancel the workflow
+        <Button kind="danger-filled" busy={phase === 'sending' ? 'Stopping…' : false} onClick={() => void send()}>
+          Yes, stop the workflow
         </Button>
         <Button kind="ghost" disabled={phase === 'sending'} onClick={reset}>
           Keep it running
         </Button>
       </span>
     </div>
+  )
+}
+
+/**
+ * WHAT A RECORDED STOP DID, IN THE HEAD (overview-agents-84): the steps asked
+ * to stop and the ones that had already ended, from the API's own answer, and
+ * the pending tag until the page's read carries the request (the head draws
+ * that one itself once it does). A fixture or an API that names no task says
+ * only that the stop was recorded -- never a made-up count.
+ */
+type CancelSentRead = CancelWorkflowResult | 'recorded'
+
+function CancelSent({ sent, pendingShown }: { sent: CancelSentRead; pendingShown: boolean }) {
+  const n = (k: number) => `${k} step${k === 1 ? '' : 's'}`
+  const words =
+    sent === 'recorded' || sent.tasks_cancelled.length + sent.tasks_already_terminal.length === 0
+      ? 'Stop recorded.'
+      : `Stop recorded: ${n(sent.tasks_cancelled.length)} asked to stop${
+          sent.tasks_already_terminal.length > 0 ? `, ${n(sent.tasks_already_terminal.length)} had already ended` : ''
+        }.`
+  return (
+    <>
+      {!pendingShown && <span className="tag wait">{CANCEL_PENDING_WORD}</span>}
+      <span className="wfp-cancel-sent" role="status">
+        {words}
+      </span>
+    </>
   )
 }
 
