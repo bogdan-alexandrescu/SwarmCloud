@@ -1118,6 +1118,27 @@ body {
 .ctl-skel-row { display: flex; align-items: center; height: 38px; border-bottom: 1px solid var(--line-soft); }
 .ctl-skel-row:last-child { border-bottom: 0; }
 .ctl-skel-bar { display: block; height: 12px; max-width: 100%; }
+/* A SCREEN'S OWN LAYOUT (visual QA V063, 2026-10-16; `SkeletonRows`'
+   `shape`). The cards stand where the page's will: Accounts' list beside its
+   detail on `.acct-split`'s grid (380px and the rest, from 901px; below it
+   the page shows the list alone until a row is chosen), and the Submit
+   forms' build column beside the 300px send panel on `.sbf`'s (from
+   1080px). A table's column head is a row of short bars. */
+.ctl-skel.is-split, .ctl-skel.is-form { display: grid; gap: var(--ctl-s3); align-items: start; }
+.ctl-skel > .ctl-skel-card { min-width: 0; }
+@media (min-width: 901px) {
+  .ctl-skel.is-split { grid-template-columns: minmax(0, 380px) minmax(0, 1fr); }
+}
+@media (max-width: 900px) {
+  .ctl-skel.is-split > .ctl-skel-card.is-detail { display: none; }
+}
+@media (min-width: 1080px) {
+  .ctl-skel.is-form { grid-template-columns: minmax(0, 1fr) 300px; }
+}
+.ctl-skel-row.is-head { gap: var(--ctl-s3); }
+.ctl-skel-row.is-head > .ctl-skel-bar { height: 10px; }
+.ctl-skel-field { display: flex; flex-direction: column; gap: var(--ctl-s1); padding: var(--ctl-s2) 0; }
+.ctl-skel-input { display: block; height: var(--h-ctl); max-width: 100%; border-radius: var(--ctl-radius-sm); }
 
 /* THE INVARIANT LINE on a failure panel: what this failure is NOT evidence of.
    It is the one sentence in the product that no visual encoding can replace,
@@ -10969,8 +10990,15 @@ span.sk-ttile { cursor: default; }
    (onboarding.css); every head has it now. */
 .c-phead { display: flex; flex-wrap: nowrap; align-items: center; gap: var(--ctl-s2) var(--ctl-s3); margin: 0 0 var(--ctl-s3); min-width: 0; min-height: var(--h-ctl); }
 .c-phead > .head { margin: 0; flex: none; align-items: center; gap: var(--ctl-s2); flex-wrap: nowrap; }
-.c-phead > .c-acts { margin-left: auto; flex: 0 1 auto; min-width: 0; display: flex; flex-wrap: nowrap; align-items: center; justify-content: flex-end; gap: var(--ctl-s2) var(--ctl-s3); font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.c-phead > .c-acts { margin-left: auto; flex: 0 0 auto; min-width: 0; max-width: 100%; display: flex; flex-wrap: nowrap; align-items: center; justify-content: flex-end; gap: var(--ctl-s2) var(--ctl-s3); font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 .c-phead > .c-acts:empty { display: none; }
+/* THE TITLE GIVES WAY, NOT THE STAMP (visual QA V240, 2026-10-16). The
+   title block shrinks and clamps to two lines (styles/names.css), but the
+   actions shrank beside it in proportion, so a 120-character title cut the
+   freshness stamp to "read 0 s …". The actions keep their own width now --
+   `flex: 0 0 auto` -- and `max-width: 100%` holds them to the row on a phone,
+   where they wrap under the title and wrap within themselves. The inspector's
+   narrow head (styles/agents.css) sets its own, deeper, and still wins. */
 /* THE TITLE SITS AT ONE HEIGHT, WHATEVER THE ACTIONS (visual QA run 3,
    work-b-008, part of #1680). The row is centred, so a head whose actions
    stand taller than the 32px floor -- Access's segmented control beside its
