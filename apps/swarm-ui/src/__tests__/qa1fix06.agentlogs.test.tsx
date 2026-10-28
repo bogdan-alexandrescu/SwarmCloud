@@ -423,4 +423,11 @@ describe('overview-agents-36: an empty stderr says so in a sentence', () => {
     expect(dock().querySelector('.rf-empty')!.textContent).toBe('Nothing on agent stderr yet.')
     expect(dock().querySelector('details.ag-logmeta')?.hasAttribute('open')).toBe(false)
   })
+
+  it('stands clear of the menu rule above it', () => {
+    // The re-review's render: the body has no top padding, so the sentence sat on the rule.
+    const css = readFileSync(join(__dirname, '..', 'styles', 'agents.css'), 'utf8')
+    // MUTATION: delete the `.ag-logs-body .rf-empty` rule from agents.css -- the sentence touches the rule again.
+    expect(css).toMatch(/\.ag-logs-body \.rf-empty \{ margin-top: var\(--ctl-s2\); \}/)
+  })
 })
