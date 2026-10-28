@@ -52,8 +52,15 @@ describe('runs-submit-27: the planner is named, not shown as its raw id', () => 
     // MUTATION: restore `{run.planner_task_id}` as the link's text and this reads the id.
     expect(visible(link)).toBe('planner agent')
     expect(link.getAttribute('href')).toBe('/agents/recent/task_planner1')
-    expect(visible(fact.querySelector('.sb-note'))).toBe('task_planner1')
-    expect(visible(fact)).toBe('Planner planner agent task_planner1')
+    const id = fact.querySelector<HTMLElement>('.sb-note')!
+    expect(visible(id)).toBe('task_planner1')
+    // The id is cut to the card like the link it was (D3), whole in its title.
+    expect(id.classList.contains('rn-id')).toBe(true)
+    expect(id.getAttribute('title')).toBe('task_planner1')
+    expect(visible(fact)).toBe('Plannerplanner agenttask_planner1')
+    // The link is words, so it is neither cut nor set in mono.
+    expect(link.classList.contains('rn-id')).toBe(false)
+    expect(link.classList.contains('mono')).toBe(false)
   })
 
   it('still says `not recorded`, with no id note, when the run records no planner', async () => {
