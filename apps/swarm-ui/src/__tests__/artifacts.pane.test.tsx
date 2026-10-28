@@ -878,11 +878,11 @@ describe('Inputs: the prompt, the repository, and every staged file', () => {
     const pre = inputs.querySelector('pre')
     expect(pre?.textContent, 'the prompt is not the served copy').toBe('Audit the capacity code.\n\nSay what reserve() guarantees.')
     expect(api.count(`/v1/tasks/${REF}/input`), 'the prompt was not read through the masked copy').toBeGreaterThan(0)
-    // A clean prompt is a measured zero, in plain ink, and the qualifier that
-    // said the prompt was not masked is gone because it no longer is true.
-    const count = inputs.querySelector('.art-masked')
-    expect(count?.textContent, 'the prompt carries no masked count').toBe('0')
-    expect(count!.classList.contains('is-warn')).toBe(false)
+    // A clean prompt draws no count: `masked 0` read as jargon beside it
+    // (QA1-FIX-07, overview-agents-50); a count above zero is drawn, below.
+    // The qualifier that said the prompt was not masked is gone because it
+    // no longer is true.
+    expect(inputs.querySelector('.art-masked'), 'a clean prompt says `masked 0`').toBeNull()
     expect(inputs.textContent).not.toMatch(/not masked/)
     expect(inputs.textContent).toMatch(/github\.com\/bogdan-alexandrescu\/SwarmCloud/)
     expect(inputs.textContent).toMatch(/main/)

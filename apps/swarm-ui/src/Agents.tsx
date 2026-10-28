@@ -11,7 +11,7 @@ import { Em, Mark, timesRun, type ChipTone } from './AgentDetail'
 import { TaskIdLine } from './TaskIdLine'
 import { BrowserUseMark, browserUseOf, browserUseSay } from './BrowserUse'
 import { BudgetRowMark, budgetRowSay, budgetStopLine, stoppedAtBudgetRow, useBudgetWarning } from './AgentBudget'
-import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, agentKind, agentList, shortTaskId, workflowHref, type AgentList, type RecentState } from './agentlist'
+import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, agentKind, agentList, agentName, workflowHref, type AgentList, type RecentState } from './agentlist'
 import { TASK_PAGE_LIMIT, USE_FIXTURES, loadAttempts, loadLiveSession, loadTask, loadTasks, loadTasksInState, type LiveSession, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
 import type { Result } from './fetch'
@@ -36,6 +36,7 @@ import {
   WAITING_STATES,
   compareStarted,
   elapsed,
+  formatDuration,
   rollupState,
   taskGroup,
   timeAgo,
@@ -128,6 +129,29 @@ const ListReadAt = createContext<number | null>(null)
  * row itself (`ownTitle`, SUMMARY-TITLE).
  */
 const RowTitleOf = createContext<((t: Task) => string | null) | null>(null)
+
+/**
+ * THE ROWS ARE UNDER THEIR WORKFLOW'S HEADING (visual QA pass 1,
+ * overview-agents-53): the group's heading is the workflow's title, so a row
+ * under it is its step alone, not the title again on every line.
+ */
+const UnderWorkflow = createContext(false)
+
+/**
+ * A STEP'S WORKFLOW TITLE, OFF ITS OWN SUMMARY ROW FIRST (visual QA pass 1,
+ * overview-agents-60): every step carries its workflow's `metadata.title`,
+ * and the summary view serves it, so the row is named on its first draw. It
+ * waited for `useRowTitles`' read, and the one row read `report` in one
+ * layout and `Audit the operator scripts… · report` in the other, depending
+ * on whether that read had landed. The read stays the fallback for an API
+ * whose summary sends no metadata.
+ */
+export function stepWorkflowTitle(t: Pick<Task, 'workflow_id' | 'step_id' | 'metadata'>, read: ((t: Task) => string | null) | null): string | null {
+  if ((t.workflow_id ?? null) === null || (t.step_id ?? null) === null) return null
+  const v = t.metadata?.title
+  if (typeof v === 'string' && v.trim() !== '') return v.trim()
+  return read?.(t as Task) ?? null
+}
 
 /** The rows that are a workflow's steps: the ones a workflow title names. */
 function isStep(t: Task): boolean {
@@ -802,6 +826,11 @@ function AgentsBody({
   // panel lit `Live 0` beside the Recent rows. The tab on screen is reported
   // first, so App writes the agent's address under it.
   const openRow = (taskId: string) => {
+    // A ROW OPENED BY A CLICK IS ALREADY IN VIEW (visual QA pass 1,
+    // overview-agents-55): the scroll below, meant for a deep link, ran on a
+    // click too, and as the split opened it scrolled the page column until
+    // the `Agents` heading sat under the sticky breadcrumb.
+    scrolledTo.current = taskId
     report({})
     onOpen(taskId)
   }
@@ -896,7 +925,7 @@ function AgentsBody({
         ? `${sortWord}; press for oldest start first`
         : `${sortWord}; press for the list’s own order, ${ownOrder}`
   // The workflow titles of the steps on screen (VQ-009, `RowTitleOf`).
-  const titleOf = useRowTitles(rows.filter(isStep))
+  const titleOf = useRowTitles(rows.filter((t) => isStep(t) && stepWorkflowTitle(t, null) === null))
   const liveSay = `Every agent holding a pool slot is listed: the live states are read in full, not only from the ${page.tasks.length} newest rows.`
 
   return (
@@ -960,15 +989,23 @@ function AgentsBody({
             value={query}
             placeholder="Find by name or task id"
             aria-label="Find by name or task id"
+            title={liveAll && bounded ? liveSay : scopeSay}
             onChange={(e) => setQuery(e.target.value)}
           />
-          <span className="ag-scope" aria-label={liveAll && bounded ? liveSay : scopeSay}>
-            {liveAll && bounded
-              ? `all ${counts.live} live`
-              : phonePage
-                ? `showing the ${page.tasks.length} most recent`
-                : `${page.tasks.length} loaded${page.next_page_token ? ' · more beyond' : ''}`}
-          </span>
+          {/* `N LOADED` IS THE HEADER'S, ONCE (visual QA pass 1,
+              overview-agents-13): the subtitle reads `27 loaded · 6 live`, and
+              the same `27 loaded` stood again here. The scope stays only where
+              it says something the header does not: every live row read, the
+              phone's page, or rows beyond the page. */}
+          {(liveAll && bounded) || phonePage || page.next_page_token ? (
+            <span className="ag-scope" aria-label={liveAll && bounded ? liveSay : scopeSay}>
+              {liveAll && bounded
+                ? `all ${counts.live} live`
+                : phonePage
+                  ? `showing the ${page.tasks.length} most recent`
+                  : 'more beyond'}
+            </span>
+          ) : null}
         </div>
 
         {/* THE CONTROLS ARE ONE ITEM OF THE TOOLBAR (V147, VQA2-R13). Each was
@@ -1064,7 +1101,9 @@ function AgentsBody({
               overview-agents-17). */}
           {browsers && rows.length > 0 && !USE_FIXTURES && (
             <a className="ag-theater-all" href={theaterPath(rows[0]!.id, null)}>
-              ⤢ theater all
+              {/* SENTENCE CASE, AND WHAT IT DOES (visual QA pass 1,
+                  overview-agents-18): it read `theater all`. */}
+              ⤢ Watch all browsers
             </a>
           )}
 
@@ -1222,7 +1261,7 @@ function AgentsBody({
           </h3>
         </div>
       ) : shown === 'waiting' ? (
-        <WaitingGroups rows={rows} now={now} vouched={vouched} onOpen={openRow} openTaskId={openTaskId} classes={classes} grouped={grouped} bounded={tabBounded('waiting')} />
+        <WaitingGroups rows={rows} now={now} vouched={vouched} onOpen={openRow} openTaskId={openTaskId} classes={classes} grouped={grouped} bounded={tabBounded('waiting')} taskById={taskById} />
       ) : grouped && shown !== 'live' ? (
         <GroupedRows rows={rows} now={now} vouched={vouched} onOpen={openRow} openTaskId={openTaskId} classes={classes} taskById={taskById} />
       ) : (
@@ -1435,6 +1474,7 @@ function WaitingGroups({
   classes,
   grouped,
   bounded,
+  taskById = null,
 }: {
   rows: Task[]
   now: number
@@ -1445,6 +1485,8 @@ function WaitingGroups({
   grouped: boolean
   /** More rows exist beyond the page, so a group's count is a lower bound (G2-05). */
   bounded: boolean
+  /** Every row the list read, by id: a workflow group's state is read over all of them. */
+  taskById?: ReadonlyMap<string, Task> | null
 }) {
   // A PARKED TASK IS FILED UNDER ITS OWN PARK REASON (N12, owner QA
   // 2026-10-04): `/agents/waiting` headed a step waiting on an earlier step
@@ -1480,7 +1522,7 @@ function WaitingGroups({
               </span>
             </h2>
             {grouped ? (
-              <GroupedRows rows={g.rows} now={now} vouched={vouched} onOpen={onOpen} openTaskId={openTaskId} classes={classes} />
+              <GroupedRows rows={g.rows} now={now} vouched={vouched} onOpen={onOpen} openTaskId={openTaskId} classes={classes} taskById={taskById} />
             ) : (
               <FlatRows rows={g.rows} now={now} vouched={vouched} onOpen={onOpen} openTaskId={openTaskId} classes={classes} />
             )}
@@ -1503,9 +1545,19 @@ export function waitGroupOf(t: Task): { key: string; title: string } {
 /**
  * Recent's search (#99): the task id, the step id and the workflow id,
  * case-insensitively. `needle` is already trimmed and lower-cased.
+ *
+ * AND THE NAME THE ROW IS DRAWN BY (visual QA pass 1, overview-agents-15):
+ * the box says "Find by name or task id", and `flaky` found nothing beside a
+ * live `Fix flaky lease heartbeat test`. The summary row's `metadata.title`
+ * -- a lone agent's own title, a step's workflow title -- and `agentName`'s
+ * `claude-code agent · a073aff5` are searched too, so what the row says is
+ * what the search finds.
  */
-function matchesQuery(t: Task, needle: string): boolean {
-  return [t.id, t.step_id, t.workflow_id].some((v) => v != null && v.toLowerCase().includes(needle))
+export function matchesQuery(t: Task, needle: string): boolean {
+  const title = t.metadata?.title
+  return [t.id, t.step_id, t.workflow_id, typeof title === 'string' ? title : null, agentName(t)].some(
+    (v) => v != null && v.toLowerCase().includes(needle),
+  )
 }
 
 /**
@@ -1563,8 +1615,23 @@ function rowReason(
   // A CASCADE CANCEL NAMES THE STEP THAT FAILED (visual QA run 4, N23) when
   // that step is among the rows the list read; the meta line keeps its
   // `to cancel` span note (U10a D20) and the cause is said here.
-  return { text: whyAgent(task, units, taskById), warn }
+  const text = whyAgent(task, units, taskById)
+  // A ROW UNDER `NO ROOM` WITH NO REASON SAYS SO (visual QA pass 1,
+  // overview-agents-56): a queued or ready row the scheduler recorded no
+  // blocker for drew no line at all, so the reader could not tell a pool
+  // that was full from a reason that was never written. A row that carries
+  // one (`blocked_by`, `waiting`) names its pool above.
+  if (text === '' && (task.state === 'READY' || task.state === 'QUEUED')) return { text: NO_BLOCKER, warn }
+  return { text, warn }
 }
+
+/**
+ * The why line of a waiting row the scheduler recorded no blocker for. It is
+ * also a grouped list's line for every such row, after their count (`2 no
+ * pool named…`), so it names no one row: it read `2 No pool named: … this one
+ * waits` (QA1-FIX-07 re-review).
+ */
+export const NO_BLOCKER = 'no pool named: the scheduler recorded no reason for the wait'
 
 /**
  * THE LIST'S SILENT-WORKER LINE (#179), or null. AG-14 (#82) names a stuck or
@@ -1693,11 +1760,23 @@ function GroupedRows({
       a === '' ? 1 : b === '' ? -1 : a.localeCompare(b),
     )
   }, [rows])
+  const titleOf = useContext(RowTitleOf)
 
   return (
     <>
       {groups.map(([wf, tasks]) => {
-        const roll = rollupState(tasks.map((t) => t.state))
+        // THE WORKFLOW'S STATE, NOT THIS TAB'S (visual QA pass 1,
+        // overview-agents-54): rolled up over this tab's rows, one workflow
+        // read `succeeded` on Recent and `waiting` on Waiting while
+        // Workflows said `running`. It is rolled up over every step of it the
+        // list read, whichever tab each is on, as Workflows rolls up its
+        // steps. "No workflow" is no workflow, so it has no state.
+        const steps = wf === '' ? [] : taskById !== null ? [...taskById.values()].filter((t) => t.workflow_id === wf) : tasks
+        const roll = wf === '' ? null : rollupState((steps.length > 0 ? steps : tasks).map((t) => t.state))
+        // THE HEADING IS THE WORKFLOW'S TITLE (overview-agents-53): it was
+        // the raw id in large mono, over rows that each repeated the title.
+        // The id is the link's hover; an untitled workflow keeps its id.
+        const wfName = wf === '' ? null : stepWorkflowTitle(tasks[0]!, titleOf)
         const said = groupReasons(tasks.map((t) => rowReason(t, classes, vouched, taskById)))
         return (
           <section className="section group" key={wf || 'standalone'}>
@@ -1710,6 +1789,10 @@ function GroupedRows({
                   per-workflow read exists. */}
               {wf === '' ? (
                 'No workflow'
+              ) : wfName !== null ? (
+                <a className="ctl-link" href={workflowHref(wf)} title={wf}>
+                  {wfName}
+                </a>
               ) : (
                 <a className="ctl-link" href={workflowHref(wf)}>
                   <Id>{wf}</Id>
@@ -1722,7 +1805,7 @@ function GroupedRows({
                   same kind of fact as every other state here, so it is drawn
                   the same way. `.roll`'s four rules went with it; nothing else
                   rendered them. */}
-              <ToneMark tone={rollTone(roll)}>{roll}</ToneMark>
+              {roll !== null && <ToneMark tone={rollTone(roll)}>{roll}</ToneMark>}
               {/* THE FIGURE IS THE FACT. "3 steps in this page" said `3` and
                   then re-said, in four more words, the thing the toolbar's
                   scope qualifier already says once for the whole screen. A
@@ -1746,6 +1829,7 @@ function GroupedRows({
                 <b>{r.count}</b> {r.text}
               </p>
             ))}
+            <UnderWorkflow.Provider value={wf !== ''}>
             <div className="rows">
               {tasks.map((t, i) => (
                 <TaskRow
@@ -1761,6 +1845,7 @@ function GroupedRows({
                 />
               ))}
             </div>
+            </UnderWorkflow.Provider>
           </section>
         )
       })}
@@ -1814,6 +1899,17 @@ export function attemptsUsed(
 }
 
 /**
+ * The attempt documents each row last read, by task id (`useRuns`), the oldest
+ * dropped past `RUNS_HELD`. It outlives a tenant or workspace switch in one
+ * session. That is deliberate: an entry is found only by a row with that
+ * exact task id, and it only seeds the figure drawn while that row's own read
+ * is in flight; the read's answer replaces it.
+ */
+const RUNS_READ = new Map<string, { key: string; attempts: readonly unknown[] }>()
+/** A page's worth of rows and its next: more than one list ever draws. */
+const RUNS_HELD = 500
+
+/**
  * HOW MANY TIMES A ROW'S TASK RAN, read as the task header reads it
  * (`timesRun` over `GET /v1/tasks/{id}/attempts`, QA12-12). Only for a row
  * that shows the figure -- live, or over its cap -- and re-read only when the
@@ -1831,7 +1927,16 @@ export function attemptsUsed(
  */
 function useRuns(task: Task, shows: boolean): number | null {
   const key = `${task.id}:${task.current_generation}:${task.attempt_count}:${task.state}`
-  const [got, setGot] = useState<{ id: string; key: string; attempts: readonly unknown[] | null } | null>(null)
+  // A ROW DRAWN AGAIN KEEPS ITS FIGURE (visual QA pass 1, overview-agents-16):
+  // a search that changes the list mounts its rows afresh, and each read
+  // `attempt … of 3` for one read cycle though `1` was already known. The
+  // documents a row last read are kept by task id, so a new row starts from
+  // them while its own read is in flight; `timesRun` still takes the larger
+  // of them and the task's counter, as a re-read for a changed key does.
+  const [got, setGot] = useState<{ id: string; key: string; attempts: readonly unknown[] | null } | null>(() => {
+    const held = RUNS_READ.get(task.id)
+    return held === undefined ? null : { id: task.id, key: held.key, attempts: held.attempts }
+  })
   useEffect(() => {
     if (!shows) return
     let live = true
@@ -1843,6 +1948,11 @@ function useRuns(task: Task, shows: boolean): number | null {
         if (!live) return
         const attempts = r === null ? null : r.status === 'ok' || r.status === 'stale' ? r.data.attempts : r.status === 'empty' ? [] : null
         setGot({ id: task.id, key, attempts })
+        if (attempts !== null) {
+          RUNS_READ.delete(task.id)
+          RUNS_READ.set(task.id, { key, attempts })
+          if (RUNS_READ.size > RUNS_HELD) RUNS_READ.delete(RUNS_READ.keys().next().value!)
+        }
       })
     return () => {
       live = false
@@ -1996,22 +2106,46 @@ function CompactRow({
   const finished = TERMINAL_STATES.has(task.state)
   const endedAt = finished ? (task.completed_at ?? task.updated_at) : null
   const wordOnly = !finished && el.phase === 'waiting' && !el.ticking
-  const whenText = endedAt !== null ? timeAgo(endedAt, now) : wordOnly ? '' : el.text
+  // AN AGE FOR THE ROWS WITH NO START (visual QA pass 1, overview-agents-19):
+  // a leased or dispatched row's column was blank beside every other live
+  // row's `8d 21h`. Nothing records when it was leased, so its age is from
+  // when it was SUBMITTED, and the cell's title says that is what it counts.
+  const submitted = wordOnly ? Date.parse(task.created_at ?? '') : NaN
+  const sinceSubmit = Number.isFinite(submitted) ? formatDuration(now - submitted) : null
+  const whenText = endedAt !== null ? timeAgo(endedAt, now) : wordOnly ? (sinceSubmit ?? '') : el.text
   const whenTitle =
     endedAt !== null
       ? `ended ${new Date(endedAt).toLocaleString()}`
-      : undefined
+      : wordOnly && sinceSubmit !== null
+        ? `${sinceSubmit} since it was submitted at ${new Date(submitted).toISOString().slice(0, 16).replace('T', ' ')}Z: nothing records when it was ${task.state.toLowerCase()}`
+        : undefined
   const ran = finished && el.phase !== 'unknown' ? (el.phase === 'ran' ? `ran ${el.text}` : el.text) : null
   const tries = attemptsUsed(task, useRuns(task, live || task.attempt_count > task.max_attempts))
+  // EVERY LIVE AND WAITING ROW SAYS ITS STATE IN WORDS (visual QA pass 1,
+  // overview-agents-11, -56): a running row was told only by its dot, and a
+  // waiting row's `queued` or `ready` was in its accessible name and nowhere
+  // on screen, beside two marks (ring, dotted ring) a reader cannot name.
+  const waitingRow = tabOf(task) === 'waiting'
+  const stateWord = live
+    ? wordOnly
+      ? el.text
+      : task.state === 'STARTING'
+        ? 'starting'
+        : task.state.toLowerCase()
+    : waitingRow
+      ? task.state.toLowerCase()
+      : null
   // NAMED FROM WHAT IT IS (walkthrough G): its step, else `browser check ·
   // 02e9705a` -- it was the bare hash. `agentName`'s rule, drawn below.
   // A STEP LEADS WITH ITS WORKFLOW'S TITLE (VQ-009), once it is read:
   // `<title> · implement`, Overview's `rowLabel`.
   const titleOf = useContext(RowTitleOf)
-  const wfTitle = isStep(task) ? (titleOf?.(task) ?? null) : null
+  const underWorkflow = useContext(UnderWorkflow)
+  const wfFull = stepWorkflowTitle(task, titleOf)
+  const wfTitle = underWorkflow ? null : wfFull
   // A LONE AGENT LEADS WITH ITS OWN TITLE (SUMMARY-TITLE), off the row itself.
   const loneTitle = ownTitle(task)
-  const name = loneTitle ?? rowLabel(task, wfTitle)
+  const name = loneTitle ?? rowLabel(task, wfFull)
   const owner = task.submitted_by?.split('@')[0] ?? null
   const profile = task.model ? `${task.runner_profile} · ${task.model}` : task.runner_profile
   // WHETHER ITS BROWSER WAS USED (BROWSER-USE-UI, #2322): an ended agent on a
@@ -2077,14 +2211,14 @@ function CompactRow({
   // `… · claude-opus-5-5 · b…` named nobody. Its facts in the line's order,
   // with the owner's whole address where the line prints the name before @.
   const subSaid = [
-    live && (wordOnly || task.state === 'STARTING') ? (startingBrowser ? 'starting' : wordOnly ? el.text : 'starting') : null,
+    stateWord,
     live ? tries.text : null,
     budgetSay,
     profile,
     browserMark !== null ? browserUseSay(browserMark) : null,
     task.submitted_by ?? 'no owner recorded',
     ran,
-    !live && wordOnly ? el.text : null,
+    !live && !waitingRow && wordOnly ? el.text : null,
     !live && tries.over ? tries.text : null,
     cancelling ? 'cancelling' : null,
     waitsForYou ? 'needs you' : null,
@@ -2125,7 +2259,11 @@ function CompactRow({
         onOpen(task.id)
       }}
       onFocus={(e) => {
-        if (e.target === e.currentTarget) e.currentTarget.querySelector<HTMLElement>(':scope > .cr-open')?.focus()
+        // The row already has focus where it sits, so handing it to the opener
+        // scrolls nothing (overview-agents-55): a plain `focus()` here nudged the
+        // page column as the split opened beside the list.
+        if (e.target === e.currentTarget)
+          e.currentTarget.querySelector<HTMLElement>(':scope > .cr-open')?.focus({ preventScroll: true })
       }}
       onMouseEnter={(e) => show(e.currentTarget)}
       onMouseLeave={hide}
@@ -2162,13 +2300,10 @@ function CompactRow({
             {loneTitle}
           </b>
         ) : (
-          <b title={task.id}>
-            {task.step_id ?? (
-              <>
-                {agentKind(task.runner_profile)} · <span className="id" title={task.id}>{shortTaskId(task.id)}</span>
-              </>
-            )}
-          </b>
+          // THE ID ONCE (visual QA pass 1, overview-agents-14): an untitled
+          // row read `claude-code agent · 460409cd` over `task_460409cd`.
+          // The whole id is the line under the name, so the name is the kind.
+          <b title={task.id}>{task.step_id ?? agentKind(task.runner_profile)}</b>
         )}
         {/* THE WHOLE ID, PRINTED, under the name (#94): it was a hover
             title, and an id read off the screen had to be hovered for. */}
@@ -2196,14 +2331,14 @@ function CompactRow({
             the same half-filled mark, led with their word. A browser agent's
             `starting` is the same word, marked as the browser not up yet
             (QA12-20), so it leads once and is not repeated at the end. */}
-        {live && (wordOnly || task.state === 'STARTING') && (
+        {stateWord !== null && (
           <>
             {startingBrowser ? (
               <span className="cr-state cr-starting" title="The browser is starting: there is nothing to watch yet">
                 <ToneMark tone="unknown">starting</ToneMark>
               </span>
             ) : (
-              <span className="cr-state">{wordOnly ? el.text : 'starting'}</span>
+              <span className="cr-state">{stateWord}</span>
             )}
             {' · '}
           </>
@@ -2244,7 +2379,7 @@ function CompactRow({
             </span>
           </>
         )}
-        {!live && wordOnly && (
+        {!live && !waitingRow && wordOnly && (
           <>
             {' · '}
             <span className="cr-state">{el.text}</span>
