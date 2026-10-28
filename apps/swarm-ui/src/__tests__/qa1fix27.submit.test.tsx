@@ -21,6 +21,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { recentSubmissions, recentScope } from '../SubmitChooser'
 import { SubmitWorkflowScreen, postWorkflow } from '../SubmitWorkflow'
 import { task } from './runfixture'
+import SUBMIT_CSS from '../styles/submit.css?raw'
 
 const visible = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim()
 
@@ -152,5 +153,19 @@ describe('runs-submit-26: each recent row says what it was, and the footnote cou
     )
     expect(recentScope([], ['the tenant’s newest 1 workflow'])).toBe('Among the tenant’s newest 1 workflow.')
     expect(recentScope([], [])).toBeNull()
+  })
+})
+
+describe('runs-submit-26 (re-review): on a phone the state does not cut the name', () => {
+  it('drops a recent row\'s state and age under its name at 560px and below', () => {
+    // At 390px the state word ("dispatched · 9d ago") beside the name cut
+    // "claude-code agent · 19d91b82" to "claude-code agent · 19…": the id,
+    // the one part that tells the rows apart, was what went. jsdom lays out
+    // nothing, so the rule is read from the sheet. MUTATION: delete the
+    // phone block for `.sb-recent-i` and neither match is found.
+    const flat = SUBMIT_CSS.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\s+/g, ' ')
+    const phone = [...flat.matchAll(/@media \(max-width: 560px\) \{(.*?\})\s*\}/g)].map((m) => m[1]).join(' ')
+    expect(phone).toMatch(/\.sb-recent-i \{[^}]*grid-template-columns: auto minmax\(0, 1fr\);/)
+    expect(phone).toMatch(/\.sb-recent-at \{[^}]*grid-column: 2;/)
   })
 })

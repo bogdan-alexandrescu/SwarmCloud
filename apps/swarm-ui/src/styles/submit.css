@@ -469,6 +469,13 @@ input.dsp-repo[aria-invalid='true'] { border-color: var(--warn); box-shadow: ins
 .sb-recent-n:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
 .sb-recent-at { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); white-space: nowrap; }
 .sb-recent-scope { margin: 6px 0 0; }
+/* ON A PHONE THE STATE GOES UNDER THE NAME (QA1 runs-submit-26, re-review):
+   beside it, "dispatched · 9d ago" cut "claude-code agent · 19d91b82" to
+   "claude-code agent · 19…", and the id is what tells those rows apart. */
+@media (max-width: 560px) {
+  .sb-recent-i { grid-template-columns: auto minmax(0, 1fr); row-gap: 0; padding: 4px 0; }
+  .sb-recent-at { grid-column: 2; }
+}
 
 /* ---- a phone (submit.html's 390px frames) ------------------------------- */
 /* One column of runners; the choices stack (the grid already does); no key
