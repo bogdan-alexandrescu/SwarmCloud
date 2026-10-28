@@ -169,8 +169,11 @@ vulnerabilities:
   # root. Found by the image scan in Google's prebuilt gcloud-crc32c and
   # gke-gcloud-auth-plugin (google-cloud-cli 587.0.0, go1.26.6) and in kubectl
   # (1.36.5, go1.26.8), in workspace-apply and agent-runtime-base. PR 2673's
-  # build-check was refused on this id alone (workspace-apply, run of 2026-10-28
-  # ~20:50Z), so every change that rebuilds those images stopped.
+  # build-check was refused on this id alone (workspace-apply, run 40762235943),
+  # and the 21:32Z release refused five images on it, so every change that
+  # rebuilds those images stopped. (PR 2673's own fix step had added a
+  # four-week entry for this id to clear its CI; this one, approved by BGD on
+  # 2026-10-28 for two weeks, replaces it.)
   #
   # kubectl is FIXED here, not accepted: this change pins 1.36.6, built on
   # go1.26.10. The Google binaries are accepted: we do not build them, and the

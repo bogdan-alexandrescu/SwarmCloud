@@ -24,10 +24,17 @@ import './styles/secrets.css'
 
 const ROUTE = 'GET /v1/admin/platform-secrets'
 
+/**
+ * `not_declared` IS "NO SECRET" (visual QA pass 1, admin-shell-22, part of
+ * #2596). The status means the name is in the catalogue and Secret Manager
+ * holds no secret of that name. "Not declared" read as the opposite -- the
+ * banner went on to say the name IS in the catalogue -- while the row's own
+ * columns already said "no secret".
+ */
 const STATUS_WORDS: Readonly<Record<string, string>> = {
   set: 'set',
   not_set: 'declared, no version',
-  not_declared: 'not declared',
+  not_declared: 'no secret',
   unreadable: 'unreadable',
 }
 
@@ -115,13 +122,15 @@ function PlatformSecretsBody({ data }: { data: PlatformSecrets }) {
         <section className="sec-lead is-warn" aria-label="Needs a look">
           <span className="sec-k">Needs a look</span>
           <b>
-            {look.length === 1
-              ? `${look[0]!.secret_id} is ${STATUS_WORDS[look[0]!.status] ?? look[0]!.status}`
-              : `${look.length} platform secrets are not set`}
+            {look.length !== 1
+              ? `${look.length} platform secrets are not set`
+              : look[0]!.status === 'not_declared'
+                ? `${look[0]!.secret_id} has no secret yet`
+                : `${look[0]!.secret_id} is ${STATUS_WORDS[look[0]!.status] ?? look[0]!.status}`}
           </b>
           <span>
             {look.length === 1 && look[0]!.status === 'not_declared'
-              ? 'Its name is in the catalogue but no secret exists. '
+              ? 'It is in the catalogue but nothing was stored. '
               : ''}
             {grace.length > 0 ? `${grace.length === 1 ? 'One other is' : `${grace.length} are`} mid-rotation, which is expected for 24 h. ` : ''}
             {blind.length > 0

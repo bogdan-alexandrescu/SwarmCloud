@@ -181,8 +181,9 @@ describe('V024: opening the editor at 1440 reflows no row', () => {
     expect(won(side, 'grid-area', WIDE)).toBe('1 / 1')
     expect(won(side, 'justify-self', WIDE)).toBe('end')
     expect(won(side, 'position', WIDE)).toBe('sticky')
-    // The Set by term (`lowered automatically after errors`, once `AIMD back-off`)
-    // breaks only between words (QA1B-13 review: the one-line rule cut it).
+    // The Set by term (`lowered automatically (back-off)` on Pool limits,
+    // admin-shell-13; once `AIMD back-off`) breaks only between words
+    // (QA1B-13 review: the one-line rule cut it), never anywhere.
     const by = document.getElementById('limit-tenant:eng')!.querySelector('td[data-label="Set by"]')!
     expect(won(by, 'overflow-wrap', WIDE)).toBe('normal')
   })

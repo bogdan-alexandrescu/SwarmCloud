@@ -68,6 +68,8 @@ def _graph_manifest(image: str = IMAGE) -> str:
         "__GRAPH_BUCKET__": f"{PROJECT}-swarm-artifacts",
         "__GRAPH_CONFIG_SHA256__": "c" * 64,
         "__GRAPH_CONFIG_JSON__": config,
+        "__GRAPH_STATS_ADDRESS__": "10.10.0.81",
+        "__SWARM_API_EGRESS_CIDR__": "10.10.0.0/20",
     }
     text = TEMPLATE.read_text()
     for key, value in values.items():

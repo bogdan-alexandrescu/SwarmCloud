@@ -175,7 +175,7 @@ describe('the verdict', () => {
   })
 
   it('counts free slots over the accounts that can take one', () => {
-    const v = pool.verdictOf([acct('a', {}, AT), acct('b', { assigned: 4 }, AT), weekly('c', 0.99, AT + D, AT)], 'eng', 0)
+    const v = pool.verdictOf([acct('a', {}, AT), acct('b', { assigned: 4 }, AT), weekly('c', 0.99, AT + D, AT)], 'eng', 0, AT)
     expect([v.n, v.m, v.free]).toEqual([2, 3, 8])
   })
 
