@@ -76,10 +76,12 @@ function frameHolds(): void {
 }
 
 describe('item 3: no box escapes the app frame, so the window never scrolls', () => {
-  it('the workflow graph page', async () => {
-    window.history.replaceState(null, '', '/workflows/wf_5e5ad3b6f7da4299a839')
+  // The Steps table is the Table tab's alone since visual QA pass 1
+  // (overview-agents-73, #2596): the Graph tab no longer draws it under the graph.
+  it('the workflow table page', async () => {
+    window.history.replaceState(null, '', '/workflows/wf_5e5ad3b6f7da4299a839/table')
     render(<App />)
-    await waitFor(() => expect(document.querySelectorAll('.wfp-steps tbody tr[data-step]').length).toBeGreaterThan(1))
+    await waitFor(() => expect(document.querySelectorAll('.wf-card .wf-table tbody tr[data-step]').length).toBeGreaterThan(1))
     frameHolds()
     const { checked, out } = escapes()
     // The hidden state words in the Steps table are the boxes that escaped.
