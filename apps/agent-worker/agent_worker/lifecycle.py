@@ -462,6 +462,36 @@ SWAP_EXHAUSTED = "exhausted"
 SWAP_DRAIN = "drain"
 SWAP_UNUSABLE = "unusable"
 
+#: Why a dead credential moves an attempt to another account (#1855; BGD
+#: 2026-10-28: "it should automatically move in the future on this error").
+#: The `why` of the `account_moved` event; to the broker every one of them is a
+#: `SWAP_UNUSABLE` swap, which marks the dead account for this tenant.
+#:   * the token the secret still holds is the one the provider just refused,
+#:     so a reload would start the CLI on the same dead token;
+#:   * the refresher wrote successors and the provider refused those too, past
+#:     `MAX_CREDENTIAL_RELOADS`;
+#:   * the broker marked the account `reauth_required` (its refresh failed):
+#:     a person has to log it in again, and no reload will help;
+#:   * the secret could not be read at all on the reload.
+MOVE_TOKEN_UNCHANGED = "token_unchanged"
+MOVE_REFUSED_AFTER_RELOAD = "refused_after_reload"
+MOVE_REAUTH_REQUIRED = "reauth_required"
+MOVE_TOKEN_UNREADABLE = "token_unreadable"
+
+#: The account state the broker sets when its refresh failed
+#: (`quota_broker.main.CREDENTIAL_NEEDS_A_HUMAN`), read off the hold's status.
+ACCOUNT_STATE_REAUTH_REQUIRED = "reauth_required"
+
+#: The pool declines where the workspace HAS a pool and its broker did not
+#: answer (#2560). Asked once more, then parked: never the tenant's own secret,
+#: which in task_d212c88b was a key the provider refused. Every other decline
+#: means the workspace has no pool for this run, and keeps the tenant secret.
+POOL_UNANSWERED = ("broker_unreachable", "broker_client_error")
+#: Asks of the broker for one assignment when it does not answer: the first,
+#: and one more (#2560). A broker that is down for a second is not one that is
+#: down for the next quarter of an hour, which is what the park waits.
+POOL_ASKS = 2
+
 #: One heartbeat event per this many lease heartbeats. The lease is refreshed
 #: every interval; the event stream would be unreadable at that rate.
 HEARTBEAT_EVENT_EVERY = 5
@@ -1151,6 +1181,13 @@ class Worker:
         # Accounts this attempt was given and could not read. Sent back to the
         # broker as `exclude` so the next ask does not return the same one.
         self._account_rejected: list[str] = []
+        # A digest of the token each held account's secret last gave this
+        # attempt (#1855), never the token: a refused credential whose secret
+        # still holds the same token moves the attempt rather than reloading it.
+        self._account_token_digests: dict[str, str] = {}
+        # Why the runner was asked to stop at its turn boundary when it was not
+        # a drain: the broker marked the held account `reauth_required`.
+        self._move_why: str | None = None
         # THE ACCOUNT MID-RUN (S13-S15), for an attempt that holds one. The
         # session id the runner's stream named, kept to `--resume` it under
         # another account and NEVER logged (it is registered as a secret);
@@ -1620,6 +1657,23 @@ class Worker:
                         kind="auth",
                         message="the provider refused the account's credential",
                     )
+                    # A DEAD TOKEN MOVES THE ATTEMPT (#1855). Reloading helps
+                    # only when the refresher wrote a successor; a token that
+                    # came back unchanged, a successor refused again, or an
+                    # account the broker marked `reauth_required` moves to a
+                    # healthy account of the same pool and resumes there, in
+                    # this lease, attempt and generation -- or parks on the
+                    # pool when there is none. Never a failure.
+                    why = self._dead_credential(credential_reloads)
+                    if why is not None:
+                        ws.credential_path.unlink(missing_ok=True)
+                        moved = self._swap_account(SWAP_UNUSABLE, why=why)
+                        if isinstance(moved, Outcome):
+                            return moved
+                        if moved is not None:
+                            child_env = moved
+                            attempt_number -= 1
+                            continue
                 if refusal is not None and credential_reloads < MAX_CREDENTIAL_RELOADS:
                     credential_reloads += 1
                     # RESUMED, NOT STARTED AGAIN (#626). A restart from the
@@ -9642,14 +9696,18 @@ class Worker:
             adopted the pool;
           * the profile does not declare `CLAUDE_CODE_OAUTH_TOKEN`, so it wants
             a metered API key and an account has none to give;
-          * the broker is unreachable or answers unusably, which must degrade
-            to the behaviour that worked yesterday rather than fail a task;
           * the tenant has no account registered at all.
+
+        Each of those is a decline, and every decline emits
+        `account_pool_declined` (#2560): which one fired used to be in a log
+        line alone, and task_d212c88b's record could not say.
 
         `NoAccountAvailable` is raised for the cases that are genuinely a wait
         or genuinely broken: accounts exist and every one is spent, paused,
-        draining or unobserved; or the broker REFUSED this worker. The caller
-        parks in both cases -- an attempt is never failed over the pool.
+        draining or unobserved; the broker REFUSED this worker; or the broker
+        did not answer twice (`POOL_UNANSWERED`, #2560 -- it used to fall back
+        to the tenant secret). The caller parks in every case -- an attempt is
+        never failed over the pool.
         """
         if self._account is not None:
             # Already held. Re-reading it is what the credential-reload path
@@ -9660,7 +9718,7 @@ class Worker:
             # Decided once, at step 6, and not revisited. See the field.
             return None
         if self._account_broker is None:
-            return self._decline_pool("no_broker_configured")
+            return self._decline_pool("no_broker_configured", profile.provider)
         if ACCOUNT_TOKEN_ENV not in (profile.secrets or ()):
             self.log.info(
                 "runner profile does not accept a subscription token; using the "
@@ -9668,50 +9726,65 @@ class Worker:
                 runner_profile=profile.name,
                 declared=sorted(profile.secrets or ()),
             )
-            return self._decline_pool("profile_takes_no_subscription")
+            return self._decline_pool("profile_takes_no_subscription", profile.provider)
 
         provider = profile.provider
-        try:
-            outcome = self._account_broker.assign(
-                provider, exclude=tuple(self._account_rejected)
+        cause = POOL_UNANSWERED[0]
+        for ask in range(1, POOL_ASKS + 1):
+            try:
+                outcome = self._account_broker.assign(
+                    provider, exclude=tuple(self._account_rejected)
+                )
+            except BrokerRefused as exc:
+                # REFUSE, DO NOT CARRY ON. A 401/403/404 means the pool is
+                # configured and this worker may not use it -- almost always a
+                # missing `run.invoker` grant for this tenant's worker service
+                # account, or a URL that is not the broker. Falling back here
+                # would put every agent back on the one shared tenant
+                # subscription while the pool's own dashboards showed it
+                # healthy and idle, which is the failure nobody would ever
+                # find. Parking costs nothing and puts the cause in the task's
+                # own blocked_by.
+                self.log.error(
+                    "the quota broker refused this worker; the account pool is "
+                    "configured and this tenant cannot use it",
+                    provider=provider,
+                    error=str(exc),
+                )
+                raise NoAccountAvailable(
+                    NoAccount(reason=BROKER_REFUSED), provider or "unknown"
+                ) from None
+            except BrokerUnavailable as exc:
+                # ASK AGAIN, THEN PARK -- NEVER THE TENANT SECRET (#2560, BGD
+                # 2026-10-28). This used to degrade to the tenant's own secret
+                # with nothing but a log line, and in task_d212c88b that secret
+                # held a key the provider refused: three tasks FAILED on a pool
+                # that was healthy a second later. The workspace HAS a pool, so
+                # its own secret is not how it runs. Parking costs nothing.
+                cause = "broker_unreachable"
+                self.log.warning(
+                    "could not reach the quota broker for an account",
+                    provider=provider,
+                    ask=ask,
+                    error=str(exc),
+                )
+            except Exception as exc:
+                # Defence in depth: whatever the client raised, the pool is
+                # there and did not answer. The same as an unreachable broker.
+                cause = "broker_client_error"
+                self.log.warning(
+                    "the account pool client raised",
+                    provider=provider,
+                    ask=ask,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            else:
+                break
+            self._emit_pool_declined(
+                cause, provider, then="parking" if ask == POOL_ASKS else "asking_again"
             )
-        except BrokerRefused as exc:
-            # REFUSE, DO NOT CARRY ON. A 401/403/404 means the pool is
-            # configured and this worker may not use it -- almost always a
-            # missing `run.invoker` grant for this tenant's worker service
-            # account, or a URL that is not the broker. Falling back here would
-            # put every agent back on the one shared tenant subscription while
-            # the pool's own dashboards showed it healthy and idle, which is
-            # the failure nobody would ever find. Parking costs nothing and
-            # puts the cause in the task's own blocked_by.
-            self.log.error(
-                "the quota broker refused this worker; the account pool is "
-                "configured and this tenant cannot use it",
-                provider=provider,
-                error=str(exc),
-            )
-            raise NoAccountAvailable(
-                NoAccount(reason=BROKER_REFUSED), provider or "unknown"
-            ) from None
-        except BrokerUnavailable as exc:
-            # DEGRADE, DO NOT FAIL. The broker being down is not the task's
-            # fault and the tenant secret still works; turning an outage in a
-            # control-plane service into failed attempts across every tenant is
-            # a much larger incident than the one that started it.
-            self.log.warning(
-                "could not reach the quota broker for an account; falling back "
-                "to the tenant credential",
-                provider=provider,
-                error=str(exc),
-            )
-            return self._decline_pool("broker_unreachable")
-        except Exception as exc:  # pragma: no cover - defence in depth
-            self.log.warning(
-                "the account pool client raised; falling back to the tenant credential",
-                provider=provider,
-                error=f"{type(exc).__name__}: {exc}",
-            )
-            return self._decline_pool("broker_client_error")
+        else:
+            raise NoAccountAvailable(NoAccount(reason=cause), provider or "unknown")
 
         if isinstance(outcome, NoAccount):
             if outcome.is_pool_absent:
@@ -9719,7 +9792,7 @@ class Worker:
                     "no account is registered for this tenant; using the tenant credential",
                     provider=provider,
                 )
-                return self._decline_pool("no_accounts_registered")
+                return self._decline_pool("no_accounts_registered", provider)
             raise NoAccountAvailable(outcome, provider or "unknown")
 
         self._account = outcome
@@ -9888,6 +9961,18 @@ class Worker:
                     account_id=self._account.account_id,
                     move=str(status["move"]),
                 )
+            elif status.get("state") == ACCOUNT_STATE_REAUTH_REQUIRED:
+                # BEFORE THE TOKEN DIES (#1855). The broker's refresh failed
+                # and the access token the agent holds expires on its own
+                # within the hour: move at the next turn boundary, as a drain
+                # does, rather than at the 401.
+                self._move_why = MOVE_REAUTH_REQUIRED
+                move.write_text(json.dumps({"reason": SWAP_UNUSABLE}))
+                self.log.warning(
+                    "this attempt's account needs re-authentication; the agent "
+                    "moves to another account at its next turn boundary",
+                    account_id=self._account.account_id,
+                )
         except Exception as exc:
             self.log.warning(
                 "could not read the account channel or the hold's status; the run "
@@ -9918,8 +10003,13 @@ class Worker:
         self._report_runner_error(data.get("error"))
         stopped_for = data.get("stopped_for")
         just_swapped, self._just_swapped = self._just_swapped, False
+        why, self._move_why = self._move_why, None
         reason: str | None = None
-        if stopped_for == STOP_DRAIN:
+        if stopped_for == STOP_DRAIN and why is not None:
+            # Stopped for a dead credential, not a drain (`_watch_account`).
+            reason = SWAP_UNUSABLE
+        elif stopped_for == STOP_DRAIN:
+            why = None
             reason = SWAP_DRAIN
         elif stopped_for == STOP_EXHAUSTED or result.exit_code == EXIT_QUOTA_EXHAUSTED:
             reason = SWAP_EXHAUSTED
@@ -9930,6 +10020,10 @@ class Worker:
             self.ws.credential_path.unlink(missing_ok=True)
         if reason is None:
             return None
+        if why is not None:
+            # A dead credential moves with or without a session: one that
+            # named none restarts from the prompt in the same workspace.
+            return self._swap_account(reason, why=why)
         if self._session_id is None:
             # Nothing to resume. A rate limit goes the way it always went; a
             # drain stop with no session cannot be continued, so it parks.
@@ -9969,7 +10063,44 @@ class Worker:
             message=message if isinstance(message, str) else "",
         )
 
-    def _swap_account(self, reason: str) -> dict[str, str] | Outcome | None:
+    def _dead_credential(self, reloads: int) -> str | None:
+        """Why the held account's refused credential moves the attempt, or None
+        to reload it in place (#1855). Never raises for the broker or the secret.
+
+        A reload helps only when the refresher has written a successor. The
+        move is right when it has not and will not: the reloads are spent, the
+        broker marked the account `reauth_required`, or the secret holds the
+        very token the provider refused (or cannot be read at all).
+        """
+        account = self._account
+        assert account is not None
+        if reloads >= MAX_CREDENTIAL_RELOADS:
+            return MOVE_REFUSED_AFTER_RELOAD
+        if self._account_broker is not None:
+            try:
+                status = self._account_broker.hold_status(account)
+            except Exception as exc:
+                # A fenced attempt's status read is refused; the swap checks
+                # the fence itself, so this only loses the reauth hint.
+                self.log.warning(
+                    "could not read the held account's status",
+                    error_type=type(exc).__name__,
+                )
+                status = {}
+            if isinstance(status, dict) and status.get("state") == ACCOUNT_STATE_REAUTH_REQUIRED:
+                return MOVE_REAUTH_REQUIRED
+        before = self._account_token_digests.get(account.account_id)
+        try:
+            self._account_credential_env(self.cfg.profile, account)
+        except AccountUnreadable:
+            return MOVE_TOKEN_UNREADABLE
+        if before is not None and before == self._account_token_digests.get(account.account_id):
+            return MOVE_TOKEN_UNCHANGED
+        return None
+
+    def _swap_account(
+        self, reason: str, *, why: str | None = None
+    ) -> dict[str, str] | Outcome | None:
         """Move the hold through the broker and rebuild the child's environment.
 
         ONE BROKER CALL PER MOVE (`AccountBroker.swap`), which releases this
@@ -9980,6 +10111,13 @@ class Worker:
 
         Re-checks the fence first: nothing continues under a stale generation
         (invariant 5), and the broker refuses a fenced attempt's swap anyway.
+
+        `why` is set for a dead credential (#1855, `_dead_credential`): the
+        attempt is CHECKPOINTED before it moves (invariant 8), so a worker lost
+        mid-move resumes from here; the move is announced as `account_moved`
+        naming both accounts by their pool label; and with no healthy account
+        the dead one goes back unusable and the attempt parks on the pool --
+        never a failure.
         """
         profile = self.cfg.profile
         provider = profile.provider or "unknown"
@@ -9990,8 +10128,18 @@ class Worker:
                 "this attempt has moved accounts as often as it may; not moving again",
                 swaps=self._swaps,
             )
-            return self._cannot_swap(reason, current, NoAccount(reason="no_account_available"))
+            return self._cannot_swap(
+                reason, current, NoAccount(reason="no_account_available"), dead=why is not None
+            )
         self.control.validate_generation()
+        if why is not None:
+            self.log.warning(
+                "the held account's credential is dead; checkpointing and moving "
+                "this attempt to another account",
+                account_id=current.account_id,
+                why=why,
+            )
+            self._checkpoint("account-move")
         for _ in range(MAX_ACCOUNT_TRIES):
             try:
                 outcome = self._account_broker.swap(
@@ -10011,13 +10159,19 @@ class Worker:
                     # A refused swap is what a fenced attempt meets; the fence
                     # check says so and ends the attempt the fenced way.
                     self.control.validate_generation()
-                return self._cannot_swap(reason, current, NoAccount(reason="no_account_available"))
+                return self._cannot_swap(
+                    reason, current, NoAccount(reason="no_account_available"),
+                    dead=why is not None,
+                )
             if isinstance(outcome, NoAccount):
-                return self._cannot_swap(reason, current, outcome)
+                return self._cannot_swap(reason, current, outcome, dead=why is not None)
             self._swaps += 1
             self._account = outcome
             self._account_released = False
             self._emit_swapped(current, outcome, reason)
+            if why is not None:
+                self._emit_moved(current, outcome, why)
+                why = None
             try:
                 self._account_credential_env(profile, outcome)
             except AccountUnreadable as exc:
@@ -10043,7 +10197,7 @@ class Worker:
         return self._cannot_swap(SWAP_UNUSABLE, current, NoAccount(reason=ACCOUNT_UNREADABLE))
 
     def _cannot_swap(
-        self, reason: str, current: Assignment, outcome: NoAccount
+        self, reason: str, current: Assignment, outcome: NoAccount, *, dead: bool = False
     ) -> Outcome | None:
         """No other account took this attempt. Fall back to what happens today.
 
@@ -10051,6 +10205,9 @@ class Worker:
         and parks exactly as `_park_for_quota` always has. A drain: park on
         the pool, holding the hold until the exit path gives it back. An
         account that could not be read: give it back unusable, then park.
+        A dead credential (`dead`, #1855): give it back unusable and park on
+        the broker's own answer -- `no_account_available` waits
+        NO_ACCOUNT_RETRY_SECONDS -- never a failure.
         """
         self.log.warning(
             "no other account can take this attempt; falling back to a checkpoint and park",
@@ -10059,7 +10216,11 @@ class Worker:
         )
         if reason == SWAP_EXHAUSTED:
             return None
-        if reason == SWAP_UNUSABLE:
+        if dead:
+            self._account = None
+            self._account_released = False
+            self._give_back(current, unusable="the provider refused this account's credential")
+        elif reason == SWAP_UNUSABLE:
             self._account = None
             self._account_released = False
             self._give_back(current, unusable="the agent could not start on this account")
@@ -10104,7 +10265,31 @@ class Worker:
                 error_type=type(exc).__name__,
             )
 
-    def _decline_pool(self, cause: str) -> None:
+    def _emit_moved(self, left: Assignment, taken: Assignment, why: str) -> None:
+        """`account_moved` for a dead credential's move (#1855), naming both
+        accounts by their pool label. Never a token, a secret name or a
+        session id. An audit record: one that cannot be written costs the move
+        nothing -- except a fence."""
+        try:
+            self.control.emit(
+                EventType.RETRYING,
+                {
+                    "cause": "account_moved",
+                    "why": why,
+                    "from_account": left.label,
+                    "to_account": taken.label,
+                    "provider": self.cfg.provider,
+                },
+            )
+        except (FencedError, TenantMismatchError):
+            raise
+        except Exception as exc:
+            self.log.warning(
+                "could not record the account move on the task's events",
+                error_type=type(exc).__name__,
+            )
+
+    def _decline_pool(self, cause: str, provider: str | None) -> None:
         """Record that this attempt is NOT on the pool, once and for good.
 
         Returns None so call sites can `return self._decline_pool(...)`. The
@@ -10112,9 +10297,44 @@ class Worker:
         credential is reloaded mid-attempt, and a second ask there could move a
         running agent onto a pool account it did not start on, or raise from a
         call site whose job is to restart the child rather than to park.
+
+        Only for a workspace with no pool for this run: the broker that did
+        not answer parks instead (`POOL_UNANSWERED`). Announced either way.
         """
         self._account_declined = cause
+        self._emit_pool_declined(cause, provider, then="tenant_secret")
         return None
+
+    def _emit_pool_declined(self, reason: str, provider: str | None, *, then: str) -> None:
+        """`account_pool_declined` on the task's events (#2560). Never a key.
+
+        `reason` is the decline's cause, `pool` the provider whose pool it is,
+        `then` what this attempt does next: `tenant_secret` (no pool),
+        `asking_again` or `parking`. The task and attempt are named in the
+        detail as well as stamped by `control.emit`, so a reader of the detail
+        alone has them. An audit record: one that cannot be written costs the
+        attempt nothing, as for a credential reload -- except a fence.
+        """
+        try:
+            self.control.emit(
+                EventType.RUNNING,
+                {
+                    "cause": "account_pool_declined",
+                    "reason": reason,
+                    "pool": provider or "unknown",
+                    "task_id": self.cfg.task_id,
+                    "attempt_id": self.cfg.attempt_id,
+                    "then": then,
+                },
+            )
+        except (FencedError, TenantMismatchError):
+            raise
+        except Exception as exc:
+            self.log.warning(
+                "could not record the account pool's decline",
+                reason=reason,
+                error_type=type(exc).__name__,
+            )
 
     def _account_credential_env(self, profile: Any, account: Assignment) -> dict[str, str]:
         """Read the ASSIGNED account's secret and shape it for the child.
@@ -10151,6 +10371,10 @@ class Worker:
             ) from None
         for value in env.values():
             self.log.register_secret(value)
+        # A one-way digest, never the token: what `_dead_credential` compares.
+        self._account_token_digests[account.account_id] = hashlib.sha256(
+            json.dumps(sorted(env.items())).encode("utf-8")
+        ).hexdigest()
         self.log.info(
             "account credentials resolved",
             account_id=account.account_id,
@@ -10583,6 +10807,7 @@ class Worker:
                 else "a person" if reason == POOL_PAUSED
                 else "the broker's next usage poll" if reason == NO_RECENT_READING
                 else "an agent on a full account to finish" if reason == ACCOUNTS_FULL
+                else "the quota broker to answer" if reason in POOL_UNANSWERED
                 else "a quota window"
             ),
             next_eligible_at=next_eligible.isoformat(),

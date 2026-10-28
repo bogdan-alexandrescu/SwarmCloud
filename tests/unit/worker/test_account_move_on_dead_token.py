@@ -157,7 +157,8 @@ def test_a_refreshed_token_refused_again_moves_instead_of_failing(
     assert len(_details(db, "credential_reloaded")) == lifecycle.MAX_CREDENTIAL_RELOADS
     assert [(s["from"], s["reason"]) for s in broker.swaps] == [(FIRST, "unusable")]
     assert runs[-1]["token"] == tokens[SECOND_SECRET]
-    assert runs[-1]["resume"] == sessions[0]
+    # The fake CLI names a session per start: the move resumes the latest.
+    assert runs[-1]["resume"] == sessions[len(runs) - 2]
     assert db.doc("tasks/task_1")["state"] == TaskState.SUCCEEDED.value
     assert [m["why"] for m in _details(db, "account_moved")] == ["refused_after_reload"]
 
