@@ -29,6 +29,7 @@ import type { StepUsage, WorkflowUsage } from '../api'
 import type { AttemptRow, Task, TaskState, Workflow, WorkflowStep } from '../types'
 import { painted, resolveColour, THEMES } from './marks'
 import { contrast } from './spaceprobe'
+import { cellStyle, textPx } from './tablefit'
 
 const api = vi.hoisted(() => ({
   loadWorkflowBoard: vi.fn(),
@@ -696,5 +697,55 @@ describe('G3-33: the Tokens column sorts, as Cost does', () => {
     expect(order()).toEqual(['fix', 'implement', 'review'])
     fireEvent.click(button!)
     expect(order()).toEqual(['review', 'implement', 'fix'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// overview-agents-69 (visual QA pass 1, part of #2596): a sum over some attempts
+// ---------------------------------------------------------------------------
+
+describe('overview-agents-69: a step’s cost summed over only some attempts says so', () => {
+  it('marks the cell `· 1 of 3` when two of three attempts reported no cost', () => {
+    const { w, tasks, usage } = skippedRun()
+    usage.byTaskId.set('t_rev', usageOf({ attempts: 3, attemptsWithCost: 1, costUsd: 0.253 }))
+    const { container } = card(w, tasks, usage, 'table')
+    const cost = (step: string) => container.querySelector<HTMLElement>(`.wf-table tr[data-step="${step}"] td[data-col="cost"]`)!.textContent!
+    // MUTATION: drop the `attemptsWithCost < attempts` mark and this reads `$0.253` alone.
+    expect(cost('review')).toMatch(/^\$0\.253 · 1 of 3$/)
+    // The control: every attempt reported, and the cell is the figure alone.
+    expect(cost('implement')).not.toMatch(/ of /)
+  })
+
+  // The re-review (2026-10-28): at 1440 the Table's Cost column is 100px, and
+  // '$0.4230 · 1 of 2' (127px) drew on one line as '$0.4230 · 1…' -- the mark
+  // cut off was the part the finding asked for. Widening Cost takes Why under
+  // its 60px at the 980px minimum (walk.steps, qa.workflow Q3), so the mark
+  // is a line of its own, as the workflow list's coverage wraps (V163).
+  it('holds the mark whole in the Table’s Cost column at desktop, on a line of its own', () => {
+    const { w, tasks, usage } = skippedRun()
+    usage.byTaskId.set('t_rev', usageOf({ attempts: 3, attemptsWithCost: 1, costUsd: 0.253 }))
+    const { container } = card(w, tasks, usage, 'table')
+    const env = { width: 1440 }
+    const th = container.querySelector<HTMLElement>('.wf-table th[data-col="cost"]')!
+    const td = container.querySelector<HTMLElement>('.wf-table tr[data-step="review"] td[data-col="cost"]')!
+    const st = cellStyle(td, env)
+    // The column's ceiling: the `min(..., Npx)` the head cell carries inline, and the sheet's.
+    const cap = Number(/(\d+(?:\.\d+)?)px\)$/.exec(th.style.width)?.[1] ?? NaN)
+    expect(Number(/^(\d+)px$/.exec(painted(th, 'width', env) ?? '')?.[1] ?? NaN)).toBe(cap)
+    const room = cap - st.pl - st.pr
+    // The premise: on one line the reviewer's row does not fit, and the cell is nowrap and cut.
+    expect(textPx('$0.4230 · 1 of 2', td, env)).toBeGreaterThan(room)
+    expect(painted(td, 'text-overflow', env)).toBe('ellipsis')
+    // MUTATION: print the cell as one CellView again and there is no mark of its own.
+    const mark = td.querySelector<HTMLElement>('.wf-cost-of')!
+    expect(mark.textContent).toBe('· 1 of 3')
+    // MUTATION: drop the `.wf-cost-of { display: block }` rule and the mark
+    // shares the figure's line, where the ellipsis takes it.
+    expect(painted(mark, 'display', env)).toBe('block')
+    for (const line of ['$0.4230', '· 1 of 2', '$0.253', mark.textContent!]) {
+      expect(textPx(line, td, env), line).toBeLessThanOrEqual(room)
+    }
+    // The control: a cost every attempt reported has no mark.
+    expect(container.querySelector('.wf-table tr[data-step="implement"] td[data-col="cost"] .wf-cost-of')).toBeNull()
   })
 })

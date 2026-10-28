@@ -573,3 +573,12 @@ input.dsp-repo[aria-invalid='true'] { border-color: var(--warn); box-shadow: ins
   .btp-opt { min-height: 44px; border-bottom: 1px solid var(--line); }
   .btp-opt:nth-child(2n) { border-right: 0; }
 }
+/* A GAP BETWEEN THE SETTINGS AND THE NEXT GROUP (QA1 runs-submit-19): the
+   "+ Add setting" button, the last thing in `.sbf-input`, sat on the
+   "Additional repositories" legend with no space. One step, the 12px `.btp`
+   already keeps below itself. */
+.sbf-input + .btp { margin-top: 12px; }
+/* A SETTING'S LABEL IN WORDS (QA1 runs-submit-18): `.sbf-name` is mono for a
+   key typed by the caller; an offered setting's label is a name, in the body
+   face at the size the key used to take. */
+.sbf-name > .sbf-words { font: var(--t-body)/var(--lh-body) var(--font); color: var(--text); }

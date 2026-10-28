@@ -170,7 +170,7 @@ describe('S2b: connected, Where the App is installed is on the Connection tab', 
     // MUTATION: drop <Installs> from Mine (the owners were only on Choose repositories).
     const card = await cardTitled('Where the App is installed')
     const table = await within(card).findByRole('table', { name: 'Where the App is installed' })
-    expect(within(table).getAllByRole('columnheader').map((h) => visible(h))).toEqual(['Owner', 'Install', 'Chosen', 'Action'])
+    expect(within(table).getAllByRole('columnheader').map((h) => visible(h))).toEqual(['Owner', 'Installed', 'Chosen', 'Action'])
     const row = (owner: string) => table.querySelector(`tr[data-owner="${owner}"]`) as HTMLElement
     expect(visible(row('octo-dev'))).toContain('your account')
     expect(visible(row('octo-dev'))).toContain('all repositories')

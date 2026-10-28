@@ -327,7 +327,12 @@ describe('Tenants says there is no budget in the reader’s words (AH-21)', () =
     expect(link?.getAttribute('href')).toBe('#help/tenant-fields')
     expect(link?.textContent).toBe('Why →')
     const words = visible(note!).replace('Why →', '').trim()
-    expect(words).toBe('no budget column · no budget can be set')
+    // A SENTENCE, IN THE BODY FONT (visual QA pass 1, admin-shell-18): the
+    // mono `no budget column · no budget can be set` read as debug output.
+    // MUTATION: restore the mono fragment, or drop `font-family` from
+    // `.ctl-panel-note.ten-budget`.
+    expect(words).toBe('Tenants have no budget column: no budget can be set here.')
+    expect(painted(note!, 'font-family', WIDE)).toBe('var(--font)')
     // A budget is a setting, not a measurement: no `not measured` mark.
     expect(note!.querySelector('.ctl-mark'), 'a setting is drawn as an unmeasured figure').toBeNull()
     // The field name is the API's, not the reader's.

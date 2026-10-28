@@ -589,6 +589,8 @@ export const SECTIONS: SectionDef[] = [
 const REFERENCE = 'reference'
 /** API reads' tab under Capacity (NAV-FOOT): SECTIONS' id and the path's last segment. */
 const API_READS_TAB = 'api-reads'
+/** API reads' failures-only filter on its address: `/capacity/api-reads?failed=1` (QA1 capacity-10). */
+const API_FAILED_KEY = 'failed'
 
 /** The Submit chooser's address (`/submit`). Not a section, like Help. */
 const SUBMIT = SUBMIT_ADDRESS
@@ -1173,6 +1175,8 @@ function keptKeys(sectionId: string, tab: string): readonly string[] {
   if (tab === 'holders') return ['pool', 'tenant']
   // And its Table / Timeline view (#2222, ACCOUNTS-TIMELINE): linkable.
   if (tab === 'accounts') return ['account', 'view']
+  // And API reads' failures-only filter (QA1 capacity-10): `?failed=1`.
+  if (tab === API_READS_TAB) return [API_FAILED_KEY]
   return []
 }
 
@@ -1457,7 +1461,17 @@ export function App() {
     setAt((r) => ({ ...r, view: view === '' ? null : view }))
   }, [])
 
-  const [apiFailuresOnly, setApiFailuresOnly] = useState(false)
+  // API READS' FILTER RIDES ON ITS ADDRESS (QA1 capacity-10, #2596):
+  // `/capacity/api-reads?failed=1`, so a filtered view can be linked and
+  // survives a reload. One value, read by the panel's pair and the page's own
+  // toggle alike, and written by either -- in place, like a list filter.
+  const apiFailuresOnly = at.sectionId === CAPACITY && at.tab === API_READS_TAB && at.taskId === null
+    && new URLSearchParams(at.view ?? '').get(API_FAILED_KEY) === '1'
+  const setApiFailuresOnly = useCallback((failuresOnly: boolean) => {
+    setAt((r) => (r.sectionId === CAPACITY && r.tab === API_READS_TAB && r.taskId === null
+      ? { ...r, view: failuresOnly ? `${API_FAILED_KEY}=1` : null }
+      : r))
+  }, [])
 
   // Replaced in place by the normalise effect, so Back does not return to the
   // Admin page: Overview for someone who administers nothing (CONFIG-NAV),
@@ -1497,9 +1511,16 @@ export function App() {
               ? PROFILE_LABEL
               : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
   const object = at.missing ? null : documentObjectOf(at)
+  // THE OPEN OBJECT BY ITS NAME, once one is known, as the breadcrumb and its
+  // page heading give it (visual QA pass 1, #2596): an agent by the name its
+  // split recorded (overview-agents-20), a workflow by the name Recent holds
+  // (overview-agents-65). Its id until then, which is all anyone knows.
+  const agentNamed = useAgentName(at.missing ? null : at.taskId)
+  const workflowNamed = useRecentName(!at.missing && at.taskId === null && at.tab === 'workflows' ? openObjectOf(at) : null)
+  const titled = agentNamed ?? workflowNamed ?? object
   useEffect(() => {
-    document.title = documentTitleOf(title, object)
-  }, [title, object])
+    document.title = documentTitleOf(title, titled)
+  }, [title, titled])
   // THE HEADER BAR IS DRAWN ONLY WHERE IT HOLDS A TRAIL (visual QA V178,
   // 2026-10-16): inside an open object, the one place `Head` draws. The frame
   // says so (`has-ctl-bar`), which sets `--ctl-bar-h` for the sticky heads
@@ -1564,7 +1585,7 @@ export function App() {
               head with no age of its own; a `Screen` carries its own on its
               refresh control and claims it (#98). */}
           <FrameAge.Provider value={true}>
-          <SectionHelp.Provider value={helpSection === null ? null : <SectionQuestion section={helpSection} topic={PAGE_TOPIC[`${at.sectionId}/${at.tab}`] ?? null} />}>
+          <SectionHelp.Provider value={helpSection === null ? null : <SectionQuestion section={helpSection} topic={PAGE_TOPIC[`${at.sectionId}/${at.tab}`] ?? null} title={pageQuestionTitle(helpSection.label, at.sectionId, at.tab, tabDef?.label)} />}>
           <HeadAgeProvider at={at}>
           {/* THE HEADER BAR (#1206, proposal A), over both the page and an
               open agent beside it: the trail and the frame's age (`Head`).
@@ -1621,6 +1642,7 @@ export function App() {
                         onView={onView}
                         go={go}
                         apiFailuresOnly={apiFailuresOnly}
+                        onApiFilter={setApiFailuresOnly}
                         qaLink={onQaPage ? qaLink.current : null}
                         secretsLink={onSecretsPage && at.view ? secretsLink.current : null}
                       />
@@ -2085,7 +2107,17 @@ const PAGE_TOPIC: Readonly<Record<string, TopicId>> = {
   'admin/workspaces': 'workspaces-you-admin',
 }
 
-function SectionQuestion({ section, topic = null }: { section: SectionQuestionDef; topic?: TopicId | null }) {
+/**
+ * THE `?` CARD'S TITLE (QA1 config-32, #2596): a page with a topic of its own
+ * is titled by its tab ("Secrets answers"), so the six Config tabs' cards no
+ * longer read alike as "Config answers"; any other page keeps its section's.
+ */
+export function pageQuestionTitle(sectionLabel: string, sectionId: string, tab: string, tabLabel: string | undefined): string {
+  const own = PAGE_TOPIC[`${sectionId}/${tab}`] !== undefined && tabLabel !== undefined
+  return `${own ? tabLabel : sectionLabel} answers`
+}
+
+function SectionQuestion({ section, topic = null, title = `${section.label} answers` }: { section: SectionQuestionDef; topic?: TopicId | null; title?: string }) {
   // THE CARD IS MEASURED THROUGH `cardRef`, and before it existed this card
   // was not measured at all. `useEdgeSafePlacement` used to look for the card
   // under the ANCHOR, and this one is portalled to `document.body` below, so
@@ -2113,7 +2145,7 @@ function SectionQuestion({ section, topic = null }: { section: SectionQuestionDe
       style={placement}
       ref={cardRef}
     >
-      <strong id={`${cardId}-title`} className="ctl-q-title">{section.label} answers</strong>
+      <strong id={`${cardId}-title`} className="ctl-q-title">{title}</strong>
       <span className="ctl-q-body">{section.question}</span>
       {topic !== null && <span className="ctl-q-body" data-topic={topic}>{HELP_TOPICS[topic].short}</span>}
       {/* Inline, from tokens, like the topic cards' own link: styles.css is
@@ -2145,7 +2177,7 @@ function SectionQuestion({ section, topic = null }: { section: SectionQuestionDe
         // `Help: <card title>`, the name every `?` in the app now carries
         // (AH-4), so one query finds both kinds and a screen reader hears the
         // same shape of name wherever it meets one.
-        aria-label={`Help: ${section.label} answers`}
+        aria-label={`Help: ${title}`}
         aria-expanded={state.open}
         aria-controls={state.open ? cardId : undefined}
         {...trigger}
@@ -2175,6 +2207,7 @@ function SectionBody({
   onView,
   go,
   apiFailuresOnly = false,
+  onApiFilter,
   qaLink = null,
   secretsLink = null,
 }: {
@@ -2195,6 +2228,9 @@ function SectionBody({
   go: (to: string) => void
   /** API reads' filter, set by the panel's "Failures only" row. */
   apiFailuresOnly?: boolean
+  /** Where the page's own "failures only" toggle writes, so the panel's row
+   *  follows it (QA1 capacity-10): one filter, two controls. */
+  onApiFilter?: (failuresOnly: boolean) => void
   /** The QA credential link App read off the bar, for the QA targets page, or null. */
   qaLink?: QaLink | null
   /** The one-time link's token App read off the bar for Config › Secrets, or null. Never drawn. */
@@ -2287,7 +2323,7 @@ function SectionBody({
     case 'capacity/account-health':
       return <AccountHealthScreen />
     case 'capacity/api-reads':
-      return <ReferenceScreen failuresOnly={apiFailuresOnly} />
+      return <ReferenceScreen failuresOnly={apiFailuresOnly} onFailuresOnly={onApiFilter} />
     case 'capacity/quota':
       return <QuotaDetailScreen />
 
@@ -2379,7 +2415,7 @@ function ConfigPage({ go, children }: { go: (to: string) => void; children: Reac
  * It fetches nothing of its own. Opening it first therefore shows an empty
  * registry, and the empty state says exactly that rather than "no routes".
  */
-function ReferenceScreen({ failuresOnly: asked = false }: { failuresOnly?: boolean }) {
+function ReferenceScreen({ failuresOnly: asked = false, onFailuresOnly }: { failuresOnly?: boolean; onFailuresOnly?: (failuresOnly: boolean) => void }) {
   const probes = useSyncExternalStore(subscribeProbes, probeSnapshot, probeSnapshot)
   // The ages are the point, so they move on their own rather than only when a
   // fetch happens to land -- on the shared clock the head and the dock read.
@@ -2441,7 +2477,13 @@ function ReferenceScreen({ failuresOnly: asked = false }: { failuresOnly?: boole
               label="Rows"
               value={failuresOnly ? 'failures' : null}
               options={[{ key: 'failures', label: 'failures only' }]}
-              onChange={() => setFailuresOnly(!failuresOnly)}
+              // ONE FILTER, TWO CONTROLS (QA1 capacity-10): the page's toggle
+              // filtered the table while the panel kept "Every read" pressed.
+              // It now writes App's filter, which the panel and the address read too.
+              onChange={() => {
+                setFailuresOnly(!failuresOnly)
+                onFailuresOnly?.(!failuresOnly)
+              }}
             />
             <span className="ctl-card-note ref-count">
               {shown.length} of {probes.length}

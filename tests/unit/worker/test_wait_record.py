@@ -117,8 +117,24 @@ def test_a_cancelled_run_superseded_by_a_success_is_not_failed(tmp_path):
     assert outcome.ci_wait["pending"] == [LINT]
 
 
-def test_the_control_a_cancelled_run_that_is_the_newest_is_failed(tmp_path):
-    """The control for the test above: the same runs, the ids swapped."""
+def test_the_control_a_failed_run_that_is_the_newest_is_failed(tmp_path):
+    """The control for the test above: the same runs, the ids swapped, the
+    newest one failed. (A cancelled newest run is pending, not failed: #1778.)"""
+    world = MergeWorld(tmp_path)
+    _two_required(world)
+    _rounds_left(world)
+    world.runs = [_run(CHECK, 20, "completed", "success"),
+                  _run(CHECK, 30, "completed", "failure"),
+                  _run(LINT, 31, "in_progress", None)]
+
+    outcome = merge.run_merge(world.context())
+
+    # MUTATION: `failed` is always [] (the reading is never recorded) -> fails.
+    assert outcome.ci_wait["failed"] == [CHECK], outcome.ci_wait
+
+
+def test_a_cancelled_run_that_is_the_newest_is_recorded_pending(tmp_path):
+    """#1778: the newest run cancelled waits for its re-run."""
     world = MergeWorld(tmp_path)
     _two_required(world)
     _rounds_left(world)
@@ -128,8 +144,9 @@ def test_the_control_a_cancelled_run_that_is_the_newest_is_failed(tmp_path):
 
     outcome = merge.run_merge(world.context())
 
-    # MUTATION: `failed` is always [] (the reading is never recorded) -> fails.
-    assert outcome.ci_wait["failed"] == [CHECK], outcome.ci_wait
+    assert outcome.ci_wait["code"] == "checks_pending", outcome.ci_wait
+    assert outcome.ci_wait["failed"] == [], outcome.ci_wait
+    assert sorted(outcome.ci_wait["pending"]) == sorted([CHECK, LINT])
 
 
 def test_a_wait_made_before_the_checks_were_read_records_no_failed(tmp_path):

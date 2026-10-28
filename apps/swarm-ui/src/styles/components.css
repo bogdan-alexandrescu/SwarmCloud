@@ -361,7 +361,17 @@
 .c-menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
 
 /* ---- dialogs, including the typed confirm ----------------------------- */
-.c-scrim { position: fixed; inset: 0; z-index: 50; background: color-mix(in srgb, #06101e 42%, transparent); display: flex; align-items: center; justify-content: center; padding: 16px; }
+/* THE SCRIM DIMS IN BOTH THEMES (visual QA overview-agents-86, 2026-10-28).
+   It was the navy #06101e at 42% everywhere -- and #06101e IS the dark
+   `--bg`, so in dark it left the page exactly as it was and only faintly
+   darkened the cards. Dark takes black at 60% (`--bg` to ~#02060c, a card
+   from #0c1a2e to ~#050a12), so the page reads as behind the dialog; light
+   keeps the navy wash, which over a white page always did. */
+.c-scrim { position: fixed; inset: 0; z-index: 50; background: rgb(0 0 0 / .6); display: flex; align-items: center; justify-content: center; padding: 16px; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) .c-scrim { background: color-mix(in srgb, #06101e 42%, transparent); }
+}
+:root[data-theme='light'] .c-scrim { background: color-mix(in srgb, #06101e 42%, transparent); }
 .c-dlg { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-dlg); box-shadow: var(--sk-sh); padding: 16px; display: flex; flex-direction: column; gap: 10px; width: min(460px, 100%); max-height: calc(100vh - 32px); overflow: auto; }
 .c-dlg > h2 { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); }
 .c-dlg p { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }

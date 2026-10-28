@@ -92,6 +92,9 @@
 .ad-kv > dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .ad-file { display: block; overflow-wrap: anywhere; }
 .ad-files { margin: 0; padding-left: 18px; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
+/* A plan's steps (automate-06): numbered, each title over its prompt. */
+.ad-steps { display: grid; gap: 4px; }
+.ad-steps > li > .ad-step-p { display: block; }
 .ad-hold { display: grid; gap: 6px; min-width: 0; }
 
 /* The check counts at the head: a bar of passed, failed and pending, and the figures in words. */

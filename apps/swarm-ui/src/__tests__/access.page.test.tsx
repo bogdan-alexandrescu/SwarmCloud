@@ -252,9 +252,9 @@ describe('owners (chooser A, left)', () => {
     expect(visible(owner('octo-dev'))).toContain('your account')
     expect(visible(owner('example-org'))).toContain('2 chosen')
     expect(within(owner('example-lab')).getByRole('button', { name: 'Enable' })).toBeTruthy()
-    expect(within(owner('example-new')).getByRole('link', { name: 'Install on example-new' }).getAttribute('href')).toBe(
-      'https://github.com/apps/swarmcloud/installations/new',
-    )
+    // An organisation not installed offers Request install alone, as the Connection tab does (QA1-FIX-01 config-04).
+    expect(within(owner('example-new')).getByRole('button', { name: 'Request install' })).toBeTruthy()
+    expect(within(owner('example-new')).queryByRole('link', { name: 'Install on example-new' })).toBeNull()
     expect(visible(owner('example-new'))).toContain('not installed')
   })
 
@@ -277,7 +277,7 @@ describe('owners (chooser A, left)', () => {
     )
     await mount('choose')
     await screen.findByRole('list', { name: 'Owners your connection reaches' })
-    fireEvent.click(within(owner('example-org')).getByRole('button', { name: 'Remove' }))
+    fireEvent.click(within(owner('example-org')).getByRole('button', { name: 'Remove all 2' }))
     expect(calls.some((c) => c.method === 'DELETE')).toBe(false)
     expect(visible(owner('example-org'))).toContain('Deletes your 2 grants under example-org at once')
     fireEvent.click(within(owner('example-org')).getByRole('button', { name: 'Remove' }))
@@ -558,7 +558,7 @@ describe('connected but not installed (#780)', () => {
     expect(within(owner('octo-dev')).getByRole('button', { name: 'Enable' })).toBeTruthy()
     expect(within(owner('octo-dev')).queryByRole('link', { name: /Install/ })).toBeNull()
     expect(visible(owner('example-co'))).toContain('not installed')
-    expect(within(owner('example-co')).getByRole('link', { name: 'Install on example-co' }).getAttribute('href')).toBe(APP_INSTALL)
+    expect(within(owner('example-co')).getByRole('button', { name: 'Request install' })).toBeTruthy()
     expect(screen.getByText('No owner enabled yet')).toBeTruthy()
   })
 

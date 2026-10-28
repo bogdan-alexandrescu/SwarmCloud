@@ -17,10 +17,20 @@ Owner requirements and decisions, 2026-10-20 (#1773; lane BOARD-CORE):
   `(... #N)` in its title -- labelled with the issue's title where SwarmCloud
   has it, else the number alone; "No issue" for the rest. No hand-kept map.
 * WAITING ON SOMEONE lists exactly three kinds, from what SwarmCloud knows:
-  a finished task's owner questions (its recommended option marked); steps
-  waiting for a person (AWAITING_INPUT, and HUMAN_REQUIRED parks), each with
-  its `/sc answer WF STEP`; merges refused (`check.MERGE_CODES`) and CI parks
+  owner questions (the recommended option marked); steps waiting for a
+  person (AWAITING_INPUT, and HUMAN_REQUIRED parks), each with its
+  `/sc answer WF STEP`; merges refused (`check.MERGE_CODES`) and CI parks
   over `CI_PARK_MINUTES`. A failed step in general is NOT listed.
+* AN OWNER QUESTION WAITS only while its lane is open (owner decision
+  2026-10-27, "Yes, narrow it"; #1812): a finished step's question, in a
+  workflow that has neither finished nor merged (a merge step SUCCEEDED),
+  and that no answer recorded on any step of the lane answers -- the task's
+  `owner_answers`, which `swarm_task_answer` and the console write. A
+  finished single task is a finished lane, so its questions never wait. A
+  question several steps asked is listed ONCE per lane, naming every step
+  that asked it, and "Questions that could not be read" is listed only when
+  no step of the lane read any. Before this, a board of weeks of merged
+  lanes counted 1,054 "needs you", nearly all old questions, many twice.
 * NOTHING IS READ FROM GITHUB. Every read is a GET this bridge already makes
   elsewhere; `swarm_check` reads a refused PR's state from GitHub, the board
   does not, so a refused merge stays listed for as long as its lane does.
@@ -79,7 +89,12 @@ PAGE_NAME = "index.html"
 CACHE_NAME = "cache.json"
 #: The last refresh that failed, read into the next page's banner and then removed.
 FAILURE_NAME = "last-failure.json"
-CACHE_VERSION = 1
+#: 2 since #1812 (2026-10-27): a version-1 cache holds finished lanes with the
+#: owner questions they listed before a merged or finished lane stopped waiting,
+#: and `collect()` reuses a cached finished lane verbatim, so those questions
+#: would stay on the board for the whole HISTORY_DAYS window. A new version
+#: drops the old cache and every lane is read once under the new rule.
+CACHE_VERSION = 2
 
 #: Finished work stays on the board this long (owner decision 4, #1773).
 HISTORY_DAYS = 30
@@ -188,12 +203,18 @@ class _Reader:
         self.cache = cache
         self.now = now
 
-    def finished(self, task: dict[str, Any]) -> dict[str, Any]:
-        """`{pull_request, questions, unavailable?}` of a FINISHED task, cached."""
+    def finished(self, task: dict[str, Any], *, questions: bool = True) -> dict[str, Any]:
+        """`{pull_request, questions, unavailable?}` of a FINISHED task, cached.
+
+        `questions=False` reads nothing: a finished lane's questions wait on no
+        one, so they are not fetched, and that answer is not cached."""
         tid = str(task_id_of(task) or "")
         kept = self.cache["tasks"].get(tid)
         if kept is not None:
             return kept
+        if not questions:
+            return {"pull_request": pull_request_of(task), "questions": [],
+                    "ended": _iso(task.get("completed_at"))}
         asked = progress.owner_questions(self.client, task)
         entry: dict[str, Any] = {"pull_request": pull_request_of(task),
                                  "questions": asked.get("questions") or [],
@@ -217,25 +238,59 @@ class _Reader:
 # --------------------------------------------------------------------------
 
 
-def _questions(lane: dict[str, Any], task: dict[str, Any], done: dict[str, Any], step: Any) -> list[dict[str, Any]]:
-    where = f"{lane['label']}" + (f" · step {step}" if step else "")
+def _answered(task: dict[str, Any], asked: list[dict[str, Any]]) -> set[str]:
+    """The texts of the questions `task`'s recorded answers answer."""
+    texts = set()
+    for answer in progress.owner_answers(task):
+        if answer.get("question"):
+            texts.add(str(answer["question"]))
+        index = answer.get("question_index")
+        if isinstance(index, int) and not isinstance(index, bool) and 0 <= index < len(asked):
+            texts.add(str(asked[index].get("question") or ""))
+    return texts
+
+
+def _questions(lane: dict[str, Any], read: list[tuple[Any, dict[str, Any], dict[str, Any]]]) -> list[dict[str, Any]]:
+    """An open lane's unanswered owner questions, once each, from its finished
+    steps' `(step_id, task, reader.finished(task))`."""
+    answered: set[str] = set()
+    for _, task, done in read:
+        answered |= _answered(task, done.get("questions") or [])
+    shown: dict[str, tuple[dict[str, Any], list[str]]] = {}
+    unread: list[str] = []
+    since: list[str] = []
+    for step, task, done in read:
+        name = f"step {step}" if step else None
+        if done.get("unavailable"):
+            unread.append(f"{name}: {done['unavailable']}" if name else str(done["unavailable"]))
+            since.append(done.get("ended") or "")
+        for asked in done.get("questions") or []:
+            text = str(asked.get("question") or "(no question text)")
+            if text in answered:
+                continue
+            if text in shown:
+                if name and name not in shown[text][1]:
+                    shown[text][1].append(name)
+                continue
+            recommended = asked.get("recommended")
+            shown[text] = ({
+                "kind": "question", "who": "Owner", "item": text,
+                "since": done.get("ended"), "unlocks": "a decision this lane left to the owner",
+                "context": asked.get("context") or "",
+                "options": [{"label": str(o.get("label") or ""), "recommended": bool(recommended)
+                             and o.get("label") == recommended} for o in asked.get("options") or []],
+                "next": None,
+            }, [name] if name else [])
     items = []
-    if done.get("unavailable"):
-        # `unread` keeps the lane out of the cache, so the read is tried again.
+    for item, steps in shown.values():
+        context = item.pop("context")
+        where = lane["label"] + (" · " + ", ".join(steps) if steps else "")
+        items.append({**item, "detail": where + (f": {context}" if context else "")})
+    if unread and not any(done.get("questions") for _, _, done in read):
         items.append({"kind": "question", "who": "Owner", "item": "Questions that could not be read",
-                      "since": done.get("ended"), "unlocks": "a decision this lane left to the owner",
-                      "detail": f"{where}: {done['unavailable']}", "options": [], "next": None,
-                      "unread": True})
-    for asked in done.get("questions") or []:
-        recommended = asked.get("recommended")
-        items.append({
-            "kind": "question", "who": "Owner", "item": str(asked.get("question") or "(no question text)"),
-            "since": done.get("ended"), "unlocks": "a decision this lane left to the owner",
-            "detail": f"{where}" + (f": {asked['context']}" if asked.get("context") else ""),
-            "options": [{"label": str(o.get("label") or ""), "recommended": bool(recommended)
-                         and o.get("label") == recommended} for o in asked.get("options") or []],
-            "next": None,
-        })
+                      "since": min((s for s in since if s), default=None),
+                      "unlocks": "a decision this lane left to the owner",
+                      "detail": f"{lane['label']} · " + "; ".join(unread), "options": [], "next": None})
     return items
 
 
@@ -255,8 +310,6 @@ def _step_waits(reader: _Reader, lane: dict[str, Any], steps: list[dict[str, Any
     state, park = task.get("state"), task.get("park_reason")
     is_merge = step.get("runner_profile") == MERGE_PROFILE
     items: list[dict[str, Any]] = []
-    if state in _TERMINAL:
-        items += _questions(lane, task, reader.finished(task), sid)
     if state == "PARKED" and park == "AWAITING_INPUT":
         opened = awaitinput.window(task).get("opened_at")
         items.append({"kind": "awaiting_input", "who": f"A member of {task.get('tenant_id') or 'the workspace'}",
@@ -322,11 +375,15 @@ def workflow_lane(reader: _Reader, row: dict[str, Any], envelope: dict[str, Any]
     label = names.get("title") or names.get("label") or wid
     state = doc.get("state") or row.get("state")
     finished = state in _TERMINAL
+    # Its owner questions wait only while it is open: neither finished nor merged (#1812).
+    asking = not finished and not any(s.get("runner_profile") == MERGE_PROFILE and t.get("state") == "SUCCEEDED"
+                                      for s, t in paired)
     issue = next((n for n in (issue_of(t.get("input"), None) for _, t in paired) if n), None) or issue_of(None, label)
     titled = _run_title(names.get("title"), key)
     pr = None
     for _, task in paired:
-        pr = (reader.finished(task)["pull_request"] if task.get("state") in _TERMINAL else None) or pull_request_of(task)
+        pr = ((reader.finished(task, questions=asking)["pull_request"] if task.get("state") in _TERMINAL else None)
+              or pull_request_of(task))
         if pr:
             break
     started = [parse_time(t.get("started_at")) for _, t in paired]
@@ -339,7 +396,11 @@ def workflow_lane(reader: _Reader, row: dict[str, Any], envelope: dict[str, Any]
         "ended": _iso(max((e for e in ended if e), default=None)) if finished else None,
         "issue": issue, "issue_title": titled[1] if titled and titled[0] == issue else None,
     }
-    waiting: list[dict[str, Any]] = []
+    read = [(step.get("step_id"), task, reader.finished(task)) for step, task in paired
+            if asking and task.get("state") in _TERMINAL]
+    waiting = _questions(lane, read)
+    for item in waiting:
+        item["lane"] = wid
     for step, task in paired:
         waiting += _step_waits(reader, lane, steps, step, task)
     lane["waiting"] = waiting
@@ -359,7 +420,8 @@ def task_lane(reader: _Reader, task: dict[str, Any]) -> dict[str, Any]:
     tid = str(task_id_of(task))
     label = workflows._flat(meta.get("title")) or workflows._flat(meta.get("unit")) or tid
     finished = task.get("state") in _TERMINAL
-    done = reader.finished(task) if finished else None
+    # A finished single task is a finished lane: its questions wait on no one (#1812).
+    done = reader.finished(task, questions=False) if finished else None
     lane: dict[str, Any] = {
         "id": tid, "kind": "task", "label": label, "state": _task_state(task.get("state")),
         "finished": finished, "pull_request": (done or {}).get("pull_request") or pull_request_of(task),
@@ -367,7 +429,7 @@ def task_lane(reader: _Reader, task: dict[str, Any]) -> dict[str, Any]:
         "started": _iso(task.get("started_at")), "ended": _iso(task.get("completed_at")) if finished else None,
         "issue": issue_of(task.get("input"), label), "issue_title": None,
     }
-    waiting = _questions(lane, task, done, None) if done else []
+    waiting: list[dict[str, Any]] = []
     if task.get("state") == "PARKED" and task.get("park_reason") == "HUMAN_REQUIRED":
         waiting.append({"kind": "human_required", "who": "A person",
                         "item": f"{label} is parked until a person promotes it",
@@ -562,11 +624,10 @@ def collect(client: SwarmClient, *, repository: str, now: datetime, cache: dict[
 
     lanes = [lane for lane in lanes
              if not lane["finished"] or (parse_time(lane.get("ended") or lane.get("created")) or now) >= cutoff]
-    # A lane holding a questions read that failed is NOT cached: taken from the
-    # cache it would never call `_Reader.finished` again, and its questions
-    # would stay unread for the whole window.
-    cache["lanes"] = {lane["id"]: lane for lane in lanes
-                      if lane["finished"] and not any(item.get("unread") for item in lane["waiting"])}
+    # Only a finished lane is cached, and a finished lane reads no questions
+    # (#1812), so none holds a failed read: an open lane's is retried because
+    # `_Reader.finished` never caches one.
+    cache["lanes"] = {lane["id"]: lane for lane in lanes if lane["finished"]}
     cache["tasks"] = {tid: entry for tid, entry in cache["tasks"].items()
                       if (parse_time(entry.get("ended")) or now) >= cutoff}
 

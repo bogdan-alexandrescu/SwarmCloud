@@ -301,7 +301,7 @@ def test_the_minimum_change_interval_holds_a_push_back(
     assert early["submitted"] == 0 and early["held"] == {"throttled": 1}
     assert _index(db, repo_id)["head_sha"] == TWO  # read all the same
 
-    clock.advance(minutes=21)
+    clock.advance(minutes=111)  # 121 minutes: past the 120-minute default (#2524)
     later = _push(client).json()["report"]
     assert later["submitted"] == 1
     assert sorted(t["repository_ref"] for t in _tasks(db)) == sorted([ONE, TWO])

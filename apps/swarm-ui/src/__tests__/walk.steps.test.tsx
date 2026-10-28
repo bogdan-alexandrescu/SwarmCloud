@@ -150,10 +150,11 @@ describe('A: Inputs is a count in the column and the files in the row under it',
     expect(toggle!.getAttribute('aria-controls')).toBe(next.querySelector('[id]')!.id)
   })
 
-  it('says none in the column for a step that reads nothing, with no control', async () => {
+  it('says prompt in the column for a step that reads no file, with no control', async () => {
     const wrap = await table()
     const cell = wrap.querySelector('tbody tr[data-step="fencing"] td[data-col="inputs"]')!
-    expect(cell.textContent).toBe('none')
+    // 'prompt', not 'none', since QA1-FIX-29 (overview-agents-72): the prompt is its input.
+    expect(cell.textContent).toBe('prompt')
     expect(cell.querySelector('button')).toBeNull()
   })
 })

@@ -153,13 +153,19 @@ def test_the_weekly_full_run_stays():
 
 @pytest.mark.parametrize("index,version,changes,why", [
     (_state(current_sha=None), None, None, "no promoted index"),
-    (_state(current_sha=TWO), None, None, "the head is the promoted index"),
     (_state(), {"commit_sha": ONE, "graph_digest": None}, None, "no graph"),
 ])
 def test_without_a_base_to_build_on_the_run_is_full(index, version, changes, why):
     choice = repoindex.choose_kind(index, TWO, requested="incremental",
                                    version=version, changes=changes, now=NOW)
     assert choice.kind == "full" and why in choice.reason
+
+
+def test_the_promoted_head_itself_starts_no_run():
+    # #2524: it used to be rebuilt in full (test_repository_index_cadence.py).
+    choice = repoindex.choose_kind(_state(current_sha=TWO), TWO, requested="incremental",
+                                   version=None, changes=None, now=NOW)
+    assert choice.kind == repoindex.NO_RUN and "the head is the promoted index" in choice.reason
 
 
 @pytest.mark.parametrize("record,why", [

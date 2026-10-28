@@ -1,0 +1,25 @@
+/* WORKFLOWVIEWS.TSX'S OWN RULES: the timeline, the table and the step
+   inspector it draws for a workflow's page. The section's shared rules stay in
+   workflows.css (Workflows.tsx's sheet); these are the ones only this file's
+   markup carries. A section sheet loads before styles.css, so a rule here
+   that overrides a styles.css one outranks it on specificity, not order. */
+
+/* A SHORT RUN'S LENGTH, BESIDE ITS BAR (visual QA pass 1, overview-agents-88,
+   and its review). It borrows `.wf-tl-cut`'s micro mono face, but not its
+   surface backdrop or its -0.5ch pull: those are for a label written OVER a
+   cut wait, and here they covered the 4px bar the label is for. Its inline
+   `left` (the bar's width plus its 4px floor) is already past the bar. */
+.wf-tl-cut.wf-tl-short {
+  transform: translateY(-50%);
+  background: none;
+  padding: 0;
+}
+
+/* WHOSE REASON WHY IT FAILED IS, WHEN AN OLDER ATTEMPT IS PICKED (visual QA
+   pass 1, overview-agents-68, and its review): a sentence in the body face,
+   on its own line of the card, wrapping at any width. */
+.wf-inspect > .wf-scrub-note {
+  font: var(--t-micro)/var(--lh-micro) var(--font);
+  color: var(--text-dim);
+  white-space: normal;
+}

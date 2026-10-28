@@ -169,7 +169,7 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
         <RecentSubmissions go={go} read={recent.read} reading={recent.reading} onRetry={recent.reload} />
       </section>
       <p className="sb-note sb-foot">
-        The spine&rsquo;s Submit button opens this page; <kbd className="sb-kbd">N</kbd> from anywhere does too.
+        The Submit button in the sidebar opens this page; <kbd className="sb-kbd">N</kbd> from anywhere does too.
       </p>
     </section>
   )

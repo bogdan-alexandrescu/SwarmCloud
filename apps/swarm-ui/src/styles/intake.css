@@ -72,6 +72,10 @@
    owner's hyphen. Cut with an ellipsis, whole in its title. */
 .in-send .ctl-fact code { display: inline-block; max-width: 100%; vertical-align: bottom; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }
 .in-send .ctl-fact > span { min-width: 0; overflow: hidden; }
+/* THE REPOSITORY WRAPS (visual QA runs-submit-24, 2026-10-28): cut, it read
+   "example-org/agent-swarm-i…" and the part that tells two repositories apart
+   was the part lost. It breaks anywhere, whole on screen; still its title. */
+.in-send .ctl-fact code.in-repo { min-width: 0; white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; text-align: right; }
 /* NO VALUE WIDENS THE CARD (browser QA N2, 2026-10-04): a fact is at most
    the card's width, and its value shrinks inside it and is cut, whole in the
    reference's title. */
