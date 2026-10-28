@@ -111,12 +111,17 @@
    figure is, and the cell's padding is what now separates two rows' boxes.
    ONE WIDTH, NOT A MINIMUM (visual QA V090, 2026-10-27): at `min-width: 5ch`
    a figure past five characters grew its box, 40px beside 44px. The box is
-   9ch of content -- `120000` and `999/1000` fit -- in `content-box`, so the
-   8px padding does not eat it, and a worded value (`no limit set`) wraps
-   inside it rather than widening it. The `used/ceiling` line never wraps. */
+   5ch of content in `content-box`, so the 8px padding does not eat it: 42px
+   at 1440, where a five-digit figure and a `37/40` use line fit (the
+   `--t-micro` line's `ch` is smaller). A worded value (`no limit set`) wraps
+   inside it rather than widening it. The `used/ceiling` line never wraps.
+   NOT 9ch (review of U01, 2026-10-27): six family columns of 92px boxes
+   made the matrix 1247px in its 1039px scroller at 1440 and pushed Runs out
+   first -- the answer -- off-screen. vqa2.r16.capacity.test.tsx (FIT) sums
+   the columns from the review's measurement. */
 .cap-mx td > .cap-mx-v {
   display: inline-flex; flex-direction: column; align-items: flex-end;
-  box-sizing: content-box; inline-size: 9ch; min-width: 0;
+  box-sizing: content-box; inline-size: 5ch; min-width: 0;
   padding: 2px 8px; border-radius: 6px;
   vertical-align: middle; white-space: normal; text-align: right;
 }
@@ -151,13 +156,16 @@
 /* ONE LINE AT ONE WIDTH (visual QA V195 and V090's half of it, 2026-10-27).
    The column's wrap above let an entry break INSIDE itself beside a long
    profile name -- `(5/5) fits ⏎0` on every row. An entry is a one-line flex
-   row 34ch wide (`runner claude-code (12/20) fits 8` fits), held to its cell
-   on a phone record: the pool name gives way with an ellipsis, whole in the
-   entry's title, and the use and the fits never shrink. Entries still stack,
-   one per line, so the column wraps BETWEEN them. */
+   row 21ch wide, held to its cell on a phone record: the pool name gives way
+   with an ellipsis, whole in the entry's title, and the use and the fits
+   never shrink. Entries still stack, one per line, so the column wraps
+   BETWEEN them. 21ch, NOT 34ch (review of U01, 2026-10-27): at 34ch the
+   column was 276px and, with the 9ch boxes above, sat off-screen at 1440. A
+   long pool name is cut sooner; the use and the fits -- the answer -- are
+   always on screen, and the binding family cell outlines the same pool. */
 .cap-mx-bind {
   display: flex; align-items: baseline; gap: 0.5ch; font-size: var(--t-meta); color: var(--text);
-  inline-size: 34ch; max-inline-size: 100%; white-space: nowrap;
+  inline-size: 21ch; max-inline-size: 100%; white-space: nowrap;
 }
 .cap-mx-bind > .cap-mx-bind-pool { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .cap-mx-bind > .cap-mx-bind-use,
