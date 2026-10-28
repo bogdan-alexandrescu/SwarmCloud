@@ -4,8 +4,9 @@ import {
   removeJoinedMember, setJoinLink, setWorkspaceDefaultRole, setWorkspacePersonRole,
   type ApiError, type Result,
 } from './api'
-import { Banner, Button, Card, Chip, Dash, EmptyState, Segmented, Tabs, ToneMark, type TabDef } from './components'
+import { Banner, Button, ButtonLink, Card, Chip, Dash, EmptyState, Segmented, Tabs, ToneMark, type TabDef } from './components'
 import { SetupContext } from './ConfigSetup'
+import { addressToPath } from './paths'
 import { UrCopy, UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { DEFAULT_ROLES, ROLES, sourceWords, type RoleName } from './roles'
 import { FailedPanel, PageHead } from './Shell'
@@ -13,6 +14,7 @@ import {
   timeAgo, type AccessMember, type JoinedMember, type JoinedMembers, type JoinLinkState, type WorkspaceRoleEvent,
   type WorkspaceRoles,
 } from './types'
+import { WORKSPACE_NEW_ADDRESS, WORKSPACE_SETTINGS_ADDRESS } from './WorkspaceSettings'
 import './styles/keys.css'
 import './styles/onboarding.css'
 import './styles/workspace-settings.css'
@@ -442,6 +444,32 @@ function Members() {
   )
 }
 
+/**
+ * A PERSONAL WORKSPACE'S PAGE HAS A WAY ON (visual QA pass 1, config-29; part of #2596). Reached by URL, the page
+ * was one sentence with no way back but the panel, which leaves People and roles out here. It now offers Workspace
+ * Settings, and for a platform admin, who is the one person who may add one (Workspace Settings' `part=new`), Add a
+ * new workspace: people and roles belong to a group workspace.
+ */
+function PersonalOnly() {
+  const admin = usePlatformAdmin()
+  return (
+    <>
+      <p className="pk-lead">You are this workspace&rsquo;s admin; a personal workspace has only you.</p>
+      <p className="ur-hint">
+        {admin === true
+          ? 'People and roles belong to a group workspace. You may add one.'
+          : 'People and roles belong to a group workspace; a platform admin adds one.'}
+      </p>
+      <div className="ws-rename-a" data-testid="wp-personal-actions">
+        <ButtonLink size="sm" href={addressToPath(WORKSPACE_SETTINGS_ADDRESS)}>Open Workspace Settings</ButtonLink>
+        {admin === true && (
+          <ButtonLink kind="primary" size="sm" href={addressToPath(WORKSPACE_NEW_ADDRESS)}>Add a new workspace</ButtonLink>
+        )}
+      </div>
+    </>
+  )
+}
+
 /** The Roles in this workspace card's body: who you are, the default, the roster, and S5b's "as built" rest. */
 function Roster({ data, said, onClear, onDefault }: {
   data: WorkspaceRoles
@@ -453,9 +481,7 @@ function Roster({ data, said, onClear, onDefault }: {
   // People other than the caller who hold a role of their own: what the lead's step 4 counts as holders.
   const others = data.people.filter((p) => p.email.toLowerCase() !== (data.me.email || '').toLowerCase()).length
 
-  if (data.kind === 'user') {
-    return <p className="pk-lead">You are this workspace&rsquo;s admin; a personal workspace has only you.</p>
-  }
+  if (data.kind === 'user') return <PersonalOnly />
 
   return (
     <>
