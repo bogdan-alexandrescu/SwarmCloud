@@ -425,7 +425,9 @@ describe('e. F5: a finished step’s empty Changes', () => {
     expect(text).not.toMatch(/\byet\b/)
     // MUTATION: print `${n}+` when no step's list is known.
     expect(text).not.toMatch(/(^|\D)0\+/)
-    expect(text).toMatch(/(^|\D)0 files across 6 steps/)
+    // No '0 files' total with no list known, since QA1-FIX-29 (overview-agents-76).
+    expect(text).not.toMatch(/(^|\D)0 files/)
+    expect(text).toContain('File lists not collected for any step')
     // Still one column for the selected step (QAFIX5, L6).
     expect(within(table).getAllByRole('columnheader').map((th) => th.getAttribute('data-step') ?? 'File')).toEqual(['File', 'checkpoints'])
   })

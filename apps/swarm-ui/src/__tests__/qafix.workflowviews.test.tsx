@@ -151,7 +151,10 @@ describe('WG-4, WG-6: the step card says each figure in words', () => {
     // 'lease generation' and 'this attempt’s cost' since QAFIX5 (run 5b L4, D2).
     // 'saved checkpoints', and no 'error' restating the exit code ('exit
     // status 1' beside 'exit code 1'), since QAFIX6 (run 6, F2).
-    expect(keys).toEqual(['lease generation', 'took', 'exit code', 'this attempt’s cost', 'tokens', 'saved checkpoints'])
+    // The lease generation folds under More about this attempt since
+    // QA1-FIX-29 (overview-agents-66): last, behind its summary.
+    expect(keys).toEqual(['took', 'exit code', 'this attempt’s cost', 'tokens', 'saved checkpoints', 'lease generation'])
+    expect(scrub.querySelector('details.wf-inspect-more .ctl-fact > b')?.textContent).toBe('lease generation')
     const fact = (k: string) => [...scrub.querySelectorAll<HTMLElement>('.ctl-fact')].find((li) => li.querySelector('b')?.textContent === k)
     // The figures are the attempt's own; only their labels changed.
     // MUTATION: map a label onto the wrong fact and one of these is red.
@@ -176,14 +179,13 @@ describe('WG-4, WG-6: the step card says each figure in words', () => {
 
   it("words the same-step row's shape as the page head does: its steps, its stages, then the widths", async () => {
     const card = await openCard()
-    const shape = card.querySelector<HTMLElement>('[data-scrub="workflow"] .wf-scrub-shape')!
+    // ONE WORKFLOW OF THIS SHAPE: nothing to page, so since QA1-FIX-29
+    // (overview-agents-67) the shape is the sentence's title, not a line.
+    const shape = card.querySelector<HTMLElement>('[data-scrub="workflow"] .wf-scrub-pos')!
     // MUTATION: print `${shape.text} · ${shape.steps} steps` again and the
     // row reads '1 → 1 · 2 steps', the bare widths QA-119 named in the head.
-    expect(shape.textContent).toBe('shape: 2 steps in 2 stages (1 → 1)')
-    // The page head says the same shape in the same words (QA-119).
-    // MUTATION: word the two differently and this is red.
-    const head = document.querySelector<HTMLElement>('.wfp')!.textContent ?? ''
-    expect(head).toContain('2 steps in 2 stages (1 → 1)')
+    expect(shape.getAttribute('title')).toBe('This workflow’s shape: 2 steps in 2 stages (1 → 1). Only workflows of this shape are compared.')
+    expect(card.querySelector('[data-scrub="workflow"] .wf-scrub-shape')).toBeNull()
   })
 })
 

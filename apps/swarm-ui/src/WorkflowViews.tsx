@@ -32,6 +32,7 @@ import {
   MERGE_MAX_HEAD_UPDATES,
   type MergeCard,
 } from './stepviews'
+import './styles/workflow-views.css'
 import { TERMINAL_STATES, bytesLabel, timeAgo, type AttemptRow, type TaskState, type Tone, type WorkflowStep } from './types'
 
 /**
@@ -292,6 +293,13 @@ function PickButton({
       aria-pressed={picked}
       title={row.look.title}
       onClick={() => onPick(row.step.step_id)}
+      // ESCAPE ON THE OPENED STEP'S NAME CLOSES IT (visual QA pass 1,
+      // overview-agents-75): a click leaves focus here, and only the × closed.
+      onKeyDown={(e) => {
+        if (e.key !== 'Escape' || !picked || e.defaultPrevented) return
+        e.preventDefault()
+        onPick(row.step.step_id)
+      }}
     >
       {withDot && <WfStepMark look={row.look} />}
       <span className="wf-pick-id" title={row.step.step_id}>
@@ -436,6 +444,10 @@ function cutSentence(times: StepTimes, axis: TimelineAxis): string {
   return ` Its wait is drawn cut short: it lasted ${durationText(cut.clampedMs)}, beyond the ${durationText(axis.clampMs)} that ${CLAMP_PERCENTILE}% of this workflow's spans stay within.`
 }
 
+/** A run narrower than this share of the track is drawn at `SHORT_SPAN_MIN` with its length beside it. */
+const SHORT_SPAN_PCT = 1.5
+const SHORT_SPAN_MIN = '4px'
+
 /**
  * One row's spans.
  *
@@ -470,13 +482,31 @@ function Spans({ row, axis }: { row: StepRowModel; axis: TimelineAxis }) {
         // G3-13): an outline on the track read as an empty row for a step
         // parked 1h 37m.
         const skip = s.kind === 'ran' && row.look.mark === 'skipped' ? ' is-skipped' : ''
-        const parked = s.kind === 'waiting' && row.look.mark === 'parked' ? ' is-parked' : ''
+        // A PARKED STEP'S OPEN WAIT ON ITS PARENTS IS PARKED TOO (visual QA
+        // pass 1, overview-agents-88): `report`, parked on a dependency, drew
+        // the dotted 'on parents' outline, not the key's parked hatch.
+        const parkedNow = row.look.mark === 'parked' && (s.kind === 'waiting' || (s.kind === 'parents' && s.open))
+        const kind = parkedNow ? 'waiting' : s.kind
+        const parked = parkedNow ? ' is-parked' : ''
+        // A RUN TOO SHORT TO SEE KEEPS A BAR AND SAYS ITS LENGTH (overview-
+        // agents-88): on an eight-day axis `plan` and `scan-scripts` were 1px
+        // ticks with no figure. The label stands just after the bar.
+        const short = (s.kind === 'ran' || s.kind === 'running') && width < SHORT_SPAN_PCT
         return (
           <Fragment key={i}>
             <i
-              className={`wf-tl-span is-${s.kind}${s.open ? ' is-open' : ''}${bad}${tint}${cut}${skip}${parked}`}
-              style={{ left: `${left}%`, width: `${width}%` }}
+              className={`wf-tl-span is-${kind}${s.open ? ' is-open' : ''}${bad}${tint}${cut}${skip}${parked}`}
+              style={{ left: `${left}%`, width: `${width}%`, minWidth: short ? SHORT_SPAN_MIN : undefined }}
             />
+            {short && (
+              // PAST THE BAR'S DRAWN EDGE (review of QA1-FIX-29): the bar ends
+              // at the larger of its width and SHORT_SPAN_MIN, so their sum is
+              // never on it. `.wf-tl-short` drops the cut label's backdrop and
+              // its -0.5ch pull (styles/workflow-views.css), which covered it.
+              <span className="wf-tl-cut wf-tl-short" style={{ left: `calc(${left + width}% + ${SHORT_SPAN_MIN})` }} aria-hidden>
+                {durationText(s.to - s.from)}
+              </span>
+            )}
             {d.clampedMs !== null &&
               d.breaks.map((b, k) => (
                 <span key={b} className="wf-tl-cut" style={{ left: `${pctOf(axis, b)}%` }} aria-hidden>
@@ -672,6 +702,48 @@ export function figureColumnWidths(
   }
 }
 
+/** `$0.22`, split into its whole, its decimals and any qualifier after them; no match for a cost that is a word. */
+const DOLLARS = /^\$(\d+)\.(\d+)(.*)$/
+
+/** A step whose task ended before it ever started: Waited, Cost and Tokens do not apply to it. */
+function neverStarted(r: Pick<StepRowModel, 'ran'>): boolean {
+  return r.ran.kind === 'absent' && r.ran.text === NEVER_STARTED_WORD
+}
+
+const NOT_APPLICABLE = (what: string): Cell => ({
+  kind: 'absent',
+  text: '—',
+  note: `This step ended without ever starting, so it has no ${what}.`,
+})
+
+/**
+ * THE ROWS AS THE TABLE PRINTS THEM (visual QA pass 1, overview-agents-70,
+ * -71). Two things the row model does not decide, because they are about the
+ * column rather than the step:
+ *
+ *  * ONE PRECISION PER COST COLUMN: `$0.22` beside `$0.231` read as two
+ *    precisions of one figure. Every dollar figure is padded with zeros to the
+ *    column's most decimals -- never rounded, so no figure changes.
+ *  * A STEP THAT NEVER STARTED PRINTS A DASH, with its reason as the title,
+ *    for Waited, Cost and Tokens: `0s` and `none` beside `never started`
+ *    measured something for a step nothing happened to.
+ */
+export function tableRows<R extends Pick<StepRowModel, 'ran' | 'cost' | 'tokens' | 'pending' | 'times'>>(rows: readonly R[]): (R & { waited: Cell })[] {
+  const places = rows.reduce((n, r) => {
+    const m = DOLLARS.exec(r.cost.text)
+    return m === null ? n : Math.max(n, m[2]!.length)
+  }, 0)
+  const pad = (c: Cell): Cell => {
+    const m = DOLLARS.exec(c.text)
+    return m === null ? c : { ...c, text: `$${m[1]}.${m[2]!.padEnd(places, '0')}${m[3]}` }
+  }
+  return rows.map((r) =>
+    neverStarted(r)
+      ? { ...r, waited: NOT_APPLICABLE('wait to time'), cost: NOT_APPLICABLE('cost'), tokens: NOT_APPLICABLE('tokens'), pending: false }
+      : { ...r, waited: waitedCell(r.times), cost: pad(r.cost) },
+  )
+}
+
 /** The columns a table draws: every one, less Why when no row has a why (D12). */
 export function tableColumns(rows: readonly Pick<StepRowModel, 'why'>[]): typeof COLUMNS {
   return rows.some((r) => r.why !== null) ? COLUMNS : COLUMNS.filter((c) => c.col !== 'why')
@@ -809,7 +881,15 @@ function inputsCount(inputs: StepInputs): number {
 
 function InputsSummary({ inputs, open, controls, onToggle }: { inputs: StepInputs; open: boolean; controls: string; onToggle: () => void }) {
   const n = inputsCount(inputs)
-  if (n === 0 && inputs.malformed === 0) return <span className="wf-cell is-none">none</span>
+  // THE PROMPT IS AN INPUT (visual QA pass 1, overview-agents-72): every
+  // prompt-driven step read `none`, as if it had been given nothing.
+  if (n === 0 && inputs.malformed === 0) {
+    return (
+      <span className="wf-cell is-none" title="This step reads its prompt and no file from another step.">
+        prompt
+      </span>
+    )
+  }
   const words = [
     n > 0 ? `${n} file${n === 1 ? '' : 's'}` : null,
     inputs.malformed > 0 ? `${inputs.malformed} unreadable` : null,
@@ -886,7 +966,7 @@ export function WorkflowTable({
   detail?: ReactNode
 }) {
   const [sort, setSort] = useState<SortSpec>(DEFAULT_SORT)
-  const sorted = sortRows(rows, sort)
+  const sorted = tableRows(sortRows(rows, sort))
   const more = useMoreRight<HTMLDivElement>()
   // AN EMPTY COLUMN IS NOT DRAWN (browser QA D12, 2026-10-04): with no step
   // waiting on a reason or failed, Why was ~110px of blank while ten long step
@@ -895,7 +975,7 @@ export function WorkflowTable({
   // The Step column grows to its longest name (V098; `stepColumnWidth`), and
   // the figure columns hold their longest value, so Why gets the rest (V202).
   const stepWidth = stepColumnWidth(rows)
-  const figureWidths = figureColumnWidths(rows)
+  const figureWidths = figureColumnWidths(tableRows(rows))
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set())
   const toggleInputs = (stepId: string) =>
     setOpened((was) => {
@@ -985,7 +1065,7 @@ export function WorkflowTable({
               )}
               <td data-col="runner" data-label="Runner">{r.step.runner_profile}</td>
               <td data-col="waited" data-label="Waited" className="is-num">
-                <CellView cell={waitedCell(r.times)} />
+                <CellView cell={r.waited} />
               </td>
               <td data-col="ran" data-label="Ran" className="is-num">
                 <CellView cell={r.ran} />
@@ -1231,10 +1311,33 @@ export function ShapeWords({ words }: { words: string }) {
   )
 }
 
+/**
+ * THE FACTS A READER DEBUGGING THE PLATFORM WANTS, NOT ONE READING THE STEP
+ * (visual QA pass 1, overview-agents-66): the lease generation and its hint
+ * were the card's jargon. They fold under More about this attempt.
+ */
+const FOLDED_FACTS: ReadonlySet<string> = new Set(['gen'])
+
 function FactList({ facts, cause = null }: { facts: readonly Fact[]; cause?: string | null }) {
+  const all = unsaid(facts, cause)
+  const folded = all.filter((f) => FOLDED_FACTS.has(f.key))
+  return (
+    <>
+      <FactItems facts={all.filter((f) => !FOLDED_FACTS.has(f.key))} />
+      {folded.length > 0 && (
+        <details className="wf-inspect-more">
+          <summary>More about this attempt</summary>
+          <FactItems facts={folded} />
+        </details>
+      )}
+    </>
+  )
+}
+
+function FactItems({ facts }: { facts: readonly Fact[] }) {
   return (
     <ul className="ctl-facts wf-inspect-facts">
-      {unsaid(facts, cause).map((f) =>
+      {facts.map((f) =>
         f.cell.kind === 'absent' ? (
           <li key={f.key} className="ctl-fact is-absent">
             <b>{FACT_LABEL[f.key] ?? f.key}</b>
@@ -1465,18 +1568,28 @@ export function StepInspector({
   // cannot hold focus -- which put a reader holding ArrowRight on "newer" with
   // nothing said. `ScrubButton` stays focusable at its end, so there is no
   // fallback to need.
+  //
+  // HELD UNTIL THE PAGER IS DRAWN (QA1-FIX-29): a list of one draws no
+  // pager (overview-agents-67), and the inspector can arrive before the board
+  // that tells it the list is longer -- so the control is focused when it
+  // first exists, not only on mount. The request is still handed back at once.
+  const wantFocus = useRef(focus)
+  const paged = siblings.length > 1
   useEffect(() => {
-    if (focus === null) return
-    const want = focus === 'older' ? olderRef : newerRef
-    want.current?.focus()
-    onFocused()
+    if (focus !== null) onFocused()
     // On mount only: this is about how the inspector ARRIVED.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+  useEffect(() => {
+    if (wantFocus.current === null || !paged) return
+    ;(wantFocus.current === 'older' ? olderRef : newerRef).current?.focus()
+    wantFocus.current = null
+  }, [paged])
 
   const ready = read.kind === 'ready' ? read.attempts : null
   const at = ready === null || ready.length === 0 ? null : (index ?? ready.length - 1)
   const current = ready !== null && at !== null ? (ready[at] ?? null) : null
+  const newest = ready !== null && at === ready.length - 1
   const toAttempt = (delta: -1 | 1) => {
     if (ready === null || at === null) return
     const n = at + delta
@@ -1493,8 +1606,20 @@ export function StepInspector({
       : `Run ${at + 1} of the ${ready.length} attempt records this step has. ` +
         `${row.attempts.text} count against its attempts, as the table says: a wait for CI is refunded and not counted.`
 
+  // ESCAPE CLOSES IT (visual QA pass 1, overview-agents-75), and focus goes
+  // back to the step's name in the view that opened it.
+  const closeOnEscape = (e: KeyboardEvent<HTMLElement>) => {
+    // The graph's docked panel has its own Escape, which puts focus on the node.
+    if (e.key !== 'Escape' || e.defaultPrevented || e.currentTarget.closest('.wf-panel') !== null) return
+    e.preventDefault()
+    const scope = e.currentTarget.closest('.wf-card') ?? e.currentTarget.ownerDocument
+    const name = [...scope.querySelectorAll<HTMLButtonElement>('button.wf-pick')].find((b) => b.dataset.step === row.step.step_id)
+    onClose()
+    name?.focus()
+  }
+
   return (
-    <section className="wf-inspect" aria-label={`Step ${row.step.step_id} of ${workflowId}`}>
+    <section className="wf-inspect" aria-label={`Step ${row.step.step_id} of ${workflowId}`} onKeyDown={closeOnEscape}>
       <div className="wf-inspect-head">
         {/* WHICH WORKFLOW, BY NAME (#330): the label the row leads with, and
             the id one line down; the id alone when the spec gave no label.
@@ -1628,6 +1753,16 @@ export function StepInspector({
 
       {children}
 
+      {/* ITS OWN LINE, UNDER THE REASON IT QUALIFIES (review of QA1-FIX-29):
+          inside the attempt row it took `.wf-scrub`'s one line, clipped at
+          390, and on a wide card it sat beside the closed fold as its label.
+          A block of its own in the card's column wraps. */}
+      {ready !== null && at !== null && !newest && row.why !== null && row.why.kind === 'cause' && (
+        <span className="wf-scrub-note">
+          Why it failed is the step’s final reason, from attempt {ready.length}; the attempt {at + 1} figures below are its own.
+        </span>
+      )}
+
       <div
         className="wf-scrub"
         role="group"
@@ -1673,8 +1808,12 @@ export function StepInspector({
                   run {at + 1} of {ready.length}
                 </span>
               ) : (
-                <span className="wf-scrub-pos">
-                  attempt {at + 1} of {ready.length}
+                // 'OF N' IS ATTEMPTS MADE, AND SAYS SO (visual QA pass 1,
+                // overview-agents-74): the table's '1 of 3' is attempts used of
+                // those allowed, and 'attempt 1 of 1' beside it read as the
+                // same ratio.
+                <span className="wf-scrub-pos" title={`Attempt ${at + 1} of the ${ready.length} this step has made. The table’s Attempts is attempts used of those allowed.`}>
+                  attempt {at + 1} of {ready.length} made
                 </span>
               )}
               <ScrubButton label="Next attempt" glyph="▶" onPress={nextAttempt} />
@@ -1697,7 +1836,11 @@ export function StepInspector({
                 // finished task is the run the Graph and the Table time.
                 at === ready.length - 1 && taskState !== null && TERMINAL_STATES.has(taskState) ? row.times.ranMs : null,
               )}
-              cause={row.why !== null && row.why.kind === 'cause' ? row.why.full : null}
+              // THE STEP'S REASON IS THE NEWEST ATTEMPT'S (visual QA pass 1,
+              // overview-agents-68): stepping back to attempt 2 kept attempt
+              // 3's 'exit status 2' under Why it failed. An older attempt
+              // keeps its own error, and the card says whose reason that is.
+              cause={newest && row.why !== null && row.why.kind === 'cause' ? row.why.full : null}
             />
           </>
         )}
@@ -1719,6 +1862,15 @@ export function StepInspector({
             2026-10-04): the shape sat between the position and ▶, and a long
             shape pushed the arrow onto a line of its own. The shape follows
             the unit and is cut, whole in its title. */}
+        {/* NOTHING TO PAGE, NO PAGER (visual QA pass 1, overview-agents-67):
+            'no other workflow of this shape' sat between two disabled arrows
+            over a lone strip mark. One sentence, the shape in its title. */}
+        {siblings.length <= 1 ? (
+          <span className="wf-scrub-pos" title={`This workflow’s shape: ${shapeWords(shape)}. Only workflows of this shape are compared.`}>
+            No other workflow of this shape on this board
+          </span>
+        ) : (
+        <>
         <span className="wf-scrub-nav">
           <ScrubButton
             buttonRef={newerRef}
@@ -1728,9 +1880,7 @@ export function StepInspector({
           />
           {/* A LIST OF ONE SAYS SO: `workflow 1 of 1` was a position with
               nowhere to go, the arrows both at their ends. */}
-          <span className="wf-scrub-pos">
-            {siblings.length <= 1 ? 'no other workflow of this shape' : `workflow ${siblingIndex + 1} of ${siblings.length}`}
-          </span>
+          <span className="wf-scrub-pos">{`workflow ${siblingIndex + 1} of ${siblings.length}`}</span>
           <ScrubButton
             buttonRef={olderRef}
             label="Same step, older workflow"
@@ -1769,6 +1919,8 @@ export function StepInspector({
           <span className="wf-scrub-more" aria-hidden>
             +{siblings.length - strip.to}
           </span>
+        )}
+        </>
         )}
         {/* THE ID ONCE ON A WORKFLOW'S PAGE (VQ-015 re-review): the page
             head's Copy id carries it, so this row does not render it again.
