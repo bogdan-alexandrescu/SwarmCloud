@@ -153,7 +153,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import Any, Mapping, Protocol
+from typing import Any, Iterable, Mapping, Protocol
 from urllib.parse import quote
 
 from swarm_common.models import EndCause, utcnow
@@ -302,6 +302,15 @@ MERGE_MAX_HEAD_UPDATES = 12
 #: that never reports -- a required check no workflow produces, a stuck
 #: runner -- reaches it.
 MERGE_CI_MAX_SECONDS = 6 * 3600
+
+#: How long a reading whose ONLY problem is cancelled runs -- nothing failed,
+#: nothing still running or missing (`cancelled_since`) -- waits for its
+#: re-run before the step refuses `checks_cancelled`. BGD set it on
+#: 2026-10-27 (#1778, "refuse after a shorter bound", 60 min): a cancelled
+#: run is pending, not failed, but nobody re-running it is not CI that has
+#: yet to settle, so it does not get the 6 h of `MERGE_CI_MAX_SECONDS`. A
+#: reading with anything still running keeps that bound.
+MERGE_CI_CANCELLED_MAX_SECONDS = 60 * 60
 
 #: The merge task's record of its CI-fix rounds, written only by swarm-api's
 #: wake tick (`swarm_api.mergewake.MERGE_FIX_METADATA_KEY`, lane MS7):
@@ -663,6 +672,52 @@ def cancelled_run(run: Mapping[str, Any]) -> bool:
     gates 5-6 state the same rule.
     """
     return check_run_finished(run) and run.get("conclusion") == CANCELLED_CONCLUSION
+
+
+def _completed_instant(run: Mapping[str, Any]) -> datetime | None:
+    """A run's `completed_at` as an aware instant, or None when it has none."""
+    value = run.get("completed_at")
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        instant = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return instant if instant.tzinfo is not None else None
+
+
+def cancelled_since(groups: Iterable[list[Mapping[str, Any]]]) -> datetime | None:
+    """When a reading became one whose ONLY problem is cancelled runs (#1778).
+
+    `groups` are the runs of each check the decision judges, one list per
+    check. The reading is cancelled-only when every check has runs, every
+    event's latest run (`latest_per_event`) has finished, at least one is
+    `cancelled` (`cancelled_run`) and none failed -- the caller asks only of
+    a reading with nothing failed. Every deciding run having finished, the
+    reading has not changed since the last of them did, so the newest
+    `completed_at` among them is when the first such reading could be made:
+    the start of `MERGE_CI_CANCELLED_MAX_SECONDS`. Read from GitHub, not from
+    the park record, because a CI park's record (`merge_wait`) carries no
+    field for it and swarm-api's park body is strict. A re-run makes a new
+    latest run, still running or green, so it ends the bound; one cancelled
+    again starts it afresh. None when the reading is not cancelled-only, or
+    when a deciding run has no `completed_at` (a commit status): that reading
+    keeps `MERGE_CI_MAX_SECONDS`.
+    """
+    latest: list[Mapping[str, Any]] = []
+    for runs in groups:
+        mine = [run for _event, run in latest_per_event(runs)]
+        if not mine:
+            return None
+        latest.extend(mine)
+    if not latest or not all(check_run_finished(run) for run in latest):
+        return None
+    if not any(cancelled_run(run) for run in latest):
+        return None
+    instants = [_completed_instant(run) for run in latest]
+    if any(instant is None for instant in instants):
+        return None
+    return max(instant for instant in instants if instant is not None)
 
 
 def _judge_latest(runs: list[Mapping[str, Any]], green: frozenset[str] | set[str]) -> str:
@@ -2435,6 +2490,8 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     failed: list[str] = []
     #: None once a failing check is one no re-run replaces (`failing_run_ids`).
     failing_ids: set[int] | None = set()
+    #: The runs of each check the decision judges, for `cancelled_since`.
+    judged: list[list[dict[str, Any]]] = []
     if required.checks:
         run.reading = (head, *latest_reading(
             {check.context: [c for c in checks if c.name == check.context
@@ -2445,6 +2502,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         for check in required.checks:
             mine = [c.as_run() for c in checks if c.name == check.context
                     and (check.app_id is None or c.app_id == check.app_id)]
+            judged.append(mine)
             state = required_check_state(mine)
             if state == "pending":
                 pending.append(check.context)
@@ -2470,9 +2528,20 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
             by_check.setdefault((check.name, check.app_id), []).append(check.as_run())
         for runs in by_check.values():
             failing_ids = _with_failing(failing_ids, failing_run_ids(runs, OTHER_TOLERATED))
+        judged = list(by_check.values())
     if failed:
         return _red(run, own, head=head, failed=failed, failing_ids=failing_ids, wait=wait)
     if pending:
+        since = cancelled_since(judged)
+        if since is not None:
+            waited = (utcnow() - since).total_seconds()
+            summary["cancelled_since"] = since.isoformat()
+            if waited > MERGE_CI_CANCELLED_MAX_SECONDS:
+                return run.refuse("checks_cancelled",
+                                  f"at {head} the only checks not green were cancelled "
+                                  f"{int(waited // 60)} min ago and nothing re-ran them, past "
+                                  f"{MERGE_CI_CANCELLED_MAX_SECONDS // 60} min: "
+                                  + ", ".join(sorted(pending)))
         return wait("checks_pending", f"at {head}: " + ", ".join(sorted(pending)), pending)
 
     # Green at this step's own head. In a workspace that merges in trains
