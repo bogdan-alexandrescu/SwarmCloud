@@ -122,7 +122,9 @@ describe('the rendered sentences put the one-page limit on this screen', () => {
       }),
     )
     const note = [...el.querySelectorAll('.dt-progress .dt-note')].find((n) =>
-      (n.textContent ?? '').includes('cap unknown'),
+      // The glass reads `the first page of events` since QA1 overview-agents-29
+      // dropped `one page, cap unknown`; the caveat stays whole in the label.
+      (n.textContent ?? '').includes('the first page of events'),
     )
     expect(note, 'the event list lost its paging qualifier').toBeTruthy()
     const say = note!.getAttribute('aria-label') ?? ''
