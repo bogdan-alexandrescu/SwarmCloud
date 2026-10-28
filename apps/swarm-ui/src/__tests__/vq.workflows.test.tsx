@@ -563,13 +563,28 @@ describe('VQ-WORKFLOWS re-review minors', () => {
   })
 
   // MUTATION: print `drift.stored` and `drift.derived` as they come (QUEUED, RUNNING).
-  it('says the state drift in words, not capitals', async () => {
+  it('says the state drift in words, not capitals, on the board card and never on the page', async () => {
     const drifted: Workflow = {
       ...chain,
       drift: { stored: 'QUEUED', derived: 'RUNNING', agrees: false, reason: 'test', steps_read: 3, unreadable_steps: [], repaired: false },
     }
     serve([drifted], chainTasks)
-    render(<Routed initial="wf=wf_chain" />)
+    const routed = render(<Routed initial="wf=wf_chain" />)
+    await waitFor(() => expect(document.querySelector('.wfp:not(.is-loading) .wfp-head')).toBeTruthy())
+    // MUTATION: draw `StateDrift` on the page again: `stored as queued · steps
+    // running` beside a head that says running (visual QA pass 1 overview-agents-81, #2596).
+    expect(document.querySelector('.wf-drift'), 'the page prints the stored state').toBeNull()
+    routed.unmount()
+    render(
+      <WorkflowCard
+        workflow={drifted}
+        taskById={chainTasks}
+        usage={{ kind: 'ready', usage: null }}
+        openStages={{}}
+        onToggleStage={() => {}}
+        reload={() => {}}
+      />,
+    )
     const drift = await waitFor(() => {
       const d = document.querySelector<HTMLElement>('.wf-drift')
       expect(d).toBeTruthy()

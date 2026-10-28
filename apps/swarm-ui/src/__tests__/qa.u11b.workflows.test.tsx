@@ -132,7 +132,8 @@ function rowFits(rows: readonly HTMLTableRowElement[], env: CascadeEnv & { conta
 }
 
 describe('N1: a step row never prints over the next one', () => {
-  for (const path of [`/workflows/${WF}/table`, `/workflows/${WF}`]) {
+  // The table is the Table tab's alone: the Graph tab draws no rows under it (visual QA pass 1 overview-agents-73, #2596).
+  for (const path of [`/workflows/${WF}/table`]) {
     it(`at 1440 the table is a table, with no sideways scroll (${path})`, async () => {
       const wrap = await stepTable(path)
       const rows = tenLongRows(wrap)
