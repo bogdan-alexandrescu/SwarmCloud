@@ -244,6 +244,35 @@ acc_submit() {
   printf -v "${__acc_var}" '%s' "${__acc_id}"
 }
 
+# acc_api_as SA TENANT METHOD PATH BODY OUT -> one API request as the service
+# account SA (its ID token minted by impersonation: the caller needs
+# roles/iam.serviceAccountTokenCreator on it) with `X-Swarm-Tenant: TENANT`.
+# The response body goes to OUT, the HTTP status to OUT.status (0 when no
+# request was made) and anything the request printed to OUT.err. Never fails.
+#
+# In a subshell, so the identity, the tenant and the cached token are this
+# request's only: the suite's own calls keep the job's identity. The token
+# stays in that shell's memory and the header file api_request removes.
+# Inside Cloud Run an API reached through its front door takes the metadata
+# server's ACCESS token before any impersonation (common.sh access_token), so
+# a caller checks who the API saw (`me.email` of GET /v1/workspace/roles)
+# rather than trusting that SA was used.
+acc_api_as() {
+  local out="$6"
+  printf '0' >"${out}.status"
+  # A subshell as well as locals: a credential that cannot be minted ends
+  # api_request with `exit`, which must end this request, not the suite.
+  ( _acc_api_as_one "$@" ) 2>"${out}.err" || true
+}
+
+_acc_api_as_one() {
+  local sa="$1" tenant="$2" method="$3" path="$4" body="$5" out="$6"
+  local _ID_TOKEN="" _ACCESS_TOKEN="" SWARM_ID_TOKEN="" API_STATUS=0
+  local SWARM_IMPERSONATE_SA="${sa}" SWARM_API_TENANT="${tenant}"
+  api_request "${method}" "${API_PREFIX}${path}" "${body}" >"${out}" || true
+  printf '%s' "${API_STATUS}" >"${out}.status"
+}
+
 # acc_record_task TASK -> TASK is cancelled at exit, in the tenant this
 # shell's API calls select now: ACC_TASKS for ACC_TENANT, ACC_OTHER_TASKS for
 # any other.

@@ -14,7 +14,10 @@ design. Both refusal switches and
 now runs with `role_member_required` and the reach on, both set in
 `dev.tfvars` (§4.9's amendment); `role_admin_required` stays off in dev, and
 prod has all three off, so in prod a role still narrows nobody and a
-platform admin reaches no workspace they are not a member of.
+platform admin reaches no workspace they are not a member of. **Amended
+2026-10-28 (ROLES-ACCEPT):** the acceptance probe is built and runs in
+accept.yml's smoke job; it SKIPs until the owner provisions its identities
+and test workspace (§8).
 
 The owner asked for this on 2026-10-18, answering the Settings › Profile
 design (#1505, PR 1506, question Q7):
@@ -1264,7 +1267,7 @@ so the UI is three lanes.
 | 5 | **ROLES-UI-ADMIN** (after UI-PEOPLE) | `WorkspaceRolesAdmin.tsx` (new), `People.tsx`, `Spine.tsx`, their `__tests__` | Admin › People shows the Workspace roles card with "Name an admin" and the drawer's roles; a platform admin's switcher lists reach workspaces under their own heading, and selecting one shows the platform-admin banner; a non-admin's switcher is unchanged |
 | 5 | **ROLES-UI-GATES** (after UI-PEOPLE) | `Approvals.tsx`, `QuestionsCard.tsx`, `Submit.tsx`, `Schedules.tsx`, `Repositories.tsx`, the Profile seam's file, their `__tests__` | a `viewer` sees Approve/Reject disabled with the role sentence; Submit and Cancel are disabled for a `viewer`; Profile shows the stored role and its source, "admin (platform admin)" for a reach entry, and the derived role when `role` is absent |
 | each | **ROLES-DOCS** | `docs/workspaces.md`, `docs/security.md`, `docs/design/workspace-secrets.md`, `docs/design/human-steps.md`, this file | `test_docs_describe_what_was_built`, where it reads these files |
-| 6 | **ROLES-ACCEPT** (after GATES, and the dev switches and reach on) | `tests/acceptance/` one probe, its workflow wiring | with a dev acceptance identity granted `viewer` in a test workspace: `POST /v1/tasks` is 403 `role_member_required`, `GET /v1/tasks` is 200, and the grant and its revocation each appear in `GET /v1/workspace/roles` `audit`; with a dev platform-admin identity outside the test workspace's group: selecting it succeeds, a write appears as `platform_admin_acted`, and selecting another identity's `u-` workspace is 403 `tenant_not_member` |
+| 6 | **ROLES-ACCEPT** (after GATES, and the dev switches and reach on) | one probe, its workflow wiring (built as `scripts/acceptance/groups/roles.sh` in accept.yml's smoke job, §8) | with a dev acceptance identity granted `viewer` in a test workspace: `POST /v1/tasks` is 403 `role_member_required`, `GET /v1/tasks` is 200, and the grant and its revocation each appear in `GET /v1/workspace/roles` `audit`; with a dev platform-admin identity outside the test workspace's group: selecting it succeeds, a write appears as `platform_admin_acted`, and selecting another identity's `u-` workspace is 403 `tenant_not_member` |
 
 Order and dependencies:
 
@@ -1547,13 +1550,45 @@ a platform admin's reach", and the reach in "Authentication"),
 workspaces) and this section, held by
 `tests/unit/scripts/test_docs_describe_what_was_built.py`.
 
-**ROLES-ACCEPT (not built on 2026-10-19).** No acceptance probe asserts
-`role_member_required` or `platform_admin_acted`. Since ROLES-ON-DEV
-(2026-10-19) dev has `role_member_required` and the reach on, so a probe
-there would now meet the gated behaviour; `role_admin_required` is still off
-in dev (§4.9's amendment).
+**ROLES-ACCEPT (not built on 2026-10-19; built on 2026-10-28, lane
+accept-roles-and-labels, #1518).** The probe is
+`scripts/acceptance/groups/roles.sh`, run by
+`.github/workflows/accept.yml`'s smoke job as `verify-remote.sh
+acceptance/groups/roles` (BGD, 2026-10-28: the smoke job, not a new
+acceptance group or the tenant-isolation job). It acts as two identities that
+are not swarm-verify's own, each through an impersonated ID token
+(`acc_api_as` in `scripts/acceptance/lib.sh`), in a group workspace of its
+own, and checks five things: a viewer's `POST /v1/tasks` is 403
+`role_member_required` and creates nothing; its `GET /v1/tasks` is 200; the
+viewer grant and its revocation, matched by a reason naming the run, are both
+in `GET /v1/workspace/roles` `audit`; the platform admin, outside the
+workspace's group, selects it and its write is recorded
+`platform_admin_acted`; and that admin selecting another identity's `u-`
+workspace is 403 `tenant_not_member`. Its judge reads only the status and the
+API's code or audit action, and
+`tests/unit/scripts/test_acceptance_roles.py` holds it to `swarm_api`'s own
+codes. Departures from §6 row 6:
 
-**What is left, in order.** ROLES-ACCEPT; a named workspace admin in every
+* **The grant is the workspace's default role, not a person's.** The planned
+  viewer is the QA service account (swarm-qa, #1649), and a role write naming
+  a service account is 403 `role_person_required` (§4.6). The workspace
+  default is the one grant that reaches it, which is why the probe narrows a
+  workspace of its own and refuses to run in `smoke`, where every other
+  acceptance group submits.
+* **It is a shell probe under `scripts/acceptance/`, not a file under
+  `tests/acceptance/`,** because the suites in the swarm-verify job are shell;
+  `test_docs_describe_what_was_built.py` still looks under `tests/acceptance/`
+  for the code.
+* **It SKIPs until the owner provisions it**, naming what is missing: a group
+  workspace for it (repository variable `ROLES_TENANT`), the viewer identity
+  in that workspace's group (`ROLES_VIEWER_SA`), a platform-admin identity
+  outside it (`ROLES_ADMIN_SA`), another identity's personal workspace
+  (`ROLES_OTHER_WORKSPACE`), and roles/iam.serviceAccountTokenCreator for
+  swarm-verify on both identities. A skip is never a pass; #1518's last
+  criterion is met when the probe first passes live.
+
+**What is left, in order.** The owner provisions ROLES-ACCEPT's identities
+and workspace, and the probe passes live; a named workspace admin in every
 group workspace that manages secrets (eng, smoke), then
 `role_admin_required` on in dev; the registry gap above; a week of
 report-only lines in prod; then prod.
