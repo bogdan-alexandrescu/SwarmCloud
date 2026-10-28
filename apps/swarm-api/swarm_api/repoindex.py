@@ -140,12 +140,12 @@ from .repositories import (
     FULL_EVERY_DAYS_DEFAULT,
     INTERVAL_HOURS_DEFAULT,
     KEEP_VERSIONS_DEFAULT,
-    MIN_CHANGE_INTERVAL_DEFAULT,
     ON_CHANGE_DEFAULT,
     ON_CHANGE_POLLED,
     ON_CHANGE_PUSHED,
     Repositories,
     keep_versions_of,
+    min_change_interval_of,
     settle_relation,
 )
 from .schemas import TaskCreate
@@ -172,6 +172,22 @@ MAX_SUMMARY_BYTES = 24 * 1024
 #: and the shard writer. Named here, by swarm-api, never by a caller's image
 #: (invariant 10). The agent-free shape of §6.3 (B) is a later change.
 INDEXER_PROFILE = "indexer"
+#: The model class every index run names (#2524, BGD 2026-10-27: "Sonnet"):
+#: the indexer profile accepts it (`profiles.RUNNER_PROFILES["indexer"]`,
+#: terraform/infra/locals.tf) and defaults to opus, which ran all 845 index
+#: runs of the week 2026-10-20..27. An index is extraction and summary over
+#: the extractor's own output, not the work, so it runs on the cheaper class.
+#: Named only where the deployment pins it (WORKER_CLASS_MODELS, from
+#: terraform's `runner_models`): where nothing is pinned -- the local
+#: emulator loop -- submission refuses a non-default class
+#: (`validation.check_model_class_available`), so the run names none and
+#: takes the profile's default instead of failing (`index_model_class`).
+INDEXER_MODEL_CLASS = "sonnet"
+
+
+def index_model_class(class_models: Mapping[str, str] | None) -> str | None:
+    """`INDEXER_MODEL_CLASS` when this deployment pins it, else None."""
+    return INDEXER_MODEL_CLASS if INDEXER_MODEL_CLASS in (class_models or {}) else None
 #: Below the tenant's default-0 work: an index makes work better, it is not the work.
 INDEX_PRIORITY = -50
 #: §3.1's timeouts, now §3.5's smallest row: under 2,000 source files, and
@@ -897,7 +913,8 @@ def indexer_prompt(
 
 
 def indexer_task(record: Mapping[str, Any], commit_sha: str, kind: str = "full", *,
-                 base_sha: str | None = None, keep: Sequence[str] | None = None) -> TaskCreate:
+                 base_sha: str | None = None, keep: Sequence[str] | None = None,
+                 model_class: str | None = INDEXER_MODEL_CLASS) -> TaskCreate:
     """The index run: an ordinary task, signed by `submit_tasks` like any other.
 
     An incremental run names its base in the prompt's `BASE_LINE`, inside
@@ -912,6 +929,9 @@ def indexer_task(record: Mapping[str, Any], commit_sha: str, kind: str = "full",
     lane INDEX-BUDGETS), and what each language server cost in the last
     promoted full run is named in `LSP_COST_LINE`; both are read from the
     registration's own `index`, which only promotion writes.
+
+    `model_class` is `INDEXER_MODEL_CLASS` (#2524); `RepoIndex` passes
+    `index_model_class`, None where the deployment pins no sonnet model.
     """
     index = record.get("index") or {}
     index = index if isinstance(index, Mapping) else {}
@@ -923,6 +943,7 @@ def indexer_task(record: Mapping[str, Any], commit_sha: str, kind: str = "full",
         metadata["base_sha"] = base_sha
     return TaskCreate(
         runner_profile=INDEXER_PROFILE,
+        model_class=model_class,
         input={"prompt": indexer_prompt(
             repository, commit_sha, record["default_branch"],
             tenant_id=record["tenant_id"], repo_id=record["repo_id"],
@@ -1111,19 +1132,23 @@ def interval_due(
 ) -> bool:
     """§3.3's backstop: `interval_hours` passed since the registration was last indexed.
 
-    Counted from the LATER of the last promotion and the last run queued, so
-    a run that failed is not re-queued on every tick: the next interval run
-    comes a whole interval after it. A registration never indexed and never
+    Counted from the LATER of the last promotion, the last run queued and the
+    last run not started because the head was the promoted index
+    (`index.last_skip`, #2524), so neither a run that failed nor a skip is
+    re-tried on every tick: the next interval run comes a whole interval
+    after it. A registration never indexed and never
     run counts from its creation. `off` is never due.
     """
     hours = index.get("interval_hours", INTERVAL_HOURS_DEFAULT)
     if hours == "off":
         return False
     hours = _int_or(hours, INTERVAL_HOURS_DEFAULT)
+    skip = index.get("last_skip")
     marks = [
         moment for moment in (
             _parse_time(index.get("last_indexed_at")),
             _parse_time((newest_run or {}).get("queued_at")),
+            _parse_time(skip.get("at") if isinstance(skip, Mapping) else None),
         ) if moment is not None
     ]
     base = max(marks) if marks else _parse_time(created_at)
@@ -1175,9 +1200,7 @@ def poll_decision(
     on_change = index.get("on_change", ON_CHANGE_DEFAULT) in ON_CHANGE_POLLED
     if on_change and behind:
         last_queued = _parse_time((newest_run or {}).get("queued_at"))
-        minimum = timedelta(minutes=_int_or(
-            index.get("min_change_interval_minutes"), MIN_CHANGE_INTERVAL_DEFAULT
-        ))
+        minimum = timedelta(minutes=min_change_interval_of(index))
         if last_queued is None or now - last_queued >= minimum:
             return PollDecision("change", "change")
     if interval_due(index, newest_run=newest_run, created_at=created_at, now=now):
@@ -1325,9 +1348,18 @@ def last_full_at(index: Mapping[str, Any]) -> datetime | None:
     return None
 
 
+#: `KindChoice.kind` when no run is started: the head is the promoted
+#: index's commit, so a run would rebuild what is already built (#2524, BGD
+#: 2026-10-27: no rebuild of an unchanged head). Never a `RUN_KINDS` value.
+NO_RUN = "none"
+#: The poll's `held` reason, and `index.last_skip.reason`, for that skip.
+UNCHANGED = "unchanged"
+
+
 @dataclass(frozen=True)
 class KindChoice:
-    """What an index run is submitted as, and why it is not incremental when it is not."""
+    """What an index run is submitted as, and why it is not incremental when
+    it is not -- or `NO_RUN`, and why no run is started."""
 
     kind: str
     base_sha: str | None = None
@@ -1347,6 +1379,11 @@ def choose_kind(
     younger than `full_every_days` (the weekly full run, §3.3); it is an
     ANCESTOR of the head; the diff touches fewer than
     MAX_INCREMENTAL_CHANGES files; and no build or test configuration changed.
+
+    A head equal to the promoted index's commit starts NO run (`NO_RUN`,
+    #2524): it used to be rebuilt in full, which built the same index again
+    on every interval tick of a quiet repository. Only an explicit `full`
+    request rebuilds it -- a person asking, say after an extractor upgrade.
     """
     if requested == "full":
         return KindChoice("full", reason="a full run was asked for")
@@ -1354,7 +1391,7 @@ def choose_kind(
     if not current:
         return KindChoice("full", reason="there is no promoted index to build on")
     if current == head:
-        return KindChoice("full", reason="the head is the promoted index; it is rebuilt in full")
+        return KindChoice(NO_RUN, reason="the head is the promoted index; nothing to rebuild")
     if version is None:
         return KindChoice("full", reason="the promoted index's version is not kept")
     if not version.get("graph_digest"):
@@ -2312,8 +2349,12 @@ class RepoIndex:
         now: Callable[[], datetime],
         installations: InstallationSource | None = None,
         quota_percent: float = forge_limits.DEFAULT_DEFER_PERCENT,
+        class_models: Mapping[str, str] | None = None,
     ) -> None:
         self._db = db
+        #: The deployment's pinned classes (WORKER_CLASS_MODELS), read only
+        #: for `index_model_class`.
+        self._class_models = dict(class_models or {})
         self._installations = installations
         #: The poll is a background read: under this percent of its
         #: credential's GitHub quota it waits (QUOTA-THROTTLE).
@@ -2333,6 +2374,7 @@ class RepoIndex:
             tokens=ctx.forge_tokens, forge=ctx.forge, now=ctx.now,
             installations=getattr(ctx, "forge_installations", None),
             quota_percent=forge_limits.defer_percent(ctx),
+            class_models=getattr(getattr(ctx, "settings", None), "worker_class_models", None),
         )
 
     # -- references --------------------------------------------------------
@@ -2524,6 +2566,11 @@ class RepoIndex:
         `kind` is what was asked for: `full`, or `incremental`, which
         `choose_kind` grants only when §3.4 allows. The run records what it
         was submitted as, its base, and why it is full when it is.
+
+        When `choose_kind` says `NO_RUN` (the head is the promoted index),
+        nothing is submitted: the claim is released, the skip is recorded as
+        `index.last_skip` (when, which head, why) and logged, and the answer
+        is (None, False) -- neither a run nor coalesced.
         """
         repo_id = record["repo_id"]
         claim, in_flight = self._claim(
@@ -2538,6 +2585,11 @@ class RepoIndex:
             return run, True
         try:
             choice = self._choose(tenant_id, repo_id, sha, kind)
+            if choice.kind == NO_RUN:
+                self._confirm(tenant_id, repo_id, claim, None)
+                self._record_skip(tenant_id, repo_id, sha, trigger=trigger,
+                                  reason=choice.reason or UNCHANGED)
+                return None, False
             keep = self._kept_for_run(tenant_id, record, sha)
             # A service submission (owner's D4 for automation, 2026-10-07): the
             # index runs with the tenant's own slot whoever registered the
@@ -2546,7 +2598,8 @@ class RepoIndex:
             # its owner's GitHub connection (`forge.service_slot`, INDEX-CRED).
             submission = self._submissions.submit_tasks(
                 auth, [indexer_task(record, sha, choice.kind, base_sha=choice.base_sha,
-                                    keep=keep)],
+                                    keep=keep,
+                                    model_class=index_model_class(self._class_models))],
                 service_submission=True,
             )
         except Exception:
@@ -2582,6 +2635,21 @@ class RepoIndex:
         )
         return run, False
 
+    def _record_skip(self, tenant_id: str, repo_id: str, sha: str, *, trigger: str,
+                     reason: str) -> None:
+        """`index.last_skip`: the run `_start` did not submit, and why. The
+        interval counts from it (`interval_due`), so a quiet repository's
+        interval tick is skipped once an interval, not on every poll."""
+        now = self._now()
+
+        def _skip(index: dict[str, Any]) -> dict[str, Any]:
+            return {**index, "last_skip": {"at": now, "head_sha": sha, "trigger": trigger,
+                                           "reason": reason}}
+
+        self._update_index(tenant_id, repo_id, _skip)
+        log.info("repo index run tenant=%s repo_id=%s sha=%s trigger=%s skipped=%s",
+                 tenant_id, repo_id, sha[:12], trigger, UNCHANGED)
+
     def request_run(
         self, auth: AuthContext, tenant_id: str, repo_id: str, *, tenant: Tenant,
         kind: str = "full",
@@ -2609,6 +2677,8 @@ class RepoIndex:
             "coalesced": coalesced,
             "pending_sha": head if coalesced else None,
             "head_sha": head,
+            # An incremental ask on a head already indexed starts nothing (#2524).
+            "skipped": UNCHANGED if run is None and not coalesced else None,
         }
 
     # -- settling ----------------------------------------------------------
@@ -3368,10 +3438,13 @@ class RepoIndex:
                 return "held", decision.reason, head
             if head in (index.get("pending_sha"), self._in_flight_sha(in_flight, newest)):
                 return "held", "in_flight", head
-            self._start(
+            run, coalesced = self._start(
                 owner_auth(record), tenant_id, record, head, kind="incremental", trigger=trigger,
                 requested_by=POLL_REQUESTED_BY, head_read=False, from_pending=False,
             )
+            if run is None and not coalesced:
+                report.skipped += 1
+                return "held", UNCHANGED, head
             report.coalesced += 1
             return "pending", trigger, head
         pending = index.get("pending_sha")
@@ -3391,6 +3464,10 @@ class RepoIndex:
                           else index.get("pending_requested_by") or POLL_REQUESTED_BY),
             head_read=False, from_pending=False,
         )
+        if _run is None and not coalesced:
+            # The head is the promoted index (`NO_RUN`): skipped, like a pause.
+            report.skipped += 1
+            return "held", UNCHANGED, head
         if coalesced:
             report.coalesced += 1
             return "pending", trigger or "pending", head
@@ -3527,7 +3604,8 @@ __all__ = [
     "MAX_INDEX_TIMEOUT_SECONDS", "index_timeout_seconds", "lsp_costs_of", "source_files_of", "SWEEP_PHASE", "kept_commits", "retention_of",
     "CONFIG_DIRECTORIES", "CONFIG_FILENAMES", "CONFIG_GLOBS",
     "EXTRACTOR_COMMAND", "GRAPH_WRITER_COMMAND", "HeadRead", "INDEXER_PROFILE", "INDEX_FILE",
-    "INDEXER_EXTRACTOR_VERSION", "KindChoice", "MAX_INCREMENTAL_CHANGES", "PHASES_FILE", "RUN_KINDS",
+    "INDEXER_MODEL_CLASS", "INDEXER_EXTRACTOR_VERSION", "index_model_class", "KindChoice", "MAX_INCREMENTAL_CHANGES", "NO_RUN", "PHASES_FILE",
+    "RUN_KINDS", "UNCHANGED",
     "VERSIONS_COLLECTION", "choose_kind", "graph_carry_refusal", "graph_extractor_record",
     "is_config_path", "last_full_at", "read_changes",
     "IndexDigestMismatch",

@@ -8,9 +8,10 @@ sweeper's OIDC identity. What is held here:
     answers `304 Not Modified`, and nothing is submitted;
   * a head that moved is indexed ONCE: a second poll finds the run in flight
     and submits nothing more;
-  * the minimum change interval holds a busy repository back, and the
-    interval trigger (`last_indexed_at + interval_hours`) queues a run even
-    when the head never moved;
+  * the minimum change interval (120 minutes by default since #2524) holds a
+    busy repository back, and the interval trigger (`last_indexed_at +
+    interval_hours`) queues a run of a head the index has not built -- and,
+    since #2524, none of a head that IS the built index (`unchanged`);
   * a run in flight is never duplicated: a newer head is recorded as pending
     and indexed once, after the running one ends;
   * a head that is not the BUILT index is queued once the throttle allows,
@@ -267,7 +268,7 @@ def test_the_minimum_change_interval_holds_a_busy_branch_back(
     assert _index(db, repo_id)["current_sha"] == ONE  # the finished run was settled
     assert _index(db, repo_id)["head_sha"] == TWO  # the head is recorded all the same
 
-    clock.advance(minutes=21)  # 31 minutes since the last run was queued
+    clock.advance(minutes=111)  # 121 minutes since the last run was queued
     later = _poll(client).json()["report"]
     assert later["submitted"] == 1
     assert sorted(t["repository_ref"] for t in _tasks(db)) == sorted([ONE, TWO])
@@ -288,17 +289,36 @@ def test_on_change_off_reads_no_head_until_the_interval_is_due(client, db, repo_
 # the interval trigger
 # --------------------------------------------------------------------------
 
-def test_an_elapsed_interval_submits_a_run_of_the_unchanged_head(
+def test_an_elapsed_interval_on_the_built_head_reads_it_and_starts_nothing(
     client, db, repo_id, polls, clock
 ):
+    # #2524: it used to rebuild the unchanged head in full on every interval.
     _indexed(db, repo_id, ONE, clock() - timedelta(hours=25))
 
     report = _poll(client).json()["report"]
 
     assert polls.calls[-1][2] == 304
+    assert report["submitted"] == 0 and report["held"] == {repoindex.UNCHANGED: 1}
+    assert _tasks(db) == []
+
+
+def _change_trigger_off(db, repo_id) -> None:
+    """Only the interval queues a run, so the trigger under test is it alone."""
+    _index(db, repo_id)["on_change"] = "off"
+
+
+def test_an_elapsed_interval_submits_a_run_of_a_head_not_yet_built(
+    client, db, repo_id, github, polls, clock
+):
+    _change_trigger_off(db, repo_id)
+    _indexed(db, repo_id, ONE, clock() - timedelta(hours=25))
+    github.heads["main"] = TWO
+
+    report = _poll(client).json()["report"]
+
     assert report["submitted"] == 1
     [task] = _tasks(db)
-    assert task["repository_ref"] == ONE
+    assert task["repository_ref"] == TWO
     assert db.docs[f"repo_index_runs/{task['id']}"]["trigger"] == "interval"
 
 
@@ -308,8 +328,10 @@ def test_an_interval_not_yet_elapsed_submits_nothing(client, db, repo_id, clock)
     assert _tasks(db) == []
 
 
-def test_a_failed_run_is_not_retried_every_tick(client, db, objects, repo_id, clock):
+def test_a_failed_run_is_not_retried_every_tick(client, db, objects, repo_id, github, clock):
+    _change_trigger_off(db, repo_id)
     _indexed(db, repo_id, ONE, clock() - timedelta(hours=25))
+    github.heads["main"] = TWO
     _poll(client)
     [task] = _tasks(db)
     finish_index_task(db, objects, task["id"], None, state="FAILED")
@@ -348,7 +370,7 @@ def test_a_moved_head_answered_304_is_built_once_the_throttle_allows(
     _failed_run_of(client, db, objects, github, repo_id, clock, TWO)
     assert _index(db, repo_id)["etag_sha"] == TWO  # the stored ETag is the new head's
 
-    clock.advance(minutes=31)
+    clock.advance(minutes=121)
     report = _poll(client).json()["report"]
 
     assert polls.calls[-1][2] == 304, "the read was answered Not Modified"
@@ -403,7 +425,7 @@ def test_the_minimum_change_interval_holds_back_a_retry_of_an_unbuilt_head(
     _indexed(db, repo_id, ONE, clock() - timedelta(hours=2))
     _failed_run_of(client, db, objects, github, repo_id, clock, TWO)
 
-    for _ in range(5):  # 25 minutes after the failed run was queued
+    for _ in range(23):  # 115 minutes after the failed run was queued
         clock.advance(minutes=5)
         report = _poll(client).json()["report"]
         assert report["submitted"] == 0 and report["held"] == {"throttled": 1}
@@ -411,7 +433,7 @@ def test_the_minimum_change_interval_holds_back_a_retry_of_an_unbuilt_head(
     poll = _index(db, repo_id)["last_poll"]
     assert (poll["outcome"], poll["reason"]) == ("held", "throttled")
 
-    clock.advance(minutes=5)  # 30 minutes: the throttle is spent
+    clock.advance(minutes=5)  # 120 minutes: the throttle is spent
     assert _poll(client).json()["report"]["submitted"] == 1
     clock.advance(minutes=5)
     held = _poll(client).json()["report"]
@@ -436,8 +458,12 @@ def test_a_refused_read_is_recorded_as_the_reason_nothing_was_built(
     [
         # moved past the built index; the newest run was GIVEN this head and
         # failed -- it built nothing, so the head is still due (AUT-7)
-        ({"current_sha": ONE}, TWO, TWO, 31, ("change", "change")),
+        ({"current_sha": ONE}, TWO, TWO, 121, ("change", "change")),
         ({"current_sha": ONE}, TWO, TWO, 10, (None, "throttled")),
+        # 30 minutes was the default before #2524; 120 is.
+        ({"current_sha": ONE}, TWO, TWO, 31, (None, "throttled")),
+        ({"current_sha": ONE, "min_change_interval_minutes": 30,
+          "min_change_interval_set": True}, TWO, TWO, 31, ("change", "change")),
         ({"current_sha": ONE}, TWO, None, None, ("change", "change")),
         ({"current_sha": TWO}, TWO, TWO, 31, (None, "current")),
         ({"current_sha": ONE, "on_change": "off"}, TWO, ONE, 31, (None, "on_change_off")),
@@ -473,7 +499,7 @@ def test_a_run_in_flight_is_not_duplicated(client, db, objects, repo_id, github,
     assert same["submitted"] == 0 and same["coalesced"] == 0
     assert _index(db, repo_id).get("pending_sha") is None
 
-    clock.advance(minutes=30)
+    clock.advance(minutes=120)
     github.heads["main"] = TWO
     moved = _poll(client).json()["report"]
     assert moved["submitted"] == 0 and moved["coalesced"] == 1
@@ -500,10 +526,12 @@ def test_a_run_in_flight_is_not_duplicated(client, db, objects, repo_id, github,
 
 
 def test_an_interval_passing_while_a_run_is_queued_does_not_index_its_commit_twice(
-    client, db, objects, repo_id, clock
+    client, db, objects, repo_id, github, clock
 ):
+    _change_trigger_off(db, repo_id)
     _indexed(db, repo_id, ONE, clock() - timedelta(hours=2))
     _index(db, repo_id)["interval_hours"] = 1
+    github.heads["main"] = TWO
     assert _poll(client).json()["report"]["submitted"] == 1
     [task] = _tasks(db)
 
@@ -513,7 +541,7 @@ def test_an_interval_passing_while_a_run_is_queued_does_not_index_its_commit_twi
     assert late["submitted"] == 0 and late["coalesced"] == 0
     assert _index(db, repo_id).get("pending_sha") is None
 
-    finish_index_task(db, objects, task["id"], fixture_index(ONE))
+    finish_index_task(db, objects, task["id"], fixture_index(TWO))
     clock.advance(minutes=5)
     after = _poll(client).json()["report"]
     assert after["submitted"] == 0

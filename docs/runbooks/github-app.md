@@ -469,7 +469,7 @@ In this order:
    default branch** at registration, and a repository's settings change it in
    place with that same PATCH, carrying `index.on_change` alone. Both show the
    note that the App's webhook must be ticked (this step).
-   `min_change_interval_minutes` (default 30) applies to pushes as well, so a
+   `min_change_interval_minutes` (default 120 since #2524, was 30) applies to pushes as well, so a
    busy default branch does not queue a run per merge.
 
 **Rotating the webhook secret.** GitHub holds one webhook secret at a time, so

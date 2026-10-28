@@ -94,7 +94,7 @@ compared with them.
   ([issue-runs.md](issue-runs.md#the-cloud-scheduler-tick-and-why-every-read-also-advances)).
 * **The repository index already has a per-repository recurring job.**
   Each registration carries `index.interval_hours` (default 24),
-  `index.on_change` (`poll`), `index.min_change_interval_minutes` (default 30),
+  `index.on_change` (`poll`), `index.min_change_interval_minutes` (default 120 since #2524, was 30),
   `index.full_every_days` and `index.paused`. The 5-minute `repo_index_poll`
   tick reads each head with an ETag and queues an index run when the head has
   moved or the interval has passed
