@@ -2106,13 +2106,12 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
       {/* NO SECOND `Resources` TITLE (QA1 overview-agents-25, 2026-10-28):
           the card is drawn only inside the Resources row's fold, whose
           summary already says `Resources`, so the row opened onto a card
-          headed the same. The head keeps what it carried besides the word. */}
-      <div className="dt-card-head">
-        <span className="dt-card-r">
-          {cls === null && <span className="dt-note">{unknownLimit}</span>}
-          <HelpCard topic="requests-are-ceilings" />
-        </span>
-      </div>
+          headed the same. Its heading says what the bars add -- each figure
+          against its limit -- and its `?` still follows a heading (AH-24). */}
+      <DtCardHead title="Against each limit">
+        {cls === null && <span className="dt-note">{unknownLimit}</span>}
+        <HelpCard topic="requests-are-ceilings" />
+      </DtCardHead>
       {rows.map((r) => (
         <div key={r.name} className="dt-rr">
           <span className="dt-rr-n">{r.name}</span>

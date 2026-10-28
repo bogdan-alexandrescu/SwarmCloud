@@ -266,6 +266,7 @@ describe('overview-agents-25: one Resources title', () => {
     const titles = [...fold.querySelectorAll('h2, h3, .dt-res-l')].filter((h) => text(h) === 'Resources')
     expect(titles).toHaveLength(1)
     // What the head carried besides the word is still there.
-    expect(fold.querySelector('.dt-resources .dt-card-head .dt-card-r')).not.toBeNull()
+    expect(text(fold.querySelector('.dt-resources .dt-card-head > h2'))).toBe('Against each limit')
+    expect(fold.querySelector('.dt-resources .dt-card-head .dt-card-r [aria-label^="Help: "]')).not.toBeNull()
   })
 })

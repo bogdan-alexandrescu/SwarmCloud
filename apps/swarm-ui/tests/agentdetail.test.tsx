@@ -712,7 +712,8 @@ test('the timeline does not draw a read in flight once its read has landed', () 
   const events = [event({ type: 'submitted', at: '2026-09-22T09:00:00Z' })]
   const unproven = timelineToolbar(surface(run({ task: RUNNING_TASK, attempts: [RUNNING_ATTEMPT], events })))
   assert.ok(!unproven.includes('is-pending'), 'the landed timeline still says `reading`')
-  assert.ok(unproven.includes('one page, cap unknown'), 'the paging caveat is gone from the event list')
+  // Worded plainly since QA1 overview-agents-29 (`one page, cap unknown` was jargon).
+  assert.ok(unproven.includes('newest first · the first page of events'), 'the paging caveat is gone from the event list')
   // THE PROVEN CASE KEEPS ITS MARK: a SUCCEEDED task with no terminal event
   // on the page proves the page ends early.
   const proven = timelineToolbar(surface(run({ events })))
