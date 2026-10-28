@@ -698,3 +698,20 @@ describe('G3-33: the Tokens column sorts, as Cost does', () => {
     expect(order()).toEqual(['review', 'implement', 'fix'])
   })
 })
+
+// ---------------------------------------------------------------------------
+// overview-agents-69 (visual QA pass 1, part of #2596): a sum over some attempts
+// ---------------------------------------------------------------------------
+
+describe('overview-agents-69: a step’s cost summed over only some attempts says so', () => {
+  it('marks the cell `· 1 of 3` when two of three attempts reported no cost', () => {
+    const { w, tasks, usage } = skippedRun()
+    usage.byTaskId.set('t_rev', usageOf({ attempts: 3, attemptsWithCost: 1, costUsd: 0.253 }))
+    const { container } = card(w, tasks, usage, 'table')
+    const cost = (step: string) => container.querySelector<HTMLElement>(`.wf-table tr[data-step="${step}"] td[data-col="cost"]`)!.textContent!
+    // MUTATION: drop the `attemptsWithCost < attempts` mark and this reads `$0.253` alone.
+    expect(cost('review')).toMatch(/^\$0\.253 · 1 of 3$/)
+    // The control: every attempt reported, and the cell is the figure alone.
+    expect(cost('implement')).not.toMatch(/ of /)
+  })
+})
