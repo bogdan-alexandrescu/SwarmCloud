@@ -30,7 +30,9 @@ are restated here and held to the same rules:
     test_forgechecks_per_event.py runs this rule and the merge step's over
     one table;
   * green is `success` or `skipped`, nothing else, `neutral` included;
-  * no runs, or an event's latest run not completed, is pending.
+  * no runs, or an event's latest run not completed, is pending; so is a
+    check whose every latest run not green is `cancelled` (#1778): a run
+    someone stopped waits for its re-run, and red in another event wins.
 
 WHERE THIS IS DELIBERATELY WIDER than the merge step:
 
@@ -53,7 +55,7 @@ count per bucket -- passed, failed, pending, skipped -- and one entry per check
 it evaluated (`{name, state, url}`), so the run page can say "5 passed · 7
 pending · 3 skipped" and link each check, where it once said only "pending".
 These are for DISPLAY: they never decide the state, which is the rule above,
-unchanged (a `cancelled` run counts as skipped here and is still red there).
+unchanged (a `cancelled` run counts as skipped here and pending there, #1778).
 """
 
 from __future__ import annotations
@@ -63,6 +65,9 @@ from typing import Any, Mapping, Sequence
 
 #: What counts as green for a REQUIRED check (agent_worker.merge.REQUIRED_GREEN).
 REQUIRED_GREEN = frozenset({"success", "skipped"})
+#: A run someone stopped: pending, never red (#1778; `cancelled_run`,
+#: agent_worker.merge.CANCELLED_CONCLUSION).
+CANCELLED_CONCLUSION = "cancelled"
 #: What any OTHER check run may conclude and still not hold the run
 #: (agent_worker.merge.OTHER_TOLERATED).
 OTHER_TOLERATED = frozenset({"success", "skipped", "neutral"})
@@ -158,9 +163,22 @@ def check_run_finished(run: Mapping[str, Any]) -> bool:
     return bool(run.get("conclusion")) and bool(run.get("completed_at"))
 
 
+def cancelled_run(run: Mapping[str, Any]) -> bool:
+    """A run that finished `cancelled`: pending, never red.
+
+    #1778's second expectation (BGD released bundle H09, 2026-10-27): "a
+    check whose LATEST run is cancelled is still not green and waits, rather
+    than failing the merge". A red latest run of another event still wins.
+    The worker's `merge.cancelled_run` is the same rule, held equal by
+    tests/unit/control_plane/test_forgechecks_per_event.py.
+    """
+    return check_run_finished(run) and run.get("conclusion") == CANCELLED_CONCLUSION
+
+
 def required_check_state(runs: Sequence[Mapping[str, Any]]) -> str:
     """The runs of ONE required check by its pinned App: green, pending or red,
-    decided by the latest run of each event (`latest_per_event`)."""
+    decided by the latest run of each event (`latest_per_event`); pending when
+    every latest run not green is cancelled (`cancelled_run`)."""
     latest = latest_per_event(runs)
     if not latest:
         return PENDING
@@ -168,12 +186,15 @@ def required_check_state(runs: Sequence[Mapping[str, Any]]) -> str:
         return PENDING
     if all((run.get("conclusion") or "") in REQUIRED_GREEN for run in latest):
         return GREEN
+    if all(cancelled_run(run) or (run.get("conclusion") or "") in REQUIRED_GREEN for run in latest):
+        return PENDING
     return RED
 
 
 def other_check_state(run: Mapping[str, Any]) -> str:
-    """A check run nothing requires: pending until finished, then tolerated or red."""
-    if not check_run_finished(run):
+    """A check run nothing requires: pending until finished or when cancelled
+    (`cancelled_run`), then tolerated or red."""
+    if not check_run_finished(run) or cancelled_run(run):
         return PENDING
     return GREEN if (run.get("conclusion") or "") in OTHER_TOLERATED else RED
 
@@ -286,7 +307,7 @@ def evaluate(
                 if state == RED:
                     reading.failing_runs += [
                         run for run in deciding
-                        if check_run_finished(run)
+                        if check_run_finished(run) and not cancelled_run(run)
                         and (run.get("conclusion") or "") not in REQUIRED_GREEN
                     ]
                 elif state == PENDING:

@@ -506,6 +506,10 @@ def test_a_refused_or_other_head_rerun_does_not_hold_the_refusal(tmp_path, mutat
     world = MergeWorld(tmp_path)
     _red(world)
     mutate(world)
+    # The step already parked once for the free re-run at this head (#2351):
+    # what holds the refusal here is the re-run record alone.
+    world.docs[TASK].setdefault("metadata", {})[merge.MERGE_WAIT_METADATA_KEY] = {
+        "code": merge.CI_RERUN_DUE, "head": PINNED}
 
     outcome = merge.run_merge(world.context())
 
