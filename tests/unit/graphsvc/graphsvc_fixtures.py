@@ -7,7 +7,10 @@ literal: nothing here may look like a credential."""
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
+import json
 import secrets
 import time
 from typing import Any
@@ -83,8 +86,13 @@ def inline_warmer() -> Warmer:
 
 def service(key: str, store: MemoryStore, *, enabled: bool = True,
             shards: ShardCache | None = None, results: ResultCache | None = None,
-            warmer: Warmer | None = None) -> GraphService:
+            warmer: Warmer | None = None, peers: list[str] | None = None,
+            peer_timeout: float = 2.0) -> GraphService:
+    """A service on a replica named `replica-0` whose headless Service
+    resolves to `peers` (none by default), so no test resolves real DNS."""
     return GraphService(keys=KeyRing(key.encode()), store=store, enabled=lambda: enabled,
+                        replica="replica-0", peers=lambda: list(peers or []),
+                        peer_timeout=peer_timeout,
                         shards=ShardCache() if shards is None else shards,
                         results=ResultCache() if results is None else results,
                         manifests=ManifestCache(),
@@ -97,3 +105,35 @@ def post(svc: GraphService, body: bytes, ticket: str | None, *,
     if ticket is not None:
         headers.append(("Authorization", f"Bearer {ticket}"))
     return svc.handle(method, path, headers, lambda n: body[:n])
+
+
+#: The stats ticket's MAC domain (graph-answer-cache.md §5.3), restated here
+#: rather than imported, so a verifier that drifted from the wire is caught.
+STATS_DOMAIN = b"swarm-graph-stats/v1\0"
+
+
+def _b64(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def mint_stats(key: str, *, raw: bytes, tenant_id: str = TENANT, repo_id: str = REPO_ID,
+               previous: str | None = None, exp: int | None = None,
+               domain: bytes = STATS_DOMAIN, **overrides: Any) -> str:
+    """A stats ticket as swarm-api mints it (§5.3): the claims, base64url JSON,
+    MAC'd under `swarm-graph-ticket-key` behind the stats domain."""
+    claims: dict[str, Any] = {
+        "tenant_id": tenant_id, "repo_id": repo_id, "manifest_digest": digest(raw),
+        "previous_manifest_digest": previous,
+        "exp": int(time.time()) + 60 if exp is None else exp}
+    claims.update(overrides)
+    payload = _b64(json.dumps(claims, sort_keys=True, separators=(",", ":")).encode())
+    mac = hmac.new(key.encode("utf-8"), domain + payload.encode("ascii"), hashlib.sha256)
+    return f"{payload}.{_b64(mac.digest())}"
+
+
+def get(svc: GraphService, path: str, ticket: str | None, *, method: str = "GET"):
+    """A request to the stats port's routes."""
+    headers: list[tuple[str, str]] = []
+    if ticket is not None:
+        headers.append(("Authorization", f"Bearer {ticket}"))
+    return svc.handle_stats(method, path, headers)
