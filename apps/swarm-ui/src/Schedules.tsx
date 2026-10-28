@@ -22,7 +22,7 @@
  * run, a task, a workflow -- and is listed in Work like any other; this
  * screen lists the thing that makes it, and links each firing to its work.
  */
-import { Fragment, useEffect, useState, type MouseEvent, type ReactNode } from 'react'
+import { Fragment, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import { AllTenantsSchedules } from './AdminSchedules'
 import {
   deleteSchedule,
@@ -154,6 +154,7 @@ export function InApp({
   children,
   className,
   current = false,
+  onGo,
 }: {
   to: string
   go: (to: string) => void
@@ -161,6 +162,8 @@ export function InApp({
   className?: string
   /** The link to the item this page has open: `aria-current`, so the choice is not colour alone. */
   current?: boolean
+  /** Called before a plain click goes. */
+  onGo?: () => void
 }) {
   return (
     <a
@@ -170,12 +173,27 @@ export function InApp({
       onClick={(e: MouseEvent) => {
         if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
         e.preventDefault()
+        onGo?.()
         go(to)
       }}
     >
       {children}
     </a>
   )
+}
+
+/**
+ * THE ROW A CLOSED SHEET HANDS FOCUS BACK TO (QA1 automate-03). Opening a
+ * sheet draws the list again under it, and closing it draws the list again
+ * without it, so the link that opened the sheet is gone by the time it
+ * closes: the sheet leaves its schedule's id here as it closes (Close,
+ * Escape, `‹ Schedules`), and the list focuses that row's link once it has
+ * drawn its rows. Taken once, so a later visit to the list is not moved.
+ */
+let closedSheet: string | null = null
+
+export function sheetClosed(scheduleId: string): void {
+  closedSheet = scheduleId
 }
 
 /** §1.3's states, as the person reads them. */
@@ -326,38 +344,35 @@ function runCost(s: Schedule): string {
 
 type ActKind = 'run' | 'dry' | 'pause' | 'resume' | 'delete'
 
+/** `PauseIn.reason`'s `max_length` (routes/schedules.py): a longer one is a 422. */
+const PAUSE_REASON_MAX = 500
+
 /**
- * A SCHEDULE'S ACTIONS. On a row: Run now, and Resume when it is paused or
- * auto-paused. On its page: Run now, Dry run, Pause, Resume and Delete. Only
- * Run now asks first, and only when `runSpends`; Delete always asks for the
- * schedule's name typed, which the route checks again (`confirm`). Each
- * answer is said, and the page reads the schedule again rather than patching
- * what it drew. A disabled schedule is an admin's to enable: Run now says so
- * and Resume is not offered (`:resume` is 403 `admin_required` for it).
+ * A SCHEDULE'S ACTIONS, at the head of its sheet: Run now, Dry run, Pause or
+ * Resume, and Delete. No list row draws them (frame A1), and a phone draws
+ * them as the desktop does, wrapped (frame A7b, the picked mock-up: the old
+ * page's More fold, VQ-029, went with frame A2). Run now asks first only when
+ * `runSpends`; Pause asks for an optional reason, which the list and the
+ * sheet's Why paused say; Delete always asks for the schedule's name typed,
+ * which the route checks again (`confirm`). Each answer is said, and the page
+ * reads the schedule again rather than patching what it drew. A disabled
+ * schedule is an admin's to enable: Run now says so and Resume is not offered
+ * (`:resume` is 403 `admin_required` for it).
  */
 export function ScheduleActions({
   s,
-  where,
   onDone,
   onDeleted,
-  foldId,
 }: {
   s: Schedule
-  where: 'row' | 'head'
   onDone: (notice: ActNotice) => void
   onDeleted?: (notice: ActNotice) => void
-  /**
-   * The head's id for what folds into More on a phone (VQ-029): every action
-   * but Run now. A desktop draws them in the row as before (`.sc-fold` is
-   * `display: contents`); the page's More button names this id.
-   */
-  foldId?: string
 }) {
   const [busy, setBusy] = useState<ActKind | null>(null)
-  const [asking, setAsking] = useState<'run' | 'delete' | null>(null)
+  const [asking, setAsking] = useState<'run' | 'pause' | 'delete' | null>(null)
   const [typed, setTyped] = useState('')
+  const [reason, setReason] = useState('')
   const [refused, setRefused] = useState<string | null>(null)
-  const size = where === 'row' ? 'sm' : 'md'
   // A VIEWER CHANGES NO SCHEDULE (docs/design/workspace-roles.md §4.8): every
   // write in routes/schedules.py needs `member`. The server still decides.
   const roleGate = useRoleGate('member', 'run and change schedules')
@@ -384,8 +399,11 @@ export function ScheduleActions({
       if (r.status === 'error') setRefused(actRefusal(r.error))
       return
     }
-    const r = kind === 'pause' ? await pauseSchedule(s.schedule_id) : await resumeSchedule(s.schedule_id)
+    // THE REASON IS SENT ONLY WHEN ONE IS WRITTEN: the server says "paused" for none.
+    const why = reason.trim()
+    const r = kind === 'pause' ? await pauseSchedule(s.schedule_id, why === '' ? {} : { reason: why }) : await resumeSchedule(s.schedule_id)
     setBusy(null)
+    setAsking(null)
     if (r.status === 'ok') {
       const said =
         kind === 'pause'
@@ -401,36 +419,26 @@ export function ScheduleActions({
   const runNow = () => (runSpends(s, false) ? setAsking('run') : void act('run'))
   const resumable = s.state === 'paused' || s.state === 'auto_paused'
   return (
-    <div className={where === 'row' ? 'sc-row-acts' : 'c-acts sc-head-acts'} data-testid={`sc-acts-${where}`}>
-      <Button size={size} kind={where === 'head' ? 'primary' : 'secondary'} busy={busy === 'run' ? 'Running…' : false} disabledReason={disabled} onClick={runNow}>
+    <div className="c-acts sc-head-acts" data-testid="sc-acts-head">
+      <Button kind="primary" busy={busy === 'run' ? 'Running…' : false} disabledReason={disabled} onClick={runNow}>
         Run now
       </Button>
-      {where === 'head' ? (
-        <span className="sc-fold" id={foldId}>
-          <Button size={size} busy={busy === 'dry' ? 'Running dry…' : false} disabledReason={disabled} onClick={() => void act('dry')}>
-            Dry run
-          </Button>
-          {s.state === 'enabled' && (
-            <Button size={size} busy={busy === 'pause' ? 'Pausing…' : false} disabled={roleGate !== null} onClick={() => void act('pause')}>
-              Pause
-            </Button>
-          )}
-          {resumable && (
-            <Button size={size} busy={busy === 'resume' ? 'Resuming…' : false} disabled={roleGate !== null} onClick={() => void act('resume')}>
-              Resume
-            </Button>
-          )}
-          <Button size={size} kind="danger" disabled={roleGate !== null} onClick={() => { setTyped(''); setRefused(null); setAsking('delete') }}>
-            Delete…
-          </Button>
-        </span>
-      ) : (
-        resumable && (
-          <Button size={size} busy={busy === 'resume' ? 'Resuming…' : false} disabled={roleGate !== null} onClick={() => void act('resume')}>
-            Resume
-          </Button>
-        )
+      <Button busy={busy === 'dry' ? 'Running dry…' : false} disabledReason={disabled} onClick={() => void act('dry')}>
+        Dry run
+      </Button>
+      {s.state === 'enabled' && (
+        <Button disabled={roleGate !== null} onClick={() => { setReason(''); setAsking('pause') }}>
+          Pause
+        </Button>
       )}
+      {resumable && (
+        <Button busy={busy === 'resume' ? 'Resuming…' : false} disabled={roleGate !== null} onClick={() => void act('resume')}>
+          Resume
+        </Button>
+      )}
+      <Button kind="danger" disabled={roleGate !== null} onClick={() => { setTyped(''); setRefused(null); setAsking('delete') }}>
+        Delete…
+      </Button>
       {asking === 'run' && (
         <Dialog
           title={`Run ${s.name} now?`}
@@ -451,6 +459,28 @@ export function ScheduleActions({
             {runCost(s)}
           </p>
           <p>A dry run creates nothing and runs no agent.</p>
+        </Dialog>
+      )}
+      {asking === 'pause' && (
+        <Dialog
+          title={`Pause ${s.name}?`}
+          onClose={() => setAsking(null)}
+          actions={
+            <>
+              <Button kind="ghost" onClick={() => setAsking(null)}>
+                Keep it running
+              </Button>
+              <Button kind="primary" busy={busy === 'pause' ? 'Pausing…' : false} onClick={() => void act('pause')}>
+                Pause
+              </Button>
+            </>
+          }
+        >
+          <p>No new firings until it is resumed. Work it already made carries on.</p>
+          <label className="c-field">
+            <span className="c-lbl">Why, in one line (optional; shown in the list and on this sheet)</span>
+            <input className="c-inp" maxLength={PAUSE_REASON_MAX} value={reason} onChange={(e) => setReason(e.target.value)} />
+          </label>
         </Dialog>
       )}
       {asking === 'delete' && (
@@ -490,11 +520,21 @@ export function ScheduleActions({
   )
 }
 
-/** What the last action said: a status, or an alert when it was refused. */
+/**
+ * What the last action said: a status, or an alert when it was refused.
+ * IT TAKES FOCUS WHEN IT ARRIVES (QA1 automate-15): the pressed button is
+ * disabled while busy, or gone once the schedule is read again (Pause gives
+ * way to Resume), and a browser drops a focused button that turns disabled to
+ * <body>, so a keyboard reader started again from the top of the page.
+ */
 export function Said({ notice }: { notice: ActNotice | null }) {
+  const line = useRef<HTMLParagraphElement | null>(null)
+  useEffect(() => {
+    if (notice !== null) line.current?.focus()
+  }, [notice])
   if (notice === null) return null
   return (
-    <p className={`sc-said is-${notice.tone}`} role={notice.tone === 'bad' ? 'alert' : 'status'} data-testid="sc-said">
+    <p ref={line} tabIndex={-1} className={`sc-said is-${notice.tone}`} role={notice.tone === 'bad' ? 'alert' : 'status'} data-testid="sc-said">
       {notice.text}
     </p>
   )
@@ -678,12 +718,20 @@ function ScheduleList({
   open: string | null
 }) {
   const now = useNow()
+  const table = useRef<HTMLTableElement | null>(null)
+  useEffect(() => {
+    if (open !== null || closedSheet === null) return
+    const id = closedSheet
+    closedSheet = null
+    const tr = [...(table.current?.querySelectorAll<HTMLElement>('tr[data-schedule]') ?? [])].find((r) => r.dataset.schedule === id)
+    tr?.querySelector<HTMLElement>('a.al-name')?.focus()
+  }, [open])
   // NEEDS A LOOK FIRST, THEN BY NAME (frame A1). The API lists by name, and a
   // stable sort keeps that order inside each half.
   const sorted = [...rows].sort((a, b) => Number(NEEDS_LOOK.has(b.state_word!)) - Number(NEEDS_LOOK.has(a.state_word!)))
   return (
     <div className="sc-table-wrap al-wrap">
-      <table className="sc-table al-table">
+      <table className="sc-table al-table" ref={table}>
         <thead>
           <tr>
             <th scope="col" data-col="name">Schedule</th>
