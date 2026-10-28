@@ -163,7 +163,8 @@ describe('Building: what the agent is building, in one line, at the top of the p
     const dt = container.querySelector<HTMLElement>('.dt')!
     await waitFor(() => expect(text(dt.querySelector('.dt-building-v'))).toBe('Masked: keep three versions. (#7)'))
     expect(dt.firstElementChild).toBe(dt.querySelector('.dt-building'))
-    expect(text(dt.querySelector('.dt-building-l'))).toBe('Building')
+    // The word follows the state (QA1 overview-agents-26): a running agent's line says Running.
+    expect(text(dt.querySelector('.dt-building-l'))).toBe('Running')
     expect(dt.querySelector('.dt-building-v')!.getAttribute('title')).toBe('Masked: keep three versions.')
     expect(dt.textContent).not.toContain(raw)
   })
@@ -259,7 +260,8 @@ describe('Resources: one row, the prose behind “details”', () => {
     // With no attempt figure at all, the class's cores say whose they are.
     const bare = attempt(1, { backend: 'GKE_JOB', completed_at: null, exit_code: null } as Parameters<typeof attempt>[1])
     const dt2 = host(runOf({ classes: four, attempts: [bare] }))
-    expect(text(dt2.querySelector('details.dt-res > summary .dt-res-f'))).toBe('4 cores (class)')
+    // MUTATION (QA1 overview-agents-24): put back `4 cores (class)` -- the class's size reads as a third CPU limit.
+    expect(text(dt2.querySelector('details.dt-res > summary .dt-res-f'))).toBe('class 4 vCPU')
   })
 
   it('names what it could not read with a dash, never a 0', () => {
