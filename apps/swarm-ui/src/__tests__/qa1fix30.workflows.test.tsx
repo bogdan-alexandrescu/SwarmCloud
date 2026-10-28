@@ -14,6 +14,7 @@
  *   82  `$0.518 3 of 4 reported`: no unit, no space
  *   83  stop / Stop step / Cancel workflow / Stop: one action, three words
  *   84  a recorded stop changed nothing on the page
+ *   85  the stop dialog's hint asked for a name where the id is typed (QA1C-FOLLOWUPS)
  *   89  two screens named Timeline
  *   C-10 Submitted and started as local clock times with no zone
  *   C-11 a one-step chip cut to `claude-code-browser …`
@@ -263,6 +264,20 @@ describe('83: one verb, Stop, for every stop on the page', () => {
     // MUTATION: put `label="Stop step"` back on the card's `StopRun`.
     const card = document.querySelector<HTMLElement>('.wf-inspect-acts')
     if (card !== null) expect(flat(card.querySelector('button'))).toBe('Stop')
+  })
+})
+
+describe('overview-agents-85: the stop dialog asks for the id, and its hint says id', () => {
+  it('says the button unlocks when the id matches exactly, then that the id matches', async () => {
+    await page(AUDIT)
+    const head = document.querySelector<HTMLElement>('.wfp:not(.is-loading) .wfp-head')!
+    fireEvent.click(await waitFor(() => within(head).getByRole('button', { name: 'Stop workflow' })))
+    const dialog = await screen.findByRole('dialog')
+    // MUTATION: drop `noun="id"` from CancelWorkflow's TypedConfirm -- the
+    // hint asks for a "name" the reader is told nowhere to type (QA1C-FOLLOWUPS).
+    expect(flat(dialog.querySelector('.c-hint'))).toBe('The button unlocks when the id matches exactly.')
+    fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: AUDIT } })
+    expect(flat(dialog.querySelector('.c-hint'))).toBe('The id matches.')
   })
 })
 
