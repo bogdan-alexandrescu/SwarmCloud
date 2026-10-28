@@ -5395,8 +5395,9 @@ function SampleNote(usage: WorkflowUsage, workflow: Workflow): ReactNode {
 function WorkflowStateMark({ workflow }: { workflow: Workflow }) {
   const s = derivedStateOf(workflow)
   if (s !== null) return <StateMark state={s} />
-  const h = workflowHeaderState(workflow)
-  return <NamedMark mark="queued" dataMark="unknown" hue="warn" word={markWord(h.word)} title={h.title} />
+  const read = workflowHeaderState(workflow)
+  const h = { ...read, word: markWord(read.word) }
+  return <NamedMark mark="queued" dataMark="unknown" hue="warn" word={h.word} title={h.title} />
 }
 
 /**
