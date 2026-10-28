@@ -112,6 +112,16 @@ vulnerabilities:
   # the scanner's title for this one is about certificate verification, so the
   # expiry is shorter: replace each tool with a vendor release built on the
   # fixed Go as soon as one ships (docs/versions.md), re-scanning first.
+  #
+  # Re-dated 2026-10-28 from that day's expiry, one more week, because no
+  # vendor had shipped yet. Measured 2026-10-28 ~03:00Z from each binary's
+  # embedded Go version: kubectl v1.37.1, the newest release
+  # (dl.k8s.io/release/stable.txt), is built with go1.26.8; google-cloud-cli
+  # 591.0.0, the newest in the rapid channel's components-2.json, ships
+  # gcloud-crc32c on go1.27.2 and gke-gcloud-auth-plugin on go1.27.1. All are
+  # below the fixed 1.26.10 / 1.27.3, so bumping a pin removes nothing. The
+  # expiry had refused workspace-apply on this id alone in PR 2548's build
+  # (run 40620118018).
   - id: CVE-2026-111943
     statement: "Go stdlib crypto/x509 inside vendor-built Go binaries (docker, gcloud helpers, gh, kubectl, terraform, trivy); needs vendor rebuilds."
-    expired_at: 2026-10-28
+    expired_at: 2026-11-04
