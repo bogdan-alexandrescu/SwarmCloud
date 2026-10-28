@@ -1199,8 +1199,9 @@ export function adminPanelCounts(
  * email (which stays in its title). "Platform admin", else "Workspace admin"
  * when `/v1/tenants/mine` names them admin of a group workspace, else
  * "Viewer" when the group workspace in hand holds them as one -- "Member"
- * there would claim a wider role than the server stores -- else "Member".
- * Null until both reads have answered: an unread list is not "not an admin".
+ * there would claim a wider role than the server stores -- "Workspace admin"
+ * again when the workspace in hand is the person's own personal one -- else
+ * "Member". Null until both reads have answered: an unread list is not "not an admin".
  */
 export function roleLine(platformAdmin: boolean, mine: Result<TenantChoice[]>, tenantId: string | null): string | null {
   if (platformAdmin) return 'Platform admin'
@@ -1208,6 +1209,10 @@ export function roleLine(platformAdmin: boolean, mine: Result<TenantChoice[]>, t
   if (choices === null) return null
   if (adminWorkspaces(choices).length > 0) return 'Workspace admin'
   const here = choices.find((c) => c.tenant_id === tenantId)
+  // THE OWNER OF A PERSONAL WORKSPACE IS ITS ADMIN (QA1 config-28): the foot
+  // said "Member" while People and roles said "You are this workspace's
+  // admin" and This workspace "Your role: admin".
+  if (here !== undefined && here.kind === 'user') return 'Workspace admin'
   return here !== undefined && here.kind === 'group' && roleOf(here) === 'viewer' ? 'Viewer' : 'Member'
 }
 
@@ -2642,7 +2647,9 @@ function TenantBlock({
           <span className="sk-tt">
             <b>{name}</b>
             <small>
-              workspace · {at === -1 ? 'not in the list' : `${at + 1} of ${choices.length}`}
+              {/* ITS KIND, AS WORKSPACE SETTINGS SAYS IT (QA1 admin-shell-21):
+                  the person's own workspace is `personal` there. */}
+              {choices[at]?.kind === 'user' ? 'personal' : 'workspace'} · {at === -1 ? 'not in the list' : `${at + 1} of ${choices.length}`}
               {isDefault ? ' · default' : ''}
             </small>
           </span>
@@ -2792,11 +2799,24 @@ function TenantPicker({
       if (box.current?.contains(t) === true || t.closest('.sk-tsw, .sk-ttile, .sk-tchip') !== null) return
       close.current()
     }
+    // FOCUS ARRIVING OUTSIDE CLOSES IT TOO (QA1 admin-shell-07): `onBlur`
+    // below reads `relatedTarget`, and a focusout that does not carry one
+    // returned early, so Tab walked into the page with the list still open and
+    // a later Escape gave focus back to nothing. Where focus LANDS is read here.
+    const onIn = (e: FocusEvent) => {
+      const t = e.target
+      if (!(t instanceof Element) || box.current?.contains(t) === true) return
+      if (t.closest('.sk-tsw, .sk-ttile, .sk-tchip') !== null) return
+      giveBack.current = false
+      close.current()
+    }
     document.addEventListener('keydown', onKey, true)
     document.addEventListener('pointerdown', onDown)
+    document.addEventListener('focusin', onIn)
     return () => {
       document.removeEventListener('keydown', onKey, true)
       document.removeEventListener('pointerdown', onDown)
+      document.removeEventListener('focusin', onIn)
       if (giveBack.current) opener?.focus()
     }
   }, [])
