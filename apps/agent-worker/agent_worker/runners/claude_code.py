@@ -270,6 +270,19 @@ never a literal /tmp or the workspace. Where the worker put
 PLAYWRIGHT_BROWSERS_PATH under the cache (an image with no browser), this
 runner hands that path to the agent itself, and never reads it as an image's
 browser (`cachedirs.image_browsers_path`).
+
+WHY LANE CAPS (TOKEN-A, #2524 items 6 and 8, BGD 2026-10-27). A token
+analysis of 2026-10-20..27 (wf_9a256dde8d174201947c) found 97% of the pool's
+tokens were cache reads: the same long context re-read on every turn. What
+sits in that context is capped here. The repository's own `swarmcloud` MCP
+server (`.mcp.json`) is not loaded (`disabledMcpjsonServers`): no lane in the
+sample called it and its ~100 tool schemas were in every prefix. A Bash
+result is capped at about 12,000 characters (`BASH_MAX_OUTPUT_LENGTH`). A
+second `scripts/changed-guards.sh` on a tree nothing has changed since the
+last one is warned, never blocked (`guards_repeat_hook.py`). And the prompt
+gains one line (`exploration_note`): the graph's `search` and `call_graph`
+before a `grep -rn` across the tree, and broad exploration sent to a sonnet
+or haiku child, each clause only when the attempt has that tool.
 """
 
 from __future__ import annotations
@@ -292,7 +305,7 @@ from swarm_common.models import (
 from .. import browser_tools, graphstage
 from ..budget import NOTE_ENV as BUDGET_NOTE_ENV
 from ..cachedirs import image_browsers_path, scratch_note
-from ..children import git_shim_argv, search_shim_argv
+from ..children import CHILDREN_ENV, git_shim_argv, search_shim_argv
 from ..mcp_attach import MAX_SERVERS as MAX_MCP_SERVERS
 from ..mcp_attach import RELAY_ENV as MCP_RELAY_ENV
 from ..mcp_relay import LOOPBACK as MCP_RELAY_HOST
@@ -343,6 +356,17 @@ GATE_WAIT_HOOK = Path(__file__).resolve().parent / GATE_WAIT_HOOK_NAME
 #: hook: the one way text reaches a headless run mid-turn. Registered only
 #: when the worker named a note file (`agent_worker.budget.NOTE_ENV`).
 BUDGET_NOTE_HOOK = Path(__file__).resolve().parent / "budget_note_hook.py"
+#: The PreToolUse hook that warns a second `scripts/changed-guards.sh` on a
+#: tree nothing has changed since the last one (module docstring, LANE CAPS).
+#: Shipped and named by absolute path, as the stdin hook is; its state is a
+#: file beside the settings, reset each time the settings are written.
+GUARDS_REPEAT_HOOK = Path(__file__).resolve().parent / "guards_repeat_hook.py"
+GUARDS_STATE_NAME = "guards-state.json"
+#: The repository `.mcp.json` servers a lane does not load (LANE CAPS).
+REPO_MCP_SERVERS_OFF = ("swarmcloud",)
+#: The most characters of one Bash result the CLI keeps (LANE CAPS). A
+#: string, as the settings' env is.
+BASH_MAX_OUTPUT = "12000"
 
 #: Where agent-runtime-browser installed Chromium (its Dockerfile's ENV). Set
 #: only in that image; the lifecycle passes it to this runner by name.
@@ -375,6 +399,18 @@ RELATED_TESTS_NOTE = (
     "shards are what ran containers out of memory. Run "
     "scripts/changed-guards.sh once at the end and fix what it reports; CI "
     "runs everything else."
+)
+
+#: Where to explore first (LANE CAPS, #2524 item 8), once, after the prompt;
+#: each clause only when the attempt has the tool it names (`exploration_note`).
+EXPLORATION_GRAPH_CLAUSE = (
+    "use the swarm-graph `search` and `call_graph` tools before a `grep -rn` "
+    "across the tree"
+)
+EXPLORATION_CHILDREN_CLAUSE = (
+    "send broad exploration to a child task through .swarm-children "
+    "($SWARM_CHILDREN) with `model_class` \"sonnet\" or \"haiku\" rather "
+    "than reading the tree yourself"
 )
 
 #: Set by the dispatcher on the worker container only with the live browser's
@@ -724,6 +760,18 @@ def scratch_note_for(environ: Mapping[str, str]) -> str | None:
     return scratch_note(own_volume=not Path(tmpdir).is_relative_to(workspace))
 
 
+def exploration_note(*, graph: bool, children: str) -> str | None:
+    """The one exploration line, naming only what this attempt has, or None."""
+    clauses = []
+    if graph:
+        clauses.append(EXPLORATION_GRAPH_CLAUSE)
+    if children:
+        clauses.append(EXPLORATION_CHILDREN_CLAUSE)
+    if not clauses:
+        return None
+    return f"Explore cheaply: {'; and '.join(clauses)}."
+
+
 def egress_notice(spool: str) -> str | None:
     """EGRESS-GATE: the worker's notice that this attempt's proxied browser has
     no egress (`handoff.EGRESS_NOTICE_NAME`, written by `HandoffPath.prepare`
@@ -777,6 +825,11 @@ def write_headless_settings(directory: Path) -> Path:
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     hook = directory / "refuse-background.py"
     _write_private(hook, _HOOK)
+    # A new settings file is a new attempt: an earlier attempt's guard run
+    # is not this one's to compare with.
+    guards_state = directory / GUARDS_STATE_NAME
+    if guards_state.is_symlink() or guards_state.exists():
+        guards_state.unlink()
     settings: dict[str, Any] = {
         "env": {
             NO_BACKGROUND_ENV: "1",
@@ -787,7 +840,17 @@ def write_headless_settings(directory: Path) -> Path:
             # may ask for match the briefs. Strings: the settings' env is.
             "BASH_DEFAULT_TIMEOUT_MS": "600000",
             "BASH_MAX_TIMEOUT_MS": "600000",
+            # LANE CAPS (#2524 item 6): a whole test transcript in one Bash
+            # result is re-read on every later turn; past this the CLI keeps
+            # the head and tail. related-tests.sh and changed-guards.sh print
+            # a tail and keep the full output in a log.
+            "BASH_MAX_OUTPUT_LENGTH": BASH_MAX_OUTPUT,
         },
+        # LANE CAPS (#2524 item 6): the repository's `.mcp.json` server is the
+        # operator's console; no lane in the measured week called it, and its
+        # ~100 tool schemas sat in every turn's prefix. The platform's own
+        # servers come from `--mcp-config`, which this does not touch.
+        "disabledMcpjsonServers": list(REPO_MCP_SERVERS_OFF),
         # #735, owner decision 2026-10-06: no attribution written at all, so
         # no "Generated with" footer reaches a pr-body.md and no
         # Co-Authored-By trailer a commit. The object form is the pinned
@@ -818,6 +881,19 @@ def write_headless_settings(directory: Path) -> Path:
                         {
                             "type": "command",
                             "command": f"{shlex.quote(sys.executable)} -I {shlex.quote(str(STDIN_HOOK))}",
+                            "timeout": 30,
+                        }
+                    ],
+                },
+                {
+                    # Warns, never blocks: no permission decision, exit 0,
+                    # and fails open (guards_repeat_hook.py).
+                    "matcher": "Bash",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": f"{shlex.quote(sys.executable)} -I {shlex.quote(str(GUARDS_REPEAT_HOOK))} "
+                                       f"{shlex.quote(str(guards_state))}",
                             "timeout": 30,
                         }
                     ],
@@ -1399,6 +1475,12 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     scratch = scratch_note_for(os.environ) if ctx.repo_dir is not None else None
     if scratch and isinstance(prompt, str) and prompt.strip():
         prompt = f"{prompt.rstrip()}\n\n{scratch}"
+        ctx.payload = {**ctx.payload, "prompt": prompt}
+    # Where to explore first, naming only the tools this attempt has (LANE CAPS).
+    explore = exploration_note(graph=bool(graph_snapshot or graph_served),
+                               children=os.environ.get(CHILDREN_ENV, "").strip())
+    if explore and isinstance(prompt, str) and prompt.strip():
+        prompt = f"{prompt.rstrip()}\n\n{explore}"
         ctx.payload = {**ctx.payload, "prompt": prompt}
     # The caller's registered MCP servers, through the worker's relay
     # (MCP-RUNNERS): the local token and loopback URLs only, and a line each
