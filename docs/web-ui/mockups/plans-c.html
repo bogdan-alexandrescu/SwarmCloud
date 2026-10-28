@@ -673,7 +673,7 @@ const STAGES=[
   {t:'Planned, waiting',s:'a plan waits on a person'},
   {t:'Approved, running',s:'steps are tasks now'},
   {t:'Pull request and CI',s:'fix rounds, review, merge gate'},
-  {t:'Merged or ended',s:'last 7 days'}
+  {t:'Merged or ended',s:'last 24 h'}
 ];
 function card(k,o){
   o=o||{};const s=SRC[k.src];
@@ -819,7 +819,7 @@ function traceSheet(){
   const li=(d,ic,t,s,extra)=>`<li><span class="dot ${d}">${I(ic)}</span><div class="tb"><b>${t}</b><span>${s}</span>${extra||''}</div></li>`;
   return `<aside class="dsheet w7"><div class="shh"><div class="tt"><span class="cr">Failure review · #2583</span><h4>cifix.stamp’s ci_fix branch refuses a PR-side CI fix while a plain continuation holds the pull request</h4><span class="meta">${C('merged','ok')}<span>run_fba2dc8f6ec9494dae2f · done</span></span></div>${B('','q x','x')}</div>`+
     `<section class="shs"><h5>From plan to merge</h5><ol class="trace">`+
-    li('ok','check','Plan revision 1 approved','auto-approved by its schedule’s gate (<code>plan_approval: auto</code>) at 2026-10-28 00:06:03Z · '+`<span class="dg">${DIGS}</span>`,`<span class="fold">${I('chev')}The plan as approved</span>`)+
+    li('ok','check','Plan revision 1 approved','auto-approved by its schedule’s gate (<code>plan: auto</code>, so the run’s <code>plan_approval: auto</code>) at 2026-10-28 00:06:03Z · '+`<span class="dg">${DIGS}</span>`,`<span class="fold">${I('chev')}The plan as approved</span>`)+
     li('ok','check','Workflow wf_e0fe6bf2c96f4a4082fa','the plan compiled to its step, then review, fix and re-review',T(['Step','Task','State'],[[`<span class="mn">ci-fix-waits-on-continuation</span>`,`<span class="mn">task_a5ddf372107c41e9ab7e</span>`,C('done','ok')],[`<span class="mn">review</span>`,DASH('the review task is not on the run record'),C('done','ok')]]))+
     li('ok','pr','Pull request #2584','opened by the step; the run checked it to a green head',`<span class="sm12">head <code>da75881a2270</code></span>`)+
     li('ok','check','CI and fix rounds',`green at <code>da75881a2270</code> · 10 checks passed, 0 failed · fix rounds used: 0 of 3`)+
@@ -907,7 +907,7 @@ function p7b(){
 function p1c(){
   const rows=K.filter(k=>k.stg===4).map(k=>[`<b class="nm">${k.t}</b>`,`${SRC[k.src].l}`,C(k.st[0],k.st[1]),`<span class="sm12">${k.why?k.why+' · '+k.meta:k.meta}</span>`]);
   return desk({},PHEAD,P1LEAD+filters('',[5,6,7,8,9])+`<div class="acts">${C('showing: rejected, expired, superseded, merged, failed','in')}${B('Clear the state filter','s q','x')}</div>`+
-    CARD('Merged or ended · '+rows.length,'<span class="sm12 dim">newest first · last 7 days</span>',T(['What','Source','State','Reason or outcome'],rows)),'','short');
+    CARD('Merged or ended · '+rows.length,'<span class="sm12 dim">newest first · last 24 h</span>',T(['What','Source','State','Reason or outcome'],rows)),'','short');
 }
 
 /* ---------- the frames ---------- */
