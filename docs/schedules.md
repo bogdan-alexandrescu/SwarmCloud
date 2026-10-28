@@ -1817,7 +1817,7 @@ it rather than from what it happens to hold. Each kind is read from its own
 source of truth, as its pending item is: a record from `approvals/`, a
 projected plan from its run (`approved_by`/`approved_at`, or its `PLANNED ->
 REJECTED` step, `expired` when expiry rejected it), an await-input step from
-its task (`answered` with whoever answered, or `expired`). `superseded` is not
+its `metadata.await_input` (`answered` with whoever answered, or `expired`). `superseded` is not
 history: nobody decided it.
 
 A history read is bounded: at most 200 rows, each source one bounded read
