@@ -7,7 +7,7 @@ import { isTerminalEvent } from './events'
 import { backendWord, eventWord, stateWord } from './words'
 import { num, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
-import { Screen, timeAgo } from './Shell'
+import { Screen } from './Shell'
 import { REASON_COPY, TERMINAL_STATES, bytesLabel, newestHeartbeat, pluralise, type AttemptRow, type Task, type TaskEvent } from './types'
 
 /**
@@ -270,7 +270,11 @@ function Body({ t }: { t: AttemptTimeline }) {
   // ONE CARD HOLDS THE WHOLE PAGE (QA1 overview-agents-41): its own count is
   // the page's, so the toolbar keeps only the caveat and the figure moves to
   // its accessible name. Shared between cards, the total is the toolbar's.
-  const oneCard = groups.length === 1 && groups[0]?.events.length === count
+  // A CARD WITH NO EVENTS SHARES NOTHING (QA1 review, 2026-10-28): a retried
+  // agent draws a card per attempt, and two event-less attempts kept the
+  // toolbar's `8 events` beside the third card's `8 events · Cloud Run`.
+  const holding = groups.filter((g) => g.events.length > 0)
+  const oneCard = holding.length === 1 && holding[0]?.events.length === count
   // THE FULL TIMELINE LIVES HERE NOW (#101), so the proof Details drew with
   // it comes too: a terminal task always writes a terminal event, so a
   // finished task whose page carries none proves the page ends before the
@@ -763,7 +767,9 @@ export function absTime(iso: string): string {
  * WHEN, AS THE GAP FROM THE EVENT BEFORE, with the absolute time in `title`
  * and -- because a title is a hover a keyboard never gets -- in a span the
  * sheet shows while the element has focus. The first event on the page has
- * no predecessor, so it keeps its age.
+ * no predecessor, so it keeps its age -- in `ageText`, the card's formatter,
+ * so `ready 9d ago` no longer sits over `ran 8d 22h · open` (QA1 review of
+ * overview-agents-42, 2026-10-28).
  */
 export function EventWhen({ e, prev }: { e: TaskEvent; prev: TaskEvent | null }) {
   const at = instant(e.at)
@@ -771,7 +777,7 @@ export function EventWhen({ e, prev }: { e: TaskEvent; prev: TaskEvent | null })
   const abs = absTime(e.at)
   return (
     <time className="ev-at" dateTime={e.at} title={abs} tabIndex={0}>
-      {at !== null && before !== null ? gapText(at - before) : timeAgo(e.at)}
+      {at !== null && before !== null ? gapText(at - before) : ageText(e.at)}
       <span className="ev-abs">{abs}</span>
     </time>
   )

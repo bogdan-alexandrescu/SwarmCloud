@@ -1073,11 +1073,13 @@ p.muted.rt-reason { margin: 0 0 var(--ctl-s3); }
   /* `46` then `/50`: the frame's figure, leased over ceiling. */
   .cap-pools.is-stacked > table > tbody > tr > td[data-label='Ceiling (units)'] { grid-area: ceil; align-self: start; }
   .cap-pools.is-stacked > table > tbody > tr > td[data-label='Ceiling (units)']::before { content: '/'; }
-  /* A LOWERED CEILING SAYS ITS CONFIGURED LIMIT IN WORDS, UNDER THE FIGURE
+  /* A LOWERED CEILING SAYS ITS CONFIGURED LIMIT IN WORDS, ON THE SET BY LINE
      (QA1 capacity-12, 2026-10-28): `0 /6 /10` ran three numbers together.
-     The row prints `lowered from 10` (Capacity.tsx), a muted line of its own,
-     so the figure stays `0/6` and the name column keeps its width. */
-  .cap-pools.is-stacked .cap-ceil > .cap-was { display: block; margin-left: 0; white-space: nowrap; }
+     The row prints `provider quota · lowered from 10` in the full-width `by`
+     area (Capacity.tsx), so the figure stays `0/6`. Under the figure, as a
+     nowrap line, it sized the max-content ceiling column and took 51px from
+     the name at 390 (review of the same finding). */
+  .cap-pools.is-stacked .cap-by-low > .cap-was { margin-left: 0; }
   .cap-pools.is-stacked > table > tbody > tr > td[data-label='Use'] { grid-area: use; }
   .cap-pools.is-stacked > table > tbody > tr > td[data-label='State'] { grid-area: state; justify-self: end; }
   .cap-pools.is-stacked > table > tbody > tr > td[data-label='Set by'] { grid-area: by; }

@@ -134,16 +134,21 @@ describe('capacity-02: a pool with leased units never reads `0 holders`', () => 
 })
 
 describe('capacity-12: the phone row says the configured limit in words', () => {
-  it('reads `lowered from 10` beside the ceiling on the stacked row, not `/10`', async () => {
+  it('reads `lowered from 10` on the Set by line of the stacked row, and the ceiling only `6`', async () => {
     vi.stubGlobal('matchMedia', (q: string) => ({
       matches: q === '(max-width: 560px)', media: q, addEventListener() {}, removeEventListener() {},
     }))
     await renderPools(false)
-    const ceil = rowOf('tenant:eng').querySelector('.cap-ceil')!
+    const row = rowOf('tenant:eng')
     // MUTATION: keep `/{hard_limit}` on the stacked row -- `6/10`, read as `0 /6 /10`.
-    expect(flat(ceil)).toBe('6 lowered from 10')
-    expect(ceil.querySelector('.cap-was')!.textContent).toBe('lowered from 10')
-    expect(flat(ceil)).not.toMatch(/\/10/)
+    // MUTATION: put `lowered from 10` back under the figure in `.cap-ceil` --
+    // a nowrap line that sized the max-content ceiling column and cut the
+    // name's key at 390 (review of capacity-12).
+    expect(flat(row.querySelector('.cap-ceil'))).toBe('6')
+    const by = row.querySelector('td[data-label="Set by"]')!
+    expect(by.classList.contains('cap-by-cfg')).toBe(false)
+    expect(flat(by)).toBe('AIMD back-off · lowered from 10')
+    expect(by.querySelector('.cap-was')!.textContent).toBe('lowered from 10')
   })
 
   it('keeps `6/10` in the desktop table, where Leased and Ceiling are columns (control)', async () => {

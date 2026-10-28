@@ -708,6 +708,7 @@ function PoolRow({
   const marks = classifyPool(pool, poolWeight(pool, classes))
   const by = setBy(pool)
   const limit = pool.effective_limit
+  const lowered = limit !== null && pool.hard_limit !== null && limit < pool.hard_limit
   // UNROUNDED for the track: 1 unit of 300 is 0.3%, and rounding it to 0
   // would hand the track a measured zero for a pool that holds something. A
   // ceiling of 0 leaves no room at all, so the track is full in the
@@ -761,15 +762,15 @@ function PoolRow({
           ) : (
             limit
           )}
-          {/* IN WORDS ON THE PHONE ROW (QA1 capacity-12, 2026-10-28). Stacked,
+          {/* NOT ON THE PHONE ROW (QA1 capacity-12, 2026-10-28). Stacked,
               Leased and Ceiling read as one figure, `0` then `/6`, so a
               second `/10` made `0 /6 /10` -- three numbers and no telling
-              which was the ceiling. The desktop table has them in columns
-              and keeps the frame's `6/10`. */}
-          {stacked && limit !== null && pool.hard_limit !== null && limit < pool.hard_limit && ' '}
-          {limit !== null && pool.hard_limit !== null && limit < pool.hard_limit && (
+              which was the ceiling. There the configured limit is said in
+              words on the Set by line, below. The desktop table has them in
+              columns and keeps the frame's `6/10`. */}
+          {!stacked && lowered && (
             <span className="cap-was" title={`Configured hard limit is ${pool.hard_limit}`}>
-              {stacked ? `lowered from ${pool.hard_limit}` : `/${pool.hard_limit}`}
+              /{pool.hard_limit}
             </span>
           )}
         </span>
@@ -809,8 +810,24 @@ function PoolRow({
       {/* `cap-by-cfg` LETS THE PHONE ROW DROP IT (VQ-032): the compact row
           keeps Set by only when something other than the configured limit
           sets the ceiling, which is when it says anything. */}
-      <td role="cell" data-label="Set by" title={by.detail} className={by.term === 'configured' ? 'cap-by-cfg' : undefined}>
-        {by.term === 'configured' ? (
+      {/* THE PHONE ROW'S `lowered from 10` LIVES HERE (QA1 capacity-12
+          review, 2026-10-28): under the figure it was a nowrap label that
+          widened the ceiling column and cut openai · eng's key to
+          `provider:openai:tenant:e…`. Set by is the row's full-width line,
+          and what lowered a ceiling is what this cell says. One element, so
+          the stacked cell stays one grid item (visual QA V012). */}
+      <td
+        role="cell"
+        data-label="Set by"
+        title={by.detail}
+        className={by.term === 'configured' && !(stacked && lowered) ? 'cap-by-cfg' : undefined}
+      >
+        {stacked && lowered ? (
+          <span className="cap-by-low">
+            {by.term === 'configured' ? '' : `${by.term} · `}
+            <span className="cap-was">lowered from {pool.hard_limit}</span>
+          </span>
+        ) : by.term === 'configured' ? (
           <span className="cap-setby-cfg" role="img" aria-label="configured">·</span>
         ) : (
           by.term

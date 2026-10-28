@@ -61,6 +61,22 @@ describe('overview-agents-41: the event count is said once', () => {
     expect(cap.getAttribute('aria-label')).toMatch(/^2 events, the first page/)
   })
 
+  it('three attempts, two of them without events: the card holding all of them says the count, the toolbar does not', async () => {
+    // The fixture's running agent: attempts 1 and 2 wrote no event on this
+    // page, attempt 3 holds all of it. `grouped()` draws a card for each.
+    const attempts = [1, 2, 3].map((n) => attempt(n, { created_at: at(n * 2) }))
+    api.loadAttempts.mockResolvedValue(ok({ attempts }))
+    api.loadAgentDetail.mockResolvedValue(
+      ok({ task: runTask({ state: 'SUCCEEDED' }), events: [ev('running', at(7), 'att_3'), ev('succeeded', at(10), 'att_3')] } as unknown as AgentDetail),
+    )
+    render(<AttemptTimelineScreen taskId="tsk_charts" />)
+    await waitFor(() => expect(document.querySelectorAll('.att-card').length).toBe(3))
+    // MUTATION: `const oneCard = groups.length === 1 && ...` -- the toolbar
+    // reads `2 events · first page` beside the card's `2 events · Cloud Run`.
+    expect(flat(document.querySelector('.att-ev-cap'))).toBe('first page')
+    expect(eventCounts()).toBe(1)
+  })
+
   it('a page shared between cards keeps its one total on the toolbar (control)', async () => {
     api.loadAttempts.mockResolvedValue(ok({ attempts: [attempt(1)] }))
     api.loadAgentDetail.mockResolvedValue(
@@ -96,5 +112,24 @@ describe('overview-agents-42: one instant, one formatter', () => {
     // MUTATION: `heartbeat ${timeAgo(reading.at)}` -- `heartbeat 9d ago`.
     expect(facts.find((f) => f.startsWith('peak memory'))).toMatch(/heartbeat 8d 21h ago$/)
     expect(facts.join(' | ')).not.toMatch(/9d/)
+  })
+
+  it('the first timeline row ages its event in the same formatter: `8d 21h ago`, never `9d ago`', async () => {
+    const started = new Date(Date.now() - ((8 * 24 + 21) * 3600 + 600) * 1000).toISOString()
+    const open = attempt(1, { started_at: started, completed_at: null, exit_code: null })
+    api.loadAttempts.mockResolvedValue(ok({ attempts: [open] }))
+    api.loadAgentDetail.mockResolvedValue(
+      ok({
+        task: runTask({ state: 'RUNNING', started_at: started, completed_at: null }),
+        events: [ev('running', started, 'att_1'), ev('heartbeat', started, 'att_1')],
+      } as unknown as AgentDetail),
+    )
+    render(<AttemptTimelineScreen taskId="tsk_charts" />)
+    await waitFor(() => expect(document.querySelector('ol.timeline time.ev-at')).not.toBeNull())
+    const first = document.querySelector('ol.timeline time.ev-at')!
+    // The age, without the focus-only absolute time beside it.
+    const age = flat(first).replace(flat(first.querySelector('.ev-abs')), '').trim()
+    // MUTATION: `timeAgo(e.at)` in EventWhen -- `9d ago`.
+    expect(age).toBe('8d 21h ago')
   })
 })
