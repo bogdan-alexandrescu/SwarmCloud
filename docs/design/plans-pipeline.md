@@ -3,10 +3,10 @@
 **Status: designed 2026-10-28 (lane PLANS-DESIGN, part of #2585). Nothing here
 is built.** The owner's picks are BGD's of 2026-10-28 (§1); the build is the
 lanes of §11, API lanes first. BGD answered owner questions Q2-Q10 on
-2026-10-28 and each answer is written into the section it decides (§12 lists
-them); the one still open is Q1, the placement on the page, which waits on the
-PLANS-DIAG-A/B/C mock-ups (Q11, raised by writing Q5 down, is new and blocks
-nothing). Every file and symbol cited was read on 2026-10-28 at `12932fc`;
+2026-10-28, and Q1 (the placement on the page, picked C/C/C/B from the
+hand-drawn PLANS-DIAG-A/B/C mock-ups) and Q11 (what the $25 counts) at about
+18:30Z the same day; each answer is written into the section it decides (§12
+lists them), and no owner question is open. Every file and symbol cited was read on 2026-10-28 at `12932fc`;
 those §7.8 added (`store.PLATFORM_SETTINGS_DEFAULTS`, `AdminSettings.tsx`,
 `WorkspaceSettings.tsx`, `ScheduleEdit.tsx`, `Attempt.model`) at `8b91b10`.
 Lines move, so each citation names the symbol.
@@ -33,16 +33,24 @@ What this design settles, in one line each:
   says they help, inside the plan digest, on by default, switched at platform,
   workspace and schedule level (each overrides the one above, and a run
   records the setting it planned under); a plan that draws none says why in
-  one line (§6).
+  one line (§6). **They sit in the conversation** (BGD's PD1-PD2 pick, C):
+  the planner's opening message names them, a "Pinned to the plan" strip at
+  the top of the page shows one at a time on tabs, and a diagram asked for in
+  the thread joins the strip through "Pin to the plan", which makes a
+  revision (§2.5).
 * **The plan review chat** is an agent that reads this run only, answers each
   question as one short `claude-code` agent streamed to the page, may draw a
   diagram or propose a revision, and never applies one; its transcript is
-  every member's and kept with the run (§7).
+  every member's and kept with the run (§7). It is a right-hand column opened
+  from the page head (PD3, C).
 * **The plan-review settings** (§7.8): the chat's model is Sonnet by default,
   set at platform and workspace level and overridable on one plan when the
   plan's reading suggests a stronger one; the caps (5 re-plans, 20 diagram
   asks, 40 chat turns, $25 of review agents per run) are a platform admin's
-  setting, and every cap refuses with its reason, never silently.
+  setting, and every cap refuses with its reason, never silently. The $25
+  counts the chat's turns and the on-demand diagram agents only (Q11). A
+  workspace's plan-review settings sit on a new **Automate › Settings** tab
+  (PD4, B).
 
 ---
 
@@ -80,13 +88,28 @@ BGD, 2026-10-28, answered owner questions Q2-Q10 of the first round. They are
 quoted in §12 and written into §4, §5, §6, §7 and §11; Q4 and Q5 asked for more
 than a pick (both "configurable"), which §7.8 designs.
 
-**Placement is not decided** (Q1, still open after BGD's answers of
-2026-10-28). Where the diagrams, the on-demand ask, the chat
-section and the default-on switch sit on D's page is being drawn as three
-competing mock-ups (PLANS-DIAG-A, B and C) for BGD's pick. So §6 and §7 design
-the data and the routes to serve any of the three placements, and the
-placement is owner question Q1 (§12). No lane of §11 that is not a placement
-lane waits on it.
+**Placement: BGD's answer to Q1, 2026-10-28 (~18:30Z, recorded on #2585 at
+18:33Z).** Where the diagrams, the on-demand ask, the review chat and the
+run's diagram setting sit was drawn as three competing mock-ups,
+`docs/web-ui/mockups/plans-diagrams-a.html`, `-b.html` and `-c.html`
+(PLANS-DIAG-A, B and C, PRs 2640, 2643 and 2642). They are **hand-drawn**:
+static pages of example data, not the console, so a frame shows a placement
+and never a built behaviour. BGD picked **C, C, C, B** from them on the
+plan-diagrams picks page:
+
+| question | pick | what it means here |
+|---|---|---|
+| PD1 Where a plan's diagrams sit | **C, diagrams in the conversation** | The planner's opening message in the thread lists the diagrams it drew, or one line saying why it drew none; a "Pinned to the plan" strip at the top of the decision page shows one diagram at a time on tabs, each anchored to the plan or a step. |
+| PD2 Asking for a diagram during review | **C** | The reviewer asks in the thread, anchored to a step; the answer is a diagram message; "Pin to the plan" makes a new revision whose digest covers the diagram set, and puts it on the strip. |
+| PD3 The review chat | **C** | A right-hand column opened from the page head; while it is open, the margin's reasons and thread fold under each part of the document, as on the phone. |
+| PD4 The diagrams switch | **B** | A new Settings tab under Automate holds the workspace default (on); each schedule that plans can follow it or override it on or off. |
+
+The picks take C's and B's placements only. The data, routes and checks stay
+this design's (§3, §6, §7): where a mock-up's field list differs (C's
+`plan-pin` and `diagrams_reason`, B's `automate_settings.plan_diagrams` and
+`gate.plan_diagrams`), §6.2's `no_diagram`, §6.5's `plan:add-diagram`,
+§6.4's `plans.diagrams` and the schedule's `plan_diagrams` serve the same
+frame, and the mock-ups' example costs and caps are not this design's.
 
 ---
 
@@ -169,7 +192,7 @@ links to it from a `PLANNED` run (`D`'s "Runs links to it"); the plan view in
 
 | frame | state | what it draws |
 |---|---|---|
-| `D:P2a` | waiting, seen by someone who may decide | **The document** on the left, in the order a decision is made: why it exists (the source, §3.1, and the issue), the summary, requirements (folded past the first), overlaps (folded past the first), the steps (id, files, tests, estimate, prompt), **diagrams** (§6), risk per step (§3.7), estimate and **expected cost** (§3.8). **The margin** on the right: against each part, the planner's reason (§3.6) and that part's thread entries (§3.4). **The decision bar** names the revision and digest it approves: Approve, Edit, Request changes, Reject with a reason. |
+| `D:P2a` | waiting, seen by someone who may decide | **The document** on the left, in the order a decision is made: why it exists (the source, §3.1, and the issue), the summary, requirements (folded past the first), overlaps (folded past the first), the steps (id, files, tests, estimate, prompt), risk per step (§3.7), estimate and **expected cost** (§3.8). Above it, the **Pinned to the plan** strip of the revision's diagrams (§2.5, §6). **The margin** on the right: against each part, the planner's reason (§3.6) and that part's thread entries (§3.4), opening with the planner's message naming the diagrams it drew (§2.5). The page head carries the button that opens the review chat's column (§2.5, §7). **The decision bar** names the revision and digest it approves: Approve, Edit, Request changes, Reject with a reason. |
 | `D:P2b` | seen by a member who may not decide | No Approve, Edit or Reject; the bar says who can (`may_decide.deciders`, §3.9); Comment and the chat (§7) stay, because "a comment never changes the plan, only a revision does". |
 | `D:P2c` | superseded while open | A poll brought revision N+1 while N is on screen: the page keeps N, says N+1 arrived and what changed, takes Approve away from N (the server would answer 409 `plan_changed` anyway) and offers one button, "Read revision N+1". The rule `Runs.tsx` records today: a poll never swaps the plan under an open Approve. |
 | `D:P3a` | Request changes | Every open comment goes to the planner with the digest it was written on; the thread shows "re-planning" with the cost so far; the planner's answer arrives as revision N+1, with its diff, each comment marked answered by it, and its cost on its row (§5). |
@@ -179,7 +202,7 @@ links to it from a `PLANNED` run (`D`'s "Runs links to it"); the plan view in
 | `D:P4b` | merged, every requirement confirmed | The review's verdict against each requirement, the merge, "the pull request says Closes #N". |
 | `D:P4c` | merged, a requirement unmet | "part of #N", naming the unmet requirement (`requirements_unmet`, `requirements_note`), as docs/issue-runs.md requires. |
 | `D:P6d` | the server predates threads | The run read carries no `plan_revisions` or `plan_thread`: the plan is drawn without revisions or thread, and Approve, Edit and Reject work as today. |
-| `D:P7b` | phone at 390 | One column: each part, then its reason and thread under it; the decision bar sticky at the foot. |
+| `D:P7b` | phone at 390 | One column: each part, then its reason and thread under it; the decision bar sticky at the foot. The strip draws each diagram in a tall layout of the same source, and the review chat opens as a sheet over the plan (`DC:D7`, §2.5). |
 
 D's `P1a`/`P1b` (Approvals as a list of threads) are **not** built: PL1 is C's
 board. Their one idea that survives is the "last word" of a thread, which a
@@ -212,21 +235,42 @@ entry, served on `GET /v1/schedule-types`, so the list is the server's.
 
 ### 2.5 Diagrams and the review chat on the page
 
-Drawn by PLANS-DIAG-A/B/C, not here (Q1). Whatever the pick, the page has these
-parts, each fed by a read of §6-§7:
+**Placed as BGD picked on 2026-10-28 (Q1: C, C, C, B; §1).** Frames are cited
+by the id they carry in the two picked mock-ups: `DC:D1a` is frame D1a of
+`docs/web-ui/mockups/plans-diagrams-c.html` (PR 2642), `DB:D5a` is frame D5a
+of `docs/web-ui/mockups/plans-diagrams-b.html` (PR 2643). Both are hand-drawn
+pages of example data, so their costs, caps and counts are examples; the
+values are §6-§7's. Each part below is fed by a read of §6-§7:
 
-* the plan's diagrams, each with its title, kind, why and what it explains,
-  anchored to the whole plan or to a step, requirement or overlap;
-* the "no diagram, because …" line when the plan drew none;
-* an ask for a diagram, anchored or of the whole plan;
-* the chat section, its transcript, the turn in flight streaming, its cost so
-  far against the run's $25 (§7.8), and the model the next turn will use with
-  the per-plan override where it is offered (§7.8);
-* the diagram switch's state for this run (on, off, and from where).
+| frame | part | what it draws |
+|---|---|---|
+| `DC:D1a`, `DC:D1b` | **the Pinned to the plan strip** (PD1) | One card above the document, the revision's `diagrams[]` (§6.2) and nothing else: one diagram drawn at a time, the others named on tabs, each tab with its title and what it explains (the plan, or a step; a requirement or overlap when §6.2's `explains` names one). The card says "N diagrams in revision R · inside its digest" and offers Open large. Every diagram is drawn once, here: the messages that name it link to its tab. A revision with no diagram has no strip. |
+| `DC:D1a` | **the planner's opening message** (PD1) | The head of the margin's thread is the `planned` event (§3.4), drawn as the planner's message: it names each diagram of revision 1 with its `why` and a link to its strip tab. A `revised` event names the diagrams its revision added or removed. Both are derived on read from the revisions, never stored twice. |
+| `DC:D2a` | **the "no diagram, because …" line** (PD1) | A plan that drew none (`no_diagram`, §6.2) has no strip; its opening message carries the one line, and Ask for a diagram stays offered beside it. |
+| `DC:D3a`-`DC:D3c` | **asking in the thread** (PD2) | Ask for a diagram sits beside Comment in each part's margin composer, anchored to that part (a step, or the whole plan). The waiting entry shows elapsed time and its cost so far; the answer is a `diagram` entry (§3.4) with the diagram drawn in it, which is part of the conversation, not of the plan, so Approve does not include it. **Pin to the plan** (§6.5's `plan:add-diagram`) makes revision N+1 whose digest covers the new diagram set, puts the diagram on the strip, and the entry then names it and links to its tab. The revision chip says "diagrams only" when a revision only added one. |
+| `DC:D8a`-`DC:D8c` | **the review chat** (PD3) | A right-hand column, opened from a button in the page head and closed the same way. Its head names the agent, its model and the next turn's model with its level (§7.8); the meter under the composer is the run's review spend against its $25 (§7.8). A chat diagram offers Pin to the plan, which makes a revision exactly as from the thread, and Pin to the thread (§7.5). **While the column is open**, the margin folds: each part's reason and thread are drawn under that part of the document, as on the phone (`D:P7b`), and the strip folds to its tabs so the document keeps its width. |
+| `DC:D7a`-`DC:D7c` | **the phone** | The strip draws each diagram in a tall layout of the same source; a sequence diagram scrolls inside its own box. The chat opens as a sheet over the plan. |
+| `DC:D6c`, `DB:D5c` | **this run's diagram setting** | When the setting this run planned under (`run.plan_settings`, §6.4) is off: no strip, no Ask for a diagram, no draw in the chat, and one line in the strip's place naming the level that turned it off ("off for this schedule") with a link to that setting for someone who may change it. When it is on, the strip's card says nothing more: on is the default. A run planned before the field says "planned before diagrams". |
 
-The settings themselves are not on this page and are not part of Q1: the
-platform's on Admin › Settings, the workspace's on a card under Settings ›
-Workspace, a schedule's override on its edit sheet (§6.4, §7.8, lanes U10-U12).
+**The answer in the thread is "the planner's" by side, not by agent.** PD2
+says the planner answers. On the page the answer sits on the planner's side
+of the thread, as a diagram message; the agent that draws it is §6.5's
+diagram agent at the chat's model (§7.2's builder), and the entry's `by` says
+`review-agent` with its model and cost. It is not a re-plan: a diagram
+changes no step, so an opus planner run would buy nothing, and Q11 counts it
+in the $25 as a diagram agent.
+
+**The settings are edited off this page.** The workspace's are on the new
+**Automate › Settings** tab (PD4, B; `DB:D5a`, `DB:D5b`): the workspace
+default for diagrams in plans (on unless someone turns it off) and, under it,
+each schedule that plans with its choice to follow the workspace or override
+it on or off. The rest of the workspace's Plan review card (the chat's model
+class and the caps' read-only sentence, §7.8) moves there with the switch,
+rather than staying under Settings › Workspace as the design first placed it:
+all three are one `plan-settings` read and PUT, and one card per route keeps
+a workspace admin from finding half of it on another page. That move is this
+design's, not B's, and is asked in `questions.json`. The platform's stay on Admin › Settings (Q2), and a schedule's
+override is also on its edit sheet (§6.4, §7.8, lanes U10-U12).
 
 ---
 
@@ -758,7 +802,7 @@ A new revision is a new question; the reviewer gets the schedule's
   reason (§7.8's refusal shape). The cap counts re-plans submitted, failed
   ones included, because a failed opus planner run was still paid for. A
   re-plan's dollars count against the run's day budget, not the $25 of
-  review agents (§7.8 says why).
+  review agents (BGD's answer to Q11, 2026-10-28; §7.8 says why).
 * **Budget**: the agent counts against the tenant's day budget like any agent
   (`budget.py`); a re-plan refused by budget is 429 with the budget's refusal,
   and the thread says so.
@@ -918,8 +962,8 @@ set wins, and a run records the setting it planned under:
 | level | where it is stored | who sets it, and where |
 |---|---|---|
 | platform | the platform setting `plan_diagrams_default` in `store.PLATFORM_SETTINGS_DEFAULTS` (the `control/settings` document `GET/PUT /v1/admin/settings` serves), `true`, with its reason beside the value ("BGD 2026-10-28: by default on") | a platform admin, on Admin › Settings (`AdminSettings.tsx`), the page that already sets `merge_by_default` and the agent budget ceiling; recorded as that route's other settings are (`updated_by`, `updated_at`) |
-| workspace | `workspace_settings/{tenant_id}.plans.diagrams`: `on` \| `off` \| absent (the platform's) | the workspace's admin (a workspace admin, or the owner of a personal workspace, or a platform admin), exactly `mergesettings.py`'s rule and its switched refusal; on the Plan review card under Settings › Workspace (§7.8) |
-| schedule | the schedule document's `plan_diagrams`: `inherit` \| `on` \| `off`, default `inherit` | whoever may edit the schedule (its PATCH), audited in `schedaudit` as any field; on the schedule's edit sheet (`ScheduleEdit.tsx`), shown only for a type that `proposes` (§2.4) |
+| workspace | `workspace_settings/{tenant_id}.plans.diagrams`: `on` \| `off` \| absent (the platform's) | the workspace's admin (a workspace admin, or the owner of a personal workspace, or a platform admin), exactly `mergesettings.py`'s rule and its switched refusal; on the new Automate › Settings tab (PD4, §2.5, §7.8) |
+| schedule | the schedule document's `plan_diagrams`: `inherit` \| `on` \| `off`, default `inherit` | whoever may edit the schedule (its PATCH), audited in `schedaudit` as any field; on Automate › Settings' list of the schedules that plan (follow the workspace, on or off), and on the schedule's edit sheet (`ScheduleEdit.tsx`), both through the schedule's `PATCH`; shown only for a type that `proposes` (§2.4) |
 
 The platform level is a setting a platform admin changes at run time, not an
 environment variable: a value in tfvars changes only with a deploy, and BGD's
@@ -935,14 +979,21 @@ tenant's worker cannot forge the value), and one `admin_audit` entry,
 that changes nothing writes nothing. A run made by hand has no schedule and
 reads the workspace's.
 
-**"From the automation settings."** There is no page by that name today. Each
-level is edited on the page that already holds its level's settings: Admin ›
-Settings for the platform, a Plan review card under Settings › Workspace
-beside Merging for the workspace, the schedule's edit sheet for a schedule
-(lanes U10, U11, U12). If BGD's PLANS-DIAG pick (Q1) also draws an entry point
-from Automate, it links to that card; it never becomes a second editor of the
-same value. What Q1 still decides is how the decision page **shows** this
-run's setting (on or off, and from which level).
+**"From the automation settings": a new Automate › Settings tab, BGD's PD4
+pick (B), 2026-10-28.** There was no page by that name; B drew one, and BGD
+picked it. Automate gains a Settings tab after Approvals (`DB:D5a`). It holds
+the workspace's default for diagrams in plans, on unless a workspace admin
+turns it off, with BGD's examples of where the planner draws and where it does
+not beside it so the switch's meaning is on the screen; and, under it, every
+schedule whose type `proposes` (§2.4) with its choice: follow the workspace,
+on, or off; a type that does not propose has no plan to draw in and no row.
+An issue run submitted by hand has no schedule and follows the workspace, and
+the tab says so. Each level is still edited in one way: the workspace's through
+`PUT /v1/workspaces/{tenant_id}/plan-settings`, a schedule's through its
+`PATCH` (the same field the schedule's edit sheet sets, so the two controls
+are one value and one audit trail, never two copies), the platform's on
+Admin › Settings (lanes U10, U11, U12). The decision page only **shows** this
+run's setting, as §2.5 draws it.
 
 **How a run records what it planned under.** Each planner, re-plan, on-demand
 diagram and chat turn reads the effective setting at the moment it is
@@ -971,7 +1022,7 @@ inside its digest, and dropping them would change what was approved.
 
 ### 6.5 On demand: in the thread and in the chat
 
-**Asked in the thread** (D's anchored thread):
+**Asked in the thread** (D's anchored thread; PD2, `DC:D3a`: Ask for a diagram beside Comment in a part's margin composer, anchored to that part):
 
 ```
 POST /v1/runs/{run_id}/plan:diagram
@@ -989,10 +1040,11 @@ change the plan, its digest or its revision.** A digest that is not one of the
 run's revisions is 409 `plan_changed`; an older revision's is accepted and the
 entry says which revision it was drawn for.
 
-**Asked in the chat** (§7): a chat turn may answer with diagrams; they live in
-the chat transcript, same shape, same checks, same cap.
+**Asked in the chat** (§7, the right-hand column of PD3): a chat turn may
+answer with diagrams; they live in the chat transcript, same shape, same
+checks, same cap, and Pin to the plan adds one exactly as from the thread.
 
-**Added to the plan:**
+**Added to the plan: the page's "Pin to the plan"** (PD2, `DC:D3c`, `DC:D8c`):
 
 ```
 POST /v1/runs/{run_id}/plan:add-diagram
@@ -1007,6 +1059,11 @@ the same transaction, the digest it replaces, `plan_revision + 1`,
 `plan_edited_by`, re-signed; `no_diagram` is cleared when the first diagram
 joins. Refused 409 `plan_changed` on a stale digest, 409 `replan_running`
 (§5.3), 422 `diagrams_cap` past `MAX_PLAN_DIAGRAMS`, 409 `diagrams_off`.
+No agent runs, so pinning costs nothing and its author is the person who
+pinned. The new revision's digest covers the whole diagram set, so Approve
+names the diagrams it approves, and the revision before keeps its own set;
+the diagram moves onto the "Pinned to the plan" strip (§2.5) and the message
+it came from names it and links there.
 
 **Who may ask: whoever may edit the plan today** (BGD's answer to Q6,
 2026-10-28; the edit level of §3). A member who may only comment asks in a
@@ -1078,7 +1135,9 @@ PNG drawn from the image on a canvas. The issue comment carries the source in a
 ## 7. The plan review chat
 
 BGD's third addition: a chat section on D's decision page where the reviewer
-talks live with an agent that takes part in the plan review. It reads the
+talks live with an agent that takes part in the plan review. It is a
+right-hand column opened from the page head (BGD's PD3 pick, C; §2.5), and
+the margin folds under the document while it is open. It reads the
 plan, its revisions, the issue, the repository index and the thread; it
 answers questions, draws diagrams on request, and can **propose** a revision,
 which the reviewer applies through Request changes or an edit, **never on its
@@ -1147,7 +1206,8 @@ Capped per run at **40 chat turns and $25 of review agents** by default
 `plan_review_caps.chat_turns` and `plan_review_caps.review_usd` (§7.8),
 whichever comes first (429 `chat_cap`, naming which, with §7.8's reason). The
 dollars count every review agent of the run, chat turns and on-demand diagrams
-together, because they are one builder (§7.2); an unreported cost counts at
+together, because they are one builder (§7.2), and nothing else: a re-plan
+is not in them (BGD's answer to Q11, §7.8); an unreported cost counts at
 the median of the run's reported review agents (or, with none, at $0.50), and
 the figure says "at least". The tenant's day budget applies on top, as to any
 agent.
@@ -1293,7 +1353,7 @@ and refused one way.
 | diagrams on or off | `plan_diagrams_default`, `true` | `plans.diagrams` | `plan_diagrams` | (none: the plan's diagrams are in its digest) |
 | the chat's model class | `plan_chat_model_class`, `"sonnet"` | `plans.chat_model_class` | (none: see "Why no schedule level" below) | `plan_chat_model` on the run, only when §"When it makes sense" allows |
 | the caps | `plan_review_caps`, `{replans: 5, diagram_asks: 20, chat_turns: 40, review_usd: 25.00}` | read-only: shown, never set | (none) | (none) |
-| who sets it | a platform admin, Admin › Settings, `PUT /v1/admin/settings` | the workspace's admin (§6.4's rule), Settings › Workspace › Plan review, `PUT /v1/workspaces/{tid}/plan-settings` | whoever may edit the schedule, its edit sheet, its `PATCH` | whoever may edit the plan (§3's edit level), on the decision page, `POST /v1/runs/{run_id}/plan:chat-model` |
+| who sets it | a platform admin, Admin › Settings, `PUT /v1/admin/settings` | the workspace's admin (§6.4's rule), the Plan review card on Automate › Settings (PD4, §6.4), `PUT /v1/workspaces/{tid}/plan-settings` | whoever may edit the schedule, its row on Automate › Settings or its edit sheet, its `PATCH` | whoever may edit the plan (§3's edit level), on the decision page, `POST /v1/runs/{run_id}/plan:chat-model` |
 
 The platform keys join `store.PLATFORM_SETTINGS_DEFAULTS`, each with its
 reason beside the value as the keys there carry today ("BGD 2026-10-28: Sonnet
@@ -1354,11 +1414,10 @@ harder, and may always ask for a **cheaper** one.
   `plan_thread` event "the chat now answers with opus: step 2 touches iam",
   so the transcript says why the next turn costs more. Not signed and not in
   the digest: it changes what the chat costs, never what was approved.
-* Where it shows: in the chat section's header, the model the next turn will
+* Where it shows: in the chat column's header, the model the next turn will
   use and from which level ("sonnet, the workspace's"), and, only when a
   suggestion exists, one button, "Answer with opus: step 2 touches iam". The
-  placement of the chat section is still Q1; the control is inside the chat
-  component, so it goes wherever the chat goes.
+  header is the head of the chat's right-hand column (PD3, §2.5).
 
 **How a run records the model each turn used.** Each turn (and each
 on-demand diagram entry) records, when it is submitted and when its agent
@@ -1386,7 +1445,7 @@ serves them read-only, each with where it comes from:
          "from": "platform", "set_by": "<admin's email>" | null, "set_at": "<iso>" | null}
 ```
 
-and the Plan review card under Settings › Workspace draws them as a sentence
+and the Plan review card on Automate › Settings draws them as a sentence
 with no input: "Each run may have 5 re-plans, 20 diagram asks, 40 chat turns
 and $25 of review agents. Set by a platform admin." Any member reads it;
 nobody below a platform admin can change it.
@@ -1439,16 +1498,19 @@ with the same sentence the server would answer:
   only in the console: each route checks its cap in the same transaction that
   records the ask, so two asks racing for the last turn cannot both pass.
 
-**Why the $25 counts review agents only.** BGD's option paired the dollars
-with the chat ("$10 of chat" in the first round, $25 picked). The on-demand
-diagram agents are the same builder at the same model, so they share it. A
-re-plan is an opus planner run already bounded by its count (5) and the day
-budget; folding it into the $25 would let two re-plans exhaust the chat. Whether
-the $25 should also count re-plans is asked again in `questions.json`
-(Q11); this design builds review agents only.
+**The $25 counts the review chat's turns and the on-demand diagram agents
+only: BGD's answer to Q11, 2026-10-28 (~18:30Z)** (answered). Re-plans are
+bounded by their own cap of 5 and by the tenant's day budget, never by the
+$25. The on-demand diagram agents are the chat's builder at the chat's model
+(§7.2), so they share the chat's dollars, whether asked in the thread or in
+the chat. A re-plan is an opus planner run; counting it in the $25 would let
+two re-plans spend most of it before anyone asked the chat. So
+`plan_review_usage.review_usd` sums the cost of every chat turn and every
+`diagram` thread entry of the run and nothing else, and a re-plan's cost is
+recorded on its revision (§5.4) and counted in `plan_review_cost_usd` only.
 
 **Where spend against the $25 shows.** In three places, all from
-`plan_review_usage.review_usd`: the chat section's header ("$6.40 of $25 ·
+`plan_review_usage.review_usd`: the chat column's header ("$6.40 of $25 ·
 at least" when a cost is unreported), amber from 80% ($20) and with the
 refusal's sentence at 100%; the decision bar's cost line beside the plan's
 expected cost (§3.8), "review so far $6.40 of $25"; and the run's row in Work ›
@@ -1655,7 +1717,8 @@ plan, revisions, issue, index sections, thread and transcript between nonce
 delimiters and nothing of another run; a second ask in flight is 409
 `chat_busy`; with the default caps the 41st turn is 429 `chat_cap` naming
 `chat_turns`, and a run whose chat turns and diagram agents together reported
-$25.00 is refused naming `review_usd`; a turn running when the spend crosses
+$25.00 is refused naming `review_usd`, and one whose re-plans alone cost
+$25.00 is not (Q11); a turn running when the spend crosses
 $25 keeps its answer; a turn records `model.model_id` from its attempt's
 `Attempt.model`, and `null` with `why_none` when the attempt has none; a turn
 asked below the edit level drops its diagrams with §6.5's line; an
@@ -1698,7 +1761,9 @@ the suggestion's sentence; a class the profile does not carry is 422; a
 member who may not edit is refused; the next turn is submitted at the
 override and records `from: "plan"`; clearing it returns to the workspace's;
 `plan_review_usage` counts re-plans, asks, turns and review dollars against
-the caps read now, with `at_least` when a cost is unreported; a stronger
+the caps read now, with `at_least` when a cost is unreported, and
+`review_usd` sums chat turns and `diagram` entries only, a re-plan's cost
+never (Q11); a stronger
 class is treated as such by its `model_prices` output price, and an unpriced
 class needs the suggestion. Tests: `test_plan_chat_model.py`. Depends on P5
 (`plan_risk`), P7, P9.
@@ -1709,9 +1774,11 @@ docs/web-ui (the board), `.github/ISSUE_TEMPLATE/bug_report.yml` and
 `feature_request.yml` "Where" lists gain "Web UI · Automate › Pipeline
 (/automate/pipeline)" — `tests/unit/scripts/test_issue_forms.py` fails the
 moment U1 adds the tab without them, so P8's form change lands **with U1**, in
-U1's pull request (stated in U1). docs/issue-runs.md also gains the
+U1's pull request (stated in U1); the same holds for Automate › Settings,
+whose form line lands with U11. docs/issue-runs.md also gains the
 plan-review settings (§7.8: the three levels, the caps, the refusals), and
-docs/web-ui the Plan review card. Depends on P1-P10 for the prose.
+docs/web-ui the Automate › Settings tab and the decision page's strip and
+chat column (§2.5). Depends on P1-P10 for the prose.
 
 ### Console
 
@@ -1780,23 +1847,42 @@ no `script`, `foreignObject`, `a` or `on*`; the outline lists every edge of a
 fixture flowchart; switching the theme changes the image. Depends on nothing
 (it renders a source), so it can run beside the API lanes.
 
-**U8 DIAGRAMS-ON-PAGE.** Diagrams in the document, "no diagram, because …",
-the rule's reading, ask-for-a-diagram (offered only when `may_decide.edit`,
-Q6, with the cap's sentence when it is reached), add-to-plan, and this run's
-setting as recorded (on or off, from which level) — **placed as BGD's
-PLANS-DIAG pick draws them**. The settings are edited by U10-U12, not here.
-Territory: `PlanDocument.tsx`, `PlanThread.tsx`. Depends on P6, U4, U7, and
-**Q1**.
+**U8 DIAGRAMS-ON-PAGE.** §2.5 as BGD picked it (PD1, PD2: C): the
+"Pinned to the plan" strip above the document (one diagram at a time, tabs
+naming each one's anchor, Open large; `DC:D1a`, `DC:D1b`), the planner's
+opening message naming the diagrams with links to their tabs or carrying the
+"no diagram, because …" line (`DC:D2a`), Ask for a diagram beside Comment in
+each margin composer (offered only when `may_decide.edit`, Q6, with the cap's
+sentence when it is reached), the diagram message and its Pin to the plan
+(`DC:D3a`-`DC:D3c`), the "diagrams only" revision chip, the phone's tall
+layout (`DC:D7a`, `DC:D7b`), and this run's setting when off, naming its level
+(`DC:D6c`). The settings are edited by U10-U12, not here. Territory:
+`PlanDocument.tsx`, `PlanThread.tsx`, new `PinnedDiagrams.tsx`. Red first:
+`plan.diagrams-strip.test.tsx` — a revision with two diagrams draws one and
+names both on tabs; a revision with none has no strip and the opening message
+carries `no_diagram`; a diagram entry is not on the strip until Pin to the
+plan returns revision N+1, then it is, and the entry links to its tab; a
+member below the edit level sees no Ask for a diagram; a run planned with
+diagrams off shows the off line naming its level and no ask. Depends on P6,
+U4, U7.
 
-**U9 PLAN-CHAT-UI.** The chat section: ask, stream, each turn's cost and the
+**U9 PLAN-CHAT-UI.** The chat as a right-hand column (PD3, C;
+`DC:D8a`-`DC:D8c`, `DC:D7c`): ask, stream, each turn's cost and the
 model it ran (`model.model_id`), the header's "$6.40 of $25" from
 `plan_review_usage` (amber from 80%, the refusal's sentence at a cap, the ask
 disabled with it), pin, a proposal's diff with Request changes / Edit with
 this. Territory: new
 `PlanChat.tsx`, new `styles/plan-chat.css`, and its mount point. The component
-is built against P7 with its own tests now; **its mount point waits on Q1**,
-so the lane splits: U9a (the component, testable alone) and U9b (one line
-mounting it where the pick puts it). Depends on P7, U7.
+is built against P7 with its own tests now, so the lane splits: U9a (the
+component, testable alone) and U9b (its mount on the decision page: the
+button in the page head that opens and closes the column, the margin folded
+under each part and the strip folded to its tabs while it is open, the sheet
+over the plan on the phone). U9b's territory adds `PlanDocument.tsx` and
+`styles/plan-document.css`; red first, `plan.chat-column.test.tsx` — the
+column is closed on load; opening it folds each part's reason and thread
+under that part and the strip to its tabs, and closing it restores the
+margin; at 390 it opens as a sheet. Depends on P7, U7; U9b on U3, U4, U8 and
+U9a.
 
 **U10 PLATFORM-PLAN-SETTINGS.** Admin › Settings gains a Plan review group:
 the diagram default (a switch), the chat's model class (a choice of the
@@ -1809,15 +1895,26 @@ read 5 / 20 / 40 / $25, sonnet, on; a cap outside its range is refused
 before the save with the range; a save sends only the keys changed; a
 non-admin never sees the group. Depends on P9.
 
-**U11 WORKSPACE-PLAN-SETTINGS.** A Plan review card under Settings ›
-Workspace, beside Merging: the diagram switch (on / off / the platform's),
-the chat's model class (a class / the platform's), each saying what it
-inherits; and the caps as a read-only sentence naming who sets them.
-Territory: new `PlanSettingsCard.tsx`, `WorkspaceSettings.tsx` (mount),
-`api.ts` (`loadPlanSettings`, `savePlanSettings`). Red first:
-`plan.settings-card.test.tsx` — an admin changes each and a member sees them
+**U11 AUTOMATE-SETTINGS.** The new Automate › Settings tab (PD4, B;
+`DB:D5a`, `DB:D5b`), after Approvals, at `/automate/settings`. Its Plan
+review card: the diagram switch (on / off / the platform's) with BGD's
+examples of where the planner draws and where it does not, the chat's model
+class (a class / the platform's), each saying what it inherits, and the caps
+as a read-only sentence naming who sets them. Under it, the schedules whose
+type `proposes`, each with "follow the workspace / on / off", saved through
+the schedule's `PATCH` (the same field as U12's), and the line that an issue
+run submitted by hand follows the workspace. Territory: new
+`AutomateSettings.tsx`, new `PlanSettingsCard.tsx`, `App.tsx` (the tab in
+`SECTIONS`), `api.ts` (`loadPlanSettings`, `savePlanSettings`), and the two
+issue forms' "Where" line "Web UI · Automate › Settings (/automate/settings)",
+in this lane's pull request because `tests/unit/scripts/test_issue_forms.py`
+fails the moment the tab is added without it. Red first:
+`automate.settings.test.tsx` — an admin changes each and a member sees them
 read-only; "the platform's" shows the platform's value; the caps have no
-input for anyone; a refused save shows the server's reason. Depends on P9.
+input for anyone; a refused save shows the server's reason; a schedule row's
+override sends the schedule's `PATCH` with `plan_diagrams` only; a type that
+does not propose has no row. Depends on P9, P5 (`proposes`) and U12
+(`plan_diagrams` on the schedule in `types.ts`, which U12 adds).
 
 **U12 SCHEDULE-PLAN-DIAGRAMS.** The schedule's edit sheet gains "Diagrams in
 plans: inherit / on / off", shown only for a type that `proposes`, naming
@@ -1836,30 +1933,41 @@ of $25". Territory: new `ChatModelControl.tsx`, `PlanChat.tsx` (its header),
 no suggestion, no stronger choice is offered; a suggestion offers exactly its
 class with its sentence; a member who may not edit sees the model but no
 control; a 422 shows its sentence. Because it lives inside the chat
-component, it follows the chat's placement and does not wait on Q1. Depends
+component, it sits in the head of the chat's column (PD3). Depends
 on P10, U9a, U3.
 
 **Order.** P1, P2, P5, P9 and U7 start at once; P3 after P2; P4 after P3 and
 P9; P6a after P3 and P9; P7 after P6a; P6b and P10 after P7; U1 after P1
 (with P8's form line); U2 after U1; U3 after P2 and P5; U4 after U3 and P4;
-U5 after U3; U6 after P5; U10 and U11 after P9; U12 after P9 and P5; U8 after
-P6, U4, U7 and Q1; U9a after P7 and U7, U9b after Q1; U13 after P10, U9a and
-U3; P8 last.
+U5 after U3; U6 after P5; U10 after P9; U12 after P9 and P5; U11 after U12; U8
+after P6, U4 and U7; U9a after P7 and U7, U9b after U3, U4, U8 and U9a; U13
+after P10, U9a and U3; P8 last. No lane waits on an owner question.
 
 ---
 
 ## 12. Owner questions
 
-BGD answered Q2-Q10 on 2026-10-28; each answer is written into the section
-named beside it, and its lanes in §11 are built to it. Q1 is still open. Q11
-is new, raised by writing Q5's answer down; the design builds its first option
-and no lane waits on it. Both are in `questions.json` beside the pull request.
+BGD answered Q2-Q10 on 2026-10-28, and Q1 and Q11 the same day at about
+18:30Z (Q1 recorded on #2585 at 18:33Z); each answer is written into the
+section named beside it, and its lanes in §11 are built to it. No owner
+question is open.
 
 1. **Q1 Where diagrams, the on-demand ask, the chat and the diagram switch's
-   state sit on D's page.** **Open.** It waits on the plan-diagram mock-ups
-   PLANS-DIAG-A, B and C. The data and routes of §6-§7 serve any of them, and
-   the settings' own editors (U10-U12) are not part of it (§2.5, §6.4). Waits
-   on it: U8, U9b.
+   state sit on D's page.** **Answered 2026-10-28 (~18:30Z): C, C, C, B,**
+   picked from the hand-drawn mock-ups `plans-diagrams-a.html`, `-b.html` and
+   `-c.html` (PLANS-DIAG-A, B, C; PRs 2640, 2643, 2642). PD1, C: the planner's
+   opening message lists the diagrams it drew (or one line saying why it drew
+   none), and a "Pinned to the plan" strip at the top of the decision page
+   shows one at a time on tabs, each anchored to the plan or a step. PD2, C:
+   the reviewer asks in the thread anchored to a step, the answer is a diagram
+   message, and Pin to the plan makes a revision whose digest covers the
+   diagram set and puts it on the strip. PD3, C: the chat is a right-hand
+   column opened from the page head; while it is open the margin's reasons
+   and thread fold under each part, as on the phone. PD4, B: a new Settings
+   tab under Automate holds the workspace default (on), and each schedule
+   that plans follows it or overrides it on or off. Written into §1, §2.3,
+   §2.5, §6.4, §6.5, §7 and §7.8; lanes U8, U9 (U9b no longer waits), U11
+   (now Automate › Settings), U13 and P8.
 2. **Q2 Where the diagram switch lives.** **Answered 2026-10-28: platform,
    workspace and schedule; each level overrides the one above, and a run
    records the setting it planned under.** Written into §6.4 (the platform
@@ -1893,9 +2001,7 @@ and no lane waits on it. Both are in `questions.json` beside the pull request.
    sandboxing. Written into §6.2; lanes P6, U7 unchanged.
 10. **Q10 Who sees the chat transcript.** **Answered 2026-10-28: every member
     of the workspace, kept with the run.** Written into §7.6 and §7.7; lane P7.
-11. **Q11 What the $25 counts.** New. (a) **The review agents only: chat turns
-    and on-demand diagrams** (built: they are one builder at one model, and a
-    re-plan is bounded by its own count of 5 and the day budget); (b) the
-    whole plan review, re-plans included (two opus re-plans could then use
-    most of it before anyone asks the chat). Changes P7, P10's sum and the
-    sentences of §7.8.
+11. **Q11 What the $25 counts.** **Answered 2026-10-28 (~18:30Z): the
+    review chat's turns and the on-demand diagram agents only.** Re-plans are
+    bounded by their own cap of 5 and the day budget. Written into §5.4,
+    §7.1 and §7.8; lanes P7 and P10 (`review_usd` never counts a re-plan).
