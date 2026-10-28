@@ -77,16 +77,36 @@ step kinds the drawer already draws, with the item kinds and the turn
 summary's wording of `codex_events` -- kept in step by hand, since swarm-api
 does not depend on the worker:
 
-  * `thread.started` is `init` (`meta.thread_id`); `turn.started`,
-    `turn.completed` (the usage row: input, cached and output tokens),
-    `turn.failed` and `error` are `system` rows named by `meta.subtype`;
+  * `thread.started` is `init` (`meta.thread_id`); `turn.started` is a
+    `system` row named by `meta.subtype`;
+  * `turn.completed` is a `usage` row and `turn.failed`, a top-level `error`
+    and an `error` item are `error` rows -- kinds of their own (CODEX-ROWS,
+    part of #2459; BGD, 2026-10-28, mock-up proposal B "New kinds in the
+    drawer"), described below;
   * an `agent_message` item is assistant `text`, `reasoning` is `thinking`;
   * `command_execution` is a `tool_call` named `command` whose input is the
     command, and once it has output or has ended a `tool_result` carrying the
     output and its `exit N`; `mcp_tool_call` is a `tool_call` named
     `server.tool` whose input is its arguments, masked by their structure;
-  * `file_change`, `web_search`, `todo_list` and an `error` item are short
-    `system` rows; an item or event of any other type is `other`, named.
+  * `file_change`, `web_search` and `todo_list` are short `system` rows; an
+    item or event of any other type is `other`, named.
+
+A `usage` row's meta carries the turn's figures as codex reported them --
+`input_tokens`, `cached_input_tokens`, `output_tokens` -- and `turn`, the
+turn's number counted from the stream's first line. A figure the event did not
+carry is ABSENT from meta, never 0: a reader adding turns up must not count an
+unreported figure as a measured zero. `turn` is there only when the window
+starts at the stream's first byte and no capture notice cut it before this
+turn, the one case where counting `turn.started` lines gives the true number.
+The row's text stays the worded line (`turn completed: 12,000 input tokens
+...`), so a reader that does not know the kind still says something true.
+
+An `error` row's text is the message itself, and `meta.subtype` says which
+shape it came from: `turn_failed` for `turn.failed`, `error` for a top-level
+`error` event and an `error` item. codex's own retry notice, `Reconnecting...
+1/5 (stream disconnected before completion)`, is served as the message in its
+brackets with `meta.retry_attempt` 1 and `meta.retry_limit` 5, so the drawer
+can say "(retrying, 1 of 5)" after the message instead of before it.
 
 An item's `item.started`, `item.updated` and `item.completed` share ONE place
 in the window: the latest of them is mapped where the first one was, so a
@@ -99,6 +119,7 @@ Claude event's does.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
@@ -129,8 +150,15 @@ CODEX_ITEM_EVENTS = frozenset({"item.started", "item.updated", "item.completed"}
 
 STEP_KINDS = (
     "init", "text", "thinking", "tool_call", "tool_result", "result",
-    "rate_limit", "system", "other",
+    "rate_limit", "system", "usage", "error", "other",
 )
+
+#: A turn's usage figures, as codex's `turn.completed {usage}` names them.
+CODEX_USAGE_FIGURES = ("input_tokens", "cached_input_tokens", "output_tokens")
+
+#: codex's retry notice: `Reconnecting... 1/5 (stream disconnected before
+#: completion)`. The bracketed words are the message; the counter is meta.
+_CODEX_RETRY = re.compile(r"^Reconnecting\.*\s*(\d+)/(\d+)\s*(?:\((.*)\))?\s*$", re.DOTALL)
 
 #: The `result` event's fields a reader wants beside the answer text.
 RESULT_META = (
@@ -289,13 +317,23 @@ def parse_window(
         records = _codex_records(records)
     else:
         fmt = "ndjson"
-    mapper = map_codex_event if fmt == "codex-exec-json" else map_event
     steps: list[dict[str, Any]] = []
+    # The codex turn's number: counted only from the stream's first byte, and
+    # forgotten at a capture notice, which dropped turns nobody can count.
+    turn: int | None = 0 if base_offset == 0 else None
     for offset, record in records:
         if isinstance(record, bytes):
             steps.append(_notice_step(scrubber, offset, record))
+            turn = None
+        elif fmt == "codex-exec-json":
+            if turn is not None and record.get("type") == "turn.started":
+                turn += 1
+            steps.extend(map_codex_event(
+                scrubber, record, line_offset=offset, include_raw=include_raw,
+                turn=turn or None,
+            ))
         else:
-            steps.extend(mapper(scrubber, record, line_offset=offset, include_raw=include_raw))
+            steps.extend(map_event(scrubber, record, line_offset=offset, include_raw=include_raw))
     return ParsedWindow(
         format=fmt,
         steps=steps,
@@ -431,10 +469,29 @@ def _message(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _codex_error(subtype: str, message: str | None) -> tuple[str, dict[str, Any]]:
+    """An `error` row's text and meta: the message, and codex's retry counter
+    lifted out of it into meta."""
+    meta: dict[str, Any] = {"subtype": subtype}
+    if message is None:
+        return "(no message)", meta
+    retry = _CODEX_RETRY.match(message)
+    if retry is None:
+        return message, meta
+    meta.update(retry_attempt=int(retry.group(1)), retry_limit=int(retry.group(2)))
+    detail = (retry.group(3) or "").strip()
+    return detail or "reconnecting", meta
+
+
 def map_codex_event(
-    scrubber: _Scrubber, event: dict[str, Any], *, line_offset: int, include_raw: bool
+    scrubber: _Scrubber, event: dict[str, Any], *, line_offset: int, include_raw: bool,
+    turn: int | None = None,
 ) -> list[dict[str, Any]]:
-    """One decoded codex `exec --json` event to its steps (at least one)."""
+    """One decoded codex `exec --json` event to its steps (at least one).
+
+    `turn`: the number of the turn this event is in, when the window could
+    count it (`parse_window`); None otherwise, and then a `usage` row has none.
+    """
     kind = event.get("type")
     raw = JsonMasker(event, literals=scrubber.literals).json(event, indent=None) if include_raw else None
 
@@ -447,27 +504,32 @@ def map_codex_event(
     def row(subtype: str, text: str, **meta: Any) -> list[dict[str, Any]]:
         return [step(0, kind="system", role="system", text=text, meta={"subtype": subtype, **meta})]
 
+    def error_row(subtype: str, message: str | None) -> list[dict[str, Any]]:
+        text, meta = _codex_error(subtype, message)
+        return [step(0, kind="error", role="system", text=text, meta=meta)]
+
     if kind == "thread.started":
         return [step(0, kind="init", role="system", meta={"thread_id": event.get("thread_id")})]
     if kind == "turn.started":
         return row("turn_started", "turn started")
     if kind == "turn.completed":
         usage = event.get("usage") if isinstance(event.get("usage"), dict) else {}
-        return row(
-            "turn_completed", _codex_usage_line(event.get("usage")),
-            **{name: _int(usage.get(name))
-               for name in ("input_tokens", "cached_input_tokens", "output_tokens")},
-        )
+        figures = {name: _int(usage.get(name)) for name in CODEX_USAGE_FIGURES}
+        meta = {name: value for name, value in figures.items() if value is not None}
+        if turn is not None:
+            meta["turn"] = turn
+        return [step(0, kind="usage", role="system", text=_codex_usage_line(event.get("usage")),
+                     meta=meta)]
     if kind == "turn.failed":
-        return row("turn_failed", f"turn failed: {_message(event.get('error')) or '(no message)'}")
+        return error_row("turn_failed", _message(event.get("error")))
     if kind == "error":
-        return row("error", f"error: {_message(event) or '(no message)'}")
+        return error_row("error", _message(event))
     if kind in CODEX_ITEM_EVENTS and isinstance(event.get("item"), dict):
-        return _codex_item_steps(step, row, event["item"])
+        return _codex_item_steps(step, row, error_row, event["item"])
     return [step(0, kind="other", role=None, meta={"raw_type": kind if isinstance(kind, str) else None})]
 
 
-def _codex_item_steps(step: Any, row: Any, item: dict[str, Any]) -> list[dict[str, Any]]:
+def _codex_item_steps(step: Any, row: Any, error_row: Any, item: dict[str, Any]) -> list[dict[str, Any]]:
     """An item's steps, by `codex_events._item_step`'s item kinds."""
     kind = item.get("type")
     item_id = item.get("id") if isinstance(item.get("id"), str) else None
@@ -529,7 +591,7 @@ def _codex_item_steps(step: Any, row: Any, item: dict[str, Any]) -> list[dict[st
             f"    [{'x' if t.get('completed') is True else ' '}] {t.get('text')}"
             for t in items if isinstance(t, dict)))
     if kind == "error":
-        return row("error", f"error: {_message(item) or '(no message)'}")
+        return error_row("error", _message(item))
     return [step(0, kind="other", role=None, meta={"raw_type": kind if isinstance(kind, str) else None})]
 
 
