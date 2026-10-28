@@ -598,6 +598,17 @@ alert_emails  = []
 enable_frontend   = true
 frontend_hostname = "swarm.saga.xyz"
 
+# --- the release acceptance's QA identity case (QA-IDENTITY-WIRE, #1649) ----
+# run_live_browser_qa in scripts/acceptance/groups/live-browser.sh SKIPs every
+# check unless the swarm-verify job carries both. BGD decided on 2026-10-27 to
+# grant `smoke`, the tenant the suite already submits in, the QA identity; the
+# grant is made in the console by a platform admin, and until it is the case's
+# submission is refused qa_identity_not_granted and its first check FAILs.
+# The URL is this environment's own console (https://<frontend_hostname>),
+# because the case judges "signed in" by its host.
+acceptance_qa_tenant   = "smoke"
+acceptance_console_url = "https://swarm.saga.xyz"
+
 # --- the SwarmCloud GitHub App (#780, docs/runbooks/github-app.md) -----------
 # enable_github_app declares the App's two empty secret slots, which swarm-api
 # alone reads (github_app.tf). The four settings below are the App's PUBLIC
