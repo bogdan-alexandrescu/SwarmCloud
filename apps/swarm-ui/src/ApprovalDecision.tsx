@@ -124,7 +124,7 @@ const DECIDER_WORDS: Readonly<Record<string, string>> = {
   platform_admins: 'a platform admin',
   second_member: 'a second member',
   workspace_admins: 'a workspace admin',
-  members: 'any member of this tenant',
+  members: 'any member of this workspace',
 }
 
 /** Who may decide, from `may_decide.deciders`, or null when it is not served. */
@@ -137,7 +137,7 @@ export function decidersWords(d: MayDecide | null | undefined): string | null {
 /** Who a stored `approvers` value admits, in words. */
 export function approversWords(a: unknown): string | null {
   if (a === undefined || a === null || a === '') return null
-  if (a === 'members') return 'any member of this tenant'
+  if (a === 'members') return 'any member of this workspace'
   // #2259: the owner decides even as the schedule's last editor, audited.
   if (a === 'owner_only') return 'the platform owner alone, who may decide even as the schedule’s last editor; that decision is recorded in the audit as an owner waiver'
   if (a === 'second_member') return 'a second member: not the run’s creator, its last plan editor or its schedule’s last gate editor'
@@ -158,6 +158,20 @@ const APPROVE_DOES: Readonly<Record<string, string>> = {
   merge: 'Approving submits the merge of this pull request at the head it was checked at.',
   proposal: 'Approving files this proposal as an issue.',
   spec: 'A custom-prompt spec is approved by a platform admin.',
+}
+
+/**
+ * What each kind asked for, once it is decided (visual QA automate-07,
+ * 2026-10-28): "What you approve" in the present tense sat above "Nothing is
+ * left to decide." on a rejected plan.
+ */
+const ASKED_FOR: Readonly<Record<string, string>> = {
+  run: 'It asked to create the work this firing was waiting to make.',
+  plan: 'It asked to start the run on this plan.',
+  hold: 'It asked to start the run on this held plan.',
+  merge: 'It asked to merge this pull request at the head it was checked at.',
+  proposal: 'It asked to file this proposal as an issue.',
+  spec: 'It asked to approve this custom-prompt spec.',
 }
 
 /** A date and time, short: "Oct 29, 02:40". The full instant rides on the title. */
@@ -207,6 +221,7 @@ const MARK = {
  */
 function mergeChecks(d: Decision): Check[] {
   const m = d.merge ?? {}
+  const counted = checkCounts(d) !== null
   const { head, verdict } = mergeDigest(d)
   const out: Check[] = []
   const green = m.green_sha ?? null
@@ -215,7 +230,17 @@ function mergeChecks(d: Decision): Check[] {
   } else if (head !== null && green !== head) {
     out.push({ key: 'ci', mark: 'unmet', label: 'Required checks green at an older head', sub: <>green at <span className="mono">{short(green)}</span>, the head is <span className="mono">{short(head)}</span></> })
   } else {
-    out.push({ key: 'ci', mark: 'met', label: 'Required checks green at the head', sub: <>green at <span className="mono">{short(green)}</span></> })
+    out.push({
+      key: 'ci',
+      mark: 'met',
+      label: 'Required checks green at the head',
+      sub: (
+        <>
+          green at <span className="mono">{short(green)}</span>
+          {!counted && '; per-check counts not served'}
+        </>
+      ),
+    })
   }
   if (verdict !== null) {
     out.push({ key: 'review', mark: verdict === 'MERGE' ? 'met' : 'unmet', label: <>Review verdict <b>{verdict}</b></> })
@@ -266,15 +291,25 @@ function MergeChecks({ d }: { d: Decision }) {
   )
 }
 
+/** `merge.checks` when every count is served, else null. */
+function checkCounts(d: Decision): { passed: number; failed: number; pending: number } | null {
+  const c = d.merge?.checks
+  const ok = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0
+  return c === null || c === undefined || !ok(c.passed) || !ok(c.failed) || !ok(c.pending) ? null : { passed: c.passed, failed: c.failed, pending: c.pending }
+}
+
 /**
  * `merge.checks {passed, failed, pending}` at the head the approval names, as
  * a bar and its counts. Not served (no reading, or one of another head), it
- * is a dash with its reason, never "0 passed".
+ * is a dash with its reason, never "0 passed" -- unless the head is green,
+ * when the checklist's green row says the counts are not served, on the one
+ * line (visual QA automate-23: a dash line sat directly above "✓ Required
+ * checks green at the head").
  */
 function CheckCounts({ d, head }: { d: Decision; head: string | null }) {
-  const c = d.merge?.checks
-  const ok = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0
-  if (c === null || c === undefined || !ok(c.passed) || !ok(c.failed) || !ok(c.pending)) {
+  const c = checkCounts(d)
+  if (c === null) {
+    if (mergeChecks(d).some((k) => k.key === 'ci' && k.mark === 'met')) return null
     return (
       <p className="ad-counts" data-testid="ad-check-counts">
         Checks at this head: <Dash why="not served" /> <span className="ad-sub-i">no check counts are served for the head this approval names</span>
@@ -431,11 +466,31 @@ function runAddress(runId: string): string {
   return `work/runs?${new URLSearchParams({ run: runId }).toString()}`
 }
 
+/**
+ * A plan's steps, as served (`issueruns.PlanStep`: a title and a prompt): the
+ * reader approves "Start the run on this plan?" on them, so they are drawn
+ * under the summary (visual QA automate-06). A step with no title is named by
+ * its prompt; one with neither is not drawn.
+ */
+function planSteps(raw: unknown[] | undefined): { key: string; title: string; prompt: string | null }[] {
+  const text = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? v : null)
+  return (raw ?? []).flatMap((st, i) => {
+    if (typeof st === 'string') return text(st) === null ? [] : [{ key: `s${i}`, title: st, prompt: null }]
+    if (st === null || typeof st !== 'object') return []
+    const o = st as { step_id?: unknown; title?: unknown; prompt?: unknown }
+    const title = text(o.title) ?? text(o.prompt)
+    if (title === null) return []
+    return [{ key: text(o.step_id) ?? `s${i}`, title, prompt: text(o.title) === null ? null : text(o.prompt) }]
+  })
+}
+
 /** The evidence, as numbered cards: what it is, why it is held, what you approve, what asked for it. */
 function Evidence({ d, go }: { d: Decision; go: (to: string) => void }) {
   const a = d.approval
   const plan = d.run?.plan ?? null
   const files = plan?.files ?? []
+  const steps = planSteps(plan?.steps)
+  const pending = a.state === 'pending'
   const hold = a.hold ?? d.merge?.approval_hold ?? null
   const { head, verdict } = a.kind === 'merge' ? mergeDigest(d) : { head: null, verdict: null }
   const now = a.head_sha_now ?? null
@@ -484,6 +539,18 @@ function Evidence({ d, go }: { d: Decision; go: (to: string) => void }) {
       body: (
         <>
           {plan.summary ? <p className="ad-p">{plan.summary}</p> : <p className="ad-p">The plan carries no summary.</p>}
+          {steps.length > 0 ? (
+            <ol className="ad-files ad-steps" aria-label="The plan’s steps">
+              {steps.map((st) => (
+                <li key={st.key}>
+                  <b>{st.title}</b>
+                  {st.prompt !== null && <span className="ad-sub ad-step-p">{st.prompt}</span>}
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p className="ad-p">The plan serves no steps.</p>
+          )}
           {files.length > 0 ? (
             <ul className="ad-files" aria-label="Files the plan names">
               {files.map((f) => (
@@ -500,22 +567,30 @@ function Evidence({ d, go }: { d: Decision; go: (to: string) => void }) {
     })
   }
   if (hold !== null) cards.push({ title: 'Why it is held', side: 'r', body: <HoldBody hold={hold} itemApprovers={a.approvers} /> })
+  // Once decided, the card says what the item asked for, in the past tense,
+  // and no longer what a decision would send (automate-07).
   cards.push({
-    title: 'What you approve',
+    title: pending ? 'What you approve' : 'What it asked for',
     side: 'l',
     body: (
       <>
-        <p className="ad-p">{APPROVE_DOES[a.kind] ?? 'Approving lets this go ahead.'}</p>
+        <p className="ad-p">{pending ? (APPROVE_DOES[a.kind] ?? 'Approving lets this go ahead.') : (ASKED_FOR[a.kind] ?? 'It asked to let this go ahead.')}</p>
         {a.kind === 'merge' ? (
           <>
-            <p className="ad-p">A decision is sent with this digest. If the head moves before it arrives, the server refuses it.</p>
+            {pending && <p className="ad-p">A decision is sent with this digest. If the head moves before it arrives, the server refuses it.</p>}
             <dl className="ad-kv">
-              <Kv name="Verdict">{verdict ?? <Dash why="the digest names no verdict" />}</Kv>
+              <Kv name="Verdict">
+                {verdict ?? (
+                  <>
+                    <Dash why="the digest names no verdict" /> <span className="ad-sub-i">the digest names no verdict</span>
+                  </>
+                )}
+              </Kv>
               <Kv name="At head">{head === null ? <Dash why="the head is not served" /> : <code>{short(head)}</code>}</Kv>
             </dl>
           </>
         ) : (
-          a.digest !== undefined && a.digest !== null && <p className="ad-p">Approve sends back what this page read: a plan or a firing changed since is refused, never approved unread.</p>
+          pending && a.digest !== undefined && a.digest !== null && <p className="ad-p">Approve sends back what this page read: a plan or a firing changed since is refused, never approved unread.</p>
         )}
       </>
     ),
@@ -538,9 +613,37 @@ function Evidence({ d, go }: { d: Decision; go: (to: string) => void }) {
   )
 }
 
-/** The question the item asks, in one sentence. */
+/** What each kind's item is, as a decided headline names it: "This plan was rejected." */
+const KIND_NOUN: Readonly<Record<string, string>> = {
+  run: 'This firing',
+  plan: 'This plan',
+  hold: 'This held plan',
+  proposal: 'This proposal',
+  spec: 'This spec',
+}
+
+/**
+ * What became of a decided item, in one sentence (visual QA automate-07): the
+ * question "Start the run on this plan?" stayed the headline of a rejected,
+ * expired or superseded plan, above "Nothing is left to decide."
+ */
+function outcomeSentence(d: Decision): ReactNode {
+  const a = d.approval
+  const n = d.merge?.pull_request?.number
+  const noun: ReactNode =
+    a.kind === 'merge' ? <>The merge of {n === undefined ? 'this pull request' : <>pull request <em>#{n}</em></>}</> : (KIND_NOUN[a.kind] ?? 'This request')
+  const happened = a.state === 'expired' ? 'expired' : `was ${STATE_WORD[a.state] ?? a.state}`
+  return (
+    <>
+      {noun} {happened}.
+    </>
+  )
+}
+
+/** The question the item asks, in one sentence; once decided, what became of it. */
 function question(d: Decision): ReactNode {
   const a = d.approval
+  if (a.state !== 'pending') return outcomeSentence(d)
   switch (a.kind) {
     case 'merge': {
       const n = d.merge?.pull_request?.number
@@ -654,9 +757,15 @@ function Outcome({ d, kind, go }: { d: Decision; kind: string | null; go: (to: s
     case 'superseded': {
       tone = 'is-warn'
       const next = a.superseded_by ?? null
-      const moved = a.head_sha_now ?? next?.head_sha ?? null
-      const { head: was } = a.kind === 'merge' ? mergeDigest(d) : { head: null }
-      head = moved !== null ? <>Superseded: the head moved to <span className="mono">{short(moved)}</span>.</> : 'Superseded: a newer request replaced it.'
+      const served = next !== null && !!next.approval_id
+      // Only a merge has a head (visual QA automate-08): a plan is replaced
+      // when the run's plan changes, a firing when a newer one asks.
+      const isMerge = a.kind === 'merge'
+      const isPlan = a.kind === 'plan' || a.kind === 'hold'
+      const moved = isMerge ? (a.head_sha_now ?? next?.head_sha ?? null) : null
+      const { head: was } = isMerge ? mergeDigest(d) : { head: null }
+      head =
+        moved !== null ? <>Superseded: the head moved to <span className="mono">{short(moved)}</span>.</> : isPlan ? 'Superseded: the run’s plan changed.' : 'Superseded: a newer request replaced it.'
       body = (
         <>
           {was !== null && (
@@ -664,7 +773,12 @@ function Outcome({ d, kind, go }: { d: Decision; kind: string | null; go: (to: s
               This approval was for <span className="mono">{short(was)}</span> and can no longer merge anything.
             </span>
           )}
-          {(next === null || !next.approval_id) && <span className="ad-sub">No newer request is served for the new head yet.</span>}
+          {isPlan && served && <span className="ad-sub">The new plan has its own request.</span>}
+          {!served && (
+            <span className="ad-sub">
+              {isMerge ? 'No newer request is served for the new head yet.' : isPlan ? 'The new plan has its own request; none is served yet.' : 'No newer request is served for it yet.'}
+            </span>
+          )}
         </>
       )
       if (next !== null && next.approval_id) {
@@ -777,7 +891,7 @@ function Decide({ d, onDecided }: { d: Decision; onDecided: (word: string) => vo
       {confirm !== null && (
         <label className="c-field ad-why">
           <span className="c-lbl">
-            You are the only person in this tenant, so no second member can approve this hold. Type <code>{confirm.expected}</code> to approve it yourself.
+            You are the only person in this workspace, so no second member can approve this hold. Type <code>{confirm.expected}</code> to approve it yourself.
           </span>
           <input ref={confirmField} className="c-inp is-mono" value={confirm.typed} autoComplete="off" spellCheck={false} onChange={(e) => setConfirm({ ...confirm, typed: e.target.value })} />
         </label>
@@ -888,7 +1002,7 @@ export function ApprovalDecisionScreen({ itemId, kind, round, go, onDecided }: {
           ) : r.status === 'error' ? (
             <p className="c-hint" role="alert" data-testid="ap-detail">
               {r.error.kind === 'not_found'
-                ? `No approval ${itemId} in this tenant: the link names an item that does not exist here, or a plan whose run has since moved on.`
+                ? `No approval ${itemId} in this workspace: the link names an item that does not exist here, or a plan whose run has since moved on.`
                 : `Not read: ${errorHeading(r.error)}`}
             </p>
           ) : (
