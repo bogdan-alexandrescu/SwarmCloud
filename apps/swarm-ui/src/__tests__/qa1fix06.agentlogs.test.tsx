@@ -347,3 +347,41 @@ describe('overview-agents-48: Escape folds the innermost open thing before it cl
     expect(document.activeElement).toBe(d.querySelector('summary'))
   })
 })
+
+describe('overview-agents-38: a phone opens the log wrapped', () => {
+  function widthIs(phone: boolean): () => void {
+    const had = Object.getOwnPropertyDescriptor(window, 'matchMedia')
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: (q: string) => ({
+        matches: phone && q === '(max-width: 560px)',
+        media: q,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      }),
+    })
+    return () => {
+      if (had === undefined) delete (window as unknown as Record<string, unknown>).matchMedia
+      else Object.defineProperty(window, 'matchMedia', had)
+    }
+  }
+  const wrap = () => dock().querySelector<HTMLButtonElement>('button[aria-keyshortcuts="W"]')!
+
+  it('turns Wrap on at a phone’s width, and leaves it off wider', async () => {
+    undo = widthIs(true)
+    const { unmount } = render(<AgentLogs task={running()} />)
+    await waitFor(() => expect(dock().textContent).toContain('step 1'))
+    // MUTATION: start `wrap` at false again -- every raw stdout line needs a sideways scroll at 390.
+    expect(wrap().getAttribute('aria-pressed')).toBe('true')
+    expect(dock().querySelector('.ag-logs-body')!.classList.contains('is-wrap')).toBe(true)
+    // Still the reader's to turn off.
+    fireEvent.click(wrap())
+    expect(wrap().getAttribute('aria-pressed')).toBe('false')
+    unmount()
+    undo()
+    undo = widthIs(false)
+    render(<AgentLogs task={running()} />)
+    await waitFor(() => expect(dock().textContent).toContain('step 1'))
+    expect(wrap().getAttribute('aria-pressed')).toBe('false')
+  })
+})

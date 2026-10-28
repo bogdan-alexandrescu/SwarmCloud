@@ -26,6 +26,7 @@ import {
   type WindowAt,
 } from './logLines'
 import { MarkdownInline } from './ArtifactViewer'
+import { phoneWidth } from './HelpCard'
 import { GapNotice, LogMarksContext, type LogMarks } from './logMarks'
 import { attemptLine, useRead } from './RunFiles'
 import { TERMINAL_STATES, clockTime, type AttemptRow, type LogStream, type Task, type TaskTranscript } from './types'
@@ -306,7 +307,10 @@ export function AgentLogs({ task }: { task: Task }) {
   const [view, setView] = useState<LogView>(() => defaultView(task.runner_profile))
   const [attemptId, setAttemptId] = useState<string | null>(null)
   const [needle, setNeedle] = useState('')
-  const [wrap, setWrap] = useState(false)
+  // WRAPPED BY DEFAULT ON A PHONE (QA1 overview-agents-38, 2026-10-28): at
+  // 390 every raw stream-json line on stdout needed a sideways scroll inside
+  // the log box. The phone opens wrapped; Wrap and W still turn it off.
+  const [wrap, setWrap] = useState(phoneWidth)
   const [current, setCurrent] = useState<string | null>(null)
   const [targets, setTargets] = useState<{ hits: string[]; errors: string[] }>({ hits: [], errors: [] })
   const drawnTargets = useRef(targets)
