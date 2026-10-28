@@ -992,6 +992,19 @@ function renderRuntimes(over: Partial<RuntimeTopology> = {}) {
   return render(<RuntimesScreen />)
 }
 
+/**
+ * The topic links behind the `?` beside the Runtimes title, opened. They were
+ * the `Reading this screen:` footer until QA1-FIX-24 (capacity-13, part of
+ * #2596) moved them there, as VQ-033 did Pools'.
+ */
+async function runtimesTitleTopics(): Promise<string[]> {
+  const glyph = document.querySelector('.c-phead button[aria-label^="Help: "]')
+  expect(glyph, 'no `?` beside the Runtimes title').not.toBeNull()
+  fireEvent.click(glyph!)
+  const dialog = await screen.findByRole('dialog', {}, WAIT)
+  return [...dialog.querySelectorAll('a[href^="#help/"]')].map((a) => a.getAttribute('href')!)
+}
+
 describe('Runtimes, with every help card closed', () => {
   it('draws unread pool counters as dashes and says so, rather than as zeros', async () => {
     // B4.5 RE-POINT. WHAT MOVED: the banner heading "Pool counters could not
@@ -1091,19 +1104,18 @@ describe('Runtimes, with every help card closed', () => {
     await screen.findAllByText('claude-code', undefined, WAIT)
     expectAllCardsClosed()
     expect(document.querySelector('.section.legend')).toBeNull()
-    const links = [...document.querySelectorAll('a[href^="#help/"]')].map((a) =>
-      a.getAttribute('href'),
-    )
+    // Behind the title's `?` since QA1-FIX-24 (capacity-13), not a footer.
+    const links = await runtimesTitleTopics()
     expect(links).toContain('#help/catalogue-from-route')
     expect(links).toContain('#help/units-not-agents')
     expect(links).toContain('#help/workspace-memory')
   })
 
   // #126. The screen's one always-present `?` opened `catalogue-from-route`,
-  // which the footer index already carries; what a reader of a card cannot
+  // which the title's topic index already carries; what a reader of a card cannot
   // work out from it is what `Sets it apart` is measured against and what the
   // `disabled` chip means. The `?` goes to that topic, still after a label.
-  it('points its one `?` at what "Sets it apart" and "disabled" mean, after a label, and keeps catalogue-from-route in the footer', async () => {
+  it('points its one `?` at what "Sets it apart" and "disabled" mean, after a label, and keeps catalogue-from-route behind the title', async () => {
     renderRuntimes()
     await screen.findAllByText('claude-code', undefined, WAIT)
     const eyebrow = document.querySelector('.rt-eyebrow')
@@ -1116,9 +1128,9 @@ describe('Runtimes, with every help card closed', () => {
     const topic = HELP['what-sets-it-apart-is-arithmetic']
     expect(topic.short).toMatch(/rest of the catalogue|the others/)
     expect(topic.short).toMatch(/[Dd]isabled/)
-    // catalogue-from-route stays reachable, from the footer index.
-    const footer = [...document.querySelectorAll('a[href^="#help/"]')].map((a) => a.getAttribute('href'))
-    expect(footer).toContain('#help/catalogue-from-route')
+    // catalogue-from-route stays reachable, from the title's topic index
+    // (a footer index until QA1-FIX-24, capacity-13).
+    expect(await runtimesTitleTopics()).toContain('#help/catalogue-from-route')
   })
 
   it('makes "Pools" in the Backends caption a link to the pool board', async () => {

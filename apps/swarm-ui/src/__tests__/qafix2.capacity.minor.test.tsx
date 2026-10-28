@@ -140,16 +140,16 @@ describe('capacity-006: `Sets it apart` names the classes and the credential for
     await shown()
     // MUTATION: drop the `model classes` distinction and scribe reads only
     // `nothing: same as the others` again; this array loses the line.
-    expect(apart('scribe')).toContain('model classes: the only runtime offering quick, later')
+    expect(apart('scribe')).toContain('model classes: the only runtime with the model classes quick, later')
     // MUTATION: count a class shared with another runtime and viewport is
     // told apart by `deep`, which scribe offers too; this gains a line.
     expect(apart('viewport').some((l) => l.startsWith('model classes'))).toBe(false)
   })
 
-  it('says it is the only runtime that takes any one of its secrets', async () => {
+  it('says it is the only runtime that accepts any one of its credentials', async () => {
     await shown()
     // MUTATION: drop the any-one-of distinction and this line is gone.
-    expect(apart('scribe')).toContain('cred: the only runtime that takes any one of its secrets')
+    expect(apart('scribe')).toContain('credential: the only runtime that accepts any one of its credentials')
     // MUTATION: say it of a single-secret runtime too and viewport gains it.
     expect(apart('viewport')).toEqual([])
     // The card's own nothing-mark is gone from scribe.
@@ -158,18 +158,18 @@ describe('capacity-006: `Sets it apart` names the classes and the credential for
   })
 })
 
-describe('capacity-006: one `cred` line when the provider and the any-one-of form are both its own', () => {
-  it('says the provider line alone, never two `cred` lines', async () => {
+describe('capacity-006: one `credential` line when the provider and the any-one-of form are both its own', () => {
+  it('says the provider line alone, never two `credential` lines', async () => {
     const t = topology()
     // scribe is now the only `vendor` runtime AND the only any-one-of one.
     t.runtimes.viewport = { ...t.runtimes.viewport!, provider: 'third' }
     api.loadRuntimeTopology.mockResolvedValue(ok(t))
     render(<RuntimesScreen />)
     await screen.findByText('Sizing', undefined, WAIT)
-    const creds = apart('scribe').filter((l) => l.startsWith('cred'))
+    const creds = apart('scribe').filter((l) => l.startsWith('credential'))
     // MUTATION: turn the any-one-of `else if` into a plain `if` and scribe
-    // gains a second `cred` line; this reads two.
-    expect(creds).toEqual(['cred: the only runtime that needs this credential'])
+    // gains a second `credential` line; this reads two.
+    expect(creds).toEqual(['credential: the only runtime that needs this credential'])
   })
 })
 

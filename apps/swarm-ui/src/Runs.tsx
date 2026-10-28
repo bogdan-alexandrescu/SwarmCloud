@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { approvePlan, editPlan, loadRun, loadRuns, rejectPlan } from './api'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { approvePlan, editPlan, loadRun, loadRuns, loadSchedules, rejectPlan } from './api'
 import type { ApiError, Result } from './fetch'
 import { InlineText as RnText, runAddress } from './IssueSubmit'
 import { MarkGlyph, type MarkHue, type MarkName } from './marks'
@@ -149,12 +149,55 @@ const RUN_MARK: Readonly<Record<IssueRunState, { mark: MarkName; hue: MarkHue }>
 /** `issuesweep.SWEEP_CREATOR`: what a run the issue sweeper started records as its creator. */
 export const SWEEP_CREATOR = 'issue-sweep'
 
+/**
+ * A SCHEDULE IS NAMED, NEVER ITS BARE ID (QA1-FIX-24, chrome-C12, part of
+ * #2596). A run a schedule fired records `schedule:<schedule_id>` as its
+ * creator (schedulefire.py), and the list's By column, the run's head and its
+ * Progress rows printed that -- `schedule:sch_54e9828e6772`, cut in the list
+ * -- where the reader knows the schedule as "Failure review". The tenant's
+ * schedules are read once, only when a schedule appears, and the id is kept
+ * in the title; a name that could not be read says so beside the id.
+ */
+const SCHEDULE_BY = /^schedule:(.+)$/
+
+/** The schedule id a `created_by` / `by` names, or null for a person or a service. */
+export function scheduleOf(by: string | null | undefined): string | null {
+  const m = SCHEDULE_BY.exec(by ?? '')
+  return m === null ? null : m[1]!
+}
+
+/** The tenant's schedules' names by id; null until read (or when no schedule is named). */
+export type ScheduleNames = Readonly<Record<string, string>> | null
+
+/** `by` in words: a schedule by its name, anyone else as recorded. */
+export function byWord(by: string, names: ScheduleNames = null): string {
+  const id = scheduleOf(by)
+  if (id === null) return by
+  const name = names?.[id]
+  return name ? `schedule ${name}` : `schedule ${id} · name not read`
+}
+
+/** Reads the schedules' names once `wanted` turns true; a failed read leaves the ids, said so. */
+export function useScheduleNames(wanted: boolean): ScheduleNames {
+  const [names, setNames] = useState<ScheduleNames>(null)
+  useEffect(() => {
+    if (!wanted || names !== null) return
+    let live = true
+    void loadSchedules().then((r) => {
+      if (!live || (r.status !== 'ok' && r.status !== 'stale')) return
+      setNames(Object.fromEntries(r.data.schedules.map((x) => [x.schedule_id, x.name])))
+    })
+    return () => { live = false }
+  }, [wanted, names])
+  return names
+}
+
 /** Who a run is by, as the list and the run page say it. */
-export function runCreatorWord(run: IssueRunSummary): string | null {
+export function runCreatorWord(run: IssueRunSummary, names: ScheduleNames = null): string | null {
   if (run.created_by === SWEEP_CREATOR) {
     return run.on_behalf_of ? `issue sweep, as ${run.on_behalf_of}` : 'issue sweep'
   }
-  return run.created_by || null
+  return run.created_by ? byWord(run.created_by, names) : null
 }
 
 /** A NOT_READY run's reason, or why an auto approval waits; null otherwise. */
@@ -187,11 +230,17 @@ const PAST_APPROVAL: ReadonlySet<IssueRunState> = new Set(['APPROVED', 'RUNNING'
  * required' (~87px) and 'none needed' (~80px) do not, so an automatic
  * approval is a dash, and 'awaiting a plan' (~109px) is 'no plan'.
  * qafix6.workpages.test.tsx measures every word against the column.
+ *
+ * AN AUTOMATIC APPROVAL IS A WORD, NOT A DASH (QA1-FIX-24, chrome-C13, part
+ * of #2596): the dash read as unknown on every row, runs the schedule's
+ * automatic gate had approved among them. An approved run says 'approved'
+ * whoever gave it (the cell's title says automatically); one still waiting
+ * for its automatic gate says 'automatic' (~66px, inside the 74px).
  */
 export function planApprovalWord(run: IssueRunSummary): string {
-  if (run.plan_approval === 'auto') return '\u2014'
   if (run.state === 'REJECTED') return 'rejected'
   if (run.workflow_id !== null || run.approved_at !== null || PAST_APPROVAL.has(run.state)) return 'approved'
+  if (run.plan_approval === 'auto' && run.state !== 'PLANNING') return 'automatic'
   if (run.state === 'PLANNED') return 'awaiting'
   if (run.state === 'PLANNING') return 'no plan'
   return 'not given'
@@ -345,6 +394,10 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
   useEffect(() => setNotice(null), [runId])
   /** The issue's title, once the run is read: the page's title (item 4). */
   const [heading, setHeading] = useState<{ run: string; title: string } | null>(null)
+  // Set by the list or the run page once a schedule is among the creators shown.
+  const [wantNames, setWantNames] = useState(false)
+  const names = useScheduleNames(wantNames)
+  const want = () => setWantNames(true)
 
   if (runId !== null) {
     // A local, not an inline expression: the nav-heading test reads the
@@ -375,7 +428,7 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
           title={pageTitle}
           load={() => loadRun(runId)}
           pollMs={(d) => (d === null || d.run.terminal ? null : RUN_POLL_MS)}
-          summary={(d) => <RunMeta>{`${d.run.issue.ref} · ${d.run.id} · created by ${d.run.created_by || '—'}`}</RunMeta>}
+          summary={(d) => <RunMeta>{`${d.run.issue.ref} · ${d.run.id} · created by ${d.run.created_by ? byWord(d.run.created_by, names) : '—'}`}</RunMeta>}
         >
           {(d) => {
             const onHeading = (title: string) => setHeading((was) => (was?.run === runId && was.title === title ? was : { run: runId, title }))
@@ -403,7 +456,7 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
                     />}
                   </>
                 ) : (
-                  <RunPage run={d.run} reread={reread} go={go} onHeading={onHeading} />
+                  <RunPage run={d.run} reread={reread} go={go} onHeading={onHeading} names={names} want={want} />
                 )}
               </>
             )
@@ -432,7 +485,7 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
         body: <>This tenant has not planned an issue. <SubmitIssueLink go={go} /> starts one.</>,
       }}
     >
-      {(d) => <RunList first={d} go={go} view={view} />}
+      {(d) => <RunList first={d} go={go} view={view} names={names} want={want} />}
     </Screen>
   )
 }
@@ -535,8 +588,13 @@ export function runListQueryString(which: RunFilter, text: string): string {
   return p.toString()
 }
 
-function RunList({ first, go, view = null }: { first: IssueRunSummaryPage; go: (to: string) => void; view?: string | null }) {
+function RunList({ first, go, view = null, names = null, want }: {
+  first: IssueRunSummaryPage; go: (to: string) => void; view?: string | null
+  names?: ScheduleNames; want?: () => void
+}) {
   const now = useNow()
+  const scheduled = first.runs.some((r) => scheduleOf(r.created_by) !== null)
+  useEffect(() => { if (scheduled) want?.() }, [scheduled])
   const [which, setWhich] = useState<RunFilter>(() => runListQuery(view).which)
   const [text, setText] = useState(() => runListQuery(view).text)
   // Written in place, never pushed: a chip or a keystroke is not a page.
@@ -680,7 +738,7 @@ function RunList({ first, go, view = null }: { first: IssueRunSummaryPage; go: (
                       </td>
                     )}
                     <td data-label="Created" title={r.created_at}>{timeAgo(r.created_at, now)}</td>
-                    <td data-label="By">{runCreatorWord(r) !== null ? <span className="rn-cut" title={runCreatorWord(r) ?? ''} data-sweep={r.created_by === SWEEP_CREATOR || undefined}>{runCreatorWord(r)}</span> : <i className="ctl-em">&mdash; not recorded</i>}</td>
+                    <td data-label="By">{runCreatorWord(r, names) !== null ? <span className="rn-cut" title={scheduleOf(r.created_by) === null ? runCreatorWord(r, names) ?? '' : `${runCreatorWord(r, names)} (${r.created_by})`} data-sweep={r.created_by === SWEEP_CREATOR || undefined}>{runCreatorWord(r, names)}</span> : <i className="ctl-em">&mdash; not recorded</i>}</td>
                   </tr>
                 ))}
               </tbody>
@@ -832,14 +890,19 @@ export function planMovedUnder(shown: IssueRun, served: IssueRun): boolean {
   return shown.plan_digest !== null && served.state === 'PLANNED' && served.plan_digest !== shown.plan_digest
 }
 
-function RunPage({ run: served, reread, go, onHeading }: {
+function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
   run: IssueRun
   reread: (why: string) => void
   go: (to: string) => void
   /** Told the page's title: the issue's, or its reference when the run kept none. */
   onHeading: (title: string) => void
+  /** The schedules' names, read once a schedule is the run's creator or in its history. */
+  names?: ScheduleNames
+  want?: () => void
 }) {
   const now = useNow()
+  const scheduled = [served.created_by, ...served.history.map((h) => h.by)].some((b) => scheduleOf(b) !== null)
+  useEffect(() => { if (scheduled) want?.() }, [scheduled])
   // THE ANSWER TO AN ACTION IS DRAWN AT ONCE: the API returns the run it
   // moved, and a poll that lands later replaces it with whatever it reads.
   const [run, setRun] = useState(served)
@@ -852,7 +915,23 @@ function RunPage({ run: served, reread, go, onHeading }: {
   const [held, setHeld] = useState<IssueRun | null>(null)
   const shown = useRef(run)
   shown.current = run
+  /**
+   * A DECISION SHOWS ITS OUTCOME WHERE IT WAS TAKEN (QA1-FIX-24,
+   * runs-submit-03, part of #2596). After Approve and run, and after Reject
+   * this plan, the page read "Planned · Waiting for a person" again with the
+   * buttons offered: the answer was drawn, then a read that still served the
+   * plan as Planned -- the 15s poll, or the read a tab makes when it is shown
+   * again -- drew the undecided run back over it. A run never returns to
+   * Planned on the plan it was decided on, so such a read is older than the
+   * decision and is not drawn; a line beside where the decision was taken
+   * says what it did, and a refusal is drawn there too, not under the risks.
+   */
+  const [decided, setDecided] = useState<{ what: 'approve' | 'reject'; digest: string | null; at: ActionsAt } | null>(null)
+  const decidedRef = useRef(decided)
+  decidedRef.current = decided
   useEffect(() => {
+    const d = decidedRef.current
+    if (d !== null && served.state === 'PLANNED' && served.plan_digest === d.digest) return
     if (planMovedUnder(shown.current, served)) {
       setHeld(served)
     } else {
@@ -866,6 +945,9 @@ function RunPage({ run: served, reread, go, onHeading }: {
   // On the title alone: `onHeading` is a new function on every render of the screen.
   useEffect(() => onHeading(title), [title])
   const [acting, setActing] = useState<Acting>({ kind: 'idle' })
+  /** Where the last action was pressed: its refusal is drawn there. */
+  const [actedAt, setActedAt] = useState<ActionsAt>('top')
+  const pageRef = useRef<HTMLDivElement>(null)
   // The editor records the digest it opened on, and saves with that one.
   // `at`: which of the two action rows asked to reject, so its form opens where the reader is.
   const [open, setOpen] = useState<{ kind: 'none' } | { kind: 'edit'; digest: string } | { kind: 'reject'; at: ActionsAt }>(
@@ -882,14 +964,17 @@ function RunPage({ run: served, reread, go, onHeading }: {
   const canAct = run.state === 'PLANNED' && run.plan_digest !== null && run.plan !== null
   const busy = acting.kind === 'busy'
 
-  async function act(what: 'approve' | 'edit' | 'reject', call: () => Promise<Result<unknown>>) {
+  async function act(what: 'approve' | 'edit' | 'reject', at: ActionsAt, call: () => Promise<Result<unknown>>) {
     setActing({ kind: 'busy', what })
+    setActedAt(at)
+    const on = run.plan_digest
     const r = await call()
     if (r.status === 'ok' || r.status === 'stale') {
       const next = (r.data as { run?: IssueRun } | null)?.run
       setActing({ kind: 'idle' })
       close()
       setHeld(null)
+      if (what !== 'edit') setDecided({ what, digest: on, at })
       if (next !== undefined && next !== null && typeof next.id === 'string') setRun(next)
       else reread('The API accepted this and did not echo the run, so it was read again.')
       return
@@ -929,23 +1014,46 @@ function RunPage({ run: served, reread, go, onHeading }: {
     if (!canAct || open.kind === 'edit') return null
     if (open.kind === 'reject' && open.at === at) {
       return (
-        <RejectForm busy={busy} onCancel={close}
-          onReject={(reason) => void act('reject', () => rejectPlan(run.id, digest, reason))} />
+        <RejectForm busy={busy} onCancel={() => keep(at)}
+          onReject={(reason) => void act('reject', at, () => rejectPlan(run.id, digest, reason))} />
       )
     }
     return (
       <div className="rn-actions">
         <Button kind="primary" disabled={busy}
-          onClick={() => void act('approve', () => approvePlan(run.id, digest!))}>
+          onClick={() => void act('approve', at, () => approvePlan(run.id, digest!))}>
           {acting.kind === 'busy' && acting.what === 'approve' ? 'Approving…' : 'Approve and run'}
         </Button>
         <Button disabled={busy} onClick={() => setOpen({ kind: 'edit', digest: digest! })}>Edit plan</Button>
-        <Button disabled={busy} onClick={() => setOpen({ kind: 'reject', at })}>Reject</Button>
+        <Button disabled={busy} data-act={`reject-${at}`} onClick={() => setOpen({ kind: 'reject', at })}>Reject</Button>
       </div>
     )
   }
+  /**
+   * "Keep it", or Escape in the reject form: the form closes and the Reject
+   * that opened it has the focus again (QA1-FIX-24, runs-submit-08), not the
+   * page's <body>, so a keyboard reader goes on from where they were.
+   */
+  function keep(at: ActionsAt) {
+    close()
+    requestAnimationFrame(() => pageRef.current?.querySelector<HTMLElement>(`[data-act="reject-${at}"]`)?.focus())
+  }
+  /** What a decision did, or why it was refused, drawn beside the buttons pressed. */
+  const answer = (at: ActionsAt): ReactNode => {
+    if (acting.kind === 'failed' && actedAt === at) {
+      return <FailedPanel error={acting.error} onRetry={() => setActing({ kind: 'idle' })} />
+    }
+    if (decided === null || decided.at !== at || run.state === 'PLANNED') return null
+    return (
+      <p className="rn-decided sb-note" role="status">
+        {decided.what === 'approve'
+          ? <><b>Approved.</b> The run is {runStateWord(run.state)} now{run.workflow_id === null ? '.' : ', with its workflow created.'}</>
+          : <><b>Rejected.</b> The run is {runStateWord(run.state)} now; nothing ran.</>}
+      </p>
+    )
+  }
   return (
-    <div className="rn-page">
+    <div className="rn-page" ref={pageRef}>
       <section className="rn-main">
         <div className="rn-state">
           <RunStateMark state={run.state} />
@@ -1004,8 +1112,10 @@ function RunPage({ run: served, reread, go, onHeading }: {
               rather than run.
             </p>
             {actions('top')}
+            {answer('top')}
           </div>
         )}
+        {!canAct && answer('top')}
 
         {held !== null && (
           <div className="rn-notice rn-held" role="status">
@@ -1054,7 +1164,7 @@ function RunPage({ run: served, reread, go, onHeading }: {
               onCancel={close}
               onSave={(plan) => {
                 const opened = open.digest
-                void act('edit', () => editPlan(run.id, opened, plan))
+                void act('edit', 'foot', () => editPlan(run.id, opened, plan))
               }}
             />
           ) : (
@@ -1077,8 +1187,17 @@ function RunPage({ run: served, reread, go, onHeading }: {
                 live={approved ? { read, rows, go } : null} />
             </>
           )}
-          {canAct && open.kind !== 'edit' && <div className="rn-actbar">{actions('foot')}</div>}
+          {/* THE CONFIRM OPENS IN FLOW (QA1-FIX-24, runs-submit-29, part of
+              #2596): opened in the sticky bar, the reject form grew the bar
+              up over the plan it was turning down. While it is open the foot's
+              actions are a plain block under the plan; the bar (opaque, with
+              its top border, intake.css) carries only the three buttons. */}
+          {canAct && open.kind !== 'edit' && (
+            <div className={open.kind === 'reject' && open.at === 'foot' ? 'rn-actflow' : 'rn-actbar'}>{actions('foot')}{answer('foot')}</div>
+          )}
+          {open.kind === 'edit' && answer('foot')}
           </Fold>
+          {!canAct && answer('foot')}
         </section>
 
         {!prLeads && <CiCard run={run} go={go} wfPr={wfPr} index={indexRead} merge={merge} />}
@@ -1091,8 +1210,6 @@ function RunPage({ run: served, reread, go, onHeading }: {
           </section>
         )}
 
-        {acting.kind === 'failed' && <FailedPanel error={acting.error} onRetry={() => setActing({ kind: 'idle' })} />}
-
         <section className="rn-history" aria-label="History">
           <h3>Progress</h3>
           {/* THE STEPS' CHANGES UNDER THE RUN'S, OLDEST FIRST (item 3). */}
@@ -1100,11 +1217,12 @@ function RunPage({ run: served, reread, go, onHeading }: {
             {progress.map((h, i) => h.kind === 'step' ? <StepProgress key={h.key} e={h} prev={previousAt(progress, i)} now={now} /> : (
               <li key={h.key}>
                 <RunStateMark state={h.to} />
-                <span>{h.from === null ? 'created' : h.from === 'PLANNED' && h.to === 'PLANNED' ? `plan edited · revision ${planRevisionAt(progress, i)}` : `from ${stateWord(h.from)}`} · by {h.by || '—'}</span>
+                <span>{h.from === null ? 'created' : h.from === 'PLANNED' && h.to === 'PLANNED' ? `plan edited · revision ${planRevisionAt(progress, i)}` : `from ${stateWord(h.from)}`} · by {h.by ? <span title={scheduleOf(h.by) === null ? undefined : h.by}>{byWord(h.by, names)}</span> : '—'}</span>
                 <ProgressTime at={h.at} prev={previousAt(progress, i)} now={now} />
               </li>
             ))}
           </ol>
+          {historyGap(run) !== null && <p className="sb-note rn-hgap-note" data-gap="">{historyGap(run)}</p>}
         </section>
       </section>
 
@@ -1144,8 +1262,8 @@ function RunPage({ run: served, reread, go, onHeading }: {
             <li className="ctl-fact"><b>plan approval</b><span>{run.plan_approval}</span></li>
             <li className="ctl-fact"><b>auto-merge</b><span>{run.auto_merge ? 'on' : 'off'}</span></li>
             <li className="ctl-fact"><b>fix rounds</b><span>up to {run.fix_rounds}</span></li>
-            <li className="ctl-fact"><b>by</b>{runCreatorWord(run) !== null
-              ? <span className="rn-id" title={runCreatorWord(run) ?? ''}>{runCreatorWord(run)}</span>
+            <li className="ctl-fact"><b>by</b>{runCreatorWord(run, names) !== null
+              ? <span className="rn-id" title={scheduleOf(run.created_by) === null ? runCreatorWord(run, names) ?? '' : `${runCreatorWord(run, names)} (${run.created_by})`}>{runCreatorWord(run, names)}</span>
               : <i className="ctl-em">&mdash; not recorded</i>}</li>
             <CostFact read={read} ended={run.terminal} />
           </ul>
@@ -1153,6 +1271,20 @@ function RunPage({ run: served, reread, go, onHeading }: {
       </aside>
     </div>
   )
+}
+
+/**
+ * A TRANSITION MISSING FROM THE RECORD IS SAID (QA1-FIX-24, runs-submit-06,
+ * part of #2596): Progress ended at "Planning → Planned" under a Running
+ * badge that said "approved 9d ago", and nothing said the approval and the
+ * start were not in the history. When the last transition recorded does not
+ * reach the run's state, a line under the last row says so.
+ */
+export function historyGap(run: IssueRun): string | null {
+  const last = run.history[run.history.length - 1]
+  if (last === undefined) return `No transition is recorded; the run is ${runStateWord(run.state)} now.`
+  if (last.to === run.state) return null
+  return `The record ends at ${runStateWord(last.to)}; the run is ${runStateWord(run.state)} now. The transitions between were not recorded.`
 }
 
 /** A list as the editor shows it: one entry per line. */
@@ -1321,18 +1453,26 @@ function PlanStep({ step, n, live }: { step: PlanStepDoc; n: number; live: PlanL
   const files = textList(step.files)
   const tests = textList(step.tests)
   const estimate = typeof step.estimate === 'string' && step.estimate.trim() !== '' ? step.estimate : null
+  // THE ROLE ONCE (QA1-FIX-24, runs-submit-28, part of #2596): a title that
+  // already opens with its step id ("api: …") had the id again, raw in mono,
+  // on the line under it. The id line is drawn only for a title that does not
+  // name it; what the step waits for keeps its line.
+  const named = step.title.trim().toLowerCase().startsWith(step.step_id.toLowerCase())
+  const deps = step.depends_on !== undefined && (live === null || step.depends_on.length > 0)
   return (
     <li className="rn-step">
       <b className="rn-step-h">{n} · <RnText text={step.title} /></b>
-      <span className="rn-step-id sb-note">
-        <span className="mono">{step.step_id}</span>
-        {step.depends_on !== undefined && (live === null || step.depends_on.length > 0) && (
-          <span className="rn-deps">
-            {' · '}
-            {step.depends_on.length === 0 ? 'starts at once' : <>after <span className="mono">{step.depends_on.join(', ')}</span></>}
-          </span>
-        )}
-      </span>
+      {(!named || deps) && (
+        <span className="rn-step-id sb-note">
+          {!named && <span className="mono">{step.step_id}</span>}
+          {deps && (
+            <span className="rn-deps">
+              {named ? '' : ' · '}
+              {step.depends_on!.length === 0 ? 'starts at once' : <>after <span className="mono">{step.depends_on!.join(', ')}</span></>}
+            </span>
+          )}
+        </span>
+      )}
       {live !== null && (
         <PlanStepLive read={live.read} go={live.go}
           row={planStepRow(live.rows, step.step_id)} />
@@ -1416,7 +1556,13 @@ function IssueReadCard({ run, now }: { run: IssueRun; now: number }) {
         {read === null ? null : (
           <>
             <li className="ctl-fact"><b>title</b><span title={read.title}><RnText text={read.title} /></span></li>
-            <li className="ctl-fact"><b>state</b><span>{read.state}</span></li>
+            {/* A READING, DATED (QA1-FIX-24, chrome-C14, part of #2596): a
+                Done run's PR card said "closed by the merge" while this said
+                "open" with no time, as if it were the issue now. The state is
+                the one read at submission and says so; it is never re-read. */}
+            <li className="ctl-fact"><b>state</b><span title="Read once, when the run was submitted; not read again since." data-state-then="">
+              {read.state} · at submission
+            </span></li>
             <li className="ctl-fact"><b>labels</b><span>{read.labels.length === 0 ? 'none' : breakAt(read.labels.join(' · '))}</span></li>
             <li className="ctl-fact">
               <b>body</b>
@@ -1429,7 +1575,7 @@ function IssueReadCard({ run, now }: { run: IssueRun; now: number }) {
             <li className="ctl-fact"><b>comments</b><span>{read.comments}</span></li>
             <li className="ctl-fact">
               <b>read</b>
-              <span title={read.read_at ?? undefined}>{read.read_at === null ? '—' : `${timeAgo(read.read_at, now)}, at submission`}</span>
+              <span title={read.read_at ?? 'The run recorded no time for this reading.'}>{read.read_at === null ? '— at submission · the time was not recorded' : `${timeAgo(read.read_at, now)}, at submission`}</span>
             </li>
           </>
         )}
@@ -1469,7 +1615,23 @@ function PlanEditor({ plan, busy, onCancel, onSave }: {
   const [steps, setSteps] = useState<StepDraft[]>(plan.steps.map((s) => ({
     step: s, title: s.title, prompt: s.prompt, files: linesOf(s.files), tests: linesOf(s.tests), estimate: s.estimate ?? '',
   })))
-  const blank = summary.trim() === '' || steps.some((s) => s.title.trim() === '' || s.prompt.trim() === '')
+  // WHAT BLOCKS SAVING IS NAMED (QA1-FIX-24, runs-submit-09, part of #2596):
+  // Save went disabled with nothing saying why, and no field was marked. Each
+  // blank required field is `aria-invalid` with its own hint, and the
+  // disabled Save says which fields block it (`disabledReason`, its
+  // aria-describedby).
+  const blanks = [
+    ...(summary.trim() === '' ? ['the summary'] : []),
+    ...steps.flatMap((s, i) => [
+      ...(s.title.trim() === '' ? [`step ${i + 1}'s title`] : []),
+      ...(s.prompt.trim() === '' ? [`step ${i + 1}'s prompt`] : []),
+    ]),
+  ]
+  const blank = blanks.length > 0
+  // The editor opens on its first field, not on <body> (runs-submit-08).
+  const first = useRef<HTMLTextAreaElement>(null)
+  useEffect(() => first.current?.focus(), [])
+  const hintId = useId()
   const set = (i: number, key: 'title' | 'prompt' | 'files' | 'tests' | 'estimate', value: string) =>
     setSteps((all) => all.map((s, j) => (j === i ? { ...s, [key]: value } : s)))
 
@@ -1497,12 +1659,17 @@ function PlanEditor({ plan, busy, onCancel, onSave }: {
     }}>
       <label className="rn-field">
         <b>Summary</b>
-        <textarea value={summary} rows={3} onChange={(e) => setSummary(e.target.value)} />
+        <textarea ref={first} value={summary} rows={3} onChange={(e) => setSummary(e.target.value)}
+          aria-invalid={summary.trim() === '' || undefined}
+          aria-describedby={summary.trim() === '' ? `${hintId}-summary` : undefined} />
       </label>
+      {summary.trim() === '' && <span className="sbf-bad rn-field-why" id={`${hintId}-summary`}>Required: the plan needs a summary.</span>}
       <label className="rn-field">
         <b>Estimate</b>
-        <input value={estimate} maxLength={200} onChange={(e) => setEstimate(e.target.value)} />
+        <input value={estimate} maxLength={200} onChange={(e) => setEstimate(e.target.value)} aria-describedby={`${hintId}-estimate`} />
       </label>
+      {/* Beside the field, not in its label: the label stays its name alone. */}
+      <span className="sb-note" id={`${hintId}-estimate`}>Free text, as the planner wrote it: a time or a size, such as &ldquo;about 2 hours&rdquo;. Optional.</span>
       <label className="rn-field">
         <b>Requirements, one per line</b>
         <textarea value={requirements} rows={4} onChange={(e) => setRequirements(e.target.value)} />
@@ -1516,12 +1683,18 @@ function PlanEditor({ plan, busy, onCancel, onSave }: {
           <legend className="mono">{i + 1} · {s.step.step_id}</legend>
           <label className="rn-field">
             <b>Title</b>
-            <input value={s.title} onChange={(e) => set(i, 'title', e.target.value)} />
+            <input value={s.title} onChange={(e) => set(i, 'title', e.target.value)}
+              aria-invalid={s.title.trim() === '' || undefined}
+              aria-describedby={s.title.trim() === '' ? `${hintId}-t${i}` : undefined} />
           </label>
+          {s.title.trim() === '' && <span className="sbf-bad rn-field-why" id={`${hintId}-t${i}`}>Required: a step needs a title.</span>}
           <label className="rn-field">
             <b>Prompt</b>
-            <textarea value={s.prompt} rows={4} onChange={(e) => set(i, 'prompt', e.target.value)} />
+            <textarea value={s.prompt} rows={4} onChange={(e) => set(i, 'prompt', e.target.value)}
+              aria-invalid={s.prompt.trim() === '' || undefined}
+              aria-describedby={s.prompt.trim() === '' ? `${hintId}-p${i}` : undefined} />
           </label>
+          {s.prompt.trim() === '' && <span className="sbf-bad rn-field-why" id={`${hintId}-p${i}`}>Required: a step needs a prompt.</span>}
           <label className="rn-field">
             <b>Files, one per line</b>
             <textarea className="mono" value={s.files} rows={2} onChange={(e) => set(i, 'files', e.target.value)} />
@@ -1538,7 +1711,8 @@ function PlanEditor({ plan, busy, onCancel, onSave }: {
       ))}
       <p className="sb-note">Saving sends the digest of the plan you opened; an edit made by someone else since is refused.</p>
       <div className="rn-actions">
-        <Button type="submit" kind="primary" disabled={busy || blank}>Save the plan</Button>
+        <Button type="submit" kind="primary" disabled={busy}
+          disabledReason={blank ? `Not saved: ${blanks.join(', ')} ${blanks.length === 1 ? 'is' : 'are'} empty.` : undefined}>Save the plan</Button>
         <Button disabled={busy} onClick={onCancel}>Cancel</Button>
       </div>
     </form>
@@ -1726,7 +1900,8 @@ function planApproved(run: IssueRun): boolean {
 function Requirements({ plan, unmet }: { plan: RunPlan; unmet: string[] }) {
   const reqs = plan.requirements
   if (reqs === undefined || reqs === null || reqs.length === 0) {
-    return <p className="sb-note">The plan lists no requirements, so a review cannot confirm every one: the pull request says part of.</p>
+    // `part of #N` QUOTED (runs-submit-28): "the pull request says part of." read as a broken sentence.
+    return <p className="sb-note">The plan lists no requirements, so a review cannot confirm every one: the pull request says <code>part of #N</code>, not <code>Closes</code>.</p>
   }
   const open = new Set(unmet)
   return (
@@ -1816,10 +1991,17 @@ function PullRequestFact({ run, wfPr: read }: { run: IssueRun; wfPr: WfPrRead })
     const why = read.kind === 'reading'
       ? 'The run records no pull request; its workflow is still being read for the one its integrator opened.'
       : `The run records no pull request, and its workflow could not be read for the one its integrator opened: ${read.why}`
+    // THE REASON IN WORDS, AS EVERY OTHER ABSENT FACT HERE (QA1-FIX-24,
+    // runs-submit-31, part of #2596): a bare dash sat where the Planned run
+    // says "none yet · the workflow opens it"; its why was only a title. The
+    // dash stays (an unknown is a dash, U11b N15), its reason beside it.
     return (
       <li className="ctl-fact is-absent">
         <b>Pull request</b>
-        <Dash why={why} />
+        <Dash why={why} />{' '}
+        <i className="ctl-em" title={why} data-pr-unknown="">
+          {read.kind === 'reading' ? 'not known yet · reading its workflow' : 'not known · its workflow was not read'}
+        </i>
       </li>
     )
   }
@@ -2303,16 +2485,28 @@ function IssueFact({ run, known, url }: { run: IssueRun; known: MergeKnown; url:
   )
 }
 
+/**
+ * THE FORM TAKES THE FOCUS IT OPENS (QA1-FIX-24, runs-submit-08, part of
+ * #2596): Enter on Reject drew the form and left the focus on <body>, and
+ * Escape did nothing. Its Why field has the focus once it opens, and Escape
+ * anywhere in it is "Keep it" (which gives the focus back to Reject).
+ */
 function RejectForm({ busy, onCancel, onReject }: { busy: boolean; onCancel: () => void; onReject: (reason: string) => void }) {
   const [reason, setReason] = useState('')
+  const why = useRef<HTMLTextAreaElement>(null)
+  useEffect(() => why.current?.focus(), [])
   return (
     <form className="rn-reject" onSubmit={(e) => {
       e.preventDefault()
       onReject(reason)
+    }} onKeyDown={(e) => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      onCancel()
     }}>
       <label className="rn-field">
         <b>Why (optional)</b>
-        <textarea value={reason} rows={2} maxLength={1024} onChange={(e) => setReason(e.target.value)} />
+        <textarea ref={why} value={reason} rows={2} maxLength={1024} onChange={(e) => setReason(e.target.value)} />
       </label>
       <div className="rn-actions">
         <Button type="submit" disabled={busy}>Reject this plan</Button>

@@ -88,3 +88,39 @@ export function WorkspaceRefusalBanner({ error }: { error: ApiError | null | und
     </div>
   )
 }
+
+/**
+ * AN ADMIN PAGE REFUSED BY ROLE, SAID IN PLACE (visual QA pass 1, admin-shell-23; part of #2596). A member who
+ * follows a link to `/admin/limits` or `/admin/people` was sent to Overview with no word of why: the link silently
+ * became another page. The frame draws this in the page's place instead, for someone who administers nothing, once
+ * both of its reads say so (an unread session is not "not an admin"); it names the page, the caller's role and
+ * the workspace by its name, and links to Overview. The API's own refusal of every admin route is unchanged; this
+ * says what it would answer before anything is asked of it.
+ *
+ * `role` is the caller's stored role in the workspace in hand, or null when it was not read: then the sentence
+ * says only that the page is for platform admins, never a role guessed.
+ */
+export function AdminRoleRefusal({ page, role, workspace }: { page: string; role: string | null; workspace: string }) {
+  const overview = addressToPath('overview/now')
+  return (
+    <div className="ws-refusal" data-refused="admin">
+      <Banner
+        tone="info"
+        role="status"
+        title={`${page} is for platform admins`}
+        actions={
+          <ButtonLink kind="primary" size="sm" href={overview}>
+            Open Overview
+          </ButtonLink>
+        }
+      >
+        {role === null || role === '' ? `You are not a platform admin, and your role in ${workspace} was not read.` : `You are ${article(role)} ${role} of ${workspace}.`}
+      </Banner>
+    </div>
+  )
+}
+
+/** "a member", "an admin": the article a role's name takes. */
+function article(word: string): string {
+  return /^[aeiou]/i.test(word) ? 'an' : 'a'
+}

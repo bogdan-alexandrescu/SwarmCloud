@@ -174,10 +174,32 @@ export function CanStartFact({ profile }: { profile: RunnerProfile }) {
   const room = headroomFor(profile)
   if (room.agents !== null) {
     if (room.agents > 0) return <>{room.agents} more can start now</>
-    return <>0 can start now{room.binding !== null && <> · held by <span className="sbf-runner-holder" title={room.binding}>{room.binding}</span></>}</>
+    if (room.binding === null) return <>0 can start now</>
+    const words = poolInWords(room.binding)
+    return <>0 can start now · held by <span data-pool={room.binding} title={`${words} (pool ${room.binding})`}>{words}</span></>
   }
   if (room.basis === 'uncapped') return <>no pool caps it</>
   return <UnreadRoom profile={profile} unread={room.unread.length} />
+}
+
+/**
+ * A POOL IN WORDS, FOR THE PERSON SUBMITTING (QA1-FIX-23, runs-submit-21).
+ * The card read `held by provider:anthropic:tenant:u-bogdan` in mono, a key
+ * that means nothing to a submitter. It names what the pool caps and whose it
+ * is; the key stays in the title. A profile's pools are the CALLING tenant's
+ * (`headroomFor`, trap D), so a tenant pool is always "this tenant". A kind
+ * this build does not know is printed as sent rather than guessed at.
+ */
+const POOL_KIND_WORD: Readonly<Record<string, string>> = { provider: 'key', resource: 'class', runner: 'runner', backend: 'backend' }
+
+export function poolInWords(pool: string): string {
+  const parts = pool.split(':')
+  if (pool === 'global') return 'the platform'
+  if (parts[0] === 'tenant' && parts.length === 2) return 'this tenant'
+  if (parts[0] === 'provider' && parts.length === 4 && parts[2] === 'tenant') return `${parts[1]} key, this tenant`
+  if (parts.length !== 2) return pool
+  const what = POOL_KIND_WORD[parts[0]!]
+  return what === undefined ? pool : `${parts[1]} ${what}, platform-wide`
 }
 
 /** `CanStartFact` as plain text, for an `<option>`, which holds no markup. */
