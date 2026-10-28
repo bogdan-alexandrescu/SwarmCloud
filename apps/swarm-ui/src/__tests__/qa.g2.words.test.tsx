@@ -277,8 +277,9 @@ describe('G2-28: a task with no attempt is worded by its state, and its absent t
 
   it('says `no attempt` in every absent tile and resource row', async () => {
     const el = await mountRun(none('CANCELLED'))
+    // Cost is the strip's one absent tile since Peak memory and CPU were dropped (QA1 overview-agents-25).
     const cells = [...el.querySelectorAll<HTMLElement>('.dt-sc')].filter((c) => /^(Peak memory|CPU|Cost)/.test(c.querySelector('.dt-sc-l')?.textContent ?? ''))
-    expect(cells).toHaveLength(3)
+    expect(cells).toHaveLength(1)
     for (const c of cells) {
       const said = visible(c)
       expect(said, said).toMatch(/no attempt/)

@@ -200,34 +200,32 @@ describe('c05: the over-time line names the limit it counts against', () => {
     }
   }
 
-  it('reads `mean … of 2 cores (cgroup limit)`: the enforced limit, named as such', async () => {
+  // A SHORT TITLE, ONE MEAN (QA1 overview-agents-24, owner pick 2026-10-28):
+  // the over-time title names no second limit; Resources names the cgroup's.
+  it('prints no core count on the over-time title, so no second limit needs naming', async () => {
     const data: UtilisationRead = { task_id: ID, read_at: at(1), attempts: [util()] }
     api.loadUtilisation.mockResolvedValue(ok(data))
     const { container } = render(<UtilisationPanel taskId={ID} live={false} />)
     await act(async () => {})
     const head = container.querySelector('[data-testid="util-headline"]')
-    // MUTATION: drop the ` (cgroup limit)` UtilisationPanel adds after `of 2 cores` -- the count is not named.
-    expect(head?.textContent).toContain('mean 1 of 2 cores (cgroup limit)')
+    // MUTATION: put `mean 1 of 2 cores` back in the title -- an unnamed second limit.
+    expect(head?.textContent).not.toMatch(/cores/)
+    expect(head?.textContent).toContain('at the limit 0% of the time · throttled 0%')
   })
 })
 
-describe('c06: Peak memory is the newest attempt’s figure, with the worst named under it', () => {
+describe('c06: Peak memory is the newest attempt’s figure, with the worst named beside it', () => {
+  // The strip's Peak memory tile was dropped (QA1 overview-agents-25, owner
+  // pick 2026-10-28): Resources' Memory row says the figure, whole.
   it('shows attempt 3’s running 3 GiB, and names attempt 2’s 7.20 GiB in the alert tone', () => {
     const beat = ev('heartbeat', ago(1), 'att_3', { peak_rss_bytes: 3 * GIB })
     const el = host(runOf(running(), threeAttempts(false), [{ ...beat, task_id: ID }]))
-    const t = tile(el, /^Peak memory/)
-    // MUTATION: keep memoryOf's `Math.max` over every measured attempt -- the tile reads 7.20 GiB.
-    expect(t.querySelector('.dt-sc-v')?.textContent).toMatch(/^3\.00 GiB/)
-    const sub = t.querySelector('.dt-sc-s')?.textContent ?? ''
-    // MUTATION: drop the `worst …, attempt N` words from the Peak memory caption.
-    expect(sub).toContain('worst 7.20 GiB, attempt 2')
-    expect(sub).toMatch(/^of 8 GiB · worst 7\.20 GiB, attempt 2 · OOM near miss$/)
-    // MUTATION: leave the live tone on the tile when an earlier attempt was worse -- the caption is not the alert's.
-    expect(t.classList.contains('is-alert')).toBe(true)
-    expect(painted(t.querySelector('.dt-sc-s')!, 'color', WIDE)).toBe('var(--s-warn)')
+    // MUTATION: push the Peak memory tile back into the strip.
+    expect([...el.querySelectorAll('.dt-strip .dt-sc-l')].some((l) => /^Peak memory/.test(l.textContent ?? ''))).toBe(false)
+    // MUTATION: keep memoryOf's `Math.max` over every measured attempt -- the row reads 7.20 GiB.
+    expect(resourcesNote(el, 'Memory')).toMatch(/^Memory3\.00 GiB/)
     // MUTATION: leave Resources' Memory row on its own words -- the worst is said nowhere whole.
     expect(resourcesNote(el, 'Memory')).toContain('worst 7.20 GiB, attempt 2 · OOM near miss')
-    expect(resourcesNote(el, 'Memory')).toMatch(/^Memory3\.00 GiB/)
   })
 
   it('shows the newest attempt’s peak once it ends, and no `worst` caption when no earlier attempt was worse', () => {
@@ -237,11 +235,8 @@ describe('c06: Peak memory is the newest attempt’s figure, with the worst name
         threeAttempts(true, { peak_rss_bytes: 7.5 * GIB }).map((a) => (a.attempt_id === 'att_2' ? { ...a, oom_near_miss: false } : a)),
       ),
     )
-    const t = tile(el, /^Peak memory/)
-    expect(t.querySelector('.dt-sc-v')?.textContent).toMatch(/^7\.50 GiB/)
+    expect(resourcesNote(el, 'Memory')).toMatch(/^Memory7\.50 GiB/)
     // MUTATION: name an earlier attempt as `worst` whenever there are several -- attempt 3 is the worst itself.
-    expect(t.querySelector('.dt-sc-s')?.textContent ?? '').not.toContain('worst')
-    expect(t.classList.contains('is-alert')).toBe(false)
     expect(resourcesNote(el, 'Memory')).not.toContain('worst')
   })
 })

@@ -375,12 +375,15 @@ describe('G2-10: each card’s `?` opens a topic about what it shows', () => {
   })
 })
 
-describe('G2-11: the memory tile says its figure is a peak', () => {
+// The strip's Peak memory tile was dropped (QA1 overview-agents-25, owner
+// pick 2026-10-28); Resources' Memory row says the figure, and that it is a peak.
+describe('G2-11: the memory figure says it is a peak', () => {
   it('reads `of 8 GiB · peak, written at exit` on a finished attempt', () => {
     const t = running({ state: 'SUCCEEDED', completed_at: ago(1) })
     const el = host(runOf({ task: t, attempts: [attempt(1, { created_at: ago(15), started_at: ago(14), completed_at: ago(1), peak_rss_bytes: 28 * 1024 ** 2 })] }))
-    const mem = tile(el, /^Peak memory/)
-    expect(mem.sub).toBe('of 8 GiB · peak, written at exit')
+    const row = [...el.querySelectorAll<HTMLElement>('.dt-resources .dt-rr')].find((r) => r.querySelector('.dt-rr-n')?.textContent === 'Memory')
+    // MUTATION: drop ` · peak, written at exit` from Resources' Memory row.
+    expect(row?.querySelector('.dt-rr-v small')?.textContent).toMatch(/of 8 GiB · peak, written at exit$/)
   })
 })
 

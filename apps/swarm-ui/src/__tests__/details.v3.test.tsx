@@ -319,7 +319,10 @@ describe('the Now card leads, and becomes the outcome or the failure', () => {
   })
 })
 
-describe('one stat strip: Elapsed · Attempt · Peak memory · CPU · Cost', () => {
+// NO PEAK MEMORY OR CPU TILE (QA1 overview-agents-25, owner pick 2026-10-28):
+// the strip and the Resources card share one fold, and the tiles restated the
+// card's Memory and CPU peak rows. The card keeps the figures.
+describe('one stat strip: Elapsed · Attempt · Cost', () => {
   function cells(el: HTMLElement) {
     return [...el.querySelectorAll<HTMLElement>('.dt-strip > .dt-sc')].map((c) => ({
       label: seen(c.querySelector('.dt-sc-l')),
@@ -342,19 +345,14 @@ describe('one stat strip: Elapsed · Attempt · Peak memory · CPU · Cost', () 
     })
     const beat = ev('heartbeat', ago(1), 'att_1', { peak_rss_bytes: 2 * 1024 ** 3 })
     const c = cells(host(runOf({ attempts: [a], events: [beat] })))
-    expect(c.map((x) => x.label)).toEqual(['Run · attempt 1', 'Attempt', 'Peak memory', 'CPU', 'Cost'])
+    // MUTATION: push the Peak memory or CPU tile back into the strip.
+    expect(c.map((x) => x.label)).toEqual(['Run · attempt 1', 'Attempt', 'Cost'])
     expect(c[0]!.value).toMatch(/^1[34]m \d+s$/)
     expect(c[1]!.value).toBe('1 of 3')
-    expect(c[2]!.value).toBe('2.00 GiB 25%')
-    expect(c[2]!.sub).toMatch(/^of 8 GiB · so far · 1m ago$/)
-    expect(c[3]!.value).toBe('1.6 / 2 cores')
-    // The limit is the class's own, so its name says so (FF-D5a, run 2).
-    // MUTATION: drop the limit's words from the CPU tile's sub-line.
-    expect(c[3]!.sub).toBe('peak · mean 0.7 · standard limit')
     // NOT DUE YET: small, muted, words -- never a figure.
-    expect(c[4]!.value).toBe('at exit')
-    expect(c[4]!.cls).toContain('is-reading')
-    expect(c[4]!.sub).toMatch(/tokens/)
+    expect(c[2]!.value).toBe('at exit')
+    expect(c[2]!.cls).toContain('is-reading')
+    expect(c[2]!.sub).toMatch(/tokens/)
   })
 
   it('an unknown figure is a dash with its reason, never 0, and wears the muted form', () => {
@@ -365,9 +363,6 @@ describe('one stat strip: Elapsed · Attempt · Peak memory · CPU · Cost', () 
     expect(cost.value).toBe('— not reported')
     expect(cost.cls).toContain('is-absent')
     expect(cost.sub).toMatch(/tokens not reported/)
-    const mem = c.find((x) => x.label === 'Peak memory')!
-    expect(mem.value).toBe('— not recorded')
-    expect(mem.cls).toContain('is-absent')
   })
 
   // FF-D5a (visual QA run 2, #1680): the header said `4 vCPU`, the tile `1.6
@@ -389,18 +384,13 @@ describe('one stat strip: Elapsed · Attempt · Peak memory · CPU · Cost', () 
       cpu_seconds: 600,
     })
     const el = host(runOf({ attempts: [a], classes }))
-    const cpu = cells(el).find((x) => x.label === 'CPU')!
-    // MUTATION: draw `/ ${cls.cpu} cores`; the denominator is the limit the worker read.
-    expect(cpu.value).toBe('1.6 / 2 cores')
-    // MUTATION: drop `(class 4 vCPU)` when the limit and the class differ.
-    expect(cpu.sub).toBe('peak · mean 0.7 · cgroup limit (class 4 vCPU)')
     const note = (name: string) =>
       seen(
         [...el.querySelectorAll<HTMLElement>('.dt-resources > .dt-rr')]
           .find((r) => seen(r.querySelector('.dt-rr-n')) === name)!
           .querySelector('.dt-rr-v'),
       )
-    // MUTATION: leave the Resources row's note at `of 2 cores`.
+    // MUTATION: draw `of ${cls.cpu} cores`, or leave the note at `of 2 cores` with no limit's words.
     expect(note('CPU peak')).toBe('1.6 80% of 2 cores · cgroup limit (class 4 vCPU)')
     // MUTATION: repeat the limit's words on the mean row too; once per card is enough.
     // The mean row names its own source instead (FF-D5a, QAFIX5-TASK-DETAIL).
@@ -410,11 +400,10 @@ describe('one stat strip: Elapsed · Attempt · Peak memory · CPU · Cost', () 
   it('a failed attempt read leaves the task’s own figures and dashes the rest', () => {
     const c = cells(host(runOf({ attempts: null, attemptsDetail: 'HTTP 503.' })))
     expect(c.find((x) => x.label === 'Attempt')!.value).toBe('1 of 3')
-    for (const label of ['Peak memory', 'CPU', 'Cost']) {
-      const cell = c.find((x) => x.label === label)!
-      expect(cell.value, label).toBe('— read failed')
-      expect(cell.cls, label).toContain('is-unread')
-    }
+    const cost = c.find((x) => x.label === 'Cost')!
+    expect(cost.value).toBe('— read failed')
+    expect(cost.cls).toContain('is-unread')
+    expect(c.map((x) => x.label)).not.toContain('Peak memory')
   })
 })
 

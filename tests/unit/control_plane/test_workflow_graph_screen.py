@@ -761,8 +761,12 @@ def test_the_run_panel_keeps_the_writing_the_node_borrows():
     # The property is unchanged: an unmeasured memory or cost is a PHRASE in
     # the value slot, never blank and never `$0`.
     strip = _decl(agent, "function DtStrip(")
-    assert "value: '— not recorded'" in strip, (
-        "an unrecorded peak memory no longer says so in the value slot"
+    # The strip's Peak memory tile was dropped (QA1 overview-agents-25, owner
+    # pick 2026-10-28); Resources' Memory row draws an unrecorded peak as a
+    # dash beside the words.
+    resources = _decl(agent, "function DtResources(")
+    assert "'not recorded'" in resources and "value: '—'" in resources, (
+        "an unrecorded peak memory no longer says so beside its dash"
     )
     assert "value: '— not reported'" in strip, (
         "an unreported cost no longer says so in the value slot, so it may be read as $0"

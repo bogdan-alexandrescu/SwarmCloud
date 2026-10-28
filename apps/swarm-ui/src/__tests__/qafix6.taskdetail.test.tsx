@@ -232,21 +232,22 @@ describe('a: every `cgroup limit` figure on Details divides by one limit', () =>
     api.loadUtilisation.mockResolvedValue(ok(data))
     const { container } = render(<UtilisationPanel taskId={ID} live={false} />)
     await act(async () => {})
-    const texts = [
-      tile(el, /^CPU/).textContent ?? '',
-      resourcesRow(el, 'CPU peak').querySelector('.dt-rr-v')?.textContent ?? '',
-      container.querySelector('[data-testid="util-headline"]')?.textContent ?? '',
-    ]
+    // The strip's CPU tile was dropped and the over-time title prints no
+    // core count (QA1 overview-agents-24/25, owner picks 2026-10-28), so
+    // Resources' CPU peak row is the one figure called the cgroup's.
+    expect(el.querySelector('.dt-strip')?.textContent ?? '').not.toMatch(/cores/)
+    expect(container.querySelector('[data-testid="util-headline"]')?.textContent ?? '').not.toMatch(/cores/)
+    const texts = [resourcesRow(el, 'CPU peak').querySelector('.dt-rr-v')?.textContent ?? '']
     // Each figure called the cgroup's, with the core count it divides by.
     const limits = texts.map((t) => {
       expect(t, t).toMatch(/cgroup limit/)
       return /(?:\/|of) (\d+(?:\.\d+)?) cores/.exec(t)?.[1] ?? null
     })
-    // MUTATION: divide the CPU tile by the class's cpu instead of the attempt's limit -- `/ 4 cores` beside `of 2 cores`.
+    // MUTATION: divide the CPU peak row by the class's cpu instead of the attempt's limit -- `of 4 cores`.
     expect(new Set(limits)).toEqual(new Set(['2']))
   })
 
-  it('names the series’ own 4 cores by its source when the attempt record’s limit is 2, and says the two shares measure different things', async () => {
+  it('prints none of the series’ own 4 cores when the attempt record’s limit is 2, and says in the title what the two shares measure', async () => {
     // The fixture build's case (api.ts): the 5 s samples carry 4 cores, the
     // attempt record 2. Each figure is named by where it came from.
     const el = host(runOf(running(), threeAttempts(false), [beat()]))
@@ -268,18 +269,22 @@ describe('a: every `cgroup limit` figure on Details divides by one limit', () =>
       ],
     }
     api.loadUtilisation.mockResolvedValue(ok(data))
-    const { container } = render(<UtilisationPanel taskId={ID} live={false} limitCores={2} />)
+    const { container } = render(<UtilisationPanel taskId={ID} live={false} />)
     await act(async () => {})
     const head = container.querySelector('[data-testid="util-headline"]')?.textContent ?? ''
+    // Every core count on the pane is the attempt record's 2: Resources' rows; the title prints none.
     const pane = `${el.querySelector('.dt-strip')?.textContent ?? ''} ${el.querySelector('.dt-resources')?.textContent ?? ''} ${head}`
-    // Every core count called the cgroup's, wherever it is printed, is one number.
-    const called = [...pane.matchAll(/(\d+(?:\.\d+)?) cores?\)?[^·]{0,24}?cgroup limit|cgroup limit is (\d+(?:\.\d+)?) cores/g)].map((m) => m[1] ?? m[2])
-    // MUTATION: call every series limit `(cgroup limit)` -- `mean 2.8 of 4 cores (cgroup limit)` beside `/ 2 cores`.
-    expect(head).not.toMatch(/of 4 cores \(cgroup limit\)/)
-    expect(head).toMatch(/of 4 cores \(the limit the 5 s samples carry; the attempt's cgroup limit is 2 cores\)/)
-    expect(new Set(called.filter((n) => n !== undefined))).toEqual(new Set(['2']))
-    // MUTATION: drop the measures note -- `at the limit 0%` sits beside `throttled 6%` as if one figure.
-    expect(head).toMatch(/at the limit 0% of the time · throttled 6% \(near-limit samples vs throttled CFS periods\)/)
+    const counts = [...pane.matchAll(/(\d+(?:\.\d+)?) cores/g)].map((m) => m[1])
+    // A SHORT TITLE, ONE MEAN (QA1 overview-agents-24, owner pick 2026-10-28).
+    // MUTATION: put `mean 2.8 of 4 cores` back in the title -- a second mean of a second limit.
+    expect(head).not.toMatch(/4 cores|mean/)
+    expect(head).toBe('CPU and memory over time · at the limit 0% of the time · throttled 6%')
+    expect(counts.length).toBeGreaterThan(0)
+    expect(new Set(counts)).toEqual(new Set(['2']))
+    // MUTATION: drop the title attribute -- `at the limit 0%` beside `throttled 6%` reads as one figure.
+    const why = container.querySelector('[data-testid="util-headline"]')?.getAttribute('title') ?? ''
+    expect(why).toMatch(/5 s CPU samples/)
+    expect(why).toMatch(/CFS periods/)
   })
 })
 
@@ -390,15 +395,16 @@ describe('e: the Progress card draws every attempt on the longest attempt’s sc
 // f. Peak memory, as decided (boxes 6314119814 c06, 6343769495)
 // ---------------------------------------------------------------------------
 
-describe('f: Peak memory is the newest attempt’s figure, with the worst named whole under it', () => {
-  it('shows attempt 3’s 1.72 GiB and `worst 7.20 GiB, attempt 2 · OOM near miss`, unclamped at 1440', () => {
+describe('f: Peak memory is the newest attempt’s figure, with the worst named whole beside it', () => {
+  // The strip's Peak memory tile was dropped (QA1 overview-agents-25, owner
+  // pick 2026-10-28): Resources' Memory row, which never clamps, says it.
+  it('shows attempt 3’s 1.72 GiB and `worst 7.20 GiB, attempt 2 · OOM near miss` on Resources’ Memory row, and no tile', () => {
     const el = host(runOf(running(), threeAttempts(false), [beat()]))
-    const c = tile(el, /^Peak memory/)
-    expect(c.querySelector('.dt-sc-v')?.firstChild?.textContent?.trim()).toBe('1.72 GiB')
-    const sub = c.querySelector<HTMLElement>('.dt-sc-s')!
-    expect(sub.textContent).toMatch(/worst 7\.20 GiB, attempt 2 · OOM near miss$/)
-    // MUTATION: drop `whole` from the Peak memory cell -- the 480-639 px pane clamps it to `worst 7.20 GiB, attempt…`.
-    expectWhole(sub, PANE_1440)
+    // MUTATION: push the Peak memory tile back into the strip -> red.
+    expect([...el.querySelectorAll('.dt-strip .dt-sc-l')].some((l) => /^Peak memory/.test(l.textContent ?? ''))).toBe(false)
+    const v = resourcesRow(el, 'Memory').querySelector('.dt-rr-v')?.textContent ?? ''
+    expect(v).toMatch(/^1\.72 GiB/)
+    expect(v).toMatch(/worst 7\.20 GiB, attempt 2 · OOM near miss$/)
   })
 })
 

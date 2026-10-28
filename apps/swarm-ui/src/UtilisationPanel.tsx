@@ -20,44 +20,32 @@ import type { Result } from './fetch'
 import { cpuSummary, type UtilisationAttempt, type UtilisationRead } from './utilisation'
 
 /**
- * THE HEADLINE WITH ITS LIMIT NAMED (c05, owner decision 2026-10-22, box
- * comment 6298220484: "Name every count where it is printed"). `of 2 cores`
- * is the attempt's cgroup CPU limit -- what the kernel enforced, not the
- * class's guaranteed size the head prints -- so the line says which it is.
- * The words are added once, after the mean's `of N cores`, and only when the
- * route served a limit: `limit not reported` already says there is none.
- *
- * ONE NUMBER PER NAME (6:task-001). The CPU tile and Resources divide by the
- * attempt record's `cpu_limit_cores`; the series carries its own. When the two
- * differ, only the record's is called `cgroup limit`, and the series' is named
- * by its source -- never two numbers both called the cgroup's.
+ * A SHORT TITLE, ONE MEAN (QA1 overview-agents-24, owner pick 2026-10-28).
+ * The title read `CPU, 5 s samples: mean 2.8 of 4 cores (the limit the 5 s
+ * samples carry; ...) · at the limit 0% of the time · throttled 6%
+ * (near-limit samples vs throttled CFS periods)`: three lines, and a second
+ * mean of a second limit beside Resources' `CPU mean 0.8 · 42% of 2 cores`
+ * in the same fold. The owner chose to drop it rather than name both (which
+ * c05/FF-D5a had done), so the fold prints one mean -- Resources', the
+ * attempt's CPU-seconds over its runner time -- and this title keeps the two
+ * figures only the series has: time at the limit and throttling. What each
+ * measures is the title attribute, not more words on the glass. The chart,
+ * one click down, still states its samples' figures in its own caption.
  */
-function namedLimit(attempt: UtilisationAttempt | null, text: string, recordLimit: number | null): string {
-  const sampled = namedMean(text)
-  if (attempt === null) return sampled
+export function overTimeTitle(attempt: UtilisationAttempt | null): { text: string; title: string } {
+  if (attempt === null) return { text: 'not measured', title: '' }
   const s = cpuSummary(attempt)
-  if (s.limit === null) return sampled
-  const words =
-    recordLimit === null || Math.abs(recordLimit - s.limit) < 0.05
-      ? ' (cgroup limit)'
-      : ` (the limit the 5 s samples carry; the attempt's cgroup limit is ${Number(recordLimit.toFixed(1))} cores)`
-  const named = sampled.replace(/^(CPU, 5 s samples: mean \S+ of \S+ cores)/, `$1${words}`)
-  // TWO MEASURES, SAID SO: `at the limit` counts 5 s samples at the limit's
-  // edge, `throttled` the kernel's CFS periods held back. 0% beside 6% is not
-  // a contradiction, and the line says why rather than leaving it to look like one.
-  if (s.atLimit === null || s.throttled === null) return named
-  return `${named} (near-limit samples vs throttled CFS periods)`
-}
-
-/**
- * AND WHICH MEAN IT IS (FF-D5a, the same c05 box). Resources, above this
- * line, prints the attempt's own mean -- its CPU-seconds over the time its
- * runners ran -- and this one is the mean of the series' 5 s samples, setup
- * and waits included. Two means on one pane, each named where it is printed,
- * so a reader does not take the difference for an error.
- */
-function namedMean(text: string): string {
-  return text.replace(/^CPU: mean (?=\d)/, 'CPU, 5 s samples: mean ')
+  const pct = (share: number) => `${Math.round(share * 100)}%`
+  const parts: string[] = []
+  if (s.atLimit !== null) parts.push(`at the limit ${pct(s.atLimit)} of the time`)
+  parts.push(s.throttled === null ? 'throttling not measured' : `throttled ${pct(s.throttled)}`)
+  const title = [
+    s.atLimit === null ? null : 'At the limit: the share of 5 s CPU samples within reach of the limit the samples carry.',
+    s.throttled === null ? null : 'Throttled: the share of CFS periods the kernel held the container back.',
+  ]
+    .filter((t): t is string => t !== null)
+    .join(' ')
+  return { text: parts.join(' · '), title }
 }
 
 /**
@@ -69,16 +57,7 @@ function namedMean(text: string): string {
  */
 export const UTILISATION_POLL_MS = 10_000
 
-export function UtilisationPanel({
-  taskId,
-  live,
-  limitCores = null,
-}: {
-  taskId: string
-  live: boolean
-  /** The newest attempt record's `cpu_limit_cores`: the one the CPU tile and Resources divide by. */
-  limitCores?: number | null
-}) {
+export function UtilisationPanel({ taskId, live }: { taskId: string; live: boolean }) {
   const [got, setGot] = useState<Result<UtilisationRead> | null>(null)
   const inFlight = useRef(false)
 
@@ -123,15 +102,17 @@ export function UtilisationPanel({
   }
   const attempt = got.status === 'empty' ? null : (got.data.attempts[0] ?? null)
   const head = utilisationHeadline(attempt, live)
-  const headline = head.measured ? namedLimit(attempt, head.text, limitCores) : head.text
+  const short = head.measured ? overTimeTitle(attempt) : { text: head.text, title: '' }
   // THE SUMMARY ON THE GLASS, THE CHART ONE CLICK AWAY. Details keeps every
   // chart behind a disclosure so its first 900px stay Now, the strip and the
   // column heads (details.v3.test.tsx). The one line the owner asked for --
-  // mean of the limit, time at the limit, throttled -- is the disclosure's
-  // own summary, so it is read without opening anything, and live.
+  // time at the limit and throttled -- is the disclosure's own summary, so it
+  // is read without opening anything, and live.
   return (
     <details className="dt-disc ctl-util-disc">
-      <summary data-testid="util-headline">CPU and memory over time · {headline}</summary>
+      <summary data-testid="util-headline" title={short.title === '' ? undefined : short.title}>
+        CPU and memory over time · {short.text}
+      </summary>
       <UtilisationChart attempt={attempt} live={live} />
       {got.status === 'stale' && (
         <p className="ctl-chart-note" role="status">

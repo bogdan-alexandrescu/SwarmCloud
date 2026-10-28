@@ -1401,10 +1401,8 @@ export function runsLine(summary: ResultSummary | null | undefined): { text: str
 }
 
 function DtStrip({ run, now }: { run: AgentRun; now: number }) {
-  const { task, attempts, events } = run
+  const { task, attempts } = run
   const el = elapsed(task, now)
-  const cls = run.classes?.[task.resource_class] ?? null
-  const noCeiling = ceilingNote(run)
   // WHEN IT STARTED AND ENDED ARE THE ELAPSED FIGURE'S SUB-LINE (agent-
   // details-v3.html A: `since 14:02`, `13:18 → 13:41`), in the one formatter
   // (`clockTime`): local time, the UTC instant and its age in the title.
@@ -1459,8 +1457,6 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
   if (attempts === null) {
     cells.push(
       { label: 'Attempt', value: `${task.attempt_count}`, unit: `of ${task.max_attempts}`, sub: 'agent counter' },
-      { label: 'Peak memory', value: '— read failed', tone: 'unread', bar: null, sub: 'attempt query', help: 'read-failed' },
-      { label: 'CPU', value: '— read failed', tone: 'unread', bar: null, sub: 'attempt query' },
       { label: 'Cost', value: '— read failed', tone: 'unread', sub: 'attempt query' },
     )
     return <DtStripView cells={cells} />
@@ -1491,83 +1487,13 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
     tone: attempts.length >= task.attempt_count ? undefined : 'unread',
   })
 
-  // MEMORY, against the class's limit when the catalogue answered.
-  const mem = memoryOf(run)
-  const nearMiss = attempts.some((a) => a.oom_near_miss)
-  const limit = cls === null ? null : cls.memory_gib * GIB
-  const memPct = mem.bytes !== null && limit !== null ? pctOf(mem.bytes, limit) : null
-  const ofLimit = cls === null ? (noCeiling ?? 'limit unknown') : `of ${cls.memory_gib} GiB`
-  // THE WORST EARLIER ATTEMPT IS THE CAPTION (c06): `of 8 GiB · worst 7.20
-  // GiB, attempt 2 · OOM near miss`, in the alert tone, the owner's words.
-  // IT WRAPS, WHOLE (5b:QA-024, box comment 6343769495): the 480-639px
-  // pane's two-line clamp cut it to `worst 7.20 GiB, attempt…` at 1440, the
-  // half that names the attempt and the near miss lost. Every Peak memory
-  // cell is `whole`, as the CPU tile is; Resources' Memory row says it too,
-  // with the reading's age (`so far · 1m ago`).
-  const worst = worstWords(mem.worst)
-  const nearWords = nearMiss ? ' · OOM near miss' : ''
-  if (mem.bytes !== null) {
-    cells.push({
-      label: mem.kind === 'last' ? 'Memory · last reading' : 'Peak memory',
-      value: bytesLabel(mem.bytes),
-      unit: memPct === null ? undefined : `${memPct}%`,
-      bar: memPct,
-      sub:
-        worst !== null
-          ? `${ofLimit} · ${worst}${nearWords}`
-          : mem.kind === 'live'
-            ? `${ofLimit} · so far · ${timeAgo(mem.at ?? '', now)}`
-            : mem.kind === 'last'
-              ? `${ofLimit} · no peak was written`
-              : // A PEAK, WRITTEN AT EXIT (G2-11, QA 2026-10-07): `at exit` alone
-                // read as the value at exit, and 26.7 MiB for a Claude Code run
-                // looked like a residue. The worker records the high-water mark
-                // it sampled (`peak_rss_bytes`, agent_worker/metrics.py) and
-                // writes it when the attempt ends.
-                `${ofLimit} · peak, written at exit${nearWords}`,
-      // THE LIVE HIGH-WATER MARK IS NOT THE FINAL FIGURE (AG-4): full size,
-      // because it is a real measurement, but on its own tone and labelled
-      // `so far` with its age -- unless an earlier attempt was worse, whose
-      // warning takes the alert tone.
-      tone: worst !== null || nearMiss || mem.kind === 'last' ? 'alert' : mem.kind === 'live' ? 'live' : undefined,
-      help: 'peak-memory',
-      whole: true,
-    })
-  } else if (mem.kind === 'pending') {
-    cells.push({
-      label: 'Peak memory',
-      value: 'at exit',
-      tone: 'reading',
-      bar: null,
-      sub: worst !== null ? `${ofLimit} · ${worst}${nearWords} · no heartbeat reading yet` : `${ofLimit} · no heartbeat reading yet`,
-      help: 'peak-memory',
-      whole: true,
-    })
-  } else if (latest === null) {
-    // ONE CAUSE, ONE WORD (QA G2-28): with no attempt, Peak memory, CPU and
-    // Cost each say `no attempt`. They said `not recorded`, `no attempt yet`
-    // and `nothing ran yet` for the same fact, and `yet` on a cancelled task.
-    cells.push({ label: 'Peak memory', value: '— no attempt', tone: 'absent', bar: null, help: 'peak-memory' })
-  } else {
-    cells.push({
-      label: 'Peak memory',
-      value: '— not recorded',
-      tone: 'absent',
-      bar: null,
-      // The newest wrote none; an earlier one that did is still named.
-      sub: worst !== null ? `attempt ${attempts.length} wrote none · ${worst}${nearWords}` : 'no attempt wrote one',
-      help: 'peak-memory',
-      whole: true,
-    })
-  }
-
-  // CPU: the newest attempt's peak against its limit, the mean under it.
-  // THE CPU CAPTION IS NEVER CUT (task-012, visual QA run 3, #1680): it says
-  // the reading, whose limit the `/ 2 cores` is and the size the attempt was
-  // guaranteed (FF-D5a, SIZES-DETAIL), and the two-line clamp cut it to
-  // `cgroup limit (clas…` in the 1440 split's pane. Every other sub-line
-  // still clamps.
-  cells.push({ ...cpuCell(latest, open !== null, events, cls), whole: true })
+  // NO PEAK MEMORY OR CPU TILE (QA1 overview-agents-25, owner pick
+  // 2026-10-28, "Drop the tiles"). This strip and the Resources card are
+  // drawn together, inside the one Resources fold, and the tiles restated the
+  // card's Memory and CPU peak rows -- the same figure against the same limit,
+  // twice in one fold. The card keeps them, whole: the worst earlier attempt,
+  // an OOM near miss, whose limit the cores are and what the attempt was sized
+  // at. The strip keeps what only it says: the clock, the attempt and the cost.
 
   // COST, with tokens as its sub-line (#322: every kind summed on its own).
   const spent = attempts.filter((a) => a.cost_usd !== null)
@@ -1665,10 +1591,9 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
   // THE COST LINE WRAPS, WHOLE (5b:ff-desktop-05, box comment 6343792637).
   // The 480-639px pane's two-line clamp cut a failed task's line to `cost 1
   // of 3 reported · last...` at 1440: the coverage it opens with is the
-  // reason the figure says `at least`. Like CPU and Peak memory, the Cost
-  // tile's sub-line is never clamped; a taller strip is the price. Each Cost
-  // cell above says `whole` where it is pushed, as Peak memory and CPU do, so
-  // a renamed label cannot bring the clamp back.
+  // reason the figure says `at least`. The Cost tile's sub-line is never
+  // clamped; a taller strip is the price. Each Cost cell above says `whole`
+  // where it is pushed, so a renamed label cannot bring the clamp back.
   return <DtStripView cells={cells} />
 }
 
@@ -1680,41 +1605,6 @@ function DtStripView({ cells }: { cells: DtCell[] }) {
       ))}
     </div>
   )
-}
-
-/** The CPU cell: the newest attempt's peak against its limit, its mean in the sub-line. */
-function cpuCell(latest: AttemptRow | null, open: boolean, events: TaskEvent[] | null, cls: ResourceClassSpec | null): DtCell {
-  if (latest === null) return { label: 'CPU', value: '— no attempt', tone: 'absent', bar: null }
-  const from = cpuOf(latest, events)
-  if (from.kind === 'not_served') {
-    return { label: 'CPU', value: '— not served', tone: 'absent', bar: null, sub: 'this API sends no CPU fields', help: 'cpu-figures' }
-  }
-  if (from.kind === 'unread') {
-    return { label: 'CPU', value: '— events unread', tone: 'unread', bar: null, sub: 'heartbeat read failed', help: 'cpu-figures' }
-  }
-  const f = from.figures
-  const limit = f.cpu_limit_cores ?? cls?.cpu ?? null
-  // The size was pinned at admission, so it is known before the first reading.
-  const sized = sizedCpuWords(latest)
-  const withSize = (sub: string) => (sized === null ? sub : `${sub} · ${sized}`)
-  if (f.peak_cpu_cores === null) {
-    return open
-      ? { label: 'CPU', value: 'at exit', tone: 'reading', bar: null, sub: withSize('no reading yet'), help: 'cpu-figures' }
-      : { label: 'CPU', value: '— not measured', tone: 'absent', bar: null, sub: withSize('no figure was written'), help: 'cpu-figures' }
-  }
-  const pct = limit === null ? null : pctOf(f.peak_cpu_cores, limit)
-  const whose = cpuLimitWords(f.cpu_limit_cores, cls, from.kind === 'attempt' ? (latest.cpu_limit_source ?? null) : null)
-  return {
-    label: 'CPU',
-    value: cores(f.peak_cpu_cores),
-    unit: limit === null ? 'cores · limit unknown' : `/ ${cores(limit)} cores`,
-    bar: pct,
-    tone: pct !== null && pct >= 100 ? 'alert' : undefined,
-    sub: withSize(
-      `${from.kind === 'heartbeat' && !from.final ? 'last reading' : 'peak'}${f.mean_cpu_cores === null ? '' : ` · mean ${cores(f.mean_cpu_cores)}`}${whose === null ? '' : ` · ${whose}`}`,
-    ),
-    help: 'cpu-figures',
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2008,10 +1898,12 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
   const { latest } = orderedAttempts(attempts)
   const open = latest !== null && !attemptEnd(latest, task, true).over
   const mem = memoryOf(run)
-  // THE WORST EARLIER ATTEMPT, WHOLE (c06): the strip's tile cuts its caption
-  // at two lines in a 480-639px pane; this row never does.
+  // THE WORST EARLIER ATTEMPT AND AN OOM NEAR MISS, WHOLE (c06): this row
+  // is where they are said since the strip's Peak memory tile was dropped
+  // (QA1 overview-agents-25), so the near miss is named here on its own too.
   const worst = worstWords(mem.worst)
-  const worstNote = worst === null ? '' : ` · ${worst}${attempts?.some((a) => a.oom_near_miss) ? ' · OOM near miss' : ''}`
+  const nearMiss = attempts?.some((a) => a.oom_near_miss) === true
+  const worstNote = (worst === null ? '' : ` · ${worst}`) + (nearMiss ? ' · OOM near miss' : '')
   const rows: { name: string; value: string; note: string; pct: number | null; warn?: boolean }[] = []
   const unknownLimit = noCeiling ?? 'limit unknown'
   if (attempts === null) {
@@ -2024,7 +1916,7 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
             value: '—',
             note: (latest === null ? 'no attempt' : mem.kind === 'pending' ? 'written at exit' : 'not recorded') + worstNote,
             pct: null,
-            warn: worst !== null,
+            warn: worst !== null || nearMiss,
           }
         : {
             name: 'Memory',
@@ -2032,9 +1924,12 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
             note:
               (cls === null ? unknownLimit : `of ${cls.memory_gib} GiB`) +
               (mem.kind === 'live' ? ` · so far · ${timeAgo(mem.at ?? '', now)}` : mem.kind === 'last' ? ' · last reading' : '') +
+              // A PEAK, WRITTEN AT EXIT (G2-11): the dropped Peak memory tile
+              // said so, because a small figure read as a residue at exit.
+              (mem.kind === 'peak' ? ' · peak, written at exit' : '') +
               worstNote,
             pct: cls === null ? null : pctOf(mem.bytes, cls.memory_gib * GIB),
-            warn: mem.kind === 'last' || worst !== null,
+            warn: mem.kind === 'last' || worst !== null || nearMiss,
           },
     )
     const disk = latest?.peak_disk_bytes ?? null
@@ -2068,21 +1963,29 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
               name,
               value: '—',
               note:
-                from === null ? 'no attempt' : from.kind === 'not_served' ? 'not served' : from.kind === 'unread' ? 'events unread' : open ? 'written at exit' : 'not measured',
+                (from === null ? 'no attempt' : from.kind === 'not_served' ? 'not served' : from.kind === 'unread' ? 'events unread' : open ? 'written at exit' : 'not measured') +
+                // The size was pinned at admission, so it is said before the
+                // first reading, as the dropped CPU tile said it.
+                (name === 'CPU peak' && sized !== null ? ` · ${sized}` : ''),
               pct: null,
             }
           : {
               name,
               value: cores(v),
               // WHICH MEAN THIS IS (FF-D5a, c05 "Name every count where it
-              // is printed", box comment 6298220484). The over-time summary
-              // under these rows prints a second mean, of its 5 s samples;
-              // this one is the attempt's CPU-seconds over the time its
-              // runners ran (help `cpu-figures`), so setup and retry waits
-              // are not in it and the two differ by design.
+              // is printed", box comment 6298220484): the attempt's
+              // CPU-seconds over the time its runners ran (help
+              // `cpu-figures`), so setup and retry waits are not in it. It is
+              // the fold's one mean: the over-time title under these rows
+              // dropped its 5 s samples' mean (QA1 overview-agents-24, owner
+              // pick 2026-10-28); only the chart's own caption, one click
+              // down, states it.
               note:
                 (limit === null ? unknownLimit : `of ${cores(limit)} cores${name === 'CPU peak' && whose !== null ? ` · ${whose}` : ''}`) +
                 (name === 'CPU peak' && sized !== null ? ` · ${sized}` : '') +
+                // A running attempt's heartbeat figure is its last reading, not
+                // its peak, as the dropped CPU tile said.
+                (name === 'CPU peak' && from?.kind === 'heartbeat' && !from.final ? ' · last reading' : '') +
                 (name === 'CPU mean' ? ' · CPU-seconds over runner time' : ''),
               pct: limit === null ? null : pctOf(v, limit),
             },
@@ -2128,7 +2031,7 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
           newest attempt, against its limits, with the throttled windows
           shaded. It reads its own route, on its own clock while the task
           runs, and stops once it is finished. */}
-      <UtilisationPanel taskId={task.id} live={!TERMINAL_STATES.has(task.state)} limitCores={latest?.cpu_limit_cores ?? null} />
+      <UtilisationPanel taskId={task.id} live={!TERMINAL_STATES.has(task.state)} />
       <details className="dt-disc">
         <summary>Details: memory, spend and each attempt over time</summary>
         <Attempts run={run} now={now} />
@@ -2178,7 +2081,7 @@ export function resourceFigures(run: AgentRun): ResFigure[] {
           }
         : cls !== null
           ? // NAMED AS THE CLASS, NOT AS A LIMIT (QA1 overview-agents-24): the
-            // head says `standard class · 4 vCPU` and the CPU tile's caption
+            // head says `standard class · 4 vCPU` and Resources' CPU peak row
             // `cgroup limit (class 4 vCPU)`; `4 cores (class)` here read as
             // a third limit beside the attempt's `2 cores`. A class's size is
             // in vCPU everywhere on this page, a limit in cores.

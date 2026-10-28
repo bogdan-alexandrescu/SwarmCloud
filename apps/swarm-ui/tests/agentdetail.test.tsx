@@ -216,6 +216,21 @@ function tiles(markup: string): Map<string, Tile> {
   return out
 }
 
+/**
+ * A Resources row's value and note, as text. The strip's Peak memory and CPU
+ * tiles were dropped (QA1 overview-agents-25, owner pick 2026-10-28): these
+ * rows are where the memory and CPU figures are said now.
+ */
+function resourceRow(markup: string, name: string): { value: string; note: string; warn: boolean } | undefined {
+  for (const chunk of markup.split('<div class="dt-rr">').slice(1)) {
+    if (!chunk.startsWith(`<span class="dt-rr-n">${name}</span>`)) continue
+    const value = text(/<span class="dt-rr-v"><b>([\s\S]*?)<\/b>/.exec(chunk)?.[1] ?? '')
+    const note = text(/<small>([\s\S]*?)<\/small>/.exec(chunk)?.[1] ?? '')
+    return { value, note, warn: /class="[^"]*is-warn/.test(chunk) }
+  }
+  return undefined
+}
+
 /** Would a reader read this rendered value as a quantity? */
 function readsAsANumber(value: string): boolean {
   return /^[$]?[\d,]+(\.\d+)?/.test(value.trim())
@@ -274,11 +289,13 @@ test('the named absences still say what they are, in words, on the surface', () 
   // The brief lists these three by name as writing that must survive VISIBLY:
   // a dash and the word, never a figure. Tokens are Cost's sub-line now.
   assert.equal(t.get('Cost')?.value, '— not reported')
-  assert.equal(t.get('Peak memory')?.value, '— not recorded')
   assert.equal(t.get('Cost')?.sub, 'tokens not reported')
-  for (const label of ['Cost', 'Peak memory']) {
-    assert.equal(t.get(label)?.absent, true, `${label} lost its absent treatment`)
-  }
+  assert.equal(t.get('Cost')?.absent, true, 'Cost lost its absent treatment')
+  // Memory is Resources' row now: a dash and the words.
+  // MUTATION: draw the unrecorded memory as `0 B`.
+  const mem = resourceRow(surface(), 'Memory')
+  assert.equal(mem?.value, '—')
+  assert.equal(mem?.note, 'not recorded')
 })
 
 test('the explanations moved rather than staying', () => {
@@ -296,12 +313,16 @@ test('the explanations moved rather than staying', () => {
 })
 
 test('a failed read never produces a figure', () => {
-  const t = tiles(surface(run({ attempts: null, attemptsDetail: 'HTTP 503.' })))
-  for (const label of ['Peak memory', 'CPU', 'Cost']) {
-    const tile = t.get(label)
-    assert.ok(tile, `${label} is missing`)
-    assert.equal(tile.unread, true, `${label} does not carry the read-failed treatment`)
-    assert.ok(!readsAsANumber(tile.value), `${label} rendered "${tile.value}" after a failed read`)
+  const markup = surface(run({ attempts: null, attemptsDetail: 'HTTP 503.' }))
+  const tile = tiles(markup).get('Cost')
+  assert.ok(tile, 'Cost is missing')
+  assert.equal(tile.unread, true, 'Cost does not carry the read-failed treatment')
+  assert.ok(!readsAsANumber(tile.value), `Cost rendered "${tile.value}" after a failed read`)
+  for (const name of ['Memory', 'CPU peak', 'CPU mean']) {
+    const row = resourceRow(markup, name)
+    assert.ok(row, `${name} is missing`)
+    assert.equal(row.value, '—', `${name} rendered "${row.value}" after a failed read`)
+    assert.equal(row.note, 'read failed')
   }
 })
 
@@ -382,7 +403,8 @@ test('the `?` sits after a label and never after a value', () => {
   // the strip is one card, and the cards' `?`s are below. Pinned on EVERY
   // explained label rather than on the first one a regex finds.
   const labels = [...markup.matchAll(/<span class="dt-sc-l"([^>]*)>(.*?)<\/span><span class="dt-sc-v"/gs)]
-  assert.ok(labels.length >= 4, `only ${labels.length} strip labels were examined`)
+  // Three since the Peak memory and CPU tiles were dropped (QA1 overview-agents-25).
+  assert.ok(labels.length >= 3, `only ${labels.length} strip labels were examined`)
   let explained = 0
   for (const [, attrs, body] of labels) {
     const described = /aria-describedby="([^"]+)"/.exec(attrs ?? '')
@@ -394,7 +416,8 @@ test('the `?` sits after a label and never after a value', () => {
     )
     assert.ok(!(body ?? '').includes('<button'), 'a strip label draws a help glyph')
   }
-  assert.ok(explained >= 3, `only ${explained} strip labels publish an explanation`)
+  // Cost's is the one left: Peak memory's and CPU's went with their tiles (QA1 overview-agents-25).
+  assert.ok(explained >= 1, `only ${explained} strip labels publish an explanation`)
   // AND EVERY GLYPH FOLLOWS A CARD'S HEADING (AH-24: a `?` goes after the
   // label or heading it explains, never after a value). Each card head is its
   // title, then its links, then its one `?`.
@@ -423,18 +446,19 @@ test('a running agent draws its end-of-attempt figures as pending, never as abse
   // tiles go back to `not recorded` / `not reported` on the dashed absent
   // tile, beside an attempt that is still running.
   const t = tiles(surface(run({ task: RUNNING_TASK, attempts: [RUNNING_ATTEMPT] })))
-  for (const label of ['Peak memory', 'Cost']) {
-    const tile = t.get(label)
-    assert.ok(tile, `${label} is not on the screen`)
-    assert.equal(tile.absent, false, `${label} draws the absent encoding while its attempt is open`)
-    assert.equal(tile.reading, true, `${label} is not on the pending tone while its attempt is open`)
-    // Pending is still not a number: nothing has been written.
-    assert.ok(!readsAsANumber(tile.value), `${label} rendered "${tile.value}" before anything was written`)
-  }
+  const tile = t.get('Cost')
+  assert.ok(tile, 'Cost is not on the screen')
+  assert.equal(tile.absent, false, 'Cost draws the absent encoding while its attempt is open')
+  assert.equal(tile.reading, true, 'Cost is not on the pending tone while its attempt is open')
+  // Pending is still not a number: nothing has been written.
+  assert.ok(!readsAsANumber(tile.value), `Cost rendered "${tile.value}" before anything was written`)
   // Small, muted words -- `at exit` -- never full size (agent-details-v3.html A).
   assert.equal(t.get('Cost')?.value, 'at exit')
   assert.equal(t.get('Cost')?.sub, 'with tokens, when the attempt ends')
-  assert.equal(t.get('Peak memory')?.value, 'at exit')
+  // Memory is Resources' row now: pending, `written at exit`, not `not recorded`.
+  const mem = resourceRow(surface(run({ task: RUNNING_TASK, attempts: [RUNNING_ATTEMPT] })), 'Memory')
+  assert.equal(mem?.value, '—')
+  assert.equal(mem?.note, 'written at exit')
 })
 
 test('a running agent shows its newest heartbeat peak as a live figure, with its age', () => {
@@ -444,14 +468,12 @@ test('a running agent shows its newest heartbeat peak as a live figure, with its
     attempt_id: 'att_1',
     detail: { peak_rss_bytes: 19_500_000, elapsed_seconds: 530, checkpoints: 0 },
   })
-  const t = tiles(surface(run({ task: RUNNING_TASK, attempts: [RUNNING_ATTEMPT], events: [beat] })))
-  const peak = t.get('Peak memory')
-  assert.ok(peak, 'Peak memory is not on the screen')
+  // Resources' Memory row, since the strip's Peak memory tile was dropped.
+  const peak = resourceRow(surface(run({ task: RUNNING_TASK, attempts: [RUNNING_ATTEMPT], events: [beat] })), 'Memory')
+  assert.ok(peak, 'Memory is not on the screen')
   // A heartbeat reading IS a measurement of the live process, so it is a figure.
   assert.equal(peak.value, '18.6 MiB')
-  assert.match(peak.sub, / · so far · \S+ ago$/, `the live figure is not labelled live with its age: "${peak.sub}"`)
-  assert.equal(peak.absent, false)
-  assert.equal(peak.live, true, 'the live high-water mark is presented as the final figure')
+  assert.match(peak.note, / · so far · \S+ ago$/, `the live figure is not labelled live with its age: "${peak.note}"`)
 })
 
 test('a runner that never reports spend stays absent while it runs', () => {

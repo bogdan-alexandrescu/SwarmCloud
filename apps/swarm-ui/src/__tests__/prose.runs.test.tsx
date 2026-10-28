@@ -602,9 +602,8 @@ describe('AgentDetail, with every help card closed', () => {
     const mark = el.querySelector('.ctl-mark.is-unread')
     expect(mark, 'a failed read is not marked as unread').not.toBeNull()
     expect(mark!.textContent).toMatch(/not read/i)
-    const peak = [...el.querySelectorAll('.dt-sc')].find((t) =>
-      (t.textContent ?? '').toLowerCase().includes('peak memory'),
-    )
+    // The strip's Peak memory tile was dropped (QA1 overview-agents-25); Cost reads the attempts too.
+    const peak = [...el.querySelectorAll('.dt-sc')].find((t) => (t.querySelector('.dt-sc-l')?.textContent ?? '').startsWith('Cost'))
     expect(peak!.classList.contains('is-unread')).toBe(true)
     expect(peak!.querySelector('.dt-sc-v')!.textContent).not.toMatch(/\d/)
   })
