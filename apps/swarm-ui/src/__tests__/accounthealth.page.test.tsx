@@ -397,15 +397,17 @@ describe('review fixes: the phone, the swimlane, the list and the development po
     }
   })
 
-  it('cuts the Last event message to one line with the whole of it as its title', () => {
+  it('draws the Last event message whole, wrapping inside its held column (QA1-FIX-01 chrome-C26)', () => {
     const { accounts, events } = pool()
     const long = 'x'.repeat(30) + ' a provider message long enough to widen the column past its card'
     events.set('eng:example-team', [ev(600, 'network', { message: long })])
     const { container } = desktop(board(accounts, events))
 
     const cell = container.querySelector('tr[data-account="eng:example-team"] td.ah-last-td')!
-    const msg = cell.querySelector<HTMLElement>('.ah-msg.is-one-line')!
-    expect(msg.getAttribute('title')).toBe(long)
+    const msg = cell.querySelector<HTMLElement>('.ah-msg')!
+    // MUTATION: cut it to one line again (a title no keyboard or touch reader can open).
+    expect(msg.classList.contains('is-one-line')).toBe(false)
+    expect(msg.textContent).toBe(long)
   })
 
   it('lets a Limited row’s reset time wrap under its word, so the table fits its card and keeps "Sign in again ›"', () => {
