@@ -4352,6 +4352,10 @@ def push_branch(
       "Update branch", the measured case -- takes this attempt's commits
       replayed onto the moved tip (`base_merge_tip`, `replay_onto_tip`), and
       that push is again a plain one, a fast-forward over the fetched tip.
+      Since #1821 (owner decision 2026-10-27) any other mover that still
+      descends from the clone base is replayed onto the same way
+      (`moved_branch_tip`), with no side of a conflict taken from the tip:
+      a conflict is still reported, never won.
 
     `lease` IS THE ONE EXCEPTION, AND IT IS NOT A FORCE (#1438). It is a sha
     the caller has just proved holds only this task's own earlier worker
@@ -4669,6 +4673,72 @@ def base_merge_tip(
     return tip, ""
 
 
+def moved_branch_tip(
+    *,
+    repo: Path,
+    url: str,
+    branch: str,
+    token: str,
+    base: str | None,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+    branch_prefix: str = "swarm/",
+) -> tuple[str | None, str]:
+    """The moved tip of `branch` on `url`, when it still descends from the clone `base`.
+
+    Returns `(sha, "")` when the fetched tip differs from `base` and `base` is
+    its ancestor: someone added commits on top of what this attempt cloned.
+    Otherwise `(None, why)` -- the branch could not be fetched, has not
+    moved, or was rewritten so the clone base is no longer under it -- and
+    the caller fails as it always did.
+
+    WHY (#1821, measured 2026-10-21): 14 of 69 ci-fix rounds in 48 h lost
+    their fix to a push refused because another fix round, a conflict fix or
+    the merge step's update moved the pull request's branch first. The owner
+    decided (2026-10-27) that the worker replays the round's commits onto
+    such a tip (`replay_onto_tip`, with no tip-side resolution) and pushes
+    once as a fast-forward. A rewritten branch is not such a tip: whoever
+    rewrote it meant to drop what was there, and a fix stacked onto it was
+    never seen against that intent, so it is refused.
+
+    `repo` MUST be the worker-owned publish repository: the fetch carries the
+    token (`fetch_branch_tip`). `branch` must carry `branch_prefix`.
+    """
+    branch = validate_ref(branch) or ""
+    if not branch or not branch.startswith(branch_prefix):
+        raise GitError(f"refusing to fetch {branch!r}: outside {branch_prefix!r}")
+    base = (base or "").strip()
+    if not _FULL_SHA_RE.match(base):
+        return None, "the clone base is unknown, so what moved the branch cannot be read"
+    tip = fetch_branch_tip(
+        repo=repo, url=url, branch=branch, token=token, private_dir=private_dir,
+        logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
+        git_binary=git_binary, branch_prefix=branch_prefix,
+    )
+    if tip is None:
+        return None, f"could not fetch {branch} to read what moved it"
+    if tip == base:
+        return None, f"{branch} has not moved off the clone base {base[:12]}"
+    code, _ = _git_text(
+        [git_binary, *_NO_HOOKS, "merge-base", "--is-ancestor", base, tip],
+        repo=Path(repo),
+        private_dir=private_dir,
+        logs_dir=logs_dir,
+        slug="moved-tip-descends",
+        timeout_seconds=timeout_seconds,
+        logger=logger,
+    )
+    if code != 0:
+        return None, (
+            f"{branch} was rewritten: the clone base {base[:12]} is not under its tip "
+            f"{tip[:12]}"
+        )
+    return tip, ""
+
+
 def base_merge_changed_paths(
     *,
     repo: Path,
@@ -4713,6 +4783,7 @@ def replay_onto_tip(
     logger: Any,
     git_binary: str = "git",
     superseded: list[str] | None = None,
+    take_base_paths: bool = True,
 ) -> str | None:
     """Replay HEAD's first-parent commits since `base` onto `tip`, as the worker's.
 
@@ -4759,6 +4830,11 @@ def replay_onto_tip(
     Each such path is appended once to `superseded` when given. A conflict
     in any path the base merge did not change, a merge commit the tip does
     not already hold (above), or any other failure still raises, as before.
+
+    `take_base_paths=False` for a tip moved by anything else
+    (`moved_branch_tip`, #1821): what lies between the base and the tip is
+    then another writer's work, not the default branch's published change,
+    so no side of a conflict is known to be stale and every conflict raises.
     """
     g = [git_binary, *_NO_HOOKS, *_worker_identity(author_name, author_email)]
 
@@ -4803,6 +4879,8 @@ def replay_onto_tip(
         conflicted = f"replaying commit {sha[:12]} onto {tip[:12]} conflicted"
         code, text = run([*g, "diff", "--name-only", "-z", "--diff-filter=U"], "replay-unmerged")
         unmerged = sorted({path for path in text.split("\0") if path}) if code == 0 else []
+        if not take_base_paths:
+            raise restore(conflicted)
         if not merged_paths:
             merged_paths.append(base_merge_changed_paths(
                 repo=repo, base=base, tip=tip, private_dir=private_dir, logs_dir=logs_dir,

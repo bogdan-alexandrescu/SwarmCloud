@@ -255,6 +255,7 @@ from .gitops import (
     is_branch_ref_name,
     merge_branches,
     mirror_worktree,
+    moved_branch_tip,
     origin_tips_as_data,
     own_branch_tip,
     prepare_publish_repo,
@@ -569,6 +570,12 @@ BASE_MERGE_SUPERSEDED_FIELD = "base_merge_superseded"
 #: Enough to name what main rewrote under a round -- one file, measured --
 #: without a vendored-tree conflict filling the record.
 BASE_MERGE_SUPERSEDED_MAX = 20
+#: The `result_summary.git` key `_push_onto_base_merge` sets when a continued
+#: branch was moved by something other than merges of the default branch --
+#: another fix round's commit, a conflict fix -- and this round's commits were
+#: replayed onto that tip (#1821, owner decision 2026-10-27): the tip's sha.
+#: `moved_tip_from` beside it holds the clone base the round started from.
+MOVED_TIP_FIELD = "moved_tip"
 #: The paths a push may touch only with the `workflow` scope (AU-3,
 #: docs/design/agent-autonomy.md §3.3): `_publish_git` hands a branch whose
 #: new commits touch either to swarm-api's `git_push_branch`. Restated from
@@ -13509,6 +13516,20 @@ class Worker:
         reason naming the paths and the tip, so the round ends `no_change`,
         not publish_failed; with something left, it is checked and pushed
         exactly as above. A conflict in any other path still raises.
+
+        ANY OTHER MOVER, REPLAYED ONTO TOO (#1821, owner decision 2026-10-27).
+        MEASURED 2026-10-21: 14 of 69 ci-fix rounds in 48 h failed
+        publish_failed because another fix round, a conflict fix or the merge
+        step moved the pull request's branch before their push. When the tip
+        is not base merges alone but still descends from the clone base
+        (`gitops.moved_branch_tip`), the round's commits are replayed onto it
+        with no tip-side resolution of any conflict -- the mover is another
+        writer's work, not main's published change -- and the same checks
+        run again, the fence among them, before one fast-forward push, never
+        forced. A conflict raises a GitError naming the moved tip, and the
+        attempt ends publish_failed with nothing pushed; a rewritten branch
+        (the clone base no longer under it) re-raises `rejected` as before.
+        The tip is recorded in `MOVED_TIP_FIELD`.
         """
         cfg = self.cfg
         ws = self.ws
@@ -13527,18 +13548,36 @@ class Worker:
             logger=self.log,
             branch_prefix=cfg.git_branch_prefix,
         )
+        by_base_merge = tip is not None
+        if tip is None and base is not None:
+            tip, other_why = moved_branch_tip(
+                repo=publish_repo,
+                url=url,
+                branch=branch,
+                token=token,
+                base=base,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_clone_timeout_seconds,
+                logger=self.log,
+                branch_prefix=cfg.git_branch_prefix,
+            )
+            why = f"{why}; {other_why}" if tip is None else why
         if tip is None or base is None:
             self.log.warning(
-                "the push was refused and the branch did not move by a merge of the "
-                "default branch alone; publishing nothing",
+                "the push was refused and the branch did not move on top of the clone "
+                "base; publishing nothing",
                 branch=branch,
                 reason=str(self._scrub(why)),
             )
             raise rejected
-        moved = (
-            f"{branch} moved to {tip[:12]} by a base merge of "
-            f"{default_branch or 'the default branch'} only"
-        )
+        if by_base_merge:
+            moved = (
+                f"{branch} moved to {tip[:12]} by a base merge of "
+                f"{default_branch or 'the default branch'} only"
+            )
+        else:
+            moved = f"{branch} moved to {tip[:12]} by commits this round did not write"
         superseded: list[str] = []
         try:
             head = replay_onto_tip(
@@ -13552,6 +13591,7 @@ class Worker:
                 timeout_seconds=cfg.git_harvest_timeout_seconds,
                 logger=self.log,
                 superseded=superseded,
+                take_base_paths=by_base_merge,
             )
         except GitError as exc:
             raise GitError(
@@ -13559,8 +13599,12 @@ class Worker:
                 f"it conflicted or failed ({str(self._scrub(str(exc)[:200]))}); nothing was "
                 "pushed or forced"
             ) from rejected
-        out["base_merge_from"] = base
-        out["base_merge_tip"] = tip
+        if by_base_merge:
+            out["base_merge_from"] = base
+            out["base_merge_tip"] = tip
+        else:
+            out["moved_tip_from"] = base
+            out[MOVED_TIP_FIELD] = tip
         if superseded:
             out[BASE_MERGE_SUPERSEDED_FIELD] = [
                 str(self._scrub(path[:300])) for path in superseded[:BASE_MERGE_SUPERSEDED_MAX]
@@ -13622,6 +13666,14 @@ class Worker:
             self.log.warning("the replay onto the moved tip touches workflow files; "
                              "publishing nothing", branch=branch)
             raise rejected
+        # The fence, read again after the replay and before the second push
+        # (invariant 5, #1821): a superseded attempt raises FencedError here
+        # and stands down with the branch as the mover left it.
+        try:
+            self.control.validate_generation()
+        except BaseException:
+            self._publish_base = base
+            raise
         try:
             # No lease: HEAD descends from the tip just fetched, so this is
             # a fast-forward, and a branch moved again is refused.
@@ -13642,7 +13694,10 @@ class Worker:
             raise
         self.log.info(
             "the continued branch moved only by a merge of the default branch; "
-            "pushed this round's commits onto it as a fast-forward",
+            "pushed this round's commits onto it as a fast-forward"
+            if by_base_merge else
+            "the continued branch moved by another writer's commits; pushed this "
+            "round's commits onto it as a fast-forward",
             branch=branch,
             moved_tip=tip,
             head=pushed or "unknown",
