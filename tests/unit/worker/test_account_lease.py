@@ -52,6 +52,7 @@ from agent_worker.accountlease import (
     BrokerRefused,
     BrokerUnavailable,
     NoAccount,
+    NoAccountAvailable,
     credential_env_from_account,
 )
 from agent_worker.errors import ExitCode, FencedError
@@ -240,29 +241,40 @@ def test_a_pool_with_no_accounts_registered_falls_back(db, worker_factory, secre
     assert secrets.accessed == [TENANT_SECRET]
 
 
-def test_a_broker_that_cannot_be_reached_falls_back(db, worker_factory, secrets, tmp_path):
-    """DEGRADE, DO NOT FAIL. A control-plane service being down is not the
-    task's fault, and the tenant secret still works -- turning one outage into
-    failed attempts across every tenant is a much larger incident."""
+def test_a_broker_that_cannot_be_reached_is_asked_again_then_parks(
+    db, worker_factory, secrets, tmp_path
+):
+    """PARK, DO NOT FALL BACK (#2560, BGD 2026-10-28). The workspace has a
+    pool, so the tenant's own secret is not how it runs: task_d212c88b fell
+    back to it and Anthropic refused the key. Asked once more, then parked,
+    and the tenant secret is never read."""
     seed_attempt(db, runner_profile="claude-code")
     seed_tenant(db, credentials=["anthropic"])
     broker = FakeBroker(assign_error=BrokerUnavailable("connection refused"))
     worker, _, _ = _pool_worker(worker_factory, secrets, broker, tmp_path)
 
-    env = worker._build_child_env()
+    with pytest.raises(NoAccountAvailable):
+        worker._build_child_env()
 
-    assert env["ANTHROPIC_API_KEY"] == "sk-ant-api03-tenant"
+    assert len(broker.assigns) == 2
+    assert TENANT_SECRET not in secrets.accessed
 
 
-def test_a_broker_client_that_raises_anything_falls_back(db, worker_factory, secrets, tmp_path):
-    """Defence in depth. The fallback must not depend on the client raising
-    exactly the exception this module expects."""
+def test_a_broker_client_that_raises_anything_is_asked_again_then_parks(
+    db, worker_factory, secrets, tmp_path
+):
+    """Defence in depth. Whatever the client raised, the pool is there and did
+    not answer: the same re-ask and park as an unreachable broker."""
     seed_attempt(db, runner_profile="claude-code")
     seed_tenant(db, credentials=["anthropic"])
     broker = FakeBroker(assign_error=RuntimeError("something unforeseen"))
     worker, _, _ = _pool_worker(worker_factory, secrets, broker, tmp_path)
 
-    assert worker._build_child_env()["ANTHROPIC_API_KEY"] == "sk-ant-api03-tenant"
+    with pytest.raises(NoAccountAvailable):
+        worker._build_child_env()
+
+    assert len(broker.assigns) == 2
+    assert TENANT_SECRET not in secrets.accessed
 
 
 def test_a_tenant_with_no_key_and_no_pool_still_parks_as_before(db, worker_factory):
