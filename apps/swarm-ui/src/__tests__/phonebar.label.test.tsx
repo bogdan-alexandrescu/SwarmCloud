@@ -327,7 +327,7 @@ describe('PHONE-BAR-LABEL: a long page name reads whole at 390', () => {
     expect(Object.keys(widths).sort()).toEqual(Object.keys(RENDERED).sort())
     // Half a pixel for the render's own rounding to whole pixels.
     for (const [item, seen] of Object.entries(RENDERED)) expect(widths[item]!, `${item} modelled narrower than the ${seen}px rendered`).toBeGreaterThanOrEqual(seen - 0.5)
-  }, 15000)
+  })
 
   for (const [who, env] of WHO.flatMap((w) => ENVS.map((e) => [w, e] as const))) {
     it(`keeps the workspace whole and sets every long page name in at most two whole lines: ${who}, ${env}`, async () => {
@@ -363,7 +363,10 @@ describe('PHONE-BAR-LABEL: a long page name reads whole at 390', () => {
         visited++
       }
       expect(visited).toBe(LONG_LABELS.length)
-    }, 15000)
+      // No per-test timeout: vitest.config.ts's 30s `testTimeout` is the
+      // headroom for a loaded runner, and a 15s one here timed out on #2590's
+      // CI while a neighbouring file in the same shard took 370s.
+    })
   }
 
   it('leaves the desktop unchanged: no phone bar from 760px up', () => {
