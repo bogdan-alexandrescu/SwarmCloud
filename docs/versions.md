@@ -77,7 +77,7 @@ release of either, and the same findings.
 |---|---|---|---|
 | `gh` | **2.102.0** | yes | newest; scan clean |
 | `gcloud` | **587.0.0** | yes | newest; its bundled Python 3.14 is removed (7 fixable HIGHs in its site-packages) and gcloud runs on the image's 3.11 |
-| `kubectl` | **1.36.5** | yes | newest 1.36 patch; operators pin 1.36.3 |
+| `kubectl` | **1.36.6** | yes | newest 1.36 patch (go1.26.10: CVE-2026-56857 and -111943 fixed); operators pin 1.36.3 |
 | `terraform` | **1.16.4** | yes | operators and CI pin 1.16.2, whose Go 1.26.4 stdlib has 9 fixable HIGHs |
 | `checkov` | **3.3.17** | yes | matches CI; isolated `uv tool` env, resolution pinned to 2026-10-01 |
 | `shellcheck` | **0.11.0** | yes | matches the operator pin |
