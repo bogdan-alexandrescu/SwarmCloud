@@ -104,7 +104,8 @@ async function gateDialog(viewer: Json, current: Json = schedule(), extra: Handl
   const go = vi.fn()
   render(<Routed Screen={SchedulesScreen} section="automate/schedules" start="schedule=sch_a" spy={go} />)
   await screen.findByRole('heading', { name: 'Weekday sweep', level: 1 }, WAIT)
-  fireEvent.click(screen.getByRole('tab', { name: /Gate/ }))
+  // Frame A2 draws the gate as a section of the sheet, not a tab to open.
+  await waitFor(() => expect(document.querySelector('aside.as-sheet [data-sec="gate"]')).not.toBeNull(), WAIT)
   fireEvent.click(await screen.findByRole('button', { name: 'Merge automatically…' }, WAIT))
   const dialog = await screen.findByRole('dialog', undefined, WAIT)
   // Let the viewer and audit reads land before reading what the dialog says.
@@ -204,7 +205,8 @@ describe('the merge switch dialog, for the gate’s last editor', () => {
     expect(painted(go!, 'cursor', { width: 1440 })).toBe('not-allowed')
     fireEvent.click(go!)
     expect(within(dialog).queryByRole('textbox')).toBeNull()
-    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(0)
+    // The sheet's cadence asks `:preview` for the next firings, a read sent as a POST; nothing else is sent.
+    expect(calls.filter((c) => c.method === 'POST' && !c.url.startsWith('/v1/schedules:preview'))).toHaveLength(0)
     fireEvent.click(close!)
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull(), WAIT)
   })
@@ -241,11 +243,12 @@ describe('the merge switch dialog, for a viewer who can switch', () => {
   })
 })
 
-describe('the page head’s actions', () => {
+describe('the sheet’s actions', () => {
   it('are one wrapping row that cannot outgrow its container, at 390, 1024 and 1440', async () => {
     await gateDialog(me('second@example.com', false))
     fireEvent.keyDown(document, { key: 'Escape' })
-    const row = screen.getByTestId('sc-head-row')
+    // Frame A2: the sheet's action row (`as-acts`) is the old head row.
+    const row = screen.getByTestId('as-acts')
     const acts = screen.getByTestId('sc-acts-head')
     expect(row.contains(acts)).toBe(true)
     expect(within(row).getByRole('button', { name: 'Edit' })).toBeTruthy()

@@ -123,7 +123,7 @@ class Routes:
         self.fake = FakeApi(origin, scratch, "")
         self.git_calls: list[str] = []
 
-    def call(self, method, path, *, body=None, headers=None):
+    def call(self, method, path, *, body=None, headers=None, timeout=None):
         headers = dict(headers or {})
         if path.endswith("/child-key"):
             self.public_key = json.loads(body).get("public_key")

@@ -137,4 +137,92 @@ run_live_browser() {
     esac
   done
   cancel_all "${task}"
+  run_live_browser_qa
+}
+
+#: QI-ACCEPT (docs/design/qa-identity.md §8, part of #1649): the verdict keys
+#: test_live_browser.py --qa-identity writes (its QA_IDENTITY_CHECKS).
+LIVE_BROWSER_QA_KEYS=(qa_signed_in qa_handoff_refused qa_ungranted_refused qa_no_leak)
+
+live_browser_qa_checks() {
+  cat <<'EOF2'
+live-browser: a claude-code-browser agent naming the QA identity lands on the console's Overview signed in, with no hand-off
+live-browser: a hand-off on the console host is refused qa_identity_host
+live-browser: the same submission from an ungranted tenant is refused qa_identity_not_granted
+live-browser: no credential's shape is in the QA identity agent's transcript, logs, outputs, recordings or events
+EOF2
+}
+
+# run_live_browser_qa: the QA identity's agent, in SWARM_ACCEPTANCE_QA_TENANT
+# (a tenant a platform admin has granted the identity), against the console
+# at SWARM_ACCEPTANCE_CONSOLE_URL. SKIPs every check when either is unset.
+run_live_browser_qa() {
+  step "Acceptance: live-browser (QA identity)"
+  local task="" state="" doc dir pid rc=0 i key line verdict reason body empty='{}' saved="${SWARM_API_TENANT}"
+  local names=()
+  while IFS= read -r line; do
+    names+=("${line}")
+  done < <(live_browser_qa_checks)
+  [[ "${#names[@]}" -eq "${#LIVE_BROWSER_QA_KEYS[@]}" ]] \
+    || die "live-browser: ${#names[@]} QA checks listed, ${#LIVE_BROWSER_QA_KEYS[@]} verdict keys"
+  if [[ -z "${SWARM_ACCEPTANCE_QA_TENANT:-}" || -z "${SWARM_ACCEPTANCE_CONSOLE_URL:-}" ]]; then
+    for (( i = 0; i < ${#names[@]}; i++ )); do
+      acc_check "${names[i]}"
+      acc_skip "not measured: SWARM_ACCEPTANCE_QA_TENANT or SWARM_ACCEPTANCE_CONSOLE_URL is unset"
+    done
+    return 0
+  fi
+  dir="${ACC_WORK}/live-browser-qa"
+  mkdir -p "${dir}"
+  chmod 700 "${dir}"
+  python3 "${REPO_ROOT}/tests/acceptance/test_live_browser.py" qa-identity-submission \
+    "${SWARM_ACCEPTANCE_CONSOLE_URL}" >"${dir}/body.json"
+  body="$(cat "${dir}/body.json")"
+  SWARM_API_TENANT="${SWARM_ACCEPTANCE_QA_TENANT}"
+  acc_check "${names[0]}"
+  acc_submit task "$(jq -r '.runner_profile' <<<"${body}")" "$(jq -c '.input' <<<"${body}")" \
+    "$(acc_extra "$(jq -c 'del(.runner_profile, .input)' <<<"${body}")")" || task=""
+  if [[ -z "${task}" ]]; then
+    SWARM_API_TENANT="${saved}"
+    for (( i = 1; i < ${#names[@]}; i++ )); do
+      acc_check "${names[i]}"
+      acc_skip "not measured: the task was not created (see the first check)"
+    done
+    return 0
+  fi
+  ( umask 077; api_credential >"${dir}/credential" )
+  if ! ( umask 077; access_token >"${dir}/gcs-token" ) 2>/dev/null; then
+    rm -f "${dir}/gcs-token"
+  fi
+  local args=(--qa-identity --console-url "${SWARM_ACCEPTANCE_CONSOLE_URL}" --task "${task}"
+              --tenant "${SWARM_ACCEPTANCE_QA_TENANT}" --api "$(api_url)" --bucket "${ARTIFACT_BUCKET}"
+              --control-dir "${dir}" --results "${dir}/results.jsonl"
+              --credential-file "${dir}/credential" --timeout "${ACC_TIMEOUT}")
+  [[ ! -f "${dir}/gcs-token" ]] || args+=(--gcs-token-file "${dir}/gcs-token")
+  [[ -z "${SWARM_ACCEPTANCE_OTHER_TENANT:-}" ]] || args+=(--other-tenant "${SWARM_ACCEPTANCE_OTHER_TENANT}")
+  python3 "${REPO_ROOT}/tests/acceptance/test_live_browser.py" "${args[@]}" &
+  pid=$!
+  if ! state="$(acc_settle "${task}" "${ACC_TIMEOUT}")"; then
+    if doc="$(task_doc "${task}")"; then
+      state="$(live_browser_stuck "${doc}")"
+    fi
+  fi
+  printf '%s\n' "${state}" >"${dir}/settled"
+  wait "${pid}" || rc=$?
+  rm -f "${dir}/credential" "${dir}/gcs-token"
+  for (( i = 0; i < ${#names[@]}; i++ )); do
+    key="${LIVE_BROWSER_QA_KEYS[i]}"
+    [[ "${i}" -eq 0 ]] || acc_check "${names[i]}"
+    line="$(jq -c --arg k "${key}" 'select(.check == $k)' "${dir}/results.jsonl" 2>/dev/null | head -n 1 || true)"
+    verdict="$(jq -r '.verdict // empty' <<<"${line:-$empty}" 2>/dev/null || true)"
+    reason="$(jq -r '.reason // empty' <<<"${line:-$empty}" 2>/dev/null | redact || true)"
+    case "${verdict}" in
+      PASS) acc_pass "${reason}" "${task}" ;;
+      SKIP) acc_skip "${reason}" "${task}" ;;
+      FAIL) acc_fail "${reason}" "${task}" ;;
+      *) acc_fail "the viewer wrote no verdict for this check (it exited ${rc})" "${task}" ;;
+    esac
+  done
+  cancel_all "${task}"
+  SWARM_API_TENANT="${saved}"
 }

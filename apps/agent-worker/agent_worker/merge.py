@@ -3180,6 +3180,26 @@ def _fix_rounds(own: Mapping[str, Any], key: str = "rounds") -> list[Mapping[str
     return [r for r in rounds if isinstance(r, Mapping)] if isinstance(rounds, list) else []
 
 
+_ROUND_KINDS = (("CI", "rounds"), ("conflict", CONFLICT_ROUNDS_KEY), ("pick", PICK_ROUNDS_KEY))
+
+
+def _live_round(ctx: ActionContext, own: Mapping[str, Any]) -> tuple[str, Mapping[str, Any]] | None:
+    """The first fix round of any kind whose task is still running, at any head (#2577).
+
+    One writer per pull request: while a round's task has not ended, the
+    next round would push onto the same branch and fail to replay over it.
+    A round without a task (claimed, not submitted yet) is the tick's to
+    hold for LOST_ROUND_SECONDS; an errored one never ran."""
+    for kind, key in _ROUND_KINDS:
+        for entry in _fix_rounds(own, key):
+            if entry.get("error"):
+                continue
+            task_id = _task_id(entry.get("task_id"))
+            if task_id is not None and not _ended(ctx, task_id):
+                return kind, entry
+    return None
+
+
 def _with_failing(ids: set[int] | None, more: set[int] | None) -> set[int] | None:
     """The union of two `failing_run_ids` answers; None when either is None."""
     return None if ids is None or more is None else ids | more
@@ -3457,6 +3477,12 @@ def _conflicted(run: _Run, own: Mapping[str, Any], *, head: str, number: int, ba
     (`fixable` False: a `merge_pr` target, whose branch no round may push
     to) -- the step fails fast with `merge_conflict`, naming the pull
     request. A park past MERGE_CI_MAX_SECONDS is `merge_conflict` too.
+
+    One writer per pull request (#2577): while an earlier round of any kind
+    (CI-fix, conflict or pick) is still running at another head, the step
+    parks CONFLICT_FIX_RUNNING, naming it, rather than _PENDING (which tells
+    the tick the next round is due) or the rounds-spent refusal: a second
+    round on the same branch cannot replay its merge over the first's.
     """
     message = f"pull request #{number} conflicts with {base} at {head}"
     if detail:
@@ -3490,6 +3516,12 @@ def _conflicted(run: _Run, own: Mapping[str, Any], *, head: str, number: int, ba
         return run.refuse("merge_conflict",
                           f"{message}, after conflict fix round {n} ({task_id}) ended at this "
                           "head")
+    live = _live_round(run.ctx, own)
+    if live is not None:
+        kind, entry = live
+        return wait(CONFLICT_FIX_RUNNING,
+                    f"{kind} fix round {entry.get('round')} ({_task_id(entry.get('task_id'))}) "
+                    f"is still running at {str(entry.get('head') or '?')[:12]}")
     if len(rounds) < MERGE_CONFLICT_ROUNDS_MAX:
         return wait(CONFLICT_FIX_PENDING,
                     f"conflict fix round {len(rounds) + 1} of {MERGE_CONFLICT_ROUNDS_MAX} is due")

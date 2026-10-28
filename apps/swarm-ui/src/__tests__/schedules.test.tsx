@@ -404,7 +404,7 @@ describe("a schedule's page head", () => {
   })
 })
 
-describe('the Budget tab', () => {
+describe("the sheet's Spend today", () => {
   const USE = {
     day: '2026-10-11',
     per_day_usd: 120,
@@ -422,7 +422,8 @@ describe('the Budget tab', () => {
     const over: Json = use === undefined ? {} : { budget_use: use }
     await mountDetail({ '/v1/schedules/sch_a': { status: 200, body: { schedule: schedule('sch_a', over), firings: [] } } })
     await screen.findByRole('heading', { name: 'Schedule sch_a', level: 1 }, WAIT)
-    fireEvent.click(screen.getByRole('tab', { name: /Budget/ }))
+    // Frame A2 draws Spend today as a section of the sheet, not a tab to open.
+    await waitFor(() => expect(document.querySelector('aside.as-sheet [data-sec="spend"]')).not.toBeNull(), WAIT)
   }
 
   /** A part's width, as a share of the bar, to the hundredth of a percent. */
@@ -575,7 +576,7 @@ describe('one schedule', () => {
     expect(outcome('sch_a:0')).toContain('3 of 8 running from this schedule')
   })
 
-  it('reads the audit when its tab is opened, newest first as served', async () => {
+  it('draws the audit when its fold is opened, newest first as served', async () => {
     const { calls } = await mountDetail({
       '/v1/schedules/sch_a': { status: 200, body: { schedule: schedule('sch_a'), firings: [] } },
       '/v1/schedules/sch_a/audit': {
@@ -589,9 +590,15 @@ describe('one schedule', () => {
       },
     })
     await screen.findByRole('heading', { name: 'Schedule sch_a', level: 1 }, WAIT)
-    expect(calls.some((c) => c.url.startsWith('/v1/schedules/sch_a/audit'))).toBe(false)
-    fireEvent.click(screen.getByRole('tab', { name: /Audit/ }))
+    // Frame A2 folds the audit at the sheet's foot. The merge switch in the
+    // gate section reads the audit for its last-editor rule as the sheet
+    // opens, so what waits for the fold is the list, not the read.
+    // MUTATION: draw the audit unfolded and entries are here before the click.
+    await waitFor(() => expect(document.querySelector('aside.as-sheet [data-sec="audit"]')).not.toBeNull(), WAIT)
+    expect(document.querySelectorAll('li[data-audit]')).toHaveLength(0)
+    fireEvent.click(within(document.querySelector<HTMLElement>('[data-sec="audit"]')!).getByRole('button', { name: 'Audit' }))
     await waitFor(() => expect(document.querySelectorAll('li[data-audit]')).toHaveLength(2), WAIT)
+    expect(calls.some((c) => c.url.startsWith('/v1/schedules/sch_a/audit'))).toBe(true)
     const entries = [...document.querySelectorAll<HTMLElement>('li[data-audit]')]
     expect(entries.map((e) => e.dataset.audit)).toEqual(['pause', 'create'])
     expect(visible(entries[0]!)).toContain('holiday')
@@ -602,21 +609,20 @@ describe('one schedule', () => {
       '/v1/schedules/sch_a': { status: 200, body: { schedule: schedule('sch_a'), firings: [] } },
     })
     await screen.findByRole('heading', { name: 'Schedule sch_a', level: 1 }, WAIT)
-    fireEvent.click(screen.getByRole('tab', { name: /Gate/ }))
+    // Frame A2 draws the gate and the budget as sections of the sheet, not tabs.
     const gate = await screen.findByTestId('sc-gate', undefined, WAIT)
-    const facts = [...gate.querySelectorAll('.sc-fact')].map((f) => `${visible(f.querySelector('dt'))}: ${visible(f.querySelector('dd'))}`)
-    expect(facts).toContain('Merge: approve')
-    expect(facts).toContain('Expiry: 72 h')
+    const facts = [...gate.querySelectorAll('dt')].map((d) => `${visible(d)}: ${visible(d.nextElementSibling)}`)
+    expect(facts).toContain('Merge: waits for an approval at the green head')
+    expect(facts).toContain('Expiry: an approval nobody decides expires after 72 h')
     expect(visible(gate)).toContain('.github/workflows/')
     // §4.4: outside a platform repository the holds are a second member's, not the owner's.
     // MUTATION: say "held for the owner" for every repository and this fails.
-    const stops = visible(gate.querySelector('.sc-stops'))
-    expect(stops).toMatch(/refused, not held/)
-    expect(stops).toMatch(/held at plan and at merge for a second member to approve; in a platform repository, for the owner/)
-    expect(stops).toMatch(/protected paths/)
-    expect(stops).toMatch(/frozen contract is held for the owner/)
+    const stops = facts.find((f) => f.startsWith('Hard stops: '))!
+    expect(stops).toMatch(/\.github\/workflows\/ is refused/)
+    expect(stops).toMatch(/held for a second member, or in a platform repository for the owner/)
+    expect(stops).toMatch(/protected path/)
+    expect(stops).toMatch(/frozen contract/)
     expect(stops).toMatch(/\b3 failed runs in a row pause/)
-    fireEvent.click(screen.getByRole('tab', { name: /Budget/ }))
     const budget = await screen.findByTestId('sc-budget', undefined, WAIT)
     expect(visible(budget)).toContain('$15.00')
     expect(visible(budget)).toContain('$120.00')
@@ -640,9 +646,10 @@ describe('one schedule on a phone', () => {
       expect(td.getAttribute('data-label'), 'a cell with no name').toBeTruthy()
       expect(painted(td, 'display', PHONE)).toBe('block')
     }
-    // The head's figures are two by two on a phone (VQ-029), not one per row.
-    const figs = screen.getByTestId('sc-figs')
-    expect(painted(figs, 'grid-template-columns', PHONE)).toBe('repeat(2, minmax(0, 1fr))')
+    // The sheet's facts are one column on a phone (frame A7b), a name over its value.
+    // MUTATION: drop the 560px block from automate-sheet.css and the names sit beside their values.
+    const facts = document.querySelector<HTMLElement>('aside.as-sheet [data-sec="what"] dl.as-kv')!
+    expect(painted(facts, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr)')
   })
 })
 
@@ -715,7 +722,7 @@ describe('live QA: automate, the list and the page', () => {
   const refresh = () => fireEvent.click(document.querySelector<HTMLButtonElement>('button.c-refresh')!)
 
   it('labels a dry-run schedule as one in the list and in the head (AUT-3)', async () => {
-    const dry = schedule('sch_a', { name: 'Dry sweep', state: 'paused', next_run_at: null, policy: { dry_run: true } })
+    const dry = schedule('sch_a', { name: 'Dry sweep', state: 'paused', state_word: 'paused', next_run_at: null, policy: { dry_run: true } })
     const list = await mountList({ '/v1/schedules': { status: 200, body: { schedules: [dry, schedule('sch_b')], tenant_id: 'eng' } }, '/v1/repositories': { status: 200, body: { repositories: [REPO] } } })
     await waitFor(() => expect(document.querySelector('tr[data-schedule="sch_a"]')).not.toBeNull(), WAIT)
     // MUTATION: drop `DryRunChip` from the State cell and the row says only "paused".
@@ -724,26 +731,29 @@ describe('live QA: automate, the list and the page', () => {
     list.unmount()
     await mountDetail({ '/v1/schedules/sch_a': { status: 200, body: { schedule: dry, firings: [] } } })
     await screen.findByRole('heading', { name: 'Dry sweep', level: 1 }, WAIT)
-    const state = screen.getByTestId('sc-pills')
-    expect(visible(state)).toContain('paused')
+    // The sheet's head line (frame A2) carries the state word and the chip.
+    const state = await screen.findByTestId('as-meta', undefined, WAIT)
+    expect(visible(state.querySelector('.as-word'))).toBe('paused')
     expect(visible(state)).toContain('dry run')
   })
 
-  it('keeps the tab and the editor in the address (AUT-11)', async () => {
-    expect(addressToPath('automate/schedules?schedule=sch_a&tab=gate')).toBe('/automate/schedules/sch_a?tab=gate')
-    expect(pathToAddress('/automate/schedules/sch_a', '?tab=gate')?.address).toBe('automate/schedules?schedule=sch_a&tab=gate')
+  it('keeps the open fold and the editor in the address (AUT-11)', async () => {
+    expect(addressToPath('automate/schedules?schedule=sch_a&tab=settings')).toBe('/automate/schedules/sch_a?tab=settings')
+    expect(pathToAddress('/automate/schedules/sch_a', '?tab=settings')?.address).toBe('automate/schedules?schedule=sch_a&tab=settings')
     expect(addressToPath('automate/schedules?schedule=sch_a&edit=1')).toBe('/automate/schedules/sch_a/edit')
     expect(pathToAddress('/automate/schedules/sch_a/edit')?.address).toBe('automate/schedules?schedule=sch_a&edit=1')
     // MUTATION: leave `tab` out of keptKeys and a reload drops it.
-    expect(canonical(fromAddress('automate/schedules?schedule=sch_a&tab=gate'))).toBe('automate/schedules?schedule=sch_a&tab=gate')
-    const { go } = await mountActing('schedule=sch_a&tab=gate', { '/v1/schedules/sch_a': { status: 200, body: { schedule: schedule('sch_a'), firings: [] } } }, () => null)
+    expect(canonical(fromAddress('automate/schedules?schedule=sch_a&tab=settings'))).toBe('automate/schedules?schedule=sch_a&tab=settings')
+    const { go } = await mountActing('schedule=sch_a&tab=settings', { '/v1/schedules/sch_a': { status: 200, body: { schedule: schedule('sch_a'), firings: [] } } }, () => null)
     await screen.findByRole('heading', { name: 'Schedule sch_a', level: 1 }, WAIT)
-    // Opened on Gate: the tab the address names, not History.
-    await screen.findByTestId('sc-gate', undefined, WAIT)
-    fireEvent.click(screen.getByRole('tab', { name: /Budget/ }))
-    expect(go).toHaveBeenLastCalledWith('automate/schedules?schedule=sch_a&tab=budget')
+    // Opened with Settings unfolded: the fold the address names (frame A2 folds Settings and Audit).
+    const settings = () => document.querySelector<HTMLElement>('aside.as-sheet [data-sec="settings"]')!
+    await waitFor(() => expect(settings()).not.toBeNull(), WAIT)
+    expect(within(settings()).getByRole('button', { name: 'Settings' }).getAttribute('aria-expanded')).toBe('true')
+    fireEvent.click(within(document.querySelector<HTMLElement>('aside.as-sheet [data-sec="audit"]')!).getByRole('button', { name: 'Audit' }))
+    expect(go).toHaveBeenLastCalledWith('automate/schedules?schedule=sch_a&tab=audit')
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
-    expect(go).toHaveBeenLastCalledWith('automate/schedules?schedule=sch_a&tab=budget&edit=1')
+    expect(go).toHaveBeenLastCalledWith('automate/schedules?schedule=sch_a&edit=1')
   })
 
   it('says a schedule deleted while its page was open was deleted, not "showing older data" (AUT-9)', async () => {
@@ -753,15 +763,19 @@ describe('live QA: automate, the list and the page', () => {
         ? gone
           ? { status: 404, body: { code: 'not_found', message: 'schedule sch_a not found' } }
           : { status: 200, body: { schedule: schedule('sch_a'), firings: [] } }
-        : null,
+        : m === 'POST' && url === '/v1/schedules/sch_a:pause'
+          ? { status: 200, body: { schedule: schedule('sch_a', { state: 'paused', next_run_at: null }) } }
+          : null,
     )
     await screen.findByRole('heading', { name: 'Schedule sch_a', level: 1 }, WAIT)
+    await screen.findByTestId('sc-acts-head', undefined, WAIT)
     gone = true
-    refresh()
+    // The sheet reads itself again after an action (frame A2); the list's ⟳ re-reads the list.
+    fireEvent.click(within(screen.getByTestId('sc-acts-head')).getByRole('button', { name: 'Pause' }))
     // MUTATION: drop `setGone` and the stale record stays, Edit enabled.
     await screen.findByText('This schedule was deleted', undefined, WAIT)
     expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
-    expect(screen.getByRole('link', { name: 'Back to all schedules' }).getAttribute('href')).toBe('/automate/schedules')
+    expect(screen.getByRole('link', { name: '‹ Schedules' }).getAttribute('href')).toBe('/automate/schedules')
   })
 
   it('still says Not found for a schedule that was never read (AUT-9 control)', async () => {

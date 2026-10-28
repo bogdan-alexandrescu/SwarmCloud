@@ -66,12 +66,14 @@ module "network" {
   region      = var.region
   name_prefix = var.name_prefix
 
-  subnet_cidr         = var.subnet_cidr
-  pods_cidr           = var.pods_cidr
-  services_cidr       = var.services_cidr
-  gke_master_cidr     = var.gke_master_cidr
-  nat_static_ip_count = var.nat_static_ip_count
-  restrict_egress     = var.restrict_egress
+  subnet_cidr          = var.subnet_cidr
+  pods_cidr            = var.pods_cidr
+  services_cidr        = var.services_cidr
+  gke_master_cidr      = var.gke_master_cidr
+  nat_static_ip_count  = var.nat_static_ip_count
+  nat_min_ports_per_vm = var.nat_min_ports_per_vm
+  nat_max_ports_per_vm = var.nat_max_ports_per_vm
+  restrict_egress      = var.restrict_egress
 
   labels = local.labels
 
@@ -358,7 +360,16 @@ module "cloud_run" {
       # broker and this could not.
       vpc_egress  = "ALL_TRAFFIC"
       concurrency = 80
-      env         = local.service_env["swarm-api"]
+      # 660s, NOT THE MODULE'S 300s (#2576). git_push_branch, git_fetch and
+      # git_rebase_onto run git against GitHub under
+      # gitexec.CALL_DEADLINE_SECONDS = 600 (apps/swarm-api/swarm_api/gitexec.py);
+      # at 300s Cloud Run cut a longer call with a 504 the worker read as
+      # api_unavailable, and the publish failed. 600 plus 60 s for the bundle
+      # and the answer. The worker waits the same 660 s for these tools:
+      # agent_worker.gittools.GIT_CALL_TIMEOUT_SECONDS. Change all three
+      # together; tests/terraform/cloud_run.tftest.hcl holds this one.
+      request_timeout = "660s"
+      env             = local.service_env["swarm-api"]
       # SWARM_CHILD_KEY (and, during a rotation, SWARM_CHILD_KEY_PREVIOUS) by
       # Secret Manager reference, only once enable_child_tasks is on
       # (child_tasks.tf); and SWARM_LIVE_KEY, the live relay's ticket key,

@@ -34,6 +34,7 @@ from agent_worker.runners.cliagent import (
     announces_pending_work,
     open_background_shells,
 )
+from test_cli_prompt_names_time_limit import without_limit_line
 
 SESSION = "sess-" + "0f1e2d3c4b5a6978"
 
@@ -272,7 +273,8 @@ def test_a_pending_work_answer_is_resumed_exactly_once(tmp_path, monkeypatch):
     assert len(runs) == 2
     assert runs[0]["resume"] is None
     assert runs[1]["resume"] == SESSION
-    assert runs[1]["prompt"] == FINISH_PROMPT
+    # MUTATION: drop the finish pass's limit line in run_cli_agent -> red.
+    assert without_limit_line(runs[1]["prompt"]) == FINISH_PROMPT
     assert FINISH_PROMPT == (
         "Finish: wait for every command you started, report its result, then end."
     )

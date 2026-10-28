@@ -135,6 +135,20 @@ RELAYED_TOOLS = frozenset({"pr_view", "run_list", "run_view", "issue_view", "iss
 #: The tools that act on the task's own repository only.
 OWN_REPOSITORY_TOOLS = frozenset({"git_fetch", "git_rebase_onto", "git_push_branch",
                                   "pr_checks"}) | RELAYED_TOOLS
+#: The tools swarm-api runs git against the forge for, under its
+#: `gitexec.CALL_DEADLINE_SECONDS` (`git_rebase_onto` is served as the fetch it
+#: begins). The relay waits `GIT_CALL_TIMEOUT_SECONDS` for them; every other
+#: tool keeps `ChildApi`'s short timeout.
+GIT_CALL_TOOLS = frozenset({"git_push_branch", "git_fetch", "git_rebase_onto"})
+#: How long the relay waits for one of `GIT_CALL_TOOLS` (#2576): swarm-api's
+#: `gitexec.CALL_DEADLINE_SECONDS` (600) plus 60 s for the bundle upload and
+#: the answer, and below the agent's shim's `gitmcp.server.WAIT_SECONDS` (900)
+#: so the shim is still waiting when the answer comes. With ChildApi's 10 s a
+#: workflow-touching push (a fetch, then the workflow-path walk) came back
+#: `api_unavailable` while swarm-api was still pushing, and the step failed
+#: `publish_failed`. A mirrored value (docs/mirrored-values.md), held by
+#: tests/unit/worker/test_gittools_call_timeout.py.
+GIT_CALL_TIMEOUT_SECONDS = 660
 #: Each relayed argument's JSON type, checked before anything leaves.
 _RELAYED_TYPES: dict[str, tuple[type, ...]] = {
     "number": (int,), "run_id": (int,), "limit": (int,), "failed_only": (bool,),
@@ -597,8 +611,14 @@ class GitTools:
         }, sort_keys=True).encode("utf-8")
         route = self.route(tool)
         headers = self._key.headers("POST", route, body, now=self._wall())
+        started = self._clock()
         try:
-            _, payload = self._api.call("POST", route, body=body, headers=headers)
+            # Only the git tools name a timeout; the rest keep the client's.
+            if tool in GIT_CALL_TOOLS:
+                _, payload = self._api.call("POST", route, body=body, headers=headers,
+                                            timeout=GIT_CALL_TIMEOUT_SECONDS)
+            else:
+                _, payload = self._api.call("POST", route, body=body, headers=headers)
         except ChildApiError as exc:
             if exc.status == 409 or exc.code in (GIT_FENCED, "child_submit_fenced"):
                 raise GitToolFenced(exc.status, GIT_FENCED, exc.message, retryable=False) from None
@@ -607,9 +627,11 @@ class GitTools:
                 # (#2452: two refusals read only "did not answer", and a
                 # timeout could not be told from a 503). The status and
                 # swarm-api's code, or with no answer the exception class
-                # `ChildApi` recorded; never swarm-api's free text.
-                cause = (f"no answer ({exc.message or exc.code})" if exc.status is None
-                         else f"HTTP {exc.status} {exc.code}")
+                # `ChildApi` recorded and the seconds waited (#2576: a client
+                # timeout reads "after 660 s"); never swarm-api's free text.
+                waited = max(0, round(self._clock() - started))
+                cause = (f"no answer ({exc.message or exc.code} after {waited} s)"
+                         if exc.status is None else f"HTTP {exc.status} {exc.code}")
                 raise GitToolRefused("api_unavailable",
                                      f"the platform did not answer: {cause}; ask again",
                                      retryable=True) from None
@@ -1078,7 +1100,10 @@ class GitTools:
 
     def pr_checks(self, pr: int | None, *, request_id: str) -> dict[str, Any]:
         payload = self.call("pr_checks", {"pr": pr}, request_id=request_id)
-        return {k: payload[k] for k in ("pr", "head_sha", "state", "rows") if k in payload}
+        # `source`: where swarm-api read the check runs -- "actions_jobs" for a
+        # credential that may not read check runs, which omits other Apps' (#1188).
+        return {k: payload[k] for k in ("pr", "head_sha", "state", "rows", "source")
+                if k in payload}
 
     def relay(self, tool: str, args: dict[str, Any], *, request_id: str) -> dict[str, Any]:
         """An AU-1 tool: swarm-api reads or writes GitHub and answers; the

@@ -233,6 +233,11 @@ CONTENTS_READ = "contents: read"
 #: an issue and its comments, and an Actions run, its jobs and its waits.
 ISSUES_READ = "issues: read"
 ACTIONS_READ = "actions: read"
+#: The GitHub Actions App's id: the `app.id` of every check run Actions
+#: reports, and what a required check pinned to Actions names.
+GITHUB_ACTIONS_APP_ID = 15368
+#: The most Actions runs at one sha `actions_check_runs` reads the jobs of.
+MAX_ACTIONS_RUNS = 30
 #: The most of an issue's comments, a pull request's reviews or a run's jobs
 #: an agent's read asks for, newest kept: what one answer has room for.
 MAX_JOB_PAGES = 3
@@ -897,6 +902,44 @@ class GitHubWriter:
             if len(entries) < PAGE_SIZE:
                 break
         return events
+
+    def actions_check_runs(self, ref: IssueRef, sha: str, token: str) -> list[dict[str, Any]]:
+        """The Actions jobs at `sha`, each shaped as the check run it is.
+
+        #1188 (measured 2026-10-27): a fine-grained personal access token has
+        no "Checks" permission at all, so `commits/{sha}/check-runs` on a
+        PRIVATE repository answers it 403 whatever it is granted, while it can
+        hold `actions: read`. An Actions check run is its job: the same id
+        (`issueci`), the same name, the same status and conclusion, under the
+        GitHub Actions App. So the jobs of each run at `sha` -- its latest
+        attempt's -- are those check runs, each carrying its suite and event
+        as `check_runs` gives them. What this cannot see is a check run
+        another App reported; a caller says the reading came from here.
+        """
+        what = f"the Actions runs at {ref.repository}@{sha[:12]}"
+        # The newest MAX_ACTIONS_RUNS runs, one read: each costs a jobs read
+        # more. A required job only an older run had reads as pending, never green.
+        runs = self._list(
+            self._url(ref, f"actions/runs?head_sha={quote(sha, safe='')}"
+                           f"&per_page={MAX_ACTIONS_RUNS}"),
+            token, what, needs=ACTIONS_READ, key="workflow_runs")
+        checks: list[dict[str, Any]] = []
+        for run in runs:
+            run_id = _int(run.get("id"))
+            if run_id is None or run.get("head_sha") not in (None, sha):
+                continue
+            for job in self.run_jobs(ref, run_id, token):
+                job_id = _int(job.get("id"))
+                if job_id is None:
+                    continue
+                checks.append({
+                    "id": job_id, "name": job.get("name"), "head_sha": sha,
+                    "status": job.get("status"), "conclusion": job.get("conclusion"),
+                    "app": {"id": GITHUB_ACTIONS_APP_ID, "slug": "github-actions"},
+                    "check_suite": {"id": run.get("check_suite_id")},
+                    **({"event": run["event"]} if isinstance(run.get("event"), str) else {}),
+                })
+        return checks
 
     def commit_statuses(self, ref: IssueRef, sha: str, token: str) -> list[dict[str, Any]]:
         """The latest commit status of each context at `sha` (the combined status)."""

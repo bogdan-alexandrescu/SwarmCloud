@@ -774,14 +774,15 @@ function RuntimeCard({
                        it and admission skips it as unlimited. Dashed, so the
                        link is not read as a pool that exists. */
                     <Chip key={p} href="#capacity/pools" title={PHANTOM_POOL} className="is-phantom">
-                      {p}
+                      {/* Cut on the card (V162), so whole in its own title. */}
+                      <span className="rt-chip-id" title={`${p}: ${PHANTOM_POOL}`}>{p}</span>
                     </Chip>
                   ) : (
                     /* ITS OWN ROW, NOT THE TOP OF A 30-ROW PAGE (live QA
                        CAP-7): Pools highlights `?pool=`, as Quota's "Feeds
                        pool" links already use it. */
                     <Chip key={p} href={poolHref('capacity/pools', p)} title={p}>
-                      {p}
+                      <span className="rt-chip-id">{p}</span>
                     </Chip>
                   ),
                 )}
@@ -1100,7 +1101,18 @@ function Sizing({
                         <ToneMark tone="is-info"
                           title="No runtime in this catalogue resolves to this class, so no caller can reach it.">unreachable</ToneMark>
                       ) : (
-                        <span className="mono">{users.join(', ')}</span>
+                        /* ONE UNBROKEN SPAN PER RUNTIME (visual QA V194,
+                           2026-10-27): one span joined with ", " broke a name
+                           at its hyphen at 400. The comma rides inside its
+                           name, so a line breaks only at the space between. */
+                        <span className="mono rt-resolves">
+                          {users.map((u, i) => (
+                            <Fragment key={u}>
+                              {i > 0 && ' '}
+                              <span className="rt-resolves-id">{i < users.length - 1 ? `${u},` : u}</span>
+                            </Fragment>
+                          ))}
+                        </span>
                       )}
                     </td>
                   </tr>

@@ -7,21 +7,22 @@
 //     are approvals.move.test.tsx's); the panel's Approvals page carries the
 //     inbox count the section does;
 //   * a measured empty inbox is the `Absent` state, not a list of nothing;
-//   * on a desktop the list and the chosen item sit side by side (variant B);
-//     the item is read from `GET /v1/approvals/{id}` and shows its plan's
-//     files and its hold before the verbs;
+//   * a row opens the item on its own page (#2417: A4's rows open B's A5
+//     decision page, which replaced the split pane); the item is read from
+//     `GET /v1/approvals/{id}` and shows its plan's files and its hold before
+//     the verbs;
 //   * Approve sends back exactly the digest that read showed, and the inbox
 //     is read again; a refusal is the server's rule, said in place;
 //   * a one-person tenant's own hold asks for the words the server names, and
 //     the retry sends them as `confirm`;
-//   * Reject needs a reason and sends it;
+//   * Reject needs a reason, typed in the box beside it, and sends it;
 //   * a merge draws the mockup's checklist, a mark per check -- CI green at
 //     the head, the verdict, each requirement (an unmet one a ✗ row of its
 //     own), the hard-stop gate -- and Approve names the head it approves and
 //     stays enabled whatever the checks say: the server holds every rule
 //     (owner decisions 2026-10-11);
-//   * at 390px the chosen item opens in place under its row (variant A), and
-//     a row is a 44px target.
+//   * at 390px the item's page is one column (its stacked rows and 44px
+//     targets are automate.approvals.test.tsx's).
 //
 // The bodies are `routes/approvals.py`'s shapes. Placeholders only; nothing
 // is token-shaped.
@@ -147,7 +148,7 @@ describe('the Approvals page', () => {
     await mount('', routes(() => null, []))
     // MUTATION: draw an empty list for a measured zero.
     await screen.findByText('Nothing waiting', undefined, WAIT)
-    expect(document.querySelector('.ap-list')).toBeNull()
+    expect(document.querySelector('table')).toBeNull()
   })
 
   it('QA-048: names, in its empty sentence, exactly the kinds its filter chips name', async () => {
@@ -155,7 +156,8 @@ describe('the Approvals page', () => {
     await screen.findByText('Nothing waiting', undefined, WAIT)
     const chips = within(screen.getByRole('group', { name: 'Kind' }))
       .getAllByRole('button')
-      .map((b) => (b.textContent ?? '').trim())
+      // A chip carries its count after a middle dot ("Merge · 0", #2417 A4).
+      .map((b) => (b.textContent ?? '').replace(/ · \d+$/, '').trim())
       .filter((w) => w !== 'Every kind')
     expect(chips.length).toBeGreaterThan(3)
     const said = visible(document.body)
@@ -167,18 +169,20 @@ describe('the Approvals page', () => {
     expect(said).toMatch(/, spec or answer in this tenant is waiting for a person/)
   })
 
-  it('lists every kind oldest first, and asks for a choice before deciding', async () => {
+  it('lists every kind oldest first, each row opening the item’s own page', async () => {
     await mount('', routes(() => null))
-    await waitFor(() => expect(document.querySelectorAll('li[data-approval]')).toHaveLength(2), WAIT)
-    const rows = [...document.querySelectorAll<HTMLElement>('li[data-approval]')]
+    await waitFor(() => expect(document.querySelectorAll('tr[data-approval]')).toHaveLength(2), WAIT)
+    const rows = [...document.querySelectorAll<HTMLElement>('tr[data-approval]')]
     expect(rows.map((r) => r.dataset.approval)).toEqual(['run:run_8f2a', 'apr_merge1'])
     expect(visible(rows[1]!)).toContain('Merge')
-    expect(visible(document.querySelector('.ap-pane'))).toContain('Choose an item')
+    // #2417: no pane beside the list; the row is a link to the item's page.
+    expect(document.querySelector('[data-testid="ap-detail"]')).toBeNull()
+    expect(rows[1]!.querySelector('a')!.getAttribute('href')).toBe('/automate/approvals/apr_merge1')
   })
 })
 
 describe('one item', () => {
-  it('shows the plan beside the list, approves with the digest it showed, and reads the inbox again', async () => {
+  it('shows the plan on the item’s page, approves with the digest it showed, and goes back to the inbox', async () => {
     const { calls, go } = await mount(
       'approval=run%3Arun_8f2a',
       routes((m, url) =>
@@ -187,15 +191,14 @@ describe('one item', () => {
     )
     const detail = await loaded()
     await waitFor(() => expect(visible(detail)).toContain('app/retry.py'), WAIT)
-    // Variant B: the item is read in the pane beside the list, not under its row.
-    expect(detail.closest('.ap-pane')).not.toBeNull()
+    // #2417 A5: the item is its own page, with no list beside it.
+    expect(document.querySelector('.apl-card')).toBeNull()
     expect(visible(detail)).toContain('Tighten the retry loop')
     fireEvent.click(within(detail).getByRole('button', { name: 'Approve' }))
     await waitFor(() => expect(sent(calls, 'POST', '/v1/approvals/run%3Arun_8f2a:approve')).toHaveLength(1), WAIT)
     // MUTATION: send no digest, or one the page made up, and a changed plan is approved unread.
     expect(sent(calls, 'POST', '/v1/approvals/run%3Arun_8f2a:approve')[0]!.body).toEqual({ digest: 'plan-digest-1' })
     expect(go).toHaveBeenCalledWith('automate/approvals')
-    await waitFor(() => expect(sent(calls, 'GET', '/v1/approvals').length).toBe(2), WAIT)
     await screen.findByText(/Approved\. The inbox was read again\./, undefined, WAIT)
   })
 
@@ -284,7 +287,7 @@ describe('one item', () => {
     await waitFor(() => expect(visible(detail)).toContain('Held NEEDS_SECOND_MEMBER'), WAIT)
     expect(visible(detail)).toContain('terraform/iam.tf')
     fireEvent.click(within(detail).getByRole('button', { name: 'Approve' }))
-    const field = await within(detail).findByRole('textbox', undefined, WAIT)
+    const field = await within(detail).findByRole('textbox', { name: /approve it yourself/ }, WAIT)
     expect(visible(detail)).toContain('Type terraform/iam.tf')
     expect((within(detail).getByRole('button', { name: 'Approve' }) as HTMLButtonElement).disabled).toBe(true)
     fireEvent.change(field, { target: { value: 'terraform/iam.tf' } })
@@ -301,12 +304,11 @@ describe('one item', () => {
       ),
     )
     const detail = await loaded()
-    await waitFor(() => expect(within(detail).getByRole('button', { name: 'Reject…' })).toBeTruthy(), WAIT)
-    fireEvent.click(within(detail).getByRole('button', { name: 'Reject…' }))
-    const reject = within(detail).getByRole('button', { name: 'Reject' }) as HTMLButtonElement
+    // #2417 A5: the reason box sits beside Reject, which is one click, never "Reject…".
+    const reject = (await within(detail).findByRole('button', { name: 'Reject' }, WAIT)) as HTMLButtonElement
     // MUTATION: allow a blank reason, which the server refuses with a 422.
     expect(reject.disabled).toBe(true)
-    fireEvent.change(within(detail).getByRole('textbox'), { target: { value: 'the plan touches the wrong module' } })
+    fireEvent.change(within(detail).getByRole('textbox', { name: /Reason/ }), { target: { value: 'the plan touches the wrong module' } })
     fireEvent.click(within(detail).getByRole('button', { name: 'Reject' }))
     await waitFor(() => expect(sent(calls, 'POST', '/v1/approvals/run%3Arun_8f2a:reject')).toHaveLength(1), WAIT)
     expect(sent(calls, 'POST', '/v1/approvals/run%3Arun_8f2a:reject')[0]!.body).toEqual({ reason: 'the plan touches the wrong module' })
@@ -441,27 +443,25 @@ describe('a merge', () => {
 })
 
 describe('the inbox on a phone', () => {
-  it('opens the chosen item in place under its row, each row a 44px target', async () => {
-    // MUTATION: draw the split pane at 390px and the item sits after the whole list.
+  it('opens the item on its own page, its facts and evidence one column', async () => {
+    // MUTATION: keep two columns at 390px, and the page scrolls sideways.
     media(true)
     await mount('approval=run%3Arun_8f2a', routes(() => null))
     const detail = await loaded()
-    expect(detail.closest('li[data-approval="run:run_8f2a"]')).not.toBeNull()
-    expect(document.querySelector('.ap-pane')).toBeNull()
-    const pick = document.querySelector<HTMLElement>('.ap-pick')!
-    expect(painted(pick, 'min-height', PHONE)).toBe('44px')
-    expect(painted(document.querySelector<HTMLElement>('.ap-detail .sc-facts')!, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr)')
+    expect(detail.closest('tr')).toBeNull()
+    expect(painted(detail.querySelector<HTMLElement>('.ad-qfacts')!, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr)')
+    expect(painted(detail.querySelector<HTMLElement>('.ad-ev')!, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr)')
   })
 })
 
 // LIVE QA, AUTOMATE (2026-10-11): a link to one item, and the kind filter.
 describe('live QA: automate, approvals', () => {
-  it('reads an item the inbox does not hold and says it was not found, beside the empty inbox (AUT-6)', async () => {
+  it('reads an item the inbox does not hold and says it was not found, with the way back to the list (AUT-6)', async () => {
     const { calls } = await mount('approval=nope-123', routes(() => null, []))
-    // MUTATION: let the Screen's empty state stand in for the body and the item is never asked for.
+    // MUTATION: let the Screen's error stand in for the page's sentence.
     await waitFor(() => expect(sent(calls, 'GET', '/v1/approvals/nope-123')).toHaveLength(1), WAIT)
     await screen.findByText(/No approval nope-123 in this tenant/, undefined, WAIT)
-    expect(screen.getByText('Nothing waiting')).toBeTruthy()
+    expect(screen.getByRole('link', { name: '‹ Approvals' }).getAttribute('href')).toBe('/automate/approvals')
   })
 
   it('shows what became of a linked item someone else decided, or that expired (AUT-6)', async () => {
@@ -470,7 +470,7 @@ describe('live QA: automate, approvals', () => {
       body: { approval: item('apr_old', { kind: 'merge', state, decided_by: 'teammate@example.com', decided_at: hoursFromNow(-1), ...over }) },
     })
     for (const [state, words] of [
-      ['rejected', /Rejected by teammate@example.com .*: not now\. Nothing is left to decide\./],
+      ['rejected', /Rejected by teammate@example\.com.*not now.*Nothing is left to decide\./],
       ['expired', /Expired .*: nobody decided it in time/],
       ['approved', /Approved by teammate@example.com/],
     ] as const) {
@@ -482,12 +482,12 @@ describe('live QA: automate, approvals', () => {
       expect(said.getAttribute('data-state')).toBe(state)
       expect(visible(said)).toMatch(words)
       expect(screen.queryByRole('button', { name: /Approve/ })).toBeNull()
-      expect(within(screen.getByTestId('ap-linked')).getByTestId('ap-state').textContent).toBe(state)
+      expect(screen.getByTestId('ap-state').textContent).toBe(state)
       view.unmount()
     }
   })
 
-  it('opens a listed item in the inbox, not twice (AUT-6 control)', async () => {
+  it('opens a listed item once, on its own page (AUT-6 control)', async () => {
     await mount('approval=run%3Arun_8f2a', routes(() => null))
     await screen.findByTestId('ap-detail', undefined, WAIT)
     expect(screen.queryByTestId('ap-linked')).toBeNull()
@@ -503,14 +503,15 @@ describe('live QA: automate, approvals', () => {
     const { calls, go } = await mount('kind=merge', routes(() => null))
     await waitFor(() => expect(calls.some((c) => c.url === '/v1/approvals?kind=merge')).toBe(true), WAIT)
     const group = screen.getByRole('group', { name: 'Kind' })
-    expect(within(group).getByRole('button', { name: 'Merge' }).getAttribute('aria-pressed')).toBe('true')
+    // The chosen chip carries its count ("Merge · 2", #2417 A4).
+    expect(within(group).getByRole('button', { name: /^Merge/ }).getAttribute('aria-pressed')).toBe('true')
     fireEvent.click(within(group).getByRole('button', { name: 'Plan' }))
     expect(go).toHaveBeenLastCalledWith('automate/approvals?kind=plan')
     fireEvent.click(within(group).getByRole('button', { name: 'Every kind' }))
     expect(go).toHaveBeenLastCalledWith('automate/approvals')
     // An item opened from a filtered list keeps the filter.
-    await waitFor(() => expect(document.querySelectorAll('li[data-approval]').length).toBeGreaterThan(0), WAIT)
-    expect(document.querySelector('li[data-approval="apr_merge1"] a')!.getAttribute('href')).toBe('/automate/approvals/apr_merge1?kind=merge')
+    await waitFor(() => expect(document.querySelectorAll('tr[data-approval]').length).toBeGreaterThan(0), WAIT)
+    expect(document.querySelector('tr[data-approval="apr_merge1"] a')!.getAttribute('href')).toBe('/automate/approvals/apr_merge1?kind=merge')
   })
 
   it('asks for the whole inbox when no kind is named', async () => {
