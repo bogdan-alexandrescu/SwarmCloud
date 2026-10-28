@@ -349,13 +349,20 @@ export function CheckpointBrowser({
   // `nearest`: the panel is taller than the room left under the list, and
   // `nearest` brought only its top edge into view (heading and download
   // button, the `entries` line under the pane's bottom edge at phone-390).
+  // AND AGAIN ONCE THE LISTING HAS DRAWN (QA1-FIX-09-FIX): at mount the panel
+  // is its 106 px loading state, so the scroll container's maximum is
+  // computed from that short panel and the scroll clamps there (phone-390:
+  // scrollTop 354 of the 705 the loaded panel allows); the listing grows it
+  // to 457 px and nothing scrolled again, leaving its top at y=666 of 844.
+  // Focus moves once, at mount; the scroll follows the panel's size.
   const regionRef = useRef<HTMLDivElement>(null)
+  const settled = state.status !== 'loading'
   useEffect(() => {
-    const el = regionRef.current
-    if (el === null) return
-    el.scrollIntoView?.({ block: 'start' })
-    el.focus({ preventScroll: true })
+    regionRef.current?.focus({ preventScroll: true })
   }, [])
+  useEffect(() => {
+    regionRef.current?.scrollIntoView?.({ block: 'start' })
+  }, [settled])
 
   // THE TWO WAYS THE SERVER SAYS "NO ARCHIVE" (AG-10). A listing whose
   // `status` is `absent` is one; a 404 is the other -- the checkpoint, or its
@@ -594,12 +601,16 @@ function Listing({
           {/* A CUT LISTING SAYS N OF M (QA1-FIX-09, overview-agents-47):
               `entries 8 · entry cap` beside `manifest 184 files` did not say
               that 8 of 184 were shown. The manifest counts FILES, so the
-              comparison is the listing's non-directory members against it;
-              with no readable manifest count there is no M, and none is
-              claimed. */}
-          {data.truncated ? `${data.count} shown` : data.count}
-          {data.truncated && data.manifest.status === 'present' && data.manifest.file_count !== null &&
-            ` · ${members.filter((m) => m.type !== 'dir').length} of ${data.manifest.file_count} files`}
+              comparison is the listing's non-directory members against it,
+              said alone (`7 of 184 files shown`, not `8 shown · 7 of 184
+              files`: two numbers side by side, the first counting the
+              directory); with no readable manifest count there is no M, and
+              none is claimed. */}
+          {!data.truncated
+            ? data.count
+            : data.manifest.status === 'present' && data.manifest.file_count !== null
+              ? `${members.filter((m) => m.type !== 'dir').length} of ${data.manifest.file_count} files shown`
+              : `${data.count} shown`}
           {data.truncated && (
             <>
               {' '}
