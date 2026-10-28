@@ -1092,3 +1092,133 @@ def test_a_removal_over_firestores_write_cap_refuses_whole(keyed, removal, sm, m
     assert response.status_code == 409, response.text
     assert "3 documents" in response.text and "disable-grants" in response.text
     assert removal.docs == before
+
+
+# -- SEC-MIGRATE-FORGE: forge tokens listed read-only (part of #1347) ----------------
+#
+# docs/design/workspace-secrets.md §6.2: the store lists `-git` and
+# `-git-u-<hex>` as records of kind `forge_token`, `managed: legacy`, consumer
+# `component:git` ticked and locked, from the records `gittokens.py` keeps. It
+# offers no add, rotate, delete or grant on one, and no forge value is ever in
+# a release.
+
+from swarm_api.gittokens import Scope, TokenState, provider_suffix, record_for_slot  # noqa: E402
+from swarm_api.grant_attest import GrantPolicy  # noqa: E402
+from swarm_api.secrets_overview import GIT_TOKENS_PAGE as FORGE_PAGE  # noqa: E402
+from swarm_api.workspace_secrets import (  # noqa: E402
+    _grant_id,
+    legacy_rows,
+    release_plan,
+)
+from swarm_common.models import Tenant  # noqa: E402
+
+#: A user slot's name, `git-u-<16 hex>`: derived, so every xdist worker
+#: collects the same parametrize ids.
+USER_SLOT = provider_suffix(Scope.USER, user="alice@example.com")
+
+
+def _eng(db: FakeFirestore, *credentials: str) -> Tenant:
+    doc = db.docs["tenants/eng"]
+    doc["credentials"] = list(credentials)
+    return Tenant(**doc)
+
+
+def test_the_tenant_forge_token_is_listed_read_only_and_never_as_a_provider_key(client, seeded):
+    _eng(seeded, "anthropic", "git")
+    body = listing(client, "root", "eng")["platform_credentials"]
+    assert [k["provider"] for k in body["runner_provider_keys"]] == ["anthropic"]
+    forge = body["forge_tokens"]
+    [row] = forge["tokens"]
+    assert row["name"] == "git" and row["secret_id"] == "swarm-tenant-eng-git"
+    assert row["kind"] == "forge_token" and row["managed"] == "legacy"
+    assert row["read_only"] is True and row["locked"] is True
+    assert row["consumers"] == ["component:git"] and forge["page"] == FORGE_PAGE
+
+
+def test_forge_rows_come_from_the_git_token_records_never_a_value_or_another_persons(seeded):
+    tenant = _eng(seeded, "anthropic", "git")
+    at = START
+    last4 = __import__("secrets").token_hex(2)
+    own = record_for_slot("eng", Scope.TENANT, registered_by="swarm-api", now=at)
+    own.kind, own.state, own.last4 = "app_installation", TokenState.ACTIVE, last4
+    mine = record_for_slot("eng", Scope.USER, user="alice@example.com",
+                           registered_by="alice@example.com", now=at)
+    mine.kind = "app_user"
+    theirs = record_for_slot("eng", Scope.USER, user="dave@example.com",
+                             registered_by="dave@example.com", now=at)
+    repo = record_for_slot("eng", Scope.REPOSITORY, repo_id="repo_" + "0" * 16,
+                           registered_by="root@example.com", now=at)
+    other = record_for_slot("research", Scope.TENANT, registered_by="swarm-api", now=at)
+
+    forge = legacy_rows(tenant, None, None, forge_records=[own, mine, theirs, repo, other],
+                        viewer_email="Alice@example.com")["forge_tokens"]
+
+    assert forge["readable"] is True
+    assert [(r["name"], r["scope"]) for r in forge["tokens"]] == [
+        ("git", "tenant"), (mine.provider_suffix, "user")]
+    tenant_row, user_row = forge["tokens"]
+    assert tenant_row["status"] == "active" and tenant_row["token_kind"] == "app_installation"
+    assert user_row["token_kind"] == "app_user" and user_row["status"] == "unverified"
+    for row in forge["tokens"]:
+        assert row["kind"] == "forge_token" and row["read_only"] is True and row["locked"]
+        assert row["consumers"] == ["component:git"]
+    text = json.dumps(forge)
+    assert last4 not in text and "@example.com" not in text
+
+
+@pytest.mark.parametrize("slot", ["git", USER_SLOT, "git-r-" + "a" * 16])
+def test_every_write_on_a_forge_row_is_refused_and_writes_nothing(client, seeded, sm, slot):
+    _eng(seeded, "anthropic", "git")
+    before = {p: dict(d) for p, d in seeded.docs.items()}
+    attempts = [
+        create(client, "root", "eng", slot, fake_value()),
+        rotate(client, "root", "eng", slot, fake_value("r")),
+        delete(client, "root", "eng", slot, {"name": slot}),
+        grant(client, "root", "eng", slot, "component:git"),
+        grant(client, "root", "eng", slot, "profile:claude-code"),
+        client.put(f"{BASE}/{slot}/use-in", headers=as_("alice", "u-alice"),
+                   json={"workspaces": ["eng"]}),
+        client.post(f"{BASE}/links", headers=as_("root", "eng"),
+                    json={"action": "rotate", "name": slot}),
+    ]
+    for response in attempts:
+        assert response.status_code == 422, (response.request.method, response.request.url,
+                                             response.text)
+        assert "read-only" in response.text and FORGE_PAGE in response.text
+    assert sm.calls == [] and seeded.docs == before
+
+
+def test_no_forge_value_is_ever_in_a_release(keyed, seeded, grant_key):
+    """A store record granted to claude-code is released (the control); the
+    same record rewritten as a forge token, or a record forged for the tenant
+    `-git` secret with signed grants to claude-code and component:git, is not."""
+    assert create(keyed, "root", "eng", "x-key", fake_value()).status_code == 201
+    assert grant(keyed, "root", "eng", "x-key", "profile:claude-code").status_code == 200
+    record = record_of(seeded, "eng", "x-key")
+    consumers = ("profile:claude-code", "component:git")
+    keys = GrantKeys(grant_key)
+    policy = GrantPolicy(keys, required=True)
+
+    def released() -> list[str]:
+        plan = release_plan(seeded, tenant_id="eng", consumers=consumers, project_id="test",
+                            grants=policy, repositories=())
+        return [d.record["secret_id"] for d in plan.due]
+
+    assert released() == [record["secret_id"]]
+
+    seeded.docs[f"{SECRETS_COLLECTION}/{record['secret_id']}"]["kind"] = "forge_token"
+    assert released() == []
+
+    seeded.docs[f"{SECRETS_COLLECTION}/{record['secret_id']}"]["kind"] = record["kind"]
+    git = "swarm-tenant-eng-git"
+    seeded.docs[f"{SECRETS_COLLECTION}/{git}"] = {
+        **record, "secret_id": git, "name": "git", "kind": "forge_token",
+        "current_version": f"projects/test/secrets/{git}/versions/1",
+    }
+    for consumer in consumers:
+        slot = CONSUMERS_BY_NAME[consumer].slots[0].name
+        forged = {"secret_id": git, "tenant_id": "eng", "consumer": consumer,
+                  "slot": slot, "enabled": True}
+        forged["attestation"] = keys.sign(forged)
+        seeded.docs[f"{GRANTS_COLLECTION}/{_grant_id(git, consumer)}"] = forged
+    assert git not in released()

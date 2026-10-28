@@ -123,23 +123,33 @@ vulnerabilities:
     statement: "Go stdlib crypto/x509 inside vendor-built Go binaries (docker, gcloud helpers, gh, kubectl, terraform, trivy); needs vendor rebuilds."
     expired_at: 2026-11-04
 
-  # Same class (vendor-built Go binary), found 2026-10-28 when PR 2593's
-  # build-check refused agent-runtime-base and agent-runtime-base-nocodex:
-  # github.com/go-jose/go-jose/v4 v4.1.5 (HIGH, DoS parsing JWKs that contain
-  # RSA keys; fixed in 4.1.6) inside the trivy binary the agent image installs
-  # (TRIVY_VERSION in images/agent-runtime-base/Dockerfile). This is the agent's
-  # copy of trivy, not the gate's. Measured that day with `trivy rootfs
-  # --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed` over the pinned
-  # vendor downloads: trivy 0.75.0 is the only one of kubectl, gh, terraform,
-  # docker, gke-gcloud-auth-plugin and coderabbit that reports it, and the
-  # newest trivy, 0.76.1 (2026-10-21), still carries v4.1.5, so no release can
-  # be pinned. (tofu also carries it, but INSTALL_TOFU is 0.)
+  # Same class again (PROPOSED 2026-10-28 ~10:00Z by CLD for the owner's decision;
+  # this entry is not accepted until BGD merges it): go-jose v4 DoS when parsing
+  # JWKs that contain RSA keys (CVE-2026-116587, HIGH, fixed in go-jose 4.1.6),
+  # inside two THIRD-PARTY Go binaries the runtime images ship:
+  # /usr/local/bin/terraform (1.16.4, go-jose 4.1.4/4.1.5) and
+  # /usr/local/bin/trivy (0.75.0, go-jose 4.1.5) in agent-runtime-base,
+  # -nocodex, -browser, -indexer and swarm-reconciler. Every image build and
+  # release since 2026-10-27 ~20:16Z is refused on it (#2597). VENDOR-GOJOSE
+  # (task under wf_d9026ca5f9f544e49aed) measured on 2026-10-28 09:29-09:32Z that no
+  # upstream release carries the fix yet: trivy 0.76.1 (newest) and terraform
+  # 1.17.0 / 1.16.7 (newest) still embed go-jose < 4.1.6, read from each
+  # binary's build info against the vendor's published checksums.
   #
-  # What bounds it: a crafted JWK can at worst stop one trivy invocation an
-  # agent started, inside a non-root, read-only, capability-dropped attempt
-  # under the egress NetworkPolicy; the platform retries the attempt. Revisit
-  # by bumping TRIVY_VERSION once a release ships go-jose >= 4.1.6, re-scanning
-  # first. The expiry is short on purpose.
+  # What bounds it: both are clients run inside a non-root, read-only,
+  # capability-dropped container for one attempt, under the egress
+  # NetworkPolicy that denies every other tenant and the control plane. The
+  # flaw is a denial of service while parsing a JWK set; a crafted JWKS can at
+  # worst stop that one attempt's tool, which the platform treats as an
+  # ordinary failed attempt. Short expiry: take the first terraform and trivy
+  # releases built on go-jose >= 4.1.6 (docs/versions.md), re-scanning first.
+  #
+  # Also found 2026-10-28 when PR 2593's build-check refused agent-runtime-base
+  # and -nocodex on trivy 0.75.0 (TRIVY_VERSION in
+  # images/agent-runtime-base/Dockerfile; the agent's copy, not the gate's),
+  # measured with `trivy rootfs --scanners vuln --severity HIGH,CRITICAL
+  # --ignore-unfixed` over the pinned vendor downloads. (tofu also carries it,
+  # but INSTALL_TOFU is 0.)
   - id: CVE-2026-116587
-    statement: "go-jose v4 JWK RSA parsing DoS inside the vendor-built trivy binary in the agent image; no trivy release ships go-jose 4.1.6 yet."
+    statement: "go-jose v4 JWK parsing DoS inside vendor-built terraform and trivy; no vendor release carries go-jose 4.1.6 yet."
     expired_at: 2026-11-04
