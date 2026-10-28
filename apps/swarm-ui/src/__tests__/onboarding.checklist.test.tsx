@@ -9,7 +9,8 @@
 //   * a failed step prints the §2.3 copy the server sent, WORD FOR WORD, with
 //     the GitHub page it names; a step waiting on another says which;
 //   * each not-done step's action goes where the work is: Connect GitHub
-//     starts the App's authorisation, the rest open Work › Access;
+//     starts the App's authorisation, the rest open Work › Access (Verify
+//     access opens Config › Repositories, where Verify is);
 //   * on Overview the card shows while setup is incomplete, draws nothing when
 //     it is complete or its read failed, and Hide keeps it hidden on remount
 //     (through POST /v1/onboarding/dismiss: onboarding.dismiss.test.tsx);
@@ -153,14 +154,15 @@ describe('the Setup page draws the server-derived checklist', () => {
     // The fix is on Access, and Re-check is a fresh read.
     expect(within(orgs).getByRole('link', { name: 'Enable orgs' }).getAttribute('href')).toBe('/config/github')
     expect(within(orgs).getByRole('button', { name: 'Re-check' })).toBeTruthy()
-    // An in-progress step later on also points at Access.
-    expect(within(stepEl('access_verified')).getByRole('link', { name: 'Verify access' }).getAttribute('href')).toBe('/config/github')
+    // An in-progress Verify access points at Repositories, where Verify is (visual QA config-10).
+    expect(within(stepEl('access_verified')).getByRole('link', { name: 'Verify access' }).getAttribute('href')).toBe('/config/repositories')
     expect(visible(stepEl('repos_chosen'))).toContain('1 granted: octo-dev/example-api (write)')
     expect(visible(stepEl('access_verified'))).toContain('0 passed · 1 not checked yet')
-    // The pending grant is named, with the page its Verify is on (#896): GitHub access since WS-SETTINGS-PAGE.
-    // MUTATION: name the old Access page -> fails.
-    expect(visible(stepEl('access_verified'))).toContain('octo-dev/example-api: press Verify on GitHub access')
-    expect(within(stepEl('access_verified')).getByRole('link', { name: 'GitHub access' }).getAttribute('href')).toBe('/config/github')
+    // The pending grant is named, with the page its Verify is on (#896): Repositories, since GitHub access
+    // has no Verify (visual QA config-10).
+    // MUTATION: name GitHub access again -> fails.
+    expect(visible(stepEl('access_verified'))).toContain('octo-dev/example-api: press Verify on Repositories')
+    expect(within(stepEl('access_verified')).getByRole('link', { name: 'Repositories' }).getAttribute('href')).toBe('/config/repositories')
   })
 
   it('re-reads the checklist on Re-check', async () => {
