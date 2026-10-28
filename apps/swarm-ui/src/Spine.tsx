@@ -46,6 +46,7 @@ import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenant
 import { HELP_GROUPS, HELP, TOPIC_IDS, helpAnchor } from './help'
 import { STATE_MARK, type MarkHue, type MarkName } from './marks'
 import { addressToPath } from './paths'
+import { PageHead } from './Shell'
 import { AdminRoleRefusal } from './WorkspaceRefusal'
 import { shortcut, typedIntoField } from './shortcuts'
 import { poolLabelAmong, type Capacity, type Me, type Stats, type TaskState } from './types'
@@ -1254,6 +1255,18 @@ export function roleLine(platformAdmin: boolean, mine: Result<TenantChoice[]>, t
   // someone in no group, so `here` alone missed the finding's own case.
   if (personal || (here !== undefined && here.kind === 'user')) return 'Workspace admin'
   return here !== undefined && here.kind === 'group' && roleOf(here) === 'viewer' ? 'Viewer' : 'Member'
+}
+
+/**
+ * The role an Admin page's refusal names (admin-shell-23, QA1B-04 review): as
+ * `roleLine` reads it, the owner of a personal workspace is its admin -- its
+ * `/v1/tenants/mine` entry may carry no stored role, and the refusal said the
+ * role "was not read" beside a foot reading "Workspace admin". A group gives
+ * its stored role; no entry is null, never a role guessed.
+ */
+export function refusedRole(here: TenantChoice | undefined, personal: boolean): string | null {
+  if (personal || (here !== undefined && here.kind === 'user')) return 'admin'
+  return here === undefined ? null : roleOf(here)
 }
 
 function CountMark({ c }: { c: PanelCount | undefined }) {
@@ -2545,11 +2558,19 @@ export function SkyShell({
               <Fragment key={`${keepOnSwitch ? 'kept' : (tenant ?? '')}:${attempt}`}>
                 <SetupContext.Provider value={setupRead}>
                   {adminRefused && who !== null ? (
-                    <AdminRoleRefusal
-                      page={refusedPage}
-                      role={refusedHere === undefined ? null : roleOf(refusedHere)}
-                      workspace={workspaceName(who.tenant, dataOf(mine) ?? [])}
-                    />
+                    // IN THE PAGE'S FRAME (QA1B-04 review): the gutter and
+                    // the head every page has (`.app`, `main.work`,
+                    // `PageHead`), not drawn flush against the panel.
+                    <div className="app">
+                      <main className="work">
+                        <PageHead title={refusedPage} />
+                        <AdminRoleRefusal
+                          page={refusedPage}
+                          role={refusedRole(refusedHere, personal === true)}
+                          workspace={workspaceName(who.tenant, dataOf(mine) ?? [])}
+                        />
+                      </main>
+                    </div>
                   ) : (
                     children
                   )}
