@@ -308,6 +308,18 @@ describe('the Now card leads, and becomes the outcome or the failure', () => {
     expect(lead.querySelector('.dt-chip')?.textContent).toBe('budget_exceeded')
   })
 
+  it('a fix loop that ended without a merge says so, not as a crash (contract request 126)', () => {
+    const error = 'fix_loop_exhausted: the person answered stop after round 3'
+    const t = running({ state: 'FAILED', completed_at: ago(1), end_cause: 'fix_loop_exhausted', last_error: error, attempt_count: 1 })
+    const el = host(runOf({ task: t, attempts: [attempt(1, { created_at: ago(15), started_at: ago(14), completed_at: ago(1) })] }))
+    const lead = el.querySelector<HTMLElement>('.dt > .dt-now')!
+    expect(lead.dataset.lead).toBe('failed')
+    // MUTATION: drop `fix_loop_exhausted` from END_CAUSE_SAY -> the head reads
+    // "Failed: undefined", or tsc refuses the Record.
+    expect(lead.querySelector('.dt-card-head > h2')?.textContent).toBe('Failed: its fix loop ended without a merge')
+    expect(lead.querySelector('.dt-chip')?.textContent).toBe('fix_loop_exhausted')
+  })
+
   it('a cancelled agent with no error leads with the neutral Cancelled card, not an Outcome', () => {
     const t = running({ state: 'CANCELLED', completed_at: ago(1), started_at: null, end_cause: null, last_error: null, attempt_count: 0 })
     const el = host(runOf({ task: t, attempts: [] }))

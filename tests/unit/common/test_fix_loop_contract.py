@@ -11,8 +11,10 @@ docs/design/fix-loop.md §7 requests A and B, accepted by BGD on 2026-10-27
     promotes a park only through a sweep that names its reason
     (`_parked_window(ParkReason.X)`), or through PREWARM_REASONS;
   * `scripts/lib/check-contract-parity.sh` still passes with the new member;
-  * the requests are filed: 124 and 125 accepted and applied, 126 (the end
-    cause Q3 (c) needs) requested and NOT applied.
+  * the requests are filed: 124 and 125 accepted and applied, and 126 (the end
+    cause Q3 (c) needs) accepted by BGD on 2026-10-27 and applied: the frozen
+    `EndCause` has `FIX_LOOP_EXHAUSTED`, appended, the outcome ledger classes
+    it as its own failure class, and the console's `EndCause` list carries it.
 
 MUTATION: set `available=True` on `fix-loop` and
 `test_fix_loop_ships_unavailable_with_a_reason` fails; drop "fix-loop" from
@@ -21,7 +23,9 @@ MUTATION: set `available=True` on `fix-loop` and
 `ParkReason.FIX_ROUNDS_RUNNING` to PREWARM_REASONS and
 `test_no_scheduler_sweep_promotes_fix_rounds_running` fails; drop the member
 from `PARK_REASONS` in apps/swarm-ui/src/types.ts and
-`test_the_contract_parity_script_passes` fails.
+`test_the_contract_parity_script_passes` fails; take `FIX_LOOP_EXHAUSTED`
+out of `EndCause` (or put "Not applied" back on request 126's row) and
+`test_request_c_is_accepted_and_applied` fails.
 """
 
 from __future__ import annotations
@@ -189,9 +193,39 @@ def test_requests_a_and_b_are_filed_as_accepted_and_applied():
         assert re.search(rf"^## {number}\. .*\(FL-CONTRACT, {letter}\)$", text, re.M)
 
 
-def test_request_c_is_filed_and_not_applied():
-    """Q3 (c) ends a loop FAILED `fix_loop_exhausted`; the end cause is BGD's to
-    accept, so it is a request and the frozen enum does not have it yet."""
+def test_request_c_is_accepted_and_applied():
+    """Q3 (c) ends a loop FAILED `fix_loop_exhausted`. BGD accepted request 126
+    on 2026-10-27 ('accept-126'), so the frozen enum has the member, appended
+    after request 118's `budget_exceeded` so no reader's order moves.
+
+    MUTATION: drop `FIX_LOOP_EXHAUSTED` from `EndCause` and the enum asserts
+    fail; leave request 126's row saying "Not applied" and the record asserts
+    fail; drop "accepted by the owner" from the row and
+    scripts/lib/check-frozen-contract.sh would refuse the swarm_common diff.
+    """
+    assert EndCause.FIX_LOOP_EXHAUSTED.value == "fix_loop_exhausted"
+    assert EndCause("fix_loop_exhausted") is EndCause.FIX_LOOP_EXHAUSTED
+    causes = list(EndCause)
+    assert causes[-1] is EndCause.FIX_LOOP_EXHAUSTED
+    assert causes[-2] is EndCause.BUDGET_EXCEEDED
     row = _row("126")
-    assert "fix loop request C" in row and "Not applied" in row
-    assert "fix_loop_exhausted" not in {c.value for c in EndCause}
+    assert "fix loop request C" in row
+    assert "ACCEPTED by the owner (BGD) 2026-10-27" in row and "APPLIED" in row
+    assert "Not applied" not in row
+    text = REQUESTS.read_text(encoding="utf-8")
+    section = text.split("## 126. ", 1)[1].split("\n## ", 1)[0]
+    assert "**Status:** ACCEPTED by the owner (BGD) 2026-10-27" in section
+
+
+def test_the_console_names_the_new_end_cause():
+    """The parity script holds the console's `EndCause` union and `END_CAUSES`
+    to the frozen enum; this pins that it counted the new member."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GOOGLE_")}
+    result = subprocess.run(
+        ["bash", str(PARITY)],
+        cwd=REPO, env=env, capture_output=True, text=True, timeout=240,
+    )
+    report = result.stdout + result.stderr
+    assert result.returncode == 0, report[-6000:]
+    members = len(list(EndCause))
+    assert re.search(rf"ok types\.ts END_CAUSES: {members} member", report), report[-6000:]
