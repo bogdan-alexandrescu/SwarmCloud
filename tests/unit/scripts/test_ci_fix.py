@@ -965,6 +965,33 @@ def test_the_lane_code_on_another_status_is_still_a_refusal(fake):
     assert "<!-- swarm-ci-fix:refused -->" in comment
 
 
+LANE_STEP = "task_dddddddddddddddddddd"
+
+
+def test_a_lane_owns_pr_409_naming_a_plain_continuation_is_a_skip_with_no_comment(fake):
+    """#2583: the API refuses the fix while a continuation of the lane (a
+    `continues_task` or `publish_to_pr` step) pushes to the branch; that task
+    is no merge step, and the log must not call it one."""
+    _, state = fake
+    answer = json.loads(_lane_owns_pr(task_id=LANE_STEP))
+    answer["detail"]["plain_continuation"] = True
+    (state / "api_status").write_text("409")
+    (state / "api_response").write_text(json.dumps(answer))
+
+    out = _run(fake, "run")
+
+    # MUTATION: drop the `ci_fix_lane_owns_pr` branch -- reported as a refusal, red.
+    assert out.returncode == 0, out.stderr
+    assert _comments(state) == []
+    logged = out.stdout + out.stderr
+    assert LANE_STEP in logged and LANE_WORKFLOW in logged
+    # MUTATION: read `.detail.plain_continuation` with `// true` or not at all
+    # -- the skip is logged as a live merge step.
+    assert "a continuation of the lane" in logged
+    assert "merge step" not in logged
+    assert "abc123secret" not in logged
+
+
 def test_the_script_makes_no_read_of_its_own_the_api_decides(fake):
     """One source of truth: CI-FIXER-ONE's task and workflow reads, which the
     fixer's identity is never served, are gone."""
