@@ -60,6 +60,10 @@ const { QuotaDetailScreen } = await import('../QuotaDetail')
 const PHONE: CascadeEnv = { width: 400 }
 const WIDE: CascadeEnv = { width: 1440 }
 const WAIT = { timeout: 5000 } as const
+
+// THE CONFIRMATION, NOT THE SHEET UNDER IT: the desktop account sheet is a
+// dialog itself (visual QA pass 1 capacity-07), so the page holds two.
+const CONFIRM = { name: (_: string, el: Element) => el.classList.contains('c-dlg') }
 const hosts: HTMLElement[] = []
 const LONG_TENANT = 'data-platform-ingestion-team-europe-west'
 
@@ -345,7 +349,7 @@ describe('V070: the state-change modal and the Replace copy draw ids unbroken', 
     await accounts([account({ assigned: 2 })])
     fireEvent.click(row('u-bogdan:laptop'))
     fireEvent.click(screen.getByRole('button', { name: 'Pause' }))
-    const dialog = await screen.findByRole('dialog', undefined, WAIT)
+    const dialog = await screen.findByRole('dialog', CONFIRM, WAIT)
     const warn = dialog.querySelector('.warn-text')!
     expect(warn.textContent).toContain('Every agent in u-bogdan loses it for new work.')
     expect([...warn.querySelectorAll('.acct-id')].map((e) => e.textContent)).toEqual(['u-bogdan'])
