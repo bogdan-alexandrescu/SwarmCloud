@@ -40,6 +40,7 @@ from .test_release_reuses_ci_images import _code, _workflow
 
 REPO = Path(__file__).resolve().parents[3]
 GROUP = REPO / "scripts" / "acceptance" / "groups" / "roles.sh"
+CONFIG = REPO / "scripts" / "acceptance" / "config.sh"
 VERIFY_REMOTE = REPO / "scripts" / "verify-remote.sh"
 DESIGN = REPO / "docs" / "design" / "workspace-roles.md"
 TARGET = "acceptance/groups/roles"
@@ -62,7 +63,7 @@ pytestmark = pytest.mark.skipif(
 
 def _bash(script: str, **env: str) -> subprocess.CompletedProcess:
     full = {"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "/tmp"), "NO_COLOR": "1", **env}
-    return subprocess.run(["bash", "-c", f'source "{GROUP}"\n{script}'], cwd=REPO, env=full,
+    return subprocess.run(["bash", "-c", f'source "{CONFIG}"\nsource "{GROUP}"\n{script}'], cwd=REPO, env=full,
                           capture_output=True, text=True, timeout=60)
 
 
