@@ -47,7 +47,7 @@ import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { Button, Dash, NamedMark, Skeleton, StateMark, ToneMark, UsageTrack, WarnMark, type TrackTone } from './components'
 import { Absent, Mark } from './primitives'
 import { disabledSentence } from './ProfileMatrix'
-import { parkWord } from './words'
+import { backendWord, parkWord } from './words'
 import { AGED_AFTER_MS, CountNote, PageHead, RefreshControl, staleFoot, timeAgo, useClaimPageAge, useIdleStop, usePoll } from './Shell'
 import { AGE_TICK_MS, PageClock, usePageClock, useNow as useAgeClock } from './useNow'
 import { useTimeZone } from './useTimeZone'
@@ -1406,6 +1406,10 @@ function BadMark() {
  * which is the one thing the column exists for.
  */
 function bindingLabel(name: string, tenant: string | undefined): string {
+  // A BACKEND IN WORDS (visual QA pass 1, overview-agents-05, 2026-10-28):
+  // the mock tile read "binds CLOUD_RUN_JOB", the raw enum; `backendWord`
+  // is the one map every other screen prints a backend through.
+  if (name.startsWith('backend:')) return backendWord(name.slice('backend:'.length))
   if (tenant) {
     if (name === `tenant:${tenant}`) return 'your workspace'
     const own = name.endsWith(`:tenant:${tenant}`)
@@ -2100,13 +2104,21 @@ function PhoneRunRow({ task: t, title, leasedAt }: { task: Task; title: string |
             "<its title> · sc…" alike. So the workflow's title gives way with
             an ellipsis and the step after it does not; whole in the title. */}
         <a className="ov-prun-n" href={agentPath(t)} title={`${rowLabel(t, title)} · ${t.id}`}>
+          {/* A LONE AGENT'S TITLE GETS THE LINE (visual QA pass 1,
+              overview-agents-08, 2026-10-28): with no step, the kept suffix
+              was the generic "claude-code agent · 8e…" and the title read
+              "Fix flaky lea…". The step is kept because it tells one step
+              from another; a lone agent has none, so its short id moves to
+              the second line and the title takes the first. */}
           {title === null ? (
             <span className="ov-prun-t">{agentName(t)}</span>
-          ) : (
+          ) : t.step_id ? (
             <>
               <span className="ov-prun-t">{title}</span>
               <span className="ov-prun-s">{` · ${agentName(t)}`}</span>
             </>
+          ) : (
+            <span className="ov-prun-t">{title}</span>
           )}
         </a>
         {/* THE SECOND LINE IS THE DESKTOP'S STATE AND PROFILE COLUMNS
@@ -2115,6 +2127,12 @@ function PhoneRunRow({ task: t, title, leasedAt }: { task: Task; title: string |
             short id, whole in the link's title. */}
         <span className="ov-prun-sub">
           {t.state.toLowerCase().replace('_', '-')} · {t.runner_profile}
+          {title !== null && !t.step_id && (
+            <>
+              {' · '}
+              <span className="mono">{shortTaskId(t.id)}</span>
+            </>
+          )}
           {t.workflow_id && (
             <>
               {' · '}
@@ -2410,7 +2428,12 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
               never shown, so the coverage the figure is partial against was
               nowhere on the screen. */}
           <span>
+            {/* WHY IT IS NOT THE PAGE'S TOTAL (overview-agents-09): "12 newest of
+                26 agents" beside Finished today's "of the 27 newest read" was
+                two totals on one page. 26 are the agents of those 27 that have
+                run; the page's count follows, so the two agree. */}
             {countOf(s.attempts, 'attempt')}, {s.tasksSampled} newest of {countOf(s.tasksWithAttempts, 'agent')}
+            {s.tasksOnPage > s.tasksWithAttempts ? ` that have run (of the ${s.tasksOnPage} newest read)` : ''}
           </span>
           {/* 2. THE HOLES: attempts that carried no cost figure... */}
           {unmeasured > 0 && <span className="ov-warn">{unmeasured} unmeasured</span>}
