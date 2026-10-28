@@ -11,7 +11,8 @@
 import type { MouseEvent } from 'react'
 
 import { EmptyState } from './components'
-import { FIXED } from './paths'
+import { destinationOf } from './Notifications'
+import { FIXED, SECTION_ROOTS } from './paths'
 
 /** Every page with a fixed path, plus the agent lists, in the nav's order. */
 const KNOWN: readonly string[] = [
@@ -49,8 +50,13 @@ function editDistance(a: string, b: string): number {
 /**
  * The route an unknown path most likely meant. A known path that holds every
  * segment asked for, in order, under the same section, wins, the shortest first (`/capacity/quota` is
- * `/capacity/accounts/quota`); otherwise the closest spelling within a few
- * edits (`/agnets` is `/agents`); otherwise Overview.
+ * `/capacity/accounts/quota`). Under a section the spine names, a page of that
+ * section a typo away comes next (`/admin/tenant` is `/admin/tenants`), and
+ * otherwise the SECTION'S LANDING (QA1 admin-shell-11, C-05): `/admin/bogus`
+ * offered `/admin/counts`, four edits off, where the reader expects Admin's
+ * first page, and `/work/running` offered Overview and lit it in the rail.
+ * Outside a section, the closest spelling within a few edits (`/agnets` is
+ * `/agents`); otherwise Overview.
  */
 export function nearestPath(path: string): string {
   const want = segmentsOf(path)
@@ -61,17 +67,37 @@ export function nearestPath(path: string): string {
     return holding.reduce((best, k) => (segmentsOf(k).length < segmentsOf(best).length ? k : best))
   }
   const asked = `/${want.join('/')}`
-  const limit = Math.max(2, Math.floor(asked.length / 3))
-  let best: { path: string; d: number } | null = null
-  for (const k of KNOWN) {
-    const d = editDistance(asked, k)
-    if (d <= limit && (best === null || d < best.d)) best = { path: k, d }
+  const closest = (among: readonly string[], limit: number): string | null => {
+    let best: { path: string; d: number } | null = null
+    for (const k of among) {
+      const d = editDistance(asked, k)
+      if (d <= limit && (best === null || d < best.d)) best = { path: k, d }
+    }
+    return best?.path ?? null
   }
-  return best?.path ?? '/overview'
+  const root = SECTION_ROOTS[`/${want[0]}`]
+  if (root !== undefined) {
+    // A typo is a third of the last segment at most, not of the whole path:
+    // `bogus` is not `counts` because both sit under `/admin/`.
+    const last = want[want.length - 1]!
+    const typo = closest(KNOWN.filter((k) => segmentsOf(k)[0] === want[0]), Math.max(1, Math.floor(last.length / 3)))
+    return typo ?? FIXED[root] ?? '/overview'
+  }
+  return closest(KNOWN, Math.max(2, Math.floor(asked.length / 3))) ?? '/overview'
+}
+
+/**
+ * A page's name as the panel gives it, `Admin › Pool limits` (QA1
+ * admin-shell-11: the offer was a raw path in mono). A path the panel does not
+ * name stays the path.
+ */
+export function pageName(path: string): string {
+  return destinationOf(path).join(' › ')
 }
 
 export function NotFound({ path, go }: { path: string; go: (to: string) => void }) {
   const near = nearestPath(path)
+  const named = pageName(near)
   const follow = (to: string) => (e: MouseEvent<HTMLAnchorElement>) => {
     if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
     e.preventDefault()
@@ -85,9 +111,15 @@ export function NotFound({ path, go }: { path: string; go: (to: string) => void 
       <EmptyState kind="partial" heading={`No page at ${path}`} page>
         This console has no page at that address, so nothing here is a reading of the platform. The nearest page that
         exists is{' '}
-        <a className="mono" href={near} onClick={follow(near)}>
-          {near}
-        </a>
+        {named === near ? (
+          <a className="mono" href={near} onClick={follow(near)}>
+            {near}
+          </a>
+        ) : (
+          <a href={near} onClick={follow(near)}>
+            {named}
+          </a>
+        )}
         {near === '/overview' ? '.' : (
           <>
             ; or go to{' '}

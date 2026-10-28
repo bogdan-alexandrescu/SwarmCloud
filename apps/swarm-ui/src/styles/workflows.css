@@ -589,6 +589,11 @@
   .wf-card .ctl-table.wf-table th[data-col="attempts"] { width: 92px; }
   .wf-card .ctl-table.wf-table th[data-col="inputs"] { width: 72px; }
   .wf-card .ctl-table.wf-table th[data-col="cost"] { width: 100px; }
+  /* A PARTIAL SUM'S MARK IS A LINE OF ITS OWN (overview-agents-69, QA1B-08
+     re-review): `$0.4230 · 1 of 2` is 127px of 12px mono, and on one line
+     the ellipsis cut its `of 2`. 136px would hold it, but Why keeps its 60px
+     at the 980px minimum only while Cost is 100. `CostCellView`. */
+  .wf-card .ctl-table.wf-table td[data-col="cost"] .wf-cost-of { display: block; }
   /* 100px: `not reported`, its longest word, is 98.4px of 12px mono with
      the padding; the 4px went to Ran (V202). */
   .wf-card .ctl-table.wf-table th[data-col="tokens"] { width: 100px; }

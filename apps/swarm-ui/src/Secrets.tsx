@@ -26,7 +26,7 @@ import {
   type WorkspaceSecretConsumer,
 } from './api'
 import { BrowserLoginsPane, isPersonalTenant } from './BrowserLogins'
-import { Banner, Button, ButtonLink, Card, Segmented, Tabs, TypedConfirm, routedClick, type TabDef } from './components'
+import { Banner, Button, ButtonLink, Card, Dash, Segmented, Tabs, TypedConfirm, routedClick, type TabDef } from './components'
 import { SetupContext, setupNext, useSetupSteps, type SetupStep } from './ConfigSetup'
 import { configSetupOf } from './configSetupApi'
 import { chooseTenant, type Result } from './fetch'
@@ -199,15 +199,20 @@ function winnerWords(s: SecretsShadow): string {
   return s.scope === 'personal' && s.person !== null ? `${s.person}’s wins on their agents` : `${who} wins on ${s.where}`
 }
 
-/** The chips beside a row the overview reports shadowing for (§2.4). */
+/**
+ * The notes under a row's name that the overview reports shadowing for (§2.4).
+ * A LINE OF SMALL TEXT, NOT A PILL (visual QA pass 1, config-23): "shadowed:
+ * ana@…’s wins on their agents" wrapped to two lines inside a dashed pill and
+ * doubled the row's height. Each note is its own line under the name.
+ */
 function ShadowNotes({ row }: { row: SecretsRow | undefined }) {
   if (row === undefined || (row.shadowed_by.length === 0 && row.shadows.length === 0)) return null
   const lost = Array.from(new Set(row.shadowed_by.map(winnerWords)))
   const won = Array.from(new Set(row.shadows.map((s) => `overrides ${SCOPE_WORDS[s.scope]}${s.scope === 'workspace' ? '' : ` on ${s.where}`}`)))
   return (
     <>
-      {won.map((w) => <span key={w} className="sec-chip is-info">{w}</span>)}
-      {lost.map((w) => <span key={w} className="sec-chip is-shadowed">shadowed: {w}</span>)}
+      {won.map((w) => <small key={w} className="sec-note is-info">{w}</small>)}
+      {lost.map((w) => <small key={w} className="sec-note">shadowed: {w}</small>)}
     </>
   )
 }
@@ -1051,7 +1056,13 @@ function KeysCard({ rows, scope, go, onChange, onAdd }: { rows: SecretsRow[]; sc
       return {
         key: <>{r.name} runner key<small>workspace</small></>,
         reads: r.consumers.length === 0 ? 'no profile today' : r.consumers.map((c) => c.replace(/^profile:/, '')).join(', '),
-        state: <span className="sec-state is-ok">set</span>,
+        // The API records neither when a runner key was set nor by whom
+        // (`legacy_rows` lists the tenant's credentials only), so the line
+        // says so beside "set" instead of reading as less than the TypeSafe
+        // key's "set 5d ago by …" (chrome-C21).
+        state: r.set_at === null && r.set_by === null
+          ? <span className="sec-state is-ok">set · <Dash why="When and by whom a runner key was set is not recorded" /></span>
+          : <span className="sec-state is-ok">{setWords(r)}</span>,
         act: r.can_manage ? <Button kind="secondary" size="sm" aria-label={`Replace the ${r.name} runner key`} onClick={() => go({ scope: 'workspace', runnerKey: r.name })}>Replace</Button> : null,
       }
     }
@@ -1105,6 +1116,18 @@ function KeysCard({ rows, scope, go, onChange, onAdd }: { rows: SecretsRow[]; sc
   )
 }
 
+/**
+ * Whether a token's expiry has passed. AN EXPIRED TOKEN IS NOT DRAWN AS ACTIVE
+ * (visual QA pass 1, config-21): the card read State "active" in the ok tone
+ * beside Expires "9d ago". The expiry is the API's own figure, so the card
+ * believes it over a state the record has not caught up with.
+ */
+function expired(iso: string | null): boolean {
+  if (iso === null) return false
+  const ms = Date.parse(iso)
+  return !Number.isNaN(ms) && ms <= Date.now()
+}
+
 /** GitHub token status (§4): kind, state, login, verified, expires. Never any character of it. */
 function GitCard({ rows, empty }: { rows: SecretsRow[]; empty: string }) {
   return (
@@ -1112,10 +1135,14 @@ function GitCard({ rows, empty }: { rows: SecretsRow[]; empty: string }) {
       {rows.length === 0 ? <p className="ur-small">{empty}</p> : rows.map((r) => (
         <dl key={r.name} className="sec-kv">
           <dt>Kind</dt><dd>{r.kind === null ? 'not said' : (TOKEN_KINDS[r.kind] ?? r.kind)}{r.token_scope === null ? '' : ` · ${r.token_scope === 'tenant' ? 'workspace' : r.token_scope === 'user' ? 'yours' : r.token_scope}`}</dd>
-          <dt>State</dt><dd><span className={`sec-state${r.status === 'active' ? ' is-ok' : ''}`}>{r.status}</span></dd>
+          <dt>State</dt><dd>{expired(r.expires_at)
+            ? <span className="sec-state is-warn" title={`The API reads it as ${r.status}; its expiry has passed.`}>expired</span>
+            : <span className={`sec-state${r.status === 'active' ? ' is-ok' : ''}`}>{r.status}</span>}</dd>
           <dt>GitHub login</dt><dd>{r.forge_login === null ? 'not said' : `@${r.forge_login}`}</dd>
           <dt>Verified</dt><dd>{r.verified_at === null ? 'never' : timeAgo(r.verified_at)}</dd>
-          <dt>Expires</dt><dd title={r.expires_at ?? undefined}>{r.expires_at === null ? 'not said' : when(r.expires_at)}</dd>
+          <dt>Expires</dt><dd title={r.expires_at ?? undefined}>{r.expires_at === null ? 'not said' : expired(r.expires_at)
+            ? <span className="sec-state is-warn">expired {timeAgo(r.expires_at)}</span>
+            : when(r.expires_at)}</dd>
         </dl>
       ))}
       <p className="sec-hint">

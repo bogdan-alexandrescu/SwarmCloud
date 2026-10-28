@@ -813,7 +813,7 @@ describe('live QA: automate, the form', () => {
     await waitFor(() => expect(field('Name')).toBeTruthy(), WAIT)
     fireEvent.change(field('Name'), { target: { value: 'Weekday sweep' } })
     const create = () => screen.getByRole('button', { name: 'Create schedule' }) as HTMLButtonElement
-    await screen.findByText(/at least 1440 min apart/, undefined, WAIT)
+    await screen.findByText(/at least 1 day apart/, undefined, WAIT)
     expect(create().disabled).toBe(false)
     answer = { status: 422, body: { code: 'invalid_cron', message: 'minute: 61 is outside 0-59' } }
     fireEvent.change(field('Cron expression'), { target: { value: '61 * * * *' } })

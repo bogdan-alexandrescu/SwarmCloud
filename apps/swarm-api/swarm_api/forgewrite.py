@@ -76,7 +76,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import quote, urlparse
 
-from . import forge_limits
+from . import forge_limits, forgechecks
 from .errors import ApiError
 from .forge import (
     GITHUB_API_HOST,
@@ -845,10 +845,16 @@ class GitHubWriter:
     def check_runs(self, ref: IssueRef, sha: str, token: str) -> list[dict[str, Any]]:
         """The LATEST check run of each name at `sha` (`filter=latest`), every page.
 
-        Each run of a name listed more than once also carries `event`: the
-        event that triggered its check suite, read from the Actions runs at
-        `sha` in ONE more read (`_suite_events`), which `forgechecks` groups a
-        check's runs by (CHECK-RULE, part of #1999).
+        When a name is listed more than once, or a run finished neither green
+        nor tolerated, the Actions runs at `sha` are read in ONE more read
+        (`_workflow_runs`), exactly when the worker's `merge.checks_at` reads
+        them. Each run then carries `event`, the event that triggered its
+        check suite, which `forgechecks` groups a check's runs by
+        (CHECK-RULE, part of #1999), and its Actions run's conclusion
+        (`forgechecks.mark_workflow_runs`), so a red gate in a run
+        concurrency cancelled reads as pending here as it does in the merge
+        step (#2582). A head whose every check ran once and passed costs
+        nothing more.
         """
         what = f"the check runs at {ref.repository}@{sha[:12]}"
         url = self._url(ref, f"commits/{quote(sha, safe='')}/check-runs")
@@ -865,25 +871,33 @@ class GitHubWriter:
             if len(entries) < PAGE_SIZE:
                 break
         names = [run.get("name") for run in runs]
-        if len(names) != len(set(names)):
-            events = self._suite_events(ref, sha, token)
+        red = any(forgechecks.check_run_finished(run)
+                  and (run.get("conclusion") or "") not in forgechecks.OTHER_TOLERATED
+                  for run in runs)
+        if len(names) != len(set(names)) or red:
+            workflow_runs = self._workflow_runs(ref, sha, token)
+            events = {row["check_suite_id"]: row["event"] for row in workflow_runs
+                      if isinstance(row.get("event"), str)
+                      and row.get("check_suite_id") is not None}
             for run in runs:
                 suite = run.get("check_suite")
                 event = events.get(suite.get("id")) if isinstance(suite, dict) else None
                 if event is not None:
                     run["event"] = event
+            runs = forgechecks.mark_workflow_runs(runs, workflow_runs)
         return runs
 
-    def _suite_events(self, ref: IssueRef, sha: str, token: str) -> dict[Any, str]:
-        """The event of each Actions check suite at `sha`, by suite id.
+    def _workflow_runs(self, ref: IssueRef, sha: str, token: str) -> list[dict[str, Any]]:
+        """The Actions runs at `sha` (`actions/runs?head_sha=`), every page.
 
         A credential without `actions: read` (403), or Actions off (404),
-        reads as no event: each check suite is then its own group, so a green
-        suite still never outvotes a red one.
+        reads as none: no run then carries an event, so each check suite is
+        its own group and a green suite still never outvotes a red one, and
+        no red run is read as cancelled.
         """
         what = f"the Actions runs at {ref.repository}@{sha[:12]}"
         url = self._url(ref, "actions/runs")
-        events: dict[Any, str] = {}
+        rows: list[dict[str, Any]] = []
         for page in range(1, MAX_CHECK_PAGES + 1):
             try:
                 data = self._call(
@@ -891,17 +905,14 @@ class GitHubWriter:
                     token, what, needs=ACTIONS_READ,
                 )
             except (ForgeWriteForbidden, ForgeWriteNotFound):
-                return {}
+                return []
             entries = data.get("workflow_runs") if isinstance(data, dict) else None
             if not isinstance(entries, list):
                 raise ForgeWriteError(f"GitHub's answer for {what} is not a list of workflow runs")
-            for entry in entries:
-                if isinstance(entry, dict) and isinstance(entry.get("event"), str) \
-                        and entry.get("check_suite_id") is not None:
-                    events[entry["check_suite_id"]] = entry["event"]
+            rows += [entry for entry in entries if isinstance(entry, dict)]
             if len(entries) < PAGE_SIZE:
                 break
-        return events
+        return rows
 
     def actions_check_runs(self, ref: IssueRef, sha: str, token: str) -> list[dict[str, Any]]:
         """The Actions jobs at `sha`, each shaped as the check run it is.
@@ -915,6 +926,10 @@ class GitHubWriter:
         attempt's -- are those check runs, each carrying its suite and event
         as `check_runs` gives them. What this cannot see is a check run
         another App reported; a caller says the reading came from here.
+
+        Each job also carries its run's conclusion, from the same read
+        (`forgechecks.mark_workflow_runs`, #2582), so a red gate in a run
+        concurrency cancelled reads as pending, as `check_runs` reads it.
         """
         what = f"the Actions runs at {ref.repository}@{sha[:12]}"
         # The newest MAX_ACTIONS_RUNS runs, one read: each costs a jobs read
@@ -939,7 +954,7 @@ class GitHubWriter:
                     "check_suite": {"id": run.get("check_suite_id")},
                     **({"event": run["event"]} if isinstance(run.get("event"), str) else {}),
                 })
-        return checks
+        return forgechecks.mark_workflow_runs(checks, runs)
 
     def commit_statuses(self, ref: IssueRef, sha: str, token: str) -> list[dict[str, Any]]:
         """The latest commit status of each context at `sha` (the combined status)."""

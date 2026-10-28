@@ -163,7 +163,10 @@ def test_claude_code_registers_the_shim_with_the_url_in_its_env(monkeypatch, tmp
     # path is the shim's argument, not the agent's variable.
     assert seen["env"][graphstage.CONTEXT_ENV] == env[graphstage.CONTEXT_ENV]
     assert graphstage.TICKET_FILE_ENV not in seen["env"]
-    assert seen["prompt"] == "Implement it."
+    # A served graph gets the graph clause of the exploration line (LANE CAPS,
+    # part of #2524), and nothing else.
+    assert seen["prompt"] == ("Implement it.\n\n"
+                              + claude_code.exploration_note(graph=True, children=""))
 
 
 def test_claude_code_browser_registers_the_shim_beside_the_live_browser(monkeypatch, tmp_path):

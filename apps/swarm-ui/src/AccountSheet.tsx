@@ -15,7 +15,7 @@
  * is named only when it is in this read, which the broker sends only inside
  * the reader's own workspace.
  */
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 
 import { accountName } from './accountName'
 import {
@@ -132,6 +132,12 @@ export function SheetWindows({ a, now }: { a: PoolAccount; now: number }) {
 }
 
 /**
+ * The account whose cap was just saved: the reload that follows remounts the
+ * screen, and that account's `Change the cap` takes focus back when it mounts.
+ */
+let capFocusBack: string | null = null
+
+/**
  * THE AGENT CAP, AND ITS CHANGE (#2222). `PUT /v1/accounts/{id}/max-agents`
  * through swarm-api's proxy (PR 2270), owner only, 1 to 50. A borrower reads
  * the number and no control: the route refuses anyone but the owner, so a
@@ -146,13 +152,41 @@ export function AgentCap({ a, owned, reload }: { a: PoolAccount; owned: boolean;
   const [error, setError] = useState<ApiError | null>(null)
   const n = Number(draft)
   const valid = /^\d+$/.test(draft.trim()) && n >= 1 && n <= MAX_AGENTS_LIMIT
+  // FOCUS GOES INTO THE EDITOR AND BACK OUT TO ITS CONTROL (visual QA pass 1
+  // capacity-08). `Change the cap` unmounted under the keyboard and left focus
+  // on <body>, outside the sheet; after `Save cap` it landed on the sheet's
+  // Close. Opening focuses `Agents at once`; Cancel and Save hand focus back
+  // to `Change the cap`. Save's reload remounts the screen, so that hand-over
+  // is held outside the component (`capFocusBack`) and the new button takes it
+  // on mount, before the sheet's own focus effect looks.
+  const change = useRef<HTMLButtonElement>(null)
+  const field = useRef<HTMLInputElement>(null)
+  const back = useRef(false)
+  useEffect(() => {
+    if (editing) {
+      field.current?.focus()
+      return
+    }
+    const remounted = capFocusBack === a.account_id
+    if (!back.current && !remounted) return
+    back.current = false
+    if (remounted) capFocusBack = null
+    change.current?.focus()
+    // Keyed on the editor opening and closing; the account is fixed per sheet.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing])
+  const close = () => {
+    back.current = true
+    setEditing(false)
+  }
   const save = async () => {
     setBusy(true)
     setError(null)
     const res = await setAccountMaxAgents(a.account_id, n)
     setBusy(false)
     if (res.status === 'ok') {
-      setEditing(false)
+      capFocusBack = a.account_id
+      close()
       reload()
     } else if (res.status === 'error' || res.status === 'stale') {
       setError(res.error)
@@ -175,6 +209,7 @@ export function AgentCap({ a, owned, reload }: { a: PoolAccount; owned: boolean;
         {owned ? (
           !editing && (
             <button
+              ref={change}
               type="button"
               className="c-link acct-cap-change"
               onClick={() => {
@@ -202,6 +237,7 @@ export function AgentCap({ a, owned, reload }: { a: PoolAccount; owned: boolean;
           <label>
             <span>Agents at once</span>
             <input
+              ref={field}
               type="number"
               inputMode="numeric"
               min={1}
@@ -217,7 +253,7 @@ export function AgentCap({ a, owned, reload }: { a: PoolAccount; owned: boolean;
           <Button kind="primary" size="sm" type="submit" busy={busy ? 'saving…' : false} disabled={!valid || n === max}>
             Save cap
           </Button>
-          <Button kind="ghost" size="sm" disabled={busy} onClick={() => setEditing(false)}>
+          <Button kind="ghost" size="sm" disabled={busy} onClick={close}>
             Cancel
           </Button>
           <small id={`acct-cap-hint-${a.account_id}`} className={valid ? 'acct-dash' : 'warn-text'}>

@@ -277,6 +277,9 @@
 /* A pool filter no lease matches (G5-14): one row that says so. */
 .hold-all tr.hold-empty td { color: var(--text-dim); font-size: var(--t-meta); }
 .hold-pool-clear:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 2px; }
+/* THE AGREEING POOLS' FOLD (visual QA capacity-16): one line under the
+   drifted rows, the count and its toggle at the meta step. */
+.hold-agree { margin: 0; padding: 8px 12px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
 
 /* Provider quota (capacity.html frame 11): eight columns that fit 1440 with
    the nav open. Fixed layout with the widths below, so Reported is never

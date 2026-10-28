@@ -1,0 +1,57 @@
+/* =========================================================================
+   THE AGENT'S TAB STRIP: what `agent-split/tabs.tsx` needs of the sheet
+   beyond agents.css (visual QA pass 1, QA1-FIX-33, part of #2596)
+   =========================================================================
+
+   A TAB DOES NOT GROW WHEN IT IS OPENED (overview-agents-33). The open tab is
+   set in 600 (`.c-tabs > [aria-selected='true']`, components.css) and the
+   rest in the body weight, so opening Logs widened Logs and narrowed Details:
+   every tab after them moved, and the bar was fitted to widths that changed
+   with the open tab. Each label now reserves its own bold width: a hidden,
+   zero-height copy of its text in 600 (`data-label`, set by `AgTabsEdge`)
+   sits under it in a column, so the label is as wide as its bold self
+   whichever tab is open. The copy has an empty alternative text, so a tab's
+   name is still its label once.
+
+   THE MEASURING COPY (overview-agents-45): `AgTabsEdge` draws every tab once
+   more, hidden, so a tab in More is measured with the count it has now; it
+   never takes room or a pointer. Its words are drawn from `data-text`, not
+   written as text, so no query or reader finds a tab's name twice. */
+
+.c-tabs.ag-split-tabs > button > .c-tab-label {
+  display: inline-flex;
+  flex-direction: column;
+}
+
+.c-tabs.ag-split-tabs > button > .c-tab-label::after {
+  content: attr(data-label) / '';
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  font-weight: 600;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* No width and no height, clipped: the copy is as wide as every tab, and
+   would otherwise widen the drawer that scrolls on a phone. */
+.ag-tabs-measure {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.ag-tabs-measure > .c-tabs {
+  width: max-content;
+  border: 0;
+}
+
+.ag-tabs-measure .c-tab-label::before,
+.ag-tabs-measure em::before {
+  content: attr(data-text) / '';
+}

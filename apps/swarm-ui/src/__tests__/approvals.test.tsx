@@ -35,6 +35,7 @@ import { painted } from './marks'
 import { SECTIONS, canonical, fromAddress } from '../App'
 import { addressToPath, pathToAddress } from '../paths'
 import { PANEL_PAGES } from '../Spine'
+import { APPROVAL_KIND } from '../ApprovalDecision'
 
 const WAIT = { timeout: 4000 }
 const PHONE: CascadeEnv = { width: 390 }
@@ -154,11 +155,11 @@ describe('the Approvals page', () => {
   it('QA-048: names, in its empty sentence, exactly the kinds its filter chips name', async () => {
     await mount('', routes(() => null, []))
     await screen.findByText('Nothing waiting', undefined, WAIT)
-    const chips = within(screen.getByRole('group', { name: 'Kind' }))
-      .getAllByRole('button')
-      // A chip carries its count after a middle dot ("Merge · 0", #2417 A4).
-      .map((b) => (b.textContent ?? '').replace(/ · \d+$/, '').trim())
-      .filter((w) => w !== 'Every kind')
+    // An empty inbox draws only the Every kind chip (visual QA automate-22,
+    // 2026-10-28: a kind with nothing waiting has no chip), so the words are
+    // the chips' own table, the one the filter draws from.
+    expect(within(screen.getByRole('group', { name: 'Kind' })).getAllByRole('button').map((b) => visible(b))).toEqual(['Every kind · 0'])
+    const chips = Object.values(APPROVAL_KIND)
     expect(chips.length).toBeGreaterThan(3)
     const said = visible(document.body)
     // MUTATION: put back "No firing, plan, merge, proposal or spec ..." -- a
@@ -166,7 +167,7 @@ describe('the Approvals page', () => {
     expect(said).not.toMatch(/firing/i)
     for (const c of chips) expect(said, `the empty sentence leaves out "${c}"`).toContain(c.toLowerCase())
     // MUTATION: join the list with commas only ("spec, answer is waiting").
-    expect(said).toMatch(/, spec or answer in this tenant is waiting for a person/)
+    expect(said).toMatch(/, spec or answer in this workspace is waiting for a person/)
   })
 
   it('lists every kind oldest first, each row opening the item’s own page', async () => {
@@ -460,7 +461,7 @@ describe('live QA: automate, approvals', () => {
     const { calls } = await mount('approval=nope-123', routes(() => null, []))
     // MUTATION: let the Screen's error stand in for the page's sentence.
     await waitFor(() => expect(sent(calls, 'GET', '/v1/approvals/nope-123')).toHaveLength(1), WAIT)
-    await screen.findByText(/No approval nope-123 in this tenant/, undefined, WAIT)
+    await screen.findByText(/No approval nope-123 in this workspace/, undefined, WAIT)
     expect(screen.getByRole('link', { name: '‹ Approvals' }).getAttribute('href')).toBe('/automate/approvals')
   })
 
@@ -505,9 +506,10 @@ describe('live QA: automate, approvals', () => {
     const group = screen.getByRole('group', { name: 'Kind' })
     // The chosen chip carries its count ("Merge · 2", #2417 A4).
     expect(within(group).getByRole('button', { name: /^Merge/ }).getAttribute('aria-pressed')).toBe('true')
-    fireEvent.click(within(group).getByRole('button', { name: 'Plan' }))
+    // The other chips keep their counts from the whole inbox (automate-05).
+    fireEvent.click(within(group).getByRole('button', { name: 'Plan · 1' }))
     expect(go).toHaveBeenLastCalledWith('automate/approvals?kind=plan')
-    fireEvent.click(within(group).getByRole('button', { name: 'Every kind' }))
+    fireEvent.click(within(group).getByRole('button', { name: 'Every kind · 2' }))
     expect(go).toHaveBeenLastCalledWith('automate/approvals')
     // An item opened from a filtered list keeps the filter.
     await waitFor(() => expect(document.querySelectorAll('tr[data-approval]').length).toBeGreaterThan(0), WAIT)

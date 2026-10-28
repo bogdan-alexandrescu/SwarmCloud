@@ -46,6 +46,9 @@ function dropParens(text: string): string {
   return out
 }
 
+/** Upstream steps a row names before it counts the rest. */
+const UPSTREAM_NAMED = 2
+
 const PROVIDER_WORD: Readonly<Record<string, string>> = {
   'quota exhausted': 'quota',
   'cooling down': 'cooldown',
@@ -99,9 +102,15 @@ function byReason(reason: string, summary: string, first: string): string | null
       return `retry ${m[1]} of ${m[2]}${m[3] !== undefined ? ` at ${m[3]}` : ''}`
     }
     case 'DEPENDENCY_INCOMPLETE': {
-      const m = /^Waiting on (\d+) upstream steps?/.exec(first)
+      // QA1-FIX-36 (overview-agents-57): "upstream: 1 step" named no step.
+      // The summary names each one ("...: scan-terraform (RUNNING), plan
+      // (QUEUED)"), so the row says which: two names, the rest counted.
+      const m = /^Waiting on (\d+) upstream steps?(?:: (.+))?$/.exec(first)
       if (m === null) return null
-      return `upstream: ${m[1]} ${m[1] === '1' ? 'step' : 'steps'}`
+      const names = m[2] === undefined ? [] : dropParens(m[2]).split(', ').map((n) => n.trim()).filter((n) => n !== '')
+      if (names.length === 0) return `upstream: ${m[1]} ${m[1] === '1' ? 'step' : 'steps'}`
+      const more = names.length > UPSTREAM_NAMED ? ` +${names.length - UPSTREAM_NAMED} more` : ''
+      return cut(`waiting on ${names.slice(0, UPSTREAM_NAMED).join(', ')}${more}`)
     }
     case 'CHILDREN_INCOMPLETE': {
       const m = /^Waiting for (\d+) of (\d+) children/.exec(first)

@@ -48,6 +48,10 @@ vi.mock('../fetch', async (importOriginal) => ({
 const { AccountsScreen } = await import('../Accounts')
 
 const WAIT = { timeout: 5000 } as const
+
+// THE CONFIRMATION, NOT THE SHEET UNDER IT: the desktop account sheet is a
+// dialog itself (visual QA pass 1 capacity-07), so the page holds two.
+const CONFIRM = { name: (_: string, el: Element) => el.classList.contains('c-dlg') }
 const HOUR = 3_600_000
 const DAY = 24 * HOUR
 
@@ -127,7 +131,7 @@ describe('the sheet answers first, in mock-up A’s order', () => {
     expect(kv[3]).toEqual(['Id', 'eng:devops-team'])
     // Pause and Drain keep their place and their confirmation.
     fireEvent.click(screen.getByRole('button', { name: 'Drain' }))
-    expect(await screen.findByRole('dialog', undefined, WAIT)).toBeTruthy()
+    expect(await screen.findByRole('dialog', CONFIRM, WAIT)).toBeTruthy()
     expect(api.setAccountState).not.toHaveBeenCalled()
   })
 

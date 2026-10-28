@@ -35,7 +35,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { App } from '../App'
 import { tableColumns } from '../WorkflowViews'
 import type { CascadeEnv } from './cssgate'
-import { painted } from './marks'
+import { build, painted } from './marks'
 import { cellStyle, fixedColumns, nowrap, textPx } from './tablefit'
 
 const WIDE: CascadeEnv = { width: 1440 }
@@ -43,8 +43,11 @@ const LIST_AT_1440 = 1440 - 84 - 236 - 64
 /** The mark beside a state word: 12px glyph and its 6px gap. */
 const MARK = 18
 
+const hosts: HTMLElement[] = []
+
 afterEach(() => {
   window.history.replaceState(null, '', '/')
+  for (const h of hosts.splice(0)) h.remove()
 })
 
 async function list(): Promise<HTMLTableElement> {
@@ -207,16 +210,19 @@ describe('D30: the same-step scrubber keeps its arrows with the position', () =>
       expect(r).not.toBeNull()
       return r!
     })
-    const nav = row.querySelector<HTMLElement>(':scope > .wf-scrub-nav')!
-    expect(nav, 'the arrows and the position are not one unit').not.toBeNull()
-    expect([...nav.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['◀', '▶'])
-    expect(nav.querySelector('.wf-scrub-pos')).not.toBeNull()
+    // THE FIXTURE'S WORKFLOWS ARE EACH OF THEIR OWN SHAPE, so this row has
+    // nothing to page: since QA1-FIX-29 (overview-agents-67) it is one
+    // sentence, with no arrows, the shape in its title.
+    expect(row.querySelector(':scope > .wf-scrub-nav')).toBeNull()
+    expect(row.querySelector(':scope > .wf-scrub-pos')?.getAttribute('title')).toMatch(/^This workflow’s shape: .* Only workflows of this shape are compared.$/)
+    // With more than one, the unit is drawn by the sheet as before: built
+    // here, since no fixture workflow shares a shape (workflow.views.test.tsx
+    // U5 pages two of one shape and holds the DOM order).
+    const nav = build('div.wf-scrub > span.wf-scrub-nav', hosts)
+    const shape = build('div.wf-scrub > span.wf-scrub-shape', hosts)
     expect(painted(nav, 'white-space', WIDE)).toBe('nowrap')
     expect(painted(nav, 'flex', WIDE)).toBe('none')
-    const shape = row.querySelector<HTMLElement>(':scope > .wf-scrub-shape')!
-    expect(nav.compareDocumentPosition(shape) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(painted(shape, 'text-overflow', WIDE)).toBe('ellipsis')
-    expect(shape.getAttribute('title')).toBeTruthy()
   })
 })
 

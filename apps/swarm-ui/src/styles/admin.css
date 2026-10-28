@@ -487,7 +487,7 @@
      breaks inside, and one wider than the value column is cut with an
      ellipsis -- the whole value is on the identity's title and its copy
      control -- never broken mid-word. */
-  .ten-ident { overflow-wrap: normal; word-break: normal; }
+  .ten-ident { overflow-wrap: normal; word-break: normal; flex: 0 1 auto; min-width: 0; max-width: 100%; }
   .ten-seg {
     display: inline-block;
     max-width: 100%;
@@ -496,13 +496,27 @@
     text-overflow: ellipsis;
     vertical-align: top;
   }
+  /* THE IDENTITY STAYS INSIDE THE CARD (visual QA pass 1, admin-shell-02,
+     part of #2596). The row was `inline-flex` with no wrap, so the identity
+     -- a flex item whose minimum is its widest run, 28 characters of
+     `swarm-agent-worker-u-bogdan@` -- and its 44px copy control ran past the
+     value column to x=461 at 390, and the whole page scrolled sideways. Now
+     the row wraps: the identity is never wider than the column and breaks at
+     its `@` and `.` runs inside it, and the copy control takes the next line
+     when the two do not fit side by side (`.ten-ident`'s flex and width,
+     above). */
+  .ten-ident-row { display: flex; flex-wrap: wrap; max-width: 100%; }
+  .ten-copy-said { flex-basis: 100%; }
 }
 /* THE BUDGET NOTE IS A PLAIN FACT, IN PLAIN INK (AH-21). AG-5 defines a plain
    fact as no mark and no dimming. `.ctl-panel-note` is `--text-faint`, the
    tone of a qualifier under a figure; this line qualifies no figure -- it
    says a column is absent and why none can exist -- so it takes `--text`.
    Two classes, so it outranks `.ctl-panel-note` wherever that rule sits. */
-.ctl-panel-note.ten-budget { color: var(--text); }
+/* AND IT IS A SENTENCE, SO IT IS IN THE PROSE FACE (visual QA pass 1,
+   admin-shell-18, part of #2596). In `.ctl-panel-note`'s mono, `no budget
+   column · no budget can be set` read as debug output. */
+.ctl-panel-note.ten-budget { color: var(--text); font-family: var(--font); }
 /* admin-009 (visual QA run 2, 2026-10-20): POOL LIMITS' NON-ADMIN LINE IS A
    SENTENCE, so it is set in the prose face. `.ctl-panel-note` is mono because
    it usually qualifies a figure with a term; `Admins only. You can read every
@@ -595,10 +609,20 @@
      72. So the key does not shrink: it is whole unless it alone is wider
      than the column less the head's and the tail's 2ch floors, and then
      `max-width` cuts it there, with its ellipsis (V026). */
+  /* ONE CUT, NOT TWO (visual QA pass 1, admin-shell-18, part of #2596).
+     With the copy control beside it the identity had about 16 characters, so
+     both the prefix and the domain were cut: `sw…u-bogdan@ex…`. Now the
+     identity takes the cell's width and the copy control the line under it
+     when the two do not fit together; inside, the pieces wrap as whole
+     runs -- the prefix on its own line, then the key -- and only the domain,
+     the same for every row, gives way with an ellipsis. The whole value is
+     on the identity's title and on the copy control's name. */
   .ten-ident {
     display: flex;
-    flex: 1 1 0;
+    flex-wrap: wrap;
+    flex: 1 1 auto;
     min-width: 0;
+    max-width: 100%;
     overflow: hidden;
     white-space: nowrap;
   }
@@ -611,7 +635,15 @@
      unused share to the domain, and two rows with the same room show the
      same number of letters of each. The copy control beside it carries the
      whole value, on its name and its title. */
-  .ten-ident > .ten-ident-head,
+  /* The prefix is whole on its line; it is cut, with its ellipsis, only
+     when it alone is wider than the column. */
+  .ten-ident > .ten-ident-head {
+    flex: 0 1 auto;
+    min-width: 2ch;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   .ten-ident > .ten-ident-tail {
     flex: 1 1 0;
     min-width: 2ch;

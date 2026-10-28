@@ -58,6 +58,16 @@ PARITY = [
     ("every event green", [(1, "completed", "success", "push"),
                            (2, "completed", "skipped", "pull_request")], "green"),
     ("no runs", [], "pending"),
+    # #1778's second expectation: a cancelled LATEST run is not green and
+    # waits, rather than failing; red in another event still wins.
+    ("#1778: latest cancelled", [(1, "completed", "cancelled", "push")], "pending"),
+    ("#1778: green then cancelled", [(1, "completed", "success", "push"),
+                                     (2, "completed", "cancelled", "push")], "pending"),
+    ("#1778: cancelled push, green pull_request", [(1, "completed", "cancelled", "push"),
+                                                   (2, "completed", "success", "pull_request")],
+     "pending"),
+    ("#1778: cancelled push, red pull_request", [(1, "completed", "cancelled", "push"),
+                                                 (2, "completed", "failure", "pull_request")], "red"),
 ]
 
 
@@ -105,6 +115,27 @@ def test_the_reading_fails_only_the_latest_red_run_of_each_event():
     reading = forgechecks.evaluate(required, [flaky, rerun, red_pr], [])
     assert reading.state == forgechecks.RED
     # MUTATION: fail every non-green run of the check -> the superseded flake too.
+    assert reading.failing_runs == [red_pr]
+
+
+@pytest.mark.parametrize("required", [True, False], ids=["required", "nothing-required"])
+def test_the_reading_waits_on_a_cancelled_latest_run_and_fails_only_the_red_one(required):
+    """#1778: what `issueci`, the merge wake and the run page read. A
+    cancelled latest run is pending and never a failing run to excerpt."""
+    checks = [forgechecks.RequiredCheck(NAME, 1)] if required else []
+    cancelled = _github_run(1, "completed", "cancelled", "push")
+    reading = forgechecks.evaluate(checks, [cancelled], [])
+    # MUTATION (forgechecks.py `required_check_state` / `other_check_state`):
+    # read cancelled as red -> "red", the cancelled run in failing_runs.
+    assert reading.state == forgechecks.PENDING, reading
+    assert reading.failing_runs == [] and reading.pending == [NAME]
+    assert forgechecks.other_check_state(cancelled) == forgechecks.PENDING
+
+    red_pr = _github_run(2, "completed", "failure", "pull_request")
+    reading = forgechecks.evaluate(checks, [cancelled, red_pr], [])
+    assert reading.state == forgechecks.RED, reading
+    # MUTATION (`evaluate`): excerpt every non-green deciding run -> the
+    # cancelled one too.
     assert reading.failing_runs == [red_pr]
 
 

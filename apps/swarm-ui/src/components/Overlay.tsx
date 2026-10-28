@@ -129,6 +129,43 @@ export function Menu({ label, items, trigger }: { label: string; items: readonly
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
+/**
+ * THE CONTROL JUST PRESSED (visual QA overview-agents-87, 2026-10-28). Focus
+ * goes back to `document.activeElement` as it was when the dialog opened --
+ * but a press that does not focus what it lands on (WebKit's click, a touch,
+ * a scripted `click()`) leaves focus where it was: on a workflow's page, the
+ * step panel, which takes focus when it opens. Escape then sent the reader
+ * to the panel instead of "Cancel workflow". So the control under the last
+ * click is kept for the rest of that task, and a dialog that opens within it
+ * returns there when focus did not move onto a control.
+ */
+let pressed: HTMLElement | null = null
+if (typeof document !== 'undefined') {
+  document.addEventListener(
+    'click',
+    (e) => {
+      const hit = e.target instanceof Element ? e.target.closest<HTMLElement>(FOCUSABLE) : null
+      if (hit === null) return
+      pressed = hit
+      // Forgotten once the click's own work (the render that opens a dialog,
+      // and its effects) is done, so a dialog opened later by a key or a
+      // timer is not sent to a stale control.
+      setTimeout(() => {
+        if (pressed === hit) pressed = null
+      }, 0)
+    },
+    true,
+  )
+}
+
+/** What a dialog opening now gives focus back to when it closes. */
+function openerNow(): HTMLElement | null {
+  const active = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null
+  if (active !== null && active.matches(FOCUSABLE)) return active
+  if (pressed !== null && pressed.isConnected) return pressed
+  return active
+}
+
 export function Dialog({
   title,
   onClose,
@@ -147,7 +184,7 @@ export function Dialog({
   const closeRef = useRef(onClose)
   closeRef.current = onClose
   useEffect(() => {
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const opener = openerNow()
     const el = box.current
     // The first field if there is one, else the first control: a typed
     // confirm opens with its field focused.
@@ -211,9 +248,12 @@ export function TypedConfirm({
   busy = false,
   error,
   children,
+  noun = 'name',
 }: {
   title: string
   name: string
+  /** What `name` is, in the hint: `name` by default, `id` where the reader types an id (overview-agents-85). */
+  noun?: 'name' | 'id'
   verb: string
   /** The cancel action's words ("Keep it running"). */
   keep: string
@@ -268,7 +308,7 @@ export function TypedConfirm({
           }}
         />
         <p className="c-hint" id={hintId}>
-          {match ? 'The name matches.' : 'The button unlocks when the name matches exactly.'}
+          {match ? `The ${noun} matches.` : `The button unlocks when the ${noun} matches exactly.`}
         </p>
       </div>
       {error !== undefined && error !== null && (

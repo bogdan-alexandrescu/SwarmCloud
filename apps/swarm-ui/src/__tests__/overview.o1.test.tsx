@@ -357,9 +357,10 @@ describe('O1: Running now', () => {
     expect(cell.querySelector('[title]')?.getAttribute('title') ?? '').toMatch(/not served/)
   })
 
-  it('counts the rows that hold capacity in the head', async () => {
+  // The head counts the rows it lists; the Holding capacity tile keeps the capacity count (visual QA C-03).
+  it('counts the rows it lists in the head', async () => {
     const el = await mount()
-    expect(text(el.querySelector('#ov-running .ctl-card-note'))).toBe('2 hold capacity')
+    expect(text(el.querySelector('#ov-running .ctl-card-note'))).toBe('2 listed')
   })
 })
 
