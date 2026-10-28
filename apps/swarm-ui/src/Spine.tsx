@@ -39,7 +39,7 @@
  */
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { AGENT_TABS, type AgentTab } from './agentlist'
-import { USE_FIXTURES, WORKSPACE_RENAMED_EVENT, loadApprovals, loadCapacity, loadMe, loadMyTenants, loadOnboarding, loadStats, type NotificationFeed, type TenantChoice } from './api'
+import { USE_FIXTURES, WORKSPACE_RENAMED_EVENT, loadApprovals, loadCapacity, loadMe, loadMyTenants, loadOnboarding, loadStats, loadWorkflowsById, type NotificationFeed, type TenantChoice } from './api'
 import { classifyEnvironment, envTreatment, servedEnvironment, SwarmMark } from './Brand'
 import { Banner, Button, NamedMark, Toaster, acknowledge, routedClick } from './components'
 import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenantSwitch, preferencesUnavailableSnapshot, probeSnapshot, read, route, subscribePreferencesUnavailable, subscribeProbes, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type Result } from './fetch'
@@ -49,6 +49,7 @@ import { addressToPath } from './paths'
 import { shortcut, typedIntoField } from './shortcuts'
 import { poolLabelAmong, type Capacity, type Me, type Stats, type TaskState } from './types'
 import { ThemeToggle } from './ThemeToggle'
+import { derivedStateOf } from './workflowlist'
 import { SignOutButton, SignedBackIn } from './SignOut'
 import { iapFronted, signingOut } from './signoutState'
 import { AppTakeover, OfflineBanner, wholeAppFault, useOnline } from './AppStates'
@@ -753,6 +754,33 @@ export function offerNewestWorkflows(board: readonly RecentWorkflow[]): void {
     changed = true
   }
   if (changed) announce()
+}
+
+/** The ids Recent asked its own read for in this page load: each is asked once. */
+const askedThisLoad = new Set<string>()
+
+/**
+ * RECENT'S OWN READ, GIVEN BACK (QA1 overview-agents-21). Only the Workflows
+ * list offered states, so on every other page each Recent workflow carried
+ * the dashed "not re-read" ring while the Workflows pages drew the same ones
+ * running or failed. Recent now reads the ids no read of this load gave
+ * (`loadWorkflowsById`, one batched read) and hands the states here: each one
+ * read refreshes that id in both stores, and only those ids. The newest list
+ * keeps its members; that is the board read's to decide.
+ */
+export function refreshRecentWorkflows(got: readonly RecentWorkflow[]): void {
+  if (got.length === 0) return
+  const by = new Map(got.map((w) => [w.id, w] as const))
+  for (const id of by.keys()) readThisLoad.add(id)
+  for (const key of [RECENT_WORKFLOWS_KEY, NEWEST_WORKFLOWS_KEY]) {
+    const before = readRecent(recentKey(key))
+    const after = before.map((w) => {
+      const f = by.get(w.id)
+      return f === undefined ? w : { id: w.id, state: f.state, name: f.name ?? w.name }
+    })
+    if (JSON.stringify(after) !== JSON.stringify(before)) writePref(recentKey(key), JSON.stringify(after))
+  }
+  announce()
 }
 
 /** The name Recent holds for a workflow, or null: what a page can be titled by before its read lands. */
@@ -3306,6 +3334,19 @@ function RecentWorkflows({ nav }: { nav: (to: string) => void }) {
     globalThis.addEventListener?.(RECENT_WORKFLOWS_EVENT, again)
     return () => globalThis.removeEventListener?.(RECENT_WORKFLOWS_EVENT, again)
   }, [tenant])
+  // THE STATES ARE READ HERE, NOT LEFT TO THE PAGE (QA1 overview-agents-21):
+  // the ids no read of this load gave, once each, in one batched read.
+  const unread = items.filter((w) => !workflowReadThisLoad(w.id) && !askedThisLoad.has(w.id)).map((w) => w.id)
+  const unreadKey = unread.join(' ')
+  useEffect(() => {
+    if (unreadKey === '') return
+    const ids = unreadKey.split(' ')
+    for (const id of ids) askedThisLoad.add(id)
+    void loadWorkflowsById(ids).then((r) => {
+      if (r.status !== 'ok' && r.status !== 'stale') return
+      refreshRecentWorkflows([...r.data.reads.values()].map(({ workflow: w }) => ({ id: w.workflow_id, state: derivedStateOf(w), name: null })))
+    })
+  }, [unreadKey])
   if (items.length === 0) return null
   const open = openWorkflowId()
   return (
