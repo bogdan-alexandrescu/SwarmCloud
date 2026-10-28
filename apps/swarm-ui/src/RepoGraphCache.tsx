@@ -33,7 +33,7 @@
  * a full cache is what makes this repository's answers miss.
  */
 import { useEffect, useRef, useState } from 'react'
-import { Dash, StatTile, UsageBar, type TileValue } from './components'
+import { Dash, StatTile, UsageBar, buttonClass, type TileValue } from './components'
 import {
   loadRepositoryGraphCache,
   type GraphCacheDoc,
@@ -186,7 +186,7 @@ export function RepoGraphCache({
   const bodyId = `ur-cache-${repoId}`
   return (
     <section className="ur-cache" data-cache-section="" data-open={open ? 'true' : 'false'}>
-      <button type="button" className="ur-cache-toggle" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen((o) => !o)}>
+      <button type="button" className={buttonClass({ kind: 'ghost', size: 'sm' }, false, 'ur-cache-toggle')} aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen((o) => !o)}>
         Cache <span aria-hidden="true">{open ? '▾' : '▸'}</span>
       </button>
       {open && (
@@ -404,7 +404,7 @@ function ShardList({
 }) {
   return (
     <div className="ur-cache-shards" data-row="shards">
-      <button type="button" className="ur-cache-toggle" aria-expanded={open} onClick={onToggle}>
+      <button type="button" className={buttonClass({ kind: 'ghost', size: 'sm' }, false, 'ur-cache-toggle')} aria-expanded={open} onClick={onToggle}>
         {shardTitle(shards)} <span aria-hidden="true">{open ? '▾' : '▸'}</span>
       </button>
       {open && <ShardRows shards={shards} page={page} onPage={onPage} />}
@@ -448,11 +448,11 @@ function ShardRows({ shards, page, onPage }: { shards: GraphCacheShards | null; 
       </div>
       {pages > 1 && (
         <p className="ur-small" data-row="shard-pages">
-          <button type="button" className="c-btn is-sm" disabled={page <= 1} onClick={() => onPage(page - 1)}>
+          <button type="button" className={buttonClass({ size: 'sm' })} disabled={page <= 1} onClick={() => onPage(page - 1)}>
             Previous
           </button>{' '}
           Page {page} of {pages}{' '}
-          <button type="button" className="c-btn is-sm" disabled={page >= pages} onClick={() => onPage(page + 1)}>
+          <button type="button" className={buttonClass({ size: 'sm' })} disabled={page >= pages} onClick={() => onPage(page + 1)}>
             Next
           </button>
         </p>
