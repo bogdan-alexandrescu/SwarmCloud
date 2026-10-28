@@ -26,7 +26,7 @@ What this design settles, in one line each:
   says they help, on by default, switched per workspace with a per-schedule
   override; a plan that draws none says why in one line (§6).
 * **The plan review chat** is an agent that reads this run only, answers each
-  question as one short `claude-code` task streamed to the page, may draw a
+  question as one short `claude-code` agent streamed to the page, may draw a
   diagram or propose a revision, and never applies one (§7).
 
 ---
@@ -40,7 +40,7 @@ From #2585's comments (read 2026-10-28 10:20Z):
 | PL1 Where proposals land | **C, Pipeline board** | Automate gains a Pipeline tab between Schedules and Approvals: found → planned/waiting → approved/running → PR and CI → merged/ended; a card that waits on a person is edged amber and sorts first. |
 | PL2 One plan to decide | **D, Plan conversation** | A decision page: the plan as a document, a margin with the planner's reasons and the thread; the decision bar names the revision and digest it approves. |
 | PL3 Editing | **D** | Comment on a step and Request changes: the planner answers with a new revision and its diff. Or edit by hand. Every revision keeps its digest. |
-| PL4 After approval | **D** | The same thread carries on: steps to tasks, the PR, CI rounds, the review, the merge. |
+| PL4 After approval | **D** | The same thread carries on: steps to agents, the PR, CI rounds, the review, the merge. |
 | PL5 Sources and gates | **D** | A sources-that-propose list drawing only the gates that exist. |
 
 BGD, 2026-10-28 (10:08Z): *"a Pipeline card opens **D's full decision page**
@@ -51,13 +51,7 @@ input wait, plus a count of what is on the board (question 60)."*
 
 BGD, 2026-10-28 (~10:13Z), two additions:
 
-> 1. "add the ability to generate flow diagrams and schematics to be included
->    in plans for the majority of coding tasks, product design or research,
->    issue fixing, error and failure fixes and more but also not everywhere
->    where it doesn't make sense, like fixing a line in terraform or generally
->    tasks that don't involve coming up with a diagram or a flow chart or
->    schematics. This feature should be by default on but toggleable from the
->    automation settings"
+> 1. "add the ability to generate flow diagrams and schematics to be included in plans for the majority of coding tasks, product design or research, issue fixing, error and failure fixes and more but also not everywhere where it doesn't make sense, like fixing a line in terraform or generally tasks that don't involve coming up with a diagram or a flow chart or schematics. This feature should be by default on but toggleable from the automation settings"
 > 2. "provide the ability for the interactive conversational part of the plan
 >    review according to the new D designs to also be able to provide on
 >    demand schematics and diagrams during the plan review process"
@@ -161,7 +155,7 @@ links to it from a `PLANNED` run (`D`'s "Runs links to it"); the plan view in
 | `D:P3a` | Request changes | Every open comment goes to the planner with the digest it was written on; the thread shows "re-planning" with the cost so far; the planner's answer arrives as revision N+1, with its diff, each comment marked answered by it, and its cost on its row (§5). |
 | `D:P3b` | edit by hand | Today's `PlanEditor` (summary, estimate, requirements; per step title, prompt, files, tests, estimate) plus **Remove step** (disabled on the last step, because `PlanSpec.steps` keeps at least one) and, with §6, remove or reorder a diagram. The change list beside it is the diff being built. Save carries the digest it replaces. |
 | `D:P3c` | revision saved | Revision N+1, its digest and author; Approve offered for it alone. |
-| `D:P4a` | running | Approval does not close the page. The thread carries on (§3.4's events): approved revision N by whom, each step's task, the pull request, each CI round and fix round. |
+| `D:P4a` | running | Approval does not close the page. The thread carries on (§3.4's events): approved revision N by whom, each step's agent, the pull request, each CI round and fix round. |
 | `D:P4b` | merged, every requirement confirmed | The review's verdict against each requirement, the merge, "the pull request says Closes #N". |
 | `D:P4c` | merged, a requirement unmet | "part of #N", naming the unmet requirement (`requirements_unmet`, `requirements_note`), as docs/issue-runs.md requires. |
 | `D:P6d` | the server predates threads | The run read carries no `plan_revisions` or `plan_thread`: the plan is drawn without revisions or thread, and Approve, Edit and Reject work as today. |
@@ -572,7 +566,7 @@ Set out in §6 and §7, listed here so the table is whole:
 **Nothing in this section touches `apps/common/swarm_common/`.** The run, its
 plan, approvals and schedules are swarm-api documents (`issueruns.py` says so:
 "its shape is not the frozen contract's and must not leak into it"). Every
-task this design submits is an ordinary `TaskCreate` on the existing
+agent this design submits is an ordinary `TaskCreate` on the existing
 `claude-code` profile with `model_class`, which the frozen catalogue already
 carries (`MODEL_CLASSES`). §9 checks it field by field.
 
@@ -637,7 +631,7 @@ to it, which D's page already draws (`D:P3c`).
 
 ### 5.1 What runs
 
-`POST plan:revise` (§3.5) submits **one planner task**, exactly the planner's
+`POST plan:revise` (§3.5) submits **one planner agent**, exactly the planner's
 shape: `PLANNER_PROFILE` (`claude-code`), the run's repository, `metadata:
 {issue_run: <run_id>, replan: <replan_id>}`, the run's tenant, submitted as the
 run's owner (`run_owner_auth`, as an approval's workflow is) so it uses the
@@ -660,7 +654,7 @@ resource (invariant 10) because the plan schema has no field for one.
 
 ### 5.2 What comes back
 
-When the task ends, `advance_run` (the same read-or-tick that moves a
+When the agent ends, `advance_run` (the same read-or-tick that moves a
 `PLANNING` run) reads `plan.json`:
 
 * **A valid plan** (`parse_plan`, then `territory_refusal`, `workflow_paths`
@@ -673,7 +667,7 @@ When the task ends, `advance_run` (the same read-or-tick that moves a
   is still `from_digest`**; if not (§5.3), the answer is kept as a thread entry
   "the planner's answer to revision N, not applied: the plan moved", with its
   plan readable, and no revision is made.
-* **A plan the schema refuses**, or a task that failed or was cancelled: no
+* **A plan the schema refuses**, or an agent that failed or was cancelled: no
   revision; one `answer` entry saying why (the refusal's text, redacted), the
   comments stay open, the run stays `PLANNED` on revision N.
 * **A NOT_READY verdict:** not a transition. A re-plan is a conversation about
@@ -689,7 +683,7 @@ as after an edit.
 **Approve stays valid for the revision on screen.** `plan:approve` checks the
 digest it was sent against the run's current `plan_digest`; a re-plan in
 flight does not change it, so an approver reading revision N may approve
-revision N. Approving cancels the re-plan task (`executioncancel`, recorded
+revision N. Approving cancels the re-plan agent (`executioncancel`, recorded
 `cancelled: approved`), and its answer, if it lands anyway, is the "not
 applied" entry above. The decision bar says so before the click: "a re-plan is
 running for 2 comments; approving revision 3 cancels it". Why: a request for
@@ -714,9 +708,9 @@ A new revision is a new question; the reviewer gets the schedule's
 
 ### 5.4 Its cost, and the cap
 
-* **Recorded on the revision** (`cost` in §3.3): the re-plan task's
+* **Recorded on the revision** (`cost` in §3.3): the re-plan agent's
   `cost_usd_total` from `attempt_totals`, its task id and model class, written
-  when the task ends. A task whose CLI reported no cost and whose spend
+  when the agent ends. An agent whose CLI reported no cost and whose spend
   estimate returned none records `usd: null, why_none: "cost not reported"`,
   never 0. A failed re-plan's cost is recorded on its `answer` entry instead.
 * **Shown** on the revision's row and in a run total, `plan_review_cost_usd`
@@ -728,11 +722,11 @@ A new revision is a new question; the reviewer gets the schedule's
   is a plan worth rejecting and re-filing, and each round is an opus planner
   run. The cap counts re-plans submitted, failed ones included. The value is
   owner question Q5.
-* **Budget**: the task counts against the tenant's day budget like any task
+* **Budget**: the agent counts against the tenant's day budget like any agent
   (`budget.py`); a re-plan refused by budget is 429 with the budget's refusal,
   and the thread says so.
 
-**Invariant 1.** A re-plan is demand only while its task runs, exactly as the
+**Invariant 1.** A re-plan is demand only while its agent runs, exactly as the
 planner is; the `PLANNED` run holds nothing before, during (the run document
 itself holds no lease) or after.
 
@@ -742,10 +736,9 @@ itself holds no lease) or after.
 
 ### 6.1 What was asked
 
-BGD's first two additions of 2026-10-28 (§1): diagrams **in plans** "for the
-majority of coding tasks, product design or research, issue fixing, error and
-failure fixes and more but also not everywhere where it doesn't make sense,
-like fixing a line in terraform", **on by default, toggleable from the
+BGD's first two additions of 2026-10-28 (§1): diagrams **in plans**
+"for the majority of coding tasks, product design or research, issue fixing, error and failure fixes and more but also not everywhere where it doesn't make sense, like fixing a line in terraform",
+**on by default, toggleable from the
 automation settings**; and **on demand** during the plan review, in the thread
 and (the third addition) in the review chat.
 
@@ -793,7 +786,7 @@ of them:
 | `flow` | `flowchart` (`graph`) | control flow, a request's path, a decision |
 | `sequence` | `sequenceDiagram` | who calls whom, in order: a route round trip, a worker and swarm-api |
 | `architecture` | `flowchart` with `subgraph`s | components and where the change sits |
-| `state` | `stateDiagram-v2` | a state machine: `RunState`, a task's states |
+| `state` | `stateDiagram-v2` | a state machine: `RunState`, an agent's states |
 | `data` | `erDiagram` | a document shape, collections and their keys |
 | `schematic` | `flowchart` with `subgraph`s | a layout or a wiring the change makes |
 
@@ -934,7 +927,7 @@ POST /v1/runs/{run_id}/plan:diagram
 → 202 {"entry": {"entry_id", "kind": "diagram", "state": "drawing", "task_id", …}}
 ```
 
-It submits one review-agent task (§7.2's builder, asked for a diagram), and
+It submits one review agent (§7.2's builder, asked for a diagram), and
 its answer fills the pending `diagram` thread entry: the diagram (§6.2's shape,
 checked by §6.6), a one-line note, its cost. **A diagram-only answer does not
 change the plan, its digest or its revision.** A digest that is not one of the
@@ -1030,21 +1023,21 @@ own**.
 
 ### 7.1 How the chat agent runs
 
-**One task per question (a turn), recommended.** Each question submits one
-ordinary `claude-code` task, the **review agent**, whose prompt carries
+**One agent per question (a turn), recommended.** Each question submits one
+ordinary `claude-code` agent, the **review agent**, whose prompt carries
 everything it reads (§7.3) and the transcript so far; it writes its answer and
-ends. The next question is the next task, with the longer transcript. Three
+ends. The next question is the next agent, with the longer transcript. Three
 shapes were weighed (owner question Q3):
 
 | shape | latency | contract and worker | cost while idle |
 |---|---|---|---|
-| **per question** (recommended) | a task's start (a pod's scheduling and clone) before the first word, then streamed | none: an ordinary task on the existing profile | nothing: no task exists between questions (invariant 1) |
+| **per question** (recommended) | an agent's start (a pod's scheduling and clone) before the first word, then streamed | none: an ordinary agent on the existing profile | nothing: no agent exists between questions (invariant 1) |
 | per open review (a session) | the first question pays the start; later ones answer at once | a worker change (a runner that waits for the next question through a worker-only route) and likely a declared runner input on the frozen profile: a contract change request | a live lease for as long as the session idles, which invariant 4 forbids past a short wait: it must checkpoint and exit, and the next question starts it again |
 | pod-less (swarm-api calls the model) | the fastest | a provider key in swarm-api and a model call outside the worker: no repository checkout to read | nothing |
 
 Per question is the only shape that builds with no contract change and no
 worker change, keeps a waiting review at zero demand, and lets the agent read
-the repository itself (the task clones the run's repository as the planner's
+the repository itself (the agent clones the run's repository as the planner's
 does). Its weakness is the start time before the first word; lane P7 records
 `first_token_ms` on every turn, served, so BGD can judge it on real numbers and
 pick the session shape later if it is too slow. The session shape is written
@@ -1062,16 +1055,16 @@ model per question: the class is the platform's, recorded on each turn.
 **Streaming.** The worker already publishes the agent's stream-json live
 (`logs/live/agent_stdout.tail.log`, docs `agent_streams.py`, #184). swarm-api
 serves `GET /v1/runs/{run_id}/plan-chat/{turn_id}/stream` as server-sent
-events: it reads that live tail for the turn's task, keeps only the
+events: it reads that live tail for the turn's agent, keeps only the
 assistant's text deltas (never tool calls, tool results, file contents or
 system lines), passes each delta through `redact`, and ends with the turn's
 final answer once `chat-answer.json` is read. The console shows the deltas as
 they come and swaps in the final answer, whose text, diagrams and proposal are
-the only things kept. Before the task starts the stream sends `{"state":
+the only things kept. Before the agent starts the stream sends `{"state":
 "starting", "position": …}` so the page says "starting the review agent" and
 not nothing.
 
-**Idle timeout and one turn's limits.** A turn's task has a 10-minute timeout
+**Idle timeout and one turn's limits.** A turn's agent has a 10-minute timeout
 (`PLAN_CHAT_TURN_TIMEOUT_SECONDS = 600`, beside its reason: an answer about a
 plan that takes longer is a re-plan, and should be asked as one). There is no
 session to idle out in the recommended shape; the console's stream closes
@@ -1080,16 +1073,16 @@ flight per run: a second question while one runs is 409 `chat_busy`, and the
 page queues nothing silently.
 
 **Cost of a turn, where it is shown, and its cap.** Recorded on the turn when
-its task ends (`cost: {usd, task_id, model_class, why_none}`, as §5.4), shown
+its agent ends (`cost: {usd, task_id, model_class, why_none}`, as §5.4), shown
 on the turn, summed in the chat's header and in `plan_review_cost_usd` (§5.4).
 Capped per run at `MAX_CHAT_TURNS_PER_RUN = 20` turns **and**
 `PLAN_CHAT_USD_CAP_PER_RUN = 10.00` dollars, whichever comes first (429
 `chat_cap`, naming which); the dollar cap counts reported costs, so a turn
 whose cost is unreported counts at the median of the run's reported turns
 (or, with none, at $0.50), and the header says "at least". The numbers are
-owner question Q5. The tenant's day budget applies on top, as to any task.
+owner question Q5. The tenant's day budget applies on top, as to any agent.
 
-### 7.2 The review agent's task
+### 7.2 How the review agent is submitted
 
 ```
 TaskCreate(
@@ -1103,11 +1096,11 @@ TaskCreate(
 
 Submitted in the run's tenant **as the person who asked** (their identity, so
 the run's forge slot is not borrowed for a member's question, and the cost is
-attributed to them), through `submit_tasks` like every task. `metadata.issue_run`
-keeps it out of the run's own state machine: `advance_run` reads a chat task
+attributed to them), through `submit_tasks` like every agent. `metadata.issue_run`
+keeps it out of the run's own state machine: `advance_run` reads a chat agent
 only to fill its turn. It changes nothing in the repository: its prompt says
 so, and its result is read from one file, `chat-answer.json`, never from a
-diff; a task that pushes is not published, because no integrate step exists.
+diff; an agent that pushes is not published, because no integrate step exists.
 
 ### 7.3 What it reads, and isolation
 
@@ -1120,12 +1113,12 @@ planner's own, re-read), the thread (newest 100 entries), the chat transcript
 and the anchor the reviewer chose. It also has the run's repository checked
 out, which it may read.
 
-**It reads only this run's tenant and repository** (invariant 9): the task is
+**It reads only this run's tenant and repository** (invariant 9): the agent is
 submitted in the run's tenant, through that tenant's service account,
 namespace and secrets, with the run's repository as its one repository. Its
 prompt is built by swarm-api from this run's documents after the run's tenant
 check; nothing in a question selects another run, repository or tenant,
-because a question is text and the task's shape is fixed here. A question is
+because a question is text and the agent's shape is fixed here. A question is
 data inside delimiters, never a profile, image, command or resource
 (invariant 10).
 
@@ -1201,7 +1194,7 @@ the cap. **Shared**: every member of the tenant sees the whole transcript, as
 they see the thread, because it is part of how a plan was judged (owner
 question Q10 records private-per-person as the alternative). Kept as long as
 the run document is. No route deletes issue runs today (`purge.py` only
-refuses to purge a task a live run still references, `_issue_run_guard`), so
+refuses to purge an agent a live run still references, `_issue_run_guard`), so
 whichever lane first deletes a run must delete its three subcollections
 (`plan_revisions`, `plan_thread`, `plan_chat`) in the same pass; lane P3's
 module docstring says so. Never posted to GitHub: the issue may be public, and
@@ -1248,7 +1241,7 @@ Checked field by field against `apps/common/swarm_common/`:
 | approvals, `may_decide`, `GET /v1/pipeline` | `approvals.py`, `routes/approvals.py` | no |
 | `workspace_settings/{tid}.plans` | `plansettings.py` (new) | no: `Tenant` is frozen and gains nothing, as for merge settings |
 | schedule `plan_diagrams`, type `proposes` | `schedules.py`, `scheduletypes.py` | no |
-| the re-plan, diagram and chat tasks | `TaskCreate` on profile `claude-code` with `model_class` and `metadata` | the types are frozen and **used as they are**: `claude-code` declares the `issue` input these send; `model_class` is accepted (`model_classes_carried`); `metadata` is free-form |
+| the re-plan, diagram and chat agents | `TaskCreate` on profile `claude-code` with `model_class` and `metadata` | the types are frozen and **used as they are**: `claude-code` declares the `issue` input these send; `model_class` is accepted (`model_classes_carried`); `metadata` is free-form |
 | the live stream | `logs/live/agent_stdout.tail.log` (#184) | read as it is published |
 
 So the build needs **no contract change**. One is written down now so a later
@@ -1268,22 +1261,22 @@ choice does not start from nothing:
 
 1. **Only `LEASED`…`RUNNING` create demand.** A `PLANNED` run, a pending
    approval, a comment, a revision document, a transcript and a board card
-   are documents. The re-plan, diagram and chat tasks are demand only while
+   are documents. The re-plan, diagram and chat agents are demand only while
    they run, like the planner; none waits for a person while holding a lease.
 2. **All-or-nothing reservation** and 3. **concurrency from `LEASED`:** every
-   task here is admitted by the ordinary path; nothing reserves capacity on
+   agent here is admitted by the ordinary path; nothing reserves capacity on
    its own.
 4. **No sleeping through a long wait.** The recommended chat shape has no
-   wait: one task per question. The session shape is refused here for exactly
+   wait: one agent per question. The session shape is refused here for exactly
    this reason unless it parks.
-5. **Fencing** is untouched: every task is an ordinary attempt.
+5. **Fencing** is untouched: every agent is an ordinary attempt.
 6. **Spot** is untouched. 7. **Requests and limits** come from the profile.
 8. **Checkpointing** is the runner's own, unchanged.
 9. **Per-tenant isolation:** §3's rule, §7.3's.
 10. **Callers pick a profile by name and nothing else.** A comment, an ask, a
     chat question and a diagram are text; the plan schema has no field for an
     image, a command, a resource or a backend, and §6.2 adds none. The model
-    class of every task here is the platform's, never the caller's.
+    class of every agent here is the platform's, never the caller's.
 
 ---
 
@@ -1328,23 +1321,23 @@ refused with the role floor's refusal; a member's is stored with `on_digest`;
 an unknown digest is 409 `plan_changed`, an older revision's is accepted; an
 anchor not in that revision is 422; a comment changes neither `plan_digest`
 nor `plan_revision`; the served thread merges events in time order (approved,
-step tasks, pull request, CI rounds, review, merged, keyword) from a DONE
+step agents, pull request, CI rounds, review, merged, keyword) from a DONE
 fixture; another tenant's thread is 404. Tests: `test_plan_thread.py`. Depends
 on P2 (revisions to anchor to).
 
 **P4 PLANS-REVISE.** `plan:revise` and the round trip (§5). Territory:
 `issueruns.py` (prompt sections, answer reading, the revision write),
 `routes/runs.py` (route, submission, cancel), `approvals.py` (`_planned_at`
-counts from the newest revision). Red first: the re-plan task is `claude-code`
+counts from the newest revision). Red first: the re-plan agent is `claude-code`
 at the run's planner class with `metadata.replan`; comments reach the prompt
 between nonce delimiters; a valid answer makes revision N+1 with
 `plan_edited_by` the requester and `answered_by_revision` on each comment; the
 requester is excluded by a `second_member` hold; an answer to a moved plan
-makes no revision and one "not applied" entry; a refused plan, a failed task
+makes no revision and one "not applied" entry; a refused plan, a failed agent
 and a NOT_READY answer each leave the run `PLANNED` with one answer entry;
-approve during a re-plan approves the shown digest and cancels the task; edit
+approve during a re-plan approves the shown digest and cancels the agent; edit
 during one is 409 `replan_running`; the 4th re-plan is 429 `replan_cap`; the
-revision's `cost` is the task's `cost_usd_total`, null with `why_none` when
+revision's `cost` is the agent's `cost_usd_total`, null with `why_none` when
 unreported; `expires_at` moves to the newest revision. Tests:
 `test_plan_revise.py`. Depends on P2, P3.
 
@@ -1377,14 +1370,14 @@ the workspace over the platform; `plan:diagram` is 409 `diagrams_off` naming
 the level; a diagram answer changes no digest; `plan:add-diagram` makes
 revision N+1 and clears `no_diagram`; the 11th ask is 429. Tests:
 `test_plan_diagrams.py`, `test_plan_settings.py`. Depends on P2, P3, and on
-P7's task builder for `plan:diagram`'s agent — so P6 lands the field, the
+P7's agent builder for `plan:diagram`'s agent — so P6 lands the field, the
 checks, the settings and `add-diagram` first (P6a) and `plan:diagram` after
 P7 (P6b).
 
-**P7 PLANS-CHAT-API.** §7: `planchat.py` (turns, the review-agent task
+**P7 PLANS-CHAT-API.** §7: `planchat.py` (turns, the review-agent
 builder and prompt, answer reading and checks, cost and caps), routes in
 `routes/runs.py` (ask, list, stream, pin). Territory: new `planchat.py`,
-`routes/runs.py`. Red first: the task is `claude-code` at `sonnet`, in the
+`routes/runs.py`. Red first: the agent is `claude-code` at `sonnet`, in the
 run's tenant, as the asker, with `metadata.plan_chat`; its prompt carries the
 plan, revisions, issue, index sections, thread and transcript between nonce
 delimiters and nothing of another run; a second ask in flight is 409
@@ -1504,7 +1497,7 @@ different answer changes the lane it names and nothing else.
    from the automation settings" is a workspace's choice, and a sweep over a
    repository of value files is the case for turning one schedule off);
    (b) workspace only; (c) per schedule only. Changes P6 and U8.
-3. **Q3 How the review chat runs.** (a) **One task per question**
+3. **Q3 How the review chat runs.** (a) **One agent per question**
    (recommended: no contract or worker change, zero demand between questions,
    reads the checkout; slower first word, measured as `first_token_ms`);
    (b) a session per open review (needs contract request R1 and a worker
