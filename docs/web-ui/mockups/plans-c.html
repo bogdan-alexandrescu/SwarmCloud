@@ -1,0 +1,946 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><link rel="icon" href="data:,">
+<title>SwarmCloud Plans, proposal C: Pipeline board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;600;650;700&display=swap" rel="stylesheet">
+<style>
+/*
+ * Proposal C, "Pipeline board" (PLANS-MOCKS-C, part of #2585).
+ * Tokens, type scale, lead strip, tables, cards, side sheet, chips and buttons are
+ * Config E's (config-e.html, #2157) and Subscription accounts A's (accounts-a.html,
+ * #2222), as Automate A (automate-a.html, #2417) carries them; copied, not restyled.
+ * Only the board (columns of stage cards) and the trace are new layout here.
+ * PICKS.md rules: 12px type floor, no all-caps, no letter-spacing, a theme toggle,
+ * an unknown figure is a dash with its reason, never 0.
+ */
+:root{--bg:#f3f6f9;--surface:#ffffff;--surface-2:#eef4fa;--line:#d6e0ea;--line-soft:#dde5ee;--text:#0d1724;--text-dim:#4f5d6e;--text-faint:#606a77;--ok:#1a7f37;--warn:#6e4a00;--bad:#681117;--info:#0369a1;--paused:#7139db;--ok-ink:#15662c;--warn-ink:#805500;--bad-ink:#a71b25;--info-ink:#075985;--paused-ink:#6629d8;--ctl-bd:#7d8ea3;--ctl-onac:#ffffff;--bar-bg:#e3eaf1;--scrim:rgba(6,16,30,.28);--sh:-14px 0 34px rgba(11,58,122,.16);--font:"Inter Tight",system-ui,-apple-system,sans-serif;--mono:"DM Mono",ui-monospace,SFMono-Regular,Menlo,monospace;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#06101e;--surface:#0c1a2e;--surface-2:#11233b;--line:#1e3350;--line-soft:#1d3049;--text:#eef4fa;--text-dim:#9fb0c4;--text-faint:#828d9b;--ok:#58c668;--warn:#ffd60a;--bad:#f85149;--info:#7cc8f8;--paused:#b288f8;--ok-ink:#42bf53;--warn-ink:#d29922;--bad-ink:#fa7872;--info-ink:#b9e3fc;--paused-ink:#b892f9;--ctl-bd:#5f7087;--ctl-onac:#06101e;--bar-bg:#1d3049;--scrim:rgba(0,0,0,.5);--sh:-14px 0 34px rgba(0,0,0,.55);color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#06101e;--surface:#0c1a2e;--surface-2:#11233b;--line:#1e3350;--line-soft:#1d3049;--text:#eef4fa;--text-dim:#9fb0c4;--text-faint:#828d9b;--ok:#58c668;--warn:#ffd60a;--bad:#f85149;--info:#7cc8f8;--paused:#b288f8;--ok-ink:#42bf53;--warn-ink:#d29922;--bad-ink:#fa7872;--info-ink:#b9e3fc;--paused-ink:#b892f9;--ctl-bd:#5f7087;--ctl-onac:#06101e;--bar-bg:#1d3049;--scrim:rgba(0,0,0,.5);--sh:-14px 0 34px rgba(0,0,0,.55);color-scheme:dark}
+:root{--t-ok:color-mix(in srgb,var(--ok) 13%,var(--surface));--t-warn:color-mix(in srgb,var(--warn-ink) 14%,var(--surface));--t-bad:color-mix(in srgb,var(--bad-ink) 12%,var(--surface));--t-info:color-mix(in srgb,var(--info) 11%,var(--surface));--t-pa:color-mix(in srgb,var(--paused) 12%,var(--surface));--l-info:color-mix(in srgb,var(--info) 40%,var(--line))}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 var(--font);overflow-x:hidden}
+a{color:var(--info)}
+code,.mono{font-family:var(--mono);font-size:13px;background:var(--surface-2);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--info);outline-offset:2px}
+
+/* ---------- the document around the frames ---------- */
+.topbar{position:relative;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(6px);border-bottom:1px solid var(--line)}
+.topbar .in{max-width:1520px;margin:0 auto;padding:8px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.topbar b{font-size:14px;font-weight:650}
+.topbar .sp0{flex:1}
+.doc{max-width:1520px;margin:0 auto;padding:28px 16px 80px}
+.doc .kick{font:500 13px var(--mono);color:var(--info);margin:0}
+.doc h1{font-size:clamp(26px,4vw,38px);line-height:1.15;margin:8px 0 12px;font-weight:650}
+.doc h2{font-size:24px;margin:0;font-weight:650;scroll-margin-top:60px;flex:1 1 200px;min-width:0;overflow-wrap:anywhere}
+.doc p,.doc li{max-width:86ch}
+.doc .lede{font-size:17px;color:var(--text-dim)}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 0;padding:0;list-style:none}
+.toc a{display:inline-block;padding:6px 12px;border:1px solid var(--line);border-radius:99px;color:var(--text);text-decoration:none;font-size:13px;background:var(--surface)}
+.toc a:hover{border-color:var(--info);color:var(--info)}
+.idea{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:16px;margin-top:20px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.idea h4{margin:0 0 6px;font-size:15px;color:var(--info-ink)}
+.idea p,.idea ul{margin:0;font-size:14px}.idea ul{padding-left:18px}.idea li{margin:3px 0}
+.rules{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 18px;margin-top:16px;font-size:14px}
+.rules ul{margin:6px 0 0;padding-left:18px}
+
+/* a frame box: one per frame id, each state a labelled sub-frame */
+.frame{margin-top:44px;border:1px solid var(--line);border-radius:16px;background:color-mix(in srgb,var(--surface) 55%,var(--bg));padding:16px 16px 20px;scroll-margin-top:60px;min-width:0}
+.flabel{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}
+.fid{font:600 14px var(--mono);color:var(--info-ink);background:var(--t-info);border:1px solid var(--l-info);padding:2px 10px;border-radius:99px;flex:none}
+.frame>p{font-size:14px;color:var(--text-dim);margin:8px 0 0}
+.sub{margin:20px 0 0;min-width:0}
+.sub>.sl{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin:0 0 8px;font-size:14px}
+.sub>.sl .sid{font:500 13px var(--mono);color:var(--info-ink)}
+.sub>.sl b{font-weight:600}
+.sub>.sl span.dim{font-size:13px}
+.sub figcaption{font-size:13.5px;color:var(--text-dim);margin-top:8px;max-width:110ch}
+.sub figcaption b{color:var(--text)}
+.scroller{overflow-x:auto;border-radius:12px;border:1px solid var(--line);max-width:100%;background:var(--bg)}
+.pair{display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start}
+.pair>.sub{flex:0 1 auto;max-width:100%}
+.dt{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface);margin-top:14px}
+table.doct{border-collapse:collapse;width:100%;min-width:640px;font-size:14px}
+table.doct th,table.doct td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+table.doct th{font-size:13px;color:var(--text-dim);font-weight:600}
+table.doct tr:last-child td{border-bottom:0}
+
+.tseg{display:inline-flex;border:1px solid var(--ctl-bd);border-radius:8px;overflow:hidden;background:var(--surface)}
+.tseg button{border:0;background:none;padding:4px 10px;font-size:13px;cursor:pointer;color:var(--text-dim);display:inline-flex;gap:5px;align-items:center;border-right:1px solid var(--line)}
+.tseg button:last-child{border-right:0}
+.tseg button[aria-pressed="true"]{background:var(--t-info);color:var(--info-ink);font-weight:600}
+
+/* ---------- frames: shared ---------- */
+.ic{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.F{font:14px/1.45 var(--font);color:var(--text);text-align:left}
+.F a{color:var(--info);text-decoration:none}
+/* 1440 wide, or the page's own width when the window is narrower; a grid so the side sheet lies over the list in the same cell */
+.app{display:grid;grid-template-columns:84px 236px minmax(0,1fr);width:clamp(1180px,100%,1440px);min-height:720px;background:var(--bg)}
+.app.short{min-height:560px}
+.app>.sp{grid-column:1;grid-row:1}.app>.pn{grid-column:2;grid-row:1}.app>.ct{grid-column:3;grid-row:1}
+.app>.scr{grid-column:3;grid-row:1;background:var(--scrim)}
+.app>.dsheet{grid-column:3;grid-row:1;justify-self:end;align-self:stretch}
+
+.sp{background:linear-gradient(180deg,#0b3a7a,#06101e);display:flex;flex-direction:column;align-items:center;padding:14px 0 12px;gap:2px;color:#bcd6ee}
+.sp .hv{margin:0 0 12px}
+.sp .si{width:74px;display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 0;border-radius:10px;font-size:12px;line-height:1.15;color:#bcd6ee;position:relative;text-align:center}
+.sp .si .ic{width:20px;height:20px}
+.sp .si.on{background:rgba(124,200,248,.2);color:#fff}
+.sp .si.on::before{content:"";position:absolute;left:-5px;top:10px;bottom:10px;width:3px;border-radius:2px;background:#7cc8f8}
+.sp .si.go{background:#38bdf8;color:#06101e;width:56px;border-radius:12px;font-weight:600;margin-bottom:8px}
+.sp .si .dt0{position:absolute;top:4px;right:14px;width:8px;height:8px;border-radius:50%;background:#f5c451;box-shadow:0 0 0 2px #0b3a7a}
+.sp .gr{flex:1}
+.sp .av{margin-top:6px}
+.av{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#38bdf8,#0b3a7a);color:#fff;font:600 12px/30px var(--font);text-align:center;flex:none}
+
+.pn{background:var(--surface);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:14px 0 0}
+.pn .wm{display:flex;align-items:center;gap:8px;padding:0 16px 10px;font-weight:650;font-size:16px}
+.pn .wm span{color:var(--info)}
+.pill{font:500 12px/1 var(--mono);padding:4px 7px;border-radius:99px;color:var(--info-ink);background:var(--t-info);border:1px solid var(--l-info);margin-left:auto}
+.wsb{margin:0 12px 10px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;display:flex;gap:9px;align-items:center}
+.wsb .tg{width:26px;height:26px;border-radius:7px;background:var(--t-info);color:var(--info-ink);font:650 12px/26px var(--font);text-align:center;flex:none}
+.wsb .tt{display:flex;flex-direction:column;line-height:1.25;min-width:0;flex:1}
+.wsb .tt b{font-size:13px}.wsb .tt small{font-size:12px;color:var(--text-dim)}
+.pn .sec{font-size:15px;font-weight:650;padding:4px 20px 6px}
+.pi{display:flex;align-items:center;gap:9px;min-height:34px;padding:0 10px;margin:1px 10px;border-radius:8px;color:var(--text-dim);position:relative;font-size:13.5px}
+.pi .lb{flex:1;color:var(--text)}
+.pi.on{background:var(--t-info);color:var(--info)}.pi.on .lb{color:var(--info-ink);font-weight:600}
+.pi.on::before{content:"";position:absolute;left:-10px;top:7px;bottom:7px;width:3px;border-radius:2px;background:var(--info)}
+.pnote{font-size:12px;color:var(--text-dim);padding:10px 20px 0;line-height:1.4}
+.pgrow{flex:1}
+.pf{border-top:1px solid var(--line);padding:10px 14px 12px;display:flex;flex-direction:column;gap:8px}
+.pf .who{display:flex;gap:9px;align-items:center}
+.pf .who span:not(.av){display:flex;flex-direction:column;line-height:1.25}.pf .who b{font-size:13px}.pf .who small{font-size:12px;color:var(--text-dim)}
+.pf .tseg button{padding:3px 8px;font-size:12px;flex:1;justify-content:center}
+
+.ct{min-width:0;padding:18px 28px 32px;display:flex;flex-direction:column;gap:14px}
+.hd{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}
+.hd .tl{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0}
+.hd .cr{font-size:12px;color:var(--text-dim)}
+.hd .h{font-size:22px;font-weight:650;line-height:1.2}
+.hd .age{font:12px var(--mono);color:var(--text-dim)}
+
+.lead{display:flex;gap:16px;align-items:center;padding:14px 18px;border-radius:12px;background:var(--t-info);border:1px solid var(--l-info);flex-wrap:wrap}
+.lead .lt{flex:1;min-width:240px;display:flex;flex-direction:column;gap:2px}
+.lead .lt .k{font-size:12px;color:var(--info-ink);font-weight:600}
+.lead .lt b{font-size:16px;font-weight:600}
+.lead .lt span{font-size:13px;color:var(--text-dim)}
+.lead.ok{background:var(--t-ok);border-color:color-mix(in srgb,var(--ok) 35%,var(--line))}
+.lead.ok .lt .k{color:var(--ok-ink)}
+.lead.wn{background:var(--t-warn);border-color:color-mix(in srgb,var(--warn-ink) 40%,var(--line))}
+.lead.wn .lt .k{color:var(--warn-ink)}
+.lead.bd{background:var(--t-bad);border-color:color-mix(in srgb,var(--bad-ink) 40%,var(--line))}
+.lead.bd .lt .k{color:var(--bad-ink)}
+.acts{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+
+.cd{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;min-width:0}
+.cd .ch{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.cd .ch b{font-size:15px;font-weight:600}
+.cd .ch .r{margin-left:auto}
+.cd p{margin:0 0 8px;font-size:13.5px;color:var(--text-dim)}
+.cd.dash{border-style:dashed;background:transparent}
+.g2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.g4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:5px 14px;font-size:13.5px;margin:0}
+.kv dt{color:var(--text-dim)}.kv dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.dim{color:var(--text-dim)}.faint{color:var(--text-faint)}
+.sm12{font-size:12px}
+.mn{font-family:var(--mono);font-size:12.5px;overflow-wrap:anywhere}
+
+.b{height:32px;padding:0 12px;border-radius:8px;border:1px solid var(--ctl-bd);background:var(--surface);color:var(--text);font:600 13px var(--font);display:inline-flex;align-items:center;gap:6px;white-space:nowrap;cursor:default}
+.b.p{background:var(--info);color:var(--ctl-onac);border-color:var(--info)}
+.b.q{border-color:transparent;background:none;color:var(--info);padding:0 6px}
+.b.d{color:var(--bad-ink)}
+.b.s{height:28px;font-size:12.5px;padding:0 10px}
+.b[aria-disabled="true"]{opacity:.55}
+.c{font-size:12px;padding:2px 8px;border-radius:999px;background:var(--surface-2);color:var(--text-dim);white-space:nowrap;display:inline-flex;gap:4px;align-items:center;line-height:1.5}
+.c.ok{background:var(--t-ok);color:var(--ok-ink)}
+.c.wn{background:var(--t-warn);color:var(--warn-ink)}
+.c.bd{background:var(--t-bad);color:var(--bad-ink)}
+.c.in{background:var(--t-info);color:var(--info-ink)}
+.c.pa{background:var(--t-pa);color:var(--paused-ink)}
+.c.ln{background:none;border:1px solid var(--line)}
+.c .ic{width:12px;height:12px}
+.st{display:inline-flex;align-items:center;gap:6px}
+.st .ic{width:14px;height:14px}
+.st.ok{color:var(--ok-ink)}.st.wn{color:var(--warn-ink)}.st.bd{color:var(--bad-ink)}.st.in{color:var(--info-ink)}.st.nu{color:var(--text-dim)}
+.sg{display:inline-flex;border:1px solid var(--ctl-bd);border-radius:8px;overflow:hidden;background:var(--surface);flex:none;flex-wrap:wrap}
+.sg span{padding:5px 11px;font-size:13px;color:var(--text-dim);border-right:1px solid var(--line);white-space:nowrap;display:inline-flex;gap:5px;align-items:center}
+.sg span:last-child{border-right:0}
+.sg span.on{background:var(--t-info);color:var(--info-ink);font-weight:600}
+.fld{display:flex;flex-direction:column;gap:4px;font-size:13px;min-width:0}
+.fld>span{color:var(--text-dim);font-weight:600;font-size:12.5px}
+.inp{min-height:34px;border:1px solid var(--ctl-bd);border-radius:8px;background:var(--surface);display:flex;align-items:center;padding:0 10px;font-size:13.5px;color:var(--text-faint);gap:8px;min-width:0}
+.inp.v{color:var(--text)}
+.inp.er{border-color:var(--bad-ink);box-shadow:0 0 0 1px var(--bad-ink)}
+.err{font-size:12.5px;color:var(--bad-ink);display:flex;gap:6px;align-items:flex-start}
+.err .ic{width:14px;height:14px;margin-top:2px}
+.col4{display:flex;flex-direction:column;gap:4px;min-width:0}
+.hint{font-size:12.5px;color:var(--text-dim)}
+.bn{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-radius:10px;font-size:13px;border:1px solid var(--line);background:var(--surface-2)}
+.bn.in{background:var(--t-info);border-color:var(--l-info)}
+.bn.wn{background:var(--t-warn);border-color:color-mix(in srgb,var(--warn-ink) 40%,var(--line))}
+.bn.bd{background:var(--t-bad);border-color:color-mix(in srgb,var(--bad-ink) 40%,var(--line))}
+.bn.ok{background:var(--t-ok);border-color:color-mix(in srgb,var(--ok) 35%,var(--line))}
+.bn b{display:block}
+.bn .ic{margin-top:2px}
+.bn>div{min-width:0}
+
+/* tables; .rs turns rows into cards on the phone */
+.tw{border:1px solid var(--line);border-radius:10px;overflow-x:auto;background:var(--surface)}
+table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums}
+.t th{font-size:12px;font-weight:600;color:var(--text-dim);text-align:left;padding:8px 10px;background:var(--surface-2);border-bottom:1px solid var(--line);white-space:nowrap}
+.t td{padding:8px 10px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+.t tr:last-child td{border-bottom:0}
+.t .n{text-align:right}
+.t tr.need td{background:color-mix(in srgb,var(--warn-ink) 6%,var(--surface))}
+.t tr.sel td{background:var(--t-info)}
+.t tr.sel td:first-child{box-shadow:inset 3px 0 0 var(--info)}
+.t tr.grp td{background:var(--bg);font-weight:600;font-size:12px;color:var(--text-dim);padding:6px 10px}
+.t td small{display:block;font-size:12px;color:var(--text-dim)}
+.t td .nw{white-space:nowrap}
+.t td b.nm{font-weight:600}
+.t tr.fade td{opacity:.55}
+
+/* bars: spend against the day budget, a run against the per-run tripwire */
+.bar{position:relative;height:6px;border-radius:3px;background:var(--bar-bg);width:100%;min-width:60px}
+.bar i{position:absolute;left:0;top:0;bottom:0;border-radius:3px;background:var(--info)}
+.bar i.ok{background:var(--ok)}.bar i.wn{background:var(--warn-ink)}.bar i.bd{background:var(--bad-ink)}
+.bar u{position:absolute;top:0;bottom:0;border-radius:0 3px 3px 0;background:repeating-linear-gradient(90deg,var(--ctl-bd) 0 3px,transparent 3px 6px);opacity:.7}
+.bar s{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--text);border-radius:1px}
+.bar.big{height:10px;border-radius:5px}.bar.big i{border-radius:5px}
+.lg{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12.5px;color:var(--text-dim)}
+.lg i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+/* the side sheet (accounts-a.html's, wider: a schedule carries a history table) */
+.dsheet{width:680px;max-width:100%;background:var(--surface);border-left:1px solid var(--line);box-shadow:var(--sh);padding:18px 22px 26px;display:flex;flex-direction:column;gap:14px;min-width:0;position:relative}
+.dsheet.w6{width:600px}
+.shh{display:flex;align-items:flex-start;gap:10px}
+.shh .tt{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.shh .tt .cr{font-size:12px;color:var(--text-dim)}
+.shh .tt h4{margin:0;font-size:19px;font-weight:650;line-height:1.25}
+.shh .tt .meta{display:flex;gap:6px 10px;flex-wrap:wrap;align-items:center;font-size:12.5px;color:var(--text-dim)}
+.shh .x{flex:none;width:32px;padding:0;justify-content:center}
+.shs{border-top:1px solid var(--line);padding-top:12px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.shs>h5{margin:0;font-size:14px;font-weight:600;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.shs>h5 small{font-size:12px;font-weight:400;color:var(--text-dim)}
+.shs>p{margin:0;font-size:13.5px}
+.shs .t{font-size:12.5px}
+.fires{display:flex;gap:6px;flex-wrap:wrap}
+.fires span{font-size:12.5px;padding:3px 9px;border-radius:8px;border:1px solid var(--line);background:var(--surface-2);white-space:nowrap}
+.fires span:first-child{border-color:var(--l-info);background:var(--t-info);color:var(--info-ink);font-weight:600}
+.solo{display:flex;flex-direction:column}
+.scroller.solo{width:max-content;max-width:100%}
+.solo .dsheet{border:1px solid var(--line);border-radius:12px;box-shadow:none}
+/* a drawer drawn alone is the desktop drawer: on a narrow page it keeps that width and scrolls in its box, as the 1440 frames do, instead of crushing the risk cards */
+.solo .dsheet{min-width:600px}
+.foot{display:flex;gap:8px;flex-wrap:wrap;align-items:center;border-top:1px solid var(--line);padding-top:12px}
+.foot .grow{flex:1}
+.quote{margin:0;font-size:13.5px;padding:8px 12px;border-left:3px solid var(--line);background:var(--surface-2);border-radius:0 8px 8px 0}
+.files{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:4px;font-size:13px}
+.files li{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.who0{display:flex;gap:10px;align-items:center;font-size:13.5px}
+
+/* the stepped sheet (A3) */
+.wz{display:flex;gap:6px;flex-wrap:wrap}
+.wz span{display:inline-flex;gap:6px;align-items:center;font-size:12.5px;color:var(--text-dim);padding:3px 10px 3px 4px;border-radius:99px;border:1px solid var(--line)}
+.wz span i{width:20px;height:20px;border-radius:50%;background:var(--surface-2);font:600 12px/20px var(--font);text-align:center;font-style:normal}
+.wz span.d i{background:var(--ok);color:var(--surface)}
+.wz span.e i{background:var(--bad-ink);color:var(--surface)}
+.wz span.on{border-color:var(--info);color:var(--info-ink);font-weight:600}
+.wz span.on i{background:var(--info);color:var(--ctl-onac)}
+.opt{border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;gap:10px;align-items:flex-start;font-size:13.5px;background:var(--surface);min-width:0}
+.opt.on{border-color:var(--info);background:var(--t-info)}
+.opt.x{opacity:.6}
+.opt .rd{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--ctl-bd);flex:none;margin-top:2px}
+.opt.on .rd{border:5px solid var(--info)}
+.opt>span:last-child{min-width:0}
+.opt b{display:block;font-size:13.5px}
+.opt small{font-size:12.5px;color:var(--text-dim);display:block}
+.tiles{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.chk{display:inline-flex;align-items:center;gap:8px;font-size:13.5px}
+.chk i{width:16px;height:16px;border-radius:4px;border:1.5px solid var(--ctl-bd);flex:none;display:inline-flex;align-items:center;justify-content:center}
+.chk i.y{background:var(--info);border-color:var(--info);color:var(--ctl-onac)}
+.chk i .ic{width:11px;height:11px;stroke-width:3}
+
+/* empty */
+.empty{display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:20px 20px}
+.empty b{font-size:15px}
+.empty p{margin:0;font-size:13.5px;color:var(--text-dim)}
+
+/* ---------- phone ---------- */
+.ph{width:390px;max-width:100%;border:1px solid var(--line);border-radius:28px;overflow:hidden;background:var(--bg);position:relative}
+.phd{height:52px;background:#0b3a7a;color:#eef4fa;display:flex;align-items:center;gap:10px;padding:0 14px}
+.phd b{font-size:15px;font-weight:650;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.phd .wsc{font-size:12px;padding:3px 8px;border-radius:99px;background:rgba(124,200,248,.18);color:#cfe9fb;border:1px solid rgba(124,200,248,.45);white-space:nowrap}
+.pb{padding:14px;display:flex;flex-direction:column;gap:12px}
+.ph .ct{padding:0;gap:12px}
+.ph .hd .h{font-size:20px}
+.ph .g2,.ph .g4,.ph .tiles{grid-template-columns:minmax(0,1fr)}
+.ph .lead{padding:12px 14px}
+.ph .lead .lt{min-width:0}
+.ph .lead .acts{width:100%}
+.ph .cd{padding:12px}
+.ph .tw{border:0;background:none;overflow:visible}
+.ph .rs thead{display:none}
+.ph .rs,.ph .rs tbody,.ph .rs tr,.ph .rs td{display:block;width:100%}
+.ph .rs tr{border:1px solid var(--line);border-radius:10px;background:var(--surface);margin-bottom:8px;padding:6px 0}
+.ph .rs tr.need{border-color:color-mix(in srgb,var(--warn-ink) 45%,var(--line))}
+.ph .rs tr.need td{background:none}
+.ph .rs tr.grp{border:0;background:none;padding:0;margin:4px 0 6px}
+.ph .rs tr.grp td{padding:0 2px;background:none;justify-content:flex-start}
+.ph .rs td{display:flex;justify-content:flex-end;gap:4px 12px;border:0;padding:4px 12px;text-align:right;align-items:flex-start;flex-wrap:wrap}
+.ph .rs td>*{text-align:right}
+.ph .rs td::before{content:attr(data-l);color:var(--text-dim);font-size:12px;text-align:left;flex:none;margin-right:auto}
+.ph .rs td:first-child{font-weight:600;justify-content:flex-start;text-align:left}
+.ph .rs td:first-child>*{text-align:left}
+.ph .rs td:first-child::before{display:none}
+.ph .rs td:empty{display:none}
+.ph .rs td small{text-align:right;flex-basis:100%}
+/* a sentence (a planner's note, what to do) wraps under its label, left-aligned: right-aligned prose reads ragged on the left */
+.ph .rs td>.sm12{text-align:left;flex-basis:100%}
+.ph .rs td:first-child small{text-align:left}
+.ph .rs td .bar{flex-basis:100%}
+.ph .hd:has(.acts) .tl{flex-basis:100%}
+.ph .sg{flex-wrap:wrap}
+.ph .kv{grid-template-columns:1fr;gap:1px}
+.ph .kv dd{margin-bottom:6px}
+.ph .dsheet{width:100%;border:0;box-shadow:none;padding:14px;gap:12px}
+.ph .shh .tt h4{font-size:18px}
+.ph .foot{position:sticky;bottom:0}
+.back{font-size:13.5px;color:var(--info);font-weight:600;display:inline-flex;gap:4px;align-items:center}
+.hide-ph{}
+.ph .hide-ph{display:none}
+
+@media (max-width:600px){
+  .doc{padding:20px 0 60px}
+  .doc>:not(.frame){margin-left:12px;margin-right:12px}
+  .frame{padding:12px 0 16px;border-radius:0;border-left:0;border-right:0}
+  .frame>.flabel,.frame>p,.frame>.dt,.sub>.sl,.sub figcaption{margin-left:12px;margin-right:12px}
+  .sub>.scroller{margin:0 12px;max-width:calc(100% - 24px)}
+  .ph{border-radius:0;border-left:0;border-right:0}
+  .dt table.doct{min-width:0}.dt thead{display:none}.dt tr,.dt td{display:block}.dt td{border-bottom:0;padding:2px 12px}.dt td:first-child{font-weight:600;padding-top:10px}.dt td:last-child{padding-bottom:10px;border-bottom:1px solid var(--line)}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* ---------- proposal C: the board ---------- */
+.board{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;align-items:start}
+.colm{background:var(--surface-2);border:1px solid var(--line);border-radius:12px;padding:10px 8px 8px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.colm.stall{border-color:color-mix(in srgb,var(--warn-ink) 50%,var(--line));box-shadow:inset 0 3px 0 var(--warn-ink)}
+.colh{display:flex;flex-direction:column;gap:1px;padding:0 4px 4px}
+.colh b{font-size:14px;font-weight:650;display:flex;gap:6px;align-items:baseline}
+.colh b .n{font:600 13px var(--mono);color:var(--text-dim);margin-left:auto}
+.colh small{font-size:12px;color:var(--text-dim);line-height:1.35}
+.nw{white-space:nowrap}
+.colh small.w{color:var(--warn-ink);font-weight:600}
+.kc{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:8px 10px;display:flex;flex-direction:column;gap:4px;font-size:12.5px;min-width:0}
+.kc.me{border-color:color-mix(in srgb,var(--warn-ink) 55%,var(--line));box-shadow:inset 3px 0 0 var(--warn-ink)}
+.kc.sel{border-color:var(--info);box-shadow:inset 3px 0 0 var(--info),0 0 0 1px var(--info)}
+.kc.fade{opacity:.72}
+.kc .src{display:flex;gap:5px;align-items:center;font-size:12px;color:var(--text-dim);flex-wrap:wrap}
+.kc .src .ic{width:13px;height:13px}
+.kc b.tt{font-size:13px;font-weight:600;line-height:1.3;overflow-wrap:anywhere}
+.kc .ln2{display:flex;gap:4px 6px;flex-wrap:wrap;align-items:center}
+.kc .mt{font-size:12px;color:var(--text-dim);line-height:1.35;overflow-wrap:anywhere}
+.kc .why{font-size:12px;color:var(--text);background:var(--surface-2);border-radius:6px;padding:3px 6px;line-height:1.35}
+.kc .ex{font-size:12px;color:var(--warn-ink);font-weight:600}
+.colm .more{font-size:12px;color:var(--info);padding:0 4px}
+.flow{display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:12.5px;color:var(--text-dim)}
+.flow .ic{width:13px;height:13px}
+/* the trace (P4) */
+.trace{display:flex;flex-direction:column;gap:0;margin:0;padding:0;list-style:none}
+.trace>li{display:grid;grid-template-columns:22px minmax(0,1fr);gap:10px;position:relative;padding-bottom:14px}
+.trace>li::before{content:"";position:absolute;left:10px;top:22px;bottom:0;width:2px;background:var(--line)}
+.trace>li:last-child::before{display:none}
+.trace .dot{width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;background:var(--surface-2);border:1.5px solid var(--ctl-bd);color:var(--text-dim)}
+.trace .dot .ic{width:13px;height:13px;stroke-width:2.4}
+.trace .dot.ok{background:var(--ok);border-color:var(--ok);color:var(--surface)}
+.trace .dot.bd{background:var(--bad-ink);border-color:var(--bad-ink);color:var(--surface)}
+.trace .dot.in{background:var(--info);border-color:var(--info);color:var(--ctl-onac)}
+.trace .tb{min-width:0;display:flex;flex-direction:column;gap:6px}
+.trace .tb>b{font-size:14px;font-weight:600}
+.trace .tb>span{font-size:13px;color:var(--text-dim)}
+/* plan pieces */
+.stp{border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;background:var(--surface);min-width:0}
+.stp.ed{border-color:var(--info);background:var(--t-info)}
+.stp.rm{border-style:dashed;opacity:.7}
+.stp .sh{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.stp .sh b{font-size:14px;font-weight:600}
+.fold{font-size:13px;color:var(--info);font-weight:600;display:inline-flex;gap:4px;align-items:center}
+.fold .ic{width:13px;height:13px}
+.prompt{font:12.5px/1.5 var(--mono);background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--text)}
+.prompt.ed{border-color:var(--info);background:var(--surface)}
+.prompt ins{background:var(--t-ok);color:var(--ok-ink);text-decoration:none}
+.req{margin:0;padding-left:22px;font-size:13.5px;display:flex;flex-direction:column;gap:4px}
+.req li.new{color:var(--ok-ink)}
+.risk{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+.risk>div{border:1px solid var(--line);border-radius:8px;padding:6px 8px;font-size:12.5px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.risk>div b{font-size:12.5px;font-weight:600}
+.risk>div small{overflow-wrap:anywhere;word-break:break-word}
+.risk>div.hit{border-color:color-mix(in srgb,var(--bad-ink) 50%,var(--line));background:var(--t-bad)}
+.risk>div.hit b{color:var(--bad-ink)}
+.dg{font:12.5px var(--mono);overflow-wrap:anywhere}
+.dsheet.w7{width:720px}
+.dbl{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.dbl>div{border:1px solid var(--line);border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.dbl>div small{font-size:12px;color:var(--text-dim)}
+.dbl>div b{font-size:15px;font-weight:600}
+.ta{min-height:64px;align-items:flex-start;padding-top:8px}
+.fld>.inp{font-weight:400;font-size:13.5px}
+.inp.wr{flex-wrap:wrap;padding:6px 10px;gap:4px 8px;justify-content:flex-start}
+.ph .board{grid-template-columns:minmax(0,1fr)}
+.ph .risk,.ph .dbl{grid-template-columns:minmax(0,1fr)}
+.stgs{display:flex;gap:6px;flex-wrap:wrap}
+.stgs span{flex:none;font-size:12.5px;padding:5px 10px;border-radius:99px;border:1px solid var(--line);background:var(--surface);color:var(--text-dim);white-space:nowrap}
+.stgs span.on{border-color:var(--info);background:var(--t-info);color:var(--info-ink);font-weight:600}
+.stgs span.w{border-color:color-mix(in srgb,var(--warn-ink) 55%,var(--line));color:var(--warn-ink)}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<linearGradient id="g-hive-b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#7dd3fc"/></linearGradient>
+<symbol id="hive" viewBox="0 0 44 44"><g fill="url(#g-hive-b)"><path d="M22 4l6.5 3.75v7.5L22 19l-6.5-3.75v-7.5z"/><path d="M11 22.5l6.5 3.75v7.5L11 37.5l-6.5-3.75v-7.5z" opacity=".85"/><path d="M33 22.5l6.5 3.75v7.5L33 37.5l-6.5-3.75v-7.5z" opacity=".85"/><path d="M22 22.5l5 2.9v5.8l-5 2.9-5-2.9v-5.8z" opacity=".7"/><path d="M11 6.5l4.5 2.6v5.2L11 16.9l-4.5-2.6V9.1z" opacity=".55"/><path d="M33 6.5l4.5 2.6v5.2L33 16.9l-4.5-2.6V9.1z" opacity=".55"/><path d="M22 36l3.5 2v4L22 44l-3.5-2v-4z" opacity=".45"/></g></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="i-overview" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="4.5" rx="1.5"/><rect x="13.5" y="11" width="7" height="9.5" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/></symbol>
+<symbol id="i-work" viewBox="0 0 24 24"><rect x="5" y="7.5" width="14" height="11" rx="3"/><path d="M12 4v3.5M9 12.5v1M15 12.5v1"/></symbol>
+<symbol id="i-automate" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+<symbol id="i-capacity" viewBox="0 0 24 24"><path d="M12 3.5 3.5 8 12 12.5 20.5 8Z"/><path d="m3.5 12 8.5 4.5 8.5-4.5"/><path d="m3.5 16 8.5 4.5 8.5-4.5"/></symbol>
+<symbol id="i-config" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>
+<symbol id="i-admin" viewBox="0 0 24 24"><path d="M12 3.5 19.5 6v5.5c0 4.5-3.2 8-7.5 9-4.3-1-7.5-4.5-7.5-9V6Z"/><path d="m9 12 2.2 2.2L15.5 10"/></symbol>
+<symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.5a2.5 2.5 0 0 1 4.8 1c0 1.7-2.4 2-2.4 3.5"/><path d="M12 17.2v.1"/></symbol>
+<symbol id="i-github" viewBox="0 0 24 24"><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3 0 0 0-6.2 0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></symbol>
+<symbol id="i-repo" viewBox="0 0 24 24"><path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5Z"/><path d="M5 19.5A1.5 1.5 0 0 0 6.5 21H19v-3"/></symbol>
+<symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 8.5-8.5M16 7l2.5 2.5M14 9l2 2"/></symbol>
+<symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0Z"/><path d="M12 17v4"/></symbol>
+<symbol id="i-people" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19.5a5.5 5.5 0 0 1 11 0"/><path d="M16 5.5a3 3 0 0 1 0 6M18.5 19.5a5 5 0 0 0-2.5-4.3"/></symbol>
+<symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+<symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 4 21 19.5H3Z"/><path d="M12 10v4.5M12 17v.1"/></symbol>
+<symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8v.1"/></symbol>
+<symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></symbol>
+<symbol id="i-ext" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></symbol>
+<symbol id="i-chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+<symbol id="i-chevd" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+<symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+<symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></symbol>
+<symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10Z"/></symbol>
+<symbol id="i-sys" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="12" rx="2"/><path d="M9 20h6M12 16.5V20"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></symbol>
+<symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18M10.6 6.1A9.8 9.8 0 0 1 12 6c5 0 8.5 4.5 9.5 6-.5.8-1.5 2.1-2.9 3.3M6.6 6.6C4.6 7.9 3.2 9.8 2.5 12c1 1.5 4.5 6 9.5 6a9.6 9.6 0 0 0 4.4-1.1M9.9 9.9a3 3 0 0 0 4.2 4.2"/></symbol>
+<symbol id="i-play" viewBox="0 0 24 24"><path d="M7 5v14l11-7Z"/></symbol>
+<symbol id="i-env" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M3.5 9h17M7 7h.1M9.5 7h.1"/></symbol>
+<symbol id="i-person" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/></symbol>
+<symbol id="i-building" viewBox="0 0 24 24"><path d="M4 20V6.5L12 3.5l8 3V20"/><path d="M9 20v-4.5h6V20M8.5 9.5h1M14.5 9.5h1M8.5 12.5h1M14.5 12.5h1"/></symbol>
+<symbol id="i-counts" viewBox="0 0 24 24"><path d="M4 19.5h16"/><path d="M6.5 16v-4M10.5 16V8M14.5 16v-6M18.5 16V5"/></symbol>
+<symbol id="i-sizes" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2.5"/><path d="M9 4v16M4 9h5M4 14h5"/></symbol>
+<symbol id="i-cal" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M8.5 3v4M15.5 3v4"/></symbol>
+<symbol id="i-qa" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="12" rx="2"/><path d="m9 10.5 2 2 4-4M9 20h6"/></symbol>
+</defs></svg>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 5.5v13M15 5.5v13"/></symbol>
+<symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16Z"/><path d="m13.5 6.5 4 4"/></symbol>
+<symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+<symbol id="i-back" viewBox="0 0 24 24"><path d="m15 6-6 6 6 6"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 24 24"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4.5v4h-4"/></symbol>
+</defs></svg>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 5.5v13M15 5.5v13"/></symbol>
+<symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16Z"/><path d="m13.5 6.5 4 4"/></symbol>
+<symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+<symbol id="i-back" viewBox="0 0 24 24"><path d="m15 6-6 6 6 6"/></symbol>
+<symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12c1-1.5 4.5-6 9.5-6s8.5 4.5 9.5 6c-1 1.5-4.5 6-9.5 6s-8.5-4.5-9.5-6Z"/><circle cx="12" cy="12" r="3"/></symbol>
+<symbol id="i-bug" viewBox="0 0 24 24"><rect x="7" y="8" width="10" height="12" rx="5"/><path d="M9 8a3 3 0 0 1 6 0M3.5 13H7M17 13h3.5M4.5 8.5 7.5 10M19.5 8.5 16.5 10M4.5 18.5l3-1.5M19.5 18.5l-3-1.5"/></symbol>
+<symbol id="i-pr" viewBox="0 0 24 24"><circle cx="6.5" cy="5.5" r="2"/><circle cx="6.5" cy="18.5" r="2"/><circle cx="17.5" cy="18.5" r="2"/><path d="M6.5 7.5v9M17.5 16.5V9a3 3 0 0 0-3-3H10m2-2.5L9.5 6 12 8.5"/></symbol>
+<symbol id="i-merge" viewBox="0 0 24 24"><circle cx="6.5" cy="5.5" r="2"/><circle cx="6.5" cy="18.5" r="2"/><circle cx="17.5" cy="12" r="2"/><path d="M6.5 7.5v9M6.5 7.5c0 3 4 4.5 9 4.5"/></symbol>
+<symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13"/></symbol>
+<symbol id="i-filter" viewBox="0 0 24 24"><path d="M4 5h16l-6 7.5V19l-4-2v-4.5Z"/></symbol>
+</defs></svg>
+
+<div class="topbar"><div class="in">
+  <b>Plans proposal C · Pipeline board</b>
+  <span class="sp0"></span>
+  <span class="sm12 dim">Theme for the page and every frame</span>
+  <div class="tseg" role="group" aria-label="Theme">
+    <button type="button" data-theme-set="light"><svg class="ic"><use href="#i-sun"/></svg>Light</button><button type="button" data-theme-set="dark"><svg class="ic"><use href="#i-moon"/></svg>Dark</button><button type="button" data-theme-set="system" aria-pressed="true"><svg class="ic"><use href="#i-sys"/></svg>System</button>
+  </div>
+</div></div>
+
+<main class="doc">
+<p class="kick">PLANS-MOCKS-C · part of #2585 · drawn 2026-10-28 · not picked</p>
+<h1>Plans, proposal C: Pipeline board</h1>
+<p class="lede">One of four competing proposals (A to D) for how the console shows what automatic runs propose, and how a plan is judged and approved. Each draws the same frames (P1 to P7). This one draws the whole road from an automatic finding to a merged fix as one board of stages, so the reader sees every proposal at once and sees where the flow stalls.</p>
+
+<div class="idea">
+  <div><h4>Idea</h4><p>Automate gains one tab, <b>Pipeline</b>, between Schedules and Approvals. It is a board of five stages: <b>found</b> (a failure fingerprint, an issue the sweep picked, an observer's proposal), <b>planned, waiting on a person</b>, <b>approved and running</b>, <b>pull request and CI</b>, and <b>merged or ended</b>. Every card says where it came from. A card that waits on a person is edged amber and sorts first in its column, oldest first, with its time to expiry. A plan opens in a <b>drawer</b> over the board (Subscription accounts A's side sheet) and is decided there: Approve, Edit, Reject with a reason, each carrying the digest of the plan shown. After approval the same card moves right, and its drawer becomes the trace from plan to merge.</p></div>
+  <div><h4>How it differs from the console today</h4><ul>
+    <li>Today an issue run's plan is in Work › Runs, a proposal or a merge in Automate › Approvals, and the plan also as a GitHub comment. Here all of them are cards on one board; Approvals keeps the kinds that are not part of this road (<code>run</code>, <code>spec</code>, <code>input</code>).</li>
+    <li>Today the PLANNED view lists the plan's fields in the order they are stored. Here the drawer reads in the order a decision is made: why it exists, what it changes, what it collides with, what it costs, what risk it touches, then the buttons.</li>
+    <li>Today a column of state words is all that says where work stops. Here each column's head names its count and its oldest card, and a column holding something over a day is edged.</li>
+    <li>Today the source of a plan is a schedule id on the run. Here every card names its source in words: the sweep, failure review with its fingerprint, an observer, or a person.</li></ul></div>
+  <div><h4>Pros and risks</h4><ul>
+    <li><b>Pro:</b> one look shows the flow and its stall: five waiting plans with nothing running reads differently from five running and one waiting.</li>
+    <li><b>Pro:</b> a card keeps its place in the flow after the decision, so "what did my approval become" is the same card, one column right.</li>
+    <li><b>Risk:</b> five columns at 1440 with the nav open leave about 200px a card. Titles wrap to three lines; the drawer carries the rest.</li>
+    <li><b>Risk:</b> a board invites dragging. Nothing here drags: a card moves only when the run moves, and a decision is made only in the drawer, against a digest.</li>
+    <li><b>Risk:</b> on a phone the board becomes one stage at a time, so the whole-flow view is a row of stage chips with counts rather than columns.</li></ul></div>
+</div>
+
+<div class="rules">
+  <b>What every frame obeys</b>
+  <ul>
+    <li>PICKS.md: nothing below 12px, no all-caps, no letter-spacing, a light / dark / system toggle (top of this page and in every frame's panel foot), an unknown figure is a dash with its reason, never 0. State words are lower case (waiting, approved, rejected, expired, superseded), never the API's enums.</li>
+    <li>The V2 Sky spine, Config E's tokens, lead strip, cards, chips and buttons, Subscription accounts A's side sheet, Automate A's landing and B's one-approval decision. The board's columns are the only new layout.</li>
+    <li><b>The canonical plan</b> is the real <code>run_fba2dc8f6ec9494dae2f</code> on <code>bogdan-alexandrescu/SwarmCloud#2583</code>, quoted from its plan comment. Its schedule's gate approved it automatically at 00:06:03Z; P2 draws it as it would wait if that gate said <code>plan: approve</code>. Every other card is example data. The board is read at <b>Wednesday 2026-10-28 03:00Z</b>; the viewer is Operator, the platform owner, unless a frame says otherwise.</li>
+  </ul>
+</div>
+
+<ul class="toc">
+  <li><a href="#P1">P1 Where proposals land</a></li><li><a href="#P2">P2 One plan to decide</a></li><li><a href="#P3">P3 Editing a plan</a></li><li><a href="#P4">P4 After approval</a></li><li><a href="#P5">P5 The automatic sources</a></li><li><a href="#P6">P6 Empty and honest states</a></li><li><a href="#P7">P7 Phone at 390</a></li><li><a href="#fields">New fields this proposal needs</a></li>
+</ul>
+
+<section class="frame" id="P1" data-frame="P1">
+  <div class="flabel"><span class="fid">P1</span><h2>Where proposals land: the Pipeline board</h2></div>
+  <p>Automate › Pipeline. Thirteen cards from every source, in every state. The lead names what waits on a person across the whole board; the columns show where it waits.</p>
+  <figure class="sub" id="P1a" data-frame="P1a"><div class="sl"><span class="sid">P1a</span><b>Every source, every state</b><span class="dim">desktop 1440</span></div><div class="scroller" data-f="p1a"></div>
+  <figcaption><b>Where each card's state comes from.</b> Found: a <code>proposal</code> approval (an observer or flake proposal, pending), or an issue run in <code>PLANNING</code>. Waiting: a run in <code>PLANNED</code>, projected into the inbox as <code>plan</code> or, when held, <code>hold</code>. Approved and running: <code>APPROVED</code> or <code>RUNNING</code>, with <code>approved_by</code> (<i>auto-approved by its schedule's gate</i> is <code>approved_by: auto-approval</code>). Pull request and CI: <code>CHECKING</code> or <code>FIXING</code>, and a pending <code>merge</code> approval. Merged or ended: <code>DONE</code>, <code>FAILED</code>, <code>REJECTED</code> with <code>rejected_by</code> and its reason, and an approval <code>expired</code> or <code>superseded</code>. A card that waits on a person is edged amber whatever its column.</figcaption></figure>
+  <figure class="sub" id="P1b" data-frame="P1b"><div class="sl"><span class="sid">P1b</span><b>Filtered by source: failure review</b><span class="dim">desktop 1440</span></div><div class="scroller" data-f="p1b"></div>
+  <figcaption>The columns stay; the cards from other sources leave, and each column's count says how many it hides. The filter is in the address (<code>?source=failure-review</code>), so a link to it holds.</figcaption></figure>
+  <figure class="sub" id="P1c" data-frame="P1c"><div class="sl"><span class="sid">P1c</span><b>Filtered by state: decided and ended</b><span class="dim">desktop 1440</span></div><div class="scroller" data-f="p1c"></div>
+  <figcaption>A state filter that leaves one column turns the board into that column's table, with room for each reason in full.</figcaption></figure>
+</section>
+
+<section class="frame" id="P2" data-frame="P2">
+  <div class="flabel"><span class="fid">P2</span><h2>One plan to decide</h2></div>
+  <p>The card for #2583 opens its plan in a drawer over the board. The drawer reads top to bottom in the order a decision is made, and its foot holds the decision.</p>
+  <figure class="sub" id="P2a" data-frame="P2a"><div class="sl"><span class="sid">P2a</span><b>Waiting, seen by the platform owner</b><span class="dim">desktop 1440 · over the board</span></div><div class="scroller" data-f="p2a"></div>
+  <figcaption><b>Approve, Edit and Reject each carry <code>sha256:be162b53…</code>, the digest of the plan shown</b> (docs/issue-runs.md, "Approve and edit carry the digest of the plan shown"). The risk row is the run's <code>approval_hold</code> read against each step's files; this run has none, which is why its gate could approve it. Requirements and overlaps open folded past the first; "Show all" unfolds in place.</figcaption></figure>
+  <div class="pair">
+    <figure class="sub" id="P2b" data-frame="P2b"><div class="sl"><span class="sid">P2b</span><b>The same plan, seen by a member who may not approve</b><span class="dim">the drawer alone</span></div><div class="scroller solo" data-f="p2b"></div></figure>
+    <figure class="sub" id="P2c" data-frame="P2c"><div class="sl"><span class="sid">P2c</span><b>Superseded: the plan changed after it was shown</b><span class="dim">the drawer alone</span></div><div class="scroller solo" data-f="p2c"></div></figure>
+  </div>
+  <figcaption class="sub">P2b: no button is drawn, and the foot says who can decide (a new field, <code>may_decide</code>). P2c: a poll brought revision 2 while revision 1 was open. The console never swaps a plan under an open Approve button; it says so, shows what changed, and offers only "Read revision 2". Approving revision 1 would be refused 409 <code>plan_changed</code> anyway.</figcaption>
+</section>
+
+<section class="frame" id="P3" data-frame="P3">
+  <div class="flabel"><span class="fid">P3</span><h2>Editing a plan</h2></div>
+  <p>Edit turns the drawer into the plan's editor, in place, against the digest it replaces. Every change is marked until it is saved; saving makes a new revision with a new digest, and only then can it be approved.</p>
+  <figure class="sub" id="P3a" data-frame="P3a"><div class="sl"><span class="sid">P3a</span><b>Changing a step, editing its prompt, adding a requirement</b><span class="dim">desktop 1440 · over the board</span></div><div class="scroller" data-f="p3a"></div></figure>
+  <div class="pair">
+    <figure class="sub" id="P3b" data-frame="P3b"><div class="sl"><span class="sid">P3b</span><b>Removing a step (an example three-step plan)</b><span class="dim">the drawer alone</span></div><div class="scroller solo" data-f="p3b"></div></figure>
+    <figure class="sub" id="P3c" data-frame="P3c"><div class="sl"><span class="sid">P3c</span><b>Saved: revision 2, its digest, and Approve</b><span class="dim">the drawer alone</span></div><div class="scroller solo" data-f="p3c"></div></figure>
+  </div>
+  <figcaption class="sub">The canonical plan has one step, and a plan keeps at least one (<code>PlanSpec.steps</code>, at least one), so its Remove is disabled with that reason; P3b removes a step from an example plan instead. A save goes through the planner's own validator, so a refusal names its field where it was typed. The digests in P3b and P3c are examples: a real one is computed on save.</figcaption>
+</section>
+
+<section class="frame" id="P4" data-frame="P4">
+  <div class="flabel"><span class="fid">P4</span><h2>After approval: the plan traced to what it became</h2></div>
+  <p>An approved card moves right. Its drawer becomes the trace: the plan revision approved, each step's task, the pull request, CI and its fix rounds, the review's verdict on every requirement, the merge, and the keyword it earned.</p>
+  <figure class="sub" id="P4a" data-frame="P4a"><div class="sl"><span class="sid">P4a</span><b>#2583, merged, Closes #2583</b><span class="dim">desktop 1440 · over the board</span></div><div class="scroller" data-f="p4a"></div>
+  <figcaption>The run's own record, as its status comment on #2583 states it: <code>DONE</code>, pull request #2584 at <code>da75881a2270</code>, <code>Closes #2583</code> because the review confirmed every planned requirement, workflow <code>wf_e0fe6bf2c96f4a4082fa</code>. The step's task, the checks, the fix rounds and the merge time are the run record's own (<code>pr_task_id</code>, <code>pull_request.check_counts</code>, <code>ci_fix_round</code> of <code>fix_rounds</code>, <code>pull_request.merged_at</code>). The review step's task is not on the run record, so it is a dash with that reason.</figcaption></figure>
+  <figure class="sub" id="P4b" data-frame="P4b"><div class="sl"><span class="sid">P4b</span><b>An example run (the board’s PR #2580) in its second fix round, the review leaving a requirement unmet</b><span class="dim">the drawer alone</span></div><div class="scroller solo" data-f="p4b"></div>
+  <figcaption><code>part of #2567</code>, never <code>Closes</code>, while one requirement is unconfirmed: the keyword block names what is left (docs/issue-runs.md, "<code>Closes #N</code> only when the review confirmed every requirement").</figcaption></figure>
+</section>
+
+<section class="frame" id="P5" data-frame="P5">
+  <div class="flabel"><span class="fid">P5</span><h2>The automatic sources and their gates</h2></div>
+  <p>The board's "Sources" button. Every schedule and observer that puts cards on the board, its gate as served (<code>gate.run</code>, <code>gate.plan</code>, <code>gate.merge</code>, <code>gate.approvers</code>), today's spend, and what it proposed and what came of it in seven days. Spend and counts are example data.</p>
+  <figure class="sub" id="P5a" data-frame="P5a"><div class="sl"><span class="sid">P5a</span><b>Sources, with their gates</b><span class="dim">desktop 1440 · over the board</span></div><div class="scroller" data-f="p5a"></div></figure>
+  <figure class="sub" id="P5b" data-frame="P5b"><div class="sl"><span class="sid">P5b</span><b>Merge automatic: the audited switch</b><span class="dim">the drawer alone</span></div><div class="scroller solo" data-f="p5b"></div>
+  <figcaption>Merge goes automatic only through <code>POST /v1/schedules/{id}:merge-mode</code>, recorded <code>gate_merge_auto</code> in the schedule's audit; <code>PATCH</code> refuses it with 422 <code>use_merge_switch</code>. Every hold still stops a merge. No gate is drawn here that the API does not serve.</figcaption></figure>
+</section>
+
+<section class="frame" id="P6" data-frame="P6">
+  <div class="flabel"><span class="fid">P6</span><h2>Empty and honest states</h2></div>
+  <p>The states.html tiers: a whole-section state takes the content area with the nav usable; a region state shows in place, in its column.</p>
+  <figure class="sub" id="P6a" data-frame="P6a"><div class="sl"><span class="sid">P6a</span><b>Nothing waits on a person</b><span class="dim">desktop 1440</span></div><div class="scroller" data-f="p6a"></div></figure>
+  <figure class="sub" id="P6b" data-frame="P6b"><div class="sl"><span class="sid">P6b</span><b>A source paused: failure review</b><span class="dim">desktop 1440</span></div><div class="scroller" data-f="p6b"></div></figure>
+  <figure class="sub" id="P6c" data-frame="P6c"><div class="sl"><span class="sid">P6c</span><b>A read that failed: the approvals read, with the runs read fine</b><span class="dim">desktop 1440</span></div><div class="scroller" data-f="p6c"></div></figure>
+  <figure class="sub" id="P6d" data-frame="P6d"><div class="sl"><span class="sid">P6d</span><b>The plans API is not served by this deployment</b><span class="dim">desktop 1440</span></div><div class="scroller" data-f="p6d"></div></figure>
+</section>
+
+<section class="frame" id="P7" data-frame="P7">
+  <div class="flabel"><span class="fid">P7</span><h2>Phone at 390</h2></div>
+  <p>The board becomes one stage at a time: a row of stage chips with counts, the waiting stage first. A plan opens as a page, its decision in a sticky foot.</p>
+  <div class="pair">
+    <figure class="sub" id="P7a" data-frame="P7a"><div class="sl"><span class="sid">P7a</span><b>P1, the board</b></div><div data-f="p7a"></div></figure>
+    <figure class="sub" id="P7b" data-frame="P7b"><div class="sl"><span class="sid">P7b</span><b>P2, the plan for #2583</b></div><div data-f="p7b"></div></figure>
+  </div>
+</section>
+
+<section class="frame" id="fields">
+  <div class="flabel"><span class="fid">+</span><h2>New fields this proposal needs</h2></div>
+  <p>Every other figure on this page is served today by <code>GET /v1/runs</code> and <code>GET /v1/runs/{id}</code> (state, plan, <code>plan_digest</code>, <code>plan_revision</code>, <code>plan_edited_by</code>, <code>approved_by</code>, <code>rejected_by</code>, <code>approval_hold</code>, the pull request, CI rounds, <code>requirements_met</code>), <code>GET /v1/approvals</code> (kinds <code>plan</code>, <code>hold</code>, <code>merge</code>, <code>proposal</code>; states pending, approved, rejected, expired, superseded; <code>expires_at</code>, <code>superseded_by</code>) and <code>GET /v1/schedules</code> (<code>gate</code>, spend, state), or is derived from them (the stage of a card, time to expiry, column counts). These are not:</p>
+  <div class="dt"><table class="doct"><thead><tr><th>Field</th><th>What it is</th><th>Why this proposal needs it</th><th>Frames</th></tr></thead><tbody>
+    <tr><td><code>GET /v1/pipeline</code> <code>{cards: [{stage, source, subject, state, waits_on_person, expires_at}], by_stage}</code></td><td>One read of everything the board draws, each item already placed in its stage, from the runs, the approvals and the schedules it joins.</td><td>The board is one view over three collections. Joined in the browser it is three reads that can disagree for a poll; served, a card cannot be in two columns or none, and the column counts are the API's.</td><td>P1, P6, P7a</td></tr>
+    <tr><td><code>run.source</code> <code>{kind: sweep | failure_review | observer | hand, fingerprint, firing_id}</code></td><td>What produced the run, named, with the failure fingerprint (<code>fr-…</code>) when failure review filed its issue.</td><td>Every card and P2's "Why it exists" name the source. Today a run carries <code>schedule.schedule_id</code> and <code>firing_id</code>; the fingerprint lives only in the issue body's marker comment and in <code>failure_causes</code>.</td><td>P1, P2, P7</td></tr>
+    <tr><td><code>plan.expected_usd</code> <code>{low, high, basis}</code></td><td>The plan's expected cost, from its steps' estimates and the runner's price, with how it was computed.</td><td>P2 draws "Expected cost" as a dash with this reason today: a plan carries <code>estimate</code> in agent-hours only.</td><td>P2, P7b</td></tr>
+    <tr><td><code>plan.steps[].risk</code> <code>[{stop, matched}]</code></td><td>For each step, which hold stops (<code>secrets</code>, <code>iam</code>, <code>workflows</code>, <code>contract</code>, <code>shared</code>) its files match.</td><td>P2's risk row names the step that touches a risk path. <code>approval_hold.matched</code> is served for the whole run, capped; matching it back to steps in the browser restates the server's patterns, which is how the shell copies drifted.</td><td>P2, P1 (held card)</td></tr>
+    <tr><td><code>run.may_decide</code> <code>{approve, edit, reject, why}</code></td><td>Whether the signed-in person may approve, edit and reject this plan, with the sentence naming who can, from the same who-checks <code>plan:approve</code> runs.</td><td>P2b draws no buttons and says who can. The inbox item carries <code>approvers</code>, but the last-editor and creator rules of a <code>second_member</code> hold are only known to the server.</td><td>P2b, P3c</td></tr>
+    <tr><td><code>run.plan_revisions[]</code> <code>{revision, digest, edited_by, at, changed}</code></td><td>Each revision's digest and what changed from the one before.</td><td>P2c and P3c say what changed between revision 1 and 2. Today only the current plan and its revision number are served; the history row says an edit happened, not what it changed.</td><td>P2c, P3c</td></tr>
+    <tr><td><code>run.trace</code> <code>{steps: [{step_id, task_id, state}], fix_rounds, review: {verdict, requirements}, merged_at}</code></td><td>The approved plan's steps joined to their tasks, with the review's per-requirement answers.</td><td>P4 draws plan → tasks → PR → CI → review → merge in one drawer. The pieces are served across the run, its workflow and the review's verdict; one field makes the trace one read.</td><td>P4</td></tr>
+    <tr><td><code>schedule.proposals_7d</code> <code>{proposed, approved, rejected, expired, merged}</code></td><td>What a source proposed in seven days and what became of it.</td><td>P5's counts. They can be counted from the approvals and runs lists, but not past their page size.</td><td>P5a</td></tr>
+  </tbody></table></div>
+  <p><b>No frozen-contract change.</b> All of these are additions to <code>apps/swarm-api</code> responses; nothing under <code>apps/common/swarm_common/</code> changes. The board adds no capacity demand: a waiting card is a <code>PLANNED</code> run or a pending approval, which holds nothing (invariant 1).</p>
+</section>
+</main>
+
+<script>
+(function(){
+'use strict';
+const I=(n,c)=>`<svg class="ic ${c||''}" aria-hidden="true"><use href="#i-${n}"/></svg>`;
+const B=(t,c,ic,dis)=>`<span class="b ${c||''}" role="button"${dis?' aria-disabled="true"':''}>${ic?I(ic):''}${t}</span>`;
+const C=(t,c,ic)=>`<span class="c ${c||''}">${ic?I(ic):''}${t}</span>`;
+const SI={ok:'check',wn:'warn',bd:'x',in:'info',nu:'info'};
+const S=(k,t)=>`<span class="st ${k}">${I(SI[k])}<span>${t}</span></span>`;
+const DASH=(why)=>`<span class="dim">— <small class="sm12" style="display:inline">${why}</small></span>`;
+const strip=s=>s.replace(/<[^>]+>/g,'');
+const SG=(opts,on)=>`<span class="sg">${opts.map((o,i)=>`<span class="${i===on?'on':''}">${o}</span>`).join('')}</span>`;
+const F=(l,v,cls)=>`<label class="fld"><span>${l}</span><span class="inp ${cls||'v'}">${v}</span></label>`;
+const CHK=(t,y)=>`<span class="chk"><i class="${y?'y':''}">${y?I('check'):''}</i>${t}</span>`;
+function T(cols,rows){
+  const h=cols.map(c=>{const n=c.startsWith('#');return `<th class="${n?'n':''}">${n?c.slice(1):c}</th>`}).join('');
+  const b=rows.map(r=>{
+    if(r.grp) return `<tr class="grp"><td colspan="${cols.length}">${r.grp}</td></tr>`;
+    const cells=Array.isArray(r)?r:r.c;const cls=Array.isArray(r)?'':(r.cls||'');
+    return `<tr class="${cls}">${cells.map((v,i)=>{const c=cols[i]||'';const n=c.startsWith('#');return `<td data-l="${strip(n?c.slice(1):c)}" class="${n?'n':''}">${v}</td>`}).join('')}</tr>`}).join('');
+  return `<div class="tw"><table class="t rs"><thead><tr>${h}</tr></thead><tbody>${b}</tbody></table></div>`;
+}
+const CARD=(title,right,body,cls)=>`<section class="cd ${cls||''}"><div class="ch"><b>${title}</b>${right?`<span class="r acts">${right}</span>`:''}</div>${body}</section>`;
+const LEAD=(k,t,s,acts,cls)=>`<section class="lead ${cls||''}"><div class="lt"><span class="k">${k}</span><b>${t}</b>${s?`<span>${s}</span>`:''}</div>${acts?`<div class="acts">${acts}</div>`:''}</section>`;
+const BAR=(pct,cls,tick,un)=>`<div class="bar"><i class="${cls||''}" style="width:${Math.min(pct,100)}%"></i>${un?`<u style="left:${pct}%;width:${un}%"></u>`:''}${tick!=null?`<s style="left:${tick}%"></s>`:''}</div>`;
+
+/* ---------- chrome: spine, panel, phone header ---------- */
+function spine(){
+  const it=(id,lb,ic,on)=>`<span class="si ${on?'on':''}">${I(ic)}${lb}</span>`;
+  return `<nav class="sp" aria-label="Sections"><svg class="hv" width="44" height="44" aria-label="SwarmCloud"><use href="#hive"/></svg>`+
+    `<span class="si go">${I('plus')}Submit</span>`+it('overview','Overview','overview')+it('work','Work','work')+it('automate','Automate','automate',true)+it('capacity','Capacity','capacity')+
+    it('config','Config','config')+it('admin','Admin','admin')+`<span class="gr"></span>`+it('help','Help','help')+`<span class="si"><span class="av">OP</span></span></nav>`;
+}
+const PI=(on,ic,lb,badge)=>`<span class="pi ${on?'on':''}">${ic?I(ic):''}<span class="lb">${lb}</span>${badge||''}</span>`;
+function panel(x){
+  x=x||{};
+  const pb=x.pbadge!==undefined?x.pbadge:C('5 waiting','wn');
+  return `<aside class="pn" aria-label="Pages"><div class="wm"><span style="color:var(--text)">Swarm</span><span>Cloud</span><span class="pill">dev</span></div>`+
+    `<div class="wsb"><span class="tg">PL</span><span class="tt"><b>Platform</b><small>group · ${x.member?'you are a member':'you are admin'}</small></span>${I('chevd')}</div>`+
+    `<div class="sec">Automate</div>`+PI(false,'cal','Schedules','<span class="sm12 dim">7</span>')+PI(true,'merge','Pipeline',pb)+PI(false,'check','Approvals',x.abadge!==undefined?x.abadge:'<span class="sm12 dim">1</span>')+
+    `<p class="pnote">What runs here by itself, what it proposes, and what is waiting on you to approve.</p>`+
+    `<span class="pgrow"></span><div class="pf"><div class="who"><span class="av">${x.member?'AP':'OP'}</span><span><b>${x.member?'Alex Pop':'Operator'}</b><small>${x.member?'member of Platform':'platform owner'}</small></span></div>`+
+    `<div class="tseg" role="group" aria-label="Theme"><button type="button" data-theme-set="light">Light</button><button type="button" data-theme-set="dark">Dark</button><button type="button" data-theme-set="system">System</button></div></div></aside>`;
+}
+function head(hd){
+  return `<div class="hd"><div class="tl"><span class="cr">${hd.cr||'Automate'}</span><span class="h">${hd.h}</span></div>${hd.right?`<div class="acts">${hd.right}</div>`:''}${hd.age?`<span class="age">${hd.age}</span>`:''}</div>`;
+}
+function desk(x,hd,body,sheet,cls){
+  return `<div class="F app ${cls||''}">${spine()}${panel(x)}<main class="ct">${head(hd)}${body}</main>${sheet?`<div class="scr"></div>${sheet}`:''}</div>`;
+}
+function phone(title,body){
+  return `<div class="F ph"><div class="phd">${I('menu')}<svg width="26" height="26" aria-hidden="true"><use href="#hive"/></svg><b>${title}</b><span class="wsc">Platform</span></div>${body}</div>`;
+}
+const PHEAD={h:'Pipeline',right:B('Sources','','gear')+B('Submit from an issue','','plus'),age:'read 03:00Z · every 30 s'};
+
+/* ---------- the sources ---------- */
+const SRC={
+  sweep:{l:'Issue sweep',ic:'search',sub:'Nightly issue sweep'},
+  review:{l:'Failure review',ic:'bug',sub:'sch_54e9828e6772'},
+  observer:{l:'Observer',ic:'eye',sub:'platform observer'},
+  flake:{l:'CI flake hunter',ic:'eye',sub:'flake proposal'},
+  hand:{l:'By hand',ic:'person',sub:'submitted by BGD'}
+};
+const SRCF={sweep:'sweep',review:'review',observer:'obs',flake:'obs',hand:'hand'};
+/* stage: 0 found, 1 waiting, 2 running, 3 pr, 4 ended. st: [word, tone]. me: waits on a person */
+const K=[
+  {id:'k1',stg:0,src:'observer',t:'File as an issue: tenant reads of /v1/capacity 429 three times as often as last week',st:['waiting','wn'],me:1,kind:'proposal',ex:'expires in 1 d 6 h',meta:'proposed 21:10Z yesterday · Approve files it in the bug form',age:5.8},
+  {id:'k2',stg:0,src:'review',t:'Fingerprint fr-5d1e09a7c2b4: the rollup tick 502s while a planner is still writing',st:['planning','in'],meta:'filed as #2590 at 00:04Z · planner started 00:05Z',fp:1},
+  {id:'k3',stg:1,src:'sweep',t:'#2579 Pin the checkov action by digest in security.yml',st:['waiting','wn'],me:1,kind:'hold',ex:'expires in 1 d 2 h',meta:'planned Oct 26 05:00Z · 3 steps · 3 agent-hours',why:'held: a step touches .github/workflows/; only the owner decides',age:46},
+  {id:'k4',stg:1,src:'review',t:'#2583 cifix.stamp’s ci_fix branch refuses a PR-side CI fix while a plain continuation holds the PR',st:['waiting','wn'],me:1,kind:'plan',ex:'expires in 2 d 21 h',meta:'planned 00:06Z · 1 step · 2 agent-hours',canon:1,age:3},
+  {id:'k5',stg:1,src:'hand',t:'#2581 The Runs list loses its filter when a run moves state',st:['waiting','wn'],me:1,kind:'plan',ex:'no expiry: a plan made by hand waits until decided',meta:'planned 01:40Z · 2 steps · 3 agent-hours',age:1.3},
+  {id:'k6',stg:2,src:'sweep',t:'#2574 Schedules’ history table drops the firing’s second page',st:['running','in'],meta:'approved by Operator 23:40Z yesterday · step 2 of 2 running'},
+  {id:'k7',stg:2,src:'review',t:'#2572 The expiry sweep leaves a superseded merge pending',st:['approved','ok'],meta:'auto-approved by its schedule’s gate (plan: auto) 02:31Z · workflow starting'},
+  {id:'k8',stg:3,src:'sweep',t:'Merge PR #2577 for #2570',st:['waiting','wn'],me:1,kind:'merge',ex:'expires in 2 d 9 h',meta:'green at 9c1e40b27a55 · review MERGE · 7 of 7 requirements met',age:15},
+  {id:'k9',stg:3,src:'review',t:'PR #2580 for #2567: CI red, fix round 2 of 3',st:['fixing','wn'],meta:'round 2 started 02:48Z · 1 check red: python (unit)'},
+  {id:'k10',stg:4,src:'review',t:'#2559 merged as PR #2562, Closes #2559',st:['merged','ok'],meta:'merged automatically 22:40Z yesterday · every requirement confirmed'},
+  {id:'k11',stg:4,src:'sweep',t:'#2566 plan rejected',st:['rejected','bd'],meta:'by Operator, Oct 27 18:12Z',why:'“Two steps edit Runs.tsx side by side; plan it as one step.”'},
+  {id:'k12',stg:4,src:'flake',t:'File as an issue: test_rollup_tick flakes 3 of 40 runs',st:['expired','ln'],meta:'Oct 27 09:30Z · nobody decided in 72 h; nothing was filed'},
+  {id:'k13',stg:4,src:'sweep',t:'Merge PR #2563 for #2558',st:['superseded','pa'],meta:'Oct 27 14:05Z · the head moved to 41be7c0d9a12; a new request replaced it and was approved'}
+];
+const STAGES=[
+  {t:'Found',s:'findings and proposals, before a plan'},
+  {t:'Planned, waiting',s:'a plan waits on a person'},
+  {t:'Approved, running',s:'steps are tasks now'},
+  {t:'Pull request and CI',s:'fix rounds, review, merge gate'},
+  {t:'Merged or ended',s:'last 24 h'}
+];
+function card(k,o){
+  o=o||{};const s=SRC[k.src];
+  return `<article class="kc ${k.me?'me':''} ${o.sel===k.id?'sel':''} ${k.stg===4?'fade':''}">`+
+    `<span class="src">${I(s.ic)}<span>${s.l}</span>${k.kind?`<span class="faint">· ${k.kind==='hold'?'held plan':k.kind}</span>`:''}</span>`+
+    `<b class="tt">${k.t}</b>`+
+    `<span class="ln2">${C(k.st[0],k.st[1])}${k.ex?`<span class="ex">${k.ex}</span>`:''}</span>`+
+    (k.why?`<span class="why">${k.why}</span>`:'')+
+    `<span class="mt">${k.meta}</span></article>`;
+}
+function board(o){
+  o=o||{};
+  const keep=k=>(!o.src||SRCF[k.src]===o.src);
+  const L=o.move?K.map(k=>k.id===o.move.id?Object.assign({},k,o.move):k):K;
+  return `<div class="board">`+STAGES.map((g,i)=>{
+    const all=L.filter(k=>k.stg===i);const cs=all.filter(keep);
+    cs.sort((a,b)=>(b.me||0)-(a.me||0)||(b.age||0)-(a.age||0));
+    const wait=cs.filter(k=>k.me);const oldest=wait.length?Math.max(...wait.map(k=>k.age||0)):0;
+    const stall=oldest>=24&&!o.nostall;
+    let sub=g.s;
+    if(o.colnote&&o.colnote[i]) sub=o.colnote[i];
+    else if(wait.length) sub=`<small class="w">${wait.length} waiting on a person · <span class="nw">oldest ${oldest>=24?Math.floor(oldest/24)+' d '+Math.round(oldest%24)+' h':Math.round(oldest)+' h'}</span></small>`;
+    const hid=all.length-cs.length;
+    const n=o.ncol&&o.ncol[i]!==undefined?o.ncol[i]:String(cs.length);
+    return `<section class="colm ${stall&&!o.src?'stall':''}"><div class="colh"><b>${g.t}<span class="n">${n}</span></b>${sub.startsWith('<small')?sub:`<small>${sub}</small>`}</div>`+
+      (o.body&&o.body[i]!==undefined?o.body[i]:cs.map(k=>card(k,o)).join(''))+
+      (hid?`<span class="more">${hid} more from other sources, hidden by the filter</span>`:'')+`</section>`;
+  }).join('')+`</div>`;
+}
+function srcCount(f){return K.filter(k=>!f||SRCF[k.src]===f).length}
+function filters(src,st,counts){
+  const so=[['All',''],['Issue sweep','sweep'],['Failure review','review'],['Observers','obs'],['By hand','hand']];
+  const sto=['Any state','Waiting','Auto-approved','Approved','Running','Rejected','Expired','Superseded','Merged','Failed'];
+  return `<div class="acts"><span class="sm12 dim">Source</span>${SG(so.map((x,i)=>`${x[0]} · ${counts?counts[i]:srcCount(x[1])}`),so.findIndex(x=>x[1]===(src||'')))}</div>`+
+    `<div class="acts"><span class="sm12 dim">State</span><span class="sg">${sto.map((o,i)=>`<span class="${(Array.isArray(st)?st.includes(i):i===(st||0))?'on':''}">${o}</span>`).join('')}</span><span class="sm12 dim" style="margin-left:auto">Waiting on a person first, oldest first</span></div>`;
+}
+const P1LEAD=LEAD('Needs you','5 cards wait on a person: 3 plans, 1 merge and 1 proposal.','The flow stalls at "planned, waiting": the oldest, #2579’s held plan, has waited 1 d 22 h and expires in 1 d 2 h. Nothing in "approved, running" waits on anyone.',B('Open the oldest','p'),'wn');
+
+/* ---------- the canonical plan (run_fba2dc8f6ec9494dae2f), quoted from its plan comment ---------- */
+const DIG='sha256:be162b53886ee262025253dc537c84ca7236964c1c93f08a39a05e4fa0f6be22';
+const DIGS='sha256:be162b53886ee2620…';
+const SUMMARY='cifix.stamp’s ci_fix branch refuses a PR-side CI fix while a lane’s merge step, a live issue run, a live conflict fix or a live claim on the same failure holds the pull request, but never while a plain continuation (a <code>continues_task</code> workflow with no writer mark of its own, or a <code>publish_to_pr</code> workflow naming the same branch task) is live on it. #2554 (<code>_refuse_if_fix_live</code>) gates only the opposite order. On 2026-10-27 the CI fixer’s attempt 2 (task_7d270954, 16:26:01Z) was admitted onto PR #2570 two minutes after implement task_8017fba2 (wf_1a460a31, 16:24:06Z) had started on the same red head 7e55a8d.';
+const REQS=[
+ 'cifix.stamp’s ci_fix branch refuses a CI-fix request while a non-terminal plain continues_task task of the same tenant continues the same root (metadata.dispatch.continues == root) and would push to that pull request’s branch, naming that task (and its workflow) in the refusal.',
+ 'The same refusal holds for a live publish_to_pr workflow whose step pushes onto the same pull request’s branch (metadata.dispatch.publish_to_pr naming the root / the pull request number).',
+ 'The refusal runs before the attempt cap and the claim, so a refused request writes nothing and holds no claim.',
+ 'The refusal is a 409 that scripts/ci-fix.sh treats as ‘skip, a fix is in flight’: no fix step, no comment, the run passes, and the log names the live task.',
+ 'A terminal continuation, a merge-only step, and continuations carrying their own writer mark (ci_fix, merge_fix_round, merge_conflict_round, pr_shepherd, issue_run) do not trigger this new refusal; the existing gates for them are unchanged.',
+ 'The tenant boundary holds: another tenant’s continuation of a task with the same id never refuses the request (every filter re-checked in the application).',
+ 'A red-first unit test in tests/unit/control_plane: with a live plain continues_task workflow on PR N’s root, a ci_fix request for PR N is refused; it is admitted on main today.'
+];
+const OV1='Open PR ‘cifix refuses a PR-side CI fix while a live issue run owns the pull request (part of #2216)’. It edits apps/swarm-api/swarm_api/cifix.py, the file this plan changes. Its subject was delivered by #2546, which mer…';
+const FILES=['apps/swarm-api/swarm_api/cifix.py','apps/swarm-api/swarm_api/refusals.py','scripts/ci-fix.sh'];
+const RISKS=[['Credentials','stop: secrets'],['IAM','stop: iam'],['.github/workflows','stop: workflows'],['Frozen contract','contract: apps/common/ swarm_common/'],['Shared deny-list','shared: scripts/lib/ common.sh']];
+function riskRow(hit){
+  return `<div class="risk">${RISKS.map(r=>{const h=hit&&hit[r[0]];return `<div class="${h?'hit':''}"><b>${r[0]}</b><span class="sm12 ${h?'':'dim'}">${h||'not touched'}</span><small class="sm12 faint">${r[1]}</small></div>`}).join('')}</div>`;
+}
+function why(o){
+  o=o||{};
+  return `<section class="shs"><h5>Why it exists</h5><dl class="kv">`+
+    `<dt>Source</dt><dd>${I('bug')} Failure review, <code>sch_54e9828e6772</code></dd>`+
+    `<dt>Firing</dt><dd><code>sch_54e9828e6772:29885760</code> <span class="dim">· Oct 28 00:00Z</span></dd>`+
+    `<dt>Failure</dt><dd>fingerprint <code>fr-043100d00dae</code>, first filed from firing <code>…:29885400</code> <span class="dim">· 1 failure: agent task_8017fba2e38a41a591fe, publish refused head moved</span></dd>`+
+    `<dt>Issue</dt><dd><a>bogdan-alexandrescu/SwarmCloud#2583</a> <span class="dim">· bug · S1, filed by the schedule in the bug form</span></dd>`+
+    `<dt>Run</dt><dd><code>run_fba2dc8f6ec9494dae2f</code> · mode single (one agent)</dd></dl></section>`;
+}
+function reqs(all,add){
+  const list=all?REQS:REQS.slice(0,1);
+  return `<section class="shs"><h5>Requirements <small>${REQS.length+(add?1:0)} · the review answers each one; <code>Closes #2583</code> only if all are met</small></h5><ol class="req">${list.map(r=>`<li>${r}</li>`).join('')}${add?`<li class="new"><b>added:</b> ${add}</li>`:''}</ol>${all?'':`<span class="fold">${I('chevd')}Show all ${REQS.length}</span>`}</section>`;
+}
+function overlaps(){
+  return `<section class="shs"><h5>Overlaps with work in flight <small>5 · the planner’s, with what it says to do</small></h5>`+
+    T(['With','Kind','The planner’s note','What to do'],[[`<a class="nw">#2226</a>`,'pull request',`<span class="sm12">${OV1}</span>`,`${C('action required','wn')}<span class="sm12"> An operator should close it as superseded by #2546.</span><small>${B('Open #2226','s q','ext')}</small>`]])+
+    `<span class="fold">${I('chevd')}Show the other 4 overlaps</span></section>`;
+}
+function step(o){
+  o=o||{};
+  return `<div class="stp ${o.ed?'ed':''}"><div class="sh">${C('step 1','ln')}<b class="mn">ci-fix-waits-on-continuation</b><span class="r" style="margin-left:auto">${C('2 agent-hours','ln','clock')}</span></div>`+
+    `<dl class="kv"><dt>Files</dt><dd>${(o.files||FILES).map(f=>`<code>${f}</code>`).join(' ')}</dd>`+
+    `<dt>Tests</dt><dd class="dim">6 named, red first: <code>test_cifix_waits_<wbr>on_plain_continuation.py</code> (5) and <code>test_ci_fix.py</code> (1)</dd>`+
+    `<dt>Runner</dt><dd>claude-code <span class="dim">· the default model class: a plan step cannot name one yet</span></dd>`+
+    `<dt>Depends on</dt><dd class="dim">nothing</dd></dl>`+
+    `<span class="fold">${I('chev')}Prompt, folded</span></div>`;
+}
+function figures(rev,dig){
+  return `<section class="shs"><h5>Estimate, cost and identity</h5><div class="dbl">`+
+    `<div><small>Estimate</small><b>2 agent-hours</b><small>1 step · mode single</small></div>`+
+    `<div><small>Expected cost</small><b>—</b><small>not served: no plan carries a dollar estimate yet (new field)</small></div>`+
+    `<div><small>Plan</small><b>revision ${rev||1}</b><small class="dg">${dig||DIGS}</small></div></div></section>`;
+}
+function planSheet(o){
+  o=o||{};
+  const tone=o.sup?'pa':'wn';
+  let foot;
+  if(o.member) foot=`<div class="foot"><div class="bn in" style="flex:1">${I('lock')}<div><b>Only the platform owner may decide this plan.</b>Failure review’s gate names <code>approvers: owner_only</code>. You may read it and comment on #2583.</div></div></div>`;
+  else if(o.sup) foot=`<div class="foot"><span class="sm12 dim grow">Revision 1 can no longer be approved.</span>${B('Read revision 2','p')}</div>`;
+  else foot=`<div class="foot"><span class="sm12 dim grow">Approves revision 1, <span class="dg">${DIGS}</span></span>${B('Reject','d','x')}${B('Edit','','edit')}${B('Approve this plan','p','check')}</div>`;
+  return `<aside class="dsheet w7"><div class="shh"><div class="tt"><span class="cr">Failure review · plan for #2583</span><h4>cifix.stamp’s ci_fix branch refuses a PR-side CI fix while a plain continuation holds the pull request</h4>`+
+    `<span class="meta">${C(o.sup?'superseded':'waiting on a person',tone)}<span>${o.sup?'revision 2 replaced it at 03:02Z':'expires in 2 d 21 h, Oct 31 00:06Z'}</span><span>· ${o.member?'you may not decide':'you may decide'}</span></span></div>${B('','q x','x')}</div>`+
+    (o.sup?`<div class="bn wn">${I('warn')}<div><b>This plan changed after you opened it.</b>Operator saved revision 2 at 03:02Z (<span class="dg">sha256:7d0c55e19a3b4f2e…</span>, an example digest): step 1’s estimate, files and prompt changed, and requirement 8 added. Revision 1 stays on screen so you can compare; nothing approves it.</div></div>`:'')+
+    why()+`<section class="shs"><h5>Summary</h5><p>${SUMMARY} <span class="fold">Show all</span></p></section>`+
+    figures()+reqs(false)+overlaps()+
+    `<section class="shs"><h5>Steps <small>1</small></h5>${step()}</section>`+
+    `<section class="shs"><h5>Risk paths <small>the run’s <code>approval_hold</code>: none · read against every step’s files</small></h5>${riskRow()}</section>`+
+    foot+`</aside>`;
+}
+const p2a=()=>desk({},PHEAD,P1LEAD+filters()+board({sel:'k4'}),planSheet());
+
+/* ---------- P3: editing ---------- */
+const ADDREQ='scripts/ci-fix.sh’s skip line names the live task’s workflow id, so the CI log alone says which continuation held the pull request.';
+function editSheet(){
+  return `<aside class="dsheet w7"><div class="shh"><div class="tt"><span class="cr">Failure review · plan for #2583 · editing</span><h4>Editing revision 1</h4><span class="meta">${C('editing','in')}<span>replaces <span class="dg">${DIGS}</span>; if someone saves first, your save is refused and kept</span></span></div>${B('','q x','x')}</div>`+
+    `<section class="shs"><h5>Steps <small>1 · a plan keeps at least one</small></h5>`+
+    `<div class="stp ed"><div class="sh">${C('step 1 · changed','in')}<b class="mn">ci-fix-waits-on-continuation</b><span style="margin-left:auto">${B('Remove','s d','trash',true)}</span></div><span class="hint">Remove is off: this is the plan’s only step.</span>`+
+    `<div class="g2">${F('Estimate','3 agent-hours','v')}${F('Depends on','nothing','')}</div>`+
+    `<label class="fld"><span>Files</span><span class="inp v wr">apps/swarm-api/swarm_api/cifix.py · apps/swarm-api/swarm_api/refusals.py · scripts/ci-fix.sh · <ins style="background:var(--t-ok);color:var(--ok-ink);text-decoration:none">tests/unit/control_plane/test_cifix_waits_on_plain_continuation.py</ins></span></label>`+
+    `<label class="fld"><span>Prompt</span><div class="prompt ed"><span class="dim">… the planner’s prompt, unchanged lines folded (${I('chevd')}show) …</span>
+<ins>Also make scripts/ci-fix.sh’s skip line print the live task’s workflow id next to its task id.</ins></div></label></div></section>`+
+    `<section class="shs"><h5>Requirements <small>7 + 1 added</small></h5><ol class="req" start="7"><li>${REQS[6]}</li><li class="new"><label class="fld" style="display:flex"><span>Requirement 8, new</span><span class="inp v ta">${ADDREQ}</span></label></li></ol>${B('Add a requirement','s q','plus')}</section>`+
+    `<section class="shs"><h5>What saving does</h5><p class="sm12">Saving sends the plan with the digest it replaces (<span class="dg">${DIGS}</span>). The server validates it with the planner’s own rules, writes revision 2 with a new digest and records you as <code>plan_edited_by</code>. The plan stays waiting; it is approved only from revision 2.</p></section>`+
+    `<div class="foot"><span class="sm12 dim grow">4 changes: step 1’s estimate, files and prompt; requirement 8 added</span>${B('Discard')}${B('Save as revision 2','p','check')}</div></aside>`;
+}
+function removeSheet(){
+  const st=(n,id,t,cls,files,dep)=>`<div class="stp ${cls||''}"><div class="sh">${C('step '+n,'ln')}<b>${t}</b><span style="margin-left:auto">${cls==='rm'?B('Undo','s q'):B('Remove','s d','trash')}</span></div><span class="mn">${id}</span><span class="sm12 dim">${files}${dep?' · depends on '+dep:''}</span></div>`;
+  return `<aside class="dsheet w6"><div class="shh"><div class="tt"><span class="cr">Issue sweep · plan for #2579 · editing (example)</span><h4>Editing revision 1</h4><span class="meta">${C('editing','in')}<span>replaces sha256:41a7c0e9… (example)</span></span></div></div>`+
+    `<section class="shs"><h5>Steps <small>3 · 1 to remove</small></h5>`+
+    st(1,'pin-checkov-digest','Pin the checkov action by digest','', '.github/workflows/security.yml')+
+    st(2,'record-the-pin','Record the pin and its source in docs/ci.md','rm','docs/ci.md','pin-checkov-digest')+
+    st(3,'guard-the-pin','A guard test that every action is pinned by digest','','tests/unit/scripts/test_action_pins.py','pin-checkov-digest')+
+    `<div class="bn wn">${I('warn')}<div><b>Step 2 is removed.</b>Nothing depends on it. Requirement 2 (“docs/ci.md names the pin’s source”) is now covered by no step: remove it too, or keep it and the review will mark it unmet.</div></div></section>`+
+    `<div class="foot"><span class="sm12 dim grow">1 change</span>${B('Discard')}${B('Save as revision 2','p','check')}</div></aside>`;
+}
+function savedSheet(){
+  return `<aside class="dsheet w6"><div class="shh"><div class="tt"><span class="cr">Failure review · plan for #2583</span><h4>Revision 2, saved</h4><span class="meta">${C('waiting on a person','wn')}<span>edited by Operator 03:02Z</span></span></div></div>`+
+    `<div class="bn ok">${I('check')}<div><b>Saved as revision 2.</b><span class="dg">sha256:7d0c55e19a3b4f2e…</span> <span class="sm12 dim">(an example: the server computes it)</span> replaces <span class="dg">${DIGS}</span>.</div></div>`+
+    `<section class="shs"><h5>What changed from revision 1</h5><ul class="files"><li>${C('changed','in')} step 1 estimate: 2 → 3 agent-hours</li><li>${C('changed','in')} step 1 files: + tests/unit/control_plane/test_cifix_waits_on_plain_continuation.py</li><li>${C('changed','in')} step 1 prompt: 1 line added</li><li>${C('added','ok')} requirement 8</li></ul></section>`+
+    `<section class="shs"><h5>Who may approve it</h5><p class="sm12">The plan is not held, so its editor may approve it. Had it carried a <code>second_member</code> hold, the last plan editor could not: the foot would name who can.</p></section>`+
+    `<div class="foot"><span class="sm12 dim grow">Approves revision 2 only</span>${B('Reject','d','x')}${B('Edit','','edit')}${B('Approve revision 2','p','check')}</div></aside>`;
+}
+
+/* ---------- P4: the trace ---------- */
+function traceSheet(){
+  const li=(d,ic,t,s,extra)=>`<li><span class="dot ${d}">${I(ic)}</span><div class="tb"><b>${t}</b><span>${s}</span>${extra||''}</div></li>`;
+  return `<aside class="dsheet w7"><div class="shh"><div class="tt"><span class="cr">Failure review · #2583</span><h4>cifix.stamp’s ci_fix branch refuses a PR-side CI fix while a plain continuation holds the pull request</h4><span class="meta">${C('merged','ok')}<span>run_fba2dc8f6ec9494dae2f · done</span></span></div>${B('','q x','x')}</div>`+
+    `<section class="shs"><h5>From plan to merge</h5><ol class="trace">`+
+    li('ok','check','Plan revision 1 approved','auto-approved by its schedule’s gate (<code>plan: auto</code>, so the run’s <code>plan_approval: auto</code>) at 2026-10-28 00:06:03Z · '+`<span class="dg">${DIGS}</span>`,`<span class="fold">${I('chev')}The plan as approved</span>`)+
+    li('ok','check','Workflow wf_e0fe6bf2c96f4a4082fa','the plan compiled to its step, then review, fix and re-review',T(['Step','Task','State'],[[`<span class="mn">ci-fix-waits-on-continuation</span>`,`<span class="mn">task_a5ddf372107c41e9ab7e</span>`,C('done','ok')],[`<span class="mn">review</span>`,DASH('the review task is not on the run record'),C('done','ok')]]))+
+    li('ok','pr','Pull request #2584','opened by the step; the run checked it to a green head',`<span class="sm12">head <code>da75881a2270</code></span>`)+
+    li('ok','check','CI and fix rounds',`green at <code>da75881a2270</code> · 10 checks passed, 0 failed · fix rounds used: 0 of 3`)+
+    li('ok','check','Review: every requirement met','the review’s verdict answered all 7 requirements met',`<span class="ln2">${REQS.map((r,i)=>C('requirement '+(i+1)+' met','ok','check')).join(' ')}</span>`)+
+    li('ok','merge','Merged','merged at 2026-10-28 01:23:31Z; the run read DONE at 01:24:06Z')+
+    li('ok','check','Closes #2583','written into #2584’s body because the review confirmed every planned requirement; #2583 is closed')+
+    `</ol></section></aside>`;
+}
+function traceB(){
+  const li=(d,ic,t,s,extra)=>`<li><span class="dot ${d}">${I(ic)}</span><div class="tb"><b>${t}</b><span>${s}</span>${extra||''}</div></li>`;
+  return `<aside class="dsheet w6"><div class="shh"><div class="tt"><span class="cr">Failure review · #2567 (example)</span><h4>The expiry sweep counts a superseded hold twice</h4><span class="meta">${C('fixing','wn')}<span>fix round 2 of 3</span></span></div></div>`+
+    `<section class="shs"><h5>From plan to merge</h5><ol class="trace">`+
+    li('ok','check','Plan revision 1 approved','auto-approved by its schedule’s gate (plan: auto), Oct 27 18:20Z')+
+    li('ok','check','Workflow wf_3b81… · 2 steps',``,T(['Step','Task','State'],[['count-hold-once','task_91c0…',C('done','ok')],['hold-count-test','task_2e7a…',C('done','ok')]]))+
+    li('ok','pr','Pull request #2580','opened Oct 27 23:10Z')+
+    li('in','clock','CI: round 2 of 3 running','round 1 red: python (unit), 1 test; round 1’s fix still red on the same check; round 2 started 02:48Z')+
+    li('','info','Review: 2 of 3 requirements met','requirement 3, “a superseded hold is counted once”, is not confirmed',`<span class="ln2">${C('requirement 1 met','ok','check')}${C('requirement 2 met','ok','check')}${C('requirement 3 not confirmed','bd','x')}</span>`)+
+    li('','merge','Merge',DASH('not yet: CI is red; the gate merges on its own once CI is green and the verdict is MERGE'))+
+    li('','info','part of #2567','the keyword block says what is left: requirement 3')+
+    `</ol></section></aside>`;
+}
+
+/* ---------- P5: sources ---------- */
+function sourcesSheet(){
+  const g=(r,p,m,a)=>`<span class="nw">run ${r} · plan ${p}</span><small>merge ${m} · ${a}</small>`;
+  const rows=[
+    [`<b class="nm">Nightly issue sweep</b><small>issue-sweep · sch_1a2b3c4d5e6f</small>`,C('active','ok'),g('auto','approve','approve','members'),'$22.60<small>of $120.00 a day</small>','6','4<small>1 rejected · 1 waiting</small>','3'],
+    [`<b class="nm">Failure review</b><small>failure-review · sch_54e9828e6772</small>`,C('active','ok'),g('auto','auto','auto, by the audited switch','owner only'),'$4.10<small>no day budget: the type sets none</small>','5','4<small>auto-approved by its gate; #2583 is drawn waiting for P2</small>','2'],
+    [`<b class="nm">Platform observer</b><small>observer · proposals to file</small>`,C('active','ok'),`<span class="nw">run auto</span><small>plans: does not plan · merge: off</small>`,'$0.40<small>of $5.00 a day</small>','3','1<small>1 waiting · 1 expired</small>',DASH('it files issues; the sweep plans them')],
+    [`<b class="nm">CI flake hunter</b><small>ci-flake-hunter · proposals to file</small>`,C('paused','pa'),`<span class="nw">run auto</span><small>plans: does not plan · merge: off</small>`,'$0.00<small>paused all day</small>','2','0<small>2 expired</small>',DASH('it files issues')],
+    [`<b class="nm">By hand</b><small>Submit from a GitHub issue</small>`,'<span class="dim">always on</span>',`<span class="nw">plan: each run says</span><small>default required · merge by the repository’s merge_policy</small>`,DASH('no schedule budget: each run is its submitter’s'),'1','0<small>1 waiting</small>','0']
+  ];
+  return `<aside class="dsheet" style="width:900px"><div class="shh"><div class="tt"><span class="cr">Pipeline</span><h4>Sources</h4><span class="meta">what puts cards on this board, and its gate · last 7 days</span></div>${B('','q x','x')}</div>`+
+    T(['Source','State','Gate','Spend today','#Proposed','#Approved','#Merged'],rows)+
+    `<p class="sm12 dim">Totals, 7 days: 17 proposed, 9 approved, 5 merged. Proposed counts a plan or a proposal once, at its first revision. A gate is changed on its schedule (Automate › Schedules), never here; this sheet links to it.</p>`+
+    `<div class="bn in">${I('info')}<div><b>The gates drawn are the ones the API serves:</b> <code>gate.run</code> (auto, approve), <code>gate.plan</code> (auto, approve), <code>gate.merge</code> (off, approve, auto) and <code>gate.approvers</code>. A hold (<code>approval_hold</code>) overrides <code>plan: auto</code> and every merge gate. The 7-day counts are a new field.</div></div></aside>`;
+}
+function mergeSwitch(){
+  return `<aside class="dsheet w6"><div class="shh"><div class="tt"><span class="cr">Nightly issue sweep · gate</span><h4>Merge automatically?</h4><span class="meta">${C('audited','in','lock')}<span>POST /v1/schedules/sch_1a2b3c4d5e6f:merge-mode</span></span></div></div>`+
+    `<p class="sm12">With merge automatic, a run’s merge-only continuation merges on a <code>MERGE</code> verdict and green CI, with no person in between. Every hold still stops a merge, and a change under <code>.github/workflows/</code> is always the owner’s.</p>`+
+    `<dl class="kv"><dt>Now</dt><dd>merge: approve</dd><dt>Becomes</dt><dd>merge: auto</dd><dt>Who may switch it</dt><dd>a platform admin: the sweep’s repository is the platform’s own (<code>platform: true</code>)</dd><dt>Recorded as</dt><dd><code>gate_merge_auto</code> in the schedule’s audit, naming you</dd></dl>`+
+    F('Type the schedule’s name to switch','Nightly issue sweep','v')+
+    `<div class="foot"><span class="grow"></span>${B('Cancel')}${B('Switch merge to automatic','p','lock')}</div></aside>`;
+}
+
+/* ---------- P6 ---------- */
+const emptyCol=t=>`<div class="empty" style="padding:6px 4px"><p style="font-size:12.5px">${t}</p></div>`;
+function p6a(){
+  return desk({pbadge:'<span class="sm12 dim">0</span>'},PHEAD,LEAD('Nothing waiting','Nothing on this board waits on a person.','Read at 03:00Z. 2 cards are running and 1 is in CI; none needs you until it reaches its merge gate.',B('Open Sources',''),'ok')+filters('',0,[7,3,3,1,0])+
+    board({nostall:1,ncol:['0','0','2','1','4'],colnote:['nothing found since 00:00Z','nothing waits on a person',null,'fix rounds running; no merge waits'],body:[emptyCol('Failure review fired at 00:00Z and filed nothing new. The sweep next fires at 02:00Z tomorrow.'),emptyCol('A waiting plan holds no capacity; an empty column means no plan is waiting, not that something is stuck.'),K.filter(k=>k.stg===2).map(card).join(''),card(K[8]),K.filter(k=>k.stg===4).slice(0,4).map(card).join('')]}),'','short');
+}
+function p6b(){
+  return desk({},PHEAD,`<div class="bn pa" style="background:var(--t-pa);border-color:color-mix(in srgb,var(--paused) 40%,var(--line))">${I('pause')}<div><b>Failure review is paused, by Operator at 01:30Z today: “until #2585’s plans view lands”.</b>Its 06:00Z firing will not run, so it adds nothing to Found until it is resumed. Its cards already on the board go on moving. ${B('Resume on its schedule','s q','ext')}</div></div>`+
+    filters('review')+board({src:'review',colnote:['failure review is paused: nothing new since its 00:00Z firing']}),'','short');
+}
+function p6c(){
+  const fail=`<div class="bn bd">${I('warn')}<div><b>Approvals not read: GET /v1/approvals answered 503 at 03:00Z.</b>Proposals, merges waiting and approval outcomes are not shown; plans are, from the runs read, which worked. Retrying in 30 s.</div></div>`;
+  return desk({pbadge:'<span class="sm12 dim">—</span>',abadge:'<span class="sm12 dim">—</span>'},PHEAD,
+    LEAD('Needs you','3 plans wait on a person; proposals and merges are not known.','The approvals read failed, so at least 3 cards wait; the full count is not known until it reads.',B('Retry now',''),'wn')+fail+filters('',0,['—','—','—','—','—'])+
+    board({ncol:['—','3','2','—','—'],colnote:['proposals: — not read (approvals 503)',null,null,'merges waiting: — not read (approvals 503)','expired, superseded: — not read'],
+    body:[card(K[1]),undefined,undefined,card(K[8]),card(K[9])+card(K[10])]}),'','short');
+}
+function p6d(){
+  return desk({pbadge:''},{h:'Pipeline'},`<div class="cd" style="max-width:720px"><div class="empty"><b>This deployment does not serve plans.</b><p><code>GET /v1/runs</code> answered 404 <code>not_found</code> at 03:00Z: issue runs are not part of this deployment, so nothing here can be planned, approved or traced. Schedules and Approvals are unaffected.</p><p>Until this deployment serves <code>/v1/runs</code>, the tab stays with this page, so a link to it does not break, and the panel shows no count for it rather than 0.</p>${B('Open Approvals','')}</div></div>`,'','short');
+}
+
+/* ---------- P7: phone ---------- */
+function p7a(){
+  const w=K.filter(k=>k.stg===1).sort((a,b)=>(b.age||0)-(a.age||0));
+  return phone('Pipeline',`<div class="pb">`+LEAD('Needs you','5 wait on a person.','Oldest: #2579’s held plan, expires in 1 d 2 h.','','wn')+
+    `<div class="stgs"><span class="w">Found · 2</span><span class="on w">Waiting · 3</span><span>Running · 2</span><span class="w">PR and CI · 2</span><span>Ended · 4</span></div>`+
+    `<div class="acts"><span class="b s">${I('filter')}Source: all</span><span class="b s">State: any</span></div>`+
+    `<div class="colh"><b>Planned, waiting<span class="n">3</span></b><small class="w">3 waiting on a person · <span class="nw">oldest 1 d 22 h</span></small></div>`+
+    w.map(k=>card(k)).join('')+`<p class="sm12 dim" style="margin:0">Also waiting on a person: 1 merge in PR and CI, and 1 proposal in Found.</p></div>`);
+}
+function p7b(){
+  return phone('Plan for #2583',`<div class="pb"><span class="back">${I('back')}Pipeline</span>`+
+    `<div class="F" style="display:flex;flex-direction:column;gap:12px"><div class="shh"><div class="tt"><span class="cr">Failure review · plan for #2583</span><h4 style="font-size:18px;margin:0">cifix.stamp’s ci_fix branch refuses a PR-side CI fix while a plain continuation holds the pull request</h4><span class="meta">${C('waiting on a person','wn')}<span>expires in 2 d 21 h</span></span></div></div>`+
+    why()+`<section class="shs"><h5>Summary</h5><p>${SUMMARY.slice(0,SUMMARY.indexOf(' (a <code>'))}… <span class="fold">Show all</span></p></section>`+figures()+reqs(false)+overlaps()+
+    `<section class="shs"><h5>Steps <small>1</small></h5>${step()}</section><section class="shs"><h5>Risk paths <small>none touched</small></h5>${riskRow()}</section>`+
+    `<div class="foot" style="background:var(--bg);padding-bottom:8px"><span class="sm12 dim" style="flex-basis:100%">Approves revision 1, <span class="dg">${DIGS}</span></span>${B('Reject','d','x')}${B('Edit','','edit')}<span class="grow"></span>${B('Approve','p','check')}</div></div></div>`);
+}
+
+/* ---------- P1c ---------- */
+function p1c(){
+  const rows=K.filter(k=>k.stg===4).map(k=>[`<b class="nm">${k.t}</b>`,`${SRC[k.src].l}`,C(k.st[0],k.st[1]),`<span class="sm12">${k.why?k.why+' · '+k.meta:k.meta}</span>`]);
+  return desk({},PHEAD,P1LEAD+filters('',[5,6,7,8,9])+`<div class="acts">${C('showing: rejected, expired, superseded, merged, failed','in')}${B('Clear the state filter','s q','x')}</div>`+
+    CARD('Merged or ended · '+rows.length,'<span class="sm12 dim">newest first · last 24 h</span>',T(['What','Source','State','Reason or outcome'],rows)),'','short');
+}
+
+/* ---------- the frames ---------- */
+const FR={
+  p1a:()=>desk({},PHEAD,P1LEAD+filters()+board()),
+  p1b:()=>desk({},PHEAD,P1LEAD+filters('review')+board({src:'review'})),
+  p1c,
+  p2a,p2b:()=>planSheet({member:true}),p2c:()=>planSheet({sup:true}),
+  p3a:()=>desk({},PHEAD,P1LEAD+filters()+board({sel:'k4'}),editSheet()),
+  p3b:removeSheet,p3c:savedSheet,
+  p4a:()=>desk({pbadge:C('4 waiting','wn')},PHEAD,LEAD('Needs you','4 cards wait on a person: 2 plans, 1 merge and 1 proposal.','The oldest, #2579’s held plan, expires in 1 d 2 h.',B('Open the oldest','p'),'wn')+filters()+board({sel:'k4',move:{id:'k4',stg:4,me:0,kind:'',ex:'',st:['merged','ok'],t:'#2583 merged as PR #2584, Closes #2583',meta:'auto-approved 00:06:03Z · every requirement confirmed'}}),traceSheet()),
+  p4b:traceB,
+  p5a:()=>desk({},PHEAD,P1LEAD+filters()+board(),sourcesSheet()),
+  p5b:mergeSwitch,
+  p6a,p6b,p6c,p6d,p7a,p7b
+};
+/* ?only=P7 (or P2,P7) shows only those frames: a long page at phone size is easier to read, and to capture, one frame at a time */
+const only=(new URLSearchParams(location.search).get('only')||'').split(',').filter(Boolean);
+if(only.length)document.querySelectorAll('section.frame').forEach(f=>{if(!only.includes(f.id))f.style.display='none'});
+let drawn=0;
+document.querySelectorAll('[data-f]').forEach(el=>{const f=FR[el.dataset.f];if(!f){el.textContent='Missing frame: '+el.dataset.f;return}el.innerHTML='<div class="F">'+f()+'</div>';drawn++});
+document.documentElement.dataset.frames=String(drawn);
+
+const root=document.documentElement;
+function apply(t){
+  if(t==='system')delete root.dataset.theme;else root.dataset.theme=t;
+  document.querySelectorAll('[data-theme-set]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.themeSet===t)));
+  try{localStorage.setItem('plans-c-theme',t)}catch(e){}
+}
+document.addEventListener('click',e=>{const b=e.target.closest('[data-theme-set]');if(b)apply(b.dataset.themeSet)});
+let saved='system';try{saved=localStorage.getItem('plans-c-theme')||'system'}catch(e){}
+apply(saved);
+})();
+</script>
+</body>
+</html>
