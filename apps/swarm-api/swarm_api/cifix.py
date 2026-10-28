@@ -111,6 +111,16 @@ branch task recorded (`result_summary.git.pull_request.number`), a
 its repository. A merge-only request and a branch task with no recorded pull
 request are admitted as before.
 
+The other order holds too (#2583): a `metadata.ci_fix` request is refused
+409 `ci_fix_lane_owns_pr` with `plain_continuation` while a plain
+continuation of the lane is live -- a non-terminal task of the tenant that
+continues the branch task or pushes onto it with `publish_to_pr`, is not a
+merge step and carries no writer mark of its own (`live_plain_continuation`).
+Measured 2026-10-27 on PR #2570: the CI fixer's task_7d270954 was admitted
+two minutes after implement task_8017fba2 (wf_1a460a31) started on the same
+red head 7e55a8d, pushed f4f93dc first, and the implement step's publish was
+refused `head_moved`.
+
 EVERY FIX ROUND'S HEAD, AGAINST ITS PULL REQUEST (epic #1334). Measured
 2026-10-15 02:16Z: HANG-LEASE's merge step refused PR 1338 `head_moved` at
 the head a fix task of ANOTHER workflow pushed; a merge step knew only its
@@ -789,6 +799,98 @@ def _refuse_if_conflict_fix_live(store: Any, tenant_id: str, continuation: Conti
     ))
 
 
+#: A plain continuation's own issue-run mark (`issueci`, `issueruns` write it
+#: as a literal): the run's rounds have the issue run's gate, not this one.
+ISSUE_RUN_METADATA_KEY = "issue_run"
+#: The most tasks one (tenant, branch task) is read for by each of
+#: `live_plain_continuation`'s two reads. Unordered, so a live row must not
+#: hide behind finished ones: a branch task is continued by at most
+#: MAX_ATTEMPTS_CEILING PR-side fixes, its merge step's few rounds, one
+#: conflict fix per head and the lanes its owner points at it, and fifty --
+#: `PUBLISH_WRITERS_READ`'s room -- is all of them with room.
+CONTINUATIONS_READ = 50
+
+
+def live_plain_continuation(db: Any, tenant_id: str, root_task_id: str) -> dict[str, Any] | None:
+    """A live plain continuation that pushes to the `swarm/<root_task_id>`
+    branch, as `{task_id, workflow_id, via}`; None when there is none.
+
+    A plain continuation is a non-terminal task of this tenant whose
+    `metadata.dispatch.continues` is the root (`via: "continues"`) or whose
+    signed `metadata.dispatch.publish_to_pr.task_id` is (`via:
+    "publish_to_pr"`), that is not a merge step (it pushes nothing) and
+    carries none of `PR_WRITER_KINDS` nor `metadata.issue_run`: each of those
+    writers has its own gate, and `live_pr_writer` is theirs. Two reads,
+    equality filters only (tenant, and the dispatch field -- the built-in
+    single-field indexes, no composite index), each held to
+    `CONTINUATIONS_READ`. Every filter is checked again in the application: a
+    fake or an index mistake must not move the tenant boundary (invariant 9).
+    """
+    terminal = {s.value for s in TERMINAL_STATES}
+    dispatch_path = f"metadata.{DISPATCH_METADATA_KEY}"
+    reads = (
+        ("continues", f"{dispatch_path}.continues"),
+        (publishtopr.DISPATCH_FIELD, f"{dispatch_path}.{publishtopr.DISPATCH_FIELD}.task_id"),
+    )
+    for via, path in reads:
+        query = (
+            db.collection(TASKS)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter(path, "==", root_task_id))
+            .limit(CONTINUATIONS_READ)
+        )
+        for snap in query.stream():
+            doc = snap.to_dict() or {}
+            metadata = _mapping(doc.get("metadata"))
+            dispatch = _mapping(metadata.get(DISPATCH_METADATA_KEY))
+            named = (dispatch.get("continues") if via == "continues"
+                     else _mapping(dispatch.get(publishtopr.DISPATCH_FIELD)).get("task_id"))
+            if (doc.get("tenant_id") != tenant_id or named != root_task_id
+                    or doc.get("state") in terminal
+                    or is_merge_step(doc.get("runner_profile"))
+                    or any(kind in metadata for kind in PR_WRITER_KINDS)
+                    or ISSUE_RUN_METADATA_KEY in metadata):
+                continue
+            return {"task_id": str(doc.get("id") or snap.id),
+                    "workflow_id": doc.get("workflow_id"), "via": via}
+    return None
+
+
+def _refuse_if_continuation_live(store: Any, tenant_id: str, continuation: Continuation,
+                                 record: Mapping[str, Any]) -> None:
+    """Refuse `CiFixLaneOwnsPr` while a plain continuation of the lane pushes
+    to this pull request's branch (through `refusals.refuse`: switched off,
+    the request goes on as before).
+
+    ONE WRITER PER PULL REQUEST, THE OTHER ORDER (#2583). #2535 holds a plain
+    continuation submitted while a fix is live (`_refuse_if_fix_live`); a fix
+    submitted while a plain continuation is live went through. Measured
+    2026-10-27 on PR #2570: the CI fixer's attempt 2 (task_7d270954,
+    wf_68cfa3f0) was admitted at 16:26:01Z, two minutes after the `implement`
+    step task_8017fba2 (wf_1a460a31, 16:24:06Z) started on the same red head
+    7e55a8d; both fixed the same test, the fixer pushed f4f93dc first, and the
+    step's 88-minute publish was refused `head_moved`. So the CI fix waits:
+    the lane's push moves the head, CI runs again there, and a red run at
+    that head gets its own fix. A continuation carrying a writer's own mark
+    (`PR_WRITER_KINDS`, `metadata.issue_run`) is left to that writer's gate
+    -- the merge-step, issue-run and conflict-fix reads above, and `_claim`
+    -- so this read neither duplicates nor widens them. The existing refusal,
+    because it is the same rule and scripts/ci-fix.sh already reads it as a
+    skip with no comment; `plain_continuation` in the detail says which.
+    """
+    lane = live_plain_continuation(store.db, tenant_id, continuation.root_task_id)
+    if lane is None:
+        return
+    refuse(CiFixLaneOwnsPr(
+        f"pull request #{record['pull_request']} has a live continuation of its lane "
+        f"({lane['task_id']}) pushing to the same branch; the CI fix waits for it, and CI "
+        "runs again at the head it pushes. No CI fix is made beside it.",
+        detail={"metadata": CI_FIX_METADATA_FIELD, "task_id": lane["task_id"],
+                "workflow_id": lane["workflow_id"], "pull_request": record["pull_request"],
+                "plain_continuation": True},
+    ))
+
+
 def _branch_pull_request(db: Any, tenant_id: str, continuation: Continuation) -> int | None:
     """The number of the pull request the continuation's root opened, from its
     own record (`result_summary.git.pull_request.number`, the worker's), read
@@ -978,9 +1080,13 @@ def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
     `invalid_dispatch`) for every refusal, before anything is written,
     `CiFixLaneOwnsPr` (409) while the continued task's workflow has a live
     merge step, a non-terminal issue run of the tenant owns the pull request
-    (`_refuse_if_lane_owns`) or a conflict fix on the pull request is live (on
+    (`_refuse_if_lane_owns`), a conflict fix on the pull request is live (on
     2026-10-26 PR #2381 got both a conflict fix and a CI fix at 15cc7ea, and
-    the second push was rejected), and `CiFixInFlight` (409) when the failure
+    the second push was rejected) or a plain continuation of the lane pushes
+    to its branch (`_refuse_if_continuation_live`: on 2026-10-27 PR #2570's
+    fixer was admitted two minutes after a `publish_to_pr` implement step
+    started at 7e55a8d, and the step's publish was refused `head_moved`), and
+    `CiFixInFlight` (409) when the failure
     already has a live fix. A continuation or `publish_to_pr` workflow with no
     `metadata.ci_fix` that pushes and carries no writer mark of its own is
     refused `PrFixInFlight` (409) while a CI fix or conflict fix on its pull
@@ -1016,6 +1122,8 @@ def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
     _refuse_if_lane_owns(store, tenant_id, continuation, record)
     # The same place, the same reason: a live conflict fix on this pull request (#2456).
     _refuse_if_conflict_fix_live(store, tenant_id, continuation, record)
+    # And a live plain continuation of the lane pushing to the branch (#2583).
+    _refuse_if_continuation_live(store, tenant_id, continuation, record)
     made = _attempts_made(
         store.db, tenant_id, continuation.root_task_id, record["pull_request"], MAX_ATTEMPTS_CEILING,
     )

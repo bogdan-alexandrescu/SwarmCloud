@@ -38,9 +38,13 @@
 #      (swarm_api.cifix.CiFixLaneOwnsPr). An issue run that is not terminal
 #      owns its pull request the same way (#2216): it has no merge step but
 #      runs its own CI-fix rounds, and the 409 names the run
-#      (`detail.issue_run_id`, `detail.issue_run_state`). This script makes
-#      no read of its own, and on that answer logs the skip, comments nothing
-#      and passes.
+#      (`detail.issue_run_id`, `detail.issue_run_state`). So does a live
+#      conflict fix on the pull request (#2456, `detail.conflict_fix`) and a
+#      live plain continuation of the lane -- a `continues_task` or
+#      `publish_to_pr` step pushing to the same branch (#2583,
+#      `detail.plain_continuation`): CI runs again at the head it pushes.
+#      This script makes no read of its own, and on that answer logs the
+#      skip, comments nothing and passes.
 #   1b. NOT A FAILURE MAIN HAS TOO (#2367). Before any log is read, the
 #      default branch's head is read, and its check runs (`red_on_default`).
 #      When every failed job of the run is also failing there, no fix step is
@@ -84,7 +88,8 @@
 # nothing ran -- except two 409s, each logged with the ids it names, with no
 # comment, and the run passes: `ci_fix_in_flight`, the failure already has a
 # live fix task; and `ci_fix_lane_owns_pr`, the lane's merge step or a live
-# issue run owns the pull request and fixes CI here itself (1a).
+# issue run owns the pull request and fixes CI here itself, or a conflict fix
+# or a continuation of the lane is pushing to its branch (1a).
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
@@ -563,7 +568,8 @@ run_fix() {
     fi
     # 409 `ci_fix_lane_owns_pr` (swarm_api.cifix.CiFixLaneOwnsPr, 1a): the
     # lane's merge step, or a non-terminal issue run (#2216), is live and runs
-    # this pull request's CI-fix rounds. Skip: name the merge step and its
+    # this pull request's CI-fix rounds, or a conflict fix or a continuation
+    # of the lane is pushing to its branch. Skip: name the live task and its
     # workflow, or the issue run and its state, post no comment, pass. The
     # same rule as above -- only the ids, only in their minted shape.
     if [[ "${API_STATUS}" == "409" && "${code}" == "ci_fix_lane_owns_pr" ]]; then
@@ -579,7 +585,17 @@ run_fix() {
         "${WORK}/response" 2>/dev/null || true)"
       issue_run_state="$(jq -r '.detail.issue_run_state // empty | strings | select(test("^[A-Z_]{1,20}$"))' \
         "${WORK}/response" 2>/dev/null || true)"
-      if [[ -n "${issue_run}" ]]; then
+      # A conflict fix (#2456) or a plain continuation of the lane (#2583)
+      # is pushing to the branch: the detail names that task. Compared with
+      # `== true`, never `// true`, which reads false as absent (CLAUDE.md).
+      local plain_continuation conflict_fix
+      plain_continuation="$(jq -r '.detail.plain_continuation == true' "${WORK}/response" 2>/dev/null || printf 'false')"
+      conflict_fix="$(jq -r '.detail.conflict_fix == true' "${WORK}/response" 2>/dev/null || printf 'false')"
+      if [[ "${plain_continuation}" == "true" ]]; then
+        ok "#${pr}: a continuation of the lane (task ${merge_task:-unknown}, workflow ${lane_workflow:-unknown}) is pushing to this pull request's branch; no standalone fix, no comment"
+      elif [[ "${conflict_fix}" == "true" ]]; then
+        ok "#${pr}: a conflict fix (task ${merge_task:-unknown}, workflow ${lane_workflow:-unknown}) is merging the base into this pull request's branch; no standalone fix, no comment"
+      elif [[ -n "${issue_run}" ]]; then
         ok "#${pr}: issue run ${issue_run} (${issue_run_state:-unknown}) owns this pull request and runs its own CI-fix rounds; no standalone fix, no comment"
       else
         ok "#${pr}: the lane owns this pull request -- its merge step (task ${merge_task:-unknown}, workflow ${lane_workflow:-unknown}) is live and runs its own CI-fix rounds; no standalone fix, no comment"
