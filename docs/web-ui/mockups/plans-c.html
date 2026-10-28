@@ -794,7 +794,7 @@ function editSheet(){
 <ins>Also make scripts/ci-fix.sh’s skip line print the live task’s workflow id next to its task id.</ins></div></label></div></section>`+
     `<section class="shs"><h5>Requirements <small>7 + 1 added</small></h5><ol class="req" start="7"><li>${REQS[6]}</li><li class="new"><label class="fld" style="display:flex"><span>Requirement 8, new</span><span class="inp v ta">${ADDREQ}</span></label></li></ol>${B('Add a requirement','s q','plus')}</section>`+
     `<section class="shs"><h5>What saving does</h5><p class="sm12">Saving sends the plan with the digest it replaces (<span class="dg">${DIGS}</span>). The server validates it with the planner’s own rules, writes revision 2 with a new digest and records you as <code>plan_edited_by</code>. The plan stays waiting; it is approved only from revision 2.</p></section>`+
-    `<div class="foot"><span class="sm12 dim grow">3 changes: step 1’s estimate, files and prompt; requirement 8</span>${B('Discard')}${B('Save as revision 2','p','check')}</div></aside>`;
+    `<div class="foot"><span class="sm12 dim grow">4 changes: step 1’s estimate, files and prompt; requirement 8 added</span>${B('Discard')}${B('Save as revision 2','p','check')}</div></aside>`;
 }
 function removeSheet(){
   const st=(n,id,t,cls,files,dep)=>`<div class="stp ${cls||''}"><div class="sh">${C('step '+n,'ln')}<b>${t}</b><span style="margin-left:auto">${cls==='rm'?B('Undo','s q'):B('Remove','s d','trash')}</span></div><span class="mn">${id}</span><span class="sm12 dim">${files}${dep?' · depends on '+dep:''}</span></div>`;
@@ -890,7 +890,7 @@ function p6d(){
 function p7a(){
   const w=K.filter(k=>k.stg===1).sort((a,b)=>(b.age||0)-(a.age||0));
   return phone('Pipeline',`<div class="pb">`+LEAD('Needs you','5 wait on a person.','Oldest: #2579’s held plan, expires in 1 d 2 h.','','wn')+
-    `<div class="stgs"><span>Found · 2</span><span class="on w">Waiting · 3</span><span>Running · 2</span><span class="w">PR and CI · 2</span><span>Ended · 4</span></div>`+
+    `<div class="stgs"><span class="w">Found · 2</span><span class="on w">Waiting · 3</span><span>Running · 2</span><span class="w">PR and CI · 2</span><span>Ended · 4</span></div>`+
     `<div class="acts"><span class="b s">${I('filter')}Source: all</span><span class="b s">State: any</span></div>`+
     `<div class="colh"><b>Planned, waiting<span class="n">3</span></b><small class="w">3 waiting on a person · <span class="nw">oldest 1 d 22 h</span></small></div>`+
     w.map(k=>card(k)).join('')+`<p class="sm12 dim" style="margin:0">Also waiting on a person: 1 merge in PR and CI, and 1 proposal in Found.</p></div>`);
