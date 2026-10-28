@@ -39,7 +39,7 @@
  */
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { AGENT_TABS, type AgentTab } from './agentlist'
-import { USE_FIXTURES, WORKSPACE_RENAMED_EVENT, loadApprovals, loadCapacity, loadMe, loadMyTenants, loadOnboarding, loadStats, type NotificationFeed, type TenantChoice } from './api'
+import { USE_FIXTURES, WORKSPACE_RENAMED_EVENT, loadApprovals, loadCapacity, loadMe, loadMyTenants, loadOnboarding, loadStats, loadWorkflowsById, type NotificationFeed, type ResourceClasses, type TenantChoice } from './api'
 import { classifyEnvironment, envTreatment, servedEnvironment, SwarmMark } from './Brand'
 import { Banner, Button, NamedMark, Toaster, acknowledge, routedClick } from './components'
 import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenantSwitch, preferencesUnavailableSnapshot, probeSnapshot, read, route, subscribePreferencesUnavailable, subscribeProbes, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type Result } from './fetch'
@@ -50,6 +50,9 @@ import { AdminRoleRefusal } from './WorkspaceRefusal'
 import { shortcut, typedIntoField } from './shortcuts'
 import { poolLabelAmong, type Capacity, type Me, type Stats, type TaskState } from './types'
 import { ThemeToggle } from './ThemeToggle'
+import { derivedStateOf } from './workflowlist'
+import { useResourceClasses } from './Blockers'
+import { needsALook } from './Capacity'
 import { SignOutButton, SignedBackIn } from './SignOut'
 import { iapFronted, signingOut } from './signoutState'
 import { AppTakeover, OfflineBanner, wholeAppFault, useOnline } from './AppStates'
@@ -756,6 +759,33 @@ export function offerNewestWorkflows(board: readonly RecentWorkflow[]): void {
   if (changed) announce()
 }
 
+/** The ids Recent asked its own read for in this page load: each is asked once. */
+const askedThisLoad = new Set<string>()
+
+/**
+ * RECENT'S OWN READ, GIVEN BACK (QA1 overview-agents-21). Only the Workflows
+ * list offered states, so on every other page each Recent workflow carried
+ * the dashed "not re-read" ring while the Workflows pages drew the same ones
+ * running or failed. Recent now reads the ids no read of this load gave
+ * (`loadWorkflowsById`, one batched read) and hands the states here: each one
+ * read refreshes that id in both stores, and only those ids. The newest list
+ * keeps its members; that is the board read's to decide.
+ */
+export function refreshRecentWorkflows(got: readonly RecentWorkflow[]): void {
+  if (got.length === 0) return
+  const by = new Map(got.map((w) => [w.id, w] as const))
+  for (const id of by.keys()) readThisLoad.add(id)
+  for (const key of [RECENT_WORKFLOWS_KEY, NEWEST_WORKFLOWS_KEY]) {
+    const before = readRecent(recentKey(key))
+    const after = before.map((w) => {
+      const f = by.get(w.id)
+      return f === undefined ? w : { id: w.id, state: f.state, name: f.name ?? w.name }
+    })
+    if (JSON.stringify(after) !== JSON.stringify(before)) writePref(recentKey(key), JSON.stringify(after))
+  }
+  announce()
+}
+
 /** The name Recent holds for a workflow, or null: what a page can be titled by before its read lands. */
 export function recentName(id: string): string | null {
   return recentWorkflows().find((w) => w.id === id)?.name ?? null
@@ -1060,8 +1090,14 @@ const WAITING_STATES = ['QUEUED', 'READY', 'PARKED'] as const
  *                  ways of not counting. A dash is for a count that WAS
  *                  asked for and could not be read (Live and Waiting, below);
  *                  a row nobody counts draws no mark, never a 0.
- *   Pools          the amber count of pools full or paused, derived from the
- *                  capacity read the meter already made; nothing when none is.
+ *   Pools          the amber count of the pools Pools' "Needs a look" group
+ *                  holds (`needsALook`, Capacity.tsx), derived from the
+ *                  capacity read the meter already made; nothing when none
+ *                  is. It counted only full or paused pools, so a pool
+ *                  lowered to 0 -- no room, nothing can start -- was on the
+ *                  page's "Needs a look · 4" and not in the badge's 2 (QA1
+ *                  capacity-11). `classes` is the shared class catalogue read,
+ *                  which weighs a pool too small for one task of its class.
  *
  * A failed read is a dash with the failure as its reason, never a 0.
  */
@@ -1069,13 +1105,14 @@ export function panelCounts(
   stats: Result<Stats>,
   cap: Result<Capacity>,
   list: ListCounts | null = null,
+  classes: ResourceClasses | null = null,
 ): Readonly<Record<string, PanelCount>> {
   const out: Record<string, PanelCount> = {}
   if (list !== null && list.whole) {
     const why = `counted from the Agents list read at ${new Date(list.at).toLocaleTimeString()}, as its tabs are`
     out.live = { n: list.live, why }
     out.waiting = { n: list.waiting, why }
-    return { ...panelCounts(stats, cap), ...out }
+    return { ...panelCounts(stats, cap, null, classes), ...out }
   }
   const s = dataOf(stats)
   // A reply with no per-state table is not a table of zeros.
@@ -1104,8 +1141,8 @@ export function panelCounts(
   if (c === null) {
     if (cap.status === 'error') out.pools = { n: null, why: `not read: ${errorHeading(cap.error)}` }
   } else {
-    const hot = c.pools.filter((p) => p.enabled === false || (p.effective_limit !== null && p.effective_limit > 0 && p.available !== null && p.available <= 0)).length
-    if (hot > 0) out.pools = { n: hot, alert: true, why: `${hot} pool${hot === 1 ? '' : 's'} full or paused` }
+    const hot = c.pools.filter((p) => needsALook(p, classes)).length
+    if (hot > 0) out.pools = { n: hot, alert: true, why: `${hot} pool${hot === 1 ? ' needs' : 's need'} a look: full, lowered, paused or near the ceiling` }
   }
   return out
 }
@@ -1200,15 +1237,22 @@ export function adminPanelCounts(
  * email (which stays in its title). "Platform admin", else "Workspace admin"
  * when `/v1/tenants/mine` names them admin of a group workspace, else
  * "Viewer" when the group workspace in hand holds them as one -- "Member"
- * there would claim a wider role than the server stores -- else "Member".
- * Null until both reads have answered: an unread list is not "not an admin".
+ * there would claim a wider role than the server stores -- "Workspace admin"
+ * again when the workspace in hand is the person's own personal one -- else
+ * "Member". Null until both reads have answered: an unread list is not "not an admin".
  */
-export function roleLine(platformAdmin: boolean, mine: Result<TenantChoice[]>, tenantId: string | null): string | null {
+export function roleLine(platformAdmin: boolean, mine: Result<TenantChoice[]>, tenantId: string | null, personal = false): string | null {
   if (platformAdmin) return 'Platform admin'
   const choices = dataOf(mine) ?? (mine.status === 'empty' ? [] : null)
   if (choices === null) return null
   if (adminWorkspaces(choices).length > 0) return 'Workspace admin'
   const here = choices.find((c) => c.tenant_id === tenantId)
+  // THE OWNER OF A PERSONAL WORKSPACE IS ITS ADMIN (QA1 config-28): the foot
+  // said "Member" while People and roles said "You are this workspace's
+  // admin" and This workspace "Your role: admin". `personal` is `me`'s tenant
+  // kind, as the People page reads it: `/v1/tenants/mine` answers empty for
+  // someone in no group, so `here` alone missed the finding's own case.
+  if (personal || (here !== undefined && here.kind === 'user')) return 'Workspace admin'
   return here !== undefined && here.kind === 'group' && roleOf(here) === 'viewer' ? 'Viewer' : 'Member'
 }
 
@@ -1655,11 +1699,12 @@ export function SkyShell({
   // identity it would sign out has been read.
   const canSignOut = who !== null && iapFronted(typeof window === 'undefined' ? '' : window.location.hostname)
   const meter = meterOf(dataOf(cap))
+  const classes = useResourceClasses()
   // The Approvals page carries the inbox count the Automate section does (§6.1).
-  const counts = waiting === null ? panelCounts(stats, cap, fromList) : { ...panelCounts(stats, cap, fromList), approvals: waiting }
+  const counts = waiting === null ? panelCounts(stats, cap, fromList, classes) : { ...panelCounts(stats, cap, fromList, classes), approvals: waiting }
   const adminCounts = adminPanelCounts(admin, feedData(notes), cap, mine)
   const jumpCounts = useSyncExternalStore(subscribeOverviewCounts, overviewCountsSnapshot, overviewCountsSnapshot)
-  const role = who === null ? null : roleLine(admin, mine, who.tenant.tenant_id)
+  const role = who === null ? null : roleLine(admin, mine, who.tenant.tenant_id, personal === true)
   const online = useOnline()
   const probes = useSyncExternalStore(subscribeProbes, probeSnapshot, probeSnapshot)
   const fault = wholeAppFault(me, probes)
@@ -2663,7 +2708,9 @@ function TenantBlock({
           <span className="sk-tt">
             <b>{name}</b>
             <small>
-              workspace · {at === -1 ? 'not in the list' : `${at + 1} of ${choices.length}`}
+              {/* ITS KIND, AS WORKSPACE SETTINGS SAYS IT (QA1 admin-shell-21):
+                  the person's own workspace is `personal` there. */}
+              {choices[at]?.kind === 'user' ? 'personal' : 'workspace'} · {at === -1 ? 'not in the list' : `${at + 1} of ${choices.length}`}
               {isDefault ? ' · default' : ''}
             </small>
           </span>
@@ -2813,11 +2860,24 @@ function TenantPicker({
       if (box.current?.contains(t) === true || t.closest('.sk-tsw, .sk-ttile, .sk-tchip') !== null) return
       close.current()
     }
+    // FOCUS ARRIVING OUTSIDE CLOSES IT TOO (QA1 admin-shell-07): `onBlur`
+    // below reads `relatedTarget`, and a focusout that does not carry one
+    // returned early, so Tab walked into the page with the list still open and
+    // a later Escape gave focus back to nothing. Where focus LANDS is read here.
+    const onIn = (e: FocusEvent) => {
+      const t = e.target
+      if (!(t instanceof Element) || box.current?.contains(t) === true) return
+      if (t.closest('.sk-tsw, .sk-ttile, .sk-tchip') !== null) return
+      giveBack.current = false
+      close.current()
+    }
     document.addEventListener('keydown', onKey, true)
     document.addEventListener('pointerdown', onDown)
+    document.addEventListener('focusin', onIn)
     return () => {
       document.removeEventListener('keydown', onKey, true)
       document.removeEventListener('pointerdown', onDown)
+      document.removeEventListener('focusin', onIn)
       if (giveBack.current) opener?.focus()
     }
   }, [])
@@ -3307,6 +3367,19 @@ function RecentWorkflows({ nav }: { nav: (to: string) => void }) {
     globalThis.addEventListener?.(RECENT_WORKFLOWS_EVENT, again)
     return () => globalThis.removeEventListener?.(RECENT_WORKFLOWS_EVENT, again)
   }, [tenant])
+  // THE STATES ARE READ HERE, NOT LEFT TO THE PAGE (QA1 overview-agents-21):
+  // the ids no read of this load gave, once each, in one batched read.
+  const unread = items.filter((w) => !workflowReadThisLoad(w.id) && !askedThisLoad.has(w.id)).map((w) => w.id)
+  const unreadKey = unread.join(' ')
+  useEffect(() => {
+    if (unreadKey === '') return
+    const ids = unreadKey.split(' ')
+    for (const id of ids) askedThisLoad.add(id)
+    void loadWorkflowsById(ids).then((r) => {
+      if (r.status !== 'ok' && r.status !== 'stale') return
+      refreshRecentWorkflows([...r.data.reads.values()].map(({ workflow: w }) => ({ id: w.workflow_id, state: derivedStateOf(w), name: null })))
+    })
+  }, [unreadKey])
   if (items.length === 0) return null
   const open = openWorkflowId()
   return (

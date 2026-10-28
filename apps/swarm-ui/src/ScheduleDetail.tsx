@@ -60,6 +60,7 @@ import {
   SpendFigure,
   localTime,
   scheduleAddress,
+  sheetClosed,
   slashBreaks,
   untilWords,
   type ActNotice,
@@ -1025,9 +1026,18 @@ const MERGE_GATE: Readonly<Record<string, string>> = {
   auto: 'merges by itself once it is green',
 }
 
+/**
+ * WHAT A GATE THE SCHEDULE LEAVES UNSET FALLS BACK TO (`schedules.resolve_gate`):
+ * the type's `default_gate` for run, plan and merge, `members` for who
+ * approves, and `APPROVAL_TTL_DEFAULT_HOURS` for the expiry. The sheet says
+ * what applies, marked "(default)" (QA1 automate-20): "— not set" beside a
+ * gate that waits for an approval read as if nobody could approve it.
+ */
+const APPROVAL_TTL_DEFAULT_HOURS = 72
+
 /** Who a schedule's `gate.approvers` admits (`schedules.GateIn`). */
 function approversWords(a: unknown): string {
-  if (a === undefined || a === null || a === '') return '— not set'
+  if (a === undefined || a === null || a === '') return 'any member of this workspace (default)'
   if (a === 'members') return 'any member of this workspace'
   if (a === 'owner_only') return 'the platform owner only'
   if (Array.isArray(a)) return a.map(String).join(', ')
@@ -1164,13 +1174,20 @@ function Cadence({ s, word }: { s: Schedule; word: StateWord | undefined }) {
           )}
         </p>
       ) : (
-        <ol className="as-fires" data-testid="as-next" aria-label="The next firings">
-          {next.map((at) => (
-            <li key={at} title={localTime(at)}>
-              {slotWords(at)}
-            </li>
-          ))}
-        </ol>
+        <>
+          {/* WHICH CLOCK, beside the chips (QA1 automate-14), in the form's words ("Next five, in UTC"): the zone in the heading is a line away. */}
+          <p className="as-note" data-testid="as-next-zone">
+            Next {next.length === 5 ? 'five' : next.length}, in {s.timezone}:
+          </p>
+          <ol className="as-fires" data-testid="as-next" aria-label={`The next firings, in ${s.timezone}`}>
+            {next.map((at) => (
+              <li key={at} title={localTime(at)}>
+                {slotWords(at)}
+                {s.timezone === 'UTC' ? 'Z' : ''}
+              </li>
+            ))}
+          </ol>
+        </>
       )}
       {rules.length > 0 && <p className="as-note">{rules.join(' ')}</p>}
     </Sec>
@@ -1267,18 +1284,27 @@ function Spend({ s }: { s: Schedule }) {
   )
 }
 
-function Gate({ s, onChanged, go }: { s: Schedule; onChanged: () => void; go: (to: string) => void }) {
+function Gate({ s, type, onChanged, go }: { s: Schedule; type: ScheduleTypeRow | null | 'unread'; onChanged: () => void; go: (to: string) => void }) {
   const g = s.gate
   const failures = failuresToPause(s)
-  const word = (map: Readonly<Record<string, string>>, v: string | undefined) => (v === undefined ? '— not set' : map[v] ?? v)
+  const word = (map: Readonly<Record<string, string>>, v: string | undefined, point: 'run' | 'plan' | 'merge'): ReactNode => {
+    if (v !== undefined) return map[v] ?? v
+    if (type === null) return <span className="as-dim">the type’s default; reading which…</span>
+    const d = type === 'unread' ? undefined : type.default_gate?.[point]
+    if (d === undefined) return <i className="ctl-em">&mdash; the type’s default, which the catalogue did not say</i>
+    return `${map[d] ?? d} (the type’s default)`
+  }
   return (
     <Sec name="gate" title="Gates and approvers">
       <dl className="as-kv" data-testid="sc-gate">
-        <Kv name="Run">{word(RUN_GATE, g.run)}</Kv>
-        <Kv name="Plan">{word(PLAN_GATE, g.plan)}</Kv>
-        <Kv name="Merge">{g.merge === 'approve' ? <b>{MERGE_GATE.approve}</b> : word(MERGE_GATE, g.merge)}</Kv>
+        <Kv name="Run">{word(RUN_GATE, g.run, 'run')}</Kv>
+        <Kv name="Plan">{word(PLAN_GATE, g.plan, 'plan')}</Kv>
+        <Kv name="Merge">{g.merge === 'approve' ? <b>{MERGE_GATE.approve}</b> : word(MERGE_GATE, g.merge, 'merge')}</Kv>
         <Kv name="Who approves">{approversWords(g.approvers)}</Kv>
-        <Kv name="Expiry">{g.approval_ttl_hours === undefined ? '— not set' : `an approval nobody decides expires after ${g.approval_ttl_hours} h`}</Kv>
+        <Kv name="Expiry">
+          an approval nobody decides expires after {g.approval_ttl_hours ?? APPROVAL_TTL_DEFAULT_HOURS} h
+          {g.approval_ttl_hours === undefined ? ' (default)' : ''}
+        </Kv>
         <Kv name="Waiting">
           {s.pending_approvals === 0 ? (
             'nothing waits on a person'
@@ -1366,7 +1392,7 @@ function SheetBody({
   return (
     <>
       <div className="as-acts" data-testid="as-acts">
-        <ScheduleActions s={s} where="head" onDone={onDone} onDeleted={() => go(SCHEDULES_ADDRESS)} />
+        <ScheduleActions s={s} onDone={onDone} onDeleted={() => go(SCHEDULES_ADDRESS)} />
         <Button onClick={() => go(scheduleAddress(s.schedule_id, { edit: true }))}>Edit</Button>
       </div>
       <Said notice={notice} />
@@ -1402,7 +1428,7 @@ function SheetBody({
       <Cadence s={s} word={s.state_word} />
       <Firings s={s} firings={firings} go={go} />
       <Spend s={s} />
-      <Gate s={s} onChanged={reread} go={go} />
+      <Gate s={s} type={type} onChanged={reread} go={go} />
       <FoldSec
         name="settings"
         title="Settings"
@@ -1455,34 +1481,45 @@ function ScheduleSheet({ scheduleId, go, fold }: { scheduleId: string; go: (to: 
       live = false
     }
   }, [scheduleId, round])
-  // OPENED, IT STARTS AT ITS TOP WITH FOCUS ON CLOSE, so Escape and Tab start inside it.
+  // OPENED, IT STARTS AT ITS TOP WITH FOCUS ON ITS HEADING, so a screen
+  // reader says which schedule opened and Tab and Escape start inside it. Not
+  // on Close or `‹ Schedules` (QA1 automate-03): the first of those in the
+  // page is `‹ Schedules`, which a desktop does not draw, so the focus went
+  // nowhere and the shell put it on the list's own heading behind the sheet.
   useEffect(() => {
     const el = sheet.current
     if (el === null) return
     el.scrollTop = 0
-    if (!el.contains(document.activeElement)) el.querySelector<HTMLElement>('.as-close, .as-back')?.focus({ preventScroll: true })
+    if (!el.contains(document.activeElement)) el.querySelector<HTMLElement>('.as-head h1')?.focus({ preventScroll: true })
   }, [scheduleId])
-  // ESCAPE CLOSES THE SHEET, unless a dialog on it (Delete's typed confirmation, Run now's) has it first.
+  // CLOSED, IT HANDS FOCUS BACK TO ITS ROW in the list (`sheetClosed`).
+  const close = () => {
+    sheetClosed(scheduleId)
+    go(SCHEDULES_ADDRESS)
+  }
+  const closeRef = useRef(close)
+  closeRef.current = close
+  // ESCAPE CLOSES THE SHEET wherever focus is, unless a dialog on it (Delete's typed confirmation, Run now's) has it first.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.defaultPrevented || document.querySelector('.c-dlg') !== null) return
-      go(SCHEDULES_ADDRESS)
+      closeRef.current()
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [go])
+  }, [])
   const s = r.status === 'ok' || r.status === 'stale' ? r.data.schedule : null
   const title = s?.name ?? scheduleId
   const word = s?.state_word
   return (
     <aside className="as-sheet" ref={sheet} aria-labelledby={headingId} data-schedule={scheduleId}>
-      <InApp go={go} to={SCHEDULES_ADDRESS} className="as-back">
+      <InApp go={go} to={SCHEDULES_ADDRESS} className="as-back" onGo={() => sheetClosed(scheduleId)}>
         ‹ Schedules
       </InApp>
       <div className="as-head">
         <div className="as-title">
           <span className="as-crumb">Schedules ›</span>
-          <h1 id={headingId} title={title}>
+          <h1 id={headingId} title={title} tabIndex={-1}>
             {title}
           </h1>
           {s !== null && !gone && (
@@ -1500,7 +1537,7 @@ function ScheduleSheet({ scheduleId, go, fold }: { scheduleId: string; go: (to: 
             </p>
           )}
         </div>
-        <Button className="as-close" size="sm" iconOnly icon={<CIcon name="close" />} onClick={() => go(SCHEDULES_ADDRESS)}>
+        <Button className="as-close" size="sm" iconOnly icon={<CIcon name="close" />} onClick={close}>
           Close this schedule
         </Button>
       </div>
