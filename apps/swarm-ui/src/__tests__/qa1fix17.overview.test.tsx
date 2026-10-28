@@ -9,6 +9,10 @@
  *        it ("of the 27 newest"), so both count the same rows. With more
  *        behind the page and a FAILED state read, both stay on 24 hours.
  *
+ *   overview-agents-07  Needs a look's first row drew the two-line "2 leases
+ *        past TTL" card as tall as the card beside it: the grid stretched it.
+ *        The cards size to their content (`align-items: start`).
+ *
  * Fixtures from `runfixture`; nothing here is token-shaped.
  */
 import { cleanup, render } from '@testing-library/react'
@@ -17,6 +21,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { Result } from '../fetch'
 import { RecentFailures, failureWindow, failuresOf, type OverviewTaskPage } from '../OverviewRegions'
 import type { Task } from '../types'
+import type { CascadeEnv } from './cssgate'
+import { painted } from './marks'
 import { task } from './runfixture'
 
 const MIN = 60_000
@@ -71,5 +77,16 @@ describe('overview-agents-01: Recent failures counts the failures Needs a look c
     const { container } = render(<RecentFailures tasks={ok(data)} />)
     expect(container.querySelectorAll('tbody th a.ov-name')).toHaveLength(0)
     expect(failuresOf(rows, Date.now(), undefined, failureWindow(data)).note).toMatch(/^last 24h · 0 failed/)
+  })
+})
+
+describe('overview-agents-07: a Needs a look card is as tall as its own content', () => {
+  it('does not stretch a short card to its neighbour, at any width', () => {
+    document.body.innerHTML = '<section class="ov-lead"><div class="ov-atts"></div></section>'
+    const grid = document.querySelector('.ov-atts')!
+    for (const env of [{ width: 1440 }, { width: 390 }] as CascadeEnv[]) {
+      // MUTATION: drop `align-items: start` from `.ov-atts` -> the default stretch is back.
+      expect(painted(grid, 'align-items', env)).toBe('start')
+    }
   })
 })
