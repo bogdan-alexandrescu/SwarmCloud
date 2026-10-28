@@ -753,7 +753,7 @@ function step(o){
   o=o||{};
   return `<div class="stp ${o.ed?'ed':''}"><div class="sh">${C('step 1','ln')}<b class="mn">ci-fix-waits-on-continuation</b><span class="r" style="margin-left:auto">${C('2 agent-hours','ln','clock')}</span></div>`+
     `<dl class="kv"><dt>Files</dt><dd>${(o.files||FILES).map(f=>`<code>${f}</code>`).join(' ')}</dd>`+
-    `<dt>Tests</dt><dd class="dim">6 named, red first: <code>test_cifix_waits_on_plain_continuation.py</code> (5) and <code>test_ci_fix.py</code> (1)</dd>`+
+    `<dt>Tests</dt><dd class="dim">6 named, red first: <code>test_cifix_waits_<wbr>on_plain_continuation.py</code> (5) and <code>test_ci_fix.py</code> (1)</dd>`+
     `<dt>Runner</dt><dd>claude-code <span class="dim">· the default model class: a plan step cannot name one yet</span></dd>`+
     `<dt>Depends on</dt><dd class="dim">nothing</dd></dl>`+
     `<span class="fold">${I('chev')}Prompt, folded</span></div>`;
