@@ -753,6 +753,14 @@ function failureTable(
           const title = titleOf(t)
           const wf = title === null ? t.workflow_id : null
           const label = rowLabel(t, title)
+          // THE TOOLTIP HOLDS WHAT THE LINK SAYS, THEN THE WHOLE ID (CIFIX-2632,
+          // 2026-10-28): a step's link ends in its short id, `fan_3`, and a
+          // tooltip of `<label> · task_fan_3` did not contain it, so the
+          // clamped name was not whole in its title (walk.long C). The short
+          // id stays in the words; the full id still ends the tooltip.
+          const short = (t.step_id ?? null) !== null ? shortTaskId(t.id) : null
+          const words = [label, ...(wf === null ? [] : [wf]), ...(short === null ? [] : [short])].join(' · ')
+          const tip = short === t.id ? words : `${words} · ${t.id}`
           return (
             <tr key={t.id}>
               {/* THE MARK ALONE (browser QA N3, 2026-10-04): the 68px badge
@@ -762,7 +770,7 @@ function failureTable(
                 <StateMark state={t.state} bare />
               </td>
               <th scope="row">
-                <a className="ov-name" href={href} title={`${wf === null ? label : `${label} · ${wf}`} · ${t.id}`}>
+                <a className="ov-name" href={href} title={tip}>
                   {label}
                   {wf !== null && (
                     <>
@@ -779,10 +787,10 @@ function failureTable(
                       `<title> · <step> · <id>`, in an element of its own:
                       drawn as an id, it is the user's data, not a code
                       identifier (walk.copy E). */}
-                  {(t.step_id ?? null) !== null && (
+                  {short !== null && (
                     <>
                       {' · '}
-                      <span className="mono">{shortTaskId(t.id)}</span>
+                      <span className="mono">{short}</span>
                     </>
                   )}
                 </a>
