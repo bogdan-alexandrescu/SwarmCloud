@@ -197,6 +197,21 @@ describe('QA1-FIX-07: the Agents list', () => {
     expect(scroll).not.toHaveBeenCalled()
   })
 
+  it('overview-agents-55: focus handed from a clicked row to its opener scrolls nothing', async () => {
+    // The scroll the review measured (0 -> 37px on `.ctl-scroll`) followed
+    // focus(), not scrollIntoView: jsdom has no layout, so the mechanism is
+    // what is pinned -- every focus the click causes asks for no scroll.
+    // MUTATION: call `.cr-open`'s `focus()` without `{ preventScroll: true }` in the row's onFocus.
+    serve()
+    render(<AgentsScreen onOpen={() => {}} />)
+    await waitFor(() => expect(rowOf(flaky)).not.toBeNull())
+    const opener = rowOf(flaky)!.querySelector<HTMLElement>(':scope > .cr-open')!
+    const focus = vi.spyOn(opener, 'focus')
+    act(() => rowOf(flaky)!.focus())
+    expect(focus).toHaveBeenCalledTimes(1)
+    expect(focus.mock.calls[0]![0]).toEqual({ preventScroll: true })
+  })
+
   it('overview-agents-18: the theater link says what it does, in sentence case', async () => {
     // MUTATION: label the link `⤢ theater all` again.
     const browser = row(10, 'RUNNING', { runner_profile: 'claude-code-browser' })

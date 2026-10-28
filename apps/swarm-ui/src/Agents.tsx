@@ -1890,7 +1890,13 @@ export function attemptsUsed(
   }
 }
 
-/** The attempt documents each row last read, by task id (`useRuns`), the oldest dropped past `RUNS_HELD`. */
+/**
+ * The attempt documents each row last read, by task id (`useRuns`), the oldest
+ * dropped past `RUNS_HELD`. It outlives a tenant or workspace switch in one
+ * session. That is deliberate: an entry is found only by a row with that
+ * exact task id, and it only seeds the figure drawn while that row's own read
+ * is in flight; the read's answer replaces it.
+ */
 const RUNS_READ = new Map<string, { key: string; attempts: readonly unknown[] }>()
 /** A page's worth of rows and its next: more than one list ever draws. */
 const RUNS_HELD = 500
@@ -2245,7 +2251,11 @@ function CompactRow({
         onOpen(task.id)
       }}
       onFocus={(e) => {
-        if (e.target === e.currentTarget) e.currentTarget.querySelector<HTMLElement>(':scope > .cr-open')?.focus()
+        // The row already has focus where it sits, so handing it to the opener
+        // scrolls nothing (overview-agents-55): a plain `focus()` here nudged the
+        // page column as the split opened beside the list.
+        if (e.target === e.currentTarget)
+          e.currentTarget.querySelector<HTMLElement>(':scope > .cr-open')?.focus({ preventScroll: true })
       }}
       onMouseEnter={(e) => show(e.currentTarget)}
       onMouseLeave={hide}
