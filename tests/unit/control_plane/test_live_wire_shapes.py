@@ -432,7 +432,7 @@ def test_the_api_and_the_gate_name_the_same_presets_at_the_same_sizes():
     api = {p["name"]: (p["width"], p["height"]) for p in live_module.LIVE_PRESETS}
     assert api == gate
     assert api["phone-390"] == (390, 844)
-    assert api["phone-380"] == (380, 844)
+    assert api["phone-380"] == (380, 800)
     assert PRESETS["phone-390"].mobile == PRESETS["iphone-15"].mobile
     assert PRESETS["phone-390"].touch == PRESETS["iphone-15"].touch
     assert PRESETS["phone-390"].scale == PRESETS["iphone-15"].scale

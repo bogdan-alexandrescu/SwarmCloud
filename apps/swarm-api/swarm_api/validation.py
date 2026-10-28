@@ -1171,6 +1171,13 @@ CONFLICT_ROUND_METADATA_KEY = "merge_conflict_round"
 #: that the branch now stands on the default branch's head. The worker spells
 #: it `agent_worker.lifecycle.CONFLICT_ROUND_FIELD`.
 CONFLICT_ROUND_FIELD = "conflict_round"
+#: A CI fix's red head (#2276): `{"pull_request": int, "head_sha": 40-hex}`,
+#: copied from `metadata.ci_fix` at submission, on a continuation only, and
+#: only those two fields. Inside the signed block, so the worker may act on
+#: it: at attempt start it ends a fix as superseded when the pull request's
+#: branch has moved past that head or the pull request is merged or closed.
+#: The worker spells it `agent_worker.cifixstart.FIELD`.
+CI_FIX_HEAD_FIELD = "ci_fix_head"
 
 #: The key inside `task.metadata` the worker stages declared inputs from:
 #: `{upstream TASK id: filename}`. Written by workflow expansion only
@@ -1319,6 +1326,12 @@ HUMAN_RETURNED_METADATA_KEY = "human_returned"
 #: (`control.RELEASE_WAIT_RESUMES_METADATA_KEY`).
 RELEASE_WAIT_RESUMES_METADATA_KEY = "release_wait_resumes"
 
+#: The provider-quota parks whose attempt was refunded (#2350), counted
+#: against `attemptstate.QUOTA_MAX_RESUMES`. A caller who set it would choose
+#: how many free attempts the task has left. The worker restates it
+#: (`control.QUOTA_PARK_RESUMES_METADATA_KEY`).
+QUOTA_PARK_RESUMES_METADATA_KEY = "quota_park_resumes"
+
 #: The pull requests a workflow's root step waits for before it may start
 #: (`after`, lane SPEED-D3, `swarm_api.prgate`): written by `submit_workflow`
 #: from the spec's `after` and then only by the wake tick. A caller who set
@@ -1368,6 +1381,7 @@ RESERVED_METADATA_KEYS = (
     AFTER_PRS_METADATA_KEY,
     QA_TARGET_METADATA_KEY,
     RELEASE_WAIT_RESUMES_METADATA_KEY,
+    QUOTA_PARK_RESUMES_METADATA_KEY,
 )
 
 #: Reserved like every key above, and refused by the same function in the
@@ -1787,6 +1801,10 @@ class DispatchOptions:
     #: a continuation whose metadata carries `CONFLICT_ROUND_METADATA_KEY`.
     #: Written only when true, inside the signed block.
     conflict_round: bool = False
+    #: A CI fix's red head (#2276), `{"pull_request": int, "head_sha": str}`:
+    #: set by `submit_workflow` on a continuation whose `metadata.ci_fix`
+    #: names a head. Written only when set, inside the signed block.
+    ci_fix_head: dict[str, Any] | None = None
     #: `(upstream TASK id, upstream STEP id)` for every `input_from` entry of a
     #: step that opted in to `input_layout: "by_parent"` (#75), else empty. The
     #: worker sees only task ids in `metadata.input_from`; this is how it learns
@@ -2000,6 +2018,13 @@ class DispatchOptions:
         # other step stores exactly the block it stored before.
         if self.conflict_round:
             block[CONFLICT_ROUND_FIELD] = True
+        # Absent on every step but a CI fix that names its red head (#2276),
+        # so every other step stores exactly the block it stored before.
+        if self.ci_fix_head:
+            block[CI_FIX_HEAD_FIELD] = {
+                "pull_request": self.ci_fix_head["pull_request"],
+                "head_sha": self.ci_fix_head["head_sha"],
+            }
         # Absent on every step but an `await-input` step (HW-API-SUBMIT), so
         # every other step stores exactly the block it stored before.
         if self.await_input is not None:
@@ -2139,6 +2164,11 @@ _RESERVED_BECAUSE = {
         f"metadata.{RELEASE_WAIT_RESUMES_METADATA_KEY} is reserved: it is set only "
         "by the worker, to count the release waits whose attempt was refunded. "
         "Drop the key from metadata."
+    ),
+    QUOTA_PARK_RESUMES_METADATA_KEY: (
+        f"metadata.{QUOTA_PARK_RESUMES_METADATA_KEY} is reserved: it is set only "
+        "by the worker's quota park, to count the provider-quota parks whose "
+        "attempt was refunded. Drop the key from metadata."
     ),
     OWNER_ANSWERS_METADATA_KEY: (
         f"metadata.{OWNER_ANSWERS_METADATA_KEY} is reserved: it holds the owner's "
@@ -3055,6 +3085,16 @@ def rereview_step_for(
     review's task (`SubmissionService.submit_workflow`): the scheduler runs
     the re-review on the profile the review RESOLVED to, never re-deciding
     from the integrator's diff (`scheduler.runtime.resolve`).
+
+    A review PINNED to `claude-code`, with no block, gets one on its
+    re-review (#2275, BGD 2026-10-27, Q-2275): a `claude-code` review of a
+    UI lane can never say MERGE, and a re-review copying its profile could
+    not either, so no fix round reached the merge. The re-review is
+    submitted on the pair's browser profile with `browser_if_ui`, catalogue
+    names only (invariant 10), and the scheduler decides from the lane's own
+    files -- the browser only when they are UI, which is the #2322 cost
+    decision. It carries no `inherit`: the review it would inherit from was
+    pinned, not resolved (`SubmissionService.submit_workflow`).
     """
     sources = merge_sources(steps, strategy)
     if (
@@ -3074,9 +3114,16 @@ def rereview_step_for(
         verdict_file=sources.verdict_file,
         staged=paths,
     )
+    metadata = dict(review.get("metadata") or {})
+    profile = review.get("runner_profile")
+    if profile == RUNTIME_POLICY_PROFILES["code"] and RUNTIME_METADATA_KEY not in metadata:
+        profile = RUNTIME_POLICY_PROFILES["browser"]
+        metadata[RUNTIME_METADATA_KEY] = {
+            "policy": RUNTIME_POLICY_BROWSER_IF_UI, **RUNTIME_POLICY_PROFILES,
+        }
     step: dict[str, Any] = {
         "step_id": _free_step_id(REREVIEW_STEP_ID, {s.step_id for s in steps}),
-        "runner_profile": review.get("runner_profile"),
+        "runner_profile": profile,
         "input": {**original, "prompt": preamble + (prompt if isinstance(prompt, str) else "")},
         "depends_on": list(dict.fromkeys([sources.pull_request, *staged])),
         "builds_on": sources.pull_request,
@@ -3084,10 +3131,7 @@ def rereview_step_for(
         # The integrator's own gate: the re-review runs after a fix, and
         # passes the review's verdict on when there was none.
         "when": {"step": sources.review, "verdict_in": list(integrator.when_verdicts)},
-        "metadata": {
-            **dict(review.get("metadata") or {}),
-            INPUT_LAYOUT_METADATA_KEY: INPUT_LAYOUT_BY_PARENT,
-        },
+        "metadata": {**metadata, INPUT_LAYOUT_METADATA_KEY: INPUT_LAYOUT_BY_PARENT},
     }
     for name in ("resource_class", "timeout_seconds"):
         if review.get(name) is not None:

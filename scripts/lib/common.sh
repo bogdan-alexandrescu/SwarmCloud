@@ -2421,6 +2421,16 @@ redact() {
   local v_type_end='([[:blank:]]+=[[:blank:]]|[[:blank:]]+\|[[:blank:]]+(None|null|undefined|str|bytes|int|float|bool|[A-Z][a-z])|\)[[:blank:]]*(->|:?$)|\[(str|bytes|int|float|bool|None|Any|object|[A-Z][a-z]{1,15}([A-Z][a-z]{1,15}){0,3})[],])'
   local v_annotation="(_*(${v_hump})(${v_hump})*|[a-z_][a-z0-9_]{0,31}\\.(${v_hump})(${v_hump})*)${v_type_end}"
   local v_word='(={1,2}[[:blank:]]|(await|new|not)[[:blank:]]|(None|True|False|null|undefined|\{\}|\[\]|\(\))([,;[:space:]]|$|[])}]+([,;[:space:]]|$)))'
+  # `_DOTTED_CLOSED` (#2237): a dotted name of letters and humps that a `}`
+  # or `)` closes -- `token: secretsLink.current }` -- under any key word but
+  # `password`/`passwd`/`passphrase`. The bracket is in the marked span, so
+  # the s command puts it back.
+  local v_ahump='([A-Z][a-z]{2,15}|Id)'
+  local v_apart="_*([a-z][a-z_]{0,31}|[a-z]{1,16}${v_ahump}(${v_ahump})*)"
+  local v_dotted_closed="_*([a-z][a-z_]{1,31}|[a-z]{1,16}${v_ahump}(${v_ahump})*)(\\.${v_apart})(\\.${v_apart})*[[:blank:]]*[)}]"
+  # `_CONTAINER` (#2237): an empty `[]`/`{}`/`()` where a value ends, an
+  # opening bracket at the end of the line, or `{` and a blank.
+  local v_container="(\\[[[:blank:]]*\\]|\\{[[:blank:]]*\\}|\\([[:blank:]]*\\))${v_end}|[[{(][[:blank:]]*\$|\\{[[:blank:]]"
   # A LITERAL AFTER CODE (#361 box 64): `swarm_redaction.rules.mask_code_literals`,
   # restated move for move -- its comment says why each move is there. The
   # quotes around a quoted NAME become $c_sq/$c_dq, $c_mark goes after each
@@ -2588,8 +2598,12 @@ redact() {
     -e "s/${c_mark}//g" \
     -e "s/${c_sq}//g" \
     -e "s/${c_dq}//g" \
+    -e "s/sk-([a-z]{1,16}(-[a-z]{1,16})*)([^A-Za-z0-9_-]|\$)/sk${envname}-\\1\\3/g" \
+    -e "s/sk${envname}-((proj|ant|test|live)-)/sk-\\1/g" \
     -e 's/(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]{26}[A-Za-z0-9_-]*/\1********/g' \
-    -e 's/(^|[^A-Za-z0-9_])(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+/\1\2********/g' \
+    -e 's/(^|[^A-Za-z0-9_])(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]{14}[A-Za-z0-9_-]*/\1\2********/g' \
+    -e 's/(^|[^A-Za-z0-9_])(sk-((proj|test|live)-[A-Za-z0-9_-]|ant-[A-Za-z0-9_-]{2}))[A-Za-z0-9_-]+/\1\2********/g' \
+    -e "s/${envname}//g" \
     -e 's/(ya29\.)[A-Za-z0-9._-]+/\1********/g' \
     -e 's/(eyJ[A-Za-z0-9_-]{7})[A-Za-z0-9._-]{30}[A-Za-z0-9._-]*/\1********/g' \
     -e 's/(^|[^A-Za-z0-9_])(eyJ[A-Za-z0-9_-]{7})[A-Za-z0-9._-]+/\1\2********/g' \
@@ -2626,6 +2640,8 @@ redact() {
     -e "s/${code_key}(:[[:blank:]]*[-+=?]\\}(\"|[[:space:]]|\$))/\\1${keep}\\3/g" \
     -e "s/${code_key_np}(:[[:blank:]]*${v_annotation})/\\1${keep}\\6/g" \
     -e "s#${code_key_np}(:[[:blank:]]*${v_call})#\\1${keep}\\6#g" \
+    -e "s/${code_key_np}(:[[:blank:]]*${v_dotted_closed})/\\1${keep}\\6/g" \
+    -e "s/${code_key}([:=][[:blank:]]*(${v_container}))/\\1${keep}\\3/g" \
     -e "s/(^|[^A-Za-z0-9_.-])(${up_name}(\\\\*\")?)=/\\1\\2${envname}=/g" \
     -e "s/${code_key}(=[[:blank:]]*${v_word})/\\1${keep}\\3/g" \
     -e "s/${code_key}(=[[:blank:]]*${v_dotted_self}${v_end})/\\1${keep}\\3/g" \

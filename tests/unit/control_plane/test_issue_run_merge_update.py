@@ -26,6 +26,7 @@ No credentials, no network, no emulator.
 from __future__ import annotations
 
 import ast
+import copy
 import json
 import re
 from pathlib import Path
@@ -36,10 +37,17 @@ import pytest
 from swarm_api import issueci, issueruns
 
 from . import forge_fakes
-from .test_issue_run_auto_merge import _checking, _merge_task, _merge_workflows
+from .test_issue_run_auto_merge import (
+    CONFLICT_FIX_WORKFLOW,
+    _checking,
+    _conflict_fix,
+    _merge_task,
+    _merge_workflows,
+)
 from .test_issue_run_ci import (  # noqa: F401  (fixtures, imported to be used)
     PR,
     SHA_A,
+    SHA_B,
     _read,
     _step_task,
     api_context,
@@ -138,6 +146,27 @@ def test_a_head_of_base_merges_on_the_pushed_head_is_merged(
     assert run["merge"]["head_sha"] == head
 
 
+def test_a_base_merge_on_a_conflict_fix_head_is_merged(client, db, objects, writes, clock):
+    """#2537: the merge step's own update on top of a pr-shepherd conflict
+    fix's head is still the run's, and the merge continues the fix.
+
+    MUTATION: drop the conflict-fix candidates from `issueci._pushing_task` --
+    the run FAILs "not pushed by any of this run's tasks"."""
+    running = _checking(client, db, objects, writes)
+    fix = _conflict_fix(db, running)
+    head = _updates(writes, 1, onto=SHA_B)
+    _green_at(writes, head)
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "CHECKING", run.get("error")
+    (merge_wf,) = _merge_workflows(db)
+    assert _merge_task(db, merge_wf)["metadata"]["dispatch"]["merge_target"] == {
+        "pull_request": fix["id"], "pull_request_workflow": CONFLICT_FIX_WORKFLOW,
+    }
+    assert run["merge"]["head_sha"] == head
+
+
 def test_one_base_merge_past_the_cap_is_refused(client, db, objects, writes, clock):
     running = _checking(client, db, objects, writes)
     _green_at(writes, _updates(writes, issueci.MERGE_MAX_HEAD_UPDATES + 1))
@@ -230,6 +259,146 @@ def test_the_claimed_merges_own_update_is_the_same_merge_not_a_second(
     writes.pulls[PR]["state"] = "closed"
     done = _read(client, clock, running["id"])
     assert done["state"] == "DONE" and done["green_sha"] == head
+
+
+ROUND_TASK = "task_" + "e7" * 10
+ROUND_WORKFLOW = "wf_" + "e8" * 10
+
+
+def _claimed(client, db, objects, writes, clock) -> tuple[dict, dict]:
+    """A CHECKING run that claimed the merge of SHA_A, and its merge workflow."""
+    running = _checking(client, db, objects, writes)
+    writes.check(SHA_A, "unit", "success")
+    claimed = _read(client, clock, running["id"])
+    assert claimed["merge"]["head_sha"] == SHA_A
+    (merge_wf,) = _merge_workflows(db)
+    return running, merge_wf
+
+
+def _agent_merge(writes: CommitWrites) -> str:
+    """A merge of the base onto SHA_A that an agent committed: not GitHub's,
+    so `through_base_merges` alone never walks through it."""
+    head, base_tip = _sha(50), _sha(150)
+    writes.on_base.add(base_tip)
+    writes.commit(head, [SHA_A, base_tip], by_github=False)
+    return head
+
+
+def _round(db, merge_wf: dict, pushed: str, *, step_id: str = "conflict-fix:1",
+           tenant_id: str | None = None, task_workflow: str = ROUND_WORKFLOW) -> dict:
+    """A round mergewake submitted as its own workflow and appended to the
+    merge workflow as `step_id`, whose task pushed `pushed`.
+
+    The shape `mergewake._submit_round` writes: the round's task belongs to
+    ROUND_WORKFLOW, never to the merge workflow, and the appended step's
+    `input.merge_fix_round` names that workflow and the merge task."""
+    merge_task = _merge_task(db, merge_wf)
+    task = copy.deepcopy(merge_task)
+    task.update({
+        "id": ROUND_TASK, "tenant_id": tenant_id or merge_task["tenant_id"],
+        "workflow_id": task_workflow, "state": "SUCCEEDED",
+        "result_summary": {"git": {"pushed_head": pushed}},
+    })
+    db.docs[f"tasks/{ROUND_TASK}"] = task
+    stored = db.docs[f"workflows/{merge_wf['workflow_id']}"]
+    stored["steps"].append({
+        "step_id": step_id, "task_id": ROUND_TASK, "runner_profile": "claude-code",
+        "input": {"merge_fix_round": {
+            "kind": step_id.split("-fix", 1)[0], "round": 1, "head_sha": SHA_A,
+            "pull_request": PR, "merge_task": merge_task["id"],
+            "workflow_id": ROUND_WORKFLOW,
+        }},
+        "depends_on": [], "resource_class": None, "input_from": {},
+        "timeout_seconds": None,
+    })
+    return task
+
+
+def _still_the_same_merge(client, db, writes, clock, running: dict, merge_wf: dict,
+                          head: str) -> None:
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "CHECKING", run.get("error")
+    assert [w["workflow_id"] for w in _merge_workflows(db)] == [merge_wf["workflow_id"]]
+    assert run["merge"]["head_sha"] == SHA_A
+
+    writes.pulls[PR]["merged"] = True
+    writes.pulls[PR]["state"] = "closed"
+    done = _read(client, clock, running["id"])
+    assert done["state"] == "DONE" and done["green_sha"] == head
+
+
+def test_a_head_its_merge_steps_conflict_fix_round_pushed_is_the_same_merge(
+    client, db, objects, writes, clock,
+):
+    """#2578 (wf_4eb18fe5, PR #2554): the merge step handed a conflict to its
+    own `conflict-fix:1` round, whose agent-committed head is neither the
+    claimed head nor GitHub's base merge on it; the merge is still running.
+
+    MUTATION: drop `round_heads` from the in-flight `known` predicate in
+    `issueci._merge` -- the run FAILs "not pushed by any of this run's tasks"
+    while its merge workflow is still running."""
+    running, merge_wf = _claimed(client, db, objects, writes, clock)
+    head = _agent_merge(writes)
+    _round(db, merge_wf, head)
+    _green_at(writes, head)
+
+    _still_the_same_merge(client, db, writes, clock, running, merge_wf, head)
+
+
+def test_a_base_merge_on_a_merge_rounds_head_is_the_same_merge(
+    client, db, objects, writes, clock,
+):
+    running, merge_wf = _claimed(client, db, objects, writes, clock)
+    pushed = _agent_merge(writes)
+    _round(db, merge_wf, pushed)
+    head = _updates(writes, 1, onto=pushed)
+    _green_at(writes, head)
+
+    _still_the_same_merge(client, db, writes, clock, running, merge_wf, head)
+
+
+def test_a_ci_fix_round_of_the_merge_workflow_is_the_same_merge(
+    client, db, objects, writes, clock,
+):
+    running, merge_wf = _claimed(client, db, objects, writes, clock)
+    head = _sha(60)
+    writes.commit(head, [SHA_A], by_github=False)
+    _round(db, merge_wf, head, step_id="ci-fix:1")
+    _green_at(writes, head)
+
+    _still_the_same_merge(client, db, writes, clock, running, merge_wf, head)
+
+
+@pytest.mark.parametrize("step_id, tenant_id, task_workflow", [
+    ("conflict-fix:1", "research", ROUND_WORKFLOW),
+    ("merge-again", None, ROUND_WORKFLOW),
+    ("ci-fix", None, ROUND_WORKFLOW),
+    ("conflict-fix:", None, ROUND_WORKFLOW),
+    ("review-fix:1", None, ROUND_WORKFLOW),
+    ("conflict-fix:1", None, "wf_" + "e9" * 10),
+])
+def test_a_round_step_of_another_tenant_or_not_a_round_is_still_refused(
+    client, db, objects, writes, clock, step_id, tenant_id, task_workflow,
+):
+    """Invariant 9, and only mergewake's round steps: anything else pushed the
+    head as far as this run knows, so it is refused as before -- a task of
+    another tenant, a step that is not a round, or a task of a workflow other
+    than the one its round step names.
+
+    MUTATION: read the round tasks without the run's tenant, match any step
+    id, or skip the round workflow's binding -- the run stays CHECKING."""
+    running, merge_wf = _claimed(client, db, objects, writes, clock)
+    head = _agent_merge(writes)
+    _round(db, merge_wf, head, step_id=step_id, tenant_id=tenant_id,
+           task_workflow=task_workflow)
+    _green_at(writes, head)
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "FAILED"
+    assert "not pushed by any of this run's tasks" in run["error"]
+    assert len(_merge_workflows(db)) == 1
 
 
 def _worker_value(name: str) -> str:

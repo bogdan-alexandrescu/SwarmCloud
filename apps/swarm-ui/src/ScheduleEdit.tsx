@@ -1,10 +1,17 @@
 /**
- * CREATE AND EDIT A SCHEDULE (docs/schedules.md §6.2, create variant A: one
- * page from a type template, owner-picked 2026-10-11). Every field starts at
+ * CREATE AND EDIT A SCHEDULE (docs/schedules.md §6.2; Automate proposal B's
+ * A3, picked by BGD 2026-10-26, #2417, docs/web-ui/mockups/automate-b.html
+ * #A3a and #A3b). One page of numbered cards -- type and template, target,
+ * cadence, gates and approvers, budget and tripwire, and how a new one starts
+ * -- beside a sheet that keeps every problem, the change against the stored
+ * revision, the next five firings and Create in view. Every field starts at
  * the type's default, so most schedules are a type, a repository and a time.
- * A new schedule picks its type from template tiles; the cron's words, its
- * next five firings and the template card sit in a side column beside the
- * fields, so the whole decision is on one page (ScheduleTemplates.tsx).
+ *
+ * THE SHEET DRAWS THE SERVER'S OWN ANSWERS: the preview's refusal and the
+ * type's served `budget_caps`, judged as `schedules.resolve_budget` judges
+ * them, so a problem shows before Create is pressed, not after. An edit of a
+ * paused schedule leads with "Saving does not resume": resuming is its own
+ * step on the schedule's page.
  *
  * THE BROWSER PARSES NO CRON. The words, the next five and the type's
  * minimum-interval refusal all come from `POST /v1/schedules:preview`, which
@@ -45,6 +52,8 @@ import type { RepoRecord } from './RepositoriesData'
 import { InApp, SCHEDULES_ADDRESS, scheduleAddress } from './Schedules'
 import { budgetDefaultWords, StartChoice, TemplateCard, TemplateTiles, TenantRoom, type Start } from './ScheduleTemplates'
 import { Screen } from './Shell'
+import { usd } from './measure'
+import './styles/automate-edit.css'
 
 /** §6.3's presets. The raw field takes anything the tick's parser accepts. */
 export const CRON_PRESETS: readonly { label: string; cron: string }[] = [
@@ -307,40 +316,17 @@ function inViewer(iso: string): string {
 }
 
 /**
- * THE CRON IN WORDS, AND THE NEXT FIVE (§6.3): in the schedule's zone and in
- * the viewer's. A bad expression is the parser's own reason, said in place.
+ * ONE PREVIEW READ PER FORM, debounced. The sheet's problem list, the error
+ * under the cron field and the next five all draw this one answer, so they
+ * cannot disagree and the route is asked once per pause in typing. `fresh` is
+ * false from the keystroke until the next answer: an expression being retyped
+ * is not yet refused, so a stale refusal stops nothing.
  */
-/**
- * Why the preview stops a save, or null: the parser's 422 and the type's
- * minimum-interval refusal alike (AUT-10). A preview that was not read stops
- * nothing -- the server still checks the expression -- and says so in place.
- */
-export function previewBlocks(r: Result<{ preview: SchedulePreview }> | null): string | null {
-  if (r === null || r.status === 'loading' || r.status === 'empty') return null
-  if (r.status === 'error') return r.error.kind === 'invalid' ? `Not a schedule: ${r.error.message}` : null
-  const refusal = refusalWords(r.data.preview.refusal)
-  return refusal === null ? null : `This type would refuse it: ${refusal}`
-}
-
-function CronPreview({
-  cron,
-  timezone,
-  type,
-  onBlocks,
-}: {
-  cron: string
-  timezone: string
-  type: string
-  /** What stops a save, as `previewBlocks` reads the last answer. */
-  onBlocks: (why: string | null) => void
-}) {
+function usePreview(cron: string, timezone: string, type: string): { r: Result<{ preview: SchedulePreview }> | null; fresh: boolean } {
   const [r, setR] = useState<Result<{ preview: SchedulePreview }> | null>(null)
-  const report = useRef(onBlocks)
-  report.current = onBlocks
+  const [fresh, setFresh] = useState(false)
   useEffect(() => {
-    // An expression being retyped is not yet refused: the last refusal is
-    // dropped at once, and the next answer decides.
-    report.current(null)
+    setFresh(false)
     if (cron.trim() === '' || timezone.trim() === '') {
       setR(null)
       return
@@ -350,7 +336,7 @@ function CronPreview({
       void previewSchedule({ cron: cron.trim(), timezone: timezone.trim(), ...(type === '' ? {} : { type }) }).then((next) => {
         if (!live) return
         setR(next)
-        report.current(previewBlocks(next))
+        setFresh(true)
       })
     }, PREVIEW_DEBOUNCE_MS)
     return () => {
@@ -358,6 +344,37 @@ function CronPreview({
       clearTimeout(timer)
     }
   }, [cron, timezone, type])
+  return { r, fresh }
+}
+
+/**
+ * Why the preview stops a save, or null: the parser's 422 and the type's
+ * minimum-interval refusal alike (AUT-10). A preview that was not read stops
+ * nothing -- the server still checks the expression -- and one being retyped
+ * stops nothing until it answers. THE REASON IS SAID ONCE WHERE THE PREVIEW
+ * SAYS IT (review of AUTO-A3): the preview leads with "Not a schedule" /
+ * "This type would refuse it" and the reason, so the sheet's problem names
+ * the cadence without the reason (`cadenceProblem`), and the cron field
+ * carries the reason in place only beside the cards, where the preview is in
+ * the sheet; on one column the preview sits right under the field instead.
+ */
+/** The sheet's line for a cadence `previewBlocks` stops: what is wrong, not the reason the preview says. */
+function cadenceProblem(r: Result<{ preview: SchedulePreview }> | null): string {
+  return r !== null && r.status === 'error' ? 'Cadence: not a schedule.' : 'Cadence: this type refuses it.'
+}
+
+export function previewBlocks(p: { r: Result<{ preview: SchedulePreview }> | null; fresh: boolean }): string | null {
+  if (!p.fresh || p.r === null) return null
+  if (p.r.status === 'error') return p.r.error.kind === 'invalid' ? p.r.error.message : null
+  if (p.r.status !== 'ok' && p.r.status !== 'stale') return null
+  return refusalWords(p.r.data.preview.refusal)
+}
+
+/**
+ * THE CRON IN WORDS, AND THE NEXT FIVE (§6.3): in the schedule's zone and in
+ * the viewer's. A bad expression is the parser's own reason, said in place.
+ */
+function CronPreview({ r, timezone }: { r: Result<{ preview: SchedulePreview }> | null; timezone: string }) {
   if (r === null) return <p className="c-hint" data-testid="sc-preview">Type an expression to see it in words.</p>
   if (r.status === 'loading') return <p className="c-hint" data-testid="sc-preview">Reading the preview…</p>
   if (r.status === 'error') {
@@ -397,13 +414,16 @@ function CronPreview({
           <p className="c-hint">
             Next five, in {timezone}:
           </p>
-          <ol className="sc-next" aria-label="The next five firings">
+          <ol className={refusal === null ? 'sc-next' : 'sc-next is-refused'} aria-label="The next five firings">
             {p.next.map((iso) => (
               <li key={iso}>
                 <span className="mono">{inZone(iso)}</span> <span className="sc-sub sc-yours">{inViewer(iso)} your time</span>
               </li>
             ))}
           </ol>
+          {/* A3a: the firings a refused cadence would have had, struck
+              through, so the sheet shows what the server will not do. */}
+          {refusal !== null && <p className="c-hint">Struck through: the server refuses this cadence.</p>}
         </>
       )}
     </div>
@@ -416,19 +436,29 @@ function CronPreview({
  * hint (AUT-16): a wrapped `<select>` otherwise takes every option and the
  * hint as its accessible name ("Type issue-sweep issue-plan-only …").
  */
-function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
+function Field({ label, hint, error, children }: { label: string; hint?: ReactNode; error?: string | null; children: ReactNode }) {
   const id = useId()
   const hinted = hint !== undefined && hint !== ''
+  const wrong = error !== undefined && error !== null && error !== ''
+  const described = [hinted ? `${id}-h` : null, wrong ? `${id}-e` : null].filter((x): x is string => x !== null)
   const control = isValidElement(children)
     ? cloneElement(children as ReactElement<Record<string, unknown>>, {
         'aria-labelledby': `${id}-l`,
-        ...(hinted ? { 'aria-describedby': `${id}-h` } : {}),
+        ...(described.length > 0 ? { 'aria-describedby': described.join(' ') } : {}),
+        ...(wrong ? { 'aria-invalid': 'true' } : {}),
       })
     : children
   return (
     <label className="c-field">
       <span className="c-lbl" id={`${id}-l`}>{label}</span>
       {control}
+      {/* A3a: the field's own problem, in place, in the bad ink; the sheet
+          lists it again with the rest so nothing is found only by scrolling. */}
+      {wrong && (
+        <span className="ae-err" id={`${id}-e`}>
+          {error}
+        </span>
+      )}
       {hinted && <span className="c-hint" id={`${id}-h`}>{hint}</span>}
     </label>
   )
@@ -667,6 +697,142 @@ export function editBody(d: Draft, s: Schedule): ScheduleEditBody {
   return body
 }
 
+/** A budget field's own problem (in place) and the sheet's line for it. */
+interface BudgetProblem {
+  key: keyof Schedule['budget']
+  field: string
+  sheet: string
+}
+
+/**
+ * THE BUDGET AGAINST THE TYPE'S SERVED CAPS (A3a), as `schedules.resolve_budget`
+ * will judge it: each of per run and per day above zero and at most its cap,
+ * live runs 1 to its cap, and a day at least one run. A blank field is the
+ * stored value on an edit and the cap on a create, which is what the server
+ * starts from. A type with no served caps is judged by the server alone.
+ */
+export function budgetProblems(d: Draft, t: ScheduleTypeRow | null, s: Schedule | null): BudgetProblem[] {
+  const caps = t?.budget_caps ?? null
+  const typed = budgetOf(d)
+  const out: BudgetProblem[] = []
+  const name = t?.name ?? d.type
+  const money = (key: 'per_run_usd' | 'per_day_usd', unit: string, words: string) => {
+    const v = typed[key]
+    if (v === undefined) return
+    const cap = caps?.[key]
+    if (v <= 0) out.push({ key, field: 'Must be above $0.00.', sheet: `${words} must be above $0.00.` })
+    else if (cap !== undefined && cap !== null && Math.round(v * 100) > Math.round(cap * 100)) {
+      out.push({ key, field: `Over ${name}’s cap of ${usd(cap)} a ${unit}.`, sheet: `${words} ${usd(v)} is over ${name}’s cap of ${usd(cap)}.` })
+    }
+  }
+  money('per_run_usd', 'run', 'Per run')
+  money('per_day_usd', 'day', 'Per day')
+  const run = typed.per_run_usd ?? s?.budget.per_run_usd ?? caps?.per_run_usd ?? undefined
+  const day = typed.per_day_usd ?? s?.budget.per_day_usd ?? caps?.per_day_usd ?? undefined
+  const dayMine = out.some((p) => p.key === 'per_day_usd')
+  if (!dayMine && run !== undefined && day !== undefined && run > 0 && Math.round(day * 100) < Math.round(run * 100)) {
+    out.push({ key: 'per_day_usd', field: `Under one run’s ${usd(run)}.`, sheet: `Per day ${usd(day)} is under one run’s ${usd(run)}.` })
+  }
+  const live = typed.max_concurrent
+  const liveCap = caps?.max_concurrent
+  if (live !== undefined && live < 1) out.push({ key: 'max_concurrent', field: 'At least 1.', sheet: 'Live runs must be at least 1.' })
+  else if (live !== undefined && liveCap !== undefined && liveCap !== null && live > liveCap) {
+    out.push({ key: 'max_concurrent', field: `Over ${name}’s cap of ${liveCap}.`, sheet: `Live runs ${live} is over ${name}’s cap of ${liveCap}.` })
+  }
+  return out
+}
+
+/** A changed value in words for the sheet's "Changes against revision N". */
+function changeWords(key: string, v: unknown): string {
+  if (v === undefined) return 'the type’s default'
+  if ((key === 'per_run_usd' || key === 'per_day_usd') && typeof v === 'number') return usd(v)
+  if (key === 'approvers') return v === 'owner_only' ? 'the owner only' : v === 'members' ? 'any member' : (plainValue(v) ?? paramText(v))
+  return plainValue(v) ?? paramText(v)
+}
+
+const CHANGE_LABEL: Readonly<Record<string, string>> = {
+  run: 'Run',
+  plan: 'Plan',
+  merge: 'Merge',
+  approvers: 'Who may approve',
+  approval_ttl_hours: 'Approval expires after (hours)',
+  per_run_usd: 'Per run',
+  per_day_usd: 'Per day',
+  max_concurrent: 'Live runs at most',
+  overlap: 'If the last firing is still running',
+  catch_up: 'After an outage',
+  dry_run: 'Dry run',
+}
+
+function scopeWords(scope: Schedule['scope']): string {
+  if (scope.mode !== 'repos') return SCOPE_WORD[scope.mode]
+  const n = scope.repo_ids?.length ?? 0
+  return `${n} chosen ${n === 1 ? 'repository' : 'repositories'}`
+}
+
+/**
+ * WHAT A SAVE WOULD CHANGE (A3b), one line a field, read off `editBody` so
+ * the sheet lists exactly what the PATCH sends and nothing it does not.
+ */
+export function changeLines(d: Draft, s: Schedule, t: ScheduleTypeRow | null): { label: string; from: string; to: string }[] {
+  const body = editBody(d, s)
+  const out: { label: string; from: string; to: string }[] = []
+  if (body.name !== undefined) out.push({ label: 'Name', from: s.name, to: body.name })
+  if (body.scope !== undefined) out.push({ label: 'Scope', from: scopeWords(s.scope), to: scopeWords(body.scope) })
+  if (body.cron !== undefined) out.push({ label: 'Cadence', from: s.cron, to: body.cron })
+  if (body.timezone !== undefined) out.push({ label: 'Timezone', from: s.timezone, to: body.timezone })
+  const group = (changes: Record<string, unknown> | undefined, stored: Record<string, unknown>, title: (k: string) => string) => {
+    for (const [k, v] of Object.entries(changes ?? {})) out.push({ label: title(k), from: changeWords(k, stored[k]), to: changeWords(k, v) })
+  }
+  const known = (k: string) => CHANGE_LABEL[k] ?? k
+  group(body.gate as Record<string, unknown> | undefined, s.gate as Record<string, unknown>, known)
+  group(body.params, s.params, (k) => t?.params_schema.properties?.[k]?.title ?? k)
+  group(body.budget as Record<string, unknown> | undefined, s.budget as Record<string, unknown>, known)
+  group(body.policy as Record<string, unknown> | undefined, s.policy as Record<string, unknown>, known)
+  return out
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/** "26 Oct 07:41Z": a served instant, in UTC as the mock-up writes it. */
+function utcWords(iso: string | undefined | null): string | null {
+  if (iso === undefined || iso === null) return null
+  const d = new Date(iso)
+  if (!Number.isFinite(d.getTime())) return null
+  return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.toISOString().slice(11, 16)}Z`
+}
+
+/**
+ * THE PAUSED LEAD (A3b). Saving an edit never resumes a schedule: resuming
+ * is a separate step on its page, and the lead says so before the person
+ * saves and waits for a firing that will not come. The word is the API's
+ * `state_word` where it is served; the stored `state` otherwise. An admin's
+ * `disabled` reads paused, the decided word (#2417), never "disabled".
+ */
+export function pausedLead(s: Schedule): { title: string; say: string } | null {
+  if (s.state === 'enabled') return null
+  const word = (s as Schedule & { state_word?: unknown }).state_word
+  const tripwire = word === 'paused_by_tripwire' || (word === undefined && s.state === 'auto_paused' && s.pause?.code === 'RUN_OVER_BUDGET')
+  const at = utcWords(s.pause?.at)
+  const when = at === null ? '' : ` at ${at}`
+  const said = tripwire ? `It was paused by its tripwire${when}.` : at === null ? 'It is paused.' : `It was paused${when}.`
+  return { title: `Saving does not resume ${s.name}`, say: `${said} Save the change, then resume it from its page.` }
+}
+
+/** One numbered card of the form (B's Config E card): a titled surface. */
+function Card({ title, right, children }: { title: string; right?: ReactNode; children: ReactNode }) {
+  const id = useId()
+  return (
+    <section className="ae-card" aria-labelledby={id}>
+      <div className="ae-card-h">
+        <h3 id={id}>{title}</h3>
+        {right}
+      </div>
+      {children}
+    </section>
+  )
+}
+
 function ScheduleForm({
   types,
   repos,
@@ -698,18 +864,35 @@ function ScheduleForm({
     setD((prev) => ({ ...draftFor(next, null, repoList), name: prev.name, cron: prev.cron, timezone: prev.timezone, repoIds: prev.repoIds, start: prev.start }))
   }
 
-  const [previewWhy, setPreviewWhy] = useState<string | null>(null)
+  const preview = usePreview(d.cron, d.timezone, d.type)
   const scopes = t === null ? [d.scopeMode] : scopesOf(t)
+  const cadenceWhy = previewBlocks(preview)
+  const budgetWhy = budgetProblems(d, t, schedule)
+  const budgetErr = (key: keyof Schedule['budget']) => budgetWhy.find((p) => p.key === key)?.field ?? null
+  // EVERY PROBLEM AT ONCE (A3a): the sheet lists them all, so a person fixes
+  // the form in one pass instead of meeting each refusal after the last.
+  const problems = [
+    d.name.trim() === '' ? 'Name the schedule first.' : null,
+    d.type === '' ? 'Pick a type first.' : null,
+    d.scopeMode === 'repos' && d.repoIds.length === 0 ? 'Choose at least one repository.' : null,
+    d.cron.trim() === '' ? 'Say when it runs.' : cadenceWhy === null ? null : cadenceProblem(preview.r),
+    paramsWhy(t, d),
+    ...budgetWhy.map((p) => p.sheet),
+  ].filter((x): x is string => x !== null)
+  const verb = schedule === null ? 'create' : 'save'
+  const unchanged = schedule !== null && Object.keys(editBody(d, schedule)).length === 1
   const why =
-    d.name.trim() === ''
-      ? 'Name the schedule first.'
-      : d.type === ''
-        ? 'Pick a type first.'
-        : d.scopeMode === 'repos' && d.repoIds.length === 0
-          ? 'Choose at least one repository.'
-          : d.cron.trim() === ''
-            ? 'Say when it runs.'
-            : (previewWhy ?? paramsWhy(t, d) ?? (schedule !== null && Object.keys(editBody(d, schedule)).length === 1 ? 'Nothing has changed yet.' : undefined))
+    problems.length === 1
+      ? `Fix the problem to ${verb}.`
+      : problems.length > 1
+        ? `Fix the ${problems.length} problems to ${verb}.`
+        : unchanged
+          ? 'Nothing has changed yet.'
+          : undefined
+  const changes = schedule === null ? [] : changeLines(d, schedule, t)
+  const lead = schedule === null ? null : pausedLead(schedule)
+  const cronRef = useRef<HTMLInputElement>(null)
+  const preset = CRON_PRESETS.find((p) => p.cron === d.cron.trim())
 
   const submit = async () => {
     setBusy(true)
@@ -727,15 +910,68 @@ function ScheduleForm({
   // not `editable`, so each draws read-only.
   const params: [string, Prop][] =
     t !== null ? Object.entries(t.params_schema.properties ?? {}) : Object.keys(d.params).map((k) => [k, {}])
-  // THE PREVIEW SITS UNDER THE CRON ON ONE COLUMN (visual QA V245). Folded
-  // under the fields, the side column came after Cancel / Create: on a phone
-  // the cron's words and next five were a screen and more below the field
-  // being typed in. One element, moved, so the preview is read once.
+  // A parameter that restates the gate is drawn in the gates card, under the
+  // control it follows; the type's own parameters are part of the target.
+  const restatedOnes = params.filter(([k]) => restated(d.type, k) !== undefined)
+  const ownOnes = params.filter(([k]) => restated(d.type, k) === undefined)
+  // THE PREVIEW SITS UNDER THE CRON ON ONE COLUMN (visual QA V245). Beside
+  // the cards it is the sheet's; on one column the sheet comes after every
+  // card (B's phone frame), so the cron's words and next five are drawn in
+  // the Cadence card instead, right under the field being typed in. One
+  // element either way, so the preview is read once.
   const oneColumn = useOneColumn()
-  const side = (
-    <aside className={oneColumn ? 'sc-edit-side is-inline' : 'sc-edit-side'} aria-label="When it fires, and the template">
-      <CronPreview cron={d.cron} timezone={d.timezone} type={d.type} onBlocks={setPreviewWhy} />
-      <TemplateCard type={t} tier={schedule?.tier} />
+  const previewNode = <CronPreview r={preview.r} timezone={d.timezone} />
+  const templateNode = <TemplateCard type={t} tier={schedule?.tier} />
+  const sheet = (
+    <aside className={oneColumn ? 'sc-edit-side ae-sheet is-inline' : 'sc-edit-side ae-sheet'} aria-label={schedule === null ? 'Before you create' : 'Before you save'} data-testid="ae-sheet">
+      <div className="ae-sheet-h">
+        <b>{schedule === null ? 'Before you create' : 'Before you save'}</b>
+        <span className={problems.length > 0 ? 'ae-count is-bad' : 'ae-count'}>
+          {problems.length === 0 ? 'no problems' : problems.length === 1 ? '1 problem' : `${problems.length} problems`}
+        </span>
+      </div>
+      {problems.length > 0 && (
+        <ul className="ae-probs" aria-label="Problems">
+          {problems.map((p) => (
+            <li key={p}>{p}</li>
+          ))}
+        </ul>
+      )}
+      {schedule !== null && changes.length > 0 && (
+        <div className="ae-diff">
+          <b>Changes against revision {schedule.revision}</b>
+          <dl>
+            {changes.map((c) => (
+              <div key={c.label}>
+                <dt>{c.label}</dt>
+                <dd>
+                  {c.from} → {c.to}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      )}
+      {!oneColumn && (
+        <div className="ae-next">
+          {previewNode}
+          <span className="c-hint">From the server’s own parser, read as you type.</span>
+        </div>
+      )}
+      {!oneColumn && templateNode}
+      {refused !== null && (
+        <p className="c-hint ae-refused" role="alert" data-code={refused.code ?? ''}>
+          {refused.code === 'schedule_changed'
+            ? 'Someone changed this schedule since you opened it. Close the editor to read it again, then edit.'
+            : `Not saved: ${refused.message}`}
+        </p>
+      )}
+      <div className="c-acts ae-acts">
+        <Button kind="primary" busy={busy ? 'Saving…' : false} disabledReason={why} onClick={() => void (why === undefined && !busy && submit())}>
+          {schedule === null ? 'Create schedule' : 'Save changes'}
+        </Button>
+        {cancel}
+      </div>
     </aside>
   )
   return (
@@ -743,214 +979,251 @@ function ScheduleForm({
     // schedule over every repository in one keystroke. The form has no submit
     // button, and the browser's implicit submission is swallowed here, so
     // only a click on Create or Save writes.
-    <form
-      className="sc-form"
-      data-testid="sc-form"
-      onSubmit={(e) => e.preventDefault()}
-    >
-      {schedule === null && <TemplateTiles types={types} value={d.type} onPick={pickType} />}
+    <form className="sc-form ae-form" data-testid="sc-form" onSubmit={(e) => e.preventDefault()}>
       <div className="sc-edit-cols">
         <div className="sc-edit-main">
-          <div className="sc-facts">
-            {schedule !== null && (
-              <Field label="Type" hint="A different type is a different schedule.">
+          {lead !== null && (
+            <section className="ae-lead" data-testid="ae-lead" aria-label="Editing a paused schedule">
+              <span className="ae-lead-k">Editing a paused schedule</span>
+              <b>{lead.title}</b>
+              <span>{lead.say}</span>
+            </section>
+          )}
+
+          {schedule === null ? (
+            <Card title="1 · Type and template">
+              <TemplateTiles types={types} value={d.type} onPick={pickType} />
+              {oneColumn && templateNode}
+            </Card>
+          ) : (
+            <Card title="1 · Type">
+              <Field label="Type" hint="The type is fixed once a schedule exists. Make a new schedule to change it.">
                 <input className="c-inp" value={schedule.type} readOnly />
               </Field>
-            )}
-            <Field label="Name">
-              <input className="c-inp" value={d.name} maxLength={80} onChange={(e) => set({ name: e.target.value })} />
-            </Field>
-            <Choice<Scope>
-              label="Scope"
-              value={d.scopeMode}
-              options={scopes.map((m) => ({ value: m as Scope, label: SCOPE_WORD[m as Scope] }))}
-              onChange={(v) => set({ scopeMode: v ?? 'repos' })}
-            />
-          </div>
+              {oneColumn && templateNode}
+            </Card>
+          )}
 
-          {d.scopeMode === 'repos' && (
-            <fieldset className="c-field">
-              <legend className="c-lbl">Repositories</legend>
-              {repos.status === 'loading' && <p className="c-hint">Reading the registered repositories…</p>}
-              {repos.status === 'error' && <p className="c-hint" role="alert">Repositories not read: {errorHeading(repos.error)}</p>}
-              {(repos.status === 'empty' || ((repos.status === 'ok' || repos.status === 'stale') && repoList.length === 0)) && (
-                <p className="c-hint">No repository is registered. Register one under Work › Repositories first.</p>
-              )}
-              {repoList.map((r) => (
-                <label key={r.repo_id} className="sc-check">
-                  <input
-                    type="checkbox"
-                    checked={d.repoIds.includes(r.repo_id)}
-                    onChange={(e) => set({ repoIds: e.target.checked ? [...d.repoIds, r.repo_id] : d.repoIds.filter((x) => x !== r.repo_id) })}
-                  />{' '}
-                  {r.owner}/{r.repo}
-                </label>
+          <Card title="2 · Target">
+            <div className="sc-facts">
+              <Field label="Name">
+                <input className="c-inp" value={d.name} maxLength={80} onChange={(e) => set({ name: e.target.value })} />
+              </Field>
+              <Choice<Scope>
+                label="Scope"
+                value={d.scopeMode}
+                options={scopes.map((m) => ({ value: m as Scope, label: SCOPE_WORD[m as Scope] }))}
+                onChange={(v) => set({ scopeMode: v ?? 'repos' })}
+              />
+            </div>
+            {d.scopeMode === 'repos' && (
+              <fieldset className="c-field">
+                <legend className="c-lbl">Repositories</legend>
+                {repos.status === 'loading' && <p className="c-hint">Reading the registered repositories…</p>}
+                {repos.status === 'error' && <p className="c-hint" role="alert">Repositories not read: {errorHeading(repos.error)}</p>}
+                {(repos.status === 'empty' || ((repos.status === 'ok' || repos.status === 'stale') && repoList.length === 0)) && (
+                  <p className="c-hint">No repository is registered. Register one under Work › Repositories first.</p>
+                )}
+                {repoList.map((r) => (
+                  <label key={r.repo_id} className="sc-check">
+                    <input
+                      type="checkbox"
+                      checked={d.repoIds.includes(r.repo_id)}
+                      onChange={(e) => set({ repoIds: e.target.checked ? [...d.repoIds, r.repo_id] : d.repoIds.filter((x) => x !== r.repo_id) })}
+                    />{' '}
+                    <span className="ae-repo">
+                      {r.owner}/{r.repo}
+                    </span>
+                  </label>
+                ))}
+              </fieldset>
+            )}
+            {ownOnes.length > 0 && (
+              <>
+                <h4 className="ae-sub">What it works on</h4>
+                <div className="sc-facts">
+                  {ownOnes.map(([k, p]) =>
+                    editable(p) ? (
+                      // Keyed by the type too: a list field keeps its own text,
+                      // and two types share a key (`paths`) with different defaults.
+                      <ParamField key={`${d.type}:${k}`} name={k} schema={p} value={d.params[k]} onChange={(v) => set({ params: { ...d.params, [k]: v } })} />
+                    ) : (
+                      <Field key={`${d.type}:${k}`} label={p.title ?? k} hint={notEditableWhy(p)}>
+                        {plainValue(d.params[k]) !== null || d.params[k] === undefined ? (
+                          <input className="c-inp" value={d.params[k] === undefined ? '' : paramText(d.params[k])} readOnly data-testid={`sc-param-${k}`} />
+                        ) : (
+                          <textarea
+                            className="c-inp sc-ptext"
+                            value={paramText(d.params[k])}
+                            rows={Math.min(12, paramText(d.params[k]).split('\n').length)}
+                            readOnly
+                            data-testid={`sc-param-${k}`}
+                          />
+                        )}
+                      </Field>
+                    ),
+                  )}
+                </div>
+              </>
+            )}
+          </Card>
+
+          <Card title="3 · Cadence">
+            <div className="sc-presets" role="group" aria-label="Presets">
+              {CRON_PRESETS.map((p) => (
+                <Button key={p.cron} size="sm" kind={d.cron.trim() === p.cron ? 'primary' : 'secondary'} aria-pressed={d.cron.trim() === p.cron} onClick={() => set({ cron: p.cron })}>
+                  {p.label}
+                </Button>
               ))}
-            </fieldset>
-          )}
-
-          <h3 className="sc-h3">When</h3>
-          <div className="sc-presets" role="group" aria-label="Presets">
-            {CRON_PRESETS.map((p) => (
-              <Button key={p.cron} size="sm" kind={d.cron.trim() === p.cron ? 'primary' : 'secondary'} aria-pressed={d.cron.trim() === p.cron} onClick={() => set({ cron: p.cron })}>
-                {p.label}
+              {/* Custom is the field itself: pressed when no preset matches,
+                  and a click puts the cursor in the expression. */}
+              <Button size="sm" kind={preset === undefined ? 'primary' : 'secondary'} aria-pressed={preset === undefined} onClick={() => cronRef.current?.focus()}>
+                Custom
               </Button>
-            ))}
-          </div>
-          <div className="sc-facts">
-            <Field label="Cron expression" hint="Minute, hour, day of month, month, day of week.">
-              <input className="c-inp is-mono" value={d.cron} spellCheck={false} onChange={(e) => set({ cron: e.target.value })} />
-            </Field>
-            <Field label="Timezone" hint="An IANA zone, such as Europe/London.">
-              <input className="c-inp is-mono" value={d.timezone} spellCheck={false} onChange={(e) => set({ timezone: e.target.value })} />
-            </Field>
-          </div>
-          {oneColumn && side}
-
-          <h3 className="sc-h3">Gate</h3>
-          <div className="sc-facts">
-            <Choice label="Run" value={d.gate.run as 'auto' | 'approve' | undefined} options={RUN_PLAN} onChange={(v) => set({ gate: { ...d.gate, run: v } })}
-              hint={t?.default_gate.run === undefined ? undefined : `type default: ${t.default_gate.run}`} />
-            <Choice label="Plan" value={d.gate.plan as 'auto' | 'approve' | undefined} options={RUN_PLAN} onChange={(v) => set({ gate: { ...d.gate, plan: v } })}
-              hint={t?.default_gate.plan === undefined ? undefined : `type default: ${t.default_gate.plan}`} />
-            {d.gate.merge === 'auto' ? (
-              <Field label="Merge" hint="Automatic, set by the merge switch on the Gate tab; it is changed back there.">
-                <input className="c-inp" value="auto" readOnly />
+            </div>
+            <div className="sc-facts">
+              <Field label="Cron expression" hint="Minute, hour, day of month, month, day of week." error={d.cron.trim() === '' || oneColumn ? null : cadenceWhy}>
+                <input
+                  ref={cronRef}
+                  className="c-inp is-mono"
+                  value={d.cron}
+                  spellCheck={false}
+                  onChange={(e) => set({ cron: e.target.value })}
+                  {...(oneColumn && d.cron.trim() !== '' && cadenceWhy !== null ? { 'aria-invalid': 'true' } : {})}
+                />
               </Field>
-            ) : (
-              <Choice<'off' | 'approve'>
-                label="Merge"
-                value={d.gate.merge as 'off' | 'approve' | undefined}
-                options={[
-                  { value: 'off', label: 'off' },
-                  { value: 'approve', label: 'approve' },
-                ]}
-                onChange={(v) => set({ gate: { ...d.gate, merge: v } })}
-                hint="Automatic merging is only ever the audited switch on the Gate tab, never this form."
-              />
-            )}
-            {typeof d.gate.approvers === 'string' || d.gate.approvers === undefined ? (
-              <Choice<'members' | 'owner_only'>
-                label="Approvers"
-                value={d.gate.approvers as 'members' | 'owner_only' | undefined}
-                options={[
-                  { value: 'members', label: 'any member' },
-                  { value: 'owner_only', label: 'the owner only' },
-                ]}
-                onChange={(v) => set({ gate: { ...d.gate, approvers: v } })}
-              />
-            ) : (
-              <Field label="Approvers" hint="A named list, set through the API; unchanged here.">
-                <input className="c-inp" value={(d.gate.approvers as unknown as string[]).join(', ')} readOnly />
+              <Field label="Timezone" hint="An IANA zone, such as Europe/London.">
+                <input className="c-inp is-mono" value={d.timezone} spellCheck={false} onChange={(e) => set({ timezone: e.target.value })} />
               </Field>
-            )}
-            <Field label="Approval expires after (hours)">
-              <input
-                className="c-inp"
-                type="number"
-                min={1}
-                value={d.gate.approval_ttl_hours ?? ''}
-                onChange={(e) => set({ gate: { ...d.gate, approval_ttl_hours: e.target.value === '' ? undefined : Math.trunc(Number(e.target.value)) } })}
+            </div>
+            {oneColumn && previewNode}
+            <div className="sc-facts">
+              <Choice<'skip' | 'queue_one'>
+                label="If the last firing is still running"
+                value={d.policy.overlap as 'skip' | 'queue_one' | undefined}
+                options={[
+                  { value: '', label: "the type's default" },
+                  { value: 'skip', label: 'skip this one' },
+                  { value: 'queue_one', label: 'queue one' },
+                ]}
+                onChange={(v) => set({ policy: { ...d.policy, overlap: v } })}
               />
-            </Field>
-          </div>
-          <p className="c-hint">A gate below the type's default needs a platform admin; the hard stops hold whatever the gate.</p>
-
-          <h3 className="sc-h3">Budget</h3>
-          <div className="sc-facts">
-            <Field label="Per run (USD)" hint={budgetDefaultWords(t, 'per_run_usd')}>
-              <input className="c-inp" type="number" min={0} step="0.01" placeholder={placeholderOf(t, 'per_run_usd')} value={d.budget.per_run_usd} onChange={(e) => set({ budget: { ...d.budget, per_run_usd: e.target.value } })} />
-            </Field>
-            <Field label="Per day (USD)" hint={budgetDefaultWords(t, 'per_day_usd')}>
-              <input className="c-inp" type="number" min={0} step="0.01" placeholder={placeholderOf(t, 'per_day_usd')} value={d.budget.per_day_usd} onChange={(e) => set({ budget: { ...d.budget, per_day_usd: e.target.value } })} />
-            </Field>
-            <Field label="Live runs at most" hint={budgetDefaultWords(t, 'max_concurrent')}>
-              <input className="c-inp" type="number" min={1} placeholder={placeholderOf(t, 'max_concurrent')} value={d.budget.max_concurrent} onChange={(e) => set({ budget: { ...d.budget, max_concurrent: e.target.value } })} />
-            </Field>
-          </div>
-
-          {params.length > 0 && (
-            <>
-              <h3 className="sc-h3">Parameters</h3>
-              <div className="sc-facts">
-                {params.map(([k, p]) => {
-                  const follows = restated(d.type, k)
-                  return follows !== undefined ? (
-                    <Field key={k} label={p.title ?? k} hint="Follows the gate above; it is changed there, never here.">
-                      <input className="c-inp" value={follows(d.gate)} readOnly data-testid={`sc-param-${k}`} />
-                    </Field>
-                  ) : editable(p) ? (
-                    // Keyed by the type too: a list field keeps its own text,
-                    // and two types share a key (`paths`) with different defaults.
-                    <ParamField key={`${d.type}:${k}`} name={k} schema={p} value={d.params[k]} onChange={(v) => set({ params: { ...d.params, [k]: v } })} />
-                  ) : (
-                    <Field key={`${d.type}:${k}`} label={p.title ?? k} hint={notEditableWhy(p)}>
-                      {plainValue(d.params[k]) !== null || d.params[k] === undefined ? (
-                        <input className="c-inp" value={d.params[k] === undefined ? '' : paramText(d.params[k])} readOnly data-testid={`sc-param-${k}`} />
-                      ) : (
-                        <textarea
-                          className="c-inp sc-ptext"
-                          value={paramText(d.params[k])}
-                          rows={Math.min(12, paramText(d.params[k]).split('\n').length)}
-                          readOnly
-                          data-testid={`sc-param-${k}`}
-                        />
-                      )}
-                    </Field>
-                  )
-                })}
-              </div>
-            </>
-          )}
-
-          <h3 className="sc-h3">Policy</h3>
-          <div className="sc-facts">
-            <Choice<'skip' | 'queue_one'>
-              label="If the last firing is still running"
-              value={d.policy.overlap as 'skip' | 'queue_one' | undefined}
-              options={[
-                { value: '', label: "the type's default" },
-                { value: 'skip', label: 'skip this one' },
-                { value: 'queue_one', label: 'queue one' },
-              ]}
-              onChange={(v) => set({ policy: { ...d.policy, overlap: v } })}
-            />
-            <Choice<'skip' | 'run_once'>
-              label="After an outage"
-              value={d.policy.catch_up as 'skip' | 'run_once' | undefined}
-              options={[
-                { value: '', label: "the type's default" },
-                { value: 'skip', label: 'skip what was missed' },
-                { value: 'run_once', label: 'run once' },
-              ]}
-              onChange={(v) => set({ policy: { ...d.policy, catch_up: v } })}
-            />
-            {schedule !== null && (
-              <Check
-                label="Dry run"
-                hint="Fires and records what it would do, and creates nothing."
-                checked={d.policy.dry_run === true}
-                onChange={(v) => set({ policy: { ...d.policy, dry_run: v } })}
+              <Choice<'skip' | 'run_once'>
+                label="After an outage"
+                value={d.policy.catch_up as 'skip' | 'run_once' | undefined}
+                options={[
+                  { value: '', label: "the type's default" },
+                  { value: 'skip', label: 'skip what was missed' },
+                  { value: 'run_once', label: 'run once' },
+                ]}
+                onChange={(v) => set({ policy: { ...d.policy, catch_up: v } })}
               />
-            )}
-          </div>
-          {schedule === null && <StartChoice value={d.start} onChange={(v) => set({ start: v })} />}
+              {schedule !== null && (
+                <Check
+                  label="Dry run"
+                  hint="Fires and records what it would do, and creates nothing."
+                  checked={d.policy.dry_run === true}
+                  onChange={(v) => set({ policy: { ...d.policy, dry_run: v } })}
+                />
+              )}
+            </div>
+          </Card>
 
-          {refused !== null && (
-            <p className="c-hint" role="alert" data-code={refused.code ?? ''}>
-              {refused.code === 'schedule_changed'
-                ? 'Someone changed this schedule since you opened it. Close the editor to read it again, then edit.'
-                : `Not saved: ${refused.message}`}
+          <Card title="4 · Gates and approvers">
+            <div className="ae-g3">
+              <Choice label="Run" value={d.gate.run as 'auto' | 'approve' | undefined} options={RUN_PLAN} onChange={(v) => set({ gate: { ...d.gate, run: v } })}
+                hint={t?.default_gate.run === undefined ? undefined : `type default: ${t.default_gate.run}`} />
+              <Choice label="Plan" value={d.gate.plan as 'auto' | 'approve' | undefined} options={RUN_PLAN} onChange={(v) => set({ gate: { ...d.gate, plan: v } })}
+                hint={t?.default_gate.plan === undefined ? undefined : `type default: ${t.default_gate.plan}`} />
+              {d.gate.merge === 'auto' ? (
+                <Field label="Merge" hint="Automatic, set by the audited switch on the schedule’s page; it is changed back there.">
+                  <input className="c-inp" value="auto" readOnly />
+                </Field>
+              ) : (
+                <Choice<'off' | 'approve'>
+                  label="Merge"
+                  value={d.gate.merge as 'off' | 'approve' | undefined}
+                  options={[
+                    { value: 'off', label: 'off' },
+                    { value: 'approve', label: 'approve' },
+                  ]}
+                  onChange={(v) => set({ gate: { ...d.gate, merge: v } })}
+                  hint={t?.default_gate.merge === undefined ? undefined : `type default: ${t.default_gate.merge}`}
+                />
+              )}
+            </div>
+            <p className="c-hint">
+              {/* The API's rule (`gate_below_default`), not the mock-up's caption:
+                  `merge: off` is the strictest merge, so anyone may set it. */}
+              A gate below the type’s default needs a platform admin. Merging automatically is the audited switch on the schedule’s page, never this form.
             </p>
+            <div className="sc-facts">
+              {typeof d.gate.approvers === 'string' || d.gate.approvers === undefined ? (
+                <Choice<'members' | 'owner_only'>
+                  label="Approvers"
+                  value={d.gate.approvers as 'members' | 'owner_only' | undefined}
+                  options={[
+                    { value: 'members', label: 'any member' },
+                    { value: 'owner_only', label: 'the owner only' },
+                  ]}
+                  onChange={(v) => set({ gate: { ...d.gate, approvers: v } })}
+                />
+              ) : (
+                <Field label="Approvers" hint="A named list, set through the API; unchanged here.">
+                  <input className="c-inp" value={(d.gate.approvers as unknown as string[]).join(', ')} readOnly />
+                </Field>
+              )}
+              <Field label="Approval expires after (hours)">
+                <input
+                  className="c-inp"
+                  type="number"
+                  min={1}
+                  value={d.gate.approval_ttl_hours ?? ''}
+                  onChange={(e) => set({ gate: { ...d.gate, approval_ttl_hours: e.target.value === '' ? undefined : Math.trunc(Number(e.target.value)) } })}
+                />
+              </Field>
+            </div>
+            {restatedOnes.length > 0 && (
+              <div className="sc-facts">
+                {restatedOnes.map(([k, p]) => (
+                  <Field key={k} label={p.title ?? k} hint="Follows the gate above; it is changed there, never here.">
+                    <input className="c-inp" value={restated(d.type, k)!(d.gate)} readOnly data-testid={`sc-param-${k}`} />
+                  </Field>
+                ))}
+              </div>
+            )}
+            <p className="c-hint">
+              Hard stops stay on whatever is chosen here: a fix touching IAM, the contract, secrets, tenancy, shared files, workflows or cost is held for the owner.
+            </p>
+          </Card>
+
+          <Card title="5 · Budget and tripwire">
+            <div className="ae-g3">
+              <Field label="Per run (USD)" hint={budgetDefaultWords(t, 'per_run_usd')} error={budgetErr('per_run_usd')}>
+                <input className="c-inp" type="number" min={0} step="0.01" placeholder={placeholderOf(t, 'per_run_usd')} value={d.budget.per_run_usd} onChange={(e) => set({ budget: { ...d.budget, per_run_usd: e.target.value } })} />
+              </Field>
+              <Field label="Per day (USD)" hint={budgetDefaultWords(t, 'per_day_usd')} error={budgetErr('per_day_usd')}>
+                <input className="c-inp" type="number" min={0} step="0.01" placeholder={placeholderOf(t, 'per_day_usd')} value={d.budget.per_day_usd} onChange={(e) => set({ budget: { ...d.budget, per_day_usd: e.target.value } })} />
+              </Field>
+              <Field label="Live runs at most" hint={budgetDefaultWords(t, 'max_concurrent')} error={budgetErr('max_concurrent')}>
+                <input className="c-inp" type="number" min={1} placeholder={placeholderOf(t, 'max_concurrent')} value={d.budget.max_concurrent} onChange={(e) => set({ budget: { ...d.budget, max_concurrent: e.target.value } })} />
+              </Field>
+            </div>
+            {/* §4.3 in words: what the per-run amount does is the one thing
+                here a person cannot guess from the field's name. */}
+            <p className="c-hint">
+              A run that costs more than its per-run amount ends failed and <b>pauses the schedule at once</b>. A firing that would pass the day’s amount is
+              skipped. An unreported cost counts at the per-run amount.
+            </p>
+          </Card>
+
+          {schedule === null && (
+            <Card title="6 · Start">
+              <StartChoice value={d.start} onChange={(v) => set({ start: v })} />
+            </Card>
           )}
-          <div className="c-acts">
-            {cancel}
-            <Button kind="primary" busy={busy ? 'Saving…' : false} disabledReason={why} onClick={() => void (why === undefined && !busy && submit())}>
-              {schedule === null ? 'Create schedule' : 'Save changes'}
-            </Button>
-          </div>
         </div>
-        {!oneColumn && side}
+        {sheet}
       </div>
     </form>
   )
@@ -1050,7 +1323,12 @@ export function EditSchedule({ schedule, onSaved, onCancel }: { schedule: Schedu
     // the heading, the labels and the preview touched its border. The create
     // form has no card and reads well; the edit form is drawn the same way.
     <section className="sc-edit" aria-label="Edit this schedule">
-      <h2 className="sc-h2">Edit</h2>
+      {/* A3b: the head names what is edited and the revision the save is
+          checked against, so "Changes against revision N" has its N. */}
+      <div className="ae-head">
+        <h2 className="sc-h2">Edit {schedule.name}</h2>
+        <span className="ae-rev">revision {schedule.revision}</span>
+      </div>
       {types.status === 'error' && <p className="c-hint">The type catalogue was not read ({errorHeading(types.error)}), so the type's defaults are not shown.</p>}
       <ScheduleForm
         types={list}

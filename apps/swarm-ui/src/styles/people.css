@@ -228,6 +228,15 @@
 .pp-role-w { color: var(--text-dim); }
 .pp-role-w.is-admin { color: var(--text); font-weight: 600; }
 .pp-role-none { color: var(--text-dim); opacity: 0.75; }
+/* A PLATFORM ADMIN'S CELL, 'admin' over '(platform admin)' (ROLE-MARK; part
+   of #2391), in one box. The suffix at the body size made each role column
+   119px and, with every column marked, the grid 1018px in its 1009px wrapper
+   at 1440 (rendered review, 2026-10-27). So it is the meta size and, alone in
+   the nowrap cell, may break at its space: the column's narrowest is
+   '(platform', and the table takes the second line only when it is short. */
+.pp-role-pa { display: inline-block; vertical-align: top; white-space: normal; }
+.pp-role-pa > span { display: block; }
+.pp-role-src { color: var(--text-dim); font-size: var(--t-meta); line-height: var(--lh-meta); }
 /* THE PLATFORM ROLE IS A COLUMN (S5c, visual QA VQ-051), one line. It was a
    chip in the Person cell, which on a phone cut `alice@example.com` to
    "alice@examp" and at 1440 took the name's room (VQ-052). */

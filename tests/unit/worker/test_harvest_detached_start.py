@@ -33,7 +33,7 @@ import pytest
 
 from agent_worker import lifecycle, workspace as workspace_mod
 
-from test_harvest_start_sha import REVIEW, REVIEWED, IMPLEMENT, _commits, _git, _reviewed_branch
+from test_harvest_start_sha import REVIEW, REVIEWED, IMPLEMENT, _commits, _git, _kept, _reviewed_branch
 from test_carrier_branches import BRANCHES, tree_at
 from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
     _the_agent_titles_its_pull_request,
@@ -125,7 +125,7 @@ def test_a_by_sha_implement_step_that_commits_on_its_start_publishes_its_commits
     assert "head_moved" not in out, out
     assert out["commit_count"] == 2, out
     commits = pushed_commits(origin, branch)
-    assert [c["message"].strip() for c in commits] == ["Add the fix", "Add the tests"]
+    assert [c["message"].strip() for c in commits] == _kept(config.task_id, "Add the fix", "Add the tests")
     assert_only_the_worker_wrote(commits, config)
     assert [pull["head"] for pull in forge.pulls] == [branch]
 

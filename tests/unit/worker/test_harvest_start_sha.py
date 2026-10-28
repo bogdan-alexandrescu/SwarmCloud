@@ -207,7 +207,7 @@ def test_a_step_that_commits_on_its_start_publishes_exactly_its_own_commits(
     assert "head_moved" not in out
     assert out["commit_count"] == 2 and out.get("agent_commits_kept") == 2, out
     commits = pushed_commits(origin, branch)
-    assert [c["message"].strip() for c in commits] == ["Add the fix", "Add the tests"]
+    assert [c["message"].strip() for c in commits] == _kept(config.task_id, "Add the fix", "Add the tests")
     assert_only_the_worker_wrote(commits, config)
     assert [pull["head"] for pull in forge.pulls] == [branch]
 
@@ -230,6 +230,13 @@ def test_a_step_allowed_an_empty_diff_that_did_nothing_opens_no_pull_request(
 
 
 # -- a branch the agent created from its start is its own (BGD, 2026-10-23) --
+
+
+def _kept(task_id: str, *subjects: str) -> list[str]:
+    """Kept agent commits' messages: each ends with the worker's line (#2505
+    review), which the merge step reads to tell a platform head from a
+    person's push."""
+    return [f"{subject}\n\nMade by the worker for task {task_id}." for subject in subjects]
 
 
 def _commits(repo: Path, *names: str) -> None:
@@ -260,7 +267,7 @@ def test_an_implement_agent_on_its_own_new_branch_publishes_exactly_its_commits(
     # MUTATION: count anything but the agent's own line and this is not 2.
     assert out["commit_count"] == 2 and out.get("agent_commits_kept") == 2, out
     commits = pushed_commits(origin, branch)
-    assert [c["message"].strip() for c in commits] == ["Add the fix", "Add the tests"]
+    assert [c["message"].strip() for c in commits] == _kept(config.task_id, "Add the fix", "Add the tests")
     assert_only_the_worker_wrote(commits, config)
     assert [pull["head"] for pull in forge.pulls] == [branch]
     assert "feature" not in refs(origin), "the agent's local name was pushed"

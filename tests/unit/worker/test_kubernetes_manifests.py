@@ -2808,3 +2808,66 @@ def test_every_command_a_worker_template_runs_is_a_binary_some_image_installs():
     assert not missing, (
         f"worker templates run a binary no images/*/Dockerfile installs: {missing}"
     )
+
+
+# ---------------------------------------------------------------------------
+# SWARM_SCRATCH_VOLUMES: the worker's local scratch volumes, in every copy (#2436)
+# ---------------------------------------------------------------------------
+
+
+def _worker_env(job: dict[str, Any]) -> dict[str, str]:
+    containers = job["spec"]["template"]["spec"]["containers"]
+    worker = next(c for c in containers if c["name"] == "worker")
+    return {e["name"]: e.get("value", "") for e in worker.get("env", [])}
+
+
+def _disk_emptydirs(job: dict[str, Any]) -> str:
+    """The job's own disk emptyDirs mounted in `worker`, spelled as SWARM_SCRATCH_VOLUMES is."""
+    pod = job["spec"]["template"]["spec"]
+    worker = next(c for c in pod["containers"] if c["name"] == "worker")
+    mounts = {m["name"]: m["mountPath"] for m in worker["volumeMounts"]}
+    entries = []
+    for volume in pod["volumes"]:
+        empty = volume.get("emptyDir")
+        if empty is None or "medium" in empty or volume["name"] not in mounts:
+            continue
+        assert empty["sizeLimit"].endswith("Gi"), volume
+        entries.append(f"{volume['name']}={mounts[volume['name']]}:{empty['sizeLimit'][:-2]}")
+    return ",".join(sorted(entries))
+
+
+@pytest.mark.parametrize("profile", _gke_profiles())
+def test_a_rendered_job_names_the_same_scratch_volumes_as_the_dispatcher(profile):
+    """The YAML templates tell the worker what the dispatcher tells it.
+
+    `render_job` fills `__SCRATCH_VOLUMES__` from the dispatcher's own
+    `scratch_volumes_value(gke_disk(rc))`, so the value is derived; this holds
+    that the template carries it on the `worker` container, that it equals the
+    dispatched Job's for the same class, and that it names exactly the
+    template's own disk emptyDirs -- a template whose volumes moved without its
+    variable would report the wrong path when one of them evicts.
+
+    The gvisor template's HOME is a volume named `work` at /work, not `home` at
+    /home/swarm, so it is held to its OWN volumes, not to the dispatcher's.
+
+    MUTATION: drop SWARM_SCRATCH_VOLUMES from any one template, or render it
+    with a hand-written value; rename a template's `tmp` volume.
+    """
+    from scheduler.dispatch import SCRATCH_VOLUMES_ENV, scratch_volumes_value  # noqa: PLC0415
+
+    rendered = _worker_env(_rendered_job(profile))
+    dispatched = _worker_env(_dispatcher_job(profile))
+    expected = scratch_volumes_value(gke_disk(RESOURCE_CLASSES[RUNNER_PROFILES[profile].resource_class]))
+    assert rendered.get(SCRATCH_VOLUMES_ENV) == dispatched.get(SCRATCH_VOLUMES_ENV) == expected, (
+        f"{profile}: render.py says {rendered.get(SCRATCH_VOLUMES_ENV)!r}, the dispatcher "
+        f"{dispatched.get(SCRATCH_VOLUMES_ENV)!r}, scratch_volumes_value {expected!r}"
+    )
+    job = _rendered_job(profile)
+    assert ",".join(sorted(expected.split(","))) == _disk_emptydirs(job), profile
+
+    v2 = _render_v2_job()
+    told = _worker_env(v2).get(SCRATCH_VOLUMES_ENV)
+    assert told is not None, "worker-job-v2.yaml does not tell the worker its scratch volumes"
+    assert ",".join(sorted(told.split(","))) == _disk_emptydirs(v2), (
+        f"worker-job-v2.yaml says {told!r}; its own disk emptyDirs are {_disk_emptydirs(v2)!r}"
+    )

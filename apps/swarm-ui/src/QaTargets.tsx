@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
-import { loadRepositories } from './api'
+import { loadQaSettings, loadRepositories, type QaSettings } from './api'
 import { Banner, Button, Card, EmptyState } from './components'
 import { repoName } from './RepositoriesData'
 import { UrLink, UrRefresh, UrRegion, useUrRead, writeFailure } from './RepositoriesParts'
@@ -117,12 +117,26 @@ import './styles/repositories.css'
  * rest. Beside Run, "Flows with" picks the tool for that one run alone
  * (`browser_tool`); left on the target's, nothing is sent and the target's
  * applies. Capture stays the fixed capture tool either way.
+ *
+ * FLOWS PER STEP (lane QA-FLOWS-UI over QA-FLOWS-CAP, part of #2136; BGD,
+ * 2026-10-26). A run's read-only flows run in batches, several flows to one
+ * live-browser step. Beside Run, a target with flows draws "Flows per step",
+ * prefilled from the workspace's `qa_flows_per_step` (`GET /v1/qa-settings`,
+ * read once for the page, set on Workspace Settings) and naming that default
+ * beside it. It is sent as `flows_per_step` only when changed from that
+ * default, so an untouched run follows the workspace setting as the API
+ * resolves it; a value outside the API's bounds (1-30) disables Run and is
+ * never sent. A target with no flows draws no such field: it has nothing to
+ * batch.
  */
 
 /** This page's address under Repositories (`RepositoriesScreen` mounts it on `page`). */
 export const QA_TARGETS_PAGE = 'work/repositories?page=qa-targets'
 
 const LIST_ROUTE = 'GET /v1/qa-targets'
+
+/** The run's flows-per-step field width: two digits and the spinner. */
+const FLOWS_INPUT: CSSProperties = { width: '4.5rem' }
 
 /** How often the list is read again while a discovery runs: a crawl of 60
  *  pages takes minutes, so this is a few reads a discovery, not a poll storm. */
@@ -165,6 +179,9 @@ export function QaTargetsScreen({
   // member runs. A viewer does neither. The server decides.
   const adminGate = useRoleGate('admin', 'register, change or set the credential of a QA target')
   const runGate = useRoleGate('member', 'run a QA target')
+  // The workspace's flows-per-step default, which each Run's field starts from; unread is no prefill.
+  const qaSettings = useUrRead(loadQaSettings, 'qa-settings')
+  const flowsDefault = qaSettings.state.status === 'ok' || qaSettings.state.status === 'stale' ? qaSettings.state.data : null
   // A PLATFORM admin approves a host (VQ-Q1): not a workspace role. Unread is no control.
   const platformAdmin = useIsAdmin() === true
   // Targets the approve route answered, by id, drawn over the list's row of the same revision.
@@ -309,6 +326,7 @@ export function QaTargetsScreen({
                 admin={adminGate === null}
                 platformAdmin={platformAdmin}
                 runGate={runGate}
+                flowsDefault={flowsDefault}
                 onApproved={(doc) => setApproved((was) => ({ ...was, [doc.id]: doc }))}
                 onEdit={() => setEditing(t)}
                 onChanged={list.reload}
@@ -474,6 +492,7 @@ function TargetCard({
   admin,
   platformAdmin,
   runGate,
+  flowsDefault,
   onApproved,
   onEdit,
   onChanged,
@@ -490,6 +509,8 @@ function TargetCard({
   onApproved: (doc: QaTarget) => void
   /** The caller's role is below `member`: Run is disabled and this says why. */
   runGate: string | null
+  /** The workspace's QA settings, whose `qa_flows_per_step` the run's field starts from; null while unread. */
+  flowsDefault: QaSettings | null
   onEdit: () => void
   /** A discovery was started or a route promoted: read the list again. */
   onChanged: () => void
@@ -507,6 +528,16 @@ function TargetCard({
   const [reportOnly, setReportOnly] = useState(false)
   /** This one run's flow browser; null runs the target's own. */
   const [runTool, setRunTool] = useState<FlowBrowserTool | null>(null)
+  // This one run's flows per step as typed; null is untouched, and the workspace's default applies.
+  const [flowsTyped, setFlowsTyped] = useState<string | null>(null)
+  const hasFlows = Array.isArray(t.more.flows) && t.more.flows.length > 0
+  const flowsMin = flowsDefault?.min_flows_per_step ?? 1
+  const flowsMax = flowsDefault?.max_flows_per_step ?? 30
+  const flowsShown = flowsTyped ?? (flowsDefault === null ? '' : String(flowsDefault.qa_flows_per_step))
+  const flowsValue = /^\d+$/.test(flowsShown.trim()) ? Number(flowsShown.trim()) : null
+  const flowsBad = hasFlows && flowsTyped !== null && (flowsValue === null || flowsValue < flowsMin || flowsValue > flowsMax)
+  // Sent only when changed from the workspace default: an untouched run follows the setting.
+  const flowsSend = hasFlows && flowsTyped !== null && !flowsBad && flowsValue !== flowsDefault?.qa_flows_per_step ? flowsValue : null
   const [busy, setBusy] = useState(false)
   const [started, setStarted] = useState<QaRunGroupStart | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
@@ -537,13 +568,13 @@ function TargetCard({
   }
 
   async function run() {
-    if (ticked.length === 0 || runGate !== null) return
+    if (ticked.length === 0 || runGate !== null || flowsBad) return
     setBusy(true)
     setFailed(null)
     setStarted(null)
     // Names only (invariant 10). The one-origin shape names none: its only entry runs.
     const names = named ? ticked.flatMap((leg) => (leg.name === null ? [] : [leg.name])) : null
-    const r = await runQaTarget(t.id, reportOnly ? 'none' : 'issues', runTool, names)
+    const r = await runQaTarget(t.id, reportOnly ? 'none' : 'issues', runTool, names, flowsSend)
     setBusy(false)
     if (r.status === 'error') setFailed(writeFailure(r.error))
     else if (r.status === 'ok') setStarted(r.data)
@@ -709,7 +740,7 @@ function TargetCard({
         </p>
       )}
       <div className="ur-cacts">
-        <Button size="sm" kind="primary" busy={busy} disabled={ticked.length === 0 || runGate !== null} onClick={() => void run()}>
+        <Button size="sm" kind="primary" busy={busy} disabled={ticked.length === 0 || runGate !== null || flowsBad} onClick={() => void run()}>
           {runLabel}
         </Button>
         <label className="ur-small">
@@ -728,6 +759,29 @@ function TargetCard({
             <option value="jev">Jev, this run</option>
           </select>
         </label>
+        {hasFlows && (
+          <label className="ur-small">
+            Flows per step{' '}
+            <input
+              className="c-inp"
+              style={FLOWS_INPUT}
+              type="number"
+              inputMode="numeric"
+              data-run-flows-per-step=""
+              min={flowsMin}
+              max={flowsMax}
+              step={1}
+              value={flowsShown}
+              aria-invalid={flowsBad || undefined}
+              onChange={(e) => setFlowsTyped(e.target.value)}
+            />
+            {/* Unread, the field is empty and nothing is named: an untouched run still takes the API's default. */}
+            {flowsDefault !== null && <span>{` workspace default: ${flowsDefault.qa_flows_per_step}`}</span>}
+          </label>
+        )}
+        {flowsBad && (
+          <small className="ur-bad" role="alert">{`Flows per step is a whole number, ${flowsMin}-${flowsMax}.`}</small>
+        )}
         {t.discovers && (
           <Button size="sm" busy={discoveryBusy} disabled={runGate !== null || discoverable.length === 0} onClick={() => void discover()}>
             {anyDiscovered ? 'Run discovery again' : 'Run discovery'}

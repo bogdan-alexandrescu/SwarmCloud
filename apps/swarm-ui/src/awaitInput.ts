@@ -15,7 +15,7 @@
  *     after a 16 MiB upload. They are a fast refusal, not the safety: the
  *     server repeats every one, sniffs the bytes, and scans text files;
  *   * the words a step's state reads in: "waiting for a member" (any member
- *     of the step's tenant may answer, Q2, so never "you"), and "expires in
+ *     of the step's workspace may answer, Q2, so never "you"), and "expires in
  *     3 h 20 m".
  *
  * NOTHING HERE MAKES THE FEATURE LIVE. The `await-input` profile ships
@@ -334,8 +334,8 @@ export function expiresAtOf(task: Pick<Task, 'metadata'> | null | undefined): st
 /** The tooltip on a waiting step's pill: whose answer it waits for (§4.5). */
 export function waitingTitle(tenant: string | null | undefined): string {
   return tenant
-    ? `Waiting for any member of tenant ${tenant} to answer. Holds no capacity; it ends on the first answer or at its declared expiry.`
-    : 'Waiting for any member of its tenant to answer. Holds no capacity; it ends on the first answer or at its declared expiry.'
+    ? `Waiting for any member of workspace ${tenant} to answer. Holds no capacity; it ends on the first answer or at its declared expiry.`
+    : 'Waiting for any member of its workspace to answer. Holds no capacity; it ends on the first answer or at its declared expiry.'
 }
 
 // --------------------------------------------------------------------------

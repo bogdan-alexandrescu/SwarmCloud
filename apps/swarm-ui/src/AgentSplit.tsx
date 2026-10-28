@@ -267,6 +267,21 @@ export function AgentSplit({
 
   const tabs = paneTabs({ task, base, hasBrowser, sessionOpen, childCount, runs, ckpt, ckptCount, pane })
   const selected: TaskPane = pane
+  // THE THEATER ASKED FOR IS HELD UNTIL THE BROWSER TAB IS DRAWN (part of
+  // #1346, comment 3): the route drops `?theater=1` after arrival, and the
+  // tab waits on the task's read, so a route rebuilt in between handed the
+  // tab no request. Held per agent, from arrival or a later ask, and let go
+  // once the tab has it (it holds it from there through start-up) or the
+  // address leaves the Browser tab.
+  const theaterAsked = useRef<string | null>(theater ? taskId : null)
+  const theaterWas = useRef<string | null>(theaterAsked.current)
+  const theaterNow = theater ? taskId : null
+  if (theaterNow !== null && theaterNow !== theaterWas.current) theaterAsked.current = theaterNow
+  theaterWas.current = theaterNow
+  const browserDrawn = !deciding && selected === 'browser' && task !== null && !held
+  useEffect(() => {
+    if (browserDrawn || pane !== 'browser') theaterAsked.current = null
+  }, [browserDrawn, pane])
   // The banner's Open in theater, from a tab that is not Browser: to the Browser tab, in the theater.
   const openTheater = useCallback(() => go(`${base}/browser?theater=1`), [base, go])
   const onHandoffReady = useCallback(() => {
@@ -383,7 +398,7 @@ export function AgentSplit({
               task={task}
               live={liveRead}
               reload={reloadLive}
-              theater={theater}
+              theater={theater || theaterAsked.current === taskId}
               onHandoffReady={reload}
             />
           ) : selected === 'browser' && held ? null : selected === 'logs' && task !== null ? (

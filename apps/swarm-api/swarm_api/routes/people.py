@@ -426,10 +426,25 @@ def list_people(
     everything above. A workspace admin (`scope: workspaces`) is served only
     the workspaces they administer and the people in them, and none of the
     rest (`People.in_workspaces`). Every write on this router stays a
-    platform admin's (`admin_auth`)."""
+    platform admin's (`admin_auth`).
+
+    A PLATFORM ADMIN'S CELL IS `admin` in every column, for both readers
+    (`people.role_cell`, `RoleStore.resolve`'s rule; BGD 2026-10-26, part of
+    #2391): the admin holders are read BEFORE the grid and their emails passed
+    to it, and their rows carry `platform_admin: true`, which the page draws
+    as "(platform admin)" under the cell (`people.mark_platform_admin`; BGD
+    2026-10-26, "Mark the source"). A workspace admin is not served the list
+    itself, so for them the marker is the only place it shows. ADMIN_GROUPS
+    members hold admin through a group nobody can list here
+    (`AdminRoles.holders`), so their cells stay the stored role. When the
+    holders cannot be read the grid is drawn from the stored roles, as before
+    this rule, and the Admins card says why."""
     join_requests, join_error = open_join_requests(ctx, people, scope)
+    admins, admins_error = admin_holders(ctx)
+    platform_admins = {str(a["email"]).lower() for a in admins or ()}
     if scope is not None:
-        return people.in_workspaces(ctx.roles, scope, join_requests, join_error)
+        return people.in_workspaces(ctx.roles, scope, join_requests, join_error,
+                                    platform_admins=platform_admins)
     body = people.everyone(store=ctx.store, join_requests=join_requests,
                            join_requests_error=join_error)
     body["scope"] = SCOPE_PLATFORM
@@ -438,7 +453,8 @@ def list_people(
     try:
         columns, grants = people.role_columns(
             ctx.roles, ctx.authenticator.registered_group_workspaces())
-        people.add_roles(body["people"], columns, grants, join_requests)
+        people.add_roles(body["people"], columns, grants, join_requests,
+                         platform_admins=platform_admins)
         body["workspaces"] = columns
         body["workspaces_error"] = None
     except Exception as exc:  # noqa: BLE001 - one section, never the page
@@ -454,13 +470,18 @@ def list_people(
         body["lendable_error"] = getattr(exc, "code", None) or type(exc).__name__
     # Who the admins are, for the Admins card: one more section of this read,
     # not a route of its own, and like the lendable list it fails alone.
-    try:
-        body["admins"] = _roles(ctx).holders()
-        body["admins_error"] = None
-    except Exception as exc:  # noqa: BLE001 - one section, never the page
-        body["admins"] = None
-        body["admins_error"] = getattr(exc, "code", None) or type(exc).__name__
+    body["admins"] = admins
+    body["admins_error"] = admins_error
     return body
+
+
+def admin_holders(ctx: AppContext) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """`AdminRoles.holders()` and None, or None and why it could not be read:
+    the Admins card's section and the grid's platform admins, read once."""
+    try:
+        return _roles(ctx).holders(), None
+    except Exception as exc:  # noqa: BLE001 - one section, never the page
+        return None, getattr(exc, "code", None) or type(exc).__name__
 
 
 @router.post("/workspaces/sweep")

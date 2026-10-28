@@ -685,7 +685,9 @@ describe('CH-20: the identity at phone width', () => {
   afterEach(() => atUrl(DEFAULT_URL))
 
   it('holds the phone header to one row at 390, and draws none above it', async () => {
-    // MUTATION: let the title wrap, or drop the header's fixed height.
+    // MUTATION: drop the header's fixed height, or let the title run past two
+    // lines. The title wraps inside the row since PHONE-BAR-LABEL (part of
+    // #2391): a long page name reads whole, and the row stays one row.
     const c = await sky(json(200, me({ is_admin: true })))
     await waitFor(() => expect(c.querySelector('.sk-pbar .sk-tn')?.textContent).toBe('Bogdan'))
     const bar = c.querySelector('.sk-pbar')!
@@ -693,8 +695,8 @@ describe('CH-20: the identity at phone width', () => {
     expect(painted(bar, 'height', PHONE_W)).toBe('44px')
     expect(painted(bar, 'display', WIDE_W)).toBe('none')
     const title = c.querySelector('.sk-pbar b')!
-    expect(painted(title, 'white-space', PHONE_W)).toBe('nowrap')
-    expect(painted(title, 'text-overflow', PHONE_W)).toBe('ellipsis')
+    expect(painted(title, '-webkit-line-clamp', PHONE_W)).toBe('2')
+    expect(painted(title, 'overflow', PHONE_W)).toBe('hidden')
     // The environment rides in the same row, as the same verdict as the panel's.
     expect(c.querySelector('.sk-pbar .sk-pill')?.textContent).toBe(c.querySelector('.sk-panel .sk-pill')?.textContent)
   })

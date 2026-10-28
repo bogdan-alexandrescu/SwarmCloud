@@ -64,6 +64,7 @@ from .finishwake import FinishAnnouncer, PubSubFinishAnnouncer
 from .detect import (
     CLOUD_RUN,
     ENDED_AT_STARTUP_STATES,
+    EVERY_VOLUME,
     WORKER_EXIT_CANNOT_START,
     Finding,
     FindingKind,
@@ -79,6 +80,7 @@ from .detect import (
     detect_unused_job_resources,
     normalise_executions,
     sanitised,
+    scratch_report,
     stuck_candidates,
 )
 from .model import (
@@ -574,6 +576,12 @@ class Reconciler:
         #: (`_read_finished`). Reset every pass; `_admit` judges a
         #: lost-after-finish finding on the backend this attempt names.
         self._finished: dict[str, AttemptView] = {}
+        #: Where the next workflow stall check resumes (`_check_workflows`):
+        #: the last workflow id of a full page, None after a short one. Kept
+        #: across passes on purpose, as the scheduler's `_park_cursors` are:
+        #: that is what moves the window past `workflow_scan_limit` (#1822).
+        #: Per instance: a cold instance starts from the top.
+        self._workflow_cursor: str | None = None
         if self._finish is None:
             # Said once, here, for the same reason as the broker below: a
             # deployment missing DISPATCH_TOPIC rings no wake and would
@@ -1033,7 +1041,9 @@ class Reconciler:
         }
         report.workflow_check = check
         try:
-            read = self._store.workflows_for_stall_check(limit=self._config.workflow_scan_limit)
+            read = self._store.workflows_for_stall_check(
+                limit=self._config.workflow_scan_limit, after=self._workflow_cursor
+            )
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
             check["read_error"] = message[:500]
@@ -1045,6 +1055,10 @@ class Reconciler:
             return
         check["examined"] = len(read.workflows) + len(read.malformed)
         check["truncated"] = read.truncated
+        # A full page moves the window to its last document; a short page
+        # sends the next pass back to the top. A read that failed (above)
+        # leaves the cursor where it was.
+        self._workflow_cursor = read.next_after
         for stall in detect_stalled_workflows(read, snapshot.leases, self._config, now):
             try:
                 repaired, repair = self._repair_stall(stall)
@@ -2024,6 +2038,21 @@ class Reconciler:
         if out_of_memory is not None:
             finding = replace(finding, reason=f"{out_of_memory.words}; {finding.reason}")
             outcome.reason = finding.reason
+        # What filled the volume a disk-limit eviction names, from the
+        # attempt's last scratch reading (#2436): kubelet gives no grace
+        # period, so the worker's newest heartbeat is the last word it had.
+        # Words only, like the two above: the state, the eviction count, the
+        # fence and the release below are decided exactly as before.
+        if disk_eviction and not self._config.dry_run:
+            scratch = self._scratch_report(finding)
+            if scratch:
+                what = finding.detail.get("what_ended") or finding.reason
+                finding = replace(
+                    finding,
+                    reason=f"{finding.reason}; {scratch}",
+                    detail={**finding.detail, "what_ended": f"{what}; {scratch}"},
+                )
+                outcome.reason = finding.reason
         if self._config.dry_run:
             outcome.skipped = "dry_run"
             outcome.actions.append(
@@ -2311,6 +2340,31 @@ class Reconciler:
             return None
         return stalled_at_memory_limit(
             events, attempt_id=finding.attempt_id, generation=finding.generation
+        )
+
+    def _scratch_report(self, finding: Finding) -> str | None:
+        """The evicted volume's largest paths from the attempt's last reading (#2436), or None.
+
+        A read that fails is no report: the eviction's own words stand and
+        the repair goes ahead, logged.
+        """
+        if not finding.task_id or not finding.attempt_id:
+            return None
+        try:
+            events = self._store.attempt_events(finding.task_id, finding.attempt_id)
+        except Exception as exc:
+            self._log.warning(
+                "could not read an attempt's heartbeats; not naming what filled its scratch",
+                task_id=finding.task_id,
+                attempt_id=finding.attempt_id,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return None
+        return scratch_report(
+            events,
+            attempt_id=finding.attempt_id,
+            generation=finding.generation,
+            volume=str(finding.detail.get("volume") or EVERY_VOLUME),
         )
 
     @staticmethod

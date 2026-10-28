@@ -85,7 +85,7 @@ class FakeRoutes:
         self.fence = False
         self.missing = False
 
-    def call(self, method, path, *, body=None, headers=None):
+    def call(self, method, path, *, body=None, headers=None, timeout=None):
         headers = dict(headers or {})
         self.calls.append({"method": method, "path": path, "body": body, "headers": headers})
         if path.endswith("/child-key"):

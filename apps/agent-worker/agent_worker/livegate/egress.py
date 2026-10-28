@@ -105,6 +105,23 @@ DIAL_TIMEOUT_SECONDS = 10.0
 ANSWER_TIMEOUT_SECONDS = 50.0
 #: The reachability probe the gate runs when a ticket arrives.
 PROBE_TIMEOUT_SECONDS = 5.0
+#: Tries of the swarm-egress hop per CONNECT, and per probe: ONE retry (#1346).
+#: Visual QA 2026-10-15 saw a host fail twice with ERR_TUNNEL_CONNECTION_FAILED
+#: and the chip read "Proxy failing" before the path came back by itself: the
+#: first failure went straight to Chromium and marked the path failing. A
+#: CONNECT not yet answered 200 has carried no byte to the site, so dialling
+#: swarm-egress again is safe; more than one retry would only hide a path that
+#: is really down from the chip, and Chromium waits through every try.
+CONNECT_ATTEMPTS = 2
+RETRY_DELAY_SECONDS = 0.25
+#: A failure slower than this is not retried: the page has already waited
+#: that long, and a second wait as long is worse than the error.
+RETRY_WITHIN_SECONDS = 15.0
+#: The causes of that hop that say nothing lasting about the path: a dial or an
+#: answer that failed (`forwarder_unreachable`, `vendor_unreachable`) and the
+#: residential provider refusing one tunnel (`vendor_refused`). A policy, cap,
+#: ticket or configuration refusal is the same on a second try and is not retried.
+RETRY_CAUSES = frozenset({"forwarder_unreachable", "vendor_unreachable", "vendor_refused"})
 CHUNK = 65536
 
 #: A cause swarm-egress names in `X-Swarm-Egress-Refused` (server.py): a word,
@@ -371,6 +388,8 @@ class LocalForwarder:
         self._live: set[asyncio.Task[Any]] = set()
         self.connects = 0
         self.refused = 0
+        #: Transient failures a retry absorbed: they never reach Chromium or the chip.
+        self.retried = 0
         self.bytes_up = 0
         self.bytes_down = 0
 
@@ -440,15 +459,20 @@ class LocalForwarder:
             pass
 
     async def probe(self) -> bool:
-        """Whether swarm-egress accepts a TCP connection now. Sends no byte."""
-        try:
-            reader, writer = await asyncio.wait_for(
-                self._dial(self.settings.forwarder_host, self.settings.forwarder_port),
-                PROBE_TIMEOUT_SECONDS)
-        except (OSError, asyncio.TimeoutError):
-            return False
-        writer.close()
-        return True
+        """Whether swarm-egress accepts a TCP connection now, on one of
+        `CONNECT_ATTEMPTS` tries. Sends no byte."""
+        for attempt in range(CONNECT_ATTEMPTS):
+            if attempt:
+                await asyncio.sleep(RETRY_DELAY_SECONDS)
+            try:
+                reader, writer = await asyncio.wait_for(
+                    self._dial(self.settings.forwarder_host, self.settings.forwarder_port),
+                    PROBE_TIMEOUT_SECONDS)
+            except (OSError, asyncio.TimeoutError):
+                continue
+            writer.close()
+            return True
+        return False
 
     def unreachable(self) -> None:
         """The gate's probe could not reach swarm-egress: the path is failing
@@ -481,6 +505,7 @@ class LocalForwarder:
             "expires_at": self._expires_at,
             "connects": self.connects,
             "refused": self.refused,
+            "retried": self.retried,
             "bytes_up": self.bytes_up,
             "bytes_down": self.bytes_down,
         }
@@ -545,15 +570,52 @@ class LocalForwarder:
         if not self.ticket_live():
             self._unavailable("ticket_expired")
             return self._refuse(writer, 503, "ticket_expired")
+        loop = asyncio.get_running_loop()
+        for attempt in range(CONNECT_ATTEMPTS):
+            if attempt:
+                await asyncio.sleep(RETRY_DELAY_SECONDS)
+                if self.state == "failed":
+                    return self._refuse(writer, 503, self.cause or "mint_failed")
+                if not self.ticket_live():
+                    self._unavailable("ticket_expired")
+                    return self._refuse(writer, 503, "ticket_expired")
+            started = loop.time()
+            upstream, cause = await self._open_upstream(target)
+            if upstream is not None:
+                break
+            if cause in RETRY_CAUSES and attempt + 1 < CONNECT_ATTEMPTS \
+                    and loop.time() - started < RETRY_WITHIN_SECONDS:
+                # Absorbed if the next try is served: no 502, no failing chip.
+                self.retried += 1
+                self._record("egress_retried", {"cause": cause})
+                continue
+            if cause == "forwarder_unreachable" and not self.connects:
+                self._unavailable(cause)
+            elif cause in ("egress_disabled", "tenant_off"):
+                self._unavailable(cause)
+            # Never a 407 to Chromium: it would ask for a proxy password.
+            return self._refuse(writer, 502, cause)
+        up_reader, up_writer = upstream
+        self.connects += 1
+        self._last_refusal = None
+        self._path_refusal = None
+        writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
+        await writer.drain()
+        await self._relay(reader, writer, up_reader, up_writer)
+
+    async def _open_upstream(self, target: str) -> tuple[Any, str]:
+        """One try of the swarm-egress hop: `((reader, writer), "")` once it has
+        answered 200, else `(None, cause)` with the connection closed. Nothing
+        is sent on to the site before that 200, so a try may be repeated."""
         ticket = self._ticket
+        if ticket is None:
+            return None, "no_ticket"
         try:
             up_reader, up_writer = await asyncio.wait_for(
                 self._dial(self.settings.forwarder_host, self.settings.forwarder_port),
                 DIAL_TIMEOUT_SECONDS)
         except (OSError, asyncio.TimeoutError):
-            if not self.connects:
-                self._unavailable("forwarder_unreachable")
-            return self._refuse(writer, 502, "forwarder_unreachable")
+            return None, "forwarder_unreachable"
         try:
             authorization = " ".join((SCHEME, ticket))
             up_writer.write((f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n"
@@ -563,22 +625,12 @@ class LocalForwarder:
             answer = await asyncio.wait_for(up_reader.readuntil(b"\r\n\r\n"), ANSWER_TIMEOUT_SECONDS)
         except (OSError, asyncio.IncompleteReadError, asyncio.LimitOverrunError, asyncio.TimeoutError):
             up_writer.close()
-            if not self.connects:
-                self._unavailable("forwarder_unreachable")
-            return self._refuse(writer, 502, "forwarder_unreachable")
+            return None, "forwarder_unreachable"
         status, cause = _answer(answer)
         if status != 200:
             up_writer.close()
-            if cause in ("egress_disabled", "tenant_off"):
-                self._unavailable(cause)
-            # Never a 407 to Chromium: it would ask for a proxy password.
-            return self._refuse(writer, 502, cause)
-        self.connects += 1
-        self._last_refusal = None
-        self._path_refusal = None
-        writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
-        await writer.drain()
-        await self._relay(reader, writer, up_reader, up_writer)
+            return None, cause
+        return (up_reader, up_writer), ""
 
     async def _relay(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
                      up_reader: asyncio.StreamReader, up_writer: asyncio.StreamWriter) -> None:

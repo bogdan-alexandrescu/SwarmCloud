@@ -202,6 +202,26 @@ _case(fd.FIX_ROUND_LIVE,
                       metadata={"merge_fix_rounds": 1, "merge_fix": {"rounds": [{"round": 1}]}})])
 
 
+_case(fd.PERSON_PUSH,
+      # #2505, BGD 2026-10-27: a merge step a person's push superseded. Until
+      # contract request SUPERSEDED_BY_PERSON_PUSH lands the worker ends it
+      # FAILED merge_refused with this code; after, CANCELLED with the cause.
+      [task("pushed-over", runner_profile="merge", end_cause="merge_refused",
+            result_summary={"merge": {"refusal": {"code": "superseded_by_person_push",
+                                                  "message": "pat-person pushed it"}}}),
+       task("pushed-over-typed", state="CANCELLED", runner_profile="merge",
+            end_cause="superseded_by_person_push")],
+      # An unknown branch-mate's head is still head_moved, and reviewed; so
+      # is any other step that only names the code somewhere it is not the
+      # merge's refusal.
+      [task("branch-mate", runner_profile="merge", end_cause="merge_refused",
+            result_summary={"merge": {"refusal": {"code": "head_moved",
+                                                  "message": "superseded_by_person_push"}}}),
+       task("verdict", runner_profile="post-verdict", end_cause="verdict_refused",
+            result_summary={"verdict": {"refusal": {"code": "superseded_by_person_push"}}}),
+       task("agent-said-so", last_error="superseded_by_person_push")])
+
+
 @pytest.mark.parametrize("rule", fd.SKIP_RULES)
 def test_each_skip_rule_skips_exactly_its_case_and_names_itself(rule: str):
     skipped, control, extra = CASES[rule]
@@ -221,10 +241,24 @@ def test_each_skip_rule_skips_exactly_its_case_and_names_itself(rule: str):
     assert not ids & reviewed_ids(digest)
 
 
-def test_the_rules_are_the_designs_six_and_no_others():
+def test_the_rules_are_the_designs_seven_and_no_others():
     # MUTATION: a rule added (or one the agent could add) changes this tuple.
     assert fd.SKIP_RULES == ("self", "acceptance_deliberate", "verify_fence", "person_cancel",
-                             "question_unanswered", "fix_round_live")
+                             "question_unanswered", "fix_round_live", "person_push")
+
+
+def test_a_workflow_failed_only_by_a_person_push_is_skipped_with_its_step():
+    """The merge step is a workflow's last step: the workflow FAILED only
+    because a person's push superseded it is not reviewed either."""
+    step = task("merge-step", runner_profile="merge", end_cause="merge_refused",
+                workflow_id="wf_push",
+                result_summary={"merge": {"refusal": {"code": "superseded_by_person_push"}}})
+    workflow = {"workflow_id": "wf_push", "tenant_id": OTHER, "state": "FAILED",
+                "updated_at": at(1), "steps": [{"step_id": "merge", "task_id": "merge-step"}]}
+    digest = build(docs_of(step, workflows=[workflow]))
+    # MUTATION: drop the PERSON_PUSH branch of `skip_rule` and both are reviewed.
+    assert reviewed_ids(digest) == set()
+    assert set(digest.skipped[fd.PERSON_PUSH]) == {"merge-step", "wf_push"}
 
 
 # --------------------------------------------------------------------------

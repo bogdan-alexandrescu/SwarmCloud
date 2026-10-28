@@ -104,6 +104,7 @@ from scheduler.dispatch import (  # noqa: E402
     cpu_quantity,
     gke_disk,
     gke_ephemeral_storage_gib,
+    scratch_volumes_value,
 )
 from swarm_common.config import Settings  # noqa: E402
 from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE  # noqa: E402
@@ -342,6 +343,13 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     "CACHE_DISK": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
     "HOME_DISK": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
     "EPHEMERAL": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
+    # SWARM_SCRATCH_VOLUMES (#2436): `<volume>=<absolute path>:<GiB>`, comma
+    # separated, from the dispatcher's `scratch_volumes_value`. No space, quote,
+    # colon in a path or newline, so it stays one plain YAML scalar.
+    "SCRATCH_VOLUMES": re.compile(
+        r"^[a-z0-9-]{1,63}=/[A-Za-z0-9/_.-]{0,255}:[0-9]{1,4}"
+        r"(,[a-z0-9-]{1,63}=/[A-Za-z0-9/_.-]{0,255}:[0-9]{1,4}){0,7}$"
+    ),
     "TIMEOUT_SECONDS": re.compile(r"^[0-9]{1,8}$"),
     "ACTIVE_DEADLINE_SECONDS": re.compile(r"^[0-9]{1,8}$"),
     "CHECKPOINT_INTERVAL_SECONDS": re.compile(r"^[0-9]{1,8}$"),
@@ -1341,6 +1349,10 @@ def render_job(args: argparse.Namespace) -> str:
             "CACHE_DISK": f"{CACHE_VOLUME_GIB}Gi",
             "HOME_DISK": f"{gke_disk(rc).home_gib}Gi",
             "EPHEMERAL": f"{gke_ephemeral_storage_gib(rc)}Gi",
+            # The worker's local scratch volumes and their limits, the
+            # dispatcher's own value (SCRATCH_VOLUMES_ENV, #2436); the gvisor
+            # template's HOME volume differs and is set below.
+            "SCRATCH_VOLUMES": scratch_volumes_value(gke_disk(rc)),
             # The LIFECYCLE's deadline (TASK_TIMEOUT_SECONDS) and the JOB's are
             # two tokens, because they were one and the Job always won: see
             # WORKER_FINALISE_BUDGET_SECONDS in apps/scheduler/scheduler/dispatch.py.
@@ -1379,6 +1391,11 @@ def render_job(args: argparse.Namespace) -> str:
                 "the sandbox is what replaces the part restricted was doing"
             )
         template = JOB_FILES_GVISOR["default"]
+        # v2's HOME is its own `work` volume at /work (worker-job-v2.yaml),
+        # not the dispatcher's `home` at /home/swarm.
+        values["SCRATCH_VOLUMES"] = scratch_volumes_value(
+            gke_disk(rc), home_volume="work", home_mount="/work"
+        )
     else:
         template = JOB_FILES.get(profile.name, JOB_FILES["default"])
     return substitute((HERE / template).read_text(), values)
