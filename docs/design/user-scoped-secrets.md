@@ -309,6 +309,8 @@ step:**
    credential_unavailable`. This is the case after "Disconnect GitHub" or
    "remove owner", which disable every version.
 
+Phase 2 adds a person-signature check between steps 7 and 8 (a user slot is released only to an agent its person signed): workspace-secrets.md §11.4, owner decision P9.
+
 **The answer:**
 
 A `200` with `Cache-Control: no-store`. Its JSON body has two fields:

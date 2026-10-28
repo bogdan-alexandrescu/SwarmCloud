@@ -572,6 +572,7 @@ refusing at the first failure:
    `mcp:<name>` of the agent's tenant, then its `current_version`. Missing or
    unreadable: `withheld` with a reason; a read swarm-api may not make (the
    IAM not applied) is 503 with a reason and no name.
+   Phase 2 gates each credential on its person's signature before it is read: workspace-secrets.md §11.4, owner decision P9.
 7. **The rows.** One `mcp_attach_releases` row per server
    (`at, task_id, attempt_id, generation, tenant_id, server_id, name,
    revision, auth_mode, secret_id, version, submitted_by`, `expire_at` 90 days
