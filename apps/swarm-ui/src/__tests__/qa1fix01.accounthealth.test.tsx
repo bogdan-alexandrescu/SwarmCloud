@@ -126,3 +126,20 @@ describe('chrome-C26: a Last event message can be read whole', () => {
     expect(css).toMatch(/\.ah-last-td \.ah-last\s*\{[^}]*max-width:\s*280px/)
   })
 })
+
+describe('capacity-04 review: the broker note wraps inside the Status column', () => {
+  it('draws the note in a class of its own that wraps and is held to a width', async () => {
+    const b = await fixtureBoard()
+    const { container } = render(<AccountHealthBody board={b} now={b.readAt} phone={false} />)
+    const notes = container.querySelectorAll<HTMLElement>('tbody [data-broker]')
+    expect(notes.length).toBeGreaterThan(0)
+    // MUTATION: draw the note as .ah-st-until again (display: block alone): it
+    // inherits the cell's nowrap, the Status column grows to 573 px and the
+    // table runs 329 px past its card at 1440, off "Sign in again ›".
+    notes.forEach((n) => expect(n.classList.contains('ah-broker')).toBe(true))
+    const css = readFileSync(join(__dirname, '..', 'styles', 'account-health.css'), 'utf8')
+    const rule = css.match(/\.ah-broker\s*\{([^}]*)\}/)?.[1] ?? ''
+    expect(rule).toMatch(/white-space:\s*normal/)
+    expect(rule).toMatch(/max-width:\s*\d+px/)
+  })
+})

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import {
   disableAccessOwner, disconnectGitHub, enableAccessOwner, githubAppName, loadAccess, loadAccessOwners,
   loadAccessRepositories, putAccessGrant, requestAccessInstall, revokeAccessGrant, typedRepoId,
@@ -873,11 +873,14 @@ export function RepoChooser({ owner, chosen = [], onChange }: { owner: string; c
   // counted its grants. So Search is disabled with its reason, and Chosen is
   // drawn from the grants the page already holds, as an empty first page.
   const unserved = read.state.status === 'error' && notServed(read.state.error)
+  // Its time is when the refusing read came back, held across renders: a
+  // fresh Date.now() on each one called the list "just read" forever.
+  const unservedAt = useMemo(() => Date.now(), [read.state])
   const state: typeof read.state =
     unserved && only === 'chosen'
       ? {
           status: 'ok',
-          fetchedAt: Date.now(),
+          fetchedAt: unservedAt,
           data: { owner, repositories: [], page: 1, per_page: 100, max_pages: 1, next_page: null, capped: false, q: null, total_count: null, tenant_id: '' },
         }
       : read.state
@@ -930,7 +933,9 @@ export function RepoChooser({ owner, chosen = [], onChange }: { owner: string; c
           ]}
         />
       </div>
-      {unserved && <p className="ur-hint">Search needs the repository list, which this API does not serve yet; Chosen lists your grants.</p>}
+      {/* One line, never two: under All the "Not served yet" box below says
+          it, so this line is drawn under Chosen only, where no box is. */}
+      {unserved && only === 'chosen' && <p className="ur-hint">Search needs the repository list, which this API does not serve yet; Chosen lists your grants.</p>}
       {settling && read.state.status !== 'loading' && (
         <p className="ur-reading-why" role="status">
           {STILL_SETTING_UP}

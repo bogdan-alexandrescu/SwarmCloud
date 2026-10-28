@@ -23,6 +23,13 @@
 /* A Limited row's reset time, under its word in the list: it may wrap, so the
    Status column gives way and the table fits its card at 1440. */
 .ah-st-until { display: block; margin-top: 2px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--warn-ink); }
+/* What the broker holds an account back for, under its status (QA1-FIX-01
+   capacity-04). A sentence, not a time: it wraps, and is held to 200 px, so the
+   Status column gives way. Without both it took the cell's nowrap, the column
+   grew to 573 px and the table ran 329 px past its card at 1440, pushing Last
+   event and "Sign in again ›" off the edge. 200 px keeps the table (793 px
+   without the column) inside the 1037 px card. */
+.ah-broker { display: block; margin-top: 2px; max-width: 200px; white-space: normal; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--warn-ink); }
 .ah-dash { color: var(--text-dim); font-weight: 600; cursor: help; }
 .ah-mu { color: var(--text-dim); }
 

@@ -275,7 +275,7 @@ function BrokerNote({ m, a }: { m: Model; a: HealthAccount }) {
   if (!held) return null
   const names = new Map(m.accounts.map((x) => [x.account_id, nameOf(x)]))
   return (
-    <small className="ah-st-until" data-broker={a.state}>
+    <small className="ah-broker" data-broker={a.state}>
       {whyOf(a, m.scope, m.now, names)}
     </small>
   )

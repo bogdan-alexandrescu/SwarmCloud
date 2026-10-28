@@ -144,7 +144,7 @@ describe('config-02: a refused Request install is a full-width row under its own
   it('draws the refusal in its own row spanning the table, not inside the Action cell', async () => {
     vi.spyOn(window, 'open').mockImplementation(() => null)
     api()
-    const { container } = await mount()
+    await mount()
     const table = await screen.findByRole('table', { name: 'Where the App is installed' })
     const row = table.querySelector('tr[data-owner="example-labs"]') as HTMLElement
     await act(async () => {
@@ -156,7 +156,6 @@ describe('config-02: a refused Request install is a full-width row under its own
     const cell = refusal.closest('td') as HTMLTableCellElement
     expect(cell.colSpan).toBe(4)
     expect(cell.closest('tr')?.previousElementSibling).toBe(row)
-    expect(container).toBeTruthy()
   })
 })
 
@@ -170,8 +169,10 @@ describe('config-03: controls over a repository list this API does not serve', (
     // MUTATION: leave the search input and Search enabled while the list read is not served.
     expect(search.disabled).toBe(true)
     expect((within(region).getByRole('button', { name: 'Search' }) as HTMLButtonElement).disabled).toBe(true)
-    expect(region.textContent).toContain('Search needs the repository list')
+    // MUTATION: draw the hint under All too, above the "Not served yet" box that says it again.
+    expect(region.textContent).not.toContain('Search needs the repository list')
     fireEvent.click(within(region).getByRole('radio', { name: 'Chosen' }))
+    expect(region.textContent).toContain('Search needs the repository list')
     // MUTATION: draw Chosen from the unserved list read only, so it shows nothing.
     const rows = region.querySelectorAll('[data-repo]')
     expect([...rows].map((r) => r.getAttribute('data-repo'))).toEqual(['example-org/example-api', 'example-org/example-docs', 'example-org/example-web'])
