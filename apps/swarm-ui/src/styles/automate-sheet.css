@@ -1,0 +1,136 @@
+/* ONE SCHEDULE IN THE SIDE SHEET OVER THE LIST (proposal A, frame A2, with
+   A6's never-fired state and A7's phone for this sheet; lane AUTO-A2, part of
+   #2417). Its own sheet because the other Automate lanes edit theirs in
+   parallel. Tokens only; the type scale is the tokens' (the 12px floor).
+   Every selector is `.as-`, so nothing here reaches another page.
+
+   THE LIST STAYS IN VIEW ON THE LEFT (frame A2, "desktop 1440 · the list
+   stays in view on the left"): the sheet is fixed to the window's right edge,
+   at most 680px and never wider than the window less 360px, so at 1440 with
+   the nav open the list's names and targets are still beside it. FIXED, SO IT
+   SCROLLS ITSELF and its own scroll reaches Audit; it ends above the API-reads
+   line (`--dock-h`), as the accounts sheet does. No scrim: the list beside it
+   is read and clicked, and a row opened swaps the sheet. On a phone (560 and
+   under) the sheet is the page (frame A7b): the list steps aside and
+   `‹ Schedules` goes back. */
+
+.as-over { display: contents; }
+
+.as-sheet {
+  display: flex; flex-direction: column; gap: 14px; min-width: 0;
+  background: var(--surface); color: var(--text);
+}
+@media (min-width: 561px) {
+  .as-sheet {
+    position: fixed; top: 0; right: 0; bottom: var(--dock-h, 28px); z-index: 40;
+    width: min(680px, calc(100vw - 360px));
+    overflow-y: auto; overscroll-behavior: contain;
+    padding: 0 22px 26px;
+    border-left: 1px solid var(--line);
+    box-shadow: var(--sk-sh);
+  }
+  /* The head sticks, so Close is one Tab away however far down the sheet is read. */
+  .as-sheet > .as-head {
+    position: sticky; top: 0; z-index: 3;
+    margin: 0 -22px; padding: 14px 22px 10px;
+    background: var(--surface); border-bottom: 1px solid var(--line-soft);
+  }
+  .as-back { display: none; }
+}
+/* Between the phone and 1024 the window has no room for both, and the sheet
+   takes the content's width: the list is under it, as on the accounts page. */
+@media (min-width: 561px) and (max-width: 1023px) {
+  .as-sheet { width: min(680px, 100vw); }
+}
+
+/* The open row in the list: tinted, and marked by `aria-current`, never by colour alone. */
+.al-row.is-open > td { background: var(--sk-acs); }
+.al-row.is-open > td:first-child { box-shadow: inset 3px 0 0 var(--sk-ac); }
+
+/* ---- the head: name, state word, type and id; Close ---------------------- */
+.as-head { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.as-title { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.as-crumb { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.as-title > h1 { margin: 0; font-size: var(--t-title); line-height: var(--lh-title); font-weight: 650; overflow-wrap: anywhere; }
+.as-meta {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 0; min-width: 0;
+  font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere;
+}
+.as-meta .mono { font-family: var(--mono); }
+.as-close { flex: none; }
+.as-back { color: var(--sk-ac); font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; text-decoration: none; }
+
+/* ---- the actions: one wrapping row, every button a sibling ---------------- */
+.as-acts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; max-width: 100%; }
+.as-acts > .sc-head-acts, .as-acts .sc-fold { display: contents; }
+.as-acts .c-btn-wrap { min-width: 0; max-width: 100%; }
+.as-acts .c-why { min-width: 0; overflow-wrap: anywhere; }
+
+/* ---- a section: a rule above, a heading with its small note --------------- */
+.as-sec { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding-top: 12px; border-top: 1px solid var(--line); }
+.as-sec > h3 {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin: 0;
+  font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600;
+}
+.as-sec > h3 > small { font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 400; color: var(--text-dim); overflow-wrap: anywhere; }
+.as-sec > h3 code { font-family: var(--mono); }
+.as-sec > p { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
+.as-h4 { margin: 4px 0 0; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
+.as-note, .as-dim { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.as-sec > p.as-note { font-size: var(--t-micro); line-height: var(--lh-micro); }
+
+/* Two columns of name and value; one on a phone. */
+.as-kv {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 14px; margin: 0; min-width: 0;
+  font-size: var(--t-meta); line-height: var(--lh-meta);
+}
+.as-kv > dt { color: var(--text-dim); }
+.as-kv > dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.as-kv code { font-family: var(--mono); font-size: var(--t-micro); }
+
+/* ---- cadence: the next five firings, the first one the next --------------- */
+.as-fires { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.as-fires > li {
+  padding: 3px 9px; border: 1px solid var(--line); border-radius: var(--r-ctl); background: var(--surface-2);
+  font-size: var(--t-micro); line-height: var(--lh-micro); white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.as-fires > li:first-child { border-color: var(--sk-ac); background: var(--sk-acs); font-weight: 600; }
+
+/* ---- firings: the table, its runs and pull requests, the tripwire bar ----- */
+.as-firings th[data-col='slot'] { width: 112px; }
+.as-firings th[data-col='outcome'] { width: 112px; }
+.as-firings th[data-col='cost'] { width: 84px; }
+.as-firings th[data-col='largest'] { width: 112px; }
+.as-firings td { overflow-wrap: anywhere; }
+.as-work { margin: 2px 0 0; padding: 0; list-style: none; display: grid; gap: 2px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.as-work .mono { font-family: var(--mono); }
+.as-trip { display: grid; gap: 2px; min-width: 0; }
+.as-trip-bar { position: relative; display: block; height: 6px; border-radius: 3px; background: var(--surface-2); border: 1px solid var(--line-soft); }
+.as-trip-bar > i { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: var(--sk-ac); }
+.as-trip-bar > s { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--text); text-decoration: none; }
+.as-trip.is-over .as-trip-bar > i { background: var(--s-warn); }
+.as-trip.is-over > .sc-sub { color: var(--text); font-weight: 600; }
+.as-pager { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.as-pager > .as-view { margin-left: auto; }
+
+/* ---- Settings and Audit, folded at the foot ------------------------------- */
+.as-fold-b {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0;
+  border: 0; background: none; color: var(--text); font: inherit; font-weight: 600; cursor: pointer;
+}
+.as-fold-b > .c-ic { width: 16px; height: 16px; }
+.as-fold-b:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: var(--r-xs); }
+.as-fold-body { min-width: 0; }
+
+/* ---- the phone: the sheet is the page (frame A7b) ------------------------- */
+@media (max-width: 560px) {
+  .as-over[data-sheet] > .as-under { display: none; }
+  .as-sheet { gap: 12px; }
+  .as-crumb, .as-head > .as-close { display: none; }
+  .as-kv { grid-template-columns: minmax(0, 1fr); gap: 1px; }
+  .as-kv > dd { margin-bottom: 6px; }
+  .as-acts .c-btn, .as-fold-b, .as-back { min-height: 44px; }
+  .as-back { display: inline-flex; align-items: center; }
+  .as-fires > li { white-space: normal; }
+  .as-pager > .as-view { margin-left: 0; }
+}

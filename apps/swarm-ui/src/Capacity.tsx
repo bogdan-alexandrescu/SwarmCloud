@@ -17,7 +17,8 @@ import {
   usePhoneTables,
 } from './capacityPoll'
 import { leaseCoverage } from './Holders'
-import { Screen } from './Shell'
+import { Absent } from './primitives'
+import { Screen, SkeletonRows, staleFoot, type ScreenReading } from './Shell'
 import './styles/capacity.css'
 import { Segmented, ToneMark, UsageTrack } from './components'
 import {
@@ -37,6 +38,7 @@ import {
   type LeasePage,
   type Pool,
 } from './types'
+import { AGE_TICK_MS, useNow } from './useNow'
 
 /**
  * Screen B -- the capacity board.
@@ -84,24 +86,14 @@ export function CapacityScreen() {
       // screen:` footer under the families; the `?` takes the section
       // question's place by the title, so the page still draws one glyph.
       help={CAPACITY_TOPICS}
-      load={loadPoolsBoard}
+      load={loadPoolsView}
       // Decided 2026-10-01 (#117): Pools re-reads every 30s, and `Screen`
       // pauses the timer while the tab is hidden.
       pollMs={capacityPoll(POOLS_POLL_MS)}
-      summary={(d) => <PoolsSummary capacity={d} />}
-      /* A REAL ZERO. Pools are created at provisioning time, so an environment
-         with none has not been fully applied -- which is an absence the mark
-         names in two words instead of two clauses.
-
-         THE MARK IS `Screen`'s, drawn in the heading by the shared empty state
-         (#145). A hand-drawn `.ctl-mark is-zero` span here said `real zero` a
-         second time, with no sentence behind it. */
-      empty={{
-        heading: 'No pools exist',
-        body: <>none provisioned in this environment</>,
-      }}
+      skeleton={<PoolsSkeleton view="ceilings" />}
+      summary={(d) => d.pools === 'some' && <PoolsSummary capacity={d.board} />}
     >
-      {(d) => (
+      {(d, reading) => (
         <>
           <CapSeg view="ceilings" />
           {/* CEILINGS, AS DECIDED ON 2026-10-01 (capacity.html, Variant 1, #125):
@@ -110,7 +102,11 @@ export function CapacityScreen() {
               ceiling (`needsALook`, BGD 2026-10-26). A pool appears once: the
               top group takes it out of its family. The Cards view was the
               alternative set aside and is gone. */}
-          <CeilingTables pools={d.pools} viewer={poolViewer(d)} holders={d.holders} />
+          {d.pools === 'none' ? (
+            <NoPools reading={reading} />
+          ) : (
+            <CeilingTables pools={d.board.pools} viewer={poolViewer(d.board)} holders={d.board.holders} />
+          )}
         </>
       )}
     </Screen>
@@ -143,6 +139,80 @@ export function CapSeg({ view }: { view: 'ceilings' | 'profiles' }) {
         ]}
       />
     </div>
+  )
+}
+
+/**
+ * A Pools read whose empty answer stays an answer (visual QA V199, part of
+ * #1427): `some` carries the board, `none` is a capacity read that succeeded
+ * with an empty pool list.
+ *
+ * WHY NOT `Screen`'s `empty`. `Screen` draws its empty panel in place of
+ * `children`, so it drew it without the view strip, and each view worded the
+ * one absence its own way ("No pools exist" on Ceilings, "The capacity read
+ * returned no pools" on By runner profile). Kept as data, the empty read
+ * reaches `children`, which draws the strip and then `NoPools`, on both
+ * views. `Screen` has no slot above its empty panel to put the strip in.
+ */
+export type PoolsView<T> = { pools: 'some'; board: T } | { pools: 'none' }
+
+/** `load`, with its `empty` answer turned into `{ pools: 'none' }` and nothing else changed. */
+export function keepNoPools<T>(load: () => Promise<Result<T>>): () => Promise<Result<PoolsView<T>>> {
+  return async () => {
+    const r = await load()
+    if (r.status === 'ok' || r.status === 'stale') return { ...r, data: { pools: 'some', board: r.data } }
+    if (r.status === 'empty') {
+      return {
+        status: 'ok',
+        data: { pools: 'none' },
+        fetchedAt: r.fetchedAt,
+        ...(r.serverAt !== undefined ? { serverAt: r.serverAt } : {}),
+      }
+    }
+    return r
+  }
+}
+
+const loadPoolsView = keepNoPools(loadPoolsBoard)
+
+/**
+ * THE ONE EMPTY POOLS STATE, FOR BOTH VIEWS (V199). A REAL ZERO: pools are
+ * created at provisioning time, so an environment with none has not been fully
+ * applied. The `real zero` mark is `Absent`'s, in the heading (#145); the body
+ * does not repeat it. Its foot says the read's age only once it is stale, as
+ * `Screen`'s own empty panel does (#98).
+ */
+export function NoPools({ reading }: { reading: ScreenReading }) {
+  const now = useNow(AGE_TICK_MS)
+  return (
+    <Absent
+      kind="zero"
+      heading="No pools exist"
+      say="The capacity read succeeded and returned no pools."
+      foot={staleFoot(reading.fetchedAt, now) ?? undefined}
+    >
+      The capacity read succeeded with an empty pool list: pools are created at provisioning time, and this environment has
+      not been given any yet.
+    </Absent>
+  )
+}
+
+/**
+ * WHAT A POOLS VIEW DRAWS BEFORE ITS FIRST READ LANDS (visual QA V063, the
+ * capacity half): the count note's line, the view strip, then the generic
+ * rows -- the order the loaded page draws them in -- so the strip is where it
+ * will stay and nothing above the body moves when the data lands. The strip is
+ * live: it needs no data, and a reader can change view while the read is out.
+ */
+export function PoolsSkeleton({ view }: { view: 'ceilings' | 'profiles' }) {
+  return (
+    <>
+      <p className="c-count-note" aria-hidden="true">
+        <span className="skeleton" style={{ display: 'inline-block', width: '24ch', height: '1em', verticalAlign: 'middle' }} />
+      </p>
+      <CapSeg view={view} />
+      <SkeletonRows />
+    </>
   )
 }
 

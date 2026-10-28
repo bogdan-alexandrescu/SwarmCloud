@@ -539,7 +539,7 @@ export const STATE_WORD_SAID: Readonly<Record<StateWord, string>> = {
   never_fired: 'never fired',
 }
 
-const WORD_TONE: Readonly<Record<StateWord, string>> = {
+export const WORD_TONE: Readonly<Record<StateWord, string>> = {
   active: 'ok',
   paused: 'paused',
   paused_by_tripwire: 'warn',
@@ -667,12 +667,15 @@ function ScheduleList({
   names,
   inbox,
   go,
+  open,
 }: {
   rows: Listed[]
   names: ReadonlyMap<string, string> | null
   /** The inbox's items, or null when it was not read. */
   inbox: ApprovalItem[] | null
   go: (to: string) => void
+  /** The schedule open in the sheet beside the list (frame A2), or null. */
+  open: string | null
 }) {
   const now = useNow()
   // NEEDS A LOOK FIRST, THEN BY NAME (frame A1). The API lists by name, and a
@@ -699,9 +702,14 @@ function ScheduleList({
             const need = s.state_word !== undefined && NEEDS_LOOK.has(s.state_word)
             const lastAt = s.last_firing === null ? null : s.last_firing.ended_at ?? s.last_firing.slot
             return (
-              <tr key={s.schedule_id} className={`sc-row al-row${need ? ' is-need' : ''}`} data-schedule={s.schedule_id} data-word={s.state_word}>
+              <tr
+                key={s.schedule_id}
+                className={`sc-row al-row${s.schedule_id === open ? ' is-open' : need ? ' is-need' : ''}`}
+                data-schedule={s.schedule_id}
+                data-word={s.state_word}
+              >
                 <td data-label="Schedule" className="al-c-name">
-                  <InApp go={go} to={scheduleAddress(s.schedule_id)} className="sc-name al-name">{s.name}</InApp>
+                  <InApp go={go} to={scheduleAddress(s.schedule_id)} className="sc-name al-name" current={s.schedule_id === open}>{s.name}</InApp>
                   <span className="sc-sub">
                     {s.tier === null ? s.type : `${s.type} · ${s.tier}`}
                     <span className="al-ph"> · {s.words ?? s.cron}</span>
@@ -1067,7 +1075,7 @@ interface Landing {
   notServed: boolean
 }
 
-function SchedulesBody({ d, go, scopeSwitch }: { d: Landing; go: (to: string) => void; scopeSwitch: ReactNode }) {
+function SchedulesBody({ d, go, scopeSwitch, open }: { d: Landing; go: (to: string) => void; scopeSwitch: ReactNode; open: string | null }) {
   const [filter, setFilter] = useState<Filter>('all')
   const rows = d.schedules
   const repos = d.repos
@@ -1125,7 +1133,7 @@ function SchedulesBody({ d, go, scopeSwitch }: { d: Landing; go: (to: string) =>
         <>
           <LandingLead rows={rows} summary={d.summary} inbox={inbox} go={go} />
           {counts !== null && <WordFilter rows={rows} counts={counts} value={filter} onChange={setFilter} />}
-          <ScheduleList rows={shown} names={names} inbox={inbox.items} go={go} />
+          <ScheduleList rows={shown} names={names} inbox={inbox.items} go={go} open={open} />
         </>
       )}
       <div className="al-g2">
@@ -1161,7 +1169,18 @@ export function SchedulesScreen({ view, go }: { view: string | null; go: (to: st
   if (scheduleId === NEW_SCHEDULE) return <NewSchedule go={go} />
   if (scheduleId !== null) {
     const q = new URLSearchParams(view ?? '')
-    return <ScheduleDetail scheduleId={scheduleId} go={go} tab={detailTabOf(q.get('tab'))} editing={q.get('edit') === '1'} />
+    if (q.get('edit') === '1') return <ScheduleDetail scheduleId={scheduleId} go={go} tab={detailTabOf(q.get('tab'))} editing />
+    // ONE SCHEDULE OPENS IN A SIDE SHEET OVER THE LIST (frame A2): the list
+    // stays drawn and in view on the left at desktop width; on a phone the
+    // sheet is the page (automate-sheet.css).
+    return (
+      <div className="as-over" data-sheet={scheduleId}>
+        <div className="as-under">
+          <ScheduleListScreen go={go} scopeSwitch={null} open={scheduleId} />
+        </div>
+        <ScheduleDetail scheduleId={scheduleId} go={go} tab={detailTabOf(q.get('tab'))} />
+      </div>
+    )
   }
   return <ScheduleLists scope={scopeOf(view)} go={go} />
 }
@@ -1182,14 +1201,14 @@ function ScheduleLists({ scope, go }: { scope: Scope; go: (to: string) => void }
   return <ScheduleListScreen go={go} scopeSwitch={scopeSwitch} />
 }
 
-function ScheduleListScreen({ go, scopeSwitch }: { go: (to: string) => void; scopeSwitch: ReactNode }) {
+function ScheduleListScreen({ go, scopeSwitch, open = null }: { go: (to: string) => void; scopeSwitch: ReactNode; open?: string | null }) {
   return (
     <Screen
       title="Schedules"
       load={loadListAndRepos}
       summary={(d) => (d.notServed ? 'schedules: — not served by this deployment' : `${pluralise(d.schedules.length, 'schedule')} · workspace ${d.tenant_id}`)}
     >
-      {(d) => <SchedulesBody d={d} go={go} scopeSwitch={scopeSwitch} />}
+      {(d) => <SchedulesBody d={d} go={go} scopeSwitch={scopeSwitch} open={open} />}
     </Screen>
   )
 }

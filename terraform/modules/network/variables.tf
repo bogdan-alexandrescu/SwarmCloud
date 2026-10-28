@@ -68,8 +68,39 @@ variable "nat_static_ip_count" {
 }
 
 variable "nat_min_ports_per_vm" {
-  type    = number
-  default = 128
+  description = <<-EOT
+    Ports Cloud NAT reserves to every VM (GKE node or Cloud Run instance) up
+    front. Each one is held whether it is used or not, so this times the number
+    of VMs must fit in nat_static_ip_count x 64,512.
+  EOT
+  type        = number
+  default     = 128
+
+  # Cloud NAT refuses anything else with dynamic port allocation on, and only
+  # at apply. A plan should refuse it first.
+  validation {
+    condition     = contains([32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], var.nat_min_ports_per_vm)
+    error_message = "nat_min_ports_per_vm must be a power of two from 32 to 32768 (Cloud NAT dynamic port allocation)."
+  }
+}
+
+variable "nat_max_ports_per_vm" {
+  description = <<-EOT
+    The most ports dynamic allocation will double a busy VM up to. A cap, not a
+    reservation: it costs nothing until one VM really needs it.
+  EOT
+  type        = number
+  default     = 8192
+
+  validation {
+    condition     = contains([64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536], var.nat_max_ports_per_vm)
+    error_message = "nat_max_ports_per_vm must be a power of two from 64 to 65536 (Cloud NAT dynamic port allocation)."
+  }
+
+  validation {
+    condition     = var.nat_max_ports_per_vm > var.nat_min_ports_per_vm
+    error_message = "nat_max_ports_per_vm must be greater than nat_min_ports_per_vm."
+  }
 }
 
 variable "flow_log_sampling" {

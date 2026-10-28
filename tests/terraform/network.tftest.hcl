@@ -132,3 +132,83 @@ run "name_prefix_cannot_wander_outside_the_swarm" {
   # not "swarm..." could name a resource another team owns.
   expect_failures = [var.name_prefix]
 }
+
+# #1334 c24: the swarm-nat drops are OUT_OF_RESOURCES. ENDPOINT_INDEPENDENCE_
+# CONFLICT is only logged with endpoint-independent mapping on, and it is off
+# (dynamic port allocation requires it off). The bursts to port 44445 are
+# swarm-egress (one replica, so one node) opening a new upstream connection per
+# browser CONNECT to brd.superproxy.io, which resolves to DigitalOcean and
+# Vultr hosts (read 2026-10-27). dev.tfvars raises the floor and the cap, and
+# these hold both its text and what the module does with it.
+run "nat_ports_are_raised_in_dev_for_the_egress_forwarder_bursts" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/network"
+  }
+
+  variables {
+    nat_min_ports_per_vm = 512
+    nat_max_ports_per_vm = 16384
+  }
+
+  assert {
+    condition     = google_compute_router_nat.this.min_ports_per_vm == 512 && length(regexall("(?m)^nat_min_ports_per_vm\\s*=\\s*512\\s*$", file("../../terraform/environments/dev/dev.tfvars"))) == 1
+    error_message = "dev.tfvars must set nat_min_ports_per_vm = 512 and swarm-nat must take it (#1334 c24): at 128 a node starts each burst two doublings short"
+  }
+
+  assert {
+    condition     = google_compute_router_nat.this.max_ports_per_vm == 16384 && length(regexall("(?m)^nat_max_ports_per_vm\\s*=\\s*16384\\s*$", file("../../terraform/environments/dev/dev.tfvars"))) == 1
+    error_message = "dev.tfvars must set nat_max_ports_per_vm = 16384 and swarm-nat must take it (#1334 c24): 8192 caps the one node swarm-egress runs on"
+  }
+
+  assert {
+    condition     = google_compute_router_nat.this.enable_dynamic_port_allocation == true && google_compute_router_nat.this.enable_endpoint_independent_mapping == false
+    error_message = "dynamic port allocation stays on and endpoint-independent mapping stays off: the two cannot be combined, and EIM would add ENDPOINT_INDEPENDENCE_CONFLICT drops"
+  }
+}
+
+# Cloud NAT refuses, at apply, a dynamic-allocation range that is not two
+# powers of two with max above min. A plan should refuse it first.
+run "nat_port_floor_must_be_a_power_of_two" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/network"
+  }
+
+  variables {
+    nat_min_ports_per_vm = 500
+  }
+
+  expect_failures = [var.nat_min_ports_per_vm]
+}
+
+run "nat_port_cap_must_be_a_power_of_two" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/network"
+  }
+
+  variables {
+    nat_max_ports_per_vm = 10000
+  }
+
+  expect_failures = [var.nat_max_ports_per_vm]
+}
+
+run "nat_port_cap_must_be_above_the_floor" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/network"
+  }
+
+  variables {
+    nat_min_ports_per_vm = 512
+    nat_max_ports_per_vm = 256
+  }
+
+  expect_failures = [var.nat_max_ports_per_vm]
+}

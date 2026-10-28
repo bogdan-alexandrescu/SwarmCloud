@@ -30,6 +30,7 @@ from agent_worker.accountlease import (
     NoAccount,
     ReadingForwarder,
 )
+from test_cli_prompt_names_time_limit import without_limit_line
 
 
 class _Log:
@@ -381,7 +382,8 @@ def test_a_resumed_start_passes_resume_and_logs_the_session_masked(
     # The fake appends what it read on stdin after its argv: the message is
     # the resume prompt, delivered on stdin after `--resume <id>`.
     received = json.loads(out["summary"].split("argv=", 1)[1])
-    assert received[-3:] == ["--resume", sid, RESUME_PROMPT]
+    # MUTATION: drop the resume's limit line in run_cli_agent -> red.
+    assert [*received[-3:-1], without_limit_line(received[-1])] == ["--resume", sid, RESUME_PROMPT]
     assert "the original prompt" not in json.dumps(received), "the session already holds it"
     err = capsys.readouterr().err
     assert sid not in err and "<session>" in err

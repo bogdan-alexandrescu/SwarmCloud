@@ -42,6 +42,7 @@ from agent_worker import metrics
 from agent_worker.runners import claude_code, cliagent
 
 from test_runners import make_ctx
+from test_cli_prompt_names_time_limit import without_limit_line
 
 GIB = 1 << 30
 SESSION = "sess-" + "b2c3d4e5f6071829"
@@ -175,7 +176,8 @@ def test_a_resumed_session_is_not_told_again(tmp_path, monkeypatch):
 
     seen = _run(tmp_path, monkeypatch, resume=True)
 
-    assert seen["stdin"] == cliagent.RESUME_PROMPT
+    # MUTATION: drop the resume's limit line in run_cli_agent -> red.
+    assert without_limit_line(seen["stdin"]) == cliagent.RESUME_PROMPT
     assert _budget_lines(seen["stdin"]) == []
     # The process is new, so its env is told again.
     assert seen["env"]["SWARM_MEMORY_LIMIT_BYTES"] == str(8 * GIB)

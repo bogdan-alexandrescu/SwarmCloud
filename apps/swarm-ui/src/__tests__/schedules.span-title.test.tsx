@@ -14,7 +14,7 @@
 // and `list_firing_spans`'s shapes. Placeholders only; nothing is token-shaped.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 import { Routed } from './screenroute'
 
@@ -92,6 +92,8 @@ async function mount() {
   const { SchedulesScreen } = await import('../Schedules')
   render(<Routed Screen={SchedulesScreen} section="automate/schedules" start="schedule=sch_t" spy={vi.fn()} />)
   await screen.findByRole('heading', { name: 'Schedule sch_t', level: 1 }, WAIT)
+  // Frame A2's sheet draws the firings' table first; the names are the Timeline's.
+  fireEvent.click(await screen.findByRole('button', { name: 'Timeline' }, WAIT))
 }
 
 function found(selector: string): HTMLElement {

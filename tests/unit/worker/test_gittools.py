@@ -612,3 +612,19 @@ def test_a_refused_tool_calls_log_line_carries_its_scrubbed_message(world: World
     # MUTATION: log `refusal.message` unscrubbed and either value is in the log.
     assert registered not in stream.getvalue()
     assert shaped not in stream.getvalue()
+
+
+def test_pr_checks_passes_on_where_swarm_api_read_the_check_runs(world: World, monkeypatch):
+    """#1188: for a credential that may not read check runs (a fine-grained
+    token on a private repository), swarm-api reads the Actions jobs at the
+    head instead and says so in `source`. The agent must see it: such a
+    reading leaves out any other App's check runs."""
+    def pr_checks(self, body: dict[str, Any]) -> dict[str, Any]:
+        return {"pr": body.get("pr"), "head_sha": "0" * 40, "state": "red", "rows": [],
+                "source": "actions_jobs", "unasked": "dropped"}
+    monkeypatch.setattr(FakeApi, "pr_checks", pr_checks)
+    answer = world.spool("pr_checks", {"pr": 12})
+    # MUTATION: drop "source" from the worker's pass-through and this is a KeyError.
+    assert answer["result"]["source"] == "actions_jobs", answer
+    # The control: a field swarm-api's answer does not define is still not passed on.
+    assert "unasked" not in answer["result"]
