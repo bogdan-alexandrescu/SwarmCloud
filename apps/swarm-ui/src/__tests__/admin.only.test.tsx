@@ -69,11 +69,14 @@ describe('a viewer sees no Admin (ADMIN-ONLY)', () => {
     expect(adminItem(), 'a viewer was shown Admin').toBeNull()
   })
 
-  it('sends a viewer from every platform Admin address to Overview', async () => {
+  // Refused in place since visual QA pass 1 admin-shell-23 (BGD 2026-10-28);
+  // CONFIG-NAV sent them to Overview.
+  it('refuses a viewer in place at every platform Admin address', async () => {
     for (const path of ['/admin/limits', '/admin/runner-sizes', '/admin/tenants', '/admin/counts', '/admin/people']) {
       serve()
       await app(path)
-      await waitFor(() => expect(window.location.pathname, path).toBe('/overview'))
+      await waitFor(() => expect(document.querySelector('[data-refused="admin"]'), path).not.toBeNull())
+      expect(window.location.pathname, path).toBe(path)
       expect(adminItem(), path).toBeNull()
       cleanup()
     }

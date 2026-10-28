@@ -267,7 +267,7 @@ describe('V064: the page head is a control tall in every state', () => {
 })
 
 describe('V092: a screen read once says its age is a read age', () => {
-  it('reads `read 0 s ago`, not a bare `0 s`, when the screen passes no pollMs', async () => {
+  it('reads `read once · 0 s ago` (overview-agents-79), not a bare `0 s`, when the screen passes no pollMs', async () => {
     // MUTATION: let `RefreshControl` say the bare age when it has no cadence.
     render(
       <Screen<{ n: number }> title="Runtimes" load={async () => ({ status: 'ok', data: { n: 1 }, fetchedAt: Date.now() })}>
@@ -276,8 +276,8 @@ describe('V092: a screen read once says its age is a read age', () => {
     )
     await screen.findByText('rows')
     const refresh = document.querySelector<HTMLButtonElement>('.c-phead .c-acts .c-refresh')!
-    expect(refresh.textContent).toMatch(/^⟳ read \d+ s ago$/)
-    expect(refresh.getAttribute('title')).toMatch(/^read \d+ s ago$/)
+    expect(refresh.textContent).toMatch(/^⟳ read once · \d+ s ago$/)
+    expect(refresh.getAttribute('title')).toMatch(/^read once · \d+ s ago$/)
   })
 })
 
