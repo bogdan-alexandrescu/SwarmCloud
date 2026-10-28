@@ -1058,7 +1058,7 @@ describe('Logs: the transcript as steps, the agent’s streams, the runner’s',
       fireEvent.click(b!)
     }
     choose('Agent stderr')
-    await waitFor(() => expect(row(logsSection, 'agent_stderr').querySelector('td[data-label="Size"] .ctl-mark.is-zero')).not.toBeNull())
+    await waitFor(() => expect(row(logsSection, 'agent stderr').querySelector('td[data-label="Size"] .ctl-mark.is-zero')).not.toBeNull())
     choose('Runner')
     await waitFor(() => expect(logsSection.querySelector('pre.logwin-body')?.textContent).toMatch(/child started/))
     // The runner's own streams, named the runner's (G2-07).
@@ -1339,7 +1339,7 @@ describe('the pane holds at 390 wide and in the dark theme', () => {
     // #172: a live stream's Age cell leads with how long ago the tail object
     // changed, with `live` on the line under it.
     const cell = await waitFor(() => {
-      const c = row(logsSection, 'agent_stderr').querySelector<HTMLElement>('td[data-label="Age"]')
+      const c = row(logsSection, 'agent stderr').querySelector<HTMLElement>('td[data-label="Age"]')
       expect(c?.textContent).toMatch(/^\d+s ago/)
       expect(c?.querySelector('.ctl-sub')?.textContent).toBe('live')
       return c!
