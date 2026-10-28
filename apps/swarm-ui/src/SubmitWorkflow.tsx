@@ -1525,6 +1525,13 @@ function Outcome({ sub, refusal, onStep }: {
   // compiled (docs/workspaces.md §5.3), with the setup step that fixes it.
   if (sub.kind === 'rejected' && workspaceRefusal(error) !== null) return <WorkspaceRefusalBanner error={error} />
   const uncertain = sub.kind === 'uncertain'
+  // A 404 WITH NO REASON IS A MISSING ROUTE, NOT A BAD PLAN (QA1 runs-submit-02,
+  // re-review): no handler answered, so nothing judged the plan, and "Correct
+  // the plan and submit again" sent the reader to edit what nobody refused. Its
+  // message was the fallback "The API returned HTTP 404.", said again by the
+  // status line under it. A 404 that carries a code was a handler's, and keeps
+  // the server's words.
+  const unserved = !uncertain && error.kind === 'not_found' && error.code === null
   // A 403 is information -- you may not submit -- not a broken platform, so it gets
   // the gate treatment rather than the red one, exactly as FailedPanel does.
   return (
@@ -1546,7 +1553,7 @@ function Outcome({ sub, refusal, onStep }: {
       </h3>
       {/* VERBATIM: the cycle the server named is the only part that says where to
           look, and "invalid DAG" would throw it away. */}
-      <p>{error.message}</p>
+      <p>{unserved ? 'This deployment has no route that takes a workflow.' : error.message}</p>
       {/* THE SERVER'S DETAIL, READ (VQA V051): the steps it names, each a way
           to that step's card, which is marked with the same sentence; then
           whatever it said about no step, as facts. It was printed as JSON. */}
@@ -1573,7 +1580,9 @@ function Outcome({ sub, refusal, onStep }: {
           EXPLANATION OF IT: whether anything was created. */}
       <p>{uncertain
         ? 'The workflow may exist. Open the Workflows board and look before submitting again.'
-        : 'Nothing was created. Correct the plan and submit again.'}</p>
+        : unserved
+          ? 'Nothing was created, and the plan is not what was refused: changing it will not help.'
+          : 'Nothing was created. Correct the plan and submit again.'}</p>
       {error.httpStatus !== null && <p className="checked-at">HTTP {error.httpStatus}{error.code ? ` · ${error.code}` : ''}</p>}
     </div>
   )

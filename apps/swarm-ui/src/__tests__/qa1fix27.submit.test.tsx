@@ -78,6 +78,27 @@ describe('runs-submit-17: the summary heading follows what disables the button',
   }, 20000)
 })
 
+describe('runs-submit-02 (re-review): a 404 with no reason says the route is missing, not the plan', () => {
+  it('does not tell the reader to correct a plan nothing refused', async () => {
+    const { container } = await readyForm()
+    respond(404, '<!doctype html><title>Not found</title>', 'text/html')
+    fireEvent.click(screen.getByRole('button', { name: 'Submit this workflow' }))
+    const card = await waitFor(() => {
+      const el = container.querySelector('.sbf-side .state.failed')
+      if (el === null) throw new Error('no refusal card yet')
+      return el
+    })
+    const said = visible(card)
+    expect(said).toContain('Nothing was created')
+    // MUTATION: drop `unserved` in SubmitOutcome and the card reads "Correct
+    // the plan and submit again." over a plan nothing refused, and says
+    // "HTTP 404" twice ("The API returned HTTP 404." over "HTTP 404").
+    expect(said).not.toContain('Correct the plan')
+    expect(said).toContain('This deployment has no route that takes a workflow')
+    expect(said.match(/HTTP 404/g)?.length).toBe(1)
+  }, 20000)
+})
+
 describe('runs-submit-22 and chrome-C30: the plan opens the form, its stages named in words', () => {
   it('labels each stage "Stage N", not a raw word', async () => {
     const { container } = await readyForm()
