@@ -489,18 +489,21 @@ describe('j. 6:admin-009, 6:admin-008: Tenants shows principals whole at 1440 an
     expect(total).toBeCloseTo(100, 5)
   })
 
-  it('cuts the prefix and the domain by the same rule in every row', async () => {
+  it('cuts the domain by the same rule in every row', async () => {
     viewport(1440)
     render(<TenantIdent value="swarm-agent-worker-u-bogdan@example-project.iam.gserviceaccount.com" noun="service account" tenant="u-bogdan" phone={false} />)
     const head = document.querySelector('.ten-ident-head')!
     const tail = document.querySelector('.ten-ident-tail')!
-    // MUTATION: weight the two by 1000 and 4000 again: flexbox shrinks each by
+    // MUTATION: weight the tail by its length again: flexbox shrinks it by
     // its weight times its length, so every row's domain is cut at a
     // different letter ('swa…u-bogdan@e…').
-    expect(painted(head, 'flex', WIDE)).toBe('1 1 0')
     expect(painted(tail, 'flex', WIDE)).toBe('1 1 0')
-    expect(painted(head, 'max-width', WIDE)).toBe('max-content')
     expect(painted(tail, 'max-width', WIDE)).toBe('max-content')
+    // The prefix is no longer the second cut (visual QA pass 1,
+    // admin-shell-18): it is whole on its own line, cut only when it alone
+    // is wider than the column (qa1fix03.tenants.test.tsx).
+    expect(painted(head, 'flex', WIDE)).toBe('0 1 auto')
+    expect(painted(head, 'max-width', WIDE)).toBe('100%')
     // The copy control carries the whole value.
     const copy = screen.getByRole('button', { name: /^Copy service account / })
     expect(copy.getAttribute('title')).toContain('swarm-agent-worker-u-bogdan@example-project.iam.gserviceaccount.com')

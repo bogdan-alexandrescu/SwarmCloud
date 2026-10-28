@@ -2386,7 +2386,10 @@ export function TenantsScreen() {
                 className="ctl-panel-note ten-budget"
                 aria-label="No budget column, and no budget can be set: the only route that could set a budget refuses it, so none is set for any tenant, and the column is left out rather than drawn empty."
               >
-                no budget column · no budget can be set
+                {/* A SENTENCE, IN THE BODY FONT (visual QA pass 1, admin-shell-18,
+                    part of #2596): the mono `no budget column · no budget can
+                    be set` read as debug output. */}
+                Tenants have no budget column: no budget can be set here.{' '}
                 <a href={helpHref(TENANT_HELP)}>Why &rarr;</a>
               </p>
               {/* THE HELP LINK AH-12 DECIDED FOR THE ENFORCED COLUMN: the footer
