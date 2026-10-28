@@ -478,9 +478,11 @@ MOVE_REFUSED_AFTER_RELOAD = "refused_after_reload"
 MOVE_REAUTH_REQUIRED = "reauth_required"
 MOVE_TOKEN_UNREADABLE = "token_unreadable"
 
-#: The account state the broker sets when its refresh failed
-#: (`quota_broker.main.CREDENTIAL_NEEDS_A_HUMAN`), read off the hold's status.
-ACCOUNT_STATE_REAUTH_REQUIRED = "reauth_required"
+#: The account state the broker stores when its refresh failed, read off the
+#: hold's status: `quota_broker.accounts.AccountState.REAUTH_REQUIRED.value`,
+#: which `account_hold_status` returns as is. The lowercase `reauth_required`
+#: is the refresh-outcome reason (`CREDENTIAL_NEEDS_A_HUMAN`), never a state.
+ACCOUNT_STATE_REAUTH_REQUIRED = "REAUTH_REQUIRED"
 
 #: The pool declines where the workspace HAS a pool and its broker did not
 #: answer (#2560). Asked once more, then parked: never the tenant's own secret,
