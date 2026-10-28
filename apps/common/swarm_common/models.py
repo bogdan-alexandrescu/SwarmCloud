@@ -597,11 +597,6 @@ class Task:
     #: construction of a task changes meaning; every document written before
     #: it decodes exactly as it did.
     model_class: str | None = None
-    #: Consecutive dispatches the platform refused (PLATFORM_REFUSED parks).
-    #: Reset to 0 by a dispatch that succeeds. Contract request 123, accepted
-    #: by BGD 2026-10-28. Before `budget`, which a test of request 120
-    #: holds to the last place.
-    platform_refusals: int = 0
     #: Contract request 120 (BUDGET-CAP, #2459), accepted by the owner
     #: 2026-10-26: the attempt's RESOLVED per-agent budget, `usd` and/or
     #: `tokens` -- min(step, workspace default, platform ceiling), each unit on
@@ -611,6 +606,12 @@ class Task:
     #: (invariant 10). Before this field the same figures were pinned in
     #: `metadata.dispatch.budget`, which readers fall back to for one release.
     budget: dict[str, float | int] | None = None
+    #: Consecutive dispatches the platform refused (PLATFORM_REFUSED parks).
+    #: Reset to 0 by a dispatch that succeeds. Contract request 123, accepted
+    #: by BGD 2026-10-28. Last in the class, after `budget`, so no positional
+    #: construction of a task changes meaning; absent on every older
+    #: document, which decodes as 0.
+    platform_refusals: int = 0
 
     def __post_init__(self) -> None:
         # Only the fields of requests 54 and 95: a document decoded before them

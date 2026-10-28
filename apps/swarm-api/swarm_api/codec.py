@@ -199,6 +199,8 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         timeout_seconds=int(data.get("timeout_seconds", 3600)),
         max_attempts=int(data.get("max_attempts", 3)),
         attempt_count=int(data.get("attempt_count", 0)),
+        # Contract request 123: absent on every older document, which is 0.
+        platform_refusals=int(data.get("platform_refusals") or 0),
         next_eligible_at=as_datetime(data.get("next_eligible_at")),
         park_reason=ParkReason(park) if park else None,
         blocked_by=list(data.get("blocked_by") or []),
@@ -659,6 +661,10 @@ def task_to_api(
         "submitted_by": task.submitted_by,
         "attempt_count": task.attempt_count,
         "max_attempts": task.max_attempts,
+        # Contract request 123: consecutive dispatches the platform refused
+        # (a PLATFORM_REFUSED park counts one; a dispatch that succeeds
+        # resets it). Past PLATFORM_REFUSED_MAX_PARKS the task is trouble.
+        "platform_refusals": task.platform_refusals,
         "timeout_seconds": task.timeout_seconds,
         # Contract request 120 (#2459): the attempt's resolved budget, or
         # null for none. A task stored before the field serves what its

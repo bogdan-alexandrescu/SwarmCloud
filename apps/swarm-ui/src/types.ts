@@ -704,6 +704,12 @@ export interface Task {
   submitted_by_name?: string | null
   attempt_count: number
   max_attempts: number
+  /**
+   * Contract request 123: consecutive dispatches the cluster refused (Job
+   * quota or an admission policy). Each parks PLATFORM_REFUSED without
+   * spending an attempt; a dispatch that succeeds resets it to 0.
+   */
+  platform_refusals?: number
   park_reason: ParkReason | string | null
   blocked_by: BlockedEntry[] | null
   workflow_id: string | null
