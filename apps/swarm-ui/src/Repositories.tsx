@@ -6,7 +6,7 @@ import { useSetupSteps } from './ConfigSetup'
 import { addressToPath } from './paths'
 import { ReachableRepositories } from './ReachableRepositories'
 import { HEAD_UNREAD, WORKFLOW_FILES_WHY, freshness, indexCredentialWords, repoName, scheduleWords, shortSha, type RepoRecord } from './RepositoriesData'
-import { REGISTER, GT_PAGE, TestsMapped, UrConfirmIndex, UrFreshPill, UrLink, UrNavButton, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
+import { REGISTER, GT_PAGE, TestsMapped, UrConfirmIndex, UrFreshPill, UrGraphCacheSection, UrLink, UrNavButton, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
 import { RegisterRepository } from './RepositoriesRegister'
 import { RepositoryDetail } from './RepositoriesDetail'
 import { GitTokensPage, PermissionsPage } from './GitTokens'
@@ -902,6 +902,8 @@ function RepoCard({
           onCancel={onCancel}
         />
       )}
+      {/* THE CACHE SECTION, LAST AND FOLDED (graph-answer-cache.md §5.1): it reads nothing until opened. */}
+      <UrGraphCacheSection r={r} />
     </Card>
   )
 }

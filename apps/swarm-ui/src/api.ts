@@ -7754,6 +7754,71 @@ function fixtureRepoIndex(repoId: string): unknown {
   return { index: { commit_sha: fixtureSha(r.sha), truncated: [] }, document: { modules, truncated: [] } }
 }
 
+/**
+ * `GET /v1/repositories/{repo_id}/graph-cache` for a fixture repository
+ * (CACHE-4-CONSOLE): two replicas read and ONE NOT READ (a peer that timed
+ * out), so the fixture build draws the hard case of §5.3, and no `carried`
+ * count, so the reuse tile is its dash. `shards=1` adds a page of the list,
+ * changed shards first. Digests are built here, never written out whole.
+ */
+function fixtureGraphCache(url: string): unknown {
+  const repoId = fixtureSegment(url, 3)
+  const r = FIXTURE_REPOS.find((x) => x.repo_id === repoId)
+  if (r === undefined) return undefined
+  const MiB = 1024 * 1024
+  const digest = (seed: string) => `sha256:${seed.repeat(Math.ceil(64 / seed.length)).slice(0, 64)}`
+  const current = digest(`${r.sha}c`)
+  const warm = { digest: current, ms: 2140, shards: 46, replayed: 200 }
+  const replicas = [
+    {
+      replica: 'swarm-graph-0', state: 'read', started_at: fixtureAgo(3 * 24 * FIXTURE_HOUR), uptime_seconds: 3 * 24 * 3600,
+      result_bytes: 61 * MiB, result_bound: 256 * MiB, shard_bytes: 188 * MiB, shard_bound: 512 * MiB,
+      answers_hot: 412, shards_hot: 31, last_warm: warm,
+    },
+    {
+      replica: 'swarm-graph-1', state: 'read', started_at: fixtureAgo(5 * FIXTURE_HOUR), uptime_seconds: 5 * 3600,
+      result_bytes: 23 * MiB, result_bound: 256 * MiB, shard_bytes: 97 * MiB, shard_bound: 512 * MiB,
+      answers_hot: 140, shards_hot: 18, last_warm: { ...warm, ms: 1870 },
+    },
+    { replica: 'swarm-graph-2', state: 'not_read', reason: 'timeout' },
+  ]
+  const layers = ['symbols', 'callers', 'callees', 'tests', 'signatures', 'files', 'terms']
+  const rows = Array.from({ length: r.modules * layers.length }, (_v, i) => {
+    const layer = layers[i % layers.length]!
+    const mod = `src/module_${Math.floor(i / layers.length) + 1}`
+    const changed = i % 5 === 0
+    const hits = changed ? 3 + i : 40 + ((i * 37) % 300)
+    return {
+      layer, module: mod, blob: digest(`${(i + 11).toString(16)}e`), raw_bytes: 4096 + i * 1531,
+      last_merge: changed ? 'changed' : 'unchanged',
+      replicas: [{ replica: 'swarm-graph-0', hot: i % 3 !== 0 }, { replica: 'swarm-graph-1', hot: i % 4 === 0 }],
+      hits_24h: hits, last_read: fixtureAgo((i % 9) * 6 * 60_000 + 40_000),
+    }
+  }).sort((a, b) => Number(b.last_merge === 'changed') - Number(a.last_merge === 'changed') || b.hits_24h - a.hits_24h)
+  const page = Math.max(1, Number(new URLSearchParams(url.split('?')[1] ?? '').get('page') ?? '1') || 1)
+  const withShards = (url.split('?')[1] ?? '').includes('shards=1')
+  return {
+    repo_id: repoId,
+    index: { commit_sha: fixtureSha(r.sha), manifest_digest: current, previous_sha: fixtureSha(`${r.sha}p`), previous_digest: digest(`${r.sha}p`) },
+    // swarm-graph-1 restarted 5 h ago, so the window covers 5 h, not 24.
+    facts: {
+      window_hours: 5, answers: 1284, hit: 1168, carried: null, miss: 116, hit_rate: 1168 / 1284,
+      reused_share: null, served_p95_ms: 38, last_warm: warm,
+    },
+    replicas,
+    stats: { state: 'read' },
+    latency: { p50_ms: 61, p95_ms: 152, max_ms: 410, reference_ms: 20.5, symbols: 9120 },
+    ...(withShards
+      ? {
+          shards: {
+            state: 'read', comparison: 'read', total: rows.length, changed: rows.filter((x) => x.last_merge === 'changed').length,
+            page, page_rows: 100, rows: rows.slice((page - 1) * 100, page * 100),
+          },
+        }
+      : {}),
+  }
+}
+
 // ---------------------------------------------------------------------------
 // SETUP AND ACCESS IN THE FIXTURE BUILD (QAFIX6-FIXTURE d, visual QA run 6
 // work-b-006, part of #1680). These reads were answered as not served, so no
@@ -8194,6 +8259,10 @@ const FIXTURE_READS: Readonly<Record<string, (url: string) => FixtureBody | unde
     const body = fixtureRepoIndex(fixtureSegment(url, 3))
     return body === undefined ? undefined : { body }
   },
+  '/v1/repositories/{repo_id}/graph-cache': (url) => {
+    const body = fixtureGraphCache(url)
+    return body === undefined ? undefined : { body }
+  },
   '/v1/provider-keys/{provider}': (url) => ({ body: fixtureProviderKeys(fixtureSegment(url, 3)) }),
   '/v1/judgment': () => ({ body: fixtureJudgment() }),
   '/v1/code-intelligence': () => ({ body: fixtureCodeIntelligence() }),
@@ -8288,6 +8357,216 @@ export async function loadRepositoryIndex(repoId: string): Promise<Result<IndexD
 /** `GET /v1/repositories/{repo_id}/graph`: the module dependency graph, aggregated for drawing (Graph A). */
 export async function loadRepositoryGraph(repoId: string): Promise<Result<ModuleGraph | null>> {
   return readAs(route('/v1/repositories/{repo_id}/graph', { repo_id: repoId }), normModuleGraph)
+}
+
+// ---------------------------------------------------------------------------
+// The Cache section (docs/design/graph-answer-cache.md §5.2-§5.5, lane
+// CACHE-4-CONSOLE): `GET /v1/repositories/{repo_id}/graph-cache`, as
+// swarm-api's `routes/graph_cache.py` answers it. Every figure the route
+// leaves null stays null here: a replica that was not read is its reason,
+// never a panel of zeros, and `carried` is null until carry forward exists.
+// ---------------------------------------------------------------------------
+
+/** Why swarm-graph, or one replica of it, was not read (graph_cache.py's reasons). */
+export type GraphCacheReason = string
+
+export interface GraphCacheWarm {
+  digest: string
+  ms: number | null
+  shards: number | null
+  replayed: number | null
+}
+
+export type GraphCacheReplica =
+  | {
+      replica: string
+      state: 'read'
+      started_at: string | null
+      uptime_seconds: number | null
+      result_bytes: number | null
+      result_bound: number | null
+      shard_bytes: number | null
+      shard_bound: number | null
+      answers_hot: number | null
+      shards_hot: number | null
+      last_warm: GraphCacheWarm | null
+    }
+  | { replica: string; state: 'not_read'; reason: GraphCacheReason }
+
+/** §5.2's tiles, summed over the replicas read; null where nothing was read. */
+export interface GraphCacheFacts {
+  window_hours: number | null
+  answers: number | null
+  hit: number | null
+  /** Null until carry forward exists (BGD Q4): never a 0 that says it ran. */
+  carried: number | null
+  miss: number | null
+  hit_rate: number | null
+  reused_share: number | null
+  served_p95_ms: number | null
+  last_warm: GraphCacheWarm | null
+}
+
+/**
+ * The current version's `answer_latency` (§1.2): the uncached p95 and the
+ * reference workload's time, or why it was not measured.
+ */
+export type GraphCacheLatency =
+  | { state: 'measured'; p95_ms: number; reference_ms: number | null }
+  | { state: 'unmeasured'; cause: string }
+
+export interface GraphCacheShardRow {
+  layer: string
+  module: string
+  blob: string
+  raw_bytes: number | null
+  /** Null when there is no previous version to compare with. */
+  last_merge: 'changed' | 'unchanged' | null
+  replicas: { replica: string; hot: boolean }[]
+  hits_24h: number | null
+  last_read: string | null
+}
+
+export type GraphCacheShards =
+  | {
+      state: 'read'
+      comparison: string
+      total: number
+      changed: number | null
+      page: number
+      page_rows: number
+      rows: GraphCacheShardRow[]
+    }
+  | { state: 'not_read'; reason: string }
+
+export interface GraphCacheDoc {
+  repo_id: string
+  index: { commit_sha: string | null; manifest_digest: string | null; previous_sha: string | null; previous_digest: string | null } | null
+  facts: GraphCacheFacts
+  replicas: GraphCacheReplica[]
+  /** Whether swarm-graph itself answered; `not_read` with `replicas: []` when it did not. */
+  stats: { state: 'read' } | { state: 'not_read'; reason: GraphCacheReason }
+  latency: GraphCacheLatency | null
+  /** Present only on a `shards=1` read. */
+  shards: GraphCacheShards | null
+}
+
+const gcRec = (v: unknown): Record<string, unknown> => (typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {})
+const gcNum = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null)
+const gcStr = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null)
+
+function normGraphCacheWarm(v: unknown): GraphCacheWarm | null {
+  const w = gcRec(v)
+  const digest = gcStr(w.digest)
+  return digest === null ? null : { digest, ms: gcNum(w.ms), shards: gcNum(w.shards), replayed: gcNum(w.replayed) }
+}
+
+function normGraphCacheReplica(v: unknown): GraphCacheReplica | null {
+  const r = gcRec(v)
+  const replica = gcStr(r.replica)
+  if (replica === null) return null
+  // Anything but a replica the route says it read is one it did not read.
+  if (r.state !== 'read') return { replica, state: 'not_read', reason: gcStr(r.reason) ?? 'bad_response' }
+  return {
+    replica,
+    state: 'read',
+    started_at: gcStr(r.started_at),
+    uptime_seconds: gcNum(r.uptime_seconds),
+    result_bytes: gcNum(r.result_bytes),
+    result_bound: gcNum(r.result_bound),
+    shard_bytes: gcNum(r.shard_bytes),
+    shard_bound: gcNum(r.shard_bound),
+    answers_hot: gcNum(r.answers_hot),
+    shards_hot: gcNum(r.shards_hot),
+    last_warm: normGraphCacheWarm(r.last_warm),
+  }
+}
+
+/**
+ * `answer_latency` as §1.2 records it: the median run's `p95_ms` and its
+ * `reference_ms`, at the top or under `run`; `{state: "unmeasured", cause}`,
+ * or the route's `not_recorded`, otherwise.
+ */
+function normGraphCacheLatency(v: unknown): GraphCacheLatency | null {
+  if (typeof v !== 'object' || v === null) return null
+  const l = gcRec(v)
+  if (l.state === 'unmeasured') return { state: 'unmeasured', cause: gcStr(l.cause) ?? 'not_recorded' }
+  const run = gcNum(l.p95_ms) !== null ? l : gcRec(l.run)
+  const p95 = gcNum(run.p95_ms)
+  if (p95 === null) return { state: 'unmeasured', cause: 'malformed' }
+  return { state: 'measured', p95_ms: p95, reference_ms: gcNum(run.reference_ms) ?? gcNum(l.reference_ms) }
+}
+
+function normGraphCacheShards(v: unknown): GraphCacheShards | null {
+  if (typeof v !== 'object' || v === null) return null
+  const s = gcRec(v)
+  if (s.state !== 'read') return { state: 'not_read', reason: gcStr(s.reason) ?? 'bad_response' }
+  const rows = (Array.isArray(s.rows) ? s.rows : []).map((x): GraphCacheShardRow => {
+    const r = gcRec(x)
+    const merge = r.last_merge === 'changed' || r.last_merge === 'unchanged' ? r.last_merge : null
+    return {
+      layer: gcStr(r.layer) ?? '',
+      module: gcStr(r.module) ?? '',
+      blob: gcStr(r.blob) ?? '',
+      raw_bytes: gcNum(r.raw_bytes),
+      last_merge: merge,
+      replicas: (Array.isArray(r.replicas) ? r.replicas : []).flatMap((m) => {
+        const name = gcStr(gcRec(m).replica)
+        return name === null ? [] : [{ replica: name, hot: gcRec(m).hot === true }]
+      }),
+      hits_24h: gcNum(r.hits_24h),
+      last_read: gcStr(r.last_read),
+    }
+  })
+  return {
+    state: 'read',
+    comparison: gcStr(s.comparison) ?? 'read',
+    total: gcNum(s.total) ?? rows.length,
+    changed: gcNum(s.changed),
+    page: gcNum(s.page) ?? 1,
+    page_rows: gcNum(s.page_rows) ?? 100,
+    rows,
+  }
+}
+
+/** The route's body, held to the fields §5.2 draws. */
+export function normGraphCache(raw: unknown): GraphCacheDoc {
+  const d = gcRec(raw)
+  const f = gcRec(d.facts)
+  const ix = typeof d.index === 'object' && d.index !== null ? gcRec(d.index) : null
+  const stats = gcRec(d.stats)
+  return {
+    repo_id: gcStr(d.repo_id) ?? '',
+    index:
+      ix === null
+        ? null
+        : { commit_sha: gcStr(ix.commit_sha), manifest_digest: gcStr(ix.manifest_digest), previous_sha: gcStr(ix.previous_sha), previous_digest: gcStr(ix.previous_digest) },
+    facts: {
+      window_hours: gcNum(f.window_hours),
+      answers: gcNum(f.answers),
+      hit: gcNum(f.hit),
+      carried: gcNum(f.carried),
+      miss: gcNum(f.miss),
+      hit_rate: gcNum(f.hit_rate),
+      reused_share: gcNum(f.reused_share),
+      served_p95_ms: gcNum(f.served_p95_ms),
+      last_warm: normGraphCacheWarm(f.last_warm),
+    },
+    replicas: (Array.isArray(d.replicas) ? d.replicas : []).map(normGraphCacheReplica).filter((r): r is GraphCacheReplica => r !== null),
+    stats: stats.state === 'read' ? { state: 'read' } : { state: 'not_read', reason: gcStr(stats.reason) ?? 'bad_response' },
+    latency: normGraphCacheLatency(d.latency),
+    shards: normGraphCacheShards(d.shards),
+  }
+}
+
+/**
+ * `GET /v1/repositories/{repo_id}/graph-cache[?shards=1&page=N]`: the Cache
+ * section's one read (§5.3). `shardsPage` null asks for no shard list, so a
+ * folded list costs nothing (§5.2).
+ */
+export async function loadRepositoryGraphCache(repoId: string, shardsPage: number | null = null): Promise<Result<GraphCacheDoc>> {
+  const q = shardsPage === null ? undefined : new URLSearchParams({ shards: '1', page: String(shardsPage) })
+  return readAs(route('/v1/repositories/{repo_id}/graph-cache', { repo_id: repoId }, q), normGraphCache)
 }
 
 /** `GET /v1/repositories/{repo_id}/symbols?q=`: symbols whose id contains `q`. */
