@@ -772,10 +772,12 @@ describe('one age, a cut said as N of M, and a panel that comes into view (QA1-F
 
   /**
    * MUTATION: draw `{data.count}` alone in the entries fact again. It reads
-   * `5` beside `manifest 184 files`, and neither `5 shown` nor `4 of 184
-   * files` is on the screen.
+   * `5` beside `manifest 184 files`, and `4 of 184 files shown` is not on
+   * the screen. MUTATION: draw `5 shown · 4 of 184 files` (the re-review's
+   * minor): two different numbers side by side, the entry count counting the
+   * directory, so the count is asserted alone.
    */
-  it('says a listing the entry cap cut as N shown, and the files as N of the manifest\'s M', async () => {
+  it('says a listing the entry cap cut as the manifest\'s files: N of M files shown', async () => {
     mount(
       loaders(
         ok(
@@ -791,8 +793,8 @@ describe('one age, a cut said as N of M, and a panel that comes into view (QA1-F
     await screen.findByRole('tree')
     // Five entries, one of them a directory: the manifest counts files, so
     // the comparison is the four non-directory members against its 184.
-    expect(entriesFact().textContent).toContain('5 shown')
-    expect(entriesFact().textContent).toContain('4 of 184 files')
+    expect(entriesFact().textContent).toContain('4 of 184 files shown')
+    expect(entriesFact().textContent).not.toContain('5')
     expect(within(entriesFact()).getByText('entry cap')).toBeTruthy()
   })
 
@@ -840,6 +842,43 @@ describe('one age, a cut said as N of M, and a panel that comes into view (QA1-F
       expect(scroll).toHaveBeenCalledWith({ block: 'start' })
       expect(scroll.mock.contexts[0]).toBe(region())
       expect(document.activeElement).toBe(region())
+    } finally {
+      if (had) Element.prototype.scrollIntoView = before
+      else delete (Element.prototype as Partial<Element>).scrollIntoView
+    }
+  })
+
+  /**
+   * THE SCROLL RUNS AGAIN ONCE THE LISTING HAS DRAWN (QA1-FIX-09-FIX, the
+   * re-review's finding). At mount the panel is its 106 px loading state, so
+   * the scroll container's maximum is computed from that short panel and the
+   * scroll clamps there; the listing grows the panel to 457 px 200 ms later
+   * and, with the scroll run only at mount, nothing scrolls again (rendered
+   * at phone-390: the panel's top stayed at y=666 of 844). The loader is held
+   * open here, so the mount-time call happens with no tree in the region.
+   * MUTATION: key the scroll effect on `[]` again. Every call then finds the
+   * region still loading, and no call sees the tree.
+   */
+  it('scrolls the panel into view again once its listing has drawn, not only on mount', async () => {
+    const sawTree: boolean[] = []
+    const scroll = vi.fn(function (this: Element) {
+      sawTree.push(this.querySelector('[role="tree"]') !== null)
+    })
+    const had = Object.prototype.hasOwnProperty.call(Element.prototype, 'scrollIntoView')
+    const before = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = scroll
+    let answer: (r: Result<CheckpointFiles>) => void = () => {}
+    const l = loaders(ok(listing()))
+    l.files.mockImplementation(() => new Promise<Result<CheckpointFiles>>((r) => (answer = r)))
+    try {
+      mount(l)
+      await waitFor(() => expect(l.files).toHaveBeenCalled())
+      expect(sawTree, 'a scroll ran with the listing already drawn').not.toContain(true)
+      answer(ok(listing()))
+      await screen.findByRole('tree')
+      await waitFor(() => expect(sawTree, 'no scroll ran once the listing had drawn').toContain(true))
+      expect(scroll.mock.calls.at(-1)).toEqual([{ block: 'start' }])
+      expect(scroll.mock.contexts.at(-1)).toBe(region())
     } finally {
       if (had) Element.prototype.scrollIntoView = before
       else delete (Element.prototype as Partial<Element>).scrollIntoView
