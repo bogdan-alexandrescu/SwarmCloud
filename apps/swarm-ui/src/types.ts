@@ -224,6 +224,14 @@ export function providerTenantPool(provider: string, tenant: string): string {
 /** `provider:anthropic:tenant:u-bogdan` -> `anthropic · u-bogdan`. */
 export function poolLabel(name: string): string {
   if (name === 'global') return 'global'
+  // A BACKEND POOL IN WORDS (QA1 capacity-14, 2026-10-28): `CLOUD_RUN_JOB`
+  // was the API's enum printed as a name. These are words.ts `backendWord`'s
+  // words, restated because words.ts imports this module through StatePill.
+  // The raw key stays in each table's mono sub-line.
+  if (name.startsWith('backend:')) {
+    const id = name.slice('backend:'.length)
+    return ({ CLOUD_RUN_JOB: 'Cloud Run', GKE_AUTOPILOT: 'GKE Autopilot' } as Record<string, string>)[id] ?? id
+  }
   const parts = name.split(':')
   if (parts.length <= 2) return parts[1] ?? name
   // provider:X:tenant:Y
@@ -517,7 +525,7 @@ export function setBy(pool: Pool): { term: string; detail: string } {
     return { term: 'provider quota', detail: `Provider quota caps this at ${quota_derived_limit}; configured is ${hard_limit}.` }
   }
   if (adaptive_target !== null && adaptive_target === effective_limit && adaptive_target < hard_limit) {
-    return { term: 'AIMD back-off', detail: `AIMD lowered this to ${adaptive_target} after provider errors; configured is ${hard_limit}.` }
+    return { term: 'lowered automatically after errors', detail: `Lowered automatically to ${adaptive_target} after provider errors; configured is ${hard_limit}.` }
   }
   return { term: 'configured', detail: `The configured hard limit of ${hard_limit} is what applies.` }
 }

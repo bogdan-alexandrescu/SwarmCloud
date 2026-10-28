@@ -119,7 +119,7 @@ describe('Pools puts the abnormal row first and measures every row (#125)', () =
       // MUTATION: draw `.cap-setby-cfg` in `--text-dim`.
       expect(painted(dot, 'color', { width: 1440, theme }), theme).toBe('var(--text-faint)')
     }
-    expect(rowOf('tenant:eng').querySelector('td[data-label="Set by"]')!.textContent).toBe('AIMD back-off')
+    expect(rowOf('tenant:eng').querySelector('td[data-label="Set by"]')!.textContent).toBe('lowered automatically after errors')
   })
 })
 
