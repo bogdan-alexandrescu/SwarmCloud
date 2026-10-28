@@ -698,6 +698,12 @@
   .ag-logs-streams > button > .ag-logs-short { display: inline; }
 }
 .ag-logs-bar > .ag-logs-streams { align-self: center; }
+/* ONE SELECTED STYLE UNDER THE POINTER (QA1 overview-agents-35, 2026-10-28).
+   `.c-seg > button:hover:not(:disabled)` outranks the pressed rule, so the
+   stream just clicked, still under the pointer, lost its accent colour:
+   Transcript selected read blue, stderr selected read as bold body text.
+   The pressed button keeps its colour while hovered. */
+.ag-logs-streams.c-seg > button[aria-pressed='true']:hover:not(:disabled) { color: var(--sk-ac); }
 /* THE STREAMS IN TWO ROWS UNDER 260px (BT-009, #2423). Beside the live
    browser and in the theater's Logs panel the bar is 213px at 1440 and 180px
    at 1024; the four short labels need 238px in a row, and the segmented
@@ -898,6 +904,16 @@
 .ag-logs-body.is-wrap .ag-logtext { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ag-logline { display: block; }
 .ag-logno { display: inline-block; min-width: 4ch; margin-inline-end: 1ch; color: var(--text-faint); text-align: right; user-select: none; }
+/* WRAPPED, THE NUMBER HANGS IN A GUTTER (QA1-FIX-06 re-review, 2026-10-28).
+   A phone opens the log wrapped (overview-agents-38), and a stream-json line
+   has no space to break at: the break after the inline-block number won, so
+   `1` and `3` sat alone on a row with their JSON pushed under them. Floated
+   into the line's padding the number leaves no break of its own, the text
+   starts beside it, and its wrapped rows stay clear of the gutter. */
+.ag-logtext.is-wrap .ag-logline,
+.ag-logs-body.is-wrap .ag-logtext .ag-logline { padding-inline-start: 5ch; }
+.ag-logtext.is-wrap .ag-logno,
+.ag-logs-body.is-wrap .ag-logtext .ag-logno { float: inline-start; margin-inline-start: -5ch; }
 .ag-logline.is-err { background: var(--s-badb); }
 .ag-logline.is-current,
 .arts-step.is-current { outline: 2px solid var(--sk-ac); outline-offset: -1px; }

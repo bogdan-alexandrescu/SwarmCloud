@@ -13,6 +13,9 @@
  *
  * MUTATIONS are named at each assertion.
  */
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -256,6 +259,20 @@ describe('overview-agents-35: every stream button is selected the same way', () 
     }
     await waitFor(() => expect(api.loadTaskLogs).toHaveBeenCalled())
   })
+
+  // THE RENDER FOUND THE SECOND STYLE (QA1-FIX-06 re-review, 2026-10-28): the
+  // stream just clicked is still under the pointer, and `.c-seg >
+  // button:hover:not(:disabled)` (0,3,1) outranks the pressed rule (0,2,1),
+  // so stderr selected read as bold body text while Transcript selected read
+  // blue. jsdom paints no :hover, so this reads the two stylesheets.
+  it('keeps the pressed accent colour on a hovered stream button', () => {
+    const css = (f: string) => readFileSync(join(__dirname, '..', 'styles', f), 'utf8')
+    expect(css('components.css'), 'the hover rule this guards against moved').toMatch(/\.c-seg > button:hover:not\(:disabled\) \{ color: var\(--text\); \}/)
+    // MUTATION: delete the `.ag-logs-streams.c-seg > button[aria-pressed='true']:hover` rule from agents.css -- the hovered selected stream draws body text again.
+    expect(css('agents.css')).toMatch(
+      /\.ag-logs-streams\.c-seg > button\[aria-pressed='true'\]:hover:not\(:disabled\) \{ color: var\(--sk-ac\); \}/,
+    )
+  })
 })
 
 describe('overview-agents-40: the last log line of a failed agent says when it IS the error', () => {
@@ -383,5 +400,16 @@ describe('overview-agents-38: a phone opens the log wrapped', () => {
     render(<AgentLogs task={running()} />)
     await waitFor(() => expect(dock().textContent).toContain('step 1'))
     expect(wrap().getAttribute('aria-pressed')).toBe('false')
+  })
+  // THE RENDER FOUND THE ORPHANED NUMBER (QA1-FIX-06 re-review, 2026-10-28):
+  // wrapped at 390, a stream-json line has no space to break at, so the break
+  // after the inline-block `.ag-logno` won and `1` sat alone on a row above
+  // its JSON. jsdom lays nothing out, so this reads the stylesheet.
+  it('hangs the line number in a gutter when wrapped, so it never sits alone on a row', () => {
+    const css = readFileSync(join(__dirname, '..', 'styles', 'agents.css'), 'utf8')
+    // MUTATION: drop the float -- the number is inline again and `1` sits alone above its line at 390.
+    expect(css).toMatch(/\.ag-logs-body\.is-wrap \.ag-logtext \.ag-logno \{ float: inline-start; margin-inline-start: -5ch; \}/)
+    // MUTATION: drop the padding -- the floated number hangs outside the log box.
+    expect(css).toMatch(/\.ag-logs-body\.is-wrap \.ag-logtext \.ag-logline \{ padding-inline-start: 5ch; \}/)
   })
 })
