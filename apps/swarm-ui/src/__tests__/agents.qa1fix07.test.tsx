@@ -134,6 +134,23 @@ describe('QA1-FIX-07: the Agents list', () => {
     expect(flat(rowOf(full)!.querySelector('.why'))).not.toBe('')
   })
 
+  it('overview-agents-56 (re-review): the no-blocker line reads under a count, said once for the group', async () => {
+    // The re-review's render of Waiting, grouped, read `2 No pool named: the
+    // scheduler recorded no reason this one waits.` -- a count of two before
+    // `this one`. The line is the group's as well as one row's.
+    // MUTATION: put `this one waits` back in `NO_BLOCKER` -> the group line says `2 … this one`.
+    serve()
+    render(<AgentsScreen onOpen={() => {}} />)
+    await waitFor(() => expect(rowOf(flaky)).not.toBeNull())
+    tab(/^Waiting/)
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Group by workflow' }))
+    await waitFor(() => expect(document.querySelector('.group-why')).not.toBeNull())
+    const said = [...document.querySelectorAll('.group-why')].map(flat)
+    expect(said).toContain(`2 ${NO_BLOCKER}`)
+    expect(said.join(' ')).not.toMatch(/this one|No pool/)
+    expect(NO_BLOCKER).toMatch(/^no pool named/)
+  })
+
   it('overview-agents-13: `N loaded` is said once, in the header, not again beside the search', async () => {
     // MUTATION: draw `${n} loaded` in `.ag-find .ag-scope` again.
     serve()

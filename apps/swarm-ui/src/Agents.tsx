@@ -1622,8 +1622,13 @@ function rowReason(
   return { text, warn }
 }
 
-/** The why line of a waiting row the scheduler recorded no blocker for. */
-export const NO_BLOCKER = 'No pool named: the scheduler recorded no reason this one waits.'
+/**
+ * The why line of a waiting row the scheduler recorded no blocker for. It is
+ * also a grouped list's line for every such row, after their count (`2 no
+ * pool named…`), so it names no one row: it read `2 No pool named: … this one
+ * waits` (QA1-FIX-07 re-review).
+ */
+export const NO_BLOCKER = 'no pool named: the scheduler recorded no reason for the wait'
 
 /**
  * THE LIST'S SILENT-WORKER LINE (#179), or null. AG-14 (#82) names a stuck or
