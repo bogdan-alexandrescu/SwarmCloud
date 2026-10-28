@@ -49,7 +49,9 @@ WHAT IS STAGED, AND WHAT NEVER IS (knowledge-graph.md §5.2, §5.3):
   * only an index commit PROVEN to be an ancestor of the step's base: the
     same commit, `git merge-base --is-ancestor` in the clone, or the compare
     swarm-api recorded for exactly this index and this base
-    (`index.head_relation`, status `ahead`). A non-ancestor, or one whose
+    (`index.head_relation`, status `ahead`); failing those, `merge-base`
+    again after a bounded fetch deepens the depth-1 clone behind the base
+    (`gitops.fetch_base_history`, lane GRAPH-ANCESTRY). A non-ancestor, or one whose
     ancestry cannot be shown, is never staged: a graph of a rewritten
     history describes code that is not there.
 
@@ -154,7 +156,7 @@ from urllib.parse import urlsplit
 from swarm_common.models import check_additional_repositories
 
 from . import graph_ticket as graph_ticket_mod
-from . import graphroute, indexrun
+from . import gitops, graphroute, indexrun
 
 # --------------------------------------------------------------------------
 # names the runners, CTXQ-P and the tests share
@@ -394,23 +396,54 @@ class Ancestry:
     changed: list[str] | None = None
 
 
+def is_shallow(checkout: Path | None) -> bool:
+    """Whether the clone is shallow: only then can a fetch add history the
+    ancestry proof lacks. A full clone already holds every ancestor."""
+    if checkout is None:
+        return False
+    done = _git(checkout, "rev-parse", "--is-shallow-repository")
+    return done is not None and done.returncode == 0 and done.stdout.strip() == b"true"
+
+
+def _git_ancestry(checkout: Path, index_sha: str, base_sha: str) -> Ancestry:
+    count = _git(checkout, "rev-list", "--count", f"{index_sha}..{base_sha}")
+    diff = _git(checkout, "diff", "--name-only", "-z", "--no-renames", index_sha, base_sha)
+    behind = count.stdout.decode().strip() if count and count.returncode == 0 else ""
+    changed = ([p for p in diff.stdout.decode("utf-8", "replace").split("\0") if p]
+               if diff and diff.returncode == 0 else None)
+    return Ancestry(basis="git", behind_by=int(behind) if behind.isdigit() else None,
+                    changed=changed)
+
+
+def _not_an_ancestor(index_sha: str, base_sha: str) -> str:
+    return f"the index commit {index_sha[:12]} is not an ancestor of the base " \
+           f"{base_sha[:12]}"
+
+
 def prove_ancestry(checkout: Path | None, index_sha: str, base_sha: str,
-                   index_state: Mapping[str, Any]) -> Ancestry | str:
-    """How `index_sha` is known to be an ancestor of `base_sha`, or why it is not."""
+                   index_state: Mapping[str, Any],
+                   deepen: Callable[[], str | None] | None = None) -> Ancestry | str:
+    """How `index_sha` is known to be an ancestor of `base_sha`, or why it is not.
+
+    `deepen` (lane GRAPH-ANCESTRY, part of #2540) makes the clone's history
+    reach further back -- `gitops.fetch_base_history`, once per staging --
+    and answers None when it did, or why not. It is asked only when neither
+    the clone nor the recorded compare could answer: a lane's clone is one
+    commit deep, so git could never see the index commit, and swarm-api
+    records the compare of ONE pair (the promoted index against the head
+    its last poll read), which a lane based on any other main commit never
+    matches. Measured 2026-10-20/27: 1,053 of eng's 1,799 graph-asking steps
+    were refused here, against 3 proven by git. The rule is unchanged: only
+    a proof stages, and a fetch that fails or does not reach the index
+    commit leaves the ancestry not shown.
+    """
     if index_sha == base_sha:
         return Ancestry(basis="same", behind_by=0, changed=[])
     local = is_ancestor(checkout, index_sha, base_sha)
     if local is False:
-        return f"the index commit {index_sha[:12]} is not an ancestor of the base " \
-               f"{base_sha[:12]}"
+        return _not_an_ancestor(index_sha, base_sha)
     if local is True and checkout is not None:
-        count = _git(checkout, "rev-list", "--count", f"{index_sha}..{base_sha}")
-        diff = _git(checkout, "diff", "--name-only", "-z", "--no-renames", index_sha, base_sha)
-        behind = count.stdout.decode().strip() if count and count.returncode == 0 else ""
-        changed = ([p for p in diff.stdout.decode("utf-8", "replace").split("\0") if p]
-                   if diff and diff.returncode == 0 else None)
-        return Ancestry(basis="git", behind_by=int(behind) if behind.isdigit() else None,
-                        changed=changed)
+        return _git_ancestry(checkout, index_sha, base_sha)
     relation = index_state.get("head_relation")
     relation = relation if isinstance(relation, Mapping) else {}
     if relation.get("base") == index_sha and relation.get("head") == base_sha:
@@ -426,8 +459,71 @@ def prove_ancestry(checkout: Path | None, index_sha: str, base_sha: str,
                 else None)
         return f"the index commit {index_sha[:12]} is not an ancestor of the base " \
                f"{base_sha[:12]} (recorded compare: {relation.get('status')})"
-    return f"the ancestry of the index commit {index_sha[:12]} and the base " \
-           f"{base_sha[:12]} cannot be shown from this clone or the recorded compare"
+    unshown = f"the ancestry of the index commit {index_sha[:12]} and the base " \
+              f"{base_sha[:12]} cannot be shown from this clone or the recorded compare"
+    if deepen is None or checkout is None:
+        return unshown
+    why = deepen()
+    if why is not None:
+        return f"{unshown} ({why})"
+    local = is_ancestor(checkout, index_sha, base_sha)
+    if local is True:
+        return _git_ancestry(checkout, index_sha, base_sha)
+    if local is False:
+        return _not_an_ancestor(index_sha, base_sha)
+    return f"{unshown} (not within the history fetched behind the base)"
+
+
+class _HistoryOnce:
+    """One staging's `deepen`: the fetch runs at most once, for the first
+    candidate that needs it, and every later candidate reads its answer."""
+
+    def __init__(self, fetch: Callable[[Path, str], str | None], checkout: Path,
+                 base_sha: str) -> None:
+        self._fetch, self._checkout, self._base = fetch, checkout, base_sha
+        self._asked = False
+        self._answer: str | None = None
+        #: Seconds the fetch took, or None when it was not needed.
+        self.seconds: float | None = None
+
+    def __call__(self) -> str | None:
+        if not self._asked:
+            self._asked = True
+            started = time.monotonic()
+            try:
+                self._answer = self._fetch(self._checkout, self._base)
+            except Exception as exc:  # noqa: BLE001 -- a fetch is a reason, never a failure
+                self._answer = f"the history fetch failed ({type(exc).__name__})"
+            self.seconds = round(time.monotonic() - started, 3)
+        return self._answer
+
+
+def history_fetcher(repository_url: str | None, private_dir: Path, *,
+                    token: Callable[[], str | None] | None = None,
+                    ) -> Callable[[Path, str], str | None]:
+    """The production `deepen` fetch: `gitops.fetch_base_history` from the
+    task's SIGNED `repository_url`, validated as a clone validates it.
+
+    `token` supplies the tenant's forge token for a private repository; with
+    none, the fetch is anonymous, which a public repository answers and a
+    private one refuses -- a reason in `stage.json`, as before this lane."""
+    def fetch(checkout: Path, base_sha: str) -> str | None:
+        try:
+            url = gitops.validate_repository_url(repository_url or "")
+        except gitops.GitError:
+            return "the repository URL is not one a fetch may use"
+        # Asked here, only once a fetch is needed, so a step whose proof
+        # needs no fetch never reads the token at all. A read that fails is
+        # an anonymous fetch, and the reason says so if that fails too.
+        unread = ""
+        try:
+            secret = token() if token is not None else None
+        except Exception as exc:  # noqa: BLE001 -- a token read is a reason, never a failure
+            secret, unread = None, f" (forge token not read: {type(exc).__name__})"
+        why = gitops.fetch_base_history(checkout, url=url, base_sha=base_sha,
+                                        private_dir=private_dir, token=secret or None)
+        return f"{why}{unread}" if why is not None else None
+    return fetch
 
 
 # --------------------------------------------------------------------------
@@ -674,6 +770,9 @@ class StageResult:
     #: GRAPH-STAGING); None when it was, or when the tenant reads the state
     #: routes. Logged, not recorded: `stage.json` keeps its shape.
     route: str | None = None
+    #: Seconds the ancestry proof's history fetch took (lane GRAPH-ANCESTRY);
+    #: None when no fetch was needed. In `stage.json` only when it ran.
+    history_seconds: float | None = None
 
     @property
     def delivery(self) -> str:
@@ -699,6 +798,8 @@ class StageResult:
             # staging wrote before the service existed.
             **({"pin": str(self.pin)} if self.served and self.pin is not None else {}),
             **({"fallback": self.fallback} if self.fallback else {}),
+            **({"history_seconds": self.history_seconds}
+               if self.history_seconds is not None else {}),
             **self.facts,
         }
 
@@ -772,7 +873,8 @@ def stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, ta
           clock: Callable[[], float] = time.monotonic,
           service: ServiceRoute | None = None,
           unserved: str | None = None,
-          graph_context: graphroute.GraphContextRoute | None = None) -> StageResult:
+          graph_context: graphroute.GraphContextRoute | None = None,
+          fetch_history: Callable[[Path, str], str | None] | None = None) -> StageResult:
     """Decide and stage (or pin), timed on `clock`. Every failure is a reason;
     only the fence, GraphTicketFenced, is raised (invariant 5).
 
@@ -783,7 +885,11 @@ def stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, ta
     `graph_context` is swarm-api's answer for the task's OWN repository
     (`graphroute`, lane GRAPH-STAGING), read in place of Firestore when the
     tenant is not switched to the state routes. Never an additional
-    repository's: the route serves the signed `repository_url` only."""
+    repository's: the route serves the signed `repository_url` only.
+
+    `fetch_history` deepens a shallow `checkout` behind `base_sha` when the
+    ancestry proof needs it (`history_fetcher`, lane GRAPH-ANCESTRY); None
+    proves from the clone and the recorded compare alone."""
     started = clock()
     route_note: str | None = None
     try:
@@ -801,7 +907,8 @@ def stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, ta
                         repository_url=repository_url, task_id=task_id, checkout=checkout,
                         base_sha=base_sha, context_dir=context_dir,
                         options=dict(call_options or {}), service=service or ServiceRoute(),
-                        unserved=unserved, graph_context=graph_context)
+                        unserved=unserved, graph_context=graph_context,
+                        fetch_history=fetch_history)
     except graph_ticket_mod.GraphTicketFenced:
         raise
     except StageRefused as refused:
@@ -817,7 +924,8 @@ def _stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, t
            checkout: Path | None, base_sha: str | None, context_dir: Path,
            options: dict[str, Any], service: ServiceRoute,
            unserved: str | None = None,
-           graph_context: graphroute.GraphContextRoute | None = None) -> StageResult:
+           graph_context: graphroute.GraphContextRoute | None = None,
+           fetch_history: Callable[[Path, str], str | None] | None = None) -> StageResult:
     where = indexrun.target(tenant_id, repository_url)
     if isinstance(where, str):
         return StageResult(False, where)
@@ -876,10 +984,17 @@ def _stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, t
         if not candidates:
             raise StageRefused("no promoted index with a graph is kept for this repository")
         reasons: list[str] = []
+        # Only a shallow clone can be deepened; a full one already holds
+        # every ancestor the proof could ask for, so it fetches nothing.
+        deepen = (_HistoryOnce(fetch_history, checkout, base_sha)
+                  if fetch_history is not None and checkout is not None
+                  and is_shallow(checkout) else None)
         for version in candidates:
             ancestry = prove_ancestry(checkout, version.sha, base_sha,
                                       index_state if version.sha == index_state.get(
-                                          "current_sha") else {})
+                                          "current_sha") else {}, deepen=deepen)
+            if deepen is not None:
+                result.history_seconds = deepen.seconds
             if isinstance(ancestry, str):
                 reasons.append(ancestry)
                 continue
@@ -967,7 +1082,8 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
             secret_env_names: Iterable[str] = (),
             additional_repositories: Sequence[Mapping[str, Any]] | None = None,
             repos_dir: Path | None = None,
-            graph_context: graphroute.GraphContextRoute | None = None) -> dict[str, str]:
+            graph_context: graphroute.GraphContextRoute | None = None,
+            forge_token: Callable[[], str | None] | None = None) -> dict[str, str]:
     """Stage (or pin) for this attempt and return the runner's variables.
 
     Raises only `graph_ticket.GraphTicketFenced`, the fence (invariant 5);
@@ -1001,6 +1117,13 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
     unswitched tenant's step reads its own repository's registration,
     versions and settings, so the worker lists no Firestore documents
     (lane GRAPH-STAGING). None reads by document id.
+
+    `forge_token` is the tenant's forge token, asked for only when the
+    ancestry proof has to deepen the clone (`history_fetcher`, lane
+    GRAPH-ANCESTRY); None fetches anonymously, which proves a public
+    repository's steps and leaves a private one's a reason. It is used only
+    with a `private_dir` (lane GRAPH-TOKEN-2563): never written beside the
+    context dir the agent reads.
     """
     try:
         if profile_name == indexrun.INDEXER_PROFILE or not offers_graph(runner_argv) \
@@ -1015,7 +1138,15 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
         result = stage(db=db, store=store, tenant_id=tenant_id, repository_url=repository_url,
                        task_id=task_id, checkout=checkout, base_sha=base_sha,
                        context_dir=context_dir, call_options=call_options, service=service,
-                       graph_context=graph_context)
+                       graph_context=graph_context,
+                       # The token only ever lands in the worker's own
+                       # `private_dir`: with none, the fetch is anonymous and
+                       # its logs go to the context dir, which then holds no
+                       # credential to leak (lane GRAPH-TOKEN-2563).
+                       fetch_history=history_fetcher(
+                           repository_url, private_dir if private_dir is not None
+                           else context_dir,
+                           token=forge_token if private_dir is not None else None))
         if not result.served:
             # A restored checkpoint's pin is not this attempt's decision either.
             remove_pin(context_dir)
@@ -1237,7 +1368,8 @@ __all__ = [
     "SETTINGS_COLLECTION", "SHIM_MODULE",
     "SNAPSHOT_DIR_NAME", "SNAPSHOT_ENV", "STAGE_RECORD_NAME", "STAGING_BACKENDS",
     "ServiceRoute", "StageResult", "TICKET_FILE_ENV", "UNSTAGED_ENV", "URL_ENV",
-    "assign_arm", "checked_manifest", "decide", "delivery_of", "is_ancestor", "offers_graph",
+    "assign_arm", "checked_manifest", "decide", "delivery_of", "history_fetcher",
+    "is_ancestor", "is_shallow", "offers_graph",
     "pin", "prepare", "prepare_additional", "prove_ancestry", "ready_detail", "remove_pin",
     "server_argv",
     "served_env", "shim_argv", "stage", "unstaged_note", "write_snapshot",

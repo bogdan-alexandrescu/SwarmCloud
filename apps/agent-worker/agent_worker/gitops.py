@@ -1211,6 +1211,172 @@ def deepen_history(
     return head.duration_seconds + seconds
 
 
+#: How many commits back from the step's base `fetch_base_history` deepens a
+#: depth-1 clone so `graphstage` can prove the index commit an ancestor
+#: (lane GRAPH-ANCESTRY, part of #2540). The index is promoted from main's
+#: head and a lane clones main's head a little later, so the gap is the
+#: commits merged between the two: main takes about 70 a day here, and 200
+#: covers a promoted index up to roughly three days old. Deeper buys proofs
+#: for indexes that stale only at the price of every step's start-up.
+ANCESTRY_FETCH_DEPTH = 200
+#: The fetch's whole wall-clock limit: a step's start-up never waits longer
+#: for a proof than this, and a fetch cut off is a reason, not a failure.
+ANCESTRY_FETCH_TIMEOUT_SECONDS = 20.0
+#: How long a timed-out fetch has, after SIGTERM, to remove its own
+#: `.git/shallow.lock` before SIGKILL: git exits on SIGTERM at once.
+ANCESTRY_FETCH_GRACE_SECONDS = 5.0
+
+
+class _QuietLog:
+    """The logger `fetch_base_history` hands `_clone_env`: its caller
+    records the outcome as a reason, so nothing here logs."""
+
+    def info(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    error = warning = info
+
+
+def fetch_base_history(
+    checkout: Path,
+    *,
+    url: str,
+    base_sha: str,
+    private_dir: Path,
+    token: str | None = None,
+    depth: int = ANCESTRY_FETCH_DEPTH,
+    timeout_seconds: float = ANCESTRY_FETCH_TIMEOUT_SECONDS,
+    git_binary: str = "git",
+) -> str | None:
+    """Deepen a shallow `checkout` to `depth` commits behind `base_sha`. None
+    when the fetch landed, else a short reason (never git's own words, which
+    may name the URL).
+
+    `git fetch --depth=<n> <url> <base>`: base's own first `n` generations and
+    nothing else -- no other branch, no tags, no FETCH_HEAD, no ref moved, no
+    working file touched. `url` is the caller's, already validated
+    (`validate_repository_url`); this does not read the clone's `origin`,
+    which a restored checkpoint's `.git` could have rewritten.
+
+    `token`, when given, is held exactly as a clone holds it (`_clone_env`):
+    a 0600 file scoped to the forge's host, removed before this returns. The
+    helper list is reset first (`credential.helper=`), so a helper planted in
+    the clone's own `.git/config` is never handed it, and `http.proxy=`
+    turns off any proxy that config names (lane GRAPH-TOKEN-2563).
+
+    Unlike a clone, this runs git INSIDE a checkout whose `.git/config` a
+    restored checkpoint carries, and some of that config no `-c` can undo:
+    `url.<base>.insteadOf` is multi-valued (a `-c` adds a rule, never removes
+    one, and an empty one rewrites EVERY URL to its base), and an
+    `http.<url>.*` or `credential.<url>.*` entry outranks the unscoped `-c`
+    by URL specificity. So the clone's config is read first
+    (`_token_unsafe_config`) and, when it sets anything under `url.`,
+    `http.` or `credential.`, the token is withheld: the fetch goes on
+    anonymously, which a public repository still answers, and a failure
+    says why the token was not used.
+    """
+    if not _FULL_SHA_RE.match(base_sha or ""):
+        return "the base is not a full commit sha"
+    private_dir = Path(private_dir)
+    private_dir.mkdir(parents=True, exist_ok=True)
+    withheld: str | None = None
+    if token:
+        scan_env, _, _ = _clone_env(url, None, private_dir, _QuietLog())
+        withheld = _token_unsafe_config(checkout, scan_env, git_binary)
+        if withheld is not None:
+            token = None
+    try:
+        env, config_args, cred_file = _clone_env(url, token, private_dir, _QuietLog())
+    except GitError:
+        # `_write_credentials` could not hold the token safely; no file is left.
+        return "the forge token could not be held for the history fetch"
+    if cred_file is not None:
+        config_args = ["-c", "credential.helper=", *config_args]
+    note = f" (forge token withheld: {withheld})" if withheld else ""
+    argv = [git_binary, *config_args, "-c", "http.proxy=",
+            "-c", "core.hooksPath=/dev/null", "-c", "gc.auto=0",
+            "-C", str(checkout), "fetch", "--quiet", "--no-tags", "--no-write-fetch-head",
+            "--no-recurse-submodules", f"--depth={int(depth)}", "--", url, base_sha]
+    # Through `run_child`, never `subprocess.run(timeout=)`: that SIGKILLs git,
+    # and a `--depth` fetch holds `.git/shallow.lock` while the pack arrives,
+    # which SIGKILL skips cleaning up -- every deepen the agent tried after a
+    # timed-out fetch then failed on "shallow.lock: File exists". SIGTERM to
+    # the group first lets git remove its own locks.
+    try:
+        done = run_child(argv, cwd=private_dir, env=env,
+                         stdout_path=private_dir / "git-ancestry.out.log",
+                         stderr_path=private_dir / "git-ancestry.err.log",
+                         timeout_seconds=timeout_seconds,
+                         grace_seconds=ANCESTRY_FETCH_GRACE_SECONDS,
+                         max_stdout_bytes=64 * 1024, max_stderr_bytes=64 * 1024,
+                         logger=_QuietLog())
+    except OSError as exc:
+        return f"the history fetch did not start ({type(exc).__name__}){note}"
+    finally:
+        _remove_credentials(cred_file, _QuietLog())
+    if done.timed_out:
+        if done.killed:
+            # Git ignored SIGTERM, so its lock outlived it. The fetch's whole
+            # process group is reaped by now: nothing else holds that lock.
+            (Path(checkout) / ".git" / "shallow.lock").unlink(missing_ok=True)
+        return f"the history fetch timed out after {timeout_seconds:g} s{note}"
+    if done.exit_code != 0:
+        return f"the history fetch failed (git exit {done.exit_code}){note}"
+    return None
+
+
+#: Config sections in a checkout's own `.git/config` that could send a
+#: credential somewhere other than the repository's forge, or hand it to a
+#: program, and that a `-c` on the command line cannot reliably undo:
+#: `url.*.insteadOf` rewrites, `http.<url>.proxy` (and every other
+#: `http.` key), and `credential.<url>.helper`. A `remote.` other than
+#: `origin` is refused too (`_token_unsafe_config`).
+_TOKEN_UNSAFE_SECTIONS = ("url.", "http.", "credential.")
+#: The most of `git config --list --name-only` that is read; a list that
+#: reaches it is refused rather than read in part.
+_CONFIG_SCAN_MAX_BYTES = 256 * 1024
+
+
+def _token_unsafe_config(checkout: Path, env: dict[str, str], git_binary: str) -> str | None:
+    """Why the checkout's own git config makes holding a token unsafe, or None.
+
+    Reads `git config --list --name-only --includes` with the global and
+    system files already off (`_clone_env`), so what is listed is the
+    clone's own config and whatever it includes. Only key NAMES are read --
+    never a value, which may itself be a URL or a secret -- and the reason
+    names the section, never the key. A config git cannot read is unsafe."""
+    out = Path(env["HOME"]) / "git-ancestry-config.out.log"
+    try:
+        done = run_child([git_binary, "-C", str(checkout), "config", "--list", "--name-only",
+                          "--includes"],
+                         cwd=Path(env["HOME"]), env=env, stdout_path=out,
+                         stderr_path=Path(env["HOME"]) / "git-ancestry-config.err.log",
+                         timeout_seconds=10.0, grace_seconds=2.0,
+                         max_stdout_bytes=_CONFIG_SCAN_MAX_BYTES, max_stderr_bytes=16 * 1024,
+                         logger=_QuietLog())
+        names = out.read_bytes() if done.exit_code == 0 and not done.timed_out else None
+        out.unlink(missing_ok=True)
+    except OSError as exc:
+        return f"the clone's git config could not be read ({type(exc).__name__})"
+    if names is not None and len(names) >= _CONFIG_SCAN_MAX_BYTES:
+        # Cut off at the cap: a name past it would go unread.
+        return "the clone's git config is too large to read"
+    if names is None:
+        return "the clone's git config could not be read"
+    sections: set[str] = set()
+    for name in names.decode("utf-8", "replace").splitlines():
+        lowered = name.lower()
+        sections.update(s for s in _TOKEN_UNSAFE_SECTIONS if lowered.startswith(s))
+        # `git fetch <url>` reads a remote NAMED `<url>` when one is
+        # configured, and its `url`/`proxy` would then decide where the
+        # fetch goes. The worker's clone configures `origin` alone.
+        if lowered.startswith("remote.") and not lowered.startswith("remote.origin."):
+            sections.add("remote.")
+    if sections:
+        return "the clone's git config sets " + ", ".join(f"{s}*" for s in sorted(sections))
+    return None
+
+
 def clone_at_commit(
     *,
     url: str,
