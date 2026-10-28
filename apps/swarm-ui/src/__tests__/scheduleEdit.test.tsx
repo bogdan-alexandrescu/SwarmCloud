@@ -830,13 +830,22 @@ describe('live QA: automate, the form', () => {
     await mount('schedule=new', routes(() => null))
     await waitFor(() => expect(field('Name')).toBeTruthy(), WAIT)
     // MUTATION: drop `aria-labelledby` from `Segmented` and the group has no name, so none of these is found.
-    for (const label of ['Scope', 'Run', 'Plan', 'Merge', 'Approvers']) expect(screen.getByRole('radiogroup', { name: label }), label).toBeTruthy()
+    for (const label of ['Scope', 'Run', 'Plan', 'Merge', 'Who may approve']) expect(screen.getByRole('radiogroup', { name: label }), label).toBeTruthy()
     // MUTATION: draw any of them as a `<select>` again and it is a combobox.
-    expect(screen.queryAllByRole('combobox', { name: /^(Scope|Run|Plan|Merge|Approvers)$/ })).toEqual([])
+    expect(screen.queryAllByRole('combobox', { name: /^(Scope|Run|Plan|Merge|Who may approve)$/ })).toEqual([])
     const run = seg('Run')
     const hint = document.getElementById(run.getAttribute('aria-describedby') ?? '')
     expect(hint?.textContent).toBe('type default: auto')
     expect(screen.getByRole('textbox', { name: 'Cron expression' })).toBeTruthy()
+  })
+
+  it('names the approvers group "Who may approve", proposal B’s words (A3-LABEL)', async () => {
+    await mount('schedule=new', routes(() => null))
+    await waitFor(() => seg('Merge'), WAIT)
+    // MUTATION: label the group "Approvers" again and it is found by that name, not by BGD’s pick of 2026-10-28.
+    const group = screen.getByRole('radiogroup', { name: 'Who may approve' })
+    expect(within(group).getAllByRole('radio').map((r) => r.textContent)).toEqual(['any member', 'the owner only'])
+    expect(screen.queryByRole('radiogroup', { name: 'Approvers' })).toBeNull()
   })
 })
 
@@ -844,7 +853,7 @@ describe('live QA: automate, the form', () => {
 // over dropdowns for Scope, Run, Plan, Merge and Approvers, 2026-10-28
 // (docs/web-ui/mockups/automate-b.html #A3a, cards 2 and 4).
 describe('A3: the five choices are segmented controls', () => {
-  const FIVE = ['Scope', 'Run', 'Plan', 'Merge', 'Approvers'] as const
+  const FIVE = ['Scope', 'Run', 'Plan', 'Merge', 'Who may approve'] as const
 
   it('shows every value of each group without opening anything, in today’s order', async () => {
     await mount('schedule=new', routes(() => null, [sweepType({ creatable_scopes: ['repos', 'all'] })]))
@@ -854,7 +863,7 @@ describe('A3: the five choices are segmented controls', () => {
     expect(words('Run')).toEqual(['auto', 'approve'])
     expect(words('Plan')).toEqual(['auto', 'approve'])
     expect(words('Merge')).toEqual(['off', 'approve'])
-    expect(words('Approvers')).toEqual(['any member', 'the owner only'])
+    expect(words('Who may approve')).toEqual(['any member', 'the owner only'])
     for (const label of FIVE) {
       // MUTATION: put the unchosen segments behind a disclosure (a closed `<details>` or `hidden`) and one is found inside it.
       for (const r of within(seg(label)).getAllByRole('radio')) expect(r.closest('[hidden], details:not([open]), select'), `${label}: ${r.textContent}`).toBeNull()
@@ -872,7 +881,7 @@ describe('A3: the five choices are segmented controls', () => {
     expect(checked('Run')).toEqual(['auto'])
     expect(checked('Plan')).toEqual(['auto'])
     expect(checked('Merge')).toEqual(['approve'])
-    expect(checked('Approvers')).toEqual(['any member'])
+    expect(checked('Who may approve')).toEqual(['any member'])
     pick('Merge', 'off')
     // MUTATION: drop `onClick` from the segments and the check stays on approve.
     expect(checked('Merge')).toEqual(['off'])
