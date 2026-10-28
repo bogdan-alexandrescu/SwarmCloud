@@ -308,7 +308,11 @@ describe('Settings › People and roles: the join link is shown once', () => {
     await waitFor(() => expect(visible(screen.getByLabelText('Join link'))).toMatch(/The join link is on/))
     expect(screen.queryByLabelText('Link to share')).toBeNull()
     expect(document.body.textContent ?? '').not.toContain(CODE)
-  })
+    // ~8s on an idle container (two renders of the whole screen): over a
+    // quarter of the 30s suite default, so a busy CI shard timed it out at 30s
+    // on run 40673547010 with nothing wrong. Own budget, as qa.u11b.workflows
+    // and keyboard already carry; a hang still fails.
+  }, 120_000)
 
   it('rotates with rotate: true and shows the new link; turning it off takes it away', async () => {
     const calls = adminApi(roles({}), { on: true, set_by: 'sam@example.com', set_at: iso(-HOUR) })
@@ -323,7 +327,8 @@ describe('Settings › People and roles: the join link is shown once', () => {
       { on: true, rotate: true },
       { on: false, rotate: false },
     ])
-  })
+    // ~6s on an idle container, the same weight as the case above: its budget.
+  }, 120_000)
 
   it('reads neither the link nor the memberships for a viewer, or in a personal workspace', async () => {
     const viewer = adminApi(roles({ can_manage: false, me: { email: 'lee@example.com', role: 'viewer', source: 'default', via: 'member' } }), { on: true, set_by: '', set_at: '' })
