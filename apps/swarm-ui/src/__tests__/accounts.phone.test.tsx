@@ -16,7 +16,7 @@
 import { render } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
 import type { PoolAccount } from '../accountsPool'
 import { AccountsTable } from '../AccountsTable'
@@ -86,17 +86,10 @@ describe('the phone cards draw each window against its floor', () => {
 })
 
 describe('an account name is never broken at its hyphen', () => {
-  // THE VERDICT READS THE WALL CLOCK for a clock that has gone (capacity-03,
-  // `verdictOf`'s `now`, QA1B-02): a reset 40 minutes after NOW is past by the
-  // time this runs, so the clock is held at NOW, the moment these rows describe.
-  beforeEach(() => {
-    vi.useFakeTimers({ toFake: ['Date'] })
-    vi.setSystemTime(NOW)
-  })
-  afterEach(() => {
-    vi.useRealTimers()
-  })
-
+  // THE VERDICT JUDGES A GONE CLOCK AGAINST ITS OWN `now` PROP (capacity-03,
+  // QA1B-02 and QA1C-FOLLOWUPS): a reset 40 minutes after NOW is long past on
+  // the wall clock, and still named, because `Verdict` hands `verdictOf` the
+  // board's clock. No fake Date is held for it.
   it('holds every name in the verdict whole', () => {
     expect(css).toMatch(/\.acct-nm\s*\{[^}]*white-space:\s*nowrap/)
     const now = NOW
