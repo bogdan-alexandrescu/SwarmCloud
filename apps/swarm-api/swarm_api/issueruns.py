@@ -219,6 +219,8 @@ from .validation import (
     MERGE_ON_VERDICT,
     MERGE_STEP_ID,
     REREVIEW_STEP_ID,
+    REVIEW_GATE_DEFAULT_MIN_LINES,
+    REVIEW_GATE_METADATA_KEY,
     RUNTIME_METADATA_KEY,
     RUNTIME_POLICY_BROWSER_IF_UI,
     RUNTIME_POLICY_PROFILES,
@@ -244,6 +246,18 @@ STEP_PROFILE = "claude-code"
 REVIEW_PROFILE = RUNTIME_POLICY_PROFILES["browser"]
 REVIEW_RUNTIME: Mapping[str, str] = MappingProxyType(
     {"policy": RUNTIME_POLICY_BROWSER_IF_UI, **RUNTIME_POLICY_PROFILES})
+
+# The compiled review runs only where it matters (#2524, BGD 2026-10-27:
+# "Risk paths + over 300 lines; reuse renders"): when what the implementer
+# steps changed touches a risk path or more than 300 lines. Otherwise the
+# scheduler ends it SUCCEEDED without an agent, with a MERGE verdict.json
+# naming the reason (`scheduler.reviewgate`), and the fix step publishes as
+# for any MERGE. No `risk_paths`: the scheduler's default list applies, the
+# one list BGD's decision names.
+def review_gate_block() -> dict[str, Any]:
+    """The `metadata.review_gate` every compiled review step carries."""
+    return {"min_lines": REVIEW_GATE_DEFAULT_MIN_LINES}
+
 
 #: The one file the planner writes, read back out of its artifacts.
 PLAN_FILE = "plan.json"
@@ -2337,7 +2351,8 @@ def compile_plan(run: "IssueRun", review_context: str | None = None) -> Workflow
     steps.append({
         "step_id": REVIEW_STEP,
         "runner_profile": REVIEW_PROFILE,
-        "metadata": {RUNTIME_METADATA_KEY: dict(REVIEW_RUNTIME)},
+        "metadata": {RUNTIME_METADATA_KEY: dict(REVIEW_RUNTIME),
+                     REVIEW_GATE_METADATA_KEY: review_gate_block()},
         "depends_on": [last],
         "builds_on": last,
         "input_from": {last: PATCH_FILE},
@@ -2524,7 +2539,8 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
         "builds_on": last,
         "input_from": {sid: PATCH_FILE for sid in impl},
         "metadata": {INPUT_LAYOUT_METADATA_KEY: INPUT_LAYOUT_BY_PARENT,
-                     RUNTIME_METADATA_KEY: dict(REVIEW_RUNTIME)},
+                     RUNTIME_METADATA_KEY: dict(REVIEW_RUNTIME),
+                     REVIEW_GATE_METADATA_KEY: review_gate_block()},
         "input": {
             "issue": ref.number,
             "prompt": (

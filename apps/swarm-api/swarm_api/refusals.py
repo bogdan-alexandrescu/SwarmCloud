@@ -514,6 +514,17 @@ SWITCHES: dict[str, Switch] = {
         "by BGD's decision 2026-10-26 (enforce at once); off, the default is saved and capped",
         default=True,
     ),
+    # A step's `metadata.review_gate` (#2524, `validation.resolve_review_gate`).
+    # Before it, the key was a caller label stored as sent, so refusing a bad
+    # one narrows what a caller could send. Off, a malformed gate is dropped
+    # and the review runs ungated.
+    "invalid_review_gate": Switch(
+        code="invalid_review_gate",
+        why="a workflow step's metadata.review_gate with an unknown key or a bad type is "
+        "refused 422. Ships on by BGD's decision 2026-10-27 (#2524: an unknown key or a bad "
+        "type is a 422); off, the block is dropped and the review always runs",
+        default=True,
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "
