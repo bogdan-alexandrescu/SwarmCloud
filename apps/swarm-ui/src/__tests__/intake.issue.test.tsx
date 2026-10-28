@@ -10,8 +10,9 @@
 //     no_forge_credential, read_failed; validation_failed for a malformed
 //     reference), and none of them prints a figure it did not read;
 //   * a CLOSED issue warns and needs "Plan it anyway", never a refusal;
-//   * auto-merge is drawn OFF and DISABLED, 'Not available yet' (the why in a tooltip),
-//     unless the preview reports it available (the API refuses it until then);
+//   * auto-merge is drawn OFF and DISABLED -- before a read, decided by the read;
+//     after it, the API's answer and reason -- unless the preview reports it
+//     available (QA1-FIX-12 chrome-C29: no "not available yet" before anything was asked);
 //   * fix rounds are 3 by default within 1-5;
 //   * the body POSTed is exactly RunCreate's fields, and the page lands on the
 //     new run.
@@ -288,9 +289,8 @@ describe('steps 2 and 3: the runner and what it may do on its own', () => {
     const merge = screen.getByRole('switch', { name: 'Merge the pull request when it is ready' }) as HTMLInputElement
     expect(merge.checked).toBe(false)
     expect(merge.disabled).toBe(true)
-    // No issue number on the form (walkthrough E): the why is the line's tooltip.
-    expect(visible(merge.closest('.in-merge'))).toContain('Not available yet')
-    expect(merge.closest('.in-merge')!.querySelector('small')!.getAttribute('title')).toMatch(/merge chain has not shipped/)
+    // Before a read nothing was asked (QA1-FIX-12 chrome-C29): the read decides it.
+    expect(visible(merge.closest('.in-merge'))).toContain('Decided when the issue is read')
     const rounds = screen.getByLabelText('Fix rounds when checks go red') as HTMLInputElement
     expect(rounds.value).toBe('3')
     expect(rounds.min).toBe('1')
@@ -305,7 +305,7 @@ describe('steps 2 and 3: the runner and what it may do on its own', () => {
     await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
     const merge = screen.getByRole('switch', { name: 'Merge the pull request when it is ready' }) as HTMLInputElement
     expect(merge.disabled).toBe(true)
-    expect(visible(container.querySelector('.in-merge'))).toContain('Not available yet')
+    expect(visible(container.querySelector('.in-merge'))).toContain('Not available for this run')
     expect(visible(container.querySelector('.in-merge'))).toContain(reason)
   })
 
@@ -389,7 +389,8 @@ describe('steps 2 and 3: the runner and what it may do on its own', () => {
     expect(side()).toContain('example-org/infra')
     expect(side()).toContain('claude-code')
     expect(side()).toContain('waits for approval')
-    expect(side()).toContain('off · not available yet')
+    // A preview that does not say: off, and the summary says the API did not offer it.
+    expect(side()).toContain('off · not offered by this API')
     expect(side()).toContain('up to 3')
     fireEvent.click(screen.getByRole('radio', { name: /Auto/ }))
     fireEvent.change(screen.getByLabelText('Fix rounds when checks go red'), { target: { value: '5' } })
