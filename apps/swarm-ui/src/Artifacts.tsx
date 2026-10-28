@@ -2255,8 +2255,14 @@ function StepRowBody({
             <span className="arts-usage" style={{ fontVariantNumeric: 'tabular-nums' }}>
               {figures.map((f, i) => (
                 <span key={f.label} data-figure={f.label}>
-                  {i > 0 ? ' · ' : ''}
-                  {f.label === 'turn' ? `turn ${f.value}` : `${f.value} ${f.label}`}
+                  {/* The separator rides with the figure after it, unbroken,
+                      so a narrow drawer wraps before a ` · `, never after it
+                      (a dangling dot, or "turn" split from its number). */}
+                  {i > 0 ? ' ' : ''}
+                  <span style={{ whiteSpace: 'nowrap' }}>
+                    {i > 0 ? '· ' : ''}
+                    {f.label === 'turn' ? `turn ${f.value}` : `${f.value} ${f.label}`}
+                  </span>
                 </span>
               ))}
             </span>
@@ -2280,8 +2286,10 @@ function StepRowBody({
         <li className="arts-step is-meta is-error is-err">
           <ToneMark tone="bad">{m.subtype === 'turn_failed' ? 'error · turn failed' : 'error'}</ToneMark> {capped}
           {step.text !== null && step.text !== '' && <pre className="art-code">{step.text}</pre>}
+          {/* Muted by its own colour: `.ctl-sub` is styled only inside a
+              table and a few panels, so in a log row it drew at full ink. */}
           {attempt !== null && (
-            <span className="ctl-sub">
+            <span className="arts-retry" data-retry="" style={{ color: 'var(--text-faint)' }}>
               (retrying, {attempt}
               {limit !== null ? ` of ${limit}` : ''})
             </span>

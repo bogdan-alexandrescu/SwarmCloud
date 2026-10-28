@@ -215,10 +215,13 @@ describe('a codex error row draws in the bad tone, the message first', () => {
       }),
     ])
     const message = row.querySelector('pre')
-    const retry = row.querySelector('.ctl-sub')
+    const retry = row.querySelector<HTMLElement>('[data-retry]')
     expect(message?.textContent).toBe('stream disconnected before completion')
-    // MUTATION: drop the retry counter, or draw it un-muted (no `.ctl-sub`).
+    // MUTATION: drop the retry counter.
     expect(retry?.textContent).toBe('(retrying, 1 of 5)')
+    // MUTATION: drop the faint colour from the retry (it draws at full ink,
+    // as it did under a bare `.ctl-sub`, which no rule styles in a log row).
+    expect(retry?.style.color).toBe('var(--text-faint)')
     // MUTATION: draw the retry before the message.
     expect(message!.compareDocumentPosition(retry!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })

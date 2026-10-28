@@ -88,7 +88,8 @@ does not depend on the worker:
     command, and once it has output or has ended a `tool_result` carrying the
     output and its `exit N`; `mcp_tool_call` is a `tool_call` named
     `server.tool` whose input is its arguments, masked by their structure;
-  * `file_change`, `web_search` and `todo_list` are short `system` rows; an item or event of any other type is `other`, named.
+  * `file_change`, `web_search` and `todo_list` are short `system` rows; an
+    item or event of any other type is `other`, named.
 
 A `usage` row's meta carries the turn's figures as codex reported them --
 `input_tokens`, `cached_input_tokens`, `output_tokens` -- and `turn`, the
