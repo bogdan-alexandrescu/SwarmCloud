@@ -479,6 +479,22 @@ export function AgTabsEdge({
   const stripClass = moreTabs.length === 0 ? 'ag-split-tabs' : 'ag-split-tabs is-fitted'
   return (
     <div className="ag-tabs-edge" ref={box} data-more={more || undefined} onKeyDown={onKey}>
+      {/* EVERY TAB, HIDDEN, TO BE MEASURED (overview-agents-45): the widths
+          the bar is fitted to, the ones in More included. Drawn as the bar
+          draws them, with the bold width reserved, and never a stop. Its
+          words are the sheet's (`data-text`), not text: nothing reads or
+          finds them a second time. First, so More is still the box's last
+          child, at the bar's end. */}
+      <div className="ag-tabs-measure" aria-hidden="true">
+        <div className="c-tabs ag-split-tabs">
+          {tabs.map((t) => (
+            <button key={t.key} type="button" tabIndex={-1}>
+              <span className="c-tab-label" data-label={t.label} data-text={t.label} />
+              {t.count !== undefined && <em data-text={t.count === null ? '—' : String(t.count)} />}
+            </button>
+          ))}
+        </div>
+      </div>
       {/* A FITTED BAR NEVER SHRINKS (VQ-008): it holds only the tabs that
           fit, the open one always, so More gives way and the open tab stays
           drawn and marked (agents.css `.ag-split-tabs.is-fitted`). */}
@@ -490,21 +506,6 @@ export function AgTabsEdge({
         onSelect={onSelect}
       />
       {moreTabs.length > 0 && <MoreTabs tabs={moreTabs} onSelect={onSelect} />}
-      {/* EVERY TAB, HIDDEN, TO BE MEASURED (overview-agents-45): the widths
-          the bar is fitted to, the ones in More included. Drawn as the bar
-          draws them, with the bold width reserved, and never a stop. Its
-          words are the sheet's (`data-text`), not text: nothing reads or
-          finds them a second time. */}
-      <div className="ag-tabs-measure" aria-hidden="true">
-        <div className="c-tabs ag-split-tabs">
-          {tabs.map((t) => (
-            <button key={t.key} type="button" tabIndex={-1}>
-              <span className="c-tab-label" data-label={t.label} data-text={t.label} />
-              {t.count !== undefined && <em data-text={t.count === null ? '—' : String(t.count)} />}
-            </button>
-          ))}
-        </div>
-      </div>
     </div>
   )
 }
