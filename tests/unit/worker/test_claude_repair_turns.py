@@ -34,6 +34,7 @@ import pytest
 
 from agent_worker.runners import claude_code, cliagent
 from agent_worker.runners.base import RunnerContext
+from test_cli_prompt_names_time_limit import without_limit_line
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 
@@ -321,7 +322,8 @@ def test_a_finish_pass_runs_before_the_repair_checks(tmp_path, monkeypatch):
     out = claude_code.body(ctx)
     runs = _runs(ctx)
     assert len(runs) == 3
-    assert runs[1]["prompt"] == cliagent.FINISH_PROMPT
+    # MUTATION: drop the finish pass's limit line in run_cli_agent -> red.
+    assert without_limit_line(runs[1]["prompt"]) == cliagent.FINISH_PROMPT
     assert "scan-01.md" in runs[2]["prompt"]
     assert out["resumed_to_finish"] is True
     assert out["repair_turns"] == 1

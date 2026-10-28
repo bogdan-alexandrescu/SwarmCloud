@@ -35,6 +35,7 @@ from agent_worker.runners.cliagent import (
     CliAgentSpec,
     run_cli_agent,
 )
+from test_cli_prompt_names_time_limit import without_limit_line
 
 #: A fake claude-code. Each start appends its argv and stdin to
 #: `$HOME/starts.jsonl` and plays the next entry of `$HOME/plan.json`: one
@@ -225,7 +226,8 @@ def test_a_finish_pass_over_the_ceiling_is_a_fresh_session(ctx):
     first, second = _starts(ctx)
     assert "--resume" not in second["argv"]
     assert second["stdin"].startswith("CONTEXT CEILING HANDOFF")
-    assert second["stdin"].rstrip().endswith(FINISH_PROMPT)
+    # MUTATION: drop the finish pass's limit line in run_cli_agent -> red.
+    assert without_limit_line(second["stdin"]).endswith(FINISH_PROMPT)
     (stop,) = out["context_ceiling"]["stops"]
     assert stop["at"] == ceiling.AT_RESUME and stop["resume_reason"] == "finish"
 
