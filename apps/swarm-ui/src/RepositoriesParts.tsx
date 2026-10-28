@@ -12,6 +12,7 @@ import { AGED_AFTER_MS, FailedPanel, RefreshControl, useClaimPageAge } from './S
 import type { ApiError, Result } from './fetch'
 import { addressToPath } from './paths'
 import { AGE_TICK_MS, useNow } from './useNow'
+import { RepoGraphCache } from './RepoGraphCache'
 import { CAPABILITIES, coverageDetail, coverageRatio, coverageWords, notServed, pct, shortSha, thousands, type CapCell, type CapRow, type Freshness, type RepoRecord } from './RepositoriesData'
 
 /**
@@ -574,4 +575,27 @@ export function UrConfirmIndex({
       </Banner>
     </div>
   )
+}
+
+/**
+ * WHETHER A REPOSITORY HAS INDEXING ON, for its Cache section
+ * (graph-answer-cache.md §5.1, CACHE-4-CONSOLE). On when it has an index to
+ * cache (`index.current_sha`), or when its schedule builds one: an interval,
+ * or a change trigger. A registration with both off and no index has nothing
+ * a cache could hold, so it gets no section, not an empty one. An unserved
+ * schedule (null) is not a confident off: it counts as on.
+ */
+export function indexingOn(r: RepoRecord): boolean {
+  const ix = r.index
+  if (ix.current_sha !== null) return true
+  return !(ix.interval_hours === 'off' && ix.on_change === 'off')
+}
+
+/**
+ * The Cache section in a repository's card when indexing is on (§5.1): folded,
+ * and reading nothing until it is opened. Nothing at all when indexing is off.
+ */
+export function UrGraphCacheSection({ r }: { r: RepoRecord }) {
+  if (!indexingOn(r)) return null
+  return <RepoGraphCache repoId={r.repo_id} indexSha={r.index.current_sha} />
 }

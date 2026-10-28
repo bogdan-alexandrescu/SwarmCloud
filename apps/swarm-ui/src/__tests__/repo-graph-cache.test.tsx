@@ -13,7 +13,8 @@
 //   * an index not promoted yet says so and reads nothing (§5.1).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { repo, serve } from './repofixture'
 import { RepoGraphCache } from '../RepoGraphCache'
 import { normGraphCache, type GraphCacheDoc } from '../api'
 import type { ApiError, Result } from '../fetch'
@@ -56,6 +57,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  cleanup()
   vi.useRealTimers()
 })
 
@@ -179,7 +181,9 @@ describe('a replica that was not read (§5.3, §5.4)', () => {
     render(<RepoGraphCache repoId={REPO} indexSha="4c1e9a0000" load={async () => ok(down)} />)
     await open()
     expect(document.querySelectorAll('[data-replica]')).toHaveLength(0)
-    expect(screen.getByText(/swarm-graph was not read/i)).toBeTruthy()
+    const line = document.querySelector('[data-stats="not_read"]')
+    expect(line?.getAttribute('data-reason')).toBe('timeout')
+    expect(line?.textContent).toMatch(/swarm-graph was not read: did not answer in time/)
     expect(tile('p95 served / uncached').textContent).toMatch(/152 ms/)
     expect(tile('p95 served / uncached').textContent).toMatch(/7\.4× reference/)
     expect(tile('Answer hit rate, 24 h').getAttribute('data-form')).toBe('unknown')
@@ -196,7 +200,8 @@ describe('the reuse tile (§5.2, BGD Q4)', () => {
     expect(t.querySelector('b')?.textContent).toBe('—')
     expect(t.textContent).not.toMatch(/carried/i)
     expect(t.textContent).not.toMatch(/0%/)
-    expect(tile('Answer hit rate, 24 h').textContent).toMatch(/91% of 1,284 answers/)
+    expect(tile('Answer hit rate, 24 h').querySelector('b')?.textContent).toBe('91%')
+    expect(tile('Answer hit rate, 24 h').querySelector('i')?.textContent).toBe('of 1,284 answers')
   })
 
   it('shows the share and the carried count once there is one', async () => {
@@ -217,7 +222,8 @@ describe('a failed read (§5.5)', () => {
     expect(tile('Answer hit rate, 24 h').textContent).toMatch(/91%/)
     await tick(30_000)
     expect(load).toHaveBeenCalledTimes(2)
-    expect(tile('Answer hit rate, 24 h').textContent).toMatch(/91% of 1,284 answers/)
+    expect(tile('Answer hit rate, 24 h').querySelector('b')?.textContent).toBe('91%')
+    expect(tile('Answer hit rate, 24 h').querySelector('i')?.textContent).toBe('of 1,284 answers')
     expect(panel('swarm-graph-0').textContent).toMatch(/64 \/ 256 MiB/)
     const age = document.querySelector('[data-read-age]')
     expect(age?.textContent).toMatch(/read 30 s ago/)
@@ -257,5 +263,72 @@ describe('the shard list (§5.2)', () => {
     expect(screen.getByRole('button', { name: /^Shards/ }).textContent).toMatch(/Shards \(2\) · 1 changed by the last merge/)
     const rows = Array.from(document.querySelectorAll('[data-shard-row]'))
     expect(rows.map((r) => r.getAttribute('data-last-merge'))).toEqual(['changed', 'unchanged'])
+  })
+})
+
+describe('the repository card mounts it when indexing is on (§5.1)', () => {
+  afterEach(() => vi.unstubAllEnvs())
+
+  it('draws a folded section on an indexed card, none on a card with indexing off, and reads only once opened', async () => {
+    vi.useRealTimers()
+    const ON = 'repo_0a1b2c3d4e5f6071'
+    const OFF = 'repo_9f8e7d6c5b4a3921'
+    const calls = serve((m, url) => {
+      if (m !== 'GET') return null
+      if (url === '/v1/repositories') {
+        return {
+          status: 200,
+          body: {
+            repositories: [
+              repo(),
+              repo({ repo_id: OFF, repo: 'example-docs' }, { interval_hours: 'off', on_change: 'off', current_sha: null, head_sha: null, last_indexed_at: null }),
+            ],
+          },
+        }
+      }
+      if (url.startsWith(`/v1/repositories/${ON}/graph-cache`)) return { status: 200, body: body({ repo_id: ON }) }
+      return null
+    })
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const { RepositoriesScreen } = await import('../Repositories')
+    render(<RepositoriesScreen view={null} go={vi.fn()} />)
+    await waitFor(() => expect(document.querySelectorAll('.ur-cards > .ur-card').length).toBeGreaterThanOrEqual(2), { timeout: 4000 })
+    const cards = Array.from(document.querySelectorAll<HTMLElement>('.ur-cards > .ur-card'))
+    const on = cards.find((c) => c.id === `ur-card-${ON}`)!
+    const off = cards.find((c) => c.id === `ur-card-${OFF}`)!
+    expect(off.querySelector('[data-cache-section]')).toBeNull()
+    expect(on.querySelector('[data-cache-section]')).not.toBeNull()
+    expect(calls.some((c) => c.url.includes('/graph-cache'))).toBe(false)
+
+    fireEvent.click(within(on).getByRole('button', { name: /^Cache/ }))
+    await waitFor(() => expect(on.querySelector('[data-replica="swarm-graph-1"]')).not.toBeNull(), { timeout: 4000 })
+    expect(calls.filter((c) => c.url.includes('/graph-cache'))).toHaveLength(1)
+    expect(on.querySelector('[data-replica="swarm-graph-1"]')?.getAttribute('data-reason')).toBe('timeout')
+  })
+})
+
+describe('the fixture build draws the hard case', () => {
+  it('serves one replica not read, no carried count, and a shard page only when asked', async () => {
+    vi.useRealTimers()
+    expect(import.meta.env.DEV, 'this case reads the fixture build').toBeTruthy()
+    vi.unstubAllEnvs()
+    vi.resetModules()
+    const api = await import('../api')
+    const plain = await api.loadRepositoryGraphCache('repo_5e1f0c2a9b3d4e61')
+    expect(plain.status).toBe('ok')
+    const doc = (plain as { data: GraphCacheDoc }).data
+    const notRead = doc.replicas.filter((r) => r.state === 'not_read')
+    expect(notRead).toHaveLength(1)
+    expect(doc.replicas.length).toBeGreaterThan(1)
+    expect(doc.facts.carried).toBeNull()
+    expect(doc.shards).toBeNull()
+    const paged = await api.loadRepositoryGraphCache('repo_5e1f0c2a9b3d4e61', 1)
+    const shards = (paged as { data: GraphCacheDoc }).data.shards
+    expect(shards?.state).toBe('read')
+    if (shards?.state === 'read') {
+      expect(shards.rows.length).toBeGreaterThan(0)
+      expect(shards.rows[0]!.last_merge).toBe('changed')
+    }
   })
 })
