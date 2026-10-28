@@ -127,6 +127,9 @@ describe('config-13: the grants table stacks at phone width', () => {
     expect(block).toMatch(/table\.fp-grants > tbody > tr > td\s*\{[^}]*display:\s*block/)
     expect(block).toMatch(/table\.fp-grants > thead\s*\{[^}]*clip-path:\s*inset\(50%\)/)
     expect(block).toMatch(/td\[data-label\]::before\s*\{[^}]*content:\s*attr\(data-label\)/)
+    // The cell rule above outranks `.fp-for`, so the For cell restates its column.
+    // MUTATION: drop the td.fp-for rule, and "merges can't land" runs into "Push, Merge" on one line.
+    expect(block).toMatch(/table\.fp-grants > tbody > tr > td\.fp-for\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column/)
   })
 })
 
