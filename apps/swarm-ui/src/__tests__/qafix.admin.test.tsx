@@ -257,9 +257,9 @@ describe('QA-099 (run 2): `configured` is a word a sighted reader can read', () 
       expect(painted(word, ['background-color', 'background'], env)).toBeNull()
     }
     // The override stays the one in ink.
-    const aimd = [...document.querySelectorAll('td[data-label="Set by"]')].find((c) => c.textContent === 'AIMD back-off')
+    const aimd = [...document.querySelectorAll('td[data-label="Set by"]')].find((c) => c.textContent === 'lowered automatically after errors')
     // MUTATION: drop the AIMD branch of setBy -- this row reads `configured` too.
-    expect(aimd?.textContent).toBe('AIMD back-off')
+    expect(aimd?.textContent).toBe('lowered automatically after errors')
     // MUTATION: drop the word's title -- a mouse learns nothing about why.
     expect(word.getAttribute('title')).toBe('configured. The configured hard limit of 20 is what applies.')
   })
