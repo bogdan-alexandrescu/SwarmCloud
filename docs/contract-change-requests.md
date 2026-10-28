@@ -14784,7 +14784,7 @@ with finished Jobs on 2026-10-28 ~09:30-11:15Z and 28 steps FAILED
 `gke_job_quota_exceeded`. Applied in `apps/common/swarm_common/`:
 `ParkReason.PLATFORM_REFUSED`, `Task.platform_refusals: int = 0`,
 `models.PLATFORM_REFUSED_MAX_PARKS = 5` and the transition LEASED -> PARKED
-(the failed-dispatch path parks a task it found LEASED; no other edge was
+(the failed-dispatch path parks an agent it found LEASED; no other edge was
 needed: PARKED -> READY, CANCELLED and DEAD_LETTERED already existed).
 
 **Two points of "The scheduler, once applied" below were REPLACED by BGD's
@@ -14796,10 +14796,10 @@ new quota is refreshed"):**
   10, ...), not 1-16 minutes; it is `scheduler/store.py`
   `platform_refusal_backoff`, so no `platform_refusal_backoff` was added to
   `models.py`;
-* past `PLATFORM_REFUSED_MAX_PARKS` consecutive refusals the task is NOT
+* past `PLATFORM_REFUSED_MAX_PARKS` consecutive refusals the agent is NOT
   ended FAILED: it stays PARKED/`PLATFORM_REFUSED`, retried every 10 minutes,
   logged at ERROR as trouble (and listed by `swarm_trouble`, which lists every
-  park but DEPENDENCY_INCOMPLETE). The refusal never fails a task.
+  park but DEPENDENCY_INCOMPLETE). The refusal never fails an agent.
 
 The rest is as written: the lease is released in the parking transaction,
 `attempt_count` is put back, `platform_refusals` is incremented, a successful
