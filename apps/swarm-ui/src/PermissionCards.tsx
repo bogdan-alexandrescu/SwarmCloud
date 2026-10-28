@@ -293,12 +293,16 @@ function PermCard({
           <ToneMark tone={tone} hidden />
           <b>{name}</b>
           <small>{kindWord}</small>
+          {/* THE COUNT IS ON THE TITLE ROW (visual QA pass 1, config-12): in the head's action it wrapped
+              under the summary, right-aligned on a row of its own beside a lone Details. */}
+          <Chip tone={tone === 'bad' ? 'bad' : undefined} className="fp-count">
+            {chip}
+          </Chip>
           {summary !== undefined && <span className="fp-summary">{summary}</span>}
         </span>
       }
       action={
         <span className="ur-acts fp-acts">
-          <Chip tone={tone === 'bad' ? 'bad' : undefined}>{chip}</Chip>
           <Button kind="ghost" size="sm" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen((o) => !o)}>
             {open ? 'Hide' : 'Details'}
           </Button>
@@ -460,34 +464,38 @@ function GrantsTable({ rows }: { rows: readonly GrantRow[] }) {
   if (rows.length === 0) return null
   return (
     <div className="fp-grants-wrap">
-      <table className="fp-grants">
-        <thead>
-          <tr>
-            <th scope="col">GitHub permission</th>
-            <th scope="col">Needs</th>
-            <th scope="col">Granted</th>
-            <th scope="col" aria-label="Enough" />
-            <th scope="col">For</th>
+      {/* THE ROLES ARE WRITTEN DOWN (visual QA pass 1, config-13): under 600px the table stacks
+          (forgeperms.css), and a table element whose `display` moves loses its implicit role. Each cell
+          names its column (`data-label`), drawn as the stacked value's key. */}
+      <table className="fp-grants" role="table">
+        <thead role="rowgroup">
+          <tr role="row">
+            <th scope="col" role="columnheader">GitHub permission</th>
+            <th scope="col" role="columnheader">Needs</th>
+            <th scope="col" role="columnheader">Granted</th>
+            <th scope="col" role="columnheader" aria-label="Enough" />
+            <th scope="col" role="columnheader">For</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody role="rowgroup">
           {rows.map((r) => (
             <tr
               key={r.permission}
               data-permission={r.permission}
               data-ok={r.ok ? 'true' : r.optional ? 'neutral' : 'false'}
               className={r.ok ? undefined : r.optional ? 'is-optional' : 'is-short'}
+              role="row"
             >
-              <td>
+              <td role="cell" data-label="GitHub permission">
                 <span className="fp-perm">{permissionWord(r.permission)}</span> <code className="fp-jargon">{r.permission}</code>
               </td>
-              <td>{r.needs ?? '?'}</td>
-              <td>{r.has ?? 'none'}</td>
-              <td className="fp-mark">
+              <td role="cell" data-label="Needs">{r.needs ?? '?'}</td>
+              <td role="cell" data-label="Granted">{r.has ?? 'none'}</td>
+              <td role="cell" data-label="Enough" className="fp-mark">
                 {r.ok ? <OkDot /> : <ToneMark tone={r.optional ? 'info' : 'bad'} hidden />}
                 <span className="fp-sr">{r.ok ? 'enough' : r.optional ? 'not needed yet' : 'not enough'}</span>
               </td>
-              <td className="fp-for">
+              <td role="cell" data-label="For" className="fp-for">
                 <span className="fp-words">{r.neededFor}</span>
                 {/* A span, not a <small>: the table is already --t-micro, and a <small> drew these at 10px. */}
                 {r.capabilities.length > 0 && <span className="fp-caps">{r.capabilities.map((c) => CAPABILITY_WORD[c] ?? c).join(', ')}</span>}
@@ -545,9 +553,10 @@ function OrgDetail({
       <p className="ur-small fp-via">
         <span>Via: SwarmCloud GitHub App installation {org.installation_id}</span>
         {manage !== null && (
-          <ButtonLink kind="ghost" size="sm" href={manage} target="_blank" rel="noreferrer" onClick={onFix}>
+          // A LINK, NOT A GHOST BUTTON (visual QA pass 1, config-14): the ghost drew as grey body text.
+          <a className="c-link is-sm" href={manage} target="_blank" rel="noreferrer" onClick={onFix}>
             Manage on GitHub
-          </ButtonLink>
+          </a>
         )}
       </p>
       {checkedAt !== undefined && <p className="ur-hint fp-when">{checkedWords(checkedAt)}</p>}

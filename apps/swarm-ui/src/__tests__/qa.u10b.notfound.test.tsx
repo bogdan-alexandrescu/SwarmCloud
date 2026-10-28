@@ -41,7 +41,8 @@ describe('an unknown route is a not-found state, not a redirect', () => {
     expect(heading).toBeTruthy()
     await waitFor(() => expect(window.location.pathname).toBe('/capacity/quota'))
     const page = within(document.querySelector<HTMLElement>('.nf-page')!)
-    const near = page.getByRole('link', { name: '/capacity/accounts/quota' })
+    // Named in the panel's words since QA1 admin-shell-11, the path its target.
+    const near = page.getByRole('link', { name: 'Capacity › Provider quota' })
     expect(near.getAttribute('href')).toBe('/capacity/accounts/quota')
     expect(page.getByRole('link', { name: 'Overview' }).getAttribute('href')).toBe('/overview')
     // The nav is still there, so the reader can go anywhere.

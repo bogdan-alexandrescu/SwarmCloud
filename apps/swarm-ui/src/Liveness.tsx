@@ -1,5 +1,6 @@
 import { CONCURRENCY_STATES, TERMINAL_STATES, type Task, type TaskEvent } from './types'
 import { ToneMark } from './components'
+import { spanText } from './duration'
 
 /**
  * The liveness badge. Shared, so it is defined once.
@@ -99,7 +100,13 @@ export function livenessOf(
   }
 
   const ageS = Math.max(0, Math.round((now - newest) / 1000))
+  // AN AGE A PERSON READS (QA1-FIX-14, overview-agents-22). A worker gone
+  // for days said `No event for 12809m` and `silent 12809m ago`: minutes are
+  // the unit below an hour and nothing after it. Past the hour the age is the
+  // shared formatter's (`spanText`, duration.ts), `8d 21h`, the words the
+  // Agents list and the attempt timeline use for the same span.
   const mins = Math.round(ageS / 60)
+  const age = mins < 60 ? `${mins}m` : spanText(ageS * 1000)
 
   if (ageS < 180) {
     return { kind: 'live', word: 'live', copy: `${ageS}s ago`, say: `Last event ${ageS}s ago.`, tone: 'ok' }
@@ -108,16 +115,16 @@ export function livenessOf(
     return {
       kind: 'quiet',
       word: 'quiet',
-      copy: `${mins}m ago`,
-      say: `No event for ${mins}m. Heartbeat events are only every ~150s, so this is not yet alarming.`,
+      copy: `${age} ago`,
+      say: `No event for ${age}. Heartbeat events are only every ~150s, so this is not yet alarming.`,
       tone: 'warn',
     }
   }
   return {
     kind: 'silent',
     word: 'silent',
-    copy: `${mins}m ago`,
-    say: `No event for ${mins}m. The worker may be gone; the reconciler reclaims a stale lease.`,
+    copy: `${age} ago`,
+    say: `No event for ${age}. The worker may be gone; the reconciler reclaims a stale lease.`,
     tone: 'bad',
   }
 }

@@ -379,7 +379,10 @@ describe('Holders leads with the table, its filter, and drift per pool under it 
     expect([...seg!.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['All', 'eng'])
   })
 
-  it('draws drift as a per-pool table of From leases, Counter and Delta, agreeing rows included', async () => {
+  // AGREEING ROWS ARE FOLDED BEHIND A COUNT, ONE CLICK AWAY (QA1-FIX-12
+  // capacity-16, 2026-10-28): 13 of 20 pools at 0/0/0 interleaved the drifted
+  // ones. They are still drawn, in the same table, once the fold is opened.
+  it('draws drift as a per-pool table of From leases, Counter and Delta, agreeing rows behind a fold', async () => {
     api.loadHolders.mockResolvedValue(
       ok(holders([lease(1, ['global', 'runner:codex']), lease(2, ['global'])], [pool('global', 2, 10), pool('runner:codex', 2, 10)])),
     )
@@ -388,12 +391,16 @@ describe('Holders leads with the table, its filter, and drift per pool under it 
     const heads = [...drift.querySelectorAll('thead th')].map((th) => th.textContent)
     expect(heads).toEqual(['Pool', 'From leases', 'Counter', 'Delta'])
     const row = (name: string) => [...drift.querySelectorAll('tbody tr')].find((tr) => tr.querySelector('th')?.getAttribute('title') === name)!
+    expect(row('global'), 'an agreeing row is drawn before the fold is opened').toBeUndefined()
+    fireEvent.click(screen.getByRole('button', { name: /1 pool agrees/ }))
     expect(row('global').querySelector('td[data-label="Delta"]')!.textContent).toBe('0')
     const off = row('runner:codex')
     expect(off.querySelector('td[data-label="Delta"]')!.textContent).toContain('+1')
     expect(off.querySelector('td[data-label="Delta"] [data-mark="warn"]')).not.toBeNull()
-    // And the callout above the table names the pool that disagrees.
-    expect(document.querySelector('.hold-callout')?.textContent ?? '').toContain('runner:codex')
+    // And the callout above the table names the pool that disagrees, as the
+    // table does, the raw id its title (capacity-16).
+    expect(document.querySelector('.hold-callout')?.textContent ?? '').toContain('codex counts 1 more')
+    expect(document.querySelector('.hold-callout [title="runner:codex"]')).not.toBeNull()
   })
 
   it('draws dispatched and leased as the half disc of the holding-capacity family', async () => {

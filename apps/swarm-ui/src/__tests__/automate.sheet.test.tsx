@@ -242,10 +242,10 @@ describe('one schedule in the side sheet (frame A2)', () => {
 
   it('draws the next five firings of a schedule that fires, from the preview', async () => {
     await open(schedule('sch_a'), [NEWEST])
-    const next = await within(sec('cadence')).findByRole('list', { name: 'The next firings' }, WAIT)
+    const next = await within(sec('cadence')).findByRole('list', { name: 'The next firings, in UTC' }, WAIT)
     expect(within(next).getAllByRole('listitem')).toHaveLength(5)
-    // The slot's own wall time, in the zone the heading names.
-    expect(visible(within(next).getAllByRole('listitem')[0]!)).toBe('Oct 28 02:00')
+    // The slot's own wall time, in the zone named beside it; a UTC one with its Z (QA1 automate-14).
+    expect(visible(within(next).getAllByRole('listitem')[0]!)).toBe('Oct 28 02:00Z')
     expect(visible(sec('cadence').querySelector('h3'))).toContain('0 2 * * *')
   })
 

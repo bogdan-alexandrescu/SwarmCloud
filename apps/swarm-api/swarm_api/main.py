@@ -57,6 +57,7 @@ from .routes import (
     forgeperms,
     gittokens,
     gittools,
+    graph_cache,
     graph_ticket,
     health,
     issues,
@@ -531,6 +532,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # The shared graph service's attempt ticket (docs/design/graph-service.md
     # §3.1, lane GS-TICKET): worker-only, proven and fenced as above.
     app.include_router(graph_ticket.router)
+    # The console's Cache section (docs/design/graph-answer-cache.md §5.3,
+    # lane CACHE-3-ROUTE): tenant-scoped, one stats-ticket read of swarm-graph.
+    app.include_router(graph_cache.router)
     # The notification feed (#1206, NOTIF-API; docs/notifications.md): the
     # caller's own items, derived on each read from the records above, and
     # one document of read marks per person.

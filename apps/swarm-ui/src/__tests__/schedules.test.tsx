@@ -328,7 +328,7 @@ describe("a schedule's page head", () => {
     expect(within(head()).getAllByRole('button').map((b) => visible(b))).toEqual(['Run now', 'Dry run', 'Resume', 'Delete…'])
   })
 
-  it('dry-runs and pauses without asking, through :run and :pause, then reads the schedule again', async () => {
+  it('dry-runs without asking and pauses after its reason dialog, through :run and :pause, then reads the schedule again', async () => {
     // MUTATION: route Dry run through the confirmation and the first click sends nothing.
     const { calls } = await mountActing('schedule=sch_a', ONE(), (m, url) => {
       if (m === 'POST' && url === '/v1/schedules/sch_a:run') {
@@ -348,7 +348,10 @@ describe("a schedule's page head", () => {
     await waitFor(() => expect(reads(calls, '/v1/schedules/sch_a')).toBe(2), WAIT)
     await screen.findByTestId('sc-acts-head', undefined, WAIT)
     fireEvent.click(within(head()).getByRole('button', { name: 'Pause' }))
+    // Pause asks for an optional reason (QA1 automate-12); none written sends none.
+    fireEvent.click(within(await screen.findByRole('dialog', undefined, WAIT)).getByRole('button', { name: 'Pause' }))
     await waitFor(() => expect(posts(calls, '/v1/schedules/sch_a:pause')).toHaveLength(1), WAIT)
+    expect(posts(calls, '/v1/schedules/sch_a:pause')[0]!.body).toEqual({})
     expect(screen.queryByRole('dialog')).toBeNull()
     await waitFor(() => expect(visible(screen.getByTestId('sc-said'))).toContain('Paused: no new firings'), WAIT)
     await waitFor(() => expect(reads(calls, '/v1/schedules/sch_a')).toBe(3), WAIT)
@@ -772,6 +775,7 @@ describe('live QA: automate, the list and the page', () => {
     gone = true
     // The sheet reads itself again after an action (frame A2); the list's ⟳ re-reads the list.
     fireEvent.click(within(screen.getByTestId('sc-acts-head')).getByRole('button', { name: 'Pause' }))
+    fireEvent.click(within(await screen.findByRole('dialog', undefined, WAIT)).getByRole('button', { name: 'Pause' }))
     // MUTATION: drop `setGone` and the stale record stays, Edit enabled.
     await screen.findByText('This schedule was deleted', undefined, WAIT)
     expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()

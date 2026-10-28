@@ -62,7 +62,7 @@
 
 /* ---- the actions: one wrapping row, every button a sibling ---------------- */
 .as-acts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; max-width: 100%; }
-.as-acts > .sc-head-acts, .as-acts .sc-fold { display: contents; }
+.as-acts > .sc-head-acts { display: contents; }
 .as-acts .c-btn-wrap { min-width: 0; max-width: 100%; }
 .as-acts .c-why { min-width: 0; overflow-wrap: anywhere; }
 

@@ -156,7 +156,7 @@ def test_a_live_browser_attempt_wires_the_hook_after_every_tool(tmp_path, monkey
     # MUTATION: the hook reads a path other than $SWARM_HANDOFF -- no message, differs.
     assert json.loads(done.stdout)["hookSpecificOutput"]["additionalContext"] == MESSAGE
     # The existing PreToolUse hooks are untouched.
-    assert len(settings["hooks"]["PreToolUse"]) == 2  # MUTATION: the new hook replaces a PreToolUse entry -- differs.
+    assert len(settings["hooks"]["PreToolUse"]) == 3  # MUTATION: the new hook replaces a PreToolUse entry -- differs.
 
 
 @pytest.mark.parametrize("value", [None, "", "   "])
