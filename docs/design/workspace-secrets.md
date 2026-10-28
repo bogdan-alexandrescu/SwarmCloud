@@ -1530,10 +1530,13 @@ This comes after the attempt-signed release of phase 1, so the build plan gains 
 
 ## 11. Phase 2: per-person signed submissions (designed 2026-10-27, part of #1347)
 
-**Status: designed, nothing built.** No code in this change. §11.11 has the
-owner questions; each is also in this lane's `questions.json`. The build
-lanes in §11.10 start only after they are answered. Every file and symbol
-below was read on 2026-10-27 at `bce4b22`.
+**Status: designed and decided, nothing built.** No code in this change.
+§11.11 has the owner questions P1–P10. BGD answered all ten on 2026-10-27
+and 2026-10-28, and the sections below are written to those answers. Three
+answers go against the design's first recommendation (P4, P9 and P10), and
+§11.11 says what the design does instead. The build lanes in §11.10 start
+from these answers. Every file and symbol below was read on 2026-10-27 at
+`bce4b22`.
 
 The owner's phase 2 decision (§10, 2026-10-14 ~22:40 PDT) asks for four
 things. Each person gets a signing key. Every submission is signed by its
@@ -1582,8 +1585,8 @@ against bytes that person signed, with a key that never leaves them.**
 
 **What phase 2 does not stop: a compromised swarm-api.** swarm-api holds the
 read grant (§3.3) and runs the check, so whoever controls it can skip the
-check. The owner did not name this threat. Q P8 asks whether to move the check
-and the read grant out of swarm-api, and says what that costs.
+check. The owner did not name this threat. Q P8 asked whether to move the check
+and the read grant out of swarm-api. BGD's answer: not in phase 2.
 
 ### 11.2 Keys: two kinds, one registry
 
@@ -1606,8 +1609,8 @@ A person can hold several keys, of either kind:
 **The registry is where phase 2 succeeds or fails.** If a tenant agent can add
 a public key under Alice's name, it can sign as Alice. A Firestore document is
 writable by every tenant agent, and a MAC over it is replayable (SEC-GRANT-ATTEST,
-"Replaying a grant's own earlier state"). So the recommended registry
-(Q P2) is **Secret Manager**: one secret, `swarm-person-signing-keys`. Only
+"Replaying a grant's own earlier state"). So the registry (Q P2, decided as
+recommended) is **Secret Manager**: one secret, `swarm-person-signing-keys`. Only
 swarm-api may add versions and read it. Each version is the whole registry as
 JSON: `{email: [{key_id, kind, public_key, enrolled_at, enrolled_via,
 revoked_at}]}`. Tenant workers hold no grant on it, so a Firestore writer
@@ -1621,15 +1624,39 @@ for at most 60 s. A revocation is in force within that minute.
   `auth_time` is under 5 minutes old, as the caller, plus proof of possession
   (the new key signs a server challenge). The new key is the caller's only.
   Nobody can enrol a key for someone else, platform admins included.
-* **Each later key** needs either a signature by an unrevoked existing key,
-  or a fresh sign-in plus **24 hours' delay** (recovery). During the delay the
-  person is notified and any existing key can cancel the enrolment. That
-  delay is Q P3.
+* **Each later key** goes through one of three paths. BGD chose all of them
+  (Q P3, options (a) and (c), 2026-10-27–28):
+  1. **Signed by an existing key.** An unrevoked key of the same person
+     signs the new key's enrolment. It takes effect at once
+     (`enrolled_via: "existing_key"`).
+  2. **Self-service recovery, when no key is left.** A fresh sign-in, as for
+     the first key, plus proof of possession of the new key, then **24 hours'
+     delay**. The person is notified when the delay starts. Any existing key
+     of theirs can cancel the enrolment during the delay, so a stolen Google
+     session alone cannot quietly add a key. The key becomes usable when the
+     delay ends (`enrolled_via: "recovery_delay"`).
+  3. **Admin-approved recovery, at once.** The person starts a recovery with
+     a fresh sign-in and proof of possession, as in path 2. A platform admin
+     then approves it, and the key is usable at once with no delay
+     (`enrolled_via: "admin_recovery"`). The admin approves a key the person
+     generated and proved. **The admin never supplies or sees a private
+     key**, and the rule that nobody enrols a key for someone else still
+     holds. The approval needs its own fresh sign-in by the admin, and an
+     admin cannot approve their own recovery. It writes an `admin_audit` row
+     naming the admin, the person, the new `key_id` and both sign-in times.
+     The person is notified at once, by email and in the console, with the
+     admin's name and the new key's id. Their existing keys, if any, stay
+     valid, and any of them can revoke the new key. The cost: a platform
+     admin who colludes with whoever holds the person's Google session can
+     give that session a key at once. The audit row and the notification are
+     what make that visible, and they do not prevent it.
 * **Revocation** takes any one of the person's keys or a fresh sign-in, and
   is immediate. A revoked key's past statements stop verifying, so agents still
-  queued under it get no personal secrets.
-* Every enrolment, cancellation and revocation writes an `admin_audit` row.
-  The row is for people to read; the release never trusts it.
+  queued under it get no personal secrets. A revoked key's standing grants
+  (§11.5) stop verifying too.
+* Every enrolment, cancellation, admin approval and revocation writes an
+  `admin_audit` row. The row is for people to read; the release never trusts
+  it.
 
 ### 11.3 What a person signs: the submission statement
 
@@ -1645,12 +1672,14 @@ bytes that will run, under task ids swarm-api has already minted:
    never sees it (invariant 1). The response is the statement:
 
        {"purpose": "swarm.person-submission/v1", "prepared_id", "tenant_id",
-        "submitted_by", "issued_at", "expires_at",
+        "submitted_by", "tenant_via", "issued_at", "expires_at",
         "specs": [{"task_id", "spec_format", "spec_digest"}, ...]}
 
    `specs` is sorted by `task_id`. It includes the second digest of a
    `browser_if_ui` step's runtime alternate, so the scheduler's swap stays
-   covered. The digest that gets signed is `SHA-256(jcs(statement))`.
+   covered. `tenant_via` is `"member"` or `"platform_admin"`, how the
+   caller reached the tenant (§11.4, Q P10). The digest that gets signed is
+   `SHA-256(jcs(statement))`.
 2. **`POST /v1/submissions/{prepared_id}:commit`** with `{key_id,
    signature}`, plus `authenticator_data` and `client_data_json` for a
    passkey. swarm-api runs these checks in order:
@@ -1669,6 +1698,9 @@ the prepared specs with `canonical_step_spec`. It refuses to sign if the
 tenant, profile, input or repository is not what it sent. The console shows
 the tenant, the steps and their profiles in the passkey prompt's dialog. A
 workflow is one statement and one prompt, however many steps it has.
+
+BGD chose the statement, by prepare then commit (Q P1, option (a),
+2026-10-27–28).
 
 **Why not sign the request body (Q P1, option b)?** A request signature does
 not name a task id or the spec bytes. swarm-api would then decide which agent
@@ -1700,11 +1732,43 @@ Then, for each secret that is due:
 
 | secret | released when |
 |---|---|
-| **personal** (a `u-` tenant's record), in its own personal workspace or opted in to a group (Q3) | the agent is person-signed, and the signer is the record's person |
-| **group workspace** secret | the agent is person-signed, and the signer is a member of the group **now**, asked of the directory as `apps/swarm-api/swarm_api/routes/attempts_secrets.py::SecretRelease._membership_refusal` already asks |
-| **repository** secret (secrets-scopes.md) | as a group workspace secret (Q P6) |
+| **personal** (a `u-` tenant's record), in its own personal workspace or opted in to a group (Q3) | the agent is person-signed, and the signer is the record's person. **Never** on a platform admin's signature, whatever `tenant_via` says (Q P10 does not reach personal secrets) |
+| **group workspace** secret | the agent is person-signed, and the signer is either a member of the group **now**, asked of the directory as `apps/swarm-api/swarm_api/routes/attempts_secrets.py::SecretRelease._membership_refusal` already asks, or a platform admin acting in the group (Q P10, below) |
+| **repository** secret (secrets-scopes.md) | as a group workspace secret (Q P6, decided as recommended): a current member's signature, or an audited platform admin's |
 | headless agent | §11.5's standing grant instead of a statement |
 | child agent | §11.6 |
+
+**A platform admin acting in a group counts as a member, audited (Q P10,
+decided 2026-10-27–28 against the recommendation).** The statement (§11.3)
+gains one field, `tenant_via`, which swarm-api fills at prepare from the
+caller's context: `"member"`, or `"platform_admin"` when the caller reached
+the group through platform reach
+(`apps/swarm-api/swarm_api/auth.py::Authenticator.holds_platform_admin`).
+The person signs it, so swarm-api cannot later relabel a member's submission
+as an admin's or the reverse. A signature with `tenant_via ==
+"platform_admin"` satisfies the group rule only when both of these hold at
+release time:
+
+* the signer is still a platform admin **now**, asked with `fresh=True`. An
+  admin whose role was removed is `signer_not_member`, as a member who left
+  the group is;
+* the secret is a group or repository secret of the statement's own tenant.
+  A personal secret, including one its owner opted in to the group, is
+  withheld from the admin's agent with `person_signature_missing`. The admin
+  is not that person.
+
+Every release that relies on a platform admin's signature writes, in the
+release's own transaction, one `admin_audit` row
+`workspace_secret_released_to_platform_admin`, with detail `{tenant_id,
+admin, task_id, attempt_id, generation, secrets: [{secret_id, name,
+version}]}`. It names the admin, the group, the agent and each secret
+released, and never holds a value. Each of those secrets' release rows
+(§4.4) also gains `via: "platform_admin"` and the admin's email. The group's
+secret page shows "last used by a platform admin" from those rows to the
+group's members, not only to admins, so members can see every time an admin
+used their credentials. The cost BGD accepted: a platform admin can run an
+agent with a group's credentials without being in the group. The audit
+record makes that visible after the fact, and does not prevent it.
 
 A secret that fails its rule is **withheld by name**, the same way a lapsed
 membership is withheld today, with one of these reasons:
@@ -1712,6 +1776,51 @@ membership is withheld today, with one of these reasons:
 `signer_not_member`, `standing_grant_out_of_scope`. A required slot left empty
 parks `CREDENTIAL_MISSING` through the worker's existing path. No new
 `ParkReason` is added (request 83 stands).
+
+**The same rule gates the other two credential routes (Q P9, decided
+2026-10-27–28 against the recommendation: both at once, in P2-RELEASE).**
+Two more routes serve credential material to an attempt, and both get the
+same check, in the same build wave as `secrets:release`. Each route runs the
+signature lookup above after its own fence and spec check, and before it
+reads any secret:
+
+* **The forge-credential broker** (`POST /v1/attempts/forge-credential`,
+  user-scoped-secrets.md §3.2). It serves a user slot (`git-u-<16 hex>`),
+  which is a person's forge token, so it is a personal secret. It is
+  released only when the agent is signed by the slot's person: the agent's
+  own statement, a standing grant of that person whose `forge` field names
+  the slot (§11.5), or a child inside the root's envelope (§11.6). A
+  platform admin's signature never releases another person's forge token
+  (Q P10 does not reach personal secrets). The new check is a step between
+  §3.2's step 7 (the slot is the submitter's) and step 8 (the grant still
+  covers the repository). The broker answers per call rather than with a
+  `withheld` list, so a failure is a `403` with the reason as its code:
+  `person_signature_missing`, `person_signature_invalid`,
+  `person_key_revoked` or `standing_grant_out_of_scope`. The worker's
+  existing path treats a refused forge read as it treats `grant_removed`
+  today. Team slots (`git`, `git-r-<hex>`) are not served by the broker and
+  are unchanged.
+* **`mcp:attach`** (`POST /v1/attempts/{attempt_id}/mcp:attach`,
+  registered-mcp-servers.md §4.6). Its credentials follow their secret's
+  scope. A `workspace_secret`-mode credential (a grant `mcp:<name>`) is a
+  group secret, so it needs a current member's signature or an audited
+  platform admin's, and an admin release writes the `admin_audit` row above.
+  In a personal workspace it is a personal secret, so it needs that person's
+  signature. A `dispatch`-mode credential is bound to the submission that
+  carried it: it is released only when the agent (or, for a child, its root
+  inside the envelope) is covered by the very statement that committed that
+  submission. A credential carried by one submission never reaches an agent
+  signed under another, and never reaches a headless agent's grant unless
+  that grant names the server. A failure is one more entry in the route's
+  `withheld` list beside the server's name, with reason
+  `person_signature_missing`, `person_signature_invalid`,
+  `person_key_revoked`, `signer_not_member` or `standing_grant_out_of_scope`.
+  A server with auth mode `none` carries no credential and is not gated.
+
+Both routes take the rollout of §11.7: under `person_signature_mode =
+report` they serve as today and log the reason they would refuse, and a
+person who has enrolled a key is enforced for their own forge slot and their
+personal MCP credentials at once.
 
 **Admission must not loop.** SEC-ADMIT-PARK's sweep promotes a park once its
 grant is ticked, but a missing signature never cures itself. So
@@ -1733,7 +1842,34 @@ jobs it covers:
     {"purpose": "swarm.standing-grant/v1", "grant_id", "grantor", "tenant_id",
      "origin": {"kind": "schedule" | "issue_run" | "issue_sweep", "id"},
      "profiles": [...], "secrets": [...names, never "all"],
-     "not_before", "expires_at"}
+     "forge": [...user slots] (optional), "mcp_servers": [...names] (optional),
+     "not_before", "expires_at" (optional)}
+
+`secrets` names the workspace secrets the grant covers. `forge` names the
+grantor's own user slots (`git-u-<16 hex>`) the forge-credential broker may
+serve under it, and `mcp_servers` names the registered MCP servers whose
+credentials `mcp:attach` may serve under it (§11.4, Q P9). An absent or empty
+list covers nothing on that route. None of the three accepts "all".
+
+**A grant has no expiry unless its grantor sets one (Q P4, decided
+2026-10-27–28 against the recommendation).** BGD chose no expiry, revoked by
+hand, over the recommended 30-day cap. `not_before` stays required.
+`expires_at` is optional: absent means the grant never expires, and a
+grantor may still set one. There is no cap, and no expiry reminder. A grant
+lasts until one of these:
+
+* its grantor revokes it;
+* its grantor's signing key is revoked (§11.2);
+* the schedule's owner, profile or secrets change, which already needs a new
+  grant (below), so the old grant stops matching.
+
+What this costs: a stolen key's grants stay live until someone revokes them.
+Nothing lapses on its own, so a grant the grantor forgot about keeps
+releasing secrets to every fire of its schedule. Revocation is the only
+control. It is by registry key (revoking the key revokes every grant it
+signed) or by a signed revoke statement for one grant. The console lists
+each person's live grants with their origin, profiles, secrets, forge slots
+and MCP servers, so a forgotten grant can be found and revoked.
 
 It is stored in `standing_grants/{grant_id}`. Like a submission signature, a
 forged one needs the grantor's key. Revocation is by registry key (§11.2) or
@@ -1747,10 +1883,11 @@ these hold:
   `SIGNED_METADATA_KEYS`, so the headless submitters write
   `metadata.dispatch.origin = {kind, id}`. `dispatch` is signed already, so
   this needs no new spec format;
-* a standing grant of the agent's `submitted_by` names that origin, is in its
-  window and is not revoked;
-* the agent's profile is in `profiles`, and each released secret's name is in
-  `secrets`;
+* a standing grant of the agent's `submitted_by` names that origin, is past
+  `not_before`, is before `expires_at` if it has one, and is not revoked;
+* the agent's profile is in `profiles`. Each released workspace secret's name
+  is in `secrets`, a forge token's slot is in `forge`, and an MCP server
+  whose credential is served is in `mcp_servers`;
 * §11.4's owner or membership rule holds for the grantor.
 
 The three headless kinds:
@@ -1769,14 +1906,17 @@ The three headless kinds:
   `issue_sweep:<repository registration id>`, signed by the registration's
   creator (`on_behalf_of`).
 
-`expires_at` is capped at **30 days** (Q P4). When a grant expires,
-`notifications.py` reminds the grantor before the schedule's next fire finds
-nothing.
+A platform admin firing a group schedule is that fire's `submitted_by`, so
+the owner's grant does not cover it. Only a grant the admin signed for that
+schedule does, and under it the fire gets the group's secrets alone (Q P10,
+audited as §11.4 says). It never gets the owner's personal secrets, forge
+token or personal MCP credentials.
 
 ### 11.6 Children, continuations and the runtime alternate
 
 A child's spec is written by swarm-api from its parent agent's request. Its
-person never saw it. Recommended (Q P5, option b): **a person-signed root
+person never saw it. Decided as recommended (Q P5, option (b), 2026-10-27–28):
+**a person-signed root
 carries a child envelope** in its statement,
 `"children": {"profiles": [...], "max_depth": n}`, defaulting to the root's
 own profile and depth 1. A child's secrets are released when walking
@@ -1784,7 +1924,10 @@ own profile and depth 1. A child's secrets are released when walking
 person-signed root, the child's profile is in the envelope, and its depth is
 within `max_depth`. The person already trusted the agent with these secrets,
 and the envelope stops the agent from carrying them into other kinds of
-runner. A continuation that creates a new agent follows the same walk. Without
+runner. The envelope covers the forge-credential broker and `mcp:attach` as
+it covers `secrets:release` (§11.4, Q P9). A `dispatch`-mode MCP credential
+reaches a child only through its root's submission. A continuation that
+creates a new agent follows the same walk. Without
 a parent it gets nothing. The runtime alternate is covered by its second
 digest (§11.3).
 
@@ -1793,13 +1936,24 @@ digest (§11.3).
 * **`person_signature_mode`**: `off` (default), `report`, `enforce`, as
   `grant_attestation_required` shipped off. `report` releases as today and
   logs every reason §11.4 would withhold. `enforce` withholds.
-* **Enrolled means enforced, for that person's own secrets** (Q P7,
-  recommended). Once a person has enrolled a key, their personal secrets
+  The mode covers all three routes: `secrets:release`, the forge-credential
+  broker and `mcp:attach` (Q P9).
+* **Enrolled means enforced, for that person's own secrets** (Q P7, decided
+  as recommended, 2026-10-27–28). Once a person has enrolled a key, their
+  personal secrets, their forge slots and their personal MCP credentials
   require their signature even while the mode is `off`. Nobody else's flow
   depends on it, so early adopters are protected at once.
-* Each release row (§4.4) gains `signature: {kind: "statement" |
-  "standing_grant" | "child_envelope", id, key_id}`. Nothing secret goes in
-  it, and it uses the same 90-day TTL.
+* Each release row (§4.4), and each `mcp_attach_releases` row, gains
+  `signature: {kind: "statement" | "standing_grant" | "child_envelope", id,
+  key_id}`, plus `via: "platform_admin"` and the admin's email when a
+  platform admin's signature released it (§11.4). Nothing secret goes in it,
+  and it uses the same 90-day TTL. The forge broker writes no release row
+  today. It logs its decision code, the agent and the slot's name
+  (user-scoped-secrets.md §3.2), and that log line gains the same
+  `signature` fields.
+* A key enrolled by admin-approved recovery (§11.2), and every release on a
+  platform admin's signature (§11.4), writes an `admin_audit` row and is
+  shown to the people it concerns.
 * The new refusal codes ship off (`test_new_refusals_ship_off.py`).
 
 ### 11.8 Invariants
@@ -1807,10 +1961,20 @@ digest (§11.3).
 * **1:** prepared submissions are not agents. They hold nothing and cost
   nothing. A parked agent without a signature holds nothing.
 * **5:** unchanged. The generation fence runs before any signature work, and a
-  stale worker still gets 409 and nothing.
+  stale worker still gets 409 and nothing. That holds on all three routes:
+  the forge broker's fence (user-scoped-secrets.md §3.2, step 4) and
+  `mcp:attach`'s (registered-mcp-servers.md §4.6, step 2) both run before
+  the signature lookup (Q P9).
 * **9:** a statement names its tenant inside the signed bytes, and a key
   belongs to one person, not a tenant. The release still bounds every query
-  by the agent's tenant.
+  by the agent's tenant. A platform admin's signature (Q P10) releases only
+  the group or repository secrets of the statement's own tenant, never a
+  person's personal secret, forge token or personal MCP credential, and
+  every such release is in `admin_audit` where the group's members see it.
+  This is a deliberate, audited exception to "only a member's signature
+  releases a group's secrets", not to tenant isolation: the admin's agent
+  still runs as the group's worker identity, under the group's prefix and
+  namespace.
 * **10:** the caller still picks a profile by name. The statement signs
   swarm-api's spec and adds no caller-supplied resource or image.
 
@@ -1821,7 +1985,18 @@ digest (§11.3).
   `STANDING_GRANT_PURPOSE`, and `canonical_submission_statement(...)` /
   `canonical_standing_grant(...)`, both JCS over the fields in §11.3 and
   §11.5. The plugin installs `swarm_common` from a git tag, so this is the
-  only way swarm-api, `sc` and the release read the same bytes.
+  only way swarm-api, `sc` and the release read the same bytes. The owner's
+  answers fix three details of those fields. The statement carries
+  `tenant_via` (Q P10). The standing grant carries `forge` and `mcp_servers`
+  (Q P9). Its `expires_at` is optional, and absent means no expiry (Q P4), so
+  the canonical form must omit an absent `expires_at` rather than write
+  `null`. Otherwise `sc` and the release would sign different bytes for the
+  same grant.
+* **Also a request: a revoke statement purpose.**
+  `STANDING_GRANT_REVOKE_PURPOSE = "swarm.standing-grant-revoke/v1"`, with
+  its canonical form over `{purpose, grant_id, grantor, revoked_at}`. With no
+  expiry (Q P4), revocation is the only way a grant ends, so its bytes need
+  the same single definition.
 * **Not requested:** a new `SPEC_FORMAT`. The statement is stored beside the
   agent and signs the existing spec digest, so no spec field changes. The
   origin goes in `metadata.dispatch`, which is already signed.
@@ -1834,10 +2009,10 @@ owner approves the design. That file is outside this lane's territory.
 | lane | territory | red-first tests |
 |---|---|---|
 | **P2-CONTRACT** (owner applies) | `apps/common/swarm_common/specsign.py`, `docs/contract-change-requests.md` | a statement's bytes change when any field changes; `specs` order is canonical |
-| **P2-REGISTRY** | `swarm_api/person_keys.py` (new), its routes, `terraform/infra` (the registry secret; swarm-api only) | a key enrolled without a fresh sign-in is refused; a second key without an existing key's signature waits 24 h; no tenant worker grant on the registry (a tftest) |
+| **P2-REGISTRY** | `swarm_api/person_keys.py` (new), its routes, `notifications.py`, `terraform/infra` (the registry secret; swarm-api only) | a key enrolled without a fresh sign-in is refused; a second key without an existing key's signature waits 24 h, and an existing key's cancel during the delay leaves it unenrolled; an admin-approved recovery is usable at once, writes an `admin_audit` row naming the admin, the person and the key, and notifies the person; an admin cannot approve their own recovery or approve without a fresh sign-in; no tenant worker grant on the registry (a tftest) |
 | **P2-SUBMIT** | `service.py` (prepare/commit), `routes/` | a prepared submission is not in `tasks`; a commit signed over another statement, by another person's key or after expiry is refused and writes nothing |
-| **P2-RELEASE** | `routes/attempts_secrets.py`, `workspace_secrets.py::release_plan`, `scheduler/credentials.py` | a personal secret is withheld from an agent signed by someone else, from an unsigned agent, from a revoked key's agent and from an agent whose task document was rewritten; a group secret is withheld when the signer left the group; an unsigned agent with a required slot stays parked |
-| **P2-HEADLESS** | `schedulefire.py`, `issueruns.py`, `cifix.py`, `issuesweep.py` | a schedule fired by a platform admin gets none of its owner's personal secrets; a fix round past `fix_rounds` gets none; a grant outside its window gets none |
+| **P2-RELEASE** | `routes/attempts_secrets.py`, `workspace_secrets.py::release_plan`, `scheduler/credentials.py`, `credbroker.py` and `routes/credentials.py` (the forge-credential broker, user-scoped-secrets.md §3.2), `routes/attempts_mcp.py` (`mcp:attach`, registered-mcp-servers.md §4.6), `admin_audit` writes for platform-admin releases | **secrets:release:** a personal secret is withheld from an agent signed by someone else, from an unsigned agent, from a revoked key's agent and from an agent whose task document was rewritten; a group secret is withheld when the signer left the group; an unsigned agent with a required slot stays parked. **Platform admin (Q P10):** a group secret IS released to a platform admin's signature with `tenant_via == "platform_admin"`, and writes one `admin_audit` row naming the admin, the group, the agent and each secret, with no value in it; it is withheld once the signer is no longer a platform admin; a personal secret opted in to the group is withheld from the admin's agent. **Forge broker (Q P9):** a forge token is withheld (403 with the reason) from an unsigned agent, from an agent signed by another person, a platform admin included, and from a revoked key's agent; it is served under a standing grant whose `forge` names the slot and refused under one that does not. **mcp:attach (Q P9):** a `workspace_secret`-mode credential is withheld the same three ways and is listed in `withheld` with its reason; a `dispatch`-mode credential is withheld from an agent not covered by the statement that carried it; a server with auth `none` is attached unsigned |
+| **P2-HEADLESS** | `schedulefire.py`, `issueruns.py`, `cifix.py`, `issuesweep.py` | a schedule fired by a platform admin gets none of its owner's personal secrets, forge token or personal MCP credentials; a fix round past `fix_rounds` gets none; a grant before `not_before` or past a set `expires_at` gets none; a grant with no `expires_at` is still honoured a year after `not_before`; a revoked grant, or a grant of a revoked key, gets none |
 | **P2-UI** | `apps/swarm-ui` (passkey enrolment, the prompt, schedule grant) | no private key or signature leaves the prompt except to the commit route |
 | **P2-SC** | `plugin/`, `apps/swarm-mcp` | the key is never written to a file or the environment; a prepared spec whose profile differs from the request is not signed |
 
@@ -1846,6 +2021,12 @@ P2-REGISTRY, P2-SUBMIT and P2-RELEASE.
 
 ### 11.11 Owner questions
 
+BGD answered all ten on 2026-10-27 and 2026-10-28. Each question below keeps
+its options, and its **Answer** line names the option picked. Seven follow
+the recommendation. P3 takes two options together. **P4, P9 and P10 go
+against the recommendation**, and their answers say what the design does
+instead.
+
 **P1. What does a person sign?** (a) **the submission statement over
 swarm-api's minted task ids and spec digests, by prepare then commit**
 (recommended: it binds the exact bytes that run and cannot be replayed into a
@@ -1853,37 +2034,61 @@ second agent); (b) the request body, in one call (no extra round trip, but
 swarm-api decides which agent it vouches for, and it can be replayed); (c)
 the request body plus a client nonce that swarm-api marks used (replay is
 stopped only by a Firestore mark a tenant agent can delete).
+**Answer (2026-10-27–28): (a), as recommended.** §11.3 as written.
 
 **P2. Where does the key registry live?** (a) **one Secret Manager secret that
 only swarm-api reads and versions** (recommended: a Firestore writer cannot
 enrol or un-revoke a key); (b) Firestore with a swarm-api MAC per key, like
 grants (a revoked key's earlier record can be replayed: SEC-GRANT-ATTEST's
 residual).
+**Answer (2026-10-27–28): (a), as recommended.** §11.2 as written.
 
 **P3. How does a person add a second key, or recover after losing all keys?**
 (a) **signed by an existing key, or a fresh Google sign-in plus a 24 h delay
 the person is notified about and any existing key can cancel** (recommended);
 (b) a fresh sign-in alone, at once (a stolen Google session enrols a key);
-(c) a platform admin approves recovery.
+(c) **a platform admin approves recovery.**
+**Answer (2026-10-27–28): (a) and (c) together**, BGD: "+3". Either path
+works. A new key is signed by an existing key, or, with no key left, a fresh
+sign-in plus a 24 h delay any existing key can cancel. Or a platform admin
+approves the recovery, and the key is usable at once. §11.2 writes the
+admin path: the person still generates and proves the key, the admin needs a
+fresh sign-in and cannot approve their own recovery, an `admin_audit` row
+names the admin, the person and the key, and the person is notified at once.
+§11.10's P2-REGISTRY tests cover it.
 
-**P4. Standing grants for headless jobs: the longest window?** (a) **30 days,
-renewed from a reminder** (recommended); (b) 7 days; (c) no expiry, revoked by
-hand.
+**P4. Standing grants for headless jobs: the longest window?** (a) 30 days,
+renewed from a reminder (recommended); (b) 7 days; (c) **no expiry, revoked
+by hand**.
+**Answer (2026-10-27–28): (c), against the recommendation.** The design
+does this instead of a 30-day cap: there is no cap and no expiry reminder.
+`not_before` stays required. `expires_at` is optional, and absent means no
+expiry. A grant lasts until its grantor revokes it, its key is revoked, or
+the schedule's owner, profile or secrets change (which already needs a new
+grant). The cost, stated in §11.5: a stolen key's grants stay live until
+revoked, and revocation (by registry key, or by a signed revoke statement)
+is the only control. §11.9 adds the revoke statement's purpose to request E.
 
 **P5. Do children get the root's person-signed secrets?** (a) never, so a
 child that needs a personal secret parks; (b) **within a child envelope the
 person signs with the root: profiles and depth, defaulting to the root's own
 profile at depth 1** (recommended); (c) always, by walking to a signed root.
+**Answer (2026-10-27–28): (b), as recommended.** §11.6 as written.
 
 **P6. What signature does a repository secret (secrets-scopes.md) need?**
 (a) **a current member of the workspace, as a group secret** (recommended);
 (b) only the repository registration's creator.
+**Answer (2026-10-27–28): (a), as recommended.** §11.4's table. With P10, an
+audited platform admin's signature counts here too, as it does for a group
+secret.
 
 **P7. How does enforcement switch on?** (a) **`person_signature_mode`
 off → report → enforce platform-wide, AND enforced for a person's own secrets
 from the moment they enrol a key** (recommended); (b) the platform switch
 only; (c) enforce at once (every unsigned path, schedules included, stops
 getting personal and group secrets the day it ships).
+**Answer (2026-10-27–28): (a), as recommended.** §11.7. With P9 the mode
+and the enrolment rule cover the forge broker and `mcp:attach` as well.
 
 **P8. A compromised swarm-api can skip the check, because it both verifies
 and reads. Close that too?** (a) **not in phase 2: the owner's stated threat
@@ -1892,16 +2097,43 @@ is the scheduler, the database and other members, and swarm-api already has
 its own identity holds the read grant and verifies both the KMS spec signature
 and the person's signature. swarm-api loses `versions.access` on `-wsec-`.
 That is a new service, a new IAM binding and a second hop on the start path.
+**Answer (2026-10-27–28): (a), as recommended.** §11.1 states that phase 2
+does not stop a compromised swarm-api.
 
 **P9. Does the same rule gate the other two credential routes?** The forge
 credential broker (`POST /v1/attempts/forge-credential`, user-scoped-secrets.md)
 serves a person's forge token on `submitted_by` alone, and `mcp:attach`
-serves MCP credentials. (a) **yes, the forge broker in P2-RELEASE's wave
-(a person's forge token is their most valuable secret), `mcp:attach` after**
-(recommended); (b) workspace secrets only; (c) both at once, in P2-RELEASE.
+serves MCP credentials. (a) yes, the forge broker in P2-RELEASE's wave
+(a person's forge token is their most valuable secret), `mcp:attach` after
+(recommended); (b) workspace secrets only; (c) **both at once, in
+P2-RELEASE**.
+**Answer (2026-10-27–28): (c), against the recommendation.** The design
+does this instead of staging the two routes. §11.4's rule extends to both
+routes in the same wave. A person's forge token (a user slot) is released only
+to an agent its person signed, a standing grant naming the slot covers, or
+a child inside the root's envelope. A failure is a 403 with the reason as its
+code. An MCP credential follows its secret's scope: a `workspace_secret`-mode
+credential is gated as a group secret, and a `dispatch`-mode credential is
+bound to the submission that carried it. A failure is a `withheld` entry
+with the reason. A standing grant names the forge slots and MCP servers it
+covers (§11.5). P2-RELEASE's territory and red-first tests grow to cover
+`credbroker.py`, `routes/credentials.py` and `routes/attempts_mcp.py`
+(§11.10). The cost: P2-RELEASE is a larger lane, and the review CLAUDE.md
+requires now covers three credential routes at once.
 
 **P10. Does a platform admin acting in a group (`tenant_via ==
 "platform_admin"`) count as a member for a group secret's signature?** (a)
-**no: a group secret needs a signature by a directory member** (recommended:
+no: a group secret needs a signature by a directory member (recommended:
 the admin's reach is for running the platform, not for borrowing a group's
-credentials); (b) yes, audited.
+credentials); (b) **yes, audited**.
+**Answer (2026-10-27–28): (b), against the recommendation.** The design
+does this instead of refusing the admin. The statement carries `tenant_via`
+inside the signed bytes. An admin's signature releases the group's and its
+repositories' secrets, and only while the signer is still a platform admin.
+Every such release writes an `admin_audit` row naming the admin, the group,
+the agent and each secret released, and the group's members can see it
+(§11.4). A platform admin still never gets a person's personal secrets,
+forge token or personal MCP credentials: §11.4's personal rule and §11.5's
+schedule-fire rule stand. The cost: an admin can use a group's credentials
+without being in the group, and the audit makes that visible after the fact
+rather than preventing it.
