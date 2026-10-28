@@ -139,3 +139,27 @@ describe('config-28: the foot calls the owner of a personal workspace its admin'
     expect(roleLine(false, mine as never, 'eng')).toBe('Member')
   })
 })
+
+describe('capacity-11: the Pools badge counts what "Needs a look" counts', () => {
+  const pool = (over: Record<string, unknown> & { name: string }) => ({
+    hard_limit: 5, adaptive_target: null, quota_derived_limit: null, effective_limit: 5,
+    active: 0, available: 5, enabled: true, updated_at: '2026-10-28T09:00:00Z', ...over,
+  })
+  // MUTATION: count only `enabled === false` or a positive limit with no room
+  // again and the pool lowered to 0 is left out (2, not 3).
+  it('counts a pool lowered to 0 of 5, which has no room, with the full and the paused', async () => {
+    const { panelCounts } = await import('../Spine')
+    const { needsALook } = await import('../Capacity')
+    const pools = [
+      pool({ name: 'global', hard_limit: 100, effective_limit: 100, available: 90, active: 10 }),
+      pool({ name: 'provider:anthropic', effective_limit: 5, active: 5, available: 0 }),
+      pool({ name: 'resource:large', enabled: false }),
+      pool({ name: 'provider:openai:tenant:eng', adaptive_target: 0, effective_limit: 0, available: 0 }),
+    ]
+    const cap = { status: 'ok' as const, fetchedAt: 0, data: { pools } }
+    const out = panelCounts({ status: 'loading', since: 0 }, cap as never)
+    expect(out.pools?.n).toBe(3)
+    expect(out.pools?.n).toBe(pools.filter((p) => needsALook(p as never, null)).length)
+    expect(out.pools?.why).toBe('3 pools need a look: full, lowered, paused or near the ceiling')
+  })
+})
