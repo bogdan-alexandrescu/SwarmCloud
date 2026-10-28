@@ -26,4 +26,23 @@ describe('a progress line’s time', () => {
     const t = container.querySelector('time')!
     expect(t.textContent).toMatch(/^09:05:30Z \+/)
   })
+
+  // Where CI's clock is UTC the cases above prove only the Z: local and UTC
+  // hours agree there. In Tokyo (UTC+9, no daylight saving) 17:02:06Z on the
+  // 27th is 02:02 on the 28th, today, so a local reading prints neither the
+  // date nor the hour.
+  it('reads the UTC clock where the local zone is not UTC', () => {
+    const before = process.env.TZ
+    process.env.TZ = 'Asia/Tokyo'
+    try {
+      // The premise: the zone took, and the local day is the 28th.
+      expect(new Date('2026-10-27T17:02:06.000Z').getDate()).toBe(28)
+      const { container } = render(<ProgressTime at="2026-10-27T17:02:06.000Z" prev={null} now={NOW} />)
+      // MUTATION: read getHours/getDate and this prints '02:02:06Z'.
+      expect(container.querySelector('time')!.textContent).toBe('10-27 17:02:06Z')
+    } finally {
+      if (before === undefined) delete process.env.TZ
+      else process.env.TZ = before
+    }
+  })
 })

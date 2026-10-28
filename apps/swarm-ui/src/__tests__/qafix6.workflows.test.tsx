@@ -502,6 +502,15 @@ describe('g. the policy chip reads as configuration', () => {
     expect(chip.parentElement).not.toBe(state.parentElement)
     expect(flat(chip.parentElement)).toMatch(/^Policy ?if a step fails: stop the workflow$/)
   })
+
+  it('says a workflow submitted to continue keeps going when a step fails', async () => {
+    const f = fan()
+    serve({ ...f, w: { ...f.w, on_step_failure: 'CONTINUE' } })
+    await page()
+    const head = document.querySelector<HTMLElement>('.wfp-head')!
+    // MUTATION: swap the two branches of the policy chip and this reads 'stop the workflow'.
+    expect(flat(head.querySelector('.wfp-policy'))).toMatch(/^Policy ?if a step fails: keep going$/)
+  })
 })
 
 // ---------------------------------------------------------------------------

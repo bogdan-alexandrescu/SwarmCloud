@@ -654,14 +654,20 @@ export function stepColumnWidth(rows: readonly { step: { step_id: string } }[]):
  * the widest value it can hold -- `skipped by verdict`, `task unread`, `not
  * reported` (styles/workflows.css). Ran is 128 because `between attempts` is
  * 16 characters of 12px mono, 115px, and it was cut at 114; State (136 to
- * 126) and Tokens (104 to 100) gave the room (V202, #1427).
+ * 126) and Tokens (104 to 100) gave the room (V202, #1427). Cost is 136
+ * because a sum over some attempts carries its mark (overview-agents-69):
+ * `$0.4230 · 1 of 2` is 16 characters, 127px with the padding, and at 100
+ * the ellipsis took `of 2`, the part the mark is for; 136 holds 17
+ * (`$0.4230 · 9 of 10`). It is a ceiling: a table with no partial cost asks
+ * for its figures' width as before, and only one that has one gives the
+ * 36px from Why at the 980px minimum (QA1B-08 re-review, 2026-10-28).
  */
 const FIGURE_COLUMN_CAP_PX: Readonly<Record<'state' | 'waited' | 'ran' | 'attempts' | 'cost' | 'tokens', number>> = {
   state: 126,
   waited: 108,
   ran: 128,
   attempts: 92,
-  cost: 100,
+  cost: 136,
   tokens: 100,
 }
 
