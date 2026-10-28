@@ -39,7 +39,7 @@
  */
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { AGENT_TABS, type AgentTab } from './agentlist'
-import { USE_FIXTURES, WORKSPACE_RENAMED_EVENT, loadApprovals, loadCapacity, loadMe, loadMyTenants, loadOnboarding, loadStats, loadWorkflowsById, type NotificationFeed, type TenantChoice } from './api'
+import { USE_FIXTURES, WORKSPACE_RENAMED_EVENT, loadApprovals, loadCapacity, loadMe, loadMyTenants, loadOnboarding, loadStats, loadWorkflowsById, type NotificationFeed, type ResourceClasses, type TenantChoice } from './api'
 import { classifyEnvironment, envTreatment, servedEnvironment, SwarmMark } from './Brand'
 import { Banner, Button, NamedMark, Toaster, acknowledge, routedClick } from './components'
 import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenantSwitch, preferencesUnavailableSnapshot, probeSnapshot, read, route, subscribePreferencesUnavailable, subscribeProbes, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type Result } from './fetch'
@@ -50,6 +50,8 @@ import { shortcut, typedIntoField } from './shortcuts'
 import { poolLabelAmong, type Capacity, type Me, type Stats, type TaskState } from './types'
 import { ThemeToggle } from './ThemeToggle'
 import { derivedStateOf } from './workflowlist'
+import { useResourceClasses } from './Blockers'
+import { needsALook } from './Capacity'
 import { SignOutButton, SignedBackIn } from './SignOut'
 import { iapFronted, signingOut } from './signoutState'
 import { AppTakeover, OfflineBanner, wholeAppFault, useOnline } from './AppStates'
@@ -1087,8 +1089,14 @@ const WAITING_STATES = ['QUEUED', 'READY', 'PARKED'] as const
  *                  ways of not counting. A dash is for a count that WAS
  *                  asked for and could not be read (Live and Waiting, below);
  *                  a row nobody counts draws no mark, never a 0.
- *   Pools          the amber count of pools full or paused, derived from the
- *                  capacity read the meter already made; nothing when none is.
+ *   Pools          the amber count of the pools Pools' "Needs a look" group
+ *                  holds (`needsALook`, Capacity.tsx), derived from the
+ *                  capacity read the meter already made; nothing when none
+ *                  is. It counted only full or paused pools, so a pool
+ *                  lowered to 0 -- no room, nothing can start -- was on the
+ *                  page's "Needs a look · 4" and not in the badge's 2 (QA1
+ *                  capacity-11). `classes` is the shared class catalogue read,
+ *                  which weighs a pool too small for one task of its class.
  *
  * A failed read is a dash with the failure as its reason, never a 0.
  */
@@ -1096,13 +1104,14 @@ export function panelCounts(
   stats: Result<Stats>,
   cap: Result<Capacity>,
   list: ListCounts | null = null,
+  classes: ResourceClasses | null = null,
 ): Readonly<Record<string, PanelCount>> {
   const out: Record<string, PanelCount> = {}
   if (list !== null && list.whole) {
     const why = `counted from the Agents list read at ${new Date(list.at).toLocaleTimeString()}, as its tabs are`
     out.live = { n: list.live, why }
     out.waiting = { n: list.waiting, why }
-    return { ...panelCounts(stats, cap), ...out }
+    return { ...panelCounts(stats, cap, null, classes), ...out }
   }
   const s = dataOf(stats)
   // A reply with no per-state table is not a table of zeros.
@@ -1131,8 +1140,8 @@ export function panelCounts(
   if (c === null) {
     if (cap.status === 'error') out.pools = { n: null, why: `not read: ${errorHeading(cap.error)}` }
   } else {
-    const hot = c.pools.filter((p) => p.enabled === false || (p.effective_limit !== null && p.effective_limit > 0 && p.available !== null && p.available <= 0)).length
-    if (hot > 0) out.pools = { n: hot, alert: true, why: `${hot} pool${hot === 1 ? '' : 's'} full or paused` }
+    const hot = c.pools.filter((p) => needsALook(p, classes)).length
+    if (hot > 0) out.pools = { n: hot, alert: true, why: `${hot} pool${hot === 1 ? ' needs' : 's need'} a look: full, lowered, paused or near the ceiling` }
   }
   return out
 }
@@ -1681,8 +1690,9 @@ export function SkyShell({
   // identity it would sign out has been read.
   const canSignOut = who !== null && iapFronted(typeof window === 'undefined' ? '' : window.location.hostname)
   const meter = meterOf(dataOf(cap))
+  const classes = useResourceClasses()
   // The Approvals page carries the inbox count the Automate section does (§6.1).
-  const counts = waiting === null ? panelCounts(stats, cap, fromList) : { ...panelCounts(stats, cap, fromList), approvals: waiting }
+  const counts = waiting === null ? panelCounts(stats, cap, fromList, classes) : { ...panelCounts(stats, cap, fromList, classes), approvals: waiting }
   const adminCounts = adminPanelCounts(admin, feedData(notes), cap, mine)
   const jumpCounts = useSyncExternalStore(subscribeOverviewCounts, overviewCountsSnapshot, overviewCountsSnapshot)
   const role = who === null ? null : roleLine(admin, mine, who.tenant.tenant_id)
