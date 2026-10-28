@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { loadWorkflow, loadWorkflowUsage, type StepUsage, type WorkflowRead } from './api'
+import type { ApiError } from './fetch'
 import { Dash } from './components/Chip'
 import { PARK_WORD } from './components/StatePill'
 import { WAITING_WORD, expiresAtOf, expiresWords, isAwaitStep, isWaitingForMember } from './awaitInput'
@@ -43,6 +44,12 @@ export interface WfLoad {
   data: WorkflowRead | null
   /** Why the newest read failed; null when it landed. */
   error: string | null
+  /**
+   * The failed read's kind, when the API answered one: `not_found` and
+   * `forbidden` are answers a second read gets again (visual QA pass 1,
+   * runs-submit-05), so the Changes tab offers no Try again for them.
+   */
+  kind?: ApiError['kind']
 }
 
 /** Every workflow the run started, as last read; null before the first read lands. */
@@ -97,7 +104,7 @@ export function useRunWorkflows(run: IssueRun): RunWorkflows {
             const r = reads[round]!
             if (r.status === 'ok' || r.status === 'stale') return { wf, round, data: r.data, error: null }
             const why = r.status === 'error' ? r.error.message : r.status === 'empty' ? 'the API returned no workflow' : 'the read did not finish'
-            return { wf, round, data: prior[round]?.data ?? null, error: why }
+            return { wf, round, data: prior[round]?.data ?? null, error: why, ...(r.status === 'error' ? { kind: r.error.kind } : {}) }
           }),
         }
       })
@@ -519,7 +526,7 @@ export function progressEntries(run: IssueRun, rows: StepRow[]): ProgressEntry[]
 /**
  * WHEN A PROGRESS LINE HAPPENED (QA G2-31, 2026-10-07): every line read "3d
  * ago", so neither the order nor how long anything took could be read. The
- * clock time, local, to the second -- `HH:MM:SS` today, `MM-DD HH:MM:SS`
+ * clock time, UTC, to the second -- `HH:MM:SSZ` today, `MM-DD HH:MM:SSZ`
  * before -- and `+Δ` since the line above that carries a time; the full ISO
  * timestamp and its age are the title. A line with no time is a dash that
  * says so.
@@ -529,12 +536,15 @@ export function ProgressTime({ at, prev, now }: { at: string | null; prev: strin
   if (t === null || at === null) {
     return <span className="sb-note" title="The run recorded no time for this change.">—</span>
   }
+  // UTC, WRITTEN WITH ITS Z (QA1-FIX-24, chrome-C16, part of #2596): the
+  // local clock carried no zone, so '10-27 17:02:06' could not be set beside
+  // a log line or a CI run's time. BGD's rule: UTC times are written with Z.
   const d = new Date(t)
   const pad = (n: number) => String(n).padStart(2, '0')
   const today = new Date(now)
-  const sameDay = d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth() && d.getDate() === today.getDate()
-  const clock = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-  const text = sameDay ? clock : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${clock}`
+  const sameDay = d.getUTCFullYear() === today.getUTCFullYear() && d.getUTCMonth() === today.getUTCMonth() && d.getUTCDate() === today.getUTCDate()
+  const clock = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}Z`
+  const text = sameDay ? clock : `${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${clock}`
   const before = ms(prev)
   const gap = before === null ? null : spanText(t - before)
   const title = `${d.toISOString()} (${timeAgo(at, now)})${gap === null ? '' : ` · ${gap} after the line above`}`

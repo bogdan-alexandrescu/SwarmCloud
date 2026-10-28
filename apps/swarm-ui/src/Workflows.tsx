@@ -3197,10 +3197,11 @@ function VerticalMinimap({
 }
 
 /**
- * THE CRITICAL PATH'S CAPTION (GR1): `critical path · 41m` and the steps on
- * it, in order, every one of which has a measured duration -- or, while any
- * step has none, `critical path` with the `absent` Mark, naming the steps that
- * have not been measured. Never a partial chain: a step that has not run could
+ * THE CRITICAL PATH'S CAPTION (GR1): `longest chain · 41m run time` and the
+ * steps on it, in order, every one of which has a measured duration -- or,
+ * while any step has none, `longest chain` with the `absent` Mark, naming the
+ * steps that have not been measured. (Worded `critical path` until visual QA
+ * pass 1, overview-agents-66.) Never a partial chain: a step that has not run could
  * yet be the longest link, so a path through the measured ones alone would be a
  * guess drawn as a fact.
  */
@@ -3212,9 +3213,14 @@ function CriticalPathNote({ path, total }: { path: CriticalPath; total: number }
       path.missing.length === 0
         ? 'no step ends the workflow, so its dependencies form a cycle and no chain has an end.'
         : `${path.missing.length} of ${total} steps have no measured duration (${named}${more}). It is drawn once every step has run, because a step that has not run could be on it.`
+    // IN WORDS (visual QA pass 1, overview-agents-66, part of #2596): the
+    // caption read "critical path not measured", jargon with no reason on
+    // the page. It names what it is and when it is drawn; the reason in full
+    // is the Mark's.
     return (
       <p className="wf-critical is-unmeasured">
-        critical path <Mark kind="absent" say={`Critical path not measured: ${why}`} />
+        <span className="wf-critical-h">longest chain</span> <Mark kind="absent" say={`Longest chain not measured: ${why}`} />{' '}
+        {path.missing.length === 0 ? 'because the steps’ dependencies form a cycle' : 'until every step has run'}
       </p>
     )
   }
@@ -3228,7 +3234,7 @@ function CriticalPathNote({ path, total }: { path: CriticalPath; total: number }
       className="wf-critical"
       title="The chain of dependent steps whose measured run times sum longest. Its edges are drawn heavier. Only run time is summed: waits for capacity, for parents and for CI are not, so the workflow's wall-clock duration can be much longer."
     >
-      <span className="wf-critical-h">critical path · {took} run time</span>{' '}
+      <span className="wf-critical-h">longest chain · {took} run time</span>{' '}
       <span className="wf-critical-chain">{path.steps.join(' → ')}</span>
     </p>
   )
@@ -5127,6 +5133,12 @@ function figuresFor(state: StepState, usage: UsageRead, now: number): StepFigure
     ),
     'untyped',
   )
+  // A SUM OVER SOME ATTEMPTS SAYS SO (visual QA pass 1, overview-agents-69):
+  // checkpoints' $0.253 was attempt 3's alone, attempts 1 and 2 'not
+  // reported' in the card, and the cell read as the step's whole cost.
+  if (cost.from === null && cost.cell.kind === 'measured' && u.attemptsWithCost > 0 && u.attemptsWithCost < u.attempts) {
+    cost.cell = { ...cost.cell, text: `${cost.cell.text} · ${u.attemptsWithCost} of ${u.attempts}` }
+  }
   const tokens = tokensOrResult(tokensOf(u), 'untyped')
   return {
     ran,
@@ -6512,7 +6524,10 @@ function WorkflowHead({
             the phone head two lines in both states (V103). */}
         <span className="wfp-policy" title="What this workflow was submitted to do when a step fails. Configuration, not an outcome.">
           <span className="wfp-policy-k">Policy</span>
-          <Chip>on failure: {workflow.on_step_failure.toLowerCase() === 'continue' ? 'continue' : 'fail the workflow'}</Chip>
+          {/* IN WORDS (visual QA pass 1, overview-agents-66): 'on failure:
+              fail the workflow' was the API's enum read aloud. It says what
+              happens when a step fails. */}
+          <Chip>if a step fails: {workflow.on_step_failure.toLowerCase() === 'continue' ? 'keep going' : 'stop the workflow'}</Chip>
         </span>
         <span className="wfp-cost">
           <Chip>
