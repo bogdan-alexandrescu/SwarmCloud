@@ -181,7 +181,7 @@ describe('V024: opening the editor at 1440 reflows no row', () => {
     expect(won(side, 'grid-area', WIDE)).toBe('1 / 1')
     expect(won(side, 'justify-self', WIDE)).toBe('end')
     expect(won(side, 'position', WIDE)).toBe('sticky')
-    // `AIMD back-off` never breaks at its hyphen.
+    // The Set by word (`lowered automatically after errors`, once `AIMD back-off`) never breaks.
     const by = document.getElementById('limit-tenant:eng')!.querySelector('td[data-label="Set by"]')!
     expect(won(by, 'white-space', WIDE)).toBe('nowrap')
   })
