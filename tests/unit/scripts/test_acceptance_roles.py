@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import shutil
 import stat
 import subprocess
@@ -242,6 +243,75 @@ def test_verify_remote_carries_the_probes_settings_into_the_execution(tmp_path):
     assert f"{SETTINGS[0]}=roles-accept" in call
     assert f"{SETTINGS[1]}=swarm-qa@p.iam.gserviceaccount.com" in call
     assert SETTINGS[2] not in call and SETTINGS[3] not in call
+
+
+#: A curl stand-in for the swarm-verify job: the metadata server, the IAM
+#: Credentials API and swarm-api. It logs its argv, and answers the API only
+#: for the ID token generateIdToken handed out.
+FAKE_CURL = r"""#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${FAKE_DIR}/curl.argv"
+header="" data="" url=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -H) [[ "$2" == @* ]] && header="${2#@}"; shift 2 ;;
+    --data-binary) data="$2"; shift 2 ;;
+    -m|-X|-w) shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+case "${url}" in
+  http://metadata.google.internal/*/token) printf '{"access_token":"%s"}' "${FAKE_ACCESS}" ;;
+  https://iamcredentials.googleapis.com/*)
+    printf '%s %s\n' "${url}" "${data}" >>"${FAKE_DIR}/mint"
+    grep -qx "Authorization: Bearer ${FAKE_ACCESS}" "${header}" || exit 22
+    printf '{"token":"%s"}' "${FAKE_ID}" ;;
+  https://swarm-api.example.a.run.app/*)
+    grep -qx "Authorization: Bearer ${FAKE_ID}" "${header}" || { printf '{}\n401'; exit 0; }
+    printf '{"me":{"email":"viewer"}}\n200' ;;
+  *) exit 7 ;;
+esac
+"""
+
+
+def test_acc_api_as_mints_the_id_token_inside_cloud_run_without_gcloud(tmp_path):
+    """accept.yml runs the probe in the swarm-verify job, whose image has no
+    gcloud (images/swarm-verify/Dockerfile): there acc_api_as mints SA's ID
+    token through generateIdToken with the metadata server's access token,
+    and neither token reaches argv."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    # Every tool on PATH but gcloud, and curl replaced by the stand-in.
+    for directory in os.environ["PATH"].split(os.pathsep):
+        if not os.path.isdir(directory):
+            continue
+        for entry in os.scandir(directory):
+            if entry.name not in ("gcloud", "curl") and not (bin_dir / entry.name).exists():
+                (bin_dir / entry.name).symlink_to(entry.path)
+    curl = bin_dir / "curl"
+    curl.write_text(FAKE_CURL)
+    curl.chmod(curl.stat().st_mode | stat.S_IXUSR)
+    access, id_token = secrets.token_hex(16), secrets.token_hex(16)
+    sa = "swarm-qa@p.iam.gserviceaccount.com"
+    script = (f'source "{REPO}/scripts/lib/common.sh"\nsource "{REPO}/scripts/acceptance/lib.sh"\n'
+              f'acc_api_as {sa} roles-accept GET /workspace/roles "" "{tmp_path}/out"\n')
+    env = {"PATH": str(bin_dir), "HOME": str(tmp_path), "NO_COLOR": "1", "TMPDIR": str(tmp_path),
+           "SWARM_ENV_FILE": str(tmp_path / "no.env"), "CLOUD_RUN_JOB": "swarm-verify",
+           "API_URL": "https://swarm-api.example.a.run.app", "API_HOST": "front.example.com",
+           "FAKE_DIR": str(tmp_path), "FAKE_ACCESS": access, "FAKE_ID": id_token}
+    proc = subprocess.run([str(bin_dir / "bash"), "-c", script], cwd=REPO, env=env,
+                          capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    err = (tmp_path / "out.err").read_text()
+    assert (tmp_path / "out.status").read_text() == "200", err
+    mint = (tmp_path / "mint").read_text()
+    assert f"/serviceAccounts/{sa}:generateIdToken" in mint
+    assert '"audience":"https://swarm-api.example.a.run.app"' in mint
+    assert '"includeEmail":true' in mint
+    argv = (tmp_path / "curl.argv").read_text()
+    assert access not in argv and id_token not in argv
+    assert access not in err + proc.stdout + proc.stderr and id_token not in err + proc.stdout + proc.stderr
+    assert not list(tmp_path.glob("swarm-auth.*")), "a header file outlived its request"
 
 
 def test_the_group_runs_on_its_own():
