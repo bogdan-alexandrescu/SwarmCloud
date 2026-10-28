@@ -1805,6 +1805,34 @@ or slot exists for it, and a plan's planner agent has already ended (invariant
 1). Expiry is a tidy-up of the inbox, not a capacity release. Expired items
 leave the inbox and remain in the schedule's history.
 
+**The last 7 days stay readable** (BGD 2026-10-27, AUTO-A4A5, #2417 A4).
+`GET /v1/approvals?state=decided|expired|all` also serves the tenant's items
+approved or rejected (`decided`) or expired (`expired`) in the last 7 days,
+newest first by `decided_at`, each in the shape a pending item has plus its
+`decided_by`, `decided_by_name`, `decided_at` and `reason`. `state=pending`
+is the default and is the inbox exactly as before, so no caller that never
+asks sees a different response; `all` is the inbox first, then the history.
+The console's Approvals page draws its "decided" and "expired" sections from
+it rather than from what it happens to hold. Each kind is read from its own
+source of truth, as its pending item is: a record from `approvals/`, a
+projected plan from its run (`approved_by`/`approved_at`, or its `PLANNED ->
+REJECTED` step, `expired` when expiry rejected it), an await-input step from
+its task (`answered` with whoever answered, or `expired`). `superseded` is not
+history: nobody decided it.
+
+A history read is bounded: at most 200 rows, each source one bounded read
+on an index that exists, every one tenant-scoped in the query and again in
+the application (invariant 9). The records' read runs on
+`approvals-tenant-state-requested`, which is ascending, so it reads `state in
+(approved, rejected, expired)` with `requested_at` inside the window plus the
+longest TTL (a record closes at most 14 days after it is asked for) and keeps
+those with `decided_at` in the last 7 days; when that read is full it is the
+window's oldest 200, and the response says `history_truncated: true`. The
+exact read, newest 200 by `decided_at`, needs a `(tenant_id, state,
+decided_at DESC)` index, proposed with the change and not yet made. Runs and
+steps are each the tenant's newest 200; a plan made by hand that waited weeks
+before its decision may fall outside them.
+
 ### 4.8 The audit
 
 `schedule_audit/{id}` is **append-only**, like `admin_audit`. The module that
@@ -2141,7 +2169,7 @@ All of these are tenant-scoped as in §5.1. The new refusals ship report-only
 | `GET /v1/schedules/{id}/spans?firing_id=…` | the History timeline's bars and the list under them (#1109), for ONE page of firings: the `firing_id`s asked, at most 10 firings (`SPAN_FIRINGS`; more is a 422), never every firing ever. For each firing's work item it reads the agent, the workflow's steps or the issue run's planner and workflows, and each agent's attempts (newest 20 attempts, `SPAN_ATTEMPTS`; more says `attempts_truncated`), at most 100 agents across the page (`SPAN_TASKS`; the rest are served `unread` with that reason). Each item carries its `cost`, summed from its attempts' recorded `cost_usd` the way the tick sums the firing's (§4.3), from one batched attempts read for the page: an attempt that recorded none is counted in `unreported_attempts`, and an item with no recorded figure has `reported_usd: null` and an `unread` reason, never $0. An issue run also carries its `issue`: number, reference, url and the title read when the run was created (null when that read failed). Writes nothing. Tenant-scoped: another tenant's schedule is the 404 a missing one gets, a firing id that is not this schedule's (or is stored for another tenant) is listed in `not_found` and not read, and every agent, workflow and issue run is read under the caller's tenant |
 | `GET /v1/schedules/{id}/audit` | the audit, newest first |
 | `POST /v1/schedules:preview` | §6.3 |
-| `GET /v1/approvals` | the inbox: `approvals/` plus projected `PLANNED` runs, filterable by kind |
+| `GET /v1/approvals` | the inbox: `approvals/` plus projected `PLANNED` runs, filterable by kind; with `state=decided\|expired\|all`, the last 7 days' decided and expired items too, newest first (§4.7) |
 | `GET /v1/approvals/{id}` | one item, with what its kind needs to decide it: for `merge`, the run's `green_sha`, the review verdict and requirements, and the pull request's changed files checked against the protected paths |
 | `POST /v1/approvals/{id}:approve` · `:reject` | `{digest}` / `{reason}`. A projected run's id is `run:<run_id>` and calls its existing approve |
 | `POST /v1/admin/schedules/tick` | the tick (§2). Admits only the `swarm-schedule-tick` identity (SD10) |
