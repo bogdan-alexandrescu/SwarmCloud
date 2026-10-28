@@ -98,7 +98,9 @@ describe('capacity-21: the forecast and the verdict speak in the reader’s word
   })
 
   it('never calls the deployment a broker', () => {
-    const { can_take_new_agent: _drop, ...bare } = acct('home-personal')
+    // A deployment that serves no per-account answer.
+    const bare = acct('home-personal')
+    delete bare.can_take_new_agent
     const { container } = render(
       <Verdict accounts={[bare]} scope="eng" shortfall={0} now={NOW} waiting={{ kind: 'loading' }} />,
     )
