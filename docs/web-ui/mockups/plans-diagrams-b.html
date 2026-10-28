@@ -737,7 +737,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 
 <section class="frame" id="D7" data-frame="D7">
   <div class="flabel"><span class="fid">D7</span><h2>Phone at 390: the plan, an ask, and the chat</h2></div>
-  <p>No sticky rail: the canvas is a card at the top of the plan with the same tabs, each step carries a Diagram chip that opens its tab, and the chat is a sheet opened from the foot.</p>
+  <p>No sticky rail: the canvas is a card at the top of the plan with the same tabs, each step carries a Diagram chip that opens its tab, and the chat is a sheet opened from the foot. While a draw asked in a thread runs, the canvas docks under that thread (D7b), so the ask and its progress share one screen.</p>
   <div class="pair">
     <figure class="sub" id="D7a" data-frame="D7a"><div class="sl"><span class="sid">D7a</span><b>D1 on the phone</b><span class="dim">390</span></div><div class="scroller solo" data-f="d7a"></div></figure>
     <figure class="sub" id="D7b" data-frame="D7b"><div class="sl"><span class="sid">D7b</span><b>D3 on the phone</b><span class="dim">390 · example</span></div><div class="scroller solo" data-f="d7b"></div></figure>
@@ -809,11 +809,11 @@ function head(hd){
 }
 function desk(x,hd,body){return `<div class="F app">${spine()}${panel(x)}<main class="ct">${head(hd)}${body}</main></div>`}
 function phone(title,body){return `<div class="F ph"><div class="phd">${I('menu')}<svg width="26" height="26" aria-hidden="true"><use href="#hive"/></svg><b>${title}</b><span class="wsc">platform</span></div><div class="pb">${body}</div></div>`}
-const solo=(body,w)=>`<div class="F" style="width:${w||640}px;max-width:100%;background:var(--bg);padding:14px;display:flex;flex-direction:column;gap:12px">${body}</div>`;
+const solo=(body,w)=>`<div class="F" style="width:${w||640}px;max-width:${(w||640)>=900?"none":"100%"};background:var(--bg);padding:14px;display:flex;flex-direction:column;gap:12px">${body}</div>`;
 
 /* ---------- the canonical plan, in its own words ---------- */
 const RUN='run_fba2dc8f6ec9494dae2f',SCH='sch_54e9828e6772',FIRE='sch_54e9828e6772:29885760',ISS='bogdan-alexandrescu/SwarmCloud#2583';
-const DIG='sha256:be162b53886ee2620…';
+const DIG='sha256:be162b53886ee<span style="white-space:nowrap">2620…</span>';
 const DIG2='sha256:3f9a07c1d2e4… (example)',DIG3='sha256:81c4e2a90b6f… (example)';
 const SUMMARY="cifix.stamp's ci_fix branch refuses a PR-side CI fix while a lane's merge step, a live issue run, a live conflict fix or a live claim on the same failure holds the pull request, but never while a plain continuation (a <code>continues_task</code> workflow with no writer mark of its own, or a <code>publish_to_pr</code> workflow naming the same branch task) is live on it. #2554 (<code>_refuse_if_fix_live</code>) gates only the opposite order. On 2026-1…";
 const REQ1="cifix.stamp's ci_fix branch refuses a CI-fix request while a non-terminal plain continues_task task of the same tenant continues the same root (metadata.dispatch.continues == root) and would push to t…";
@@ -1064,13 +1064,13 @@ const SRC_OV=`flowchart TD
   p -- no --> k{claim live?}
   k -- yes --> refuse
   k -- no --> s([stamp: the fix runs])
-  click p step:ci-fix-waits-on-continuation
+  click p href "#step-ci-fix-waits-on-continuation"
   classDef new stroke-width:2px`;
 const ALT_OV=`<ol class="alt"><li>A CI-fix request arrives with <code>metadata.ci_fix</code> on a pull request.</li><li>If the continued lane's merge step is live, it is refused 409, naming the task.</li><li>Else if an issue run owns the pull request, refused.</li><li>Else if a conflict fix is live on it, refused.</li><li>Else if a plain continuation is live (the check step 1 adds), refused.</li><li>Else if another fix holds the claim, refused.</li><li>Otherwise stamp runs the fix.</li></ol>`;
 function d4a(){
   return desk({},{cr:'Automate › Pipeline › plan › diagram',h:'Overview · a CI-fix request through stamp()’s checks',right:B('Back to the plan','','back'),age:'Esc closes'},
     `<div class="lv"><section class="lvc" style="position:relative"><div class="lvt"><b class="sm12" style="font-size:13.5px">revision 1 · overview · flow</b><span class="grow"></span><span class="zoom"><span>−</span><span class="v">150%</span><span>+</span></span>${B('Fit','s')}${B('Full screen','s','max')}</div>`+
-    `<div class="lvs">${dgOverview({st:'width:510px;max-width:none'})}</div><div class="mini" aria-hidden="true"><i></i></div>`+
+    `<div class="lvs">${dgOverview({st:'width:510px;max-width:none'})}</div>`+
     `<div class="cvf"><span class="grow">Drag to pan, scroll or pinch to zoom; a node’s link still goes to its step.</span>${B('Copy source','s','code')}</div></section>`+
     `<div class="col4" style="gap:12px"><section class="cd"><div class="ch"><b>Text alternative</b><span class="r sm12 dim">read in place of the drawing</span></div>${ALT_OV}</section>`+
     `<section class="cd"><div class="ch"><b>Source</b><span class="r sm12 dim">mermaid · inside the digest</span></div><pre class="src">${SRC_OV.replace(/</g,'&lt;')}</pre></section>`+
@@ -1095,7 +1095,7 @@ function d5a(){
   ];
   return desk({page:'set'},{h:'Settings',age:'read 03:00Z'},
     setCard(true)+
-    `<section class="cd"><div class="ch"><b>Per schedule</b><span class="r sm12 dim">a schedule follows the workspace unless it overrides it; the same choice is on the schedule’s sheet</span></div>`+
+    `<section class="cd"><div class="ch"><b>Per schedule</b><span class="r sm12 dim">5 of the 8 schedules (example); a schedule follows the workspace unless it overrides it; the same choice is on the schedule’s sheet</span></div>`+
     T(['Schedule','Diagrams','#Plans with one, 7 days','#Plans without, 7 days'],rows)+`</section>`+
     `<div class="bn in">${I('info')}<div><b>Issue runs submitted by hand</b>Follow the workspace setting; they have no schedule to override it.</div></div>`);
 }
@@ -1111,7 +1111,7 @@ function d5c(){
 
 /* ---------- D6: honest states ---------- */
 function d6a(){
-  const bad=SRC_OV.split('\n').map((l,i)=>i===5?`<span class="er">  i -- yes --&gt;</span>`:l.replace(/</g,'&lt;')).join('\n');
+  const bad=SRC_OV.split('\n').map((l,i)=>i===5?`<span class="er">  i -- no --&gt;</span>`:l.replace(/</g,'&lt;')).join('\n');
   return railSolo(RAIL(canvas({tab:'ov',body:`<div class="bn bd">${I('warn')}<div><b>This diagram could not be drawn</b>The renderer stopped at line 6: “expected a node after <code>--&gt;</code>”. Its source and text alternative are below.</div></div>`+
     `<pre class="src" style="margin-top:8px">${bad}</pre><div class="fold">${I('chevd')}Text alternative</div>`,
     foot:`<span class="grow">The plan is unchanged; a redraw is a new revision if you add it</span>${B('Copy source','s q','code')}${B('Ask to redraw','s','refresh')}`})));
@@ -1174,8 +1174,8 @@ function d8b(){
       ag('','01:22Z',`<div class="work"><span class="dots"><i></i><i></i><i></i></span><span class="grow">drawing a data flow</span><span>0:23 · $0.07 so far</span>${B('Stop','s q','stop')}</div><span class="sk" style="width:70%"></span><span class="sk" style="width:50%"></span>`)}),480);
 }
 function d8c(){
-  return solo(revbar('<span>revision 1 · 2 diagrams</span><span class="on">revision 2 · Operator · 01:16Z · 3 diagrams</span>',DIG2,'<span class="dim">from '+DIG+'</span>')+
-    chatBox({meta:'$0.31 of $2.00 · example',body:CHAT_EX(false,true)+`<div class="bn ok">${I('pin')}<div><b>Operator pinned it to the plan</b>Revision 2, <span class="mn">${DIG2}</span>, anchored to step 1, origin this chat message. Revision 1 keeps its 2 diagrams; Approve now applies to revision 2.</div></div>`}),480);
+  return solo(revbar('<span>revision 1 · 2 diagrams</span><span class="on">revision 2 · Operator · 01:16Z · 3 diagrams</span>',DIG3,'<span class="dim">from '+DIG+'</span>')+
+    chatBox({meta:'$0.31 of $2.00 · example',body:CHAT_EX(false,true)+`<div class="bn ok">${I('pin')}<div><b>Operator pinned it to the plan</b>Revision 2, <span class="mn">${DIG3}</span>, anchored to step 1, origin this chat message. Revision 1 keeps its 2 diagrams; Approve now applies to revision 2.</div></div>`}),480);
 }
 
 const FR={d1a,d1b,d2a,d3a,d3b,d3c,d3d,d3e,d4a,d5a,d5b,d5c,d6a,d6b,d6c,d6d,d7a,d7b,d7c,d7d,d8a,d8b,d8c};
