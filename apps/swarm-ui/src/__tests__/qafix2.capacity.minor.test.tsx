@@ -10,7 +10,8 @@
 //   capacity-007  `← AUTO` wrapped to the start of the `runs on` row, under
 //                 the key, instead of staying with CLOUD_RUN_JOB in the value
 //                 column.
-//   capacity-008  Pools' Set by cell (`AIMD back-off`) was at the table's body
+//   capacity-008  Pools' Set by cell (`AIMD back-off` then, `lowered automatically
+//                 after errors` since QA1B-13) was at the table's body
 //                 size beside the 12px marks and links of its row.
 //
 // capacity-009 (the half-height amber rule) is the sheet's deliberate warn

@@ -1271,7 +1271,8 @@ function PoolEditor({
           the history. From 1280px it floats over the right of the families
           (VQA V024): it took a grid column of its own, which narrowed every
           family to ~660px and reflowed every row -- `edit` wrapped under its
-          figure and `AIMD back-off` broke in two -- the moment it opened.
+          figure and `AIMD back-off` (Set by's term then) broke in two -- the
+          moment it opened.
           Below 1280px it is drawn under the row it edits (VQA V025): placed
           after all six families, tapping `edit` on a phone's first record
           jumped ~5,000px down to it. */}

@@ -19,6 +19,11 @@
 //                       the mono 600 reading face; it is the line's plain
 //                       sans (QA1-FIX-32).
 //
+// The review of this lane (2026-10-28) found capacity-21's plain words did
+// not fit the columns sized for `AIMD back-off`: three lines on Pools (a 61px
+// row against 46px), `lowered autom…` on Pool limits. The cases under
+// `capacity-21's words fit` hold the rebalanced columns.
+//
 // Fixtures only; no network. Nothing here is credential-shaped.
 
 import { cleanup, render } from '@testing-library/react'
@@ -26,11 +31,21 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { HELP } from '../help'
 import { LivenessBadge } from '../Liveness'
-import { poolLabel, setBy } from '../types'
+import { BACKEND_POOL_WORD, poolLabel, setBy } from '../types'
 import type { Pool, Task } from '../types'
-import { painted } from './marks'
+import { backendWord } from '../words'
+import WORDS_TS from '../words.ts?raw'
+import type { CascadeEnv } from './cssgate'
+import { build, painted } from './marks'
+import { cellStyle, lengthPx, textPx } from './tablefit'
 
-afterEach(cleanup)
+const hosts: HTMLElement[] = []
+afterEach(() => {
+  cleanup()
+  for (const h of hosts.splice(0)) h.remove()
+})
+
+const WIDE: CascadeEnv = { width: 1440 }
 
 function pool(over: Partial<Pool>): Pool {
   return {
@@ -67,6 +82,20 @@ describe('capacity-14: a backend pool is named in words', () => {
     expect(poolLabel('tenant:eng')).toBe('eng')
     expect(poolLabel('provider:anthropic:tenant:u-x')).toBe('anthropic · u-x')
   })
+
+  it('says each backend as words.ts backendWord does, for every backend either names', () => {
+    // words.ts's BACKEND_WORD keys, read from its source: it is not exported,
+    // and words.ts cannot be imported by types.ts (StatePill's cycle).
+    const block = /const BACKEND_WORD[^=]*=\s*\{([^}]*)\}/.exec(WORDS_TS)?.[1]
+    expect(block, 'words.ts no longer declares BACKEND_WORD').toBeDefined()
+    const named = [...block!.matchAll(/^\s*([A-Z_]+):/gm)].map((m) => m[1]!)
+    // `AUTO` is a choice made at dispatch, never a pool.
+    const pools = named.filter((id) => id !== 'AUTO')
+    expect(pools.length).toBeGreaterThan(0)
+    // MUTATION: add a third backend to BACKEND_WORD alone, or to BACKEND_POOL_WORD alone.
+    expect(Object.keys(BACKEND_POOL_WORD).sort()).toEqual([...pools].sort())
+    for (const id of pools) expect(poolLabel(`backend:${id}`), id).toBe(backendWord(id))
+  })
 })
 
 describe('admin-shell-17: help says where the platform roles come from', () => {
@@ -75,6 +104,13 @@ describe('admin-shell-17: help says where the platform roles come from', () => {
     expect(text).toContain('PLATFORM_OWNER')
     expect(text).toContain('ADMIN_GROUPS')
     expect(text).toContain('the Admins card does not list them')
+  })
+
+  it('names the screen it means, never `this page` or `here`, which on Help is Help', () => {
+    const text = HELP['people-and-roles-scope'].long.join(' ')
+    // MUTATION: put back `it is not switched here`.
+    expect(text).not.toMatch(/\bthis page\b|\bswitched here\b/)
+    expect(text).toContain('no switch on People and roles changes it')
   })
 })
 
@@ -104,5 +140,42 @@ describe('overview-agents-59: a not-started state word is the plain sans', () =>
     const { container } = render(<LivenessBadge task={task('RUNNING')} events={null} now={Date.now()} />)
     const word = container.querySelector('.liveness .lv-word')!
     expect(painted(word, 'font-family', { width: 1440 })).not.toBe('var(--font)')
+  })
+})
+
+/**
+ * The families table on Pools at 1440 with the nav open: the review measured
+ * Set by's 11% at 114px, so the table is ~1036px. Pool limits' families are
+ * 1022px (qafix6.admin.test.tsx `FAMILIES_1440`).
+ */
+const POOLS_1440 = 1036
+const FAMILIES_1440 = 1024 - 2
+/** The tablefit model's upper bound on a phrase's width in `cell`. */
+const content = (col: Element, cell: Element, basis: number): number => {
+  const st = cellStyle(cell, WIDE)
+  return lengthPx(painted(col, 'width', WIDE), basis)! - st.pl - st.pr
+}
+
+describe("capacity-21's words fit the columns sized for `AIMD back-off`", () => {
+  it('Pools: Set by holds `lowered automatically` on one line, so the term is two lines at most', () => {
+    const col = build('div.ctl-table.cap-pools > table > colgroup > col.cap-c-by', hosts)
+    const cell = build('div.cap-families > div.ctl-table.cap-pools > table > tbody > tr > td', hosts)
+    cell.setAttribute('data-label', 'Set by')
+    // MUTATION: put .cap-c-by back to 11% -- the term is three lines, the row 61px.
+    expect(content(col, cell, POOLS_1440)).toBeGreaterThanOrEqual(textPx('lowered automatically', cell, WIDE))
+    expect(textPx('after errors', cell, WIDE)).toBeLessThan(textPx('lowered automatically', cell, WIDE))
+  })
+
+  it('Pool limits: Set by wraps between words instead of cutting the phrase', () => {
+    const cell = build('div.cap-families > div.ctl-table > table.adm-limits > tbody > tr > td.adm-setby', hosts)
+    // MUTATION: put back `white-space: nowrap; overflow: hidden; text-overflow: ellipsis`.
+    expect(painted(cell, 'white-space', WIDE)).not.toBe('nowrap')
+    expect(painted(cell, 'text-overflow', WIDE)).not.toBe('ellipsis')
+    // `.cap-families`' `overflow-wrap: anywhere` would split a word; this cell never does.
+    expect(painted(cell, 'overflow-wrap', WIDE)).toBe('normal')
+    const col = build('div.cap-families > div.ctl-table > table.adm-limits > colgroup > col.adm-col-by', hosts)
+    // Its longest word fits whole, and the column grew past the 12% sized for `AIMD back-off`.
+    expect(content(col, cell, FAMILIES_1440)).toBeGreaterThanOrEqual(textPx('automatically', cell, WIDE))
+    expect(lengthPx(painted(col, 'width', WIDE), 100)).toBeGreaterThan(12)
   })
 })

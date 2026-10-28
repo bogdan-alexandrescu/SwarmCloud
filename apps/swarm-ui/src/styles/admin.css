@@ -22,7 +22,8 @@
    FROM 1280px THE EDITOR FLOATS OVER THE RIGHT OF THE FAMILIES (VQA V024). It
    took a grid column of its own, which narrowed the families from ~1024 to
    ~660px at 1440: every fixed-width row re-laid itself, `edit` wrapped under
-   its figure and `AIMD back-off` broke in two, the opposite of the rule
+   its figure and `AIMD back-off` (Set by's term then; `lowered automatically
+   after errors` since QA1B-13) broke in two, the opposite of the rule
    above. Both now share the one grid cell, so the families' width -- and
    with it every column and every row -- is the same open or shut; the editor
    sits over Set by and Last changed (it carries the open pool's own), sticky
@@ -229,18 +230,26 @@
      `provider:anthropic:tenant:u-bogdan` -- 34 characters of 12px DM Mono,
      245px, and the cell's 20px of padding -- wrapped between its pairs and
      made one row of Providers taller than the rest. 27% is 276px. The 2% is
-     Set by's slack (`AIMD back-off` is 122px, 12% is 123px) and Last
-     changed's 1%. The `<wbr>` between pairs (`keyBreaks`) stays the wrap
+     Set by's slack (`AIMD back-off`, its term then, was 122px in 12%'s 123px;
+     its plain-words term since QA1B-13 is sized below) and Last changed's 1%. The `<wbr>` between pairs (`keyBreaks`) stays the wrap
      point beside the open editor. */
   table.adm-limits > colgroup > col.adm-col-pool { width: 27%; }
   table.adm-limits > colgroup > col.adm-col-use { width: 15%; }
-  table.adm-limits > colgroup > col.adm-col-ceiling { width: 21%; }
-  table.adm-limits > colgroup > col.adm-col-by { width: 12%; }
-  table.adm-limits > colgroup > col.adm-col-changed { width: 25%; }
-  /* SET BY IS A TERM, ON ONE LINE (VQA V024): `AIMD back-off` broke at its
-     hyphen. Where the column is too narrow it is cut, whole on the cell's
-     title, which carries the sentence why. */
-  table.adm-limits td.adm-setby { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* SET BY HOLDS ITS WORDS, ON TWO LINES (QA1B-13 review, 2026-10-28).
+     capacity-21's `lowered automatically after errors` is ~200px of 14px
+     text: at 12% it was cut to `lowered autom…`, hiding the plain words that
+     finding asked for. Set by takes 15% (~153px, ~133px of text, which
+     holds `lowered automatically`), from the Ceiling slot's slack (19% is
+     ~194px against its ~175px) and Last changed's 1%, and wraps below. */
+  table.adm-limits > colgroup > col.adm-col-ceiling { width: 19%; }
+  table.adm-limits > colgroup > col.adm-col-by { width: 15%; }
+  table.adm-limits > colgroup > col.adm-col-changed { width: 24%; }
+  /* SET BY BREAKS BETWEEN WORDS, NEVER INSIDE ONE (VQA V024; QA1B-13
+     review). V024 held the old two-word term on one line, cutting it where
+     the column was narrow; the plain-words term is a phrase, and a cut
+     phrase hides what it says. It wraps at its spaces, and `overflow-wrap:
+     normal` undoes `.cap-families`' `anywhere`, so no word is split. */
+  table.adm-limits td.adm-setby { white-space: normal; overflow-wrap: normal; }
   /* One line: `.cap-families .ctl-table th` lets Capacity's heads wrap. */
   .cap-families table.adm-limits > thead th { white-space: nowrap; }
 }
@@ -735,7 +744,8 @@ table.ten-table > thead > tr > th.n { font-family: var(--font); }
 /* `configured` IS THE WORD, IN THE DIM INK (visual QA QA-099, run 2,
    2026-10-20). It was the `·` glyph in `--text-faint`, then (PR 1707) a 6px
    disc; either way a sighted reader had a mark with no word, legend or
-   tooltip they would think to hover for, while `AIMD back-off` beside it
+   tooltip they would think to hover for, while `AIMD back-off` (now `lowered
+   automatically after errors`) beside it
    was in words. The word at the cell's size in `--text-dim` reads, and is
    still quieter than the overrides in ink (G5-19's reason for hiding it).
    `--text-dim` clears AA on the edited row's tint too (VQA V065 above). */
