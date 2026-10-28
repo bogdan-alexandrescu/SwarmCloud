@@ -868,10 +868,24 @@ passthroughs, so nothing a caller or the environment sends replaces them.
 `PYTEST_XDIST_AUTO_NUM_WORKERS` caps `-n auto` only, so a first start's prompt
 also carries one line (`cliagent.budget_line`), after the caller's prompt and
 before the platform's instructions, for an agent with a repository or without:
-the budget in GiB, stop the dev servers before tsc or the tests, never pass
-`pytest -n` above the worker count, never set `--max-old-space-size` above the
-budget. A resumed session is not told again; the session already holds the
-line. An unknown `memory.max` sets neither variable and adds no line.
+the budget in GiB, stop the dev servers before tsc or the tests, and never pass
+`pytest -n` above the worker count.
+
+That line also carries #2507's four rules, because the OOM kills came from the
+shape of the work as much as from its size:
+
+1. run one heavy command (a test run, tsc, a build) at a time;
+2. never background a test run with `&` or `nohup`, where it is forgotten and
+   keeps its memory;
+3. when a command times out, kill its process group (`kill -- -PGID`) before
+   starting another, since its children outlive it;
+4. never set `--max-old-space-size` above the limit less 1.5 GiB
+   (`OLD_SPACE_HEADROOM_BYTES`), stated in MiB: 6656 of 8 GiB, 3584 of 5 GiB,
+   never below 256. The whole limit, which #2504's line allowed, leaves nothing
+   for the worker and the CLI that share the container.
+
+A resumed session is not told again; the session already holds the line. An
+unknown `memory.max` sets neither variable and adds no line.
 
 ## Two kinds of stdout, and the label that was wrong
 

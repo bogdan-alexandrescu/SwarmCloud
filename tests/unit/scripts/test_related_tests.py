@@ -193,6 +193,22 @@ def test_a_mixed_change_selects_both_sides_and_a_changed_test_selects_itself(tmp
     assert _files(got["vitest"]) == ["src/__tests__/other.test.tsx", "src/__tests__/panel.test.tsx"]
 
 
+def test_a_test_reading_a_doc_that_cites_the_changed_path_is_selected(tmp_path):
+    """The same doc rule as pull-request CI and changed-guards.sh (#2299): a
+    test that names a doc citing the changed path by its full path reaches the
+    change through the doc."""
+    _tree(tmp_path)
+    _write(tmp_path, "docs/core.md", "`apps/foo/foo/lone.py` holds Y.\n")
+    _write(tmp_path, "docs/elsewhere.md", "`apps/foo/foo/edge.py` holds nothing here.\n")
+    _write(tmp_path, "tests/unit/foo/test_core_doc.py", 'DOC = REPO / "docs" / "core.md"\n')
+    _write(tmp_path, "tests/unit/foo/test_elsewhere_doc.py", 'DOC = REPO / "docs" / "elsewhere.md"\n')
+    got = _select(tmp_path, "apps/foo/foo/lone.py")
+    # MUTATION: feed the text rule script_closure(changed) without doc_closure
+    # -> test_core_doc.py is lost. The control: a doc citing another path does
+    # not select its readers.
+    assert _files(got["pytest"]) == ["tests/unit/foo/test_core_doc.py", "tests/unit/foo/test_lone.py"]
+
+
 def test_a_deleted_file_selects_nothing_that_is_gone(tmp_path):
     _tree(tmp_path)
     got = _select(tmp_path, f"{UI}/src/__tests__/gone.test.tsx", "tests/unit/foo/test_gone.py")
