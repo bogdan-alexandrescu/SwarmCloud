@@ -51,6 +51,10 @@ carried as `detail.reason` on the established 403, and the fence as
 The service (lane GS-SVC, apps/swarm-graph/) verifies with its own module;
 `verify_graph_ticket` here is the reference that a parity test holds it to.
 
+THE STATS TICKET (docs/design/graph-answer-cache.md §5.3, lane CACHE-3-ROUTE,
+part of #1835) is minted by routes/graph_cache.py for the console's Cache
+section: the same key, its own domain and fields (`mint_stats_ticket`).
+
 Read-only: minting writes nothing. Nothing here logs, stores or serves a key,
 a signature or a ticket, other than the one ticket in the response body.
 """
@@ -96,6 +100,15 @@ TICKET_FIELDS = frozenset({"tenant_id", "repo_id", "task_id", "attempt_id", "gen
 #: a misconfigured setting.
 MAX_TICKET_SECONDS = 900
 MIN_TICKET_SECONDS = 60
+#: The console's stats ticket (graph-answer-cache.md §5.3): the same key under
+#: its OWN domain, so an attempt ticket never reads `/v1/stats` and a stats
+#: ticket never reads `/mcp`. It names a repository and two digests, and no
+#: task, attempt or commit: it reads counters, never a graph.
+STATS_DOMAIN = b"swarm-graph-stats/v1\0"
+STATS_FIELDS = frozenset({"tenant_id", "repo_id", "manifest_digest", "previous_digest",
+                          "exp", "nonce"})
+#: A stats ticket lives for one read (§5.3: `exp` 60 s ahead).
+STATS_TICKET_SECONDS = 60
 MAX_REQUEST_BYTES = 4096
 #: `detail.reason` on the established 403 when the stored setting is off.
 CONTEXT_DISABLED = "context_disabled"
@@ -141,8 +154,8 @@ def _unb64(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
-def _mac(key: str, payload: str) -> bytes:
-    return hmac.new(key.encode("utf-8"), TICKET_DOMAIN + payload.encode("ascii"),
+def _mac(key: str, payload: str, domain: bytes = TICKET_DOMAIN) -> bytes:
+    return hmac.new(key.encode("utf-8"), domain + payload.encode("ascii"),
                     hashlib.sha256).digest()
 
 
@@ -179,6 +192,44 @@ def verify_graph_ticket(keys: Sequence[str], ticket: Any, *, now: float) -> dict
         raise TicketRefused("expired")
     if claims["exp"] > now + MAX_TICKET_SECONDS + 1:
         raise TicketRefused("the ticket claims more life than a ticket may have")
+    return claims
+
+
+def mint_stats_ticket(key: str, *, tenant_id: str, repo_id: str, manifest_digest: str,
+                      previous_digest: str | None, exp: int) -> str:
+    """The stats ticket (§5.3): `tenant_id`, `repo_id`, the current and the
+    previous `manifest_digest` (None when there is no previous graph) and
+    `exp`, MAC'd under STATS_DOMAIN, never TICKET_DOMAIN."""
+    if not key:
+        raise GraphTicketUnavailable("this deployment has no swarm-graph-ticket-key")
+    body = {"tenant_id": tenant_id, "repo_id": repo_id, "manifest_digest": manifest_digest,
+            "previous_digest": previous_digest, "exp": exp, "nonce": secrets.token_hex(8)}
+    payload = _b64(json.dumps(body, sort_keys=True, separators=(",", ":")).encode())
+    return f"{payload}.{_b64(_mac(key, payload, STATS_DOMAIN))}"
+
+
+def verify_stats_ticket(keys: Sequence[str], ticket: Any, *, now: float) -> dict[str, Any]:
+    """The claims of a live stats ticket one of `keys` made; the reference the
+    service's own verifier (lane 1, swarm_graph/ticket.py) is held to. An
+    attempt ticket does not verify here, because its MAC is over another
+    domain."""
+    if not isinstance(ticket, str) or ticket.count(".") != 1:
+        raise TicketRefused("malformed")
+    payload, mac = ticket.split(".")
+    try:
+        presented = _unb64(mac)
+        claims = json.loads(_unb64(payload))
+    except (binascii.Error, ValueError):
+        raise TicketRefused("malformed") from None
+    if not any(k and hmac.compare_digest(_mac(k, payload, STATS_DOMAIN), presented)
+               for k in keys):
+        raise TicketRefused("the ticket did not verify")
+    if not isinstance(claims, dict) or set(claims) != STATS_FIELDS:
+        raise TicketRefused("malformed")
+    if not isinstance(claims["exp"], int) or claims["exp"] <= now:
+        raise TicketRefused("expired")
+    if claims["exp"] > now + STATS_TICKET_SECONDS + 1:
+        raise TicketRefused("the ticket claims more life than a stats ticket may have")
     return claims
 
 
@@ -364,6 +415,9 @@ __all__ = [
     "FENCED",
     "MAX_TICKET_SECONDS",
     "MIN_TICKET_SECONDS",
+    "STATS_DOMAIN",
+    "STATS_FIELDS",
+    "STATS_TICKET_SECONDS",
     "TICKET_DOMAIN",
     "TICKET_FIELDS",
     "TICKET_PURPOSE",
@@ -374,6 +428,8 @@ __all__ = [
     "TicketRefused",
     "graph_ticket_message",
     "mint_graph_ticket",
+    "mint_stats_ticket",
     "ticket_seconds",
     "verify_graph_ticket",
+    "verify_stats_ticket",
 ]
