@@ -33,6 +33,7 @@ import json
 import re
 import secrets as pysecrets
 import time
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -186,3 +187,103 @@ def test_limit_line_forbids_background_suites_polled_with_sleep():
     for seconds in (600, 1800, 3600, LIMIT_SECONDS, 4 * 3600, 24 * 3600):
         text = cliagent.time_limit_line(seconds, now=now).lower()
         assert [m for m in markers if m in text] == [], seconds
+
+
+# A RESUMED SESSION AND THE FINISH PASS ARE TOLD WHAT IS LEFT (#2139, owner
+# decision 2026-10-28). An account move, a credential reload or a finish pass
+# continues a session that was told its limit at the start, an hour ago
+# perhaps; each is told again, from the time left at that moment.
+
+T0 = datetime(2026, 10, 28, 6, 0, 0, tzinfo=timezone.utc)
+MOVED_SECONDS = 2700
+
+
+class _Clock:
+    """The fake wall clock `cliagent.time_limit_line` reads."""
+
+    def __init__(self) -> None:
+        self.now = T0
+
+    def install(self, monkeypatch) -> None:
+        clock = self
+
+        class _FakeDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):  # noqa: D401 - datetime's own signature
+                return clock.now if tz is None else clock.now.astimezone(tz)
+
+        monkeypatch.setattr(cliagent, "datetime", _FakeDatetime)
+
+
+def _runs(ctx: RunnerContext) -> list[dict]:
+    path = ctx.work_dir / "runs.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def test_a_resumed_session_is_told_the_time_left_at_the_resume(tmp_path, monkeypatch):
+    ctx = _ctx(tmp_path, {"prompt": "fix it"}, repo=True)
+    _install(tmp_path, monkeypatch)
+    clock = _Clock()
+    clock.install(monkeypatch)
+    claude_code.body(ctx)
+
+    # 45 minutes later the worker restarts the runner on another account,
+    # with the time left as its limit (lifecycle, #2363).
+    clock.now = T0 + timedelta(seconds=MOVED_SECONDS)
+    monkeypatch.setenv(TIMEOUT_ENV, str(LIMIT_SECONDS - MOVED_SECONDS))
+    monkeypatch.setenv(cliagent.RESUME_SESSION_ENV, SESSION)
+    monkeypatch.setenv(cliagent.RESUME_REASON_ENV, cliagent.RESUME_MOVED)
+    claude_code.body(ctx)
+
+    first, resumed = _runs(ctx)
+    assert first["argv"].count("--resume") == 0 and "--resume" in resumed["argv"]
+    stdin = resumed["stdin"]
+    # MUTATION: send RESUME_PROMPT alone on a resume -> red (no limit line).
+    assert without_limit_line(stdin) == cliagent.RESUME_PROMPT
+    # MUTATION: build the resume's line from the start's limit or clock -> red.
+    assert stdin.rstrip().rpartition("\n\n")[2] == cliagent.time_limit_line(
+        LIMIT_SECONDS - MOVED_SECONDS, now=clock.now)
+    assert "75 minutes" in stdin and "2026-10-28T08:00:00Z" in stdin, stdin
+
+
+#: The first start announces pending work; the second (the finish pass) ends.
+FAKE_CLI_PENDING = FAKE_CLI.replace(
+    '"result": "All done."',
+    '"result": ("The suite is still running; I\'ll report the result once it finishes."'
+    ' if len((home / "runs.jsonl").read_text().splitlines()) == 1 else "All done.")',
+)
+
+
+def test_the_finish_pass_is_told_the_time_left_after_the_first_start(tmp_path, monkeypatch):
+    ctx = _ctx(tmp_path, {"prompt": "fix it"}, repo=True)
+    _install(tmp_path, monkeypatch)
+    (tmp_path / "fake-cli").write_text(FAKE_CLI_PENDING)
+    clock = _Clock()
+    clock.install(monkeypatch)
+
+    # The first start takes 45 minutes, on both the wall clock and the
+    # duration the step's budget is counted from.
+    def moved(real):
+        def run(*args, **kwargs):
+            result = real(*args, **kwargs)
+            if clock.now == T0:
+                clock.now = T0 + timedelta(seconds=MOVED_SECONDS)
+                return replace(result, duration_seconds=MOVED_SECONDS)
+            return result
+        return run
+
+    monkeypatch.setattr(cliagent, "run_child", moved(cliagent.run_child))
+    monkeypatch.setattr(cliagent, "_run_watched", moved(cliagent._run_watched))
+
+    out = claude_code.body(ctx)
+
+    first, finish = _runs(ctx)
+    assert out.get("resumed_to_finish") is True, out
+    assert first["stdin"].count("120 minutes") == 1
+    stdin = finish["stdin"]
+    # MUTATION: send FINISH_PROMPT alone in the finish pass -> red.
+    assert without_limit_line(stdin) == cliagent.FINISH_PROMPT
+    # MUTATION: build the finish pass's line from `limits.timeout_seconds` -> red.
+    assert stdin.rstrip().rpartition("\n\n")[2] == cliagent.time_limit_line(
+        LIMIT_SECONDS - MOVED_SECONDS, now=clock.now)
+    assert "75 minutes" in stdin and "2026-10-28T08:00:00Z" in stdin, stdin
