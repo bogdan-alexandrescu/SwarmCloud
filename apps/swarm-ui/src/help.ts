@@ -1765,7 +1765,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Each cell is the person’s own role in that workspace when they hold one, else the workspace’s default when they were last seen in it, else none. A dash means that workspace’s roles could not be read, and is never a guessed role.',
       'The platform cannot list a Google group’s members, so being in a workspace is read from the person’s last sign-in. Someone who has not signed in since joining is shown once they hold a role of their own.',
       'Roles are changed on Config › People and roles, in the workspace itself.',
-      'Two platform roles come from the deployment’s configuration, not from this page. The platform owner is the PLATFORM_OWNER setting: it is not switched here, and only the owner can change it. A member of a group named in ADMIN_GROUPS is an admin without a role record, so the Admins card does not list them and their Admin switch reads off.',
+      'Two platform roles come from the deployment’s configuration, not from People and roles. The platform owner is the PLATFORM_OWNER setting: it is not switched here, and only the owner can change it. A member of a group named in ADMIN_GROUPS is an admin without a role record, so the Admins card does not list them and their Admin switch reads off.',
     ],
   },
 
