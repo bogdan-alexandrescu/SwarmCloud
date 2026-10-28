@@ -237,10 +237,13 @@
   table.adm-limits > colgroup > col.adm-col-ceiling { width: 21%; }
   table.adm-limits > colgroup > col.adm-col-by { width: 12%; }
   table.adm-limits > colgroup > col.adm-col-changed { width: 25%; }
-  /* SET BY IS A TERM, ON ONE LINE (VQA V024): `AIMD back-off` broke at its
-     hyphen. Where the column is too narrow it is cut, whole on the cell's
-     title, which carries the sentence why. */
-  table.adm-limits td.adm-setby { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* SET BY WRAPS BETWEEN WORDS, NEVER INSIDE ONE (VQA V024; visual QA pass 1,
+     admin-shell-13). `AIMD back-off` broke at its hyphen, so the cell was one
+     cut line; its words, `lowered automatically (back-off)`, are wider than
+     the column's 123px, and a cut line would hide them. So the cell breaks
+     only at spaces, and `(back-off)` is one run (`.adm-setby-nb`). The cell's
+     title carries the sentence why. */
+  table.adm-limits td.adm-setby { white-space: normal; overflow-wrap: normal; }
   /* One line: `.cap-families .ctl-table th` lets Capacity's heads wrap. */
   .cap-families table.adm-limits > thead th { white-space: nowrap; }
 }
@@ -711,6 +714,8 @@ table.ten-table > thead > tr > th.n { font-family: var(--font); }
   color: var(--text-dim);
   cursor: help;
 }
+/* `(back-off)` never breaks at its hyphen (VQA V024), at any width. */
+.adm-setby-nb { white-space: nowrap; }
 /* A POOL KEY BREAKS AT A COLON, NEVER MID-WORD (QA G5-11, 2026-10-07).
    `.cap-families` cells wrap anywhere, which split `…:tenant:smok / e` and,
    beside the open editor, `backend:CLOUD_RUN_J / OB`. The row header puts a
@@ -919,3 +924,14 @@ table.adm-limits th.pool-name > .adm-quota-line { display: block; margin-top: 2p
 }
 /* A term never breaks inside itself: `429 6d ago` is one run. */
 .adm-quota-line > span, .adm-quota-line > b, .adm-quota-line > time { white-space: nowrap; }
+
+/* WHERE THE REST OF GLOBAL'S UNITS ARE (visual QA pass 1, admin-shell-14;
+   AdminSettings.tsx `familyNote`): one sentence under a family's rows, in the
+   page's dim meta type, ruled off the table above it. */
+.adm-family-note {
+  margin: 0;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line);
+  font: var(--t-meta)/var(--lh-meta) var(--font);
+  color: var(--text-dim);
+}
