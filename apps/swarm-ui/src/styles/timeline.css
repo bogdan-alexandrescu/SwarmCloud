@@ -159,6 +159,17 @@
   -webkit-mask-image: linear-gradient(to left, transparent 0, #000 var(--ctl-s5));
   mask-image: linear-gradient(to left, transparent 0, #000 var(--ctl-s5));
 }
+/* THE DAY TABLE'S HEADS ARE A NAME AND A QUALIFIER, TWO LINES (QA1-FIX-13,
+   runs-submit-40). One nowrap string per head ("Cancelled · requested or
+   other / after a failure / after a cancel") set the column widths, and the
+   table scrolled at 1440. The qualifier is a second line in the meta face's
+   weight, and Cancelled is a group head over its four columns. */
+.ol-th-sub {
+  display: block;
+  font-weight: 400;
+  font-size: var(--t-micro);
+}
+.ol-table th.ol-th-group { text-align: center; }
 
 /* ---- notes, strip, legend ---- */
 .tl-note,
