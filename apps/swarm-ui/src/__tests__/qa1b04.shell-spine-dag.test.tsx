@@ -161,7 +161,7 @@ describe('overview-agents-64: a counted dependency line is measured as one line'
     task_id: null,
   })
   const parents = ['cold-start-latency', 'dispatch-throughput', 'fencing-generations', 'quota-park-and-exit', 'tenant-isolation-audit']
-  const files = Object.fromEntries(parents.map((p) => [p, `${p}-findings.md`]))
+  const files: Record<string, string> = Object.fromEntries(parents.map((p) => [p, `${p}-findings.md`]))
 
   it('a five-file synthesis node is as tall as a node with one short parent', () => {
     // MUTATION: measure `units.map((u) => u.text)` for every node and the
@@ -171,7 +171,7 @@ describe('overview-agents-64: a counted dependency line is measured as one line'
 
   it('a node at the limit still names its files, and is measured by them', () => {
     const two = parents.slice(0, DEP_FILES_LISTED)
-    expect(heightOf(step(two, Object.fromEntries(two.map((p) => [p, files[p]]))))).toBeGreaterThan(heightOf(step(['plan'], {})))
+    expect(heightOf(step(two, Object.fromEntries(two.map((p) => [p, `${p}-findings.md`]))))).toBeGreaterThan(heightOf(step(['plan'], {})))
   })
 
   it('counts past the same number of files the node draws by', () => {
