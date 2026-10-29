@@ -18,7 +18,7 @@
  * THE BREADCRUMB is the trail TO the page; every segment but the open object
  * is a link back, and the object is the last segment, in mono, not a link.
  */
-import { Fragment, type MouseEvent, type ReactNode } from 'react'
+import { Fragment, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 
 export interface TabDef {
   key: string
@@ -54,6 +54,22 @@ function TabCount({ t }: { t: TabDef }) {
   )
 }
 
+/**
+ * ARROW KEYS MOVE ALONG THE STRIP (QA2-FIX-20, runs2-13): a strip drawn as
+ * tabs is a `tablist` in both forms, and Left/Right/Home/End move the focus
+ * between its tabs, the current one the strip's single Tab stop. Enter on a
+ * link tab still follows it, so each view keeps its own address.
+ */
+function moveFocus(e: KeyboardEvent<HTMLElement>): void {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'Home' && e.key !== 'End') return
+  const items = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]'))
+  const at = items.indexOf(document.activeElement as HTMLElement)
+  if (at < 0 || items.length === 0) return
+  e.preventDefault()
+  const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : (at + (e.key === 'ArrowRight' ? 1 : -1) + items.length) % items.length
+  items[next]!.focus()
+}
+
 /** A plain left click a router should take; anything else is the browser's. */
 export function routedClick(e: MouseEvent): boolean {
   return !(e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
@@ -77,11 +93,14 @@ export function Tabs({
   className?: string
 }) {
   const cls = className === undefined ? 'c-tabs' : `c-tabs ${className}`
+  // The strip's one Tab stop: the current tab, else the first, so a strip
+  // whose current view it does not draw is never left out of the Tab order.
+  const stop = tabs.some((t) => t.key === current) ? current : tabs[0]?.key
   if (onSelect !== undefined) {
     return (
-      <div className={cls} role="tablist" aria-label={label}>
+      <div className={cls} role="tablist" aria-label={label} onKeyDown={moveFocus}>
         {tabs.map((t) => (
-          <button key={t.key} role="tab" type="button" aria-selected={t.key === current} onClick={() => onSelect(t.key)}>
+          <button key={t.key} role="tab" type="button" aria-selected={t.key === current} tabIndex={t.key === stop ? 0 : -1} onClick={() => onSelect(t.key)}>
             <span className="c-tab-label">{t.label}</span>
             <TabCount t={t} />
           </button>
@@ -90,11 +109,14 @@ export function Tabs({
     )
   }
   return (
-    <nav className={cls} aria-label={label}>
+    <div className={cls} role="tablist" aria-label={label} onKeyDown={moveFocus}>
       {tabs.map((t) => (
         <a
           key={t.key}
           href={t.href}
+          role="tab"
+          aria-selected={t.key === current}
+          tabIndex={t.key === stop ? 0 : -1}
           aria-current={t.key === current ? 'page' : undefined}
           onClick={(e) => {
             if (onGo === undefined || t.href === undefined || !routedClick(e)) return
@@ -106,7 +128,7 @@ export function Tabs({
           <TabCount t={t} />
         </a>
       ))}
-    </nav>
+    </div>
   )
 }
 

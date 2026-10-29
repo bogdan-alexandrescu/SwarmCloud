@@ -129,7 +129,7 @@ function Routed({ initial, onView }: { initial: string; onView?: (v: string) => 
 }
 
 const tabLabels = (root: ParentNode) =>
-  [...within(root as HTMLElement).getByRole('navigation', { name: 'Views of this workflow' }).querySelectorAll('.c-tab-label')].map(
+  [...within(root as HTMLElement).getByRole('tablist', { name: 'Views of this workflow' }).querySelectorAll('.c-tab-label')].map(
     (s) => s.textContent,
   )
 
@@ -186,7 +186,7 @@ describe('#113: one workflow’s page draws its head and tabs while it reads', (
     api.loadWorkflowBoard.mockReturnValue(new Promise<Result<WorkflowBoard>>(() => {}))
     const views: string[] = []
     render(<Routed initial="wf=wf_one" onView={(v) => views.push(v)} />)
-    fireEvent.click(screen.getByRole('link', { name: 'Steps over time' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Steps over time' }))
     expect(views.at(-1)).toMatch(/tab=timeline/)
     expect(document.querySelector('.wfp.is-loading .c-tabs [aria-current="page"] .c-tab-label')!.textContent).toBe('Steps over time')
   })

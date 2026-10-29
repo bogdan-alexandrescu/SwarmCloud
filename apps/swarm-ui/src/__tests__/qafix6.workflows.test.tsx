@@ -421,7 +421,7 @@ describe('d. F4: one name per scope', () => {
     // MUTATION: keep ', changes' on the banner's button while the card is open.
     expect(within(lead).getByRole('button').textContent).not.toMatch(/changes/i)
     // The tab stays the workflow's.
-    expect(screen.getByRole('link', { name: 'Changes' })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: 'Changes' })).toBeTruthy()
   })
 })
 

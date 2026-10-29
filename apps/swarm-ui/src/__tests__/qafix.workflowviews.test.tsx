@@ -198,7 +198,7 @@ describe("WG-7: the step card's changes link names the step, not the workflow's 
     // MUTATION: keep a second link on the card called just 'Changes' and this is red.
     expect(within(card).queryByRole('link', { name: /^Changes\b/ })).toBeNull()
     // The tab it filters keeps its own name.
-    const tabs = within(document.body).getByRole('navigation', { name: 'Views of this workflow' })
-    expect(within(tabs).getByRole('link', { name: 'Changes' })).toBeTruthy()
+    const tabs = within(document.body).getByRole('tablist', { name: 'Views of this workflow' })
+    expect(within(tabs).getByRole('tab', { name: 'Changes' })).toBeTruthy()
   })
 })

@@ -177,7 +177,10 @@ export function RunContextCard({ run, ctx, go }: { run: IssueRun; ctx: RunIndexR
           {run.issue_read ? ` with ${run.issue_read.comments} ${run.issue_read.comments === 1 ? 'comment' : 'comments'}` : (
             <>
               {' '}
-              <NotRead why="The issue was not read when the run was created" />
+              <NotRead
+                say={run.issue_read_error ? 'its read failed' : 'this run kept no reading of it'}
+                why={run.issue_read_error ? `The issue could not be read when the run was created: ${run.issue_read_error.message}` : 'This run was created before runs kept the issue they read.'}
+              />
             </>
           )}
         </li>
@@ -186,7 +189,7 @@ export function RunContextCard({ run, ctx, go }: { run: IssueRun; ctx: RunIndexR
           {run.open_work ? (
             `${plural(run.open_work.issues.length, 'issue')}${run.open_work.issues_truncated ? '+' : ''}, ${plural(run.open_work.pull_requests.length, 'pull request')}${run.open_work.pull_requests_truncated ? '+' : ''}, read when the run was created`
           ) : (
-            <NotRead why="Open work was not read for this run: it was created before the open-work read, or the read failed" />
+            <NotRead say="this run kept no reading of it" why="Open work was not read for this run: it was created before the open-work read, or the read failed" />
           )}
         </li>
       </ul>
@@ -203,11 +206,13 @@ export function RunContextCard({ run, ctx, go }: { run: IssueRun; ctx: RunIndexR
  * A row the run holds nothing for: the dash AND its reason in words (QA
  * runs-submit-27, 2026-10-28). A bare dash ended "Issue #512 —" with the
  * reason only on hover; the Planner fact beside it says "— not recorded".
+ * THE REASON IS ON THE LINE (QA2-FIX-20, runs2-11): `— not read` still left
+ * the why to the hover; `say` is its short form, `why` the whole of it.
  */
-function NotRead({ why }: { why: string }) {
+function NotRead({ say, why }: { say: string; why: string }) {
   return (
     <i className="ctl-em" title={why}>
-      &mdash; not read
+      &mdash; not read · {say}
     </i>
   )
 }

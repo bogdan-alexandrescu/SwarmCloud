@@ -419,7 +419,7 @@ describe('the workflow page head (#503, workflows.html frame B)', () => {
     const tabs = await waitFor(() => {
       // The canonical underline tabs (components.html A): a link per view --
       // the loaded page's, since its skeleton draws them too, uncounted (#113).
-      const t = document.querySelector<HTMLElement>('.wfp:not(.is-loading) > nav.c-tabs[aria-label="Views of this workflow"]')
+      const t = document.querySelector<HTMLElement>('.wfp:not(.is-loading) > .c-tabs[role="tablist"][aria-label="Views of this workflow"]')
       expect(t).toBeTruthy()
       return t!
     })
@@ -752,7 +752,7 @@ describe('a step skipped by its verdict gate never reads as one that ran', () =>
     const ran = document.querySelector<HTMLElement>('button.node[data-step="implement"]')!
     expect(ran.className).not.toContain('is-skipped')
     // The rows are the Table tab's alone (overview-agents-73, #2596).
-    fireEvent.click(screen.getByRole('link', { name: /^Table/ }))
+    fireEvent.click(screen.getByRole('tab', { name: /^Table/ }))
     const cell = await waitFor(() => {
       const c = document.querySelector<HTMLElement>('.wf-table tr[data-step="fix"] td[data-col="state"]')
       expect(c).toBeTruthy()
