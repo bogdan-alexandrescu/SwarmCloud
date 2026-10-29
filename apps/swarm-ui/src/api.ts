@@ -1082,7 +1082,11 @@ async function fixtureTaskLogs(
       redaction_count: 0,
       tail_window: source === 'live' && size > 0 ? { object_offset: 0, stream_size: size, published_at: new Date(last - 3_000).toISOString() } : null,
       object_updated_at: new Date(source === 'live' ? last - 3_000 : last).toISOString(),
-      age_seconds: Math.max(0, Math.round((FIXTURE_NOW - (source === 'live' ? last - 3_000 : last)) / 1000)),
+      // AGED AGAINST THE BROWSER'S CLOCK (QA2 overview-agents-39): the console
+      // adds the time since the read to `age_seconds` and ages an attempt's end
+      // by its own clock, so an age measured at FIXTURE_NOW read `34m ago` on
+      // an object whose attempt the picker said ended days ago.
+      age_seconds: Math.max(0, Math.round((Date.now() - (source === 'live' ? last - 3_000 : last)) / 1000)),
     }
   }
   return {
@@ -1911,12 +1915,23 @@ async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<R
   // BROWSER AGENT, task_f523c160 (FIXTURE-BROWSER-DONE, part of #2423), has
   // a short one, six actions and its result: its Browser tab is reviewed
   // for the end time, the links and the recordings, not for a long log.
+  const browserInput = (action: string, i: number): Record<string, string> =>
+    action === 'browser_navigate'
+      ? { url: `https://example.com/page-${i + 1}` }
+      : action === 'browser_click'
+        ? { element: `Link ${i + 1} in the page's list`, ref: `e${i + 10}` }
+        : action === 'browser_type'
+          ? { element: 'Search box', ref: `e${i + 10}`, text: `query ${i + 1}` }
+          : {}
   const browserSteps = (from: number, count: number): TranscriptStep[] =>
     Array.from({ length: count }, (_, i) => {
       const id = `toolu_b${String(i).padStart(2, '0')}`
       const action = ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type'][i % 4]!
       return [
-        step(from + 2 * i, { kind: 'tool_call', tool: { id, name: action, input: `{\n  "step": ${i + 1}\n}` } }),
+        // THE INPUTS A BROWSER TOOL CARRIES (QA2 overview-agents-31): `{ "step": n }`
+        // held no address, element or text, so the transcript's one-line gist
+        // (Artifacts.tsx `inputGist`) had nothing to show beside the tool's name.
+        step(from + 2 * i, { kind: 'tool_call', tool: { id, name: action, input: JSON.stringify(browserInput(action, i), null, 2) } }),
         step(from + 2 * i + 1, { kind: 'tool_result', role: 'user', tool_result: { tool_use_id: id, is_error: false, content: `Step ${i + 1}: ${action} done; the page says "Example Domain".`, images: 0 } }),
       ]
     }).flat()
@@ -1953,7 +1968,7 @@ async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<R
           ? `gs://swarm-logs/tenants/u-bogdan/tasks/${taskId}/attempts/${attemptId}/logs/${finished ? 'final' : 'live'}/agent_stdout${finished ? '' : '.tail'}.log`
           : null,
         object_updated_at: started ? new Date(at).toISOString() : null,
-        age_seconds: started ? Math.max(0, Math.round((FIXTURE_NOW - at) / 1000)) : null,
+        age_seconds: started ? Math.max(0, Math.round((Date.now() - at) / 1000)) : null,
         total_bytes: started ? size : null,
         offset: 0,
         returned_bytes: size,

@@ -23,7 +23,7 @@ import { cellStyle, lengthPx, textPx } from './tablefit'
 const api = vi.hoisted(() => ({ loadCapacity: vi.fn(), loadAdminPools: vi.fn(), setPoolLimit: vi.fn(), loadMe: vi.fn() }))
 vi.mock('../api', () => api)
 
-const { AdminSettingsScreen } = await import('../AdminSettings')
+const { AdminSettingsScreen, poolSpoken } = await import('../AdminSettings')
 
 const WAIT = { timeout: 5000 } as const
 const WIDE = { width: 1440 }
@@ -65,7 +65,7 @@ async function open(name: string): Promise<HTMLElement> {
     expect(r).not.toBeNull()
     return r as HTMLElement
   }, WAIT)
-  fireEvent.click(within(row).getByRole('button', { name: `Edit ceiling for ${name}` }))
+  fireEvent.click(within(row).getByRole('button', { name: `Edit ceiling for ${poolSpoken(name)}` }))
   return document.querySelector<HTMLElement>('aside.adm-side')!
 }
 

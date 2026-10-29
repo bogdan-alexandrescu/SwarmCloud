@@ -238,7 +238,7 @@ describe('a11y-keyboard-003: every table on Pool limits is named', () => {
     viewport(1100)
     api.loadMe.mockResolvedValue(session(true))
     await limits([pool('tenant:a'), pool('tenant:b')])
-    const edit = await screen.findByRole('button', { name: 'Edit ceiling for tenant:a' }, WAIT)
+    const edit = await screen.findByRole('button', { name: 'Edit ceiling for a (workspace)' }, WAIT)
     edit.click()
     // MUTATION: name only the first part: the second table under the editor is anonymous.
     await waitFor(() => expect(screen.getByRole('table', { name: 'Workspaces ceilings, continued' })).toBeTruthy(), WAIT)

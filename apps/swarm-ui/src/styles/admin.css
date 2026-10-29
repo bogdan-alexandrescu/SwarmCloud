@@ -177,6 +177,12 @@
    Last changed dash. On this row the faint step is the dim one, 6.59:1 dark
    and 5.94:1 light; every other row keeps the faint step. */
 .adm-family tr.is-editing { --text-faint: var(--text-dim); }
+/* THE ROW A LINK NAMED KEEPS ITS MARK WHILE IT HOLDS FOCUS (QA2-FIX-11
+   review, admin2-21). The row takes focus on arrival, and the shell's
+   `.ctl-scroll [id][tabindex='-1']:focus { outline: none }` (styles.css)
+   outranks `tr.is-target`'s outline, so the row arrived unmarked. This
+   selector is one class and one tag heavier and draws the same outline. */
+.ctl-scroll tr.is-target[id][tabindex='-1']:focus { outline: 2px solid var(--info); outline-offset: -2px; }
 @media (max-width: 560px) {
   .adm-side input,
   .adm-side-actions > button { min-height: 44px; }

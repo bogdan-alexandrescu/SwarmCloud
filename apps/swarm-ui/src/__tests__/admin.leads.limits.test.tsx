@@ -137,7 +137,7 @@ describe('Pool limits leads with the pool closest to its ceiling (S10b)', () => 
     expect(text(l)).toContain('Pool example-labs has no ceiling set')
     expect(l.querySelector('.ws-lead-s.id')?.textContent).toBe('tenant:example-labs')
     fireEvent.click(within(l).getByRole('button', { name: 'Open example-labs' }))
-    expect(within(document.querySelector('aside.adm-side') as HTMLElement).getByLabelText('Hard limit for tenant:example-labs')).toBeTruthy()
+    expect(within(document.querySelector('aside.adm-side') as HTMLElement).getByLabelText('Hard limit for example-labs (workspace)')).toBeTruthy()
   })
 })
 

@@ -27,7 +27,7 @@ const api = vi.hoisted(() => ({
 }))
 vi.mock('../api', () => api)
 
-const { AdminSettingsScreen, quotaTerms } = await import('../AdminSettings')
+const { AdminSettingsScreen, quotaTerms, poolSpoken } = await import('../AdminSettings')
 
 const WAIT = { timeout: 5000 } as const
 const POOL = 'provider:anthropic:tenant:eng'
@@ -115,7 +115,7 @@ async function row(): Promise<HTMLElement> {
 
 async function openEditor(): Promise<HTMLElement> {
   const r = await row()
-  fireEvent.click(within(r).getByRole('button', { name: `Edit ceiling for ${POOL}` }))
+  fireEvent.click(within(r).getByRole('button', { name: `Edit ceiling for ${poolSpoken(POOL)}` }))
   return await waitFor(() => {
     const side = document.querySelector<HTMLElement>(`aside.adm-side[data-pool="${POOL}"]`)
     expect(side?.querySelector('[data-quota-section]')).toBeTruthy()
@@ -166,7 +166,7 @@ describe('only a platform admin sees the two controls', () => {
     // A non-admin cannot open the editor at all; an unknown session can, for
     // the hard limit, and the quota section draws its facts without a control.
     const r = await row()
-    const edit = within(r).getByRole('button', { name: new RegExp(`^Edit ceiling for ${POOL}`) })
+    const edit = within(r).getByRole('button', { name: new RegExp(`^Edit ceiling for ${poolSpoken(POOL)}`) })
     fireEvent.click(edit)
     await new Promise((done) => setTimeout(done, 50))
     expect(screen.queryByRole('button', { name: 'Reset target' })).toBeNull()
@@ -188,9 +188,9 @@ describe('Reset target', () => {
     const side = await openEditor()
     const button = within(side).getByRole('button', { name: 'Reset target' }) as HTMLButtonElement
     // The target is prefilled with the configured max; the reason is required.
-    expect((within(side).getByLabelText(`New adaptive target for ${POOL}`) as HTMLInputElement).value).toBe('50')
+    expect((within(side).getByLabelText(`New adaptive target for ${poolSpoken(POOL)}`) as HTMLInputElement).value).toBe('50')
     expect(button.disabled).toBe(true)
-    fireEvent.change(within(side).getByLabelText(`Reason for resetting the target of ${POOL}`), {
+    fireEvent.change(within(side).getByLabelText(`Reason for resetting the target of ${poolSpoken(POOL)}`), {
       target: { value: 'one account hit its window' },
     })
     fireEvent.click(button)
@@ -218,9 +218,9 @@ describe('Reset target', () => {
     )
     render(<AdminSettingsScreen />)
     const side = await openEditor()
-    fireEvent.change(within(side).getByLabelText(`New adaptive target for ${POOL}`), { target: { value: '80' } })
+    fireEvent.change(within(side).getByLabelText(`New adaptive target for ${poolSpoken(POOL)}`), { target: { value: '80' } })
     expect(side.textContent).toContain('above the max')
-    fireEvent.change(within(side).getByLabelText(`Reason for resetting the target of ${POOL}`), { target: { value: 'r' } })
+    fireEvent.change(within(side).getByLabelText(`Reason for resetting the target of ${poolSpoken(POOL)}`), { target: { value: 'r' } })
     fireEvent.click(within(side).getByRole('button', { name: 'Reset target' }))
     await waitFor(() => expect(screen.getAllByText(/target 14 → 50, clamped to the max/).length).toBeGreaterThan(0), WAIT)
   })
@@ -238,7 +238,7 @@ describe('Reset target', () => {
     render(<AdminSettingsScreen />)
     side = await openEditor()
     fireEvent.click(within(side).getByLabelText('clear cooldown'))
-    fireEvent.change(within(side).getByLabelText(`Reason for resetting the target of ${POOL}`), { target: { value: 'window reset' } })
+    fireEvent.change(within(side).getByLabelText(`Reason for resetting the target of ${poolSpoken(POOL)}`), { target: { value: 'window reset' } })
     fireEvent.click(within(side).getByRole('button', { name: 'Reset target' }))
     await waitFor(() => expect(api.resetAdaptiveTarget).toHaveBeenCalledTimes(1), WAIT)
     expect(api.resetAdaptiveTarget.mock.calls[0]![2]).toEqual({ target: 50, reason: 'window reset', clear_cooldown: true })
@@ -254,9 +254,9 @@ describe('Set max', () => {
     )
     render(<AdminSettingsScreen />)
     const side = await openEditor()
-    fireEvent.change(within(side).getByLabelText(`New configured max for ${POOL}`), { target: { value: '30' } })
+    fireEvent.change(within(side).getByLabelText(`New configured max for ${poolSpoken(POOL)}`), { target: { value: '30' } })
     expect(side.textContent).toContain('below the target (40): the broker lowers the target to 30')
-    fireEvent.change(within(side).getByLabelText(`Reason for changing the max of ${POOL}`), { target: { value: 'eng asked for less' } })
+    fireEvent.change(within(side).getByLabelText(`Reason for changing the max of ${poolSpoken(POOL)}`), { target: { value: 'eng asked for less' } })
     fireEvent.click(within(side).getByRole('button', { name: 'Set max' }))
     await waitFor(() => expect(api.setQuotaHardMax).toHaveBeenCalledTimes(1), WAIT)
     expect(api.setQuotaHardMax).toHaveBeenCalledWith('anthropic', 'eng', { hard_max: 30, reason: 'eng asked for less' })

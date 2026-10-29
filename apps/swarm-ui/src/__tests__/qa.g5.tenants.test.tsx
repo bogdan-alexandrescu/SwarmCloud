@@ -178,7 +178,7 @@ describe('G5-13: Enforced is the tenant pool’s effective limit, as /v1/capacit
     expect(api.loadCapacity).toHaveBeenCalledTimes(1)
     // The registry values are the explanation, on the figure.
     const link = enforced('eng').querySelector('a')!
-    expect(link.getAttribute('title')).toBe('effective limit of tenant:eng · configured 45 · 40u')
+    expect(link.getAttribute('title')).toBe('45 agents at once configured · 30 units enforced')
   })
 
   it('draws a dash with its reason when the tenant has no pool, or its pool no limit', async () => {
