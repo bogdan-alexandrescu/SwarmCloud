@@ -23,8 +23,8 @@ def test_counts_match_header() -> None:
     )
 
 
-def test_entry_ids_unique_and_prefixed() -> None:
-    """Every id is unique and its kind prefix is one of the manifest's known ones."""
+def test_entry_ids_unique_and_nonempty() -> None:
+    """The base file has entries, and no id twice (the loader refuses that too)."""
     base = m.parse_file(m.MANIFEST_PATH)
     ids = [e.id for e in base.entries]
     assert len(ids) == len(set(ids)), sorted({i for i in ids if ids.count(i) > 1})

@@ -59,14 +59,16 @@ def _tf_files() -> list[tuple[str, Path]]:
 
 
 def collect_terraform() -> dict[str, str]:
-    """1. Every `resource` and `data` block: `<root>/<type>.<name>`."""
+    """1. Every `resource` and `data` block: `<root>/<type>.<name>`, and
+    `<root>/data.<type>.<name>` for a data source, as Terraform addresses it."""
     found: dict[str, str] = {}
     multi_line: list[str] = []
     for root, path in _tf_files():
         for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             match = _TF_HEADER.match(line)
             if match:
-                found[f"{root}/{match.group(2)}.{match.group(3)}"] = f"{_rel(path)}:{n}"
+                data = "data." if match.group(1) == "data" else ""
+                found[f"{root}/{data}{match.group(2)}.{match.group(3)}"] = f"{_rel(path)}:{n}"
             elif _TF_HEADER_START.match(line):
                 multi_line.append(f"{_rel(path)}:{n}")
     assert not multi_line, (
@@ -125,40 +127,64 @@ def _python_service_files() -> list[Path]:
     return files
 
 
+_ENVIRON_NAMES = ("environ", "env")
+
+
 def _is_environ(node: ast.AST) -> bool:
+    """`os.environ`, or a mapping passed in as `environ` or `env`."""
     return (isinstance(node, ast.Attribute) and node.attr == "environ") or (
-        isinstance(node, ast.Name) and node.id == "environ"
+        isinstance(node, ast.Name) and node.id in _ENVIRON_NAMES
     )
 
 
+def _env_key(node: ast.AST) -> ast.AST | None:
+    """The key expression of an environment read, or None if `node` is not one."""
+    if (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.ctx, ast.Load)
+        and _is_environ(node.value)
+    ):
+        return node.slice
+    if isinstance(node, ast.Call) and node.args:
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "get" and _is_environ(func.value):
+            return node.args[0]
+        if (isinstance(func, ast.Attribute) and func.attr == "getenv") or (
+            isinstance(func, ast.Name) and func.id == "getenv"
+        ):
+            return node.args[0]
+    return None
+
+
+def _env_helpers(tree: ast.AST) -> dict[str, int]:
+    """Functions that read the environment under one of their parameters, e.g.
+    settings.py's `_csv(name, default)`: name -> that parameter's position."""
+    helpers: dict[str, int] = {}
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        params = [a.arg for a in fn.args.posonlyargs + fn.args.args]
+        for node in ast.walk(fn):
+            key = _env_key(node)
+            if isinstance(key, ast.Name) and key.id in params:
+                helpers[fn.name] = params.index(key.id)
+                break
+    return helpers
+
+
 def _env_names(tree: ast.AST) -> list[tuple[str, int]]:
+    """Every literal environment variable name the module reads, directly or
+    through one of its own helpers."""
+    helpers = _env_helpers(tree)
     names: list[tuple[str, int]] = []
-
-    def literal(node: ast.AST) -> str | None:
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            return node.value
-        return None
-
     for node in ast.walk(tree):
-        if isinstance(node, ast.Subscript) and _is_environ(node.value):
-            name = literal(node.slice)
-            if name:
-                names.append((name, node.lineno))
-        elif isinstance(node, ast.Call):
-            func = node.func
-            arg0 = literal(node.args[0]) if node.args else None
-            if isinstance(func, ast.Attribute) and func.attr == "get" and _is_environ(func.value):
-                if arg0:
-                    names.append((arg0, node.lineno))
-            elif (isinstance(func, ast.Attribute) and func.attr == "getenv") or (
-                isinstance(func, ast.Name) and func.id == "getenv"
-            ):
-                if arg0:
-                    names.append((arg0, node.lineno))
-            elif isinstance(func, ast.Name) and func.id == "_env" and len(node.args) >= 2:
-                name = literal(node.args[1])
-                if name:
-                    names.append((name, node.lineno))
+        key = _env_key(node)
+        if key is None and isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            position = helpers.get(node.func.id)
+            if position is not None and len(node.args) > position:
+                key = node.args[position]
+        if isinstance(key, ast.Constant) and isinstance(key.value, str):
+            names.append((key.value, node.lineno))
     return names
 
 

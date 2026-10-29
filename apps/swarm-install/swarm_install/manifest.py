@@ -18,8 +18,9 @@ counts, so a lane's fragment never edits the base.
 test_manifest_complete.py` collects from the tree. Each list holds exact keys or
 `fnmatch` patterns (`*` matches any run of characters):
 
-* `terraform`: `<root>/<type>.<name>`, root `bootstrap`, `infra` or
-  `modules/<module>`, for every `resource` and `data` block;
+* `terraform`: `<root>/<type>.<name>` for every `resource` block and
+  `<root>/data.<type>.<name>` for every `data` block, root `bootstrap`, `infra`
+  or `modules/<module>`;
 * `api`: `<name>.googleapis.com`;
 * `secret`: a Secret Manager id; an interpolated id is collected with each
   `${...}` as `*` (`swarm-tenant-*-qa`), so a pattern entry matches it;
