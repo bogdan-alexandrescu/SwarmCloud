@@ -234,7 +234,7 @@ function taskWhat(t: Task): string {
 type RecentRead =
   | { kind: 'reading' }
   | { kind: 'who-unread'; why: string; unread: string[] }
-  | { kind: 'read'; items: RecentSubmission[]; looked: string[]; unread: string[] }
+  | { kind: 'read'; items: RecentSubmission[]; looked: RecentWindow[]; unread: string[] }
 
 function okData<T>(r: Result<T>): T | null {
   return r.status === 'ok' || r.status === 'stale' ? r.data : null
@@ -250,6 +250,16 @@ function unreadWhy(what: string, r: Result<unknown>): string | null {
  * workflow you submitted, an issue run you created. Pure, for the test.
  */
 export function recentSubmissions(
+  email: string,
+  tasks: readonly Task[] | null,
+  workflows: readonly import('./types').Workflow[] | null,
+  runs: readonly import('./types').IssueRunSummary[] | null,
+): RecentSubmission[] {
+  return yourSubmissions(email, tasks, workflows, runs).slice(0, RECENT_SHOWN)
+}
+
+/** All of yours in what was read, newest first: what the card's five are cut from. */
+function yourSubmissions(
   email: string,
   tasks: readonly Task[] | null,
   workflows: readonly import('./types').Workflow[] | null,
@@ -273,7 +283,34 @@ export function recentSubmissions(
     if (!mine(r.created_by)) continue
     out.push({ kind: 'issue run', id: r.id, name: r.issue_read?.title || r.issue.ref, at: r.created_at, state: stateOf(r.state), to: runAddress(r.id) })
   }
-  return out.sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, RECENT_SHOWN)
+  return out.sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
+}
+
+/**
+ * A WINDOW THE CARD READ: which kind it holds, how many it held, and how many
+ * of those were yours.
+ */
+export interface RecentWindow {
+  kind: RecentSubmission['kind']
+  read: number
+  yours: number
+}
+
+/**
+ * A window in words. Whose window each is, said per window: the agents are
+ * yours, the workflows and runs the tenant's (live QA SUB-6); a run window
+ * straight after the workflows' is "its".
+ */
+function windowWords(w: RecentWindow, after: RecentWindow | undefined): string {
+  const plural = w.read === 1 ? '' : 's'
+  if (w.kind === 'task') return `your newest ${w.read} agent${plural}`
+  if (w.kind === 'workflow') return `the tenant\u2019s newest ${w.read} workflow${plural}`
+  return `${after?.kind === 'workflow' ? 'its' : 'the tenant\u2019s'} newest ${w.read} issue run${plural}`
+}
+
+function windowsWords(ws: readonly RecentWindow[], last: ', ' | ' and ' | ' or '): string {
+  const said = ws.map((w, i) => windowWords(w, ws[i - 1]))
+  return said.length < 2 ? said.join('') : `${said.slice(0, -1).join(', ')}${last}${said[said.length - 1]}`
 }
 
 /**
@@ -282,17 +319,33 @@ export function recentSubmissions(
  * issue runs" -- under a list of five agents, so it counted workflows and runs
  * the list never showed. It counts what is listed first, then where it was
  * found. With nothing listed it names the windows alone, as before (VQA V135);
- * with no window, nothing. Pure, for the test.
+ * with no window, nothing.
+ *
+ * AND EACH WINDOW SAYS WHAT BECAME OF IT (visual QA pass 2, runs2-10): "Found
+ * among your newest 27 agents, the tenant's newest 3 workflows, its newest 2
+ * issue runs" under five agents still read as if workflows and runs had been
+ * listed. A window is "found among" only when the list shows its kind; one
+ * whose yours are older than the five says so; one with none of yours says
+ * that. Pure, for the test.
  */
-export function recentScope(items: readonly RecentSubmission[], looked: readonly string[]): string | null {
+export function recentScope(items: readonly RecentSubmission[], looked: readonly RecentWindow[]): string | null {
   if (looked.length === 0) return null
-  if (items.length === 0) return `Among ${looked.join(', ')}.`
+  if (items.length === 0) return `Among ${windowsWords(looked, ', ')}.`
   const kinds: RecentSubmission['kind'][] = ['task', 'workflow', 'issue run']
   const listed = kinds.flatMap((k) => {
     const n = items.filter((it) => it.kind === k).length
     return n === 0 ? [] : [`${n} ${KIND_LABEL[k]}${n === 1 ? '' : 's'}`]
   })
-  return `Listed: ${listed.join(', ')}, newest first. Found among ${looked.join(', ')}.`
+  const shown = (w: RecentWindow) => items.some((it) => it.kind === w.kind)
+  const found = looked.filter(shown)
+  const older = looked.filter((w) => !shown(w) && w.yours > 0)
+  const none = looked.filter((w) => !shown(w) && w.yours === 0)
+  return [
+    `Listed: ${listed.join(', ')}, newest first.`,
+    `Found among ${windowsWords(found, ', ')}.`,
+    ...(older.length === 0 ? [] : [`Yours among ${windowsWords(older, ' and ')} are older than these.`]),
+    ...(none.length === 0 ? [] : [`None of yours among ${windowsWords(none, ' or ')}.`]),
+  ].join(' ')
 }
 
 /**
@@ -332,14 +385,11 @@ function useRecentRead(): { read: RecentRead; readAt: number | null; reading: bo
       // A WINDOW THAT HELD NOTHING IS NOT A WINDOW (VQA V135): "Among the
       // newest 0 tasks, 0 workflows, 0 issue runs" under "None of yours yet."
       // said nothing twice. Only a window that held something is named.
-      const looked = [
-        t === null || t.length === 0 ? null : `your newest ${t.length} agent${t.length === 1 ? '' : 's'}`,
-        // Whose window each is, said per window: the tasks are yours, the
-        // workflows and runs the tenant's (live QA SUB-6).
-        w === null || w.length === 0 ? null : `the tenant\u2019s newest ${w.length} workflow${w.length === 1 ? '' : 's'}`,
-        r === null || r.length === 0 ? null : `its newest ${r.length} issue run${r.length === 1 ? '' : 's'}`,
-      ].filter((x): x is string => x !== null)
-      setRead({ kind: 'read', items: recentSubmissions(who.principal.email, t, w, r), looked, unread })
+      const all = yourSubmissions(who.principal.email, t, w, r)
+      const windowOf = (kind: RecentSubmission['kind'], rows: readonly unknown[] | null): RecentWindow | null =>
+        rows === null || rows.length === 0 ? null : { kind, read: rows.length, yours: all.filter((it) => it.kind === kind).length }
+      const looked = [windowOf('task', t), windowOf('workflow', w), windowOf('issue run', r)].filter((x): x is RecentWindow => x !== null)
+      setRead({ kind: 'read', items: all.slice(0, RECENT_SHOWN), looked, unread })
     })
     return () => {
       live = false

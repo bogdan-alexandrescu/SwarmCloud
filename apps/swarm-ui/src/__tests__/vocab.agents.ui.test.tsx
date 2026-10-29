@@ -140,10 +140,11 @@ describe('3. the Submit pages count agents', () => {
   })
 
   it('says "your newest N agents" on the chooser', () => {
-    // MUTATION: put `your newest ${t.length} task…` back in SubmitChooser.tsx
+    // MUTATION: put `your newest ${w.read} task…` back in SubmitChooser.tsx
     // and this goes red.
-    expect(code(SUBMIT_CHOOSER)).toContain('`your newest ${t.length} agent${')
-    expect(code(SUBMIT_CHOOSER)).not.toMatch(/your newest \$\{t\.length\} task/)
+    // The window is worded by `windowWords` (visual QA pass 2, runs2-10).
+    expect(code(SUBMIT_CHOOSER)).toContain('`your newest ${w.read} agent${')
+    expect(code(SUBMIT_CHOOSER)).not.toMatch(/your newest \$\{\w+(\.\w+)?\} task/)
   })
 })
 
