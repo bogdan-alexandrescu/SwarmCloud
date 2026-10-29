@@ -223,9 +223,10 @@ describe('d. 6:capacity-010 (box 6314114353): runtime cards in a row share its h
 describe('e. box 6298212195: `← AUTO` reads beside its resolved backend', () => {
   it('holds the declared and the resolved backend in one value element, beside `runs on`', async () => {
     await renderRuntimes()
-    const declared = screen.getByText('← AUTO')
+    // In words since QA2-FIX-21 (capacity-14, cap2-10).
+    const declared = screen.getByText('chosen automatically')
     const value = declared.parentElement!
-    expect(value.querySelector('.rt-backend')?.textContent).toBe('CLOUD_RUN_JOB')
+    expect(value.querySelector('.rt-backend')?.textContent).toBe('Cloud Run')
     const fact = value.closest('li.ctl-fact')!
     expect(fact.querySelector(':scope > b')?.textContent).toBe('runs on')
     expect(value, 'the declared backend is its own item of the fact').not.toBe(fact)
