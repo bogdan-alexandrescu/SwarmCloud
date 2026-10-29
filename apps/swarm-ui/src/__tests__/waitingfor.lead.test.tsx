@@ -165,7 +165,9 @@ describe('the agent inspector', () => {
   it('full: names the pool and its units, and says it holds no capacity', async () => {
     const { container, bar } = await inspect(readyTask(FULL))
     const leadEl = bar.querySelector('[data-waiting-lead]')!
-    expect(leadEl.textContent).toBe('waiting for: tenant:eng  20/20 units')
+    // The pool is named as Headroom names it, its key in the title (QA2 ovag2-06).
+    expect(leadEl.textContent).toBe('waiting for: eng  20/20 units')
+    expect(leadEl.querySelector('[title="tenant:eng"]')).not.toBeNull()
     expect(bar.textContent).toContain('(holds no capacity)')
     // The last pass's record is still drawn, and labelled as such.
     const last = container.querySelector<HTMLElement>('[data-blocked-by]')
@@ -178,14 +180,14 @@ describe('the agent inspector', () => {
 
   it('paused: says the pool is paused', async () => {
     const { bar } = await inspect(readyTask(PAUSED))
-    expect(bar.querySelector('[data-waiting-lead]')!.textContent).toBe('waiting for: tenant:eng paused')
+    expect(bar.querySelector('[data-waiting-lead]')!.textContent).toBe('waiting for: eng paused')
     expect(bar.classList.contains('amber'), 'a paused pool needs a person').toBe(true)
   })
 
   it('unknown: says the limit is unknown and never prints 0 or full', async () => {
     const { bar } = await inspect(readyTask(UNKNOWN))
     const text = bar.querySelector('[data-waiting-lead]')!.textContent ?? ''
-    expect(text).toBe('waiting for: tenant:eng: limit unknown')
+    expect(text).toBe('waiting for: eng: limit unknown')
     expect(text).not.toMatch(/\d/)
     expect(text).not.toMatch(/full/i)
   })
