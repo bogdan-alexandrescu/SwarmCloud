@@ -457,7 +457,8 @@ describe('the ticket goes in the first message, never the URL', () => {
     rfb.FakeRfb.throwNext = true
     pane(session())
     await waitFor(() => expect(FakeSocket.made.length).toBe(1))
-    await waitFor(() => expect(document.querySelector('.live-screen-say')?.textContent).toContain('already closed'))
+    // Nothing has drawn yet, so the reason is said in the frame (QA2-FIX-16, ovag2-12).
+    await waitFor(() => expect(document.querySelector('.live-frame-empty')?.textContent).toContain('already closed'))
     expect(rfb.FakeRfb.made).toHaveLength(0)
     expect(FakeSocket.made[0]!.readyState, 'the refused socket was left open').toBe(3)
   })

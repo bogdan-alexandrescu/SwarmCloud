@@ -1382,7 +1382,9 @@ describe('timeline figures open the rows behind them (#116) and add up (#123)', 
     const [ended, succeeded, failed, cancelled] = [/^Ended$/, /^Succeeded$/, /^Failed/, /^Cancelled/].map(at)
     expect(succeeded, 'no Succeeded column').toBeGreaterThan(-1)
     const rows = [...c.querySelectorAll('tbody tr')]
-    expect(rows.length).toBe(4)
+    // Four profiles, the remainder the headline counts and no profile row
+    // does, and the headline itself (QA2-FIX-16, runs2-23): each adds up.
+    expect(rows.length).toBe(6)
     for (const r of rows) {
       const cells = [...r.children].map((x) => (x.textContent ?? '').trim())
       const n = (i: number) => Number((cells[i] ?? '').split(' ')[0])
