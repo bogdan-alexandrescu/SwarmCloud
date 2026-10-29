@@ -542,3 +542,46 @@ def test_only_the_named_modules_read_a_secret_payload():
         if "SecretManagerReader(" in path.read_text(encoding="utf-8")
     }
     assert makers == {"routes/attempts_secrets.py"}
+
+
+# --------------------------------------------------------------------------
+# What a run's forge credential WAS, never what it is
+# --------------------------------------------------------------------------
+#
+# DAYONE-FORGE-CRED-RECORD (part of #2688). The worker records, in an
+# attempt's result summary, the KIND of GitHub credential the run cloned and
+# pushed with and the secret NAME it came from (`result_summary.
+# forge_credential`); stage 14 of `swarm install` reads it through `swarm
+# result <task> --json` to check lesson 43 (an App installation token, never a
+# PAT). It is a kind and a name, not credential material: served where the
+# summary already is, the task read, unchanged by the masking, and never to
+# another tenant's caller.
+FORGE_RECORD = {"kind": "app_installation", "source": "swarm-tenant-eng-git"}
+
+
+def _seed_forge_record(db, record) -> None:
+    seed_tenant(db, "eng")
+    doc = seed_task(db, task_id="task_cred", tenant_id="eng", state="SUCCEEDED")
+    doc["result_summary"] = {"summary": "done", "forge_credential": record}
+
+
+@pytest.mark.parametrize("record", [
+    FORGE_RECORD,
+    {"kind": "pat", "source": "swarm-tenant-eng-git"},
+    {"kind": "mixed", "kinds": ["app_installation", "pat"], "source": "swarm-tenant-eng-git"},
+    {"kind": "none", "source": None},
+])
+def test_the_task_read_serves_the_recorded_kind_unmasked(client, db, record):
+    _seed_forge_record(db, record)
+    response = client.get("/v1/tasks/task_cred", headers=auth_header("alice"))
+    assert response.status_code == 200, response.text
+    task = response.json()["task"]
+    assert task["result_summary"]["forge_credential"] == record
+    assert task["result_summary_redaction_count"] == 0
+
+
+def test_another_tenants_caller_is_served_no_forge_record(client, db):
+    _seed_forge_record(db, FORGE_RECORD)
+    response = client.get("/v1/tasks/task_cred", headers=auth_header("bob"))
+    assert response.status_code in (403, 404)
+    assert "forge_credential" not in response.text
