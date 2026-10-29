@@ -50,6 +50,19 @@ describe('admin-shell-01: the eng card\'s link opens pages that describe eng', (
     expect(ok(await api.loadAccess(), 'access').tenant_id).toBe('eng')
   })
 
+  it('a platform admin who picks eng reads eng\'s setup steps, whose people step applies', async () => {
+    const api = await apiAs('platform-admin')
+    chooseTenant('eng')
+    const setup = ok(await api.loadOnboarding(), 'onboarding') as unknown as {
+      tenant_id: string; config_setup: { people: { applies: boolean; reason: string | null } }
+    }
+    // MUTATION: `tenant_id: FIXTURE_TENANT` back in fixtureOnboarding -> 'u-bogdan' -> fails.
+    expect(setup.tenant_id).toBe('eng')
+    // MUTATION: serve the personal workspace's people step whatever the pick -> applies false -> fails.
+    expect(setup.config_setup.people.applies).toBe(true)
+    expect(setup.config_setup.people.reason).toBeNull()
+  })
+
   it('with no pick, the personal workspace is still the acting one', async () => {
     const api = await apiAs('platform-admin')
     const profile = ok(await api.loadProfile(), 'profile')
@@ -132,6 +145,18 @@ describe('cap2-06: the account sheet, the list and the health board tell one sto
     expect(total(sheet.counts.last_24h as unknown as Record<string, number>)).toBe(2)
     // On the browser's clock, which the sheet measures on: read now, not at FIXTURE_CLOCK.
     expect(Math.abs(Date.now() - Date.parse(sheet.observed_at ?? ''))).toBeLessThan(60_000)
+  })
+
+  it('the health board and the sheet end weekly-burn\'s limit at the same instant', async () => {
+    const api = await apiAs(null)
+    const board = ok(await api.loadAccountHealthBoard(), 'board')
+    const onBoard = board.health.kind === 'ok' ? board.health.pool.accounts.find((a) => a.account_id === 'u-bogdan:weekly-burn') : undefined
+    const sheet = ok(await api.loadAccountHealth('u-bogdan:weekly-burn'), 'sheet health')
+    expect(onBoard?.limited_until).toBeTruthy()
+    // MUTATION: serve the board's pool unmoved (on FIXTURE_CLOCK) -> Oct 22 on the board, Nov 1 in the sheet -> fails.
+    expect(Math.abs(Date.parse(onBoard?.limited_until ?? '') - Date.parse(sheet.limited_until ?? ''))).toBeLessThan(60_000)
+    // MUTATION: `readAt: FIXTURE_NOW` back on the board -> ten days behind the list's clock -> fails.
+    expect(Math.abs(Date.now() - board.readAt)).toBeLessThan(60_000)
   })
 
   it('the Accounts list reads primary as read minutes ago on the page\'s clock, not days', async () => {

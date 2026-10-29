@@ -6956,27 +6956,31 @@ async function fixtureAccountHealthBoard(): Promise<Result<AccountHealthBoard>> 
   await new Promise((r) => setTimeout(r, 180))
   noteFixtureProbe(route('/v1/accounts'), 180, true)
   noteFixtureProbe(route('/v1/accounts/health'), 120, true)
-  const pool = fixturePoolHealth()
+  // ONE CLOCK FOR EVERY CAPACITY FIXTURE (QA2-FIX-07 review, cap2-06): the
+  // board, the Accounts list and the account sheet are all moved onto the
+  // browser's clock, so weekly-burn's limit ends at the same instant on each.
+  const now = Date.now()
+  const pool = fixtureOnClock(fixturePoolHealth(), now)
   const byId = new Map(pool.accounts.map((r) => [r.account_id, r]))
   return {
     status: 'ok',
-    fetchedAt: Date.now(),
+    fetchedAt: now,
     data: {
       page: {
-        accounts: fixtureAccounts.map((a) => ({
+        accounts: fixtureAccounts.map((a) => fixtureOnClock({
           ...a,
           health_status: byId.get(a.account_id)?.status ?? null,
           health_24h: byId.get(a.account_id)?.counts.last_24h ?? null,
-        })),
+        }, now)),
         tenant_id: FIXTURE_TENANT,
         unreadable_documents: [],
         unreadable_document_count: 0,
       },
       health: { kind: 'ok', pool },
-      // The fixture's events are dated off FIXTURE_NOW, so that is when it was
-      // read: the page's clock is the read's, and a real clock would show every
-      // limit as long cleared and every incident closed.
-      readAt: FIXTURE_NOW,
+      // The fixture's events are dated off FIXTURE_NOW and moved onto `now` by
+      // the same span, so `now` is when it was read: the page's clock is the
+      // read's, and no limit reads as long cleared nor incident as closed.
+      readAt: now,
     },
   }
 }
@@ -8037,13 +8041,18 @@ let fixtureOnboardingHiddenAt: string | null = null
 
 /** `GET /v1/onboarding`: seven steps as `derive` serves them with the workspace gate off, in mixed states. */
 function fixtureOnboarding(): unknown {
+  // THE PICKED WORKSPACE'S CHECKLIST (QA2-FIX-07 review, admin-shell-01): the
+  // read names the acting workspace, and eng, a group, has people to invite;
+  // the strip drew u-bogdan's 'a personal workspace has nobody to invite'.
+  const acting = fixtureActingTenant()
+  const group = acting === FIXTURE_GROUP.tenant_id
   const checked = fixtureAgo(4 * 60_000)
   const step = (name: string, state: string, evidence: Record<string, unknown>, issues: unknown[] = []) => ({
     step: name, state, code: null, copy: null, checked_at: state === 'todo' ? null : checked, evidence, issues,
   })
   const ssoUrl = 'https://github.com/orgs/example-labs/sso'
   const steps = [
-    step('signed_in', 'done', { email: 'alice@example.com', tenant_id: FIXTURE_TENANT }),
+    step('signed_in', 'done', { email: 'alice@example.com', tenant_id: acting }),
     step('github_connected', 'done', { via: 'user', kind: 'app_user', forge_login: 'alice-example', token_state: 'active' }),
     step('app_installed', 'done', { needed: true, read: true, source: 'github', login: 'alice-example', installed: ['example-org'], not_installed: ['example-labs'], install_url: null, app_name: null }),
     {
@@ -8067,7 +8076,7 @@ function fixtureOnboarding(): unknown {
     step('ready', 'todo', { waiting_for: 'orgs_enabled' }),
   ]
   return {
-    tenant_id: FIXTURE_TENANT, user: 'alice@example.com', user_hash: '5a1ce0e8a3b7c912', derived_at: new Date(FIXTURE_NOW).toISOString(),
+    tenant_id: acting, user: 'alice@example.com', user_hash: '5a1ce0e8a3b7c912', derived_at: new Date(FIXTURE_NOW).toISOString(),
     steps, next_step: 'orgs_enabled', complete: false, dismissed: fixtureOnboardingHiddenAt !== null, dismissed_at: fixtureOnboardingHiddenAt, source: 'derived on this read',
     // config_setup.py's field, which the live read carries and the strip's
     // Secrets set and People invited are drawn from (QA1-FIX-10, config-09).
@@ -8079,7 +8088,11 @@ function fixtureOnboarding(): unknown {
         items: [{ kind: 'mcp_server', name: 'kb', needed_by: 'kb', where: 'config/secrets' }],
         sources: { mcp_servers: { needed: 1, reason: null }, qa_targets: { needed: 0, reason: null }, provider_key: { needed: 0, reason: null } },
       },
-      people: { applies: false, done: null, holders: null, admins: null, pending: null, reason: 'a personal workspace has nobody to invite', pending_reason: null },
+      // config_setup.people_step's two answers: eng's only role holder is the
+      // reader (`fixtureAdminWorkspacesRoles`), so nobody else is in it yet.
+      people: group
+        ? { applies: true, done: false, holders: 0, admins: 0, pending: null, reason: null, pending_reason: 'this workspace takes no requests to join; its people come from its group' }
+        : { applies: false, done: null, holders: null, admins: null, pending: null, reason: 'a personal workspace has nobody to invite', pending_reason: null },
     },
   }
 }
