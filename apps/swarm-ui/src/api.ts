@@ -13004,7 +13004,7 @@ function liveNotServed<T>(target: ApiRoute): Result<T> {
 // ---------------------------------------------------------------------------
 // ADMIN › SETUP AND HEALTH (DAYONE-SETUP-UI-1; part of #2688; plan §5.1-§5.4).
 //
-// The client of swarm-api's `/v1/admin/setup/*` routes (SETUP-API-1,
+// The client of swarm-api's Admin › Setup routes (SETUP-API-1,
 // `apps/swarm-api/swarm_api/routes/setup.py`). Every route is a platform
 // admin's, so a 403 is information, as every Admin read here treats it. The
 // shapes are the routes' own; each read is normalised once, here, so a panel
