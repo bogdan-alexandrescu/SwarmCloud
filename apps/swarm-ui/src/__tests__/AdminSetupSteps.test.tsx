@@ -220,7 +220,7 @@ describe('GitHubAppCallback', () => {
     // MUTATION: post on every render (or once per effect run).
     expect(posts).toHaveLength(1)
     // MUTATION: post anything but `{code, state}`.
-    expect(posts[0].body).toEqual({ code, state: st })
+    expect(posts[0]?.body).toEqual({ code, state: st })
     const html = document.body.innerHTML
     // MUTATION: draw the answer's extra fields, or echo the code.
     expect(html).not.toContain('PRIVATE KEY')

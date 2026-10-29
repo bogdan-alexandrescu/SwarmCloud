@@ -13000,3 +13000,479 @@ function liveNotServed<T>(target: ApiRoute): Result<T> {
     error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build serves no live browser.' },
   }
 }
+
+// ---------------------------------------------------------------------------
+// ADMIN › SETUP AND HEALTH (DAYONE-SETUP-UI-1; part of #2688; plan §5.1-§5.4).
+//
+// The client of swarm-api's `/v1/admin/setup/*` routes (SETUP-API-1,
+// `apps/swarm-api/swarm_api/routes/setup.py`). Every route is a platform
+// admin's, so a 403 is information, as every Admin read here treats it. The
+// shapes are the routes' own; each read is normalised once, here, so a panel
+// never guards a field the server may leave out. No answer of these routes
+// carries a secret (the conversion answers `{id, slug}` only, a link's token
+// is in its URL and nowhere else), and nothing here reads one.
+// ---------------------------------------------------------------------------
+
+/** The engine document's `verify` field (D26): the console's verify row. Times are epoch seconds, the engine's clock. */
+export interface SetupVerify {
+  check: string | null
+  done: number
+  total: number
+  started: number | null
+  expected_end: number | null
+  deadline: number | null
+  /** `passed`, `failed`, or null while verify runs. */
+  result: string | null
+}
+
+/** `stages[n]` of the engine document: `{state, at, by}`, or null for a stage not started. */
+export interface SetupStage {
+  state: string
+  at: string | null
+  by: string | null
+}
+
+/** The engine document `swarm-install/<env>`: the CLI's, read here and never written. */
+export interface SetupEngine {
+  release: string | null
+  hostname: string | null
+  stages: Array<SetupStage | null>
+  lease: { holder: string | null; heartbeat: string | null } | null
+  verify: SetupVerify | null
+  hand_off_at: string | null
+  ready_at: string | null
+}
+
+/** `console/github_app`, without its state hash (the route drops it). */
+export interface SetupGitHubApp {
+  /** A manifest was issued, or the App exists. */
+  started: boolean
+  id: string | null
+  slug: string | null
+  installed_on: string | null
+  secrets_written_at: string | null
+  self_check: { ok: boolean; reason: string | null; at: string | null } | null
+}
+
+/** `console/teams/<id>`. `smoke` is the team's smoke agent, once it has one. */
+export interface SetupTeam {
+  id: string
+  group: string
+  workspace: string
+  first_admin: string | null
+  invites: string[]
+  progress: Record<string, unknown>
+  smoke: { state: string; detail: string | null; url: string | null } | null
+}
+
+/** One pool account's row of `console/accounts`; the link's hash is never served. */
+export interface SetupAccount {
+  label: string
+  owner: string | null
+  link_expires: string | null
+  signed_in_at: string | null
+}
+
+export interface SetupAddon {
+  name: string
+  /** The CLI line that enables it: enabling needs a Terraform switch. */
+  enable: string
+  secret_link: boolean
+}
+
+/** `GET /v1/admin/setup`: the page's whole state. */
+export interface SetupState {
+  env: string
+  engine: SetupEngine | null
+  /** False when the install lease's heartbeat is over 2 minutes old: swarm install is not running. */
+  cli_running: boolean
+  github_app: SetupGitHubApp | null
+  teams: SetupTeam[]
+  accounts: SetupAccount[]
+  finished: { at: string | null; by: string | null } | null
+  addons: SetupAddon[]
+  hostname: string | null
+  github_org: string | null
+}
+
+const objOf = (v: unknown): Record<string, unknown> | null => (typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null)
+const strOf = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : typeof v === 'number' ? String(v) : null)
+const numOf = (v: unknown): number | null => {
+  if (typeof v === 'number' && Number.isFinite(v)) return v
+  // A time the record stored as a timestamp reaches JSON as ISO text: read it as epoch seconds too.
+  if (typeof v === 'string' && v !== '') {
+    const ms = Date.parse(v)
+    return Number.isNaN(ms) ? null : ms / 1000
+  }
+  return null
+}
+
+function normVerify(raw: unknown): SetupVerify | null {
+  const v = objOf(raw)
+  if (v === null) return null
+  return {
+    check: strOf(v.check),
+    done: numOf(v.done) ?? 0,
+    total: numOf(v.total) ?? 0,
+    started: numOf(v.started),
+    expected_end: numOf(v.expected_end),
+    deadline: numOf(v.deadline),
+    result: strOf(v.result),
+  }
+}
+
+function normEngine(raw: unknown): SetupEngine | null {
+  const e = objOf(raw)
+  if (e === null) return null
+  const stages = Array.isArray(e.stages)
+    ? e.stages.map((s) => {
+        const o = objOf(s)
+        return o === null || strOf(o.state) === null ? null : { state: strOf(o.state) as string, at: strOf(o.at), by: strOf(o.by) }
+      })
+    : []
+  const lease = objOf(e.lease)
+  return {
+    release: strOf(e.release),
+    hostname: strOf(e.hostname),
+    stages,
+    lease: lease === null ? null : { holder: strOf(lease.holder), heartbeat: strOf(lease.heartbeat) },
+    verify: normVerify(e.verify),
+    hand_off_at: strOf(e.hand_off_at),
+    ready_at: strOf(e.ready_at),
+  }
+}
+
+function normGitHubApp(raw: unknown): SetupGitHubApp | null {
+  const g = objOf(raw)
+  if (g === null) return null
+  const check = objOf(g.self_check)
+  return {
+    started: g.started === true || strOf(g.id) !== null,
+    id: strOf(g.id),
+    slug: strOf(g.slug),
+    installed_on: strOf(g.installed_on),
+    secrets_written_at: strOf(g.secrets_written_at),
+    self_check: check === null ? null : { ok: check.ok === true, reason: strOf(check.reason), at: strOf(check.at) },
+  }
+}
+
+function normTeam(raw: unknown): SetupTeam | null {
+  const t = objOf(raw)
+  const id = t === null ? null : strOf(t.id)
+  if (t === null || id === null) return null
+  const smoke = objOf(t.smoke)
+  return {
+    id,
+    group: strOf(t.group) ?? '',
+    workspace: strOf(t.workspace) ?? id,
+    first_admin: strOf(t.first_admin),
+    invites: Array.isArray(t.invites) ? t.invites.filter((x): x is string => typeof x === 'string') : [],
+    progress: objOf(t.progress) ?? {},
+    smoke: smoke === null ? null : { state: strOf(smoke.state) ?? 'waiting', detail: strOf(smoke.detail), url: strOf(smoke.url) },
+  }
+}
+
+/** One normaliser for `GET /v1/admin/setup`, exported so a panel's fixture is read the way the live answer is. */
+export function normSetupState(raw: unknown): SetupState {
+  const d = objOf(raw) ?? {}
+  const accounts = objOf(d.accounts) ?? {}
+  const finished = objOf(d.finished)
+  return {
+    env: strOf(d.env) ?? '',
+    engine: normEngine(d.engine),
+    cli_running: d.cli_running === true,
+    github_app: normGitHubApp(d.github_app),
+    teams: Array.isArray(d.teams) ? d.teams.map(normTeam).filter((t): t is SetupTeam => t !== null) : [],
+    accounts: Object.keys(accounts)
+      .sort()
+      .map((label) => {
+        const a = objOf(accounts[label]) ?? {}
+        return { label, owner: strOf(a.owner), link_expires: strOf(a.link_expires), signed_in_at: strOf(a.signed_in_at) }
+      }),
+    finished: finished === null ? null : { at: strOf(finished.at), by: strOf(finished.by) },
+    addons: Array.isArray(d.addons)
+      ? d.addons
+          .map(objOf)
+          .filter((a): a is Record<string, unknown> => a !== null && strOf(a.name) !== null)
+          .map((a) => ({ name: strOf(a.name) as string, enable: strOf(a.enable) ?? `swarm addon enable ${strOf(a.name)}`, secret_link: a.secret_link === true }))
+      : [],
+    hostname: strOf(d.hostname),
+    github_org: strOf(d.github_org),
+  }
+}
+
+/** `POST /v1/admin/setup/github-app/manifest`: the App manifest and the github.com form it posts to. */
+export interface GitHubAppManifestStart {
+  manifest: Record<string, unknown>
+  /** `https://github.com/organizations/<org>/settings/apps/new?state=…` */
+  action: string
+}
+
+/** `GET /v1/admin/setup/github-app/installation`. */
+export interface GitHubAppInstallation {
+  installed: boolean
+  org: string | null
+  slug: string | null
+}
+
+/** `POST /v1/admin/setup/links`: a one-time link. Its URL carries the token: shown once, never stored here. */
+export interface SetupLink {
+  kind: string
+  label: string
+  owner: string
+  url: string | null
+  path: string
+  expires_at: string | null
+}
+
+export type SetupLinkKind = 'pool-account' | 'team-git' | 'addon-secret'
+
+/** One check's last result in `health/latest`. "Not checked" is its own result, never a pass. */
+export interface HealthCheck {
+  id: string
+  title: string
+  /** `passed`, `failed`, or `not_checked` (anything unread is not checked). */
+  result: string
+  at: string | null
+  detail: string | null
+}
+
+/** One doctor finding: what drifted, what changed, and how to repair it. */
+export interface HealthFinding {
+  check: string
+  title: string
+  cause: string | null
+  /** The audit-log entry, when the check knows it. */
+  changed: string | null
+  /** The repair command; `swarm install --repair <check>` when the finding names none. */
+  repair: string
+  /** Where in the Cloud console the same repair is, when there is one. */
+  console_path: string | null
+}
+
+export interface SetupHealth {
+  run_at: string | null
+  checks: HealthCheck[]
+  findings: HealthFinding[]
+}
+
+const CHECK_RESULTS = new Set(['passed', 'failed'])
+
+/** `GET /v1/admin/setup/health`'s `latest`, or null when no doctor run is recorded. */
+export function normSetupHealth(raw: unknown): SetupHealth | null {
+  const latest = objOf(objOf(raw)?.latest)
+  if (latest === null) return null
+  const checks = (Array.isArray(latest.checks) ? latest.checks : [])
+    .map(objOf)
+    .filter((c): c is Record<string, unknown> => c !== null && strOf(c.id ?? c.check) !== null)
+    .map((c) => {
+      const id = strOf(c.id ?? c.check) as string
+      const result = strOf(c.result ?? c.state)
+      return { id, title: strOf(c.title) ?? id, result: result !== null && CHECK_RESULTS.has(result) ? result : 'not_checked', at: strOf(c.at), detail: strOf(c.detail) }
+    })
+  const findings = (Array.isArray(latest.findings) ? latest.findings : [])
+    .map(objOf)
+    .filter((f): f is Record<string, unknown> => f !== null && strOf(f.check) !== null)
+    .map((f) => {
+      const check = strOf(f.check) as string
+      return {
+        check,
+        title: strOf(f.title) ?? check,
+        cause: strOf(f.cause),
+        changed: strOf(f.changed),
+        repair: strOf(f.repair) ?? `swarm install --repair ${check}`,
+        console_path: strOf(f.console_path),
+      }
+    })
+  return { run_at: strOf(latest.run_at), checks, findings }
+}
+
+/** A write's answer as T, or the write's own error. */
+async function setupWrite<T>(target: ApiRoute, method: 'POST' | 'PUT', body: unknown, norm: (raw: unknown) => T, fixture: () => T): Promise<Result<T>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 120))
+    if (!fixtureIsAdmin) return fixtureAdminRefusal<T>(target, 120)
+    noteFixtureProbe(target, 120, true)
+    return { status: 'ok', data: fixture(), fetchedAt: Date.now() }
+  }
+  const r = await write(target, method, body)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: norm(r.data) }
+  return r as Result<T>
+}
+
+/** `GET /v1/admin/setup`. */
+export async function loadSetup(): Promise<Result<SetupState>> {
+  const target = route('/v1/admin/setup')
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 120))
+    if (!fixtureIsAdmin) return fixtureAdminRefusal<SetupState>(target, 120)
+    noteFixtureProbe(target, 120, true)
+    return { status: 'ok', data: normSetupState(fixtureSetupState()), fetchedAt: Date.now() }
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normSetupState(r.data) }
+  return r as Result<SetupState>
+}
+
+/** `POST /v1/admin/setup/github-app/manifest`. */
+export function startGitHubApp(): Promise<Result<GitHubAppManifestStart>> {
+  return setupWrite(
+    route('/v1/admin/setup/github-app/manifest'),
+    'POST',
+    {},
+    (raw) => ({ manifest: objOf(objOf(raw)?.manifest) ?? {}, action: strOf(objOf(raw)?.action) ?? '' }),
+    () => ({ manifest: { name: 'SwarmCloud prod' }, action: 'https://github.com/organizations/example-org/settings/apps/new' }),
+  )
+}
+
+/**
+ * `POST /v1/admin/setup/github-app/conversion` with `{code, state}`. The
+ * answer is read for `id` and `slug` ONLY: GitHub's secrets went straight to
+ * Secret Manager, and were the server ever to answer more, nothing past those
+ * two fields reaches a screen.
+ */
+export function convertGitHubApp(code: string, state: string): Promise<Result<{ id: string | null; slug: string | null }>> {
+  return setupWrite(
+    route('/v1/admin/setup/github-app/conversion'),
+    'POST',
+    { code, state },
+    (raw) => ({ id: strOf(objOf(raw)?.id), slug: strOf(objOf(raw)?.slug) }),
+    () => ({ id: '4242', slug: 'swarmcloud-prod' }),
+  )
+}
+
+/** `GET /v1/admin/setup/github-app/installation`: is the App on the org yet (polled). */
+export async function checkGitHubAppInstallation(): Promise<Result<GitHubAppInstallation>> {
+  const target = route('/v1/admin/setup/github-app/installation')
+  const norm = (raw: unknown): GitHubAppInstallation => ({ installed: objOf(raw)?.installed === true, org: strOf(objOf(raw)?.org), slug: strOf(objOf(raw)?.slug) })
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 120))
+    if (!fixtureIsAdmin) return fixtureAdminRefusal<GitHubAppInstallation>(target, 120)
+    noteFixtureProbe(target, 120, true)
+    return { status: 'ok', data: { installed: true, org: 'example-org', slug: 'swarmcloud-prod' }, fetchedAt: Date.now() }
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: norm(r.data) }
+  return r as Result<GitHubAppInstallation>
+}
+
+/** `POST /v1/admin/setup/github-app/self-check`: the `/admin/forge/app` check, recorded. */
+export function runGitHubAppSelfCheck(): Promise<Result<{ ok: boolean; reason: string | null }>> {
+  return setupWrite(
+    route('/v1/admin/setup/github-app/self-check'),
+    'POST',
+    undefined,
+    (raw) => ({ ok: objOf(raw)?.ok === true, reason: strOf(objOf(raw)?.reason) }),
+    () => ({ ok: true, reason: null }),
+  )
+}
+
+/** `POST /v1/admin/setup/teams`: the same call `swarm team add` makes. */
+export function createSetupTeam(body: { group: string; display_name?: string; first_admin?: string; invites: string[] }): Promise<Result<{ team: string | null }>> {
+  return setupWrite(route('/v1/admin/setup/teams'), 'POST', body, (raw) => ({ team: strOf(objOf(raw)?.team) }), () => ({ team: body.group.split('@')[0] ?? null }))
+}
+
+/** `POST /v1/admin/setup/links`: a one-time link for one named person. */
+export function mintSetupLink(body: { kind: SetupLinkKind; label: string; owner: string }): Promise<Result<SetupLink>> {
+  return setupWrite(
+    route('/v1/admin/setup/links'),
+    'POST',
+    body,
+    (raw) => {
+      const d = objOf(raw) ?? {}
+      return { kind: strOf(d.kind) ?? body.kind, label: strOf(d.label) ?? body.label, owner: strOf(d.owner) ?? body.owner, url: strOf(d.url), path: strOf(d.path) ?? '', expires_at: strOf(d.expires_at) }
+    },
+    () => ({ ...body, url: null, path: '/setup/link', expires_at: new Date(FIXTURE_NOW + 24 * 3_600_000).toISOString() }),
+  )
+}
+
+/** `POST /v1/admin/setup/finish`: `console/finished`, once every console step is done; the CLI then runs verify. */
+export function finishSetup(): Promise<Result<{ at: string | null }>> {
+  return setupWrite(
+    route('/v1/admin/setup/finish'),
+    'POST',
+    undefined,
+    (raw) => ({ at: strOf(objOf(objOf(raw)?.finished)?.at) }),
+    () => ({ at: new Date(FIXTURE_NOW).toISOString() }),
+  )
+}
+
+/** `GET /v1/admin/setup/health`: the latest scheduled doctor run, or null. */
+export async function loadSetupHealth(): Promise<Result<SetupHealth | null>> {
+  const target = route('/v1/admin/setup/health')
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 120))
+    if (!fixtureIsAdmin) return fixtureAdminRefusal<SetupHealth | null>(target, 120)
+    noteFixtureProbe(target, 120, true)
+    return { status: 'ok', data: normSetupHealth(fixtureSetupHealth()), fetchedAt: Date.now() }
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normSetupHealth(r.data) }
+  return r as Result<SetupHealth | null>
+}
+
+/** The fixture build's install, mid-verify: every console step done, verify on its third check. */
+function fixtureSetupState(): Record<string, unknown> {
+  const at = (minAgo: number) => new Date(FIXTURE_NOW - minAgo * 60_000).toISOString()
+  const t0 = FIXTURE_NOW / 1000 - 240
+  return {
+    env: 'prod',
+    engine: {
+      release: 'v1.0.0',
+      hostname: 'swarm.example.com',
+      stages: Array.from({ length: 16 }, (_, i) => (i <= 13 ? { state: i === 9 ? 'switches_on' : 'done', at: at(40 - i), by: 'ana@example.com' } : null)),
+      lease: { holder: 'ana@example.com laptop', heartbeat: at(0) },
+      verify: { check: 'digests', done: 2, total: 8, started: t0, expected_end: t0 + 600, deadline: t0 + 1800, result: null },
+      hand_off_at: at(30),
+      ready_at: null,
+    },
+    cli_running: true,
+    github_app: { started: true, id: 4242, slug: 'swarmcloud-prod', installed_on: 'example-org', secrets_written_at: at(25), self_check: { ok: true, reason: null, at: at(20) } },
+    teams: [
+      {
+        id: 'engineering',
+        group: 'engineering@example.com',
+        workspace: 'engineering',
+        first_admin: 'ana@example.com',
+        invites: ['ravi@example.com', 'lea@example.com'],
+        progress: { workspace_state: 'active', created_at: at(18) },
+        smoke: { state: 'passed', detail: 'green in 2 min 48 s', url: null },
+      },
+    ],
+    accounts: {
+      ravi: { owner: 'ravi@example.com', link_expires: at(-1400), signed_in_at: at(12) },
+      lea: { owner: 'lea@example.com', link_expires: at(-1430), signed_in_at: null },
+    },
+    finished: { at: at(5), by: 'ana@example.com' },
+    addons: [
+      { name: 'brave-search', enable: 'swarm addon enable brave-search', secret_link: true },
+      { name: 'ci', enable: 'swarm addon enable ci', secret_link: false },
+    ],
+    hostname: 'swarm.example.com',
+    github_org: 'example-org',
+  }
+}
+
+/** The fixture build's latest doctor run: one finding, one check not run. */
+function fixtureSetupHealth(): Record<string, unknown> {
+  return {
+    latest: {
+      run_at: new Date(FIXTURE_NOW - 2 * 60_000).toISOString(),
+      checks: [
+        { id: 'edge.certificate', title: 'Front door', result: 'passed', detail: 'certificate ACTIVE · IAP on' },
+        { id: 'iap.programmatic_clients', title: 'IAP programmatic clients', result: 'failed', detail: '0 of 1 present' },
+        { id: 'images.digests', title: 'Images', result: 'passed', detail: 'every service on its expected digest' },
+        { id: 'scheduler.targets', title: 'Scheduler ticks', result: 'not_checked', detail: null },
+      ],
+      findings: [
+        {
+          check: 'iap.programmatic_clients',
+          title: 'The Desktop OAuth client is no longer on IAP’s programmatic allowlist',
+          cause: 'Every new sc login answers 401 with code 900; signed-in sessions keep working until their token expires.',
+          changed: 'removed 3 h ago by ravi@example.com (Cloud Audit Logs)',
+          console_path: 'Security › Identity-Aware Proxy › Settings › Programmatic clients',
+        },
+      ],
+    },
+  }
+}
