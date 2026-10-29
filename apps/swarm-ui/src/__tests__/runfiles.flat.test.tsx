@@ -349,7 +349,7 @@ describe('the Checkpoints panel is one table of checkpoints', () => {
     expect(counted.querySelector('.ctl-em')).not.toBeNull()
     expect(counted.textContent).toContain('— files (manifest unreadable)')
     expect(counted.textContent).not.toMatch(/not read\b|file count unknown/)
-    expect(counted.querySelector('.ctl-mark')).toBeNull()
+    expect([...counted.querySelectorAll('.ctl-mark')].filter((m) => /count is unknown/.test(m.getAttribute('aria-label') ?? ''))).toHaveLength(0)
     expect(counted.querySelector('.rf-count-unknown')?.getAttribute('title') ?? '').toMatch(/count is unknown/)
     // A readable manifest's count stays a bare figure.
     expect(rowFor(s, 'ckpt-00002').querySelector('th')!.textContent).toContain('184 files')

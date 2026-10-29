@@ -62,6 +62,7 @@ import { Absent, Mark } from './primitives'
 import { staleFoot } from './Shell'
 import { OpenLink } from './TimelineRows'
 import { HatchDef, useHatchId } from './charts/parts'
+import { basisWords } from './charts/OutcomeLedger'
 import {
   CONCURRENCY_STATES,
   PARK_NEEDS_A_PERSON,
@@ -315,10 +316,14 @@ export function LedgerTable({ data }: { data: Outcomes }) {
                 Rate<Sub>k of n, 95 % range</Sub>
               </th>
               <th scope="colgroup" colSpan={4} className="ol-th-group">Cancelled</th>
-              {/* The one column on the submission-time basis says so, in the
-                  route's word, as the throughput lane's label does. */}
+              {/* The one column on the submission-time basis says so, in
+                  words, as the throughput lane's label does (runs2-17):
+                  `created_at` is "submit time", the field its title. */}
               <th scope="col" rowSpan={2} className="is-num">
-                Submitted<Sub>by {data.basis.submitted}</Sub>
+                Submitted
+                <Sub>
+                  by <span title={data.basis.submitted}>{basisWords(data.basis.submitted)}</span>
+                </Sub>
               </th>
               <th scope="col" rowSpan={2} className="is-num">Finished</th>
             </tr>
