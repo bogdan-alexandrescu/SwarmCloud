@@ -268,8 +268,13 @@ describe('QA-120: the failed step’s card opens on the first click', () => {
     expect(cause.textContent).not.toContain('…')
     // The node's one line keeps the whole text in its title -- on the canvas
     // once a reader opens its stage (overview-agents-63).
+    const go = await waitFor(() => {
+      const b = document.querySelector<HTMLButtonElement>('.wfp-fail-lead-go')
+      expect(b, 'the failure line has no control to open its step').toBeTruthy()
+      return b!
+    })
     act(() => {
-      fireEvent.click(document.querySelector<HTMLButtonElement>('.wfp-fail-lead-go')!)
+      fireEvent.click(go)
     })
     await waitFor(() => expect(node('test')).toBeTruthy())
     expect(node('test')!.parentElement!.querySelector<HTMLElement>('.node-note')?.getAttribute('title')).toBe(ERROR)

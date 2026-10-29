@@ -269,8 +269,13 @@ describe('a. F1: the expanded stage', () => {
     await page()
     // The page's own pick leaves its stage folded (visual QA pass 2,
     // overview-agents-63, #2694); the failure line's control opens it.
+    const go = await waitFor(() => {
+      const b = document.querySelector<HTMLButtonElement>('.wfp-fail-lead-go')
+      expect(b, 'the failure line has no control to open its step').toBeTruthy()
+      return b!
+    })
     act(() => {
-      fireEvent.click(document.querySelector<HTMLButtonElement>('.wfp-fail-lead-go')!)
+      fireEvent.click(go)
     })
     const band = await waitFor(() => {
       const b = document.querySelector<HTMLElement>('.wf-canvas .wf-band.is-opened')
@@ -298,8 +303,13 @@ describe('a. F1: the expanded stage', () => {
     stubBox('offsetWidth', (el) => (el.classList.contains('wf-levels') ? 72 : 0))
     await page()
     // The reader's open, not the arrival, brings the stage round (overview-agents-63).
+    const go = await waitFor(() => {
+      const b = document.querySelector<HTMLButtonElement>('.wfp-fail-lead-go')
+      expect(b, 'the failure line has no control to open its step').toBeTruthy()
+      return b!
+    })
     act(() => {
-      fireEvent.click(document.querySelector<HTMLButtonElement>('.wfp-fail-lead-go')!)
+      fireEvent.click(go)
     })
     const wrap = await waitFor(() => {
       const w = document.querySelector<HTMLElement>('.wf-canvas-wrap')
