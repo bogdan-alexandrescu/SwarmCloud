@@ -121,6 +121,16 @@ two minutes after implement task_8017fba2 (wf_1a460a31) started on the same
 red head 7e55a8d, pushed f4f93dc first, and the implement step's publish was
 refused `head_moved`.
 
+And a plain `continues_task` request is refused 409 `ci_fix_lane_owns_pr`
+with `plain_continuation` while the continued lane's merge step is not
+terminal (#2685), naming the merge step and its workflow
+(`_refuse_if_lane_merge_live`); merge-only requests and requests with a
+writer's own mark keep their own gates. Measured 2026-10-28 on PR #2617: the
+plain lane task_7ff30c32 (wf_85f651ab) was admitted while merge step
+task_943ec5f2 was live, pushed 5bc405a before the merge step's ci-fix:1
+round task_99b8e1e0, whose push was rejected non-fast-forward, and the merge
+step refused `head_moved`.
+
 EVERY FIX ROUND'S HEAD, AGAINST ITS PULL REQUEST (epic #1334). Measured
 2026-10-15 02:16Z: HANG-LEASE's merge step refused PR 1338 `head_moved` at
 the head a fix task of ANOTHER workflow pushed; a merge step knew only its
@@ -1018,6 +1028,53 @@ def _refuse_if_fix_live(store: Any, tenant_id: str, continuation: Continuation |
     ))
 
 
+def _refuse_if_lane_merge_live(store: Any, tenant_id: str, continuation: Continuation | None,
+                               spec: WorkflowCreate) -> None:
+    """Refuse `CiFixLaneOwnsPr` while the lane this plain continuation pushes
+    to has a live merge step (through `refusals.refuse`: switched off, the
+    request goes on as before).
+
+    ONE WRITER PER PULL REQUEST, THE MERGE STEP'S SIDE (#2685). The merge-step
+    read (`_refuse_if_lane_owns`) held only a `metadata.ci_fix` request.
+    Measured 2026-10-28 on PR #2617: the plain lane task_7ff30c32
+    (wf_85f651ab, 'CIFIX-2617') was admitted while the lane's merge step
+    task_943ec5f2 was live; the merge step then submitted its ci-fix:1 round
+    task_99b8e1e0 beside it, the plain lane pushed 5bc405a first, the round's
+    push was rejected non-fast-forward (f-046), and the merge step refused
+    `head_moved` at a head none of its rounds had pushed (f-045). So a plain
+    continuation waits while the merge step is in any non-terminal state, as
+    a standalone fix does. A merge-only request pushes nothing, and a request
+    carrying a writer's own mark (`PR_WRITER_KINDS`, `metadata.issue_run`) --
+    the merge step's own CI, conflict and pick rounds among them -- has that
+    writer's gate, so none is read here. A `publish_to_pr` workflow's branch
+    task is known only after `stamp`, so it is not read here either.
+    """
+    if continuation is None:
+        return
+    if all(is_merge_step(step.runner_profile) for step in spec.steps):
+        return
+    if (any(kind in spec.metadata for kind in PR_WRITER_KINDS)
+            or ISSUE_RUN_METADATA_KEY in spec.metadata):
+        return
+    workflow = _lane_workflow(store.db, tenant_id, continuation)
+    merge_task = _live_merge_step(store.db, tenant_id, workflow) if workflow else None
+    if merge_task is None:
+        return
+    number = _branch_pull_request(store.db, tenant_id, continuation)
+    pull = f"pull request #{number}" if number is not None else "this pull request"
+    detail: dict[str, Any] = {"task_id": merge_task, "workflow_id": workflow,
+                              "root_task_id": continuation.root_task_id,
+                              "plain_continuation": True}
+    if number is not None:
+        detail["pull_request"] = number
+    refuse(CiFixLaneOwnsPr(
+        f"{pull}'s lane has a live merge step ({merge_task}) that runs its own fix rounds "
+        "on the branch; this continuation was not made. Resubmit it once that merge step "
+        "ends or is cancelled.",
+        detail=detail,
+    ))
+
+
 #: The fix rounds that run with their lane's territory (module docstring):
 #: the PR-side fixer's and the merge step's CI-fix round, never a conflict round.
 TERRITORY_ROUND_KINDS = (CI_FIX_METADATA_FIELD, "merge_fix_round")
@@ -1092,6 +1149,11 @@ def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
     refused `PrFixInFlight` (409) while a CI fix or conflict fix on its pull
     request is live (on 2026-10-26 PR #2473 got a CI fix and a
     `publish_to_pr` step at 377c3010, and the second publish was refused
+    `head_moved`), and such a continuation is refused `CiFixLaneOwnsPr` (409,
+    `plain_continuation`) while its lane's merge step is live
+    (`_refuse_if_lane_merge_live`: on 2026-10-28 PR #2617's plain lane
+    task_7ff30c32 pushed 5bc405a beside merge step task_943ec5f2, whose
+    ci-fix:1 round was rejected non-fast-forward and which refused
     `head_moved`).
     """
     for step in spec.steps:
@@ -1106,6 +1168,8 @@ def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
     if CI_FIX_METADATA_FIELD not in spec.metadata:
         # First, so a refused request writes nothing (#2535).
         _refuse_if_fix_live(store, tenant_id, continuation, spec)
+        # And the lane's live merge step, which runs its own rounds (#2685).
+        _refuse_if_lane_merge_live(store, tenant_id, continuation, spec)
         marker = _fix_head_marker(spec.metadata, continuation)
         if marker is None:
             return spec
