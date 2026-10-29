@@ -143,3 +143,66 @@ def test_dev_loop_sets_its_project_before_sourcing() -> None:
     source_at = text.index('source "$(cd -- ')
     set_at = text.find('PROJECT_ID="${DEV_PROJECT_ID:-swarm-local}"')
     assert 0 <= set_at < source_at, "dev.sh sets PROJECT_ID only after sourcing common.sh"
+
+
+#: What CI runs with no PROJECT_ID (application.yml's shell and quick-checks
+#: jobs, security.yml's checks and trivy jobs): each touches no project, says
+#: so with SWARM_NO_PROJECT=1, and must get past common.sh (DAYONE-DESAGA-2B).
+_CI_NO_PROJECT = [
+    ("scripts/destroy.sh", "--self-test"),
+    ("scripts/lib/plan-guard.sh", "--self-test"),
+    ("scripts/lib/kubectl-guard.sh", "--self-test"),
+    ("scripts/lib/auth-guard.sh", "--self-test"),
+    ("scripts/lib/check-doc-links.sh",),
+    ("scripts/lib/check-env-parity.sh",),
+]
+
+
+def _script(tmp_path: Path, *argv: str, **extra: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", str(REPO / argv[0]), *argv[1:]], capture_output=True, text=True,
+        timeout=300, check=False, cwd=str(REPO), env=_env(tmp_path, **extra),
+    )
+
+
+def test_ci_checks_run_with_no_project(tmp_path: Path) -> None:
+    # MUTATION: drop the SWARM_NO_PROJECT line from destroy.sh -> red with
+    # "PROJECT_ID is not set", the error security.yml's destroy-guard step hit.
+    for argv in _CI_NO_PROJECT:
+        proc = _script(tmp_path, *argv)
+        assert "PROJECT_ID is not set" not in proc.stderr, argv
+        assert proc.returncode == 0, (argv, proc.stderr[-2000:])
+
+
+def test_only_the_offline_mode_opts_out(tmp_path: Path) -> None:
+    # The opt-out is per mode: destroy.sh's real run, bench-ui.sh's capture
+    # and ci-fix.sh with no API address still refuse an unset project.
+    for argv in (("scripts/destroy.sh",), ("scripts/bench-ui.sh",), ("scripts/ci-fix.sh",)):
+        proc = _script(tmp_path, *argv, API_HOST="", API_URL="")
+        assert proc.returncode != 0, argv
+        assert "PROJECT_ID is not set" in proc.stderr, (argv, proc.stderr[-2000:])
+
+
+def test_require_project_stops_an_opted_out_script(tmp_path: Path) -> None:
+    # check-cluster-network-parity.sh opts out to skip on a runner with no
+    # credentials, and calls require_project once it has some.
+    proc = _source(tmp_path, "require_project; echo reached", SWARM_NO_PROJECT="1")
+    assert proc.returncode != 0
+    assert "reached" not in proc.stdout
+    assert "PROJECT_ID is not set" in proc.stderr
+
+
+def test_empty_deny_list_expansions_are_guarded() -> None:
+    # bash 3.2 dies on "${arr[@]}" of an empty array under `set -u`, and the
+    # list is empty for every project but the shared one.
+    bare = re.compile(r'(?<![+])"\$\{SHARED_DENY_LIST\[[@*]\]\}"')
+    offenders = []
+    for path in sorted((REPO / "scripts").rglob("*.sh")):
+        lines = path.read_text().splitlines()
+        for n, line in enumerate(lines, 1):
+            # Allowed: the copy taken while the list is still the literal
+            # block, and a line under an explicit non-empty test.
+            guarded = "SHARED_PROJECT_DENY_LIST=" in line or (n > 1 and "-gt 0" in lines[n - 2])
+            if bare.search(line) and not guarded:
+                offenders.append(f"{path.relative_to(REPO)}:{n}")
+    assert not offenders
