@@ -936,13 +936,14 @@ else
   #   * all five --quota-* flags given (the job's A7, under a call guard that
   #     admits no call to swarm-api): rendered as given, nothing is read;
   #   * a Terraform tenant -- named in this environment's tfvars, eng or smoke
-  #     -- has no workspace record: render.py's defaults, nothing is read, and
+  #     -- has no workspace record: render.py's Terraform tenant quota
+  #     (`terraform-quota`, passed as flags), nothing is read, and
   #     the release, whose account is no swarm-api admin, applies it as before;
   #   * any other tenant: its record is read from swarm-api with the
   #     operator's own credentials (--workspace-id names it; else the admin
   #     list, matched by the tenant its principal derives), and render.py's
   #     `workspace-quota` turns its limits into the five flags with the job's
-  #     formula. No record names it: the defaults, said so. An unreadable
+  #     formula. No record names it: the Terraform tenant quota, said so. An unreadable
   #     answer renders nothing -- falling back to the defaults is the defect.
   # A --quota-* flag on the command line still wins over the record's: the
   # record's flags are passed first, and render.py takes the last of a flag.
