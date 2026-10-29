@@ -177,11 +177,22 @@ export function NotificationBell({ go }: { go: (to: string) => void }) {
       if (t !== null && rootRef.current?.contains(t)) return
       close(false)
     }
+    // FOCUS ARRIVING OUTSIDE CLOSES IT TOO (QA2 admin2-09): Tab walked out of
+    // the open dialog onto Help, Profile and the spine's collapse control
+    // with the panel still drawn over them. Where focus LANDS is read, as the
+    // Act-as list reads it; focus stays where Tab put it.
+    const onIn = (e: FocusEvent) => {
+      const t = e.target
+      if (t instanceof Node && rootRef.current?.contains(t)) return
+      close(false)
+    }
     document.addEventListener('keydown', onKey)
     document.addEventListener('mousedown', onDown)
+    document.addEventListener('focusin', onIn)
     return () => {
       document.removeEventListener('keydown', onKey)
       document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('focusin', onIn)
     }
   }, [open, close])
 
@@ -219,7 +230,8 @@ export function NotificationBell({ go }: { go: (to: string) => void }) {
         )}
       </button>
       <span className="sk-vh" aria-live="polite">
-        {count > 0 ? `${count} notification${count === 1 ? '' : 's'} need you` : ''}
+        {/* ONE NEEDS, TWO NEED (QA2 admin2-17): it read "1 notification need you". */}
+        {count > 0 ? (count === 1 ? '1 notification needs you' : `${count} notifications need you`) : ''}
       </span>
       {open && (
         <NotificationPanel
