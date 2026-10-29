@@ -217,7 +217,10 @@ describe('the Agents list Why column', () => {
       expect(el, 'no row drew a why line').not.toBeNull()
       return el!
     })
-    expect(why.textContent).toBe('waiting for: tenant:eng  20/20 units')
+    // The list names the pool by `poolLabel` (QA2-FIX-12, overview-agents-56);
+    // the raw key stays in the row's title.
+    expect(why.textContent).toBe('waiting for: eng  20/20 units')
+    expect(why.getAttribute('title')).toBe('waiting for: tenant:eng  20/20 units')
     expect(why.classList.contains('is-warn'), 'a full pool clears by waiting').toBe(false)
   })
 
@@ -230,7 +233,7 @@ describe('the Agents list Why column', () => {
       expect(el).not.toBeNull()
       return el!
     })
-    expect(why.textContent).toBe('waiting for: tenant:eng: limit unknown')
+    expect(why.textContent).toBe('waiting for: eng: limit unknown')
     expect(why.textContent ?? '').not.toMatch(/\d|full/i)
   })
 })

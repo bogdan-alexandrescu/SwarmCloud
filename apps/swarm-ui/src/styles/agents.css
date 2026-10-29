@@ -596,6 +596,24 @@
      scrollport's foot and the column can stay 16px down to the last pixel. */
   .sk-main > .ctl-scroll > .app.has-inspector { padding-bottom: 0; }
   .app.has-inspector > .work { padding-bottom: 48px; }
+  /* ONE SCROLLER PER COLUMN (visual QA pass 2, ovag2-11 and overview-agents-55).
+     The list ran on down the page, so with an agent open the page scrolled
+     the list while the agent scrolled itself: two scrollbars side by side at
+     the right edge, 47px apart, each moving a different column, and a scrolled
+     list put the `Agents` heading under the sticky breadcrumb with its glyph
+     tops cut. The list is the agent's height and scrolls in its own column,
+     so the page has nothing to scroll and the heading leaves at the list's
+     top edge, below the breadcrumb, never under it. It scrolls one way only:
+     `overflow-y: auto` alone computes `overflow-x` as auto too, and a row's
+     `.when-note` 11px past the list's edge drew a horizontal bar along the
+     column's foot, a second scroller in the column (QA2-FIX-12 review). */
+  .app.has-inspector > .work {
+    max-height: calc(100vh - var(--dock-h, 28px) - var(--ctl-bar-h, 0px) - 16px);
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
 }
 /* --- the Logs tab (U11a, owner decision 2026-10-04) ---------------------- */
 /* THE WHOLE DETAIL AREA UNDER THE HEADER, AND NOTHING BENEATH IT. The pane

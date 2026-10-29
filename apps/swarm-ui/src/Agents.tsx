@@ -37,9 +37,11 @@ import {
   compareStarted,
   elapsed,
   formatDuration,
+  poolLabel,
   rollupState,
   taskGroup,
   timeAgo,
+  waitingLine,
   whyAgent,
   whyNeedsAction,
   type Task,
@@ -1497,6 +1499,7 @@ function WaitingGroups({
   const groups: { key: string; title: string; rows: Task[] }[] = [
     { key: 'needs_action', title: 'Needs action', rows: [] },
     { key: 'no_room', title: 'No room', rows: [] },
+    { key: 'not_eligible', title: 'Not yet eligible', rows: [] },
   ]
   for (const t of rows) {
     const at = taskGroup(t, classUnits(classes, t.resource_class)) === 'needs_action' ? { key: 'needs_action', title: '' } : waitGroupOf(t)
@@ -1533,8 +1536,16 @@ function WaitingGroups({
   )
 }
 
-/** The Waiting group a task that needs no action is filed under: its park reason, or `No room`. */
+/**
+ * The Waiting group a task that needs no action is filed under: its park
+ * reason, `Not yet eligible` for a queued one, or `No room`.
+ *
+ * A QUEUED TASK IS NOT SHORT OF ROOM (visual QA pass 2, overview-agents-56):
+ * it sat under `No room` while Overview's waiting card calls it not yet
+ * eligible (`waitGroups`). Only a READY task is eligible and waits for a pool.
+ */
 export function waitGroupOf(t: Task): { key: string; title: string } {
+  if (t.state === 'QUEUED') return { key: 'not_eligible', title: 'Not yet eligible' }
   if (t.state !== 'PARKED') return { key: 'no_room', title: 'No room' }
   const r = t.park_reason ?? null
   if (r === null) return { key: 'park:none', title: 'Parked, reason not recorded' }
@@ -1610,8 +1621,15 @@ function rowReason(
   // sentence is `full`. The ink is still `whyNeedsAction`'s: the reason got
   // specific, not more urgent. An API that sends no `waiting` keeps today's
   // line.
-  const short = tabOf(task) === 'waiting' && task.waiting ? waitingShort(task.waiting) : null
+  const short = tabOf(task) === 'waiting' && task.waiting ? poolWords(waitingShort(task.waiting)) : null
   if (short !== null) return { text: short, warn, full: task.waiting!.summary.trim() }
+  // A READY ROW WITH ONLY `waiting_for` NAMES ITS POOL TOO (QA2-FIX-12
+  // review, overview-agents-56): `waitingLine` read `waiting for:
+  // provider:anthropic:tenant:u-bogdan 5/5 units` under `No room`. The line
+  // names the pool by `poolLabel`; the raw key stays in the row's title.
+  const raw = waitingLine(task)
+  const pool = task.waiting_for?.lead?.pool
+  if (raw !== null && pool) return { text: raw.replace(pool, poolLabel(pool)), warn, full: raw }
   // A CASCADE CANCEL NAMES THE STEP THAT FAILED (visual QA run 4, N23) when
   // that step is among the rows the list read; the meta line keeps its
   // `to cancel` span note (U10a D20) and the cause is said here.
@@ -1623,6 +1641,17 @@ function rowReason(
   // one (`blocked_by`, `waiting`) names its pool above.
   if (text === '' && (task.state === 'READY' || task.state === 'QUEUED')) return { text: NO_BLOCKER, warn }
   return { text, warn }
+}
+
+/**
+ * A capacity short line's pool in words (visual QA pass 2, overview-agents-56):
+ * `capacity: runner:merge full` named the raw key; `poolLabel` is the name
+ * every other pool on the console is drawn by. The whole sentence, raw key
+ * and all, stays the row's title.
+ */
+export function poolWords(short: string | null): string | null {
+  if (short === null) return null
+  return short.replace(/^capacity: (\S+)/, (_, pool: string) => `capacity: ${poolLabel(pool)}`)
 }
 
 /**
@@ -1966,8 +1995,12 @@ function useRuns(task: Task, shows: boolean): number | null {
 
 /** The qualifier on a CANCELLED row's elapsed figure (#163); `TaskRow` says why. */
 export const CANCEL_SPAN = '(last start to cancel, may include parked time)'
-/** The mark line two carries for it; the sentence is its title (U10a D20). */
-export const CANCEL_NOTE = 'to cancel'
+/**
+ * The mark line two carries for it; the sentence is its title (U10a D20).
+ * Past tense, after `ran 6m 32s` (visual QA pass 2, ovag2-10): `to cancel`
+ * said neither who cancelled nor what the figure spanned.
+ */
+export const CANCEL_NOTE = 'cancelled by request'
 
 /**
  * ONE ROW OF THE LIST, AND IT IS ALWAYS THE COMPACT ROW (agents.html V1).
@@ -2152,7 +2185,12 @@ function CompactRow({
   // browser runtime only. A live one has no verdict yet, and its row already
   // carries the browser's thumbnail; the inspector says "recorded when it ends".
   const browserUse = browserUseOf(task)
-  const browserMark = browserUse !== null && browserUse.ended ? browserUse : null
+  const browserEnded = browserUse !== null && browserUse.ended ? browserUse : null
+  // AN UNKNOWN VERDICT DRAWS NOTHING ON THE ROW (visual QA pass 2,
+  // overview-agents-27): `claude-opus-5 · browser — · alice` said nothing
+  // between the model and the owner. The row's name keeps the reason (#100),
+  // and the inspector draws the dash with it.
+  const browserMark = browserEnded !== null && browserEnded.kind !== 'unknown' ? browserEnded : null
   // A BROWSER AGENT WHOSE BROWSER IS NOT UP YET (QA12-20): listed under
   // Browsers with the running ones, and marked, so it is not read as a
   // browser to watch.
@@ -2193,7 +2231,7 @@ function CompactRow({
     endedAt !== null ? `ended ${whenText}` : whenText === '' ? null : whenText,
     ran,
     profile,
-    browserMark !== null ? browserUseSay(browserMark) : null,
+    browserEnded !== null ? browserUseSay(browserEnded) : null,
     owner ?? 'no owner recorded',
     live || tries.over ? tries.say : null,
     startingBrowser ? 'browser starting' : null,
