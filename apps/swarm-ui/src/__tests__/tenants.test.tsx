@@ -190,11 +190,13 @@ describe('Tenants puts the status beside the name and fits at 1440 (AH-11)', () 
       expect(value!.textContent).toBe(full)
       // ON HOVER: the full value is the element's title.
       expect(value!.getAttribute('title')).toBe(full)
-      // At 1440, a clipped, one-line box that gives way to its column (#503):
-      // a flex item allowed to shrink below its text. The ellipsis is on its
-      // pieces since G5-12, so the cut falls in the middle
-      // (qa.g5.tenants.test.tsx). MUTATION: drop any of these, or the shrink.
-      expect(won(value!.lastElementChild!, 'text-overflow', WIDE)).toBe('ellipsis')
+      // At 1440, a clipped box that gives way to its column (#503): a flex
+      // item allowed to shrink below its text. The ellipsis is on its pieces
+      // since G5-12 (qa.g5.tenants.test.tsx), and the domain, its last piece,
+      // is no longer cut at all: it wraps on its own line (visual QA pass 2,
+      // admin-shell-18). MUTATION: drop any of these, or the shrink.
+      expect(won(value!.lastElementChild!, 'text-overflow', WIDE)).toBeNull()
+      expect(won(value!.lastElementChild!, 'overflow-wrap', WIDE)).toBe('anywhere')
       expect(won(value!, ['overflow', 'overflow-x'], WIDE)).toBe('hidden')
       expect(won(value!, 'white-space', WIDE)).toBe('nowrap')
       expect(won(value!, 'min-width', WIDE), 'the identity cannot shrink below its text').toBe('0')

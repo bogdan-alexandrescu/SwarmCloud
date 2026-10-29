@@ -497,8 +497,10 @@ describe('j. 6:admin-009, 6:admin-008: Tenants shows principals whole at 1440 an
     // MUTATION: weight the tail by its length again: flexbox shrinks it by
     // its weight times its length, so every row's domain is cut at a
     // different letter ('swa…u-bogdan@e…').
-    expect(painted(tail, 'flex', WIDE)).toBe('1 1 0')
-    expect(painted(tail, 'max-width', WIDE)).toBe('max-content')
+    // NOT CUT AT ALL NOW (visual QA pass 2, admin-shell-18): the domain
+    // wraps on its own line, so every row shows all of it.
+    expect(painted(tail, 'flex', WIDE)).toBe('0 1 auto')
+    expect(painted(tail, 'max-width', WIDE)).toBe('100%')
     // The prefix is no longer the second cut (visual QA pass 1,
     // admin-shell-18): it is whole on its own line, cut only when it alone
     // is wider than the column (qa1fix03.tenants.test.tsx).

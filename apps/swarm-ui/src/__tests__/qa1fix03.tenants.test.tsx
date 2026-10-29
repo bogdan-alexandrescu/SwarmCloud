@@ -64,8 +64,8 @@ describe('admin-shell-02: at 390 the identity stays inside the card', () => {
   }
 })
 
-describe('admin-shell-18: at 1440 the identity is cut once, in its domain', () => {
-  it('wraps the prefix and the key as whole runs and cuts only the domain', () => {
+describe('admin-shell-18: at 1440 the identity is whole, wrapped in its domain', () => {
+  it('wraps the prefix and the key as whole runs and the domain where it must', () => {
     render(<TenantIdent value={SA} noun="service account" tenant="u-bogdan" phone={false} />)
     const row = document.querySelector('.ten-ident-row')!
     const ident = row.querySelector('.ten-ident')!
@@ -79,9 +79,15 @@ describe('admin-shell-18: at 1440 the identity is cut once, in its domain', () =
     expect(painted(ident, ['flex-wrap', 'flex-flow'], WIDE)).toBe('wrap')
     expect(painted(head, 'flex', WIDE)).toBe('0 1 auto')
     expect(painted(head, 'max-width', WIDE)).toBe('100%')
-    // The domain is the one piece that gives way.
-    expect(painted(tail, 'flex', WIDE)).toBe('1 1 0')
-    expect(painted(tail, 'text-overflow', WIDE)).toBe('ellipsis')
+    // AND THE DOMAIN IS WHOLE (visual QA pass 2, admin-shell-18): it wraps
+    // on its own line rather than being cut. MUTATION: put back
+    // `text-overflow: ellipsis` and `white-space` unset on the tail, and the
+    // address reads `u-bogdan@example-proj…` at 1440.
+    expect(painted(tail, 'flex', WIDE)).toBe('0 1 auto')
+    expect(painted(tail, 'max-width', WIDE)).toBe('100%')
+    expect(painted(tail, 'white-space', WIDE)).toBe('normal')
+    expect(painted(tail, 'overflow-wrap', WIDE)).toBe('anywhere')
+    expect(painted(tail, 'text-overflow', WIDE)).toBeNull()
     // And the whole value is on the identity's title and the control's name.
     expect(ident.getAttribute('title')).toBe(SA)
     expect(row.querySelector('button.ten-copy')?.getAttribute('aria-label')).toBe(`Copy service account ${SA}`)
