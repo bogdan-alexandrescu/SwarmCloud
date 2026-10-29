@@ -1,4 +1,4 @@
-// NO FILE UNDER src/ NAMES THE LIVE REPOSITORY (DAYONE-DESAGA-4, lesson 5).
+// NO FILE UNDER src/ NAMES THE LIVE REPOSITORY (Day One de-hardcoding, lesson 5).
 //
 // WHY. The console is installed by companies that are not the one it was built
 // in. The fixture data in `api.ts` served the live deployment's own GitHub
