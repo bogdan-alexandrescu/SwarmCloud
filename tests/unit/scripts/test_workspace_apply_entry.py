@@ -35,8 +35,11 @@ everything. No cloud, no metadata server: the metadata lookup is injected.
 
 from __future__ import annotations
 
+import base64
+import copy
 import hashlib
 import importlib.util
+import json
 import os
 import re
 import secrets
@@ -44,6 +47,7 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -488,3 +492,130 @@ def test_the_child_is_step_one_through_a_fixed_bash_and_timeout(entry):
     assert str(entry.APPLY_SCRIPT) == "/opt/swarm/scripts/workspace-apply.sh"
     assert entry.DEADLINE_SECONDS == 1800
     assert os.access(REPO / "scripts" / "workspace-apply.sh", os.X_OK)
+
+
+# ---------------------------------------------------------------------------
+# The trusted signing key is the fixed command's (DAYONE-BOOT-1, plan R1).
+# ---------------------------------------------------------------------------
+#: The step-spec key of a project that is NOT the live deployment's: until
+#: DAYONE-BOOT-1 the image trusted one project's key, so a fresh project's
+#: group or service workspace always stopped at APPROVAL_UNSIGNED (#2688).
+SIGNING_KEY = f"projects/{PROJECT}/locations/{REGION}/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
+SIGNING = "--spec-signing-key=" + SIGNING_KEY
+OWNER = "owner@example.com"
+REQUEST_ID = "5d0c6a3e-1b7f-4c55-9a51-0f1c2b3d4e5f"
+SERVICE_DOC = f"projects/{PROJECT}/databases/swarm/documents/workspaces/u-re-75c2e5"
+
+
+class SignedService:
+    """A P-256 key standing in for Cloud KMS's step-spec key version, the
+    SPEC_VERIFY_KEYS the bootstrap renders for it, and a service record
+    approved and signed with it as swarm-api's approval writes one."""
+
+    def __init__(self, entry, version: str) -> None:
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec, utils
+
+        private = ec.generate_private_key(ec.SECP256R1())
+        self.version = version
+        self.keys = json.dumps({version: private.public_key().public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()})
+        self.pin = "--spec-verify-keys-sha256=" + hashlib.sha256(self.keys.encode("utf-8")).hexdigest()
+        self.doc = {
+            "workspace_id": WORKSPACE, "tenant_id": "u-re-75c2e5", "kind": "service",
+            "principal": f"reports-bot@{PROJECT}.iam.gserviceaccount.com", "state": "approved",
+            "request_id": REQUEST_ID, "decision": {"verdict": "approved", "by": OWNER},
+        }
+        payload = {key: self.doc[key] for key in ("workspace_id", "tenant_id", "kind", "principal")}
+        payload.update(decided_by=OWNER, decided_at="2026-10-19T09:30:00+00:00", request_id=REQUEST_ID)
+        der = private.sign(entry.specsign.spec_digest(entry.canonical_approval(payload)),
+                           ec.ECDSA(utils.Prehashed(hashes.SHA256())))
+        self.doc["approval"] = {
+            "decided_by": OWNER, "decided_at": payload["decided_at"], "request_id": REQUEST_ID,
+            "key_version": version, "signature": base64.b64encode(der).decode("ascii"),
+        }
+        self.commits: list[Any] = []
+
+    def __call__(self, project: str) -> SignedService:
+        assert project == PROJECT
+        return self
+
+    def record(self, workspace_id: str):
+        return (SERVICE_DOC, "2026-10-19T09:31:00.000001Z", copy.deepcopy(self.doc))
+
+    def commit(self, write: Any) -> None:
+        self.commits.append(write)
+
+
+def _signed_run(entry, tmp_path: Path, service: SignedService, command: list[str],
+                environ: dict[str, str] | None = None) -> tuple[int, Recorder]:
+    rec = Recorder()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(parents=True, exist_ok=True)
+    rc = entry.main([*command, WORKSPACE, "create"],
+                    _cloud_run_env(SPEC_VERIFY_KEYS=service.keys) if environ is None else environ,
+                    metadata=rec.metadata, scratch_root=str(scratch),
+                    target=Path("/opt/swarm/scripts/workspace-apply.sh"), execve=rec.execve,
+                    cloud=service)
+    return rc, rec
+
+
+def test_signing_key_from_fixed_command(entry, tmp_path):
+    """A project other than the live one trusts its OWN step-spec key, named by
+    the job's fixed command: the service approval verifies and step 1 runs,
+    pinned as verified. The negative control beside it: the command naming
+    another key (prod's ring) stops the same record for the owner."""
+    service = SignedService(entry, SIGNING_KEY + "/cryptoKeyVersions/1")
+    rc, rec = _signed_run(entry, tmp_path, service, [service.pin, SIGNING])
+    assert rc == 0 and service.commits == [], "the project's own key was not trusted"
+    [(_, args, env)] = rec.execs
+    assert args[-2:] == [WORKSPACE, "create"]
+    assert json.loads(env["SWARM_APPROVAL_PIN"])["verified"] is True
+
+    other = SignedService(entry, SIGNING_KEY + "/cryptoKeyVersions/1")
+    rc, rec = _signed_run(entry, tmp_path, other,
+                          [other.pin, SIGNING.replace("swarm-dev-specs", "swarm-prod-specs")])
+    assert rc == 0 and rec.execs == [], "a version of a key the command does not name was trusted"
+    assert len(other.commits) == 1, "the untrusted approval was not stopped for the owner"
+
+
+@pytest.mark.parametrize("variable", ["SPEC_SIGNING_KEY", "SIGNING_KEYS", "SPEC_SIGNING_KEYS"])
+def test_signing_key_not_from_environment(entry, tmp_path, variable):
+    """An execution override may set any variable but cannot touch the
+    command. A variable carrying the record's key changes nothing: with the
+    command naming another key the record still stops for the owner, and with
+    a command that names no key nothing runs at all."""
+    service = SignedService(entry, SIGNING_KEY + "/cryptoKeyVersions/1")
+    environ = _cloud_run_env(SPEC_VERIFY_KEYS=service.keys, **{variable: SIGNING_KEY})
+    other_key = SIGNING.replace("swarm-dev-specs", "swarm-prod-specs")
+    rc, rec = _signed_run(entry, tmp_path, service, [service.pin, other_key], environ=dict(environ))
+    assert rc == 0 and rec.execs == [] and len(service.commits) == 1
+
+    again = tmp_path / "again"
+    rc, rec = _signed_run(entry, again, service, [service.pin], environ=dict(environ))
+    _ran_nothing(rc, rec, again)
+
+
+@pytest.mark.parametrize("value", [
+    pytest.param("", id="empty"),
+    pytest.param(SIGNING_KEY + "/cryptoKeyVersions/1", id="a-version"),
+    pytest.param(SIGNING_KEY.replace("step-spec", "other"), id="not-step-spec"),
+    pytest.param(SIGNING_KEY.replace(PROJECT, "Fixture-project-1"), id="project-upper"),
+    pytest.param(SIGNING_KEY.replace(PROJECT, "p1"), id="project-short"),
+    pytest.param(SIGNING_KEY.replace("keyRings/swarm-dev-specs", "keyRings/a/b"), id="ring-slash"),
+    pytest.param(SIGNING_KEY + "\n", id="newline"),
+    pytest.param(" " + SIGNING_KEY, id="leading-space"),
+])
+def test_a_signing_key_argument_that_is_not_a_step_spec_key_is_refused(entry, tmp_path, value):
+    rc, rec = _call(entry, tmp_path, [PIN, "--spec-signing-key=" + value, WORKSPACE, "create"],
+                    _cloud_run_env())
+    _ran_nothing(rc, rec, tmp_path)
+
+
+def test_a_signing_key_of_another_project_than_the_jobs_is_refused(entry, tmp_path):
+    """The command is the deployment's own: a key in another project than the
+    metadata server's is a job spec rendered for somewhere else."""
+    rc, rec = _call(entry, tmp_path,
+                    [PIN, SIGNING.replace(PROJECT, "another-project-1"), WORKSPACE, "create"],
+                    _cloud_run_env())
+    assert rc == 1 and rec.execs == []
