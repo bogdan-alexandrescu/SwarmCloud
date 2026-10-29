@@ -123,7 +123,7 @@ describe('a11y-keyboard-001: the Shell refresh keeps focus through its read', ()
     expect(document.activeElement).toBe(paused)
   })
 
-  it('hands focus to the head refresh when the failure panel’s Try again unmounts', async () => {
+  it('draws one retry on a failed page, the head refresh, which keeps focus (QA2 automate2-11)', async () => {
     const second = deferred<Result<number[]>>()
     const load = vi.fn<() => Promise<Result<number[]>>>()
     load.mockResolvedValueOnce(failed()).mockReturnValueOnce(second.promise)
@@ -132,11 +132,11 @@ describe('a11y-keyboard-001: the Shell refresh keeps focus through its read', ()
         {(d) => <span>{d.length} rows</span>}
       </Screen>,
     )
-    press(await screen.findByRole('button', { name: 'Try again' }, WAIT))
-    const reading = await screen.findByRole('button', { name: 'Reading' }, WAIT)
+    const refresh = await screen.findByRole('button', { name: 'Refresh · not read' }, WAIT)
+    // MUTATION: the panel's `Try again` drawn on a Screen again: two controls for one press.
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
-    // MUTATION: `onRetry={retry}` on Screen's FailedPanel again, without the
-    // focus hand-off: the pressed button unmounts and focus is <body>.
+    press(refresh)
+    const reading = await screen.findByRole('button', { name: 'Reading' }, WAIT)
     expect(document.activeElement).toBe(reading)
     await act(async () => second.resolve({ status: 'ok', data: [1], fetchedAt: Date.now() }))
   })

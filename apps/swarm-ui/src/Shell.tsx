@@ -828,17 +828,13 @@ export function Screen<T>({
     resume()
     retry()
   }, [resume, retry])
-  // THE FAILURE PANEL'S `Try again` UNMOUNTS WITH ITS PANEL (a11y-keyboard-001):
-  // the read it starts puts the screen back to `loading`, and focus went to
-  // <body> with the button. It is handed to the head's refresh first, which
-  // stays mounted through the read (`⟳ reading…`) and is the same press. The
-  // one failure that draws no head refresh, an admin gate, draws no Try again
-  // either (`FailedPanel`), so there is always a refresh to hand it to.
+  // ONE RETRY CONTROL PER PAGE (QA2 automate2-11): a failed read drew `⟳
+  // refresh · not read` in the head and `Try again` in the panel under it,
+  // two controls for one press. The head's stays: it is mounted through the
+  // read it starts (`⟳ reading…`), so a keyboard reader keeps focus on it
+  // (a11y-keyboard-001), where the panel's `Try again` unmounted with its
+  // panel. The page's panel draws none (`offerRetry={false}`).
   const headRefresh = useRef<HTMLButtonElement>(null)
-  const retryFromPanel = useCallback(() => {
-    headRefresh.current?.focus()
-    retry()
-  }, [retry])
 
   const data =
     state.status === 'ok' ? state.data : state.status === 'stale' ? state.data : null
@@ -902,7 +898,7 @@ export function Screen<T>({
       )}
 
       {state.status === 'loading' && (skeleton ?? <SkeletonRows shape={shape} />)}
-      {state.status === 'error' && <FailedPanel error={state.error} onRetry={retryFromPanel} page />}
+      {state.status === 'error' && <FailedPanel error={state.error} onRetry={retry} offerRetry={false} page />}
 
       {/* THE SHARED EMPTY STATE (CH-10), where this was a hand-built `.state`
           box: no mark, so a real zero told itself from a failed read by
@@ -1098,10 +1094,16 @@ function StaleBanner({ error, fetchedAt, now }: { error: ApiError; fetchedAt: nu
 export function FailedPanel({
   error,
   onRetry,
+  offerRetry = true,
   page = false,
 }: {
   error: ApiError
   onRetry: () => void
+  /**
+   * Whether the panel draws its own `Try again`. A `Screen`'s does not: the
+   * head's refresh is the page's one retry (QA2 automate2-11).
+   */
+  offerRetry?: boolean
   /**
    * The panel IS the page: a `Screen` whose read failed. Its sentences keep
    * the lead size. Everywhere else the panel sits in a card, a pane or the
@@ -1181,7 +1183,7 @@ export function FailedPanel({
         <p className="checked-at">
           paused {error.retryAfterSeconds ?? 'a few'}s — the API asked us to wait
         </p>
-      ) : writeRefused(error) || answered ? null : (
+      ) : writeRefused(error) || answered || !offerRetry ? null : (
         <Button onClick={onRetry}>Try again</Button>
       )}
     </div>

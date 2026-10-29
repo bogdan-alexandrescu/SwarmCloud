@@ -49,7 +49,7 @@ import { Button } from './components'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { Absent } from './primitives'
 import type { RepoRecord } from './RepositoriesData'
-import { InApp, SCHEDULES_ADDRESS, scheduleAddress } from './Schedules'
+import { InApp, SCHEDULES_ADDRESS, firingReaderTime, firingWallTime, scheduleAddress } from './Schedules'
 import { budgetDefaultWords, gapWords, StartChoice, TemplateCard, TemplateTiles, TenantRoom, type Start } from './ScheduleTemplates'
 import { Screen } from './Shell'
 import { usd } from './measure'
@@ -336,18 +336,6 @@ function refusalWords(r: unknown): string | null {
   return JSON.stringify(r)
 }
 
-/** `2026-10-12T09:00:00+01:00` in the schedule's own zone, read off the ISO itself. */
-function inZone(iso: string): string {
-  return `${iso.slice(0, 10)} ${iso.slice(11, 16)}`
-}
-
-function inViewer(iso: string): string {
-  const d = new Date(iso)
-  return Number.isFinite(d.getTime())
-    ? d.toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
-    : iso
-}
-
 /**
  * ONE PREVIEW READ PER FORM, debounced. The sheet's problem list, the error
  * under the cron field and the next five all draw this one answer, so they
@@ -450,11 +438,18 @@ function CronPreview({ r, timezone }: { r: Result<{ preview: SchedulePreview }> 
             Next five, in {timezone}:
           </p>
           <ol className={refusal === null ? 'sc-next' : 'sc-next is-refused'} aria-label="The next five firings">
-            {p.next.map((iso) => (
-              <li key={iso}>
-                <span className="mono">{inZone(iso)}</span> <span className="sc-sub sc-yours">{inViewer(iso)} your time</span>
-              </li>
-            ))}
+            {/* ONE FORMAT, AS THE SHEET'S CHIPS (QA2 automate2-07): "Fri, Oct
+                30 09:11", the reader's time beside it only when it is a
+                different wall time. */}
+            {p.next.map((iso) => {
+              const yours = firingReaderTime(iso)
+              return (
+                <li key={iso}>
+                  <span>{firingWallTime(iso, timezone)}</span>
+                  {yours !== null && <> <span className="sc-sub sc-yours">{yours} your time</span></>}
+                </li>
+              )
+            })}
           </ol>
           {/* A3a: the firings a refused cadence would have had, struck
               through, so the sheet shows what the server will not do. */}

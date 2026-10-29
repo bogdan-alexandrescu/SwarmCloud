@@ -224,4 +224,10 @@ describe('G1-11 and G1-12: the 404 is titled as one, and every tab says its page
     await app('/workflows/wf_title_probe')
     await waitFor(() => expect(document.title).toBe('wf_title_probe · Workflows · SwarmCloud'))
   })
+
+  it('titles an open schedule by the name its list read, not its id (QA2 automate2-15)', async () => {
+    // MUTATION: drop `scheduleNamed` from the title and it stays "sch_3f9a0c1e7b25 · Schedules · SwarmCloud".
+    await app('/automate/schedules/sch_3f9a0c1e7b25')
+    await waitFor(() => expect(document.title).toBe('Plan open issues · Schedules · SwarmCloud'), { timeout: 4000 })
+  })
 })
