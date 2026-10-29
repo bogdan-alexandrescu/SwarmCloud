@@ -125,8 +125,8 @@ describe('config-01: an expired token is not drawn as renewed automatically', ()
     const card = token.closest('.ac-conn') as HTMLElement
     // MUTATION: keep the unconditional <span>renewed automatically</span> in Connection.
     expect(card.textContent).not.toContain('renewed automatically')
-    // MUTATION: drop the "the next use renews it" span for an expired token.
-    expect(card.textContent).toContain('the next use renews it')
+    // MUTATION: drop the renewal from an expired token's state (said once since config2-02).
+    expect(card.textContent).toContain('token renews on next use')
     // MUTATION: draw the expired token without its warn ToneMark.
     expect(token.closest('[data-tone="warn"]')).not.toBeNull()
   })
@@ -136,7 +136,7 @@ describe('config-01: an expired token is not drawn as renewed automatically', ()
     await mount()
     const card = (await screen.findByText(/expires in/)).closest('.ac-conn') as HTMLElement
     expect(card.textContent).toContain('renewed automatically')
-    expect(card.textContent).not.toContain('the next use renews it')
+    expect(card.textContent).not.toContain('renews on next use')
   })
 })
 

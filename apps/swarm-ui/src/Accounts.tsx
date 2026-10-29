@@ -465,25 +465,26 @@ function Body({
  *   * an EMPTY pool -- the form is the one control that fixes it, and the
  *     empty state says "add the first one below";
  *   * a sign-in UNDER WAY or just finished -- its link, its code box and its
- *     report are the form, and folding them away mid-sign-in loses them.
+ *     report are the form. Starting one opens the form (`adding`), and a
+ *     close FOLDS it without losing it (visual QA pass 2 cap2-02: the sheet
+ *     had no close and ignored Escape once Sign in started): the sign-in is
+ *     held in `signin`, and Add account opens it again where it was.
  *
  * The control sits in the list's header row (capacity.html A1, #503): it was a
  * bar of its own under the table, where it read as belonging to nothing.
  */
 function addOpen(ui: Persisted): boolean {
-  return ui.adding || ui.signin.kind !== 'idle'
+  return ui.adding
 }
 
 function AddButton({ ui, patch }: { ui: Persisted; patch: Patch }) {
-  const busy = ui.signin.kind !== 'idle'
   return (
     <button
       type="button"
       className="acct-add"
       aria-label="Add account"
       aria-expanded={addOpen(ui)}
-      // Nothing to fold while a sign-in is under way: see above.
-      disabled={busy}
+      // A folded sign-in under way opens again where it was: see above.
       onClick={() => patch((p) => ({ ...p, adding: !p.adding }))}
     >
       <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
@@ -847,17 +848,16 @@ function Pool({
   const adding = addOpen(ui)
   const a = shown.account
   // CLOSING: an opened account goes back to the table, focus on its row (live
-  // QA CAP-11); an add form nobody has started folds. A sign-in under way is
-  // never folded by a close -- its link and code box are the form -- so the
-  // sheet then holds it, and offers no close.
-  const closable = shown.explicit || ui.signin.kind === 'idle'
+  // QA CAP-11); an add form folds, at every step (visual QA pass 2 cap2-02).
+  // A sign-in under way is folded, not dropped: `signin` keeps its link and
+  // code box, and Add account opens them again.
   closeRef.current = () => {
     if (shown.explicit) {
       backTo.current = a.account_id
       choose(null)
-    } else if (ui.signin.kind === 'idle') {
-      patch((p) => ({ ...p, adding: false }))
     }
+    patch((p) => ({ ...p, adding: false }))
+    if (!shown.explicit && typeof document !== 'undefined') document.querySelector<HTMLButtonElement>('.acct-add')?.focus()
   }
   // THE OPENED ACCOUNT, AS A SIDE SHEET (#2222, mock-up A F4; a full screen
   // on a phone, P3). It is drawn only when a row or a lane was opened or the
@@ -885,17 +885,15 @@ function Pool({
             <span className="acct-sheet-crumb">
               {shown.explicit ? `Accounts › ${accountName(a)}` : 'Accounts › Add an account'}
             </span>
-            {closable && (
-              <Button
-                iconOnly
-                size="sm"
-                icon={<CIcon name="close" />}
-                className="acct-sheet-close"
-                onClick={() => closeRef.current()}
-              >
-                Close
-              </Button>
-            )}
+            <Button
+              iconOnly
+              size="sm"
+              icon={<CIcon name="close" />}
+              className="acct-sheet-close"
+              onClick={() => closeRef.current()}
+            >
+              Close
+            </Button>
           </div>
           {adding && addForm}
           {/* ONE THING AT A TIME (live QA CAP-11): an add form nobody has
@@ -1215,10 +1213,21 @@ function NameHead({ account, owned, reload }: { account: Account; owned: boolean
   const [draft, setDraft] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
+  // FOCUS BACK ON `Rename` (visual QA pass 2 cap2-03): Escape or Cancel
+  // unmounted the editor under the keyboard and left focus on <body>. The
+  // button is drawn again by that render, so it takes focus once it mounts
+  // (`Button` takes no ref, so it is found in its row).
+  const headRef = useRef<HTMLDivElement>(null)
+  const back = useRef(false)
+  useEffect(() => {
+    if (draft !== null || !back.current) return
+    back.current = false
+    headRef.current?.querySelector<HTMLButtonElement>('button')?.focus()
+  }, [draft])
 
   if (draft === null) {
     return (
-      <div className="acct-dhead-name">
+      <div className="acct-dhead-name" ref={headRef}>
         <h3>{accountName(account)}</h3>
         {owned && (
           <Button
@@ -1238,6 +1247,7 @@ function NameHead({ account, owned, reload }: { account: Account; owned: boolean
 
   const cancel = () => {
     if (busy) return
+    back.current = true
     setDraft(null)
     setError(null)
   }
@@ -3993,12 +4003,23 @@ function AddAccount({
   // form somebody opened folds: on an empty pool it is drawn with no click,
   // as the one fix, and there is nothing to go back to.
   const labelRef = useRef<HTMLInputElement | null>(null)
-  const closable = ui.adding && accounts.length > 0 && (state.kind === 'idle' || state.kind === 'start_failed')
+  const closable = ui.adding && accounts.length > 0
   useEffect(() => {
     if (ui.adding && state.kind === 'idle') labelRef.current?.focus()
     // Only on opening: a re-render while typing must not move the caret.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ui.adding])
+  // A NEW STEP TAKES FOCUS (visual QA pass 2 cap2-02): Start unmounted under
+  // the keyboard and left focus on <body>. When the sign-in link arrives, or
+  // the receipt, focus goes to the step's first control.
+  const panelRef = useRef<HTMLElement | null>(null)
+  const stepWas = useRef(state.kind)
+  useEffect(() => {
+    const was = stepWas.current
+    stepWas.current = state.kind
+    if (was === state.kind || (state.kind !== 'open' && state.kind !== 'done')) return
+    panelRef.current?.querySelector<HTMLElement>('a[href], button:not([disabled]), input:not([disabled])')?.focus()
+  }, [state.kind])
   const cancel = () => {
     patch((p) => ({ ...p, adding: false, signin: p.signin.kind === 'start_failed' ? { kind: 'idle' } : p.signin }))
     setLabel('')
@@ -4058,7 +4079,8 @@ function AddAccount({
     // Enter in the field reaches here without the button.
     if (trimmed === '' || fault !== null) return
     const lendTo = splitTenants(lend).filter((t) => t !== owner)
-    set({ kind: 'starting' })
+    // A sign-in holds the form open (`addOpen`) until it is closed.
+    patch((p) => ({ ...p, adding: true, signin: { kind: 'starting' } }))
     const res = await beginAccountSignIn({
       // THE LABEL AND THE LENDING LIST, AND NOTHING ELSE. The pending record
       // the broker writes is what decides where the account lands when the code
@@ -4091,6 +4113,7 @@ function AddAccount({
 
   return (
     <section
+      ref={panelRef}
       className="section panel acct-add-panel"
       onKeyDown={(e) => {
         if (e.key === 'Escape' && closable) {
@@ -4651,6 +4674,7 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
   const [error, setError] = useState<ApiError | null>(null)
 
   const armed = typed === account.label
+  const whyId = useId()
 
   const run = async () => {
     if (!armed) return
@@ -4723,14 +4747,22 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
             filled red only once a click would remove the account. THE LABEL,
             NOT THE NAME, ARMS IT: the label is the id, and a Name is free
             text that two accounts may share. */}
+        {/* WHY IT IS OFF IS ITS DESCRIPTION (visual QA pass 2 cap2-13): the
+            line beside it was not tied to the button, so a reader on it heard
+            a dimmed control with no reason. */}
         <Button
           kind={armed ? 'danger-filled' : 'danger'}
           disabled={!armed || busy}
+          aria-describedby={armed ? undefined : whyId}
           onClick={() => void run()}
         >
           {busy ? 'Removing…' : `Remove ${account.label}`}
         </Button>
-        <span className="client-side">type the label to arm this</span>
+        {!armed && (
+          <span className="client-side" id={whyId}>
+            off until you type {account.label} above
+          </span>
+        )}
       </span>
       {error && (
         <p className="warn-text">
