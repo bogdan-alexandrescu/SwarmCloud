@@ -490,6 +490,8 @@ def cluster(tmp_path: Path) -> dict[str, Any]:
     (d / "oauth-value").write_text(value + "\n")
     (tmp_path / "tfdata").mkdir()
     env = {k: v for k, v in os.environ.items() if k not in LEAKY}
+    # common.sh has no default project any more: name the one the suite models.
+    env["PROJECT_ID"] = "saga-agents-staging"
     env.update(
         PATH=f"{b}:{env.get('PATH', '')}",
         FAKE_CLUSTER_DIR=str(d),

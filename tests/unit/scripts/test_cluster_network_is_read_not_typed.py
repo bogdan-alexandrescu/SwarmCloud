@@ -369,6 +369,8 @@ class Cluster:
 
     def env(self, **extra: str) -> dict[str, str]:
         env = {k: v for k, v in os.environ.items() if k not in LEAKY}
+        # common.sh has no default project any more: name the one the suite models.
+        env["PROJECT_ID"] = "saga-agents-staging"
         env.update(
             PATH=os.pathsep.join(
                 [str(self.bin), str(Path(sys.executable).parent), os.environ.get("PATH", "")]
