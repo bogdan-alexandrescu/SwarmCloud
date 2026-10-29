@@ -4449,6 +4449,7 @@ class Worker:
             # A `publish_to_pr` step that checked and changed nothing (#2241):
             # its evidence goes onto the pull request as a comment, not a commit.
             self._post_no_change_evidence(summary)
+            self._record_forge_credential(summary)
         if ran_clean and self._no_change_after_publish(summary):
             self.log.info("nothing to change: the moved branch already holds this round's change",
                           reason=summary.get(NO_CHANGE_REASON_SUMMARY_KEY))
@@ -9072,6 +9073,18 @@ class Worker:
         found["source"] = sources[-1] if sources else None
         return found
 
+    def _record_forge_credential(self, summary: dict[str, Any]) -> None:
+        """Write `_forge_credential_summary` into `summary` again, after a push.
+
+        The upload takes the summary BEFORE the deferred publish pushes, and
+        the push reads the slot again (`_git_token`): without this, a slot
+        rotated to a PAT between clone and push would still say
+        `app_installation`, and stage 14 would pass it.
+        """
+        forge_credential = self._forge_credential_summary()
+        if forge_credential is not None:
+            summary["forge_credential"] = forge_credential
+
     def _stage_issue(
         self, issue_number: int, work_dir: Path, prefetch: issue_mod.IssuePrefetch | None
     ) -> Path:
@@ -13456,6 +13469,8 @@ class Worker:
         if isinstance(patch, dict) and isinstance(artifacts, list):
             grew = manifest_mod.add_late_entry(artifacts, patch)
             summary["artifact_bytes"] = int(summary.get("artifact_bytes") or 0) + grew
+        # The push read the slot again: the kind it read joins the record.
+        self._record_forge_credential(summary)
 
     def _integration_is_pending(self) -> bool:
         """True when this step still owes a merge even having changed nothing.
@@ -16369,9 +16384,7 @@ class Worker:
         }
         if git_summary is not None:
             summary["git"] = git_summary
-        forge_credential = self._forge_credential_summary()
-        if forge_credential is not None:
-            summary["forge_credential"] = forge_credential
+        self._record_forge_credential(summary)
         if workdir is not None:
             summary["workdir_outputs"] = workdir["summary"]
         # THE AGENT'S QUESTIONS FOR THE OWNER (owner decision, 2026-10-05):

@@ -646,6 +646,32 @@ def test_the_final_upload_carries_the_record(db, worker_factory):
     assert summary["forge_credential"] == {"kind": "app_installation", "source": TENANT_SECRET}
 
 
+def test_a_push_after_the_upload_joins_the_record(db, worker_factory, monkeypatch):
+    """The runner-exit path takes the summary at the upload and pushes after
+    it (`_publish_checked`); the push reads the slot again (`_publish_git`
+    calls `_git_token`). A slot rotated to a PAT before the push is `mixed`."""
+    worker, config = _tenant_worker(db, worker_factory, installation_token())
+    worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
+    worker._git_token()
+    summary = worker._upload_outputs(defer_publish=True)
+    assert summary["forge_credential"]["kind"] == "app_installation"
+    worker.secret_client.values[TENANT_SECRET] = classic_pat()
+
+    def publish(**kwargs: Any) -> dict[str, Any]:
+        assert worker._git_token() is not None
+        return {"published": True}
+
+    monkeypatch.setattr(worker, "_publish_git", publish)
+    worker._deferred_publish = {"repo": None, "work_head": None, "publish_repo": None}
+    summary.setdefault("git", {})
+    worker._publish_checked(summary, None)
+
+    assert summary["git"]["published"] is True
+    assert summary["forge_credential"] == {
+        "kind": "mixed", "kinds": ["app_installation", "pat"], "source": TENANT_SECRET,
+    }
+
+
 @pytest.mark.parametrize("make", [installation_token, app_user_token, classic_pat, fine_grained_pat])
 def test_no_recorded_field_holds_anything_token_shaped(db, worker_factory, make):
     """Not the value, not its prefix, not a piece of it, not a hash of it --
