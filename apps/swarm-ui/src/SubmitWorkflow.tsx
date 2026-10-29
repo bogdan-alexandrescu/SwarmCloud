@@ -462,6 +462,9 @@ export function SubmitWorkflowScreen() {
   )
 }
 
+/** The not-ready line under the send button, which the button names as its description. */
+const WF_WHY_ID = 'wf-send-why'
+
 /**
  * WHAT IS WRONG WITH A TYPED PRIORITY, BY CAUSE (QA G4-24), or null when the
  * API would take it. The rail said "not a whole number" for 500, a whole
@@ -722,6 +725,19 @@ function Form({ sources }: { sources: FormSources }) {
   // button was disabled by `priorityOk` alone, so "Ready to send" headed a
   // summary whose priority row said "out of range".
   const blocked = plan.problems.length > 0 || noRepo || badRepo || mcpUnfilled.length > 0 || !priorityOk
+  // WHAT ELSE HOLDS THE BUTTON, IN WORDS, UNDER IT (visual QA pass 2,
+  // runs2-31): a priority of 500 disabled "Submit this workflow" with nothing
+  // under it, while the task form says "Not ready: …" and an unready step
+  // reads "1 step not ready: step-1". The steps and the MCP credentials keep
+  // their own lines above the button; these are the terms of `blocked` that
+  // had none, in its order, so the line and the button cannot disagree.
+  const why = [
+    ...(noRepo ? ['give a repository url to push to'] : []),
+    ...(badRepo ? ['give a repository url the API accepts'] : []),
+    ...(priorityWrong === null ? [] : [priorityWrong === 'not a whole number'
+      ? 'priority must be a whole number from \u2212100 to 100'
+      : 'priority must be \u2212100 to 100']),
+  ]
   // WHAT THIS CLICK WOULD SEND, as one comparable value (VQA V048, owner
   // decision Q1 on #1038): after a 201 the button is "Submit another" for as
   // long as the form still says exactly what was sent.
@@ -1062,10 +1078,12 @@ function Form({ sources }: { sources: FormSources }) {
           {justSent ? (
             <Button key="another" kind="primary" full onClick={another}>Submit another</Button>
           ) : (
-            <Button key="submit" kind="primary" full disabled={sub.kind === 'sending' || blocked || !priorityOk} onClick={send}>
+            <Button key="submit" kind="primary" full disabled={sub.kind === 'sending' || blocked || !priorityOk} onClick={send}
+              aria-describedby={why.length > 0 ? WF_WHY_ID : undefined}>
               {sub.kind === 'sending' ? 'Submitting…' : submitAs === null ? 'Submit this workflow' : `Submit as ${submitAs}`}
             </Button>
           )}
+          {!justSent && why.length > 0 && <p id={WF_WHY_ID} className="sb-note sbf-why">Not ready: {why.join('; ')}.</p>}
           {/* THE OUTCOME, BESIDE THE BUTTON (VQA V002, owner decision Q1 on
               #1038), as the task and issue forms draw theirs. */}
           <OutcomeSlot at={sub} shown={sub.kind !== 'idle' && sub.kind !== 'sending'}>

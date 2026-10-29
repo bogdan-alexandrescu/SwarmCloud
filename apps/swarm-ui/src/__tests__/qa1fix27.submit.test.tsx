@@ -145,13 +145,17 @@ describe('runs-submit-26: each recent row says what it was, and the footnote cou
       task({ ...lone, id: 'task_a', created_at: '2026-10-04T12:00:00Z' }),
       task({ ...lone, id: 'task_b', created_at: '2026-10-04T11:00:00Z' }),
     ], [], [])
-    const looked = ['your newest 30 agents', 'the tenant’s newest 3 workflows', 'its newest 2 issue runs']
+    const looked = [
+      { kind: 'task' as const, read: 30, yours: 2 },
+      { kind: 'workflow' as const, read: 3, yours: 0 },
+      { kind: 'issue run' as const, read: 2, yours: 0 },
+    ]
     // MUTATION: print only the windows ("Among …") again and nothing says the
     // list holds two agents and no workflow or issue run.
     expect(recentScope(items, looked)).toBe(
-      'Listed: 2 agents, newest first. Found among your newest 30 agents, the tenant’s newest 3 workflows, its newest 2 issue runs.',
+      'Listed: 2 agents, newest first. Found among your newest 30 agents. None of yours among the tenant’s newest 3 workflows or its newest 2 issue runs.',
     )
-    expect(recentScope([], ['the tenant’s newest 1 workflow'])).toBe('Among the tenant’s newest 1 workflow.')
+    expect(recentScope([], [{ kind: 'workflow', read: 1, yours: 0 }])).toBe('Among the tenant’s newest 1 workflow.')
     expect(recentScope([], [])).toBeNull()
   })
 })
