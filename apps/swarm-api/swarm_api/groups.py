@@ -20,6 +20,12 @@ problem.
 
 `checkTransitiveMembership` is a network round trip on a request path that must
 stay fast, so answers are cached per (caller, group) with a short TTL.
+
+How swarm-api is authorised to ask is `GROUPS_AUTH` (`GROUPS_AUTH_MODES`;
+docs/design/day-one-install.md section 8): `admin_role`, the Workspace "Groups
+Reader" admin role assigned to swarm-api's own service account, which then asks
+as itself; or `delegation`, domain-wide delegation acting as
+`GROUPS_IMPERSONATE_USER`, the fallback and the default.
 """
 
 from __future__ import annotations
@@ -36,6 +42,34 @@ log = logging.getLogger(__name__)
 
 CLOUD_IDENTITY_ROOT = "https://cloudidentity.googleapis.com/v1"
 GROUPS_READONLY_SCOPE = "https://www.googleapis.com/auth/cloud-identity.groups.readonly"
+
+#: `GROUPS_AUTH`'s values. `admin_role`: swarm-api's service account holds the
+#: Workspace "Groups Reader" admin role and calls the Groups API as itself, so
+#: `delegation.delegate()` is never reached. `delegation`: it acts as
+#: `GROUPS_IMPERSONATE_USER` through domain-wide delegation. The default is
+#: `delegation` because that is what the live deployment is set up for; installs
+#: set `admin_role` (BGD's Q2 answer, design section 14).
+GROUPS_AUTH_ADMIN_ROLE = "admin_role"
+GROUPS_AUTH_DELEGATION = "delegation"
+GROUPS_AUTH_MODES = (GROUPS_AUTH_ADMIN_ROLE, GROUPS_AUTH_DELEGATION)
+
+#: How long a caller's last answer for a group may stand in for one Cloud
+#: Identity cannot give now (`groups_for`). A day: the hourly doctor re-probes
+#: every registered group and alerts on one that does not answer, so a broken
+#: group is named long before that; past a day the answer is too old to bet a
+#: tenant on, and the 503 returns.
+LAST_ANSWER_SECONDS = 24 * 60 * 60
+
+
+def parse_groups_auth(raw: str | None) -> str:
+    """`GROUPS_AUTH` normalised, or ValueError naming the variable. Unset or
+    blank is `delegation`."""
+    mode = (raw or "").strip().lower() or GROUPS_AUTH_DELEGATION
+    if mode not in GROUPS_AUTH_MODES:
+        raise ValueError(
+            f"GROUPS_AUTH must be one of {', '.join(GROUPS_AUTH_MODES)}, got {raw!r}"
+        )
+    return mode
 
 
 class HttpSession(Protocol):
@@ -69,21 +103,33 @@ class CloudIdentityGroups:
         *,
         session: HttpSession | None = None,
         impersonate_user: str | None = None,
+        auth_mode: str = GROUPS_AUTH_DELEGATION,
         ttl_seconds: int = 120,
+        last_answer_seconds: int = LAST_ANSWER_SECONDS,
         timeout_seconds: float = 5.0,
         now: Callable[[], datetime] = utcnow,
     ) -> None:
         if not project_id:
             raise ValueError("project_id is required: it is the x-goog-user-project value")
         self._project_id = project_id
-        self._impersonate_user = (impersonate_user or "").strip() or None
+        self._auth_mode = parse_groups_auth(auth_mode)
+        # With the admin role there is no one to act as: a subject still
+        # rendered beside it is ignored rather than delegated to.
+        self._impersonate_user = (
+            None if self._auth_mode == GROUPS_AUTH_ADMIN_ROLE
+            else (impersonate_user or "").strip() or None
+        )
         self._session = session
         self._ttl = timedelta(seconds=max(1, ttl_seconds))
+        self._last_answer_window = timedelta(seconds=max(0, last_answer_seconds))
         self._timeout = timeout_seconds
         self._now = now
         self._lock = threading.Lock()
         self._group_names: dict[str, _CacheEntry] = {}
         self._memberships: dict[tuple[str, str], _CacheEntry] = {}
+        # (caller, group) -> the last answer Cloud Identity gave and when.
+        # Outlives the cache: read only when a group cannot answer now.
+        self._last_answers: dict[tuple[str, str], tuple[bool, datetime]] = {}
 
     # -- plumbing ---------------------------------------------------------
 
@@ -128,6 +174,11 @@ class CloudIdentityGroups:
             # keyless one: build the assertion, have Google sign it with the key
             # we are not allowed to hold, exchange it for a token that acts as
             # the subject. See swarm_api/delegation.py.
+            #
+            # GROUPS_AUTH=admin_role skips all of it: the Workspace "Groups
+            # Reader" admin role, assigned to this service account's email,
+            # lets it call the Groups API as itself (design section 8), and
+            # `_impersonate_user` is None in that mode.
             if self._impersonate_user:
                 from . import delegation
 
@@ -220,14 +271,27 @@ class CloudIdentityGroups:
         )
         has = bool(payload.get("hasMembership", False))
         self._store(self._memberships, key, has)
+        with self._lock:
+            self._last_answers[key] = (has, self._now())
         return has
+
+    def _known_outside(self, member_email: str, group_email: str) -> bool:
+        """True when Cloud Identity's last answer, within the window, was that
+        `member_email` is NOT in `group_email`."""
+        with self._lock:
+            last = self._last_answers.get((member_email.lower(), group_email.lower()))
+        if last is None:
+            return False
+        has, at = last
+        return not has and self._now() - at < self._last_answer_window
 
     def groups_for(
         self, member_email: str, candidate_groups: tuple[str, ...], *, fresh: bool = False
     ) -> tuple[str, ...]:
         """Which of the admin-registered groups this caller belongs to.
 
-        `fresh` asks every candidate past the cache (`is_member`).
+        `fresh` asks every candidate past the cache (`is_member`), and never
+        leans on a last answer (below).
 
         `candidate_groups` arrives in ADMIN PRIORITY ORDER, which is the order
         `resolve_tenant` walks, so a failure only matters when it lands ABOVE the
@@ -237,7 +301,11 @@ class CloudIdentityGroups:
             the tenant, so it is logged and swallowed -- one flaky group must not
             take down the API;
           * a failure at a higher priority, or with no match at all, COULD change
-            the tenant, so it raises.
+            the tenant, so it raises -- unless this caller's last answer for that
+            group, within `LAST_ANSWER_SECONDS`, was "not a member". Then the
+            group is read as the "no" it last gave, so one unreadable group
+            fails only its own members (and callers never asked about it), not
+            everyone it outranks (design section 8, the 503-everyone trap).
 
         Failing open in that second case is not a cheap degradation: the tenant
         decides which Secret Manager secret, which GCS prefix and which namespace
@@ -253,13 +321,14 @@ class CloudIdentityGroups:
         for index, group in enumerate(candidate_groups):
             try:
                 member = self.is_member(member_email, group, fresh=fresh)
-            except GroupLookupError as exc:
-                log.warning("group membership check failed for group=%s: %s", group, exc)
-                failures.append(group)
-                first_failure = index if first_failure is None else first_failure
-                continue
-            except Exception as exc:  # pragma: no cover - transport level
-                log.warning("group membership check errored for group=%s: %r", group, exc)
+            except Exception as exc:
+                # GroupLookupError, or anything the transport throws.
+                if not fresh and self._known_outside(member_email, group):
+                    log.warning(
+                        "group membership check failed for group=%s; the caller's last "
+                        "answer was not a member, so it stands: %s", group, exc)
+                    continue
+                log.warning("group membership check failed for group=%s: %r", group, exc)
                 failures.append(group)
                 first_failure = index if first_failure is None else first_failure
                 continue
@@ -321,8 +390,13 @@ class StaticGroups:
 __all__ = [
     "CLOUD_IDENTITY_ROOT",
     "CloudIdentityGroups",
+    "GROUPS_AUTH_ADMIN_ROLE",
+    "GROUPS_AUTH_DELEGATION",
+    "GROUPS_AUTH_MODES",
     "GroupLookupError",
+    "LAST_ANSWER_SECONDS",
     "MembershipResolver",
     "StaticGroups",
     "check_group_readable",
+    "parse_groups_auth",
 ]
