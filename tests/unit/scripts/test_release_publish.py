@@ -55,6 +55,11 @@ if tool == "gcloud" and args[:2] == ["storage", "ls"]:
         sys.exit(0)
     print(f"ERROR: (gcloud.storage.ls) One or more URLs matched no objects: {url}", file=sys.stderr)
     sys.exit(1)
+if tool == "gcrane" and args[:1] == ["cp"] and "@" in args[1]:
+    # The copy keeps the digest, unless the state says the registry served another.
+    state.setdefault("tags", {})[args[2]] = state.get("serves", {}).get(args[2], args[1].split("@", 1)[1])
+    json.dump(state, open(os.environ["FAKE_STATE"], "w"))
+    sys.exit(0)
 if tool == "gcrane" and args[:1] == ["digest"]:
     ref = args[-1]
     print(ref.split("@", 1)[1] if "@" in ref else state.get("tags", {}).get(ref, "sha256:" + "0" * 64))
@@ -282,6 +287,17 @@ def test_publish_copies_and_signs_every_image_by_digest(tmp_path: Path, bundle: 
     # SHA256SUMS goes up last, so a half-uploaded release has none to read.
     assert dest[-1] == f"{RELEASE}/SHA256SUMS", dest
     assert f"{RELEASE}/SHA256SUMS.sig" in dest and f"{RELEASE}/cosign.pub" in dest
+
+
+def test_publish_refuses_a_copy_with_another_digest(tmp_path: Path, bundle: Path,
+                                                    assembled: tuple[Path, Path]) -> None:
+    """The copy is checked by digest before it is signed (H28)."""
+    state = {"serves": {f"{HOME_REGISTRY}/swarm-api:{VERSION}": fake_digest("other")}}
+    proc = _publish(tmp_path, bundle, assembled[1], state=state)
+    assert proc.returncode == 1 and "swarm-api" in proc.stderr, proc.stderr[-2000:]
+    calls = _calls(tmp_path)
+    assert not [c for c in calls if c[:2] == ["cosign", "sign"] and any("/swarm-api@" in a for a in c)]
+    assert not [c for c in _writes(calls) if c[0] == "gcloud"]
 
 
 def test_publish_refuses_a_tampered_bundle(tmp_path: Path, bundle: Path, assembled: tuple[Path, Path]) -> None:
