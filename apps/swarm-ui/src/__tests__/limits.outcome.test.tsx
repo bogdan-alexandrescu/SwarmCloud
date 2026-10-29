@@ -21,7 +21,7 @@ const api = vi.hoisted(() => ({
 }))
 vi.mock('../api', () => api)
 
-const { AdminSettingsScreen, saveOutcome } = await import('../AdminSettings')
+const { AdminSettingsScreen, saveOutcome, poolSpoken } = await import('../AdminSettings')
 
 const WAIT = { timeout: 5000 } as const
 
@@ -66,8 +66,8 @@ function row(name: string): HTMLElement {
 
 async function save(name: string, value: string): Promise<void> {
   await waitFor(() => expect(document.getElementById(`limit-${name}`)).not.toBeNull(), WAIT)
-  fireEvent.click(within(row(name)).getByRole('button', { name: `Edit ceiling for ${name}` }))
-  fireEvent.change(screen.getByLabelText(`Hard limit for ${name}`, { exact: false }), { target: { value } })
+  fireEvent.click(within(row(name)).getByRole('button', { name: `Edit ceiling for ${poolSpoken(name)}` }))
+  fireEvent.change(screen.getByLabelText(`Hard limit for ${poolSpoken(name)}`, { exact: false }), { target: { value } })
   fireEvent.click(within(document.querySelector<HTMLElement>('aside.adm-side')!).getByRole('button', { name: 'Save' }))
 }
 

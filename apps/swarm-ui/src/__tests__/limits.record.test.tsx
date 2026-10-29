@@ -34,7 +34,7 @@ const api = vi.hoisted(() => ({
 }))
 vi.mock('../api', () => api)
 
-const { AdminSettingsScreen } = await import('../AdminSettings')
+const { AdminSettingsScreen, poolSpoken } = await import('../AdminSettings')
 
 const WAIT = { timeout: 5000 } as const
 
@@ -98,7 +98,7 @@ function lastChanged(name: string): HTMLElement {
 
 function open(name: string): HTMLElement {
   const row = document.getElementById(`limit-${name}`)!
-  fireEvent.click(within(row).getByRole('button', { name: `Edit ceiling for ${name}` }))
+  fireEvent.click(within(row).getByRole('button', { name: `Edit ceiling for ${poolSpoken(name)}` }))
   return document.querySelector<HTMLElement>('aside.adm-side')!
 }
 
@@ -193,7 +193,7 @@ describe('Pool limits reads who changed a ceiling from the admin pool read (#133
     await waitFor(() => expect(document.getElementById('limit-runner:claude-code')).not.toBeNull(), WAIT)
 
     const side = open('runner:claude-code')
-    fireEvent.change(within(side).getByLabelText('Hard limit for runner:claude-code'), { target: { value: '15' } })
+    fireEvent.change(within(side).getByLabelText('Hard limit for claude-code (runner profile)'), { target: { value: '15' } })
     fireEvent.click(within(side).getByRole('button', { name: 'Save' }))
 
     await waitFor(() => expect(lastChanged('runner:claude-code').textContent).toContain('root@example.com'), WAIT)

@@ -158,9 +158,9 @@ describe('Pool limits draws a pool with no limit set as that, not as 0 agents', 
     expect(api.loadMe).toHaveBeenCalledTimes(1)
     // MUTATION: answer `adminMe()` with `is_admin: false` -- what the member
     // fixture says -- and `edit` is refused: no button has this name, every run.
-    const edit = screen.getByRole('button', { name: 'Edit ceiling for tenant:eng' })
+    const edit = screen.getByRole('button', { name: 'Edit ceiling for eng (workspace)' })
     fireEvent.click(edit)
-    const field = (await screen.findByLabelText('Hard limit for tenant:eng', { exact: false })) as HTMLInputElement
+    const field = (await screen.findByLabelText('Hard limit for eng (workspace)', { exact: false })) as HTMLInputElement
     expect(field.value).toBe('')
     expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true)
   })

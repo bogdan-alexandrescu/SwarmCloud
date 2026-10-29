@@ -822,9 +822,34 @@ function impactOf(pool: Pool, next: number, capacity: Capacity): Sentence[] {
 /**
  * THE ADDRESS OF A POOL'S ROW, the one the Tenants roster's Enforced links
  * write (#134), so following it moves the `is-target` mark to that row.
+ * A PATH, NOT THE OLD HASH (QA2 admin2-21, 2026-10-29): `#admin/limits?pool=`
+ * worked through the redirect, but a copied or middle-clicked link was the
+ * legacy address. The pool's colons are encoded, as a query value's are.
  */
-function rowHref(pool: string): string {
-  return `#admin/limits?pool=${pool}`
+export function rowHref(pool: string): string {
+  return addressToPath(`admin/limits?pool=${encodeURIComponent(pool)}`)
+}
+
+/**
+ * A POOL AS A CONTROL'S NAME SAYS IT (QA2 admin2-20, 2026-10-29). The row
+ * shows `eng` under the Workspaces head, but its Edit button and its editor's
+ * field were named `tenant:eng`, the raw key the visible text had dropped. A
+ * control is heard without its family's head, so the kind follows the label:
+ * `eng (workspace)`. A provider's tenant pool is already two names,
+ * `anthropic · u-bogdan`; `global` is its own kind.
+ */
+const SPOKEN_KIND: Readonly<Partial<Record<PoolKind, string>>> = {
+  tenant: 'workspace',
+  resource: 'resource class',
+  runner: 'runner profile',
+  backend: 'backend',
+  provider: 'provider',
+}
+
+export function poolSpoken(name: string): string {
+  const kind = SPOKEN_KIND[poolKind(name)]
+  if (kind === undefined || name.split(':').length > 2) return poolLabel(name)
+  return `${poolLabel(name)} (${kind})`
 }
 
 function Impact({ said }: { said: readonly Sentence[] }) {
@@ -1201,12 +1226,18 @@ function PoolEditor({
   const globalPool = pools.find((p) => p.name === 'global')
 
   // TO THE ROW A LINK NAMED, once it is on screen. jsdom implements no
-  // `scrollIntoView`, hence the guard.
+  // `scrollIntoView`, hence the guard. AND FOCUS WITH IT (QA2 admin2-21,
+  // 2026-10-29): the row was marked but focus stayed on the page's H1, so a
+  // keyboard or screen reader user arrived at the top, not at the row the
+  // link named. The row takes focus (`tabIndex={-1}` while it is the
+  // target), without a second scroll.
   const landed = target !== null && pools.some((p) => p.name === target)
   useEffect(() => {
     if (!landed) return
     const row = document.getElementById(`limit-${target}`)
-    if (row !== null && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'center' })
+    if (row === null) return
+    if (typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'center' })
+    row.focus({ preventScroll: true })
   }, [landed, target])
 
   // CLOSING THE EDITOR RETURNS FOCUS TO THE ROW'S EDIT CONTROL. The editor
@@ -1592,7 +1623,7 @@ function PoolRow({
   return (
     // THE ID A LINK NAMES (#132, #134): `limit-<pool>`, the raw pool name,
     // so the Tenants roster can point at `limit-tenant:<id>`.
-    <tr role="row" id={`limit-${pool.name}`} className={classes === '' ? undefined : classes}>
+    <tr role="row" id={`limit-${pool.name}`} className={classes === '' ? undefined : classes} tabIndex={target ? -1 : undefined}>
       <th role="rowheader" scope="row" className="pool-name">
         {poolLabel(pool.name)}
         {/* The raw name, because it is what you paste into pool-limit.sh and a
@@ -1656,12 +1687,12 @@ function PoolRow({
             aria-expanded={open}
             aria-label={
               !editable
-                ? `Edit ceiling for ${pool.name}. This pool kind has no write route, so it is read-only.`
+                ? `Edit ceiling for ${poolSpoken(pool.name)}. This pool kind has no write route, so it is read-only.`
                 : refused
-                  ? `Edit ceiling for ${pool.name}. Admins only: changing a ceiling needs the platform admin group.`
+                  ? `Edit ceiling for ${poolSpoken(pool.name)}. Admins only: changing a ceiling needs the platform admin group.`
                   : locked
-                    ? `Edit ceiling for ${pool.name}. Another pool has an unsaved value: save or cancel it first.`
-                    : `Edit ceiling for ${pool.name}`
+                    ? `Edit ceiling for ${poolSpoken(pool.name)}. Another pool has an unsaved value: save or cancel it first.`
+                    : `Edit ceiling for ${poolSpoken(pool.name)}`
             }
             title={locked ? 'another pool has an unsaved value' : refused ? 'admins only' : undefined}
           >
@@ -2017,7 +2048,7 @@ function QuotaSection({
       </dl>
 
       {admin === true && (
-        <form className="adm-quota-form" onSubmit={reset} aria-label={`Reset the adaptive target for ${pool.name}`}>
+        <form className="adm-quota-form" onSubmit={reset} aria-label={`Reset the adaptive target for ${poolSpoken(pool.name)}`}>
           <div className="adm-side-field">
             <label className="adm-side-k" htmlFor={`${id}-target`}>
               Reset target (now {current}, max {q.configured_hard_max})
@@ -2030,7 +2061,7 @@ function QuotaSection({
               value={targetText}
               disabled={busy !== null}
               onChange={(e) => setTarget(e.target.value)}
-              aria-label={`New adaptive target for ${pool.name}`}
+              aria-label={`New adaptive target for ${poolSpoken(pool.name)}`}
             />
             <input
               type="text"
@@ -2040,7 +2071,7 @@ function QuotaSection({
               value={targetWhy}
               disabled={busy !== null}
               onChange={(e) => setTargetWhy(e.target.value)}
-              aria-label={`Reason for resetting the target of ${pool.name}`}
+              aria-label={`Reason for resetting the target of ${poolSpoken(pool.name)}`}
               required
             />
           </div>
@@ -2063,7 +2094,7 @@ function QuotaSection({
       )}
 
       {admin === true && (
-        <form className="adm-quota-form" onSubmit={saveMax} aria-label={`Set the configured max for ${pool.name}`}>
+        <form className="adm-quota-form" onSubmit={saveMax} aria-label={`Set the configured max for ${poolSpoken(pool.name)}`}>
           <div className="adm-side-field">
             <label className="adm-side-k" htmlFor={`${id}-max`}>
               Configured max (now {q.configured_hard_max})
@@ -2076,7 +2107,7 @@ function QuotaSection({
               value={maxText}
               disabled={busy !== null}
               onChange={(e) => setMax(e.target.value)}
-              aria-label={`New configured max for ${pool.name}`}
+              aria-label={`New configured max for ${poolSpoken(pool.name)}`}
             />
             <input
               type="text"
@@ -2086,7 +2117,7 @@ function QuotaSection({
               value={maxWhy}
               disabled={busy !== null}
               onChange={(e) => setMaxWhy(e.target.value)}
-              aria-label={`Reason for changing the max of ${pool.name}`}
+              aria-label={`Reason for changing the max of ${poolSpoken(pool.name)}`}
               required
             />
           </div>
@@ -2248,7 +2279,7 @@ function SideEditor({
           value={value}
           disabled={busy || !editable}
           onChange={(e) => onDraft(e.target.value)}
-          aria-label={`Hard limit for ${pool.name}`}
+          aria-label={`Hard limit for ${poolSpoken(pool.name)}`}
           // THE INPUT SAYS IT IS WRONG, AND WHY (AH-8): the stylesheet draws
           // the warn border off `aria-invalid`, and the range is the message
           // the field points at.
@@ -2259,9 +2290,14 @@ function SideEditor({
         {next !== null && <span className="adm-delta">{deltaWords(pool.hard_limit, next)}</span>}
       </div>
       {/* BELOW THE FIELD, ON A LINE OF ITS OWN (AH-8). */}
+      {/* THE LINE SAYS WHAT IS WRONG (QA2 admin2-19, 2026-10-29): the bare
+          range `0–100000` turned amber and Save went disabled, and nothing
+          said the value was out of range or why Save would not press. */}
       {invalid && (
         <div className="warn-text limit-message" id={messageId}>
-          0–100000
+          {value.trim() !== '' && !Number.isInteger(parsed) && parsed >= 0 && parsed <= 100_000
+            ? 'A ceiling is a whole number of units, 0 to 100000.'
+            : 'A ceiling is 0 to 100000 units.'}
         </div>
       )}
 

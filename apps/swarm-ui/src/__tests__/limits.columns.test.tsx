@@ -33,7 +33,7 @@ const api = vi.hoisted(() => ({
 }))
 vi.mock('../api', () => api)
 
-const { AdminSettingsScreen } = await import('../AdminSettings')
+const { AdminSettingsScreen, poolSpoken } = await import('../AdminSettings')
 
 const WAIT = { timeout: 5000 } as const
 const WIDE: CascadeEnv = { width: 1440 }
@@ -120,7 +120,7 @@ function won(el: Element, prop: string | readonly string[], env: CascadeEnv): st
 
 function open(name: string): HTMLElement {
   const row = document.getElementById(`limit-${name}`)!
-  fireEvent.click(within(row).getByRole('button', { name: `Edit ceiling for ${name}` }))
+  fireEvent.click(within(row).getByRole('button', { name: `Edit ceiling for ${poolSpoken(name)}` }))
   const side = document.querySelector<HTMLElement>('aside.adm-side')
   expect(side, 'edit opened no side editor').not.toBeNull()
   return side!
@@ -200,7 +200,7 @@ describe('a drastic change asks for the pool name inside the side editor (adm1)'
     api.setPoolLimit.mockResolvedValue({ status: 'ok', data: {}, fetchedAt: Date.now() })
     await drawn()
     const side = open('resource:browser')
-    fireEvent.change(within(side).getByLabelText('Hard limit for resource:browser'), { target: { value: '0' } })
+    fireEvent.change(within(side).getByLabelText('Hard limit for browser (resource class)'), { target: { value: '0' } })
     const field = within(side).getByLabelText('Type resource:browser to confirm')
     expect(field.closest('aside'), 'the confirmation is not in the side editor').toBe(side)
     const go = within(side).getByRole('button', { name: 'Set to 0' }) as HTMLButtonElement
@@ -221,7 +221,7 @@ describe('a drastic change asks for the pool name inside the side editor (adm1)'
     ;(window as unknown as Record<string, unknown>).SWARM_ASSUME_YES = true
     await drawn()
     const side = open('tenant:eng')
-    const input = within(side).getByLabelText('Hard limit for tenant:eng')
+    const input = within(side).getByLabelText('Hard limit for eng (workspace)')
     fireEvent.change(input, { target: { value: '10' } })
     expect(within(side).getByLabelText('Type tenant:eng to confirm'), 'a cut of half asked for nothing').toBeTruthy()
     fireEvent.keyDown(input, { key: 'Enter' })
