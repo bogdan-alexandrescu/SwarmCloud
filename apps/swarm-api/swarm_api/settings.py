@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 from swarm_common.config import Settings
 from swarm_common.identity import SERVICE_ACCOUNT_EMAIL, TenantMember
@@ -550,6 +551,25 @@ class ApiSettings:
     #: a link that does not open.
     console_url: str = ""
 
+    #: ADMIN › SETUP (docs/design/day-one-plan.md §5.3, lane DAYONE-SETUP-API-1).
+    #: The GitHub organisation the console's App manifest form posts to, from
+    #: SETUP_GITHUB_ORG. EMPTY BY DEFAULT, and empty means the manifest route
+    #: answers 409 `setup_unconfigured`: a guessed org would register the App
+    #: under someone else's account.
+    setup_github_org: str = ""
+    #: The deployment's hostname `<H>`, from SWARM_HOSTNAME; empty falls back
+    #: to `console_url`'s host (`install_hostname`), never a run.app guess.
+    setup_hostname: str = ""
+    #: The `swarm-github-hooks` receiver's public URL, from GITHUB_HOOKS_URL:
+    #: the App manifest's `hook_attributes.url`. Empty means the manifest has
+    #: no hook URL and the hook route answers 409 `setup_unconfigured`.
+    setup_github_hooks_url: str = ""
+    #: The `swarm-doctor` job's account, the one caller of
+    #: `PUT /v1/admin/setup/health`, from SWARM_DOCTOR_ACCOUNT. Empty means
+    #: `swarm-doctor@<project>.iam.gserviceaccount.com` (`doctor_identity`), the
+    #: name the install's Terraform gives it, so no deployment has to set it.
+    doctor_account: str = ""
+
     #: THE QA IDENTITY (docs/design/qa-identity.md §4.1, lane QI-API, part of
     #: #1649): the address of the QA service account whose IAP JWT swarm-api
     #: signs for a live attempt of a granted tenant (`swarm_api.qa_identity`).
@@ -907,6 +927,24 @@ class ApiSettings:
         return self.core.project_id
 
     @property
+    def install_hostname(self) -> str:
+        """`<H>`: SWARM_HOSTNAME, else `console_url`'s host, else empty."""
+        if self.setup_hostname:
+            return self.setup_hostname
+        return (urlsplit(self.console_url).hostname or "") if self.console_url else ""
+
+    @property
+    def deployer_identity(self) -> str:
+        """The engine's caller (`swarm-tf-deployer`), derived from the project id
+        (docs/design/day-one-plan.md §5.3, review-fix finding 2)."""
+        return f"swarm-tf-deployer@{self.project_id}.iam.gserviceaccount.com".lower()
+
+    @property
+    def doctor_identity(self) -> str:
+        return (self.doctor_account
+                or f"swarm-doctor@{self.project_id}.iam.gserviceaccount.com").lower()
+
+    @property
     def hardened(self) -> bool:
         """True outside local development, where safety checks are mandatory."""
         return self.core.environment.strip().lower() not in {"dev", "test", "local"}
@@ -1050,6 +1088,10 @@ class ApiSettings:
             # variable that exists and says nothing has declared nothing.
             environment_declared=bool(os.environ.get("ENVIRONMENT", "").strip()),
             console_url=os.environ.get("SWARM_CONSOLE_URL", "").strip(),
+            setup_github_org=os.environ.get("SETUP_GITHUB_ORG", "").strip(),
+            setup_hostname=os.environ.get("SWARM_HOSTNAME", "").strip().lower(),
+            setup_github_hooks_url=os.environ.get("GITHUB_HOOKS_URL", "").strip(),
+            doctor_account=os.environ.get("SWARM_DOCTOR_ACCOUNT", "").strip().lower(),
             qa_identity_console_account=os.environ.get(
                 "QA_IDENTITY_CONSOLE_ACCOUNT", "").strip().lower(),
             qa_identity_lifetime_seconds=_int("QA_IDENTITY_LIFETIME_SECONDS", 900),
