@@ -388,6 +388,22 @@ export const SECTION_ROOTS: Readonly<Record<string, string>> = {
   '/settings': 'settings/profile',
 }
 
+/**
+ * WORK'S TABS BY THEIR NAMES UNDER `/work` (visual QA pass 2 runs2-14, was
+ * runs-submit-32, part of #2694): `/work` opens Work, so a person who types
+ * `/work/runs` for the Runs tab was told "Not found". Each tab's name, as the
+ * spine writes it, lands on the tab -- one way only, like a section root: the
+ * address goes back to the tab's own path (`/runs`), the bar rewritten once by
+ * App's normalise, so no page gains a second spelling. `/work/running` is the
+ * internal address, not a name anyone reads, and stays a missing page.
+ */
+const WORK_TAB_PATHS: Readonly<Record<string, string>> = {
+  '/work/agents': 'work/running',
+  '/work/workflows': 'work/workflows',
+  '/work/runs': 'work/runs',
+  '/work/timeline': 'work/timeline',
+}
+
 const GROUP_IDS: readonly string[] = HELP_GROUPS.map((g) => g.id)
 
 /** The Help group a topic is drawn under, or null for a topic this build lacks. */
@@ -761,7 +777,7 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
   // API reads' old paths, and anything under them (NAV-FOOT, #1672).
   if (OLD_API_READS_PATHS.some((old) => path === old || path.startsWith(`${old}/`))) return plain(REFERENCE_ADDRESS)
 
-  const fixed = FIXED_BACK[path] ?? SECTION_ROOTS[path]
+  const fixed = FIXED_BACK[path] ?? SECTION_ROOTS[path] ?? WORK_TAB_PATHS[path]
   if (fixed === undefined) return null
   return plain(query === '' ? fixed : `${fixed}?${query}`)
 }

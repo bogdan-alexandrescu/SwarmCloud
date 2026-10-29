@@ -377,7 +377,8 @@ describe('Overview draws its empty states through the shared empty state', () =>
       (e.querySelector('h3')?.textContent ?? '').includes('Pool state unread'),
     )
     expect(failed, 'the unread pool state is not a failed empty state').toBeTruthy()
-    expect(failed!.querySelector('.ctl-mark.is-unread')?.textContent).toBe('not read')
+    // An empty state's mark is the unread silhouette with its sentence, no words (automate2-17).
+    expect(failed!.querySelector('.ctl-mark.is-unread.is-icon')?.getAttribute('aria-label')).toMatch(/\S/)
     expect(failed!.textContent).not.toMatch(/\d/)
 
     const zero = [...document.querySelectorAll('.ctl-empty.ov-empty')].find((e) =>
@@ -386,7 +387,7 @@ describe('Overview draws its empty states through the shared empty state', () =>
     // MUTATION (VOCAB-AGENTS): put back `heading="No task exists"` in TaskListAbsent.
     expect(zero, 'an empty agent list is not a real-zero empty state').toBeTruthy()
     expect(zero!.classList.contains('is-failed')).toBe(false)
-    expect(zero!.querySelector('.ctl-mark.is-zero')?.textContent).toBe('none')
+    expect(zero!.querySelector('.ctl-mark.is-zero.is-icon')?.textContent).toBe('')
     // The sentence is the mark's accessible name, not a paragraph.
     expect(zero!.querySelector('.ctl-mark')?.getAttribute('aria-label')).toMatch(/read succeeded/i)
     expect(zero!.querySelector('p')).toBeNull()
@@ -470,7 +471,8 @@ describe('AgentDetail draws requested-vs-utilised through the shared track', () 
     expect(peak.classList.contains('is-unread')).toBe(true)
     expect(peak.querySelector('.dt-sc-v')?.textContent).not.toMatch(/\d/)
     const failed = document.querySelector('.ctl-empty.is-failed')
-    expect(failed?.querySelector('.ctl-mark.is-unread')?.textContent).toBe('not read')
+    // An empty state's mark is the unread silhouette with its sentence, no words (automate2-17).
+    expect(failed?.querySelector('.ctl-mark.is-unread.is-icon')?.getAttribute('aria-label')).toMatch(/\S/)
     expect(failed?.getAttribute('role')).toBe('status')
   })
 })
