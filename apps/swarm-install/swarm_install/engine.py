@@ -18,7 +18,9 @@
    the end of a stage, so a crash between two steps resumes at the second.
 
 `--dry-run` checks every step and prints each unmet step's plan: it takes no
-lease, applies nothing and writes no state.
+lease and writes no state. It runs stage 0 (design §2.4) through the stage-0
+steps that declare `read_only = True` (preflight asks and reads); every other
+step's `apply` is never called.
 
 The result is an `exitcodes.ExitCode`: 0 only when every step in scope is met
 and verified; 1 a step failed (named, with how to continue); 3 a check could
@@ -341,6 +343,16 @@ class Engine:
                 waits_on=unmet,
                 explain=step.explain(),
             )
+            if step.stage == 0 and getattr(step, "read_only", False) and not unmet and plan:
+                # Design §2.4: the dry run RUNS stage 0. A preflight step that
+                # declares `read_only` only asks and reads; nothing is recorded.
+                self.events.emit("step_apply", step=step.id, stage=step.stage, explain=step.explain())
+                try:
+                    step.apply(self.ctx, plan)
+                except Exception as exc:
+                    raise self._failed(step, f"apply raised {type(exc).__name__}: {exc}") from exc
+                if self._observe(step, step.check).status == MET:
+                    self.met.update(step.satisfies)
             return
         if unmet:
             raise self._refuse_for(step, unmet)

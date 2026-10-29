@@ -21,6 +21,10 @@ A step has one of three kinds (`kind`, default `engine`):
   poll the engine checks each one's `trigger(ctx)` and runs the ones whose
   trigger has landed (how the hand-off runs infra passes 3 and 4, plan §5.5).
 
+A stage-0 step may declare `read_only = True`: its `apply` only asks and
+reads (preflight), so `--dry-run` runs it (design §2.4). No other step's
+`apply` runs in a dry run.
+
 **The registry is discovered, never listed** (plan §1 conventions): every
 module in this package that defines `STEPS` (a sequence of steps) contributes
 them, so each Day One lane adds its own module and no two lanes edit a shared
