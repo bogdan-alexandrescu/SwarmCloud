@@ -32,7 +32,7 @@ caller's run, sharing its agent counter -- so the bridge writes one copy per
 running workflow and the session launches each.
 
 THE WORKSPACE IS IN THE DESCRIPTION, NOT THE NAME (SC-WS-DESC, owner request
-2026-10-14, seeing the rows after plugin 0.5.35: "instead of [eng@saga.xyz] in
+2026-10-14, seeing the rows after plugin 0.5.35: "instead of [eng@example.com] in
 the main row name, we should have it in the description of the workflow or
 task instead"). The name is `SC · <name> · N steps` or `SC · <label> ·
 task`, and the description STARTS with `Workspace: <workspace> (<tenant>) · `
@@ -42,7 +42,7 @@ the API named none.
 
 THE DETAILS, AND NO WORKSPACE IN ANY NAME (SC-DESC-DETAILS, owner 2026-10-14
 ~22:00 PDT: "workflows in here should not have the [Engineering] or
-[eng@saga.xyz] prefix in front of the names. We do want to have a section in
+[eng@example.com] prefix in front of the names. We do want to have a section in
 the workflow or task description when you expand it in claude, that will
 provide more details like user that created the job, tenant or workspace that
 is using and maybe even what LLM subscription or config is using"). The

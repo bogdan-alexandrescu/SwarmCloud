@@ -6,23 +6,23 @@ arguments:
   - verb
   - target
 allowed-tools:
-  - Bash(uv run sc)
-  - Bash(uv run sc overview:*)
-  - Bash(uv run sc accounts:*)
-  - Bash(uv run sc agents:*)
-  - Bash(uv run sc capacity:*)
-  - Bash(uv run sc task:*)
-  - Bash(uv run sc trouble:*)
-  - Bash(uv run sc whoami:*)
-  - Bash(uv run sc config:*)
-  - Bash(uv run sc debug:*)
-  - Bash(uv run sc workflows:*)
-  - Bash(uv run sc runs:*)
-  - Bash(uv run sc run show:*)
-  - Bash(uv run sc plan show:*)
-  - Bash(uv run sc roles)
-  - Bash(uv run sc roles --json)
-  - Bash(uv run sc roles list:*)
+  - Bash(sc)
+  - Bash(sc overview:*)
+  - Bash(sc accounts:*)
+  - Bash(sc agents:*)
+  - Bash(sc capacity:*)
+  - Bash(sc task:*)
+  - Bash(sc trouble:*)
+  - Bash(sc whoami:*)
+  - Bash(sc config:*)
+  - Bash(sc debug:*)
+  - Bash(sc workflows:*)
+  - Bash(sc runs:*)
+  - Bash(sc run show:*)
+  - Bash(sc plan show:*)
+  - Bash(sc roles)
+  - Bash(sc roles --json)
+  - Bash(sc roles list:*)
   - Bash(sc)
   - Bash(sc overview:*)
   - Bash(sc accounts:*)
@@ -42,8 +42,8 @@ allowed-tools:
   - Bash(sc roles list:*)
   - Bash(open /*/.claude/build-board/index.html)
   - Bash(xdg-open /*/.claude/build-board/index.html)
-  - Bash(uv run swarm doctor:*)
-  - Bash(uv run swarm profiles:*)
+  - Bash(swarm doctor:*)
+  - Bash(swarm profiles:*)
   - CronCreate
   - CronList
   - CronDelete
@@ -67,7 +67,7 @@ one action — never a second one the developer did not ask for:
 
 | `$ARGUMENTS` | What happens | Writes? |
 |---|---|---|
-| no verb (empty) | today's cluster state: `uv run sc`, read by the rules below | no |
+| no verb (empty) | today's cluster state: `sc`, read by the rules below | no |
 | `status <wf_id\|task_id>` | one status read of that workflow or task | no |
 | `workflows` | lists your tenant's workflows still running in SwarmCloud, marking `[this session]` the ones this Claude Code session started | no |
 | `attach <wf_id>` | re-attaches live rows to a workflow running in SwarmCloud | no |
@@ -108,7 +108,7 @@ workspace the reply names, `[<workspace>] <id> · <state>` (the reply's
 from the session's tenant). A waiting task's reply carries `waiting_line` --
 why it waits, in the API's own words, with its next check when known: print
 it after the state, `[<workspace>] <id> · <state> · <waiting_line>`, e.g.
-`[eng@saga.xyz] task_31c3… · PARKED · CI on PR #1779: 5 checks pending; next
+`[eng@example.com] task_31c3… · PARKED · CI on PR #1779: 5 checks pending; next
 check 02:46Z`, and nothing more of `waiting` (its detail and history are the
 console page's). No `waiting_line` -- a task not waiting, or an API older
 than it -- is the line without it. An error is reported verbatim:
@@ -122,7 +122,7 @@ did from a row: make the ONE read, report it, and say what the strip noticed
 (a waiting step: `/sc answer`; owner questions: `swarm_result`'s
 `owner_questions`, put to the person). Both tools are the sc
 plugin's own read tools and work outside a checkout; they are not pre-granted
-here -- this skill's grants mark it as the checkout-bound view surface -- so
+here -- this skill grants only the `sc` and `swarm` commands -- so
 the session may ask once before the first read.
 
 ### Every run is titled after its workflow
@@ -134,7 +134,7 @@ workflow id, cut to fit, never the step count. A run of single tasks is
 titled `SC · <label> · task` (several: `SC · <first label> +N · N tasks`).
 NO NAME CARRIES A WORKSPACE -- not the run's, not a row's (owner,
 2026-10-14: "workflows in here should not have the [Engineering] or
-[eng@saga.xyz] prefix in front of the names"). The run's DESCRIPTION starts
+[eng@example.com] prefix in front of the names"). The run's DESCRIPTION starts
 with its DETAILS, one line, six fields in this order:
 `Workspace: <workspace> (<tenant>) · Started by: <submitted_by> · Profiles: <runner profiles> · LLM: <pool account> (<provider>), model <model> · Browser tool: <browser_tool> · Session: <claude_session>`
 -- <workspace> is the workspace (tenant) the API's document says it runs in,
@@ -204,7 +204,7 @@ the reply's `arm_watch` -- also when the workflow has already finished.
 ONE read of the caller's tenant's workflows that are not finished — every
 one whose state is not `SUCCEEDED`, `FAILED`, `CANCELLED` or `DEAD_LETTERED`,
 closest to finish first. Call `swarm_workflows` once (the sc plugin's own read tool; it
-works outside a checkout); in a checkout `uv run sc workflows` prints the
+works outside a checkout); in a terminal `sc workflows` prints the
 same list, closest to finish first (steps done of the total, then the
 current step's age) and grouped by workspace. Report each workflow on
 one line that STARTS with its workspace, `[<workspace>] <id> <label>
@@ -811,7 +811,7 @@ this session supplies.
    developer gave `--plan auto`, `--auto-merge`, `--fix-rounds` or
    `--model-class <class>` (the planner's model class; see "Model classes"
    below). The terminal equivalent,
-   `uv run sc run --issue <owner/repo#N> --follow`, is the developer's to run
+   `sc run --issue <owner/repo#N> --follow`, is the developer's to run
    (this skill is not granted it); it prints one row per step as it moves.
 2. `--auto-merge` merges the run's pull request with the `merge` step (#295,
    enabled by contract request 47). The API refuses it only while the `merge`
@@ -843,13 +843,13 @@ made in the spec or on the command line.
 
 ### `runs`
 
-ONE read: call `swarm_runs` (in a checkout, `uv run sc runs`) and report each
+ONE read: call `swarm_runs` (in a terminal, `sc runs`) and report each
 run's id, issue, state and pull request as served. Never poll.
 
 ### `plan show <run>`
 
 ONE read: call `swarm_run` with `run_id` (in a checkout,
-`uv run sc plan show <run>`), and show the developer the WHOLE plan — summary,
+`sc plan show <run>`), and show the developer the WHOLE plan — summary,
 requirements, overlaps with work in flight, every step's title, files, tests,
 estimate and prompt — and its `plan_digest`. The prompts are what will run with
 the tenant's forge token; they are what is being approved.
@@ -887,7 +887,7 @@ granted it (see the last section).
 
 It reads **the developer's own deployment**, not one this plugin knows about:
 whatever they configured at install (`/plugin configure sc@swarmcloud`), or a
-context they added. `uv run sc whoami` prints which deployment, from where,
+context they added. `sc whoami` prints which deployment, from where,
 and who they are on it. `sc login`, `sc logout` and `sc context` change the
 developer's own sign-in and which cluster every later call reaches — they are
 theirs to run, so **tell them the command; never run it yourself**. `sc login`
@@ -902,18 +902,18 @@ dispatch to another cluster without asking.
 
 | Question | Command |
 |---|---|
-| what is the swarm doing? | `uv run sc` (or `uv run sc overview`) |
-| how much quota is left? which account? | `uv run sc accounts` |
-| why is my task queued? what is running? | `uv run sc agents` |
-| what is the real ceiling? | `uv run sc capacity` |
-| what did this agent produce? | `uv run sc task <id>` |
-| is anything broken? | `uv run sc trouble` |
-| which deployment, and who am I on it? | `uv run sc whoami` |
-| what is my role here, and who holds which? | `uv run sc roles` |
-| which endpoint, tenant, dispatch target and plugin version? | `uv run sc config` |
-| why did this one task fail? | `uv run sc debug <id>` |
-| which of my workflows are still running? | `uv run sc workflows` |
-| what may I actually run? | `uv run swarm profiles` |
+| what is the swarm doing? | `sc` (or `sc overview`) |
+| how much quota is left? which account? | `sc accounts` |
+| why is my task queued? what is running? | `sc agents` |
+| what is the real ceiling? | `sc capacity` |
+| what did this agent produce? | `sc task <id>` |
+| is anything broken? | `sc trouble` |
+| which deployment, and who am I on it? | `sc whoami` |
+| what is my role here, and who holds which? | `sc roles` |
+| which endpoint, tenant, dispatch target and plugin version? | `sc config` |
+| why did this one task fail? | `sc debug <id>` |
+| which of my workflows are still running? | `sc workflows` |
+| what may I actually run? | `swarm profiles` |
 
 `sc config` shows where the dispatching tools send work — the session
 `target` (cloud, local or hybrid) and which setting chose it — beside the
@@ -930,7 +930,7 @@ report is still good.
 
 ## Changing an account is the developer's to do
 
-`uv run sc account pause <label>`, `resume`, `drain`, `remove`,
+`sc account pause <label>`, `resume`, `drain`, `remove`,
 `max-agents <label> <n>` and `add` WRITE to the shared account pool, and this
 skill is not granted them. Tell the developer the command and let them run it:
 `drain` stops new assignments and moves running agents to another account at
@@ -949,11 +949,11 @@ which redacts it at read time; this skill lists and never fetches.
 
 Add `--json` for the numbers, `--width N` to force a column count, `--ascii`
 for a terminal without the bar glyphs. Put them **after** the view's name —
-`uv run sc accounts --json`, `uv run sc overview --json` — because that is
+`sc accounts --json`, `sc overview --json` — because that is
 what this skill is granted. A flag written before the view's name works too,
 but asks the developer first.
 
-`uv run swarm profiles` is the odd one out, listed here because it is read-only
+`swarm profiles` is the odd one out, listed here because it is read-only
 and because it is the question people ask next. It reads the frozen catalogue
 rather than the cluster, so it makes **no network call** and still answers when
 nothing else does — which is exactly when someone is guessing at a profile name
@@ -1041,13 +1041,13 @@ is down, and reporting either as the other sends someone to the wrong place.
 ## When sc cannot connect
 
 `sc` exits 1 and prints nothing to stdout, on purpose: a screen of dashes would
-look like a reading. Run `uv run swarm doctor` — it reports which deployment it
+look like a reading. Run `swarm doctor` — it reports which deployment it
 resolved and from where, which auth tier this machine is on and what that tier
 can reach, which is almost always the real answer.
 
 **`sign-in required for <context>: run sc login`** is the commonest answer on a
 new machine and is not a fault: the deployment takes a signed-in developer and
-none is signed in. Tell the developer to run `uv run sc login` themselves (a
+none is signed in. Tell the developer to run `sc login` themselves (a
 browser window opens), then try again. Do not treat it as the cluster being
 unreachable, and do not look for another credential to use instead.
 
@@ -1055,10 +1055,10 @@ unreachable, and do not look for another credential to use instead.
 
 This is the single most likely wrong report from this plugin, so it is worth
 being exact. On a **team** deployment the API is behind IAP at a load balancer,
-and `uv run swarm doctor` prints which door it used and what it presents:
+and `swarm doctor` prints which door it used and what it presents:
 
 ```
-front door  https://swarm.saga.xyz  (IAP; takes an OAuth ACCESS token)
+front door  https://swarm.example.com  (IAP; takes an OAuth ACCESS token)
 api         UNREACHABLE
             GET /v1/tenants/me -> 401: ... Error code 900
 ```
@@ -1067,7 +1067,7 @@ Read the refusal, because the three of them mean three different things:
 
 | What comes back | What it means |
 |---|---|
-| **401, IAP error code 900** | IAP did not accept the token at all. A gcloud *user* credential cannot pass: the deployment's IAP uses a Google-managed OAuth client, which admits only allowlisted programmatic clients. The developer signs in with `uv run sc login` (the deployment's Desktop OAuth client); CI sets `SWARM_IMPERSONATE_SA`. A 401 **after** `sc login` means the deployment has not allowlisted its own client — an operator's one-time step |
+| **401, IAP error code 900** | IAP did not accept the token at all. A gcloud *user* credential cannot pass: the deployment's IAP uses a Google-managed OAuth client, which admits only allowlisted programmatic clients. The developer signs in with `sc login` (the deployment's Desktop OAuth client); CI sets `SWARM_IMPERSONATE_SA`. A 401 **after** `sc login` means the deployment has not allowlisted its own client — an operator's one-time step |
 | **403 that NAMES the caller** | IAP **authenticated** you and the principal is not on the list. One `roles/iap.httpsResourceAccessor` grant away — `frontend_iap_members` in `terraform/bootstrap/terraform.tfvars`, which the owner applies and CI does not |
 | **an HTML 404** | the wrong ADDRESS, not a missing route. Cloud Run's `*.run.app` hostname refuses everyone outside the VPC and renders the refusal as 404 |
 

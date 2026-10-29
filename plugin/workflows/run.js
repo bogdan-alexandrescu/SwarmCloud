@@ -1007,7 +1007,7 @@ function stagePhase(stage) {
 // the same title into the per-run copy's meta.name, and this Result title is
 // that title: no `[<workspace>] ` in either since SC-DESC-DETAILS (owner
 // 2026-10-14: "workflows in here should not have the [Engineering] or
-// [eng@saga.xyz] prefix in front of the names") -- the copy's
+// [eng@example.com] prefix in front of the names") -- the copy's
 // meta.description leads with the workspace instead -- and the plugin's tests
 // hold the two cuts equal. Counted in code points, as Python counts.
 const TITLE_CHARS = 150
@@ -1111,7 +1111,7 @@ function setupLabel(name, facts, what, link) {
 }
 
 // NO WORKSPACE IN ANY LABEL (SC-DESC-DETAILS, owner 2026-10-14 ~22:00 PDT:
-// "workflows in here should not have the [Engineering] or [eng@saga.xyz]
+// "workflows in here should not have the [Engineering] or [eng@example.com]
 // prefix in front of the names"). SC-ROWS put `[<workspace>] ` after the
 // prefix; the workspace is now the first field of each row's details line
 // (rowDetails), which Claude Code shows when the row is expanded.

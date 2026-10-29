@@ -1,6 +1,6 @@
 """`sc login`: a developer signs in AS THEMSELVES, and IAP lets them through.
 
-WHY THIS EXISTS. Measured 2026-09-24 against https://swarm.saga.xyz: a user's
+WHY THIS EXISTS. Measured 2026-09-24 against the live deployment: a user's
 own gcloud access token is refused by IAP with 401 and error code 900, because
 this platform's IAP uses a Google-managed OAuth client
 (`terraform/modules/frontend` sets no `oauth2_client_id`, on purpose), and
@@ -205,6 +205,19 @@ def client_secret_for(deployment: Deployment, store: credentials.Store | None = 
     return chosen.get(credentials.key(deployment.context, credentials.CLIENT_SECRET)) or ""
 
 
+def needs_no_secret(deployment: Deployment, store: credentials.Store | None = None) -> bool:
+    """Does this deployment sign in with PKCE alone (plan §6.3, Q1)?
+
+    True for the plugin's one-value install when the discovery document served
+    no secret and none is known here: the operator left
+    `discovery_serves_client_secret` off because Google accepted the PKCE-only
+    exchange for this Desktop client (`sc login --pkce-only`, the probe).
+    """
+    from .config import SKEW_REQUIRED
+
+    return deployment.skew == SKEW_REQUIRED and not client_secret_for(deployment, store)
+
+
 def _secret_or_ask(deployment: Deployment, store: credentials.Store, supplied: str | None) -> str:
     """The secret for a login: supplied, known, or typed -- and then remembered.
 
@@ -286,15 +299,22 @@ def login(
     client_secret: str | None = None,
     timeout: float = LOGIN_TIMEOUT_SECONDS,
     notify: Callable[[str], None] | None = None,
+    pkce_only: bool = False,
 ) -> dict[str, Any]:
     """Run the installed-app flow; store the refresh token; return the ID token's claims.
 
     `notify` receives the one line a person needs if no browser opens: the URL
     to open by hand. It goes to stderr in the CLI, so stdout stays the result.
+
+    `pkce_only` is Q1's probe (plan §6.3): the same flow with PKCE and NO
+    client secret, in any request -- none is read, asked for or sent. If Google
+    answers `invalid_client`, the Desktop client needs its secret and the
+    deployment serves it through discovery; if it signs in, it does not.
     """
     _require_client(deployment)
     chosen = store if store is not None else credentials.store()
-    secret = _secret_or_ask(deployment, chosen, client_secret)
+    pkce_only = pkce_only or needs_no_secret(deployment, chosen)
+    secret = "" if pkce_only else _secret_or_ask(deployment, chosen, client_secret)
 
     verifier = _b64url(secrets.token_bytes(48))
     challenge = _b64url(hashlib.sha256(verifier.encode()).digest())
@@ -344,16 +364,24 @@ def login(
             f"Google did not sign you in: {params['error']}. Nothing was stored"
         )
 
+    form = {
+        "client_id": deployment.client_id,
+        "code": params.get("code", ""),
+        "code_verifier": verifier,
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code",
+    }
+    if not pkce_only:
+        form["client_secret"] = secret
     try:
-        tokens = _post(TOKEN_URI, {
-            "client_id": deployment.client_id,
-            "client_secret": secret,
-            "code": params.get("code", ""),
-            "code_verifier": verifier,
-            "redirect_uri": redirect_uri,
-            "grant_type": "authorization_code",
-        })
+        tokens = _post(TOKEN_URI, form)
     except _OAuthError as exc:
+        if pkce_only:
+            raise SwarmError(
+                f"Google refused the PKCE-only exchange: {exc}. If this says "
+                "invalid_client, this Desktop client needs its secret: the deployment's "
+                "operator sets discovery_serves_client_secret = true (plan §6.3)"
+            ) from None
         raise SwarmError(
             f"Google refused to exchange the sign-in code: {exc}. If this says "
             "invalid_client, the client id or secret for this context is wrong"
@@ -440,19 +468,21 @@ class SignedIn:
         if not refresh:
             raise SignInRequired(sign_in_hint(self.deployment))
         secret = client_secret_for(self.deployment, store)
-        if not secret:
+        if not secret and not needs_no_secret(self.deployment, store):
             raise SwarmError(
                 f"signed in to {self.deployment.context}, but its OAuth client secret is "
                 "not in the credential store any more; run "
                 f"`{terminal_command('sc login')}` to give it again"
             )
+        form = {
+            "client_id": self.deployment.client_id,
+            "refresh_token": refresh,
+            "grant_type": "refresh_token",
+        }
+        if secret:
+            form["client_secret"] = secret
         try:
-            tokens = _post(TOKEN_URI, {
-                "client_id": self.deployment.client_id,
-                "client_secret": secret,
-                "refresh_token": refresh,
-                "grant_type": "refresh_token",
-            })
+            tokens = _post(TOKEN_URI, form)
         except _OAuthError as exc:
             if exc.error == "invalid_grant":
                 # Expired, revoked, or the password changed. The stored token is
@@ -472,3 +502,34 @@ class SignedIn:
         self._token = token
         self._claims = decode_claims(token)
         return token
+
+
+def probe_main(argv: list[str] | None = None) -> int:
+    """Q1's probe as a command (plan §6.3): `python -m swarm_mcp.signin
+    --pkce-only [--context NAME]`. One installed-app sign-in with PKCE and no
+    client secret against the deployment's Desktop client; prints whether
+    Google accepted it. `sc login --pkce-only` runs the same `login`."""
+    import argparse
+
+    from .config import resolve
+
+    parser = argparse.ArgumentParser(prog="python -m swarm_mcp.signin")
+    parser.add_argument("--pkce-only", action="store_true", required=True)
+    parser.add_argument("--context", default=None)
+    args = parser.parse_args(argv)
+    deployment = resolve(context=args.context)
+    if deployment is None:
+        print("no SwarmCloud deployment is configured; pass --context NAME", file=sys.stderr)
+        return 2
+    try:
+        claims = login(deployment, pkce_only=True, notify=lambda line: print(line, file=sys.stderr))
+    except SwarmError as exc:
+        print(f"PKCE-only sign-in REFUSED for {deployment.context}: {exc}", file=sys.stderr)
+        return 1
+    email = claims.get("email") or "(no email in the token)"
+    print(f"PKCE-only sign-in ACCEPTED for {deployment.context} as {email}: no client secret is needed")
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover - process entrypoint
+    sys.exit(probe_main())

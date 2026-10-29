@@ -537,33 +537,29 @@ def _descriptions() -> dict[str, str]:
 
 def test_the_descriptions_say_what_still_needs_a_checkout():
     """The install listing is where a user decides whether this plugin works for
-    them, so it must not over-claim.
+    them, so it must not over-claim -- or under-claim.
 
     #62 first fixed the old false claim ("requires the swarm-mcp bridge in this
-    repository") with a new one: "it needs uv, not a checkout", said of both
-    skills in plugin.json and of the whole plugin in marketplace.json. That is
-    true of the MCP server only. `/sc` and the `sc` skill run `uv run sc` in the
-    session's directory and fail anywhere but a checkout.
+    repository") with a new one: "it needs uv, not a checkout", said while `/sc`
+    and the `sc` skill ran `uv run sc` and failed anywhere but a checkout. Since
+    DAYONE-PLUGIN-1 they run the installed `sc` and `swarm` (plan review finding
+    17), so no surface is checkout-bound any more.
 
-    THE PROPERTY: each description has one sentence that mentions a checkout and
-    names every checkout-bound surface, and no sentence denies needing a
-    checkout unless it is about the MCP server. THE MUTATION THIS CATCHES: both
-    descriptions as #62 first wrote them.
+    THE PROPERTY: every checkout-bound surface is named in a sentence about a
+    checkout (today there are none, and a description that still says one
+    needs a checkout is stale), and no sentence denies needing a checkout
+    unless it is about the MCP server. THE MUTATIONS THIS CATCHES: a `uv run`
+    line back in a command or skill, and both descriptions as #62 first wrote
+    them.
     """
     bound = _checkout_bound_surfaces()
-    assert "/sc" in bound and "`sc`" in bound, (
-        f"expected /sc and the `sc` skill to be checkout-bound, derived {bound}"
-    )
+    assert bound == [], f"these plugin surfaces need a checkout again: {bound}"
     problems = []
     for where, description in _descriptions().items():
         sentences = re.split(r"(?<=[.!?])\s+", description.strip())
-        about_checkouts = [s for s in sentences if re.search(r"\bcheckout\b", s)]
-        if not any(all(surface in s for surface in bound) for s in about_checkouts):
-            problems.append(
-                f"{where}: no sentence says that {', '.join(bound)} need a checkout; "
-                f"the ones about a checkout are {about_checkouts}"
-            )
         for sentence in sentences:
+            if re.search(r"\bneeds?\s+a\s+checkout\b", sentence):
+                problems.append(f"{where}: {sentence!r} says a checkout is needed; nothing does")
             denies = re.search(r"\b(not|no|without)\s+(a\s+)?checkout\b", sentence)
             if denies and "MCP server" not in sentence:
                 problems.append(

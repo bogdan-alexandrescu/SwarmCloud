@@ -890,7 +890,7 @@ def workflow_title(name: str, steps: int) -> str:
 
     No workspace: SC-ROWS put `[<workspace>] ` after the prefix, SC-WS-DESC
     moved it to the run's description, and SC-DESC-DETAILS (owner 2026-10-14:
-    no `[Engineering]` or `[eng@saga.xyz]` in front of any name) took the
+    no `[Engineering]` or `[eng@example.com]` in front of any name) took the
     parameter away, so no caller can put it back.
 
     The NAME is cut, never the step count: at the last word boundary that
