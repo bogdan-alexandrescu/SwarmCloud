@@ -361,16 +361,24 @@ function Kv({ name, children }: { name: string; children: ReactNode }) {
   )
 }
 
-/** Why it is held: the hold's code, its reasons, and the files each reason matched. */
+/** The hold's lead sentence in words: "Held for the platform owner."; a code with no words is said as served. */
+function holdLead(code: string | undefined): string {
+  const words = code === undefined ? undefined : HOLD_WORDS[code]
+  if (words !== undefined) return `${words.charAt(0).toUpperCase()}${words.slice(1)}.`
+  return code === undefined || code === '' ? 'Held.' : `Held: ${code}.`
+}
+
+/** Why it is held: the hold's words, its reasons, and the files each reason matched. */
 function HoldBody({ hold, itemApprovers }: { hold: ServedHold; itemApprovers: unknown }) {
   const reasons = hold.reasons ?? []
   const pairs = hold.reason_files ?? null
   const matched = hold.matched ?? []
   return (
     <div className="ad-hold" role="note">
+      {/* The words lead, the code only as a title (visual QA automate2-05):
+          "Held NEEDS_OWNER: held for the platform owner." said it twice. */}
       <p className="ad-p">
-        <b>Held {hold.code ?? ''}</b>
-        {hold.code !== undefined && HOLD_WORDS[hold.code] !== undefined && <>: {HOLD_WORDS[hold.code]}.</>}
+        <b title={hold.code}>{holdLead(hold.code)}</b>
       </p>
       {reasons.length > 0 && (
         <p className="ad-tags" aria-label="Reasons">
@@ -402,7 +410,7 @@ function HoldBody({ hold, itemApprovers }: { hold: ServedHold; itemApprovers: un
       )}
       {/* "Who decides" above already says it when the item's approvers are the hold's, as a hold item's are. */}
       {approversWords(hold.approvers) !== approversWords(itemApprovers) && (
-        <p className="ad-sub">Approved only by {approversWords(hold.approvers) ?? 'the hold’s approvers'}.</p>
+        <p className="ad-sub">Approved by {approversWords(hold.approvers) ?? 'the hold’s approvers'}.</p>
       )}
     </div>
   )
@@ -566,7 +574,10 @@ function Evidence({ d, go }: { d: Decision; go: (to: string) => void }) {
       ),
     })
   }
-  if (hold !== null) cards.push({ title: 'Why it is held', side: 'r', body: <HoldBody hold={hold} itemApprovers={a.approvers} /> })
+  // Why it is held reads before what you approve, in the left column as the
+  // mock-up draws it, so the DOM, the Tab order and the numbers agree
+  // (visual QA automate2-04: the right column put 2 after 3 in the DOM).
+  if (hold !== null) cards.push({ title: 'Why it is held', side: 'l', body: <HoldBody hold={hold} itemApprovers={a.approvers} /> })
   // Once decided, the card says what the item asked for, in the past tense,
   // and no longer what a decision would send (automate-07).
   cards.push({
@@ -578,14 +589,9 @@ function Evidence({ d, go }: { d: Decision; go: (to: string) => void }) {
         {a.kind === 'merge' ? (
           <>
             {pending && <p className="ad-p">A decision is sent with this digest. If the head moves before it arrives, the server refuses it.</p>}
+            {/* A digest with no verdict draws no Verdict row (visual QA automate2-20). */}
             <dl className="ad-kv">
-              <Kv name="Verdict">
-                {verdict ?? (
-                  <>
-                    <Dash why="the digest names no verdict" /> <span className="ad-sub-i">the digest names no verdict</span>
-                  </>
-                )}
-              </Kv>
+              {verdict !== null && <Kv name="Verdict">{verdict}</Kv>}
               <Kv name="At head">{head === null ? <Dash why="the head is not served" /> : <code>{short(head)}</code>}</Kv>
             </dl>
           </>

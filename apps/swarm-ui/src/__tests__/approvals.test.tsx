@@ -285,7 +285,8 @@ describe('one item', () => {
       }),
     )
     const detail = await loaded()
-    await waitFor(() => expect(visible(detail)).toContain('Held NEEDS_SECOND_MEMBER'), WAIT)
+    // Visual QA automate2-05: the hold leads with its words, not its code.
+    await waitFor(() => expect(visible(detail)).toContain('Held for a second member.'), WAIT)
     expect(visible(detail)).toContain('terraform/iam.tf')
     fireEvent.click(within(detail).getByRole('button', { name: 'Approve' }))
     const field = await within(detail).findByRole('textbox', { name: /approve it yourself/ }, WAIT)

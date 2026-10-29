@@ -13,7 +13,7 @@
 //   * automate-08: a superseded plan says its plan changed, never "head";
 //   * automate-10: the reader reads "workspace", never "tenant";
 //   * automate-23: a merge green at its head with no counts served says so
-//     on one line, and a missing verdict says why beside its dash.
+//     on one line (a missing verdict draws no row since pass 2, automate2-20).
 //
 // The bodies are `routes/approvals.py`'s shapes. Placeholders only; nothing
 // is token-shaped.
@@ -217,7 +217,7 @@ describe('a merge’s checks (automate-23)', () => {
     },
   })
 
-  it('says green at the head and counts not served on one line, and why the verdict is a dash', async () => {
+  it('says green at the head and counts not served on one line, and draws no verdict it was not given', async () => {
     await mount('approval=apr_merge', routes(INBOX, merge()))
     const d = await page()
     const ci = await waitFor(() => {
@@ -229,9 +229,9 @@ describe('a merge’s checks (automate-23)', () => {
     expect(within(d).queryByTestId('ad-check-counts')).toBeNull()
     expect(visible(ci)).toContain('Required checks green at the head')
     expect(visible(ci)).toContain('green at dbd00f0; per-check counts not served')
-    // MUTATION: a bare dash with its reason only in a tooltip.
-    const verdict = within(within(d).getByRole('region', { name: 'What you approve' })).getByText('Verdict').nextElementSibling!
-    expect(visible(verdict)).toContain('the digest names no verdict')
+    // Visual QA pass 2 automate2-20: a digest with no verdict draws no
+    // Verdict row (approvals.qa2.test.tsx holds it); the head row stays.
+    expect(within(within(d).getByRole('region', { name: 'What you approve' })).queryByText('Verdict')).toBeNull()
   })
 
   it('keeps the counts line, with its dash and reason, when the head is not green', async () => {
