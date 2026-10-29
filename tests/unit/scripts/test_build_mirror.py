@@ -32,8 +32,9 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
-from .test_build_images_concurrency import _sandbox
+from .test_build_images_concurrency import FAKE_GCLOUD, TAG, _sandbox
 
 
 REPO = Path(__file__).resolve().parents[3]
@@ -165,13 +166,117 @@ def test_the_mirrors_are_the_ones_terraform_declares() -> None:
     assert set(by_id) == {"mirror-ghcr", "mirror-dockerhub"}, sorted(by_id)
     assert re.search(r'uri\s*=\s*"https://ghcr\.io"', by_id["mirror-ghcr"])
     assert re.search(r'public_repository\s*=\s*"DOCKER_HUB"', by_id["mirror-dockerhub"])
-    # The Dockerfiles name the repositories terraform creates under the
-    # default prefix, in the dev project.
+    # The build names the repositories terraform creates under the default
+    # prefix, in the project it builds for (design section 7): the Dockerfiles
+    # name none, and scripts/lib/build-mirror.sh derives each from
+    # REGION and PROJECT_ID, so the live project's build reads the live mirror.
     prefix = re.search(
         r'variable\s+"name_prefix"\s*\{.*?default\s*=\s*"([^"]+)"', (REPO / "terraform/infra/variables.tf").read_text(), re.S
     ).group(1)
     for name, (ref, _) in MIRRORS.items():
         assert ref.split("/")[-1].startswith(prefix + "-mirror-"), (name, ref)
+        assert _mirror_repository(name, PROJECT, REGION) == ref, name
+
+
+def _mirror_repository(name: str, project: str, region: str) -> str:
+    """What scripts/lib/build-mirror.sh says the build passes as NAME."""
+    done = subprocess.run(
+        ["bash", "-c", 'source scripts/lib/common.sh && source scripts/lib/build-mirror.sh && mirror_repository "$1"', "_", name],
+        cwd=REPO, capture_output=True, text=True, check=False, timeout=60,
+        env={**os.environ, "PROJECT_ID": project, "REGION": region, "SWARM_ENV_FILE": "/nonexistent/.env", "NO_COLOR": "1"},
+    )
+    assert done.returncode == 0, done.stderr[-2000:]
+    return done.stdout.strip()
+
+
+#: The live project's id, built at runtime so that this file names it in no
+#: literal the guard below would have to except.
+_LIVE_PROJECT = "-".join(("saga", "agents", "staging"))
+
+
+def test_no_dockerfile_names_a_project() -> None:
+    """DAYONE-DESAGA-1 (design section 7): a Dockerfile that names the live
+    project's mirror builds only where that project's registry is readable.
+    No tracked Dockerfile names the project or a mirror repository, and every
+    `ARG MIRROR_*` default is empty: scripts/build-images.sh passes the mirror
+    of the project it builds for."""
+    tracked = subprocess.run(
+        ["git", "ls-files", "--", "*Dockerfile*"], cwd=REPO, capture_output=True, text=True, check=True,
+    ).stdout.split()
+    assert sorted(tracked) == sorted(_rel(p) for p in DOCKERFILES), tracked
+    assert len(tracked) == 15, tracked
+    hits = []
+    for rel in tracked:
+        text = (REPO / rel).read_text()
+        for n, line in enumerate(text.splitlines(), 1):
+            if _LIVE_PROJECT in line or "swarm-mirror-" in line:
+                hits.append(f"{rel}:{n}: {line[:120]}")
+        for m in re.finditer(r"^[ \t]*ARG[ \t]+(MIRROR_[A-Za-z0-9_]*)(=[^\n]*)?$", text, re.M):
+            if m.group(2) not in (None, "="):
+                hits.append(f"{rel}: ARG {m.group(1)} defaults to {m.group(2)[1:]}")
+    assert not hits, "\n".join(hits)
+
+
+def _generated_config(tmp_path: Path, project: str, target: str) -> dict:
+    root = _sandbox(tmp_path)
+    bindir = tmp_path / "bin"
+    _write_tool(bindir, "gcloud", FAKE_GCLOUD)
+    proc = subprocess.run(
+        ["bash", str(root / "scripts" / "build-images.sh"), target, "--tag", TAG],
+        env=_env(tmp_path, bindir, PROJECT_ID=project), capture_output=True, text=True, timeout=180, check=False,
+    )
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    return yaml.safe_load((root / "build" / f"cloudbuild-{target}.yaml").read_text())
+
+
+def _docker_build_args(config: dict) -> dict[str, list[str]]:
+    builds = [s for s in config["steps"] if (s.get("args") or [""])[0] == "build"]
+    assert len(builds) == 1, config["steps"]
+    argv = builds[0]["args"]
+    out: dict[str, list[str]] = {}
+    for i, a in enumerate(argv[:-1]):
+        if a == "--build-arg":
+            k, v = argv[i + 1].split("=", 1)
+            out.setdefault(k, []).append(v)
+    return out
+
+
+@pytest.mark.parametrize("project", [PROJECT, "swarm-test-project"])
+def test_the_build_passes_the_mirror_of_the_project_it_builds_for(tmp_path: Path, project: str) -> None:
+    """The live project's build is unchanged -- every pull still goes through
+    its own mirror, the `# syntax=` frontend included (BUILDKIT_SYNTAX) -- and
+    any other project's build reads that project's mirror."""
+    dockerfile = REPO / "images" / "swarm-api" / "Dockerfile"
+    args = _docker_build_args(_generated_config(tmp_path, project, "swarm-api"))
+    host = f"{REGION}-docker.pkg.dev/{project}"
+    assert args.get("MIRROR_DOCKER_HUB") == [f"{host}/swarm-mirror-dockerhub"], args
+    assert args.get("MIRROR_GHCR") == [f"{host}/swarm-mirror-ghcr"], args
+    syntax = _syntax(dockerfile.read_text())
+    assert syntax and re.fullmatch(r"docker/dockerfile:[0-9.]+@sha256:[0-9a-f]{64}", syntax), syntax
+    assert args.get("BUILDKIT_SYNTAX") == [f"{host}/swarm-mirror-dockerhub/{syntax}"], args
+
+
+def test_the_build_passes_only_the_mirrors_a_dockerfile_declares(tmp_path: Path) -> None:
+    # swarm-ui pulls only from Docker Hub: an argument it does not declare
+    # would be a warning in every build log.
+    args = _docker_build_args(_generated_config(tmp_path, PROJECT, "swarm-ui"))
+    assert "MIRROR_GHCR" not in args, args
+    assert args.get("MIRROR_DOCKER_HUB") == [MIRRORS["MIRROR_DOCKER_HUB"][0]], args
+
+
+def test_the_refresh_check_reads_the_project_s_own_mirror(tmp_path: Path) -> None:
+    """The Dockerfiles name no mirror, so the refresh expands their pulls with
+    the mirror of PROJECT_ID; were it still reading ARG defaults, it would
+    find nothing to check (or the live project's mirror)."""
+    _, _, proc, calls, _ = _refresh(tmp_path, "--check", "--images-only")
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    described = sorted({c[4] for c in calls if c[:4] == ["artifacts", "docker", "images", "describe"]})
+    hub = "us-central1-docker.pkg.dev/swarm-test-project/swarm-mirror-dockerhub"
+    ghcr = "us-central1-docker.pkg.dev/swarm-test-project/swarm-mirror-ghcr"
+    assert any(d.startswith(f"{hub}/docker/dockerfile@sha256:") for d in described), described
+    assert any(d.startswith(f"{hub}/library/python@sha256:") for d in described), described
+    assert any(d.startswith(f"{ghcr}/astral-sh/uv@sha256:") for d in described), described
+    assert all(d.startswith((hub + "/", ghcr + "/")) for d in described), described
 
 
 def test_the_tool_bucket_is_terraform_managed_and_grants_nothing() -> None:
