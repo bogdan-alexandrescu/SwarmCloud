@@ -53,8 +53,13 @@ function cards(): HTMLElement[] {
   return Array.from(document.querySelectorAll<HTMLElement>('.ur-cards > .ur-card'))
 }
 
+/** One card by its repository's name: the cards are drawn by full name, not in the order served (QA2-FIX-19). */
+function card(name: string): HTMLElement {
+  return cards().find((c) => visible(c.querySelector('h2')) === `example-org/${name}`)!
+}
+
 describe('the Repositories list is cards, one per repository (pick B)', () => {
-  it('draws one card per registration in the served order, headed Repositories', async () => {
+  it('draws one card per registration by full name, headed Repositories', async () => {
     serve((m, url) => (m === 'GET' && url === '/v1/repositories' ? { status: 200, body: { repositories: THREE } } : null))
     await mount()
     await waitFor(() => expect(cards()).toHaveLength(3), WAIT)
@@ -62,10 +67,13 @@ describe('the Repositories list is cards, one per repository (pick B)', () => {
     // #138: the count is a note over the first card, never a line in the head.
     expect(visible(document.querySelector('.c-count-note'))).toBe('Registered repositories · 3')
     expect(visible(document.querySelector('.c-phead'))).not.toContain('registered')
+    // QA2-FIX-19 (config2-09): by full name, the reach table's order, not the
+    // order served (api, web, infra).
+    // MUTATION: draw the cards in the order served and infra goes last.
     expect(cards().map((c) => visible(c.querySelector('h2')))).toEqual([
       'example-org/example-api',
-      'example-org/example-web',
       'example-org/example-infra',
+      'example-org/example-web',
     ])
   })
 
@@ -73,7 +81,7 @@ describe('the Repositories list is cards, one per repository (pick B)', () => {
     serve((m, url) => (m === 'GET' && url === '/v1/repositories' ? { status: 200, body: { repositories: THREE } } : null))
     await mount()
     await waitFor(() => expect(cards()).toHaveLength(3), WAIT)
-    const [api, web] = cards()
+    const [api, web] = [card('example-api'), card('example-web')]
     expect(api!.querySelector('.c-pill')?.getAttribute('data-fresh')).toBe('current')
     expect(visible(api!)).toContain('Default branch main')
     expect(visible(api!)).toContain('head a1b2c3d')
@@ -90,7 +98,7 @@ describe('the Repositories list is cards, one per repository (pick B)', () => {
     serve((m, url) => (m === 'GET' && url === '/v1/repositories' ? { status: 200, body: { repositories: THREE } } : null))
     await mount()
     await waitFor(() => expect(cards()).toHaveLength(3), WAIT)
-    const infra = cards()[2]!
+    const infra = card('example-infra')
     expect(infra.querySelector('.c-pill')?.getAttribute('data-fresh')).toBe('none')
     expect(visible(infra.querySelector('.c-pill'))).toBe('no index')
     const dashes = Array.from(infra.querySelectorAll('.c-dash')).map((d) => d.getAttribute('title'))
@@ -107,10 +115,10 @@ describe('the Repositories list is cards, one per repository (pick B)', () => {
     serve((m, url) => (m === 'GET' && url === '/v1/repositories' ? { status: 200, body: { repositories: THREE } } : null))
     await mount()
     await waitFor(() => expect(cards()).toHaveLength(3), WAIT)
-    const web = cards()[1]!
+    const web = card('example-web')
     expect(visible(web)).toContain('indexing now')
     expect(within(web).queryByRole('button', { name: 'Index now' })).toBeNull()
-    expect(within(cards()[0]!).getByRole('button', { name: 'Index now' })).toBeTruthy()
+    expect(within(card('example-api')).getByRole('button', { name: 'Index now' })).toBeTruthy()
   })
 
   it('Index now queues an index run for that repository and re-reads', async () => {
@@ -125,15 +133,15 @@ describe('the Repositories list is cards, one per repository (pick B)', () => {
     })
     await mount()
     await waitFor(() => expect(cards()).toHaveLength(3), WAIT)
-    fireEvent.click(within(cards()[0]!).getByRole('button', { name: 'Index now' }))
+    fireEvent.click(within(card('example-api')).getByRole('button', { name: 'Index now' }))
     // Nothing is queued until the run is confirmed (RSA-15; repositories.liveqa.test.tsx).
-    fireEvent.click(within(cards()[0]!).getByRole('button', { name: 'Queue incremental run' }))
+    fireEvent.click(within(card('example-api')).getByRole('button', { name: 'Queue incremental run' }))
     await waitFor(() => expect(reads).toBe(2), WAIT)
     const post = calls.find((c) => c.method === 'POST')!
     expect(post.body).toEqual({ kind: 'incremental' })
     // A repository with no index yet gets a full run.
-    fireEvent.click(within(cards()[2]!).getByRole('button', { name: 'Index now' }))
-    fireEvent.click(within(cards()[2]!).getByRole('button', { name: 'Queue full run' }))
+    fireEvent.click(within(card('example-infra')).getByRole('button', { name: 'Index now' }))
+    fireEvent.click(within(card('example-infra')).getByRole('button', { name: 'Queue full run' }))
     await waitFor(() => expect(calls.filter((c) => c.method === 'POST')).toHaveLength(2), WAIT)
     expect(calls.filter((c) => c.method === 'POST')[1]!.url).toBe('/v1/repositories/repo_2222222222222222/index:run')
     expect(calls.filter((c) => c.method === 'POST')[1]!.body).toEqual({ kind: 'full' })
@@ -143,7 +151,7 @@ describe('the Repositories list is cards, one per repository (pick B)', () => {
     serve((m, url) => (m === 'GET' && url === '/v1/repositories' ? { status: 200, body: { repositories: THREE } } : null))
     const { go } = await mount()
     await waitFor(() => expect(cards()).toHaveLength(3), WAIT)
-    const open = within(cards()[0]!).getByRole('link', { name: 'Open' })
+    const open = within(card('example-api')).getByRole('link', { name: 'Open' })
     expect(open.getAttribute('href')).toBe('/config/repositories/repo_0a1b2c3d4e5f6071')
     fireEvent.click(open)
     expect(go).toHaveBeenLastCalledWith('work/repositories?repo=repo_0a1b2c3d4e5f6071')
