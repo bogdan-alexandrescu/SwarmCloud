@@ -206,7 +206,8 @@ function useSignedInEmail(): string | null {
   useEffect(() => {
     let live = true
     void loadMe({ frame: true }).then((r) => {
-      if (live && (r.status === 'ok' || r.status === 'stale')) setEmail(r.data.principal.email)
+      // A reply without its principal says nothing of who is reading: no "yours".
+      if (live && (r.status === 'ok' || r.status === 'stale')) setEmail(r.data.principal?.email ?? null)
     })
     return () => {
       live = false
