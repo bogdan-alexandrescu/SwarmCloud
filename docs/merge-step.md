@@ -31,13 +31,59 @@ instead of a six-hour wait for checks -- the third section below.**
 bounded fix rounds by itself, two by default, re-running a flaky job before
 it spends an agent -- the second section below.**
 **Revised 2026-10-27: a person's push to the pull request ends the step
-`superseded_by_person_push`, which failure-review does not file -- the first
+`superseded_by_person_push`, which failure-review does not file -- the second
 section below.**
 **Revised 2026-10-26: a merge woken by the owner's answers does not merge an
 option its branch did not build -- it starts a bounded pick-fix round that
 builds it, and compares every answered question that names `built` -- and a
 merge held on owner questions whose pull request was merged or closed
-outside the workflow finishes on its own -- the second and third sections below.**
+outside the workflow finishes on its own -- the third and fourth sections below.**
+**Revised 2026-10-29: the merge step's CI, conflict and pick rounds wait while a
+plain continuation of the lane is live on the same branch -- the first section
+below.**
+
+## Revised 2026-10-29: a plain continuation of the lane holds the merge's rounds (part of #2685)
+
+**One writer per pull request, at any head (#2577)** already held the tick:
+before a re-run, a budget check or a claim, `mergewake._live_writer` waits on
+any live CI, conflict or pick round of this merge, and on any live writer
+`cifix.live_pr_writer` finds on the pull request. `live_pr_writer` reads only
+writers that carry a mark -- a PR-side fix's `metadata.ci_fix`, a round's
+`merge_fix_round` / `merge_conflict_round`, pr-shepherd's `pr_shepherd`. A
+**plain** continuation of the lane carries none: a `continues_task` workflow
+with no `metadata.ci_fix`, or a `publish_to_pr` lane aimed at the root. It
+pushes to the same `swarm/<root>` branch all the same.
+
+What happened. On 2026-10-28, on PR #2617, the plain lane task_7ff30c32
+(CIFIX-2617, wf_85f651ab) was RUNNING on the branch when the merge step of
+wf_f20546f4 read red and submitted ci-fix:1 (task_99b8e1e0, 13:50:24Z, from
+e80b3f8) beside it. The lane pushed 5bc405a first, the round's push was
+rejected non-fast-forward (f-046), and the merge step refused `head_moved` at
+a head none of its rounds had pushed (f-045). Two agents fixed one failure,
+and both the round and the step were lost.
+
+The rule. After the `live_pr_writer` read, `_live_writer` asks
+`cifix.live_plain_continuation` for the lane's root: a non-terminal task of
+the tenant whose `metadata.dispatch.continues`, or signed
+`metadata.dispatch.publish_to_pr.task_id`, names the root, that is not a
+merge step and carries no writer's mark nor `metadata.issue_run`. While there
+is one, `_on_red`, `_on_conflict` and the pick path claim nothing and submit
+nothing. The merge stays parked on `CI_PENDING`, and the tick logs the lane as
+a `plain_continuation` writer. The lane's push moves the head, CI runs again
+there, and the next red reading at that head gets its round.
+
+* **The merge never waits on itself.** Every round the tick submits (CI,
+  conflict, pick) carries `merge_fix_round` or `merge_conflict_round`, and
+  `live_plain_continuation` skips both. A terminal lane, another tenant's
+  lane, and a lane continuing another root hold nothing.
+* **No new timeout.** The wait is the same park as #2577's, bounded by the
+  worker's `MERGE_CI_MAX_SECONDS`. Nothing sleeps: the tick returns `waiting`
+  and exits (invariant 4).
+* **Tenant isolation.** `live_plain_continuation` checks the tenant again in
+  the application on every row it reads, so an index mistake cannot move the
+  boundary (invariant 9).
+* **The other order** -- a plain continuation admitted while the merge step
+  is live -- is `cifix.stamp`'s gate (part 1 of #2685, docs/ci.md).
 
 ## Revised 2026-10-27: a person's push supersedes the merge step (PERSON-PUSH-END, part of #2505)
 

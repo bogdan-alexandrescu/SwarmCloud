@@ -104,9 +104,24 @@ Before a re-run, a budget check or a claim, `_hand_off` and `_on_pick` ask
 `_live_writer`: any CI, conflict or pick round of this merge whose task has
 not ended, or that was claimed inside LOST_ROUND_SECONDS and has no task yet,
 whatever head it recorded; else any live writer `cifix.live_pr_writer` finds
-on the pull request. While there is one, the tick submits nothing and the
-merge stays parked: never woken for it, since the worker's park is bounded by
-MERGE_CI_MAX_SECONDS.
+on the pull request; else a live plain continuation of the lane
+(`cifix.live_plain_continuation`, #2685). While there is one, the tick
+submits nothing and the merge stays parked: never woken for it, since the
+worker's park is bounded by MERGE_CI_MAX_SECONDS.
+
+A PLAIN CONTINUATION OF THE LANE HOLDS THE ROUNDS TOO (#2685). Measured
+2026-10-28 on PR #2617: the merge step of wf_f20546f4 submitted ci-fix:1
+(task_99b8e1e0, 13:50:24Z, from e80b3f8) beside task_7ff30c32, a plain
+`continues_task` lane (CIFIX-2617, wf_85f651ab) RUNNING on the same branch.
+`live_pr_writer` reads only writers carrying a mark, so the lane was not
+seen; it pushed 5bc405a first, the round's push was rejected
+non-fast-forward, and the step refused `head_moved` at a head none of its
+rounds had pushed. A plain continuation -- `metadata.dispatch.continues` or
+a signed `publish_to_pr.task_id` naming the root, no writer's mark, not a
+merge step -- is a writer on the branch, so the tick waits on it as on any
+other. The merge's own CI, conflict and pick rounds carry `merge_fix_round`
+or `merge_conflict_round`, which that read excludes, so a round never waits
+on itself. No new timeout: the wait is the same park, bounded the same way.
 
 A CHECK RED ON THE DEFAULT BRANCH'S OWN HEAD IS NOT THE PULL REQUEST'S TO
 FIX (#2367). Four rounds on 2026-10-25 hand-patched main's stale unit-shard
@@ -289,7 +304,9 @@ from swarm_rollup import is_fix_round_step
 
 from . import gitidentity
 from .auth import AuthContext
-from .cifix import BRANCH_PREFIX, PR_WRITER_KINDS, live_claim, live_pr_writer
+from .cifix import (
+    BRANCH_PREFIX, PR_WRITER_KINDS, live_claim, live_plain_continuation, live_pr_writer,
+)
 from .continuation import TASK_ID_RE
 from .errors import ApiError, Forbidden, NotFound, UpstreamUnavailable
 from .forgechecks import GREEN, RED, CiReading, evaluate, required_status_checks
@@ -930,7 +947,13 @@ def _live_writer(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any], read
     `error` whose task is not terminal, or with no task yet and claimed
     inside LOST_ROUND_SECONDS. Then any writer `cifix.live_pr_writer` finds
     continuing the root on this pull request -- a PR-side fix, the
-    shepherd's conflict fix, a round the record does not hold. Read only;
+    shepherd's conflict fix, a round the record does not hold. Then a live
+    plain continuation of the root (`cifix.live_plain_continuation`, #2685:
+    on PR #2617 ci-fix:1 task_99b8e1e0 was submitted beside the RUNNING plain
+    lane task_7ff30c32, which pushed first, and the round's push was rejected
+    non-fast-forward), as kind `plain_continuation`. Every round this module
+    submits -- CI, conflict, pick -- carries `merge_fix_round` or
+    `merge_conflict_round`, which that read excludes. Read only;
     `_round_at_head` still gives a lost round at this head its `error`.
     """
     metadata = _mapping(doc.get("metadata"))
@@ -957,7 +980,13 @@ def _live_writer(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any], read
         return None
     writer = live_pr_writer(db, tenant_id, resolved[1], read.pull.number,
                             kinds=PR_WRITER_KINDS, now=now)
-    return None if writer is None else {**writer, "head": None}
+    if writer is not None:
+        return {**writer, "head": None}
+    lane = live_plain_continuation(db, tenant_id, resolved[1])
+    if lane is None:
+        return None
+    return {"task_id": lane["task_id"], "workflow_id": lane["workflow_id"],
+            "kind": "plain_continuation", "head": None}
 
 
 def _waits_on_writer(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any],
