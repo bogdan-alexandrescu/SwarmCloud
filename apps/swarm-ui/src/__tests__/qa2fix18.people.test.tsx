@@ -92,8 +92,12 @@ const DOC = peopleDoc(
   [account('primary', 'AVAILABLE'), account('weekly-burn', 'PAUSED'), account('retired-laptop', 'REAUTH_REQUIRED')],
 )
 
-async function mountPeople(body: Json) {
-  serve((m, url) => (m === 'GET' && url === '/v1/admin/people' ? { status: 200, body } : null))
+async function mountPeople(body: Json, mine: Json[] | null = null) {
+  serve((m, url) => {
+    if (m === 'GET' && url === '/v1/admin/people') return { status: 200, body }
+    if (m === 'GET' && url === '/v1/tenants/mine' && mine !== null) return { status: 200, body: mine }
+    return null
+  })
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
   const { PeopleScreen } = await import('../People')
@@ -142,6 +146,38 @@ describe('People Manage sheet says account states and lenders in words (admin2-0
   })
 })
 
+// The fixture console's shape (QA2-FIX-18 review, 2026-10-29): two people
+// hold the lender's workspace, and the first to sort is not its owner. The
+// render read 'lent by alice@example.com’s workspace'.
+const SHARED = peopleDoc(
+  [
+    person('alice@example.com', null, workspace('ready', 'u-bo'), NONE),
+    person('bo@example.com', 'Bo', workspace('ready', 'u-bo'), NONE),
+    person('bob@example.com', 'Bob', workspace('ready', 'u-bob'), LENT_BY_BO),
+  ],
+  [account('primary', 'AVAILABLE'), account('weekly-burn', 'PAUSED')],
+)
+
+describe('The lender is named as the switcher names it, never by whichever row sorts first (admin2-04 review)', () => {
+  it("names the caller's own personal workspace 'your workspace'", async () => {
+    await mountPeople(SHARED, [{ tenant_id: 'u-bo', display_name: 'Your workspace (u-bo)', kind: 'user', role: { name: 'admin', source: 'personal' } }])
+    // MUTATION: drop the `named` loop from lenderNames (or pass it no `named`).
+    await waitFor(() => expect(visible(rowOf('bob@example.com'))).toContain('lent by your workspace'), WAIT)
+    const section = await claudeSection('bob@example.com')
+    expect(visible(section)).toContain('Now using lent by your workspace')
+    expect(visible(section)).not.toContain('alice@example.com’s workspace')
+    const options = [...within(section).getByLabelText('Account to reclaim from bob@example.com').querySelectorAll('option')].map((o) => o.textContent)
+    expect(options).toContain('primary · your workspace · available')
+  })
+
+  it('keeps the id when two people hold the workspace and the switcher does not name it', async () => {
+    await mountPeople(SHARED)
+    // MUTATION: name a workspace by its first row whatever the count of rows holding it.
+    expect(visible(rowOf('bob@example.com'))).toContain('lent by u-bo')
+    expect(visible(rowOf('bob@example.com'))).not.toContain('alice@example.com’s workspace')
+  })
+})
+
 describe('A workspace request says what is asked for (admin2-22)', () => {
   it('reads as a personal workspace for the person, the id on its own line', async () => {
     await mountPeople(DOC)
@@ -156,5 +192,15 @@ describe('A workspace request says what is asked for (admin2-22)', () => {
     expect(visible(what)).not.toMatch(/^Workspace w-c4r01e/)
     // The id is still there, as the secondary line.
     expect(what.querySelector('.pp-req-id')?.textContent).toBe('id w-c4r01e')
+    // MUTATION: the separator back to a plain space before 'asked'.
+    expect(what.textContent).toContain('carol@example.com ·\u00a0asked ')
+  })
+
+  it("the People table's Own workspace cell keeps the id as its secondary line", async () => {
+    await mountPeople(DOC)
+    const cell = rowOf('carol@example.com').querySelector<HTMLElement>('.pp-ws')!
+    // MUTATION: the requested id back inline after the state word.
+    expect(cell.querySelector('.pp-req-id')?.textContent).toBe('id w-c4r01e')
+    expect(visible(cell)).not.toMatch(/requested w-c4r01e/i)
   })
 })

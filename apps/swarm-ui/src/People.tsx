@@ -22,7 +22,7 @@ import { groupWorkspaceName, useStoredRoles } from './Profile'
 import { Mark } from './primitives'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead, usePoll } from './Shell'
-import { nameTenants, type NamedTenantChoice } from './Spine'
+import { nameTenants, OWN_WORKSPACE_LABEL, type NamedTenantChoice } from './Spine'
 import { tableMode, usePhoneTables } from './capacityPoll'
 import { PersonWorkspaceRoles, WorkspaceRolesCard } from './WorkspaceRolesAdmin'
 import type {
@@ -223,20 +223,35 @@ export function accountStateWord(state: string): string {
 
 /**
  * WHO LENT IT, AS A WORKSPACE (admin2-04): the select and 'Now using' named
- * the lender by its tenant id, 'lent by u-bogdan'. A personal workspace is
- * named by its person, as the People table lists them ("Bogdan's
- * workspace"); a group workspace by its column's name, which
- * `withWorkspaceNames` already renamed by the switcher's rule. A tenant the
- * page cannot name stays its id.
+ * the lender by its tenant id, 'lent by u-bogdan'. A workspace is named first
+ * as the switcher names it (`nameTenants`): the caller's own personal
+ * workspace is 'your workspace', a group one its switcher name. Then a group
+ * workspace by its column's name, which `withWorkspaceNames` already renamed
+ * by the switcher's rule; then a personal workspace by its person, as the
+ * People table lists them ("Bo's workspace"), but only when ONE row holds
+ * that id: the review's render had two people in u-bogdan and named it by
+ * whichever sorted first (QA2-FIX-18 review, 2026-10-29). A tenant the page
+ * cannot name stays its id.
  */
-export function lenderNames(doc: Pick<PeopleDoc, 'people'> & { workspaces?: PeopleWorkspaceColumn[] | null }): (tenant: string) => string {
+export function lenderNames(
+  doc: Pick<PeopleDoc, 'people'> & { workspaces?: PeopleWorkspaceColumn[] | null },
+  named: readonly NamedTenantChoice[] = [],
+): (tenant: string) => string {
   const names = new Map<string, string>()
-  for (const c of Array.isArray(doc.workspaces) ? doc.workspaces : []) {
-    if (c.display_name !== '') names.set(c.tenant_id, c.display_name)
+  for (const c of named) {
+    if (c.display_name === OWN_WORKSPACE_LABEL) names.set(c.tenant_id, 'your workspace')
+    else if (c.display_name !== '' && c.display_name !== c.tenant_id) names.set(c.tenant_id, c.display_name)
   }
+  for (const c of Array.isArray(doc.workspaces) ? doc.workspaces : []) {
+    if (c.display_name !== '' && !names.has(c.tenant_id)) names.set(c.tenant_id, c.display_name)
+  }
+  const holders = new Map<string, PersonRow[]>()
   for (const r of Array.isArray(doc.people) ? doc.people : []) {
     const id = r.workspace.workspace_id
-    if (typeof id === 'string' && id !== '' && !names.has(id)) names.set(id, `${r.display_name || r.email}\u2019s workspace`)
+    if (typeof id === 'string' && id !== '') holders.set(id, [...(holders.get(id) ?? []), r])
+  }
+  for (const [id, rows] of holders) {
+    if (rows.length === 1 && !names.has(id)) names.set(id, `${rows[0].display_name || rows[0].email}\u2019s workspace`)
   }
   return (tenant) => names.get(tenant) ?? tenant
 }
@@ -1195,7 +1210,9 @@ function WaitingCard({ doc, rows, reload }: { doc: PeopleDoc & JoinFields; rows:
                         person's row asks for their own workspace, so the line
                         says so; the id it will have is the secondary line. */}
                     <span>
-                      A personal workspace for {row.email} · <Requested at={at} />
+                      {/* '·' is held to 'asked' (U+00A0), so a phone's line break never leaves it alone at a line's end. */}
+                      A personal workspace for {row.email} ·{'\u00a0'}
+                      <Requested at={at} />
                     </span>
                     {row.workspace.workspace_id != null && row.workspace.workspace_id !== '' && (
                       <small className="pp-req-id">
@@ -1470,7 +1487,7 @@ function WorkspaceCell({ row }: { row: PersonRow }) {
   return (
     <div className="pp-ws" data-workspace-state={w.state}>
       <ToneMark tone={STATE_TONE[w.state] ?? 'unknown'}>{STATE_WORD[w.state] ?? w.state}</ToneMark>
-      {w.workspace_id != null && w.workspace_id !== '' && (
+      {w.workspace_id != null && w.workspace_id !== '' && w.state !== 'requested' && (
         <>
           {' '}
           {/* Whole in `title`: people.css cuts an id longer than its room (V021, V161). */}
@@ -1478,6 +1495,17 @@ function WorkspaceCell({ row }: { row: PersonRow }) {
             {w.workspace_id}
           </code>
         </>
+      )}
+      {/* A REQUESTED WORKSPACE'S ID IS SECONDARY (admin2-22, QA2-FIX-18 review,
+          2026-10-29): 'requested w-c4r01e' named the request by a generated
+          id, as Waiting for you did; the id it will have is its own line. */}
+      {w.workspace_id != null && w.workspace_id !== '' && w.state === 'requested' && (
+        <p className="ur-hint pp-req-id">
+          id{' '}
+          <code className="pp-id" title={w.workspace_id}>
+            {w.workspace_id}
+          </code>
+        </p>
       )}
       {w.state === 'failed' && failedAt !== null && <> ({failedAt})</>}
       {w.state === 'needs_owner' && (
@@ -2729,7 +2757,7 @@ function withWorkspaceNames<D extends { workspaces?: PeopleWorkspaceColumn[] | n
   }
 }
 
-function PeopleBody({ doc, reload }: { doc: PeopleDoc & JoinFields; reload: () => void }) {
+function PeopleBody({ doc, reload, named = [] }: { doc: PeopleDoc & JoinFields; reload: () => void; named?: readonly NamedTenantChoice[] }) {
   const rows = pendingFirst(Array.isArray(doc.people) ? doc.people : [])
   const phone = usePhoneTables()
   // The drawer follows the person, not a snapshot of their row: each read
@@ -2751,7 +2779,7 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc & JoinFields; reload: () =
     setVersion((v) => v + 1)
   }
   const grid: JoinGrid = { joins, members }
-  const lender = useMemo(() => lenderNames(doc), [doc])
+  const lender = useMemo(() => lenderNames(doc, named), [doc, named])
   return (
     <LenderName.Provider value={lender}>
       <PeopleLead rows={rows} joins={joins} joinsError={joinsError} />
@@ -2873,7 +2901,7 @@ export function PeopleScreen() {
           isScoped(d) ? (
             <ScopedBody doc={withWorkspaceNames(d, named)} reload={people.reload} />
           ) : (
-            <PeopleBody doc={withWorkspaceNames(d, named)} reload={people.reload} />
+            <PeopleBody doc={withWorkspaceNames(d, named)} reload={people.reload} named={named} />
           )
         }
       </UrRegion>
