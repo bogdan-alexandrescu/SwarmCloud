@@ -182,7 +182,13 @@ whose own loop fixes CI before it merges). Three things come with them:
   -- it has not made the new ones yet -- the tick waits, at most
   RERUN_SETTLE_SECONDS. A re-run GitHub refuses (no `actions: write`) is
   recorded with its `error` and the round is claimed, or the step woken,
-  in the same tick: the refusal costs nothing.
+  in the same tick: the refusal costs nothing. A CI-fix round that ended
+  at the red head having found nothing to change (`no_change`: it read
+  the failure as a flake) gets that same one re-run before the step is
+  woken `fix_round_ended`, when the head has not had it (#2684:
+  task_d2698b60 on PR #2603 asked for a re-run, and the merge
+  task_69eb7362 refused without one). Still once per head: a head re-run
+  before its round wakes the step as before.
 * EACH ROUND IS A STEP OF THE MERGE'S WORKFLOW. After the round's own
   workflow is submitted, the tick appends a step `ci-fix:<n>`,
   `conflict-fix:<n>` or `pick-fix:<n>` (ROLLUP-PICK-FIX) naming the round's
@@ -296,6 +302,7 @@ from .forgewrite import (
 from .issueci import (
     CI_READ_SECONDS,
     LOST_ROUND_SECONDS,
+    NO_CHANGE_MARKER,
     ci_fix_continuation,
     excerpt_at,
     pushing_task,
@@ -303,6 +310,7 @@ from .issueci import (
 from .issueruns import NO_CLOSING_KEYWORD, STEP_PROFILE, failure_text
 from .redaction import redact
 from .repositories import parse_repository
+from .rollup import SKIPPED_SUMMARY_KEY
 from .schemas import WorkflowCreate
 from . import sessiontag
 from .validation import (
@@ -894,6 +902,25 @@ def _round_at_head(ctx: Any, db: Any, tenant_id: str, task_id: str,
     return FIX_ROUND_ENDED if task.state in TERMINAL_STATES else None
 
 
+def _round_left_nothing(ctx: Any, tenant_id: str, entry: Mapping[str, Any]) -> bool:
+    """Whether a CI-fix round's task SUCCEEDED having found nothing to change (#2684).
+
+    Its `result_summary.no_change` is True, as the worker's
+    `merge._round_left_nothing` reads it: it pushed nothing, so the red head
+    is still the one the tick may re-run once. Read under this tenant.
+    """
+    fix_task = entry.get("task_id")
+    if not isinstance(fix_task, str) or not TASK_ID_RE.match(fix_task):
+        return False
+    try:
+        task = ctx.store.get_task(tenant_id, fix_task, submitted_by=None)
+    except NotFound:
+        return False
+    summary = _mapping(getattr(task, "result_summary", None))
+    return (task.state == TaskState.SUCCEEDED and summary.get(NO_CHANGE_MARKER) is True
+            and not isinstance(summary.get(SKIPPED_SUMMARY_KEY), Mapping))
+
+
 def _live_writer(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any], read: _Reading,
                  now: datetime) -> dict[str, Any] | None:
     """A writer still live on this merge's pull request, at any head, as
@@ -1387,7 +1414,8 @@ def _hand_off(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], head: str,
     (`_FIXING` | `_WAITING` | `_WAKE`, the wake reason). One rule for a red
     reading's CI-fix rounds (MS7) and a conflict's fix rounds (#1076): a
     round at this head is waited on until it ends, or woken through
-    `_round_at_head`; then ONE WRITER PER PULL REQUEST (#2577): while any
+    `_round_at_head` -- a CI-fix round that ended there `no_change` first
+    through `first`, the head's one free re-run (#2684); then ONE WRITER PER PULL REQUEST (#2577): while any
     round of this merge, of any kind and at any head, or a writer
     `cifix.live_pr_writer` finds, is still live (`_live_writer`), nothing is
     submitted -- conflict-fix:1 still RUNNING at a8cb2f5 when the head read
@@ -1413,6 +1441,13 @@ def _hand_off(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], head: str,
     rounds = _rounds(metadata, key)
     if rounds and rounds[-1].get("head") == head:
         reason = _round_at_head(ctx, db, tenant_id, task_id, rounds[-1], now, key)
+        if (reason == FIX_ROUND_ENDED and key == "rounds" and first is not None
+                and _round_left_nothing(ctx, tenant_id, rounds[-1])):
+            # The round found nothing to change -- a flake, read as one
+            # (#2684): the head's one free re-run, if it has not had it.
+            early = first()
+            if early is not None:
+                return early
         return (_WAITING, None) if reason is None else (_WAKE, reason)
     if _waits_on_writer(ctx, db, tenant_id, doc, read, now, label):
         # One writer per pull request (#2577): a round live at another head

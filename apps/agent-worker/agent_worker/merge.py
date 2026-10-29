@@ -166,6 +166,7 @@ from . import owner_questions as owner_questions_mod
 from . import questions as questions_mod
 from . import verdict as verdict_mod
 from .errors import ExitCode, FencedError, InputUnavailable
+from .expected_outputs import NO_CHANGE_SUMMARY_KEY, left_nothing
 from .post_verdict import (
     ActionContext,
     ActionOutcome,
@@ -361,6 +362,9 @@ CI_RERUN_PENDING = "ci_rerun_pending"
 #: DB) refused a whole lane. Parked ONCE per head (`_rerun_due`): a red
 #: re-run, a re-run GitHub refused, or a second red reading with nothing
 #: re-run (the tick found no Actions job to re-run) refuses `checks_failed`.
+#: A CI-fix round that ended at the red head with `no_change` reaches it too
+#: (#2684): task_d2698b60 diagnosed a flaky shard on PR #2603 and asked for
+#: a re-run, and the step refused without one (task_69eb7362).
 CI_RERUN_DUE = "ci_rerun_due"
 #: The park code of a red reading no CI-fix round can fix (#2046): the
 #: publish that wrote this head -- the opener's, or the CI-fix round's that
@@ -3771,7 +3775,12 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
 
     With no round left to ask for, the FIRST red reading at a head with no
     re-run recorded there parks once `CI_RERUN_DUE` (#2351), so the tick's
-    free re-run runs; its red answer refuses here as before.
+    free re-run runs; its red answer refuses here as before. A round that
+    ended at this head having found nothing to change (`no_change`,
+    `_round_left_nothing`) gets the same: the re-run settling parks
+    `CI_RERUN_PENDING`, none recorded at the head parks `CI_RERUN_DUE` once,
+    and anything else refuses after the round (#2684). Still one free re-run
+    per head: a head the tick re-ran before the round refuses.
 
     A head written by a publish swarm-api refused WORKFLOW_SCOPE_MISSING --
     the opener's pinned head, or the head a round ended at -- parks
@@ -3796,26 +3805,68 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
         refused = _round_refusal(run.ctx, task_id)
         if refused is not None:
             return _await_workflow_patch(run, message, task_id, refused, wait)
+        if _round_left_nothing(run.ctx, task_id):
+            parked = _rerun_wait(own, head, failing_ids, wait,
+                                 f"{message}; CI fix round {number} ({task_id}) found "
+                                 "nothing to change")
+            if parked is not None:
+                return parked
         return run.refuse("checks_failed",
                           f"{message}, after CI fix round {number} ({task_id}) ended at this head")
     if run.refused_publish is not None and run.refused_publish[1] == head:
         opener, _, refused = run.refused_publish
         return _await_workflow_patch(run, message, opener, refused, wait)
+    parked = _rerun_wait(own, head, failing_ids, wait, message, due=False)
+    if parked is not None:
+        return parked
+    asked = _rounds_asked(own)
+    if len(rounds) < asked:
+        return wait(CI_FIX_PENDING,
+                    f"{message}; CI fix round {len(rounds) + 1} of {asked} is due", [])
+    parked = _rerun_wait(own, head, failing_ids, wait, message)
+    if parked is not None:
+        return parked
+    if asked:
+        message += f", after {len(rounds)} CI fix round(s)"
+    return run.refuse("checks_failed", message)
+
+
+def _rerun_wait(own: Mapping[str, Any], head: str, failing_ids: set[int] | None, wait: Any,
+                message: str, *, due: bool = True) -> ActionOutcome | None:
+    """The park a red reading at `head` owes the tick's free re-run, or None.
+
+    `CI_RERUN_PENDING` while a re-run at `head` settles (`_rerun_settling`);
+    then, with `due`, `CI_RERUN_DUE` once when none is recorded there
+    (`_rerun_due`). One rule for a red reading with no round at the head and
+    for a round that ended there with nothing to change (#2684).
+    """
     requested_at = _rerun_settling(own, head, failing_ids)
     if requested_at is not None:
         return wait(CI_RERUN_PENDING,
                     f"{message}; the failing jobs were re-run at {requested_at.isoformat()}, "
                     "and the re-run has not answered yet", [])
-    asked = _rounds_asked(own)
-    if len(rounds) < asked:
-        return wait(CI_FIX_PENDING,
-                    f"{message}; CI fix round {len(rounds) + 1} of {asked} is due", [])
-    if _rerun_due(own, head, failing_ids):
+    if due and _rerun_due(own, head, failing_ids):
         return wait(CI_RERUN_DUE,
                     f"{message}; the failing jobs are due their one free re-run at this head", [])
-    if asked:
-        message += f", after {len(rounds)} CI fix round(s)"
-    return run.refuse("checks_failed", message)
+    return None
+
+
+def _round_left_nothing(ctx: ActionContext, task_id: str) -> bool:
+    """Whether a CI-fix round's task SUCCEEDED having found nothing to change (#2684).
+
+    Its `result_summary.no_change` is True (`expected_outputs.left_nothing`):
+    the round read the failure as a flake, or one outside the branch, and
+    pushed nothing. Only this tenant's task counts; one that cannot be read
+    did not. The round's document is tenant-writable, so a forged one can at
+    most park the step once for the re-run, which MERGE_CI_MAX_SECONDS bounds.
+    """
+    try:
+        doc = _mapping(ctx.fetch_upstream(task_id))
+    except Exception:  # noqa: BLE001 - unreadable: nothing to read
+        return False
+    if doc.get("tenant_id") != ctx.tenant_id or doc.get("state") != TaskState.SUCCEEDED.value:
+        return False
+    return left_nothing(doc.get("result_summary")) == NO_CHANGE_SUMMARY_KEY
 
 
 def _workflow_refusal(doc: Mapping[str, Any]) -> dict[str, Any] | None:

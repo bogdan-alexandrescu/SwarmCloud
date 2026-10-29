@@ -323,6 +323,19 @@ defaulted to 0. What this lane changed, and why:
   `actions: write` is recorded as the re-run's `error`, and the round is
   claimed, or the step woken, in the same tick: the refusal costs one
   request, not a wait.
+  A CI-fix round that ended at the red head having found nothing to change
+  (`result_summary.no_change`) gets that one re-run too before the step
+  refuses `checks_failed` (#2684). A round that reads its failure as a flake
+  says so by pushing nothing and asking for a re-run; before #2684 the step
+  refused at once on the round's end, so task_d2698b60's flaky Python shard
+  on PR #2603 (a TypeScript-only change) refused the merge task_69eb7362,
+  and the re-run that later passed was run by hand. The tick asks for the
+  re-run before it wakes the step `fix_round_ended`; the worker
+  (`merge._red`) parks `ci_rerun_pending` while it settles and
+  `ci_rerun_due` once when none is recorded at the head, and refuses after
+  the round on its red answer. It is still one re-run per head: a head the
+  tick re-ran before the round refuses as before. A round that pushed,
+  failed, was cancelled or ended without `no_change` refuses as before.
   While GitHub still serves the very runs that were re-run, the tick waits,
   at most `RERUN_SETTLE_SECONDS` (10 min). A wake inside that window parks
   the step `ci_rerun_pending` only while EVERY failing check is a job the
