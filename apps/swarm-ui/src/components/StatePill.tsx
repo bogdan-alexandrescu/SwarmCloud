@@ -62,6 +62,8 @@ export const PARK_WORD: Readonly<Record<ParkReason, string>> = {
   AWAITING_INPUT: 'waiting for a member',
   // Contract request 125: a fix loop whose rounds run as steps of their own.
   FIX_ROUNDS_RUNNING: 'fix rounds running',
+  // Contract request 123: the cluster's Job quota or a policy refused it.
+  PLATFORM_REFUSED: 'refused by the cluster, retrying',
 }
 
 function isParkReason(v: string): v is ParkReason {

@@ -130,7 +130,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 120 | `models.py` / `specsign.py`: `Task.budget` and `WorkflowStep.budget`, a step's budget as a typed, signed field (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): spec format 6; submission writes `Task.budget` and `WorkflowStep.budget`, and the worker and the API read `metadata.dispatch.budget` as the fallback for one release |
 | 121 | `states.py`: `EventType.BUDGET_WARNING`, the 80% warning as its own event type (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): the worker writes it; `codec.stored_event_type` reads the old `running` form as it for one release |
 | 122 | `models.py`: `Tenant.principal`'s comment gives a fictional example on the company's real domain (EXAMPLE-IDENTITIES, part of #1647) | open |
-| 123 | `states.py` / `models.py`: `ParkReason.PLATFORM_REFUSED` and `Task.platform_refusals`, so a dispatch the platform refuses parks instead of spending attempts (PLATFORM-REFUSED, part of #1820) | PROPOSED for BGD |
+| 123 | `states.py` / `models.py`: `ParkReason.PLATFORM_REFUSED` and `Task.platform_refusals`, so a dispatch the platform refuses parks instead of spending attempts (PLATFORM-REFUSED, part of #1820) | ACCEPTED by the owner (BGD) 2026-10-28 (~11:10Z, after the eng Job-quota incident) and APPLIED 2026-10-28 by the pull request that adds this line (lane PLATFORM-REFUSED-APPLY, part of #1820): the enum member, the field, `PLATFORM_REFUSED_MAX_PARKS` and the edge LEASED -> PARKED. Per BGD's brief the backoff is 30 s doubling to at most 10 min (in the scheduler) and a task past the bound stays parked as trouble, never FAILED |
 | 124 | `profiles.py`: a `fix-loop` catalogue profile, `control_plane: true`, shipped unavailable until FL-ACCEPT passes, as `await-input` was (FL-CONTRACT, fix loop request A, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT): mirrored in `terraform/infra/locals.tf` and listed in `profiles_without_a_job` |
 | 125 | `states.py`: `ParkReason.FIX_ROUNDS_RUNNING`, a fix loop's step while its rounds run: never promoted by the scheduler, in no capacity set, ended by swarm-api (FL-CONTRACT, fix loop request B, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT), with the console's and swarm-mcp's park-reason lists |
 | 126 | `models.py`: `EndCause.FIX_LOOP_EXHAUSTED`, a fix loop that ended without a MERGE (FL-CONTRACT, fix loop request C, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 ('accept-126', answering FL-CONTRACT's question on PR 2570; requested by lane FL-CONTRACT the same day, Q3 (c) needs an end cause). APPLIED 2026-10-28 by the pull request that adds this line (lane FL-CONTRACT-126): appended to `EndCause`; the outcome ledger classes it `fix_loop_exhausted`, its own failure class (DERIVE_VERSION 12), and the console's `EndCause`, `END_CAUSES` and `END_CAUSE_SAY` carry it |
@@ -14780,10 +14780,38 @@ None is touched: a comment decides nothing.
 
 ## 123. `states.py` / `models.py`: `ParkReason.PLATFORM_REFUSED` and `Task.platform_refusals` (PLATFORM-REFUSED, part of #1820)
 
-**Status:** PROPOSED 2026-10-27 for BGD by lane PLATFORM-REFUSED, on BGD's
-2026-10-27 triage decision on #1820 (epic #2525). Not applied:
-`apps/common/swarm_common/` is frozen, and a dedicated contract lane applies
-it after BGD accepts. The precise codes it parks on are built without it
+**Status:** ACCEPTED by BGD 2026-10-28 (~11:10Z) and APPLIED 2026-10-28 by
+the pull request that adds this status (lane PLATFORM-REFUSED-APPLY, part of
+#1820), after swarm-tenant-eng's Job quota (`count/jobs.batch` 240) filled
+with finished Jobs on 2026-10-28 ~09:30-11:15Z and 28 steps FAILED
+`gke_job_quota_exceeded`. Applied in `apps/common/swarm_common/`:
+`ParkReason.PLATFORM_REFUSED`, `Task.platform_refusals: int = 0`,
+`models.PLATFORM_REFUSED_MAX_PARKS = 5` and the transition LEASED -> PARKED
+(the failed-dispatch path parks an agent it found LEASED; no other edge was
+needed: PARKED -> READY, CANCELLED and DEAD_LETTERED already existed).
+
+**Two points of "The scheduler, once applied" below were REPLACED by BGD's
+brief of 2026-10-28, which applies the standing rule of 2026-09-14 ("never
+fail workflows when quotas are reached. just pause them and resume them when
+new quota is refreshed"):**
+
+* the backoff is 30 s doubling, held at 10 minutes (30 s, 1, 2, 4, 8, 10,
+  10, ...), not 1-16 minutes; it is `scheduler/store.py`
+  `platform_refusal_backoff`, so no `platform_refusal_backoff` was added to
+  `models.py`;
+* past `PLATFORM_REFUSED_MAX_PARKS` consecutive refusals the agent is NOT
+  ended FAILED: it stays PARKED/`PLATFORM_REFUSED`, retried every 10 minutes,
+  logged at ERROR as trouble (and listed by `swarm_trouble`, which lists every
+  park but DEPENDENCY_INCOMPLETE). The refusal never fails an agent.
+
+The rest is as written: the lease is released in the parking transaction,
+`attempt_count` is put back, `platform_refusals` is incremented, a successful
+dispatch resets it to 0, a sweep beside `_promote_scheduled_retries`
+(`_promote_platform_refusals`) promotes a due park, and each park counts in
+`swarm_scheduler_platform_refusals_total{code}`. The finished-Job TTL was
+shortened from 3600 s to 600 s by the same pull request (BGD, 2026-10-28).
+
+The text below is the request as it was proposed. The precise codes it parks on are built without it
 (`apps/scheduler/scheduler/dispatch.py` `forbidden_code`); the design is
 [docs/design/dispatch-refusals.md](design/dispatch-refusals.md).
 

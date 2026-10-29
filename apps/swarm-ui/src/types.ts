@@ -721,6 +721,12 @@ export interface Task {
   submitted_by_name?: string | null
   attempt_count: number
   max_attempts: number
+  /**
+   * Contract request 123: consecutive dispatches the cluster refused (Job
+   * quota or an admission policy). Each parks PLATFORM_REFUSED without
+   * spending an attempt; a dispatch that succeeds resets it to 0.
+   */
+  platform_refusals?: number
   park_reason: ParkReason | string | null
   blocked_by: BlockedEntry[] | null
   workflow_id: string | null
@@ -2942,16 +2948,19 @@ export const END_CAUSES: readonly EndCause[] = [
  * waiting for an answer from a tenant member (docs/design/human-steps.md).
  * FIX_ROUNDS_RUNNING is contract request 125: a `fix-loop` workflow step
  * while its review-fix rounds run (docs/design/fix-loop.md).
+ * PLATFORM_REFUSED is contract request 123: the cluster refused the dispatch
+ * (an admission policy, or the namespace's Job quota), and the scheduler
+ * retries it on a backoff (docs/design/dispatch-refusals.md).
  */
 export type ParkReason =
   | 'PROVIDER_QUOTA_EXHAUSTED' | 'PROVIDER_COOLDOWN' | 'PROVIDER_OUTAGE'
   | 'SCHEDULED_RETRY' | 'DEPENDENCY_INCOMPLETE' | 'MANUAL_PAUSE'
   | 'BUDGET_EXHAUSTED' | 'CREDENTIAL_MISSING' | 'CHILDREN_INCOMPLETE'
   | 'CI_PENDING' | 'HUMAN_REQUIRED' | 'AWAITING_INPUT'
-  | 'FIX_ROUNDS_RUNNING'
+  | 'FIX_ROUNDS_RUNNING' | 'PLATFORM_REFUSED'
 
 /**
- * The same thirteen as a value, so a test can compare the list against
+ * The same fourteen as a value, so a test can compare the list against
  * `swarm_common.states.ParkReason` and the three sets below can be checked for
  * covering it. A union type erases at build time and can be checked against
  * nothing.
@@ -2976,6 +2985,7 @@ export const PARK_REASONS = [
   'HUMAN_REQUIRED',
   'AWAITING_INPUT',
   'FIX_ROUNDS_RUNNING',
+  'PLATFORM_REFUSED',
 ] as const
 
 /**
@@ -3042,6 +3052,10 @@ export const PARK_CLEARS_ITSELF: ReadonlySet<string> = new Set<ParkReason>([
   // the rounds run out; only then may it park for a person, as HUMAN_REQUIRED
   // (docs/design/fix-loop.md §4.5).
   'FIX_ROUNDS_RUNNING',
+  // The cluster refused the dispatch: an admission policy or the Job quota
+  // (contract request 123). The scheduler retries it on its own, 30 s
+  // doubling to ten minutes, and never fails it for this.
+  'PLATFORM_REFUSED',
 ])
 
 /**
@@ -3096,6 +3110,7 @@ export const REASON_COPY: Readonly<Record<string, string>> = {
   HUMAN_REQUIRED: 'The agent asked for a person and nobody came in time. Holds no capacity until someone says they are ready.',
   AWAITING_INPUT: 'A workflow step waits for a member of its workspace to answer. Holds no capacity; it ends on the first answer or at its declared expiry.',
   FIX_ROUNDS_RUNNING: 'A fix loop waits while its review and fix rounds run as steps of their own. Holds no capacity.',
+  PLATFORM_REFUSED: 'The cluster refused to start it (its job quota is full, or a policy said no). Holds no capacity; retried automatically, at most ten minutes apart.',
   POOL_LIMIT_UNSET: 'This pool has no limit set, so it admits nothing. Nobody set it to 0: somebody has to set a limit.',
 }
 

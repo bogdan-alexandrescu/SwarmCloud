@@ -93,8 +93,17 @@ _ALLOWED: dict[TaskState, frozenset[TaskState]] = {
     ),
     # A lease can be lost before dispatch (reconciler reclaim, limit reduction,
     # cancellation) which returns the task to READY without an attempt.
+    # LEASED -> PARKED: the platform refused the dispatch (ParkReason
+    # PLATFORM_REFUSED, contract request 123). Only the scheduler writes it,
+    # releasing the lease in the same transaction, so the park holds nothing.
     TaskState.LEASED: frozenset(
-        {TaskState.DISPATCHED, TaskState.READY, TaskState.FAILED, TaskState.CANCELLED}
+        {
+            TaskState.DISPATCHED,
+            TaskState.READY,
+            TaskState.PARKED,
+            TaskState.FAILED,
+            TaskState.CANCELLED,
+        }
     ),
     TaskState.DISPATCHED: frozenset(
         {TaskState.STARTING, TaskState.READY, TaskState.FAILED, TaskState.CANCELLED}
@@ -242,6 +251,13 @@ class ParkReason(str, Enum):
     #: request 125 (FL-CONTRACT, fix loop request B), accepted by BGD
     #: 2026-10-27 (Q2).
     FIX_ROUNDS_RUNNING = "FIX_ROUNDS_RUNNING"
+    #: The platform refused this task's dispatch -- a cluster admission
+    #: policy or webhook, or the tenant namespace's ResourceQuota
+    #: (`gke_admission_refused`, `gke_job_quota_exceeded`). Written by the
+    #: scheduler's failed-dispatch path with the lease released; promoted by
+    #: the scheduler once `next_eligible_at` passes. Holds no capacity
+    #: (invariant 1). Contract request 123, accepted by BGD 2026-10-28.
+    PLATFORM_REFUSED = "PLATFORM_REFUSED"
 
 
 class BlockedReason(str, Enum):

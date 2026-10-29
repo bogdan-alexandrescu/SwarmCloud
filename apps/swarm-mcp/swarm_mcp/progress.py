@@ -188,6 +188,9 @@ _PARKED_BECAUSE = {
     # Contract request 125 (docs/design/fix-loop.md): a fix-loop step whose
     # review-fix rounds run as steps of their own. Waiting, not stalled.
     "FIX_ROUNDS_RUNNING": "its review-fix rounds are running as steps of their own",
+    # Contract request 123: the cluster refused the dispatch (Job quota or an
+    # admission policy). No attempt was spent; the scheduler retries it.
+    "PLATFORM_REFUSED": "the cluster refused to start it (Job quota or a policy); it is retried on its own",
 }
 
 

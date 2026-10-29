@@ -417,6 +417,9 @@ UNSIGNED_TASK_FIELDS = {
     "spec_key_version",
     "spec_format",
     "human_wait",
+    # Contract request 123: the scheduler counts refused dispatches after
+    # submission, so it cannot be inside a signature made at it.
+    "platform_refusals",
 }
 
 

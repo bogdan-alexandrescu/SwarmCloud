@@ -614,6 +614,12 @@ class Task:
     #: (invariant 10). Before this field the same figures were pinned in
     #: `metadata.dispatch.budget`, which readers fall back to for one release.
     budget: dict[str, float | int] | None = None
+    #: Consecutive dispatches the platform refused (PLATFORM_REFUSED parks).
+    #: Reset to 0 by a dispatch that succeeds. Contract request 123, accepted
+    #: by BGD 2026-10-28. Last in the class, after `budget`, so no positional
+    #: construction of a task changes meaning; absent on every older
+    #: document, which decodes as 0.
+    platform_refusals: int = 0
 
     def __post_init__(self) -> None:
         # Only the fields of requests 54 and 95: a document decoded before them
@@ -667,6 +673,16 @@ def retries_exhausted(attempt_count: int, max_attempts: int) -> bool:
     restatement: here.
     """
     return attempt_count >= max_attempts
+
+
+#: Consecutive PLATFORM_REFUSED parks after which a task is reported as
+#: trouble (contract request 123). Beside `retries_exhausted` because it is
+#: its counterpart for a refusal that spends no attempt: past it the task
+#: STAYS PARKED and keeps being retried at the longest backoff -- BGD's
+#: standing rule (2026-09-14) is that a quota pauses work and never fails
+#: it, and BGD's 2026-10-28 brief applies that to the platform's refusals.
+PLATFORM_REFUSED_MAX_PARKS = 5
+
 
 @dataclass
 class Attempt:

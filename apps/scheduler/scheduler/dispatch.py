@@ -368,7 +368,7 @@ class GkeDisk:
 #: this was written: docs/browser-startup-speed.md §11 has the slot for it
 #: beside the warm 6 s / cold 125 s it adds to. And a disk outlives the run by
 #: as long as the pod does: a finished Job keeps its pod for
-#: ttlSecondsAfterFinished (an hour), so the tenant quota admits one claim per
+#: ttlSecondsAfterFinished (ten minutes), so the tenant quota admits one claim per
 #: Job, not per running pod (kubernetes/namespaces/tenant-namespace.yaml).
 #:
 #: HOW GKE FAILS WHEN A VOLUME FILLS, compared with Cloud Run. Cloud Run's
@@ -2812,6 +2812,14 @@ GKE_CREATE_JOB_FORBIDDEN = "gke_create_job_forbidden"
 #: dispatcher lacking a permission: what PLATFORM_REFUSED will park on.
 PLATFORM_REFUSAL_CODES = frozenset({GKE_ADMISSION_REFUSED, GKE_JOB_QUOTA_EXCEEDED})
 
+#: How long a finished worker Job (and so its pod and its cache claim) stays
+#: in the tenant namespace: `ttlSecondsAfterFinished`. It holds a
+#: `count/jobs.batch` slot for all of it, so the namespace admits
+#: quota / (runtime + this) Jobs an hour. 600 s, from 3600, by BGD's decision
+#: of 2026-10-28 after finished Jobs filled eng's quota of 240 and refused
+#: every dispatch past it (#1820).
+FINISHED_JOB_TTL_SECONDS = 600
+
 _ADMISSION_DENIAL = re.compile(
     r"ValidatingAdmissionPolicy\b.*\bdenied request"
     r"|admission webhook \"[^\"]*\" denied the request",
@@ -3126,7 +3134,14 @@ class GkeJobDispatcher:
                     task.timeout_seconds,
                     dispatch_timeout_seconds=self._settings.core.dispatch_timeout_seconds,
                 ),
-                "ttlSecondsAfterFinished": 3600,
+                # TEN MINUTES, not an hour (BGD 2026-10-28). A finished Job
+                # keeps its `count/jobs.batch` slot until this expires, and on
+                # 2026-10-28 ~09:30-11:15Z eng's 240 slots filled with FINISHED
+                # Jobs from a burst of ~45 lanes: every dispatch past them was
+                # refused `gke_job_quota_exceeded` and 28 steps FAILED. Ten
+                # minutes is still long enough to read a failed pod's status
+                # and logs live; Cloud Logging keeps them after.
+                "ttlSecondsAfterFinished": FINISHED_JOB_TTL_SECONDS,
                 "template": {
                     "metadata": {
                         "labels": dict(labels),

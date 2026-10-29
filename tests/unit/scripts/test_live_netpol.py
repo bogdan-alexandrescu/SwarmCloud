@@ -218,7 +218,9 @@ PRE_L6_DIGESTS = {
 #: PVC per Job on the cache's StorageClass, where it held PVCs at 0.
 #: Re-read for SIZES-SCHED-1 (2026-10-20): the quota's limits.cpu is
 #: CPU_BURST_MAX_RATIO x requests.cpu and the LimitRange's CPU max is 16.
-PRE_L6_TENANT_RENDER = "9af68c41dfc58eb545d35045496c20b2f584eb5749e6c580613d8b5d03df1156"
+#: Re-read for PLATFORM-REFUSED-APPLY (2026-10-28): a comment in the tenant
+#: ResourceQuota now says the finished-Job TTL is ten minutes; no value moved.
+PRE_L6_TENANT_RENDER = "09f455c12b9e654e99dc48c718ab935038c786d5a4e6ea902d4cb5a76badc3b3"
 
 
 def _tenant_values() -> dict[str, str]:
