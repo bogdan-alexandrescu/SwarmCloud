@@ -1,0 +1,16 @@
+/* OUTCOMES' FILTERS ARE THE LANES CHIPS (visual QA pass 2, runs2-19).
+   Activity.tsx draws Group by, Profile, Workspace and Submitted by as
+   `.tl-flt` (styles/timeline.css); Lanes' chips hold only selects and
+   checklists, so the one text field, Submitted by, is given the chip's own
+   look here: the chip is the box, the field inside it has none.
+   Activity.tsx imports timeline.css itself, so the chips are styled when
+   Outcomes is the first page of the tab drawn. */
+.ol-toolbar .tl-flt input {
+  width: 16ch;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+.ol-toolbar .tl-flt input:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }

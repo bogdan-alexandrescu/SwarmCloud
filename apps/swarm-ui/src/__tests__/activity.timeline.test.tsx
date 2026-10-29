@@ -558,12 +558,12 @@ describe('the ledger', () => {
   it('draws the throughput lane as submitted against finished, labelled as the only submission-time lane', async () => {
     const root = await timeline()
     const labels = [...drawing(root).querySelectorAll('.ol-lane-label')].map((t) => t.textContent ?? '')
-    expect(labels[3]).toMatch(/submitted \(by created_at, the only lane on submission time\) vs finished · max 338/)
+    expect(labels[3]).toMatch(/submitted \(by submit time, the only lane on submission time\) vs finished · max 338/)
     expect(drawing(root).querySelector('.ol-lane.is-flow .ol-m-sub'), 'no submitted line').not.toBeNull()
     expect(bucketMarks(root, 10)!.querySelector('.ol-m-fin'), 'no finished column on 22 Sep').not.toBeNull()
     // The narrow drawing carries a short label that still names its basis.
     const narrow = [...drawing(root, 'narrow').querySelectorAll('.ol-lane-label')].map((t) => t.textContent ?? '')
-    expect(narrow[3]).toContain('by created_at')
+    expect(narrow[3]).toContain('by submit time')
   })
 
   it('draws a bucket that was not read as one hatched band over every lane, with no digit and no marks', async () => {
@@ -633,7 +633,7 @@ describe('the ledger', () => {
       // The time axis is the one set of labels that DOES scroll: it names the columns under it.
       expect(dr.querySelectorAll('.ol-plot .ol-axis-label').length).toBeGreaterThan(0)
     }
-    expect(drawing(root, 'narrow').querySelectorAll('.ol-lane-label')[3]!.textContent).toContain('by created_at')
+    expect(drawing(root, 'narrow').querySelectorAll('.ol-lane-label')[3]!.textContent).toContain('by submit time')
   })
 
   it('labels a phone’s hourly axis every third hour on the clock and every day, and nothing between', async () => {
@@ -670,7 +670,7 @@ describe('the readout', () => {
     expect(legend.textContent).toContain('272 of 300 · 95 % 86.8–93.5 %')
     expect(legend.textContent).toContain('requested 401 · other 0')
     expect(legend.textContent).toContain('incl. workflow sweep 3')
-    expect(legend.textContent).toContain('by created_at')
+    expect(legend.textContent).toContain('by submit time')
     // Not a live region: the focused column's name already says the counts.
     expect(legend.getAttribute('aria-live')).toBeNull()
     expect(root.querySelector('.ol-at')!.textContent).toBe('all 14 days')
@@ -872,8 +872,9 @@ describe('scope and filters', () => {
     // platform fact say it; the hash and the query keep `tenant`.
     const scope = [...root.querySelector('.ol-scope')!.querySelectorAll('button')].map((b) => b.textContent)
     expect(scope).toEqual(['my workspace', 'platform'])
-    const picker = [...root.querySelectorAll<HTMLElement>('.ol-pick summary')].map((p) => p.textContent ?? '')
-    expect(picker).toContain('Workspace all 3')
+    const picker = [...root.querySelectorAll<HTMLElement>('.tl-pick summary')].map((p) => p.textContent ?? '')
+    // No count on an unnarrowed picker, as on Lanes (runs2-19).
+    expect(picker).toContain('Workspace all')
     expect(root.querySelector('.ol-toolbar')!.textContent).not.toMatch(/tenant/i)
     expect(root.querySelector('.ol-facts')!.textContent).not.toMatch(/tenant/i)
     fireEvent.click(verify)
@@ -885,7 +886,7 @@ describe('scope and filters', () => {
     const onView = vi.fn()
     const root = await timeline(ledgerFixture(), { view: '', onView })
     await waitFor(() => expect(api.loadRunnerProfiles).toHaveBeenCalled())
-    const pick = [...root.querySelectorAll<HTMLElement>('.ol-pick')].find((p) => p.textContent?.startsWith('Profile'))!
+    const pick = [...root.querySelectorAll<HTMLElement>('.tl-pick')].find((p) => p.textContent?.startsWith('Profile'))!
     await waitFor(() => expect(pick.querySelectorAll('input[type="checkbox"]')).toHaveLength(5))
     // By its label, not by role: the list sits in a closed <details>, which a
     // role query may treat as hidden depending on the DOM's UA sheet.
@@ -984,7 +985,7 @@ describe('what the route serves, said as the route means it', () => {
     // for 14 local days, and in platform scope one per tenant per day.
     const root = await timeline()
     const facts = [...root.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
-    expect(facts).toContain('sealed14 of 15 UTC days · today so far')
+    expect(facts).toContain('sealed14 of 15 days (UTC) · today so far')
     const prov = root.querySelector('.ol-prov')!.textContent ?? ''
     expect(prov).toContain('14 UTC days sealed')
     expect(prov, 'a live day need not be today: yesterday is live through the seal grace').toContain('1 live')
@@ -994,7 +995,7 @@ describe('what the route serves, said as the route means it', () => {
     d.coverage = { ...d.coverage, days: { total: 45, sealed: 42, live: 3, unread: 0 } }
     const platform = await timeline(d, { view: 'scope=platform' }, { admin: true })
     const pf = [...platform.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
-    expect(pf, '45 workspace-days read as "45 days" over a 14-day span').toContain('sealed42 of 45 workspace-days · today so far')
+    expect(pf, '45 workspace-days read as "45 days" over a 14-day span').toContain('sealed42 of 45 workspace-days (UTC) · today so far')
     expect(platform.querySelector('.ol-prov')!.textContent).toContain('42 workspace-days sealed')
   })
 
