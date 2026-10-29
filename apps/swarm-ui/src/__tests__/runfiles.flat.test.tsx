@@ -332,7 +332,7 @@ describe('the Checkpoints panel is one table of checkpoints', () => {
    * `manifest unreadable` line. The count's dash has no reason beside it and
    * the state is said only by a mark and the server's sentence.
    */
-  it('says an unreadable manifest in words, and marks the file count it took away', async () => {
+  it('says an unreadable manifest in words, and gives the file count it took away a dash and its reason', async () => {
     const s = await panel('Checkpoints', { checkpoints: ok(listing()) })
     const name = rowFor(s, 'ckpt-00001').querySelector('th')!
     const lines = [...name.querySelectorAll<HTMLElement>(':scope > .ctl-sub')].map((l) => l.textContent ?? '')
@@ -341,11 +341,31 @@ describe('the Checkpoints panel is one table of checkpoints', () => {
     expect(lines.indexOf('manifest unreadable')).toBeLessThan(lines.findIndex((l) => l.startsWith('resume')))
     const facts = lines.find((l) => l.includes('files'))!
     expect(facts).not.toMatch(/\d+ files/)
+    // QA2-FIX-14, overview-agents-49, as CLD adapted it (QA2B-C): the
+    // unknown count stays a dash, and its reason is words beside it, not a
+    // `not read` mark. MUTATION: draw `<Em /> files` and the mark again --
+    // the row reads `— files · not read`.
     const counted = [...name.querySelectorAll<HTMLElement>(':scope > .ctl-sub')].find((l) => (l.textContent ?? '').includes('files'))!
     expect(counted.querySelector('.ctl-em')).not.toBeNull()
-    expect(counted.querySelector('.ctl-mark.is-unread')?.getAttribute('aria-label') ?? '').toMatch(/count is unknown/)
+    expect(counted.textContent).toContain('— files (manifest unreadable)')
+    expect(counted.textContent).not.toMatch(/not read\b|file count unknown/)
+    expect([...counted.querySelectorAll('.ctl-mark')].filter((m) => /count is unknown/.test(m.getAttribute('aria-label') ?? ''))).toHaveLength(0)
+    expect(counted.querySelector('.rf-count-unknown')?.getAttribute('title') ?? '').toMatch(/count is unknown/)
     // A readable manifest's count stays a bare figure.
     expect(rowFor(s, 'ckpt-00002').querySelector('th')!.textContent).toContain('184 files')
+  })
+
+  it('says a count the manifest did not record as a dash and `not recorded`', async () => {
+    // QA2-FIX-14, overview-agents-49 (QA2B-C). MUTATION: drop the reason's
+    // words -- the row reads a bare `— files`.
+    const s = await panel('Checkpoints', {
+      checkpoints: ok(listing({ checkpoints: [record('ckpt-00003', { file_count: null })] })),
+    })
+    const name = rowFor(s, 'ckpt-00003').querySelector('th')!
+    const counted = [...name.querySelectorAll<HTMLElement>(':scope > .ctl-sub')].find((l) => (l.textContent ?? '').includes('files'))!
+    expect(counted.querySelector('.ctl-em')).not.toBeNull()
+    expect(counted.textContent).toContain('— files (not recorded)')
+    expect(counted.querySelector('.rf-count-unknown')?.getAttribute('title') ?? '').toMatch(/No file count was recorded/)
   })
 
   it('draws a checkpoint\'s objects as rows of the same table, each with a name, a size and an age', async () => {
