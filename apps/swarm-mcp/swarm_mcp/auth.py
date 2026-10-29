@@ -170,7 +170,7 @@ WHY_NOT: Mapping[tuple[Tier, str], str] = _Spelled({
         "roles/iap.httpsResourceAccessor, granted through frontend_iap_members in "
         "terraform/bootstrap/terraform.tfvars, which the owner applies and CI does "
         "not (moved out of terraform/infra on 2026-09-24). That list now holds "
-        "domain:saga.xyz and swarm-verify; a service account not on it gets the "
+        "the deployment's own domain and swarm-verify; a service account not on it gets the "
         "same named 403 until it is added there. SWARM_IAP_CLIENT_ID is NOT the "
         "answer here: terraform/modules/frontend sets no oauth2_client_id on "
         "purpose, so IAP uses a Google-managed client and there is no audience to "

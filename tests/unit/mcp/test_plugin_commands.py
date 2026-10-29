@@ -467,6 +467,11 @@ _DEVELOPER_STATE = frozenset(
         # 2026-10-11: the audited purge of failed history DELETES workflows,
         # tasks and their artifacts. Typed at a terminal, never granted.
         "sc.cmd_admin_purge",
+        # Approving or rejecting what waits for a person decides it for them;
+        # /sc tells the operator the command and never runs it
+        # (DAYONE-PLUGIN-1: the scan now reads every bare `sc ...`).
+        "sc.cmd_approvals_approve",
+        "sc.cmd_approvals_reject",
         # KEYS-PLUGIN: storing a TypeSafe key reads it at a hidden prompt.
         # The key never passes through a model, so no skill may run it.
         "sc.cmd_key_set",
@@ -613,7 +618,7 @@ def test_every_read_only_command_the_surface_tells_a_model_to_run_is_granted(pat
     rules = [_rule_pattern(rule) for rule in _granted_rules(path)]
     assert rules, f"{path} grants no Bash rule at all"
     checked, ungranted = 0, []
-    for command in sorted({m for m in _BACKTICKED_COMMAND.findall(path.read_text()) if m.startswith("uv run ")}):
+    for command in sorted(set(_BACKTICKED_COMMAND.findall(path.read_text()))):
         if "$" in command:
             continue  # `$ARGUMENTS` is the operator's, not a command
         runnable = re.sub(r"<[^>]*>", "x", command)
