@@ -300,20 +300,22 @@ describe('keyboard access', () => {
     })
     render(<Tab ts={ts} />)
     await waitFor(() => expect(marks()).toHaveLength(2))
-    const note = screen.getByTestId('diff-pin-note')
-    expect(note.textContent).toBe('')
+    // Read fresh each time: a late load can redraw the findings list, and a
+    // node held from before it keeps the text it had when it was replaced.
+    const note = () => screen.getByTestId('diff-pin-note')
+    expect(note().textContent).toBe('')
     const blocker = marks().find((m) => m.getAttribute('aria-label') === 'Blocker finding: the loop never ends')!
     expect(blocker.tagName).toBe('BUTTON')
     expect(blocker.tabIndex).toBe(0)
     fireEvent.focus(blocker)
-    expect(note.textContent).toBe('Blocker · new line 10: the loop never ends')
+    expect(note().textContent).toBe('Blocker · new line 10: the loop never ends')
 
     const list = screen.getByRole('navigation', { name: 'Review findings on this patch' })
     expect(list.textContent).toMatch(/2 of 2 findings pinned/)
     const go = within(list).getByRole('button', { name: /src\/app\/one\.ts · old 1 · Not graded · rename this/ })
     fireEvent.click(go)
     expect(go.getAttribute('aria-pressed')).toBe('true')
-    expect(note.textContent).toBe('Not graded · old line 1: rename this')
+    expect(note().textContent).toBe('Not graded · old line 1: rename this')
   })
 
   it('opens a pinned finding’s file from the findings panel', async () => {
