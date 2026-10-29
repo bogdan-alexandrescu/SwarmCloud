@@ -101,7 +101,13 @@ def test_broker_url_computed(env_name: str, local_name: str, service: str):
     texts = {p.name: _strip_comments(p.read_text()) for p in INFRA.glob("*.tf")}
     assignments = re.findall(rf"(?m)^\s*{env_name}\s*=\s*(\S+)\s*$", texts["locals.tf"])
     assert assignments, f"{env_name} is not rendered in locals.tf"
-    assert set(assignments) == {f"local.{local_name}"}, assignments
+    # The services' own environments take the computed URL; worker jobs, which
+    # live outside module.cloud_run, may read its output. Never a variable.
+    assert f"local.{local_name}" in assignments
+    assert set(assignments) <= {
+        f"local.{local_name}",
+        f'module.cloud_run.service_urls["{service}"]',
+    }, assignments
     (definition,) = [
         m.group(1)
         for text in texts.values()
@@ -145,14 +151,19 @@ def test_no_live_default():
     assert not found, "defaults that configure a new install as the live one:\n" + "\n".join(found)
 
 
+def test_allowed_domains_has_no_default_domain():
+    body = _variables(INFRA / "variables.tf")["allowed_domains"]
+    assert _default(body) == "null"
+
+
 def test_tailscale_target_has_no_default():
     body = _variables(INFRA / "tailscale.tf")["tailscale_egress_target"]
     assert _default(body) == "null"
 
 
-def test_monitoring_excluded_tenants_has_no_default():
+def test_monitoring_excluded_tenants_default_names_no_tenant():
     body = _variables(MONITORING_VARS)["fencing_alert_excluded_tenants"]
-    assert _default(body) is None
+    assert _default(body) == "[]"
     monitoring = _block((INFRA / "main.tf").read_text(), 'module "monitoring"')
     assert re.search(r"(?m)^\s*fencing_alert_excluded_tenants\s*=", monitoring)
 

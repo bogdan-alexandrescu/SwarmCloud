@@ -14,7 +14,9 @@
 # to plan against an empty state while the deployer exists
 # (docs/operations.md, "The bootstrap layer's state").
 terraform {
-  required_version = ">= 1.9.0"
+  # The version scripts/prerequisites.sh pins and the install engine enforces
+  # (docs/design/day-one-install.md §14 Q8): patch releases of 1.16 only.
+  required_version = "~> 1.16.2"
 
   required_providers {
     google = {

@@ -566,57 +566,6 @@ variable "internal_decision_api_enabled" {
   default     = false
 }
 
-variable "frontend_iap_audiences" {
-  description = <<-EOT
-    Audiences swarm-api accepts on an IAP assertion, one per backend service:
-
-        /projects/<PROJECT NUMBER>/global/backendServices/<BACKEND SERVICE ID>
-
-    Declared rather than derived because deriving it from the frontend module is
-    a terraform cycle -- that module consumes the Cloud Run services this value
-    configures. Read it from `terraform output frontend_iap_audiences` once the
-    load balancer exists.
-
-    EMPTY MEANS THE IAP PATH IS OFF, not "accept any audience". An unpinned
-    audience makes google-auth skip the `aud` check, and an IAP assertion is
-    issued to anyone who can reach any IAP-protected resource anywhere.
-  EOT
-  type        = list(string)
-  default     = []
-}
-
-variable "quota_broker_url" {
-  description = <<-EOT
-    Base URL of the swarm-quota-broker Cloud Run service, for the SCHEDULER's
-    environment. The scheduler never calls the broker; it passes this through
-    to every worker it dispatches (scheduler.dispatch.worker_env), and a worker
-    with no QUOTA_BROKER_URL uses no account pool at all.
-
-    Declared rather than derived, for the same reason frontend_iap_audiences
-    is: the scheduler's environment is an INPUT to the Cloud Run module and the
-    broker's URL is an OUTPUT of it, so referencing it is a cycle terraform
-    refuses to plan. Worker JOBS are unaffected -- locals.tf derives the same
-    value for them, because that module reads the Cloud Run outputs rather than
-    feeding them.
-
-    Read it from `terraform output quota_broker_url` after the first apply and
-    put it in <env>.tfvars. The `quota_broker_url_is_wired` check fails while it
-    is empty or stale.
-
-    EMPTY MEANS "NO POOL ON THE GKE PATH", not "guess". A guessed URL is the
-    worst outcome available here: a 404 is a configuration refusal, and a
-    worker that is refused PARKS rather than running on the wrong credential,
-    so a wrong guess would park every browser and GPU task in the fleet.
-  EOT
-  type        = string
-  default     = ""
-
-  validation {
-    condition     = var.quota_broker_url == "" || startswith(var.quota_broker_url, "https://")
-    error_message = "quota_broker_url must be an https:// base URL, or empty."
-  }
-}
-
 variable "groups_impersonate_user" {
   description = <<-EOT
     The Workspace user swarm-api acts AS when it reads Cloud Identity groups.
@@ -919,13 +868,48 @@ variable "settings_env" {
 }
 
 variable "allowed_domains" {
-  description = "Hosted domains permitted to authenticate."
+  description = <<-EOT
+    Hosted domains permitted to authenticate.
+
+    NO DEFAULT DOMAIN (null): a default is what a new install gets without
+    being asked, and the only one this could hold is the live deployment's own
+    domain (DAYONE-TF-1). Unset admits NO hosted domain -- only swarm-verify
+    and var.allowed_users, swarm-api's solo deployment -- so leaving it out
+    fails closed. An explicit [] is still refused: whoever writes it believes
+    it opens sign-in to everyone.
+  EOT
   type        = list(string)
-  default     = ["saga.xyz"]
+  default     = null
 
   validation {
-    condition     = length(var.allowed_domains) > 0
-    error_message = "at least one allowed domain is required; refusing open auth."
+    condition     = var.allowed_domains == null || try(length(var.allowed_domains) > 0, false)
+    error_message = "at least one allowed domain is required; refusing open auth. Leave allowed_domains unset to admit no hosted domain at all."
+  }
+}
+
+variable "allowed_users" {
+  description = <<-EOT
+    Addresses admitted past the domain check in addition to swarm-verify's own
+    account, which locals.tf always adds (swarm-api's ALLOWED_USERS). For a
+    service account that is no Workspace principal and so can never match
+    allowed_domains -- in the live deployment, the oracle-api client
+    application (owner decision 2026-10-18, #1568).
+
+    Empty by default: a new install admits no one by address until its owner
+    names them. An input rather than a literal in locals.tf, because the
+    address names one project and a literal would carry it into every install
+    (DAYONE-TF-1).
+
+    This widens WHICH verified identities are admitted, never whether an
+    identity was verified: swarm-api consults it only after the token has been
+    checked, and the address it compares comes from that token.
+  EOT
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for u in var.allowed_users : can(regex("^[^@,[:space:]]+@[^@,[:space:]]+$", u))])
+    error_message = "allowed_users are bare email addresses (no `user:` or `serviceAccount:` prefix, no comma): each is joined into swarm-api's comma-separated ALLOWED_USERS."
   }
 }
 
