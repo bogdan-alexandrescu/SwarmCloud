@@ -267,9 +267,14 @@ async function openPanel(): Promise<HTMLElement> {
 describe('a. F1: the expanded stage', () => {
   it('holds no step card, sits above its cards, and begins its error line with the step’s name', async () => {
     await page()
+    // The page's own pick leaves its stage folded (visual QA pass 2,
+    // overview-agents-63, #2694); the failure line's control opens it.
+    act(() => {
+      fireEvent.click(document.querySelector<HTMLButtonElement>('.wfp-fail-lead-go')!)
+    })
     const band = await waitFor(() => {
       const b = document.querySelector<HTMLElement>('.wf-canvas .wf-band.is-opened')
-      expect(b, 'the failed step’s stage did not open on arrival').toBeTruthy()
+      expect(b, 'the failed step’s stage did not open when the reader asked').toBeTruthy()
       return b!
     })
     expect(band.querySelector('.node-slot, .node'), 'a step card is inside the band').toBeNull()
@@ -292,6 +297,10 @@ describe('a. F1: the expanded stage', () => {
     stubBox('scrollWidth', (el) => (el.classList.contains('wf-canvas-wrap') ? 72 + Number.parseFloat(el.querySelector<HTMLElement>('.wf-canvas')?.style.width ?? '0') : 0))
     stubBox('offsetWidth', (el) => (el.classList.contains('wf-levels') ? 72 : 0))
     await page()
+    // The reader's open, not the arrival, brings the stage round (overview-agents-63).
+    act(() => {
+      fireEvent.click(document.querySelector<HTMLButtonElement>('.wfp-fail-lead-go')!)
+    })
     const wrap = await waitFor(() => {
       const w = document.querySelector<HTMLElement>('.wf-canvas-wrap')
       expect(w?.querySelector('.wf-band.is-opened')).toBeTruthy()
@@ -536,9 +545,12 @@ describe('h. the list’s cost column holds its note on one line at 1440', () =>
 describe('i. QA-120: the failed step on arrival', () => {
   it('opens its card on arrival, and a click on the selected card keeps it open', async () => {
     await openPanel()
-    const node = document.querySelector<HTMLButtonElement>('button.node[data-step="checkpoints"]')!
+    // Its stage is folded on arrival (overview-agents-63): the selected step
+    // is the band's pressed chip.
+    const chip = [...document.querySelectorAll<HTMLButtonElement>('.wf-band-chips button')].find((b) => b.textContent?.includes('checkpoints'))!
+    expect(chip.getAttribute('aria-pressed')).toBe('true')
     act(() => {
-      fireEvent.click(node)
+      fireEvent.click(chip)
     })
     // MUTATION: drop the open-first branch in `pickStep` -- the first click
     // on the arrival pick closes its card.

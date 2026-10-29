@@ -1431,7 +1431,7 @@ export function WorkflowCard({
       // now; its close control takes focus once it has (`bringInline`).
       if (card === null) bringInline.current = true
       if (card !== null) {
-        if (typeof card.scrollIntoView === 'function') card.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+        if (typeof card.scrollIntoView === 'function') card.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' })
         // The docked panel takes focus itself; the card drawn under a row
         // (Table or Timeline below the dock width) is not focusable, so its
         // close control is where a keyboard reader lands.
@@ -1459,16 +1459,30 @@ export function WorkflowCard({
   }, [arrival])
 
   // CLOSING THE GRAPH'S PANEL PUTS FOCUS BACK ON THE NODE THAT OPENED IT, so a
-  // keyboard reader is where they were rather than at the top of the page. The
-  // node survives the close -- only the panel unmounts -- so it can take focus
-  // at once.
+  // keyboard reader is where they were rather than at the top of the page.
+  // AND AGAIN ONCE THE CLOSE HAS DRAWN (visual QA pass 2 ovag2-08, #2694):
+  // the node does not always survive the close. Unpicking can re-lay its
+  // stage -- drawn in a `.wf-stage` box while open, loose on the canvas after
+  // -- and React mounts a new button there, so the one focused here was
+  // detached and focus fell to <body>: the next Tab started at the skip link.
+  // The effect below focuses the node as it is after the commit.
+  const refocus = useRef<string | null>(null)
+  const focusNode = (stepId: string) =>
+    [...(sectionRef.current?.querySelectorAll<HTMLButtonElement>('button.node, button.wf-pick') ?? [])]
+      .find((b) => b.dataset.step === stepId)
+      ?.focus()
   const closePanel = (stepId: string) => {
     togglePick(stepId)
-    const node = [
-      ...(sectionRef.current?.querySelectorAll<HTMLButtonElement>('button.node, button.wf-pick') ?? []),
-    ].find((b) => b.dataset.step === stepId)
-    node?.focus()
+    focusNode(stepId)
+    refocus.current = stepId
   }
+  useEffect(() => {
+    const stepId = refocus.current
+    if (stepId === null) return
+    refocus.current = null
+    const at = document.activeElement
+    if (at === null || at === document.body || !at.isConnected || !(sectionRef.current?.contains(at) ?? false)) focusNode(stepId)
+  })
 
   // WHY THE STEP FAILED, ABOVE THE GRAPH, ON ARRIVAL (visual QA QA-120, run
   // 2, 2026-10-20). A failed workflow's page opens with its failed step
@@ -1594,6 +1608,7 @@ export function WorkflowCard({
                 zoom={zoom}
                 onZoom={onZoom}
                 picked={picked}
+                arrivalPick={page && arrival}
                 onPick={pickStep}
                 reload={reload}
                 onStageTable={page ? onStageTable : undefined}
@@ -1723,7 +1738,10 @@ function StepPanel({ onClose, children, bring = true }: { onClose: () => void; c
     // ONLY WHEN A READER OPENED IT (QA G3-28). The page picks the first
     // failure on arrival, and bringing that card into view opened a failed
     // workflow's page ~920px down, past its head and its tabs.
-    if (bring && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    // `inline: 'nearest'` SPELLED OUT (overview-agents-63): it is the
+    // browsers' default for that axis, written here so a later edit of the
+    // options cannot quietly scroll a sideways scroller past the card.
+    if (bring && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' })
     // On mount only: this is about how the card ARRIVED.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -1987,12 +2005,22 @@ function Spend({ spend, short = false, reading = false }: { spend: WorkflowSpend
       {/* THE UNIT AND A SPACE (visual QA pass 1 overview-agents-82, #2596):
           `3 of 4 reported` named no unit, and with no space between the two
           spans a copy read `$0.5183 of 4 reported`. */}
+      {/* SHORT IN THE LIST (visual QA pass 2 ovag2-15, #2694): the list's
+          Cost column set `3 of 4 steps that ran reported` on four lines. The
+          list says `3 of 4 reported`, with the long form as its title; the
+          head and the step table, which have the room, keep the long form. */}
       {partial && (
         <>
           {' '}
-          <span className="wf-spend-cov">
-            {spend.covered} of {due} step{due === 1 ? '' : 's'} that ran reported
-          </span>
+          {short ? (
+            <span className="wf-spend-cov" title={`${spend.covered} of ${due} step${due === 1 ? '' : 's'} that ran reported a cost`}>
+              {spend.covered} of {due} reported
+            </span>
+          ) : (
+            <span className="wf-spend-cov">
+              {spend.covered} of {due} step{due === 1 ? '' : 's'} that ran reported
+            </span>
+          )}
         </>
       )}
     </span>
@@ -3261,14 +3289,41 @@ function VerticalMinimap({
  * yet be the longest link, so a path through the measured ones alone would be a
  * guess drawn as a fact.
  */
-function CriticalPathNote({ path, total }: { path: CriticalPath; total: number }) {
+function CriticalPathNote({
+  path,
+  total,
+  ended = false,
+  neverRan = [],
+}: {
+  path: CriticalPath
+  total: number
+  /** The workflow has ended: a step with no measured run time will never have one. */
+  ended?: boolean
+  /** Of `path.missing`, the steps that never started. */
+  neverRan?: readonly string[]
+}) {
   if (path.kind === 'unmeasured') {
     const named = path.missing.slice(0, 3).join(', ')
     const more = path.missing.length > 3 ? ` and ${path.missing.length - 3} more` : ''
+    // A WORKFLOW THAT HAS ENDED IS NOT WAITING FOR ITS STEPS (visual QA pass
+    // 2, overview-agents-66, #2694): a failed fan-in whose synthesis was
+    // cancelled before it ran read `until every step has run`, a wait for
+    // something that cannot happen. Once the workflow has ended the caption
+    // names the steps that kept the chain from being measured, and says they
+    // never ran when that is why.
+    const allNeverRan = neverRan.length === path.missing.length
     const why =
       path.missing.length === 0
         ? 'no step ends the workflow, so its dependencies form a cycle and no chain has an end.'
-        : `${path.missing.length} of ${total} steps have no measured duration (${named}${more}). It is drawn once every step has run, because a step that has not run could be on it.`
+        : ended
+          ? `${path.missing.length} of ${total} steps have no measured duration (${named}${more}), and the workflow has ended, so they never will${allNeverRan ? ': they never ran' : ''}. A step with no run time could have been on the chain.`
+          : `${path.missing.length} of ${total} steps have no measured duration (${named}${more}). It is drawn once every step has run, because a step that has not run could be on it.`
+    const words =
+      path.missing.length === 0
+        ? 'because the steps’ dependencies form a cycle'
+        : ended
+          ? `not measured: ${named}${more} ${allNeverRan ? 'never ran' : 'recorded no run time'}`
+          : 'until every step has run'
     // IN WORDS (visual QA pass 1, overview-agents-66, part of #2596): the
     // caption read "critical path not measured", jargon with no reason on
     // the page. It names what it is and when it is drawn; the reason in full
@@ -3276,7 +3331,7 @@ function CriticalPathNote({ path, total }: { path: CriticalPath; total: number }
     return (
       <p className="wf-critical is-unmeasured">
         <span className="wf-critical-h">longest chain</span> <Mark kind="absent" say={`Longest chain not measured: ${why}`} />{' '}
-        {path.missing.length === 0 ? 'because the steps’ dependencies form a cycle' : 'until every step has run'}
+        {words}
       </p>
     )
   }
@@ -3430,6 +3485,7 @@ function WorkflowGraph({
   zoom,
   onZoom,
   picked,
+  arrivalPick = false,
   onPick,
   reload,
   onStageTable,
@@ -3445,6 +3501,8 @@ function WorkflowGraph({
   onZoom?: (id: string, choice: ZoomChoice) => void
   /** The step the inspector is on, outlined so the canvas says which one it is. */
   picked: string | null
+  /** `picked` is the page's own pick on arrival, not a reader's: it opens no stage and scrolls nothing (overview-agents-63). */
+  arrivalPick?: boolean
   /** Clicking a node puts its step in the inspector (WF-7). */
   onPick: (stepId: string) => void
   reload: () => void
@@ -3545,8 +3603,17 @@ function WorkflowGraph({
   // `onToggleStage`, and from the next render on `openStages` alone decides --
   // which is what leaves a reader's re-close standing. Adding a level that is
   // not wide is harmless: `layoutOf` only opens a level that is.
-  const pickedLevel = picked === null ? -1 : levels.findIndex((l) => l.some((s) => s.step_id === picked))
-  const arrival = `${workflow.workflow_id}\u0000${picked ?? ''}`
+  //
+  // NOT FOR THE PAGE'S OWN PICK ON ARRIVAL (visual QA pass 2,
+  // overview-agents-63, #2694). A failed fan-in's page loaded with the
+  // failure's stage opened and the canvas scrolled to it, beside the docked
+  // card: the stage band was cut at both edges (`status 2: pytest…`,
+  // `collapse sta`). The graph now opens whole, the stage folded with the
+  // picked step named in its band; the stage opens and the canvas comes
+  // round once a reader picks -- the node, the band's chip or the failure
+  // line's control -- which `arrivalPick` going false makes a new arrival.
+  const pickedLevel = picked === null || arrivalPick ? -1 : levels.findIndex((l) => l.some((s) => s.step_id === picked))
+  const arrival = `${workflow.workflow_id}\u0000${picked ?? ''}\u0000${arrivalPick ? 'page' : 'reader'}`
   const arrived = useRef<string | null>(null)
   const opensOnArrival = arrived.current !== arrival && pickedLevel >= 0 && !expandedStages.has(pickedLevel)
   const shownStages = opensOnArrival ? new Set([...expandedStages, pickedLevel]) : expandedStages
@@ -3568,6 +3635,19 @@ function WorkflowGraph({
     const d = stepDuration(stepState(s, taskById), now)
     return d.kind === 'ran' ? d.seconds : null
   })
+  // Whether the workflow has ended, and which of the steps the chain could not
+  // be measured over never started (overview-agents-66, `CriticalPathNote`).
+  const endedAs = derivedStateOf(workflow)
+  const workflowEnded = endedAs !== null && TERMINAL_STATES.has(endedAs)
+  const criticalNeverRan =
+    critical.kind === 'unmeasured'
+      ? critical.missing.filter((id) => {
+          const s = workflow.steps.find((x) => x.step_id === id)
+          if (s === undefined) return false
+          const st = stepState(s, taskById)
+          return st.kind === 'unstarted' || (st.kind === 'state' && !st.task.started_at)
+        })
+      : []
   const criticalEdges = new Set<string>()
   if (critical.kind === 'measured') {
     for (let i = 1; i < critical.steps.length; i++) criticalEdges.add(`${critical.steps[i - 1]}->${critical.steps[i]}`)
@@ -3620,7 +3700,7 @@ function WorkflowGraph({
     onToggleStage(stageKey(workflow.workflow_id, pickedLevel), false)
     // On the pick's arrival only -- see above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [picked, workflow.workflow_id])
+  }, [picked, workflow.workflow_id, arrivalPick])
 
   // THE CANVAS OPENS ON ITS START, NOT ON AN EMPTY LANE (WF-9, epic #83).
   // Levels are centred against the widest one -- kept, by the owner's decision
@@ -3799,7 +3879,9 @@ function WorkflowGraph({
       )}
       {/* ITS OWN LINE, NOT THE ZOOM STRIP'S: the strip is view chrome and holds
           no data mark (WF-14), and an unmeasured path is one. */}
-      {layout.edges.length > 0 && <CriticalPathNote path={critical} total={workflow.steps.length} />}
+      {layout.edges.length > 0 && (
+        <CriticalPathNote path={critical} total={workflow.steps.length} ended={workflowEnded} neverRan={criticalNeverRan} />
+      )}
       <div className="wf-canvas-row">
       <div className={`wf-canvas-wrap${fitsAcross ? ' fits-x' : ''}`} ref={wrapRef} onScroll={syncView}>
         <div className="wf-graph">
@@ -6083,8 +6165,21 @@ function WorkflowListRow({
   const read = workflowDuration(workflow, taskById, now)
   // NOT READ YET IS NOT A FAILED READ (live QA WF-11): the legend's `not read`
   // means the read failed, and a row whose read has not been made yet said it.
-  const dur =
-    pending && read.ms === null && read.text === 'not read'
+  // NO DURATION CLAIM WHILE THE STATE IS UNKNOWN (visual QA pass 2,
+  // overview-agents-62, #2694): the Running bucket holds a workflow whose
+  // state this read could not derive, so its row measured to now and said
+  // `9d 22h so far` -- a claim that it is still running, beside a mark that
+  // says nobody knows. It says how long ago it was submitted instead, in the
+  // absent treatment, and why in its title.
+  const unknownState = derivedStateOf(workflow) === null && read.live && read.ms !== null
+  const dur = unknownState
+    ? {
+        ...read,
+        ms: null,
+        text: `submitted ${formatDuration(read.ms ?? 0)} ago`,
+        title: `The workflow's state is unknown, so whether it is still running, and so its duration, is not known. Submitted ${workflow.created_at}.`,
+      }
+    : pending && read.ms === null && read.text === 'not read'
       ? { ...read, text: 'not yet read', title: "this row's steps are read when it scrolls into view" }
       : read
   return (
