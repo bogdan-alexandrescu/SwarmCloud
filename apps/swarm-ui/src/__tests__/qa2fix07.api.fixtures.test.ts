@@ -131,7 +131,7 @@ describe('cap2-06: the account sheet, the list and the health board tell one sto
     expect(sheet.status).toBe(onBoard?.status)
     expect(total(sheet.counts.last_24h as unknown as Record<string, number>)).toBe(2)
     // On the browser's clock, which the sheet measures on: read now, not at FIXTURE_CLOCK.
-    expect(Math.abs(Date.now() - Date.parse(sheet.observed_at))).toBeLessThan(60_000)
+    expect(Math.abs(Date.now() - Date.parse(sheet.observed_at ?? ''))).toBeLessThan(60_000)
   })
 
   it('the Accounts list reads primary as read minutes ago on the page\'s clock, not days', async () => {
