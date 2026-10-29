@@ -4,6 +4,16 @@
 
 /* The page's column: the parts, the lead and the cards one gap apart. */
 .ws-page { display: flex; flex-direction: column; gap: var(--ctl-s3, 12px); min-width: 0; }
+/* THE TABS AT THE SAME HEIGHT AS EVERY CONFIG PAGE'S (QA2-FIX-27, config2-17,
+   part of #2694). `.c-phead` keeps a 12px bottom margin, and a flex item's
+   margin does not collapse into the column's 12px gap -- here or in
+   `.cfg-page`, which this box dissolves into from 760px (config.css) -- so
+   Settings / Workspace setup drew 12px lower (y 89) than GitHub access,
+   Repositories and Secrets (y 77), whose heads drop it (`.ur-page`,
+   repositories.css; `.sec-page`, secrets.css). The gap is the one gap.
+   People and roles (`.wp-page`, styled below) is the same box and the same
+   head, so it drops it too. */
+.ws-page > .c-phead, .wp-page > .c-phead { margin-bottom: 0; }
 
 /* A part's lead: one line of what it is about and its one next action (S6). */
 .ws-lead { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; padding: 14px 18px; border-radius: var(--r-card); background: var(--sk-acs); border: 1px solid var(--sk-acl, var(--line)); min-width: 0; }
