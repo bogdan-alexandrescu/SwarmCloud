@@ -1632,7 +1632,7 @@ function fixtureIssueRun(id: string, over: Partial<IssueRun> = {}): IssueRun {
   }
   const at = new Date(FIXTURE_NOW - 6 * 60_000).toISOString()
   return {
-    id, tenant_id: 'eng', state: 'PLANNED', terminal: false, issue,
+    id, tenant_id: 'u-bogdan', state: 'PLANNED', terminal: false, issue,
     plan_approval: 'required', auto_merge: false, fix_rounds: 3, planner_task_id: 'task_planner_fixture',
     // The digest is computed text in the live API; the fixture's is built, not a literal.
     plan: FIXTURE_PLAN, plan_digest: `sha256:${'9f2c41'.padEnd(64, '0')}`, plan_revision: 1, plan_edited_by: null,
@@ -1640,6 +1640,14 @@ function fixtureIssueRun(id: string, over: Partial<IssueRun> = {}): IssueRun {
     approved_by: null, approved_at: null, approved_digest: null, rejected_by: null, rejection_reason: null,
     error: null,
     history: [{ at, from: null, to: 'PLANNING', by: 'operator@example.com' }, { at, from: 'PLANNING', to: 'PLANNED', by: 'swarm-api' }],
+    // THE ISSUE AS THE RUN READ IT AT SUBMISSION (QA2-FIX-20, runs2-03): the
+    // list leads each row with its title, as the live API's runs carry it.
+    issue_read: {
+      title: "The workflow list shows no cost column, so a finished workflow's spend needs opening every step",
+      labels: ['enhancement', 'ui'], state: 'open', comments: 4, url: issue.url,
+      body: 'See what a finished workflow cost without opening each step.', body_truncated: false, body_redacted: false, read_at: at,
+    },
+    issue_read_error: null,
     ...over,
   }
 }
@@ -1715,7 +1723,7 @@ async function fixtureRuns(pageToken: string | null): Promise<Result<IssueRunPag
   await new Promise((r) => setTimeout(r, 60))
   noteFixtureProbe(route('/v1/runs'), 60, true)
   const runs = pageToken === null ? fixtureIssueRuns() : []
-  return { status: 'ok', fetchedAt: Date.now(), data: { runs, next_page_token: null, tenant_id: 'eng' } }
+  return { status: 'ok', fetchedAt: Date.now(), data: { runs, next_page_token: null, tenant_id: 'u-bogdan' } }
 }
 
 async function fixtureRun(runId: string): Promise<Result<IssueRunRead>> {
@@ -2037,7 +2045,12 @@ async function fixtureWorkflowRead(workflowId: string): Promise<Result<WorkflowR
     }
   }
   const page = await fixtureTasks()
-  const tasks = page.status === 'ok' ? page.data.tasks.filter((t) => t.workflow_id === workflowId) : []
+  // THE STEPS' OWN TASKS (review of QA2-FIX-16 runs2-36): the fixture tasks
+  // carry no workflow_id, so a filter on it alone served a read with no step
+  // task and Outcomes could not name the workflow Work › Workflows names.
+  const stepTasks = new Set(workflow.steps.map((s) => s.task_id).filter((id): id is string => !!id))
+  const tasks =
+    page.status === 'ok' ? page.data.tasks.filter((t) => t.workflow_id === workflowId || stepTasks.has(t.id)) : []
   return { status: 'ok', fetchedAt: Date.now(), data: { workflow, tasks } }
 }
 
@@ -3318,8 +3331,15 @@ async function fixtureLeases(): Promise<Result<LeasePage>> {
       leases: [
         row('d1', 400, { expired: true, expires_at: iso(60) }),
         row('c1', 140),
-        row('b1', 20),
+        // LEASED AFTER SUBMITTED (visual QA pass 2, ovag2-03, 2026-10-29): every
+        // row was leased 10 min ago, before `task_19d91b82` (3 min) and
+        // `task_460409cd` (1 min) were submitted, so Overview's held-since-lease
+        // age ran longer than Agents' since-submitted one. Each is leased after
+        // its task, its dispatch deadline after its lease.
+        row('b1', 20, { created_at: iso(160), dispatch_deadline: iso(130) }),
         row('a1', 0, {
+          created_at: iso(40),
+          dispatch_deadline: iso(10),
           dispatch_state: 'LEASED',
           dispatch_overdue: true,
           heartbeat_ever: false,
@@ -5485,16 +5505,26 @@ function fixtureTaskRows(): Task[] {
     // with every fixture row at generation == attempt_count, a glyph that
     // never fires and a glyph that is not wired look identical.
     mk('task_19d91b82', 'DISPATCHED', 'claude-code', 3, {
+      input: { prompt: 'Make the reconciler release a lease whose generation is stale.' },
       current_generation: 2,
       current_lease_id: 'lease_723362a25968460aae35',
     }),
-    mk('task_92eb4807', 'STARTING', 'claude-code', 2),
-    mk('task_460409cd', 'LEASED', 'claude-code', 1),
+    // WHAT EACH OF THE FIVE NEWEST LONE AGENTS DID (visual QA pass 2,
+    // runs2-10): with no title and no prompt, Submit's "Start from a recent
+    // one" listed all five as `claude-code agent · <hex>`. Each has the
+    // prompt a person would have typed; the list reads its first line.
+    mk('task_92eb4807', 'STARTING', 'claude-code', 2, {
+      input: { prompt: 'Add a test for a park that outlives its provider wait.' },
+    }),
+    mk('task_460409cd', 'LEASED', 'claude-code', 1, {
+      input: { prompt: 'Show the queue depth per pool on the Capacity page.' },
+    }),
     // A READY ROW SAYS WHICH POOL REFUSES IT (visual QA pass 1,
     // overview-agents-56): the sidebar named `anthropic · u-bogdan` full and
     // this row named nothing. Its `waiting_for` is the capacity fixture's own
     // claude-code blocker, the per-tenant anthropic slice at 5 of 5.
     mk('task_950b8e4a', 'READY', 'claude-code', 1, {
+      input: { prompt: 'Rename the dispatch strategies in the API docs.' },
       waiting_for: {
         as_of: new Date(FIXTURE_NOW).toISOString(),
         admissible_now: false,
@@ -5504,7 +5534,9 @@ function fixtureTaskRows(): Task[] {
         complete: true,
       },
     }),
-    mk('task_e7d210b6', 'QUEUED', 'claude-code', 0),
+    mk('task_e7d210b6', 'QUEUED', 'claude-code', 0, {
+      input: { prompt: 'Write the runbook for rotating a tenant git secret.' },
+    }),
     // THE FAILED TASK WHOSE CLI REPORTED SUCCESS (QA-115, kept as built):
     // its transcript ends `result · success` and the task still failed
     // after it, which is the case Logs explains. The only one: every other
@@ -5684,6 +5716,9 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
     // a fixture that disagrees with the response is a development screen that
     // renders correctly and a production one that does not.
     input_from: Record<string, string> = {},
+    // The step's input as the workflow route serves it, masked by its task's
+    // masker (QA2-FIX-13, overview-agents-50): the prompt the workflow gave it.
+    input: Record<string, unknown> = {},
   ) => ({
     step_id,
     runner_profile: 'claude-code',
@@ -5692,6 +5727,7 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
     input_from,
     timeout_seconds: 3600,
     task_id,
+    input,
   })
 
   const workflows: Workflow[] = [
@@ -5781,7 +5817,7 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
           step('cold-start', [], 'task_fan_0'),
           step('fencing', [], 'task_fan_1'),
           step('allornothing', [], 'task_fan_2'),
-          step('checkpoints', [], 'task_fan_3'),
+          step('checkpoints', [], 'task_fan_3', {}, { prompt: 'Audit the checkpoint writer: every running attempt checkpoints on its period, and a parked one before it exits.' }),
           step('absentzero', [], 'task_fan_4'),
           // `input_from` MIRRORS `depends_on` here, and it is a MAP -- upstream
           // step_id to artifact filename -- because that is what the API serves

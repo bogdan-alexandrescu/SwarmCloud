@@ -852,8 +852,8 @@ describe('scope and filters', () => {
     await waitFor(() => expect(api.loadMe).toHaveBeenCalled())
     expect(root.querySelector('.ol-scope')).toBeNull()
     const facts = [...root.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
-    // The reader's word is workspace (VQ-056); the id is still the tenant id.
-    expect(facts).toContain('workspaceeng')
+    // The reader's word is workspace (VQ-056); the id is still the tenant id, the fixture's u-bogdan.
+    expect(facts).toContain('workspaceu-bogdan')
     expect(facts).toContain('byfinish time')
   })
 
