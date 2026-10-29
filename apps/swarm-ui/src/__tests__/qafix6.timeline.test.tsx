@@ -114,7 +114,9 @@ beforeEach(() => {
   api.loadTasks.mockResolvedValue(ok({ tasks: [CROWD, LIVE] } as TaskPage))
   api.loadTask.mockResolvedValue({ status: 'error', error: { kind: 'server', httpStatus: 404, code: null, message: 'gone' } })
   api.loadWorkflow.mockResolvedValue(ok({ workflow: { workflow_id: 'wf_none', state: 'RUNNING', steps: [] }, tasks: [] } as unknown as WorkflowRead))
-  api.loadOutcomes.mockResolvedValue(ok(ledgerFixture()))
+  // A ledger over the 24 h span: since QA2-FIX-05 (runs2-04) one over
+  // another window shows no figures.
+  api.loadOutcomes.mockResolvedValue(ok({ ...ledgerFixture(), tz: 'UTC', bucket: 'hour', since: new Date(Date.now() - 86_400_000).toISOString(), until: new Date().toISOString() }))
 })
 
 afterEach(() => {
@@ -158,16 +160,16 @@ describe('6:work-a-001: the fenced and parks cells are busy exactly while an eve
     expect(cell(/park/)!.getAttribute('aria-busy')).not.toBe('true')
     cleanup()
 
-    // Failed: the cells keep 'events not read', and are not busy.
+    // Failed: the cell says 'not counted' (QA2-FIX-05, runs2-15), and is not busy.
     api.loadTaskEventsPage.mockResolvedValue({ status: 'error', error: { kind: 'server', httpStatus: 500, code: null, message: 'boom' } })
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     await waitFor(() => {
       // One cell for both, of how many (QA1-FIX-28, chrome-C17 and runs-submit-33).
-      expect(text(cell(/fenced/))).toMatch(/events not read on 2 of 2 lanes/)
+      expect(text(cell(/fenced/))).toMatch(/not counted on 2 of 2 lanes/)
       // MUTATION: mark the cells busy whenever a lane's events are unread, failed reads included.
       expect(cell(/fenced/)!.getAttribute('aria-busy')).not.toBe('true')
     })
-    expect(text(cell(/park/))).toMatch(/events not read on 2 of 2 lanes/)
+    expect(text(cell(/park/))).toMatch(/not counted on 2 of 2 lanes/)
     expect(cell(/park/)!.getAttribute('aria-busy')).not.toBe('true')
   })
 })
@@ -177,18 +179,19 @@ describe('6:work-a-001: the fenced and parks cells are busy exactly while an eve
 // ---------------------------------------------------------------------------
 
 describe('6:work-a-003: the success headline names the ledger’s window when it is not the span’s', () => {
-  it('carries “Sep 12 – Sep 25” in the headline over a ledger outside the 24 h span, and nothing over one that matches', async () => {
+  it('carries “Sep 12 – Sep 25” in place of the figures over a ledger outside the 24 h span, and nothing over one that matches', async () => {
+    api.loadOutcomes.mockResolvedValue(ok(ledgerFixture()))
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     const head = await waitFor(() => {
-      const el = cell(/% success/)
+      const el = cell(/not this span, read for/)
       expect(el).not.toBeNull()
       return el!
     })
     // MUTATION: leave the window to the small line under the strip, and the headline reads as the span's.
     expect(text(head)).toMatch(/Sep 12 – Sep 25/)
-    // At the figure's weight: a `b` of its own inside the headline, as the figure is.
-    // MUTATION: print the window as plain text beside the bold figure.
-    expect([...head.querySelectorAll('b')].map(text)).toContain('Sep 12 – Sep 25')
+    // QA2-FIX-05 (runs2-04): the ledger's figures are not printed over another window.
+    // MUTATION: print '91 % success' beside the window and it reads as the span's.
+    expect(text(head)).not.toMatch(/% success/)
     cleanup()
 
     // A ledger over the span itself: the headline names no window.
