@@ -80,7 +80,8 @@ def entry():
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert module.SIGNING_KEYS[PROJECT] == (KEY,), "the job trusts another key than this test signs with"
+    assert module.SIGNING_KEY_RE.fullmatch("--spec-signing-key=" + KEY), (
+        "the job cannot trust the key this test signs with")
     return module
 
 
@@ -128,7 +129,7 @@ def _record(db, tenant_id: str) -> dict[str, Any]:
 
 def _verifies(entry, kms: KmsKey, record: dict[str, Any]) -> None:
     """The job's own check, over the record as swarm-api stored it."""
-    entry.verify_approval(record, project=PROJECT, verify_keys={VERSION: kms.public_key(VERSION)})
+    entry.verify_approval(record, signing_key=KEY, verify_keys={VERSION: kms.public_key(VERSION)})
 
 
 def test_the_owners_approval_of_a_service_verifies_in_the_job(client, db, kms, entry) -> None:
@@ -197,7 +198,7 @@ def test_a_persons_own_request_approved_automatically_is_signed(client, db, kms,
     record = _record(db, ws.personal_tenant_id(DANA))
     assert record["state"] == ws.APPROVED
     assert record["approval"]["decided_by"] == DANA
-    entry.verify_approval(record, project=PROJECT, verify_keys={VERSION: kms.public_key(VERSION)})
+    entry.verify_approval(record, signing_key=KEY, verify_keys={VERSION: kms.public_key(VERSION)})
 
 
 def test_kms_failing_leaves_the_record_unapproved_and_publishes_nothing(

@@ -100,11 +100,18 @@ locals {
   # approval verification, so the job never reads Cloud KMS). SPEC_VERIFY_KEYS
   # in the shape workers get, {full version name: PEM}, over the ENABLED
   # versions of the key swarm-api signs approvals with: dev's step-spec key,
-  # the one images/workspace-apply/entry.py's SIGNING_KEYS trusts. Read below,
-  # at the owner's plan, with the owner's credentials. Public keys, not
+  # the one the command below names to images/workspace-apply/entry.py. Read
+  # below, at the owner's plan, with the owner's credentials. Public keys, not
   # secrets; nothing private is ever read or written here.
   workspace_spec_environment = "dev"
   workspace_spec_verify_keys = jsonencode(var.enable_workspace_deployer ? module.workspace_spec_keys[0].verify_keys : {})
+
+  # The key whose signatures the job trusts (DAYONE-BOOT-1, part of #2688):
+  # THIS project's step-spec key, the same module's the verify keys come from,
+  # so the trusted key and the public keys pinned beside it are one key's.
+  # entry.py used to trust one hard-coded project's key, so on any other
+  # project every group or service workspace stopped at APPROVAL_UNSIGNED.
+  workspace_spec_signing_key = var.enable_workspace_deployer ? module.workspace_spec_keys[0].crypto_key_id : ""
 
   # The job's command: isolated-mode Python running the scrub (§2.2 step 0),
   # which the image puts root-owned under /opt/swarm (images/workspace-apply,
@@ -112,15 +119,17 @@ locals {
   # is the one part of an execution no caller can override, so it is what
   # makes the scrub run first.
   #
-  # ITS LAST ELEMENT PINS THE KEYS. A caller holding runWithOverrides may set
-  # any environment variable on an execution, SPEC_VERIFY_KEYS included, and
-  # would then choose which key "verifies" a record it wrote. It cannot touch
-  # the command, so the command carries the SHA-256 of the value set below,
-  # and entry.py refuses an execution whose SPEC_VERIFY_KEYS hashes to
-  # anything else.
+  # ITS LAST TWO ELEMENTS ARE THE TRUST. A caller holding runWithOverrides may
+  # set any environment variable on an execution, SPEC_VERIFY_KEYS included,
+  # and would then choose which key "verifies" a record it wrote. It cannot
+  # touch the command, so the command carries the SHA-256 of the value set
+  # below, and entry.py refuses an execution whose SPEC_VERIFY_KEYS hashes to
+  # anything else; and it names the one key whose versions count, which
+  # entry.py holds to a step-spec key of the metadata server's project.
   workspace_apply_command = [
     "python3", "-I", "/opt/swarm/entry.py",
     "--spec-verify-keys-sha256=${sha256(local.workspace_spec_verify_keys)}",
+    "--spec-signing-key=${local.workspace_spec_signing_key}",
   ]
 
   # The swarm subnet and the network it is in, as terraform/modules/network

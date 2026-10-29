@@ -59,6 +59,13 @@ mock_provider "google" {
   }
 }
 
+# terraform/bootstrap/state_bucket.tf imports the state bucket (DAYONE-BOOT-1):
+# a mock provider cannot import, so the bucket's provider values are the
+# override's and its configuration is still planned and asserted.
+override_resource {
+  target = google_storage_bucket.state
+}
+
 variables {
   # The live deployment's two backends, which K1 is made on. Empty by default
   # since DAYONE-TF-1 (a fresh project's first bootstrap pass has none).
