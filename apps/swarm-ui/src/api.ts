@@ -552,7 +552,7 @@ function fixtureGit(task: Task): Record<string, unknown> {
     ],
     commit_count: 1, insertions: 61, deletions: 12,
     dirty: [], patch: 'diff.patch', patch_bytes: 91233,
-    repository: 'bogdan-alexandrescu/SwarmCloud',
+    repository: 'example-org/agent-swarm-infra',
   }
   const d = task.dispatch
   if (d?.strategy === 'collect' || d === undefined || d === null) {
@@ -584,7 +584,7 @@ function fixtureGit(task: Task): Record<string, unknown> {
     default_branch: 'main', can_push: true,
     branch: `swarm/${task.id}`, pushed_head: '9b1c7f00aa', auto_committed: false,
     published: true,
-    pull_request: { number: 412, url: 'https://github.com/bogdan-alexandrescu/SwarmCloud/pull/412', state: 'open', created: true },
+    pull_request: { number: 412, url: 'https://github.com/example-org/agent-swarm-infra/pull/412', state: 'open', created: true },
     ...(d.role === 'integrator'
       ? { integrated: { merged: d.integrates, conflicted: [], missing: [], complete: true } }
       : {}),
@@ -4849,7 +4849,7 @@ function fixtureWaitingTasks(listed: Task[]): Task[] {
     })
   }
   const checks = ['checkov', 'ci-gate', 'python (unit)', 'ui (typecheck + component)', 'integration (emulator)']
-  const pr = { number: 1779, url: 'https://github.com/bogdan-alexandrescu/SwarmCloud/pull/1779' }
+  const pr = { number: 1779, url: 'https://github.com/example-org/agent-swarm-infra/pull/1779' }
   return [
     one(
       'CI_PENDING',
@@ -5127,7 +5127,7 @@ function fixtureBudgetTasks(listed: Task[]): Task[] {
         budget: { limit: { usd: 1 }, used: { tokens: 1_020_000, usd: 1.02 }, warned: true, end_cause: 'budget_exceeded', stopped: 'turn_boundary' },
         git: {
           ...fixtureGit(exceeded),
-          pull_request: { number: 2470, url: 'https://github.com/bogdan-alexandrescu/SwarmCloud/pull/2470', state: 'open', created: true },
+          pull_request: { number: 2470, url: 'https://github.com/example-org/agent-swarm-infra/pull/2470', state: 'open', created: true },
         },
         runner: {
           usage: {
@@ -5395,7 +5395,7 @@ function fixtureTaskRows(): Task[] {
     step_id: null,
     depends_on: null,
     cancel_requested: false,
-    repository_url: 'https://github.com/bogdan-alexandrescu/SwarmCloud',
+    repository_url: 'https://github.com/example-org/agent-swarm-infra',
     model: profile === 'mock' ? null : 'claude-opus-5',
     timeout_seconds: 3600,
     // Only a PARKED task has one. Left null elsewhere on purpose: a date here
