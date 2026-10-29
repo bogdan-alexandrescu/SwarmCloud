@@ -32,8 +32,6 @@ from pathlib import Path
 
 import pytest
 
-from swarm_api import issueruns
-
 ROOT = Path(__file__).resolve().parents[3]
 APPS = ROOT / "apps"
 
@@ -149,7 +147,16 @@ def test_the_key_prefix_and_comments_are_not_literals():
 # the issueruns deny-list, keyed by project (plan R4)
 # --------------------------------------------------------------------------
 
-def _shared_hold(name: str):
+@pytest.fixture
+def issueruns():
+    """swarm_api.issueruns, imported here: tests/unit/scripts collects without
+    the service stack (test_collection_stays_cheap.py)."""
+    from swarm_api import issueruns as module
+
+    return module
+
+
+def _shared_hold(issueruns, name: str):
     path = "terraform/infra/network.tf"
     patch = f'--- a/x\n+++ b/x\n@@ -1,1 +1,2 @@\n unchanged\n+  network = "{name}"\n'
     return issueruns.hard_stop_hold(
@@ -157,23 +164,23 @@ def _shared_hold(name: str):
     )
 
 
-def test_the_deny_list_is_empty_for_another_project(monkeypatch):
+def test_the_deny_list_is_empty_for_another_project(monkeypatch, issueruns):
     monkeypatch.setenv("PROJECT_ID", "acme-swarm-prod")
     # MUTATION: return the shared list whatever the project, and both are red.
     assert issueruns.shared_deny_list() == ()
-    assert _shared_hold("agents-staging-vpc") is None
+    assert _shared_hold(issueruns, "agents-staging-vpc") is None
 
 
 @pytest.mark.parametrize("project", ["shared", ""])
-def test_the_deny_list_is_whole_in_the_shared_project_or_an_unknown_one(monkeypatch, project):
+def test_the_deny_list_is_whole_in_the_shared_project_or_an_unknown_one(monkeypatch, issueruns, project):
     monkeypatch.setenv("PROJECT_ID", issueruns.SHARED_PROJECT_ID if project else "")
     # The guard never weakens where it applies: an unset project is not another project.
     assert issueruns.shared_deny_list() == issueruns.SHARED_DENY_LIST
-    held = _shared_hold("agents-staging-vpc")
+    held = _shared_hold(issueruns, "agents-staging-vpc")
     assert held is not None and held["reasons"] == ["shared"]
 
 
-def test_the_shared_list_names_its_project_once():
+def test_the_shared_list_names_its_project_once(issueruns):
     # Every entry that names the shared project is built from SHARED_PROJECT_ID.
     project = issueruns.SHARED_PROJECT_ID
     assert f"{project}_cloudbuild" in issueruns.SHARED_DENY_LIST
