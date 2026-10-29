@@ -419,7 +419,8 @@ describe('live QA admin: nothing writes on the first click', () => {
     choose(row, 'acct-eng-2')
     fireEvent.click(within(row).getByRole('button', { name: 'Lend' }))
     const dialog = await screen.findByRole('dialog', { name: 'Lend this account' }, WAIT)
-    expect(within(dialog).getByTestId('pp-loan-idle').textContent).toContain('PAUSED')
+    // In words, not the broker's enum (QA2-FIX-18, admin2-04).
+    expect(within(dialog).getByTestId('pp-loan-idle').textContent).toContain('This account is paused:')
   })
 
   it('ADM-3: a ceiling Save asks first with old → new and the change, and an unchanged value has nothing to save', async () => {
