@@ -512,7 +512,8 @@ describe('one schedule', () => {
     const cost = rows[0]!.querySelector('td[data-label="Cost"]')!
     expect(cost.querySelector('.ctl-mark.is-partial')).not.toBeNull()
     expect(visible(cost)).toContain('1 attempt unreported')
-    expect(visible(rows[1]!)).toContain('OVERLAP')
+    // In words since QA2-FIX-21 (automate2-03), never the raw code.
+    expect(visible(rows[1]!)).toContain('skipped: the last firing was still running')
   })
 
   it('says in plain words why a refused run was not started, under a firing that still succeeded', async () => {
