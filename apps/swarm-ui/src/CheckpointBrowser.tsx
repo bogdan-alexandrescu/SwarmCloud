@@ -4,6 +4,7 @@ import { Mark } from './AgentDetail'
 import { USE_FIXTURES, loadCheckpoints } from './api'
 import { ArtifactViewer } from './ArtifactViewer'
 import { Button, ButtonLink } from './components'
+import { useEscapeLayer } from './escape'
 import { encoded, errorHeading, noteFixtureProbe, read, route, tenantQuery, type ApiError, type Result } from './fetch'
 import { bytesLabel, timeAgo, type ArtifactContent } from './types'
 
@@ -356,6 +357,12 @@ export function CheckpointBrowser({
   // to 457 px and nothing scrolled again, leaving its top at y=666 of 844.
   // Focus moves once, at mount; the scroll follows the panel's size.
   const regionRef = useRef<HTMLDivElement>(null)
+  // ESCAPE CLOSES THIS PANEL FIRST (QA2-FIX-14, overview-agents-48). It was
+  // not a layer, so Escape on the files panel reached the agent pane's own
+  // listener and closed the whole pane. Registered for as long as it is
+  // mounted: a file opened from it (`ArtifactViewer`) registers after it and
+  // closes before it, and the pane closes on the Escape after that.
+  useEscapeLayer(true, onClose)
   const settled = state.status !== 'loading'
   useEffect(() => {
     regionRef.current?.focus({ preventScroll: true })

@@ -136,7 +136,10 @@ describe('VQ-031: a pool near its ceiling, or lowered, is drawn so', () => {
   it('counts near ceiling in the head by the marks’ own rule', async () => {
     await renderPools()
     await waitFor(() => expect(document.body.textContent).toContain('1 near ceiling'), WAIT)
-    expect(document.body.textContent).toContain('2 lowered')
+    // EACH POOL ONCE, BY ITS WORST MARK (QA2-FIX-14, capacity-11): the 46 of
+    // a lowered 50 is near ceiling, and only the 2 of a lowered 20 is lowered.
+    expect(document.body.textContent).toContain('1 lowered')
+    expect(document.body.textContent).not.toContain('2 lowered')
   })
 
   it('heads the board with Needs a look, never Needs action (BGD 2026-10-26)', async () => {
@@ -174,9 +177,10 @@ describe('VQ-032: at 390 a pool is one compact row', () => {
     expect(painted(tr, 'display', WIDE)).not.toBe('grid')
   })
 
-  it('drops the field keys, prints the ceiling as `/50`, and hides a configured Set by', () => {
+  // `of 50`, not `/50` (QA2-FIX-14, capacity-12): the row read `0 /6 /10`.
+  it('drops the field keys, prints the ceiling as `of 50`, and hides a configured Set by', () => {
     expect(painted(cell('Leased (units)'), 'content', PHONE, 'before')).toBe('none')
-    expect(painted(cell('Ceiling (units)'), 'content', PHONE, 'before')).toBe("'/'")
+    expect(painted(cell('Ceiling (units)'), 'content', PHONE, 'before')).toBe("'of '")
     expect(painted(cell('Set by', '.cap-by-cfg'), 'display', PHONE)).toBe('none')
     expect(painted(cell('Set by'), 'display', PHONE)).not.toBe('none')
     expect(painted(cell('State'), 'grid-area', PHONE)).toBe('state')

@@ -1084,9 +1084,20 @@ p.muted.rt-reason { margin: 0 0 var(--ctl-s3); }
     align-self: start;
     font-weight: 600;
   }
-  /* `46` then `/50`: the frame's figure, leased over ceiling. */
+  /* `46 of 50`: leased over ceiling, in words (QA2-FIX-14, capacity-12). The
+     row read `0 /6 /10` -- the `/` before the ceiling and the configured
+     limit's own `/10` -- three figures with no key between them. The ceiling
+     takes `of`, and a lowered one names what it was lowered from: `0 of 6
+     (lowered from 10)`. The configured limit's `/` is its own element
+     (Capacity.tsx `.cap-was-sl`) so this row can drop it; the wide table
+     keeps the frame's `6/10`. */
   .cap-pools.is-stacked > table > tbody > tr > td[data-label='Ceiling (units)'] { grid-area: ceil; align-self: start; }
-  .cap-pools.is-stacked > table > tbody > tr > td[data-label='Ceiling (units)']::before { content: '/'; }
+  .cap-pools.is-stacked > table > tbody > tr > td[data-label='Ceiling (units)']::before { content: 'of '; }
+  /* No limit set has no ceiling to be `of`: the row reads `0 no limit set`. */
+  .cap-pools.is-stacked > table > tbody > tr > td[data-label='Ceiling (units)']:has(.ctl-em)::before { content: none; }
+  .cap-pools.is-stacked .cap-was-sl { display: none; }
+  .cap-pools.is-stacked .cap-was::before { content: '(lowered from '; }
+  .cap-pools.is-stacked .cap-was::after { content: ')'; }
   .cap-pools.is-stacked > table > tbody > tr > td[data-label='Use'] { grid-area: use; }
   .cap-pools.is-stacked > table > tbody > tr > td[data-label='State'] { grid-area: state; justify-self: end; }
   .cap-pools.is-stacked > table > tbody > tr > td[data-label='Set by'] { grid-area: by; }
