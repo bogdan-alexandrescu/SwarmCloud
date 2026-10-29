@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
 import tarfile
 from collections.abc import Sequence
@@ -22,7 +23,7 @@ from typing import Any
 
 import pytest
 
-from swarm_install.exitcodes import UNMET, ExitCode
+from swarm_install.exitcodes import MET, UNMET, ExitCode
 from swarm_install.steps import cluster
 from swarm_install.steps.preflight import RELEASE_HOME
 
@@ -89,6 +90,9 @@ class FakeShell:
         self.current_context = current_context
         self.calls: list[tuple[list[str], str | None, dict[str, str] | None]] = []
         self.applied: list[str] = []
+        # swarm-system's core workloads: name -> (replicas, ready); None is NotFound.
+        self.workloads: dict[str, tuple[int, int] | None] = {
+            "statefulset/swarm-live": (1, 1), "deployment/swarm-graph": (2, 2)}
 
     def kubectl_calls(self) -> list[list[str]]:
         return [argv for argv, _, _ in self.calls if argv[0].endswith("kubectl")]
@@ -109,6 +113,11 @@ class FakeShell:
         if verbs[0] == "apply":
             self.applied.append(str(stdin))
             return 0, "", ""
+        if verbs[0] == "get" and verbs[1] in self.workloads:
+            found = self.workloads[verbs[1]]
+            if found is None:
+                return 1, "", f'Error from server (NotFound): {verbs[1]} not found'
+            return 0, json.dumps({"spec": {"replicas": found[0]}, "status": {"readyReplicas": found[1]}}), ""
         if verbs[0] == "get":
             return 0, "namespace/swarm-system\n", ""
         raise AssertionError(f"unexpected command {argv}")
@@ -155,7 +164,7 @@ def test_policies_before_tenant_objects(tmp_path: Path) -> None:
     """Lesson 33: the policies are applied before swarm-system's objects, and
     swarm-system refuses to apply while the policies differ from the render."""
     gcp, shell = ClusterFakeGcp(), FakeShell()
-    bundle, policies, swarm_system = _steps(gcp, shell)
+    bundle, policies, swarm_system, _ = _steps(gcp, shell)
     assert [s.id for s in (bundle, policies, swarm_system)] == ["cluster.bundle", "cluster.policies",
                                                                "cluster.swarm-system"]
     assert {s.stage for s in (bundle, policies, swarm_system)} == {10}
@@ -174,7 +183,7 @@ def test_subjects_from_unique_id_read_from_iam() -> None:
     """Lesson 29: the RBAC's subjects are the uniqueIds IAM assigned; an
     account IAM gives no uniqueId stops the render before it runs."""
     gcp, shell = ClusterFakeGcp(), FakeShell()
-    _, policies, _ = _steps(gcp, shell)
+    _, policies, *_ = _steps(gcp, shell)
     policies.rendered(_ctx())
     render = next(argv for argv, _, _ in shell.calls if argv[1].endswith("render.py"))
     assert "--scheduler-uid=100000000000000000001" in render
@@ -186,7 +195,7 @@ def test_subjects_from_unique_id_read_from_iam() -> None:
     no_uid = dict(UIDS)
     no_uid.pop(cluster.account_email(PROJECT, "swarm-reconciler"))
     gcp, shell = ClusterFakeGcp(uids=no_uid), FakeShell()
-    _, policies, _ = _steps(gcp, shell)
+    _, policies, *_ = _steps(gcp, shell)
     with pytest.raises(LookupError, match="lesson 29"):
         policies.check(_ctx())
     assert not any(argv[1].endswith("render.py") for argv, _, _ in shell.calls)
@@ -226,7 +235,7 @@ def test_context_is_the_install_cluster(home: Path) -> None:
     install cluster's context; a kubeconfig that lands on another cluster, or
     a deny-listed cluster, is refused before kubectl acts."""
     gcp, shell = ClusterFakeGcp(), FakeShell()
-    _, policies, swarm_system = _steps(gcp, shell)
+    _, policies, swarm_system, _ = _steps(gcp, shell)
     ctx = _ctx()
     assert policies.check(ctx).status == UNMET
     assert swarm_system.check(ctx).status == UNMET
@@ -244,7 +253,7 @@ def test_context_is_the_install_cluster(home: Path) -> None:
         assert argv[4] == cluster.DEFAULT_CLUSTER and f"--project={PROJECT}" in argv
 
     other = FakeShell(current_context="gke_saga-agents-staging_us-central1_agents-staging")
-    _, policies, _ = _steps(ClusterFakeGcp(), other)
+    _, policies, *_ = _steps(ClusterFakeGcp(), other)
     with pytest.raises(cluster.WrongCluster, match=CONTEXT):
         policies.check(_ctx())
     assert not [a for a in other.kubectl_calls() if "current-context" not in a]
@@ -252,7 +261,7 @@ def test_context_is_the_install_cluster(home: Path) -> None:
     denied = FakeShell()
     ctx = _ctx()
     ctx.outputs["gke_cluster_name"] = "agents-staging"
-    _, policies, _ = _steps(ClusterFakeGcp(), denied, deny=("agents-staging",))
+    _, policies, *_ = _steps(ClusterFakeGcp(), denied, deny=("agents-staging",))
     with pytest.raises(cluster.WrongCluster, match="deny-list"):
         policies.check(ctx)
     assert not [argv for argv, _, _ in denied.calls if not argv[1].endswith("render.py")]
@@ -265,3 +274,30 @@ def test_steps_satisfy_every_stage_10_entry() -> None:
     covered = {entry for step in cluster.STEPS for entry in step.satisfies}
     assert covered <= ids
     assert "other.release-kubernetes-bundle" in covered and "cluster.swarm-system-namespace" in covered
+    # Review finding 5: every core stage 10 entry has a step; the addons' are their addons'.
+    core = {e.id for e in load().entries if e.stage == 10 and e.scope == "core"}
+    assert core <= covered
+    assert {"workload.swarm-live", "workload.swarm-graph"} <= covered
+
+
+def test_core_workloads_ready_in_swarm_system() -> None:
+    """Review finding 5: swarm-live and swarm-graph, Terraform's renders, are
+    checked ready in swarm-system on the install cluster's context; a missing
+    one names its Terraform output, and the apply names the pass that writes
+    it and applies nothing."""
+    gcp, shell = ClusterFakeGcp(), FakeShell()
+    *_, workloads = _steps(gcp, shell)
+    ctx = _ctx()
+    assert workloads.check(ctx).status == MET
+    gets = [argv for argv in shell.kubectl_calls() if "get" in argv and "-o" in argv]
+    assert len(gets) == 2 and all(f"--context={CONTEXT}" in argv for argv in gets)
+    assert all("--namespace=swarm-system" in argv for argv in gets)
+
+    shell.workloads["statefulset/swarm-live"] = None
+    shell.workloads["deployment/swarm-graph"] = (2, 1)
+    observed = workloads.check(ctx)
+    assert observed.status == UNMET
+    assert "swarm_live_manifest" in observed.detail and "1 of 2 replicas" in observed.detail
+    with pytest.raises(RuntimeError, match="DAYONE-ENGINE-3"):
+        workloads.apply(ctx, workloads.plan(ctx))
+    assert shell.applied == []

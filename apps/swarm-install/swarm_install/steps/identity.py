@@ -5,6 +5,14 @@ registered only once swarm-api has read it (design §8; plan §5.3; lesson 20).
 |---|---|---|
 | `identity.group-read` | `workspace-group.cloud-identity-presence`, `workspace-group.tenant-groups`, `workspace-delegation.groups-reader-admin-role`, `workspace-delegation.groups-dwd` | human: the Admin console grant, the admin-role path offered first (Q2), delegation the fallback; polls the probe |
 | `identity.admin-group` | `workspace-group.admin-surface-swarm-admins` | engine: the platform admins' group, registered only after its probe passes |
+| `identity.qa-console` | `switch.enable_qa_identity`, `sa.qa-console`, `role.custom.swarmQaJwtSigner`, `iam-binding.qa-console-authoritative-policy` | engine, read-only: the live-browser QA identity terraform/bootstrap creates (`qa_identity.tf`) is exactly as designed |
+| `identity.allowed-domains` | `declared-value.allowed-domains-solo` | engine, read-only: swarm-api's `ALLOWED_DOMAINS` is this organisation's domain, never a consumer domain |
+
+**What stage 8 reads but does not write.** qa-console's account, role and
+policy are terraform/bootstrap resources and `ALLOWED_DOMAINS` is terraform/
+infra's `allowed_domains`: the engine's Terraform passes (DAYONE-ENGINE-3)
+write them. Stage 8 checks them where the design places them, and its apply
+names the pass that writes them rather than writing them a second way.
 
 **The probe runs through swarm-api, in the mode swarm-api runs** (review
 finding 8). The engine never calls the Groups API itself: what matters is
@@ -27,6 +35,7 @@ delegation or the admin role was never granted there), never IAM; only a
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 from .. import api_client
@@ -34,7 +43,7 @@ from ..api_client import ADMIN_ROLE, DELEGATION, ApiClient, GroupResult
 from ..exitcodes import MET, UNMET
 from ..waits import WaitSpec
 from . import Observation, Plan
-from .preflight import ASK, EMAIL, GCP, Ask, Gcp, remember
+from .preflight import ASK, EMAIL, GCP, IAM, Ask, Gcp, remember
 
 GROUPS_SCOPE = "https://www.googleapis.com/auth/cloud-identity.groups.readonly"
 SWARM_API_ACCOUNT = "swarm-api"
@@ -57,6 +66,43 @@ GRANT_WAIT = WaitSpec(
 )
 
 ApiFactory = Callable[[Any], ApiClient]
+
+QA_ACCOUNT = "qa-console"
+QA_ROLE = "swarmQaJwtSigner"
+QA_PERMISSIONS = ["iam.serviceAccounts.signJwt"]
+RUN_API = "https://run.googleapis.com/v2"
+
+#: Domains that are every Google account on earth (the manifest's
+#: `declared-value.allowed-domains-solo`, docs/deploying-without-an-organisation.md).
+CONSUMER_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
+
+
+class IdentityGcp(Gcp):
+    """`preflight.Gcp` plus the reads stage 8's read-only checks make."""
+
+    def custom_role(self, project: str, role: str) -> dict[str, Any] | None:
+        return self._call("GET", f"{IAM}/projects/{project}/roles/{role}", missing_ok=True)
+
+    def service_account_policy(self, email: str) -> dict[str, Any]:
+        return self._call("POST", f"{IAM}/projects/-/serviceAccounts/{email}:getIamPolicy", body={}) or {}
+
+    def run_service(self, project: str, region: str, name: str) -> dict[str, Any] | None:
+        return self._call("GET", f"{RUN_API}/projects/{project}/locations/{region}/services/{name}", missing_ok=True)
+
+
+@dataclass
+class _LazyIdentity:
+    """One `IdentityGcp`, built on first use (never at import)."""
+
+    made: list[IdentityGcp] = field(default_factory=list)
+
+    def __call__(self) -> IdentityGcp:
+        if not self.made:
+            self.made.append(IdentityGcp())
+        return self.made[0]
+
+
+IDENTITY_GCP = _LazyIdentity()
 
 
 def swarm_api_email(project: str) -> str:
@@ -219,10 +265,115 @@ class AdminGroupStep(_Base):
         remember(ctx, outputs={"admin_groups": [group], "admin_group_member": member})
 
 
+class _ReadOnly:
+    """A stage 8 check of what an engine Terraform pass writes (module docstring)."""
+
+    stage = 8
+    kind = "engine"
+    satisfies: tuple[str, ...] = ()
+    _explain = ""
+    written_by = ""
+
+    def __init__(self, gcp: Callable[[], IdentityGcp]) -> None:
+        self._gcp = gcp
+
+    @property
+    def gcp(self) -> IdentityGcp:
+        return self._gcp()
+
+    def verify(self, ctx: Any) -> Observation:
+        return self.check(ctx)
+
+    def explain(self) -> str:
+        return self._explain
+
+    def check(self, ctx: Any) -> Observation:  # pragma: no cover - every step overrides it
+        raise TypeError(f"{type(self).__name__} has no check")
+
+    def plan(self, ctx: Any) -> Plan:
+        return Plan(f"check what {self.written_by} wrote", (self.written_by,))
+
+    def apply(self, ctx: Any, plan: Plan) -> None:
+        found = self.check(ctx)
+        if found.status != MET:
+            raise RuntimeError(f"{found.detail}. Stage 8 does not write this: {self.written_by} does; "
+                               "run swarm install again once it has applied")
+
+
+class QaConsoleStep(_ReadOnly):
+    id = "identity.qa-console"
+    satisfies = (
+        "switch.enable_qa_identity",
+        "sa.qa-console",
+        "role.custom.swarmQaJwtSigner",
+        "iam-binding.qa-console-authoritative-policy",
+    )
+    written_by = "terraform/bootstrap/qa_identity.tf, applied by the engine's bootstrap pass (DAYONE-ENGINE-3)"
+    _explain = (
+        "A live-browser QA agent signs in to the console as qa-console through IAP, with a 15-minute JWT "
+        "swarm-api signs. No key exists; the custom role carries signJwt alone, never Token Creator; and "
+        "the account's policy binds it to swarm-api only, authoritatively (QI-IAM, #1649)."
+    )
+
+    def check(self, ctx: Any) -> Observation:
+        email = f"{QA_ACCOUNT}@{ctx.project}.iam.gserviceaccount.com"
+        if not self.gcp.service_account(email):
+            return Observation(UNMET, f"{email} does not exist (enable_qa_identity is off, or bootstrap has not run)")
+        role = self.gcp.custom_role(ctx.project, QA_ROLE)
+        if not role or role.get("deleted"):
+            return Observation(UNMET, f"the custom role {QA_ROLE} does not exist")
+        permissions = sorted(role.get("includedPermissions") or [])
+        if permissions != QA_PERMISSIONS:
+            return Observation(UNMET, f"{QA_ROLE} carries {permissions}, not exactly {QA_PERMISSIONS}")
+        expected = [{"role": f"projects/{ctx.project}/roles/{QA_ROLE}",
+                     "members": [f"serviceAccount:{swarm_api_email(ctx.project)}"]}]
+        bindings = [{"role": b.get("role"), "members": sorted(b.get("members") or [])}
+                    for b in self.gcp.service_account_policy(email).get("bindings") or []]
+        if bindings != expected:
+            return Observation(UNMET, f"{email}'s policy is {bindings}, not {QA_ROLE} for swarm-api alone")
+        return Observation(MET, f"{email}: {QA_ROLE} (signJwt only), bound to swarm-api alone")
+
+
+class AllowedDomainsStep(_ReadOnly):
+    id = "identity.allowed-domains"
+    satisfies = ("declared-value.allowed-domains-solo",)
+    written_by = "terraform/infra's allowed_domains, generated by the engine's tfvars (DAYONE-ENGINE-3)"
+    _explain = (
+        "There is no shared bearer token: the hosted-domain allow-list is the whole authentication boundary "
+        "beyond a valid Google ID token. gmail.com would admit every Google account on earth, and "
+        "terraform/infra's default names another organisation's domain."
+    )
+
+    def check(self, ctx: Any) -> Observation:
+        region = ctx.state.region
+        if not region:
+            raise LookupError("no region is recorded (preflight.region confirms it)")
+        service = self.gcp.run_service(ctx.project, str(region), "swarm-api") or {}
+        env = {str(e.get("name")): str(e.get("value") or "")
+               for c in (service.get("template") or {}).get("containers") or [] for e in c.get("env") or []}
+        domains = sorted({d.strip().lower() for d in env.get("ALLOWED_DOMAINS", "").split(",") if d.strip()})
+        if not domains:
+            return Observation(UNMET, "swarm-api has no ALLOWED_DOMAINS")
+        consumer = sorted(set(domains) & CONSUMER_DOMAINS)
+        if consumer:
+            return Observation(UNMET, f"ALLOWED_DOMAINS holds {', '.join(consumer)}, which admits every Google account")
+        own = sorted({str(g).rsplit("@", 1)[-1].lower() for g in ctx.outputs.get("admin_groups") or []})
+        if not own:
+            return Observation(UNMET, "no admin group is registered yet, so this organisation's domain is not known")
+        missing = [d for d in own if d not in domains]
+        if missing:
+            return Observation(UNMET, f"ALLOWED_DOMAINS is {', '.join(domains)}; it does not hold this "
+                                      f"organisation's {', '.join(missing)}")
+        return Observation(MET, f"ALLOWED_DOMAINS is {', '.join(domains)}", {"allowed_domains": domains})
+
+
 def build_steps(gcp: Callable[[], Gcp] = GCP, ask: Ask = ASK,
-                api: ApiFactory = api_client.for_install) -> list[Any]:
-    """Stage 8 in order: group reading first, then the groups that depend on it."""
-    return [GroupReadStep(gcp, ask, api), AdminGroupStep(gcp, ask, api)]
+                api: ApiFactory = api_client.for_install,
+                identity_gcp: Callable[[], IdentityGcp] = IDENTITY_GCP) -> list[Any]:
+    """Stage 8 in order: group reading first, then the groups that depend on
+    it, then the read-only checks (the allowed domains need the admin group)."""
+    return [GroupReadStep(gcp, ask, api), AdminGroupStep(gcp, ask, api),
+            QaConsoleStep(identity_gcp), AllowedDomainsStep(identity_gcp)]
 
 
 STEPS = build_steps()

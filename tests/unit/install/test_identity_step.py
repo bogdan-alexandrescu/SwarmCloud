@@ -12,11 +12,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from swarm_install.api_client import ADMIN_ROLE, DELEGATION, GroupResult, GroupsProbe
 from swarm_install.exitcodes import MET, UNMET, ExitCode
 from swarm_install.steps import identity
 
-from .test_preflight import Answers, FakeGcp, Rig, ctx_for
+from .test_preflight import PROJECT, Answers, FakeGcp, Rig, ctx_for
 
 GROUP = "eng@example.com"
 MEMBER = "lea@example.com"
@@ -157,4 +159,80 @@ def test_steps_satisfy_every_stage_8_identity_entry() -> None:
     assert covered <= ids
     assert {"workspace-delegation.groups-reader-admin-role", "workspace-delegation.groups-dwd",
             "workspace-group.admin-surface-swarm-admins", "workspace-group.tenant-groups",
-            "workspace-group.cloud-identity-presence"} == covered
+            "workspace-group.cloud-identity-presence", "switch.enable_qa_identity", "sa.qa-console",
+            "role.custom.swarmQaJwtSigner", "iam-binding.qa-console-authoritative-policy",
+            "declared-value.allowed-domains-solo"} == covered
+    # Review finding 5: every stage 8 entry of the manifest has a step.
+    stage_8 = {e.id for e in load().entries if e.stage == 8}
+    assert stage_8 <= covered
+
+
+class QaFakeGcp(FakeGcp):
+    """IAM's view of qa-console, its role and its policy, and swarm-api's env."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.accounts: set[str] = {f"qa-console@{PROJECT}.iam.gserviceaccount.com"}
+        self.permissions = ["iam.serviceAccounts.signJwt"]
+        self.bindings = [{"role": f"projects/{PROJECT}/roles/swarmQaJwtSigner",
+                          "members": [f"serviceAccount:swarm-api@{PROJECT}.iam.gserviceaccount.com"]}]
+        self.allowed = "example.com"
+
+    def service_account(self, email: str) -> dict[str, Any] | None:
+        self._call("service_account", email)
+        return {"email": email} if email in self.accounts else None
+
+    def custom_role(self, project: str, role: str) -> dict[str, Any] | None:
+        self._call("custom_role", project, role)
+        return {"name": f"projects/{project}/roles/{role}", "includedPermissions": list(self.permissions)}
+
+    def service_account_policy(self, email: str) -> dict[str, Any]:
+        self._call("service_account_policy", email)
+        return {"bindings": [dict(b) for b in self.bindings]}
+
+    def run_service(self, project: str, region: str, name: str) -> dict[str, Any] | None:
+        self._call("run_service", project, region, name)
+        return {"template": {"containers": [{"env": [{"name": "ALLOWED_DOMAINS", "value": self.allowed}]}]}}
+
+
+def test_qa_console_identity_read_exactly_as_designed() -> None:
+    """Review finding 5 (stage 8): qa-console exists, its role carries signJwt
+    alone and its policy binds that role to swarm-api alone. Stage 8 reads it;
+    its apply names the bootstrap pass that writes it and writes nothing."""
+    gcp = QaFakeGcp()
+    step = identity.QaConsoleStep(lambda: gcp)
+    ctx = ctx_for()
+    assert step.check(ctx).status == MET
+
+    gcp.bindings[0]["members"].append("user:someone@example.com")
+    observed = step.check(ctx)
+    assert observed.status == UNMET and "swarm-api alone" in observed.detail
+    with pytest.raises(RuntimeError, match="DAYONE-ENGINE-3"):
+        step.apply(ctx, step.plan(ctx))
+    assert not gcp.called("set_iam_policy")
+
+    gcp.bindings[0]["members"].pop()
+    gcp.permissions = ["iam.serviceAccounts.signJwt", "iam.serviceAccounts.getAccessToken"]
+    assert step.check(ctx).status == UNMET
+
+    gcp.accounts.clear()
+    assert "does not exist" in step.check(ctx).detail
+
+
+def test_allowed_domains_hold_the_organisation_never_gmail() -> None:
+    """`declared-value.allowed-domains-solo`: swarm-api's ALLOWED_DOMAINS
+    holds the admin group's domain and no consumer domain."""
+    gcp = QaFakeGcp()
+    step = identity.AllowedDomainsStep(lambda: gcp)
+    ctx = ctx_for(outputs={"admin_groups": [ADMINS]})
+    observed = step.check(ctx)
+    assert observed.status == MET and observed.outputs["allowed_domains"] == ["example.com"]
+
+    gcp.allowed = "example.com,gmail.com"
+    assert "every Google account" in step.check(ctx).detail
+
+    gcp.allowed = "another.org"
+    observed = step.check(ctx)
+    assert observed.status == UNMET and "example.com" in observed.detail
+
+    assert step.check(ctx_for()).status == UNMET  # no admin group yet: the domain is not known

@@ -7,7 +7,18 @@
 | `verify.digests` | `other.verify-digests` | every service serves 100 % on its latest ready revision, and that revision's **digest** is the release's | 28: labels lie; a pinned revision served 0 % |
 | `verify.reconciler-jobs` | (lesson 30) | the reconciler may list Jobs in every tenant namespace, namespaced, by email and by uniqueId | 30: it listed Jobs at cluster scope and saw nothing |
 | `verify.firestore-migrations` | `other.firestore-migrations` | the state and the install record are at this engine's schema | |
-| `verify.end-to-end` | `other.verify-end-to-end`, `other.verify-row` | four runs, each to a pull request: a single task and a workflow from the plugin, and from the console | 18: the plugin signs in with the Desktop client; 43: a run uses an App installation token, never a PAT |
+| `verify.end-to-end` | `other.verify-end-to-end`, `other.verify-row` | four runs, each to a pull request: a single task and a workflow from the plugin, and from the console | 18: the plugin signs in with the Desktop client; 43: not checkable yet (below) |
+
+**Lesson 43 is not checked here, and the step says so.** Nothing swarm-api
+serves records which GitHub credential a run cloned and pushed with: a
+tenant's git slot has a `kind`, but no task, attempt or result names the
+credential its run used. Until one does (a cross-lane question, in the PR),
+every passing run's detail and the step's outputs say the credential is
+unrecorded; the engine never reads a field nothing writes.
+
+**Only the platform's own** (`swarm-*`) Scheduler jobs and Cloud Run services
+are verified: the project may hold others, and calling their targets would
+trigger them.
 
 **The console's verify row** (D26): every step writes the engine document's
 `verify` field as it goes (`check`, `done`, `total`, `started`,
@@ -75,8 +86,17 @@ NOT_FOR_PLUGIN_RUNS = (
     "GOOGLE_OAUTH_ACCESS_TOKEN",
 )
 
-#: How a run's audit names the GitHub credential it ran with.
-APP_INSTALLATION = "app-installation"
+#: The platform's Scheduler jobs and Cloud Run services are named `swarm-*`.
+PLATFORM_PREFIX = "swarm-"
+
+#: What the verify step reports about lesson 43 until swarm-api records the
+#: GitHub credential each run used (module docstring).
+CREDENTIAL_UNRECORDED = ("the GitHub credential each run used is not recorded by swarm-api, so lesson 43 "
+                         "(an App installation token, never a PAT) is not checked here")
+
+#: Task states (swarm_common's vocabulary) as `RunStatus.state` names them;
+#: anything else is still going.
+TERMINAL_STATES = {"SUCCEEDED": "succeeded", "FAILED": "failed", "CANCELLED": "cancelled"}
 
 
 class VerifyGcp(Gcp):
@@ -225,7 +245,7 @@ class SchedulerTargetsStep(_Base):
         for job in self.jobs(ctx):
             name = str(job.get("name", "")).rsplit("/", 1)[-1]
             target = job.get("httpTarget")
-            if job.get("state") == "PAUSED" or not target:
+            if not name.startswith(PLATFORM_PREFIX) or job.get("state") == "PAUSED" or not target:
                 continue
             uri = str(target["uri"])
             headers = {k: v for k, v in (target.get("headers") or {}).items() if k.lower() != "authorization"}
@@ -264,6 +284,8 @@ class DigestsStep(_Base):
         serving: dict[str, str] = {}
         for service in services:
             name = str(service.get("metadata", {}).get("name", ""))
+            if not name.startswith(PLATFORM_PREFIX):
+                continue
             status = service.get("status") or {}
             latest = status.get("latestReadyRevisionName")
             traffic = status.get("traffic") or []
@@ -348,13 +370,12 @@ class FirestoreMigrationsStep(_Base):
 class RunStatus:
     state: str  # running | succeeded | failed | cancelled
     pull_request: str = ""
-    forge_token: str = ""  # the GitHub credential the run's audit records
 
 
 class Runs(Protocol):
     def launch(self, ctx: Any, surface: str, shape: str, repository: str, label: str) -> str: ...
 
-    def status(self, ctx: Any, run_id: str) -> RunStatus: ...
+    def status(self, ctx: Any, shape: str, run_id: str) -> RunStatus: ...
 
 
 def plugin_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -377,13 +398,15 @@ def run_command(argv: Sequence[str], stdin: str | None = None,
 
 
 def workflow_spec(repository: str, label: str) -> str:
-    """A two-step workflow: one agent writes, a second reviews and opens the PR."""
+    """A two-step workflow: one agent writes, a second builds on it and opens
+    the PR. Every key is one `swarm_mcp.workflows.read_spec` accepts (`step_id`,
+    `runner_profile`, `builds_on`); `swarm workflow` refuses any other. The
+    repository and label travel as `--repo` and `--label`."""
     return json.dumps({
-        "name": f"swarm-install verify {label}",
         "steps": [
-            {"id": "write", "profile": "claude-code",
+            {"step_id": "write", "runner_profile": "claude-code",
              "prompt": "Add a file VERIFY.md saying this deployment ran a workflow; commit it."},
-            {"id": "open", "profile": "claude-code", "depends_on": ["write"],
+            {"step_id": "open", "runner_profile": "claude-code", "depends_on": ["write"], "builds_on": "write",
              "prompt": "Open a pull request with the previous step's commit, titled 'swarm install verify'."},
         ],
     })
@@ -393,47 +416,71 @@ SINGLE_PROMPT = ("Add a file VERIFY.md saying this deployment ran a single task,
                  "titled 'swarm install verify'.")
 
 
+def _state(raw: Any) -> str:
+    return TERMINAL_STATES.get(str(raw or "").upper(), "running")
+
+
 @dataclass
 class SwarmCli:
     """The four runs through the `swarm` CLI, as the person, signed in with the
     deployment's Desktop client. The console's two are started by the person
     in the console (the engine cannot press its buttons); the engine asks for
-    the task ids the console shows, then follows all four the same way."""
+    the task id or the workflow id the console shows, then follows all four
+    the same way.
+
+    Read as the CLI prints them (apps/swarm-mcp/swarm_mcp/cli.py):
+    `swarm dispatch --json` prints the task (`id`); `swarm workflow --json`
+    prints the envelope (`workflow.workflow_id`); `swarm status <task>` prints
+    `<id>  <STATE>  ...`; `swarm result <task> --json` prints only the task's
+    `result_summary` (`git.pull_request.url`); and a workflow, which
+    `/v1/tasks/<id>` does not serve, is followed by `swarm workflow-status
+    <id> --result --json`: its derived `state` (null, exit 1, while the
+    server did not derive) and each step's `produced.pull_request`."""
 
     ask: Ask
     run: Run = run_command
     swarm: str = "swarm"
 
-    def _json(self, argv: Sequence[str], stdin: str | None = None) -> dict[str, Any]:
+    def _call(self, argv: Sequence[str], stdin: str | None = None, *, ok: Sequence[int] = (0,)) -> str:
         code, out, err = self.run([self.swarm, *argv], stdin, plugin_env())
-        if code != 0:
+        if code not in ok:
             raise RuntimeError(f"swarm {argv[0]} failed: {err.strip()[:300]}")
-        found = json.loads(out or "{}")
+        return out
+
+    def _json(self, argv: Sequence[str], stdin: str | None = None, *, ok: Sequence[int] = (0,)) -> dict[str, Any]:
+        found = json.loads(self._call(argv, stdin, ok=ok) or "{}")
         return found if isinstance(found, dict) else {}
 
     def launch(self, ctx: Any, surface: str, shape: str, repository: str, label: str) -> str:
         if surface == "console":
-            what = "a single task" if shape == "single" else "a workflow"
+            what = "a single task (its task id)" if shape == "single" else "a workflow (its workflow id)"
             return self.ask(ctx, "verify.end-to-end",
-                            f"In the console, start {what} on {repository} labelled {label}; its task id").strip()
+                            f"In the console, start {what} on {repository} labelled {label}").strip()
         if shape == "single":
-            found = self._json(["dispatch", "--json", f"--repo={repository}", f"--label={label}", "-"], SINGLE_PROMPT)
+            task = self._json(["dispatch", "--json", f"--repo={repository}", f"--label={label}", "-"], SINGLE_PROMPT)
+            run_id = str(task.get("id") or task.get("task_id") or "")
         else:
-            found = self._json(["workflow", "-", "--json", f"--repo={repository}", f"--label={label}"],
-                               workflow_spec(repository, label))
-        run_id = str(found.get("task_id") or found.get("workflow_id") or found.get("id") or "")
+            envelope = self._json(["workflow", "-", "--json", f"--repo={repository}", f"--label={label}"],
+                                  workflow_spec(repository, label))
+            run_id = str((envelope.get("workflow") or {}).get("workflow_id") or "")
         if not run_id:
             raise RuntimeError(f"swarm {'dispatch' if shape == 'single' else 'workflow'} returned no id")
         return run_id
 
-    def status(self, ctx: Any, run_id: str) -> RunStatus:
-        found = self._json(["result", run_id, "--json"])
-        metadata = found.get("metadata") or {}
-        return RunStatus(
-            state=str(found.get("state") or "running").lower(),
-            pull_request=str(found.get("pull_request_url") or (found.get("pull_request") or {}).get("url") or ""),
-            forge_token=str(metadata.get("forge_token_kind") or found.get("forge_token_kind") or ""),
-        )
+    def status(self, ctx: Any, shape: str, run_id: str) -> RunStatus:
+        if shape == "workflow":
+            # Exit 1 with `state: null` is "not derived on this read": still going.
+            report = self._json(["workflow-status", run_id, "--result", "--json"], ok=(0, 1))
+            prs = [str((row.get("produced") or {}).get("pull_request") or "") for row in report.get("steps") or []]
+            return RunStatus(_state(report.get("state")), next((p for p in reversed(prs) if p), ""))
+        line = next((ln for ln in self._call(["status", run_id]).splitlines() if ln.startswith(run_id)), "")
+        words = line.split()
+        state = _state(words[1] if len(words) > 1 else "")
+        if state != "succeeded":
+            return RunStatus(state)
+        summary = self._json(["result", run_id, "--json"])
+        pull = ((summary.get("git") or {}).get("pull_request") or {})
+        return RunStatus(state, str(pull.get("url") or "") if isinstance(pull, dict) else "")
 
 
 class EndToEndStep(_Base):
@@ -445,8 +492,9 @@ class EndToEndStep(_Base):
     _explain = (
         "Done means a team can use it: a single task and a workflow from the plugin and from the console, "
         "each to a pull request (D3). The plugin's runs sign in with the deployment's Desktop client, as a "
-        "teammate's will (lesson 18), and every run must clone and push with a GitHub App installation "
-        "token, never a personal access token (lesson 43)."
+        "teammate's will (lesson 18). Every run should clone and push with a GitHub App installation token, "
+        "never a personal access token (lesson 43); swarm-api does not yet record which one a run used, so "
+        "the step reports that check as not made."
     )
 
     def __init__(self, gcp: Callable[[], VerifyGcp], ask: Ask, *, runs: Runs | None = None) -> None:
@@ -460,14 +508,11 @@ class EndToEndStep(_Base):
         done, problems, prs = 0, [], {}
         for surface, shape in RUNS:
             key = f"{surface}-{shape}"
-            found = self._runs.status(ctx, launched[key])
+            found = self._runs.status(ctx, shape, launched[key])
             if found.state in ("failed", "cancelled"):
                 problems.append(f"{key} ({launched[key]}) {found.state}")
             elif found.state == "succeeded" and not found.pull_request:
                 problems.append(f"{key} ({launched[key]}) finished without a pull request")
-            elif found.state == "succeeded" and found.forge_token != APP_INSTALLATION:
-                problems.append(f"{key} ({launched[key]}) ran with {found.forge_token or 'an unrecorded'} GitHub "
-                                "credential, not an App installation token (lesson 43)")
             elif found.state == "succeeded":
                 done += 1
                 prs[key] = found.pull_request
@@ -480,7 +525,8 @@ class EndToEndStep(_Base):
             return Observation(UNMET, "; ".join(problems))
         if done < len(RUNS):
             return Observation(WAITING, f"{done} of {len(RUNS)} runs have opened their pull request")
-        return Observation(MET, "four runs, each to a pull request", {"verify_pull_requests": prs})
+        return Observation(MET, f"four runs, each to a pull request; {CREDENTIAL_UNRECORDED}",
+                           {"verify_pull_requests": prs, "verify_forge_credential": "unrecorded"})
 
     def plan(self, ctx: Any) -> Plan:
         return Plan("run a single task and a workflow from the plugin, and from the console, each to a PR",

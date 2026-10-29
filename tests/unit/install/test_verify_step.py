@@ -5,14 +5,18 @@ On fakes, with no credentials: every Scheduler target is called as its job
 calls it and must answer 2xx; what a service serves is read from its
 revision's digest, never a label; the reconciler may list Jobs per tenant
 namespace; the console's verify row is written with its countdown; four runs
-each reach a pull request, the plugin's signed in with the Desktop client and
-every one with an App installation token; and the cluster's objects render
-from the release bundle.
+each reach a pull request, read from what the real `swarm` CLI prints, the
+plugin's signed in with the Desktop client; lesson 43 is reported as not
+checkable rather than read from a field nothing records; and the cluster's
+objects render from the release bundle.
 """
 
 from __future__ import annotations
 
 import base64
+import contextlib
+import io
+import json
 import secrets
 from collections.abc import Sequence
 from pathlib import Path
@@ -93,10 +97,13 @@ def test_every_scheduler_target_must_answer_2xx() -> None:
     sweep = cluster.account_email(PROJECT, "swarm-scheduler")
     stale_bearer = "Bearer " + secrets.token_hex(8)
     gcp.jobs = [
-        _job("quota-sweep", "https://scheduler.run.app/sweep", account=sweep, audience="https://scheduler.run.app",
+        _job("swarm-quota-sweep", "https://scheduler.run.app/sweep", account=sweep,
+             audience="https://scheduler.run.app",
              headers={"Authorization": stale_bearer, "Content-Type": "application/json"}),
-        _job("reconcile", "https://reconciler.run.app/tick", account=RECONCILER),
-        _job("paused", "https://paused.run.app/x", account=sweep, state="PAUSED"),
+        _job("swarm-reconcile", "https://reconciler.run.app/tick", account=RECONCILER),
+        _job("swarm-paused", "https://paused.run.app/x", account=sweep, state="PAUSED"),
+        # Not the platform's: never triggered by the check.
+        _job("nightly-export", "https://export.example/run", account=sweep),
     ]
     status = {"https://scheduler.run.app/sweep": 403, "https://reconciler.run.app/tick": 200}
     called: list[tuple[str, str, dict[str, str], bytes]] = []
@@ -108,7 +115,7 @@ def test_every_scheduler_target_must_answer_2xx() -> None:
     step = verify.SchedulerTargetsStep(lambda: gcp, Answers(), minter=minter, call=call)
     observed = step.check(_ctx())
     assert observed.status == WAITING
-    assert "quota-sweep -> HTTP 403" in observed.detail and "reconcile" not in observed.detail
+    assert "swarm-quota-sweep -> HTTP 403" in observed.detail and "swarm-reconcile" not in observed.detail
     assert [url for _, url, _, _ in called] == ["https://scheduler.run.app/sweep", "https://reconciler.run.app/tick"]
     assert minter.minted == [(sweep, "https://scheduler.run.app", True),
                              (RECONCILER, "https://reconciler.run.app/tick", True)]
@@ -120,7 +127,7 @@ def test_every_scheduler_target_must_answer_2xx() -> None:
     status["https://scheduler.run.app/sweep"] = 204
     observed = step.check(_ctx())
     assert observed.status == MET
-    assert observed.outputs["scheduler_targets"] == ["quota-sweep", "reconcile"]
+    assert observed.outputs["scheduler_targets"] == ["swarm-quota-sweep", "swarm-reconcile"]
 
 
 def _service(name: str, latest: str, traffic: list[dict[str, Any]], label: str = DIGEST) -> dict[str, Any]:
@@ -148,7 +155,9 @@ def test_digests_read_never_labels() -> None:
     assert observed.status == UNMET and "serves 0 %" in observed.detail
 
     gcp.services = [_service("swarm-api", "swarm-api-00002", [{"latestRevision": True, "percent": 100}],
-                             label="anything")]
+                             label="anything"),
+                    # Not the platform's: not held to the release's digests.
+                    _service("someone-elses", "someone-elses-00001", [{"latestRevision": True, "percent": 100}])]
     gcp.revisions["swarm-api-00002"] = {"status": {"imageDigest": f"us-docker.pkg.dev/x/swarm-api@{DIGEST}"}}
     observed = step.check(ctx)
     assert observed.status == MET
@@ -197,12 +206,13 @@ class FakeRuns:
         self.states[run_id] = verify.RunStatus("running")
         return run_id
 
-    def status(self, ctx: Any, run_id: str) -> verify.RunStatus:
+    def status(self, ctx: Any, shape: str, run_id: str) -> verify.RunStatus:
+        assert run_id.endswith(shape)
         return self.states[run_id]
 
-    def finish(self, run_id: str, *, pr: str | None = None, token: str = verify.APP_INSTALLATION) -> None:
+    def finish(self, run_id: str, *, pr: str | None = None) -> None:
         url = pr if pr is not None else f"https://github.com/acme/demo/pull/{len(run_id)}"
-        self.states[run_id] = verify.RunStatus("succeeded", url, token)
+        self.states[run_id] = verify.RunStatus("succeeded", url)
 
 
 def test_four_end_to_end_runs_each_to_a_pr() -> None:
@@ -240,27 +250,120 @@ def test_four_end_to_end_runs_each_to_a_pr() -> None:
 
 
 def test_runs_use_installation_tokens() -> None:
-    """Lesson 43: a run that succeeded with a PAT is not a verified install."""
+    """Lesson 43: a run must clone and push with an App installation token,
+    never a PAT. Nothing swarm-api serves records which credential a run used
+    (no task, attempt or result names it), so the step never reads an invented
+    field, and never claims the check: every pass says the credential is
+    unrecorded, in its detail and in its outputs (question in the PR)."""
     runs = FakeRuns()
     step = verify.EndToEndStep(lambda: VerifyFakeGcp(), Answers(), runs=runs)
     ctx = _ctx(verify_runs={f"{s}-{k}": f"t-{s}-{k}" for s, k in verify.RUNS})
     for surface, shape in verify.RUNS:
         runs.finish(f"t-{surface}-{shape}")
-    runs.finish("t-plugin-workflow", token="personal-access-token")
     observed = step.check(ctx)
-    assert observed.status == UNMET
-    assert "plugin-workflow" in observed.detail and "App installation token" in observed.detail
-    assert "lesson 43" in observed.detail
+    assert observed.status == MET
+    assert "lesson 43" in observed.detail and "not checked" in observed.detail
+    assert observed.outputs["verify_forge_credential"] == "unrecorded"
+    assert not hasattr(verify, "APP_INSTALLATION")
+    assert set(verify.RunStatus.__dataclass_fields__) == {"state", "pull_request"}
 
-    runs.finish("t-plugin-workflow", token="")
-    assert step.check(ctx).status == UNMET
 
-    # The CLI's audit field is what the status reads.
-    cli = verify.SwarmCli(Answers(), run=lambda argv, stdin, env: (
-        0, '{"state": "SUCCEEDED", "pull_request_url": "https://github.com/acme/demo/pull/9", '
-           '"metadata": {"forge_token_kind": "app-installation"}}', ""))
-    found = cli.status(ctx, "t-1")
-    assert found == verify.RunStatus("succeeded", "https://github.com/acme/demo/pull/9", verify.APP_INSTALLATION)
+# -- the swarm CLI as it really prints ------------------------------------------
+
+
+class FakeSwarmApi:
+    """What the real `swarm` CLI's commands read through their client: tasks by
+    id, the workflow route and the dispatch call; nothing else is answered."""
+
+    tenant = None
+
+    def __init__(self) -> None:
+        self.tasks: dict[str, dict[str, Any]] = {}
+        self.workflows: dict[str, dict[str, Any]] = {}
+        self.posted: list[dict[str, Any]] = []
+        self.dispatched: list[dict[str, Any]] = []
+
+    def task(self, task_id: str) -> dict[str, Any]:
+        return self.tasks[task_id]
+
+    def dispatch(self, **kw: Any) -> dict[str, Any]:
+        self.dispatched.append(kw)
+        self.tasks["t-single"] = {"id": "t-single", "state": "QUEUED", "runner_profile": kw["runner_profile"]}
+        return self.tasks["t-single"]
+
+    def request(self, method: str, path: str, payload: Any = None, **kw: Any) -> Any:
+        if method == "POST" and path == "/v1/workflows":
+            self.posted.append(payload)
+            steps = [{"step_id": st["step_id"], "task_id": f"t-{st['step_id']}",
+                      "depends_on": st.get("depends_on") or []} for st in payload["steps"]]
+            self.workflows["wf_1"] = {"workflow": {"workflow_id": "wf_1", "steps": steps,
+                                                   "state": "QUEUED", "state_source": "stored"}, "tasks": []}
+            return self.workflows["wf_1"]
+        if method == "GET" and path.startswith("/v1/workflows/"):
+            return self.workflows[path.rsplit("/", 1)[-1]]
+        raise AssertionError(f"the CLI made a call this test does not expect: {method} {path}")
+
+
+def real_swarm(api: FakeSwarmApi, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """A `run` that executes the real `swarm` command (swarm_mcp.cli's parser
+    and handlers) against `api`, and answers its exit code and its stdout."""
+    from swarm_mcp import cli as swarm_cli
+    from swarm_mcp.client import SwarmError
+
+    def run(argv: Sequence[str], stdin: str | None, env: dict[str, str] | None) -> tuple[int, str, str]:
+        assert argv[0] == "swarm"
+        args = swarm_cli.build_parser().parse_args(list(argv[1:]))
+        monkeypatch.setattr("sys.stdin", io.StringIO(stdin or ""))
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                code = args.func(api, args)
+            except SwarmError as exc:
+                return 1, out.getvalue(), str(exc)
+        return code, out.getvalue(), err.getvalue()
+
+    return run
+
+
+def test_plugin_runs_launch_and_finish_as_the_real_cli_prints(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review findings 1-3: the workflow spec passes the CLI's own
+    `read_spec`; the workflow id is read from the envelope `swarm workflow
+    --json` prints; a task's state is read from `swarm status` and its pull
+    request from `swarm result --json` (only `result_summary`); a workflow is
+    followed through `swarm workflow-status`, never `/v1/tasks/<wf id>`."""
+    from swarm_mcp import workflows as swarm_workflows
+
+    spec = json.loads(verify.workflow_spec("acme/demo", "v-1"))
+    assert [st["step_id"] for st in swarm_workflows.read_spec(spec, where="verify")["steps"]] == ["write", "open"]
+
+    api = FakeSwarmApi()
+    cli = verify.SwarmCli(Answers(), run=real_swarm(api, monkeypatch))
+    ctx = _ctx()
+    assert cli.launch(ctx, "plugin", "single", "acme/demo", "v-1") == "t-single"
+    assert api.dispatched[0]["metadata"] == {"unit": "v-1"}
+    assert cli.launch(ctx, "plugin", "workflow", "acme/demo", "v-2") == "wf_1"
+    assert [st["step_id"] for st in api.posted[0]["steps"]] == ["write", "open"]
+
+    # Still going: a queued task, and a workflow the server did not derive (exit 1, state null).
+    assert cli.status(ctx, "single", "t-single") == verify.RunStatus("running")
+    assert cli.status(ctx, "workflow", "wf_1") == verify.RunStatus("running")
+
+    pr = "https://github.com/acme/demo/pull/7"
+    api.tasks["t-single"].update(state="SUCCEEDED",
+                                 result_summary={"git": {"pull_request": {"url": pr, "number": 7}}})
+    assert cli.status(ctx, "single", "t-single") == verify.RunStatus("succeeded", pr)
+
+    wf_pr = "https://github.com/acme/demo/pull/8"
+    api.workflows["wf_1"]["workflow"].update(state="SUCCEEDED", state_source="derived")
+    api.workflows["wf_1"]["tasks"] = [
+        {"id": "t-write", "state": "SUCCEEDED", "result_summary": {"git": {}}},
+        {"id": "t-open", "state": "SUCCEEDED",
+         "result_summary": {"git": {"pull_request": {"url": wf_pr, "number": 8}}}},
+    ]
+    assert cli.status(ctx, "workflow", "wf_1") == verify.RunStatus("succeeded", wf_pr)
+
+    api.tasks["t-failed"] = {"id": "t-failed", "state": "FAILED"}
+    assert cli.status(ctx, "single", "t-failed") == verify.RunStatus("failed")
 
 
 def test_plugin_run_signs_in_with_desktop_client_not_gcloud_token(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -271,16 +374,17 @@ def test_plugin_run_signs_in_with_desktop_client_not_gcloud_token(monkeypatch: p
         monkeypatch.setenv(name, secrets.token_hex(8))
     monkeypatch.setenv("HOME", "/home/person")
     calls: list[tuple[list[str], str | None, dict[str, str] | None]] = []
+    swarm = real_swarm(FakeSwarmApi(), monkeypatch)
 
     def run(argv: Sequence[str], stdin: str | None, env: dict[str, str] | None) -> tuple[int, str, str]:
         calls.append((list(argv), stdin, env))
-        return 0, '{"task_id": "t-1"}', ""
+        return swarm(argv, stdin, env)
 
     ask = Answers(verify_end_to_end=["t-console-1"])
     cli = verify.SwarmCli(ask, run=run)
     ctx = _ctx()
-    assert cli.launch(ctx, "plugin", "single", "acme/demo", "v-1") == "t-1"
-    assert cli.launch(ctx, "plugin", "workflow", "acme/demo", "v-2") == "t-1"
+    assert cli.launch(ctx, "plugin", "single", "acme/demo", "v-1") == "t-single"
+    assert cli.launch(ctx, "plugin", "workflow", "acme/demo", "v-2") == "wf_1"
     assert cli.launch(ctx, "console", "single", "acme/demo", "v-3") == "t-console-1"
     assert len(calls) == 2  # the console's run is started by the person, in the console
     for argv, _, env in calls:
@@ -300,7 +404,7 @@ def test_verify_progress_written_with_countdown(tmp_path: Path) -> None:
     rig.store.update(lambda s: setattr(s, "region", REGION))
     documents = FakeDocuments()
     gcp = VerifyFakeGcp()
-    gcp.jobs = [_job("reconcile", "https://reconciler.run.app/tick", account=RECONCILER)]
+    gcp.jobs = [_job("swarm-reconcile", "https://reconciler.run.app/tick", account=RECONCILER)]
     targets = verify.SchedulerTargetsStep(lambda: gcp, Answers(), minter=FakeMinter(),
                                           call=lambda m, u, h, b: 200)
     engine = rig.engine([targets])
@@ -338,8 +442,11 @@ def test_cluster_objects_from_release_bundle(tmp_path: Path, monkeypatch: pytest
     sum, or escapes its root, is refused."""
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     gcp, shell = ClusterFakeGcp(), FakeShell()
-    bundle, policies, _ = cluster.build_steps(lambda: gcp, Answers(), kube=_kube(shell), run=shell)
+    bundle, policies, *_ = cluster.build_steps(lambda: gcp, Answers(), kube=_kube(shell), run=shell)
     ctx = _ctx()
+    # A dry run checks the digest and writes nothing (review minor).
+    assert bundle.check(ctx).status == MET and not cluster.bundle_dir(PROJECT, VERSION).exists()
+    ctx.dry_run = False
     observed = bundle.check(ctx)
     assert observed.status == MET
     root = Path(observed.outputs["kubernetes_bundle"])
@@ -357,7 +464,7 @@ def test_cluster_objects_from_release_bundle(tmp_path: Path, monkeypatch: pytest
 
     escaping = ClusterFakeGcp(bundle=bundle_bytes({"../outside.py": b"x"}))
     with pytest.raises(ValueError, match="escapes"):
-        cluster.build_steps(lambda: escaping, Answers(), kube=_kube(FakeShell()))[0].check(_ctx())
+        cluster.build_steps(lambda: escaping, Answers(), kube=_kube(FakeShell()))[0].check(ctx)
 
 
 def test_steps_satisfy_every_stage_14_entry() -> None:

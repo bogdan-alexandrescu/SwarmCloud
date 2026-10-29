@@ -7,6 +7,16 @@
 | `cluster.bundle` | `other.release-kubernetes-bundle` | engine: the release's `kubernetes.tgz`, checked against its `SHA256SUMS` and unpacked; never a checkout |
 | `cluster.policies` | `cluster-policy.*` (9), `rbac.provisioner-clusterrole` | engine: `render.py policies` from the bundle, applied before anything a tenant runs |
 | `cluster.swarm-system` | `cluster.swarm-system-namespace` | engine: swarm-system's default-deny ingress, only once the policies are in |
+| `cluster.workloads` | `workload.swarm-live`, `workload.swarm-graph` | engine, read-only: the live relay and the graph service run in swarm-system |
+
+**swarm-system's two core workloads are Terraform's renders.** The live
+relay's manifest is terraform/infra's `swarm_live_manifest` output and the
+graph service's `swarm_graph_manifest` (`kubernetes/apply.sh --swarm-system`
+and `--swarm-graph` apply them; neither is in the release bundle). The
+engine's Terraform runner (DAYONE-ENGINE-3) holds those outputs, so stage 10
+checks the workloads run and its apply names that pass rather than reading
+Terraform a second way. The addon workloads (`swarm-egress`,
+`swarm-typesafe-fwd`, `tailscale-egress`) belong to their addons' installs.
 
 **Policies before the code that needs them** (lesson 33): the scheduler once
 shipped sizes the admission policy did not yet admit, and 54 dispatches
@@ -230,7 +240,8 @@ class Bundle:
     gcp: Callable[[], Gcp]
     where: Callable[[str, str], Path] = bundle_dir
 
-    def fetch(self, ctx: Any) -> Path:
+    def read(self, ctx: Any) -> tuple[bytes, str]:
+        """The bundle's bytes and digest, checked against SHA256SUMS; nothing written."""
         version = ctx.state.release
         if not version:
             raise LookupError("no release is recorded (preflight.release reads it)")
@@ -241,7 +252,12 @@ class Bundle:
         digest = hashlib.sha256(data).hexdigest()
         if sums.get(BUNDLE) != digest:
             raise ValueError(f"release {version}: {BUNDLE} does not match SHA256SUMS")
-        target = self.where(ctx.project, str(version))
+        return data, digest
+
+    def fetch(self, ctx: Any) -> Path:
+        """The bundle unpacked into the engine's local cache (a render needs files)."""
+        data, digest = self.read(ctx)
+        target = self.where(ctx.project, str(ctx.state.release))
         if (target / ".sha256").is_file() and (target / ".sha256").read_text().strip() == digest:
             return target
         root = unpack(data, target)
@@ -336,6 +352,10 @@ class BundleStep(_Base):
     )
 
     def check(self, ctx: Any) -> Observation:
+        if ctx.dry_run:
+            # A dry run checks the digest and writes nothing, not even the cache.
+            self._bundle.read(ctx)
+            return Observation(MET, f"{BUNDLE} of release {ctx.state.release} matches SHA256SUMS")
         root = self._bundle.fetch(ctx)
         return Observation(MET, f"{BUNDLE} of release {ctx.state.release}", {"kubernetes_bundle": str(root)})
 
@@ -367,6 +387,10 @@ class PoliciesStep(_Base):
     )
 
     def rendered(self, ctx: Any) -> str:
+        """No `--terraform-tfvars`: a Day One install has no Terraform tenants
+        (the release bundle carries no terraform/ tree), so the workspace
+        deployer's scope policy names no reserved tenant namespace; every team
+        is a workspace tenant, made by swarm-workspace-apply."""
         uids = unique_ids(self.gcp, ctx.project)
         return self.render(ctx, "policies", f"--project={ctx.project}",
                            f"--scheduler-uid={uids['scheduler']}", f"--reconciler-uid={uids['reconciler']}",
@@ -442,6 +466,52 @@ class SwarmSystemStep(_Base):
         self.apply_render(ctx, self.rendered(ctx))
 
 
+#: swarm-system's core workloads: (manifest entry, kind/name, Terraform output).
+CORE_WORKLOADS = (
+    ("workload.swarm-live", "statefulset/swarm-live", "swarm_live_manifest"),
+    ("workload.swarm-graph", "deployment/swarm-graph", "swarm_graph_manifest"),
+)
+
+
+class WorkloadsStep(_Base):
+    id = "cluster.workloads"
+    satisfies = tuple(entry for entry, _, _ in CORE_WORKLOADS)
+    _explain = (
+        "The live-browser relay and the shared code graph service run in swarm-system. Their manifests are "
+        "terraform/infra's renders (image digest, bucket, key reference, address), applied after the "
+        "namespace's policies; stage 10 checks every replica is ready."
+    )
+
+    def check(self, ctx: Any) -> Observation:
+        problems: list[str] = []
+        for _, name, output in CORE_WORKLOADS:
+            code, out, err = self.kube(ctx)("get", name, "--namespace=swarm-system", "-o", "json")
+            if code != 0:
+                if "NotFound" not in err:
+                    raise RuntimeError(f"kubectl get {name} failed: {err.strip()[:300]}")
+                problems.append(f"{name} does not exist (terraform output {output})")
+                continue
+            found = yaml.safe_load(out) or {}
+            wanted = int((found.get("spec") or {}).get("replicas") or 0)
+            ready = int((found.get("status") or {}).get("readyReplicas") or 0)
+            if wanted < 1 or ready < wanted:
+                problems.append(f"{name} has {ready} of {wanted} replicas ready")
+        if problems:
+            return Observation(UNMET, "; ".join(problems))
+        return Observation(MET, "swarm-live and swarm-graph are ready in swarm-system")
+
+    def plan(self, ctx: Any) -> Plan:
+        return Plan("check swarm-system's core workloads",
+                    tuple(f"{name}: terraform output {output}" for _, name, output in CORE_WORKLOADS))
+
+    def apply(self, ctx: Any, plan: Plan) -> None:
+        found = self.check(ctx)
+        if found.status != MET:
+            raise RuntimeError(f"{found.detail}. Their manifests are terraform/infra's outputs, applied by the "
+                               "engine's Terraform pass (DAYONE-ENGINE-3), as kubernetes/apply.sh --swarm-system "
+                               "and --swarm-graph apply them; run swarm install again once it has")
+
+
 def build_steps(gcp: Callable[[], ClusterGcp] = CLUSTER_GCP, ask: Ask = ASK, *,
                 kube: Callable[[Any], Kube] = kube_for, bundle: Bundle | None = None,
                 run: Run = run_command) -> list[Any]:
@@ -452,6 +522,7 @@ def build_steps(gcp: Callable[[], ClusterGcp] = CLUSTER_GCP, ask: Ask = ASK, *,
         BundleStep(gcp, ask, kube=kube, bundle=shared, run=run),
         policies,
         SwarmSystemStep(gcp, ask, policies=policies, kube=kube, bundle=shared, run=run),
+        WorkloadsStep(gcp, ask, kube=kube, bundle=shared, run=run),
     ]
 
 
