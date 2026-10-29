@@ -67,7 +67,7 @@ import { SubmitWorkflowScreen } from './SubmitWorkflow'
 import { QaRunGroupScreen } from './QaRunGroup'
 import { IssueSubmitScreen } from './IssueSubmit'
 import { RunsScreen } from './Runs'
-import { ALL_TENANTS_SCHEDULES, NEW_SCHEDULE, SchedulesScreen, WaitingOnYouCard } from './Schedules'
+import { ALL_TENANTS_SCHEDULES, NEW_SCHEDULE, SchedulesScreen, WaitingOnYouCard, useScheduleName } from './Schedules'
 import { ApprovalsScreen } from './Approvals'
 import { RepositoriesScreen } from './Repositories'
 import { qaCredentialLinkFrom, type QaLink } from './qaTargetsApi'
@@ -1517,7 +1517,13 @@ export function App() {
   // (overview-agents-65). Its id until then, which is all anyone knows.
   const agentNamed = useAgentName(at.missing ? null : at.taskId)
   const workflowNamed = useRecentName(!at.missing && at.taskId === null && at.tab === 'workflows' ? openObjectOf(at) : null)
-  const titled = agentNamed ?? workflowNamed ?? object
+  // A schedule by the name its list read (QA2 automate2-15): "sch_a ·
+  // Schedules" named the open sheet by its id though the list under it had
+  // read its name.
+  const scheduleNamed = useScheduleName(
+    !at.missing && at.sectionId === AUTOMATE && at.tab === 'schedules' ? new URLSearchParams(at.view ?? '').get('schedule') : null,
+  )
+  const titled = agentNamed ?? workflowNamed ?? scheduleNamed ?? object
   useEffect(() => {
     document.title = documentTitleOf(title, titled)
   }, [title, titled])

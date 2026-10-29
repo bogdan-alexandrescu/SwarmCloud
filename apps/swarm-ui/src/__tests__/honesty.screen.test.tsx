@@ -227,10 +227,13 @@ describe('a failed read', () => {
 
   it('offers a retry, and the head does not pretend a read or a number is available', async () => {
     renderScreen({ status: 'error', error: err('server_error') })
-    expect(await screen.findByRole('button', { name: 'Try again' })).toBeTruthy()
+    // ONE RETRY CONTROL (QA2 automate2-11): the head's refresh, not a second
+    // `Try again` in the panel under it.
+    // MUTATION: draw the panel's `Try again` on a Screen again and this fails.
+    const ctl = await screen.findByRole('button', { name: 'Refresh · not read' })
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
     // Nothing was read, so the head's control carries no age and no count:
     // `⟳ refresh`, named as not read.
-    const ctl = screen.getByRole('button', { name: 'Refresh · not read' })
     expect(ctl.textContent).toBe('⟳ refresh')
     expect(document.querySelector('.c-count-note')).toBeNull()
   })
@@ -743,7 +746,8 @@ describe('a screen that polls (AG-1)', () => {
     await advance(10_000)
     expect(load, 'the retry did not happen, so this proves nothing').toHaveBeenCalledTimes(2)
     expect(document.querySelector('.state.failed'), 'the retry unmounted the failure panel').not.toBeNull()
-    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy()
+    // The page's one retry, the head's refresh (QA2 automate2-11), stays drawn.
+    expect(document.querySelector('.c-refresh')).not.toBeNull()
     expect(document.querySelectorAll('.skeleton')).toHaveLength(0)
   })
 
