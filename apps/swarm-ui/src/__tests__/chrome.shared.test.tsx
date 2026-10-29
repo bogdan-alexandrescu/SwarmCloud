@@ -115,7 +115,8 @@ async function liveApp(hash: string, held = '/v1/admin/tenants'): Promise<{ rele
   render(<LiveApp />)
   // The FRAME's read has landed: the tab now holds a successful read that is
   // not the screen's.
-  await waitFor(() => expect(document.querySelector('.sk-tenant b')?.textContent).toBe('Bogdan'))
+  // The caller's own personal workspace, by its one name (admin-shell-21).
+  await waitFor(() => expect(document.querySelector('.sk-tenant b')?.textContent).toBe('Your workspace'))
   return {
     release: async (res: Response) => {
       await act(async () => {

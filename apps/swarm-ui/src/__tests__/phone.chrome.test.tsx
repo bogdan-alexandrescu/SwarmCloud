@@ -103,7 +103,8 @@ async function shellAs(who: Me): Promise<HTMLElement> {
       {null}
     </SkyShell>,
   )
-  await waitFor(() => expect(container.querySelector('.sk-pbar .sk-tn')?.textContent).toBe('Phone'))
+  // The caller's own personal workspace, by its one name (admin-shell-21).
+  await waitFor(() => expect(container.querySelector('.sk-pbar .sk-tn')?.textContent).toBe('Your workspace'))
   return container
 }
 
@@ -241,9 +242,13 @@ describe('#139 at 390: the header row never widens the page', () => {
   it("cuts a long tenant name with an ellipsis, before the title gives way, and keeps the whole name as its title", async () => {
     // MUTATION: drop `min-width: 0` / `max-width` / `overflow: hidden` from
     // `.sk-pbar .sk-tn`, or let the menu, the mark or the env pill shrink.
+    // A GROUP workspace with a long key and name: the caller's own personal
+    // one is `Your workspace` whatever its document says (admin-shell-21), and
+    // the bar draws a group workspace by its key (VQ-001), whole in the title.
     const long = me(false)
-    const name = 'someone.with.a.rather.long.address' + '@' + 'example.com'
-    ;(long.tenant as { display_name: string }).display_name = name
+    const key = 'someone-with-a-rather-long-workspace-key'
+    const name = 'Someone with a rather long workspace name'
+    Object.assign(long.tenant as object, { tenant_id: key, kind: 'group', display_name: name })
     vi.stubEnv('VITE_LIVE', '1')
     vi.stubEnv('VITE_SWARM_ENV', 'dev')
     vi.resetModules()
@@ -258,7 +263,7 @@ describe('#139 at 390: the header row never widens the page', () => {
     )
     const tn = await waitFor(() => {
       const el = container.querySelector<HTMLElement>('.sk-pbar .sk-tn')
-      expect(el?.textContent).toBe(name)
+      expect(el?.textContent).toBe(key)
       return el!
     })
     expect(tn.getAttribute('title'), 'a cut name has no way to read it whole').toBe(name)
