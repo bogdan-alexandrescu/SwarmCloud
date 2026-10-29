@@ -456,9 +456,11 @@ function PersonalOnly() {
     <>
       <p className="pk-lead">You are this workspace&rsquo;s admin; a personal workspace has only you.</p>
       <p className="ur-hint">
+        {/* WHO CREATES WHAT, IN PLAIN WORDS (visual QA pass 2, config2-21): "a platform admin adds one" read as
+            adding a person as well as a workspace. */}
         {admin === true
-          ? 'People and roles belong to a group workspace. You may add one.'
-          : 'People and roles belong to a group workspace; a platform admin adds one.'}
+          ? 'Only a group workspace has people and roles; as a platform admin, you may create one.'
+          : 'Only a group workspace has people and roles; a platform admin creates group workspaces.'}
       </p>
       <div className="ws-rename-a" data-testid="wp-personal-actions">
         <ButtonLink size="sm" href={addressToPath(WORKSPACE_SETTINGS_ADDRESS)}>Open Workspace Settings</ButtonLink>

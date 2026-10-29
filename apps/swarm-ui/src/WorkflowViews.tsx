@@ -379,13 +379,17 @@ export function WorkflowTimeline({
  * run, the time on parents and a park were told apart only by a hover; each
  * swatch here is drawn by the same classes the spans are, so the key cannot
  * describe a bar the track does not draw. `parked` and `skipped` are the
- * hatches the Graph's node uses for those states.
+ * hatches the Graph's node uses for those states; `running` is the run's core
+ * in the live hue with the open end `is-open` draws.
  */
 export const TIMELINE_KEY: readonly { kind: string; word: string; title: string }[] = [
   { kind: 'parents', word: 'on parents', title: 'Waiting for a parent step to finish: the step could not start any sooner.' },
   { kind: 'waited', word: 'waited', title: 'Queued, ready, leased or dispatched: time waited, never time run.' },
   { kind: 'parked', word: 'parked', title: 'Parked and holding nothing: the step is waiting on a provider window or capacity, and will resume.' },
   { kind: 'ran', word: 'ran', title: 'From the latest start to the recorded finish, in the step’s state colour.' },
+  // A RUN STILL GOING HAS ITS OWN SWATCH (visual QA pass 2, ovag2-09): the
+  // key named none, so wf_audit_01's running scan-terraform read as 8 days waited.
+  { kind: 'running', word: 'running', title: 'Started and not finished: the run so far, its open end dashed, up to now.' },
   { kind: 'skipped', word: 'skipped by verdict', title: 'The verdict gate kept the step’s agent from running; the attempt only published the reviewed work.' },
 ]
 
