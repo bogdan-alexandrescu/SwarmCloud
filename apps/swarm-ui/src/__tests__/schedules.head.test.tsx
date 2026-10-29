@@ -121,7 +121,8 @@ describe("a schedule's head, on the sheet (VQ-029)", () => {
     expect(absent).toContain('— no day bar')
     expect(absent).toContain('$41.20')
     // The gate rows' words since QA2-FIX-21 (automate2-18): this type serves no caps.
-    expect(kv(sec('spend'), 'Day budget')).toBe('— the type’s default, which the catalogue did not say')
+    // The catalogue's read settles after the sheet draws ("reading which…" until then).
+    await waitFor(() => expect(kv(sec('spend'), 'Day budget')).toBe('— the type’s default, which the catalogue did not say'), WAIT)
     expect(kv(sec('spend'), 'Live runs')).toBe('— the type’s default, which the catalogue did not say')
     expect(kv(sec('gate'), 'Waiting')).toBe('nothing waits on a person')
     expect(visible(sheet())).not.toContain('$0.00')
