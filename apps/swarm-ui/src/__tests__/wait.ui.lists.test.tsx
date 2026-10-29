@@ -178,7 +178,8 @@ describe('the Agents Waiting tab says each task’s own reason', () => {
     // MUTATION: keep `whyAgent`'s generic CI_PENDING sentence on the row.
     expect(whyOf(c, A).textContent).toBe('CI #1779: 5 pending')
     expect(whyOf(c, B).textContent).toBe('CI #1780: 2 pending, 1 failed')
-    expect(whyOf(c, R).textContent).toBe('capacity: runner:merge full')
+    // Visual QA pass 2 (overview-agents-56): the row names the pool by `poolLabel`.
+    expect(whyOf(c, R).textContent).toBe('capacity: merge full')
     // MUTATION: title the line with the short form: the whole summary is lost to a pointer.
     expect(whyOf(c, A).getAttribute('title')).toBe(CI.summary)
     // MUTATION: name the opener with the short form (`why.text`) rather than the whole summary.

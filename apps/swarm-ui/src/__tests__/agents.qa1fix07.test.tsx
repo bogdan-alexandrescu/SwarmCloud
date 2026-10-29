@@ -139,7 +139,9 @@ describe('QA1-FIX-07: the Agents list', () => {
     // scheduler recorded no reason this one waits.` -- a count of two before
     // `this one`. The line is the group's as well as one row's.
     // MUTATION: put `this one waits` back in `NO_BLOCKER` -> the group line says `2 … this one`.
-    serve()
+    // Since pass 2 (overview-agents-56) a queued row is under `Not yet
+    // eligible`, apart from the ready one, so two queued rows share the line.
+    serve([...ALL, row(12, 'QUEUED')])
     render(<AgentsScreen onOpen={() => {}} />)
     await waitFor(() => expect(rowOf(flaky)).not.toBeNull())
     tab(/^Waiting/)
