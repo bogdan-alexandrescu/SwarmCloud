@@ -826,7 +826,7 @@ describe('the Table toggle', () => {
     expect(table.querySelectorAll('tbody tr')).toHaveLength(14)
     const heads = [...table.querySelectorAll('thead th')].map((th) => th.textContent)
     // The one submission-time column names its basis under Table too, where no lane label is drawn.
-    expect(heads).toContain('Submitted by created_at')
+    expect(heads).toContain('Submitted by submit time')
     expect(heads).toContain('Rate k of n, 95 % range')
     const toggle = root.querySelector<HTMLButtonElement>('.ol-table-toggle')!
     expect(toggle.getAttribute('aria-pressed')).toBe('true')
