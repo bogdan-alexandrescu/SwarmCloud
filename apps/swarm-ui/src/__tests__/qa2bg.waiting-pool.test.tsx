@@ -24,7 +24,7 @@ afterEach(cleanup)
 
 describe('ovag2-04: a READY group names its pool in words, its key on hover', () => {
   it('writes the lead pool by its label, the raw key as `pool`', () => {
-    const [g] = waitGroups([ready('task_r1', KEY), ready('task_r2', KEY)])
+    const g = waitGroups([ready('task_r1', KEY), ready('task_r2', KEY)])[0]!
     // MUTATION: `title = line` again in waitGroups -> the raw key: red.
     expect(g.title).toBe('waiting for: anthropic · u-bogdan  5/5 units')
     expect(g.title).not.toContain('provider:')
@@ -42,9 +42,9 @@ describe('ovag2-04: a READY group names its pool in words, its key on hover', ()
   })
 
   it('leaves a group with no pool in its line untitled', () => {
-    const [g] = waitGroups([task({ id: 'task_q1', state: 'QUEUED' })])
+    const g = waitGroups([task({ id: 'task_q1', state: 'QUEUED' })])[0]!
     expect(g.pool).toBeUndefined()
-    const [r] = waitGroups([task({ id: 'task_r3', state: 'READY' })])
+    const r = waitGroups([task({ id: 'task_r3', state: 'READY' })])[0]!
     expect(r.title).toBe('Eligible, waiting for room')
     expect(r.pool).toBeUndefined()
   })
