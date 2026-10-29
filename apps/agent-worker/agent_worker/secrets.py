@@ -342,6 +342,39 @@ def resolve_git_token(
     return token
 
 
+#: What `result_summary.forge_credential.kind` may say (lesson 43, stage 14 of
+#: `swarm install`): the KIND of GitHub credential a run cloned and pushed
+#: with. `unknown` is a value of no shape GitHub documents a prefix for (never
+#: taken for an App token); `mixed` is an attempt whose reads were of two
+#: kinds (`kinds` lists them).
+FORGE_CREDENTIAL_KINDS = frozenset({"app_installation", "app_user", "pat", "none", "unknown", "mixed"})
+
+#: GitHub's documented token prefixes (as `swarm_api.gittokens.token_kind`
+#: reads them), to this record's coarser kinds: `ghs_` an App installation
+#: token, `ghu_` an App user access token, `github_pat_` a fine-grained PAT,
+#: `ghp_` a classic one and `gho_` an OAuth app's, which carries classic scopes.
+_KIND_BY_PREFIX = (
+    ("ghs_", "app_installation"),
+    ("ghu_", "app_user"),
+    ("github_pat_", "pat"),
+    ("ghp_", "pat"),
+    ("gho_", "pat"),
+)
+
+
+def forge_credential_kind(token: str | None) -> str:
+    """The token's kind, read in memory from its prefix: one of
+    `FORGE_CREDENTIAL_KINDS` and nothing else. The value, its prefix and any
+    piece or hash of it are never returned, stored or logged."""
+    value = (token or "").strip()
+    if not value:
+        return "none"
+    for prefix, kind in _KIND_BY_PREFIX:
+        if value.startswith(prefix):
+            return kind
+    return "unknown"
+
+
 def git_token_from_payload(payload: str, secret_name: str) -> str:
     """A git secret's token: the payload, or its `GIT_TOKEN` when it is a JSON object.
 
