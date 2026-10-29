@@ -41,7 +41,7 @@ import { usePageClock } from './useNow'
 import { formatDateTime, isToday, startOfDay, zoneLabel } from './timezone'
 import { useTimeZone } from './useTimeZone'
 import { ENDED_BADLY, WHOLE, hhmm, readReach, stateView as readStateView, type Coverage, type OverviewTaskPage, type StateView } from './overviewReads'
-import { CONCURRENCY_STATES, TERMINAL_STATES, clockTime, reasonCopy, timeAgo, whyAgent, type Stats, type Task, type TaskPage, type TaskState } from './types'
+import { CONCURRENCY_STATES, TERMINAL_STATES, clockTime, poolLabel, reasonCopy, timeAgo, whyAgent, type Stats, type Task, type TaskPage, type TaskState } from './types'
 
 /**
  * The path of one agent, under the list it actually sits in (browser QA,
@@ -297,6 +297,8 @@ export interface WaitGroup {
   n: number
   /** The workflows the detail names, by id, for the line's `title`. */
   ids: string[]
+  /** The raw key of the pool a READY title names in words, for its `title`. */
+  pool?: string
 }
 
 /**
@@ -317,13 +319,20 @@ export function waitGroups(
   for (const t of all) {
     let key: string
     let title: string
+    let pool: string | undefined
     if (t.state === 'PARKED') {
       key = `P:${t.park_reason ?? ''}`
       title = t.park_reason ? reasonCopy(t.park_reason) : 'Parked'
     } else if (t.state === 'READY') {
       const line = whyAgent(t)
       key = `R:${line}`
-      title = line === '' ? 'Eligible, waiting for room' : line
+      // THE POOL IN WORDS (QA2 ovag2-04): 'waiting for: anthropic · u-bogdan
+      // 5/5 units', as Headroom writes it, never the raw key, which broke
+      // mid-word at 390; the key is the title's hover.
+      const lead = t.waiting_for?.lead?.pool
+      pool = lead && line.includes(lead) ? lead : undefined
+      const said = pool === undefined ? line : line.replace(pool, poolLabel(pool))
+      title = said === '' ? 'Eligible, waiting for room' : said
     } else if (t.state === 'QUEUED') {
       const deps = (t.depends_on?.length ?? 0) > 0
       key = deps ? 'Q:deps' : 'Q:line'
@@ -331,7 +340,7 @@ export function waitGroups(
     } else {
       continue
     }
-    const g = groups.get(key) ?? { key, state: t.state, title, detail: '', n: 0, eligible: null, workflows: new Map() }
+    const g = groups.get(key) ?? { key, state: t.state, title, detail: '', n: 0, eligible: null, workflows: new Map(), ...(pool === undefined ? {} : { pool }) }
     g.n += 1
     if (t.next_eligible_at !== null && (g.eligible === null || t.next_eligible_at < g.eligible)) g.eligible = t.next_eligible_at
     if (t.workflow_id !== null) g.workflows.set(t.workflow_id, (g.workflows.get(t.workflow_id) ?? 0) + 1)
@@ -456,7 +465,7 @@ export function WaitingWhy({ tasks }: { tasks: Result<TaskPage> }) {
             <StateMark state={g.state} />
           </span>
           <span className="ov-wt">
-            <b>{g.title}</b>
+            <b title={g.pool}>{g.title}</b>
             <small title={g.ids.length > 0 ? g.ids.join(', ') : undefined}>{g.detail}</small>
           </span>
           <span className="ov-wn">{g.n}</span>
