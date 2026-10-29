@@ -57,6 +57,7 @@ locals {
 }
 
 resource "google_project_iam_member" "doctor_read_only" {
+  # checkov:skip=CKV_GCP_117:roles/viewer is the plan's read-only doctor role (DAYONE-TF-2, D27); its write-shaped permissions are listed above and held by test_doctor_roles_are_read_only; narrower viewers are asked of the owner in the TF-2 PR.
   for_each = local.doctor_project_roles
 
   project = var.project_id
