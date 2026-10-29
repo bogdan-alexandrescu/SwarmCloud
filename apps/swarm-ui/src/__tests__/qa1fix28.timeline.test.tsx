@@ -115,13 +115,13 @@ describe('runs-submit-10: the headline names its window before its figures', () 
     api.loadOutcomes.mockResolvedValue(ok(ledgerFixture()))
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     const head = await waitFor(() => {
-      const el = cell(/outcomes read answered/)
+      const el = cell(/not this span, read for/)
       expect(el).not.toBeNull()
       return el!
     })
     // MUTATION: print the ledger's figures over another window and the line
     // reads '91 % success' as the span's (superseded by QA2-FIX-05, runs2-04).
-    expect(text(head)).toBe('outcomes — the outcomes read answered for Sep 12 – Sep 25, not this span')
+    expect(text(head)).toBe('outcomes — not this span, read for Sep 12 – Sep 25')
     cleanup()
 
     const same: Outcomes = { ...ledgerFixture(), tz: 'UTC', bucket: 'hour', since: ago(24 * 60), until: ago(0), generated_at: ago(0) }

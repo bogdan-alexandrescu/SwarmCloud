@@ -24,6 +24,7 @@ import type { Outcomes } from '../outcomes'
 import type { WorkflowRead } from '../api'
 import type { AttemptRow, AttemptsPage, Task, TaskPage } from '../types'
 import { byIdVia } from './workflowsById'
+import TIMELINE_CSS from '../styles/timeline.css?raw'
 
 const api = vi.hoisted(() => ({
   loadAttemptsPage: vi.fn(),
@@ -105,12 +106,12 @@ describe('runs2-04: outcomes figures are shown only over the span they cover', (
   it('puts a dash and the window the read answered for in place of figures from another window', async () => {
     api.loadOutcomes.mockResolvedValue(ok(ledgerFixture()))
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
-    await waitFor(() => expect(cell(/outcomes read answered/)).not.toBeNull())
+    await waitFor(() => expect(cell(/not this span, read for/)).not.toBeNull())
     // MUTATION: lead the ledger's figures with their window (the code before
     // this fix) and '91 % success' over Sep 12 – Sep 25 sits beside 24h lanes.
     expect(text(strip())).not.toMatch(/% success|decided|finished/)
     expect(document.querySelector('.tl-strip .tl-n-ended')).toBeNull()
-    expect(text(cell(/outcomes read answered/))).toBe('outcomes — the outcomes read answered for Sep 12 – Sep 25, not this span')
+    expect(text(cell(/not this span, read for/))).toBe('outcomes — not this span, read for Sep 12 – Sep 25')
     // MUTATION: keep footnoting the mismatch, 'Decided counts cover Sep 12 …; the lanes cover …'.
     expect(text(strip())).not.toMatch(/Decided counts cover/)
     expect(text(strip())).toMatch(/The lanes cover .+\. Parks and fences count only the lanes drawn\./)
@@ -227,5 +228,28 @@ describe('runs2-27: a standalone lane is named by what it is, in full, then its 
     const name = lanes()[0]!.querySelector('button.tl-name')!
     expect(text(name.querySelector('.tl-name-k'))).toBe('claude-code')
     expect(text(name.querySelector('.tl-name-id'))).toBe('· solo')
+  })
+
+  // jsdom lays nothing out (every scrollWidth and clientWidth is 0), so what
+  // the 240 px label column draws is pinned by the rules that draw it.
+  const rule = (sel: string) => {
+    const at = TIMELINE_CSS.indexOf(`${sel} {`)
+    return at < 0 ? '' : TIMELINE_CSS.slice(at, TIMELINE_CSS.indexOf('}', at))
+  }
+  it('draws the name whole on its own line rather than cutting it to “claude-c…” beside the state and time', async () => {
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(lanes()).toHaveLength(1))
+    // MUTATION: leave the label line unmarked (the code before this fix) and
+    // the name shares one nowrap line with the mark and the time held, which
+    // left 'claude-c…' of 'claude-code' on the 14d desktop render.
+    expect(lanes()[0]!.querySelector('.tl-lab > b')!.classList.contains('is-split')).toBe(true)
+    // MUTATION: drop `flex-wrap: wrap` and the mark and time keep the name's room.
+    expect(rule('.tl-lab b.is-split')).toMatch(/flex-wrap: wrap;/)
+    expect(rule('.tl-lab b.is-split')).toMatch(/white-space: normal;/)
+    // MUTATION: keep the kind on one ellipsized line and a title reads 'Researc… · 1beb89a5'.
+    const kind = rule('.tl-name.is-split .tl-name-k')
+    expect(kind).toMatch(/white-space: normal;/)
+    expect(kind).toMatch(/-webkit-line-clamp: 2;/)
+    expect(kind).not.toMatch(/white-space: nowrap/)
   })
 })

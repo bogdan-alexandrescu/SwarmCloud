@@ -183,7 +183,7 @@ describe('6:work-a-003: the success headline names the ledger’s window when it
     api.loadOutcomes.mockResolvedValue(ok(ledgerFixture()))
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     const head = await waitFor(() => {
-      const el = cell(/outcomes read answered/)
+      const el = cell(/not this span, read for/)
       expect(el).not.toBeNull()
       return el!
     })
