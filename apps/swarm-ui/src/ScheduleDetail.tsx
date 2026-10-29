@@ -219,9 +219,11 @@ export function refusalWords(code: string): string {
  * never disagree about a firing.
  */
 function FiringOutcome({ f }: { f: ScheduleFiring }) {
+  // Read whole, never `.sc-cut` (QA2-FIX-21 review): cut, an OVERLAP skip
+  // read 'skipped: the la…' at 1440, its reason only in a hover title.
   return (
     <>
-      <span className="sc-cut" title={firingWord(f)}>{firingWord(f)}</span>
+      <span className="sc-why">{firingWord(f)}</span>
       {f.approval_id !== null && f.state === 'awaiting_approval' && <span className="sc-sub">waiting for approval, holding nothing</span>}
       {f.skip?.code === 'NOTHING_STARTED' &&
         nothingStartedLines(nothingDetail(f)).map((line) => (

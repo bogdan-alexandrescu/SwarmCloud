@@ -167,6 +167,21 @@ describe('automate2-03: a skipped firing in words', () => {
     expect(visible(row('sch_a:2'))).toContain('skipped')
     expect(visible(row('sch_a:3'))).toContain('skipped: the day budget was spent')
   })
+
+  it('draws the skip words whole, never in a one-line ellipsis cut', async () => {
+    await open(schedule('sch_a'), [firing(1, { state: 'skipped', outcome: 'skipped', skip: { code: 'OVERLAP' } })])
+    // The review read 'skipped: the la…' at 1440: `.sc-cut` is nowrap with an
+    // ellipsis, and jsdom's textContent reads the whole words either way, so
+    // this pins the class on the element that holds the words.
+    // MUTATION: put `sc-cut` back on the outcome span in FiringOutcome and
+    // the span holding the words carries it.
+    const cell = row('sch_a:1')
+    const words = Array.from(cell.querySelectorAll('span')).find((el) =>
+      (el.textContent ?? '').startsWith('skipped: the last firing was still running'),
+    )
+    expect(words).toBeDefined()
+    expect(words!.closest('.sc-cut')).toBeNull()
+  })
 })
 
 describe('automate2-19: lateness in duration words', () => {
