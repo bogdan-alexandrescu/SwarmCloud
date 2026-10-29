@@ -21,11 +21,14 @@ import { NamedMark } from './components'
  *                        this console never heard of is drawn as unrecognised
  *                        rather than defaulted into a healthy one.
  *
- * The word is lower case with spaces (`reauth required`), the way every other
- * state word in the console reads; the platform's spelling is the `title`.
+ * The word is lower case with spaces, the way every other state word in the
+ * console reads; the platform's spelling is the `title`. REAUTH_REQUIRED is
+ * the one said in plain words (QA2-FIX-14, capacity-21): `reauth required`
+ * named the broker's step, and what a reader has to do is sign the account
+ * in again.
  */
 export function AcctState({ state }: { state: string }) {
-  const word = state.toLowerCase().replace(/_/g, ' ')
+  const word = state === 'REAUTH_REQUIRED' ? 'needs sign-in' : state.toLowerCase().replace(/_/g, ' ')
   if (state === 'REAUTH_REQUIRED') return <NamedMark className="acct-state" mark="warn" hue="warn" word={word} title={state} />
   if (state === 'PAUSED') return <NamedMark className="acct-state" mark="parked" hue="park" word={word} title={state} />
   const known = state === 'AVAILABLE' || state === 'DRAINING'

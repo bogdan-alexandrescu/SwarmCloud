@@ -526,8 +526,11 @@ export function setBy(pool: Pool): { term: string; detail: string } {
   // cap configured at 0) rather than claiming which it was.
   if (quota_derived_limit === 0 && effective_limit === 0 && hard_limit > 0) {
     return {
-      term: 'quota state',
-      detail: `The provider's quota state (EXHAUSTED, DISABLED or COOLDOWN, or a cooldown still running) forces this to 0 until it clears; configured is ${hard_limit}. Provider quota shows the state, and the one other way to this 0: a quota cap set to 0.`,
+      // PLAIN WORDS (QA2-FIX-14, capacity-21): the term was `quota state`,
+      // the broker's own name for the document, and the detail spelled the
+      // three states in capitals. The term says what happened to the quota.
+      term: 'provider quota closed',
+      detail: `The provider's quota is used up, turned off or cooling down, which holds this at 0 until it clears; configured is ${hard_limit}. Provider quota shows which, and the one other way to this 0: a quota cap set to 0.`,
     }
   }
   if (quota_derived_limit !== null && quota_derived_limit === effective_limit && quota_derived_limit < hard_limit) {
@@ -4282,7 +4285,10 @@ export function timeAgo(when: Date | string | number, now: number = Date.now()):
   // being the readable unit.
   const h = Math.round(s / 3600)
   if (h < 48) return `${h}h ago`
-  return `${Math.round(h / 24)}d ago`
+  // WHOLE DAYS, FLOORED, as `formatDuration` floors them (visual QA pass 2
+  // overview-agents-42, part of #2694): rounded, an agent submitted 9d 21h
+  // ago read `submitted 10d ago` under a head that said `9d 21h`.
+  return `${Math.floor(h / 24)}d ago`
 }
 
 /**
@@ -4299,7 +4305,7 @@ export function ageSpan(ms: number): string {
   if (s < 3600) return `${Math.round(s / 60)}m`
   const h = Math.round(s / 3600)
   if (h < 48) return `${h}h`
-  return `${Math.round(h / 24)}d`
+  return `${Math.floor(h / 24)}d`
 }
 
 // --------------------------------------------------------------------------
