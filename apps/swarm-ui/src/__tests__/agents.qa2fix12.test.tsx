@@ -2,7 +2,7 @@
 // Agents list's findings from sweep lane QA2-OVERVIEW-AGENTS on the fixture
 // console. Each `it` names its finding and the mutation that turns it red.
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
