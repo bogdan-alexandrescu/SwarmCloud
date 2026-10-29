@@ -94,7 +94,7 @@ def test_discovery_path_rule_targets_non_iap_backend() -> None:
     backend = _resource(TF / "modules" / "frontend" / "main.tf", "google_compute_backend_service", "discovery")
     assert not re.search(r"enabled\s*=\s*true", backend), "the discovery backend must not turn IAP on"
     rule = re.search(
-        r'path_rule\s*\{\s*paths\s*=\s*\["/\.well-known/swarmcloud"\]\s*service\s*=\s*([^\n]+)\n',
+        r'(?:path_rule|content)\s*\{\s*paths\s*=\s*\["/\.well-known/swarmcloud"\]\s*service\s*=\s*([^\n]+)\n',
         frontend,
     )
     assert rule, "no path_rule for /.well-known/swarmcloud in the URL map"

@@ -42,6 +42,8 @@ locals {
 }
 
 resource "google_storage_bucket" "acceptance_fixture" {
+  count = var.enable_acceptance_fixture ? 1 : 0
+
   # checkov:skip=CKV_GCP_114:the acceptance fixture is public by design (#1628): one fixed page, no input rendered as markup; public access prevention would refuse the read grant below.
   project  = var.project_id
   name     = local.acceptance_fixture_bucket
@@ -74,7 +76,9 @@ resource "google_storage_bucket" "acceptance_fixture" {
 }
 
 resource "google_storage_bucket_object" "acceptance_fixture" {
-  bucket = google_storage_bucket.acceptance_fixture.name
+  count = var.enable_acceptance_fixture ? 1 : 0
+
+  bucket = google_storage_bucket.acceptance_fixture[0].name
   name   = "fixture.html"
   # `content`, not `source`: an edited page is then a diff in the plan, where
   # a `source` path whose file changed is not.
@@ -98,7 +102,9 @@ resource "google_storage_bucket_object" "acceptance_fixture" {
 #trivy:ignore:AVD-GCP-0001
 resource "google_storage_bucket_iam_member" "acceptance_fixture_public_read" {
   # checkov:skip=CKV_GCP_28:the acceptance fixture is public by design (#1628); the bucket holds only fixture.html, whose markup is fixed.
-  bucket = google_storage_bucket.acceptance_fixture.name
+  count = var.enable_acceptance_fixture ? 1 : 0
+
+  bucket = google_storage_bucket.acceptance_fixture[0].name
   role   = "roles/storage.legacyObjectReader"
   member = local.acceptance_fixture_public_reader
 }
@@ -106,4 +112,24 @@ resource "google_storage_bucket_iam_member" "acceptance_fixture_public_read" {
 output "acceptance_fixture_url" {
   description = "The browser acceptance fixture page, without its ?run= id. scripts/lib/testlib.sh builds the same URL from ACCEPTANCE_FIXTURE_BUCKET in scripts/lib/common.sh; SWARM_BROWSER_FIXTURE_BASE overrides it."
   value       = "https://storage.googleapis.com/${google_storage_bucket.acceptance_fixture.name}/${google_storage_bucket_object.acceptance_fixture.name}"
+}
+
+# AN addon:ci PIECE, OFF BY DEFAULT (DAYONE-TF-2, review finding 4). An install
+# makes no public bucket: enable_acceptance_fixture gates the bucket, its object
+# and its allUsers reader, and dev.tfvars and prod.tfvars set it true. The
+# moved blocks carry the live objects to index [0], so the live plan shows no
+# change at all; a state that never held them plans nothing for them.
+moved {
+  from = google_storage_bucket.acceptance_fixture
+  to   = google_storage_bucket.acceptance_fixture[0]
+}
+
+moved {
+  from = google_storage_bucket_object.acceptance_fixture
+  to   = google_storage_bucket_object.acceptance_fixture[0]
+}
+
+moved {
+  from = google_storage_bucket_iam_member.acceptance_fixture_public_read
+  to   = google_storage_bucket_iam_member.acceptance_fixture_public_read[0]
 }

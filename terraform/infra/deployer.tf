@@ -49,6 +49,10 @@ locals {
       # The schedule tick's job (lane S4) mints OIDC tokens as this account
       # (docs/schedules.md SD10). Creating a job that does needs actAs on it.
       "swarm-schedule-tick" = module.scheduler.schedule_tick_email
+      # swarm-discovery's service (discovery.tf) and swarm-doctor's job
+      # (doctor.tf) run as these bootstrap-made accounts (DAYONE-TF-2).
+      "swarm-discovery" = local.discovery_email
+      "swarm-doctor"    = local.doctor_email
     },
   )
 }

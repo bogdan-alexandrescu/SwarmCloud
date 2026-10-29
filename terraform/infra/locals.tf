@@ -802,7 +802,7 @@ locals {
     # SETTINGS_MAC_REQUIRED (settings_mac.tf).
     # local.api_graph_stats_env: SWARM_GRAPH_STATS_URL, the graph service's
     # stats address (graph_service.tf).
-    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, local.api_grant_attestation_env, local.settings_mac_env, local.model_class_env, local.api_graph_stats_env, {
+    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, local.api_grant_attestation_env, local.settings_mac_env, local.model_class_env, local.api_graph_stats_env, local.api_day_one_env, {
       # DISPATCH_TOPIC, not WAKE_TOPIC. Both apps read `DISPATCH_TOPIC`
       # (swarm_api.settings, scheduler.settings); terraform set `WAKE_TOPIC`,
       # which nothing has ever read. swarm_api.deps falls back to NullWaker()
@@ -1306,11 +1306,18 @@ locals {
       # broker could not resolve it to a tenant anyway. Being listed lets it
       # use every platform route (the sweep, a hard max); it calls only the
       # release, and it is a control-plane identity as trusted as the tick.
-      PLATFORM_SERVICE_ACCOUNTS = join(",", [
+      #
+      # swarm-doctor is here once the scheduled doctor runs (doctor.tf): it
+      # probes the broker's platform routes as a control-plane identity, and an
+      # identity the broker does not list is answered 403 on every call -- the
+      # quota sweep's year of silent 403s (lesson 38) was exactly that. Only
+      # while enable_scheduled_doctor is on, so the live broker's environment
+      # does not change before the doctor exists.
+      PLATFORM_SERVICE_ACCOUNTS = join(",", concat([
         module.iam.tick_service_account,
         module.iam.service_account_emails["swarm-api"],
         module.iam.service_account_emails["swarm-reconciler"],
-      ])
+      ], local.doctor_on ? [local.doctor_email] : []))
 
       # Provisioning an account's two secrets, which moved here when account
       # management became a Settings page rather than a shell script. A pool
@@ -1394,4 +1401,22 @@ data "google_service_account" "listed" {
   for_each   = local.listed_service_accounts
   project    = var.project_id
   account_id = split("@", each.value)[0]
+}
+
+# swarm-api's Day One environment (DAYONE-TF-2). GROUPS_AUTH is always
+# rendered (default "delegation", the live deployment's mode, so the live plan
+# shows this one new variable and no behaviour change). The console's App
+# setup values are rendered only once they mean something, so the live
+# deployment's environment gains nothing else:
+#   * SETUP_GITHUB_ORG when setup_github_org names an organisation;
+#   * SWARM_HOSTNAME and GITHUB_HOOKS_URL under enable_console_app_setup (the
+#     receiver's URL only while the receiver is deployed).
+# Unset, apps/swarm-api/swarm_api/settings.py explains each one's fallback.
+locals {
+  api_day_one_env = merge(
+    { GROUPS_AUTH = var.groups_auth },
+    var.setup_github_org == "" ? {} : { SETUP_GITHUB_ORG = var.setup_github_org },
+    var.enable_console_app_setup && var.frontend_hostname != "" ? { SWARM_HOSTNAME = var.frontend_hostname } : {},
+    var.enable_console_app_setup && local.github_hooks_serving ? { GITHUB_HOOKS_URL = google_cloud_run_v2_service.github_hooks[0].uri } : {},
+  )
 }

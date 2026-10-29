@@ -290,7 +290,10 @@ module "secret_manager" {
   # The SwarmCloud GitHub App's client secret and private key (#780, OB2):
   # two empty platform slots swarm-api alone reads. github_app.tf says why
   # the user slots' grants are not made here.
-  github_app_secrets_enabled = var.enable_github_app
+  # The App's two secret containers exist under enable_console_app_setup alone
+  # too, so the console's App step has somewhere to store the manifest
+  # exchange's results before any App switch is on (DAYONE-TF-2).
+  github_app_secrets_enabled = var.enable_github_app || var.enable_console_app_setup
   github_app_secret_readers  = [module.iam.service_account_members["swarm-api"]]
 
   labels = local.labels
@@ -692,6 +695,10 @@ module "frontend" {
   service_name    = "swarm-api"
   ui_service_name = "swarm-ui"
   hostname        = var.frontend_hostname
+
+  # The unauthenticated /.well-known/swarmcloud backend (discovery.tf); "" when
+  # swarm-discovery is not deployed, which makes no backend and no path rule.
+  discovery_service_name = local.discovery_on ? local.discovery_name : ""
 
   labels = local.labels
 

@@ -1067,3 +1067,9 @@ graph_service = {
 # swarm-api's viewAccessor. Two IAM rows: the release holds at dev-iam. Prod
 # stays off. Kill switch: false and release.
 swarm_workers_log_view_enabled = true
+
+# The acceptance suite's public fixture bucket (terraform/infra/acceptance_fixture.tf),
+# an addon:ci piece that defaults off since DAYONE-TF-2 so an install makes no
+# public bucket. This deployment runs the acceptance suite, so it stays on and
+# the live plan shows no change.
+enable_acceptance_fixture = true
