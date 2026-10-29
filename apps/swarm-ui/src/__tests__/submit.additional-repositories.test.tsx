@@ -50,7 +50,9 @@ vi.mock('../api', async (importOriginal) => {
   const { read, route } = await import('../fetch')
   mocks.loadCapacity.mockImplementation(actual.loadCapacity)
   return {
-    ...actual, loadCapacity: mocks.loadCapacity, loadCheckpoints: mocks.loadCheckpoints, loadTaskLogs: mocks.loadTaskLogs,
+    // The submit answers through fetch here, not the fixture build's 201
+    // (QA2-FIX-07, runs2-01 and runs2-02).
+    ...actual, USE_FIXTURES: false, loadCapacity: mocks.loadCapacity, loadCheckpoints: mocks.loadCheckpoints, loadTaskLogs: mocks.loadTaskLogs,
     loadPlatformSettings: () => read<import('../types').PlatformSettings>(route('/v1/admin/settings'), () => false),
     fixtureRead: (target: import('../fetch').ApiRoute) => read<unknown>(target, () => false),
   }

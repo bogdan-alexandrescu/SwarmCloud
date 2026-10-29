@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
-import { loadCapacity, loadModelClasses, loadStats, type ModelClassOffer } from './api'
+import { fixtureSubmitTask, loadCapacity, loadModelClasses, loadStats, USE_FIXTURES, type ModelClassOffer } from './api'
 import {
   CeilingTag,
   blockerVerdict,
@@ -26,7 +26,7 @@ import {
   type TaskReadableList,
 } from './Dispatch'
 import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
-import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, isPaused, type ApiError, type Result } from './fetch'
+import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, isPaused, writeRefused, type ApiError, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import { clearTaskPrefill, peekTaskPrefill } from './submitPrefill'
 import { ModelClassSelect, RoomFact, RunnerPicker, UnreadRoom, sentModelClass, useProviderKeys } from './RunnerPicker'
@@ -130,6 +130,11 @@ function fail(kind: ApiError['kind'], httpStatus: number | null, message: string
 
 /** POST /v1/tasks. Exported for `submit.errors.test.ts`, which hands it real responses. */
 export async function postTask(body: Record<string, unknown>): Promise<Outcome> {
+  // The fixture build answers the submit as the 201 does (QA2-FIX-07, runs2-01).
+  if (USE_FIXTURES) {
+    const made = await fixtureSubmitTask(body)
+    return { kind: 'created', task: made.task, woke: made.scheduler_woken }
+  }
   const tenant = chosenTenant()
   let res: Response
   try {
@@ -1775,15 +1780,19 @@ function Form({ capacity }: { capacity: Capacity }) {
             {outcome.kind === 'failed' && workspaceRefusal(outcome.error) === null && (
               <>
                 <FailedPanel error={outcome.error} onRetry={() => void submit()} />
+                {/* Only where the failure is ambiguous (QA2-FIX-07, runs2-01): a
+                    definite refusal (4xx) created nothing, and its panel says so. */}
                 {/* A write is not a read: a failure after the request left the browser
                     does not prove nothing was created. */}
                 {/* NO `?` (B7.4). `ambiguous-write` is "a failure after the request
                     left the browser does not prove nothing was created", and the
                     two sentences here ARE that, with the remedy first. */}
+                {!writeRefused(outcome.error) && (
                 <p className="warn-text">
                   <strong>Check Agents before submitting again.</strong> This failed on
                   a write, so the agent may exist anyway.
                 </p>
+                )}
               </>
             )}
           </OutcomeSlot>
