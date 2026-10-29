@@ -1600,7 +1600,7 @@ export async function editPlan(runId: string, planDigest: string, plan: RunPlan)
 
 /** Turn the plan down. The shown digest is sent, so a plan edited since is not rejected unseen. */
 export async function rejectPlan(runId: string, planDigest: string | null, reason: string): Promise<Result<IssueRunRead>> {
-  if (USE_FIXTURES) return fixturePlanAction(runId, 'reject')
+  if (USE_FIXTURES) return fixturePlanAction(runId, 'reject', undefined, reason)
   const body: Record<string, string> = {}
   if (planDigest !== null) body.plan_digest = planDigest
   if (reason.trim() !== '') body.reason = reason.trim()
@@ -1671,17 +1671,29 @@ function fixtureIssueRuns(): IssueRun[] {
   ].map((r) => ({ ...r, ...(fixtureRunsDecided.get(r.id) ?? {}) }))
 }
 
-async function fixtureIssuePreview(issue: string): Promise<Result<IssuePreviewRead>> {
-  await new Promise((r) => setTimeout(r, 60))
-  noteFixtureProbe(route('/v1/issues/preview', {}, new URLSearchParams({ issue })), 60, true)
+/** The issue the fixture reads for `owner/repo#N` or its URL, or null for anything else. */
+function fixtureIssueDoc(issue: string): IssuePreviewRead['issue'] | null {
   const m = /([\w.-]+)\/([\w.-]+)(?:#|\/issues\/)(\d+)/.exec(issue)
-  if (m === null) {
-    return { status: 'error', error: { kind: 'invalid', httpStatus: 422, code: 'validation_failed',
-      message: 'issue must name an issue: owner/repo#N or its URL' } }
-  }
+  if (m === null) return null
   const [, owner, repo, num] = m as unknown as [string, string, string, string]
   const ref = `${owner}/${repo}#${num}`
   const url = `https://github.com/${owner}/${repo}/issues/${num}`
+  return {
+        ref, owner, repo, number: Number(num), url, repository_url: `https://github.com/${owner}/${repo}`,
+        title: 'The workflow list shows no cost column, so a finished workflow\'s spend needs opening every step',
+        body: 'What are you trying to do?\nSee what a finished workflow cost without opening each step.\n\nWhat would you like to see?\nA cost column on Work › Workflows, with a dash and a reason when a step\'s spend was not recorded.',
+        body_truncated: false, body_redacted: false, labels: ['enhancement', 'ui'], state: 'open', comments: 4,
+  }
+}
+
+async function fixtureIssuePreview(issue: string): Promise<Result<IssuePreviewRead>> {
+  await new Promise((r) => setTimeout(r, 60))
+  noteFixtureProbe(route('/v1/issues/preview', {}, new URLSearchParams({ issue })), 60, true)
+  const doc = fixtureIssueDoc(issue)
+  if (doc === null) {
+    return { status: 'error', error: { kind: 'invalid', httpStatus: 422, code: 'validation_failed',
+      message: 'issue must name an issue: owner/repo#N or its URL' } }
+  }
   return {
     status: 'ok', fetchedAt: Date.now(),
     data: {
@@ -1690,12 +1702,7 @@ async function fixtureIssuePreview(issue: string): Promise<Result<IssuePreviewRe
       // chrome-C29).
       tenant_id: 'u-bogdan',
       auto_merge: { available: true, requires: '#295', reason: null },
-      issue: {
-        ref, owner, repo, number: Number(num), url, repository_url: `https://github.com/${owner}/${repo}`,
-        title: 'The workflow list shows no cost column, so a finished workflow\'s spend needs opening every step',
-        body: 'What are you trying to do?\nSee what a finished workflow cost without opening each step.\n\nWhat would you like to see?\nA cost column on Work › Workflows, with a dash and a reason when a step\'s spend was not recorded.',
-        body_truncated: false, body_redacted: false, labels: ['enhancement', 'ui'], state: 'open', comments: 4,
-      },
+      issue: doc,
     },
   }
 }
@@ -1722,7 +1729,20 @@ async function fixtureCreateRun(body: RunCreateBody): Promise<Result<IssueRunRea
   noteFixtureProbe(route('/v1/runs'), 60, true)
   const at = new Date().toISOString()
   const id = `run_${Array.from(crypto.getRandomValues(new Uint8Array(4)), (b) => b.toString(16).padStart(2, '0')).join('')}`
+  // THE RUN KEEPS THE ISSUE IT WAS PLANNED FROM, AND THE READ (QA2-FIX-07,
+  // runs2-06): created after the read, so "older than the issue snapshot"
+  // was never true of it. Read as the route reads it, at creation.
+  const doc = fixtureIssueDoc(body.issue)
+  const issued: Partial<IssueRun> = doc === null ? {} : {
+    issue: { ref: doc.ref, owner: doc.owner, repo: doc.repo, number: doc.number, url: doc.url, repository_url: doc.repository_url },
+    issue_read: {
+      title: doc.title, labels: doc.labels, state: doc.state === 'closed' ? 'closed' : 'open', comments: doc.comments, url: doc.url, body: doc.body,
+      body_truncated: doc.body_truncated, body_redacted: doc.body_redacted, read_at: at,
+    },
+    issue_read_error: null,
+  }
   const run = fixtureIssueRun(id, {
+    ...issued,
     state: 'PLANNED', plan_approval: body.plan_approval, fix_rounds: body.fix_rounds, auto_merge: body.auto_merge,
     created_at: at, updated_at: at,
     history: [{ at, from: null, to: 'PLANNING', by: 'operator@example.com' }, { at, from: 'PLANNING', to: 'PLANNED', by: 'swarm-api' }],
@@ -1731,7 +1751,7 @@ async function fixtureCreateRun(body: RunCreateBody): Promise<Result<IssueRunRea
   return { status: 'ok', fetchedAt: Date.now(), data: { run } }
 }
 
-async function fixturePlanAction(runId: string, action: 'approve' | 'edit' | 'reject', plan?: RunPlan): Promise<Result<IssueRunRead>> {
+async function fixturePlanAction(runId: string, action: 'approve' | 'edit' | 'reject', plan?: RunPlan, reason = ''): Promise<Result<IssueRunRead>> {
   await new Promise((r) => setTimeout(r, 60))
   // Spelled out per action, not `plan:${action}`: tests/unit/control_plane
   // test_every_v1_path_the_ui_calls_is_served_by_this_api reads these literals
@@ -1741,11 +1761,27 @@ async function fixturePlanAction(runId: string, action: 'approve' | 'edit' | 're
   noteFixtureProbe(route(planPath, { id: runId }), 60, true)
   const now = new Date().toISOString()
   const was = fixtureIssueRuns().find((r) => r.id === runId) ?? fixtureIssueRun(runId)
+  // AN APPROVED PLAN STARTS A WORKFLOW OF ITS OWN STEPS, just queued
+  // (QA2-FIX-07, runs2-24): it linked wf_audit_01, five other steps, two of
+  // them succeeded nine days before the approval.
+  const started = action === 'approve'
+    ? fixtureMakeWorkflow(
+        (was.plan ?? FIXTURE_PLAN).steps.map((st, i, all) => ({
+          step_id: st.step_id,
+          // A plan step with no `depends_on` runs as a chain (PlanStepDoc).
+          depends_on: st.depends_on ?? (i === 0 ? [] : [all[i - 1]?.step_id ?? '']),
+          runner_profile: 'claude-code',
+        })),
+        'operator@example.com',
+        0,
+      )
+    : null
   const over: Partial<IssueRun> = action === 'approve'
-    ? { state: 'RUNNING', workflow_id: 'wf_audit_01', approved_by: 'operator@example.com', approved_at: now, updated_at: now,
+    ? { state: 'RUNNING', workflow_id: started?.workflow_id ?? null, approved_by: 'operator@example.com', approved_at: now, updated_at: now,
         history: [...was.history, { at: now, from: 'PLANNED', to: 'APPROVED', by: 'operator@example.com' }, { at: now, from: 'APPROVED', to: 'RUNNING', by: 'swarm-api' }] }
     : action === 'reject'
-      ? { state: 'REJECTED', terminal: true, rejected_by: 'operator@example.com', updated_at: now,
+      // The reason typed is kept, trimmed as the live write sends it (QA2-FIX-07, runs2-20).
+      ? { state: 'REJECTED', terminal: true, rejected_by: 'operator@example.com', rejection_reason: reason.trim() === '' ? null : reason.trim(), updated_at: now,
           history: [...was.history, { at: now, from: 'PLANNED', to: 'REJECTED', by: 'operator@example.com' }] }
       : { plan: plan ?? FIXTURE_PLAN, plan_revision: 2, plan_edited_by: 'operator@example.com' }
   fixtureRunsDecided.set(runId, { ...(fixtureRunsDecided.get(runId) ?? {}), ...over })
@@ -2998,6 +3034,18 @@ function fixtureTenantChoices(): TenantChoice[] {
   ]
 }
 
+/**
+ * THE WORKSPACE THE FIXTURE ACTS IN, as the API honours `X-Swarm-Tenant`: `eng`
+ * when it is picked by a persona `/v1/tenants/mine` lists it for, else the
+ * personal one. Every fixture read that names the acting workspace asks this
+ * (QA2-FIX-07, admin-shell-01: `/v1/tenants/me` honoured the pick, but
+ * `/v1/profile` and `/v1/access` did not, so Workspace Settings and GitHub
+ * access still described u-bogdan after the eng card's link picked eng).
+ */
+function fixtureActingTenant(): string {
+  return chosenTenant() === FIXTURE_GROUP.tenant_id && (fixtureIsAdmin || fixtureIsWorkspaceAdmin) ? FIXTURE_GROUP.tenant_id : 'u-bogdan'
+}
+
 async function fixtureMe(options: { frame?: boolean } = {}): Promise<Result<Me>> {
   await new Promise((r) => setTimeout(r, 150))
   noteFixtureProbe(route('/v1/tenants/me'), 150, true, undefined, { frame: options.frame === true })
@@ -3005,15 +3053,18 @@ async function fixtureMe(options: { frame?: boolean } = {}): Promise<Result<Me>>
   // admin-shell-01): Admin › Workspaces you admin selects `eng` and opens
   // Workspace Settings, which read this and drew the personal workspace. A
   // persona that `/v1/tenants/mine` lists `eng` for reads it when it is picked.
-  const group = chosenTenant() === FIXTURE_GROUP.tenant_id && (fixtureIsAdmin || fixtureIsWorkspaceAdmin)
-  const id = group ? FIXTURE_GROUP.tenant_id : 'u-bogdan'
+  const id = fixtureActingTenant()
+  const group = id === FIXTURE_GROUP.tenant_id
   return {
     status: 'ok',
     fetchedAt: Date.now(),
     data: {
       tenant: {
         tenant_id: id, kind: group ? 'group' : 'user', principal: group ? FIXTURE_GROUP.principal : 'alice@example.com',
-        display_name: group ? FIXTURE_GROUP.principal : 'Bogdan', created_at: new Date(FIXTURE_NOW - 86_400_000 * 9).toISOString(),
+        // THE PERSONAL WORKSPACE IS THE SIGNED-IN PERSON'S (QA2-FIX-07, config2-06):
+        // alice@example.com's, so named Alice. 'Bogdan' read as someone else's
+        // workspace that alice administered, which a personal one never is.
+        display_name: group ? FIXTURE_GROUP.principal : 'Alice', created_at: new Date(FIXTURE_NOW - 86_400_000 * 9).toISOString(),
         max_active: 2, capacity_units: 40, monthly_budget_usd: null, enabled: true,
         credentials: [
           'anthropic',
@@ -3069,7 +3120,7 @@ function fixtureRoster(): Tenant[] {
     gcs_prefix: `gs://swarm-artifacts-dev/${tenant_id}`, namespace: `swarm-tenant-${tenant_id}`,
   })
   return [
-    t('u-bogdan', 'user', 'alice@example.com', 'Bogdan', 9, 2, 40, ['anthropic']),
+    t('u-bogdan', 'user', 'alice@example.com', 'Alice', 9, 2, 40, ['anthropic']),
     t(FIXTURE_GROUP.tenant_id, 'group', FIXTURE_GROUP.principal, 'Engineering', 30, 4, 10, ['anthropic', 'openai']),
     t('smoke', 'group', 'smoke@example.com', 'Smoke tests', 60, 1, 2, []),
   ]
@@ -5287,7 +5338,7 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
   return {
     status: 'ok',
     fetchedAt: Date.now(),
-    data: { tasks: fixtureTaskRows(), next_page_token: null, tenant_id: 'u-bogdan' },
+    data: { tasks: [...fixtureTasksMade, ...fixtureTaskRows()], next_page_token: null, tenant_id: 'u-bogdan' },
   }
 }
 
@@ -5764,7 +5815,7 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
   // wf_audit_01's were typed as one succeeded beside two step tasks the
   // Timeline drew as succeeded. Counted here as `rollup.py` counts them: each
   // step's task state, `unstarted` for a step with no task yet.
-  return workflows.map((w) => {
+  return [...fixtureWorkflowsMade, ...workflows].map((w) => {
     if (w.rollup === undefined || w.rollup === null) return w
     const counts: Record<string, number> = {}
     for (const st of w.steps) {
@@ -5773,6 +5824,100 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
     }
     return { ...w, rollup: { ...w.rollup, counts } }
   })
+}
+
+/**
+ * THE WORKFLOWS MADE IN THIS PAGE'S LIFE (QA2-FIX-07, runs2-02 and runs2-24):
+ * by Submit a workflow and by an approved plan, newest first. No step has a
+ * task yet, so each reads QUEUED with every step unstarted, as `rollup.py`
+ * derives a workflow none of whose steps has started (`steps_not_started`).
+ */
+const fixtureWorkflowsMade: Workflow[] = []
+
+type FixtureStepAsked = { step_id: string; depends_on: string[]; runner_profile: string; resource_class?: string; input_from?: Record<string, string> }
+
+function fixtureMakeWorkflow(steps: FixtureStepAsked[], by: string, priority: number, onStepFailure = 'FAIL_WORKFLOW'): Workflow {
+  const at = new Date().toISOString()
+  const id = `wf_${Array.from(crypto.getRandomValues(new Uint8Array(10)), (b) => b.toString(16).padStart(2, '0')).join('')}`
+  const workflow: Workflow = {
+    workflow_id: id, tenant_id: fixtureActingTenant(),
+    state: 'QUEUED', stored_state: 'QUEUED', state_source: 'derived',
+    rollup: {
+      state: 'QUEUED', complete: true, reason: 'steps_not_started', counts: {},
+      unreadable_steps: [], unstarted_steps: steps.map((st) => st.step_id), steps_read: 0,
+    },
+    created_at: at, updated_at: at, submitted_by: by, priority, on_step_failure: onStepFailure, cancel_requested: false,
+    steps: steps.map((st) => ({
+      step_id: st.step_id, runner_profile: st.runner_profile, resource_class: st.resource_class ?? 'standard',
+      depends_on: st.depends_on, input_from: st.input_from ?? {}, timeout_seconds: 3600, task_id: null,
+    })),
+  }
+  fixtureWorkflowsMade.unshift(workflow)
+  return workflow
+}
+
+/**
+ * `POST /v1/workflows` in the fixture build (QA2-FIX-07, runs2-02): the
+ * workflow the body asks for, created now and readable by its id after, as
+ * the 201 serves it (`state_source: 'stored'` on the create response). The
+ * fixture checks nothing the form has not; the live route is the gate.
+ */
+export async function fixtureSubmitWorkflow(body: Record<string, unknown>): Promise<{ workflow: Workflow; dispatch: { strategy: string; carrier: string; integrator_step_id: string | null } }> {
+  await new Promise((r) => setTimeout(r, 120))
+  noteFixtureProbe(route('/v1/workflows'), 120, true)
+  const asked = Array.isArray(body.steps) ? (body.steps as Record<string, unknown>[]) : []
+  const made = fixtureMakeWorkflow(
+    asked.map((st, i) => ({
+      step_id: typeof st.step_id === 'string' ? st.step_id : `step-${i + 1}`,
+      depends_on: Array.isArray(st.depends_on) ? st.depends_on.filter((d): d is string => typeof d === 'string') : [],
+      runner_profile: typeof st.runner_profile === 'string' ? st.runner_profile : 'claude-code',
+      resource_class: typeof st.resource_class === 'string' ? st.resource_class : undefined,
+      input_from: typeof st.input_from === 'object' && st.input_from !== null && !Array.isArray(st.input_from) ? (st.input_from as Record<string, string>) : undefined,
+    })),
+    'alice@example.com',
+    typeof body.priority === 'number' ? body.priority : 0,
+    typeof body.on_step_failure === 'string' ? body.on_step_failure : 'FAIL_WORKFLOW',
+  )
+  const { rollup: _rollup, ...stored } = made
+  return {
+    workflow: { ...stored, state_source: 'stored' },
+    dispatch: {
+      strategy: typeof body.strategy === 'string' ? body.strategy : 'collect',
+      carrier: typeof body.carrier === 'string' ? body.carrier : 'checkpoints',
+      integrator_step_id: null,
+    },
+  }
+}
+
+/**
+ * THE AGENTS STARTED IN THIS PAGE'S LIFE (QA2-FIX-07, runs2-01): Start one
+ * agent answered a 404 in the fixture build. Listed first and readable by id,
+ * QUEUED and never admitted, as a 201 leaves a task.
+ */
+const fixtureTasksMade: Task[] = []
+
+/** `POST /v1/tasks` in the fixture build: the task the body asks for, as the 201 serves it. */
+export async function fixtureSubmitTask(body: Record<string, unknown>): Promise<{ task: Task; scheduler_woken: boolean }> {
+  await new Promise((r) => setTimeout(r, 120))
+  noteFixtureProbe(route('/v1/tasks'), 120, true)
+  const at = new Date().toISOString()
+  const id = `task_${Array.from(crypto.getRandomValues(new Uint8Array(4)), (b) => b.toString(16).padStart(2, '0')).join('')}`
+  // A never-admitted row of the list, so every field the list serves is there.
+  const like = fixtureTaskRows().find((t) => t.state === 'QUEUED' && t.workflow_id === null) ?? fixtureTaskRows()[0]
+  const profile = typeof body.runner_profile === 'string' ? body.runner_profile : 'claude-code'
+  const task: Task = {
+    ...(like as Task),
+    id, tenant_id: fixtureActingTenant(), state: 'QUEUED', runner_profile: profile,
+    created_at: at, updated_at: at, started_at: null, completed_at: null,
+    submitted_by: 'alice@example.com', attempt_count: 0, current_generation: 0, current_lease_id: null,
+    park_reason: null, blocked_by: null, workflow_id: null, step_id: null, depends_on: null, cancel_requested: false,
+    priority: typeof body.priority === 'number' ? body.priority : 0,
+    input: typeof body.input === 'object' && body.input !== null ? (body.input as Task['input']) : null,
+    repository_url: typeof body.repository_url === 'string' ? body.repository_url : like?.repository_url ?? null,
+    next_eligible_at: null, metadata: null, last_error: null, result_summary: null, latest_checkpoint: null,
+  }
+  fixtureTasksMade.unshift(task)
+  return { task, scheduler_woken: true }
 }
 
 /**
@@ -6633,7 +6778,8 @@ async function fixtureAccountsBoard(): Promise<Result<AccountsBoard>> {
       // or refreshable from here, and the fixture is what makes that path
       // visible in development.
       page: {
-        accounts: fixtureAccounts.map((a) => ({ ...a })),
+        // On the page's clock, as the board reads them on the fixture's (cap2-06).
+        accounts: fixtureAccounts.map((a) => fixtureOnClock({ ...a }, Date.now())),
         tenant_id: FIXTURE_TENANT,
         // A document this tenant owns and the store could not parse. The rows
         // above are six; the pool is seven. Development has to be able to see
@@ -7023,12 +7169,12 @@ async function fixtureName(accountId: string, displayName: string | null): Promi
 }
 
 /**
- * THE HEALTH RECORD THE FIXTURE SERVES (#2302): one account per state the
- * Health section draws, so a local render shows each without a deployment.
- * `primary` has a week of events and a closed 5-hour limit; `five-hour-floor`
- * is limited now; `retired-laptop` needs re-auth; `never-polled` was read and
- * is empty; `eng:shared` is a deployment whose broker predates the record (a
- * 404). Every other account is a quiet healthy one with a single event.
+ * THE HEALTH RECORD THE FIXTURE SERVES (#2302): the account's own record off
+ * the health board (`fixturePoolHealth`), so the sheet, the board and the list
+ * tell one story (QA2-FIX-07, cap2-06: the sheet had a plan of its own on the
+ * browser's clock, and drew weekly-burn Healthy with no event in 24 h beside a
+ * board that drew it Limited with two). `eng:shared` is a deployment whose
+ * broker predates the record (a 404).
  */
 async function fixtureAccountHealth(accountId: string): Promise<Result<AccountHealth>> {
   await new Promise((r) => setTimeout(r, 160))
@@ -7038,108 +7184,40 @@ async function fixtureAccountHealth(accountId: string): Promise<Result<AccountHe
   if (accountId === 'eng:shared') {
     return { status: 'error', error: { kind: 'not_found', httpStatus: 404, code: null, message: 'Not Found' } }
   }
+  const record = fixturePoolHealth().accounts.find((r) => r.account_id === accountId)
+  if (record === undefined) {
+    return { status: 'error', error: { kind: 'not_found', httpStatus: 404, code: 'not_found', message: `no account '${accountId}'` } }
+  }
   const now = Date.now()
-  const H = 3_600_000
-  const at = (hoursAgo: number) => new Date(now - hoursAgo * H).toISOString()
-  const task = () => `task_${Math.random().toString(16).slice(2, 12)}${Math.random().toString(16).slice(2, 12)}`
-  type Ev = [number, AccountHealthKind, Partial<AccountHealthEvent>?]
-  const ev = (list: Ev[]): AccountHealthEvent[] =>
-    list.map(([h, kind, over]) => ({
-      // Another workspace's event is floored to its hour, as the route floors it.
-      at: over?.own === false ? new Date(now - h * H - ((now - h * H) % H)).toISOString() : at(h),
-      kind,
-      tenant_id: 'u-bogdan',
-      task_id: task(),
-      window: null,
-      reset_at: null,
-      message: FIXTURE_HEALTH_MESSAGES[kind],
-      own: true,
-      ...over,
-    }))
-  let status: AccountHealthStatus = 'healthy'
-  let limitedUntil: string | null = null
-  let events: AccountHealthEvent[]
-  if (accountId === 'u-bogdan:never-polled') {
-    events = []
-  } else if (accountId === 'u-bogdan:primary') {
-    events = ev([
-      [0.4, 'overloaded'],
-      [3.2, 'network'],
-      [26, 'rate_limit', { window: 'five_hour', reset_at: at(23) }],
-      [25.5, 'exhausted'],
-      [25, 'assign_refused', { window: 'five_hour', message: 'not assigned: window under its floor' }],
-      [24.6, 'assign_refused', { window: 'five_hour', message: 'not assigned: window under its floor' }],
-      [52, 'server_error'],
-      [52.2, 'overloaded'],
-      [98, 'network', { tenant_id: null, task_id: null, message: null, own: false }],
-      [140, 'overloaded'],
-    ])
-  } else if (accountId === 'u-bogdan:five-hour-floor') {
-    status = 'limited'
-    limitedUntil = at(-40 / 60)
-    events = ev([
-      [0.2, 'assign_refused', { window: 'five_hour', message: 'not assigned: window under its floor' }],
-      [1.1, 'assign_refused', { window: 'five_hour', message: 'not assigned: window under its floor' }],
-      [2.6, 'exhausted'],
-      [2.8, 'rate_limit', { window: 'five_hour', reset_at: limitedUntil }],
-      [74, 'rate_limit', { window: 'five_hour', reset_at: at(71) }],
-      [73.6, 'exhausted'],
-    ])
-  } else if (accountId === 'u-bogdan:retired-laptop') {
-    status = 'reauth_needed'
-    events = ev([
-      [0.3, 'assign_refused', { message: 'not assigned: account marked reauth_needed' }],
-      [0.9, 'assign_refused', { message: 'not assigned: account marked reauth_needed' }],
-      [1.4, 'reauth'],
-      [1.41, 'auth'],
-      [1.6, 'refresh_failed'],
-      [2.1, 'refresh_failed'],
-    ])
-  } else {
-    events = ev([[61, 'network']])
-  }
-  events.sort((x, y) => Date.parse(y.at) - Date.parse(x.at))
-  const span = (hours: number): AccountHealthCounts => {
-    const c = {} as AccountHealthCounts
-    for (const k of ACCOUNT_HEALTH_KINDS) c[k] = 0
-    for (const e of events) if (now - Date.parse(e.at) <= hours * H) c[e.kind] += 1
-    return c
-  }
-  const byHour = new Map<string, AccountHealthHour>()
-  for (const e of events) {
-    const t = Date.parse(e.at)
-    const hour = new Date(t - (t % H)).toISOString()
-    const row = byHour.get(hour) ?? { hour, counts: {}, total: 0 }
-    row.counts[e.kind] = (row.counts[e.kind] ?? 0) + 1
-    row.total += 1
-    byHour.set(hour, row)
-  }
+  // The sheet measures on the browser's clock, so the record is moved onto it whole.
+  const r = fixtureOnClock(record, now)
   return {
     status: 'ok',
     fetchedAt: now,
     data: {
-      account_id: accountId,
-      status,
-      limited_until: limitedUntil,
-      counts: { last_1h: span(1), last_24h: span(24), last_7d: span(168) },
-      hourly: [...byHour.values()].sort((x, y) => Date.parse(x.hour) - Date.parse(y.hour)),
-      events,
-      observed_at: new Date(now).toISOString(),
-    },
+      account_id: r.account_id, status: r.status, limited_until: r.limited_until, counts: r.counts,
+      hourly: r.hourly.filter((h) => h.total > 0), events: r.events, observed_at: r.observed_at,
+    } as AccountHealth,
   }
 }
 
-/** What the worker and broker write for each kind, already redacted (mock-up A's `msgOf`). */
-const FIXTURE_HEALTH_MESSAGES: Record<AccountHealthKind, string> = {
-  rate_limit: 'rate_limit_event status=rejected',
-  exhausted: 'PROVIDER_QUOTA_EXHAUSTED · parked at checkpoint 4, capacity released',
-  assign_refused: 'not assigned: window under its floor',
-  overloaded: '529 overloaded_error: Overloaded',
-  server_error: '503 service unavailable, retry later',
-  network: 'connect ECONNRESET api.anthropic.com:443',
-  auth: '401 authentication_error: OAuth access expired · credential [redacted]',
-  refresh_failed: 'refresh failed: invalid_grant · credential [redacted]',
-  reauth: 'marked reauth_needed by the worker after a 401',
+const FIXTURE_ISO_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/
+
+/**
+ * A fixture document dated off FIXTURE_NOW, every time in it moved by the same
+ * span onto `now`: what a page that measures on the browser's clock reads, so
+ * "4 min ago" on the fixture's clock is still 4 min ago on the page's
+ * (QA2-FIX-07, cap2-06: the Accounts list read every account "read 10d ago").
+ */
+function fixtureOnClock<T>(doc: T, now: number): T {
+  const shift = now - FIXTURE_NOW
+  const move = (v: unknown): unknown => {
+    if (typeof v === 'string') return FIXTURE_ISO_AT.test(v) ? new Date(Date.parse(v) + shift).toISOString() : v
+    if (Array.isArray(v)) return v.map(move)
+    if (v !== null && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, move(x)]))
+    return v
+  }
+  return move(doc) as T
 }
 
 async function fixtureMaxAgents(accountId: string, maxAgents: number): Promise<Result<unknown>> {
@@ -7738,11 +7816,14 @@ export async function loadRunnerProfiles(): Promise<Result<string[]>> {
 // still answered as not served, exactly as an API without it.
 // ---------------------------------------------------------------------------
 
-function repoNotServed<T>(target: ApiRoute): Result<T> {
+// THE ANSWER NAMES THE ROUTE IT WAS ASKED FOR (QA2-FIX-07, admin2-08): it
+// said "no repository or git-token routes" after Approve, Roles in workspaces
+// and Runner sizes Save too, none of which is either.
+function repoNotServed<T>(target: ApiRoute, method = 'GET'): Result<T> {
   noteFixtureProbe(target, 0, false)
   return {
     status: 'error',
-    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build serves no repository or git-token routes.', template: target.template },
+    error: { kind: 'not_found', httpStatus: 404, code: null, message: `The fixture build does not serve this route (${method} ${target.template}).`, template: target.template },
   }
 }
 
@@ -7945,6 +8026,13 @@ function fixtureAccessGrants(): Record<string, unknown>[] {
   })
 }
 
+/**
+ * When Hide was pressed in this page's life, or null (QA2-FIX-07,
+ * overview-agents-04): `POST /v1/onboarding/dismiss` is answered as the route
+ * answers it and the next read says so, as the server keeps it per person.
+ */
+let fixtureOnboardingHiddenAt: string | null = null
+
 /** `GET /v1/onboarding`: seven steps as `derive` serves them with the workspace gate off, in mixed states. */
 function fixtureOnboarding(): unknown {
   const checked = fixtureAgo(4 * 60_000)
@@ -7978,7 +8066,7 @@ function fixtureOnboarding(): unknown {
   ]
   return {
     tenant_id: FIXTURE_TENANT, user: 'alice@example.com', user_hash: '5a1ce0e8a3b7c912', derived_at: new Date(FIXTURE_NOW).toISOString(),
-    steps, next_step: 'orgs_enabled', complete: false, dismissed: false, dismissed_at: null, source: 'derived on this read',
+    steps, next_step: 'orgs_enabled', complete: false, dismissed: fixtureOnboardingHiddenAt !== null, dismissed_at: fixtureOnboardingHiddenAt, source: 'derived on this read',
     // config_setup.py's field, which the live read carries and the strip's
     // Secrets set and People invited are drawn from (QA1-FIX-10, config-09).
     // It agrees with `fixtureSecretsOverview`'s workspace scope: MCP server
@@ -8037,7 +8125,7 @@ function fixtureAccess(): unknown {
     }],
     requested: [],
     grants: fixtureAccessGrants(),
-    tenant_id: FIXTURE_TENANT,
+    tenant_id: fixtureActingTenant(),
   }
 }
 
@@ -8076,14 +8164,16 @@ function fixtureIdentity(): Record<string, unknown> {
  * fixture describes, and the Claude accounts fixtureAccounts holds.
  */
 function fixtureProfile(): unknown {
+  const acting = fixtureActingTenant()
   const workspaces: Record<string, unknown>[] = [{
     tenant_id: FIXTURE_TENANT, display_name: `Your workspace (${FIXTURE_TENANT})`, kind: 'user',
-    role: { name: 'admin', source: 'personal', via: 'personal' }, state: 'ready', selectable: true, is_acting: true, is_default: true,
+    role: { name: 'admin', source: 'personal', via: 'personal' }, state: 'ready', selectable: true, is_acting: acting === FIXTURE_TENANT, is_default: true,
   }]
-  if (fixtureIsAdmin) {
+  // Every persona `/v1/tenants/mine` lists eng for, and acting in it once it is picked (admin-shell-01).
+  if (fixtureIsAdmin || fixtureIsWorkspaceAdmin) {
     workspaces.push({
       tenant_id: FIXTURE_GROUP.tenant_id, display_name: FIXTURE_GROUP.principal, kind: 'group',
-      role: { name: 'admin', source: 'override', via: 'member' }, state: 'ready', selectable: true, is_acting: false, is_default: false,
+      role: { name: 'admin', source: 'override', via: 'member' }, state: 'ready', selectable: true, is_acting: acting === FIXTURE_GROUP.tenant_id, is_default: false,
     })
   }
   const github = workspaces.map((w, i) => ({
@@ -8098,7 +8188,7 @@ function fixtureProfile(): unknown {
       github,
       typesafe: {
         personal: { set: true, set_at: fixtureAgo(5 * 24 * FIXTURE_HOUR), set_by: 'alice@example.com', version: 2 },
-        acting_workspace: { tenant_id: FIXTURE_TENANT, set: false, set_at: null, set_by: null, version: null },
+        acting_workspace: { tenant_id: acting, set: false, set_at: null, set_by: null, version: null },
         uses: 'user',
       },
     },
@@ -8407,7 +8497,7 @@ export function fixtureRead(target: ApiRoute): Promise<Result<unknown>> {
 }
 
 async function writeTo(target: ApiRoute, method: 'POST' | 'PUT' | 'DELETE', body?: unknown): Promise<Result<unknown>> {
-  if (USE_FIXTURES) return repoNotServed<unknown>(target)
+  if (USE_FIXTURES) return repoNotServed<unknown>(target, method)
   return write(target, method, body)
 }
 
@@ -10612,7 +10702,7 @@ export function normRepoContext(raw: unknown): RepoContext {
 /** `PATCH /v1/repositories/{repo_id}` with `context`: on, off, or inherit to clear it. */
 export async function patchRepositoryContext(repoId: string, context: RepoContext): Promise<Result<unknown>> {
   const target = route('/v1/repositories/{repo_id}', { repo_id: repoId })
-  if (USE_FIXTURES) return repoNotServed<unknown>(target)
+  if (USE_FIXTURES) return repoNotServed<unknown>(target, 'PATCH')
   return write(target, 'PATCH', { context })
 }
 
@@ -10623,7 +10713,7 @@ export async function patchRepositoryContext(repoId: string, context: RepoContex
  */
 export async function patchRepositoryTrigger(repoId: string, onChange: 'poll' | 'webhook' | 'off'): Promise<Result<unknown>> {
   const target = route('/v1/repositories/{repo_id}', { repo_id: repoId })
-  if (USE_FIXTURES) return repoNotServed<unknown>(target)
+  if (USE_FIXTURES) return repoNotServed<unknown>(target, 'PATCH')
   return write(target, 'PATCH', { index: { on_change: onChange } })
 }
 
@@ -10634,7 +10724,7 @@ export async function patchRepositoryTrigger(repoId: string, onChange: 'poll' | 
  */
 export async function patchRepositoryKeepVersions(repoId: string, keepVersions: number): Promise<Result<unknown>> {
   const target = route('/v1/repositories/{repo_id}', { repo_id: repoId })
-  if (USE_FIXTURES) return repoNotServed<unknown>(target)
+  if (USE_FIXTURES) return repoNotServed<unknown>(target, 'PATCH')
   return write(target, 'PATCH', { index: { keep_versions: keepVersions } })
 }
 
@@ -10722,6 +10812,17 @@ export async function storeOwnerToken(owner: string, token: string): Promise<Res
 
 /** `POST /v1/onboarding/dismiss`: hide the caller's checklist (`true`), or show it again. Steps keep their state. */
 export async function dismissOnboarding(dismissed = true): Promise<Result<OnboardingDismissal>> {
+  if (USE_FIXTURES) {
+    const target = route('/v1/onboarding/dismiss')
+    await new Promise((r) => setTimeout(r, 80))
+    noteFixtureProbe(target, 80, true)
+    fixtureOnboardingHiddenAt = dismissed ? new Date().toISOString() : null
+    const doc = fixtureOnboarding() as { tenant_id: string; user_hash: string }
+    return {
+      status: 'ok', fetchedAt: Date.now(),
+      data: { tenant_id: doc.tenant_id, user_hash: doc.user_hash, dismissed, dismissed_at: fixtureOnboardingHiddenAt },
+    }
+  }
   return writeTo(route('/v1/onboarding/dismiss'), 'POST', { dismissed }) as Promise<Result<OnboardingDismissal>>
 }
 
@@ -11818,6 +11919,22 @@ export async function loadSchedules(): Promise<Result<{ schedules: Schedule[]; t
 async function fixtureSchedules(): Promise<Result<{ schedules: Schedule[]; tenant_id: string }>> {
   await new Promise((r) => setTimeout(r, 110))
   noteFixtureProbe(route('/v1/schedules'), 110, true)
+  return { status: 'ok', fetchedAt: Date.now(), data: { schedules: fixtureScheduleRows(), tenant_id: FIXTURE_TENANT } }
+}
+
+/**
+ * `schedules.state_word`, first match wins, as the route serves it beside each
+ * row (QA2-FIX-07, automate2-13: every State cell read "not served", the
+ * paused row too). No approval waits in the fixture, so never
+ * `waiting_on_approval`.
+ */
+function fixtureStateWord(s: Schedule): string {
+  if (s.state !== 'enabled') return s.state === 'auto_paused' && s.pause?.code === 'RUN_OVER_BUDGET' ? 'paused_by_tripwire' : 'paused'
+  if ((s.consecutive_failures ?? 0) > 0) return 'failing'
+  return s.last_firing === null ? 'never_fired' : 'active'
+}
+
+function fixtureScheduleRows(): Schedule[] {
   const day = new Date(FIXTURE_NOW).toISOString().slice(0, 10)
   const at = (h: number) => new Date(FIXTURE_NOW + h * FIXTURE_HOUR).toISOString()
   const base = {
@@ -11840,11 +11957,29 @@ async function fixtureSchedules(): Promise<Result<{ schedules: Schedule[]; tenan
       created_at: fixtureAgo(30 * 24 * FIXTURE_HOUR), next_run_at: null, revision: 5,
     },
   ]
-  return { status: 'ok', fetchedAt: Date.now(), data: { schedules, tenant_id: FIXTURE_TENANT } }
+  return schedules.map((row) => ({ ...row, state_word: fixtureStateWord(row) }))
+}
+
+/**
+ * One listed schedule and no firings, as the route serves a schedule that has
+ * not fired (QA2-FIX-07, automate2-12: a row opened a 404 under its raw id).
+ * Any other id is the route's own 404.
+ */
+async function fixtureSchedule(scheduleId: string): Promise<Result<{ schedule: Schedule; firings: ScheduleFiring[] }>> {
+  const target = route('/v1/schedules/{id}', { id: scheduleId })
+  await new Promise((r) => setTimeout(r, 90))
+  const schedule = fixtureScheduleRows().find((s) => s.schedule_id === scheduleId)
+  if (schedule === undefined) {
+    noteFixtureProbe(target, 90, false)
+    return { status: 'error', error: { kind: 'not_found', httpStatus: 404, code: 'not_found', message: `schedule '${scheduleId}' not found`, template: target.template } }
+  }
+  noteFixtureProbe(target, 90, true)
+  return { status: 'ok', fetchedAt: Date.now(), data: { schedule, firings: [] } }
 }
 
 /** `GET /v1/schedules/{id}`: one schedule and its last 50 firings, newest first. */
 export async function loadSchedule(scheduleId: string): Promise<Result<{ schedule: Schedule; firings: ScheduleFiring[] }>> {
+  if (USE_FIXTURES) return fixtureSchedule(scheduleId)
   return read(route('/v1/schedules/{id}', { id: scheduleId }), () => false)
 }
 
@@ -11859,15 +11994,24 @@ export async function loadScheduleAudit(scheduleId: string): Promise<Result<{ au
  * The development fixtures serve no inbox, and say so by being empty rather
  * than by inventing items.
  */
-export async function loadApprovals(options: { frame?: boolean; kind?: string } = {}): Promise<Result<{ approvals: ApprovalItem[] }>> {
+export async function loadApprovals(
+  options: { frame?: boolean; kind?: string; state?: 'pending' | 'all' | 'decided' | 'expired' } = {},
+): Promise<Result<{ approvals: ApprovalItem[] }>> {
   if (USE_FIXTURES) return { status: 'empty', fetchedAt: Date.now() }
   // The frame reads this on every page. A 200 without an `approvals` list is
   // not a measured empty inbox, and passing it on as one would draw "nothing
   // waiting" over an answer nobody read; it is a failure, as an unreadable
   // body is. `kind` is the route's own filter (`?kind=`, §4.5).
-  const kind = options.kind === undefined || options.kind === '' ? undefined : new URLSearchParams({ kind: options.kind })
+  //
+  // `state` is the route's too, and it DEFAULTS TO `pending` (QA2-FIX-07,
+  // automate2-01): the Approvals list asks `all` so its Decided and Expired
+  // cards can be drawn from what the server holds; the frame's badge and the
+  // Schedules card keep the inbox by sending none.
+  const query = new URLSearchParams()
+  if (options.kind !== undefined && options.kind !== '') query.set('kind', options.kind)
+  if (options.state !== undefined && options.state !== 'pending') query.set('state', options.state)
   const r = await read<{ approvals: ApprovalItem[] }>(
-    route('/v1/approvals', {}, kind),
+    route('/v1/approvals', {}, query.toString() === '' ? undefined : query),
     (d) => Array.isArray(d.approvals) && d.approvals.length === 0,
     { frame: options.frame === true },
   )
@@ -12060,6 +12204,50 @@ export interface ScheduleCreateBody {
 /** The edit body: what changed, and the revision it was read at. `type` is not editable. */
 export type ScheduleEditBody = Partial<Omit<ScheduleCreateBody, 'type' | 'state' | 'client_request_id'>> & { revision: number }
 
+/**
+ * The catalogue rows of the two types the fixture's schedules are
+ * (scheduletypes.py: their descriptions, gates, caps and parameters), so New
+ * schedule and an edit can be walked in the fixture build (QA2-FIX-07,
+ * automate2-12: it opened "serves no schedule routes" over a list it had just
+ * served).
+ */
+function fixtureScheduleTypes(): ScheduleTypeRow[] {
+  return [
+    {
+      name: 'issue-plan-only',
+      description: 'Plan the ready open issues and wait: nothing executes until a person approves each plan.',
+      params_schema: {
+        properties: {
+          max_pending_plans: { type: 'integer', title: 'Max Pending Plans', default: 5, minimum: 1, maximum: 20 },
+          fix_rounds: { type: 'integer', title: 'Fix Rounds', default: 3, minimum: 1, maximum: 5 },
+        },
+      },
+      default_gate: { run: 'auto', plan: 'approve', merge: 'approve' },
+      floor_gate: { run: 'auto', plan: 'approve', merge: 'approve' },
+      min_interval_minutes: 15,
+      budget_caps: { per_run_usd: 3, per_day_usd: 30, max_concurrent: 5 },
+      scopes: ['repos', 'all'], creatable_scopes: ['repos', 'all'], gate_notes: null,
+      available: true, disabled_reason: null,
+    },
+    {
+      name: 'cost-report',
+      description: 'Sum reported cost over the window by schedule, repository, profile and person, with coverage.',
+      params_schema: {
+        properties: {
+          window: { type: 'string', title: 'Window', default: 'day', enum: ['day', 'week'] },
+          post_to_issue: { type: 'string', title: 'Post To Issue', default: null },
+        },
+      },
+      default_gate: { run: 'auto', plan: 'auto', merge: 'off' },
+      floor_gate: { run: 'auto', plan: 'auto', merge: 'off' },
+      min_interval_minutes: 24 * 60,
+      budget_caps: null,
+      scopes: ['repos', 'all', 'platform'], creatable_scopes: fixtureIsAdmin ? ['repos', 'all', 'platform'] : ['repos', 'all'], gate_notes: null,
+      available: true, disabled_reason: null,
+    },
+  ]
+}
+
 function scheduleNotServed<T>(target: ApiRoute): Result<T> {
   noteFixtureProbe(target, 0, false)
   return {
@@ -12076,7 +12264,11 @@ async function scheduleWrite(target: ApiRoute, method: 'POST' | 'PATCH', body: u
 
 /** `GET /v1/schedule-types`: the types this caller may create, with their gates. */
 export async function loadScheduleTypes(): Promise<Result<{ types: ScheduleTypeRow[] }>> {
-  if (USE_FIXTURES) return scheduleNotServed(route('/v1/schedule-types'))
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 90))
+    noteFixtureProbe(route('/v1/schedule-types'), 90, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: { types: fixtureScheduleTypes() } }
+  }
   return read(route('/v1/schedule-types'), () => false)
 }
 
