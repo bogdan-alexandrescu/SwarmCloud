@@ -142,12 +142,14 @@ describe('G5-12: an identity is cut in the middle, never through the tenant’s 
     expect(won(key!, 'max-width', WIDE)).toBe('calc(100% - 4ch)')
     expect(won(key!, 'text-overflow', WIDE)).toBe('ellipsis')
     expect(won(key!, ['overflow', 'overflow-x'], WIDE)).toBe('hidden')
-    for (const part of [head!, tail!]) {
-      expect(won(part, 'text-overflow', WIDE)).toBe('ellipsis')
-      expect(won(part, ['overflow', 'overflow-x'], WIDE)).toBe('hidden')
-      // NEVER A SLIVER (VQA V075): room for a letter and its ellipsis.
-      expect(won(part, 'min-width', WIDE)).toBe('2ch')
-    }
+    expect(won(head!, 'text-overflow', WIDE)).toBe('ellipsis')
+    expect(won(head!, ['overflow', 'overflow-x'], WIDE)).toBe('hidden')
+    // NEVER A SLIVER (VQA V075): room for a letter and its ellipsis.
+    for (const part of [head!, tail!]) expect(won(part, 'min-width', WIDE)).toBe('2ch')
+    // THE DOMAIN IS NOT CUT AT 1440 (visual QA pass 2, admin-shell-18): it
+    // wraps on its own line, so the whole address is on screen.
+    expect(won(tail!, 'text-overflow', WIDE)).toBeNull()
+    expect(won(tail!, 'overflow-wrap', WIDE)).toBe('anywhere')
     expect(won(ident, 'display', WIDE)).toBe('flex')
     // The phone table scrolls, so the identity shows whole there (CH-13).
     expect(won(head!, 'text-overflow', PHONE)).toBeNull()
