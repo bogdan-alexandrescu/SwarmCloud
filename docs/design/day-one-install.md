@@ -443,6 +443,8 @@ Whether the live deployment's Terraform tenants should move to the same single w
 
 ### 6.1 The release home
 
+**D25 (BGD, 2026-10-28):** the release home exists. BGD created GCP project `swarmcloud` under the Saga org, and its id was free; billing is linked. Paths: Artifact Registry under project `swarmcloud`, bundles in `gs://swarmcloud`.
+
 The project id is `swarmcloud` if BGD's creation succeeds, else `swarmcloud-releases` (D23). It holds three things.
 
 **`gs://swarmcloud`**, free as of 2026-10-28 (D16). Layout:
@@ -730,9 +732,23 @@ Disabling an add-on turns its switch off, destroys its Terraform resources, and 
 
 ---
 
-## 14. Open questions for BGD
+## 14. Open questions for BGD, and his answers
 
-Each has options and a recommendation. None blocks the P1 mock-ups.
+**BGD answered all nine on 2026-10-29 (GATE 0b review), each with the recommended option:**
+
+| # | Question | Decision |
+|---|---|---|
+| 1 | The Desktop client secret | **(a)** PKCE-only if Google accepts it; otherwise the discovery document serves the secret. A teammate configures only the deployment URL. |
+| 2 | Group reads | **(a)** The Workspace admin role Groups Reader on swarm-api's service account, proven in P4; delegation through a dedicated non-person user is the documented fallback. |
+| 3 | The public GitHub receiver vs Domain Restricted Sharing | **(a)** Disable the invoker IAM check on `swarm-github-hooks` (no `allUsers` binding); the HMAC check stays the authentication. |
+| 4 | The release home's public read | **(a)** One org-policy exception for `iam.allowedPolicyMemberDomains` on the release project alone, covering the registry reader and the bucket's object viewer. |
+| 5 | The engine's home | **(a)** A new `apps/swarm-install` package behind the existing `swarm` CLI. |
+| 6 | Frozen-contract literals | **(a)** P2 reads each one; any that environment variables cannot override becomes a contract request. |
+| 7 | Moving platform service accounts into bootstrap | **(a)** The live deployment migrates too, in P3, plan-reviewed by BGD, with the `removed { destroy = false }` + `import` pattern. A plan with any destroy is a merge blocker. |
+| 8 | Terraform pin | **Yes:** both roots move to `~> 1.16.2`. |
+| 9 | The 48 history lessons | **(a)** The full list is attached as [`day-one/lessons.md`](day-one/lessons.md); P2's plan maps every lesson to a manifest entry, or says why none is needed. |
+
+The questions as P0 put them follow, for the record.
 
 1. **The Desktop client secret** (brief §12 Q1).
    - (a) PKCE-only if Google accepts it, else serve the secret in the discovery document.
