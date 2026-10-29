@@ -391,6 +391,11 @@ describe('63: the graph brings the picked step round without cutting its neighbo
     )
     stubBox('offsetWidth', (el) => (el.classList.contains('wf-levels') ? 72 : 0))
     await page(SYNTH)
+    // THE READER BRINGS IT ROUND (visual QA pass 2, overview-agents-63,
+    // #2694): the page's own pick on arrival opens no stage and scrolls
+    // nothing, so the scroll measured here is the one the failure line's
+    // control makes.
+    fireEvent.click(await waitFor(() => document.querySelector<HTMLButtonElement>('.wfp-fail-lead-go')!))
     const wrap = await waitFor(() => {
       const w = document.querySelector<HTMLElement>('.wf-canvas-wrap')
       expect(w?.querySelector('.node.is-picked')).toBeTruthy()

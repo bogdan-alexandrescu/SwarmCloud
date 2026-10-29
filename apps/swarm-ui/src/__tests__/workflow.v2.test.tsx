@@ -774,7 +774,9 @@ describe('the list row: shape, runners and spend', () => {
   it('never shows a partial total without its coverage', async () => {
     const cell = await spendCell([0.0642, null, null])
     expect(cell.textContent).toContain('$0.0642')
-    expect(cell.querySelector('.wf-spend-cov')!.textContent).toBe('1 of 3 steps that ran reported')
+    // Short in the list, the long form its title (visual QA pass 2 ovag2-15, #2694).
+    expect(cell.querySelector('.wf-spend-cov')!.textContent).toBe('1 of 3 reported')
+    expect(cell.querySelector('.wf-spend-cov')!.getAttribute('title')).toBe('1 of 3 steps that ran reported a cost')
     expect(cell.getAttribute('title')).toContain('floor rather than the total')
   })
 })

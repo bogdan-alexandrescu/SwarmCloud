@@ -211,12 +211,19 @@ describe('QA-120: the failed step’s card opens on the first click', () => {
     // Arrival: the failed step is the one selected, its card drawn, and the
     // page is not scrolled down to it (QA G3-28 holds).
     await waitFor(() => expect(panel()?.querySelector('.wf-inspect-id')?.textContent).toBe('test'))
-    await waitFor(() => expect(node('test')).toBeTruthy())
     expect(scroll, 'the arrival pick scrolled the page down to the card').not.toHaveBeenCalled()
+    // ITS STAGE STAYS FOLDED ON ARRIVAL (visual QA pass 2, overview-agents-63,
+    // #2694): the step is the band's pressed chip, not a node on the canvas.
+    const chip = await waitFor(() => {
+      const c = [...document.querySelectorAll<HTMLButtonElement>('.wf-band-chips button')].find((b) => b.textContent?.includes('test'))
+      expect(c?.getAttribute('aria-pressed')).toBe('true')
+      return c!
+    })
+    expect(node('test')).toBeNull()
 
     // The first click: the card stays, and is brought to the reader.
     act(() => {
-      fireEvent.click(node('test')!)
+      fireEvent.click(chip)
     })
     // MUTATION: make `pickStep` in `WorkflowCard` toggle unconditionally, as
     // it did -- the first click closes the arrival card and nothing scrolls.
@@ -224,6 +231,8 @@ describe('QA-120: the failed step’s card opens on the first click', () => {
     expect(panel(), 'the first click on the arrival pick closed its card').not.toBeNull()
     expect(panel()!.querySelector('.wf-inspect-id')?.textContent).toBe('test')
     expect(panel()!.contains(document.activeElement), 'focus did not move into the card the click opened').toBe(true)
+    // The reader's pick opens its stage.
+    await waitFor(() => expect(node('test')).toBeTruthy())
 
     // The second click: closes it.
     act(() => {
@@ -257,7 +266,17 @@ describe('QA-120: the failed step’s card opens on the first click', () => {
     // In full: every line, nothing cut.
     expect(cause.querySelector('.wf-inspect-cause-text')?.textContent).toBe(ERROR)
     expect(cause.textContent).not.toContain('…')
-    // The node's one line keeps the whole text in its title.
+    // The node's one line keeps the whole text in its title -- on the canvas
+    // once a reader opens its stage (overview-agents-63).
+    const go = await waitFor(() => {
+      const b = document.querySelector<HTMLButtonElement>('.wfp-fail-lead-go')
+      expect(b, 'the failure line has no control to open its step').toBeTruthy()
+      return b!
+    })
+    act(() => {
+      fireEvent.click(go)
+    })
+    await waitFor(() => expect(node('test')).toBeTruthy())
     expect(node('test')!.parentElement!.querySelector<HTMLElement>('.node-note')?.getAttribute('title')).toBe(ERROR)
   })
 
@@ -334,6 +353,12 @@ describe('QA-120 (run 2): the failed step’s reason leads the graph, above the 
   it('draws no lead once the reader picks another step, nor on a workflow with no failed pick', async () => {
     await page()
     await waitFor(() => expect(lead()).not.toBeNull())
+    // The stage opens to its toggle, as a reader opens it: the page's own
+    // pick leaves it folded (overview-agents-63).
+    act(() => {
+      fireEvent.click(document.querySelector<HTMLButtonElement>('.wf-band-toggle')!)
+    })
+    await waitFor(() => expect(node('lint')).toBeTruthy())
     act(() => {
       fireEvent.click(node('lint')!)
     })

@@ -100,7 +100,10 @@
      c28 measured the text in the cell's sans face (100.8px) and saw slack
      that was not there; a browser rounding one glyph advance up wraps
      'reported'. 136px leaves one character's advance (7.2px) to spare, and
-     the name still keeps 196px at 1280 with the nav open, over D8's 168. */
+     the name still keeps 196px at 1280 with the nav open, over D8's 168.
+     The coverage is now the body face and `N of M reported` (ovag2-15,
+     below the media rules), narrower than the mono it was measured in, so
+     the 136px holds it with more to spare. */
   @media (min-width: 1280px) {
     .wfl .wfl-table th[data-col="cost"] { width: 136px; }
   }
@@ -118,7 +121,20 @@
      (dag.ts `mixChipW` plus `STEPS_WORD_W`). The basis is a length, not
      `auto`: the mix measures its own width to fold its chips, so its width
      comes from the line, never from what it draws. */
-  .wfl .wfl-line > a { flex: 0 1 auto; min-width: 6em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* TWO LINES, THEN CUT (visual QA pass 2, overview-agents-61, #2694): one
+     line cut `Check the five contract invariants, then write one sy…` at
+     1440. The name wraps at its spaces and is clamped at its second line,
+     with the whole name as the link's title. */
+  .wfl .wfl-line > a {
+    flex: 0 1 auto;
+    min-width: 6em;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow-wrap: anywhere;
+  }
   .wfl .wfl-line > .wfl-mix { flex: 1 0 11rem; min-width: 11rem; }
   /* The current step is the row's one second line, cut with its title. */
   .wfl .wfl-name > .wfl-why { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -142,6 +158,11 @@
    column gap spaces it, and its own bottom margin (`.c-count-note`) is not
    added on top. */
 .wfl > .c-count-note { margin: 0; }
+/* A NOTE, NOT A FIGURE (visual QA pass 2 ovag2-15, #2694): the cost cell's
+   coverage is words, so at every width it is set in the body face, not the
+   figure's mono, and the list says it short (`3 of 4 reported`, Workflows.tsx
+   `Spend`) -- it was `3 of 4 / steps / that ran / reported` at 1440. */
+.wfl .wfl-table td[data-col="cost"] .wf-spend-cov { font-family: var(--font); }
 /* THE NAME'S LINE (VQ-013): the name, its id muted beside it, the runner
    mix where the Runners column is not drawn, and a row's tags. A flex row,
    so the id and the chips sit on the name's line; a table holds it to one
@@ -211,7 +232,13 @@ span.wf-mix > .c-chip { display: flex; }
   .wfl > .wfl-scroll > .wfl-table > thead { display: none; }
   .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+    /* TWO EQUAL TRACKS (visual QA pass 2 ovag2-01, #2694). The right one was
+       `minmax(0, auto)`, and a grid grows an auto track to its content's
+       one-line width before a `1fr` gets what is left: the cost cell's
+       coverage note took ~340px of a 390 card, and State and Steps done kept
+       ~10px -- `running` a letter a line, over the progress bar, and `2/5`
+       run into `cost $0.518`. Halves cannot starve either side. */
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     grid-template-areas: "name name" "state duration" "done cost" "owner submitted";
     gap: var(--ctl-s1) var(--ctl-s3);
     padding: var(--ctl-s3) var(--ctl-s3);
@@ -238,7 +265,7 @@ span.wf-mix > .c-chip { display: flex; }
   .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row.is-failed { background: var(--s-badb); }
   .wfl > .wfl-scroll.is-scroll > .wfl-table > tbody > tr.wfl-row.is-failed > td:not([colspan]) { background: none; }
   .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="workflow"] { grid-area: name; }
-  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="state"] { grid-area: state; }
+  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="state"] { grid-area: state; white-space: nowrap; }
   .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="duration"] { grid-area: duration; text-align: right; }
   .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="done"] { grid-area: done; }
   .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="cost"] { grid-area: cost; text-align: right; }
@@ -255,6 +282,10 @@ span.wf-mix > .c-chip { display: flex; }
     color: var(--text-dim);
     font-size: var(--t-micro);
   }
+  /* AN UNKNOWN STATE HAS NO DURATION (visual QA pass 2 overview-agents-62,
+     #2694): its cell says `began 10d ago`, which is not a duration, so the
+     card draws no `duration` label over it. */
+  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="duration"].is-unknown::before { content: none; }
   .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="workflow"] > .id { overflow-wrap: normal; word-break: keep-all; }
   .wfl .wfl-name > .wfl-line { flex-wrap: wrap; }
   .wfl .wfl-line > .wfl-mix { display: block; flex: 1 0 100%; overflow: hidden; white-space: nowrap; }
@@ -848,6 +879,7 @@ span.wf-mix > .c-chip { display: flex; }
   position: absolute; z-index: 1;
   box-sizing: border-box;
   display: flex; flex-direction: column; gap: 4px;
+  /* 12px a side is `BAND_PAD_X` in Workflows.tsx, which adds the on-screen inset to it. */
   margin: 0; padding: 8px 12px;
   background: var(--surface);
   border: 1px solid var(--line);
