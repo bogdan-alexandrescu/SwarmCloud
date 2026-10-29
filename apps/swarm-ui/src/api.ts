@@ -13419,7 +13419,7 @@ function fixtureSetupState(): Record<string, unknown> {
     env: 'prod',
     engine: {
       release: 'v1.0.0',
-      hostname: 'swarm.example.com',
+      hostname: 'console.example.com',
       stages: Array.from({ length: 16 }, (_, i) => (i <= 13 ? { state: i === 9 ? 'switches_on' : 'done', at: at(40 - i), by: 'ana@example.com' } : null)),
       lease: { holder: 'ana@example.com laptop', heartbeat: at(0) },
       verify: { check: 'digests', done: 2, total: 8, started: t0, expected_end: t0 + 600, deadline: t0 + 1800, result: null },
@@ -13448,7 +13448,7 @@ function fixtureSetupState(): Record<string, unknown> {
       { name: 'brave-search', enable: 'swarm addon enable brave-search', secret_link: true },
       { name: 'ci', enable: 'swarm addon enable ci', secret_link: false },
     ],
-    hostname: 'swarm.example.com',
+    hostname: 'console.example.com',
     github_org: 'example-org',
   }
 }
