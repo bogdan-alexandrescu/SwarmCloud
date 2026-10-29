@@ -108,7 +108,7 @@ function stateChip(label: string): HTMLElement {
 const STATES = [
   { state: 'PAUSED', hue: 'park', mark: 'parked', word: 'paused' },
   { state: 'DRAINING', hue: 'neu', mark: 'none', word: 'draining' },
-  { state: 'REAUTH_REQUIRED', hue: 'warn', mark: 'warn', word: 'reauth required' },
+  { state: 'REAUTH_REQUIRED', hue: 'warn', mark: 'warn', word: 'needs sign-in' },
   { state: 'SOMETHING_NEW', hue: 'unknown', mark: 'none', word: 'something new' },
 ] as const
 
@@ -155,7 +155,7 @@ describe('an account state is a mark and a word', () => {
     // THE WORD IS LOWER CASE WITH SPACES, in the DOM (#503), the way every
     // other state word in the console reads; the platform's own spelling is
     // the title, so what someone retypes into a command is still at hand.
-    expect(chip.textContent).toBe('reauth required')
+    expect(chip.textContent).toBe('needs sign-in')
     expect(chip.getAttribute('title')).toBe('REAUTH_REQUIRED')
 
     // THE MARK IS A SECOND CHANNEL, NOT A SUBSTITUTE: aria-hidden, no text.
