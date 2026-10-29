@@ -154,7 +154,7 @@ describe('N26: "lands as" speaks of waiting for a room of 0 and for a room not r
 // c09
 // ---------------------------------------------------------------------------
 
-const C09 = 'Room for 0 now: it is accepted and waits, holding nothing, until every pool it needs has room.'
+const C09 = 'It is accepted and waits, holding nothing, until every pool it needs has room.'
 const ADMITS = 'Nothing runs until the scheduler admits it into every pool it needs.'
 
 /** The notes drawn after the send button, in order. */

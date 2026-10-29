@@ -1748,9 +1748,13 @@ function Form({ capacity }: { capacity: Capacity }) {
               valid, and it lands holding nothing (invariant 1) -- and this note
               says what happens next, in the warning ink. A MEASURED zero only:
               an unread room keeps the admits note, and "lands as" says it may
-              wait (N26). It follows `profile`, so each room read re-decides it. */}
+              wait (N26). It follows `profile`, so each room read re-decides it.
+              THE ROOM IS SAID ONCE, IN THE SUMMARY (visual QA pass 2, runs2-07):
+              "Room for 0 now:" here repeated the summary's "room for 0 more"
+              and its "waits for room", so the note keeps c09's what-happens-
+              next and drops the figure. */}
           {waits === 'yes'
-            ? <p className="sb-note sbf-wait">Room for 0 now: it is accepted and waits, holding nothing, until every pool it needs has room.</p>
+            ? <p className="sb-note sbf-wait">It is accepted and waits, holding nothing, until every pool it needs has room.</p>
             : <p className="sb-note">Nothing runs until the scheduler admits it into every pool it needs.</p>}
           {/* THE OUTCOME IS DRAWN BESIDE THE BUTTON THAT CAUSED IT (VQA V002,
               owner decision Q1 on #1038), as the issue form draws it. It was
