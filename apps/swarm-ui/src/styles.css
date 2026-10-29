@@ -6761,9 +6761,8 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
 .dsp-option-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .dsp-option-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .dsp-option-head b { font-size: var(--t-body); font-weight: 600; }
-.dsp-code { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
 .dsp-default {
-      font: var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-faint); border: 1px solid var(--line); border-radius: 999px; padding: 0 6px;
+      font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-faint); border: 1px solid var(--line); border-radius: 999px; padding: 0 6px;
 }
 
 /* INK (TS-13). The pull-request count is the decision on this control, and the

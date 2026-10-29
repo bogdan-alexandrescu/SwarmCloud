@@ -18,6 +18,10 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+// These hand the submit real responses, so the fixture build's answer to the
+// submit (QA2-FIX-07, runs2-01 and runs2-02) is turned off here.
+vi.mock('../api', async (importOriginal) => ({ ...(await importOriginal<typeof import('../api')>()), USE_FIXTURES: false }))
+
 import { recentSubmissions, recentScope } from '../SubmitChooser'
 import { SubmitWorkflowScreen, postWorkflow } from '../SubmitWorkflow'
 import { task } from './runfixture'

@@ -230,8 +230,11 @@ export function DispatchChoice({
               />
               <span className="dsp-option-body">
                 <span className="dsp-option-head">
+                  {/* NO RAW KEY BESIDE THE LABEL (visual QA pass 2, runs2-30):
+                      "Collect collect default" printed the API value in mono
+                      after the words that already name it. The value is the
+                      radio's own `value`; the reader gets the label alone. */}
                   <b>{strategyLabel(s, scale)}</b>
-                  <code className="dsp-code">{s}</code>
                   {s === 'collect' && <span className="dsp-default">default</span>}
                 </span>
                 {/* THE CONSEQUENCE, on the option, in numbers. It is the only

@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
-import { loadCapacity, loadModelClasses, loadStats, type ModelClassOffer } from './api'
+import { fixtureSubmitWorkflow, loadCapacity, loadModelClasses, loadStats, USE_FIXTURES, type ModelClassOffer } from './api'
 import {
   AdditionalRepositoriesPicker,
   DispatchChoice,
@@ -191,6 +191,11 @@ const unsure = (kind: ApiErrorKind, httpStatus: number | null, message: string):
 /** POST /v1/workflows. fetch.ts owns reads and has no write half yet.
  *  Exported for `submit.workflow.refusal.test.ts`, which hands it real responses. */
 export async function postWorkflow(body: unknown): Promise<Submission> {
+  // The fixture build answers the submit as the 201 does (QA2-FIX-07, runs2-02).
+  if (USE_FIXTURES) {
+    const made = await fixtureSubmitWorkflow(typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {})
+    return { kind: 'created', workflow: made.workflow, dispatch: made.dispatch }
+  }
   const tenant = chosenTenant()
   let res: Response
   try {

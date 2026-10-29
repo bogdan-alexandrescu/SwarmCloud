@@ -61,7 +61,9 @@ const api = vi.hoisted(() => ({
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()
   api.loadCapacity.mockImplementation(actual.loadCapacity)
-  return { ...actual, ...api }
+  // The submit answers through fetch here, not the fixture build's 201
+  // (QA2-FIX-07, runs2-01 and runs2-02).
+  return { ...actual, ...api, USE_FIXTURES: false }
 })
 
 vi.mock('@novnc/novnc/core/rfb.js', () => ({
