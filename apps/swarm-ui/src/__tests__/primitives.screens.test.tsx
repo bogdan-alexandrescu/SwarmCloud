@@ -240,9 +240,9 @@ function row(name: string): Element {
   return found!
 }
 
-/** Overview's Headroom pool row for `name`. */
+/** Overview's Headroom pool row for `name`: its raw key, the name's title (QA2 ovag2-04). */
 function poolRow(name: string): Element {
-  const found = [...document.querySelectorAll('.ov-pl')].find((r) => (r.querySelector('.ov-idc')?.textContent ?? '').trim() === name)
+  const found = [...document.querySelectorAll('.ov-pl')].find((r) => r.querySelector('.ov-idc')?.getAttribute('title') === name)
   expect(found, `no pool row is named ${name}`).toBeTruthy()
   return found!
 }

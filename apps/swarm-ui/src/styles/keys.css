@@ -125,6 +125,12 @@ fieldset.jb-options > legend { padding: 0; margin-bottom: var(--ctl-s1); font-si
    phone block stacks each row and breaks every value anywhere. */
 @media (min-width: 720px) {
   .mcp-registered > tbody > tr > td[data-label='State'] { white-space: nowrap; overflow-wrap: normal; }
+  /* THE URL BREAKS AT A '/' OR A '.' (QA2 config2-19). Broken anywhere, its
+     narrowest width was one letter, so the table gave it almost none and
+     cut 'https://mcp.exampl / e.com/docs/mcp'. McpServers.tsx puts a `<wbr>`
+     after each '/' and '.'; `break-word` breaks inside a piece only when one
+     is wider than the column, and leaves the column its widest piece. */
+  .mcp-registered > tbody > tr > td[data-label='URL'] { overflow-wrap: break-word; }
   .mcp-registered > tbody > tr > td[data-label='Actions'] > .pk-form-row { flex-wrap: nowrap; }
 }
 
@@ -147,6 +153,19 @@ fieldset.jb-options > legend { padding: 0; margin-bottom: var(--ctl-s1); font-si
   border: 1px solid var(--warn-ink); border-radius: 999px; color: var(--warn-ink);
   font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 500; white-space: nowrap;
 }
+/* AN MCP SERVER ON THE START FORM IS A CHECKBOX, ON OR OFF (QA2 runs2-29).
+   The picker borrowed `.btp-opt`, the segmented control's segment: a hidden
+   input, no border but a lighter right one, and the pale tint as the only
+   sign of a pick, so an unpicked 'kb · Answers from ...' read as a sentence.
+   Each server is now a bordered option, one border colour on all four sides,
+   with its own checkbox drawn in the accent; the pick also takes the accent
+   border. `.btp-row >` outranks every `.btp-opt` rule in submit.css. */
+.btp-row > .btp-opt.mcp-opt {
+  justify-content: flex-start; gap: var(--ctl-s2); padding: 6px 12px; text-align: left; white-space: normal;
+  border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl);
+}
+.btp-row > .btp-opt.mcp-opt.is-on { border-color: var(--sk-ac); }
+.btp-row > .btp-opt.mcp-opt > input { position: static; opacity: 1; flex: none; width: 16px; height: 16px; accent-color: var(--sk-ac); }
 .mcp-allow { min-width: 0; }
 .mcp-allow > details { border: 1px solid var(--line); border-radius: var(--r-ctl); background: var(--surface); min-width: 0; }
 .mcp-allow > details > summary {
@@ -214,7 +233,9 @@ fieldset.jb-options > legend { padding: 0; margin-bottom: var(--ctl-s1); font-si
   }
 
   /* A stacked server is one card: its needed bar runs the card's height. */
-  .mcp-registered > tbody > tr.is-need { background: color-mix(in srgb, var(--warn-ink) 6%, var(--surface)); box-shadow: inset 3px 0 0 var(--warn-ink); padding-left: 10px; }
+  /* Its inner space is the same on both sides (QA2 config2-20): with the
+     left alone padded, kb's Disable button met the tint's right edge. */
+  .mcp-registered > tbody > tr.is-need { background: color-mix(in srgb, var(--warn-ink) 6%, var(--surface)); box-shadow: inset 3px 0 0 var(--warn-ink); padding: var(--ctl-s2) 10px; }
   .mcp-registered > tbody > tr.is-need > th { box-shadow: none; padding-left: 0; }
   .mcp-registered > tbody > tr.is-need > th, .mcp-registered > tbody > tr.is-need > td { background: none; }
 }

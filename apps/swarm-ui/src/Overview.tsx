@@ -1556,8 +1556,8 @@ function PoolsBody({ state }: { state: Result<Capacity> }) {
   }
   return (
     <div className="ov-pls">
-      {busiestFirst(state.data.pools).map((p) => (
-        <PoolRow key={p.name} pool={p} />
+      {busiestFirst(state.data.pools).map((p, _i, all) => (
+        <PoolRow key={p.name} pool={p} among={all.map((o) => o.name)} />
       ))}
     </div>
   )
@@ -1688,7 +1688,7 @@ export function ProfileTile({
  * figure says so rather than `/ 0`. Units, never agents: admission counts a
  * resource class's weight.
  */
-export function PoolRow({ pool: p }: { pool: Pool }) {
+export function PoolRow({ pool: p, among = [] }: { pool: Pool; among?: readonly string[] }) {
   const limit = p.effective_limit
   const known = limit !== null && limit > 0
   const ratio = known ? p.active / limit : 0
@@ -1710,10 +1710,15 @@ export function PoolRow({ pool: p }: { pool: Pool }) {
   // threshold as the track, so the two widths agree; a paused pool keeps its
   // own tone and is not warned about.
   const near = !full && !paused && known && ratio >= 0.8
-  const say = `${poolLabel(p.name)}: ${p.active} of ${limit === null ? 'no limit set' : `${limit}`} units in use${full ? ', full' : near ? ', nearly full' : ''}${paused ? ', paused' : ''}`
+  const label = poolLabelAmong(p.name, among)
+  const say = `${label}: ${p.active} of ${limit === null ? 'no limit set' : `${limit}`} units in use${full ? ', full' : near ? ', nearly full' : ''}${paused ? ', paused' : ''}`
   const name = (
-    <span className="ov-idc" title={p.name}>
-      {p.name}
+    // NAMED AS HEADROOM NAMES IT (QA2 ovag2-04): 'anthropic · u-bogdan',
+    // 'Cloud Run', never the raw 'provider:anthropic:tenant:u-bogdan' key,
+    // which stays on hover. `poolLabelAmong` qualifies two pools that would
+    // print one word.
+    <span className="ov-idc ov-pl-k" title={p.name}>
+      {label}
     </span>
   )
   return (
@@ -1905,7 +1910,7 @@ function RunningCard({
 }) {
   const now = usePageClock()
   const page = dataOf(tasks)
-  const silent = silentByTask(leases)
+  const silent = silentByTask(leases, now)
   const leased = leasedAtByTask(leases)
   const view = page === null ? null : stateView(page, HOLDING)
   // Every capacity-holding task was read: a whole page, or every state read.
@@ -2180,9 +2185,11 @@ export function RunningRow({
         <a className="ov-name" href={agentPath(task)} title={`${rowLabel(task, title)} · ${task.id}`}>
           {rowLabel(task, title)}
         </a>
-        {/* SILENT, ON THE ROW ITSELF (#92), from the lease's heartbeat age. */}
+        {/* SILENT, ON THE ROW ITSELF (#92), from the lease's heartbeat age,
+            whole: '9d 20h', the figure the agent's pane gives, not '9d'. Its
+            units are joined by a no-break space, so the chip never wraps. */}
         {silentFor !== undefined && (
-          <span className="ov-silent">silent {formatDuration(silentFor * 1000).split(' ')[0]}</span>
+          <span className="ov-silent">silent {formatDuration(silentFor * 1000).replace(/ /g, '\u00a0')}</span>
         )}
         <span className="ov-sub">
           {task.runner_profile}
@@ -2216,16 +2223,29 @@ export function RunningRow({
  * (#92). `leaseLiveliness` with the page's own thresholds, the same verdict
  * the silent-workers item and Holders draw, so a row is marked exactly when
  * the item counts it.
+ *
+ * THE FIGURE IS AGED TO `now` (QA2 ovag2-02). `silent_seconds` is the age at
+ * the read's `evaluated_at`; drawn as it came, a worker quiet for 9d 20h read
+ * "silent 2m" here while its pane, which ages its last beat to now, read
+ * "Heartbeat silent 9d 20h ago". The age is Holders' (`heartbeatAgeMs`): the
+ * served seconds plus the time since the read, or, never beaten, the time
+ * since the lease was created. The verdict stays the read's, the item's.
  */
-function silentByTask(leases: Result<LeasePage>): Map<string, number> {
+function silentByTask(leases: Result<LeasePage>, now: number): Map<string, number> {
   const out = new Map<string, number>()
   const page = dataOf(leases)
   if (page === null) return out
+  const read = Date.parse(page.evaluated_at)
   for (const l of page.leases) {
     // `starting` is a worker that has not beaten yet inside its dispatch
     // deadline (G5-01): booting, not silent, so it is not one of the item's.
     const { kind } = leaseLiveliness(l, page.thresholds)
-    if (kind === 'silent' || kind === 'presumed-dead') out.set(l.task_id, l.silent_seconds)
+    if (kind !== 'silent' && kind !== 'presumed-dead') continue
+    const created = Date.parse(l.created_at)
+    const age = !l.heartbeat_ever
+      ? Number.isFinite(created) ? Math.max(0, now - created) / 1000 : l.silent_seconds
+      : Number.isFinite(read) ? l.silent_seconds + Math.max(0, now - read) / 1000 : l.silent_seconds
+    out.set(l.task_id, age)
   }
   return out
 }

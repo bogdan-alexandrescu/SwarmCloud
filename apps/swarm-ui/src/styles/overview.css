@@ -328,6 +328,9 @@
    together. The bar spans the row; the name is whole, or cut with its title. */
 .ov-pl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; align-items: center; }
 .ov-pl .ctl-util-track { height: 6px; grid-column: 1 / -1; grid-row: 2; }
+/* A POOL IS NAMED IN WORDS (QA2 ovag2-04): 'anthropic · u-bogdan' in the
+   page's face, as Headroom writes it; the mono key is the name's title. */
+.ov-pl .ov-pl-k { font-family: var(--font); }
 .ov-pl b { font-size: var(--t-micro); text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
 /* A FULL POOL'S FIGURE CARRIES THE VERDICT (visual QA V057, owner decision
    Q3 2026-10-11). The phone block hides every utilisation track at 560px and
