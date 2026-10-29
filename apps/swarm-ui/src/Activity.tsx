@@ -20,6 +20,7 @@ import { OutcomeLedger } from './charts/OutcomeLedger'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { helpAnchor, type TopicId } from './help'
 import { HelpCard, HelpLinks } from './HelpCard'
+import { addressToPath } from './paths'
 import {
   CancelCausesCard,
   CostCard,
@@ -2319,8 +2320,13 @@ export function TenantsScreen() {
                           ) : (
                             <a
                               className="ctl-link"
-                              href={`#admin/limits?pool=${encodeURIComponent(`tenant:${t.tenant_id}`)}`}
-                              title={`effective limit of tenant:${t.tenant_id} · configured ${t.max_active} · ${t.capacity_units}u`}
+                              // A PATH, AND A TITLE THAT NAMES BOTH FIGURES
+                              // (QA2 admin2-21, 2026-10-29): the legacy hash was
+                              // what a copied link carried, and `configured 2 ·
+                              // 40u` beside a drawn 40 did not say which was
+                              // agents and which units.
+                              href={addressToPath(`admin/limits?pool=${encodeURIComponent(`tenant:${t.tenant_id}`)}`)}
+                              title={`${t.max_active} agents at once configured · ${enforcedWords(t, pools)}`}
                             >
                               <Enforced tenant={t} pools={pools} />
                             </a>
@@ -2590,6 +2596,13 @@ const TENANT_HELP: TopicId = 'tenant-fields'
 
 /** The Tenants table's help link (AH-12), as a footer index. */
 const TENANT_TOPICS: readonly TopicId[] = [TENANT_HELP]
+
+/** The Enforced link's title figure: the units drawn, or why there is none. */
+function enforcedWords(t: Tenant, pools: TenantPools): string {
+  const pool = typeof pools === 'object' ? pools[`tenant:${t.tenant_id}`] : undefined
+  if (pool === undefined) return pools === 'reading' ? 'units enforced not read yet' : 'units enforced not read'
+  return pool.effective_limit === null ? 'no units limit enforced' : `${pool.effective_limit} units enforced`
+}
 
 /**
  * THE CEILING ADMISSION APPLIES TO A TENANT (AH-12, G5-13): the tenant pool's

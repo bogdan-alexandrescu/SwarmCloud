@@ -462,8 +462,11 @@ describe('Tenants links each Enforced figure to its pool on Pool limits (#134)',
     ] as const) {
       const link = row(c, id).querySelector<HTMLAnchorElement>('td[data-label="Enforced"] a')
       expect(link, `${id}: the Enforced figure is not a link`).not.toBeNull()
-      expect(link!.getAttribute('href')).toBe(`#admin/limits?pool=${encodeURIComponent(`tenant:${id}`)}`)
+      // A path, not the legacy hash (QA2 admin2-21, 2026-10-29).
+      expect(link!.getAttribute('href')).toBe(`/admin/limits?pool=${encodeURIComponent(`tenant:${id}`)}`)
       expect(link!.textContent).toBe(figure)
+      expect(link!.getAttribute('title')).toMatch(/^\d+ agents at once configured · /)
+      expect(link!.getAttribute('title')).toContain(`${figure} units enforced`)
       expect(link!.className).toContain('ctl-link')
     }
   })
