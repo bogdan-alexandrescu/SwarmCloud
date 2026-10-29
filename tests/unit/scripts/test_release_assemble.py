@@ -269,3 +269,82 @@ def test_tar_members_are_reproducible(bundle: Path) -> None:
     assert {(m.uid, m.gid, m.uname, m.gname, m.mtime) for m in members} == {(0, 0, "", "", 0)}
     data = (bundle / "module.tgz").read_bytes()
     assert io.BytesIO(data).read(4)[:2] == b"\x1f\x8b"
+
+
+# -- install.sh (design 6.3) --------------------------------------------------------------------------
+
+FAKE_CURL = r'''#!{python}
+"""A fake curl: serves the release home from a bundle directory."""
+import os, shutil, sys
+
+args = sys.argv[1:]
+out = args[args.index("-o") + 1] if "-o" in args else None
+url = args[-1]
+home = "https://storage.googleapis.com/swarmcloud/"
+bundle = os.environ["FAKE_BUNDLE"]
+version = os.environ["FAKE_VERSION"]
+if url == home + "channels/stable":
+    data = (version + "\n").encode()
+elif url.startswith(home + f"releases/{version}/") and os.path.isfile(os.path.join(bundle, url.rsplit("/", 1)[1])):
+    data = open(os.path.join(bundle, url.rsplit("/", 1)[1]), "rb").read()
+else:
+    sys.exit(22)
+if out:
+    open(out, "wb").write(data)
+else:
+    sys.stdout.buffer.write(data)
+'''
+
+FAKE_UV = r'''#!{python}
+import json, os, sys
+with open(os.environ["FAKE_UV_LOG"], "a") as fh:
+    fh.write(json.dumps(sys.argv[1:]) + "\n")
+'''
+
+
+def _install(tmp_path: Path, bundle: Path) -> tuple[subprocess.CompletedProcess, list[list[str]]]:
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    for name, text in (("curl", FAKE_CURL), ("uv", FAKE_UV)):
+        (bindir / name).write_text(text.replace("{python}", sys.executable))
+        (bindir / name).chmod(0o755)
+    log = tmp_path / "uv.log"
+    log.write_text("")
+    env = {"PATH": f"{bindir}{os.pathsep}/usr/bin:/bin", "HOME": str(tmp_path), "TMPDIR": str(tmp_path),
+           "FAKE_BUNDLE": str(bundle), "FAKE_VERSION": VERSION, "FAKE_UV_LOG": str(log)}
+    proc = subprocess.run(["sh", str(REPO / "install" / "install.sh")], env=env, capture_output=True,
+                          text=True, timeout=120, check=False)
+    return proc, [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
+
+
+def test_install_sh_installs_both_wheels_from_the_stable_release(bundle: Path, tmp_path: Path) -> None:
+    """`curl .../install.sh | sh` installs the stable release's bridge and
+    engine as ONE uv tool (so `swarm install` finds the engine), every wheel
+    checked against SHA256SUMS first, the in-repo libraries from the release."""
+    proc, calls = _install(tmp_path, bundle)
+    assert proc.returncode == 0, proc.stderr
+    (call,) = calls
+    assert call[:2] == ["tool", "install"]
+    wheels = [a for a in call if " @ file://" in a]
+    assert [w.split(" @ ")[0] for w in wheels] == ["swarm-mcp", "swarm-install", "swarm-common", "swarm-redaction"]
+    for w in wheels:
+        assert w.endswith(f"-{VERSION}-py3-none-any.whl"), w
+    assert call.count("--with") == 3
+
+
+def test_install_sh_refuses_a_wheel_that_does_not_match(bundle: Path, tmp_path: Path) -> None:
+    tampered = tmp_path / "tampered"
+    shutil.copytree(bundle, tampered)
+    wheel = tampered / f"swarm_install-{VERSION}-py3-none-any.whl"
+    wheel.write_bytes(wheel.read_bytes() + b"\0")
+    proc, calls = _install(tmp_path, tampered)
+    assert proc.returncode == 1 and "SHA256SUMS" in proc.stderr, proc.stderr
+    assert calls == []
+
+
+@pytest.mark.skipif(shutil.which("shellcheck") is None, reason="shellcheck not installed")
+def test_install_sh_is_posix_and_shellcheck_clean() -> None:
+    """It is piped to `sh`, which is dash on Debian and Ubuntu: POSIX only."""
+    proc = subprocess.run(["shellcheck", "-s", "sh", str(REPO / "install" / "install.sh")],
+                          capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
