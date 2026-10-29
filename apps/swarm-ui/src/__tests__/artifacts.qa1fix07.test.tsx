@@ -69,7 +69,7 @@ describe('QA1-FIX-07: the Artifacts pane', () => {
     // MUTATION: draw `MaskedNote` at a count of 0 -> `masked 0` is back.
     serve(failedStep())
     render(<ArtifactsScreen taskId={ID} />)
-    await waitFor(() => expect(flat(document.querySelector('.arts-inputs .arts-block'))).toMatch(/prompt not recorded/))
+    await waitFor(() => expect(flat(document.querySelector('.arts-inputs .arts-block'))).toMatch(/^prompt ?not recorded/))
     const block = document.querySelector('.arts-inputs .arts-block')!
     expect(flat(block)).not.toMatch(/no input/)
     expect(flat(block)).not.toMatch(/masked/)

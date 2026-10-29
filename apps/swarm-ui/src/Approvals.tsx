@@ -240,7 +240,14 @@ function KindFilter({ kind, items, every, go }: { kind: string | null; items: In
 function ApprovalsList({ items, every, kind, go }: { items: InboxItem[]; every: InboxItem[] | null; kind: string | null; go: (to: string) => void }) {
   const now = useNow()
   const waiting = items.filter(isWaiting)
-  const decided = items.filter((i) => i.state === 'approved' || i.state === 'rejected')
+  // NEWEST FIRST, AND SAID SO (visual QA pass 2, automate2-08). The note read
+  // `as the read served them`, how the rows arrived rather than their order;
+  // the route serves the inbox by `requested_at`, oldest first, so the card
+  // orders its own rows by when they were decided. One with no decision time
+  // goes last.
+  const decided = items
+    .filter((i) => i.state === 'approved' || i.state === 'rejected')
+    .sort((a, b) => (Date.parse(b.decided_at ?? '') || 0) - (Date.parse(a.decided_at ?? '') || 0))
   const ended = items.filter((i) => !isWaiting(i) && i.state !== 'approved' && i.state !== 'rejected')
   const at = (iso: string | null | undefined) => (iso ? <span title={iso}>{when(iso)}</span> : <Dash why="not served" />)
   return (
@@ -277,7 +284,7 @@ function ApprovalsList({ items, every, kind, go }: { items: InboxItem[]; every: 
         </Card>
       )}
       {decided.length > 0 && (
-        <Card title={`Decided · ${decided.length}`} note="as the read served them" testId="apl-decided">
+        <Card title={`Decided · ${decided.length}`} note="newest first" testId="apl-decided">
           <Table
             label="Decided"
             heads={['Kind', 'What', 'Decision', 'By', 'When', 'Reason']}

@@ -86,10 +86,12 @@ export function AttemptTimelineScreen({ taskId }: { taskId: string }) {
         // Verbatim: an id a reader cannot paste back into swarmctl is unusable.
         title={taskId}
         load={load}
-        summary={(t) =>
-          `${pluralise(t.attempts.length, 'attempt')} · ` +
-          (t.events === null ? 'events unread' : pluralise(t.events.length, 'event') + beforeSay(t))
-        }
+        // THE EVENT COUNT IS SAID ONCE, ON THE TOOLBAR (visual QA pass 2,
+        // overview-agents-41). `1 attempt · 9 events` here, `9 events · first
+        // page` on the toolbar and `9 events` on the one card printed one
+        // figure three times. The toolbar's is the one with its qualifier
+        // (`first page`, `before any attempt`, its marks), so it stays.
+        summary={(t) => pluralise(t.attempts.length, 'attempt')}
         empty={{
           // ONE `real zero`, THE PRIMITIVE'S. `No attempt · real zero` said it a
           // second time beside the mark `Absent` draws in the heading (#145).
@@ -381,7 +383,7 @@ function Body({ t }: { t: AttemptTimeline }) {
             built from this toolbar's own `say` strings. */}
       </div>
       {groups.map((g) => (
-        <AttemptCard key={g.key} g={g} eventsRead={t.events !== null} prev={prev} task={t.task}
+        <AttemptCard key={g.key} g={g} eventsRead={t.events !== null} pageCount={t.events?.length ?? null} prev={prev} task={t.task}
           isLatest={g.attempt !== null && g.attempt.attempt_id === latest?.attempt_id} />
       ))}
       <p className="ctl-card-foot">
@@ -396,12 +398,15 @@ function Body({ t }: { t: AttemptTimeline }) {
 function AttemptCard({
   g,
   eventsRead,
+  pageCount,
   prev,
   task,
   isLatest,
 }: {
   g: Group
   eventsRead: boolean
+  /** How many events the page holds; null when the event read failed. */
+  pageCount: number | null
   /** Each event's predecessor on the page, by event id (`previousOf`). */
   prev: ReadonlyMap<string, TaskEvent>
   /** The task, for its model class and its stream's models; null when that read failed. */
@@ -437,8 +442,19 @@ function AttemptCard({
               disagree: this page holds none for the attempt, which is not a
               measured zero. Why that cannot be told from a missing page is
               the toolbar's one `partial` tally, said once there. */}
-          {g.events.length === 0 && eventsRead ? 'no events on this page' : pluralise(g.events.length, 'event')}
-          {a !== null && ` · ${backendWord(a.backend)}`}
+          {/* NOR THE PAGE'S COUNT A SECOND TIME (visual QA pass 2,
+              overview-agents-41): a card holding every event on the page
+              would repeat the toolbar's figure, so it names its backend only. */}
+          {[
+            g.events.length === 0 && eventsRead
+              ? 'no events on this page'
+              : g.events.length === pageCount
+                ? null
+                : pluralise(g.events.length, 'event'),
+            a === null ? null : backendWord(a.backend),
+          ]
+            .filter((w) => w !== null)
+            .join(' · ')}
         </span>
       </div>
 
@@ -536,7 +552,11 @@ function AttemptCard({
             </li>
             {/* The model this attempt ran and the task's class (#1435), and
                 both models when the CLI ran another -- Details' own fact. */}
-            <AttemptModel a={a} task={task} isLatest={isLatest} />
+            {a.model == null && task?.model ? (
+              <RequestedModel model={task.model} task={task} />
+            ) : (
+              <AttemptModel a={a} task={task} isLatest={isLatest} />
+            )}
           </ul>
         )}
 
@@ -545,7 +565,14 @@ function AttemptCard({
             in the chip; the line under it is the reason's copy, and only when
             this screen has copy for it -- `reasonCopy`'s raw-token fallback
             would print the chip's word a second time. */}
-        {a?.error != null && !isParked(a) && <pre className="err full">{a.error}</pre>}
+        {a?.error != null && !isParked(a) && (
+          // A BARE CODE IS SAID IN WORDS (visual QA pass 2, ovag2-07): the card
+          // ended in `BACKEND_REJECTED`. The code stays in the title, for a
+          // search; free text -- a stderr tail -- is printed whole, as before.
+          <pre className="err full" title={errorCode(a.error) ? a.error : undefined}>
+            {errorWords(a.error)}
+          </pre>
+        )}
         {a !== null && isParked(a) && a.error != null && REASON_COPY[a.error] !== undefined && (
           <p className="blocker-copy">{REASON_COPY[a.error]}</p>
         )}
@@ -606,6 +633,37 @@ function AttemptCard({
 }
 
 /**
+ * THE MODEL ASKED FOR, WHEN THE ATTEMPT RECORDED NONE (visual QA pass 2,
+ * overview-agents-43). `not recorded` here sat beside Inputs' `model
+ * claude-opus-5` and the transcript's init row naming it. The task's `model`
+ * is what the agent asked for, so it is shown, labelled `requested`: a
+ * request, not a record of what ran. The class beside it as `AttemptModel`
+ * draws it.
+ */
+function RequestedModel({ model, task }: { model: string; task: Task }) {
+  const modelClass = task.model_class ?? null
+  return (
+    <li className="ctl-fact">
+      <b>model</b>
+      <span className="mono">{model}</span>{' '}
+      <small
+        className="att-model-why"
+        title="This attempt recorded no model; this is the model the agent asked for when it was submitted."
+      >
+        requested
+      </small>
+      {modelClass !== null && (
+        <span className="att-model-class" title={task.model_class_defaulted ? 'The agent named no class, so it runs its runner’s default.' : 'The class the agent named.'}>
+          {' · '}
+          <span className="mono">{modelClass}</span>
+          {task.model_class_defaulted && ' (default)'}
+        </span>
+      )}
+    </li>
+  )
+}
+
+/**
  * An attempt's memory from its newest heartbeat, when it wrote no peak: what
  * Details' `memoryOf` and its attempt cards read for the same attempt.
  * `ended` is `attemptEnd`'s answer -- a running attempt's figure is `so far`,
@@ -623,6 +681,26 @@ function heartbeatMemory(
   if (hb === null || hb.peakRssBytes === null) return null
   const ended = task === null ? a.completed_at !== null || !isLatest : attemptEnd(a, task, isLatest).over
   return { bytes: hb.peakRssBytes, at: hb.at, ended }
+}
+
+/**
+ * THE ERROR CODES AN ATTEMPT ENDS ON, IN WORDS. A dispatch the backend refused
+ * writes the bare token on the attempt; a code this table does not know is
+ * printed in lower case with its underscores as spaces, as `words.ts` prints
+ * a token it does not know -- never dropped and never guessed at.
+ */
+const ERROR_SAY: Readonly<Record<string, string>> = {
+  BACKEND_REJECTED: 'The backend refused to start it.',
+}
+
+/** True when the error is one bare upper-case token rather than a sentence. */
+function errorCode(error: string): boolean {
+  return /^[A-Z][A-Z0-9]*(_[A-Z0-9]+)+$/.test(error)
+}
+
+function errorWords(error: string): string {
+  if (!errorCode(error)) return error
+  return ERROR_SAY[error] ?? error.toLowerCase().replace(/_/g, ' ')
 }
 
 /**
