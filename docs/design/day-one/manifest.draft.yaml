@@ -26,7 +26,13 @@
 #   scope         core | addon:<name>        (brief D9, D10)
 #   stage         the brief's section 5 numbering, 0 preflight .. 15 hand-off
 #   provider      engine | human-in-console | human-in-terminal | org-admin |
-#                 company-external
+#                 company-external: who provides it IN THE DAY ONE INSTALL,
+#                 not who runs it by hand today. Everything Terraform, the
+#                 engine or kubernetes/apply.sh creates is `engine` (D20); a
+#                 human-* provider is a step that pauses the install (design
+#                 section 2.1, exit code 4), so it is kept for what only a
+#                 person can do: install a local tool, create the project and
+#                 link billing, type a value held outside the platform, sign in
 #   check         a read-only probe
 #   apply         what creates it today (or NEW: what the engine will do)
 #   verify        how to see it works, not only that it exists
@@ -77,12 +83,18 @@
 #   github-app-installation  1
 #   claude-account           1
 # by scope:
-#   core                       353
-#   addon:ci                   52
+#   core                       362
+#   addon:ci                   43
 #   addon:typesafe             12
 #   addon:bright-data-egress   9
 #   addon:tailscale            4
 #   addon:brave-search         3
+# by provider:
+#   engine                     381
+#   human-in-terminal          21
+#   org-admin                  17
+#   human-in-console           13
+#   company-external           1
 # by stage: 0:26  1:39  2:12  3:42  4:30  5:58  6:42  7:106  8:9  9:19  10:16  11:18  12:1  13:4  14:4  15:7
 #
 # Known gaps in this draft (design section 3.4): the per-tenant fan-out
@@ -97,7 +109,7 @@ entries:
   # ---- stage 0 ----
   - id: "local-tool.checkov"
     kind: "local-tool"
-    scope: "core"
+    scope: "addon:ci"
     stage: 0
     provider: "human-in-terminal"
     check: "checkov --version"
@@ -124,7 +136,7 @@ entries:
     notes: "Not used anywhere in the repo today."
   - id: "local-tool.docker"
     kind: "local-tool"
-    scope: "core"
+    scope: "addon:ci"
     stage: 0
     provider: "human-in-terminal"
     check: "docker info"
@@ -192,7 +204,7 @@ entries:
     kind: "local-tool"
     scope: "core"
     stage: 0
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "python3 -c 'import sys; print(\"%d.%d\" % sys.version_info[:2])'"
     apply: "3.11 required; uv reads .python-version and fetches it itself if the system one does not match"
     verify: "scripts/prerequisites.sh step 'Python' passes exactly on 3.11"
@@ -203,7 +215,7 @@ entries:
     evidence: ["scripts/prerequisites.sh:106-113"]
   - id: "local-tool.shellcheck"
     kind: "local-tool"
-    scope: "core"
+    scope: "addon:ci"
     stage: 0
     provider: "human-in-terminal"
     check: "shellcheck --version"
@@ -230,7 +242,7 @@ entries:
     evidence: ["scripts/prerequisites.sh:57", "scripts/lib/common.sh:672", "scripts/lib/common.sh:677-679"]
   - id: "local-tool.tflint"
     kind: "local-tool"
-    scope: "core"
+    scope: "addon:ci"
     stage: 0
     provider: "human-in-terminal"
     check: "tflint --version"
@@ -243,7 +255,7 @@ entries:
     evidence: ["scripts/prerequisites.sh:58"]
   - id: "local-tool.trivy"
     kind: "local-tool"
-    scope: "core"
+    scope: "addon:ci"
     stage: 0
     provider: "human-in-terminal"
     check: "trivy --version"
@@ -452,7 +464,7 @@ entries:
     kind: "bucket"
     scope: "core"
     stage: 1
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud storage buckets describe gs://swarm-tfstate-$P --project=$P --format='value(name,versioning_enabled)'"
     apply: "scripts/bootstrap.sh (gcloud storage buckets create, BEFORE terraform init) then terraform/bootstrap/state_bucket.tf resource \"google_storage_bucket\" \"state\""
     verify: "gcloud storage buckets describe gs://<bucket> shows versioning_enabled=True, uniform_bucket_level_access=True, public_access_prevention=enforced"
@@ -466,7 +478,7 @@ entries:
     kind: "bucket"
     scope: "core"
     stage: 1
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud storage buckets describe gs://swarm-tfstate-logs-$P --project=$P"
     apply: "terraform/bootstrap/state_bucket.tf resource \"google_storage_bucket\" \"state_logs\""
     verify: "gcloud storage buckets describe shows lifecycle rule deleting objects after 400 days"
@@ -479,7 +491,7 @@ entries:
     kind: "declared-value"
     scope: "core"
     stage: 1
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n '^project_id' terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:6 project_id = \"saga-agents-staging\""
     verify: "terraform -chdir=terraform/bootstrap workspace show; gcloud config get-value project"
@@ -548,7 +560,7 @@ entries:
     kind: "gcp-api"
     scope: "core"
     stage: 1
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud services list --enabled --project=$P --filter='config.name=cloudkms.googleapis.com'"
     apply: "terraform/modules/project_services/main.tf google_project_service.this (var.services), called from terraform/bootstrap/main.tf module.project_services with var.prerequisite_services"
     verify: "gcloud kms keyrings list --project=$P --location=$R succeeds with no PERMISSION_DENIED/SERVICE_DISABLED"
@@ -562,7 +574,7 @@ entries:
     kind: "gcp-api"
     scope: "core"
     stage: 1
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud services list --enabled --project=$P --filter='config.name=cloudresourcemanager.googleapis.com'"
     apply: "terraform/modules/project_services/main.tf google_project_service.this, var.prerequisite_services ALSO: module.project_services (terraform/infra/main.tf:27)"
     verify: "gcloud projects describe $P succeeds"
@@ -654,7 +666,7 @@ entries:
     kind: "gcp-api"
     scope: "core"
     stage: 1
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud services list --enabled --project=$P --filter='config.name=iam.googleapis.com'"
     apply: "terraform/modules/project_services/main.tf google_project_service.this, var.prerequisite_services ALSO: module.project_services (terraform/infra/main.tf:46)"
     verify: "gcloud iam service-accounts list --project=$P succeeds"
@@ -667,7 +679,7 @@ entries:
     kind: "gcp-api"
     scope: "core"
     stage: 1
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud services list --enabled --project=$P --filter='config.name=iamcredentials.googleapis.com'"
     apply: "terraform/modules/project_services/main.tf google_project_service.this, var.prerequisite_services ALSO: module.project_services (terraform/infra/main.tf:50)"
     verify: "gcloud auth print-access-token --impersonate-service-account=<any SA> succeeds"
@@ -759,7 +771,7 @@ entries:
     kind: "gcp-api"
     scope: "core"
     stage: 1
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud services list --enabled --project=$P --filter='config.name=serviceusage.googleapis.com'"
     apply: "terraform/modules/project_services/main.tf google_project_service.this, var.prerequisite_services ALSO: module.project_services (terraform/infra/main.tf:56)"
     verify: "terraform -chdir=terraform/bootstrap plan succeeds past the google_project_service resources"
@@ -772,7 +784,7 @@ entries:
     kind: "gcp-api"
     scope: "core"
     stage: 1
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud services list --enabled --project=$P --filter='config.name=storage.googleapis.com'"
     apply: "terraform/modules/project_services/main.tf google_project_service.this, var.prerequisite_services ALSO: module.project_services (terraform/infra/main.tf:57)"
     verify: "gcloud storage buckets describe gs://<state bucket> --project=$P succeeds"
@@ -785,7 +797,7 @@ entries:
     kind: "gcp-api"
     scope: "addon:ci"
     stage: 1
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud services list --enabled --project=$P --filter='config.name=sts.googleapis.com'"
     apply: "terraform/modules/project_services/main.tf google_project_service.this, var.prerequisite_services"
     verify: "A GitHub Actions run with enable_github_wif=true successfully exchanges its OIDC token (google-github-actions/auth step succeeds, no unauthorized_client)"
@@ -825,7 +837,7 @@ entries:
     kind: "iam-binding"
     scope: "core"
     stage: 1
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud storage buckets get-iam-policy gs://swarm-tfstate-logs-$P"
     apply: "terraform/bootstrap/state_bucket.tf resource \"google_storage_bucket_iam_member\" \"log_writer\""
     verify: "policy shows roles/storage.objectCreator for group:cloud-storage-analytics@google.com"
@@ -838,7 +850,7 @@ entries:
     kind: "local-tool"
     scope: "core"
     stage: 1
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "scripts/bootstrap.sh --help; bash -n scripts/bootstrap.sh"
     apply: "scripts/bootstrap.sh (sourced from scripts/lib/common.sh): creates the state bucket via gcloud if missing, applies terraform/bootstrap against its own remote state (gs://<bucket>/bootstrap), then runs terraform init for the selected environment's root"
     verify: "`make bootstrap` run twice is idempotent: second run reports the bucket and deployer already exist and makes no changes"
@@ -893,7 +905,7 @@ entries:
     kind: "other"
     scope: "core"
     stage: 1
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam service-accounts describe swarm-tf-deployer@$P.iam.gserviceaccount.com; tf -chdir=terraform/bootstrap state list"
     apply: "scripts/bootstrap.sh lines 279-330 (THE EMPTY-STATE GUARD, #827)"
     verify: "an empty remote bootstrap state WITH the deployer account already existing hard-refuses to plan, rather than offering to re-create the live deployer and every grant it holds"
@@ -906,8 +918,8 @@ entries:
     kind: "other"
     scope: "core"
     stage: 1
-    provider: "human-in-terminal"
-    check: "scripts/bootstrap.sh --migrate-state --skip-prereq (dry inspection: it refuses before changing anything if preconditions are not met)"
+    provider: "engine"
+    check: "test ! -e terraform/bootstrap/terraform.tfstate && gcloud storage objects describe gs://swarm-tfstate-$P/bootstrap/default.tfstate --project $P (read-only: no local state to migrate, and the remote state object is where scripts/bootstrap.sh:171-173 and scripts/lib/common.sh:191,197 put it)"
     apply: "scripts/bootstrap.sh --migrate-state code path, lines 213-266: terraform init -migrate-state -force-copy, after a typed confirmation that ignores --yes and SWARM_ASSUME_YES"
     verify: "post-migration resource-instance COUNT in the GCS state equals the pre-migration local state's count exactly, or the script dies without proceeding"
     explain: "One-time move of a pre-#827 local terraform.tfstate into the shared GCS backend. Irrelevant to a from-scratch install (there is no local state to migrate), but still fires its own guards if an operator mistakenly copies an old terraform.tfstate file into a fresh checkout."
@@ -947,7 +959,7 @@ entries:
     kind: "other"
     scope: "core"
     stage: 1
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n '^project_id' terraform/environments/dev/dev.tfvars terraform/environments/prod/prod.tfvars"
     apply: "terraform/environments/dev/dev.tfvars:8 and terraform/environments/prod/prod.tfvars:13 BOTH hardcode project_id = \"saga-agents-staging\""
     verify: "the two tfvars files currently resolve to the SAME GCP project -- 'dev' and 'prod' are two Terraform workspaces/roots pointed at one shared project, not two projects"
@@ -961,7 +973,7 @@ entries:
     kind: "switch"
     scope: "core"
     stage: 1
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "terraform -chdir=terraform/bootstrap show -json | jq '.values.root_module.resources[]? | select(.address==\"module.project_services\")'"
     apply: "terraform/bootstrap/main.tf module.project_services count = var.manage_project_services ? 1 : 0"
     verify: "terraform plan shows the 7 google_project_service resources only when true"
@@ -990,7 +1002,7 @@ entries:
     kind: "declared-value"
     scope: "core"
     stage: 2
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n frontend_iap_backends terraform/bootstrap/variables.tf terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/variables.tf:503-525, default [\"swarm-ui-backend\", \"swarm-ui-ui-backend\"]; absent from terraform.tfvars (default used)"
     verify: "gcloud compute backend-services describe swarm-ui-backend --global --project=$P exists before this is non-empty"
@@ -1004,7 +1016,7 @@ entries:
     kind: "declared-value"
     scope: "core"
     stage: 2
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n frontend_iap_programmatic_clients terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:168-170"
     verify: "value matches ^[0-9]+-[a-z0-9]+\\.apps\\.googleusercontent\\.com$ (variables.tf validation)"
@@ -1059,7 +1071,7 @@ entries:
     kind: "iap-setting"
     scope: "core"
     stage: 2
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iap settings get --resource-type=compute --service=swarm-ui-backend --project=$P"
     apply: "terraform/bootstrap/iap_programmatic_clients.tf resource \"google_iap_settings\" \"frontend_programmatic_clients\" (for_each frontend_iap_backends, only while frontend_iap_programmatic_clients is non-empty) ALSO: terraform/bootstrap/iap_programmatic_clients.tf, targeted apply: scripts/bootstrap.sh --target 'google_iap_settings.frontend_programmatic_clients[\"swarm-ui-backend\"]' --target '...[\"swarm-ui-ui-backend\"]'"
     verify: "access_settings.oauth_settings.programmatic_clients equals the declared list, one google_iap_settings per backend"
@@ -1087,7 +1099,7 @@ entries:
     kind: "oauth-brand"
     scope: "core"
     stage: 2
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iap oauth-brands list --project=$P"
     apply: "NOT created by Terraform -- google_iap_brand cannot be deleted, so this repository does not manage it; one-time human step: gcloud iap oauth-brands create ... (terraform/modules/frontend/main.tf:29-57) ALSO: console: Google Auth Platform -> Branding, then Audience -> Internal (one brand per project, created once; cannot be edited back to External without deleting IAP-dependent resources in some cases)"
     verify: "the brand exists before any backend's iap{enabled=true} block can apply"
@@ -1102,7 +1114,7 @@ entries:
     scope: "core"
     stage: 2
     provider: "human-in-console"
-    check: "console.cloud.google.com > APIs & Services > Credentials; confirm an OAuth 2.0 Desktop app client with this id exists"
+    check: "gcloud iap settings get --project=$P --resource-type=compute --service=<backend> --format='value(accessSettings.oauthSettings.programmaticClients)' lists the client id (docs/runbooks/iap-desktop-client.md:115-116). Partial: it proves the id is allowlisted on each backend, not that a Desktop client with that id exists; no API lists OAuth clients since the IAP OAuth Admin API was deprecated, so existence is shown by verify (`sc login`). Not run."
     apply: "Created BY HAND in the GCP console (the IAP OAuth Admin API that could create clients is deprecated); referenced via terraform/bootstrap/terraform.tfvars:169 frontend_iap_programmatic_clients = [\"209012342332-deadkn6c5s1ghe0s5lnq3khmekogn2tv.apps.googleusercontent.com\"] ALSO: console: Google Auth Platform -> Clients -> Create client -> Application type: Desktop app -> name 'SwarmCloud sc CLI'. One client per deployment, used by every developer's `sc login`"
     verify: "`sc login` mints an ID token IAP accepts for this client id"
     explain: "IAP's Google-managed OAuth client cannot be used programmatically; this Desktop app client is the one documented way for `sc` to sign a developer in to an IAP-protected backend without impersonating a service account. ALSO: a gcloud user token is refused by IAP (401, error code 900) because the deployment's IAP front door uses a Google-managed OAuth client, which cannot programmatically authenticate anyone; a Desktop client is Google's documented way for a person to sign in from a CLI through IAP"
@@ -1115,7 +1127,7 @@ entries:
     kind: "other"
     scope: "core"
     stage: 2
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam service-accounts describe service-<PROJECT_NUMBER>@gcp-sa-iap.iam.gserviceaccount.com --project=$P"
     apply: "NOT created by Terraform -- google_project_service_identity lives only in the google-beta provider, which this repo does not carry for one resource; one-time command: gcloud beta services identity create --service=iap.googleapis.com --project=<project> (terraform/infra/main.tf:396-404) ALSO: created automatically by Google the first time IAP is enabled on a backend service in the project (enabling iap.googleapis.com and attaching IAP to a backend triggers it); no explicit terraform resource in this repo creates it"
     verify: "swarm-api's invokers map includes this exact identity (terraform/infra/main.tf:408-410) and IAP-proxied requests do not 500 with 'The IAP service account is not provisioned'"
@@ -1145,7 +1157,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmBucketMetadataReader --project=$P"
     apply: "terraform/bootstrap/platform_roles.tf google_project_iam_custom_role.platform[\"bucket_metadata_reader\"]"
     verify: "permissions == [storage.buckets.get] only"
@@ -1158,7 +1170,7 @@ entries:
     kind: "custom-role"
     scope: "addon:ci"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmDeployerProjectBuckets --project=$P"
     apply: "terraform/bootstrap/wif.tf resource \"google_project_iam_custom_role\" \"deployer_project_buckets\" + member grant, both count=wif_enabled"
     verify: "permissions == [storage.buckets.create, storage.buckets.list] only"
@@ -1171,7 +1183,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmGkeDispatcher --project=$P"
     apply: "terraform/bootstrap/platform_roles.tf google_project_iam_custom_role.platform[\"gke_dispatcher\"]"
     verify: "permissions limited to container.clusters.get/namespaces/jobs/pods/events read+create-job; no secret access"
@@ -1184,7 +1196,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmGkeReaper --project=$P"
     apply: "terraform/bootstrap/platform_roles.tf google_project_iam_custom_role.platform[\"gke_reaper\"]"
     verify: "permissions: container.jobs.delete, container.pods.delete; reconciler-only"
@@ -1197,7 +1209,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmImagePuller --project=$P"
     apply: "terraform/bootstrap/platform_roles.tf google_project_iam_custom_role.platform[\"image_puller\"], permissions = var.image_puller_permissions"
     verify: "permissions carry no `list`, no create/update/delete/setIamPolicy (variables.tf validations enforce this at plan)"
@@ -1210,7 +1222,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmJobDispatcher --project=$P"
     apply: "terraform/bootstrap/platform_roles.tf resource \"google_project_iam_custom_role\" \"platform\" [\"job_dispatcher\"], id from terraform/modules/custom_role_ids"
     verify: "gcloud iam roles describe shows exactly the 12 run.jobs/executions/tasks/operations permissions, no delete, no IAM"
@@ -1224,7 +1236,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmJobReaper --project=$P"
     apply: "terraform/bootstrap/platform_roles.tf google_project_iam_custom_role.platform[\"job_reaper\"]"
     verify: "permissions include run.jobs.delete, run.executions.cancel/delete; no create"
@@ -1237,7 +1249,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmSecretLister --project=$P"
     apply: "terraform/bootstrap/platform_roles.tf google_project_iam_custom_role.platform[\"secret_lister\"]"
     verify: "permissions: secretmanager.secrets.list/create/get/getIamPolicy/setIamPolicy, versions.list/destroy, plus versions.add only while broker_secret_lister_project_wide_versions_add is true"
@@ -1251,7 +1263,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmTenantWorkerFirestore --project=$P"
     apply: "terraform/bootstrap/platform_roles.tf google_project_iam_custom_role.platform[\"worker_firestore\"]"
     verify: "permissions: datastore.databases.get, entities.get/create/update; no entities.delete, no entities.list"
@@ -1264,7 +1276,7 @@ entries:
     kind: "declared-value"
     scope: "core"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n adopt_from_infra_states terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:16 adopt_from_infra_states = [\"infra/dev\"]"
     verify: "terraform -chdir=terraform/bootstrap plan shows 0 imports when this is []"
@@ -1278,7 +1290,7 @@ entries:
     kind: "declared-value"
     scope: "core"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n deployer_service_account terraform/environments/*/*.tfvars"
     apply: "terraform/infra/variables.tf:1123, string, default \"\""
     verify: "when non-empty, module.tenancy's dispatcher_members includes this as the 'deployer' key (terraform/infra/main.tf:252) and terraform/infra/deployer.tf:56 grants it actAs on each tenant worker SA"
@@ -1292,7 +1304,7 @@ entries:
     kind: "declared-value"
     scope: "addon:ci"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n deployer_storage_bucket_prefixes terraform/bootstrap/variables.tf"
     apply: "terraform/bootstrap/variables.tf:465-486, default [\"swarm-\"]"
     verify: "every bucket this platform creates starts with this prefix"
@@ -1305,7 +1317,7 @@ entries:
     kind: "declared-value"
     scope: "addon:ci"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n deployer_storage_buckets_exact terraform/bootstrap/variables.tf terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/variables.tf:488-501 default [\"saga-agents-staging_cloudbuild\"]; not overridden in terraform.tfvars"
     verify: "the value equals \"$P_cloudbuild\""
@@ -1319,7 +1331,7 @@ entries:
     kind: "declared-value"
     scope: "addon:ci"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n github_allowed_refs terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:28 github_allowed_refs = [\"refs/heads/main\"]"
     verify: "a workflow_dispatch or push on refs/heads/main authenticates; a PR ref does not"
@@ -1332,7 +1344,7 @@ entries:
     kind: "declared-value"
     scope: "addon:ci"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n github_repository terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:21 github_repository = \"bogdan-alexandrescu/SwarmCloud\""
     verify: "matches the repository that will actually run the CI workflows"
@@ -1345,7 +1357,7 @@ entries:
     kind: "iam-binding"
     scope: "addon:ci"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam service-accounts get-iam-policy $(gcloud projects describe $P --format='value(projectNumber)')-compute@developer.gserviceaccount.com"
     apply: "terraform/bootstrap/wif.tf resource \"google_service_account_iam_member\" \"deployer_acts_as_cloudbuild\""
     verify: "policy shows roles/iam.serviceAccountUser for swarm-tf-deployer bound ON THE RESOURCE (the compute default SA), never roles/iam.serviceAccountUser at the project level"
@@ -1358,7 +1370,7 @@ entries:
     kind: "iam-binding"
     scope: "addon:ci"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud kms keys get-iam-policy step-spec --keyring=swarm-dev-specs --location=$R --project=$P --flatten=bindings --filter='bindings.members:serviceAccount:swarm-tf-deployer@*'"
     apply: "terraform/bootstrap/spec_signing.tf resource \"google_kms_crypto_key_iam_member\" \"deployer_key_readers\" (roles/cloudkms.publicKeyViewer, roles/cloudkms.viewer), one pair per spec_signing_environments"
     verify: "deployer holds exactly these two roles on the key, no signer, no setIamPolicy"
@@ -1371,7 +1383,7 @@ entries:
     kind: "iam-binding"
     scope: "addon:ci"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:serviceAccount:swarm-tf-deployer@*'"
     apply: "terraform/bootstrap/wif.tf resource \"google_project_iam_member\" \"deployer_roles\" (for_each = deployer_roles minus deployer_scoped_roles)"
     verify: "policy shows exactly the roles in var.deployer_roles (artifactregistry.admin, cloudbuild.builds.editor, cloudscheduler.admin, compute.networkAdmin, compute.securityAdmin, container.admin, datastore.owner, iam.serviceAccountCreator, logging.configWriter, monitoring.editor, pubsub.admin, resourcemanager.projectIamAdmin, run.admin, serviceusage.serviceUsageAdmin) minus any role in deployer_scoped_roles, each unconditioned"
@@ -1385,7 +1397,7 @@ entries:
     kind: "iam-binding"
     scope: "addon:ci"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.role:swarmSecretProvisioner'"
     apply: "terraform/bootstrap/wif.tf resource \"google_project_iam_custom_role\" \"secret_provisioner\" + resource \"google_project_iam_member\" \"deployer_secrets\" (unconditioned) or \"deployer_secrets_scoped\" (deployer_conditions.tf, conditioned) depending on whether swarmSecretProvisioner is in deployer_scoped_roles"
     verify: "role permissions never include secretmanager.versions.access (variables.tf validation at line 405-408 enforces this at plan)"
@@ -1398,7 +1410,7 @@ entries:
     kind: "iam-binding"
     scope: "addon:ci"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud storage buckets get-iam-policy gs://swarm-tfstate-$P"
     apply: "terraform/bootstrap/wif.tf resource \"google_storage_bucket_iam_member\" \"deployer_state\", role=roles/storage.objectAdmin"
     verify: "bound on the bucket resource, not the project"
@@ -1411,7 +1423,7 @@ entries:
     kind: "iam-binding"
     scope: "addon:ci"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.role=roles/storage.admin AND bindings.members:serviceAccount:swarm-tf-deployer@*' --format='value(bindings.condition.expression)'"
     apply: "terraform/bootstrap/wif.tf resource \"google_project_iam_member\" \"deployer_storage\""
     verify: "condition expression admits bucket prefix 'swarm-' plus the exact Cloud Build staging bucket '<project>_cloudbuild' (both as bucket and as /objects/ prefix); refuses the other team's 3 buckets by name"
@@ -1425,7 +1437,7 @@ entries:
     kind: "iam-binding"
     scope: "addon:ci"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:serviceAccount:swarm-tf-deployer@* AND bindings.role=roles/logging.viewAccessor'"
     apply: "terraform/bootstrap/verify_logs.tf resource \"google_logging_log_view\" \"verify\" + resource \"google_project_iam_member\" \"deployer_reads_verify_logs\""
     verify: "condition pins resource.name to exactly the swarm-verify view on _Default; CI can read no other log"
@@ -1438,7 +1450,7 @@ entries:
     kind: "iam-binding"
     scope: "addon:ci"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam service-accounts get-iam-policy swarm-tf-deployer@$P.iam.gserviceaccount.com"
     apply: "terraform/bootstrap/wif.tf resource \"google_service_account_iam_member\" \"deployer_wif\" (one per deployer_workflows x github_allowed_refs pair)"
     verify: "policy shows roles/iam.workloadIdentityUser for principalSet://.../attribute.job_workflow_ref/<repo>/.github/workflows/<file>@<ref>, one entry per (release.yml, hotfix.yml, application.yml, terraform.yml, security.yml, iam-refusal-probe.yml) x refs/heads/main"
@@ -1466,7 +1478,7 @@ entries:
     kind: "kms-key"
     scope: "core"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud kms keys describe step-spec --keyring=swarm-dev-specs --location=$R --project=$P"
     apply: "terraform/bootstrap/spec_signing.tf resource \"google_kms_crypto_key\" \"step_spec\", ASYMMETRIC_SIGN / EC_SIGN_P256_SHA256 / SOFTWARE"
     verify: "gcloud kms keys versions list shows at least one ENABLED version; prevent_destroy is set in Terraform"
@@ -1480,7 +1492,7 @@ entries:
     kind: "kms-key"
     scope: "core"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud kms keyrings describe swarm-dev-specs --location=$R --project=$P"
     apply: "terraform/bootstrap/spec_signing.tf resource \"google_kms_key_ring\" \"step_spec\" for_each var.spec_signing_environments (default [\"dev\",\"prod\"])"
     verify: "keyring exists at the declared region; cannot be deleted even by terraform destroy (KMS has no delete)"
@@ -1507,7 +1519,7 @@ entries:
     kind: "other"
     scope: "addon:ci"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam service-accounts get-iam-policy swarm-tf-deployer@$P.iam.gserviceaccount.com --format=json | jq '.bindings[].members[]' | grep -c 'ci-fix.yml\\|accept.yml'"
     apply: "N/A (absence by design): ci_fix.yml and accept.yml are deliberately NOT in wif.tf's local.deployer_workflows list"
     verify: "expect 0: neither file can federate as swarm-tf-deployer"
@@ -1520,7 +1532,7 @@ entries:
     kind: "other"
     scope: "addon:ci"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam workload-identity-pools describe swarm-github --project=$P --location=global; gcloud iam workload-identity-pools providers describe swarm-github-oidc --workload-identity-pool=swarm-github --project=$P --location=global"
     apply: "terraform/bootstrap/wif.tf resource \"google_iam_workload_identity_pool\" \"github\" and resource \"google_iam_workload_identity_pool_provider\" \"github\""
     verify: "terraform -chdir=terraform/bootstrap output github_workload_identity_provider is non-empty; a GitHub Actions run on refs/heads/main authenticates successfully; a run on a PR ref is refused"
@@ -1629,7 +1641,7 @@ entries:
     kind: "service-account"
     scope: "addon:ci"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam service-accounts describe swarm-tf-deployer@$P.iam.gserviceaccount.com"
     apply: "terraform/bootstrap/wif.tf resource \"google_service_account\" \"deployer\", count = enable_github_wif"
     verify: "gcloud iam service-accounts keys list --iam-account=swarm-tf-deployer@$P.iam.gserviceaccount.com shows zero keys (no key is ever created for it)"
@@ -1654,7 +1666,7 @@ entries:
     notes: "Not created by terraform/bootstrap; see sa.swarm-api note."
   - id: "sa.swarm-verify"
     kind: "service-account"
-    scope: "addon:ci"
+    scope: "core"
     stage: 3
     provider: "engine"
     check: "gcloud iam service-accounts describe swarm-verify@$P.iam.gserviceaccount.com --project=$P"
@@ -1682,7 +1694,7 @@ entries:
     kind: "switch"
     scope: "addon:ci"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n enable_github_wif terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:20 enable_github_wif = true (example file default: false)"
     verify: "plan false removes the deployer account, pool, provider and all deployer_* grants"
@@ -1695,7 +1707,7 @@ entries:
     kind: "switch"
     scope: "core"
     stage: 3
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n grant_broker_secret_lister terraform/bootstrap/variables.tf terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/variables.tf:591-601, default TRUE; not set in terraform.tfvars"
     verify: "plan with this true before swarm-quota-broker exists fails the grant (account not found) -- the file explicitly says to run the FIRST bootstrap apply on a fresh project with this false"
@@ -1753,7 +1765,7 @@ entries:
     kind: "declared-value"
     scope: "core"
     stage: 4
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n workspace_apply_image terraform/bootstrap/terraform.tfvars; gcloud artifacts docker images describe <value>"
     apply: "terraform/bootstrap/terraform.tfvars:192 us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@sha256:7a03ed...028a"
     verify: "the digest exists in the TARGET project's swarm-images repository, not the old project's"
@@ -1781,7 +1793,7 @@ entries:
     kind: "image"
     scope: "core"
     stage: 4
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud artifacts docker images list $R-docker.pkg.dev/$P/swarm-images/agent-runtime-base-nocodex --limit=5"
     apply: "same Dockerfile as agent-runtime-base (images/agent-runtime-base/Dockerfile), built again with INSTALL_CODEX=0 via target_build_args; its own image NAME, not a second tag"
     verify: "the built image's npm layer excludes the 129.7 MB codex package"
@@ -1795,7 +1807,7 @@ entries:
     kind: "image"
     scope: "core"
     stage: 4
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud artifacts docker images list $R-docker.pkg.dev/$P/swarm-images/agent-runtime-browser --limit=5"
     apply: "images/agent-runtime-browser/Dockerfile, FROM agent-runtime-base-nocodex"
     verify: "a browser-profile worker Job starts Chromium with the required /dev/shm size"
@@ -1807,9 +1819,9 @@ entries:
     notes: "declares no MIRROR_* build arg at all -- its only external pull is the `# syntax=` frontend itself (scripts/lib/build-mirror.sh:43-46 comment), so there is nothing a --build-arg override can redirect for this image; only editing the Dockerfile's first line moves it off saga-agents-staging"
   - id: "image.agent-runtime-indexer"
     kind: "image"
-    scope: "addon:ci"
+    scope: "core"
     stage: 4
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud artifacts docker images list $R-docker.pkg.dev/$P/swarm-images/agent-runtime-indexer --limit=5"
     apply: "images/agent-runtime-indexer/Dockerfile"
     verify: "the repo-indexing job it backs completes against a sample repository"
@@ -1865,7 +1877,7 @@ entries:
     kind: "image"
     scope: "addon:bright-data-egress"
     stage: 4
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud artifacts docker images list $R-docker.pkg.dev/$P/swarm-images/swarm-egress --limit=5"
     apply: "apps/swarm-egress/Dockerfile; terraform/infra/egress.tf renders swarm_egress_manifest only once image_refs has this image's digest"
     verify: "the StatefulSet in swarm-egress.yaml runs it and proxies a CONNECT"
@@ -1890,9 +1902,9 @@ entries:
     evidence: ["terraform/infra/images.json:9-14"]
   - id: "image.swarm-github-hooks"
     kind: "image"
-    scope: "addon:ci"
+    scope: "core"
     stage: 4
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud artifacts docker images list $R-docker.pkg.dev/$P/swarm-images/swarm-github-hooks --limit=5"
     apply: "apps/swarm-github-hooks/Dockerfile; terraform/infra/github_hooks.tf deploys the Cloud Run service only once image_refs has this digest"
     verify: "a GitHub webhook delivery's signature verifies and the receiver processes it"
@@ -1917,9 +1929,9 @@ entries:
     evidence: ["terraform/infra/images.json:14-20"]
   - id: "image.swarm-graph"
     kind: "image"
-    scope: "addon:ci"
+    scope: "core"
     stage: 4
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud artifacts docker images list $R-docker.pkg.dev/$P/swarm-images/swarm-graph --limit=5"
     apply: "apps/swarm-graph/Dockerfile; copies apps/agent-worker in, so a worker change rebuilds it too; terraform/infra/graph_service.tf renders its manifest only once image_refs has this digest"
     verify: "the Deployment in swarm-graph.yaml runs it and answers a graph query"
@@ -1946,7 +1958,7 @@ entries:
     kind: "image"
     scope: "core"
     stage: 4
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud artifacts docker images list $R-docker.pkg.dev/$P/swarm-images/swarm-live --limit=5"
     apply: "apps/swarm-live/Dockerfile (Track B owns images/ and the service Dockerfiles both; find_recipe() accepts either layout)"
     verify: "kubernetes/swarm-system/swarm-live.yaml's StatefulSet runs this digest and serves a tunnel ticket"
@@ -1958,7 +1970,7 @@ entries:
     notes: "null"
   - id: "image.swarm-live-gated"
     kind: "image"
-    scope: "addon:ci"
+    scope: "core"
     stage: 4
     provider: "engine"
     check: "gcloud artifacts docker images list ${region}-docker.pkg.dev/$P/${artifact_registry_repository}/swarm-live --project=$P"
@@ -2015,7 +2027,7 @@ entries:
     kind: "image"
     scope: "addon:typesafe"
     stage: 4
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud artifacts docker images list $R-docker.pkg.dev/$P/swarm-images/swarm-typesafe-fwd --limit=5"
     apply: "apps/swarm-typesafe-fwd/Dockerfile; terraform/infra/typesafe_fwd.tf renders its manifest only once image_refs has this digest"
     verify: "the Deployment in swarm-typesafe-fwd.yaml runs it and verifies a minted ticket"
@@ -2054,7 +2066,7 @@ entries:
     notes: "null"
   - id: "image.swarm-verify"
     kind: "image"
-    scope: "addon:ci"
+    scope: "core"
     stage: 4
     provider: "engine"
     check: "gcloud artifacts docker images list ${region}-docker.pkg.dev/$P/${artifact_registry_repository}/swarm-verify --project=$P"
@@ -2070,7 +2082,7 @@ entries:
     kind: "image"
     scope: "core"
     stage: 4
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud artifacts docker images list $R-docker.pkg.dev/$P/swarm-images/workspace-apply --limit=5"
     apply: "images/workspace-apply/Dockerfile"
     verify: "the keyless swarm-workspace-apply Cloud Build job runs this digest and renders a personal tenant's namespace"
@@ -2273,7 +2285,7 @@ entries:
     kind: "declared-value"
     scope: "core"
     stage: 5
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "diff <(grep -A2 '^  [a-z0-9_-]* = {' terraform/environments/dev/dev.tfvars) <(cat docs/design/workspace-kinds.md)  # manual: compare tfvars tenant keys against the frozen list §4.7 describes"
     apply: "terraform/infra/variables.tf:~445-457 (freeze comment), enforced by the var.tenants type/validation block starting above it"
     verify: "a tenant NOT in dev.tfvars/prod.tfvars today cannot be added by editing these files -- it must come from the in-cloud swarm-workspace-apply job via Admin > Tenants instead"
@@ -2536,7 +2548,7 @@ entries:
     kind: "other"
     scope: "core"
     stage: 5
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "awk '/^tenants = \\{/,/^\\}/' terraform/environments/dev/dev.tfvars | grep -cE '^  [a-zA-Z0-9_-]+ = \\{'"
     apply: "terraform/environments/dev/dev.tfvars:320+ declares 4 tenants: eng, smoke, u-sw-c90291, u-or-9a0792"
     verify: "4 tenant keys, matching declared-value.var-tenants-freeze's dev count"
@@ -2563,7 +2575,7 @@ entries:
     kind: "other"
     scope: "core"
     stage: 5
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "awk '/^tenants = \\{/,/^\\}/' terraform/environments/prod/prod.tfvars | grep -cE '^  [a-zA-Z0-9_-]+ = \\{'"
     apply: "terraform/environments/prod/prod.tfvars declares 3 tenants: eng, research, smoke"
     verify: "3 tenant keys"
@@ -2905,7 +2917,7 @@ entries:
     notes: "HARDCODED LIVE VALUE: this default names a specific live tailnet host (Saga's staging decision API) belonging to the CURRENT project's addon setup. A from-scratch install into a new project almost certainly needs a different value here, or the addon dials somebody else's staging backend."
   - id: "cloud-run-job.verify"
     kind: "cloud-run-job"
-    scope: "addon:ci"
+    scope: "core"
     stage: 6
     provider: "engine"
     check: "gcloud run jobs describe verify --project=$P --region=$R"
@@ -2947,7 +2959,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 6
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmForgeSlotCreator --project=$P"
     apply: "terraform/bootstrap/forge_user_slots.tf resource \"google_project_iam_custom_role\" \"forge_slot_creator\", count=switch.enable_forge_user_slots"
     verify: "permissions == [secretmanager.secrets.create] only"
@@ -2960,7 +2972,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 6
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmForgeSlotVersionManager --project=$P"
     apply: "terraform/bootstrap/forge_user_slots.tf resource \"google_project_iam_custom_role\" \"forge_slot_version_manager\", count=switch.enable_forge_user_slots"
     verify: "permissions: versions.disable + versions.enable only -- no versions.destroy (OB3: a disconnect is reversible)"
@@ -2973,7 +2985,7 @@ entries:
     kind: "declared-value"
     scope: "core"
     stage: 6
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n pubsub_kms_key_name terraform/environments/*/*.tfvars"
     apply: "terraform/infra/variables.tf:969"
     verify: "pubsub topics show this CMEK key under encryption when set"
@@ -2987,7 +2999,7 @@ entries:
     kind: "iam-binding"
     scope: "core"
     stage: 6
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:serviceAccount:swarm-api@* AND (bindings.role:swarmForgeSlotCreator OR bindings.role:swarmForgeSlotVersionManager OR bindings.role=roles/secretmanager.secretVersionAdder OR bindings.role=roles/secretmanager.secretAccessor)'"
     apply: "terraform/bootstrap/forge_user_slots.tf: forge_slot_creator (unconditioned), forge_slot_version_adder (per-tenant condition), forge_slot_version_manager (per-tenant), forge_refresh_reader (per-tenant secretAccessor, base+refresh), forge_repo_slot_reader (per-tenant, -git-r- slots), plus forge_personal_* (personal tenants) and forge_member_slots_any_tenant (K3, any tenant, behind enable_workspace_kinds)"
     verify: "each per-tenant condition narrows to projects/<n>/secrets/swarm-tenant-<t>-git-u-* (or -git-r- for repo slots); forge_slot_reader (the WORKER's read of base slots) still exists and is NOT yet removed -- superseded-but-kept until terraform/infra's forge_broker has run live in dev"
@@ -3001,7 +3013,7 @@ entries:
     kind: "other"
     scope: "core"
     stage: 6
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n 'ALLOWED_USERS' terraform/infra/locals.tf"
     apply: "terraform/infra/locals.tf:1012-1015 (comment + usage inside local.api_secret_env / service env construction) -- the ALLOWED_USERS env var itself is NOT set by any .tf or .tfvars file in this track today"
     verify: "swarm-verify@<project>.iam.gserviceaccount.com can authenticate against swarm-api despite its domain not being saga.xyz"
@@ -3123,7 +3135,7 @@ entries:
     notes: "null"
   - id: "secret.swarm-graph-ticket-key.container"
     kind: "secret-container"
-    scope: "addon:ci"
+    scope: "core"
     stage: 6
     provider: "engine"
     check: "gcloud secrets describe swarm-graph-ticket-key --project=$P"
@@ -3137,7 +3149,7 @@ entries:
     notes: "SURPRISE: not a Cloud Run service either; see secret-container.swarm-live-key's note for the same pattern. ALSO: add a version after that apply and before graph_service.serve: a versionless reference stops swarm-api starting"
   - id: "secret.swarm-live-key.container"
     kind: "secret-container"
-    scope: "addon:ci"
+    scope: "core"
     stage: 6
     provider: "engine"
     check: "gcloud secrets describe swarm-live-key --project=$P"
@@ -3153,7 +3165,7 @@ entries:
     kind: "secret-container"
     scope: "addon:brave-search"
     stage: 6
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud secrets describe swarm-search-api-key --project $P"
     apply: "scripts/create-secrets.sh --search-api-key --stdin (the script itself creates the container if missing, replicated to the region)"
     verify: "gcloud secrets get-iam-policy swarm-search-api-key shows swarm-api alone as secretAccessor"
@@ -3223,7 +3235,7 @@ entries:
     kind: "secret-value"
     scope: "core"
     stage: 6
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud secrets versions list swarm-child-key --project $P --filter=state:ENABLED"
     apply: "scripts/create-secrets.sh --child-key; 48 random bytes generated in-script, never shown"
     verify: "a freshly dispatched child task's registration nonce verifies"
@@ -3251,7 +3263,7 @@ entries:
     kind: "secret-value"
     scope: "addon:bright-data-egress"
     stage: 6
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud secrets versions list swarm-egress-key --project $P --filter=state:ENABLED"
     apply: "scripts/create-secrets.sh --egress-key [--overwrite swarm-egress-key]; value generated in-script (48 random bytes), never typed"
     verify: "swarm-egress's KeyRing accepts a ticket minted under the new version"
@@ -3263,9 +3275,9 @@ entries:
     notes: "null"
   - id: "secret.swarm-graph-ticket-key.value"
     kind: "secret-value"
-    scope: "addon:ci"
+    scope: "core"
     stage: 6
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud secrets versions list swarm-graph-ticket-key --project $P --filter=state:ENABLED"
     apply: "scripts/create-secrets.sh --graph-ticket-key; generated, never read/shown"
     verify: "a minted ticket verifies against swarm-graph"
@@ -3279,7 +3291,7 @@ entries:
     kind: "secret-value"
     scope: "core"
     stage: 6
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud secrets versions list swarm-live-key --project $P --filter=state:ENABLED"
     apply: "scripts/create-secrets.sh --live-key; 48 random bytes generated in-script"
     verify: "a live session ticket minted under the new version verifies at swarm-live"
@@ -3307,7 +3319,7 @@ entries:
     kind: "secret-value"
     scope: "core"
     stage: 6
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud secrets versions list swarm-settings-key --project $P --filter=state:ENABLED"
     apply: "scripts/create-secrets.sh --settings-mac-key [--overwrite swarm-settings-key]; generated, never read back"
     verify: "a workspace_settings write's MAC verifies at the scheduler"
@@ -3349,7 +3361,7 @@ entries:
     kind: "secret-value"
     scope: "addon:typesafe"
     stage: 6
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud secrets versions list swarm-typesafe-fwd-key --project $P --filter=state:ENABLED"
     apply: "scripts/create-secrets.sh --typesafe-fwd-key [--overwrite swarm-typesafe-fwd-key]; generated, never read/shown"
     verify: "a minted TypeSafe ticket verifies at swarm-typesafe-fwd"
@@ -3363,7 +3375,7 @@ entries:
     kind: "secret-value"
     scope: "core"
     stage: 6
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud secrets versions list swarm-workspace-grant-key --project $P --filter=state:ENABLED"
     apply: "scripts/create-secrets.sh --workspace-grant-key [--overwrite swarm-workspace-grant-key]; generated, never read/shown"
     verify: "the attest route verifies a freshly-signed grant"
@@ -3390,7 +3402,7 @@ entries:
     kind: "switch"
     scope: "core"
     stage: 6
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n enable_forge_user_slots terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:178 enable_forge_user_slots = true"
     verify: "plan false removes all forge_user_slots.tf resources"
@@ -3401,7 +3413,7 @@ entries:
     evidence: ["terraform/bootstrap/terraform.tfvars:172-178"]
   - id: "switch.enable_live_browser"
     kind: "switch"
-    scope: "addon:ci"
+    scope: "core"
     stage: 6
     provider: "engine"
     check: "grep -n enable_live_browser terraform/environments/*/*.tfvars"
@@ -3470,7 +3482,7 @@ entries:
     kind: "cloud-run-job"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud run jobs describe swarm-workspace-apply --region=$R --project=$P"
     apply: "terraform/bootstrap/workspace_deployer.tf resource \"google_cloud_run_v2_job\" \"workspace_apply\""
     verify: "command is exactly [python3, -I, /opt/swarm/entry.py, --spec-verify-keys-sha256=<hash>]; task_count=1, parallelism=1, max_retries=0, resources.limits cpu=1/memory=2Gi (request==limit, Burstable-equivalent for Cloud Run)"
@@ -3483,7 +3495,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmBrowserLoginRevoker --project=$P"
     apply: "terraform/bootstrap/browser_logins.tf resource \"google_project_iam_custom_role\" \"browser_login_revoker\", count=switch.enable_browser_logins"
     verify: "permissions: secretmanager.secrets.delete/get, versions.destroy/list -- no setIamPolicy, no versions.access"
@@ -3496,7 +3508,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmBrowserSessionProvisioner --project=$P"
     apply: "terraform/bootstrap/browser_logins.tf resource \"google_project_iam_custom_role\" \"browser_session_provisioner\", count=switch.enable_browser_logins"
     verify: "permissions: secretmanager.secrets.create/get/getIamPolicy/setIamPolicy only"
@@ -3509,7 +3521,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmFrontDoorAdmitter --project=$P"
     apply: "terraform/bootstrap/workspace_deployer.tf resource \"google_project_iam_custom_role\" \"front_door_admitter\", count only when workspace_kinds_on AND swarmFrontDoorAdmitter is in workspace_deployer_roles"
     verify: "NOT created today: the committed workspace_deployer_roles default does not include swarmFrontDoorAdmitter (needs O1 to pass first, per owner decision)"
@@ -3522,7 +3534,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmFrontDoorReader --project=$P"
     apply: "terraform/bootstrap/workspace_deployer.tf resource \"google_project_iam_custom_role\" \"front_door_reader\", count = workspace_kinds_on && !front_door_admitter_on"
     verify: "permissions == [iap.webServices.getIamPolicy] only; VERIFIED LIVE 2026-10-20 (file's own record: applied 06:09Z, a retried workspace passed S2 at 06:11Z)"
@@ -3535,7 +3547,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmGithubHooksDedup --project=$P"
     apply: "terraform/bootstrap/github_hooks_role.tf resource \"google_project_iam_custom_role\" \"github_hooks_dedup\", count=switch.enable_github_hooks_dedup_role"
     verify: "permissions == [datastore.entities.create] only"
@@ -3549,7 +3561,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmHistoryPurgeDeleter --project=$P"
     apply: "terraform/bootstrap/history_purge.tf resource \"google_project_iam_custom_role\" \"history_purge_deleter\" (unconditional count, always created)"
     verify: "permissions == [storage.objects.delete] only"
@@ -3563,7 +3575,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmMcpCredentialAccessor --project=$P"
     apply: "terraform/bootstrap/mcp_credentials.tf resource \"google_project_iam_custom_role\" \"mcp_credential_accessor\", count=switch.enable_mcp_credentials"
     verify: "permissions: secretmanager.versions.access + secrets.delete only"
@@ -3576,7 +3588,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmProviderKeyWriter --project=$P"
     apply: "terraform/bootstrap/provider_keys.tf resource \"google_project_iam_custom_role\" \"provider_key_writer\", count=switch.enable_provider_keys"
     verify: "permissions: secrets.create/getIamPolicy/setIamPolicy, versions.add/destroy/disable/list -- no versions.access, no secrets.get"
@@ -3589,7 +3601,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmSecretStatusViewer --project=$P"
     apply: "terraform/bootstrap/platform_secret_status.tf resource \"google_project_iam_custom_role\" \"secret_status_viewer\", count=switch.enable_platform_secret_status"
     verify: "permissions: secrets.get + versions.list only, no versions.access"
@@ -3602,7 +3614,7 @@ entries:
     kind: "custom-role"
     scope: "addon:typesafe"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmTypesafeForwarderAccessor --project=$P"
     apply: "terraform/bootstrap/typesafe_forwarder.tf resource \"google_project_iam_custom_role\" \"typesafe_forwarder_accessor\", count=switch.enable_typesafe_forwarder_read"
     verify: "permissions == [secretmanager.versions.access] only"
@@ -3615,7 +3627,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmWorkspaceAccountAdmin --project=$P"
     apply: "terraform/bootstrap/workspace_deployer.tf resource \"google_project_iam_custom_role\" \"workspace\" [\"workspace_account_admin\"]"
     verify: "permissions: iam.serviceAccounts.create/get/getIamPolicy/list/setIamPolicy/serviceAccountKeys.list -- no delete, disable, key create, token, signBlob or actAs"
@@ -3628,7 +3640,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmWorkspaceBucketIam --project=$P"
     apply: "terraform/bootstrap/workspace_deployer.tf resource \"google_project_iam_custom_role\" \"workspace\" [\"workspace_bucket_iam\"]"
     verify: "permissions: storage.buckets.get/getIamPolicy/setIamPolicy -- no legacyBucketReader, no object list"
@@ -3641,7 +3653,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmWorkspaceFirestore --project=$P"
     apply: "terraform/bootstrap/workspace_deployer.tf resource \"google_project_iam_custom_role\" \"workspace\" [\"workspace_firestore\"]"
     verify: "permissions: databases.getMetadata (unused, kept by owner decision 2026-10-12), databases.get, entities.create/get/list/update -- no delete"
@@ -3654,7 +3666,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmWorkspaceProjectReader --project=$P"
     apply: "terraform/bootstrap/workspace_deployer.tf resource \"google_project_iam_custom_role\" \"workspace\" [\"workspace_project_reader\"]"
     verify: "permissions: iam.roles.get, resourcemanager.projects.getIamPolicy only"
@@ -3667,7 +3679,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmWorkspaceSecretAccessor --project=$P"
     apply: "terraform/bootstrap/workspace_secrets.tf resource \"google_project_iam_custom_role\" \"workspace_secret_accessor\", count=switch.enable_workspace_secrets"
     verify: "permissions == [secretmanager.versions.access] only"
@@ -3680,7 +3692,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmWorkspaceSecretBinder --project=$P"
     apply: "terraform/bootstrap/workspace_deployer.tf resource \"google_project_iam_custom_role\" \"workspace\" [\"workspace_secret_binder\"]"
     verify: "permissions: secrets.get/getIamPolicy/setIamPolicy only, conditioned to swarm-tenant-u- prefix at grant time"
@@ -3693,7 +3705,7 @@ entries:
     kind: "declared-value"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "terraform -chdir=terraform/infra output frontend_iap_audiences"
     apply: "terraform/infra/variables.tf:569, list(string), default []; consumed by swarm-api's IAP-audience check"
     verify: "the value equals /projects/<PROJECT NUMBER>/global/backendServices/<BACKEND SERVICE ID> for each of the two backends"
@@ -3707,7 +3719,7 @@ entries:
     kind: "declared-value"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n -A10 '^frontend_iap_members' terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:149-155"
     verify: "gcloud iap web get-iam-policy --resource-type=backend-services --service=swarm-ui-backend shows exactly these members"
@@ -3721,7 +3733,7 @@ entries:
     kind: "declared-value"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n infra_tenants_tfvars terraform/bootstrap/variables.tf terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/variables.tf:11-34, default \"../environments/dev/dev.tfvars\"; not overridden in terraform.tfvars"
     verify: "the file exists and parses a tenants = { ... } block by the fmt-dependent regex in deployer_service_accounts.tf"
@@ -3734,7 +3746,7 @@ entries:
     kind: "declared-value"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "terraform -chdir=terraform/infra output quota_broker_url"
     apply: "terraform/infra/variables.tf:588, string; feeds the SCHEDULER's environment only (worker Jobs derive the same value from locals.tf instead, which reads module.cloud_run's output directly and has no cycle)"
     verify: "the `quota_broker_url_is_wired` check block fails while this is empty or stale"
@@ -3748,7 +3760,7 @@ entries:
     kind: "declared-value"
     scope: "addon:typesafe"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n -A3 typesafe_user_key_readers terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:224-226 typesafe_user_key_readers = { eng = [\"u-bogdan\"] }"
     verify: "gcloud secrets get-iam-policy swarm-tenant-u-bogdan-typesafe shows swarm-agent-worker-eng as an accessor"
@@ -3789,7 +3801,7 @@ entries:
     kind: "iam-binding"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:serviceAccount:swarm-quota-broker@* AND bindings.role:swarmSecretLister'"
     apply: "terraform/bootstrap/platform_roles.tf resource \"google_project_iam_member\" \"broker_secret_lister\", for_each gated by switch.grant_broker_secret_lister"
     verify: "the role (and this grant) exists only while swarm-quota-broker already exists"
@@ -3841,7 +3853,7 @@ entries:
     kind: "iam-binding"
     scope: "addon:ci"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam service-accounts get-iam-policy swarm-api@$P.iam.gserviceaccount.com; repeat per managed account; terraform -chdir=terraform/bootstrap output deployer_admin_accounts"
     apply: "terraform/bootstrap/deployer_service_accounts.tf resource \"google_service_account_iam_member\" \"deployer_admin\" (one per account in module.service_account_ids.infra_managed minus swarm-ci-fix/swarm-tf-deployer)"
     verify: "roles/iam.serviceAccountAdmin bound per-account (never project-wide); swarm-ci-fix and swarm-tf-deployer never appear"
@@ -3855,7 +3867,7 @@ entries:
     kind: "iam-binding"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iap web get-iam-policy --resource-type=backend-services --service=swarm-ui-backend --project=$P"
     apply: "terraform/bootstrap/wif.tf resource \"google_iap_web_backend_service_iam_member\" \"frontend_accessors\" (one per frontend_iap_backends x frontend_iap_members pair)"
     verify: "policy shows roles/iap.httpsResourceAccessor for every member in frontend_iap_members, on both backends"
@@ -3882,7 +3894,7 @@ entries:
     kind: "iam-binding"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud logging views get-iam-policy swarm-workers --bucket=swarm-worker-logs --location=global --project=$P"
     apply: "terraform/bootstrap/log_view_read.tf resource \"google_logging_log_view_iam_member\" \"swarm_api_reads_swarm_workers\""
     verify: "roles/logging.viewAccessor for swarm-api, bound on the view's own policy, no condition needed (the resource itself is the scope)"
@@ -3974,7 +3986,7 @@ entries:
     kind: "iam-binding"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.role:swarmBrowserSessionProvisioner OR bindings.role:swarmBrowserLoginRevoker'"
     apply: "terraform/bootstrap/browser_logins.tf resource \"google_project_iam_member\" \"browser_session_provisioner\" + \"browser_login_revoker\""
     verify: "conditions narrow to projects/<n>/secrets/swarm-tenant-u-*-browser-*; secrets.create itself cannot be narrowed (checked on the project) -- documented residual"
@@ -3987,7 +3999,7 @@ entries:
     kind: "iam-binding"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.role:swarmMcpCredentialAccessor'"
     apply: "terraform/bootstrap/mcp_credentials.tf resource \"google_project_iam_member\" \"mcp_credential_accessor\""
     verify: "condition: projects/<n>/secrets/swarm-tenant-{t}-mcpc-*"
@@ -4000,7 +4012,7 @@ entries:
     kind: "iam-binding"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.role:swarmSecretStatusViewer'"
     apply: "terraform/bootstrap/platform_secret_status.tf resource \"google_project_iam_member\" \"secret_status_viewer\""
     verify: "condition: projects/<n>/secrets/swarm-* (broad family prefix, deliberately includes swarm-tenant-* metadata -- documented as harmless)"
@@ -4013,7 +4025,7 @@ entries:
     kind: "iam-binding"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.role:swarmProviderKeyWriter'"
     apply: "terraform/bootstrap/provider_keys.tf resource \"google_project_iam_member\" \"provider_key_writer\""
     verify: "condition: resource.type==Project OR resource.name startsWith swarm-tenant-; the create arm (project-type) cannot be narrowed by design"
@@ -4026,7 +4038,7 @@ entries:
     kind: "iam-binding"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud kms keys get-iam-policy step-spec --keyring=swarm-dev-specs --location=$R --project=$P"
     apply: "terraform/bootstrap/spec_signing.tf resource \"google_kms_crypto_key_iam_member\" \"swarm_api_signer\", role=roles/cloudkms.signer, member=swarm-api"
     verify: "policy shows roles/cloudkms.signer for serviceAccount:swarm-api@$P.iam.gserviceaccount.com and no one else, on the key only (not the ring, not the project)"
@@ -4039,7 +4051,7 @@ entries:
     kind: "iam-binding"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.role:swarmWorkspaceSecretAccessor'"
     apply: "terraform/bootstrap/workspace_secrets.tf resource \"google_project_iam_member\" \"workspace_secret_accessor\""
     verify: "condition: projects/<n>/secrets/swarm-tenant-{t}-wsec-*, via extract(), never matches()"
@@ -4066,7 +4078,7 @@ entries:
     kind: "iam-binding"
     scope: "addon:typesafe"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.role:swarmTypesafeForwarderAccessor'"
     apply: "terraform/bootstrap/typesafe_forwarder.tf resource \"google_project_iam_member\" \"typesafe_forwarder_accessor\", member = principal://.../workloadIdentityPools/$P.svc.id.goog/subject/ns/swarm-system/sa/swarm-typesafe-fwd"
     verify: "member is the GKE Workload Identity principal for KSA swarm-typesafe-fwd in namespace swarm-system, not a Google service account"
@@ -4079,7 +4091,7 @@ entries:
     kind: "iam-binding"
     scope: "addon:typesafe"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud secrets get-iam-policy swarm-tenant-u-bogdan-typesafe --project=$P"
     apply: "terraform/bootstrap/typesafe_user_keys.tf resource \"google_project_iam_member\" \"typesafe_user_key_reader\""
     verify: "roles/secretmanager.secretAccessor bound to the group's worker, condition pins the exact secret (name + /versions/) by project number"
@@ -4092,7 +4104,7 @@ entries:
     kind: "iam-binding"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:serviceAccount:swarm-verify@* AND bindings.role=roles/container.clusterViewer'"
     apply: "terraform/bootstrap/verify_cluster_read.tf resource \"google_project_iam_member\" \"verify_views_swarm_cluster\""
     verify: "condition pins resource.name to exactly projects/$P/locations/$R/clusters/swarm-autopilot (and sub-paths); agents-staging (the other team's cluster) cannot match a bare startsWith either, since its name does not start with ours"
@@ -4104,7 +4116,7 @@ entries:
     notes: "Target account swarm-verify is created by terraform/infra/verify.tf, which is outside this agent's assigned territory (terraform/infra proper, not terraform/bootstrap or the five named modules), so it has no entry of its own in this file."
   - id: "iam-binding.verify-invokes-api"
     kind: "iam-binding"
-    scope: "addon:ci"
+    scope: "core"
     stage: 7
     provider: "engine"
     check: "gcloud run services get-iam-policy swarm-api --project=$P --region=$R | grep swarm-verify"
@@ -4119,7 +4131,7 @@ entries:
     kind: "iam-binding"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam service-accounts get-iam-policy swarm-agent-worker-$T@$P.iam.gserviceaccount.com"
     apply: "terraform/modules/tenancy/main.tf:309-317 google_service_account_iam_member.workload_identity, roles/iam.workloadIdentityUser, member = serviceAccount:$P.svc.id.goog[swarm-tenant-$T/swarm-agent-worker]"
     verify: "a pod running as the worker KSA in swarm-tenant-$T successfully obtains a token for the tenant GSA from the metadata server"
@@ -4133,7 +4145,7 @@ entries:
     kind: "iam-binding"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud storage buckets get-iam-policy gs://swarm-artifacts-$P"
     apply: "terraform/bootstrap/workspace_deployer.tf resource \"google_storage_bucket_iam_member\" \"workspace_deployer_bucket_iam\" + \"workspace_deployer_marker\""
     verify: "workspace_deployer_marker is roles/storage.objectCreator conditioned to tenants/ marker objects only; additive member, never a full bucket policy (would wipe every prior personal worker's grant)"
@@ -4146,7 +4158,7 @@ entries:
     kind: "iam-binding"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:serviceAccount:swarm-workspace-deployer@*'"
     apply: "terraform/bootstrap/workspace_deployer.tf resource \"google_project_iam_member\" \"workspace_deployer\" (for_each = workspace_deployer_roles subset of a fixed 10-entry reviewed list)"
     verify: "roles/resourcemanager.projectIamAdmin is scoped to hasOnly([worker_firestore, logWriter, metricWriter]) only; swarmWorkspaceSecretBinder scoped to swarm-tenant-u-*; roles/container.clusterViewer scoped to the swarm cluster only"
@@ -4160,7 +4172,7 @@ entries:
     kind: "iam-binding"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:serviceAccount:swarm-workspace-dispatch@*'"
     apply: "terraform/bootstrap/workspace_dispatch.tf resource \"google_project_iam_member\" \"workspace_dispatch_invoker\", role=roles/workflows.invoker (PROJECT-WIDE, unconditioned)"
     verify: "the dispatch account can start ANY workflow in the project (Workflows accepts no narrower grant and has no provider-level per-workflow IAM resource -- hashicorp/terraform-provider-google#13125)"
@@ -4173,7 +4185,7 @@ entries:
     kind: "iam-binding"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iap web get-iam-policy --resource-type=backend-services --service=swarm-ui-backend --project=$P"
     apply: "terraform/bootstrap/workspace_deployer.tf resource \"google_project_iam_member\" \"front_door_admitter\" (K1, currently 0 instances) and resource \"google_iap_web_backend_service_iam_member\" \"front_door_reader\" (currently live) and resource \"google_project_iam_member\" \"workspace_team_slot_binder\" (K2)"
     verify: "front_door_reader is bound on the API backend by exact resource name; its precondition (workspace_deployer.tf:1009-1012) requires swarm-ui-backend already be in frontend_iap_backends"
@@ -4186,7 +4198,7 @@ entries:
     kind: "iam-binding"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud logging views get-iam-policy _AllLogs --bucket=swarm-workspace-apply --location=global --project=$P"
     apply: "terraform/bootstrap/workspace_deployer.tf resource \"google_project_iam_member\" \"workspace_log_readers\" (for_each var.workspace_log_readers)"
     verify: "roles/logging.viewAccessor conditioned to the restricted bucket's view, one per person/group in workspace_log_readers"
@@ -4223,7 +4235,7 @@ entries:
     evidence: ["terraform/infra/await_input.tf:86-96"]
   - id: "other.verify-reads-firestore-and-run"
     kind: "iam-binding"
-    scope: "addon:ci"
+    scope: "core"
     stage: 7
     provider: "engine"
     check: "gcloud projects get-iam-policy $P --flatten='bindings[].members' --filter='bindings.members:swarm-verify'"
@@ -4238,7 +4250,7 @@ entries:
     kind: "iam-binding"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud run jobs get-iam-policy swarm-workspace-apply --region=$R --project=$P"
     apply: "terraform/bootstrap/workspace_deployer.tf data \"google_iam_policy\" \"workspace_apply_job\" + resource \"google_cloud_run_v2_job_iam_policy\" \"workspace_apply\""
     verify: "policy is authoritative and contains exactly one binding: roles/run.jobsExecutorWithOverrides for swarm-workspace-dispatch"
@@ -4277,7 +4289,7 @@ entries:
     kind: "monitoring"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud logging buckets describe swarm-workspace-apply --location=global --project=$P; gcloud logging sinks describe swarm-workspace-apply --project=$P"
     apply: "terraform/bootstrap/workspace_deployer.tf resource \"google_logging_project_bucket_config\" \"workspace_apply\" + resource \"google_logging_project_sink\" \"workspace_apply\" + resource \"google_logging_project_exclusion\" \"workspace_apply\""
     verify: "the job's resource.type=cloud_run_job AND job_name=swarm-workspace-apply entries land in the restricted bucket and are excluded from _Default; AUDIT entries deliberately stay in _Default"
@@ -4316,7 +4328,7 @@ entries:
     kind: "other"
     scope: "addon:ci"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "terraform -chdir=terraform/bootstrap output deployer_conditions"
     apply: "terraform/bootstrap/deployer_conditions.tf locals.deployer_type_scoped / deployer_conditions, consumed by the five single resources: deployer_network_admin, deployer_security_admin, deployer_container_admin, deployer_datastore_owner, deployer_logging_config_writer, deployer_project_iam_admin (chunked), deployer_secrets_scoped"
     verify: "each of the six conditions is count-gated on var.deployer_scoped_roles and does nothing while its role is absent from that list"
@@ -4398,7 +4410,7 @@ entries:
     kind: "other"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "tf -chdir=terraform/bootstrap state list | grep u_bogdan"
     apply: "terraform/bootstrap/removed.tf: moved{} + removed{ lifecycle { destroy = false } } pairs for 5 resource instances tied to tenant u-bogdan"
     verify: "the 5 live grants (deployer_admin on the worker SA, 3 forge-slot grants, 1 forge_slot_reader) are forgotten from Terraform state but untouched live"
@@ -4425,7 +4437,7 @@ entries:
     kind: "other"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud eventarc triggers describe swarm-workspace-apply --location=$R --project=$P"
     apply: "terraform/bootstrap/workspace_dispatch.tf resource \"google_eventarc_trigger\" \"workspace_apply\""
     verify: "transport is the existing swarm-workspace-apply Pub/Sub topic; destination is the workflow"
@@ -4438,7 +4450,7 @@ entries:
     kind: "other"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud projects get-iam-policy $P --format=json | jq '.auditConfigs[] | select(.service==\"run.googleapis.com\")'"
     apply: "terraform/bootstrap/workspace_deployer.tf resource \"google_project_iam_audit_config\" \"run_data_write\", log_type=DATA_WRITE"
     verify: "DATA_WRITE logging is on for run.googleapis.com project-wide; this is the only record of who called jobs.run on the workspace job"
@@ -4452,7 +4464,7 @@ entries:
     kind: "other"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud workflows describe swarm-workspace-apply --location=$R --project=$P"
     apply: "terraform/bootstrap/workspace_dispatch.tf resource \"google_workflows_workflow\" \"workspace_apply\", source from terraform/bootstrap/workflows/workspace-apply.yaml"
     verify: "call_log_level = LOG_NONE (even the id/mode never reach the workflow's own log)"
@@ -4465,7 +4477,7 @@ entries:
     kind: "pubsub-topic"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud pubsub topics describe swarm-workspace-apply --project=$P"
     apply: "terraform/bootstrap/workspace_deployer.tf resource \"google_pubsub_topic\" \"workspace_apply\", message_retention_duration=86400s"
     verify: "gcloud pubsub topics get-iam-policy swarm-workspace-apply shows roles/pubsub.publisher for swarm-api only"
@@ -4548,7 +4560,7 @@ entries:
     kind: "secret-container"
     scope: "addon:typesafe"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud secrets describe swarm-tenant-$T-typesafe --project $P"
     apply: "scripts/create-secrets.sh --tenant $T --provider typesafe --stdin (same generic path as anthropic/openai) OR swarm-api's credentials.py put_credential"
     verify: "terraform/bootstrap/typesafe_forwarder.tf's condition names swarm-tenant-{t}-typesafe/versions/ as what the forwarder may read"
@@ -4660,7 +4672,7 @@ entries:
     kind: "service-account"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam service-accounts describe swarm-workspace-deployer@$P.iam.gserviceaccount.com"
     apply: "terraform/bootstrap/workspace_deployer.tf resource \"google_service_account\" \"workspace_deployer\", count=switch.enable_workspace_deployer"
     verify: "the account's OWN iam-policy (google_service_account_iam_policy.workspace_deployer) is authoritatively EMPTY: no actAs/tokenCreator/workloadIdentityUser for anyone"
@@ -4673,7 +4685,7 @@ entries:
     kind: "service-account"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam service-accounts describe swarm-workspace-dispatch@$P.iam.gserviceaccount.com"
     apply: "terraform/bootstrap/workspace_dispatch.tf resource \"google_service_account\" \"workspace_dispatch\""
     verify: "its OWN iam-policy is authoritatively empty (no actAs for anyone)"
@@ -4686,7 +4698,7 @@ entries:
     kind: "switch"
     scope: "addon:ci"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n deployer_scoped_roles terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:128 deployer_scoped_roles = [\"roles/resourcemanager.projectIamAdmin\"]"
     verify: "gcloud projects get-iam-policy $P shows the deployer's resourcemanager.projectIamAdmin binding split into exactly 2 condition-chunk bindings (hasOnly() over <=10 roles each) with NO unconditioned sibling binding remaining"
@@ -4713,7 +4725,7 @@ entries:
     kind: "switch"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n broker_secret_lister_project_wide_versions_add terraform/bootstrap/variables.tf"
     apply: "terraform/bootstrap/variables.tf:603-618, default true; not set in terraform.tfvars"
     verify: "swarmSecretLister's permission list includes versions.add only while this is true"
@@ -4726,7 +4738,7 @@ entries:
     kind: "switch"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n enable_browser_logins terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:209 enable_browser_logins = true"
     verify: "terraform plan with it false shows the browser_logins.tf resources at count=0"
@@ -4740,7 +4752,7 @@ entries:
     kind: "switch"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n enable_github_hooks_dedup_role terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:251 enable_github_hooks_dedup_role = true"
     verify: "role shows up on deployer_grantable_project_roles only while this is on (deployer_conditions.tf)"
@@ -4753,7 +4765,7 @@ entries:
     kind: "switch"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n enable_mcp_credentials terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:264 enable_mcp_credentials = true"
     verify: "plan false removes role+grant"
@@ -4766,7 +4778,7 @@ entries:
     kind: "switch"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n enable_platform_secret_status terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:276 enable_platform_secret_status = true"
     verify: "plan false removes role+grant"
@@ -4779,7 +4791,7 @@ entries:
     kind: "switch"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n enable_provider_keys terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:216 enable_provider_keys = true"
     verify: "plan with false removes the role and grant"
@@ -4792,7 +4804,7 @@ entries:
     kind: "switch"
     scope: "addon:typesafe"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n enable_typesafe_forwarder_read terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:244 enable_typesafe_forwarder_read = true"
     verify: "plan false removes role+grant"
@@ -4806,7 +4818,7 @@ entries:
     kind: "switch"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n enable_workspace_deployer terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:191 enable_workspace_deployer = true"
     verify: "plan false tears down the whole job/topic/workflow/trigger/account/log-routing tree"
@@ -4819,7 +4831,7 @@ entries:
     kind: "switch"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n enable_workspace_kinds terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:202 enable_workspace_kinds = true"
     verify: "plan false removes K2/K3 grants; K1 requires swarmFrontDoorAdmitter ALSO added to workspace_deployer_roles, which is NOT in that variable's default and not added in the committed tfvars"
@@ -4832,7 +4844,7 @@ entries:
     kind: "switch"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n enable_workspace_secrets terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:234 enable_workspace_secrets = true"
     verify: "plan false removes the role/grant"
@@ -4845,7 +4857,7 @@ entries:
     kind: "switch"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n front_door_admit_role_bound terraform/bootstrap/variables.tf terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/variables.tf:882-896, default false; not overridden in terraform.tfvars"
     verify: "when true, adds a hasOnly([iap.httpsResourceAccessor]) arm to K1's condition"
@@ -4858,7 +4870,7 @@ entries:
     kind: "switch"
     scope: "core"
     stage: 7
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n swarm_workers_log_view_exists terraform/bootstrap/variables.tf terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/variables.tf:898-912, default TRUE; not overridden in terraform.tfvars"
     verify: "gcloud logging views describe swarm-workers --bucket=swarm-worker-logs --location=$R --project=$P exists before this is true"
@@ -4888,7 +4900,7 @@ entries:
     kind: "custom-role"
     scope: "core"
     stage: 8
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmQaJwtSigner --project=$P"
     apply: "terraform/bootstrap/qa_identity.tf resource \"google_project_iam_custom_role\" \"qa_jwt_signer\""
     verify: "permissions == [iam.serviceAccounts.signJwt] only -- never roles/iam.serviceAccountTokenCreator (which also carries getAccessToken/getOpenIdToken/signBlob/implicitDelegation)"
@@ -4901,7 +4913,7 @@ entries:
     kind: "declared-value"
     scope: "core"
     stage: 8
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "echo \"${ALLOWED_DOMAINS:-saga.xyz}\" (read from .env, defaulted in apps/common/swarm_common/config.py:46,110)"
     apply: "operator sets ALLOWED_DOMAINS to the fresh deployment's own hosted domain(s) in .env, or ALLOWED_USERS as an additive explicit list for anyone without a domain of their own"
     verify: "an out-of-domain sign-in is refused (register-tenant.sh's own check: 'die ... is outside the allowed hosted domain(s)')"
@@ -4915,7 +4927,7 @@ entries:
     kind: "iam-binding"
     scope: "core"
     stage: 8
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam service-accounts get-iam-policy qa-console@$P.iam.gserviceaccount.com"
     apply: "terraform/bootstrap/qa_identity.tf data \"google_iam_policy\" \"qa_identity\" + resource \"google_service_account_iam_policy\" \"qa_identity\""
     verify: "policy holds exactly one binding: swarmQaJwtSigner -> serviceAccount:swarm-api@$P.iam.gserviceaccount.com; nothing else, ever (authoritative, so a hand-added member is removed on next apply)"
@@ -4928,7 +4940,7 @@ entries:
     kind: "service-account"
     scope: "core"
     stage: 8
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam service-accounts describe qa-console@$P.iam.gserviceaccount.com"
     apply: "terraform/bootstrap/qa_identity.tf resource \"google_service_account\" \"qa_identity\", count=switch.enable_qa_identity"
     verify: "gcloud iam service-accounts keys list shows zero keys; account id is 'qa-console', deliberately NOT swarm-prefixed"
@@ -4941,7 +4953,7 @@ entries:
     kind: "switch"
     scope: "core"
     stage: 8
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n enable_qa_identity terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:162 enable_qa_identity = true"
     verify: "plan false removes the account, role and policy"
@@ -5010,7 +5022,7 @@ entries:
     kind: "custom-role"
     scope: "addon:ci"
     stage: 9
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmAcceptanceLister --project=$P"
     apply: "terraform/bootstrap/acceptance.tf resource \"google_project_iam_custom_role\" \"acceptance_lister\""
     verify: "permissions: run.jobs.list, run.executions.list, run.tasks.list, run.operations.get"
@@ -5023,7 +5035,7 @@ entries:
     kind: "custom-role"
     scope: "addon:ci"
     stage: 9
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam roles describe swarmAcceptanceRunner --project=$P"
     apply: "terraform/bootstrap/acceptance.tf resource \"google_project_iam_custom_role\" \"acceptance_runner\""
     verify: "permissions: run.jobs.get/run/runWithOverrides, run.executions.get/cancel, run.tasks.get"
@@ -5036,7 +5048,7 @@ entries:
     kind: "declared-value"
     scope: "addon:ci"
     stage: 9
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "grep -n ci_fix_service_account terraform/bootstrap/terraform.tfvars; gcloud iam service-accounts describe swarm-ci-fix@$P.iam.gserviceaccount.com"
     apply: "terraform/bootstrap/terraform.tfvars:34 ci_fix_service_account = \"swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com\""
     verify: "the account exists and is bound in ci_fix.tf's google_service_account_iam_member.ci_fix_wif"
@@ -5117,7 +5129,7 @@ entries:
     kind: "iam-binding"
     scope: "addon:ci"
     stage: 9
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:serviceAccount:swarm-accept@*'"
     apply: "terraform/bootstrap/acceptance.tf: google_project_iam_custom_role.acceptance_runner + acceptance_lister (two custom roles), google_project_iam_member.acceptance_runs_jobs (UNCONDITIONED, #965) + acceptance_lists_jobs, google_project_iam_member.acceptance_reads_verify_logs (conditioned to the swarm-verify log view), google_storage_bucket_iam_member.acceptance_reads_release_records (conditioned to releases/ prefix)"
     verify: "swarmAcceptanceRunner/Lister carry no create/update/delete/IAM permission"
@@ -5130,7 +5142,7 @@ entries:
     kind: "iam-binding"
     scope: "addon:ci"
     stage: 9
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam service-accounts get-iam-policy swarm-ci-fix@$P.iam.gserviceaccount.com"
     apply: "terraform/bootstrap/ci_fix.tf resource \"google_service_account_iam_member\" \"ci_fix_wif\""
     verify: "policy shows roles/iam.workloadIdentityUser for principalSet://.../attribute.job_workflow_ref/<repo>/.github/workflows/ci-fix.yml@refs/heads/main only"
@@ -5143,7 +5155,7 @@ entries:
     kind: "secret-value"
     scope: "core"
     stage: 9
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud secrets versions list swarm-github-app-client-secret --project $P --filter=state:ENABLED"
     apply: "scripts/create-secrets.sh --github-app client-secret --stdin"
     verify: "an ENABLED version exists"
@@ -5157,7 +5169,7 @@ entries:
     kind: "secret-value"
     scope: "core"
     stage: 9
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud secrets versions list swarm-github-app-private-key --project $P --filter=state:ENABLED"
     apply: "scripts/create-secrets.sh --github-app private-key --stdin < app.private-key.pem"
     verify: "an ENABLED version exists; swarm-api's /v1/admin/platform-secrets row reads status=set"
@@ -5171,7 +5183,7 @@ entries:
     kind: "secret-value"
     scope: "core"
     stage: 9
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud secrets versions list swarm-github-app-webhook-secret --project $P --filter=state:ENABLED"
     apply: "scripts/create-secrets.sh --github-app-webhook-secret --stdin, value typed into the GitHub App settings and here"
     verify: "a delivery's signature verifies at swarm-github-hooks within a minute of rotation (the receiver re-reads latest on a mismatch at most once/minute)"
@@ -5185,7 +5197,7 @@ entries:
     kind: "service-account"
     scope: "addon:ci"
     stage: 9
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud iam service-accounts describe swarm-accept@$P.iam.gserviceaccount.com"
     apply: "terraform/bootstrap/acceptance.tf resource \"google_service_account\" \"acceptance\", count=wif_enabled"
     verify: "repository variable GCP_ACCEPT_SA equals this account's email"
@@ -5266,7 +5278,7 @@ entries:
     kind: "cluster-policy"
     scope: "core"
     stage: 10
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E get storageclass -o name | grep cache"
     apply: "kubernetes/storage/cache-storage-class.yaml, applied by kubernetes/apply.sh --policies --confirm"
     verify: "kubectl describe storageclass <name> shows the expected provisioner/params; a worker PVC using it leaves Pending only for a real capacity reason, not a missing class"
@@ -5280,7 +5292,7 @@ entries:
     kind: "cluster-policy"
     scope: "core"
     stage: 10
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E get validatingadmissionpolicy swarm-worker-job-constraints"
     apply: "kubernetes/policies/pod-security.yaml:172-252 (+ binding 252-287)"
     verify: "a Job spec missing required fields is rejected at admission"
@@ -5294,7 +5306,7 @@ entries:
     kind: "cluster-policy"
     scope: "core"
     stage: 10
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E get validatingadmissionpolicy swarm-worker-pod-constraints"
     apply: "kubernetes/policies/pod-security.yaml:42-156 (ValidatingAdmissionPolicy + its Binding), applied by kubernetes/apply.sh --policies --confirm"
     verify: "kubectl apply a worker pod spec that violates the constraint and confirm it is rejected at admission, not merely documented"
@@ -5308,7 +5320,7 @@ entries:
     kind: "cluster-policy"
     scope: "core"
     stage: 10
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E get validatingadmissionpolicybinding -o name | grep pod-constraints"
     apply: "kubernetes/policies/pod-security.yaml:156-172"
     verify: "kubectl get validatingadmissionpolicybinding shows validationActions enforcing (not just Audit)"
@@ -5322,7 +5334,7 @@ entries:
     kind: "cluster-policy"
     scope: "core"
     stage: 10
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E get validatingadmissionpolicy swarm-worker-pod-hardening"
     apply: "kubernetes/policies/pod-security.yaml:287-358 (+ binding 358-end)"
     verify: "a pod spec setting automountServiceAccountToken: true where disallowed is rejected"
@@ -5336,7 +5348,7 @@ entries:
     kind: "cluster-policy"
     scope: "core"
     stage: 10
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E get validatingadmissionpolicy swarm-workspace-deployer-namespaces"
     apply: "kubernetes/policies/workspace-provisioner-scope.yaml:229-320 (+ binding)"
     verify: "a Namespace create/update outside the swarm-tenant-u-* shape is rejected for the deployer principal"
@@ -5350,7 +5362,7 @@ entries:
     kind: "cluster-policy"
     scope: "core"
     stage: 10
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E get validatingadmissionpolicy swarm-workspace-deployer-rolebindings"
     apply: "kubernetes/policies/workspace-provisioner-scope.yaml:403-459 (+ binding 459-end)"
     verify: "a RoleBinding the deployer creates outside the expected subject/roleRef shape is rejected"
@@ -5364,7 +5376,7 @@ entries:
     kind: "cluster-policy"
     scope: "core"
     stage: 10
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E get validatingadmissionpolicy swarm-workspace-deployer-roles"
     apply: "kubernetes/policies/workspace-provisioner-scope.yaml:331-392 (+ binding)"
     verify: "a Role the deployer creates outside the expected name map is rejected"
@@ -5378,7 +5390,7 @@ entries:
     kind: "cluster-policy"
     scope: "core"
     stage: 10
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E get validatingadmissionpolicy swarm-workspace-deployer-scope"
     apply: "kubernetes/policies/workspace-provisioner-scope.yaml:91-229 (+ binding 216-229)"
     verify: "the deployer identity cannot create/act on a namespace outside swarm-tenant-u-*"
@@ -5392,7 +5404,7 @@ entries:
     kind: "namespace-object"
     scope: "core"
     stage: 10
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E get namespace swarm-system"
     apply: "kubernetes/swarm-system/{swarm-egress,swarm-graph,swarm-live,swarm-typesafe-fwd,tailscale-egress}.yaml each declare their own Namespace object; applied by kubernetes/apply.sh --swarm-system --confirm (and --swarm-graph/--swarm-typesafe-fwd for those two)"
     verify: "kubectl get ns swarm-system"
@@ -5406,7 +5418,7 @@ entries:
     kind: "namespace-object"
     scope: "core"
     stage: 10
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E get clusterrole,clusterrolebinding -o name | grep provisioner"
     apply: "kubernetes/rbac/provisioner-rbac.yaml:64-154 (ClusterRole+ClusterRoleBinding, then a namespaced Role+RoleBinding), applied by kubernetes/apply.sh --policies --confirm, LAST in POLICY_FILES"
     verify: "kubectl get clusterrolebinding <name> -o yaml shows the deployer's uniqueId-based subject bound"
@@ -5420,7 +5432,7 @@ entries:
     kind: "namespace-object"
     scope: "addon:bright-data-egress"
     stage: 10
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E -n swarm-system get statefulset swarm-egress"
     apply: "kubernetes/swarm-system/swarm-egress.yaml:44(Namespace),56(SA),73(NetworkPolicy),105(ConfigMap),120(Service),138(StatefulSet); kubernetes/apply.sh --swarm-system --confirm"
     verify: "kubectl -n swarm-system get pods -l app=swarm-egress shows Running; a proxied CONNECT through it succeeds"
@@ -5432,9 +5444,9 @@ entries:
     notes: "null A swarm-system GKE workload, not a Cloud Run job."
   - id: "workload.swarm-graph"
     kind: "namespace-object"
-    scope: "addon:ci"
+    scope: "core"
     stage: 10
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E -n swarm-system get deployment swarm-graph"
     apply: "kubernetes/swarm-system/swarm-graph.yaml:62(Namespace),74(SA),100(NetworkPolicy),145(ConfigMap),160+188(Service x2),212(PodDisruptionBudget),226(Deployment)"
     verify: "kubectl -n swarm-system get pods -l app=swarm-graph shows Running; swarm-api's graph ticket mint+verify round-trips"
@@ -5448,7 +5460,7 @@ entries:
     kind: "namespace-object"
     scope: "core"
     stage: 10
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E -n swarm-system get statefulset swarm-live"
     apply: "kubernetes/swarm-system/swarm-live.yaml:60(Namespace),71(SA),94(NetworkPolicy),139+163(Service x2),185(StatefulSet)"
     verify: "kubectl -n swarm-system get pods -l app=swarm-live shows Running; a live session reaches it"
@@ -5462,7 +5474,7 @@ entries:
     kind: "namespace-object"
     scope: "addon:typesafe"
     stage: 10
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E -n swarm-system get deployment swarm-typesafe-fwd"
     apply: "kubernetes/swarm-system/swarm-typesafe-fwd.yaml:52(Namespace),63(SA),80(NetworkPolicy),113(ConfigMap),128(Service),146(Deployment)"
     verify: "kubectl -n swarm-system get pods -l app=swarm-typesafe-fwd shows Running"
@@ -5476,7 +5488,7 @@ entries:
     kind: "namespace-object"
     scope: "addon:tailscale"
     stage: 10
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E -n swarm-system get deployment tailscale-egress"
     apply: "kubernetes/swarm-system/tailscale-egress.yaml:96(Namespace),108(SA),125(NetworkPolicy),161(Service),182(Deployment)"
     verify: "kubectl -n swarm-system get pods -l app=tailscale-egress shows Running; the tailnet device registers (docs/runbooks/tailscale-egress.md)"
@@ -5492,7 +5504,7 @@ entries:
     kind: "namespace-object"
     scope: "core"
     stage: 11
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E -n swarm-tenant-$T get serviceaccount swarm-worker 2>/dev/null || echo absent"
     apply: "kubernetes/service-accounts/legacy-worker-serviceaccount.yaml:36, included by render.py ONLY where the tenant's GSA's IAM policy already binds this older KSA name"
     verify: "kubectl get sa swarm-worker -n swarm-tenant-$T; absent is correct for a from-scratch install"
@@ -5506,7 +5518,7 @@ entries:
     kind: "namespace-object"
     scope: "core"
     stage: 11
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E -n swarm-tenant-$T get limitrange -o name"
     apply: "kubernetes/namespaces/tenant-namespace.yaml:138 (LimitRange), same document stream"
     verify: "a pod spec that omits resources gets the LimitRange's defaults applied (visible in kubectl get pod -o yaml), before pod-security.yaml's hardening policy even sees it"
@@ -5520,7 +5532,7 @@ entries:
     kind: "namespace-object"
     scope: "core"
     stage: 11
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E get namespace swarm-tenant-$T"
     apply: "kubernetes/namespaces/tenant-namespace.yaml:44 (Namespace), rendered by kubernetes/render.py and applied by kubernetes/apply.sh --tenant $T --confirm; ALSO the release workflow's release-namespaces job, but ONLY when vars.APPLY_TENANT_NAMESPACES is 'true' (off by default -- see notes)"
     verify: "kubectl get ns swarm-tenant-$T -o yaml shows the expected labels; a worker Job dispatches into it"
@@ -5534,7 +5546,7 @@ entries:
     kind: "namespace-object"
     scope: "core"
     stage: 11
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E -n swarm-tenant-$T get resourcequota -o name"
     apply: "kubernetes/namespaces/tenant-namespace.yaml:87 (ResourceQuota), same document stream as the namespace"
     verify: "kubectl describe resourcequota -n swarm-tenant-$T shows the flat ceiling; a pod over it is refused at admission with the quota's own message, not a scheduling stall"
@@ -5548,7 +5560,7 @@ entries:
     kind: "namespace-object"
     scope: "core"
     stage: 11
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E -n swarm-tenant-$T get configmap swarm-spec-verify-keys"
     apply: "kubernetes/render.py:1166,1289 renders it from 'terraform output -json spec_verify_keys_configmap'; applied by kubernetes/apply.sh --spec-verify-keys (apply.sh:1096-1098)"
     verify: "kubectl get configmap swarm-spec-verify-keys -n swarm-tenant-$T -o yaml; its data matches the current step-spec signing key version"
@@ -5562,7 +5574,7 @@ entries:
     kind: "namespace-object"
     scope: "core"
     stage: 11
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E -n swarm-tenant-$T get serviceaccount swarm-agent-worker"
     apply: "kubernetes/service-accounts/worker-serviceaccount.yaml:47 (rendered __KSA_NAME__ -> swarm-agent-worker), applied with the tenant namespace"
     verify: "kubectl get sa swarm-agent-worker -n swarm-tenant-$T -o yaml shows automountServiceAccountToken: false and the iam.gke.io/gcp-service-account annotation matching terraform's WI binding"
@@ -5576,7 +5588,7 @@ entries:
     kind: "namespace-object"
     scope: "core"
     stage: 11
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E -n swarm-tenant-$T get role,rolebinding -o name | grep dispatcher"
     apply: "kubernetes/rbac/dispatcher-rbac.yaml:46,76,121,142; TWO Role+RoleBinding pairs, applied per tenant via TENANT_FILES"
     verify: "kubectl get rolebinding <name> -n swarm-tenant-$T -o yaml shows the scheduler GSA bound BOTH by email and by its numeric uniqueId subject"
@@ -5590,7 +5602,7 @@ entries:
     kind: "namespace-object"
     scope: "core"
     stage: 11
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E -n swarm-tenant-$T get role,rolebinding -o name | grep verify"
     apply: "kubernetes/rbac/verify-rbac.yaml:50,70,79-94; applied only when verify_read_wanted() and --verify-uid are both given (kubernetes/render.py:503-519 verify_read_files)"
     verify: "kubectl get rolebinding -n swarm-tenant-$T -o yaml shows swarm-verify bound by its numeric uniqueId, same reasoning as the dispatcher's"
@@ -5604,7 +5616,7 @@ entries:
     kind: "namespace-object"
     scope: "core"
     stage: 11
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E -n swarm-tenant-$T get role,rolebinding -o name | grep worker"
     apply: "kubernetes/rbac/worker-rbac.yaml:45 (Role), 60 (RoleBinding)"
     verify: "the worker KSA can read only what the Role allows inside its own namespace"
@@ -5618,7 +5630,7 @@ entries:
     kind: "network"
     scope: "core"
     stage: 11
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E -n swarm-tenant-$T get networkpolicy -o name | grep allow-egress$"
     apply: "kubernetes/network-policies/allow-egress.yaml:91"
     verify: "a worker pod reaches DNS and its provider APIs"
@@ -5632,7 +5644,7 @@ entries:
     kind: "network"
     scope: "addon:bright-data-egress"
     stage: 11
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E -n swarm-tenant-$T get networkpolicy -o name | grep egress-proxy"
     apply: "kubernetes/network-policies/allow-egress-proxy.yaml:23; rendered after allow-live-egress for the same reason"
     verify: "a proxied-browser attempt reaches swarm-egress"
@@ -5646,7 +5658,7 @@ entries:
     kind: "network"
     scope: "core"
     stage: 11
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E -n swarm-tenant-$T get networkpolicy -o name | grep judge-egress"
     apply: "kubernetes/network-policies/allow-judge-egress.yaml:27; rendered LAST of all, for the same digest-stability reason"
     verify: "the internal judge reaches the tailnet forwarder"
@@ -5660,7 +5672,7 @@ entries:
     kind: "network"
     scope: "core"
     stage: 11
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E -n swarm-tenant-$T get networkpolicy -o name | grep live-egress"
     apply: "kubernetes/network-policies/allow-live-egress.yaml:37; rendered LAST on purpose so every document before it is byte-identical to before the live browser existed (test_live_netpol.py pins the digests)"
     verify: "a live-browser attempt's pod reaches the swarm-live relay on TCP 8080"
@@ -5674,7 +5686,7 @@ entries:
     kind: "network"
     scope: "core"
     stage: 11
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "kubectl --context $E -n swarm-tenant-$T get networkpolicy -o name | grep default-deny"
     apply: "kubernetes/network-policies/default-deny.yaml:21,51 (ingress+egress deny), first in TENANT_FILES' network-policies block"
     verify: "a pod in the namespace cannot reach anything until an allow- policy admits it"
@@ -5911,7 +5923,7 @@ entries:
     kind: "addon"
     scope: "addon:typesafe"
     stage: 15
-    provider: "human-in-terminal"
+    provider: "engine"
     check: "gcloud secrets versions list swarm-typesafe-fwd-key --project=$P --filter=state=ENABLED --limit=1"
     apply: "swarm addon enable typesafe: the forwarder key, then enable_typesafe_forwarder"
     verify: "the forwarder answers its health path inside the cluster"

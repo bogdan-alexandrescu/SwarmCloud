@@ -12,7 +12,7 @@ This document says **how** Day One is built. The brief says **what** and **why**
 
 ## 1. What P0 found, in short
 
-The manifest holds **433 dependencies**: 353 core and 80 add-on (52 `addon:ci`, 12 `addon:typesafe`, 9 `addon:bright-data-egress`, 4 `addon:tailscale`, 3 `addon:brave-search`). Counts by kind are in section 3.2.
+The manifest holds **433 dependencies**: 362 core and 71 add-on (43 `addon:ci`, 12 `addon:typesafe`, 9 `addon:bright-data-egress`, 4 `addon:tailscale`, 3 `addon:brave-search`). Counts by kind and by provider are in section 3.2. The live browser, code intelligence (the graph service and its indexer) and the in-VPC `swarm-verify` gate are core (D4, brief §5 stage 14); only the CI machinery of D10 is `addon:ci`.
 
 The research summary in brief §3 holds. The code reading added the following points. Each one changes what the build must do.
 
@@ -137,6 +137,8 @@ The draft's fields are exactly brief §6 A's list, and the header of [`day-one/m
 
 `id`, `kind`, `scope`, `stage`, `provider`, `check`, `apply`, `verify`, `explain`, `guards`, `secret_entry`, `depends_on`, `evidence`, `notes`.
 
+`provider` says who provides the dependency **in the Day One install**, not who runs it by hand today. Everything Terraform, the engine or `kubernetes/apply.sh --policies` creates is `engine` (D20; brief §5 stage 10), so no Terraform-made role, binding, switch, cluster policy or namespace object pauses the install. A `human-*`, `org-admin` or `company-external` provider is a step that pauses it with exit code 4 (section 2.1), and is kept for what only a person can do: install a local tool, create the project and link billing, type a value held outside the platform, sign in to a Claude account, or act in a console.
+
 **P3 adds four fields:**
 
 - `probe:`, the typed check (section 2.2);
@@ -171,6 +173,8 @@ The draft's fields are exactly brief §6 A's list, and the header of [`day-one/m
 | bucket | 7 | github-app-installation | 1 |
 | cloud-run-service | 7 | claude-account | 1 |
 | monitoring | 6 |  |  |
+
+**By provider:** engine 381, human-in-terminal 21, org-admin 17, human-in-console 13, company-external 1.
 
 **By stage:** 0: 26, 1: 39, 2: 12, 3: 42, 4: 30, 5: 58, 6: 42, 7: 106, 8: 9, 9: 19, 10: 16, 11: 18, 12: 1, 13: 4, 14: 4, 15: 7.
 
@@ -625,10 +629,10 @@ GitHub documents the flow at https://docs.github.com/en/apps/sharing-github-apps
 
 A person outside the org who holds the secret still cannot get an ID token IAP accepts.
 
-**Recommendation** (open question 1):
+**Recommendation** (open question 1; BGD decides, and this design builds neither branch until then):
 
 1. In P3, run the PKCE-only exchange once. If Google accepts it, the plugin needs no secret, and the discovery document carries the client id only.
-2. If Google refuses, the discovery document also carries `oauth_client_secret`. That is consistent with Google's own classification and with the brief's goal that the plugin needs one value.
+2. If Google refuses, the recommendation is that the discovery document also carries `oauth_client_secret`. That is consistent with Google's own classification and with the brief's goal that the plugin needs one value, but serving it unauthenticated is BGD's call, not part of the plan: the other options are in section 14 item 1.
 3. Either way, the value lives in Secret Manager as `swarm-iap-desktop-client-secret` (a new id), entered by hidden prompt in stage 2, instead of a password manager.
 
 The other branch the brief named, serving the secret "to signed-in members only", is circular: a member signs in *with* that client.
@@ -702,7 +706,7 @@ Each add-on is a `swarm addon enable|disable <name>`. Each has its own manifest 
 | `tailscale` | 4 | the OAuth secret, the tailnet target (no default; today `terraform/infra/tailscale.tf:84`), the `tailscale-egress` workload | `apps/swarm-api/swarm_api/platform_secrets.py:120-121` |
 | `typesafe` | 12 | the forwarder key, `enable_typesafe_forwarder`, per-user key readers | `apps/swarm-api/swarm_api/platform_secrets.py:116-117`; `terraform/infra/typesafe_fwd.tf` |
 | `brave-search` | 3 | `swarm-search-api-key` | `apps/swarm-api/swarm_api/platform_secrets.py:105` |
-| `ci` | 52 | WIF pool and provider for GitHub Actions, the merge App, merge train, CI fixer (`swarm-ci-fix`, created outside Terraform, `terraform/bootstrap/ci_fix.tf:29-34`), sandbox repo, self-hosted runners, Cloud Build and its own service account | `terraform/bootstrap/wif.tf:72`; `docs/runbooks/merge-app.md:54-68` |
+| `ci` | 43 | WIF pool and provider for GitHub Actions, the merge App, merge train, CI fixer (`swarm-ci-fix`, created outside Terraform, `terraform/bootstrap/ci_fix.tf:29-34`), sandbox repo, self-hosted runners, Cloud Build and its own service account, the post-deploy acceptance identity and fixtures, and the repository's own lint and scan tools (checkov, tflint, trivy, shellcheck, and docker for the local build loop) | `terraform/bootstrap/wif.tf:72`; `docs/runbooks/merge-app.md:54-68` |
 
 Disabling an add-on turns its switch off, destroys its Terraform resources, and leaves its secret containers in place. Their deletion is a second, typed step.
 
