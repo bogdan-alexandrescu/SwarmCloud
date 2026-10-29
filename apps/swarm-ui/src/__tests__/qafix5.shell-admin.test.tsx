@@ -156,7 +156,8 @@ describe('5b:QA-019: What the pools admit fits a phone card', () => {
         expect(painted(c, ['border-bottom', 'border-bottom-width'], PHONE)).toMatch(/^0/)
       }
     }
-    expect(within(rows[1]!).getByText('4 → 4')).toBeTruthy()
+    // One figure where nothing moves (QA2-FIX-20, admin2-12), never `4 → 4`.
+    expect(within(rows[1]!).getByText('4')).toBeTruthy()
   })
 
   it('stays a table at 1440, scrolling inside the card if it ever must', () => {

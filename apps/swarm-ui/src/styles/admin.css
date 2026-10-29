@@ -898,8 +898,10 @@ table.adm-limits th.pool-name > .ctl-sub > .adm-key-seg {
    record's name; here its row rule leaves the fields, which a record does not
    rule (§13.3), and the record sits on the card's own padding. Wider, the
    table scrolls inside its wrapper, never past the card. The pool name is a
-   row header now, drawn as the mono value it was. */
-.rs-pools tbody th { font-family: var(--mono); font-weight: 400; }
+   row header now. It is the pool's NAME, with its raw key as a mono line
+   under it, as Pool limits draws it (QA2-FIX-20, admin2-05). */
+.rs-pools tbody th { font-weight: 400; }
+.rs-pool-key { display: block; font: 400 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
 .rs-pools-wrap { overflow-x: auto; }
 @media (max-width: 899px) {
   .rs-pools-wrap.is-stacked { overflow-x: visible; }

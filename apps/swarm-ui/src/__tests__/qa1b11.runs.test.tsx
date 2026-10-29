@@ -72,8 +72,8 @@ describe('runs-submit-27: the planner is named, not shown as its raw id', () => 
   })
 })
 
-describe('runs-submit-27: `mode not stated` is a note, not a chip', () => {
-  it('draws an unstated mode as a note', async () => {
+describe('runs-submit-27: `mode not stated` is not a chip', () => {
+  it('draws no chip for an unstated mode', async () => {
     const container = await mount({ plan: { ...FULL_PLAN, mode: undefined } })
     const facts = await waitFor(() => {
       const f = container.querySelector<HTMLElement>('.rn-plan-facts')
@@ -83,8 +83,8 @@ describe('runs-submit-27: `mode not stated` is a note, not a chip', () => {
     const chips = [...facts.querySelectorAll('.c-chip')].map((c) => visible(c))
     // MUTATION: put `mode not stated` back in the `<Chip>` and it is among the chips.
     expect(chips).not.toContain('mode not stated')
-    const note = [...facts.querySelectorAll('.sb-note')].find((n) => visible(n) === 'mode not stated')
-    expect(note).toBeTruthy()
+    // QA2-FIX-20 (runs2-11): nor is it a note any more; an unstated mode says nothing.
+    expect(visible(facts)).not.toContain('mode not stated')
   })
 
   it('keeps a stated mode as a chip', async () => {

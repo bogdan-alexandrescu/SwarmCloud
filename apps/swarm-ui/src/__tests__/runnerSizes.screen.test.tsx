@@ -16,7 +16,7 @@
 //   * §4.9's pattern hints appear with 30 attempts and not with 29, and a
 //     share the API reports as null reads "no data", never 0%;
 //   * `disk_gib` is shown and never an input (owner Q5); Cloud Run profiles
-//     are listed as "does not follow" (owner Q3).
+//     are listed as not following this size (owner Q3).
 //
 // The bodies are `swarm_api.runnersizes`' shapes (`served`, `preview`,
 // `versions`; tests/unit/control_plane/test_runner_sizes_api.py). Nothing
@@ -278,7 +278,7 @@ describe('editing a class', () => {
     expect(visible(card('standard')!.querySelector('.rs-disk'))).toContain('4 GiB')
     // MUTATION: drop the fixed list (owner Q3).
     const fixed = card('standard')!.querySelector<HTMLElement>('.rs-fixed')
-    expect(visible(fixed)).toContain('does not follow')
+    expect(visible(fixed)).toContain('do not follow this size')
     expect(visible(fixed)).toContain('claude-code-review')
   })
 })
@@ -295,7 +295,8 @@ describe('history', () => {
     // MUTATION: drop the reason or the changes from a row.
     expect(visible(row)).toContain('root@example.com')
     expect(visible(row)).toContain('first version')
-    expect(visible(row)).toContain('large memory_gib 32 → 24')
+    // The field in words with its unit (QA2-FIX-20, admin2-05), not `memory_gib`.
+    expect(visible(row)).toContain('large memory 32 → 24 GiB')
     // The current version is not offered as a restore.
     const current = document.querySelector<HTMLElement>('.rs-version[data-version="2"]')!
     expect(within(current).queryByRole('button', { name: /Restore/ })).toBeNull()
