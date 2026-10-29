@@ -97,6 +97,7 @@ from .routes import repository_secrets
 from .routes import actions_secrets
 from .routes import secrets_overview
 from .routes import join_requests
+from .routes import setup
 from .qa_identity import QaIdentityOrigin
 from .validation import FORBIDDEN_CALLER_FIELDS
 
@@ -168,6 +169,14 @@ UNCAPTURED_ROUTES = frozenset({
     join_requests.LOOKUP_ROUTE,
     join_requests.ASK_ROUTE,
     join_requests.LINK_ROUTE,
+    # Admin › Setup (docs/design/day-one-plan.md §5.3, lane
+    # DAYONE-SETUP-API-1): the GitHub App manifest's one-time code, which
+    # GitHub redeems for the App's key and secrets; the one-time link a
+    # platform admin mints, in its answer; and the redemption, whose body is
+    # the link's token and the value its form carries.
+    "/v1/admin/setup/github-app/conversion",
+    "/v1/admin/setup/links",
+    "/v1/setup/links/redeem",
 })
 
 # --------------------------------------------------------------------------
@@ -558,6 +567,12 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # caller's tenant's findings from the failure review, read only, through
     # an allow-list that keeps the platform tenant's fields out.
     app.include_router(failurefindings.router)
+    # Admin › Setup and Health (docs/design/day-one-plan.md §5.3, lane
+    # DAYONE-SETUP-API-1): platform admins only, plus the deployer on the hook
+    # and groups probe and swarm-doctor on the health write; the link
+    # redemption is any signed-in person's, for their own link.
+    app.include_router(setup.router)
+    app.include_router(setup.links_router)
 
     # Gzip for a caller that asks (#1822, lane API-GZIP): 3.23 GB left this
     # API in 48 h uncompressed, a build-board task page averaging 1.43 MB and

@@ -1,0 +1,22 @@
+# Lane DAYONE-SETUP-API-1 (part of #2688): the environment variables
+# apps/swarm-api/swarm_api/settings.py reads for Admin › Setup
+# (docs/design/day-one-plan.md §5.3; review finding 7). Nothing renders them
+# until DAYONE-TF-2 adds them to swarm-api's environment; an env: name cannot
+# be restated by another fragment, so TF-2 edits these setters to its
+# terraform path:line in its own PR. Unset, each one is explained beside its
+# field in settings.py: no org and no hooks URL answer 409
+# setup_unconfigured, the hostname falls back to SWARM_CONSOLE_URL's host and
+# the doctor's account to swarm-doctor@<project>.iam.gserviceaccount.com.
+# The routes' manifest entries (github-app-setting.*, the three
+# secret.swarm-github-app-*.value entries, other.install-record-firestore,
+# other.doctor-findings) are already in the base manifest.
+version: 1
+env:
+  SETUP_GITHUB_ORG:
+    setter: 'internal: read at apps/swarm-api/swarm_api/settings.py:1091; the GitHub org the console registers the App under; DAYONE-TF-2 renders it into swarm-api''s environment from the install state, until then the manifest route answers 409 setup_unconfigured'
+  SWARM_HOSTNAME:
+    setter: 'internal: read at apps/swarm-api/swarm_api/settings.py:1092; the deployment hostname <H>; DAYONE-TF-2 renders it, until then swarm-api uses SWARM_CONSOLE_URL''s host'
+  GITHUB_HOOKS_URL:
+    setter: 'internal: read at apps/swarm-api/swarm_api/settings.py:1093; the swarm-github-hooks receiver''s URL, the App manifest''s hook URL; DAYONE-TF-2 renders it, until then the hook route answers 409 setup_unconfigured'
+  SWARM_DOCTOR_ACCOUNT:
+    setter: 'internal: read at apps/swarm-api/swarm_api/settings.py:1094; the swarm-doctor job''s account, the one writer of health/latest; unset is swarm-doctor@<project>.iam.gserviceaccount.com, so nothing needs to set it'
