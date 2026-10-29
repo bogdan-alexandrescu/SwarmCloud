@@ -116,6 +116,8 @@
 .pp-req:first-child { border-top: 0; }
 .pp-req-who { display: flex; align-items: center; gap: var(--ctl-s2); min-width: 0; }
 .pp-req-what { display: flex; flex-direction: column; gap: var(--ctl-s1); min-width: 0; }
+/* The requested workspace's id, under what it is (admin2-22). */
+.pp-req-id { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); min-width: 0; overflow-wrap: anywhere; }
 .pp-req-acts { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: flex-end; gap: var(--ctl-s2); min-width: 0; }
 .pp-req-acts .ur-hint, .pp-req-acts [role='status'], .pp-req-acts [role='alert'] { flex-basis: 100%; margin: 0; }
 .pp-limits { display: flex; flex-wrap: wrap; gap: var(--ctl-s1); }
