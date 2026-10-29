@@ -102,5 +102,23 @@ def test_the_container_writes_its_environment_at_start():
     assert (
         "COPY images/swarm-ui/40-swarm-ui-config.sh /docker-entrypoint.d/40-swarm-ui-config.sh" in text
     )
-    assert "RUN chmod 0755 /docker-entrypoint.d/40-swarm-ui-config.sh" in text
     assert "${ENVIRONMENT:-}" in ENTRYPOINT_SCRIPT.read_text()
+
+
+def test_the_entrypoint_script_is_executable_by_its_own_mode_not_a_chmod_layer():
+    """nginx's entrypoint runs only executable scripts in /docker-entrypoint.d, so
+    the script must be executable in the image. It is: git commits it as 100755
+    and COPY keeps the mode. A `RUN chmod` after the COPY would change nothing,
+    and its layer would be byte-identical to the COPY's. The release's layer
+    check refuses an image that repeats a layer (GKE image streaming will not
+    stream it), and that refusal stopped the release of c08dc1e75 on
+    2026-10-29."""
+    mode = subprocess.run(
+        ["git", "ls-files", "-s", str(ENTRYPOINT_SCRIPT.relative_to(REPO))],
+        cwd=REPO, capture_output=True, text=True, check=True,
+    ).stdout.split()[0]
+    assert mode == "100755", f"commit {ENTRYPOINT_SCRIPT.name} executable (git mode {mode})"
+    code = [line for line in DOCKERFILE.read_text().splitlines() if not line.lstrip().startswith("#")]
+    assert not any("chmod" in line and "40-swarm-ui-config.sh" in line for line in code), (
+        "a RUN chmod of the already-executable script repeats the COPY's layer"
+    )

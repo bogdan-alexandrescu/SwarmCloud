@@ -143,10 +143,17 @@ RUN echo "apk layer of ${APT_REFRESH}" \
 # DAYONE-UIENV-1 (#2744), it passed the pull request's buildx build-check and
 # failed every main `build images` run from 16:01Z on 2026-10-29
 # (SWARM-UI-IMAGE-FIX). tests/unit/scripts/test_classic_builder_dockerfiles.py
-# refuses BuildKit-only syntax in every image the classic builder builds. The
-# chmod is a RUN, as root, because `COPY --chmod` is BuildKit's too.
+# refuses BuildKit-only syntax in every image the classic builder builds.
+#
+# NO `RUN chmod` AFTER THE COPY. The script is committed executable (git mode
+# 100755) and COPY keeps the mode, so a chmod changes nothing, and its layer is
+# byte-identical to the COPY's. The release's layer check refuses an image that
+# repeats a layer, because GKE image streaming will not stream it (docs/
+# browser-startup-speed.md section 2.4); that refusal stopped the release of
+# c08dc1e75 on 2026-10-29. `COPY --chmod` is BuildKit's, so it is no way out
+# either. tests/unit/scripts/test_ui_build_declares_its_environment.py holds both
+# the executable bit and the absence of the chmod.
 COPY images/swarm-ui/40-swarm-ui-config.sh /docker-entrypoint.d/40-swarm-ui-config.sh
-RUN chmod 0755 /docker-entrypoint.d/40-swarm-ui-config.sh
 USER 101
 
 COPY images/swarm-ui/nginx.conf /etc/nginx/conf.d/default.conf
