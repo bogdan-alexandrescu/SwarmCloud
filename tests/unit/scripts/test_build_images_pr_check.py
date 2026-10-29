@@ -497,6 +497,40 @@ def test_affected_by_needs_no_gcloud_and_takes_no_targets(tmp_path):
     assert "--affected-by" in proc.stderr, proc.stderr
 
 
+@pytest.mark.parametrize("args", [["--affected-by", "-"], ["--inputs"]])
+def test_offline_modes_need_no_project(tmp_path, args):
+    """application.yml's `changes` job runs these before it authenticates and
+    names no PROJECT_ID; common.sh has no default project (DAYONE-DESAGA-2)."""
+    env = _env(tmp_path)
+    env.pop("PROJECT_ID")
+    proc = subprocess.run(
+        ["bash", str(REPO / "scripts" / "build-images.sh"), *args],
+        input="apps/swarm-api/swarm_api/__init__.py\n",
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "swarm-api" in proc.stdout, proc.stdout
+
+
+def test_a_build_still_needs_a_project(tmp_path):
+    env = _env(tmp_path)
+    env.pop("PROJECT_ID")
+    proc = subprocess.run(
+        ["bash", str(REPO / "scripts" / "build-images.sh"), "--build-only", "swarm-api"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode != 0
+    assert "PROJECT_ID is not set" in proc.stderr, proc.stderr
+
+
 # ---------------------------------------------------------------------------
 # The workflow.
 # ---------------------------------------------------------------------------
