@@ -130,6 +130,25 @@ def _all_routes() -> list[APIRoute]:
 #: sweep below holds. A literal set: a new scoped gate is a new decision.
 ADMIN_GATES = (admin_auth, people_scope)
 
+#: The /v1/admin routes a SERVICE identity must reach, so `admin_auth` cannot
+#: gate them: Admin › Setup's webhook switch and groups probe (the deployer,
+#: `swarm-tf-deployer`) and its health write (`swarm-doctor`), each refused to
+#: every other identity by `routes.setup.setup_caller` (docs/design/
+#: day-one-plan.md §5.3, review-fix finding 2; tests/unit/control_plane/
+#: test_setup_routes.py holds who passes). A literal set, held to
+#: `setup.SERVICE_ROUTES` below: a new one is a new decision.
+SERVICE_GATED = frozenset({
+    ("POST", "/v1/admin/setup/github-app/hook"),
+    ("POST", "/v1/admin/setup/health/groups-probe"),
+    ("PUT", "/v1/admin/setup/health"),
+})
+
+
+def test_the_service_gated_routes_are_setups_own() -> None:
+    from swarm_api.routes import setup
+
+    assert SERVICE_GATED == frozenset().union(*setup.SERVICE_ROUTES.values())
+
 
 def _is_admin_gated(route: APIRoute) -> bool:
     return any(call in ADMIN_GATES for call in _calls(route.dependant))
@@ -196,6 +215,7 @@ def test_every_route_under_v1_admin_is_admin_gated() -> None:
         f"{sorted(r.methods)} {r.path}"
         for r in _all_routes()
         if r.path.startswith("/v1/admin/") and not _is_admin_gated(r)
+        and not {(m, r.path) for m in r.methods} <= SERVICE_GATED
     )
     assert not ungated, f"these /v1/admin routes are not behind admin_auth: {ungated}"
 
@@ -256,7 +276,7 @@ def test_the_templates_the_gate_compares_are_the_published_urls(gate_context) ->
         for method, path in published
         if path == "/v1/admin" or path.startswith("/v1/admin/")
     }
-    unswept = sorted(public_admin - set(ADMIN_ROUTES))
+    unswept = sorted(public_admin - set(ADMIN_ROUTES) - SERVICE_GATED)
     assert not unswept, (
         f"the app publishes these /v1/admin operations and the sweep does not "
         f"see them as admin-gated routes of swarm_api.routes: {unswept}"
