@@ -29,13 +29,14 @@
 // the server's fixed order (`vocab`), with its labels; this file never sorts
 // them, so a filter can never re-rank them.
 
-import { useEffect, useId, useState, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useState, type ReactNode, type RefObject } from 'react'
 
 import { Segmented, Tag, UsageTrack } from './components'
 import { HelpNote } from './HelpCard'
 import { useMoreRight } from './WorkflowViews'
 import { WORKFLOW_IDS_PER_READ, loadWorkflowsById, type WorkflowRead } from './api'
 import { listRowName, workflowLabel } from './stepviews'
+import { stepsRead } from './workflowlist'
 import { type TopicId } from './help'
 import {
   LOW_N,
@@ -375,7 +376,7 @@ export function LedgerTable({ data }: { data: Outcomes }) {
           </tbody>
         </table>
       </div>
-      {more.on && (
+      {more.on && columns > 0 && (
         <p className="tl-note ol-table-more">
           More columns to the right: scroll the table sideways to read all {columns}.
         </p>
@@ -463,11 +464,15 @@ function useWorkflowNames(ids: readonly string[]): ReadonlyMap<string, WorkflowR
   return got !== null && got.key === key ? got.reads : null
 }
 
-/** A failed workflow's name over its id, or the id alone while the name is not read (`listRowName`). */
+/** A failed workflow's name over its id, or the id alone while the name or its steps are not read (`listRowName`). */
 function WorkflowName({ id, read }: { id: string; read: ReadonlyMap<string, WorkflowRead> | null }) {
   const one = read?.get(id) ?? null
-  const label = one === null ? null : workflowLabel(one.workflow, new Map(one.tasks.map((t) => [t.id, t])))
-  const row = listRowName(id, label, one !== null)
+  const taskById = one === null ? null : new Map(one.tasks.map((t) => [t.id, t]))
+  const label = one === null ? null : workflowLabel(one.workflow, taskById)
+  // "Untitled workflow" only when every step's task came back, as Work ›
+  // Workflows says it (`stepsRead`): a read missing a step's task is not
+  // known to have no name, so the id stays alone (review of runs2-36).
+  const row = listRowName(id, label, one !== null && stepsRead(one.workflow, taskById))
   if (!row.showId) {
     return (
       <span className="mono" title={id}>
@@ -533,7 +538,7 @@ export function WorkflowsFailedCard({
       {w.rows.length === 0 ? (
         <Nothing cov={cov} heading="No workflow step failed" what="every workflow step that ended ended some other way" />
       ) : (
-        <MoreRightSaid columns={7}>
+        <MoreRightSaid>
           <table>
             {w.rows_total > w.rows.length && <caption>showing {w.rows.length} of {w.rows_total}</caption>}
             <thead>
@@ -968,14 +973,22 @@ function Spark({ series }: { series: GroupRow['series'] }) {
  * is the one the day-by-day table already draws (`LedgerTable`), mounted with
  * its element as `MoreRight` is, since these tables are drawn once rows land.
  */
-function MoreRightSaid({ columns, children }: { columns: number; children: ReactNode }) {
+function MoreRightSaid({ children }: { children: ReactNode }) {
   const more = useMoreRight<HTMLDivElement>()
+  // The count is read off the table's own head, so a column added to either
+  // table is counted without a second number to keep in step (review of runs2-18).
+  const [columns, setColumns] = useState(0)
+  useLayoutEffect(() => {
+    if (!more.on) return
+    const el = (more.ref as RefObject<HTMLDivElement>).current
+    setColumns(el?.querySelectorAll('thead tr:first-child > th').length ?? 0)
+  }, [more.on, more.ref])
   return (
     <>
       <div ref={more.ref} className={`ctl-table is-scroll${more.on ? ' has-more' : ''}`}>
         {children}
       </div>
-      {more.on && (
+      {more.on && columns > 0 && (
         <p className="tl-note ol-table-more">
           More columns to the right: scroll the table sideways to read all {columns}.
         </p>
@@ -1077,7 +1090,7 @@ export function ReliabilityCard({
       ) : g.rows.length === 0 ? (
         <Nothing cov={cov} heading="Nothing ended" what="no agent ended under these filters" />
       ) : (
-        <MoreRightSaid columns={7}>
+        <MoreRightSaid>
           <table>
             {g.rows_total > g.rows.length && <caption>showing {g.rows.length} of {g.rows_total}</caption>}
             <thead>

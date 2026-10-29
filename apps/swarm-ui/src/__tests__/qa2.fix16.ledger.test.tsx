@@ -17,7 +17,9 @@
 // it. Drop `MoreRightSaid`'s line -- the second finds no words. Return null
 // from `groupRemainder` -- the third finds no "other profiles" row. Print
 // `shortId` alone in the workflow cell -- the fifth finds no name. Drop
-// `attemptsWord` -- the last finds "181 of 190" bare.
+// `attemptsWord` -- the last finds "181 of 190" bare. Pass `one !== null`
+// as `listRowName`'s stepsKnown again (no `stepsRead`) -- the read missing
+// its step tasks prints "Untitled workflow" and the sixth finds it.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
@@ -137,6 +139,51 @@ describe('runs2-36: a failed workflow by its name', () => {
     expect(words(second)).toBe('wf_71aa…02c1')
     expect(api.loadWorkflowsById).toHaveBeenCalledTimes(1)
     expect(screen.queryByText(/Untitled workflow/)).toBeNull()
+  })
+})
+
+describe('runs2-36 (review): a read without its step tasks is not a guess', () => {
+  // The fixture console's read: the workflow came back, its step tasks did
+  // not, and Outcomes called it "Untitled workflow" while Work › Workflows
+  // named it. Untitled only once every step's task is read, as there.
+  function serve(id: string, read: WorkflowRead) {
+    api.loadWorkflowsById.mockResolvedValue({
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: { batched: true, reads: new Map([[id, read]]), missing: [] },
+    })
+  }
+  const steps = [
+    { step_id: 'research', task_id: 'task_r1' },
+    { step_id: 'draft', task_id: 'task_d1' },
+  ]
+
+  it('keeps the id alone when no step task came back, or only some did', async () => {
+    const d = ledgerFixture()
+    const id = d.workflows_failed.rows[0]!.workflow_id
+    for (const tasks of [[], [{ id: 'task_r1', metadata: {} }]]) {
+      serve(id, { workflow: { workflow_id: id, steps }, tasks } as unknown as WorkflowRead)
+      const { container, unmount } = render(<WorkflowsFailedCard data={d} spanLabel="14d" />)
+      await waitFor(() => expect(api.loadWorkflowsById).toHaveBeenCalled())
+      await new Promise((r) => setTimeout(r, 0))
+      const th = container.querySelector('.ol-workflows tbody tr th')!
+      expect(words(th), `with ${tasks.length} of 2 step tasks read`).toBe('wf_bcdc…9f31')
+      expect(screen.queryByText(/Untitled workflow/)).toBeNull()
+      unmount()
+      api.loadWorkflowsById.mockReset()
+    }
+  })
+
+  it('says "Untitled workflow" once every step task is read and none has a name', async () => {
+    const d = ledgerFixture()
+    const id = d.workflows_failed.rows[0]!.workflow_id
+    const tasks = [
+      { id: 'task_r1', metadata: {} },
+      { id: 'task_d1', metadata: {} },
+    ]
+    serve(id, { workflow: { workflow_id: id, steps }, tasks } as unknown as WorkflowRead)
+    const { container } = render(<WorkflowsFailedCard data={d} spanLabel="14d" />)
+    await waitFor(() => expect(words(container.querySelector('.ol-workflows tbody tr th'))).toContain('Untitled workflow'))
   })
 })
 
