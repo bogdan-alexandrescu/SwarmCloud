@@ -15,6 +15,7 @@ No cloud credentials, no cluster: render.py runs in-process or as a child.
 from __future__ import annotations
 
 import contextlib
+import functools
 import importlib.util
 import io
 import re
@@ -50,7 +51,10 @@ def _uid() -> str:
     return str(10**20 + secrets.randbelow(9 * 10**20))
 
 
+@functools.cache
 def _load():
+    """render.py, loaded on first use: it imports the service stack, which a
+    module-top load would make every collection of tests/unit/scripts pay for."""
     spec = importlib.util.spec_from_file_location("swarm_k8s_render_project", RENDER)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -58,14 +62,12 @@ def _load():
     return module
 
 
-render = _load()
-
 
 def _main(*argv: str) -> tuple[int, str, str]:
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         try:
-            code = render.main(list(argv))
+            code = _load().main(list(argv))
         except SystemExit as exc:
             code = exc.code if isinstance(exc.code, int) else 1
     return code, out.getvalue(), err.getvalue()
@@ -193,7 +195,7 @@ def test_quota_from_tenant_record(tmp_path: Path) -> None:
     assert hard["count/jobs.batch"] == given["--quota-jobs"]
     assert hard["requests.ephemeral-storage"] == given["--quota-ephemeral"]
     # Seven agents is not the Terraform tenant's flat quota.
-    assert hard["pods"] != str(render.TERRAFORM_TENANT_QUOTA["quota_pods"])
+    assert hard["pods"] != str(_load().TERRAFORM_TENANT_QUOTA["quota_pods"])
 
 
 def test_terraform_quota_is_the_named_constant() -> None:
@@ -203,7 +205,7 @@ def test_terraform_quota_is_the_named_constant() -> None:
     assert code == 0
     lines = out.split()
     assert lines[::2] == ["--quota-pods", "--quota-cpu", "--quota-memory", "--quota-jobs", "--quota-ephemeral"]
-    assert lines[1::2] == [str(v) for v in render.TERRAFORM_TENANT_QUOTA.values()]
+    assert lines[1::2] == [str(v) for v in _load().TERRAFORM_TENANT_QUOTA.values()]
 
 
 def test_policies_unchanged_without_project() -> None:
@@ -220,8 +222,8 @@ def test_policies_unchanged_without_project() -> None:
     # MUTATION: put `default="saga-agents-staging"` back on policies' --project.
     assert LIVE_PROJECT not in out
     projects = set(re.findall(r"@([a-z0-9-]+)\.iam\.gserviceaccount\.com", out))
-    assert projects == {render.OFFLINE_PROJECT}, projects
-    assert "google" in render.OFFLINE_PROJECT  # a restricted string in a GCP project id
+    assert projects == {_load().OFFLINE_PROJECT}, projects
+    assert "google" in _load().OFFLINE_PROJECT  # a restricted string in a GCP project id
 
     # The lint tenant and job renders beside it (security.yml, Makefile, the
     # worker's pre-publish checkov) keep working offline and name no project.
