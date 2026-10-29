@@ -1493,7 +1493,7 @@ def test_the_job_script_ends_a_stop_for_the_owner_as_a_success(tmp_path: Path, s
     scripts = _stub_tree(tmp_path)
     expect = tmp_path / "guard" / "expect.json"
     expect.parent.mkdir()
-    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(tmp_path), "SWARM_CALL_GUARD": str(expect),
+    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(tmp_path), "PROJECT_ID": PROJECT, "SWARM_CALL_GUARD": str(expect),
            "SWARM_CALL_GUARD_ENFORCE": "1", "NO_COLOR": "1", "STUB_RC": str(script_rc)}
     proc = subprocess.run([str(scripts / "workspace-apply.sh"), WORKSPACE, "limits"], env=env,
                           capture_output=True, text=True, timeout=120, check=False)
@@ -1509,7 +1509,7 @@ def test_the_job_script_ends_a_stop_for_the_owner_as_a_success(tmp_path: Path, s
 def test_the_job_script_runs_nothing_when_the_guard_fails_its_own_cases(tmp_path: Path) -> None:
     scripts = _stub_tree(tmp_path)
     expect = tmp_path / "expect.json"
-    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(tmp_path), "SWARM_CALL_GUARD": str(expect),
+    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(tmp_path), "PROJECT_ID": PROJECT, "SWARM_CALL_GUARD": str(expect),
            "SWARM_CALL_GUARD_ENFORCE": "1", "NO_COLOR": "1", "STUB_SELFTEST_RC": "1"}
     proc = subprocess.run([str(scripts / "workspace-apply.sh"), WORKSPACE, "create"], env=env,
                           capture_output=True, text=True, timeout=120, check=False)
@@ -1521,7 +1521,7 @@ def test_the_job_script_runs_nothing_when_the_guard_fails_its_own_cases(tmp_path
 @pytest.mark.parametrize("enforce", [None, "0", ""])
 def test_the_job_script_refuses_to_run_unenforced(tmp_path: Path, enforce: str | None) -> None:
     scripts = _stub_tree(tmp_path)
-    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(tmp_path),
+    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(tmp_path), "PROJECT_ID": PROJECT,
            "SWARM_CALL_GUARD": str(tmp_path / "expect.json"), "NO_COLOR": "1"}
     if enforce is not None:
         env["SWARM_CALL_GUARD_ENFORCE"] = enforce

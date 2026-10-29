@@ -49,7 +49,7 @@ def _guard(tmp_path: Path, *changes: dict, mode: str = "apply") -> subprocess.Co
     plan = tmp_path / "plan.json"
     plan.write_text(json.dumps({"format_version": "1.2", "resource_changes": list(changes)}))
     env = {k: v for k, v in os.environ.items() if not k.startswith(("SWARM_", "GCP_", "PROJECT"))}
-    env.update(NO_COLOR="1", SWARM_ENV_FILE=str(tmp_path / "no.env"))
+    env.update(NO_COLOR="1", SWARM_ENV_FILE=str(tmp_path / "no.env"), PROJECT_ID="saga-agents-staging")
     return subprocess.run([str(root / "scripts" / "lib" / "plan-guard.sh"), "--plan", str(plan), "--mode", mode],
                           capture_output=True, text=True, timeout=60, env=env, check=False)
 
