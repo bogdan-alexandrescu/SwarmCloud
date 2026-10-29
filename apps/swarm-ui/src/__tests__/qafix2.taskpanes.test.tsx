@@ -121,7 +121,9 @@ describe('QA-113: the Attempts tab’s counts agree and what ran comes first', (
     const el = await attemptsTab(rows, events)
     const notes = Array.from(el.querySelectorAll('.att-card .ctl-card-note')).map((n) => n.textContent)
     // MUTATION: put `0 events` back on an empty card -- it reads as a measured zero against the toolbar's 3.
-    expect(notes).toEqual(['3 events · Cloud Run', 'no events on this page · Cloud Run', 'no events on this page · Cloud Run'])
+    // The card holding all three of the page's events names its backend only:
+    // the toolbar says `3 events` (QA2-FIX-13, overview-agents-41).
+    expect(notes).toEqual(['Cloud Run', 'no events on this page · Cloud Run', 'no events on this page · Cloud Run'])
     // MUTATION: restore the card's `partial · none on this page` line -- two words that contradict.
     expect(el.querySelector('.att-card .ctl-mark.is-partial')).toBeNull()
     for (const card of el.querySelectorAll('.att-card')) expect(card.textContent).not.toMatch(/none on this page/)
@@ -143,8 +145,9 @@ describe('QA-113: the Attempts tab’s counts agree and what ran comes first', (
     expect(within(head).getByText('failed to start')).toBeTruthy()
     // MUTATION: draw it in `unknown` -- a rejected dispatch reads as no verdict.
     expect(head.querySelector('[data-tone="bad"]')).not.toBeNull()
-    // The error itself is still printed, verbatim.
-    expect(first.querySelector('pre.err')?.textContent).toBe('BACKEND_REJECTED')
+    // The error is said in words, and its code kept in the title (QA2-FIX-13, ovag2-07).
+    expect(first.querySelector('pre.err')?.textContent).toBe('The backend refused to start it.')
+    expect(first.querySelector('pre.err')?.getAttribute('title')).toBe('BACKEND_REJECTED')
   })
 
   it('still says "never started" for an attempt with no error', async () => {

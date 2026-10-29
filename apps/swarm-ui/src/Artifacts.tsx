@@ -27,6 +27,7 @@ import {
   type WorkflowRead,
 } from './api'
 import { ArtifactViewer, Markdown, offersRawPatch, RawPatchDownload } from './ArtifactViewer'
+import { workflowHref } from './agentlist'
 import { DECLARED_WORDS, taskInputsOf, type TaskInputRow } from './dag'
 import { SkippedArtifactsNote } from './DecisionCard'
 import { errorHeading, num, type ApiError, type Result } from './fetch'
@@ -335,11 +336,33 @@ function Inputs({ v, reading }: { v: ArtifactsView; reading: ScreenReading }) {
   return (
     <section className="section arts-inputs">
       <h2>Inputs</h2>
-      <Prompt taskId={v.task.id} readAt={reading.fetchedAt} step={(v.task.workflow_id ?? null) !== null && (v.task.step_id ?? null) !== null} />
+      <Prompt
+        taskId={v.task.id}
+        readAt={reading.fetchedAt}
+        step={(v.task.workflow_id ?? null) !== null && (v.task.step_id ?? null) !== null}
+        workflowId={v.task.workflow_id ?? null}
+        stepPrompt={stepPromptOf(v)}
+      />
       <Repository task={v.task} />
       <StagedFiles v={v} />
     </section>
   )
+}
+
+/**
+ * THE PROMPT THIS STEP'S WORKFLOW GAVE IT (visual QA pass 2,
+ * overview-agents-50): the step's `input.prompt` off the workflow read the
+ * pane already holds for its staged files. The route serves each step's input
+ * masked by that step's task's masker, as the task's own copy is. Null: not a
+ * step, the workflow not read, or no prompt there.
+ */
+function stepPromptOf(v: ArtifactsView): string | null {
+  const w = v.workflow
+  if (w === null || !ok(w) || (v.task.step_id ?? null) === null) return null
+  const input = w.data.workflow.steps?.find((s) => s.step_id === v.task.step_id)?.input
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) return null
+  const prompt = (input as Record<string, unknown>)['prompt']
+  return typeof prompt === 'string' && prompt !== '' ? prompt : null
 }
 
 /**
@@ -369,7 +392,21 @@ function Inputs({ v, reading }: { v: ArtifactsView; reading: ScreenReading }) {
  * request, and one that failed is asked for again. A pane that has stopped
  * polling -- a settled finish -- stops asking with it.
  */
-export function Prompt({ taskId, readAt, step = false }: { taskId: string; readAt: number; step?: boolean }) {
+export function Prompt({
+  taskId,
+  readAt,
+  step = false,
+  workflowId = null,
+  stepPrompt = null,
+}: {
+  taskId: string
+  readAt: number
+  step?: boolean
+  /** The step's workflow, for the way to its page when no prompt is recorded. */
+  workflowId?: string | null
+  /** The prompt the step's workflow gave it (`stepPromptOf`); null when there is none to show. */
+  stepPrompt?: string | null
+}) {
   const { state } = useRead<TaskInputCopy>(() => loadTaskInputOnce(taskId), taskId, `input:${readAt}`, null)
   const copy = state.status === 'ok' || state.status === 'stale' ? state.data : null
   // What this block draws, masked: the prompt and the rest, or the whole input.
@@ -414,17 +451,38 @@ export function Prompt({ taskId, readAt, step = false }: { taskId: string; readA
             </div>
           )}
         </>
+      ) : copy.prompt_key === 'missing' && copy.full.text === '{}' && step && stepPrompt !== null ? (
+        // THE WORKFLOW'S PROMPT, SAID AS ITS (visual QA pass 2,
+        // overview-agents-50). The step's own copy is empty and its workflow
+        // served the prompt it gave the step, so that is drawn, labelled.
+        <>
+          <p className="ctl-card-note">from its workflow</p>
+          <PromptText text={stepPrompt} />
+        </>
       ) : copy.prompt_key === 'missing' && copy.full.text === '{}' && step ? (
         // A WORKFLOW STEP RAN A PROMPT (visual QA pass 1, overview-agents-50):
         // `none · no input` said nothing was sent to a step whose workflow
         // gave it one. Its input copy is empty, so the prompt it ran is not
-        // in the record, which is what is said.
+        // in the record, which is what is said. NOT `not measured` (pass 2):
+        // a prompt is a record, not a measurement -- the hatched absence
+        // with the word that is true, as the attempt card's model says it,
+        // and the way to the page that holds its workflow's steps.
         <p className="att-none">
-          <Mark
-            kind="absent"
-            say="This workflow step ran the prompt its workflow gave it, and its stored input is empty, so the prompt it ran was not recorded here. The workflow's page holds its steps' prompts."
-          />{' '}
-          prompt not recorded
+          <span
+            className="ctl-mark is-absent"
+            role="img"
+            aria-label="This workflow step ran the prompt its workflow gave it, and neither its stored input nor its workflow's read holds it, so the prompt it ran was not recorded here."
+          >
+            not recorded
+          </span>
+          {workflowId !== null && (
+            <>
+              {' · '}
+              <a className="ctl-link" href={workflowHref(workflowId)}>
+                the workflow’s steps
+              </a>
+            </>
+          )}
         </p>
       ) : copy.prompt_key === 'missing' && copy.full.text === '{}' ? (
         <p className="att-none">
