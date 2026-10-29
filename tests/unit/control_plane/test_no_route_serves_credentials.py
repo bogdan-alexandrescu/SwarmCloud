@@ -450,6 +450,12 @@ SECRET_PAYLOAD_READERS = {
     # only to the worker of a proven, fenced attempt whose run names the target,
     # at qatargets.ISSUE_ROUTE, which main.UNCAPTURED_ROUTES keeps out of capture.
     "qatargets.py",
+    # The Desktop OAuth client's secret, read once at start and served in the
+    # unauthenticated discovery document ONLY when DISCOVERY_SERVE_CLIENT_SECRET
+    # is true: BGD's Q1 decision (docs/design/day-one-plan.md §6.3; Google
+    # classifies a Desktop client's secret as non-confidential). A separate
+    # app, swarm-discovery, never mounted on swarm-api's routes.
+    "discovery.py",
     # gittools.py read the `-git-wf` slot until #2029 (WF-APP-TOKEN) removed
     # it: a workflow-touching push now uses an App installation token minted
     # per push, never a stored secret. MUTATION: keep the slot reader and
