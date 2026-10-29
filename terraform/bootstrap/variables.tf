@@ -28,8 +28,8 @@ variable "infra_tenants_tfvars" {
   default     = "../environments/dev/dev.tfvars"
 
   validation {
-    condition     = endswith(var.infra_tenants_tfvars, ".tfvars")
-    error_message = "infra_tenants_tfvars must name a .tfvars file."
+    condition     = var.infra_tenants_tfvars == "" || endswith(var.infra_tenants_tfvars, ".tfvars")
+    error_message = "infra_tenants_tfvars must name a .tfvars file, or be \"\" for an install that declares no Terraform tenants (DAYONE-BOOT-1)."
   }
 }
 
@@ -495,9 +495,14 @@ variable "deployer_storage_buckets_exact" {
     match `swarm-`, and omitting it breaks every image build -- which is how a
     plausible-looking `startsWith("swarm-")` condition would have taken down the
     release pipeline on the day it first worked.
+
+    EMPTY BY DEFAULT: the bucket's name carries the project id, and the only
+    default this could hold named the live project (DAYONE-TF-1). A deployment
+    that builds images with Cloud Build lists `<project>_cloudbuild` in its
+    terraform.tfvars; the install engine writes it under the CI add-on.
   EOT
   type        = list(string)
-  default     = ["saga-agents-staging_cloudbuild"]
+  default     = []
 }
 
 variable "frontend_iap_backends" {
@@ -509,11 +514,14 @@ variable "frontend_iap_backends" {
     The names follow modules/frontend/main.tf for name_prefix "swarm". A rename
     there makes this plan fail at the data source lookup.
 
-    Set to [] for the first bootstrap apply on a fresh project, before
-    terraform/infra has created the backends.
+    EMPTY BY DEFAULT, which is what the first bootstrap apply on a fresh
+    project needs: terraform/infra has not created the backends yet, and a
+    named one fails this plan at the data source lookup. A deployment whose
+    infra pass has run lists them in its terraform.tfvars; the install engine
+    writes them from the infra state for bootstrap pass 2 (DAYONE-TF-1).
   EOT
   type        = list(string)
-  default     = ["swarm-ui-backend", "swarm-ui-ui-backend"]
+  default     = []
 
   # Nine of the ten backend services in saga-agents-staging belong to another
   # team, including their Keycloak and ArgoCD. The prefix check keeps any of them

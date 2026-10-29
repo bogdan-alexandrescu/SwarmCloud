@@ -75,19 +75,31 @@ variable "enable_tailscale_egress" {
 
 variable "tailscale_egress_target" {
   description = <<-EOT
-    The tailnet name the forwarder dials, on 443, and the only one: Saga's
+    The tailnet name the forwarder dials, on 443, and the only one: the
     decision API (owner decision 2026-10-14). Its /jev and /laya paths, and
     the root, are all behind this one host, so one forwarder serves both
     internal judgment backends.
+
+    NO DEFAULT (null): it names one tailnet, and a default would carry that
+    tailnet into every install (DAYONE-TF-1). The Tailscale add-on sets it;
+    without the add-on nothing reads it. Required once enable_tailscale_egress
+    or internal_decision_api_enabled is on.
   EOT
   type        = string
-  default     = "decision-api-staging.taile0bda9.ts.net"
+  default     = null
 
   validation {
     # A MagicDNS name: <host>.<tailnet>.ts.net. It is written into a command
     # line and an annotation, so nothing else is accepted.
-    condition     = can(regex("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.[a-z0-9-]+\\.ts\\.net$", var.tailscale_egress_target))
+    condition     = var.tailscale_egress_target == null || can(regex("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.[a-z0-9-]+\\.ts\\.net$", var.tailscale_egress_target))
     error_message = "tailscale_egress_target is one MagicDNS name, <host>.<tailnet>.ts.net, in lower case."
+  }
+
+  validation {
+    # Refused at plan rather than rendered as "https://" or an empty forwarder
+    # target, which would fail only when a judging pod first dials it.
+    condition     = var.tailscale_egress_target != null || (!var.enable_tailscale_egress && !var.internal_decision_api_enabled)
+    error_message = "tailscale_egress_target is unset, but enable_tailscale_egress or internal_decision_api_enabled is on: set the decision API's MagicDNS name, <host>.<tailnet>.ts.net."
   }
 }
 

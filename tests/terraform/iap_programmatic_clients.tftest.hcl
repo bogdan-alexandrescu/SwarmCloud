@@ -68,6 +68,7 @@ run "a_desktop_client_is_allowlisted_on_our_backends_and_nowhere_else" {
   }
 
   variables {
+    frontend_iap_backends             = ["swarm-ui-backend", "swarm-ui-ui-backend"]
     frontend_iap_programmatic_clients = ["209012342332-abcdef0123.apps.googleusercontent.com"]
   }
 

@@ -1223,25 +1223,17 @@ def test_terraform_lets_a_tenant_worker_call_the_broker():
     )
 
 
-def test_terraform_catches_a_stale_broker_url():
-    """The GKE path cannot derive the URL -- the scheduler's environment is an
-    input to the module whose output the URL is -- so it is declared, and a
-    declared value goes stale. A stale one is worse than an empty one: a
-    request to it is REFUSED rather than unanswered, and a refused worker parks
-    every task instead of falling back."""
+def test_terraform_computes_the_broker_url():
+    """The GKE path cannot read the broker's uri -- the scheduler's environment
+    is an input to the module whose output the uri is -- so it is built from
+    the project number (DAYONE-TF-1): a computed value cannot be empty or go
+    stale, which is the outage a declared one risked."""
     main_tf = (REPO / "terraform" / "infra" / "main.tf").read_text()
+    locals_tf = (REPO / "terraform" / "infra" / "locals.tf").read_text()
 
-    assert 'check "quota_broker_url_is_wired"' in main_tf
-    assert 'module.cloud_run.service_urls["swarm-quota-broker"]' in main_tf
-
-
-def test_the_environment_that_exists_actually_sets_it():
-    """The defect was not "there is no way to set this", it was "nothing set
-    it". A mechanism with no value in it is the same outage."""
-    dev = (REPO / "terraform" / "environments" / "dev" / "dev.tfvars").read_text()
-
-    assert "quota_broker_url" in dev
-    assert 'quota_broker_url = ""' not in dev
+    assert "swarm-quota-broker-${data.google_project.this.number}.${var.region}.run.app" in main_tf
+    assert "QUOTA_BROKER_URL      = local.quota_broker_url" in locals_tf
+    assert "var.quota_broker_url" not in locals_tf
 
 
 # The other half of that alarm -- that the broker actually raises it -- is in
