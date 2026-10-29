@@ -21,6 +21,9 @@
 # Usage: scripts/lib/check-doc-links.sh
 
 set -euo pipefail
+# This script touches no project: it reads the docs in the checkout. It says so, so common.sh
+# (no default project, DAYONE-DESAGA-2) does not stop on an unset PROJECT_ID.
+SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"

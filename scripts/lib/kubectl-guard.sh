@@ -9,6 +9,12 @@
 #
 # Usage: scripts/lib/kubectl-guard.sh --self-test
 set -euo pipefail
+# --self-test judges fixture calls and reaches no cluster: that mode touches no project and says so, so common.sh
+# (no default project, DAYONE-DESAGA-2) does not stop on an unset PROJECT_ID.
+# Every other mode still needs one.
+for arg in "$@"; do
+  [[ "${arg}" != "--self-test" ]] || SWARM_NO_PROJECT=1
+done
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"

@@ -147,6 +147,15 @@ assert_env_file_is_trustworthy() {
   fi
 }
 
+# require_project: stop unless PROJECT_ID names a project. load_env calls it
+# for every script that did not set SWARM_NO_PROJECT=1; a script that did, but
+# has a mode that does reach a project (a check that finds credentials, say),
+# calls it before that mode, so the opt-out never becomes a guess.
+require_project() {
+  [[ -n "${PROJECT_ID:-}" ]] \
+    || die "PROJECT_ID is not set, and no script here guesses it. Set it in .env (cp .env.example .env) or export it: PROJECT_ID=<your-gcp-project>"
+}
+
 load_env() {
   local env_file="${SWARM_ENV_FILE:-${REPO_ROOT}/.env}"
   if [[ -f "${env_file}" ]]; then
@@ -169,9 +178,7 @@ load_env() {
   # runs with PROJECT_ID empty, and the deny-list stays WHOLE: a project nobody
   # named is never assumed to be one whose list may be empty.
   if [[ -z "${PROJECT_ID:-}" ]]; then
-    if [[ "${SWARM_NO_PROJECT:-}" != "1" ]]; then
-      die "PROJECT_ID is not set, and no script here guesses it. Set it in .env (cp .env.example .env) or export it: PROJECT_ID=<your-gcp-project>"
-    fi
+    [[ "${SWARM_NO_PROJECT:-}" == "1" ]] || require_project
     PROJECT_ID=""
   fi
   REGION="${REGION:-us-central1}"

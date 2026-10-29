@@ -1039,7 +1039,10 @@ def test_documents_terraform_owns_are_left_for_terraform(tmp_path):
 )
 def test_refusals_delete_nothing(tmp_path, tenant, over, says):
     before = world(**over)
-    run = _run(tmp_path, before, "--tenant", tenant, "--apply", typed=tenant or "x")
+    # The deny-list is keyed by project (DAYONE-DESAGA-2): it is whole only in
+    # the shared project, so the deny-listed case runs there.
+    shared = {"PROJECT_ID": "saga-agents-staging"} if says == "shared deny-list" else {}
+    run = _run(tmp_path, before, "--tenant", tenant, "--apply", typed=tenant or "x", **shared)
     assert run.rc != 0, run.stderr[-3000:]
     assert says in run.stderr, run.stderr[-3000:]
     assert not run.writes, run.writes

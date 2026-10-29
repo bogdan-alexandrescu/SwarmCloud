@@ -66,6 +66,13 @@ case "${BASH_SOURCE[0]}" in
   */*) GUARD_SELF_DIR="${BASH_SOURCE[0]%/*}"; GUARD_SELF_DIR="${GUARD_SELF_DIR:-/}" ;;
   *)   GUARD_SELF_DIR="." ;;
 esac
+# self-test judges the fixture cases and touches no project, and says so, so
+# common.sh (no default project, DAYONE-DESAGA-2) does not stop on an unset
+# PROJECT_ID. Every other subcommand runs inside a workspace build that names
+# one.
+case "${1:-}" in
+  self-test|--self-test) SWARM_NO_PROJECT=1 ;;
+esac
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=common.sh
 source "$(cd -- "${GUARD_SELF_DIR}" && pwd)/common.sh"
@@ -924,7 +931,7 @@ guard_real_bin() {
 GUARD_DENY_LINES=""
 guard_deny_lists() {
   local IFS=$'\n'
-  GUARD_DENY_LINES="${SHARED_DENY_LIST[*]}"
+  GUARD_DENY_LINES="${SHARED_DENY_LIST[*]+${SHARED_DENY_LIST[*]}}"
 }
 
 # ---------------------------------------------------------------------------

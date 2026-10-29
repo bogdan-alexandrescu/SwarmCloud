@@ -47,6 +47,13 @@
 #   scripts/bench-ui.sh --from-json capture.jsonl   # re-analyse a capture
 
 set -euo pipefail
+# --from-json re-analyses a capture on disk and touches no project (bench.sh
+# --self-test runs it that way). It says so, so common.sh (no default project,
+# DAYONE-DESAGA-2) does not stop on an unset PROJECT_ID. Every other mode
+# still needs one.
+for arg in "$@"; do
+  [[ "${arg}" != "--from-json" ]] || SWARM_NO_PROJECT=1
+done
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
