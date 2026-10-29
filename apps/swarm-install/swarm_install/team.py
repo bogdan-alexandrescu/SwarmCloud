@@ -427,9 +427,9 @@ def scheduler_spec_settings(gcp: Any, project: str, region: str) -> dict[str, st
     service = gcp.run_service(project, region, "swarm-scheduler") or {}
     out: dict[str, str] = {}
     for container in (service.get("template") or {}).get("containers") or ():
-        for env in container.get("env") or ():
-            if env.get("name") in SPEC_SETTINGS and env.get("value"):
-                out[str(env["name"])] = str(env["value"])
+        for var in container.get("env") or ():
+            if var.get("name") in SPEC_SETTINGS and var.get("value"):
+                out[str(var["name"])] = str(var["value"])
     return out
 
 

@@ -300,3 +300,16 @@ def test_the_verb_exits_fail_with_the_reason(monkeypatch, capsys) -> None:
                               git_owner=None, context=None, json_events=False)
     assert verb.run(args) == int(ExitCode.FAIL)
     assert "no install state" in capsys.readouterr().err
+
+
+def test_the_keys_are_the_ones_the_scheduler_hands_its_jobs() -> None:
+    settings = _settings()
+
+    class Gcp:
+        def run_service(self, project: str, region: str, name: str) -> dict:
+            assert (project, region, name) == (PROJECT, "us-central1", "swarm-scheduler")
+            env = [{"name": k, "value": v} for k, v in settings.items()]
+            env.append({"name": "UNRELATED", "value": "x"})
+            return {"template": {"containers": [{"env": env}]}}
+
+    assert team_mod.scheduler_spec_settings(Gcp(), PROJECT, "us-central1") == settings
