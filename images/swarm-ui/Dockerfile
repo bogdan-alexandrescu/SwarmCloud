@@ -1,4 +1,4 @@
-# syntax=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # swarm-ui -- the static web UI, served behind the same load balancer as swarm-api.
 #
@@ -59,7 +59,12 @@ ARG NGINX_IMAGE=nginxinc/nginx-unprivileged:1.31.6-alpine@sha256:b54ac358b83fc6c
 # digests. A pull request's local build, which has no Google identity,
 # passes the upstream registries here instead (scripts/lib/build-mirror.sh).
 # docs/runbooks/build-mirror.md.
-ARG MIRROR_DOCKER_HUB=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub
+# No default, so this file names no project (DAYONE-DESAGA-1,
+# docs/design/day-one-install.md section 7): scripts/build-images.sh passes
+# the mirror of the project it builds for (lib/build-mirror.sh
+# mirror_build_args), and the `# syntax=` frontend through the same mirror as
+# BUILDKIT_SYNTAX. A `docker build` given neither fails on its first FROM.
+ARG MIRROR_DOCKER_HUB=
 
 # --- build -----------------------------------------------------------------
 FROM ${MIRROR_DOCKER_HUB}/library/${NODE_IMAGE} AS build

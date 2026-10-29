@@ -66,6 +66,12 @@ steps:
       - build
       - -t
       - ${_IMAGE}:${_TAG}
+      # The project's mirrors, which build-images.sh passes as substitutions
+      # (recipe_mirror_subs; the Dockerfile names no project, DAYONE-DESAGA-1).
+      - --build-arg
+      - MIRROR_DOCKER_HUB=${_MIRROR_DOCKER_HUB}
+      - --build-arg
+      - BUILDKIT_SYNTAX=${_BUILDKIT_SYNTAX}
       - /workspace/verify-ctx
 
 images:

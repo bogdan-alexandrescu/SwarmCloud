@@ -14,9 +14,20 @@
 #   images  Artifact Registry REMOTE repositories, swarm-mirror-ghcr and
 #           swarm-mirror-dockerhub. Every Dockerfile names its base as
 #           ${MIRROR_GHCR}/<image> or ${MIRROR_DOCKER_HUB}/<image>, at the
-#           digest it pinned before, and its `# syntax=` frontend the same
-#           way. A remote repository fetches a digest from upstream once and
-#           serves it from the cache after that.
+#           digest it pinned before. A remote repository fetches a digest
+#           from upstream once and serves it from the cache after that.
+#
+#           THE DOCKERFILES NAME NO PROJECT (DAYONE-DESAGA-1;
+#           docs/design/day-one-install.md section 7). Their MIRROR_*
+#           defaults are empty and their `# syntax=` line is the plain
+#           docker/dockerfile reference -- BuildKit reads that line before
+#           any build argument, so it cannot name one. The build passes the
+#           mirror of the project it builds for (mirror_build_args): each
+#           MIRROR_* the Dockerfile declares, and the frontend through the
+#           Docker Hub mirror as BUILDKIT_SYNTAX, which BuildKit uses in place
+#           of the `# syntax=` line. So the live project's build pulls exactly
+#           what it pulled when the Dockerfiles named its mirror, and another
+#           project's build reads its own.
 #   tools   a GCS bucket, gs://${BUILD_MIRROR_BUCKET}, holding each release
 #           file at its upstream URL without `https://`. The list, with the
 #           sha256 the Dockerfile checks, is TOOL_MIRROR_MANIFEST. Cloud Build
@@ -47,6 +58,72 @@ TOOL_MIRROR_CONTEXT_DIR="build/tool-mirror"
 # so a Dockerfile that declares no MIRROR_* argument (agent-runtime-browser,
 # whose only pull is its `# syntax=` frontend) is mapped the same way.
 MIRROR_UPSTREAMS_JSON='{"MIRROR_DOCKER_HUB": {"suffix": "-mirror-dockerhub", "upstream": "docker.io"}, "MIRROR_GHCR": {"suffix": "-mirror-ghcr", "upstream": "ghcr.io"}}'
+# The mirror build arguments, in the order they are passed.
+MIRROR_BUILD_ARGS=(MIRROR_DOCKER_HUB MIRROR_GHCR)
+
+# mirror_repository NAME -- the repository NAME (MIRROR_DOCKER_HUB or
+# MIRROR_GHCR) stands for in the project this build is for:
+# <REGION>-docker.pkg.dev/<PROJECT_ID>/<repository>. Dies when PROJECT_ID is
+# unset: there is no project whose mirror a build could fall back to.
+mirror_repository() {
+  local repository
+  # Under terraform/infra's default name_prefix, `swarm`: build_mirror.tf
+  # names them "${var.name_prefix}-mirror-...".
+  case "$1" in
+    MIRROR_DOCKER_HUB) repository="swarm-mirror-dockerhub" ;;
+    MIRROR_GHCR) repository="swarm-mirror-ghcr" ;;
+    *) die "no build mirror is called $1" ;;
+  esac
+  [[ -n "${PROJECT_ID:-}" ]] || die "PROJECT_ID is not set: a build reads the mirrors of its own project"
+  [[ -n "${REGION:-}" ]] || die "REGION is not set: a build reads the mirrors in its own region"
+  printf '%s-docker.pkg.dev/%s/%s\n' "${REGION}" "${PROJECT_ID}" "${repository}"
+}
+
+# dockerfile_syntax_ref DOCKERFILE -- the frontend its `# syntax=` first line
+# names, as written, or nothing. A path relative to the repository is taken
+# from REPO_ROOT.
+dockerfile_syntax_ref() {
+  local df="$1" first=""
+  [[ "${df}" == /* ]] || df="${REPO_ROOT}/${df}"
+  [[ -f "${df}" ]] || die "no Dockerfile at ${df#"${REPO_ROOT}/"}"
+  IFS= read -r first <"${df}" || true
+  if [[ "${first}" =~ ^#[[:space:]]*syntax[[:space:]]*=[[:space:]]*([^[:space:]]+) ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+  fi
+}
+
+# mirror_syntax_ref DOCKERFILE -- the Dockerfile's `# syntax=` frontend
+# through this project's Docker Hub mirror, or nothing when its first line
+# names no frontend or names one outside Docker Hub.
+mirror_syntax_ref() {
+  local ref hub
+  ref="$(dockerfile_syntax_ref "$1")"
+  [[ -n "${ref}" ]] || return 0
+  # A registry host has a dot or a port in its first component; a Docker Hub
+  # short name (docker/dockerfile) has neither.
+  [[ "${ref%%/*}" != *.* && "${ref%%/*}" != *:* && "${ref%%/*}" != localhost ]] || return 0
+  [[ "${ref}" == */* ]] || ref="library/${ref}"
+  hub="$(mirror_repository MIRROR_DOCKER_HUB)"
+  printf '%s/%s\n' "${hub}" "${ref}"
+}
+
+# mirror_build_args DOCKERFILE -- `NAME=VALUE`, one a line, for every mirror
+# build argument the Dockerfile declares, then BUILDKIT_SYNTAX for its
+# frontend (mirror_syntax_ref). An argument the Dockerfile does not declare is
+# not passed: BuildKit warns about every one it was given and did not use.
+mirror_build_args() {
+  local df="$1" name repo syntax
+  [[ "${df}" == /* ]] || df="${REPO_ROOT}/${df}"
+  [[ -f "${df}" ]] || die "no Dockerfile at ${df#"${REPO_ROOT}/"}"
+  for name in "${MIRROR_BUILD_ARGS[@]}"; do
+    if grep -Eq "^[[:space:]]*ARG[[:space:]]+${name}(=|[[:space:]]*$)" "${df}"; then
+      repo="$(mirror_repository "${name}")"
+      printf '%s=%s\n' "${name}" "${repo}"
+    fi
+  done
+  syntax="$(mirror_syntax_ref "${df}")"
+  if [[ -n "${syntax}" ]]; then printf 'BUILDKIT_SYNTAX=%s\n' "${syntax}"; fi
+}
 
 # tool_mirror_rows -- `<sha256> <object>` for every row of the manifest, or
 # die on a row that is not one. An object is a path under one of the two
@@ -161,15 +238,40 @@ tool_mirror_stage_upstream() {
   info "staged ${n} release file(s) from upstream into ${TOOL_MIRROR_CONTEXT_DIR}, each matching its pinned sha256"
 }
 
+# mirror_build_args_yaml DOCKERFILE -- mirror_build_args as YAML list items
+# for a docker step's args (scripts/build-images.sh generate_config), so the
+# live project's build pulls what it pulled when the Dockerfiles named its
+# mirror and another project's build reads its own (DAYONE-DESAGA-1; design
+# section 7). Nothing for a pull request's local build (LOCAL_BUILD=1): it
+# can read no mirror, and its replay passes the upstream registries
+# (build-images.sh LOCAL_REPLAY upstream_args), so it needs no project at
+# all. Call it before the heredoc it fills, so an unset PROJECT_ID stops the
+# run instead of writing an empty argument.
+mirror_build_args_yaml() {
+  local args line
+  [[ "${LOCAL_BUILD:-0}" -eq 0 ]] || return 0
+  args="$(mirror_build_args "$1")"
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] || continue
+    printf '%s\n' "      - --build-arg" "      - ${line}"
+  done <<<"${args}"
+}
+
 # mirror_image_refs -- every image reference a Dockerfile here pulls through a
-# mirror, one per line, sorted: each FROM and each `# syntax=` frontend,
-# expanded with the Dockerfile's own ARG defaults, that names a
-# *-mirror-ghcr or *-mirror-dockerhub repository.
+# mirror, one per line, sorted: each FROM and each `# syntax=` frontend, as
+# the build passes them (mirror_build_args: the MIRROR_* arguments name this
+# project's mirrors) and otherwise with the Dockerfile's own ARG defaults,
+# that names a *-mirror-ghcr or *-mirror-dockerhub repository.
 mirror_image_refs() {
-  "${SWARM_PYTHON:-python3}" - "${REPO_ROOT}" "${MIRROR_UPSTREAMS_JSON}" <<'PY'
+  local passed="" name
+  for name in "${MIRROR_BUILD_ARGS[@]}"; do
+    passed+="${name}=$(mirror_repository "${name}")"$'\n'
+  done
+  "${SWARM_PYTHON:-python3}" - "${REPO_ROOT}" "${MIRROR_UPSTREAMS_JSON}" "${passed}" <<'PY'
 import json, pathlib, re, sys
 
 root, mirrors = pathlib.Path(sys.argv[1]), json.loads(sys.argv[2])
+passed = dict(line.split("=", 1) for line in sys.argv[3].splitlines() if line)
 suffixes = tuple(m["suffix"] for m in mirrors.values())
 refs = set()
 for df in sorted([*root.glob("apps/*/Dockerfile"), *root.glob("images/*/Dockerfile")]):
@@ -177,8 +279,14 @@ for df in sorted([*root.glob("apps/*/Dockerfile"), *root.glob("images/*/Dockerfi
     first = text.splitlines()[0] if text else ""
     m = re.match(r"#\s*syntax\s*=\s*(\S+)", first)
     if m:
-        refs.add(m.group(1))
-    args, cur = {}, ""
+        ref = m.group(1)
+        # A Docker Hub short name is passed through the mirror as
+        # BUILDKIT_SYNTAX (mirror_syntax_ref).
+        head = ref.split("/", 1)[0]
+        if "." not in head and ":" not in head and head != "localhost":
+            ref = f"{passed['MIRROR_DOCKER_HUB']}/{ref if '/' in ref else 'library/' + ref}"
+        refs.add(ref)
+    args, cur = dict(passed), ""
     for raw in text.splitlines():
         s = raw.strip()
         if s.startswith("#"):
@@ -189,7 +297,9 @@ for df in sorted([*root.glob("apps/*/Dockerfile"), *root.glob("images/*/Dockerfi
         line, cur = cur.strip(), ""
         a = re.match(r"ARG\s+([A-Za-z_][A-Za-z0-9_]*)=(\S+)$", line)
         if a:
-            args[a.group(1)] = a.group(2)
+            # What the build passes wins over a default, as it does in BuildKit.
+            if a.group(1) not in passed:
+                args[a.group(1)] = a.group(2)
             continue
         f = re.match(r"FROM\s+(?:--platform=\S+\s+)?(\S+)", line)
         if f:

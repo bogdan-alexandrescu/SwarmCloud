@@ -37,6 +37,10 @@ TAG=testtag
 BUILD_ONLY=0
 LOCAL_BUILD=0
 REPO_ROOT={REPO}
+# The project whose build mirrors the config names (DAYONE-DESAGA-1).
+PROJECT_ID=swarm-test-project
+REGION=us-central1
+die() {{ printf '%s\\n' "$*" >&2; exit 1; }}
 source scripts/lib/build-mirror.sh
 # Pull in just the functions, not the whole script's side effects. The
 # per-target build args are their own function, shared with --build-only's

@@ -1,4 +1,4 @@
-# syntax=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # agent-runtime-indexer -- agent-runtime-base plus the repository index's
 # toolchain: the tree-sitter extractor (`swarm-repo-index`), the graph shard
@@ -46,7 +46,12 @@ ARG PYTHON_IMAGE=python:3.11-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34
 # digests. A pull request's local build, which has no Google identity,
 # passes the upstream registries here instead (scripts/lib/build-mirror.sh).
 # docs/runbooks/build-mirror.md.
-ARG MIRROR_DOCKER_HUB=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub
+# No default, so this file names no project (DAYONE-DESAGA-1,
+# docs/design/day-one-install.md section 7): scripts/build-images.sh passes
+# the mirror of the project it builds for (lib/build-mirror.sh
+# mirror_build_args), and the `# syntax=` frontend through the same mirror as
+# BUILDKIT_SYNTAX. A `docker build` given neither fails on its first FROM.
+ARG MIRROR_DOCKER_HUB=
 ARG BASE_IMAGE
 
 # ---------------------------------------------------------------------------
