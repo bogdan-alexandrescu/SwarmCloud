@@ -194,13 +194,13 @@ export function GitTokensPage({ go }: { go: (to: string) => void }) {
           <>
             <Button kind="ghost" size="sm" className="ur-discl-btn" aria-expanded={teamOpen} aria-controls="ur-reg-team" onClick={() => setTeamOpen((o) => !o)}>
               <span aria-hidden="true">{teamOpen ? '▾ ' : '▸ '}</span>
-              {`Team token for ${tenant} (admins only)`}
+              {`Workspace token for ${tenant} (admins only)`}
             </Button>
             {teamOpen && (
               <RegisterToken
                 id="ur-reg-team"
                 className="ur-reg ur-reg-team"
-                title={`Team token for ${tenant}: from your terminal`}
+                title={`Workspace token for ${tenant}: from your terminal`}
                 scopes={['tenant']}
                 slot={teamSlot}
                 onSlot={(t) => {

@@ -339,9 +339,9 @@ describe('89: the workflow’s time view is not a second Timeline', () => {
     const tabs = document.querySelector<HTMLElement>('.wfp')!
     // MUTATION: use `VIEW_LABEL` for the page's tabs again -- `Timeline`, the
     // nav's platform-lanes screen's name.
-    const tab = within(tabs).getByRole('link', { name: 'Steps over time' })
+    const tab = within(tabs).getByRole('tab', { name: 'Steps over time' })
     expect(tab.getAttribute('href')).toMatch(/\/timeline/)
-    expect(within(tabs).queryByRole('link', { name: 'Timeline' })).toBeNull()
+    expect(within(tabs).queryByRole('tab', { name: 'Timeline' })).toBeNull()
   })
 })
 

@@ -309,8 +309,8 @@ describe('one workflow', () => {
     const onView = vi.fn()
     render(<Routed initial="wf=wf_broker&owner=priya" onView={onView} />)
     await waitFor(() => expect(document.querySelector('.wf-canvas')).toBeTruthy())
-    // A canonical tab: a link to the view's own address, switched in place.
-    const tab = screen.getAllByRole('link').find((b) => b.textContent === 'Steps over time')
+    // A canonical tab: a role=tab link to the view's own address, switched in place.
+    const tab = screen.getAllByRole('tab').find((b) => b.textContent === 'Steps over time')
     // `Steps over time`, not the nav's Timeline (overview-agents-89, #2596); the address keeps `timeline`.
     expect(tab, 'no Steps over time tab').toBeTruthy()
     fireEvent.click(tab!)
