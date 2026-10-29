@@ -251,7 +251,8 @@ export function lenderNames(
     if (typeof id === 'string' && id !== '') holders.set(id, [...(holders.get(id) ?? []), r])
   }
   for (const [id, rows] of holders) {
-    if (rows.length === 1 && !names.has(id)) names.set(id, `${rows[0].display_name || rows[0].email}\u2019s workspace`)
+    const only = rows.length === 1 ? rows[0] : undefined
+    if (only !== undefined && !names.has(id)) names.set(id, `${only.display_name || only.email}\u2019s workspace`)
   }
   return (tenant) => names.get(tenant) ?? tenant
 }
