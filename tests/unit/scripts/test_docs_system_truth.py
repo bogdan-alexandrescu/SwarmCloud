@@ -238,7 +238,8 @@ def test_scaling_ceilings_are_the_terraform_and_code_values():
     main_tf = _text(MAIN_TF)
     scheduler_concurrency = _tf_number(main_tf, r'"swarm-scheduler" = \{.*?\bconcurrency\s*=\s*(\d+)')
     api_cpu = _tf_number(main_tf, r'"swarm-api" = \{.*?\bcpu\s*=\s*"(\d+)"')
-    quota_jobs = _tf_number(_text(RENDER_PY), r'"--quota-jobs", type=int, default=(\d+)')
+    # The Terraform tenant quota (DAYONE-K8S-1: render.py's --quota-* flags have no default).
+    quota_jobs = _tf_number(_text(RENDER_PY), r'^TERRAFORM_TENANT_QUOTA = \{.*?"quota_jobs": (\d+)')
     rps = next(f.default for f in dataclasses.fields(Settings) if f.name == "requests_per_second")
 
     body = _flat(_section(_text(SCALING), CEILINGS))

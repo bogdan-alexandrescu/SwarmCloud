@@ -133,6 +133,15 @@ REPO="$(cd -- "${HERE}/.." && pwd)"
 # defines functions and arrays when sourced -- it reads no .env and contacts
 # nothing -- so sourcing it costs nothing and buys `kubectl_bin` as well.
 COMMON="${REPO}/scripts/lib/common.sh"
+# THE PROJECT IS THE CALLER'S, NEVER A DEFAULT (DAYONE-K8S-1, design §7).
+# common.sh's load_env fills an unset PROJECT_ID with the live project, so a
+# caller in any other project that forgot it would read that project's cluster
+# context check, uniqueIds and network, and render its identities. Marked here,
+# before load_env runs: the environment or the env file replaces the mark, and
+# a mark that survives is a project nobody gave, refused below once --help has
+# had its chance. "(none given)" is no project id, so load_env's `:-` keeps it.
+PROJECT_NOT_GIVEN="(none given)"
+[[ -n "${PROJECT_ID:-}" ]] || PROJECT_ID="${PROJECT_NOT_GIVEN}"
 [[ -f "${COMMON}" ]] || { printf 'error: %s is missing; the shared deny-list lives there\n' "${COMMON}" >&2; exit 1; }
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=../scripts/lib/common.sh
@@ -186,6 +195,12 @@ LIVE_FLAGS=(--swarm-api-egress-cidr --swarm-api-egress-source)
 # typed `--verify-uid` would win and bind whatever number it named into the
 # eng and smoke namespaces' Job read.
 VERIFY_FLAGS=(--verify-uid)
+
+# THE PROJECT IS PROJECT_ID, NOT PASSED: every render below is given
+# `--project "${PROJECT_ID}"`, the project whose cluster, uniqueIds and network
+# this script reads. A forwarded `--project` would come after it and win, and
+# render another project's identities into this cluster.
+PROJECT_FLAGS=(--project)
 
 # derived_flag_for ARG FLAG... -- print the FLAG that ARG spells, and succeed,
 # when ARG (the part before any `=`) is one of the FLAGs or ANY PREFIX of one.
@@ -261,6 +276,11 @@ while [[ $# -gt 0 ]]; do
        the tenant GSA's IAM policy (its roles/iam.workloadIdentityUser members); it cannot
        be passed, in full or abbreviated. Bind the KSA in IAM and re-run."
       fi
+      if PROJECT_FLAG="$(derived_flag_for "$1" "${PROJECT_FLAGS[@]}")"; then
+        die "'${1%%=*}' would reach the renderer as ${PROJECT_FLAG}; the project is PROJECT_ID
+       (${PROJECT_ID}), the one whose cluster and identities this script reads. Set
+       PROJECT_ID instead."
+      fi
       if VERIFY_FLAG="$(derived_flag_for "$1" "${VERIFY_FLAGS[@]}")"; then
         die "'${1%%=*}' would reach the renderer as ${VERIFY_FLAG}, which this script resolves
        itself (swarm-verify's uniqueId, by uid_of, for the eng and smoke renders); it
@@ -269,6 +289,12 @@ while [[ $# -gt 0 ]]; do
       RENDER_ARGS+=("$1"); shift ;;
   esac
 done
+
+# --- 0. the project, before anything is contacted ------------------------------
+[[ "${PROJECT_ID}" != "${PROJECT_NOT_GIVEN}" ]] \
+  || die "PROJECT_ID is not set (in the environment or ${SWARM_ENV_FILE:-.env}); refusing to render.
+       Every object here names its project's identities, and there is no default project.
+       Run: PROJECT_ID=<your project> $0 ..."
 
 # --- 0. the workspace label, before anything is contacted ---------------------
 # Checked here as well as in render.py so a refused id costs no cluster read,
@@ -910,17 +936,30 @@ else
   #   * all five --quota-* flags given (the job's A7, under a call guard that
   #     admits no call to swarm-api): rendered as given, nothing is read;
   #   * a Terraform tenant -- named in this environment's tfvars, eng or smoke
-  #     -- has no workspace record: render.py's defaults, nothing is read, and
+  #     -- has no workspace record: render.py's Terraform tenant quota
+  #     (`terraform-quota`, passed as flags), nothing is read, and
   #     the release, whose account is no swarm-api admin, applies it as before;
   #   * any other tenant: its record is read from swarm-api with the
   #     operator's own credentials (--workspace-id names it; else the admin
   #     list, matched by the tenant its principal derives), and render.py's
   #     `workspace-quota` turns its limits into the five flags with the job's
-  #     formula. No record names it: the defaults, said so. An unreadable
+  #     formula. No record names it: the Terraform tenant quota, said so. An unreadable
   #     answer renders nothing -- falling back to the defaults is the defect.
   # A --quota-* flag on the command line still wins over the record's: the
   # record's flags are passed first, and render.py takes the last of a flag.
   QUOTA_ARGS=()
+  # render.py's tenant render has no quota default (DAYONE-K8S-1): where no
+  # record exists, the Terraform tenant quota is passed by name, as flags, from
+  # `render.py terraform-quota`, before any flag given on the command line.
+  terraform_quota_args() {
+    local line
+    QUOTA_ARGS=()
+    while IFS= read -r line; do
+      if [[ -n "${line}" ]]; then QUOTA_ARGS+=("${line}"); fi
+    done < <("${PYTHON}" "${HERE}/render.py" terraform-quota)
+    [[ "${#QUOTA_ARGS[@]}" -eq 10 ]] \
+      || die "render.py terraform-quota printed ${#QUOTA_ARGS[@]} values, not five flags and their numbers"
+  }
   QUOTA_SEEN=" "
   for arg in ${RENDER_ARGS[@]+"${RENDER_ARGS[@]}"}; do
     case "${arg%%=*}" in
@@ -938,7 +977,8 @@ else
   if [[ "${#QUOTA_GIVEN[@]}" -eq 5 ]]; then
     info "quota  as given: all five --quota-* flags are on the command line; no workspace record is read"
   elif [[ $'\n'"${TF_TENANTS}"$'\n' == *$'\n'"${TENANT}"$'\n'* ]]; then
-    info "quota  render.py's defaults: ${TENANT} is a Terraform tenant (${ENVIRONMENT}.tfvars), which has no workspace record"
+    terraform_quota_args
+    info "quota  render.py's Terraform tenant quota: ${TENANT} is a Terraform tenant (${ENVIRONMENT}.tfvars), which has no workspace record"
   else
     QUOTA_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-quota.XXXXXX")"
     QUOTA_PATH="/admin/workspaces${WORKSPACE_ID:+/${WORKSPACE_ID}}"
@@ -963,7 +1003,8 @@ else
     done <"${QUOTA_WORK}/args"
     rm -rf "${QUOTA_WORK}"
     if [[ -z "${QUOTA_ID}" ]]; then
-      info "quota  render.py's defaults: no workspace record names ${TENANT}"
+      terraform_quota_args
+      info "quota  render.py's Terraform tenant quota: no workspace record names ${TENANT}"
     else
       [[ "${QUOTA_ID}" =~ ^w-[0-9a-f]{6}$ ]] || QUOTA_ID="(an unrecognised id)"
       [[ "${#QUOTA_ARGS[@]}" -eq 10 ]] \
@@ -984,7 +1025,7 @@ else
   # deployer, which runs this script for those, gains no lookup. Where the read
   # is rendered, a missing account is as FATAL as a missing scheduler: an eng
   # render without it applies cleanly and leaves e2e [10] failing on a 403.
-  VERIFY_GSA="$("${PYTHON}" "${HERE}/render.py" verify-read --tenant "${TENANT}" \
+  VERIFY_GSA="$("${PYTHON}" "${HERE}/render.py" verify-read --tenant "${TENANT}" --project "${PROJECT_ID}" \
     ${WORKSPACE_ARGS[@]+"${WORKSPACE_ARGS[@]}"} \
     "${RENDER_ARGS[@]+"${RENDER_ARGS[@]}"}")" \
     || die "could not ask render.py whether tenant ${TENANT}'s render binds swarm-verify (above);
@@ -1041,7 +1082,7 @@ else
   # would drop a bound account's RoleBinding subject. A GSA that does not exist
   # yet (register-tenant.sh --dry-run previews a new tenant whose GSA it has not
   # created) binds nothing, and says so.
-  IDENTITY="$("${PYTHON}" "${HERE}/render.py" identity --tenant "${TENANT}" \
+  IDENTITY="$("${PYTHON}" "${HERE}/render.py" identity --tenant "${TENANT}" --project "${PROJECT_ID}" \
     "${RENDER_ARGS[@]+"${RENDER_ARGS[@]}"}")" \
     || die "could not resolve tenant ${TENANT}'s namespace and service account (above);
        nothing was rendered or applied."
@@ -1113,7 +1154,7 @@ else
     dim "  no --spec-verify-keys: swarm-spec-verify-keys is not rendered; an existing one is left as it is"
   fi
 
-  MANIFEST="$("${PYTHON}" "${HERE}/render.py" tenant --tenant "${TENANT}" \
+  MANIFEST="$("${PYTHON}" "${HERE}/render.py" tenant --tenant "${TENANT}" --project "${PROJECT_ID}" \
     ${SPEC_ARGS[@]+"${SPEC_ARGS[@]}"} \
     --scheduler-uid "${SCHEDULER_UID}" \
     --reconciler-uid "${RECONCILER_UID}" \

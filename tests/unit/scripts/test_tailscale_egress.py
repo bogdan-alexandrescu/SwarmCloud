@@ -497,6 +497,9 @@ def cluster(tmp_path: Path) -> dict[str, Any]:
         SWARM_TERRAFORM=str(b / "terraform"),
         TF_DATA_DIR=str(tmp_path / "tfdata"),
         SWARM_ENV_FILE=str(tmp_path / "no.env"),
+        # apply.sh has no default project (DAYONE-K8S-1): the one this fake
+        # cluster's context and identities name is given, as an operator would.
+        PROJECT_ID="saga-agents-staging",
         HOME=str(tmp_path),
         TMPDIR=str(tmp_path),
     )
