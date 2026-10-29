@@ -16,7 +16,10 @@ needed (D12) and no committed tfvars is in it (design §5.1).
 **A pass is met** when the inputs it would generate now are the inputs it last
 applied (their digest is recorded in the state), so a changed input (a new
 digest, a key that now has a version) is drift the engine repairs by applying
-again, and a resume never re-applies an unchanged pass.
+again, and a resume never re-applies an unchanged pass. Once a later pass of
+the same root has been applied, the earlier one is met: only the latest
+applied pass of each root compares its inputs, so a resume never re-applies an
+earlier pass with its narrower inputs (key before switch, lesson 39).
 
 **Adoption before bootstrap pass 1** (`adopt.py`): a step-spec key ring or key
 that exists and is not in the state is imported (they can never be deleted, so
@@ -220,6 +223,20 @@ def applied_key(pass_name: str) -> str:
     return f"tf_applied_{pass_name.replace('-', '_')}"
 
 
+def superseded(ctx: Any, pass_name: str) -> bool:
+    """A later pass of the same root has been applied since `pass_name`.
+
+    Later stages change what an earlier pass would generate (bootstrap-1 gains
+    the workspace-apply image, infra-1 the alerts and the admin groups); its
+    applied inputs are then part of the later pass's, and re-applying it with
+    its narrower inputs would turn switches off again (lesson 39). Only the
+    latest applied pass of each root compares its inputs.
+    """
+    root = tfvars.ROOT_OF[pass_name]
+    return any(ctx.outputs.get(applied_key(later)) for later in tfvars.PASSES
+               if tfvars.ROOT_OF[later] == root and later != pass_name and tfvars.after(later, pass_name))
+
+
 def apply_pass(ctx: Any, deps: Deps, pass_name: str, *, targets: Sequence[str] = (),
                before_plan: Callable[[Terraform], None] | None = None) -> dict[str, Any]:
     """Generate, guard, plan, review and apply one pass; record what it applied."""
@@ -278,6 +295,8 @@ class PassStep:
         recorded = ctx.outputs.get(applied_key(self.pass_name))
         if not recorded:
             return f"{self.pass_name} has not been applied"
+        if superseded(ctx, self.pass_name):
+            return None
         current = inputs_digest(generate(ctx, self.pass_name, self.deps.gcp()))
         if recorded != current:
             return f"{self.pass_name}'s inputs changed since it was applied"
