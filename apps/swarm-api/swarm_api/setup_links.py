@@ -110,6 +110,25 @@ class SetupLinks:
         self._ref(digest(token)).set(record)
         return token, record
 
+    def _check(self, record: dict[str, Any] | None, caller: str) -> dict[str, Any]:
+        if record is None or record.get("used_at") is not None:
+            raise LinkInvalid("this link is not valid: ask the admin for a new one")
+        expires = record.get("expires_at")
+        if not isinstance(expires, datetime) or self._now() >= expires:
+            raise LinkInvalid("this link is not valid: ask the admin for a new one")
+        if record.get("owner") != caller:
+            raise LinkNotYours("this link was made for someone else")
+        return record
+
+    def peek(self, token: str, *, email: str) -> dict[str, Any]:
+        """The link `email` may open, refused as `redeem` would, NOT consumed.
+
+        The form kinds check their value and write it before `redeem`, so a
+        missing value or a Secret Manager failure leaves the link usable."""
+        snapshot = self._ref(digest(token or "")).get()
+        record = dict(snapshot.to_dict() or {}) if snapshot.exists else None
+        return dict(self._check(record, (email or "").strip().lower()))
+
     def redeem(self, token: str, *, email: str) -> dict[str, Any]:
         """Consume the link for `email`, in one transaction, or refuse.
 
@@ -126,13 +145,7 @@ class SetupLinks:
         def _consume(transaction: Any) -> None:
             snapshot = ref.get(transaction=transaction)
             record = dict(snapshot.to_dict() or {}) if snapshot.exists else None
-            if record is None or record.get("used_at") is not None:
-                raise LinkInvalid("this link is not valid: ask the admin for a new one")
-            expires = record.get("expires_at")
-            if not isinstance(expires, datetime) or self._now() >= expires:
-                raise LinkInvalid("this link is not valid: ask the admin for a new one")
-            if record.get("owner") != caller:
-                raise LinkNotYours("this link was made for someone else")
+            record = self._check(record, caller)
             record["used_at"] = self._now()
             transaction.set(ref, record)
             found.clear()
@@ -140,7 +153,6 @@ class SetupLinks:
 
         _consume(self._db.transaction())
         return found
-
 
 __all__ = [
     "ADDON_SECRET",

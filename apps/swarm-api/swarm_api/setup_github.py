@@ -130,7 +130,8 @@ def form_target(org: str, state: str) -> str:
 class SetupSecrets(Protocol):
     """The Secret Manager calls the flow makes, so tests run on a fake."""
 
-    def add_version(self, secret_id: str, value: str) -> None: ...
+    def add_version(self, secret_id: str, value: str, *,
+                    create_labels: dict[str, str] | None = None) -> None: ...
 
     def has_enabled_version(self, secret_id: str) -> bool: ...
 
@@ -154,7 +155,18 @@ class SecretManagerSetupSecrets:
     def _name(self, secret_id: str) -> str:
         return f"projects/{self._project_id}/secrets/{secret_id}"
 
-    def add_version(self, secret_id: str, value: str) -> None:
+    def add_version(self, secret_id: str, value: str, *,
+                    create_labels: dict[str, str] | None = None) -> None:
+        """Write `value` as a new version of `secret_id`.
+
+        With `create_labels`, the container is created first when it is missing
+        (an existing one is kept as it is): an install's team git slot
+        `swarm-tenant-<tenant>-git` has no Terraform tenant and no
+        create-secrets.sh run to make it (design §5.7). No accessor is granted
+        here: a forge token is read by swarm-api's minter, never by a worker
+        GSA (CLAUDE.md, forge-token rule)."""
+        if create_labels is not None:
+            self._create(secret_id, create_labels)
         try:
             self._secret_client().add_secret_version(request={
                 "parent": self._name(secret_id),
@@ -164,6 +176,21 @@ class SecretManagerSetupSecrets:
             # The type only: an exception's text could quote the request.
             raise UpstreamUnavailable(
                 f"{secret_id} could not be written ({type(exc).__name__})") from None
+
+    def _create(self, secret_id: str, labels: dict[str, str]) -> None:
+        from google.api_core import exceptions as gexc
+
+        try:
+            self._secret_client().create_secret(request={
+                "parent": f"projects/{self._project_id}",
+                "secret_id": secret_id,
+                "secret": {"replication": {"automatic": {}}, "labels": dict(labels)},
+            })
+        except gexc.AlreadyExists:
+            pass
+        except Exception as exc:
+            raise UpstreamUnavailable(
+                f"{secret_id} could not be created ({type(exc).__name__})") from None
 
     def has_enabled_version(self, secret_id: str) -> bool:
         from google.cloud import secretmanager

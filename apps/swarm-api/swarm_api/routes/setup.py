@@ -511,22 +511,29 @@ def redeem_link(
     then `/exchange`) with that id as `X-Swarm-Tenant`, so the account lands
     in the first team. `team-git` and `addon-secret` take the value in the same
     request and write it straight into their one container; it is never
-    returned or logged."""
-    link = links.redeem(body.token, email=auth.email)
-    kind = link.get("kind")
+    returned or logged. Their link is consumed only AFTER the write, so a
+    missing value or a failed write leaves it usable. A team's git container
+    is created on first use (an install has no Terraform tenant to make it)."""
+    peeked = links.peek(body.token, email=auth.email)
+    kind = peeked.get("kind")
     if kind == sl.POOL_ACCOUNT:
+        link = links.redeem(body.token, email=auth.email)
         return {"kind": kind, "label": link.get("label"), "tenant": link.get("tenant_id"),
                 "sign_in": {"authorize": "/v1/accounts/authorize",
                             "exchange": "/v1/accounts/exchange",
                             "header": TENANT_HEADER}}
     if body.value is None:
-        raise ValidationFailed(f"a {kind} link is opened with its value; the link is now used, "
-                               "ask the admin for a new one")
+        raise ValidationFailed(f"a {kind} link is opened with its value; the link is still "
+                               "unused, open it again with the value")
+    labels: dict[str, str] | None = None
     if kind == sl.TEAM_GIT:
-        secret_id = sl.team_git_secret(str(link.get("tenant_id")))
+        tenant_id = str(peeked.get("tenant_id"))
+        secret_id = sl.team_git_secret(tenant_id)
+        labels = {"managed-by": "swarm-api", "tenant": tenant_id}
     else:
-        secret_id = sl.ADDON_SECRETS[str(link.get("label"))]
-    secrets_.add_version(secret_id, body.value or "")
+        secret_id = sl.ADDON_SECRETS[str(peeked.get("label"))]
+    secrets_.add_version(secret_id, body.value, create_labels=labels)
+    link = links.redeem(body.token, email=auth.email)
     log.info("a setup link wrote its secret kind=%s label=%s", kind, link.get("label"))
     return {"kind": kind, "label": link.get("label"), "secret": secret_id, "written": True}
 
