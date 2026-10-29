@@ -345,7 +345,7 @@ describe("a schedule's page head", () => {
     await waitFor(() => expect(posts(calls, '/v1/schedules/sch_a:run')).toHaveLength(1), WAIT)
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(posts(calls, '/v1/schedules/sch_a:run')[0]!.body).toEqual({ dry_run: true })
-    expect(visible(await screen.findByTestId('sc-said', undefined, WAIT))).toContain('Dry run recorded: nothing was created')
+    expect(visible(await screen.findByTestId('sc-said', undefined, WAIT))).toContain('Schedule sch_a recorded a dry run: nothing was created')
     await waitFor(() => expect(reads(calls, '/v1/schedules/sch_a')).toBe(2), WAIT)
     await screen.findByTestId('sc-acts-head', undefined, WAIT)
     fireEvent.click(within(head()).getByRole('button', { name: 'Pause' }))

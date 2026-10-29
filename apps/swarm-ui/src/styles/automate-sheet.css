@@ -134,3 +134,15 @@
   .as-fires > li { white-space: normal; }
   .as-pager > .as-view { margin-left: 0; }
 }
+
+/* ---- the delete dialog's actions (QA2 automate2-21) -------------------------
+   On a desk they are the dialog's own row (`.c-acts`: Keep it, then the verb).
+   On a phone they stack full width at the 44px target the sheet's buttons
+   keep, Keep it first and Delete schedule under it with its reason below. The
+   dialog is portalled to <body>, so the hook is the actions' own wrapper. */
+.sc-del-acts { display: contents; }
+@media (max-width: 560px) {
+  .sc-del-acts { display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: 100%; }
+  .sc-del-acts .c-btn { min-height: 44px; width: 100%; justify-content: center; }
+  .sc-del-acts > .c-btn-wrap { display: flex; flex-direction: column; align-items: stretch; }
+}
