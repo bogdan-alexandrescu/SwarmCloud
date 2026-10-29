@@ -295,11 +295,12 @@ describe('VQ-011: the Attempts totals say which events no attempt holds', () => 
     api.loadAgentDetail.mockResolvedValue(ok({ task: t, events } as unknown as AgentDetail))
   }
 
-  it('reads `1 attempt · 3 events, 1 before any attempt` over a card of 2', async () => {
+  it('reads `3 events, 1 before any attempt` on the toolbar over a card of 2', async () => {
     serve([ev('submitted', at(-1), null), ev('running', at(1), 'att_1'), ev('succeeded', at(10), 'att_1')])
     render(<AttemptTimelineScreen taskId="tsk_charts" />)
-    // MUTATION: drop `beforeSay` and the head reads `3 events` over a card of 2.
-    await waitFor(() => expect(screen.getByText('1 attempt · 3 events, 1 before any attempt')).toBeTruthy())
+    // MUTATION: drop `beforeSay` and the toolbar reads `3 events` over a card of 2.
+    // The head counts the attempts only (QA1 overview-agents-41).
+    await waitFor(() => expect(screen.getByText('1 attempt')).toBeTruthy())
     expect(flat(document.querySelector('.att-ev-cap'))).toBe('3 events, 1 before any attempt · first page')
     const cards = [...document.querySelectorAll('.att-card')].map((c) => flat(c.querySelector('.ctl-card-head')))
     expect(cards.some((c) => c.startsWith('Before any attempt') && c.includes('1 event'))).toBe(true)
@@ -308,8 +309,10 @@ describe('VQ-011: the Attempts totals say which events no attempt holds', () => 
   it('says nothing more when every event is an attempt’s (control)', async () => {
     serve([ev('running', at(1), 'att_1'), ev('succeeded', at(10), 'att_1')])
     render(<AttemptTimelineScreen taskId="tsk_charts" />)
-    await waitFor(() => expect(screen.getByText('1 attempt · 2 events')).toBeTruthy())
-    expect(flat(document.querySelector('.att-ev-cap'))).toBe('2 events · first page')
+    await waitFor(() => expect(screen.getByText('1 attempt')).toBeTruthy())
+    // One card holds the page, so its `2 events` is the one count (QA1
+    // overview-agents-41); the toolbar keeps the caveat.
+    expect(flat(document.querySelector('.att-ev-cap'))).toBe('first page')
   })
 })
 

@@ -101,7 +101,7 @@ describe('r2:capacity-007: `CLOUD_RUN_JOB ← AUTO` stays in the value column be
     expect(fact.querySelector('b')?.textContent).toBe('runs on')
     const value = fact.querySelector<HTMLElement>(':scope > .rt-runs-on-value')!
     // MUTATION: render the value as two items again; this reads `CLOUD_RUN_JOB` alone.
-    expect(value.textContent).toBe('CLOUD_RUN_JOB← AUTO')
+    expect(value.textContent).toBe('Cloud Run← AUTO')
     for (const env of [WIDE, PHONE]) {
       // MUTATION: put `flex-wrap: wrap` back on `.rt-runs-on` (capacity.css)
       // and the whole value item drops to the row's start, under `runs on`,

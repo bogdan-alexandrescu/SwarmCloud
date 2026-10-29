@@ -7,7 +7,7 @@ import { isTerminalEvent } from './events'
 import { backendWord, eventWord, stateWord } from './words'
 import { num, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
-import { Screen, timeAgo } from './Shell'
+import { Screen } from './Shell'
 import { REASON_COPY, TERMINAL_STATES, bytesLabel, newestHeartbeat, pluralise, type AttemptRow, type Task, type TaskEvent } from './types'
 
 /**
@@ -86,10 +86,11 @@ export function AttemptTimelineScreen({ taskId }: { taskId: string }) {
         // Verbatim: an id a reader cannot paste back into swarmctl is unusable.
         title={taskId}
         load={load}
-        summary={(t) =>
-          `${pluralise(t.attempts.length, 'attempt')} · ` +
-          (t.events === null ? 'events unread' : pluralise(t.events.length, 'event') + beforeSay(t))
-        }
+        // THE ATTEMPTS ONLY (QA1 overview-agents-41, 2026-10-28). The head
+        // read `1 attempt · 8 events` over a toolbar reading `8 events · first
+        // page` over a card reading `8 events · Cloud Run`: one figure three
+        // times. The event total, and `events unread`, are the toolbar's.
+        summary={(t) => pluralise(t.attempts.length, 'attempt')}
         empty={{
           // ONE `real zero`, THE PRIMITIVE'S. `No attempt · real zero` said it a
           // second time beside the mark `Absent` draws in the heading (#145).
@@ -266,6 +267,14 @@ function Body({ t }: { t: AttemptTimeline }) {
   const count = t.events?.length ?? 0
   const before = beforeSay(t)
   const prev = previousOf(t.events ?? [])
+  // ONE CARD HOLDS THE WHOLE PAGE (QA1 overview-agents-41): its own count is
+  // the page's, so the toolbar keeps only the caveat and the figure moves to
+  // its accessible name. Shared between cards, the total is the toolbar's.
+  // A CARD WITH NO EVENTS SHARES NOTHING (QA1 review, 2026-10-28): a retried
+  // agent draws a card per attempt, and two event-less attempts kept the
+  // toolbar's `8 events` beside the third card's `8 events · Cloud Run`.
+  const holding = groups.filter((g) => g.events.length > 0)
+  const oneCard = holding.length === 1 && holding[0]?.events.length === count
   // THE FULL TIMELINE LIVES HERE NOW (#101), so the proof Details drew with
   // it comes too: a terminal task always writes a terminal event, so a
   // finished task whose page carries none proves the page ends before the
@@ -330,7 +339,7 @@ function Body({ t }: { t: AttemptTimeline }) {
                 className="att-ev-cap"
                 aria-label={`${count} events${before}, the first page, oldest first. This screen reads one page and does not follow the page token the events route returns, so newer events may exist that it has not fetched.`}
               >
-                {pluralise(count, 'event')}{before} · first page
+                {oneCard ? 'first page' : <>{pluralise(count, 'event')}{before} · first page</>}
               </span>
             )}
             {blind.length > 0 && (
@@ -515,7 +524,7 @@ function AttemptCard({
                 // high-water mark so far, or its last reading once it is over
                 // -- and this card said `not measured` beside them. It reads
                 // the same heartbeat, in the same words, never as a peak.
-                `${bytesLabel(reading.bytes)} · ${reading.ended ? 'last reading' : 'so far'} · heartbeat ${timeAgo(reading.at)}`
+                `${bytesLabel(reading.bytes)} · ${reading.ended ? 'last reading' : 'so far'} · heartbeat ${ageText(reading.at)}`
               ) : a.peak_rss_bytes === null ? (
                 <Mark
                   kind="absent"
@@ -673,7 +682,14 @@ function outcome(a: AttemptRow): { label: string; tone: ChipTone } {
  */
 function ran(a: AttemptRow): string | null {
   if (a.started_at === null) return null
-  if (a.completed_at === null) return `${timeAgo(a.started_at)} · open`
+  // HOW LONG, NOT HOW LONG AGO, AND IN `spanText` (QA1 overview-agents-42,
+  // 2026-10-28). `9d ago · open` sat under a head saying 8d 21h: `timeAgo`
+  // rounds 213 hours to 9 days where `spanText` floors to `8d 21h`, so one
+  // instant read as two ages on one pane.
+  if (a.completed_at === null) {
+    const started = instant(a.started_at)
+    return started === null ? null : `${spanText(Math.max(0, Date.now() - started))} · open`
+  }
   const done = instant(a.completed_at)
   const started = instant(a.started_at)
   if (done === null || started === null) return null
@@ -682,6 +698,16 @@ function ran(a: AttemptRow): string | null {
   // pane was two formatters for one number; the Details card reads the same
   // helper over the same two instants, so the two panes cannot round apart.
   return spanText(done - started)
+}
+
+/**
+ * An instant's age in `spanText`, `8d 21h ago`: the formatter `ran` and the
+ * head use, so a heartbeat written when the attempt started reads the same
+ * age as the attempt beside it (QA1 overview-agents-42).
+ */
+function ageText(iso: string): string {
+  const t = instant(iso)
+  return t === null ? 'at an unknown time' : `${spanText(Math.max(0, Date.now() - t))} ago`
 }
 
 // ---------------------------------------------------------------------------
@@ -741,7 +767,9 @@ export function absTime(iso: string): string {
  * WHEN, AS THE GAP FROM THE EVENT BEFORE, with the absolute time in `title`
  * and -- because a title is a hover a keyboard never gets -- in a span the
  * sheet shows while the element has focus. The first event on the page has
- * no predecessor, so it keeps its age.
+ * no predecessor, so it keeps its age -- in `ageText`, the card's formatter,
+ * so `ready 9d ago` no longer sits over `ran 8d 22h · open` (QA1 review of
+ * overview-agents-42, 2026-10-28).
  */
 export function EventWhen({ e, prev }: { e: TaskEvent; prev: TaskEvent | null }) {
   const at = instant(e.at)
@@ -749,7 +777,7 @@ export function EventWhen({ e, prev }: { e: TaskEvent; prev: TaskEvent | null })
   const abs = absTime(e.at)
   return (
     <time className="ev-at" dateTime={e.at} title={abs} tabIndex={0}>
-      {at !== null && before !== null ? gapText(at - before) : timeAgo(e.at)}
+      {at !== null && before !== null ? gapText(at - before) : ageText(e.at)}
       <span className="ev-abs">{abs}</span>
     </time>
   )

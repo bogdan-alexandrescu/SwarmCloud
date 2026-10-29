@@ -9,8 +9,9 @@ import { HOLDERS_POLL_MS, capacityPoll, paneHref, tableMode, useLinkedParam, use
 import { Screen } from './Shell'
 import { LeaseRef, TaskRef } from './TaskRef'
 import './styles/capacity.css'
-import { formatDuration, leaseLiveliness, poolLabel, type LeasePage, type LeaseRow } from './types'
+import { formatDuration, leaseLiveliness, poolKind, poolLabel, type LeasePage, type LeaseRow } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
+import { backendWord } from './words'
 
 /**
  * WHETHER THESE ROWS ARE EVERY LIVE LEASE, in the three answers there are.
@@ -472,7 +473,9 @@ function Drift({ board, coverage, rows }: { board: HoldersBoard; coverage: Lease
                 {drawn.map((r) => (
                   <tr role="row" key={r.name} className={disagrees(r) ? 'is-warn' : undefined}>
                     <th role="rowheader" scope="row" title={r.name}>
-                      {poolLabel(r.name)}
+                      {/* A backend pool in words (QA1 capacity-14): `CLOUD_RUN_JOB`
+                          was the API's enum; the id stays on the mono line below. */}
+                      {poolKind(r.name) === 'backend' ? backendWord(r.name.slice(r.name.indexOf(':') + 1)) : poolLabel(r.name)}
                       <span className="ctl-sub">{r.name}</span>
                     </th>
                     <td role="cell" data-label="From leases" className="is-num">{r.held}</td>

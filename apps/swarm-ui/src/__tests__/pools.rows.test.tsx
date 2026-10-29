@@ -30,7 +30,7 @@ import type { Result } from '../fetch'
 import type { Capacity, Pool } from '../types'
 import { THEMES, painted } from './marks'
 
-const api = vi.hoisted(() => ({ loadCapacity: vi.fn() }))
+const api = vi.hoisted(() => ({ loadCapacity: vi.fn(), loadMe: vi.fn() }))
 vi.mock('../api', async (importOriginal) => ({ ...(await importOriginal<typeof import('../api')>()), ...api }))
 
 const { CapacityScreen } = await import('../Capacity')
@@ -132,7 +132,10 @@ describe('a Pools row is one click from its holders and its limit (#125)', () =>
   })
 
   it('links limit to that pool\'s Pool limits row', async () => {
+    // Pool limits is an admin route, so only an admin's row links it (QA1 capacity-01).
+    api.loadMe.mockResolvedValue(ok({ principal: { is_admin: true } }))
     await renderPools()
+    await waitFor(() => expect(rowOf('runner:zeta').querySelector('td.cap-links a:nth-of-type(2)')).not.toBeNull(), WAIT)
     const links = [...rowOf('runner:zeta').querySelectorAll('td.cap-links a')]
     const limit = links.find((a) => a.textContent === 'limit')
     expect(limit).toBeTruthy()

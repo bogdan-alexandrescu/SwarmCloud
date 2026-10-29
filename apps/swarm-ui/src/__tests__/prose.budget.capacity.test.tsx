@@ -84,6 +84,8 @@ const api = vi.hoisted(() => ({
     error: { kind: 'admin_required' as const, httpStatus: 403, code: 'forbidden', message: 'admin group membership is required' },
   })),
   loadRuntimeTopology: vi.fn(),
+  // The session read behind Pools' admin-only `limit` links (QA1 capacity-01).
+  loadMe: vi.fn(),
   loadAccountsBoard: vi.fn(),
   loadHolders: vi.fn(),
   beginAccountSignIn: vi.fn(),

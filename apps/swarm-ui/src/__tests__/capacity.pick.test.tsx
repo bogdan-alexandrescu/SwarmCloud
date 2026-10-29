@@ -43,6 +43,7 @@ const api = vi.hoisted(() => ({
   loadHolders: vi.fn(),
   loadRuntimeTopology: vi.fn(),
   loadAdminQuota: vi.fn(),
+  loadMe: vi.fn(),
 }))
 vi.mock('../api', async (importOriginal) => ({ ...(await importOriginal<typeof import('../api')>()), ...api }))
 
@@ -206,14 +207,17 @@ describe('the family tables are the frame’s seven columns (#503)', () => {
   })
 
   it('counts the holders on the link when every live lease was read', async () => {
+    // An admin's session, so each row carries `limit` too (QA1 capacity-01).
+    api.loadMe.mockResolvedValue(ok({ principal: { is_admin: true } }))
     await renderPools(
       board(),
       ok(leasePage([lease(1, ['global', 'runner:codex']), lease(2, ['global', 'runner:codex']), lease(3, ['global'])])),
     )
     const links = (name: string) => [...rowOf(name).querySelectorAll('.cap-links a')].map((a) => a.textContent)
-    expect(links('global')).toEqual(['3 holders', 'limit'])
+    await waitFor(() => expect(links('global')).toEqual(['3 holders', 'limit']), WAIT)
     expect(links('runner:codex')).toEqual(['2 holders', 'limit'])
-    expect(links('tenant:research')).toEqual(['0 holders', 'limit'])
+    // 1 unit leased and no lease naming it: not counted, never `0 holders` (QA1 capacity-02).
+    expect(links('tenant:research')).toEqual(['holders', 'limit'])
   })
 
   it('draws no count when the lease read failed or was cut: unknown is not 0', async () => {

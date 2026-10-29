@@ -137,7 +137,7 @@ describe('QA-010: the resolved backend never breaks mid-word beside `← AUTO`',
       (f) => f.querySelector('b')?.textContent === 'runs on',
     )!
     const backend = fact.querySelector<HTMLElement>('.rt-backend')!
-    expect(backend.textContent).toBe('CLOUD_RUN_JOB')
+    expect(backend.textContent).toBe('Cloud Run')
     expect(fact.querySelector('.rt-declared')?.textContent).toBe('← AUTO')
     for (const env of [PHONE, WIDE]) {
       // MUTATION: drop `flex: none` from `.rt-backend` and the value shrinks

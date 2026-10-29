@@ -2,6 +2,8 @@ import { Fragment, useState } from 'react'
 import { isPaused } from './fetch'
 import { tableMode, usePhoneTables } from './capacityPoll'
 import { WarnMark } from './marks'
+import { useViewerIsAdmin } from './Capacity'
+import { backendWord } from './words'
 import './styles/profile-matrix.css'
 import {
   FAMILY_TITLE,
@@ -145,6 +147,11 @@ export function disabledSentence(name: string, reason: string | null | undefined
 
 export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
   const [open, setOpen] = useState<string | null>(null)
+  // POOL LIMITS IS AN ADMIN ROUTE (QA1 capacity-01, 2026-10-28): the router
+  // sends a member who opens `#admin/limits` to Overview with no word of why,
+  // so the opened row links it only for a reader the session read calls an
+  // admin -- the rule Ceilings' `limit` links follow (Capacity.tsx).
+  const limitLink = useViewerIsAdmin() === true
   // ONE CARD PER PROFILE ON A PHONE (QA G5-08). The matrix was 923px in a
   // 352px box, and Can start and Runs out first -- the answer -- sat 570px
   // off-screen behind the family cells. On a phone each profile is a record:
@@ -266,7 +273,7 @@ export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
                           // styles/profile-matrix.css).
                           return (
                             <span key={b} className="cap-mx-bind" data-pool={b} title={b}>
-                              <span className="cap-mx-bind-pool">{poolLabelAmong(b, among)}</span>
+                              <span className="cap-mx-bind-pool">{matrixPoolLabel(b, among)}</span>
                               {use !== null && <span className="cap-mx-bind-use"> {use}</span>}{' '}
                               <small>{fits === null ? 'fits —' : `fits ${fits}`}</small>
                             </span>
@@ -288,8 +295,13 @@ export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
                             binds={binds}
                             complete={capacity.pools_complete !== false}
                           />
-                        )}{' '}
-                        <a className="ctl-link" href="#admin/limits">Pool limits</a>
+                        )}
+                        {limitLink && (
+                          <>
+                            {' '}
+                            <a className="ctl-link" href="#admin/limits">Pool limits</a>
+                          </>
+                        )}
                       </td>
                     </tr>
                   )}
@@ -311,6 +323,16 @@ export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
       </p>
     </div>
   )
+}
+
+/**
+ * `poolLabelAmong`, except that a backend pool is named in words (QA1
+ * capacity-14, 2026-10-28): `backend:CLOUD_RUN_JOB` read `CLOUD_R… (5/20)`,
+ * the API's enum. It reads `Cloud Run`, as Ceilings names it; the id stays in
+ * the entry's title.
+ */
+function matrixPoolLabel(name: string, among: readonly string[]): string {
+  return poolKind(name) === 'backend' ? backendWord(name.slice(name.indexOf(':') + 1)) : poolLabelAmong(name, among)
 }
 
 /**
@@ -364,7 +386,7 @@ function FitsTable({
             return (
               <tr role="row" key={name} data-pool={name} className={binding ? 'is-binding' : undefined}>
                 <th role="rowheader" scope="row" title={name}>
-                  {poolLabelAmong(name, among)}
+                  {matrixPoolLabel(name, among)}
                 </th>
                 {row === null && uncapped.has(name) ? (
                   // One statement across both figure columns: there is no

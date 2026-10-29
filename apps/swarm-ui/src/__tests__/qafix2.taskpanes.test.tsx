@@ -128,7 +128,9 @@ describe('QA-113: the Attempts tab’s counts agree and what ran comes first', (
     // The toolbar keeps its one tally of what the page cannot prove, and it agrees with the cards.
     const toolbar = el.querySelector<HTMLElement>('.ctl-toolbar .is-end')!
     // MUTATION: drop the toolbar's tally -- nothing says two attempts are without events.
-    expect(toolbar.textContent).toMatch(/3 events · first page · partial 2 attempts without events/)
+    // The `3 events` is the one card's that holds them all, not the toolbar's
+    // as well (QA1 overview-agents-41 review, 2026-10-28).
+    expect(toolbar.textContent).toMatch(/^first page · partial 2 attempts without events/)
   })
 
   it('does not say an attempt with an error never started', async () => {
