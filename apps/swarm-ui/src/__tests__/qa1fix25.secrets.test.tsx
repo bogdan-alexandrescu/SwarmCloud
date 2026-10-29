@@ -3,7 +3,9 @@
 // to what the reader sees:
 //
 //   * config-21: a GitHub token whose expiry has passed reads "expired …",
-//     in the warn tone, and its State no longer reads "active" in the ok tone;
+//     in the warn tone, and its State no longer reads "active" in the ok tone
+//     (since QA2-FIX-09 it reads GitHub access's "active · token renews on
+//     next use");
 //   * config-23: the shadow note is a plain line of small text under the
 //     name, not a dashed pill, and Rotate and Delete never wrap apart;
 //   * config-24: the page head keeps no bottom margin of its own, so the tab
@@ -66,8 +68,11 @@ describe('config-21: a GitHub token past its expiry', () => {
     const expires = within(card).getByText(/expired 9d ago/)
     // MUTATION: render a past expiry with `when()` alone ("9d ago") -> fails.
     expect(expires.className).toMatch(/is-warn/)
-    const state = within(card).getByText(/^expired$/)
-    // MUTATION: keep `r.status` with is-ok for an expired token -> fails.
+    // config2-02 (QA2-FIX-09): the State word is GitHub access's, from
+    // `githubTokenState`, not a separate `expired`.
+    const state = within(card).getByText(/^active · token renews on next use$/)
+    // MUTATION: keep `r.status` with is-ok for an expired token, or put back
+    // Secrets' own `expired` word -> fails.
     expect(state.className).not.toMatch(/is-ok/)
     expect(state.className).toMatch(/is-warn/)
   })
