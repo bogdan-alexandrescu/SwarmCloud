@@ -523,7 +523,8 @@ describe('live QA: automate, approvals', () => {
     // MUTATION: leave `kind` out of keptKeys and the filter is dropped from the URL.
     expect(canonical(fromAddress('automate/approvals?kind=merge'))).toBe('automate/approvals?kind=merge')
     const { calls, go } = await mount('kind=merge', routes(() => null))
-    await waitFor(() => expect(calls.some((c) => c.url === '/v1/approvals?kind=merge')).toBe(true), WAIT)
+    // The list asks the inbox and its history (`state=all`, QA2-FIX-07 automate2-01).
+    await waitFor(() => expect(calls.some((c) => c.url === '/v1/approvals?kind=merge&state=all')).toBe(true), WAIT)
     const group = screen.getByRole('group', { name: 'Kind' })
     // The chosen chip carries its count ("Merge · 2", #2417 A4).
     expect(within(group).getByRole('button', { name: /^Merge/ }).getAttribute('aria-pressed')).toBe('true')
@@ -539,7 +540,7 @@ describe('live QA: automate, approvals', () => {
 
   it('asks for the whole inbox when no kind is named', async () => {
     const { calls } = await mount('', routes(() => null))
-    await waitFor(() => expect(calls.some((c) => c.url === '/v1/approvals')).toBe(true), WAIT)
+    await waitFor(() => expect(calls.some((c) => c.url === '/v1/approvals?state=all')).toBe(true), WAIT)
     expect(calls.some((c) => c.url.startsWith('/v1/approvals?kind'))).toBe(false)
   })
 })
