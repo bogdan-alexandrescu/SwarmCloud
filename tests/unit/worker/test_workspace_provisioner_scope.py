@@ -1095,6 +1095,9 @@ APPLY = KUBERNETES / "apply.sh"
 def _apply(*args: str) -> subprocess.CompletedProcess[str]:
     env = {k: v for k, v in os.environ.items() if not k.startswith(("SWARM_", "GOOGLE_", "CLOUDSDK_"))}
     env.update(SWARM_ENV_FILE="/nonexistent/swarm.env", NO_COLOR="1", KUBECONFIG="/nonexistent/kubeconfig")
+    # common.sh has no default project (DAYONE-DESAGA-2): name one, so the
+    # refusal under test is the --workspace-id one, not the missing project.
+    env.setdefault("PROJECT_ID", "swarm-test-project")
     return subprocess.run(
         ["bash", str(APPLY), *args], cwd=REPO, env=env, capture_output=True, text=True, timeout=120, check=False
     )

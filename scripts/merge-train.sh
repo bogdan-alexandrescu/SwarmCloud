@@ -90,6 +90,10 @@
 #       the repository, main checked out), RUN_ID, RUN_ATTEMPT, RUN_URL,
 #       EVENT_NAME, MERGE_TRAIN, DRY_RUN_INPUT. Neither token is ever printed.
 set -euo pipefail
+# This script touches no project: it reads and writes GitHub only. It says
+# so, so common.sh (no default project, DAYONE-DESAGA-2) does not stop on an
+# unset PROJECT_ID.
+SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"

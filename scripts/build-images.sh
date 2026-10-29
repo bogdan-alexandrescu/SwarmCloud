@@ -138,9 +138,13 @@ set -euo pipefail
 # They say so, so common.sh (no default project, DAYONE-DESAGA-2) does not
 # stop on an unset PROJECT_ID. Every other mode still needs one; combining
 # either with another flag is refused below, before anything is built.
+# --local too: it is a mode of --build-only (refused below without it) that
+# builds on this machine's docker as swarm-build-only/<image>, reads no
+# registry and submits nothing, and the build-check job runs it with no
+# PROJECT_ID. --build-only alone submits to Cloud Build and still needs one.
 for arg in "$@"; do
   case "${arg}" in
-    --affected-by|--inputs) SWARM_NO_PROJECT=1 ;;
+    --affected-by|--inputs|--local) SWARM_NO_PROJECT=1 ;;
   esac
 done
 # shellcheck source-path=SCRIPTDIR

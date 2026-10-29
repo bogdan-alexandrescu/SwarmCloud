@@ -20,6 +20,10 @@
 #           an image nobody could scan is not a clean one (#2379)
 
 set -euo pipefail
+# This script touches no project: it scans a local OCI layout. It says so, so
+# common.sh (no default project, DAYONE-DESAGA-2) does not stop on an unset
+# PROJECT_ID.
+SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
