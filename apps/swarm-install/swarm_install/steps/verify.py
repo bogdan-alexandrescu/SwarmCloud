@@ -7,14 +7,16 @@
 | `verify.digests` | `other.verify-digests` | every service serves 100 % on its latest ready revision, and that revision's **digest** is the release's | 28: labels lie; a pinned revision served 0 % |
 | `verify.reconciler-jobs` | (lesson 30) | the reconciler may list Jobs in every tenant namespace, namespaced, by email and by uniqueId | 30: it listed Jobs at cluster scope and saw nothing |
 | `verify.firestore-migrations` | `other.firestore-migrations` | the state and the install record are at this engine's schema | |
-| `verify.end-to-end` | `other.verify-end-to-end`, `other.verify-row` | four runs, each to a pull request: a single task and a workflow from the plugin, and from the console | 18: the plugin signs in with the Desktop client; 43: not checkable yet (below) |
+| `verify.end-to-end` | `other.verify-end-to-end`, `other.verify-row` | four runs, each to a pull request: a single task and a workflow from the plugin, and from the console | 18: the plugin signs in with the Desktop client; 43: every run's task cloned and pushed with an App installation token (below) |
 
-**Lesson 43 is not checked here, and the step says so.** Nothing swarm-api
-serves records which GitHub credential a run cloned and pushed with: a
-tenant's git slot has a `kind`, but no task, attempt or result names the
-credential its run used. Until one does (a cross-lane question, in the PR),
-every passing run's detail and the step's outputs say the credential is
-unrecorded; the engine never reads a field nothing writes.
+**Lesson 43 is read from what each run recorded.** The worker writes the
+KIND of GitHub credential an attempt cloned and pushed with into its
+result summary (`forge_credential`: `kind`, and `source`, the secret's
+NAME; never a value), and swarm-api serves that summary to anyone who may
+read the task. The step reads it for every task a run is made of (a
+workflow's every step) through `swarm result <task> --json`, and passes
+only when each says `app_installation`; any other kind, or none recorded,
+fails the step naming the run, the task, the kind and the secret.
 
 **Only the platform's own** (`swarm-*`) Scheduler jobs and Cloud Run services
 are verified: the project may hold others, and calling their targets would
@@ -32,6 +34,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -89,10 +92,19 @@ NOT_FOR_PLUGIN_RUNS = (
 #: The platform's Scheduler jobs and Cloud Run services are named `swarm-*`.
 PLATFORM_PREFIX = "swarm-"
 
-#: What the verify step reports about lesson 43 until swarm-api records the
-#: GitHub credential each run used (module docstring).
-CREDENTIAL_UNRECORDED = ("the GitHub credential each run used is not recorded by swarm-api, so lesson 43 "
-                         "(an App installation token, never a PAT) is not checked here")
+#: Lesson 43: the only credential kind a verification run may clone and push
+#: with, as the worker records it (`result_summary.forge_credential.kind`).
+APP_INSTALLATION = "app_installation"
+
+#: The kinds the worker writes (`agent_worker.secrets.FORGE_CREDENTIAL_KINDS`);
+#: a run is named by one of these, by "unrecorded", or by "unrecognised" --
+#: never by a string read from a summary that is not one of them.
+CREDENTIAL_KINDS = frozenset({"app_installation", "app_user", "pat", "none", "unknown", "mixed"})
+UNRECORDED = "unrecorded"
+UNRECOGNISED = "unrecognised"
+
+#: A forge slot's secret name (`Tenant.secret_name`), the only `source` named.
+_SOURCE = re.compile(r"swarm-tenant-[a-z0-9][a-z0-9-]{0,200}")
 
 #: Task states (swarm_common's vocabulary) as `RunStatus.state` names them;
 #: anything else is still going.
@@ -367,9 +379,40 @@ class FirestoreMigrationsStep(_Base):
 
 
 @dataclass(frozen=True)
+class CredentialUse:
+    """Which kind of GitHub credential one task of a run used (lesson 43)."""
+
+    task_id: str
+    kind: str  # one of CREDENTIAL_KINDS, UNRECORDED or UNRECOGNISED
+    source: str = ""  # the secret's NAME, or ""
+
+    def words(self) -> str:
+        source = f" from {self.source}" if self.source else ""
+        if self.kind == UNRECORDED:
+            return f"task {self.task_id} recorded no GitHub credential kind"
+        return f"task {self.task_id} used a {self.kind} credential{source}"
+
+
+def credential_use(task_id: str, summary: Any) -> CredentialUse:
+    """`result_summary.forge_credential` as a `CredentialUse`: only a kind the
+    worker writes and a slot-shaped secret name are carried; nothing else in
+    the summary is repeated."""
+    found = summary.get("forge_credential") if isinstance(summary, dict) else None
+    if not isinstance(found, dict) or found.get("kind") is None:
+        return CredentialUse(task_id, UNRECORDED)
+    kind = found.get("kind")
+    kind = kind if isinstance(kind, str) and kind in CREDENTIAL_KINDS else UNRECOGNISED
+    source = found.get("source")
+    source = source if isinstance(source, str) and _SOURCE.fullmatch(source) else ""
+    return CredentialUse(task_id, kind, source)
+
+
+@dataclass(frozen=True)
 class RunStatus:
     state: str  # running | succeeded | failed | cancelled
     pull_request: str = ""
+    #: Every task of a succeeded run, with the credential kind it recorded.
+    credentials: tuple[CredentialUse, ...] = ()
 
 
 class Runs(Protocol):
@@ -435,7 +478,11 @@ class SwarmCli:
     `result_summary` (`git.pull_request.url`); and a workflow, which
     `/v1/tasks/<id>` does not serve, is followed by `swarm workflow-status
     <id> --result --json`: its derived `state` (null, exit 1, while the
-    server did not derive) and each step's `produced.pull_request`."""
+    server did not derive) and each step's `produced.pull_request`.
+
+    Once a run succeeded, each of its tasks' `swarm result <task> --json`
+    gives the credential kind the worker recorded (`forge_credential`,
+    lesson 43): the single task's own, and every workflow step's."""
 
     ask: Ask
     run: Run = run_command
@@ -471,8 +518,16 @@ class SwarmCli:
         if shape == "workflow":
             # Exit 1 with `state: null` is "not derived on this read": still going.
             report = self._json(["workflow-status", run_id, "--result", "--json"], ok=(0, 1))
-            prs = [str((row.get("produced") or {}).get("pull_request") or "") for row in report.get("steps") or []]
-            return RunStatus(_state(report.get("state")), next((p for p in reversed(prs) if p), ""))
+            rows = report.get("steps") or []
+            prs = [str((row.get("produced") or {}).get("pull_request") or "") for row in rows]
+            state = _state(report.get("state"))
+            if state != "succeeded":
+                return RunStatus(state)
+            tasks = [str(row.get("task_id") or "") for row in rows]
+            used = tuple(credential_use(task, self._json(["result", task, "--json"])) if task
+                         else CredentialUse(str(row.get("step_id") or "a step"), UNRECORDED)
+                         for task, row in zip(tasks, rows))
+            return RunStatus(state, next((p for p in reversed(prs) if p), ""), used)
         line = next((ln for ln in self._call(["status", run_id]).splitlines() if ln.startswith(run_id)), "")
         words = line.split()
         state = _state(words[1] if len(words) > 1 else "")
@@ -480,7 +535,8 @@ class SwarmCli:
             return RunStatus(state)
         summary = self._json(["result", run_id, "--json"])
         pull = ((summary.get("git") or {}).get("pull_request") or {})
-        return RunStatus(state, str(pull.get("url") or "") if isinstance(pull, dict) else "")
+        return RunStatus(state, str(pull.get("url") or "") if isinstance(pull, dict) else "",
+                         (credential_use(run_id, summary),))
 
 
 class EndToEndStep(_Base):
@@ -492,9 +548,10 @@ class EndToEndStep(_Base):
     _explain = (
         "Done means a team can use it: a single task and a workflow from the plugin and from the console, "
         "each to a pull request (D3). The plugin's runs sign in with the deployment's Desktop client, as a "
-        "teammate's will (lesson 18). Every run should clone and push with a GitHub App installation token, "
-        "never a personal access token (lesson 43); swarm-api does not yet record which one a run used, so "
-        "the step reports that check as not made."
+        "teammate's will (lesson 18). Every run must clone and push with a GitHub App installation token, "
+        "never a personal access token (lesson 43): the worker records each task's credential kind in its "
+        "result summary (`forge_credential`), and the step fails naming any task whose kind is not "
+        "app_installation."
     )
 
     def __init__(self, gcp: Callable[[], VerifyGcp], ask: Ask, *, runs: Runs | None = None) -> None:
@@ -514,6 +571,12 @@ class EndToEndStep(_Base):
             elif found.state == "succeeded" and not found.pull_request:
                 problems.append(f"{key} ({launched[key]}) finished without a pull request")
             elif found.state == "succeeded":
+                wrong = [use for use in found.credentials if use.kind != APP_INSTALLATION]
+                if wrong or not found.credentials:
+                    said = "; ".join(use.words() for use in wrong) or "no task's credential was read"
+                    problems.append(f"{key} ({launched[key]}) did not clone and push with a GitHub App "
+                                    f"installation token (lesson 43): {said}")
+                    continue
                 done += 1
                 prs[key] = found.pull_request
         result = "failed" if problems else ("passed" if done == len(RUNS) else None)
@@ -525,8 +588,10 @@ class EndToEndStep(_Base):
             return Observation(UNMET, "; ".join(problems))
         if done < len(RUNS):
             return Observation(WAITING, f"{done} of {len(RUNS)} runs have opened their pull request")
-        return Observation(MET, f"four runs, each to a pull request; {CREDENTIAL_UNRECORDED}",
-                           {"verify_pull_requests": prs, "verify_forge_credential": "unrecorded"})
+        return Observation(MET, "four runs, each to a pull request, each task cloning and pushing with a "
+                                "GitHub App installation token (lesson 43)",
+                           {"verify_pull_requests": prs,
+                            "verify_forge_credential": {key: APP_INSTALLATION for key in prs}})
 
     def plan(self, ctx: Any) -> Plan:
         return Plan("run a single task and a workflow from the plugin, and from the console, each to a PR",

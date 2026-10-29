@@ -6,9 +6,9 @@ calls it and must answer 2xx; what a service serves is read from its
 revision's digest, never a label; the reconciler may list Jobs per tenant
 namespace; the console's verify row is written with its countdown; four runs
 each reach a pull request, read from what the real `swarm` CLI prints, the
-plugin's signed in with the Desktop client; lesson 43 is reported as not
-checkable rather than read from a field nothing records; and the cluster's
-objects render from the release bundle.
+plugin's signed in with the Desktop client; lesson 43 is read from the
+credential kind each run's tasks recorded, and fails on anything but an App
+installation token; and the cluster's objects render from the release bundle.
 """
 
 from __future__ import annotations
@@ -210,9 +210,10 @@ class FakeRuns:
         assert run_id.endswith(shape)
         return self.states[run_id]
 
-    def finish(self, run_id: str, *, pr: str | None = None) -> None:
+    def finish(self, run_id: str, *, pr: str | None = None, kind: str = "app_installation") -> None:
         url = pr if pr is not None else f"https://github.com/acme/demo/pull/{len(run_id)}"
-        self.states[run_id] = verify.RunStatus("succeeded", url)
+        used = verify.credential_use(run_id, {"forge_credential": {"kind": kind, "source": TENANT_GIT}})
+        self.states[run_id] = verify.RunStatus("succeeded", url, (used,))
 
 
 def test_four_end_to_end_runs_each_to_a_pr() -> None:
@@ -249,23 +250,64 @@ def test_four_end_to_end_runs_each_to_a_pr() -> None:
     assert "other.verify-row" in step.satisfies
 
 
+TENANT_GIT = "swarm-tenant-acme-git"
+
+
+def _all_finished(kinds: dict[str, str] | None = None) -> tuple[Any, Any]:
+    runs = FakeRuns()
+    step = verify.EndToEndStep(lambda: VerifyFakeGcp(), Answers(), runs=runs)
+    ctx = _ctx(verify_runs={f"{s}-{k}": f"t-{s}-{k}" for s, k in verify.RUNS})
+    for surface, shape in verify.RUNS:
+        key = f"{surface}-{shape}"
+        runs.finish(f"t-{key}", kind=(kinds or {}).get(key, "app_installation"))
+    return step, ctx
+
+
 def test_runs_use_installation_tokens() -> None:
     """Lesson 43: a run must clone and push with an App installation token,
-    never a PAT. Nothing swarm-api serves records which credential a run used
-    (no task, attempt or result names it), so the step never reads an invented
-    field, and never claims the check: every pass says the credential is
-    unrecorded, in its detail and in its outputs (question in the PR)."""
+    never a PAT. The worker records each task's credential kind in its result
+    summary, and the step passes only when every run's says
+    `app_installation`; nothing says the check was not made."""
+    step, ctx = _all_finished()
+    observed = step.check(ctx)
+    assert observed.status == MET
+    assert "lesson 43" in observed.detail and "not checked" not in observed.detail
+    assert observed.outputs["verify_forge_credential"] == {
+        f"{s}-{k}": "app_installation" for s, k in verify.RUNS}
+    assert not hasattr(verify, "CREDENTIAL_UNRECORDED")
+
+
+@pytest.mark.parametrize("kind", ["pat", "app_user", "none", "mixed", "unknown"])
+def test_a_run_that_used_anything_but_an_installation_token_fails_naming_it(kind: str) -> None:
+    step, ctx = _all_finished({"console-single": kind})
+    observed = step.check(ctx)
+    assert observed.status == UNMET
+    assert "console-single (t-console-single)" in observed.detail
+    assert f"used a {kind} credential from {TENANT_GIT}" in observed.detail
+    assert "lesson 43" in observed.detail
+    for other in ("plugin-single", "plugin-workflow", "console-workflow"):
+        assert other not in observed.detail
+
+
+def test_a_run_whose_task_recorded_no_credential_fails() -> None:
     runs = FakeRuns()
     step = verify.EndToEndStep(lambda: VerifyFakeGcp(), Answers(), runs=runs)
     ctx = _ctx(verify_runs={f"{s}-{k}": f"t-{s}-{k}" for s, k in verify.RUNS})
     for surface, shape in verify.RUNS:
         runs.finish(f"t-{surface}-{shape}")
+    runs.states["t-plugin-single"] = verify.RunStatus(
+        "succeeded", "https://github.com/acme/demo/pull/1",
+        (verify.credential_use("t-plugin-single", {"git": {}}),))
     observed = step.check(ctx)
-    assert observed.status == MET
-    assert "lesson 43" in observed.detail and "not checked" in observed.detail
-    assert observed.outputs["verify_forge_credential"] == "unrecorded"
-    assert not hasattr(verify, "APP_INSTALLATION")
-    assert set(verify.RunStatus.__dataclass_fields__) == {"state", "pull_request"}
+    assert observed.status == UNMET
+    assert "plugin-single" in observed.detail and "recorded no GitHub credential kind" in observed.detail
+
+
+def test_only_a_known_kind_and_a_slot_name_are_repeated_from_a_summary() -> None:
+    odd = secrets.token_hex(12)
+    used = verify.credential_use("t-1", {"forge_credential": {"kind": odd, "source": odd}})
+    assert used == verify.CredentialUse("t-1", verify.UNRECOGNISED, "")
+    assert odd not in used.words()
 
 
 # -- the swarm CLI as it really prints ------------------------------------------
@@ -349,18 +391,29 @@ def test_plugin_runs_launch_and_finish_as_the_real_cli_prints(monkeypatch: pytes
     assert cli.status(ctx, "workflow", "wf_1") == verify.RunStatus("running")
 
     pr = "https://github.com/acme/demo/pull/7"
+    installation = {"kind": "app_installation", "source": TENANT_GIT}
     api.tasks["t-single"].update(state="SUCCEEDED",
-                                 result_summary={"git": {"pull_request": {"url": pr, "number": 7}}})
-    assert cli.status(ctx, "single", "t-single") == verify.RunStatus("succeeded", pr)
+                                 result_summary={"git": {"pull_request": {"url": pr, "number": 7}},
+                                                 "forge_credential": installation})
+    assert cli.status(ctx, "single", "t-single") == verify.RunStatus(
+        "succeeded", pr, (verify.CredentialUse("t-single", "app_installation", TENANT_GIT),))
 
     wf_pr = "https://github.com/acme/demo/pull/8"
     api.workflows["wf_1"]["workflow"].update(state="SUCCEEDED", state_source="derived")
+    pat = {"kind": "pat", "source": TENANT_GIT}
     api.workflows["wf_1"]["tasks"] = [
-        {"id": "t-write", "state": "SUCCEEDED", "result_summary": {"git": {}}},
+        {"id": "t-write", "state": "SUCCEEDED", "result_summary": {"git": {}, "forge_credential": pat}},
         {"id": "t-open", "state": "SUCCEEDED",
-         "result_summary": {"git": {"pull_request": {"url": wf_pr, "number": 8}}}},
+         "result_summary": {"git": {"pull_request": {"url": wf_pr, "number": 8}},
+                            "forge_credential": installation}},
     ]
-    assert cli.status(ctx, "workflow", "wf_1") == verify.RunStatus("succeeded", wf_pr)
+    # Each step's own task, read through `swarm result <task> --json`.
+    for row in api.workflows["wf_1"]["tasks"]:
+        api.tasks[row["id"]] = row
+    assert cli.status(ctx, "workflow", "wf_1") == verify.RunStatus("succeeded", wf_pr, (
+        verify.CredentialUse("t-write", "pat", TENANT_GIT),
+        verify.CredentialUse("t-open", "app_installation", TENANT_GIT),
+    ))
 
     api.tasks["t-failed"] = {"id": "t-failed", "state": "FAILED"}
     assert cli.status(ctx, "single", "t-failed") == verify.RunStatus("failed")

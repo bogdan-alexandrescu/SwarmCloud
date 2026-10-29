@@ -321,6 +321,7 @@ from .secrets import (
     SecretError,
     SecretManagerClient,
     call_reading_again,
+    forge_credential_kind,
     forge_credential_refused,
     forge_read_only,
     forge_suffix,
@@ -1070,6 +1071,10 @@ class Worker:
         # on -- the question every debugging of a wrong workflow output starts
         # with, and one the workspace cannot answer because it is destroyed.
         self._staged_inputs: list[inputs_mod.StagedInput] = []
+        # Every forge credential `_git_token` read this attempt, as `(kind,
+        # secret NAME or None)` -- never a value (lesson 43; see
+        # `_forge_credential_summary`).
+        self._forge_credentials_read: list[tuple[str, str | None]] = []
         # The declared inputs NOT staged because their upstream left nothing
         # to stage -- a no-change step's patch, anything of a skipped step --
         # while another input of this step changed something (#978). Each is
@@ -9005,19 +9010,30 @@ class Worker:
         refusal = self._git_token_refusal()
         if refusal:
             self.log.error("not reading the tenant git credential", reason=refusal)
+            self._forge_credentials_read.append(("none", None))
             return None
         suffix = self._forge_suffix()
         if self.secret_client is None and user_slot_hash(suffix) is None:
+            self._forge_credentials_read.append(("none", None))
             return None
+        source: str | None = None
         try:
             tenant = load_tenant(
                 self.db, self.cfg.tenant_id, call_options=self.control.call_options()
             )
-            return resolve_git_token(
+            source = tenant.secret_name(suffix)
+            token = resolve_git_token(
                 tenant=tenant, client=self.secret_client, logger=self.log,
                 provider=suffix, broker=self.forge_broker,
             )
+            # The KIND, classified here in memory; the value goes no further
+            # than the caller. A tenant with no `git` slot read nothing.
+            self._forge_credentials_read.append(
+                (forge_credential_kind(token), source if token else None)
+            )
+            return token
         except SecretError as exc:
+            self._forge_credentials_read.append(("none", source))
             # Why, for a caller that must say it (`_open_pull_request_reading_
             # again`): a `SecretError` names the secret and the broker's code,
             # never a value.
@@ -9027,6 +9043,34 @@ class Worker:
                 error=str(exc),
             )
             return None
+
+    def _forge_credential_summary(self) -> dict[str, Any] | None:
+        """`result_summary.forge_credential`: which KIND of GitHub credential
+        this attempt cloned and pushed with, and the secret NAME it came from.
+
+        Lesson 43 (docs/design/day-one/lessons.md): a verification run must
+        use a GitHub App installation token, never a personal access token;
+        stage 14 of `swarm install` reads this to check it. `kind` is one of
+        `secrets.FORGE_CREDENTIAL_KINDS`, classified in memory from GitHub's
+        documented prefix (`secrets.forge_credential_kind`); `source` is
+        `swarm-tenant-<tenant>-<suffix>` or None when nothing was read. Every
+        read counts: the clone and each push read the latest version, so reads
+        of two kinds are `mixed` with `kinds` listing them, never the first.
+        NEVER the token, a prefix of it, a piece of it or a hash of it.
+
+        None when this attempt never asked for a forge credential (no
+        repository), so a summary says nothing it did not measure.
+        """
+        reads = self._forge_credentials_read
+        if not reads:
+            return None
+        kinds = sorted({kind for kind, _ in reads})
+        sources = [source for _, source in reads if source]
+        found: dict[str, Any] = {"kind": kinds[0] if len(kinds) == 1 else "mixed"}
+        if len(kinds) > 1:
+            found["kinds"] = kinds
+        found["source"] = sources[-1] if sources else None
+        return found
 
     def _stage_issue(
         self, issue_number: int, work_dir: Path, prefetch: issue_mod.IssuePrefetch | None
@@ -16325,6 +16369,9 @@ class Worker:
         }
         if git_summary is not None:
             summary["git"] = git_summary
+        forge_credential = self._forge_credential_summary()
+        if forge_credential is not None:
+            summary["forge_credential"] = forge_credential
         if workdir is not None:
             summary["workdir_outputs"] = workdir["summary"]
         # THE AGENT'S QUESTIONS FOR THE OWNER (owner decision, 2026-10-05):
