@@ -322,3 +322,39 @@ def test_every_entry_an_install_step_satisfies_has_its_dependencies_owned() -> N
                     continue
                 assert dep in owner, f"{step.id}: {entry} depends on {dep}, which no step satisfies"
                 assert owner[dep].stage <= step.stage, f"{step.id}: {dep} is satisfied later ({owner[dep].id})"
+
+
+def test_resume_after_pass3_reapplies_no_earlier_pass(tmp_path: Path) -> None:
+    """Later stages change what an earlier pass would generate (bootstrap-1
+    gains the workspace-apply image, infra-1 and infra-2 gain the alerts and
+    the admin groups). On a resume an earlier pass whose root a later pass has
+    since applied is met: re-applying it would turn the key switches and the
+    App's switches off again (lesson 39). Only the latest applied pass of each
+    root compares its inputs."""
+    from swarm_install.steps.bootstrap import BootstrapPass1Step, Deps, applied_key, generate, inputs_digest
+    from swarm_install.steps.github_switches import Pass3Step, Pass4Step
+    from swarm_install.steps.infra import BootstrapPass2Step, InfraPass1Step, InfraPass2Step
+
+    class Project:
+        def service_account(self, email):
+            return {"email": email}
+
+        def secret(self, project, name):
+            return {"name": name}
+
+        def enabled_version(self, project, name):
+            return 1
+
+    deps = Deps(gcp=lambda: Project(), exec_=FakeExec(), root_dir=lambda ctx, root: tmp_path)
+    ctx = FakeCtx(install_state(github_app={"id": "42", "slug": "swarmcloud"}))
+    for pass_name in ("bootstrap-1", "infra-1", "infra-2", "bootstrap-2", "infra-3"):
+        ctx.outputs[applied_key(pass_name)] = inputs_digest(generate(ctx, pass_name, Project()))
+    ctx.outputs["image_digests"] = {"workspace-apply": "sha256:" + "a" * 64}
+    ctx.outputs["metric_descriptors_ready"] = True
+    ctx.outputs["admin_groups"] = ["admins@example.com"]
+
+    for step in (BootstrapPass1Step(deps), InfraPass1Step(deps), InfraPass2Step(deps)):
+        assert step.check(ctx).status == "met", f"{step.pass_name} would be re-applied on a resume"
+    assert BootstrapPass2Step(deps).check(ctx).status == "unmet", "bootstrap's latest pass still sees drift"
+    assert Pass3Step(deps).check(ctx).status == "unmet", "infra's latest pass still sees drift"
+    assert Pass4Step(deps).check(ctx).status == "unmet", "infra-4 has not been applied"
