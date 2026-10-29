@@ -2147,8 +2147,15 @@ class LiveGate:
             if self._episode is not None and self.control is not None and self.control.holds(conn_id):
                 self._renew_lease()
                 return
+            # `asyncio.timeout`, not `wait_for`: on Python 3.11 a cancel that
+            # lands as the grant finishes is swallowed by `wait_for`, which
+            # returns the grant's result instead, so the tunnel task read on
+            # with control held and its cleanup never ended it (FLAKE-LIVEGATE,
+            # part of #2230; reproduced 2026-10-29 under CPU load in
+            # test_a_gate_cancelled_while_a_person_holds_control_finishes).
             try:
-                await asyncio.wait_for(self._grant(conn_id), CONTROL_GRANT_SECONDS)
+                async with asyncio.timeout(CONTROL_GRANT_SECONDS):
+                    await self._grant(conn_id)
             except asyncio.TimeoutError:
                 await self._refused("grant_timeout")
         else:
