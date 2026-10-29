@@ -76,7 +76,7 @@ class PlatformKeysStep:
         unversioned, _ = self._missing(ctx)
         for name in unversioned:
             version = gcp.add_secret_version(ctx.project, name, _secrets.token_urlsafe(48).encode())
-            ctx.events.emit("secret_version", step=self.id, message=f"{name}: version {version} added")
+            ctx.events.emit("step_apply", step=self.id, message=f"{name}: version {version} added")
 
 
 def build_steps(deps: Deps = DEPS) -> list[Any]:

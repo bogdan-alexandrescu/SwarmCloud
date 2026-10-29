@@ -245,7 +245,7 @@ def apply_pass(ctx: Any, deps: Deps, pass_name: str, *, targets: Sequence[str] =
         tf.plan = plan  # type: ignore[method-assign]
     outputs = run_pass(tf, pass_name, inputs, project=ctx.project, bucket=bucket, guards=guards,
                        confirm=deps.confirm, targets=targets,
-                       announce=lambda line: ctx.events.emit("terraform", step=pass_name, message=line))
+                       announce=lambda line: ctx.events.emit("step_apply", step=pass_name, message=line))
     recorded: dict[str, Any] = {applied_key(pass_name): inputs_digest(inputs)}
     audiences = outputs.get("frontend_iap_audiences") or []
     if audiences:
@@ -328,11 +328,11 @@ class BootstrapPass1Step(PassStep):
             listed = tf.state_list()
             for address, resource_id in adopt.kms_imports(gcp, ctx.project, str(ctx.state.region),
                                                           ctx.environment, listed):
-                ctx.events.emit("adopt", step=self.id, message=f"import {address} (it can never be deleted)")
+                ctx.events.emit("step_apply", step=self.id, message=f"import {address} (it can never be deleted)")
                 tf.run("import", "-input=false", address, resource_id)
             roles = adopt.undelete_roles(gcp, ctx.project, _swarm_roles(gcp, ctx.project))
             for role in roles.undeleted:
-                ctx.events.emit("adopt", step=self.id, message=f"undeleted custom role {role}")
+                ctx.events.emit("step_apply", step=self.id, message=f"undeleted custom role {role}")
             if roles.blocked:
                 raise TerraformRefused(
                     f"custom roles {', '.join(roles.blocked)} were deleted more than 7 days ago; their ids are "

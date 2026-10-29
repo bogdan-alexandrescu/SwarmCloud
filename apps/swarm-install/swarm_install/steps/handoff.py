@@ -96,13 +96,15 @@ class HandoffStep:
                                                 "this terminal waits, keeping the lease, until the console is done"))
 
     def apply(self, ctx: Any, plan: Plan) -> None:
+        # The certificate can take longer than the lease: this wait renews it on
+        # every poll, as the engine's own wait does (B05).
         wait_until(self.id + ":answers", CONSOLE_ANSWERS, lambda: MET if self.answers(ctx) else UNMET,
-                   clock=ctx.clock, events=ctx.events)
+                   clock=ctx.clock, events=ctx.events, on_poll=getattr(ctx.engine, "_heartbeat", None))
         url = console_url(ctx)
         if ctx.state.hand_off_at is None:
             now = ctx.clock.now()
             ctx.engine.save(lambda s: setattr(s, "hand_off_at", now))
-        ctx.events.emit("hand_off", step=self.id, url=url,
+        ctx.events.emit("step_apply", step=self.id, url=url,
                         message=f"open {url} to finish setup (keep this terminal open)")
         self._say(f"\nOpen {url} to finish setup. Keep this terminal open: it turns the GitHub App on and "
                   "runs verify when the console is done.\n")
@@ -144,7 +146,7 @@ class ReadyStep:
         now = ctx.clock.now()
         ctx.engine.save(lambda s: setattr(s, "ready_at", now))
         url = console_url(ctx).removesuffix("/admin/setup")
-        ctx.events.emit("ready", step=self.id, url=url, message=f"READY: {url}")
+        ctx.events.emit("step_apply", step=self.id, url=url, message=f"READY: {url}")
         self._say(f"\nREADY: SwarmCloud answers at {url}\n")
 
 

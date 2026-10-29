@@ -151,7 +151,7 @@ class CopyStep:
             copied = self.deps.exec_([str(gcrane), "cp", source, target], {}, key.parent)
             if copied.returncode != 0:
                 raise RuntimeError(f"gcrane cp {source} failed: {copied.stderr.strip()[-500:]}")
-            ctx.events.emit("image_copied", step=self.id, message=f"{name}@{digest}")
+            ctx.events.emit("step_apply", step=self.id, message=f"{name}@{digest}")
         remember(ctx, outputs={"image_digests": images})
 
 
