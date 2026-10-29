@@ -282,6 +282,10 @@ span.wf-mix > .c-chip { display: flex; }
     color: var(--text-dim);
     font-size: var(--t-micro);
   }
+  /* AN UNKNOWN STATE HAS NO DURATION (visual QA pass 2 overview-agents-62,
+     #2694): its cell says `began 10d ago`, which is not a duration, so the
+     card draws no `duration` label over it. */
+  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="duration"].is-unknown::before { content: none; }
   .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="workflow"] > .id { overflow-wrap: normal; word-break: keep-all; }
   .wfl .wfl-name > .wfl-line { flex-wrap: wrap; }
   .wfl .wfl-line > .wfl-mix { display: block; flex: 1 0 100%; overflow: hidden; white-space: nowrap; }
@@ -875,6 +879,7 @@ span.wf-mix > .c-chip { display: flex; }
   position: absolute; z-index: 1;
   box-sizing: border-box;
   display: flex; flex-direction: column; gap: 4px;
+  /* 12px a side is `BAND_PAD_X` in Workflows.tsx, which adds the on-screen inset to it. */
   margin: 0; padding: 8px 12px;
   background: var(--surface);
   border: 1px solid var(--line);

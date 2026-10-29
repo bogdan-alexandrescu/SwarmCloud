@@ -3322,7 +3322,9 @@ function CriticalPathNote({
       path.missing.length === 0
         ? 'because the steps’ dependencies form a cycle'
         : ended
-          ? `not measured: ${named}${more} ${allNeverRan ? 'never ran' : 'recorded no run time'}`
+          ? // The Mark beside it already says `not measured` (review of
+            // QA2-FIX-06: the line read `not measured not measured: …`).
+            `${named}${more} ${allNeverRan ? 'never ran' : 'recorded no run time'}`
           : 'until every step has run'
     // IN WORDS (visual QA pass 1, overview-agents-66, part of #2596): the
     // caption read "critical path not measured", jargon with no reason on
@@ -3661,9 +3663,22 @@ function WorkflowGraph({
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLDivElement | null>(null)
   const [view, setView] = useState<{ left: number; w: number }>({ left: 0, w: 0 })
+  // THE PART OF THE CANVAS ON SCREEN, in canvas px: from past the sticky rail
+  // to the wrapper's right edge, or null before anything is laid out (jsdom).
+  // A wide stage's band spans the whole canvas, so any sideways scroll cut its
+  // rows at both edges (visual QA pass 2 overview-agents-63, #2694: `status 2:
+  // pytest…` with `exit` off the left, `collapse sta` on the right); the band
+  // draws its rows inside this window instead (`StageBand`'s `shown`).
+  const [onScreen, setOnScreen] = useState<{ lo: number; hi: number } | null>(null)
   const syncView = useCallback(() => {
     const el = wrapRef.current
     if (el === null) return
+    const railW = el.querySelector<HTMLElement>('.wf-levels')?.offsetWidth ?? 0
+    const graph = el.querySelector<HTMLElement>('.wf-graph')
+    const gap = graph === null ? 0 : Number.parseFloat(getComputedStyle(graph).columnGap) || 0
+    const lo = el.scrollLeft - gap
+    const hi = el.scrollLeft + el.clientWidth - railW - gap
+    setOnScreen((o) => (el.clientWidth <= 0 ? null : o !== null && o.lo === lo && o.hi === hi ? o : { lo, hi }))
     // Compared before it is set: this runs on every scroll event and on every
     // layout change, and a fresh object each time would re-render the card once
     // per scroll tick for no change at all.
@@ -4065,6 +4080,7 @@ function WorkflowGraph({
                 cause={stageCause(b.steps, notes)}
                 controls={stageDomId(workflow.workflow_id, b.level)}
                 picked={picked !== null && b.steps.some((s) => s.step_id === picked) ? picked : null}
+                shown={onScreen}
                 onToggle={() => onToggleStage(stageKey(workflow.workflow_id, b.level), b.expanded)}
                 onPick={onPick}
                 onCount={onStageTable === undefined ? undefined : (word) => onStageTable(b.level, word)}
@@ -4113,6 +4129,9 @@ function WorkflowGraph({
  * the census is the only thing on screen that says what the part you have
  * scrolled past is doing.
  */
+/** `.wf-band`'s own side padding (workflows.css), which `StageBand` adds its on-screen inset to. */
+const BAND_PAD_X = 12
+
 function StageBand({
   band,
   census,
@@ -4120,11 +4139,14 @@ function StageBand({
   cause,
   controls,
   picked,
+  shown = null,
   onToggle,
   onPick,
   onCount,
 }: {
   band: DagBand
+  /** The part of the canvas on screen, in canvas px; null when nothing is laid out. */
+  shown?: { lo: number; hi: number } | null
   census: StageCensus
   /** The stage's state mix, slots held and named steps (`stageMix`; wide-workflows.html A). */
   mix: StageMix
@@ -4172,6 +4194,19 @@ function StageBand({
   const hold = holdLine(mix)
   const chips = mix.chips.slice(0, BAND_CHIPS)
   const more = mix.chips.length - chips.length
+  // THE ROWS STAY ON SCREEN (visual QA pass 2 overview-agents-63, #2694). The
+  // band spans the whole canvas, so once a reader's pick scrolled the canvas
+  // to a step, its rows were cut at both edges: the cause lost its start
+  // (`status 2: pytest…`) and the caret its end (`collapse sta`). The band's
+  // box and edges stay where they are; its padding moves its rows into the
+  // part of it that is on screen, so they read from their start and the caret
+  // sits at the view's right edge, wherever the canvas is scrolled.
+  const inLo = shown === null ? 0 : Math.max(0, shown.lo - band.x)
+  const inHi = shown === null ? 0 : Math.max(0, band.x + band.w - shown.hi)
+  const rowsOnScreen =
+    shown !== null && (inLo > 0 || inHi > 0) && band.w - inLo - inHi > 0
+      ? { paddingLeft: BAND_PAD_X + inLo, paddingRight: BAND_PAD_X + inHi }
+      : {}
   return (
     // A GROUP, NOT A BUTTON, SINCE THE WIDE-STAGE PICK: the band now holds
     // controls of its own -- each count opens the Table, each chip picks its
@@ -4179,7 +4214,7 @@ function StageBand({
     // row, `.wf-band-toggle`, and it keeps the census as its name.
     <div
       className={cls}
-      style={{ left: band.x, top: band.y, width: band.w, height: band.h }}
+      style={{ left: band.x, top: band.y, width: band.w, height: band.h, ...rowsOnScreen }}
       role="group"
       aria-label={`Stage ${band.level + 1}`}
       data-level={band.level}
@@ -6169,14 +6204,19 @@ function WorkflowListRow({
   // overview-agents-62, #2694): the Running bucket holds a workflow whose
   // state this read could not derive, so its row measured to now and said
   // `9d 22h so far` -- a claim that it is still running, beside a mark that
-  // says nobody knows. It says how long ago it was submitted instead, in the
-  // absent treatment, and why in its title.
+  // says nobody knows. It says how long ago it began instead, in the
+  // absent treatment, and why in its title. IN THE LARGEST UNIT ONLY (review
+  // of #2694's lane QA2-FIX-06): `submitted 10d 0h ago` was 144px in the
+  // 124px Duration column (`submitted 10d 0h ag` at 1440) and ran 9px off the
+  // phone card; `began 10d ago` fits both (95px by the table-fit model,
+  // `started 10d ago` 109px of 104), and the phone card draws no
+  // `duration` label over it (`.is-unknown` in workflows.css).
   const unknownState = derivedStateOf(workflow) === null && read.live && read.ms !== null
   const dur = unknownState
     ? {
         ...read,
         ms: null,
-        text: `submitted ${formatDuration(read.ms ?? 0)} ago`,
+        text: `began ${formatDuration(read.ms ?? 0).split(' ')[0]} ago`,
         title: `The workflow's state is unknown, so whether it is still running, and so its duration, is not known. Submitted ${workflow.created_at}.`,
       }
     : pending && read.ms === null && read.text === 'not read'
@@ -6260,7 +6300,11 @@ function WorkflowListRow({
       >
         {started.submitted}
       </td>
-      <td className={`num wfl-dur${dur.ms === null ? ' is-absent' : ''}`} data-col="duration" title={dur.title}>
+      <td
+        className={`num wfl-dur${dur.ms === null ? ' is-absent' : ''}${unknownState ? ' is-unknown' : ''}`}
+        data-col="duration"
+        title={dur.title}
+      >
         {dur.text}
       </td>
     </tr>

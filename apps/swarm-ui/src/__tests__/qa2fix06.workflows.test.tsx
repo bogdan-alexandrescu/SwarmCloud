@@ -18,8 +18,14 @@
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { CascadeEnv } from './cssgate'
+import { painted } from './marks'
+import { cellStyle, lengthPx, textPx } from './tablefit'
+
 const { WorkflowsScreen } = await import('../Workflows')
 
+const WIDE: CascadeEnv = { width: 1440 }
+const PHONE: CascadeEnv = { width: 390 }
 const AUDIT = 'wf_audit_01'
 const SYNTH = 'wf_5e5ad3b6f7da4299a839'
 const STORED = 'wf_bcdc9180e4fb4a209f31'
@@ -138,9 +144,25 @@ describe('62: a `state unknown` row makes no duration claim', () => {
     const cell = row(STORED).querySelector<HTMLElement>('td[data-col="duration"]')!
     // MUTATION: drop the unknown-state arm in `WorkflowListRow` -- `9d 22h so far`.
     expect(flat(cell)).not.toMatch(/so far/)
-    expect(flat(cell)).toMatch(/^submitted \S.* ago$/)
+    expect(flat(cell)).toMatch(/^began \d+[dhms] ago$/)
     expect(cell.className).toMatch(/is-absent/)
     expect(cell.getAttribute('title')).toMatch(/state is unknown/)
+  })
+
+  it('fits the Duration column at 1440, and the phone card puts no duration label over it', async () => {
+    await list()
+    await waitFor(() => expect(row(STORED).querySelector('td[data-col="state"] [data-mark="unknown"]')).toBeTruthy())
+    const cell = row(STORED).querySelector<HTMLElement>('td[data-col="duration"]')!
+    const th = document.querySelector<HTMLElement>('.wfl-table th[data-col="duration"]')!
+    const st = cellStyle(cell, WIDE)
+    const room = (lengthPx(painted(th, 'width', WIDE), 0) ?? 0) - st.pl - st.pr
+    // MUTATION: say `submitted ${formatDuration(ms)} ago` again -- `submitted
+    // 10d 0h ago` is wider than the 124px column and was clipped to `…ag`.
+    expect(textPx(flat(cell), cell, WIDE)).toBeLessThanOrEqual(room)
+    // MUTATION: drop the `.is-unknown::before { content: none }` rule -- the
+    // phone card reads `duration began 10d ago`, a label over a non-duration.
+    expect(cell.className).toMatch(/is-unknown/)
+    expect(painted(cell, 'content', PHONE, 'before')).toBe('none')
   })
 })
 
@@ -154,7 +176,10 @@ describe('66: the longest chain on a workflow that has ended', () => {
     })
     // MUTATION: drop the ended arm of `CriticalPathNote` -- `until every step has run`.
     expect(flat(note)).not.toMatch(/until every step has run/)
-    expect(flat(note)).toMatch(/not measured: synthesis never ran$/)
+    expect(flat(note)).toMatch(/synthesis never ran$/)
+    // MUTATION: put the `not measured:` prefix back on the words -- the
+    // absent Mark already says it, so the line said it twice.
+    expect(flat(note).match(/not measured/g)?.length ?? 0).toBe(1)
   })
 })
 
@@ -194,6 +219,64 @@ describe('63: the page opens on the whole graph, its failed stage folded', () =>
       expect(seen.at(-1)).toMatchObject({ block: 'nearest', inline: 'nearest' })
     } finally {
       delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollIntoView
+    }
+  })
+})
+
+describe('63: a reader’s pick scrolls the canvas, and the opened band still reads whole', () => {
+  it('draws the band’s rows inside the part of the canvas on screen', async () => {
+    // The 1440 page with the step card open: the ~595px wrapper, the 72px rail.
+    const restore: (() => void)[] = []
+    const stub = (prop: string, get: (this: HTMLElement) => number, set?: (this: HTMLElement, v: number) => void) => {
+      Object.defineProperty(HTMLElement.prototype, prop, { configurable: true, get, ...(set ? { set } : {}) })
+      restore.push(() => delete (HTMLElement.prototype as unknown as Record<string, unknown>)[prop])
+    }
+    const at = new WeakMap<HTMLElement, number>()
+    stub(
+      'scrollLeft',
+      function () {
+        return at.get(this) ?? 0
+      },
+      function (v) {
+        at.set(this, v)
+      },
+    )
+    stub('clientWidth', function () {
+      return this.classList.contains('wf-canvas-wrap') ? 595 : 0
+    })
+    stub('scrollWidth', function () {
+      return this.classList.contains('wf-canvas-wrap') ? 72 + Number.parseFloat(this.querySelector<HTMLElement>('.wf-canvas')?.style.width ?? '0') : 0
+    })
+    stub('offsetWidth', function () {
+      return this.classList.contains('wf-levels') ? 72 : 0
+    })
+    try {
+      await page(SYNTH)
+      fireEvent.click(await waitFor(() => document.querySelector<HTMLButtonElement>('.wfp-fail-lead-go')!))
+      const band = await waitFor(() => {
+        const b = document.querySelector<HTMLElement>('.wf-canvas .wf-band.is-opened')
+        expect(b).toBeTruthy()
+        return b!
+      })
+      const wrap = document.querySelector<HTMLElement>('.wf-canvas-wrap')!
+      // The premise: bringing `checkpoints` round scrolled the canvas into the band.
+      await waitFor(() => expect(wrap.scrollLeft).toBeGreaterThan(0))
+      const lo = wrap.scrollLeft
+      const hi = wrap.scrollLeft + 595 - 72
+      const x = Number.parseFloat(band.style.left)
+      const w = Number.parseFloat(band.style.width)
+      expect(x + w, 'the band is wider than the view, so its edges are off screen').toBeGreaterThan(hi)
+      // MUTATION: drop `rowsOnScreen` from `StageBand`'s style -- the rows
+      // start at the band's left, `lo - x` px off screen (`exit` cut from the
+      // cause), and the caret ends past the view (`collapse sta`).
+      await waitFor(() => {
+        const pl = Number.parseFloat(band.style.paddingLeft || '12')
+        const pr = Number.parseFloat(band.style.paddingRight || '12')
+        expect(x + pl, 'the rows start off the left of the view').toBeGreaterThanOrEqual(lo)
+        expect(x + w - pr, 'the rows end past the right of the view').toBeLessThanOrEqual(hi)
+      })
+    } finally {
+      for (const r of restore.reverse()) r()
     }
   })
 })
