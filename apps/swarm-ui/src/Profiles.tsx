@@ -120,7 +120,7 @@ const loadProfilesView = keepNoPools(() => loadCapacity())
 
 /**
  * The count note (#138): `36 profiles · 2 backends · the whole catalogue ·
- * counts read 2 m ago, one pool at a time`.
+ * counters last reported 2m ago, one pool at a time`.
  *
  * §8.4(4): PROVENANCE, ONCE, FOR THE WHOLE PAGE. Every figure on it is worked
  * out from pool counts read at one instant, and the instant is the server's
@@ -139,15 +139,24 @@ function CatalogueCount({ capacity }: { capacity: Capacity }) {
 }
 
 /**
- * `counts read 2m ago, one pool at a time`, on the age tick, so it moves while
- * the page is open. The `<time>` carries the server's own instant.
+ * `counters last reported 2m ago, one pool at a time`, on the age tick, so it
+ * moves while the page is open. The `<time>` carries the server's own instant.
+ *
+ * REPORTED, NOT READ (visual QA pass 2, cap2-12, 2026-10-29): 'counts read
+ * 10d ago' sat beside the refresh chip's 'read 0 s ago', two reads of one page
+ * ten days apart. They are two instants: the chip is when this page last asked,
+ * and `generated_at` is when the server's counters were last written. This one
+ * says it is the counters' report time; the chip keeps the read.
  */
 function CountsAge({ generatedAt }: { generatedAt: string }) {
   const now = useNow(AGE_TICK_MS)
   return (
     <>
-      counts read{' '}
-      <time dateTime={generatedAt} title={generatedAt}>
+      counters last reported{' '}
+      <time
+        dateTime={generatedAt}
+        title={`${generatedAt}: when the server last reported these counters. The refresh control says when this page last read them.`}
+      >
         {timeAgo(generatedAt, now)}
       </time>
       , one pool at a time
