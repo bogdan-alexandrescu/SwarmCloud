@@ -104,12 +104,13 @@ RUN python -m venv --without-pip /opt/venv
 # Third-party dependencies, exported from uv.lock for this service alone. The
 # root project depends on every app, so the export prunes the internal packages
 # swarm-reconciler does not depend on (`swarm-agent-worker`, `swarm-api`,
-# `swarm-mcp`, `swarm-quota-broker`, `swarm-redaction`, `swarm-scheduler`), and
+# `swarm-install`, `swarm-mcp`, `swarm-quota-broker`, `swarm-redaction`,
+# `swarm-scheduler`), and
 # the third-party packages only they need go with them. `--no-emit-local`
 # leaves our own packages out of the file: they come from /wheels, below. The
 # export carries a hash for every file; `--no-hashes` must never be added here.
 RUN uv export --frozen --no-dev --no-emit-local --no-editable \
-      --prune swarm-agent-worker --prune swarm-api --prune swarm-mcp \
+      --prune swarm-agent-worker --prune swarm-api --prune swarm-install --prune swarm-mcp \
       --prune swarm-quota-broker --prune swarm-redaction \
       --prune swarm-scheduler \
       > /tmp/requirements.txt
