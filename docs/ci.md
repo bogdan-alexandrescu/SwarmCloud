@@ -2597,6 +2597,33 @@ script's own attempt cap is checked before it submits, so a pull request
 already at the cap gets the stop comment even while its lane's merge step is
 live.
 
+**A plain continuation of the lane waits for its merge step too** (#2685).
+The merge-step read above held only a request with `metadata.ci_fix`; a plain
+`continues_task` workflow (no fix mark of any kind) went straight through.
+On 2026-10-28 the plain lane task_7ff30c32 (wf_85f651ab, `CIFIX-2617`) was
+admitted onto PR #2617 while that lane's merge step task_943ec5f2 was live.
+The merge step then submitted its ci-fix:1 round task_99b8e1e0 beside it, the
+plain lane pushed 5bc405a first, the round's push was rejected
+non-fast-forward, and the merge step refused `head_moved` at a head none of
+its rounds had pushed. Why: a pull request has one writer at a time. A lane
+with a merge step already has one -- the merge step submits its own CI,
+conflict and pick rounds whenever CI goes red or the branch conflicts -- so
+any other agent pushing to the branch races that round, and whichever
+pushes second loses its whole run. So `cifix.stamp` answers such a request
+409 `ci_fix_lane_owns_pr` while the continued lane's merge step is in any
+non-terminal state, before anything is written. The detail names the merge
+step (`task_id`), its `workflow_id`, the lane's `root_task_id`, the
+`pull_request` when the branch's agent recorded one, and
+`plain_continuation: true`; it carries no `metadata: ci_fix`, because the
+request had none. Resubmit once the merge step ends or is cancelled. A
+merge-only request, a request carrying a writer's own mark (`ci_fix`, the
+merge step's `merge_fix_round` and `merge_conflict_round`, pr-shepherd's
+`pr_shepherd`, an issue run's `issue_run`), an agent in no workflow, a
+workflow with no merge step and a merge step that has finished are admitted
+as before. A `publish_to_pr` workflow is not read here: its branch's agent is
+known only after `stamp`. The same switch turns it off
+(`REFUSAL_CI_FIX_LANE_OWNS_PR=off`).
+
 **A request that pushes to a pull request waits while a fix holds it**
 (#2535). The gates above read only a request that carries `metadata.ci_fix`.
 Anything else went straight through. On 2026-10-26 an `implement` step of
