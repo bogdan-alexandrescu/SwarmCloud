@@ -38,6 +38,7 @@ _SECRET_ID = re.compile(r'\bsecret_id\s*=\s*"(swarm-[^"]+)"')
 _VARIABLE = re.compile(r'^variable\s+"([A-Za-z0-9_]+)"\s*\{')
 _BOOL_TYPE = re.compile(r"^\s*type\s*=\s*bool\s*$")
 _VITE = re.compile(r"import\.meta\.env\.(VITE_[A-Z0-9_]+)")
+_MAY_READ_ENV = re.compile(r"environ|getenv|\benv(\.get\(|\[)")
 _SCRIPT_FLAG = re.compile(r"^\s*(--[a-z0-9-]+)\)")
 
 
@@ -117,13 +118,25 @@ def collect_apis() -> dict[str, str]:
     return found
 
 
+def _git_files(*patterns: str) -> list[str]:
+    """Tracked files matching the pathspecs: the tree, never a build or cache."""
+    return subprocess.run(
+        ["git", "ls-files", "--", *patterns],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split()
+
+
 def _python_service_files() -> list[Path]:
+    """Every tracked Python file under apps/, tests excluded."""
     files = []
-    for path in sorted((ROOT / "apps").glob("*/**/*.py")):
-        parts = path.relative_to(ROOT / "apps").parts
-        if any(p in ("tests", "test", "node_modules", ".venv") for p in parts):
+    for name in _git_files("apps/*.py"):
+        parts = Path(name).parts
+        if any(p in ("tests", "test") for p in parts) or parts[-1].startswith("test_"):
             continue
-        files.append(path)
+        files.append(ROOT / name)
     return files
 
 
@@ -192,11 +205,15 @@ def collect_env() -> dict[str, str]:
     """3. Environment variables services read: Python `ast`, and `VITE_*` in the UI."""
     found: dict[str, str] = {}
     for path in _python_service_files():
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        text = path.read_text(encoding="utf-8")
+        if not _MAY_READ_ENV.search(text):
+            continue  # cannot read the environment: skip the parse, the slow part
+        tree = ast.parse(text, filename=str(path))
         for name, line in _env_names(tree):
             found.setdefault(name, f"{_rel(path)}:{line}")
-    for path in sorted((ROOT / "apps" / "swarm-ui" / "src").rglob("*")):
-        if path.suffix not in (".ts", ".tsx") or "__tests__" in path.parts:
+    for name in _git_files("apps/swarm-ui/src/*.ts", "apps/swarm-ui/src/*.tsx"):
+        path = ROOT / name
+        if "__tests__" in path.parts:
             continue
         for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             for name in _VITE.findall(line):
@@ -258,14 +275,7 @@ def collect_images() -> dict[str, str]:
             if k not in found
         }
     )
-    tracked = subprocess.run(
-        ["git", "ls-files", "--", "*Dockerfile", "Dockerfile"],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.split()
-    for path in tracked:
+    for path in _git_files("*Dockerfile", "Dockerfile"):
         found[f"dockerfile:{path}"] = path
     return found
 
