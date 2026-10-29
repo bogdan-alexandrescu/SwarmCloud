@@ -264,6 +264,50 @@ def test_the_build_passes_only_the_mirrors_a_dockerfile_declares(tmp_path: Path)
     assert args.get("MIRROR_DOCKER_HUB") == [MIRRORS["MIRROR_DOCKER_HUB"][0]], args
 
 
+RECIPES = sorted(REPO.glob("images/*/cloudbuild.yaml"))
+
+
+def _declared_mirrors(dockerfile: Path) -> set[str]:
+    text = dockerfile.read_text()
+    return {n for n in MIRRORS if re.search(rf"^[ \t]*ARG[ \t]+{n}(=|[ \t]*$)", text, re.M)}
+
+
+@pytest.mark.parametrize("recipe", RECIPES, ids=_rel)
+def test_every_checked_in_recipe_passes_the_mirrors_it_is_given(recipe: Path) -> None:
+    """A checked-in recipe is submitted as it is, so it cannot be handed build
+    arguments: build-images.sh gives it the project's mirrors as substitutions
+    (recipe_mirror_subs), and its `docker build` must pass each one the
+    Dockerfile declares, and the frontend as BUILDKIT_SYNTAX. Without them its
+    FROM lines would expand the empty defaults (DAYONE-DESAGA-1)."""
+    dockerfile = recipe.parent / "Dockerfile"
+    assert dockerfile.is_file(), f"{_rel(recipe)} has no Dockerfile beside it"
+    text = recipe.read_text()
+    declared = _declared_mirrors(dockerfile)
+    for name in MIRRORS:
+        passed = f"{name}=${{_{name}}}" in text
+        assert passed == (name in declared), (
+            f"{_rel(recipe)}: {name} {'is not passed' if not passed else 'is passed, but its Dockerfile does not declare it'}"
+        )
+    assert "BUILDKIT_SYNTAX=${_BUILDKIT_SYNTAX}" in text, f"{_rel(recipe)} does not pass BUILDKIT_SYNTAX"
+
+
+def test_a_checked_in_recipe_is_given_its_project_s_mirrors(tmp_path: Path) -> None:
+    """The substitutions build-images.sh hands a checked-in recipe name the
+    mirror of the project it builds for, the frontend included."""
+    from .test_build_images_pr_check import _build_only
+
+    _, proc, events = _build_only(tmp_path, "--build-only", "--tag", TAG, "workspace-apply")
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    submits = [e for e in events if e["args"][:2] == ["builds", "submit"]]
+    assert len(submits) == 1, submits
+    subs = dict(kv.split("=", 1) for kv in submits[0]["subs"].split(","))
+    host = "us-central1-docker.pkg.dev/swarm-test-project"
+    assert subs.get("_MIRROR_DOCKER_HUB") == f"{host}/swarm-mirror-dockerhub", subs
+    assert subs.get("_MIRROR_GHCR") == f"{host}/swarm-mirror-ghcr", subs
+    syntax = _syntax((REPO / "images" / "workspace-apply" / "Dockerfile").read_text())
+    assert subs.get("_BUILDKIT_SYNTAX") == f"{host}/swarm-mirror-dockerhub/{syntax}", subs
+
+
 def test_the_refresh_check_reads_the_project_s_own_mirror(tmp_path: Path) -> None:
     """The Dockerfiles name no mirror, so the refresh expands their pulls with
     the mirror of PROJECT_ID; were it still reading ARG defaults, it would
