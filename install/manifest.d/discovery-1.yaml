@@ -1,0 +1,23 @@
+# Lane DAYONE-DISCOVERY-1 (part of #2688): the environment variables
+# apps/swarm-api/swarm_api/discovery.py reads (docs/design/day-one-plan.md §6).
+# Nothing renders them until DAYONE-TF-2 adds the swarm-discovery service
+# (terraform/infra/discovery.tf); an env: name cannot be restated by another
+# fragment, so TF-2 edits these setters to that file's path:line in its own PR.
+# PROJECT_ID, PORT and LOG_LEVEL, which discovery.py also reads, are already
+# in the base manifest's env: table.
+version: 1
+env:
+  DISCOVERY_HOST:
+    setter: 'internal: read at apps/swarm-api/swarm_api/discovery.py:106; rendered by the swarm-discovery service''s environment, which DAYONE-TF-2 adds (terraform/infra/discovery.tf); until then nothing deploys the discovery app'
+  DISCOVERY_NAME:
+    setter: 'internal: read at apps/swarm-api/swarm_api/discovery.py:113; rendered by the swarm-discovery service''s environment, which DAYONE-TF-2 adds (terraform/infra/discovery.tf); until then nothing deploys the discovery app'
+  DISCOVERY_VERSION:
+    setter: 'internal: read at apps/swarm-api/swarm_api/discovery.py:114; rendered by the swarm-discovery service''s environment, which DAYONE-TF-2 adds (terraform/infra/discovery.tf); until then nothing deploys the discovery app'
+  DISCOVERY_OAUTH_CLIENT_ID:
+    setter: 'internal: read at apps/swarm-api/swarm_api/discovery.py:117; rendered by the swarm-discovery service''s environment, which DAYONE-TF-2 adds (terraform/infra/discovery.tf); until then nothing deploys the discovery app'
+  DISCOVERY_IAP_AUDIENCE:
+    setter: 'internal: read at apps/swarm-api/swarm_api/discovery.py:118; rendered by the swarm-discovery service''s environment, which DAYONE-TF-2 adds (terraform/infra/discovery.tf); until then nothing deploys the discovery app'
+  DISCOVERY_PLUGIN_MIN_VERSION:
+    setter: 'internal: read at apps/swarm-api/swarm_api/discovery.py:119; rendered by the swarm-discovery service''s environment, which DAYONE-TF-2 adds (terraform/infra/discovery.tf); until then nothing deploys the discovery app'
+  DISCOVERY_SERVE_CLIENT_SECRET:
+    setter: 'internal: read at apps/swarm-api/swarm_api/discovery.py:121; rendered by the swarm-discovery service''s environment, which DAYONE-TF-2 adds (terraform/infra/discovery.tf); until then nothing deploys the discovery app'
