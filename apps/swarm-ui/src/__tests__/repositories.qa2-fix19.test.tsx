@@ -71,8 +71,30 @@ describe('config2-10: the reach table\'s actions on one line in every row', () =
     expect(painted(acts, 'flex-wrap', WIDE)).toBe('nowrap')
     // MUTATION: put the 216px track back and the three buttons (~244px) no longer fit it.
     const track = painted(rowOf('example-org/example-api')!, 'grid-template-columns', WIDE) ?? ''
-    expect(track.trim().split(/\s+/).pop()).toBe('256px')
+    expect(track.trim().split(/\s+/).pop()).toBe('230px')
     expect(painted(document.querySelector('.ac-grid-h')!, 'grid-template-columns', WIDE)).toBe(track)
+  })
+
+  it('keeps the name track as wide as main gave it at 1440, so "example-org/example-api" stays on one line', async () => {
+    await mount()
+    const row = rowOf('example-org/example-api')!
+    const tracks = (painted(row, 'grid-template-columns', WIDE) ?? '').replace(/repeat\((\d+),\s*(\d+px)\)/g, (_, n: string, w: string) => Array(Number(n)).fill(w).join(' '))
+    const fixed = tracks.trim().replace(/^minmax\([^)]*\)\s*/, '').split(/\s+/).reduce((sum, t) => sum + Number.parseFloat(t), 0)
+    const gap = Number.parseFloat(painted(row, 'column-gap', WIDE) ?? '10')
+    // Main's tracks: 112 + 4 x 84 + 104 + 216 and seven 10px gaps = 838px
+    // beside the name, which left it 173px at 1440 (the review measured it);
+    // "example-org/example-api" needs that to sit on one line. The actions
+    // track's width comes from tightening its buttons, never from the name.
+    // MUTATION: put back the 256px track with its 8px gaps (864px) and the
+    // name drops to 147px and breaks mid-name ('example-org/example-' / 'api').
+    expect(fixed + 7 * gap).toBeLessThanOrEqual(838)
+    // The three buttons fit 230px only at their tightened padding and gap
+    // (Verify, Push test, Remove access at 12px: ~163px of words, 36px of
+    // padding, 6px of borders, 8px of gaps).
+    const acts = row.querySelector('.ac-grant-acts')!
+    // MUTATION: drop the 6px padding rule and the buttons take 24px more than the track.
+    for (const b of acts.querySelectorAll('button')) expect(painted(b, ['padding-inline', 'padding'], WIDE)).toMatch(/^0(px)? 6px$/)
+    expect(painted(acts, ['column-gap', 'gap'], WIDE)).toBe('4px')
   })
 })
 
