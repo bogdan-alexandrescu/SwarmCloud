@@ -37,16 +37,6 @@ locals {
     "swarm-github-app-webhook-secret",
   ]
 
-  # A secret's resource name is projects/<NUMBER>/secrets/<id>, a version's
-  # that plus /versions/<v>. Exact name or a path under it, never a prefix
-  # match that a longer secret id could share.
-  github_app_setup_condition = join(" || ", flatten([
-    for id in local.github_app_setup_secret_ids : [
-      "resource.name == \"projects/${data.google_project.github_app_setup.number}/secrets/${id}\"",
-      "resource.name.startsWith(\"projects/${data.google_project.github_app_setup.number}/secrets/${id}/\")",
-    ]
-  ]))
-
   github_app_setup_roles = toset([
     "roles/secretmanager.secretVersionAdder",
     "roles/secretmanager.secretAccessor",
@@ -69,9 +59,17 @@ resource "google_project_iam_member" "api_github_app_secrets" {
   member  = google_service_account.platform["swarm-api"].member
 
   condition {
-    title       = "swarm-github-app-secrets-only"
+    title       = "github-app-secrets-only"
     description = "managed-by=swarm-terraform; the three swarm-github-app-* secrets the console's App setup writes (D26). Owner-applied."
-    expression  = local.github_app_setup_condition
+    # A secret's resource name is projects/<NUMBER>/secrets/<id>, a version's
+    # that plus /versions/<v>. Exact name or a path under it, never a prefix
+    # match that a longer secret id could share.
+    expression = join(" || ", flatten([
+      for id in local.github_app_setup_secret_ids : [
+        "resource.name == \"projects/${data.google_project.github_app_setup.number}/secrets/${id}\"",
+        "resource.name.startsWith(\"projects/${data.google_project.github_app_setup.number}/secrets/${id}/\")",
+      ]
+    ]))
   }
 }
 

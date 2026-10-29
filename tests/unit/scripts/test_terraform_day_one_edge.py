@@ -46,8 +46,14 @@ def _block(text: str, header: str) -> str:
     match = re.search(rf"^{header}\s*\{{", text, re.M)
     assert match, f"no block {header!r}"
     depth = 0
+    in_string = False
     for i in range(match.end() - 1, len(text)):
-        if text[i] == "{":
+        # Braces inside a quoted string (an error_message's `{ ... }`) do not count.
+        if text[i] == '"' and text[i - 1] != "\\":
+            in_string = not in_string
+        elif in_string:
+            continue
+        elif text[i] == "{":
             depth += 1
         elif text[i] == "}":
             depth -= 1
@@ -164,7 +170,7 @@ def test_doctor_gated_off_by_default() -> None:
     ):
         block = _resource(INFRA / "doctor.tf", rtype, name)
         assert re.search(r"count\s*=\s*(local\.doctor_on|var\.enable_scheduled_doctor)", block), f"{rtype}.{name}"
-    assert 'schedule = "0 * * * *"' in doctor or "schedule  = \"0 * * * *\"" in doctor
+    assert re.search(r'^\s*schedule\s*=\s*"0 \* \* \* \*"\s*$', doctor, re.M), "the doctor is not hourly"
 
 
 def test_doctor_in_platform_service_accounts() -> None:

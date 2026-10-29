@@ -1417,6 +1417,9 @@ locals {
     { GROUPS_AUTH = var.groups_auth },
     var.setup_github_org == "" ? {} : { SETUP_GITHUB_ORG = var.setup_github_org },
     var.enable_console_app_setup && var.frontend_hostname != "" ? { SWARM_HOSTNAME = var.frontend_hostname } : {},
-    var.enable_console_app_setup && local.github_hooks_serving ? { GITHUB_HOOKS_URL = google_cloud_run_v2_service.github_hooks[0].uri } : {},
+    # The receiver's deterministic run.app URL (main.tf says why), not its
+    # resource's `uri`: the receiver reads swarm-api's URL, so naming its
+    # resource here would be a dependency cycle.
+    var.enable_console_app_setup && local.github_hooks_serving ? { GITHUB_HOOKS_URL = "https://${local.github_hooks_name}-${data.google_project.this.number}.${var.region}.run.app" } : {},
   )
 }

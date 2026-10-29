@@ -110,8 +110,8 @@ resource "google_storage_bucket_iam_member" "acceptance_fixture_public_read" {
 }
 
 output "acceptance_fixture_url" {
-  description = "The browser acceptance fixture page, without its ?run= id. scripts/lib/testlib.sh builds the same URL from ACCEPTANCE_FIXTURE_BUCKET in scripts/lib/common.sh; SWARM_BROWSER_FIXTURE_BASE overrides it."
-  value       = "https://storage.googleapis.com/${google_storage_bucket.acceptance_fixture.name}/${google_storage_bucket_object.acceptance_fixture.name}"
+  description = "The browser acceptance fixture page, without its ?run= id; \"\" while enable_acceptance_fixture is false. scripts/lib/testlib.sh builds the same URL from ACCEPTANCE_FIXTURE_BUCKET in scripts/lib/common.sh; SWARM_BROWSER_FIXTURE_BASE overrides it."
+  value       = var.enable_acceptance_fixture ? "https://storage.googleapis.com/${google_storage_bucket.acceptance_fixture[0].name}/${google_storage_bucket_object.acceptance_fixture[0].name}" : ""
 }
 
 # AN addon:ci PIECE, OFF BY DEFAULT (DAYONE-TF-2, review finding 4). An install
