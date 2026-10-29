@@ -162,6 +162,8 @@ def test_commands_run_json_events_only():
         patterns = [_rule_pattern(rule) for rule in grants]
         for command in sorted(set(_BACKTICKED_SWARM.findall(text))):
             words = command.split()
+            if len(words) < 2:
+                continue  # a bare `swarm` is the program's name, not a command
             assert _is_machine_form(words), (
                 f"/sc:{face} tells a model to run `{command}`, which is not the engine's "
                 "machine form"
