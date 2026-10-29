@@ -44,8 +44,8 @@
 #   notes         where the code disagrees with the runbooks or itself, the
 #                 live-instance hard-coding, the first-apply trap; or absent
 #
-# Counts (459 entries; 433 in P0, plus 26 added by DAYONE-P2) by kind:
-#   iam-binding              54
+# Counts (460 entries; 433 in P0, plus 27 added by DAYONE-P2) by kind:
+#   iam-binding              55
 #   switch                   42
 #   other                    46
 #   custom-role              30
@@ -83,19 +83,19 @@
 #   github-app-installation  1
 #   claude-account           1
 # by scope:
-#   core                       387
+#   core                       388
 #   addon:ci                   44
 #   addon:typesafe             12
 #   addon:bright-data-egress   9
 #   addon:tailscale            4
 #   addon:brave-search         3
 # by provider:
-#   engine                     404
+#   engine                     405
 #   human-in-terminal          21
 #   org-admin                  18
 #   human-in-console           13
 #   company-external           3
-# by stage: 0:28  1:39  2:12  3:45  4:31  5:59  6:42  7:118  8:10  9:19  10:17  11:18  12:1  13:5  14:5  15:10
+# by stage: 0:28  1:39  2:12  3:45  4:31  5:59  6:42  7:119  8:10  9:19  10:17  11:18  12:1  13:5  14:5  15:10
 #
 # Known gaps in this draft (design section 3.4): the per-tenant fan-out
 # (Cloud Run jobs per tenant x profile, per-tenant Scheduler jobs) is one entry
@@ -6338,3 +6338,17 @@ entries:
     depends_on: []
     evidence: ["docs/design/day-one-plan.md"]
     notes: "added by DAYONE-P2"
+  - id: "iam-binding.deployer-iap-api-accessor"
+    kind: "iam-binding"
+    scope: "core"
+    stage: 7
+    provider: "engine"
+    check: "gcloud iap web get-iam-policy --resource-type=backend-services --service=${name_prefix}-backend --project=$P | grep swarm-tf-deployer"
+    apply: "NEW (DAYONE-TF-2): roles/iap.httpsResourceAccessor for serviceAccount:swarm-tf-deployer@$P.iam.gserviceaccount.com on the API backend's IAP only, never the UI backend"
+    verify: "the engine's call to POST /v1/admin/setup/health/groups-probe with an ID token minted for swarm-tf-deployer (audience: the API backend's IAP client id) passes IAP; the same token on any other /v1 route gets 403 from swarm-api"
+    explain: "swarm-api's ingress is internal-and-cloud-load-balancing, so the laptop engine reaches it only through IAP, which refuses gcloud user tokens (lesson 18); the engine calls the two engine routes (the webhook activation and stage 8's group probe) as the deployer it already impersonates (plan section 5.3)."
+    guards: "lesson 18"
+    secret_entry: null
+    depends_on: ["sa.swarm-tf-deployer", "iam-binding.installer-impersonates-deployer", "iap-setting.backend-api"]
+    evidence: ["docs/design/day-one-plan.md", "terraform/modules/frontend/main.tf:148-171"]
+    notes: "that IAP admits a service-account ID token with the backend's IAP client id as audience is to be proven on the D22 test project; the fallback is the person's own Desktop-client sign-in, which then needs a platform admin. Added by DAYONE-P2 (review-fix finding 2)"
