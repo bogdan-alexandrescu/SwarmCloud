@@ -13,6 +13,9 @@ Exit codes are meant to be read by a script:
     1  it did not
     2  it happened, with conflicts a human has to resolve
 
+`swarm install` and the installer's other verbs exit with the installer's codes
+(docs/design/day-one-install.md §2.1); there, 2 is a usage error.
+
 Anywhere a command takes task ids -- `status`, `tail`, `follow` -- a workflow
 id (wf_...) stands for every step of that workflow.
 """
@@ -93,6 +96,9 @@ from .render import (
 EXIT_OK = 0
 EXIT_FAIL = 1
 EXIT_CONFLICT = 2
+#: An installer verb that cannot run here because the engine is not installed
+#: (`_delegate_to_install`); the installer's own codes follow design §2.1.
+EXIT_USAGE = 2
 
 
 def _artifact_bucket() -> str:
@@ -1304,6 +1310,57 @@ def cmd_sc(_client, args) -> int:
     return _delegate_to_sc(prefix + [args.command] + list(args.argv))
 
 
+# -- the installer ---------------------------------------------------------
+#
+# `swarm install` and its siblings run the Day One engine, which lives in its
+# own package, `swarm_install` (docs/design/day-one-install.md §2.1). A
+# teammate's `swarm` is this package alone (plan R6: the engine's wheel is
+# separate, so the Google clients it needs never reach a developer's bridge),
+# so the engine is imported only when one of these verbs runs, and without it
+# the verb says the one line that installs it.
+#
+# Routed on the first token, like `sc`'s: `swarm_install` builds its own
+# parser from the verb modules it discovers, so the line is handed over
+# verbatim and no flag of theirs is restated here. `status` is NOT one of them:
+# `swarm status` stays the one-line-per-task command, and an install's status
+# is `swarm install --status` (plan review finding 13).
+
+#: The installer's verbs (design §2.1). Only their names live here, because the
+#: hint for a missing engine has to be printed without importing it.
+INSTALL_VERBS = ("install", "uninstall", "upgrade", "team", "addon")
+
+#: How the engine is installed: the release home's installer script (design
+#: §6.3), which installs both wheels (plan R6).
+INSTALL_LINE = "curl -fsSL https://storage.googleapis.com/swarmcloud/install.sh | sh"
+
+
+def _delegate_to_install(raw: list[str]) -> int:
+    try:
+        from swarm_install import cli as _install_cli
+    except ImportError as exc:
+        # The engine itself absent, or present without one of its dependencies:
+        # either way the fix is the same line, and the second names what broke.
+        missing = getattr(exc, "name", None) or ""
+        why = (
+            "which is not installed here"
+            if missing.split(".")[0] in ("", "swarm_install")
+            else f"which cannot load here ({missing} is missing)"
+        )
+        print(
+            f"swarm {raw[0]} needs the SwarmCloud installer, {why}; install it with: {INSTALL_LINE}",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    return _install_cli.main(raw)
+
+
+def cmd_install(_client, args) -> int:
+    """The argparse route into `swarm_install`, which `main()` normally gets to
+    first; it exists so `swarm --help` lists the verbs, and runs the same
+    delegation (see `cmd_sc`)."""
+    return _delegate_to_install([args.command] + list(args.argv))
+
+
 # -- setup and diagnosis ---------------------------------------------------
 #
 # These three exist because of how this platform fails for a NEWCOMER. Every
@@ -2010,6 +2067,13 @@ def build_parser() -> argparse.ArgumentParser:
         alias_parser.add_argument("argv", nargs=argparse.REMAINDER)
         alias_parser.set_defaults(func=cmd_sc, no_client=True)
 
+    for verb in INSTALL_VERBS:
+        verb_parser = sub.add_parser(
+            verb, help=f"the installer: `swarm {verb} --help` (needs the SwarmCloud installer)"
+        )
+        verb_parser.add_argument("argv", nargs=argparse.REMAINDER)
+        verb_parser.set_defaults(func=cmd_install, no_client=True)
+
     # `no_client=True` for the same reason `doctor` and `init` carry it: the
     # catalogue is the frozen contract, held in this process, so asking for a
     # client would make the one command that works without a cluster require one.
@@ -2040,6 +2104,8 @@ def main(argv: list[str] | None = None) -> int:
         # `sc` owns its own error handling and exit codes (3 means "something
         # is down"), so this hands the whole line over rather than wrapping it.
         return _delegate_to_sc(raw)
+    if raw and raw[0] in INSTALL_VERBS:
+        return _delegate_to_install(raw)
 
     args = build_parser().parse_args(argv)
     try:
