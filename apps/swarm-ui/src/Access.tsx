@@ -10,6 +10,7 @@ import { ConnectButton, Refusal } from './GitHubConnect'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import { UrCap, UrRadio, UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { notServed, type CapCell } from './RepositoriesData'
+import { githubTokenState } from './githubTokenState'
 import { PageHead } from './Shell'
 import { usePhoneTables } from './capacityPoll'
 import type {
@@ -220,26 +221,6 @@ export function tokenExpiry(iso: string, now: number): string {
   const t = new Date(iso).getTime()
   if (!Number.isFinite(t)) return 'expiry unreadable'
   return t > now ? `expires in ${humaniseUntil(t - now)}` : `expired ${timeAgo(t, now)}`
-}
-
-/**
- * ONE STATE FOR THE GITHUB CONNECTION'S TOKEN (visual QA pass 2 config2-02).
- * GitHub access read `✓ active` above `Token ⚠ expired 10d ago` while Secrets
- * › GitHub token read `expired`: two Config pages, two states for one token.
- * An expired token on an active connection is `active · token renews on next
- * use` in warn tone (forgeapp.py renews it on its next use), never the ok
- * check; anything not active is its own word in bad tone. Secrets › GitHub
- * token takes its word from here too.
- */
-export function githubTokenState(
-  state: string | null,
-  expiresAt: string | null,
-  now: number,
-): { word: string; tone: 'ok' | 'warn' | 'bad' } {
-  if (state !== 'active') return { word: state ?? 'unknown', tone: 'bad' }
-  const t = expiresAt === null ? NaN : Date.parse(expiresAt)
-  if (Number.isFinite(t) && t <= now) return { word: 'active · token renews on next use', tone: 'warn' }
-  return { word: 'active', tone: 'ok' }
 }
 
 /**

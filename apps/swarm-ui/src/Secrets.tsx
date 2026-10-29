@@ -26,6 +26,7 @@ import {
   type WorkspaceSecretConsumer,
 } from './api'
 import { BrowserLoginsPane, isPersonalTenant } from './BrowserLogins'
+import { githubTokenState } from './githubTokenState'
 import { Banner, Button, ButtonLink, Card, Dash, Segmented, Tabs, TypedConfirm, routedClick, type TabDef } from './components'
 import { SetupContext, setupNext, useSetupSteps, type SetupStep } from './ConfigSetup'
 import { configSetupOf } from './configSetupApi'
@@ -1135,9 +1136,14 @@ function GitCard({ rows, empty }: { rows: SecretsRow[]; empty: string }) {
       {rows.length === 0 ? <p className="ur-small">{empty}</p> : rows.map((r) => (
         <dl key={r.name} className="sec-kv">
           <dt>Kind</dt><dd>{r.kind === null ? 'not said' : (TOKEN_KINDS[r.kind] ?? r.kind)}{r.token_scope === null ? '' : ` · ${r.token_scope === 'tenant' ? 'workspace' : r.token_scope === 'user' ? 'yours' : r.token_scope}`}</dd>
-          <dt>State</dt><dd>{expired(r.expires_at)
-            ? <span className="sec-state is-warn" title={`The API reads it as ${r.status}; its expiry has passed.`}>expired</span>
-            : <span className={`sec-state${r.status === 'active' ? ' is-ok' : ''}`}>{r.status}</span>}</dd>
+          {/* ONE STATE WITH GITHUB ACCESS (visual QA pass 2 config2-02): the
+              word comes from `githubTokenState`, which GitHub access uses
+              too, so an expired token on an active connection reads `active ·
+              token renews on next use` on both pages. */}
+          <dt>State</dt><dd>{(() => {
+            const st = githubTokenState(r.status, r.expires_at, Date.now())
+            return <span className={`sec-state${st.tone === 'ok' ? ' is-ok' : st.tone === 'warn' ? ' is-warn' : ''}`}>{st.word}</span>
+          })()}</dd>
           <dt>GitHub login</dt><dd>{r.forge_login === null ? 'not said' : `@${r.forge_login}`}</dd>
           <dt>Verified</dt><dd>{r.verified_at === null ? 'never' : timeAgo(r.verified_at)}</dd>
           <dt>Expires</dt><dd title={r.expires_at ?? undefined}>{r.expires_at === null ? 'not said' : expired(r.expires_at)

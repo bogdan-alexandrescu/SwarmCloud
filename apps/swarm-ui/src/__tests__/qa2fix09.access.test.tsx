@@ -120,7 +120,7 @@ describe('config2-02: one state for an expired token on an active connection', (
   })
 
   it('names the same word for both pages from one helper', async () => {
-    const { githubTokenState } = await import('../Access')
+    const { githubTokenState } = await import('../githubTokenState')
     const now = Date.parse('2026-10-29T10:00:00Z')
     // MUTATION: return `expired` (Secrets' old word) or `active` for an expired active token.
     expect(githubTokenState('active', '2026-10-19T10:00:00Z', now)).toEqual({ word: 'active · token renews on next use', tone: 'warn' })
