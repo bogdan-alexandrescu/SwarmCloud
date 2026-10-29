@@ -175,7 +175,7 @@ describe('capacity-16: drifted pools first, agreeing ones folded, one name per p
     render(<HoldersScreen />)
     await screen.findByRole('heading', { name: /Accounting drift/ }, WAIT)
     const foot = driftCard().querySelector('.ctl-card-foot')!
-    expect(visible(foot)).toMatch(/over 2 rows/)
+    expect(visible(foot)).toMatch(/against 2 leases read/)
     expect(visible(foot)).not.toContain('make ')
   })
 })

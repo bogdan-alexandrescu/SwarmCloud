@@ -255,6 +255,26 @@ export function ConfigBadgeMark({ badge }: { badge: ConfigBadge | undefined }) {
   )
 }
 
+/**
+ * A STEP STILL TO DO IS NAMED AS A TASK (visual QA pass 2 admin2-03,
+ * config2-04, 2026-10-29). The label is the done state ("GitHub connected"),
+ * so "Next: GitHub connected, Enable orgs failed" read as if GitHub were
+ * connected over the failure. A "Next:" line names what to do instead, and a
+ * failed or stale step 1 (held by GitHub access's checklist steps) is a fix.
+ */
+export function stepAction(step: Pick<SetupStep, 'key' | 'state'>): string {
+  switch (step.key) {
+    case 'github':
+      return step.state === 'failed' || step.state === 'stale' ? 'Fix GitHub access' : 'Connect GitHub'
+    case 'repositories':
+      return 'Choose repositories'
+    case 'secrets':
+      return 'Set secrets'
+    case 'people':
+      return 'Invite people'
+  }
+}
+
 /** The first measured step not done: the one the strip calls next, for a page's lead to name. */
 export function setupNext(steps: readonly SetupStep[]): SetupStep | null {
   return steps.find((s) => s.state !== 'done' && s.state !== 'unknown') ?? null
@@ -347,15 +367,17 @@ function writeShowSteps(shown: boolean) {
 }
 
 /**
- * THE CHECKLIST'S OWN COUNT, NAMED (config-08, chrome-C20): "Workspace setup:
- * 4 of 7 done", Workspace setup's checklist count in its own words
+ * THE CHECKLIST'S OWN COUNT, NAMED (config-08, chrome-C20): "Setup
+ * checklist: 4 of 7 done", Workspace setup's checklist count in its own words
  * (Onboarding's `countLabel`), on the strip's link to it. The strip counts
- * its three or four steps; without this the two counts on one screen read as
- * one count that disagrees with itself. Null while the read has no steps.
+ * its three or four steps, and says "steps"; without this the two counts on
+ * one screen read as one count that disagrees with itself. It said
+ * "Workspace setup: 4 of 7 done" beside "1 of 3 done", which named neither
+ * list (pass 2 config2-03, admin-shell-10). Null while the read has no steps.
  */
 export function checklistCount(doc: OnboardingDoc | null): string | null {
   if (doc === null || !Array.isArray(doc.steps) || doc.steps.length === 0) return null
-  return `Workspace setup: ${countLabel(doc)}`
+  return `Setup checklist: ${countLabel(doc)}`
 }
 
 /**
@@ -435,11 +457,11 @@ export function SetupStrip({ go }: { go: (to: string) => void }) {
       <div className="cfg-compact">
         <div className="cfg-compact-h">
           <b>
-            Setup {done} of {of}
+            Setup {done} of {of} steps
           </b>
           {hide ?? (
             <a className="ctl-link" {...link(nextStep === null ? WORKSPACE_SETUP_ADDRESS : nextStep.to)}>
-              {nextStep === null ? 'Workspace setup' : nextStep.label} ›
+              {nextStep === null ? 'Workspace setup' : stepAction(nextStep)} ›
             </a>
           )}
         </div>
@@ -449,7 +471,7 @@ export function SetupStrip({ go }: { go: (to: string) => void }) {
           ))}
         </div>
         <small>
-          {nextStep !== null ? `Next: ${nextStep.label}, ${nextStep.line}` : unknown > 0 ? `${unknown} not measured` : 'Every step done'}
+          {nextStep !== null ? `Next: ${stepAction(nextStep)} (${nextStep.line})` : unknown > 0 ? `${unknown} not measured` : 'Every step done'}
           {age !== null && (
             <>
               {' · '}
@@ -480,7 +502,7 @@ export function SetupStrip({ go }: { go: (to: string) => void }) {
       </ol>
       <div className="cfg-count">
         <b>
-          {done} of {of} done
+          {done} of {of} steps done
         </b>
         {unknown > 0 && <small>{unknown} not measured</small>}
         {hide}
@@ -531,7 +553,7 @@ export function SetupProgress({ name, steps, onNext }: { name: string; steps: re
     <div className="cfg-progress" role="group" aria-label={`${name} setup`}>
       <div className="cfg-progress-h">
         <b className={`cfg-progress-n${done === of ? ' is-done' : ''}`}>
-          Setup {done} of {of}
+          Setup {done} of {of} steps
         </b>
         {unknown > 0 && <small>{unknown} not measured</small>}
       </div>
@@ -545,9 +567,9 @@ export function SetupProgress({ name, steps, onNext }: { name: string; steps: re
           <>
             Next:{' '}
             <a href={addressToPath(nextStep.to)} onClick={(e) => onNext?.(nextStep, e)}>
-              {nextStep.label}
-            </a>
-            , {nextStep.line}
+              {stepAction(nextStep)}
+            </a>{' '}
+            ({nextStep.line})
           </>
         ) : done === of ? (
           'Setup complete'

@@ -83,7 +83,7 @@ describe('the strip names the checklist’s count beside its own', () => {
 
   it('checklistCount is the checklist’s own words', () => {
     // MUTATION: return null from checklistCount -> the link reads plain "Workspace setup".
-    expect(checklistCount(doc())).toBe('Workspace setup: 4 of 7 done')
+    expect(checklistCount(doc())).toBe('Setup checklist: 4 of 7 done')
     expect(checklistCount(null)).toBeNull()
   })
 
@@ -91,10 +91,10 @@ describe('the strip names the checklist’s count beside its own', () => {
     strip(doc())
     const section = screen.getByRole('region', { name: 'Workspace setup' })
     // Secrets set is unknown with no `config_setup`, so one of three is done: GitHub is held, Repositories done.
-    expect(within(section).getByText('1 of 3 done')).toBeTruthy()
+    expect(within(section).getByText('1 of 3 steps done')).toBeTruthy()
     const steps = within(section).getByRole('list', { name: 'Workspace setup steps' })
     expect(steps.querySelector('.cfg-step.is-failed')?.textContent).toContain('Next: Enable orgs failed')
-    const link = within(section).getByRole('link', { name: 'Workspace setup: 4 of 7 done' })
+    const link = within(section).getByRole('link', { name: 'Setup checklist: 4 of 7 done' })
     expect(link.getAttribute('href')).toBe('/config/workspace/setup')
   })
 })
