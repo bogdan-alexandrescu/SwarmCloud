@@ -70,34 +70,36 @@ run "the_role_deletes_objects_and_does_nothing_else" {
 run "swarm_api_holds_it_on_the_artifact_bucket_only" {
   command = plan
 
-  # The accounts' emails are computed, so unknown at plan. Each one is given
-  # its own, so the member below can only match if it is swarm-api's.
-  override_resource {
-    target          = google_service_account.platform["swarm-api"]
+  # The accounts are terraform/bootstrap's since DAYONE-BOOT-2; modules/iam
+  # reads them, and a mock data source fills the email with a random string.
+  # Each one is given its own, so the member below can only match if it is
+  # swarm-api's.
+  override_data {
+    target          = data.google_service_account.platform["swarm-api"]
     override_during = plan
     values = {
       email = "swarm-api@saga-agents-staging.iam.gserviceaccount.com"
       name  = "projects/saga-agents-staging/serviceAccounts/swarm-api@saga-agents-staging.iam.gserviceaccount.com"
     }
   }
-  override_resource {
-    target          = google_service_account.platform["swarm-scheduler"]
+  override_data {
+    target          = data.google_service_account.platform["swarm-scheduler"]
     override_during = plan
     values = {
       email = "swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
       name  = "projects/saga-agents-staging/serviceAccounts/swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
     }
   }
-  override_resource {
-    target          = google_service_account.platform["swarm-reconciler"]
+  override_data {
+    target          = data.google_service_account.platform["swarm-reconciler"]
     override_during = plan
     values = {
       email = "swarm-reconciler@saga-agents-staging.iam.gserviceaccount.com"
       name  = "projects/saga-agents-staging/serviceAccounts/swarm-reconciler@saga-agents-staging.iam.gserviceaccount.com"
     }
   }
-  override_resource {
-    target          = google_service_account.platform["swarm-quota-broker"]
+  override_data {
+    target          = data.google_service_account.platform["swarm-quota-broker"]
     override_during = plan
     values = {
       email = "swarm-quota-broker@saga-agents-staging.iam.gserviceaccount.com"
@@ -112,7 +114,7 @@ run "swarm_api_holds_it_on_the_artifact_bucket_only" {
   assert {
     condition = alltrue([
       google_storage_bucket_iam_member.api_history_purge_deleter.member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com",
-      google_service_account.platform["swarm-api"].account_id == "swarm-api",
+      data.google_service_account.platform["swarm-api"].account_id == "swarm-api",
     ])
     error_message = "the purge runs in swarm-api; no other account may hold its delete"
   }

@@ -121,11 +121,6 @@ run "the_workspace_sweep_runs_every_ten_minutes_as_the_sweeper" {
   }
 
   assert {
-    condition     = strcontains(google_service_account.rollup_sweeper.description, "workspace-sweep")
-    error_message = "the sweeper account's description names every job that presents it"
-  }
-
-  assert {
     condition     = contains(output.scheduler_job_names, "swarm-workspace-sweep")
     error_message = "scheduler_job_names must list the workspace sweep"
   }
@@ -301,5 +296,32 @@ run "one_stuck_entry_in_thirty_minutes_pages" {
   assert {
     condition     = contains(output.alert_policy_names, "swarm-dev-workspace-stuck")
     error_message = "the policy must be listed with the module's other alert policies"
+  }
+}
+
+# The rollup sweeper account is terraform/bootstrap's since DAYONE-BOOT-2
+# (platform_service_accounts.tf); modules/scheduler only reads it, so its
+# description is held on the root that writes it.
+run "the_sweeper_account_names_the_workspace_sweep" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  # terraform/bootstrap/state_bucket.tf imports the state bucket (DAYONE-BOOT-1);
+  # a mock provider cannot import.
+  override_resource {
+    target = google_storage_bucket.state
+  }
+
+  variables {
+    project_id           = "saga-agents-staging"
+    frontend_iap_members = ["domain:example.com"]
+  }
+
+  assert {
+    condition     = strcontains(google_service_account.rollup_sweeper.description, "workspace-sweep")
+    error_message = "the sweeper account's description names every job that presents it"
   }
 }

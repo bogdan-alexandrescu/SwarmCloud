@@ -63,9 +63,10 @@ PLATFORM_AND_RUNNERS = [
     "swarm-verify", "agent-runtime-base", "agent-runtime-browser", "agent-runtime-indexer",
 ]
 
+# The receiver has no allUsers binding since DAYONE-TF-2: its invoker check is
+# off on the service itself (Q3), so the service is its one gated address.
 RECEIVER = [
     "google_cloud_run_v2_service.github_hooks[0]",
-    "google_cloud_run_v2_service_iam_member.github_hooks_public[0]",
 ]
 
 

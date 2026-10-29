@@ -96,16 +96,18 @@ def _verify_identity() -> str:
     to grant the release deployer serviceAccountAdmin on this account -- and
     verify.tf takes it from there. So the derivation follows the same two hops:
     verify.tf must name the module's output, and the module holds the literal.
+    Since DAYONE-BOOT-2 terraform/bootstrap creates the account and verify.tf
+    reads it as `data "google_service_account" "verify"`.
     """
     verify = _strip_comments(VERIFY_TF.read_text())
     m = re.search(
-        r'resource\s+"google_service_account"\s+"verify"\s*\{[^}]*?account_id\s*=\s*'
+        r'data\s+"google_service_account"\s+"verify"\s*\{[^}]*?account_id\s*=\s*'
         r"module\.(\w+)\.verify_id\b",
         verify,
         re.S,
     )
     assert m, (
-        "google_service_account.verify's account_id is not "
+        "data.google_service_account.verify's account_id is not "
         "module.<service_account_ids>.verify_id in verify.tf"
     )
     call = re.search(
@@ -136,9 +138,9 @@ def test_the_derived_identity_is_the_one_swarm_api_admits() -> None:
     # gate must still be its first element.
     assert re.search(
         r'ALLOWED_USERS\s*=\s*(?:join\(\s*",",\s*(?:concat\(\s*)?\[\s*)?'
-        r"google_service_account\.verify\.email\b",
+        r"local\.verify_email\b",
         _strip_comments(LOCALS_TF.read_text()),
-    ), "swarm-api no longer admits google_service_account.verify through ALLOWED_USERS"
+    ), "swarm-api no longer admits swarm-verify (local.verify_email) through ALLOWED_USERS"
 
 
 #: No xfail any more. This was `xfail(strict=True)` while decision 1 was decided

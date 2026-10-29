@@ -542,6 +542,57 @@ run "adoption_waits_until_terraform_infra_has_let_go" {
     }
   }
 
+  # The same adoption imports the platform service accounts
+  # (platform_service_accounts.tf, DAYONE-BOOT-2); a mock provider cannot
+  # import, so their import targets are overridden too. An override holds one
+  # value for every instance of a for_each, so each platform account reads
+  # swarm-api's address here; bootstrap's IAM members only need it well formed.
+
+  override_resource {
+    target          = google_service_account.platform
+    override_during = plan
+    values = {
+      email  = "swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  override_resource {
+    target          = google_service_account.tick
+    override_during = plan
+    values = {
+      email  = "swarm-tick@saga-agents-staging.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-tick@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  override_resource {
+    target          = google_service_account.verify
+    override_during = plan
+    values = {
+      email  = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  override_resource {
+    target          = google_service_account.schedule_tick
+    override_during = plan
+    values = {
+      email  = "swarm-schedule-tick@saga-agents-staging.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-schedule-tick@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  override_resource {
+    target          = google_service_account.rollup_sweeper
+    override_during = plan
+    values = {
+      email  = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
   expect_failures = [google_project_iam_custom_role.platform]
 }
 
@@ -575,6 +626,57 @@ run "adoption_proceeds_once_terraform_infra_has_let_go" {
     override_during = plan
     values = {
       deleted = false
+    }
+  }
+
+  # The same adoption imports the platform service accounts
+  # (platform_service_accounts.tf, DAYONE-BOOT-2); a mock provider cannot
+  # import, so their import targets are overridden too. An override holds one
+  # value for every instance of a for_each, so each platform account reads
+  # swarm-api's address here; bootstrap's IAM members only need it well formed.
+
+  override_resource {
+    target          = google_service_account.platform
+    override_during = plan
+    values = {
+      email  = "swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  override_resource {
+    target          = google_service_account.tick
+    override_during = plan
+    values = {
+      email  = "swarm-tick@saga-agents-staging.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-tick@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  override_resource {
+    target          = google_service_account.verify
+    override_during = plan
+    values = {
+      email  = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  override_resource {
+    target          = google_service_account.schedule_tick
+    override_during = plan
+    values = {
+      email  = "swarm-schedule-tick@saga-agents-staging.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-schedule-tick@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  override_resource {
+    target          = google_service_account.rollup_sweeper
+    override_during = plan
+    values = {
+      email  = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
     }
   }
 

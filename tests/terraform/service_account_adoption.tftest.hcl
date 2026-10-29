@@ -6,7 +6,9 @@
 # that is squatting: the release would then set IAM on, deploy as and grant
 # roles to an identity whose history it does not know -- keys included. The
 # platform accounts, swarm-tick and swarm-verify are already in state, so they
-# never need it and do not set it. The tenant worker keeps it, because
+# never need it and do not set it (terraform/bootstrap's since DAYONE-BOOT-2,
+# adopted from infra's state only by an `import` gated on
+# adopt_from_infra_states). The tenant worker keeps it, because
 # scripts/register-tenant.sh creates that account before the release that adds
 # the tenant, and refuses when the account it finds already carries IAM members
 # or user-managed keys it did not expect
@@ -18,7 +20,68 @@ mock_provider "google" {
   source = "./mocks/google"
 }
 
-run "platform_and_tick_accounts_are_never_adopted" {
+# Since DAYONE-BOOT-2 the platform accounts, swarm-tick, swarm-verify,
+# swarm-schedule-tick and swarm-rollup-sweeper are terraform/bootstrap's
+# (platform_service_accounts.tf); terraform/infra and its modules only READ
+# them (data "google_service_account") and forget their old addresses with
+# `removed { destroy = false }` (terraform/infra/removed.tf). The promise
+# stays: no account is ever taken over by name on a 409. Bootstrap adopts the
+# accounts infra created only through its `import` blocks, and only while
+# adopt_from_infra_states names infra's state; with it empty nothing is
+# imported -- which this run proves on a mock provider, which refuses any
+# import ("Invalid import request") and so could not plan otherwise.
+run "platform_and_tick_accounts_are_adopted_only_under_the_infra_state_gate" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  # terraform/bootstrap/state_bucket.tf imports the state bucket
+  # unconditionally (DAYONE-BOOT-1); that import is not this suite's subject.
+  override_resource {
+    target = google_storage_bucket.state
+  }
+
+  variables {
+    project_id              = "saga-agents-staging"
+    frontend_iap_members    = ["domain:example.com"]
+    adopt_from_infra_states = []
+  }
+
+  assert {
+    condition     = alltrue([for k, sa in google_service_account.platform : sa.create_ignore_already_exists != true])
+    error_message = "a platform service account adopts a pre-existing account of its name on a 409; only the import gated on adopt_from_infra_states may adopt it"
+  }
+
+  assert {
+    condition = alltrue([
+      for sa in [
+        google_service_account.tick,
+        google_service_account.verify,
+        google_service_account.schedule_tick,
+        google_service_account.rollup_sweeper,
+        google_service_account.discovery,
+        google_service_account.doctor,
+      ] : sa.create_ignore_already_exists != true
+    ])
+    error_message = "swarm-tick, swarm-verify, swarm-schedule-tick, swarm-rollup-sweeper, swarm-discovery or swarm-doctor adopts a pre-existing account of its name on a 409"
+  }
+
+  # The control: the accounts are planned at all, under their names.
+  assert {
+    condition = (
+      toset(keys(google_service_account.platform)) == toset(["swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler"])
+      && google_service_account.tick.account_id == "swarm-tick"
+      && google_service_account.verify.account_id == "swarm-verify"
+    )
+    error_message = "the four platform accounts, swarm-tick and swarm-verify are not planned, so the assertions above prove nothing"
+  }
+}
+
+# modules/iam creates no account any more: it reads bootstrap's, so it cannot
+# adopt one either.
+run "modules_iam_reads_the_platform_and_tick_accounts_and_creates_none" {
   command = plan
 
   module {
@@ -34,19 +97,12 @@ run "platform_and_tick_accounts_are_never_adopted" {
   }
 
   assert {
-    condition     = alltrue([for k, sa in google_service_account.platform : sa.create_ignore_already_exists != true])
-    error_message = "a platform service account adopts a pre-existing account of its name; it is already in state and must fail on a 409 instead"
-  }
-
-  assert {
-    condition     = google_service_account.tick.create_ignore_already_exists != true
-    error_message = "swarm-tick adopts a pre-existing account of its name; it is already in state and must fail on a 409 instead"
-  }
-
-  # The control: the accounts are planned at all.
-  assert {
-    condition     = length(google_service_account.platform) == 4
-    error_message = "the four platform accounts are not planned, so the assertions above prove nothing"
+    condition = (
+      toset(keys(data.google_service_account.platform)) == toset(["swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler"])
+      && data.google_service_account.tick.account_id == "swarm-tick"
+      && length(regexall("resource\\s+\"google_service_account\"", file("../../terraform/modules/iam/service_accounts.tf"))) == 0
+    )
+    error_message = "modules/iam must read the four platform accounts and swarm-tick from terraform/bootstrap, and declare no google_service_account resource of its own"
   }
 }
 
@@ -75,14 +131,15 @@ run "the_verify_account_is_never_adopted" {
     }
   }
 
+  # terraform/infra no longer creates swarm-verify (terraform/bootstrap does,
+  # under the gate the first run above holds): it reads it, so it can adopt
+  # nothing of that name.
   assert {
-    condition     = google_service_account.verify.create_ignore_already_exists != true
-    error_message = "swarm-verify adopts a pre-existing account of its name; it is already in state and must fail on a 409 instead"
-  }
-
-  assert {
-    condition     = google_service_account.verify.account_id == "swarm-verify"
-    error_message = "the verify account is not planned under its name, so the assertion above proves nothing"
+    condition = (
+      data.google_service_account.verify.account_id == "swarm-verify"
+      && length(regexall("resource\\s+\"google_service_account\"\\s+\"verify\"", file("../../terraform/infra/verify.tf"))) == 0
+    )
+    error_message = "terraform/infra must read swarm-verify from terraform/bootstrap by its name, and declare no google_service_account of its own for it"
   }
 }
 
