@@ -99,25 +99,57 @@ export function WorkspaceRefusalBanner({ error }: { error: ApiError | null | und
  *
  * `role` is the caller's stored role in the workspace in hand, or null when it was not read: then the sentence
  * says only that the page is for platform admins, never a role guessed.
+ *
+ * WHO THE PAGE IS FOR (visual QA pass 2, admin2-02; part of #2694). People and roles and Workspaces you admin are
+ * shown to a workspace admin who is not a platform admin (`WORKSPACE_ADMIN_PAGE_KEYS`), so titling their refusal
+ * "for platform admins" was wrong: `audience="workspace"` titles it "for workspace admins" and says the reader
+ * administers no group workspace. And the owner of a personal workspace is its admin only in the
+ * data's sense: "You are an admin of Bogdan" read as if the reader qualified, so `personal` says it is their own
+ * workspace instead of naming a role.
  */
-export function AdminRoleRefusal({ page, role, workspace }: { page: string; role: string | null; workspace: string }) {
+export function AdminRoleRefusal({
+  page,
+  role,
+  workspace,
+  audience = 'platform',
+  personal = false,
+}: {
+  page: string
+  role: string | null
+  workspace: string
+  audience?: 'platform' | 'workspace'
+  personal?: boolean
+}) {
   const overview = addressToPath('overview/now')
   return (
-    <div className="ws-refusal" data-refused="admin">
+    <div className="ws-refusal" data-refused="admin" data-audience={audience}>
       <Banner
         tone="info"
         role="status"
-        title={`${page} is for platform admins`}
+        title={`${page} is for ${audience === 'workspace' ? 'workspace' : 'platform'} admins`}
         actions={
           <ButtonLink kind="primary" size="sm" href={overview}>
             Open Overview
           </ButtonLink>
         }
       >
-        {role === null || role === '' ? `You are not a platform admin, and your role in ${workspace} was not read.` : `You are ${article(role)} ${role} of ${workspace}.`}
+        {refusalLine(audience, role, workspace, personal)}
       </Banner>
     </div>
   )
+}
+
+/** Why the reader does not qualify, then their role in the workspace in hand: never a role guessed. */
+function refusalLine(audience: 'platform' | 'workspace', role: string | null, workspace: string, personal: boolean): string {
+  const lead = audience === 'workspace' ? 'This page is for admins of a group workspace; you administer none.' : null
+  if (personal) return `${lead ?? 'You are not a platform admin.'} ${workspace} is your own workspace.`
+  if (role === null || role === '') {
+    return lead === null
+      ? `You are not a platform admin, and your role in ${workspace} was not read.`
+      : `${lead} Your role in ${workspace} was not read.`
+  }
+  const yours = `You are ${article(role)} ${role} of ${workspace}.`
+  return lead === null ? yours : `${lead} ${yours}`
 }
 
 /** "a member", "an admin": the article a role's name takes. */
