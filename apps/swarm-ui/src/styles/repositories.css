@@ -75,14 +75,18 @@
    part of #2694). 216px held Verify, Push test and Remove; renamed Remove
    access (QA1 config-15), the write rows' third button wrapped under the
    other two while the read row's two stayed on one line, so the column was
-   ragged and the rows two heights. The track is 256px -- Verify, Push test
-   and Remove access at the 12px button size, with their 6px gaps -- and the
-   buttons never wrap at this width; the 40px come from the column gaps
-   (10px to 8px, 14px) and the name's share (26px, of the ~200px it has at
-   1440). */
+   ragged and the rows two heights. The buttons are tightened here (6px of
+   padding, 4px between them) and the track is 230px: Verify, Push test and
+   Remove access are ~163px of words, 36px of padding, 6px of borders and 8px
+   of gaps, so they never wrap. The 14px over 216 come from the column gaps
+   (10px to 8px), never from the name: its track stays the 173px main gave it
+   at 1440, which holds "example-org/example-api" on one line (a 256px track
+   took 26px from it and broke the name mid-word, review shot
+   light-desktop-01). */
 @media (min-width: 1080px) {
-  .ac-reach.has-registered .ac-grid-h, .ac-reach.has-registered .ac-grant { grid-template-columns: minmax(0, 1fr) 112px repeat(4, 84px) 104px 256px; column-gap: 8px; }
-  .ac-reach.has-registered .ac-grant-acts { flex-wrap: nowrap; }
+  .ac-reach.has-registered .ac-grid-h, .ac-reach.has-registered .ac-grant { grid-template-columns: minmax(0, 1fr) 112px repeat(4, 84px) 104px 230px; column-gap: 8px; }
+  .ac-reach.has-registered .ac-grant-acts { flex-wrap: nowrap; gap: 4px; }
+  .ac-reach.has-registered .ac-grant-acts > .c-btn { padding: 0 6px; }
 }
 /* The freshness badge's one slot (visual QA run 6, work-a-009): the row
    under the name, from the left edge, on every card at every width. */
