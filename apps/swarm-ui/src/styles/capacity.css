@@ -1096,7 +1096,9 @@ p.muted.rt-reason { margin: 0 0 var(--ctl-s3); }
   /* No limit set has no ceiling to be `of`: the row reads `0 no limit set`. */
   .cap-pools.is-stacked > table > tbody > tr > td[data-label='Ceiling (units)']:has(.ctl-em)::before { content: none; }
   .cap-pools.is-stacked .cap-was-sl { display: none; }
-  .cap-pools.is-stacked .cap-was::before { content: '(lowered from '; }
+  /* The leading space is the row's word gap (QA2-FIX-14 review): `.cap-was`'s
+     2px margin alone joined it as `of 6(lowered from 10)`. */
+  .cap-pools.is-stacked .cap-was::before { content: ' (lowered from '; }
   .cap-pools.is-stacked .cap-was::after { content: ')'; }
   .cap-pools.is-stacked > table > tbody > tr > td[data-label='Use'] { grid-area: use; }
   .cap-pools.is-stacked > table > tbody > tr > td[data-label='State'] { grid-area: state; justify-self: end; }

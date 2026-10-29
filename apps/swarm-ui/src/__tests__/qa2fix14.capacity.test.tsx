@@ -158,7 +158,9 @@ describe('capacity-12: the compact row labels the configured limit', () => {
     slash.className = 'cap-was-sl'
     was.appendChild(slash)
     expect(painted(slash, 'display', PHONE)).toBe('none')
-    expect(painted(was, 'content', PHONE, 'before')).toBe("'(lowered from '")
+    // MUTATION: drop the leading space from `.cap-was::before` and this goes
+    // red: the row read `of 6(lowered from 10)`.
+    expect(painted(was, 'content', PHONE, 'before')).toBe("' (lowered from '")
     expect(painted(was, 'content', PHONE, 'after')).toBe("')'")
     // The wide table keeps the frame's `6/10`.
     expect(painted(slash, 'display', WIDE)).not.toBe('none')
