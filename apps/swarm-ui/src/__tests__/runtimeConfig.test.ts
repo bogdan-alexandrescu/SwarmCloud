@@ -1,5 +1,5 @@
 // ONE IMAGE, EVERY DEPLOYMENT (DAYONE-UIENV-1, design day-one-install.md
-// section 13): the console learns which environment it is pointed at from
+// section 6.2): the console learns which environment it is pointed at from
 // `/config.json`, which the swarm-ui container writes from its own
 // environment when it starts, and no longer from a `VITE_SWARM_ENV` that the
 // image build compiled into the bundle.
@@ -63,16 +63,17 @@ describe('the console reads its environment at run time', () => {
     await Promise.all([loadRuntimeConfig(fetcher), loadRuntimeConfig(fetcher)])
     await loadRuntimeConfig(fetcher)
     expect(calls).toHaveLength(1)
-    expect(calls[0].url).toBe(RUNTIME_CONFIG_PATH)
+    expect(calls[0]?.url).toBe(RUNTIME_CONFIG_PATH)
     expect(RUNTIME_CONFIG_PATH).toBe('/config.json')
-    expect(calls[0].init?.cache).toBe('no-store')
+    expect(calls[0]?.init?.cache).toBe('no-store')
     expect(deployedEnvironment()).toBe('dev')
   })
 
   it("the API's declared answer still outranks the deployment's file", async () => {
     await loadRuntimeConfig(serving({ environment: 'dev' }).fetcher)
     const env = classifyEnvironment(undefined, 'console.example.test', { name: 'prod', declared: true })
-    expect(env).toMatchObject({ kind: 'production', name: 'prod', source: 'api', build: 'dev' })
+    expect(env).toMatchObject({ kind: 'production', name: 'prod', source: 'api', deployment: 'dev' })
+    expect(envTreatment(env).explain).toMatch(/reported by the API.*This deployment declared dev\./)
   })
 
   it('a deployment that declares nothing falls through to the loud unknown', async () => {
@@ -121,7 +122,7 @@ describe('when the read starts', () => {
     const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{"environment":"dev"}', { status: 200 }))
     expect(deployedEnvironment()).toBeUndefined()
     expect(spy).toHaveBeenCalledTimes(1)
-    expect(spy.mock.calls[0][0]).toBe('/config.json')
+    expect(spy.mock.calls[0]?.[0]).toBe('/config.json')
     await loadRuntimeConfig()
     expect(deployedEnvironment()).toBe('dev')
     spy.mockRestore()
@@ -148,9 +149,13 @@ describe('the swarm-ui image', () => {
   it('writes /config.json from the container environment when it starts', () => {
     // nginx's own entrypoint runs every executable script in this directory
     // before it starts nginx.
-    expect(code).toMatch(/COPY\s+--chmod=0?755\s+<<"EOF"\s+\/docker-entrypoint\.d\/\d+-swarm-ui-config\.sh/)
+    expect(dockerfile).toMatch(
+      /RUN cat > (\/docker-entrypoint\.d\/\d+-swarm-ui-config\.sh) <<"EOF" && chmod 0755 \1\n#!\/bin\/sh\n/,
+    )
     expect(code).toMatch(/\$\{ENVIRONMENT:-\}/)
-    expect(code).toMatch(/\/tmp\/swarm-ui\/config\.json/)
+    // Written whole, then moved into place, where nginx.conf's alias reads it.
+    expect(code).toMatch(/^dir=\/tmp\/swarm-ui$/m)
+    expect(code).toMatch(/mv "\$dir\/config\.json\.tmp" "\$dir\/config\.json"/)
   })
 
   it('nginx serves that file, uncached, at /config.json', () => {
