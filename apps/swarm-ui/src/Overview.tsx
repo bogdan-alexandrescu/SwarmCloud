@@ -21,7 +21,7 @@ import { accountName } from './accountName'
 import { HUMAN_PARK_MAX_MS, HandoffBanner, handoffOf, needsYou } from './Handoff'
 import { LiveControl } from './LiveBrowser'
 import { browserTabPath } from './LiveThumb'
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   loadAccountPool,
   loadCapacity,
@@ -74,6 +74,7 @@ import {
   type Task,
   type TaskPage,
   type TaskState,
+  type WorkflowPage,
 } from './types'
 
 /**
@@ -321,7 +322,7 @@ export function OverviewScreen({ setup, waitingOnYou }: { setup?: ReactNode; wai
       {waitingOnYou}
 
       <section className="ov-lead" id="ov-needs" aria-labelledby="ov-needs-h">
-        <NeedsALook checks={checks} />
+        <NeedsALook checks={checks} tasks={page ?? []} workflows={dataOf(workflows)?.workflows ?? []} />
         {/* THE HAND-OFF BANNER (docs/design/live-browser.md §6, lane LB-L12):
             an agent stopped until a person signs in, one card each, under
             the checks and in the same lead. Nothing at all when none is. */}
@@ -926,10 +927,74 @@ export function keepNeedsRoom(cards: number): void {
   needsHeld = Math.min(Math.max(cards, 1), NEEDS_ROOM_MAX)
 }
 
-function NeedsALook({ checks }: { checks: Check[] }) {
+/** A workflow or task id as a check's sentence prints it: `wf_…` or `task_…`. */
+const CHECK_ID = /\b(?:wf|task)_\w+/g
+
+/**
+ * EACH ID A CARD PRINTS, BY ITS TITLE (visual QA pass 2, overview-agents-02,
+ * 2026-10-29): Needs a look read 'Workflow wf_5e5ad3b6f7da4299a8…',
+ * 'wf_bcdc9180e4fb4a209f31 — …' and 'task_8ea5c26d' where the rest of the page
+ * says 'Check the five contract invariants…' and 'Fix flaky lease heartbeat
+ * test'. `checks.ts` speaks in ids (its node tests read them, and it reads no
+ * metadata); the card names each from the rows this page already holds, by
+ * `useRowTitles`' one read per workflow or lone task. A workflow is read
+ * through a step task: one on the page, else one its workflow row lists. An
+ * id with no title read stays the id; a titled one keeps it as its `title`.
+ */
+function useCheckNames(problems: readonly Problem[], tasks: readonly Task[], workflows: WorkflowPage['workflows']): (id: string) => string | null {
+  const byTask = new Map<string, Task>(tasks.map((t) => [t.id, t] as const))
+  const stepOf = new Map<string, string>()
+  for (const t of tasks) if (t.workflow_id !== null && !stepOf.has(t.workflow_id)) stepOf.set(t.workflow_id, t.id)
+  for (const w of workflows) {
+    const step = w.steps.find((x) => typeof x.task_id === 'string' && x.task_id !== '')
+    if (!stepOf.has(w.workflow_id) && step?.task_id) stepOf.set(w.workflow_id, step.task_id)
+  }
+  const keyed = new Map<string, Pick<Task, 'id' | 'workflow_id'>>()
+  for (const p of problems) {
+    for (const id of [...(p.workflows ?? []).map((w) => w.id), ...`${p.headline} ${p.detail}`.matchAll(CHECK_ID)].map((m) => (typeof m === 'string' ? m : m[0]))) {
+      if (keyed.has(id)) continue
+      if (id.startsWith('wf_')) {
+        const step = stepOf.get(id)
+        if (step !== undefined) keyed.set(id, { id: step, workflow_id: id })
+      } else {
+        keyed.set(id, { id, workflow_id: byTask.get(id)?.workflow_id ?? null })
+      }
+    }
+  }
+  // `useRowTitles` reads `id` and `workflow_id` alone.
+  const titleOf = useRowTitles([...keyed.values()] as Task[])
+  return (id) => {
+    const t = keyed.get(id)
+    return t === undefined ? null : titleOf(t as Task)
+  }
+}
+
+/** `text` with each id `name` titles drawn as its title, the id its `title`. */
+function namedIds(text: string, name: (id: string) => string | null): ReactNode[] {
+  const out: ReactNode[] = []
+  let at = 0
+  for (const m of text.matchAll(CHECK_ID)) {
+    const title = name(m[0])
+    if (title === null) continue
+    if (m.index > at) out.push(text.slice(at, m.index))
+    out.push(
+      <span key={out.length} title={m[0]}>
+        {title}
+      </span>,
+    )
+    at = m.index + m[0].length
+  }
+  if (at < text.length) out.push(text.slice(at))
+  return out
+}
+
+const NO_NAMES = (): string | null => null
+
+function NeedsALook({ checks, tasks = [], workflows = [] }: { checks: Check[]; tasks?: readonly Task[]; workflows?: WorkflowPage['workflows'] }) {
   const problems = checks
     .flatMap((c) => (c.status === 'found' ? c.problems : []))
     .sort((a, b) => (a.severity === b.severity ? b.n - a.n : a.severity === 'bad' ? -1 : 1))
+  const name = useCheckNames(problems, tasks, workflows)
   const blind = checks.filter((c): c is Extract<Check, { status: 'blind' }> => c.status === 'blind')
   const reading = checks.filter((c) => c.status === 'reading')
   const clear = checks.filter((c): c is Extract<Check, { status: 'clear' }> => c.status === 'clear')
@@ -1011,7 +1076,7 @@ function NeedsALook({ checks }: { checks: Check[] }) {
       ) : problems.length > 0 ? (
         <div className="ov-atts">
           {problems.map((p, i) => (
-            <CheckCard key={`${p.headline}-${i}`} problem={p} />
+            <CheckCard key={`${p.headline}-${i}`} problem={p} name={name} />
           ))}
         </div>
       ) : (
@@ -1233,7 +1298,7 @@ function HandoffTakeControl({ taskId }: { taskId: string }) {
  * card's last line, clamped to four at every width (overview-automate-010),
  * and its whole text is the title.
  */
-export function CheckCard({ problem }: { problem: Problem }) {
+export function CheckCard({ problem, name = NO_NAMES }: { problem: Problem; name?: (id: string) => string | null }) {
   // A PARK REASON IS A WORD (visual QA VQ-003, 2026-10-26): the parked
   // checks' detail read "CI_PENDING ×2 — Waiting for the pull request
   // checks…". `checks.ts` keeps the reason token, because the node-run check
@@ -1276,11 +1341,11 @@ export function CheckCard({ problem }: { problem: Problem }) {
           <b title={p.headline}>{title}</b>
           {ids !== null && (
             <small className="ov-att-ids" title={ids}>
-              {linkedIds(keepDash(ids), workflows)}
+              {linkedIds(keepDash(ids), workflows, name)}
             </small>
           )}
           <small className={ids === null ? undefined : 'is-one'} title={p.detail}>
-            {detail}
+            {namedIds(detail, name)}
           </small>
         </span>
         <span className="ov-att-acts">
@@ -1290,7 +1355,7 @@ export function CheckCard({ problem }: { problem: Problem }) {
               that workflow; the list's link is a plain link above it. */}
           {workflows.map((w, i) => (
             <a key={w.id} className={i === 0 ? 'ov-att-go ov-att-wf is-cover' : 'ov-att-go ov-att-wf'} href={toPath(w.href)} title={`Open workflow ${w.id}`}>
-              <span className="ov-att-wf-t">Workflow {w.id}</span> <span aria-hidden="true">&rarr;</span>
+              <span className="ov-att-wf-t">{name(w.id) ?? `Workflow ${w.id}`}</span> <span aria-hidden="true">&rarr;</span>
             </a>
           ))}
           <a className="ov-att-go" href={toPath(p.href)} aria-label={`${go}: ${p.headline}. ${p.detail}`}>
@@ -1307,11 +1372,11 @@ export function CheckCard({ problem }: { problem: Problem }) {
         <b title={p.headline}>{title}</b>
         {ids !== null && (
           <small className="ov-att-ids" title={ids}>
-            {keepDash(ids)}
+            {namedIds(keepDash(ids), name)}
           </small>
         )}
         <small className={ids === null ? undefined : 'is-one'} title={p.detail}>
-          {detail}
+          {namedIds(detail, name)}
         </small>
       </span>
       {/* THE WORDS ARE THEIR OWN SPAN (visual QA VQ-002, 2026-10-26): a
@@ -1325,7 +1390,7 @@ export function CheckCard({ problem }: { problem: Problem }) {
 }
 
 /** The ids line with every workflow id it names drawn as a link to that workflow. */
-function linkedIds(text: string, workflows: readonly { id: string; href: string }[]): ReactNode[] {
+function linkedIds(text: string, workflows: readonly { id: string; href: string }[], name: (id: string) => string | null = NO_NAMES): ReactNode[] {
   const out: ReactNode[] = []
   let rest = text
   for (;;) {
@@ -1335,15 +1400,15 @@ function linkedIds(text: string, workflows: readonly { id: string; href: string 
       if (at >= 0 && (next === null || at < next.at)) next = { at, w }
     }
     if (next === null) break
-    if (next.at > 0) out.push(rest.slice(0, next.at))
+    if (next.at > 0) out.push(<Fragment key={out.length}>{namedIds(rest.slice(0, next.at), name)}</Fragment>)
     out.push(
       <a key={out.length} href={toPath(next.w.href)} title={`Open workflow ${next.w.id}`}>
-        {next.w.id}
+        {name(next.w.id) ?? next.w.id}
       </a>,
     )
     rest = rest.slice(next.at + next.w.id.length)
   }
-  if (rest !== '') out.push(rest)
+  if (rest !== '') out.push(<Fragment key={out.length}>{namedIds(rest, name)}</Fragment>)
   return out
 }
 
@@ -2457,7 +2522,12 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
           {/* ITS OWN CLAUSE (QA1B-06 review): every `.ctl-foot-run > *` is
               nowrap, so inside the span above it could not wrap and was cut
               off at 390 and 1440; as its own clause it wraps as a unit. */}
-          {s.tasksOnPage > s.tasksWithAttempts && <span>that have run (of the {s.tasksOnPage} newest read)</span>}
+          {/* THE WINDOW, NAMED (visual QA pass 2, overview-agents-09 recheck,
+              2026-10-29): '(of the 20 newest read)' beside Finished today's
+              'of the 27 newest' read as two reads of one page. It is one read:
+              the 27, less the agents holding capacity (`spendSample`), which
+              have no ended attempt to price. The clause says so. */}
+          {s.tasksOnPage > s.tasksWithAttempts && <span>that have run (of the {s.tasksOnPage} newest read that hold no capacity)</span>}
           {/* 2. THE HOLES: attempts that carried no cost figure... */}
           {unmeasured > 0 && <span className="ov-warn">{unmeasured} unmeasured</span>}
           {/* 3. ...and attempt reads that failed. THE COUNT OF WHAT IS
