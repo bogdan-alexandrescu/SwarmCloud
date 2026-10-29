@@ -15,6 +15,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
+import ADMIN from '../styles/admin.css?raw'
+import SHELL from '../styles.css?raw'
 import type { Result } from '../fetch'
 import type { Capacity, Pool, RunnerProfile } from '../types'
 
@@ -157,5 +159,16 @@ describe('admin2-21: a link to a pool row is a path, and focus lands on the row'
     await waitFor(() => expect(document.activeElement).toBe(r), WAIT)
     expect(r.getAttribute('tabindex')).toBe('-1')
     expect(document.getElementById('limit-global')?.hasAttribute('tabindex')).toBe(false)
+  })
+
+  it('keeps the target outline while the row holds focus, over the shell\'s no-ring rule', () => {
+    // The shell drops the ring on a focused `[id][tabindex='-1']` (0,4,0);
+    // the row's own rule must outrank it and draw the is-target outline.
+    expect(SHELL).toContain(".ctl-scroll [id][tabindex='-1']:focus")
+    expect(SHELL).toMatch(/tr\.is-target \{ outline: 2px solid var\(--info\); outline-offset: -2px; \}/)
+    // MUTATION: delete the `.ctl-scroll tr.is-target[id][tabindex='-1']:focus` rule from admin.css.
+    expect(ADMIN).toMatch(
+      /\.ctl-scroll tr\.is-target\[id\]\[tabindex='-1'\]:focus \{ outline: 2px solid var\(--info\); outline-offset: -2px; \}/,
+    )
   })
 })
