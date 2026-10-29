@@ -434,14 +434,18 @@ def test_build_only_builds_and_pushes_nothing(tmp_path):
     assert set(submits) == {"swarm-api", "swarm-verify", "agent-runtime-base", "agent-runtime-browser"}, sorted(submits)
 
     registry = "docker.pkg.dev"
+    # The build mirrors are the one registry a build-only config may name: the
+    # Dockerfiles name no project, so the build passes its project's mirror to
+    # pull through (DAYONE-DESAGA-1; scripts/lib/build-mirror.sh). Pulls only.
+    mirror = re.compile(r"[a-z0-9-]+-docker\.pkg\.dev/[a-z0-9-]+/swarm-mirror-(?:dockerhub|ghcr)\b")
     for target, event in submits.items():
-        text = event["text"]
+        text = mirror.sub("<mirror>", event["text"])
         assert "images" not in _top_level_keys(text), f"{target}'s config pushes: {text}"
         assert "artifacts" not in _top_level_keys(text), f"{target}'s config uploads: {text}"
         assert not re.search(r"\bdocker\s+(push|pull)\b|-\s+push\b|-\s+pull\b", text), (
             f"{target}'s config talks to a registry: {text}"
         )
-        assert registry not in text and registry not in event.get("subs", ""), (
+        assert registry not in text and registry not in mirror.sub("<mirror>", event.get("subs", "")), (
             f"{target}'s config names the registry: {text}\n{event.get('subs')}"
         )
 

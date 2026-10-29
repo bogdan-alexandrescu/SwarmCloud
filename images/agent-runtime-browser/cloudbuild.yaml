@@ -130,12 +130,15 @@ steps:
       - -c
       - |
         base="$$(cat /workspace/base-image-ref)"
+        # The project's mirrors, which build-images.sh passes as substitutions
+        # (recipe_mirror_subs; the Dockerfile names no project, DAYONE-DESAGA-1).
         docker build \
           --platform linux/amd64 \
           -f '${_DOCKERFILE}' \
           -t '${_IMAGE}:${_TAG}' \
           --build-arg "BASE_IMAGE=$${base}" \
           --build-arg "GIT_SHA=${_TAG}" \
+          --build-arg "BUILDKIT_SYNTAX=${_BUILDKIT_SYNTAX}" \
           .
 
 images:
