@@ -2014,9 +2014,11 @@ function ScreenAge({ at, reads, now }: { at: Route; reads: ScreenReads; now: num
   // API READS SAYS WHOSE READS ARE NOT ITS OWN (capacity-005, visual QA run 2).
   // "reads nothing" over a table of reads, every one `200 ok` and `just now`,
   // read as "no reads" -- the opposite of the page. The page lists the reads
-  // the OTHER screens made; it issues none, which is what this says.
+  // the OTHER screens made; it issues none, which is what this says. Said as
+  // what the rows ARE: "no reads of its own" over the same table still read
+  // as "no reads" (QA2 capacity-19).
   if (at.sectionId === CAPACITY && at.tab === API_READS_TAB) {
-    return <span className="ctl-em">no reads of its own</span>
+    return <span className="ctl-em">reads made by other screens</span>
   }
   // `reads` is about ANOTHER screen until this one's scope has begun (the
   // first render of a route comes before its layout effect), and a screen
@@ -2450,7 +2452,9 @@ function ReferenceScreen({ failuresOnly: asked = false, onFailuresOnly }: { fail
           What these mean &rarr;
         </a>
       </PageHead>
-      <CountNote>this tab only · not the API surface</CountNote>
+      {/* What the rows are, then what they are not (QA2 capacity-19): "this
+          tab only" over a table of reads read as a restriction on the reader. */}
+      <CountNote>reads this browser tab made · not the whole API</CountNote>
 
       {probes.length === 0 ? (
         // A REAL ZERO, and the one screen in the product where that is true by
@@ -2467,7 +2471,7 @@ function ReferenceScreen({ failuresOnly: asked = false, onFailuresOnly }: { fail
         </div>
       ) : (
         <section className="section">
-          {/* THE SCOPE IS SAID ONCE (#140), in the head's `this tab only`. An
+          {/* THE SCOPE IS SAID ONCE (#140), in the note's `this browser tab`. An
               h2 ("Routes called in this tab") and a caption ("N routes since
               this tab loaded") said it twice more; the count the caption
               carried is the `N of M` beside the toggle. */}
