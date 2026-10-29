@@ -106,6 +106,9 @@ settings_env = {
 
 # --- tenancy ---------------------------------------------------------------
 allowed_domains = ["saga.xyz"]
+# What terraform/infra/locals.tf named as a literal until DAYONE-TF-1, kept so
+# this environment's ALLOWED_USERS is unchanged (owner decision 2026-10-18, #1568).
+allowed_users = ["oracle-api@saga-agents-staging.iam.gserviceaccount.com"]
 
 tenants = {
   eng = {

@@ -28,8 +28,8 @@ variable "infra_tenants_tfvars" {
   default     = "../environments/dev/dev.tfvars"
 
   validation {
-    condition     = endswith(var.infra_tenants_tfvars, ".tfvars")
-    error_message = "infra_tenants_tfvars must name a .tfvars file."
+    condition     = var.infra_tenants_tfvars == "" || endswith(var.infra_tenants_tfvars, ".tfvars")
+    error_message = "infra_tenants_tfvars must name a .tfvars file, or be \"\" for an install that declares no Terraform tenants (DAYONE-BOOT-1)."
   }
 }
 

@@ -95,7 +95,9 @@ def test_the_template_has_two_placeholders_and_terraform_fills_both():
     tf = TAILSCALE_TF.read_text()
     assert '"__TAILNET_FQDN__", var.tailscale_egress_target' in tf
     assert '"__DECISION_API_CLUSTER_IP__", local.decision_api_cluster_ip' in tf
-    assert f'default     = "{TARGET}"' in tf
+    # No default since DAYONE-TF-1: dev.tfvars names the deployment's tailnet.
+    tfvars = (REPO / "terraform" / "environments" / "dev" / "dev.tfvars").read_text()
+    assert f'tailscale_egress_target = "{TARGET}"' in tfvars
 
 
 def test_everything_is_in_swarm_system_labelled_and_holds_no_rbac_or_secret():

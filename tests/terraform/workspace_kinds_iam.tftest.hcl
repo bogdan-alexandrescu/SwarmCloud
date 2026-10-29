@@ -60,6 +60,10 @@ mock_provider "google" {
 }
 
 variables {
+  # The live deployment's two backends, which K1 is made on. Empty by default
+  # since DAYONE-TF-1 (a fresh project's first bootstrap pass has none).
+  frontend_iap_backends = ["swarm-ui-backend", "swarm-ui-ui-backend"]
+
   project_id           = "saga-agents-staging"
   frontend_iap_members = ["domain:example.com"]
 
