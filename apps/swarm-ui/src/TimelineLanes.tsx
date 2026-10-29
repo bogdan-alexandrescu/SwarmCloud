@@ -2120,8 +2120,10 @@ function LaneRow({
       <div className="tl-lab">
         {/* THE NAME, THE STATE AND HOW LONG IT HELD CAPACITY -- `implement ✓
             · 1h 18m` (walkthrough G, owner 2026-10-03). The label led with
-            the task id; the id is the name's tooltip now. */}
-        <b>
+            the task id; the id is the name's tooltip now. A lone agent's
+            line wraps (pass 2 review, runs2-27): beside the mark and the time
+            held, 240 px left `claude-c… · 99284d38`. */}
+        <b className={idAt < 0 ? undefined : 'is-split'}>
           <button
             type="button"
             className={idAt < 0 ? 'tl-name' : 'tl-name is-split'}
@@ -2493,7 +2495,7 @@ function OutcomeStrip({
         <p className="tl-strip1">
           {own !== null ? (
             <span className="tl-x tl-off">
-              outcomes <b className="tl-dash">—</b> the outcomes read answered for <span className="tl-win">{own}</span>, not this span
+              outcomes <b className="tl-dash">—</b> not this span, read for <span className="tl-win">{own}</span>
             </span>
           ) : strip.data.totals.rate === null ? (
             <span className="tl-x">

@@ -339,9 +339,21 @@
 /* A LONE AGENT KEEPS ITS ID (VQA2 V212, 2026-10-16): `claude-code task ·
    a073aff5` lost its id to the ellipsis, and the id is all that tells two
    standalone lanes apart. The kind gives way; the id never wraps or cuts. */
-.tl-lab .tl-name.is-split { display: inline-flex; align-items: baseline; flex: 0 1 auto; }
+.tl-lab .tl-name.is-split { display: inline-flex; align-items: last baseline; flex: 0 1 auto; }
 .tl-name-k { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .tl-name-id { flex: none; white-space: pre; }
+/* A LONE AGENT'S NAME IS READ WHOLE (pass 2 review, runs2-27): on one nowrap
+   line with its mark and time held, the 240 px column left the kind
+   `claude-c…` and a title `Researc…`. The line wraps, the name takes its own
+   line when it needs it, and the kind wraps to two lines before it cuts. */
+.tl-lab b.is-split { flex-wrap: wrap; row-gap: 0; white-space: normal; }
+.tl-name.is-split .tl-name-k {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .tl-lab .tl-dur { flex: none; font: var(--t-micro) / var(--lh-micro) var(--mono); font-weight: 400; color: var(--text-dim); white-space: pre; }
 .tl-lab small {
   font: var(--t-micro) / var(--lh-micro) var(--mono);
