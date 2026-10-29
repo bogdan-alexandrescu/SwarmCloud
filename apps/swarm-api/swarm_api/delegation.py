@@ -23,6 +23,12 @@ The Admin-console grant was necessary and never sufficient. Observed live on
 request -- because a failed lookup is fatal by design, since an unknown
 higher-priority group could file a caller's work under the wrong tenant.
 
+Delegation is now the FALLBACK. Under `GROUPS_AUTH=admin_role`
+(`swarm_api.groups.GROUPS_AUTH_MODES`; docs/design/day-one-install.md
+section 8) the Workspace "Groups Reader" admin role, assigned to the service
+account's own email, lets it read groups as itself, and nothing here is
+called. `GROUPS_AUTH=delegation`, the default, is the path this file serves.
+
 The keyless equivalent is to build the assertion ourselves and have Google sign
 it with the key we are not allowed to hold:
 

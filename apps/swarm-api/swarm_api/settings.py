@@ -409,8 +409,18 @@ class ApiSettings:
     #:
     #: Empty disables delegation, which is correct for local development where
     #: google.auth.default() returns user credentials that cannot delegate
-    #: anyway.
+    #: anyway. Always empty under `groups_auth = "admin_role"`.
     groups_impersonate_user: str = ""
+
+    #: `GROUPS_AUTH`: how swarm-api is authorised to read groups
+    #: (`swarm_api.groups.GROUPS_AUTH_MODES`; docs/design/day-one-install.md
+    #: section 8). `admin_role`: the Workspace "Groups Reader" admin role on
+    #: this service account, which asks as itself, so `groups_impersonate_user`
+    #: is cleared and no request delegates. `delegation`: acts as
+    #: `groups_impersonate_user`. Default `delegation`, because that is the mode
+    #: the live deployment is set up for; installs set `admin_role` (Q2). An
+    #: unknown value is refused at start.
+    groups_auth: str = "delegation"
 
     #: Cloud Identity membership checks are a network round trip on the request
     #: path, so answers are cached briefly per (caller, group).
@@ -944,6 +954,14 @@ class ApiSettings:
                 f"SEARCH_PROVIDER must be one of {', '.join(sorted(SEARCH_PROVIDERS))}, "
                 f"got {search_provider!r}"
             )
+        from .groups import GROUPS_AUTH_ADMIN_ROLE, parse_groups_auth
+
+        groups_auth = parse_groups_auth(os.environ.get("GROUPS_AUTH"))
+        groups_impersonate_user = os.environ.get("GROUPS_IMPERSONATE_USER", "").strip()
+        if groups_auth == GROUPS_AUTH_ADMIN_ROLE:
+            # The admin role needs no subject; one still rendered beside it
+            # must not quietly turn delegation back on.
+            groups_impersonate_user = ""
         sweepers = {u.lower() for u in rollup_sweeper_users}
         for name, values in (
             ("PLATFORM_OWNER", (platform_owner,) if platform_owner else ()),
@@ -990,7 +1008,8 @@ class ApiSettings:
             schedule_tick_users=_csv("SCHEDULE_TICK_USERS"),
             allowed_users=allowed_users,
             secret_admin_principals=secret_admin_principals,
-            groups_impersonate_user=os.environ.get("GROUPS_IMPERSONATE_USER", "").strip(),
+            groups_impersonate_user=groups_impersonate_user,
+            groups_auth=groups_auth,
             group_cache_ttl_seconds=_int("GROUP_CACHE_TTL_SECONDS", 120),
             workspace_registry_cache_seconds=float(
                 _int("WORKSPACE_REGISTRY_CACHE_SECONDS", 60)),

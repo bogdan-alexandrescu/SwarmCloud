@@ -1,0 +1,30 @@
+# Lane DAYONE-IDENTITY-1 (part of #2688): GROUPS_AUTH, the group-read mode
+# apps/swarm-api/swarm_api/settings.py reads (docs/design/day-one-install.md
+# §8, BGD's Q2 answer in §14). Nothing renders it until DAYONE-TF-2 adds it to
+# swarm-api's environment; unset, swarm-api runs in `delegation`, the live
+# deployment's mode. TF-2 edits the setter to its terraform path:line in its
+# own PR. `workspace-delegation.groups-reader-admin-role` and the delegation
+# and group entries this lane touches are already in the base manifest.
+version: 1
+entries:
+- id: declared-value.groups_auth
+  kind: declared-value
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud run services describe swarm-api --format=json | jq '.spec.template.spec.containers[0].env[] | select(.name=="GROUPS_AUTH")'
+  apply: 'NEW (DAYONE-IDENTITY-1 reads it at apps/swarm-api/swarm_api/settings.py, DAYONE-TF-2 renders it, DAYONE-ENGINE-3 sets admin_role for installs): admin_role or delegation; unset is delegation; any other value refuses to start'
+  verify: stage 8's probe passes through swarm-api in the mode it runs
+  explain: 'Q2: installs read groups with the Groups Reader admin role on swarm-api''s own account; the live deployment keeps delegation until BGD flips it.'
+  guards: lesson 20
+  secret_entry: null
+  depends_on:
+  - workspace-delegation.groups-reader-admin-role
+  evidence:
+  - apps/swarm-api/swarm_api/groups.py
+  - apps/swarm-api/swarm_api/settings.py
+  - docs/design/day-one-install.md
+  notes: added by DAYONE-P2; reader added by DAYONE-IDENTITY-1
+env:
+  GROUPS_AUTH:
+    setter: 'internal: read at apps/swarm-api/swarm_api/settings.py:959; nothing in terraform/ sets it until DAYONE-TF-2 renders it into swarm-api''s environment, so a deployed swarm-api runs on the default, delegation'
