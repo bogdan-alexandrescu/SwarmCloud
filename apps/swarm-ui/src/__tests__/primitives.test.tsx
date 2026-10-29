@@ -133,18 +133,20 @@ describe('Metric', () => {
 })
 
 describe('Absent', () => {
+  // The mark is an icon here, its silhouette and its sentence without its
+  // words: the heading carries them (automate2-17, qa2fix26.test.tsx).
   it('names each kind of nothing with its own mark, inside the heading', () => {
     const cases = [
-      ['zero', 'none', ''],
-      ['failed', 'not read', 'is-failed'],
-      ['partial', 'partial', 'is-partial'],
-      ['admin', 'admin only', 'is-admin'],
+      ['zero', 'is-zero', ''],
+      ['failed', 'is-unread', 'is-failed'],
+      ['partial', 'is-partial', 'is-partial'],
+      ['admin', 'is-admin', 'is-admin'],
     ] as const
-    for (const [kind, word, cls] of cases) {
+    for (const [kind, markCls, cls] of cases) {
       const e = one(<Absent kind={kind} heading="Nothing here" say={`A ${kind} empty state.`} />)
       expect(e.className.trim()).toBe(cls === '' ? 'ctl-empty' : `ctl-empty ${cls}`)
-      const mark = e.querySelector('h3 > .ctl-mark')
-      expect(mark?.textContent).toBe(word)
+      const mark = e.querySelector(`h3 > .ctl-mark.${markCls}.is-icon`)
+      expect(mark?.textContent).toBe('')
       expect(mark?.getAttribute('aria-label')).toBe(`A ${kind} empty state.`)
       // Only a real zero is quiet; anything else is news.
       expect(e.getAttribute('role')).toBe(kind === 'zero' ? null : 'status')
