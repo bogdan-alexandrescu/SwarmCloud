@@ -12,6 +12,8 @@
 #   2. Every shared resource in saga-agents-staging that belongs to another team
 #      is named here, once, in SHARED_DENY_LIST. destroy.sh, purge-data.sh and
 #      configure-kubectl.sh all read it. One list, one place to keep correct.
+#      It is keyed by project: whole when PROJECT_ID is that project, empty for
+#      any other. PROJECT_ID has no default; an unset project is an error.
 
 set -euo pipefail
 
@@ -155,7 +157,23 @@ load_env() {
     set +a
   fi
 
-  PROJECT_ID="${PROJECT_ID:-saga-agents-staging}"
+  # NO DEFAULT. This read `${PROJECT_ID:-saga-agents-staging}`, so a machine
+  # with no .env -- a fresh install, a new operator, a CI job that forgot the
+  # variable -- aimed every script here at the shared project, the one that
+  # holds another team's live cluster. An unset project is an error instead
+  # (Day One plan, lane DAYONE-DESAGA-2, R4). The live deployment's .env and
+  # every workflow name it; .env.example says where to.
+  #
+  # A script that touches no project at all (a local check, a self-test)
+  # says so by setting SWARM_NO_PROJECT=1 before it sources this file. It then
+  # runs with PROJECT_ID empty, and the deny-list stays WHOLE: a project nobody
+  # named is never assumed to be one whose list may be empty.
+  if [[ -z "${PROJECT_ID:-}" ]]; then
+    if [[ "${SWARM_NO_PROJECT:-}" != "1" ]]; then
+      die "PROJECT_ID is not set, and no script here guesses it. Set it in .env (cp .env.example .env) or export it: PROJECT_ID=<your-gcp-project>"
+    fi
+    PROJECT_ID=""
+  fi
   REGION="${REGION:-us-central1}"
   ZONE="${ZONE:-us-central1-a}"
   ENVIRONMENT="${ENVIRONMENT:-dev}"
@@ -225,6 +243,8 @@ load_env() {
   IMAGE_HOST="${IMAGE_HOST:-${REGION}-docker.pkg.dev}"
   IMAGE_REPO="${IMAGE_REPO:-${IMAGE_HOST}/${PROJECT_ID}/${ARTIFACT_REGISTRY}}"
 
+  key_shared_deny_list
+
   export PROJECT_ID REGION ZONE ENVIRONMENT FIRESTORE_DATABASE ARTIFACT_BUCKET
   export ARTIFACT_REGISTRY BUILD_MIRROR_BUCKET ACCEPTANCE_FIXTURE_BUCKET TF_STATE_BUCKET TF_STATE_PREFIX TF_BOOTSTRAP_STATE_PREFIX GKE_CLUSTER GKE_LOCATION
   export PUBSUB_TOPIC SCHEDULER_JOB API_SERVICE SCHEDULER_SERVICE QUOTA_SERVICE RECONCILER_SERVICE
@@ -241,6 +261,13 @@ load_env() {
     export KUBECONFIG
   fi
 }
+
+# The project the list below belongs to. The list is KEYED by it (Day One plan,
+# R4): it applies when PROJECT_ID is this project, and it is empty for any
+# other, whose resources are nobody else's. It stays here, written once, rather
+# than in an environment variable an operator could forget -- a forgotten
+# variable would empty the live guard without a word.
+SHARED_PROJECT_ID="saga-agents-staging"
 
 # Resources owned by other teams in this shared project. Verified against the
 # live project on 2026-09-15, and the service accounts, buckets and Cloud Run
@@ -289,10 +316,27 @@ SHARED_DENY_LIST=(
   "promptlab-api@saga-agents-staging.iam.gserviceaccount.com"
   "oracle-web"
 )
+# The shared project's list as written, kept apart from SHARED_DENY_LIST so
+# re-keying is idempotent: load_env run again after PROJECT_ID moved back to
+# the shared project restores every entry rather than keeping an empty list.
+SHARED_PROJECT_DENY_LIST=("${SHARED_DENY_LIST[@]}")
+
+# key_shared_deny_list: SHARED_DENY_LIST is the shared project's whole list when
+# PROJECT_ID is SHARED_PROJECT_ID or empty (SWARM_NO_PROJECT=1: no project was
+# named, so none is assumed safe), and empty for any other project. load_env
+# calls it once PROJECT_ID is final. An empty array must be expanded as
+# ${SHARED_DENY_LIST[@]+"${SHARED_DENY_LIST[@]}"} under bash 3.2's `set -u`.
+key_shared_deny_list() {
+  if [[ -z "${PROJECT_ID:-}" || "${PROJECT_ID}" == "${SHARED_PROJECT_ID}" ]]; then
+    SHARED_DENY_LIST=("${SHARED_PROJECT_DENY_LIST[@]}")
+  else
+    SHARED_DENY_LIST=()
+  fi
+}
 
 is_shared_resource() {
   local candidate="$1" protected
-  for protected in "${SHARED_DENY_LIST[@]}"; do
+  for protected in ${SHARED_DENY_LIST[@]+"${SHARED_DENY_LIST[@]}"}; do
     [[ "${candidate}" == "${protected}" ]] && return 0
   done
   return 1
@@ -344,9 +388,14 @@ shared_resource_kind() {
 #   * `(default)` is ADDED. That is Firestore's default database -- the one
 #     CONTRACT.md says must stay free for the other teams in this shared
 #     project -- and it is a name no token-splitting would produce.
+#
+# For a project other than the shared one the list is empty and this prints
+# ["(default)"]: `printf '%s\n'` with no arguments still prints one empty line,
+# so nothing is printed at all then, and grep finding no line is not an error.
 guard_deny_json() {
-  printf '%s\n' "${SHARED_DENY_LIST[@]}" \
-    | grep -vx 'default' | jq -R . | jq -sc '. + ["(default)"]'
+  if [[ "${#SHARED_DENY_LIST[@]}" -gt 0 ]]; then
+    printf '%s\n' "${SHARED_DENY_LIST[@]}"
+  fi | { grep -vx 'default' || [[ $? -eq 1 ]]; } | jq -R . | jq -sc '. + ["(default)"]'
 }
 
 # The platform name prefix `destroy-guard.jq` judges OWNERSHIP by, in the one

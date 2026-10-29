@@ -71,6 +71,21 @@ def test_empty_project_is_an_error(tmp_path: Path) -> None:
     assert "PROJECT_ID" in proc.stderr, proc.stderr
 
 
+def test_no_project_opt_out_keeps_the_whole_list(tmp_path: Path) -> None:
+    # A script that touches no project sets SWARM_NO_PROJECT=1: it runs with
+    # PROJECT_ID empty -- never the live project -- and a project nobody named
+    # is never treated as one whose deny-list may be empty.
+    proc = _source(tmp_path, 'printf "[%s] %s" "${PROJECT_ID}" "${#SHARED_DENY_LIST[@]}"', SWARM_NO_PROJECT="1")
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == f"[] {len(_literal_deny_list())}"
+
+
+def test_prerequisites_no_cloud_needs_no_project() -> None:
+    # --no-cloud checks this machine only; it opts out before sourcing common.sh.
+    text = (REPO / "scripts" / "prerequisites.sh").read_text()
+    assert text.index("SWARM_NO_PROJECT=1") < text.index('source "$(cd -- ')
+
+
 def test_project_from_env_file_is_honoured(tmp_path: Path) -> None:
     env_file = tmp_path / "env"
     env_file.write_text("PROJECT_ID=swarm-dayone-test\n")
