@@ -1721,7 +1721,8 @@ export function SkyShell({
   const platformPage = section === 'admin' && adminDecided && landing !== null && !missing
     && PANEL_PAGES.admin.some((p) => p.to === `admin/${tab}`) && !adminPages.some((p) => p.to === `admin/${tab}`)
   const adminRefused = section === 'admin' && adminDecided && !missing && (landing === null || (platformPage && !openedAtAdmin))
-  const refusedPage = PANEL_PAGES.admin.find((p) => p.to === `admin/${tab}`)?.label ?? 'Admin'
+  const refusedEntry = PANEL_PAGES.admin.find((p) => p.to === `admin/${tab}`)
+  const refusedPage = refusedEntry?.label ?? 'Admin'
   const refusedHere = (dataOf(mine) ?? []).find((c) => c.tenant_id === who?.tenant.tenant_id)
   const adminRedirect = platformPage && openedAtAdmin && landing !== null ? landing.to : null
   useEffect(() => {
@@ -2616,6 +2617,9 @@ export function SkyShell({
                             page={refusedPage}
                             role={refusedRole(refusedHere, personal === true)}
                             workspace={inSentence(workspaceName(who.tenant, dataOf(mine) ?? []))}
+                            // A workspace admin's own pages are refused as such (admin2-02).
+                            audience={refusedEntry !== undefined && WORKSPACE_ADMIN_PAGE_KEYS.has(refusedEntry.key) ? 'workspace' : 'platform'}
+                            personal={personal === true || refusedHere?.kind === 'user'}
                           />
                         ) : (
                           // The member's refusal (AdminRoleRefusal's words),

@@ -53,7 +53,7 @@ import './styles/accounts-ranked.css'
 // Cells
 // ---------------------------------------------------------------------------
 
-/** The can-take chip: `Yes · 6 free`, `Full · 6 of 6`, `No`. */
+/** The can-take chip: `Yes · 6 free`, `Full · 6 of 6`, `No · paused` (cap2-01), `No`. */
 export function CanTakeChip({ a, scope }: { a: PoolAccount; scope: string | null }) {
   const can = canTake(a, scope)
   if (can === null) {
@@ -72,6 +72,7 @@ export function CanTakeChip({ a, scope }: { a: PoolAccount; scope: string | null
       </span>
     )
   }
+  if (a.state === 'PAUSED') return <span className="acct-chip is-no">No &middot; paused</span>
   return <span className="acct-chip is-no">No</span>
 }
 

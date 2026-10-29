@@ -35,6 +35,8 @@ import {
   counts24h,
   familyCount,
   healthServed,
+  healthyWithheld,
+  healthyWithheldLine,
   hm,
   incidentSummary,
   incidentTitle,
@@ -411,6 +413,18 @@ function OutrankedLine({ m }: { m: Model }) {
   )
 }
 
+/** Under Healthy: the healthy accounts the pool still withholds, by name (capacity-04). */
+function WithheldLine({ m }: { m: Model }) {
+  const held = healthyWithheld(m.accounts, m.records, m.scope)
+  const line = healthyWithheldLine(held)
+  if (line === null) return null
+  return (
+    <small className="ah-tile-also" data-withheld={held.length}>
+      {line}
+    </small>
+  )
+}
+
 function Tiles({ m }: { m: Model }) {
   const t = tallyOf(m)
   const v = verdictOf(m.accounts as PoolAccount[], m.scope, m.shortfall, m.now)
@@ -426,6 +440,7 @@ function Tiles({ m }: { m: Model }) {
           </div>
           <small>{m.served ? STATUS_HINT[s] : 'not served'}</small>
           {m.served && s === 'erroring' && <OutrankedLine m={m} />}
+          {m.served && s === 'healthy' && <WithheldLine m={m} />}
         </div>
       ))}
       <div className="ah-tile is-verdict" role="listitem" data-tile="verdict">
