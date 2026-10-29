@@ -1861,3 +1861,69 @@ describe('VQA-L13: lane captions and table edges', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// VISUAL QA PASS 2 (lane QA2-FIX-10, part of #2694)
+// ---------------------------------------------------------------------------
+
+describe('one time zone and no raw field names (runs2-17)', () => {
+  it('says the sealed days are UTC beside the zone, not as a second zone inside the count', async () => {
+    const root = await timeline()
+    const facts = [...root.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
+    expect(facts).toContain('zoneEurope/Bucharest')
+    // MUTATION: put back `dayDocWords` in the sealed fact -> "14 of 15 UTC days" and this fails.
+    expect(facts).toContain('sealed14 of 15 days (UTC) · today so far')
+    cleanup()
+    const d = ledgerFixture()
+    d.scope = { kind: 'platform', tenants: ['eng', 'personal', 'verify'], excluded: [], tenants_complete: true }
+    d.coverage = { ...d.coverage, days: { total: 45, sealed: 42, live: 3, unread: 0 } }
+    const platform = await timeline(d, { view: 'scope=platform' }, { admin: true })
+    const pf = [...platform.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
+    expect(pf).toContain('sealed42 of 45 workspace-days (UTC) · today so far')
+  })
+
+  it('names the throughput lane’s basis "submit time" in the label and the legend, never created_at', async () => {
+    const root = await timeline()
+    const labels = [...drawing(root).querySelectorAll('.ol-lane-label')].map((t) => t.textContent ?? '')
+    // MUTATION: print `basis.submitted` raw in `laneLabels` -> "by created_at" and this fails.
+    expect(labels[3]).toContain('submitted (by submit time, the only lane on submission time) vs finished')
+    expect(drawing(root, 'narrow').querySelectorAll('.ol-lane-label')[3]!.textContent).toContain('by submit time')
+    // MUTATION: print `data.basis.submitted` raw in the legend -> fails.
+    const legend = root.querySelector('.ol-legend')!
+    expect(legend.textContent).toContain('by submit time')
+    expect(legend.querySelector('[title="created_at"]')).not.toBeNull()
+    expect(drawing(root).textContent).not.toContain('created_at')
+  })
+})
+
+describe('Outcomes draws its filters in the Lanes chip row (runs2-19)', () => {
+  it('draws Group by, Profile and Submitted by as the Lanes filter chips', async () => {
+    const root = await timeline()
+    const sheet = root.querySelector<HTMLElement>('#ol-sheet')!
+    const chip = (word: string) => [...sheet.querySelectorAll<HTMLElement>('.tl-flt')].find((c) => c.textContent?.startsWith(word))
+    // MUTATION: draw them in the old `.ol-field` / `.ol-pick` boxes -> fails.
+    expect(chip('Group by')?.tagName).toBe('LABEL')
+    expect(chip('Group by')!.querySelector('select')).not.toBeNull()
+    expect(chip('Submitted by')?.querySelector('input')).not.toBeNull()
+    const profile = chip('Profile')!
+    expect(profile.tagName).toBe('DETAILS')
+    expect(profile.classList.contains('tl-pick')).toBe(true)
+    expect(profile.querySelector('.tl-pop')).not.toBeNull()
+    expect(sheet.querySelector('.ol-pick, .ol-field')).toBeNull()
+  })
+
+  it('counts nothing on an unnarrowed Profile, as Lanes does, and names the picks once narrowed', async () => {
+    const root = await timeline()
+    await waitFor(() => expect(api.loadRunnerProfiles).toHaveBeenCalled())
+    const summary = () => root.querySelector('#ol-sheet details.tl-pick summary')!.textContent
+    // MUTATION: put back `all ${profileOptions.length}` -> "Profile all 5" and this fails.
+    await waitFor(() => expect(root.querySelectorAll('#ol-sheet details.tl-pick input[type="checkbox"]')).toHaveLength(5))
+    expect(summary()).toBe('Profile all')
+    cleanup()
+    const narrowed = await timeline(ledgerFixture(), { view: 'profile=claude-code' })
+    const pick = narrowed.querySelector('#ol-sheet details.tl-pick')!
+    expect(pick.querySelector('summary')!.textContent).toBe('Profile claude-code')
+    // A set filter wears the Lanes chip's `is-on`.
+    expect(pick.classList.contains('is-on')).toBe(true)
+  })
+})

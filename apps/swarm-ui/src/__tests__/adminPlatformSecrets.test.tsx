@@ -180,6 +180,32 @@ describe('status only', () => {
     expect(visible(document.body)).not.toMatch(/not declared/)
   })
 
+  // VISUAL QA PASS 2, admin2-16 (QA2-FIX-10, part of #2694): the
+  // swarm-live-key row said "no secret" three times -- the pill, Enabled
+  // versions and Age of newest. The pill says it; the figures are a dash.
+  it('says "no secret" once, in the pill, and dashes the figures beside it', async () => {
+    serve((_m, url) => (url === '/v1/admin/platform-secrets'
+      ? { status: 200, body: {
+        secrets: [
+          { secret_id: 'swarm-live-key', status: 'not_declared', reason: null, enabled_versions: null, newest_enabled_at: null, rotation_in_grace: false, managed_by: 'terraform', written_by: 'scripts/create-secrets.sh --live-key', family: 'platform' },
+          { secret_id: 'swarm-search-api-key', status: 'not_set', reason: null, enabled_versions: 0, newest_enabled_at: null, rotation_in_grace: false, managed_by: 'terraform', written_by: 'scripts/create-secrets.sh --search-api-key', family: 'platform' },
+        ],
+        accounts_unread: false, accounts_refused: 0, accounts_truncated: false, read_at: AT,
+      } }
+      : null))
+    const { AdminPlatformSecretsScreen } = await load()
+    render(<AdminPlatformSecretsScreen />)
+    const table = await screen.findByRole('table', { name: /platform secrets/i })
+    const row = within(table).getByRole('row', { name: /swarm-live-key/ })
+    const cell = (label: string) => visible(row.querySelector(`td[data-label="${label}"]`) as HTMLElement)
+    // MUTATION: put back `'no secret'` in Enabled versions or Age of newest -> fails.
+    expect(cell('Enabled versions')).toBe('—')
+    expect(cell('Age of newest')).toBe('—')
+    expect(visible(row).match(/no secret/g)).toHaveLength(1)
+    // A declared name with no version still says so: its pill does not.
+    expect(visible(within(table).getByRole('row', { name: /swarm-search-api-key/ }).querySelector('td[data-label="Age of newest"]') as HTMLElement)).toBe('no version')
+  })
+
   it('a non-admin who types the address sees the route\'s refusal, not rows', async () => {
     serve((_m, url) => (url === '/v1/admin/platform-secrets' ? { status: 403, body: { detail: 'admin only', code: 'admin_required' } } : null))
     const { AdminPlatformSecretsScreen } = await load()
