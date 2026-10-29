@@ -1,9 +1,10 @@
-import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactNode } from 'react'
 import {
   checkActionsRule,
   deleteBrowserLogin,
   deleteProviderKey,
   loadActionsSecrets,
+  loadMe,
   loadRepositories,
   loadSecretsOverview,
   loadWorkspaceSecretCatalogue,
@@ -193,8 +194,36 @@ const dataOf = <T,>(r: Result<T>): T | null => (r.status === 'ok' || r.status ==
 
 const SCOPE_WORDS: Readonly<Record<SecretsScope, string>> = { workspace: 'the workspace’s', personal: 'yours', repository: 'the repository’s' }
 
-/** A shadow entry in the reader's words: "Yours wins on agents of ana@…". */
-function winnerWords(s: SecretsShadow): string {
+/**
+ * THE SIGNED-IN EMAIL, or null until it is known (and when it cannot be read):
+ * the frame's read, once per page, so a shadow note can say "yours" to the
+ * person it names (visual QA pass 2, config2-16).
+ */
+const SignedInEmail = createContext<string | null>(null)
+
+function useSignedInEmail(): string | null {
+  const [email, setEmail] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    void loadMe({ frame: true }).then((r) => {
+      // A reply without its principal says nothing of who is reading: no "yours".
+      if (live && (r.status === 'ok' || r.status === 'stale')) setEmail(r.data.principal?.email ?? null)
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+  return email
+}
+
+/**
+ * A shadow entry in the reader's words: "Yours wins on agents of ana@…". The
+ * winner is the reader's own personal secret when its person is the signed-in
+ * email: "your own wins on your agents", never the reader in the third
+ * person (config2-16).
+ */
+function winnerWords(s: SecretsShadow, me: string | null): string {
+  if (s.scope === 'personal' && s.person !== null && me !== null && s.person.toLowerCase() === me.toLowerCase()) return 'your own wins on your agents'
   const who = s.scope === 'personal' ? 'Yours' : s.scope === 'repository' ? `${s.repository ?? 'the repository'}’s` : 'The workspace’s'
   return s.scope === 'personal' && s.person !== null ? `${s.person}’s wins on their agents` : `${who} wins on ${s.where}`
 }
@@ -206,8 +235,9 @@ function winnerWords(s: SecretsShadow): string {
  * doubled the row's height. Each note is its own line under the name.
  */
 function ShadowNotes({ row }: { row: SecretsRow | undefined }) {
+  const me = useContext(SignedInEmail)
   if (row === undefined || (row.shadowed_by.length === 0 && row.shadows.length === 0)) return null
-  const lost = Array.from(new Set(row.shadowed_by.map(winnerWords)))
+  const lost = Array.from(new Set(row.shadowed_by.map((s) => winnerWords(s, me))))
   const won = Array.from(new Set(row.shadows.map((s) => `overrides ${SCOPE_WORDS[s.scope]}${s.scope === 'workspace' ? '' : ` on ${s.where}`}`)))
   return (
     <>
@@ -386,7 +416,9 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
     const listed = at.consumer !== null && (catalogueData?.consumers ?? []).some((c) => c.consumer === at.consumer)
     setWizard({ scope: at.scope, repo: repoId, consumer: listed ? at.consumer : null })
   }, [at.add, at.consumer, at.scope, repoId, formOpen, mayAdd, catalogueSettled, catalogueData])
+  const me = useSignedInEmail()
   return (
+    <SignedInEmail.Provider value={me}>
     <div className="pk-page sec-page">
       {/* The head's Refresh and Add a secret are the secrets' own, so the
           logins tab, whose list is read by its own pane, offers neither. */}
@@ -511,6 +543,7 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
         />
       )}
     </div>
+    </SignedInEmail.Provider>
   )
 }
 
@@ -680,7 +713,7 @@ function ScopeBody({
           : strip.secrets?.state === 'done' ? <DoneLead tenant={overview.tenant_id} secrets={of('agents').length} keys={keys.length} next={strip.next} />
             : null}
       <StoreCard title="For agents" label="Workspace secrets" target={{ scope: 'workspace' }} overview={overview} catalogue={catalogue} onChange={onChange} go={go} at={at} empty={<FirstSecret tenant={overview.tenant_id} keys={keys} />} />
-      <KeysCard rows={[...of('keys'), ...of('accounts')]} scope="workspace" go={go} onChange={onChange} onAdd={onAdd} />
+      <KeysCard rows={[...of('keys'), ...of('accounts')]} scope="workspace" agents={of('agents')} go={go} onChange={onChange} onAdd={onAdd} />
       <GitCard rows={of('github')} empty="No workspace token is registered. Connect one on GitHub access." />
     </>
   )
@@ -719,7 +752,7 @@ function NeedLead({ rows, keyNeeded, manages, scope, tenant, repository, repoId,
   } : {
     words: `MCP server ${r.name}’s credential`,
     why: `Every call to ${r.name} fails until a secret is granted to ${r.consumer ?? `mcp:${r.name}`}.`,
-    act: <Button key={r.name} kind="primary" size="sm" onClick={() => onAdd(r.consumer)}>Add a secret for {r.name}</Button>,
+    act: <Button key={r.name} kind="primary" size="sm" onClick={() => onAdd(r.consumer)}>{credentialLabel(r.name)}</Button>,
   })
   if (keyNeeded) {
     needs.push({
@@ -1018,8 +1051,23 @@ function BrowserCard({ rows, removable, onChange }: { rows: SecretsRow[]; remova
   )
 }
 
-/** Keys for agents and MCP (Settings › API keys until SSC-UI; BGD 2026-10-23 23:57Z). */
-function KeysCard({ rows, scope, go, onChange, onAdd }: { rows: SecretsRow[]; scope: SecretsScope; go: (n: Partial<SecretsAt>) => void; onChange: () => void; onAdd: (c: string | null) => void }) {
+/**
+ * THE ONE LABEL FOR STORING AN MCP SERVER'S CREDENTIAL (visual QA pass 2,
+ * config2-15): the Secrets lead said "Add a secret for kb", the keys table
+ * "Add one" and MCP servers "Set kb’s credential" for the same action. All
+ * three now read as MCP servers does.
+ */
+function credentialLabel(name: string): string {
+  return `Set ${name}’s credential`
+}
+
+/**
+ * Keys for agents and MCP (Settings › API keys until SSC-UI; BGD 2026-10-23 23:57Z).
+ * `agents` is For agents' rows: a TypeSafe secret granted there is its own
+ * record, set on its own date, so the TypeSafe key row says it is a separate
+ * one rather than reading as the same key with a second date (config2-05).
+ */
+function KeysCard({ rows, scope, agents = [], go, onChange, onAdd }: { rows: SecretsRow[]; scope: SecretsScope; agents?: SecretsRow[]; go: (n: Partial<SecretsAt>) => void; onChange: () => void; onAdd: (c: string | null) => void }) {
   const [deleting, setDeleting] = useState<SecretsRow | null>(null)
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
@@ -1039,8 +1087,9 @@ function KeysCard({ rows, scope, go, onChange, onAdd }: { rows: SecretsRow[]; sc
   const line = (r: SecretsRow): { key: ReactNode; reads: string; state: ReactNode; act: ReactNode } => {
     if (r.store === 'provider_keys') {
       const label = r.name === 'typesafe' ? 'TypeSafe key' : `${r.name} key`
+      const twin = r.name === 'typesafe' ? agents.find((a) => a.provider === 'typesafe' || /typesafe/i.test(a.name)) : undefined
       return {
-        key: <>{label}<small>{scope === 'personal' ? 'yours' : 'workspace'}</small></>,
+        key: <>{label}<small>{scope === 'personal' ? 'yours' : 'workspace'}</small>{twin !== undefined && <small>not the {twin.name} secret in For agents</small>}</>,
         reads: scope === 'personal' ? 'your own submissions' : 'Jev and browser agents',
         state: r.status === 'set' ? <span className="sec-state is-ok">{setWords(r)}</span> : <span className="sec-chip is-warn">not set</span>,
         act: r.can_manage ? (
@@ -1073,7 +1122,7 @@ function KeysCard({ rows, scope, go, onChange, onAdd }: { rows: SecretsRow[]; sc
         state: r.status === 'set'
           ? <span className="sec-state is-ok">reads {r.secrets.join(', ')}</span>
           : <span className="sec-chip is-warn">not set</span>,
-        act: r.can_manage && r.status !== 'set' ? <Button kind="primary" size="sm" onClick={() => onAdd(r.consumer)}>Add one</Button> : null,
+        act: r.can_manage && r.status !== 'set' ? <Button kind="primary" size="sm" onClick={() => onAdd(r.consumer)}>{credentialLabel(r.name)}</Button> : null,
       }
     }
     return {
@@ -1083,6 +1132,16 @@ function KeysCard({ rows, scope, go, onChange, onAdd }: { rows: SecretsRow[]; sc
       act: <AppLink address="capacity/accounts">Capacity › Accounts</AppLink>,
     }
   }
+  // THE HINT NAMES THE BUTTONS THE TABLE DRAWS (config2-14): it read "Was
+  // Settings › API keys. Set and Replace open…", a page no reader today saw,
+  // and a Set the table did not draw.
+  const opens = Array.from(new Set(rows.flatMap((r) => !r.can_manage ? []
+    : r.store === 'provider_keys' ? [r.status === 'set' ? 'Replace' : 'Set']
+      : r.store === 'runner_provider_keys' ? ['Replace']
+        : r.store === 'mcp_servers' && r.status !== 'set' ? [credentialLabel(r.name)] : [])))
+  const hint = opens.length === 0
+    ? 'No value is shown again once it is set.'
+    : `${opens.length === 1 ? opens[0] : `${opens.slice(0, -1).join(', ')} and ${opens[opens.length - 1]}`} open${opens.length === 1 ? 's' : ''} the one-time form; no value is shown again.`
   return (
     <Card title={scope === 'personal' ? 'Keys' : 'Keys for agents and MCP'}>
       {rows.length === 0 ? (
@@ -1105,7 +1164,7 @@ function KeysCard({ rows, scope, go, onChange, onAdd }: { rows: SecretsRow[]; sc
           </tbody>
         </table>
       )}
-      <p className="sec-hint">Was Settings › API keys. Set and Replace open the one-time form; no value is shown again.</p>
+      <p className="sec-hint">{hint}</p>
       {deleting !== null && (
         <TypedConfirm title="Delete the TypeSafe key" name={deleting.name} verb="Delete" keep="Keep it" busy={busy ? 'Deleting…' : false}
           error={failed} onConfirm={() => void remove(deleting)} onClose={() => setDeleting(null)}>
