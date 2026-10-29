@@ -336,22 +336,28 @@ describe('Admin is drawn only for an admin (CONFIG-NAV)', () => {
   })
 })
 
-describe('a workspace admin on a platform Admin page goes to Workspaces you admin (ADMIN-REDIRECT)', () => {
+describe('a workspace admin on a platform Admin page is refused in place, and a bare /admin goes to Workspaces you admin (ADMIN-REDIRECT)', () => {
   // BGD 2026-10-24, "Redirect, in a later lane": the nav never links a
-  // workspace admin to a platform page, and a typed or bookmarked one sends
-  // them to the one Admin page they are shown, as CONFIG-NAV sends a member
-  // to Overview.
+  // workspace admin to a platform page, and a typed or bookmarked one sent
+  // them to the one Admin page they are shown. Visual QA pass 2 admin2-01
+  // (part of #2694) applies BGD 2026-10-28's admin-shell-23 rule to them
+  // too: a platform page is refused in place, with a link to Workspaces you
+  // admin; only the bare /admin, Admin itself, still lands there.
   // Not /admin/people since ADMIN-PEOPLE-ROLES (part of #2157): a workspace
   // admin has a scoped People and roles page there (the case below).
   const PLATFORM_PAGES = ['/admin/limits', '/admin/tenants', '/admin/runner-sizes', '/admin/counts', '/admin']
 
-  it('sends a workspace admin from every platform Admin address to /admin/workspaces', async () => {
+  it('refuses a workspace admin in place on every platform Admin address, and sends the bare /admin to /admin/workspaces', async () => {
     for (const path of PLATFORM_PAGES) {
       serve(ME(false), [PERSONAL, group('eng', 'admin')])
       await app(path)
-      // MUTATION: redirect only someone who administers nothing -> the
-      // workspace admin stays on the platform page and this fails.
-      await waitFor(() => expect(window.location.pathname, path).toBe('/admin/workspaces'))
+      if (path === '/admin') {
+        await waitFor(() => expect(window.location.pathname, path).toBe('/admin/workspaces'))
+      } else {
+        // MUTATION: redirect the workspace admin again -> no refusal, and the address changes.
+        await waitFor(() => expect(document.querySelector('[data-refused="admin"]')?.textContent, path).toContain('is for platform admins'))
+        expect(window.location.pathname, path).toBe(path)
+      }
       expect(document.querySelector('.sk-spine a[data-sec="admin"]'), path).not.toBeNull()
       cleanup()
     }
@@ -382,10 +388,10 @@ describe('a workspace admin on a platform Admin page goes to Workspaces you admi
     expect(document.querySelector('.sk-spine a[data-sec="admin"]')?.getAttribute('href')).toBe('/admin/workspaces')
   })
 
-  it('rewrites the bar in place, so Back does not return to the refused page', async () => {
+  it('rewrites the bare /admin in place, so Back does not return to it', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'admin')])
     const push = vi.spyOn(window.history, 'pushState')
-    await app('/admin/limits')
+    await app('/admin')
     await waitFor(() => expect(window.location.pathname).toBe('/admin/workspaces'))
     // MUTATION: navigate with `go` (a push) -> Back lands on /admin/limits again.
     expect(push).not.toHaveBeenCalled()

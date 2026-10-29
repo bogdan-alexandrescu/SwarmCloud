@@ -585,8 +585,9 @@ describe('the frame', () => {
     expect(name.toLowerCase()).toBe('dev')
     expect(name, 'a non-production pill is shouting').not.toBe(name.toUpperCase())
     // Who you are: the tenant by name with its id in the title, and the
-    // signed-in principal in the panel's foot.
-    await waitFor(() => expect(c.querySelector('.sk-tenant b')?.textContent).toBe('Bogdan'))
+    // signed-in principal in the panel's foot. The caller's own personal
+    // workspace is `Your workspace` whatever its document says (admin-shell-21).
+    await waitFor(() => expect(c.querySelector('.sk-tenant b')?.textContent).toBe('Your workspace'))
     expect(c.querySelector('.sk-tenant b')?.getAttribute('title')).toBe('u-bogdan')
     // Its role line carries the address in its title (S1a, CONFIG-ADMIN-POLISH).
     expect(c.querySelector('.sk-pfoot small')?.getAttribute('title')).toBe('someone@example.com')
@@ -622,7 +623,7 @@ describe('the frame', () => {
     expect(admin.querySelector('.sk-pfrow')?.textContent).toContain('someone')
     cleanup()
     const plain = await sky(json(200, me()))
-    await waitFor(() => expect(plain.querySelector('.sk-tenant b')?.textContent).toBe('Bogdan'))
+    await waitFor(() => expect(plain.querySelector('.sk-tenant b')?.textContent).toBe('Your workspace'))
     expect(plain.querySelector('.sk-adm'), 'a non-admin is tagged admin').toBeNull()
   })
 
@@ -689,7 +690,7 @@ describe('CH-20: the identity at phone width', () => {
     // lines. The title wraps inside the row since PHONE-BAR-LABEL (part of
     // #2391): a long page name reads whole, and the row stays one row.
     const c = await sky(json(200, me({ is_admin: true })))
-    await waitFor(() => expect(c.querySelector('.sk-pbar .sk-tn')?.textContent).toBe('Bogdan'))
+    await waitFor(() => expect(c.querySelector('.sk-pbar .sk-tn')?.textContent).toBe('Your workspace'))
     const bar = c.querySelector('.sk-pbar')!
     expect(painted(bar, 'display', PHONE_W)).toBe('flex')
     expect(painted(bar, 'height', PHONE_W)).toBe('44px')

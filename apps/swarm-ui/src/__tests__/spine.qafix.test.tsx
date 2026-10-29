@@ -88,12 +88,12 @@ describe('QA-040: the global meter does not wear another pool’s warning as its
     updated_at: '2026-10-20T00:00:00Z',
   })
 
-  it('names the binding pool as another pool, in its label, with the raw key in the title', () => {
+  it('names the binding pool as a pool, in its label, with the raw key in the title (`a`, not `another`, since admin2-15)', () => {
     const cap = { pools: [pool('global', 5, 20), pool('provider:anthropic:tenant:u-bogdan', 3, 3)], runner_profiles: {} } as unknown as Capacity
     const m = meterOf(cap)!
     // MUTATION: put back `${hot.name} full` in meterOf and the line under
     // the 5 / 20 meter reads as the global pool being full, in a raw key.
-    expect(m.warn).toBe('another pool is full: anthropic · u-bogdan')
+    expect(m.warn).toBe('a pool is full: anthropic · u-bogdan')
     expect(m.warn).not.toContain('provider:')
     // MUTATION: drop `warnPool` and the exact pool is nowhere on the card.
     expect(m.warnPool).toBe('provider:anthropic:tenant:u-bogdan')
@@ -101,7 +101,7 @@ describe('QA-040: the global meter does not wear another pool’s warning as its
 
   it('says the global pool itself is full when it is', () => {
     const cap = { pools: [pool('global', 20, 20), pool('tenant:eng', 0, 5, false)], runner_profiles: {} } as unknown as Capacity
-    // MUTATION: name the first hot pool whichever it is and this reads "another pool".
+    // MUTATION: name the first hot pool whichever it is and this reads "a pool".
     expect(meterOf(cap)?.warn).toBe('this pool is full')
   })
 })
