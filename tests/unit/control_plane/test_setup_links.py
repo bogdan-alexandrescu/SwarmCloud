@@ -14,6 +14,12 @@ import logging
 import secrets
 from datetime import datetime, timedelta
 
+import pytest
+
+from google.api_core import exceptions as gexc
+
+from swarm_api.errors import UpstreamUnavailable
+from swarm_api.setup_github import SecretManagerSetupSecrets
 from swarm_api.setup_links import COLLECTION, LINK_TTL, digest
 
 from .conftest import auth_header
@@ -122,6 +128,71 @@ def test_link_kinds_pool_account_team_git_addon_secret(setup_client, db, fake_se
     accounts = db.docs[ACCOUNTS_DOC]
     assert accounts["pool-1"]["owner"] == ALICE
     assert accounts["pool-1"]["link_hash"] == digest(_token(pool_link))
+
+
+class _SecretManagerClient:
+    """Secret Manager's create/add as a fresh install answers them: a version
+    added to a container nobody created is NOT_FOUND. Any other call (an IAM
+    grant) is an AttributeError, so the test sees it."""
+
+    def __init__(self) -> None:
+        self.containers: dict[str, dict] = {}
+        self.versions: dict[str, list[bytes]] = {}
+
+    def create_secret(self, request: dict) -> None:
+        name = f"{request['parent']}/secrets/{request['secret_id']}"
+        if name in self.containers:
+            raise gexc.AlreadyExists("exists")
+        self.containers[name] = request["secret"]
+
+    def add_secret_version(self, request: dict) -> None:
+        if request["parent"] not in self.containers:
+            raise gexc.NotFound("no such secret")
+        self.versions.setdefault(request["parent"], []).append(request["payload"]["data"])
+
+
+def test_team_git_container_created_on_a_fresh_install(setup_client, db, fake_secrets) -> None:
+    """Nothing on an install makes `swarm-tenant-<tenant>-git`: the redemption
+    creates it, labelled, keeps an existing one, and grants no accessor."""
+    team = _team(setup_client, db)
+    value = secrets.token_hex(20)
+    git = setup_client.post(REDEEM, json={"token": _token(_mint(setup_client, "team-git", team)),
+                                          "value": value}, headers=auth_header("alice"))
+    assert git.status_code == 200, git.text
+    secret_id = git.json()["secret"]
+    tenant = secret_id.removeprefix("swarm-tenant-").removesuffix("-git")
+    assert fake_secrets.created[secret_id] == {"managed-by": "swarm-api", "tenant": tenant}
+
+    client = _SecretManagerClient()
+    writer = SecretManagerSetupSecrets("p", client=client)
+    with pytest.raises(UpstreamUnavailable):
+        writer.add_version(secret_id, value)  # no container, no create: refused
+    labels = {"managed-by": "swarm-api", "tenant": tenant}
+    writer.add_version(secret_id, value, create_labels=labels)
+    writer.add_version(secret_id, value, create_labels=labels)  # AlreadyExists is kept
+    name = f"projects/p/secrets/{secret_id}"
+    assert client.containers[name]["labels"] == labels
+    assert client.versions[name] == [value.encode()] * 2
+
+
+def test_form_link_survives_a_missing_value_or_a_failed_write(setup_client, db,
+                                                              fake_secrets) -> None:
+    """A form link is consumed only after its value is written."""
+    token = _token(_mint(setup_client, "addon-secret", "tailscale"))
+    ref = f"{COLLECTION}/{digest(token)}"
+    empty = setup_client.post(REDEEM, json={"token": token}, headers=auth_header("alice"))
+    assert empty.status_code == 422, empty.text
+    assert db.docs[ref]["used_at"] is None
+    fake_secrets.fail = True
+    failed = setup_client.post(REDEEM, json={"token": token, "value": secrets.token_hex(16)},
+                               headers=auth_header("alice"))
+    assert failed.status_code == 503, failed.text
+    assert db.docs[ref]["used_at"] is None
+    fake_secrets.fail = False
+    done = setup_client.post(REDEEM, json={"token": token, "value": secrets.token_hex(16)},
+                             headers=auth_header("alice"))
+    assert done.status_code == 200, done.text
+    assert db.docs[ref]["used_at"] is not None
 
 
 def test_pool_link_refused_before_first_team(setup_client, db) -> None:

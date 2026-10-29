@@ -26,6 +26,7 @@ from swarm_api import publish_workspace as pw
 from swarm_api.auth import StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import build_context
+from swarm_api.errors import UpstreamUnavailable
 from swarm_api.forgeapp import HttpAnswer
 from swarm_api.groups import GroupLookupError, StaticGroups
 from swarm_api.main import create_app
@@ -118,9 +119,16 @@ class FakeSecrets:
 
     def __init__(self) -> None:
         self.versions: dict[str, list[str]] = {}
+        self.created: dict[str, dict[str, str]] = {}
+        self.fail = False
         self.key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
-    def add_version(self, secret_id: str, value: str) -> None:
+    def add_version(self, secret_id: str, value: str, *,
+                    create_labels: dict[str, str] | None = None) -> None:
+        if self.fail:
+            raise UpstreamUnavailable(f"{secret_id} could not be written")
+        if create_labels is not None:
+            self.created.setdefault(secret_id, dict(create_labels))
         self.versions.setdefault(secret_id, []).append(value)
 
     def has_enabled_version(self, secret_id: str) -> bool:
