@@ -312,3 +312,16 @@ def test_json_events_carry_no_value(tmp_path: Path) -> None:
     events.emit("step_done", step="secrets.hmac", state="met")
     line = json.loads(out.getvalue().splitlines()[-1])
     assert line == {"v": 1, "event": "step_done", "at": 1.0, "step": "secrets.hmac", "state": "met"}
+
+
+def test_dry_run_runs_read_only_stage_0_only(tmp_path: Path) -> None:
+    rig = Rig(tmp_path)
+    log: list[str] = []
+    preflight = FakeStep("preflight.region", 0, log=log)
+    preflight.read_only = True
+    writer = FakeStep("preflight.writes", 0, log=log)
+    later = FakeStep("foundations.apis", 1, log=log)
+    later.read_only = True  # ignored outside stage 0
+    assert rig.engine([preflight, writer, later], dry_run=True).run().exit_code == 0
+    assert [line for line in log if line.startswith("apply")] == ["apply preflight.region"]
+    assert rig.bucket.writes == []
