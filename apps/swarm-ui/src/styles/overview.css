@@ -259,8 +259,14 @@
    which a flex item would drop, so the text is still the tooltip's). No clamp: names.css's Overview clamp names
    `.ov-name` alone, because names.css comes after this sheet in the bundle
    and a tie there is its. */
-.ov-prun-n { display: flex; min-width: 0; white-space: nowrap; color: var(--text); text-decoration: none; }
-.ov-prun-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* THE TITLE TAKES TWO LINES BEFORE IT IS CUT (visual QA pass 2,
+   overview-agents-08 recheck, 2026-10-29): on one line at 390, 'Audit the
+   operator scri… · scan-terraform' kept the step and lost what the work was.
+   The title wraps to two lines and only then gives way with an ellipsis; the
+   step still keeps its width (ffp-002) and sits on the title's last line, so
+   a row is at most two lines, not VQ-002's four. */
+.ov-prun-n { display: flex; align-items: flex-end; min-width: 0; white-space: nowrap; color: var(--text); text-decoration: none; }
+.ov-prun-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .ov-prun-s { flex: none; max-width: 66%; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
 /* STATE · PROFILE · SHORT WORKFLOW ID UNDER THE NAME (QA G1-08, 2026-10-07):
    the phone dropped all three, and two "implement" rows read alike. */

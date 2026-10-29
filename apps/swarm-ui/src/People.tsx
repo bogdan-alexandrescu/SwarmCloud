@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
+import { createContext, Fragment, useContext, useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import {
   approveWorkspace,
@@ -22,7 +22,7 @@ import { groupWorkspaceName, useStoredRoles } from './Profile'
 import { Mark } from './primitives'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead, usePoll } from './Shell'
-import { nameTenants, type NamedTenantChoice } from './Spine'
+import { nameTenants, OWN_WORKSPACE_LABEL, type NamedTenantChoice } from './Spine'
 import { tableMode, usePhoneTables } from './capacityPoll'
 import { PersonWorkspaceRoles, WorkspaceRolesCard } from './WorkspaceRolesAdmin'
 import type {
@@ -202,6 +202,64 @@ function named(a: { account_id: string; label: string | null; display_name?: str
   return accountName({ label: a.label ?? '', display_name: a.display_name }) || a.account_id
 }
 
+/**
+ * AN ACCOUNT'S STATE IN PLAIN WORDS (visual QA pass 2, admin2-04,
+ * 2026-10-29): the lend select read 'AVAILABLE', 'PAUSED' and
+ * 'REAUTH_REQUIRED', the broker's enum. These are the words the Accounts
+ * table's reasons use (`AccountsTable.tsx` `whyOf`: paused, draining, signed
+ * out until someone signs in again). A state this console does not know is
+ * its own word, lower case, as `AcctState` draws it.
+ */
+const ACCOUNT_STATE_WORD: Readonly<Record<string, string>> = {
+  AVAILABLE: 'available',
+  PAUSED: 'paused',
+  DRAINING: 'draining',
+  REAUTH_REQUIRED: 'needs signing in again',
+}
+
+export function accountStateWord(state: string): string {
+  return ACCOUNT_STATE_WORD[state] ?? state.toLowerCase().replace(/_/g, ' ')
+}
+
+/**
+ * WHO LENT IT, AS A WORKSPACE (admin2-04): the select and 'Now using' named
+ * the lender by its tenant id, 'lent by u-bogdan'. A workspace is named first
+ * as the switcher names it (`nameTenants`): the caller's own personal
+ * workspace is 'your workspace', a group one its switcher name. Then a group
+ * workspace by its column's name, which `withWorkspaceNames` already renamed
+ * by the switcher's rule; then a personal workspace by its person, as the
+ * People table lists them ("Bo's workspace"), but only when ONE row holds
+ * that id: the review's render had two people in u-bogdan and named it by
+ * whichever sorted first (QA2-FIX-18 review, 2026-10-29). A tenant the page
+ * cannot name stays its id.
+ */
+export function lenderNames(
+  doc: Pick<PeopleDoc, 'people'> & { workspaces?: PeopleWorkspaceColumn[] | null },
+  named: readonly NamedTenantChoice[] = [],
+): (tenant: string) => string {
+  const names = new Map<string, string>()
+  for (const c of named) {
+    if (c.display_name === OWN_WORKSPACE_LABEL) names.set(c.tenant_id, 'your workspace')
+    else if (c.display_name !== '' && c.display_name !== c.tenant_id) names.set(c.tenant_id, c.display_name)
+  }
+  for (const c of Array.isArray(doc.workspaces) ? doc.workspaces : []) {
+    if (c.display_name !== '' && !names.has(c.tenant_id)) names.set(c.tenant_id, c.display_name)
+  }
+  const holders = new Map<string, PersonRow[]>()
+  for (const r of Array.isArray(doc.people) ? doc.people : []) {
+    const id = r.workspace.workspace_id
+    if (typeof id === 'string' && id !== '') holders.set(id, [...(holders.get(id) ?? []), r])
+  }
+  for (const [id, rows] of holders) {
+    const only = rows.length === 1 ? rows[0] : undefined
+    if (only !== undefined && !names.has(id)) names.set(id, `${only.display_name || only.email}\u2019s workspace`)
+  }
+  return (tenant) => names.get(tenant) ?? tenant
+}
+
+/** The page's lender namer; the bare id outside a People page. */
+const LenderName = createContext<(tenant: string) => string>((tenant) => tenant)
+
 /** An account with its id: the id, then how the console names it when that is something else. */
 function accountWithId(a: { account_id: string; label: string | null; display_name?: string | null }): string {
   const name = named(a)
@@ -213,7 +271,7 @@ function accountWithId(a: { account_id: string; label: string | null; display_na
  * the owner tenant and never the account. An older API without
  * `lent_accounts` still says its owners.
  */
-function claudeText(c: PersonClaudeAccount): ReactNode {
+function claudeText(c: PersonClaudeAccount, lender: (tenant: string) => string = (t) => t): ReactNode {
   if (c.source === 'own') return `own (${c.own})`
   if (c.source === 'lent' && c.lent_accounts !== undefined && c.lent_accounts.length > 0) {
     // Each id is one token (`ai-eng-4` broke as "ai-" over "eng-4" at 390,
@@ -228,7 +286,7 @@ function claudeText(c: PersonClaudeAccount): ReactNode {
   }
   // The lenders' tenant ids are tokens like the workspace ids beside them:
   // "lent by u-" over "bogdan" read as a lender called "u-" (rendered review).
-  if (c.source === 'lent') return c.lent_by.length > 0 ? <>lent by <span className="pp-nobr">{c.lent_by.join(', ')}</span></> : `lent (${c.lent})`
+  if (c.source === 'lent') return c.lent_by.length > 0 ? <>lent by <span className="pp-nobr">{c.lent_by.map(lender).join(', ')}</span></> : `lent (${c.lent})`
   if (c.source === 'provider_key') return 'provider key'
   return 'none'
 }
@@ -615,6 +673,7 @@ function LoanPicker({
   const [busy, setBusy] = useState(false)
   const [said, say] = useSaid(onSaid)
   const chosen = accounts.find((a) => a.account_id === account) ?? null
+  const lender = useContext(LenderName)
   const go = async () => {
     if (busy || chosen === null) return
     setBusy(true)
@@ -628,7 +687,7 @@ function LoanPicker({
     )
     reload()
   }
-  const name = chosen === null ? '' : `${named(chosen)} (${chosen.owner_tenant})`
+  const name = chosen === null ? '' : `${named(chosen)} (${lender(chosen.owner_tenant)})`
   const idle = chosen !== null && chosen.state !== null && NOT_ASSIGNING.has(chosen.state)
   const verb = lend ? 'Lend' : 'Reclaim'
   const one = !lend && accounts.length === 1 ? accounts[0]! : null
@@ -636,8 +695,8 @@ function LoanPicker({
     <div className="pp-loan">
       {one !== null ? (
         <span className="pp-loan-one" data-testid="pp-loan-one">
-          Lent to them: <strong>{accountWithId(one)}</strong> · {one.owner_tenant}
-          {one.state !== null ? ` · ${one.state}` : ''}
+          Lent to them: <strong>{accountWithId(one)}</strong> · {lender(one.owner_tenant)}
+          {one.state !== null ? ` · ${accountStateWord(one.state)}` : ''}
         </span>
       ) : (
         <label className="c-field">
@@ -651,8 +710,8 @@ function LoanPicker({
             <option value="">choose…</option>
             {accounts.map((a) => (
               <option key={a.account_id} value={a.account_id}>
-                {named(a)} · {a.owner_tenant}
-                {a.state !== null ? ` · ${a.state}` : ''}
+                {named(a)} · {lender(a.owner_tenant)}
+                {a.state !== null ? ` · ${accountStateWord(a.state)}` : ''}
                 {a.state !== null && NOT_ASSIGNING.has(a.state) ? ' (starts no new agent)' : ''}
               </option>
             ))}
@@ -678,12 +737,12 @@ function LoanPicker({
           <p>{lend ? `Lend ${name} to ${row.email}?` : `Reclaim ${name} from ${row.email}?`}</p>
           <p className="ur-hint">
             {lend
-              ? `Their work may then run on an account ${chosen.owner_tenant} owns.`
-              : `${chosen.owner_tenant} stops lending it to them; their new work is no longer offered it.`}
+              ? `Their work may then run on an account ${lender(chosen.owner_tenant)} owns.`
+              : `${lender(chosen.owner_tenant)} stops lending it to them; their new work is no longer offered it.`}
           </p>
           {lend && idle && (
             <p className="ur-hint" role="note" data-testid="pp-loan-idle">
-              This account is {chosen.state}: it starts no new agent until its owner makes it available again.
+              This account is {accountStateWord(chosen.state ?? '')}: it starts no new agent until its owner makes it available again.
             </p>
           )}
         </Dialog>
@@ -1146,9 +1205,21 @@ function WaitingCard({ doc, rows, reload }: { doc: PeopleDoc & JoinFields; rows:
               {kind === 'workspace' ? (
                 <>
                   <div className="pp-req-what">
+                    {/* WHAT IS ASKED FOR, BY KIND AND PERSON (visual QA pass 2,
+                        admin2-22, 2026-10-29): 'Workspace w-c4r01e' named the
+                        request by a generated id an approver cannot place. A
+                        person's row asks for their own workspace, so the line
+                        says so; the id it will have is the secondary line. */}
                     <span>
-                      Workspace <code className="pp-id">{row.workspace.workspace_id}</code> · <Requested at={at} />
+                      {/* '·' is held to 'asked' (U+00A0), so a phone's line break never leaves it alone at a line's end. */}
+                      A personal workspace for {row.email} ·{'\u00a0'}
+                      <Requested at={at} />
                     </span>
+                    {row.workspace.workspace_id != null && row.workspace.workspace_id !== '' && (
+                      <small className="pp-req-id">
+                        id <code className="pp-id">{row.workspace.workspace_id}</code>
+                      </small>
+                    )}
                     <LimitChips limits={row.workspace.limits} />
                   </div>
                   <div className="pp-req-acts">
@@ -1417,7 +1488,7 @@ function WorkspaceCell({ row }: { row: PersonRow }) {
   return (
     <div className="pp-ws" data-workspace-state={w.state}>
       <ToneMark tone={STATE_TONE[w.state] ?? 'unknown'}>{STATE_WORD[w.state] ?? w.state}</ToneMark>
-      {w.workspace_id != null && w.workspace_id !== '' && (
+      {w.workspace_id != null && w.workspace_id !== '' && w.state !== 'requested' && (
         <>
           {' '}
           {/* Whole in `title`: people.css cuts an id longer than its room (V021, V161). */}
@@ -1425,6 +1496,17 @@ function WorkspaceCell({ row }: { row: PersonRow }) {
             {w.workspace_id}
           </code>
         </>
+      )}
+      {/* A REQUESTED WORKSPACE'S ID IS SECONDARY (admin2-22, QA2-FIX-18 review,
+          2026-10-29): 'requested w-c4r01e' named the request by a generated
+          id, as Waiting for you did; the id it will have is its own line. */}
+      {w.workspace_id != null && w.workspace_id !== '' && w.state === 'requested' && (
+        <p className="ur-hint pp-req-id">
+          id{' '}
+          <code className="pp-id" title={w.workspace_id}>
+            {w.workspace_id}
+          </code>
+        </p>
       )}
       {w.state === 'failed' && failedAt !== null && <> ({failedAt})</>}
       {w.state === 'needs_owner' && (
@@ -1463,7 +1545,8 @@ function lenderOf(a: PersonLentAccount): string {
  */
 function ClaudeSummary({ c }: { c: PersonClaudeAccount }) {
   const accounts = c.source === 'lent' ? (c.lent_accounts ?? []) : []
-  if (accounts.length < 2) return <>{claudeText(c)}</>
+  const lender = useContext(LenderName)
+  if (accounts.length < 2) return <>{claudeText(c, lender)}</>
   const lenders = [...new Set(accounts.map(lenderOf))]
   return (
     <details className="pp-loans">
@@ -2675,7 +2758,7 @@ function withWorkspaceNames<D extends { workspaces?: PeopleWorkspaceColumn[] | n
   }
 }
 
-function PeopleBody({ doc, reload }: { doc: PeopleDoc & JoinFields; reload: () => void }) {
+function PeopleBody({ doc, reload, named = [] }: { doc: PeopleDoc & JoinFields; reload: () => void; named?: readonly NamedTenantChoice[] }) {
   const rows = pendingFirst(Array.isArray(doc.people) ? doc.people : [])
   const phone = usePhoneTables()
   // The drawer follows the person, not a snapshot of their row: each read
@@ -2697,8 +2780,9 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc & JoinFields; reload: () =
     setVersion((v) => v + 1)
   }
   const grid: JoinGrid = { joins, members }
+  const lender = useMemo(() => lenderNames(doc, named), [doc, named])
   return (
-    <>
+    <LenderName.Provider value={lender}>
       <PeopleLead rows={rows} joins={joins} joinsError={joinsError} />
       <BuildingOff doc={doc} />
       {joinsError !== null && <JoinsUnread code={joinsError} />}
@@ -2785,7 +2869,7 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc & JoinFields; reload: () =
       </div>
       {managed !== null && <Drawer key={managed.email} row={managed} doc={doc} reload={reload} onClose={() => setManaging(null)} />}
       {granting && <GrantDialog reload={reload} onClose={() => setGranting(false)} onSaid={setSaid} />}
-    </>
+    </LenderName.Provider>
   )
 }
 
@@ -2818,7 +2902,7 @@ export function PeopleScreen() {
           isScoped(d) ? (
             <ScopedBody doc={withWorkspaceNames(d, named)} reload={people.reload} />
           ) : (
-            <PeopleBody doc={withWorkspaceNames(d, named)} reload={people.reload} />
+            <PeopleBody doc={withWorkspaceNames(d, named)} reload={people.reload} named={named} />
           )
         }
       </UrRegion>
