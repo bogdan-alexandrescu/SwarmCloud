@@ -185,8 +185,12 @@
    `resul…` -- the one line a reader opened the card to compare with the
    error. Here the strip wraps: the line takes its own row when it has less
    than 12em beside its label, and breaks anywhere rather than running out. */
+/* AND IT TAKES ITS OWN ROW, LEFT-ALIGNED (QA2 ovag2-16): beside its label
+   and `Open logs ›` it was wrapped into a narrow centre column. The label and
+   the link share the first row; the line runs the card's width under them. */
 .dt-fail > .ag-loglast { flex-wrap: wrap; padding-block: 6px; }
-.dt-fail > .ag-loglast > .ag-loglast-line { flex: 1 1 12em; white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
+.dt-fail > .ag-loglast > .ag-loglast-open { order: 1; margin-left: auto; }
+.dt-fail > .ag-loglast > .ag-loglast-line { order: 2; flex: 1 0 100%; text-align: left; white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
 /* The leading Outcome card keeps the code panel's own blocks flush. */
 .dt-card.run-output > .section,
 .dt-card.run-output > .git-outcome { margin: 0; }

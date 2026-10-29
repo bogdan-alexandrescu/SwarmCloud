@@ -266,7 +266,10 @@ describe('overview-agents-52: a failed agent can be run again', () => {
     })
     expect(again.textContent).toBe('Run again')
     expect(again.closest('.dt-fail')).not.toBeNull()
-    expect(again.getAttribute('href')).toBe('/work/new')
+    // Submit's own path (`addressToPath('work/new')`).
+    expect(again.getAttribute('href')).toBe('/submit/task')
+    // jsdom navigates no paths; the app's own click handler does that.
+    again.addEventListener('click', (e) => e.preventDefault())
     fireEvent.click(again)
     // MUTATION: drop the `prefillTask` call -- Submit opens empty.
     expect(peekTaskPrefill()).toEqual({

@@ -1,4 +1,4 @@
-import { Banner, Button, CIcon, Count, ToneMark } from './components'
+import { Banner, Button, ButtonLink, CIcon, Count, ToneMark } from './components'
 import { Children, Fragment, cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   EVENT_PAGE_LIMIT,
@@ -39,6 +39,7 @@ import { tokenCount } from './measure'
 import { Absent, Mark, UtilRow, type MarkKind } from './primitives'
 import { checkpointsLine, checkpointsSay, type CheckpointCount } from './CheckpointsPane'
 import { useCheckpointListing, useRead, type CheckpointListing } from './RunFiles'
+import { prefillTask } from './submitPrefill'
 import { Screen, timeAgo, type ScreenReading } from './Shell'
 import { StagedInputs } from './StagedInputs'
 import { StopRun } from './StopRun'
@@ -67,6 +68,7 @@ import {
   startedOf,
   usageOf,
   modelMismatch,
+  poolLabel,
   waitingLine,
   whyAgent,
   whyNeedsAction,
@@ -485,7 +487,7 @@ export function Run({
       <div className="dt-top">
         <Alerts task={task} />
         <WaitPanel task={task} now={now} />
-        <Why task={task} events={events} now={now} classes={run.classes} />
+        <Why task={task} classes={run.classes} />
       </div>
       {/* WHY THE AGENT RAN OR DID NOT (owner request 2026-10-07): a step with
           a verdict gate, or the review that gated one, leads with the rule,
@@ -933,6 +935,19 @@ export function buildingOf(
   return { text, facts, hover }
 }
 
+/**
+ * THE TICKER'S VERB FOLLOWS THE STATE (QA2 overview-agents-26): `Building`
+ * stood over a ready agent that had not started, a failed one and a finished
+ * one. A parked agent that ran is still building; one that never started has
+ * not begun.
+ */
+export function buildingWord(task: Pick<Task, 'state' | 'started_at'>): string {
+  if (task.state === 'SUCCEEDED') return 'Built'
+  if (TERMINAL_STATES.has(task.state)) return 'Was building'
+  if (CONCURRENCY_STATES.has(task.state) || (task.state === 'PARKED' && task.started_at !== null)) return 'Building'
+  return 'To build'
+}
+
 function DtBuilding({ task, readAt }: { task: Task; readAt: number | null }) {
   // THE SAME READ AS Input's (same loader, task and key), so one request.
   const { state: copy } = useRead<TaskInputCopy>(() => loadTaskInputOnce(task.id), task.id, `input:${readAt ?? ''}`, null)
@@ -940,7 +955,7 @@ function DtBuilding({ task, readAt }: { task: Task; readAt: number | null }) {
   const facts = b.facts.join(' · ')
   return (
     <p className="dt-building">
-      <span className="dt-building-l">Building</span>
+      <span className="dt-building-l">{buildingWord(task)}</span>
       <span className={`dt-building-v${b.text === null ? ' is-none' : ''}`} title={b.hover ?? undefined}>
         {b.text === null
           ? facts !== ''
@@ -1048,6 +1063,32 @@ function DtNow({
 }
 
 /**
+ * RUN IT AGAIN (QA2 overview-agents-52): a failed agent offered no way back
+ * but to retype it. This opens Submit with the same runner profile, by name
+ * (invariant 10), the prompt from the masked copy Input draws (never
+ * `task.input`) and the repository, through `prefillTask`; the person reads
+ * the form and presses Submit there, so nothing is sent from here. A workflow
+ * step is not offered it: its prompt alone, submitted as a lone agent, is not
+ * the step it was.
+ */
+function RunAgain({ task }: { task: Task }) {
+  const { state: copy } = useRead<TaskInputCopy>(() => loadTaskInputOnce(task.id), task.id, 'input:', null)
+  if (task.workflow_id !== null && task.workflow_id !== undefined) return null
+  const prompt = copy.status === 'ok' || copy.status === 'stale' ? (copy.data.prompt?.text ?? '') : ''
+  return (
+    <ButtonLink
+      size="sm"
+      href={addressToPath('work/new')}
+      data-run-again=""
+      title={`Open Submit with ${task.runner_profile}, this agent's prompt and its repository filled in.`}
+      onClick={() => prefillTask({ profile: task.runner_profile, prompt, repositoryUrl: task.repository_url ?? '' })}
+    >
+      Run again
+    </ButtonLink>
+  )
+}
+
+/**
  * THE FAILURE CARD, which leads a failed agent: a plain sentence for its end
  * cause, the cause itself verbatim, who wrote the error (`errorWriter`) and
  * the whole error -- never truncated, it is the reason the page was opened --
@@ -1083,6 +1124,7 @@ function DtFailure({ run, lastLine }: { run: AgentRun; lastLine: ReactNode }) {
       {/* NO `Attempts ›` HERE (QA-115). The Progress card under the strip
           links the same tab, so the page offered two links to one place. */}
       <DtCardHead title={heading}>
+        {task.state !== 'CANCELLED' && <RunAgain task={task} />}
         <HelpCard topic="attempt-documents" />
       </DtCardHead>
       <p className="dt-nfs">
@@ -1883,7 +1925,7 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
               className="dt-note"
               aria-label={`One page, as served. This screen asks for ${EVENT_PAGE_LIMIT} events and the server may clamp that lower, and it does not follow the page token the events route returns — so a page that looks complete is not evidence that it is.`}
             >
-              newest first · one page, cap unknown
+              Newest first · first page only
             </p>
           )}
           {events.length > 5 && (
@@ -2075,7 +2117,10 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
             : `Figures written at exit by attempt ${attempts.length}.`
   return (
     <section className="dt-card dt-resources">
-      <DtCardHead title="Resources">
+      {/* NOT `Resources` AGAIN (QA2 overview-agents-25): this card sits inside
+          the Resources row's fold, under its title; what it adds is each
+          figure against its limit, and over time. */}
+      <DtCardHead title="Against each limit">
         {cls === null && <span className="dt-note">{unknownLimit}</span>}
         <HelpCard topic="requests-are-ceilings" />
       </DtCardHead>
@@ -2140,11 +2185,15 @@ export function resourceFigures(run: AgentRun): ResFigure[] {
         : { text: `${n(req)}/${n(lim)} cores`, title: 'Cores the attempt was guaranteed / the most it could burst to.' }
       : latest !== null && finite(recorded)
         ? {
-            text: `${n(recorded)} cores`,
+            // ONE CPU FIGURE WITH ITS BASIS (QA2 overview-agents-24): the
+            // head prints the class (`4 vCPU`), so a bare `2 cores` here read
+            // as a contradiction. The limit is named a limit, and the class
+            // beside it in the head's own unit when the two differ.
+            text: `${n(recorded)}-core limit${cls !== null && cls.cpu !== recorded ? ` · ${cls.cpu} vCPU class` : ''}`,
             title: `The limit the attempt recorded${limitWords === null ? '' : `: ${limitWords}`}; no request was recorded.`,
           }
         : cls !== null
-          ? { text: `${cores(cls.cpu)} cores (class)`, title: `The ${task.resource_class} class's cores; the attempt recorded no size or limit.` }
+          ? { text: `${cores(cls.cpu)} vCPU class`, title: `The ${task.resource_class} class's cores; the attempt recorded no size or limit.` }
           : { text: '— cores', title: 'No size was recorded and the class was not read.', absent: true }
   const memFig: ResFigure =
     cls !== null
@@ -2239,6 +2288,27 @@ export function parkedOutcome(a: AttemptRow): { label: string; tone: ChipTone } 
   return { label: a.error ? `parked · ${a.error}` : 'parked', tone: 'info' }
 }
 
+
+/**
+ * THE WAIT LINE, WITH THE POOL NAMED AS HEADROOM NAMES IT (QA2 ovag2-06):
+ * `waiting for: anthropic · u-bogdan  5/5 units`, the raw key in the
+ * name's title. `waitingLine` (types.ts) is the line every other screen
+ * compares against, so it stays as it is; only the drawing names the pool.
+ */
+function WaitingLead({ task }: { task: Task }) {
+  const line = waitingLine(task)
+  const pool = task.waiting_for?.lead?.pool
+  if (line === null) return null
+  const at = typeof pool === 'string' && pool !== '' ? line.indexOf(pool) : -1
+  if (at === -1) return <span data-waiting-lead="">{line}</span>
+  return (
+    <span data-waiting-lead="">
+      {line.slice(0, at)}
+      <span title={pool}>{poolLabel(pool!)}</span>
+      {line.slice(at + pool!.length)}
+    </span>
+  )
+}
 
 /** The em dash, as a token rather than a bare character, so "not measured" is
  *  styleable as a class of thing and never mistaken for a digit.
@@ -2732,9 +2802,14 @@ function Alerts({ task }: { task: Task }) {
           the same rule as the why line. */}
       {waitingLine(task) !== null && !paneled && (
         <div className={`bar${whyNeedsAction(task) ? ' amber' : ''}`} data-waiting-for="">
-          <span data-waiting-lead="">{waitingLine(task)}</span>
+          <WaitingLead task={task} />
+          {/* A SPACE BEFORE THE ASIDE (QA2 ovag2-06): the margin drew one, the
+              text did not, so a copy or a reader said `units(holds`. */}
           {task.waiting_for?.holds_capacity === false && (
-            <span className="blocker-copy">(holds no capacity)</span>
+            <>
+              {' '}
+              <span className="blocker-copy">(holds no capacity)</span>
+            </>
           )}
         </div>
       )}
@@ -2865,13 +2940,9 @@ function reasonText(reason: string): string {
  */
 function Why({
   task,
-  events,
-  now,
   classes,
 }: {
   task: Task
-  events: TaskEvent[] | null
-  now: number
   /**
    * The catalogue `Run` already read alongside this task (`loadAgentRun`,
    * api.ts) -- not a second fetch of `/v1/resource-classes`. `classUnits`
@@ -2885,15 +2956,18 @@ function Why({
   classes: ResourceClasses | null
 }) {
   // ONCE, IN THE BANNER (LB-V4, U1): a parked hand-off's sentence is the
-  // banner's, so it is not repeated here. See `Alerts`. This also skips
-  // `SilentWorker`, which is right: a PARKED task has no live worker.
+  // banner's, so it is not repeated here. See `Alerts`.
   if (handoffOf(task)?.phase === 'parked') return null
   // The wait panel's summary is this sentence, made from what was recorded
   // rather than a table of reasons (#1782); once is enough.
   if (fullWaiting(task) !== null) return null
   const units = classUnits(classes, task.resource_class)
   const why = whyAgent(task, units)
-  if (!why) return <SilentWorker task={task} events={events} now={now} />
+  // A SILENT WORKER IS SAID ONCE, IN THE NOW CARD (QA2 overview-agents-23):
+  // `No event for 9d 20h…` stood here, above Now, and again inside it. A
+  // silent worker holds a slot, so it is never terminal and Now always leads
+  // its page (`leadOf`); the card's `--warn` line is the one that stays.
+  if (!why) return null
   // #362: the "waiting for" bar in `Alerts` already prints this line, with
   // "(holds no capacity)" beside it; once is enough, as for `last_error`.
   if (why === waitingLine(task)) return null
@@ -2908,41 +2982,6 @@ function Why({
   return (
     <section className="section">
       <p className={`why-full${whyNeedsAction(task, units) ? ' is-warn' : ''}`}>{why}</p>
-    </section>
-  )
-}
-
-/**
- * AG-14'S FOURTH KIND: A STUCK OR SILENT WORKER, which had no line to colour.
- *
- * The owner's decision names "stuck/silent workers" among the why lines that
- * need a person and so take `--warn`. `whyAgent` writes nothing for a task
- * that holds a slot -- it answers "why is this not running", and a leased or
- * running task is -- so the first pass had no line here and coloured none.
- *
- * The inspector reads the task's events, and `livenessOf` (Liveness.tsx)
- * already derives the answer the badge in the heading draws: a task in a
- * concurrency state with no event for seven minutes is `silent`, "the worker
- * may be gone". That sentence is the why line, in `--warn`, and nothing else
- * is -- not `quiet` (heartbeats are ~150s apart, so three to seven minutes is
- * not yet alarming), and not an event read that failed or a re-read that
- * stopped vouching (`now` stops with it, `rowClock` in `Run`): "could not
- * look" is never drawn as "nothing happened".
- *
- * NOT ON THE AGENTS LIST. A list row is a task document, and a worker's
- * heartbeat is written to its LEASE (control.py `heartbeat`), which no
- * tenant-scoped route serves; the admin leases route is the only reader. The
- * list half is a backend change, #179, rather than a guess from
- * `updated_at`, which a heartbeat does not move.
- */
-function SilentWorker({ task, events, now }: { task: Task; events: TaskEvent[] | null; now: number }) {
-  const live = livenessOf(task, events, now)
-  if (live.kind !== 'silent') return null
-  return (
-    <section className="section">
-      <p className="why-full is-warn" data-why="silent">
-        {live.say}
-      </p>
     </section>
   )
 }
@@ -5432,6 +5471,20 @@ function PublishOutcome({ git, task }: { git: GitSummary; task: Task }) {
  * failed read is asked again with each re-read of the drawer (`readAt`), so a
  * copy that failed once is not `input not read` until the drawer is reopened.
  */
+/**
+ * HOW FAR A RUN IS PAST ITS TIMEOUT, in ms, or null when it is not (QA2
+ * overview-agents-28): `timeout 3600s` stood beside a run of 9d 20h with
+ * nothing reconciling the two. The run is its last start to its end, or to
+ * the read while it runs; a run never started has none.
+ */
+export function overTimeout(task: Pick<Task, 'timeout_seconds' | 'started_at' | 'completed_at'>, now: number): number | null {
+  if (task.timeout_seconds === null || task.started_at === null) return null
+  const started = Date.parse(task.started_at)
+  const ended = task.completed_at === null ? now : Date.parse(task.completed_at)
+  const over = ended - started - task.timeout_seconds * 1000
+  return Number.isFinite(over) && over >= 1000 ? over : null
+}
+
 function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
   const { task } = run
   const { state: copy } = useRead<TaskInputCopy>(
@@ -5442,6 +5495,7 @@ function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
   )
   const served = copy.status === 'ok' || copy.status === 'stale' ? copy.data : null
   const prompt = served?.prompt ?? null
+  const over = overTimeout(task, readAt ?? Date.now())
   const keys = served?.metadata === null || served?.metadata === undefined ? null : Object.keys(served.metadata.value).length
 
   // FOLDED (agent-details-v3.html A): a facts line, a three-line preview of
@@ -5489,22 +5543,29 @@ function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
         <li className={`ctl-fact${task.timeout_seconds === null ? ' is-absent' : ''}`}>
           <b>timeout</b>
           {task.timeout_seconds !== null ? `${task.timeout_seconds}s` : <Em />}
+          {over !== null && (
+            <span title="The run has lasted longer than this timeout; the timeout did not end it.">
+              {` · over by ${formatDuration(over)}`}
+            </span>
+          )}
         </li>
       </ul>
 
       {served === null ? (
         <InputNotRead copy={copy} />
       ) : prompt === null ? (
-        <p className="att-none">
-          <Mark
-            kind="zero"
-            say={
-              served.prompt_key === 'other'
-                ? "This agent's input has a prompt key whose value is not text, so there is no prompt to show. The full input is under Metadata."
-                : "This agent's input has no prompt string. That is legitimate — the field is a convention of the CLI and mock runners, not part of the submission schema. The full input is under Metadata."
-            }
-          />{' '}
-          {served.prompt_key === 'other' ? 'prompt is not text' : 'no prompt key'}
+        // A SENTENCE, NOT `none · no prompt key` (QA2 overview-agents-29):
+        // the mark's `none` before the words read as two labels. Why there is
+        // none stays the line's title.
+        <p
+          className="att-none"
+          title={
+            served.prompt_key === 'other'
+              ? "This agent's input has a prompt key whose value is not text, so there is no prompt to show. The full input is under Metadata."
+              : "This agent's input has no prompt string. That is legitimate — the field is a convention of the CLI and mock runners, not part of the submission schema. The full input is under Metadata."
+          }
+        >
+          {served.prompt_key === 'other' ? 'The prompt is not text' : 'No prompt was recorded'}
         </p>
       ) : prompt.text === '' ? (
         <p className="att-none">
