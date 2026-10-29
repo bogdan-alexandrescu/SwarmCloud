@@ -4,8 +4,12 @@
    checklists, so the one text field, Submitted by, is given the chip's own
    look here: the chip is the box, the field inside it has none.
    Activity.tsx imports timeline.css itself, so the chips are styled when
-   Outcomes is the first page of the tab drawn. */
-.ol-toolbar .tl-flt input {
+   Outcomes is the first page of the tab drawn.
+   ONLY THE TEXT FIELD (review of runs2-19): a bare `input` also caught the
+   Profile and Workspace pickers' checkboxes in `.tl-pop`, drawing each 16ch
+   wide and borderless, far from its label, and pushing the popover past a
+   phone's edge. The rule names Submitted by's `type="search"`. */
+.ol-toolbar .tl-flt input[type="search"] {
   width: 16ch;
   padding: 0;
   border: 0;
@@ -13,4 +17,13 @@
   color: inherit;
   font: inherit;
 }
-.ol-toolbar .tl-flt input:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.ol-toolbar .tl-flt input[type="search"]:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+/* GROUP BY AT LANES' WIDTH (review of runs2-19): the select was as wide as
+   its longest option, 'month (span under 60 days)', so the chip stood about
+   100px wider than Lanes' Group by. It holds the width of 'auto · month';
+   the disabled options' reasons still read in full in the open list. */
+.ol-toolbar .tl-flt select { width: 8.5em; }
+/* The pickers' checklists run taller than Lanes' 320px ceiling (a tenant's
+   profiles and workspaces), so Outcomes' popover holds a taller one, here
+   rather than inline. */
+.ol-toolbar .tl-pop { max-height: min(70vh, 480px); }

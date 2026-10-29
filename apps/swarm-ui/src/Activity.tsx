@@ -1489,7 +1489,7 @@ function Picker({
       <summary>
         {label} <i>{summary}</i>
       </summary>
-      <div className="tl-pop" role="group" aria-label={label} style={{ maxHeight: 'min(70vh, 480px)' }}>
+      <div className="tl-pop" role="group" aria-label={label}>
         {all.map((o) => (
           <label key={o}>
             <input

@@ -1927,4 +1927,28 @@ describe('Outcomes draws its filters in the Lanes chip row (runs2-19)', () => {
     // A set filter wears the Lanes chip's `is-on`.
     expect(pick.classList.contains('is-on')).toBe(true)
   })
+
+  it("styles only Submitted by's text field, not the picker's checkboxes (review of runs2-19)", async () => {
+    const root = await timeline()
+    await waitFor(() => expect(root.querySelector('#ol-sheet details.tl-pick input[type="checkbox"]')).not.toBeNull())
+    const box = root.querySelector<HTMLElement>('#ol-sheet details.tl-pick input[type="checkbox"]')!
+    const field = root.querySelector<HTMLElement>('#ol-sheet .tl-flt input[type="search"]')!
+    // MUTATION: put back the bare `.ol-toolbar .tl-flt input` -> each checkbox
+    // is 16ch wide and borderless, far from its label, and this fails.
+    expect(painted(box, 'width', { width: 1440 })).toBeNull()
+    expect(painted(box, 'border', { width: 1440 })).toBeNull()
+    expect(painted(field, 'width', { width: 1440 })).toBe('16ch')
+  })
+
+  it("holds the popover's ceiling in the stylesheet and Group by at Lanes' width (review of runs2-19)", async () => {
+    const root = await timeline()
+    const pop = root.querySelector<HTMLElement>('#ol-sheet .tl-pop')!
+    // MUTATION: put back the inline `style={{ maxHeight }}` -> fails.
+    expect(pop.getAttribute('style')).toBeNull()
+    expect(painted(pop, 'max-height', { width: 1440 })).toBe('min(70vh, 480px)')
+    // MUTATION: drop the select's width -> it is as wide as 'month (span under
+    // 60 days)', about 100px wider than Lanes' Group by, and this fails.
+    const select = root.querySelector<HTMLElement>('#ol-sheet label.tl-flt select')!
+    expect(painted(select, 'width', { width: 1440 })).toBe('8.5em')
+  })
 })
