@@ -5856,13 +5856,16 @@ function fixtureMakeWorkflow(steps: FixtureStepAsked[], by: string, priority: nu
   return workflow
 }
 
+/** SubmitWorkflow.tsx's `DispatchEcho`: what the create says it will do with the steps' work. */
+type FixtureDispatchEcho = { strategy: string; carrier: string; integrator_step_id: string | null }
+
 /**
  * `POST /v1/workflows` in the fixture build (QA2-FIX-07, runs2-02): the
  * workflow the body asks for, created now and readable by its id after, as
  * the 201 serves it (`state_source: 'stored'` on the create response). The
  * fixture checks nothing the form has not; the live route is the gate.
  */
-export async function fixtureSubmitWorkflow(body: Record<string, unknown>): Promise<{ workflow: Workflow; dispatch: { strategy: string; carrier: string; integrator_step_id: string | null } }> {
+export async function fixtureSubmitWorkflow(body: Record<string, unknown>): Promise<{ workflow: Workflow; dispatch: FixtureDispatchEcho }> {
   await new Promise((r) => setTimeout(r, 120))
   noteFixtureProbe(route('/v1/workflows'), 120, true)
   const asked = Array.isArray(body.steps) ? (body.steps as Record<string, unknown>[]) : []
@@ -5879,14 +5882,13 @@ export async function fixtureSubmitWorkflow(body: Record<string, unknown>): Prom
     typeof body.on_step_failure === 'string' ? body.on_step_failure : 'FAIL_WORKFLOW',
   )
   const { rollup: _rollup, ...stored } = made
-  return {
-    workflow: { ...stored, state_source: 'stored' },
-    dispatch: {
-      strategy: typeof body.strategy === 'string' ? body.strategy : 'collect',
-      carrier: typeof body.carrier === 'string' ? body.carrier : 'checkpoints',
-      integrator_step_id: null,
-    },
+  // The create's echo (`DispatchEcho`), not a task's dispatch block.
+  const echo = {
+    strategy: typeof body.strategy === 'string' ? body.strategy : 'collect',
+    carrier: typeof body.carrier === 'string' ? body.carrier : 'checkpoints',
+    integrator_step_id: null,
   }
+  return { workflow: { ...stored, state_source: 'stored' }, dispatch: echo }
 }
 
 /**
