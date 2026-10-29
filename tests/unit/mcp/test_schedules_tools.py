@@ -568,6 +568,6 @@ def test_no_read_only_surface_is_granted_a_schedule_verb_that_writes(path):
 
 def test_slash_sc_is_granted_the_schedule_and_approval_views():
     rules = _granted_rules(_PLUGIN / "commands" / "sc.md")
-    for view in ("uv run sc schedules", "uv run sc schedules show:*", "uv run sc schedules preview:*",
-                 "uv run sc approvals"):
+    for view in ("sc schedules", "sc schedules show:*", "sc schedules preview:*",
+                 "sc approvals"):
         assert view in rules, f"/sc is not granted {view}"
