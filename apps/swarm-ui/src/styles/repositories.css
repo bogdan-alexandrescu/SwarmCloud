@@ -70,10 +70,23 @@
    carries its own label as every other cell does. The column is paid for
    from the Access track, cut to the Read | Write segment it holds (~106px):
    taken from the name's share alone it broke "example-org/example-web"
-   mid-name at 1440 (review shot light-desktop-01). The actions keep their
-   216px: at 200 Remove wrapped under Verify and Push test (light-desktop-02). */
+   mid-name at 1440 (review shot light-desktop-01).
+   THE ACTIONS ON ONE LINE IN EVERY ROW (console visual QA pass 2, config2-10;
+   part of #2694). 216px held Verify, Push test and Remove; renamed Remove
+   access (QA1 config-15), the write rows' third button wrapped under the
+   other two while the read row's two stayed on one line, so the column was
+   ragged and the rows two heights. The buttons are tightened here (6px of
+   padding, 4px between them) and the track is 230px: Verify, Push test and
+   Remove access are ~163px of words, 36px of padding, 6px of borders and 8px
+   of gaps, so they never wrap. The 14px over 216 come from the column gaps
+   (10px to 8px), never from the name: its track stays the 173px main gave it
+   at 1440, which holds "example-org/example-api" on one line (a 256px track
+   took 26px from it and broke the name mid-word, review shot
+   light-desktop-01). */
 @media (min-width: 1080px) {
-  .ac-reach.has-registered .ac-grid-h, .ac-reach.has-registered .ac-grant { grid-template-columns: minmax(0, 1fr) 112px repeat(4, 84px) 104px 216px; }
+  .ac-reach.has-registered .ac-grid-h, .ac-reach.has-registered .ac-grant { grid-template-columns: minmax(0, 1fr) 112px repeat(4, 84px) 104px 230px; column-gap: 8px; }
+  .ac-reach.has-registered .ac-grant-acts { flex-wrap: nowrap; gap: 4px; }
+  .ac-reach.has-registered .ac-grant-acts > .c-btn { padding: 0 6px; }
 }
 /* The freshness badge's one slot (visual QA run 6, work-a-009): the row
    under the name, from the left edge, on every card at every width. */
@@ -100,7 +113,11 @@
 .ur-cmeta > span + span::before, .ur-meta > span + span::before { content: '·' / ''; position: absolute; left: calc(var(--ctl-s3) / -2); transform: translateX(-50%); }
 .ur-cmeta b, .ur-meta b { color: var(--text); font-weight: 550; }
 .ur-tm { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; font-size: var(--t-micro); }
-.ur-tm > b { text-align: right; font-family: var(--mono); font-weight: 500; white-space: nowrap; }
+/* THE COUNT IN THE BODY FACE (console visual QA pass 2, config2-11; part of
+   #2694): "4 of 6 modules" is a read-out like the card's others (`.ur-cmeta
+   b`), not an identifier, so it leaves mono; tabular figures keep its digits
+   in columns from card to card. */
+.ur-tm > b { text-align: right; font-family: var(--font); font-variant-numeric: tabular-nums; font-weight: 550; white-space: nowrap; }
 /* What stands behind the modules figure: edges and always-run tests (QA G4-03). */
 .ur-tm-sub { grid-column: 1 / -1; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
 .ur-bar { display: flex; height: 6px; min-width: 60px; border-radius: 3px; background: var(--line); overflow: hidden; }
