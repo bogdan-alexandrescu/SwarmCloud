@@ -1,8 +1,9 @@
 """The workspace job's entrypoint scrubs what a caller can override (W6b, #847).
 
 docs/workspaces.md §2.2 step 0. The Cloud Run job `swarm-workspace-apply` runs
-`python3 -I /opt/swarm/entry.py --spec-verify-keys-sha256=<hex> <w-id> <mode>`
-(the first argument is the command's own, lane WK-APPROVAL-KEYS) as
+`python3 -I /opt/swarm/entry.py --spec-verify-keys-sha256=<hex> --spec-signing-key=<key>
+<w-id> <mode>` (the first two arguments are the command's own, lanes
+WK-APPROVAL-KEYS and DAYONE-BOOT-1) as
 swarm-workspace-deployer, an
 identity with project-wide account-IAM power. Anyone holding
 `run.jobs.runWithOverrides` on the job -- the scheduler, the acceptance account
@@ -17,7 +18,7 @@ the boundary. What these tests hold, each against the REAL entry.py:
   exactly the fixed one, carry no value the caller chose -- including for the
   names entry.py sets itself -- and an exported bash function or BASH_ENV must
   not have run;
-* ANY ARGUMENT LIST BUT [<pin>, <w-id>, <mode>] IS REFUSED BEFORE ANYTHING
+* ANY ARGUMENT LIST BUT [<pin>, <key>, <w-id>, <mode>] IS REFUSED BEFORE ANYTHING
   RUNS: no metadata request, no directory made, no exec;
 * SPEC_VERIFY_KEYS IS THE JOB SPEC'S OR NOTHING RUNS: its SHA-256 must be the
   one the fixed command carries, so an override that sets it (or drops it, or
@@ -65,6 +66,12 @@ REGION = "us-central1"
 #: are personal, whose approval is not verified.
 KEYS = "{}"
 PIN = "--spec-verify-keys-sha256=" + hashlib.sha256(KEYS.encode("utf-8")).hexdigest()
+#: The command's other element: the step-spec key it trusts, of a project that
+#: is NOT the live deployment's. Until DAYONE-BOOT-1 the image trusted one
+#: project's key, so a fresh project's group or service workspace always
+#: stopped at APPROVAL_UNSIGNED (#2688).
+SIGNING_KEY = f"projects/{PROJECT}/locations/{REGION}/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
+SIGNING = "--spec-signing-key=" + SIGNING_KEY
 
 #: What the child's environment holds, by name, and nothing else (§2.2 step 0).
 FIXED = {
@@ -152,8 +159,8 @@ def _call(entry, tmp_path: Path, argv: list[str], environ: dict[str, str]) -> tu
 
 
 def _pinned(argv: list[str]) -> list[str]:
-    """ARGV as an execution passes it: after the command's own pin."""
-    return [PIN, *argv]
+    """ARGV as an execution passes it: after the command's own pin and key."""
+    return [PIN, SIGNING, *argv]
 
 
 def _ran_nothing(rc: int, rec: Recorder, tmp_path: Path) -> None:
@@ -164,7 +171,7 @@ def _ran_nothing(rc: int, rec: Recorder, tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# The arguments: exactly [<pin>, <w-id>, <mode>], the pin the command's.
+# The arguments: exactly [<pin>, <key>, <w-id>, <mode>], the first two the command's.
 # ---------------------------------------------------------------------------
 BAD_ARGUMENTS = [
     pytest.param([], id="none"),
@@ -201,16 +208,20 @@ OTHER_PIN = "--spec-verify-keys-sha256=" + hashlib.sha256(b'{"x":"y"}').hexdiges
 
 @pytest.mark.parametrize("argv", [
     pytest.param([WORKSPACE, "create"], id="no-pin"),
-    pytest.param([WORKSPACE, PIN, "create"], id="pin-second"),
-    pytest.param([WORKSPACE, "create", PIN], id="pin-last"),
-    pytest.param([OTHER_PIN, WORKSPACE, "create"], id="another-sets-pin"),
-    pytest.param([PIN.upper(), WORKSPACE, "create"], id="pin-upper"),
-    pytest.param([PIN[:-1], WORKSPACE, "create"], id="pin-short"),
-    pytest.param([PIN + "0", WORKSPACE, "create"], id="pin-long"),
-    pytest.param([PIN.replace("sha256", "sha512"), WORKSPACE, "create"], id="pin-other-name"),
+    pytest.param([SIGNING, WORKSPACE, "create"], id="key-without-pin"),
+    pytest.param([PIN, WORKSPACE, "create"], id="pin-without-key"),
+    pytest.param([SIGNING, PIN, WORKSPACE, "create"], id="key-first"),
+    pytest.param([WORKSPACE, PIN, SIGNING, "create"], id="pin-second"),
+    pytest.param([WORKSPACE, "create", PIN, SIGNING], id="pin-last"),
+    pytest.param([OTHER_PIN, SIGNING, WORKSPACE, "create"], id="another-sets-pin"),
+    pytest.param([PIN.upper(), SIGNING, WORKSPACE, "create"], id="pin-upper"),
+    pytest.param([PIN[:-1], SIGNING, WORKSPACE, "create"], id="pin-short"),
+    pytest.param([PIN + "0", SIGNING, WORKSPACE, "create"], id="pin-long"),
+    pytest.param([PIN.replace("sha256", "sha512"), SIGNING, WORKSPACE, "create"], id="pin-other-name"),
     pytest.param([PIN, PIN, WORKSPACE, "create"], id="pin-twice"),
+    pytest.param([PIN, SIGNING, SIGNING, WORKSPACE, "create"], id="key-twice"),
 ])
-def test_an_argument_list_without_the_commands_pin_first_is_refused(entry, tmp_path, argv):
+def test_an_argument_list_without_the_commands_pin_and_key_first_is_refused(entry, tmp_path, argv):
     rc, rec = _call(entry, tmp_path, argv, _cloud_run_env())
     _ran_nothing(rc, rec, tmp_path)
 
@@ -254,7 +265,7 @@ def test_an_id_and_a_mode_reach_the_exec(entry, tmp_path, mode):
 def test_the_real_command_refuses_bad_arguments_without_the_metadata_server(tmp_path, argv):
     """`python3 -I entry.py ...`, as the job runs it: no metadata server here, so
     a check that came after the lookup would fail on the lookup instead."""
-    proc = subprocess.run([sys.executable, "-I", str(ENTRY), PIN, *argv], env=_cloud_run_env(),
+    proc = subprocess.run([sys.executable, "-I", str(ENTRY), PIN, SIGNING, *argv], env=_cloud_run_env(),
                           capture_output=True, text=True, timeout=60, check=False)
     assert proc.returncode == 1, proc.stderr
     assert "refused: the" in proc.stderr and "argument" in proc.stderr, proc.stderr
@@ -302,7 +313,7 @@ def test_a_metadata_answer_that_is_not_a_name_is_refused(entry, tmp_path, answer
     execs: list = []
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    rc = entry.main([PIN, WORKSPACE, "create"], _cloud_run_env(), metadata=answers.__getitem__,
+    rc = entry.main([PIN, SIGNING, WORKSPACE, "create"], _cloud_run_env(), metadata=answers.__getitem__,
                     scratch_root=str(scratch), execve=lambda *a: execs.append(a), cloud=PersonalCloud)
     assert rc == 1 and execs == [] and list(scratch.iterdir()) == []
 
@@ -320,7 +331,7 @@ def test_the_caller_environment_is_emptied_before_anything_reads_it(entry, tmp_p
 
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    rc = entry.main([PIN, WORKSPACE, "create"], environ, metadata=metadata, scratch_root=str(scratch),
+    rc = entry.main([PIN, SIGNING, WORKSPACE, "create"], environ, metadata=metadata, scratch_root=str(scratch),
                     execve=lambda *a: None, cloud=PersonalCloud)
     assert rc == 0 and seen == [{}, {}] and environ == {}
 
@@ -413,7 +424,7 @@ def _dumper(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 
 def _run_entry(tmp_path: Path, env: dict[str, str], target: Path, deadline: int = 1800,
-               argv: tuple[str, ...] = (PIN, WORKSPACE, "create")) -> subprocess.CompletedProcess[str]:
+               argv: tuple[str, ...] = (PIN, SIGNING, WORKSPACE, "create")) -> subprocess.CompletedProcess[str]:
     scratch = tmp_path / "scratch"
     scratch.mkdir(exist_ok=True)
     return subprocess.run(
@@ -497,11 +508,6 @@ def test_the_child_is_step_one_through_a_fixed_bash_and_timeout(entry):
 # ---------------------------------------------------------------------------
 # The trusted signing key is the fixed command's (DAYONE-BOOT-1, plan R1).
 # ---------------------------------------------------------------------------
-#: The step-spec key of a project that is NOT the live deployment's: until
-#: DAYONE-BOOT-1 the image trusted one project's key, so a fresh project's
-#: group or service workspace always stopped at APPROVAL_UNSIGNED (#2688).
-SIGNING_KEY = f"projects/{PROJECT}/locations/{REGION}/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
-SIGNING = "--spec-signing-key=" + SIGNING_KEY
 OWNER = "owner@example.com"
 REQUEST_ID = "5d0c6a3e-1b7f-4c55-9a51-0f1c2b3d4e5f"
 SERVICE_DOC = f"projects/{PROJECT}/databases/swarm/documents/workspaces/u-re-75c2e5"
