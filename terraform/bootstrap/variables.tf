@@ -599,10 +599,11 @@ variable "adopt_from_infra_states" {
 variable "grant_broker_secret_lister" {
   description = <<-EOT
     Grant swarm-quota-broker the swarmSecretLister role (platform_roles.tf).
-    terraform/infra creates that account, so on a FRESH project the first
-    bootstrap apply must run with this false -- a grant to an account that does
-    not exist yet is refused -- and the next one, after terraform/infra's first
-    apply, with it true. Everywhere else, true.
+    Since DAYONE-BOOT-2 this root creates that account
+    (platform_service_accounts.tf), so the grant no longer waits for
+    terraform/infra and this stays true everywhere, a fresh project included.
+    The switch itself goes once platform_roles.tf orders the grant after the
+    account (outside this lane's files; asked in the BOOT-2 PR).
   EOT
   type        = bool
   default     = true

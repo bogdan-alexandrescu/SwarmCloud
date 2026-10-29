@@ -43,7 +43,7 @@ locals {
     module.iam.service_account_emails,
     {
       "swarm-tick"   = module.iam.tick_service_account
-      "swarm-verify" = google_service_account.verify.email
+      "swarm-verify" = local.verify_email
       # The workflow-rollup jobs mint OIDC tokens as this account (D17).
       "swarm-rollup-sweeper" = module.scheduler.rollup_sweeper_email
       # The schedule tick's job (lane S4) mints OIDC tokens as this account

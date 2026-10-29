@@ -1033,7 +1033,7 @@ locals {
       # this root's, the owner's decision names one deployment's address, and a
       # literal in this file would carry it into every install (DAYONE-TF-1).
       ALLOWED_USERS = join(",", concat(
-        [google_service_account.verify.email],
+        [local.verify_email],
         var.allowed_users,
       ))
 

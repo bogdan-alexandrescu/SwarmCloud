@@ -12,8 +12,6 @@
 # knowing every place it was copied to.
 
 locals {
-  owner_marker = "managed-by=${lookup(var.labels, "managed-by", "swarm-terraform")}"
-
   # Listed in modules/service_account_ids, which terraform/bootstrap reads too:
   # it grants the release deployer roles/iam.serviceAccountAdmin on each of
   # these accounts and on no other (#334).
@@ -24,20 +22,21 @@ module "service_account_ids" {
   source = "../service_account_ids"
 }
 
-# NO create_ignore_already_exists, here or on swarm-tick (#334 security
-# review). These accounts are in state already, and a release that met a 409
-# on one of them should fail rather than adopt an account somebody else made
-# under the name -- with that somebody's IAM policy and keys. A NEW platform
-# account is created by the release, which then 403s setting its IAM until the
-# owner applies bootstrap's per-account grant; re-run the release after
-# (docs/ci.md, "A new account exists before the release that adds it").
-resource "google_service_account" "platform" {
+# The accounts are terraform/bootstrap's (platform_service_accounts.tf,
+# DAYONE-BOOT-2, design Q7): bootstrap grants roles to them, so it creates
+# them, and a fresh project's first bootstrap apply needs no "later" switch.
+# This module READS them. The live deployment's accounts were forgotten here,
+# never destroyed (terraform/infra/removed.tf), and adopted by bootstrap's
+# gated import blocks; no email or unique id changed, so no grant moved.
+#
+# A data source, not a string: a plan against a project whose bootstrap has
+# not created an account fails here, by name, instead of granting on an
+# account that does not exist.
+data "google_service_account" "platform" {
   for_each = local.platform_accounts
 
-  project      = var.project_id
-  account_id   = each.key
-  display_name = each.value.display_name
-  description  = "${local.owner_marker}; ${each.value.description}"
+  project    = var.project_id
+  account_id = each.key
 }
 
 # Cloud Scheduler and Pub/Sub push present this identity when they call the
@@ -45,9 +44,7 @@ resource "google_service_account" "platform" {
 # role at all: its entire authority is run.invoker on two specific services,
 # granted at the service resource. A compromised tick can ring the doorbell and
 # nothing else.
-resource "google_service_account" "tick" {
-  project      = var.project_id
-  account_id   = module.service_account_ids.tick_id
-  display_name = "Swarm Tick Invoker"
-  description  = "${local.owner_marker}; OIDC identity for Cloud Scheduler and Pub/Sub push. No project roles."
+data "google_service_account" "tick" {
+  project    = var.project_id
+  account_id = module.service_account_ids.tick_id
 }

@@ -11,9 +11,12 @@
 #     downstream of the scheduler (invariant 10).
 
 locals {
-  sa_email = { for k, sa in google_service_account.platform : k => sa.email }
+  # Built from each account id (known at plan, and what a mock provider keeps)
+  # rather than read off `.email`; the reference orders every grant after the
+  # data source, which fails the plan if bootstrap has not made the account.
+  sa_email = { for k, sa in data.google_service_account.platform : k => "${sa.account_id}@${var.project_id}.iam.gserviceaccount.com" }
 
-  sa_member = { for k, sa in google_service_account.platform : k => "serviceAccount:${sa.email}" }
+  sa_member = { for k, email in local.sa_email : k => "serviceAccount:${email}" }
 
   # DOES NOT RESTRICT DOCUMENT ACCESS. Verified against a live deployment on
   # 2026-09-16: with this condition attached, every control-plane service was
@@ -329,7 +332,7 @@ resource "google_storage_bucket_iam_member" "reconciler_admin" {
 # it then performs is bounded by the Admin console grant, which is scoped to
 # cloud-identity.groups.readonly.
 resource "google_service_account_iam_member" "api_signs_as_itself" {
-  service_account_id = google_service_account.platform["swarm-api"].name
+  service_account_id = "projects/${var.project_id}/serviceAccounts/${local.sa_email["swarm-api"]}"
   role               = "roles/iam.serviceAccountTokenCreator"
   member             = local.sa_member["swarm-api"]
 }
