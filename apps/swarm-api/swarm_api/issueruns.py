@@ -187,9 +187,11 @@ import binascii
 import hashlib
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import lru_cache
 from enum import Enum
 from types import MappingProxyType
 from typing import Annotated, Any, Callable, Literal, Mapping
@@ -1261,12 +1263,19 @@ TENANCY_FUNCTIONS: tuple[str, ...] = ("tenant_scope", "submission_scope", "names
 _TENANCY_NAME = re.compile(r"\b(?:" + "|".join(TENANCY_FUNCTIONS) + r")\b")
 #: The deny-list itself.
 SHARED_PATTERNS: tuple[str, ...] = ("scripts/lib/common.sh",)
+#: The shared project (CLAUDE.md rule 2): the one project whose other teams'
+#: resources `SHARED_DENY_LIST` names. The list is keyed by it (plan R4,
+#: docs/design/day-one-plan.md section 0), as common.sh's is: a deployment in
+#: any other project holds no change for naming them.
+SHARED_PROJECT_ID = "saga-agents-staging"
 #: `SHARED_DENY_LIST` of scripts/lib/common.sh, where it lives once (CLAUDE.md
 #: rule 2). Restated here because swarm-api's image carries no scripts/;
 #: tests/unit/control_plane/test_hold_categories.py fails the day the two
 #: differ. Keep the order of common.sh. oracle-api@ and the bare oracle-api
 #: are off it since 2026-10-27 (#1835, BGD: both entries); common.sh says why.
-SHARED_DENY_LIST: tuple[str, ...] = (
+#: An entry naming the project is written with `{project}`, so the project's
+#: id is stated once, in SHARED_PROJECT_ID.
+_SHARED_DENY_TEMPLATES: tuple[str, ...] = (
     "agents-staging",
     "agents-staging-vpc",
     "agents-staging-subnet",
@@ -1277,39 +1286,65 @@ SHARED_DENY_LIST: tuple[str, ...] = (
     "saga-agents-terraform-state-staging",
     "ai-studio-avatars-staging",
     "promptlab-avatars-staging",
-    "saga-agents-staging_cloudbuild",
-    "api-service@saga-agents-staging.iam.gserviceaccount.com",
-    "publisher@saga-agents-staging.iam.gserviceaccount.com",
+    "{project}_cloudbuild",
+    "api-service@{project}.iam.gserviceaccount.com",
+    "publisher@{project}.iam.gserviceaccount.com",
     "209012342332-compute@developer.gserviceaccount.com",
-    "promptlab-deployer@saga-agents-staging.iam.gserviceaccount.com",
-    "promptlab-runner@saga-agents-staging.iam.gserviceaccount.com",
-    "aipipeline@saga-agents-staging.iam.gserviceaccount.com",
-    "saga-storage-ro@saga-agents-staging.iam.gserviceaccount.com",
-    "saga-storage-rw@saga-agents-staging.iam.gserviceaccount.com",
-    "external-secrets@saga-agents-staging.iam.gserviceaccount.com",
-    "staging-gke-nodes@saga-agents-staging.iam.gserviceaccount.com",
-    "crawler@saga-agents-staging.iam.gserviceaccount.com",
-    "tournament-digest@saga-agents-staging.iam.gserviceaccount.com",
-    "ai-studio-api@saga-agents-staging.iam.gserviceaccount.com",
-    "ai-studio-deployer@saga-agents-staging.iam.gserviceaccount.com",
-    "ai-studio-runner@saga-agents-staging.iam.gserviceaccount.com",
-    "oracle-ticker@saga-agents-staging.iam.gserviceaccount.com",
-    "oracle-web@saga-agents-staging.iam.gserviceaccount.com",
-    "promptlab-api@saga-agents-staging.iam.gserviceaccount.com",
+    "promptlab-deployer@{project}.iam.gserviceaccount.com",
+    "promptlab-runner@{project}.iam.gserviceaccount.com",
+    "aipipeline@{project}.iam.gserviceaccount.com",
+    "saga-storage-ro@{project}.iam.gserviceaccount.com",
+    "saga-storage-rw@{project}.iam.gserviceaccount.com",
+    "external-secrets@{project}.iam.gserviceaccount.com",
+    "staging-gke-nodes@{project}.iam.gserviceaccount.com",
+    "crawler@{project}.iam.gserviceaccount.com",
+    "tournament-digest@{project}.iam.gserviceaccount.com",
+    "ai-studio-api@{project}.iam.gserviceaccount.com",
+    "ai-studio-deployer@{project}.iam.gserviceaccount.com",
+    "ai-studio-runner@{project}.iam.gserviceaccount.com",
+    "oracle-ticker@{project}.iam.gserviceaccount.com",
+    "oracle-web@{project}.iam.gserviceaccount.com",
+    "promptlab-api@{project}.iam.gserviceaccount.com",
     "oracle-web",
 )
+SHARED_DENY_LIST: tuple[str, ...] = tuple(t.format(project=SHARED_PROJECT_ID) for t in _SHARED_DENY_TEMPLATES)
+
+
+def shared_deny_list() -> tuple[str, ...]:
+    """The deny-list for the project this swarm-api runs in: `SHARED_DENY_LIST`
+    in the shared project, empty in any other.
+
+    Keyed by PROJECT_ID, the variable `swarm_common.config.Settings` already
+    reads (`ApiSettings.project_id`), read at call time because the hold
+    functions are pure and their callers hold no settings. An unset project
+    keeps the whole list: an unknown project is not another project, and a
+    hold is cheap (a person decides) where a missed one is not.
+    """
+    project = os.environ.get("PROJECT_ID", "").strip()
+    return SHARED_DENY_LIST if project in ("", SHARED_PROJECT_ID) else ()
+
+
 #: A deny-list name, whole: not inside a longer name (`swarm-agents-staging-x`
 #: is not `agents-staging`). "default" (the shared project's default network)
 #: is also an ordinary word, so it is matched only quoted, as a resource name
 #: is written; every other entry anywhere.
 _NAME_CHAR = r"A-Za-z0-9_@"
-_SHARED_NAME = re.compile(
-    "|".join(
-        rf"""(?<=["'`]){re.escape(name)}(?=["'`])""" if name.isalpha()
-        else rf"(?<![{_NAME_CHAR}.-]){re.escape(name)}(?![{_NAME_CHAR}-])"
-        for name in sorted(SHARED_DENY_LIST, key=len, reverse=True)
+
+
+@lru_cache(maxsize=2)
+def _shared_name(names: tuple[str, ...]) -> re.Pattern[str] | None:
+    """The pattern matching any of `names`, or None for an empty list."""
+    if not names:
+        return None
+    return re.compile(
+        "|".join(
+            rf"""(?<=["'`]){re.escape(name)}(?=["'`])""" if name.isalpha()
+            else rf"(?<![{_NAME_CHAR}.-]){re.escape(name)}(?![{_NAME_CHAR}-])"
+            for name in sorted(names, key=len, reverse=True)
+        )
     )
-)
+
+
 #: Runner sizes and classes: what one agent's cpu and memory cost.
 COST_PATTERNS: tuple[str, ...] = (
     "terraform/environments/**/*.tfvars",
@@ -1396,7 +1431,11 @@ def _category_hits(
     )
     # An ADDED line: removing a reference to the other team's resources is
     # the direction CLAUDE.md rule 2 wants.
-    scan(STOP_SHARED, SHARED_PATTERNS, changed(_SHARED_NAME, removed=False), terms(_SHARED_NAME))
+    shared_name = _shared_name(shared_deny_list())
+    if shared_name is None:
+        scan(STOP_SHARED, SHARED_PATTERNS, lambda patch: False, lambda text: [])
+    else:
+        scan(STOP_SHARED, SHARED_PATTERNS, changed(shared_name, removed=False), terms(shared_name))
     scan(STOP_COST, COST_PATTERNS, changed(_COST_LINE), terms(_COST_LINE))
     return found
 
