@@ -58,7 +58,7 @@ function state(over: Json = {}, engine: Json = {}): Json {
         workspace: 'engineering',
         first_admin: 'ana@example.com',
         invites: ['ravi@example.com', 'lea@example.com'],
-        progress: { workspace_state: 'active', created_at: '2026-10-29T14:53:00Z' },
+        progress: { workspace_state: 'ready', created_at: '2026-10-29T14:53:00Z' },
       },
     ],
     accounts: {
@@ -159,6 +159,25 @@ describe('Admin › Setup step panels', () => {
     // MUTATION: drop Retry, or point it at anything but the step's own check.
     fireEvent.click(within(row).getByRole('button', { name: 'Retry' }))
     await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.url === '/v1/admin/setup/github-app/self-check')).toBe(true))
+  })
+
+  it('the workspace apply reads ready as done, and denied as failed with its fix and a retry', async () => {
+    const team = (workspace_state: string): Json => ({ teams: [{ ...((state().teams as Json[])[0]), progress: { workspace_state, created_at: '2026-10-29T14:53:00Z' } }] })
+    const nsFact = () => within(document.querySelector('[data-step="team"]') as HTMLElement).getByText('Namespace, quota, verify-keys and worker identity').closest('li') as HTMLElement
+    // MUTATION: count the namespace done on any value but swarm-api's own `ready`.
+    await mountSteps(state(team('ready')))
+    expect(nsFact().className).toContain('is-done')
+    expect((document.querySelector('[data-step="team"]') as HTMLElement).className).not.toContain('is-failed')
+    cleanup()
+    const calls = serve((m, url) => (m === 'POST' && url === '/v1/admin/setup/teams' ? { status: 200, body: {} } : m === 'GET' && url === '/v1/admin/setup' ? { status: 200, body: state() } : null))
+    // MUTATION: drop `denied` from the states that fail the step.
+    await mountSteps(state(team('denied')))
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    expect(row.className).toContain('is-failed')
+    expect(nsFact().className).toContain('is-failed')
+    expect(within(row).getByText(/^Fix:/)).toBeTruthy()
+    fireEvent.click(within(row).getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.url === '/v1/admin/setup/teams')).toBe(true))
   })
 
   it('the plugin line carries only the deployment URL', async () => {

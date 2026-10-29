@@ -404,7 +404,11 @@ function githubRow(state: SetupState, onChanged: () => void, act: ReturnType<typ
   }
 }
 
-const FAILED_WORKSPACE = new Set(['failed', 'error'])
+// The workspace record's own states (swarm_api/workspaces.py STATES): `ready`
+// is the apply's success; `failed` and `denied` are the two it does not
+// recover from on its own, so each draws its fix and a Retry.
+const WORKSPACE_READY = 'ready'
+const FAILED_WORKSPACE = new Set(['failed', 'denied'])
 
 function TeamForm({ onChanged }: { onChanged: () => void }) {
   const act = useAction(onChanged)
@@ -456,7 +460,7 @@ function teamFacts(team: SetupTeam, signedIn: boolean, nowMs: number): Fact[] {
   return [
     { state: 'done', name: 'Tenant record', text: `${team.workspace} · from ${team.group}, checked by membership per registered group` },
     {
-      state: ws === null ? 'in_progress' : FAILED_WORKSPACE.has(ws) ? 'failed' : ws === 'active' ? 'done' : 'in_progress',
+      state: ws === null ? 'in_progress' : FAILED_WORKSPACE.has(ws) ? 'failed' : ws === WORKSPACE_READY ? 'done' : 'in_progress',
       name: 'Namespace, quota, verify-keys and worker identity',
       text: ws === null ? 'swarm-workspace-apply has not reported yet' : `swarm-workspace-apply: ${ws}`,
     },

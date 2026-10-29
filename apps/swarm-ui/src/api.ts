@@ -13435,7 +13435,7 @@ function fixtureSetupState(): Record<string, unknown> {
         workspace: 'engineering',
         first_admin: 'ana@example.com',
         invites: ['ravi@example.com', 'lea@example.com'],
-        progress: { workspace_state: 'active', created_at: at(18) },
+        progress: { workspace_state: 'ready', created_at: at(18) },
         smoke: { state: 'passed', detail: 'green in 2 min 48 s', url: null },
       },
     ],
