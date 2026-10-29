@@ -228,6 +228,9 @@ class Cluster:
             SWARM_TERRAFORM=str(self.bin / "terraform"),
             TF_DATA_DIR=str(self.tmp / "tfdata"),
             SWARM_ENV_FILE=str(self.tmp / "no.env"),
+            # apply.sh has no default project (DAYONE-K8S-1): the one this fake
+            # cluster's context and identities name is given, as an operator would.
+            PROJECT_ID="saga-agents-staging",
             KUBECONFIG=str(self.tmp / "no-such-kubeconfig"),
             HOME=str(self.tmp),
             TMPDIR=str(self.tmp),
