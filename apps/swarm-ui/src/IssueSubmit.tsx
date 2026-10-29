@@ -453,7 +453,8 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
             <li className={read === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>issue</b>
               {/* THE NUMBER FIRST (live QA SUB-9): the cut fell on the repository
-                  and took the number with it -- "bogdan-alexandrescu/SwarmClou…" --
+                  and took the number with it -- the live deployment's own
+                  repository, drawn as its owner and a cut name with no number --
                   and the number is the one part that tells two issues apart. The
                   repository is the next row; the whole reference is the title. */}
               {/* AN UNPARSEABLE REFERENCE IS NOT "READ ONE FIRST" (runs-submit-23):

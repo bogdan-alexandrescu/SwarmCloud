@@ -308,7 +308,8 @@
 .rn-run .c-phead > div.head > :not(h1) { flex: none; }
 .rn-run .c-phead > .c-acts { margin-left: auto; flex: 0 1 auto; min-width: 0; max-width: 100%; }
 /* A REFERENCE IS NEVER CUT TO MAKE ROOM FOR THE `?` (browser QA D11): beside
-   it, `bogdan-alexandrescu/SwarmCloud#454` (335px drawn) lost its last digit
+   it, a reference to issue 454 in the live deployment's own repository
+   (335px drawn) lost its last digit
    in a 390px phone's 358px column. The `?` stays beside a reference that
    fits with it (V096: `example-org/agent-swarm-infra#512` is 304px) and
    wraps under one that does not; only a reference wider than the column
