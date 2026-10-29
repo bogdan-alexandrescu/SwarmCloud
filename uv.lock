@@ -31,6 +31,7 @@ dev = [
     { name = "pytest-xdist" },
     { name = "rfc8785" },
     { name = "ruff" },
+    { name = "swarm-install" },
     { name = "tree-sitter" },
     { name = "tree-sitter-go" },
     { name = "tree-sitter-hcl" },
@@ -60,6 +61,7 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.6" },
     { name = "rfc8785", specifier = ">=0.1.4" },
     { name = "ruff", specifier = "==0.17.0" },
+    { name = "swarm-install", editable = "apps/swarm-install" },
     { name = "tree-sitter", specifier = "==0.25.2" },
     { name = "tree-sitter-go", specifier = "==0.25.0" },
     { name = "tree-sitter-hcl", specifier = "==1.2.0" },
@@ -2030,6 +2032,41 @@ requires-dist = [
 name = "swarm-common"
 version = "0.1.0"
 source = { editable = "apps/common" }
+
+[[package]]
+name = "swarm-install"
+version = "0.1.0"
+source = { editable = "apps/swarm-install" }
+dependencies = [
+    { name = "google-auth" },
+    { name = "google-cloud-firestore" },
+    { name = "google-cloud-kms" },
+    { name = "google-cloud-monitoring" },
+    { name = "google-cloud-run" },
+    { name = "google-cloud-secret-manager" },
+    { name = "google-cloud-storage" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "requests" },
+    { name = "swarm-common" },
+    { name = "swarm-redaction" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "google-auth", specifier = ">=2.30" },
+    { name = "google-cloud-firestore", specifier = ">=2.16" },
+    { name = "google-cloud-kms", specifier = ">=2.21" },
+    { name = "google-cloud-monitoring", specifier = ">=2.21" },
+    { name = "google-cloud-run", specifier = ">=0.10" },
+    { name = "google-cloud-secret-manager", specifier = ">=2.20" },
+    { name = "google-cloud-storage", specifier = ">=2.18" },
+    { name = "pydantic", specifier = ">=2.8" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "requests", specifier = ">=2.32" },
+    { name = "swarm-common", editable = "apps/common" },
+    { name = "swarm-redaction", editable = "apps/redaction" },
+]
 
 [[package]]
 name = "swarm-mcp"
