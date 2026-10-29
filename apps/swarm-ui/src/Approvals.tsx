@@ -444,7 +444,9 @@ function InputScreen({ itemId, kind, round, go }: { itemId: string; kind: string
       key={`approval:${itemId}:${round}`}
       title="Approvals"
       load={async () => {
-        const r = await loadApprovals(kind === null ? {} : { kind })
+        // `all`: the inbox and the history, so Decided and Expired draw what the
+        // server holds (QA2-FIX-07, automate2-01); the route defaults to pending.
+        const r = await loadApprovals(kind === null ? { state: 'all' } : { kind, state: 'all' })
         return r.status === 'empty' ? { status: 'ok' as const, data: { approvals: [] }, fetchedAt: r.fetchedAt } : r
       }}
     >
@@ -473,7 +475,8 @@ function InputScreen({ itemId, kind, round, go }: { itemId: string; kind: string
 type ListRead = { approvals: InboxItem[]; every: InboxItem[] | null }
 
 async function readList(kind: string | null): Promise<Result<ListRead>> {
-  const [r, all] = await Promise.all([loadApprovals(kind === null ? {} : { kind }), kind === null ? null : loadApprovals()])
+  // `all` on the list read (automate2-01): the route's default is the inbox only.
+  const [r, all] = await Promise.all([loadApprovals(kind === null ? { state: 'all' } : { kind, state: 'all' }), kind === null ? null : loadApprovals()])
   const every = all === null ? null : all.status === 'ok' ? (all.data.approvals as InboxItem[]) : all.status === 'empty' ? [] : null
   if (r.status === 'empty') return { status: 'ok', data: { approvals: [], every }, fetchedAt: r.fetchedAt }
   if (r.status === 'ok' || r.status === 'stale') return { ...r, data: { approvals: r.data.approvals as InboxItem[], every } }

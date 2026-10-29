@@ -258,6 +258,13 @@ export function AgentSplit({
   })
   const liveSession = liveRead.status === 'ok' ? liveRead.session : null
   const sessionOpen = liveSession !== null && liveSession.state === 'open'
+  // THE TAB SAYS LIVE ON A PICTURE, NOT ON THE READ ALONE (visual QA
+  // ovag2-12, 2026-10-29): with the Browser pane open, an open session whose
+  // screen has drawn no frame (the fixture build mints no ticket) carried
+  // the badge over an empty frame. Off the pane, the session read is all
+  // there is, and it says live as before.
+  const [picture, setPicture] = useState(false)
+  const sessionLive = sessionOpen && (pane !== 'browser' || picture)
   // THE TAB STAYS WHILE THE AGENT IS BETWEEN ATTEMPTS (LB-UX1): a parked
   // hand-off's "I'm ready to sign in" opens it on a READY task, which has no
   // attempt and so no session read, and the tab says the browser is
@@ -285,7 +292,7 @@ export function AgentSplit({
     base,
   })
 
-  const tabs = paneTabs({ task, base, hasBrowser, sessionOpen, childCount, runs, ckpt, ckptCount, pane })
+  const tabs = paneTabs({ task, base, hasBrowser, sessionOpen: sessionLive, childCount, runs, ckpt, ckptCount, pane })
   const selected: TaskPane = pane
   // THE THEATER ASKED FOR IS HELD UNTIL THE BROWSER TAB IS DRAWN (part of
   // #1346, comment 3): the route drops `?theater=1` after arrival, and the
@@ -421,6 +428,7 @@ export function AgentSplit({
               reload={reloadLive}
               theater={theater || theaterAsked.current === taskId}
               onHandoffReady={reload}
+              onPicture={setPicture}
             />
           ) : selected === 'browser' && held ? null : selected === 'logs' && task !== null ? (
             <AgentLogs key={taskId} task={task} />

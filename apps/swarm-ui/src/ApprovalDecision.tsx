@@ -23,12 +23,12 @@
  * A waiting item holds no capacity (invariant 1): nothing here is running.
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { approveApproval, loadApproval, rejectApproval, type ApprovalDetail, type ApprovalItem } from './api'
-import { Button, Dash } from './components'
+import { approveApproval, loadApproval, loadSchedule, rejectApproval, type ApprovalDetail, type ApprovalItem } from './api'
+import { Dash } from './components'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { PersonName } from './PersonName'
 import { useRoleGate } from './Profile'
-import { InApp, scheduleAddress, untilWords } from './Schedules'
+import { HeldButton, InApp, rememberScheduleNames, scheduleAddress, untilWords, useScheduleName } from './Schedules'
 import { Screen, timeAgo } from './Shell'
 import { useNow } from './useNow'
 import './styles/schedules.css'
@@ -416,6 +416,35 @@ function HoldBody({ hold, itemApprovers }: { hold: ServedHold; itemApprovers: un
   )
 }
 
+/**
+ * THE SCHEDULE BY ITS NAME, its id beside it (QA2 automate2-15): "Its
+ * schedule sch_a" named it by id though the list had its name. A name the
+ * Schedules list read this session is used at once; else the schedule is read
+ * once for it, and "Its schedule" stands until the name arrives (or if the
+ * read fails).
+ */
+function ScheduleNamed({ id, go }: { id: string; go: (to: string) => void }) {
+  const name = useScheduleName(id)
+  useEffect(() => {
+    if (name !== null) return
+    let live = true
+    void loadSchedule(id).then((r) => {
+      if (live && (r.status === 'ok' || r.status === 'stale')) rememberScheduleNames([r.data.schedule])
+    })
+    return () => {
+      live = false
+    }
+  }, [id, name])
+  return (
+    <>
+      <InApp go={go} to={scheduleAddress(id)}>
+        {name ?? 'Its schedule'}
+      </InApp>{' '}
+      <span className="mono ad-sub-i">{id}</span>
+    </>
+  )
+}
+
 /** Where the item came from: its schedule, firing, run, issue and pull request, as served. */
 function AskedBy({ d, go }: { d: Decision; go: (to: string) => void }) {
   const s = d.approval.subject
@@ -423,10 +452,7 @@ function AskedBy({ d, go }: { d: Decision; go: (to: string) => void }) {
   if (typeof s.schedule_id === 'string' && s.schedule_id !== '') {
     rows.push(
       <Kv key="schedule" name="Schedule">
-        <InApp go={go} to={scheduleAddress(s.schedule_id)}>
-          Its schedule
-        </InApp>{' '}
-        <span className="mono ad-sub-i">{s.schedule_id}</span>
+        <ScheduleNamed id={s.schedule_id} go={go} />
       </Kv>,
     )
   }
@@ -904,14 +930,15 @@ function Decide({ d, onDecided }: { d: Decision; onDecided: (word: string) => vo
       )}
       <div className="ad-bar-acts">
         {offerReject && (
-          <Button kind="danger" busy={busy === 'reject' ? 'Rejecting…' : false} disabled={gate !== null} disabledReason={reason.trim() === '' ? 'Say why it is rejected.' : undefined} onClick={() => void reject()}>
+          // A pressed Reject keeps focus while busy (QA2 automate2-16): `HeldButton`, not `busy`'s disabled.
+          <HeldButton kind="danger" busy={busy === 'reject' ? 'Rejecting…' : false} disabled={gate !== null} disabledReason={reason.trim() === '' ? 'Say why it is rejected.' : undefined} onClick={() => void reject()}>
             Reject
-          </Button>
+          </HeldButton>
         )}
         {offerApprove && (
-          <Button kind="primary" busy={busy === 'approve' ? 'Approving…' : false} disabled={gate !== null} disabledReason={confirmOk ? undefined : 'Type the words shown exactly.'} onClick={() => void approve()}>
+          <HeldButton kind="primary" busy={busy === 'approve' ? 'Approving…' : false} disabled={gate !== null} disabledReason={confirmOk ? undefined : 'Type the words shown exactly.'} onClick={() => void approve()}>
             {approveWord}
-          </Button>
+          </HeldButton>
         )}
       </div>
       {refused !== null && !(confirm !== null && confirm.typed === '' && confirmationOf(refused) !== null) && (
