@@ -189,7 +189,10 @@ describe('b: the Repositories cards line up (6:work-a-009)', () => {
       expect(c).toHaveLength(3)
       return c
     }, WAIT)
-    expect(visible(cards[2]!.querySelector('h2'))).toBe(`example-org/${LONG}`)
+    // The cards sort by full name (config2-09), so the long name is found by
+    // its name, not by the slot it was served in.
+    const long = cards.find((c) => visible(c.querySelector('h2')) === `example-org/${LONG}`)
+    expect(long, 'the long-named card is drawn').toBeDefined()
     for (const card of cards) {
       const head = card.querySelector('.c-card-h')!
       // MUTATION: pass the pill back as the Card's `action` (it rides the head's row and wraps under a long name).
@@ -207,7 +210,7 @@ describe('b: the Repositories cards line up (6:work-a-009)', () => {
     for (const card of cards.slice(1)) expect(rowsOf(card)).toEqual(first)
     // The badge's row starts from the left edge at every width.
     // MUTATION: give `.ur-cbadge` `justify-content: flex-end`.
-    expect(painted(cards[2]!.querySelector('.ur-cbadge')!, ['justify-content'], WIDE) ?? 'flex-start').toMatch(/^(flex-)?start|normal$/)
+    expect(painted(long!.querySelector('.ur-cbadge')!, ['justify-content'], WIDE) ?? 'flex-start').toMatch(/^(flex-)?start|normal$/)
   })
 })
 
