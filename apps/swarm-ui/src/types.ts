@@ -221,9 +221,26 @@ export function providerTenantPool(provider: string, tenant: string): string {
   return `provider:${provider}:tenant:${tenant}`
 }
 
+/**
+ * A BACKEND POOL IN WORDS (QA1 capacity-14, 2026-10-28): `CLOUD_RUN_JOB` was
+ * the API's enum printed as a name. These are words.ts `backendWord`'s words,
+ * restated because words.ts imports this module through StatePill; `AUTO` is
+ * a choice, never a pool. Exported so a test holds the two maps together
+ * (qa1b13.types.help.styles.test.tsx): a backend added to one alone fails it.
+ */
+export const BACKEND_POOL_WORD: Readonly<Record<string, string>> = {
+  CLOUD_RUN_JOB: 'Cloud Run',
+  GKE_AUTOPILOT: 'GKE Autopilot',
+}
+
 /** `provider:anthropic:tenant:u-bogdan` -> `anthropic · u-bogdan`. */
 export function poolLabel(name: string): string {
   if (name === 'global') return 'global'
+  // The raw key stays in each table's mono sub-line.
+  if (name.startsWith('backend:')) {
+    const id = name.slice('backend:'.length)
+    return BACKEND_POOL_WORD[id] ?? id
+  }
   const parts = name.split(':')
   if (parts.length <= 2) return parts[1] ?? name
   // provider:X:tenant:Y
@@ -517,7 +534,7 @@ export function setBy(pool: Pool): { term: string; detail: string } {
     return { term: 'provider quota', detail: `Provider quota caps this at ${quota_derived_limit}; configured is ${hard_limit}.` }
   }
   if (adaptive_target !== null && adaptive_target === effective_limit && adaptive_target < hard_limit) {
-    return { term: 'AIMD back-off', detail: `AIMD lowered this to ${adaptive_target} after provider errors; configured is ${hard_limit}.` }
+    return { term: 'lowered automatically after errors', detail: `Lowered automatically to ${adaptive_target} after provider errors; configured is ${hard_limit}.` }
   }
   return { term: 'configured', detail: `The configured hard limit of ${hard_limit} is what applies.` }
 }
@@ -2902,21 +2919,22 @@ function waitingNeedsAPerson(w: WaitingFor | null | undefined): boolean {
  * FAILED or CANCELLED. Held to the enum by section 5 of
  * scripts/lib/check-contract-parity.sh, so a value added there (contract
  * request 29 added `publish_refused` and request 41 `child_cascade`,
- * 2026-10-02; request 118 `budget_exceeded`, 2026-10-27) is added here too.
+ * 2026-10-02; request 118 `budget_exceeded`, 2026-10-27; request 126
+ * `fix_loop_exhausted`, 2026-10-28) is added here too.
  */
 export type EndCause =
   | 'timeout' | 'cannot_start' | 'lost_worker' | 'outputs_missing'
   | 'inputs_unavailable' | 'dispatch_failed' | 'runner_error' | 'cancel_requested'
   | 'failed_parent' | 'cancelled_parent' | 'workflow_sweep' | 'spec_signature_invalid'
   | 'merge_refused' | 'merge_failed' | 'verdict_refused' | 'verdict_failed'
-  | 'publish_refused' | 'child_cascade' | 'budget_exceeded'
+  | 'publish_refused' | 'child_cascade' | 'budget_exceeded' | 'fix_loop_exhausted'
 
 export const END_CAUSES: readonly EndCause[] = [
   'timeout', 'cannot_start', 'lost_worker', 'outputs_missing',
   'inputs_unavailable', 'dispatch_failed', 'runner_error', 'cancel_requested',
   'failed_parent', 'cancelled_parent', 'workflow_sweep', 'spec_signature_invalid',
   'merge_refused', 'merge_failed', 'verdict_refused', 'verdict_failed',
-  'publish_refused', 'child_cascade', 'budget_exceeded',
+  'publish_refused', 'child_cascade', 'budget_exceeded', 'fix_loop_exhausted',
 ]
 
 /**
@@ -2928,6 +2946,8 @@ export const END_CAUSES: readonly EndCause[] = [
  * expired with nobody in control (docs/design/live-browser.md section 4.3).
  * AWAITING_INPUT is contract request 92: an `await-input` workflow step
  * waiting for an answer from a tenant member (docs/design/human-steps.md).
+ * FIX_ROUNDS_RUNNING is contract request 125: a `fix-loop` workflow step
+ * while its review-fix rounds run (docs/design/fix-loop.md).
  * PLATFORM_REFUSED is contract request 123: the cluster refused the dispatch
  * (an admission policy, or the namespace's Job quota), and the scheduler
  * retries it on a backoff (docs/design/dispatch-refusals.md).
@@ -2936,10 +2956,11 @@ export type ParkReason =
   | 'PROVIDER_QUOTA_EXHAUSTED' | 'PROVIDER_COOLDOWN' | 'PROVIDER_OUTAGE'
   | 'SCHEDULED_RETRY' | 'DEPENDENCY_INCOMPLETE' | 'MANUAL_PAUSE'
   | 'BUDGET_EXHAUSTED' | 'CREDENTIAL_MISSING' | 'CHILDREN_INCOMPLETE'
-  | 'CI_PENDING' | 'HUMAN_REQUIRED' | 'AWAITING_INPUT' | 'PLATFORM_REFUSED'
+  | 'CI_PENDING' | 'HUMAN_REQUIRED' | 'AWAITING_INPUT'
+  | 'FIX_ROUNDS_RUNNING' | 'PLATFORM_REFUSED'
 
 /**
- * The same thirteen as a value, so a test can compare the list against
+ * The same fourteen as a value, so a test can compare the list against
  * `swarm_common.states.ParkReason` and the three sets below can be checked for
  * covering it. A union type erases at build time and can be checked against
  * nothing.
@@ -2963,6 +2984,7 @@ export const PARK_REASONS = [
   'CI_PENDING',
   'HUMAN_REQUIRED',
   'AWAITING_INPUT',
+  'FIX_ROUNDS_RUNNING',
   'PLATFORM_REFUSED',
 ] as const
 
@@ -3025,6 +3047,11 @@ export const PARK_CLEARS_ITSELF: ReadonlySet<string> = new Set<ParkReason>([
   // settle, and past its fallback instant the scheduler wakes it anyway
   // (docs/merge-step.md, 2026-10-06, §1).
   'CI_PENDING',
+  // A fix-loop step while its review-fix rounds run as steps of their own
+  // (contract request 125). It ends on its own when a round says MERGE or
+  // the rounds run out; only then may it park for a person, as HUMAN_REQUIRED
+  // (docs/design/fix-loop.md §4.5).
+  'FIX_ROUNDS_RUNNING',
   // The cluster refused the dispatch: an admission policy or the Job quota
   // (contract request 123). The scheduler retries it on its own, 30 s
   // doubling to ten minutes, and never fails it for this.
@@ -3082,6 +3109,7 @@ export const REASON_COPY: Readonly<Record<string, string>> = {
   CREDENTIAL_MISSING: 'No provider key is registered for this workspace.',
   HUMAN_REQUIRED: 'The agent asked for a person and nobody came in time. Holds no capacity until someone says they are ready.',
   AWAITING_INPUT: 'A workflow step waits for a member of its workspace to answer. Holds no capacity; it ends on the first answer or at its declared expiry.',
+  FIX_ROUNDS_RUNNING: 'A fix loop waits while its review and fix rounds run as steps of their own. Holds no capacity.',
   PLATFORM_REFUSED: 'The cluster refused to start it (its job quota is full, or a policy said no). Holds no capacity; retried automatically, at most ten minutes apart.',
   POOL_LIMIT_UNSET: 'This pool has no limit set, so it admits nothing. Nobody set it to 0: somebody has to set a limit.',
 }

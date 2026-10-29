@@ -28,6 +28,7 @@ import {
   blocksOf,
   canTake,
   clockOf,
+  clockPassed,
   floorOf,
   freeSlots,
   groupOf,
@@ -168,6 +169,8 @@ export function clearsOf(a: PoolAccount, scope: string | null, now: number): { h
   if (g === 'now') return { head: 'now', sub: `${freeSlots(a)} slot${freeSlots(a) === 1 ? '' : 's'}` }
   if (g === 'clock') {
     const at = clockOf(a) as number
+    // A reset already past, nothing read since (capacity-03): never "Clears <a past time> · now".
+    if (clockPassed(a, now)) return { head: 'at the next reading', sub: `reset ${utcAt(at, now)} passed, nothing read since` }
     const aged = blocksOf(a).some((b) => isWindowBlock(b) && b.aged_reading)
     return aged
       ? { head: 'at the next reading', sub: `or ${utcAt(at, now)} at the latest` }
@@ -240,7 +243,10 @@ export function WindowCell({ a, k, now }: { a: PoolAccount; k: string; now: numb
         label={`${label}: ${pct(used)} used, ${pct(left)} left; floor ${pct(floor)} left${under ? ', under it' : ''}`}
       />
       <small>{pct(used)} used</small>
-      <small>resets {utcAt(r.resetsAt, now)}</small>
+      {/* A reset already past is said as one (capacity-03), not as a time to come. */}
+      <small>
+        {Date.parse(r.resetsAt) <= now ? `reset ${utcAt(r.resetsAt, now)} passed` : `resets ${utcAt(r.resetsAt, now)}`}
+      </small>
     </div>
   )
 }

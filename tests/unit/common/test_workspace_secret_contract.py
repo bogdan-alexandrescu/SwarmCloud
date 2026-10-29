@@ -31,7 +31,7 @@ AGENT_PROFILES = (
 )
 # await-input is a control_plane profile (contract request 93), which may not
 # declare a slot at all.
-NO_SLOT_PROFILES = ("mock", "generic", "merge", "post-verdict", "await-input")
+NO_SLOT_PROFILES = ("mock", "generic", "merge", "post-verdict", "await-input", "fix-loop")
 
 
 def _profile(**overrides):

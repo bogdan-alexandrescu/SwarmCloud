@@ -507,7 +507,7 @@ describe('TS-15: a required key is named at its field, in the words the API used
   })
 })
 
-describe('TS-20: a stage says "then", and "waits for" is said once, on each step', () => {
+describe('TS-20: a stage says its number, and "waits for" is said once, on each step', () => {
   it('drops the stage clause and the add-a-stage sub-line, and counts steps that run together', async () => {
     const { container } = render(<SubmitWorkflowScreen />)
     await screen.findByRole('button', { name: 'Submit this workflow' }, { timeout: 4000 })
@@ -516,7 +516,8 @@ describe('TS-20: a stage says "then", and "waits for" is said once, on each step
     fireEvent.click(addStage)
     const second = () => container.querySelectorAll<HTMLElement>('.wfb-stage')[1]!
     const head = () => second().querySelector('.wfb-stage-h')!
-    expect(visible(head()).trim()).toBe('then')
+    // QA1 runs-submit-22: the stage is named in words, "Stage 2", not `then`.
+    expect(visible(head()).trim()).toBe('Stage 2')
     // The alongside cue is the tile's own label (#118).
     const alongside = second().querySelector<HTMLButtonElement>('.wfb-steps > button.sbf-addstep')!
     expect(visible(alongside).trim()).toBe('+ Add a step to this stage')

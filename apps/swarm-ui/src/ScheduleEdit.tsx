@@ -31,7 +31,7 @@
  * `use_merge_switch`); the SD3 switch on the Gate tab is the one way there,
  * because it is audited and needs a second person (§4.2).
  */
-import { cloneElement, isValidElement, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode } from 'react'
+import { cloneElement, isValidElement, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactElement, type ReactNode, type RefObject } from 'react'
 import {
   createSchedule,
   loadRepositories,
@@ -50,7 +50,7 @@ import { errorHeading, type ApiError, type Result } from './fetch'
 import { Absent } from './primitives'
 import type { RepoRecord } from './RepositoriesData'
 import { InApp, SCHEDULES_ADDRESS, scheduleAddress } from './Schedules'
-import { budgetDefaultWords, StartChoice, TemplateCard, TemplateTiles, TenantRoom, type Start } from './ScheduleTemplates'
+import { budgetDefaultWords, gapWords, StartChoice, TemplateCard, TemplateTiles, TenantRoom, type Start } from './ScheduleTemplates'
 import { Screen } from './Shell'
 import { usd } from './measure'
 import './styles/automate-edit.css'
@@ -62,6 +62,39 @@ export const CRON_PRESETS: readonly { label: string; cron: string }[] = [
   { label: 'Nightly', cron: '0 2 * * *' },
   { label: 'Weekly on Monday', cron: '0 9 * * 1' },
 ]
+
+/**
+ * THE HARD STOPS, SAID ONCE (QA1 automate-09). The form's Gates card and the
+ * schedule page's Gate tab said different things -- "held for the owner"
+ * against "held for a second member, or in a platform repository for the
+ * owner", and workflows "held" against "refused". This is the page's newer
+ * wording, which is the server's: a protected change is held for a second
+ * member (the owner, in a platform repository) whatever the gate, and a plan
+ * touching `.github/workflows/` is refused because SwarmCloud cannot push it.
+ * Both places draw this, so they cannot drift apart again.
+ */
+export function HardStops() {
+  return (
+    <>
+      A change to IAM, the frozen contract, security, CODEOWNERS or a protected path is held for a second member, or in a platform repository for
+      the owner, whatever the gate; a change to <code>.github/workflows/</code> is refused.
+    </>
+  )
+}
+
+/**
+ * A served calendar day, `2026-10-28`, as the console writes a day: "Oct 28"
+ * (QA1 automate-21). The day is a date, not an instant, so it is read and
+ * written in UTC and never shifts by the viewer's zone. Anything that is not
+ * a real `YYYY-MM-DD` is shown as served rather than guessed at.
+ */
+export function dayWords(day: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day)
+  if (m === null) return day
+  const at = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])))
+  if (at.getUTCMonth() !== Number(m[2]) - 1 || at.getUTCDate() !== Number(m[3])) return day
+  return at.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
+}
 
 /** How long the form waits after a keystroke before it asks for a preview. */
 const PREVIEW_DEBOUNCE_MS = 400
@@ -404,7 +437,9 @@ function CronPreview({ r, timezone }: { r: Result<{ preview: SchedulePreview }> 
             <b>{words}</b> ·{' '}
           </>
         )}
-        at least {p.min_gap_minutes} min apart
+        {/* In the template card's own words (QA1 automate-21): "at least
+            1440 min apart" sat beside "Shortest interval 1 day". */}
+        at least {gapWords(p.min_gap_minutes)} apart
       </p>
       {p.next.length > 0 && (
         <>
@@ -745,7 +780,7 @@ function gateOptions<V extends string>(t: ScheduleTypeRow | null, point: 'run' |
  * and Create says so instead of sending a body the server refuses. A field
  * the form does draw says which value it is missing.
  */
-function paramsWhy(t: ScheduleTypeRow | null, d: Draft): string | null {
+function paramsWhy(t: ScheduleTypeRow | null, d: Draft): { say: string; key: string } | null {
   if (t === null) return null
   const required = t.params_schema.required ?? []
   for (const [k, p] of Object.entries(t.params_schema.properties ?? {}) as [string, Prop][]) {
@@ -753,12 +788,12 @@ function paramsWhy(t: ScheduleTypeRow | null, d: Draft): string | null {
     const name = p.title ?? k
     if (!editable(p)) {
       if (required.includes(k) && d.params[k] === undefined) {
-        return `${t.name} needs ${name}, which this form cannot write. Create it through the API (POST /v1/schedules with params.${k}) or the MCP schedule tools.`
+        return { say: `${t.name} needs ${name}, which this form cannot write. Create it through the API (POST /v1/schedules with params.${k}) or the MCP schedule tools.`, key: k }
       }
       continue
     }
     if (missingParam(p, required.includes(k), d.params[k])) {
-      return Array.isArray(d.params[k]) ? `${name} needs at least ${p.minItems ?? 1}.` : `${name} needs a value.`
+      return { say: Array.isArray(d.params[k]) ? `${name} needs at least ${p.minItems ?? 1}.` : `${name} needs a value.`, key: k }
     }
   }
   return null
@@ -933,6 +968,52 @@ export function pausedLead(s: Schedule): { title: string; say: string } | null {
 }
 
 /** One numbered card of the form (B's Config E card): a titled surface. */
+/** What a problem's jump focuses inside its box when the box is no control itself. */
+const FOCUSABLE = 'input:not(:disabled), select:not(:disabled), textarea:not(:disabled), button:not(:disabled)'
+
+/** A radio group's own radios, not those of a group nested inside it. */
+function radiosOf(group: Element): HTMLButtonElement[] {
+  return [...group.querySelectorAll<HTMLButtonElement>('[role="radio"]')].filter((r) => r.closest('[role="radiogroup"]') === group)
+}
+
+/**
+ * ONE TAB STOP PER RADIO GROUP, AND THE ARROWS MOVE AND SELECT (QA1
+ * automate-16), as the radio pattern requires. `Segmented` does this for
+ * itself; the Type tiles and the Start choice (`ScheduleTemplates`) drew every
+ * radio as a tab stop and ignored the arrows. The form holds the pattern for
+ * every radio group inside it, by the same rule as `Segmented`: the checked
+ * live radio is the stop, or the first live one when none is checked.
+ */
+function useRovingRadios(form: RefObject<HTMLFormElement | null>) {
+  useLayoutEffect(() => {
+    form.current?.querySelectorAll('[role="radiogroup"]').forEach((group) => {
+      const radios = radiosOf(group)
+      const live = radios.filter((r) => !r.disabled)
+      const stop = live.find((r) => r.getAttribute('aria-checked') === 'true') ?? live[0]
+      radios.forEach((r) => {
+        r.tabIndex = r === stop ? 0 : -1
+      })
+    })
+  })
+}
+
+/** The arrows on a radio: focus and select the next live one, wrapping. A group that moved already (`Segmented`) prevented the default. */
+function roveRadios(e: KeyboardEvent<HTMLFormElement>) {
+  if (e.defaultPrevented) return
+  const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0
+  if (step === 0 || !(e.target instanceof HTMLElement)) return
+  const radio = e.target.closest<HTMLButtonElement>('[role="radio"]')
+  const group = radio?.closest('[role="radiogroup"]') ?? null
+  if (radio === null || group === null) return
+  const live = radiosOf(group).filter((r) => !r.disabled)
+  const at = live.indexOf(radio)
+  if (at < 0) return
+  const next = live[(at + step + live.length) % live.length]!
+  e.preventDefault()
+  next.focus()
+  next.click()
+}
+
 function Card({ title, right, children }: { title: string; right?: ReactNode; children: ReactNode }) {
   const id = useId()
   return (
@@ -984,14 +1065,32 @@ function ScheduleForm({
   const budgetErr = (key: keyof Schedule['budget']) => budgetWhy.find((p) => p.key === key)?.field ?? null
   // EVERY PROBLEM AT ONCE (A3a): the sheet lists them all, so a person fixes
   // the form in one pass instead of meeting each refusal after the last.
+  // EACH PROBLEM GOES TO ITS FIELD (QA1 automate-24): on a phone the sheet
+  // sits some 2,000px under the fields it names, so each line is a button
+  // that scrolls to the field and focuses it. `at` is the field's
+  // `data-jump`; null where the form draws no field for it.
+  const paramsSay = paramsWhy(t, d)
   const problems = [
-    d.name.trim() === '' ? 'Name the schedule first.' : null,
-    d.type === '' ? 'Pick a type first.' : null,
-    d.scopeMode === 'repos' && d.repoIds.length === 0 ? 'Choose at least one repository.' : null,
-    d.cron.trim() === '' ? 'Say when it runs.' : cadenceWhy === null ? null : cadenceProblem(preview.r),
-    paramsWhy(t, d),
-    ...budgetWhy.map((p) => p.sheet),
-  ].filter((x): x is string => x !== null)
+    d.name.trim() === '' ? { say: 'Name the schedule first.', at: 'name' } : null,
+    d.type === '' ? { say: 'Pick a type first.', at: 'type' } : null,
+    d.scopeMode === 'repos' && d.repoIds.length === 0 ? { say: 'Choose at least one repository.', at: 'repos' } : null,
+    d.cron.trim() === '' ? { say: 'Say when it runs.', at: 'cron' } : cadenceWhy === null ? null : { say: cadenceProblem(preview.r), at: 'cron' },
+    paramsSay === null ? null : { say: paramsSay.say, at: `param-${paramsSay.key}` },
+    ...budgetWhy.map((p) => ({ say: p.sheet, at: `budget-${p.key}` })),
+  ].filter((x): x is { say: string; at: string } => x !== null)
+  const formRef = useRef<HTMLFormElement>(null)
+  const jump = (at: string) => {
+    const box = formRef.current?.querySelector<HTMLElement>(`[data-jump="${at}"]`) ?? null
+    // A radio group's stop is its checked radio, so a jump lands there.
+    const target =
+      box === null || box.matches('input, select, textarea')
+        ? box
+        : (box.querySelector<HTMLElement>('[role="radio"][tabindex="0"]') ?? box.querySelector<HTMLElement>(FOCUSABLE))
+    if (target === null) return
+    target.scrollIntoView?.({ block: 'center' })
+    target.focus()
+  }
+  useRovingRadios(formRef)
   const verb = schedule === null ? 'create' : 'save'
   const unchanged = schedule !== null && Object.keys(editBody(d, schedule)).length === 1
   const why =
@@ -1046,7 +1145,11 @@ function ScheduleForm({
       {problems.length > 0 && (
         <ul className="ae-probs" aria-label="Problems">
           {problems.map((p) => (
-            <li key={p}>{p}</li>
+            <li key={p.say}>
+              <button type="button" className="ae-prob-jump" onClick={() => jump(p.at)}>
+                {p.say}
+              </button>
+            </li>
           ))}
         </ul>
       )}
@@ -1092,7 +1195,7 @@ function ScheduleForm({
     // schedule over every repository in one keystroke. The form has no submit
     // button, and the browser's implicit submission is swallowed here, so
     // only a click on Create or Save writes.
-    <form className="sc-form ae-form" data-testid="sc-form" onSubmit={(e) => e.preventDefault()}>
+    <form ref={formRef} className="sc-form ae-form" data-testid="sc-form" onSubmit={(e) => e.preventDefault()} onKeyDown={roveRadios}>
       <div className="sc-edit-cols">
         <div className="sc-edit-main">
           {lead !== null && (
@@ -1105,7 +1208,9 @@ function ScheduleForm({
 
           {schedule === null ? (
             <Card title="1 · Type and template">
-              <TemplateTiles types={types} value={d.type} onPick={pickType} />
+              <div className="ae-jump" data-jump="type">
+                <TemplateTiles types={types} value={d.type} onPick={pickType} />
+              </div>
               {oneColumn && templateNode}
             </Card>
           ) : (
@@ -1120,7 +1225,7 @@ function ScheduleForm({
           <Card title="2 · Target">
             <div className="sc-facts">
               <Field label="Name">
-                <input className="c-inp" value={d.name} maxLength={80} onChange={(e) => set({ name: e.target.value })} />
+                <input className="c-inp" value={d.name} maxLength={80} data-jump="name" onChange={(e) => set({ name: e.target.value })} />
               </Field>
               <Segmented<Scope>
                 wide
@@ -1131,7 +1236,7 @@ function ScheduleForm({
               />
             </div>
             {d.scopeMode === 'repos' && (
-              <fieldset className="c-field">
+              <fieldset className="c-field" data-jump="repos">
                 <legend className="c-lbl">Repositories</legend>
                 {repos.status === 'loading' && <p className="c-hint">Reading the registered repositories…</p>}
                 {repos.status === 'error' && <p className="c-hint" role="alert">Repositories not read: {errorHeading(repos.error)}</p>}
@@ -1156,13 +1261,15 @@ function ScheduleForm({
               <>
                 <h4 className="ae-sub">What it works on</h4>
                 <div className="sc-facts">
-                  {ownOnes.map(([k, p]) =>
-                    editable(p) ? (
-                      // Keyed by the type too: a list field keeps its own text,
-                      // and two types share a key (`paths`) with different defaults.
-                      <ParamField key={`${d.type}:${k}`} name={k} schema={p} value={d.params[k]} onChange={(v) => set({ params: { ...d.params, [k]: v } })} />
+                  {ownOnes.map(([k, p]) => (
+                    // Keyed by the type too: a list field keeps its own text,
+                    // and two types share a key (`paths`) with different defaults.
+                    // `.ae-jump` draws no box: the field stays the grid's item.
+                    <div key={`${d.type}:${k}`} className="ae-jump" data-jump={`param-${k}`}>
+                    {editable(p) ? (
+                      <ParamField name={k} schema={p} value={d.params[k]} onChange={(v) => set({ params: { ...d.params, [k]: v } })} />
                     ) : (
-                      <Field key={`${d.type}:${k}`} label={p.title ?? k} hint={notEditableWhy(p)}>
+                      <Field label={p.title ?? k} hint={notEditableWhy(p)}>
                         {plainValue(d.params[k]) !== null || d.params[k] === undefined ? (
                           <input className="c-inp" value={d.params[k] === undefined ? '' : paramText(d.params[k])} readOnly data-testid={`sc-param-${k}`} />
                         ) : (
@@ -1175,8 +1282,9 @@ function ScheduleForm({
                           />
                         )}
                       </Field>
-                    ),
-                  )}
+                    )}
+                    </div>
+                  ))}
                 </div>
               </>
             )}
@@ -1199,6 +1307,7 @@ function ScheduleForm({
               <Field label="Cron expression" hint="Minute, hour, day of month, month, day of week." error={d.cron.trim() === '' || oneColumn ? null : cadenceWhy}>
                 <input
                   ref={cronRef}
+                  data-jump="cron"
                   className="c-inp is-mono"
                   value={d.cron}
                   spellCheck={false}
@@ -1306,21 +1415,21 @@ function ScheduleForm({
                 ))}
               </div>
             )}
-            <p className="c-hint">
-              Hard stops stay on whatever is chosen here: a fix touching IAM, the contract, secrets, tenancy, shared files, workflows or cost is held for the owner.
+            <p className="c-hint" data-testid="ae-hard-stops">
+              Hard stops stay on whatever is chosen here. <HardStops />
             </p>
           </Card>
 
           <Card title="5 · Budget and tripwire">
             <div className="ae-g3">
               <Field label="Per run (USD)" hint={budgetDefaultWords(t, 'per_run_usd')} error={budgetErr('per_run_usd')}>
-                <input className="c-inp" type="number" min={0} step="0.01" placeholder={placeholderOf(t, 'per_run_usd')} value={d.budget.per_run_usd} onChange={(e) => set({ budget: { ...d.budget, per_run_usd: e.target.value } })} />
+                <input className="c-inp" type="number" min={0} step="0.01" placeholder={placeholderOf(t, 'per_run_usd')} data-jump="budget-per_run_usd" value={d.budget.per_run_usd} onChange={(e) => set({ budget: { ...d.budget, per_run_usd: e.target.value } })} />
               </Field>
               <Field label="Per day (USD)" hint={budgetDefaultWords(t, 'per_day_usd')} error={budgetErr('per_day_usd')}>
-                <input className="c-inp" type="number" min={0} step="0.01" placeholder={placeholderOf(t, 'per_day_usd')} value={d.budget.per_day_usd} onChange={(e) => set({ budget: { ...d.budget, per_day_usd: e.target.value } })} />
+                <input className="c-inp" type="number" min={0} step="0.01" placeholder={placeholderOf(t, 'per_day_usd')} data-jump="budget-per_day_usd" value={d.budget.per_day_usd} onChange={(e) => set({ budget: { ...d.budget, per_day_usd: e.target.value } })} />
               </Field>
               <Field label="Live runs at most" hint={budgetDefaultWords(t, 'max_concurrent')} error={budgetErr('max_concurrent')}>
-                <input className="c-inp" type="number" min={1} placeholder={placeholderOf(t, 'max_concurrent')} value={d.budget.max_concurrent} onChange={(e) => set({ budget: { ...d.budget, max_concurrent: e.target.value } })} />
+                <input className="c-inp" type="number" min={1} placeholder={placeholderOf(t, 'max_concurrent')} data-jump="budget-max_concurrent" value={d.budget.max_concurrent} onChange={(e) => set({ budget: { ...d.budget, max_concurrent: e.target.value } })} />
               </Field>
             </div>
             {/* §4.3 in words: what the per-run amount does is the one thing

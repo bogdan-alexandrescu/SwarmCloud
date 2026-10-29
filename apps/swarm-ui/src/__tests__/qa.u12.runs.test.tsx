@@ -187,7 +187,8 @@ describe('R1/A: the side cards stack each label above its value', () => {
     const { container } = await mount(run())
     const read = within(container).getByRole('region', { name: 'Read from the issue' })
     const fact = (label: string) => [...read.querySelectorAll('.ctl-fact')].find((f) => visible(f.querySelector('b')) === label)!
-    expect(visible(fact('state').querySelector(':scope > :not(b)'))).toBe('open')
+    // QA1-FIX-24 (chrome-C14): the state is the reading at submission, and says so.
+    expect(visible(fact('state').querySelector(':scope > :not(b)'))).toBe('open · at submission')
     expect(visible(fact('labels').querySelector(':scope > :not(b)'))).toBe('bug · ui · needs-triage')
     expect(visible(fact('comments').querySelector(':scope > :not(b)'))).toBe('2')
     expect(visible(fact('title').querySelector(':scope > :not(b)'))).toBe(LONG_TITLE)

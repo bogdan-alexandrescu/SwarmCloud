@@ -335,7 +335,7 @@ function Inputs({ v, reading }: { v: ArtifactsView; reading: ScreenReading }) {
   return (
     <section className="section arts-inputs">
       <h2>Inputs</h2>
-      <Prompt taskId={v.task.id} readAt={reading.fetchedAt} />
+      <Prompt taskId={v.task.id} readAt={reading.fetchedAt} step={(v.task.workflow_id ?? null) !== null && (v.task.step_id ?? null) !== null} />
       <Repository task={v.task} />
       <StagedFiles v={v} />
     </section>
@@ -369,7 +369,7 @@ function Inputs({ v, reading }: { v: ArtifactsView; reading: ScreenReading }) {
  * request, and one that failed is asked for again. A pane that has stopped
  * polling -- a settled finish -- stops asking with it.
  */
-export function Prompt({ taskId, readAt }: { taskId: string; readAt: number }) {
+export function Prompt({ taskId, readAt, step = false }: { taskId: string; readAt: number; step?: boolean }) {
   const { state } = useRead<TaskInputCopy>(() => loadTaskInputOnce(taskId), taskId, `input:${readAt}`, null)
   const copy = state.status === 'ok' || state.status === 'stale' ? state.data : null
   // What this block draws, masked: the prompt and the rest, or the whole input.
@@ -383,7 +383,10 @@ export function Prompt({ taskId, readAt }: { taskId: string; readAt: number }) {
     <div className="arts-block">
       <div className="ctl-toolbar att-sub-head">
         <span className="ctl-eyebrow">prompt</span>
-        {masked !== null && <MaskedNote count={masked} />}
+        {/* `MASKED 0` IS NOT SAID (visual QA pass 1, overview-agents-50): a
+            count of nothing masked beside the prompt read as jargon. A
+            count above zero is the fact worth its words, and stays. */}
+        {masked !== null && masked > 0 && <MaskedNote count={masked} />}
       </div>
       {state.status === 'loading' ? (
         <p className="art-loading">
@@ -411,6 +414,18 @@ export function Prompt({ taskId, readAt }: { taskId: string; readAt: number }) {
             </div>
           )}
         </>
+      ) : copy.prompt_key === 'missing' && copy.full.text === '{}' && step ? (
+        // A WORKFLOW STEP RAN A PROMPT (visual QA pass 1, overview-agents-50):
+        // `none · no input` said nothing was sent to a step whose workflow
+        // gave it one. Its input copy is empty, so the prompt it ran is not
+        // in the record, which is what is said.
+        <p className="att-none">
+          <Mark
+            kind="absent"
+            say="This workflow step ran the prompt its workflow gave it, and its stored input is empty, so the prompt it ran was not recorded here. The workflow's page holds its steps' prompts."
+          />{' '}
+          prompt not recorded
+        </p>
       ) : copy.prompt_key === 'missing' && copy.full.text === '{}' ? (
         <p className="att-none">
           <Mark kind="zero" say="This agent was submitted with no input at all. Nothing is missing: nothing was sent." /> no
@@ -844,11 +859,18 @@ function Answer({ v }: { v: ArtifactsView }) {
         </p>
       ) : r.data.status === 'absent' ? (
         <p className="att-none">
-          <Mark
-            kind="absent"
-            say="The attempt ended and wrote no result event, and there is no runner summary to stand in for one."
-          />{' '}
-          no answer recorded
+          {/* A FAILED AGENT SAYS IT FAILED (visual QA pass 1,
+              overview-agents-51): `not measured · no answer recorded` read
+              as a gap in the record of a run that ended well. */}
+          {failedRun(v.task) ? (
+            <ToneMark tone="bad">failed</ToneMark>
+          ) : (
+            <Mark
+              kind="absent"
+              say="The attempt ended and wrote no result event, and there is no runner summary to stand in for one."
+            />
+          )}{' '}
+          {failedRun(v.task) ? 'no output recorded' : 'no answer recorded'}
           {/* A CUT CAPTURE IS A REASON, and the server's sentence names it:
               the run's middle was not kept, so "no result event" is about
               what was kept. Said only then; otherwise the mark says it all. */}
@@ -1023,6 +1045,11 @@ export function isSubmitter(email: string | null, submittedBy: string | null | u
   return email !== null && email !== '' && typeof submittedBy === 'string' && submittedBy === email
 }
 
+/** A run that ended in failure: the Outputs say `failed`, not a missing record's mark. */
+function failedRun(task: Pick<Task, 'state'>): boolean {
+  return task.state === 'FAILED' || task.state === 'DEAD_LETTERED'
+}
+
 function Files({ v }: { v: ArtifactsView }) {
   const { task, listing } = v
   const submitter = isSubmitter(useSignedInEmail(), task.submitted_by)
@@ -1055,6 +1082,13 @@ function Files({ v }: { v: ArtifactsView }) {
       <p className="att-none">
         <Mark kind="zero" say="No attempt of this agent ever started, so no file was ever going to be uploaded." /> nothing
         ran
+      </p>
+    ) : failedRun(task) ? (
+      // FAILED, NOT `PARTIAL` (visual QA pass 1, overview-agents-51): the
+      // partial mark beside `finished with no summary` read as a partial
+      // success on an agent that failed.
+      <p className="att-none" title="This agent failed without a result summary, which is where the file list is written. The attempt may have produced files; this is a missing record, not an empty one.">
+        <ToneMark tone="bad">failed</ToneMark> no output recorded
       </p>
     ) : (
       <p className="att-none">
@@ -1548,6 +1582,28 @@ export function StreamsFrom({
       </div>
   )
   const drawn = (r: (typeof rows)[number]) => r.stream !== null && r.stream.status === 'ok' && r.stream.content !== null && r.stream.content !== ''
+  // NOTHING WRITTEN IS A SENTENCE, NOT A CARD (QA1 overview-agents-36,
+  // 2026-10-28): an empty agent stderr in the Logs tab drew the gs:// object
+  // card, `0 B real zero · live`, where a reader wanted to be told there is
+  // nothing on it. In the dock, when every stream is a measured empty object,
+  // the sentence leads and the card folds under it, as a stream with lines does.
+  const empty = (r: (typeof rows)[number]) => r.stream !== null && r.stream.status === 'ok' && r.stream.content === ''
+  if (docked && rows.every(empty)) {
+    const live = rows.some((r) => r.stream?.source === 'live')
+    return (
+      <>
+        <p className="art-fallback rf-empty">
+          {`Nothing on ${rows.map((r) => streamLabel(r.name)).join(' or ')}${live ? ' yet' : ''}.`}
+        </p>
+        <details className="ag-logmeta">
+          <summary>
+            {rows.map((r) => streamLabel(r.name)).join(' · ')} · size, age and location
+          </summary>
+          {table}
+        </details>
+      </>
+    )
+  }
   return (
     <>
       {/* IN THE LOG DOCK THE TABLE IS FOLDED when every stream has lines to
@@ -2045,6 +2101,41 @@ function StepRow(props: {
   })
 }
 
+/** How much of a tool's input or result a closed row shows: one line, cut. */
+const GIST_CHARS = 100
+
+function cut(text: string): string {
+  return text.length > GIST_CHARS ? `${text.slice(0, GIST_CHARS - 1)}…` : text
+}
+
+/** The first non-blank line of a tool result, cut to `GIST_CHARS`; null when it has none. */
+export function firstLine(content: string | null): string | null {
+  const line = content?.split('\n').find((l) => l.trim() !== '')
+  return line === undefined ? null : cut(line.trim())
+}
+
+/**
+ * A CLOSED TOOL ROW SAYS WHAT IT RAN (visual QA pass 1, chrome-C07): every
+ * row read `tool · Bash` over `result`, dozens alike, so the transcript could
+ * not be scanned without opening each. The input's telling field -- the
+ * command, the file, the pattern, the address -- or else its first string,
+ * one line and cut. Null when the input is absent or not an object.
+ */
+export function toolGist(input: string | null): string | null {
+  if (input === null) return null
+  let o: unknown
+  try {
+    o = JSON.parse(input)
+  } catch {
+    return firstLine(input)
+  }
+  if (o === null || typeof o !== 'object' || Array.isArray(o)) return null
+  const rec = o as Record<string, unknown>
+  const keys = ['command', 'file_path', 'path', 'pattern', 'url', 'query', 'description', 'prompt']
+  const first = [...keys.map((k) => rec[k]), ...Object.values(rec)].find((x): x is string => typeof x === 'string' && x.trim() !== '')
+  return first === undefined ? null : firstLine(first)
+}
+
 function StepRowBody({
   step,
   results,
@@ -2122,6 +2213,9 @@ function StepRowBody({
     case 'tool_call': {
       const id = step.tool?.id ?? null
       const input = step.tool?.input ?? null
+      // Both gists landed at once (#2634 and chrome-C07): a browser tool's
+      // element or address first, else the command, file or first line.
+      const gist = inputGist(input) ?? toolGist(input)
       const result = id === null ? undefined : results.get(id)
       const kids = id === null || seen.has(id) ? [] : (nested.get(id) ?? [])
       const nextSeen = id === null ? seen : new Set([...seen, id])
@@ -2131,6 +2225,7 @@ function StepRowBody({
           <details className="arts-more">
             <summary>
               tool · <b>{step.tool?.name ?? 'unnamed'}</b>
+              {gist !== null && <span className="ctl-sub mono arts-tool-gist"> {gist}</span>}
             </summary>
             {input === null ? (
               <p className="art-fallback">
@@ -2146,6 +2241,7 @@ function StepRowBody({
               <summary>
                 result{r.is_error ? ' · error' : ''}
                 {r.images > 0 ? ` · ${r.images} image${r.images === 1 ? '' : 's'} not shown` : ''}
+                {firstLine(r.content) !== null && <span className="ctl-sub"> {firstLine(r.content)}</span>}
               </summary>
               {r.content === null ? (
                 <p className="art-fallback">
@@ -2190,8 +2286,7 @@ function StepRowBody({
       return (
         <li className="arts-step is-result">
           <span className="arts-step-kind">
-            result
-            {typeof m.subtype === 'string' ? ` · ${m.subtype}` : ''}
+            {resultWords(m.subtype)}
             {turns !== null ? ` · ${turns} turns` : ''}
           </span>{' '}
           {m.is_error === true && <ToneMark tone="bad">the agent reported an error</ToneMark>} {capped}
@@ -2431,4 +2526,45 @@ function rateLimitWords(key: string, value: string | number | boolean): string {
       return `${name} ${moment ? localMoment(value as number) : String(value)}`
     }
   }
+}
+
+/**
+ * A TOOL CALL'S ONE-LINE GIST (QA1 overview-agents-31, 2026-10-28): forty
+ * rows of `tool · browser_click` could not be told apart without opening
+ * each. The first field a reader looks for -- where it went or what it
+ * touched -- else the first text field, on one line and cut at 80
+ * characters. Null for an input that is not a JSON object or holds no text.
+ */
+const GIST_KEYS = ['url', 'element', 'selector', 'ref', 'file_path', 'path', 'command', 'pattern', 'query', 'text'] as const
+
+export function inputGist(input: string | null): string | null {
+  if (input === null) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(input)
+  } catch {
+    return null
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  const o = parsed as Record<string, unknown>
+  const key = GIST_KEYS.find((k) => typeof o[k] === 'string' && (o[k] as string).trim() !== '') ?? Object.keys(o).find((k) => typeof o[k] === 'string' && (o[k] as string).trim() !== '')
+  if (key === undefined) return null
+  const line = (o[key] as string).replace(/\s+/g, ' ').trim()
+  return line.length > 80 ? `${line.slice(0, 79)}…` : line
+}
+
+/**
+ * A RESULT STEP IN WORDS (QA1 overview-agents-37, 2026-10-28): the row read
+ * `result · error_during_execution · 7 turns`, the CLI's enum. A subtype the
+ * console has no words for keeps its name after `result`.
+ */
+const RESULT_WORDS: Readonly<Record<string, string>> = {
+  error_during_execution: 'Stopped on an error',
+  error_max_turns: 'Stopped at its turn limit',
+  error_max_budget_usd: 'Stopped at its budget',
+}
+
+export function resultWords(subtype: unknown): string {
+  if (typeof subtype !== 'string') return 'result'
+  return RESULT_WORDS[subtype] ?? `result · ${subtype}`
 }

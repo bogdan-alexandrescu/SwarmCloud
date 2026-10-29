@@ -109,7 +109,7 @@ describe('CAP-14: what sets a runtime apart is said in words', () => {
     render(<RuntimesScreen />)
     await screen.findByText('Sizing', undefined, WAIT)
     const apart = card('alpha').querySelector('.rt-apart-facts')!
-    const cred = [...apart.querySelectorAll('.ctl-fact')].find((f) => f.querySelector('b')?.textContent === 'cred')!
+    const cred = [...apart.querySelectorAll('.ctl-fact')].find((f) => f.querySelector('b')?.textContent === 'credential')!
     expect(cred.textContent).toContain('the only runtime that needs this credential')
     expect(apart.textContent).not.toMatch(/\bsole\b/)
   })

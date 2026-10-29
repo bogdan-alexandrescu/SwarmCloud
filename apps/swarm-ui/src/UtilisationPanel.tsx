@@ -17,48 +17,7 @@ import { useEffect, useRef, useState } from 'react'
 import { loadUtilisation } from './api'
 import { UtilisationChart, utilisationHeadline } from './charts/Utilisation'
 import type { Result } from './fetch'
-import { cpuSummary, type UtilisationAttempt, type UtilisationRead } from './utilisation'
-
-/**
- * THE HEADLINE WITH ITS LIMIT NAMED (c05, owner decision 2026-10-22, box
- * comment 6298220484: "Name every count where it is printed"). `of 2 cores`
- * is the attempt's cgroup CPU limit -- what the kernel enforced, not the
- * class's guaranteed size the head prints -- so the line says which it is.
- * The words are added once, after the mean's `of N cores`, and only when the
- * route served a limit: `limit not reported` already says there is none.
- *
- * ONE NUMBER PER NAME (6:task-001). The CPU tile and Resources divide by the
- * attempt record's `cpu_limit_cores`; the series carries its own. When the two
- * differ, only the record's is called `cgroup limit`, and the series' is named
- * by its source -- never two numbers both called the cgroup's.
- */
-function namedLimit(attempt: UtilisationAttempt | null, text: string, recordLimit: number | null): string {
-  const sampled = namedMean(text)
-  if (attempt === null) return sampled
-  const s = cpuSummary(attempt)
-  if (s.limit === null) return sampled
-  const words =
-    recordLimit === null || Math.abs(recordLimit - s.limit) < 0.05
-      ? ' (cgroup limit)'
-      : ` (the limit the 5 s samples carry; the attempt's cgroup limit is ${Number(recordLimit.toFixed(1))} cores)`
-  const named = sampled.replace(/^(CPU, 5 s samples: mean \S+ of \S+ cores)/, `$1${words}`)
-  // TWO MEASURES, SAID SO: `at the limit` counts 5 s samples at the limit's
-  // edge, `throttled` the kernel's CFS periods held back. 0% beside 6% is not
-  // a contradiction, and the line says why rather than leaving it to look like one.
-  if (s.atLimit === null || s.throttled === null) return named
-  return `${named} (near-limit samples vs throttled CFS periods)`
-}
-
-/**
- * AND WHICH MEAN IT IS (FF-D5a, the same c05 box). Resources, above this
- * line, prints the attempt's own mean -- its CPU-seconds over the time its
- * runners ran -- and this one is the mean of the series' 5 s samples, setup
- * and waits included. Two means on one pane, each named where it is printed,
- * so a reader does not take the difference for an error.
- */
-function namedMean(text: string): string {
-  return text.replace(/^CPU: mean (?=\d)/, 'CPU, 5 s samples: mean ')
-}
+import { cpuSummary, type UtilisationRead } from './utilisation'
 
 /**
  * How often a running task's series is read: the drawer's own cadence
@@ -72,12 +31,9 @@ export const UTILISATION_POLL_MS = 10_000
 export function UtilisationPanel({
   taskId,
   live,
-  limitCores = null,
 }: {
   taskId: string
   live: boolean
-  /** The newest attempt record's `cpu_limit_cores`: the one the CPU tile and Resources divide by. */
-  limitCores?: number | null
 }) {
   const [got, setGot] = useState<Result<UtilisationRead> | null>(null)
   const inFlight = useRef(false)
@@ -123,12 +79,28 @@ export function UtilisationPanel({
   }
   const attempt = got.status === 'empty' ? null : (got.data.attempts[0] ?? null)
   const head = utilisationHeadline(attempt, live)
-  const headline = head.measured ? namedLimit(attempt, head.text, limitCores) : head.text
+  // ONE MEAN, ONE LIMIT, A SHORT TITLE (QA1 overview-agents-24/25,
+  // 2026-10-28): the fold's title wrapped to three lines and printed a second
+  // mean of a second limit (`mean 2.8 of 4 cores (the limit the 5 s samples
+  // carry; the attempt's cgroup limit is 2 cores)`) under the Resources
+  // rows' `mean 0.8 … of 2 cores`. The title says what the chart adds -- time
+  // at the limit and throttling -- and the samples' mean stays in the chart's
+  // own caption, opened.
+  const s = attempt === null ? null : cpuSummary(attempt)
+  const headline =
+    head.measured && s !== null
+      ? [
+          s.atLimit === null ? null : `at the limit ${Math.round(s.atLimit * 100)}% of the time`,
+          s.throttled === null ? 'throttling not measured' : `throttled ${Math.round(s.throttled * 100)}%`,
+        ]
+          .filter((p): p is string => p !== null)
+          .join(' · ')
+      : head.text
   // THE SUMMARY ON THE GLASS, THE CHART ONE CLICK AWAY. Details keeps every
   // chart behind a disclosure so its first 900px stay Now, the strip and the
-  // column heads (details.v3.test.tsx). The one line the owner asked for --
-  // mean of the limit, time at the limit, throttled -- is the disclosure's
-  // own summary, so it is read without opening anything, and live.
+  // column heads (details.v3.test.tsx). Time at the limit and throttled are
+  // the disclosure's own summary, so they are read without opening anything,
+  // and live; the mean of the limit is the chart's caption, inside.
   return (
     <details className="dt-disc ctl-util-disc">
       <summary data-testid="util-headline">CPU and memory over time · {headline}</summary>

@@ -824,7 +824,7 @@ A new tab beside **Pool limits** in the Admin section
 | `claude-code`, `codex`, `generic`, `merge`, `indexer` | yes | yes | GKE: rendered per pod from the pinned size |
 | `browser`, `claude-code-browser` (live split) | yes | yes | GKE; the live split is part of the browser class's setting |
 | `mock`, `post-verdict`, `claude-code-review` | **no** | **no** | Cloud Run fixes resources on the Job, not the execution; updating a shared Job in place races between schedulers (§3 C′); and a Cloud Run container is billed its limit |
-| `await-input` | n/a | n/a | `control_plane`: never reserved, never run |
+| `await-input`, `fix-loop` | n/a | n/a | `control_plane`: never reserved, never run |
 | any GKE profile on its `cloud_run_fallback_profiles` rollback Job | no | no | the same Cloud Run rule; the Terraform Job is sized from `locals.tf` |
 
 The admin page lists the second group under each class it uses, so nobody

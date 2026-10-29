@@ -1765,6 +1765,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Each cell is the person’s own role in that workspace when they hold one, else the workspace’s default when they were last seen in it, else none. A dash means that workspace’s roles could not be read, and is never a guessed role.',
       'The platform cannot list a Google group’s members, so being in a workspace is read from the person’s last sign-in. Someone who has not signed in since joining is shown once they hold a role of their own.',
       'Roles are changed on Config › People and roles, in the workspace itself.',
+      'Two platform roles come from the deployment’s configuration, not from People and roles. The platform owner is the PLATFORM_OWNER setting: no switch on People and roles changes it, and only the owner can. A member of a group named in ADMIN_GROUPS is an admin without a role record, so the Admins card does not list them and their Admin switch reads off.',
     ],
   },
 
@@ -1816,7 +1817,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'configuring-a-workspace',
     title: 'A repository is chosen on GitHub access and registered on Repositories',
     short:
-      'Repositories lists the repositories registered in the workspace, and each one chosen on GitHub access but not yet registered as a dashed card with Register. Nothing is added from Repositories itself: Add new repository opens GitHub access.',
+      'Repositories lists the repositories registered in the workspace, and each one chosen on GitHub access but not yet registered as a dashed card with Register. Nothing is added from Repositories itself: Choose more on GitHub (Choose on GitHub while nothing is chosen) opens GitHub access.',
     long: [
       'Registering needs the member role. Remove unregisters a repository after you type its owner and name, and turns off the grants on that repository’s secrets; it deletes nothing on GitHub.',
       'Inside a repository, Index queues an ordinary agent that holds capacity like any other.',
@@ -2477,6 +2478,56 @@ export const TOPIC_IDS: readonly TopicId[] = HELP_GROUPS.flatMap((g) =>
 /** A topic by id, or null. Used by the router, which gets its input from a URL. */
 export function topicFor(id: string): HelpTopic | null {
   return Object.prototype.hasOwnProperty.call(HELP, id) ? HELP[id as TopicId] : null
+}
+
+/**
+ * A PAGE WITH A TOPIC OF ITS OWN, keyed `<section>/<tab>` (AUT-14, VQ-055).
+ * Its head `?` says the section's question, then this topic's card text, and
+ * `Help →` opens the topic rather than the index. Kept here, beside the
+ * topics, so the Help record and the pages that point into it are one file.
+ */
+export const PAGE_TOPIC: Readonly<Record<string, TopicId>> = {
+  'automate/schedules': 'schedules',
+  'automate/approvals': 'approvals',
+  // Admin › People and roles answers differently by reader (ADMIN-PEOPLE-ROLES):
+  // its topic rides the section's `?` rather than a second glyph by the title,
+  // which the console's glyph ceiling (tests/help.test.ts) has no room for.
+  'admin/people': 'people-and-roles-scope',
+  // VQ-055 (visual QA 2026-10-26): every Config page's `?` opened the same
+  // section card, whose `Help →` led to Help's first group. Each page now
+  // says, and links, its own topic in Help's Config and Admin groups.
+  'config/github': 'config-github-access',
+  'config/repositories': 'config-repositories',
+  'config/secrets': 'secret-scopes',
+  'config/mcp-servers': 'mcp-servers',
+  'config/people': 'workspace-roles',
+  'config/workspace': 'workspace-settings',
+  'admin/limits': 'ceiling-change-evicts-nothing',
+  'admin/runner-sizes': 'runner-sizes',
+  'admin/tenants': 'tenant-fields',
+  'admin/counts': 'platform-counts',
+  'admin/platform-secrets': 'platform-secrets',
+  'admin/workspaces': 'workspaces-you-admin',
+}
+
+/** The page's own topic, or null when its `?` is the section's alone. */
+export function pageTopic(sectionId: string, tab: string | null | undefined): TopicId | null {
+  const key = `${sectionId}/${tab ?? ''}`
+  return Object.prototype.hasOwnProperty.call(PAGE_TOPIC, key) ? PAGE_TOPIC[key]! : null
+}
+
+/**
+ * THE HEAD `?` CARD'S TITLE NAMES THE PAGE IT HELPS WITH (QA1 config-32,
+ * 2026-10-28). Every Config tab's card was titled "Config answers" over the
+ * same section question, so six different pages opened what read as one card
+ * and the tab's own topic under it looked like an afterthought. A page with a
+ * topic of its own is titled by its tab ("Secrets answers"); a page without
+ * one keeps the section's title, because its card is the section's question
+ * and nothing else. The `?`'s name is "Help: " and this, as everywhere (AH-4).
+ */
+export function pageQuestionTitle(sectionLabel: string, sectionId: string, tab: string | null | undefined, tabLabel: string | null | undefined): string {
+  const own = pageTopic(sectionId, tab) !== null && tabLabel != null && tabLabel !== ''
+  return `${own ? tabLabel : sectionLabel} answers`
 }
 
 /**

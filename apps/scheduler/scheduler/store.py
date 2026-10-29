@@ -968,6 +968,41 @@ class SchedulerStore:
             self.append_event(task, EventType.FAILED, {"reason": error, **(detail or {})})
         return outcome
 
+    def skip_before_lease(
+        self, task: Task, reason: str, *, detail: dict[str, Any] | None = None
+    ) -> GuardedWrite:
+        """READY -> CANCELLED for a step that would buy nothing (#2524, NOOP-PRECHECK).
+
+        With `result_summary.skipped.reason`, the worker's own marker for a
+        step that did not run. CANCELLED, not SUCCEEDED: the frozen table has
+        no READY -> SUCCEEDED. The task holds nothing in READY, so, exactly as
+        `cancel`, there is no lease to release, and the write is guarded on
+        the state read: CANCELLED over LEASED would be a terminal task holding
+        a live lease. `end_cause` is None: no `EndCause` value names it.
+        """
+        if task.state is not TaskState.READY:
+            raise InvalidTransition(task.state, TaskState.CANCELLED)
+        assert_transition(task.state, TaskState.CANCELLED)
+        now = self._now()
+        outcome = self._write_if_unchanged(
+            "skip_before_lease",
+            task,
+            {
+                "state": TaskState.CANCELLED.value,
+                "park_reason": None,
+                "blocked_by": [],
+                "completed_at": now,
+                "last_error": reason[:1000],
+                "end_cause": None,
+                "result_summary": {"skipped": {"reason": reason[:1000]}},
+                "updated_at": now,
+            },
+        )
+        if outcome.applied:
+            self.append_event(task, EventType.CANCELLED,
+                              {"reason": reason, "skipped": True, **(detail or {})})
+        return outcome
+
     def mark_dispatched(
         self, task: Task, lease: Lease, execution_name: str, backend: str
     ) -> GuardedWrite:

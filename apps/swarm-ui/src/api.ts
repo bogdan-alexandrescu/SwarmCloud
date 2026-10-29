@@ -638,6 +638,10 @@ async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> 
     detail,
   })
   const events = []
+  // THE SUBMITTED EVENT IS WRITTEN WITH THE TASK (QA1 overview-agents-58), so
+  // a task nothing has admitted still has one: without it a READY agent's
+  // Progress drew the events read as answering with none.
+  if (span === undefined) events.push(ev('submitted', Date.parse(task.created_at)))
   if (span !== undefined) {
     // Admission to start: a few seconds each, never back past the end of the
     // attempt before it, or the submission (`fixtureSpans` leaves a gap).
@@ -1636,15 +1640,35 @@ function fixtureIssueRun(id: string, over: Partial<IssueRun> = {}): IssueRun {
   }
 }
 
+/**
+ * THE FIXTURE RUNS REMEMBER WHAT WAS DONE TO THEM (QA1-FIX-24, part of
+ * #2596): a run planned from Submit is a new run created now (runs-submit-15),
+ * and an approval or a rejection is still there on the next read
+ * (runs-submit-03), as the live API's would be. Kept for the page's life.
+ */
+const fixtureRunsMade: IssueRun[] = []
+const fixtureRunsDecided = new Map<string, Partial<IssueRun>>()
+
 function fixtureIssueRuns(): IssueRun[] {
+  const planned = new Date(FIXTURE_NOW - 40 * 60_000).toISOString()
+  const approved = new Date(FIXTURE_NOW - 30 * 60_000).toISOString()
+  const created = new Date(FIXTURE_NOW - 50 * 60_000).toISOString()
   return [
+    ...fixtureRunsMade,
     fixtureIssueRun('run_4c1e09d2'),
+    // The workflow it started is one the workflow fixture holds (QA1-FIX-22, runs-submit-04).
     fixtureIssueRun('run_19ab77e0', {
-      state: 'RUNNING', workflow_id: 'wf_8b21d0e4', approved_by: 'operator@example.com',
-      approved_at: new Date(FIXTURE_NOW - 30 * 60_000).toISOString(),
-      created_at: new Date(FIXTURE_NOW - 50 * 60_000).toISOString(),
+      state: 'RUNNING', workflow_id: 'wf_audit_01', approved_by: 'operator@example.com',
+      approved_at: approved, created_at: created,
+      // Every transition to its state (runs-submit-06): the approval and the start too.
+      history: [
+        { at: created, from: null, to: 'PLANNING', by: 'operator@example.com' },
+        { at: planned, from: 'PLANNING', to: 'PLANNED', by: 'swarm-api' },
+        { at: approved, from: 'PLANNED', to: 'APPROVED', by: 'operator@example.com' },
+        { at: approved, from: 'APPROVED', to: 'RUNNING', by: 'swarm-api' },
+      ],
     }),
-  ]
+  ].map((r) => ({ ...r, ...(fixtureRunsDecided.get(r.id) ?? {}) }))
 }
 
 async function fixtureIssuePreview(issue: string): Promise<Result<IssuePreviewRead>> {
@@ -1661,7 +1685,11 @@ async function fixtureIssuePreview(issue: string): Promise<Result<IssuePreviewRe
   return {
     status: 'ok', fetchedAt: Date.now(),
     data: {
-      tenant_id: 'eng',
+      // THE CAPACITY FIXTURE'S TENANT, and the merge step's answer as the live
+      // API serves it since contract request 47 (QA1-FIX-12 runs-submit-13,
+      // chrome-C29).
+      tenant_id: 'u-bogdan',
+      auto_merge: { available: true, requires: '#295', reason: null },
       issue: {
         ref, owner, repo, number: Number(num), url, repository_url: `https://github.com/${owner}/${repo}`,
         title: 'The workflow list shows no cost column, so a finished workflow\'s spend needs opening every step',
@@ -1692,10 +1720,15 @@ async function fixtureRun(runId: string): Promise<Result<IssueRunRead>> {
 async function fixtureCreateRun(body: RunCreateBody): Promise<Result<IssueRunRead>> {
   await new Promise((r) => setTimeout(r, 60))
   noteFixtureProbe(route('/v1/runs'), 60, true)
-  return { status: 'ok', fetchedAt: Date.now(), data: { run: fixtureIssueRun('run_4c1e09d2', {
-    state: 'PLANNING', plan: null, plan_digest: null, plan_revision: 0,
-    plan_approval: body.plan_approval, fix_rounds: body.fix_rounds,
-  }) } }
+  const at = new Date().toISOString()
+  const id = `run_${Array.from(crypto.getRandomValues(new Uint8Array(4)), (b) => b.toString(16).padStart(2, '0')).join('')}`
+  const run = fixtureIssueRun(id, {
+    state: 'PLANNED', plan_approval: body.plan_approval, fix_rounds: body.fix_rounds, auto_merge: body.auto_merge,
+    created_at: at, updated_at: at,
+    history: [{ at, from: null, to: 'PLANNING', by: 'operator@example.com' }, { at, from: 'PLANNING', to: 'PLANNED', by: 'swarm-api' }],
+  })
+  fixtureRunsMade.unshift(run)
+  return { status: 'ok', fetchedAt: Date.now(), data: { run } }
 }
 
 async function fixturePlanAction(runId: string, action: 'approve' | 'edit' | 'reject', plan?: RunPlan): Promise<Result<IssueRunRead>> {
@@ -1706,12 +1739,17 @@ async function fixturePlanAction(runId: string, action: 'approve' | 'edit' | 're
   const planPath = action === 'approve' ? '/v1/runs/{id}/plan:approve'
     : action === 'edit' ? '/v1/runs/{id}/plan:edit' : '/v1/runs/{id}/plan:reject'
   noteFixtureProbe(route(planPath, { id: runId }), 60, true)
+  const now = new Date().toISOString()
+  const was = fixtureIssueRuns().find((r) => r.id === runId) ?? fixtureIssueRun(runId)
   const over: Partial<IssueRun> = action === 'approve'
-    ? { state: 'RUNNING', workflow_id: 'wf_8b21d0e4', approved_by: 'operator@example.com', approved_at: new Date(FIXTURE_NOW).toISOString() }
+    ? { state: 'RUNNING', workflow_id: 'wf_audit_01', approved_by: 'operator@example.com', approved_at: now, updated_at: now,
+        history: [...was.history, { at: now, from: 'PLANNED', to: 'APPROVED', by: 'operator@example.com' }, { at: now, from: 'APPROVED', to: 'RUNNING', by: 'swarm-api' }] }
     : action === 'reject'
-      ? { state: 'REJECTED', terminal: true, rejected_by: 'operator@example.com' }
+      ? { state: 'REJECTED', terminal: true, rejected_by: 'operator@example.com', updated_at: now,
+          history: [...was.history, { at: now, from: 'PLANNED', to: 'REJECTED', by: 'operator@example.com' }] }
       : { plan: plan ?? FIXTURE_PLAN, plan_revision: 2, plan_edited_by: 'operator@example.com' }
-  return { status: 'ok', fetchedAt: Date.now(), data: { run: fixtureIssueRun(runId, over) } }
+  fixtureRunsDecided.set(runId, { ...(fixtureRunsDecided.get(runId) ?? {}), ...over })
+  return { status: 'ok', fetchedAt: Date.now(), data: { run: { ...was, ...over } } }
 }
 
 /**
@@ -2867,7 +2905,10 @@ export interface NotificationFeed {
  */
 export async function loadNotifications(): Promise<Result<NotificationFeed>> {
   const target = route('/v1/notifications')
-  if (USE_FIXTURES) return { status: 'ok', fetchedAt: Date.now(), data: { items: [{ id: 'admin:ws:wsr_c4r0l', group: 'admin', needs_you: true, title: 'Carol asked for a workspace', detail: null, href: '/admin/people', at: new Date(Date.now() - 40 * 60_000).toISOString(), read: false }], unread_needs_you: 1, unread_updates: 0, admin_pending: 1, tenants_waiting: null, platform_secrets_unset: null, read_at: new Date().toISOString() } } as Result<NotificationFeed>
+  // The fixture item is Carol's workspace request (`wsr_c4r0l`), dated from
+  // its own `requested_at` as the API dates it (notifications.py), so the bell
+  // and Admin › People and roles give one age for one request (QA1 admin-shell-06).
+  if (USE_FIXTURES) return { status: 'ok', fetchedAt: Date.now(), data: { items: [{ id: 'admin:ws:wsr_c4r0l', group: 'admin', needs_you: true, title: 'Carol asked for a workspace', detail: null, href: '/admin/people', at: fixtureAgo(40 * 60_000), read: false }], unread_needs_you: 1, unread_updates: 0, admin_pending: 1, tenants_waiting: null, platform_secrets_unset: null, read_at: new Date().toISOString() } } as Result<NotificationFeed>
   const r = await read<NotificationFeed>(target, () => false, { frame: true })
   // A 200 with no list is not an empty feed, and drawing "Nothing needs you"
   // over an answer nobody could read would be a claim; it is a failure.
@@ -2960,19 +3001,25 @@ function fixtureTenantChoices(): TenantChoice[] {
 async function fixtureMe(options: { frame?: boolean } = {}): Promise<Result<Me>> {
   await new Promise((r) => setTimeout(r, 150))
   noteFixtureProbe(route('/v1/tenants/me'), 150, true, undefined, { frame: options.frame === true })
+  // THE PICK IS HONOURED, AS THE API HONOURS `X-Swarm-Tenant` (QA1-FIX-32,
+  // admin-shell-01): Admin › Workspaces you admin selects `eng` and opens
+  // Workspace Settings, which read this and drew the personal workspace. A
+  // persona that `/v1/tenants/mine` lists `eng` for reads it when it is picked.
+  const group = chosenTenant() === FIXTURE_GROUP.tenant_id && (fixtureIsAdmin || fixtureIsWorkspaceAdmin)
+  const id = group ? FIXTURE_GROUP.tenant_id : 'u-bogdan'
   return {
     status: 'ok',
     fetchedAt: Date.now(),
     data: {
       tenant: {
-        tenant_id: 'u-bogdan', kind: 'user', principal: 'alice@example.com',
-        display_name: 'Bogdan', created_at: new Date(FIXTURE_NOW - 86_400_000 * 9).toISOString(),
+        tenant_id: id, kind: group ? 'group' : 'user', principal: group ? FIXTURE_GROUP.principal : 'alice@example.com',
+        display_name: group ? FIXTURE_GROUP.principal : 'Bogdan', created_at: new Date(FIXTURE_NOW - 86_400_000 * 9).toISOString(),
         max_active: 2, capacity_units: 40, monthly_budget_usd: null, enabled: true,
         credentials: [
           'anthropic',
         ],
-        service_account: 'swarm-agent-worker-u-bogdan@example-project.iam.gserviceaccount.com',
-        gcs_prefix: 'gs://swarm-artifacts-dev/u-bogdan', namespace: 'swarm-tenant-u-bogdan',
+        service_account: `swarm-agent-worker-${id}@example-project.iam.gserviceaccount.com`,
+        gcs_prefix: `gs://swarm-artifacts-dev/${id}`, namespace: `swarm-tenant-${id}`,
       },
       principal: {
         email: 'alice@example.com', domain: 'example.com',
@@ -3154,6 +3201,14 @@ async function fixtureEventsPage(taskId: string, order: 'asc' | 'desc'): Promise
   return { status: 'ok', fetchedAt: Date.now(), data: { events, next_page_token: null } }
 }
 
+/** The fixture leases' tasks: holding-capacity tasks `fixtureTasks` serves. */
+const FIXTURE_LEASE_TASKS: Readonly<Record<string, string>> = {
+  d1: 'task_a073aff5',
+  c1: 'task_8ea5c26d',
+  b1: 'task_19d91b82',
+  a1: 'task_460409cd',
+}
+
 async function fixtureLeases(): Promise<Result<LeasePage>> {
   await new Promise((r) => setTimeout(r, 180))
   noteFixtureProbe(route('/v1/admin/leases'), 180, true)
@@ -3164,7 +3219,10 @@ async function fixtureLeases(): Promise<Result<LeasePage>> {
     extra: Partial<LeaseRow> = {},
   ): LeaseRow => ({
     lease_id: id,
-    task_id: `task_${id}`,
+    // A TASK THE AGENT FIXTURE KNOWS (QA1-FIX-12 chrome-C25): Holders names a
+    // holder by its task read, and `task_d1` is not one, so every row fell
+    // back to its short id on the fixture console.
+    task_id: FIXTURE_LEASE_TASKS[id] ?? `task_${id}`,
     attempt_id: `att_${id}`,
     tenant_id: 'u-bogdan',
     generation: 1,
@@ -4413,7 +4471,8 @@ const FIXTURE_INPUT_CONTRACTS: Record<string, FixtureInputContract> = {
   "indexer": {"required_keys": ["prompt"]},
   "claude-code-browser": {"required_keys": ["prompt"]},
   "claude-code-large": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}}},
-  "await-input": {"required_keys": []}
+  "await-input": {"required_keys": []},
+  "fix-loop": {"required_keys": []}
 }
 
 /**
@@ -4448,7 +4507,8 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
   "indexer": {"available": true, "disabled_reason": ""},
   "claude-code-browser": {"available": true, "disabled_reason": ""},
   "claude-code-large": {"available": true, "disabled_reason": ""},
-  "await-input": {"available": true, "disabled_reason": ""}
+  "await-input": {"available": true, "disabled_reason": ""},
+  "fix-loop": {"available": false, "disabled_reason": "fix-loop is not available yet: it ships unavailable until its acceptance run passes, as docs/design/fix-loop.md says."}
 }
 
 async function fixtureCapacity(): Promise<Result<Capacity>> {
@@ -5018,9 +5078,55 @@ function fixtureBudgetTasks(listed: Task[]): Task[] {
   ]
 }
 
-/** A task a per-task read answers and no list returns: a waiting one (#1782) or a budget one (#2459). */
+/**
+ * THE AGENT ANOTHER USER SUBMITTED (#1857, RAW-PATCH-FIXTURE; BGD's decision
+ * 2026-10-27). The raw patch is offered to a task's submitter only, and every
+ * other fixture task was submitted by the signed-in fixture user, so the
+ * console only ever showed the offer. This one finished agent was submitted by
+ * someone else: its Artifacts tab lists the same `diff.patch` with the
+ * redacted download alone, beside any of the user's own agents (for example
+ * `task_99284d38`), which also offer "Download raw patch".
+ *
+ * Reached BY ID AND KEPT OFF THE LISTS, as the budget agents are, so every
+ * list and count other tests pin stays where it was. Everything else is a
+ * finished claude-code agent's ordinary shape; only `submitted_by` differs.
+ */
+const FIXTURE_OTHER_SUBMITTER = 'task_patch_other_submitter'
+
+function fixtureOtherSubmitterTasks(listed: Task[]): Task[] {
+  const base = listed.find((t) => t.state === 'SUCCEEDED' && t.runner_profile === 'claude-code') ?? listed[0]
+  if (base === undefined) return []
+  const at = (minsAgo: number) => new Date(FIXTURE_NOW - minsAgo * 60_000).toISOString()
+  return [
+    fixtureTimed({
+      ...base,
+      id: FIXTURE_OTHER_SUBMITTER,
+      state: 'SUCCEEDED',
+      submitted_by: 'dave@example.com',
+      metadata: { title: 'Tidy the lease test fixtures' },
+      input: null,
+      workflow_id: null,
+      step_id: null,
+      depends_on: null,
+      attempt_count: 1,
+      current_generation: 1,
+      current_lease_id: null,
+      created_at: at(70),
+      // Its end: `fixtureTimed` derives the start and the completion from it.
+      updated_at: at(64),
+      last_error: null,
+      dispatch: { strategy: 'collect', carrier: 'checkpoints', role: null, integrates: [] },
+    }),
+  ]
+}
+
+/** A task a per-task read answers and no list returns: a waiting one (#1782), a budget one (#2459), or another user's (#1857). */
 function fixtureOffList(listed: Task[], taskId: string): Task | undefined {
-  return fixtureWaitingTasks(listed).find((t) => t.id === taskId) ?? fixtureBudgetTasks(listed).find((t) => t.id === taskId)
+  return (
+    fixtureWaitingTasks(listed).find((t) => t.id === taskId) ??
+    fixtureBudgetTasks(listed).find((t) => t.id === taskId) ??
+    fixtureOtherSubmitterTasks(listed).find((t) => t.id === taskId)
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -5212,7 +5318,10 @@ function fixtureTaskRows(): Task[] {
     started_at: null,
     completed_at: null,
     submitted_by: 'alice@example.com',
-    attempt_count: state === 'FAILED' ? 3 : 1,
+    // A NEVER-ADMITTED TASK COUNTS NO ATTEMPT (QA1 overview-agents-58): the
+    // generation below is 0 for QUEUED and READY, and `fixtureSpans` serves
+    // them no attempt, so a counter of 1 drew `counts 1 · returned 0`.
+    attempt_count: state === 'FAILED' ? 3 : state === 'QUEUED' || state === 'READY' ? 0 : 1,
     max_attempts: 3,
     park_reason: null,
     blocked_by: null,
@@ -5315,7 +5424,20 @@ function fixtureTaskRows(): Task[] {
     }),
     mk('task_92eb4807', 'STARTING', 'claude-code', 2),
     mk('task_460409cd', 'LEASED', 'claude-code', 1),
-    mk('task_950b8e4a', 'READY', 'claude-code', 1),
+    // A READY ROW SAYS WHICH POOL REFUSES IT (visual QA pass 1,
+    // overview-agents-56): the sidebar named `anthropic · u-bogdan` full and
+    // this row named nothing. Its `waiting_for` is the capacity fixture's own
+    // claude-code blocker, the per-tenant anthropic slice at 5 of 5.
+    mk('task_950b8e4a', 'READY', 'claude-code', 1, {
+      waiting_for: {
+        as_of: new Date(FIXTURE_NOW).toISOString(),
+        admissible_now: false,
+        holds_capacity: false,
+        lead: { pool: 'provider:anthropic:tenant:u-bogdan', state: 'full', active: 5, limit: 5, units: 1, reason: 'PROVIDER_CONCURRENCY_LIMIT' },
+        pools: [{ pool: 'provider:anthropic:tenant:u-bogdan', state: 'full', active: 5, limit: 5, units: 1, reason: 'PROVIDER_CONCURRENCY_LIMIT' }],
+        complete: true,
+      },
+    }),
     mk('task_e7d210b6', 'QUEUED', 'claude-code', 0),
     // THE FAILED TASK WHOSE CLI REPORTED SUCCESS (QA-115, kept as built):
     // its transcript ends `result · success` and the task still failed
@@ -5389,7 +5511,7 @@ function fixtureTaskRows(): Task[] {
       park_reason: 'DEPENDENCY_INCOMPLETE',
       // The listing row's `waiting` (#1782, WAIT-API), in the sentence
       // `swarm_api/waiting_detail.py` writes, so the Waiting tab's short
-      // reason ("upstream: 1 step") is reachable in development.
+      // reason ("waiting on scan-terraform") is reachable in development.
       waiting: { reason: 'DEPENDENCY_INCOMPLETE', summary: 'Waiting on 1 upstream steps: scan-terraform (RUNNING)' },
       dispatch: {
         strategy: 'integrate', carrier: 'checkpoints', role: 'integrator',
@@ -6606,13 +6728,15 @@ function fixturePoolHealth(): PoolHealth {
       [-30 * H, 'overloaded'], [-30 * H + 8 * M, 'overloaded'],
     ],
     'u-bogdan:weekly-burn': [
-      [-3 * H, 'rate_limit', { w: 'seven_day', r: 20 * H }],
+      // Its reset is the one Accounts draws (seven_day resets_at, ISO(70 h)): QA1-FIX-01 capacity-04.
+      [-3 * H, 'rate_limit', { w: 'seven_day', r: 70 * H }],
       [-2 * H, 'assign_refused', { w: 'seven_day', m: 'not assigned: its 7-day window is under its floor' }],
       [-27 * H, 'exhausted'],
     ],
     'u-bogdan:five-hour-floor': [
-      [-90 * M, 'rate_limit', { w: 'five_hour', r: 50 * M }],
-      [-70 * M, 'rate_limit', { w: 'five_hour', r: 50 * M }],
+      // Its reset is the one Accounts draws (five_hour resets_at, ISO(40 min)): QA1-FIX-01 capacity-04.
+      [-90 * M, 'rate_limit', { w: 'five_hour', r: 40 * M }],
+      [-70 * M, 'rate_limit', { w: 'five_hour', r: 40 * M }],
       [-52 * H, 'rate_limit', { w: 'five_hour', r: -48 * H }],
       [-120 * H, 'rate_limit', { w: 'five_hour', r: -117 * H }],
     ],
@@ -7685,7 +7809,7 @@ function fixtureRepositories(): unknown {
       repository_url: `https://github.com/example-org/${r.repo}`, default_branch: 'main',
       allowed_profiles: ['claude-code'], created_by: 'alice@example.com', created_at: fixtureAgo((20 - i * 5) * 24 * FIXTURE_HOUR),
       index: {
-        interval_hours: r.interval_hours, on_change: r.on_change, min_change_interval_minutes: 30, paused: false,
+        interval_hours: r.interval_hours, on_change: r.on_change, min_change_interval_minutes: 120, paused: false,
         current_sha: fixtureSha(r.sha), last_indexed_at: fixtureAgo((i + 2) * FIXTURE_HOUR), head_sha: fixtureSha(r.sha),
         behind_by: 0, stale: false, in_flight_task_id: null,
         coverage: { modules: r.modules, modules_with_tests: r.tested, test_map_edges: r.edges, always_tests: 1 },
@@ -7696,6 +7820,9 @@ function fixtureRepositories(): unknown {
       index_credential: { source: 'tenant', secret_name: `swarm-tenant-${FIXTURE_TENANT}-git` },
       agents_may_file_issues: fixtureFileIssues.get(r.repo_id) ?? false,
       workflow_files: fixtureWorkflowFiles.get(r.repo_id) ?? false,
+      // Two of three open to agents, so Submit's Additional repositories picker
+      // draws a list and the gate both (QA1-FIX-10, runs-submit-16).
+      readable_by_tasks: i < 2, archived: false,
     })).filter((x) => !fixtureRemoved.has(x.repo_id)),
   }
 }
@@ -7706,6 +7833,71 @@ function fixtureRepoIndex(repoId: string): unknown {
   if (r === undefined) return undefined
   const modules = Array.from({ length: r.modules }, (_v, i) => ({ path: `src/module_${i + 1}`, files: 4 + i, lines: 300 + 40 * i, language: 'typescript' }))
   return { index: { commit_sha: fixtureSha(r.sha), truncated: [] }, document: { modules, truncated: [] } }
+}
+
+/**
+ * `GET /v1/repositories/{repo_id}/graph-cache` for a fixture repository
+ * (CACHE-4-CONSOLE): two replicas read and ONE NOT READ (a peer that timed
+ * out), so the fixture build draws the hard case of §5.3, and no `carried`
+ * count, so the reuse tile is its dash. `shards=1` adds a page of the list,
+ * changed shards first. Digests are built here, never written out whole.
+ */
+function fixtureGraphCache(url: string): unknown {
+  const repoId = fixtureSegment(url, 3)
+  const r = FIXTURE_REPOS.find((x) => x.repo_id === repoId)
+  if (r === undefined) return undefined
+  const MiB = 1024 * 1024
+  const digest = (seed: string) => `sha256:${seed.repeat(Math.ceil(64 / seed.length)).slice(0, 64)}`
+  const current = digest(`${r.sha}c`)
+  const warm = { digest: current, ms: 2140, shards: 46, replayed: 200 }
+  const replicas = [
+    {
+      replica: 'swarm-graph-0', state: 'read', started_at: fixtureAgo(3 * 24 * FIXTURE_HOUR), uptime_seconds: 3 * 24 * 3600,
+      result_bytes: 61 * MiB, result_bound: 256 * MiB, shard_bytes: 188 * MiB, shard_bound: 512 * MiB,
+      answers_hot: 412, shards_hot: 31, last_warm: warm,
+    },
+    {
+      replica: 'swarm-graph-1', state: 'read', started_at: fixtureAgo(5 * FIXTURE_HOUR), uptime_seconds: 5 * 3600,
+      result_bytes: 23 * MiB, result_bound: 256 * MiB, shard_bytes: 97 * MiB, shard_bound: 512 * MiB,
+      answers_hot: 140, shards_hot: 18, last_warm: { ...warm, ms: 1870 },
+    },
+    { replica: 'swarm-graph-2', state: 'not_read', reason: 'timeout' },
+  ]
+  const layers = ['symbols', 'callers', 'callees', 'tests', 'signatures', 'files', 'terms']
+  const rows = Array.from({ length: r.modules * layers.length }, (_v, i) => {
+    const layer = layers[i % layers.length]!
+    const mod = `src/module_${Math.floor(i / layers.length) + 1}`
+    const changed = i % 5 === 0
+    const hits = changed ? 3 + i : 40 + ((i * 37) % 300)
+    return {
+      layer, module: mod, blob: digest(`${(i + 11).toString(16)}e`), raw_bytes: 4096 + i * 1531,
+      last_merge: changed ? 'changed' : 'unchanged',
+      replicas: [{ replica: 'swarm-graph-0', hot: i % 3 !== 0 }, { replica: 'swarm-graph-1', hot: i % 4 === 0 }],
+      hits_24h: hits, last_read: fixtureAgo((i % 9) * 6 * 60_000 + 40_000),
+    }
+  }).sort((a, b) => Number(b.last_merge === 'changed') - Number(a.last_merge === 'changed') || b.hits_24h - a.hits_24h)
+  const page = Math.max(1, Number(new URLSearchParams(url.split('?')[1] ?? '').get('page') ?? '1') || 1)
+  const withShards = (url.split('?')[1] ?? '').includes('shards=1')
+  return {
+    repo_id: repoId,
+    index: { commit_sha: fixtureSha(r.sha), manifest_digest: current, previous_sha: fixtureSha(`${r.sha}p`), previous_digest: digest(`${r.sha}p`) },
+    // swarm-graph-1 restarted 5 h ago, so the window covers 5 h, not 24.
+    facts: {
+      window_hours: 5, answers: 1284, hit: 1168, carried: null, miss: 116, hit_rate: 1168 / 1284,
+      reused_share: null, served_p95_ms: 38, last_warm: warm,
+    },
+    replicas,
+    stats: { state: 'read' },
+    latency: { p50_ms: 61, p95_ms: 152, max_ms: 410, reference_ms: 20.5, symbols: 9120 },
+    ...(withShards
+      ? {
+          shards: {
+            state: 'read', comparison: 'read', total: rows.length, changed: rows.filter((x) => x.last_merge === 'changed').length,
+            page, page_rows: 100, rows: rows.slice((page - 1) * 100, page * 100),
+          },
+        }
+      : {}),
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -7787,6 +7979,18 @@ function fixtureOnboarding(): unknown {
   return {
     tenant_id: FIXTURE_TENANT, user: 'alice@example.com', user_hash: '5a1ce0e8a3b7c912', derived_at: new Date(FIXTURE_NOW).toISOString(),
     steps, next_step: 'orgs_enabled', complete: false, dismissed: false, dismissed_at: null, source: 'derived on this read',
+    // config_setup.py's field, which the live read carries and the strip's
+    // Secrets set and People invited are drawn from (QA1-FIX-10, config-09).
+    // It agrees with `fixtureSecretsOverview`'s workspace scope: MCP server
+    // kb's credential is the one thing needed and not stored.
+    config_setup: {
+      secrets: {
+        needed: 1, done: false,
+        items: [{ kind: 'mcp_server', name: 'kb', needed_by: 'kb', where: 'config/secrets' }],
+        sources: { mcp_servers: { needed: 1, reason: null }, qa_targets: { needed: 0, reason: null }, provider_key: { needed: 0, reason: null } },
+      },
+      people: { applies: false, done: null, holders: null, admins: null, pending: null, reason: 'a personal workspace has nobody to invite', pending_reason: null },
+    },
   }
 }
 
@@ -8148,6 +8352,10 @@ const FIXTURE_READS: Readonly<Record<string, (url: string) => FixtureBody | unde
     const body = fixtureRepoIndex(fixtureSegment(url, 3))
     return body === undefined ? undefined : { body }
   },
+  '/v1/repositories/{repo_id}/graph-cache': (url) => {
+    const body = fixtureGraphCache(url)
+    return body === undefined ? undefined : { body }
+  },
   '/v1/provider-keys/{provider}': (url) => ({ body: fixtureProviderKeys(fixtureSegment(url, 3)) }),
   '/v1/judgment': () => ({ body: fixtureJudgment() }),
   '/v1/code-intelligence': () => ({ body: fixtureCodeIntelligence() }),
@@ -8185,6 +8393,17 @@ async function readAs<T>(target: ApiRoute, norm: (raw: unknown) => T, isEmpty: (
   }
   if (r.status === 'stale') return { ...r, data: norm(r.data) }
   return r
+}
+
+/**
+ * A fixture read's raw body, through the same table and probe as `readAs`,
+ * for a reader that walks pages and filters rows itself (Dispatch.tsx's
+ * `loadTaskReadableRepositories`). In the fixture build `fetch.read` asks the
+ * dev server, which serves no API, so that reader drew a 404 over a route
+ * this table answers.
+ */
+export function fixtureRead(target: ApiRoute): Promise<Result<unknown>> {
+  return readAs(target, (raw) => raw)
 }
 
 async function writeTo(target: ApiRoute, method: 'POST' | 'PUT' | 'DELETE', body?: unknown): Promise<Result<unknown>> {
@@ -8242,6 +8461,216 @@ export async function loadRepositoryIndex(repoId: string): Promise<Result<IndexD
 /** `GET /v1/repositories/{repo_id}/graph`: the module dependency graph, aggregated for drawing (Graph A). */
 export async function loadRepositoryGraph(repoId: string): Promise<Result<ModuleGraph | null>> {
   return readAs(route('/v1/repositories/{repo_id}/graph', { repo_id: repoId }), normModuleGraph)
+}
+
+// ---------------------------------------------------------------------------
+// The Cache section (docs/design/graph-answer-cache.md §5.2-§5.5, lane
+// CACHE-4-CONSOLE): `GET /v1/repositories/{repo_id}/graph-cache`, as
+// swarm-api's `routes/graph_cache.py` answers it. Every figure the route
+// leaves null stays null here: a replica that was not read is its reason,
+// never a panel of zeros, and `carried` is null until carry forward exists.
+// ---------------------------------------------------------------------------
+
+/** Why swarm-graph, or one replica of it, was not read (graph_cache.py's reasons). */
+export type GraphCacheReason = string
+
+export interface GraphCacheWarm {
+  digest: string
+  ms: number | null
+  shards: number | null
+  replayed: number | null
+}
+
+export type GraphCacheReplica =
+  | {
+      replica: string
+      state: 'read'
+      started_at: string | null
+      uptime_seconds: number | null
+      result_bytes: number | null
+      result_bound: number | null
+      shard_bytes: number | null
+      shard_bound: number | null
+      answers_hot: number | null
+      shards_hot: number | null
+      last_warm: GraphCacheWarm | null
+    }
+  | { replica: string; state: 'not_read'; reason: GraphCacheReason }
+
+/** §5.2's tiles, summed over the replicas read; null where nothing was read. */
+export interface GraphCacheFacts {
+  window_hours: number | null
+  answers: number | null
+  hit: number | null
+  /** Null until carry forward exists (BGD Q4): never a 0 that says it ran. */
+  carried: number | null
+  miss: number | null
+  hit_rate: number | null
+  reused_share: number | null
+  served_p95_ms: number | null
+  last_warm: GraphCacheWarm | null
+}
+
+/**
+ * The current version's `answer_latency` (§1.2): the uncached p95 and the
+ * reference workload's time, or why it was not measured.
+ */
+export type GraphCacheLatency =
+  | { state: 'measured'; p95_ms: number; reference_ms: number | null }
+  | { state: 'unmeasured'; cause: string }
+
+export interface GraphCacheShardRow {
+  layer: string
+  module: string
+  blob: string
+  raw_bytes: number | null
+  /** Null when there is no previous version to compare with. */
+  last_merge: 'changed' | 'unchanged' | null
+  replicas: { replica: string; hot: boolean }[]
+  hits_24h: number | null
+  last_read: string | null
+}
+
+export type GraphCacheShards =
+  | {
+      state: 'read'
+      comparison: string
+      total: number
+      changed: number | null
+      page: number
+      page_rows: number
+      rows: GraphCacheShardRow[]
+    }
+  | { state: 'not_read'; reason: string }
+
+export interface GraphCacheDoc {
+  repo_id: string
+  index: { commit_sha: string | null; manifest_digest: string | null; previous_sha: string | null; previous_digest: string | null } | null
+  facts: GraphCacheFacts
+  replicas: GraphCacheReplica[]
+  /** Whether swarm-graph itself answered; `not_read` with `replicas: []` when it did not. */
+  stats: { state: 'read' } | { state: 'not_read'; reason: GraphCacheReason }
+  latency: GraphCacheLatency | null
+  /** Present only on a `shards=1` read. */
+  shards: GraphCacheShards | null
+}
+
+const gcRec = (v: unknown): Record<string, unknown> => (typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {})
+const gcNum = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null)
+const gcStr = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null)
+
+function normGraphCacheWarm(v: unknown): GraphCacheWarm | null {
+  const w = gcRec(v)
+  const digest = gcStr(w.digest)
+  return digest === null ? null : { digest, ms: gcNum(w.ms), shards: gcNum(w.shards), replayed: gcNum(w.replayed) }
+}
+
+function normGraphCacheReplica(v: unknown): GraphCacheReplica | null {
+  const r = gcRec(v)
+  const replica = gcStr(r.replica)
+  if (replica === null) return null
+  // Anything but a replica the route says it read is one it did not read.
+  if (r.state !== 'read') return { replica, state: 'not_read', reason: gcStr(r.reason) ?? 'bad_response' }
+  return {
+    replica,
+    state: 'read',
+    started_at: gcStr(r.started_at),
+    uptime_seconds: gcNum(r.uptime_seconds),
+    result_bytes: gcNum(r.result_bytes),
+    result_bound: gcNum(r.result_bound),
+    shard_bytes: gcNum(r.shard_bytes),
+    shard_bound: gcNum(r.shard_bound),
+    answers_hot: gcNum(r.answers_hot),
+    shards_hot: gcNum(r.shards_hot),
+    last_warm: normGraphCacheWarm(r.last_warm),
+  }
+}
+
+/**
+ * `answer_latency` as §1.2 records it: the median run's `p95_ms` and its
+ * `reference_ms`, at the top or under `run`; `{state: "unmeasured", cause}`,
+ * or the route's `not_recorded`, otherwise.
+ */
+function normGraphCacheLatency(v: unknown): GraphCacheLatency | null {
+  if (typeof v !== 'object' || v === null) return null
+  const l = gcRec(v)
+  if (l.state === 'unmeasured') return { state: 'unmeasured', cause: gcStr(l.cause) ?? 'not_recorded' }
+  const run = gcNum(l.p95_ms) !== null ? l : gcRec(l.run)
+  const p95 = gcNum(run.p95_ms)
+  if (p95 === null) return { state: 'unmeasured', cause: 'malformed' }
+  return { state: 'measured', p95_ms: p95, reference_ms: gcNum(run.reference_ms) ?? gcNum(l.reference_ms) }
+}
+
+function normGraphCacheShards(v: unknown): GraphCacheShards | null {
+  if (typeof v !== 'object' || v === null) return null
+  const s = gcRec(v)
+  if (s.state !== 'read') return { state: 'not_read', reason: gcStr(s.reason) ?? 'bad_response' }
+  const rows = (Array.isArray(s.rows) ? s.rows : []).map((x): GraphCacheShardRow => {
+    const r = gcRec(x)
+    const merge = r.last_merge === 'changed' || r.last_merge === 'unchanged' ? r.last_merge : null
+    return {
+      layer: gcStr(r.layer) ?? '',
+      module: gcStr(r.module) ?? '',
+      blob: gcStr(r.blob) ?? '',
+      raw_bytes: gcNum(r.raw_bytes),
+      last_merge: merge,
+      replicas: (Array.isArray(r.replicas) ? r.replicas : []).flatMap((m) => {
+        const name = gcStr(gcRec(m).replica)
+        return name === null ? [] : [{ replica: name, hot: gcRec(m).hot === true }]
+      }),
+      hits_24h: gcNum(r.hits_24h),
+      last_read: gcStr(r.last_read),
+    }
+  })
+  return {
+    state: 'read',
+    comparison: gcStr(s.comparison) ?? 'read',
+    total: gcNum(s.total) ?? rows.length,
+    changed: gcNum(s.changed),
+    page: gcNum(s.page) ?? 1,
+    page_rows: gcNum(s.page_rows) ?? 100,
+    rows,
+  }
+}
+
+/** The route's body, held to the fields §5.2 draws. */
+export function normGraphCache(raw: unknown): GraphCacheDoc {
+  const d = gcRec(raw)
+  const f = gcRec(d.facts)
+  const ix = typeof d.index === 'object' && d.index !== null ? gcRec(d.index) : null
+  const stats = gcRec(d.stats)
+  return {
+    repo_id: gcStr(d.repo_id) ?? '',
+    index:
+      ix === null
+        ? null
+        : { commit_sha: gcStr(ix.commit_sha), manifest_digest: gcStr(ix.manifest_digest), previous_sha: gcStr(ix.previous_sha), previous_digest: gcStr(ix.previous_digest) },
+    facts: {
+      window_hours: gcNum(f.window_hours),
+      answers: gcNum(f.answers),
+      hit: gcNum(f.hit),
+      carried: gcNum(f.carried),
+      miss: gcNum(f.miss),
+      hit_rate: gcNum(f.hit_rate),
+      reused_share: gcNum(f.reused_share),
+      served_p95_ms: gcNum(f.served_p95_ms),
+      last_warm: normGraphCacheWarm(f.last_warm),
+    },
+    replicas: (Array.isArray(d.replicas) ? d.replicas : []).map(normGraphCacheReplica).filter((r): r is GraphCacheReplica => r !== null),
+    stats: stats.state === 'read' ? { state: 'read' } : { state: 'not_read', reason: gcStr(stats.reason) ?? 'bad_response' },
+    latency: normGraphCacheLatency(d.latency),
+    shards: normGraphCacheShards(d.shards),
+  }
+}
+
+/**
+ * `GET /v1/repositories/{repo_id}/graph-cache[?shards=1&page=N]`: the Cache
+ * section's one read (§5.3). `shardsPage` null asks for no shard list, so a
+ * folded list costs nothing (§5.2).
+ */
+export async function loadRepositoryGraphCache(repoId: string, shardsPage: number | null = null): Promise<Result<GraphCacheDoc>> {
+  const q = shardsPage === null ? undefined : new URLSearchParams({ shards: '1', page: String(shardsPage) })
+  return readAs(route('/v1/repositories/{repo_id}/graph-cache', { repo_id: repoId }, q), normGraphCache)
 }
 
 /** `GET /v1/repositories/{repo_id}/symbols?q=`: symbols whose id contains `q`. */
@@ -9459,7 +9888,7 @@ function fixtureSecretsOverview(url: string): unknown {
   const base = { section: 'agents', store: 'workspace_secrets', consumers: ['profile:claude-code'], shadowed_by: [], shadows: [], can_manage: true }
   const github = (scopeOf: string) => ({
     section: 'github', store: 'git_tokens', name: `swarm-tenant-${FIXTURE_TENANT}-git`, scope: scopeOf, kind: 'app_user',
-    status: 'active', forge_login: 'operator', verified_at: at(0.002), expires_at: new Date(Date.parse(FIXTURE_CLOCK) + 7 * 3_600_000).toISOString(),
+    status: 'active', forge_login: 'alice-example', verified_at: at(0.002), expires_at: new Date(Date.parse(FIXTURE_CLOCK) + 7 * 3_600_000).toISOString(),
     set_at: at(3), set_by: 'alice@example.com', consumers: [], can_manage: false, page: '/repositories/tokens',
   })
   if (scope === 'repository') {
@@ -9496,7 +9925,7 @@ function fixtureSecretsOverview(url: string): unknown {
     rows: [
       { ...base, name: 'typesafe-key', scope: 'workspace', kind: 'api_key', status: 'set', set_at: at(2), set_by: 'alice@example.com',
         shadowed_by: [{ scope: 'personal', where: 'agents of alice@example.com', person: 'alice@example.com', slot: 'typesafe' }] },
-      { section: 'keys', store: 'provider_keys', name: 'typesafe', status: 'unset', set_at: null, set_by: null, consumers: [], can_manage: true },
+      { section: 'keys', store: 'provider_keys', name: 'typesafe', status: 'set', set_at: at(5), set_by: 'alice@example.com', consumers: [], can_manage: true },
       { section: 'keys', store: 'runner_provider_keys', name: 'anthropic', status: 'set', set_at: null, set_by: null, consumers: ['profile:claude-code'], can_manage: true },
       { section: 'keys', store: 'mcp_servers', name: 'kb', consumer: 'mcp:kb', secrets: [], status: 'unset', set_at: null, set_by: null, consumers: ['mcp:kb'], can_manage: true },
       { section: 'accounts', store: 'pool_accounts', name: 'subscription accounts', status: 'elsewhere', consumers: [], can_manage: false, page: '/capacity/accounts' },

@@ -593,6 +593,7 @@ const END_CAUSE_SAY: Readonly<Record<EndCause, string>> = {
   publish_refused: 'publishing was refused',
   child_cascade: 'a child agent ended it',
   budget_exceeded: 'it was stopped at its budget',
+  fix_loop_exhausted: 'its fix loop ended without a merge',
 }
 
 /**
@@ -2094,7 +2095,7 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
           newest attempt, against its limits, with the throttled windows
           shaded. It reads its own route, on its own clock while the task
           runs, and stops once it is finished. */}
-      <UtilisationPanel taskId={task.id} live={!TERMINAL_STATES.has(task.state)} limitCores={latest?.cpu_limit_cores ?? null} />
+      <UtilisationPanel taskId={task.id} live={!TERMINAL_STATES.has(task.state)} />
       <details className="dt-disc">
         <summary>Details: memory, spend and each attempt over time</summary>
         <Attempts run={run} now={now} />

@@ -255,6 +255,7 @@ from .gitops import (
     is_branch_ref_name,
     merge_branches,
     mirror_worktree,
+    moved_branch_tip,
     origin_tips_as_data,
     own_branch_tip,
     prepare_publish_repo,
@@ -461,6 +462,38 @@ SWAP_EXHAUSTED = "exhausted"
 SWAP_DRAIN = "drain"
 SWAP_UNUSABLE = "unusable"
 
+#: Why a dead credential moves an attempt to another account (#1855; BGD
+#: 2026-10-28: "it should automatically move in the future on this error").
+#: The `why` of the `account_moved` event; to the broker every one of them is a
+#: `SWAP_UNUSABLE` swap, which marks the dead account for this tenant.
+#:   * the token the secret still holds is the one the provider just refused,
+#:     so a reload would start the CLI on the same dead token;
+#:   * the refresher wrote successors and the provider refused those too, past
+#:     `MAX_CREDENTIAL_RELOADS`;
+#:   * the broker marked the account `reauth_required` (its refresh failed):
+#:     a person has to log it in again, and no reload will help;
+#:   * the secret could not be read at all on the reload.
+MOVE_TOKEN_UNCHANGED = "token_unchanged"
+MOVE_REFUSED_AFTER_RELOAD = "refused_after_reload"
+MOVE_REAUTH_REQUIRED = "reauth_required"
+MOVE_TOKEN_UNREADABLE = "token_unreadable"
+
+#: The account state the broker stores when its refresh failed, read off the
+#: hold's status: `quota_broker.accounts.AccountState.REAUTH_REQUIRED.value`,
+#: which `account_hold_status` returns as is. The lowercase `reauth_required`
+#: is the refresh-outcome reason (`CREDENTIAL_NEEDS_A_HUMAN`), never a state.
+ACCOUNT_STATE_REAUTH_REQUIRED = "REAUTH_REQUIRED"
+
+#: The pool declines where the workspace HAS a pool and its broker did not
+#: answer (#2560). Asked once more, then parked: never the tenant's own secret,
+#: which in task_d212c88b was a key the provider refused. Every other decline
+#: means the workspace has no pool for this run, and keeps the tenant secret.
+POOL_UNANSWERED = ("broker_unreachable", "broker_client_error")
+#: Asks of the broker for one assignment when it does not answer: the first,
+#: and one more (#2560). A broker that is down for a second is not one that is
+#: down for the next quarter of an hour, which is what the park waits.
+POOL_ASKS = 2
+
 #: One heartbeat event per this many lease heartbeats. The lease is refreshed
 #: every interval; the event stream would be unreadable at that rate.
 HEARTBEAT_EVENT_EVERY = 5
@@ -569,6 +602,12 @@ BASE_MERGE_SUPERSEDED_FIELD = "base_merge_superseded"
 #: Enough to name what main rewrote under a round -- one file, measured --
 #: without a vendored-tree conflict filling the record.
 BASE_MERGE_SUPERSEDED_MAX = 20
+#: The `result_summary.git` key `_push_onto_base_merge` sets when a continued
+#: branch was moved by something other than merges of the default branch --
+#: another fix round's commit, a conflict fix -- and this round's commits were
+#: replayed onto that tip (#1821, owner decision 2026-10-27): the tip's sha.
+#: `moved_tip_from` beside it holds the clone base the round started from.
+MOVED_TIP_FIELD = "moved_tip"
 #: The paths a push may touch only with the `workflow` scope (AU-3,
 #: docs/design/agent-autonomy.md §3.3): `_publish_git` hands a branch whose
 #: new commits touch either to swarm-api's `git_push_branch`. Restated from
@@ -1144,6 +1183,13 @@ class Worker:
         # Accounts this attempt was given and could not read. Sent back to the
         # broker as `exclude` so the next ask does not return the same one.
         self._account_rejected: list[str] = []
+        # A digest of the token each held account's secret last gave this
+        # attempt (#1855), never the token: a refused credential whose secret
+        # still holds the same token moves the attempt rather than reloading it.
+        self._account_token_digests: dict[str, str] = {}
+        # Why the runner was asked to stop at its turn boundary when it was not
+        # a drain: the broker marked the held account `reauth_required`.
+        self._move_why: str | None = None
         # THE ACCOUNT MID-RUN (S13-S15), for an attempt that holds one. The
         # session id the runner's stream named, kept to `--resume` it under
         # another account and NEVER logged (it is registered as a secret);
@@ -1613,6 +1659,23 @@ class Worker:
                         kind="auth",
                         message="the provider refused the account's credential",
                     )
+                    # A DEAD TOKEN MOVES THE ATTEMPT (#1855). Reloading helps
+                    # only when the refresher wrote a successor; a token that
+                    # came back unchanged, a successor refused again, or an
+                    # account the broker marked `reauth_required` moves to a
+                    # healthy account of the same pool and resumes there, in
+                    # this lease, attempt and generation -- or parks on the
+                    # pool when there is none. Never a failure.
+                    why = self._dead_credential(credential_reloads)
+                    if why is not None:
+                        ws.credential_path.unlink(missing_ok=True)
+                        moved = self._swap_account(SWAP_UNUSABLE, why=why)
+                        if isinstance(moved, Outcome):
+                            return moved
+                        if moved is not None:
+                            child_env = moved
+                            attempt_number -= 1
+                            continue
                 if refusal is not None and credential_reloads < MAX_CREDENTIAL_RELOADS:
                     credential_reloads += 1
                     # RESUMED, NOT STARTED AGAIN (#626). A restart from the
@@ -4410,6 +4473,11 @@ class Worker:
                 # The owner's words for it (2026-10-05): on MERGE, no fix
                 # agent; the step only published the reviewed work.
                 summary["skipped_agent"] = f"review verdict {self._verdict['verdict']}"
+                noop = self._verdict.get(verdict_mod.NOOP_PRECHECK_KEY)
+                if noop is not None:
+                    # #2524 check (b): a NOT_YET whose head a MERGE already covers.
+                    summary[verdict_mod.NOOP_PRECHECK_KEY] = dict(noop)
+                    summary["skipped_agent"] = f"no-op precheck (b): {noop['reason']}"
             if result.exit_code != EXIT_TERMINATED:
                 # After the publish, so the epic hears of a review only once
                 # the step it gated has done its own work; never on a stop.
@@ -7257,7 +7325,15 @@ class Worker:
             ws.work / source.path, task_id=gate.task_id, filename=source.filename
         )
         runs = read.verdict in gate.verdict_in
-        self._verdict_staged = (ws.work / source.path, source.filename)
+        passed_on = ws.work / source.path
+        # The no-op precheck, check (b) (#2524, BGD 2026-10-28): a NOT_YET
+        # that would run the agent does not when this head already holds a
+        # commit a review gave MERGE. The MERGE is then the verdict passed on.
+        noop = self._noop_precheck_b(staged, source, read) if (
+            runs and read.verdict == "NOT_YET") else None
+        if noop is not None:
+            runs, passed_on = False, noop[1]
+        self._verdict_staged = (passed_on, source.filename)
         self._verdict = {
             "task_id": gate.task_id,
             "file": source.filename,
@@ -7276,6 +7352,8 @@ class Worker:
             self._verdict["reviewed_patches"] = self._reviewed_patches(gate.task_id)
         if read.locations_dropped:
             self._verdict["locations_dropped"] = read.locations_dropped
+        if noop is not None:
+            self._verdict[verdict_mod.NOOP_PRECHECK_KEY] = noop[0].as_record()
         self._verdict_minors = read.minors
         self._verdict_minors_dropped = read.minors_dropped
         self.log.info(
@@ -7287,6 +7365,56 @@ class Worker:
             findings=len(read.findings) + read.findings_dropped,
         )
         return runs
+
+    def _noop_precheck_b(
+        self,
+        staged: list[inputs_mod.StagedInput],
+        source: inputs_mod.StagedInput,
+        read: verdict_mod.Verdict,
+    ) -> tuple[verdict_mod.ContainedMerge, Path] | None:
+        """A MERGE verdict this step stages whose `commit` its head holds, and its file.
+
+        Every staged `verdict.json` is read (the gate's own and any other a
+        step stages from a review), and one that cannot be read is passed
+        over: the gate's own verdict already decided the step. Only on a fresh
+        clone, before any agent wrote to it; the ancestry is asked with hooks
+        off. A git that fails or times out reads as "not contained", so the
+        agent runs (`verdict.merged_commit_contained`).
+        """
+        ws = self.ws
+        assert ws is not None
+        repo = ws.checkout()
+        if self._restored_from is not None or not (repo / ".git").exists():
+            return None
+        found: list[tuple[str, verdict_mod.Verdict, Path]] = [
+            (source.upstream_task_id, read, ws.work / source.path)]
+        for item in staged:
+            if item is source or Path(item.filename).name != owner_questions_mod.REVIEW_OUTPUT:
+                continue
+            try:
+                other = verdict_mod.read_verdict(
+                    ws.work / item.path, task_id=item.upstream_task_id, filename=item.filename)
+            except InputUnavailable:
+                continue
+            found.append((item.upstream_task_id, other, ws.work / item.path))
+
+        def is_ancestor(commit: str) -> bool:
+            code, _ = _git_text(
+                ["git", *_NO_HOOKS, "merge-base", "--is-ancestor", commit, "HEAD"],
+                repo=repo, private_dir=ws.private, logs_dir=ws.logs,
+                slug="noop-precheck-ancestor",
+                timeout_seconds=self.cfg.git_harvest_timeout_seconds, logger=self.log,
+            )
+            return code == 0
+
+        hit = verdict_mod.merged_commit_contained(
+            ((task_id, v) for task_id, v, _path in found), is_ancestor)
+        if hit is None:
+            return None
+        path = next(p for task_id, v, p in found
+                    if task_id == hit.task_id and v.commit == hit.commit)
+        self.log.info("no-op precheck (b): the agent does not run", reason=hit.reason)
+        return hit, path
 
     def _reviewed_patches(self, review_task_id: str) -> list[dict[str, str]]:
         """The patches the review read, with digests (`verdict.reviewed_patches`).
@@ -7430,6 +7558,10 @@ class Worker:
                 {
                     "status": "skipped",
                     "summary": (
+                        f"no-op precheck (b): the "
+                        f"{self._verdict[verdict_mod.NOOP_PRECHECK_KEY]['reason']}; the "
+                        "agent was not started and the step published the reviewed work"
+                        if verdict_mod.NOOP_PRECHECK_KEY in self._verdict else
                         f"the review verdict was {self._verdict['verdict']}, and this "
                         f"step's agent runs only on "
                         f"{', '.join(self._verdict['verdict_in'])}; the agent was not "
@@ -8590,6 +8722,13 @@ class Worker:
                 + (f" ({git['patch_note']})" if git.get("patch_note") else "")
                 + "; the work is in the attempt's final checkpoint."
             )
+        located = credential_locator(cause)
+        if located:
+            # A REFUSAL A BRIEF CAN BE CORRECTED FROM (part of #2524): which
+            # scan rule fired and at which `path:line`, said first and in the
+            # shape `scripts/publish-scan.sh` prints, so it survives whatever
+            # cut the cause meets downstream. Never the matched text.
+            cause = f"the pre-publish credential scan refused it ({located}): {cause}"
         return f"publish_failed: {why} and its branch was not pushed: {cause}. {where}"
 
     def _skipped_publish_missing(self, summary: dict[str, Any]) -> str | None:
@@ -9559,14 +9698,18 @@ class Worker:
             adopted the pool;
           * the profile does not declare `CLAUDE_CODE_OAUTH_TOKEN`, so it wants
             a metered API key and an account has none to give;
-          * the broker is unreachable or answers unusably, which must degrade
-            to the behaviour that worked yesterday rather than fail a task;
           * the tenant has no account registered at all.
+
+        Each of those is a decline, and every decline emits
+        `account_pool_declined` (#2560): which one fired used to be in a log
+        line alone, and task_d212c88b's record could not say.
 
         `NoAccountAvailable` is raised for the cases that are genuinely a wait
         or genuinely broken: accounts exist and every one is spent, paused,
-        draining or unobserved; or the broker REFUSED this worker. The caller
-        parks in both cases -- an attempt is never failed over the pool.
+        draining or unobserved; the broker REFUSED this worker; or the broker
+        did not answer twice (`POOL_UNANSWERED`, #2560 -- it used to fall back
+        to the tenant secret). The caller parks in every case -- an attempt is
+        never failed over the pool.
         """
         if self._account is not None:
             # Already held. Re-reading it is what the credential-reload path
@@ -9577,7 +9720,7 @@ class Worker:
             # Decided once, at step 6, and not revisited. See the field.
             return None
         if self._account_broker is None:
-            return self._decline_pool("no_broker_configured")
+            return self._decline_pool("no_broker_configured", profile.provider)
         if ACCOUNT_TOKEN_ENV not in (profile.secrets or ()):
             self.log.info(
                 "runner profile does not accept a subscription token; using the "
@@ -9585,50 +9728,65 @@ class Worker:
                 runner_profile=profile.name,
                 declared=sorted(profile.secrets or ()),
             )
-            return self._decline_pool("profile_takes_no_subscription")
+            return self._decline_pool("profile_takes_no_subscription", profile.provider)
 
         provider = profile.provider
-        try:
-            outcome = self._account_broker.assign(
-                provider, exclude=tuple(self._account_rejected)
+        cause = POOL_UNANSWERED[0]
+        for ask in range(1, POOL_ASKS + 1):
+            try:
+                outcome = self._account_broker.assign(
+                    provider, exclude=tuple(self._account_rejected)
+                )
+            except BrokerRefused as exc:
+                # REFUSE, DO NOT CARRY ON. A 401/403/404 means the pool is
+                # configured and this worker may not use it -- almost always a
+                # missing `run.invoker` grant for this tenant's worker service
+                # account, or a URL that is not the broker. Falling back here
+                # would put every agent back on the one shared tenant
+                # subscription while the pool's own dashboards showed it
+                # healthy and idle, which is the failure nobody would ever
+                # find. Parking costs nothing and puts the cause in the task's
+                # own blocked_by.
+                self.log.error(
+                    "the quota broker refused this worker; the account pool is "
+                    "configured and this tenant cannot use it",
+                    provider=provider,
+                    error=str(exc),
+                )
+                raise NoAccountAvailable(
+                    NoAccount(reason=BROKER_REFUSED), provider or "unknown"
+                ) from None
+            except BrokerUnavailable as exc:
+                # ASK AGAIN, THEN PARK -- NEVER THE TENANT SECRET (#2560, BGD
+                # 2026-10-28). This used to degrade to the tenant's own secret
+                # with nothing but a log line, and in task_d212c88b that secret
+                # held a key the provider refused: three tasks FAILED on a pool
+                # that was healthy a second later. The workspace HAS a pool, so
+                # its own secret is not how it runs. Parking costs nothing.
+                cause = "broker_unreachable"
+                self.log.warning(
+                    "could not reach the quota broker for an account",
+                    provider=provider,
+                    ask=ask,
+                    error=str(exc),
+                )
+            except Exception as exc:
+                # Defence in depth: whatever the client raised, the pool is
+                # there and did not answer. The same as an unreachable broker.
+                cause = "broker_client_error"
+                self.log.warning(
+                    "the account pool client raised",
+                    provider=provider,
+                    ask=ask,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            else:
+                break
+            self._emit_pool_declined(
+                cause, provider, then="parking" if ask == POOL_ASKS else "asking_again"
             )
-        except BrokerRefused as exc:
-            # REFUSE, DO NOT CARRY ON. A 401/403/404 means the pool is
-            # configured and this worker may not use it -- almost always a
-            # missing `run.invoker` grant for this tenant's worker service
-            # account, or a URL that is not the broker. Falling back here would
-            # put every agent back on the one shared tenant subscription while
-            # the pool's own dashboards showed it healthy and idle, which is
-            # the failure nobody would ever find. Parking costs nothing and
-            # puts the cause in the task's own blocked_by.
-            self.log.error(
-                "the quota broker refused this worker; the account pool is "
-                "configured and this tenant cannot use it",
-                provider=provider,
-                error=str(exc),
-            )
-            raise NoAccountAvailable(
-                NoAccount(reason=BROKER_REFUSED), provider or "unknown"
-            ) from None
-        except BrokerUnavailable as exc:
-            # DEGRADE, DO NOT FAIL. The broker being down is not the task's
-            # fault and the tenant secret still works; turning an outage in a
-            # control-plane service into failed attempts across every tenant is
-            # a much larger incident than the one that started it.
-            self.log.warning(
-                "could not reach the quota broker for an account; falling back "
-                "to the tenant credential",
-                provider=provider,
-                error=str(exc),
-            )
-            return self._decline_pool("broker_unreachable")
-        except Exception as exc:  # pragma: no cover - defence in depth
-            self.log.warning(
-                "the account pool client raised; falling back to the tenant credential",
-                provider=provider,
-                error=f"{type(exc).__name__}: {exc}",
-            )
-            return self._decline_pool("broker_client_error")
+        else:
+            raise NoAccountAvailable(NoAccount(reason=cause), provider or "unknown")
 
         if isinstance(outcome, NoAccount):
             if outcome.is_pool_absent:
@@ -9636,7 +9794,7 @@ class Worker:
                     "no account is registered for this tenant; using the tenant credential",
                     provider=provider,
                 )
-                return self._decline_pool("no_accounts_registered")
+                return self._decline_pool("no_accounts_registered", provider)
             raise NoAccountAvailable(outcome, provider or "unknown")
 
         self._account = outcome
@@ -9805,6 +9963,18 @@ class Worker:
                     account_id=self._account.account_id,
                     move=str(status["move"]),
                 )
+            elif status.get("state") == ACCOUNT_STATE_REAUTH_REQUIRED:
+                # BEFORE THE TOKEN DIES (#1855). The broker's refresh failed
+                # and the access token the agent holds expires on its own
+                # within the hour: move at the next turn boundary, as a drain
+                # does, rather than at the 401.
+                self._move_why = MOVE_REAUTH_REQUIRED
+                move.write_text(json.dumps({"reason": SWAP_UNUSABLE}))
+                self.log.warning(
+                    "this attempt's account needs re-authentication; the agent "
+                    "moves to another account at its next turn boundary",
+                    account_id=self._account.account_id,
+                )
         except Exception as exc:
             self.log.warning(
                 "could not read the account channel or the hold's status; the run "
@@ -9835,8 +10005,13 @@ class Worker:
         self._report_runner_error(data.get("error"))
         stopped_for = data.get("stopped_for")
         just_swapped, self._just_swapped = self._just_swapped, False
+        why, self._move_why = self._move_why, None
         reason: str | None = None
-        if stopped_for == STOP_DRAIN:
+        if stopped_for == STOP_DRAIN and why is not None:
+            # Stopped for a dead credential, not a drain (`_watch_account`).
+            reason = SWAP_UNUSABLE
+        elif stopped_for == STOP_DRAIN:
+            why = None
             reason = SWAP_DRAIN
         elif stopped_for == STOP_EXHAUSTED or result.exit_code == EXIT_QUOTA_EXHAUSTED:
             reason = SWAP_EXHAUSTED
@@ -9847,6 +10022,10 @@ class Worker:
             self.ws.credential_path.unlink(missing_ok=True)
         if reason is None:
             return None
+        if why is not None:
+            # A dead credential moves with or without a session: one that
+            # named none restarts from the prompt in the same workspace.
+            return self._swap_account(reason, why=why)
         if self._session_id is None:
             # Nothing to resume. A rate limit goes the way it always went; a
             # drain stop with no session cannot be continued, so it parks.
@@ -9886,7 +10065,44 @@ class Worker:
             message=message if isinstance(message, str) else "",
         )
 
-    def _swap_account(self, reason: str) -> dict[str, str] | Outcome | None:
+    def _dead_credential(self, reloads: int) -> str | None:
+        """Why the held account's refused credential moves the attempt, or None
+        to reload it in place (#1855). Never raises for the broker or the secret.
+
+        A reload helps only when the refresher has written a successor. The
+        move is right when it has not and will not: the reloads are spent, the
+        broker marked the account `reauth_required`, or the secret holds the
+        very token the provider refused (or cannot be read at all).
+        """
+        account = self._account
+        assert account is not None
+        if reloads >= MAX_CREDENTIAL_RELOADS:
+            return MOVE_REFUSED_AFTER_RELOAD
+        if self._account_broker is not None:
+            try:
+                status = self._account_broker.hold_status(account)
+            except Exception as exc:
+                # A fenced attempt's status read is refused; the swap checks
+                # the fence itself, so this only loses the reauth hint.
+                self.log.warning(
+                    "could not read the held account's status",
+                    error_type=type(exc).__name__,
+                )
+                status = {}
+            if isinstance(status, dict) and status.get("state") == ACCOUNT_STATE_REAUTH_REQUIRED:
+                return MOVE_REAUTH_REQUIRED
+        before = self._account_token_digests.get(account.account_id)
+        try:
+            self._account_credential_env(self.cfg.profile, account)
+        except AccountUnreadable:
+            return MOVE_TOKEN_UNREADABLE
+        if before is not None and before == self._account_token_digests.get(account.account_id):
+            return MOVE_TOKEN_UNCHANGED
+        return None
+
+    def _swap_account(
+        self, reason: str, *, why: str | None = None
+    ) -> dict[str, str] | Outcome | None:
         """Move the hold through the broker and rebuild the child's environment.
 
         ONE BROKER CALL PER MOVE (`AccountBroker.swap`), which releases this
@@ -9897,6 +10113,13 @@ class Worker:
 
         Re-checks the fence first: nothing continues under a stale generation
         (invariant 5), and the broker refuses a fenced attempt's swap anyway.
+
+        `why` is set for a dead credential (#1855, `_dead_credential`): the
+        attempt is CHECKPOINTED before it moves (invariant 8), so a worker lost
+        mid-move resumes from here; the move is announced as `account_moved`
+        naming both accounts by their pool label; and with no healthy account
+        the dead one goes back unusable and the attempt parks on the pool --
+        never a failure.
         """
         profile = self.cfg.profile
         provider = profile.provider or "unknown"
@@ -9907,8 +10130,18 @@ class Worker:
                 "this attempt has moved accounts as often as it may; not moving again",
                 swaps=self._swaps,
             )
-            return self._cannot_swap(reason, current, NoAccount(reason="no_account_available"))
+            return self._cannot_swap(
+                reason, current, NoAccount(reason="no_account_available"), dead=why is not None
+            )
         self.control.validate_generation()
+        if why is not None:
+            self.log.warning(
+                "the held account's credential is dead; checkpointing and moving "
+                "this attempt to another account",
+                account_id=current.account_id,
+                why=why,
+            )
+            self._checkpoint("account-move")
         for _ in range(MAX_ACCOUNT_TRIES):
             try:
                 outcome = self._account_broker.swap(
@@ -9928,13 +10161,19 @@ class Worker:
                     # A refused swap is what a fenced attempt meets; the fence
                     # check says so and ends the attempt the fenced way.
                     self.control.validate_generation()
-                return self._cannot_swap(reason, current, NoAccount(reason="no_account_available"))
+                return self._cannot_swap(
+                    reason, current, NoAccount(reason="no_account_available"),
+                    dead=why is not None,
+                )
             if isinstance(outcome, NoAccount):
-                return self._cannot_swap(reason, current, outcome)
+                return self._cannot_swap(reason, current, outcome, dead=why is not None)
             self._swaps += 1
             self._account = outcome
             self._account_released = False
             self._emit_swapped(current, outcome, reason)
+            if why is not None:
+                self._emit_moved(current, outcome, why)
+                why = None
             try:
                 self._account_credential_env(profile, outcome)
             except AccountUnreadable as exc:
@@ -9960,7 +10199,7 @@ class Worker:
         return self._cannot_swap(SWAP_UNUSABLE, current, NoAccount(reason=ACCOUNT_UNREADABLE))
 
     def _cannot_swap(
-        self, reason: str, current: Assignment, outcome: NoAccount
+        self, reason: str, current: Assignment, outcome: NoAccount, *, dead: bool = False
     ) -> Outcome | None:
         """No other account took this attempt. Fall back to what happens today.
 
@@ -9968,6 +10207,9 @@ class Worker:
         and parks exactly as `_park_for_quota` always has. A drain: park on
         the pool, holding the hold until the exit path gives it back. An
         account that could not be read: give it back unusable, then park.
+        A dead credential (`dead`, #1855): give it back unusable and park on
+        the broker's own answer -- `no_account_available` waits
+        NO_ACCOUNT_RETRY_SECONDS -- never a failure.
         """
         self.log.warning(
             "no other account can take this attempt; falling back to a checkpoint and park",
@@ -9976,7 +10218,11 @@ class Worker:
         )
         if reason == SWAP_EXHAUSTED:
             return None
-        if reason == SWAP_UNUSABLE:
+        if dead:
+            self._account = None
+            self._account_released = False
+            self._give_back(current, unusable="the provider refused this account's credential")
+        elif reason == SWAP_UNUSABLE:
             self._account = None
             self._account_released = False
             self._give_back(current, unusable="the agent could not start on this account")
@@ -10021,7 +10267,31 @@ class Worker:
                 error_type=type(exc).__name__,
             )
 
-    def _decline_pool(self, cause: str) -> None:
+    def _emit_moved(self, left: Assignment, taken: Assignment, why: str) -> None:
+        """`account_moved` for a dead credential's move (#1855), naming both
+        accounts by their pool label. Never a token, a secret name or a
+        session id. An audit record: one that cannot be written costs the move
+        nothing -- except a fence."""
+        try:
+            self.control.emit(
+                EventType.RETRYING,
+                {
+                    "cause": "account_moved",
+                    "why": why,
+                    "from_account": left.label,
+                    "to_account": taken.label,
+                    "provider": self.cfg.provider,
+                },
+            )
+        except (FencedError, TenantMismatchError):
+            raise
+        except Exception as exc:
+            self.log.warning(
+                "could not record the account move on the task's events",
+                error_type=type(exc).__name__,
+            )
+
+    def _decline_pool(self, cause: str, provider: str | None) -> None:
         """Record that this attempt is NOT on the pool, once and for good.
 
         Returns None so call sites can `return self._decline_pool(...)`. The
@@ -10029,9 +10299,44 @@ class Worker:
         credential is reloaded mid-attempt, and a second ask there could move a
         running agent onto a pool account it did not start on, or raise from a
         call site whose job is to restart the child rather than to park.
+
+        Only for a workspace with no pool for this run: the broker that did
+        not answer parks instead (`POOL_UNANSWERED`). Announced either way.
         """
         self._account_declined = cause
+        self._emit_pool_declined(cause, provider, then="tenant_secret")
         return None
+
+    def _emit_pool_declined(self, reason: str, provider: str | None, *, then: str) -> None:
+        """`account_pool_declined` on the task's events (#2560). Never a key.
+
+        `reason` is the decline's cause, `pool` the provider whose pool it is,
+        `then` what this attempt does next: `tenant_secret` (no pool),
+        `asking_again` or `parking`. The task and attempt are named in the
+        detail as well as stamped by `control.emit`, so a reader of the detail
+        alone has them. An audit record: one that cannot be written costs the
+        attempt nothing, as for a credential reload -- except a fence.
+        """
+        try:
+            self.control.emit(
+                EventType.RUNNING,
+                {
+                    "cause": "account_pool_declined",
+                    "reason": reason,
+                    "pool": provider or "unknown",
+                    "task_id": self.cfg.task_id,
+                    "attempt_id": self.cfg.attempt_id,
+                    "then": then,
+                },
+            )
+        except (FencedError, TenantMismatchError):
+            raise
+        except Exception as exc:
+            self.log.warning(
+                "could not record the account pool's decline",
+                reason=reason,
+                error_type=type(exc).__name__,
+            )
 
     def _account_credential_env(self, profile: Any, account: Assignment) -> dict[str, str]:
         """Read the ASSIGNED account's secret and shape it for the child.
@@ -10068,6 +10373,10 @@ class Worker:
             ) from None
         for value in env.values():
             self.log.register_secret(value)
+        # A one-way digest, never the token: what `_dead_credential` compares.
+        self._account_token_digests[account.account_id] = hashlib.sha256(
+            json.dumps(sorted(env.items())).encode("utf-8")
+        ).hexdigest()
         self.log.info(
             "account credentials resolved",
             account_id=account.account_id,
@@ -10500,6 +10809,7 @@ class Worker:
                 else "a person" if reason == POOL_PAUSED
                 else "the broker's next usage poll" if reason == NO_RECENT_READING
                 else "an agent on a full account to finish" if reason == ACCOUNTS_FULL
+                else "the quota broker to answer" if reason in POOL_UNANSWERED
                 else "a quota window"
             ),
             next_eligible_at=next_eligible.isoformat(),
@@ -12963,6 +13273,12 @@ class Worker:
                 # Fails closed, and says so where a reader of the publish looks.
                 out["published"] = False
                 out["publish_reason"] = f"nothing was published: {out['error']}"
+            # THE WORK IS STILL RECOVERABLE (#2544, owner decision 2026-10-28).
+            # The publish-fetch that failed here took the patch with it: TOKEN-A
+            # and U01 lost their integrator's whole run to it. The patch is the
+            # agent's TREE against the base, so it is taken from a repository
+            # holding the base alone, whatever the clone's history lacks.
+            out.update(self._harvest_tree_patch(repo, fetched_base))
             return out
 
         out.update(
@@ -13120,6 +13436,105 @@ class Worker:
             and not self._verdict.get("agent_ran", True)
             and self._opens_pull_request()
         )
+
+    def _harvest_tree_patch(self, repo: Path, base: str | None) -> dict[str, Any]:
+        """`swarm-work.patch` from the agent's final tree, for a harvest whose
+        clean repository could not be built (#2544). Never raises.
+
+        THE TREES, NOT THE COMMIT GRAPH. The #2559 shape -- a merge of a
+        branch the agent fetched `--depth=N` -- fails the publish-fetch
+        because the walk from HEAD crosses into history the clone never had.
+        A patch needs none of that history: only the base's tree, which the
+        clone holds because it was cloned at the base. So a second clean
+        repository fetches the base ALONE (`work_head=base`, its shallow
+        boundary the base, the same object checks and no confirmer), the
+        agent's working tree is mirrored onto it exactly as the publish does,
+        and `summarize_work` takes `git diff --binary <base>` there: committed
+        and uncommitted work in one patch, untracked files included, under
+        the same cap. `git apply` of it onto the base reproduces the agent's
+        tree. No git runs in the clone, as everywhere in the harvest (#259).
+
+        Returns the patch fields for `result_summary["git"]`, with
+        `patch_note` saying why when no patch was written.
+        """
+        ws = self.ws
+        assert ws is not None
+        cfg = self.cfg
+        out: dict[str, Any] = {"patch": None, "patch_bytes": 0, "patch_omitted": False}
+        if base is None:
+            out["patch_note"] = (
+                "the publish repository could not be built and the clone base is "
+                "unknown, so there was no tree to diff the agent's work against"
+            )
+            return out
+        try:
+            base_repo = prepare_publish_repo(
+                source_repo=repo,
+                work_head=base,
+                base=base,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_clone_timeout_seconds,
+                logger=self.log,
+                local_branch="swarm-tree-patch",
+            )
+            mirror_worktree(
+                source=repo,
+                dest=base_repo,
+                logger=self.log,
+                hidden_names=self._hidden_checkout_names(repo),
+                agent_excludes=read_agent_excludes(
+                    clone=repo, workspace_root=ws.root, home=ws.work, logger=self.log
+                ),
+            )
+            work = summarize_work(
+                repo=base_repo,
+                base=base,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                patch_path=ws.artifacts / PATCH_NAME,
+                max_patch_bytes=cfg.max_patch_bytes,
+                timeout_seconds=cfg.git_harvest_timeout_seconds,
+                logger=self.log,
+            )
+        except Exception as exc:  # noqa: BLE001 - the teardown path never raises
+            reason = self._scrub(str(exc)[:300])
+            self.log.warning("could not take the patch from the agent's tree", error=reason)
+            out["patch_note"] = (
+                "the publish repository could not be built, and the patch could not "
+                f"be taken from the agent's tree either: {reason}"
+            )
+            return out
+        out.update(
+            {
+                "patch": work.patch_name,
+                "patch_bytes": work.patch_bytes,
+                "patch_omitted": work.patch_omitted,
+                # Where the patch came from: the tree, so there is no commit
+                # list or own-files row beside it.
+                "patch_from": "tree",
+            }
+        )
+        if work.files is not None:
+            out["files"] = [f.as_record(self._scrub) for f in work.files]
+            out["files_truncated"] = work.files_truncated
+        if work.patch_omitted:
+            out["patch_note"] = (
+                f"the diff was {work.patch_bytes} bytes, over the "
+                f"{cfg.max_patch_bytes} cap, and was discarded rather than "
+                "truncated -- a truncated patch applies cleanly and silently "
+                "drops the rest of the change"
+            )
+        elif work.patch_name is None:
+            out["patch_note"] = (
+                "the agent's final tree is the clone base's tree, so there was "
+                "no change to write a patch of"
+            )
+        self.log.info(
+            "took the patch from the agent's tree after the publish repository failed",
+            patch=work.patch_name, patch_bytes=work.patch_bytes,
+        )
+        return out
 
     def _build_clean_repo(
         self, repo: Path, *, floor: str | None, allow_unknown_base: bool = False
@@ -13328,6 +13743,20 @@ class Worker:
         reason naming the paths and the tip, so the round ends `no_change`,
         not publish_failed; with something left, it is checked and pushed
         exactly as above. A conflict in any other path still raises.
+
+        ANY OTHER MOVER, REPLAYED ONTO TOO (#1821, owner decision 2026-10-27).
+        MEASURED 2026-10-21: 14 of 69 ci-fix rounds in 48 h failed
+        publish_failed because another fix round, a conflict fix or the merge
+        step moved the pull request's branch before their push. When the tip
+        is not base merges alone but still descends from the clone base
+        (`gitops.moved_branch_tip`), the round's commits are replayed onto it
+        with no tip-side resolution of any conflict -- the mover is another
+        writer's work, not main's published change -- and the same checks
+        run again, the fence among them, before one fast-forward push, never
+        forced. A conflict raises a GitError naming the moved tip, and the
+        attempt ends publish_failed with nothing pushed; a rewritten branch
+        (the clone base no longer under it) re-raises `rejected` as before.
+        The tip is recorded in `MOVED_TIP_FIELD`.
         """
         cfg = self.cfg
         ws = self.ws
@@ -13346,18 +13775,36 @@ class Worker:
             logger=self.log,
             branch_prefix=cfg.git_branch_prefix,
         )
+        by_base_merge = tip is not None
+        if tip is None and base is not None:
+            tip, other_why = moved_branch_tip(
+                repo=publish_repo,
+                url=url,
+                branch=branch,
+                token=token,
+                base=base,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_clone_timeout_seconds,
+                logger=self.log,
+                branch_prefix=cfg.git_branch_prefix,
+            )
+            why = f"{why}; {other_why}" if tip is None else why
         if tip is None or base is None:
             self.log.warning(
-                "the push was refused and the branch did not move by a merge of the "
-                "default branch alone; publishing nothing",
+                "the push was refused and the branch did not move on top of the clone "
+                "base; publishing nothing",
                 branch=branch,
                 reason=str(self._scrub(why)),
             )
             raise rejected
-        moved = (
-            f"{branch} moved to {tip[:12]} by a base merge of "
-            f"{default_branch or 'the default branch'} only"
-        )
+        if by_base_merge:
+            moved = (
+                f"{branch} moved to {tip[:12]} by a base merge of "
+                f"{default_branch or 'the default branch'} only"
+            )
+        else:
+            moved = f"{branch} moved to {tip[:12]} by commits this round did not write"
         superseded: list[str] = []
         try:
             head = replay_onto_tip(
@@ -13371,6 +13818,7 @@ class Worker:
                 timeout_seconds=cfg.git_harvest_timeout_seconds,
                 logger=self.log,
                 superseded=superseded,
+                take_base_paths=by_base_merge,
             )
         except GitError as exc:
             raise GitError(
@@ -13378,8 +13826,12 @@ class Worker:
                 f"it conflicted or failed ({str(self._scrub(str(exc)[:200]))}); nothing was "
                 "pushed or forced"
             ) from rejected
-        out["base_merge_from"] = base
-        out["base_merge_tip"] = tip
+        if by_base_merge:
+            out["base_merge_from"] = base
+            out["base_merge_tip"] = tip
+        else:
+            out["moved_tip_from"] = base
+            out[MOVED_TIP_FIELD] = tip
         if superseded:
             out[BASE_MERGE_SUPERSEDED_FIELD] = [
                 str(self._scrub(path[:300])) for path in superseded[:BASE_MERGE_SUPERSEDED_MAX]
@@ -13441,6 +13893,14 @@ class Worker:
             self.log.warning("the replay onto the moved tip touches workflow files; "
                              "publishing nothing", branch=branch)
             raise rejected
+        # The fence, read again after the replay and before the second push
+        # (invariant 5, #1821): a superseded attempt raises FencedError here
+        # and stands down with the branch as the mover left it.
+        try:
+            self.control.validate_generation()
+        except BaseException:
+            self._publish_base = base
+            raise
         try:
             # No lease: HEAD descends from the tip just fetched, so this is
             # a fast-forward, and a branch moved again is refused.
@@ -13461,7 +13921,10 @@ class Worker:
             raise
         self.log.info(
             "the continued branch moved only by a merge of the default branch; "
-            "pushed this round's commits onto it as a fast-forward",
+            "pushed this round's commits onto it as a fast-forward"
+            if by_base_merge else
+            "the continued branch moved by another writer's commits; pushed this "
+            "round's commits onto it as a fast-forward",
             branch=branch,
             moved_tip=tip,
             head=pushed or "unknown",
@@ -18539,6 +19002,30 @@ def credential_refusal(hit: ScanHit) -> str:
     )
 
 
+#: `credential_refusal`'s file, rule and line, read back out of a reason that
+#: has since been wrapped (`refusing to push: ...`) and scrubbed. The path is
+#: already `_reason_path`'s masked form, and nothing here reads past `line N)`,
+#: where the value would be if a refusal ever carried one.
+_REFUSAL_LOCATOR_RE = re.compile(
+    r"the final tree adds a credential in (?P<path>.+?) "
+    r"\(rule (?P<rule>[A-Za-z0-9_]+), line (?P<line>[0-9]+)\)"
+)
+
+
+def credential_locator(reason: str) -> str | None:
+    """`rule <rule> at <path>:<line>` for a credential refusal in `reason`, or
+    None when `reason` holds none. Pure.
+
+    The `path:line rule` pair is what `scripts/publish-scan.sh` prints, so the
+    author of a brief reads the refusal and the local scan the same way. The
+    matched text is never part of it: `credential_refusal` never wrote it.
+    """
+    found = _REFUSAL_LOCATOR_RE.search(reason or "")
+    if found is None:
+        return None
+    return f"rule {found['rule']} at {found['path']}:{found['line']}"
+
+
 #: The longest a refusal shows a file's path, in characters (#361 box 71).
 REASON_PATH_MAX_CHARS = 160
 #: A run of token characters in a path, judged as a possible credential.
@@ -19316,7 +19803,8 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 _USAGE_KEYS = SPEND_KEYS
 
 #: The fields of a usage summary that ADD UP across the runs of one attempt.
-#: Everything `_usage_summary` emits except `models`, which is a set.
+#: Everything `_usage_summary` emits except `models`, which is a set, and the
+#: per-model rows and sub-agent share, which `_add_spend` merges by model.
 _SUMMED_SPEND = (
     "input_tokens",
     "output_tokens",
@@ -19352,6 +19840,9 @@ def _add_spend(
     later total below the session's earlier one was not carried over
     (`cliagent.carries_session_totals`), and is added like any other.
     Tokens, turns and `duration_ms` are each invocation's own and always add.
+    Per-model rows (`MODEL_USAGE_KEY`) add model by model, and are a session's
+    running totals like its cost; the sub-agent share (`SUBAGENT_COST_KEY`)
+    adds, and for a resumed session is read over the session as a whole.
 
     A key absent from BOTH stays absent. "Not reported" is not zero (see
     `control.record_spend`), and a sum must not turn the one into the other.
@@ -19379,6 +19870,35 @@ def _add_spend(
     models = set(out.get("models") or ()) | set(more.get("models") or ())
     if models:
         out["models"] = sorted(models)
+    more_rows = more.get(MODEL_USAGE_KEY)
+    if isinstance(more_rows, list) and more_rows:
+        if session and session_base is not None:
+            # `modelUsage` is a session running total like the cost
+            # (`cliagent.SESSION_SPEND_KEYS`), so the resumed runner's rows
+            # replace the session's earlier ones; and its sub-agent share is
+            # read against the parent's tokens over the WHOLE session, since
+            # `usage` is per invocation and the rows are not.
+            out[MODEL_USAGE_KEY] = _add_model_usage(
+                session_base.get(MODEL_USAGE_KEY) or [], more_rows)
+            session_tokens = {
+                key: out[key] - session_base.get(key, 0)
+                for key, _ in _TOKEN_WEIGHTS
+                if key in out
+            }
+            subagent = _subagent_cost_usd(
+                session_tokens, more_rows, more.get("total_cost_usd"))
+            if subagent is not None:
+                out[SUBAGENT_COST_KEY] = round(
+                    session_base.get(SUBAGENT_COST_KEY, 0) + subagent, 10)
+            else:
+                out.pop(SUBAGENT_COST_KEY, None)
+                if SUBAGENT_COST_KEY in session_base:
+                    out[SUBAGENT_COST_KEY] = session_base[SUBAGENT_COST_KEY]
+        else:
+            out[MODEL_USAGE_KEY] = _add_model_usage(out.get(MODEL_USAGE_KEY) or [], more_rows)
+            if SUBAGENT_COST_KEY in more:
+                out[SUBAGENT_COST_KEY] = round(
+                    out.get(SUBAGENT_COST_KEY, 0) + more[SUBAGENT_COST_KEY], 10)
     return out
 
 
@@ -19615,8 +20135,141 @@ def _usage_summary(output: Any) -> dict[str, Any]:
     models = source.get("modelUsage")
     if isinstance(models, dict) and models:
         summary["models"] = sorted(str(m) for m in models)
+        # SUBAGENT-SPEND (part of #2524, item 8): each model's own counts and
+        # cost, not only the list of names. `usage` above is the parent
+        # agent's alone; `modelUsage` is every call the session paid for,
+        # sub-agents and the CLI's own housekeeping included.
+        rows = _model_usage_rows(models)
+        if rows:
+            summary[MODEL_USAGE_KEY] = rows
+            subagent = _subagent_cost_usd(summary, rows, summary.get("total_cost_usd"))
+            if subagent is not None:
+                summary[SUBAGENT_COST_KEY] = subagent
 
     return summary
+
+
+#: SUBAGENT-SPEND (part of #2524, item 8; BGD, 2026-10-27). The usage summary's
+#: per-model rows -- `[{model, input_tokens, output_tokens,
+#: cache_read_input_tokens, cache_creation_input_tokens, cost_usd}]`, sorted by
+#: model -- and the share of `total_cost_usd` the parent agent's own token
+#: counts do not explain. Both land in `result_summary.runner.usage`, which
+#: swarm-api serves as written; neither is an `Attempt` field
+#: (`control.record_spend` writes only the frozen columns). Measured over
+#: 2026-10-20..27: about 11% of cost had no token count behind it, because
+#: `usage` counts the parent alone while `total_cost_usd` pays for every
+#: sub-agent the parent started.
+MODEL_USAGE_KEY = "model_usage"
+SUBAGENT_COST_KEY = "subagent_cost_usd"
+
+#: A CLI `modelUsage` entry's key -> the usage summary's name for it.
+_MODEL_USAGE_FIELDS = (
+    ("inputTokens", "input_tokens"),
+    ("outputTokens", "output_tokens"),
+    ("cacheReadInputTokens", "cache_read_input_tokens"),
+    ("cacheCreationInputTokens", "cache_creation_input_tokens"),
+    ("costUSD", "cost_usd"),
+)
+
+#: What one token of each kind costs relative to an input token, on every
+#: Claude model's price list (output 5x, a cache write 1.25x, a cache read
+#: 0.1x). The worker holds no price table (#1481); these ratios are all it
+#: needs to split ONE model's cost between the parent's tokens and the rest,
+#: because that model's own `costUSD` fixes the scale. A one-hour cache write
+#: costs 2x, not 1.25x, so a parent writing those is credited slightly less
+#: than it spent and the sub-agent share reads that much high.
+_TOKEN_WEIGHTS = (
+    ("input_tokens", 1.0),
+    ("output_tokens", 5.0),
+    ("cache_creation_input_tokens", 1.25),
+    ("cache_read_input_tokens", 0.1),
+)
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _model_usage_rows(models: dict[str, Any]) -> list[dict[str, Any]]:
+    """A CLI's `modelUsage` as the usage summary's per-model rows. Pure.
+
+    A field the CLI did not report, or reported as something other than a
+    number, is left out of its row rather than written as zero; a model with
+    no number at all has no row.
+    """
+    rows = []
+    for name in sorted(models, key=str):
+        entry = models[name]
+        if not isinstance(entry, dict):
+            continue
+        row: dict[str, Any] = {}
+        for source, target in _MODEL_USAGE_FIELDS:
+            value = entry.get(source)
+            if target == "cost_usd" and _is_number(value):
+                row[target] = round(float(value), 10)
+            elif isinstance(value, int) and not isinstance(value, bool):
+                row[target] = value
+        if row:
+            rows.append({"model": str(name), **row})
+    return rows
+
+
+def _weighted_tokens(counts: dict[str, Any]) -> float:
+    return sum(float(counts.get(key) or 0) * weight for key, weight in _TOKEN_WEIGHTS)
+
+
+def _subagent_cost_usd(
+    parent: dict[str, Any], rows: list[dict[str, Any]], total_cost: Any
+) -> float | None:
+    """The share of `total_cost` the parent's token counts do not explain. Pure.
+
+    `parent` carries the parent agent's own token counts (the CLI's `usage`),
+    `rows` every model's counts and cost (`_model_usage_rows`). The parent's
+    model is the row whose four counts each reach the parent's, the costliest
+    if several do; the parent is credited that row's cost in proportion to
+    its share of the row's tokens, weighted by `_TOKEN_WEIGHTS`. Everything
+    else -- the rest of that row, every other model's row, and any of
+    `total_cost` the rows do not account for -- is spend with no parent token
+    behind it: sub-agents, and the small model the CLI runs for its own
+    housekeeping.
+
+    None, "not known", when there is no total, the parent reported no token,
+    or no row is complete enough to hold the parent: a guess is not a figure.
+    """
+    if not _is_number(total_cost):
+        return None
+    keys = [key for key, _ in _TOKEN_WEIGHTS]
+    if not any(_is_number(parent.get(key)) for key in keys):
+        return None
+    candidates = [
+        row for row in rows
+        if _is_number(row.get("cost_usd"))
+        and all(_is_number(row.get(key)) for key in keys)
+        and all(row[key] >= (parent.get(key) or 0) for key in keys)
+    ]
+    if not candidates:
+        return None
+    home = max(candidates, key=lambda row: row["cost_usd"])
+    row_weight = _weighted_tokens(home)
+    explained = home["cost_usd"] * (_weighted_tokens(parent) / row_weight) if row_weight else 0.0
+    return round(min(max(float(total_cost) - explained, 0.0), float(total_cost)), 10)
+
+
+def _add_model_usage(
+    earlier: list[dict[str, Any]], later: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Two runs' per-model rows as one: each model's numbers summed. Pure."""
+    by_model: dict[str, dict[str, Any]] = {}
+    for row in [*earlier, *later]:
+        if not isinstance(row, dict) or "model" not in row:
+            continue
+        into = by_model.setdefault(str(row["model"]), {"model": str(row["model"])})
+        for _, key in _MODEL_USAGE_FIELDS:
+            if _is_number(row.get(key)):
+                into[key] = into.get(key, 0) + row[key]
+        if _is_number(into.get("cost_usd")):
+            into["cost_usd"] = round(into["cost_usd"], 10)
+    return [by_model[name] for name in sorted(by_model)]
 
 
 #: BROWSER-USE-FLAG (part of #2322): the `result_summary` keys the worker

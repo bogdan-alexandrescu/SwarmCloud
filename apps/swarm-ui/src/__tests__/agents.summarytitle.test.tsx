@@ -83,10 +83,13 @@ describe('SUMMARY-TITLE: a lone agent’s row is named by its title', () => {
     expect(opener.getAttribute('aria-label')!.startsWith(`${TITLE} · ${titled.id}`)).toBe(true)
     // The control: no title, a blank one, or an API that sends no metadata.
     for (const t of [untitled, blank, older]) {
-      expect(flat(name(t))).toBe(`claude-code agent · ${t.id.slice(5, 13)}`)
+      // The kind alone: the whole id is the line under it (QA1-FIX-07, overview-agents-14).
+      expect(flat(name(t))).toBe('claude-code agent')
     }
-    // No lone agent was read for its title: the summary carried it.
-    expect(api.loadTask.mock.calls.map((c) => c[0])).toEqual([step.id])
+    // No lone agent was read for its title: the summary carried it. Nor was
+    // the step, whose summary row carries its workflow's title
+    // (QA1-FIX-07, overview-agents-60).
+    expect(api.loadTask.mock.calls.map((c) => c[0])).toEqual([])
   })
 
   it('names only a lone agent by its own title, never a step', () => {

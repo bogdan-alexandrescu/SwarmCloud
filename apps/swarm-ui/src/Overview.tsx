@@ -47,7 +47,7 @@ import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { Button, Dash, NamedMark, Skeleton, StateMark, ToneMark, UsageTrack, WarnMark, type TrackTone } from './components'
 import { Absent, Mark } from './primitives'
 import { disabledSentence } from './ProfileMatrix'
-import { parkWord } from './words'
+import { backendWord, parkWord } from './words'
 import { AGED_AFTER_MS, CountNote, PageHead, RefreshControl, staleFoot, timeAgo, useClaimPageAge, useIdleStop, usePoll } from './Shell'
 import { AGE_TICK_MS, PageClock, usePageClock, useNow as useAgeClock } from './useNow'
 import { useTimeZone } from './useTimeZone'
@@ -714,7 +714,7 @@ function useSpend(tasks: Result<TaskPage>, heavy: number): Result<SpendRollup> {
   useEffect(() => {
     if (job === null) return
     let live = true
-    loadSpend(job.page).then((r) => {
+    loadSpend(spendSample(job.page)).then((r) => {
       if (live) setState(r)
     })
     return () => {
@@ -723,6 +723,19 @@ function useSpend(tasks: Result<TaskPage>, heavy: number): Result<SpendRollup> {
   }, [job])
 
   return state
+}
+
+/**
+ * THE PAGE THE SPEND CARD SAMPLES: every task on it that holds no capacity
+ * (visual QA C-02, 2026-10-28). An attempt records its cost when it ends, so
+ * a running attempt has no figure yet. With 20 agents running, the 12 newest
+ * that had run were all running ones, and the card read "12 of 12 attempts
+ * unmeasured": a sample of attempts that could not have been measured. A task
+ * holding no capacity has no attempt in flight (CONTRACT invariant 1), so
+ * each attempt it has is one that ended and could have reported.
+ */
+function spendSample(page: TaskPage): TaskPage {
+  return { ...page, tasks: page.tasks.filter((t) => !HOLDING.includes(t.state)) }
 }
 
 /**
@@ -1393,6 +1406,10 @@ function BadMark() {
  * which is the one thing the column exists for.
  */
 function bindingLabel(name: string, tenant: string | undefined): string {
+  // A BACKEND IN WORDS (visual QA pass 1, overview-agents-05, 2026-10-28):
+  // the mock tile read "binds CLOUD_RUN_JOB", the raw enum; `backendWord`
+  // is the one map every other screen prints a backend through.
+  if (name.startsWith('backend:')) return backendWord(name.slice('backend:'.length))
   if (tenant) {
     if (name === `tenant:${tenant}`) return 'your workspace'
     const own = name.endsWith(`:tenant:${tenant}`)
@@ -1900,10 +1917,21 @@ function RunningCard({
           // A SILENT worker first (#92), then the longest-running.
           .sort((a, b) => Number(silent.has(b.id)) - Number(silent.has(a.id)) || startKey(a) - startKey(b))
   const titleOf = useRowTitles(running)
+  // THE HEAD COUNTS ROWS, NOT CAPACITY (visual QA C-03, 2026-10-28). The
+  // Holding capacity tile is `/v1/stats`'s count; this list is the state
+  // reads', taken at another moment, and the two can differ by an agent that
+  // moved between them. The head said "21 hold capacity" beside the tile's
+  // 20, one screen claiming two counts of one thing; it says what it lists,
+  // and the foot names the stats count when the two differ.
+  //
+  // COST SO FAR FILLS WHEN AN ATTEMPT ENDS (C-01): a running attempt has no
+  // figure yet, so a first attempt's row is a dash. The foot says so once,
+  // on the surface, rather than in each dash's title alone.
+  const unreported = running.filter((t) => totalCostOf(t) === null && t.attempts_read !== 'failed' && typeof t.attempts === 'number').length
   const head = (
     <CardHead
       title="Running now"
-      note={page === null ? undefined : `${running.length} hold capacity`}
+      note={page === null ? undefined : `${running.length} listed`}
       href="/agents/live"
       cta="All live"
     />
@@ -1965,6 +1993,7 @@ function RunningCard({
         <span>{whole ? `${running.length} read by state` : `${running.length} of ${page.tasks.length} newest`}</span>
         {counted !== null && counted !== running.length && <span>stats say {counted}</span>}
         {counted !== null && counted !== running.length && countedAge !== null && <span>counted {countedAge}</span>}
+        {unreported > 0 && <span>cost so far shows once an attempt ends</span>}
       </FootRun>
     </p>
   )
@@ -2075,13 +2104,21 @@ function PhoneRunRow({ task: t, title, leasedAt }: { task: Task; title: string |
             "<its title> · sc…" alike. So the workflow's title gives way with
             an ellipsis and the step after it does not; whole in the title. */}
         <a className="ov-prun-n" href={agentPath(t)} title={`${rowLabel(t, title)} · ${t.id}`}>
+          {/* A LONE AGENT'S TITLE GETS THE LINE (visual QA pass 1,
+              overview-agents-08, 2026-10-28): with no step, the kept suffix
+              was the generic "claude-code agent · 8e…" and the title read
+              "Fix flaky lea…". The step is kept because it tells one step
+              from another; a lone agent has none, so its short id moves to
+              the second line and the title takes the first. */}
           {title === null ? (
             <span className="ov-prun-t">{agentName(t)}</span>
-          ) : (
+          ) : t.step_id ? (
             <>
               <span className="ov-prun-t">{title}</span>
               <span className="ov-prun-s">{` · ${agentName(t)}`}</span>
             </>
+          ) : (
+            <span className="ov-prun-t">{title}</span>
           )}
         </a>
         {/* THE SECOND LINE IS THE DESKTOP'S STATE AND PROFILE COLUMNS
@@ -2090,6 +2127,12 @@ function PhoneRunRow({ task: t, title, leasedAt }: { task: Task; title: string |
             short id, whole in the link's title. */}
         <span className="ov-prun-sub">
           {t.state.toLowerCase().replace('_', '-')} · {t.runner_profile}
+          {title !== null && !t.step_id && (
+            <>
+              {' · '}
+              <span className="mono">{shortTaskId(t.id)}</span>
+            </>
+          )}
           {t.workflow_id && (
             <>
               {' · '}
@@ -2309,6 +2352,20 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
         />
       )
     }
+    // Every agent that has run still holds capacity, so the sample
+    // (`spendSample`) left each one out: not "none has started".
+    const page = dataOf(tasks)
+    const running = page === null ? 0 : page.tasks.filter((t) => t.attempt_count > 0 && HOLDING.includes(t.state)).length
+    if (running > 0) {
+      return (
+        <CardAbsent
+          kind="zero"
+          heading="No attempt has ended"
+          say={`Every agent on the page that has run still holds capacity (${running}), and an attempt records its cost when it ends, so there is no figure to sum yet.`}
+          explain="attempt-documents"
+        />
+      )
+    }
     return (
       <CardAbsent
         kind="zero"
@@ -2349,7 +2406,7 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
           ) : (
             <Mark
               kind="partial"
-              say={`Summed from the ${countOf(s.attempts, 'attempt')} of the ${s.tasksSampled} newest of ${countOf(s.tasksWithAttempts, 'agent')} that have run on the ${s.tasksOnPage} most recently created. A sample of token cost, not a bill: older agents are outside it, and no billing integration records Cloud Run, Firestore or GCS spend.`}
+              say={`Summed from the ${countOf(s.attempts, 'attempt')} of the ${s.tasksSampled} newest of ${countOf(s.tasksWithAttempts, 'agent')} that have run, among the ${s.tasksOnPage} most recently created that hold no capacity. Agents holding capacity are left out: an attempt records its cost when it ends, so a running one would add an unmeasured attempt and no figure. A sample of token cost, not a bill: older agents are outside it, and no billing integration records Cloud Run, Firestore or GCS spend.`}
             />
           )}
         </span>
@@ -2371,8 +2428,16 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
               never shown, so the coverage the figure is partial against was
               nowhere on the screen. */}
           <span>
+            {/* WHY IT IS NOT THE PAGE'S TOTAL (overview-agents-09): "12 newest of
+                26 agents" beside Finished today's "of the 27 newest read" was
+                two totals on one page. 26 are the agents of those 27 that have
+                run; the page's count follows, so the two agree. */}
             {countOf(s.attempts, 'attempt')}, {s.tasksSampled} newest of {countOf(s.tasksWithAttempts, 'agent')}
           </span>
+          {/* ITS OWN CLAUSE (QA1B-06 review): every `.ctl-foot-run > *` is
+              nowrap, so inside the span above it could not wrap and was cut
+              off at 390 and 1440; as its own clause it wraps as a unit. */}
+          {s.tasksOnPage > s.tasksWithAttempts && <span>that have run (of the {s.tasksOnPage} newest read)</span>}
           {/* 2. THE HOLES: attempts that carried no cost figure... */}
           {unmeasured > 0 && <span className="ov-warn">{unmeasured} unmeasured</span>}
           {/* 3. ...and attempt reads that failed. THE COUNT OF WHAT IS

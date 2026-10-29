@@ -153,7 +153,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import Any, Mapping, Protocol
+from typing import Any, Iterable, Mapping, NamedTuple, Protocol
 from urllib.parse import quote
 
 from swarm_common.models import EndCause, utcnow
@@ -242,6 +242,13 @@ RETIRED_TITLE_RE = re.compile(r"\[swarm\]\s*task_", re.IGNORECASE)
 #: §5.2 3: what counts as green for a REQUIRED check. The owner's rule:
 #: success or skipped, nothing else -- `neutral` included.
 REQUIRED_GREEN = frozenset({"success", "skipped"})
+#: The conclusion of a run someone stopped: pending, never failed (#1778,
+#: `cancelled_run`).
+CANCELLED_CONCLUSION = "cancelled"
+#: The one conclusion a check run keeps inside an Actions run that was
+#: cancelled (`cancelled_by_its_workflow`, #2582): its job ran and passed.
+#: `skipped` is not kept -- a job a cancelled run never ran may say it.
+PASSED_IN_ITS_RUN = "success"
 #: What any OTHER check may conclude without holding the merge, and what
 #: every check must conclude on a base branch that requires none:
 #: auto-merge.yml gate 5's own tolerance plus nothing.
@@ -300,6 +307,15 @@ MERGE_MAX_HEAD_UPDATES = 12
 #: runner -- reaches it.
 MERGE_CI_MAX_SECONDS = 6 * 3600
 
+#: How long a reading whose ONLY problem is cancelled runs -- nothing failed,
+#: nothing still running or missing (`cancelled_since`) -- waits for its
+#: re-run before the step refuses `checks_cancelled`. BGD set it on
+#: 2026-10-27 (#1778, "refuse after a shorter bound", 60 min): a cancelled
+#: run is pending, not failed, but nobody re-running it is not CI that has
+#: yet to settle, so it does not get the 6 h of `MERGE_CI_MAX_SECONDS`. A
+#: reading with anything still running keeps that bound.
+MERGE_CI_CANCELLED_MAX_SECONDS = 60 * 60
+
 #: The merge task's record of its CI-fix rounds, written only by swarm-api's
 #: wake tick (`swarm_api.mergewake.MERGE_FIX_METADATA_KEY`, lane MS7):
 #: `rounds`, oldest first, each `{round, head, claimed_at}` plus the round's
@@ -337,6 +353,15 @@ CI_FIX_RUNNING = "ci_fix_running"
 #: The park code of a red reading whose failing jobs the tick re-ran at this
 #: head less than RERUN_SETTLE_SECONDS ago: the re-run has not answered yet.
 CI_RERUN_PENDING = "ci_rerun_pending"
+#: The park code of a red reading with no CI-fix round left to ask for and no
+#: re-run recorded at this head (#2351, BGD 2026-10-27): swarm-api's wake
+#: tick re-runs the failing Actions jobs only for a merge parked CI_PENDING
+#: (`mergewake._rerun_first`), so refusing on the FIRST red reading meant the
+#: free re-run never ran -- a transient red (trivy failing to download its
+#: DB) refused a whole lane. Parked ONCE per head (`_rerun_due`): a red
+#: re-run, a re-run GitHub refused, or a second red reading with nothing
+#: re-run (the tick found no Actions job to re-run) refuses `checks_failed`.
+CI_RERUN_DUE = "ci_rerun_due"
 #: The park code of a red reading no CI-fix round can fix (#2046): the
 #: publish that wrote this head -- the opener's, or the CI-fix round's that
 #: ended at it -- touched `.github/workflows/` and swarm-api refused the push
@@ -597,15 +622,55 @@ def other_check_blocks(run: Mapping[str, Any]) -> bool:
     return (run.get("conclusion") or "") not in OTHER_TOLERATED
 
 
-def _other_branch_push(suite: tuple[str | None, str | None] | None,
-                       head_ref: str | None) -> bool:
-    """Whether a check suite, (event, head branch), was triggered by a push
-    to a known branch that is not `head_ref` -- another branch's result at a
-    shared sha, not the pull request's (#2365). False when anything is unknown."""
+class ActionsSuite(NamedTuple):
+    """What the Actions run that made one check suite says (`actions_suites`)."""
+
+    event: str | None
+    branch: str | None
+    #: The Actions run's own conclusion (`cancelled_by_its_workflow`, #2582).
+    conclusion: str | None = None
+    #: A newer Actions run of the same workflow and event, from the same
+    #: branch, is at the sha: the run that concurrency cancelled this one.
+    superseded: bool = False
+
+
+_NO_SUITE = ActionsSuite(None, None)
+
+
+def actions_suites(runs: Iterable[Any]) -> dict[int | None, ActionsSuite]:
+    """`GET actions/runs?head_sha=` read as `ActionsSuite`s, by check suite id.
+
+    A run is superseded when another run at the sha has the same
+    `workflow_id`, event and head branch and a larger id (GitHub's run ids
+    grow), finished or not: a concurrency group cancels the older run when
+    the newer one starts, and the newer one may not have created a given
+    check run yet (#2582). A run with no `workflow_id` is never superseded.
+    """
+    rows = [_mapping(run) for run in runs]
+    suites: dict[int | None, ActionsSuite] = {}
+    for run in rows:
+        suite = _int(run.get("check_suite_id"))
+        event, branch = _str(run.get("event")), _str(run.get("head_branch"))
+        if suite is None or not (event or branch):
+            continue
+        workflow, run_id = _int(run.get("workflow_id")), _int(run.get("id"))
+        superseded = workflow is not None and run_id is not None and any(
+            _int(other.get("workflow_id")) == workflow
+            and _str(other.get("event")) == event
+            and _str(other.get("head_branch")) == branch
+            and (_int(other.get("id")) or 0) > run_id
+            for other in rows)
+        suites[suite] = ActionsSuite(event, branch, _str(run.get("conclusion")), superseded)
+    return suites
+
+
+def _other_branch_push(suite: ActionsSuite | None, head_ref: str | None) -> bool:
+    """Whether a check suite was triggered by a push to a known branch that
+    is not `head_ref` -- another branch's result at a shared sha, not the
+    pull request's (#2365). False when anything is unknown."""
     if suite is None or head_ref is None:
         return False
-    event, branch = suite
-    return event == "push" and branch is not None and branch != head_ref
+    return suite.event == "push" and suite.branch is not None and suite.branch != head_ref
 
 
 def _event_group(run: Mapping[str, Any]) -> str | None:
@@ -633,8 +698,108 @@ def latest_per_event(runs: list[Mapping[str, Any]]) -> list[tuple[str | None, Ma
     latest: dict[str | None, tuple[int, Mapping[str, Any]]] = {}
     for rank, (_position, run) in enumerate(ordered):
         latest[_event_group(run)] = (rank, run)
-    return [(event, run) for event, (_rank, run)
-            in sorted(latest.items(), key=lambda item: item[1][0])]
+    deciding = [(event, run) for event, (_rank, run)
+                in sorted(latest.items(), key=lambda item: item[1][0])]
+    others = [run for _event, run in deciding]
+    return [(event, {**run, "conclusion": CANCELLED_CONCLUSION}
+             if cancelled_by_its_workflow(run, others) else run)
+            for event, run in deciding]
+
+
+def cancelled_by_its_workflow(run: Mapping[str, Any],
+                              deciding: Iterable[Mapping[str, Any]]) -> bool:
+    """Whether a check run that finished red is read as `cancelled` because
+    its Actions run was (#2582, BGD 2026-10-28).
+
+    `ci-gate` and security.yml's folded name-keepers run under `if: always()`,
+    so inside a workflow run concurrency cancelled they still run and conclude
+    `failure` over needs that were only cancelled: PR #2565's push ci-gate at
+    968d9949 read red, the branch's newer push run had not created its own
+    yet, and the step refused `checks_failed` although no job had failed. So a
+    check run that finished with any conclusion but `success`
+    (`PASSED_IN_ITS_RUN`) -- `skipped` too, which is what a gate under
+    `!cancelled()` may conclude in a cancelled run, and which would otherwise
+    read green -- in an
+    Actions run that concluded `cancelled` (`workflow_conclusion`), is read
+    as cancelled -- pending, never green (`cancelled_run`) -- when a newer run
+    of the same workflow and event is at the head (`workflow_superseded`) or
+    another event's deciding run (`deciding`, the check's latest run of each
+    event) passed the check. A red check in a run nobody cancelled stays red,
+    and so does one in a cancelled run with neither: nothing then says the
+    failure was not real. swarm-api's `forgechecks.cancelled_by_its_workflow`
+    is the same rule, held equal by
+    tests/unit/control_plane/test_forgechecks_cancelled_workflow_run.py.
+    """
+    if run.get("workflow_conclusion") != CANCELLED_CONCLUSION or not check_run_finished(run):
+        return False
+    if (run.get("conclusion") or "") in (PASSED_IN_ITS_RUN, CANCELLED_CONCLUSION):
+        return False
+    if run.get("workflow_superseded") is True:
+        return True
+    return any(other is not run and check_run_finished(other)
+               and (other.get("conclusion") or "") in REQUIRED_GREEN for other in deciding)
+
+
+def cancelled_run(run: Mapping[str, Any]) -> bool:
+    """A run that finished `cancelled`: pending, never failed (#1778).
+
+    BGD released bundle H09, 2026-10-27, #1778's second expectation: "a check
+    whose LATEST run is cancelled is still not green and waits, rather than
+    failing the merge". A cancelled run is one someone stopped -- the operator
+    cancelling stranded runs to re-run them, on 2026-10-21 -- not a verdict on
+    the head, so it waits for its re-run as a run still in progress does
+    (`MERGE_CI_MAX_SECONDS` still bounds the wait). A red latest run of
+    another event still wins: a re-run of the cancelled one cannot make it
+    green. swarm-api's `forgechecks`, `merge-train.sh judge` and auto-merge.yml's
+    gates 5-6 state the same rule.
+    """
+    return check_run_finished(run) and run.get("conclusion") == CANCELLED_CONCLUSION
+
+
+def _completed_instant(run: Mapping[str, Any]) -> datetime | None:
+    """A run's `completed_at` as an aware instant, or None when it has none."""
+    value = run.get("completed_at")
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        instant = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return instant if instant.tzinfo is not None else None
+
+
+def cancelled_since(groups: Iterable[list[Mapping[str, Any]]]) -> datetime | None:
+    """When a reading became one whose ONLY problem is cancelled runs (#1778).
+
+    `groups` are the runs of each check the decision judges, one list per
+    check. The reading is cancelled-only when every check has runs, every
+    event's latest run (`latest_per_event`) has finished, at least one is
+    `cancelled` (`cancelled_run`) and none failed -- the caller asks only of
+    a reading with nothing failed. Every deciding run having finished, the
+    reading has not changed since the last of them did, so the newest
+    `completed_at` among them is when the first such reading could be made:
+    the start of `MERGE_CI_CANCELLED_MAX_SECONDS`. Read from GitHub, not from
+    the park record, because a CI park's record (`merge_wait`) carries no
+    field for it and swarm-api's park body is strict. A re-run makes a new
+    latest run, still running or green, so it ends the bound; one cancelled
+    again starts it afresh. None when the reading is not cancelled-only, or
+    when a deciding run has no `completed_at` (a commit status): that reading
+    keeps `MERGE_CI_MAX_SECONDS`.
+    """
+    latest: list[Mapping[str, Any]] = []
+    for runs in groups:
+        mine = [run for _event, run in latest_per_event(runs)]
+        if not mine:
+            return None
+        latest.extend(mine)
+    if not latest or not all(check_run_finished(run) for run in latest):
+        return None
+    if not any(cancelled_run(run) for run in latest):
+        return None
+    instants = [_completed_instant(run) for run in latest]
+    if any(instant is None for instant in instants):
+        return None
+    return max(instant for instant in instants if instant is not None)
 
 
 def _judge_latest(runs: list[Mapping[str, Any]], green: frozenset[str] | set[str]) -> str:
@@ -645,6 +810,8 @@ def _judge_latest(runs: list[Mapping[str, Any]], green: frozenset[str] | set[str
         return "pending"
     if all((run.get("conclusion") or "") in green for run in latest):
         return "green"
+    if all(cancelled_run(run) or (run.get("conclusion") or "") in green for run in latest):
+        return "pending"
     return "failed"
 
 
@@ -653,7 +820,8 @@ def required_check_state(runs: list[Mapping[str, Any]]) -> str:
 
     Decided by the LATEST run of EACH event that ran it (BGD, 2026-10-22):
     green only when every event's latest run is green, pending when any is
-    not finished (`check_run_finished`; or there is none), failed otherwise. A red push run is
+    not finished (`check_run_finished`; or there is none) or every one not
+    green is cancelled (`cancelled_run`, #1778), failed otherwise. A red push run is
     never outvoted by a green pull_request run (CI-EARLY, #1694); a flake
     re-run green no longer holds the check (#1999, #1778). swarm-api's
     `forgechecks.required_check_state` is the same rule, held equal by
@@ -665,13 +833,15 @@ def required_check_state(runs: list[Mapping[str, Any]]) -> str:
 def failing_run_ids(runs: list[Mapping[str, Any]],
                     green: frozenset[str] | set[str]) -> set[int] | None:
     """GitHub's ids of the runs that make ONE check red: each event's latest
-    run (`latest_per_event`) that finished with a conclusion not in `green`.
-    None when one of them has no id -- a commit status, which no re-run
+    run (`latest_per_event`) that finished with a conclusion not in `green`,
+    and not `cancelled` (`cancelled_run`, #1778: pending, not red). None
+    when one of them has no id -- a commit status, which no re-run
     replaces. What `_rerun_settling` matches against the jobs the tick
     re-ran: a re-run makes new ids, so a red one is no longer among them."""
     ids: set[int] = set()
     for _event, run in latest_per_event(runs):
-        if not check_run_finished(run) or (run.get("conclusion") or "") in green:
+        if (not check_run_finished(run) or cancelled_run(run)
+                or (run.get("conclusion") or "") in green):
             continue
         run_id = run.get("run_id")
         if not isinstance(run_id, int) or isinstance(run_id, bool):
@@ -702,8 +872,10 @@ def judge_other_checks(checks: list[CheckFacts]) -> tuple[list[str], list[str]]:
     `other_check_blocks`. A superseded failure, or a superseded run still in
     progress, no longer holds the merge. A check with an event's latest run
     failed is failed even beside one still running: waiting cannot make it
-    green, and the merge refused on it before this rule too. The label names
-    the deciding run of each event, as `required_check_label` does.
+    green, and the merge refused on it before this rule too. A deciding run
+    that finished `cancelled` is pending, not failed (`cancelled_run`,
+    #1778). The label names the deciding run of each event, as
+    `required_check_label` does.
     """
     by_check: dict[tuple[str, int | None], list[dict[str, Any]]] = {}
     for check in checks:
@@ -715,7 +887,7 @@ def judge_other_checks(checks: list[CheckFacts]) -> tuple[list[str], list[str]]:
         if not blocking:
             continue
         label = f"{name} ({required_check_label(runs)})"
-        if any(check_run_finished(run) for run in blocking):
+        if any(check_run_finished(run) and not cancelled_run(run) for run in blocking):
             failed.append(label)
         else:
             pending.append(label)
@@ -731,7 +903,8 @@ def latest_reading(runs_by_check: Mapping[str, list[CheckFacts]],
     A check's runs are ordered by GitHub's run id, which a re-run increases,
     so a run cancelled and then superseded by a success of the same event is
     green here. No run is pending; so is any event's latest run not
-    finished (`check_run_finished`). Otherwise a check with any event's latest run's conclusion
+    finished (`check_run_finished`), and a check whose every latest run not
+    in `green` is cancelled (`cancelled_run`, #1778). Otherwise a check with any event's latest run's conclusion
     not in `green` is failed.
 
     A RECORD, NOT THE DECISION: the merge decides on `required_check_state`
@@ -808,11 +981,19 @@ class CheckFacts:
     #: run whatever `status` says (`check_run_finished`, CHECK-STUCK). None
     #: for a commit status, whose state alone says whether it finished.
     completed_at: str | None = None
+    #: The conclusion of the Actions run whose suite made this check run, and
+    #: whether a newer run of the same workflow and event, from the same
+    #: branch, is at the head: what `cancelled_by_its_workflow` reads
+    #: (#2582). None and False when the Actions runs were not read.
+    workflow_conclusion: str | None = None
+    workflow_superseded: bool = False
 
     def as_run(self) -> dict[str, Any]:
         return {"name": self.name, "status": self.status, "conclusion": self.conclusion,
                 "completed_at": self.completed_at, "run_id": self.run_id, "event": self.event,
-                "check_suite_id": self.check_suite_id}
+                "check_suite_id": self.check_suite_id,
+                "workflow_conclusion": self.workflow_conclusion,
+                "workflow_superseded": self.workflow_superseded}
 
 
 @dataclass(frozen=True)
@@ -1151,8 +1332,10 @@ class GitHubMerger:
                   for run in (check.as_run() for check in out))
         if len(names) != len(set(names)) or red:
             suites = self._suite_events(sha)
-            out = [replace(check, event=suites.get(check.check_suite_id, (None, None))[0])
+            out = [replace(check, event=suite.event, workflow_conclusion=suite.conclusion,
+                           workflow_superseded=suite.superseded)
                    for check in out
+                   for suite in (suites.get(check.check_suite_id, _NO_SUITE),)
                    if not _other_branch_push(suites.get(check.check_suite_id), head_ref)]
         combined = _mapping(self._client.get_ok(f"{self._base}/commits/{sha}/status"))
         for status in combined.get("statuses") or []:
@@ -1166,9 +1349,10 @@ class GitHubMerger:
             out.append(CheckFacts(name=name, status=state, conclusion=conclusion))
         return out
 
-    def _suite_events(self, sha: str) -> dict[int | None, tuple[str | None, str | None]]:
-        """The (event, head branch) of each Actions check suite at `sha`, by
-        suite id; either is None when GitHub did not say.
+    def _suite_events(self, sha: str) -> dict[int | None, ActionsSuite]:
+        """The Actions run of each check suite at `sha`, by suite id: its
+        event and head branch, either None when GitHub did not say, its own
+        conclusion, and whether it is superseded (`ActionsSuite`, #2582).
 
         A credential without `actions: read` (403), or a repository with
         Actions off (404), reads as no event and no branch: each check suite
@@ -1182,14 +1366,7 @@ class GitHubMerger:
             if exc.status in (403, 404):
                 return {}
             raise
-        suites: dict[int | None, tuple[str | None, str | None]] = {}
-        for run in runs:
-            run = _mapping(run)
-            suite = _int(run.get("check_suite_id"))
-            event, branch = _str(run.get("event")), _str(run.get("head_branch"))
-            if suite is not None and (event or branch):
-                suites[suite] = (event, branch)
-        return suites
+        return actions_suites(runs)
 
     def commit(self, sha: str) -> CommitFacts:
         data = _mapping(self._client.get_ok(f"{self._base}/commits/{quote(sha, safe='')}"))
@@ -2399,6 +2576,8 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     failed: list[str] = []
     #: None once a failing check is one no re-run replaces (`failing_run_ids`).
     failing_ids: set[int] | None = set()
+    #: The runs of each check the decision judges, for `cancelled_since`.
+    judged: list[list[dict[str, Any]]] = []
     if required.checks:
         run.reading = (head, *latest_reading(
             {check.context: [c for c in checks if c.name == check.context
@@ -2409,6 +2588,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         for check in required.checks:
             mine = [c.as_run() for c in checks if c.name == check.context
                     and (check.app_id is None or c.app_id == check.app_id)]
+            judged.append(mine)
             state = required_check_state(mine)
             if state == "pending":
                 pending.append(check.context)
@@ -2434,9 +2614,20 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
             by_check.setdefault((check.name, check.app_id), []).append(check.as_run())
         for runs in by_check.values():
             failing_ids = _with_failing(failing_ids, failing_run_ids(runs, OTHER_TOLERATED))
+        judged = list(by_check.values())
     if failed:
         return _red(run, own, head=head, failed=failed, failing_ids=failing_ids, wait=wait)
     if pending:
+        since = cancelled_since(judged)
+        if since is not None:
+            waited = (utcnow() - since).total_seconds()
+            summary["cancelled_since"] = since.isoformat()
+            if waited > MERGE_CI_CANCELLED_MAX_SECONDS:
+                return run.refuse("checks_cancelled",
+                                  f"at {head} the only checks not green were cancelled "
+                                  f"{int(waited // 60)} min ago and nothing re-ran them, past "
+                                  f"{MERGE_CI_CANCELLED_MAX_SECONDS // 60} min: "
+                                  + ", ".join(sorted(pending)))
         return wait("checks_pending", f"at {head}: " + ", ".join(sorted(pending)), pending)
 
     # Green at this step's own head. In a workspace that merges in trains
@@ -3243,6 +3434,26 @@ def _rerun_settling(own: Mapping[str, Any], head: str,
     return since if 0 <= age < RERUN_SETTLE_SECONDS else None
 
 
+def _rerun_due(own: Mapping[str, Any], head: str, failing_ids: set[int] | None) -> bool:
+    """Whether a red reading at `head` parks `CI_RERUN_DUE` for the tick's free re-run (#2351).
+
+    Only while nothing at this head has answered it: no re-run recorded at
+    `head` (answered, refused or settling -- `_rerun_settling` holds the
+    last), and this step's own last park (`merge_wait`) was not already
+    `CI_RERUN_DUE` at `head`, so a tick that found no Actions job to re-run
+    and woke the step red is answered with the refusal, not a second park.
+    Never for a failing run no re-run replaces (`failing_ids` None, a commit
+    status): waiting changes nothing. The document is tenant-writable; a
+    forged record can at most refuse at once, as before #2351, or park once.
+    """
+    if not failing_ids:
+        return False
+    if any(r.get("head") == head for r in _fix_rounds(own, RERUNS_KEY)):
+        return False
+    parked = _mapping(_mapping(own.get("metadata")).get(MERGE_WAIT_METADATA_KEY))
+    return not (parked.get("code") == CI_RERUN_DUE and parked.get("head") == head)
+
+
 def _rounds_asked(own: Mapping[str, Any]) -> int:
     value = _mapping(own.get("metadata")).get(MERGE_FIX_ROUNDS_KEY)
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
@@ -3558,6 +3769,10 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
     failing run is a new id, inside the window or not -- or a check it did
     not re-run is red, this refuses (or hands it to a round) as before.
 
+    With no round left to ask for, the FIRST red reading at a head with no
+    re-run recorded there parks once `CI_RERUN_DUE` (#2351), so the tick's
+    free re-run runs; its red answer refuses here as before.
+
     A head written by a publish swarm-api refused WORKFLOW_SCOPE_MISSING --
     the opener's pinned head, or the head a round ended at -- parks
     WORKFLOW_PATCH_PENDING for the operator instead (#2046): no round is
@@ -3595,6 +3810,9 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
     if len(rounds) < asked:
         return wait(CI_FIX_PENDING,
                     f"{message}; CI fix round {len(rounds) + 1} of {asked} is due", [])
+    if _rerun_due(own, head, failing_ids):
+        return wait(CI_RERUN_DUE,
+                    f"{message}; the failing jobs are due their one free re-run at this head", [])
     if asked:
         message += f", after {len(rounds)} CI fix round(s)"
     return run.refuse("checks_failed", message)

@@ -736,3 +736,152 @@ describe('a refusal is drawn as a refusal', () => {
     expect(viewer.textContent).not.toMatch(/API failed/)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Console visual QA pass 1 (QA1-FIX-09; part of #2596)
+// ---------------------------------------------------------------------------
+//
+// Measured on the fixture console at phone-390 (sweep lane ovag): the
+// ckpt_0002 row said Age `9d ago` and the panel opened from it said `archive
+// 17.6 MiB · written 4m ago` -- two ages for one archive; `entries 8 partial
+// entry cap` sat beside `manifest 184 files` without saying 8 of 184 were
+// shown; and `files` on the first row opened its panel below the LAST row,
+// out of view, with nothing on screen changing.
+
+describe('one age, a cut said as N of M, and a panel that comes into view (QA1-FIX-09)', () => {
+  const entriesFact = () =>
+    [...region().querySelectorAll<HTMLElement>('.ctl-facts .ctl-fact')].find(
+      (f) => (f.querySelector('b')?.textContent ?? '') === 'entries',
+    )!
+
+  /**
+   * MUTATION: put the fixture's `object_updated_at` back to `Date.now() - 4
+   * * 60_000`. The archive then says `written 4m ago` under a row whose Age
+   * says `9d ago`, and the two times below differ.
+   */
+  it('the fixture archive was written when its checkpoint was, not four minutes ago', async () => {
+    const { loadCheckpoints } = await import('../api')
+    const page = await loadCheckpoints('task_fixture')
+    if (page.status !== 'ok') throw new Error(`checkpoint fixture answered ${page.status}`)
+    const row = page.data.checkpoints.find((c) => c.checkpoint_id === 'ckpt_0002')!
+    expect(row.created_at).not.toBeNull()
+    const files = await loadCheckpointFiles('task_fixture', row.attempt_id, 'ckpt_0002', { fixtures: true })
+    if (files.status !== 'ok') throw new Error(`files fixture answered ${files.status}`)
+    expect(files.data.archive.object_updated_at).toBe(row.created_at)
+  })
+
+  /**
+   * MUTATION: draw `{data.count}` alone in the entries fact again. It reads
+   * `5` beside `manifest 184 files`, and `4 of 184 files shown` is not on
+   * the screen. MUTATION: draw `5 shown · 4 of 184 files` (the re-review's
+   * minor): two different numbers side by side, the entry count counting the
+   * directory, so the count is asserted alone.
+   */
+  it('says a listing the entry cap cut as the manifest\'s files: N of M files shown', async () => {
+    mount(
+      loaders(
+        ok(
+          listing({
+            truncated: true,
+            truncated_reason: 'entry_cap',
+            file_count_agrees: null,
+            manifest: { ...listing().manifest, file_count: 184 },
+          }),
+        ),
+      ),
+    )
+    await screen.findByRole('tree')
+    // Five entries, one of them a directory: the manifest counts files, so
+    // the comparison is the four non-directory members against its 184.
+    expect(entriesFact().textContent).toContain('4 of 184 files shown')
+    expect(entriesFact().textContent).not.toContain('5')
+    expect(within(entriesFact()).getByText('entry cap')).toBeTruthy()
+  })
+
+  it('says a cut listing with no manifest count as N shown, and claims no total', async () => {
+    mount(
+      loaders(
+        ok(
+          listing({
+            truncated: true,
+            truncated_reason: 'entry_cap',
+            file_count_agrees: null,
+            manifest: { ...listing().manifest, status: 'unreadable', file_count: null },
+          }),
+        ),
+      ),
+    )
+    await screen.findByRole('tree')
+    expect(entriesFact().textContent).toContain('5 shown')
+    expect(entriesFact().textContent).not.toMatch(/ of /)
+  })
+
+  it('draws a whole listing\'s entries as the bare count', async () => {
+    mount(loaders(ok(listing())))
+    await screen.findByRole('tree')
+    expect(entriesFact().textContent).toBe('entries5')
+  })
+
+  /**
+   * MUTATION: delete the mount effect that scrolls the region into view and
+   * focuses it. `scrollIntoView` is never called and focus stays on the body
+   * -- the panel opens off screen and the `files` button reads as dead.
+   * MUTATION: scroll with `{ block: 'nearest' }`. Only the panel's top edge
+   * comes into view (rendered at phone-390: heading and download button,
+   * the `entries` line half under the pane's bottom edge), so the call's
+   * argument is pinned to `start`.
+   */
+  it('scrolls the panel into view and moves focus to it when it opens', async () => {
+    const scroll = vi.fn()
+    const had = Object.prototype.hasOwnProperty.call(Element.prototype, 'scrollIntoView')
+    const before = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = scroll
+    try {
+      mount(loaders(ok(listing())))
+      await waitFor(() => expect(scroll).toHaveBeenCalled())
+      expect(scroll).toHaveBeenCalledWith({ block: 'start' })
+      expect(scroll.mock.contexts[0]).toBe(region())
+      expect(document.activeElement).toBe(region())
+    } finally {
+      if (had) Element.prototype.scrollIntoView = before
+      else delete (Element.prototype as Partial<Element>).scrollIntoView
+    }
+  })
+
+  /**
+   * THE SCROLL RUNS AGAIN ONCE THE LISTING HAS DRAWN (QA1-FIX-09-FIX, the
+   * re-review's finding). At mount the panel is its 106 px loading state, so
+   * the scroll container's maximum is computed from that short panel and the
+   * scroll clamps there; the listing grows the panel to 457 px 200 ms later
+   * and, with the scroll run only at mount, nothing scrolls again (rendered
+   * at phone-390: the panel's top stayed at y=666 of 844). The loader is held
+   * open here, so the mount-time call happens with no tree in the region.
+   * MUTATION: key the scroll effect on `[]` again. Every call then finds the
+   * region still loading, and no call sees the tree.
+   */
+  it('scrolls the panel into view again once its listing has drawn, not only on mount', async () => {
+    const sawTree: boolean[] = []
+    const scroll = vi.fn(function (this: Element) {
+      sawTree.push(this.querySelector('[role="tree"]') !== null)
+    })
+    const had = Object.prototype.hasOwnProperty.call(Element.prototype, 'scrollIntoView')
+    const before = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = scroll
+    let answer: (r: Result<CheckpointFiles>) => void = () => {}
+    const l = loaders(ok(listing()))
+    l.files.mockImplementation(() => new Promise<Result<CheckpointFiles>>((r) => (answer = r)))
+    try {
+      mount(l)
+      await waitFor(() => expect(l.files).toHaveBeenCalled())
+      expect(sawTree, 'a scroll ran with the listing already drawn').not.toContain(true)
+      answer(ok(listing()))
+      await screen.findByRole('tree')
+      await waitFor(() => expect(sawTree, 'no scroll ran once the listing had drawn').toContain(true))
+      expect(scroll.mock.calls.at(-1)).toEqual([{ block: 'start' }])
+      expect(scroll.mock.contexts.at(-1)).toBe(region())
+    } finally {
+      if (had) Element.prototype.scrollIntoView = before
+      else delete (Element.prototype as Partial<Element>).scrollIntoView
+    }
+  })
+})

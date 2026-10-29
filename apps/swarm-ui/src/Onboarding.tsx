@@ -6,7 +6,6 @@ import { connectionOf, Refusal } from './GitHubConnect'
 import { WorkspaceStepDetail, waitingOf } from './OnboardingWorkspace'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
-import { GitHubPermissions } from './PermissionCards'
 import type { AppInstalledEvidence, OnboardingDoc, OnboardingIssue, OnboardingStep, OnboardingStepName, OnboardingStepState, WorkspaceView } from './types'
 import { timeAgo } from './types'
 import './styles/repositories.css'
@@ -33,9 +32,10 @@ import './styles/onboarding.css'
  * this read; nothing on this page marks a step done. A step's sub-line is its
  * evidence, its failure is the §2.3 copy the server sent WORD FOR WORD (so the
  * plugin's `/sc:setup` prints the same sentence), and its button is the next
- * action: Connect GitHub, Enable orgs, Choose repositories and Verify access
- * all link to Config › GitHub access, where the App is connected and OB4's
- * routes act (BGD, #2157: GitHub access is connect and disconnect). Connect
+ * action: Connect GitHub, Enable orgs and Choose repositories link to
+ * Config › GitHub access, where the App is connected and OB4's routes act
+ * (BGD, #2157: GitHub access is connect and disconnect), and Verify access to
+ * Config › Repositories, which holds Verify (visual QA config-10). Connect
  * GitHub started the authorisation in place until WS-SETTINGS-PAGE; one page
  * does it now, so the two cannot drift. Re-check is a fresh read, which is a
  * fresh derivation.
@@ -53,6 +53,12 @@ import './styles/onboarding.css'
 /** Workspace setup and GitHub access, by their Config addresses (CONFIG-NAV moved both; the old ones still land). */
 export const SETUP = WORKSPACE_SETUP_ADDRESS
 export const ACCESS = 'config/github'
+/**
+ * Config › Repositories, where a granted repository's Verify is ("Repositories
+ * SwarmCloud may reach as you"). GitHub access is connect and disconnect only
+ * (#2157), so the Verify access step points here (visual QA config-10).
+ */
+export const REPOSITORIES = 'config/repositories'
 const SUBMIT_TASK = 'work/new'
 
 /** The steps' names as the mock-up draws them (onboarding.html, Entry A). */
@@ -85,7 +91,7 @@ const STATE_TONE: Readonly<Record<OnboardingStepState, string>> = {
   todo: 'unknown',
 }
 
-/** The steps whose next action is on GitHub access, and their buttons' words. Connect GitHub's is drawn apart: it says Reconnect once a connection exists. */
+/** The steps' next actions and their buttons' words: on GitHub access, but Verify access's on Repositories, where Verify is. Connect GitHub's is drawn apart: it says Reconnect once a connection exists. */
 const ACCESS_ACTION: Partial<Record<OnboardingStepName, string>> = {
   orgs_enabled: 'Enable orgs',
   repos_chosen: 'Choose repositories',
@@ -156,14 +162,35 @@ function probeErrorLine(step: OnboardingStep): string | null {
   return `Last probe did not complete: ${error} (${when === null ? 'time unknown' : `as of ${when}`}; re-checked hourly)`
 }
 
+/** Names as a sentence: "A", "A and B", "A, B and C". */
+function andList(names: string[]): string {
+  return names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+}
+
+/**
+ * WHAT A WAITING STEP WAITS FOR. The server's `waiting_for` names one step, the
+ * first unfinished one, so Ready read "waits for Enable orgs" while Verify
+ * access was unfinished too (visual QA config-11). Ready waits for every
+ * required step before it, so it names every one still open that a person can
+ * act on: a step itself waiting on an earlier one is covered by that one. Any
+ * other step keeps the server's one name.
+ */
+function waitsFor(step: OnboardingStep, waiting: string, doc: OnboardingDoc): string {
+  const named = STEP_LABEL[waiting as OnboardingStepName] ?? waiting
+  if (step.step !== 'ready') return named
+  const at = doc.steps.indexOf(step)
+  const open = doc.steps
+    .slice(0, at < 0 ? doc.steps.length : at)
+    .filter((s) => stepRequired(s) && s.state !== 'done' && !(s.state === 'todo' && str(s.evidence?.waiting_for) !== null))
+    .map((s) => STEP_LABEL[s.step] ?? s.step)
+  return open.length === 0 ? named : andList(open)
+}
+
 /** What the step's evidence says, in one line: its last probe, never a guess. */
 function stepLine(step: OnboardingStep, doc: OnboardingDoc): ReactNode {
   const ev = step.evidence ?? {}
   const waiting = str(ev.waiting_for)
-  if (step.state === 'todo' && waiting !== null) {
-    const on = STEP_LABEL[waiting as OnboardingStepName] ?? waiting
-    return `waits for ${on}`
-  }
+  if (step.state === 'todo' && waiting !== null) return `waits for ${waitsFor(step, waiting, doc)}`
   switch (step.step) {
     case 'signed_in': {
       const email = str(ev.email)
@@ -210,7 +237,8 @@ function stepLine(step: OnboardingStep, doc: OnboardingDoc): ReactNode {
       if (n('failed') > 0) parts.push(`${n('failed')} failed`)
       if (n('pending') > 0) parts.push(`${n('pending')} not checked yet`)
       // Name the repositories still to verify, so a person knows which
-      // grant's Verify to press on GitHub access (#896).
+      // grant's Verify to press on Config › Repositories (#896; visual QA
+      // config-10: GitHub access has no Verify).
       const open = repos
         .filter((r) => r.result === 'failed' || r.result === 'pending')
         .map((r) => `${str(r.repository) ?? '?'}${r.result === 'failed' ? ' (failed)' : ''}`)
@@ -219,8 +247,8 @@ function stepLine(step: OnboardingStep, doc: OnboardingDoc): ReactNode {
       return (
         <>
           {parts.join(' · ')} · {shown}: press Verify on{' '}
-          <a className="c-link" href={addressToPath(ACCESS)}>
-            GitHub access
+          <a className="c-link" href={addressToPath(REPOSITORIES)}>
+            Repositories
           </a>
         </>
       )
@@ -233,14 +261,22 @@ function stepLine(step: OnboardingStep, doc: OnboardingDoc): ReactNode {
   return null
 }
 
-/** A §2.3 problem: the server's copy, word for word, and the GitHub page it names. */
+/**
+ * A §2.3 problem: the server's copy and the GitHub page it names.
+ *
+ * NO RAW CODE, NO URL TWICE (visual QA pass 1, overview-agents-03,
+ * 2026-10-28): the card printed `SSO_NOT_AUTHORISED` before the copy, and the
+ * copy's "Open https://github.com/orgs/…/sso" beside an "Open on GitHub" link
+ * to the same place. The code stays on the element (`data-code`, the title)
+ * for support; the URL in the copy reads as the link under it.
+ */
 function IssueCopy({ code, copy, url }: { code: string; copy: string; url?: string | null }) {
+  const linked = typeof url === 'string' && url.startsWith('https://github.com/')
+  const words = linked ? copy.split(url).join('the GitHub page linked below') : copy
   return (
-    <div className="ob-issue" data-code={code}>
-      <p className="ur-small">
-        <b className="ur-bad">{code}</b> {copy}
-      </p>
-      {typeof url === 'string' && url.startsWith('https://github.com/') && (
+    <div className="ob-issue" data-code={code} title={code}>
+      <p className="ur-small">{words}</p>
+      {linked && (
         <a className="c-link" href={url} target="_blank" rel="noreferrer">
           Open on GitHub
         </a>
@@ -296,7 +332,11 @@ function StepAction({ step, doc, reload }: { step: OnboardingStep; doc: Onboardi
   if (label === undefined || (step.state === 'todo' && step.evidence?.waiting_for !== undefined)) return null
   return (
     <span className="ob-acts">
-      <ButtonLink kind={doc.next_step === step.step ? 'primary' : 'secondary'} size="sm" href={addressToPath(ACCESS)}>
+      <ButtonLink
+        kind={doc.next_step === step.step ? 'primary' : 'secondary'}
+        size="sm"
+        href={addressToPath(step.step === 'access_verified' ? REPOSITORIES : ACCESS)}
+      >
         {label}
       </ButtonLink>
       {(step.state === 'failed' || step.state === 'stale' || step.state === 'in_progress') && (
@@ -502,8 +542,6 @@ export function OnboardingScreen() {
           )
         }
       </UrRegion>
-      {/* Setup › GitHub (#1086, design 2 "Org cards"): what the App and each org grant, below the checklist. */}
-      <GitHubPermissions />
     </div>
   )
 }

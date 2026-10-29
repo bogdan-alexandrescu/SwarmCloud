@@ -7,6 +7,19 @@
     -> 200 application/json, one JSON-RPC response (202, no body, for a notification)
     GET  /healthz  -> 200 when the key ring is loaded and the switch is on
 
+THE STATS PORT (docs/design/graph-answer-cache.md §5.3) is a second listener,
+`make_stats_server` on stats.STATS_PORT (8081), routed by `handle_stats`:
+
+    GET /v1/stats/local   this replica's figures for the stats ticket's repository
+    GET /v1/stats         this replica's, then every peer's (stats.read_peers)
+
+It takes a STATS ticket (`ticket.verify_stats_ticket`, its own MAC domain)
+and never an attempt ticket; `/mcp` takes an attempt ticket and never a stats
+one. The stats port never serves `/mcp` and this port never serves stats, so
+a NetworkPolicy that admits swarm-api to 8081 admits it to nothing else. The
+same refusal table answers there: 401 ticket_refused with only the reason, 503
+disabled while the switch is off, 404 and 405 otherwise.
+
 No `Mcp-Session-Id` and no server-sent-event stream: the ticket carries the
 pin, so nothing needs state between calls or affinity to a replica.
 
@@ -38,7 +51,9 @@ handler (never a stdlib 501), an unparsable request is 400 with no echo, the
 stdlib's request-line log is silenced, no `Server` version, one request per
 connection. Nothing logged here carries a ticket, a header or a body; a
 `graph_answer` line carries the tenant and repository ids, the tool, the
-status, `cache: hit|miss` and milliseconds (§10 "cache cold").
+status, `cache: hit|miss` and milliseconds (§10 "cache cold"), and the stats
+counters (stats.AnswerCounters) count the outcome right after that line, from
+the same values, so the console and the log-based metric cannot disagree.
 """
 
 from __future__ import annotations
@@ -72,6 +87,7 @@ from .cache import (
     encode_unresolved,
     result_key,
 )
+from . import stats
 from .store import (
     IndexMissing,
     ManifestMismatch,
@@ -80,7 +96,15 @@ from .store import (
     TenantSource,
     open_snapshot,
 )
-from .ticket import GraphTicket, KeyRing, TicketRefused, bearer, verify_graph_ticket
+from .ticket import (
+    GraphTicket,
+    KeyRing,
+    StatsTicket,
+    TicketRefused,
+    bearer,
+    verify_graph_ticket,
+    verify_stats_ticket,
+)
 from .warm import Warmed, Warmer
 
 log = logging.getLogger("swarm_graph")
@@ -167,7 +191,9 @@ class GraphService:
     def __init__(self, *, keys: KeyRing, store: ObjectStore, enabled: Callable[[], bool],
                  shards: ShardCache | None = None, results: ResultCache | None = None,
                  manifests: ManifestCache | None = None, warmer: Warmer | None = None,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time, replica: str | None = None,
+                 peers: Callable[[], list[str] | None] | None = None,
+                 peer_timeout: float = stats.PEER_TIMEOUT_SECONDS) -> None:
         self.keys = keys
         self.store = store
         self.enabled = enabled
@@ -176,6 +202,12 @@ class GraphService:
         self.manifests = manifests if manifests is not None else ManifestCache()
         self.warmer = warmer if warmer is not None else Warmer(on_done=_warmed)
         self._clock = clock
+        #: The stats port's figures (graph-answer-cache.md §5.3).
+        self.replica = replica if replica is not None else stats.replica_name()
+        self.started_at = clock()
+        self.peers = peers if peers is not None else stats.Peers()
+        self.peer_timeout = peer_timeout
+        self.answers = stats.AnswerCounters()
 
     # -- the routes -------------------------------------------------------------
 
@@ -218,6 +250,40 @@ class GraphService:
         except _Refused as refused:
             self._log(ticket, None, refused.code, None, started)
             return refusal(refused.code, **refused.detail)
+
+    def handle_stats(self, method: str, path: str,
+                     headers: Iterable[tuple[str, str]]) -> Reply:
+        """The stats port's routes: no body is read, and nothing but a stats
+        ticket is accepted."""
+        route, _, query = path.partition("?")
+        if route not in (stats.STATS_PATH, stats.STATS_LOCAL_PATH):
+            return refusal(NOT_FOUND)
+        if method not in ("GET", "HEAD"):
+            return refusal(METHOD_NOT_ALLOWED)
+        if not self.enabled():
+            return refusal(DISABLED)
+        named = {k.lower(): v for k, v in headers}
+        raw = bearer(named.get("authorization"))
+        try:
+            ticket = verify_stats_ticket(self.keys.keys(), raw, now=self._clock())
+        except TicketRefused as exc:
+            event("graph_refused", code=TICKET_REFUSED, cause=exc.cause, port="stats")
+            return refusal(TICKET_REFUSED, reason=exc.reason)
+        with_shards = "shards=1" in query.split("&")
+        local = self._stats_local(ticket, with_shards)
+        if route == stats.STATS_LOCAL_PATH:
+            return _json_reply(200, local)
+        peers = self.peers()
+        replicas = [local, *stats.read_peers(peers or [], str(raw), with_shards=with_shards,
+                                             timeout=self.peer_timeout)]
+        return _json_reply(200, {"replicas": replicas, "peers_resolved": peers is not None})
+
+    def _stats_local(self, ticket: StatsTicket, with_shards: bool) -> dict:
+        return stats.local_document(ticket, replica=self.replica, started_at=self.started_at,
+                                    now=self._clock(), results=self.results,
+                                    shards=self.shards, manifests=self.manifests,
+                                    warmer=self.warmer, counters=self.answers,
+                                    with_shards=with_shards)
 
     def _mcp(self, ticket: GraphTicket, body: bytes, started: float) -> Reply:
         try:
@@ -325,9 +391,12 @@ class GraphService:
 
     def _log(self, ticket: GraphTicket, tool: str | None, status: str, cache: str | None,
              started: float) -> None:
+        ms = int((time.monotonic() - started) * 1000)
         event("graph_answer", tenant_id=ticket.tenant_id, repo_id=ticket.repo_id,
-              tool=tool, status=status, cache=cache,
-              ms=int((time.monotonic() - started) * 1000))
+              tool=tool, status=status, cache=cache, ms=ms)
+        # Counted from the line's own values, after it is written (§5.3).
+        if tool is not None:
+            self.answers.record(ticket.tenant_id, ticket.repo_id, cache, ms, now=self._clock())
 
 
 def _warmed(tenant_id: str, repo_id: str, result: Warmed, ms: int) -> None:
@@ -403,6 +472,24 @@ def make_server(service: GraphService, host: str, port: int) -> GraphHttpServer:
     return GraphHttpServer((host, port), handler)
 
 
+class _StatsRoutes:
+    """The stats port's view of the service: `handle_stats` and nothing else,
+    so `/mcp` is a 404 there whatever is asked."""
+
+    def __init__(self, service: GraphService) -> None:
+        self._service = service
+
+    def handle(self, method: str, path: str, headers: Iterable[tuple[str, str]],
+               read: Callable[[int], bytes]) -> Reply:
+        return self._service.handle_stats(method, path, headers)
+
+
+def make_stats_server(service: GraphService, host: str,
+                      port: int = stats.STATS_PORT) -> GraphHttpServer:
+    handler = type("StatsHandler", (_Handler,), {"service": _StatsRoutes(service)})
+    return GraphHttpServer((host, port), handler)
+
+
 __all__ = [
     "HEALTH_PATH",
     "MAX_BODY_BYTES",
@@ -414,5 +501,6 @@ __all__ = [
     "Reply",
     "event",
     "make_server",
+    "make_stats_server",
     "refusal",
 ]

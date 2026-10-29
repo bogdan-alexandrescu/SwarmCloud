@@ -22,7 +22,8 @@
    FROM 1280px THE EDITOR FLOATS OVER THE RIGHT OF THE FAMILIES (VQA V024). It
    took a grid column of its own, which narrowed the families from ~1024 to
    ~660px at 1440: every fixed-width row re-laid itself, `edit` wrapped under
-   its figure and `AIMD back-off` broke in two, the opposite of the rule
+   its figure and `AIMD back-off` (Set by's term then; `lowered automatically
+   after errors` since QA1B-13) broke in two, the opposite of the rule
    above. Both now share the one grid cell, so the families' width -- and
    with it every column and every row -- is the same open or shut; the editor
    sits over Set by and Last changed (it carries the open pool's own), sticky
@@ -229,18 +230,29 @@
      `provider:anthropic:tenant:u-bogdan` -- 34 characters of 12px DM Mono,
      245px, and the cell's 20px of padding -- wrapped between its pairs and
      made one row of Providers taller than the rest. 27% is 276px. The 2% is
-     Set by's slack (`AIMD back-off` is 122px, 12% is 123px) and Last
-     changed's 1%. The `<wbr>` between pairs (`keyBreaks`) stays the wrap
+     Set by's slack (`AIMD back-off`, its term then, was 122px in 12%'s 123px;
+     its plain-words term since QA1B-13 is sized below) and Last changed's 1%. The `<wbr>` between pairs (`keyBreaks`) stays the wrap
      point beside the open editor. */
   table.adm-limits > colgroup > col.adm-col-pool { width: 27%; }
   table.adm-limits > colgroup > col.adm-col-use { width: 15%; }
-  table.adm-limits > colgroup > col.adm-col-ceiling { width: 21%; }
-  table.adm-limits > colgroup > col.adm-col-by { width: 12%; }
-  table.adm-limits > colgroup > col.adm-col-changed { width: 25%; }
-  /* SET BY IS A TERM, ON ONE LINE (VQA V024): `AIMD back-off` broke at its
-     hyphen. Where the column is too narrow it is cut, whole on the cell's
-     title, which carries the sentence why. */
-  table.adm-limits td.adm-setby { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* SET BY HOLDS ITS WORDS, ON TWO LINES (QA1B-13 review, 2026-10-28).
+     capacity-21's `lowered automatically after errors` is ~200px of 14px
+     text: at 12% it was cut to `lowered autom…`, hiding the plain words that
+     finding asked for. Set by takes 15% (~153px, ~133px of text, which
+     holds `lowered automatically`), from the Ceiling slot's slack (19% is
+     ~194px against its ~175px) and Last changed's 1%, and wraps below. */
+  table.adm-limits > colgroup > col.adm-col-ceiling { width: 19%; }
+  table.adm-limits > colgroup > col.adm-col-by { width: 15%; }
+  table.adm-limits > colgroup > col.adm-col-changed { width: 24%; }
+  /* SET BY BREAKS BETWEEN WORDS, NEVER INSIDE ONE (VQA V024; QA1B-13
+     review). V024 held the old two-word term on one line, cutting it where
+     the column was narrow; the plain-words term is a phrase, and a cut
+     phrase hides what it says. It wraps at its spaces, and `overflow-wrap:
+     normal` undoes `.cap-families`' `anywhere`, so no word is split. Pool
+     limits says it as `lowered automatically (back-off)` (admin-shell-13,
+     `setByWords`), and `(back-off)` is one run (`.adm-setby-nb`) so its
+     hyphen never cuts it. The cell's title carries the sentence why. */
+  table.adm-limits td.adm-setby { white-space: normal; overflow-wrap: normal; }
   /* One line: `.cap-families .ctl-table th` lets Capacity's heads wrap. */
   .cap-families table.adm-limits > thead th { white-space: nowrap; }
 }
@@ -487,7 +499,7 @@
      breaks inside, and one wider than the value column is cut with an
      ellipsis -- the whole value is on the identity's title and its copy
      control -- never broken mid-word. */
-  .ten-ident { overflow-wrap: normal; word-break: normal; }
+  .ten-ident { overflow-wrap: normal; word-break: normal; flex: 0 1 auto; min-width: 0; max-width: 100%; }
   .ten-seg {
     display: inline-block;
     max-width: 100%;
@@ -496,13 +508,27 @@
     text-overflow: ellipsis;
     vertical-align: top;
   }
+  /* THE IDENTITY STAYS INSIDE THE CARD (visual QA pass 1, admin-shell-02,
+     part of #2596). The row was `inline-flex` with no wrap, so the identity
+     -- a flex item whose minimum is its widest run, 28 characters of
+     `swarm-agent-worker-u-bogdan@` -- and its 44px copy control ran past the
+     value column to x=461 at 390, and the whole page scrolled sideways. Now
+     the row wraps: the identity is never wider than the column and breaks at
+     its `@` and `.` runs inside it, and the copy control takes the next line
+     when the two do not fit side by side (`.ten-ident`'s flex and width,
+     above). */
+  .ten-ident-row { display: flex; flex-wrap: wrap; max-width: 100%; }
+  .ten-copy-said { flex-basis: 100%; }
 }
 /* THE BUDGET NOTE IS A PLAIN FACT, IN PLAIN INK (AH-21). AG-5 defines a plain
    fact as no mark and no dimming. `.ctl-panel-note` is `--text-faint`, the
    tone of a qualifier under a figure; this line qualifies no figure -- it
    says a column is absent and why none can exist -- so it takes `--text`.
    Two classes, so it outranks `.ctl-panel-note` wherever that rule sits. */
-.ctl-panel-note.ten-budget { color: var(--text); }
+/* AND IT IS A SENTENCE, SO IT IS IN THE PROSE FACE (visual QA pass 1,
+   admin-shell-18, part of #2596). In `.ctl-panel-note`'s mono, `no budget
+   column · no budget can be set` read as debug output. */
+.ctl-panel-note.ten-budget { color: var(--text); font-family: var(--font); }
 /* admin-009 (visual QA run 2, 2026-10-20): POOL LIMITS' NON-ADMIN LINE IS A
    SENTENCE, so it is set in the prose face. `.ctl-panel-note` is mono because
    it usually qualifies a figure with a term; `Admins only. You can read every
@@ -595,10 +621,20 @@
      72. So the key does not shrink: it is whole unless it alone is wider
      than the column less the head's and the tail's 2ch floors, and then
      `max-width` cuts it there, with its ellipsis (V026). */
+  /* ONE CUT, NOT TWO (visual QA pass 1, admin-shell-18, part of #2596).
+     With the copy control beside it the identity had about 16 characters, so
+     both the prefix and the domain were cut: `sw…u-bogdan@ex…`. Now the
+     identity takes the cell's width and the copy control the line under it
+     when the two do not fit together; inside, the pieces wrap as whole
+     runs -- the prefix on its own line, then the key -- and only the domain,
+     the same for every row, gives way with an ellipsis. The whole value is
+     on the identity's title and on the copy control's name. */
   .ten-ident {
     display: flex;
-    flex: 1 1 0;
+    flex-wrap: wrap;
+    flex: 1 1 auto;
     min-width: 0;
+    max-width: 100%;
     overflow: hidden;
     white-space: nowrap;
   }
@@ -611,7 +647,15 @@
      unused share to the domain, and two rows with the same room show the
      same number of letters of each. The copy control beside it carries the
      whole value, on its name and its title. */
-  .ten-ident > .ten-ident-head,
+  /* The prefix is whole on its line; it is cut, with its ellipsis, only
+     when it alone is wider than the column. */
+  .ten-ident > .ten-ident-head {
+    flex: 0 1 auto;
+    min-width: 2ch;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   .ten-ident > .ten-ident-tail {
     flex: 1 1 0;
     min-width: 2ch;
@@ -703,7 +747,8 @@ table.ten-table > thead > tr > th.n { font-family: var(--font); }
 /* `configured` IS THE WORD, IN THE DIM INK (visual QA QA-099, run 2,
    2026-10-20). It was the `·` glyph in `--text-faint`, then (PR 1707) a 6px
    disc; either way a sighted reader had a mark with no word, legend or
-   tooltip they would think to hover for, while `AIMD back-off` beside it
+   tooltip they would think to hover for, while `AIMD back-off` (now `lowered
+   automatically after errors`) beside it
    was in words. The word at the cell's size in `--text-dim` reads, and is
    still quieter than the overrides in ink (G5-19's reason for hiding it).
    `--text-dim` clears AA on the edited row's tint too (VQA V065 above). */
@@ -711,6 +756,8 @@ table.ten-table > thead > tr > th.n { font-family: var(--font); }
   color: var(--text-dim);
   cursor: help;
 }
+/* `(back-off)` never breaks at its hyphen (VQA V024), at any width. */
+.adm-setby-nb { white-space: nowrap; }
 /* A POOL KEY BREAKS AT A COLON, NEVER MID-WORD (QA G5-11, 2026-10-07).
    `.cap-families` cells wrap anywhere, which split `…:tenant:smok / e` and,
    beside the open editor, `backend:CLOUD_RUN_J / OB`. The row header puts a
@@ -919,3 +966,14 @@ table.adm-limits th.pool-name > .adm-quota-line { display: block; margin-top: 2p
 }
 /* A term never breaks inside itself: `429 6d ago` is one run. */
 .adm-quota-line > span, .adm-quota-line > b, .adm-quota-line > time { white-space: nowrap; }
+
+/* WHERE THE REST OF GLOBAL'S UNITS ARE (visual QA pass 1, admin-shell-14;
+   AdminSettings.tsx `familyNote`): one sentence under a family's rows, in the
+   page's dim meta type, ruled off the table above it. */
+.adm-family-note {
+  margin: 0;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line);
+  font: var(--t-meta)/var(--lh-meta) var(--font);
+  color: var(--text-dim);
+}

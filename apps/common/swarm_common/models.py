@@ -273,6 +273,13 @@ class EndCause(str, Enum):
     checkpoint, and published what it had. Written only by the worker, beside
     TIMEOUT. Never retried by the worker: another attempt of the same step
     starts from the same budget, so a resume is a person's choice.
+
+    FIX_LOOP_EXHAUSTED is contract request 126 (FL-CONTRACT, #2509), accepted
+    by the owner 2026-10-27 and applied 2026-10-28: a workflow's `fix-loop`
+    step whose review-fix rounds ended without a MERGE -- a person answered
+    "stop", or the park for a person passed 7 days. Written only by swarm-api
+    and the scheduler's `_expire_human_waits`; a failure of the work, not of
+    the platform.
     """
 
     TIMEOUT = "timeout"
@@ -294,6 +301,7 @@ class EndCause(str, Enum):
     PUBLISH_REFUSED = "publish_refused"   # the worker refused to publish: a credential in the final tree, or an unusable pr-title.txt
     CHILD_CASCADE = "child_cascade"   # the parent task was cancelled or ended, or its await expired
     BUDGET_EXCEEDED = "budget_exceeded"   # the worker stopped the agent: it spent its budget
+    FIX_LOOP_EXHAUSTED = "fix_loop_exhausted"   # the fix loop's rounds ended without a MERGE
 
 
 #: The shape of `Task.forge_credential`: a provider suffix for

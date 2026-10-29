@@ -162,7 +162,7 @@ export function Verdict({
   now: number
   waiting: WaitRead
 }) {
-  const v = verdictOf(accounts, scope, shortfall)
+  const v = verdictOf(accounts, scope, shortfall, now)
   // An empty read with an unreadable document is not an empty pool: it is at
   // least that many accounts this page could not read (rendered 2026-10-25,
   // when the head said "this list is short" and the verdict "none registered").
@@ -178,8 +178,9 @@ export function Verdict({
     sub =
       'Agents whose runner profile uses the pool wait until an account is added here, or one is lent to this workspace. Agents with their own key are not affected.'
   } else if (v.n === null) {
-    head = 'This broker does not say which accounts can take a new agent.'
-    sub = 'It predates the per-account answer; the table shows the windows it served.'
+    // Plain words (capacity-21): `broker` is the service's own name for itself.
+    head = 'This deployment does not say which accounts can take a new agent.'
+    sub = 'It is older than the per-account answer; the table shows the windows it reported.'
   } else if (v.n === 0) {
     const next = v.next
     head = next ? (
@@ -258,7 +259,7 @@ export function Verdict({
   return (
     <section className={`acct-verdict ${tone}`} aria-label="Can the pool take a new agent">
       <div className="acct-verdict-big">
-        {v.n === null ? <span title="This broker does not serve can_take_new_agent">&mdash;</span> : v.n}{' '}
+        {v.n === null ? <span title="This deployment does not report which accounts can take a new agent">&mdash;</span> : v.n}{' '}
         <small>{v.m === 0 && !unread ? 'accounts' : of}</small>
       </div>
       <div className="acct-verdict-say">
@@ -441,24 +442,36 @@ function Tile({ k, v, small }: { k: string; v: ReactNode; small: ReactNode }) {
  * WHEN THE POOL GOES DARK, AND WHEN IT COMES BACK: "From today's readings"
  * (BGD). Each subscription's 7-day pace is its used share over the hours since
  * its week opened; a withheld duplicate is counted once. No new API field.
+ *
+ * AN ACCOUNT WITH NO 7-DAY READING IS LEFT OUT AND NAMED, NOT ALLOWED TO BLANK
+ * THE CARD (visual QA pass 1, capacity-20, part of #2596). One never-polled
+ * account turned the whole forecast into a lone `Goes dark —`, with no `Back`
+ * tile under a title that promises one. The pace is now taken over the
+ * accounts that have readings, and a line under the tiles names the ones left
+ * out -- the pool can stay open longer than the forecast says while one of
+ * them is. `forecastOf` still answers `darkAt: null` for the whole set, so the
+ * forecast here is its own run over the measured accounts, the one rule.
  */
 export function Forecast({ accounts, scope, now }: { accounts: readonly PoolAccount[]; scope: string | null; now: number }) {
-  const f = forecastOf(accounts, scope, now)
+  const whole = forecastOf(accounts, scope, now)
+  const left = whole.unmeasured
+  const f = left.length === 0 ? whole : forecastOf(accounts.filter((a) => !left.includes(a)), scope, now)
   const k = f.paces.length
   let tiles: ReactNode
-  if (k === 0 && f.unmeasured.length === 0) {
-    tiles = <Tile k="Goes dark" v="—" small="no subscription here takes agents" />
-  } else if (f.unmeasured.length > 0) {
+  if (k === 0) {
+    const why =
+      left.length === 0 ? (
+        'no subscription here takes agents'
+      ) : (
+        <>
+          {andNames(left)} {left.length === 1 ? 'has' : 'have'} no 7-day reading to take a pace from
+        </>
+      )
     tiles = (
-      <Tile
-        k="Goes dark"
-        v="—"
-        small={
-          <>
-            {andNames(f.unmeasured)} {f.unmeasured.length === 1 ? 'has' : 'have'} no 7-day reading to take a pace from
-          </>
-        }
-      />
+      <>
+        <Tile k="Goes dark" v="—" small={why} />
+        <Tile k="Back" v="—" small={left.length === 0 ? why : 'no pace to forecast from'} />
+      </>
     )
   } else if (f.darkAt === null) {
     tiles = (
@@ -508,9 +521,17 @@ export function Forecast({ accounts, scope, now }: { accounts: readonly PoolAcco
         </span>
       </div>
       <div className="acct-fc-tiles">{tiles}</div>
+      {left.length > 0 && k > 0 && (
+        <p className="acct-fc-note acct-fc-left">
+          <b>Left out:</b> {andNames(left)} {left.length === 1 ? 'has' : 'have'} no 7-day reading to take a pace from,
+          so the pool can stay open longer than this says.
+        </p>
+      )}
+      {/* PLAIN WORDS (capacity-21): the laptop tool's name is not the
+          reader's; the sessions it signs in are. */}
       <p className="acct-fc-note">
-        <b>Laptop sessions spend the same windows:</b> these are claudeswitch&rsquo;s subscriptions too, so the pool can go
-        dark sooner than this says.
+        <b>Laptop sessions spend the same windows:</b> they sign in to these subscriptions too, so the pool can go dark
+        sooner than this says.
       </p>
     </section>
   )

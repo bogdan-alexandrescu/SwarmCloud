@@ -403,7 +403,7 @@ describe('U2: the view modes', () => {
     const seg = document.querySelector('nav[aria-label="Views of this workflow"]')
     expect(seg, 'the page has no view tabs').toBeTruthy()
     const buttons = [...seg!.querySelectorAll<HTMLAnchorElement>('a')]
-    expect(buttons.map((b) => b.firstChild?.textContent)).toEqual(['Graph', 'Table', 'Timeline', 'Changes'])
+    expect(buttons.map((b) => b.firstChild?.textContent)).toEqual(['Graph', 'Table', 'Steps over time', 'Changes'])
     expect(c.querySelector('.wf-viewbar .c-seg'), 'the boxed control is still in the card').toBeNull()
     // The Graph is what the page lands on.
     expect(c.querySelector('.wf-canvas')).toBeTruthy()
@@ -596,7 +596,7 @@ async function inspectWork(t: Task, attempts: AttemptRow[]): Promise<HTMLElement
   const { container } = oneStepCard(t, attempts)
   pick(container as HTMLElement, 'work')
   const i = inspector(container as HTMLElement)
-  await within(i).findByText(`attempt ${attempts.length} of ${attempts.length}`)
+  await within(i).findByText(`attempt ${attempts.length} of ${attempts.length} made`)
   return i
 }
 
@@ -847,8 +847,9 @@ describe('U3: an edge that carries a file', () => {
     const fresh = inputsOf(cardOf('wf_new'), 'build')
     expect(fresh.textContent).toContain('plan.md')
     expect(fresh.textContent).toContain('reported at finish')
-    // A step that declares nothing says so; it is not an absence.
-    expect(cell(cardOf('wf_new'), 'scan', 'inputs').textContent).toBe('none')
+    // A step that declares nothing says so; it is not an absence. 'prompt',
+    // the input it does read, since QA1-FIX-29 (overview-agents-72).
+    expect(cell(cardOf('wf_new'), 'scan', 'inputs').textContent).toBe('prompt')
   })
 
   it('does not call a file "not reported" when the report holds an entry it could not read', () => {
@@ -979,7 +980,7 @@ describe('U5: scrubbing', () => {
     // The link to the full run is on the inspector; selecting did not navigate.
     expect(i.querySelector('a[href="/agents/recent/t_plan"]'), 'a finished step opens over Recent (WF-21)').toBeTruthy()
     // Newest attempt first, because that is the one a reader asked about.
-    await within(i).findByText('attempt 3 of 3')
+    await within(i).findByText('attempt 3 of 3 made')
     // 'lease generation', the figure, then what it is for (QAFIX5, run 5b L4).
     expect(fact(i, 'lease generation')).toMatch(/^3 · raised by every new lease/)
     // AT ITS END, NOT DISABLED: `aria-disabled`, so the control keeps focus and
@@ -987,22 +988,22 @@ describe('U5: scrubbing', () => {
     expect(within(i).getByRole('button', { name: 'Next attempt' }).getAttribute('aria-disabled')).toBe('true')
 
     fireEvent.click(within(i).getByRole('button', { name: 'Previous attempt' }))
-    expect(within(i).getByText('attempt 2 of 3')).toBeTruthy()
+    expect(within(i).getByText('attempt 2 of 3 made')).toBeTruthy()
     expect(fact(i, 'lease generation')).toMatch(/^2 · /)
     expect(fact(i, 'exit code')).toBe('137')
 
     const group = i.querySelector<HTMLElement>('[data-scrub="attempt"]')
     expect(group).toBeTruthy()
     fireEvent.keyDown(group!, { key: 'ArrowLeft' })
-    expect(within(i).getByText('attempt 1 of 3')).toBeTruthy()
+    expect(within(i).getByText('attempt 1 of 3 made')).toBeTruthy()
     expect(within(i).getByRole('button', { name: 'Previous attempt' }).getAttribute('aria-disabled')).toBe('true')
     // Pressing a control at its end does nothing.
     fireEvent.click(within(i).getByRole('button', { name: 'Previous attempt' }))
-    expect(within(i).getByText('attempt 1 of 3')).toBeTruthy()
+    expect(within(i).getByText('attempt 1 of 3 made')).toBeTruthy()
     // And the unmeasured cost of attempt 1 is a word, not $0.00.
     expect(fact(i, 'this attempt’s cost')).toBe('not reported')
     fireEvent.keyDown(group!, { key: 'ArrowRight' })
-    expect(within(i).getByText('attempt 2 of 3')).toBeTruthy()
+    expect(within(i).getByText('attempt 2 of 3 made')).toBeTruthy()
   })
 
   it('steps to the same step in the next workflow of the same shape, newest first, and keeps focus on the control', async () => {
@@ -1019,8 +1020,10 @@ describe('U5: scrubbing', () => {
     pick(c, 'plan')
     const alone = inspector(cardOf('wf_new'))
     // A list of one says so, not `workflow 1 of 1` (QAFIX5, run 5b L4).
-    expect(within(alone).getByText('no other workflow of this shape')).toBeTruthy()
-    expect(alone.querySelector('.wf-scrub-shape')!.textContent).toBe('shape: 4 steps in 3 stages (1 → 2 → 1)')
+    // One sentence, no pager, the shape in its title, since QA1-FIX-29 (overview-agents-67).
+    const sentence = within(alone).getByText('No other workflow of this shape on this board')
+    expect(sentence.getAttribute('title')).toBe('This workflow’s shape: 4 steps in 3 stages (1 → 2 → 1). Only workflows of this shape are compared.')
+    expect(alone.querySelector('[data-scrub="workflow"] button')).toBeNull()
     fireEvent.click(within(alone).getByRole('button', { name: 'Stop inspecting this step' }))
 
     // wf_mid's page lands with its failed `plan` already picked (the step
@@ -1030,6 +1033,11 @@ describe('U5: scrubbing', () => {
     expect(cardOf('wf_mid').querySelector('.wf-pick[data-step="plan"]')!.getAttribute('aria-pressed')).toBe('true')
     expect(within(first).getByText('workflow 1 of 2')).toBeTruthy()
     expect(first.querySelector('.wf-scrub-shape')!.textContent).toBe('shape: 2 steps in 2 stages (1 → 1)')
+    // ◀ position ▶ is one unit, the shape after it (D30; held here since the
+    // fixture's own workflows are each of their own shape, qa.u10b).
+    const nav = first.querySelector<HTMLElement>('[data-scrub="workflow"] > .wf-scrub-nav')!
+    expect([...nav.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['◀', '▶'])
+    expect(nav.compareDocumentPosition(first.querySelector('.wf-scrub-shape')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(
       within(first).getByRole('button', { name: 'Same step, newer workflow' }).getAttribute('aria-disabled'),
     ).toBe('true')
@@ -1064,13 +1072,13 @@ describe('U5: scrubbing', () => {
     const c = cardOf('wf_new')
     pick(c, 'plan')
     const i = inspector(c)
-    await within(i).findByText('attempt 3 of 3')
+    await within(i).findByText('attempt 3 of 3 made')
     const prev = within(i).getByRole('button', { name: 'Previous attempt' })
     prev.focus()
     expect(document.activeElement).toBe(prev)
     fireEvent.keyDown(prev, { key: 'ArrowLeft' })
     fireEvent.keyDown(prev, { key: 'ArrowLeft' })
-    expect(within(i).getByText('attempt 1 of 3')).toBeTruthy()
+    expect(within(i).getByText('attempt 1 of 3 made')).toBeTruthy()
     // A BROWSER TAKES FOCUS OFF A CONTROL THE MOMENT IT BECOMES `disabled`
     // (the HTML focus fixup rule), and from <body> no arrow key reaches the
     // scrubber. jsdom does not run that rule, so this asks the question it can
@@ -1085,7 +1093,7 @@ describe('U5: scrubbing', () => {
     prev.focus()
     expect(document.activeElement, 'the control at its end cannot take focus').toBe(prev)
     fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' })
-    expect(within(i).getByText('attempt 2 of 3')).toBeTruthy()
+    expect(within(i).getByText('attempt 2 of 3 made')).toBeTruthy()
   })
 
   it('says a step with no task has no attempt to scrub, rather than showing none', async () => {
@@ -1261,7 +1269,7 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
     expect(mark()!.closest('.wf-card'), 'the mark is outside the card').not.toBeNull()
     expect(document.querySelector('.wf-chrome'), 'an empty strip above the card').toBeNull()
     // The Timeline draws times from the task read, not the sample.
-    chooseTab(c, 'Timeline')
+    chooseTab(c, 'Steps over time')
     expect(mark(), 'a caveat about figures nobody can see').toBeNull()
     // AH-24: the board's one `?` follows the screen's heading, never a value.
     chooseTab(cardOf('wf_new'), 'Table')
@@ -1407,7 +1415,7 @@ describe('the owner’s decisions: where a figure came from (WF-5)', () => {
     // the same source, in the same words.
     pick(root, 'work')
     const i = inspector(root)
-    await within(i).findByText('attempt 1 of 1')
+    await within(i).findByText('attempt 1 of 1 made')
     const costFact = factLi(i, 'this attempt’s cost')
     expect(costFact.classList.contains('is-absent'), 'the inspector calls a reported cost absent').toBe(false)
     expect(costFact.textContent).toContain('$0.42')
@@ -1461,7 +1469,7 @@ describe('the owner’s decisions: where a figure came from (WF-5)', () => {
 
     pick(root, 'work')
     const i = inspector(root)
-    await within(i).findByText('attempt 1 of 1')
+    await within(i).findByText('attempt 1 of 1 made')
     const fact = factLi(i, 'tokens')
     expect(fact.textContent).toContain('1.41M')
     expect(fact.getAttribute('title')).toContain(caption)
@@ -1606,7 +1614,7 @@ describe('the owner’s decisions: where a figure came from (WF-5)', () => {
     const root = viewCard(work, [done], 'table', notSampled, { t_res: [attempt(1, { task_id: 't_res' })] })
     pick(root, 'work')
     const i = inspector(root)
-    await within(i).findByText('attempt 1 of 1')
+    await within(i).findByText('attempt 1 of 1 made')
     expect(factLi(i, 'this attempt’s cost').getAttribute('title')).toContain('own document carries no typed figure')
   })
 
@@ -1651,7 +1659,7 @@ describe('the owner’s decisions: where a figure came from (WF-5)', () => {
     // floor rather than a total.
     const total = table.querySelector<HTMLElement>('.wf-spend')!
     expect(total.firstChild?.textContent, 'the row’s total counts a figure no step shows').toBe('$0.20')
-    expect(total.querySelector('.wf-spend-cov')?.textContent).toBe('1 of 2 reported')
+    expect(total.querySelector('.wf-spend-cov')?.textContent).toBe('1 of 2 steps that ran reported')
 
     // And the node agrees with the table.
     const node = nodeNamed(viewCard(steps, [done, retrying], 'graph', usage), 'again')
@@ -1668,7 +1676,7 @@ describe('the owner’s decisions: scrubbing across workflows (WF-10)', () => {
     // `wf_mid` and `wf_old` are the two workflows of one shape (#112); wf_mid
     // lands with its failed `plan` picked.
     const mid = await openPage('wf_mid')
-    chooseTab(mid, 'Timeline')
+    chooseTab(mid, 'Steps over time')
     await waitFor(() => inspector(cardOf('wf_mid')))
     expect(cardOf('wf_mid').querySelector('.wf-pick[data-step="plan"]')!.getAttribute('aria-pressed')).toBe('true')
     fireEvent.click(within(inspector(cardOf('wf_mid'))).getByRole('button', { name: 'Same step, older workflow' }))

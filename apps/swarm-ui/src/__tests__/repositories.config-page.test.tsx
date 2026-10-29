@@ -6,12 +6,14 @@
 //   * "Repositories SwarmCloud may reach as you" (ReachableRepositories.tsx,
 //     extracted by GITHUB-ACCESS-PAGE) is mounted at the top of the list,
 //     above the registry, with its rows;
-//   * Add new repository goes to Config › GitHub access with Choose
-//     repositories open (Access.tsx's ADD_REPOSITORY_ADDRESS);
+//   * Choose more on GitHub (Choose on GitHub while nothing is chosen; it was
+//     "Add new repository" until QA1-FIX-21, config-16) goes to Config ›
+//     GitHub access with Choose repositories open (Access.tsx's
+//     ADD_REPOSITORY_ADDRESS);
 //   * the registry's cards and QA targets are still on the page, below;
 //   * a chosen repository that is not registered is a dashed card with
 //     Register, and the page's lead names it (S3a);
-//   * with nothing chosen the lead carries Add new repository and the head
+//   * with nothing chosen the lead carries Choose on GitHub and the head
 //     does not repeat it (S3c).
 //
 // Fixtures only; no network.
@@ -60,7 +62,8 @@ async function mount(view: string | null = null, go = vi.fn()) {
 
 const reach = () => document.querySelector<HTMLElement>('.ac-grants')
 const cards = () => Array.from(document.querySelectorAll<HTMLElement>('.ur-cards > .ur-card'))
-const addButtons = () => Array.from(document.querySelectorAll<HTMLAnchorElement>('a')).filter((a) => visible(a) === 'Add new repository')
+const ADD_WORDS = ['Choose on GitHub', 'Choose more on GitHub']
+const addButtons = () => Array.from(document.querySelectorAll<HTMLAnchorElement>('a')).filter((a) => ADD_WORDS.includes(visible(a)))
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -80,7 +83,7 @@ describe('Config › Repositories: what SwarmCloud may reach as you, then the re
     expect(reach()!.compareDocumentPosition(cards()[0]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
-  it('Add new repository opens GitHub access with Choose repositories open', async () => {
+  it('Choose more on GitHub opens GitHub access with Choose repositories open', async () => {
     live([repo()], [GRANT(1, 'example-org/example-api', 'write')])
     const { go } = await mount()
     await waitFor(() => expect(addButtons()).toHaveLength(1), WAIT)
@@ -93,7 +96,7 @@ describe('Config › Repositories: what SwarmCloud may reach as you, then the re
     expect(go).toHaveBeenCalledWith('config/github?view=choose')
   })
 
-  it('the address Add new repository goes to is GitHub access with view=choose kept', async () => {
+  it('the address the choose button goes to is GitHub access with view=choose kept', async () => {
     vi.resetModules()
     const { fromAddress, canonical } = await import('../App')
     const r = fromAddress('config/github?view=choose')
@@ -145,18 +148,18 @@ describe('the page is led by what is missing (proposal E)', () => {
     // MUTATION: match the registry by repo name alone and the registered one is drawn dashed too.
     expect(document.querySelectorAll('.ur-cards > .ur-card.is-chosen')).toHaveLength(1)
     // MUTATION: count the dashed card as registered, or leave it uncounted, and the note disagrees with the grid.
-    expect(visible(document.querySelector('.c-count-note'))).toContain('1 registered · 1 chosen, not registered')
+    expect(visible(document.querySelector('.c-count-note'))).toContain('Registered repositories · 1 · 1 chosen, not registered')
     const lead = document.querySelector<HTMLElement>('section[aria-label="Next step"]')
     expect(lead).not.toBeNull()
     expect(visible(lead!)).toContain('example-labs/console is chosen but not registered')
-    // MUTATION: lead with Add new repository here and the head would not carry it.
+    // MUTATION: lead with the choose button here and the head would not carry it.
     expect(addButtons()).toHaveLength(1)
     expect(lead!.contains(addButtons()[0]!)).toBe(false)
     fireEvent.click(within(dashed()!).getByRole('link', { name: 'Register' }))
     expect(go).toHaveBeenCalledWith('config/repositories?page=register&repo=example-labs%2Fconsole')
   })
 
-  it('with nothing chosen the lead carries Add new repository and the head does not repeat it (S3c)', async () => {
+  it('with nothing chosen the lead carries Choose on GitHub and the head does not repeat it (S3c)', async () => {
     live([], [])
     await mount()
     const lead = () => document.querySelector<HTMLElement>('section[aria-label="Next step"]')
@@ -164,14 +167,14 @@ describe('the page is led by what is missing (proposal E)', () => {
     // MUTATION: read the step's place from a fixed "of 4" and a personal workspace's strip disagrees.
     expect(visible(lead()!)).toMatch(/Step 2 of \d · next\./)
     expect(visible(lead()!)).toContain('No repository chosen yet')
-    // MUTATION: draw Add new repository in the head as well and there are two.
+    // MUTATION: draw the choose button in the head as well and there are two.
     await waitFor(() => expect(addButtons()).toHaveLength(1), WAIT)
     expect(lead()!.contains(addButtons()[0]!)).toBe(true)
     // The registry's empty state says what it waits for (S3c's Registered repositories).
     await waitFor(() => expect(visible(document.querySelector('.ur-list'))).toContain('A repository is registered after it is chosen'), WAIT)
   })
 
-  it('every chosen repository registered: the lead says so and carries Add new repository', async () => {
+  it('every chosen repository registered: the lead says so and carries Choose more on GitHub', async () => {
     live([repo()], [GRANT(1, 'Example-Org/Example-API', 'write')])
     await mount()
     const lead = () => document.querySelector<HTMLElement>('section[aria-label="Next step"]')

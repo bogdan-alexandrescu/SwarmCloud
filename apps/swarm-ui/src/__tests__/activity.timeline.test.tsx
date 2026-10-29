@@ -714,9 +714,10 @@ describe('the readout', () => {
     cleanup()
     const table = await timeline(ledgerFixture(), { view: 'table=1' })
     const row = table.querySelectorAll('.ol-table tbody tr')[10]!
-    expect(row.textContent).toContain(`${b.cancelled!.total} · ${flat} / ${outline}`)
+    // The Cancelled cell is four columns since QA1-FIX-13: all, requested or other, after a failure, after a cancel.
+    expect([...row.children].slice(4, 7).map((c) => (c.textContent ?? '').trim())).toEqual([String(b.cancelled!.total), flat, outline])
     const head = [...table.querySelectorAll('.ol-table thead th')].map((th) => th.textContent ?? '')
-    expect(head).toContain('Cancelled · requested or other / after a failure / after a cancel')
+    expect(head).toEqual(expect.arrayContaining(['Cancelled', 'requested or other', 'after a failure', 'after a cancel']))
   })
 
   it('is one tab stop, starting on the newest bucket, moved by the arrows, Home and End', async () => {
@@ -785,6 +786,36 @@ describe('the readout', () => {
 // The Table twin
 // ---------------------------------------------------------------------------
 
+describe('the head and the facts line (QA1-FIX-13)', () => {
+  it('stamps the head with the browser’s read, not the ledger’s generated_at (runs-submit-12)', async () => {
+    const d = ledgerFixture()
+    d.generated_at = new Date(Date.now() - 8 * 86_400_000).toISOString()
+    const root = await timeline(d)
+    const head = root.querySelector('.c-refresh')!.textContent ?? ''
+    // MUTATION: feed RefreshControl `Date.parse(data.generated_at)` again and this reads "read 8 d ago".
+    expect(head).not.toMatch(/\bd ago/)
+    expect(head).toMatch(/read \d+ ?s ago/)
+  })
+
+  it('says the time basis in words, the field in its title (runs-submit-39)', async () => {
+    const root = await timeline()
+    const by = [...root.querySelectorAll('.ol-facts .ctl-fact')].find((f) => f.querySelector('b')?.textContent === 'by')!
+    // MUTATION: print `<code>{data.basis.outcomes}</code>` again.
+    expect(by.textContent).toBe('byfinish time')
+    expect(by.querySelector('[title="completed_at"]')).not.toBeNull()
+  })
+
+  it('says a submit-time basis in words too, the field in its title (runs-submit-39)', async () => {
+    const d = ledgerFixture()
+    d.basis = { ...d.basis, outcomes: 'created_at' }
+    const root = await timeline(d)
+    const by = [...root.querySelectorAll('.ol-facts .ctl-fact')].find((f) => f.querySelector('b')?.textContent === 'by')!
+    // MUTATION: drop the created_at branch from `basisWords` and this reads "bycreated_at".
+    expect(by.textContent).toBe('bysubmit time')
+    expect(by.querySelector('[title="created_at"]')).not.toBeNull()
+  })
+})
+
 describe('the Table toggle', () => {
   it('swaps the drawing for the same buckets as a scrolling table, and writes it to the hash', async () => {
     const onView = vi.fn()
@@ -795,8 +826,8 @@ describe('the Table toggle', () => {
     expect(table.querySelectorAll('tbody tr')).toHaveLength(14)
     const heads = [...table.querySelectorAll('thead th')].map((th) => th.textContent)
     // The one submission-time column names its basis under Table too, where no lane label is drawn.
-    expect(heads).toContain('Submitted · by created_at')
-    expect(heads.some((h) => /Rate · k of n · 95 %/.test(h ?? ''))).toBe(true)
+    expect(heads).toContain('Submitted by created_at')
+    expect(heads).toContain('Rate k of n, 95 % range')
     const toggle = root.querySelector<HTMLButtonElement>('.ol-table-toggle')!
     expect(toggle.getAttribute('aria-pressed')).toBe('true')
     fireEvent.click(toggle)
@@ -823,7 +854,7 @@ describe('scope and filters', () => {
     const facts = [...root.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
     // The reader's word is workspace (VQ-056); the id is still the tenant id.
     expect(facts).toContain('workspaceeng')
-    expect(facts).toContain('bycompleted_at')
+    expect(facts).toContain('byfinish time')
   })
 
   it('gives an admin the scope, and excludes the verify tenant in one click', async () => {
@@ -990,10 +1021,13 @@ describe('what the route serves, said as the route means it', () => {
     expect(root.querySelector('.ol-legend')!.textContent).toContain('by arrived_at')
     const facts = [...root.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
     expect(facts).toContain('byended_at')
+    // An unknown basis keeps its field name, and the field is its title too (QA1-FIX-13).
+    // MUTATION: drop the `title` from the facts line's basis span.
+    expect(root.querySelector('.ol-facts .ctl-fact [title="ended_at"]')?.textContent).toBe('ended_at')
     cleanup()
     const table = await timeline(d, { view: 'table=1' })
     const heads = [...table.querySelectorAll('.ol-table thead th')].map((th) => th.textContent)
-    expect(heads).toContain('Submitted · by arrived_at')
+    expect(heads).toContain('Submitted by arrived_at')
   })
 
   it('draws a submitter the route did not record as an absence, never as a blank', async () => {
@@ -1068,12 +1102,15 @@ describe('the eight cards', () => {
     expect(rows.map((r) => r.getAttribute('data-row'))).toEqual([
       'runner error', 'timeout', 'lost worker', 'could not start', 'inputs unavailable', 'outputs missing',
       'dispatch failed', 'spec signature invalid', 'verdict refused', 'verdict failed', 'merge refused',
-      'merge failed', 'publish refused', 'budget exceeded', 'other', 'no reason recorded', 'failed on purpose',
+      'merge failed', 'publish refused', 'budget exceeded', 'fix loop exhausted', 'other', 'no reason recorded',
+      'failed on purpose',
     ])
     // Contract request 118 (BGD 2026-10-27): the fixture's one budget stop on
     // 25 Sep is its own row, after publish refused, and no longer an "other".
+    // Contract request 126 (BGD 2026-10-27): a fix loop that ended without a
+    // MERGE is its own row after it, drawn as 0 in a fixture that has none.
     expect(rows.map((r) => r.querySelector('.ol-row-n')!.textContent)).toEqual([
-      '1', '0', '7', '0', '0', '6', '8', '0', '0', '0', '0', '0', '0', '1', '5', '0', '0',
+      '1', '0', '7', '0', '0', '6', '8', '0', '0', '0', '0', '0', '0', '1', '0', '5', '0', '0',
     ])
     // A 0 ROW DRAWS NO BAR (visual QA VQ-022, 2026-10-26): the zero tick read
     // as a small non-zero bar. The row and its "0" are drawn; the bar is not.
@@ -1238,7 +1275,8 @@ describe('the eight cards', () => {
   it('draws a card’s mini strips in the band its bucket count needs, so the sheet can drop them where they do not fit', async () => {
     const root = await timeline(thirtyDays())
     const strips = [...card(root, /^Why agents failed/).querySelectorAll('.ol-strip')]
-    // One per class in the route's vocabulary: seventeen since "budget
+    // One per class in the route's vocabulary: eighteen since "fix loop
+    // exhausted" (contract request 126, BGD 2026-10-27), seventeen since "budget
     // exceeded" (contract request 118, BGD 2026-10-27), sixteen since "failed on
     // purpose" (#631, the caller asked for the failure), fifteen since "publish
     // refused" (contract request 29), fourteen since the worker actions'
@@ -1246,7 +1284,7 @@ describe('the eight cards', () => {
     // (contract request 34), nine since "inputs unavailable" (#185,
     // decision 4).
     expect(strips).toHaveLength(ledgerFixture().vocab.failure_classes.length)
-    expect(strips).toHaveLength(17)
+    expect(strips).toHaveLength(18)
     for (const s of strips) {
       expect(s.classList.contains('is-n31'), `a 30-bucket strip is not in the ≤31 band: ${s.getAttribute('class')}`).toBe(true)
       expect(Number(s.getAttribute('width'))).toBe(30 * 6)
@@ -1382,9 +1420,11 @@ describe('timeline figures open the rows behind them (#116) and add up (#123)', 
     const d = ledgerFixture()
     d.buckets[10] = { ...d.buckets[10]!, failed: 5, dead_lettered: 3 }
     const root = await timeline(d, { view: 'table=1' })
-    const heads = [...root.querySelectorAll('.ol-table thead th')].map((th) => (th.textContent ?? '').trim())
+    // The head's leaves, left to right: the Cancelled group head spans its four columns (QA1-FIX-13).
+    const [top, under] = [...root.querySelectorAll<HTMLTableRowElement>('.ol-table thead tr')].map((r) => [...r.cells])
+    const heads = top!.flatMap((th) => (th.colSpan > 1 ? under!.splice(0, th.colSpan) : [th])).map((th) => (th.textContent ?? '').trim())
     const at = (name: RegExp) => heads.findIndex((h) => name.test(h))
-    const [succeeded, failed, cancelled, finished] = [/^Succeeded$/, /^Failed · incl\. dead-lettered$/, /^Cancelled/, /^Finished$/].map(at)
+    const [succeeded, failed, cancelled, finished] = [/^Succeeded$/, /^Failed incl\. dead-lettered$/, /^all$/, /^Finished$/].map(at)
     expect(failed, `no single Failed column in ${heads.join(' | ')}`).toBeGreaterThan(-1)
     const rows = [...root.querySelectorAll('.ol-table tbody tr')].filter((r) => r.getAttribute('data-state') !== 'unread')
     expect(rows.length).toBeGreaterThan(0)

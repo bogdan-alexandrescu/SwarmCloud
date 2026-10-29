@@ -188,6 +188,7 @@ _WAITS_FOR = {
     "CREDENTIAL_MISSING": "credential",
     "HUMAN_REQUIRED": "a person",
     "AWAITING_INPUT": "a person's answer",   # contract request 92
+    "FIX_ROUNDS_RUNNING": "fix rounds",      # contract request 125
     "PLATFORM_REFUSED": "cluster quota or policy",   # contract request 123
 }
 

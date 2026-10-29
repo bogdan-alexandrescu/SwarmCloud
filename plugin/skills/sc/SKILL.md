@@ -408,7 +408,9 @@ re-dispatches anything (owner, 2026-10-14: "report only"). Two calls:
 This project's build board (#1773): one local HTML page of every lane of
 the work the developer submitted against this project's repository -- its
 state, pull request and what it waits on, grouped by feature -- and a
-"Waiting on someone" list. It lives at `<project>/.claude/build-board/`,
+"Waiting on someone" list -- an owner question counts there only while its
+lane is open (not merged, not finished) and unanswered on the task, once per
+lane (#1812). It lives at `<project>/.claude/build-board/`,
 beside a `.gitignore` of `*`, so it is never committed, and it belongs to no
 Claude account. The bridge already refreshes it after every dispatch, check
 and attach, and as rows see work move; this verb refreshes it now and shows

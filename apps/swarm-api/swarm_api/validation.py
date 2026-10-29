@@ -250,6 +250,105 @@ def resolve_runtime_policy(
     return dict(shape)
 
 
+#: A review step's gate (#2524, BGD 2026-10-27: "Risk paths + over 300 lines;
+#: reuse renders"). A WORKFLOW STEP may carry `metadata.review_gate =
+#: {"min_lines": 300, "risk_paths": [...]}`: the scheduler holds it PARKED
+#: when its parents end, swarm-api reads what they changed (`reviewgate`) and
+#: the review runs only when that touches a risk path or changes more than
+#: `min_lines` lines; otherwise swarm-api ends the step SUCCEEDED without an
+#: agent and its verdict.json reads MERGE, with the reason. Either key may be
+#: left out (`min_lines` 300, `risk_paths` `reviewgate.DEFAULT_RISK_PATHS`). Not a typed
+#: field, for the reason `metadata.runtime` is not: `swarm_common` is frozen.
+REVIEW_GATE_METADATA_KEY = "review_gate"
+REVIEW_GATE_KEYS = ("min_lines", "risk_paths")
+#: BGD's value, read by `reviewgate.DEFAULT_MIN_LINES`.
+REVIEW_GATE_DEFAULT_MIN_LINES = 300
+#: Bounds on what a caller may write: a gate is a short list of globs, and
+#: the whole block sits in a task document read on every promotion.
+REVIEW_GATE_MAX_MIN_LINES = 1_000_000
+REVIEW_GATE_MAX_RISK_PATHS = 100
+REVIEW_GATE_MAX_PATH_CHARS = 200
+
+
+class ReviewGateInvalid(ValidationFailed):
+    """422 `invalid_review_gate`: a `metadata.review_gate` this platform does not run."""
+
+    code = "invalid_review_gate"
+
+
+def resolve_review_gate(
+    metadata: Mapping[str, Any] | None, *, step_id: str | None, workflow_step: bool,
+) -> dict[str, Any] | None:
+    """A step's `review_gate` block, checked and normalised; None when it has none.
+
+    A switch (`refusals.SWITCHES["invalid_review_gate"]`), on by BGD's
+    decision of 2026-10-27. Turned off, a malformed block is not refused and
+    is not stored either (None): the step's review then always runs, as it
+    did before gates existed.
+    """
+    try:
+        return _checked_review_gate(metadata, step_id=step_id, workflow_step=workflow_step)
+    except ReviewGateInvalid as error:
+        refusals.refuse(error)
+        return None
+
+
+def _checked_review_gate(
+    metadata: Mapping[str, Any] | None, *, step_id: str | None, workflow_step: bool,
+) -> dict[str, Any] | None:
+    """`resolve_review_gate`, raising `ReviewGateInvalid` for every refusal.
+
+    Refused: on anything but a workflow step (a task has no parent whose diff
+    could decide for it); any key but `REVIEW_GATE_KEYS`; a `min_lines` that
+    is not a whole number in 0..`REVIEW_GATE_MAX_MIN_LINES` (a bool is not);
+    and a `risk_paths` that is not a list of 1..`REVIEW_GATE_MAX_RISK_PATHS`
+    non-empty strings of at most `REVIEW_GATE_MAX_PATH_CHARS`, with no control
+    character and none absolute. A left-out `risk_paths` is left out, so the
+    scheduler's default list applies.
+    """
+    if not isinstance(metadata, Mapping) or REVIEW_GATE_METADATA_KEY not in metadata:
+        return None
+    where = {"step_id": step_id} if step_id else {}
+    field = f"metadata.{REVIEW_GATE_METADATA_KEY}"
+    if not workflow_step:
+        raise ReviewGateInvalid(
+            "metadata.review_gate is a workflow step's: a task has no upstream step whose "
+            "change could decide whether it runs",
+            detail={**where, "field": field},
+        )
+    raw = metadata[REVIEW_GATE_METADATA_KEY]
+    if not isinstance(raw, Mapping) or not set(raw) <= set(REVIEW_GATE_KEYS):
+        unknown = sorted(set(raw) - set(REVIEW_GATE_KEYS)) if isinstance(raw, Mapping) else None
+        raise ReviewGateInvalid(
+            f"metadata.review_gate must be an object with only {list(REVIEW_GATE_KEYS)}",
+            detail={**where, "field": field, "accepted": list(REVIEW_GATE_KEYS),
+                    **({"unknown": unknown} if unknown else {})},
+        )
+    min_lines = raw.get("min_lines", REVIEW_GATE_DEFAULT_MIN_LINES)
+    if (isinstance(min_lines, bool) or not isinstance(min_lines, int)
+            or not 0 <= min_lines <= REVIEW_GATE_MAX_MIN_LINES):
+        raise ReviewGateInvalid(
+            f"metadata.review_gate.min_lines must be a whole number from 0 to "
+            f"{REVIEW_GATE_MAX_MIN_LINES}",
+            detail={**where, "field": f"{field}.min_lines"},
+        )
+    out: dict[str, Any] = {"min_lines": min_lines}
+    if "risk_paths" in raw:
+        paths = raw["risk_paths"]
+        if (not isinstance(paths, list) or not paths
+                or len(paths) > REVIEW_GATE_MAX_RISK_PATHS
+                or not all(isinstance(p, str) and p.strip() and len(p) <= REVIEW_GATE_MAX_PATH_CHARS
+                           and not p.startswith("/") and p.isprintable() for p in paths)):
+            raise ReviewGateInvalid(
+                f"metadata.review_gate.risk_paths must be a list of 1 to "
+                f"{REVIEW_GATE_MAX_RISK_PATHS} repository-relative globs of at most "
+                f"{REVIEW_GATE_MAX_PATH_CHARS} characters",
+                detail={**where, "field": f"{field}.risk_paths"},
+            )
+        out["risk_paths"] = [p.strip() for p in paths]
+    return out
+
+
 def validate_runner_profile(name: str) -> RunnerProfile:
     profile = RUNNER_PROFILES.get(name)
     if profile is None:
@@ -933,7 +1032,8 @@ REREVIEW_PREAMBLE = (
     "only the fix. The earlier review's verdict is staged at {verdict_path}; "
     "check every finding in it is resolved. Write your OWN verdict to "
     "$SWARM_ARTIFACTS_DIR/{verdict_file} in the same shape: "
-    '{{"verdict": "MERGE" or "NOT_YET", "findings": [...]}}. '
+    '{{"verdict": "MERGE" or "NOT_YET", "commit": "<the full SHA of HEAD you '
+    'reviewed, from git rev-parse HEAD>", "findings": [...]}}. '
     "The merge step merges only on your MERGE. Do not edit files.\n\n"
     "The original review instructions follow, for reference; files they name "
     "are staged under the directory of the step that produced them ({staged}).\n\n"
@@ -2902,6 +3002,53 @@ def validate_step_routing(
                             "builds_on": step.builds_on},
                 )
     return plan
+
+
+def _is_agent_step(step: StepSpec) -> bool:
+    """A step whose profile runs an agent: not a worker action (post-verdict,
+    merge) and not a control-plane step (`await-input`). An unknown profile
+    counts as an agent; `validate_runner_profile` has refused it already."""
+    profile = RUNNER_PROFILES.get(step.runner_profile or "")
+    return profile is None or (profile.worker_action is None and not profile.control_plane)
+
+
+def reader_step_ids(steps: Sequence[StepSpec], *, strategy: str) -> frozenset[str]:
+    """The `direct-pr` agent steps that are readers: stored with
+    `allow_empty_diff` so an empty diff ends them SUCCEEDED `no_change` (#2662).
+
+    Under `direct-pr` the worker holds every step to opening a pull request,
+    and only `allow_empty_diff` (or `verification.md`) lets one that committed
+    nothing succeed. A step that another agent step `depends_on` (or stages a
+    file from through `input_from`) and that no step `builds_on` is a reader:
+    its dependants consume its artifacts, never its branch. A read-only review
+    that writes `review.md` and changes nothing did its job; failing it
+    `published_nothing:` swept the fix behind it (wf_ea38b900). If it does
+    commit, it still opens its pull request: the flag covers an empty diff
+    and nothing else.
+
+    Left out, keeping today's obligation:
+
+    * a step another step `builds_on` -- its branch is the deliverable the
+      builder clones (#1225);
+    * a step nothing depends on -- its pull request is the workflow's result;
+    * a step only a worker action or a control-plane step depends on -- the
+      merge step `plan_merge` appends under `direct-pr` merges the pull
+      request this step opens, so that step must open one;
+    * every step under any other strategy, which stores the block it did.
+    """
+    if strategy != "direct-pr":
+        return frozenset()
+    agents = [step for step in steps if _is_agent_step(step)]
+    built_on = {step.builds_on for step in steps if step.builds_on}
+    read = {
+        upstream
+        for step in agents
+        for upstream in (*step.depends_on, *step.input_from)
+    }
+    return frozenset(
+        step.step_id for step in agents
+        if step.step_id in read and step.step_id not in built_on
+    )
 
 
 # --------------------------------------------------------------------------

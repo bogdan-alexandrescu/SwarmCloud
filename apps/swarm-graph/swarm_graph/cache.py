@@ -19,7 +19,11 @@ THREE CACHES, per replica:
     holds more than half the bound; a tenant over its share loses its own
     least recently used shard first, so one large repository cannot starve
     every other workspace's agents. Loads are single-flight per key, so the
-    warmer and a query asking for the same shard read GCS once.
+    warmer and a query asking for the same shard read GCS once. It also counts
+    every read of a key, hit or load, in hourly buckets kept READ_HOURS
+    (graph-answer-cache.md §5.3): the console's per-shard "hits, 24 h" and
+    "last read". Memory only, keyed like the entries, so a tenant's counts
+    are read only by that tenant's stats ticket.
   * `ResultCache` -- a tool's `Computed` (head and every row, materialised),
     serialised compactly, keyed `(tenant_id, manifest_digest, tool,
     canonical_args, TOOLS_VERSION)` (§5.2). Every page of one question is
@@ -64,6 +68,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from collections import OrderedDict
 from typing import Any, Callable, Generic, Hashable, TypeVar
 
@@ -123,6 +128,13 @@ class _Lru(Generic[K, V]):
         with self._lock:
             return list(self._entries)
 
+    def peek(self, key: K) -> V | None:
+        """The entry, without counting as a use: a stats read does not keep
+        an entry hot."""
+        with self._lock:
+            held = self._entries.get(key)
+            return None if held is None else held[0]
+
     def get(self, key: K) -> V | None:
         with self._lock:
             held = self._entries.get(key)
@@ -150,13 +162,60 @@ class _Lru(Generic[K, V]):
 # --- decoded shards (§5.1) -----------------------------------------------------
 
 ShardKey = tuple[str, str]
+#: Hours of per-blob reads kept: the console's "hits, 24 h" (graph-answer-cache.md §5.2).
+READ_HOURS = 24
+HOUR_SECONDS = 3600
+
+
+class _BlobReads:
+    """Reads per `(tenant_id, blob_sha256)` in hourly buckets, and the last
+    read's time. A key whose every bucket is older than READ_HOURS is dropped
+    at the next sweep, so this holds at most the blobs read in a day."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._reads: dict[ShardKey, tuple[dict[int, int], float]] = {}
+        self._swept = 0
+
+    def record(self, key: ShardKey, now: float) -> None:
+        hour = int(now // HOUR_SECONDS)
+        with self._lock:
+            buckets, _last = self._reads.get(key, ({}, now))
+            buckets[hour] = buckets.get(hour, 0) + 1
+            self._reads[key] = (buckets, now)
+            if hour != self._swept:
+                self._swept = hour
+                self._sweep(hour)
+
+    def _sweep(self, hour: int) -> None:
+        oldest = hour - READ_HOURS + 1
+        for key in list(self._reads):
+            buckets, last = self._reads[key]
+            for old in [h for h in buckets if h < oldest]:
+                del buckets[old]
+            if not buckets:
+                del self._reads[key]
+
+    def read(self, key: ShardKey, now: float) -> tuple[int, float | None]:
+        """(reads in the last READ_HOURS hourly buckets, the last read's time)."""
+        oldest = int(now // HOUR_SECONDS) - READ_HOURS + 1
+        with self._lock:
+            held = self._reads.get(key)
+            if held is None:
+                return 0, None
+            buckets, last = held
+            count = sum(n for h, n in buckets.items() if h >= oldest)
+            return count, (last if count else None)
 
 
 class ShardCache:
     """Decoded shards keyed `(tenant_id, blob_sha256)`, raw-byte bounded, fair."""
 
-    def __init__(self, bound: int = SHARD_CACHE_RAW_BYTES) -> None:
+    def __init__(self, bound: int = SHARD_CACHE_RAW_BYTES, *,
+                 clock: Callable[[], float] = time.time) -> None:
         self.bound = bound
+        self._clock = clock
+        self._reads = _BlobReads()
         self._lock = threading.Lock()
         self._entries: OrderedDict[ShardKey, _Shard] = OrderedDict()
         self._bytes = 0
@@ -181,6 +240,16 @@ class ShardCache:
         with self._lock:
             return list(self._entries)
 
+    def hot(self, tenant_id: str, blob_sha256: str) -> bool:
+        """Whether this tenant's copy of the blob is held decoded."""
+        with self._lock:
+            return (tenant_id, blob_sha256) in self._entries
+
+    def reads(self, tenant_id: str, blob_sha256: str) -> tuple[int, float | None]:
+        """(this tenant's reads of the blob over READ_HOURS, its last read's
+        time or None)."""
+        return self._reads.read((tenant_id, blob_sha256), self._clock())
+
     def get(self, key: ShardKey) -> _Shard | None:
         with self._lock:
             shard = self._entries.get(key)
@@ -191,7 +260,9 @@ class ShardCache:
     def get_or_load(self, key: ShardKey, load: Callable[[], _Shard]) -> tuple[_Shard, bool]:
         """(the shard, whether it was a hit). One caller loads a missing key;
         any other asking for it meanwhile waits for that load. A failed load
-        is not kept, and a waiter then loads for itself."""
+        is not kept, and a waiter then loads for itself. Every call is one
+        read of the key in its hourly bucket."""
+        self._reads.record(key, self._clock())
         while True:
             with self._lock:
                 shard = self._entries.get(key)
@@ -318,6 +389,12 @@ class ResultCache(_Lru[ResultKey, bytes]):
             raise ValueError("a result key leads with the tenant and the manifest digest")
         return self.put(key, data, len(data))
 
+    def held_for(self, tenant_id: str, manifest_digest: str) -> int:
+        """How many answers this tenant holds for one manifest digest. The
+        tenant leads the key, so another tenant's equal digest is not counted."""
+        with self._lock:
+            return sum(1 for k in self._entries if k[0] == tenant_id and k[1] == manifest_digest)
+
 
 # --- opened manifests ------------------------------------------------------------
 
@@ -333,8 +410,10 @@ __all__ = [
     "DECODED_RATIO",
     "DEFAULTS",
     "HEADROOM_BYTES",
+    "HOUR_SECONDS",
     "MANIFEST_CACHE_RAW_BYTES",
     "MEMORY_LIMIT_BYTES",
+    "READ_HOURS",
     "RESULT_CACHE_BYTES",
     "RESULT_ENTRY_MAX_BYTES",
     "SHARD_CACHE_RAW_BYTES",

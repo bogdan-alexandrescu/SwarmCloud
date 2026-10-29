@@ -9,7 +9,7 @@ import {
   type WorkspaceSecretList,
   type WorkspaceSecretRotate,
 } from './api'
-import { Banner, Button, TypedConfirm } from './components'
+import { Banner, Button, Dash, TypedConfirm } from './components'
 import type { ApiError } from './fetch'
 import { timeAgo } from './types'
 import './styles/keys.css'
@@ -106,9 +106,13 @@ function setWords(s: WorkspaceSecret): string {
   return s.set_by === null ? timeAgo(s.set_at) : `${timeAgo(s.set_at)} by ${s.set_by}`
 }
 
-/** The "Last used" cell: an API that does not serve the field says nothing either way, and the cell says so. */
+/**
+ * The "Last used" cell: an API that does not serve the field says nothing
+ * either way, and the cell says so as a dash with its reason (visual QA pass
+ * 1, config-22): "not served" in every row was the API's word, not the reader's.
+ */
 function LastUsed({ at }: { at: string | null | undefined }) {
-  if (at === undefined) return <td data-label="Last used" title="This API does not yet say when a secret was last released to an attempt.">not served</td>
+  if (at === undefined) return <td data-label="Last used"><Dash why="Not reported by this API yet: it does not say when a secret was last released to an attempt" /></td>
   return at === null ? <td data-label="Last used">never</td> : <td data-label="Last used" title={at}>{timeAgo(at)}</td>
 }
 

@@ -36,15 +36,25 @@
    bar alone was 147px. Use loses bar, never figure (below), and Set by is a
    dot on most rows now (G5-19), so they give Pool the room. */
 /* SET BY HOLDS ITS WORDS (visual QA V089, 2026-10-11). At 9% it was ~75px of
-   text at 1440 with the nav open, and `AIMD back-off` and `provider quota` --
+   text at 1440 with the nav open, and `AIMD back-off` (the term then; see
+   QA1B-13 below for its plain words) and `provider quota` --
    the two terms the column exists to make stand out -- wrapped to two lines
    and made their rows taller than every other. Pool gives up two points; at
    28% it still holds `provider:mock-provider:tenant:eng` whole. */
-.cap-c-pool { width: 28%; }
+/* AND IT HOLDS THEM IN PLAIN WORDS, ON TWO LINES AT MOST (QA1B-13 review,
+   2026-10-28). capacity-21 replaced `AIMD back-off` with `lowered
+   automatically after errors`, and at 11% (114px at 1440 with the nav open)
+   that wrapped to three lines and made its row 61px against 46px -- V089
+   again. 16% (~166px, 146px of text) holds `lowered automatically` on one
+   line at the cell's 12px even at the tests' 0.56em upper bound, so the term
+   is two lines, inside the row's height. Pool gives two points (its key is
+   12px sans, ~200px, in 26%'s ~269px), Use two (it loses bar, never figure:
+   `no limit set` still fits 12%), State one (`near ceiling` fits 12%). */
+.cap-c-pool { width: 26%; }
 .cap-c-num { width: 11%; }
-.cap-c-use { width: 14%; }
-.cap-c-state { width: 13%; }
-.cap-c-by { width: 11%; }
+.cap-c-use { width: 12%; }
+.cap-c-state { width: 12%; }
+.cap-c-by { width: 16%; }
 .cap-c-links { width: 12%; }
 /* A head is one line: "Leased (units)" fits its eleventh at 1440 with the nav
    open, and at a narrower desktop it ellipsizes (its title says it whole)
@@ -277,6 +287,9 @@
 /* A pool filter no lease matches (G5-14): one row that says so. */
 .hold-all tr.hold-empty td { color: var(--text-dim); font-size: var(--t-meta); }
 .hold-pool-clear:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 2px; }
+/* THE AGREEING POOLS' FOLD (visual QA capacity-16): one line under the
+   drifted rows, the count and its toggle at the meta step. */
+.hold-agree { margin: 0; padding: 8px 12px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
 
 /* Provider quota (capacity.html frame 11): eight columns that fit 1440 with
    the nav open. Fixed layout with the widths below, so Reported is never
@@ -825,7 +838,8 @@
    `--text-faint` keeps 28 configured rows quieter than the overrides in ink
    (G5-19), and its `aria-label` names it. */
 .cap-setby-cfg { color: var(--text-faint); }
-/* capacity-008 (visual QA run 2): `AIMD back-off` WAS THE ROW'S BIGGEST WORDS.
+/* capacity-008 (visual QA run 2): `AIMD back-off` (since QA1B-13, `lowered
+   automatically after errors`) WAS THE ROW'S BIGGEST WORDS.
    The cell took the table's body size, ~15px, beside a 12px `paused` mark and
    `0 holders · limit`. Set by is a qualifier of the ceiling, like the marks and
    links of its row, so it takes their size; it keeps its ink, which is what

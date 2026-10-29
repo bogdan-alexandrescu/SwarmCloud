@@ -26,6 +26,7 @@ import {
   type WindowAt,
 } from './logLines'
 import { MarkdownInline } from './ArtifactViewer'
+import { phoneWidth } from './HelpCard'
 import { GapNotice, LogMarksContext, type LogMarks } from './logMarks'
 import { attemptLine, useRead } from './RunFiles'
 import { TERMINAL_STATES, clockTime, type AttemptRow, type LogStream, type Task, type TaskTranscript } from './types'
@@ -306,7 +307,10 @@ export function AgentLogs({ task }: { task: Task }) {
   const [view, setView] = useState<LogView>(() => defaultView(task.runner_profile))
   const [attemptId, setAttemptId] = useState<string | null>(null)
   const [needle, setNeedle] = useState('')
-  const [wrap, setWrap] = useState(false)
+  // WRAPPED BY DEFAULT ON A PHONE (QA1 overview-agents-38, 2026-10-28): at
+  // 390 every raw stream-json line on stdout needed a sideways scroll inside
+  // the log box. The phone opens wrapped; Wrap and W still turn it off.
+  const [wrap, setWrap] = useState(phoneWidth)
   const [current, setCurrent] = useState<string | null>(null)
   const [targets, setTargets] = useState<{ hits: string[]; errors: string[] }>({ hits: [], errors: [] })
   const drawnTargets = useRef(targets)
@@ -512,8 +516,14 @@ export function AgentLogs({ task }: { task: Task }) {
   useLayoutEffect(() => {
     const el = body.current
     if (!follow || el === null) return
-    autoScroll.current = true
-    el.scrollTop = el.scrollHeight
+    // `toEnd`, NOT AN UNCONDITIONAL MARK (QA1 overview-agents-34, 2026-10-28).
+    // This runs after every render -- `shown` is rebuilt on each -- and it
+    // marked the next scroll as the log's own even when the body was already
+    // at its end and no scroll event was coming. So the reader's own scroll
+    // up was swallowed as the log's, Follow stayed on, and the next 5 s read
+    // pinned the view back to the bottom: the start of a live transcript
+    // could not be read. Only a move that happens is marked.
+    toEnd(el, autoScroll)
   }, [follow, shown, view])
 
   // AND WHENEVER THE BODY ITSELF CHANGES SIZE (BT-001, #2423). The log beside
@@ -690,8 +700,14 @@ export function AgentLogs({ task }: { task: Task }) {
   )
   const errN = targets.errors.length
   const errK = errAt >= 0 ? errAt + 1 : errN === 1 ? 1 : null
-  const errWords =
-    errN === 0
+  // NO COUNT BEFORE THE READ (QA1 overview-agents-32, 2026-10-28): while the
+  // log was still being read the bar said `0 err ln`, then `Error 1/1` on a
+  // FAILED agent once it landed: a count nobody had taken, drawn as zero.
+  // Until the window on screen has been read there is no figure at all.
+  const errCounted = shown !== null
+  const errWords = !errCounted
+    ? { long: 'Errors · reading', short: 'Errors' }
+    : errN === 0
       ? { long: 'No error matched', short: '0 err ln' }
       : errK === null
         ? { long: `${errN} error lines`, short: `${errN} err ln` }
@@ -702,7 +718,7 @@ export function AgentLogs({ task }: { task: Task }) {
       disabled={targets.errors.length === 0}
       aria-keyshortcuts="E"
       onClick={() => jump(targets.errors)}
-      title={`Matches a transcript tool result or final result marked is_error, and lines with ${ERROR_PATTERN_SAYS}. The API marks no line as an error, so this is the console's own pattern: it can miss an error that says none of these, and match a line that only quotes one.`}
+      title={`${errCounted ? '' : 'Not counted yet: the log is still being read. '}Matches a transcript tool result or final result marked is_error, and lines with ${ERROR_PATTERN_SAYS}. The API marks no line as an error, so this is the console's own pattern: it can miss an error that says none of these, and match a line that only quotes one.`}
     >
       <LogWords
         // LINES, NOT ERRORS (QA-115, run 2). The narrow `Errors 0` on a
@@ -978,7 +994,15 @@ export function LogLastLine({ task, onOpen }: { task: Task; onOpen: () => void }
   // failed task this line sits under the Failed card's error, and `Last log
   // line: result ## Summary` read as why it failed. It is only the newest
   // line, so there it says so; on any other task the label is unchanged.
-  const label = task.state === 'FAILED' ? 'Last log line (not the error)' : 'Last log line'
+  //
+  // UNLESS IT IS THE ERROR (QA1 overview-agents-40, 2026-10-28): a failed
+  // agent whose last step is its CLI's error result read `Last log line (not
+  // the error)` over `result exit status 2: pytest was interrupted…`, the
+  // error word for word. When the line carries the error's first line, the
+  // label says it is the error, as logged.
+  const isTheError = task.state === 'FAILED' && line !== null && sameAsError(line, task.last_error)
+  const label =
+    task.state !== 'FAILED' ? 'Last log line' : isTheError ? 'Last log line (the error, as logged)' : 'Last log line (not the error)'
   // AND NOT A SUCCESS LINE UNDER A FAILURE (QA-115, visual QA run 2). The
   // label alone did not hold: `result ## Summary` under the error was still
   // read as its cause. When the line is the CLI's own success result, the
@@ -1005,4 +1029,16 @@ export function LogLastLine({ task, onOpen }: { task: Task; onOpen: () => void }
 /** The first non-blank line of an error, for a one-line note; the whole error is on Details. */
 function firstLine(text: string): string {
   return text.split('\n').find((l) => l.trim() !== '') ?? text
+}
+
+/**
+ * Whether a log line carries the task's error: the error's first non-blank
+ * line, whitespace folded, inside the line (a transcript line is `<kind>
+ * <text>`). No error text is never a match.
+ */
+export function sameAsError(line: string, lastError: string | null | undefined): boolean {
+  if (typeof lastError !== 'string') return false
+  const fold = (t: string) => t.replace(/\s+/g, ' ').trim()
+  const err = fold(firstLine(lastError))
+  return err !== '' && fold(line).includes(err)
 }

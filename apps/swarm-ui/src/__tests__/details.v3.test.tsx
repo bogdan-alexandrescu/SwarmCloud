@@ -308,6 +308,18 @@ describe('the Now card leads, and becomes the outcome or the failure', () => {
     expect(lead.querySelector('.dt-chip')?.textContent).toBe('budget_exceeded')
   })
 
+  it('a fix loop that ended without a merge says so, not as a crash (contract request 126)', () => {
+    const error = 'fix_loop_exhausted: the person answered stop after round 3'
+    const t = running({ state: 'FAILED', completed_at: ago(1), end_cause: 'fix_loop_exhausted', last_error: error, attempt_count: 1 })
+    const el = host(runOf({ task: t, attempts: [attempt(1, { created_at: ago(15), started_at: ago(14), completed_at: ago(1) })] }))
+    const lead = el.querySelector<HTMLElement>('.dt > .dt-now')!
+    expect(lead.dataset.lead).toBe('failed')
+    // MUTATION: drop `fix_loop_exhausted` from END_CAUSE_SAY -> the head reads
+    // "Failed: undefined", or tsc refuses the Record.
+    expect(lead.querySelector('.dt-card-head > h2')?.textContent).toBe('Failed: its fix loop ended without a merge')
+    expect(lead.querySelector('.dt-chip')?.textContent).toBe('fix_loop_exhausted')
+  })
+
   it('a cancelled agent with no error leads with the neutral Cancelled card, not an Outcome', () => {
     const t = running({ state: 'CANCELLED', completed_at: ago(1), started_at: null, end_cause: null, last_error: null, attempt_count: 0 })
     const el = host(runOf({ task: t, attempts: [] }))
@@ -452,10 +464,36 @@ describe('Progress takes the pane; Resources is folded under its row (DETAILS-BU
     // strip left about 150px of a 390x844 screen to scroll.
     expect(painted(strip, 'position', { width: 1440, container: 380 }) ?? 'static').toBe('static')
   })
+
+  // AGENT-HEAD-B (BGD's pick AH1 B, 2026-10-28, part of #2596): in the split
+  // the COLUMN scrolls, so the strip's sticky inset is measured from the
+  // column's content edge, under the stuck tab strip. At `top: 0` it stuck
+  // 18px down, behind the tabs; it sits at the tabs' foot, the strip's height
+  // as measured (`--ag-tabs-h`) less the column's 18px top padding.
+  it('in the split, the stuck strip sits under the stuck tab strip, not under or over it', () => {
+    const el = document.createElement('div')
+    el.innerHTML = `<div class="drawer ctl-drawer ag-split"><div class="ag-split-pane">${renderToStaticMarkup(<Run run={runOf()} headed />)}</div></div>`
+    document.body.appendChild(el)
+    hosts.push(el)
+    const strip = el.querySelector<HTMLElement>('.dt-strip')!
+    const column = el.querySelector<HTMLElement>('.ag-split')!
+    const tabsEdge = document.createElement('div')
+    tabsEdge.className = 'ag-tabs-edge'
+    column.prepend(tabsEdge)
+    for (const env of [{ width: 1440, height: 900, container: 600 }, { width: 900, height: 900, container: 480 }]) {
+      expect(painted(strip, 'position', env)).toBe('sticky')
+      // MUTATION: drop the split's offset in details.css and the strip sticks at `0`, under the tabs.
+      expect(painted(strip, 'top', env), `the strip hides under the tabs at ${env.width}`).toBe('calc(57px - 18px)')
+      // Under the tab strip's layer, so a strip never paints over the tabs while it slides into place.
+      expect(Number(painted(strip, 'z-index', env))).toBeLessThan(Number(painted(tabsEdge, 'z-index', env)))
+    }
+    // Outside the split the strip sticks to its own scroller's top, as before.
+    expect(painted(host(runOf()).querySelector('.dt-strip')!, 'top', { width: 1440, container: 600 })).toBe('0')
+  })
 })
 
 describe('the detail has ONE scroll container', () => {
-  it('nothing inside the split scrolls but its pane', async () => {
+  it('nothing in the split scrolls but its column', async () => {
     const t = running()
     const el = await detailsOfRunning(t, runOf({ task: t }))
     const split = el.closest<HTMLElement>('.ag-split')!
@@ -465,7 +503,9 @@ describe('the detail has ONE scroll container', () => {
     })
     // The tab strip scrolls sideways only (Q4); it is not a vertical scroller.
     const vertical = scrollers.filter((n) => !n.classList.contains('c-tabs'))
-    expect(vertical.map((n) => n.className)).toEqual([expect.stringContaining('ag-split-pane')])
+    // The COLUMN, not its pane (AGENT-HEAD-B, BGD's pick AH1 B, 2026-10-28):
+    // the head scrolls away with the detail and the tab strip sticks.
+    expect(vertical, 'a scroller other than the column').toEqual([split])
     // And no inline style makes one either (the prompt's own 320px box).
     const inline = [...split.querySelectorAll<HTMLElement>('[style]')].filter((n) =>
       /auto|scroll/.test(`${n.style.overflow} ${n.style.overflowY}`),

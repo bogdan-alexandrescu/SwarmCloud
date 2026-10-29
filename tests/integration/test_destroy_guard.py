@@ -212,15 +212,18 @@ def test_the_derived_deny_list_is_the_one_production_passes_the_guard():
     this fails on the count. Drop the `grep -vx default` from `guard_deny_json`
     and the third assertion fails.
     """
-    # 32 = the 2026-10-21 read of saga-agents-staging (#1822): 19 service
+    # 30 = the 2026-10-21 read of saga-agents-staging (#1822) -- 19 service
     # accounts, 6 buckets, 2 Cloud Run services, the cluster, the VPC, two
-    # subnets and `default`. Raise it when the list grows; never lower it to
-    # make a shortened list pass.
-    assert len(SHARED) >= 32, (
+    # subnets and `default` -- less the oracle-api@ service account and the bare
+    # "oracle-api" Cloud Run service name, which BGD removed on 2026-10-27
+    # (#1835, answer "Both entries"; see the comment above SHARED_DENY_LIST).
+    # Raise it when the list grows; never lower it to make a shortened list
+    # pass -- only an owner decision to drop an entry lowers it.
+    assert len(SHARED) >= 30, (
         f"parsed only {len(SHARED)} deny-list entries out of scripts/lib/common.sh; "
         f"the shared project holds a cluster, a VPC, two subnets, the default "
-        f"network, six buckets, two Cloud Run services and nineteen service "
-        f"accounts (32), so a short list means the parse broke or an entry was lost"
+        f"network, six buckets, one Cloud Run service and eighteen service "
+        f"accounts (30), so a short list means the parse broke or an entry was lost"
     )
     assert len(UNLABELABLE) >= 35, (
         f"parsed only {len(UNLABELABLE)} unlabelable types out of {TYPES_JSON.name}"

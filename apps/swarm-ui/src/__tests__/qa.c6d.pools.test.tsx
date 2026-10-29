@@ -104,7 +104,9 @@ describe('G5-11: a pool key is never cut by a clause that repeats it', () => {
     const width = (cls: string) => Number(new RegExp(`\\.${cls}\\s*\\{\\s*width:\\s*(\\d+)%`).exec(CAPACITY_CSS)?.[1])
     const cols = ['cap-c-pool', 'cap-c-num', 'cap-c-num', 'cap-c-use', 'cap-c-state', 'cap-c-by', 'cap-c-links']
     expect(cols.reduce((n, c) => n + width(c), 0)).toBe(100)
-    expect(width('cap-c-pool')).toBeGreaterThanOrEqual(28)
+    // 26% since QA1B-13's review gave Set by the room for its plain words;
+    // the key is 12px sans, ~200px, in ~269px at 1440.
+    expect(width('cap-c-pool')).toBeGreaterThanOrEqual(26)
     expect(width('cap-c-pool')).toBeGreaterThan(2 * width('cap-c-use') - 2)
   })
 

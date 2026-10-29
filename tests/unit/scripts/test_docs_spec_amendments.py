@@ -96,6 +96,8 @@ def test_the_catalogue_is_what_the_amendment_describes():
         # Contract requests 93 and 94: a control_plane profile, which nothing
         # runs on any backend; CLOUD_RUN_JOB is the catalogue's statement only.
         "await-input",
+        # Contract request 124: the second control_plane profile, the same way.
+        "fix-loop",
     }
 
 

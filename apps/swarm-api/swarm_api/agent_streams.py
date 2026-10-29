@@ -54,6 +54,8 @@ AGENT_STREAM_FILES: dict[str, tuple[str, str, str | None] | None] = {
     # Contract request 94: a control_plane profile; nothing runs it, so it
     # has no agent child and no streams.
     "await-input": None,
+    # Contract request 124: a control_plane profile, as await-input is.
+    "fix-loop": None,
 }
 
 #: The agent's streams, as the log routes name them. `stdout` and `stderr` keep

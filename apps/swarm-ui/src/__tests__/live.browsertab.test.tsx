@@ -458,6 +458,32 @@ describe('BT-010: the strip is the one place the tab says a plain-HTTP page refu
     expect(take.disabled).toBe(true)
     expect(take.title).toBe(HTTP_SAY)
   })
+
+  it('is not said again in the agent’s head above the tab (QA1-FIX-13, chrome-C06)', async () => {
+    // MEASURED on the live deployment (a0f2d100a, 2026-10-27): the head's Take
+    // control drew the refusal as a line, and the Browser tab's strip drew it
+    // again under the tabs. The strip keeps the line (BT-010); the head's
+    // disabled button carries it as its title, as the banner's does.
+    const { AgHead } = await import('../agent-split/head')
+    const http = { origin: 'http://staging.example.com', host: 'staging.example.com', registrable_domain: 'example.com', scheme: 'http:' }
+    const s = session({ origin: http })
+    const t = agent()
+    render(
+      <>
+        <AgHead taskId={ID} task={t} runs={1} read="ok" reload={() => {}} onClose={() => {}} live={{ status: 'ok', liveBrowser: true, session: s }} reloadLive={() => {}} />
+        <LiveBrowserPane task={t} live={{ status: 'ok', liveBrowser: true, session: s }} reload={() => {}} />
+      </>,
+    )
+    // The innermost elements that say it: the disabled button's reason line carries a glyph beside its words.
+    const says = (el: Element) => el.textContent?.includes(HTTP_SAY) === true
+    const said = [...document.querySelectorAll('*')].filter((el) => says(el) && ![...el.children].some(says))
+    // MUTATION: drop `refusal="title"` from agent-split/head.tsx's LiveControl and this is 2.
+    expect(said).toHaveLength(1)
+    expect(said[0]!.closest('.live-strip')).not.toBeNull()
+    const headTake = document.querySelector('.ag-head .live-control button') as HTMLButtonElement
+    expect(headTake.disabled).toBe(true)
+    expect(headTake.title).toBe(HTTP_SAY)
+  })
 })
 
 // ---------------------------------------------------------------------------

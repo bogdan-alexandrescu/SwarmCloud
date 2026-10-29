@@ -118,6 +118,7 @@ from .validation import (
     MERGE_METADATA_KEY,
     MERGE_ON_VERDICT,
     MERGE_STEP_MAX_ATTEMPTS,
+    REVIEW_GATE_METADATA_KEY,
     RUNTIME_METADATA_KEY,
     RuntimePolicyInvalid,
     SERVICE_FORGE_ACCESS,
@@ -137,6 +138,7 @@ from .validation import (
     merge_step_for,
     mcp_server_names,
     plan_merge,
+    reader_step_ids,
     refuse_control_plane_integrator,
     refuse_control_plane_outside_workflow,
     refuse_missing_mcp_credentials,
@@ -154,6 +156,7 @@ from .validation import (
     resolve_merge_choice,
     resolve_fix_rounds,
     resolve_merge_fix_rounds,
+    resolve_review_gate,
     resolve_runtime_policy,
     AFTER_PRS_METADATA_KEY,
     github_repository,
@@ -737,6 +740,16 @@ class SubmissionService:
             spec.metadata, runner_profile=profile.name, step_id=step_id,
             workflow_step=workflow_id is not None,
         )
+        # A review step's gate (#2524), stored normalised: the scheduler holds
+        # the step and swarm-api decides it (`reviewgate`).
+        review_gate = resolve_review_gate(
+            spec.metadata, step_id=step_id, workflow_step=workflow_id is not None,
+        )
+        if review_gate is not None:
+            metadata[REVIEW_GATE_METADATA_KEY] = review_gate
+        else:
+            # None for no block, and for a malformed one the switch let past.
+            metadata.pop(REVIEW_GATE_METADATA_KEY, None)
         if runtime is not None:
             metadata[RUNTIME_METADATA_KEY] = {
                 **runtime,
@@ -1305,6 +1318,11 @@ class SubmissionService:
                 integrator_step_id=integrator_step_id,
                 rereview=rereview_step_id,
             )
+            # A `direct-pr` step that only feeds a dependant (#2662): stored
+            # with `allow_empty_diff`, so a read-only review that changes
+            # nothing succeeds `no_change` instead of failing
+            # `published_nothing:` and sweeping the step that reads it.
+            readers = reader_step_ids(step_specs, strategy=dispatch.strategy)
             merge_plan = plan_merge(
                 step_specs, dispatch.strategy,
                 continuation.task_id if continuation else None,
@@ -1345,6 +1363,7 @@ class SubmissionService:
                 # `_build_task` checks it again and builds the alternate.
                 resolve_runtime_policy(step.metadata, runner_profile=step.runner_profile,
                                        step_id=step.step_id, workflow_step=True)
+                resolve_review_gate(step.metadata, step_id=step.step_id, workflow_step=True)
                 step_metadata = {**spec.metadata, **step.metadata}
                 # Lane MS1: the CI-fix rounds a merge step may spend, as each
                 # step's task will store them.
@@ -1441,7 +1460,7 @@ class SubmissionService:
                 builds_on=step_task_id[source.builds_on] if source.builds_on else None,
                 gate_task_id=step_task_id[source.when.step] if source.when else None,
                 gate_verdicts=source.when.verdict_in if source.when else (),
-                allow_empty_diff=source.allow_empty_diff,
+                allow_empty_diff=source.allow_empty_diff or step_id in readers,
                 # Kept on a gated step only (`with_routing`): the MERGE path's
                 # pull request title when the implementer wrote none.
                 # Not on the re-review, which is gated on the same review
