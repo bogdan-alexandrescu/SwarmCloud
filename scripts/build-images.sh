@@ -133,6 +133,16 @@
 #        TARGET defaults to every image the repo knows how to build.
 
 set -euo pipefail
+# --affected-by and --inputs touch no project: they read the checkout, and
+# the pull-request job runs them before it authenticates, with no PROJECT_ID.
+# They say so, so common.sh (no default project, DAYONE-DESAGA-2) does not
+# stop on an unset PROJECT_ID. Every other mode still needs one; combining
+# either with another flag is refused below, before anything is built.
+for arg in "$@"; do
+  case "${arg}" in
+    --affected-by|--inputs) SWARM_NO_PROJECT=1 ;;
+  esac
+done
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
