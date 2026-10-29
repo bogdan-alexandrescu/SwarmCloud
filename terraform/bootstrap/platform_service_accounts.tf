@@ -112,7 +112,7 @@ resource "google_service_account" "doctor" {
   project      = var.project_id
   account_id   = module.service_account_ids.doctor_id
   display_name = "Swarm Doctor"
-  description  = "managed-by=swarm-terraform; the scheduled read-only doctor. Read-only project roles (viewer, securityReviewer, secretmanager.viewer, clusterViewer, policytroubleshooter.user); posts findings to swarm-api. Writes nothing."
+  description  = "managed-by=swarm-terraform; the scheduled read-only doctor. Read-only project roles (viewer, securityReviewer, secretmanager.viewer, clusterViewer on the swarm cluster); posts findings to swarm-api. Writes nothing."
 }
 
 # ---------------------------------------------------------------------------
