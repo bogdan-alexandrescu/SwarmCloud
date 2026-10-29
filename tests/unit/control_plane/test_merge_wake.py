@@ -538,6 +538,68 @@ def test_a_round_that_ended_at_the_red_head_wakes_the_step(db, wake_client, gith
     assert len(_fix_workflows(db)) == 1, "a second round at the head the first could not fix"
 
 
+ROUND_TASK = "task_" + "2" * 20
+
+
+def _round_ended_at_head(db, github, *, no_change: bool) -> None:
+    """Round 1 claimed at HEAD and SUCCEEDED there, with no re-run asked at
+    HEAD before it: `no_change` when it found nothing to change (#2684)."""
+    fixable_merge(db, github, rounds=2)
+    task = seed_task(db, task_id=ROUND_TASK, tenant_id="eng", state="SUCCEEDED",
+                     runner_profile="claude-code")
+    task["result_summary"] = {"no_change": True, "git": {}} if no_change else {"git": {}}
+    db.docs["tasks/task_merge"]["metadata"][mergewake.MERGE_FIX_METADATA_KEY] = {
+        "rounds": [{"round": 1, "head": HEAD, "claimed_at": NOW, "task_id": ROUND_TASK}]}
+
+
+def test_a_no_change_round_at_the_red_head_gets_the_free_re_run(db, wake_client, github, clock):
+    """#2684 (PR #2603, task_d2698b60): round 1 diagnosed a flake and ended
+    no_change at the red head. The tick re-runs the failing jobs once before
+    waking the step, and wakes it fix_round_ended once the re-run answers red."""
+    _round_ended_at_head(db, github, no_change=True)
+    github.rerun_answer = 201
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["rerun"] == 1 and body["report"]["woken"] == 0, body
+    assert len(github.reruns) == 1
+    (rerun,) = _fix_record(db)[mergewake.RERUNS_KEY]
+    assert rerun["head"] == HEAD and "error" not in rerun
+    assert len(_fix_record(db)["rounds"]) == 1 and _fix_workflows(db) == []
+    assert mergewake.WAKE_MARKER not in _wait(db)
+
+    github.check(HEAD, CHECK, "failure")  # the re-run's own answer: a new id, red
+    clock.now = NOW + timedelta(seconds=issueci.CI_READ_SECONDS)
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 1, body
+    assert _wait(db)["wake_reason"] == "fix_round_ended"
+    assert len(github.reruns) == 1, "a head is re-run once"
+    assert len(_fix_record(db)["rounds"]) == 1 and _fix_workflows(db) == []
+
+
+def test_a_no_change_round_whose_re_run_github_refuses_wakes_the_step(db, wake_client, github):
+    _round_ended_at_head(db, github, no_change=True)
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 1, body
+    assert _wait(db)["wake_reason"] == "fix_round_ended"
+    (rerun,) = _fix_record(db)[mergewake.RERUNS_KEY]
+    assert rerun["head"] == HEAD and "error" in rerun
+
+
+def test_a_round_that_ended_at_the_red_head_with_changes_asks_no_re_run(db, wake_client, github):
+    _round_ended_at_head(db, github, no_change=False)
+    github.rerun_answer = 201
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 1, body
+    assert _wait(db)["wake_reason"] == "fix_round_ended"
+    assert github.reruns == [] and mergewake.RERUNS_KEY not in _fix_record(db)
+
+
 def test_a_round_claimed_and_never_recorded_wakes_the_step_once_lost(db, wake_client, github, clock):
     fixable_merge(db, github, rounds=2)
     db.docs["tasks/task_merge"]["metadata"][mergewake.MERGE_FIX_METADATA_KEY] = {

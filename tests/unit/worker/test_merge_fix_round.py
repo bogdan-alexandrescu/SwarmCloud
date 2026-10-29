@@ -516,6 +516,89 @@ def test_a_refused_or_other_head_rerun_does_not_hold_the_refusal(tmp_path, mutat
     assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
 
 
+def _no_change_round(world: MergeWorld, *, tenant: str = TENANT,
+                     rerun: dict[str, Any] | None = None) -> None:
+    """Round 1 ended at PINNED having found nothing to change (#2684): its
+    task diagnosed a flake and asked for a re-run, as task_d2698b60 did on
+    PR #2603. `rerun` is the tick's re-run at PINNED recorded after it."""
+    _red(world)
+    world.runs[0]["id"] = 7
+    _round(world)
+    _fix_task(world, pushed=None, tenant=tenant)
+    world.docs[FIX_TASK]["result_summary"] = {"no_change": True, "git": {}}
+    if rerun is not None:
+        requested = datetime.now(timezone.utc) - timedelta(seconds=rerun.pop("ago", 60))
+        entry = {"round": 1, "head": PINNED, "claimed_at": requested, "jobs": [7],
+                 "requested_at": requested, **rerun}
+        world.docs[TASK]["metadata"][merge.MERGE_FIX_METADATA_KEY][merge.RERUNS_KEY] = [entry]
+
+
+def test_red_after_a_no_change_round_at_this_head_parks_ci_rerun_due(tmp_path):
+    """#2684: the round found nothing to change, so the failing jobs get
+    their one free re-run at this head before the step refuses."""
+    world = MergeWorld(tmp_path)
+    _no_change_round(world)
+
+    outcome = merge.run_merge(world.context())
+
+    _parked(outcome, merge.CI_RERUN_DUE, PINNED)
+    assert "round 1" in outcome.summary["wait"]["message"]
+    assert FIX_TASK in outcome.summary["wait"]["message"]
+    assert world.merge_calls() == []
+
+
+def test_red_after_a_no_change_round_and_the_rerun_due_park_is_checks_failed(tmp_path):
+    """Parked once: the tick found nothing to re-run and woke the step red."""
+    world = MergeWorld(tmp_path)
+    _no_change_round(world)
+    world.docs[TASK]["metadata"][merge.MERGE_WAIT_METADATA_KEY] = {
+        "code": merge.CI_RERUN_DUE, "head": PINNED}
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
+    assert "round 1" in outcome.summary["refusal"]["message"]
+
+
+@pytest.mark.parametrize("rerun, answered", [
+    pytest.param({}, True, id="new-run-id"),
+    pytest.param({"ago": merge.RERUN_SETTLE_SECONDS + 5}, False, id="settled"),
+    pytest.param({"error": "403 Resource not accessible by integration"}, False,
+                 id="github-refused"),
+])
+def test_red_after_a_no_change_round_and_its_red_rerun_is_checks_failed(tmp_path, rerun,
+                                                                         answered):
+    world = MergeWorld(tmp_path)
+    _no_change_round(world, rerun=rerun)
+    if answered:
+        _rerun_answered_red(world)
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
+    assert "round 1" in outcome.summary["refusal"]["message"]
+
+
+def test_red_after_a_no_change_round_with_a_settling_rerun_parks_pending(tmp_path):
+    world = MergeWorld(tmp_path)
+    _no_change_round(world, rerun={})
+
+    outcome = merge.run_merge(world.context())
+
+    _parked(outcome, merge.CI_RERUN_PENDING, PINNED)
+
+
+def test_a_no_change_round_of_another_tenant_is_checks_failed(tmp_path):
+    """The round's document is named by the tenant-writable record: a task of
+    another tenant saying no_change buys no re-run."""
+    world = MergeWorld(tmp_path)
+    _no_change_round(world, tenant="tenant-other")
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
+
+
 def test_a_forged_round_budget_is_capped_at_the_apis_maximum(tmp_path):
     from swarm_api import validation
 
