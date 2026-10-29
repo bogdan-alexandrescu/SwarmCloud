@@ -322,8 +322,10 @@
   grid-template-columns: var(--tl-labw, 240px) minmax(0, 1fr);
   border-top: 1px solid var(--line-soft);
   align-items: stretch;
-  /* runs2-28: below the sticky axis (`--tl-axis-h`, on `.tl` above). */
-  scroll-margin-top: var(--tl-axis-h);
+  /* runs2-28: below the sticky axis (`--tl-axis-h`, on `.tl` above). The
+     fallback is the desktop value, as `--tl-labw` carries one: a token set
+     outside `:root` needs one for the sheet probes that resolve `:root` only. */
+  scroll-margin-top: var(--tl-axis-h, 65px);
 }
 .tl-row:first-child { border-top: 0; }
 .tl-lab {
