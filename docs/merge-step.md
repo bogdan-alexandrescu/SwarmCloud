@@ -63,7 +63,7 @@ a head none of its rounds had pushed (f-045). Two agents fixed one failure,
 and both the round and the step were lost.
 
 The rule. After the `live_pr_writer` read, `_live_writer` asks
-`cifix.live_plain_continuation` for the lane's root: a non-terminal task of
+`cifix.live_plain_continuation` for the lane's root: a non-terminal agent of
 the tenant whose `metadata.dispatch.continues`, or signed
 `metadata.dispatch.publish_to_pr.task_id`, names the root, that is not a
 merge step and carries no writer's mark nor `metadata.issue_run`. While there
