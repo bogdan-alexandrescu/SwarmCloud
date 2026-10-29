@@ -176,6 +176,16 @@ describe('admin2-17: the count agrees with its verb', () => {
     await waitFor(() => expect(document.querySelector('.nt [aria-live="polite"]')?.textContent).toBe('1 notification needs you'), WAIT)
   })
 
+  it('agrees in the bell\'s name and the open panel\'s chip too', async () => {
+    const bell = await mountBell([note('a', true)])
+    // MUTATION: put back `${count} need you` in the bell's label -> 'Notifications, 1 need you': red.
+    await waitFor(() => expect(bell.getAttribute('aria-label')).toBe('Notifications, 1 needs you'), WAIT)
+    fireEvent.click(bell)
+    await waitFor(() => expect(panel()).not.toBeNull(), WAIT)
+    // MUTATION: put back `{count} need you` in the panel's chip -> '1 need you': red.
+    expect(panel()!.querySelector('.nt-chip')?.textContent).toBe('1 needs you')
+  })
+
   it('says "2 notifications need you"', async () => {
     await mountBell([note('a', true), note('b', true)])
     await waitFor(() => expect(document.querySelector('.nt [aria-live="polite"]')?.textContent).toBe('2 notifications need you'), WAIT)

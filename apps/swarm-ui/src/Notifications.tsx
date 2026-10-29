@@ -149,6 +149,12 @@ export function needsSplit(items: readonly NotificationItem[]): string {
     .join(' · ')
 }
 
+/** ONE NEEDS, TWO NEED (QA2 admin2-17): the bell's name, its live line and the
+ * panel's chip all agree the verb with the count. */
+function needVerb(count: number): string {
+  return count === 1 ? 'needs' : 'need'
+}
+
 export function NotificationBell({ go }: { go: (to: string) => void }) {
   const feed = useNotificationFeed()
   const phone = useSyncExternalStore(subscribePhone, phoneNow, () => false)
@@ -206,7 +212,7 @@ export function NotificationBell({ go }: { go: (to: string) => void }) {
 
   const data = feedData(feed)
   const count = data?.unread_needs_you ?? 0
-  const label = count > 0 ? `Notifications, ${count} need you` : 'Notifications'
+  const label = count > 0 ? `Notifications, ${count} ${needVerb(count)} you` : 'Notifications'
   const why = feed.status === 'error' || feed.status === 'stale' ? `Notifications not read: ${errorHeading(feed.error)}` : null
 
   return (
@@ -231,7 +237,7 @@ export function NotificationBell({ go }: { go: (to: string) => void }) {
       </button>
       <span className="sk-vh" aria-live="polite">
         {/* ONE NEEDS, TWO NEED (QA2 admin2-17): it read "1 notification need you". */}
-        {count > 0 ? (count === 1 ? '1 notification needs you' : `${count} notifications need you`) : ''}
+        {count > 0 ? `${count} notification${count === 1 ? '' : 's'} ${needVerb(count)} you` : ''}
       </span>
       {open && (
         <NotificationPanel
@@ -299,7 +305,7 @@ function NotificationPanel({
           </button>
         )}
         <h2 className="nt-h">Notifications</h2>
-        {count > 0 && <span className="nt-chip">{count} need you</span>}
+        {count > 0 && <span className="nt-chip">{count} {needVerb(count)} you</span>}
         <button type="button" className="nt-all" disabled={!unread} onClick={() => void markAllRead()}>
           Mark all read
         </button>
