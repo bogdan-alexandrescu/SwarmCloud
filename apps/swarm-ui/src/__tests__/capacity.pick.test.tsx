@@ -213,7 +213,9 @@ describe('the family tables are the frame’s seven columns (#503)', () => {
     const links = (name: string) => [...rowOf(name).querySelectorAll('.cap-links a')].map((a) => a.textContent)
     expect(links('global')).toEqual(['3 holders', 'limit'])
     expect(links('runner:codex')).toEqual(['2 holders', 'limit'])
-    expect(links('tenant:research')).toEqual(['0 holders', 'limit'])
+    // 1 unit on the counter and no lease row naming it is not `0 holders`
+    // (QA2-FIX-14, capacity-02): the units are counter only.
+    expect(links('tenant:research')).toEqual(['no lease rows', 'limit'])
   })
 
   it('draws no count when the lease read failed or was cut: unknown is not 0', async () => {
@@ -233,13 +235,17 @@ describe('the family tables are the frame’s seven columns (#503)', () => {
 
   // The summary is the count note over the first card since #138 (owner
   // ruling 2026-10-07), where it was the line under the title.
-  // MUTATION: drop any of the four clauses from Pools' `summary`.
+  // MUTATION: drop the count, `full` or tenant clause from Pools' `summary`.
   it('says how many families are full or lowered, and whose pools these are', async () => {
     await renderPools()
     const summary = document.querySelector('p.c-count-note')?.textContent ?? ''
     expect(summary).toContain('5 pools')
     expect(summary).toContain('2 full')
-    expect(summary).toContain('1 lowered')
+    // provider:anthropic is full AND lowered, and is counted once, as full
+    // (QA2-FIX-14, capacity-11); the lowered clause is held by
+    // vq.capacity.pools.test.tsx, whose board has a pool lowered and nothing
+    // else.
+    expect(summary).not.toContain('lowered')
     expect(summary).toContain('tenant eng')
   })
 })

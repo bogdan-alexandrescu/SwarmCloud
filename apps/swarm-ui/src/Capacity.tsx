@@ -264,6 +264,12 @@ export async function loadPoolsBoard(): Promise<Result<PoolsBoard>> {
   return { ...capacity, data: { ...capacity.data, holders: holderCounts(leases) } }
 }
 
+/** A pool's marks, worst first: the order the row's tone takes them in. */
+const WORST_FIRST = ['over ceiling', 'paused', 'limit 0', 'no limit set', 'too small', 'full', 'near ceiling', 'lowered'] as const
+
+/** The head's clauses, in the order the line has always read them. */
+const HEAD_ORDER = ['full', 'near ceiling', 'lowered', 'paused', 'limit 0', 'no limit set', 'too small', 'over ceiling'] as const
+
 /**
  * The line under the heading (capacity.html C1: "9 families · 2 full · 1
  * lowered · tenant eng"). Every figure is a count of rows this read returned.
@@ -281,26 +287,25 @@ function PoolsSummary({ capacity }: { capacity: Capacity }) {
   // catalogue, so the count and the marks cannot disagree.
   const classes = useResourceClasses()
   const families = new Set(pools.map((p) => poolKind(p.name))).size
-  const full = pools.filter((p) => !overCeiling(p) && p.effective_limit !== null && p.effective_limit > 0 && p.active >= p.effective_limit).length
-  const lowered = pools.filter((p) => p.effective_limit !== null && p.hard_limit !== null && p.effective_limit < p.hard_limit).length
-  // NEAR CEILING IS COUNTED BY THE ROW'S OWN RULE (VQ-031), as `too small` is:
-  // the mark and this clause are both `nearCeiling`.
-  const near = pools.filter(nearCeiling).length
-  const paused = pools.filter(isPaused).length
-  const over = pools.filter(overCeiling).length
-  const small = pools.filter((p) => isTooSmall(p, poolWeight(p, classes)?.units ?? null)).length
+  // EACH POOL IS COUNTED ONCE, BY ITS WORST STATE (QA2-FIX-14, capacity-11).
+  // Every clause had its own filter, so `eng` -- paused, and lowered from 10
+  // -- was counted twice, and the head read `1 full · 2 lowered · 1 paused ·
+  // 1 too small` (5) over the 4 pools Needs a look holds. The state is now the
+  // worst of the marks `classifyPool` draws on the row (`WORST_FIRST`), so the
+  // clauses add up to the pools that carry one, and `limit 0` and `no limit
+  // set`, which the row marks, are counted rather than read as `lowered`.
+  const worst = pools.map((p) => {
+    const words = classifyPool(p, poolWeight(p, classes)).chips.map((c) => c.word)
+    return WORST_FIRST.find((w) => words.includes(w)) ?? null
+  })
+  const count = (w: string) => worst.filter((x) => x === w).length
   const viewer = poolViewer(capacity)
   // EACH CLAUSE IS ONE UNBREAKABLE ITEM (QA-054, 2026-10-20): at 390 the line
   // wrapped inside the tenant id, at its hyphen -- `tenant u-` / `bogdan`. The
   // line now wraps only BETWEEN clauses, at a ` · `, as Accounts' foot does.
   const clauses = [
     `${pools.length} pools in ${families} famil${families === 1 ? 'y' : 'ies'}`,
-    full > 0 ? `${full} full` : null,
-    near > 0 ? `${near} near ceiling` : null,
-    lowered > 0 ? `${lowered} lowered` : null,
-    paused > 0 ? `${paused} paused` : null,
-    small > 0 ? `${small} too small` : null,
-    over > 0 ? `${over} over ceiling` : null,
+    ...HEAD_ORDER.map((w) => (count(w) > 0 ? `${count(w)} ${w}` : null)),
     viewer !== undefined ? `tenant ${viewer}` : null,
   ].filter((c): c is string => c !== null)
   return (
@@ -602,7 +607,7 @@ function PoolTable({
  * lease; otherwise the word alone, and the title says why -- never a 0 for a
  * count nobody made.
  */
-function HoldersLink({ pool, holders }: { pool: string; holders: HolderCounts }) {
+function HoldersLink({ pool, active, holders }: { pool: string; active: number; holders: HolderCounts }) {
   const href = poolHref('capacity/holders', pool)
   if ('unknown' in holders) {
     // The reason is on the page once, above the families (`HoldersUncounted`),
@@ -614,6 +619,22 @@ function HoldersLink({ pool, holders }: { pool: string; holders: HolderCounts })
     )
   }
   const n = holders.byPool.get(pool) ?? 0
+  // UNITS ON THE COUNTER AND NO LEASE ROW IS NOT `0 holders` (QA2-FIX-14,
+  // capacity-02). `standard` at 5 of 20 read `0 holders` beside its 5 leased
+  // units: the counter holds them and no unreleased lease names the pool,
+  // which is the accounting drift Holders measures. The link says the leases
+  // are counter only, and its title says what that means.
+  if (n === 0 && active > 0) {
+    return (
+      <a
+        className="ctl-link"
+        href={href}
+        title={`The pool's counter holds ${active} unit${active === 1 ? '' : 's'}, and no unreleased lease names this pool: the units are counter only. Holders compares the two under Accounting drift.`}
+      >
+        no lease rows
+      </a>
+    )
+  }
   return (
     <a className="ctl-link" href={href} title="Unreleased leases that name this pool">
       {n} holder{n === 1 ? '' : 's'}
@@ -693,8 +714,14 @@ function PoolRow({
             limit
           )}
           {limit !== null && pool.hard_limit !== null && limit < pool.hard_limit && (
+            // THE SLASH IS ITS OWN ELEMENT (QA2-FIX-14, capacity-12): the
+            // compact phone row read `0 /6 /10`, three bare figures. It draws
+            // `0 of 6 (lowered from 10)` instead (styles/capacity.css), which
+            // needs the `/` to be something it can hide; the wide table keeps
+            // the frame's `6/10`.
             <span className="cap-was" title={`Configured hard limit is ${pool.hard_limit}`}>
-              /{pool.hard_limit}
+              <span className="cap-was-sl">/</span>
+              {pool.hard_limit}
             </span>
           )}
         </span>
@@ -748,7 +775,7 @@ function PoolRow({
         {/* ONE ELEMENT (visual QA V012): the bare ` · ` between the links
             was an anonymous grid item when stacked, a keyless row of its own. */}
         <span className="cap-open">
-          <HoldersLink pool={pool.name} holders={holders} />
+          <HoldersLink pool={pool.name} active={pool.active} holders={holders} />
           {' · '}
           <a className="ctl-link" href={poolHref('admin/limits', pool.name)}>limit</a>
         </span>
