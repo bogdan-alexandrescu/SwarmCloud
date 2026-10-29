@@ -276,7 +276,9 @@ describe('Admin is drawn only for an admin (CONFIG-NAV)', () => {
 
   // QA1B-04 review: the owner of a personal workspace is its admin, as the
   // panel foot says, even when `/v1/tenants/mine` carries no stored role for it.
-  it('names the personal-workspace owner as its admin, with no stored role', async () => {
+  // admin2-02 (visual QA pass 2, part of #2694): "You are an admin of <their own
+  // workspace>" read as if they qualified; the refusal says it is their own.
+  it('tells the personal-workspace owner it is their own workspace, with no stored role', async () => {
     const { role: _stored, ...unroled } = PERSONAL
     serve(ME(false, 'u-ana'), [unroled])
     await app('/admin/limits')
@@ -284,7 +286,8 @@ describe('Admin is drawn only for an admin (CONFIG-NAV)', () => {
     const said = document.querySelector('[data-refused="admin"]')!.textContent
     // MUTATION: name the role by `roleOf` alone -> "your role in ... was not read" and this fails.
     expect(said).not.toContain('was not read')
-    expect(said).toMatch(/You are an admin of [^.]+\./)
+    expect(said).toMatch(/You are not a platform admin\. [^.]+ is your own workspace\./)
+    expect(said).not.toContain('an admin of')
   })
 
   // QA1B-04 review: the refusal is drawn in the page's frame -- the gutter of
