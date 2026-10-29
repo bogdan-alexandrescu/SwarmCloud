@@ -22,6 +22,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]
 BUILD_SH = REPO / "scripts" / "build-images.sh"
 DOCKERFILE = REPO / "images" / "swarm-ui" / "Dockerfile"
+ENTRYPOINT_SCRIPT = REPO / "images" / "swarm-ui" / "40-swarm-ui-config.sh"
 
 
 def _generated(target: str, environment: str) -> str:
@@ -98,5 +99,8 @@ def test_the_container_writes_its_environment_at_start():
     """The other half: with nothing compiled in, the running container is what
     says which environment it is, or the console says ENVIRONMENT UNKNOWN."""
     text = DOCKERFILE.read_text()
-    assert "/docker-entrypoint.d/40-swarm-ui-config.sh" in text
-    assert "${ENVIRONMENT:-}" in text
+    assert (
+        "COPY images/swarm-ui/40-swarm-ui-config.sh /docker-entrypoint.d/40-swarm-ui-config.sh" in text
+    )
+    assert "RUN chmod 0755 /docker-entrypoint.d/40-swarm-ui-config.sh" in text
+    assert "${ENVIRONMENT:-}" in ENTRYPOINT_SCRIPT.read_text()

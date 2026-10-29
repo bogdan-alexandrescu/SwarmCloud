@@ -136,6 +136,7 @@ describe('the swarm-ui image', () => {
   const images = join(__dirname, '..', '..', '..', '..', 'images', 'swarm-ui')
   const dockerfile = readFileSync(join(images, 'Dockerfile'), 'utf8')
   const nginx = readFileSync(join(images, 'nginx.conf'), 'utf8')
+  const script = readFileSync(join(images, '40-swarm-ui-config.sh'), 'utf8')
   const code = dockerfile
     .split('\n')
     .filter((l) => !l.trimStart().startsWith('#'))
@@ -149,13 +150,17 @@ describe('the swarm-ui image', () => {
   it('writes /config.json from the container environment when it starts', () => {
     // nginx's own entrypoint runs every executable script in this directory
     // before it starts nginx.
-    expect(dockerfile).toMatch(
-      /RUN cat > (\/docker-entrypoint\.d\/\d+-swarm-ui-config\.sh) <<"EOF" && chmod 0755 \1\n#!\/bin\/sh\n/,
+    // Copied from a file, not written by a heredoc: main's Cloud Build uses
+    // the classic builder, which does not run one (SWARM-UI-IMAGE-FIX).
+    expect(code).toMatch(
+      /^COPY images\/swarm-ui\/(\d+-swarm-ui-config\.sh) (\/docker-entrypoint\.d\/\1)\nRUN chmod 0755 \2$/m,
     )
-    expect(code).toMatch(/\$\{ENVIRONMENT:-\}/)
+    expect(code).not.toMatch(/<<"?EOF/)
+    expect(script.startsWith('#!/bin/sh\n')).toBe(true)
+    expect(script).toMatch(/\$\{ENVIRONMENT:-\}/)
     // Written whole, then moved into place, where nginx.conf's alias reads it.
-    expect(code).toMatch(/^dir=\/tmp\/swarm-ui$/m)
-    expect(code).toMatch(/mv "\$dir\/config\.json\.tmp" "\$dir\/config\.json"/)
+    expect(script).toMatch(/^dir=\/tmp\/swarm-ui$/m)
+    expect(script).toMatch(/mv "\$dir\/config\.json\.tmp" "\$dir\/config\.json"/)
   })
 
   it('nginx serves that file, uncached, at /config.json', () => {
