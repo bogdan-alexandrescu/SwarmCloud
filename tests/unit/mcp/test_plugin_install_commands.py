@@ -20,27 +20,20 @@ The three commands drive the installer's verbs on the `swarm` command
     event whose reason is `needs_terminal`, the text hands the person the
     engine's own resume line and never asks for, reads or pipes the value.
 
-Offline: the markdown is parsed by hand, and `swarm_install` is imported from
-its source directory the way `tests/unit/install/__init__.py` does, because
-apps/swarm-install is not yet a member of the root uv workspace.
+Offline: the markdown is parsed by hand, and `swarm_install` is imported as
+the root uv workspace's member (pyproject.toml, the dev group).
 """
 
 from __future__ import annotations
 
 import re
-import sys
 from pathlib import Path
 
 import pytest
+from swarm_install import secret_entry
+from swarm_mcp import cli
 
 _REPO = Path(__file__).resolve().parents[3]
-_SOURCE = str(_REPO / "apps" / "swarm-install")
-if _SOURCE not in sys.path:
-    sys.path.insert(0, _SOURCE)
-
-from swarm_install import secret_entry  # noqa: E402
-
-from swarm_mcp import cli  # noqa: E402
 
 _COMMANDS = _REPO / "plugin" / "commands"
 
