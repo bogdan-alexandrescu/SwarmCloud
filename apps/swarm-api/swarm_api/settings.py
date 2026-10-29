@@ -697,6 +697,15 @@ class ApiSettings:
     #: it need not be as short as the TypeSafe ticket's. Clamped to the
     #: service's 60-900 s.
     graph_ticket_seconds: int = 600
+    #: Where swarm-api reads the graph service's cache stats
+    #: (docs/design/graph-answer-cache.md §5.3): SWARM_GRAPH_STATS_URL,
+    #: `http://<the internal load balancer's address>:8081`, which
+    #: terraform/infra/graph_service.tf sets while the stats are served. Empty
+    #: by default, and empty (or anything not http(s)) means no stats: the
+    #: repository's Cache section answers `stats: not_read` (not_configured)
+    #: and calls nothing (routes/graph_cache.py). An address, not a secret, so
+    #: it stays in the repr.
+    graph_stats_url: str = ""
     #: SETTINGS INTEGRITY (docs/design/tenant-settings-integrity.md §4.5; #1457,
     #: lanes ISO-SETTINGS-MAC and ISO-API-SETTINGS). `swarm-settings-key`, from
     #: SWARM_SETTINGS_KEY by Secret Manager reference: what swarm-api MACs every
@@ -1059,6 +1068,7 @@ class ApiSettings:
             typesafe_ticket_seconds=_int("TYPESAFE_TICKET_SECONDS", 300),
             graph_ticket_key=os.environ.get("SWARM_GRAPH_TICKET_KEY", "").strip(),
             graph_ticket_seconds=_int("GRAPH_TICKET_SECONDS", 600),
+            graph_stats_url=os.environ.get("SWARM_GRAPH_STATS_URL", "").strip(),
             settings_key=os.environ.get("SWARM_SETTINGS_KEY", "").strip(),
             settings_key_previous=os.environ.get("SWARM_SETTINGS_KEY_PREVIOUS", "").strip(),
             settings_mac_tenants=_csv("SETTINGS_MAC_TENANTS"),

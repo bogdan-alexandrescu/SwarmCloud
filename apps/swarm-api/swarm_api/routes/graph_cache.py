@@ -20,12 +20,14 @@ WHY EACH RULE:
     version recorded before it that carries a graph.
   * ONE STATS TICKET, ONE CALL (§5.3). `mint_stats_ticket` MACs the tenant, the
     repository and both digests under the stats domain, never the attempt
-    ticket's, for 60 s, and the route calls SWARM_GRAPH_STATS_URL + `/v1/stats`
+    ticket's, for 60 s, and the route calls `settings.graph_stats_url`
+    (SWARM_GRAPH_STATS_URL) + `/v1/stats`
     once with it as the bearer credential, as the pod's shim presents a graph
     ticket to `/mcp`. The receiving replica fans out to its peers (lane 1).
   * SWARM-GRAPH NOT ANSWERING IS A 200, NOT AN ERROR (§5.3). Refused, a 3 s
     timeout, a non-200, a body that is not the document, or no
-    SWARM_GRAPH_STATS_URL at all (lane 2 not applied yet) is
+    `graph_stats_url` at all (SWARM_GRAPH_STATS_URL unset: the stats are not
+    served in this deployment) is
     `replicas: []` with `stats: {state: "not_read", reason}`. The latency tile,
     read from Firestore, still shows, and nothing is shown as zero (§5.4).
   * NOTHING OF ANOTHER TENANT LEAVES (§5.4). The service already filters on the
@@ -48,7 +50,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import socket
 import time
 import urllib.error
@@ -110,15 +111,12 @@ def _urllib_send(url: str, headers: Mapping[str, str], timeout: float) -> tuple[
 
 
 def stats_url(settings: Any) -> str:
-    """SWARM_GRAPH_STATS_URL, or "" when this deployment has none (lane 2 sets it).
+    """`settings.graph_stats_url` (ApiSettings, from SWARM_GRAPH_STATS_URL), or
+    "" when this deployment has none: then the section is `not_read`.
 
-    Read from the environment here because `settings.py` is outside this
-    lane; a `graph_stats_url` setting, once one exists, wins.
+    The setting is the one source; nothing here reads the environment.
     """
-    configured = getattr(settings, "graph_stats_url", None)
-    if configured is None:
-        configured = os.environ.get("SWARM_GRAPH_STATS_URL", "")
-    url = str(configured or "").strip().rstrip("/")
+    url = str(getattr(settings, "graph_stats_url", "") or "").strip().rstrip("/")
     return url if url.startswith(("http://", "https://")) else ""
 
 

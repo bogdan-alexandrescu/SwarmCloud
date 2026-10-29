@@ -32,7 +32,10 @@
 #                         # until graph_service.serve, and then nothing is
 #                         # applied (docs/design/graph-service.md §2.1, §8.2).
 #                         # scripts/roll-graph.sh drives it and waits for the
-#                         # rollout
+#                         # rollout. After applying, swarm-api's egress range
+#                         # is read from its service and swarm-graph-ingress
+#                         # is compared with it (network_parity.py
+#                         # --graph-ingress); a difference fails the apply
 #   kubernetes/apply.sh --swarm-typesafe-fwd --confirm   # the TypeSafe forwarder:
 #                         # `terraform output -raw swarm_typesafe_fwd_manifest`
 #                         # (terraform/infra/typesafe_fwd.tf), alone; null
@@ -462,6 +465,76 @@ if [[ "${CURRENT_CLUSTER}" != "${EXPECTED_CLUSTER}" ]]; then
 fi
 info "context  ${CURRENT} -> ${CURRENT_CLUSTER}"
 
+# SWARM-API'S DIRECT VPC EGRESS RANGE, READ FROM ITS SERVICE, NEVER TYPED.
+# Sets SWARM_API_EGRESS_CIDR and SWARM_API_EGRESS_SOURCE, or dies. Called, not
+# $(...)'d: what it assigns is what the caller reads. --swarm-system reads it
+# before rendering (the relay and its policies admit it); --swarm-graph reads
+# it after applying, for the parity check of swarm-graph-ingress, whose stats
+# rule terraform rendered from its own copy of the subnet (CACHE-FOLLOWUPS).
+# EGRESS_UNREAD is what a failure says happened to the run: nothing rendered
+# before an apply, a comparison not made after one.
+EGRESS_UNREAD="nothing was rendered."
+read_swarm_api_egress() {
+  local ref
+  # To files and read in THIS shell. The v1 (Knative) shape is what `gcloud run services
+  # describe` returns -- the annotation holds a JSON list -- and the v2 shape
+  # is read as well, as scripts/lib/deploy.sh does for the image, so a gcloud
+  # that switches surfaces does not turn this into "no subnet".
+  LIVE_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-live-netpol.XXXXXX")"
+  if ! gcloud run services describe "${API_SERVICE}" --project "${PROJECT_ID}" --region "${REGION}" \
+      --format=json >"${LIVE_WORK}/service.json" 2>"${LIVE_WORK}/service.err"; then
+    LIVE_ERR="$(redact <"${LIVE_WORK}/service.err")"
+    rm -rf "${LIVE_WORK}"
+    die_if_auth_failure "${LIVE_ERR}"
+    err "could not describe Cloud Run service ${API_SERVICE} in ${PROJECT_ID}/${REGION}:"
+    printf '%s\n' "${LIVE_ERR}" | sed -n '1,5p' | sed 's/^/     /' >&2
+    die "swarm-system's ingress admits swarm-api's egress range, read from the service or not at all; ${EGRESS_UNREAD}"
+  fi
+  if ! jq -r '
+      [ ((.spec.template.metadata.annotations["run.googleapis.com/network-interfaces"] // "[]")
+          | fromjson | .[]? | .subnetwork // empty),
+        (.template.vpcAccess.networkInterfaces[]? | .subnetwork // empty) ]
+      | unique | .[]' "${LIVE_WORK}/service.json" >"${LIVE_WORK}/subnets" 2>"${LIVE_WORK}/jq.err"; then
+    rm -rf "${LIVE_WORK}"
+    die "could not read ${API_SERVICE}'s Direct VPC egress from its description; ${EGRESS_UNREAD}"
+  fi
+  # Counted, not `${#array[@]}`: an empty array is an unbound variable under
+  # bash 3.2's `set -u` (CLAUDE.md), and none is exactly the case to report.
+  SUBNET_REF=""
+  SUBNET_COUNT=0
+  while IFS= read -r ref; do
+    [[ -n "${ref}" ]] || continue
+    SUBNET_REF="${ref}"
+    SUBNET_COUNT=$((SUBNET_COUNT + 1))
+  done <"${LIVE_WORK}/subnets"
+  if [[ "${SUBNET_COUNT}" -ne 1 ]]; then
+    rm -rf "${LIVE_WORK}"
+    die "${API_SERVICE} names ${SUBNET_COUNT} Direct VPC egress subnetworks, not exactly one; swarm-system
+       admits one range and this script will not choose. (terraform/modules/cloud_run sets
+       network_interfaces.subnetwork on every service.) ${EGRESS_UNREAD}"
+  fi
+  # A name or a path (projects/<p>/regions/<r>/subnetworks/<name>); the
+  # region in a path wins over ${REGION}.
+  SUBNET="${SUBNET_REF##*/}"
+  SUBNET_REGION="${REGION}"
+  case "${SUBNET_REF}" in
+    */regions/*/subnetworks/*) SUBNET_REGION="${SUBNET_REF#*/regions/}"; SUBNET_REGION="${SUBNET_REGION%%/*}" ;;
+  esac
+  [[ "${SUBNET}" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || { rm -rf "${LIVE_WORK}"; die "${API_SERVICE}'s subnetwork '${SUBNET_REF}' is not a subnetwork name; ${EGRESS_UNREAD}"; }
+  if ! gcloud compute networks subnets describe "${SUBNET}" --project "${PROJECT_ID}" \
+      --region "${SUBNET_REGION}" --format=json >"${LIVE_WORK}/subnet.json" 2>"${LIVE_WORK}/subnet.err"; then
+    LIVE_ERR="$(redact <"${LIVE_WORK}/subnet.err")"
+    rm -rf "${LIVE_WORK}"
+    die_if_auth_failure "${LIVE_ERR}"
+    die "could not describe subnetwork ${SUBNET} in ${PROJECT_ID}/${SUBNET_REGION}; ${EGRESS_UNREAD}"
+  fi
+  SWARM_API_EGRESS_CIDR="$(jq -r '.ipCidrRange // empty' "${LIVE_WORK}/subnet.json")"
+  rm -rf "${LIVE_WORK}"
+  [[ -n "${SWARM_API_EGRESS_CIDR}" ]] || die "subnetwork ${SUBNET} reports no ipCidrRange; ${EGRESS_UNREAD}"
+  SWARM_API_EGRESS_SOURCE="run/${PROJECT_ID}/${SUBNET_REGION}/${API_SERVICE}/${SUBNET}"
+  info "swarm-api egress  ${SWARM_API_EGRESS_CIDR}  (${SWARM_API_EGRESS_SOURCE})"
+}
+
 # --- render ------------------------------------------------------------------
 PYTHON="${PYTHON_BIN:-python3}"
 
@@ -577,65 +650,7 @@ elif [[ "${MODE}" == "swarm-system" ]]; then
     warn "previewing swarm-system's policies alone; --confirm will refuse."
   fi
 
-  # SWARM-API'S DIRECT VPC EGRESS SUBNET, READ FROM THE SERVICE. To files and
-  # read in THIS shell (CLAUDE.md: a command substitution throws away what the
-  # function assigned). The v1 (Knative) shape is what `gcloud run services
-  # describe` returns -- the annotation holds a JSON list -- and the v2 shape
-  # is read as well, as scripts/lib/deploy.sh does for the image, so a gcloud
-  # that switches surfaces does not turn this into "no subnet".
-  LIVE_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-live-netpol.XXXXXX")"
-  if ! gcloud run services describe "${API_SERVICE}" --project "${PROJECT_ID}" --region "${REGION}" \
-      --format=json >"${LIVE_WORK}/service.json" 2>"${LIVE_WORK}/service.err"; then
-    LIVE_ERR="$(redact <"${LIVE_WORK}/service.err")"
-    rm -rf "${LIVE_WORK}"
-    die_if_auth_failure "${LIVE_ERR}"
-    err "could not describe Cloud Run service ${API_SERVICE} in ${PROJECT_ID}/${REGION}:"
-    printf '%s\n' "${LIVE_ERR}" | sed -n '1,5p' | sed 's/^/     /' >&2
-    die "swarm-system's ingress admits swarm-api's egress range, read from the service or not at all."
-  fi
-  if ! jq -r '
-      [ ((.spec.template.metadata.annotations["run.googleapis.com/network-interfaces"] // "[]")
-          | fromjson | .[]? | .subnetwork // empty),
-        (.template.vpcAccess.networkInterfaces[]? | .subnetwork // empty) ]
-      | unique | .[]' "${LIVE_WORK}/service.json" >"${LIVE_WORK}/subnets" 2>"${LIVE_WORK}/jq.err"; then
-    rm -rf "${LIVE_WORK}"
-    die "could not read ${API_SERVICE}'s Direct VPC egress from its description; nothing was rendered."
-  fi
-  # Counted, not `${#array[@]}`: an empty array is an unbound variable under
-  # bash 3.2's `set -u` (CLAUDE.md), and none is exactly the case to report.
-  SUBNET_REF=""
-  SUBNET_COUNT=0
-  while IFS= read -r ref; do
-    [[ -n "${ref}" ]] || continue
-    SUBNET_REF="${ref}"
-    SUBNET_COUNT=$((SUBNET_COUNT + 1))
-  done <"${LIVE_WORK}/subnets"
-  if [[ "${SUBNET_COUNT}" -ne 1 ]]; then
-    rm -rf "${LIVE_WORK}"
-    die "${API_SERVICE} names ${SUBNET_COUNT} Direct VPC egress subnetworks, not exactly one; the relay
-       admits one range and this script will not choose. (terraform/modules/cloud_run sets
-       network_interfaces.subnetwork on every service.)"
-  fi
-  # A name or a path (projects/<p>/regions/<r>/subnetworks/<name>); the
-  # region in a path wins over ${REGION}.
-  SUBNET="${SUBNET_REF##*/}"
-  SUBNET_REGION="${REGION}"
-  case "${SUBNET_REF}" in
-    */regions/*/subnetworks/*) SUBNET_REGION="${SUBNET_REF#*/regions/}"; SUBNET_REGION="${SUBNET_REGION%%/*}" ;;
-  esac
-  [[ "${SUBNET}" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || { rm -rf "${LIVE_WORK}"; die "${API_SERVICE}'s subnetwork '${SUBNET_REF}' is not a subnetwork name"; }
-  if ! gcloud compute networks subnets describe "${SUBNET}" --project "${PROJECT_ID}" \
-      --region "${SUBNET_REGION}" --format=json >"${LIVE_WORK}/subnet.json" 2>"${LIVE_WORK}/subnet.err"; then
-    LIVE_ERR="$(redact <"${LIVE_WORK}/subnet.err")"
-    rm -rf "${LIVE_WORK}"
-    die_if_auth_failure "${LIVE_ERR}"
-    die "could not describe subnetwork ${SUBNET} in ${PROJECT_ID}/${SUBNET_REGION}; nothing was rendered."
-  fi
-  SWARM_API_EGRESS_CIDR="$(jq -r '.ipCidrRange // empty' "${LIVE_WORK}/subnet.json")"
-  rm -rf "${LIVE_WORK}"
-  [[ -n "${SWARM_API_EGRESS_CIDR}" ]] || die "subnetwork ${SUBNET} reports no ipCidrRange; nothing was rendered."
-  SWARM_API_EGRESS_SOURCE="run/${PROJECT_ID}/${SUBNET_REGION}/${API_SERVICE}/${SUBNET}"
-  info "swarm-api egress  ${SWARM_API_EGRESS_CIDR}  (${SWARM_API_EGRESS_SOURCE})"
+  read_swarm_api_egress
 
 
   if [[ -n "${RELAY_MANIFEST}" ]]; then
@@ -1213,8 +1228,10 @@ if [[ "${CONFIRM}" -ne 1 ]]; then
     fi
   fi
   if [[ "${MODE}" == "swarm-graph" ]]; then
-    dim "  --confirm applies it; scripts/roll-graph.sh --confirm also waits for deploy/swarm-graph"
-    dim "    and checks its pods run the manifest's digest"
+    dim "  --confirm applies it, then reads swarm-api's egress range from its service and compares"
+    dim "    swarm-system/swarm-graph-ingress with it (kubernetes/network_parity.py --graph-ingress);"
+    dim "    scripts/roll-graph.sh --confirm also waits for deploy/swarm-graph and checks its pods"
+    dim "    run the manifest's digest"
   fi
   if [[ "${MODE}" == "swarm-typesafe-fwd" ]]; then
     dim "  --confirm applies it; scripts/roll-typesafe-fwd.sh --confirm also waits for deploy/swarm-typesafe-fwd"
@@ -1330,4 +1347,33 @@ if [[ "${MODE}" == "swarm-system" ]]; then
     die "applied, but swarm-system's ingress does not match what was rendered (above)."
   fi
   rm -rf "${LIVE_WORK}"
+fi
+if [[ "${MODE}" == "swarm-graph" ]]; then
+  # RUN, like --swarm-system's (CACHE-FOLLOWUPS, part of #1835; BGD,
+  # 2026-10-28; docs/design/graph-answer-cache.md §5.3). swarm-graph-ingress
+  # admits swarm-api's range on the stats port, and terraform rendered that
+  # range from var.subnet_cidr, its own copy of the subnet; the range swarm-api
+  # actually egresses from is READ here, from its service, exactly as
+  # --swarm-system reads it, and the policy as the API server now holds it is
+  # judged against it by check_graph_ingress: three rules, one peer and one
+  # port each -- tenants on 8080, swarm-api's range and the swarm-graph pods
+  # on 8081 -- and nothing more. A stale subnet, a missing policy or any
+  # widening fails the apply with the checker's reason.
+  EGRESS_UNREAD="swarm-graph was applied, but its ingress was not compared."
+  read_swarm_api_egress
+  info "comparing swarm-system/swarm-graph-ingress with swarm-api's ${SWARM_API_EGRESS_CIDR}"
+  GRAPH_PARITY_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-graph-parity.XXXXXX")"
+  trap 'rm -rf "${GRAPH_PARITY_WORK}"' EXIT
+  if ! "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" get networkpolicies -n swarm-system -o json \
+      >"${GRAPH_PARITY_WORK}/policies.json" 2>"${GRAPH_PARITY_WORK}/policies.err"; then
+    redact <"${GRAPH_PARITY_WORK}/policies.err" | sed -n '1,5p' | sed 's/^/     /' >&2
+    die "applied, but swarm-system's NetworkPolicies could not be read back; swarm-graph-ingress was not compared."
+  fi
+  jq -n --arg cidr "${SWARM_API_EGRESS_CIDR}" --arg source "${SWARM_API_EGRESS_SOURCE}" \
+    '{swarm_api_egress_cidr: $cidr, source: $source}' >"${GRAPH_PARITY_WORK}/live.json"
+  if ! "${PYTHON}" "${HERE}/network_parity.py" --graph-ingress \
+      --live "${GRAPH_PARITY_WORK}/live.json" --policies "${GRAPH_PARITY_WORK}/policies.json"; then
+    die "applied, but swarm-system/swarm-graph-ingress does not match swarm-api's ${SWARM_API_EGRESS_CIDR} (above)."
+  fi
+  rm -rf "${GRAPH_PARITY_WORK}"
 fi
