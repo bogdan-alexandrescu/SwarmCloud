@@ -46,6 +46,19 @@ export function ownTitle(t: Pick<Task, 'step_id' | 'metadata'>): string | null {
 }
 
 /**
+ * A WORKFLOW STEP'S NAME AS ITS AGENTS ROW SAYS IT (QA2 ovag2-14):
+ * `<workflow title> · <step>`. The pane was headed `checkpoints` alone, and
+ * so were its breadcrumb and the document title, while the row named the
+ * workflow too. Every step carries its workflow's `metadata.title`; without
+ * one the step alone stays, as on the row.
+ */
+export function stepTitle(t: Pick<Task, 'workflow_id' | 'step_id' | 'metadata'>): string | null {
+  if ((t.workflow_id ?? null) === null || (t.step_id ?? null) === null) return null
+  const v = t.metadata?.title
+  return typeof v === 'string' && v.trim() !== '' ? `${v.trim()} · ${t.step_id}` : null
+}
+
+/**
  * THE DETAIL'S HEADER, IN TWO LINES (agent-details-v3.html A, picked
  * 2026-10-04). Line 1: the state pill, the agent's name -- its step, or what
  * it is when it stands alone -- the headline `elapsed · attempt n of N` in
@@ -119,13 +132,14 @@ export function AgHead({
   // THE NAME THE LIST ROW GAVE IT (QA1-FIX-32, overview-agents-20): a lone
   // agent with a title (`ownTitle`, SUMMARY-TITLE) was `Fix flaky lease
   // heartbeat test` in its Agents row and `claude-code agent · 8ea5c26d` here
-  // and in the breadcrumb. The title leads; a step, or an agent without one,
-  // keeps `agentName`'s words, as the row does.
-  const title = task === null ? null : ownTitle(task)
+  // and in the breadcrumb. The title leads; a step leads with its workflow's
+  // (`stepTitle`), and a step or an agent without one keeps `agentName`'s
+  // words, as the row does.
+  const title = task === null ? null : (ownTitle(task) ?? stepTitle(task))
   const name = task === null ? taskId : (title ?? agentName(task))
   // The breadcrumb has the id and no task: it names the agent with this.
-  // `ownTitle` is null for a step, so a title stands in only where there is
-  // no step name for `agentName` to read.
+  // A title stands in as the step name `agentName` reads; without one the
+  // task's own step, or its kind and id, are remembered.
   useEffect(() => {
     if (task !== null) rememberAgentName(title === null ? task : { id: task.id, runner_profile: task.runner_profile, step_id: title })
   }, [task, title])

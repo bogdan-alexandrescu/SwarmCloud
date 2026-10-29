@@ -662,12 +662,18 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* AND THE DOMAIN IS WHOLE TOO (visual QA pass 2, admin-shell-18, part of
+     #2694). Cut with an ellipsis, every service account at 1440 still read
+     `swarm-agent-worker-` / `u-bogdan@example-proj…`, and the whole value was
+     only reachable through the copy control. The domain takes the line after
+     the key when it does not fit beside it and wraps there, so the whole
+     address is on screen with its copy control under it. */
   .ten-ident > .ten-ident-tail {
-    flex: 1 1 0;
+    flex: 0 1 auto;
     min-width: 2ch;
-    max-width: max-content;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
   .ten-ident > .ten-ident-key {
     flex: 0 0 auto;
