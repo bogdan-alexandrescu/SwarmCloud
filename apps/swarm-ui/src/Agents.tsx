@@ -41,6 +41,7 @@ import {
   rollupState,
   taskGroup,
   timeAgo,
+  waitingLine,
   whyAgent,
   whyNeedsAction,
   type Task,
@@ -1622,6 +1623,13 @@ function rowReason(
   // line.
   const short = tabOf(task) === 'waiting' && task.waiting ? poolWords(waitingShort(task.waiting)) : null
   if (short !== null) return { text: short, warn, full: task.waiting!.summary.trim() }
+  // A READY ROW WITH ONLY `waiting_for` NAMES ITS POOL TOO (QA2-FIX-12
+  // review, overview-agents-56): `waitingLine` read `waiting for:
+  // provider:anthropic:tenant:u-bogdan 5/5 units` under `No room`. The line
+  // names the pool by `poolLabel`; the raw key stays in the row's title.
+  const raw = waitingLine(task)
+  const pool = task.waiting_for?.lead?.pool
+  if (raw !== null && pool) return { text: raw.replace(pool, poolLabel(pool)), warn, full: raw }
   // A CASCADE CANCEL NAMES THE STEP THAT FAILED (visual QA run 4, N23) when
   // that step is among the rows the list read; the meta line keeps its
   // `to cancel` span note (U10a D20) and the cause is said here.

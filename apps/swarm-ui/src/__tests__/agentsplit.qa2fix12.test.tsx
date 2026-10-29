@@ -48,6 +48,13 @@ describe('ovag2-11, overview-agents-55: one scroller per column with an agent op
     expect(painted(work, 'min-height', WIDE)).toBe('0')
   })
 
+  it('scrolls the list one way only, so no horizontal bar runs along its foot', () => {
+    const work = frame().querySelector('.work')!
+    // MUTATION: drop `overflow-x: hidden` and `overflow-y: auto` makes the
+    // x axis auto too: a `.when-note` past the edge draws a second scrollbar.
+    expect(painted(work, 'overflow-x', WIDE)).toBe('hidden')
+  })
+
   it('leaves the overlay widths on the page scroller', () => {
     const work = frame().querySelector('.work')!
     expect(painted(work, 'overflow-y', OVERLAY)).not.toBe('auto')
