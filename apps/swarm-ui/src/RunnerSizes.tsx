@@ -75,6 +75,46 @@ type Draft = Record<string, Record<string, string>>
 
 const FIELD_WORDS: Record<ShareField, string> = { cpu_request: 'CPU request', cpu_limit: 'CPU limit', memory_gib: 'memory (GiB)' }
 
+/**
+ * A FIELD KEY IN WORDS, AND ITS UNIT (QA2-FIX-20, admin2-05 and admin2-13).
+ * History read `large memory_gib 16 → 32` and the Save line only "A size is
+ * outside its bound.": a wire key in prose, and no field named. A key reads
+ * as its words (`live_split.worker.memory_gib` is `worker memory`), and a
+ * figure carries the unit its last part names.
+ */
+const KEY_WORDS: Record<string, string> = {
+  cpu_request: 'CPU request', cpu_limit: 'CPU limit', memory_gib: 'memory', memory_per_cpu: 'memory per core', live_split: 'split',
+}
+
+export function fieldWords(field: string): string {
+  const parts = field.split('.')
+  const words = parts.filter((p, i) => !(p === 'live_split' && i < parts.length - 1)).map((p) => KEY_WORDS[p] ?? p.replace(/_/g, ' '))
+  return words.join(' ')
+}
+
+export function fieldUnit(field: string): string {
+  const last = field.split('.').pop() ?? field
+  if (last === 'memory_gib') return 'GiB'
+  if (last === 'cpu_request' || last === 'cpu_limit') return 'cores'
+  if (last === 'memory_per_cpu') return 'GiB per core'
+  return ''
+}
+
+/** A figure with its field's unit: `32 GiB`; a dash for no figure, never a 0. */
+function withUnit(value: number | null | undefined, field: string): string {
+  if (value === null || value === undefined) return '—'
+  const unit = fieldUnit(field)
+  return unit === '' ? fmt(value) : `${fmt(value)} ${unit}`
+}
+
+/** One History or banner line: `large memory 16 → 32 GiB`. */
+export function changeLine(cls: string, field: string, from: number | null | undefined, to: number | null | undefined): string {
+  const unit = fieldUnit(field)
+  const a = from === null || from === undefined ? '—' : fmt(from)
+  const c = to === null || to === undefined ? '—' : fmt(to)
+  return `${cls} ${fieldWords(field)} ${a} → ${c}${unit === '' ? '' : ` ${unit}`}`
+}
+
 function keysOf(size: RunnerSize): string[] {
   const out: string[] = [...SHARE_FIELDS]
   if (size.live_split !== undefined && size.live_split !== null) {
@@ -216,7 +256,8 @@ export function clientRefusals(doc: RunnerSizesDoc, draft: Draft): RunnerSizeRef
       const a = typedOf(low, key)
       const c = typedOf(high, key)
       if (a !== null && c !== null && a > c) {
-        const bound = `${low} is no larger than ${high} in ${words}: ${fmt(a)} > ${fmt(c)}`
+        // admin2-13: the rule in the sentence, with the figures in their units.
+        const bound = `${low}’s ${words} (${withUnit(a, key)}) must be no larger than ${high}’s (${withUnit(c, key)}).`
         out.push(refusal(low, key, a, bound), refusal(high, key, c, bound))
       }
     }
@@ -298,7 +339,7 @@ function movedBetween(before: RunnerSizesDoc, after: RunnerSizesDoc): string[] {
     for (const key of keysOf(size)) {
       const a = keysOf(old).includes(key) ? valueAt(old, key) : null
       const c = valueAt(size, key)
-      if (a !== c) out.push(`${name} ${key} ${a === null ? '—' : fmt(a)} → ${fmt(c)}`)
+      if (a !== c) out.push(changeLine(name, key, a, c))
     }
   }
   return out
@@ -518,7 +559,7 @@ function RunnerSizesBody({
   const why = !changed
     ? 'Change a size first.'
     : refusals.length > 0
-      ? 'A size is outside its bound.'
+      ? `${refusals[0]!.class} ${fieldWords(refusals[0]!.field)} is outside its bound.`
       : reason.trim() === ''
         ? 'Say why: every version records a reason.'
         : undefined
@@ -737,7 +778,7 @@ function ClassCard({
       </p>
       {followers.fixed.length > 0 && (
         <p className="rs-fixed">
-          Cloud Run, does not follow: {followers.fixed.join(', ')}. Cloud Run fixes resources on the Job and bills its limit, so these keep the code default.
+          These Cloud Run profiles do not follow this size: {followers.fixed.join(', ')}. Cloud Run fixes resources on the Job and bills its limit, so these keep the code default.
         </p>
       )}
       <RecentUse name={name} use={use} size={size} ratio={ratio} />
@@ -871,6 +912,9 @@ export function PoolsTable({
   const phone = usePhoneTables()
   if (pools === null) return <p className="rs-note">Reading what the platform-wide pools admit…</p>
   if (pools.length === 0) return <p className="rs-note">No platform-wide pool has a ceiling set, so a resize moves no ceiling.</p>
+  // admin2-05: where every row is a class's own pool admitting that class, the
+  // Class column only repeats the Pool column's name, so it is not drawn.
+  const ownOnly = pools.every((p) => Object.keys(p.admits_before).every((cls) => p.pool === `resource:${cls}`))
   return (
     <div className={phone ? 'rs-pools-wrap is-stacked' : 'rs-pools-wrap'}>
       <table className="rs-pools" role="table" aria-label="What the pools admit">
@@ -878,7 +922,7 @@ export function PoolsTable({
           <tr role="row">
             <th role="columnheader" scope="col">Pool</th>
             <th role="columnheader" scope="col">Ceiling (units)</th>
-            <th role="columnheader" scope="col">Class</th>
+            {!ownOnly && <th role="columnheader" scope="col">Class</th>}
             <th role="columnheader" scope="col">Agents admitted, before → after</th>
           </tr>
         </thead>
@@ -886,9 +930,11 @@ export function PoolsTable({
           {pools.flatMap((p) =>
             Object.entries(p.admits_before).map(([cls, before]) => (
               <tr key={`${p.pool}/${cls}`} role="row" data-pool={p.pool} data-class={cls}>
-                <th role="rowheader" scope="row">{p.pool}</th>
+                <th role="rowheader" scope="row">
+                  <PoolName pool={p.pool} />
+                </th>
                 <td role="cell" data-label="Ceiling (units)">{p.hard_limit}</td>
-                <td role="cell" data-label="Class">{cls}</td>
+                {!ownOnly && <td role="cell" data-label="Class">{cls}</td>}
                 <td role="cell" data-label="Agents admitted, before → after">
                   <AdmitsCell pool={p} cls={cls} before={before} units={unitsAfter(classes, cls)} />
                 </td>
@@ -898,6 +944,22 @@ export function PoolsTable({
         </tbody>
       </table>
     </div>
+  )
+}
+
+/**
+ * THE POOL BY ITS NAME, THE KEY UNDER IT (QA2-FIX-20, admin2-05). The Pool
+ * column read `resource:standard`; Pool limits names the same row `standard`
+ * with the raw key as a mono line under it, the spelling a script takes.
+ */
+function PoolName({ pool }: { pool: string }) {
+  const name = poolLabel(pool)
+  if (name === pool) return <>{pool}</>
+  return (
+    <>
+      {name}
+      <span className="rs-pool-key">{pool}</span>
+    </>
   )
 }
 
@@ -913,7 +975,8 @@ function AdmitsCell({
   units: number | null
 }) {
   const after = pool.admits_after[cls]
-  const figures = `${before} → ${after ?? '—'}`
+  // ONE FIGURE UNTIL A SAVE WOULD MOVE IT (admin2-12), as the cards' `moved`.
+  const figures = moved(String(before), after === undefined ? '—' : String(after))
   // By the units where the preview names them, else by the figure it admits.
   const small = pool.hard_limit > 0 && (units !== null ? units > pool.hard_limit : after === 0)
   if (!small) return <>{figures}</>
@@ -948,7 +1011,7 @@ function VersionList({ rows, current, doc, reload }: { rows: RunnerSizeVersion[]
             {Array.isArray(v.changed) && v.changed.length > 0 && (
               <ul className="rs-version-changes">
                 {v.changed.map((c, i) => (
-                  <li key={i}>{`${c.class} ${c.field} ${c.from ?? '—'} → ${c.to ?? '—'}`}</li>
+                  <li key={i}>{changeLine(c.class, c.field, c.from, c.to)}</li>
                 ))}
               </ul>
             )}
@@ -960,10 +1023,15 @@ function VersionList({ rows, current, doc, reload }: { rows: RunnerSizeVersion[]
           </li>
         ))}
       </ol>
+      {/* ITS OWN BOX, SO IT KEEPS THE BUTTON'S WIDTH (QA2-FIX-20, admin2-10): a
+          direct child of the card's flex column was stretched across the card,
+          the older option drawn as the page's main action. */}
       {current > 0 && (
-        <Button size="sm" onClick={() => setRestoring(0)}>
-          Restore the code defaults
-        </Button>
+        <div className="rs-restore-defaults">
+          <Button size="sm" onClick={() => setRestoring(0)}>
+            Restore the code defaults
+          </Button>
+        </div>
       )}
       {restoring !== null && <RestoreDialog version={restoring} doc={doc} onClose={() => setRestoring(null)} reload={reload} />}
     </>

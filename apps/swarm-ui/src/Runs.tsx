@@ -516,6 +516,24 @@ function SubmitIssueLink({ go }: { go: (to: string) => void }) {
 export const RUNS_LIST_POLL_MS = 60_000
 
 /**
+ * A ROW WITH NO ISSUE TITLE SAYS WHY (QA2-FIX-20, runs2-03). The Issue cell
+ * leads with the title the run read at submission (`issue_read`); without one
+ * the row was a bare `#512` beside a bare run id, nothing naming the work. The
+ * reason is the read's own error where it failed, else that the run kept none.
+ */
+function NoTitle({ run }: { run: Pick<IssueRun, 'issue_read_error'> }) {
+  const failed = run.issue_read_error ?? null
+  const why = failed !== null
+    ? `The issue could not be read when the run was created: ${failed.message}`
+    : 'This run kept no reading of its issue: it was created before runs kept the title they read.'
+  return (
+    <i className="ctl-em rn-cut rn-issue-none" data-why={failed !== null ? 'failed' : 'not-kept'} title={why}>
+      {failed !== null ? 'title not read · the read failed' : 'title not read · not kept on this run'}
+    </i>
+  )
+}
+
+/**
  * The Runs list's state chips (QA G2-18). `not ready` and `rejected` (live QA
  * RT-10): 11 of 50 runs were reachable only under `all`, and a not-ready run
  * is the one that waits on an owner's decision.
@@ -715,7 +733,10 @@ function RunList({ first, go, view = null, names = null, want }: {
                           <span className="mono rn-refcut rn-issue-ref" title={r.issue.ref}><IssueRefLink run={r} /></span>
                         </>
                       ) : (
-                        <span className="mono rn-refcut" title={r.issue.ref}><IssueRefLink run={r} /></span>
+                        <>
+                          <span className="mono rn-refcut" title={r.issue.ref}><IssueRefLink run={r} /></span>
+                          <NoTitle run={r} />
+                        </>
                       )}
                     </td>
                     <td data-label="State">
@@ -1178,9 +1199,11 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
                 {' '}gated on its verdict · every step runs as claude-code
               </p>
               <p className="rn-plan-facts">
-                {run.plan.mode === 'single' || run.plan.mode === 'workflow'
-                  ? <Chip title="The planner's call: one agent, or a workflow of several steps">{run.plan.mode === 'single' ? 'single agent' : 'workflow'}</Chip>
-                  : <span className="sb-note" title="The planner did not say whether this is one agent or a workflow">mode not stated</span>}
+                {/* A PLAN WITH NO MODE SAYS NOTHING OF IT (QA2-FIX-20, runs2-11): `mode
+                    not stated` named a field the reader cannot act on; the steps
+                    under it say what runs. */}
+                {(run.plan.mode === 'single' || run.plan.mode === 'workflow') &&
+                  <Chip title="The planner's call: one agent, or a workflow of several steps">{run.plan.mode === 'single' ? 'single agent' : 'workflow'}</Chip>}
                 {run.plan.estimate
                   ? <Chip title="The planner's estimate for the whole plan">estimate {run.plan.estimate}</Chip>
                   : <span className="sb-note">no estimate given</span>}
