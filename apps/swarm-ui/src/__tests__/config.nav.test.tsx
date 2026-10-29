@@ -456,10 +456,10 @@ describe('the setup strip (proposal E)', () => {
     serve(ME(false), [PERSONAL, group('eng', 'admin')])
     await app('/config/secrets')
     await screen.findByRole('list', { name: 'Workspace setup steps' }, STRIP_WAIT)
-    await waitFor(() => expect(document.querySelector('.cfg-compact')?.textContent ?? '').toContain('Next: Repositories chosen'), STRIP_WAIT)
+    await waitFor(() => expect(document.querySelector('.cfg-compact')?.textContent ?? '').toContain('Next: Choose repositories'), STRIP_WAIT)
     const compact = document.querySelector('.cfg-compact')!
     // MUTATION: drop the compact form -> the phone shows four stacked steps and this fails.
-    expect(compact.textContent).toContain('Setup 1 of 4')
+    expect(compact.textContent).toContain('Setup 1 of 4 steps')
     // MUTATION: link the compact form to Workspace setup while a step is next -> fails.
     expect(compact.querySelector('a')?.getAttribute('href')).toBe('/config/repositories')
     cleanup()

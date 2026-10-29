@@ -140,6 +140,7 @@ export function HoldersScreen() {
   // every tenant". The table applies the filter only when a loaded row is that
   // tenant's (`HolderTable`), and the head follows the same rule.
   const linkedTenant = useLinkedParam('tenant')
+  const linkedPool = useLinkedPool()
   // "Holders", matching the tab, and the two are not allowed to differ:
   // test_nav_headings_agree.py asserts every screen's heading IS the label of
   // the tab that opens it. It was "Capacity holders", and it had to be while
@@ -156,15 +157,24 @@ export function HoldersScreen() {
         const coverage = leaseCoverage(b.page)
         const rows = b.page.leases.length
         const tenant = linkedTenant !== null && b.page.leases.some((l) => l.tenant_id === linkedTenant) ? linkedTenant : null
-        if (tenant !== null) {
-          // The tenant's own rows and units. How many of ITS leases a cut
+        // AND THE POOL FILTER (visual QA cap2-08, 2026-10-29): under
+        // `?pool=provider:anthropic:tenant:u-bogdan` the head still said
+        // `every tenant`. Not the tenant's rule: `HolderTable` applies a pool
+        // filter whatever it matches (its empty state says no lease holds
+        // it), so the head follows the pool whenever the address names one,
+        // and a pool no loaded lease holds reads `0 unreleased leases`.
+        const pool = linkedPool
+        if (tenant !== null || pool !== null) {
+          // The filter's own rows and units. How many of ITS leases a cut
           // window left out is not served, so a partial read says `listed`.
-          const mine = b.page.leases.filter((l) => l.tenant_id === tenant)
+          const mine = b.page.leases.filter((l) => (tenant === null || l.tenant_id === tenant) && (pool === null || (Array.isArray(l.pools) && l.pools.includes(pool))))
           const units = mine.reduce((sum, l) => sum + (typeof l.units === 'number' && Number.isFinite(l.units) ? l.units : 0), 0)
           return (
             <>
               {mine.length} unreleased lease{mine.length === 1 ? '' : 's'}
-              {coverage.kind === 'complete' ? '' : ' listed'} · {units} units held · tenant {tenant}
+              {coverage.kind === 'complete' ? '' : ' listed'} · {units} units held
+              {tenant !== null && ` · tenant ${tenant}`}
+              {pool !== null && ` · ${poolLabel(pool)} only`}
             </>
           )
         }
@@ -450,7 +460,12 @@ function Drift({ board, coverage, rows }: { board: HoldersBoard; coverage: Lease
       <DriftHead
         note={
           <>
-            {compared} of {rows.length} pools
+            {/* EACH COUNT SAYS WHAT IT COUNTS (visual QA cap2-09): the head
+                counts pools, the foot the leases they were compared over. */}
+            {compared} of {rows.length} pools compared
+            {/* AND HOW MANY OF THEM DRIFT (review of QA2-FIX-15): the rows
+                drawn are the drift, `N pools agree` the rest. */}
+            {disagreeing.length > 0 && <> · {disagreeing.length} drift{disagreeing.length === 1 ? 's' : ''}</>}
             {coverage.kind === 'cut' && <> · {ofTotal(rowsRead, coverage)} leases</>}
             {coverage.kind === 'unreported' && <> · coverage unreported</>}
           </>
@@ -524,7 +539,9 @@ function Drift({ board, coverage, rows }: { board: HoldersBoard; coverage: Lease
               say="Every live lease was read, and the units they hold agree with every pool's own counter."
             />
           ))}{' '}
-        over {ofTotal(rowsRead, coverage)} row{rowsRead === 1 && coverage.kind !== 'cut' ? '' : 's'}
+        {/* A SENTENCE WITH ITS SUBJECT (review of QA2-FIX-15): it read
+            "against 4 leases read", a fragment, when no mark led it. */}
+        Compared against {ofTotal(rowsRead, coverage)} lease{rowsRead === 1 && coverage.kind !== 'cut' ? '' : 's'} read
         {coverage.kind === 'cut' && coverage.beyond !== null && ` · ${coverage.beyond} live not listed`}
       </div>
     </section>
@@ -595,10 +612,9 @@ function HolderTable({
           /* "EVERY HOLDER OF POOL X" (live QA CAP-6): the heading and the
              chip read as one phrase, and the count is the note's alone. */
           <span className="hold-pool">
-            of pool{' '}
-            <span className="mono" title={pool}>
-              {pool}
-            </span>{' '}
+            {/* THE POOL BY ITS NAME (visual QA cap2-08): the raw key is the
+                title, as the drift table's sub-line keeps it. */}
+            of pool <b title={pool}>{poolLabel(pool)}</b>{' '}
             <button
               type="button"
               className="hold-pool-clear"
@@ -680,7 +696,9 @@ function HolderTable({
               {pool !== null && inPool.length === 0 && !unknownPool && (
                 <tr role="row" className="hold-empty">
                   <td role="cell" colSpan={7}>
-                    No lease holds <span className="mono">{pool}</span> right now ·{' '}
+                    {/* NEVER AN ID WITHOUT ITS NAME (review of QA2-FIX-15): the
+                        pool by its name, the raw key its title, as the chip. */}
+                    No lease holds <b title={pool}>{poolLabel(pool)}</b> right now ·{' '}
                     {coverageMark(rows.length, coverage, 'This list') ?? (
                       <Mark kind="zero" say={`Every live lease was read, and none of them holds ${pool}.`} />
                     )}

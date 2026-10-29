@@ -109,7 +109,8 @@ describe('CAP-5: a pool that does not exist is not a zero', () => {
       expect(r).not.toBeNull()
       return r!
     }, WAIT)
-    expect(row.textContent).toContain('No lease holds runner:mock')
+    expect(row.textContent).toContain('No lease holds mock')
+    expect(row.querySelector('[title="runner:mock"]')).not.toBeNull()
     expect([...row.querySelectorAll('.ctl-mark')].map((m) => m.textContent)).toContain('none')
   })
 })

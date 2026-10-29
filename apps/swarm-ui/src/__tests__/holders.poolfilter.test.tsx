@@ -91,7 +91,9 @@ describe('Holders narrows to the pool a link named (#125)', () => {
     await waitFor(() => expect(drawn()).toEqual(['task-0000000001', 'task-0000000003']), WAIT)
     const chip = document.querySelector('.hold-pool')
     expect(chip, 'nothing says the table is narrowed to a pool').not.toBeNull()
-    expect(chip!.textContent).toContain('runner:codex')
+    // cap2-08: the chip names the pool; its raw key is the title.
+    expect(chip!.textContent).toContain('codex')
+    expect(chip!.querySelector('[title="runner:codex"]')).not.toBeNull()
   })
 
   it('offers every pool again, and draws them all', async () => {
