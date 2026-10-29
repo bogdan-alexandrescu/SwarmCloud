@@ -44,26 +44,26 @@
 #   notes         where the code disagrees with the runbooks or itself, the
 #                 live-instance hard-coding, the first-apply trap; or absent
 #
-# Counts (433 entries) by kind:
-#   iam-binding              52
-#   switch                   38
-#   other                    35
+# Counts (460 entries; 433 in P0, plus 27 added by DAYONE-P2) by kind:
+#   iam-binding              55
+#   switch                   42
+#   other                    46
 #   custom-role              30
 #   gcp-api                  26
 #   secret-container         24
 #   image                    23
-#   declared-value           21
+#   declared-value           23
 #   secret-value             21
 #   network                  18
 #   namespace-object         17
 #   local-tool               15
-#   service-account          15
-#   scheduler-job            13
+#   service-account          17
+#   scheduler-job            14
 #   cluster-policy           9
 #   pubsub-topic             8
 #   bucket                   7
-#   cloud-run-service        7
-#   monitoring               6
+#   cloud-run-service        8
+#   monitoring               7
 #   firestore                6
 #   org-policy               5
 #   quota                    5
@@ -72,30 +72,30 @@
 #   iap-setting              3
 #   kms-key                  3
 #   registry                 3
-#   cloud-run-job            3
+#   cloud-run-job            4
 #   workspace-group          3
 #   certificate              1
 #   dns                      1
 #   oauth-brand              1
 #   oauth-client             1
 #   cluster                  1
-#   workspace-delegation     1
+#   workspace-delegation     2
 #   github-app-installation  1
 #   claude-account           1
 # by scope:
-#   core                       362
-#   addon:ci                   43
+#   core                       388
+#   addon:ci                   44
 #   addon:typesafe             12
 #   addon:bright-data-egress   9
 #   addon:tailscale            4
 #   addon:brave-search         3
 # by provider:
-#   engine                     381
+#   engine                     405
 #   human-in-terminal          21
-#   org-admin                  17
+#   org-admin                  18
 #   human-in-console           13
-#   company-external           1
-# by stage: 0:26  1:39  2:12  3:42  4:30  5:58  6:42  7:106  8:9  9:19  10:16  11:18  12:1  13:4  14:4  15:7
+#   company-external           3
+# by stage: 0:28  1:39  2:12  3:45  4:31  5:59  6:42  7:119  8:10  9:19  10:17  11:18  12:1  13:5  14:5  15:10
 #
 # Known gaps in this draft (design section 3.4): the per-tenant fan-out
 # (Cloud Run jobs per tenant x profile, per-tenant Scheduler jobs) is one entry
@@ -3890,6 +3890,7 @@ entries:
     secret_entry: null
     depends_on: ["cloud-run-service.github-hooks"]
     evidence: ["terraform/infra/github_hooks.tf:314-320"]
+    notes: "DAYONE-P2 correction: Q3 replaces this allUsers binding with invoker_iam_disabled = true on the service (lane DAYONE-TF-2). The id stays so the completeness test keeps matching the Terraform address until TF-2 lands; after TF-2 the check is 'no allUsers member on the service and invoker IAM disabled'."
   - id: "iam-binding.log-view-read-swarm-api"
     kind: "iam-binding"
     scope: "core"
@@ -5973,3 +5974,381 @@ entries:
     secret_entry: null
     depends_on: ["other.verify-end-to-end"]
     evidence: ["plugin/README.md:325-357"]
+  - id: "declared-value.monitoring-excluded-tenants"
+    kind: "declared-value"
+    scope: "core"
+    stage: 7
+    provider: "engine"
+    check: "grep -n excluded_tenants terraform/modules/monitoring/variables.tf"
+    apply: "NEW (DAYONE-TF-1): the default is removed; the engine passes the deployment's verify tenant id, computed with the frozen swarm_common.identity rule"
+    verify: "the monitoring module's excluded-tenant list holds this deployment's verify tenant, not the live one"
+    explain: "Alerting excludes the smoke and verify tenants; the default names the live deployment's verify tenant, so a fresh install would alert on its own verify runs."
+    guards: null
+    secret_entry: null
+    depends_on: ["declared-value.project_id"]
+    evidence: ["terraform/modules/monitoring/variables.tf:115"]
+    notes: "plan R9; added by DAYONE-P2"
+  - id: "cloud-run-service.swarm-discovery"
+    kind: "cloud-run-service"
+    scope: "core"
+    stage: 7
+    provider: "engine"
+    check: "gcloud run services describe swarm-discovery --project=$P --region=$R --format='value(spec.template.spec.containers[0].image)'"
+    apply: "NEW (DAYONE-TF-2): terraform/infra/discovery.tf, the swarm-api image with the discovery factory as its command, ingress internal-and-cloud-load-balancing, invoker_iam_disabled = true"
+    verify: "an unauthenticated GET https://$H/.well-known/swarmcloud returns the public document and every other path on the service 404s"
+    explain: "Serves the discovery document (D28, Q1) that lets the plugin be configured with one value, the deployment URL."
+    guards: null
+    secret_entry: null
+    depends_on: ["sa.swarm-discovery", "other.url-map", "certificate.managed-ssl"]
+    evidence: ["docs/design/day-one-install.md", "docs/design/day-one-plan.md"]
+    notes: "design section 9.2 (c) names the service; the draft listed only other.discovery-endpoint. Added by DAYONE-P2"
+  - id: "sa.swarm-discovery"
+    kind: "service-account"
+    scope: "core"
+    stage: 3
+    provider: "engine"
+    check: "gcloud iam service-accounts describe swarm-discovery@$P.iam.gserviceaccount.com"
+    apply: "NEW (DAYONE-BOOT-2): terraform/bootstrap/platform_service_accounts.tf"
+    verify: "the account exists and holds no project role; it holds secretAccessor on swarm-iap-desktop-client-secret only when discovery_serves_client_secret is true"
+    explain: "The discovery service's runtime identity, kept roleless so the public route cannot read anything else."
+    guards: null
+    secret_entry: null
+    depends_on: ["bucket.state"]
+    evidence: ["docs/design/day-one-plan.md"]
+    notes: "added by DAYONE-P2"
+  - id: "sa.swarm-doctor"
+    kind: "service-account"
+    scope: "core"
+    stage: 3
+    provider: "engine"
+    check: "gcloud iam service-accounts describe swarm-doctor@$P.iam.gserviceaccount.com"
+    apply: "NEW (DAYONE-BOOT-2): terraform/bootstrap/platform_service_accounts.tf"
+    verify: "the account exists, holds only the read-only roles of iam-binding.doctor-read-only, and is listed in swarm-api's PLATFORM_SERVICE_ACCOUNTS so PUT /v1/admin/setup/health accepts it"
+    explain: "D27's hourly scheduled doctor runs as this identity."
+    guards: "lesson 38: a scheduled caller missing from the callee's allow-list 403s while Scheduler reports success"
+    secret_entry: null
+    depends_on: ["bucket.state"]
+    evidence: ["docs/design/day-one-plan.md"]
+    notes: "added by DAYONE-P2"
+  - id: "cloud-run-job.swarm-doctor"
+    kind: "cloud-run-job"
+    scope: "core"
+    stage: 7
+    provider: "engine"
+    check: "gcloud run jobs describe swarm-doctor --project=$P --region=$R"
+    apply: "NEW (DAYONE-TF-2): terraform/infra/doctor.tf, the swarm-verify image running swarm_install.scheduled_doctor, Direct VPC egress; created only while switch.enable_scheduled_doctor is true"
+    verify: "an execution exits 0 and health/latest in the install record carries its run time"
+    explain: "D27: the hourly read-only doctor whose findings show on Admin > Setup > Health."
+    guards: "lesson 35: jobs need VPC egress to reach internal services"
+    secret_entry: null
+    depends_on: ["sa.swarm-doctor", "switch.enable_scheduled_doctor", "image.swarm-verify"]
+    evidence: ["docs/design/day-one-plan.md"]
+    notes: "added by DAYONE-P2"
+  - id: "sched.doctor-hourly"
+    kind: "scheduler-job"
+    scope: "core"
+    stage: 7
+    provider: "engine"
+    check: "gcloud scheduler jobs describe swarm-doctor-hourly --project=$P --location=$R"
+    apply: "NEW (DAYONE-TF-2): terraform/infra/doctor.tf, schedule '0 * * * *', target the swarm-doctor job's run endpoint; created only while switch.enable_scheduled_doctor is true"
+    verify: "the last attempt's status is OK AND health/latest.run_at is under 70 minutes old (the target's own answer, not Scheduler's)"
+    explain: "D27: runs the scheduled doctor every hour."
+    guards: "lesson 38"
+    secret_entry: null
+    depends_on: ["cloud-run-job.swarm-doctor"]
+    evidence: ["docs/design/day-one-plan.md"]
+    notes: "added by DAYONE-P2"
+  - id: "iam-binding.doctor-read-only"
+    kind: "iam-binding"
+    scope: "core"
+    stage: 7
+    provider: "engine"
+    check: "gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:swarm-doctor@' --format='value(bindings.role)'"
+    apply: "NEW (DAYONE-TF-2): terraform/bootstrap/doctor_roles.tf: roles/viewer, roles/iam.securityReviewer, roles/secretmanager.viewer, roles/container.clusterViewer, roles/policytroubleshooter.user; run.invoker on swarm-api only"
+    verify: "no role held by swarm-doctor carries a create, update, delete, setIamPolicy or add permission"
+    explain: "The doctor never writes (brief section 4.2); its identity makes that structural."
+    guards: null
+    secret_entry: null
+    depends_on: ["sa.swarm-doctor"]
+    evidence: ["docs/design/day-one-plan.md"]
+    notes: "added by DAYONE-P2"
+  - id: "monitoring.doctor-findings-alert"
+    kind: "monitoring"
+    scope: "core"
+    stage: 13
+    provider: "engine"
+    check: "gcloud alpha monitoring policies list --project=$P --filter='displayName:swarm-doctor-findings'"
+    apply: "NEW (DAYONE-TF-2): an alert policy on the doctor's finding-count log metric, notifying monitoring.notification-channel"
+    verify: "a forced finding on the D22 test project notifies the channel"
+    explain: "P1-B: the scheduled doctor emails the alert channel."
+    guards: "lesson 41: alerts must notify someone"
+    secret_entry: null
+    depends_on: ["monitoring.notification-channel", "cloud-run-job.swarm-doctor"]
+    evidence: ["docs/design/day-one-plan.md"]
+    notes: "created only after its metric descriptor exists (lesson 23). Added by DAYONE-P2"
+  - id: "iam-binding.swarm-api-github-app-secret-writer"
+    kind: "iam-binding"
+    scope: "core"
+    stage: 7
+    provider: "engine"
+    check: "gcloud secrets get-iam-policy swarm-github-app-private-key --project=$P | grep swarm-api"
+    apply: "NEW (DAYONE-TF-2): secretmanager.versions.add and secretAccessor for swarm-api on exactly swarm-github-app-client-secret, swarm-github-app-private-key and swarm-github-app-webhook-secret, under switch.enable_console_app_setup"
+    verify: "the console's manifest conversion writes the three versions; any other secret refuses swarm-api's add"
+    explain: "D26 moves the GitHub App to the console; swarm-api performs the code exchange and writes the secrets server-side (plan R3), so the values never reach the CLI or a Claude session."
+    guards: "CLAUDE.md forge-token rule"
+    secret_entry: null
+    depends_on: ["switch.enable_console_app_setup", "sa.swarm-api"]
+    evidence: ["docs/design/day-one-plan.md", "terraform/modules/secret_manager/main.tf:249-255"]
+    notes: "the three containers are created under the same switch in infra pass 2, before the console's App step. Added by DAYONE-P2"
+  - id: "workspace-delegation.groups-reader-admin-role"
+    kind: "workspace-delegation"
+    scope: "core"
+    stage: 8
+    provider: "org-admin"
+    check: "a live checkTransitiveMembership on the probe group with swarm-api's own credentials returns 200"
+    apply: "human: admin.google.com > Account > Admin roles > Groups Reader, assigned to swarm-api's service account (the engine prints the path and the account's email)"
+    verify: "stage 8's probe passes with GROUPS_AUTH=admin_role"
+    explain: "Q2's chosen path: swarm-api reads group membership with its own identity; domain-wide delegation stays the fallback."
+    guards: "lesson 20"
+    secret_entry: null
+    depends_on: ["sa.swarm-api", "workspace-group.tenant-groups"]
+    evidence: ["docs/design/day-one-install.md", "apps/swarm-api/swarm_api/delegation.py"]
+    notes: "added by DAYONE-P2"
+  - id: "other.install-record-firestore"
+    kind: "other"
+    scope: "core"
+    stage: 5
+    provider: "engine"
+    check: "gcloud firestore documents describe swarm-install/$E (or the console's GET /v1/admin/setup)"
+    apply: "NEW (DAYONE-ENGINE-1, DAYONE-SETUP-API-1): Firestore collection swarm-install, document <env>, one writer per document (plan section 5.4)"
+    verify: "the console's Admin > Setup strip shows the CLI's stages with their times"
+    explain: "D26: the CLI and the console share one install record; the GCS state object stays authoritative."
+    guards: null
+    secret_entry: null
+    depends_on: ["firestore.main", "other.install-state"]
+    evidence: ["docs/design/day-one-plan.md"]
+    notes: "the engine writes it from stage 5 on, once Firestore exists; stages 0-4 are in the GCS object and the local cache. Added by DAYONE-P2"
+  - id: "other.verify-row"
+    kind: "other"
+    scope: "core"
+    stage: 14
+    provider: "engine"
+    check: "the install record's verify field has check, done, total, expected_end and deadline while stage 14 runs"
+    apply: "NEW (DAYONE-ENGINE-4 writes it, DAYONE-SETUP-UI-1 draws it)"
+    verify: "Admin > Setup shows 'Verify, run by swarm install' with a countdown, and Send to your team unlocks only when it passes"
+    explain: "D26 and the P1-B gap: the console must show verify's progress so an installer who closed the terminal is not left with an unexplained wait."
+    guards: null
+    secret_entry: null
+    depends_on: ["other.install-record-firestore", "other.verify-end-to-end"]
+    evidence: ["docs/design/day-one-plan.md"]
+    notes: "added by DAYONE-P2"
+  - id: "other.doctor-findings"
+    kind: "other"
+    scope: "core"
+    stage: 15
+    provider: "engine"
+    check: "GET /v1/admin/setup/health returns run_at under 70 minutes old"
+    apply: "NEW (DAYONE-DOCTOR-1 posts, DAYONE-SETUP-API-1 stores, DAYONE-SETUP-UI-1 draws)"
+    verify: "a finding shows on Admin > Setup > Health with its repair command"
+    explain: "D27: Admin > Setup > Health."
+    guards: null
+    secret_entry: null
+    depends_on: ["cloud-run-job.swarm-doctor", "other.install-record-firestore"]
+    evidence: ["docs/design/day-one-plan.md"]
+    notes: "added by DAYONE-P2"
+  - id: "other.release-home"
+    kind: "other"
+    scope: "core"
+    stage: 0
+    provider: "company-external"
+    check: "curl -fsI https://storage.googleapis.com/swarmcloud/channels/stable"
+    apply: "NEW (DAYONE-RELHOME-1, run by BGD in project swarmcloud): Artifact Registry us-docker.pkg.dev/swarmcloud/swarmcloud, bucket gs://swarmcloud, KMS key swarmcloud-release/cosign, public read under the one org-policy exception (Q4)"
+    verify: "an unauthenticated read of the stable channel and an image manifest by digest both answer 200"
+    explain: "D25: where a company's install fetches the release; its deployment never depends on it after the copy (D21)."
+    guards: null
+    secret_entry: null
+    depends_on: []
+    evidence: ["docs/design/day-one-plan.md"]
+    notes: "added by DAYONE-P2"
+  - id: "other.plugin-marketplace"
+    kind: "other"
+    scope: "core"
+    stage: 15
+    provider: "company-external"
+    check: "curl -fsS https://storage.googleapis.com/swarmcloud/marketplace.json | jq -e '.plugins[] | select(.name == \"sc\")'"
+    apply: "NEW (DAYONE-RELEASE-1): marketplace.json and releases/<V>/plugin/ published to gs://swarmcloud"
+    verify: "the D28 line installs sc@swarmcloud with deployment_url as its only value"
+    explain: "D28: the marketplace lives in the release home, not the deployment."
+    guards: null
+    secret_entry: null
+    depends_on: ["other.release-home"]
+    evidence: ["docs/design/day-one-plan.md"]
+    notes: "whether a URL-hosted marketplace accepts a relative plugin source is to be proven (plan 6.4). Added by DAYONE-P2"
+  - id: "other.plugin-version-skew"
+    kind: "other"
+    scope: "core"
+    stage: 15
+    provider: "engine"
+    check: "sc doctor prints the plugin version, the deployment version and the supported range"
+    apply: "NEW (DAYONE-PLUGIN-1 reads it; DAYONE-RELEASE-1 publishes compat.json; DAYONE-DISCOVERY-1 serves plugin.min_version)"
+    verify: "a plugin outside the range answers every tool call with both versions and the fix"
+    explain: "D28: the plugin can be ahead of the deployment; a skew is always named, never a silent failure."
+    guards: null
+    secret_entry: null
+    depends_on: ["other.discovery-endpoint", "other.plugin-marketplace"]
+    evidence: ["docs/design/day-one-plan.md"]
+    notes: "added by DAYONE-P2"
+  - id: "switch.enable_console_app_setup"
+    kind: "switch"
+    scope: "core"
+    stage: 7
+    provider: "engine"
+    check: "grep -n enable_console_app_setup in the generated infra tfvars (gs://swarm-tfstate-$P/swarm-install/)"
+    apply: "NEW (DAYONE-TF-2): bool, default false; creates the three swarm-github-app-* containers and swarm-api's add/read grants on them, independent of enable_github_app and enable_github_hooks"
+    verify: "the three containers exist with no version before the console's GitHub step"
+    explain: "Key before switch under D26: the console writes the App's secrets before infra pass 3 turns the App on, so their containers and writer grant must exist from pass 2."
+    guards: "lesson 39"
+    secret_entry: null
+    depends_on: ["sa.swarm-api"]
+    evidence: ["docs/design/day-one-plan.md", "terraform/modules/secret_manager/main.tf:249-255", "terraform/infra/github_hooks.tf:136-137"]
+    notes: "the engine sets it true in infra pass 2 (stage 7). Added by DAYONE-P2"
+  - id: "switch.enable_scheduled_doctor"
+    kind: "switch"
+    scope: "core"
+    stage: 7
+    provider: "engine"
+    check: "grep -n enable_scheduled_doctor in the generated infra tfvars"
+    apply: "NEW (DAYONE-TF-2): bool, default false; gates cloud-run-job.swarm-doctor and sched.doctor-hourly"
+    verify: "true only when the release's swarm-verify image carries swarm_install.scheduled_doctor"
+    explain: "Keeps the hourly doctor from running before its code ships (lesson 38)."
+    guards: "lesson 38"
+    secret_entry: null
+    depends_on: []
+    evidence: ["docs/design/day-one-plan.md"]
+    notes: "the engine turns it on in pass 2 for a release that carries DAYONE-DOCTOR-1. Added by DAYONE-P2"
+  - id: "switch.enable_acceptance_fixture"
+    kind: "switch"
+    scope: "addon:ci"
+    stage: 7
+    provider: "engine"
+    check: "grep -n enable_acceptance_fixture terraform/environments/*/*.tfvars"
+    apply: "NEW (DAYONE-TF-2): bool, default false; gates terraform/infra/acceptance_fixture.tf (its allUsers objectViewer bucket); the live tfvars set it true so the live deployment is unchanged"
+    verify: "a core install has no acceptance-fixture bucket and no allUsers binding"
+    explain: "The fixture bucket is CI machinery (D10) and its allUsers grant fails under Domain Restricted Sharing."
+    guards: null
+    secret_entry: null
+    depends_on: []
+    evidence: ["terraform/infra/acceptance_fixture.tf:39-103", "docs/design/day-one-plan.md"]
+    notes: "added by DAYONE-P2"
+  - id: "declared-value.groups_auth"
+    kind: "declared-value"
+    scope: "core"
+    stage: 7
+    provider: "engine"
+    check: "gcloud run services describe swarm-api --format=json | jq '.spec.template.spec.containers[0].env[] | select(.name==\"GROUPS_AUTH\")'"
+    apply: "NEW (DAYONE-IDENTITY-1 reads it, DAYONE-TF-2 renders it, DAYONE-ENGINE-3 sets admin_role for installs)"
+    verify: "stage 8's probe passes through swarm-api in the mode it runs"
+    explain: "Q2: installs read groups with the Groups Reader admin role; the live deployment keeps delegation until BGD flips it."
+    guards: "lesson 20"
+    secret_entry: null
+    depends_on: ["workspace-delegation.groups-reader-admin-role"]
+    evidence: ["docs/design/day-one-plan.md"]
+    notes: "added by DAYONE-P2"
+  - id: "switch.tenant_job_vpc_egress"
+    kind: "switch"
+    scope: "core"
+    stage: 7
+    provider: "engine"
+    check: "grep -n tenant_job_vpc_egress in the generated infra tfvars"
+    apply: "terraform/infra/tenant_job_vpc.tf:31 bool, default false; the engine sets it true in infra pass 2"
+    verify: "a console task run through a scheduler-created Cloud Run job reaches swarm-api (verify's console run)"
+    explain: "Scheduler-created tenant jobs need Direct VPC egress to reach internal services."
+    guards: "lesson 35"
+    secret_entry: null
+    depends_on: ["network.subnet"]
+    evidence: ["terraform/infra/tenant_job_vpc.tf:31-43"]
+    notes: "added by DAYONE-P2"
+  - id: "other.release-kubernetes-bundle"
+    kind: "other"
+    scope: "core"
+    stage: 10
+    provider: "engine"
+    check: "tar -tzf kubernetes.tgz from the release lists render.py, policies/, swarm-system/ and rbac/"
+    apply: "NEW (DAYONE-RELEASE-1): kubernetes.tgz in every release bundle"
+    verify: "stage 10, team add, upgrade and uninstall render from the bundle with no checkout"
+    explain: "The installer has no repository checkout (D12); the cluster's objects must come with the release."
+    guards: null
+    secret_entry: null
+    depends_on: ["other.release-bundle"]
+    evidence: ["kubernetes/render.py", "docs/design/day-one-plan.md"]
+    notes: "added by DAYONE-P2"
+  - id: "other.release-signing-public-key"
+    kind: "other"
+    scope: "core"
+    stage: 4
+    provider: "engine"
+    check: "the public key file in the engine wheel equals the KMS public key of swarmcloud-release/cosign"
+    apply: "NEW (DAYONE-ENGINE-3, after BGD runs scripts/release-home.sh): swarm_install/release_key.pub"
+    verify: "cosign verify of every image digest passes with the pinned key before the copy"
+    explain: "D21: signatures are verified on install and upgrade against a key the engine carries, not one fetched beside the images."
+    guards: null
+    secret_entry: null
+    depends_on: ["other.release-home", "local-tool.cosign"]
+    evidence: ["docs/design/day-one-plan.md"]
+    notes: "added by DAYONE-P2"
+  - id: "other.engine-terraform-rules"
+    kind: "other"
+    scope: "core"
+    stage: 3
+    provider: "engine"
+    check: "the engine's Terraform runner refuses a -var, a destroy without typed approval, a destroy-first IAM swap and an empty state while the deployer exists"
+    apply: "NEW (DAYONE-ENGINE-3): swarm_install/terraform.py"
+    verify: "test_terraform_runner.py and test_tfvars.py in tests/unit/install"
+    explain: "Carries the lessons whose guard is a rule of how Terraform is run rather than a resource."
+    guards: "lessons 7, 10, 11"
+    secret_entry: null
+    depends_on: ["local-tool.terraform", "bucket.state"]
+    evidence: ["docs/design/day-one-plan.md"]
+    notes: "added by DAYONE-P2"
+  - id: "other.upgrade-iam-gate"
+    kind: "other"
+    scope: "core"
+    stage: 7
+    provider: "engine"
+    check: "swarm upgrade --dry-run lists every IAM create, change or delete and what waits on it"
+    apply: "NEW (DAYONE-UPGRADE-1): swarm_install/upgrade.py"
+    verify: "an IAM change waits for the typed project id and names what it blocks"
+    explain: "A held IAM change must say what it blocks instead of silently stalling a release."
+    guards: "lesson 26"
+    secret_entry: null
+    depends_on: ["other.release-bundle"]
+    evidence: ["docs/design/day-one-plan.md"]
+    notes: "added by DAYONE-P2"
+  - id: "other.sc-install-refusal-rule"
+    kind: "other"
+    scope: "core"
+    stage: 0
+    provider: "engine"
+    check: "plugin/commands/install.md hands the exact command on a refusal and holds no workaround"
+    apply: "NEW (DAYONE-SC-INSTALL-1): plugin/commands/install.md, doctor.md, team.md"
+    verify: "test_plugin_install_commands.py in tests/unit/mcp"
+    explain: "/sc:install must work where the auto-mode classifier refuses IAM or deletion commands: it hands the person the ! line or asks for a narrow allow rule."
+    guards: "lesson 47"
+    secret_entry: null
+    depends_on: []
+    evidence: ["docs/design/day-one-plan.md"]
+    notes: "added by DAYONE-P2"
+  - id: "iam-binding.deployer-iap-api-accessor"
+    kind: "iam-binding"
+    scope: "core"
+    stage: 7
+    provider: "engine"
+    check: "gcloud iap web get-iam-policy --resource-type=backend-services --service=${name_prefix}-backend --project=$P | grep swarm-tf-deployer"
+    apply: "NEW (DAYONE-TF-2): roles/iap.httpsResourceAccessor for serviceAccount:swarm-tf-deployer@$P.iam.gserviceaccount.com on the API backend's IAP only, never the UI backend"
+    verify: "the engine's call to POST /v1/admin/setup/health/groups-probe with an ID token minted for swarm-tf-deployer (audience: the API backend's IAP client id) passes IAP; the same token on any other /v1 route gets 403 from swarm-api"
+    explain: "swarm-api's ingress is internal-and-cloud-load-balancing, so the laptop engine reaches it only through IAP, which refuses gcloud user tokens (lesson 18); the engine calls the two engine routes (the webhook activation and stage 8's group probe) as the deployer it already impersonates (plan section 5.3)."
+    guards: "lesson 18"
+    secret_entry: null
+    depends_on: ["sa.swarm-tf-deployer", "iam-binding.installer-impersonates-deployer", "iap-setting.backend-api"]
+    evidence: ["docs/design/day-one-plan.md", "terraform/modules/frontend/main.tf:148-171"]
+    notes: "that IAP admits a service-account ID token with the backend's IAP client id as audience is to be proven on the D22 test project; the fallback is the person's own Desktop-client sign-in, which then needs a platform admin. Added by DAYONE-P2 (review-fix finding 2)"
