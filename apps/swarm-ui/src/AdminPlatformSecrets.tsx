@@ -189,12 +189,14 @@ function PlatformSecretsBody({ data }: { data: PlatformSecrets }) {
                   <span className={r.status === 'set' ? 'sec-state is-ok' : unread(r) ? 'sec-chip is-info' : 'sec-chip is-warn'}>{STATUS_WORDS[r.status] ?? r.status}</span>
                   {r.reason !== null && <small className="sec-sub">{REASON_WORDS[r.reason] ?? r.reason}</small>}
                 </td>
+                {/* SAID ONCE (visual QA pass 2, admin2-16): the pill says "no
+                    secret"; the figures beside it are a dash, not the same words twice more. */}
                 <td data-label="Enabled versions">
-                  {unread(r) ? <NotRead /> : r.enabled_versions === null ? 'no secret' : r.enabled_versions}
+                  {unread(r) ? <NotRead /> : r.enabled_versions === null ? '—' : r.enabled_versions}
                   {r.rotation_in_grace && <small className="sec-sub">rotation in its grace</small>}
                 </td>
                 <td data-label="Age of newest">
-                  {unread(r) ? <NotRead /> : r.newest_enabled_at === null ? (r.status === 'not_declared' ? 'no secret' : 'no version') : timeAgo(r.newest_enabled_at)}
+                  {unread(r) ? <NotRead /> : r.newest_enabled_at === null ? (r.status === 'not_declared' ? '—' : 'no version') : timeAgo(r.newest_enabled_at)}
                 </td>
                 <td data-label="Managed by">{r.managed_by}<small className="sec-sub">{r.written_by}</small></td>
               </tr>

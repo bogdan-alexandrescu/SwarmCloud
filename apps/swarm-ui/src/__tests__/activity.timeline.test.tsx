@@ -558,12 +558,12 @@ describe('the ledger', () => {
   it('draws the throughput lane as submitted against finished, labelled as the only submission-time lane', async () => {
     const root = await timeline()
     const labels = [...drawing(root).querySelectorAll('.ol-lane-label')].map((t) => t.textContent ?? '')
-    expect(labels[3]).toMatch(/submitted \(by created_at, the only lane on submission time\) vs finished · max 338/)
+    expect(labels[3]).toMatch(/submitted \(by submit time, the only lane on submission time\) vs finished · max 338/)
     expect(drawing(root).querySelector('.ol-lane.is-flow .ol-m-sub'), 'no submitted line').not.toBeNull()
     expect(bucketMarks(root, 10)!.querySelector('.ol-m-fin'), 'no finished column on 22 Sep').not.toBeNull()
     // The narrow drawing carries a short label that still names its basis.
     const narrow = [...drawing(root, 'narrow').querySelectorAll('.ol-lane-label')].map((t) => t.textContent ?? '')
-    expect(narrow[3]).toContain('by created_at')
+    expect(narrow[3]).toContain('by submit time')
   })
 
   it('draws a bucket that was not read as one hatched band over every lane, with no digit and no marks', async () => {
@@ -633,7 +633,7 @@ describe('the ledger', () => {
       // The time axis is the one set of labels that DOES scroll: it names the columns under it.
       expect(dr.querySelectorAll('.ol-plot .ol-axis-label').length).toBeGreaterThan(0)
     }
-    expect(drawing(root, 'narrow').querySelectorAll('.ol-lane-label')[3]!.textContent).toContain('by created_at')
+    expect(drawing(root, 'narrow').querySelectorAll('.ol-lane-label')[3]!.textContent).toContain('by submit time')
   })
 
   it('labels a phone’s hourly axis every third hour on the clock and every day, and nothing between', async () => {
@@ -670,7 +670,7 @@ describe('the readout', () => {
     expect(legend.textContent).toContain('272 of 300 · 95 % 86.8–93.5 %')
     expect(legend.textContent).toContain('requested 401 · other 0')
     expect(legend.textContent).toContain('incl. workflow sweep 3')
-    expect(legend.textContent).toContain('by created_at')
+    expect(legend.textContent).toContain('by submit time')
     // Not a live region: the focused column's name already says the counts.
     expect(legend.getAttribute('aria-live')).toBeNull()
     expect(root.querySelector('.ol-at')!.textContent).toBe('all 14 days')
@@ -872,8 +872,9 @@ describe('scope and filters', () => {
     // platform fact say it; the hash and the query keep `tenant`.
     const scope = [...root.querySelector('.ol-scope')!.querySelectorAll('button')].map((b) => b.textContent)
     expect(scope).toEqual(['my workspace', 'platform'])
-    const picker = [...root.querySelectorAll<HTMLElement>('.ol-pick summary')].map((p) => p.textContent ?? '')
-    expect(picker).toContain('Workspace all 3')
+    const picker = [...root.querySelectorAll<HTMLElement>('.tl-pick summary')].map((p) => p.textContent ?? '')
+    // No count on an unnarrowed picker, as on Lanes (runs2-19).
+    expect(picker).toContain('Workspace all')
     expect(root.querySelector('.ol-toolbar')!.textContent).not.toMatch(/tenant/i)
     expect(root.querySelector('.ol-facts')!.textContent).not.toMatch(/tenant/i)
     fireEvent.click(verify)
@@ -885,7 +886,7 @@ describe('scope and filters', () => {
     const onView = vi.fn()
     const root = await timeline(ledgerFixture(), { view: '', onView })
     await waitFor(() => expect(api.loadRunnerProfiles).toHaveBeenCalled())
-    const pick = [...root.querySelectorAll<HTMLElement>('.ol-pick')].find((p) => p.textContent?.startsWith('Profile'))!
+    const pick = [...root.querySelectorAll<HTMLElement>('.tl-pick')].find((p) => p.textContent?.startsWith('Profile'))!
     await waitFor(() => expect(pick.querySelectorAll('input[type="checkbox"]')).toHaveLength(5))
     // By its label, not by role: the list sits in a closed <details>, which a
     // role query may treat as hidden depending on the DOM's UA sheet.
@@ -984,7 +985,7 @@ describe('what the route serves, said as the route means it', () => {
     // for 14 local days, and in platform scope one per tenant per day.
     const root = await timeline()
     const facts = [...root.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
-    expect(facts).toContain('sealed14 of 15 UTC days · today so far')
+    expect(facts).toContain('sealed14 of 15 days (UTC) · today so far')
     const prov = root.querySelector('.ol-prov')!.textContent ?? ''
     expect(prov).toContain('14 UTC days sealed')
     expect(prov, 'a live day need not be today: yesterday is live through the seal grace').toContain('1 live')
@@ -994,7 +995,7 @@ describe('what the route serves, said as the route means it', () => {
     d.coverage = { ...d.coverage, days: { total: 45, sealed: 42, live: 3, unread: 0 } }
     const platform = await timeline(d, { view: 'scope=platform' }, { admin: true })
     const pf = [...platform.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
-    expect(pf, '45 workspace-days read as "45 days" over a 14-day span').toContain('sealed42 of 45 workspace-days · today so far')
+    expect(pf, '45 workspace-days read as "45 days" over a 14-day span').toContain('sealed42 of 45 workspace-days (UTC) · today so far')
     expect(platform.querySelector('.ol-prov')!.textContent).toContain('42 workspace-days sealed')
   })
 
@@ -1861,5 +1862,95 @@ describe('VQA-L13: lane captions and table edges', () => {
       expect(s.classList.contains('has-more'), `${title}: the last column is in view and still dimmed`).toBe(false)
       expect(painted(s, 'mask-image', { width: 400 })).toBeNull()
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// VISUAL QA PASS 2 (lane QA2-FIX-10, part of #2694)
+// ---------------------------------------------------------------------------
+
+describe('one time zone and no raw field names (runs2-17)', () => {
+  it('says the sealed days are UTC beside the zone, not as a second zone inside the count', async () => {
+    const root = await timeline()
+    const facts = [...root.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
+    expect(facts).toContain('zoneEurope/Bucharest')
+    // MUTATION: put back `dayDocWords` in the sealed fact -> "14 of 15 UTC days" and this fails.
+    expect(facts).toContain('sealed14 of 15 days (UTC) · today so far')
+    cleanup()
+    const d = ledgerFixture()
+    d.scope = { kind: 'platform', tenants: ['eng', 'personal', 'verify'], excluded: [], tenants_complete: true }
+    d.coverage = { ...d.coverage, days: { total: 45, sealed: 42, live: 3, unread: 0 } }
+    const platform = await timeline(d, { view: 'scope=platform' }, { admin: true })
+    const pf = [...platform.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
+    expect(pf).toContain('sealed42 of 45 workspace-days (UTC) · today so far')
+  })
+
+  it('names the throughput lane’s basis "submit time" in the label and the legend, never created_at', async () => {
+    const root = await timeline()
+    const labels = [...drawing(root).querySelectorAll('.ol-lane-label')].map((t) => t.textContent ?? '')
+    // MUTATION: print `basis.submitted` raw in `laneLabels` -> "by created_at" and this fails.
+    expect(labels[3]).toContain('submitted (by submit time, the only lane on submission time) vs finished')
+    expect(drawing(root, 'narrow').querySelectorAll('.ol-lane-label')[3]!.textContent).toContain('by submit time')
+    // MUTATION: print `data.basis.submitted` raw in the legend -> fails.
+    const legend = root.querySelector('.ol-legend')!
+    expect(legend.textContent).toContain('by submit time')
+    expect(legend.querySelector('[title="created_at"]')).not.toBeNull()
+    expect(drawing(root).textContent).not.toContain('created_at')
+  })
+})
+
+describe('Outcomes draws its filters in the Lanes chip row (runs2-19)', () => {
+  it('draws Group by, Profile and Submitted by as the Lanes filter chips', async () => {
+    const root = await timeline()
+    const sheet = root.querySelector<HTMLElement>('#ol-sheet')!
+    const chip = (word: string) => [...sheet.querySelectorAll<HTMLElement>('.tl-flt')].find((c) => c.textContent?.startsWith(word))
+    // MUTATION: draw them in the old `.ol-field` / `.ol-pick` boxes -> fails.
+    expect(chip('Group by')?.tagName).toBe('LABEL')
+    expect(chip('Group by')!.querySelector('select')).not.toBeNull()
+    expect(chip('Submitted by')?.querySelector('input')).not.toBeNull()
+    const profile = chip('Profile')!
+    expect(profile.tagName).toBe('DETAILS')
+    expect(profile.classList.contains('tl-pick')).toBe(true)
+    expect(profile.querySelector('.tl-pop')).not.toBeNull()
+    expect(sheet.querySelector('.ol-pick, .ol-field')).toBeNull()
+  })
+
+  it('counts nothing on an unnarrowed Profile, as Lanes does, and names the picks once narrowed', async () => {
+    const root = await timeline()
+    await waitFor(() => expect(api.loadRunnerProfiles).toHaveBeenCalled())
+    const summary = () => root.querySelector('#ol-sheet details.tl-pick summary')!.textContent
+    // MUTATION: put back `all ${profileOptions.length}` -> "Profile all 5" and this fails.
+    await waitFor(() => expect(root.querySelectorAll('#ol-sheet details.tl-pick input[type="checkbox"]')).toHaveLength(5))
+    expect(summary()).toBe('Profile all')
+    cleanup()
+    const narrowed = await timeline(ledgerFixture(), { view: 'profile=claude-code' })
+    const pick = narrowed.querySelector('#ol-sheet details.tl-pick')!
+    expect(pick.querySelector('summary')!.textContent).toBe('Profile claude-code')
+    // A set filter wears the Lanes chip's `is-on`.
+    expect(pick.classList.contains('is-on')).toBe(true)
+  })
+
+  it("styles only Submitted by's text field, not the picker's checkboxes (review of runs2-19)", async () => {
+    const root = await timeline()
+    await waitFor(() => expect(root.querySelector('#ol-sheet details.tl-pick input[type="checkbox"]')).not.toBeNull())
+    const box = root.querySelector<HTMLElement>('#ol-sheet details.tl-pick input[type="checkbox"]')!
+    const field = root.querySelector<HTMLElement>('#ol-sheet .tl-flt input[type="search"]')!
+    // MUTATION: put back the bare `.ol-toolbar .tl-flt input` -> each checkbox
+    // is 16ch wide and borderless, far from its label, and this fails.
+    expect(painted(box, 'width', { width: 1440 })).toBeNull()
+    expect(painted(box, 'border', { width: 1440 })).toBeNull()
+    expect(painted(field, 'width', { width: 1440 })).toBe('16ch')
+  })
+
+  it("holds the popover's ceiling in the stylesheet and Group by at Lanes' width (review of runs2-19)", async () => {
+    const root = await timeline()
+    const pop = root.querySelector<HTMLElement>('#ol-sheet .tl-pop')!
+    // MUTATION: put back the inline `style={{ maxHeight }}` -> fails.
+    expect(pop.getAttribute('style')).toBeNull()
+    expect(painted(pop, 'max-height', { width: 1440 })).toBe('min(70vh, 480px)')
+    // MUTATION: drop the select's width -> it is as wide as 'month (span under
+    // 60 days)', about 100px wider than Lanes' Group by, and this fails.
+    const select = root.querySelector<HTMLElement>('#ol-sheet label.tl-flt select')!
+    expect(painted(select, 'width', { width: 1440 })).toBe('8.5em')
   })
 })
