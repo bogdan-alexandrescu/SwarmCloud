@@ -159,9 +159,11 @@ export function HoldersScreen() {
         const tenant = linkedTenant !== null && b.page.leases.some((l) => l.tenant_id === linkedTenant) ? linkedTenant : null
         // AND THE POOL FILTER (visual QA cap2-08, 2026-10-29): under
         // `?pool=provider:anthropic:tenant:u-bogdan` the head still said
-        // `every tenant`. The same rule as the tenant: it narrows the head only
-        // when a loaded lease holds that pool, as it narrows the table.
-        const pool = linkedPool !== null && b.page.leases.some((l) => Array.isArray(l.pools) && l.pools.includes(linkedPool)) ? linkedPool : null
+        // `every tenant`. Not the tenant's rule: `HolderTable` applies a pool
+        // filter whatever it matches (its empty state says no lease holds
+        // it), so the head follows the pool whenever the address names one,
+        // and a pool no loaded lease holds reads `0 unreleased leases`.
+        const pool = linkedPool
         if (tenant !== null || pool !== null) {
           // The filter's own rows and units. How many of ITS leases a cut
           // window left out is not served, so a partial read says `listed`.
@@ -461,6 +463,9 @@ function Drift({ board, coverage, rows }: { board: HoldersBoard; coverage: Lease
             {/* EACH COUNT SAYS WHAT IT COUNTS (visual QA cap2-09): the head
                 counts pools, the foot the leases they were compared over. */}
             {compared} of {rows.length} pools compared
+            {/* AND HOW MANY OF THEM DRIFT (review of QA2-FIX-15): the rows
+                drawn are the drift, `N pools agree` the rest. */}
+            {disagreeing.length > 0 && <> · {disagreeing.length} drift{disagreeing.length === 1 ? 's' : ''}</>}
             {coverage.kind === 'cut' && <> · {ofTotal(rowsRead, coverage)} leases</>}
             {coverage.kind === 'unreported' && <> · coverage unreported</>}
           </>
@@ -534,7 +539,9 @@ function Drift({ board, coverage, rows }: { board: HoldersBoard; coverage: Lease
               say="Every live lease was read, and the units they hold agree with every pool's own counter."
             />
           ))}{' '}
-        against {ofTotal(rowsRead, coverage)} lease{rowsRead === 1 && coverage.kind !== 'cut' ? '' : 's'} read
+        {/* A SENTENCE WITH ITS SUBJECT (review of QA2-FIX-15): it read
+            "against 4 leases read", a fragment, when no mark led it. */}
+        Compared against {ofTotal(rowsRead, coverage)} lease{rowsRead === 1 && coverage.kind !== 'cut' ? '' : 's'} read
         {coverage.kind === 'cut' && coverage.beyond !== null && ` · ${coverage.beyond} live not listed`}
       </div>
     </section>
@@ -689,7 +696,9 @@ function HolderTable({
               {pool !== null && inPool.length === 0 && !unknownPool && (
                 <tr role="row" className="hold-empty">
                   <td role="cell" colSpan={7}>
-                    No lease holds <span className="mono">{pool}</span> right now ·{' '}
+                    {/* NEVER AN ID WITHOUT ITS NAME (review of QA2-FIX-15): the
+                        pool by its name, the raw key its title, as the chip. */}
+                    No lease holds <b title={pool}>{poolLabel(pool)}</b> right now ·{' '}
                     {coverageMark(rows.length, coverage, 'This list') ?? (
                       <Mark kind="zero" say={`Every live lease was read, and none of them holds ${pool}.`} />
                     )}

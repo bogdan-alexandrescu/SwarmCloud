@@ -485,8 +485,10 @@ export function SetupStrip({ go }: { go: (to: string) => void }) {
           <li key={s.key} className={`cfg-step is-${s.state}${s.key === next ? ' is-next' : ''}`}>
             <StepMark state={s.state} />
             <a className="cfg-step-main" {...link(s.to)}>
+              {/* A FAILED STEP IS TITLED AS ITS TASK (review of QA2-FIX-15):
+                  "1. GitHub connected" in red over its failure read as done. */}
               <b>
-                {i + 1}. {s.label}
+                {i + 1}. {s.state === 'failed' || s.state === 'stale' ? stepAction(s) : s.label}
               </b>
               <small>{s.key === next ? `Next: ${s.line}` : s.line}</small>
               {/* Its own line, so the step's line stays word for word what the panel's badge names.
@@ -524,8 +526,9 @@ export function SetupMeter() {
     <div className="sk-meter cfg-meter" title={why}>
       <div className="cfg-meter-h">
         <span>Setup</span>
+        {/* THE UNIT, AS THE STRIP NAMES IT (review of QA2-FIX-15). */}
         <b>
-          {done} of {of}
+          {done} of {of} steps
         </b>
       </div>
       <div className="cfg-meter-bar" aria-hidden="true">

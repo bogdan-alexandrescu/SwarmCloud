@@ -19,6 +19,17 @@
 // second reads the old counts. Draw `{pool}` in the chip again, or drop the
 // pool from the head -- the third finds the raw id or `every tenant`. Put
 // "over N rows" back in the drift foot -- the fourth finds it.
+//
+// REVIEW FINDINGS (the same lane, after review): the head followed the pool
+// only when a loaded lease held it, so the fixture's `?pool=` (no lease holds
+// it) still read `every tenant`; the table's empty state drew the raw id; the
+// drift foot was a fragment and its head did not say how many drift; the
+// Config meter had no unit; a failed step 1 was titled "GitHub connected".
+// MUTATION: put back the `b.page.leases.some(...)` test on the head's pool --
+// the empty-pool case finds `every tenant`. Draw `{pool}` in the empty row --
+// it finds the raw id. Drop "Compared " or the drift count -- the drift case
+// fails. Drop " steps" from SetupMeter or draw `s.label` for a failed step --
+// the strip cases fail.
 
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -31,7 +42,7 @@ const api = vi.hoisted(() => ({ loadHolders: vi.fn(), loadTask: vi.fn() }))
 vi.mock('../api', async (importOriginal) => ({ ...(await importOriginal<typeof import('../api')>()), ...api }))
 
 const { HoldersScreen } = await import('../Holders')
-const { SetupContext, SetupProgress, SetupStrip, setupSteps } = await import('../ConfigSetup')
+const { SetupContext, SetupMeter, SetupProgress, SetupStrip, setupSteps } = await import('../ConfigSetup')
 
 const WAIT = { timeout: 5000 } as const
 const visible = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim()
@@ -87,6 +98,24 @@ describe('admin2-03, config2-04: the next step is named as a task, not by its do
     expect(visible(compact.querySelector('a'))).toBe('Fix GitHub access ›')
     expect(visible(compact.querySelector('small'))).toMatch(/^Next: Fix GitHub access \(Enable orgs failed\)/)
     expect(visible(compact)).not.toContain('GitHub connected')
+  })
+})
+
+describe('review: a failed step is titled as its task, and the meter names its unit', () => {
+  it('the desktop strip titles failed step 1 "Fix GitHub access"', () => {
+    const { container } = strip()
+    const first = container.querySelector('.cfg-steps li b')
+    expect(visible(first)).toBe('1. Fix GitHub access')
+    expect(visible(container.querySelector('.cfg-steps'))).not.toContain('GitHub connected')
+  })
+
+  it('the Config meter says "1 of 3 steps"', () => {
+    const { container } = render(
+      <SetupContext.Provider value={{ doc: { status: 'ok', data: doc(), fetchedAt: 0 }, personal: true }}>
+        <SetupMeter />
+      </SetupContext.Provider>,
+    )
+    expect(visible(container.querySelector('.cfg-meter-h b'))).toBe('1 of 3 steps')
   })
 })
 
@@ -174,6 +203,27 @@ describe('cap2-08: the pool filter names the pool, and the head says it is filte
     expect(text).toContain('1 unreleased lease · 1 units held · anthropic · u-bogdan only')
     expect(text).not.toContain('every tenant')
   })
+
+  it('a pool no loaded lease holds: the head reads 0 for that pool, never `every tenant`', async () => {
+    const other = 'provider:openai:tenant:u-bogdan'
+    window.history.replaceState(null, '', `/capacity/holders?pool=${encodeURIComponent(other)}`)
+    const b = board()
+    api.loadHolders.mockResolvedValue(ok({ ...b, pools: [...(b.pools ?? []), { name: other, active: 0 }] as unknown as Pool[] }))
+    api.loadTask.mockResolvedValue({ status: 'loading', since: Date.now() })
+    const { container } = render(<HoldersScreen />)
+    await screen.findByText('Every holder', undefined, WAIT)
+    const empty = await waitFor(() => {
+      const el = container.querySelector('.hold-all tbody tr.hold-empty')
+      expect(el).not.toBeNull()
+      return el!
+    }, WAIT)
+    const text = visible(container)
+    expect(text).toContain('0 unreleased leases · 0 units held · openai · u-bogdan only')
+    expect(text).not.toContain('every tenant')
+    expect(visible(empty)).toContain('No lease holds openai · u-bogdan right now')
+    expect(visible(empty), 'the empty row draws the raw pool id').not.toContain(other)
+    expect(empty.querySelector(`[title="${other}"]`)).not.toBeNull()
+  })
 })
 
 describe('cap2-09: the drift card says what each count counts', () => {
@@ -182,9 +232,9 @@ describe('cap2-09: the drift card says what each count counts', () => {
     api.loadTask.mockResolvedValue({ status: 'loading', since: Date.now() })
     render(<HoldersScreen />)
     const card = (await screen.findByRole('heading', { name: /Accounting drift/ }, WAIT)).closest('section')!
-    expect(visible(card.querySelector('.ctl-card-note'))).toBe('3 of 3 pools compared')
+    expect(visible(card.querySelector('.ctl-card-note'))).toBe('3 of 3 pools compared · 1 drifts')
     const foot = visible(card.querySelector('.ctl-card-foot'))
-    expect(foot).toContain('against 3 leases read')
+    expect(foot).toContain('Compared against 3 leases read')
     expect(foot).not.toMatch(/rows?\b/)
   })
 })
