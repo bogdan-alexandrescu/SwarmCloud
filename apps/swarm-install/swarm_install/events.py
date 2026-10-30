@@ -102,7 +102,13 @@ def _human_line(event: dict[str, Any]) -> str:
     for key in ("state", "detail", "message", "explain", "plan"):
         if event.get(key):
             parts.append(f"-- {event[key]}")
-    return " ".join(parts)
+    line = " ".join(parts)
+    if kind == "step_plan":
+        # A human step's instructions (what to type on the page, which path
+        # to take) live in its plan's actions; the person reads them here.
+        for action in event.get("actions") or ():
+            line += "\n" + "\n".join(f"      {text}" for text in str(action).splitlines())
+    return line
 
 
 class Events:

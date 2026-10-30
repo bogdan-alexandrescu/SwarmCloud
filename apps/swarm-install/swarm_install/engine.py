@@ -8,9 +8,11 @@
 3. Recorded done but the check now fails: that is **drift**; it is reported,
    with the step that repairs it (this one), and repaired.
 4. Before anything is applied, every manifest entry the step's entries
-   `depends_on` must already be met. If one is not, the stage refuses and
-   names the entry and the step that satisfies it (lesson 8: infra applied
-   before bootstrap fails on a missing custom role).
+   `depends_on` must already be met: a step that lists it in `satisfies` is
+   done, or the step its entry names (`entry.step`, how the terraform passes
+   own what they make) is. If one is not, the stage refuses and names the
+   entry and the step that satisfies it (lesson 8: infra applied before
+   bootstrap fails on a missing custom role).
 5. `plan`, print it, renew the lease, `apply`; for a human step, open its
    page once (`steps.open_page`, before the first poll, never on every poll);
    for a human or wait step, poll the check with a countdown up to the step's bound (running the wait's
@@ -38,7 +40,7 @@ from . import exitcodes
 from .events import Events
 from .exitcodes import MET, UNKNOWN, ExitCode
 from .lease import Lease, LeaseHeld, LeaseLost, LeaseRefused
-from .manifest import Manifest
+from .manifest import Entry, Manifest
 from .record import InstallRecord, RecordConflict
 from .state import (
     STEP_DONE,
@@ -163,6 +165,9 @@ class Engine:
         self.dry_run = dry_run
         self.confirm = confirm
         self.met: set[str] = set()
+        # Step id -> whether this run found it met; a dependency whose manifest
+        # entry names its owning step (`entry.step`) is met once that step is.
+        self._step_met: dict[str, bool] = {}
         self._owner: dict[str, Step] = {}
         self._stage_of: dict[str, int] = {}
         pending: list[Step] = list(steps)
@@ -224,6 +229,24 @@ class Engine:
         except Exception as exc:  # a probe that cannot run is unknown, not fine
             return Observation(UNKNOWN, f"{type(exc).__name__}: {exc}")
 
+    def _mark(self, step: Step, met: bool) -> None:
+        self._step_met[step.id] = met
+        if met:
+            self.met.update(step.satisfies)
+
+    def _owning_step_done(self, entry: Entry | None) -> bool:
+        """Whether the step a manifest entry names (`entry.step`) is done: met
+        in this run, or, when this run has not looked at it, recorded done.
+
+        The terraform passes declare no `satisfies`; what they make (the
+        cluster, the service accounts, Firestore, the Scheduler jobs, the
+        platform keys) is owned through `entry.step` alone."""
+        if entry is None or not entry.step:
+            return False
+        if entry.step in self._step_met:
+            return self._step_met[entry.step]
+        return self.ctx is not None and self.ctx.state.done(entry.step)
+
     def _unmet_dependencies(self, step: Step) -> list[str]:
         if self.manifest is None:
             return []
@@ -233,19 +256,25 @@ class Engine:
         for entry_id in step.satisfies:
             entry = by_id.get(entry_id)
             for dep in entry.depends_on if entry is not None else ():
-                if dep not in own and dep not in self.met and dep not in needed:
-                    needed.append(dep)
+                if dep in own or dep in self.met or dep in needed:
+                    continue
+                if self._owning_step_done(by_id.get(dep)):
+                    continue
+                needed.append(dep)
         return needed
 
     def _refuse_for(self, step: Step, unmet: list[str]) -> _Stop:
+        by_id = self.manifest.by_id() if self.manifest is not None else {}
         named = []
         for dep in unmet:
             owner = self._owner.get(dep)
-            named.append(
-                f"{dep} (satisfied by step {owner.id}, stage {owner.stage})"
-                if owner is not None
-                else f"{dep} (no step in this release satisfies it)"
-            )
+            entry = by_id.get(dep)
+            if owner is not None:
+                named.append(f"{dep} (satisfied by step {owner.id}, stage {owner.stage})")
+            elif entry is not None and entry.step in self._stage_of:
+                named.append(f"{dep} (made by step {entry.step}, stage {self._stage_of[entry.step]})")
+            else:
+                named.append(f"{dep} (no step in this release satisfies it)")
         message = (
             f"stage {step.stage} refuses: step {step.id} needs {', '.join(named)}, "
             "which is not met. Run swarm install from the earlier stage."
@@ -259,7 +288,7 @@ class Engine:
             self._record(step, STEP_FAILED, plan=plan, detail=verified.detail)
             raise self._failed(step, f"verify is {verified.status}: {verified.detail}")
         self._record(step, STEP_DONE, plan=plan, outputs={**outputs, **dict(verified.outputs)})
-        self.met.update(step.satisfies)
+        self._mark(step, True)
         self.events.emit("step_done", step=step.id, stage=step.stage)
 
     def _failed(self, step: Step, why: str) -> _Stop:
@@ -281,7 +310,7 @@ class Engine:
             if self.ctx is not None and self.ctx.state.done(triggered.id):
                 if self._observe(triggered, triggered.check).status == MET:
                     done.add(triggered.id)
-                    self.met.update(triggered.satisfies)
+                    self._mark(triggered, True)
                     continue
             if not self._trigger_landed(triggered):
                 continue
@@ -304,11 +333,11 @@ class Engine:
         )
         if observed.status == MET:
             if was_done:
-                self.met.update(step.satisfies)
+                self._mark(step, True)
                 self.events.emit("step_skip", step=step.id, stage=step.stage, state=MET)
                 return
             if self.dry_run:
-                self.met.update(step.satisfies)
+                self._mark(step, True)
                 return
             self._verified(step, None, dict(observed.outputs))
             return
@@ -334,6 +363,7 @@ class Engine:
                     f"step {step.id}'s check could not run: {observed.detail}. "
                     "Nothing was applied; fix access, then run swarm install again.",
                 )
+        self._mark(step, False)
         unmet = self._unmet_dependencies(step)
         plan = self._plan(step)
         if self.dry_run:
@@ -355,7 +385,7 @@ class Engine:
                 except Exception as exc:
                     raise self._failed(step, f"apply raised {type(exc).__name__}: {exc}") from exc
                 if self._observe(step, step.check).status == MET:
-                    self.met.update(step.satisfies)
+                    self._mark(step, True)
             return
         if unmet:
             raise self._refuse_for(step, unmet)
@@ -429,6 +459,7 @@ class Engine:
         scope = None if stages is None else set(stages)
         self.unknown_in_dry_run = False
         self.met = set()
+        self._step_met = {}
         state = self.store.load()
         self.ctx = Context(
             project=self.store.project,
@@ -506,8 +537,7 @@ class Engine:
         self.events.emit(
             "step_check", step=step.id, stage=step.stage, state=observed.status, detail=observed.detail
         )
-        if observed.status == MET:
-            self.met.update(step.satisfies)
+        self._mark(step, observed.status == MET)
 
     def _end(self, outcome: str, step: str | None, message: str) -> Result:
         code = exitcodes.for_outcome(outcome)
