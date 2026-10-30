@@ -34,10 +34,14 @@
 # shellcheck disable=SC2034
 set -euo pipefail
 
-#: The repository acceptance clones by default: private, created by the owner
-#: on 2026-10-05, default branch main. sandbox-sync.sh keeps its
-#: tests/acceptance/fixtures/ equal to the released commit's.
-ACC_SANDBOX_REPOSITORY_URL="https://github.com/bogdan-alexandrescu/swarmcloud-sandbox.git"
+#: The repository acceptance clones by default: private, default branch main.
+#: sandbox-sync.sh keeps its tests/acceptance/fixtures/ equal to the released
+#: commit's. A company's own sandbox is the CI add-on's choice: `swarm addon
+#: enable ci` sets the repository variable SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL
+#: (DAYONE-ADDON-1), which the release workflow passes in. Unset, it is the
+#: live deployment's sandbox, created by the owner on 2026-10-05, because the
+#: swarm-verify job cannot be handed an environment variable (ACC_REF below).
+ACC_SANDBOX_REPOSITORY_URL="${SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL:-https://github.com/bogdan-alexandrescu/swarmcloud-sandbox.git}"
 
 #: The tenant every submission is made for, as `X-Swarm-Tenant`.
 ACC_TENANT="${SWARM_ACCEPTANCE_TENANT:-smoke}"
