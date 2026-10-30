@@ -181,6 +181,11 @@ def ready_state(**outputs: Any) -> InstallState:
                          ready_at=1.0)
     state.outputs.update({"installer": INSTALLER, "image_digests": {"swarm-egress": DIGEST,
                                                                     "swarm-typesafe-fwd": DIGEST}})
+    # What stage 0 records and every generated input now requires (ENGINE-INPUTS,
+    # #2783): without them tfvars raises LookupError naming preflight.
+    state.outputs.update({"github_org": "example-org", "org_domain": "example.com",
+                          "installer_cidr": "203.0.113.7/32",
+                          "desktop_client_id": "123456789012-" + "a1b2c3" + ".apps.googleusercontent.com"})
     state.outputs.update(outputs)
     return state
 
