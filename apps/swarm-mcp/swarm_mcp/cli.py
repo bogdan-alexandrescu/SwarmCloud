@@ -72,6 +72,7 @@ from .follow import (
 )
 from .invocation import help_command
 from .patches import (
+    PatchRefused,
     apply_patch,
     describe_task,
     download,
@@ -82,6 +83,7 @@ from .patches import (
     masked_words,
     object_size,
     patch_uri,
+    read_patch,
 )
 from .render import (
     PLAIN,
@@ -932,7 +934,16 @@ def cmd_apply(client: SwarmClient, args) -> int:
     if uri is None:
         print(f"nothing to apply: {explain_absence(task)}", file=sys.stderr)
         return EXIT_FAIL
-    result = apply_patch(download(client, uri), repo, task_id=args.task_id)
+    # Through swarm-api's artifact route with this CLI's API credential, never
+    # Cloud Storage with the developer's gcloud login (#2834). A patch the API
+    # masked or could not serve byte for byte is refused with the reason, and
+    # nothing is applied.
+    try:
+        patch = read_patch(client, task)
+    except PatchRefused as exc:
+        print(f"{args.task_id}: not applied: {exc}", file=sys.stderr)
+        return EXIT_FAIL
+    result = apply_patch(patch, repo, task_id=args.task_id)
     print(f"{args.task_id}: {result.detail}")
     for path in result.conflicted:
         print(f"  {path}")
