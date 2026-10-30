@@ -25,6 +25,9 @@ from typing import Any, Protocol
 from .state import InstallState, refuse_secrets
 
 COLLECTION = "swarm-install"
+#: The Firestore database terraform/infra creates (`firestore_database`);
+#: that variable refuses "(default)", so the record is never there (N1).
+DATABASE = "swarm"
 RECORD_SCHEMA_VERSION = 1
 
 ENGINE = "engine"
@@ -52,6 +55,11 @@ WRITERS: dict[str, tuple[str, frozenset[str]]] = {
                 # (decision 7) from a team's (DAYONE-SETUP-API-3).
                 "sizing",
                 "installer",
+                # The first team's group stage 8 created (`identity.groups`,
+                # `state.outputs["workspace_groups"]`), as `{"team": <email>}`:
+                # Admin › Setup's first-team step starts from it rather than
+                # asking (N20). None for a one-person install, which has none.
+                "workspace_groups",
             }
         ),
     ),
@@ -131,7 +139,7 @@ class DocumentStore(Protocol):
 class FirestoreDocuments:
     """`DocumentStore` on a real Firestore database."""
 
-    def __init__(self, project: str, *, database: str = "(default)", client: Any = None) -> None:
+    def __init__(self, project: str, *, database: str = DATABASE, client: Any = None) -> None:
         if client is None:
             from google.cloud import firestore  # lazy: no client at import time
 
@@ -165,6 +173,19 @@ class FirestoreDocuments:
 def _sizing(value: Any) -> dict[str, Any] | None:
     """`state.outputs["sizing"]`, copied whole; None until stage 0 wrote it."""
     return dict(value) if isinstance(value, Mapping) else None
+
+
+def _workspace_groups(value: Any) -> dict[str, str] | None:
+    """The first team's group from `state.outputs["workspace_groups"]`; None
+    before stage 8 recorded it, or with no team group (one person)."""
+    team = str(value.get("team") or "") if isinstance(value, Mapping) else ""
+    return {"team": team} if team else None
+
+
+def open_record(project: str, env: str) -> InstallRecord:
+    """The install record of `env` in `project`'s swarm database, the one
+    place a verb builds it (no Firestore client before it is called)."""
+    return InstallRecord(env, FirestoreDocuments(project))
 
 
 def stages_of(state: InstallState, stage_of_step: Mapping[str, int]) -> list[dict[str, Any] | None]:
@@ -206,6 +227,7 @@ class InstallRecord:
             "ready_at": state.ready_at,
             "sizing": _sizing(state.outputs.get("sizing")),
             "installer": str(state.outputs.get("installer") or "") or None,
+            "workspace_groups": _workspace_groups(state.outputs.get("workspace_groups")),
         }
         if verify is not None:
             unknown = set(verify) - VERIFY_FIELDS

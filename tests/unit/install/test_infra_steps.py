@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from swarm_install import record as install_record
 from swarm_install import tfvars
 from swarm_install.engine import Engine
 from swarm_install.manifest import load as load_manifest
@@ -17,6 +18,7 @@ from swarm_install.steps import bootstrap, discover, infra
 from swarm_install.steps.bootstrap import Deps, applied_key, generate, inputs_digest
 from swarm_install.steps.infra import ClosingPassStep, IdentityPassStep
 
+from .test_record_writers import FakeDocuments
 from .test_terraform_runner import FakeCtx
 
 
@@ -215,9 +217,11 @@ class FakeTf:
         self.runs.append((args, impersonate))
 
 
-def _pass_1(monkeypatch: pytest.MonkeyPatch, gcp: Any, tf: FakeTf) -> list[str]:
+def _pass_1(monkeypatch: pytest.MonkeyPatch, gcp: Any, tf: FakeTf, ctx: FakeCtx | None = None) -> list[str]:
     """Pass 1 applied with `tf` as its runner: the passes apply_pass ran."""
     ran: list[str] = []
+    monkeypatch.setattr(install_record, "open_record",
+                        lambda project, env: install_record.InstallRecord(env=env, documents=FakeDocuments()))
 
     def apply_pass(ctx: Any, deps: Deps, pass_name: str, *, targets: Any = (), before_plan: Any = None) -> dict:
         assert before_plan is not None, "pass 1 adopts the reserved address before it plans"
@@ -227,7 +231,7 @@ def _pass_1(monkeypatch: pytest.MonkeyPatch, gcp: Any, tf: FakeTf) -> list[str]:
 
     monkeypatch.setattr(bootstrap, "apply_pass", apply_pass)
     step = infra.InfraPass1Step(Deps(gcp=lambda: gcp))
-    ctx = FakeCtx()
+    ctx = ctx or FakeCtx()
     step.apply(ctx, step.plan(ctx))
     return ran
 
@@ -257,6 +261,15 @@ def test_pass_1_skips_the_import_when_state_holds_the_address(monkeypatch: pytes
     absent = FakeTf([])
     assert _pass_1(monkeypatch, AddressGcp(set()), absent) == ["infra-1"]
     assert absent.runs == [], "nothing reserved: Terraform creates it"
+
+
+def test_pass_1_attaches_the_record_after_its_apply(monkeypatch: pytest.MonkeyPatch) -> None:
+    """N1: Firestore exists once pass 1 applied, so the step attaches the
+    install record there and the rest of this first run mirrors to it."""
+    ctx = FakeCtx()
+    assert _pass_1(monkeypatch, AddressGcp(set()), FakeTf([]), ctx) == ["infra-1"]
+    assert isinstance(ctx.record, install_record.InstallRecord)
+    assert ctx.record.env == ctx.environment
 
 
 def test_no_import_block_under_terraform_infra() -> None:
