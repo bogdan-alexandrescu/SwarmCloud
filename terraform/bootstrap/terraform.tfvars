@@ -274,3 +274,9 @@ enable_mcp_credentials = true
 # iamPolicies:lintPolicy first; the plan is 2 adds / 0 changes / 0 destroys:
 # the role (swarmSecretStatusViewer) and its conditioned member for swarm-api.
 enable_platform_secret_status = true
+
+# Defaults emptied by DAYONE-TF-1 (a default named this project), kept here so
+# this deployment's bootstrap plan is unchanged: Cloud Build's source-staging
+# bucket, and the two IAP backends terraform/infra created.
+deployer_storage_buckets_exact = ["saga-agents-staging_cloudbuild"]
+frontend_iap_backends          = ["swarm-ui-backend", "swarm-ui-ui-backend"]

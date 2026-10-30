@@ -294,8 +294,9 @@ def test_the_cluster_ip_is_terraforms_one_value():
 
 
 def test_the_tailnet_name_is_terraforms_egress_target():
-    tf = TAILSCALE_TF.read_text()
-    assert f'default     = "{DECISION_API_TAILNET_NAME}"' in tf
+    # No default since DAYONE-TF-1: dev.tfvars names the deployment's tailnet.
+    tfvars = (TAILSCALE_TF.parents[1] / "environments" / "dev" / "dev.tfvars").read_text()
+    assert f'tailscale_egress_target = "{DECISION_API_TAILNET_NAME}"' in tfvars
 
 
 def test_terraforms_url_is_the_origin_built_from_the_egress_target():

@@ -262,9 +262,10 @@ run "iap_membership_is_bootstrap_owned_and_the_deployer_has_no_iap_role" {
   }
 
   variables {
-    enable_github_wif    = true
-    github_repository    = "saga/agent-swarm-infra"
-    frontend_iap_members = ["domain:example.com", "serviceAccount:verify@example.iam.gserviceaccount.com"]
+    frontend_iap_backends = ["swarm-ui-backend", "swarm-ui-ui-backend"]
+    enable_github_wif     = true
+    github_repository     = "saga/agent-swarm-infra"
+    frontend_iap_members  = ["domain:example.com", "serviceAccount:verify@example.iam.gserviceaccount.com"]
   }
 
   assert {

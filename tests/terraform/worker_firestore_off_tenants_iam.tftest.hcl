@@ -229,11 +229,6 @@ run "eng_listed_after_its_state_switch_plans" {
     worker_firestore_off_tenants_iam = ["eng"]
   }
 
-  # swarm_api_url is empty under the mock provider, as in
-  # worker_firestore_switches.tftest.hcl. Nothing else may fail: the
-  # validations below are the refusals, and this run is their control.
-  expect_failures = [check.child_tasks_have_an_address]
-
   assert {
     # MUTATION: render the IAM list onto swarm-api's WORKER_FIRESTORE_OFF_TENANTS
     # and this is red: the two lists are distinct, and a Terraform tenant
@@ -260,7 +255,7 @@ run "eng_listed_before_its_state_switch_is_refused" {
   # worker_firestore_off_tenants_iam and this plans: eng's binding is destroyed
   # while the scheduler still dispatches eng onto direct Firestore, and every
   # eng attempt fails PermissionDenied on its first read.
-  expect_failures = [var.worker_firestore_off_tenants_iam, check.child_tasks_have_an_address]
+  expect_failures = [var.worker_firestore_off_tenants_iam]
 }
 
 run "a_star_entry_is_refused" {
@@ -283,5 +278,5 @@ run "a_star_entry_is_refused" {
   # last refusal) and, without that, plans as "nobody" today and as whatever a
   # later reader decides `*` means tomorrow. Every tenant is cut over by name.
   # Dropping the tenant-id validation alone stays green, by design.
-  expect_failures = [var.worker_firestore_off_tenants_iam, check.child_tasks_have_an_address]
+  expect_failures = [var.worker_firestore_off_tenants_iam]
 }

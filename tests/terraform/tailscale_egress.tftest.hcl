@@ -59,6 +59,10 @@ variables {
   project_id  = "saga-agents-staging"
   environment = "dev"
 
+  # No default since DAYONE-TF-1: the tailnet is the deployment's, so a test
+  # that renders the egress names it.
+  tailscale_egress_target = "decision-api-staging.taile0bda9.ts.net"
+
   spec_signature_mode      = "legacy"
   spec_legacy_cutover      = "2026-10-01T12:00:00Z"
   spec_signing_key_version = 1
@@ -201,6 +205,24 @@ run "the_target_is_one_magicdns_name" {
   variables {
     enable_tailscale_egress = true
     tailscale_egress_target = "decision-api-staging.taile0bda9.ts.net 443 --anything"
+  }
+
+  expect_failures = [var.tailscale_egress_target]
+}
+
+# MUTATION: give tailscale_egress_target a default again, or drop its second
+# validation, and an install that turns the egress on without naming a tailnet
+# renders a forwarder with no target instead of being refused at plan.
+run "the_egress_needs_a_target" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    enable_tailscale_egress = true
+    tailscale_egress_target = null
   }
 
   expect_failures = [var.tailscale_egress_target]

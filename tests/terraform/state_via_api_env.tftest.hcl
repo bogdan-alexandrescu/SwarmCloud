@@ -57,10 +57,6 @@ run "the_variable_switches_the_listed_tenants_on_the_scheduler_only" {
     state_via_api_tenants = ["eng", "u-alice"]
   }
 
-  # swarm_api_url is empty under the mock provider, as in
-  # child_tasks_infra.tftest.hcl.
-  expect_failures = [check.child_tasks_have_an_address]
-
   assert {
     # MUTATION: render the list with any separator but "," and
     # scheduler.settings reads one tenant named "eng u-alice".
@@ -105,5 +101,5 @@ run "an_entry_that_is_not_a_tenant_id_is_refused_at_plan" {
     state_via_api_tenants = ["*"]
   }
 
-  expect_failures = [var.state_via_api_tenants, check.child_tasks_have_an_address]
+  expect_failures = [var.state_via_api_tenants]
 }

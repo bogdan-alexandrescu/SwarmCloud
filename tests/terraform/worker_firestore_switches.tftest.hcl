@@ -187,10 +187,6 @@ run "every_tenant_switched_lets_the_root_take_the_grant_away" {
     worker_firestore_access      = false
   }
 
-  # swarm_api_url is empty under the mock provider, as in
-  # state_via_api_env.tftest.hcl.
-  expect_failures = [check.child_tasks_have_an_address]
-
   assert {
     # MUTATION: render the list with any separator but "," and
     # swarm_api.settings reads one tenant named "u-bogdan eng".
@@ -226,7 +222,7 @@ run "a_job_made_tenant_cut_off_before_its_state_switch_is_refused" {
   # this plans, and u-bogdan's next workspace run withholds the role from a
   # worker still dispatched onto the direct path: PermissionDenied on its
   # first read.
-  expect_failures = [var.worker_firestore_off_tenants, check.child_tasks_have_an_address]
+  expect_failures = [var.worker_firestore_off_tenants]
 }
 
 run "an_off_list_entry_that_is_not_a_tenant_id_is_refused" {
@@ -245,7 +241,7 @@ run "an_off_list_entry_that_is_not_a_tenant_id_is_refused" {
   # MUTATION: drop the tenant-id validation and `*` plans: swarm-api reads it
   # as every tenant, the state switch cannot list `*`, and every job-made
   # workspace's next run withholds a role its unswitched worker still needs.
-  expect_failures = [var.worker_firestore_off_tenants, check.child_tasks_have_an_address]
+  expect_failures = [var.worker_firestore_off_tenants]
 }
 
 run "the_grant_cannot_go_while_a_terraform_tenant_is_unswitched" {
@@ -264,5 +260,5 @@ run "the_grant_cannot_go_while_a_terraform_tenant_is_unswitched" {
   # MUTATION: drop the validation on worker_firestore_access and this plans:
   # smoke's worker, still dispatched onto the direct path, loses the role and
   # every acceptance task fails on its first read.
-  expect_failures = [var.worker_firestore_access, check.child_tasks_have_an_address]
+  expect_failures = [var.worker_firestore_access]
 }

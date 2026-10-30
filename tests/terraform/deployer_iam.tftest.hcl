@@ -1153,8 +1153,9 @@ run "the_build_can_upload_its_source_and_list_its_bucket" {
   }
 
   variables {
-    enable_github_wif = true
-    github_repository = "saga/agent-swarm-infra"
+    deployer_storage_buckets_exact = ["saga-agents-staging_cloudbuild"]
+    enable_github_wif              = true
+    github_repository              = "saga/agent-swarm-infra"
   }
 
   # The source tarball is an OBJECT in the Cloud Build bucket. An equality test
