@@ -1086,6 +1086,10 @@ class Worker:
         # for the default branch; the no-change steps walked past). None
         # until resolved.
         self._builds_on_resolved: tuple[str, list[str]] | None = None
+        # The text of each question the owner answered on the step this one
+        # builds on (#2836), staged into the prompt and dropped from this
+        # step's own questions.json if its agent asks one again.
+        self._owner_answered: list[str] = []
         # The verdict this step's gate read (#264), as `result_summary` and the
         # pull request report it; None for a step with no gate.
         self._verdict: dict[str, Any] | None = None
@@ -1802,6 +1806,17 @@ class Worker:
             )
             self._sleep_with_heartbeat(decision.wait_seconds)
             ws.quota_path.unlink(missing_ok=True)
+
+        # ---- STEP 9a': a question the owner already answered (#2836) -----
+        # Dropped from questions.json before anything parks on it or uploads
+        # it, so the owner is never asked twice.
+        if self._owner_answered:
+            dropped = owner_questions_mod.drop_answered(ws.artifacts, self._owner_answered)
+            if dropped:
+                self.log.info(
+                    "questions already answered on the step this one builds on; dropped",
+                    dropped=len(dropped),
+                )
 
         # ---- STEP 9b: the children's await (child tasks, §3.3) ----------
         awaited = self._await_children(result)
@@ -3505,6 +3520,13 @@ class Worker:
             store=self.store,
             tenant_id=cfg.tenant_id,
         ))
+        # A step that builds on another (#2836): the owner's answers to the
+        # questions that step asked, in `work/owner-answers.json`, and a
+        # prompt section naming the decisions already made, so its agent never
+        # asks the owner one again. Nothing for a step without `builds_on`.
+        answered = self._builds_on_owner_answers(task)
+        inputs_mod.stage_owner_answers(ws.work, payload, answered)
+        self._owner_answered = [row["question"] for row in answered]
         # A review of a patch that touches a UI path (#2184): its MERGE counts
         # only from a rendered review, and its prompt says so before it writes
         # a verdict. `_upload_outputs` holds the verdict to it.
@@ -6692,8 +6714,9 @@ class Worker:
             | ws.control_file_names()
             # `issue.md`, when the task asks for an issue (#265).
             | issue_mod.reserved_names(task.get("input"), self.cfg.profile)
-            # A review's owner questions, written after staging (#2070).
-            | {owner_questions_mod.NAME},
+            # A review's owner questions, written after staging (#2070), and a
+            # builds_on step's owner answers (#2836).
+            | {owner_questions_mod.NAME, inputs_mod.OWNER_ANSWERS_NAME},
         )
         self._staged_inputs = staged
         self.log.info(
@@ -6995,6 +7018,52 @@ class Worker:
             input_from=input_from, branch_from=branch_from, integrates=integrates, left=left,
             builds_on=builds_on, read_only=read_only,
         )
+
+    def _builds_on_owner_answers(self, task: dict[str, Any]) -> list[dict[str, Any]]:
+        """The owner's answers to the questions of the steps this one builds on (#2836).
+
+        One `{task_id, step_id, question_index, question, answer}` per
+        ANSWERED question of the signed `builds_on` step, then of the step
+        that one builds on, and so on: a fix of a fix is bound by the first
+        step's decisions too. Read through the tenant-checked upstream read
+        and `owner_questions.questions_of`, as a review's owner questions
+        are; a step of another workflow ends the walk, which is bounded by
+        the workflow's step count and never revisits a task. An upstream
+        that cannot be read gives no rows from there on, with a line saying
+        why: the answers inform the agent, and the clone has already met
+        that upstream's refusal if it matters.
+        """
+        current = self._dispatch_builds_on()
+        workflow_id = task.get("workflow_id")
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        while current and current not in seen and len(seen) < owner_questions_mod.MAX_ANCESTORS:
+            seen.add(current)
+            try:
+                document = inputs_mod.fetch_upstream_task(
+                    self.db, upstream_task_id=current, tenant_id=self.cfg.tenant_id,
+                    call_options=self.control.call_options(),
+                )
+                if document.get("workflow_id") != workflow_id:
+                    break
+                asked = owner_questions_mod.questions_of(
+                    current, document, store=self.store, tenant_id=self.cfg.tenant_id)
+            except InputUnavailable as exc:
+                self.log.warning(
+                    "the owner answers of a step this one builds on could not be read",
+                    upstream=current, reason=str(exc),
+                )
+                break
+            rows += [
+                {key: row[key] for key in
+                 ("task_id", "step_id", "question_index", "question", "answer")}
+                for row in asked if row["answer"] is not None
+            ]
+            metadata = document.get("metadata")
+            block = metadata.get("dispatch") if isinstance(metadata, dict) else None
+            raw = block.get("builds_on") if isinstance(block, dict) else None
+            current = raw.strip() if isinstance(raw, str) and _TASK_ID_RE.match(raw.strip()) else ""
+        return rows
 
     def _builds_on_base(self) -> str:
         """The task whose pushed branch this step starts from, or "" for the
