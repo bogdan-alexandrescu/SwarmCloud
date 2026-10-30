@@ -59,7 +59,7 @@ from .continuation import (
     resolve_merge_pr,
     with_merge_pr_label,
 )
-from .access import MODES, grant_id_for, org_id_for, via_token
+from .access import MODES, grant_id_for, org_id_for, person_grant_from_workspace, via_token
 from .extrarepos import Limits, Resolver, refuse_unless_enabled, requested_any, runs_an_agent
 from . import refusals
 from .errors import ApiError, BrowserToolUnavailable, Forbidden, NotFound, ValidationFailed
@@ -525,6 +525,14 @@ class SubmissionService:
         checks it: another person's or another tenant's grant is no grant
         (invariant 9). A mode that is neither `read` nor `write` is no grant
         either, so a damaged document refuses rather than writes.
+
+        With no grant of their own, the workspace's grant answers
+        (`access.workspace_grant_mode`): Admin › Setup's team-level grant over
+        the repositories the GitHub App installation covers (decision 3), held
+        by everyone the request was resolved into `tenant_id` as, so a
+        teammate's first task is not refused (DAYONE-SETUP-API-6, N11). It is
+        then recorded as the person's own grant, which the worker re-reads
+        before each clone and push.
         """
         if not email:
             return None
@@ -532,9 +540,11 @@ class SubmissionService:
         snap = self._store.db.collection(GRANTS).document(
             grant_id_for(tenant_id, email, repo_id)).get()
         doc = snap.to_dict() if snap.exists else None
+        if not doc:
+            return person_grant_from_workspace(self._store.db, tenant_id, email, repo_id,
+                                               at=self._now())
         if (
-            not doc
-            or doc.get("tenant_id") != tenant_id
+            doc.get("tenant_id") != tenant_id
             or doc.get("user") != caller.key
             or doc.get("repo_id") != repo_id
         ):

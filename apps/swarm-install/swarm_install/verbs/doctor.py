@@ -122,10 +122,11 @@ class _InstallApi:
 
         ctx = SimpleNamespace(project=self._state.project, state=self._state, outputs=self._state.outputs)
         client = api_client.for_install(ctx)
-        # swarm-api answers `{groups: [...], met}`; read it whole rather than
-        # through `GroupsProbe`, which keys on `results`.
-        answer = client._call("POST", api_client.GROUPS_PROBE_ROUTE, {"groups": []})
-        return list(answer.get("groups") or answer.get("results") or ())
+        # No pairs: swarm-api probes every registered group and answers
+        # `{mode, results}`, the shape stage 8 reads too (finding N6).
+        answer = client.groups_probe(())
+        return [{"group": r.group, "state": r.state, "reason": r.reason}
+                for r in answer.results]
 
 
 def make_deps(state: InstallState) -> doctor.Deps:

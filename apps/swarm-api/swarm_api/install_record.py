@@ -39,9 +39,11 @@ SWARM_API_DOCUMENTS: dict[str, frozenset[str]] = {
         {"owner", "workspace", "progress", "grant", "smoke"}),
     #: The console's two verification runs (DAYONE-SETUP-API-2): `verify_runs`
     #: is `{"console_task": <task id>, "console_workflow": <workflow id>}`,
-    #: which the engine copies into its state's `outputs["verify_runs"]`.
+    #: which the engine copies into its state's `outputs["verify_runs"]`;
+    #: `retries` is `{"console_task": n, "console_workflow": n}`, each key's
+    #: fresh starts (DAYONE-SETUP-API-6).
     "swarm-install/{env}/console/verify_runs": frozenset(
-        {"verify_runs", "repository", "started_at", "by"}),
+        {"verify_runs", "retries", "repository", "started_at", "by"}),
     "swarm-install/{env}/health/latest": frozenset({"run_at", "checks", "findings"}),
 }
 ACCOUNT_FIELDS = frozenset({"owner", "link_hash", "link_expires", "signed_in_at"})

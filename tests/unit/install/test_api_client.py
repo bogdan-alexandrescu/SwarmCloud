@@ -134,3 +134,24 @@ def test_for_install_needs_the_recorded_audience() -> None:
     ctx.outputs["api_iap_audience"] = AUDIENCE
     client = api_client.for_install(ctx, minter=IamCredentials(FakeAdcSession()), http=FakeHttp())
     assert client.base_url == "https://swarm.example.com" and client.audience == AUDIENCE
+
+
+def test_the_doctor_reads_the_probe_through_results(monkeypatch) -> None:
+    """Finding N6: the doctor asks with no pairs and reads swarm-api's
+    `{mode, results}` answer through `ApiClient.groups_probe`, the shape
+    stage 8 reads, not a `groups` key of its own."""
+    from types import SimpleNamespace
+
+    from swarm_install.verbs import doctor as doctor_verb
+
+    http = FakeHttp({"mode": "admin_role", "results": [
+        {"group": "eng@example.com", "state": "met"},
+        {"group": "ops@example.com", "state": "unmet", "reason": "permission_denied"}]})
+    monkeypatch.setattr(api_client, "for_install",
+                        lambda ctx: _client(FakeAdcSession(), http))
+    state = SimpleNamespace(project=PROJECT, hostname="swarm.example.com", outputs={})
+    found = doctor_verb._InstallApi(state).groups_probe()
+    assert found == [{"group": "eng@example.com", "state": "met", "reason": ""},
+                     {"group": "ops@example.com", "state": "unmet", "reason": "permission_denied"}]
+    [(_, _, _, body)] = http.calls
+    assert body == {"groups": []}
