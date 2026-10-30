@@ -2,11 +2,14 @@
 // frame B12b).
 //
 // WHAT EACH CASE HOLDS:
-//   * a finding shows what changed, the repair command
-//     `swarm install --repair <check>` and the console path where one exists;
+//   * a finding shows what changed, the doctor's repair command (or
+//     `swarm install`, which re-checks every step and repairs what drifted,
+//     when it names none; there is no `--repair` flag) and the console path
+//     where one exists;
 //   * the check list shows each check's last result, and "not checked" is
 //     drawn as such, never as passing;
-//   * no doctor run yet is said, not drawn as healthy.
+//   * no doctor run says the hourly doctor is off, not drawn as healthy, and
+//     names no `swarm doctor` verb (the CLI has none).
 //
 // Fixtures only; no network.
 
@@ -34,6 +37,7 @@ function health(over: Json = {}): Json {
           title: 'The Desktop OAuth client is no longer on IAP’s programmatic allowlist',
           cause: 'Every new sc login answers 401 with code 900.',
           changed: 'removed 3 h ago by ravi@example.com (Cloud Audit Logs)',
+          repair: 'gcloud iap settings set iap-settings.yaml',
           console_path: 'Security › Identity-Aware Proxy › Settings › Programmatic clients',
         },
       ],
@@ -59,8 +63,8 @@ describe('Admin › Setup › Health', () => {
   it('a finding shows the repair command and the console path', async () => {
     await mount(health())
     const finding = await screen.findByRole('region', { name: /no longer on IAP/ })
-    // MUTATION: drop the repair command, or build it from anything but the finding's check.
-    expect(visible(finding.querySelector('figure.c-code pre'))).toContain('swarm install --repair iap.programmatic_clients')
+    // MUTATION: drop the repair command, or draw anything but the finding's own.
+    expect(visible(finding.querySelector('figure.c-code pre'))).toContain('gcloud iap settings set iap-settings.yaml')
     // MUTATION: drop the console path.
     expect(visible(finding)).toContain('Security › Identity-Aware Proxy › Settings › Programmatic clients')
     // MUTATION: drop what changed (the audit-log entry).
@@ -70,7 +74,10 @@ describe('Admin › Setup › Health', () => {
   it('a finding with no console path says so instead of inventing one', async () => {
     await mount(health({ findings: [{ check: 'images.digests', title: 'Two services drifted off their digest' }] }))
     const finding = await screen.findByRole('region', { name: /drifted off their digest/ })
-    expect(visible(finding)).toContain('swarm install --repair images.digests')
+    // MUTATION: invent `swarm install --repair <check>`: swarm install has no such flag.
+    expect(visible(finding)).not.toContain('--repair')
+    expect(visible(finding.querySelector('figure.c-code pre'))).toMatch(/swarm install$/)
+    expect(visible(finding)).toContain('repairs what drifted')
     expect(visible(finding)).toContain('No console path')
   })
 
@@ -84,9 +91,13 @@ describe('Admin › Setup › Health', () => {
     expect(visible(document.body)).toContain('1 of 3 not checked')
   })
 
-  it('says no doctor run has been recorded yet, not that everything is healthy', async () => {
+  it('says the hourly doctor is off when no run is recorded, not that everything is healthy', async () => {
     await mount({ latest: null })
-    expect(await screen.findByText(/No doctor run has been recorded yet/)).toBeTruthy()
+    // MUTATION: promise an hourly doctor that is off by default (enable_scheduled_doctor).
+    expect(await screen.findByText(/The hourly doctor is off/)).toBeTruthy()
     expect(visible(document.body)).not.toMatch(/all (checks )?pass/i)
+    expect(visible(document.body)).not.toContain('runs every hour')
+    // MUTATION: name a `swarm doctor` verb the CLI does not have.
+    expect(visible(document.body)).not.toContain('swarm doctor')
   })
 })

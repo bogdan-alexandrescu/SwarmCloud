@@ -261,3 +261,185 @@ describe('GitHubAppCallback', () => {
     expect(calls).toHaveLength(0)
   })
 })
+
+// ADMIN › SETUP SAYS ONLY WHAT EXISTS (DAYONE-SETUP-UI-4; part of #2688).
+//
+// WHAT EACH CASE HOLDS:
+//   * the verify row lists the checks stage 14 runs (the end-to-end task and
+//     workflow, GKE, live browser, code intelligence), and nothing it does not
+//     (no smoke, no race, no "GKE proof");
+//   * "Run the console checks" posts SETUP-API-2's route and shows both runs'
+//     states, each linked to its page;
+//   * the team row shows its repository grant over the App installation's
+//     repositories;
+//   * the invite control opens the Google Admin members page and says
+//     "waiting for <email> to join" until the Groups API sees them;
+//   * a read-only Capacity card shows the sizing;
+//   * a one-person install replaces the first-team and invites steps with one line.
+
+const GRANTED = { state: 'granted', mode: 'write', account: 'example-org', selection: 'selected', repositories: ['example-org/app', 'example-org/lib'] }
+const MEMBERS_URL = 'https://admin.google.com/ac/groups/g0123/members'
+
+function teamWith(extra: Json): Json {
+  return { teams: [{ ...((state().teams as Json[])[0]), ...extra }] }
+}
+
+describe('Admin › Setup says only what exists', () => {
+  it('the verify row lists the checks verify runs, and none it does not', async () => {
+    await mountSteps(state({ finished: null }))
+    const text = visible(document.querySelector('[data-step="verify"]'))
+    // MUTATION: keep the old list (smoke, GKE proof, race).
+    expect(text).not.toMatch(/\brace\b/)
+    expect(text).not.toContain('GKE proof')
+    expect(text).not.toMatch(/\bsmoke\b/)
+    // MUTATION: drop any of the checks VERIFY-ENGINE runs.
+    expect(text).toContain('a task and a workflow')
+    expect(text).toContain('a task on GKE')
+    expect(text).toContain('a live-browser task')
+    expect(text).toContain('a code-intelligence read')
+  })
+
+  it('Run the console checks starts both runs and shows each one’s state, linked', async () => {
+    const calls = serve((m, url) => {
+      if (m === 'POST' && url === '/v1/admin/setup/verify-runs') {
+        return { status: 200, body: { verify_runs: { console_task: 'task_v1', console_workflow: 'wf_v1' }, repository: 'example-org/app', started: true } }
+      }
+      if (m === 'GET' && url.startsWith('/v1/tasks/task_v1')) return { status: 200, body: { task: { id: 'task_v1', tenant_id: 'engineering', state: 'RUNNING' } } }
+      if (m === 'GET' && url.startsWith('/v1/workflows/wf_v1')) return { status: 200, body: { workflow: { id: 'wf_v1', state: 'SUCCEEDED' }, tasks: [] } }
+      return null
+    })
+    await mountSteps(state({ finished: null, ...teamWith({ grant: GRANTED }) }))
+    const row = document.querySelector('[data-step="verify"]') as HTMLElement
+    // MUTATION: drop the button.
+    fireEvent.click(within(row).getByRole('button', { name: 'Run the console checks' }))
+    // MUTATION: post anything but SETUP-API-2's route.
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.url === '/v1/admin/setup/verify-runs')).toBe(true))
+    const task = await within(row).findByRole('link', { name: /task_v1/ })
+    const wf = await within(row).findByRole('link', { name: /wf_v1/ })
+    // MUTATION: link the runs anywhere but their own pages.
+    expect(task.getAttribute('href')).toContain('task_v1')
+    expect(wf.getAttribute('href')).toBe('/workflows/wf_v1')
+    // MUTATION: show the ids without the runs' states.
+    await waitFor(() => expect(visible(row)).toContain('running'))
+    await waitFor(() => expect(visible(row)).toContain('succeeded'))
+    expect(visible(row)).toContain('example-org/app')
+  })
+
+  it('reads runs already started from the status route, without a click', async () => {
+    serve((m, url) =>
+      m === 'GET' && url.startsWith('/v1/tasks/task_v2')
+        ? { status: 200, body: { task: { id: 'task_v2', tenant_id: 'engineering', state: 'FAILED' } } }
+        : m === 'GET' && url.startsWith('/v1/workflows/wf_v2')
+          ? { status: 200, body: { workflow: { id: 'wf_v2', state: 'RUNNING' }, tasks: [] } }
+          : null,
+    )
+    await mountSteps(state({ finished: null, verify_runs: { verify_runs: { console_task: 'task_v2', console_workflow: 'wf_v2' }, repository: 'example-org/app' } }))
+    const row = document.querySelector('[data-step="verify"]') as HTMLElement
+    // MUTATION: ignore the status route's `verify_runs`.
+    expect(await within(row).findByRole('link', { name: /task_v2/ })).toBeTruthy()
+    await waitFor(() => expect(visible(row)).toContain('failed'))
+    expect(within(row).queryByRole('button', { name: 'Run the console checks' })).toBeNull()
+  })
+
+  it('the team row shows its repository grant', async () => {
+    await mountSteps(state(teamWith({ grant: GRANTED })))
+    const fact = within(document.querySelector('[data-step="team"]') as HTMLElement).getByText('Repository grant').closest('li') as HTMLElement
+    // MUTATION: drop the grant, or show it as anything but done when granted.
+    expect(fact.className).toContain('is-done')
+    expect(visible(fact)).toContain('example-org/app')
+    expect(visible(fact)).toContain('example-org/lib')
+    cleanup()
+    await mountSteps(state(teamWith({ grant: { state: 'waiting_for_repositories', account: 'example-org' } })))
+    const waiting = within(document.querySelector('[data-step="team"]') as HTMLElement).getByText('Repository grant').closest('li') as HTMLElement
+    // MUTATION: draw a grant that is still waiting as done.
+    expect(waiting.className).toContain('is-in_progress')
+    expect(visible(waiting)).toContain('no repository')
+  })
+
+  it('the invite control opens the Google Admin members page and waits for them to join', async () => {
+    const opened: string[] = []
+    const open = vi.spyOn(window, 'open').mockImplementation((url) => {
+      opened.push(String(url))
+      return null
+    })
+    const calls = serve((m, url, body) =>
+      m === 'POST' && url === '/v1/admin/setup/teams/engineering/invites'
+        ? { status: 200, body: { team: 'engineering', email: (body as Json).email, group: 'engineering@example.com', add_members_url: MEMBERS_URL, member: false } }
+        : m === 'GET' && url === '/v1/admin/setup'
+          ? { status: 200, body: state() }
+          : null,
+    )
+    await mountSteps(state(teamWith({ members: [{ email: 'ravi@example.com', member: false }, { email: 'lea@example.com', member: true }] })))
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    // MUTATION: read an invite as joined before the Groups API says so.
+    expect(visible(row)).toContain('waiting for ravi@example.com to join')
+    expect(visible(row)).not.toContain('waiting for lea@example.com to join')
+    // MUTATION: promise a sign-in link nobody sends.
+    expect(visible(document.body)).not.toContain('sign-in link; nobody')
+    fireEvent.change(within(row).getByLabelText('Invite someone'), { target: { value: 'kim@example.com' } })
+    fireEvent.click(within(row).getByRole('button', { name: 'Invite' }))
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.url === '/v1/admin/setup/teams/engineering/invites')).toBe(true))
+    expect(calls.find((c) => c.url === '/v1/admin/setup/teams/engineering/invites')?.body).toEqual({ email: 'kim@example.com' })
+    // MUTATION: leave the person to find the page.
+    await waitFor(() => expect(opened).toEqual([MEMBERS_URL]))
+    const link = await within(row).findByRole('link', { name: /Google Admin/ })
+    expect(link.getAttribute('href')).toBe(MEMBERS_URL)
+    expect(visible(row)).toContain('waiting for kim@example.com to join')
+    open.mockRestore()
+  })
+
+  it('the team form says what an invite does', async () => {
+    await mountSteps(state({ teams: [], accounts: {}, finished: null }))
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    // MUTATION: keep "each gets a sign-in link".
+    expect(visible(row)).not.toContain('sign-in link')
+    expect(visible(row)).toContain('Google Admin')
+  })
+
+  it('a read-only Capacity card shows the sizing', async () => {
+    const sizing = {
+      mode: 'team',
+      members: 12,
+      pool_limits: { global: 40, default_tenant: 15, provider_tenant: 10, resource_classes: {}, runner_profiles: {}, backends: {} },
+      service_max_instances: { 'swarm-api': 4, 'swarm-scheduler': 2, 'swarm-quota-broker': 1, 'swarm-reconciler': 1 },
+      pool_accounts: 3,
+      budget_usd: 900,
+    }
+    await mountSteps(state({ sizing }))
+    const card = screen.getByRole('region', { name: 'Capacity' })
+    const text = visible(card)
+    // MUTATION: drop any of the sizing's figures.
+    expect(text).toContain('A team of 12 people')
+    expect(text).toContain('40 agents at once')
+    expect(text).toContain('15 agents at once per workspace')
+    expect(text).toContain('3 Claude subscription accounts')
+    expect(text).toContain('$900 a month')
+    // MUTATION: make the card editable.
+    expect(card.querySelector('input, button, select, textarea')).toBeNull()
+    cleanup()
+    await mountSteps(state())
+    expect(visible(screen.getByRole('region', { name: 'Capacity' }))).toContain('not recorded')
+  })
+
+  it('a one-person install replaces the first-team and invites steps with one line', async () => {
+    const sizing = { mode: 'individual', members: 1, pool_limits: { global: 4, default_tenant: 4 }, service_max_instances: {}, pool_accounts: 1, budget_usd: 150 }
+    await mountSteps(state({ sizing, teams: [], accounts: {}, finished: null }))
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    // MUTATION: draw the team form for one person.
+    expect(visible(row)).toContain('One-person install: your personal workspace is ready.')
+    expect(row.className).toContain('is-done')
+    expect(within(row).queryByRole('button', { name: 'Create the team' })).toBeNull()
+    expect(within(document.body).queryByLabelText('Invite someone')).toBeNull()
+    // MUTATION: keep the accounts gated on a team one person never makes.
+    const accounts = document.querySelector('[data-step="accounts"]') as HTMLElement
+    expect(visible(accounts)).not.toContain('after the first team')
+    expect(within(accounts).getByRole('button', { name: 'Send a sign-in link' })).toBeTruthy()
+    expect(visible(screen.getByRole('region', { name: 'Capacity' }))).toContain('One person')
+  })
+
+  it('Send to your team names no command that does not exist', async () => {
+    await mountSteps(state({}, { verify: { ...VERIFYING, done: 8, result: 'passed' } }))
+    // MUTATION: keep "swarm doctor": the CLI has no such verb.
+    expect(visible(screen.getByRole('region', { name: 'Send to your team' }))).not.toContain('swarm doctor')
+  })
+})
