@@ -14,7 +14,7 @@ import { agentList, agentListPath, agentListQuery, parseAgentList, useAgentName,
 import { AccountsScreen } from './Accounts'
 import { ActivityScreen, TenantsScreen } from './Activity'
 import { AdminSettingsScreen } from './AdminSettings'
-import { AdminSetupCallbackScreen, AdminSetupHealthScreen, AdminSetupScreen } from './AdminSetup'
+import { AdminSetupHealthScreen, AdminSetupScreen } from './AdminSetup'
 import { AgentsScreen } from './Agents'
 import { TimelineLanesScreen } from './TimelineLanes'
 import { AgentSplit } from './AgentSplit'
@@ -2377,7 +2377,7 @@ function SectionBody({
 
     // DAYONE-SETUP-UI-3: Setup, its GitHub App callback page, and Health.
     case 'admin/setup':
-      return page === SETUP_CALLBACK_PAGE ? <AdminSetupCallbackScreen search={view ?? ''} /> : <AdminSetupScreen />
+      return <AdminSetupScreen callback={page === SETUP_CALLBACK_PAGE ? (view ?? '') : undefined} />
     case 'admin/health':
       return <AdminSetupHealthScreen />
     case 'admin/limits':

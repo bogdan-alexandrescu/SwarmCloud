@@ -291,8 +291,20 @@ export function AdminSetupPage({ state, now, onChanged }: { state: SetupState; n
   )
 }
 
-/** `/admin/setup`. `now` fixes the clock (a test, a capture). */
-export function AdminSetupScreen({ now }: { now?: number }) {
+/**
+ * `/admin/setup`, and its GitHub App callback page when `callback` holds the
+ * query GitHub sent the person back with. `now` fixes the clock (a test, a
+ * capture).
+ */
+export function AdminSetupScreen({ now, callback }: { now?: number; callback?: string }) {
+  if (callback !== undefined) return <AdminSetupCallbackScreen search={callback} />
+  return <SetupFirstRunScreen now={now} />
+}
+
+function SetupFirstRunScreen({ now }: { now?: number }) {
+  // The Setup tab's page: the record read every 5 s, and drawn. (No doc
+  // comment above it: test_nav_headings_agree.py follows AdminSetupScreen's
+  // last return here only when that return ends its body.)
   const { result, reload } = useSetupState()
   return (
     <div className="ur-page asm-page">
