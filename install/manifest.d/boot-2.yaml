@@ -12,6 +12,7 @@ entries:
   scope: core
   stage: 3
   provider: engine
+  step: bootstrap.pass-1
   check: gcloud iam service-accounts describe swarm-api@$P.iam.gserviceaccount.com
   apply: terraform/bootstrap/platform_service_accounts.tf:50 google_service_account.platform["swarm-api"],
     applied by terraform/bootstrap (DAYONE-BOOT-2, Q7); terraform/infra reads it as a data source (modules/iam).
@@ -45,6 +46,7 @@ entries:
   scope: core
   stage: 3
   provider: engine
+  step: bootstrap.pass-1
   check: gcloud iam service-accounts describe swarm-quota-broker@$P.iam.gserviceaccount.com
   apply: terraform/bootstrap/platform_service_accounts.tf:50 google_service_account.platform["swarm-quota-broker"],
     applied by terraform/bootstrap (DAYONE-BOOT-2, Q7); terraform/infra reads it as a data source (modules/iam).
@@ -74,6 +76,7 @@ entries:
   scope: core
   stage: 3
   provider: engine
+  step: bootstrap.pass-1
   check: gcloud iam service-accounts describe swarm-reconciler@$P.iam.gserviceaccount.com
   apply: terraform/bootstrap/platform_service_accounts.tf:50 google_service_account.platform["swarm-reconciler"],
     applied by terraform/bootstrap (DAYONE-BOOT-2, Q7); terraform/infra reads it as a data source (modules/iam).
@@ -103,6 +106,7 @@ entries:
   scope: core
   stage: 3
   provider: engine
+  step: bootstrap.pass-1
   check: gcloud iam service-accounts describe swarm-scheduler@$P.iam.gserviceaccount.com
   apply: terraform/bootstrap/platform_service_accounts.tf:50 google_service_account.platform["swarm-scheduler"],
     applied by terraform/bootstrap (DAYONE-BOOT-2, Q7); terraform/infra reads it as a data source (modules/iam).
@@ -131,6 +135,7 @@ entries:
   scope: core
   stage: 3
   provider: engine
+  step: bootstrap.pass-1
   check: gcloud iam service-accounts describe swarm-tick@$P.iam.gserviceaccount.com
   apply: terraform/bootstrap/platform_service_accounts.tf:62 google_service_account.tick, applied by terraform/bootstrap
     (DAYONE-BOOT-2, Q7); terraform/infra reads it as a data source (modules/iam). On the live deployment
@@ -162,6 +167,7 @@ entries:
   scope: core
   stage: 3
   provider: engine
+  step: bootstrap.pass-1
   check: gcloud iam service-accounts describe swarm-verify@$P.iam.gserviceaccount.com --project=$P
   apply: terraform/bootstrap/platform_service_accounts.tf:71 google_service_account.verify, applied by
     terraform/bootstrap (DAYONE-BOOT-2, Q7); terraform/infra reads it as a data source (infra). On the
@@ -190,6 +196,7 @@ entries:
   scope: core
   stage: 3
   provider: engine
+  step: bootstrap.pass-1
   check: gcloud iam service-accounts describe swarm-schedule-tick@$P.iam.gserviceaccount.com --project=$P
   apply: terraform/bootstrap/platform_service_accounts.tf:80 google_service_account.schedule_tick, applied
     by terraform/bootstrap (DAYONE-BOOT-2, Q7); terraform/infra reads it as a data source (modules/scheduler).
@@ -219,6 +226,7 @@ entries:
   scope: core
   stage: 3
   provider: engine
+  step: bootstrap.pass-1
   check: gcloud iam service-accounts describe swarm-rollup-sweeper@$P.iam.gserviceaccount.com --project=$P
   apply: terraform/bootstrap/platform_service_accounts.tf:90 google_service_account.rollup_sweeper, applied
     by terraform/bootstrap (DAYONE-BOOT-2, Q7); terraform/infra reads it as a data source (modules/scheduler).
@@ -246,6 +254,7 @@ entries:
   scope: core
   stage: 3
   provider: engine
+  step: bootstrap.pass-1
   check: gcloud iam service-accounts describe swarm-discovery@$P.iam.gserviceaccount.com --project=$P
   apply: terraform/bootstrap/platform_service_accounts.tf:101 google_service_account.discovery, applied
     by terraform/bootstrap (DAYONE-BOOT-2)
@@ -269,6 +278,7 @@ entries:
   scope: core
   stage: 3
   provider: engine
+  step: bootstrap.pass-1
   check: gcloud iam service-accounts describe swarm-doctor@$P.iam.gserviceaccount.com --project=$P
   apply: terraform/bootstrap/platform_service_accounts.tf:111 google_service_account.doctor, applied by
     terraform/bootstrap (DAYONE-BOOT-2)
@@ -291,6 +301,7 @@ entries:
   scope: core
   stage: 7
   provider: engine
+  step: bootstrap.pass-2
   check: gcloud kms keys get-iam-policy step-spec --keyring=swarm-dev-specs --location=$R --project=$P
   apply: terraform/bootstrap/spec_signing.tf resource "google_kms_crypto_key_iam_member" "swarm_api_signer",
     role=roles/cloudkms.signer, member=swarm-api
@@ -316,6 +327,7 @@ entries:
   scope: core
   stage: 7
   provider: engine
+  step: bootstrap.pass-2
   check: gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:serviceAccount:swarm-verify@*
     AND bindings.role=roles/container.clusterViewer'
   apply: terraform/bootstrap/verify_cluster_read.tf resource "google_project_iam_member" "verify_views_swarm_cluster"
@@ -343,6 +355,7 @@ entries:
   scope: core
   stage: 7
   provider: engine
+  step: bootstrap.pass-2
   check: gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:serviceAccount:swarm-quota-broker@*
     AND bindings.role:swarmSecretLister'
   apply: terraform/bootstrap/platform_roles.tf resource "google_project_iam_member" "broker_secret_lister",
@@ -372,6 +385,7 @@ entries:
   scope: core
   stage: 3
   provider: engine
+  step: bootstrap.pass-1
   check: grep -n grant_broker_secret_lister terraform/bootstrap/variables.tf terraform/bootstrap/terraform.tfvars
   apply: terraform/bootstrap/variables.tf:591-601, default TRUE; not set in terraform.tfvars
   verify: true everywhere, a fresh project included, since the account is bootstrap's own (DAYONE-BOOT-2)
@@ -391,6 +405,7 @@ entries:
   scope: core
   stage: 7
   provider: engine
+  step: bootstrap.pass-2
   check: grep -n swarm_workers_log_view_exists terraform/bootstrap/variables.tf terraform/bootstrap/terraform.tfvars
   apply: terraform/bootstrap/variables.tf:898-912, default TRUE; not overridden in terraform.tfvars
   verify: gcloud logging views describe swarm-workers --bucket=swarm-worker-logs --location=$R --project=$P

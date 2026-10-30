@@ -12,6 +12,7 @@ entries:
   scope: core
   stage: 7
   provider: engine
+  step: infra.pass-2
   check: gcloud run services describe ${name_prefix}-github-hooks --project=$P --region=$R --format='value(invokerIamDisabled)'
     is True, and get-iam-policy on it names no allUsers member
   apply: terraform/infra/github_hooks.tf google_cloud_run_v2_service.github_hooks, invoker_iam_disabled = true
@@ -35,6 +36,7 @@ entries:
   scope: core
   stage: 7
   provider: engine
+  step: infra.pass-2
   check: curl -fsS https://$H/.well-known/swarmcloud
   apply: terraform/infra/discovery.tf google_cloud_run_v2_service.discovery (the swarm-api image, command
     swarm_api.discovery:create_app, ingress internal-and-cloud-load-balancing, invoker_iam_disabled), served
@@ -61,6 +63,7 @@ entries:
   scope: core
   stage: 7
   provider: engine
+  step: infra.pass-2
   check: gcloud run services describe swarm-discovery --project=$P --region=$R
   apply: terraform/infra/discovery.tf:53 google_cloud_run_v2_service.discovery
   verify: ingress is internal-and-cloud-load-balancing and invoker IAM is disabled; it runs as swarm-discovery
@@ -76,6 +79,7 @@ entries:
   scope: core
   stage: 7
   provider: engine
+  step: infra.pass-2
   check: gcloud secrets get-iam-policy swarm-iap-desktop-client-secret --project=$P
   apply: terraform/infra/discovery.tf:157 google_secret_manager_secret_iam_member.discovery_client_secret,
     only while discovery_serves_client_secret is true
@@ -96,6 +100,7 @@ entries:
   scope: core
   stage: 7
   provider: engine
+  step: infra.pass-2
   check: gcloud compute url-maps describe ${name_prefix}-urlmap --project=$P
   apply: terraform/modules/frontend/main.tf google_compute_url_map.this
   verify: /v1, /v1/*, /healthz, /readyz, /metrics, /docs, /openapi.json route to the API backend;
@@ -119,6 +124,7 @@ entries:
   scope: core
   stage: 3
   provider: engine
+  step: bootstrap.pass-1
   check: gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:swarm-api@'
   apply: terraform/bootstrap/github_app_setup.tf:54 google_project_iam_member.api_github_app_secrets
     (secretVersionAdder and secretAccessor, conditioned on the three swarm-github-app-* secret names)
@@ -137,6 +143,7 @@ entries:
   scope: core
   stage: 3
   provider: engine
+  step: bootstrap.pass-1
   check: gcloud iap web get-iam-policy --resource-type=backend-services --service=${name_prefix}-ui-backend --project=$P
   apply: terraform/bootstrap/github_app_setup.tf:76 google_iap_web_backend_service_iam_member.deployer_api_accessor,
     once ${name_prefix}-ui-backend is in frontend_iap_backends (bootstrap pass 2)
@@ -155,6 +162,7 @@ entries:
   scope: core
   stage: 7
   provider: engine
+  step: infra.pass-2
   check: grep enable_console_app_setup in the infra tfvars the engine writes
   apply: terraform/infra/variables.tf:1368 enable_console_app_setup (default false; the engine sets it in infra pass 2)
   verify: the three swarm-github-app-* containers exist with no App switch on
@@ -174,6 +182,7 @@ entries:
   scope: core
   stage: 7
   provider: engine
+  step: infra.pass-2
   check: gcloud run jobs describe ${name_prefix}-doctor --project=$P --region=$R
   apply: terraform/infra/doctor.tf:39 google_cloud_run_v2_job.doctor (the swarm-verify image, VPC egress),
     only while enable_scheduled_doctor is true
@@ -195,6 +204,7 @@ entries:
   scope: core
   stage: 7
   provider: engine
+  step: infra.pass-2
   check: gcloud scheduler jobs describe ${name_prefix}-doctor-hourly --project=$P --location=$R
   apply: terraform/infra/doctor.tf:138 google_cloud_scheduler_job.doctor_hourly, schedule '0 * * * *',
     only while enable_scheduled_doctor is true
@@ -214,6 +224,7 @@ entries:
   scope: core
   stage: 3
   provider: engine
+  step: bootstrap.pass-1
   check: gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:swarm-doctor@'
   apply: terraform/bootstrap/doctor_roles.tf:59 google_project_iam_member.doctor_read_only (roles/viewer,
     roles/iam.securityReviewer, roles/secretmanager.viewer) and :67 doctor_views_swarm_cluster
@@ -236,6 +247,7 @@ entries:
   scope: core
   stage: 7
   provider: engine
+  step: infra.pass-2
   check: gcloud alpha monitoring policies list --project=$P --filter='displayName~doctor'
   apply: terraform/infra/doctor.tf:171 google_logging_metric.doctor_findings and :185
     google_monitoring_alert_policy.doctor_findings, only while enable_scheduled_doctor is true
@@ -255,6 +267,7 @@ entries:
   scope: core
   stage: 7
   provider: engine
+  step: infra.pass-2
   check: grep enable_scheduled_doctor in the infra tfvars the engine writes
   apply: terraform/infra/variables.tf:1383 enable_scheduled_doctor (default false; DAYONE-DOCTOR-1 turns it on)
   verify: the doctor job, its schedule, its invoker grants and its alert exist only while it is true
@@ -271,6 +284,7 @@ entries:
   scope: addon:ci
   stage: 7
   provider: engine
+  step: infra.pass-2
   check: gcloud storage buckets describe gs://<acceptance fixture bucket> --project=$P
   apply: terraform/infra/variables.tf:1394 enable_acceptance_fixture (default false; dev.tfvars and prod.tfvars
     set it true)
