@@ -25,7 +25,10 @@
 # verify, explain, guards, secret_entry, depends_on, evidence, notes; its
 # header documents each) plus P3's four (design section 3.1):
 #   probe   the typed read-only check, {type: ..., <arguments>}
-#   step    the engine step that satisfies the entry (set by the engine lanes)
+#   step    the id of the engine step (swarm_install/steps/*.py) that satisfies
+#           the entry; when a step's `satisfies` lists the entry, that step.
+#           Every entry, base and fragment, names one: `swarm install
+#           --repair <id>` runs it (tests/unit/install/test_manifest_steps.py)
 #   refs    the references tests/unit/install/test_manifest_complete.py
 #           collects, by collector: terraform, api, secret, secret_flag,
 #           scheduler_job, image, kubernetes, variable (exact keys or fnmatch
@@ -134,6 +137,7 @@ entries:
   evidence:
   - scripts/prerequisites.sh:59
   - scripts/lib/common.sh:587
+  step: preflight.tools
 - id: local-tool.cosign
   kind: local-tool
   scope: core
@@ -149,6 +153,7 @@ entries:
   evidence:
   - scripts/prerequisites.sh:1-60
   notes: Not used anywhere in the repo today.
+  step: preflight.tools
 - id: local-tool.docker
   kind: local-tool
   scope: addon:ci
@@ -163,6 +168,7 @@ entries:
   depends_on: []
   evidence:
   - scripts/prerequisites.sh:139-144
+  step: preflight.tools
 - id: local-tool.gcloud
   kind: local-tool
   scope: core
@@ -178,6 +184,7 @@ entries:
   evidence:
   - scripts/prerequisites.sh:62
   - scripts/prerequisites.sh:150-167
+  step: preflight.tools
 - id: local-tool.gcrane
   kind: local-tool
   scope: core
@@ -193,6 +200,7 @@ entries:
   evidence:
   - scripts/prerequisites.sh:1-60
   notes: Not used anywhere in the repo today; docker is optional per the brief.
+  step: preflight.tools
 - id: local-tool.jq
   kind: local-tool
   scope: core
@@ -207,6 +215,7 @@ entries:
   depends_on: []
   evidence:
   - scripts/prerequisites.sh:63
+  step: preflight.tools
 - id: local-tool.kubectl
   kind: local-tool
   scope: core
@@ -222,6 +231,7 @@ entries:
   evidence:
   - scripts/prerequisites.sh:88-98
   - scripts/lib/common.sh:551-578
+  step: preflight.tools
 - id: local-tool.python
   kind: local-tool
   scope: core
@@ -237,6 +247,7 @@ entries:
   - local-tool.uv
   evidence:
   - scripts/prerequisites.sh:106-113
+  step: preflight.tools
 - id: local-tool.shellcheck
   kind: local-tool
   scope: addon:ci
@@ -252,6 +263,7 @@ entries:
   evidence:
   - scripts/prerequisites.sh:80-84
   notes: not a hard failure (soft/warn), unlike kubectl -- a gap between what CLAUDE.md requires and what prerequisites.sh enforces
+  step: preflight.tools
 - id: local-tool.terraform
   kind: local-tool
   scope: core
@@ -268,6 +280,7 @@ entries:
   - scripts/prerequisites.sh:57
   - scripts/lib/common.sh:672
   - scripts/lib/common.sh:677-679
+  step: preflight.tools
 - id: local-tool.tflint
   kind: local-tool
   scope: addon:ci
@@ -282,6 +295,7 @@ entries:
   depends_on: []
   evidence:
   - scripts/prerequisites.sh:58
+  step: preflight.tools
 - id: local-tool.trivy
   kind: local-tool
   scope: addon:ci
@@ -297,6 +311,7 @@ entries:
   evidence:
   - scripts/prerequisites.sh:60
   - docs/operations.md:17
+  step: preflight.tools
 - id: local-tool.uv
   kind: local-tool
   scope: core
@@ -312,6 +327,7 @@ entries:
   evidence:
   - scripts/prerequisites.sh:61
   - plugin/.claude-plugin/plugin.json:72-76
+  step: preflight.tools
 - id: org-policy.automatic-iam-grants-default-sa
   kind: org-policy
   scope: core
@@ -330,6 +346,7 @@ entries:
   - docs/ci.md:2198
   - terraform/bootstrap/workspace_deployer.tf:658-666
   notes: 'SURPRISE for a fresh install: the code''s own comment says this risk is ''never'' closed in THIS file because saga-agents-staging is shared and the default SA might be the other team''s dependency. On a fresh, single-tenant project that excuse does not apply -- nothing in terraform/bootstrap or terraform/infra removes roles/editor from the fresh project''s default compute SA, so either this org policy must be enforced at project creation or an operator must manually strip the grant; no script here does either'
+  step: preflight.org-policies
 - id: org-policy.cmek
   kind: org-policy
   scope: core
@@ -346,6 +363,7 @@ entries:
   - terraform/infra/variables.tf:970
   - terraform/bootstrap/workspace_deployer.tf:526
   notes: on a fresh, non-shared project, a CMEK-enforcing org policy would require creating and owning a KMS key ring from scratch -- nothing in this repo does that today
+  step: preflight.org-policies
 - id: org-policy.domain-restricted-sharing
   kind: org-policy
   scope: core
@@ -363,6 +381,7 @@ entries:
   - terraform/infra/github_hooks.tf:77-122
   - terraform/bootstrap/variables.tf:553-554
   notes: 'first-apply trap: the agent/operator who wrote acceptance_fixture.tf explicitly could not read the live org policy; a fresh project under a DRS-enforcing org will fail this apply and needs either an org-policy exception or dropping the two allUsers grants'
+  step: preflight.org-policies
 - id: org-policy.resource-locations
   kind: org-policy
   scope: core
@@ -379,6 +398,7 @@ entries:
   evidence:
   - scripts/lib/common.sh:159
   notes: 'not verified: no file in this repo reads or asserts this org policy; included because stage-0 preflight must confirm it before terraform/infra''s first apply, which hardcodes us-central1 throughout'
+  step: preflight.org-policies
 - id: org-policy.vm-external-ip-access
   kind: org-policy
   scope: core
@@ -395,6 +415,7 @@ entries:
   - terraform/modules/gke_autopilot/main.tf:49-57
   - docs/scaling.md:66
   notes: not verified against a live org policy; verified only that the Terraform does not need external IPs on compute
+  step: preflight.org-policies
 - id: other.release-bundle
   kind: other
   scope: core
@@ -411,6 +432,7 @@ entries:
   - scripts/build-images.sh:169
   - terraform/infra/images.json:1
   notes: 'Nothing exists today: images are promoted per environment inside the live project (scripts/push-images.sh).'
+  step: preflight.release
 - id: quota.cloud-run-jobs
   kind: quota
   scope: core
@@ -427,6 +449,11 @@ entries:
   evidence:
   - docs/scaling.md:43
   - docs/scaling.md:70
+  probe:
+    type: cloud_run_job_count
+    region: $R
+    checks_ttl: true
+  step: preflight.quotas
 - id: quota.compute-regional-cpus
   kind: quota
   scope: core
@@ -442,6 +469,7 @@ entries:
   - switch.billing-link-right
   evidence:
   - docs/scaling.md:66
+  step: preflight.quotas
 - id: quota.gke-regional
   kind: quota
   scope: core
@@ -457,6 +485,7 @@ entries:
   - switch.billing-link-right
   evidence:
   - docs/scaling.md:66
+  step: preflight.quotas
 - id: quota.kms-signing-h4
   kind: quota
   scope: core
@@ -472,6 +501,7 @@ entries:
   evidence:
   - docs/runbooks/spec-signing-rollout.md:300-320
   notes: 'not verified (the runbook says so itself): which KMS quota bucket AsymmetricSign draws from, and headroom on a fresh project with no other team''s KMS usage sharing it, is unmeasured'
+  step: preflight.quotas
 - id: quota.nat-static-ips
   kind: quota
   scope: core
@@ -487,6 +517,7 @@ entries:
   evidence:
   - docs/scaling.md:68
   notes: a fresh install's new NAT IPs are NEW literal addresses that every allow-listed external vendor (MCP servers, model providers) must be told about -- this is itself a hard-coded-value-to-change, not just a quota
+  step: preflight.quotas
 - id: switch.billing-link-right
   kind: switch
   scope: core
@@ -504,6 +535,7 @@ entries:
   - docs/deploying-without-an-organisation.md:117-118
   - scripts/prerequisites.sh:174-193
   notes: 'not verified: no command in this repo links billing; assumed done by hand before scripts/prerequisites.sh is first run'
+  step: preflight.rights
 - id: switch.project-create-right
   kind: switch
   scope: core
@@ -519,6 +551,7 @@ entries:
   evidence:
   - scripts/prerequisites.sh:150-171
   notes: 'not verified: this repository documents saga-agents-staging as an already-existing shared project and nowhere narrates who created it or what right that took; stated here from the standard GCP precondition, not from a line this repo asserts'
+  step: preflight.rights
 - id: bucket.state
   kind: bucket
   scope: core
@@ -537,6 +570,7 @@ entries:
   - terraform/bootstrap/state_bucket.tf:47-109
   - terraform/bootstrap/backend.tf:29
   notes: 'FIRST-APPLY TRAP: scripts/bootstrap.sh creates this bucket with `gcloud storage buckets create` BEFORE the first `terraform init` (the backend must exist before Terraform can initialise into it). state_bucket.tf then declares the SAME bucket as a plain `resource "google_storage_bucket" "state"` with no `import` block and no create_ignore_already_exists (the provider has none for this resource). Grepped the whole root (`terraform import`, `google_storage_bucket.state`) and found no import logic anywhere in scripts/ or terraform/bootstrap/*.tf. On a truly fresh project the first `terraform apply` of this root is therefore expected to fail the create of google_storage_bucket.state with a 409 ALREADY_EXISTS, unless the bucket is imported by hand first (not verified live -- no test or runbook step for this was found).'
+  step: foundations.state-bucket
   refs:
     terraform:
     - bootstrap/google_storage_bucket.state
@@ -555,6 +589,7 @@ entries:
   - api.storage
   evidence:
   - terraform/bootstrap/state_bucket.tf:17-45
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_storage_bucket.state_logs
@@ -573,6 +608,7 @@ entries:
   evidence:
   - terraform/bootstrap/terraform.tfvars:1-8
   notes: terraform.tfvars is committed with the live saga-agents-staging project id. A day-one install that runs `make bootstrap` against this file unmodified reconfigures the WRONG, shared project.
+  step: foundations.project
   refs:
     terraform:
     - '*/data.google_project.*'
@@ -593,6 +629,7 @@ entries:
   probe:
     type: service_enabled
     name: artifactregistry.googleapis.com
+  step: foundations.apis
   refs:
     api:
     - artifactregistry.googleapis.com
@@ -615,6 +652,7 @@ entries:
   probe:
     type: service_enabled
     name: billingbudgets.googleapis.com
+  step: foundations.apis
   new: true
 - id: api.cloudbuild
   kind: gcp-api
@@ -637,6 +675,7 @@ entries:
   probe:
     type: service_enabled
     name: cloudbuild.googleapis.com
+  step: foundations.apis
   refs:
     api:
     - cloudbuild.googleapis.com
@@ -658,6 +697,7 @@ entries:
   probe:
     type: service_enabled
     name: cloudidentity.googleapis.com
+  step: foundations.apis
   refs:
     api:
     - cloudidentity.googleapis.com
@@ -680,6 +720,7 @@ entries:
   probe:
     type: service_enabled
     name: cloudkms.googleapis.com
+  step: foundations.apis
   refs:
     terraform:
     - modules/project_services/google_project_service.this
@@ -704,6 +745,7 @@ entries:
   probe:
     type: service_enabled
     name: cloudresourcemanager.googleapis.com
+  step: foundations.apis
   refs:
     api:
     - cloudresourcemanager.googleapis.com
@@ -724,6 +766,7 @@ entries:
   probe:
     type: service_enabled
     name: cloudscheduler.googleapis.com
+  step: foundations.apis
   refs:
     api:
     - cloudscheduler.googleapis.com
@@ -744,6 +787,7 @@ entries:
   probe:
     type: service_enabled
     name: cloudtrace.googleapis.com
+  step: foundations.apis
   refs:
     api:
     - cloudtrace.googleapis.com
@@ -764,6 +808,7 @@ entries:
   probe:
     type: service_enabled
     name: compute.googleapis.com
+  step: foundations.apis
   refs:
     api:
     - compute.googleapis.com
@@ -784,6 +829,7 @@ entries:
   probe:
     type: service_enabled
     name: container.googleapis.com
+  step: foundations.apis
   refs:
     api:
     - container.googleapis.com
@@ -805,6 +851,7 @@ entries:
   probe:
     type: service_enabled
     name: eventarc.googleapis.com
+  step: foundations.apis
   refs:
     api:
     - eventarc.googleapis.com
@@ -825,6 +872,7 @@ entries:
   probe:
     type: service_enabled
     name: firestore.googleapis.com
+  step: foundations.apis
   refs:
     api:
     - firestore.googleapis.com
@@ -846,6 +894,7 @@ entries:
   probe:
     type: service_enabled
     name: iam.googleapis.com
+  step: foundations.apis
   refs:
     api:
     - iam.googleapis.com
@@ -867,6 +916,7 @@ entries:
   probe:
     type: service_enabled
     name: iamcredentials.googleapis.com
+  step: foundations.apis
   refs:
     api:
     - iamcredentials.googleapis.com
@@ -887,6 +937,7 @@ entries:
   probe:
     type: service_enabled
     name: logging.googleapis.com
+  step: foundations.apis
   refs:
     api:
     - logging.googleapis.com
@@ -907,6 +958,7 @@ entries:
   probe:
     type: service_enabled
     name: monitoring.googleapis.com
+  step: foundations.apis
   refs:
     api:
     - monitoring.googleapis.com
@@ -931,6 +983,7 @@ entries:
   probe:
     type: service_enabled
     name: policytroubleshooter.googleapis.com
+  step: foundations.apis
   new: true
 - id: api.pubsub
   kind: gcp-api
@@ -949,6 +1002,7 @@ entries:
   probe:
     type: service_enabled
     name: pubsub.googleapis.com
+  step: foundations.apis
   refs:
     api:
     - pubsub.googleapis.com
@@ -969,6 +1023,7 @@ entries:
   probe:
     type: service_enabled
     name: run.googleapis.com
+  step: foundations.apis
   refs:
     api:
     - run.googleapis.com
@@ -989,6 +1044,7 @@ entries:
   probe:
     type: service_enabled
     name: secretmanager.googleapis.com
+  step: foundations.apis
   refs:
     api:
     - secretmanager.googleapis.com
@@ -1010,6 +1066,7 @@ entries:
   probe:
     type: service_enabled
     name: serviceusage.googleapis.com
+  step: foundations.apis
   refs:
     api:
     - serviceusage.googleapis.com
@@ -1031,6 +1088,7 @@ entries:
   probe:
     type: service_enabled
     name: storage.googleapis.com
+  step: foundations.apis
   refs:
     api:
     - storage.googleapis.com
@@ -1051,6 +1109,7 @@ entries:
   probe:
     type: service_enabled
     name: sts.googleapis.com
+  step: foundations.apis
   refs:
     api:
     - sts.googleapis.com
@@ -1071,6 +1130,7 @@ entries:
   probe:
     type: service_enabled
     name: workflows.googleapis.com
+  step: foundations.apis
   refs:
     api:
     - workflows.googleapis.com
@@ -1091,6 +1151,7 @@ entries:
   - terraform/bootstrap/workspace_deployer.tf:658-666
   - docs/ci.md:2187
   notes: Cloud Build pushes in the live project rest on this Editor grant (docs/ci.md:2187); a new org with iam.automaticIamGrantsForDefaultServiceAccounts enforced never has it, so the CI add-on must bring its own build SA.
+  step: foundations.default-compute-editor
   refs:
     terraform:
     - bootstrap/data.google_iam_policy.workspace_apply_job
@@ -1109,6 +1170,7 @@ entries:
   - bucket.state_logs
   evidence:
   - terraform/bootstrap/state_bucket.tf:115
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_storage_bucket_iam_member.log_writer
@@ -1126,6 +1188,7 @@ entries:
   depends_on: []
   evidence:
   - scripts/bootstrap.sh:1-370
+  step: foundations.state-bucket
 - id: monitoring.budget-alert
   kind: monitoring
   scope: core
@@ -1143,6 +1206,7 @@ entries:
   evidence:
   - terraform/infra/variables.tf:1-20
   notes: 'No budget resource exists anywhere in terraform/ (grep google_billing_budget: no hit). Creating a budget needs billing.budgets.create on the billing account, which the installer may not have; the engine then prints the console path.'
+  step: foundations.budget
 - id: api.containerscanning-NOT-enabled
   kind: other
   scope: core
@@ -1158,6 +1222,7 @@ entries:
   evidence:
   - terraform/infra/main.tf:32-39
   notes: On a NEW project this API is off by default anyway, so there is nothing to disable; the comment's hand-disable step is only relevant on saga-agents-staging where it was once on.
+  step: foundations.apis
 - id: other.billing-link
   kind: other
   scope: core
@@ -1175,6 +1240,7 @@ entries:
   evidence:
   - scripts/prerequisites.sh:173-192
   notes: scripts/prerequisites.sh checks APIs but never billing; not verified that any script reads billingEnabled.
+  step: foundations.project
 - id: other.bootstrap-sh-empty-state-guard
   kind: other
   scope: core
@@ -1189,6 +1255,7 @@ entries:
   depends_on: []
   evidence:
   - scripts/bootstrap.sh:279-330
+  step: foundations.state-bucket
 - id: other.bootstrap-sh-migrate-state
   kind: other
   scope: core
@@ -1204,6 +1271,7 @@ entries:
   evidence:
   - scripts/bootstrap.sh:21-26
   - scripts/bootstrap.sh:213-266
+  step: foundations.state-bucket
 - id: other.gcp-project
   kind: other
   scope: core
@@ -1221,6 +1289,7 @@ entries:
   - terraform/environments/dev/dev.tfvars:8
   - terraform/environments/prod/prod.tfvars:13
   notes: Today dev and prod both point at one shared project; nothing in the repo creates a project.
+  step: foundations.project
 - id: other.install-state
   kind: other
   scope: core
@@ -1238,6 +1307,7 @@ entries:
   - terraform/bootstrap/backend.tf:29
   - scripts/bootstrap.sh:96-114
   notes: New object; no code today.
+  step: foundations.state-bucket
 - id: other.shared-project-literal-in-both-envs
   kind: other
   scope: core
@@ -1254,6 +1324,7 @@ entries:
   - terraform/environments/dev/dev.tfvars:8
   - terraform/environments/prod/prod.tfvars:13
   notes: 'TOP FIRST-INSTALL TRAP: this is the single most important finding for a day-one install into a new project. Every other entry in this file assumes $P has already been corrected away from saga-agents-staging.'
+  step: infra.pass-1
 - id: switch.manage_project_services
   kind: switch
   scope: core
@@ -1276,6 +1347,7 @@ entries:
   evidence:
   - terraform/bootstrap/variables.tf:74-77
   - terraform/bootstrap/main.tf:15-22
+  step: infra.pass-1
   refs:
     variable:
     - bootstrap/manage_project_services
@@ -1299,6 +1371,7 @@ entries:
   - terraform/environments/dev/dev.tfvars:599
   - terraform/environments/dev/dev.tfvars:610
   notes: not verified against the specific terraform resource address (not located by file:line in this pass beyond the hostname var); timing/propagation behaviour is standard GCP, not something this repo's code controls
+  step: edge.certificate
   refs:
     terraform:
     - modules/frontend/google_compute_managed_ssl_certificate.this
@@ -1317,6 +1390,7 @@ entries:
   evidence:
   - terraform/bootstrap/variables.tf:503-525
   notes: Set to [] for the FIRST bootstrap apply on a fresh project (file's own instruction, variables.tf:512-513); the committed terraform.tfvars never does this, so a naive replay fails at plan (see iam-binding.frontend-iap-accessors).
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/data.google_compute_backend_service.frontend_iap
@@ -1335,6 +1409,7 @@ entries:
   - oauth-client.desktop-sc
   evidence:
   - terraform/bootstrap/iap_programmatic_clients.tf:62-85
+  step: edge.desktop-client
 - id: dns.frontend-hostname
   kind: dns
   scope: core
@@ -1352,6 +1427,7 @@ entries:
   - terraform/modules/frontend/variables.tf
   - terraform/environments/dev/dev.tfvars:599
   notes: 'not verified: variables.tf''s hostname variable was located by name only, not read in full. ALSO: not verified: no terraform resource for the DNS zone/record itself was read in this pass; CLAUDE.md''s stage list names ''global IP / DNS A record / managed cert waits'' together as one edge-prereq step, so this is recorded as the DNS half of it'
+  step: edge.dns
 - id: api.dns
   kind: gcp-api
   scope: core
@@ -1371,6 +1447,7 @@ entries:
   probe:
     type: service_enabled
     name: dns.googleapis.com
+  step: foundations.apis
   new: true
 - id: api.iap
   kind: gcp-api
@@ -1390,6 +1467,7 @@ entries:
   probe:
     type: service_enabled
     name: iap.googleapis.com
+  step: foundations.apis
   refs:
     api:
     - iap.googleapis.com
@@ -1412,6 +1490,11 @@ entries:
   - docs/runbooks/iap-desktop-client.md:92-169
   - docs/runbooks/iap-desktop-client.md:186-194
   notes: 'known first-apply trap named in the runbook itself: Terraform addresses the IAP setting by backend NAME (''.../services/swarm-ui-backend''), but IAP''s own API answers with the numeric backend ID (''.../services/<id>''). If the provider ever stores IAP''s numeric form instead of what Terraform wrote, every later bootstrap apply replans a replace of both settings forever; treated in the runbook as ''a defect to fix ... not a plan to accept'', and NOT yet fixed as of the runbook''s text'
+  probe:
+    type: iap_programmatic_clients
+    backends: every_frontend_backend
+    client_output: desktop_client_id
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_iap_settings.frontend_programmatic_clients
@@ -1433,6 +1516,7 @@ entries:
   - terraform/modules/frontend/main.tf:99
   - .env.example:107-116
   notes: 'Stage 2 because DNS and the OAuth brand/cert need this IP before the rest of infra is useful end to end, even though Terraform itself can create it any time. ALSO: not verified against the live terraform/modules/frontend resource name/line; inferred from the .env.example and iap-desktop-client.md narrative of ''global IP, DNS, managed cert'' as the edge stack'
+  step: edge.global-ip
   refs:
     terraform:
     - modules/frontend/google_compute_global_address.this
@@ -1454,6 +1538,7 @@ entries:
   - terraform/modules/frontend/main.tf:29-57
   - docs/runbooks/iap-desktop-client.md:44-61
   notes: 'First-install trap: on a brand-new project this step is easy to forget because nothing in `terraform plan` complains about its absence until the iap{} block''s apply fails.'
+  step: edge.brand
 - id: oauth-client.desktop-sc
   kind: oauth-client
   scope: core
@@ -1473,6 +1558,11 @@ entries:
   - docs/runbooks/iap-desktop-client.md:72-90
   - docs/runbooks/iap-desktop-client.md:230-236
   notes: Client ID is a live value tied to the OLD project's OAuth consent screen. A new project needs its own Desktop OAuth client created by hand and this value replaced; the committed value is not secret but is meaningless (and potentially confusing) on a new project.
+  probe:
+    type: iap_programmatic_clients
+    backends: every_frontend_backend
+    client_output: desktop_client_id
+  step: edge.desktop-client
 - id: other.iap-service-agent
   kind: other
   scope: core
@@ -1491,6 +1581,7 @@ entries:
   - terraform/infra/main.tf:384-410
   - docs/runbooks/iap-desktop-client.md:64-70
   notes: 'Classic first-install trap: the failure mode (500, ''IAP service account is not provisioned'') does not point at this missing one-time step. ALSO: not verified: this repo never names the IAP service agent directly (no terraform resource references it); its existence is inferred from ''IAP on, Google-managed client'' being the expected describe output'
+  step: edge.iap-agent
 - id: secret.swarm-iap-desktop-client-secret.container
   kind: secret-container
   scope: core
@@ -1511,6 +1602,7 @@ entries:
   - plugin/.claude-plugin/plugin.json:23
   - plugin/.claude-plugin/plugin.json:88
   notes: New secret id. Whether it is needed at all depends on open question 1 (a PKCE-only exchange).
+  step: edge.desktop-client
 - id: role.custom.swarmBucketMetadataReader
   kind: custom-role
   scope: core
@@ -1526,6 +1618,7 @@ entries:
   - api.iam
   evidence:
   - terraform/bootstrap/platform_roles.tf:301-312
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.platform
@@ -1544,6 +1637,7 @@ entries:
   - sa.swarm-tf-deployer
   evidence:
   - terraform/bootstrap/wif.tf:320-371
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.deployer_project_buckets
@@ -1563,6 +1657,7 @@ entries:
   - api.iam
   evidence:
   - terraform/bootstrap/platform_roles.tf:143-163
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.platform
@@ -1581,6 +1676,7 @@ entries:
   - api.iam
   evidence:
   - terraform/bootstrap/platform_roles.tf:167-182
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.platform
@@ -1600,6 +1696,7 @@ entries:
   evidence:
   - terraform/bootstrap/platform_roles.tf:314-324
   - terraform/bootstrap/variables.tf:620-675
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.platform
@@ -1620,6 +1717,7 @@ entries:
   - terraform/bootstrap/platform_roles.tf:93-117
   - terraform/modules/custom_role_ids/main.tf:53-54
   notes: 'ADOPTION ORDER TRAP: committed terraform.tfvars sets adopt_from_infra_states = ["infra/dev"] (import blocks at platform_roles.tf:425-437). On a brand-new project there is no terraform/infra state at that prefix yet; the data "terraform_remote_state" "infra" read will fail or (if the object truly does not exist) the precondition at platform_roles.tf:342-344 blocks every platform role from being managed. For a fresh install this variable must be emptied.'
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.platform
@@ -1638,6 +1736,7 @@ entries:
   - api.iam
   evidence:
   - terraform/bootstrap/platform_roles.tf:120-137
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.platform
@@ -1657,6 +1756,7 @@ entries:
   evidence:
   - terraform/bootstrap/platform_roles.tf:186-260
   notes: versions.add stays in this role while switch.broker_secret_lister_project_wide_versions_add is true (default true); flipping it needs >=7 minutes of IAM propagation after terraform/infra's scoped broker_version_adder grant is live, or a live account refresh can be bricked.
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.platform
@@ -1675,6 +1775,7 @@ entries:
   - api.iam
   evidence:
   - terraform/bootstrap/platform_roles.tf:262-299
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.platform
@@ -1694,6 +1795,7 @@ entries:
   - terraform/bootstrap/terraform.tfvars:10-16
   - terraform/bootstrap/platform_roles.tf:388-437
   notes: MUST BE EMPTY ON A FRESH PROJECT (variables.tf:578 says so explicitly) but the committed terraform.tfvars leaves it set to ["infra/dev"], the live migration value. A day-one copy of this file will try to read a terraform/infra state object that cannot exist yet in the new project, and/or trip the custom_roles_owner precondition (platform_roles.tf:342-344, 381-385).
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/data.terraform_remote_state.infra
@@ -1715,6 +1817,7 @@ entries:
   - terraform/infra/main.tf:240-253
   - terraform/infra/deployer.tf:56
   notes: The deployer SA itself is created in terraform/bootstrap (stage 3), not this track -- cross-track dependency, same pattern as pubsub_kms_key_name.
+  step: infra.pass-1
 - id: declared-value.deployer_storage_bucket_prefixes
   kind: declared-value
   scope: addon:ci
@@ -1729,6 +1832,7 @@ entries:
   depends_on: []
   evidence:
   - terraform/bootstrap/variables.tf:465-486
+  step: bootstrap.pass-1
 - id: declared-value.deployer_storage_buckets_exact
   kind: declared-value
   scope: addon:ci
@@ -1746,6 +1850,7 @@ entries:
   - terraform/bootstrap/variables.tf:488-501
   - terraform/bootstrap/wif.tf:262-294
   notes: A NEW install copying terraform.tfvars verbatim silently keeps the OLD project's bucket name here, since the file never overrides it.
+  step: bootstrap.pass-1
 - id: declared-value.github_allowed_refs
   kind: declared-value
   scope: addon:ci
@@ -1760,6 +1865,7 @@ entries:
   depends_on: []
   evidence:
   - terraform/bootstrap/terraform.tfvars:23-28
+  step: bootstrap.pass-1
 - id: declared-value.github_repository
   kind: declared-value
   scope: addon:ci
@@ -1774,6 +1880,7 @@ entries:
   depends_on: []
   evidence:
   - terraform/bootstrap/terraform.tfvars:18-21
+  step: bootstrap.pass-1
 - id: iam-binding.deployer-acts-as-cloudbuild
   kind: iam-binding
   scope: addon:ci
@@ -1789,6 +1896,7 @@ entries:
   - sa.swarm-tf-deployer
   evidence:
   - terraform/bootstrap/wif.tf:437-467
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_service_account_iam_member.deployer_acts_as_cloudbuild
@@ -1808,6 +1916,7 @@ entries:
   - sa.swarm-tf-deployer
   evidence:
   - terraform/bootstrap/spec_signing.tf:146-154
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_kms_crypto_key_iam_member.deployer_key_readers
@@ -1828,6 +1937,7 @@ entries:
   - terraform/bootstrap/wif.tf:207-213
   - terraform/bootstrap/variables.tf:190-372
   notes: roles/storage.admin is NOT in this list; it is granted separately, already conditioned (iam-binding.deployer-storage-admin-scoped).
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_project_iam_member.deployer_roles
@@ -1853,6 +1963,7 @@ entries:
   evidence:
   - terraform/bootstrap/wif.tf:215-245
   - terraform/bootstrap/deployer_conditions.tf:580-592
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.secret_provisioner
@@ -1874,6 +1985,7 @@ entries:
   - sa.swarm-tf-deployer
   evidence:
   - terraform/bootstrap/wif.tf:469-477
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_storage_bucket_iam_member.deployer_state
@@ -1894,6 +2006,7 @@ entries:
   evidence:
   - terraform/bootstrap/wif.tf:247-318
   notes: 'NEW PROJECT TRAP: deployer_storage_buckets_exact defaults to ["saga-agents-staging_cloudbuild"], the OLD project''s Cloud Build staging bucket. For a new project this must be "<new-project-id>_cloudbuild" or `gcloud builds submit` 403s on storage.buckets.list for its own staging bucket and every image build fails.'
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_project_iam_member.deployer_storage
@@ -1913,6 +2026,7 @@ entries:
   evidence:
   - terraform/bootstrap/verify_logs.tf:213-321
   - terraform/bootstrap/log-reading-roles.json
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_project_iam_member.deployer_reads_verify_logs
@@ -1935,6 +2049,7 @@ entries:
   - terraform/bootstrap/wif.tf:57-73
   - terraform/bootstrap/wif.tf:194-200
   notes: tests/unit/scripts/test_workflow_id_token_scope.py holds this list equal to the workflow files whose id-token step names GCP_DEPLOY_SA; a file missing here 403s its auth step on main.
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_service_account_iam_member.deployer_wif
@@ -1954,6 +2069,7 @@ entries:
   evidence:
   - terraform/bootstrap/deployer_service_accounts.tf:1-40
   notes: Today the first infra apply must run as the owner with deployer_service_account empty (brief section 3 item 12); the impersonation binding is new.
+  step: bootstrap.pass-1
 - id: kms-key.step-spec-key
   kind: kms-key
   scope: core
@@ -1970,6 +2086,7 @@ entries:
   evidence:
   - terraform/bootstrap/spec_signing.tf:95-130
   notes: 'No per-version public-key read happens in THIS root (would be a hard plan error on first creation, #360/#361); terraform/infra reads the public keys separately once the key exists.'
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_kms_crypto_key.step_spec
@@ -1990,6 +2107,7 @@ entries:
   evidence:
   - terraform/bootstrap/spec_signing.tf:82-93
   - terraform/modules/spec_signing_key/main.tf:16-20
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_kms_key_ring.step_spec
@@ -2010,6 +2128,7 @@ entries:
   - terraform/infra/spec_signing.tf:95-111
   - terraform/infra/locals.tf:1000-1010
   notes: 'not verified: module.spec_signing_key''s own resource (terraform/modules/spec_signing_key/main.tf) was not read in this pass; the KMS key ring/key themselves may be bootstrap-created (stage 3) with this module only reading them -- flagged as not verified.'
+  step: infra.pass-1
   refs:
     terraform:
     - infra/data.google_kms_crypto_key_versions.step_spec
@@ -2032,6 +2151,7 @@ entries:
   - terraform/bootstrap/wif.tf:57-68
   - terraform/bootstrap/acceptance.tf:12-20
   - terraform/bootstrap/ci_fix.tf:8-15
+  step: bootstrap.pass-1
 - id: other.wif-github-pool-and-provider
   kind: other
   scope: addon:ci
@@ -2050,6 +2170,7 @@ entries:
   evidence:
   - terraform/bootstrap/wif.tf:115-183
   notes: 'NEVER widen attribute_condition to refs/pull/*: that admits a PR from a fork to mint a deploy token (comment at wif.tf:172-174).'
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_iam_workload_identity_pool.github
@@ -2069,6 +2190,7 @@ entries:
   - api.iam
   evidence:
   - terraform/infra/mcp_test_server.tf:110-128
+  step: infra.pass-1
   refs:
     terraform:
     - infra/google_service_account.mcp_test_server
@@ -2092,6 +2214,7 @@ entries:
   - terraform/modules/iam/service_accounts.tf:20-39
   - terraform/modules/service_account_ids/main.tf:32-35
   notes: This account and the next three are NOT created by terraform/bootstrap itself; listed because terraform/modules/iam is explicitly in this agent's assigned territory. Many bootstrap grants have a precondition-free dependency on this account already existing, which is only true after terraform/infra's first apply.
+  step: bootstrap.pass-1
   refs:
     terraform:
     - modules/iam/google_service_account.platform
@@ -2113,6 +2236,7 @@ entries:
   - terraform/bootstrap/platform_roles.tf:361-386
   - terraform/modules/service_account_ids/main.tf:40-43
   notes: Not created by terraform/bootstrap; see sa.swarm-api note. grant_broker_secret_lister must be FALSE on bootstrap's first apply (this account does not exist yet) and flipped true only after terraform/infra's first apply -- but the committed terraform.tfvars does not set this variable at all, so it silently uses the default (true), which will fail on a truly first-ever bootstrap+infra bring-up ordering.
+  step: bootstrap.pass-1
   refs:
     terraform:
     - modules/iam/google_service_account.platform
@@ -2134,6 +2258,7 @@ entries:
   - terraform/modules/service_account_ids/main.tf:44-47
   - terraform/modules/iam/service_accounts.tf:1-12
   notes: Not created by terraform/bootstrap; see sa.swarm-api note.
+  step: bootstrap.pass-1
   refs:
     terraform:
     - modules/iam/google_service_account.platform
@@ -2153,6 +2278,7 @@ entries:
   evidence:
   - terraform/modules/service_account_ids/main.tf:52-56
   - terraform/infra/main.tf:644-669
+  step: bootstrap.pass-1
   refs:
     terraform:
     - modules/scheduler/google_service_account.rollup_sweeper
@@ -2172,6 +2298,7 @@ entries:
   evidence:
   - terraform/modules/service_account_ids/main.tf:57-63
   - terraform/infra/main.tf:670-682
+  step: bootstrap.pass-1
   refs:
     terraform:
     - modules/scheduler/google_service_account.schedule_tick
@@ -2192,6 +2319,7 @@ entries:
   - terraform/modules/iam/service_accounts.tf:34-41
   - terraform/modules/service_account_ids/main.tf:36-39
   notes: Not created by terraform/bootstrap; see sa.swarm-api note.
+  step: bootstrap.pass-1
   refs:
     terraform:
     - modules/iam/google_service_account.platform
@@ -2213,6 +2341,7 @@ entries:
   - switch.enable_github_wif
   evidence:
   - terraform/bootstrap/wif.tf:185-192
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_service_account.deployer
@@ -2234,6 +2363,7 @@ entries:
   - terraform/modules/iam/service_accounts.tf:42-51
   - terraform/modules/service_account_ids/main.tf:50
   notes: Not created by terraform/bootstrap; see sa.swarm-api note.
+  step: bootstrap.pass-1
   refs:
     terraform:
     - modules/iam/google_service_account.tick
@@ -2252,6 +2382,7 @@ entries:
   - api.iam
   evidence:
   - terraform/infra/verify.tf:34-122
+  step: bootstrap.pass-1
   refs:
     terraform:
     - infra/google_service_account.verify
@@ -2273,6 +2404,7 @@ entries:
   evidence:
   - terraform/modules/tenancy/main.tf:109-178
   - terraform/infra/locals.tf:620-622
+  step: infra.pass-1
   refs:
     terraform:
     - modules/tenancy/google_service_account.worker
@@ -2292,6 +2424,7 @@ entries:
   evidence:
   - terraform/bootstrap/terraform.tfvars:18-20
   - terraform/bootstrap/terraform.tfvars.example:12-15
+  step: bootstrap.pass-1
   refs:
     variable:
     - bootstrap/enable_github_wif
@@ -2310,6 +2443,7 @@ entries:
   evidence:
   - terraform/bootstrap/variables.tf:591-601
   notes: 'FIRST-APPLY TRAP: committed terraform.tfvars never sets this, so the default (true) is what a copy-and-run install gets on its very first apply -- before any account exists to grant on.'
+  step: bootstrap.pass-1
   refs:
     variable:
     - bootstrap/grant_broker_secret_lister
@@ -2329,6 +2463,7 @@ entries:
   evidence:
   - terraform/infra/build_mirror.tf:92
   notes: 'not verified: did not read the full build_mirror.tf body for exact bucket wiring'
+  step: infra.pass-1
   refs:
     terraform:
     - infra/google_storage_bucket.build_mirror
@@ -2350,6 +2485,7 @@ entries:
   - scripts/lib/build-mirror.sh:11-30
   - tests/unit/scripts/test_build_mirror.py:150-172
   notes: FIRST-INSTALL TRAP. test_build_mirror.py:169-172 asserts the Dockerfiles name the repositories terraform creates 'under the default prefix, in the dev project' -- i.e. the intended design is that each environment's own terraform/infra/build_mirror.tf creates its OWN ${name_prefix}-mirror-ghcr/${name_prefix}-mirror-dockerhub, but the Dockerfile literals are hardcoded to the project id `saga-agents-staging` itself, not derived from any variable. A new project's build either needs a cross-project artifactregistry.reader grant from the OTHER team on their mirror repos (a company-external ask, and arguably a rule-2 violation to even request), or every Dockerfile's `# syntax=` line and MIRROR_* defaults must be repointed at the new project before the first image build -- and the `# syntax=` line is parsed by BuildKit before any --build-arg is applied, so it cannot be overridden at build time at all, only edited in the file.
+  step: images.copy
 - id: declared-value.image_refs
   kind: declared-value
   scope: core
@@ -2366,6 +2502,7 @@ entries:
   evidence:
   - terraform/infra/variables.tf:227-256
   notes: A FRESH project's first plan has an empty image_refs and targets only the registry (scripts/plan.sh), since nothing can be pinned before the registry exists to push to.
+  step: images.copy
 - id: declared-value.workspace_apply_image
   kind: declared-value
   scope: core
@@ -2383,6 +2520,7 @@ entries:
   - terraform/bootstrap/terraform.tfvars:180-192
   - terraform/bootstrap/variables.tf:699-719
   notes: Hardcoded to a digest that exists ONLY in saga-agents-staging's Artifact Registry. A new project must build and promote its own workspace-apply image first (make build / make push) and update this value, or the google_cloud_run_v2_job precondition (local.workspace_image_parts.project == var.project_id) fails the plan outright.
+  step: images.copy
 - id: image.agent-runtime-base
   kind: image
   scope: core
@@ -2405,6 +2543,7 @@ entries:
   - images/agent-runtime-base/Dockerfile:1
   - images/agent-runtime-base/Dockerfile:61-62
   notes: its first line pins `# syntax=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:...` -- the SHARED staging project, by literal hardcoded path, not derived from $P or any terraform output; see the cross-cutting note on every Dockerfile below
+  step: images.copy
   refs:
     image:
     - agent-runtime-base
@@ -2425,6 +2564,7 @@ entries:
   evidence:
   - scripts/build-images.sh:169-193
   notes: keyed by image name (not tag) in the build record, promotion, size/duplicate-layer gates (scripts/image-sizes.sh) and terraform's image_refs -- so it is tracked as its own image despite sharing a recipe directory
+  step: images.copy
   refs:
     image:
     - agent-runtime-base-nocodex
@@ -2445,6 +2585,7 @@ entries:
   - scripts/build-images.sh:169
   - images/agent-runtime-browser/Dockerfile:1
   notes: declares no MIRROR_* build arg at all -- its only external pull is the `# syntax=` frontend itself (scripts/lib/build-mirror.sh:43-46 comment), so there is nothing a --build-arg override can redirect for this image; only editing the Dockerfile's first line moves it off saga-agents-staging
+  step: images.copy
   refs:
     image:
     - agent-runtime-browser
@@ -2467,6 +2608,7 @@ entries:
   - images/agent-runtime-indexer/Dockerfile:1
   - images/agent-runtime-indexer/Dockerfile:49
   notes: 'null'
+  step: images.copy
   refs:
     image:
     - agent-runtime-indexer
@@ -2491,6 +2633,7 @@ entries:
   - terraform/infra/verify.tf:236-252
   - terraform/infra/images.json:1
   notes: Google documents gcrane for cross-project copies (cloud.google.com/artifact-registry/docs/docker/copy-images).
+  step: images.copy
 - id: image.mcp-test-server
   kind: image
   scope: addon:ci
@@ -2507,6 +2650,7 @@ entries:
   evidence:
   - terraform/infra/mcp_test_server.tf:128-216
   notes: 'not verified: did not confirm which var.image_refs key this resource reads; inferred from the resource existing outside images.json''s two lists.'
+  step: images.copy
 - id: image.swarm-api
   kind: image
   scope: core
@@ -2526,6 +2670,7 @@ entries:
   - images/swarm-api/Dockerfile:1
   - images/swarm-api/Dockerfile:44-45
   notes: 'null'
+  step: images.copy
   refs:
     image:
     - swarm-api
@@ -2549,6 +2694,7 @@ entries:
   - apps/swarm-egress/Dockerfile:1
   - apps/swarm-egress/Dockerfile:44-45
   notes: 'null'
+  step: images.copy
   refs:
     image:
     - swarm-egress
@@ -2568,6 +2714,7 @@ entries:
   - registry.swarm
   evidence:
   - terraform/infra/images.json:9-14
+  step: images.copy
 - id: image.swarm-github-hooks
   kind: image
   scope: core
@@ -2587,6 +2734,7 @@ entries:
   - apps/swarm-github-hooks/Dockerfile:1
   - apps/swarm-github-hooks/Dockerfile:52-53
   notes: 'null'
+  step: images.copy
   refs:
     image:
     - swarm-github-hooks
@@ -2606,6 +2754,7 @@ entries:
   - registry.swarm
   evidence:
   - terraform/infra/images.json:14-20
+  step: images.copy
 - id: image.swarm-graph
   kind: image
   scope: core
@@ -2626,6 +2775,7 @@ entries:
   - apps/swarm-graph/Dockerfile:1
   - apps/swarm-graph/Dockerfile:53-54
   notes: 'null'
+  step: images.copy
   refs:
     image:
     - swarm-graph
@@ -2645,6 +2795,7 @@ entries:
   - registry.swarm
   evidence:
   - terraform/infra/images.json:21-24
+  step: images.copy
 - id: image.swarm-live
   kind: image
   scope: core
@@ -2664,6 +2815,7 @@ entries:
   - apps/swarm-live/Dockerfile:1
   - apps/swarm-live/Dockerfile:54-55
   notes: 'null'
+  step: images.copy
   refs:
     image:
     - swarm-live
@@ -2683,6 +2835,7 @@ entries:
   - registry.swarm
   evidence:
   - terraform/infra/images.json:25-28
+  step: images.copy
 - id: image.swarm-quota-broker
   kind: image
   scope: core
@@ -2702,6 +2855,7 @@ entries:
   - images/swarm-quota-broker/Dockerfile:1
   - images/swarm-quota-broker/Dockerfile:44-45
   notes: 'null'
+  step: images.copy
   refs:
     image:
     - swarm-quota-broker
@@ -2725,6 +2879,7 @@ entries:
   - images/swarm-reconciler/Dockerfile:1
   - images/swarm-reconciler/Dockerfile:46-47
   notes: 'null'
+  step: images.copy
   refs:
     image:
     - swarm-reconciler
@@ -2748,6 +2903,7 @@ entries:
   - images/swarm-scheduler/Dockerfile:1
   - images/swarm-scheduler/Dockerfile:46-47
   notes: 'null'
+  step: images.copy
   refs:
     image:
     - swarm-scheduler
@@ -2771,6 +2927,7 @@ entries:
   - apps/swarm-typesafe-fwd/Dockerfile:1
   - apps/swarm-typesafe-fwd/Dockerfile:48-49
   notes: 'null'
+  step: images.copy
   refs:
     image:
     - swarm-typesafe-fwd
@@ -2790,6 +2947,7 @@ entries:
   - registry.swarm
   evidence:
   - terraform/infra/images.json:29-32
+  step: images.copy
 - id: image.swarm-ui
   kind: image
   scope: core
@@ -2809,6 +2967,7 @@ entries:
   - images/swarm-ui/Dockerfile:1
   - images/swarm-ui/Dockerfile:62
   notes: 'null'
+  step: images.copy
   refs:
     image:
     - swarm-ui
@@ -2832,6 +2991,7 @@ entries:
   - images/swarm-verify/Dockerfile:1
   - images/swarm-verify/Dockerfile:58
   notes: 'null'
+  step: images.copy
   refs:
     image:
     - swarm-verify
@@ -2855,6 +3015,7 @@ entries:
   - images/workspace-apply/Dockerfile:94
   - kubernetes/render.py:524
   notes: terraform/bootstrap/terraform.tfvars:192 pins workspace_apply_image to a `saga-agents-staging`/swarm-images digest literally; a from-scratch install must replace this tfvars value with the new project's own pushed digest before bootstrap applies, or the deployer job runs the OTHER team's image
+  step: images.copy
   refs:
     image:
     - workspace-apply
@@ -2875,6 +3036,7 @@ entries:
   evidence:
   - terraform/infra/verify.tf:236-270
   notes: A targeted plan (scripts/plan.sh's fresh-project path) does not evaluate this resource at all, so a brand-new project's very first, registry-only plan is NOT blocked by this -- it only bites once a full plan is attempted with an incomplete image_refs.
+  step: images.copy
 - id: registry.mirror-dockerhub
   kind: registry
   scope: core
@@ -2890,6 +3052,7 @@ entries:
   - api.artifactregistry
   evidence:
   - terraform/infra/build_mirror.tf:64-91
+  step: images.registry
   refs:
     terraform:
     - infra/google_artifact_registry_repository.mirror_dockerhub
@@ -2908,6 +3071,7 @@ entries:
   - api.artifactregistry
   evidence:
   - terraform/infra/build_mirror.tf:37-63
+  step: images.registry
   refs:
     terraform:
     - infra/google_artifact_registry_repository.mirror_ghcr
@@ -2926,6 +3090,7 @@ entries:
   - api.storage
   evidence:
   - terraform/infra/acceptance_fixture.tf:44-76
+  step: infra.pass-1
   refs:
     terraform:
     - infra/google_storage_bucket.acceptance_fixture
@@ -2946,6 +3111,7 @@ entries:
   evidence:
   - terraform/modules/storage/main.tf:10-11
   - terraform/modules/storage/main.tf:44-83
+  step: infra.pass-1
   refs:
     terraform:
     - modules/storage/google_storage_bucket.access_logs
@@ -2968,6 +3134,7 @@ entries:
   - terraform/modules/storage/main.tf:1-8
   - terraform/modules/storage/main.tf:89-140
   notes: The task brief expected separate 'workspace bucket' and 'checkpoints' entries; the code has one bucket with prefixes, not separate buckets. Workspace data itself is memory-backed tmpfs, never GCS at all (CLAUDE.md workspace-storage correction).
+  step: infra.pass-1
   refs:
     terraform:
     - modules/storage/google_storage_bucket.artifacts
@@ -2987,6 +3154,7 @@ entries:
   evidence:
   - terraform/infra/log_bucket.tf:83
   - terraform/infra/log_bucket.tf:118
+  step: infra.pass-1
   refs:
     terraform:
     - infra/google_logging_project_bucket_config.swarm_worker_logs
@@ -3011,6 +3179,7 @@ entries:
   - terraform/infra/locals.tf:593-673
   - terraform/modules/cloud_run_jobs/main.tf:45
   notes: The task brief's '~15 Cloud Run jobs' most likely refers to this matrix's instance count on some reference environment, not to 15 distinct job definitions; there are only 2 distinct Cloud Run Job resource declarations in this track (this one and cloud-run-job.verify). Recompute the exact count per environment from local.job_matrix before relying on a number.
+  step: infra.pass-1
   refs:
     terraform:
     - modules/cloud_run_jobs/google_cloud_run_v2_job.this
@@ -3033,6 +3202,7 @@ entries:
   evidence:
   - terraform/infra/main.tf:321-413
   notes: tests/terraform/cloud_run.tftest.hcl pins the 660s figure together with two other timeouts (gitexec.CALL_DEADLINE_SECONDS, GIT_CALL_TIMEOUT_SECONDS) that live in application code, not Terraform -- changing one without the others is a latent desync.
+  step: infra.pass-1
   refs:
     terraform:
     - modules/cloud_run/google_cloud_run_v2_service.this
@@ -3053,6 +3223,7 @@ entries:
   evidence:
   - terraform/infra/main.tf:354-361
   - terraform/infra/main.tf:432-472
+  step: infra.pass-1
   refs:
     terraform:
     - modules/cloud_run/google_cloud_run_v2_service.this
@@ -3072,6 +3243,7 @@ entries:
   - sa.swarm-reconciler
   evidence:
   - terraform/infra/main.tf:493-503
+  step: infra.pass-1
   refs:
     terraform:
     - modules/cloud_run/google_cloud_run_v2_service.this
@@ -3091,6 +3263,7 @@ entries:
   - sa.swarm-scheduler
   evidence:
   - terraform/infra/main.tf:414-431
+  step: infra.pass-1
   refs:
     terraform:
     - modules/cloud_run/google_cloud_run_v2_service.this
@@ -3110,6 +3283,7 @@ entries:
   - sa.swarm-api
   evidence:
   - terraform/infra/main.tf:473-492
+  step: infra.pass-1
   refs:
     terraform:
     - modules/cloud_run/google_cloud_run_v2_service.this
@@ -3133,6 +3307,11 @@ entries:
   - terraform/infra/main.tf:174-200
   - terraform/modules/gke_autopilot/main.tf:18
   notes: gke_cluster_name is passed to module.iam as a literal string built the same way as the module's own cluster_name, NOT read back from the module (terraform/infra/main.tf:210-214), because the cluster is behind a count and the IAM condition must be known at plan time -- a drift risk if the two naming expressions ever diverge.
+  probe:
+    type: gke_authorized_networks
+    location: $R
+    absent_display_name: swarm-install
+  step: infra.pass-1
   refs:
     terraform:
     - modules/gke_autopilot/google_container_cluster.this
@@ -3155,6 +3334,7 @@ entries:
   evidence:
   - terraform/infra/variables.tf:440-457
   notes: On a brand-new project, dev.tfvars/prod.tfvars both currently list live saga.xyz tenants (eng, smoke, u-sw-c90291, u-or-9a0792 / eng, research, smoke) -- see the top-level reply's surprises for why these cannot simply be copied as-is into a new project.
+  step: infra.pass-1
   refs:
     terraform:
     - infra/data.google_service_account.listed
@@ -3173,6 +3353,7 @@ entries:
   - firestore.main
   evidence:
   - terraform/modules/firestore/backups.tf:23
+  step: infra.pass-1
   refs:
     terraform:
     - modules/firestore/google_firestore_backup_schedule.daily
@@ -3191,6 +3372,7 @@ entries:
   - api.firestore
   evidence:
   - terraform/modules/firestore/bench.tf:25
+  step: infra.pass-1
   refs:
     terraform:
     - modules/firestore/google_firestore_database.bench
@@ -3212,6 +3394,7 @@ entries:
   - terraform/modules/firestore/bootstrap.tf:22
   - terraform/modules/firestore/bootstrap.tf:43
   - terraform/infra/main.tf:152-169
+  step: infra.pass-1
   refs:
     terraform:
     - modules/firestore/google_firestore_document.pool
@@ -3232,6 +3415,7 @@ entries:
   evidence:
   - terraform/modules/firestore/indexes.tf:604
   - terraform/modules/firestore/indexes.tf:761
+  step: infra.pass-1
   refs:
     terraform:
     - modules/firestore/google_firestore_index.this
@@ -3253,6 +3437,7 @@ entries:
   - terraform/infra/main.tf:139-172
   - terraform/modules/firestore/main.tf:8
   notes: location=var.region is a single-region Firestore location, not a multi-region one; confirm var.region is a valid Firestore location string before first apply (not verified against the full valid-location list).
+  step: infra.pass-1
   refs:
     terraform:
     - modules/firestore/google_firestore_database.this
@@ -3276,6 +3461,7 @@ entries:
   - terraform/modules/firestore/indexes.tf:626-733
   - terraform/modules/firestore/workspace_secrets_ttl.tf:15
   - terraform/infra/github_hooks.tf:186
+  step: infra.pass-1
   refs:
     terraform:
     - modules/firestore/google_firestore_field.reconciler_passes_ttl
@@ -3304,6 +3490,7 @@ entries:
   - terraform/infra/main.tf:157-169
   - terraform/modules/monitoring/tenant_namespace.tf:63-99
   notes: 'not verified: the k8s Namespace object itself is rendered by kubernetes/render.py, outside this track''s Terraform; Terraform only computes the name and grants IAM conditioned on it.'
+  step: infra.pass-1
 - id: network.fw-allow-egress-allowed-ports
   kind: network
   scope: core
@@ -3319,6 +3506,7 @@ entries:
   - network.fw-deny-all-egress
   evidence:
   - terraform/modules/network/firewall.tf:179
+  step: infra.pass-1
   refs:
     terraform:
     - modules/network/google_compute_firewall.allow_egress_allowed_ports
@@ -3338,6 +3526,7 @@ entries:
   - cluster.autopilot
   evidence:
   - terraform/modules/network/firewall.tf:129
+  step: infra.pass-1
   refs:
     terraform:
     - modules/network/google_compute_firewall.allow_gke_webhooks
@@ -3356,6 +3545,7 @@ entries:
   - network.vpc
   evidence:
   - terraform/modules/network/firewall.tf:107
+  step: infra.pass-1
   refs:
     terraform:
     - modules/network/google_compute_firewall.allow_health_checks
@@ -3374,6 +3564,7 @@ entries:
   - network.vpc
   evidence:
   - terraform/modules/network/firewall.tf:28
+  step: infra.pass-1
   refs:
     terraform:
     - modules/network/google_compute_firewall.allow_internal
@@ -3392,6 +3583,7 @@ entries:
   - network.vpc
   evidence:
   - terraform/modules/network/firewall.tf:157
+  step: infra.pass-1
   refs:
     terraform:
     - modules/network/google_compute_firewall.deny_all_egress
@@ -3412,6 +3604,7 @@ entries:
   - network.vpc
   evidence:
   - terraform/modules/network/firewall.tf:7
+  step: infra.pass-1
   refs:
     terraform:
     - modules/network/google_compute_firewall.deny_all_ingress
@@ -3431,6 +3624,7 @@ entries:
   evidence:
   - terraform/modules/network/firewall.tf:82
   - terraform/infra/main.tf:520-522
+  step: infra.pass-1
   refs:
     terraform:
     - modules/network/google_compute_firewall.deny_worker_ingress
@@ -3450,6 +3644,7 @@ entries:
   - network.nat-static-ip
   evidence:
   - terraform/modules/network/main.tf:95
+  step: infra.pass-1
   refs:
     terraform:
     - modules/network/google_compute_router_nat.this
@@ -3468,6 +3663,7 @@ entries:
   - network.vpc
   evidence:
   - terraform/modules/network/main.tf:73
+  step: infra.pass-1
   refs:
     terraform:
     - modules/network/google_compute_address.nat
@@ -3486,6 +3682,7 @@ entries:
   - network.vpc
   evidence:
   - terraform/modules/network/main.tf:86
+  step: infra.pass-1
   refs:
     terraform:
     - modules/network/google_compute_router.this
@@ -3504,6 +3701,7 @@ entries:
   - network.vpc
   evidence:
   - terraform/modules/network/main.tf:38
+  step: infra.pass-1
   refs:
     terraform:
     - modules/network/google_compute_subnetwork.this
@@ -3523,6 +3721,7 @@ entries:
   evidence:
   - terraform/infra/main.tf:62-81
   - terraform/modules/network/main.tf:20
+  step: infra.pass-1
   refs:
     terraform:
     - modules/network/google_compute_network.this
@@ -3542,6 +3741,7 @@ entries:
   evidence:
   - terraform/environments/dev/dev.tfvars:320-400
   notes: On a NEW project these 4 tenant entries (eng@saga.xyz, smoke@saga.xyz, and two u- personal tenants) are specific to the CURRENT saga.xyz Workspace domain and the CURRENT project's live history; they cannot be copied verbatim into an unrelated organization's new project without first deciding what the new project's real tenants are.
+  step: infra.pass-1
 - id: other.log-view-swarm-workers
   kind: other
   scope: core
@@ -3557,6 +3757,7 @@ entries:
   - bucket.worker-logs
   evidence:
   - terraform/infra/log_view.tf:105
+  step: infra.pass-1
   refs:
     terraform:
     - infra/google_logging_log_view.swarm_workers
@@ -3575,6 +3776,7 @@ entries:
   - declared-value.var-tenants-freeze
   evidence:
   - terraform/environments/prod/prod.tfvars:1-30
+  step: infra.pass-1
 - id: pubsub.api-task-finished-subscription
   kind: pubsub-topic
   scope: core
@@ -3591,6 +3793,7 @@ entries:
   evidence:
   - terraform/modules/scheduler/main.tf:114-150
   - terraform/infra/main.tf:611-615
+  step: infra.pass-1
   refs:
     terraform:
     - modules/scheduler/google_pubsub_subscription.api_task_finished
@@ -3609,6 +3812,7 @@ entries:
   - pubsub.dead-letter-topic
   evidence:
   - terraform/modules/scheduler/main.tf:151-172
+  step: infra.pass-1
   refs:
     terraform:
     - modules/scheduler/google_pubsub_subscription.dead_letter
@@ -3628,6 +3832,7 @@ entries:
   - api.pubsub
   evidence:
   - terraform/modules/scheduler/main.tf:42-54
+  step: infra.pass-1
   refs:
     terraform:
     - modules/scheduler/google_pubsub_topic.dead_letter
@@ -3648,6 +3853,7 @@ entries:
   - cloud-run-service.swarm-reconciler
   evidence:
   - terraform/modules/scheduler/execution_cancel.tf:47-88
+  step: infra.pass-1
   refs:
     terraform:
     - modules/scheduler/google_pubsub_subscription.execution_cancel
@@ -3667,6 +3873,7 @@ entries:
   evidence:
   - terraform/modules/scheduler/execution_cancel.tf:31-46
   - terraform/infra/main.tf:617-622
+  step: infra.pass-1
   refs:
     terraform:
     - modules/scheduler/google_pubsub_topic.execution_cancel
@@ -3687,6 +3894,7 @@ entries:
   - cloud-run-service.swarm-scheduler
   evidence:
   - terraform/modules/scheduler/main.tf:55-113
+  step: infra.pass-1
   refs:
     terraform:
     - modules/scheduler/google_pubsub_subscription.wake
@@ -3707,6 +3915,7 @@ entries:
   - terraform/modules/scheduler/main.tf:27-41
   - terraform/infra/main.tf:11-14
   - terraform/infra/main.tf:545
+  step: infra.pass-1
   refs:
     terraform:
     - modules/scheduler/google_pubsub_topic.wake
@@ -3728,6 +3937,7 @@ entries:
   evidence:
   - terraform/infra/main.tf:83-120
   - terraform/modules/artifact_registry/main.tf:6
+  step: images.registry
   refs:
     terraform:
     - modules/artifact_registry/google_artifact_registry_repository.this
@@ -3752,6 +3962,7 @@ entries:
   evidence:
   - terraform/modules/scheduler/jobs.tf:228-286
   - terraform/modules/scheduler/variables.tf:270-286
+  step: infra.pass-1
   refs:
     terraform:
     - modules/scheduler/google_cloud_scheduler_job.issue_run_advance
@@ -3775,6 +3986,7 @@ entries:
   - secret.swarm-tenant-provider.container
   evidence:
   - terraform/modules/scheduler/jobs.tf:420-488
+  step: infra.pass-1
   refs:
     terraform:
     - modules/scheduler/google_cloud_scheduler_job.merge_wake
@@ -3798,6 +4010,7 @@ entries:
   evidence:
   - terraform/modules/scheduler/jobs.tf:75-157
   - terraform/modules/scheduler/variables.tf:403-406
+  step: infra.pass-1
   refs:
     terraform:
     - modules/scheduler/google_cloud_scheduler_job.quota_refresh
@@ -3820,6 +4033,7 @@ entries:
   evidence:
   - terraform/modules/scheduler/jobs.tf:36-74
   - terraform/modules/scheduler/variables.tf:376-401
+  step: infra.pass-1
   refs:
     terraform:
     - modules/scheduler/google_cloud_scheduler_job.reconciler
@@ -3842,6 +4056,7 @@ entries:
   evidence:
   - terraform/modules/scheduler/jobs.tf:370-425
   - terraform/modules/scheduler/variables.tf:314-330
+  step: infra.pass-1
   refs:
     terraform:
     - modules/scheduler/google_cloud_scheduler_job.repo_index_poll
@@ -3865,6 +4080,7 @@ entries:
   evidence:
   - terraform/modules/scheduler/jobs.tf:559-623
   - terraform/modules/scheduler/variables.tf:180-211
+  step: infra.pass-1
   refs:
     terraform:
     - modules/scheduler/google_cloud_scheduler_job.schedule_tick
@@ -3886,6 +4102,7 @@ entries:
   evidence:
   - terraform/modules/scheduler/jobs.tf:3-35
   - terraform/modules/scheduler/variables.tf:366-375
+  step: infra.pass-1
   refs:
     terraform:
     - modules/scheduler/google_cloud_scheduler_job.safety_tick
@@ -3907,6 +4124,7 @@ entries:
   evidence:
   - terraform/modules/scheduler/jobs.tf:696-783
   - terraform/modules/scheduler/variables.tf:241-252
+  step: infra.pass-1
   refs:
     terraform:
     - modules/scheduler/google_cloud_scheduler_job.secrets_rotation_sweep
@@ -3929,6 +4147,7 @@ entries:
   evidence:
   - terraform/modules/scheduler/jobs.tf:308-369
   - terraform/modules/scheduler/variables.tf:287-313
+  step: infra.pass-1
   refs:
     terraform:
     - modules/scheduler/google_cloud_scheduler_job.stranded_pr_sweep
@@ -3954,6 +4173,7 @@ entries:
   - terraform/modules/scheduler/variables.tf:253-269
   - terraform/infra/main.tf:570-571
   notes: 'Fans out per tenant: dev.tfvars has 4 tenants, prod.tfvars has 3, so the instance count differs by environment and changes whenever var.tenants changes (which is frozen per declared-value.var-tenants-freeze).'
+  step: infra.pass-1
   refs:
     terraform:
     - modules/scheduler/google_cloud_scheduler_job.workflow_rollup
@@ -3977,6 +4197,7 @@ entries:
   - terraform/modules/scheduler/jobs.tf:624-695
   - terraform/modules/scheduler/variables.tf:212-240
   - terraform/infra/main.tf:580-584
+  step: infra.pass-1
   refs:
     terraform:
     - modules/scheduler/google_cloud_scheduler_job.workspace_sweep
@@ -3999,6 +4220,7 @@ entries:
   evidence:
   - terraform/infra/main.tf:283-289
   - terraform/modules/secret_manager/main.tf:172-216
+  step: infra.pass-1
   refs:
     terraform:
     - modules/secret_manager/google_secret_manager_secret.refresh
@@ -4027,6 +4249,7 @@ entries:
   - terraform/bootstrap/provider_keys.tf:146-176
   - apps/common/swarm_common/models.py:878-879
   notes: '409 risk: scripts/create-secrets.sh describes-then-creates (gcloud secrets describe at L934, gcloud secrets create at L940) while swarm-api''s put_credential (credentials.py:177-190) unconditionally calls create_secret and only then catches AlreadyExists. An operator running create-secrets.sh for a tenant at the same moment that tenant''s onboarding (or a PUT credential call) races swarm-api''s create is a real double-create window; both sides tolerate AlreadyExists so the practical failure is a replication-policy MISMATCH (script pins --replication-policy=user-managed --locations=$R; swarm-api''s create_secret uses replication from self._replication_locations or automatic{}) rather than a hard 409, but whichever call loses the race silently keeps the other''s replication policy forever.'
+  step: infra.pass-1
   refs:
     terraform:
     - modules/secret_manager/google_secret_manager_secret.this
@@ -4056,6 +4279,7 @@ entries:
   - apps/swarm-api/swarm_api/qatargets.py:505
   - apps/swarm-api/swarm_api/qatargets.py:775
   notes: 'Addon scope: ci (judged from the file''s purpose -- QA targets back acceptance/judge tooling, not a production runner_profile). ALSO: the ONLY per-tenant pattern terraform declares directly (for_each over tenants) rather than swarm-api creating lazily; a from-scratch install must apply qa_targets.tf per tenant before any QA registration, unlike every other per-tenant secret here'
+  step: infra.pass-1
   refs:
     terraform:
     - infra/google_secret_manager_secret.qa_target
@@ -4080,6 +4304,7 @@ entries:
   evidence:
   - terraform/infra/variables.tf:142-150
   - terraform/infra/main.tf:174-200
+  step: infra.pass-1
   refs:
     variable:
     - infra/enable_gke_autopilot
@@ -4097,6 +4322,7 @@ entries:
   depends_on: []
   evidence:
   - terraform/infra/variables.tf:975-980
+  step: infra.pass-1
   refs:
     variable:
     - infra/enable_quota_refresh
@@ -4116,6 +4342,7 @@ entries:
   evidence:
   - terraform/infra/tailscale.tf:76-91
   notes: 'HARDCODED LIVE VALUE: this default names a specific live tailnet host (Saga''s staging decision API) belonging to the CURRENT project''s addon setup. A from-scratch install into a new project almost certainly needs a different value here, or the addon dials somebody else''s staging backend.'
+  step: infra.pass-1
   refs:
     variable:
     - infra/enable_tailscale_egress
@@ -4137,6 +4364,7 @@ entries:
   - terraform/infra/verify.tf:146-224
   - terraform/infra/verify.tf:250-269
   notes: A FRESH project's first plan (scripts/plan.sh, targeted at the registry alone) does not evaluate this precondition at all, since a targeted plan skips the resource -- this is deliberate, not a gap, so the registry can be created before any image exists to pin.
+  step: infra.pass-1
   refs:
     terraform:
     - infra/google_cloud_run_v2_job.verify
@@ -4157,6 +4385,7 @@ entries:
   evidence:
   - terraform/infra/github_hooks.tf:80-96
   - terraform/infra/github_hooks.tf:201-313
+  step: infra.pass-1
   refs:
     terraform:
     - infra/google_cloud_run_v2_service.github_hooks
@@ -4176,6 +4405,7 @@ entries:
   - sa.mcp-test-server
   evidence:
   - terraform/infra/mcp_test_server.tf:110-236
+  step: infra.pass-1
   refs:
     terraform:
     - infra/google_cloud_run_v2_service.mcp_test_server
@@ -4194,6 +4424,7 @@ entries:
   - switch.enable_forge_user_slots
   evidence:
   - terraform/bootstrap/forge_user_slots.tf:206-220
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.forge_slot_creator
@@ -4212,6 +4443,7 @@ entries:
   - switch.enable_forge_user_slots
   evidence:
   - terraform/bootstrap/forge_user_slots.tf:252-268
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.forge_slot_version_manager
@@ -4230,6 +4462,7 @@ entries:
   evidence:
   - terraform/infra/variables.tf:969-974
   notes: The KMS key ITSELF is created in terraform/bootstrap (stage 3, 'bootstrap pass 1'), not this track; this is only where this root is told its name.
+  step: infra.pass-1
 - id: iam-binding.swarm-api-forge-slots
   kind: iam-binding
   scope: core
@@ -4249,6 +4482,7 @@ entries:
   evidence:
   - terraform/bootstrap/forge_user_slots.tf:222-541
   notes: forge_slot_reader (the tenant worker's own read of base slots) has a precondition refusing any tenant id that is a PREFIX of another's -git-u- name (forge_nested_tenants check); rename the tenant if it fires.
+  step: bootstrap.pass-1
   refs:
     terraform:
     - bootstrap/google_project_iam_member.forge_slot_creator
@@ -4277,6 +4511,7 @@ entries:
   evidence:
   - terraform/infra/locals.tf:1005-1020
   notes: 'Confirmed not set by any .tf/.tfvars in this track: the comment says ''was set by no .tf and no .tfvars, so the in-VPC gate''s every request was answered 403 by design'' -- on a NEW project this means the verify job is DOA until ALLOWED_USERS is set some other way (application config / a var this pass did not locate). Flag for the owner.'
+  step: infra.pass-1
 - id: sched.forge-refresh
   kind: scheduler-job
   scope: core
@@ -4294,6 +4529,7 @@ entries:
   evidence:
   - terraform/modules/scheduler/jobs.tf:489-558
   - terraform/modules/scheduler/variables.tf:170-179
+  step: infra.pass-1
   refs:
     terraform:
     - modules/scheduler/google_cloud_scheduler_job.forge_refresh
@@ -4316,6 +4552,7 @@ entries:
   evidence:
   - terraform/modules/scheduler/jobs.tf:779-825
   - terraform/infra/main.tf:592-601
+  step: infra.pass-1
   refs:
     terraform:
     - modules/scheduler/google_cloud_scheduler_job.mcp_credentials_sweep
@@ -4344,6 +4581,7 @@ entries:
   probe:
     type: secret_exists
     secret_id: swarm-child-key
+  step: infra.pass-1
   refs:
     terraform:
     - infra/google_secret_manager_secret.child_key
@@ -4373,6 +4611,7 @@ entries:
   probe:
     type: secret_exists
     secret_id: swarm-egress-credential
+  step: infra.pass-1
   refs:
     terraform:
     - infra/google_secret_manager_secret.browser_egress
@@ -4399,6 +4638,7 @@ entries:
   probe:
     type: secret_exists
     secret_id: swarm-egress-key
+  step: infra.pass-1
   refs:
     terraform:
     - infra/google_secret_manager_secret.egress_key
@@ -4428,6 +4668,7 @@ entries:
   probe:
     type: secret_exists
     secret_id: swarm-github-app-client-secret
+  step: infra.pass-1
   refs:
     terraform:
     - modules/secret_manager/google_secret_manager_secret.github_app
@@ -4456,6 +4697,7 @@ entries:
   probe:
     type: secret_exists
     secret_id: swarm-github-app-private-key
+  step: infra.pass-1
   refs:
     terraform:
     - modules/secret_manager/google_secret_manager_secret.github_app
@@ -4484,6 +4726,7 @@ entries:
   probe:
     type: secret_exists
     secret_id: swarm-github-app-webhook-secret
+  step: infra.pass-1
   refs:
     terraform:
     - infra/google_secret_manager_secret.github_webhook_secret
@@ -4513,6 +4756,7 @@ entries:
   probe:
     type: secret_exists
     secret_id: swarm-graph-ticket-key
+  step: infra.pass-1
   refs:
     terraform:
     - infra/google_secret_manager_secret.graph_ticket_key
@@ -4541,6 +4785,7 @@ entries:
   probe:
     type: secret_exists
     secret_id: swarm-live-key
+  step: infra.pass-1
   refs:
     terraform:
     - infra/google_secret_manager_secret.live_key
@@ -4567,6 +4812,7 @@ entries:
   probe:
     type: secret_exists
     secret_id: swarm-search-api-key
+  step: secrets.platform-keys
   refs:
     secret:
     - swarm-search-api-key
@@ -4591,6 +4837,7 @@ entries:
   probe:
     type: secret_exists
     secret_id: swarm-settings-key
+  step: infra.pass-1
   refs:
     terraform:
     - infra/google_secret_manager_secret.settings_mac_key
@@ -4618,6 +4865,7 @@ entries:
   probe:
     type: secret_exists
     secret_id: swarm-tailscale-oauth
+  step: infra.pass-1
   refs:
     terraform:
     - infra/google_secret_manager_secret.tailscale_oauth
@@ -4646,6 +4894,7 @@ entries:
   probe:
     type: secret_exists
     secret_id: swarm-typesafe-fwd-key
+  step: infra.pass-1
   refs:
     terraform:
     - infra/google_secret_manager_secret.typesafe_fwd_key
@@ -4673,6 +4922,7 @@ entries:
   probe:
     type: secret_exists
     secret_id: swarm-workspace-grant-key
+  step: infra.pass-1
   refs:
     terraform:
     - infra/google_secret_manager_secret.workspace_grant_key
@@ -4695,6 +4945,7 @@ entries:
   evidence:
   - scripts/create-secrets.sh:42-49
   notes: 'null'
+  step: secrets.platform-keys
   refs:
     secret_flag:
     - --child-key
@@ -4714,6 +4965,7 @@ entries:
   evidence:
   - scripts/create-secrets.sh:117-134
   notes: already held a version as of 2026-10-14 per the script header; a new version REPLACES what swarm-egress reads as latest
+  step: secrets.platform-keys
   refs:
     secret_flag:
     - --egress-credential
@@ -4733,6 +4985,7 @@ entries:
   evidence:
   - scripts/create-secrets.sh:117-134
   notes: 'null'
+  step: secrets.platform-keys
   refs:
     secret_flag:
     - --egress-key
@@ -4752,6 +5005,7 @@ entries:
   evidence:
   - scripts/create-secrets.sh:75-83
   notes: 'null'
+  step: secrets.platform-keys
   refs:
     secret_flag:
     - --graph-ticket-key
@@ -4771,6 +5025,7 @@ entries:
   evidence:
   - scripts/create-secrets.sh:50-57
   notes: 'null'
+  step: secrets.platform-keys
   refs:
     secret_flag:
     - --live-key
@@ -4790,6 +5045,7 @@ entries:
   evidence:
   - scripts/create-secrets.sh:749-806
   notes: null Scope set to addon:brave-search by brief D9 (the research pass had it core).
+  step: secrets.platform-keys
   refs:
     secret_flag:
     - --search-api-key
@@ -4809,6 +5065,7 @@ entries:
   evidence:
   - scripts/create-secrets.sh:152-166
   notes: replacing an enabled version needs a typed confirmation and the replaced version kept as SWARM_SETTINGS_KEY_PREVIOUS until the re-sign has run
+  step: secrets.platform-keys
   refs:
     secret_flag:
     - --settings-mac-key
@@ -4828,6 +5085,7 @@ entries:
   evidence:
   - scripts/create-secrets.sh:84-91
   notes: 'null'
+  step: secrets.platform-keys
   refs:
     secret_flag:
     - --tailscale-oauth
@@ -4848,6 +5106,7 @@ entries:
   - scripts/create-secrets.sh:899-920
   - scripts/create-secrets.sh:960-995
   notes: the forge token (--provider git) additionally needs contents+pull_requests write, issues write, checks read, actions read on the tenant's repositories (docs/multi-tenancy.md)
+  step: handoff.console
   refs:
     secret_flag:
     - --subscription
@@ -4868,6 +5127,7 @@ entries:
   evidence:
   - scripts/create-secrets.sh:65-73
   notes: 'null'
+  step: secrets.platform-keys
   refs:
     secret_flag:
     - --typesafe-fwd-key
@@ -4887,6 +5147,7 @@ entries:
   evidence:
   - scripts/create-secrets.sh:58-64
   notes: 'null'
+  step: secrets.platform-keys
   refs:
     secret_flag:
     - --workspace-grant-key
@@ -4905,6 +5166,7 @@ entries:
   - secret.swarm-child-key.container
   evidence:
   - terraform/infra/child_tasks.tf:58-67
+  step: infra.pass-2
   refs:
     variable:
     - infra/enable_child_tasks
@@ -4923,6 +5185,7 @@ entries:
   - sa.swarm-api
   evidence:
   - terraform/bootstrap/terraform.tfvars:172-178
+  step: bootstrap.pass-1
   refs:
     variable:
     - bootstrap/enable_forge_user_slots
@@ -4943,6 +5206,7 @@ entries:
   evidence:
   - terraform/infra/live.tf:87-100
   - terraform/infra/live.tf:42-44
+  step: infra.pass-2
   refs:
     variable:
     - infra/enable_live_browser
@@ -4961,6 +5225,7 @@ entries:
   - switch.graph_service-serve
   evidence:
   - terraform/infra/graph_service.tf:86-99
+  step: infra.pass-2
   refs:
     variable:
     - infra/enable_graph_service
@@ -4980,6 +5245,7 @@ entries:
   - switch.enable_gke_autopilot
   evidence:
   - terraform/infra/graph_service.tf:86-100
+  step: infra.pass-2
 - id: switch.settings_mac_key_ready
   kind: switch
   scope: core
@@ -4995,6 +5261,7 @@ entries:
   - secret.swarm-settings-key.container
   evidence:
   - terraform/infra/variables.tf:1292-1302
+  step: infra.pass-2
   refs:
     variable:
     - infra/settings_mac_key_ready
@@ -5014,6 +5281,7 @@ entries:
   - secret.swarm-workspace-grant-key.container
   evidence:
   - terraform/infra/workspace_grant_key.tf:40-58
+  step: infra.pass-2
 - id: cloud-run-job.workspace-apply
   kind: cloud-run-job
   scope: core
@@ -5031,6 +5299,7 @@ entries:
   - kms-key.step-spec-key
   evidence:
   - terraform/bootstrap/workspace_deployer.tf:556-641
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_cloud_run_v2_job.workspace_apply
@@ -5049,6 +5318,7 @@ entries:
   - switch.enable_browser_logins
   evidence:
   - terraform/bootstrap/browser_logins.tf:174-196
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.browser_login_revoker
@@ -5067,6 +5337,7 @@ entries:
   - switch.enable_browser_logins
   evidence:
   - terraform/bootstrap/browser_logins.tf:142-172
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.browser_session_provisioner
@@ -5085,6 +5356,7 @@ entries:
   - switch.enable_workspace_kinds
   evidence:
   - terraform/bootstrap/workspace_deployer.tf:907-919
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.front_door_admitter
@@ -5103,6 +5375,7 @@ entries:
   - switch.enable_workspace_kinds
   evidence:
   - terraform/bootstrap/workspace_deployer.tf:945-997
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.front_door_reader
@@ -5122,6 +5395,7 @@ entries:
   evidence:
   - terraform/bootstrap/github_hooks_role.tf:87-97
   notes: 'ORDER TRAP: must be applied before terraform/infra''s enable_github_hooks, whose binding names this role by id; granted there, not here.'
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.github_hooks_dedup
@@ -5141,6 +5415,7 @@ entries:
   evidence:
   - terraform/bootstrap/history_purge.tf:31-50
   notes: 'ORDER TRAP: must be applied BEFORE the terraform/infra release that grants it, or that release''s bucket setIamPolicy names a role that does not exist and fails.'
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.history_purge_deleter
@@ -5159,6 +5434,7 @@ entries:
   - switch.enable_mcp_credentials
   evidence:
   - terraform/bootstrap/mcp_credentials.tf:143-158
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.mcp_credential_accessor
@@ -5177,6 +5453,7 @@ entries:
   - switch.enable_provider_keys
   evidence:
   - terraform/bootstrap/provider_keys.tf:149-170
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.provider_key_writer
@@ -5195,6 +5472,7 @@ entries:
   - switch.enable_platform_secret_status
   evidence:
   - terraform/bootstrap/platform_secret_status.tf:98-111
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.secret_status_viewer
@@ -5213,6 +5491,7 @@ entries:
   - switch.enable_typesafe_forwarder_read
   evidence:
   - terraform/bootstrap/typesafe_forwarder.tf:122-134
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.typesafe_forwarder_accessor
@@ -5232,6 +5511,7 @@ entries:
   evidence:
   - terraform/bootstrap/workspace_deployer.tf:283-309
   - terraform/bootstrap/workspace_deployer.tf:380-389
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.workspace
@@ -5250,6 +5530,7 @@ entries:
   - sa.swarm-workspace-deployer
   evidence:
   - terraform/bootstrap/workspace_deployer.tf:320-328
+  step: bootstrap.pass-2
 - id: role.custom.swarmWorkspaceFirestore
   kind: custom-role
   scope: core
@@ -5265,6 +5546,7 @@ entries:
   - sa.swarm-workspace-deployer
   evidence:
   - terraform/bootstrap/workspace_deployer.tf:340-375
+  step: bootstrap.pass-2
 - id: role.custom.swarmWorkspaceProjectReader
   kind: custom-role
   scope: core
@@ -5280,6 +5562,7 @@ entries:
   - sa.swarm-workspace-deployer
   evidence:
   - terraform/bootstrap/workspace_deployer.tf:311-318
+  step: bootstrap.pass-2
 - id: role.custom.swarmWorkspaceSecretAccessor
   kind: custom-role
   scope: core
@@ -5295,6 +5578,7 @@ entries:
   - switch.enable_workspace_secrets
   evidence:
   - terraform/bootstrap/workspace_secrets.tf:146-160
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.workspace_secret_accessor
@@ -5313,6 +5597,7 @@ entries:
   - sa.swarm-workspace-deployer
   evidence:
   - terraform/bootstrap/workspace_deployer.tf:330-338
+  step: bootstrap.pass-2
 - id: declared-value.frontend_iap_audiences
   kind: declared-value
   scope: core
@@ -5330,6 +5615,7 @@ entries:
   evidence:
   - terraform/infra/variables.tf:569-586
   notes: 'Operator step: run `terraform output frontend_iap_audiences` AFTER the load balancer exists, then paste into <env>.tfvars and re-apply -- a two-apply dance inherent to breaking the cycle.'
+  step: infra.pass-2
 - id: declared-value.frontend_iap_members
   kind: declared-value
   scope: core
@@ -5346,6 +5632,7 @@ entries:
   evidence:
   - terraform/bootstrap/terraform.tfvars:130-155
   notes: 'Every entry here is a live-instance value: the saga.xyz domain and 4 service-account emails at saga-agents-staging.iam.gserviceaccount.com. A new install must replace all 5 or IAP admits nobody (frontend_iap_members may not be empty -- variables.tf:543-545 -- so an operator who blanks it entirely also fails validation).'
+  step: bootstrap.pass-2
 - id: declared-value.infra_tenants_tfvars
   kind: declared-value
   scope: core
@@ -5361,6 +5648,7 @@ entries:
   evidence:
   - terraform/bootstrap/variables.tf:11-34
   - terraform/bootstrap/deployer_service_accounts.tf:61-76
+  step: bootstrap.pass-2
 - id: declared-value.quota_broker_url
   kind: declared-value
   scope: core
@@ -5378,6 +5666,7 @@ entries:
   - terraform/infra/variables.tf:588-612
   - terraform/infra/main.tf:547-554
   notes: 'Same first-apply two-step as frontend_iap_audiences: apply once to create the broker, read the output, write it to tfvars, apply again.'
+  step: infra.pass-2
 - id: declared-value.typesafe_user_key_readers
   kind: declared-value
   scope: addon:typesafe
@@ -5395,6 +5684,7 @@ entries:
   - terraform/bootstrap/terraform.tfvars:218-226
   - terraform/bootstrap/typesafe_user_keys.tf:83-102
   notes: Tenant-specific live value (eng, u-bogdan) meaningless on a new install; also has a precondition (typesafe_user_keys.tf:96-100) requiring 'eng' to be a tenant in infra_tenant_ids, or the plan fails.
+  step: bootstrap.pass-2
 - id: iam-binding.acceptance-fixture-allusers
   kind: iam-binding
   scope: addon:ci
@@ -5411,6 +5701,7 @@ entries:
   evidence:
   - terraform/infra/acceptance_fixture.tf:95-104
   notes: This is a deliberate, narrowly-scoped allUsers grant on a one-object bucket holding only fixed markup -- flag for review on any new project but not a defect.
+  step: infra.pass-2
   refs:
     terraform:
     - infra/google_storage_bucket_iam_member.acceptance_fixture_public_read
@@ -5429,6 +5720,7 @@ entries:
   - sa.swarm-api
   evidence:
   - terraform/modules/iam/bindings.tf:331-335
+  step: infra.pass-2
   refs:
     terraform:
     - modules/iam/google_service_account_iam_member.api_signs_as_itself
@@ -5449,6 +5741,7 @@ entries:
   - switch.grant_broker_secret_lister
   evidence:
   - terraform/bootstrap/platform_roles.tf:361-386
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_member.broker_secret_lister
@@ -5467,6 +5760,7 @@ entries:
   - sa.swarm-quota-broker
   evidence:
   - terraform/modules/iam/custom_roles.tf:116
+  step: infra.pass-2
   refs:
     terraform:
     - modules/iam/google_project_iam_member.broker_version_adder
@@ -5487,6 +5781,7 @@ entries:
   - sa.swarm-reconciler
   evidence:
   - terraform/modules/iam/bindings.tf:215-330
+  step: infra.pass-2
   refs:
     terraform:
     - modules/iam/google_storage_bucket_iam_member.api_reader
@@ -5508,6 +5803,7 @@ entries:
   - sa.swarm-api
   evidence:
   - terraform/infra/deployer.tf:1-62
+  step: infra.pass-2
   refs:
     terraform:
     - infra/google_service_account_iam_member.deployer_acts_as
@@ -5527,6 +5823,7 @@ entries:
   evidence:
   - terraform/bootstrap/deployer_service_accounts.tf:92-115
   notes: 'FRESH-PROJECT TRAP: this resource''s lifecycle has THREE preconditions (deployer_service_accounts.tf:100-113): (1) line 100-103 requires a non-empty top-level `tenants = { ... }` block in infra_tenants_tfvars (default ../environments/dev/dev.tfvars) -- an empty or absent tenants block fails the whole grant, dropping every worker-account admin grant from the plan; (2) line 105-108 refuses a heredoc inside the tenants block (injection guard); (3) line 110-113 refuses swarm-ci-fix/swarm-tf-deployer ever appearing in the managed-account list. On a genuinely fresh project with zero tenants registered yet, precondition (1) fails outright.'
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_service_account_iam_member.deployer_admin
@@ -5547,6 +5844,7 @@ entries:
   evidence:
   - terraform/bootstrap/wif.tf:373-435
   notes: 'FRESH-PROJECT ORDER TRAP: frontend_iap_backends defaults to ["swarm-ui-backend","swarm-ui-ui-backend"] and is NOT overridden in the committed terraform.tfvars. The data source `google_compute_backend_service` (wif.tf:406-411) looks these up by name; on a brand-new project, before terraform/infra''s first apply has created them, this data source read fails the plan outright. The file''s own comment says to apply with frontend_iap_backends=[] first -- but the committed tfvars does not do that, it relies on the variable''s non-empty default.'
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_iap_web_backend_service_iam_member.frontend_accessors
@@ -5566,6 +5864,7 @@ entries:
   evidence:
   - terraform/infra/github_hooks.tf:314-320
   notes: 'DAYONE-P2 correction: Q3 replaces this allUsers binding with invoker_iam_disabled = true on the service (lane DAYONE-TF-2). The id stays so the completeness test keeps matching the Terraform address until TF-2 lands; after TF-2 the check is ''no allUsers member on the service and invoker IAM disabled''.'
+  step: infra.pass-2
   refs:
     terraform:
     - infra/google_cloud_run_v2_service_iam_member.github_hooks_public
@@ -5585,6 +5884,7 @@ entries:
   - sa.swarm-api
   evidence:
   - terraform/bootstrap/log_view_read.tf:56-75
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_logging_log_view_iam_member.swarm_api_reads_swarm_workers
@@ -5603,6 +5903,7 @@ entries:
   - cloud-run-service.mcp-test-server
   evidence:
   - terraform/infra/mcp_test_server.tf:217-236
+  step: infra.pass-2
   refs:
     terraform:
     - infra/google_cloud_run_v2_service_iam_member.mcp_test_server_invoker
@@ -5624,6 +5925,7 @@ entries:
   - sa.swarm-reconciler
   evidence:
   - terraform/modules/iam/bindings.tf:141-214
+  step: infra.pass-2
   refs:
     terraform:
     - modules/iam/google_project_iam_member.plain
@@ -5646,6 +5948,7 @@ entries:
   evidence:
   - terraform/infra/main.tf:97-115
   - terraform/modules/artifact_registry/main.tf:172
+  step: infra.pass-2
   refs:
     terraform:
     - modules/artifact_registry/google_artifact_registry_repository_iam_member.pullers
@@ -5665,6 +5968,7 @@ entries:
   evidence:
   - terraform/infra/main.tf:97-113
   - terraform/modules/artifact_registry/main.tf:143
+  step: infra.pass-2
   refs:
     terraform:
     - modules/artifact_registry/google_artifact_registry_repository_iam_member.readers
@@ -5685,6 +5989,7 @@ entries:
   - cloud-run-service.swarm-api
   evidence:
   - terraform/infra/main.tf:644-682
+  step: infra.pass-2
   refs:
     terraform:
     - infra/google_cloud_run_v2_service_iam_member.rollup_sweeper_invokes_api
@@ -5706,6 +6011,7 @@ entries:
   evidence:
   - terraform/infra/tenant_job_vpc.tf:1-79
   notes: Comment at tenant_job_vpc.tf:16 notes this is the SAME module.network outputs module cloud_run_jobs is given in main.tf -- a consistency the file calls out explicitly, worth re-checking if network module outputs ever change shape.
+  step: infra.pass-2
   refs:
     terraform:
     - infra/google_compute_subnetwork_iam_member.scheduler_tenant_job_subnet
@@ -5726,6 +6032,7 @@ entries:
   - sa.swarm-api
   evidence:
   - terraform/bootstrap/browser_logins.tf:198-234
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_member.browser_session_provisioner
@@ -5746,6 +6053,7 @@ entries:
   - sa.swarm-api
   evidence:
   - terraform/bootstrap/mcp_credentials.tf:160-173
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_member.mcp_credential_accessor
@@ -5765,6 +6073,7 @@ entries:
   - sa.swarm-api
   evidence:
   - terraform/bootstrap/platform_secret_status.tf:114-127
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_member.secret_status_viewer
@@ -5784,6 +6093,7 @@ entries:
   - sa.swarm-api
   evidence:
   - terraform/bootstrap/provider_keys.tf:172-185
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_member.provider_key_writer
@@ -5803,6 +6113,7 @@ entries:
   - sa.swarm-api
   evidence:
   - terraform/bootstrap/spec_signing.tf:132-144
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_kms_crypto_key_iam_member.swarm_api_signer
@@ -5823,6 +6134,7 @@ entries:
   evidence:
   - terraform/bootstrap/workspace_secrets.tf:162-175
   notes: 'Documented residual: extract() finds the FIRST -wsec- after swarm-tenant-, so a browser-login secret or tenant id that happens to contain -wsec- is also matched; accepted because swarm-api''s code only ever reads secret_ids it minted itself.'
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_member.workspace_secret_accessor
@@ -5844,6 +6156,7 @@ entries:
   evidence:
   - terraform/modules/tenancy/main.tf:109-318
   - terraform/infra/main.tf:219-256
+  step: infra.pass-2
   refs:
     terraform:
     - modules/tenancy/google_project_iam_member.worker_firestore
@@ -5870,6 +6183,7 @@ entries:
   - role.custom.swarmTypesafeForwarderAccessor
   evidence:
   - terraform/bootstrap/typesafe_forwarder.tf:102-149
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.typesafe_forwarder_accessor
@@ -5889,6 +6203,7 @@ entries:
   - declared-value.typesafe_user_key_readers
   evidence:
   - terraform/bootstrap/typesafe_user_keys.tf:83-102
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_member.typesafe_user_key_reader
@@ -5907,6 +6222,7 @@ entries:
   evidence:
   - terraform/bootstrap/verify_cluster_read.tf:46-65
   notes: Target account swarm-verify is created by terraform/infra/verify.tf, which is outside this agent's assigned territory (terraform/infra proper, not terraform/bootstrap or the five named modules), so it has no entry of its own in this file.
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_member.verify_views_swarm_cluster
@@ -5926,6 +6242,7 @@ entries:
   - cloud-run-service.swarm-api
   evidence:
   - terraform/infra/verify.tf:87-101
+  step: infra.pass-2
   refs:
     terraform:
     - infra/google_cloud_run_v2_service_iam_member.verify_invokes_api
@@ -5945,6 +6262,7 @@ entries:
   evidence:
   - terraform/modules/tenancy/main.tf:296-317
   notes: 'null'
+  step: infra.pass-2
   refs:
     terraform:
     - modules/tenancy/google_service_account_iam_member.act_as
@@ -5965,6 +6283,7 @@ entries:
   - role.custom.swarmWorkspaceBucketIam
   evidence:
   - terraform/bootstrap/workspace_deployer.tf:486-510
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_storage_bucket_iam_member.workspace_deployer_bucket_iam
@@ -5989,6 +6308,7 @@ entries:
   evidence:
   - terraform/bootstrap/workspace_deployer.tf:395-481
   notes: Precondition at workspace_deployer.tf:470-473 refuses granting swarmForgeSlotCreator unless enable_forge_user_slots is also true in the same apply.
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_member.workspace_deployer
@@ -6007,6 +6327,7 @@ entries:
   - sa.swarm-workspace-dispatch
   evidence:
   - terraform/bootstrap/workspace_dispatch.tf:95-105
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_member.workspace_dispatch_invoker
@@ -6028,6 +6349,7 @@ entries:
   evidence:
   - terraform/bootstrap/workspace_deployer.tf:921-943
   - terraform/bootstrap/workspace_deployer.tf:999-1035
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_member.front_door_admitter
@@ -6049,6 +6371,7 @@ entries:
   evidence:
   - terraform/bootstrap/workspace_deployer.tf:777-791
   - terraform/bootstrap/variables.tf:738-753
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_member.workspace_log_readers
@@ -6068,6 +6391,7 @@ entries:
   - sa.swarm-api
   evidence:
   - terraform/infra/git_tools.tf:90-116
+  step: infra.pass-2
   refs:
     terraform:
     - infra/google_storage_bucket_iam_member.api_fetch_bundle_writer
@@ -6087,6 +6411,7 @@ entries:
   - sa.swarm-api
   evidence:
   - terraform/infra/await_input.tf:86-96
+  step: infra.pass-2
   refs:
     terraform:
     - infra/google_storage_bucket_iam_member.api_input_writer
@@ -6107,6 +6432,7 @@ entries:
   - bucket.artifacts
   evidence:
   - terraform/infra/verify.tf:102-145
+  step: infra.pass-2
   refs:
     terraform:
     - infra/google_project_iam_member.verify_reads_firestore
@@ -6128,6 +6454,7 @@ entries:
   - sa.swarm-workspace-dispatch
   evidence:
   - terraform/bootstrap/workspace_deployer.tf:643-682
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/data.google_iam_policy.workspace_apply_job
@@ -6149,6 +6476,7 @@ entries:
   evidence:
   - terraform/modules/frontend/main.tf:29-76
   - terraform/modules/frontend/main.tf:148-171
+  step: infra.pass-2
 - id: iap-setting.backend-ui
   kind: iap-setting
   scope: core
@@ -6165,6 +6493,7 @@ entries:
   - api.iap
   evidence:
   - terraform/modules/frontend/main.tf:206-220
+  step: infra.pass-2
 - id: monitoring.workspace-apply-log-routing
   kind: monitoring
   scope: core
@@ -6180,6 +6509,7 @@ entries:
   - switch.enable_workspace_deployer
   evidence:
   - terraform/bootstrap/workspace_deployer.tf:720-775
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_logging_project_bucket_config.workspace_apply
@@ -6201,6 +6531,7 @@ entries:
   - network.global-ip
   evidence:
   - terraform/modules/frontend/main.tf:110-171
+  step: infra.pass-2
   refs:
     terraform:
     - modules/frontend/google_compute_backend_service.this
@@ -6221,6 +6552,7 @@ entries:
   - network.global-ip
   evidence:
   - terraform/modules/frontend/main.tf:172-264
+  step: infra.pass-2
   refs:
     terraform:
     - modules/frontend/google_compute_backend_service.ui
@@ -6241,6 +6573,7 @@ entries:
   evidence:
   - terraform/bootstrap/deployer_conditions.tf:1-480
   notes: '8 of the deployer''s 15 project roles are UNSCOPABLE in principle (their services are absent from IAM''s resource-attribute list): artifactregistry.admin, cloudbuild.builds.editor, cloudscheduler.admin, monitoring.editor, pubsub.admin, run.admin, serviceusage.serviceUsageAdmin, iam.serviceAccountCreator. This is a durable design ceiling, not a TODO.'
+  step: bootstrap.pass-2
 - id: other.discovery-endpoint
   kind: other
   scope: core
@@ -6259,6 +6592,7 @@ entries:
   - apps/swarm-mcp/swarm_mcp/config.py:96-98
   - terraform/modules/frontend/main.tf:268-290
   notes: Every backend on the front door has IAP on today (terraform/modules/frontend/main.tf:148, 206), so there is no unauthenticated path to serve it from.
+  step: infra.pass-2
 - id: other.http-redirect
   kind: other
   scope: core
@@ -6274,6 +6608,7 @@ entries:
   - network.global-ip
   evidence:
   - terraform/modules/frontend/main.tf:337-363
+  step: infra.pass-2
   refs:
     terraform:
     - modules/frontend/google_compute_global_forwarding_rule.http
@@ -6296,6 +6631,7 @@ entries:
   - network.global-ip
   evidence:
   - terraform/modules/frontend/main.tf:311-336
+  step: infra.pass-2
   refs:
     terraform:
     - modules/frontend/google_compute_global_forwarding_rule.https
@@ -6317,6 +6653,7 @@ entries:
   evidence:
   - terraform/modules/frontend/main.tf:218-248
   notes: 'Cross-track: terraform/bootstrap (not this track) now owns frontend_iap_members. Reported here per CLAUDE.md track-ownership rule (read freely, report conflict) -- not changed.'
+  step: bootstrap.pass-2
 - id: other.moved-block-project-literal
   kind: other
   scope: core
@@ -6333,6 +6670,7 @@ entries:
   evidence:
   - terraform/infra/custom_roles_moved_to_bootstrap.tf:105-135
   notes: 'SURPRISE / HARDCODED LIVE VALUE: this moved block''s FROM address is LITERALLY "projects/saga-agents-staging/roles/..." -- the shared staging project''s name baked into a resource address string in terraform/infra/*.tf. On a from-scratch install into a NEW project this moved block''s source address never existed in the new project''s state, so terraform should simply no-op on it (moved blocks are harmless when the FROM resource never existed) -- but it is a clear sign this root''s history was written against one specific live project and never fully genericized. Confirm with `terraform plan` on the new project before trusting this is inert.'
+  step: infra.pass-2
 - id: other.removed-tf-forgotten-grants-pattern
   kind: other
   scope: core
@@ -6349,6 +6687,7 @@ entries:
   evidence:
   - terraform/bootstrap/removed.tf:1-104
   notes: On a fresh project this file's moved/removed blocks reference resource instances (keyed on "u-bogdan") that will never have existed in the new state, so they are harmless no-ops there -- but they are dead, project-specific content worth deleting or templating out for a true day-one fork.
+  step: bootstrap.pass-2
 - id: other.url-map
   kind: other
   scope: core
@@ -6365,6 +6704,7 @@ entries:
   - frontend.backend-ui
   evidence:
   - terraform/modules/frontend/main.tf:265-293
+  step: infra.pass-2
   refs:
     terraform:
     - modules/frontend/google_compute_url_map.this
@@ -6386,6 +6726,7 @@ entries:
   - iam-binding.workspace-dispatch-invoker
   evidence:
   - terraform/bootstrap/workspace_dispatch.tf:136-166
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_eventarc_trigger.workspace_apply
@@ -6405,6 +6746,7 @@ entries:
   evidence:
   - terraform/bootstrap/workspace_deployer.tf:684-718
   notes: 'Costs: also logs the OTHER team''s Cloud Run DATA_WRITE calls in this shared project (a few MB/day, inside the free allotment, per the file''s own estimate).'
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_audit_config.run_data_write
@@ -6425,6 +6767,7 @@ entries:
   evidence:
   - terraform/bootstrap/workspace_dispatch.tf:62-130
   - terraform/bootstrap/workflows/workspace-apply.yaml:1-68
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_workflows_workflow.workspace_apply
@@ -6443,6 +6786,7 @@ entries:
   - sa.swarm-workspace-deployer
   evidence:
   - terraform/bootstrap/workspace_deployer.tf:525-550
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_pubsub_topic.workspace_apply
@@ -6473,6 +6817,7 @@ entries:
   - apps/quota-broker/quota_broker/secretstore.py:465
   - apps/quota-broker/quota_broker/secretstore.py:580
   notes: secretstore.py:99-106 regex deliberately excludes any name ending in the -refresh suffix from the plain-account pattern, so the two halves cannot be confused by a scan
+  step: handoff.console
   expand: per_account
 - id: secret.swarm-tenant-browser.container
   kind: secret-container
@@ -6495,6 +6840,7 @@ entries:
   - terraform/bootstrap/browser_logins.tf:1-63
   - terraform/bootstrap/browser_logins.tf:142-167
   notes: create is evaluated against resource.type Project (unconditioned by name) because secrets.create carries no resource name at all; browser_slots.py's refuse_unless_browser_secret() and the is_personal()/_prefix() checks in browser_login.py are the ONLY things keeping a create inside swarm-tenant-u-*-browser- -- same structural pattern as forge_user_slots.tf and workspace_secrets.tf
+  step: handoff.console
   expand: per_tenant
 - id: secret.swarm-tenant-git-r.container
   kind: secret-container
@@ -6514,6 +6860,7 @@ entries:
   - apps/swarm-api/swarm_api/gittools.py:66-73
   - apps/swarm-api/swarm_api/codec.py:357-374
   notes: no terraform container for this slot; created only by swarm-api at registration time, same unconditioned-create-then-narrow pattern as git-u- below
+  step: handoff.console
   expand: per_tenant
 - id: secret.swarm-tenant-git-u.container
   kind: secret-container
@@ -6536,6 +6883,7 @@ entries:
   - terraform/bootstrap/forge_user_slots.tf:1-72
   - terraform/bootstrap/forge_user_slots.tf:206-231
   notes: the create grant cannot be narrowed to this tenant's prefix by IAM condition (secrets.create carries no resource name); forge_user_slots.tf's own comment says the application-layer check is the only thing keeping create inside swarm-tenant- names
+  step: handoff.console
   expand: per_tenant
 - id: secret.swarm-tenant-mcpc.container
   kind: secret-container
@@ -6558,6 +6906,7 @@ entries:
   - terraform/bootstrap/mcp_credentials.tf:11-38
   - terraform/bootstrap/mcp_credentials.tf:140-176
   notes: destroyed by McpCredentials.sweep (POST /v1/admin/mcp-credentials/sweep, every 10 min) when the owning task/workflow is terminal or expires_at has passed, OR by Secret Manager's own ttl if the sweep never runs
+  step: handoff.console
   expand: per_tenant
 - id: secret.swarm-tenant-typesafe.container
   kind: secret-container
@@ -6576,6 +6925,7 @@ entries:
   - terraform/bootstrap/typesafe_forwarder.tf:27-28
   - terraform/bootstrap/typesafe_forwarder.tf:119-140
   notes: same two-writer shape as secret.swarm-tenant-provider.container
+  step: handoff.console
   expand: per_tenant
 - id: secret.swarm-tenant-wsec.container
   kind: secret-container
@@ -6598,6 +6948,7 @@ entries:
   - terraform/bootstrap/workspace_secrets.tf:10-47
   - terraform/bootstrap/workspace_secrets.tf:99-178
   notes: terraform's IAM condition (workspace_secrets_condition, workspace_secrets.tf:143) narrows READ to the swarm-tenant-*-wsec- shape but CANNOT narrow the create grant itself by name -- same structural gap as forge_user_slots.tf and browser_logins.tf
+  step: handoff.console
   expand: per_tenant
 - id: secret.swarm-account.value
   kind: secret-value
@@ -6616,6 +6967,7 @@ entries:
   - apps/quota-broker/quota_broker/credentials.py:1-20
   - apps/quota-broker/quota_broker/secretstore.py:99-106
   notes: the -refresh twin (same name + REFRESH_SUFFIX) holds the long-lived refresh/session credential the broker reads from, never mounted to a worker directly
+  step: handoff.console
   expand: per_account
 - id: secret.swarm-tenant-browser.value
   kind: secret-value
@@ -6633,6 +6985,7 @@ entries:
   evidence:
   - apps/agent-worker/agent_worker/browser_login.py:346-357
   notes: 'null'
+  step: handoff.console
   expand: per_tenant
 - id: secret.swarm-tenant-git-r.value
   kind: secret-value
@@ -6651,6 +7004,7 @@ entries:
   - apps/swarm-api/swarm_api/gittokens.py:19-20
   - apps/swarm-api/swarm_api/gittools.py:66-73
   notes: 'null'
+  step: handoff.console
   expand: per_tenant
 - id: secret.swarm-tenant-git-u.value
   kind: secret-value
@@ -6669,6 +7023,7 @@ entries:
   - apps/swarm-api/swarm_api/forgeapp.py:62-64
   - apps/swarm-api/swarm_api/gittokens.py:19-20
   notes: 'null'
+  step: handoff.console
   expand: per_tenant
 - id: secret.swarm-tenant-mcpc.value
   kind: secret-value
@@ -6686,6 +7041,7 @@ entries:
   evidence:
   - apps/swarm-api/swarm_api/mcp_credentials.py:28-33
   notes: 'null'
+  step: handoff.console
   expand: per_tenant
 - id: secret.swarm-tenant-wsec.value
   kind: secret-value
@@ -6703,6 +7059,7 @@ entries:
   evidence:
   - apps/swarm-api/swarm_api/workspace_secrets.py:54-60
   notes: 'null'
+  step: handoff.console
   expand: per_tenant
 - id: sa.swarm-workspace-deployer
   kind: service-account
@@ -6720,6 +7077,7 @@ entries:
   evidence:
   - terraform/bootstrap/workspace_deployer.tf:1-85
   - terraform/bootstrap/workspace_deployer.tf:255-277
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_service_account.workspace_deployer
@@ -6740,6 +7098,7 @@ entries:
   - switch.enable_workspace_deployer
   evidence:
   - terraform/bootstrap/workspace_dispatch.tf:1-93
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_service_account.workspace_dispatch
@@ -6762,6 +7121,7 @@ entries:
   - terraform/bootstrap/terraform.tfvars:36-128
   - terraform/bootstrap/deployer_conditions.tf:551-578
   notes: The revert path and the apply order are both manual gcloud steps the owner runs by hand around the terraform apply, not something terraform alone can do safely (documented in terraform.tfvars:90-127).
+  step: bootstrap.pass-2
 - id: switch.api_refusals
   kind: switch
   scope: core
@@ -6776,6 +7136,7 @@ entries:
   depends_on: []
   evidence:
   - terraform/infra/variables.tf:1143-1160
+  step: infra.pass-2
 - id: switch.broker_secret_lister_project_wide_versions_add
   kind: switch
   scope: core
@@ -6791,6 +7152,7 @@ entries:
   - switch.grant_broker_secret_lister
   evidence:
   - terraform/bootstrap/variables.tf:603-618
+  step: bootstrap.pass-2
   refs:
     variable:
     - bootstrap/broker_secret_lister_project_wide_versions_add
@@ -6811,6 +7173,7 @@ entries:
   - terraform/bootstrap/terraform.tfvars:204-209
   - terraform/bootstrap/browser_logins.tf:99-113
   notes: Committed as true; a fresh install applying terraform.tfvars verbatim turns this on immediately even though swarm-api's slot/revoke routes may not be deployed yet (file says 'a grant nobody uses is only exposure').
+  step: bootstrap.pass-2
   refs:
     variable:
     - bootstrap/enable_browser_logins
@@ -6828,6 +7191,7 @@ entries:
   depends_on: []
   evidence:
   - terraform/bootstrap/terraform.tfvars:246-251
+  step: bootstrap.pass-2
   refs:
     variable:
     - bootstrap/enable_github_hooks_dedup_role
@@ -6846,6 +7210,7 @@ entries:
   - sa.swarm-api
   evidence:
   - terraform/bootstrap/terraform.tfvars:253-264
+  step: bootstrap.pass-2
   refs:
     variable:
     - bootstrap/enable_mcp_credentials
@@ -6864,6 +7229,7 @@ entries:
   - sa.swarm-api
   evidence:
   - terraform/bootstrap/terraform.tfvars:266-276
+  step: bootstrap.pass-2
   refs:
     variable:
     - bootstrap/enable_platform_secret_status
@@ -6882,6 +7248,7 @@ entries:
   - sa.swarm-api
   evidence:
   - terraform/bootstrap/terraform.tfvars:211-216
+  step: bootstrap.pass-2
   refs:
     variable:
     - bootstrap/enable_provider_keys
@@ -6900,6 +7267,7 @@ entries:
   evidence:
   - terraform/bootstrap/terraform.tfvars:236-244
   notes: Example of tfvars/state drift risk this repository has already hit once.
+  step: bootstrap.pass-2
   refs:
     variable:
     - bootstrap/enable_typesafe_forwarder_read
@@ -6920,6 +7288,7 @@ entries:
   evidence:
   - terraform/bootstrap/terraform.tfvars:180-192
   - terraform/bootstrap/variables.tf:682-697
+  step: bootstrap.pass-2
   refs:
     variable:
     - bootstrap/enable_workspace_deployer
@@ -6940,6 +7309,7 @@ entries:
   evidence:
   - terraform/bootstrap/terraform.tfvars:194-202
   - terraform/bootstrap/variables.tf:851-880
+  step: bootstrap.pass-2
   refs:
     variable:
     - bootstrap/enable_workspace_kinds
@@ -6958,6 +7328,7 @@ entries:
   - sa.swarm-api
   evidence:
   - terraform/bootstrap/terraform.tfvars:228-234
+  step: bootstrap.pass-2
   refs:
     variable:
     - bootstrap/enable_workspace_secrets
@@ -6976,6 +7347,7 @@ entries:
   - switch.enable_workspace_kinds
   evidence:
   - terraform/bootstrap/variables.tf:882-896
+  step: bootstrap.pass-2
   refs:
     variable:
     - bootstrap/front_door_admit_role_bound
@@ -6994,6 +7366,7 @@ entries:
   evidence:
   - terraform/bootstrap/variables.tf:898-912
   notes: 'FRESH-PROJECT TRAP: defaults to true and is never overridden in the committed terraform.tfvars, but the view is created by terraform/infra (log_view.tf, swarm_workers_log_view_enabled), which only exists after infra''s own apply. A bootstrap apply run before terraform/infra has created the view will fail this binding on a view that does not exist; the variable''s own comment says to set it false for a project whose infra has the view off.'
+  step: bootstrap.pass-2
   refs:
     variable:
     - bootstrap/swarm_workers_log_view_exists
@@ -7015,6 +7388,7 @@ entries:
   evidence:
   - terraform/infra/variables.tf:1083-1098
   notes: 'Cross-track dependency: the topic''s consumer (Eventarc trigger + Workflow + the swarm-workspace-apply Cloud Run job) is created in terraform/bootstrap/workspace_dispatch.tf and workspace_deployer.tf, not this track.'
+  step: infra.pass-2
   refs:
     variable:
     - infra/workspace_apply_publish
@@ -7033,6 +7407,7 @@ entries:
   - sa.qa-console
   evidence:
   - terraform/bootstrap/qa_identity.tf:148-158
+  step: identity.qa-console
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.qa_jwt_signer
@@ -7054,6 +7429,7 @@ entries:
   - scripts/register-tenant.sh:2284-2289
   - docs/deploying-without-an-organisation.md:108-120
   notes: apps/common/swarm_common/config.py is FROZEN (apps/common is frozen per CLAUDE.md); this default is already override-by-environment (ALLOWED_DOMAINS env var), so no edit to the frozen file is ever needed -- listed here as the dependency, not as something to change in code
+  step: identity.allowed-domains
 - id: iam-binding.qa-console-authoritative-policy
   kind: iam-binding
   scope: core
@@ -7071,6 +7447,7 @@ entries:
   - sa.swarm-api
   evidence:
   - terraform/bootstrap/qa_identity.tf:160-177
+  step: identity.qa-console
   refs:
     terraform:
     - bootstrap/data.google_iam_policy.qa_identity
@@ -7091,6 +7468,7 @@ entries:
   - declared-value.frontend_iap_members
   evidence:
   - terraform/bootstrap/qa_identity.tf:109-146
+  step: identity.qa-console
   refs:
     terraform:
     - bootstrap/google_service_account.qa_identity
@@ -7108,6 +7486,7 @@ entries:
   depends_on: []
   evidence:
   - terraform/bootstrap/terraform.tfvars:157-162
+  step: identity.qa-console
   refs:
     variable:
     - bootstrap/enable_qa_identity
@@ -7130,6 +7509,7 @@ entries:
   - terraform/environments/dev/dev.tfvars:906-911
   - docs/deploying-without-an-organisation.md:85-99
   notes: the service account's own numeric OAuth client id must be read out of the IAM console per-deployment and pasted into the Admin console's DWD authorisation UI; this repo's dev value is hard-coded as a comment/derivation in terraform/infra/variables.tf:627-630 for THIS deployment's service account and is not reusable by a fresh project, which gets its own client id for its own swarm-api runtime SA
+  step: identity.group-read
 - id: workspace-group.admin-surface-swarm-admins
   kind: workspace-group
   scope: core
@@ -7148,6 +7528,10 @@ entries:
   - terraform/environments/prod/prod.tfvars:145
   - terraform/infra/variables.tf:700-765
   notes: 'SURPRISE: prod.tfvars already names a group that dev.tfvars documents as never created in this Workspace -- prod''s config is therefore unproven to actually resolve until someone creates swarm-admins@saga.xyz by hand. A fresh install inherits the same gap unless it creates its own admin group before first use of its prod-shaped tfvars'
+  probe:
+    type: groups_probe_via_api
+    route: /v1/admin/setup/health/groups-probe
+  step: identity.admin-group
 - id: workspace-group.cloud-identity-presence
   kind: workspace-group
   scope: core
@@ -7163,6 +7547,7 @@ entries:
   evidence:
   - docs/deploying-without-an-organisation.md:73-90
   - docs/multi-tenancy.md:118-135
+  step: identity.group-read
 - id: workspace-group.tenant-groups
   kind: workspace-group
   scope: core
@@ -7179,6 +7564,10 @@ entries:
   evidence:
   - docs/multi-tenancy.md:151-171
   - .env.example:160-163
+  probe:
+    type: groups_probe_via_api
+    route: /v1/admin/setup/health/groups-probe
+  step: identity.group-read
 - id: role.custom.swarmAcceptanceLister
   kind: custom-role
   scope: addon:ci
@@ -7194,6 +7583,7 @@ entries:
   - sa.swarm-accept
   evidence:
   - terraform/bootstrap/acceptance.tf:107-122
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.acceptance_lister
@@ -7212,6 +7602,7 @@ entries:
   - sa.swarm-accept
   evidence:
   - terraform/bootstrap/acceptance.tf:85-105
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.acceptance_runner
@@ -7233,6 +7624,7 @@ entries:
   - terraform/bootstrap/terraform.tfvars:30-34
   - terraform/bootstrap/ci_fix.tf:30-65
   notes: Hardcoded to the live project's email. For a new project this account must be created out-of-band first (scripts/register-tenant.sh or by hand) AND added to frontend_iap_members, or ci_fix.tf's two preconditions (ci_fix.tf:49-63) fail the plan.
+  step: bootstrap.pass-2
 - id: github-app-installation.per-owner
   kind: github-app-installation
   scope: core
@@ -7249,6 +7641,7 @@ entries:
   evidence:
   - docs/runbooks/github-app.md:160
   - plugin/commands/setup.md:60-68
+  step: handoff.console
 - id: github-app-setting.commit-statuses-read-gap
   kind: github-app-setting
   scope: core
@@ -7266,6 +7659,7 @@ entries:
   - docs/onboarding.md:342-382
   - docs/merge-step.md:855-866
   notes: 'live incident-caused gap: a NEWLY ADDED App permission does nothing on ANY existing installation until each org''s owner separately clicks through its review_url -- a fresh install registering the App today starts with every permission on the install screen (all accepted at once, since Request user authorization during installation is ticked), but any FUTURE permission the App adds will reproduce this exact gap for every org onboarded before the change'
+  step: handoff.console
 - id: github-app-setting.merge-app
   kind: github-app-setting
   scope: addon:ci
@@ -7282,6 +7676,7 @@ entries:
   - docs/runbooks/merge-app.md:1-68
   - docs/runbooks/merge-app.md:186-246
   notes: a fresh install that forks or copies this repository needs its OWN merge App, its own MERGE_APP_ID/MERGE_APP_PRIVATE_KEY, installed on ITS fork -- bogdan-alexandrescu/SwarmCloud throughout this runbook and the workflow files is this repository's own hard-coded identity, not a deployment parameter (see p4-hardcoded.md)
+  step: handoff.console
 - id: github-app-setting.push-webhook
   kind: github-app-setting
   scope: core
@@ -7299,6 +7694,7 @@ entries:
   - docs/runbooks/github-app.md:24-26
   - docs/runbooks/github-app.md:167
   - docs/runbooks/github-app.md:344-451
+  step: handoff.console
 - id: github-app-setting.tenant-forge-app
   kind: github-app-setting
   scope: core
@@ -7315,6 +7711,7 @@ entries:
   evidence:
   - docs/runbooks/github-app.md:150-198
   - docs/runbooks/github-app.md:216-230
+  step: handoff.console
 - id: iam-binding.acceptance-account-grants
   kind: iam-binding
   scope: addon:ci
@@ -7330,6 +7727,7 @@ entries:
   - sa.swarm-accept
   evidence:
   - terraform/bootstrap/acceptance.tf:85-194
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.acceptance_runner
@@ -7354,6 +7752,7 @@ entries:
   - other.wif-github-pool-and-provider
   evidence:
   - terraform/bootstrap/ci_fix.tf:36-65
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_service_account_iam_member.ci_fix_wif
@@ -7373,6 +7772,7 @@ entries:
   evidence:
   - scripts/create-secrets.sh:64-65
   notes: 'null'
+  step: github.pass-3
   refs:
     secret_flag:
     - --github-app
@@ -7393,6 +7793,7 @@ entries:
   - apps/swarm-api/swarm_api/platform_secrets.py:93-94
   - scripts/create-secrets.sh:66-70
   notes: 'null'
+  step: github.pass-3
   refs:
     secret_flag:
     - --github-app
@@ -7412,6 +7813,7 @@ entries:
   evidence:
   - scripts/create-secrets.sh:103-114
   notes: 'null'
+  step: github.pass-3
   refs:
     secret_flag:
     - --github-app-webhook-secret
@@ -7430,6 +7832,7 @@ entries:
   - other.wif-github-pool-and-provider
   evidence:
   - terraform/bootstrap/acceptance.tf:68-75
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_service_account.acceptance
@@ -7449,6 +7852,7 @@ entries:
   - switch.enable_github_app
   evidence:
   - terraform/infra/github_app.tf:101-108
+  step: github.pass-3
   refs:
     variable:
     - infra/enable_forge_refresh
@@ -7466,6 +7870,7 @@ entries:
   depends_on: []
   evidence:
   - terraform/infra/github_app.tf:34-42
+  step: github.pass-3
   refs:
     variable:
     - infra/enable_github_app
@@ -7484,6 +7889,7 @@ entries:
   - secret.swarm-github-app-webhook-secret.container
   evidence:
   - terraform/infra/github_hooks.tf:80-96
+  step: github.pass-4
   refs:
     variable:
     - infra/enable_github_hooks
@@ -7501,6 +7907,7 @@ entries:
   depends_on: []
   evidence:
   - terraform/infra/child_tasks.tf:70-85
+  step: github.pass-3
   refs:
     variable:
     - infra/forge_broker
@@ -7519,6 +7926,7 @@ entries:
   evidence:
   - terraform/infra/variables.tf:1063-1082
   notes: 'Cross-track dependency: terraform/bootstrap/mcp_credentials.tf owns enable_mcp_credentials, not this track.'
+  step: github.pass-3
   refs:
     variable:
     - infra/mcp_servers_enabled
@@ -7539,6 +7947,7 @@ entries:
   - kubernetes/render.py:521-533
   - kubernetes/storage/cache-storage-class.yaml:32
   notes: 'null'
+  step: cluster.policies
   refs:
     kubernetes:
     - storage/cache-storage-class.yaml
@@ -7558,6 +7967,7 @@ entries:
   evidence:
   - kubernetes/policies/pod-security.yaml:172-287
   notes: 'null'
+  step: cluster.policies
   refs:
     kubernetes:
     - policies/pod-security.yaml
@@ -7577,6 +7987,7 @@ entries:
   evidence:
   - kubernetes/policies/pod-security.yaml:42-156
   notes: 'null'
+  step: cluster.policies
   refs:
     kubernetes:
     - policies/pod-security.yaml
@@ -7596,6 +8007,7 @@ entries:
   evidence:
   - kubernetes/policies/pod-security.yaml:156-172
   notes: 'null'
+  step: cluster.policies
   refs:
     kubernetes:
     - policies/pod-security.yaml
@@ -7616,6 +8028,7 @@ entries:
   - kubernetes/policies/pod-security.yaml:287-358
   - kubernetes/service-accounts/worker-serviceaccount.yaml:89
   notes: 'null'
+  step: cluster.policies
   refs:
     kubernetes:
     - policies/pod-security.yaml
@@ -7636,6 +8049,7 @@ entries:
   evidence:
   - kubernetes/policies/workspace-provisioner-scope.yaml:229-320
   notes: 'null'
+  step: cluster.policies
   refs:
     kubernetes:
     - policies/workspace-provisioner-scope.yaml
@@ -7657,6 +8071,7 @@ entries:
   - kubernetes/rbac/provisioner-rbac.yaml:43
   - kubernetes/rbac/provisioner-rbac.yaml:59
   notes: 'null'
+  step: cluster.policies
   refs:
     kubernetes:
     - policies/workspace-provisioner-scope.yaml
@@ -7677,6 +8092,7 @@ entries:
   evidence:
   - kubernetes/policies/workspace-provisioner-scope.yaml:331-392
   notes: 'null'
+  step: cluster.policies
   refs:
     kubernetes:
     - policies/workspace-provisioner-scope.yaml
@@ -7698,6 +8114,7 @@ entries:
   - kubernetes/policies/workspace-provisioner-scope.yaml:91-229
   - kubernetes/render.py:521-528
   notes: 'render.py''s own comment: this policy must be applied BEFORE provisioner-rbac.yaml''s ClusterRole in document order, or there is a moment where the deployer''s ClusterRole can create any namespace with nothing narrowing it'
+  step: cluster.policies
   refs:
     kubernetes:
     - policies/workspace-provisioner-scope.yaml
@@ -7719,6 +8136,7 @@ entries:
   - kubernetes/apply.sh:215-216
   - kubernetes/apply.sh:283-296
   notes: 'null'
+  step: cluster.swarm-system
 - id: rbac.provisioner-clusterrole
   kind: namespace-object
   scope: core
@@ -7736,6 +8154,7 @@ entries:
   - kubernetes/rbac/provisioner-rbac.yaml:64-167
   - kubernetes/render.py:524-528
   notes: 'null'
+  step: cluster.policies
   refs:
     kubernetes:
     - rbac/provisioner-rbac.yaml
@@ -7762,6 +8181,7 @@ entries:
   - kubernetes/swarm-system/swarm-egress.yaml:120
   - kubernetes/swarm-system/swarm-egress.yaml:138
   notes: null A swarm-system GKE workload, not a Cloud Run job.
+  step: cluster.workloads
   refs:
     kubernetes:
     - swarm-system/swarm-egress.yaml
@@ -7789,6 +8209,7 @@ entries:
   - kubernetes/swarm-system/swarm-graph.yaml:212
   - kubernetes/swarm-system/swarm-graph.yaml:226
   notes: null A swarm-system GKE workload, not a Cloud Run job.
+  step: cluster.workloads
   refs:
     kubernetes:
     - swarm-system/swarm-graph.yaml
@@ -7818,6 +8239,7 @@ entries:
   - kubernetes/swarm-system/swarm-live.yaml:163
   - kubernetes/swarm-system/swarm-live.yaml:185
   notes: null A swarm-system GKE workload, not a Cloud Run job.
+  step: cluster.workloads
   refs:
     kubernetes:
     - swarm-system/swarm-live.yaml
@@ -7846,6 +8268,7 @@ entries:
   - kubernetes/swarm-system/swarm-typesafe-fwd.yaml:128
   - kubernetes/swarm-system/swarm-typesafe-fwd.yaml:146
   notes: null A swarm-system GKE workload, not a Cloud Run job.
+  step: cluster.workloads
   refs:
     kubernetes:
     - swarm-system/swarm-typesafe-fwd.yaml
@@ -7871,6 +8294,7 @@ entries:
   - kubernetes/swarm-system/tailscale-egress.yaml:161
   - kubernetes/swarm-system/tailscale-egress.yaml:182
   notes: null A swarm-system GKE workload, not a Cloud Run job.
+  step: cluster.workloads
   refs:
     kubernetes:
     - swarm-system/tailscale-egress.yaml
@@ -7890,6 +8314,7 @@ entries:
   evidence:
   - kubernetes/service-accounts/worker-serviceaccount.yaml:16-23
   notes: a from-scratch install into a new project should never render this file -- it exists only for the one legacy binding measured 2026-09-25 in the existing project
+  step: handoff.console
   refs:
     kubernetes:
     - service-accounts/worker-serviceaccount.yaml
@@ -7911,6 +8336,7 @@ entries:
   - kubernetes/namespaces/tenant-namespace.yaml:138
   - kubernetes/policies/pod-security.yaml:108-118
   notes: 'null'
+  step: handoff.console
   refs:
     kubernetes:
     - namespaces/tenant-namespace.yaml
@@ -7933,6 +8359,7 @@ entries:
   - kubernetes/render.py:399-419
   - kubernetes/namespaces/tenant-namespace.yaml:44
   notes: APPLY_TENANT_NAMESPACES (a GitHub Actions vars.* flag) is OFF by default as of docs/workspaces.md:136 ('which is the case today'); until an operator sets it true, CI's release-namespaces job applies NOTHING for tenant namespaces, so a from-scratch install's first tenant namespace must be applied by hand with kubernetes/apply.sh --tenant $T --confirm, or the var must be flipped first (#1590, docs/design/workspace-kinds.md:99,874)
+  step: handoff.console
   refs:
     kubernetes:
     - namespaces/tenant-namespace.yaml
@@ -7956,6 +8383,7 @@ entries:
   - kubernetes/README.md:19
   - kubernetes/README.md:266-272
   notes: kubernetes/README.md:205 says a wrong ResourceQuota value once left tasks waiting ~40 minutes until PR 1747 amended it -- a value copied without re-checking it against current worker resource requests is a live first-install trap
+  step: handoff.console
   refs:
     kubernetes:
     - namespaces/tenant-namespace.yaml
@@ -7983,6 +8411,7 @@ entries:
   - kubernetes/worker-templates/worker-job.yaml:253
   - kubernetes/worker-templates/worker-job.yaml:294
   notes: a revocation/rotation only reaches a RUNNING pod and this fallback ConfigMap when that release's deploy job ran with vars.APPLY_TENANT_NAMESPACES=true; otherwise the runbook says to re-apply it by hand (docs/runbooks/spec-signing-rollout.md:192,226,271) -- same switch that gates the tenant namespace itself
+  step: handoff.console
 - id: namespace-object.worker-ksa
   kind: namespace-object
   scope: core
@@ -8001,6 +8430,7 @@ entries:
   - kubernetes/service-accounts/worker-serviceaccount.yaml:1-47
   - kubernetes/service-accounts/worker-serviceaccount.yaml:89
   notes: a pod naming a ServiceAccount that does not exist is never scheduled -- the Job controller just reports serviceaccount not found on the Job's events and the pod never appears, reading as a capacity problem rather than a naming bug
+  step: handoff.console
   refs:
     kubernetes:
     - service-accounts/worker-serviceaccount.yaml
@@ -8028,6 +8458,13 @@ entries:
   - kubernetes/rbac/dispatcher-rbac.yaml:151-164
   - kubernetes/render.py:399-405
   notes: 'null'
+  probe:
+    type: kubernetes_can_i
+    subject: swarm-reconciler
+    verb: list
+    resource: jobs.batch
+    namespace: swarm-tenant-$T
+  step: handoff.console
   refs:
     kubernetes:
     - rbac/dispatcher-rbac.yaml
@@ -8052,6 +8489,7 @@ entries:
   - kubernetes/rbac/verify-rbac.yaml:70
   - kubernetes/rbac/verify-rbac.yaml:79-94
   notes: 'null'
+  step: handoff.console
 - id: rbac.worker-role
   kind: namespace-object
   scope: core
@@ -8071,6 +8509,7 @@ entries:
   - kubernetes/rbac/worker-rbac.yaml:60
   - kubernetes/rbac/worker-rbac.yaml:69
   notes: 'null'
+  step: handoff.console
   refs:
     kubernetes:
     - rbac/worker-rbac.yaml
@@ -8093,6 +8532,7 @@ entries:
   - kubernetes/network-policies/allow-egress.yaml:91
   - kubernetes/network-policies/allow-egress.yaml:117
   notes: 'null'
+  step: handoff.console
   refs:
     kubernetes:
     - network-policies/allow-egress.yaml
@@ -8113,6 +8553,7 @@ entries:
   evidence:
   - kubernetes/render.py:412-415
   notes: 'null'
+  step: handoff.console
   refs:
     kubernetes:
     - network-policies/allow-egress-proxy.yaml
@@ -8133,6 +8574,7 @@ entries:
   evidence:
   - kubernetes/render.py:416-419
   notes: 'null'
+  step: handoff.console
   refs:
     kubernetes:
     - network-policies/allow-judge-egress.yaml
@@ -8153,6 +8595,7 @@ entries:
   evidence:
   - kubernetes/render.py:408-411
   notes: 'null'
+  step: handoff.console
   refs:
     kubernetes:
     - network-policies/allow-live-egress.yaml
@@ -8175,6 +8618,7 @@ entries:
   - kubernetes/network-policies/default-deny.yaml:21
   - kubernetes/network-policies/default-deny.yaml:51
   notes: 'null'
+  step: handoff.console
   refs:
     kubernetes:
     - network-policies/default-deny.yaml
@@ -8195,6 +8639,7 @@ entries:
   evidence:
   - apps/swarm-api/swarm_api/qatargets.py:42-50
   notes: 'null'
+  step: handoff.console
   expand: per_tenant
 - id: switch.platform_admin_reach
   kind: switch
@@ -8210,6 +8655,7 @@ entries:
   depends_on: []
   evidence:
   - terraform/infra/variables.tf:997-1008
+  step: infra.pass-2
   refs:
     variable:
     - infra/platform_admin_reach
@@ -8228,6 +8674,7 @@ entries:
   - switch.enable_github_app
   evidence:
   - terraform/infra/variables.tf:981-996
+  step: infra.pass-2
   refs:
     variable:
     - infra/repository_grants_enforced
@@ -8246,6 +8693,7 @@ entries:
   - switch.workspace_apply_publish
   evidence:
   - terraform/infra/variables.tf:1101-1112
+  step: infra.pass-2
   refs:
     variable:
     - infra/workspace_gate
@@ -8268,6 +8716,7 @@ entries:
   - apps/quota-broker/quota_broker/oauth.py:48-53
   - apps/quota-broker/quota_broker/oauth.py:555-558
   notes: 'describing the OAuth client id and token/authorize endpoints without copying the literal values, per instruction: quota_broker/oauth.py hard-codes a single fixed UUID-shaped OAuth client id shared by every Claude Code installation worldwide (not a deployment secret, but UUID-shaped, so not reproduced here), a token endpoint under platform.claude.com, and an authorize endpoint under claude.com -- all three are Anthropic''s own public, non-rotating infrastructure, not something a fresh install configures'
+  step: handoff.console
   expand: per_account
 - id: monitoring.alert-policies
   kind: monitoring
@@ -8289,6 +8738,7 @@ entries:
   - terraform/modules/monitoring/tenant_namespace.tf:99
   - terraform/modules/monitoring/workspace_alerts.tf:224-373
   notes: On a NEW project, this guard means the FIRST apply of monitoring will hard-fail unless the owner has already created notification channels in the console and listed their ids in tfvars -- a real ordering dependency, not optional polish.
+  step: alerts.policies
   refs:
     terraform:
     - modules/monitoring/google_monitoring_notification_channel.email
@@ -8317,6 +8767,7 @@ entries:
   - api.monitoring
   evidence:
   - terraform/modules/monitoring/dashboard.tf:144
+  step: alerts.policies
   refs:
     terraform:
     - modules/monitoring/google_monitoring_dashboard.control_plane
@@ -8338,6 +8789,7 @@ entries:
   - terraform/modules/monitoring/alerts.tf:573-636
   - terraform/modules/monitoring/stranded_prs.tf:52
   - terraform/modules/monitoring/tenant_namespace.tf:63
+  step: alerts.policies
   refs:
     terraform:
     - modules/monitoring/google_logging_metric.events
@@ -8370,6 +8822,7 @@ entries:
   - api.monitoring
   evidence:
   - terraform/modules/monitoring/alerts.tf:35-56
+  step: alerts.policies
   refs:
     terraform:
     - modules/monitoring/google_monitoring_notification_channel.email
@@ -8391,6 +8844,7 @@ entries:
   - scripts/migrate-index-interval.sh:1
   - scripts/backfill-attempt-ends.sh:1
   notes: There is no schema version anywhere today; each migration was run by hand once against the live project.
+  step: verify.firestore-migrations
 - id: other.verify-digests
   kind: other
   scope: core
@@ -8406,6 +8860,7 @@ entries:
   - image.copy-to-company-registry
   evidence:
   - docs/DEPLOY_STATE.md:87-97
+  step: verify.digests
 - id: other.verify-end-to-end
   kind: other
   scope: core
@@ -8424,6 +8879,7 @@ entries:
   - terraform/infra/verify.tf:13
   - terraform/infra/verify.tf:51
   notes: The console single task and workflow need a browser; the engine drives them through the API with a member's identity and asks the installer to confirm the console view.
+  step: verify.end-to-end
 - id: other.verify-scheduler-targets
   kind: other
   scope: core
@@ -8440,6 +8896,7 @@ entries:
   evidence:
   - terraform/modules/scheduler/jobs.tf:3
   - docs/DEPLOY_STATE.md:264-280
+  step: verify.scheduler-targets
 - id: addon.brave-search
   kind: addon
   scope: addon:brave-search
@@ -8455,6 +8912,7 @@ entries:
   - other.ready-screen
   evidence:
   - apps/swarm-api/swarm_api/platform_secrets.py:105
+  step: infra.pass-2
   refs:
     variable:
     - infra/search_tool_enabled
@@ -8475,6 +8933,7 @@ entries:
   - apps/swarm-api/swarm_api/platform_secrets.py:107-109
   - terraform/infra/egress.tf:1
   notes: Off by default; core must pass stage 14 with it off.
+  step: infra.pass-2
   refs:
     variable:
     - infra/enable_browser_egress
@@ -8496,6 +8955,7 @@ entries:
   - terraform/bootstrap/ci_fix.tf:29-34
   - docs/runbooks/merge-app.md:54-68
   notes: merge-train.yml:98 checks a literal repository name; the runner label bogdan-ci is hard-coded in workflows.
+  step: infra.pass-2
 - id: addon.typesafe
   kind: addon
   scope: addon:typesafe
@@ -8513,6 +8973,7 @@ entries:
   - apps/swarm-api/swarm_api/platform_secrets.py:116-117
   - terraform/infra/typesafe_fwd.tf:1
   notes: terraform/bootstrap/terraform.tfvars names a person-tenant as a key reader (typesafe_user_key_readers), which a fresh install must not inherit.
+  step: infra.pass-2
   refs:
     variable:
     - infra/enable_typesafe_forwarder
@@ -8532,6 +8993,7 @@ entries:
   evidence:
   - apps/swarm-mcp/swarm_mcp/config.py:246-283
   - apps/swarm-mcp/swarm_mcp/credentials.py:25-209
+  step: verify.end-to-end
 - id: other.plugin-mcp-bridge-fetch
   kind: other
   scope: core
@@ -8548,6 +9010,7 @@ entries:
   - plugin/.claude-plugin/plugin.json:72-76
   - docs/runbooks/iap-desktop-client.md:223-229
   notes: 'hard-coded live value: the repository owner/name (bogdan-alexandrescu/SwarmCloud) and the exact tag (sc-v0.5.74) are both literal in plugin.json; see p4-hardcoded.md'
+  step: verify.end-to-end
 - id: other.ready-screen
   kind: other
   scope: core
@@ -8563,6 +9026,7 @@ entries:
   - other.verify-end-to-end
   evidence:
   - plugin/README.md:325-357
+  step: handoff.ready
 - id: declared-value.monitoring-excluded-tenants
   kind: declared-value
   scope: core
@@ -8579,6 +9043,7 @@ entries:
   evidence:
   - terraform/modules/monitoring/variables.tf:115
   notes: plan R9; added by DAYONE-P2
+  step: infra.pass-2
 - id: workspace-delegation.groups-reader-admin-role
   kind: workspace-delegation
   scope: core
@@ -8597,6 +9062,7 @@ entries:
   - docs/design/day-one-install.md
   - apps/swarm-api/swarm_api/delegation.py
   notes: added by DAYONE-P2
+  step: identity.group-read
 - id: other.install-record-firestore
   kind: other
   scope: core
@@ -8614,6 +9080,7 @@ entries:
   evidence:
   - docs/design/day-one-plan.md
   notes: the engine writes it from stage 5 on, once Firestore exists; stages 0-4 are in the GCS object and the local cache. Added by DAYONE-P2
+  step: infra.pass-1
 - id: other.verify-row
   kind: other
   scope: core
@@ -8631,6 +9098,7 @@ entries:
   evidence:
   - docs/design/day-one-plan.md
   notes: added by DAYONE-P2
+  step: verify.end-to-end
 - id: other.doctor-findings
   kind: other
   scope: core
@@ -8647,6 +9115,7 @@ entries:
   evidence:
   - docs/design/day-one-plan.md
   notes: 'added by DAYONE-P2 Its depends_on on cloud-run-job.swarm-doctor is added by DAYONE-DOCTOR-1''s fragment (replace: true), with the job: the base manifest lists only what exists on main (DAYONE-MANIFEST-1).'
+  step: handoff.ready
 - id: other.release-home
   kind: other
   scope: core
@@ -8662,6 +9131,7 @@ entries:
   evidence:
   - docs/design/day-one-plan.md
   notes: added by DAYONE-P2
+  step: preflight.release
 - id: other.plugin-marketplace
   kind: other
   scope: core
@@ -8678,6 +9148,7 @@ entries:
   evidence:
   - docs/design/day-one-plan.md
   notes: whether a URL-hosted marketplace accepts a relative plugin source is to be proven (plan 6.4). Added by DAYONE-P2
+  step: verify.end-to-end
 - id: other.plugin-version-skew
   kind: other
   scope: core
@@ -8695,6 +9166,7 @@ entries:
   evidence:
   - docs/design/day-one-plan.md
   notes: added by DAYONE-P2
+  step: verify.end-to-end
 - id: switch.tenant_job_vpc_egress
   kind: switch
   scope: core
@@ -8711,6 +9183,7 @@ entries:
   evidence:
   - terraform/infra/tenant_job_vpc.tf:31-43
   notes: added by DAYONE-P2
+  step: infra.pass-2
   refs:
     variable:
     - infra/tenant_job_vpc_egress
@@ -8731,6 +9204,7 @@ entries:
   - kubernetes/render.py
   - docs/design/day-one-plan.md
   notes: added by DAYONE-P2
+  step: cluster.bundle
 - id: other.release-signing-public-key
   kind: other
   scope: core
@@ -8748,6 +9222,7 @@ entries:
   evidence:
   - docs/design/day-one-plan.md
   notes: added by DAYONE-P2
+  step: images.copy
 - id: other.engine-terraform-rules
   kind: other
   scope: core
@@ -8765,6 +9240,7 @@ entries:
   evidence:
   - docs/design/day-one-plan.md
   notes: added by DAYONE-P2
+  step: bootstrap.pass-1
 - id: other.upgrade-iam-gate
   kind: other
   scope: core
@@ -8781,6 +9257,7 @@ entries:
   evidence:
   - docs/design/day-one-plan.md
   notes: added by DAYONE-P2
+  step: infra.pass-2
 - id: other.sc-install-refusal-rule
   kind: other
   scope: core
@@ -8796,6 +9273,7 @@ entries:
   evidence:
   - docs/design/day-one-plan.md
   notes: added by DAYONE-P2
+  step: preflight.release
 
 # Collected references no entry lists, each with why that is right (design section 3.3).
 ignored:
