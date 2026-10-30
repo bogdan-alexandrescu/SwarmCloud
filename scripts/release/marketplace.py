@@ -3,17 +3,24 @@
 (DAYONE-RELEASE-1; docs/design/day-one-plan.md §6.4-§6.5, D28).
 
     marketplace.py plugin --dir <copy of plugin/> --version V --compat install/compat.json
-    marketplace.py marketplace --version V --source ./plugin --out marketplace.json
+    marketplace.py zip --dir <prepared plugin/> --out plugin.zip
+    marketplace.py marketplace --version V --sha256 <plugin.zip's digest> --out marketplace.json
     marketplace.py compat --version V --compat install/compat.json --out compat.json
     marketplace.py wheel-version V
 
 A teammate types the D28 line, `claude plugin marketplace add
 https://storage.googleapis.com/swarmcloud/marketplace.json`, then installs
 `sc@swarmcloud`. So the marketplace is named `swarmcloud` and lists one plugin,
-`sc`. The root marketplace (written by `publish.sh --promote`) points at
-`./releases/V/plugin`; each release also carries its own pinned marketplace,
-`releases/V/marketplace.json`, pointing at `./plugin`, for a team that must
-stay on V (the skew message names it, swarm_mcp/discovery.py).
+`sc`. A marketplace added by URL is fetched as that one file, so a relative
+plugin path cannot resolve (Claude Code's marketplace reference: "url: Claude
+Code fetches only marketplace.json, so relative paths can't resolve"). The
+plugin is therefore an `archive` source: the release's `plugin.zip` by its
+absolute URL, `releases/V/plugin.zip`, with its sha256, which Claude Code
+checks before it installs (Claude Code v2.1.224 or later). Every marketplace
+says the same: the root one (`publish.sh --promote`), `channels/rc/
+marketplace.json` (a candidate's publish) and each release's pinned
+`releases/V/marketplace.json`, for a team that must stay on V (the skew
+message names it, swarm_mcp/discovery.py).
 
 `plugin` turns a copy of `plugin/` into the release's plugin:
 
@@ -34,15 +41,21 @@ laptop with whatever `python3` it has, not inside the uv workspace.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import re
 import sys
+import zipfile
 from pathlib import Path
 
 #: Where every company reads the release (D25; release-home.sh, preflight.py).
 RELEASE_HOME = "https://storage.googleapis.com/swarmcloud"
 MARKETPLACE_NAME = "swarmcloud"
 PLUGIN_NAME = "sc"
+#: The release's plugin, zipped, beside its other files (releases/V/plugin.zip).
+PLUGIN_ARCHIVE = "plugin.zip"
+SHA256 = re.compile(r"\A[0-9a-f]{64}\Z")
 PLUGIN_DESCRIPTION = (
     "SwarmCloud from inside a Claude Code session: read your deployment, dispatch work to it by "
     "runner profile, and follow it as it runs."
@@ -101,10 +114,37 @@ def compat(version: str, source: Path) -> dict:
     return {"plugin": version, "deployments": {"min": low, "max_exclusive": high}}
 
 
-def marketplace(version: str, source: str) -> dict:
-    """The marketplace document: one plugin, `sc`, at `version`, from `source`
-    (a path relative to the marketplace file)."""
+def plugin_archive_url(version: str) -> str:
+    """The absolute URL of release `version`'s plugin.zip."""
+    return f"{RELEASE_HOME}/releases/{check_version(version)}/{PLUGIN_ARCHIVE}"
+
+
+def zip_plugin(directory: Path, out: Path) -> str:
+    """Zip a prepared plugin directory, its root at the top of the archive,
+    reproducibly (sorted names, a fixed time, normalised modes), so one plugin
+    is one digest. Returns the archive's sha256."""
+    directory = Path(directory)
+    files = sorted(p for p in directory.rglob("*") if p.is_file())
+    if not (directory / ".claude-plugin" / "plugin.json").is_file():
+        raise ValueError(f"{directory}: no .claude-plugin/plugin.json, so it is not a plugin")
+    with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for path in files:
+            info = zipfile.ZipInfo(path.relative_to(directory).as_posix(), date_time=(1980, 1, 1, 0, 0, 0))
+            info.external_attr = (0o100755 if os.access(path, os.X_OK) else 0o100644) << 16
+            info.compress_type = zipfile.ZIP_DEFLATED
+            zf.writestr(info, path.read_bytes())
+    return hashlib.sha256(Path(out).read_bytes()).hexdigest()
+
+
+def marketplace(version: str, archive_sha256: str) -> dict:
+    """The marketplace document: one plugin, `sc`, at `version`, from release
+    `version`'s plugin.zip by absolute URL and digest, so it resolves however
+    the marketplace was added (see the module docstring)."""
     check_version(version)
+    digest = str(archive_sha256 or "").lower()
+    if not SHA256.match(digest):
+        raise ValueError(f"{archive_sha256!r} is not a sha256 digest (64 hex characters)")
+    source = {"source": "archive", "url": plugin_archive_url(version), "sha256": digest}
     return {
         "name": MARKETPLACE_NAME,
         "owner": {"name": "SwarmCloud"},
@@ -155,8 +195,11 @@ def main(argv: list[str] | None = None) -> int:
     plugin.add_argument("--compat", required=True)
     market = sub.add_parser("marketplace", help="write a marketplace document")
     market.add_argument("--version", required=True)
-    market.add_argument("--source", required=True)
+    market.add_argument("--sha256", required=True, help="the release's plugin.zip digest")
     market.add_argument("--out", required=True)
+    archive = sub.add_parser("zip", help="zip a prepared plugin directory; print its sha256")
+    archive.add_argument("--dir", required=True)
+    archive.add_argument("--out", required=True)
     comp = sub.add_parser("compat", help="write the release's compat.json")
     comp.add_argument("--version", required=True)
     comp.add_argument("--compat", required=True)
@@ -168,7 +211,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "plugin":
             prepare_plugin(Path(args.dir), args.version, Path(args.compat))
         elif args.command == "marketplace":
-            _write(args.out, marketplace(args.version, args.source))
+            _write(args.out, marketplace(args.version, args.sha256))
+        elif args.command == "zip":
+            print(zip_plugin(Path(args.dir), Path(args.out)))
         elif args.command == "compat":
             _write(args.out, compat(args.version, Path(args.compat)))
         else:

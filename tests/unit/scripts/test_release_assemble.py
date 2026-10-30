@@ -93,11 +93,64 @@ def test_module_has_no_tfvars_or_environments(bundle: Path) -> None:
     assert not [n for n in names if "environments" in n.split("/")], "module.tgz carries environments/"
     assert not [n for n in names if n.endswith((".tfvars", ".tfvars.json"))], "module.tgz carries a tfvars file"
     assert not [n for n in names if ".terraform" in n.split("/") or "tfstate" in n]
+    # Outside the three roots, only what they read (test below).
     outside = [n for n in names if not n.startswith(("terraform/bootstrap", "terraform/infra", "terraform/modules"))]
-    assert not outside, outside[:10]
+    assert set(outside) <= set(module_reads()), sorted(set(outside) - set(module_reads()))[:10]
     # The live deployment's bootstrap tfvars exists in the checkout; it is the
     # file this test is about.
     assert (REPO / "terraform" / "bootstrap" / "terraform.tfvars").is_file()
+
+
+MODULE_ROOTS = ("terraform/bootstrap", "terraform/infra", "terraform/modules")
+# A function that reads a file, and the path it is handed, as written.
+READS = re.compile(r'\b(file|templatefile|filebase64|filesha256|fileexists|fileset)\(\s*"([^"]*)"')
+
+
+def module_reads() -> dict[str, str]:
+    """Every file the module roots read through `${path.module}/...`, resolved to
+    its repo path -> the .tf file and line that reads it. A literal path not
+    under path.module (path.root, path.cwd, a bare relative path) fails here, so
+    it is not missed. A path held in a variable (bootstrap's
+    infra_tenants_tfvars) is a deployment's own file, not the module's."""
+    found: dict[str, str] = {}
+    for root in MODULE_ROOTS:
+        for tf in sorted((REPO / root).rglob("*.tf")):
+            rel = tf.relative_to(REPO).as_posix()
+            if "environments" in rel.split("/") or ".terraform" in rel.split("/"):
+                continue
+            for number, line in enumerate(tf.read_text().splitlines(), 1):
+                if line.lstrip().startswith(("#", "//")):
+                    continue
+                for function, arg in READS.findall(line):
+                    assert function != "fileset", f"{rel}:{number} globs with fileset(); list it here"
+                    assert arg.startswith("${path.module}/"), f"{rel}:{number} reads {arg!r}, not a path.module path"
+                    target = os.path.normpath(os.path.join(os.path.dirname(rel), arg[len("${path.module}/"):]))
+                    found[target] = f"{rel}:{number}"
+    return found
+
+
+def test_module_carries_every_file_terraform_reads(bundle: Path) -> None:
+    """Every file terraform/{bootstrap,infra,modules} reads with file() or
+    templatefile() is in module.tgz at its repo path, so `${path.module}/../..`
+    resolves in the unpacked bundle as in the checkout (audit finding N8:
+    pass 2 turns on enable_live_browser and live.tf reads
+    kubernetes/swarm-system/swarm-live.yaml)."""
+    reads = module_reads()
+    outside = {t: w for t, w in reads.items() if not t.startswith(MODULE_ROOTS)}
+    # The scan ran: infra reads these from outside the module today.
+    assert "kubernetes/swarm-system/swarm-live.yaml" in outside, sorted(outside)
+    assert "scripts/acceptance/fixture.html" in outside, sorted(outside)
+    names = set(tar_names(bundle / "module.tgz"))
+    missing = {t: w for t, w in reads.items() if t not in names}
+    # MUTATION: tar only terraform/{bootstrap,infra,modules} again and this fails.
+    assert not missing, missing
+    # Module calls with a relative source resolve inside the bundle too.
+    for root in MODULE_ROOTS:
+        for tf in sorted((REPO / root).rglob("*.tf")):
+            rel = tf.relative_to(REPO).as_posix()
+            for source in re.findall(r'(?m)^\s*source\s*=\s*"(\.\.?/[^"]+)"', tf.read_text()):
+                target = os.path.normpath(os.path.join(os.path.dirname(rel), source))
+                assert any(n.startswith(target + "/") for n in names), f"{rel}: module {source} is not in module.tgz"
 
 
 # -- the wheels (plan R6) -----------------------------------------------------------
@@ -165,8 +218,30 @@ def test_sha256sums_cover_every_file(bundle: Path) -> None:
         assert sums[name] == hashlib.sha256((bundle / name).read_bytes()).hexdigest(), name
     for must in ("module.tgz", "manifest.yaml", "images.json", "kubernetes.tgz", "compat.json",
                  "marketplace.json", "cve-acceptances.json", "RELEASE.md", "install.sh",
-                 "plugin/.claude-plugin/plugin.json", "plugin/compat.json"):
+                 "plugin/.claude-plugin/plugin.json", "plugin/compat.json", "plugin.zip"):
         assert must in sums, must
+
+
+def test_marketplace_names_the_release_plugin_zip_by_url(bundle: Path) -> None:
+    """The release's marketplace.json lists `sc` as an archive source: this
+    release's plugin.zip by absolute URL, with the digest SHA256SUMS holds for
+    it, so a marketplace added by URL resolves it (audit finding N9). The zip
+    is the release's plugin directory, its root at the top."""
+    from swarm_install.steps.preflight import parse_sums
+
+    sums = parse_sums((bundle / "SHA256SUMS").read_bytes())
+    (sc,) = json.loads((bundle / "marketplace.json").read_text())["plugins"]
+    # MUTATION: write the source as "./plugin" again and this fails.
+    assert sc["source"] == {
+        "source": "archive",
+        "url": f"https://storage.googleapis.com/swarmcloud/releases/{VERSION}/plugin.zip",
+        "sha256": sums["plugin.zip"],
+    }
+    with zipfile.ZipFile(bundle / "plugin.zip") as zf:
+        names = set(zf.namelist())
+        for name in names:
+            assert zf.read(name) == (bundle / "plugin" / name).read_bytes(), name
+    assert names == {p.relative_to(bundle / "plugin").as_posix() for p in (bundle / "plugin").rglob("*") if p.is_file()}
 
 
 # -- images.json -------------------------------------------------------------------------

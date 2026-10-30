@@ -13,7 +13,10 @@
 # DIR then holds exactly what is uploaded to gs://swarmcloud/releases/V/:
 #
 #   module.tgz            terraform/{bootstrap,infra,modules}: no tfvars, no
-#                         environments/ (design 5.1: the engine writes its own)
+#                         environments/ (design 5.1: the engine writes its own);
+#                         plus, at their repo paths, the files those read
+#                         through ${path.module}/../.. (kubernetes/swarm-system/
+#                         manifests, scripts/acceptance/fixture.html)
 #   swarm_mcp-V-*.whl     the bridge: `swarm`, `sc`, the plugin's MCP server
 #   swarm_install-V-*.whl the engine (two tool wheels, plan R6)
 #   swarm_common-V-*.whl, swarm_redaction-V-*.whl
@@ -30,10 +33,14 @@
 #   plugin/               the plugin, its bridge pointed at this release's
 #                         wheels, with compat.json (plan 6.4-6.5)
 #   compat.json           the deployment versions the plugin supports
-#   marketplace.json      the marketplace pinned to V (source ./plugin)
+#   plugin.zip            plugin/, zipped reproducibly: what Claude Code installs
+#   marketplace.json      the marketplace pinned to V: plugin `sc` is an archive
+#                         source, releases/V/plugin.zip by absolute URL and sha256
+#                         (a marketplace added by URL cannot resolve a relative
+#                         path)
 #   cve-acceptances.json  every accepted CVE of .trivyignore.yaml, with its
 #                         expiry (lesson 27; preflight.release reads it)
-#   install.sh            install/install.sh, promoted to the bucket's root
+#   install.sh            install/install.sh, copied to the bucket's root by every publish
 #   github-app-permissions.json
 #                         the GitHub App manifest's permissions, from
 #                         swarm_api.setup_github.PERMISSIONS; `swarm upgrade`
@@ -242,10 +249,29 @@ def configures_a_deployment(f):
     return ("environments" in parts or ".terraform" in parts or "tfstate" in f
             or f.endswith((".tfvars", ".tfvars.json")))
 
-module = [(f, REPO / f) for root in ("terraform/bootstrap/", "terraform/infra/", "terraform/modules/")
-          for f in under(root) if not configures_a_deployment(f)]
+MODULE_ROOTS = ("terraform/bootstrap/", "terraform/infra/", "terraform/modules/")
+module = [(f, REPO / f) for root in MODULE_ROOTS for f in under(root) if not configures_a_deployment(f)]
+# What a root reads from outside the three directories, at its repo path, so
+# `${path.module}/../../kubernetes/...` resolves inside the unpacked bundle as
+# in the checkout (infra/live.tf reads kubernetes/swarm-system/swarm-live.yaml
+# the first pass enable_live_browser is on; audit finding N8).
+READ = re.compile(r'\b(?:file|templatefile|filebase64|filesha256|fileexists)\(\s*"\$\{path\.module\}/([^"$]+)"')
+outside, unreadable = set(), []
+for f, source in module:
+    if not f.endswith(".tf"):
+        continue
+    for rel in READ.findall(source.read_text()):
+        target = os.path.normpath(os.path.join(os.path.dirname(f), rel))
+        if target.startswith(MODULE_ROOTS):
+            continue
+        if target not in tracked:
+            unreadable.append(f"{f} reads {target}, which git does not track")
+        outside.add(target)
+if unreadable:
+    raise SystemExit("assemble: module.tgz refused: " + "; ".join(sorted(unreadable)))
+module += [(f, REPO / f) for f in sorted(outside)]
 tgz(OUT / "module.tgz", module)
-say(f"module.tgz: {len(module)} files")
+say(f"module.tgz: {len(module)} files, {len(outside)} of them read from outside terraform/")
 
 # -- kubernetes.tgz (review finding 3) ------------------------------------------------------------
 kube = [(f[len("kubernetes/"):], REPO / f) for f in under("kubernetes/")]
@@ -280,7 +306,10 @@ for f in under("plugin/"):
     shutil.copy2(REPO / f, target)
 marketplace.prepare_plugin(OUT / "plugin", VERSION, REPO / "install" / "compat.json")
 shutil.copy2(OUT / "plugin" / "compat.json", OUT / "compat.json")
-(OUT / "marketplace.json").write_text(json.dumps(marketplace.marketplace(VERSION, "./plugin"), indent=2) + "\n")
+# A marketplace added by URL fetches only marketplace.json, so the plugin is
+# the release's plugin.zip by absolute URL and digest (audit finding N9).
+archive_sha256 = marketplace.zip_plugin(OUT / "plugin", OUT / marketplace.PLUGIN_ARCHIVE)
+(OUT / "marketplace.json").write_text(json.dumps(marketplace.marketplace(VERSION, archive_sha256), indent=2) + "\n")
 shutil.copy2(REPO / "install" / "install.sh", OUT / "install.sh")
 compat = json.loads((OUT / "compat.json").read_text())["deployments"]
 

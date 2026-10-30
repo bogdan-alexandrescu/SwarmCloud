@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import importlib.util
 import pty
 import shutil
 import subprocess
@@ -178,8 +179,22 @@ def _tested(version: str = VERSION, result: str = "pass") -> str:
     })
 
 
+#: The digest the published release's SHA256SUMS holds for its plugin.zip.
+PLUGIN_ZIP_SHA256 = hashlib.sha256(b"a published plugin.zip").hexdigest()
+
+
 def _published(**extra: str) -> dict:
-    return {"objects": {f"{RELEASE}/SHA256SUMS": "x", f"{RELEASE}/install.sh": "x", **extra}}
+    sums = f"{PLUGIN_ZIP_SHA256}  plugin.zip\n{'0' * 64}  install.sh\n"
+    return {"objects": {f"{RELEASE}/SHA256SUMS": sums, f"{RELEASE}/install.sh": "x", **extra}}
+
+
+def _marketplace_module():
+    spec = importlib.util.spec_from_file_location("publish_test_marketplace",
+                                                  REPO / "scripts" / "release" / "marketplace.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 def _publish(tmp_path: Path, bundle: Path, record: Path, state: dict | None = None,
@@ -225,6 +240,30 @@ def test_promote_moves_channel_after_the_record(tmp_path: Path) -> None:
         assert "--cache-control=no-cache" in call, call
 
 
+def test_promote_marketplace_names_the_plugin_zip_by_url(tmp_path: Path) -> None:
+    """The root marketplace is added BY URL, so Claude Code fetches only that
+    file: its plugin is releases/V/plugin.zip by absolute URL, with the digest
+    V's published SHA256SUMS holds (audit finding N9)."""
+    state = _published(**{f"{RELEASE}/TESTED": _tested()})
+    proc = _run(tmp_path, state, "--promote", VERSION, typed=VERSION)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    uploaded = json.loads((tmp_path / "state.json").read_text()).get("uploaded", {})
+    (sc,) = json.loads(uploaded[f"{BUCKET}/marketplace.json"])["plugins"]
+    # MUTATION: promote with --source ./releases/V/plugin again and this fails.
+    assert sc["source"] == {"source": "archive", "url": f"https://storage.googleapis.com/swarmcloud/releases/{VERSION}/plugin.zip",
+                            "sha256": PLUGIN_ZIP_SHA256}
+
+
+def test_promote_refuses_a_release_without_plugin_zip(tmp_path: Path) -> None:
+    """A release whose SHA256SUMS lists no plugin.zip has no plugin a marketplace
+    added by URL can install: it is not promoted, and nothing is written."""
+    state = _published(**{f"{RELEASE}/TESTED": _tested(), f"{RELEASE}/SHA256SUMS": f"{'0' * 64}  install.sh\n"})
+    proc = _run(tmp_path, state, "--promote", VERSION, typed=VERSION)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "plugin.zip" in proc.stderr, proc.stderr
+    assert _writes(_calls(tmp_path)) == []
+
+
 def test_promote_needs_the_version_typed(tmp_path: Path) -> None:
     state = _published(**{f"{RELEASE}/TESTED": _tested()})
     proc = _run(tmp_path, state, "--promote", VERSION, typed="yes",
@@ -234,13 +273,15 @@ def test_promote_needs_the_version_typed(tmp_path: Path) -> None:
 
 
 def test_channel_moved_only_by_promote(tmp_path: Path, bundle: Path, assembled: tuple[Path, Path]) -> None:
-    """A publish uploads under releases/V/ and nowhere else: the channel and
-    the root marketplace move only with `--promote`, after the manual test."""
+    """A publish uploads under releases/V/ and, outside it, only the
+    channel-agnostic root install.sh: the channel and the root marketplace move
+    only with `--promote`, after the manual test."""
     proc = _publish(tmp_path, bundle, assembled[1])
     assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-3000:]
     dest = _destinations(_calls(tmp_path))
     assert dest, "publish uploaded nothing"
-    assert all(d.startswith(RELEASE) for d in dest), dest
+    assert all(d.startswith(RELEASE) or d == f"{BUCKET}/install.sh" for d in dest), dest
+    assert f"{BUCKET}/marketplace.json" not in dest, dest
     text = (SCRIPT.read_text())
     # The one place the script names the channel is the promotion.
     channel_lines = [line for line in text.splitlines() if "channels/stable" in line and not line.lstrip().startswith("#")]
@@ -300,8 +341,10 @@ def test_publish_copies_and_signs_every_image_by_digest(tmp_path: Path, bundle: 
     blob = [c for c in calls if c[:2] == ["cosign", "sign-blob"]]
     assert len(blob) == 1 and f"--key={KMS}" in blob[0]
     dest = _destinations(calls)
-    # SHA256SUMS goes up last, so a half-uploaded release has none to read.
-    assert dest[-1] == f"{RELEASE}/SHA256SUMS", dest
+    # SHA256SUMS goes up last of the release, so a half-uploaded release has
+    # none to read; only the root install.sh follows it.
+    assert [d for d in dest if d.startswith(RELEASE)][-1] == f"{RELEASE}/SHA256SUMS", dest
+    assert dest[-1] == f"{BUCKET}/install.sh", dest
     assert f"{RELEASE}/SHA256SUMS.sig" in dest and f"{RELEASE}/cosign.pub" in dest
 
 
@@ -367,8 +410,70 @@ def _as_candidate(bundle: Path) -> Path:
     plugin = json.loads(plugin_json.read_text())
     plugin["version"] = CANDIDATE
     plugin_json.write_text(json.dumps(plugin))
+    archive_sha256 = _marketplace_module().zip_plugin(bundle / "plugin", bundle / "plugin.zip")
+    (bundle / "marketplace.json").write_text(
+        json.dumps(_marketplace_module().marketplace(CANDIDATE, archive_sha256), indent=2) + "\n")
     _resum(bundle)
     return bundle
+
+
+@pytest.mark.parametrize("candidate", [False, True], ids=["final", "candidate"])
+def test_every_publish_puts_install_sh_at_the_root(tmp_path: Path, bundle: Path, assembled: tuple[Path, Path],
+                                                   candidate: bool) -> None:
+    """Every publish, a candidate's included, copies the bundle's install.sh to
+    the bucket root, uncached, after SHA256SUMS: `curl .../install.sh |
+    SWARM_CHANNEL=rc sh` must work before any promotion, since a promotion
+    needs an install of the candidate first (audit finding N10)."""
+    version = CANDIDATE if candidate else VERSION
+    proc = _publish(tmp_path, _as_candidate(bundle) if candidate else bundle, assembled[1], typed=version)
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-3000:]
+    calls = _calls(tmp_path)
+    dest = _destinations(calls)
+    # MUTATION: copy install.sh to the root only in --promote again and this fails.
+    assert f"{BUCKET}/install.sh" in dest, dest
+    assert dest.index(f"{BUCKET}/install.sh") > dest.index(f"{BUCKET}/releases/{version}/SHA256SUMS"), dest
+    (call,) = [c for c in _writes(calls) if c[0] == "gcloud" and _destinations([c]) == [f"{BUCKET}/install.sh"]]
+    assert "--cache-control=no-cache" in call, call
+    assert [a for a in call[3:] if not a.startswith("-")][0] == str(bundle / "install.sh"), call
+    # The script it puts there reads whichever channel it is asked for.
+    assert "channels/${CHANNEL}" in (bundle / "install.sh").read_text()
+
+
+def test_candidate_publish_writes_the_rc_marketplace(tmp_path: Path, bundle: Path,
+                                                     assembled: tuple[Path, Path]) -> None:
+    """A candidate's publish writes channels/rc/marketplace.json, the
+    candidate's own marketplace (plugin.zip by URL), uncached, before the
+    channel line: a deployment on the rc channel adds it (audit finding N10)."""
+    proc = _publish(tmp_path, _as_candidate(bundle), assembled[1], typed=CANDIDATE)
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-3000:]
+    calls = _calls(tmp_path)
+    dest = _destinations(calls)
+    # MUTATION: drop the rc marketplace write and this fails.
+    assert f"{BUCKET}/channels/rc/marketplace.json" in dest, dest
+    assert dest.index(f"{BUCKET}/channels/rc/marketplace.json") < dest.index(f"{BUCKET}/channels/rc"), dest
+    (call,) = [c for c in _writes(calls) if c[0] == "gcloud"
+               and _destinations([c]) == [f"{BUCKET}/channels/rc/marketplace.json"]]
+    assert "--cache-control=no-cache" in call, call
+    uploaded = json.loads((tmp_path / "state.json").read_text()).get("uploaded", {})
+    (sc,) = json.loads(uploaded[f"{BUCKET}/channels/rc/marketplace.json"])["plugins"]
+    assert sc["version"] == CANDIDATE
+    assert sc["source"]["url"] == f"https://storage.googleapis.com/swarmcloud/releases/{CANDIDATE}/plugin.zip"
+    assert sc["source"]["sha256"] == hashlib.sha256((bundle / "plugin.zip").read_bytes()).hexdigest()
+
+
+def test_publish_refuses_a_marketplace_with_a_relative_source(tmp_path: Path, bundle: Path,
+                                                              assembled: tuple[Path, Path]) -> None:
+    """A bundle whose marketplace names the plugin by a relative path (which a
+    marketplace added by URL cannot resolve) is refused before anything is
+    written (N9)."""
+    document = json.loads((bundle / "marketplace.json").read_text())
+    document["plugins"][0]["source"] = "./plugin"
+    (bundle / "marketplace.json").write_text(json.dumps(document, indent=2) + "\n")
+    _resum(bundle)
+    proc = _publish(tmp_path, bundle, assembled[1])
+    assert proc.returncode == 1, proc.stdout[-2000:] + proc.stderr[-3000:]
+    assert "marketplace.json" in proc.stderr, proc.stderr[-2000:]
+    assert _writes(_calls(tmp_path)) == []
 
 
 def _channel_writes(calls: list[list[str]], channel: str) -> list[list[str]]:
@@ -386,7 +491,7 @@ def test_candidate_publish_moves_the_rc_channel_last(tmp_path: Path, bundle: Pat
     dest = _destinations(calls)
     # MUTATION: drop the rc write from publish.sh and this fails.
     assert dest[-1] == f"{BUCKET}/channels/rc", dest
-    assert dest[-2] == f"{CANDIDATE_RELEASE}/SHA256SUMS", dest
+    assert dest.index(f"{CANDIDATE_RELEASE}/SHA256SUMS") < dest.index(f"{BUCKET}/channels/rc/marketplace.json"), dest
     assert f"{BUCKET}/channels/stable" not in dest, dest
     (rc,) = _channel_writes(calls, "rc")
     assert "--cache-control=no-cache" in rc, rc
@@ -463,8 +568,8 @@ def test_ci_publish_under_actions_with_the_dispatched_version(tmp_path: Path, bu
     assert [c for c in calls if c[:2] == ["gcrane", "cp"]], "nothing was copied"
     assert [c for c in calls if c[:2] == ["cosign", "sign"]], "nothing was signed"
     dest = _destinations(calls)
-    assert dest[-1] == f"{RELEASE}/SHA256SUMS", dest
-    assert all(d.startswith(RELEASE) for d in dest), dest
+    assert dest[-2:] == [f"{RELEASE}/SHA256SUMS", f"{BUCKET}/install.sh"], dest
+    assert all(d.startswith(RELEASE) for d in dest[:-1]), dest
     assert "to continue" not in proc.stderr
     assert "SWARM_PUBLISH_VERSION" in proc.stderr, proc.stderr
 
