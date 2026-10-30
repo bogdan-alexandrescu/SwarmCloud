@@ -80,6 +80,7 @@ from .mergesettings import COLLECTION as WORKSPACE_SETTINGS
 from .provider_keys import KEYS_COLLECTION as PROVIDER_KEYS
 from .repositories import parse_repository, repo_id_for
 from .repoindex import BASE_LINE, INDEXER_PROFILE, KEPT_VERSIONS, VERSIONS_COLLECTION
+from .rollup import derived_state_write
 from .store import EVENTS, LEASES, TASKS
 from .verdictpublish import spec_refusal
 from .workspaces import personal_tenant_id
@@ -1053,11 +1054,25 @@ class AttemptState:
             payload: dict[str, Any] = {"state": to.value, "updated_at": now}
             if to is TaskState.STARTING:
                 payload["started_at"] = now
+            workflow = self._workflow_write(txn, attempt, task, payload, now)
             txn.set(*event)
             txn.update(self._task_ref(attempt), payload)
+            if workflow is not None:
+                txn.update(*workflow)
             return self._answer({**task, **payload})
 
         return self._run(_apply)
+
+    def _workflow_write(self, txn: Any, attempt: AttemptTuple, task: Mapping[str, Any],
+                        payload: Mapping[str, Any], now: datetime) -> tuple[Any, dict[str, Any]] | None:
+        """The step's workflow's derived state, written in this transaction (#2838).
+
+        Reads only, so a caller calls it before its first write; the caller
+        applies the returned update beside the task's own."""
+        return derived_state_write(
+            txn, self._db, tenant_id=attempt.tenant_id, workflow_id=task.get("workflow_id"),
+            now=now, changed={attempt.task_id: {**task, **payload}},
+        )
 
     # -- the attempt document ----------------------------------------------
 
@@ -1314,12 +1329,15 @@ class AttemptState:
             if event_kind is EventType.READY and not worker_may_transition(current,
                                                                            TaskState.READY):
                 raise TransitionRefused(f"a worker may not requeue a task that is {current.value}")
+            workflow = self._workflow_write(txn, attempt, task, payload, now)
             # Every read above; the release reads the lease and its pools, then writes.
             events: list[tuple[Any, dict[str, Any]]] = list(announced)
             events.append(self._event(attempt, event_kind, event_detail, at=now,
                                       event_id=event_id))
             self._release(txn, attempt, release_reason, now=now, events=events)
             txn.update(self._task_ref(attempt), payload)
+            if workflow is not None:
+                txn.update(*workflow)
             if uploads:
                 self._record_carry(txn, attempt, index_ref, index, uploads, now)
             txn.set(self._ref(ATTEMPTS, attempt.attempt_id), {
@@ -1502,8 +1520,11 @@ class AttemptState:
                                                   "error": body.error,
                                                   "request_id": body.request_id},
                                   at=now, event_id=event_id)]
+            workflow = self._workflow_write(txn, attempt, task, payload, now)
             self._release(txn, attempt, f"terminal:{to.value}", now=now, events=events)
             txn.update(self._task_ref(attempt), payload)
+            if workflow is not None:
+                txn.update(*workflow)
             txn.set(self._ref(ATTEMPTS, attempt.attempt_id), {
                 "completed_at": now, "exit_code": body.exit_code, "error": body.error,
                 "tenant_id": attempt.tenant_id}, merge=True)
@@ -1571,8 +1592,11 @@ class AttemptState:
                 **detail, "to_state": target.value, "attempt_count": attempt_count,
                 "max_attempts": max_attempts, "retries_exhausted": target is TaskState.FAILED,
                 "request_id": body.request_id}, at=now, event_id=event_id)]
+            workflow = self._workflow_write(txn, attempt, task, payload, now)
             self._release(txn, attempt, release_reason, now=now, events=events)
             txn.update(self._task_ref(attempt), payload)
+            if workflow is not None:
+                txn.update(*workflow)
             txn.set(self._ref(ATTEMPTS, attempt.attempt_id), {
                 "completed_at": now, "exit_code": body.exit_code, "error": body.error,
                 "tenant_id": attempt.tenant_id}, merge=True)
