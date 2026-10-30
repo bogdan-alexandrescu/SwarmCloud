@@ -38,6 +38,8 @@ locals {
   # roles/viewer's write-shaped permissions (doctor-role-permissions.json,
   # 2026-10-29): query jobs and read sessions billed to the project, Kubernetes
   # self-reviews, a trace task, a Gemini feedback/investigation object.
+  # tflint-ignore: terraform_unused_declarations
+  # A record for the reviewer, not an input: test_doctor_roles_are_read_only holds the same list.
   doctor_viewer_write_shaped = [
     "bigquery.jobs.create",
     "bigquery.readsessions.create",

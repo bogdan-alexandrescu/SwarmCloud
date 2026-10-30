@@ -38,10 +38,6 @@ locals {
   platform_sa_email = {
     for id in module.service_account_ids.bootstrap_platform : id => "${id}@${var.project_id}.iam.gserviceaccount.com"
   }
-
-  # Adopt only where an infra state held the accounts; a fresh project has
-  # nothing to adopt and creates them.
-  adopt_platform_accounts = length(var.adopt_from_infra_states) > 0
 }
 
 # One identity per component, never a shared one: the reconciler is the only
