@@ -152,13 +152,17 @@ def test_no_tty_and_no_project_exits_2_naming_the_flag(world, monkeypatch, capsy
     assert found[1].applied == []
 
 
-def test_no_tty_and_no_domain_or_region_names_both(world, monkeypatch, capsys):
+def test_no_tty_with_only_project_runs_as_before(world, monkeypatch, capsys):
+    # A script that gives --project alone is unchanged: no prompt, no exit 2;
+    # stage 0 owns the hostname and region then.
+    _, found = world
     _terminal(monkeypatch, "", tty=False)
 
-    assert cli.main(["install", "--project", "acme-swarm-1"]) == ExitCode.USAGE
+    assert cli.main(["install", "--project", "acme-swarm-1"]) == ExitCode.OK
 
-    err = capsys.readouterr().err
-    assert "--domain" in err and "--region" in err
+    out = capsys.readouterr().out
+    assert "? " not in out and "Continue?" not in out
+    assert found[1].applied == ["create state-bucket"]
 
 
 def test_flags_given_means_no_prompt(world, monkeypatch, capsys):
@@ -179,10 +183,11 @@ def test_a_resumed_install_is_not_asked_what_it_records(world, monkeypatch, caps
     recorded = InstallState(project="acme-swarm-1", environment="prod",
                             hostname="swarm.acme.example", region="europe-west1")
     store.objects[STATE_OBJECT] = (recorded.to_bytes(), 1)
-    _terminal(monkeypatch, "", tty=False)
+    _terminal(monkeypatch, "")  # a TTY, but anything read from it would be an EOF
 
     assert cli.main(["install", "--project", "acme-swarm-1"]) == ExitCode.OK
 
+    assert "? " not in capsys.readouterr().out
     assert found[1].applied == ["create state-bucket"]
 
 
@@ -190,12 +195,15 @@ def test_a_resumed_install_is_not_asked_what_it_records(world, monkeypatch, caps
 def test_dry_run_and_status_ask_only_for_the_project(world, monkeypatch, capsys, mode):
     _terminal(monkeypatch, "acme-swarm-1\n")
 
-    cli.main(["install", mode])
+    code = cli.main(["install", mode])
 
     out = capsys.readouterr().out
+    assert code != ExitCode.USAGE
     assert "? Google Cloud project to create or use:" in out
     assert "? Domain" not in out and "Continue?" not in out
-    assert "acme-swarm-1" in out
+    # It went on with the project typed: the dry run checked the steps, the
+    # status named the project.
+    assert ("check state-bucket" if mode == "--dry-run" else "acme-swarm-1") in out
 
 
 def test_a_bad_domain_is_asked_again(world, monkeypatch, capsys):
@@ -206,3 +214,13 @@ def test_a_bad_domain_is_asked_again(world, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert out.count("? Domain for the console (a hostname you control):") == 2
     assert "'not a host' is not a hostname" in out
+
+
+def test_a_bad_region_is_asked_again(world, monkeypatch, capsys):
+    _terminal(monkeypatch, "acme-swarm-1\nswarm.acme.example\nmars\neurope-west1\n\n")
+
+    assert cli.main(["install"]) == ExitCode.OK
+
+    out = capsys.readouterr().out
+    assert out.count("? Region [us-central1]:") == 2
+    assert "'mars' is not a Google Cloud region" in out
