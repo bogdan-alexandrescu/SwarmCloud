@@ -15,8 +15,10 @@ from typing import Any
 import pytest
 
 from swarm_install.api_client import ADMIN_ROLE, DELEGATION, GroupResult, GroupsProbe
-from swarm_install.exitcodes import MET, UNMET, ExitCode
-from swarm_install.steps import identity
+from swarm_install.exitcodes import MET, UNMET, WAITING, ExitCode
+from swarm_install.steps import Observation, Plan, identity
+from swarm_install.steps.preflight import ApiError
+from swarm_install.state import StepRecord
 
 from .test_preflight import PROJECT, Answers, FakeGcp, Rig, ctx_for
 
@@ -158,6 +160,7 @@ def test_steps_satisfy_every_stage_8_identity_entry() -> None:
     covered = {entry for step in identity.STEPS for entry in step.satisfies}
     assert covered <= ids
     assert {"workspace-delegation.groups-reader-admin-role", "workspace-delegation.groups-dwd",
+            "workspace-group.install-groups", "workspace-delegation.groups-reader-assignment",
             "workspace-group.admin-surface-swarm-admins", "workspace-group.tenant-groups",
             "workspace-group.cloud-identity-presence", "switch.enable_qa_identity", "sa.qa-console",
             "role.custom.swarmQaJwtSigner", "iam-binding.qa-console-authoritative-policy",
@@ -207,7 +210,7 @@ def test_qa_console_identity_read_exactly_as_designed() -> None:
     gcp.bindings[0]["members"].append("user:someone@example.com")
     observed = step.check(ctx)
     assert observed.status == UNMET and "swarm-api alone" in observed.detail
-    with pytest.raises(RuntimeError, match="DAYONE-ENGINE-3"):
+    with pytest.raises(RuntimeError, match="DAYONE-ENGINE-INPUTS"):
         step.apply(ctx, step.plan(ctx))
     assert not gcp.called("set_iam_policy")
 
@@ -236,3 +239,348 @@ def test_allowed_domains_hold_the_organisation_never_gmail() -> None:
     assert observed.status == UNMET and "example.com" in observed.detail
 
     assert step.check(ctx_for()).status == UNMET  # no admin group yet: the domain is not known
+
+
+# -- DAYONE-IDENTITY-STAGE: the groups and the role through the APIs -----------
+
+DOMAIN = "example.com"
+INSTALLER = "lea@example.com"
+CUSTOMER = "C0abc12"
+READER_ID = "91447453409034242"
+UNIQUE_ID = "112233445566778899001"
+
+
+class WorkspaceGcp(IdentityGcp):
+    """The Directory and Cloud Identity Groups APIs on dictionaries. `refuse`
+    makes a write answer 403; `on_poll` runs on every read, as a person in
+    the Admin console would act between two polls."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.groups: dict[str, str] = {}
+        self.assignments: list[dict[str, Any]] = []
+        self.refuse: set[str] = set()
+        self.on_poll: Any = None
+
+    def _refused(self, name: str) -> None:
+        if name in self.refuse:
+            raise ApiError(403, "PERMISSION_DENIED", "Not Authorized to access this resource/api")
+
+    def customer_id(self) -> str:
+        self._call("customer_id")
+        return CUSTOMER
+
+    def admin_roles(self, customer: str) -> list[dict[str, Any]]:
+        self._call("admin_roles", customer)
+        return [{"roleId": "91447453409034241", "roleName": "_GROUPS_ADMIN_ROLE", "isSystemRole": True},
+                {"roleId": READER_ID, "roleName": identity.GROUPS_READER_ROLE, "isSystemRole": True}]
+
+    def role_assignments(self, customer: str, role_id: str) -> list[dict[str, Any]]:
+        self._call("role_assignments", customer, role_id)
+        if self.on_poll:
+            self.on_poll()
+        return [dict(a) for a in self.assignments if a["roleId"] == role_id]
+
+    def assign_role(self, customer: str, role_id: str, assigned_to: str) -> dict[str, Any]:
+        self._call("assign_role", customer, role_id, assigned_to)
+        self._refused("assign_role")
+        found = {"roleId": role_id, "assignedTo": assigned_to, "scopeType": "CUSTOMER"}
+        self.assignments.append(found)
+        return found
+
+    def group_name(self, project: str, email: str) -> str | None:
+        self._call("group_name", project, email)
+        if self.on_poll:
+            self.on_poll()
+        return self.groups.get(email)
+
+    def create_group(self, project: str, parent: str, email: str, display_name: str) -> dict[str, Any]:
+        self._call("create_group", project, parent, email, display_name)
+        self._refused("create_group")
+        self.groups[email] = f"groups/{len(self.groups) + 1}"
+        return {"done": True}
+
+
+@pytest.fixture
+def pages(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+    """Every page a step opens, with what it says to do there; no browser."""
+    opened: list[tuple[str, str]] = []
+    monkeypatch.setattr(identity, "open_page", lambda url, *, why: opened.append((url, why)))
+    return opened
+
+
+def _seed(rig: Rig, **outputs: Any) -> None:
+    rig.store.update(lambda s: s.outputs.update({"org_domain": DOMAIN, "installer": INSTALLER, **outputs}))
+
+
+def test_groups_created_through_the_groups_api(tmp_path: Path, pages: list[tuple[str, str]]) -> None:
+    """The admin and first-team groups do not exist: one optional choice names
+    both, and `groups.create` makes them under customers/<id> read from the
+    Directory API. No page opens; `admin_groups` is still only recorded by
+    identity.admin-group, after its probe."""
+    gcp = WorkspaceGcp()
+    ask = Answers(identity_groups=["yes"])
+    rig = Rig(tmp_path)
+    _seed(rig)
+    result = rig.engine([identity.GroupsStep(lambda: gcp, ask, lambda c: FakeApi())]).run()
+
+    assert result.exit_code == ExitCode.OK, result.message
+    assert len(ask.asked) == 1
+    question = ask.asked[0][1]
+    assert f"swarm-admins@{DOMAIN}" in question and f"swarm-team@{DOMAIN}" in question
+    created = gcp.called("create_group")
+    assert [(c[1], c[2]) for c in created] == [(f"customers/{CUSTOMER}", f"swarm-admins@{DOMAIN}"),
+                                               (f"customers/{CUSTOMER}", f"swarm-team@{DOMAIN}")]
+    assert all(c[0] == PROJECT for c in created)
+    assert pages == []
+    outputs = rig.store.load().outputs
+    assert outputs["workspace_groups"] == {"admin": f"swarm-admins@{DOMAIN}", "team": f"swarm-team@{DOMAIN}"}
+    assert "admin_groups" not in outputs
+
+    # The admin group is then registered as today: probed, with the installer
+    # (each group's owner) as the member, and asked nothing.
+    api = FakeApi()
+    result = rig.engine([identity.AdminGroupStep(lambda: gcp, Answers(), lambda c: api)]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert rig.store.load().outputs["admin_groups"] == [f"swarm-admins@{DOMAIN}"]
+    assert api.probes[0] == [{"group": f"swarm-admins@{DOMAIN}", "member": INSTALLER}]
+
+
+def test_groups_waited_for_when_the_person_lacks_the_right(tmp_path: Path, pages: list[tuple[str, str]]) -> None:
+    """`groups.create` is refused: the Admin console's groups page opens with
+    what to create there, and the step polls until both groups exist. Nobody
+    presses Enter."""
+    gcp = WorkspaceGcp()
+    gcp.refuse.add("create_group")
+    polls = {"n": 0}
+
+    def person_creates() -> None:
+        if pages:
+            polls["n"] += 1
+            if polls["n"] > 4:
+                gcp.groups.update({f"swarm-admins@{DOMAIN}": "groups/a", f"swarm-team@{DOMAIN}": "groups/t"})
+
+    gcp.on_poll = person_creates
+    ask = Answers(identity_groups=["yes"])
+    rig = Rig(tmp_path)
+    _seed(rig)
+    result = rig.engine([identity.GroupsStep(lambda: gcp, ask, lambda c: FakeApi())]).run()
+
+    assert result.exit_code == ExitCode.OK, result.message
+    assert [url for url, _ in pages] == [identity.GROUPS_PAGE]
+    why = pages[0][1]
+    assert f"swarm-admins@{DOMAIN}" in why and f"swarm-team@{DOMAIN}" in why and "continues by itself" in why
+    assert "Enter" not in why
+    assert len(ask.asked) == 1
+    assert rig.store.load().outputs["workspace_groups"]["team"] == f"swarm-team@{DOMAIN}"
+
+
+def test_groups_reader_role_assigned_after_typed_approval(tmp_path: Path, pages: list[tuple[str, str]]) -> None:
+    """The predefined Groups Reader role is assigned to swarm-api's numeric
+    unique id with `roleAssignments.insert`, only after the typed approval;
+    anything else assigns nothing."""
+    gcp = WorkspaceGcp()
+    rig = Rig(tmp_path / "refused")
+    _seed(rig)
+    result = rig.engine([identity.GroupsReaderRoleStep(
+        lambda: gcp, Answers(identity_groups_reader_role=["yes"]), lambda c: FakeApi())]).run()
+    assert result.exit_code == ExitCode.FAIL
+    assert not gcp.called("assign_role")
+
+    ask = Answers(identity_groups_reader_role=[identity.APPROVE])
+    rig = Rig(tmp_path / "approved")
+    _seed(rig)
+    result = rig.engine([identity.GroupsReaderRoleStep(lambda: gcp, ask, lambda c: FakeApi())]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    question = ask.asked[0][1]
+    assert f"swarm-api@{PROJECT}.iam.gserviceaccount.com" in question and identity.APPROVE in question
+    assert gcp.called("assign_role") == [(CUSTOMER, READER_ID, UNIQUE_ID)]
+    assert pages == []
+    assert rig.store.load().outputs["groups_auth"] == ADMIN_ROLE
+
+    # identity.group-read then takes the recorded path and the first team's
+    # group, and asks nothing.
+    rig.store.update(lambda s: s.outputs.update(
+        {"workspace_groups": {"admin": f"swarm-admins@{DOMAIN}", "team": f"swarm-team@{DOMAIN}"}}))
+    api = FakeApi(ADMIN_ROLE)
+    result = rig.engine([identity.GroupReadStep(lambda: gcp, Answers(), lambda c: api)]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert api.probes[0] == [{"group": f"swarm-team@{DOMAIN}", "member": INSTALLER}]
+
+
+def test_groups_reader_role_refused_then_polled(tmp_path: Path, pages: list[tuple[str, str]]) -> None:
+    """The Directory API refuses the assignment: the Admin console's admin
+    roles page opens naming swarm-api's account, and `roleAssignments.list`
+    is polled until the assignment shows."""
+    gcp = WorkspaceGcp()
+    gcp.refuse.add("assign_role")
+    polls = {"n": 0}
+
+    def person_assigns() -> None:
+        if pages:
+            polls["n"] += 1
+            if polls["n"] > 3 and not gcp.assignments:
+                gcp.assignments.append({"roleId": READER_ID, "assignedTo": UNIQUE_ID, "scopeType": "CUSTOMER"})
+
+    gcp.on_poll = person_assigns
+    rig = Rig(tmp_path)
+    _seed(rig)
+    ask = Answers(identity_groups_reader_role=[identity.APPROVE])
+    result = rig.engine([identity.GroupsReaderRoleStep(lambda: gcp, ask, lambda c: FakeApi())]).run()
+
+    assert result.exit_code == ExitCode.OK, result.message
+    assert [url for url, _ in pages] == [identity.ADMIN_ROLES_PAGE]
+    assert f"swarm-api@{PROJECT}.iam.gserviceaccount.com" in pages[0][1] and "Groups Reader" in pages[0][1]
+    assert len(gcp.called("role_assignments")) > 1
+    assert rig.store.load().outputs["groups_auth"] == ADMIN_ROLE
+
+
+class FakeReapply:
+    """ENGINE-INPUTS' stage-8 re-apply as the engine sees it: a stage-8
+    Terraform pass step. Applying it writes swarm-api's ALLOWED_DOMAINS and
+    qa-console's identity."""
+
+    stage = 8
+    kind = "engine"
+    satisfies: tuple[str, ...] = ()
+    pass_name = "infra-identity"
+
+    def __init__(self, gcp: QaFakeGcp) -> None:
+        self.id = "infra.stage-8-reapply"
+        self.gcp = gcp
+        self.applied = 0
+
+    def check(self, ctx: Any) -> Observation:
+        return Observation(MET if self.applied else UNMET, "")
+
+    verify = check
+
+    def plan(self, ctx: Any) -> Plan:
+        return Plan("re-apply infra with the groups")
+
+    def apply(self, ctx: Any, plan: Plan) -> None:
+        self.applied += 1
+        self.gcp.allowed = DOMAIN
+        self.gcp.accounts.add(f"qa-console@{PROJECT}.iam.gserviceaccount.com")
+
+    def explain(self) -> str:
+        return ""
+
+
+def test_read_only_checks_wait_for_the_stage_8_reapply(tmp_path: Path) -> None:
+    """Before the stage-8 re-apply has run, qa-console and allowed-domains
+    are `waiting` for it, never failing and never "run swarm install again";
+    in the engine their apply runs that re-apply once, and they then pass."""
+    gcp = QaFakeGcp()
+    gcp.allowed = "another.org"
+    gcp.accounts.clear()
+    reapply = FakeReapply(gcp)
+    qa, domains = identity.QaConsoleStep(lambda: gcp), identity.AllowedDomainsStep(lambda: gcp)
+
+    ctx = ctx_for(outputs={"org_domain": DOMAIN, "admin_groups": [ADMINS]})
+    ctx.engine = type("E", (), {"steps": [qa, domains, reapply]})()
+    for step in (qa, domains):
+        observed = step.check(ctx)
+        assert observed.status == WAITING, observed
+        assert "waiting for the stage-8 re-apply" in observed.detail and reapply.id in observed.detail
+        assert "run swarm install again" not in observed.detail
+
+    rig = Rig(tmp_path)
+    rig.store.update(lambda s: (setattr(s, "region", "us-central1"),
+                                s.outputs.update({"org_domain": DOMAIN, "admin_groups": [ADMINS]})))
+    result = rig.engine([qa, domains, reapply]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert reapply.applied == 1
+    state = rig.store.load()
+    assert state.done(qa.id) and state.done(domains.id) and state.done(reapply.id)
+    assert state.outputs["allowed_domains"] == [DOMAIN]
+
+
+def test_read_only_checks_after_the_reapply_check_and_never_say_run_again() -> None:
+    """After the re-apply, both check what it wrote: met when right, and a
+    wrong value is unmet with a reason, never "run swarm install again"."""
+    gcp = QaFakeGcp()
+    reapply = FakeReapply(gcp)
+    ctx = ctx_for(outputs={"org_domain": DOMAIN})
+    ctx.engine = type("E", (), {"steps": [reapply]})()
+    ctx.state.steps[reapply.id] = StepRecord(state="done", at=0.0, by=INSTALLER)
+    qa, domains = identity.QaConsoleStep(lambda: gcp), identity.AllowedDomainsStep(lambda: gcp)
+    assert qa.check(ctx).status == MET
+    assert domains.check(ctx).status == MET  # org_domain alone names the organisation
+
+    gcp.allowed = "another.org"
+    observed = domains.check(ctx)
+    assert observed.status == UNMET and DOMAIN in observed.detail
+    with pytest.raises(RuntimeError) as raised:
+        domains.apply(ctx, domains.plan(ctx))
+    assert "run swarm install again" not in str(raised.value)
+    assert reapply.applied == 0  # done already: not run a second time
+
+
+def _sizing(mode: str, members: int) -> dict[str, Any]:
+    """The `sizing` record SIZING-ASK writes in stage 0; only `mode` matters here."""
+    return {"mode": mode, "members": members}
+
+
+def test_one_person_install_creates_no_team_group(tmp_path: Path, pages: list[tuple[str, str]]) -> None:
+    """Decision 7: for one person, stage 8 creates only the platform admins'
+    group, the installer its one member (its owner, nobody added). No first-team
+    group is asked about, created, recorded or probed: the probe reads the
+    admin group, with the installer as its member."""
+    gcp = WorkspaceGcp()
+    ask = Answers(identity_groups=["yes"])
+    rig = Rig(tmp_path)
+    _seed(rig, sizing=_sizing("individual", 1))
+    step = identity.GroupsStep(lambda: gcp, ask, lambda c: FakeApi())
+    assert "team" not in step.plan(ctx_for(outputs=rig.store.load().outputs)).summary
+    result = rig.engine([step]).run()
+
+    assert result.exit_code == ExitCode.OK, result.message
+    question = ask.asked[0][1]
+    assert f"swarm-admins@{DOMAIN}" in question and "swarm-team" not in question
+    created = gcp.called("create_group")
+    assert [c[2] for c in created] == [f"swarm-admins@{DOMAIN}"]
+    assert pages == []
+    outputs = rig.store.load().outputs
+    assert outputs["workspace_groups"] == {"admin": f"swarm-admins@{DOMAIN}"}
+
+    # The probe group is the admin group, its member the installer: nothing asked.
+    gcp.assignments.append({"roleId": READER_ID, "assignedTo": "112233445566778899001", "scopeType": "CUSTOMER"})
+    api = FakeApi()
+    rig.store.update(lambda s: s.outputs.update({"groups_auth": ADMIN_ROLE}))
+    read = Answers()
+    result = rig.engine([identity.GroupReadStep(lambda: gcp, read, lambda c: api),
+                         identity.AdminGroupStep(lambda: gcp, read, lambda c: api)]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert read.asked == []
+    outputs = rig.store.load().outputs
+    assert outputs["probe_group"] == f"swarm-admins@{DOMAIN}" and outputs["probe_member"] == INSTALLER
+    assert outputs["admin_groups"] == [f"swarm-admins@{DOMAIN}"]
+    assert all("swarm-team" not in p["group"] for probes in api.probes for p in probes)
+
+
+def test_groups_reader_role_probes_the_admin_group_for_one_person() -> None:
+    """With the assignment list closed, the role's proof is swarm-api's read of
+    the admin group when there is no first-team group."""
+    gcp = WorkspaceGcp()
+    original = gcp.role_assignments
+
+    def closed(customer: str, role_id: str) -> list[dict[str, Any]]:
+        original(customer, role_id)
+        raise ApiError(403, "PERMISSION_DENIED", "Not Authorized to access this resource/api")
+
+    gcp.role_assignments = closed  # type: ignore[method-assign]
+    api = FakeApi()
+    ctx = ctx_for(outputs={"org_domain": DOMAIN, "installer": INSTALLER, "sizing": _sizing("individual", 1),
+                           "workspace_groups": {"admin": f"swarm-admins@{DOMAIN}"}})
+    observed = identity.GroupsReaderRoleStep(lambda: gcp, Answers(), lambda c: api).check(ctx)
+    assert observed.status == MET, observed.detail
+    assert api.probes == [[{"group": f"swarm-admins@{DOMAIN}", "member": INSTALLER}]]
+
+
+def test_team_or_older_state_keeps_the_team_group() -> None:
+    """A team install, or a state from before `sizing` existed, still names
+    both groups."""
+    for outputs in ({}, {"sizing": _sizing("team", 12)}):
+        ctx = ctx_for(outputs={"org_domain": DOMAIN, "installer": INSTALLER, **outputs})
+        assert identity.install_groups(ctx) == {"admin": f"swarm-admins@{DOMAIN}", "team": f"swarm-team@{DOMAIN}"}

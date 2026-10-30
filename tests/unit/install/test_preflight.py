@@ -441,7 +441,7 @@ def test_region_confirmed_before_stage_1(tmp_path: Path) -> None:
     gcp = FakeGcp(log)
     gcp.iam["bindings"] = [{"role": "roles/editor",
                             "members": [f"serviceAccount:{NUMBER}-compute@developer.gserviceaccount.com"]}]
-    right = answers(log, region="europe-west1")
+    right = answers(log, region="europe-west1", foundations_budget=[""])
     rig = Rig(tmp_path / "second")
     result = rig.engine(stage0(gcp, right) + stage1(gcp, right), manifest=load_manifest()).run()
     assert result.exit_code == ExitCode.OK, result.message

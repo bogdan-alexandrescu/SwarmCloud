@@ -1,0 +1,103 @@
+# Lane DAYONE-PROJECT-CREATE (part of #2688), decision 6 of 2026-10-30: stage 1
+# creates the project and links its billing through the APIs after ONE typed
+# approval that shows the monthly cost estimate and the budget amount
+# (swarm_install/steps/foundations.py ProjectStep). The budget's amount is the
+# one chosen at that approval (asked by foundations.budget when there was no
+# approval), and containerscanning is disabled through the
+# Service Usage API rather than by a printed command. The four base entries
+# whose provider or apply text changes are restated with replace: true.
+version: 1
+entries:
+- id: other.gcp-project
+  kind: other
+  scope: core
+  stage: 1
+  provider: engine
+  check: gcloud projects describe $P --format='value(lifecycleState,parent.type,parent.id)'
+  apply: 'foundations.project shows one plan (the project id, the parent preflight.rights recorded, the billing
+    account, the budget and a monthly cost estimate with its basis), asks for the project id to be typed
+    (SWARM_ASSUME_YES never answers it), then calls Resource Manager v3 projects.create under the recorded
+    organization or folder and polls its operation; a project that exists, is ACTIVE and is in an organization
+    is left alone'
+  verify: lifecycleState is ACTIVE and parent.type is organization or folder (an Internal OAuth brand needs an
+    org, brief section 3 item 4)
+  explain: Everything lives in one dedicated project per environment (brief D11). A project outside an
+    organization cannot hold an Internal brand, so IAP with an Internal brand, the only identity shape in v1
+    (D6), is impossible.
+  guards: decision 6 (2026-10-30) replaces D14's printed command; a 409 on create is a project id taken
+    globally and is said as that
+  secret_entry: null
+  depends_on:
+  - switch.project-create-right
+  evidence:
+  - apps/swarm-install/swarm_install/steps/foundations.py
+  step: foundations.project
+  replace: true
+- id: other.billing-link
+  kind: other
+  scope: core
+  stage: 1
+  provider: engine
+  check: gcloud billing projects describe $P --format='value(billingEnabled,billingAccountName)'
+  apply: foundations.project calls Cloud Billing projects.updateBillingInfo with the account preflight.inputs
+    recorded, under the same typed approval as the project's creation; when it is refused the project is left
+    in place and the next run only links billing (needs billing.resourceAssociations.create on the account)
+  verify: billingEnabled is True; then a first services:batchEnable succeeds
+  explain: No API in stage 1 can be enabled on an unbilled project. The installer's right to link billing is
+    checked in preflight, because in September the owner could create projects but lacked
+    billing.resourceAssociations.create (brief D14).
+  guards: D14; decision 6 (2026-10-30)
+  secret_entry: null
+  depends_on:
+  - other.gcp-project
+  - switch.billing-link-right
+  evidence:
+  - apps/swarm-install/swarm_install/steps/foundations.py
+  step: foundations.project
+  replace: true
+- id: api.containerscanning-NOT-enabled
+  kind: other
+  scope: core
+  stage: 1
+  provider: engine
+  check: gcloud services list --enabled --project=$P --filter=config.name=containerscanning.googleapis.com
+  apply: deliberately absent from module.project_services' services list; when it is enabled foundations.apis
+    disables it through Service Usage services.disable (disableDependentServices false) and polls until it is
+    gone
+  verify: the API does not reappear after a `terraform apply` (disable_on_destroy is false, so removing it from
+    the list does not disable it automatically)
+  explain: 'Owner decision 2026-10-21: Google''s per-image scanning cost ~$0.26/image for results nothing read;
+    trivy is the gate instead (terraform/modules/artifact_registry/main.tf).'
+  guards: owner decision 2026-10-21, terraform/infra/main.tf:32-39
+  secret_entry: null
+  depends_on: []
+  evidence:
+  - terraform/infra/main.tf:32-39
+  - apps/swarm-install/swarm_install/steps/foundations.py
+  notes: On a NEW project this API is off by default, so there is usually nothing to disable.
+  step: foundations.apis
+  replace: true
+- id: monitoring.budget-alert
+  kind: monitoring
+  scope: core
+  stage: 1
+  provider: engine
+  check: gcloud billing budgets list --billing-account=<account> --format='value(displayName)' | grep -x swarm-$P
+  apply: foundations.budget creates budget swarm-$P scoped to $P with 50/90/100 percent thresholds; its amount is
+    the one typed at foundations.project's approval (an optional choice, default 1000 USD a month); when the
+    project already existed and was linked there is no approval, so foundations.budget asks the amount itself
+    (Enter keeps the default)
+  verify: the budget lists $P in budgetFilter.projects
+  explain: The fixed floor (swarm-api min 2 instances, the GKE cluster fee, the load balancer) costs money from
+    the first apply; the approval shows a cost estimate and the budget before any write.
+  guards: null
+  secret_entry: null
+  depends_on:
+  - other.billing-link
+  - api.billingbudgets
+  evidence:
+  - apps/swarm-install/swarm_install/steps/foundations.py
+  notes: Creating a budget needs billing.budgets.create on the billing account, which the installer may not
+    have; the engine then prints the console path.
+  step: foundations.budget
+  replace: true

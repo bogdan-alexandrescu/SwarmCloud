@@ -61,6 +61,13 @@ if tool == "gcloud" and args[:2] == ["storage", "ls"]:
         sys.exit(0)
     print(f"ERROR: (gcloud.storage.ls) One or more URLs matched no objects: {url}", file=sys.stderr)
     sys.exit(1)
+if tool == "gcloud" and args[:2] == ["storage", "cp"]:
+    # Keep what a small upload held, so a test can read what a channel says.
+    paths = [a for a in args[2:] if not a.startswith("-")]
+    if len(paths) == 2 and os.path.isfile(paths[0]) and os.path.getsize(paths[0]) < 4096:
+        state.setdefault("uploaded", {})[paths[1]] = open(paths[0]).read()
+        json.dump(state, open(os.environ["FAKE_STATE"], "w"))
+    sys.exit(0)
 if tool == "gcrane" and args[:1] == ["cp"] and "@" in args[1]:
     # The copy keeps the digest, unless the state says the registry served another.
     state.setdefault("tags", {})[args[2]] = state.get("serves", {}).get(args[2], args[1].split("@", 1)[1])
@@ -342,6 +349,89 @@ def test_dry_run_writes_nothing(tmp_path: Path, bundle: Path, assembled: tuple[P
     assert proc.returncode == 0, proc.stderr[-3000:]
     assert _writes(_calls(tmp_path)) == []
     assert "gcrane cp" in proc.stderr and "cosign sign" in proc.stderr
+
+
+# -- a release candidate moves channels/rc (DAYONE-RELEASE-2) -----------------------------------
+
+CANDIDATE = f"{VERSION}-rc.1"
+CANDIDATE_RELEASE = f"{BUCKET}/releases/{CANDIDATE}"
+
+
+def _as_candidate(bundle: Path) -> Path:
+    """The assembled bundle, renamed to CANDIDATE where publish.sh reads the
+    version (compat.json, the plugin), SHA256SUMS rewritten to match."""
+    compat = json.loads((bundle / "compat.json").read_text())
+    compat["plugin"] = CANDIDATE
+    (bundle / "compat.json").write_text(json.dumps(compat))
+    plugin_json = bundle / "plugin" / ".claude-plugin" / "plugin.json"
+    plugin = json.loads(plugin_json.read_text())
+    plugin["version"] = CANDIDATE
+    plugin_json.write_text(json.dumps(plugin))
+    _resum(bundle)
+    return bundle
+
+
+def _channel_writes(calls: list[list[str]], channel: str) -> list[list[str]]:
+    return [c for c in _writes(calls) if c[0] == "gcloud" and _destinations([c]) == [f"{BUCKET}/channels/{channel}"]]
+
+
+def test_candidate_publish_moves_the_rc_channel_last(tmp_path: Path, bundle: Path,
+                                                     assembled: tuple[Path, Path]) -> None:
+    """A candidate's publish writes `channels/rc` naming it, uncached, after
+    SHA256SUMS: `SWARM_CHANNEL=rc` install.sh reads that channel, and an
+    installer that reads it finds a complete, signed release."""
+    proc = _publish(tmp_path, _as_candidate(bundle), assembled[1], typed=CANDIDATE)
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-3000:]
+    calls = _calls(tmp_path)
+    dest = _destinations(calls)
+    # MUTATION: drop the rc write from publish.sh and this fails.
+    assert dest[-1] == f"{BUCKET}/channels/rc", dest
+    assert dest[-2] == f"{CANDIDATE_RELEASE}/SHA256SUMS", dest
+    assert f"{BUCKET}/channels/stable" not in dest, dest
+    (rc,) = _channel_writes(calls, "rc")
+    assert "--cache-control=no-cache" in rc, rc
+    # What the channel holds is one line, the candidate's version, as
+    # install.sh reads it (`curl .../channels/${SWARM_CHANNEL}`).
+    uploaded = json.loads((tmp_path / "state.json").read_text()).get("uploaded", {})
+    assert uploaded.get(f"{BUCKET}/channels/rc") == f"{CANDIDATE}\n", uploaded.get(f"{BUCKET}/channels/rc")
+
+
+def test_candidate_publish_by_ci_moves_the_rc_channel(tmp_path: Path, bundle: Path,
+                                                      assembled: tuple[Path, Path]) -> None:
+    """The dispatched publish of a candidate moves channels/rc as a typed one
+    does; channels/stable stays a person's `--promote`."""
+    proc = _run(tmp_path, {}, "--bundle", str(_as_candidate(bundle)), "--source-images", str(assembled[1]),
+                "--ci", typed=None, extra_env=_actions(version=CANDIDATE))
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-3000:]
+    dest = _destinations(_calls(tmp_path))
+    assert dest[-1] == f"{BUCKET}/channels/rc", dest
+    assert f"{BUCKET}/channels/stable" not in dest, dest
+
+
+def test_candidate_dry_run_writes_no_channel(tmp_path: Path, bundle: Path, assembled: tuple[Path, Path]) -> None:
+    proc = _run(tmp_path, {}, "--bundle", str(_as_candidate(bundle)), "--source-images", str(assembled[1]),
+                "--dry-run")
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    assert _writes(_calls(tmp_path)) == []
+    assert f"{BUCKET}/channels/rc" in proc.stderr, proc.stderr[-2000:]
+
+
+def test_final_release_publish_moves_no_channel(tmp_path: Path, bundle: Path, assembled: tuple[Path, Path]) -> None:
+    """A final release (no -rc.N) moves neither channel at publish: stable only
+    by `--promote`, and rc never to a final release."""
+    proc = _publish(tmp_path, bundle, assembled[1])
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    dest = _destinations(_calls(tmp_path))
+    assert not [d for d in dest if "/channels/" in d], dest
+
+
+def test_a_failed_candidate_publish_moves_no_channel(tmp_path: Path, bundle: Path,
+                                                     assembled: tuple[Path, Path]) -> None:
+    """The channel moves only after the publish succeeded."""
+    state = {"serves": {f"{HOME_REGISTRY}/swarm-api:{CANDIDATE}": fake_digest("other")}}
+    proc = _publish(tmp_path, _as_candidate(bundle), assembled[1], state=state, typed=CANDIDATE)
+    assert proc.returncode == 1, proc.stderr[-2000:]
+    assert not [d for d in _destinations(_calls(tmp_path)) if "/channels/" in d]
 
 
 # -- --ci: the dispatched, approved run stands for the typed version (DAYONE-RELEASE-CI) -----

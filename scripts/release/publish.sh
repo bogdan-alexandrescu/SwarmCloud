@@ -33,7 +33,10 @@
 #      with cosign and the KMS key (gcpkms://.../swarmcloud-release/cosign);
 #   4. signs SHA256SUMS with the same key, and uploads everything under
 #      releases/V/ (no object overwritten), SHA256SUMS LAST, so a release cut
-#      short has no SHA256SUMS and no installer reads it.
+#      short has no SHA256SUMS and no installer reads it;
+#   5. for a candidate (YYYY.MM.N-rc.N) only, and only once all of that has
+#      succeeded: channels/rc (one line: V, Cache-Control: no-cache), which
+#      install.sh reads under SWARM_CHANNEL=rc (DAYONE-RELEASE-2).
 #   It never touches channels/stable or the root marketplace.json.
 #
 # --record-test V --record FILE: the manual install-and-upgrade test of
@@ -335,6 +338,14 @@ publish() {
   fi
   # LAST: a release cut short above has no SHA256SUMS, so no installer reads it.
   write gcloud storage cp --no-clobber "${BUNDLE}/SHA256SUMS" "${release}/SHA256SUMS"
+  # A candidate moves the rc channel, after the release it names is complete.
+  # A final release moves no channel here: stable moves only by --promote.
+  if [[ "${VERSION}" == *-rc.* ]]; then
+    local rc_channel="${BUCKET}/channels/rc"
+    printf '%s\n' "${VERSION}" >"${WORK}/rc"
+    write gcloud storage cp --cache-control=no-cache "${WORK}/rc" "${rc_channel}"
+    [[ "${DRY_RUN}" -eq 1 ]] || ok "${rc_channel} names ${VERSION}: SWARM_CHANNEL=rc installs it"
+  fi
   ok "published ${VERSION}$([[ "${DRY_RUN}" -eq 0 ]] || printf ' (dry run: nothing written)')"
   info "next: the manual test (plan section 7.3), then --record-test ${VERSION} --record <file>, then --promote ${VERSION}"
 }

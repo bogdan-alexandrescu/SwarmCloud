@@ -10,7 +10,7 @@ lesson 17: none of these is in Terraform).
 | `edge.global-ip` | `network.global-ip` | engine: reserves the address the frontend module names (`swarm-ui-ip`) |
 | `edge.dns` | `dns.frontend-hostname` | wait, 60 min: the record is set at the person's registrar, so `apply` prints it and opens a page showing what the hostname resolves to now; the engine polls until it is the reserved address |
 | `edge.certificate` | `certificate.managed-ssl` | wait, 60 min (`waits.CERTIFICATE`); it never starts before DNS resolves to the reserved address (design R6) |
-| `edge.desktop-client` | `oauth-client.desktop-sc`, `declared-value.frontend_iap_programmatic_clients`, `secret.swarm-iap-desktop-client-secret.container` | engine: no API creates or lists a Desktop client, so `apply` opens the create page (or the recorded client's own page); the id, unless already recorded, is asked; the secret is a credential typed at a hidden prompt (`secret_entry`, echo off) straight to Secret Manager |
+| `edge.desktop-client` | `oauth-client.desktop-sc`, `declared-value.frontend_iap_programmatic_clients`, `secret.swarm-iap-desktop-client-secret.container` | engine: no API creates or lists a Desktop client, so `apply` opens the create page (or the recorded client's own page); the id, unless already recorded, is asked; the secret is a credential typed at a hidden prompt (`secret_entry`, echo off) straight to Secret Manager and, the same typed value, to the swarm credential store of the new deployment's context (`verify_context`), so verify never needs it |
 
 The managed certificate itself is created by infra pass 1 (stage 5), which
 attaches it to the load balancer; Google provisions a managed certificate only
@@ -25,7 +25,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-from .. import secret_entry
+from .. import secret_entry, swarm_context
 from ..exitcodes import MET, UNMET, WAITING
 from ..secret_entry import DevTty, Terminal
 from ..waits import CERTIFICATE, WaitSpec
@@ -300,13 +300,32 @@ class DesktopClientStep(_Base):
     _explain = (
         "sc signs a person in to IAP with this Desktop OAuth client (a gcloud token is refused with 401 "
         "code 900). No API creates one, so it is made in the console; its id is not secret, its secret is "
-        "typed at a hidden prompt and goes straight to Secret Manager, never through a chat."
+        "typed at a hidden prompt and goes straight to Secret Manager, never through a chat, and into the "
+        "swarm credential store of the new deployment's context, which verify signs in to."
     )
 
     def __init__(self, gcp: Callable[[], Gcp], ask: Ask,
-                 open_terminal: Callable[[], Terminal] = DevTty.open) -> None:
+                 open_terminal: Callable[[], Terminal] = DevTty.open,
+                 contexts: swarm_context.Run = swarm_context.run_command) -> None:
         super().__init__(gcp, ask)
         self._open_terminal = open_terminal
+        self._contexts = contexts
+
+    def _stored_context(self, ctx: Any) -> tuple[str, str]:
+        """`(context, "")` when the new deployment's context, with the secret,
+        is on this machine; else `("", why not)`. Reads the context list only."""
+        try:
+            name = swarm_context.stored_context(ctx, self._contexts)
+        except (RuntimeError, ValueError) as exc:
+            return "", str(exc)
+        if not name:
+            return "", ("the Desktop client's secret is not in the swarm credential store of a context for "
+                        f"{swarm_context.deployment_url(ctx) or 'the new deployment'} on this machine")
+        return name, ""
+
+    def _keep(self, ctx: Any, value: bytes) -> None:
+        name = swarm_context.store_desktop_secret(ctx, value, run=self._contexts)
+        remember(ctx, outputs={"verify_context": name})
 
     def _check(self, ctx: Any) -> Observation:
         client = str(ctx.outputs.get("desktop_client_id") or "")
@@ -317,7 +336,11 @@ class DesktopClientStep(_Base):
         version = self.gcp.enabled_version(ctx.project, DESKTOP_SECRET)
         if version is None:
             return Observation(UNMET, f"secret {DESKTOP_SECRET} has no enabled version")
-        return Observation(MET, "", {"desktop_client_id": client, "desktop_client_secret_version": version})
+        context, missing = self._stored_context(ctx)
+        if not context:
+            return Observation(UNMET, missing)
+        return Observation(MET, "", {"desktop_client_id": client, "desktop_client_secret_version": version,
+                                     "verify_context": context})
 
     def plan(self, ctx: Any) -> Plan:
         return Plan(
@@ -325,7 +348,8 @@ class DesktopClientStep(_Base):
             (
                 f"open {self.deep_link(ctx)}",
                 "Application type: Desktop app; name: SwarmCloud sc; create",
-                f"the secret goes to Secret Manager ({DESKTOP_SECRET}), never to a chat or a file",
+                f"the secret goes to Secret Manager ({DESKTOP_SECRET}), never to a chat or a file, and to the "
+                "swarm credential store of the new deployment's context (swarm context add --client-secret-stdin)",
             ),
         )
 
@@ -344,10 +368,11 @@ class DesktopClientStep(_Base):
         if not CLIENT_ID.match(client) or not has_secret:
             open_page(self.deep_link(ctx), why=(
                 "Create the Desktop OAuth client (Application type: Desktop app; name: SwarmCloud sc), "
-                "then give its id here, and its secret at the hidden prompt (it goes to Secret Manager only)"
+                "then give its id here, and its secret at the hidden prompt (it goes to Secret Manager and the new "
+                "deployment's swarm credential store only)"
                 if not CLIENT_ID.match(client) else
                 f"The Desktop client {client}: give its secret at the hidden prompt (it goes to Secret "
-                "Manager only)"
+                "Manager and the new deployment's swarm credential store only)"
             ))
         if not CLIENT_ID.match(client):
             client = self._ask(ctx, self.id, "The Desktop client's id (ends .apps.googleusercontent.com)").strip()
@@ -360,8 +385,18 @@ class DesktopClientStep(_Base):
             version = secret_entry.enter_secret(
                 ctx, step_id=self.id, project=ctx.project, secret_id=DESKTOP_SECRET,
                 prompt="The Desktop client's secret", store=gcp, open_terminal=self._open_terminal,
+                also=lambda value: self._keep(ctx, value),
             )
             remember(ctx, outputs={"desktop_client_secret_version": version})
+        elif not self._stored_context(ctx)[0]:
+            # Secret Manager holds it, but this machine's credential store does
+            # not (another laptop, or a run before this step kept it there): the
+            # engine never reads it back from Secret Manager, so it is typed again.
+            secret_entry.type_secret(
+                ctx, step_id=self.id, what=f"the Desktop client's secret (already in {DESKTOP_SECRET})",
+                prompt="The Desktop client's secret, for the swarm credential store",
+                use=lambda value: self._keep(ctx, value), open_terminal=self._open_terminal,
+            )
 
 
 def build_steps(gcp: Callable[[], Gcp] = GCP, ask: Ask = ASK,
