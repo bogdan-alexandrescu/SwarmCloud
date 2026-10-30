@@ -4,7 +4,7 @@ read Google groups, and a group is registered only once swarm-api has read it
 
 | Step | Manifest entries | Kind |
 |---|---|---|
-| `identity.groups` | `workspace-group.install-groups` | human only where no API answers: the platform admins' and the first team's groups, created through the Cloud Identity Groups API on one optional choice; without the right, the Admin console's groups page opens and the check is polled |
+| `identity.groups` | `workspace-group.install-groups` | human only where no API answers: the platform admins' group and, for a team (not one person, decision 7), the first team's group, created through the Cloud Identity Groups API on one optional choice; without the right, the Admin console's groups page opens and the check is polled |
 | `identity.groups-reader-role` | `workspace-delegation.groups-reader-assignment` | human only where no API answers: the predefined Groups Reader admin role assigned to swarm-api's account through the Directory API after a typed approval; refused, the Admin console's roles page opens and `roleAssignments.list` is polled |
 | `identity.group-read` | `workspace-group.cloud-identity-presence`, `workspace-group.tenant-groups`, `workspace-delegation.groups-reader-admin-role`, `workspace-delegation.groups-dwd` | human: the admin-role path first (Q2), delegation the fallback; polls the probe through swarm-api |
 | `identity.admin-group` | `workspace-group.admin-surface-swarm-admins` | engine: the platform admins' group, registered only after its probe passes |
@@ -286,22 +286,44 @@ def installer(ctx: Any) -> str:
     return str(ctx.outputs.get("installer") or getattr(ctx, "holder", "") or "")
 
 
+def one_person(ctx: Any) -> bool:
+    """Decision 7: the deployment is for one person (`sizing.mode`, stage 0).
+    A state from before `sizing` existed is a team install."""
+    return str((ctx.outputs.get("sizing") or {}).get("mode") or "") == "individual"
+
+
 def install_groups(ctx: Any) -> dict[str, str]:
-    """The platform admins' group and the first team's group, by role.
+    """The platform admins' group and, for a team, the first team's group, by role.
 
     Names recorded once are kept (a resume, or an admin group registered
     before this step existed); otherwise they are `swarm-admins@` and
-    `swarm-team@` the organisation's domain (`org_domain`, preflight)."""
+    `swarm-team@` the organisation's domain (`org_domain`, preflight). A
+    one-person install has no team group: its first workspace is the
+    installer's own, and the admin group holds only the installer."""
     recorded = dict(ctx.outputs.get("workspace_groups") or {})
-    admin = recorded.get("admin") or next(iter(ctx.outputs.get("admin_groups") or ()), "")
-    team = recorded.get("team") or ""
-    if not admin or not team:
+    groups = {"admin": str(recorded.get("admin") or next(iter(ctx.outputs.get("admin_groups") or ()), ""))}
+    if not one_person(ctx):
+        groups["team"] = str(recorded.get("team") or "")
+    if not all(groups.values()):
         domain = str(ctx.outputs.get("org_domain") or "").strip().lower()
         if not domain:
             raise LookupError("no org_domain is recorded (preflight.org-domain reads it)")
-        admin = admin or f"{ADMIN_GROUP}@{domain}"
-        team = team or f"{TEAM_GROUP}@{domain}"
-    return {"admin": str(admin), "team": str(team)}
+        names = {"admin": ADMIN_GROUP, "team": TEAM_GROUP}
+        groups = {role: email or f"{names[role]}@{domain}" for role, email in groups.items()}
+    return groups
+
+
+def probe_group(ctx: Any) -> str:
+    """The group swarm-api's read is proved on: the first team's, or, with no
+    team group (one person), the platform admins'."""
+    groups = ctx.outputs.get("workspace_groups") or {}
+    return str(groups.get("team") or groups.get("admin") or "")
+
+
+def described(groups: dict[str, str]) -> str:
+    """The groups in words, for a plan or a check."""
+    admins = f"the platform admins' group {groups['admin']}"
+    return f"{admins} and the first team's group {groups['team']}" if "team" in groups else admins
 
 
 class _Workspace(_Base):
@@ -325,10 +347,10 @@ class GroupsStep(_Workspace):
     wait = GROUPS_WAIT
     satisfies = ("workspace-group.install-groups",)
     _explain = (
-        "The admin surface is governed by a group and the first team is a group, never named people. The "
-        "engine creates both through the Cloud Identity Groups API, the installer as each one's owner; "
-        "without the right to create groups, the Admin console's groups page opens and the engine waits "
-        "until they exist."
+        "The admin surface is governed by a group and the first team is a group, never named people; a "
+        "one-person install has no team group. The engine creates them through the Cloud Identity Groups "
+        "API, the installer as each one's owner; without the right to create groups, the Admin console's "
+        "groups page opens and the engine waits until they exist."
     )
 
     def _missing(self, ctx: Any, groups: dict[str, str]) -> list[str]:
@@ -339,15 +361,15 @@ class GroupsStep(_Workspace):
         missing = self._missing(ctx, groups)
         if missing:
             return Observation(UNMET, f"{', '.join(missing)} does not exist yet")
-        return Observation(MET, f"{groups['admin']} and {groups['team']} exist", {"workspace_groups": groups})
+        return Observation(MET, f"{' and '.join(groups.values())} exist", {"workspace_groups": groups})
 
     def plan(self, ctx: Any) -> Plan:
         groups = install_groups(ctx)
         return Plan(
-            f"create the platform admins' group {groups['admin']} and the first team's group {groups['team']}",
+            f"create {described(groups)}",
             (
                 "offered once, optional: create them through the Cloud Identity Groups API under your "
-                "organisation's customer, you as each one's owner",
+                "organisation's customer, you as each one's owner and its only member",
                 "without the right to create groups, the Admin console's groups page opens and the install "
                 "continues by itself once they exist",
             ),
@@ -368,9 +390,9 @@ class GroupsStep(_Workspace):
         else:
             try:
                 parent = f"customers/{self.gcp.customer_id()}"
-                for email, role in ((groups["admin"], "admins"), (groups["team"], "team")):
+                for role, email in groups.items():
                     if email in missing:
-                        label = "SwarmCloud platform admins" if role == "admins" else "SwarmCloud first team"
+                        label = "SwarmCloud platform admins" if role == "admin" else "SwarmCloud first team"
                         self.gcp.create_group(ctx.project, parent, email, label)
                         ctx.events.emit("step_apply", step=self.id, message=f"created {email}")
                 return
@@ -409,9 +431,9 @@ class GroupsReaderRoleStep(_Workspace):
                    for a in self.gcp.role_assignments(customer, role_id))
 
     def _probed(self, ctx: Any) -> GroupResult | None:
-        """swarm-api's own read of the first team's group, in admin-role mode,
-        or None when there is nothing to probe with yet."""
-        group = str((ctx.outputs.get("workspace_groups") or {}).get("team") or "")
+        """swarm-api's own read of the probe group, in admin-role mode, or
+        None when there is nothing to probe with yet."""
+        group = probe_group(ctx)
         member = installer(ctx)
         if not group or not member:
             return None
@@ -537,10 +559,11 @@ class GroupReadStep(_Base):
             if answer not in PATHS:
                 raise ValueError(f"{answer!r} is neither admin-role nor delegation")
             outputs = {"groups_auth": PATHS[answer]}
-        # The first team's group identity.groups created, and its owner.
-        team = str((ctx.outputs.get("workspace_groups") or {}).get("team") or "")
-        if team and installer(ctx):
-            for key, value in (("probe_group", team), ("probe_member", installer(ctx))):
+        # A group identity.groups created (the first team's, or for one person
+        # the admins'), and its owner.
+        group = probe_group(ctx)
+        if group and installer(ctx):
+            for key, value in (("probe_group", group), ("probe_member", installer(ctx))):
                 if not ctx.outputs.get(key):
                     outputs[key] = value
         if outputs["groups_auth"] == DELEGATION and not ctx.outputs.get("groups_impersonate_user"):

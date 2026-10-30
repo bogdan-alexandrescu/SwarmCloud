@@ -10,10 +10,10 @@ entries:
   stage: 8
   provider: engine
   step: identity.groups
-  check: 'Cloud Identity groups:lookup (x-goog-user-project: the install project) finds the platform admins'' group and the first team''s group, swarm-admins@ and swarm-team@ the org_domain unless recorded otherwise'
-  apply: 'one optional choice naming both groups: groups.create under customers/<id> (the Directory API''s customers/my_customer), initialGroupConfig WITH_INITIAL_OWNER so the installer owns each; refused or declined, open_page(https://admin.google.com/ac/groups) and poll the lookup'
-  verify: both lookups name a group
-  explain: The admin surface and the first team are governed by groups, never named people; the installer owns both, so stage 8's probes name a real member.
+  check: 'Cloud Identity groups:lookup (x-goog-user-project: the install project) finds the platform admins'' group and, for a team, the first team''s group, swarm-admins@ and swarm-team@ the org_domain unless recorded otherwise; with sizing.mode individual (decision 7) there is no team group'
+  apply: 'one optional choice naming the groups: groups.create under customers/<id> (the Directory API''s customers/my_customer), initialGroupConfig WITH_INITIAL_OWNER so the installer owns each; refused or declined, open_page(https://admin.google.com/ac/groups) and poll the lookup'
+  verify: every lookup names a group
+  explain: The admin surface and the first team are governed by groups, never named people; the installer owns each and is its only member, so stage 8's probes name a real member. A one-person install has no team group, and its probe reads the admin group.
   guards: lesson 20
   secret_entry: null
   depends_on: []
