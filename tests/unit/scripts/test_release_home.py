@@ -14,6 +14,13 @@ effective `iam.allowedPolicyMemberDomains` policy on the project already admits
 it -- the Q4 org-policy exception, an org-admin act -- and only after the
 operator types the project id, which `SWARM_ASSUME_YES` does not skip.
 
+`--ci-publisher EMAIL` (DAYONE-RELEASE-CI, BGD 2026-10-30: CI publishes) grants
+the publish-release workflow's identity exactly three roles, each on one
+resource and none on the project: `roles/artifactregistry.writer` on the
+repository, `roles/storage.objectAdmin` on the bucket and
+`roles/cloudkms.signerVerifier` on the cosign key. The same typed project id
+gates them.
+
 Every test runs the script against a fake `gcloud` first on `PATH`, which logs
 each call and answers describes from a JSON state file: no cloud credentials.
 """
@@ -71,7 +78,7 @@ elif positional[:3] == ["services", "list"] or positional[:2] == ["services", "l
     for name in state.get("services", []):
         print(name)
 elif positional[-1:] == ["get-iam-policy"] or "get-iam-policy" in positional:
-    kind = "bucket-iam" if positional[0] == "storage" else "repo-iam"
+    kind = {"storage": "bucket-iam", "kms": "key-iam"}.get(positional[0], "repo-iam")
     print(json.dumps(state.get(kind, {"bindings": []})))
 elif "get-public-key" in positional:
     print("-----BEGIN PUBLIC KEY-----")
@@ -327,6 +334,137 @@ def test_alternate_release_project_is_admitted(tmp_path: Path) -> None:
     proc = _run(tmp_path, {"exists": {}, "services": []}, "--project", "swarmcloud-releases", "--dry-run")
     assert proc.returncode == 0, proc.stderr
     assert "--project=swarmcloud-releases" in proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# --ci-publisher: the three release roles for publish-release.yml's identity
+# ---------------------------------------------------------------------------
+
+PUBLISHER = "swarm-deployer@a-ci-project.iam.gserviceaccount.com"
+PUBLISHER_MEMBER = f"serviceAccount:{PUBLISHER}"
+#: (resource kind, role) -- the whole of what --ci-publisher may grant.
+PUBLISHER_GRANTS = {
+    ("artifacts", "roles/artifactregistry.writer"),
+    ("storage", "roles/storage.objectAdmin"),
+    ("kms", "roles/cloudkms.signerVerifier"),
+}
+
+
+def _grants(calls: list[list[str]]) -> list[list[str]]:
+    return [c for c in calls if "add-iam-policy-binding" in c]
+
+
+def _role(call: list[str]) -> str:
+    return next(a.split("=", 1)[1] for a in call if a.startswith("--role="))
+
+
+def _bound(role: str, member: str = PUBLISHER_MEMBER) -> dict:
+    return {"bindings": [{"role": role, "members": [member]}]}
+
+
+def test_ci_publisher_dry_run_shows_the_three_grants(tmp_path: Path) -> None:
+    proc = _run(tmp_path, _all_exist(), "--ci-publisher", PUBLISHER, "--dry-run")
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout
+    for piece in (
+        "gcloud artifacts repositories add-iam-policy-binding swarmcloud --location=us "
+        f"--project={PROJECT} --member={PUBLISHER_MEMBER} --role=roles/artifactregistry.writer",
+        f"gcloud storage buckets add-iam-policy-binding {BUCKET} --member={PUBLISHER_MEMBER} "
+        f"--role=roles/storage.objectAdmin --project={PROJECT}",
+        "gcloud kms keys add-iam-policy-binding cosign --keyring=swarmcloud-release --location=us "
+        f"--project={PROJECT} --member={PUBLISHER_MEMBER} --role=roles/cloudkms.signerVerifier",
+    ):
+        assert piece in out, f"dry run did not print {piece!r}:\n{out}"
+    assert out.count("would run: gcloud") == 3, out
+    assert _writes(_calls(tmp_path)) == [], "a dry run called a write"
+    assert "to continue" not in proc.stderr
+
+
+def test_ci_publisher_needs_typed_confirmation(tmp_path: Path) -> None:
+    """SWARM_ASSUME_YES does not answer it, and no terminal means no grant."""
+    proc = _run(tmp_path, _all_exist(), "--ci-publisher", PUBLISHER, extra_env={"SWARM_ASSUME_YES": "1"})
+    assert proc.returncode != 0, proc.stderr
+    assert _grants(_calls(tmp_path)) == []
+
+
+def test_ci_publisher_refused_on_wrong_typed_answer(tmp_path: Path) -> None:
+    proc = _run_typed(tmp_path, _all_exist(), "yes", "--ci-publisher", PUBLISHER,
+                      extra_env={"SWARM_ASSUME_YES": "1"})
+    assert proc.returncode != 0, proc.stderr
+    assert _grants(_calls(tmp_path)) == []
+
+
+def test_ci_publisher_grants_exactly_three_roles_after_typed_project_id(tmp_path: Path) -> None:
+    proc = _run_typed(tmp_path, _all_exist(), PROJECT, "--ci-publisher", PUBLISHER)
+    assert proc.returncode == 0, proc.stderr
+    grants = _grants(_calls(tmp_path))
+    assert {(c[0], _role(c)) for c in grants} == PUBLISHER_GRANTS, grants
+    assert len(grants) == 3, grants
+    for call in grants:
+        assert f"--member={PUBLISHER_MEMBER}" in call, call
+        assert f"--project={PROJECT}" in call, call
+    # Each on its one resource; never the project.
+    assert not [c for c in _calls(tmp_path) if c[:1] == ["projects"]]
+    assert [c[:4] for c in grants if c[0] == "kms"] == [["kms", "keys", "add-iam-policy-binding", "cosign"]]
+    assert "--keyring=swarmcloud-release" in next(c for c in grants if c[0] == "kms")
+    # Every grant is printed before the project id is asked for.
+    asked = proc.stderr.index(f"Type {PROJECT} to continue")
+    for role in ("roles/artifactregistry.writer", "roles/storage.objectAdmin", "roles/cloudkms.signerVerifier"):
+        assert -1 < proc.stderr.find(role) < asked, proc.stderr
+    # --ci-publisher is not --public: nothing reaches allUsers.
+    assert not [c for c in grants if f"--member={ALL_USERS}" in c]
+
+
+def test_ci_publisher_second_run_grants_nothing(tmp_path: Path) -> None:
+    state = _all_exist(**{
+        "repo-iam": _bound("roles/artifactregistry.writer"),
+        "bucket-iam": _bound("roles/storage.objectAdmin"),
+        "key-iam": _bound("roles/cloudkms.signerVerifier"),
+    })
+    proc = _run(tmp_path, state, "--ci-publisher", PUBLISHER)
+    assert proc.returncode == 0, proc.stderr
+    assert _writes(_calls(tmp_path)) == []
+    assert "to continue" not in proc.stderr
+
+
+def test_ci_publisher_grants_only_what_is_missing(tmp_path: Path) -> None:
+    """A role held by someone else, or another role held by the publisher, is
+    not the grant: only the bucket's is in place here."""
+    state = _all_exist(**{
+        "repo-iam": _bound("roles/artifactregistry.writer", "serviceAccount:other@x.iam.gserviceaccount.com"),
+        "bucket-iam": _bound("roles/storage.objectAdmin"),
+        "key-iam": _bound("roles/cloudkms.viewer"),
+    })
+    proc = _run_typed(tmp_path, state, PROJECT, "--ci-publisher", PUBLISHER)
+    assert proc.returncode == 0, proc.stderr
+    grants = _grants(_calls(tmp_path))
+    assert {(c[0], _role(c)) for c in grants} == {
+        ("artifacts", "roles/artifactregistry.writer"), ("kms", "roles/cloudkms.signerVerifier")}, grants
+
+
+@pytest.mark.parametrize("email", [
+    "",
+    "someone@example.com",
+    "user:someone@example.com",
+    "serviceAccount:swarm-deployer@a-ci-project.iam.gserviceaccount.com",
+    "allUsers",
+    "swarm-deployer@saga-agents-staging.iam.gserviceaccount.com",
+])
+def test_ci_publisher_refuses_anything_but_a_service_account(tmp_path: Path, email: str) -> None:
+    """A person, a group, allUsers or the shared project's identity is never
+    the publisher; refused before gcloud is called."""
+    proc = _run(tmp_path, _all_exist(), "--ci-publisher", email, "--dry-run")
+    assert proc.returncode != 0, proc.stdout
+    assert _calls(tmp_path) == []
+
+
+def test_ci_publisher_refuses_a_deny_listed_service_account(tmp_path: Path) -> None:
+    text = COMMON.read_text()
+    listed = sorted({w.strip('"\'') for w in text.split() if w.strip('"\'').endswith(".iam.gserviceaccount.com")})
+    assert listed, "SHARED_DENY_LIST names no service account"
+    proc = _run(tmp_path, _all_exist(), "--ci-publisher", listed[0], "--dry-run")
+    assert proc.returncode != 0, proc.stdout
+    assert _calls(tmp_path) == []
 
 
 @pytest.mark.skipif(shutil.which("shellcheck") is None, reason="shellcheck not installed")
