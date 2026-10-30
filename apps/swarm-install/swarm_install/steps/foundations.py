@@ -4,9 +4,9 @@ APIs, the default compute account's Editor grant, and the state bucket
 
 | Step | Manifest entries | Lesson |
 |---|---|---|
-| `foundations.project` | `other.gcp-project`, `other.billing-link` | the engine prints the commands; it never creates a project on its own (D14) |
-| `foundations.apis` | every core `api.*` entry with a `service_enabled` probe, and `api.containerscanning-NOT-enabled` | 4: one list, read from the manifest |
-| `foundations.budget` | `monitoring.budget-alert` | |
+| `foundations.project` | `other.gcp-project`, `other.billing-link` | decision 6 (2026-10-30): one typed approval showing the cost estimate and the budget, then `projects.create` and `projects.updateBillingInfo` |
+| `foundations.apis` | every core `api.*` entry with a `service_enabled` probe, and `api.containerscanning-NOT-enabled` | 4: one list, read from the manifest; containerscanning is disabled through Service Usage |
+| `foundations.budget` | `monitoring.budget-alert` | the amount chosen at the approval; asked here when there was no approval (the project already existed and was linked) |
 | `foundations.default-compute-editor` | `iam-binding.default-compute-sa-editor-removed` | 6 (#1020); 3: a write-rate limit is retried, never reported as a denial |
 | `foundations.state-bucket` | `bucket.state`, `other.install-state` | 7: created with bootstrap.sh's settings, then the local state is uploaded |
 
@@ -25,7 +25,7 @@ from ..manifest import load as load_manifest
 from ..state import STATE_OBJECT, state_bucket
 from ..waits import Clock, WaitSpec
 from . import Observation, Plan
-from .preflight import ASK, GCP, ApiError, Ask, Gcp, project_number
+from .preflight import ASK, BILLING, CRM, GCP, USAGE, ApiError, Ask, Gcp, project_number, remember
 
 #: API enablement is polled (plan §9.1: 10 min).
 API_ENABLEMENT = WaitSpec(
@@ -40,6 +40,84 @@ API_ENABLEMENT = WaitSpec(
 #: Never enabled: Google's per-image scanning cost money for results nothing
 #: read; trivy is the gate (owner decision 2026-10-21).
 NEVER_ENABLED = "containerscanning.googleapis.com"
+
+#: A project just created can take a minute to appear in `projects:search`,
+#: which the check reads; it is polled, never assumed.
+PROJECT_READY = WaitSpec(
+    reason="the new project appearing with its billing linked",
+    expected="under 1 min",
+    expected_s=60,
+    bound_s=5 * 60,
+    look_at="gcloud projects describe <project> and gcloud billing projects describe <project>",
+    interval_s=5,
+)
+
+#: `projects.create` returns a long-running operation; it is polled this often,
+#: for at most this long (Google states no bound; it is seconds in practice).
+OPERATION_INTERVAL_S = 2.0
+OPERATION_BOUND_S = 5 * 60.0
+
+#: The budget's default, in USD a month: five times the fixed floor below, so
+#: the 50 % alert fires only once agents run in earnest. The person may type
+#: another amount at the approval, or at foundations.budget when there was no
+#: approval (an optional choice; Enter keeps this).
+DEFAULT_BUDGET_USD = 1000
+
+#: The monthly fixed floor at Google's list price, before any agent runs: what
+#: the deployment costs while nobody uses it. Agent runs bill on top, by the
+#: minute they run (docs/cost-control.md). The design states no figure, so each
+#: line names its own basis.
+MONTHLY_FLOOR_USD = (
+    ("swarm-api's two always-on instances, 1 vCPU / 1 GiB each (terraform/infra/main.tf, swarm-api's "
+     "min_instances)", 105),
+    ("the GKE cluster's management fee, $0.10 an hour (docs/BUILD_PROMPT_V2.md, section 2.1)", 73),
+    ("the HTTPS load balancer's forwarding rule, $0.025 an hour", 18),
+)
+
+
+def monthly_estimate() -> int:
+    return sum(usd for _, usd in MONTHLY_FLOOR_USD)
+
+
+class ProjectApi:
+    """The Resource Manager, Cloud Billing and Service Usage writes stage 1
+    makes that `preflight.Gcp` has no method for: they go through its one REST
+    session, so errors are the same `ApiError`."""
+
+    def __init__(self, gcp: Callable[[], Gcp]) -> None:
+        self._gcp = gcp
+
+    def create_project(self, project: str, parent: str, labels: Mapping[str, str]) -> dict[str, Any]:
+        """Resource Manager v3 `projects.create`; returns its operation."""
+        return self._gcp()._call("POST", f"{CRM}/v3/projects", body={
+            "projectId": project, "displayName": project, "parent": parent, "labels": dict(labels),
+        })
+
+    def operation(self, name: str) -> dict[str, Any]:
+        return self._gcp()._call("GET", f"{CRM}/v3/{name}")
+
+    def link_billing(self, project: str, account: str) -> dict[str, Any]:
+        """Cloud Billing `projects.updateBillingInfo`."""
+        return self._gcp()._call("PUT", f"{BILLING}/projects/{project}/billingInfo",
+                                 body={"billingAccountName": f"billingAccounts/{account}"})
+
+    def disable_service(self, project: str, service: str) -> dict[str, Any]:
+        """Service Usage `services.disable`; nothing depends on the services disabled here."""
+        return self._gcp()._call("POST", f"{USAGE}/v1/projects/{project}/services/{service}:disable",
+                                 body={"disableDependentServices": False})
+
+
+def parse_budget(answer: str, default: int = DEFAULT_BUDGET_USD) -> int:
+    """The budget typed at the approval or at foundations.budget: whole US
+    dollars, Enter keeps the default."""
+    text = answer.strip().removeprefix("$").replace(",", "")
+    if not text:
+        return default
+    if not text.isdigit() or int(text) <= 0:
+        raise ValueError(f"the budget must be a whole number of US dollars above 0, not {answer.strip()!r}; "
+                         "nothing was changed")
+    return int(text)
+
 
 #: lesson 3: back-to-back IAM writes are rate-limited; these are the waits
 #: between tries (seconds), then the error is raised as what it is.
@@ -110,14 +188,20 @@ class _Base:
 
 class ProjectStep(_Base):
     id = "foundations.project"
-    kind = "human"
+    kind = "wait"
+    wait = PROJECT_READY
     needs_project = False
     satisfies = ("other.gcp-project", "other.billing-link")
     _explain = (
         "Everything lives in one dedicated project in an organization (an Internal OAuth brand needs one), "
-        "and no API can be enabled on a project with no billing. The installer runs the two commands; the "
-        "engine never creates a project on its own (D14)."
+        "and no API can be enabled on a project with no billing. After one typed approval that shows the "
+        "monthly cost estimate and the budget, the engine creates the project and links its billing "
+        "(decision 6, 2026-10-30). A project that already exists and is linked is left alone."
     )
+
+    def __init__(self, gcp: Callable[[], Gcp], ask: Ask, api: ProjectApi | None = None) -> None:
+        super().__init__(gcp, ask)
+        self.api = api if api is not None else ProjectApi(gcp)
 
     def check(self, ctx: Any) -> Observation:
         found = self.gcp.project(ctx.project)
@@ -134,21 +218,105 @@ class ProjectStep(_Base):
         account = str(info.get("billingAccountName", "")).removeprefix("billingAccounts/")
         return Observation(MET, "", {"project_number": number, "billing_account": account})
 
+    def _work(self, ctx: Any) -> tuple[bool, bool]:
+        """(create the project, link its billing). A project that exists but is
+        not ACTIVE or not in an organization is never changed: it is refused."""
+        found = self.gcp.project(ctx.project)
+        if found is None:
+            return True, True
+        if found.get("state") not in (None, "ACTIVE"):
+            raise RuntimeError(f"project {ctx.project} is {found.get('state')}; restore it or choose another "
+                               "project id (the installer never changes a project in that state)")
+        if not str(found.get("parent", "")).startswith(("organizations/", "folders/")):
+            raise RuntimeError(f"project {ctx.project} is not in an organization, so it cannot hold an Internal "
+                               "OAuth brand; move it into one, or choose another project id")
+        return False, not self.gcp.billing_info(ctx.project).get("billingEnabled")
+
+    def _summary(self, ctx: Any, create: bool, link: bool, budget: int) -> list[str]:
+        parent = str(ctx.outputs.get("parent") or "(not recorded yet: preflight.rights records it)")
+        account = str(ctx.outputs.get("billing_account") or "(not recorded yet: preflight.inputs records it)")
+        lines = [f"project        {ctx.project}" + ("" if create else " (exists)")]
+        if create:
+            lines.append(f"parent         {parent}")
+        if link:
+            lines.append(f"billing        billingAccounts/{account}")
+        lines.append(f"budget         {budget} USD a month, alerts at 50/90/100 %")
+        lines.append(f"cost estimate  about {monthly_estimate()} USD a month before any agent runs, at list price:")
+        lines.extend(f"                 {usd} USD  {what}" for what, usd in MONTHLY_FLOOR_USD)
+        lines.append("               agent runs bill on top, by the minute they run")
+        return lines
+
     def plan(self, ctx: Any) -> Plan:
-        parent = str(ctx.outputs.get("parent") or "organizations/<org-id>")
-        kind, _, number = parent.partition("/")
-        flag = "--organization" if kind == "organizations" else "--folder"
-        account = ctx.outputs.get("billing_account") or "<billing-account>"
+        create, link = self._work(ctx)
+        budget = int(ctx.outputs.get("budget_amount") or DEFAULT_BUDGET_USD)
+        doing = [*(["create the project"] if create else []), *(["link its billing"] if link else [])]
         return Plan(
-            "create the project and link its billing, in your terminal (polled until both are true)",
-            (
-                f"gcloud projects create {ctx.project} {flag}={number}",
-                f"gcloud billing projects link {ctx.project} --billing-account={account}",
-            ),
+            f"{' and '.join(doing)}, after one typed approval (the project id)",
+            tuple(self._summary(ctx, create, link, budget)),
         )
 
     def apply(self, ctx: Any, plan: Plan) -> None:
-        """The plan printed both commands; the engine polls this step's check."""
+        create, link = self._work(ctx)
+        parent = str(ctx.outputs.get("parent") or "")
+        account = str(ctx.outputs.get("billing_account") or "").removeprefix("billingAccounts/")
+        if create and not parent.startswith(("organizations/", "folders/")):
+            raise LookupError("no organization or folder is recorded for the project (preflight.rights records it)")
+        if link and not account:
+            raise LookupError("no billing account is recorded (preflight.inputs records it)")
+
+        budget = parse_budget(self._ask(
+            ctx, self.id, f"Monthly budget for {ctx.project}, in US dollars (Enter keeps it)",
+            default=str(DEFAULT_BUDGET_USD),
+        ))
+        summary = "\n".join(f"  {line}" for line in self._summary(ctx, create, link, budget))
+        doing = " and ".join([*(["create"] if create else []), *(["link billing for"] if link else [])])
+        typed = self._ask(
+            ctx, self.id,
+            f"The installer will {doing} this project:\n{summary}\nType the project id ({ctx.project}) to approve",
+        ).strip()
+        if typed != ctx.project:
+            raise PermissionError(f"not confirmed (typed {typed!r}, not {ctx.project!r}); nothing was created "
+                                  "or linked")
+        remember(ctx, outputs={"budget_amount": budget})
+
+        if create:
+            self._create(ctx, parent)
+        if link:
+            self._link(ctx, account, created=create)
+
+    def _create(self, ctx: Any, parent: str) -> None:
+        labels = {"managed-by": "swarm-install", "environment": ctx.environment}
+        try:
+            operation = self.api.create_project(ctx.project, parent, labels)
+        except ApiError as exc:
+            if exc.status == 409:
+                raise RuntimeError(f"project id {ctx.project} is taken (project ids are global, and one deleted "
+                                   "in the last 30 days stays taken); choose another") from None
+            if exc.denied:
+                raise PermissionError(f"you cannot create projects in {parent} (resourcemanager.projects.create; "
+                                      f"roles/resourcemanager.projectCreator on {parent}): {exc}") from None
+            raise
+        waited = 0.0
+        while not operation.get("done"):
+            if waited >= OPERATION_BOUND_S:
+                raise TimeoutError(f"creating project {ctx.project} did not finish in {OPERATION_BOUND_S:.0f} s "
+                                   f"({operation.get('name')}); run swarm install again to carry on")
+            ctx.clock.sleep(OPERATION_INTERVAL_S)
+            waited += OPERATION_INTERVAL_S
+            operation = self.api.operation(str(operation["name"]))
+        if operation.get("error"):
+            error = operation["error"]
+            raise RuntimeError(f"creating project {ctx.project} failed: {error.get('message') or error}")
+
+    def _link(self, ctx: Any, account: str, *, created: bool) -> None:
+        try:
+            self.api.link_billing(ctx.project, account)
+        except ApiError as exc:
+            left = (f"project {ctx.project} was created and is left in place; " if created else "")
+            why = (f"you cannot link billing account {account} (billing.resourceAssociations.create; "
+                   f"roles/billing.user on billingAccounts/{account})" if exc.denied
+                   else f"linking billing account {account} failed: {exc}")
+            raise PermissionError(f"{why}. {left}run swarm install again to link it") from None
 
 
 class ApisStep(_Base):
@@ -160,8 +328,10 @@ class ApisStep(_Base):
         "manifest's core api.* entries, one list, and never containerscanning (trivy is the gate)."
     )
 
-    def __init__(self, gcp: Callable[[], Gcp], ask: Ask, manifest: Manifest) -> None:
+    def __init__(self, gcp: Callable[[], Gcp], ask: Ask, manifest: Manifest,
+                 api: ProjectApi | None = None) -> None:
         super().__init__(gcp, ask)
+        self.api = api if api is not None else ProjectApi(gcp)
         self.apis = core_apis(manifest)
         self.satisfies = (*self.apis, "api.containerscanning-NOT-enabled")
 
@@ -172,20 +342,21 @@ class ApisStep(_Base):
     def _check(self, ctx: Any) -> Observation:
         missing, scanning = self.missing(ctx)
         if scanning:
-            return Observation(UNMET, f"{NEVER_ENABLED} is enabled; disable it (gcloud services disable "
-                                      f"{NEVER_ENABLED} --project={ctx.project}): trivy is the gate")
+            return Observation(UNMET, f"{NEVER_ENABLED} is enabled (foundations.apis disables it: trivy is the "
+                                      "gate)")
         if missing:
             return Observation("waiting", f"{len(missing)} APIs not enabled yet: {', '.join(missing)}")
         return Observation(MET, f"{len(self.apis)} APIs enabled")
 
     def plan(self, ctx: Any) -> Plan:
-        missing, _ = self.missing(ctx)
-        return Plan(f"enable {len(missing)} APIs, the manifest's one list", tuple(missing))
+        missing, scanning = self.missing(ctx)
+        disable = (f"disable {NEVER_ENABLED} (Service Usage services.disable)",) if scanning else ()
+        return Plan(f"enable {len(missing)} APIs, the manifest's one list", (*missing, *disable))
 
     def apply(self, ctx: Any, plan: Plan) -> None:
         missing, scanning = self.missing(ctx)
         if scanning:
-            raise RuntimeError(f"{NEVER_ENABLED} is enabled on {ctx.project}; disable it by hand first")
+            self.api.disable_service(ctx.project, NEVER_ENABLED)
         if missing:
             self.gcp.enable_services(ctx.project, missing)
 
@@ -195,9 +366,14 @@ class BudgetStep(_Base):
     satisfies = ("monitoring.budget-alert",)
     _explain = (
         "The platform's fixed floor (swarm-api's minimum instances, NAT, the cluster) costs money from the "
-        "first apply; a budget with 50, 90 and 100 percent alerts is set before anything bills."
+        "first apply; a budget with 50, 90 and 100 percent alerts is set before anything bills. Its amount "
+        "is the one chosen at foundations.project's approval; when there was no approval (the project "
+        "already existed and was linked) it is asked here, Enter keeping the default (owner pick, "
+        "2026-10-30)."
     )
-    AMOUNT_UNITS = "1000"
+
+    def _amount(self, ctx: Any) -> int:
+        return int(ctx.outputs.get("budget_amount") or DEFAULT_BUDGET_USD)
 
     def _name(self, ctx: Any) -> str:
         return f"swarm-{ctx.project}"
@@ -215,15 +391,25 @@ class BudgetStep(_Base):
         return Observation(UNMET, f"no budget named {self._name(ctx)}")
 
     def plan(self, ctx: Any) -> Plan:
-        return Plan(f"create budget {self._name(ctx)} on the project, alerts at 50/90/100 %",
+        amount = (f"{self._amount(ctx)} USD a month" if ctx.outputs.get("budget_amount")
+                  else f"an amount asked before it is created (Enter keeps {DEFAULT_BUDGET_USD} USD a month)")
+        return Plan(f"create budget {self._name(ctx)} of {amount} on the project, alerts at 50/90/100 %",
                     (f"billing account {self._account(ctx)}",))
 
     def apply(self, ctx: Any, plan: Plan) -> None:
+        if not ctx.outputs.get("budget_amount"):
+            # No approval ran (the project already existed and was linked), so
+            # nobody has chosen the amount yet: ask it here (owner pick, 2026-10-30).
+            amount = parse_budget(self._ask(
+                ctx, self.id, f"Monthly budget for {ctx.project}, in US dollars (Enter keeps it)",
+                default=str(DEFAULT_BUDGET_USD),
+            ))
+            remember(ctx, outputs={"budget_amount": amount})
         number = ctx.outputs.get("project_number") or project_number(self.gcp, ctx.project)
         body = {
             "displayName": self._name(ctx),
             "budgetFilter": {"projects": [f"projects/{number}"]},
-            "amount": {"specifiedAmount": {"currencyCode": "USD", "units": self.AMOUNT_UNITS}},
+            "amount": {"specifiedAmount": {"currencyCode": "USD", "units": str(self._amount(ctx))}},
             "thresholdRules": [{"thresholdPercent": p} for p in (0.5, 0.9, 1.0)],
         }
         try:
@@ -365,11 +551,12 @@ class StateBucketStep(_Base):
         ctx.attach_bucket(self.gcp.object_store(name))
 
 
-def build_steps(gcp: Callable[[], Gcp] = GCP, ask: Ask = ASK, manifest: Manifest | None = None) -> list[Any]:
+def build_steps(gcp: Callable[[], Gcp] = GCP, ask: Ask = ASK, manifest: Manifest | None = None,
+                api: ProjectApi | None = None) -> list[Any]:
     """Stage 1, in order; the engine also orders a stage by the manifest's depends_on."""
     return [
-        ProjectStep(gcp, ask),
-        ApisStep(gcp, ask, manifest if manifest is not None else load_manifest()),
+        ProjectStep(gcp, ask, api),
+        ApisStep(gcp, ask, manifest if manifest is not None else load_manifest(), api),
         BudgetStep(gcp, ask),
         DefaultComputeEditorStep(gcp, ask),
         StateBucketStep(gcp, ask),
