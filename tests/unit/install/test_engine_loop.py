@@ -204,6 +204,116 @@ def test_stage_refuses_while_earlier_entry_unmet(tmp_path: Path) -> None:
     assert "apply infra.pass2" in log and "apply bootstrap.pass1" not in log
 
 
+def _owned_entry(id: str, stage: int, step: str, depends_on: list[str] = []) -> Entry:
+    return Entry(id=id, kind=id.split(".")[0], scope="core", stage=stage, provider="engine",
+                 depends_on=depends_on, step=step)
+
+
+def _pass(id: str, stage: int, *, log: list[str], met: bool = False) -> FakeStep:
+    """A terraform pass: it lists nothing in `satisfies`; the manifest's
+    `entry.step` names it as the owner of what it makes."""
+    step = FakeStep(id, stage, log=log, met=met)
+    step.satisfies = ()
+    return step
+
+
+def test_dependency_met_once_the_step_its_entry_names_is_done(tmp_path: Path) -> None:
+    """Audit finding 1: `cluster.autopilot` is made by infra.pass-1, which
+    declares `satisfies=()`. On a fresh install stage 10 must not refuse."""
+    manifest = Manifest(
+        entries=[
+            _owned_entry("cluster.autopilot", 5, "infra.pass-1"),
+            _entry("cluster-policy.cache-storage-class", 10, ["cluster.autopilot"]),
+        ],
+        ignored={}, env={}, sources={},
+    )
+    rig = Rig(tmp_path)
+    log: list[str] = []
+    infra = _pass("infra.pass-1", 5, log=log)
+    policies = FakeStep("cluster.policies", 10, ("cluster-policy.cache-storage-class",), log=log)
+
+    result = rig.engine([infra, policies], manifest=manifest).run()
+
+    assert result.exit_code == 0, result
+    assert [line for line in log if line.startswith("apply")] == ["apply infra.pass-1", "apply cluster.policies"]
+    assert not rig.events.of_kind("stage_refused")
+
+    # A scoped re-run counts it met from the earlier stage's check.
+    log.clear()
+    infra.met = True
+    policies.met = False
+    assert rig.engine([infra, policies], manifest=manifest).run(stages=[10]).exit_code == 0
+    assert "apply cluster.policies" in log and "apply infra.pass-1" not in log
+
+
+def test_dependency_refused_while_the_step_its_entry_names_is_not_done(tmp_path: Path) -> None:
+    manifest = Manifest(
+        entries=[
+            _owned_entry("cluster.autopilot", 5, "infra.pass-1"),
+            _entry("cluster.swarm-system-namespace", 10, ["cluster.autopilot"]),
+        ],
+        ignored={}, env={}, sources={},
+    )
+    rig = Rig(tmp_path)
+    log: list[str] = []
+    infra = _pass("infra.pass-1", 5, log=log)
+    namespace = FakeStep("cluster.swarm-system", 10, ("cluster.swarm-system-namespace",), log=log)
+
+    result = rig.engine([infra, namespace], manifest=manifest).run(stages=[10])
+
+    assert result.outcome == "blocked" and result.step == "cluster.swarm-system"
+    assert not [line for line in log if line.startswith("apply")], log
+    refused = rig.events.of_kind("stage_refused")
+    assert refused[0]["needs"] == ["cluster.autopilot"]
+    assert "infra.pass-1, stage 5" in refused[0]["message"], "it names the step that makes the entry"
+
+
+def test_fresh_install_reaches_every_stage_with_the_real_manifest(tmp_path: Path) -> None:
+    """Audit finding 1, end to end: every real step (triggered ones included),
+    as a fake that applies, over the real merged manifest on a fresh state.
+    Before the fix, stage 8 refused: `identity.group-read needs sa.swarm-api
+    (no step in this release satisfies it)`."""
+    from swarm_install.manifest import load
+    from swarm_install.steps import discover, triggered_of
+
+    real, pending = [], list(discover())
+    while pending:
+        step = pending.pop(0)
+        real.append(step)
+        pending.extend(triggered_of(step))
+    log: list[str] = []
+    fakes = []
+    for step in real:
+        fake = FakeStep(step.id, step.stage, log=log)
+        fake.satisfies = tuple(step.satisfies)
+        fakes.append(fake)
+    rig = Rig(tmp_path)
+
+    result = rig.engine(fakes, manifest=load()).run()
+
+    assert not rig.events.of_kind("stage_refused"), rig.events.of_kind("stage_refused")[0]["message"]
+    assert result.exit_code == 0, result
+    assert set(rig.steps_state().values()) == {"done"} and len(rig.steps_state()) == len(real)
+
+
+def test_text_mode_prints_a_plans_actions_indented() -> None:
+    """Audit finding 15: a human step's instructions live in its plan's
+    actions; the terminal must show every one, under the plan line."""
+    out = io.StringIO()
+    events = Events(FakeClock().now, out=out)
+    events.emit(
+        "step_plan", step="edge.brand", stage=2, plan="create the OAuth brand",
+        actions=["App name: SwarmCloud\nSupport email: you", "then open .../auth/audience and choose Internal"],
+    )
+    lines = out.getvalue().splitlines()
+    assert lines[0] == "  plan edge.brand -- create the OAuth brand"
+    assert lines[1:] == [
+        "      App name: SwarmCloud",
+        "      Support email: you",
+        "      then open .../auth/audience and choose Internal",
+    ]
+
+
 def test_wait_runs_steps_whose_trigger_lands(tmp_path: Path) -> None:
     rig = Rig(tmp_path)
     start = rig.clock.now()

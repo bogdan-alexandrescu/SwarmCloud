@@ -302,7 +302,9 @@ def test_deployer_act_as_checked_before_apply(tmp_path: Path) -> None:
 
 def test_every_entry_an_install_step_satisfies_has_its_dependencies_owned() -> None:
     """The engine's dependency gate refuses a step whose entries depend on an
-    entry no earlier step satisfies; this lane's steps must never trip it."""
+    entry no step satisfies and no step owns (`entry.step`); no step in the
+    real registry, triggered steps included, may trip it against the real
+    merged manifest (audit finding 1: it checked only this lane's steps)."""
     from swarm_install.manifest import load
 
     by_id = load().by_id()
@@ -321,14 +323,24 @@ def test_every_entry_an_install_step_satisfies_has_its_dependencies_owned() -> N
                                     "secrets.platform-keys", "infra.pass-2", "bootstrap.pass-2",
                                     "alerts.policies", "handoff.console", "github.pass-3", "github.hook",
                                     "github.pass-4", "handoff.ready"}
-    for step in mine:
+    by_step = {s.id: s for s in steps}
+    unowned = []
+    for step in steps:
         for entry in step.satisfies:
             assert entry in by_id, f"{step.id} satisfies {entry}, which the manifest does not hold"
             for dep in by_id[entry].depends_on:
                 if dep in step.satisfies:
                     continue
-                assert dep in owner, f"{step.id}: {entry} depends on {dep}, which no step satisfies"
-                assert owner[dep].stage <= step.stage, f"{step.id}: {dep} is satisfied later ({owner[dep].id})"
+                # The engine also counts a dependency met once the step its
+                # entry names (`entry.step`) is done: how a terraform pass,
+                # which lists nothing in `satisfies`, owns what it makes.
+                named = by_id[dep].step if dep in by_id else None
+                made_by = owner.get(dep) or by_step.get(named or "")
+                if made_by is None:
+                    unowned.append(f"{step.id}: {entry} depends on {dep}, which no step satisfies or owns")
+                elif made_by.stage > step.stage:
+                    unowned.append(f"{step.id}: {dep} is made later, by {made_by.id} in stage {made_by.stage}")
+    assert unowned == [], "\n".join(unowned)
 
 
 def test_resume_after_pass3_reapplies_no_earlier_pass(tmp_path: Path) -> None:
