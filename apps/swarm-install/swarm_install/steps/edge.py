@@ -5,7 +5,7 @@ lesson 17: none of these is in Terraform).
 
 | Step | Manifest entries | Kind |
 |---|---|---|
-| `edge.brand` | `oauth-brand.iap` | engine: no API reads or creates a brand (Google shut the IAP OAuth Admin API down on 2026-03-19), and the console refuses to create a client before Branding and Audience are set, so the Desktop client is the brand's proof: `apply` opens the Branding page, says to choose Audience: Internal and to create the Desktop client, and asks the client's id; met once a Desktop client id is recorded |
+| `edge.brand` | `oauth-brand.iap` | engine: no API reads or creates a brand (Google shut the IAP OAuth Admin API down on 2026-03-19), and the console refuses to create a client before Branding and Audience are set, so the Desktop client is the brand's proof: `apply` opens the Branding page, then the Audience page (choose Internal), says to create the Desktop client, and asks the client's id; met once a Desktop client id is recorded |
 | `edge.iap-agent` | `other.iap-service-agent` | engine: `generateServiceIdentity` for iap.googleapis.com is both the apply and the proof: it is idempotent and answers the agent's email, which is recorded; the agent's account lives in a Google-owned project, so it is never read |
 | `edge.global-ip` | `network.global-ip` | engine: reserves the address the frontend module names (`swarm-ui-ip`) |
 | `edge.dns` | `dns.frontend-hostname` | wait, 60 min: when one of the project's public Cloud DNS managed zones covers the hostname, `apply` creates the A record there after one typed approval (the hostname); otherwise the record is set at the person's registrar, so `apply` prints it and opens a page showing what the hostname resolves to now. Either way the engine polls Google Public DNS (`dns.google/resolve`, the resolver that page shows), never the local resolver, which can cache a negative answer |
@@ -188,6 +188,9 @@ class BrandStep(_Base):
     def deep_link(self, ctx: Any) -> str:
         return f"https://console.cloud.google.com/auth/branding?project={ctx.project}"
 
+    def audience_link(self, ctx: Any) -> str:
+        return f"https://console.cloud.google.com/auth/audience?project={ctx.project}"
+
     def plan(self, ctx: Any) -> Plan:
         return Plan(
             "set the OAuth brand in the console and choose Internal (once; it can never be deleted), then "
@@ -195,7 +198,7 @@ class BrandStep(_Base):
             (
                 f"open {self.deep_link(ctx)}",
                 "Branding: App name: SwarmCloud; support email: a group you own; save",
-                f"Audience (https://console.cloud.google.com/auth/audience?project={ctx.project}): choose Internal",
+                f"open {self.audience_link(ctx)}: choose Internal",
                 f"Clients (https://console.cloud.google.com/auth/clients/create?project={ctx.project}): "
                 "Application type: Desktop app; name: SwarmCloud sc; create",
                 "give the Desktop client's id (its secret is asked by edge.desktop-client, at a hidden prompt)",
@@ -204,12 +207,19 @@ class BrandStep(_Base):
 
     def apply(self, ctx: Any, plan: Plan) -> None:
         """No API reads or creates a brand: the engine opens the Branding page,
-        says what to set there, and asks the Desktop client's id, which proves it."""
+        then the Audience page, says what to set on each, and asks the Desktop
+        client's id, which proves both: the console creates no client before
+        Branding and Audience are set. The id is the one thing the check can
+        read, so it is the prompt, never a bare Enter."""
         open_page(self.deep_link(ctx), why=(
             "Set the OAuth brand once (it can never be deleted): Branding: App name SwarmCloud, support email "
-            f"a group you own; Audience (https://console.cloud.google.com/auth/audience?project={ctx.project}): "
-            "choose Internal; then Clients > Create client: Application type Desktop app, name SwarmCloud sc. "
-            "Give the Desktop client's id here; its secret is asked next, at a hidden prompt."
+            "a group you own; save."
+        ))
+        open_page(self.audience_link(ctx), why=(
+            "Then Audience: choose Internal. Then Clients > Create client "
+            f"(https://console.cloud.google.com/auth/clients/create?project={ctx.project}): Application type "
+            "Desktop app, name SwarmCloud sc. Give the Desktop client's id here; its secret is asked next, "
+            "at a hidden prompt."
         ))
         client = self._ask(ctx, self.id, "The Desktop client's id (ends .apps.googleusercontent.com)").strip()
         if not CLIENT_ID.match(client):
