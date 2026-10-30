@@ -31,6 +31,19 @@
  * one-person install (`sizing.mode == "individual"`, decision 7) has no first
  * team and no invites: one line says its personal workspace is ready.
  *
+ * REACHES THE HAND-OVER EITHER WAY (DAYONE-SETUP-UI-5A, audit findings 12,
+ * 20, 27, 28). For one person the route's `personal` row (the installer's
+ * personal workspace) takes the first team's place: its grant, its pool
+ * accounts and its smoke. An account counts as signed in once the route sees
+ * its label in the first workspace's pool, not only once `finish` stamped
+ * `signed_in_at`. The hand-over waits for the smoke's `succeeded` (the route's
+ * word), as `finish` does, and a failed smoke has a Retry
+ * (`POST /v1/admin/setup/smoke`). The team form links Google Admin's groups
+ * page and shows the route's refusal when the group cannot be read or the
+ * installer is not in it. The App self-check waits, disabled with its reason,
+ * until stage 9 reports infra pass 3, and `app_id_not_configured` reads as
+ * that wait.
+ *
  * `GitHubAppCallback` is the page GitHub sends the person back to after it
  * created the App from the manifest: it posts `{code, state}` to the
  * conversion route ONCE and says the secrets were stored, never what they are.
@@ -49,16 +62,20 @@ import {
   loadTask,
   loadWorkflow,
   mintSetupLink,
+  restartSetupSmoke,
   runGitHubAppSelfCheck,
+  SMOKE_SUCCEEDED,
   startGitHubApp,
   startSetupVerifyRuns,
   type ApiError,
   type Result,
   type SetupAccount,
+  type SetupGrant,
   type SetupInvite,
   type SetupLink,
   type SetupMember,
   type SetupSizing,
+  type SetupSmoke,
   type SetupState,
   type SetupTeam,
   type SetupVerify,
@@ -91,9 +108,61 @@ export const VERIFY_CHECKS =
 /** The one line a one-person install shows in place of the first-team and invites steps (decision 7). */
 export const ONE_PERSON_LINE = 'One-person install: your personal workspace is ready.'
 
-/** A one-person install (decision 7): no team group, no first team, no invites. */
+/** Google Admin's groups page, where a Workspace group is created (audit finding 27). */
+export const ADMIN_GROUPS_URL = 'https://admin.google.com/ac/groups'
+
+/** What the GitHub step says while infra pass 3 has not given swarm-api the App's id (audit finding 28). */
+export const WAITING_FOR_PASS_3 = 'waiting for swarm install’s infra pass 3, which gives swarm-api the App’s id'
+
+/** A one-person install (decision 7): no team group, no first team, no invites. The route's `mode`, else the sizing's. */
 export function isOnePerson(state: SetupState): boolean {
-  return state.sizing?.mode === 'individual'
+  return state.mode === 'individual'
+}
+
+/** What the grant, the pool accounts and the smoke hang on: the first team, or for one person the personal workspace. */
+export interface FirstWorkspace {
+  workspace: string
+  progress: Record<string, unknown>
+  grant: SetupGrant | null
+  smoke: SetupSmoke | null
+  pool_accounts: string[]
+}
+
+/** The first workspace, or null until there is one: the first team, or the personal workspace once swarm-api filed it. */
+export function firstWorkspace(state: SetupState): FirstWorkspace | null {
+  if (isOnePerson(state)) {
+    const p = state.personal
+    return p === null || p.workspace === null ? null : { workspace: p.workspace, progress: p.progress, grant: p.grant, smoke: p.smoke, pool_accounts: p.pool_accounts }
+  }
+  return state.teams[0] ?? null
+}
+
+/**
+ * A pool account is signed in once `finish` stamped it, or once the route
+ * sees its label in the first workspace's own pool: `signed_in_at` is written
+ * only by the hand-over, so waiting on it alone would never offer the hand-over.
+ */
+export function accountSignedIn(state: SetupState, a: SetupAccount): boolean {
+  return a.signed_in_at !== null || (firstWorkspace(state)?.pool_accounts.includes(a.label) ?? false)
+}
+
+export function signedInCount(state: SetupState): number {
+  return state.accounts.filter((a) => accountSignedIn(state, a)).length
+}
+
+/** The first workspace's smoke passed, in the route's own word (`finish` waits for exactly this). */
+export function smokePassed(state: SetupState): boolean {
+  return firstWorkspace(state)?.smoke?.state === SMOKE_SUCCEEDED
+}
+
+/**
+ * Infra pass 3 has run: stage 9's record (its first step is pass 3, and pass 4
+ * and the hook come only after a passing self-check), or a self-check that
+ * passed. Before it swarm-api has no App id, so the self-check cannot pass.
+ */
+export function pass3Ran(state: SetupState): boolean {
+  const s = state.engine?.stages[9]?.state
+  return s === 'done' || s === 'switches_on' || s === 'drift' || state.github_app?.self_check?.ok === true
 }
 
 /** The cloud stages swarm install finishes before the hand-off (§5.1: 0-8, 10, 13). */
@@ -208,7 +277,7 @@ export function Facts({ items, label }: { items: Fact[]; label?: string }) {
 }
 
 /** A failed step: its one-line cause, the fix and a Retry that re-runs the step's check first (§5.1). */
-export function StepFailure({ cause, fix, onRetry, busy }: { cause: string; fix: ReactNode; onRetry?: () => void; busy?: boolean }) {
+export function StepFailure({ cause, fix, onRetry, busy, retryLabel = 'Retry' }: { cause: string; fix: ReactNode; onRetry?: () => void; busy?: boolean; retryLabel?: string }) {
   return (
     <div className="ob-issue" role="alert">
       <b>{cause}</b>
@@ -216,7 +285,7 @@ export function StepFailure({ cause, fix, onRetry, busy }: { cause: string; fix:
       {onRetry !== undefined && (
         <span className="ob-acts">
           <Button size="sm" onClick={onRetry} busy={busy === true ? 'Retrying' : false}>
-            Retry
+            {retryLabel}
           </Button>
         </span>
       )}
@@ -316,18 +385,20 @@ function GitHubAppPanel({ state, onChanged, act }: { state: SetupState; onChange
     },
   ]
   if (app.installed_on !== null) {
-    const switched = state.engine?.stages[9]?.state === 'switches_on' || state.engine?.stages[9]?.state === 'done'
+    const switched = pass3Ran(state)
+    const check = app.self_check
+    const waiting = check === null || check.state === 'waiting_for_infra_pass_3'
     facts.push({
-      state: app.self_check === null ? (switched ? 'todo' : 'in_progress') : app.self_check.ok ? 'done' : 'failed',
+      state: check?.state === 'passed' ? 'done' : check?.state === 'failed' ? 'failed' : waiting && switched ? 'todo' : 'in_progress',
       name: 'Self-check',
       text:
-        app.self_check !== null
-          ? app.self_check.ok
-            ? 'the App’s key signs and GitHub answers as the App'
-            : app.self_check.reason ?? 'GitHub did not answer as the App'
-          : switched
-            ? 'swarm install switched the App on; run the self-check'
-            : 'waits on swarm install’s infra pass 3, which switches the App on',
+        check?.state === 'passed'
+          ? 'the App’s key signs and GitHub answers as the App'
+          : check?.state === 'failed'
+            ? check.reason ?? 'GitHub did not answer as the App'
+            : switched
+              ? 'swarm install’s infra pass 3 gave swarm-api the App’s id; run the self-check'
+              : WAITING_FOR_PASS_3,
     })
   }
   return (
@@ -351,8 +422,15 @@ function githubRow(state: SetupState, onChanged: () => void, act: ReturnType<typ
       Create the GitHub App
     </Button>
   )
+  // Before infra pass 3 swarm-api has no App id, and the check answers `app_id_not_configured` (finding 28).
   const selfCheck = (label: string, kind: 'ghost' | 'secondary' = 'secondary') => (
-    <Button size="sm" kind={kind === 'ghost' ? 'ghost' : undefined} busy={act.busy === 'self-check' ? 'Checking' : false} onClick={() => act.run('self-check', runGitHubAppSelfCheck)}>
+    <Button
+      size="sm"
+      kind={kind === 'ghost' ? 'ghost' : undefined}
+      busy={act.busy === 'self-check' ? 'Checking' : false}
+      disabledReason={pass3Ran(state) ? undefined : `Waits for swarm install’s infra pass 3, which gives swarm-api the App’s id`}
+      onClick={() => act.run('self-check', runGitHubAppSelfCheck)}
+    >
       {label}
     </Button>
   )
@@ -379,7 +457,7 @@ function githubRow(state: SetupState, onChanged: () => void, act: ReturnType<typ
       act: create,
     }
   }
-  if (app.self_check !== null && !app.self_check.ok) {
+  if (app.self_check !== null && app.self_check.state === 'failed') {
     return {
       key: 'github',
       title: 'GitHub App',
@@ -421,13 +499,13 @@ function githubRow(state: SetupState, onChanged: () => void, act: ReturnType<typ
       ),
     }
   }
-  if (app.self_check === null) {
+  if (app.self_check === null || app.self_check.state === 'waiting_for_infra_pass_3') {
     return {
       key: 'github',
       title: 'GitHub App',
       state: 'in_progress',
       by: 'this page',
-      line: `Installed on ${app.installed_on}; the self-check is next`,
+      line: pass3Ran(state) ? `Installed on ${app.installed_on}; the self-check is next` : `Installed on ${app.installed_on}; ${WAITING_FOR_PASS_3}`,
       body,
       act: selfCheck('Run the self-check'),
     }
@@ -454,11 +532,14 @@ function TeamForm({ onChanged }: { onChanged: () => void }) {
   const [name, setName] = useState('')
   const [admin, setAdmin] = useState('')
   const [invites, setInvites] = useState('')
-  const field = (label: string, value: string, set: (v: string) => void, hint: string, placeholder: string) => (
+  const field = (label: string, value: string, set: (v: string) => void, hint: string, placeholder: string, aside?: ReactNode) => (
     <label className="c-field">
       <span className="c-lbl">{label}</span>
-      <input className="c-inp" value={value} placeholder={placeholder} onChange={(e) => set(e.target.value)} />
-      <p className="c-hint">{hint}</p>
+      <input className="c-inp" aria-label={label} value={value} placeholder={placeholder} onChange={(e) => set(e.target.value)} />
+      <p className="c-hint">
+        {hint}
+        {aside}
+      </p>
     </label>
   )
   const submit = () =>
@@ -477,7 +558,16 @@ function TeamForm({ onChanged }: { onChanged: () => void }) {
         submit()
       }}
     >
-      {field('Workspace group', group, setGroup, 'A Google Workspace group; its members are the team', 'engineering@your-domain')}
+      {field(
+        'Workspace group',
+        group,
+        setGroup,
+        'A Google Workspace group you are a member of; its members are the team. No group yet? ',
+        'engineering@your-domain',
+        <a href={ADMIN_GROUPS_URL} target="_blank" rel="noreferrer">
+          Create group in Google Admin
+        </a>,
+      )}
       {field('Workspace name', name, setName, 'Shown in the console; the group’s name when left empty', 'engineering')}
       {field('First workspace admin', admin, setAdmin, 'Administers the team’s workspace', 'name@your-domain')}
       {field('Invite', invites, setInvites, 'Each is added to the group in Google Admin, which opens from the team’s row; the row shows them as joined once the Groups API sees them', 'one or more emails')}
@@ -487,8 +577,42 @@ function TeamForm({ onChanged }: { onChanged: () => void }) {
         </Button>
       </span>
       <ErrorLine error={act.error} />
+      <GroupRefusal error={act.error} />
     </form>
   )
+}
+
+/** A Google Admin page from the route's refusal; anything else is not drawn as a link. */
+const adminPage = (v: unknown): string | null => (typeof v === 'string' && v.startsWith('https://admin.google.com/') ? v : null)
+
+/**
+ * The team route's refusal (`check_team_group`, finding 27): swarm-api could
+ * not read the group, or the installer is not in it. The message is the
+ * route's (`ErrorLine`); this adds the Google Admin page that fixes it.
+ */
+function GroupRefusal({ error }: { error: ApiError | null }) {
+  const d = error !== null && typeof error.detail === 'object' && error.detail !== null ? (error.detail as Record<string, unknown>) : null
+  if (d === null) return null
+  if (d.reason === 'installer_not_member') {
+    const page = adminPage(d.add_members_url) ?? adminPage(d.admin_groups_url) ?? ADMIN_GROUPS_URL
+    return (
+      <span className="ob-acts">
+        <ButtonLink size="sm" href={page} target="_blank" rel="noreferrer">
+          Add yourself to the group in Google Admin
+        </ButtonLink>
+      </span>
+    )
+  }
+  if (d.reason === 'group_unreadable') {
+    return (
+      <span className="ob-acts">
+        <ButtonLink size="sm" href={adminPage(d.admin_groups_url) ?? ADMIN_GROUPS_URL} target="_blank" rel="noreferrer">
+          Create or find the group in Google Admin
+        </ButtonLink>
+      </span>
+    )
+  }
+  return null
 }
 
 /** Who the team row waits on: the route's live membership, or the recorded invites when it served none. */
@@ -496,15 +620,14 @@ function teamPeople(team: SetupTeam): SetupMember[] {
   return team.members.length > 0 ? team.members : team.invites.map((email) => ({ email, member: null }))
 }
 
-function grantFact(team: SetupTeam, org: string): Fact {
-  const g = team.grant
-  if (g === null) return { state: 'in_progress', name: 'Repository grant', text: `the team’s grant over the repositories the GitHub App installation on ${org} covers; read on the next refresh` }
+function grantFact(g: SetupGrant | null, org: string, whose: string = 'the team'): Fact {
+  if (g === null) return { state: 'in_progress', name: 'Repository grant', text: `${whose}’s grant over the repositories the GitHub App installation on ${org} covers; read on the next refresh` }
   if (g.state === 'granted' && g.repositories.length > 0) {
     const n = g.repositories.length
     return {
       state: 'done',
       name: 'Repository grant',
-      text: `the team may write to the ${n === 1 ? 'repository' : `${n} repositories`} the App installation${g.account === null ? '' : ` on ${g.account}`} covers: ${g.repositories.join(', ')}`,
+      text: `${whose} may write to the ${n === 1 ? 'repository' : `${n} repositories`} the App installation${g.account === null ? '' : ` on ${g.account}`} covers: ${g.repositories.join(', ')}`,
     }
   }
   if (g.state === 'waiting_for_repositories') {
@@ -513,10 +636,41 @@ function grantFact(team: SetupTeam, org: string): Fact {
   return { state: 'in_progress', name: 'Repository grant', text: `waits for the GitHub App to be installed on ${org}` }
 }
 
+/** The first workspace's smoke, in the route's words: `succeeded` is done, `failed` is failed (finding 20). */
+function smokeFact(smoke: SetupSmoke | null, signedIn: boolean): Fact {
+  return {
+    state: smoke === null ? 'todo' : smoke.state === SMOKE_SUCCEEDED ? 'done' : smoke.state === 'failed' ? 'failed' : 'in_progress',
+    name: 'Smoke agent',
+    text:
+      smoke === null
+        ? signedIn
+          ? 'starts now that a pool account is signed in'
+          : 'waits for a pool account (the next step): it needs one to run'
+        : `${smoke.state}${smoke.detail === null ? '' : ` · ${smoke.detail}`}`,
+  }
+}
+
+/** A failed smoke's fix and its Retry: `POST /v1/admin/setup/smoke` starts it again (finding 20). */
+function SmokeRetry({ smoke, onChanged }: { smoke: SetupSmoke | null; onChanged: () => void }) {
+  const act = useAction(onChanged)
+  if (smoke?.state !== 'failed') return null
+  return (
+    <>
+      <StepFailure
+        cause={`The smoke task failed${smoke.detail === null ? '' : `: ${smoke.detail}`}`}
+        fix="its task’s page says why; once that is fixed, Retry starts the smoke again. The hand-over waits for it to succeed."
+        onRetry={() => act.run('smoke', restartSetupSmoke)}
+        busy={act.busy === 'smoke'}
+        retryLabel="Retry the smoke"
+      />
+      <ErrorLine error={act.error} />
+    </>
+  )
+}
+
 function teamFacts(team: SetupTeam, signedIn: boolean, nowMs: number, org: string): Fact[] {
   const ws = typeof team.progress.workspace_state === 'string' ? team.progress.workspace_state : null
   const git = typeof team.progress.git_link === 'object' && team.progress.git_link !== null ? (team.progress.git_link as Record<string, unknown>) : null
-  const smoke = team.smoke
   return [
     { state: 'done', name: 'Tenant record', text: `${team.workspace} · from ${team.group}, checked by membership per registered group` },
     {
@@ -525,7 +679,7 @@ function teamFacts(team: SetupTeam, signedIn: boolean, nowMs: number, org: strin
       text: ws === null ? 'swarm-workspace-apply has not reported yet' : `swarm-workspace-apply: ${ws}`,
     },
     { state: team.first_admin === null ? 'todo' : 'done', name: 'First admin', text: team.first_admin ?? 'not named' },
-    grantFact(team, org),
+    grantFact(team.grant, org),
     {
       state: git === null ? 'todo' : 'in_progress',
       name: 'Team git slot',
@@ -534,16 +688,7 @@ function teamFacts(team: SetupTeam, signedIn: boolean, nowMs: number, org: strin
           ? 'served by the GitHub App; a one-time link lets its owner enter a token instead'
           : `one-time link for ${String(git.owner ?? 'its owner')}, ${untilWords(typeof git.expires_at === 'string' ? git.expires_at : null, nowMs) ?? 'open'}`,
     },
-    {
-      state: smoke === null ? 'todo' : smoke.state === 'succeeded' || smoke.state === 'passed' ? 'done' : smoke.state === 'failed' ? 'failed' : 'in_progress',
-      name: 'Smoke agent',
-      text:
-        smoke === null
-          ? signedIn
-            ? 'starts now that a pool account is signed in'
-            : 'waits for a pool account (the next step): it needs one to run'
-          : `${smoke.state}${smoke.detail === null ? '' : ` · ${smoke.detail}`}`,
-    },
+    smokeFact(team.smoke, signedIn),
   ]
 }
 
@@ -606,10 +751,53 @@ function InviteControl({ team, onChanged }: { team: SetupTeam; onChanged: () => 
   )
 }
 
-function teamRow(state: SetupState, onChanged: () => void, nowMs: number): Row {
-  if (isOnePerson(state)) {
-    return { key: 'team', title: 'First workspace', state: 'done', by: 'swarm install', line: ONE_PERSON_LINE }
+/**
+ * A one-person install's first workspace (decision 7): the route's `personal`
+ * row, the installer's personal workspace, with its grant and its smoke; the
+ * first-team and invites steps are not needed, in the route's own words.
+ */
+function personalRow(state: SetupState, onChanged: () => void): Row {
+  const p = state.personal
+  const notNeeded = state.steps?.first_team?.reason ?? state.steps?.invites?.reason ?? 'not needed for one person'
+  const skipped: Fact = { state: 'done', name: 'First team and invites', text: notNeeded }
+  const base = { key: 'team', title: 'First workspace', by: 'swarm-api' }
+  if (p === null || p.workspace === null) {
+    return {
+      ...base,
+      state: 'in_progress',
+      line: `One-person install: your personal workspace becomes the first workspace; swarm-api files it on this page’s next read${p?.reason ? ` (last read: ${p.reason})` : ''}`,
+      body: <Facts items={[skipped]} label="First workspace" />,
+    }
   }
+  const ws = typeof p.progress.workspace_state === 'string' ? p.progress.workspace_state : null
+  const failed = ws !== null && FAILED_WORKSPACE.has(ws)
+  const signedIn = signedInCount(state) > 0
+  const facts: Fact[] = [
+    { state: 'done', name: 'Personal workspace', text: `${p.workspace}${p.owner === null ? '' : ` · ${p.owner}`}` },
+    {
+      state: ws === null ? 'in_progress' : failed ? 'failed' : ws === WORKSPACE_READY ? 'done' : 'in_progress',
+      name: 'Namespace, quota, verify-keys and worker identity',
+      text: ws === null ? 'swarm-workspace-apply has not reported yet' : `swarm-workspace-apply: ${ws}`,
+    },
+    skipped,
+    grantFact(p.grant, state.github_org ?? 'your GitHub organisation', 'your personal workspace'),
+    smokeFact(p.smoke, signedIn),
+  ]
+  return {
+    ...base,
+    state: failed ? 'failed' : ws === WORKSPACE_READY ? 'done' : 'in_progress',
+    line: ws === WORKSPACE_READY ? `${ONE_PERSON_LINE} ${p.workspace}` : `One-person install: your personal workspace ${p.workspace} is ${ws ?? 'being set up'}`,
+    body: (
+      <>
+        <Facts items={facts} label="First workspace" />
+        <SmokeRetry smoke={p.smoke} onChanged={onChanged} />
+      </>
+    ),
+  }
+}
+
+function teamRow(state: SetupState, onChanged: () => void, nowMs: number): Row {
+  if (isOnePerson(state)) return personalRow(state, onChanged)
   const team = state.teams[0]
   if (team === undefined) {
     return {
@@ -622,7 +810,7 @@ function teamRow(state: SetupState, onChanged: () => void, nowMs: number): Row {
     }
   }
   const ws = typeof team.progress.workspace_state === 'string' ? team.progress.workspace_state : null
-  const signedIn = state.accounts.some((a) => a.signed_in_at !== null)
+  const signedIn = signedInCount(state) > 0
   const failed = ws !== null && FAILED_WORKSPACE.has(ws)
   const people = teamPeople(team)
   const joined = people.filter((p) => p.member === true).length
@@ -635,6 +823,7 @@ function teamRow(state: SetupState, onChanged: () => void, nowMs: number): Row {
     body: (
       <>
         <Facts items={teamFacts(team, signedIn, nowMs, state.github_org ?? 'your GitHub organisation')} label="First team" />
+        <SmokeRetry smoke={team.smoke} onChanged={onChanged} />
         <InviteControl team={team} onChanged={onChanged} />
         {failed && <TeamRetry team={team} onChanged={onChanged} />}
       </>
@@ -657,13 +846,14 @@ function TeamRetry({ team, onChanged }: { team: SetupTeam; onChanged: () => void
   )
 }
 
-function accountFact(a: SetupAccount, nowMs: number, pool: string): Fact {
-  if (a.signed_in_at !== null) {
-    return { state: 'done', name: a.label, text: `${a.owner ?? 'its owner'} · signed in ${agoWords(a.signed_in_at, nowMs) ?? ''} · in ${pool}` }
+function accountFact(a: SetupAccount, signedIn: boolean, nowMs: number, pool: string): Fact {
+  if (signedIn) {
+    const ago = a.signed_in_at === null ? null : agoWords(a.signed_in_at, nowMs)
+    return { state: 'done', name: a.label, text: `${a.owner ?? 'its owner'} · signed in${ago === null ? '' : ` ${ago}`} · in ${pool}` }
   }
   const until = untilWords(a.link_expires, nowMs)
   if (until === 'expired') return { state: 'failed', name: a.label, text: `${a.owner ?? 'its owner'}’s one-time link expired; send a new one` }
-  return { state: 'in_progress', name: a.label, text: `waiting for ${a.owner ?? 'its owner'} to open their one-time link${until === null ? '' : `, ${until}`} · or they run sc account add --label ${a.label}` }
+  return { state: 'in_progress', name: a.label, text: `waiting for ${a.owner ?? 'its owner'} to open their one-time link and sign in${until === null ? '' : `, ${until}`}` }
 }
 
 function AccountLinkForm({ onChanged, onePerson }: { onChanged: () => void; onePerson: boolean }) {
@@ -730,7 +920,7 @@ function accountsRow(state: SetupState, onChanged: () => void, nowMs: number): R
       line: 'Comes after the first team: each pool account is owned by it, so its owner must be a member of the first team’s group',
     }
   }
-  const signed = state.accounts.filter((a) => a.signed_in_at !== null).length
+  const signed = signedInCount(state)
   const st: StepState = signed > 0 ? 'done' : state.accounts.length > 0 ? 'in_progress' : 'todo'
   return {
     key: 'accounts',
@@ -739,11 +929,11 @@ function accountsRow(state: SetupState, onChanged: () => void, nowMs: number): R
     by: 'this page',
     line:
       state.accounts.length === 0
-        ? `Each subscription’s owner signs in once, through a one-time link or sc account add, into ${pool}`
+        ? `Each subscription’s owner signs in once, through the one-time link this page sends, into ${pool}`
         : `Pool: ${signed} of ${state.accounts.length} signed in`,
     body: (
       <>
-        {state.accounts.length > 0 && <Facts items={state.accounts.map((a) => accountFact(a, nowMs, pool))} label="Pool accounts" />}
+        {state.accounts.length > 0 && <Facts items={state.accounts.map((a) => accountFact(a, accountSignedIn(state, a), nowMs, pool))} label="Pool accounts" />}
         <AccountLinkForm onChanged={onChanged} onePerson={onePerson} />
       </>
     ),
@@ -764,10 +954,15 @@ function addonsRow(state: SetupState): Row {
   }
 }
 
-/** Every required console step is done: the App installed and checked, a first team (none for one person), a pool account signed in. */
-function consoleDone(state: SetupState): boolean {
+/**
+ * Every console step `finish` requires is done, so the hand-over is never
+ * offered to a 409: the App installed and checked, a first workspace (the
+ * first team; for one person the personal workspace), a pool account signed
+ * in to it, and its smoke `succeeded`.
+ */
+export function consoleDone(state: SetupState): boolean {
   const app = state.github_app
-  return app !== null && app.installed_on !== null && app.self_check?.ok === true && (isOnePerson(state) || state.teams.length > 0) && state.accounts.some((a) => a.signed_in_at !== null)
+  return app !== null && app.installed_on !== null && app.self_check?.ok === true && firstWorkspace(state) !== null && signedInCount(state) > 0 && smokePassed(state)
 }
 
 /** The verify row's words, from the engine's `verify` field and the page's clock. */
@@ -854,14 +1049,16 @@ function ConsoleChecks({ state, onChanged }: { state: SetupState; onChanged: () 
   const task = useRunState(runs?.task ?? null, readTaskState)
   const workflow = useRunState(runs?.workflow ?? null, readWorkflowState)
   if (runs === null || (runs.task === null && runs.workflow === null)) {
-    const team = state.teams[0]
-    const blocked = isOnePerson(state)
-      ? undefined
-      : team === undefined
-        ? 'Create the first team first'
-        : team.grant?.state === 'granted' && team.grant.repositories.length > 0
+    const first = firstWorkspace(state)
+    const whose = isOnePerson(state) ? 'Your personal workspace' : 'The first team'
+    const blocked =
+      first === null
+        ? isOnePerson(state)
+          ? 'Your personal workspace is filed on the next read'
+          : 'Create the first team first'
+        : first.grant?.state === 'granted' && first.grant.repositories.length > 0
           ? undefined
-          : 'The first team needs its repository grant first'
+          : `${whose} needs its repository grant first`
     return (
       <>
         <span className="ob-acts">

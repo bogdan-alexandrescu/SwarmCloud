@@ -22,6 +22,11 @@
  * panel as its own flow, with the `swarm team add` line printed beside it
  * (`AdminSetupTeam`).
  *
+ * ONE PERSON (decision 7; DAYONE-SETUP-UI-5A, audit finding 12): the strip's
+ * first-workspace step is the route's `personal` row, the installer's personal
+ * workspace, and the accounts follow it; no step waits on a team one person
+ * never makes.
+ *
  * The Health page (`/admin/setup/health`) and the GitHub App callback
  * (`/admin/setup/github-app/callback`) are framed here too, so App.tsx routes
  * three screens from one module (SETUP-UI-3).
@@ -30,7 +35,18 @@ import { type ReactNode } from 'react'
 import { type Result, type SetupState } from './api'
 import { AdminLead, type AdminLeadTone } from './AdminSettings'
 import { AdminSetupHealth } from './AdminSetupHealth'
-import { AdminSetupSteps, GitHubAppCallback, InstallerCard, spanWords, useSetupState, type StepState } from './AdminSetupSteps'
+import {
+  AdminSetupSteps,
+  firstWorkspace,
+  GitHubAppCallback,
+  InstallerCard,
+  isOnePerson,
+  signedInCount,
+  spanWords,
+  useSetupState,
+  WAITING_FOR_PASS_3,
+  type StepState,
+} from './AdminSetupSteps'
 import { AdminSetupTeam } from './AdminSetupTeam'
 import { Banner, Button, Card } from './components'
 import { PageHead } from './Shell'
@@ -57,7 +73,7 @@ interface StripStep {
 }
 
 const workspaceState = (state: SetupState): string | null => {
-  const ws = state.teams[0]?.progress.workspace_state
+  const ws = firstWorkspace(state)?.progress.workspace_state
   return typeof ws === 'string' ? ws : null
 }
 
@@ -71,12 +87,15 @@ export function stripSteps(state: SetupState): StripStep[] {
   const app = state.github_app
   const org = state.github_org ?? 'your organisation'
   const github: StepState =
-    app === null || !app.started ? 'todo' : app.self_check?.ok === false ? 'failed' : app.installed_on !== null && app.self_check?.ok === true ? 'done' : 'in_progress'
-  const team = state.teams[0]
+    app === null || !app.started ? 'todo' : app.self_check?.state === 'failed' ? 'failed' : app.installed_on !== null && app.self_check?.ok === true ? 'done' : 'in_progress'
+  const onePerson = isOnePerson(state)
+  const team = firstWorkspace(state)
   const ws = workspaceState(state)
-  const teamState: StepState = team === undefined ? 'todo' : ws !== null && FAILED_WORKSPACE.has(ws) ? 'failed' : 'done'
-  const signed = state.accounts.filter((a) => a.signed_in_at !== null).length
-  const accounts: StepState = team === undefined ? 'todo' : signed > 0 ? 'done' : state.accounts.length > 0 ? 'in_progress' : 'todo'
+  // One person's first workspace is done once its apply says ready; a team's once it exists (the checklist's rows).
+  const teamState: StepState =
+    team === null ? (onePerson ? 'in_progress' : 'todo') : ws !== null && FAILED_WORKSPACE.has(ws) ? 'failed' : !onePerson || ws === 'ready' ? 'done' : 'in_progress'
+  const signed = signedInCount(state)
+  const accounts: StepState = team === null && !onePerson ? 'todo' : signed > 0 ? 'done' : state.accounts.length > 0 ? 'in_progress' : 'todo'
   const v = state.engine?.verify ?? null
   const verify: StepState = v === null ? 'todo' : v.result === 'passed' ? 'done' : v.result === 'failed' ? 'failed' : 'in_progress'
   return [
@@ -99,19 +118,21 @@ export function stripSteps(state: SetupState): StripStep[] {
               ? `created, install it on ${org}`
               : github === 'done'
                 ? `installed on ${app.installed_on}`
-                : `installed on ${app.installed_on}, self-check running`,
+                : app.self_check?.state === 'waiting_for_infra_pass_3'
+                  ? `installed on ${app.installed_on}, ${WAITING_FOR_PASS_3}`
+                  : `installed on ${app.installed_on}, self-check next`,
     },
     {
       key: 'team',
-      label: 'First team',
+      label: onePerson ? 'First workspace' : 'First team',
       state: teamState,
-      line: team === undefined ? 'not yet' : `${team.workspace}${ws === null ? '' : `, ${ws}`}`,
+      line: team === null ? (onePerson ? 'your personal workspace, filed on the next read' : 'not yet') : `${team.workspace}${ws === null ? '' : `, ${ws}`}`,
     },
     {
       key: 'accounts',
       label: 'Claude accounts',
       state: accounts,
-      line: team === undefined ? 'after the first team' : state.accounts.length === 0 ? 'not yet' : `${signed} of ${state.accounts.length} signed in`,
+      line: team === null && !onePerson ? 'after the first team' : state.accounts.length === 0 ? 'not yet' : `${signed} of ${state.accounts.length} signed in`,
     },
     {
       key: 'verify',
@@ -203,7 +224,11 @@ export function SetupLead({ state, now }: { state: SetupState; now?: number }) {
   const cli = state.cli_running ? 'swarm install is waiting and verifies each step as you finish it.' : 'The App’s switches and verify wait for swarm install in a terminal; the steps here stay usable.'
   const step = i === -1 ? null : steps[i]!
   if (step === null) {
-    return lead('ok', hostname === null ? 'SwarmCloud is ready' : `SwarmCloud is ready at ${hostname}`, 'Every step done and verified. Send the plugin line to your team; Health shows what swarm doctor finds from here on.')
+    return lead(
+      'ok',
+      hostname === null ? 'SwarmCloud is ready' : `SwarmCloud is ready at ${hostname}`,
+      'Every step done and verified. Send the plugin line to your team; Admin › Setup › Health shows the hourly doctor’s findings from here on, and swarm doctor checks this machine and the deployment from a terminal.',
+    )
   }
   const tone: AdminLeadTone = step.state === 'failed' ? 'warn' : 'next'
   switch (step.key) {
@@ -212,9 +237,16 @@ export function SetupLead({ state, now }: { state: SetupState; now?: number }) {
     case 'github':
       return lead(tone, `GitHub App: ${step.state === 'todo' ? 'create it from the manifest' : step.line}`, `swarm install did the cloud part; this page finishes the people part. ${cli}`)
     case 'team':
+      if (isOnePerson(state)) {
+        return lead(tone, `First workspace: ${step.line}`, `One-person install: your personal workspace is the first workspace, so no team or invites are needed; the Claude pool accounts come next. ${cli}`)
+      }
       return lead(tone, step.state === 'failed' ? `First team: ${step.line}` : 'First team: name the Workspace group that becomes the first workspace', `Its members are the team; the Claude pool accounts come next and are owned by it. ${cli}`)
     case 'accounts':
-      return lead(tone, `Claude accounts: ${step.line}`, `Each subscription’s owner signs in once, through a one-time link or sc account add; the first team’s smoke agent runs on the first one. ${cli}`)
+      return lead(
+        tone,
+        `Claude accounts: ${step.line}`,
+        `Each subscription’s owner signs in once, through the one-time link this page sends; ${isOnePerson(state) ? 'your personal workspace’s' : 'the first team’s'} smoke agent runs on the first one. ${cli}`,
+      )
     case 'verify': {
       const v = state.engine?.verify ?? null
       if (v === null) {
@@ -279,7 +311,7 @@ export function AdminSetupPage({ state, now, onChanged }: { state: SetupState; n
         </div>
         <div className="ws-col">
           <InstallerCard state={state} now={now} />
-          <Card title="Health" foot="The checks swarm doctor runs, read-only, on the live deployment.">
+          <Card title="Health" foot="The hourly doctor’s checks, read-only, on the live deployment; swarm doctor checks this machine and the deployment from a terminal.">
             <p className="ur-hint">
               Once setup is done, the scheduled doctor’s findings and each one’s repair are on <a href="/admin/setup/health">Admin › Setup › Health</a>.
             </p>
@@ -322,7 +354,7 @@ export function AdminSetupHealthScreen({ now }: { now?: number }) {
     <div className="ur-page asm-page">
       <PageHead title="Health" />
       <p className="ur-sub">
-        The checks swarm doctor runs, read-only, on the live deployment: the scheduled run’s findings, each with its repair. The install steps are on <a href="/admin/setup">Admin › Setup</a>.
+        The hourly doctor’s checks, read-only, on the live deployment: the scheduled run’s findings, each with its repair. From a terminal, swarm doctor checks this machine and the deployment against the manifest. The install steps are on <a href="/admin/setup">Admin › Setup</a>.
       </p>
       <AdminSetupHealth now={now} />
     </div>

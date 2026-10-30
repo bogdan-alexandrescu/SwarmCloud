@@ -422,8 +422,8 @@ describe('Admin › Setup says only what exists', () => {
   })
 
   it('a one-person install replaces the first-team and invites steps with one line', async () => {
-    const sizing = { mode: 'individual', members: 1, pool_limits: { global: 4, default_tenant: 4 }, service_max_instances: {}, pool_accounts: 1, budget_usd: 150 }
-    await mountSteps(state({ sizing, teams: [], accounts: {}, finished: null }))
+    // The route's `personal` row, the installer's personal workspace, ready (DAYONE-SETUP-UI-5A).
+    await mountSteps(onePerson({}, { accounts: {} }))
     const row = document.querySelector('[data-step="team"]') as HTMLElement
     // MUTATION: draw the team form for one person.
     expect(visible(row)).toContain('One-person install: your personal workspace is ready.')
