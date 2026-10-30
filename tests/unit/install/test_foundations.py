@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from swarm_install import sizing
 from swarm_install.exitcodes import MET, UNMET, ExitCode
 from swarm_install.manifest import Entry, Manifest
 from swarm_install.manifest import load as load_manifest
@@ -187,6 +188,7 @@ class FakeProjectApi:
         self.create_error = create_error
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         self.pending: dict[str, str] = {}
+        self.granted_on_poll: int | None = None
 
     def _write(self, name: str, *args: Any) -> None:
         self.calls.append((name, args))
@@ -203,6 +205,15 @@ class FakeProjectApi:
         self.pending["operations/cp.1"] = project
         self.gcp.projects[project] = {"name": f"projects/{NUMBER}", "state": "ACTIVE", "parent": parent}
         return {"name": "operations/cp.1", "done": False}
+
+    def can_create_projects(self, parent):
+        """testIamPermissions on the parent: the grant arrives on poll
+        `granted_on_poll` (never when it is None), and creating then works."""
+        self.calls.append(("can_create_projects", (parent,)))
+        polls = len(self.called("can_create_projects"))
+        if self.granted_on_poll is not None and polls >= self.granted_on_poll:
+            self.create_error = None
+        return self.create_error is None
 
     def operation(self, name):
         self.calls.append(("operation", (name,)))
@@ -335,10 +346,12 @@ def test_wrong_confirmation_creates_and_links_nothing(tmp_path: Path, monkeypatc
         assert "budget_amount" not in rig.store.load().outputs
 
 
-def test_billing_link_failure_leaves_the_project_and_the_rerun_links_it(tmp_path: Path) -> None:
-    """When updateBillingInfo is refused the step fails naming the right it
+def test_billing_link_failure_leaves_the_project_and_the_rerun_links_it(tmp_path: Path, monkeypatch) -> None:
+    """When updateBillingInfo is refused the project's billing page opens and
+    is polled; when nobody links it there the step fails naming the right it
     needs and saying the project was created; the next run does not create it
     again: it only links billing, after its own approval."""
+    opened = _pages(monkeypatch)
     gcp = FakeGcp(exists=False, billed=False)
     denied = ApiError(403, "PERMISSION_DENIED", "caller lacks billing.resourceAssociations.create")
     api = FakeProjectApi(gcp, link_error=denied)
@@ -349,6 +362,8 @@ def test_billing_link_failure_leaves_the_project_and_the_rerun_links_it(tmp_path
     assert f"roles/billing.user on billingAccounts/{ACCOUNT}" in result.message
     assert f"project {PROJECT} was created and is left in place" in result.message
     assert PROJECT in gcp.projects and gcp.budget_list == []
+    assert [url for url, _ in opened] == [foundations.billing_page(PROJECT)]
+    assert rig.of_kind("wait_gave_up", "foundations.project:billing")
 
     api.link_error = None
     ask = Answers(foundations_project=["", PROJECT])
@@ -388,3 +403,185 @@ def test_containerscanning_disabled_through_service_usage(tmp_path: Path) -> Non
     assert api.called("disable_service") == [(PROJECT, foundations.NEVER_ENABLED)]
     assert gcp.called("enable_services") == []
     assert step.check(ctx).status == MET
+
+
+# -- DAYONE-FOUNDATIONS-2: the sizing's budget, and the pages stage 1 opens ------
+
+
+def _pages(monkeypatch) -> list[tuple[str, str]]:
+    """Every page stage 1 opens, as (url, why); no browser is started."""
+    opened: list[tuple[str, str]] = []
+    monkeypatch.setattr(foundations, "open_page", lambda url, *, why: opened.append((url, why)))
+    return opened
+
+
+def _sized(tmp_path: Path, record: dict[str, Any]) -> Rig:
+    """`_recorded`, plus the sizing stage 0 recorded (lane SIZING-ASK)."""
+    rig = _recorded(tmp_path)
+    state = InstallState.from_bytes((tmp_path / "state.json").read_bytes())
+    state.outputs["sizing"] = record
+    (tmp_path / "state.json").write_bytes(state.to_bytes())
+    return rig
+
+
+def test_budget_question_defaults_to_the_sizing_proposal(tmp_path: Path) -> None:
+    """The budget question at the approval offers the sizing's budget_usd, the
+    approval shows it, and Enter keeps it; foundations.budget, on a project
+    that needed no approval, offers the same amount."""
+    proposal = dict(sizing.propose(sizing.TEAM, 20))
+    proposal["budget_usd"] = 1700
+    gcp = FakeGcp(exists=False, billed=False)
+    api = FakeProjectApi(gcp)
+    ask = Answers(foundations_project=["", PROJECT])
+    rig = _sized(tmp_path / "new", proposal)
+    result = rig.engine(_project_and_budget(gcp, ask, api)).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert ask.defaults[0] == "1700"
+    assert "1700 USD a month" in ask.asked[1][1]
+    (budget,) = gcp.budget_list
+    assert budget["amount"]["specifiedAmount"]["units"] == "1700"
+    assert rig.store.load().outputs["budget_amount"] == 1700
+
+    gcp = FakeGcp()
+    ask = Answers(foundations_budget=[""])
+    rig = _sized(tmp_path / "existing", proposal)
+    step = foundations.BudgetStep(lambda: gcp, ask)
+    assert "Enter keeps 1700 USD a month" in step.plan(ctx_for(outputs=rig.store.load().outputs)).summary
+    result = rig.engine([step]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert ask.defaults == ["1700"]
+    (budget,) = gcp.budget_list
+    assert budget["amount"]["specifiedAmount"]["units"] == "1700"
+
+
+def test_budget_question_keeps_its_own_default_without_a_sizing(tmp_path: Path) -> None:
+    """No sizing recorded (or one with no usable budget_usd): both questions
+    offer DEFAULT_BUDGET_USD, as before."""
+    for name, record in (("none", None), ("no-budget", {"mode": sizing.INDIVIDUAL, "budget_usd": 0})):
+        gcp = FakeGcp(exists=False, billed=False)
+        ask = Answers(foundations_project=["", PROJECT])
+        rig = _recorded(tmp_path / name) if record is None else _sized(tmp_path / name, record)
+        result = rig.engine(_project_and_budget(gcp, ask, FakeProjectApi(gcp))).run()
+        assert result.exit_code == ExitCode.OK, result.message
+        assert ask.defaults[0] == str(foundations.DEFAULT_BUDGET_USD)
+        (budget,) = gcp.budget_list
+        assert budget["amount"]["specifiedAmount"]["units"] == str(foundations.DEFAULT_BUDGET_USD)
+
+        gcp = FakeGcp()
+        ask = Answers(foundations_budget=[""])
+        rig = _recorded(tmp_path / f"{name}-existing") if record is None else _sized(
+            tmp_path / f"{name}-existing", record)
+        assert rig.engine([foundations.BudgetStep(lambda: gcp, ask)]).run().exit_code == ExitCode.OK
+        assert ask.defaults == [str(foundations.DEFAULT_BUDGET_USD)]
+
+
+def test_project_create_denied_opens_the_parents_iam_page_and_polls_the_grant(tmp_path: Path,
+                                                                              monkeypatch) -> None:
+    """A refused projects.create opens the parent's IAM page, says the role to
+    grant, and polls testIamPermissions on the parent; once the grant is seen
+    the project is created, with no question asked again."""
+    opened = _pages(monkeypatch)
+    gcp = FakeGcp(exists=False, billed=False)
+    denied = ApiError(403, "PERMISSION_DENIED", "caller lacks resourcemanager.projects.create")
+    api = FakeProjectApi(gcp, create_error=denied)
+    api.granted_on_poll = 3
+    ask = Answers(foundations_project=["", PROJECT])
+    rig = _recorded(tmp_path)
+    result = rig.engine(_project_and_budget(gcp, ask, api)).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    ((url, why),) = opened
+    assert url == "https://console.cloud.google.com/iam-admin/iam?organizationId=4242"
+    assert url == foundations.iam_page(ORG)
+    assert "roles/resourcemanager.projectCreator" in why and ORG in why
+    assert len(api.called("can_create_projects")) == 3
+    assert len(api.called("create_project")) == 2 and PROJECT in gcp.projects
+    assert [step for step, _ in ask.asked] == ["foundations.project", "foundations.project"]
+    assert foundations.iam_page("folders/77") == "https://console.cloud.google.com/iam-admin/iam?folderId=77"
+
+
+def test_project_create_denied_and_never_granted_fails_naming_the_role(tmp_path: Path, monkeypatch) -> None:
+    """When the grant never arrives within the bound the step fails naming the
+    role, after the page was opened; nothing is created."""
+    opened = _pages(monkeypatch)
+    gcp = FakeGcp(exists=False, billed=False)
+    api = FakeProjectApi(gcp, create_error=ApiError(403, "PERMISSION_DENIED", "denied"))
+    rig = _recorded(tmp_path)
+    result = rig.engine(_project_and_budget(gcp, Answers(foundations_project=["", PROJECT]), api)).run()
+    assert result.exit_code == ExitCode.FAIL and result.step == "foundations.project"
+    assert "roles/resourcemanager.projectCreator" in result.message
+    assert [url for url, _ in opened] == [foundations.iam_page(ORG)]
+    assert PROJECT not in gcp.projects and api.called("link_billing") == []
+
+
+def test_billing_link_denied_opens_the_projects_billing_page_and_polls_it(tmp_path: Path, monkeypatch) -> None:
+    """A refused updateBillingInfo opens the project's billing page, naming the
+    account to link, and polls the project's billing info; once it is linked
+    there the step carries on to the budget."""
+    opened = _pages(monkeypatch)
+    gcp = FakeGcp(exists=False, billed=False)
+    api = FakeProjectApi(gcp, link_error=ApiError(403, "PERMISSION_DENIED", "denied"))
+    polled = {"n": 0}
+    real = gcp.billing_info
+
+    def billing_info(project):
+        if api.called("link_billing"):
+            polled["n"] += 1
+            if polled["n"] == 2:  # the person links it on the page
+                gcp.billing = {"billingEnabled": True, "billingAccountName": f"billingAccounts/{ACCOUNT}"}
+        return real(project)
+
+    monkeypatch.setattr(gcp, "billing_info", billing_info)
+    rig = _recorded(tmp_path)
+    result = rig.engine(_project_and_budget(gcp, Answers(foundations_project=["", PROJECT]), api)).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    ((url, why),) = opened
+    assert url == f"https://console.cloud.google.com/billing/linkedaccount?project={PROJECT}"
+    assert f"billingAccounts/{ACCOUNT}" in why
+    assert api.called("link_billing") == [(PROJECT, ACCOUNT)]
+    assert len(gcp.budget_list) == 1
+
+
+def test_budget_create_denied_opens_the_budgets_page_and_polls_for_it(tmp_path: Path, monkeypatch) -> None:
+    """A refused budgets.create opens the billing account's budgets page with
+    the budget to create there, and polls the account's budgets until one of
+    that name appears."""
+    opened = _pages(monkeypatch)
+    gcp = FakeGcp()
+    name = f"swarm-{PROJECT}"
+
+    def create_budget(account, body):
+        raise ApiError(403, "PERMISSION_DENIED", "caller lacks billing.budgets.create")
+
+    listed = {"n": 0}
+    real = gcp.budgets
+
+    def budgets(account):
+        listed["n"] += 1
+        if opened and listed["n"] >= 4:  # the person made it on the page
+            gcp.budget_list = [{"displayName": name}]
+        return real(account)
+
+    monkeypatch.setattr(gcp, "create_budget", create_budget)
+    monkeypatch.setattr(gcp, "budgets", budgets)
+    rig = _recorded(tmp_path)
+    result = rig.engine([foundations.BudgetStep(lambda: gcp, Answers(foundations_budget=["900"]))]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    ((url, why),) = opened
+    assert url == f"https://console.cloud.google.com/billing/{ACCOUNT}/budgets?project={PROJECT}"
+    for said in (name, "900", "50/90/100"):
+        assert said in why, said
+
+
+def test_budget_create_denied_and_never_made_fails_naming_the_right(tmp_path: Path, monkeypatch) -> None:
+    opened = _pages(monkeypatch)
+    gcp = FakeGcp()
+
+    def create_budget(account, body):
+        raise ApiError(403, "PERMISSION_DENIED", "denied")
+
+    monkeypatch.setattr(gcp, "create_budget", create_budget)
+    rig = _recorded(tmp_path)
+    result = rig.engine([foundations.BudgetStep(lambda: gcp, Answers(foundations_budget=[""]))]).run()
+    assert result.exit_code == ExitCode.FAIL
+    assert "billing.budgets.create" in result.message
+    assert [url for url, _ in opened] == [foundations.budgets_page(ACCOUNT, PROJECT)]
