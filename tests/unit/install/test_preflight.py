@@ -485,9 +485,9 @@ def test_kms_signing_quota_read() -> None:
     low = step.check(ctx_for())
     assert low.status == UNMET and "quota.kms-signing-h4" in low.detail
 
-    gcp.quotas["cloudkms.googleapis.com"] = []
-    with pytest.raises(LookupError):  # unreadable is unknown to the engine, never fine
-        step.check(ctx_for())
+    gcp.quotas["cloudkms.googleapis.com"] = []  # #32: not reported is said in one line, never raised
+    unreported = step.check(ctx_for())
+    assert unreported.status == MET and "reports no crypto_requests quota" in unreported.detail
 
 
 def test_org_policies_read_effective() -> None:
@@ -769,10 +769,15 @@ def test_billing_account_is_a_numbered_choice_from_the_api() -> None:
     assert f"1) {ACCOUNT}" in question and f"2) {OTHER_ACCOUNT}" in question and "Lab" in question
     assert gcp.called("billing_accounts")
 
-    gcp.billing_account_list = []  # nothing listed: the id is typed
+    unlisted = FakeGcp(exists=False, billed=False)  # the list cannot be read: the id is typed
+
+    def refused() -> list[dict[str, Any]]:
+        raise ApiError(403, "PERMISSION_DENIED", "billing.accounts.list")
+
+    unlisted.billing_accounts = refused  # type: ignore[method-assign]
     ask = Answers(preflight_inputs=["alerts@example.com", "swarm.example.com", GITHUB_ORG, ACCOUNT])
     ctx = ctx_for()
-    preflight.InputsStep(lambda: gcp, ask).apply(ctx, step.plan(ctx))
+    preflight.InputsStep(lambda: unlisted, ask).apply(ctx, step.plan(ctx))
     assert ctx.outputs["billing_account"] == ACCOUNT and "XXXXXX-XXXXXX-XXXXXX" in ask.asked[-1][1]
 
     for wrong in ("3", "0", "nope"):
@@ -1488,3 +1493,126 @@ def test_an_unreadable_stage_1_quota_keeps_the_proposed_sizing() -> None:
     assert "swarm install again" not in observed.detail
     step.apply(ctx, step.plan(ctx))
     assert ctx.outputs["sizing"] == recorded
+
+
+# -- DAYONE-PREFLIGHT-3: a new organisation's billing, the organisation landing, the quota wait (part of #2688) --
+
+
+def _billing_after(gcp: FakeGcp, polls: int) -> None:
+    """`billingAccounts.list` is empty for `polls` reads, then lists ACCOUNT."""
+    listed = list(gcp.billing_account_list)
+    seen = {"n": 0}
+
+    def billing_accounts() -> list[dict[str, Any]]:
+        gcp._call("billing_accounts")
+        seen["n"] += 1
+        return listed if polls is not None and seen["n"] > polls else []
+
+    gcp.billing_account_list = []
+    gcp.billing_accounts = billing_accounts  # type: ignore[method-assign]
+
+
+def test_no_billing_account_opens_billing_creation_and_polls_until_one_appears(pages: list[Any]) -> None:
+    """N15: a brand-new organisation has no billing account; the installer
+    says so, opens the billing account creation page and polls the list,
+    then offers the account that appeared. It never asks for an id to type."""
+    gcp = FakeGcp(exists=False, billed=False)
+    _billing_after(gcp, polls=3)
+    ask = Answers(preflight_inputs=["alerts@example.com", "swarm.example.com", GITHUB_ORG, ""])
+    step = preflight.InputsStep(lambda: gcp, ask)
+    ctx = ctx_for()
+    step.apply(ctx, step.plan(ctx))
+    assert [url for url, _ in pages] == [preflight.BILLING_CREATE]
+    assert "no billing account" in pages[0][1]
+    assert ctx.outputs["billing_account"] == ACCOUNT
+    assert len(gcp.called("billing_accounts")) == 4  # polled, never "press Enter"
+    assert not [q for _, q in ask.asked if "XXXXXX" in q]
+    assert ctx.clock.sleeps and all(s <= preflight.BILLING_WAIT.interval_s for s in ctx.clock.sleeps)
+    assert gcp.mutations == []
+
+
+def test_a_billing_account_that_never_appears_says_what_to_look_at(pages: list[Any]) -> None:
+    gcp = FakeGcp(exists=False, billed=False)
+    _billing_after(gcp, polls=10**9)
+    ask = Answers(preflight_inputs=["alerts@example.com", "swarm.example.com", GITHUB_ORG])
+    step = preflight.InputsStep(lambda: gcp, ask)
+    ctx = ctx_for()
+    with pytest.raises(RuntimeError) as raised:
+        step.apply(ctx, step.plan(ctx))
+    assert "billing" in str(raised.value) and preflight.BILLING_WAIT.look_at in str(raised.value)
+    assert [url for url, _ in pages] == [preflight.BILLING_CREATE]
+    assert not [q for _, q in ask.asked if "Billing" in q]
+
+
+def test_a_new_domain_account_with_no_organisation_opens_billing_creation(pages: list[Any]) -> None:
+    """N16 [plausible]: Google may create the organisation only when the
+    domain's account first creates a billing account (or a project). Once the
+    person is signed in as the domain account and no organisation shows, the
+    billing account creation page opens too, so the organisation comes into
+    being whichever way Google answers; the wait says what to check."""
+    gcp = _no_organisation()
+    gcp.billing_account_list = []
+    accounts = [NO_ORG_ACCOUNT]
+    step = preflight.OrganizationStep(lambda: gcp, answers(), account=lambda: accounts[-1],
+                                      sign_in=lambda: accounts.append("admin@acme.example"))
+    ctx = ctx_for()
+    step.apply(ctx, step.plan(ctx))
+    assert [url for url, _ in pages] == [preflight.CLOUD_IDENTITY_SIGNUP, preflight.BILLING_CREATE]
+    assert "admin@acme.example" in pages[1][1] and "creates the organisation" in pages[1][1]
+    observed = step.check(ctx)
+    assert observed.status == UNMET and "admin@acme.example" in observed.detail
+    assert "must be in the new domain" in observed.detail
+    assert "must be in the new domain" in preflight.ORGANISATION_WAIT.look_at
+    assert preflight.ORGANISATION_WAIT.bound_s >= 3 * 60 * 60
+
+
+def test_an_organisation_that_lands_at_sign_up_opens_no_billing_page(pages: list[Any]) -> None:
+    gcp = _no_organisation()
+    gcp.billing_account_list = []
+    accounts = [NO_ORG_ACCOUNT]
+
+    def sign_in() -> None:
+        accounts.append("admin@acme.example")
+        gcp.orgs = {ORG: {"name": ORG, "displayName": "acme.example"}}
+
+    step = preflight.OrganizationStep(lambda: gcp, answers(), account=lambda: accounts[-1], sign_in=sign_in)
+    ctx = ctx_for()
+    step.apply(ctx, step.plan(ctx))
+    assert [url for url, _ in pages] == [preflight.CLOUD_IDENTITY_SIGNUP]
+
+
+def test_a_quota_the_service_does_not_report_is_said_in_one_line_not_raised() -> None:
+    """#32: a metric the service does not report is said in one plain line."""
+    gcp = FakeGcp()
+    gcp.enabled.add("run.googleapis.com")
+    gcp.quotas["run.googleapis.com"] = [_metric("run.googleapis.com/requests", 100)]
+    observed = preflight.QuotasStep(lambda: gcp, answers()).check(ctx_for())
+    assert observed.status == MET
+    said = observed.outputs["quotas"]["quota.cloud-run-jobs"]
+    assert isinstance(said, str) and "reports no" in said and "\n" not in said
+    assert "reports no" in observed.detail
+
+
+def test_the_quotas_step_polls_for_the_increase_after_the_page_opens(tmp_path: Path, pages: list[Any]) -> None:
+    """#32: the Quotas page opens and the step waits for the increase to land,
+    with a countdown, instead of "after apply its check is unmet"."""
+    gcp = FakeGcp()
+    gcp.quotas["cloudkms.googleapis.com"] = [_metric("cloudkms.googleapis.com/crypto_requests", 100)]
+    reads = {"n": 0}
+    original = gcp.quota_metrics
+
+    def quota_metrics(project: str, service: str) -> list[dict[str, Any]]:
+        reads["n"] += 1
+        if reads["n"] > 4:  # granted while the installer polls
+            gcp.quotas["cloudkms.googleapis.com"] = [_metric("cloudkms.googleapis.com/crypto_requests", 60_000)]
+        return original(project, service)
+
+    gcp.quota_metrics = quota_metrics  # type: ignore[method-assign]
+    step = preflight.QuotasStep(lambda: gcp, answers())
+    assert step.kind == "wait" and step.wait is preflight.QUOTA_WAIT
+    rig = Rig(tmp_path)
+    result = rig.engine([step]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert len(pages) == 1 and "quota.kms-signing-h4" in pages[0][1]
+    assert rig.of_kind("wait_countdown", "preflight.quotas")
+    assert gcp.mutations == []

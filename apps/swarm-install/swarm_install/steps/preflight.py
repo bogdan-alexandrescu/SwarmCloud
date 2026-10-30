@@ -10,14 +10,14 @@ zero mutating calls).
 |---|---|---|
 | `preflight.tools` | the core `local-tool.*` | 12: terraform `1.16.2`, kubectl ≥ 1.30 |
 | `preflight.sign-in` | `other.installer-sign-in` | gcloud and ADC signed in, by the installer itself; ADC with the Directory scopes; records `installer` |
-| `preflight.organization` | — | audit #24: no organisation is said first; the Cloud Identity Free sign-up opens and is polled |
-| `preflight.inputs` | `other.github-org` | R7: the alert email, the hostname (the verb's), the GitHub org, the billing account (listed) |
+| `preflight.organization` | — | audit #24: no organisation is said first; the Cloud Identity Free sign-up opens and is polled; billing creation opens when the organisation waits on it (N16) |
+| `preflight.inputs` | `other.github-org` | R7: the alert email, the hostname (the verb's), the GitHub org, the billing account (listed; with none, billing creation opens and is polled, N15) |
 | `preflight.region` | — | 2: the region (the verb's) is confirmed, typed, before stage 1 |
 | `preflight.rights` | `switch.project-create-right`, `switch.billing-link-right` | 1 and 16; the parent is listed |
 | `preflight.org-domain` | `other.org-domain` | the domain IAP admits, read from the organization |
 | `preflight.installer-address` | `other.installer-address` | the installer's /32 for the cluster's authorized networks |
 | `preflight.org-policies` | `org-policy.*` | read **effective** (inherited) policy |
-| `preflight.quotas` | `quota.*` | 4: the KMS signing quota is read; the Quotas page opens for an increase |
+| `preflight.quotas` | `quota.*` | 4: the KMS signing quota is read; the Quotas page opens and the increase is polled for (#32) |
 | `preflight.sizing` | `other.deployment-sizing` | decision 7: one person or a team of N, the proposed ceilings |
 | `preflight.sizing-quota` (stage 1) | `other.deployment-sizing-quota` | the sizing against a new project's CPU quota |
 | `preflight.release` | `other.release-home`, `other.release-bundle` | 27: CVE acceptances with expiry; records `state.release` (audit #2) |
@@ -49,7 +49,7 @@ from typing import Any
 from .. import secret_entry, sizing, tools
 from ..exitcodes import MET, UNMET
 from ..secret_entry import DevTty, Terminal
-from ..waits import WaitSpec
+from ..waits import WaitGaveUp, WaitSpec, wait_until
 from . import Observation, Plan, open_page
 
 # -- the REST client ---------------------------------------------------------
@@ -798,8 +798,23 @@ ORGANISATION_WAIT = WaitSpec(
     expected="15 to 60 min (the domain is verified by a DNS record)",
     expected_s=60 * 60,
     bound_s=3 * 60 * 60,
-    look_at="admin.google.com: the domain must be verified; then swarm install goes on from here",
+    look_at=("the account signed in here (gcloud auth list) must be in the new domain, not gmail.com; "
+             "admin.google.com must show the domain verified; Google creates the organisation when that account "
+             "first creates a billing account (console.cloud.google.com/billing/create) or a project; "
+             "then swarm install goes on from here"),
     interval_s=30,
+)
+#: Google's page for a new Cloud Billing account (there is no API to create one).
+BILLING_CREATE = "https://console.cloud.google.com/billing/create"
+#: A person adding a billing account (a payment method) on that page.
+BILLING_WAIT = WaitSpec(
+    reason="a billing account appearing (the person creates one on the Cloud Billing page)",
+    expected="5 to 15 min",
+    expected_s=15 * 60,
+    bound_s=60 * 60,
+    look_at=("console.cloud.google.com/billing: the account must be open and created by the account signed in "
+             "here (gcloud auth list), or shared with it as Billing Account User"),
+    interval_s=15,
 )
 
 
@@ -856,7 +871,9 @@ class OrganizationStep(_Base):
             return Observation(UNMET, f"{NEEDS_ORGANISATION} {who} sees none yet")
         # organizations:search shows only what the caller holds a role on
         return Observation(UNMET, f"{NEEDS_ORGANISATION} {who} sees none yet: sign one up, or ask your "
-                                  "organisation's admin for a role on it")
+                                  f"organisation's admin for a role on it. {who} must be in the new domain; "
+                                  "Google creates the organisation when it first creates a billing account "
+                                  "or a project")
 
     def plan(self, ctx: Any) -> Plan:
         return Plan("SwarmCloud needs a Google organisation: sign up for Cloud Identity Free (or Google "
@@ -873,6 +890,7 @@ class OrganizationStep(_Base):
             + ("; then sign in as the new organisation's admin in the browser window that opens next."
                if consumer else "; this installer goes on by itself once the organisation exists.")))
         if not consumer:
+            self.bring_into_being(ctx, account)
             return
         ctx.events.emit("step_apply", step=self.id, message=(
             f"{account or 'no account'} is not an organisation's account: sign in as the new organisation's "
@@ -885,6 +903,28 @@ class OrganizationStep(_Base):
         now = self._account()
         if now and not consumer_account(now):
             remember(ctx, outputs={"installer": now})
+            self.bring_into_being(ctx, now)
+
+    def bring_into_being(self, ctx: Any, account: str) -> None:
+        """Audit N16 [plausible]: Google may create the organisation resource
+        only when the domain's account first creates a billing account or a
+        project, so `organizations:search` alone could poll for ever. Signed in
+        as that account with no organisation and no billing account, the
+        billing account creation page opens as well (stage 0 links that account
+        next). Whichever way Google answers, the wait sees the organisation:
+        at once when the sign-up made it, after the billing account when not."""
+        if self.organizations(ctx):
+            return
+        try:
+            accounts = self.gcp.billing_accounts()
+        except ApiError:
+            accounts = []
+        if accounts:
+            return
+        open_page(BILLING_CREATE, why=(
+            f"Signed in as {account}, create a billing account on this page: Google creates the organisation "
+            f"for {account.rpartition('@')[2]} when its account first creates a billing account, and the "
+            "install links this account to its project next. This installer goes on by itself."))
 
 
 # -- preflight.inputs (R7) ---------------------------------------------------
@@ -957,7 +997,10 @@ class InputsStep(_Base):
 
     def _billing_account(self, ctx: Any, question: str) -> str:
         """The project's own billing account when it is billed; else a numbered
-        choice of the open accounts `billingAccounts.list` returns."""
+        choice of the open accounts `billingAccounts.list` returns. With none
+        listed (a brand-new organisation, audit N15), the billing account
+        creation page opens and the list is polled until one appears; only a
+        list that cannot be read at all asks for the id to be typed."""
         gcp = self.gcp
         if gcp.project(ctx.project) is not None:
             info = gcp.billing_info(ctx.project)
@@ -965,15 +1008,44 @@ class InputsStep(_Base):
             if info.get("billingEnabled") and BILLING_ACCOUNT.match(linked):
                 return linked
         try:
-            accounts = gcp.billing_accounts()
+            options = self._billing_options()
         except ApiError as exc:
             ctx.events.emit("step_apply", step=self.id, message=f"the billing accounts could not be listed ({exc})")
-            accounts = []
-        options = [(str(a.get("name", "")).removeprefix("billingAccounts/"), str(a.get("displayName") or ""))
-                   for a in accounts]
-        options = [o for o in options if BILLING_ACCOUNT.match(o[0])]
+            options = []
+        else:
+            if not options:
+                options = self._wait_for_billing(ctx)
         return choose(self._ask, ctx, self.id, question, options, pattern=BILLING_ACCOUNT,
                       typed="its id, XXXXXX-XXXXXX-XXXXXX")
+
+    def _billing_options(self) -> list[tuple[str, str]]:
+        accounts = self.gcp.billing_accounts()
+        options = [(str(a.get("name", "")).removeprefix("billingAccounts/"), str(a.get("displayName") or ""))
+                   for a in accounts]
+        return [o for o in options if BILLING_ACCOUNT.match(o[0])]
+
+    def _wait_for_billing(self, ctx: Any) -> list[tuple[str, str]]:
+        """No billing account can be used: say so, open the page that creates
+        one (Google has no API for it) and poll the list, never "press Enter"."""
+        open_page(BILLING_CREATE, why=(
+            "The signed-in account has no billing account the project can be linked to, so there is no "
+            "billing account to choose. Create one on this page (it asks for a payment method); this installer goes on by itself once it appears."))
+        found: list[tuple[str, str]] = []
+
+        def listed() -> str:
+            try:
+                found[:] = self._billing_options()
+            except ApiError:  # an unreadable poll has not seen it yet; the next one asks again
+                return UNMET
+            return MET if found else UNMET
+
+        try:
+            wait_until(self.id + ":billing-account", BILLING_WAIT, listed, clock=ctx.clock, events=ctx.events,
+                       on_poll=getattr(ctx.engine, "_heartbeat", None))
+        except WaitGaveUp as gave_up:
+            # A plain error: the engine stops on it and names what to look at.
+            raise RuntimeError(f"no billing account appeared: {gave_up}") from gave_up
+        return found
 
 
 # -- preflight.region (lesson 2) ---------------------------------------------
@@ -1399,8 +1471,28 @@ def _limits(metrics: Iterable[Mapping[str, Any]], needle: str, region: str, *,
     return found
 
 
+#: A quota increase requested on the Quotas page: many are granted in minutes,
+#: some are reviewed by Google for up to two business days (then the run pauses
+#: and goes on from here).
+QUOTA_WAIT = WaitSpec(
+    reason="a quota increase being granted (requested on the console's Quotas page)",
+    expected="a few minutes; a reviewed request up to 2 business days",
+    expected_s=30 * 60,
+    bound_s=4 * 60 * 60,
+    look_at="the Quotas page's increase requests and the email Google sends about each one; "
+            "swarm install goes on from here once it is granted",
+    interval_s=60,
+)
+
+
 class QuotasStep(_Base):
+    """Each quota below its floor opens the Quotas page, and the step waits
+    (polling the quota with a countdown) until the increase is granted, so
+    nobody runs swarm install again for it (audit #32)."""
+
     id = "preflight.quotas"
+    kind = "wait"
+    wait = QUOTA_WAIT
     satisfies = tuple(q.entry for q in QUOTAS)
     _explain = (
         "The Cloud KMS signing quota was never checked on the live deployment; if it runs out every "
@@ -1423,8 +1515,9 @@ class QuotasStep(_Base):
                 continue
             limits = _limits(gcp.quota_metrics(ctx.project, quota.service), quota.metric, region,
                              exact=quota.exact)
-            if not limits:
-                raise LookupError(f"{quota.service} reports no {quota.metric} quota; {quota.entry} could not be read")
+            if not limits:  # audit #32: said in one line, never raised
+                read[quota.entry] = f"{quota.service} reports no {quota.metric} quota, so {quota.entry} is not checked"
+                continue
             read[quota.entry] = {name: value for name, value in limits}
             bounded = [value for _, value in limits if value >= 0]  # -1 is unlimited
             lowest = min(bounded) if bounded else None
@@ -1439,7 +1532,11 @@ class QuotasStep(_Base):
 
     def check(self, ctx: Any) -> Observation:
         problems, outputs = self.findings(ctx)
-        return Observation(UNMET if problems else MET, "; ".join(problems), outputs)
+        if problems:
+            return Observation(UNMET, "; ".join(problems), outputs)
+        read = outputs["quotas"] if isinstance(outputs["quotas"], dict) else {}
+        unread = [said for said in read.values() if isinstance(said, str) and " reports no " in said]
+        return Observation(MET, "; ".join(unread), outputs)
 
     def plan(self, ctx: Any) -> Plan:
         return Plan("quota increases to request", tuple(self.findings(ctx)[0]))
