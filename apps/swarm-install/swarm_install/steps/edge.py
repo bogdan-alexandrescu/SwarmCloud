@@ -10,13 +10,27 @@ lesson 17: none of these is in Terraform).
 | `edge.global-ip` | `network.global-ip` | engine: reserves the address the frontend module names (`swarm-ui-ip`) |
 | `edge.dns` | `dns.frontend-hostname` | wait, 60 min: when one of the project's public Cloud DNS managed zones covers the hostname, `apply` creates the A record there after one typed approval (the hostname); otherwise the record is set at the person's registrar, so `apply` prints it and opens a page showing what the hostname resolves to now. Either way the engine polls Google Public DNS (`dns.google/resolve`, the resolver that page shows), never the local resolver, which can cache a negative answer |
 | `edge.certificate` | `certificate.managed-ssl` | wait, 60 min (`waits.CERTIFICATE`); it never starts before DNS resolves to the reserved address (design R6) |
-| `edge.desktop-client` | `oauth-client.desktop-sc`, `declared-value.frontend_iap_programmatic_clients`, `secret.swarm-iap-desktop-client-secret.container` | engine: no API creates or lists a Desktop client, so `apply` opens the create page (or the recorded client's own page); the id, unless already recorded, is asked; the secret is a credential typed at a hidden prompt (`secret_entry`, echo off) straight to Secret Manager and, the same typed value, to the swarm credential store of the new deployment's context (`verify_context`), so verify never needs it |
+| `edge.desktop-client` | `oauth-client.desktop-sc`, `declared-value.frontend_iap_programmatic_clients`, `secret.swarm-iap-desktop-client-secret.container` | engine: no API creates or lists a Desktop client, so `apply` opens the create page (or the recorded client's own page); the id, unless already recorded, is asked; the secret is a credential typed at a hidden prompt (`secret_entry`, echo off) straight to Secret Manager and, the same typed value, to the swarm credential store of the new deployment's context (`verify_context`), so verify never needs it. Normally `edge.brand` has already taken the secret, right after the id, while Google still shows it; this step then only checks, or asks again with "Add secret on this page" |
+| `edge.console-answers` (stage 8) | `other.console-through-iap` | wait, 60 min (`handoff.CONSOLE_ANSWERS`): first in stage 8, after infra pass 2 and bootstrap pass 2 (stage 7), it polls until `swarm-ui-cert` is `ACTIVE` and an anonymous GET of `https://<H>/` answers IAP's sign-in (302, 401 or 403, `handoff.IAP_ANSWERS`), so stage 8's first call through the hostname does not meet a TLS error or a load balancer still routing |
 
 The managed certificate itself is created by infra pass 1 (stage 5), which
 attaches it to the load balancer; Google provisions a managed certificate only
 once it is attached. So while it is not yet attached, the certificate step is
 met as soon as its precondition holds (DNS resolves to the reserved address),
 and once it is attached it waits, up to the 60 min bound, for `ACTIVE`.
+
+**Why the console wait is in stage 8, not stage 7.** Within a stage the engine
+runs steps in registration order (modules by name), and infra pass 2 and
+bootstrap pass 2 are registered by `infra.py`, after this module: a stage-7
+step here would run before both passes. As the first step of stage 8 it runs
+after every stage-7 step and before stage 8's first call through
+`https://<H>` (`identity.group-read`).
+
+**What the console wait assumes** (audit N17, plausible): an anonymous GET
+answering 302, 401 or 403 means the certificate is served and IAP stands in
+front of the backends. It cannot see whether the installer's own IAP grant
+has spread yet; a 403 for the installer after this wait is the identity
+steps' to retry.
 """
 
 from __future__ import annotations
@@ -30,7 +44,8 @@ from ..exitcodes import MET, UNMET, WAITING
 from ..secret_entry import DevTty, Terminal
 from ..waits import CERTIFICATE, WaitSpec
 from . import Observation, Plan, open_page
-from .preflight import ASK, GCP, USAGE, ApiError, Ask, Gcp, project_number, remember
+from .handoff import CONSOLE_ANSWERS, IAP_ANSWERS
+from .preflight import ASK, COMPUTE, GCP, USAGE, ApiError, Ask, Gcp, project_number, remember
 
 #: The frontend module's names (terraform/modules/frontend/main.tf:101, :297,
 #: `${var.name_prefix}-ui` with the default prefix `swarm`).
@@ -53,6 +68,10 @@ MANUAL = "manual"
 #: this often, this many times (it is normally done on the first answer).
 IDENTITY_POLL_S = 2
 IDENTITY_POLLS = 30
+#: `addresses.insert` answers a Compute operation; it is polled this often,
+#: this many times, before the address is re-checked (audit N19).
+ADDRESS_POLL_S = 2
+ADDRESS_POLLS = 60
 
 #: plan §9.1: DNS, 60 min.
 DNS_WAIT = WaitSpec(
@@ -96,14 +115,30 @@ class EdgeApi:
     def operation(self, name: str) -> dict[str, Any]:
         return self._gcp()._call("GET", f"{USAGE}/v1beta1/{name}") or {}
 
+    def global_operation(self, project: str, name: str) -> dict[str, Any]:
+        """Compute `globalOperations.get`."""
+        return self._gcp()._call("GET", f"{COMPUTE}/projects/{project}/global/operations/{name}") or {}
+
+    def _get(self) -> Callable[..., Any]:
+        if self._http_get is not None:
+            return self._http_get
+        import requests
+
+        return requests.get
+
+    def http_status(self, url: str) -> int | None:
+        """The status an anonymous GET of `url` answers, redirects not
+        followed; `None` when it could not be asked (a TLS error while the
+        certificate is not served, a refused connection, a timeout)."""
+        try:
+            return int(self._get()(url, timeout=30, allow_redirects=False).status_code)
+        except Exception:  # noqa: BLE001 - an answer that cannot be had yet is polled again, not fatal
+            return None
+
     def resolve(self, hostname: str) -> set[str] | None:
         """The IPv4 addresses Google Public DNS answers for `hostname` now
         (empty when it answers none); `None` when it could not be asked."""
-        get = self._http_get
-        if get is None:
-            import requests
-
-            get = requests.get
+        get = self._get()
         try:
             response = get(PUBLIC_RESOLVER, params={"name": hostname, "type": "A"}, timeout=30)
             if response.status_code >= 400:
@@ -175,8 +210,16 @@ class BrandStep(_Base):
         "reads one: Google shut the IAP OAuth Admin API down on 2026-03-19. The console refuses to create "
         "an OAuth client before Branding and Audience are set, so a Desktop client's existence proves the "
         "brand: a person sets Branding, chooses Audience: Internal and creates the Desktop client in the "
-        "console, once (the brand can never be deleted), and gives the client's id (lesson 17)."
+        "console, once (the brand can never be deleted), and gives the client's id (lesson 17), then, at once, "
+        "its secret: Google shows a client's secret only when it creates it (audit N18)."
     )
+
+    def __init__(self, gcp: Callable[[], Gcp], ask: Ask, edge: Callable[[], EdgeApi] | None = None,
+                 client: DesktopClientStep | None = None) -> None:
+        super().__init__(gcp, ask, edge)
+        #: The step whose secret prompt runs right after the id; `build_steps`
+        #: passes it, so the secret is asked before the DNS wait, not after it.
+        self._client = client
 
     def _check(self, ctx: Any) -> Observation:
         client = str(ctx.outputs.get("desktop_client_id") or "")
@@ -201,7 +244,8 @@ class BrandStep(_Base):
                 f"open {self.audience_link(ctx)}: choose Internal",
                 f"Clients (https://console.cloud.google.com/auth/clients/create?project={ctx.project}): "
                 "Application type: Desktop app; name: SwarmCloud sc; create",
-                "give the Desktop client's id (its secret is asked by edge.desktop-client, at a hidden prompt)",
+                "give the Desktop client's id, then at once its secret at a hidden prompt, while the console "
+                "still shows it",
             ),
         )
 
@@ -210,7 +254,8 @@ class BrandStep(_Base):
         then the Audience page, says what to set on each, and asks the Desktop
         client's id, which proves both: the console creates no client before
         Branding and Audience are set. The id is the one thing the check can
-        read, so it is the prompt, never a bare Enter."""
+        read, so it is the prompt, never a bare Enter. The secret follows at
+        once: Google shows it only in the dialog that creates the client."""
         open_page(self.deep_link(ctx), why=(
             "Set the OAuth brand once (it can never be deleted): Branding: App name SwarmCloud, support email "
             "a group you own; save."
@@ -218,13 +263,15 @@ class BrandStep(_Base):
         open_page(self.audience_link(ctx), why=(
             "Then Audience: choose Internal. Then Clients > Create client "
             f"(https://console.cloud.google.com/auth/clients/create?project={ctx.project}): Application type "
-            "Desktop app, name SwarmCloud sc. Give the Desktop client's id here; its secret is asked next, "
-            "at a hidden prompt."
+            "Desktop app, name SwarmCloud sc. Keep the dialog that shows the new client open: give its id "
+            "here, then its secret at the hidden prompt right after (Google shows the secret only now)."
         ))
         client = self._ask(ctx, self.id, "The Desktop client's id (ends .apps.googleusercontent.com)").strip()
         if not CLIENT_ID.match(client):
             raise ValueError(f"{client!r} is not a Desktop client id")
         remember(ctx, outputs={"desktop_client_id": client})
+        if self._client is not None:
+            self._client.take_secret(ctx)
 
 
 class IapAgentStep(_Base):
@@ -291,12 +338,27 @@ class GlobalIpStep(_Base):
         return Plan(f"reserve the global address {ADDRESS}", (f"{ADDRESS}: external, IPv4, global",))
 
     def apply(self, ctx: Any, plan: Plan) -> None:
-        self.gcp.create_global_address(ctx.project, {
+        """`addresses.insert` answers an operation before the address exists;
+        it is polled until done, so the engine's re-check sees the address
+        (audit N19). An answer with no operation is re-checked at once."""
+        answer = self.gcp.create_global_address(ctx.project, {
             "name": ADDRESS,
             "addressType": "EXTERNAL",
             "ipVersion": "IPV4",
             "labels": {"managed-by": "swarm-terraform"},
-        })
+        }) or {}
+        polls = 0
+        while answer.get("name") and answer.get("status", "DONE") != "DONE":
+            if polls >= ADDRESS_POLLS:
+                raise TimeoutError(f"reserving {ADDRESS} did not finish ({answer.get('name')} is "
+                                   f"{answer.get('status')}); run swarm install again to carry on")
+            ctx.clock.sleep(ADDRESS_POLL_S)
+            polls += 1
+            answer = self.edge.global_operation(ctx.project, str(answer["name"]))
+        errors = (answer.get("error") or {}).get("errors") or ()
+        if errors:
+            raise RuntimeError(f"reserving {ADDRESS} failed: "
+                               + "; ".join(str(e.get("message") or e.get("code") or e) for e in errors))
 
 
 def _reserved_ip(step: _Base, ctx: Any) -> str:
@@ -449,7 +511,8 @@ class CertificateStep(_Base):
             return Observation(MET, f"{CERT} is ACTIVE")
         if found is None or not found.get("inUseBy"):
             return Observation(MET, f"DNS resolves to the reserved address; {CERT} is provisioned once infra "
-                                    "pass 1 attaches it (stage 5), and stage 7 waits for ACTIVE",
+                                    "pass 1 attaches it (stage 5), and edge.console-answers waits for ACTIVE "
+                                    "before stage 8's first call through the hostname",
                                {"certificate_precondition": True})
         return Observation(WAITING, f"{CERT} is {status}")
 
@@ -538,20 +601,30 @@ class DesktopClientStep(_Base):
         gcp = self.gcp
         has_secret = (gcp.secret(ctx.project, DESKTOP_SECRET) is not None
                       and gcp.enabled_version(ctx.project, DESKTOP_SECRET) is not None)
-        if not CLIENT_ID.match(client) or not has_secret:
+        if not CLIENT_ID.match(client):
             open_page(self.deep_link(ctx), why=(
                 "Create the Desktop OAuth client (Application type: Desktop app; name: SwarmCloud sc), "
-                "then give its id here, and its secret at the hidden prompt (it goes to Secret Manager and the new "
-                "deployment's swarm credential store only)"
-                if not CLIENT_ID.match(client) else
-                f"The Desktop client {client}: give its secret at the hidden prompt (it goes to Secret "
-                "Manager and the new deployment's swarm credential store only)"
+                "then give its id here, and its secret at the hidden prompt right after, while the console still "
+                "shows it (it goes to Secret Manager and the new deployment's swarm credential store only)"
             ))
-        if not CLIENT_ID.match(client):
             client = self._ask(ctx, self.id, "The Desktop client's id (ends .apps.googleusercontent.com)").strip()
             if not CLIENT_ID.match(client):
                 raise ValueError(f"{client!r} is not a Desktop client id")
             remember(ctx, outputs={"desktop_client_id": client})
+        elif not has_secret:
+            open_page(self.deep_link(ctx), why=(
+                f"The Desktop client {client}: Google shows a client's secret only when it makes it, so Add "
+                "secret on this page and give the new secret at the hidden prompt (it goes to Secret Manager "
+                "and the new deployment's swarm credential store only)"
+            ))
+        self.take_secret(ctx)
+
+    def take_secret(self, ctx: Any) -> None:
+        """The secret, typed once at a hidden prompt, to Secret Manager and to
+        this machine's credential store; nothing is asked when both hold it.
+        `edge.brand` calls this right after the id, while the console's
+        create dialog still shows the secret (audit N18)."""
+        gcp = self.gcp
         if gcp.secret(ctx.project, DESKTOP_SECRET) is None:
             gcp.create_secret(ctx.project, DESKTOP_SECRET, {"managed-by": "swarm-install"})
         if gcp.enabled_version(ctx.project, DESKTOP_SECRET) is None:
@@ -564,7 +637,8 @@ class DesktopClientStep(_Base):
         elif not self._stored_context(ctx)[0]:
             # Secret Manager holds it, but this machine's credential store does
             # not (another laptop, or a run before this step kept it there): the
-            # engine never reads it back from Secret Manager, so it is typed again.
+            # engine never reads it back from Secret Manager, so it is typed again
+            # (a secret added on the client's page works too: Google keeps both).
             secret_entry.type_secret(
                 ctx, step_id=self.id, what=f"the Desktop client's secret (already in {DESKTOP_SECRET})",
                 prompt="The Desktop client's secret, for the swarm credential store",
@@ -572,17 +646,60 @@ class DesktopClientStep(_Base):
             )
 
 
+class ConsoleAnswersStep(_Base):
+    id = "edge.console-answers"
+    stage = 8
+    kind = "wait"
+    wait = CONSOLE_ANSWERS
+    satisfies = ("other.console-through-iap",)
+    _explain = (
+        "Stage 8's first step calls swarm-api through https://<hostname>. Infra pass 1 attached the managed "
+        "certificate, but Google provisions it for up to an hour, and the load balancer and IAP take minutes "
+        "more after pass 2; a call before then fails on TLS or a 404. This waits, first in stage 8, until the "
+        "certificate is ACTIVE and the hostname answers with IAP's sign-in (audit N17)."
+    )
+
+    def _check(self, ctx: Any) -> Observation:
+        found = self.gcp.ssl_certificate(ctx.project, CERT)
+        if found is None:
+            return Observation(UNMET, f"{CERT} does not exist (infra pass 1 creates it)")
+        status = (found.get("managed") or {}).get("status")
+        if status != "ACTIVE":
+            return Observation(WAITING, f"{CERT} is {status or 'not provisioned yet'}")
+        url = f"https://{self._hostname(ctx)}/"
+        answered = self.edge.http_status(url)
+        if answered is None:
+            return Observation(WAITING, f"{CERT} is ACTIVE; {url} does not answer over TLS yet")
+        if answered not in IAP_ANSWERS:
+            return Observation(WAITING, f"{CERT} is ACTIVE; {url} answers {answered}, not IAP's sign-in "
+                                        f"({', '.join(map(str, IAP_ANSWERS))})")
+        return Observation(MET, f"{CERT} is ACTIVE and {url} answers through IAP ({answered})")
+
+    def plan(self, ctx: Any) -> Plan:
+        return Plan(f"wait (up to 60 min) for {CERT} to be ACTIVE and https://<hostname>/ to answer through IAP",
+                    (f"poll {CERT}'s managed.status and an anonymous GET of https://<hostname>/",))
+
+    def apply(self, ctx: Any, plan: Plan) -> None:
+        """Nothing to make: Google finishes the certificate and the load
+        balancer by itself, and the engine polls the check."""
+
+
 def build_steps(gcp: Callable[[], Gcp] = GCP, ask: Ask = ASK,
                 open_terminal: Callable[[], Terminal] = DevTty.open,
-                edge: Callable[[], EdgeApi] | None = None) -> list[Any]:
-    """Stage 2 in order: the brand before the client, the address before DNS before the certificate."""
+                edge: Callable[[], EdgeApi] | None = None,
+                contexts: swarm_context.Run = swarm_context.run_command) -> list[Any]:
+    """Stage 2 in order: the brand (with the client's id and secret) before
+    the client's check, the address before DNS before the certificate; then the
+    console wait, first in stage 8."""
+    client = DesktopClientStep(gcp, ask, open_terminal, contexts, edge=edge)
     return [
-        BrandStep(gcp, ask, edge),
+        BrandStep(gcp, ask, edge, client=client),
         IapAgentStep(gcp, ask, edge),
         GlobalIpStep(gcp, ask, edge),
         DnsStep(gcp, ask, edge),
         CertificateStep(gcp, ask, edge),
-        DesktopClientStep(gcp, ask, open_terminal, edge=edge),
+        client,
+        ConsoleAnswersStep(gcp, ask, edge),
     ]
 
 
