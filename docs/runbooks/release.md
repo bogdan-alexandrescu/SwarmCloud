@@ -83,6 +83,10 @@ The release home is project `swarmcloud-prod`: images in
 3. Approve the `release` environment on the run's page. That is the
    confirmation. The run publishes under `releases/<version>/`, SHA256SUMS last;
    a version already published is refused, never overwritten.
+   A candidate (`-rc.N`) then moves `channels/rc` to itself, after SHA256SUMS, so
+   `SWARM_CHANNEL=rc` installs it; every bundle carries
+   `github-app-permissions.json` (from `swarm_api.setup_github`), which
+   `swarm upgrade` compares with the live App's permissions.
 
 4. Run the manual install-and-upgrade test (plan section 7.3) against the
    published release, then record it and promote, typed, at a terminal with

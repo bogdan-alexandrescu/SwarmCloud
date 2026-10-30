@@ -34,6 +34,10 @@
 #   cve-acceptances.json  every accepted CVE of .trivyignore.yaml, with its
 #                         expiry (lesson 27; preflight.release reads it)
 #   install.sh            install/install.sh, promoted to the bucket's root
+#   github-app-permissions.json
+#                         the GitHub App manifest's permissions, from
+#                         swarm_api.setup_github.PERMISSIONS; `swarm upgrade`
+#                         compares the live App's with it
 #   RELEASE.md            the commit, the digests, the accepted CVEs, the notes
 #   SHA256SUMS            every file above; publish.sh signs it
 #
@@ -279,6 +283,12 @@ shutil.copy2(OUT / "plugin" / "compat.json", OUT / "compat.json")
 (OUT / "marketplace.json").write_text(json.dumps(marketplace.marketplace(VERSION, "./plugin"), indent=2) + "\n")
 shutil.copy2(REPO / "install" / "install.sh", OUT / "install.sh")
 compat = json.loads((OUT / "compat.json").read_text())["deployments"]
+
+# -- github-app-permissions.json: what the App manifest asks for, read from the one place it is set --
+from swarm_api.setup_github import PERMISSIONS
+
+(OUT / "github-app-permissions.json").write_text(json.dumps(dict(sorted(PERMISSIONS.items())), indent=2) + "\n")
+say(f"github-app-permissions.json: {len(PERMISSIONS)} permissions")
 
 # -- RELEASE.md ---------------------------------------------------------------------------------------------
 notes_file = os.environ.get("NOTES") or ""
