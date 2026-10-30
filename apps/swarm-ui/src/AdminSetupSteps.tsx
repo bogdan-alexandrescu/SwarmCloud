@@ -21,6 +21,16 @@
  * THE PLUGIN LINE carries one value, the deployment URL; the plugin reads the
  * rest from the deployment's discovery document.
  *
+ * SAYS ONLY WHAT EXISTS (DAYONE-SETUP-UI-4): the verify row names the checks
+ * stage 14 runs and "Run the console checks" starts the console's two runs
+ * (SETUP-API-2's route), each drawn with its state and linked; the first
+ * team's row shows its grant over the App installation's repositories and each
+ * invitee as waiting until the Groups API sees them in the group; an invite
+ * opens the group's members page in Google Admin (decision 4: swarm-api adds
+ * no one). The Capacity card shows stage 0's `sizing`, read-only, and a
+ * one-person install (`sizing.mode == "individual"`, decision 7) has no first
+ * team and no invites: one line says its personal workspace is ready.
+ *
  * `GitHubAppCallback` is the page GitHub sends the person back to after it
  * created the App from the manifest: it posts `{code, state}` to the
  * conversion route ONCE and says the secrets were stored, never what they are.
@@ -34,19 +44,29 @@ import {
   convertGitHubApp,
   createSetupTeam,
   finishSetup,
+  inviteToSetupTeam,
   loadSetup,
+  loadTask,
+  loadWorkflow,
   mintSetupLink,
   runGitHubAppSelfCheck,
   startGitHubApp,
+  startSetupVerifyRuns,
   type ApiError,
   type Result,
   type SetupAccount,
+  type SetupInvite,
   type SetupLink,
+  type SetupMember,
+  type SetupSizing,
   type SetupState,
   type SetupTeam,
   type SetupVerify,
+  type SetupVerifyRuns,
 } from './api'
 import { Banner, Button, ButtonLink, Card, Chip, CodeBlock, ToneMark, type MarkTone } from './components'
+import { agentPath } from './OverviewRegions'
+import type { TaskState } from './types'
 import './styles/onboarding.css'
 
 /** The marketplace the plugin is installed from: the release bucket (DX3 B), as `swarm install` prints it. */
@@ -57,6 +77,24 @@ export const SETUP_REFRESH_MS = 5_000
 
 /** How often the GitHub step asks whether the App is on the org yet. */
 const INSTALL_POLL_MS = 10_000
+
+/** How often the console checks' run states are read again while either is running. */
+const RUN_POLL_MS = 10_000
+
+/**
+ * What stage 14 checks, as VERIFY-ENGINE runs it (steps/verify.py:
+ * QUICK_CHECKS, then RUNS: the four product runs and the three check runs).
+ */
+export const VERIFY_CHECKS =
+  'the Scheduler targets, the image digests, the reconciler’s reach into each workspace namespace and the Firestore migrations, then seven runs on this deployment: a task and a workflow from the plugin and from this console, a task on GKE, a live-browser task and a code-intelligence read'
+
+/** The one line a one-person install shows in place of the first-team and invites steps (decision 7). */
+export const ONE_PERSON_LINE = 'One-person install: your personal workspace is ready.'
+
+/** A one-person install (decision 7): no team group, no first team, no invites. */
+export function isOnePerson(state: SetupState): boolean {
+  return state.sizing?.mode === 'individual'
+}
 
 /** The cloud stages swarm install finishes before the hand-off (§5.1: 0-8, 10, 13). */
 const CLI_STAGES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 13]
@@ -442,7 +480,7 @@ function TeamForm({ onChanged }: { onChanged: () => void }) {
       {field('Workspace group', group, setGroup, 'A Google Workspace group; its members are the team', 'engineering@your-domain')}
       {field('Workspace name', name, setName, 'Shown in the console; the group’s name when left empty', 'engineering')}
       {field('First workspace admin', admin, setAdmin, 'Administers the team’s workspace', 'name@your-domain')}
-      {field('Invite', invites, setInvites, 'Each gets a sign-in link; nobody pastes anything', 'one or more emails')}
+      {field('Invite', invites, setInvites, 'Each is added to the group in Google Admin, which opens from the team’s row; the row shows them as joined once the Groups API sees them', 'one or more emails')}
       <span className="ob-acts">
         <Button size="sm" kind="primary" type="submit" busy={act.busy === 'team' ? 'Creating' : false} disabledReason={group.trim().length < 3 ? 'Name the Workspace group first' : undefined}>
           Create the team
@@ -453,7 +491,29 @@ function TeamForm({ onChanged }: { onChanged: () => void }) {
   )
 }
 
-function teamFacts(team: SetupTeam, signedIn: boolean, nowMs: number): Fact[] {
+/** Who the team row waits on: the route's live membership, or the recorded invites when it served none. */
+function teamPeople(team: SetupTeam): SetupMember[] {
+  return team.members.length > 0 ? team.members : team.invites.map((email) => ({ email, member: null }))
+}
+
+function grantFact(team: SetupTeam, org: string): Fact {
+  const g = team.grant
+  if (g === null) return { state: 'in_progress', name: 'Repository grant', text: `the team’s grant over the repositories the GitHub App installation on ${org} covers; read on the next refresh` }
+  if (g.state === 'granted' && g.repositories.length > 0) {
+    const n = g.repositories.length
+    return {
+      state: 'done',
+      name: 'Repository grant',
+      text: `the team may write to the ${n === 1 ? 'repository' : `${n} repositories`} the App installation${g.account === null ? '' : ` on ${g.account}`} covers: ${g.repositories.join(', ')}`,
+    }
+  }
+  if (g.state === 'waiting_for_repositories') {
+    return { state: 'in_progress', name: 'Repository grant', text: `the App is installed${g.account === null ? '' : ` on ${g.account}`} on no repository yet: add one to the installation on GitHub, and the grant follows on the next refresh` }
+  }
+  return { state: 'in_progress', name: 'Repository grant', text: `waits for the GitHub App to be installed on ${org}` }
+}
+
+function teamFacts(team: SetupTeam, signedIn: boolean, nowMs: number, org: string): Fact[] {
   const ws = typeof team.progress.workspace_state === 'string' ? team.progress.workspace_state : null
   const git = typeof team.progress.git_link === 'object' && team.progress.git_link !== null ? (team.progress.git_link as Record<string, unknown>) : null
   const smoke = team.smoke
@@ -465,7 +525,7 @@ function teamFacts(team: SetupTeam, signedIn: boolean, nowMs: number): Fact[] {
       text: ws === null ? 'swarm-workspace-apply has not reported yet' : `swarm-workspace-apply: ${ws}`,
     },
     { state: team.first_admin === null ? 'todo' : 'done', name: 'First admin', text: team.first_admin ?? 'not named' },
-    { state: team.invites.length === 0 ? 'todo' : 'done', name: 'Invited', text: team.invites.length === 0 ? 'nobody yet' : team.invites.join(', ') },
+    grantFact(team, org),
     {
       state: git === null ? 'todo' : 'in_progress',
       name: 'Team git slot',
@@ -475,7 +535,7 @@ function teamFacts(team: SetupTeam, signedIn: boolean, nowMs: number): Fact[] {
           : `one-time link for ${String(git.owner ?? 'its owner')}, ${untilWords(typeof git.expires_at === 'string' ? git.expires_at : null, nowMs) ?? 'open'}`,
     },
     {
-      state: smoke === null ? 'todo' : smoke.state === 'passed' ? 'done' : smoke.state === 'failed' ? 'failed' : 'in_progress',
+      state: smoke === null ? 'todo' : smoke.state === 'succeeded' || smoke.state === 'passed' ? 'done' : smoke.state === 'failed' ? 'failed' : 'in_progress',
       name: 'Smoke agent',
       text:
         smoke === null
@@ -487,7 +547,69 @@ function teamFacts(team: SetupTeam, signedIn: boolean, nowMs: number): Fact[] {
   ]
 }
 
+/** One fact per invitee: joined once the Groups API says so, waiting until then. */
+function memberFacts(people: SetupMember[]): Fact[] {
+  return people.map((p) =>
+    p.member === true
+      ? { state: 'done', name: p.email, text: 'is in the group' }
+      : { state: 'in_progress', name: p.email, text: `waiting for ${p.email} to join${p.member === null ? ' (the Groups API did not answer this read)' : ''}` },
+  )
+}
+
+/**
+ * Invite one more person (decision 4): records the invite and opens the
+ * group's members page in Google Admin, where the person adds them; the row
+ * shows them as waiting until the Groups API sees them in the group.
+ */
+function InviteControl({ team, onChanged }: { team: SetupTeam; onChanged: () => void }) {
+  const act = useAction(onChanged)
+  const [email, setEmail] = useState('')
+  const [asked, setAsked] = useState<SetupInvite[]>([])
+  const known = new Set(teamPeople(team).map((p) => p.email))
+  const pending = asked.filter((a) => !known.has(a.email))
+  const page = asked.map((a) => a.add_members_url).filter((u): u is string => u !== null).pop() ?? null
+  const people = teamPeople(team)
+  return (
+    <>
+      {(people.length > 0 || pending.length > 0) && (
+        <Facts items={memberFacts([...people, ...pending.map((a) => ({ email: a.email, member: a.member }))])} label="Invited" />
+      )}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault()
+          const who = email.trim().toLowerCase()
+          act.run('invite', () => inviteToSetupTeam(team.id, who), (d) => {
+            setAsked((xs) => [...xs.filter((x) => x.email !== d.email), d])
+            setEmail('')
+            if (d.add_members_url !== null) window.open(d.add_members_url, '_blank', 'noopener,noreferrer')
+          })
+        }}
+      >
+        <label className="c-field">
+          <span className="c-lbl">Invite someone</span>
+          <input className="c-inp" aria-label="Invite someone" value={email} placeholder="name@your-domain" onChange={(e) => setEmail(e.target.value)} />
+          <p className="c-hint">Opens {team.group}’s members page in Google Admin, where you add them; this row shows them as joined once the Groups API sees them</p>
+        </label>
+        <span className="ob-acts">
+          <Button size="sm" type="submit" busy={act.busy === 'invite' ? 'Inviting' : false} disabledReason={email.trim().length < 3 ? 'Enter their email first' : undefined}>
+            Invite
+          </Button>
+          {page !== null && (
+            <ButtonLink size="sm" kind="ghost" href={page} target="_blank" rel="noreferrer">
+              Open the group in Google Admin
+            </ButtonLink>
+          )}
+        </span>
+        <ErrorLine error={act.error} />
+      </form>
+    </>
+  )
+}
+
 function teamRow(state: SetupState, onChanged: () => void, nowMs: number): Row {
+  if (isOnePerson(state)) {
+    return { key: 'team', title: 'First workspace', state: 'done', by: 'swarm install', line: ONE_PERSON_LINE }
+  }
   const team = state.teams[0]
   if (team === undefined) {
     return {
@@ -502,15 +624,18 @@ function teamRow(state: SetupState, onChanged: () => void, nowMs: number): Row {
   const ws = typeof team.progress.workspace_state === 'string' ? team.progress.workspace_state : null
   const signedIn = state.accounts.some((a) => a.signed_in_at !== null)
   const failed = ws !== null && FAILED_WORKSPACE.has(ws)
+  const people = teamPeople(team)
+  const joined = people.filter((p) => p.member === true).length
   return {
     key: 'team',
     title: 'First team',
     state: failed ? 'failed' : 'done',
     by: 'this page',
-    line: `${team.workspace} from ${team.group}${team.first_admin === null ? '' : ` · admin ${team.first_admin}`} · ${team.invites.length} invited`,
+    line: `${team.workspace} from ${team.group}${team.first_admin === null ? '' : ` · admin ${team.first_admin}`} · ${joined} of ${people.length} in the group`,
     body: (
       <>
-        <Facts items={teamFacts(team, signedIn, nowMs)} label="First team" />
+        <Facts items={teamFacts(team, signedIn, nowMs, state.github_org ?? 'your GitHub organisation')} label="First team" />
+        <InviteControl team={team} onChanged={onChanged} />
         {failed && <TeamRetry team={team} onChanged={onChanged} />}
       </>
     ),
@@ -532,16 +657,16 @@ function TeamRetry({ team, onChanged }: { team: SetupTeam; onChanged: () => void
   )
 }
 
-function accountFact(a: SetupAccount, nowMs: number): Fact {
+function accountFact(a: SetupAccount, nowMs: number, pool: string): Fact {
   if (a.signed_in_at !== null) {
-    return { state: 'done', name: a.label, text: `${a.owner ?? 'its owner'} · signed in ${agoWords(a.signed_in_at, nowMs) ?? ''} · in the first team’s pool` }
+    return { state: 'done', name: a.label, text: `${a.owner ?? 'its owner'} · signed in ${agoWords(a.signed_in_at, nowMs) ?? ''} · in ${pool}` }
   }
   const until = untilWords(a.link_expires, nowMs)
   if (until === 'expired') return { state: 'failed', name: a.label, text: `${a.owner ?? 'its owner'}’s one-time link expired; send a new one` }
   return { state: 'in_progress', name: a.label, text: `waiting for ${a.owner ?? 'its owner'} to open their one-time link${until === null ? '' : `, ${until}`} · or they run sc account add --label ${a.label}` }
 }
 
-function AccountLinkForm({ onChanged }: { onChanged: () => void }) {
+function AccountLinkForm({ onChanged, onePerson }: { onChanged: () => void; onePerson: boolean }) {
   const act = useAction(onChanged)
   const [label, setLabel] = useState('')
   const [owner, setOwner] = useState('')
@@ -563,7 +688,7 @@ function AccountLinkForm({ onChanged }: { onChanged: () => void }) {
       <label className="c-field">
         <span className="c-lbl">Its owner</span>
         <input className="c-inp" value={owner} placeholder="name@your-domain" onChange={(e) => setOwner(e.target.value)} />
-        <p className="c-hint">A member of the first team’s group; the link opens for them only, once, within 24 h</p>
+        <p className="c-hint">{onePerson ? 'You, or whoever holds the subscription' : 'A member of the first team’s group'}; the link opens for them only, once, within 24 h</p>
       </label>
       <span className="ob-acts">
         <Button size="sm" kind="primary" type="submit" busy={act.busy === 'link' ? 'Sending' : false} disabledReason={label.trim() === '' || owner.trim() === '' ? 'Name the account and its owner first' : undefined}>
@@ -594,7 +719,9 @@ function AccountLinkForm({ onChanged }: { onChanged: () => void }) {
 }
 
 function accountsRow(state: SetupState, onChanged: () => void, nowMs: number): Row {
-  if (state.teams.length === 0) {
+  const onePerson = isOnePerson(state)
+  const pool = onePerson ? 'your personal workspace’s pool' : 'the first team’s pool'
+  if (state.teams.length === 0 && !onePerson) {
     return {
       key: 'accounts',
       title: 'Claude accounts',
@@ -612,12 +739,12 @@ function accountsRow(state: SetupState, onChanged: () => void, nowMs: number): R
     by: 'this page',
     line:
       state.accounts.length === 0
-        ? 'Each subscription’s owner signs in once, through a one-time link or sc account add, into the first team’s pool'
+        ? `Each subscription’s owner signs in once, through a one-time link or sc account add, into ${pool}`
         : `Pool: ${signed} of ${state.accounts.length} signed in`,
     body: (
       <>
-        {state.accounts.length > 0 && <Facts items={state.accounts.map((a) => accountFact(a, nowMs))} label="Pool accounts" />}
-        <AccountLinkForm onChanged={onChanged} />
+        {state.accounts.length > 0 && <Facts items={state.accounts.map((a) => accountFact(a, nowMs, pool))} label="Pool accounts" />}
+        <AccountLinkForm onChanged={onChanged} onePerson={onePerson} />
       </>
     ),
   }
@@ -637,10 +764,10 @@ function addonsRow(state: SetupState): Row {
   }
 }
 
-/** Every required console step is done: the App installed and checked, a first team, a pool account signed in. */
+/** Every required console step is done: the App installed and checked, a first team (none for one person), a pool account signed in. */
 function consoleDone(state: SetupState): boolean {
   const app = state.github_app
-  return app !== null && app.installed_on !== null && app.self_check?.ok === true && state.teams.length > 0 && state.accounts.some((a) => a.signed_in_at !== null)
+  return app !== null && app.installed_on !== null && app.self_check?.ok === true && (isOnePerson(state) || state.teams.length > 0) && state.accounts.some((a) => a.signed_in_at !== null)
 }
 
 /** The verify row's words, from the engine's `verify` field and the page's clock. */
@@ -666,9 +793,99 @@ function VerifyFinish({ onChanged }: { onChanged: () => void }) {
   )
 }
 
+type RunStep = 'done' | 'failed' | 'in_progress'
+
+/** A run's state word and mark: a task's TaskState or a workflow's derived state. */
+function runStep(word: string | null): RunStep {
+  if (word === null) return 'in_progress'
+  const w = word.toUpperCase()
+  if (w === 'SUCCEEDED') return 'done'
+  return w === 'FAILED' || w === 'CANCELLED' || w === 'DEAD_LETTERED' ? 'failed' : 'in_progress'
+}
+
+/** The run's state as read now: `{word}`, or the read's own error, or null before the first read answers. */
+type RunRead = { word: string } | { error: string } | null
+
+function useRunState(id: string | null, read: (id: string) => Promise<Result<string>>): RunRead {
+  const [got, setGot] = useState<RunRead>(null)
+  const [tick, setTick] = useState(0)
+  const ended = got !== null && 'word' in got && runStep(got.word) !== 'in_progress'
+  useEffect(() => {
+    if (id === null || ended) return undefined
+    let alive = true
+    void read(id).then((r) => {
+      if (!alive) return
+      if (r.status === 'ok' || r.status === 'stale') setGot({ word: r.data })
+      else if (r.status === 'error') setGot({ error: r.error.message })
+    })
+    const t = window.setTimeout(() => setTick((n) => n + 1), RUN_POLL_MS)
+    return () => {
+      alive = false
+      window.clearTimeout(t)
+    }
+  }, [id, read, tick, ended])
+  return got
+}
+
+const readTaskState = (id: string): Promise<Result<string>> =>
+  loadTask(id).then((r) => (r.status === 'ok' || r.status === 'stale' ? { ...r, data: String(r.data.state) } : (r as Result<string>)))
+const readWorkflowState = (id: string): Promise<Result<string>> =>
+  loadWorkflow(id).then((r) => (r.status === 'ok' || r.status === 'stale' ? { ...r, data: String(r.data.workflow?.state ?? '') } : (r as Result<string>)))
+
+function runFact(name: string, id: string, href: string, got: RunRead, repository: string | null): Fact {
+  const where = repository === null ? '' : ` · on ${repository}`
+  const link = <a href={href}>{id}</a>
+  if (got === null) return { state: 'in_progress', name, text: <>{link} · reading its state{where}</> }
+  if ('error' in got) return { state: 'todo', name, text: <>{link} · its state could not be read: {got.error}{where}</> }
+  return { state: runStep(got.word), name, text: <>{link} · {got.word.toLowerCase().replace(/_/g, ' ')}{where}</> }
+}
+
+/**
+ * "Run the console checks" (SETUP-API-2's `POST /v1/admin/setup/verify-runs`):
+ * the console's task and workflow, as the first team on a repository of its
+ * grant. Their ids come from the status route's `verify_runs` (or the post's
+ * answer, before the next read), and each run is drawn with its state, linked.
+ * swarm install's verify reads the same ids from the record: nobody pastes one.
+ */
+function ConsoleChecks({ state, onChanged }: { state: SetupState; onChanged: () => void }) {
+  const act = useAction(onChanged)
+  const [posted, setPosted] = useState<SetupVerifyRuns | null>(null)
+  const runs = state.verify_runs ?? posted
+  const task = useRunState(runs?.task ?? null, readTaskState)
+  const workflow = useRunState(runs?.workflow ?? null, readWorkflowState)
+  if (runs === null || (runs.task === null && runs.workflow === null)) {
+    const team = state.teams[0]
+    const blocked = isOnePerson(state)
+      ? undefined
+      : team === undefined
+        ? 'Create the first team first'
+        : team.grant?.state === 'granted' && team.grant.repositories.length > 0
+          ? undefined
+          : 'The first team needs its repository grant first'
+    return (
+      <>
+        <span className="ob-acts">
+          <Button size="sm" busy={act.busy === 'verify-runs' ? 'Starting' : false} disabledReason={blocked} onClick={() => act.run('verify-runs', startSetupVerifyRuns, setPosted)}>
+            Run the console checks
+          </Button>
+        </span>
+        <ErrorLine error={act.error} />
+      </>
+    )
+  }
+  const items: Fact[] = []
+  if (runs.task !== null) {
+    const word = task !== null && 'word' in task ? (task.word as TaskState) : ('RUNNING' as TaskState)
+    items.push(runFact('Console task', runs.task, agentPath({ id: runs.task, state: word }), task, runs.repository))
+  }
+  if (runs.workflow !== null) items.push(runFact('Console workflow', runs.workflow, `/workflows/${encodeURIComponent(runs.workflow)}`, workflow, runs.repository))
+  return <Facts items={items} label="Console checks" />
+}
+
 function verifyRow(state: SetupState, onChanged: () => void, nowMs: number): Row {
   const v = state.engine?.verify ?? null
   const base = { key: 'verify', title: 'Verify, run by swarm install', by: 'swarm install' }
+  const checks = <ConsoleChecks state={state} onChanged={onChanged} />
   if (v === null) {
     const ready = consoleDone(state)
     return {
@@ -677,24 +894,30 @@ function verifyRow(state: SetupState, onChanged: () => void, nowMs: number): Row
       line:
         state.finished !== null
           ? state.cli_running
-            ? 'The console steps are finished; swarm install starts verify on its next read'
-            : 'The console steps are finished; run swarm install in a terminal to verify'
+            ? `The console steps are finished; swarm install starts verify on its next read: ${VERIFY_CHECKS}`
+            : `The console steps are finished; run swarm install in a terminal to verify: ${VERIFY_CHECKS}`
           : ready
-            ? 'Every console step is done: hand over, and swarm install runs smoke, GKE proof, race, Scheduler targets, digests and four end-to-end runs'
-            : 'Runs once every console step above is done',
+            ? `Every console step is done: hand over, and swarm install checks ${VERIFY_CHECKS}`
+            : `Runs once every console step above is done; swarm install checks ${VERIFY_CHECKS}`,
+      body: checks,
       act: state.finished === null && ready ? <VerifyFinish onChanged={onChanged} /> : undefined,
     }
   }
   const w = verifyWords(v, nowMs)
   if (v.result === 'passed') {
-    return { ...base, state: 'done', line: `Verify passed: ${v.done} of ${v.total} checks${w.elapsed === null ? '' : `, in ${w.elapsed.replace(' elapsed', '')}`}` }
+    return { ...base, state: 'done', line: `Verify passed: ${v.done} of ${v.total} checks${w.elapsed === null ? '' : `, in ${w.elapsed.replace(' elapsed', '')}`}`, body: checks }
   }
   if (v.result === 'failed') {
     return {
       ...base,
       state: 'failed',
       line: `Verify failed at ${w.progress}`,
-      body: <StepFailure cause={`The ${v.check ?? 'current'} check failed`} fix={<>swarm install printed which part failed and why; fix it, then run <code>swarm install</code> again: it re-runs verify from the failed check.</>} />,
+      body: (
+        <>
+          <StepFailure cause={`The ${v.check ?? 'current'} check failed`} fix={<>swarm install printed which part failed and why; fix it, then run <code>swarm install</code> again: it re-runs verify from the failed check.</>} />
+          {checks}
+        </>
+      ),
     }
   }
   return {
@@ -707,6 +930,7 @@ function verifyRow(state: SetupState, onChanged: () => void, nowMs: number): Row
         {[w.elapsed, w.expected, w.deadline].filter((x): x is string => x !== null).map((x) => ` · ${x}`)}
       </>
     ),
+    body: checks,
   }
 }
 
@@ -774,7 +998,7 @@ export function SendToTeam({ state }: { state: SetupState }) {
           items={[
             { state: 'done', name: 'Console', text: `https://${hostname}` },
             { state: 'done', name: 'Then', text: 'sc login, then /sc:submit in Claude Code' },
-            { state: 'done', name: 'Day two', text: 'swarm doctor · Admin › Setup › Health' },
+            { state: 'done', name: 'Day two', text: 'Admin › Setup › Health' },
           ]}
         />
       </>
@@ -783,6 +1007,40 @@ export function SendToTeam({ state }: { state: SetupState }) {
   return (
     <div role="region" aria-label="Send to your team">
       <Card title="Send to your team" action={passed ? <Chip>verify passed</Chip> : <Chip faint>locked</Chip>}>
+        {body}
+      </Card>
+    </div>
+  )
+}
+
+const count = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`
+
+/**
+ * The Capacity card: stage 0's `sizing` (one person or a team, and the
+ * ceilings the person accepted), read-only. The numbers are swarm install's,
+ * written to terraform/infra's `pool_limits` and the services' max instances;
+ * nothing here changes them.
+ */
+export function CapacityCard({ sizing }: { sizing: SetupSizing | null }) {
+  let body: ReactNode
+  if (sizing === null) {
+    body = <p className="ur-hint">The sizing is not recorded yet: swarm install asks for it, one person or a team, in its first stage.</p>
+  } else {
+    const l = sizing.pool_limits
+    const services = Object.entries(sizing.service_max_instances)
+    const items: Fact[] = [
+      { state: 'done', name: 'For', text: sizing.mode === 'individual' ? 'One person' : sizing.members === null ? 'A team' : `A team of ${count(sizing.members, 'person', 'people')}` },
+    ]
+    if (l.global !== null) items.push({ state: 'done', name: 'Ceiling', text: `${l.global} agents at once across the deployment` })
+    if (l.default_tenant !== null) items.push({ state: 'done', name: 'Per workspace', text: `${l.default_tenant} agents at once per workspace` })
+    if (sizing.pool_accounts !== null) items.push({ state: 'done', name: 'Accounts to add', text: count(sizing.pool_accounts, 'Claude subscription account', 'Claude subscription accounts') })
+    if (sizing.budget_usd !== null) items.push({ state: 'done', name: 'Budget', text: `$${sizing.budget_usd.toLocaleString('en-US')} a month` })
+    if (services.length > 0) items.push({ state: 'done', name: 'Service ceilings', text: services.map(([name, n]) => `${name} ${count(n, 'instance', 'instances')}`).join(' · ') })
+    body = <Facts items={items} label="Sizing" />
+  }
+  return (
+    <div role="region" aria-label="Capacity">
+      <Card title="Capacity" foot="Chosen in swarm install’s first stage; read-only here.">
         {body}
       </Card>
     </div>
@@ -842,6 +1100,7 @@ export function AdminSetupSteps({ state, now, onChanged }: { state: SetupState; 
         </Banner>
       )}
       <SendToTeam state={state} />
+      <CapacityCard sizing={state.sizing} />
       <Card className="ob-card" title="First run" foot="Each step is checked again on every read; nothing here is marked done by hand.">
         <p className="ob-summary">
           {done} of {rows.length} done · add-ons optional

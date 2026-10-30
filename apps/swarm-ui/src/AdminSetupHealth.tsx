@@ -5,16 +5,22 @@
  * The latest scheduled doctor run, read from `GET /v1/admin/setup/health`
  * (swarm-doctor writes it; this page only reads): when it ran, the checks it
  * ran and its findings. Each finding says what drifted, what changed (the
- * audit-log entry, when the check knows it), the repair command
- * `swarm install --repair <check>` and the Cloud console path where one
- * exists. The full check list shows each check's last result.
+ * audit-log entry, when the check knows it), the doctor's repair command
+ * (or `swarm install`, which re-checks every step and repairs the one that
+ * drifted, when it names none) and the Cloud console path where one exists.
+ * The full check list shows each check's last result.
+ *
+ * SAYS ONLY WHAT EXISTS (DAYONE-SETUP-UI-4): the hourly doctor is off unless
+ * `enable_scheduled_doctor` turned it on (terraform/infra/doctor.tf), so no
+ * run recorded says it is off rather than promising one every hour, and no
+ * text names a `swarm doctor` verb or a `--repair` flag the CLI does not have.
  *
  * "NOT CHECKED" IS SHOWN AS SUCH, NEVER AS PASSING: a check whose result is
  * anything but `passed` or `failed` is drawn as not checked and counted
  * apart, and no doctor run at all says so rather than drawing a clean page.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { loadSetupHealth, type HealthCheck, type HealthFinding, type Result, type SetupHealth } from './api'
+import { loadSetupHealth, REPAIR_BY_REINSTALL, type HealthCheck, type HealthFinding, type Result, type SetupHealth } from './api'
 import { Banner, Button, Card, Chip, CodeBlock, ToneMark, type MarkTone } from './components'
 import { spanWords } from './AdminSetupSteps'
 import './styles/onboarding.css'
@@ -44,6 +50,7 @@ export function HealthFindingPanel({ finding }: { finding: HealthFinding }) {
         </p>
       )}
       <CodeBlock title="Repair" lang="shell" text={finding.repair} />
+      {finding.repair === REPAIR_BY_REINSTALL && <p className="ur-hint">The doctor named no command for this one: swarm install re-checks every step and repairs what drifted.</p>}
       <p className="ur-hint">
         {finding.console_path !== null ? (
           <>
@@ -68,7 +75,7 @@ export function HealthPanel({ health, now, onReload, busy }: { health: SetupHeal
   if (health === null) {
     return (
       <Card title="Health" action={reload ?? undefined}>
-        <p className="ur-hint">No doctor run has been recorded yet. The scheduled doctor runs every hour once swarm install has finished; until it reports, nothing here is known to pass. In a terminal, swarm doctor runs the same checks now.</p>
+        <p className="ur-hint">The hourly doctor is off: no doctor run is recorded, so nothing here is known to pass. Its findings show here once it is on and has run.</p>
       </Card>
     )
   }
@@ -84,7 +91,7 @@ export function HealthPanel({ health, now, onReload, busy }: { health: SetupHeal
           {reload}
         </span>
       }
-      foot={`The checks swarm doctor runs, read-only, on the live deployment · last run ${when} by the scheduled doctor`}
+      foot={`The checks the hourly doctor runs, read-only, on the live deployment · last run ${when}`}
     >
       {health.findings.map((f) => (
         <HealthFindingPanel key={`${f.check}:${f.title}`} finding={f} />
