@@ -151,13 +151,17 @@ class LiveWorld:
 
     def apply_root(self, root: str, version: str) -> None:
         from ..steps.bootstrap import apply_pass
-        from ..steps.infra import REOPENED, reach_closed
+        from ..steps.infra import REACH, REOPENED, reach_closed
         from ..steps.preflight import remember
 
         ctx = self.ctx(version)
         # infra-2's inputs carry the installer's address (decision 2): after the
-        # closing pass, record it so the upgrade's close removes it again (finding 16).
+        # closing pass, refresh it to this machine's /32 (it may not be the network
+        # recorded at install) and record it so the upgrade's close removes it again
+        # (finding 16).
         reopens = root == "infra" and reach_closed(ctx.outputs)
+        if reopens:
+            REACH.address(ctx)
         apply_pass(ctx, self.deps, LATEST_PASS[root])
         if reopens:
             remember(ctx, outputs={REOPENED: str(ctx.outputs.get("installer_cidr") or "")})

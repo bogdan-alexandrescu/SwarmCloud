@@ -385,6 +385,7 @@ def test_infra_apply_after_the_close_is_recorded_for_the_close(monkeypatch: pyte
     ctx.state.outputs[bootstrap.applied_key("infra-close")] = "digest"
     applied: list[str] = []
     monkeypatch.setattr(bootstrap, "apply_pass", lambda c, deps, pass_name, **kw: applied.append(pass_name))
+    monkeypatch.setattr(infra.REACH, "address", lambda c: None)
     world = _live_world(monkeypatch, ctx)
     world.apply_root("bootstrap", "v1.1.0")
     assert not ctx.outputs.get(infra.REOPENED), "bootstrap never touches the control plane"
@@ -396,6 +397,30 @@ def test_infra_apply_after_the_close_is_recorded_for_the_close(monkeypatch: pyte
     monkeypatch.setattr(infra.REACH, "close_after", lambda c, name: closed.append((c, name)))
     world.close_reach()
     assert closed == [(ctx, "swarm upgrade")]
+
+
+def test_infra_apply_after_the_close_carries_this_machines_address(monkeypatch: pytest.MonkeyPatch) -> None:
+    """After the close, an upgrade from another network refreshes installer_cidr
+    before infra-2, so the control plane admits this machine's /32, not the one
+    recorded at install (finding 16)."""
+    from swarm_install.steps import bootstrap, infra
+
+    from .test_infra_steps import SecretMetadata, every_key
+    from .test_terraform_runner import FakeCtx
+
+    gcp = SecretMetadata(every_key(), every_key())
+    ctx = FakeCtx()
+    ctx.state.outputs[bootstrap.applied_key("infra-close")] = "digest"
+    recorded = ctx.state.outputs["installer_cidr"]
+    now = "203.0.113.77/32"
+    assert now != recorded
+    monkeypatch.setattr(infra.REACH, "address", lambda c: c.state.outputs.update(installer_cidr=now))
+    seen: list[Any] = []
+    monkeypatch.setattr(bootstrap, "apply_pass", lambda c, deps, pass_name, **kw: seen.append(
+        bootstrap.generate(c, pass_name, gcp)["gke_master_authorized_cidrs"]))
+    _live_world(monkeypatch, ctx).apply_root("infra", "v1.1.0")
+    assert seen == [[{"cidr_block": now, "display_name": "swarm-install"}]]
+    assert ctx.outputs[infra.REOPENED] == now
 
 
 def test_infra_apply_before_the_close_records_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
