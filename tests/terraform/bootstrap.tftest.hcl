@@ -661,8 +661,8 @@ run "the_deployer_pin_covers_every_allowed_ref" {
   }
 
   assert {
-    condition     = length(google_service_account_iam_member.deployer_wif) == 12
-    error_message = "one binding per (workflow file, allowed ref): six files on two refs"
+    condition     = length(google_service_account_iam_member.deployer_wif) == 14
+    error_message = "one binding per (workflow file, allowed ref): seven files on two refs"
   }
 
   assert {
