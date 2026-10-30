@@ -1216,8 +1216,8 @@ def test_a_change_terraform_would_refuse_is_not_taken() -> None:
 
 def test_the_region_cpu_quota_caps_the_proposal_and_opens_the_quotas_page(pages: list[Any]) -> None:
     gcp = FakeGcp()
-    gcp.cpu_quota = 48  # (48 - 8 for the cluster) / 4 vCPU = 10 tasks
-    _, ask, ctx = _sized(gcp, "2", "50", "")
+    gcp.cpu_quota = 48  # (48 - 8 for the cluster) / 4 vCPU = 10 tasks, room for a team of 5 (not of 50)
+    _, ask, ctx = _sized(gcp, "2", "5", "")
     pools = ctx.outputs["sizing"]["pool_limits"]
     assert pools["global"] == 10
     assert all(v <= 10 for _, v in sizing.rows(ctx.outputs["sizing"]) if _[0] == "pool_limits")
@@ -1228,7 +1228,7 @@ def test_the_region_cpu_quota_caps_the_proposal_and_opens_the_quotas_page(pages:
     assert ctx.outputs["sizing"]["pool_limits"]["global"] == 500
     gcp = FakeGcp()
     gcp.cpu_quota = 48
-    _, ask, ctx = _sized(gcp, "2", "50", "1", "11", "")
+    _, ask, ctx = _sized(gcp, "2", "5", "1", "11", "")
     assert ctx.outputs["sizing"]["pool_limits"]["global"] == 10
     assert "above the 10 tasks the region's 48 CPUs can run" in ask.asked[4][1]
 
@@ -1826,7 +1826,7 @@ def test_a_quota_never_granted_pauses_and_the_rerun_keeps_the_answer(pages: list
     rerun.apply(ctx, rerun.plan(ctx))
     assert preflight.WHO_QUESTION not in [q for _, q in again.asked]
     assert "Proposed sizing for a team of 5" in again.asked[0][1]
-    assert ctx.outputs["sizing"] == sizing.capped(sizing.propose("team", 5), 48)
+    assert ctx.outputs["sizing"] == sizing.propose("team", 5, region_cpu_quota=48)  # never accepted: afresh
     assert rerun.check(ctx).status == MET
 
 
