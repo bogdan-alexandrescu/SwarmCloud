@@ -7,8 +7,8 @@
 #   curl -fsSL https://storage.googleapis.com/swarmcloud/install.sh | SWARMCLOUD_VERSION=2026.10.1 sh
 #   curl -fsSL https://storage.googleapis.com/swarmcloud/install.sh | SWARM_CHANNEL=rc sh
 #
-# Published at the root of the release home by `scripts/release/publish.sh
-# --promote`. With no SWARMCLOUD_VERSION it installs the release that
+# Published at the root of the release home by every `scripts/release/publish.sh`
+# run, a candidate's included, and by `--promote`. With no SWARMCLOUD_VERSION it installs the release that
 # channels/<SWARM_CHANNEL> names: `stable` by default, `rc` for a release
 # candidate (day-one decision 5); any other channel is refused. It downloads that release's wheels, checks each against the
 # release's SHA256SUMS, and installs them as ONE uv tool, so `swarm install`

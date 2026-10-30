@@ -23,7 +23,8 @@
 #
 # --bundle: publish release V (read from the bundle) under releases/V/:
 #   1. checks, before anything is written: every file matches SHA256SUMS and
-#      SHA256SUMS lists every file; every accepted CVE has an expiry that has
+#      SHA256SUMS lists every file; marketplace.json names plugin.zip by its
+#      absolute release URL and digest; every accepted CVE has an expiry that has
 #      not passed (lesson 27); every image's digest in images.json is the one
 #      the build record holds; releases/V/ does not exist yet (a release is
 #      never overwritten);
@@ -34,9 +35,14 @@
 #   4. signs SHA256SUMS with the same key, and uploads everything under
 #      releases/V/ (no object overwritten), SHA256SUMS LAST, so a release cut
 #      short has no SHA256SUMS and no installer reads it;
-#   5. for a candidate (YYYY.MM.N-rc.N) only, and only once all of that has
-#      succeeded: channels/rc (one line: V, Cache-Control: no-cache), which
-#      install.sh reads under SWARM_CHANNEL=rc (DAYONE-RELEASE-2).
+#   5. once all of that has succeeded, every publish: the root install.sh
+#      (Cache-Control: no-cache). It is channel-agnostic: it reads
+#      channels/<SWARM_CHANNEL>, so a candidate's is what `curl .../install.sh |
+#      SWARM_CHANNEL=rc sh` runs, before any promotion (audit finding N10);
+#   6. for a candidate (YYYY.MM.N-rc.N) only: channels/rc/marketplace.json (the
+#      release's marketplace, for a deployment on the rc channel), then LAST
+#      channels/rc (one line: V), both Cache-Control: no-cache; install.sh
+#      reads channels/rc under SWARM_CHANNEL=rc (DAYONE-RELEASE-2).
 #   It never touches channels/stable or the root marketplace.json.
 #
 # --record-test V --record FILE: the manual install-and-upgrade test of
@@ -45,8 +51,9 @@
 #   [{name, result: "pass"}, ...]}. A record that is not a pass is refused.
 #
 # --promote V: refused unless releases/V/TESTED records a pass for V. Then the
-#   root marketplace.json (plugin `sc` at V, from ./releases/V/plugin), the
-#   root install.sh (V's), and LAST channels/stable (one line: V), each with
+#   root marketplace.json (plugin `sc` at V, the archive releases/V/plugin.zip
+#   by absolute URL and the digest V's SHA256SUMS holds for it), the root
+#   install.sh (V's), and LAST channels/stable (one line: V), each with
 #   Cache-Control: no-cache, so nobody reads yesterday's channel for an hour.
 #
 # --dry-run prints every write and runs none; the reads still run.
@@ -222,9 +229,17 @@ promote() {
     die "release ${VERSION} has no manual test record (${release}/TESTED); run the install-and-upgrade test of plan section 7.3, then: scripts/release/publish.sh --record-test ${VERSION} --record <file>"
   fi
   check_tested "${WORK}/TESTED" "${VERSION}" || die "release ${VERSION} is not promoted"
+  # The plugin's digest is the one V's published SHA256SUMS holds: the root
+  # marketplace is added by URL, so it names plugin.zip absolutely (N9).
+  gcloud storage cat "${release}/SHA256SUMS" >"${WORK}/SHA256SUMS" 2>/dev/null \
+    || die "cannot read ${release}/SHA256SUMS"
+  local archive_sha256
+  archive_sha256="$(awk '$2 == "plugin.zip" { print $1 }' "${WORK}/SHA256SUMS")"
+  [[ "${archive_sha256}" =~ ^[0-9a-f]{64}$ ]] \
+    || die "release ${VERSION} has no plugin.zip in its SHA256SUMS: a marketplace added by URL cannot install its plugin; assemble and publish the next version"
   require_cmd python3
   python3 "${HERE}/marketplace.py" marketplace --version "${VERSION}" \
-    --source "./releases/${VERSION}/plugin" --out "${WORK}/marketplace.json"
+    --sha256 "${archive_sha256}" --out "${WORK}/marketplace.json"
   printf '%s\n' "${VERSION}" >"${WORK}/stable"
   [[ "${DRY_RUN}" -eq 1 ]] || confirm "Promote ${VERSION}: move ${CHANNEL}, ${BUCKET}/marketplace.json and ${BUCKET}/install.sh to it." "${VERSION}"
   write gcloud storage cp --cache-control=no-cache "${WORK}/marketplace.json" "${BUCKET}/marketplace.json"
@@ -285,6 +300,20 @@ check_images() {
   [[ "${bad}" -eq 0 ]] || die "the release is refused: images.json and the build record disagree"
 }
 
+# The bundle's marketplace is exactly what marketplace.py writes for V and the
+# bundle's plugin.zip: an archive source by absolute URL and digest, which a
+# marketplace added by URL resolves (a relative path does not; N9).
+check_marketplace() {
+  [[ -f "${BUNDLE}/plugin.zip" ]] \
+    || die "the bundle has no plugin.zip: a marketplace added by URL cannot install its plugin; assemble it with this checkout's scripts/release/assemble.sh"
+  require_cmd python3
+  python3 "${HERE}/marketplace.py" marketplace --version "${VERSION}" \
+    --sha256 "$(sha256_of "${BUNDLE}/plugin.zip")" --out "${WORK}/marketplace.json" \
+    || die "cannot write the marketplace of ${VERSION}"
+  cmp -s "${WORK}/marketplace.json" "${BUNDLE}/marketplace.json" \
+    || die "the bundle's marketplace.json does not name ${VERSION}'s plugin.zip by its release URL and digest; assemble it with this checkout's scripts/release/assemble.sh"
+}
+
 publish() {
   [[ -d "${BUNDLE}" ]] || die "--bundle ${BUNDLE}: no such directory"
   [[ -f "${SOURCE_IMAGES}" ]] || die "--source-images ${SOURCE_IMAGES}: no such file"
@@ -299,6 +328,7 @@ publish() {
   if [[ "${CI_RUN}" -eq 1 && "${SWARM_PUBLISH_VERSION}" != "${VERSION}" ]]; then
     die "refusing --ci: SWARM_PUBLISH_VERSION is '${SWARM_PUBLISH_VERSION}', the bundle is ${VERSION}; nothing was written"
   fi
+  check_marketplace
   check_cves
   check_images
   require_cmd gcrane cosign
@@ -338,11 +368,17 @@ publish() {
   fi
   # LAST: a release cut short above has no SHA256SUMS, so no installer reads it.
   write gcloud storage cp --no-clobber "${BUNDLE}/SHA256SUMS" "${release}/SHA256SUMS"
+  # Every publish puts install.sh at the root: it reads the channel it is asked
+  # for, so it is the same for stable and rc, and an rc's install (which its
+  # promotion needs, as TESTED) must not wait for a promotion (N10).
+  write gcloud storage cp --cache-control=no-cache "${BUNDLE}/install.sh" "${BUCKET}/install.sh"
   # A candidate moves the rc channel, after the release it names is complete.
   # A final release moves no channel here: stable moves only by --promote.
   if [[ "${VERSION}" == *-rc.* ]]; then
     local rc_channel="${BUCKET}/channels/rc"
     printf '%s\n' "${VERSION}" >"${WORK}/rc"
+    # The rc channel's marketplace, for a deployment that follows rc (N10).
+    write gcloud storage cp --cache-control=no-cache "${BUNDLE}/marketplace.json" "${rc_channel}/marketplace.json"
     write gcloud storage cp --cache-control=no-cache "${WORK}/rc" "${rc_channel}"
     [[ "${DRY_RUN}" -eq 1 ]] || ok "${rc_channel} names ${VERSION}: SWARM_CHANNEL=rc installs it"
   fi
