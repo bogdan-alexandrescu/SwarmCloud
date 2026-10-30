@@ -74,6 +74,7 @@ from .forge import (
     service_slot,
 )
 from .forgeapp import GRANTS, ORGS, Caller
+from .forge_installation import APP_INSTALLATION_SOURCE, installation_record_in
 from .gittokens import Scope, owner_suffix, provider_suffix
 from .mcp_credentials import (
     OWNER_TASK,
@@ -320,7 +321,14 @@ class SubmissionService:
         GitHub connection (INDEX-CRED: an index run in a personal workspace
         clones with what the owner's Try it checked, not a `-git` slot the
         workspace never had). Which one is recorded in
-        `metadata.forge_credential_source`, so the task says so. A personal
+        `metadata.forge_credential_source`, so the task says so. When the
+        submitter is a platform service account and the repository's owner
+        has the deployment's GitHub App installed for this tenant (`_app_installed`), the source is `app_installation`
+        instead: the slot stays as the rule picked it (the frozen
+        `forge_credential` shape has no other name), and the broker mints
+        that run an installation token for its one repository at release
+        (`credbroker`, DAYONE-SERVICE-APP-TOKEN; lesson 43), recomputing
+        the decision from the signed fields, never from this label. A personal
         workspace with no credential at all has its task on a repository
         registered as private refused up front (`no_github_credential`)
         rather than dispatched to a clone that cannot succeed. Only a
@@ -340,18 +348,29 @@ class SubmissionService:
         uncredentialed: list[str] = []
         resolved: list[ForgeSlot] = []
 
-        def on_tenants_behalf(task: Task, owner: str, repo: str) -> None:
+        installed: dict[str, bool] = {}
+
+        def app_installed(owner: str) -> bool:
+            # Once per owner per submission, as the slot is once per batch.
+            key = owner.lower()
+            if key not in installed:
+                installed[key] = self._app_installed(tenant_id, owner)
+            return installed[key]
+
+        def on_tenants_behalf(task: Task, owner: str, repo: str, *, app: bool = False) -> None:
             if not resolved:
                 # Resolved once per submission: one rule, one answer per batch.
                 resolved.append(service_slot(tenant, FirestoreSlotIndex(self._store.db)))
             slot = resolved[0]
-            if (not slot.known and tenant.kind == "user"
+            minted = app and app_installed(owner)
+            if (not minted and not slot.known and tenant.kind == "user"
                     and self._registered_private(tenant_id, owner, repo)):
                 uncredentialed.append(f"{owner}/{repo}")
                 return
             task.forge_credential = slot.provider
             task.forge_access = SERVICE_FORGE_ACCESS
-            task.metadata[FORGE_SOURCE_METADATA_KEY] = slot.source
+            task.metadata[FORGE_SOURCE_METADATA_KEY] = (
+                APP_INSTALLATION_SOURCE if minted else slot.source)
 
         for task in tasks:
             named = github_repository(task.repository_url)
@@ -359,7 +378,11 @@ class SubmissionService:
                 continue
             owner, repo = named
             if service:
-                on_tenants_behalf(task, owner, repo)
+                # Only a platform service account's own submission: an index
+                # run submitted as the person who registered the repository
+                # (`service_submission`) keeps the slot, as the broker would.
+                on_tenants_behalf(task, owner, repo,
+                                  app=is_service_submitter(task.submitted_by))
                 continue
             mode = self._grant_mode(tenant_id, task.submitted_by or "",
                                     repo_id_for(tenant_id, owner, repo))
@@ -451,6 +474,23 @@ class SubmissionService:
                 log.info("submission refused tenant=%s code=%s field=additional_repositories",
                          tenant.tenant_id, exc.code)
             raise
+
+    def _app_installed(self, tenant_id: str, owner: str) -> bool:
+        """Whether this tenant's own `forge_orgs` say the deployment's GitHub
+        App is installed on `owner` (`forge_installation.installation_record_in`,
+        never a `method: pat` owner): then a service submission's run gets an
+        installation token minted for it at release (DAYONE-SERVICE-APP-TOKEN).
+        False -- today's service rule -- when FORGE_INSTALLATION_READS is off,
+        which is also when the broker has no minter, or when the read fails."""
+        if getattr(self._settings, "forge_installation_reads", False) is not True:
+            return False
+        try:
+            return installation_record_in(self._store.db, tenant_id, owner) is not None
+        except Exception as exc:  # noqa: BLE001 -- the type is enough; fall back
+            log.warning("app installation lookup failed tenant=%s owner=%s (%s); "
+                        "the service rule's slot is used", tenant_id, owner.lower(),
+                        type(exc).__name__)
+            return False
 
     def _registered_private(self, tenant_id: str, owner: str, repo: str) -> bool:
         """Whether the tenant registered `owner/repo` and its registration

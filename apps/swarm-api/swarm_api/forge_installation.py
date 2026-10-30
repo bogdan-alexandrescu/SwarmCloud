@@ -101,15 +101,21 @@ from .gittokens import redaction_literal
 log = logging.getLogger(__name__)
 
 __all__ = [
-    "ACTIONS_ENV_READ", "ACTIONS_ENV_WRITE", "ACTIONS_PERMISSIONS", "ACTIONS_REPO_READ",
+    "ACTIONS_ENV_READ", "APP_INSTALLATION_SOURCE", "ACTIONS_ENV_WRITE", "ACTIONS_PERMISSIONS", "ACTIONS_REPO_READ",
     "ACTIONS_REPO_WRITE", "ACTIONS_RULE_READ", "ActionsMintRefused", "ActionsToken",
     "FAILURE_HOLD", "InstallationSource", "InstallationTokens", "MINT_FAILED",
-    "MINT_NO_INSTALLATION", "MINT_NOT_COVERED", "MINT_NOT_GRANTED", "MintRefused",
-    "READ_PERMISSIONS",
+    "MINT_NO_INSTALLATION", "MINT_NOT_COVERED", "MINT_NOT_GRANTED", "MINT_RUN_NOT_GRANTED",
+    "MintRefused", "READ_PERMISSIONS", "RUN_READ_PERMISSIONS", "RUN_WRITE_PERMISSIONS",
+    "RunMintRefused",
     "REFRESH_BEFORE", "WORKFLOW_PUSH_PERMISSIONS", "WorkflowMintRefused",
-    "build_installation_tokens", "read_credential", "read_token",
+    "build_installation_tokens", "installation_record_in", "read_credential", "read_token",
 ]
 
+#: `metadata.forge_credential_source` on a service submission's task whose
+#: repository's owner has the App installed (`service._resolve_forge`): the
+#: broker mints its run a token (`InstallationTokens.run_token`). A label the
+#: broker never trusts: it recomputes the decision from the signed fields.
+APP_INSTALLATION_SOURCE = "app_installation"
 #: The collection access.py writes an enabled owner to (forgeapp.ORGS).
 ORGS = "forge_orgs"
 #: access.INSTALLED: an owner the App is installed on and the person enabled.
@@ -138,6 +144,21 @@ WORKFLOW_PUSH_PERMISSIONS: Mapping[str, str] = {
     "contents": "write",
     "workflows": "write",
 }
+#: What a service submission's run clones, pushes and opens its pull request
+#: with (DAYONE-SERVICE-APP-TOKEN; lesson 43): its repository's contents and
+#: its pull requests, nothing else (`metadata: read` comes with any token).
+#: Never `workflows`: a run's push that touches a workflow file still goes
+#: through gittools' own mint. Never held, as the workflow push token is not.
+RUN_WRITE_PERMISSIONS: Mapping[str, str] = {
+    "contents": "write",
+    "pull_requests": "write",
+}
+#: The same run asking only to read (a fetch, a clone).
+RUN_READ_PERMISSIONS: Mapping[str, str] = {
+    "contents": "read",
+    "pull_requests": "read",
+}
+
 #: The GitHub calls an Actions secret mint may be for, each with the ONE
 #: permission it needs and nothing more (SSC-ACTIONS-API; GitHub's
 #: "Permissions required for GitHub Apps", read 2026-10-24): the repository
@@ -168,6 +189,9 @@ MINT_NOT_GRANTED = "workflows_not_granted"
 MINT_NOT_COVERED = "repository_not_covered"
 #: Anything else: no JWT, no answer, another status, an unreadable answer.
 MINT_FAILED = "mint_failed"
+#: GitHub refused a run token's permissions: the installation has not
+#: accepted "Contents" or "Pull requests: Read and write".
+MINT_RUN_NOT_GRANTED = "run_permissions_not_granted"
 #: A token is used until this long before GitHub's `expires_at` (tokens
 #: live an hour), so none is sent that could expire mid-read.
 REFRESH_BEFORE = 300.0
@@ -224,6 +248,10 @@ class MintRefused(Exception):
 
 class WorkflowMintRefused(MintRefused):
     """No workflow push token (#2029)."""
+
+
+class RunMintRefused(MintRefused):
+    """No run token for a service submission (DAYONE-SERVICE-APP-TOKEN)."""
 
 
 class ActionsMintRefused(MintRefused):
@@ -295,24 +323,7 @@ class InstallationTokens:
 
     def installation_record(self, tenant_id: str, owner: str) -> _Installation | None:
         """`installation_for`, with the account it is installed on."""
-        wanted = owner.lower()
-        query = (self._db.collection(ORGS)
-                 .where(filter=FieldFilter("tenant_id", "==", tenant_id))
-                 .limit(MAX_ORG_DOCS))
-        for snap in query.stream():
-            doc = snap.to_dict() or {}
-            # The query filtered on it; asked again (invariant 9).
-            if doc.get("tenant_id") != tenant_id or str(doc.get("owner") or "").lower() != wanted:
-                continue
-            if doc.get("method") == METHOD_PAT or doc.get("install_state") != INSTALLED:
-                continue
-            installation = doc.get("installation_id")
-            if isinstance(installation, int) and not isinstance(installation, bool) \
-                    and installation > 0:
-                kind = doc.get("owner_type")
-                return _Installation(installation, str(doc.get("owner") or owner),
-                                     kind if isinstance(kind, str) else None)
-        return None
+        return installation_record_in(self._db, tenant_id, owner)
 
     # -- the token -----------------------------------------------------------
 
@@ -382,6 +393,19 @@ class InstallationTokens:
             refused=ActionsMintRefused,
             not_granted=lambda: f"{next(iter(permissions))}_not_granted")
         return ActionsToken(token=token, installation=installation, permissions=permissions)
+
+    def run_token(self, tenant_id: str, owner: str, repo: str, *, write: bool) -> str:
+        """A token for ONE run of a service submission on `owner/repo`
+        (DAYONE-SERVICE-APP-TOKEN), minted now from THIS tenant's installation
+        of `owner`: one repository, exactly `RUN_WRITE_PERMISSIONS` for a write
+        and `RUN_READ_PERMISSIONS` for a read. Never held: every call mints,
+        and nothing here keeps the value once it is returned. Raises
+        `RunMintRefused`."""
+        token, _installation = self._mint_now(
+            tenant_id, owner, repo, RUN_WRITE_PERMISSIONS if write else RUN_READ_PERMISSIONS,
+            what="run token", refused=RunMintRefused,
+            not_granted=lambda: MINT_RUN_NOT_GRANTED)
+        return token
 
     def _mint_now(self, tenant_id: str, owner: str, repo: str,
                   permissions: Mapping[str, str], *, what: str,
@@ -465,6 +489,31 @@ class InstallationTokens:
         if not isinstance(token, str) or not token or expires is None:
             raise _MintFailed("unreadable answer", status)
         return token, expires
+
+
+def installation_record_in(db: Any, tenant_id: str, owner: str) -> _Installation | None:
+    """The installation of `owner` THIS tenant enabled, from its own
+    `forge_orgs` documents, or None: an owner reached through a person's
+    token (`method: pat`) or not installed has none. Reads Firestore only,
+    so submission can ask it without the App's key (`run_token` mints)."""
+    wanted = owner.lower()
+    query = (db.collection(ORGS)
+             .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+             .limit(MAX_ORG_DOCS))
+    for snap in query.stream():
+        doc = snap.to_dict() or {}
+        # The query filtered on it; asked again (invariant 9).
+        if doc.get("tenant_id") != tenant_id or str(doc.get("owner") or "").lower() != wanted:
+            continue
+        if doc.get("method") == METHOD_PAT or doc.get("install_state") != INSTALLED:
+            continue
+        installation = doc.get("installation_id")
+        if isinstance(installation, int) and not isinstance(installation, bool) \
+                and installation > 0:
+            kind = doc.get("owner_type")
+            return _Installation(installation, str(doc.get("owner") or owner),
+                                 kind if isinstance(kind, str) else None)
+    return None
 
 
 def read_token(source: InstallationSource | None, tenant_id: str, owner: str,

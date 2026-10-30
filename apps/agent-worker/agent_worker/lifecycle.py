@@ -2574,16 +2574,19 @@ class Worker:
         suffix = self._forge_suffix()
         tenant = load_tenant(self.db, self.cfg.tenant_id, call_options=self.control.call_options())
         person = user_slot_hash(suffix) is not None
-        if (self.secret_client is None and not person) or (
+        # A service submission's run asks the broker first for a token minted
+        # for it (DAYONE-SERVICE-APP-TOKEN), so it needs no slot.
+        app_installation = self._service_run()
+        if not app_installation and ((self.secret_client is None and not person) or (
             suffix == GIT_PROVIDER and GIT_PROVIDER not in tenant.credentials
-        ):
+        )):
             raise CredentialMissing(self.cfg.tenant_id, suffix)
         # A person's slot comes from the broker, asked for a write (#1041): a
         # refusal is `ForgeCredentialRefused`, or `ForgeWriteRefused` for a
         # grant gone, and never the tenant token in its place.
         token = resolve_git_token(
             tenant=tenant, client=self.secret_client, logger=self.log, provider=suffix,
-            broker=self.forge_broker, write=True,
+            broker=self.forge_broker, write=True, app_installation=app_installation,
         )
         if not token:
             raise CredentialMissing(self.cfg.tenant_id, suffix)
@@ -9015,7 +9018,9 @@ class Worker:
             self._forge_credentials_read.append(("none", None))
             return None
         suffix = self._forge_suffix()
-        if self.secret_client is None and user_slot_hash(suffix) is None:
+        app_installation = self._service_run()
+        if self.secret_client is None and user_slot_hash(suffix) is None \
+                and not app_installation:
             self._forge_credentials_read.append(("none", None))
             return None
         source: str | None = None
@@ -9027,6 +9032,7 @@ class Worker:
             token = resolve_git_token(
                 tenant=tenant, client=self.secret_client, logger=self.log,
                 provider=suffix, broker=self.forge_broker,
+                app_installation=app_installation,
             )
             # The KIND, classified here in memory; the value goes no further
             # than the caller. A tenant with no `git` slot read nothing.
@@ -9239,6 +9245,24 @@ class Worker:
         except Exception as exc:  # noqa: BLE001 -- a mark is never worth a publish
             self.log.warning("could not record the forge token re-read",
                              error=type(exc).__name__)
+
+    def _service_run(self) -> bool:
+        """Whether this task's VERIFIED submitter is a platform service account,
+        whose run swarm-api's broker mints an App installation token for when
+        the repository's owner has the App installed for this tenant
+        (DAYONE-SERVICE-APP-TOKEN; `swarm_api.credbroker.decide_run_token`).
+
+        The signed `submitted_by`, the field the broker decides from, read the
+        way `swarm_api.validation.is_service_submitter` reads it -- never the
+        unsigned `metadata.forge_credential_source` label. Unsigned, False: a
+        field anyone with write on the document could set does not choose
+        where the token comes from. Additional repositories never ask: the
+        minted token covers the task's one repository."""
+        if not self._forge_signed:
+            return False
+        submitted_by = (self._task or {}).get("submitted_by")
+        return isinstance(submitted_by, str) and \
+            submitted_by.strip().lower().endswith(".gserviceaccount.com")
 
     def _forge_suffix(self) -> str:
         """The provider suffix of this task's forge secret (contract request 54).
