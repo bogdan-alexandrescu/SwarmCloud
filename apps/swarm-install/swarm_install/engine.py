@@ -401,7 +401,11 @@ class Engine:
             step.apply(self.ctx, plan)
         except _Stop:
             raise
-        except (WaitGaveUp, LeaseLost):
+        except WaitGaveUp as gave_up:
+            # A step's own wait (handoff's console answering, a billing link)
+            # pauses the run exactly as the engine's wait below does.
+            raise self._paused(step, plan, gave_up) from gave_up
+        except LeaseLost:
             raise
         except Exception as exc:
             self._record(step, STEP_FAILED, plan=plan, detail=f"{type(exc).__name__}: {exc}")
@@ -422,9 +426,7 @@ class Engine:
                     on_poll=lambda: (self._heartbeat(), self._run_triggered(step, done)),
                 )
             except WaitGaveUp as gave_up:
-                self._record(step, STEP_PAUSED, plan=plan, detail=str(gave_up))
-                self.events.emit("step_paused", step=step.id, stage=step.stage, message=str(gave_up))
-                raise _Stop("paused", step.id, str(gave_up)) from gave_up
+                raise self._paused(step, plan, gave_up) from gave_up
             rechecked = self._observe(step, step.check)
         else:
             rechecked = self._observe(step, step.check)
@@ -432,6 +434,13 @@ class Engine:
                 self._record(step, STEP_FAILED, plan=plan, detail=rechecked.detail)
                 raise self._failed(step, f"after apply its check is {rechecked.status}: {rechecked.detail}")
         self._verified(step, plan, dict(rechecked.outputs))
+
+    def _paused(self, step: Step, plan: Plan, gave_up: WaitGaveUp) -> _Stop:
+        """A wait past its bound: the step is recorded paused (exit 4); its
+        message names what was waited on and that `swarm install` resumes there."""
+        self._record(step, STEP_PAUSED, plan=plan, detail=str(gave_up))
+        self.events.emit("step_paused", step=step.id, stage=step.stage, message=str(gave_up))
+        return _Stop("paused", step.id, str(gave_up))
 
     def _open_page(self, step: Step, plan: Plan) -> None:
         """A human step's exact page, opened once before its check is polled."""
