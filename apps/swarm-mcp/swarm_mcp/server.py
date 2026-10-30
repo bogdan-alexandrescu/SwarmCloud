@@ -72,14 +72,15 @@ from .follow import (
 )
 from .invocation import terminal_command
 from .patches import (
+    PatchRefused,
     apply_patch,
     describe_task,
-    download,
     explain_absence,
     explain_failure,
     integrate,
     masked_counts,
     patch_uri,
+    read_patch,
 )
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -5494,7 +5495,15 @@ def _call(
             return json.dumps(
                 {"applied": False, "reason": explain_absence(task)}, indent=2
             )
-        result = apply_patch(download(client, uri), repo, task_id=args["task_id"])
+        # Through swarm-api's artifact route with the bridge's own credential,
+        # never Cloud Storage with the developer's gcloud login (#2834). A
+        # patch the API masked or could not serve byte for byte is refused
+        # with the reason, as an outcome, and nothing is applied.
+        try:
+            patch = read_patch(client, task)
+        except PatchRefused as exc:
+            return json.dumps({"applied": False, "reason": str(exc)}, indent=2)
+        result = apply_patch(patch, repo, task_id=args["task_id"])
         return json.dumps(
             {
                 "applied": result.applied,
