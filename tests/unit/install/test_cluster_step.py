@@ -37,6 +37,9 @@ UIDS = {
     cluster.account_email(PROJECT, "swarm-reconciler"): "100000000000000000002",
     cluster.account_email(PROJECT, "swarm-workspace-deployer"): "100000000000000000003",
 }
+LIVE = "---\nkind: StatefulSet\nmetadata:\n  name: swarm-live\n  namespace: swarm-system\n"
+GRAPH = "---\nkind: Deployment\nmetadata:\n  name: swarm-graph\n  namespace: swarm-system\n"
+UNREACHABLE = "Unable to connect to the server: dial tcp 34.1.2.3:443: i/o timeout"
 POLICIES = ("---\nkind: ValidatingAdmissionPolicy\nmetadata:\n  name: swarm-worker-pod-constraints\n"
             "---\nkind: ClusterRole\nmetadata:\n  name: swarm-provisioner\n")
 SWARM_SYSTEM = "---\nkind: NetworkPolicy\nmetadata:\n  name: default-deny-ingress\n  namespace: swarm-system\n"
@@ -86,8 +89,14 @@ class FakeShell:
     """gcloud, kubectl and render.py, faked. The cluster holds what was applied;
     `kubectl diff` exits 0 only for a render it already holds."""
 
-    def __init__(self, *, current_context: str = CONTEXT) -> None:
+    def __init__(self, *, current_context: str = CONTEXT, unreachable: int = 0,
+                 unreachable_error: str = UNREACHABLE) -> None:
         self.current_context = current_context
+        # The control plane answers neither the first `unreachable` acting calls.
+        self.unreachable = unreachable
+        self.unreachable_error = unreachable_error
+        # kind/name -> the error `kubectl rollout status` ends with; absent rolls out.
+        self.rollouts: dict[str, str] = {}
         self.calls: list[tuple[list[str], str | None, dict[str, str] | None]] = []
         self.applied: list[str] = []
         # swarm-system's core workloads: name -> (replicas, ready); None is NotFound.
@@ -108,11 +117,21 @@ class FakeShell:
         verbs = [a for a in argv[1:] if not a.startswith("--")]
         if verbs[:2] == ["config", "current-context"]:
             return 0, self.current_context + "\n", ""
+        if self.unreachable:
+            self.unreachable -= 1
+            return 1, "", self.unreachable_error
         if verbs[0] == "diff":
             return (0, "", "") if stdin in self.applied else (1, "diff -u a/x b/x\n", "")
         if verbs[0] == "apply":
             self.applied.append(str(stdin))
+            for manifest, name in ((LIVE, "statefulset/swarm-live"), (GRAPH, "deployment/swarm-graph")):
+                if stdin == manifest:
+                    self.workloads[name] = (1, 1)
             return 0, "", ""
+        if verbs[:2] == ["rollout", "status"]:
+            if verbs[2] in self.rollouts:
+                return 1, "", self.rollouts[verbs[2]]
+            return 0, f"{verbs[2]} successfully rolled out\n", ""
         if verbs[0] == "get" and verbs[1] in self.workloads:
             found = self.workloads[verbs[1]]
             if found is None:
@@ -131,17 +150,39 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path / "home"
 
 
+def fake_plugin() -> Path:
+    """`tools.ensure("gke-gcloud-auth-plugin")`'s answer: the pinned binary,
+    cached under its versioned name, as `ensure` caches every tool."""
+    return _executable(Path(os.environ["HOME"]) / ".cache" / "swarmcloud" / "tools" / "gke-gcloud-auth-plugin-0.5.10")
+
+
 def _kube(shell: FakeShell, deny: Sequence[str] = ()) -> Any:
     def make(ctx: Any) -> cluster.Kube:
         return cluster.Kube(project=ctx.project, region=str(ctx.state.region), cluster=cluster.cluster_name(ctx),
                             deny_list=tuple(deny) or tuple(ctx.state.deny_list),
                             find=lambda tool: "/opt/bin/kubectl", run=shell,
-                            gcloud=lambda: "/opt/bin/gcloud")
+                            gcloud=lambda: "/opt/bin/gcloud", plugin=fake_plugin,
+                            clock=ctx.clock, events=ctx.events)
     return make
 
 
-def _steps(gcp: ClusterFakeGcp, shell: FakeShell, deny: Sequence[str] = ()) -> list[Any]:
-    return cluster.build_steps(lambda: gcp, Answers(), kube=_kube(shell, deny), run=shell)
+class FakeOutputs:
+    """terraform/infra's outputs, as `terraform output -json` gives them (a null
+    output is absent); records each read."""
+
+    def __init__(self, outputs: dict[str, Any] | None = None) -> None:
+        self.outputs = {"swarm_live_manifest": LIVE, "swarm_graph_manifest": GRAPH} if outputs is None else outputs
+        self.reads = 0
+
+    def __call__(self, ctx: Any) -> dict[str, Any]:
+        self.reads += 1
+        return dict(self.outputs)
+
+
+def _steps(gcp: ClusterFakeGcp, shell: FakeShell, deny: Sequence[str] = (),
+           outputs: FakeOutputs | None = None) -> list[Any]:
+    return cluster.build_steps(lambda: gcp, Answers(), kube=_kube(shell, deny), run=shell,
+                               outputs=outputs or FakeOutputs())
 
 
 def _ctx() -> Any:
@@ -176,7 +217,8 @@ def test_policies_before_tenant_objects(tmp_path: Path) -> None:
 
     result = _rig(tmp_path).engine(_steps(gcp, shell := FakeShell())).run()
     assert result.exit_code == ExitCode.OK, result.message
-    assert shell.applied == [POLICIES, SWARM_SYSTEM]
+    # The relay and the graph service, infra's renders, go last (DAYONE-CLUSTER-REACH).
+    assert shell.applied == [POLICIES, SWARM_SYSTEM, LIVE, GRAPH]
 
 
 def test_subjects_from_unique_id_read_from_iam() -> None:
@@ -218,7 +260,7 @@ def test_kubectl_resolved_through_prefer_local_bin(home: Path, tmp_path: Path,
 
     shell = FakeShell()
     kube = cluster.Kube(project=PROJECT, region=REGION, cluster=cluster.DEFAULT_CLUSTER, run=shell,
-                        gcloud=lambda: "/opt/bin/gcloud")
+                        gcloud=lambda: "/opt/bin/gcloud", plugin=fake_plugin)
     assert kube.kubectl() == str(local)
     kube("get", "namespace", "swarm-system")
     assert {argv[0] for argv in shell.kubectl_calls()} == {str(local)}
@@ -283,9 +325,9 @@ def test_steps_satisfy_every_stage_10_entry() -> None:
 def test_core_workloads_ready_in_swarm_system() -> None:
     """Review finding 5: swarm-live and swarm-graph, Terraform's renders, are
     checked ready in swarm-system on the install cluster's context; a missing
-    one names its Terraform output, and the apply names the pass that writes
-    it and applies nothing."""
+    one names its Terraform output."""
     gcp, shell = ClusterFakeGcp(), FakeShell()
+    shell.applied.extend([LIVE, GRAPH])
     *_, workloads = _steps(gcp, shell)
     ctx = _ctx()
     assert workloads.check(ctx).status == MET
@@ -298,6 +340,149 @@ def test_core_workloads_ready_in_swarm_system() -> None:
     observed = workloads.check(ctx)
     assert observed.status == UNMET
     assert "swarm_live_manifest" in observed.detail and "1 of 2 replicas" in observed.detail
-    with pytest.raises(RuntimeError, match="DAYONE-ENGINE-3"):
+
+
+# -- DAYONE-CLUSTER-REACH: the laptop reaches the control plane, and stage 10
+# applies the relay and the graph service from infra's outputs -------------------
+
+
+def test_credentials_in_the_engines_kubeconfig_with_the_auth_plugin_on_path(
+        home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """get-credentials writes the engine's own kubeconfig, never the person's
+    ~/.kube/config or $KUBECONFIG; gcloud and kubectl both see a PATH whose
+    first directory holds `gke-gcloud-auth-plugin` (the kubeconfig's exec
+    names it bare), the pinned binary `tools.ensure` returned."""
+    theirs = tmp_path / "theirs.kubeconfig"
+    monkeypatch.setenv("KUBECONFIG", str(theirs))
+    monkeypatch.setenv("PATH", "/usr/bin")
+    ensured: list[str] = []
+
+    def ensure(name: str, **_: Any) -> Path:
+        ensured.append(name)
+        return fake_plugin()
+
+    monkeypatch.setattr(cluster.tools, "ensure", ensure)
+    shell = FakeShell()
+    ctx = _ctx()
+    kube = cluster.kube_for(ctx, find=lambda tool: "/opt/bin/kubectl", run=shell)
+    kube.gcloud = lambda: "/opt/bin/gcloud"
+    assert kube("get", "namespace", "swarm-system")[0] == 0
+    assert ensured == ["gke-gcloud-auth-plugin"]
+
+    config = home / ".config" / "swarmcloud" / "install" / f"{PROJECT}.kubeconfig"
+    creds = [(argv, env) for argv, _, env in shell.calls if argv[0].endswith("gcloud")]
+    assert len(creds) == 1 and creds[0][0][1:4] == ["container", "clusters", "get-credentials"]
+    for argv, _, env in shell.calls:
+        if argv[1].endswith("render.py"):
+            continue
+        assert env is not None and env["KUBECONFIG"] == str(config), argv
+        first = Path(env["PATH"].split(os.pathsep)[0])
+        assert (first / "gke-gcloud-auth-plugin").resolve() == fake_plugin().resolve(), argv
+        assert "/usr/bin" in env["PATH"].split(os.pathsep)
+    assert not theirs.exists() and not (home / ".kube").exists()
+    assert os.environ["KUBECONFIG"] == str(theirs)  # the person's own environment is untouched
+
+
+def test_unreachable_control_plane_is_polled_with_a_countdown() -> None:
+    """The authorized network (installer_cidr) takes a minute to reach the
+    control plane: a timeout or a refused connection is polled, with a
+    countdown, until it answers; any other error is the caller's at once;
+    past the bound the wait gives up (exit 4, paused)."""
+    from swarm_install.waits import WaitGaveUp
+
+    for error in (UNREACHABLE, "The connection to the server 34.1.2.3:443 was refused - did you specify "
+                               "the right host or port?"):
+        ctx = _ctx()
+        shell = FakeShell(unreachable=2, unreachable_error=error)
+        kube = _kube(shell)(ctx)
+        code, out, _ = kube("get", "namespace", "swarm-system", "-o", "name")
+        assert (code, out) == (0, "namespace/swarm-system\n")
+        waits = ctx.events.of_kind("wait_countdown")
+        assert len(waits) == 2 and waits[0]["reason"] == cluster.CONTROL_PLANE.reason
+        assert ctx.clock.sleeps == [cluster.CONTROL_PLANE.interval_s] * 2
+
+    ctx = _ctx()
+    shell = FakeShell()
+    code, _, err = _kube(shell)(ctx)("get", "statefulset/nothing", "--namespace=swarm-system", "-o", "json")
+    assert code == 0 and not ctx.events.of_kind("wait_countdown")
+
+    ctx = _ctx()
+    shell = FakeShell(unreachable=10_000)
+    with pytest.raises(WaitGaveUp, match="installer_cidr"):
+        _kube(shell)(ctx)("get", "namespace", "swarm-system")
+    assert ctx.events.of_kind("wait_gave_up")
+
+
+def test_relay_and_graph_applied_from_infra_outputs() -> None:
+    """swarm_live_manifest and swarm_graph_manifest, read from infra's
+    Terraform outputs, are applied with the engine's pinned kubectl on the
+    install cluster's context, then their rollouts are waited for."""
+    gcp, shell, outputs = ClusterFakeGcp(), FakeShell(), FakeOutputs()
+    shell.workloads = {"statefulset/swarm-live": None, "deployment/swarm-graph": None}
+    *_, workloads = _steps(gcp, shell, outputs=outputs)
+    ctx = _ctx()
+    observed = workloads.check(ctx)
+    assert observed.status == UNMET and "swarm_live_manifest" in observed.detail
+    plan = workloads.plan(ctx)
+    assert any("swarm_graph_manifest" in line for line in plan.actions)
+
+    workloads.apply(ctx, plan)
+    assert shell.applied == [LIVE, GRAPH]
+    applies = [argv for argv in shell.kubectl_calls() if "apply" in argv]
+    assert len(applies) == 2
+    for argv in applies:
+        assert argv[0] == "/opt/bin/kubectl" and f"--context={CONTEXT}" in argv and "--server-side" in argv
+    rollouts = [argv for argv in shell.kubectl_calls() if "rollout" in argv]
+    assert [a[a.index("status") + 1] for a in rollouts] == ["statefulset/swarm-live", "deployment/swarm-graph"]
+    assert all("--namespace=swarm-system" in a for a in rollouts)
+    assert workloads.verify(ctx).status == MET
+    assert outputs.reads >= 1
+
+
+def test_unhealthy_rollout_fails_the_apply() -> None:
+    gcp, shell = ClusterFakeGcp(), FakeShell()
+    shell.rollouts["deployment/swarm-graph"] = "error: timed out waiting for the condition"
+    *_, workloads = _steps(gcp, shell)
+    ctx = _ctx()
+    with pytest.raises(RuntimeError, match="deployment/swarm-graph.*timed out"):
         workloads.apply(ctx, workloads.plan(ctx))
-    assert shell.applied == []
+
+
+def test_switched_off_workload_is_not_demanded() -> None:
+    """Terraform renders null while a workload is switched off (live.tf,
+    graph_service.tf); nothing is applied for it and the step does not wait on it."""
+    gcp, shell = ClusterFakeGcp(), FakeShell()
+    shell.workloads = {"statefulset/swarm-live": None, "deployment/swarm-graph": None}
+    *_, workloads = _steps(gcp, shell, outputs=FakeOutputs({"swarm_live_manifest": LIVE}))
+    ctx = _ctx()
+    workloads.apply(ctx, workloads.plan(ctx))
+    assert shell.applied == [LIVE]
+    observed = workloads.check(ctx)
+    assert observed.status == MET and "swarm_graph_manifest" in observed.detail
+
+
+def test_infra_outputs_read_through_terraform(tmp_path: Path) -> None:
+    """The manifests come from `terraform output -json` in the release's infra
+    root, after `init`, as the deployer (as every infra pass runs); an output
+    Terraform left null is absent, read as None."""
+    from swarm_install import terraform
+    from swarm_install.steps.bootstrap import Deps
+
+    calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def exec_(argv: Sequence[str], env: Any, cwd: Path) -> terraform.Completed:
+        calls.append((list(argv), dict(env)))
+        if argv[1] == "version":
+            return terraform.Completed(0, json.dumps({"terraform_version": terraform.TERRAFORM_VERSION}), "")
+        if argv[1] == "output":
+            return terraform.Completed(0, json.dumps({"swarm_live_manifest": {"value": LIVE, "sensitive": False},
+                                                      "gke_cluster_name": {"value": "swarm-agents"}}), "")
+        return terraform.Completed(0, "", "")
+
+    deps = Deps(gcp=lambda: None, exec_=exec_, root_dir=lambda ctx, root: tmp_path / root)
+    found = cluster.infra_outputs(_ctx(), deps=deps)
+    assert found["swarm_live_manifest"] == LIVE and found.get("swarm_graph_manifest") is None
+    verbs = [argv[1] for argv, _ in calls]
+    assert verbs.index("init") < verbs.index("output")
+    output_env = next(env for argv, env in calls if argv[1] == "output")
+    assert terraform.IMPERSONATE_ENV in output_env and PROJECT in output_env[terraform.IMPERSONATE_ENV]

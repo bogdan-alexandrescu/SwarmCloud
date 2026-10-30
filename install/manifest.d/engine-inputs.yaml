@@ -1,0 +1,31 @@
+# Lane DAYONE-ENGINE-INPUTS (part of #2688): a closing infra pass after the
+# cluster stages and stage 14's verify reads removes the installer's address
+# from the control plane's authorised networks (decision 2). The entry is new;
+# this lane restates no base entry. Stage 8's re-apply of infra pass 2
+# (infra.pass-identity) declares no entry: every stage 8 entry belongs to an
+# identity step (test_identity_step.py), and the re-apply follows them by
+# registration order.
+version: 1
+entries:
+- id: other.engine-cluster-reach-closed
+  kind: other
+  scope: core
+  stage: 14
+  provider: engine
+  step: infra.pass-close
+  check: the infra inputs last applied carry no gke_master_authorized_cidrs entry named swarm-install (infra-close
+    is the latest infra pass applied, with its current inputs)
+  apply: 'swarm_install/steps/infra.py ClosingPassStep: terraform apply infra with the same inputs less the
+    installer''s /32, as swarm-tf-deployer'
+  verify: test_infra_steps.py in tests/unit/install
+  explain: Decision 2. The install reaches the cluster's control plane from the installer's public address
+    in stages 10 and 11 and in stage 14's verify.reconciler-jobs (kubectl from the laptop); once the verify
+    steps are done the address is removed, before handoff.ready, and a run that stopped before it has the
+    leftover removed by the next one.
+  depends_on:
+  - cluster.swarm-system-namespace
+  - other.firestore-migrations
+  - other.verify-end-to-end
+  evidence:
+  - apps/swarm-install/swarm_install/steps/infra.py
+  - apps/swarm-install/swarm_install/tfvars.py

@@ -17,7 +17,7 @@ from swarm_install.steps.preflight import remember
 from swarm_install import tfvars
 
 from .test_engine_loop import FakeStep, Rig
-from .test_terraform_runner import FakeCtx
+from .test_terraform_runner import DESKTOP_CLIENT_ID, FakeCtx
 
 HOST = "swarm.example.com"
 URL = f"https://{HOST}/admin/setup"
@@ -73,7 +73,9 @@ def seed(rig: Rig, tmp_path: Path) -> None:
 
     def change(state) -> None:
         state.hostname, state.region, state.release = HOST, "europe-west1", "2026.10.1"
-        state.outputs.update({"alert_email": "alerts@example.com", "hostname": HOST})
+        state.outputs.update({"alert_email": "alerts@example.com", "hostname": HOST, "github_org": "example-org",
+                              "org_domain": "example.com", "installer_cidr": "203.0.113.7/32",
+                              "desktop_client_id": DESKTOP_CLIENT_ID})
 
     store.update(change)
 
@@ -87,7 +89,8 @@ def rig_for(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, more=(), **at: f
     def apply_pass(ctx, deps_, pass_name, **kwargs):
         world.log.append(f"apply {pass_name}")
         remember(ctx, outputs={applied_key(pass_name): inputs_digest(generate(ctx, pass_name, deps_.gcp()))})
-        return {}
+        # Pass 4's apply reports the receiver serving (terraform/infra's github_hooks output).
+        return {"github_hooks": {"serving": True}} if pass_name == "infra-4" else {}
 
     monkeypatch.setattr(bootstrap, "apply_pass", apply_pass)
 
@@ -99,7 +102,7 @@ def rig_for(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, more=(), **at: f
     said: list[str] = []
     wait = handoff.HandoffStep(deps, status=world.status, say=lambda line: (said.append(line),
                                                                              world.log.append("say")))
-    wait.triggered = (Pass3Step(deps), HookStep(deps, api=lambda ctx: Api()), Pass4Step(deps))
+    wait.triggered = (Pass3Step(deps), Pass4Step(deps), HookStep(deps, api=lambda ctx: Api()))
     engine = rig.engine([wait, *more])
     engine.record = world
     return rig, world, engine, said
@@ -133,14 +136,15 @@ def test_cli_lease_heartbeat_while_waiting(tmp_path: Path, monkeypatch: pytest.M
     assert world.writes > 0, "each heartbeat is mirrored to the install record"
 
 
-def test_app_landing_triggers_pass3_then_hook_then_pass4(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_app_landing_triggers_pass3_then_pass4_then_hook(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     rig, world, engine, said = rig_for(tmp_path, monkeypatch)
     result = engine.run()
     assert result.exit_code == 0, result
     actions = [line for line in world.log if line not in ("status", "say")]
-    assert actions == ["apply infra-3", "POST hook", "apply infra-4"]
+    # The webhook is pointed at the receiver only once pass 4 has made it (DAYONE-ENGINE-INPUTS).
+    assert actions == ["apply infra-3", "apply infra-4", "POST hook"]
     assert [e["step"] for e in rig.events.of_kind("step_triggered")] == [
-        "github.pass-3", "github.hook", "github.pass-4"]
+        "github.pass-3", "github.pass-4", "github.hook"]
     steps = {k: v["state"] for k, v in rig.bucket.state()["steps"].items()}
     assert steps == {"github.pass-3": "done", "github.hook": "done", "github.pass-4": "done",
                      "handoff.console": "done"}

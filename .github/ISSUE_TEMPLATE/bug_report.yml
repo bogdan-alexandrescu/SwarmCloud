@@ -96,6 +96,8 @@ body:
         - "Web UI · Admin › Tenants (/admin/tenants)"
         - "Web UI · Admin › Platform counts (/admin/counts)"
         - "Web UI · Admin › Platform secrets (/admin/platform-secrets)"
+        - "Web UI · Admin › Setup (/admin/setup)"
+        - "Web UI · Admin › Health (/admin/setup/health)"
         - "Web UI · Admin › People and roles (/admin/people)"
         - "Web UI · Admin › Workspaces you admin (/admin/workspaces)"
         - "Web UI · Agent inspector — one agent beside the Agents list"

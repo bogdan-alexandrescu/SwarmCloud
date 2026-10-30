@@ -189,6 +189,11 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     // status only, a platform admin's alone, so under Platform and never in
     // a workspace admin's `adminPagesFor`.
     { key: 'platform-secrets', label: 'Platform secrets', icon: 'key', to: 'admin/platform-secrets' },
+    // DAYONE-SETUP-UI-3 (part of #2688; day-one-plan §5.2): Setup and its
+    // Health page, a platform admin's alone, so never in a workspace admin's
+    // `adminPagesFor` and under Platform in the panel.
+    { key: 'setup', label: 'Setup', icon: 'admin', to: 'admin/setup' },
+    { key: 'health', label: 'Health', icon: 'admin', to: 'admin/health' },
     // #847 W8 (docs/workspaces.md §6.4): a SECTIONS tab and a route, and
     // missing here, so an admin reached it only by typing /admin/people --
     // the Runs defect visual QA Q7 caught, again. SECTIONS' label, People

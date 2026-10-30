@@ -2,7 +2,7 @@
 
 | Step | Stage | Kind | What it does |
 |---|---|---|---|
-| `handoff.console` | 13 | wait | once `https://<H>/` answers behind IAP, writes `hand_off_at` and prints the one URL, once; then waits for `console/finished`, keeping the lease (the engine heartbeats on every poll) and running stage 9's switches (`github_switches.py`) as triggered steps when the console's App step lands |
+| `handoff.console` | 13 | wait | once `https://<H>/` answers behind IAP, writes `hand_off_at` and opens the one URL (`open_page`: printed, and opened in the browser), once; then waits for `console/finished`, keeping the lease (the engine heartbeats on every poll) and running stage 9's switches (`github_switches.py`) as triggered steps when the console's App step lands |
 | `handoff.ready` | 15 | engine | after stage 14's verify steps all passed (they run only once the wait above is met, B09b), writes `ready_at` and prints READY |
 
 The wait has a bound (a person finishing the console's steps); past it the
@@ -17,7 +17,7 @@ from typing import Any
 
 from ..exitcodes import MET, UNMET, WAITING
 from ..waits import WaitSpec, wait_until
-from . import Observation, Plan
+from . import Observation, Plan, open_page
 from .bootstrap import DEPS, Deps
 from .github_switches import build_triggered
 
@@ -106,8 +106,9 @@ class HandoffStep:
             ctx.engine.save(lambda s: setattr(s, "hand_off_at", now))
         ctx.events.emit("step_apply", step=self.id, url=url,
                         message=f"open {url} to finish setup (keep this terminal open)")
-        self._say(f"\nOpen {url} to finish setup. Keep this terminal open: it turns the GitHub App on and "
-                  "runs verify when the console is done.\n")
+        open_page(url, why="\nFinish setup in the console's Admin › Setup (opening it now). Keep this terminal "
+                           "open: it turns the GitHub App on and runs verify when the console is done.",
+                  say=self._say)
 
 
 class ReadyStep:

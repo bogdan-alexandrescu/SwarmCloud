@@ -6,6 +6,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 from swarm_install import tfvars
 from swarm_install.state import StepRecord
 from swarm_install.steps import discover, github_switches, handoff
@@ -82,7 +84,7 @@ def test_app_switches_after_console_app_lands() -> None:
     top = {s.id for s in discover()}
     assert not top & {"github.pass-3", "github.hook", "github.pass-4"}
     wait = next(s for s in discover() if s.id == "handoff.console")
-    assert [s.id for s in wait.triggered] == ["github.pass-3", "github.hook", "github.pass-4"]
+    assert [s.id for s in wait.triggered] == ["github.pass-3", "github.pass-4", "github.hook"]
     assert isinstance(wait, handoff.HandoffStep)
     assert "enable_github_app" not in {k for k, v in infra("infra-2", {}).items() if v is True}
 
@@ -99,19 +101,76 @@ def test_hooks_switch_after_self_check() -> None:
     hook = HookStep(Deps(gcp=lambda: SecretMetadata()), api=lambda c: Api())
     pass4 = Pass4Step(Deps(gcp=lambda: SecretMetadata()))
     ctx.console["github_app"] = {"id": "42", "self_check": {"ok": True}}
-    assert hook.trigger(ctx) is False, "pass 3 has not run"
+    assert pass4.trigger(ctx) is False, "pass 3 has not run"
     ctx.state.steps["github.pass-3"] = StepRecord(state="done", at=1.0, by="admin@example.com")
     ctx.console["github_app"]["self_check"] = {"ok": False}
-    assert hook.trigger(ctx) is False, "the self-check has not passed"
+    assert pass4.trigger(ctx) is False, "the self-check has not passed"
     ctx.console["github_app"]["self_check"] = {"ok": True}
+    assert pass4.trigger(ctx) is True
+    assert hook.trigger(ctx) is False, "the hook waits on pass 4, which makes its receiver"
+    ctx.state.steps["github.pass-4"] = StepRecord(state="done", at=2.0, by="admin@example.com")
+    assert hook.trigger(ctx) is False, "pass 4 has not reported the receiver serving"
+    ctx.outputs["github_hooks_serving"] = True
     assert hook.trigger(ctx) is True
-    assert pass4.trigger(ctx) is False, "pass 4 waits on the hook"
     hook.apply(ctx, hook.plan(ctx))
     assert calls == ["hook"] and hook.check(ctx).status == "met"
 
     every = {name: True for name in (*tfvars.KEY_SWITCHES, *tfvars.APP_SECRETS)}
     assert infra("infra-3", every, github_app={"id": "42"})["enable_github_hooks"] is False
     assert infra("infra-4", every, github_app={"id": "42"})["enable_github_hooks"] is True
+
+
+def test_pass4_records_the_receiver_serving(monkeypatch) -> None:
+    from swarm_install.steps import bootstrap
+
+    applied: list[str] = []
+
+    def apply_pass(ctx, deps, pass_name, **kwargs):
+        applied.append(pass_name)
+        return {"github_hooks": {"serving": True, "webhook_url": "https://hooks.example/github/events"}}
+
+    monkeypatch.setattr(bootstrap, "apply_pass", apply_pass)
+    ctx = FakeCtx()
+    step = Pass4Step(Deps(gcp=lambda: SecretMetadata()))
+    step.apply(ctx, step.plan(ctx))
+    assert applied == ["infra-4"] and ctx.outputs["github_hooks_serving"] is True
+
+
+def test_hook_treats_setup_unconfigured_as_not_yet() -> None:
+    from swarm_install.api_client import ApiCallError
+
+    clock = FakeClock()
+    ctx = FakeCtx(clock=clock)
+    answers = ["setup_unconfigured", "setup_unconfigured", None]
+    calls: list[float] = []
+
+    class Api:
+        def activate_hook(self):
+            calls.append(clock.now())
+            code = answers.pop(0)
+            if code:
+                raise ApiCallError(409, code, "/v1/admin/setup/github-app/hook")
+            return {"active": True}
+
+    hook = HookStep(Deps(gcp=lambda: SecretMetadata()), api=lambda c: Api())
+    hook.apply(ctx, hook.plan(ctx))
+    assert len(calls) == 3, "it kept polling through two setup_unconfigured answers"
+    assert calls[-1] > calls[0], "between attempts it waited"
+    assert hook.check(ctx).status == "met"
+
+
+def test_hook_raises_other_refusals() -> None:
+    from swarm_install.api_client import ApiCallError
+
+    class Api:
+        def activate_hook(self):
+            raise ApiCallError(409, "webhook_secret_missing", "/v1/admin/setup/github-app/hook")
+
+    hook = HookStep(Deps(gcp=lambda: SecretMetadata()), api=lambda c: Api())
+    ctx = FakeCtx(clock=FakeClock())
+    with pytest.raises(ApiCallError):
+        hook.apply(ctx, hook.plan(ctx))
+    assert hook.check(ctx).status == "unmet"
 
 
 def test_engine_never_reads_an_app_secret() -> None:

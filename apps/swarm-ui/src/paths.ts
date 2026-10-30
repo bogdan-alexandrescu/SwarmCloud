@@ -262,6 +262,15 @@ export const FIXED: Readonly<Record<string, string>> = {
   // SSC-UI (part of #2158; docs/design/secrets-scopes.md §5): Admin › Platform
   // secrets, a platform admin's alone, status only.
   'admin/platform-secrets': '/admin/platform-secrets',
+  // DAYONE-SETUP-UI-3 (part of #2688; docs/design/day-one-plan.md §5.1):
+  // Admin › Setup, where swarm install hands the people part of an install
+  // over to the console, and Health, the scheduled doctor's findings, under
+  // it. The GitHub App callback is the page GitHub sends the person back to
+  // with `?code=&state=`; FIXED_BACK keeps that query on the way in, and the
+  // route drops it from the bar once the page has read it (App.tsx).
+  'admin/setup': '/admin/setup',
+  'admin/health': '/admin/setup/health',
+  'admin/setup/github-app/callback': '/admin/setup/github-app/callback',
   // #847 W8: Admin › People, everyone who has signed in and their workspace requests.
   'admin/people': '/admin/people',
   // NAV-ADMIN-ROLE (part of #1633): Admin › Workspaces you admin, the group

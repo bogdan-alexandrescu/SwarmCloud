@@ -1,0 +1,100 @@
+# Lane DAYONE-PREFLIGHT-ASKS (part of #2688): stage 0 asks only what it
+# cannot read. It signs the person in itself (gcloud and application-default
+# credentials), reuses the verb's hostname and region, lists the billing
+# accounts and parents through the APIs, asks the GitHub organisation, and
+# records the organization's domain and the installer's public address
+# (state.outputs github_org, org_domain, installer_cidr: the names the other
+# Day One lanes read). The GKE auth plugin kubectl execs is pinned and
+# fetched with the other local tools.
+version: 1
+entries:
+- id: local-tool.gke-gcloud-auth-plugin
+  kind: local-tool
+  scope: core
+  stage: 0
+  provider: engine
+  check: gke-gcloud-auth-plugin --version (the installer's ~/.cache/swarmcloud/tools/bin, ~/.local/bin, then $PATH)
+  apply: preflight.tools fetches the pinned gke-gcloud-auth-plugin 0.5.20 component archive from dl.google.com
+    (SHA-256 from Google's components-v591.0.0.json, pinned in swarm_install/tools.py) when none is found and
+    links it first on the engine's PATH; tools.ensure("gke-gcloud-auth-plugin") returns a file of that exact name
+  verify: preflight.tools re-check is MET; kubectl against the GKE context runs the plugin
+  explain: kubectl authenticates to a GKE control plane only through this exec plugin; a kubeconfig that names
+    it fails with 'executable gke-gcloud-auth-plugin not found' when it is missing
+  guards: null
+  secret_entry: null
+  depends_on: []
+  evidence:
+  - apps/swarm-install/swarm_install/tools.py
+  - apps/swarm-install/swarm_install/steps/preflight.py
+  step: preflight.tools
+- id: other.installer-sign-in
+  kind: other
+  scope: core
+  stage: 0
+  provider: human-in-terminal
+  check: gcloud config get-value account names an account, and google.auth.default() loads credentials
+  apply: when either is missing preflight.sign-in runs gcloud auth login and gcloud auth application-default
+    login itself; each opens the browser, the person's sign-in; it never prints a command to run
+  verify: preflight.sign-in re-check is MET
+  explain: every later step reads Google Cloud as the person, gcloud with their account and the engine and
+    terraform with their application-default credentials
+  guards: null
+  secret_entry: null
+  depends_on:
+  - local-tool.gcloud
+  evidence:
+  - apps/swarm-install/swarm_install/steps/preflight.py
+  step: preflight.sign-in
+- id: other.github-org
+  kind: other
+  scope: core
+  stage: 0
+  provider: human-in-terminal
+  check: state.outputs.github_org is a GitHub login
+  apply: preflight.inputs asks the GitHub organisation login the deployment serves and records github_org
+  verify: preflight.inputs re-check is MET
+  explain: the GitHub App is registered under this organisation and the first team's repositories are its own;
+    nothing in Google Cloud can tell the installer which organisation it is
+  guards: null
+  secret_entry: null
+  depends_on: []
+  evidence:
+  - apps/swarm-install/swarm_install/steps/preflight.py
+  step: preflight.inputs
+- id: other.org-domain
+  kind: other
+  scope: core
+  stage: 0
+  provider: engine
+  check: state.outputs.org_domain is a domain, not a consumer one (gmail.com)
+  apply: preflight.org-domain reads the displayName (the Workspace or Cloud Identity primary domain) of the
+    organization the project lives or will live under; with no organization to read it offers the signed-in
+    account's domain to confirm
+  verify: preflight.org-domain re-check is MET
+  explain: IAP admits domain:<org_domain> and swarm-api's ALLOWED_DOMAINS is [org_domain]; a consumer domain
+    would admit every account in it
+  guards: null
+  secret_entry: null
+  depends_on:
+  - other.installer-sign-in
+  evidence:
+  - apps/swarm-install/swarm_install/steps/preflight.py
+  step: preflight.org-domain
+- id: other.installer-address
+  kind: other
+  scope: core
+  stage: 0
+  provider: engine
+  check: state.outputs.installer_cidr is a.b.c.d/32 and two HTTPS address echoes (api.ipify.org,
+    checkip.amazonaws.com) still agree with it
+  apply: preflight.installer-address records the address both echoes return; when they disagree the person
+    types which is theirs
+  verify: preflight.installer-address re-check is MET
+  explain: the install's infra passes put installer_cidr in gke_master_authorized_cidrs (display name
+    swarm-install) so this machine reaches the private control plane; a closing infra pass removes it
+  guards: null
+  secret_entry: null
+  depends_on: []
+  evidence:
+  - apps/swarm-install/swarm_install/steps/preflight.py
+  step: preflight.installer-address

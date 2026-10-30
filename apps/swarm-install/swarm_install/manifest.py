@@ -31,23 +31,70 @@ test_manifest_complete.py` collects from the tree. Each list holds exact keys or
 * `kubernetes`: a path under `kubernetes/`;
 * `variable`: `<root>/<name>` for a `bool` (or `enable_*`) Terraform variable.
 
+Which copy is read (`resolve_paths`): `SWARM_INSTALL_MANIFEST` if set, else
+the copy the release wheel carries in `swarm_install/_manifest/`, else the
+checkout's `install/` (development).
+
 Nothing here touches the network or builds a client.
 """
 
 from __future__ import annotations
 
 import fnmatch
-from collections.abc import Iterable
+import importlib.resources
+import os
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-#: The repository root, three levels up from this file.
+#: The repository root, three levels up from this file (a checkout's layout; an
+#: installed wheel has no repository above it).
 REPO_ROOT = Path(__file__).resolve().parents[3]
-MANIFEST_PATH = REPO_ROOT / "install" / "manifest.yaml"
-FRAGMENTS_DIR = REPO_ROOT / "install" / "manifest.d"
+
+#: A manifest.yaml path whose sibling `manifest.d/` holds its fragments; set, it
+#: is the manifest the engine loads, ahead of every other copy.
+MANIFEST_ENV = "SWARM_INSTALL_MANIFEST"
+
+#: The wheel's copy: apps/swarm-install/pyproject.toml force-includes
+#: install/manifest.yaml and install/manifest.d/ here, so the installed engine
+#: (`uv tool install` of the release wheel) loads the release's own manifest.
+PACKAGED_DIR = "_manifest"
+
+
+def _packaged_root() -> Path | None:
+    """The package's own directory on disk, or None when it is not a directory
+    (a zip import has no path a fragment glob can walk)."""
+    root = importlib.resources.files(__package__ or "swarm_install")
+    return root if isinstance(root, Path) else None
+
+
+def resolve_paths(
+    environ: Mapping[str, str] | None = None,
+    package_root: Path | None = None,
+    repo_root: Path = REPO_ROOT,
+) -> tuple[Path, Path]:
+    """(manifest.yaml, manifest.d) in this order: `SWARM_INSTALL_MANIFEST`, then
+    the copy packaged in the wheel, then the repository checkout (development).
+
+    A checkout's editable install has no packaged copy (hatch force-includes it
+    into the built wheel only), so a checkout always reads its own install/.
+    When no copy exists the checkout's paths are returned and `load` (or `swarm
+    install`, which names `--manifest`) reports the missing file."""
+    env = os.environ if environ is None else environ
+    override = env.get(MANIFEST_ENV, "").strip()
+    if override:
+        path = Path(override).expanduser()
+        return path, path.parent / "manifest.d"
+    packaged = (package_root / PACKAGED_DIR) if package_root is not None else None
+    if packaged is not None and (packaged / "manifest.yaml").is_file():
+        return packaged / "manifest.yaml", packaged / "manifest.d"
+    return repo_root / "install" / "manifest.yaml", repo_root / "install" / "manifest.d"
+
+
+MANIFEST_PATH, FRAGMENTS_DIR = resolve_paths(package_root=_packaged_root())
 
 #: The collectors' names, in design §3.3's order; `refs:` and `ignored:` key on
 #: these (`env` has its own table).
