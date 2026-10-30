@@ -21,8 +21,13 @@ nobody reaches costs nothing. The shape is the interface sheet's, exactly:
 
 `pool_limits` carries no `providers` map, so every `provider:<p>` pool falls
 back to `global`; terraform's own rule (terraform/infra/variables.tf, the
-pool_limits validation) then reads `global >= tenants x provider_tenant`, which
-`problems()` enforces on the proposal and on every edit.
+pool_limits validation) then reads `global >= tenants x provider_tenant`. The
+tenants are the workspaces the sizing serves: one for one person, `members` for
+a team, the same count tfvars.py checks at the first infra render
+(`provider_tenants`; N5, DAYONE-SIZING-TENANTS). `propose()` chooses
+provider_tenant so the rule holds and never lowers `global` for it,
+`with_change()` keeps it when `global` is lowered, and `problems()` refuses a
+sizing that breaks it.
 """
 
 from __future__ import annotations
@@ -85,9 +90,6 @@ BUDGET_STEP_USD = 100
 SYSTEM_CPUS = 8
 #: The vCPU one admission unit requests at most (standard and browser: 4 for 1 unit).
 CPU_PER_UNIT = max(math.ceil(c.cpu / c.units) for c in RESOURCE_CLASSES.values())
-#: The tenants Day One declares that hold a provider: the person's own
-#: workspace, or the first team. terraform's floor is tenants x provider_tenant.
-PROVIDER_TENANTS = 1
 
 SERVICES = ("swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler")
 
@@ -117,6 +119,18 @@ def cpu_cap(region_cpu_quota: int | None) -> int | None:
     if region_cpu_quota is None or region_cpu_quota < 0:
         return None
     return max(1, (region_cpu_quota - SYSTEM_CPUS) // CPU_PER_UNIT)
+
+
+def provider_tenants(mode: str, members: int) -> int:
+    """The tenants that share each provider pool, as tfvars.py counts them for
+    terraform's floor (global >= tenants x provider_tenant): the one person's
+    own workspace, or each of a team's `members`."""
+    return 1 if mode == INDIVIDUAL else members
+
+
+def _fitted_provider_tenant(provider_tenant: int, global_: int, tenants: int) -> int:
+    """`provider_tenant`, lowered (never below 1) so `tenants` of it fit in `global_`."""
+    return max(1, min(provider_tenant, global_ // tenants))
 
 
 def expected_agents(mode: str, members: int) -> int:
@@ -153,7 +167,7 @@ def propose(mode: str, members: int, *, region_cpu_quota: int | None = None) -> 
     pools: dict[str, Any] = {
         "global": global_,
         "default_tenant": min(default_tenant, global_),
-        "provider_tenant": min(provider_tenant, global_ // PROVIDER_TENANTS),
+        "provider_tenant": _fitted_provider_tenant(provider_tenant, global_, provider_tenants(mode, members)),
         "resource_classes": {k: min(_scaled(v, global_), global_) for k, v in REFERENCE_RESOURCE_CLASSES.items()},
         "runner_profiles": {k: min(_scaled(v, global_), global_) for k, v in REFERENCE_RUNNER_PROFILES.items()},
         "backends": {k: min(_scaled(v, global_), global_) for k, v in REFERENCE_BACKENDS.items()},
@@ -178,8 +192,9 @@ def propose(mode: str, members: int, *, region_cpu_quota: int | None = None) -> 
 
 def capped(sizing: Mapping[str, Any], region_cpu_quota: int | None) -> Sizing:
     """A copy of `sizing` (the person's own numbers kept) with every pool
-    ceiling lowered to what `region_cpu_quota` runs. Lowering `global` and
-    `provider_tenant` to the same cap keeps `global >= provider_tenant`."""
+    ceiling lowered to what `region_cpu_quota` runs. Lowering `global` lowers
+    `provider_tenant` with it (`with_change`), so tenants x provider_tenant
+    still fits wherever the cap leaves room for every tenant."""
     cap = cpu_cap(region_cpu_quota)
     changed: Sizing = copy.deepcopy(dict(sizing))  # type: ignore[assignment]
     if cap is None:
@@ -239,7 +254,10 @@ def table(sizing: Mapping[str, Any]) -> str:
 
 
 def with_change(sizing: Mapping[str, Any], path: Sequence[str], value: int) -> Sizing:
-    """A copy of `sizing` with the number at `path` set to `value`."""
+    """A copy of `sizing` with the number at `path` set to `value`. A new
+    `global` lowers provider_tenant to what fits (tenants x provider_tenant <=
+    global); a provider_tenant the person types is kept as typed, and
+    `problems()` refuses it when it does not fit."""
     changed = copy.deepcopy(dict(sizing))
     node: Any = changed
     for key in path[:-1]:
@@ -247,13 +265,18 @@ def with_change(sizing: Mapping[str, Any], path: Sequence[str], value: int) -> S
     if path[-1] not in node:
         raise KeyError(f"{'.'.join(path)} is not a number in the sizing")
     node[path[-1]] = value
+    if tuple(path) == ("pool_limits", "global") and isinstance(value, int) and value >= 1:
+        pools = changed["pool_limits"]
+        members = changed.get("members")
+        if isinstance(pools.get("provider_tenant"), int) and isinstance(members, int) and members >= 1:
+            pools["provider_tenant"] = _fitted_provider_tenant(
+                pools["provider_tenant"], value, provider_tenants(changed.get("mode"), members))
     return changed  # type: ignore[return-value]
 
 
-def problems(sizing: Mapping[str, Any], *, region_cpu_quota: int | None = None,
-             tenants: int = PROVIDER_TENANTS) -> list[str]:
-    """What is wrong with `sizing`: empty when terraform and the region's
-    quota would both take it."""
+def problems(sizing: Mapping[str, Any], *, region_cpu_quota: int | None = None) -> list[str]:
+    """What is wrong with `sizing`: empty when terraform (the check tfvars.py
+    runs at the first infra render) and the region's quota would both take it."""
     found: list[str] = []
     if sizing.get("mode") not in MODES:
         found.append(f"mode {sizing.get('mode')!r} is not one of {MODES}")
@@ -272,11 +295,15 @@ def problems(sizing: Mapping[str, Any], *, region_cpu_quota: int | None = None,
     if found:
         return found
     pools = sizing["pool_limits"]
+    tenants = provider_tenants(sizing["mode"], members)
     if pools["global"] < tenants * pools["provider_tenant"]:
         found.append(
             f"global ({pools['global']}) is below {tenants} x provider_tenant ({pools['provider_tenant']}): every "
             "provider pool falls back to global, and terraform refuses a provider pool below tenants x "
             "provider_tenant (terraform/infra/variables.tf, pool_limits)"
+            + (f"; even provider_tenant 1 needs global {tenants}, so raise global (a smaller region CPUS quota "
+               "than that needs an increase on the Quotas page)" if pools["global"] < tenants else
+               f"; lower provider_tenant to {pools['global'] // tenants} or raise global")
         )
     missing = [s for s in SERVICES if s not in sizing["service_max_instances"]]
     if missing:
