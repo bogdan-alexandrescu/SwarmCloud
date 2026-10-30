@@ -1040,7 +1040,7 @@ def test_one_number_changed_then_accepted() -> None:
     _, ask, ctx = _sized(gcp, "2", "15", "1", "60", "")
     expected = sizing.with_change(sizing.propose("team", 15, region_cpu_quota=3000), ("pool_limits", "global"), 60)
     assert ctx.outputs["sizing"] == expected
-    assert ask.asked[3][1].startswith("New value for tasks at once, the whole deployment (global) (now 54)")
+    assert ask.asked[3][1].startswith("New value for tasks at once, the whole deployment (global) (now 81)")
     assert ask.asked[4][1].startswith("Changed tasks at once, the whole deployment (global) to 60.")
 
     budget = len(sizing.rows(ctx.outputs["sizing"]))
