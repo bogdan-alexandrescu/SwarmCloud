@@ -7,13 +7,13 @@ takes if they want it gone:
 
 | Kind | Why it survives |
 |---|---|
-| `oauth-brand` | the IAP brand has no delete method |
+| `oauth-brand` | the OAuth brand (consent screen) has no delete method; it goes with the project |
 | `kms-key-ring` | key rings and keys cannot be deleted; their versions are destroyed |
 | `custom-roles` | a deleted custom role's id is reserved (undeletable for 7 days) |
 | `firestore-database` | a deleted database's id is reusable only after Google's delay |
 | `desktop-client` | deleting the Desktop OAuth client is a console step; it is kept for reuse |
 | `github-app` | only the organisation can delete its App |
-| `dns-record` | the record is at the company's registrar |
+| `dns-record` | the record is at the company's registrar, or in the project's Cloud DNS zone `edge.dns` wrote it to |
 | `workspace-groups` | the groups, the Groups Reader role assignment or the delegation are org-admin objects |
 
 The record also carries `left`: anything else the uninstall did not remove (a
@@ -43,7 +43,6 @@ from .state import LOCAL_DIR, _write_local
 
 KMS_DELETE_DOCS = "https://cloud.google.com/kms/docs/delete-kms-resources"
 CUSTOM_ROLE_DOCS = "https://cloud.google.com/iam/docs/creating-custom-roles#deleting-custom-role"
-BRAND_DOCS = "https://cloud.google.com/iap/docs/reference/rest/v1/projects.brands"
 FIRESTORE_DOCS = "https://cloud.google.com/firestore/docs/manage-databases#delete_a_database"
 
 #: Design §10's eight rows, in its order.
@@ -99,10 +98,22 @@ def survivors(state: Any, found: Mapping[str, Any] | None = None) -> list[Remain
     slug = app.get("slug") or "<slug>"
     groups = list(outputs.get("admin_groups") or ())
     delegation = str(outputs.get("groups_auth") or "") == "delegation"
+    host = _text(state.hostname, "the console hostname")
+    zone = str(outputs.get("dns_zone") or "")  # edge.dns wrote the record to the project's Cloud DNS zone
+    dns_record = (
+        (f"edge.dns wrote it to the project's Cloud DNS zone {zone}, whose records the uninstall leaves",
+         f"https://console.cloud.google.com/net-services/dns/zones/{zone}/details?project={project}: "
+         f"delete the A record for {host}")
+        if zone else
+        ("the record is at the company's DNS registrar, which the installer cannot reach",
+         f"at your registrar, delete the A record for {host}"))
     return [
-        Remain("oauth-brand", _text(outputs.get("oauth_brand"), f"projects/{project}/brands/<number>"),
-               f"an OAuth brand cannot be deleted; there is no delete method ({BRAND_DOCS})",
-               "nothing to do: it goes with the project (a reinstall adopts it)"),
+        # No API reads a brand (the IAP OAuth Admin API was shut down on
+        # 2026-03-19): it is named by its console page, never probed.
+        Remain("oauth-brand", _text(outputs.get("oauth_brand"),
+                                    f"https://console.cloud.google.com/auth/branding?project={project}"),
+               "an OAuth brand (consent screen) cannot be deleted; it has no delete method",
+               "nothing to do: it goes with the project (a reinstall reuses it)"),
         Remain("kms-key-ring", ring,
                f"KMS key rings and keys are not deleted here; their key versions were destroyed ({KMS_DELETE_DOCS})",
                "nothing to do: it holds no usable key version (a reinstall imports it and adds a new version)"),
@@ -119,8 +130,7 @@ def survivors(state: Any, found: Mapping[str, Any] | None = None) -> list[Remain
                "only the GitHub organisation can delete its App",
                f"https://github.com/organizations/{org}/settings/apps/{slug}/advanced: Delete GitHub App"),
         Remain("dns-record", f"{_text(state.hostname, '<hostname>')} A {_text(outputs.get('global_ip'))}",
-               "the record is at the company's DNS registrar, which the installer cannot reach",
-               f"at your registrar, delete the A record for {_text(state.hostname, 'the console hostname')}"),
+               *dns_record),
         Remain("workspace-groups", ", ".join(groups) or "(none recorded)",
                "Google groups, the Groups Reader admin role assignment and domain-wide delegation are "
                "organisation-admin objects outside the project",
