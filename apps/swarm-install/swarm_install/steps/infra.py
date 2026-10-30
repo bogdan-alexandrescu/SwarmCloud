@@ -44,17 +44,58 @@ orders it after every verify step and before `handoff.ready` (stage 15). It
 applies infra-4's inputs without the address and is met while those are the
 inputs it applied, so a run that stopped before it has the leftover entry
 removed by the next run.
+
+**Pass 1 adopts the reserved address** (finding 6). Stage 2's
+`edge.global-ip` reserves `swarm-ui-ip` by API so the A record can be set
+early; the frontend module declares the same address. Before pass 1 plans,
+the engine imports it into `module.frontend[0].google_compute_global_address.this`
+when the project holds it and the state does not (as bootstrap imports its
+keys), so the apply never fails on "already exists". No `import {}` block is
+added to terraform/infra: the live deployment's plan does not change.
+
+**Reopening after the close** (finding 16). Once `infra-close` has applied,
+a re-run's cluster stages, `swarm team add`, `swarm upgrade` and an add-on
+still run kubectl from the laptop. `ClusterReach.reopen`, which `kube_for`'s
+`Kube` calls before its first kubectl call, refreshes `installer_cidr` from
+this machine's address and applies infra-4's inputs (the close's inputs with
+the address) as the deployer, and records `cluster_reach_reopened`. The
+closing pass is unmet while that is recorded, so `swarm install`'s stage 14
+closes it again; the verbs close it themselves when they finish
+(`ClusterReach.close`), and a verb that died in between leaves the record for
+the next run's close.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from .. import tfvars
+from ..api_client import deployer_email
 from ..exitcodes import MET, UNMET
-from . import Observation, Plan
-from .bootstrap import DEPS, BootstrapPass2Step, Deps, PassStep
+from ..terraform import Terraform
+from . import Observation, Plan, bootstrap
+from .bootstrap import DEPS, BootstrapPass2Step, Deps, PassStep, applied_key
+from .edge import ADDRESS
 from .secrets import PlatformKeysStep
+
+#: Where infra's frontend module keeps the address stage 2 reserved
+#: (terraform/modules/frontend/main.tf `google_compute_global_address.this`).
+FRONTEND_ADDRESS = "module.frontend[0].google_compute_global_address.this"
+
+#: Recorded while an infra pass has put the installer's address back after the
+#: close; the closing pass is unmet until it removes it again.
+REOPENED = "cluster_reach_reopened"
+#: The pass whose inputs reopen the control plane: infra-close's, with the address.
+REOPEN_PASS = "infra-4"
+
+
+def address_imports(gcp: Any, project: str, in_state: list[str]) -> list[tuple[str, str]]:
+    """(address, id) of stage 2's global address when the project holds it and
+    infra's state does not: pass 1 imports it instead of creating it again."""
+    if FRONTEND_ADDRESS in in_state or gcp.global_address(project, ADDRESS) is None:
+        return []
+    return [(FRONTEND_ADDRESS, f"projects/{project}/global/addresses/{ADDRESS}")]
 
 
 class InfraPass1Step(PassStep):
@@ -67,6 +108,17 @@ class InfraPass1Step(PassStep):
 
     def __init__(self, deps: Deps) -> None:
         super().__init__(deps, id="infra.pass-1", stage=5, satisfies=())
+
+    def apply(self, ctx: Any, plan: Plan) -> None:
+        gcp = self.deps.gcp()
+        deployer = deployer_email(ctx.project)
+
+        def adopt_address(tf: Terraform) -> None:
+            for address, resource_id in address_imports(gcp, ctx.project, tf.state_list(impersonate=deployer)):
+                ctx.events.emit("step_apply", step=self.id, message=f"import {address} (stage 2 reserved it)")
+                tf.run("import", "-input=false", address, resource_id, impersonate=deployer)
+
+        bootstrap.apply_pass(ctx, self.deps, self.pass_name, before_plan=adopt_address)
 
 
 class InfraPass2Step(PassStep):
@@ -123,6 +175,113 @@ class ClosingPassStep(PassStep):
 
     def __init__(self, deps: Deps) -> None:
         super().__init__(deps, id="infra.pass-close", stage=14, satisfies=("other.engine-cluster-reach-closed",))
+
+    def _pending(self, ctx: Any) -> str | None:
+        if ctx.outputs.get(REOPENED):
+            return f"the control plane admits {ctx.outputs[REOPENED]} again (reopened for kubectl after the close)"
+        return super()._pending(ctx)
+
+    def apply(self, ctx: Any, plan: Plan) -> None:
+        from .preflight import remember
+
+        bootstrap.apply_pass(ctx, self.deps, self.pass_name)
+        if ctx.outputs.get(REOPENED):
+            remember(ctx, outputs={REOPENED: None})
+
+
+def reach_closed(outputs: Any) -> bool:
+    """The closing pass has removed the installer's address and nothing has put it back."""
+    return bool(outputs.get(applied_key("infra-close"))) and not outputs.get(REOPENED)
+
+
+def _refresh_address(ctx: Any) -> None:
+    """`installer_cidr` from this machine's address now (preflight.installer-address)."""
+    from .preflight import ASK, GCP, InstallerAddressStep
+
+    step = InstallerAddressStep(GCP, ASK)
+    if step.check(ctx).status != MET:
+        step.apply(ctx, step.plan(ctx))
+
+
+class ClusterReach:
+    """Decision 2 after the close: put this machine's /32 back for kubectl, then take it out again."""
+
+    def __init__(self, deps: Deps = DEPS, *, address: Callable[[Any], None] = _refresh_address) -> None:
+        self.deps = deps
+        self.address = address
+
+    def reopen(self, ctx: Any) -> bool:
+        """Apply infra-4's inputs with the current address when the close removed it; True when it did."""
+        from .preflight import remember
+
+        if not reach_closed(ctx.outputs):
+            return False
+        if ctx.dry_run:
+            raise RuntimeError("the closing pass removed this machine's address from the control plane's "
+                               "authorised networks; a dry run never applies the infra pass that reopens it")
+        self.address(ctx)
+        ctx.events.emit("step_apply", step="infra.reopen",
+                        message=f"the control plane admits {ctx.outputs.get('installer_cidr')} for kubectl "
+                                "until the closing pass removes it again")
+        bootstrap.apply_pass(ctx, self.deps, REOPEN_PASS)
+        remember(ctx, outputs={REOPENED: str(ctx.outputs.get("installer_cidr") or "")})
+        return True
+
+    def close(self, ctx: Any) -> bool:
+        """The closing pass again when a reopen left the address; True when it applied."""
+        step = ClosingPassStep(self.deps)
+        if not ctx.outputs.get(REOPENED):
+            return False
+        step.apply(ctx, step.plan(ctx))
+        return True
+
+    def close_after(self, ctx: Any, verb: str) -> str | None:
+        """`close` at the end of a verb; a failure is the line the verb prints, and
+        the record stays for `swarm install`'s closing pass."""
+        try:
+            self.close(ctx)
+        except Exception as exc:  # noqa: BLE001 - the verb's own outcome stands; this line says what is left
+            return (f"{verb}: the closing pass did not apply ({type(exc).__name__}: {str(exc)[:300]}); the control "
+                    f"plane still admits {ctx.outputs.get(REOPENED)}: swarm install removes it")
+        return None
+
+
+REACH = ClusterReach()
+
+
+class VerbContext:
+    """What `ClusterReach` needs of an engine context, for a verb that runs
+    outside the engine loop (`swarm team add`, an add-on): the state, saved
+    through `save` (a store's re-reading `update`, which returns the state it
+wrote), and the bucket
+    a pass locks and writes its inputs to."""
+
+    dry_run = False
+
+    def __init__(self, *, project: str, environment: str, holder: str, state: Any, events: Any, bucket: Any,
+                 save: Callable[[Callable[[Any], None]], Any]) -> None:
+        self.project = project
+        self.environment = environment
+        self.holder = holder
+        self.state = state
+        self.events = events
+        self.bucket = bucket
+        self._save = save
+
+    @property
+    def outputs(self) -> dict[str, Any]:
+        return self.state.outputs
+
+    @property
+    def engine(self) -> VerbContext:
+        return self
+
+    @property
+    def store(self) -> VerbContext:
+        return self
+
+    def save(self, change: Callable[[Any], None]) -> None:
+        self.state = self._save(change)
 
 
 def build_steps(deps: Deps = DEPS) -> list[Any]:

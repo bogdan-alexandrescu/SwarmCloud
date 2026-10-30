@@ -151,8 +151,26 @@ class LiveWorld:
 
     def apply_root(self, root: str, version: str) -> None:
         from ..steps.bootstrap import apply_pass
+        from ..steps.infra import REACH, REOPENED, reach_closed
+        from ..steps.preflight import remember
 
-        apply_pass(self.ctx(version), self.deps, LATEST_PASS[root])
+        ctx = self.ctx(version)
+        # infra-2's inputs carry the installer's address (decision 2): after the
+        # closing pass, refresh it to this machine's /32 (it may not be the network
+        # recorded at install) and record it so the upgrade's close removes it again
+        # (finding 16).
+        reopens = root == "infra" and reach_closed(ctx.outputs)
+        if reopens:
+            REACH.address(ctx)
+        apply_pass(ctx, self.deps, LATEST_PASS[root])
+        if reopens:
+            remember(ctx, outputs={REOPENED: str(ctx.outputs.get("installer_cidr") or "")})
+
+    def close_reach(self) -> str | None:
+        """The closing pass again when this upgrade reopened the control plane; the line to print if it failed."""
+        from ..steps.infra import REACH
+
+        return REACH.close_after(self.ctx(), "swarm upgrade")
 
     def patch_log_metric(self, address: str, after: Mapping[str, Any]) -> None:
         name = str(after.get("name") or address.rsplit(".", 1)[-1])
@@ -296,7 +314,12 @@ def run(args: argparse.Namespace) -> int:
         print(f"swarm upgrade: {exc}", file=sys.stderr)
         return int(ExitCode.PAUSED)
     try:
-        code = flow.run(args.to, allow_downgrade=args.allow_downgrade)
+        try:
+            code = flow.run(args.to, allow_downgrade=args.allow_downgrade)
+        finally:
+            left = world.close_reach()
+            if left:
+                print(left, file=sys.stderr)
     except (UpgradeRefused, UpgradeFailed, MigrationFailed, WaitGaveUp) as exc:
         code = exit_code_for(exc)
         print(f"swarm upgrade: {exc}", file=sys.stderr)

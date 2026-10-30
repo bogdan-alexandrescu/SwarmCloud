@@ -4,7 +4,7 @@
 
 | Step | Manifest entries | Kind |
 |---|---|---|
-| `cluster.bundle` | `other.release-kubernetes-bundle` | engine: the release's `kubernetes.tgz`, checked against its `SHA256SUMS` and unpacked; never a checkout |
+| `cluster.bundle` | `other.release-kubernetes-bundle` | engine: the release's `kubernetes.tgz`, checked against its cosign-verified `SHA256SUMS` (`Release.fetch`) and unpacked; never a checkout |
 | `cluster.policies` | `cluster-policy.*` (9), `rbac.provisioner-clusterrole` | engine: `render.py policies` from the bundle, applied before anything a tenant runs |
 | `cluster.swarm-system` | `cluster.swarm-system-namespace` | engine: swarm-system's default-deny ingress, only once the policies are in |
 | `cluster.workloads` | `workload.swarm-live`, `workload.swarm-graph` | engine: the live relay and the graph service, infra's renders, applied and rolled out in swarm-system |
@@ -52,6 +52,18 @@ change takes about a minute to reach the control plane. A kubectl call that
 times out or is refused is polled with a countdown (`CONTROL_PLANE`) until the
 control plane answers; any other error is returned at once.
 
+**Reopened after the closing pass** (finding 16): `kube_for` gives the `Kube`
+`infra.REACH.reopen` for an engine-shaped context (one with `engine`), run once
+before its first kubectl call: when `infra.pass-close` has removed the
+address, an infra pass puts this machine's current `/32` back, and the closing
+pass (or the verb, when it finishes) removes it again. A context with no
+`engine` (uninstall's) is never reopened.
+
+**The bundle is signature-checked** (finding 31): `kubernetes.tgz` is read
+through bootstrap's `Release.fetch`, so `SHA256SUMS` verifies with cosign
+against the pinned release key before the bundle's digest is compared and
+before `render.py` runs, as bootstrap does for `module.tgz`.
+
 **kubectl through `prefer_local_bin`'s rule** (`preflight.find_tool`):
 `SWARM_KUBECTL`, then `~/.local/bin`, then `$PATH`. An old client on `$PATH`
 silently drops manifest fields.
@@ -65,6 +77,7 @@ import os
 import subprocess
 import sys
 import tarfile
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -80,7 +93,8 @@ from ..state import state_bucket
 from ..terraform import Terraform, read_outputs
 from ..waits import Clock, SystemClock, WaitSpec, wait_until
 from . import Observation, Plan
-from .preflight import ASK, COMPUTE, RELEASE_HOME, TOOLS, Ask, Gcp, find_tool, parse_sums
+from .bootstrap import Release
+from .preflight import ASK, COMPUTE, TOOLS, Ask, Gcp, find_tool
 
 #: terraform/infra's cluster (`google_container_cluster.agents`); infra pass 1
 #: records the name it created as `gke_cluster_name`.
@@ -202,7 +216,10 @@ class Kube:
     plugin: Callable[[], Path] = auth_plugin
     clock: Clock = field(default_factory=SystemClock)
     events: Events | None = None
+    #: Run once before the first kubectl call: reopens the control plane after the close.
+    reach: Callable[[], Any] | None = None
     _credentials: bool = field(default=False, repr=False)
+    _reached: bool = field(default=False, repr=False)
     _plugin_dir: Path | None = field(default=None, repr=False)
 
     @property
@@ -265,6 +282,9 @@ class Kube:
         """kubectl `args`; a control plane that does not answer yet is polled
         with a countdown (`CONTROL_PLANE`), any other answer returned as is."""
         self.credentials()
+        if self.reach is not None and not self._reached:
+            self.reach()
+            self._reached = True
         argv = [self.kubectl(), f"--kubeconfig={self.config}", f"--context={self.context}", *args]
         answer: list[tuple[int, str, str]] = []
 
@@ -277,14 +297,25 @@ class Kube:
         return answer[0]
 
 
-def kube_for(ctx: Any, *, find: Callable[[Any], str | None] = find_tool, run: Run = run_command) -> Kube:
+def reopen_for(ctx: Any) -> Callable[[], Any] | None:
+    """`infra.REACH.reopen` on `ctx`, when `ctx` can apply a pass (it has an `engine`)."""
+    if getattr(ctx, "engine", None) is None:
+        return None
+    from .infra import REACH
+
+    return lambda: REACH.reopen(ctx)
+
+
+def kube_for(ctx: Any, *, find: Callable[[Any], str | None] = find_tool, run: Run = run_command,
+             reach: Callable[[Any], Callable[[], Any] | None] = reopen_for) -> Kube:
     region = ctx.state.region
     if not region:
         raise LookupError("no region is recorded (preflight.region confirms it)")
     return Kube(project=ctx.project, region=str(region), cluster=cluster_name(ctx),
                 deny_list=tuple(ctx.state.deny_list), find=find, run=run,
-                # `swarm team add` builds a context with neither; it waits on the system clock.
-                clock=getattr(ctx, "clock", None) or SystemClock(), events=getattr(ctx, "events", None))
+                # A verb's context may hold neither; it waits on the system clock.
+                clock=getattr(ctx, "clock", None) or SystemClock(), events=getattr(ctx, "events", None),
+                reach=reach(ctx))
 
 
 # -- the release's kubernetes bundle -----------------------------------------
@@ -314,24 +345,24 @@ def bundle_dir(project: str, version: str) -> Path:
 
 @dataclass
 class Bundle:
-    """The release's Kubernetes files, from the release home, checked by digest."""
+    """The release's Kubernetes files, from the release home, through
+    `Release.fetch`: SHA256SUMS cosign-verified, then the bundle's digest."""
 
     gcp: Callable[[], Gcp]
     where: Callable[[str, str], Path] = bundle_dir
+    release: Callable[[Callable[[str], bytes]], Release] = field(
+        default=lambda read_public: Release(read_public=read_public))
 
     def read(self, ctx: Any) -> tuple[bytes, str]:
-        """The bundle's bytes and digest, checked against SHA256SUMS; nothing written."""
+        """The bundle's bytes and digest, checked against the cosign-verified
+        SHA256SUMS; cosign reads the sums and their signature from a temporary
+        directory, removed after, so nothing stays written."""
         version = ctx.state.release
         if not version:
             raise LookupError("no release is recorded (preflight.release reads it)")
-        base = f"{RELEASE_HOME}/releases/{version}"
-        gcp = self.gcp()
-        sums = parse_sums(gcp.read_public(f"{base}/SHA256SUMS"))
-        data = gcp.read_public(f"{base}/{BUNDLE}")
-        digest = hashlib.sha256(data).hexdigest()
-        if sums.get(BUNDLE) != digest:
-            raise ValueError(f"release {version}: {BUNDLE} does not match SHA256SUMS")
-        return data, digest
+        with tempfile.TemporaryDirectory(prefix="swarm-bundle-") as where:
+            data = self.release(self.gcp().read_public).fetch(str(version), BUNDLE, Path(where))
+        return data, hashlib.sha256(data).hexdigest()
 
     def fetch(self, ctx: Any) -> Path:
         """The bundle unpacked into the engine's local cache (a render needs files)."""
@@ -427,7 +458,8 @@ class BundleStep(_Base):
     satisfies = ("other.release-kubernetes-bundle",)
     _explain = (
         "Stage 10, team add, upgrade and uninstall render the release's own Kubernetes files, checked "
-        "against the release's SHA256SUMS: a checkout's files can be any version."
+        "against the release's SHA256SUMS, itself verified with cosign against the pinned release key: a "
+        "checkout's files can be any version."
     )
 
     def check(self, ctx: Any) -> Observation:
@@ -439,7 +471,7 @@ class BundleStep(_Base):
         return Observation(MET, f"{BUNDLE} of release {ctx.state.release}", {"kubernetes_bundle": str(root)})
 
     def plan(self, ctx: Any) -> Plan:
-        return Plan(f"fetch {BUNDLE} of release {ctx.state.release} and check it against SHA256SUMS")
+        return Plan(f"fetch {BUNDLE} of release {ctx.state.release} and check it against its signed SHA256SUMS")
 
     def apply(self, ctx: Any, plan: Plan) -> None:
         self._bundle.fetch(ctx)

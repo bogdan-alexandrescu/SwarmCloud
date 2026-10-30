@@ -646,6 +646,26 @@ class Flow:
 
     def enable(self, name: str, *, given: Mapping[str, str] | None = None, owner: str | None = None,
                in_terminal: bool = False) -> str:
+        try:
+            return self._enable(name, given=given, owner=owner, in_terminal=in_terminal)
+        finally:
+            self._close_reach()
+
+    def disable(self, name: str, *, delete_secrets: bool = False) -> str:
+        try:
+            return self._disable(name, delete_secrets=delete_secrets)
+        finally:
+            self._close_reach()
+
+    def _close_reach(self) -> None:
+        """Decision 2: the control plane admits this machine only while `kube` runs (finding 16)."""
+        close = getattr(self.world, "close_reach", None)
+        left = close() if close is not None else None
+        if left:
+            self.say(left)
+
+    def _enable(self, name: str, *, given: Mapping[str, str] | None = None, owner: str | None = None,
+                in_terminal: bool = False) -> str:
         addon = get(name)
         chosen = self.choices(addon, given or {})
         self.preflight(addon, chosen)
@@ -663,7 +683,7 @@ class Flow:
         self.events.emit("step_done", step=f"addon.{addon.name}", state=MET, detail=why)
         return why
 
-    def disable(self, name: str, *, delete_secrets: bool = False) -> str:
+    def _disable(self, name: str, *, delete_secrets: bool = False) -> str:
         addon = get(name)
         self._refuse_denied(addon)
         record = recorded(self._outputs()).get(addon.name) or {}
@@ -705,6 +725,7 @@ class RealWorld:
     deps: Any
     api_context: str | None = None
     _kube: Any = None
+    _reach: Any = None
 
     # Secret Manager: metadata, a generated key's addVersion, and the typed delete.
 
@@ -753,6 +774,7 @@ class RealWorld:
         from . import tfvars
         from .state import state_bucket
         from .steps import bootstrap
+        from .steps.infra import REOPEN_PASS, REOPENED
         from .terraform import Terraform, run_pass
 
         applied = [p for p in tfvars.PASSES if tfvars.ROOT_OF[p] == root and p != "registry"
@@ -760,6 +782,9 @@ class RealWorld:
         if not applied:
             raise AddonError(f"no {root} pass has been applied; run swarm install to READY first")
         pass_name = applied[-1]
+        if pass_name == "infra-close" and self.ctx.outputs.get(REOPENED):
+            # `kube` reopened the control plane: keep this machine's address until the close (finding 16).
+            pass_name = REOPEN_PASS
         inputs = bootstrap.generate(self.ctx, pass_name, self.gcp)
         _merge(inputs, overlay)
         tf = Terraform(root=root, root_dir=self.deps.module_root(self.ctx, root),
@@ -781,13 +806,41 @@ class RealWorld:
 
     # The install cluster (kube_for refuses any other and every deny-listed one).
 
+    def reach_context(self) -> Any:
+        """An engine-shaped context for the reopen after the closing pass (finding
+        16): it saves through the state store and keeps `ctx` current."""
+        if self._reach is None:
+            from .state import StateStore, local_path
+            from .steps.infra import VerbContext
+
+            store = StateStore(project=self.project, environment=self.ctx.environment,
+                               local=local_path(self.project), bucket=self.ctx.bucket)
+
+            def save(change: Callable[[Any], None]) -> Any:
+                self.ctx.state = store.update(change)
+                self.ctx.outputs = self.ctx.state.outputs
+                return self.ctx.state
+
+            self._reach = VerbContext(project=self.project, environment=self.ctx.environment,
+                                      holder=self.ctx.holder, state=self.ctx.state, events=self.ctx.events,
+                                      bucket=self.ctx.bucket, save=save)
+        return self._reach
+
     def kube(self, *args: str, stdin: str | None = None) -> tuple[int, str, str]:
         if self._kube is None:
             from .steps.cluster import kube_for
 
-            self._kube = kube_for(self.ctx)
+            self._kube = kube_for(self.reach_context())
             self._kube.credentials()
         return self._kube(*args, stdin=stdin)
+
+    def close_reach(self) -> str | None:
+        """The closing pass again when `kube` reopened the control plane; the line to print if it failed."""
+        if self._reach is None:
+            return None
+        from .steps.infra import REACH
+
+        return REACH.close_after(self._reach, "swarm addon")
 
     def sync_tailscale_secret(self) -> None:
         """Secret Manager -> a 0600 file -> `kubectl create --dry-run` -> `kubectl apply`,

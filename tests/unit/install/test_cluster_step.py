@@ -26,6 +26,7 @@ import pytest
 from swarm_install.exitcodes import MET, UNMET, ExitCode
 from swarm_install.steps import cluster
 from swarm_install.steps.preflight import RELEASE_HOME
+from swarm_install.terraform import Completed, TerraformRefused
 
 from .test_preflight import PROJECT, Answers, FakeGcp, Rig, ctx_for
 
@@ -57,6 +58,29 @@ def bundle_bytes(extra: dict[str, bytes] | None = None) -> bytes:
     return out.getvalue()
 
 
+def sign(blob: bytes) -> bytes:
+    """The fake release key's signature: what `FakeCosign` accepts for `blob`."""
+    return b"signed " + hashlib.sha256(blob).hexdigest().encode()
+
+
+class FakeCosign:
+    """`cosign verify-blob --key K --signature S BLOB`, faked: it verifies when S
+    is `sign(BLOB)`, as the pinned release key would."""
+
+    def __init__(self) -> None:
+        self.verified: list[str] = []
+
+    def __call__(self, argv: Sequence[str], env: Any, cwd: Path) -> Completed:
+        argv = list(argv)
+        assert argv[1] == "verify-blob", argv
+        signature = Path(argv[argv.index("--signature") + 1]).read_bytes()
+        blob = Path(argv[-1])
+        if signature != sign(blob.read_bytes()):
+            return Completed(1, "", "Error: invalid signature when validating ASN.1 encoded signature")
+        self.verified.append(blob.name)
+        return Completed(0, "Verified OK", "")
+
+
 class ClusterFakeGcp(FakeGcp):
     """IAM knows each policy subject's uniqueId; the release home holds the bundle."""
 
@@ -69,6 +93,7 @@ class ClusterFakeGcp(FakeGcp):
         self.release[f"{base}/{cluster.BUNDLE}"] = data
         digest = hashlib.sha256(summed if summed is not None else data).hexdigest()
         self.release[f"{base}/SHA256SUMS"] += f"{digest}  {cluster.BUNDLE}\n".encode()
+        self.release[f"{base}/SHA256SUMS.sig"] = sign(self.release[f"{base}/SHA256SUMS"])
 
     def service_account(self, email: str) -> dict[str, Any] | None:
         self._call("service_account", email)
@@ -146,8 +171,29 @@ class FakeShell:
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """The engine's kubeconfig and bundle live under ~/.config; keep them in tmp."""
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.delenv("SWARM_KUBECTL", raising=False)
     return tmp_path / "home"
+
+
+@pytest.fixture
+def cosign(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> FakeCosign:
+    """bootstrap's `Release`, with cosign and the pinned key faked (finding 31)."""
+    fake = FakeCosign()
+    real = cluster.Release
+
+    def release(read_public: Any) -> Any:
+        return real(read_public=read_public, exec_=fake, cosign=lambda: tmp_path / "cosign",
+                    key=lambda: tmp_path / "release_key.pub")
+
+    monkeypatch.setattr(cluster, "Release", release)
+    return fake
+
+
+@pytest.fixture(autouse=True)
+def _signed_release(cosign: FakeCosign) -> FakeCosign:
+    """Every stage 10 test reads the bundle through the faked `Release`."""
+    return cosign
 
 
 def fake_plugin() -> Path:
@@ -486,3 +532,74 @@ def test_infra_outputs_read_through_terraform(tmp_path: Path) -> None:
     assert verbs.index("init") < verbs.index("output")
     output_env = next(env for argv, env in calls if argv[1] == "output")
     assert terraform.IMPERSONATE_ENV in output_env and PROJECT in output_env[terraform.IMPERSONATE_ENV]
+
+
+# -- finding 31: the bundle is read through Release.fetch ---------------------------
+
+
+def test_bundle_with_unsigned_sums_never_renders(cosign: FakeCosign) -> None:
+    """Finding 31: SHA256SUMS is cosign-verified against the pinned release key
+    before the bundle's digest is compared and before render.py runs. A bundle
+    and a SHA256SUMS swapped together (the digest matches, the signature does
+    not) is refused, and nothing from it runs."""
+    gcp, shell = ClusterFakeGcp(), FakeShell()
+    base = f"{RELEASE_HOME}/releases/{VERSION}"
+    swapped = bundle_bytes({"render.py": b"raise SystemExit('the swapped renderer ran')\n"})
+    gcp.release[f"{base}/{cluster.BUNDLE}"] = swapped
+    gcp.release[f"{base}/SHA256SUMS"] = f"{hashlib.sha256(swapped).hexdigest()}  {cluster.BUNDLE}\n".encode()
+    _, policies, *_ = _steps(gcp, shell)
+    with pytest.raises(TerraformRefused, match="does not verify with the pinned release key"):
+        policies.rendered(_ctx())
+    assert not any(argv[1].endswith("render.py") for argv, _, _ in shell.calls), "render.py never ran"
+    assert not cluster.bundle_dir(PROJECT, VERSION).exists(), "nothing unpacked"
+
+
+def test_bundle_sums_verified_before_render(cosign: FakeCosign) -> None:
+    gcp, shell = ClusterFakeGcp(), FakeShell()
+    _, policies, *_ = _steps(gcp, shell)
+    policies.rendered(_ctx())
+    assert cosign.verified == ["SHA256SUMS"]
+    assert f"{RELEASE_HOME}/releases/{VERSION}/SHA256SUMS.sig" in {a[0] for a in gcp.called("read_public")}
+    assert any(argv[1].endswith("render.py") for argv, _, _ in shell.calls)
+
+
+# -- finding 16: kubectl reopens the control plane after the closing pass -----------
+
+
+def test_kube_reopens_once_before_its_first_kubectl_call(home: Path) -> None:
+    shell = FakeShell()
+    reopened: list[int] = []
+    ctx = _ctx()
+    ctx.state.region = REGION
+    kube = cluster.Kube(project=PROJECT, region=REGION, cluster=cluster.DEFAULT_CLUSTER,
+                        find=lambda tool: "/opt/bin/kubectl", run=shell, gcloud=lambda: "/opt/bin/gcloud",
+                        plugin=fake_plugin, clock=ctx.clock, events=ctx.events,
+                        reach=lambda: reopened.append(len(shell.kubectl_calls())))
+    kube.credentials()
+    assert reopened == [], "get-credentials reaches the GKE API, not the control plane"
+    kube("get", "namespace", "swarm-system")
+    kube("get", "namespace", "swarm-system")
+    # Only `config current-context` (no control plane) ran before the reopen.
+    assert reopened == [1]
+
+
+def test_kube_for_reopens_through_the_reach_on_an_engine_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    from swarm_install.steps import infra
+
+    ctx = _ctx()
+    ctx.state.region = REGION
+    ctx.engine = object()  # an engine-shaped context: it can apply a pass
+    seen: list[Any] = []
+    monkeypatch.setattr(infra.REACH, "reopen", lambda c: seen.append(c))
+    kube = cluster.kube_for(ctx)
+    assert kube.reach is not None
+    kube.reach()
+    assert seen == [ctx]
+
+    class Bare:
+        """Uninstall's context: no engine, so no pass can be applied from it."""
+        project = PROJECT
+        state = ctx.state
+        outputs = ctx.state.outputs
+
+    assert cluster.kube_for(Bare()).reach is None

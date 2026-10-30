@@ -313,3 +313,63 @@ def test_the_keys_are_the_ones_the_scheduler_hands_its_jobs() -> None:
             return {"template": {"containers": [{"env": env}]}}
 
     assert team_mod.scheduler_spec_settings(Gcp(), PROJECT, "us-central1") == settings
+
+
+def _team_args() -> argparse.Namespace:
+    return argparse.Namespace(project=PROJECT, group=GROUP, display_name=None, first_admin=None,
+                              git_owner=None, context=None, json_events=False)
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_the_verb_closes_the_reach_its_kubectl_reopened(monkeypatch, capsys, fails: bool) -> None:
+    """Finding 16: after the closing pass, team add's kubectl reopens the control
+    plane through an engine-shaped context; the verb closes it when it finishes,
+    whether the add succeeded or not, and says so when the close did not apply."""
+    from swarm_install.state import InstallState
+    from swarm_install.steps import infra
+
+    verb = discover()["team"]
+    state = InstallState(project=PROJECT, environment="dev", region="us-central1")
+    marker = object()
+    monkeypatch.setattr(verb, "read_state", lambda project: state)
+    monkeypatch.setattr(verb, "verb_context", lambda project, s, events: marker)
+
+    class Flow:
+        def run(self, group: str, **kwargs: Any) -> dict:
+            if fails:
+                raise team_mod.TeamError("swarm-api refused")
+            return {"team": TEAM}
+
+    built: list[Any] = []
+
+    def build(args: Any, s: Any, events: Any, ctx: Any = None) -> Flow:
+        built.append(ctx)
+        return Flow()
+
+    closed: list[tuple[Any, str]] = []
+
+    def close_after(ctx: Any, name: str) -> str:
+        closed.append((ctx, name))
+        return "swarm team add: the closing pass did not apply"
+
+    monkeypatch.setattr(verb, "build", build)
+    monkeypatch.setattr(infra.REACH, "close_after", close_after)
+    code = verb.run(_team_args())
+    assert code == int(ExitCode.FAIL if fails else ExitCode.OK)
+    assert built == [marker], "kube_for reads the same context the close does"
+    assert closed == [(marker, "swarm team add")]
+    assert "the closing pass did not apply" in capsys.readouterr().err
+
+
+def test_the_verb_context_can_apply_a_pass(monkeypatch) -> None:
+    from swarm_install.state import InstallState
+    from swarm_install.steps import cluster, infra
+
+    verb = discover()["team"]
+    monkeypatch.setattr(verb, "GcsObjectStore", lambda bucket: f"gs://{bucket}")
+    monkeypatch.setattr("swarm_install.verbs.install.holder_identity", lambda: ADMIN)
+    state = InstallState(project=PROJECT, environment="dev", region="us-central1")
+    ctx = verb.verb_context(PROJECT, state, Events(lambda: 0.0, out=io.StringIO()))
+    assert isinstance(ctx, infra.VerbContext) and ctx.engine.store.bucket.startswith("gs://")
+    assert (ctx.project, ctx.holder, ctx.state) == (PROJECT, ADMIN, state)
+    assert cluster.kube_for(ctx).reach is not None, "kubectl reopens the control plane after the close"
