@@ -1341,10 +1341,13 @@ a harvest that failed or met processes that survived the reap, or a publish
 that raised. Each of these used to read SUCCEEDED. A forge that could not be
 reached at the probe fails the attempt retryably instead (`forge_unreachable`),
 as it already did for a pull-request step. A push whose stderr says the forge
-did not answer (a reset connection, a 5xx, a timeout; git's own words, read by
-`gitops.transient_git_failure`) is tried once more after 5 s
-(`gitops.push_branch`). A refusal is not retried. A second transient failure
-ends the step FAILED as above.
+did not answer (a reset connection, a 5xx or its reason phrase, a timeout;
+git's own words, read by `gitops.transient_git_failure`) is tried again after
+5, 10 and 20 s (`gitops.push_branch`, #2833). A refusal or a non-fast-forward
+is not retried. A push that fails every try fails the attempt retryably
+(`forge_unreachable`), its work kept in `swarm-work.patch` and the final
+checkpoint, and the retry publishes that work without running the agent again
+when the restored clone is still at the head and base the push carried.
 
 These steps still SUCCEED without a branch: one that changed nothing (its
 dependants already step past it), one that declared `allow_empty_diff` or
