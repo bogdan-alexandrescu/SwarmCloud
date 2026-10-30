@@ -244,6 +244,7 @@ from .gitops import (
     MergeOutcome,
     PeerPin,
     PushRejected,
+    PushUnreachable,
     base_merge_tip,
     branch_commits,
     clone_at_commit,
@@ -570,6 +571,11 @@ PULL_REQUEST_NOT_OPENED_FIELD = "pull_request_not_opened"
 #: ATTEMPT retryably rather than SUCCEEDING with no pull request -- the shape
 #: that turned release 37017777271's acceptance red on 2026-10-02.
 PUBLISH_UNREACHABLE_FIELD = "forge_unreachable"
+#: The `publish` a `PUBLISH_UNREACHABLE_FIELD` marker carries when it was the
+#: branch PUSH the forge never answered (`gitops.PushUnreachable`, #2833),
+#: rather than the probe or the pull request. Read by the retry, which then
+#: publishes the kept work without running the agent (`_push_to_republish`).
+REPUBLISH_PUSH = "push"
 #: The `result_summary.git` key `_publish_git` sets when git itself failed
 #: the publish -- the push, or the commit, fold or authorship check before it
 #: (#872). Read by `_publish_failed`: a pull-request step that ends with it
@@ -1259,6 +1265,10 @@ class Worker:
         # passed (#165): what `_harvest_git(defer=True)` left for
         # `_publish_checked`. None when there is nothing to publish.
         self._deferred_publish: dict[str, Any] | None = None
+        #: The clone base the final checkpoint's manifest recorded, when the
+        #: harvest then adopted a rebase onto a newer one: what a retry's
+        #: restore reads back, so `_push_unreachable_marker` records it (#2833).
+        self._checkpointed_base: str | None = None
         # Every name the last upload skipped, with its cause (#165), uncut.
         self._skip_causes: dict[str, str] = {}
         # Until when (monotonic) the lease this worker last extended is live
@@ -3410,6 +3420,17 @@ class Worker:
             self.phases.enter("revalidate_generation")
             self.control.validate_generation()
             return self._finish_without_agent
+
+        # ---- STEP 5e: a retry whose push the forge never answered (#2833) ---
+        # The previous attempt's agent finished and its push met a forge
+        # outage; the checkpoint restored above holds that work unchanged.
+        # The step publishes it without running the agent again. The
+        # generation is checked first, as for the gate: the publish pushes.
+        republish = self._push_to_republish(task)
+        if republish is not None:
+            self.phases.enter("revalidate_generation")
+            self.control.validate_generation()
+            return functools.partial(self._republish_without_agent, republish, task)
 
         # ---- runner input -----------------------------------------------
         payload = dict(task.get("input") or {})
@@ -7664,6 +7685,193 @@ class Worker:
             )
         )
 
+    def _push_to_republish(self, task: dict[str, Any]) -> dict[str, Any] | None:
+        """The previous attempt's push outage, when this retry may publish its
+        work without running the agent again, or None (#2833).
+
+        MEASURED 2026-10-30 (task_982546a3b645480887e3): GitHub answered a
+        step's push 500, and the step ended FAILED with its dependants
+        cancelled, its finished work only in `swarm-work.patch`. A push the
+        forge never answered now fails the attempt retryably
+        (`_fail_for_publish_unreachable`), and this is the retry's half:
+        running the agent again would spend its time and quota to redo work
+        that is already done.
+
+        Every one of these must hold, else the agent runs as on any retry:
+
+        * a checkpoint was restored (`_restored_from`): the work is in `work/`.
+          The attempt that failed the push took its final checkpoint before
+          the publish, and the retryable failure moves no pointer;
+        * the task's `result_summary.git` carries the push's marker
+          (`PUBLISH_UNREACHABLE_FIELD` with `publish: push`) and full shas;
+        * THE BASE IS STILL VALID: the clone base the restored manifest
+          records -- the worker's, never the tree's -- is the marker's;
+        * THE WORK IS STILL VALID: the restored clone's HEAD, read from its
+          files (`read_head_as_data`, no git process in the agent's clone),
+          is the HEAD that attempt harvested;
+        * the patch was kept: the summary lists `swarm-work.patch`.
+
+        The summary is the task document's, which a tenant's agent can
+        write (see `_recorded_checkpoint`). Taking its word costs nothing it
+        could not do already: the most a forged marker does is publish the
+        restored checkpoint's own work, through the same harvest, scans and
+        push as any attempt, without an agent run.
+        """
+        ws = self.ws
+        restored = self._restored_from
+        if ws is None or restored is None:
+            return None
+        summary = task.get("result_summary")
+        git = summary.get("git") if isinstance(summary, dict) else None
+        marker = git.get(PUBLISH_UNREACHABLE_FIELD) if isinstance(git, dict) else None
+        if not isinstance(marker, dict) or marker.get("publish") != REPUBLISH_PUSH:
+            return None
+        head, base = marker.get("head"), marker.get("base")
+        if not (
+            isinstance(head, str) and _FULL_SHA_RE.fullmatch(head)
+            and isinstance(base, str) and _FULL_SHA_RE.fullmatch(base)
+        ):
+            self.log.info("the previous attempt's push outage names no head and base; "
+                          "the agent runs again")
+            return None
+        if restored.clone_base != base:
+            self.log.info("the restored checkpoint's base is not the one the unanswered "
+                          "push was made from; the agent runs again")
+            return None
+        try:
+            restored_head = read_head_as_data(ws.work / REPO_DIR_NAME)
+        except GitError as exc:
+            self.log.info("the restored clone's HEAD could not be read; the agent runs again",
+                          error=str(exc))
+            return None
+        if restored_head != head:
+            self.log.info("the restored clone is not at the head the unanswered push "
+                          "carried; the agent runs again")
+            return None
+        artifacts = summary.get("artifacts") if isinstance(summary, dict) else None
+        if not any(
+            isinstance(entry, dict) and entry.get("name") == PATCH_NAME
+            for entry in artifacts or []
+        ):
+            self.log.info(f"the previous attempt kept no {PATCH_NAME}; the agent runs again")
+            return None
+        return {"head": head, "base": base, "tries": marker.get("tries")}
+
+    def _carry_previous_artifacts(self, task: dict[str, Any]) -> int:
+        """Download what the previous attempt uploaded into this one's artifacts (#2833).
+
+        A retry starts with an empty artifacts directory (only `work/` is
+        checkpointed), and the agent that wrote the pull request's title and
+        body, and the step's expected outputs, does not run again. So each
+        file the previous attempt listed in its `result_summary.artifacts` is
+        downloaded back, and this attempt uploads it as its own. Not
+        `swarm-work.patch`: the harvest writes it again from the same tree.
+
+        AN ENTRY IS DATA, CHECKED BEFORE IT IS READ, as `_carry_parked_uploads`
+        checks one: its `uri` must name the object `artifacts/<name>` of an
+        attempt of THIS task under this tenant's prefix, its name a relative
+        path that stays inside the artifacts directory, and the total within
+        `max_artifact_bytes`. Anything else is skipped and counted. Never
+        raises: a file that cannot be carried is missing, and the
+        missing-output check says so. Returns how many were carried.
+        """
+        ws = self.ws
+        assert ws is not None
+        cfg = self.cfg
+        summary = task.get("result_summary")
+        entries = summary.get("artifacts") if isinstance(summary, dict) else None
+        prefix = f"tenants/{cfg.tenant_id}/tasks/{cfg.task_id}/attempts/"
+        root = ws.artifacts.resolve()
+        carried = skipped = 0
+        total = 0
+        for entry in entries if isinstance(entries, list) else []:
+            name = entry.get("name") if isinstance(entry, dict) else None
+            uri = entry.get("uri") if isinstance(entry, dict) else None
+            if name == PATCH_NAME:
+                continue
+            key = None
+            if isinstance(name, str) and name and isinstance(uri, str):
+                at = uri.find(prefix)
+                rest = uri[at + len(prefix):] if at >= 0 else ""
+                attempt_id, _, tail = rest.partition("/")
+                if attempt_id and tail == f"artifacts/{name}":
+                    key = f"{prefix}{attempt_id}/artifacts/{name}"
+            destination = (root / name).resolve() if key else None
+            listed = entry.get("bytes") if isinstance(entry, dict) else None
+            if (
+                key is None or destination is None
+                or name.startswith("/") or root not in destination.parents
+                or isinstance(listed, bool) or not isinstance(listed, int)
+                or total + listed > cfg.max_artifact_bytes
+            ):
+                skipped += 1
+                continue
+            try:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                size = self.store.download_file(key, destination)
+            except Exception as exc:
+                skipped += 1
+                self.log.warning(
+                    "could not carry the previous attempt's upload",
+                    artifact=standalone_mod.shown(self._scrub(name)),
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                continue
+            total += int(size or 0)
+            if total > cfg.max_artifact_bytes:
+                destination.unlink(missing_ok=True)
+                skipped += 1
+                continue
+            carried += 1
+        self.log.info("the previous attempt's uploads were carried into this one",
+                      carried=carried, skipped=skipped)
+        return carried
+
+    def _republish_without_agent(self, republish: dict[str, Any], task: dict[str, Any]) -> Outcome:
+        """Publish the previous attempt's kept work, with no agent run (#2833).
+
+        Through `_finalise`, as `_finish_without_agent` ends a shut gate's
+        step: the final checkpoint, the harvest of the restored clone, the
+        uploads, the missing-output check, the publish and the lease release
+        are the ones every clean attempt has. The previous attempt's uploads
+        are carried in first (`_carry_previous_artifacts`), so the pull
+        request is titled by the agent's own text and the expected outputs
+        are there.
+        """
+        ws = self.ws
+        assert ws is not None
+        self._take_workdir_baseline()
+        carried = self._carry_previous_artifacts(task)
+        ws.result_path.write_text(
+            json.dumps(
+                {
+                    "status": "republished",
+                    "summary": (
+                        "the previous attempt's agent finished and its branch push met "
+                        f"a forge that did not answer after {republish.get('tries')} "
+                        "tries; the agent was not started again and the step published "
+                        "the work that attempt kept"
+                    ),
+                    "output": {"republished": {**republish, "artifacts_carried": carried}},
+                }
+            )
+        )
+        self.log.info("publishing the previous attempt's kept work without running the agent",
+                      head=republish.get("head"), artifacts_carried=carried)
+        return self._finalise(
+            ChildResult(
+                exit_code=0,
+                term_signal=None,
+                timed_out=False,
+                killed=False,
+                duration_seconds=0.0,
+                stdout_bytes=0,
+                stderr_bytes=0,
+                stdout_truncated=False,
+                stderr_truncated=False,
+            )
+        )
+
     def _republish_staged_verdict(self) -> None:
         """Publish the verdict file this step's shut gate read as its own artifact.
 
@@ -8757,8 +8965,10 @@ class Worker:
         Not here: a step that changed nothing (`published_nothing`, and the
         allowed empty diff), which had no branch to push and whose dependants
         already step past it; a shut verdict gate's step, which
-        `_skipped_publish_missing` answers; a forge outage, which
-        `_publish_unreachable` fails retryably. The forge-write refusal and
+        `_skipped_publish_missing` answers; a forge outage -- at the probe,
+        the pull request or, since #2833, the push itself
+        (`gitops.PushUnreachable`) -- which `_publish_unreachable` fails
+        retryably. The forge-write refusal and
         the final-tree leak are answered before this is asked. A `collect`
         step without a carrier, a `single-pr` reader and a step with no
         repository deliver no branch and never reach here.
@@ -8913,6 +9123,29 @@ class Worker:
             "retry_after_seconds": exc.retry_after_seconds,
         }
 
+    def _push_unreachable_marker(
+        self, exc: PushUnreachable, *, work_head: str | None
+    ) -> dict[str, Any]:
+        """What `_publish_git` records of a push the forge never answered (#2833).
+
+        `_unreachable_marker`'s shape, so `_publish_unreachable` reads it the
+        same way, and `publish: push` with the two shas the retry checks
+        before it publishes this work without running the agent again
+        (`_push_to_republish`): `head`, the clone's HEAD the harvest read
+        (the agent's last commit), and `base`, the clone base the worker
+        recorded in the checkpoint manifest -- before any rebase the harvest
+        adopted, since that is what the retry's restore reads back.
+        """
+        base = self._checkpointed_base or self.checkpoints.clone_base
+        return {
+            "reason": str(self._scrub(str(exc)[:500])),
+            "tries": int(exc.tries),
+            "retry_after_seconds": None,
+            "publish": REPUBLISH_PUSH,
+            "head": work_head if isinstance(work_head, str) else None,
+            "base": base if isinstance(base, str) else None,
+        }
+
     def _fail_for_publish_unreachable(
         self, marker: dict[str, Any], summary: dict[str, Any], *, exit_code: int
     ) -> Outcome:
@@ -8932,11 +9165,24 @@ class Worker:
         answer (`open_pull_request`'s 422). Once attempts are spent it ends
         OUTPUTS_MISSING, as `_fail_for_published_nothing` does: the step's
         promised deliverable does not exist.
+
+        A PUSH THE FORGE NEVER ANSWERED ENDS HERE TOO (#2833), not in
+        `_publish_failed`: its marker says `publish: push`. The task goes back
+        to READY, so its dependants keep waiting rather than being cancelled,
+        and the retry publishes the work this attempt kept without running
+        the agent again (`_push_to_republish`).
         """
         reason = str(marker.get("reason") or "the forge did not answer")
         tries = marker.get("tries")
         retry_after = marker.get("retry_after_seconds")
+        pushing = marker.get("publish") == REPUBLISH_PUSH
         error = self._scrub(
+            f"{FORGE_UNREACHABLE}: the step's branch push met a forge that did not "
+            f"answer after {tries} tries: {reason}. The work is kept in {PATCH_NAME} "
+            "and the final checkpoint; the attempt is retried while the task has "
+            "attempts left, and the retry publishes that work without running the "
+            "agent again."
+            if pushing else
             f"{FORGE_UNREACHABLE}: the step was to open a pull request, and the "
             f"forge did not answer after {tries} tries: {reason}. The attempt is "
             "retried while the task has attempts left."
@@ -8950,7 +9196,7 @@ class Worker:
                 FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
                 int(retry_after) if isinstance(retry_after, int) else 0,
             ),
-            detail={"publish": "pull_request", "tries": tries},
+            detail={"publish": REPUBLISH_PUSH if pushing else "pull_request", "tries": tries},
             end_cause=EndCause.OUTPUTS_MISSING,
         )
         self.log.warning(
@@ -13445,6 +13691,7 @@ class Worker:
             rebased = self._adopt_rebase_base(publish_repo, self._publish_base)
             if rebased is not None:
                 out["rebased_from"] = self._publish_base
+                self._checkpointed_base = self.checkpoints.clone_base
                 out["rebased_onto"] = rebased
                 self._publish_base = rebased
                 self.checkpoints.clone_base = rebased
@@ -14267,6 +14514,9 @@ class Worker:
         cfg = self.cfg
         ws = self.ws
         assert ws is not None
+        # The clone's HEAD as the harvest read it, before the auto-commit
+        # moves `work_head`: what a retry's restored clone is compared with.
+        harvested_head = work_head
         self._publish_remote_tip = None
 
         if not publish:
@@ -15012,6 +15262,17 @@ class Worker:
                 out[PUBLISH_UNREACHABLE_FIELD] = self._unreachable_marker(exc.cause)
                 self.log.warning("could not read the pull request before the push",
                                  error=str(exc))
+                return out
+            if isinstance(exc, PushUnreachable):
+                # The forge did not answer the push through every try (#2833):
+                # an outage, which the next attempt may not meet, so the
+                # ATTEMPT ends retryably (`_publish_unreachable`) and the
+                # retry publishes the work kept here (`_push_to_republish`).
+                out[PUBLISH_UNREACHABLE_FIELD] = self._push_unreachable_marker(
+                    exc, work_head=harvested_head
+                )
+                self.log.warning("the forge did not answer the push; the attempt is "
+                                 "retried with its work kept", tries=exc.tries)
                 return out
             # Read at the finish (#872): a pull-request step whose push failed
             # has not delivered, however cleanly its agent exited.

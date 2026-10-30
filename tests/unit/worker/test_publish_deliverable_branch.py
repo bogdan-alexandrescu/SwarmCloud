@@ -20,8 +20,9 @@ WHAT IS PINNED.
   * A PR step whose publish declined for `can_push=False` ends FAILED (today
     SUCCEEDED, with only a patch).
   * A push that fails once with a connection reset and then succeeds is
-    published (`gitops.push_branch` tries once more on git's transient words).
-    A refusal is not tried again, and a second transient failure is raised.
+    published (`gitops.push_branch` tries again on git's transient words).
+    A refusal is not tried again, and a transient failure on the last of
+    `PUSH_TRIES` is raised (#2833: `test_push_retry_republish.py`).
   * Controls: a `collect` step without a carrier still SUCCEEDS with nothing
     pushed; a contributor that changed nothing still SUCCEEDS; a contributor
     whose forge was unreachable at the probe fails RETRYABLY, not for good.
@@ -336,8 +337,8 @@ def _failing_pushes(monkeypatch, failures: list[str]) -> list[int]:
         return real(argv, **kwargs)
 
     monkeypatch.setattr(gitops, "_git_text", git_text)
-    # `raising=False`: absent before G1, so the test fails on the push, not here.
-    monkeypatch.setattr(gitops, "PUSH_RETRY_WAIT_SECONDS", 0, raising=False)
+    # `raising=False`: absent before #2833, so the test fails on the push, not here.
+    monkeypatch.setattr(gitops, "PUSH_RETRY_WAITS_SECONDS", (0.0, 0.0, 0.0), raising=False)
     return calls
 
 
@@ -391,13 +392,16 @@ def test_a_refused_push_is_not_tried_again(tmp_path, monkeypatch, origin, local_
 
 
 @pytest_git
-def test_a_push_reset_twice_is_retried_only_once(tmp_path, monkeypatch, origin, local_urls):
+def test_a_push_reset_on_every_try_is_raised_after_the_last(
+    tmp_path, monkeypatch, origin, local_urls
+):
+    """Four tries since #2833 (`PUSH_RETRY_WAITS_SECONDS`), then `PushUnreachable`."""
     repo = _publish_repo(tmp_path, origin)
-    calls = _failing_pushes(monkeypatch, [RESET, RESET, RESET])
+    calls = _failing_pushes(monkeypatch, [RESET] * 5)
 
     with pytest.raises(GitError, match="Connection reset"):
         _push(tmp_path, origin, repo)
-    assert len(calls) == 2
+    assert len(calls) == gitops.PUSH_TRIES == 4
     assert "swarm/t-retry" not in refs(origin)
 
 
