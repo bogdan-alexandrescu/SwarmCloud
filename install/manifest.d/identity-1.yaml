@@ -12,6 +12,7 @@ entries:
   scope: core
   stage: 7
   provider: engine
+  step: infra.pass-2
   check: gcloud run services describe swarm-api --format=json | jq '.spec.template.spec.containers[0].env[] | select(.name=="GROUPS_AUTH")'
   apply: 'NEW (DAYONE-IDENTITY-1 reads it at apps/swarm-api/swarm_api/settings.py, DAYONE-TF-2 renders it, DAYONE-ENGINE-3 sets admin_role for installs): admin_role or delegation; unset is delegation; any other value refuses to start'
   verify: stage 8's probe passes through swarm-api in the mode it runs
