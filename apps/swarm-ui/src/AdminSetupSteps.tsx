@@ -156,6 +156,18 @@ export function smokePassed(state: SetupState): boolean {
 }
 
 /**
+ * What the first workspace's smoke holds its step at, since the hand-over
+ * waits for it: failed on a failed smoke, in progress once it has started or
+ * a pool account is signed in to run it. Nothing while it waits for the first
+ * account: the accounts step, next, is what it waits on.
+ */
+export function smokeHold(smoke: SetupSmoke | null, signedIn: boolean): StepState | null {
+  if (smoke?.state === SMOKE_SUCCEEDED) return null
+  if (smoke?.state === 'failed') return 'failed'
+  return smoke !== null || signedIn ? 'in_progress' : null
+}
+
+/**
  * Infra pass 3 has run: stage 9's record (its first step is pass 3, and pass 4
  * and the hook come only after a passing self-check), or a self-check that
  * passed. Before it swarm-api has no App id, so the self-check cannot pass.
@@ -428,7 +440,8 @@ function githubRow(state: SetupState, onChanged: () => void, act: ReturnType<typ
       size="sm"
       kind={kind === 'ghost' ? 'ghost' : undefined}
       busy={act.busy === 'self-check' ? 'Checking' : false}
-      disabledReason={pass3Ran(state) ? undefined : `Waits for swarm install’s infra pass 3, which gives swarm-api the App’s id`}
+      // A few words: the reason sits in the row's action column, and the row's line and Self-check fact say the rest.
+      disabledReason={pass3Ran(state) ? undefined : 'After infra pass 3'}
       onClick={() => act.run('self-check', runGitHubAppSelfCheck)}
     >
       {label}
@@ -785,7 +798,7 @@ function personalRow(state: SetupState, onChanged: () => void): Row {
   ]
   return {
     ...base,
-    state: failed ? 'failed' : ws === WORKSPACE_READY ? 'done' : 'in_progress',
+    state: failed ? 'failed' : ws === WORKSPACE_READY ? smokeHold(p.smoke, signedIn) ?? 'done' : 'in_progress',
     line: ws === WORKSPACE_READY ? `${ONE_PERSON_LINE} ${p.workspace}` : `One-person install: your personal workspace ${p.workspace} is ${ws ?? 'being set up'}`,
     body: (
       <>
@@ -817,7 +830,7 @@ function teamRow(state: SetupState, onChanged: () => void, nowMs: number): Row {
   return {
     key: 'team',
     title: 'First team',
-    state: failed ? 'failed' : 'done',
+    state: failed ? 'failed' : smokeHold(team.smoke, signedIn) ?? 'done',
     by: 'this page',
     line: `${team.workspace} from ${team.group}${team.first_admin === null ? '' : ` · admin ${team.first_admin}`} · ${joined} of ${people.length} in the group`,
     body: (

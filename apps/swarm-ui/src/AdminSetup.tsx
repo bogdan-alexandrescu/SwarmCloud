@@ -37,11 +37,13 @@ import { AdminLead, type AdminLeadTone } from './AdminSettings'
 import { AdminSetupHealth } from './AdminSetupHealth'
 import {
   AdminSetupSteps,
+  consoleDone,
   firstWorkspace,
   GitHubAppCallback,
   InstallerCard,
   isOnePerson,
   signedInCount,
+  smokeHold,
   spanWords,
   useSetupState,
   WAITING_FOR_PASS_3,
@@ -91,10 +93,14 @@ export function stripSteps(state: SetupState): StripStep[] {
   const onePerson = isOnePerson(state)
   const team = firstWorkspace(state)
   const ws = workspaceState(state)
-  // One person's first workspace is done once its apply says ready; a team's once it exists (the checklist's rows).
-  const teamState: StepState =
-    team === null ? (onePerson ? 'in_progress' : 'todo') : ws !== null && FAILED_WORKSPACE.has(ws) ? 'failed' : !onePerson || ws === 'ready' ? 'done' : 'in_progress'
   const signed = signedInCount(state)
+  // One person's first workspace is done once its apply says ready, a team's once it exists, and either only
+  // once its smoke has succeeded (the checklist's rows; the hand-over waits for the smoke).
+  const through = team !== null && !(ws !== null && FAILED_WORKSPACE.has(ws)) && (!onePerson || ws === 'ready')
+  const smoke = through ? smokeHold(team.smoke, signed > 0) : null
+  const teamState: StepState =
+    team === null ? (onePerson ? 'in_progress' : 'todo') : ws !== null && FAILED_WORKSPACE.has(ws) ? 'failed' : !through ? 'in_progress' : smoke ?? 'done'
+  const smokeWords = smoke === null ? '' : `, smoke ${team?.smoke?.state ?? 'starting'}`
   const accounts: StepState = team === null && !onePerson ? 'todo' : signed > 0 ? 'done' : state.accounts.length > 0 ? 'in_progress' : 'todo'
   const v = state.engine?.verify ?? null
   const verify: StepState = v === null ? 'todo' : v.result === 'passed' ? 'done' : v.result === 'failed' ? 'failed' : 'in_progress'
@@ -126,7 +132,7 @@ export function stripSteps(state: SetupState): StripStep[] {
       key: 'team',
       label: onePerson ? 'First workspace' : 'First team',
       state: teamState,
-      line: team === null ? (onePerson ? 'your personal workspace, filed on the next read' : 'not yet') : `${team.workspace}${ws === null ? '' : `, ${ws}`}`,
+      line: team === null ? (onePerson ? 'your personal workspace, filed on the next read' : 'not yet') : `${team.workspace}${ws === null ? '' : `, ${ws}`}${smokeWords}`,
     },
     {
       key: 'accounts',
@@ -236,11 +242,24 @@ export function SetupLead({ state, now }: { state: SetupState; now?: number }) {
       return lead(tone, `swarm install is doing the cloud part: ${step.line.replace('by swarm install, ', '')}`, 'This page finishes the people part once swarm install hands over to it.')
     case 'github':
       return lead(tone, `GitHub App: ${step.state === 'todo' ? 'create it from the manifest' : step.line}`, `swarm install did the cloud part; this page finishes the people part. ${cli}`)
-    case 'team':
+    case 'team': {
+      const smoke = firstWorkspace(state)?.smoke ?? null
+      const ws = workspaceState(state)
+      // The step is held by its smoke once the workspace itself is through (`stripSteps`).
+      if (firstWorkspace(state) !== null && (ws === null || !FAILED_WORKSPACE.has(ws)) && (!isOnePerson(state) || ws === 'ready')) {
+        return lead(
+          tone,
+          `${isOnePerson(state) ? 'First workspace' : 'First team'}: ${step.line}`,
+          smoke?.state === 'failed'
+            ? `Its smoke agent failed: the row below says why and retries it, and the hand-over to swarm install waits for it to succeed. ${cli}`
+            : `Its smoke agent runs on the first signed-in Claude account, and the hand-over to swarm install waits for it to succeed. ${cli}`,
+        )
+      }
       if (isOnePerson(state)) {
         return lead(tone, `First workspace: ${step.line}`, `One-person install: your personal workspace is the first workspace, so no team or invites are needed; the Claude pool accounts come next. ${cli}`)
       }
       return lead(tone, step.state === 'failed' ? `First team: ${step.line}` : 'First team: name the Workspace group that becomes the first workspace', `Its members are the team; the Claude pool accounts come next and are owned by it. ${cli}`)
+    }
     case 'accounts':
       return lead(
         tone,
@@ -249,6 +268,10 @@ export function SetupLead({ state, now }: { state: SetupState; now?: number }) {
       )
     case 'verify': {
       const v = state.engine?.verify ?? null
+      if (v === null && state.finished === null && !consoleDone(state)) {
+        // The hand-over button shows only once every console step is done, the first workspace's smoke with them.
+        return lead(tone, 'Verify waits for the first workspace’s smoke to succeed', `The hand-over to swarm install is offered once it has. ${cli}`)
+      }
       if (v === null) {
         return lead(
           tone,
