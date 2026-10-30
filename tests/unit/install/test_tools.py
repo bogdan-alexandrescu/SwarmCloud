@@ -209,7 +209,8 @@ def test_gke_auth_plugin_ensured_under_the_name_kubectl_execs(tmp_path: Path, mo
     data = buffer.getvalue()
     pin = tools.pin_for("gke-gcloud-auth-plugin", ("darwin", "arm64"))
     monkeypatch.setitem(tools.PINS, ("gke-gcloud-auth-plugin", "darwin", "arm64"),
-                        Pinned(pin.name, pin.version, pin.url, hashlib.sha256(data).hexdigest(), pin.member))
+                        Pinned(pin.name, pin.version, pin.url, hashlib.sha256(data).hexdigest(), pin.member,
+                               exec_name=pin.exec_name))
     with pytest.raises(ChecksumMismatch):
         tools.ensure("gke-gcloud-auth-plugin", directory=tmp_path, fetch=lambda url: data + b"x",
                      system=("darwin", "arm64"))

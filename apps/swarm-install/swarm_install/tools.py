@@ -1,8 +1,9 @@
 """The local tools the installer fetches itself, pinned: cosign and gcrane
 (stage 4; manifest `local-tool.cosign`, `local-tool.gcrane`; design §6.1, D21),
 terraform, kubectl and jq (preflight, `local-tool.terraform`, `.kubectl`, `.jq`)
-and the Google Cloud SDK (`local-tool.gcloud`, on the person's yes;
-DAYONE-INSTALL-TOOLS-AUTO). A new company needs only curl and a Google sign-in.
+the Google Cloud SDK (`local-tool.gcloud`, on the person's yes;
+DAYONE-INSTALL-TOOLS-AUTO) and the gke-gcloud-auth-plugin kubectl execs for a
+GKE context (`local-tool.gke-gcloud-auth-plugin`, DAYONE-PREFLIGHT-ASKS). A new company needs only curl and a Google sign-in.
 
 Each is downloaded from its project's GitHub release at a pinned version, and
 the bytes are checked against a pinned SHA-256 **before anything is written**:
@@ -37,6 +38,11 @@ TERRAFORM_VERSION = "1.16.2"
 KUBECTL_VERSION = "1.36.6"
 JQ_VERSION = "1.8.2"
 GCLOUD_VERSION = "591.0.0"
+#: The GKE auth plugin kubectl execs for a GKE context (CLUSTER-REACH), as
+#: GCLOUD_VERSION's component manifest names it: version 0.5.20, build
+#: 20261016073856.
+GKE_AUTH_PLUGIN_VERSION = "0.5.20"
+GKE_AUTH_PLUGIN_BUILD = "20261016073856"
 
 _COSIGN = f"https://github.com/sigstore/cosign/releases/download/v{COSIGN_VERSION}"
 _GCRANE = f"https://github.com/google/go-containerregistry/releases/download/v{GCRANE_VERSION}"
@@ -44,6 +50,7 @@ _TERRAFORM = f"https://releases.hashicorp.com/terraform/{TERRAFORM_VERSION}/terr
 _KUBECTL = f"https://dl.k8s.io/release/v{KUBECTL_VERSION}/bin"
 _JQ = f"https://github.com/jqlang/jq/releases/download/jq-{JQ_VERSION}"
 _GCLOUD = f"https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-{GCLOUD_VERSION}"
+_GKE_AUTH = "https://dl.google.com/dl/cloudsdk/channels/rapid/components/google-cloud-sdk-gke-gcloud-auth-plugin"
 
 
 @dataclass(frozen=True)
@@ -54,6 +61,9 @@ class Pinned:
     sha256: str
     #: The binary's path inside a `.tar.gz` or `.zip`; `None` when the download is the binary.
     member: str | None = None
+    #: Cached under its own name (in a versioned directory) rather than as
+    #: `<name>-<version>`: another tool execs it from PATH by that exact name.
+    exec_name: bool = False
 
 
 #: (tool, os, arch) -> the pinned download. From cosign_checksums.txt and
@@ -123,6 +133,24 @@ PINS: dict[tuple[str, str, str], Pinned] = {
         "jq", JQ_VERSION, f"{_JQ}/jq-macos-arm64",
         "2d75340ba57a4b4b4c8708a21c2dc8e958a48aaa8bba13b27f77f6e4c0eca07e"),
 }
+
+#: The gke-gcloud-auth-plugin component for each platform. The digests are the
+#: `data.checksum` (SHA-256 of the archive) of each `gke-gcloud-auth-plugin-*`
+#: component in Google's published component manifest for this SDK,
+#: https://dl.google.com/dl/cloudsdk/channels/rapid/components-v591.0.0.json,
+#: read on 2026-10-30 and matched by downloading each archive that day. The
+#: manifest's "arm" is arm64 (aarch64) on both systems.
+PINS.update({
+    ("gke-gcloud-auth-plugin", os_name, arch): Pinned(
+        "gke-gcloud-auth-plugin", GKE_AUTH_PLUGIN_VERSION, f"{_GKE_AUTH}-{component}-{GKE_AUTH_PLUGIN_BUILD}.tar.gz",
+        digest, "bin/gke-gcloud-auth-plugin", exec_name=True)
+    for (os_name, arch), component, digest in (
+        (("linux", "amd64"), "linux-x86_64", "7ca2be31d6faa232b733cd3e91b98e182771516732d7230c19196b51cde7f823"),
+        (("linux", "arm64"), "linux-arm", "9f53cf95d4bebfe313cd61741d75971b4cd34194fdf00780d754611d22a03528"),
+        (("darwin", "amd64"), "darwin-x86_64", "8f6f6a5d67717e018cd352374ea89bf0c29e7812403ee2ec15df3000fc366f29"),
+        (("darwin", "arm64"), "darwin-arm", "beb9e6ce595ca4cec5504d7f6cf85ea5863cec3d89a618c6e5249ebe70f295cc"),
+    )
+})
 
 #: (os, arch) -> the Google Cloud SDK's versioned archive, a whole tree rather
 #: than one binary. Google publishes no sums file for the versioned archives
@@ -215,11 +243,15 @@ def ensure(name: str, *, directory: Path | None = None, fetch: Callable[[str], b
     """The path of the pinned `name`, downloaded and checked on first use.
 
     The archive's digest is recorded beside the binary; a cached binary whose
-    record is not the pinned digest is downloaded again."""
+    record is not the pinned digest is downloaded again. A pin with
+    `exec_name` (gke-gcloud-auth-plugin) is `<name>-<version>/<name>`, alone
+    in its directory, so the caller can put that directory first on PATH."""
     pin = pin_for(name, system)
-    where = directory or cache_dir()
-    target = where / f"{pin.name}-{pin.version}"
-    record = target.with_name(target.name + ".sha256")
+    base = directory or cache_dir()
+    versioned = base / f"{pin.name}-{pin.version}"
+    target = versioned / pin.name if pin.exec_name else versioned
+    where = target.parent
+    record = versioned.with_name(versioned.name + ".sha256")
     if target.is_file() and record.is_file() and record.read_text().strip() == pin.sha256:
         return target
     binary = _binary(pin, checked(pin, fetch(pin.url)))

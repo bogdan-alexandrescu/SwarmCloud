@@ -560,6 +560,7 @@ PINNED_OUTPUT = {
     "cosign": "GitVersion: v2.4.1",
     "gcrane": "0.20.2",
     "gcloud": "591.0.0",
+    "gke-gcloud-auth-plugin": "Kubernetes v1.30.0+0.5.20",
 }
 
 
@@ -613,7 +614,8 @@ class FetchingTools:
 
 
 EVERY_GOOD = {"gcloud": "591.0.0", "terraform": "Terraform v1.16.2", "kubectl": "Client Version: v1.36.1",
-              "jq": "jq-1.7.1", "uv": "uv 0.13.6", "python3": "Python 3.11.9", "cosign": "v2.4.1", "gcrane": "0.20.2"}
+              "jq": "jq-1.7.1", "uv": "uv 0.13.6", "python3": "Python 3.11.9", "cosign": "v2.4.1", "gcrane": "0.20.2",
+              "gke-gcloud-auth-plugin": "Kubernetes v1.30.0+0.5.20"}
 
 
 def _applied(step: preflight.ToolsStep, ctx: Any) -> Any:
@@ -622,7 +624,7 @@ def _applied(step: preflight.ToolsStep, ctx: Any) -> Any:
     return step.check(ctx)
 
 
-@pytest.mark.parametrize("name", ["terraform", "kubectl", "jq", "cosign", "gcrane"])
+@pytest.mark.parametrize("name", ["terraform", "kubectl", "jq", "cosign", "gcrane", "gke-gcloud-auth-plugin"])
 def test_missing_tool_fetched_not_refused(tmp_path: Path, name: str) -> None:
     """A tool the release pins is fetched (SHA-256 checked by tools.ensure)
     instead of a refusal telling the person to install it."""
@@ -683,7 +685,8 @@ def test_missing_gcloud_no_stops_with_how_to_install_it(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError) as stopped:
         step.apply(ctx, step.plan(ctx))
     assert "https://cloud.google.com/sdk/docs/install" in str(stopped.value)
-    assert "gcloud auth login" in str(stopped.value)
+    assert "gcloud auth" not in str(stopped.value), "the installer signs in itself; it hands over no command"
+    assert "signs you in itself" in str(stopped.value)
     assert machine.sdk_installs == 0 and machine.logins == []
     assert len(ask.asked) == 1
 
