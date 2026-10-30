@@ -20,9 +20,11 @@ import json
 import os
 import importlib.util
 import pty
+import secrets
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -35,6 +37,8 @@ BUCKET = "gs://swarmcloud"
 RELEASE = f"{BUCKET}/releases/{VERSION}"
 HOME_REGISTRY = "us-docker.pkg.dev/swarmcloud-prod/swarmcloud"
 KMS = "gcpkms://projects/swarmcloud-prod/locations/us/keyRings/swarmcloud-release/cryptoKeys/cosign"
+#: The release key the engine pins; the assembled bundle's swarm_install wheel carries it.
+RELEASE_KEY = REPO / "apps" / "swarm-install" / "swarm_install" / "release_key.pub"
 
 FAKE = r'''#!{python}
 """A fake {tool}: logs argv, answers reads from $FAKE_STATE."""
@@ -63,10 +67,27 @@ if tool == "gcloud" and args[:2] == ["storage", "ls"]:
     print(f"ERROR: (gcloud.storage.ls) One or more URLs matched no objects: {url}", file=sys.stderr)
     sys.exit(1)
 if tool == "gcloud" and args[:2] == ["storage", "cp"]:
-    # Keep what a small upload held, so a test can read what a channel says.
     paths = [a for a in args[2:] if not a.startswith("-")]
-    if len(paths) == 2 and os.path.isfile(paths[0]) and os.path.getsize(paths[0]) < 4096:
-        state.setdefault("uploaded", {})[paths[1]] = open(paths[0]).read()
+    if len(paths) == 2 and paths[1].startswith("gs://"):
+        source, dest = paths
+        # The object gcloud storage cp writes, by its own destination rules
+        # (googlecloudsdk/command_lib/storage/tasks/cp/copy_task_iterator.py):
+        # a destination ending in "/" is a folder, and so is one that is not an
+        # object but a prefix of some, so the source's own name is appended:
+        # `cp rc gs://b/channels/rc` with only channels/rc/x in the bucket
+        # writes channels/rc/rc (audit 3, A5).
+        if dest.endswith("/"):
+            dest = dest + os.path.basename(source)
+        elif dest not in objects and any(o.startswith(dest + "/") for o in objects):
+            dest = dest + "/" + os.path.basename(source)
+        state.setdefault("written", []).append([dest, args])
+        # Keep what a small upload held, so a test (and a read back) sees it.
+        if source in objects or (os.path.isfile(source) and os.path.getsize(source) < 4096):
+            held = objects[source] if source in objects else open(source).read()
+            held = state.get("lands", {}).get(dest, held)
+            state.setdefault("uploaded", {})[dest] = held
+            objects[dest] = held
+            state["objects"] = objects
         json.dump(state, open(os.environ["FAKE_STATE"], "w"))
     sys.exit(0)
 if tool == "gcrane" and args[:1] == ["cp"] and "@" in args[1]:
@@ -78,13 +99,23 @@ if tool == "gcrane" and args[:1] == ["digest"]:
     ref = args[-1]
     print(ref.split("@", 1)[1] if "@" in ref else state.get("tags", {}).get(ref, "sha256:" + "0" * 64))
     sys.exit(0)
+# The KMS key's public half is state["kms_key"]; a signature names the key
+# that made it, and verify-blob passes only with that same public key.
 if tool == "cosign" and args[:1] == ["sign-blob"]:
     out = args[args.index("--output-signature") + 1]
-    open(out, "w").write("fake signature\n")
+    open(out, "w").write("signed by " + state["kms_key"] + "\n")
     sys.exit(0)
 if tool == "cosign" and args[:1] == ["public-key"]:
-    print("fake public key")
+    print(state["kms_key"])
     sys.exit(0)
+if tool == "cosign" and args[:1] == ["verify-blob"]:
+    key = open(args[args.index("--key") + 1]).read().strip()
+    signature = open(args[args.index("--signature") + 1]).read().strip()
+    if signature == "signed by " + key and os.path.isfile(args[-1]):
+        print("Verified OK", file=sys.stderr)
+        sys.exit(0)
+    print("Error: invalid signature when validating ASN.1 encoded signature", file=sys.stderr)
+    sys.exit(1)
 sys.exit(0)
 '''
 
@@ -113,6 +144,8 @@ def _env(tmp_path: Path, state: dict) -> dict[str, str]:
         path = bindir / tool
         path.write_text(FAKE.replace("{python}", sys.executable).replace("{tool}", tool))
         path.chmod(0o755)
+    # The KMS key is the pinned one unless a test says it is another.
+    state = {"kms_key": RELEASE_KEY.read_text().strip(), **state}
     (tmp_path / "state.json").write_text(json.dumps(state))
     (tmp_path / "calls.log").write_text("")
     # GITHUB_ too: a run of these tests inside Actions must not stand in for
@@ -169,6 +202,17 @@ def _writes(calls: list[list[str]]) -> list[list[str]]:
 
 def _destinations(calls: list[list[str]]) -> list[str]:
     return [[a for a in c[3:] if not a.startswith("-")][-1] for c in _writes(calls) if c[0] == "gcloud"]
+
+
+def _objects(tmp_path: Path) -> list[str]:
+    """Every object a `gcloud storage cp` wrote, as gcloud names it, in order."""
+    return [dest for dest, _ in json.loads((tmp_path / "state.json").read_text()).get("written", [])]
+
+
+def _object_writes(tmp_path: Path, name: str) -> list[list[str]]:
+    """The argv of every `gcloud storage cp` that wrote the object `name`."""
+    return [args for dest, args in json.loads((tmp_path / "state.json").read_text()).get("written", [])
+            if dest == name]
 
 
 def _tested(version: str = VERSION, result: str = "pass") -> str:
@@ -231,13 +275,33 @@ def test_promote_moves_channel_after_the_record(tmp_path: Path) -> None:
     state = _published(**{f"{RELEASE}/TESTED": _tested()})
     proc = _run(tmp_path, state, "--promote", VERSION, typed=VERSION)
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    dest = _destinations(_calls(tmp_path))
-    assert f"{BUCKET}/channels/stable" in dest
+    dest = _objects(tmp_path)
+    assert dest[-1] == f"{BUCKET}/channels/stable", dest
     assert f"{BUCKET}/marketplace.json" in dest
     assert f"{BUCKET}/install.sh" in dest
     # What moves is uncached: a teammate must not read yesterday's channel.
     for call in _writes(_calls(tmp_path)):
         assert "--cache-control=no-cache" in call, call
+
+
+def test_promote_writes_the_stable_object_whatever_prefix_exists(tmp_path: Path) -> None:
+    """`channels/stable` is written as that object even when the bucket holds
+    objects under a `channels/stable/` prefix, and read back (A5)."""
+    state = _published(**{f"{RELEASE}/TESTED": _tested(), f"{BUCKET}/channels/stable/stray": "x"})
+    proc = _run(tmp_path, state, "--promote", VERSION, typed=VERSION)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    dest = _objects(tmp_path)
+    assert dest[-1] == f"{BUCKET}/channels/stable", dest
+    assert not [d for d in dest if d.startswith(f"{BUCKET}/channels/stable/")], dest
+    assert ["gcloud", "storage", "cat", f"{BUCKET}/channels/stable"] in _calls(tmp_path)
+
+
+def test_promote_refuses_a_stable_object_that_does_not_read_back(tmp_path: Path) -> None:
+    state = _published(**{f"{RELEASE}/TESTED": _tested()})
+    state["lands"] = {f"{BUCKET}/channels/stable": "2026.09.9\n"}
+    proc = _run(tmp_path, state, "--promote", VERSION, typed=VERSION)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert f"{BUCKET}/channels/stable" in proc.stderr and "2026.09.9" in proc.stderr, proc.stderr
 
 
 def test_promote_marketplace_names_the_plugin_zip_by_url(tmp_path: Path) -> None:
@@ -348,6 +412,74 @@ def test_publish_copies_and_signs_every_image_by_digest(tmp_path: Path, bundle: 
     assert f"{RELEASE}/SHA256SUMS.sig" in dest and f"{RELEASE}/cosign.pub" in dest
 
 
+def _rekey_wheel(bundle: Path, tmp_path: Path, key: str | None) -> None:
+    """Put `key` as the engine wheel's release_key.pub (None: drop it), resummed."""
+    (wheel,) = bundle.glob("swarm_install-*.whl")
+    rebuilt = tmp_path / wheel.name
+    member = "swarm_install/release_key.pub"
+    with zipfile.ZipFile(wheel) as source, zipfile.ZipFile(rebuilt, "w") as target:
+        for item in source.infolist():
+            if item.filename == member:
+                if key is not None:
+                    target.writestr(item, key + "\n")
+            else:
+                target.writestr(item, source.read(item))
+    shutil.move(rebuilt, wheel)
+    _resum(bundle)
+
+
+def test_publish_verifies_the_new_signature_with_the_wheels_key_before_writing(
+        tmp_path: Path, bundle: Path, assembled: tuple[Path, Path]) -> None:
+    """The SHA256SUMS signature is checked with the release_key.pub inside the
+    bundle's own engine wheel (the key every install pins) before any image is
+    copied or any object written (audit 3, A11)."""
+    proc = _publish(tmp_path, bundle, assembled[1])
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    calls = _calls(tmp_path)
+    verifies = [c for c in calls if c[:2] == ["cosign", "verify-blob"]]
+    # MUTATION: drop the verify-blob and this fails.
+    assert len(verifies) == 1, [c[:2] for c in calls]
+    (verify,) = verifies
+    assert Path(verify[-1]).name == "SHA256SUMS", verify
+    key = Path(verify[verify.index("--key") + 1])
+    assert key.name == "release_key.pub", verify
+    assert "--insecure-ignore-tlog=true" in verify, verify
+    first_write = min(calls.index(c) for c in _writes(calls) if c[:2] != ["cosign", "sign-blob"])
+    assert calls.index(verify) < first_write, calls[:first_write + 1]
+
+
+def test_publish_refuses_a_signature_the_pinned_key_does_not_verify(tmp_path: Path, bundle: Path,
+                                                                     assembled: tuple[Path, Path]) -> None:
+    """A KMS key that is not the one the wheel pins would fail every install,
+    and a published release is never overwritten: nothing is written."""
+    other = "-----BEGIN PUBLIC KEY-----\n" + secrets.token_hex(32) + "\n-----END PUBLIC KEY-----"
+    proc = _publish(tmp_path, bundle, assembled[1], state={"kms_key": other})
+    assert proc.returncode == 1, proc.stdout[-2000:] + proc.stderr[-3000:]
+    assert "release_key.pub" in proc.stderr, proc.stderr[-2000:]
+    assert [c for c in _writes(_calls(tmp_path)) if c[:2] != ["cosign", "sign-blob"]] == []
+
+
+def test_publish_refuses_a_wheel_without_the_release_key(tmp_path: Path, bundle: Path,
+                                                         assembled: tuple[Path, Path]) -> None:
+    _rekey_wheel(bundle, tmp_path, None)
+    proc = _publish(tmp_path, bundle, assembled[1])
+    assert proc.returncode == 1, proc.stdout[-2000:] + proc.stderr[-3000:]
+    assert "release_key.pub" in proc.stderr, proc.stderr[-2000:]
+    assert _writes(_calls(tmp_path)) == []
+
+
+def test_publish_verifies_with_the_wheels_key_not_the_checkouts(tmp_path: Path, bundle: Path,
+                                                                assembled: tuple[Path, Path]) -> None:
+    """What installs pin is the key inside the published wheel, so that is the
+    key publish checks against, whatever this checkout holds."""
+    other = "-----BEGIN PUBLIC KEY-----\n" + secrets.token_hex(32) + "\n-----END PUBLIC KEY-----"
+    _rekey_wheel(bundle, tmp_path, other)
+    proc = _publish(tmp_path, bundle, assembled[1], state={"kms_key": other})
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-3000:]
+    proc = _publish(tmp_path, bundle, assembled[1])
+    assert proc.returncode == 1, proc.stdout[-2000:] + proc.stderr[-3000:]
+
+
 def test_publish_refuses_a_copy_with_another_digest(tmp_path: Path, bundle: Path,
                                                     assembled: tuple[Path, Path]) -> None:
     """The copy is checked by digest before it is signed (H28)."""
@@ -441,21 +573,21 @@ def test_every_publish_puts_install_sh_at_the_root(tmp_path: Path, bundle: Path,
 
 def test_candidate_publish_writes_the_rc_marketplace(tmp_path: Path, bundle: Path,
                                                      assembled: tuple[Path, Path]) -> None:
-    """A candidate's publish writes channels/rc/marketplace.json, the
+    """A candidate's publish writes channels/rc.marketplace.json, the
     candidate's own marketplace (plugin.zip by URL), uncached, before the
-    channel line: a deployment on the rc channel adds it (audit finding N10)."""
+    channel line: a deployment on the rc channel adds it (audit finding N10).
+    It is a sibling of the channel object, never under a `channels/rc/`
+    prefix, which would make `channels/rc` a folder to gcloud (A5)."""
     proc = _publish(tmp_path, _as_candidate(bundle), assembled[1], typed=CANDIDATE)
     assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-3000:]
-    calls = _calls(tmp_path)
-    dest = _destinations(calls)
+    dest = _objects(tmp_path)
     # MUTATION: drop the rc marketplace write and this fails.
-    assert f"{BUCKET}/channels/rc/marketplace.json" in dest, dest
-    assert dest.index(f"{BUCKET}/channels/rc/marketplace.json") < dest.index(f"{BUCKET}/channels/rc"), dest
-    (call,) = [c for c in _writes(calls) if c[0] == "gcloud"
-               and _destinations([c]) == [f"{BUCKET}/channels/rc/marketplace.json"]]
+    assert f"{BUCKET}/channels/rc.marketplace.json" in dest, dest
+    assert dest.index(f"{BUCKET}/channels/rc.marketplace.json") < dest.index(f"{BUCKET}/channels/rc"), dest
+    (call,) = _object_writes(tmp_path, f"{BUCKET}/channels/rc.marketplace.json")
     assert "--cache-control=no-cache" in call, call
     uploaded = json.loads((tmp_path / "state.json").read_text()).get("uploaded", {})
-    (sc,) = json.loads(uploaded[f"{BUCKET}/channels/rc/marketplace.json"])["plugins"]
+    (sc,) = json.loads(uploaded[f"{BUCKET}/channels/rc.marketplace.json"])["plugins"]
     assert sc["version"] == CANDIDATE
     assert sc["source"]["url"] == f"https://storage.googleapis.com/swarmcloud/releases/{CANDIDATE}/plugin.zip"
     assert sc["source"]["sha256"] == hashlib.sha256((bundle / "plugin.zip").read_bytes()).hexdigest()
@@ -476,10 +608,6 @@ def test_publish_refuses_a_marketplace_with_a_relative_source(tmp_path: Path, bu
     assert _writes(_calls(tmp_path)) == []
 
 
-def _channel_writes(calls: list[list[str]], channel: str) -> list[list[str]]:
-    return [c for c in _writes(calls) if c[0] == "gcloud" and _destinations([c]) == [f"{BUCKET}/channels/{channel}"]]
-
-
 def test_candidate_publish_moves_the_rc_channel_last(tmp_path: Path, bundle: Path,
                                                      assembled: tuple[Path, Path]) -> None:
     """A candidate's publish writes `channels/rc` naming it, uncached, after
@@ -487,18 +615,63 @@ def test_candidate_publish_moves_the_rc_channel_last(tmp_path: Path, bundle: Pat
     installer that reads it finds a complete, signed release."""
     proc = _publish(tmp_path, _as_candidate(bundle), assembled[1], typed=CANDIDATE)
     assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-3000:]
-    calls = _calls(tmp_path)
-    dest = _destinations(calls)
+    dest = _objects(tmp_path)
     # MUTATION: drop the rc write from publish.sh and this fails.
     assert dest[-1] == f"{BUCKET}/channels/rc", dest
-    assert dest.index(f"{CANDIDATE_RELEASE}/SHA256SUMS") < dest.index(f"{BUCKET}/channels/rc/marketplace.json"), dest
+    assert dest.index(f"{CANDIDATE_RELEASE}/SHA256SUMS") < dest.index(f"{BUCKET}/channels/rc.marketplace.json"), dest
     assert f"{BUCKET}/channels/stable" not in dest, dest
-    (rc,) = _channel_writes(calls, "rc")
+    (rc,) = _object_writes(tmp_path, f"{BUCKET}/channels/rc")
     assert "--cache-control=no-cache" in rc, rc
     # What the channel holds is one line, the candidate's version, as
     # install.sh reads it (`curl .../channels/${SWARM_CHANNEL}`).
     uploaded = json.loads((tmp_path / "state.json").read_text()).get("uploaded", {})
     assert uploaded.get(f"{BUCKET}/channels/rc") == f"{CANDIDATE}\n", uploaded.get(f"{BUCKET}/channels/rc")
+
+
+#: What the bucket held after 2026.10.1-rc.1 was published from 67e6e636f: the
+#: marketplace under a `channels/rc/` prefix, then the channel line copied INTO
+#: that prefix as channels/rc/rc, and no object channels/rc (audit 3, A5).
+RC1_LAYOUT = {f"{BUCKET}/channels/rc/marketplace.json": "{}", f"{BUCKET}/channels/rc/rc": "2026.10.1-rc.1\n"}
+
+
+@pytest.mark.parametrize("before", [{}, RC1_LAYOUT, {**RC1_LAYOUT, f"{BUCKET}/channels/rc": "2026.10.1-rc.1\n"}],
+                         ids=["empty", "rc1-prefix", "rc1-prefix-and-object"])
+def test_candidate_publish_writes_exactly_the_channel_objects(tmp_path: Path, bundle: Path,
+                                                              assembled: tuple[Path, Path], before: dict) -> None:
+    """The channel line lands as the object `channels/rc`, the one install.sh
+    and preflight read, and the marketplace as `channels/rc.marketplace.json`,
+    whatever `channels/rc/` prefix the bucket already holds (A5)."""
+    proc = _publish(tmp_path, _as_candidate(bundle), assembled[1], state={"objects": dict(before)},
+                    typed=CANDIDATE)
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-3000:]
+    channel_objects = [d for d in _objects(tmp_path) if d.startswith(f"{BUCKET}/channels/")]
+    # MUTATION: copy $WORK/rc to gs://swarmcloud/channels/rc again and the rc1-prefix case fails.
+    assert channel_objects == [f"{BUCKET}/channels/rc.marketplace.json", f"{BUCKET}/channels/rc"], channel_objects
+    objects = json.loads((tmp_path / "state.json").read_text())["objects"]
+    assert objects[f"{BUCKET}/channels/rc"] == f"{CANDIDATE}\n"
+
+
+def test_candidate_publish_reads_the_channel_back(tmp_path: Path, bundle: Path,
+                                                  assembled: tuple[Path, Path]) -> None:
+    """After the write, publish reads `channels/rc` back, and it holds exactly
+    the candidate's version."""
+    proc = _publish(tmp_path, _as_candidate(bundle), assembled[1], typed=CANDIDATE)
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-3000:]
+    calls = _calls(tmp_path)
+    read = ["gcloud", "storage", "cat", f"{BUCKET}/channels/rc"]
+    # MUTATION: drop the read back and this fails.
+    assert read in calls, calls[-5:]
+    last_cp = max(i for i, c in enumerate(calls) if c[:3] == ["gcloud", "storage", "cp"])
+    assert calls.index(read) > last_cp
+
+
+@pytest.mark.parametrize("held", ["2026.10.1-rc.1\n", "", f"{VERSION}-rc.10\n"])
+def test_candidate_publish_fails_when_the_channel_does_not_read_back(tmp_path: Path, bundle: Path,
+                                                                     assembled: tuple[Path, Path], held: str) -> None:
+    state = {"lands": {f"{BUCKET}/channels/rc": held}}
+    proc = _publish(tmp_path, _as_candidate(bundle), assembled[1], state=state, typed=CANDIDATE)
+    assert proc.returncode == 1, proc.stdout[-2000:] + proc.stderr[-3000:]
+    assert f"{BUCKET}/channels/rc" in proc.stderr and CANDIDATE in proc.stderr, proc.stderr[-2000:]
 
 
 def test_candidate_publish_by_ci_moves_the_rc_channel(tmp_path: Path, bundle: Path,
@@ -508,7 +681,7 @@ def test_candidate_publish_by_ci_moves_the_rc_channel(tmp_path: Path, bundle: Pa
     proc = _run(tmp_path, {}, "--bundle", str(_as_candidate(bundle)), "--source-images", str(assembled[1]),
                 "--ci", typed=None, extra_env=_actions(version=CANDIDATE))
     assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-3000:]
-    dest = _destinations(_calls(tmp_path))
+    dest = _objects(tmp_path)
     assert dest[-1] == f"{BUCKET}/channels/rc", dest
     assert f"{BUCKET}/channels/stable" not in dest, dest
 
