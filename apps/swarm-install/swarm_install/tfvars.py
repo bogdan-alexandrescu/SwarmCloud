@@ -41,7 +41,11 @@ no `sizing` (older than the question) keeps Terraform's defaults.
 
 **Add-ons.** Every pass merges `addons.inputs_for(outputs, root)` over the
 core inputs, so an add-on's recorded phase survives a later install or
-upgrade apply instead of being turned back off by core's defaults.
+upgrade apply instead of being turned back off by core's defaults. The CI
+add-on's recorded `sandbox_repository` becomes infra's
+`acceptance_sandbox_repository_url`, the same clone URL `swarm addon enable ci`
+sets as the repository variable, so the swarm-verify job's acceptance pushes to
+the company's own sandbox; without one the input stays unset (null, no env).
 
 **Cluster reach (decision 2).** Every infra pass before `infra-close` puts the
 installer's public address (`installer_cidr`) in `gke_master_authorized_cidrs`
@@ -297,6 +301,15 @@ def _with_addons(inputs: dict[str, Any], state: Any, root: str) -> dict[str, Any
     return inputs
 
 
+def acceptance_sandbox(state: Any) -> str | None:
+    """The CI add-on's sandbox clone URL for the swarm-verify job, or None when none is recorded."""
+    choices = (addons.recorded(state.outputs).get("ci") or {}).get("choices") or {}
+    if not isinstance(choices, Mapping) or not choices.get("sandbox_repository"):
+        return None
+    # One format for the repository variable and the job's env (addons.CI_VARIABLES["sandbox"]).
+    return addons.Flow._ci_variable("sandbox", choices)
+
+
 def _overlay(into: dict[str, Any], overlay: Mapping[str, Any]) -> None:
     for key, value in overlay.items():
         if isinstance(value, Mapping) and isinstance(into.get(key), Mapping):
@@ -426,6 +439,9 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
                 inputs[variable] = str(app[key])
     inputs["enable_github_hooks"] = (after(pass_name, "infra-4") and inputs["enable_github_app"]
                                      and bool(versions.get("swarm-github-app-webhook-secret")))
+    sandbox = acceptance_sandbox(state)
+    if sandbox:
+        inputs["acceptance_sandbox_repository_url"] = sandbox
     return _with_addons(inputs, state, "infra")
 
 

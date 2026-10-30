@@ -1327,7 +1327,24 @@ def cmd_sc(_client, args) -> int:
 
 #: The installer's verbs (design §2.1). Only their names live here, because the
 #: hint for a missing engine has to be printed without importing it.
-INSTALL_VERBS = ("install", "uninstall", "upgrade", "team", "addon")
+INSTALL_VERBS = ("install", "uninstall", "upgrade", "team", "addon", "doctor")
+
+#: Installer verbs this command also answers WITHOUT the installer: `swarm
+#: doctor`'s client tier (`cmd_doctor`) is what every teammate runs when
+#: nothing works, and a teammate's `swarm` has no `swarm_install`. With the
+#: installer, `swarm doctor` goes to it, which runs this client tier first and
+#: then the platform tier (DAYONE-DOCTOR-1); without it, it stays the client
+#: tier and never prints the install line.
+CLIENT_TIER_VERBS = ("doctor",)
+
+
+def _installer_present() -> bool:
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec("swarm_install") is not None
+    except (ImportError, ValueError):
+        return False
 
 #: How the engine is installed: the release home's installer script (design
 #: §6.3), which installs both wheels (plan R6).
@@ -2095,6 +2112,8 @@ def build_parser() -> argparse.ArgumentParser:
         alias_parser.set_defaults(func=cmd_sc, no_client=True)
 
     for verb in INSTALL_VERBS:
+        if verb in CLIENT_TIER_VERBS:
+            continue  # its own parser below: the client tier, installer or not
         verb_parser = sub.add_parser(
             verb, help=f"the installer: `swarm {verb} --help` (needs the SwarmCloud installer)"
         )
@@ -2138,7 +2157,7 @@ def main(argv: list[str] | None = None) -> int:
         # `sc` owns its own error handling and exit codes (3 means "something
         # is down"), so this hands the whole line over rather than wrapping it.
         return _delegate_to_sc(raw)
-    if raw and raw[0] in INSTALL_VERBS:
+    if raw and raw[0] in INSTALL_VERBS and (raw[0] not in CLIENT_TIER_VERBS or _installer_present()):
         return _delegate_to_install(raw)
 
     args = build_parser().parse_args(argv)

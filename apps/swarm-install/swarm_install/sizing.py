@@ -4,8 +4,10 @@ capacity ceilings and runtime limits stage 0 records as `state.outputs["sizing"]
 
 `propose(mode, members)` is a pure function of the constants below. The
 reference shape is the live deployment's own `pool_limits`
-(terraform/environments/dev/dev.tfvars): a team of `REFERENCE_MEMBERS` lands
-on exactly those numbers, a smaller one scales down by the same ratios, and one
+(terraform/environments/dev/dev.tfvars): every ceiling scales with `global` by
+that shape's ratios. A team of `REFERENCE_MEMBERS` lands half again above
+those numbers (`global` 270 against the live 180), because the owner picked
+`HEADROOM` 3, not 2; a smaller team scales down by the same ratios, and one
 person gets a small deployment of their own.
 
 Every number here is a CEILING, not a reservation: only LEASED, DISPATCHED,
@@ -44,7 +46,10 @@ AGENTS_PER_ACTIVE_MEMBER = 3
 ACTIVE_SHARE = 0.6
 #: Ceilings sit this far above the expected concurrency: room for AIMD to
 #: search in and for a burst, never a promise (dev.tfvars, provider_tenant).
-HEADROOM = 2
+#: 3, not the 2 that reproduces the live dev.tfvars for a team of 50: the
+#: owner picked "More headroom" (PR #2797), so 1/5/15/50 people get a global
+#: of 10/27/81/270. A ceiling nobody reaches costs nothing (invariant 1).
+HEADROOM = 3
 #: The smallest `global` ceiling, so one person can still run a small fan-out.
 MIN_GLOBAL = 10
 #: Concurrent agents one Claude subscription sustains: "three accounts at

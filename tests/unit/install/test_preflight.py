@@ -1040,7 +1040,7 @@ def test_one_number_changed_then_accepted() -> None:
     _, ask, ctx = _sized(gcp, "2", "15", "1", "60", "")
     expected = sizing.with_change(sizing.propose("team", 15, region_cpu_quota=3000), ("pool_limits", "global"), 60)
     assert ctx.outputs["sizing"] == expected
-    assert ask.asked[3][1].startswith("New value for tasks at once, the whole deployment (global) (now 54)")
+    assert ask.asked[3][1].startswith("New value for tasks at once, the whole deployment (global) (now 81)")
     assert ask.asked[4][1].startswith("Changed tasks at once, the whole deployment (global) to 60.")
 
     budget = len(sizing.rows(ctx.outputs["sizing"]))
@@ -1097,7 +1097,7 @@ def test_a_new_project_says_the_quota_is_checked_after_stage_1(pages: list[Any])
 
 
 def test_stage_1_checks_the_sizing_against_the_new_projects_quota(pages: list[Any]) -> None:
-    recorded = sizing.propose("team", 50)
+    recorded = sizing.propose("team", 15)
     outputs = {"sizing": recorded, "sizing_cpu_quota": {"region": "us-central1", "cpus": None}}
     gcp = FakeGcp()
     gcp.cpu_quota = 108  # (108 - 8) / 4 = 25 tasks
@@ -1108,7 +1108,7 @@ def test_stage_1_checks_the_sizing_against_the_new_projects_quota(pages: list[An
     assert observed.status == UNMET and "above the 25 tasks" in observed.detail
     step.apply(ctx, step.plan(ctx))
     assert ctx.outputs["sizing"] == sizing.capped(recorded, 108)
-    assert ctx.outputs["sizing"]["pool_limits"]["runner_profiles"]["codex"] == 20  # under the cap: kept
+    assert ctx.outputs["sizing"]["pool_limits"]["runner_profiles"]["codex"] == 9  # under the cap: kept
     assert ctx.outputs["sizing"]["budget_usd"] == recorded["budget_usd"]
     assert step.check(ctx).status == MET
 

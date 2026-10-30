@@ -130,6 +130,19 @@ COPY tests/acceptance/mcp_echo_server/ /swarm/tests/acceptance/mcp_echo_server/
 # and a copy would derive an id nobody resolves to. Standard library only.
 COPY apps/common/swarm_common/identity.py /swarm/apps/common/swarm_common/identity.py
 
+# The hourly doctor (lane DAYONE-DOCTOR-1): terraform/infra/doctor.tf runs
+# `python -m swarm_install.scheduled_doctor` here as swarm-doctor. It needs the
+# installer's package and the release's manifest (the probes it runs), and the
+# manifest model's two libraries, from Alpine's own packages rather than pip
+# (the scan gate above). Its probes call Google's REST APIs with the standard
+# library and the metadata server's token: no Google client library, no gcloud.
+# `python` because that is the job's command; Alpine ships only `python3`.
+RUN apk add --no-cache py3-yaml py3-pydantic \
+    && ln -sf /usr/bin/python3 /usr/bin/python
+COPY apps/swarm-install/swarm_install/ /swarm/apps/swarm-install/swarm_install/
+COPY install/ /swarm/install/
+ENV PYTHONPATH=/swarm/apps/swarm-install
+
 # Fail loudly at build time rather than at 3am if a script lost its bit.
 RUN chmod +x /swarm/scripts/*.sh /swarm/scripts/lib/*.sh 2>/dev/null || true
 

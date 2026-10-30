@@ -273,7 +273,9 @@ def test_the_list_carries_every_pattern_the_old_filter_did():
     release timing cuts A and C), which runs only after a release completes on
     main and is read by test_release_acceptance_job.py, plus
     terraform/modules/service_account_ids/main.tf (2026-10-10), which the
-    workspace-apply image copies in. MUTATION: drop any one."""
+    workspace-apply image copies in, plus install/** (2026-10-30,
+    DAYONE-DOCTOR-1), the manifest the swarm-verify image copies in for the
+    hourly doctor. MUTATION: drop any one."""
     assert set(app_paths()) == {
         "apps/**", "images/**", "kubernetes/**", "scripts/**", "tests/**", "docs/**",
         "terraform/modules/monitoring/alerts.tf", "terraform/modules/service_account_ids/main.tf", "plugin/**", ".claude-plugin/**",
@@ -282,7 +284,7 @@ def test_the_list_carries_every_pattern_the_old_filter_did():
         ".github/ISSUE_TEMPLATE/**", ".github/labels.yml", ".github/workflows/iam-refusal-probe.yml",
         ".github/workflows/ci-fix.yml", ".github/workflows/auto-merge.yml", "scripts/ci-gate.sh",
         ".dockerignore", ".gcloudignore", ".github/workflows/hotfix.yml", ".github/actions/**",
-        ".github/workflows/accept.yml",
+        ".github/workflows/accept.yml", "install/**",
     }
 
 
