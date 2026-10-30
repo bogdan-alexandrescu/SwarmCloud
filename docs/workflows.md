@@ -1196,6 +1196,53 @@ reuses `DEPENDENCY_INCOMPLETE`; every promoter of that reason checks the
 gate. Contract change request 76 (docs/contract-change-requests.md) asks for
 a typed home.
 
+## A `repository_ref` the forge does not have is refused at submission
+
+**Why it exists.** On 2026-10-29 workflow `wf_81c4f2da` was submitted with
+`repository_ref: swarm/task_77d63ca81cbb423ba839`. That was the branch of a
+pull request that had merged and whose branch GitHub had deleted. Admission
+checked only the ref's shape: `check_repository_ref` refuses an abbreviated
+sha (F4) and nothing else. So the build step took a lease and waited two
+minutes for a GKE pod, then failed in the worker's clone, and
+`on_step_failure: fail_workflow` cancelled the review and fix steps.
+
+**What swarm-api does now.** A branch or tag name is asked about once per
+submission, before any agent is stored and before any lease exists.
+`SubmissionService._check_ref_exists` makes the read with the slot
+`forge.resolve_forge_slot` picks for the submitter (the same read `merge_pr`
+uses). A workflow asks once, not once per step. A batch asks once for each
+distinct `(repository_url, repository_ref)`. The order is
+`git/ref/heads/<ref>`, then `git/ref/tags/<ref>`, then the repository itself.
+The submission is refused only when the branch and the tag are both missing
+and the repository answers. The refusal is 422 `repository_ref_not_found`
+with `detail.field: repository_ref`. When the name is `swarm/<task id>` of an
+agent in the caller's own tenant, the message names that agent and the pull
+request it recorded, says whether it was merged or closed, and suggests
+`continues_task` or the default branch. Another tenant's agent is never named.
+
+Like every new refusal, it ships **report-only** (`swarm_api/refusals.py`).
+While `REFUSAL_REPOSITORY_REF_NOT_FOUND` is unset or `off`, the refusal is
+logged as `refusal report-only code=repository_ref_not_found` and the
+submission is admitted, as before. Set the switch to `on` (terraform's
+`api_refusals` map) once that log shows only refs that really were gone.
+
+A full 40-character sha is never asked about, because the worker fetches it
+by sha. A `continues_task`, `merge_pr` or `publish_to_pr` supplies its own
+ref and refuses a `repository_ref` beside it, so none of those is asked
+about either. Neither is a repository that is not on GitHub.
+
+**Why it fails open.** Each of these admits the submission as before:
+
+* no forge reader or credential is configured;
+* GitHub answers 401 or 403, times out, answers 5xx or rate-limits;
+* the repository itself is unreadable, because a 404 for the branch is also
+  what a token that cannot see the repository gets.
+
+The check's job is to save the lease, the pod and the cancelled steps on a
+ref that is plainly gone. It must not let a GitHub outage, or one person's
+missing token, stop every submission. The clone still finds a missing ref
+in those cases, as it did before this check existed.
+
 ## The base pin: a downstream step starts where its parents started
 
 **Why it exists.** On 2026-10-02 workflow `wf_b9b337e107494c10a416`

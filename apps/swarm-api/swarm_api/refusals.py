@@ -550,6 +550,15 @@ SWITCHES: dict[str, Switch] = {
         "and offers Reject only to those who may approve",
         default=True,
     ),
+    # #2726 (docs/workflows.md, "A `repository_ref` the forge does not have").
+    # Off, a submission on a branch GitHub says is gone is admitted, as before,
+    # and fails in the worker's clone after a lease and a pod.
+    "repository_ref_not_found": Switch(
+        code="repository_ref_not_found",
+        why="a submission whose repository_ref is neither a branch nor a tag of a repository "
+        "the submitter's forge slot can read is answered 422 repository_ref_not_found before "
+        "any task is stored. On once the report-only log shows only refs that really were gone",
+    ),
     # Join requests (docs/design/join-requests.md §4.9, lane JOIN-STORE, part
     # of #2325) have NO switch here, deliberately: join_link_unknown,
     # join_already_member, join_already_reaches, join_not_offered,

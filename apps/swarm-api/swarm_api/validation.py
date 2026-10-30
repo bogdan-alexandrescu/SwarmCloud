@@ -1770,7 +1770,10 @@ def check_repository_ref(value: str | None) -> str | None:
     F4). The worker treats 7-40 lowercase hex as a sha and only a full one can
     be fetched, so 7-39 is refused here, before anything holds capacity. A
     branch or tag name -- anything the worker passes to `--branch` -- and a
-    full sha are accepted unchanged.
+    full sha are accepted unchanged here. Whether a branch or tag name exists
+    is asked of the forge once per submission afterwards
+    (`SubmissionService._check_ref_exists`, #2726), which refuses it with
+    `RepositoryRefNotFound` and fails open.
     """
     if not value:
         return value
@@ -1782,6 +1785,80 @@ def check_repository_ref(value: str | None) -> str | None:
             detail={"field": "repository_ref", "repository_ref": value},
         )
     return value
+
+
+class RepositoryRefNotFound(ValidationFailed):
+    """422 `repository_ref_not_found`: the forge has neither a branch nor a tag
+    of that name in a repository it can read (#2726)."""
+
+    code = "repository_ref_not_found"
+
+
+#: `swarm/<task id>`: the branch a `direct-pr` task or an integrator pushed
+#: (`continuation.TASK_ID_RE`, restated: continuation imports this module).
+_SWARM_TASK_BRANCH_RE = re.compile(r"^swarm/(?P<task_id>task_[0-9a-f]{20})$")
+
+
+def ref_needs_lookup(value: str | None) -> bool:
+    """Whether `repository_ref` is a branch or tag name the forge is asked about.
+
+    Not when absent (the default branch is cloned), and not a full sha, which
+    the worker fetches by sha. An abbreviated sha never gets here:
+    `check_repository_ref` refused it first.
+    """
+    if not value:
+        return False
+    return not (_WORKER_SHA_RE.match(value) and len(value) == _FULL_SHA_LENGTH)
+
+
+def swarm_task_of_ref(value: str) -> str | None:
+    """The task id a `swarm/<task id>` branch names, else None."""
+    match = _SWARM_TASK_BRANCH_RE.match(value)
+    return match.group("task_id") if match else None
+
+
+def repository_ref_not_found(
+    value: str,
+    repository: str,
+    *,
+    task_id: str | None = None,
+    pull_request: int | None = None,
+    pull_state: str | None = None,
+    default_branch: str | None = None,
+) -> RepositoryRefNotFound:
+    """The refusal of a `repository_ref` the forge does not have.
+
+    `task_id` only for a task of the CALLER's tenant (the caller checks):
+    another tenant's task is never named, so a guess at its id learns only the
+    generic sentence. `pull_state` is "merged", "closed" or "open" when the
+    pull request was read, None when it was not.
+    """
+    base = default_branch or "the default branch"
+    detail: dict[str, Any] = {"field": "repository_ref", "repository_ref": value,
+                              "repository": repository}
+    if task_id is None:
+        return RepositoryRefNotFound(
+            f"repository_ref {value!r} is neither a branch nor a tag of {repository}; "
+            f"it may have been deleted. Send an existing branch or tag, a full "
+            f"{_FULL_SHA_LENGTH}-character sha, or no repository_ref to start from {base}.",
+            detail=detail,
+        )
+    detail["task_id"] = task_id
+    if pull_request is None:
+        what = f"the branch task {task_id!r} published"
+    else:
+        detail["pull_request"] = pull_request
+        state = {"merged": "was merged", "closed": "was closed"}.get(pull_state or "")
+        what = (f"the branch of task {task_id!r}'s pull request #{pull_request}"
+                + (f", which {state}" if state else ""))
+    return RepositoryRefNotFound(
+        f"repository_ref {value!r} is {what}, and it is no longer a branch of "
+        f"{repository} (GitHub deletes a merged pull request's branch when the "
+        f"repository is set to). To add to that work, send continues_task: "
+        f"{task_id!r} instead of repository_ref; to build on what was merged, "
+        f"start from {base} (no repository_ref).",
+        detail=detail,
+    )
 
 
 # --------------------------------------------------------------------------
