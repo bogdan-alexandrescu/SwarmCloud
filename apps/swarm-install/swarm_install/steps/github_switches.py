@@ -11,6 +11,11 @@ the hand-off wait** (`handoff.py`):
 | `github.pass-4` | pass 3 done and the console's self-check `ok` | infra pass 4: `enable_github_hooks`, which makes the receiver and gives swarm-api its `GITHUB_HOOKS_URL` |
 | `github.hook` | pass 4 done and its apply reported the receiver serving | `POST /v1/admin/setup/github-app/hook` as `swarm-tf-deployer`: swarm-api signs the App JWT, so the key never reaches the laptop |
 
+**The hand-off waits for them.** The console can finish while no CLI runs; the
+hand-off is met only once `console/finished` exists AND pass 4 and the hook are
+done, so a later `swarm install` re-enters its wait and the first poll runs
+them, and `handoff.ready` requires both (audit finding 17).
+
 **The webhook waits for its receiver.** swarm-api has `GITHUB_HOOKS_URL` only
 once the receiver serves (terraform/infra/locals.tf, `api_day_one_env`), which
 is infra pass 4's apply; before it, the hook route answers 409

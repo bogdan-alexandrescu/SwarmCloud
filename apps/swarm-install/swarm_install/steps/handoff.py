@@ -3,7 +3,15 @@
 | Step | Stage | Kind | What it does |
 |---|---|---|---|
 | `handoff.console` | 13 | wait | once `https://<H>/` answers behind IAP, writes `hand_off_at` and opens the one URL (`open_page`: printed, and opened in the browser), once; then waits for `console/finished`, keeping the lease (the engine heartbeats on every poll) and running stage 9's switches (`github_switches.py`) as triggered steps when the console's App step lands |
-| `handoff.ready` | 15 | engine | after stage 14's verify steps all passed (they run only once the wait above is met, B09b), writes `ready_at` and prints READY |
+| `handoff.ready` | 15 | engine | after stage 14's verify steps all passed (they run only once the wait above is met, B09b) and the webhook pass and the hook are done, writes `ready_at` and prints READY |
+
+**The wait is met only once the switches are on, too.** The console can
+finish while no CLI runs (its steps need none up to the App's self-check), and
+the triggered steps run only on the wait's polls. So `console/finished` alone
+does not meet the hand-off: while any of stage 9's switches is not done, the
+check is `waiting`, the engine applies the step again, and the wait's first
+poll, before its first check, runs every switch whose trigger has landed
+(audit finding 17). The page is not opened again once the console is finished.
 
 The wait has a bound (a person finishing the console's steps); past it the
 install pauses with exit 4, and `swarm install` again resumes at the wait:
@@ -22,6 +30,8 @@ from .bootstrap import DEPS, Deps
 from .github_switches import build_triggered
 
 FINISHED = "finished"
+#: What READY needs besides the verify steps: the webhook pass and the hook.
+SWITCHES = ("github.pass-4", "github.hook")
 
 #: A person working through Admin › Setup: GitHub App, first team, Claude
 #: accounts, send to your team.
@@ -81,15 +91,22 @@ class HandoffStep:
         except OSError:
             return False
 
+    def switches_off(self, ctx: Any) -> list[str]:
+        return [step.id for step in self.triggered if not ctx.state.done(step.id)]
+
     def check(self, ctx: Any) -> Observation:
         if ctx.read_console(FINISHED):
-            return Observation(MET, "the console's setup is finished")
+            off = self.switches_off(ctx)
+            if not off:
+                return Observation(MET, "the console's setup is finished and the App's switches are on")
+            return Observation(WAITING, f"the console's setup is finished; waiting for {', '.join(off)}")
         if ctx.state.hand_off_at is None:
             return Observation(UNMET, "the console has not been handed off yet")
         return Observation(WAITING, "waiting for the console's setup to finish")
 
     def verify(self, ctx: Any) -> Observation:
-        return Observation(MET) if ctx.read_console(FINISHED) else Observation(UNMET, "the console is not finished")
+        observed = self.check(ctx)
+        return observed if observed.status == MET else Observation(UNMET, observed.detail)
 
     def plan(self, ctx: Any) -> Plan:
         return Plan("hand off to the console", (f"open {console_url(ctx)}",
@@ -104,6 +121,12 @@ class HandoffStep:
         if ctx.state.hand_off_at is None:
             now = ctx.clock.now()
             ctx.engine.save(lambda s: setattr(s, "hand_off_at", now))
+        if ctx.read_console(FINISHED):
+            # Finished while no CLI ran: nothing is left for the person. The
+            # engine's wait runs the landed switches on its first poll.
+            ctx.events.emit("step_apply", step=self.id, url=url,
+                            message="the console's setup is finished; turning the GitHub App's switches on")
+            return
         ctx.events.emit("step_apply", step=self.id, url=url,
                         message=f"open {url} to finish setup (keep this terminal open)")
         open_page(url, why="\nFinish setup in the console's Admin › Setup (opening it now). Keep this terminal "
@@ -124,10 +147,11 @@ class ReadyStep:
         self._say = say
 
     def explain(self) -> str:
-        return "READY is written only after every verify check passed (D3: done is proven, never assumed)."
+        return ("READY is written only after every verify check passed and the GitHub App's webhook is on "
+                "(D3: done is proven, never assumed).")
 
     def unverified(self, ctx: Any) -> list[str]:
-        return [step for step in self._verify_ids() if not ctx.state.done(step)]
+        return [step for step in (*self._verify_ids(), *SWITCHES) if not ctx.state.done(step)]
 
     def check(self, ctx: Any) -> Observation:
         if ctx.state.ready_at is not None and not self.unverified(ctx):
@@ -143,7 +167,7 @@ class ReadyStep:
     def apply(self, ctx: Any, plan: Plan) -> None:
         missing = self.unverified(ctx)
         if missing:
-            raise RuntimeError(f"not READY: verify has not passed {', '.join(missing)}")
+            raise RuntimeError(f"not READY: these have not passed: {', '.join(missing)}")
         now = ctx.clock.now()
         ctx.engine.save(lambda s: setattr(s, "ready_at", now))
         url = console_url(ctx).removesuffix("/admin/setup")
