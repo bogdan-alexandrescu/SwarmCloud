@@ -134,32 +134,26 @@ RUN echo "apk layer of ${APT_REFRESH}" \
 # with the same ENVIRONMENT variable swarm-api reads. Unset, or anything but a
 # plain environment name, writes `{}`: the console then says ENVIRONMENT
 # UNKNOWN, loudly, rather than draw a name nobody checked. The value is never
-# echoed to the log. Written by a RUN heredoc, as root, rather than a COPY
-# from one: scripts/lib/common.sh's dockerfile_copy_sources maps every COPY to
-# a file in the repository and refuses a heredoc it cannot map.
-RUN cat > /docker-entrypoint.d/40-swarm-ui-config.sh <<"EOF" && chmod 0755 /docker-entrypoint.d/40-swarm-ui-config.sh
-#!/bin/sh
-set -eu
-dir=/tmp/swarm-ui
-name=$(printf '%s' "${ENVIRONMENT:-}" | tr '[:upper:]' '[:lower:]')
-case "$name" in
-  "") ;;
-  [!a-z0-9]* | *[!a-z0-9._-]*)
-    echo "swarm-ui: ENVIRONMENT is not a plain environment name; /config.json declares none" >&2
-    name="" ;;
-esac
-if [ "${#name}" -gt 63 ]; then
-  echo "swarm-ui: ENVIRONMENT is longer than 63 characters; /config.json declares none" >&2
-  name=""
-fi
-mkdir -p "$dir"
-if [ -n "$name" ]; then
-  printf '{"environment":"%s"}\n' "$name" > "$dir/config.json.tmp"
-else
-  printf '{}\n' > "$dir/config.json.tmp"
-fi
-mv "$dir/config.json.tmp" "$dir/config.json"
-EOF
+# echoed to the log.
+#
+# A FILE IN THE REPOSITORY, COPIED, NEVER A HEREDOC. Main's Cloud Build builds
+# this image with the classic builder (scripts/build-images.sh generate_config
+# sets DOCKER_BUILDKIT=1 only for a Dockerfile that mounts the tool mirror),
+# and a `RUN cat > ... <<"EOF"` heredoc is BuildKit's: written that way by
+# DAYONE-UIENV-1 (#2744), it passed the pull request's buildx build-check and
+# failed every main `build images` run from 16:01Z on 2026-10-29
+# (SWARM-UI-IMAGE-FIX). tests/unit/scripts/test_classic_builder_dockerfiles.py
+# refuses BuildKit-only syntax in every image the classic builder builds.
+#
+# NO `RUN chmod` AFTER THE COPY. The script is committed executable (git mode
+# 100755) and COPY keeps the mode, so a chmod changes nothing, and its layer is
+# byte-identical to the COPY's. The release's layer check refuses an image that
+# repeats a layer, because GKE image streaming will not stream it (docs/
+# browser-startup-speed.md section 2.4); that refusal stopped the release of
+# c08dc1e75 on 2026-10-29. `COPY --chmod` is BuildKit's, so it is no way out
+# either. tests/unit/scripts/test_ui_build_declares_its_environment.py holds both
+# the executable bit and the absence of the chmod.
+COPY images/swarm-ui/40-swarm-ui-config.sh /docker-entrypoint.d/40-swarm-ui-config.sh
 USER 101
 
 COPY images/swarm-ui/nginx.conf /etc/nginx/conf.d/default.conf
