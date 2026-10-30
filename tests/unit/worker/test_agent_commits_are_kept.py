@@ -36,6 +36,7 @@ from swarm_common.states import TaskState
 
 from worker_seeds import seed_attempt
 from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
+    _the_fence_holds,
     _commit_as_claude,
     assert_only_the_worker_wrote,
     empty_origin,

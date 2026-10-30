@@ -48,6 +48,7 @@ from agent_worker import gitops, lifecycle
 from agent_worker.errors import FencedError
 
 from test_strategy_end_to_end import (  # noqa: F401 -- fixtures
+    _the_fence_holds,
     _the_agent_titles_its_pull_request,
     assert_only_the_worker_wrote,
     forge,

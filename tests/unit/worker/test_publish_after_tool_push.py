@@ -37,6 +37,7 @@ import pytest
 
 from agent_worker import lifecycle
 
+from test_strategy_end_to_end import _the_fence_holds  # noqa: F401 -- fixture
 from test_continue_swarm_branch import (  # noqa: F401 -- fixtures are used by name
     FIX,
     ROOT,
