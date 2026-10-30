@@ -666,3 +666,230 @@ def test_one_person_install_keeps_the_group_steps() -> None:
     assert identity.install_groups(ctx) == {"admin": f"swarm-admins@{DOMAIN}"}
     plan = identity.GroupsStep(lambda: WorkspaceGcp(), Answers(), lambda c: FakeApi()).plan(ctx)
     assert f"swarm-admins@{DOMAIN}" in plan.summary
+
+
+# -- DAYONE-DIR-SCOPES: stage 8 asks for the Directory scopes through the deployment's Desktop client ------
+
+
+DIRECTORY = ("https://www.googleapis.com/auth/admin.directory.customer.readonly",
+             "https://www.googleapis.com/auth/admin.directory.rolemanagement")
+
+
+class SignedOutGcp(WorkspaceGcp):
+    """The Directory API as it answers stage 0's ADC when Google refused it the
+    Directory scopes: every Directory call is a 403 until a session from the
+    Desktop client's sign-in is handed in with `use_directory`."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.directory: Any = None
+
+    def use_directory(self, session: Any) -> None:
+        self._call("use_directory")
+        self.directory = session
+
+    @property
+    def directory_ready(self) -> bool:
+        return self.directory is not None
+
+    def _scoped(self) -> None:
+        if self.directory is None:
+            raise ApiError(403, "ACCESS_TOKEN_SCOPE_INSUFFICIENT", "Request had insufficient authentication scopes.")
+
+    def customer_id(self) -> str:
+        self._scoped()
+        return super().customer_id()
+
+    def role_assignments(self, customer: str, role_id: str) -> list[dict[str, Any]]:
+        self._scoped()
+        return super().role_assignments(customer, role_id)
+
+
+class DirectorySignIn:
+    """The Desktop client's sign-in, faked: each call is one browser consent."""
+
+    def __init__(self, refuse: bool = False) -> None:
+        self.refuse = refuse
+        self.calls = 0
+        self.session = object()
+
+    def __call__(self, ctx: Any) -> Any:
+        self.calls += 1
+        if self.refuse:
+            raise identity.DirectorySignInFailed("Google did not grant the Directory scopes: access_denied")
+        return self.session
+
+
+def test_groups_sign_in_through_the_desktop_client_when_stage_0_had_no_directory_scopes(
+        tmp_path: Path, pages: list[tuple[str, str]]) -> None:
+    gcp = SignedOutGcp()
+    sign_in = DirectorySignIn()
+    rig = Rig(tmp_path)
+    _seed(rig, directory_scopes=False)
+    step = identity.GroupsStep(lambda: gcp, Answers(identity_groups=["yes"]), lambda c: FakeApi(), directory=sign_in)
+    result = rig.engine([step]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert sign_in.calls == 1 and gcp.directory is sign_in.session
+    assert len(gcp.called("create_group")) == 2
+    assert pages == []
+
+
+def test_stage_0_directory_scopes_never_start_a_second_sign_in(tmp_path: Path, pages: list[tuple[str, str]]) -> None:
+    gcp = WorkspaceGcp()
+    sign_in = DirectorySignIn()
+    rig = Rig(tmp_path)
+    _seed(rig, directory_scopes=True)
+    step = identity.GroupsStep(lambda: gcp, Answers(identity_groups=["yes"]), lambda c: FakeApi(), directory=sign_in)
+    assert rig.engine([step]).run().exit_code == ExitCode.OK
+    assert sign_in.calls == 0
+
+
+def test_groups_reader_role_check_never_signs_in_and_apply_does(tmp_path: Path, pages: list[tuple[str, str]]) -> None:
+    """The check is read-only and asks nothing: with no Directory session yet
+    it reads swarm-api's own probe. The apply signs in once, after the typed
+    approval, and assigns the role with that session."""
+    gcp = SignedOutGcp()
+    sign_in = DirectorySignIn()
+    ctx = ctx_for(outputs={"org_domain": DOMAIN, "installer": INSTALLER, "directory_scopes": False,
+                           "workspace_groups": {"admin": f"swarm-admins@{DOMAIN}"}})
+    api = FakeApi(answer=lambda g: GroupResult(g, UNMET, "permission_denied"))
+    step = identity.GroupsReaderRoleStep(lambda: gcp, Answers(identity_groups_reader_role=[identity.APPROVE]),
+                                         lambda c: api, directory=sign_in)
+    observed = step.check(ctx)
+    assert observed.status == UNMET and "stage 8" in observed.detail
+    assert sign_in.calls == 0 and not gcp.called("role_assignments") and api.probes
+
+    rig = Rig(tmp_path)
+    _seed(rig, directory_scopes=False)
+    result = rig.engine([step]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert sign_in.calls == 1
+    assert gcp.called("assign_role") == [(CUSTOMER, READER_ID, UNIQUE_ID)]
+    assert pages == []
+
+
+def test_a_refused_directory_sign_in_opens_the_admin_console_page(tmp_path: Path, pages: list[tuple[str, str]]) -> None:
+    gcp = SignedOutGcp()
+    gcp.on_poll = lambda: gcp.groups.update(
+        {f"swarm-admins@{DOMAIN}": "groups/a", f"swarm-team@{DOMAIN}": "groups/t"}) if pages else None
+    rig = Rig(tmp_path)
+    _seed(rig, directory_scopes=False)
+    step = identity.GroupsStep(lambda: gcp, Answers(identity_groups=["yes"]), lambda c: FakeApi(),
+                               directory=DirectorySignIn(refuse=True))
+    result = rig.engine([step]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert [url for url, _ in pages] == [identity.GROUPS_PAGE]
+    assert "access_denied" in pages[0][1]
+
+
+class Recorder:
+    """A requests-shaped session that answers every call with `body`."""
+
+    def __init__(self, body: dict[str, Any]) -> None:
+        self.body, self.urls = body, []
+
+    def request(self, method: str, url: str, **kwargs: Any) -> Any:
+        self.urls.append(url)
+        body = self.body
+        return type("R", (), {"status_code": 200, "content": b"{}", "json": lambda self: body, "reason": "OK"})()
+
+
+def test_directory_calls_go_through_the_desktop_client_session_only() -> None:
+    adc = Recorder({"name": "groups/1"})
+    desktop = Recorder({"id": CUSTOMER})
+    gcp = identity.IdentityGcp(session=adc)
+    assert not gcp.directory_ready
+    gcp.use_directory(desktop)
+    assert gcp.directory_ready
+    assert gcp.customer_id() == CUSTOMER
+    assert gcp.group_name(PROJECT, f"swarm-admins@{DOMAIN}") == "groups/1"
+    assert [u.rsplit("/", 1)[1] for u in desktop.urls] == ["my_customer"]
+    assert all("cloudidentity" in u for u in adc.urls)
+
+
+def test_the_loopback_sign_in_asks_the_directory_scopes_and_keeps_the_token_in_memory(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The consent page opens with open_page for the Desktop client with the
+    two Directory scopes and a 127.0.0.1 redirect; the code that arrives there
+    is exchanged with the client's secret; the session carries the access
+    token, which is never in an event, the state or the opened text."""
+    import secrets
+    import urllib.parse
+    import urllib.request
+
+    access = secrets.token_hex(16)
+    client_secret = secrets.token_hex(12)
+    client_id = "1234-abc.apps.googleusercontent.com"
+    opened: list[tuple[str, str]] = []
+
+    def browser(url: str, *, why: str) -> None:
+        opened.append((url, why))
+        query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
+        back = query["redirect_uri"] + "/?" + urllib.parse.urlencode({"code": "the-code", "state": query["state"]})
+        urllib.request.urlopen(back, timeout=10).read()
+
+    exchanged: list[dict[str, str]] = []
+
+    def exchange(form: dict[str, str]) -> dict[str, Any]:
+        exchanged.append(dict(form))
+        return {"access_token": access, "expires_in": 3599, "scope": " ".join(DIRECTORY), "token_type": "Bearer"}
+
+    monkeypatch.setattr(identity, "open_page", browser)
+    ctx = ctx_for(outputs={"installer": INSTALLER, "desktop_client_id": client_id})
+    session = identity.desktop_directory_session(ctx, client_id=client_id, client_secret=client_secret,
+                                                 exchange=exchange, timeout=10)
+    assert session.credentials.token == access
+    url, why = opened[0]
+    query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
+    assert url.startswith("https://accounts.google.com/o/oauth2/v2/auth?")
+    assert query["client_id"] == client_id and set(query["scope"].split()) == set(DIRECTORY)
+    assert query["redirect_uri"].startswith("http://127.0.0.1:") and query["login_hint"] == INSTALLER
+    assert "access_type" not in query or query["access_type"] == "online"
+    assert client_secret not in url and "Directory" in why
+    assert exchanged[0]["code"] == "the-code" and exchanged[0]["client_secret"] == client_secret
+    assert exchanged[0]["code_verifier"] and exchanged[0]["redirect_uri"] == query["redirect_uri"]
+    assert access not in ctx.events._out.getvalue() and access not in str(ctx.events.record)
+    assert access not in str(ctx.outputs) and access not in str(ctx.state)
+
+
+def test_a_token_without_the_directory_scopes_is_a_refused_sign_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    import secrets
+    import urllib.parse
+    import urllib.request
+
+    def browser(url: str, *, why: str) -> None:
+        query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
+        urllib.request.urlopen(query["redirect_uri"] + "/?" + urllib.parse.urlencode(
+            {"code": "c", "state": query["state"]}), timeout=10).read()
+
+    monkeypatch.setattr(identity, "open_page", browser)
+    ctx = ctx_for(outputs={"installer": INSTALLER})
+    with pytest.raises(identity.DirectorySignInFailed):
+        identity.desktop_directory_session(
+            ctx, client_id="1234-abc.apps.googleusercontent.com", client_secret=secrets.token_hex(12),
+            exchange=lambda form: {"access_token": secrets.token_hex(8), "scope": "openid"}, timeout=10)
+
+
+def test_the_desktop_client_secret_is_read_from_the_new_contexts_credential_store(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    import secrets
+
+    from swarm_mcp import credentials
+
+    value = secrets.token_hex(12)
+    store = type("S", (), {"get": lambda self, key: value if key == "swarm-example-com/oauth-client-secret" else None})()
+    monkeypatch.setattr(credentials, "store", lambda: store)
+    seen: dict[str, Any] = {}
+
+    def flow(ctx: Any, *, client_id: str, client_secret: str) -> Any:
+        seen.update(client_id=client_id, client_secret=client_secret)
+        return "session"
+
+    monkeypatch.setattr(identity, "desktop_directory_session", flow)
+    ctx = ctx_for(outputs={"desktop_client_id": "1234-abc.apps.googleusercontent.com",
+                           "verify_context": "swarm-example-com"})
+    assert identity.directory_sign_in(ctx) == "session"
+    assert seen == {"client_id": "1234-abc.apps.googleusercontent.com", "client_secret": value}
+
+    with pytest.raises(identity.DirectorySignInFailed):
+        identity.directory_sign_in(ctx_for(outputs={"verify_context": "swarm-example-com"}))

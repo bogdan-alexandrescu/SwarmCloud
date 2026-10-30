@@ -35,6 +35,7 @@ from swarm_install.state import InstallState, StateStore
 from swarm_install import sizing
 from swarm_install.steps import foundations, preflight
 from swarm_install.steps.preflight import RELEASE_HOME, ApiError
+from swarm_install.waits import WaitGaveUp
 
 from .test_state_store import FakeBucket, FakeClock
 
@@ -903,6 +904,10 @@ ADC_LOGIN = ["auth", "application-default", "login",
              "https://www.googleapis.com/auth/admin.directory.customer.readonly,"
              "https://www.googleapis.com/auth/admin.directory.rolemanagement"]
 CLOUD_PLATFORM_ONLY = frozenset({"https://www.googleapis.com/auth/cloud-platform", "openid"})
+DIRECTORY_SCOPES = frozenset({"https://www.googleapis.com/auth/admin.directory.customer.readonly",
+                              "https://www.googleapis.com/auth/admin.directory.rolemanagement"})
+CLOUD_PLATFORM_LOGIN = ["auth", "application-default", "login",
+                        "--scopes=https://www.googleapis.com/auth/cloud-platform"]
 
 
 class Login:
@@ -910,8 +915,12 @@ class Login:
     scopes the application-default credentials carry (None: no ADC); an ADC
     login grants exactly the scopes its --scopes flag names."""
 
-    def __init__(self, *, account: str = "", adc: frozenset[str] | None = None, code: int = 0) -> None:
-        self.account, self.adc, self.code = account, adc, code
+    def __init__(self, *, account: str = "", adc: frozenset[str] | None = None, code: int = 0,
+                 directory: str = "granted") -> None:
+        """`directory` is what Google does with the Directory scopes: "granted",
+        "blocked" (the browser says the app is blocked, so gcloud exits 1) or
+        "dropped" (the sign-in finishes and the token comes back without them)."""
+        self.account, self.adc, self.code, self.directory = account, adc, code, directory
         self.ran: list[list[str]] = []
 
     def __call__(self, argv: list[str]) -> int:
@@ -920,7 +929,12 @@ class Login:
             self.account = "admin@example.com"
         if self.code == 0 and argv[1:4] == ["auth", "application-default", "login"]:
             flag = next((a for a in argv[4:] if a.startswith("--scopes=")), "--scopes=")
-            self.adc = frozenset(filter(None, flag.removeprefix("--scopes=").split(",")))
+            scopes = frozenset(filter(None, flag.removeprefix("--scopes=").split(",")))
+            if scopes & DIRECTORY_SCOPES and self.directory == "blocked":
+                return 1
+            if self.directory == "dropped":
+                scopes -= DIRECTORY_SCOPES
+            self.adc = scopes
         return self.code
 
     def step(self, ask: Any = None) -> preflight.SignInStep:
@@ -989,6 +1003,64 @@ def test_existing_adc_without_the_directory_scopes_signs_in_again() -> None:
     step.apply(ctx, step.plan(ctx))
     assert gcloud.ran == [["/opt/gcloud", *ADC_LOGIN]]
     assert step.check(ctx).status == MET
+
+
+
+# -- DAYONE-DIR-SCOPES: Google refusing the Directory scopes is never a dead end ----------
+
+
+def test_directory_scopes_accepted_at_stage_0_are_recorded() -> None:
+    gcloud = Login(account="admin@example.com")
+    step = gcloud.step()
+    ctx = ctx_for()
+    step.apply(ctx, step.plan(ctx))
+    assert gcloud.ran == [["/opt/gcloud", *ADC_LOGIN]]
+    assert ctx.outputs["directory_scopes"] is True
+    observed = step.check(ctx)
+    assert observed.status == MET and observed.outputs.get("directory_scopes") is True
+
+
+@pytest.mark.parametrize("refusal", ["blocked", "dropped"])
+def test_directory_scopes_refused_at_stage_0_signs_in_without_them(refusal: str) -> None:
+    """Google blocks the sign-in that asks the Directory scopes (gcloud's own
+    client may not ask them), or finishes it without them: the ADC sign-in
+    runs again with Cloud Platform alone, `directory_scopes` is recorded false,
+    one plain line says stage 8 asks for them later, and the step is MET on
+    this and every later run, never asking for them again at stage 0."""
+    gcloud = Login(account="admin@example.com", directory=refusal)
+    step = gcloud.step()
+    ctx = ctx_for()
+    step.apply(ctx, step.plan(ctx))
+    assert gcloud.ran == [["/opt/gcloud", *ADC_LOGIN], ["/opt/gcloud", *CLOUD_PLATFORM_LOGIN]]
+    assert gcloud.adc == frozenset({"https://www.googleapis.com/auth/cloud-platform"})
+    assert ctx.outputs["directory_scopes"] is False
+    said = [e["message"] for e in ctx.events.of_kind("step_apply") if "stage 8" in e.get("message", "")]
+    assert len(said) == 1 and "\n" not in said[0] and "Directory" in said[0]
+    assert step.check(ctx).status == MET
+    assert step.missing(ctx) == []
+    gcloud.ran.clear()
+    step.apply(ctx, step.plan(ctx))
+    assert gcloud.ran == []
+
+
+def test_a_sign_in_that_fails_without_the_directory_scopes_too_still_stops() -> None:
+    gcloud = Login(account="admin@example.com", code=1)
+    step = gcloud.step()
+    ctx = ctx_for()
+    with pytest.raises(RuntimeError) as stopped:
+        step.apply(ctx, step.plan(ctx))
+    assert "swarm install" in str(stopped.value)
+    assert gcloud.ran == [["/opt/gcloud", *ADC_LOGIN], ["/opt/gcloud", *CLOUD_PLATFORM_LOGIN]]
+    assert "directory_scopes" not in ctx.outputs
+
+
+def test_the_organisation_sign_in_again_falls_back_the_same_way() -> None:
+    gcloud = Login(account="admin@example.com", directory="blocked")
+    step = gcloud.step()
+    ctx = ctx_for()
+    step.sign_in_again(ctx)
+    assert gcloud.ran[-1] == ["/opt/gcloud", *CLOUD_PLATFORM_LOGIN]
+    assert ctx.outputs["directory_scopes"] is False
 
 
 def _sized(gcp: FakeGcp, *answered: str, outputs: dict[str, Any] | None = None) -> tuple[Any, Answers, Any]:
@@ -1537,8 +1609,10 @@ def test_a_billing_account_that_never_appears_says_what_to_look_at(pages: list[A
     ask = Answers(preflight_inputs=["alerts@example.com", "swarm.example.com", GITHUB_ORG])
     step = preflight.InputsStep(lambda: gcp, ask)
     ctx = ctx_for()
-    with pytest.raises(RuntimeError) as raised:
+    with pytest.raises(WaitGaveUp) as raised:
         step.apply(ctx, step.plan(ctx))
+    # BGD, 2026-10-30: the wait's own WaitGaveUp, so the engine pauses the run (ENGINE-WAIT-PAUSE).
+    assert type(raised.value) is WaitGaveUp
     assert "billing" in str(raised.value) and preflight.BILLING_WAIT.look_at in str(raised.value)
     assert [url for url, _ in pages] == [preflight.BILLING_CREATE]
     assert not [q for _, q in ask.asked if "Billing" in q]

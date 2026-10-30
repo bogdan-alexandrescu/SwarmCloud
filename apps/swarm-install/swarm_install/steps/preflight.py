@@ -9,7 +9,7 @@ zero mutating calls).
 | Step | Manifest entries | Lesson |
 |---|---|---|
 | `preflight.tools` | the core `local-tool.*` | 12: terraform `1.16.2`, kubectl ≥ 1.30 |
-| `preflight.sign-in` | `other.installer-sign-in` | gcloud and ADC signed in, by the installer itself; ADC with the Directory scopes; records `installer` |
+| `preflight.sign-in` | `other.installer-sign-in` | gcloud and ADC signed in, by the installer itself; ADC with the Directory scopes, or without them when Google refuses them (`directory_scopes` false; stage 8 asks, N14); records `installer` |
 | `preflight.organization` | — | audit #24: no organisation is said first; the Cloud Identity Free sign-up opens and is polled; billing creation opens when the organisation waits on it (N16) |
 | `preflight.inputs` | `other.github-org` | R7: the alert email, the hostname (the verb's), the GitHub org, the billing account (listed; with none, billing creation opens and is polled, N15) |
 | `preflight.region` | — | 2: the region (the verb's) is confirmed, typed, before stage 1 |
@@ -49,7 +49,7 @@ from typing import Any
 from .. import secret_entry, sizing, tools
 from ..exitcodes import MET, UNMET
 from ..secret_entry import DevTty, Terminal
-from ..waits import WaitGaveUp, WaitSpec, wait_until
+from ..waits import WaitSpec, wait_until
 from . import Observation, Plan, open_page
 
 # -- the REST client ---------------------------------------------------------
@@ -668,6 +668,23 @@ ADC_SCOPES = (
     "https://www.googleapis.com/auth/admin.directory.customer.readonly",
     "https://www.googleapis.com/auth/admin.directory.rolemanagement",
 )
+#: What the engine and terraform cannot run without; the Directory scopes are
+#: the rest, and stage 8 asks for them itself when Google refuses them here
+#: (audit N14, DAYONE-DIR-SCOPES).
+CLOUD_PLATFORM_SCOPE = ADC_SCOPES[0]
+DIRECTORY_SCOPES = ADC_SCOPES[1:]
+DIRECTORY_LATER = ("Google refused the Directory scopes to this sign-in, so it went on without them; stage 8 "
+                   "asks for them through the deployment's own Desktop client when it needs them.")
+
+
+def adc_login(scopes: Sequence[str] = ADC_SCOPES) -> list[str]:
+    return ["auth", "application-default", "login", "--scopes=" + ",".join(scopes)]
+
+
+def directory_declined(ctx: Any) -> bool:
+    """Stage 0's sign-in went on without the Directory scopes (`directory_scopes`
+    is false): stage 8 asks for them, and stage 0 never asks again."""
+    return ctx is not None and ctx.outputs.get("directory_scopes") is False
 
 
 def adc_scopes() -> frozenset[str] | None:
@@ -704,7 +721,14 @@ class SignInStep(_Base):
     `ADC_SCOPES`, the Directory scopes stage 6 reads with beside Cloud
     Platform. When either is missing, or an existing ADC lacks a scope, the
     step runs the sign-in itself; each opens the browser, the person's
-    credential step. It never prints a command for them to run."""
+    credential step. It never prints a command for them to run.
+
+    Google may refuse the Directory scopes to gcloud's own OAuth client (the
+    browser says the app is blocked, or the token comes back without them,
+    audit N14). The sign-in is then run again with Cloud Platform alone,
+    `directory_scopes` is recorded false and one line says stage 8 asks for
+    them later (`identity.directory_sign_in`); it is never a dead end. A
+    sign-in that fails with Cloud Platform alone too still stops the run."""
 
     id = "preflight.sign-in"
     satisfies = ("other.installer-sign-in",)
@@ -724,39 +748,45 @@ class SignInStep(_Base):
         self._adc = adc
         self._login = login
 
-    def missing(self) -> list[tuple[str, list[str]]]:
-        """(what is missing, the gcloud arguments that sign it in)."""
+    def _findings(self, ctx: Any) -> tuple[list[tuple[str, list[str]]], frozenset[str] | None]:
         found = []
         if not self._account():
             found.append(("gcloud has no signed-in account", ["auth", "login"]))
         granted = self._adc()
-        lacking = [scope.rsplit("/", 1)[1] for scope in ADC_SCOPES if scope not in (granted or ())]
-        adc_login = ["auth", "application-default", "login", "--scopes=" + ",".join(ADC_SCOPES)]
+        wanted = (CLOUD_PLATFORM_SCOPE,) if directory_declined(ctx) else ADC_SCOPES
+        lacking = [scope.rsplit("/", 1)[1] for scope in wanted if scope not in (granted or ())]
         if granted is None:
-            found.append(("the application-default credentials are missing", adc_login))
+            found.append(("the application-default credentials are missing", adc_login()))
         elif lacking:
-            found.append((f"the application-default credentials lack the scopes {', '.join(lacking)}", adc_login))
-        return found
+            found.append((f"the application-default credentials lack the scopes {', '.join(lacking)}", adc_login()))
+        return found, granted
+
+    def missing(self, ctx: Any = None) -> list[tuple[str, list[str]]]:
+        """(what is missing, the gcloud arguments that sign it in). The
+        Directory scopes are not missing once stage 0 recorded that Google
+        refused them (`directory_declined`)."""
+        return self._findings(ctx)[0]
 
     def check(self, ctx: Any) -> Observation:
-        missing = self.missing()
+        missing, granted = self._findings(ctx)
         if missing:
             return Observation(UNMET, "; ".join(what for what, _ in missing))
         installer = str(ctx.outputs.get("installer") or "")
         if not installer:
             return Observation(UNMET, "the installer's account is not recorded yet")
-        return Observation(MET, f"signed in as {installer}", {"installer": installer})
+        return Observation(MET, f"signed in as {installer}",
+                           {"installer": installer, "directory_scopes": set(ADC_SCOPES) <= (granted or set())})
 
     def plan(self, ctx: Any) -> Plan:
         return Plan("sign in to Google Cloud (gcloud opens your browser)",
-                    tuple(f"{what}: sign in in the browser" for what, _ in self.missing()))
+                    tuple(f"{what}: sign in in the browser" for what, _ in self.missing(ctx)))
 
     def apply(self, ctx: Any, plan: Plan) -> None:
         """The missing sign-ins, then `installer`: the signed-in gcloud account,
         which bootstrap, IAP and the admin list read (audit #3). The first
         installer recorded is kept; preflight.organization replaces a consumer
         account with the organisation's."""
-        self.sign_in(ctx, self.missing())
+        self.sign_in(ctx, self.missing(ctx))
         account = self._account()
         if account and not ctx.outputs.get("installer"):
             remember(ctx, outputs={"installer": account})
@@ -770,16 +800,34 @@ class SignInStep(_Base):
                                "answer Y to install the Google Cloud SDK")
         for what, args in missing:
             ctx.events.emit("step_apply", step=self.id, message=f"{what}; signing in: your browser opens")
+            if args == adc_login():
+                self._adc_sign_in(ctx, gcloud, what)
+                continue
             code = self._login([gcloud, *args])
             if code != 0:
                 raise RuntimeError(f"the Google sign-in did not finish ({what}; gcloud exited {code}); "
                                    "run swarm install again to sign in")
 
+    def _adc_sign_in(self, ctx: Any, gcloud: str, what: str) -> None:
+        """The application-default sign-in with `ADC_SCOPES`; refused the
+        Directory scopes (gcloud fails, or the token comes back without them),
+        once more with Cloud Platform alone. `directory_scopes` records which."""
+        code = self._login([gcloud, *adc_login()])
+        granted = self._adc() if code == 0 else None
+        if granted is not None and set(ADC_SCOPES) <= granted:
+            remember(ctx, outputs={"directory_scopes": True})
+            return
+        code = self._login([gcloud, *adc_login((CLOUD_PLATFORM_SCOPE,))])
+        if code != 0:
+            raise RuntimeError(f"the Google sign-in did not finish ({what}; gcloud exited {code}); "
+                               "run swarm install again to sign in")
+        remember(ctx, outputs={"directory_scopes": False})
+        ctx.events.emit("step_apply", step=self.id, message=DIRECTORY_LATER)
+
     def sign_in_again(self, ctx: Any) -> None:
         """Both sign-ins once more, as another account (preflight.organization)."""
         self.sign_in(ctx, [("signing in as your organisation's account", ["auth", "login"]),
-                           ("the application-default credentials for that account",
-                            ["auth", "application-default", "login", "--scopes=" + ",".join(ADC_SCOPES)])])
+                           ("the application-default credentials for that account", adc_login())])
 
 
 # -- preflight.organization (audit #24) ------------------------------------------
@@ -1039,12 +1087,10 @@ class InputsStep(_Base):
                 return UNMET
             return MET if found else UNMET
 
-        try:
-            wait_until(self.id + ":billing-account", BILLING_WAIT, listed, clock=ctx.clock, events=ctx.events,
-                       on_poll=getattr(ctx.engine, "_heartbeat", None))
-        except WaitGaveUp as gave_up:
-            # A plain error: the engine stops on it and names what to look at.
-            raise RuntimeError(f"no billing account appeared: {gave_up}") from gave_up
+        # Past its bound the WaitGaveUp goes through as it is (BGD, 2026-10-30): the
+        # engine pauses the run on it (ENGINE-WAIT-PAUSE), and it names what to look at.
+        wait_until(self.id + ":billing-account", BILLING_WAIT, listed, clock=ctx.clock, events=ctx.events,
+                   on_poll=getattr(ctx.engine, "_heartbeat", None))
         return found
 
 
