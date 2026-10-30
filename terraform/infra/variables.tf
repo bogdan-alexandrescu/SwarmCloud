@@ -533,6 +533,26 @@ variable "acceptance_console_url" {
   }
 }
 
+variable "acceptance_sandbox_repository_url" {
+  description = <<-EOT
+    The sandbox repository the release acceptance pushes to and opens pull
+    requests on (SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL on the swarm-verify
+    job; scripts/acceptance/config.sh). Without it config.sh falls back to the
+    live deployment's sandbox, so another company's deployment sets its own
+    here and its acceptance never touches the live one's.
+
+    Null by default, and null renders no env at all, so a deployment that does
+    not set it plans no change (DAYONE-VERIFY-SANDBOX-ENV, part of #2688).
+  EOT
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.acceptance_sandbox_repository_url == null || can(regex("^https://[A-Za-z0-9.-]+/[A-Za-z0-9._/-]+$", var.acceptance_sandbox_repository_url))
+    error_message = "acceptance_sandbox_repository_url is an https:// clone URL (https://github.com/<org>/<repo>.git), or null to keep the acceptance's default."
+  }
+}
+
 variable "pr_console_links" {
   description = <<-EOT
     Whether a worker appends the workflow's and the agent's console links to

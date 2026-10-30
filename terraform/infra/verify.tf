@@ -241,6 +241,16 @@ resource "google_cloud_run_v2_job" "verify" {
             value = env.value
           }
         }
+        # The sandbox the acceptance groups push to. Rendered only when set:
+        # unset, config.sh keeps its own default and the live deployment's
+        # plan shows no change.
+        dynamic "env" {
+          for_each = var.acceptance_sandbox_repository_url == null ? [] : [var.acceptance_sandbox_repository_url]
+          content {
+            name  = "SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL"
+            value = env.value
+          }
+        }
       }
     }
   }
