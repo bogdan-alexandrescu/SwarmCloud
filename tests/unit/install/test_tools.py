@@ -179,3 +179,47 @@ def test_sdk_never_overwrites_a_tree_it_did_not_install(tmp_path: Path, monkeypa
     with pytest.raises(FileExistsError, match="not installed by swarm"):
         tools.install_sdk(home=tmp_path, fetch=lambda url: data, system=("darwin", "arm64"))
     assert (theirs / "gcloud").read_text() == "theirs"
+
+
+# -- DAYONE-PREFLIGHT-ASKS: the GKE auth plugin kubectl execs --------------------
+
+
+def test_gke_auth_plugin_pinned_for_every_platform() -> None:
+    digests = set()
+    for system in PLATFORMS:
+        pin = tools.pin_for("gke-gcloud-auth-plugin", system)
+        assert pin.url.startswith("https://dl.google.com/dl/cloudsdk/channels/rapid/components/"
+                                  "google-cloud-sdk-gke-gcloud-auth-plugin-"), system
+        assert pin.url.endswith(f"-{tools.GKE_AUTH_PLUGIN_BUILD}.tar.gz"), "a dated build, never 'latest'"
+        assert re.fullmatch(r"[0-9a-f]{64}", pin.sha256), system
+        assert pin.member == "bin/gke-gcloud-auth-plugin"
+        digests.add(pin.sha256)
+    assert len(digests) == 4, "one digest per platform"
+
+
+def test_gke_auth_plugin_ensured_under_the_name_kubectl_execs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """kubectl runs `gke-gcloud-auth-plugin` from PATH by that exact name, so
+    `ensure` returns a file called that; the caller puts its directory first."""
+    binary = secrets.token_bytes(32)
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        info = tarfile.TarInfo("bin/gke-gcloud-auth-plugin")
+        info.size, info.mode = len(binary), 0o755
+        archive.addfile(info, io.BytesIO(binary))
+    data = buffer.getvalue()
+    pin = tools.pin_for("gke-gcloud-auth-plugin", ("darwin", "arm64"))
+    monkeypatch.setitem(tools.PINS, ("gke-gcloud-auth-plugin", "darwin", "arm64"),
+                        Pinned(pin.name, pin.version, pin.url, hashlib.sha256(data).hexdigest(), pin.member,
+                               exec_name=pin.exec_name))
+    with pytest.raises(ChecksumMismatch):
+        tools.ensure("gke-gcloud-auth-plugin", directory=tmp_path, fetch=lambda url: data + b"x",
+                     system=("darwin", "arm64"))
+    assert list(tmp_path.iterdir()) == []
+    path = tools.ensure("gke-gcloud-auth-plugin", directory=tmp_path, fetch=lambda url: data,
+                        system=("darwin", "arm64"))
+    assert path.name == "gke-gcloud-auth-plugin"
+    assert path.read_bytes() == binary and path.stat().st_mode & 0o111
+    assert sorted(p.name for p in path.parent.iterdir()) == ["gke-gcloud-auth-plugin"], "only the plugin on PATH"
+    again = tools.ensure("gke-gcloud-auth-plugin", directory=tmp_path, fetch=lambda url: pytest.fail("fetched again"),
+                         system=("darwin", "arm64"))
+    assert again == path

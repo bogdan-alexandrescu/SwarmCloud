@@ -42,6 +42,9 @@ NUMBER = "123456789012"
 ORG = "organizations/4242"
 FOLDER = "folders/77"
 ACCOUNT = "01ABCD-23EF45-6789AB"
+OTHER_ACCOUNT = "0FEDCB-A98765-43210F"
+GITHUB_ORG = "acme-eng"
+INSTALLER_IP = "198.51.100.7"
 
 MUTATING = (
     "set_iam_policy", "create_budget", "enable_services", "generate_service_identity", "create_bucket",
@@ -86,6 +89,14 @@ class FakeGcp:
         self.dns: dict[str, set[str]] = {}
         self.secrets: dict[str, list[bytes]] = {}
         self.release = release_files(dt.date(2026, 12, 31))
+        self.release.update(echo_files(INSTALLER_IP))
+        self.billing_account_list: list[dict[str, Any]] = [
+            {"name": f"billingAccounts/{ACCOUNT}", "displayName": "Main", "open": True},
+        ]
+        self.orgs: dict[str, dict[str, Any]] = {ORG: {"name": ORG, "displayName": "example.com",
+                                                     "directoryCustomerId": "C0abc12"}}
+        self.folder_tree: dict[str, dict[str, Any]] = {FOLDER: {"name": FOLDER, "displayName": "eng", "parent": ORG}}
+        self.org_failure: ApiError | None = None
 
     def _call(self, name: str, *args: Any) -> None:
         self.calls.append((name, args))
@@ -112,6 +123,28 @@ class FakeGcp:
     def billing_info(self, project):
         self._call("billing_info", project)
         return dict(self.billing)
+
+    def billing_accounts(self):
+        self._call("billing_accounts")
+        return list(self.billing_account_list)
+
+    def organizations(self):
+        self._call("organizations")
+        return list(self.orgs.values())
+
+    def folders(self):
+        self._call("folders")
+        return list(self.folder_tree.values())
+
+    def organization(self, name):
+        self._call("organization", name)
+        if self.org_failure is not None:
+            raise self.org_failure
+        return self.orgs.get(name)
+
+    def folder(self, name):
+        self._call("folder", name)
+        return self.folder_tree.get(name)
 
     def iam_policy(self, project):
         self._call("iam_policy", project)
@@ -232,6 +265,13 @@ def release_files(expires: dt.date, version: str = "v1.0.0") -> dict[str, bytes]
     }
 
 
+def echo_files(*addresses: str) -> dict[str, bytes]:
+    """What each public-address echo answers: one address for all, or one each."""
+    echoes = preflight.ADDRESS_ECHOES
+    chosen = addresses if len(addresses) == len(echoes) else addresses[:1] * len(echoes)
+    return {url: f"{address}\n".encode() for url, address in zip(echoes, chosen)}
+
+
 class Answers:
     """The terminal, faked: answers by step id, in order; every question logged."""
 
@@ -239,6 +279,7 @@ class Answers:
         self.log = log if log is not None else []
         self.by_step = {self._step_id(k): list(v) for k, v in by_step.items()}
         self.asked: list[tuple[str, str]] = []
+        self.defaults: list[str | None] = []
 
     @staticmethod
     def _step_id(key: str) -> str:
@@ -247,11 +288,12 @@ class Answers:
 
     def __call__(self, ctx: Any, step_id: str, question: str, default: str | None = None) -> str:
         self.asked.append((step_id, question))
+        self.defaults.append(default)
         self.log.append(("ask", step_id, question))
         queue = self.by_step.get(step_id) or []
         if not queue:
             raise AssertionError(f"{step_id} asked an unexpected question: {question}")
-        return queue.pop(0)
+        return queue.pop(0) or (default or "")  # Enter takes the default, as secret_entry.ask does
 
 
 def good_tools() -> dict[str, Any]:
@@ -267,7 +309,7 @@ def answers(log: list[Any] | None = None, *, region: str = "us-central1", confir
             **extra: list[str]) -> Answers:
     return Answers(
         log,
-        preflight_inputs=["alerts@example.com", "swarm.example.com", ACCOUNT],
+        preflight_inputs=["alerts@example.com", "swarm.example.com", GITHUB_ORG, ACCOUNT],
         preflight_region=[region, confirm if confirm is not None else region],
         foundations_default_compute_editor=["remove-editor"],
         **extra,
@@ -279,13 +321,25 @@ def stage0(gcp: FakeGcp, ask: Answers, *, tools: dict[str, Any] | None = None,
     make = lambda: gcp  # noqa: E731
     return [
         preflight.ToolsStep(make, ask, **(tools or good_tools())),
+        signed_in(make, ask),
         preflight.InputsStep(make, ask),
         preflight.RegionStep(make, ask),
         preflight.RightsStep(make, ask),
+        preflight.OrgDomainStep(make, ask, account=lambda: "admin@example.com"),
+        preflight.InstallerAddressStep(make, ask),
         preflight.OrgPoliciesStep(make, ask),
         preflight.QuotasStep(make, ask),
         preflight.ReleaseStep(make, ask, today=lambda: today),
     ]
+
+
+def signed_in(make: Callable[[], Any], ask: Answers) -> Any:
+    """`preflight.sign-in` on a machine already signed in: it never runs gcloud."""
+    def no_login(argv: Any) -> int:
+        raise AssertionError(f"signed in already, yet ran {argv}")
+
+    return preflight.SignInStep(make, ask, gcloud=lambda: "/usr/local/bin/gcloud", account=lambda: "admin@example.com",
+                                adc=lambda: True, login=no_login)
 
 
 def stage1(gcp: FakeGcp, ask: Answers) -> list[Any]:
@@ -506,6 +560,7 @@ PINNED_OUTPUT = {
     "cosign": "GitVersion: v2.4.1",
     "gcrane": "0.20.2",
     "gcloud": "591.0.0",
+    "gke-gcloud-auth-plugin": "Kubernetes v1.30.0+0.5.20",
 }
 
 
@@ -559,7 +614,8 @@ class FetchingTools:
 
 
 EVERY_GOOD = {"gcloud": "591.0.0", "terraform": "Terraform v1.16.2", "kubectl": "Client Version: v1.36.1",
-              "jq": "jq-1.7.1", "uv": "uv 0.13.6", "python3": "Python 3.11.9", "cosign": "v2.4.1", "gcrane": "0.20.2"}
+              "jq": "jq-1.7.1", "uv": "uv 0.13.6", "python3": "Python 3.11.9", "cosign": "v2.4.1", "gcrane": "0.20.2",
+              "gke-gcloud-auth-plugin": "Kubernetes v1.30.0+0.5.20"}
 
 
 def _applied(step: preflight.ToolsStep, ctx: Any) -> Any:
@@ -568,7 +624,7 @@ def _applied(step: preflight.ToolsStep, ctx: Any) -> Any:
     return step.check(ctx)
 
 
-@pytest.mark.parametrize("name", ["terraform", "kubectl", "jq", "cosign", "gcrane"])
+@pytest.mark.parametrize("name", ["terraform", "kubectl", "jq", "cosign", "gcrane", "gke-gcloud-auth-plugin"])
 def test_missing_tool_fetched_not_refused(tmp_path: Path, name: str) -> None:
     """A tool the release pins is fetched (SHA-256 checked by tools.ensure)
     instead of a refusal telling the person to install it."""
@@ -629,7 +685,8 @@ def test_missing_gcloud_no_stops_with_how_to_install_it(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError) as stopped:
         step.apply(ctx, step.plan(ctx))
     assert "https://cloud.google.com/sdk/docs/install" in str(stopped.value)
-    assert "gcloud auth login" in str(stopped.value)
+    assert "gcloud auth" not in str(stopped.value), "the installer signs in itself; it hands over no command"
+    assert "signs you in itself" in str(stopped.value)
     assert machine.sdk_installs == 0 and machine.logins == []
     assert len(ask.asked) == 1
 
@@ -638,3 +695,231 @@ def test_python_is_the_running_interpreter() -> None:
     """uv's managed Python runs the installer; python3 on PATH is never a prerequisite."""
     python = next(t for t in preflight.TOOLS if t.name == "python3")
     assert preflight.find_tool(python) == sys.executable
+
+
+# -- DAYONE-PREFLIGHT-ASKS: preflight asks only what it cannot read ----------------
+
+
+def test_stock_python3_on_path_is_never_refused(tmp_path: Path) -> None:
+    """Stock macOS python3 is 3.9 and nothing runs it (render.py runs on
+    sys.executable): what is on PATH is never looked at, so never refused."""
+    machine = FetchingTools(tmp_path, {**EVERY_GOOD, "python3": "Python 3.9.6"})
+    step = machine.step(answers())
+    observed = step.check(ctx_for())
+    assert observed.status == MET, observed.detail
+    assert "python3" not in observed.detail
+
+
+def test_hostname_and_region_from_the_verb_are_not_asked_again() -> None:
+    """`swarm install` asked the hostname and region and handed them to the
+    state: preflight asks neither again, and never offers us-central1 back as
+    a default that Enter would silently switch to."""
+    gcp = FakeGcp()
+    ctx = ctx_for(hostname="swarm.example.com", region="europe-west1")
+    inputs = preflight.InputsStep(lambda: gcp, Answers(preflight_inputs=["alerts@example.com", GITHUB_ORG]))
+    assert "hostname" not in inputs.missing(ctx)
+    inputs.apply(ctx, inputs.plan(ctx))
+    assert ctx.outputs["hostname"] == "swarm.example.com"
+    assert not [q for _, q in inputs._ask.asked if "Hostname" in q]
+
+    ask = Answers(preflight_region=["europe-west1"])  # the typed confirmation only
+    region = preflight.RegionStep(lambda: gcp, ask)
+    region.apply(ctx, region.plan(ctx))
+    assert len(ask.asked) == 1 and "europe-west1" in ask.asked[0][1]
+    assert ask.defaults == [None], "the confirmation is typed, never defaulted"
+    assert region.check(ctx).status == MET and ctx.state.region == "europe-west1"
+
+    # Missing from the state: asked, with no silent switch back to another region.
+    ask = Answers(preflight_region=["", "us-central1"])
+    fresh = ctx_for(region=None)
+    preflight.RegionStep(lambda: gcp, ask).apply(fresh, preflight.RegionStep(lambda: gcp, ask).plan(fresh))
+    assert fresh.state.region == "us-central1" and ask.defaults[0] == "us-central1"
+
+
+def test_billing_account_is_a_numbered_choice_from_the_api() -> None:
+    gcp = FakeGcp(exists=False, billed=False)
+    gcp.billing_account_list.append({"name": f"billingAccounts/{OTHER_ACCOUNT}", "displayName": "Lab", "open": True})
+    ask = Answers(preflight_inputs=["alerts@example.com", "swarm.example.com", GITHUB_ORG, "2"])
+    step = preflight.InputsStep(lambda: gcp, ask)
+    ctx = ctx_for()
+    step.apply(ctx, step.plan(ctx))
+    assert ctx.outputs["billing_account"] == OTHER_ACCOUNT
+    question = ask.asked[-1][1]
+    assert f"1) {ACCOUNT}" in question and f"2) {OTHER_ACCOUNT}" in question and "Lab" in question
+    assert gcp.called("billing_accounts")
+
+    gcp.billing_account_list = []  # nothing listed: the id is typed
+    ask = Answers(preflight_inputs=["alerts@example.com", "swarm.example.com", GITHUB_ORG, ACCOUNT])
+    ctx = ctx_for()
+    preflight.InputsStep(lambda: gcp, ask).apply(ctx, step.plan(ctx))
+    assert ctx.outputs["billing_account"] == ACCOUNT and "XXXXXX-XXXXXX-XXXXXX" in ask.asked[-1][1]
+
+    for wrong in ("3", "0", "nope"):
+        gcp.billing_account_list = [{"name": f"billingAccounts/{ACCOUNT}", "displayName": "Main"}] * 2
+        ask = Answers(preflight_inputs=["alerts@example.com", "swarm.example.com", GITHUB_ORG, wrong])
+        with pytest.raises(ValueError):
+            preflight.InputsStep(lambda: gcp, ask).apply(ctx_for(), step.plan(ctx_for()))
+
+
+def test_billing_account_of_a_billed_project_is_read_not_asked() -> None:
+    gcp = FakeGcp()  # exists, billing linked to ACCOUNT
+    ask = Answers(preflight_inputs=["alerts@example.com", "swarm.example.com", GITHUB_ORG])
+    ctx = ctx_for()
+    step = preflight.InputsStep(lambda: gcp, ask)
+    step.apply(ctx, step.plan(ctx))
+    assert ctx.outputs["billing_account"] == ACCOUNT
+    assert not [q for _, q in ask.asked if "Billing" in q]
+
+
+def test_parent_is_a_numbered_choice_of_where_you_can_create_projects() -> None:
+    gcp = FakeGcp(exists=False)
+    gcp.perms[FOLDER] = {preflight.PROJECT_CREATE}
+    gcp.orgs["organizations/999"] = {"name": "organizations/999", "displayName": "other.com"}  # no right there
+    ask = Answers(preflight_rights=["2"])
+    step = preflight.RightsStep(lambda: gcp, ask)
+    ctx = ctx_for()
+    step.apply(ctx, step.plan(ctx))
+    assert ctx.outputs["parent"] == FOLDER
+    question = ask.asked[0][1]
+    assert f"1) {ORG}" in question and f"2) {FOLDER}" in question and "organizations/999" not in question
+
+    gcp.perms = {}  # nowhere listed: the parent is typed
+    ask = Answers(preflight_rights=[ORG])
+    ctx = ctx_for()
+    preflight.RightsStep(lambda: gcp, ask).apply(ctx, step.plan(ctx))
+    assert ctx.outputs["parent"] == ORG and "organizations/N" in ask.asked[0][1]
+
+
+def test_github_org_asked_and_recorded() -> None:
+    gcp = FakeGcp()
+    ctx = ctx_for()
+    step = preflight.InputsStep(lambda: gcp, answers())
+    assert "github_org" in step.missing(ctx)
+    step.apply(ctx, step.plan(ctx))
+    assert ctx.outputs["github_org"] == GITHUB_ORG
+    assert any("GitHub organisation" in q for _, q in step._ask.asked)
+    assert step.check(ctx).status == MET
+
+    for wrong in ("-acme", "acme_eng", "https://github.com/acme", "a" * 40):
+        bad = Answers(preflight_inputs=["alerts@example.com", "swarm.example.com", wrong])
+        with pytest.raises(ValueError):
+            preflight.InputsStep(lambda: gcp, bad).apply(ctx_for(), step.plan(ctx_for()))
+
+
+def test_org_domain_read_from_the_organization() -> None:
+    gcp = FakeGcp()  # the project exists, under FOLDER under ORG
+    step = preflight.OrgDomainStep(lambda: gcp, Answers(), account=lambda: "admin@example.com")
+    ctx = ctx_for()
+    assert step.check(ctx).status == UNMET
+    step.apply(ctx, step.plan(ctx))
+    assert ctx.outputs["org_domain"] == "example.com"
+    assert step.check(ctx).status == MET
+    assert (ORG,) in gcp.called("organization")
+
+    fresh = FakeGcp(exists=False)  # a new project under a folder: the folder's organization
+    ctx = ctx_for(outputs={"parent": FOLDER})
+    preflight.OrgDomainStep(lambda: fresh, Answers(), account=lambda: "x@y.com").apply(ctx, step.plan(ctx))
+    assert ctx.outputs["org_domain"] == "example.com"
+
+
+def test_org_domain_falls_back_to_the_account_confirmed() -> None:
+    gcp = FakeGcp()
+    gcp.org_failure = ApiError(403, "PERMISSION_DENIED", "no")
+    ask = Answers(preflight_org_domain=[""])  # Enter confirms the account's domain
+    step = preflight.OrgDomainStep(lambda: gcp, ask, account=lambda: "admin@Acme.com")
+    ctx = ctx_for()
+    step.apply(ctx, step.plan(ctx))
+    assert ctx.outputs["org_domain"] == "acme.com" and ask.defaults == ["acme.com"]
+
+    # A consumer account's domain is never offered, and never accepted: IAP would admit everyone on it.
+    ask = Answers(preflight_org_domain=["gmail.com"])
+    step = preflight.OrgDomainStep(lambda: gcp, ask, account=lambda: "someone@gmail.com")
+    with pytest.raises(ValueError):
+        step.apply(ctx_for(), step.plan(ctx_for()))
+    assert ask.defaults == [None]
+
+
+def test_installer_cidr_from_two_agreeing_echoes() -> None:
+    gcp = FakeGcp()
+    step = preflight.InstallerAddressStep(lambda: gcp, Answers())
+    ctx = ctx_for()
+    assert step.check(ctx).status == UNMET
+    step.apply(ctx, step.plan(ctx))
+    assert ctx.outputs["installer_cidr"] == f"{INSTALLER_IP}/32"
+    assert step.check(ctx).status == MET
+    assert {args[0] for args in gcp.called("read_public")} >= set(preflight.ADDRESS_ECHOES)
+    assert all(url.startswith("https://") for url in preflight.ADDRESS_ECHOES)
+
+    gcp.release.update(echo_files("203.0.113.9"))  # the laptop moved: recorded again
+    assert step.check(ctx).status == UNMET
+
+
+def test_installer_cidr_asked_when_the_echoes_disagree() -> None:
+    gcp = FakeGcp()
+    gcp.release.update(echo_files(INSTALLER_IP, "203.0.113.9"))
+    ask = Answers(preflight_installer_address=["203.0.113.9"])
+    step = preflight.InstallerAddressStep(lambda: gcp, ask)
+    ctx = ctx_for()
+    step.apply(ctx, step.plan(ctx))
+    assert ctx.outputs["installer_cidr"] == "203.0.113.9/32"
+    assert INSTALLER_IP in ask.asked[0][1] and "203.0.113.9" in ask.asked[0][1]
+    assert step.check(ctx).status == MET
+
+    del gcp.release[preflight.ADDRESS_ECHOES[0]]  # one echo down is not agreement either
+    ask = Answers(preflight_installer_address=["not-an-address"])
+    with pytest.raises(ValueError):
+        preflight.InstallerAddressStep(lambda: gcp, ask).apply(ctx_for(), step.plan(ctx_for()))
+
+
+class Login:
+    """gcloud, faked: each login argv run flips what it signs in."""
+
+    def __init__(self, *, account: str = "", adc: bool = False, code: int = 0) -> None:
+        self.account, self.adc, self.code = account, adc, code
+        self.ran: list[list[str]] = []
+
+    def __call__(self, argv: list[str]) -> int:
+        self.ran.append(list(argv))
+        if self.code == 0 and argv[1:] == ["auth", "login"]:
+            self.account = "admin@example.com"
+        if self.code == 0 and argv[1:] == ["auth", "application-default", "login"]:
+            self.adc = True
+        return self.code
+
+    def step(self, ask: Any = None) -> preflight.SignInStep:
+        return preflight.SignInStep(lambda: FakeGcp(), ask or Answers(), gcloud=lambda: "/opt/gcloud",
+                                    account=lambda: self.account, adc=lambda: self.adc, login=self)
+
+
+def test_sign_in_runs_gcloud_itself() -> None:
+    """No account and no ADC: preflight runs both sign-ins itself (each opens
+    the browser, the person's credential step) and checks again."""
+    gcloud = Login()
+    step = gcloud.step()
+    ctx = ctx_for()
+    observed = step.check(ctx)
+    assert observed.status == UNMET and "account" in observed.detail and "application-default" in observed.detail
+    step.apply(ctx, step.plan(ctx))
+    assert gcloud.ran == [["/opt/gcloud", "auth", "login"], ["/opt/gcloud", "auth", "application-default", "login"]]
+    assert step.check(ctx).status == MET
+
+    only_adc = Login(account="admin@example.com")
+    only_adc.step().apply(ctx, only_adc.step().plan(ctx))
+    assert only_adc.ran == [["/opt/gcloud", "auth", "application-default", "login"]]
+
+
+def test_sign_in_failure_never_hands_the_person_a_command() -> None:
+    gcloud = Login(code=1)
+    step = gcloud.step()
+    ctx = ctx_for()
+    with pytest.raises(RuntimeError) as stopped:
+        step.apply(ctx, step.plan(ctx))
+    assert "gcloud auth" not in str(stopped.value) and "swarm install" in str(stopped.value)
+    assert not [e for e in ctx.events.of_kind("step_apply") if "gcloud auth" in e.get("message", "")]
+
+
+def test_stage_0_order_signs_in_before_any_api_read() -> None:
+    ids = [step.id for step in preflight.build_steps(lambda: FakeGcp(), Answers())]
+    assert ids == ["preflight.tools", "preflight.sign-in", "preflight.inputs", "preflight.region", "preflight.rights",
+                   "preflight.org-domain", "preflight.installer-address", "preflight.org-policies",
+                   "preflight.quotas", "preflight.release"]
