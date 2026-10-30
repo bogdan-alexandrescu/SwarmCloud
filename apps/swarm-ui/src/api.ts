@@ -13054,15 +13054,58 @@ export interface SetupGitHubApp {
   self_check: { ok: boolean; reason: string | null; at: string | null } | null
 }
 
-/** `console/teams/<id>`. `smoke` is the team's smoke agent, once it has one. */
+/**
+ * The first team's team-level grant over the repositories the GitHub App
+ * installation covers (`teams/<id>.grant`, decision 3): `granted`, or
+ * `waiting_for_app` / `waiting_for_repositories` until the App covers one.
+ */
+export interface SetupGrant {
+  state: string
+  account: string | null
+  /** `all` or `selected`: what the installation was given on GitHub. */
+  selection: string | null
+  repositories: string[]
+}
+
+/** One invitee's (or the first admin's) membership of the team's group, per the Groups API; null when it did not answer. */
+export interface SetupMember {
+  email: string
+  member: boolean | null
+}
+
+/** `console/teams/<id>`, as the status route reads it live. `smoke` is the team's smoke agent, once it has one. */
 export interface SetupTeam {
   id: string
   group: string
   workspace: string
   first_admin: string | null
   invites: string[]
+  /** The record's progress, with the workspace's live `workspace_state` the route reads beside it. */
   progress: Record<string, unknown>
   smoke: { state: string; detail: string | null; url: string | null } | null
+  grant: SetupGrant | null
+  members: SetupMember[]
+}
+
+/** `console/verify_runs` (SETUP-API-2): the console's two verification runs, once Admin › Setup started them. */
+export interface SetupVerifyRuns {
+  task: string | null
+  workflow: string | null
+  repository: string | null
+}
+
+/**
+ * `sizing` (INTERFACE SHEET; stage 0's SIZING-ASK, served by the status
+ * route): one person or a team, and the capacity numbers the person accepted.
+ * The `pool_limits` keys are terraform/infra's `pool_limits` variable.
+ */
+export interface SetupSizing {
+  mode: 'individual' | 'team'
+  members: number | null
+  pool_limits: { global: number | null; default_tenant: number | null; provider_tenant: number | null }
+  service_max_instances: Record<string, number>
+  pool_accounts: number | null
+  budget_usd: number | null
 }
 
 /** One pool account's row of `console/accounts`; the link's hash is never served. */
@@ -13093,6 +13136,8 @@ export interface SetupState {
   addons: SetupAddon[]
   hostname: string | null
   github_org: string | null
+  verify_runs: SetupVerifyRuns | null
+  sizing: SetupSizing | null
 }
 
 const objOf = (v: unknown): Record<string, unknown> | null => (typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null)
@@ -13161,14 +13206,60 @@ function normTeam(raw: unknown): SetupTeam | null {
   const id = t === null ? null : strOf(t.id)
   if (t === null || id === null) return null
   const smoke = objOf(t.smoke)
+  const grant = objOf(t.grant)
+  const progress = objOf(t.progress) ?? {}
+  // The route reads the workspace's state live and serves it beside the record, as `workspace_state`.
+  const live = strOf(t.workspace_state)
   return {
     id,
     group: strOf(t.group) ?? '',
     workspace: strOf(t.workspace) ?? id,
     first_admin: strOf(t.first_admin),
     invites: Array.isArray(t.invites) ? t.invites.filter((x): x is string => typeof x === 'string') : [],
-    progress: objOf(t.progress) ?? {},
-    smoke: smoke === null ? null : { state: strOf(smoke.state) ?? 'waiting', detail: strOf(smoke.detail), url: strOf(smoke.url) },
+    progress: live === null ? progress : { ...progress, workspace_state: live },
+    smoke: smoke === null ? null : { state: strOf(smoke.state) ?? 'waiting', detail: strOf(smoke.detail) ?? strOf(smoke.reason), url: strOf(smoke.url) },
+    grant:
+      grant === null || strOf(grant.state) === null
+        ? null
+        : {
+            state: strOf(grant.state) as string,
+            account: strOf(grant.account),
+            selection: strOf(grant.selection),
+            repositories: Array.isArray(grant.repositories) ? grant.repositories.filter((r): r is string => typeof r === 'string' && r !== '') : [],
+          },
+    members: (Array.isArray(t.members) ? t.members : [])
+      .map(objOf)
+      .filter((m): m is Record<string, unknown> => m !== null && strOf(m.email) !== null)
+      .map((m) => ({ email: strOf(m.email) as string, member: typeof m.member === 'boolean' ? m.member : null })),
+  }
+}
+
+/** `console/verify_runs` as the status route serves it: `{verify_runs: {console_task, console_workflow}, repository}`. */
+function normVerifyRuns(raw: unknown): SetupVerifyRuns | null {
+  const doc = objOf(raw)
+  const ids = objOf(doc?.verify_runs)
+  if (doc === null || ids === null) return null
+  const task = strOf(ids.console_task)
+  const workflow = strOf(ids.console_workflow)
+  return task === null && workflow === null ? null : { task, workflow, repository: strOf(doc.repository) }
+}
+
+/** `sizing`, or null until stage 0 recorded one. A mode other than the two is not a sizing. */
+export function normSizing(raw: unknown): SetupSizing | null {
+  const d = objOf(raw)
+  if (d === null || (d.mode !== 'individual' && d.mode !== 'team')) return null
+  const limits = objOf(d.pool_limits) ?? {}
+  const services = objOf(d.service_max_instances) ?? {}
+  const max: Record<string, number> = {}
+  for (const [name, v] of Object.entries(services)) if (typeof v === 'number' && Number.isFinite(v)) max[name] = v
+  const n = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+  return {
+    mode: d.mode,
+    members: n(d.members),
+    pool_limits: { global: n(limits.global), default_tenant: n(limits.default_tenant), provider_tenant: n(limits.provider_tenant) },
+    service_max_instances: max,
+    pool_accounts: n(d.pool_accounts),
+    budget_usd: n(d.budget_usd),
   }
 }
 
@@ -13198,6 +13289,8 @@ export function normSetupState(raw: unknown): SetupState {
       : [],
     hostname: strOf(d.hostname),
     github_org: strOf(d.github_org),
+    verify_runs: normVerifyRuns(d.verify_runs),
+    sizing: normSizing(d.sizing),
   }
 }
 
@@ -13244,7 +13337,11 @@ export interface HealthFinding {
   cause: string | null
   /** The audit-log entry, when the check knows it. */
   changed: string | null
-  /** The repair command; `swarm install --repair <check>` when the finding names none. */
+  /**
+   * The repair command; `swarm install` when the finding names none: it
+   * re-checks every step and repairs the one that drifted (there is no
+   * `--repair` flag).
+   */
   repair: string
   /** Where in the Cloud console the same repair is, when there is one. */
   console_path: string | null
@@ -13257,6 +13354,9 @@ export interface SetupHealth {
 }
 
 const CHECK_RESULTS = new Set(['passed', 'failed'])
+
+/** A finding's repair when the doctor names none: swarm install re-checks every step and repairs what drifted. */
+export const REPAIR_BY_REINSTALL = 'swarm install'
 
 /** `GET /v1/admin/setup/health`'s `latest`, or null when no doctor run is recorded. */
 export function normSetupHealth(raw: unknown): SetupHealth | null {
@@ -13280,7 +13380,7 @@ export function normSetupHealth(raw: unknown): SetupHealth | null {
         title: strOf(f.title) ?? check,
         cause: strOf(f.cause),
         changed: strOf(f.changed),
-        repair: strOf(f.repair) ?? `swarm install --repair ${check}`,
+        repair: strOf(f.repair) ?? REPAIR_BY_REINSTALL,
         console_path: strOf(f.console_path),
       }
     })
@@ -13386,6 +13486,47 @@ export function mintSetupLink(body: { kind: SetupLinkKind; label: string; owner:
   )
 }
 
+/** `POST /v1/admin/setup/teams/{id}/invites`'s answer: the Google Admin page that adds them to the group, and whether they are in yet. */
+export interface SetupInvite {
+  email: string
+  add_members_url: string | null
+  member: boolean | null
+}
+
+/**
+ * `POST /v1/admin/setup/teams/{id}/invites` (decision 4): records the invite
+ * and answers the Google Admin members page. swarm-api holds Groups Reader
+ * only, so it adds no one; the status route then polls the membership.
+ */
+export function inviteToSetupTeam(teamId: string, email: string): Promise<Result<SetupInvite>> {
+  return setupWrite(
+    route('/v1/admin/setup/teams/{id}/invites', { id: teamId }),
+    'POST',
+    { email },
+    (raw) => {
+      const d = objOf(raw) ?? {}
+      const url = strOf(d.add_members_url)
+      return { email: strOf(d.email) ?? email, add_members_url: url !== null && url.startsWith('https://admin.google.com/') ? url : null, member: typeof d.member === 'boolean' ? d.member : null }
+    },
+    () => ({ email, add_members_url: 'https://admin.google.com/ac/groups', member: false }),
+  )
+}
+
+/**
+ * `POST /v1/admin/setup/verify-runs` (SETUP-API-2): the console's two
+ * verification runs, a task and a workflow, as the first team on a repository
+ * of its grant. Called again it answers the runs already started.
+ */
+export function startSetupVerifyRuns(): Promise<Result<SetupVerifyRuns>> {
+  return setupWrite(
+    route('/v1/admin/setup/verify-runs'),
+    'POST',
+    undefined,
+    (raw) => normVerifyRuns(raw) ?? { task: null, workflow: null, repository: strOf(objOf(raw)?.repository) },
+    () => ({ task: 'task_fixture_verify', workflow: 'wf_fixture_verify', repository: 'example-org/app' }),
+  )
+}
+
 /** `POST /v1/admin/setup/finish`: `console/finished`, once every console step is done; the CLI then runs verify. */
 export function finishSetup(): Promise<Result<{ at: string | null }>> {
   return setupWrite(
@@ -13436,7 +13577,13 @@ function fixtureSetupState(): Record<string, unknown> {
         first_admin: 'ana@example.com',
         invites: ['ravi@example.com', 'lea@example.com'],
         progress: { workspace_state: 'ready', created_at: at(18) },
-        smoke: { state: 'passed', detail: 'green in 2 min 48 s', url: null },
+        smoke: { state: 'succeeded', detail: 'green in 2 min 48 s', url: null },
+        grant: { state: 'granted', account: 'example-org', selection: 'selected', repositories: ['example-org/app', 'example-org/web'] },
+        members: [
+          { email: 'ana@example.com', member: true },
+          { email: 'lea@example.com', member: false },
+          { email: 'ravi@example.com', member: true },
+        ],
       },
     ],
     accounts: {
@@ -13450,6 +13597,14 @@ function fixtureSetupState(): Record<string, unknown> {
     ],
     hostname: 'console.example.com',
     github_org: 'example-org',
+    sizing: {
+      mode: 'team',
+      members: 12,
+      pool_limits: { global: 40, default_tenant: 20, provider_tenant: 20, resource_classes: {}, runner_profiles: {}, backends: {} },
+      service_max_instances: { 'swarm-api': 4, 'swarm-scheduler': 2, 'swarm-quota-broker': 1, 'swarm-reconciler': 1 },
+      pool_accounts: 3,
+      budget_usd: 900,
+    },
   }
 }
 

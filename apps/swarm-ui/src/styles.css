@@ -489,6 +489,13 @@ body {
    on the next step's --sk-acs band (2.89:1 dark, 2.96:1 light) that no browser
    draws. Restated here, after the floor, for that one button only. */
 .ob-step.is-next .c-btn.is-ghost { border-color: transparent; }
+/* A plain button on that band (Admin › Setup's Invite and "Run the console
+   checks", DAYONE-SETUP-UI-4): --ctl-bd on --sk-acs is 2.89:1 dark, 2.96:1
+   light, under 3:1 in every browser, not only jsdom. The Config lead's
+   10%-toward---text mix below, for the same tint: 3.49:1 dark, 3.47:1 light. */
+.ob-step.is-next .c-btn:not(.is-primary):not(.is-ghost):not(.is-danger):not(.is-danger-filled):not(:disabled):not([aria-disabled='true']) {
+  border-color: color-mix(in srgb, var(--ctl-bd) 90%, var(--text));
+}
 
 /* THE CONFIG LEAD'S BUTTONS (CONFIG-LEAD-TINT; part of #2157). config.css
    draws every Config page's lead (`.ac-lead`) on the --sk-acs info tint, where
