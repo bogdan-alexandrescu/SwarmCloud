@@ -485,9 +485,9 @@ def test_kms_signing_quota_read() -> None:
     low = step.check(ctx_for())
     assert low.status == UNMET and "quota.kms-signing-h4" in low.detail
 
-    gcp.quotas["cloudkms.googleapis.com"] = []
-    with pytest.raises(LookupError):  # unreadable is unknown to the engine, never fine
-        step.check(ctx_for())
+    gcp.quotas["cloudkms.googleapis.com"] = []  # #32: not reported is said in one line, never raised
+    unreported = step.check(ctx_for())
+    assert unreported.status == MET and "reports no crypto_requests quota" in unreported.detail
 
 
 def test_org_policies_read_effective() -> None:
