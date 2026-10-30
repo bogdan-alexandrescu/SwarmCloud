@@ -49,6 +49,7 @@ from . import artifacts, checkout, compact, config, keys, progress, qatargets, s
 from . import secrets as secret_tools
 from . import profiles as catalogue
 from . import workflows
+from .awaitinput import VERDICTS
 from .client import (
     TERMINAL,
     SwarmClient,
@@ -3978,6 +3979,12 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
     # `outputs`, not `produced`: a workflow read already names the whole
     # of `describe_task` `produced`, and one word for two shapes misleads.
     described["outputs"] = outputs_of(task, listing, listing_error=listing_error)
+    # A REVIEW'S VERDICT (#2837): MERGE or NOT_YET and how many findings,
+    # from the task's own `verdict.json`. No key, and no extra read, when its
+    # artifacts hold none (`_verdict_of`).
+    shown_verdict = _verdict_of(client, task_id, listing)
+    if shown_verdict is not None:
+        described["verdict"] = shown_verdict
     # WHAT THE AGENT ASKS THE OWNER (owner decisions, 2026-10-05 and
     # 2026-10-06, observer P15): its questions.json, read back through the
     # redacted artifacts route by `progress.owner_questions` -- the one parse
@@ -4011,6 +4018,65 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
         described["browser"] = browser
     # Where to watch it: the API's link, as served, or no key (`console_link`).
     return with_console(described, task)
+
+
+#: The file a review or re-review step writes (`agent_worker.expected_outputs.
+#: REVIEW_VERDICT_NAME`), and the most of it read: the worker's own bound
+#: (`agent_worker.verdict.MAX_VERDICT_BYTES`).
+VERDICT_NAME = "verdict.json"
+VERDICT_MAX_BYTES = 256 * 1024
+
+
+def _verdict_of(client: Any, task_id: str, listing: dict[str, Any] | None) -> dict[str, Any] | None:
+    """`{verdict, findings, file}` from the task's `verdict.json`, or None
+    when its artifacts hold none (#2837).
+
+    WHY. Reported 2026-10-30: a re-review's NOT_YET lived only in its
+    handoff, and nothing in `swarm_result` showed it. The worker now makes a
+    review step write the file; this shows what it says.
+
+    READ THROUGH THE ARTIFACTS ROUTE, by name, redacted by the API, and only
+    when the listing names the file: a task with none pays no read. A file
+    that does not read is `{"verdict": None, "unavailable_because": ...}`,
+    never a guessed verdict. `findings` counts the file's `findings` as the
+    worker does (`verdict.verdict_of_document`): a list's non-blank entries,
+    one for a lone non-empty value.
+    """
+    names = {
+        entry.get("name")
+        for entry in (listing or {}).get("artifacts") or []
+        if isinstance(entry, dict)
+    }
+    if VERDICT_NAME not in names:
+        return None
+
+    def unavailable(why: str) -> dict[str, Any]:
+        return {"verdict": None, "file": VERDICT_NAME, "unavailable_because": why}
+
+    try:
+        window = client.artifact_content(task_id, VERDICT_NAME, limit_bytes=VERDICT_MAX_BYTES + 1)
+    except SwarmError as exc:
+        return unavailable(f"the artifact route could not be read: {exc}")
+    if window.get("status") != "ok" or not isinstance(window.get("content"), str):
+        return unavailable(f"the artifact route says {window.get('status')}")
+    if window.get("truncated"):
+        return unavailable(f"the file is larger than the {VERDICT_MAX_BYTES} bytes the worker reads")
+    try:
+        document = json.loads(window["content"])
+    except ValueError:
+        return unavailable("the file is not JSON")
+    if not isinstance(document, dict):
+        return unavailable("the file is not a JSON object")
+    raw = document.get("verdict")
+    verdict = raw.strip().upper() if isinstance(raw, str) else None
+    if verdict not in VERDICTS:
+        return unavailable(f"its `verdict` is {raw!r}, not {' or '.join(VERDICTS)}")
+    findings = document.get("findings")
+    if isinstance(findings, list):
+        count = sum(1 for item in findings if item not in (None, "", {}, []))
+    else:
+        count = 0 if findings in (None, "") else 1
+    return {"verdict": verdict, "findings": count, "file": VERDICT_NAME}
 
 
 def _collect(client: Any, task_ids: list[str], wait_seconds: int) -> dict[str, Any]:

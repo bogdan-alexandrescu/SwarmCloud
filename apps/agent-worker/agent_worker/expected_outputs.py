@@ -111,12 +111,15 @@ Two things are deliberately NOT done here.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Collection, Iterable, Mapping, Sequence
 
 from agent_worker import questions as questions_mod
+from agent_worker import verdict as verdict_mod
 
 #: The key under `task.metadata`, and the key `input.json` carries it under.
 #:
@@ -203,13 +206,99 @@ def parse_names(value: Any) -> Declared:
     return Declared(names=tuple(sorted(names)), rejected=tuple(rejected))
 
 
+#: The file a review or re-review step writes its verdict into (#2837).
+REVIEW_VERDICT_NAME = "verdict.json"
+
+#: The key swarm-api writes a workflow step's id under, on every step's task
+#: (`swarm_api.service`: `"workflow_step": step_id`).
+WORKFLOW_STEP_KEY = "workflow_step"
+
+#: The last word of a review step's id: `review` (`issueruns.REVIEW_STEP`,
+#: a spec's `dod-data-review`) or `rereview` (a spec's `dod-data-rereview`;
+#: the appended `re-review`, `validation.REREVIEW_STEP_ID`, ends in `review`).
+_REVIEW_WORDS = frozenset({"review", "rereview"})
+_STEP_WORD_BREAK = re.compile(r"[-_.\s]+")
+
+
+def is_review_step(step_id: Any) -> bool:
+    """Whether a workflow step's id names a review or a re-review (#2837).
+
+    WHY BY ID. Reported 2026-10-30 (`wf_a1efae5b3f2f470496e5`): the leaf
+    step `dod-data-rereview` ended SUCCEEDED with its NOT_YET only in
+    `handoff.md`. No later step staged its `verdict.json`, so nothing put the
+    name in `metadata.expected_outputs`, and the stage a spec gives a step is
+    a note for its reader that never reaches the task. The step id does:
+    swarm-api writes it on every step's task.
+
+    The id's LAST word decides, case aside, after any trailing number (the
+    suffix a repeated id takes, `re-review-2`): `review` or `rereview`. So
+    `review-ui` (a QA spec's per-group review, which writes a report) and
+    `dod-data-fix` (which stages the review's verdict) are not reviews.
+    """
+    if not isinstance(step_id, str):
+        return False
+    words = [w for w in _STEP_WORD_BREAK.split(step_id.strip().lower()) if w]
+    while words and words[-1].isdigit():
+        words.pop()
+    return bool(words) and words[-1] in _REVIEW_WORDS
+
+
 def declared_outputs(metadata: Any) -> Declared:
-    """What `task.metadata` says this task's dependants will stage from it."""
+    """What `task.metadata` says this task's dependants will stage from it,
+    and, on a review or re-review step, its `verdict.json` (#2837).
+
+    A review step owes its verdict whether or not a later step stages it: the
+    merge, the console and `swarm_result` read it from the review's artifacts.
+    Declared here, it takes the #149 path whole: the agent is told the name
+    and the absolute path, and a clean finish without it fails the attempt
+    retryably instead of ending SUCCEEDED.
+    """
     if not isinstance(metadata, dict):
         # The contract types `metadata` as a dict. A value of any other type
         # cannot carry this key, so there is nothing here to honour.
         return Declared()
-    return parse_names(metadata.get(METADATA_KEY))
+    declared = parse_names(metadata.get(METADATA_KEY))
+    if is_review_step(metadata.get(WORKFLOW_STEP_KEY)) and REVIEW_VERDICT_NAME not in declared.names:
+        declared = Declared(
+            names=tuple(sorted((*declared.names, REVIEW_VERDICT_NAME))),
+            rejected=declared.rejected,
+        )
+    return declared
+
+
+def verdict_problem(artifacts_dir: Path | str) -> str | None:
+    """Why the review's own `verdict.json` in `artifacts_dir` is not a verdict,
+    or None when it reads (#2837).
+
+    The same reading a dependant gives a staged verdict
+    (`verdict.verdict_of_document`, bounded by `verdict.MAX_VERDICT_BYTES`), so
+    a file that passes here passes there. Not followed if it is a link: the
+    verdict is the bytes of a file the agent wrote into the directory.
+    """
+    path = Path(artifacts_dir) / REVIEW_VERDICT_NAME
+    accepted = " or ".join(verdict_mod.REVIEW_VERDICTS)
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return f"{REVIEW_VERDICT_NAME} was not written"
+    except OSError as exc:
+        return f"{REVIEW_VERDICT_NAME} could not be read ({type(exc).__name__})"
+    with os.fdopen(fd, "rb") as handle:
+        data = handle.read(verdict_mod.MAX_VERDICT_BYTES + 1)
+    if len(data) > verdict_mod.MAX_VERDICT_BYTES:
+        return f"{REVIEW_VERDICT_NAME} is over the {verdict_mod.MAX_VERDICT_BYTES}-byte bound"
+    try:
+        document = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        return f"{REVIEW_VERDICT_NAME} is not JSON ({type(exc).__name__})"
+    if not isinstance(document, dict):
+        return f"{REVIEW_VERDICT_NAME} is not a JSON object"
+    if verdict_mod.verdict_of_document(document) is None:
+        return (
+            f"{REVIEW_VERDICT_NAME} has `verdict` {document.get('verdict')!r}, "
+            f"not {accepted}"
+        )
+    return None
 
 
 def without_platform_names(names: Sequence[str], platform_written: Iterable[str]) -> tuple[str, ...]:
