@@ -5,20 +5,25 @@ the size the live deployment serves lands half again above the live
 pool_limits (terraform/environments/dev/dev.tfvars; the owner picked "More
 headroom": 3x the expected concurrency, not 2x), every ceiling is capped at the
 region's CPU quota when it is known, and terraform's own floor
-(global >= tenants x provider_tenant) holds for every proposal and is
-enforced on every edit.
+(global >= tenants x provider_tenant, a team's tenants being its `members`, the
+rule tfvars.py renders by) holds for every proposal and is enforced on every
+edit (DAYONE-SIZING-TENANTS, N5).
 """
 
 from __future__ import annotations
 
 import pytest
 
-from swarm_install import sizing
+from swarm_install import sizing, tfvars
 
 #: The interface sheet's keys, exactly.
 POOL_KEYS = {"global", "default_tenant", "provider_tenant", "resource_classes", "runner_profiles", "backends"}
 SERVICES = {"swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler"}
 SHAPES = [("individual", 1), ("team", 1), ("team", 2), ("team", 5), ("team", 15), ("team", 50), ("team", 200)]
+
+
+def _tenants(found: dict) -> int:
+    return 1 if found["mode"] == "individual" else found["members"]
 
 
 @pytest.mark.parametrize(("mode", "members"), SHAPES)
@@ -41,11 +46,52 @@ def test_proposal_has_the_interface_sheet_shape(mode: str, members: int) -> None
 def test_terraform_floor_holds_for_every_proposal(mode: str, members: int, quota: int | None) -> None:
     """terraform/infra/variables.tf: a provider pool (global, here: no
     providers map) is at least tenants x provider_tenant."""
-    pools = sizing.propose(mode, members, region_cpu_quota=quota)["pool_limits"]
-    assert pools["global"] >= sizing.PROVIDER_TENANTS * pools["provider_tenant"]
+    found = sizing.propose(mode, members, region_cpu_quota=quota)
+    pools = found["pool_limits"]
+    if pools["global"] < _tenants(found):
+        # The region's CPUs run fewer tasks than the team has tenants: no
+        # provider_tenant fits, and problems() says so (asked again, not passed).
+        assert "x provider_tenant" in " ".join(sizing.problems(found, region_cpu_quota=quota))
+    else:
+        assert pools["global"] >= _tenants(found) * pools["provider_tenant"]
+        assert sizing.problems(found, region_cpu_quota=quota) == []
     for group in ("resource_classes", "runner_profiles", "backends"):
         assert all(v <= pools["global"] for v in pools[group].values()), group
     assert pools["default_tenant"] <= pools["global"]
+
+
+@pytest.mark.parametrize("members", range(1, 201))
+def test_every_team_size_passes_the_render_tfvars_runs(members: int) -> None:
+    """N5: the proposal goes through the same check the first infra render
+    runs (tfvars.pool_limits, imported, not restated) and is never refused."""
+    mode = "individual" if members == 1 else "team"
+    for found in (sizing.propose(mode, members), sizing.propose("team", members)):
+        assert tfvars.pool_limits(found) == found["pool_limits"]
+        assert sizing.problems(found) == []
+
+
+@pytest.mark.parametrize("members", [2, 5, 15, 50, 200])
+def test_problems_refuse_what_the_render_refuses(members: int) -> None:
+    """problems() counts a team's members as its tenants, as tfvars.py does,
+    so preflight asks again instead of passing a sizing the render refuses."""
+    found = sizing.propose("team", members)
+    pools = found["pool_limits"]
+    broken = sizing.with_change(found, ("pool_limits", "provider_tenant"), pools["global"] // members + 1)
+    with pytest.raises(ValueError, match="pool_limits validation"):
+        tfvars.pool_limits(broken)
+    assert sizing.problems(broken)[0].startswith(f"global ({pools['global']}) is below {members} x provider_tenant")
+
+
+@pytest.mark.parametrize("members", [1, 5, 15, 50, 200])
+def test_lowering_global_lowers_provider_tenant_to_fit(members: int) -> None:
+    """with_change() keeps members x provider_tenant <= global when the person
+    lowers global, by lowering the per-tenant ceiling, never global."""
+    mode = "individual" if members == 1 else "team"
+    for new_global in (members, members + 1, 2 * members + 1, 999):
+        changed = sizing.with_change(sizing.propose(mode, members), ("pool_limits", "global"), new_global)
+        assert changed["pool_limits"]["global"] == new_global
+        assert sizing.problems(changed) == []
+        assert tfvars.pool_limits(changed)["global"] == new_global
 
 
 def test_one_person_gets_a_small_deployment() -> None:
@@ -62,13 +108,14 @@ def test_one_person_gets_a_small_deployment() -> None:
 def test_a_team_the_live_size_lands_above_the_live_values() -> None:
     """The ceilings sit 3x above the expected concurrency (the owner's "More
     headroom"), so a team the live size gets dev.tfvars' pool_limits (global
-    180, default_tenant 40, provider_tenant 100, standard 80, browser 100,
-    large 40, the runner and backend ceilings) half again over, in the same
-    ratios; service_max_instances stays the live 5/2/2/1."""
+    180, default_tenant 40, standard 80, browser 100, large 40, the runner and
+    backend ceilings) half again over, in the same ratios; service_max_instances
+    stays the live 5/2/2/1. provider_tenant is the one exception: 50 tenants
+    share the provider pool, so it is global // 50 (N5)."""
     assert sizing.HEADROOM == 3
     found = sizing.propose("team", sizing.REFERENCE_MEMBERS)
     assert found["pool_limits"] == {
-        "global": 270, "default_tenant": 60, "provider_tenant": 150,
+        "global": 270, "default_tenant": 60, "provider_tenant": 5,  # 270 // 50 tenants
         "resource_classes": {"standard": 120, "browser": 150, "large": 60},
         "runner_profiles": {"claude-code": 120, "claude-code-browser": 150, "codex": 30, "generic": 30, "browser": 30},
         "backends": {"CLOUD_RUN_JOB": 150, "GKE_AUTOPILOT": 270},
@@ -84,7 +131,7 @@ def test_the_table_for_1_5_15_and_50() -> None:
     got = {n: sizing.propose("individual" if n == 1 else "team", n) for n in (1, 5, 15, 50)}
     assert [got[n]["pool_limits"]["global"] for n in (1, 5, 15, 50)] == [10, 27, 81, 270]
     assert [got[n]["pool_limits"]["default_tenant"] for n in (1, 5, 15, 50)] == [10, 9, 18, 60]
-    assert [got[n]["pool_limits"]["provider_tenant"] for n in (1, 5, 15, 50)] == [10, 15, 45, 150]
+    assert [got[n]["pool_limits"]["provider_tenant"] for n in (1, 5, 15, 50)] == [10, 5, 5, 5]
     assert [got[n]["service_max_instances"]["swarm-api"] for n in (1, 5, 15, 50)] == [2, 2, 2, 5]
     assert [got[n]["pool_accounts"] for n in (1, 5, 15, 50)] == [1, 2, 6, 18]
     assert [got[n]["budget_usd"] for n in (1, 5, 15, 50)] == [500, 700, 1400, 3800]
@@ -101,25 +148,38 @@ def test_every_ceiling_capped_at_the_region_cpu_quota() -> None:
     assert sizing.cpu_cap(48) == 10
     assert sizing.cpu_cap(None) is None and sizing.cpu_cap(-1) is None
     assert sizing.cpu_cap(0) == 1
-    found = sizing.propose("team", 50, region_cpu_quota=48)
+    found = sizing.propose("team", 5, region_cpu_quota=48)
     assert all(v <= 10 for p, v in sizing.rows(found) if p[0] == "pool_limits")
     assert found["pool_limits"]["global"] == 10
+    assert found["pool_limits"]["provider_tenant"] == 2  # 10 // 5 tenants
     assert found["pool_accounts"] == 2  # the 10 the quota runs, at 5 agents an account
     assert sizing.problems(found, region_cpu_quota=48) == []
+    tfvars.pool_limits(found)
     assert sizing.propose("team", 50, region_cpu_quota=3000) == sizing.propose("team", 50)
     assert sizing.propose("team", 50, region_cpu_quota=-1) == sizing.propose("team", 50)
 
 
+def test_a_team_larger_than_the_quota_runs_is_asked_again() -> None:
+    """48 CPUs run 10 tasks, fewer than a team of 50's tenants: no
+    provider_tenant fits terraform's rule, so problems() says so."""
+    found = sizing.propose("team", 50, region_cpu_quota=48)
+    assert found["pool_limits"]["global"] == 10
+    assert any("50 x provider_tenant" in p and "CPUS" in p for p in sizing.problems(found, region_cpu_quota=48))
+
+
 def test_capped_keeps_the_persons_numbers_under_the_cap() -> None:
-    mine = sizing.with_change(sizing.propose("team", 50), ("budget_usd",), 9000)
+    mine = sizing.with_change(sizing.propose("team", 15), ("budget_usd",), 9000)
     lowered = sizing.capped(mine, 108)  # 25 tasks
     assert lowered["pool_limits"]["global"] == 25
-    assert lowered["pool_limits"]["runner_profiles"]["codex"] == 25
-    assert lowered["service_max_instances"]["swarm-api"] == 5  # not a pool ceiling: kept
+    assert lowered["pool_limits"]["provider_tenant"] == 1  # 25 // 15 tenants
+    assert lowered["pool_limits"]["runner_profiles"]["codex"] == 9  # already under the cap: kept
+    assert lowered["pool_limits"]["runner_profiles"]["claude-code"] == 25
+    assert lowered["service_max_instances"]["swarm-api"] == 2  # not a pool ceiling: kept
     assert lowered["budget_usd"] == 9000
     assert sizing.problems(lowered, region_cpu_quota=108) == []
+    tfvars.pool_limits(lowered)
     assert sizing.capped(mine, None) == mine
-    assert mine["pool_limits"]["global"] == 270  # never changed in place
+    assert mine["pool_limits"]["global"] == 81  # never changed in place
 
 
 @pytest.mark.parametrize(("mode", "members"), [("solo", 1), ("team", 0), ("team", -3), ("individual", 2),
@@ -131,8 +191,8 @@ def test_bad_inputs_are_refused(mode: str, members: object) -> None:
 
 def test_problems_name_every_refused_edit() -> None:
     base = sizing.propose("team", 15)
-    assert sizing.problems(sizing.with_change(base, ("pool_limits", "provider_tenant"), 82))[0].startswith(
-        "global (81) is below 1 x provider_tenant (82)")
+    assert sizing.problems(sizing.with_change(base, ("pool_limits", "provider_tenant"), 6))[0].startswith(
+        "global (81) is below 15 x provider_tenant (6)")
     assert sizing.problems(sizing.with_change(base, ("budget_usd",), 0)) == [
         "budget_usd must be a positive whole number, not 0"]
     assert "above the 10 tasks" in sizing.problems(base, region_cpu_quota=48)[0]
