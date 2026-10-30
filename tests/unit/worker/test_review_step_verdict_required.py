@@ -95,3 +95,87 @@ def test_an_unreadable_verdict_is_a_cause_a_retry_can_change():
     causes = {"verdict.json": expected_mod.CAUSE_UNREADABLE_VERDICT}
     assert expected_mod.retryable(["verdict.json"], causes)
     assert "unreadable_verdict" in expected_mod.missing_error(["verdict.json"], causes=causes)
+
+
+# -- the worker, end to end (lifecycle) -----------------------------------------
+
+
+def _seed_review(db, *, artifact_name: str, artifact_text: str, step_id: str = "dod-data-rereview"):
+    from worker_seeds import seed_attempt
+
+    seed_attempt(
+        db,
+        task_input={
+            "prompt": "re-review the lane",
+            "steps": 1,
+            "sleep_seconds": 0.01,
+            "artifact_name": artifact_name,
+            "artifact_text": artifact_text,
+        },
+    )
+    task = db.doc("tasks/task_1")
+    task["step_id"] = step_id
+    task["metadata"] = {}
+
+
+def test_a_leaf_review_that_wrote_only_its_handoff_fails_retryably(db, worker_factory):
+    """The reported attempt: a leaf re-review with its NOT_YET in handoff.md
+    alone. MUTATION: drop `step_id=` from `lifecycle._declared_outputs` and
+    the task ends SUCCEEDED."""
+    from agent_worker.errors import ExitCode
+    from swarm_common.states import TaskState
+
+    _seed_review(db, artifact_name="handoff.md", artifact_text="Verdict: NOT_YET\n")
+    worker, _, _ = worker_factory()
+
+    assert worker.run() == ExitCode.FAILED
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.READY.value, "a retry can write the verdict"
+    assert task["result_summary"]["expected_outputs_missing"] == ["verdict.json"]
+    assert task["result_summary"]["expected_outputs_missing_causes"] == [
+        {"name": "verdict.json", "cause": "not_written"}
+    ]
+    assert "verdict.json" in task["last_error"]
+
+
+def test_a_review_that_wrote_a_verdict_succeeds(db, worker_factory):
+    from agent_worker.errors import ExitCode
+    from swarm_common.states import TaskState
+
+    _seed_review(db, artifact_name="verdict.json", artifact_text=VALID_VERDICT)
+    worker, _, _ = worker_factory()
+
+    assert worker.run() == ExitCode.OK
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.SUCCEEDED.value
+    assert "expected_outputs_missing" not in task["result_summary"]
+
+
+@pytest.mark.parametrize("body", ["Verdict: NOT_YET", json.dumps({"verdict": "LGTM"})])
+def test_a_review_whose_verdict_does_not_read_fails_retryably(db, worker_factory, body):
+    """Uploaded but not a verdict. MUTATION: drop the `verdict_problem` check
+    from `lifecycle._report_missing_outputs` and the task ends SUCCEEDED."""
+    from agent_worker.errors import ExitCode
+    from swarm_common.states import TaskState
+
+    _seed_review(db, artifact_name="verdict.json", artifact_text=body)
+    worker, _, _ = worker_factory()
+
+    assert worker.run() == ExitCode.FAILED
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.READY.value
+    assert task["result_summary"]["expected_outputs_missing_causes"] == [
+        {"name": "verdict.json", "cause": "unreadable_verdict"}
+    ]
+    assert "unreadable_verdict" in task["last_error"]
+
+
+def test_a_step_that_is_not_a_review_owes_no_verdict(db, worker_factory):
+    from agent_worker.errors import ExitCode
+    from swarm_common.states import TaskState
+
+    _seed_review(db, artifact_name="handoff.md", artifact_text="done\n", step_id="dod-data-fix")
+    worker, _, _ = worker_factory()
+
+    assert worker.run() == ExitCode.OK
+    assert db.doc("tasks/task_1")["state"] == TaskState.SUCCEEDED.value
