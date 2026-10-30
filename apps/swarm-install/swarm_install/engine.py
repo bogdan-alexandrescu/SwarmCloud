@@ -11,8 +11,9 @@
    `depends_on` must already be met. If one is not, the stage refuses and
    names the entry and the step that satisfies it (lesson 8: infra applied
    before bootstrap fails on a missing custom role).
-5. `plan`, print it, renew the lease, `apply`; for a human or wait step, poll
-   the check with a countdown up to the step's bound (running the wait's
+5. `plan`, print it, renew the lease, `apply`; for a human step, open its
+   page once (`steps.open_page`, before the first poll, never on every poll);
+   for a human or wait step, poll the check with a countdown up to the step's bound (running the wait's
    triggered steps on every poll); else re-`check`. Then `verify`.
 6. **Record the result in the state store after every step**, never only at
    the end of a stage, so a crash between two steps resumes at the second.
@@ -58,7 +59,9 @@ from .steps import (
     Step,
     TriggeredStep,
     check_steps,
+    deep_link_of,
     kind_of,
+    open_page,
     triggered_of,
     wait_of,
 )
@@ -374,6 +377,8 @@ class Engine:
             self._record(step, STEP_FAILED, plan=plan, detail=f"{type(exc).__name__}: {exc}")
             raise self._failed(step, f"apply raised {type(exc).__name__}: {exc}") from exc
         kind = kind_of(step)
+        if kind == HUMAN_STEP:
+            self._open_page(step, plan)
         if kind in (HUMAN_STEP, WAIT_STEP):
             spec = wait_of(step) or HUMAN_WAIT
             done: set[str] = set()
@@ -397,6 +402,15 @@ class Engine:
                 self._record(step, STEP_FAILED, plan=plan, detail=rechecked.detail)
                 raise self._failed(step, f"after apply its check is {rechecked.status}: {rechecked.detail}")
         self._verified(step, plan, dict(rechecked.outputs))
+
+    def _open_page(self, step: Step, plan: Plan) -> None:
+        """A human step's exact page, opened once before its check is polled."""
+        try:
+            link = deep_link_of(step, self.ctx, plan)
+        except Exception:  # noqa: BLE001 - no link is printed then; the plan already named the steps
+            return
+        if link:
+            open_page(link, why=f"{step.id}: {plan.summary}")
 
     def _plan(self, step: Step) -> Plan | None:
         try:
