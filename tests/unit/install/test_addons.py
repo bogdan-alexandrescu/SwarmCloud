@@ -178,9 +178,13 @@ class FakeWorld:
 
 def ready_state(**outputs: Any) -> InstallState:
     state = InstallState(project=PROJECT, environment="prod", region="us-central1", hostname="swarm.example.com",
-                         ready_at=1.0)
+                         release="2026.10.1", ready_at=1.0)
     state.outputs.update({"installer": INSTALLER, "image_digests": {"swarm-egress": DIGEST,
                                                                     "swarm-typesafe-fwd": DIGEST}})
+    # The stage 0 and stage 2 records a ready install has, which every generated input needs (DAYONE-ENGINE-INPUTS).
+    state.outputs.update({"alert_email": "alerts@example.com", "github_org": "example-org",
+                          "org_domain": "example.com", "installer_cidr": "203.0.113.7/32",
+                          "desktop_client_id": "123456789012-abc123def456.apps.googleusercontent.com"})
     state.outputs.update(outputs)
     return state
 

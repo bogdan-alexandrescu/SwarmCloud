@@ -18,6 +18,7 @@ from swarm_install.exitcodes import ExitCode
 from swarm_install.steps import edge
 
 from .test_preflight import NUMBER, PROJECT, Answers, FakeGcp, Rig
+from .test_secret_entry import FakeContexts
 
 HOST = "swarm.example.com"
 IP = "203.0.113.7"
@@ -97,13 +98,15 @@ def test_desktop_client_opens_create_page_then_reads_secret_hidden(
     value = _value()
     terminal = Terminal(value, log)
     gcp = FakeGcp()
-    rig = Rig(tmp_path)
-    step = edge.DesktopClientStep(lambda: gcp, Answers(edge_desktop_client=[CLIENT_ID]), lambda: terminal)
+    rig = _rig(tmp_path)
+    contexts = FakeContexts()
+    step = edge.DesktopClientStep(lambda: gcp, Answers(edge_desktop_client=[CLIENT_ID]), lambda: terminal, contexts)
 
     result = rig.engine([step]).run()
     assert result.exit_code == ExitCode.OK, result.message
     assert log == [f"open https://console.cloud.google.com/auth/clients/create?project={PROJECT}", "hidden prompt"]
-    assert gcp.secrets[edge.DESKTOP_SECRET] == [value], "Secret Manager is the one place the secret goes"
+    assert gcp.secrets[edge.DESKTOP_SECRET] == [value], "Secret Manager holds the secret"
+    assert contexts.stored == {HOST: value}, "and the new deployment's credential store, the same typed value"
     text = value.decode()
     captured = capsys.readouterr()
     assert text not in captured.out + captured.err + "".join(terminal.written)
@@ -115,9 +118,9 @@ def test_desktop_client_recorded_id_opens_its_own_page(tmp_path: Path, monkeypat
     log: list[str] = []
     monkeypatch.setattr(edge, "open_page", lambda url, *, why, **_: log.append(f"open {url}"))
     gcp = FakeGcp()
-    rig = Rig(tmp_path)
+    rig = _rig(tmp_path)
     rig.store.update(lambda s: s.outputs.update({"desktop_client_id": CLIENT_ID}))
-    step = edge.DesktopClientStep(lambda: gcp, Answers(), lambda: Terminal(_value(), log))
+    step = edge.DesktopClientStep(lambda: gcp, Answers(), lambda: Terminal(_value(), log), FakeContexts())
 
     result = rig.engine([step]).run()
     assert result.exit_code == ExitCode.OK, result.message

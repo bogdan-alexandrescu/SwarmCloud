@@ -6,8 +6,11 @@
 # `swarmcloud`, the id `swarmcloud` being taken; `swarmcloud-releases` had that
 # id been taken, D23). It is where every company's install fetches the release,
 # and nothing in a deployment reads it after the install has copied the images
-# (D21). BGD runs this; nothing in CI holds a grant in that project (D22). It
-# creates, in this order, each only if it is not there yet:
+# (D21). BGD runs this. Until 2026-10-30 nothing in CI held a grant in that
+# project (D22); since BGD's "Move publishing into CI now" (DAYONE-RELEASE-CI)
+# the publish-release workflow's identity holds three, made by
+# --ci-publisher below. It creates, in this order, each only if it is not
+# there yet:
 #
 #   1. the three APIs it needs (Artifact Registry, Cloud KMS, Cloud Storage);
 #   2. Artifact Registry repository `swarmcloud` in `us`, format Docker
@@ -38,6 +41,22 @@
 # admits every member; an unreadable policy is a refusal, not a pass. Then it
 # asks for the project id, typed: SWARM_ASSUME_YES never answers that.
 #
+# With --ci-publisher EMAIL and ONLY then, the three grants that let the
+# publish-release workflow (.github/workflows/publish-release.yml) publish as
+# EMAIL, the service account it authenticates as (vars.GCP_DEPLOY_SA). Each is
+# on one resource; none is on the project:
+#
+#   * roles/artifactregistry.writer on the repository `swarmcloud` (gcrane
+#     copies each image in, cosign writes its signature beside it);
+#   * roles/storage.objectAdmin on gs://swarmcloud (publish.sh checks that
+#     releases/V/ is absent, uploads it with --no-clobber);
+#   * roles/cloudkms.signerVerifier on the key swarmcloud-release/cosign
+#     (cosign signs with it and reads its public key).
+#
+# Only a service account is admitted, never one on SHARED_DENY_LIST or of the
+# shared project. A grant already in place is not made again; the ones still
+# missing are printed, then the project id is typed, as for --public.
+#
 # The cosign public key is printed on stdout at the end (it is public, not a
 # secret); DAYONE-ENGINE-3 pins it as swarm_install/release_key.pub.
 #
@@ -45,6 +64,8 @@
 #   scripts/release-home.sh --dry-run [--public]  # every call it would make, none made
 #   scripts/release-home.sh                       # registry, bucket, key; no public read
 #   scripts/release-home.sh --public              # ...and the public read, after the check
+#   scripts/release-home.sh --ci-publisher SA@PROJECT.iam.gserviceaccount.com
+#                                                 # ...and the three release roles for CI
 #   scripts/release-home.sh --project swarmcloud-releases
 #
 # Exit codes: 0 done (or nothing to do), 1 refused or failed, 2 bad arguments.
@@ -61,10 +82,11 @@ export CLOUDSDK_CORE_DISABLE_PROMPTS=1
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 
-# The public grant is never non-interactive. An automation that sets this does
-# not get to answer the typed confirmation for this script.
+# The public grant and the CI publisher's grants are never non-interactive. An
+# automation that sets this does not get to answer the typed confirmation for
+# this script.
 if [[ -n "${SWARM_ASSUME_YES:-}" ]]; then
-  warn "ignoring SWARM_ASSUME_YES: the public grant always needs the project id typed"
+  warn "ignoring SWARM_ASSUME_YES: an IAM grant always needs the project id typed"
   unset SWARM_ASSUME_YES
 fi
 
@@ -88,11 +110,17 @@ POLICY_CONSTRAINT="iam.allowedPolicyMemberDomains"
 PUBLIC_MEMBER="allUsers"
 BUCKET_ROLE="roles/storage.objectViewer"
 REPOSITORY_ROLE="roles/artifactregistry.reader"
+# --ci-publisher: the three release roles, each on its one resource.
+PUBLISHER_REPOSITORY_ROLE="roles/artifactregistry.writer"
+PUBLISHER_BUCKET_ROLE="roles/storage.objectAdmin"
+PUBLISHER_KEY_ROLE="roles/cloudkms.signerVerifier"
 
 DRY_RUN=0
 PUBLIC=0
+PUBLISHER=""
+PUBLISHER_SET=0
 
-usage() { sed -n '2,52p' "$0"; }
+usage() { sed -n '2,71p' "$0"; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -101,6 +129,9 @@ while [[ $# -gt 0 ]]; do
       PROJECT="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --public)  PUBLIC=1; shift ;;
+    --ci-publisher)
+      [[ $# -ge 2 ]] || { err "--ci-publisher needs a service account email"; exit 2; }
+      PUBLISHER="$2"; PUBLISHER_SET=1; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) err "unknown argument: $1"; usage; exit 2 ;;
   esac
@@ -135,6 +166,25 @@ for candidate in "${RELEASE_PROJECTS[@]}"; do
 done
 [[ "${release_project}" -eq 1 ]] \
   || die "refusing project ${PROJECT}: the release home is one of ${RELEASE_PROJECTS[*]} (D23, D25)"
+
+# The CI publisher is a service account. Nothing on SHARED_DENY_LIST ever
+# qualifies. In the shared project only SwarmCloud's own accounts (swarm-*) do:
+# every SwarmCloud account lives there, and the publisher is the deployer,
+# swarm-tf-deployer, the identity publish-release.yml authenticates as (BGD,
+# 2026-10-30). Any other account of the shared project may be the other
+# team's, so it is refused.
+if [[ "${PUBLISHER_SET}" -eq 1 ]]; then
+  [[ "${PUBLISHER}" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]@([a-z][a-z0-9-]{4,28}[a-z0-9])\.iam\.gserviceaccount\.com$ ]] \
+    || die "refusing --ci-publisher '${PUBLISHER}': it must be a service account email, NAME@PROJECT.iam.gserviceaccount.com (no member prefix)"
+  publisher_project="${BASH_REMATCH[1]}"
+  if is_shared_resource "${PUBLISHER}" || is_shared_resource "${publisher_project}"; then
+    die "refusing --ci-publisher ${PUBLISHER}: it is on SHARED_DENY_LIST (scripts/lib/common.sh)"
+  fi
+  if is_shared_project "${publisher_project}" && [[ "${PUBLISHER%%@*}" != swarm-* ]]; then
+    die "refusing --ci-publisher ${PUBLISHER}: in the shared project only SwarmCloud's own swarm-* accounts may publish"
+  fi
+  PUBLISHER_MEMBER="serviceAccount:${PUBLISHER}"
+fi
 
 require_cmd gcloud jq
 
@@ -324,6 +374,52 @@ if [[ "${PUBLIC}" -eq 1 ]]; then
       gc_write artifacts repositories add-iam-policy-binding "${REPOSITORY}" --location="${LOCATION}" \
         --project="${PROJECT}" --member="${PUBLIC_MEMBER}" --role="${REPOSITORY_ROLE}"
     fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Phase 4 (--ci-publisher only): the three release roles, after the typed
+# project id.
+# ---------------------------------------------------------------------------
+
+if [[ "${PUBLISHER_SET}" -eq 1 ]]; then
+  step "Release roles for the CI publisher ${PUBLISHER}"
+  # As for --public: a resource that does not exist yet has no policy, and an
+  # empty file reads as "not bound".
+  gc_read artifacts repositories get-iam-policy "${REPOSITORY}" --location="${LOCATION}" \
+    --project="${PROJECT}" --format=json >"${WORK}/publisher-repo-iam.json" 2>/dev/null \
+    || : >"${WORK}/publisher-repo-iam.json"
+  gc_read storage buckets get-iam-policy "${BUCKET}" --project="${PROJECT}" --format=json \
+    >"${WORK}/publisher-bucket-iam.json" 2>/dev/null || : >"${WORK}/publisher-bucket-iam.json"
+  gc_read kms keys get-iam-policy "${KEY}" --keyring="${KEYRING}" --location="${LOCATION}" \
+    --project="${PROJECT}" --format=json >"${WORK}/publisher-key-iam.json" 2>/dev/null \
+    || : >"${WORK}/publisher-key-iam.json"
+
+  # Every grant still missing, one gcloud argument list per line, so each is
+  # printed in full before the one confirmation that covers them.
+  PUBLISHER_GRANTS=()
+  iam_policy_binds_member "${WORK}/publisher-repo-iam.json" "${PUBLISHER_REPOSITORY_ROLE}" "${PUBLISHER_MEMBER}" \
+    || PUBLISHER_GRANTS+=("artifacts repositories add-iam-policy-binding ${REPOSITORY} --location=${LOCATION} --project=${PROJECT} --member=${PUBLISHER_MEMBER} --role=${PUBLISHER_REPOSITORY_ROLE}")
+  iam_policy_binds_member "${WORK}/publisher-bucket-iam.json" "${PUBLISHER_BUCKET_ROLE}" "${PUBLISHER_MEMBER}" \
+    || PUBLISHER_GRANTS+=("storage buckets add-iam-policy-binding ${BUCKET} --member=${PUBLISHER_MEMBER} --role=${PUBLISHER_BUCKET_ROLE} --project=${PROJECT}")
+  iam_policy_binds_member "${WORK}/publisher-key-iam.json" "${PUBLISHER_KEY_ROLE}" "${PUBLISHER_MEMBER}" \
+    || PUBLISHER_GRANTS+=("kms keys add-iam-policy-binding ${KEY} --keyring=${KEYRING} --location=${LOCATION} --project=${PROJECT} --member=${PUBLISHER_MEMBER} --role=${PUBLISHER_KEY_ROLE}")
+
+  if [[ ${#PUBLISHER_GRANTS[@]} -eq 0 ]]; then
+    ok "${PUBLISHER} already holds the three release roles"
+  else
+    if [[ "${DRY_RUN}" -eq 0 ]]; then
+      warn "this lets ${PUBLISHER} write the release home: copy images into ${REPOSITORY}, write objects in ${BUCKET}, sign with ${KEYRING}/${KEY}"
+      for grant in "${PUBLISHER_GRANTS[@]}"; do
+        printf '  gcloud %s\n' "${grant}" >&2
+      done
+      confirm "Grant ${PUBLISHER} the ${#PUBLISHER_GRANTS[@]} role(s) above in ${PROJECT}." "${PROJECT}"
+    fi
+    for grant in "${PUBLISHER_GRANTS[@]}"; do
+      # Every word is one argument: ids, roles and the member hold no space.
+      read -r -a grant_args <<<"${grant}"
+      gc_write "${grant_args[@]}"
+    done
   fi
 fi
 

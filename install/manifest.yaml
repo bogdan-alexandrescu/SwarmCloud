@@ -2038,7 +2038,7 @@ entries:
   provider: engine
   check: gcloud iam service-accounts get-iam-policy swarm-tf-deployer@$P.iam.gserviceaccount.com
   apply: terraform/bootstrap/wif.tf resource "google_service_account_iam_member" "deployer_wif" (one per deployer_workflows x github_allowed_refs pair)
-  verify: policy shows roles/iam.workloadIdentityUser for principalSet://.../attribute.job_workflow_ref/<repo>/.github/workflows/<file>@<ref>, one entry per (release.yml, hotfix.yml, application.yml, terraform.yml, security.yml, iam-refusal-probe.yml) x refs/heads/main
+  verify: policy shows roles/iam.workloadIdentityUser for principalSet://.../attribute.job_workflow_ref/<repo>/.github/workflows/<file>@<ref>, one entry per (release.yml, hotfix.yml, application.yml, terraform.yml, security.yml, iam-refusal-probe.yml, publish-release.yml) x refs/heads/main
   explain: 'Pins trust to the WORKFLOW FILE (job_workflow_ref), not just repo+ref: closes the #457 gap where every workflow on main (including a merged test) could mint a deploy token.'
   guards: '#457, owner decision 2026-10-02'
   secret_entry: null

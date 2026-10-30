@@ -8,8 +8,15 @@ the hand-off wait** (`handoff.py`):
 | Step | Trigger | What it does |
 |---|---|---|
 | `github.pass-3` | `github_app.secrets_written_at` and the App's three secrets each have an ENABLED version | infra pass 3: the App ids, `enable_github_app`, `enable_forge_refresh` |
-| `github.hook` | pass 3 done and the console's self-check `ok` | `POST /v1/admin/setup/github-app/hook` as `swarm-tf-deployer`: swarm-api signs the App JWT, so the key never reaches the laptop |
-| `github.pass-4` | the hook is active | infra pass 4: `enable_github_hooks` |
+| `github.pass-4` | pass 3 done and the console's self-check `ok` | infra pass 4: `enable_github_hooks`, which makes the receiver and gives swarm-api its `GITHUB_HOOKS_URL` |
+| `github.hook` | pass 4 done and its apply reported the receiver serving | `POST /v1/admin/setup/github-app/hook` as `swarm-tf-deployer`: swarm-api signs the App JWT, so the key never reaches the laptop |
+
+**The webhook waits for its receiver.** swarm-api has `GITHUB_HOOKS_URL` only
+once the receiver serves (terraform/infra/locals.tf, `api_day_one_env`), which
+is infra pass 4's apply; before it, the hook route answers 409
+`setup_unconfigured`. So the hook runs after pass 4, and an
+`setup_unconfigured` answer (a revision still rolling out) is "not yet": the
+step keeps polling within `RECEIVER_WAIT` and never stops the hand-off on it.
 
 A switch is true only when its secret has an ENABLED version (lesson 39);
 whether it has one is read from the version's **metadata**. The engine holds
@@ -23,14 +30,29 @@ from collections.abc import Callable
 from typing import Any
 
 from .. import api_client, tfvars
-from ..exitcodes import MET, UNMET
-from . import Observation, Plan
+from ..api_client import ApiCallError
+from ..exitcodes import MET, UNMET, WAITING
+from ..waits import WaitSpec, wait_until
+from . import Observation, Plan, bootstrap
 from .bootstrap import DEPS, Deps, PassStep, key_versions
 from .preflight import remember
 
 GITHUB_APP = "github_app"
 #: The App fields infra pass 3 needs; none is a secret.
 APP_FIELDS = ("id", "client_id", "slug", "name")
+#: swarm-api's answer while it has no GITHUB_HOOKS_URL (setup_github.py).
+NOT_YET = "setup_unconfigured"
+#: Pass 4's apply waits for the new swarm-api revision, so the URL is normally
+#: served at once; this covers a revision still taking traffic. Well inside the
+#: lease (30 min), which the engine renews only between polls of the hand-off.
+RECEIVER_WAIT = WaitSpec(
+    reason="swarm-api serving GITHUB_HOOKS_URL after infra pass 4",
+    expected="under 1 min",
+    expected_s=60.0,
+    bound_s=300.0,
+    look_at="the swarm-api revision infra pass 4 deployed, and its GITHUB_HOOKS_URL",
+    interval_s=10.0,
+)
 
 
 def app_document(ctx: Any) -> dict[str, Any]:
@@ -78,7 +100,7 @@ class HookStep:
                 "swarm-api does it, signing the App JWT itself; the engine never holds the App's key.")
 
     def trigger(self, ctx: Any) -> bool:
-        return ctx.state.done("github.pass-3") and bool((app_document(ctx).get("self_check") or {}).get("ok"))
+        return ctx.state.done("github.pass-4") and bool(ctx.outputs.get("github_hooks_serving"))
 
     def check(self, ctx: Any) -> Observation:
         if ctx.outputs.get("github_hook_active"):
@@ -93,21 +115,38 @@ class HookStep:
                     (f"POST {api_client.HOOK_ROUTE} as {api_client.deployer_email(ctx.project)}",))
 
     def apply(self, ctx: Any, plan: Plan) -> None:
-        self._api(ctx).activate_hook()
+        api = self._api(ctx)
+
+        def attempt() -> str:
+            try:
+                api.activate_hook()
+            except ApiCallError as refused:
+                if refused.code == NOT_YET:
+                    return WAITING
+                raise
+            return MET
+
+        wait_until(self.id, RECEIVER_WAIT, attempt, clock=ctx.clock, events=ctx.events)
         remember(ctx, outputs={"github_hook_active": True})
 
 
 class Pass4Step(PassStep):
     pass_name = "infra-4"
-    _explain = "Infra pass 4 turns on enable_github_hooks, the one switch left, once the webhook is active."
+    _explain = ("Infra pass 4 turns on enable_github_hooks once the App's self-check passed: it makes the "
+                "receiver and gives swarm-api the URL the webhook is then pointed at.")
 
     def __init__(self, deps: Deps) -> None:
         super().__init__(deps, id="github.pass-4", stage=9, satisfies=())
 
     def trigger(self, ctx: Any) -> bool:
-        return ctx.state.done("github.hook")
+        return ctx.state.done("github.pass-3") and bool((app_document(ctx).get("self_check") or {}).get("ok"))
+
+    def apply(self, ctx: Any, plan: Plan) -> None:
+        outputs = bootstrap.apply_pass(ctx, self.deps, self.pass_name, targets=self.targets) or {}
+        hooks = outputs.get("github_hooks") or {}
+        remember(ctx, outputs={"github_hooks_serving": bool(hooks.get("serving"))})
 
 
 def build_triggered(deps: Deps = DEPS) -> tuple[Any, ...]:
     """The three, in order, for the hand-off wait to carry (not registered on their own)."""
-    return (Pass3Step(deps), HookStep(deps), Pass4Step(deps))
+    return (Pass3Step(deps), Pass4Step(deps), HookStep(deps))

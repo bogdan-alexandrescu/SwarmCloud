@@ -9,6 +9,9 @@ DAYONE-SETUP-API-1, part of #2688).
     POST /v1/admin/setup/github-app/hook          turn the webhook on (engine or admin)
     POST /v1/admin/setup/links                    a one-time link, three kinds
     POST /v1/admin/setup/teams                    a team: its workspace record and `teams/<id>`
+    POST /v1/admin/setup/teams/{id}/invites       an invite and its Google Admin members page
+    POST /v1/admin/setup/smoke                    the first team's smoke, again after a failure
+    POST /v1/admin/setup/verify-runs              the console's two verify runs, as the first team
     POST /v1/admin/setup/finish                   `console/finished`, once every step is done
     PUT  /v1/admin/setup/health                   `health/latest` (swarm-doctor only)
     GET  /v1/admin/setup/health                   `health/latest`
@@ -26,7 +29,17 @@ the links are: any signed-in person, for a link minted for their own email.
 WHAT IS WRITTEN (§5.4). The console's documents under `swarm-install/<env>/`
 and `health/latest`, through `install_record.InstallRecord`, and the link
 digests under `setup_links/`. The engine's document `swarm-install/<env>` is
-read and never written. No answer, log record or Firestore field carries a
+read and never written.
+
+THE FIRST TEAM (lane DAYONE-SETUP-API-2). Its row is read live on every page
+read: the workspace's state, each invitee's membership per the Groups API,
+its pool accounts. Creating it records a team-level grant over the App
+installation's repositories (`teams/<id>.grant`, decision 3). Once its first
+pool account lands, swarm-api runs its smoke, one small task on a granted
+repository, recorded as `teams/<id>.smoke`; `finish` waits for it to pass.
+The smoke and the console's verify runs are submitted as swarm-api's own
+service account in the team's tenant, so they run on the team's own slot and
+never on a person's GitHub connection. No answer, log record or Firestore field carries a
 secret: the App's three secrets go from GitHub's answer straight into Secret
 Manager, and a link's value straight into its one container.
 """
@@ -39,6 +52,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Header, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import Field
 
@@ -49,7 +63,7 @@ from .. import workspaces as ws
 from ..auth import TENANT_HEADER, AuthContext, bearer_tokens, require_admin
 from ..codec import console_origin
 from ..deps import AppContext, admin_auth, current_auth, get_context
-from ..errors import Conflict, Forbidden, NotFound, UpstreamUnavailable, ValidationFailed
+from ..errors import ApiError, Conflict, Forbidden, NotFound, UpstreamUnavailable, ValidationFailed
 from ..groups import GroupLookupError, MembershipResolver, check_group_readable
 from ..people import People
 from ..schemas import StrictModel
@@ -226,6 +240,283 @@ def links_service(ctx: AppContext = Depends(get_context)) -> sl.SetupLinks:
 
 
 # --------------------------------------------------------------------------
+# the first team: its repository grant, its live row, its smoke, the console's
+# verify runs (lane DAYONE-SETUP-API-2, decisions 3 and 4)
+# --------------------------------------------------------------------------
+
+#: The Google Admin page that adds members to a group, by the group's id (the
+#: Cloud Identity `groups/<id>` name's last segment, which is the Directory
+#: id the Admin console uses). Google has no API this deployment may call to
+#: add a member (decision 4: no Groups admin grant), so the person adds them
+#: there and the row polls membership through the Groups API.
+ADMIN_GROUP_MEMBERS = "https://admin.google.com/ac/groups/{group_id}/members"
+#: When the group's id cannot be looked up: the Admin console's group list.
+ADMIN_GROUPS = "https://admin.google.com/ac/groups"
+
+#: Pages of `GET /installation/repositories` read at most (100 a page).
+MAX_REPOSITORY_PAGES = 10
+
+SMOKE_PROMPT = ("Add a file SMOKE.md saying this deployment's first team ran its smoke task, "
+                "and commit it. Do not open a pull request.")
+VERIFY_TASK_PROMPT = ("Add a file VERIFY.md saying this deployment ran a single task from the "
+                      "console, and open a pull request titled 'swarm install verify'.")
+RUN_PROFILE = "claude-code"
+SMOKE_LABEL = "swarm-install-smoke"
+VERIFY_LABEL = "swarm-install-verify"
+
+RUNNING = "running"
+SUCCEEDED = "succeeded"
+FAILED = "failed"
+_DONE_STATES = {"SUCCEEDED": SUCCEEDED, "FAILED": FAILED, "CANCELLED": FAILED,
+                "DEAD_LETTERED": FAILED}
+
+
+def run_state(raw: Any) -> str:
+    """A task's state as the setup row says it: running, succeeded, failed."""
+    value = getattr(raw, "value", raw)
+    return _DONE_STATES.get(str(value or "").upper(), RUNNING)
+
+
+def runner_identity(project_id: str) -> str:
+    """The identity the first team's smoke and the console's verify runs are
+    submitted as: swarm-api's own service account. A service submitter is
+    resolved by the service rule (`forge.service_slot`): the team's own slot,
+    never a person's GitHub connection (decision 3, lesson 43), and the
+    workspace gate does not judge it (WD7)."""
+    return f"swarm-api@{project_id}.iam.gserviceaccount.com"
+
+
+class TeamRuns:
+    """Submits and reads the first team's runs through the existing
+    submission path (`SubmissionService`), as `runner_identity` in the team's
+    tenant. A test sets `app.state.setup_runs` to a fake."""
+
+    def __init__(self, ctx: AppContext) -> None:
+        self._ctx = ctx
+
+    def _auth(self, tenant_id: str, group: str) -> AuthContext:
+        from swarm_common.identity import Principal
+
+        email = runner_identity(self._ctx.settings.project_id)
+        return AuthContext(
+            principal=Principal(email=email, subject=f"setup:{tenant_id}",
+                                domain=email.rsplit("@", 1)[-1], groups=()),
+            tenant_id=tenant_id, is_admin=False, tenant_principal=group)
+
+    def submit_task(self, *, tenant_id: str, group: str, repository: str, prompt: str,
+                    label: str) -> str:
+        from ..schemas import TaskCreate
+
+        spec = TaskCreate(runner_profile=RUN_PROFILE, input={"prompt": prompt},
+                          repository_url=f"https://github.com/{repository}",
+                          metadata={"unit": label})
+        result = self._ctx.submissions.submit_tasks(self._auth(tenant_id, group), [spec])
+        return str(result.tasks[0].id)
+
+    def submit_workflow(self, *, tenant_id: str, group: str, repository: str,
+                        label: str) -> str:
+        from ..schemas import WorkflowCreate
+
+        spec = WorkflowCreate.model_validate({
+            "repository_url": f"https://github.com/{repository}",
+            "metadata": {"unit": label},
+            "steps": [
+                {"step_id": "write", "runner_profile": RUN_PROFILE,
+                 "input": {"prompt": "Add a file VERIFY.md saying this deployment ran a "
+                                     "workflow from the console; commit it."}},
+                {"step_id": "open", "runner_profile": RUN_PROFILE, "depends_on": ["write"],
+                 "builds_on": "write",
+                 "input": {"prompt": "Open a pull request with the previous step's commit, "
+                                     "titled 'swarm install verify'."}},
+            ],
+        })
+        submission = self._ctx.submissions.submit_workflow(self._auth(tenant_id, group), spec)
+        return str(submission.workflow.workflow_id)
+
+    def task_state(self, *, tenant_id: str, task_id: str) -> str:
+        task = self._ctx.store.get_task(tenant_id, task_id, submitted_by=None)
+        return run_state(task.state)
+
+
+def setup_runs(request: Request, ctx: AppContext = Depends(get_context)) -> Any:
+    found = getattr(request.app.state, "setup_runs", None)
+    return found if found is not None else TeamRuns(ctx)
+
+
+def installation_repositories(flow: ManifestFlow, github: GitHubSetupApi,
+                              org: str) -> dict[str, Any] | None:
+    """The App installation on `org` and the repositories it covers, or None
+    while the App is not created or not installed there.
+
+    Signed with the App's key (`ManifestFlow._signed`), as the installation
+    check is; the installation token is minted for this one read, held in
+    memory, and never stored, returned or logged."""
+    if not org or not (flow._doc().get("id")):  # noqa: SLF001 - the flow's own record
+        return None
+    jwt = flow._signed()  # noqa: SLF001 - the one App JWT signer
+    installs = github.installations(jwt)
+    found = next((i for i in installs
+                  if str((i.get("account") or {}).get("login") or "").lower() == org.lower()),
+                 None)
+    if found is None or not isinstance(found.get("id"), int):
+        return None
+    minted = github._call("POST", f"/app/installations/{found['id']}/access_tokens",  # noqa: SLF001
+                          jwt=jwt, body={})
+    token = minted.get("token") if isinstance(minted, dict) else None
+    if not isinstance(token, str) or not token:
+        raise UpstreamUnavailable("GitHub minted no installation token")
+    names: list[str] = []
+    for page in range(1, MAX_REPOSITORY_PAGES + 1):
+        answer = github._call(  # noqa: SLF001
+            "GET", f"/installation/repositories?per_page=100&page={page}", jwt=token)
+        rows = (answer or {}).get("repositories") if isinstance(answer, dict) else None
+        rows = [r for r in rows or [] if isinstance(r, dict) and r.get("full_name")]
+        names += [str(r["full_name"]) for r in rows]
+        if len(rows) < 100:
+            break
+    return {"installation_id": found["id"], "account": org,
+            "selection": found.get("repository_selection"), "repositories": sorted(set(names))}
+
+
+def ensure_grant(record: ir.InstallRecord, team_id: str, team: dict[str, Any], *,
+                 flow: ManifestFlow, github: GitHubSetupApi, org: str, by: str,
+                 now: datetime) -> dict[str, Any]:
+    """Decision 3: the first team's team-level grant over the repositories the
+    App installation covers, recorded on `teams/<id>.grant` and shown on the
+    page. Written once the App is installed on at least one repository; until
+    then `state: waiting_for_app` (not installed) or `waiting_for_repositories`
+    (installed on none, as a new organisation is), and the next read of the
+    page tries again. A grant already recorded is kept as it is."""
+    grant = dict(team.get("grant") or {})
+    if grant.get("state") == "granted" and grant.get("repositories"):
+        return grant
+    try:
+        found = installation_repositories(flow, github, org)
+    except ApiError as exc:
+        log.info("first team grant: the installation could not be read code=%s", exc.code)
+        found = None
+    if found is None or not found["repositories"]:
+        waiting = "waiting_for_app" if found is None else "waiting_for_repositories"
+        if grant.get("state") == waiting:
+            return grant  # unchanged: no write on every poll of the page
+        grant = {"state": waiting, "checked_at": now}
+        if found is not None:
+            grant.update({"installation_id": found["installation_id"],
+                          "account": found["account"], "selection": found["selection"]})
+    else:
+        grant = {"state": "granted", "mode": "write", "at": now, "by": by, **found}
+        log.info("first team granted the App's repositories team=%s repositories=%d",
+                 team_id, len(found["repositories"]))
+    record.write(record.team_path(team_id), {"grant": grant})
+    return grant
+
+
+def admin_members_url(directory: Any, group: str) -> str:
+    """The Google Admin page that adds members to `group` (decision 4)."""
+    lookup = getattr(directory, "group_resource_name", None)
+    if callable(lookup):
+        try:
+            name = str(lookup(group) or "")
+        except Exception:  # noqa: BLE001 - the group list still gets them there
+            name = ""
+        group_id = name.rsplit("/", 1)[-1]
+        if group_id:
+            return ADMIN_GROUP_MEMBERS.format(group_id=group_id)
+    return ADMIN_GROUPS
+
+
+def _membership(directory: MembershipResolver | None, email: str, group: str) -> bool | None:
+    """Whether `email` is in `group` now, per the Groups API; None when it did
+    not answer (never read as "not a member")."""
+    if directory is None or not group:
+        return None
+    try:
+        return bool(directory.groups_for(email, (group,), fresh=True))
+    except GroupLookupError:
+        return None
+
+
+def _pool_labels(request: Request, ctx: AppContext, tenant: str) -> list[str]:
+    listing = account_pool(request, ctx).list_accounts(tenant)
+    return sorted({str(a.get("label") or "") for a in listing.get("accounts") or []
+                   if isinstance(a, dict) and a.get("owner_tenant") == tenant} - {""})
+
+
+def advance_smoke(record: ir.InstallRecord, team_id: str, team: dict[str, Any], *,
+                  runs: Any, pool_accounts: list[str], now: datetime) -> dict[str, Any] | None:
+    """The first team's smoke (plan §5, stage 12): once its first pool account
+    has landed and its grant names a repository, ONE small task on that
+    repository, as the team; then its state, read live until it ends. The
+    result is `teams/<id>.smoke`, which `finish` waits for. A failed smoke is
+    started again only by `POST /v1/admin/setup/smoke`."""
+    smoke = dict(team.get("smoke") or {})
+    tenant = str(team.get("workspace") or team_id)
+    if smoke.get("task_id"):
+        if smoke.get("state") in (SUCCEEDED, FAILED):
+            return smoke
+        try:
+            state = runs.task_state(tenant_id=tenant, task_id=str(smoke["task_id"]))
+        except ApiError as exc:
+            log.info("first team smoke: its task could not be read code=%s", exc.code)
+            return smoke
+        if state != smoke.get("state"):
+            smoke["state"] = state
+            if state != RUNNING:
+                smoke["finished_at"] = now
+            record.write(record.team_path(team_id), {"smoke": smoke})
+        return smoke
+    repositories = list((team.get("grant") or {}).get("repositories") or [])
+    if not pool_accounts or not repositories:
+        return smoke or None
+    repository = repositories[0]
+    try:
+        task_id = runs.submit_task(tenant_id=tenant, group=str(team.get("group") or ""),
+                                   repository=repository, prompt=SMOKE_PROMPT,
+                                   label=SMOKE_LABEL)
+    except ApiError as exc:
+        smoke = {"state": FAILED, "repository": repository, "started_at": now,
+                 "finished_at": now, "reason": exc.code}
+    else:
+        smoke = {"state": RUNNING, "task_id": task_id, "repository": repository,
+                 "started_at": now}
+        log.info("first team smoke started team=%s task=%s", team_id, task_id)
+    record.write(record.team_path(team_id), {"smoke": smoke})
+    return smoke
+
+
+def team_row(request: Request, ctx: AppContext, record: ir.InstallRecord, team_id: str,
+             team: dict[str, Any], *, directory: MembershipResolver | None, first: bool,
+             runs: Any, flow: ManifestFlow, github: GitHubSetupApi, by: str) -> dict[str, Any]:
+    """A team's row, read live: its workspace's state now, each invitee's (and
+    the first admin's) membership per the Groups API, its pool accounts, and
+    for the first team its grant and smoke, advanced on this read."""
+    tenant = str(team.get("workspace") or team_id)
+    group = str(team.get("group") or "")
+    workspace = ctx.submissions.workspaces.get(tenant) or {}
+    people = sorted({str(e) for e in team.get("invites") or []}
+                    | ({str(team["first_admin"])} if team.get("first_admin") else set()))
+    members = {email: _membership(directory, email, group) for email in people}
+    try:
+        pool_accounts = _pool_labels(request, ctx, tenant)
+    except ApiError as exc:
+        log.info("setup page: the pool could not be read code=%s", exc.code)
+        pool_accounts = []
+    row = dict(team)
+    row.update({"id": team_id, "workspace_state": workspace.get("state"),
+                "members": [{"email": e, "member": m} for e, m in members.items()],
+                "pool_accounts": pool_accounts, "first": first})
+    if first:
+        now = ctx.now()
+        team = {**team, "grant": ensure_grant(
+            record, team_id, team, flow=flow, github=github,
+            org=ctx.settings.setup_github_org, by=by, now=now)}
+        row["grant"] = team["grant"]
+        row["smoke"] = advance_smoke(record, team_id, team, runs=runs,
+                                     pool_accounts=pool_accounts, now=now)
+    return row
+
+
+# --------------------------------------------------------------------------
 # the page
 # --------------------------------------------------------------------------
 
@@ -264,17 +555,29 @@ def _accounts_view(doc: dict[str, Any] | None) -> dict[str, Any]:
 
 @router.get("", dependencies=[Depends(admin_auth)])
 def setup_state(
-    caller: SetupCaller = Depends(admin_setup_caller),  # noqa: ARG001 - the gate
+    request: Request,
+    caller: SetupCaller = Depends(admin_setup_caller),
     ctx: AppContext = Depends(get_context),
     record: ir.InstallRecord = Depends(install_record),
+    directory: MembershipResolver | None = Depends(workspace_directory),
+    flow: ManifestFlow = Depends(manifest_flow),
+    github: GitHubSetupApi = Depends(setup_github_api),
+    runs: Any = Depends(setup_runs),
 ) -> dict:
+    """The page's whole state. Each team's row is read live (`team_row`), and
+    the first team's grant and smoke are advanced on the read the page polls."""
     engine = record.read_engine()
+    teams = record.teams()
     return {
         "env": record.env,
         "engine": engine,
         "cli_running": _cli_running(engine, ctx.now()),
         "github_app": _github_view(record.read(record.console_path(ir.GITHUB_APP))),
-        "teams": [{"id": team_id, **doc} for team_id, doc in record.teams()],
+        "teams": [team_row(request, ctx, record, team_id, doc, directory=directory,
+                           first=index == 0, runs=runs, flow=flow, github=github,
+                           by=caller.email)
+                  for index, (team_id, doc) in enumerate(teams)],
+        "verify_runs": record.read(record.console_path(ir.VERIFY_RUNS)),
         "accounts": _accounts_view(record.read(record.console_path(ir.ACCOUNTS))),
         "finished": record.read(record.console_path(ir.FINISHED)),
         "addons": [{"name": name, "enable": f"swarm addon enable {name}",
@@ -382,11 +685,19 @@ def create_team(
     ctx: AppContext = Depends(get_context),
     people: People = Depends(people_service),
     record: ir.InstallRecord = Depends(install_record),
+    directory: MembershipResolver | None = Depends(workspace_directory),
+    flow: ManifestFlow = Depends(manifest_flow),
+    github: GitHubSetupApi = Depends(setup_github_api),
 ) -> JSONResponse:
     """A team: the group workspace through the existing workspace path
     (`People.create`, as `POST /v1/admin/workspaces`; `swarm-workspace-apply`
     then does the namespace, quota, verify-keys and identity, the one writer
-    of design §5.7), its first admin, and `teams/<id>`."""
+    of design §5.7), its first admin, and `teams/<id>`.
+
+    The FIRST team also gets its team-level grant over the App installation's
+    repositories (decision 3, `ensure_grant`). Each invite comes back with the
+    Google Admin page that adds the person to the group (decision 4); the
+    page's row then polls their membership through the Groups API."""
     first_admin = roles.subject_for_write(body.first_admin) if body.first_admin else None
     auth = caller.auth
     status, workspace = people.create(
@@ -402,20 +713,134 @@ def create_team(
     progress = dict(existing.get("progress") or {})
     progress.setdefault("created_at", ctx.now())
     progress["workspace_state"] = workspace.get("state")
-    record.write(record.team_path(team_id), {
-        "group": str(workspace.get("principal") or body.group).lower(),
+    group = str(workspace.get("principal") or body.group).lower()
+    invites = sorted({i.strip().lower() for i in body.invites if i.strip()}
+                     | set(existing.get("invites") or []))
+    first = _first_team(record)
+    team = record.write(record.team_path(team_id), {
+        "group": group,
         "workspace": team_id,
         "first_admin": first_admin,
-        "invites": sorted({i.strip().lower() for i in body.invites if i.strip()}),
+        "invites": invites,
         "progress": progress,
     })
-    return JSONResponse(status_code=status, content={
-        "team": team_id, "workspace": content, "first_admin": granted})
+    grant = None
+    if first is None or first[0] == team_id:
+        grant = ensure_grant(record, team_id, team, flow=flow, github=github,
+                             org=ctx.settings.setup_github_org, by=caller.email, now=ctx.now())
+    members_url = admin_members_url(directory, group) if invites else None
+    return JSONResponse(status_code=status, content=jsonable_encoder({
+        "team": team_id, "workspace": content, "first_admin": granted, "grant": grant,
+        "invites": [{"email": email, "add_members_url": members_url,
+                     "member": _membership(directory, email, group)} for email in invites]}))
 
 
 def _first_team(record: ir.InstallRecord) -> tuple[str, dict[str, Any]] | None:
     teams = record.teams()
     return teams[0] if teams else None
+
+
+class InviteCreate(StrictModel):
+    email: str = Field(min_length=3, max_length=320)
+
+
+@router.post("/teams/{team_id}/invites", dependencies=[Depends(admin_auth)])
+def invite(
+    team_id: str,
+    body: InviteCreate,
+    caller: SetupCaller = Depends(admin_setup_caller),
+    record: ir.InstallRecord = Depends(install_record),
+    directory: MembershipResolver | None = Depends(workspace_directory),
+) -> dict:
+    """Decision 4: record the invite and answer the Google Admin page that adds
+    the person to the team's group. swarm-api holds Groups Reader only, so it
+    adds no one; the page's row polls the membership (`GET /v1/admin/setup`)
+    until the Groups API says they are in."""
+    team = record.read(record.team_path(team_id))
+    if team is None:
+        raise NotFound(f"no team {team_id!r}")
+    email = roles.subject_for_write(body.email)
+    group = str(team.get("group") or "")
+    invites = sorted(set(team.get("invites") or []) | {email})
+    if invites != list(team.get("invites") or []):
+        record.write(record.team_path(team_id), {"invites": invites})
+    log.info("setup invite recorded team=%s by=%s", team_id, caller.email)
+    return {"team": team_id, "email": email, "group": group,
+            "add_members_url": admin_members_url(directory, group),
+            "member": _membership(directory, email, group)}
+
+
+def _granted_repository(record: ir.InstallRecord) -> tuple[str, dict[str, Any], str]:
+    """(team id, team, repository): the first team and the first repository of
+    its grant, which every run Admin › Setup starts uses (decision 3)."""
+    first = _first_team(record)
+    if first is None:
+        raise Conflict("create the first team first")
+    team_id, team = first
+    repositories = list((team.get("grant") or {}).get("repositories") or [])
+    if not repositories:
+        raise Conflict("the first team has no granted repository yet: install the GitHub "
+                       "App on the organisation, on at least one repository",
+                       detail={"grant": (team.get("grant") or {}).get("state")})
+    return team_id, team, repositories[0]
+
+
+@router.post("/smoke", dependencies=[Depends(admin_auth)])
+def restart_smoke(
+    request: Request,
+    caller: SetupCaller = Depends(admin_setup_caller),  # noqa: ARG001 - the gate
+    ctx: AppContext = Depends(get_context),
+    record: ir.InstallRecord = Depends(install_record),
+    runs: Any = Depends(setup_runs),
+) -> dict:
+    """Start the first team's smoke again after it failed; a running or passed
+    smoke is answered as it is."""
+    team_id, team, _ = _granted_repository(record)
+    smoke = dict(team.get("smoke") or {})
+    if smoke.get("state") == FAILED:
+        team = {**team, "smoke": None}
+    tenant = str(team.get("workspace") or team_id)
+    smoke = advance_smoke(record, team_id, team, runs=runs,
+                          pool_accounts=_pool_labels(request, ctx, tenant), now=ctx.now())
+    if smoke is None:
+        raise Conflict("the first team's smoke waits for its first pool account")
+    return {"team": team_id, "smoke": smoke}
+
+
+@router.post("/verify-runs", dependencies=[Depends(admin_auth)])
+def start_verify_runs(
+    caller: SetupCaller = Depends(admin_setup_caller),
+    ctx: AppContext = Depends(get_context),
+    record: ir.InstallRecord = Depends(install_record),
+    runs: Any = Depends(setup_runs),
+) -> dict:
+    """The console's two verification runs, one task and one workflow, as the
+    first team on a repository of its grant (decision 3: the team's own slot,
+    never a person's token). Their ids go to `console/verify_runs` as
+    `verify_runs: {console_task, console_workflow}`, which the engine copies
+    into `state.outputs["verify_runs"]`, so nobody pastes an id. Called again,
+    it answers the runs already started and starts nothing."""
+    path = record.console_path(ir.VERIFY_RUNS)
+    done = record.read(path) or {}
+    started = dict(done.get("verify_runs") or {})
+    if started.get("console_task") and started.get("console_workflow"):
+        return {"verify_runs": started, "repository": done.get("repository"), "started": False}
+    team_id, team, repository = _granted_repository(record)
+    tenant = str(team.get("workspace") or team_id)
+    group = str(team.get("group") or "")
+    if not started.get("console_task"):
+        started["console_task"] = runs.submit_task(
+            tenant_id=tenant, group=group, repository=repository, prompt=VERIFY_TASK_PROMPT,
+            label=VERIFY_LABEL)
+        record.write(path, {"verify_runs": dict(started), "repository": repository,
+                            "started_at": ctx.now(), "by": caller.email})
+    started["console_workflow"] = runs.submit_workflow(
+        tenant_id=tenant, group=group, repository=repository, label=VERIFY_LABEL)
+    record.write(path, {"verify_runs": dict(started), "repository": repository,
+                        "started_at": done.get("started_at") or ctx.now(), "by": caller.email})
+    log.info("console verify runs started task=%s workflow=%s by=%s",
+             started["console_task"], started["console_workflow"], caller.email)
+    return {"verify_runs": started, "repository": repository, "started": True}
 
 
 # --------------------------------------------------------------------------
@@ -549,10 +974,14 @@ def finish(
     caller: SetupCaller = Depends(admin_setup_caller),
     ctx: AppContext = Depends(get_context),
     record: ir.InstallRecord = Depends(install_record),
+    flow: ManifestFlow = Depends(manifest_flow),
+    github: GitHubSetupApi = Depends(setup_github_api),
+    runs: Any = Depends(setup_runs),
 ) -> dict:
     """Write `console/finished` once every required console step is done: the
-    App installed and its self-check passed, a first team, and a pool account
-    signed in to it. A labelled account seen in the first team's pool gets its
+    App installed and its self-check passed, a first team, a pool account
+    signed in to it, and the first team's smoke passed (`advance_smoke`,
+    started here too if the page has not started it yet). A labelled account seen in the first team's pool gets its
     `signed_in_at` here. The CLI starts verify when this document exists."""
     app = record.read(record.console_path(ir.GITHUB_APP)) or {}
     first = _first_team(record)
@@ -578,6 +1007,20 @@ def finish(
             signed |= set(newly)
     if not signed:
         missing.append("pool_account_signed_in")
+    smoke_passed = False
+    if first is not None and signed:
+        team_id, team = first
+        grant = (team.get("grant") or {})
+        if grant.get("state") != "granted" or not grant.get("repositories"):
+            grant = ensure_grant(record, team_id, team, flow=flow, github=github,
+                                 org=ctx.settings.setup_github_org, by=caller.email,
+                                 now=ctx.now())
+            team = {**team, "grant": grant}
+        smoke = advance_smoke(record, team_id, team, runs=runs, pool_accounts=sorted(signed),
+                              now=ctx.now()) or {}
+        smoke_passed = smoke.get("state") == SUCCEEDED
+    if not smoke_passed:
+        missing.append("first_team_smoke")
     if missing:
         raise Conflict("setup is not finished yet", detail={"missing": missing})
     done = record.read(record.console_path(ir.FINISHED))

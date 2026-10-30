@@ -1449,6 +1449,33 @@ def cmd_profiles(_client, args) -> int:
     return EXIT_OK
 
 
+def cmd_graph_index(client: SwarmClient, args) -> int:
+    """The code graph's own record of a registered repository's index:
+    `GET /v1/repositories/{repo_id}/graph-cache`'s `index` (`commit_sha`,
+    `manifest_digest`), which only swarm-graph's promotion writes, never an
+    agent. The installer's verify compares an agent's `freshness.index_sha`
+    with it. Read-only; the tenant is the caller's (`tenant_scope`) and the
+    repo_id the API's own registration (`secrets.resolve_repository`).
+
+    Exit 1 when the repository has no promoted index: `index` is null."""
+    from .secrets import resolve_repository
+
+    repo_id = resolve_repository(client, args.repository)
+    body = client.request("GET", f"/v1/repositories/{repo_id}/graph-cache")
+    index = body.get("index") if isinstance(body, dict) else None
+    index = index if isinstance(index, dict) and index.get("commit_sha") else None
+    found = {"repository": args.repository, "repo_id": repo_id,
+             "index": {"commit_sha": str(index["commit_sha"]),
+                       "manifest_digest": index.get("manifest_digest")} if index else None}
+    if args.json:
+        print(json.dumps(found, indent=2))
+    elif index:
+        print(f"{args.repository}  indexed at {found['index']['commit_sha']}")
+    else:
+        print(f"{args.repository}  no promoted index", file=sys.stderr)
+    return EXIT_OK if index else EXIT_FAIL
+
+
 def cmd_tenants(client: SwarmClient, args) -> int:
     """The tenants you may act as, from `GET /v1/tenants/mine`, current marked.
 
@@ -2082,6 +2109,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     prof.add_argument("--json", action="store_true")
     prof.set_defaults(func=cmd_profiles, no_client=True)
+
+    gi = sub.add_parser(
+        "graph-index", help="the code graph's own record of a registered repository's index (its commit)"
+    )
+    gi.add_argument("repository", help="owner/repo, registered in the selected workspace")
+    gi.add_argument("--json", action="store_true")
+    gi.set_defaults(func=cmd_graph_index)
 
     ten = sub.add_parser("tenants", help="the tenants you may act as, the current one marked")
     ten.add_argument("--json", action="store_true")

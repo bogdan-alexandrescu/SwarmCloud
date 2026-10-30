@@ -31,8 +31,13 @@ SWARM_API_DOCUMENTS: dict[str, frozenset[str]] = {
          "self_check"}),
     "swarm-install/{env}/console/accounts": frozenset(),
     "swarm-install/{env}/console/teams/{id}": frozenset(
-        {"group", "workspace", "first_admin", "invites", "progress", "smoke"}),
+        {"group", "workspace", "first_admin", "invites", "progress", "smoke", "grant"}),
     "swarm-install/{env}/console/finished": frozenset({"at", "by"}),
+    #: The console's two verification runs (DAYONE-SETUP-API-2): `verify_runs`
+    #: is `{"console_task": <task id>, "console_workflow": <workflow id>}`,
+    #: which the engine copies into its state's `outputs["verify_runs"]`.
+    "swarm-install/{env}/console/verify_runs": frozenset(
+        {"verify_runs", "repository", "started_at", "by"}),
     "swarm-install/{env}/health/latest": frozenset({"run_at", "checks", "findings"}),
 }
 ACCOUNT_FIELDS = frozenset({"owner", "link_hash", "link_expires", "signed_in_at"})
@@ -44,6 +49,7 @@ GITHUB_APP = "github_app"
 ACCOUNTS = "accounts"
 FINISHED = "finished"
 TEAMS = "teams"
+VERIFY_RUNS = "verify_runs"
 
 
 class RecordFieldRefused(ValueError):
@@ -152,5 +158,6 @@ __all__ = [
     "RecordFieldRefused",
     "SWARM_API_DOCUMENTS",
     "TEAMS",
+    "VERIFY_RUNS",
     "check_fields",
 ]
