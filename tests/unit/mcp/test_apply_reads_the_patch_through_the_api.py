@@ -238,3 +238,47 @@ def test_integrate_reports_a_refused_patch_as_failed_not_skipped(repo):
 
 def test_a_refusal_is_a_swarm_error():
     assert issubclass(patches.PatchRefused, SwarmError)
+
+
+# The terminal command `swarm apply` (cli.cmd_apply) read the patch the old way
+# after PR 2843 moved the plugin tool: `download(patch_uri(task))`, a Cloud
+# Storage read with the developer's gcloud login (#2834). The same fake API
+# holds it to the same route: `access_token`, urllib and gcloud fail the test.
+
+
+def _cli_apply(api, repo):
+    from argparse import Namespace
+
+    from swarm_mcp import cli
+
+    return cli.cmd_apply(api, Namespace(task_id="task_a", into=str(repo)))
+
+
+def test_swarm_apply_on_the_terminal_reads_the_patch_through_the_api_and_applies_it(repo, capsys):
+    from swarm_mcp import cli
+
+    patch = _patch(repo)
+    api = FakeApi(patch, window=64)
+
+    code = _cli_apply(api, repo)
+
+    assert code == cli.EXIT_OK, capsys.readouterr()
+    assert (repo / "added.ts").read_text().endswith("export const line29 = 29\n")
+    expected = list(range(0, len(patch), api.window))
+    assert api.reads == [("task_a", PATCH_NAME, offset) for offset in expected]
+
+
+def test_swarm_apply_on_the_terminal_refuses_a_redacted_patch_with_its_reason(repo, capsys):
+    from swarm_mcp import cli
+
+    api = FakeApi(_patch(repo), window=64, redact_window=1)
+
+    code = _cli_apply(api, repo)
+
+    assert code == cli.EXIT_FAIL
+    assert "redact" in capsys.readouterr().err
+    assert not (repo / "added.ts").exists()
+    status = subprocess.run(
+        ["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True, check=True
+    ).stdout
+    assert status == ""
