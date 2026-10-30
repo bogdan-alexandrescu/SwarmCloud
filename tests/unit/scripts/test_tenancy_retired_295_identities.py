@@ -82,13 +82,20 @@ def test_infra_managed_is_the_platform_and_worker_accounts_alone():
     m = re.search(r"infra_managed = sort\(concat\((.*?)\)\)", text)
     assert m, "modules/service_account_ids no longer builds infra_managed the way this test reads it"
     parts = [p.strip() for p in m.group(1).split(",") if p.strip()]
+    assert parts == ["local.bootstrap_platform", "values(local.worker_ids)"], parts
+    # infra_managed reads bootstrap's platform list; that list names the
+    # platform accounts alone, no action account.
+    m = re.search(r"bootstrap_platform = sort\(concat\((.*?)\)\)", text)
+    assert m, "modules/service_account_ids no longer builds bootstrap_platform the way this test reads it"
+    parts = [p.strip() for p in m.group(1).split(",") if p.strip()]
     assert parts == [
         "keys(local.platform)",
         "[local.tick_id",
         "local.verify_id",
         "local.rollup_sweeper_id",
-        "local.schedule_tick_id]",
-        "values(local.worker_ids)",
+        "local.schedule_tick_id",
+        "local.discovery_id",
+        "local.doctor_id]",
     ], parts
 
 
