@@ -461,3 +461,56 @@ def test_upgrade_applies_the_latest_infra_pass_never_infra_2(monkeypatch: pytest
     _live_world(monkeypatch, ctx).apply_root("infra", "v1.1.0")
     assert seen == [(expected, expected != "infra-2")]
     assert not ctx.outputs.get(infra.REOPENED)
+
+
+# -- A12: upgrade opens the install's own Firestore database, never (default) -------
+
+
+class _Clients:
+    """Stands in for `google.cloud.firestore.Client`; records the database each client names."""
+
+    def __init__(self) -> None:
+        self.databases: list[str] = []
+
+    def __call__(self, *, project: str, database: str) -> Any:
+        self.databases.append(database)
+        return _TasksClient()
+
+
+class _TasksClient:
+    def collection(self, name: str) -> Any:
+        assert name == "tasks"
+        return self
+
+    def where(self, *, filter: Any) -> Any:  # noqa: A002 -- the Firestore keyword
+        return self
+
+    def stream(self) -> list[Any]:
+        return [object(), object()]
+
+
+def test_upgrade_migrations_and_running_name_the_install_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    """In a shared project (default) belongs to someone else: the drain count and
+    every numbered migration act on the install's database, record.DATABASE."""
+    from google.cloud import firestore
+
+    from swarm_install import record
+
+    clients = _Clients()
+    monkeypatch.setattr(firestore, "Client", clients)
+    world = verb.LiveWorld("proj", "prod", object(), object(), object(), object(), "holder", None)
+    assert world.running() == 2
+    world.documents()._client = None
+    _ = world.documents().client
+    assert clients.databases == [record.DATABASE, record.DATABASE]
+
+
+def test_migration_documents_default_to_the_install_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    from google.cloud import firestore
+
+    from swarm_install import record
+
+    clients = _Clients()
+    monkeypatch.setattr(firestore, "Client", clients)
+    _ = mig.FirestoreMigrationDocuments("proj").client
+    assert clients.databases == [record.DATABASE]

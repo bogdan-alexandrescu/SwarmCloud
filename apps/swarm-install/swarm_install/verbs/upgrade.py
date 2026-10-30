@@ -33,6 +33,7 @@ from ..events import Events
 from ..exitcodes import MET, UNKNOWN, ExitCode
 from ..lease import Lease, LeaseHeld, LeaseRefused
 from ..migrations import FirestoreMigrationDocuments, MigrationFailed
+from ..record import DATABASE
 from ..state import GcsObjectStore, StateStore, local_path, state_bucket
 from ..upgrade import Upgrade, UpgradeFailed, UpgradeRefused
 from ..waits import SystemClock, WaitGaveUp
@@ -104,7 +105,7 @@ class LiveWorld:
         self.holder = holder
         self.deps = DEPS
         self.steps = {step.id: step for step in discover_steps()}
-        self._documents = FirestoreMigrationDocuments(project)
+        self._documents = FirestoreMigrationDocuments(project, database=DATABASE)
         self._context = context
         self._api: Any = None
 
