@@ -187,6 +187,38 @@ describe('Admin › Setup, one person and the doctor', () => {
     expect(lead).toContain('your personal workspace')
   })
 
+  // Review of DAYONE-SETUP-UI-5A: the strip and the lead rest on the smoke as the hand-over does.
+  const SIGNED_IN = { ana: { owner: 'ana@example.com', link_expires: '2026-10-30T14:54:00Z' } }
+  const withSmoke = (smoke: Json) => ({ ...ONE_PERSON, personal: { ...ONE_PERSON.personal, pool_accounts: ['ana'], smoke }, accounts: SIGNED_IN })
+
+  it('a failed smoke keeps the first workspace failed, and the lead never says hand over', async () => {
+    await mountPage(firstRun(withSmoke({ state: 'failed', reason: 'no_capacity' })))
+    // MUTATION: tick the first workspace on its apply alone, with the smoke failed.
+    expect(stripStep('team').className).not.toContain('is-done')
+    expect(stripStep('team').className).toContain('is-failed')
+    const lead = visible(document.querySelector('.ws-lead'))
+    // MUTATION: say "hand over" while the page offers no hand-over button.
+    expect(lead).not.toMatch(/hand over/i)
+    expect(lead).toContain('smoke')
+  })
+
+  it('a running smoke keeps the first workspace in progress; a succeeded one lets the lead say hand over', async () => {
+    await mountPage(firstRun(withSmoke({ state: 'running', task_id: 'task_smoke' })))
+    expect(stripStep('team').className).toContain('is-in_progress')
+    expect(visible(document.querySelector('.ws-lead'))).not.toMatch(/hand over/i)
+    cleanup()
+    await mountPage(firstRun(withSmoke({ state: 'succeeded', task_id: 'task_smoke' })))
+    expect(stripStep('team').className).toContain('is-done')
+    expect(visible(document.querySelector('.ws-lead'))).toMatch(/hand over to swarm install/)
+  })
+
+  it('a team’s failed smoke keeps the first team failed in the strip', async () => {
+    await mountPage(firstRun({ github_app: ONE_PERSON.github_app, teams: [{ ...FIRST_TEAM, smoke: { state: 'failed', detail: 'quota_exceeded', url: null } }] }))
+    // MUTATION: count the first team done once it exists, whatever its smoke.
+    expect(stripStep('team').className).not.toContain('is-done')
+    expect(visible(document.querySelector('.ws-lead'))).not.toMatch(/hand over/i)
+  })
+
   it('names swarm doctor only for what it does, and the hourly doctor’s findings on Health', async () => {
     await mountPage(firstRun())
     const card = visible(screen.getByRole('heading', { name: 'Health' }).closest('section'))

@@ -635,6 +635,14 @@ describe('the App self-check waits for infra pass 3 (finding 28)', () => {
     expect(after.disabled).toBe(false)
   })
 
+  it('says why it waits in a few words beside the button, leaving the sentence to the row', async () => {
+    await mountSteps(state(installed(null)))
+    const why = (document.querySelector('[data-step="github"]') as HTMLElement).querySelector('.c-why') as HTMLElement
+    // MUTATION: put the full sentence beside the button: the action column widens and squeezes the row's body.
+    expect(visible(why).length).toBeLessThanOrEqual(24)
+    expect(visible(why)).toContain('infra pass 3')
+  })
+
   it('reads app_id_not_configured as waiting for swarm install’s infra pass 3, not as a failure', async () => {
     await mountSteps(state(installed({ ok: false, reason: 'app_id_not_configured', at: '2026-10-29T14:52:00Z', state: 'waiting_for_infra_pass_3' })))
     const row = document.querySelector('[data-step="github"]') as HTMLElement
