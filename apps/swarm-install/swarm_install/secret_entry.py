@@ -6,6 +6,13 @@ and handed straight to Secret Manager's `addVersion`. It is never printed,
 never put in an event, never written to the install state (which records only
 the version number) and never written to disk.
 
+The Desktop client's secret is the one value with a second destination: the
+same typed value also goes, on stdin, to the swarm CLI's credential store for
+the new deployment's context (`swarm_context.store_desktop_secret`), so
+verify signs in to that context without the engine ever reading the secret
+back from Secret Manager. The store is the person's keychain (or the CLI's
+0600 file), the place `swarm login` keeps it anyway.
+
 **No terminal, no prompt (review finding 11).** `getpass.getpass` falls back to
 reading stdin, with echo on, when `/dev/tty` cannot be opened; under
 `/sc:install` that stdin is a pipe Claude writes to, so a value could be piped
@@ -23,7 +30,9 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from typing import Any, NoReturn, Protocol
+from typing import Any, NoReturn, Protocol, TypeVar
+
+T = TypeVar("T")
 
 #: The `reason` of the `step_paused` event a step emits when it has no terminal.
 NEEDS_TERMINAL = "needs_terminal"
@@ -136,6 +145,34 @@ def ask(
     return answer or (default or "")
 
 
+def type_secret(
+    ctx: Any,
+    *,
+    step_id: str,
+    what: str,
+    prompt: str,
+    use: Callable[[bytes], T],
+    open_terminal: Callable[[], Terminal] = DevTty.open,
+) -> T:
+    """Prompt for a value with echo off and hand it, stripped, to `use`; the
+    typed buffer is zeroed whatever `use` does. Returns what `use` returns."""
+    try:
+        terminal = open_terminal()
+    except NoTerminal:
+        needs_terminal(ctx, step_id, f"the value of {what}")
+    value = bytearray()
+    try:
+        terminal.write(f"{prompt} (input hidden): ")
+        value = terminal.read_hidden()
+        if not value.strip():
+            raise ValueError(f"nothing was typed for {what}; nothing was stored")
+        return use(bytes(value.strip()))
+    finally:
+        for index in range(len(value)):
+            value[index] = 0
+        terminal.close()
+
+
 def enter_secret(
     ctx: Any,
     *,
@@ -145,23 +182,20 @@ def enter_secret(
     prompt: str,
     store: SecretVersions,
     open_terminal: Callable[[], Terminal] = DevTty.open,
+    also: Callable[[bytes], Any] | None = None,
 ) -> int:
-    """Prompt for a value with echo off and add it as a version of `secret_id`.
+    """Prompt for a value with echo off and add it as a version of `secret_id`;
+    `also`, when given, gets the same typed value after Secret Manager took it
+    (the Desktop client's secret also goes to the swarm credential store).
 
     Returns the version number, the only thing about the value anyone keeps.
     """
-    try:
-        terminal = open_terminal()
-    except NoTerminal:
-        needs_terminal(ctx, step_id, f"the value of {secret_id}")
-    value = bytearray()
-    try:
-        terminal.write(f"{prompt} (input hidden): ")
-        value = terminal.read_hidden()
-        if not value.strip():
-            raise ValueError(f"nothing was typed for {secret_id}; nothing was stored")
-        return store.add_secret_version(project, secret_id, bytes(value.strip()))
-    finally:
-        for index in range(len(value)):
-            value[index] = 0
-        terminal.close()
+
+    def add(value: bytes) -> int:
+        version = store.add_secret_version(project, secret_id, value)
+        if also is not None:
+            also(value)
+        return version
+
+    return type_secret(ctx, step_id=step_id, what=secret_id, prompt=prompt, use=add,
+                       open_terminal=open_terminal)
