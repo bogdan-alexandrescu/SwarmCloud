@@ -14,7 +14,10 @@ another session's is not; one in another repository is not; one finished
 more than 7 days ago is not; a questions read that fails lands in
 `unchecked` with its reason; a failed list read too; the cache spares a
 second read of a finished task's questions; and the section is never a
-stuck or stale flag.
+stuck or stale flag. Since #2835 the tasks come from one server-side read
+(`GET /v1/tasks/open-questions`), so a busy session's old question is
+listed; the old walk is only the fallback for an API without the route,
+and says so under `unchecked`.
 """
 
 from __future__ import annotations
@@ -162,16 +165,79 @@ def test_a_failed_questions_read_lands_in_unchecked(swarm, db, sid, reads):  # n
     assert reads.count("task_broken") == 2, reads
 
 
-def test_a_failed_list_read_lands_in_unchecked(swarm, db, sid, reads, monkeypatch):  # noqa: F811
+def test_a_busy_sessions_old_question_is_listed_from_one_read(swarm, db, sid, reads, monkeypatch):  # noqa: F811
+    """#2835: 600 succeeded tasks of this session in the last hours -- twelve
+    pages of 50, past the old 10-page walk -- and, six days ago, one task
+    whose question nobody answered."""
+    for i in range(600):
+        _finished(db, f"task_busy_{i:03d}", sid, asked=0, days_ago=i / 86400 * 10)
+    _finished(db, "task_old_open", sid, asked=1, days_ago=6)
+    paths: list[str] = []
+    real = type(swarm).request
+
+    def counting(self, method, path, **kwargs):
+        if path.startswith("/v1/tasks"):
+            paths.append(path)
+        return real(self, method, path, **kwargs)
+
+    monkeypatch.setattr(type(swarm), "request", counting)
+    result = _check(swarm)
+    # MUTATION: page the session's finished tasks (the #2835 defect) and the
+    # six-day-old task is never reached: `unchecked` says "more than 10 pages".
+    assert [e["task_id"] for e in result["owner_questions"]] == ["task_old_open"], result["owner_questions"]
+    assert not [u for u in result["unchecked"] if u.get("section") == "owner_questions"], result["unchecked"]
+    # ONE read for (g), not a walk of every terminal state.
+    asked = [p for p in paths if p.startswith(check.OPEN_QUESTIONS_ROUTE)]
+    assert len(asked) == 1, asked
+    assert not [p for p in paths if "state=SUCCEEDED" in p], paths
+
+
+def test_a_failed_open_questions_read_lands_in_unchecked(swarm, db, sid, reads, monkeypatch):  # noqa: F811
     _finished(db, "task_open", sid)
     real = type(swarm).request
 
     def failing(self, method, path, **kwargs):
-        if path.startswith("/v1/tasks?") and "state=FAILED" in path:
-            raise check.SwarmError("503 Service Unavailable")
+        if path.startswith(check.OPEN_QUESTIONS_ROUTE):
+            raise check.SwarmError("503 Service Unavailable", status=503)
         return real(self, method, path, **kwargs)
 
     monkeypatch.setattr(type(swarm), "request", failing)
+    result = _check(swarm)
+    assert result["owner_questions"] == []
+    # MUTATION: swallowing the failed read -- "no questions" over a list never read.
+    assert any(u.get("section") == "owner_questions" and "503" in u["why"]
+               for u in result["unchecked"]), result["unchecked"]
+
+
+def _without_the_route(swarm, monkeypatch, fail_state: str | None = None):  # noqa: F811
+    """A deployment that predates the route: it answers 404 from the API."""
+    real = type(swarm).request
+
+    def old_api(self, method, path, **kwargs):
+        if path.startswith(check.OPEN_QUESTIONS_ROUTE):
+            raise check.SwarmError("404 not_found: no such task", status=404)
+        if fail_state and path.startswith("/v1/tasks?") and f"state={fail_state}" in path:
+            raise check.SwarmError("503 Service Unavailable", status=503)
+        return real(self, method, path, **kwargs)
+
+    monkeypatch.setattr(type(swarm), "request", old_api)
+
+
+def test_an_api_without_the_route_falls_back_to_paging_and_says_so(swarm, db, sid, reads, monkeypatch):  # noqa: F811
+    _finished(db, "task_open", sid)
+    _finished(db, "task_done", sid, asked=1, answered=(0,))
+    _without_the_route(swarm, monkeypatch)
+    result = _check(swarm)
+    # The walk still finds the question, and still drops the answered one.
+    assert [e["task_id"] for e in result["owner_questions"]] == ["task_open"]
+    # MUTATION: fall back silently, and a session cannot tell a bounded walk
+    # from the one read that sees every task.
+    assert check.OPEN_QUESTIONS_FALLBACK in [u["why"] for u in result["unchecked"]], result["unchecked"]
+
+
+def test_a_failed_list_read_in_the_fallback_lands_in_unchecked(swarm, db, sid, reads, monkeypatch):  # noqa: F811
+    _finished(db, "task_open", sid)
+    _without_the_route(swarm, monkeypatch, fail_state="FAILED")
     result = _check(swarm)
     # The other states were still read.
     assert [e["task_id"] for e in result["owner_questions"]] == ["task_open"]

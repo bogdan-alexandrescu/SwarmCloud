@@ -77,7 +77,10 @@ THE RULES, each with the control that is NOT flagged:
     `progress.owner_questions` (redacted, by name) -- once per task while
     the bridge lives, since a finished task's questions never change. A
     read that fails is under `unchecked` with its reason, and tried again
-    on the next check.
+    on the next check. The tasks come from ONE server-side read,
+    `GET /v1/tasks/open-questions` (#2835), whatever the session's volume;
+    paging the session's finished tasks is only the fallback for a
+    deployment that does not serve it, and says so under `unchecked`.
 
 Every age is measured from evidence and says which: the event that entered
 the state when the newest page of events holds it, else a LOWER BOUND from
@@ -832,8 +835,9 @@ def _single_tasks(
 #: console's to show.
 OWNER_QUESTIONS_DAYS = 7
 
-#: One page of finished tasks per request, and at most this many pages per
-#: terminal state: a session's own finished work in a week, newest first.
+#: The FALLBACK walk only (`_finished_tasks`, for a deployment without
+#: `OPEN_QUESTIONS_ROUTE`): one page of finished tasks per request, and at
+#: most this many pages per terminal state, newest first.
 OWNER_QUESTIONS_PAGE = 50
 OWNER_QUESTIONS_MAX_PAGES = 10
 
@@ -910,6 +914,45 @@ def _finished_tasks(client: SwarmClient, sid: str, since: datetime) -> tuple[lis
     return list(found.values()), failures
 
 
+#: The one read (g) makes (#2835): this session's finished tasks with an
+#: owner question that has no answer, filtered on the server.
+OPEN_QUESTIONS_ROUTE = "/v1/tasks/open-questions"
+
+#: (g)'s `unchecked` line when the API does not serve `OPEN_QUESTIONS_ROUTE`
+#: and the questions were found by `_finished_tasks`' bounded walk instead.
+OPEN_QUESTIONS_FALLBACK = (f"this deployment does not serve GET {OPEN_QUESTIONS_ROUTE}, so the owner's "
+                           f"questions were found by paging this session's finished tasks, at most "
+                           f"{OWNER_QUESTIONS_MAX_PAGES} pages per state; an older task's may not be listed")
+
+
+def _asked_tasks(client: SwarmClient, sid: str, since: datetime) -> tuple[list[dict[str, Any]], list[str]]:
+    """`(tasks, failures)`: this session's tasks that ended since `since` with
+    an owner question no answer covers, from ONE server-side query (#2835).
+
+    It used to page every finished task of the session, newest first, and
+    stopped after `OWNER_QUESTIONS_MAX_PAGES`: a busy session passed that in
+    hours, and an older task's questions were never listed. That walk is
+    kept only for a deployment that does not serve the route (a 404 from the
+    API itself, not from the edge), and `failures` names it."""
+    params = urllib.parse.urlencode([("claude_session", sid), ("since", _iso(since))])
+    try:
+        data = client.request("GET", f"{OPEN_QUESTIONS_ROUTE}?{params}")
+    except SwarmError as exc:
+        if exc.status == 404 and not exc.edge:
+            tasks, failures = _finished_tasks(client, sid, since)
+            return tasks, [OPEN_QUESTIONS_FALLBACK, *failures]
+        return [], [f"reading this session's tasks with open questions failed ({exc}); "
+                    "their questions for the owner are not listed"]
+    if not isinstance(data, dict) or not isinstance(data.get("tasks"), list):
+        return [], [f"GET {OPEN_QUESTIONS_ROUTE} answered without a `tasks` list; "
+                    "this session's questions for the owner are not listed"]
+    failures = []
+    if data.get("complete") is False:
+        failures.append(f"GET {OPEN_QUESTIONS_ROUTE} reached its read bound; "
+                        "some of this session's questions for the owner may not be listed")
+    return [t for t in data["tasks"] if isinstance(t, dict)], failures
+
+
 def _owner_questions(client: SwarmClient, scope: str | None, sid: str | None, record: session.Record,
                      now: datetime, names: dict[str, str], tenant: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """`(entries, unchecked)`: (g), this session's finished tasks in this
@@ -918,7 +961,7 @@ def _owner_questions(client: SwarmClient, scope: str | None, sid: str | None, re
         # No session, no candidate (`session.UNKNOWN_NOTE`): nothing is read.
         return [], []
     since = now - timedelta(days=OWNER_QUESTIONS_DAYS)
-    tasks, failures = _finished_tasks(client, sid, since)
+    tasks, failures = _asked_tasks(client, sid, since)
     unchecked: list[dict[str, Any]] = [{"task_id": None, "workflow_id": None, "section": "owner_questions",
                                         "why": why} for why in failures]
     wanted: list[tuple[dict[str, Any], set[int]]] = []
