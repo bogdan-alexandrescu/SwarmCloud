@@ -701,10 +701,38 @@ def _cli_running(engine: dict[str, Any] | None, now: datetime) -> bool:
     return beat is not None and now - beat <= LEASE_STALE
 
 
+#: The self-check's states (audit finding 28). Before swarm install's infra
+#: pass 3 renders GITHUB_APP_ID into swarm-api, `check_app_key` answers
+#: `app_id_not_configured`: that is a wait for the pass, never a reason to
+#: create the App again (pass 4 then waits on a passing check).
+SELF_CHECK_PASSED = "passed"
+SELF_CHECK_FAILED = "failed"
+SELF_CHECK_WAITING = "waiting_for_infra_pass_3"
+#: The `check_app_key` reasons that mean pass 3 has not landed yet.
+BEFORE_PASS_3 = frozenset({"app_id_not_configured", "app_slug_not_configured"})
+
+
+def self_check_view(result: dict[str, Any]) -> dict[str, Any]:
+    """A recorded or fresh self-check with its `state` and the sentence the
+    page shows; one recorded before the states existed is read the same way."""
+    reason = result.get("reason")
+    if result.get("ok"):
+        state, message = SELF_CHECK_PASSED, "the App's private key signs and GitHub knows the App"
+    elif reason in BEFORE_PASS_3:
+        state = SELF_CHECK_WAITING
+        message = ("waiting for swarm install's infra pass 3, which gives swarm-api the "
+                   "App's id; the check can run once that pass has")
+    else:
+        state, message = SELF_CHECK_FAILED, f"the App's key self-check failed: {reason}"
+    return {**result, "state": state, "message": message}
+
+
 def _github_view(doc: dict[str, Any] | None) -> dict[str, Any] | None:
     if doc is None:
         return None
     view = {k: v for k, v in doc.items() if k != "state_hash"}
+    if isinstance(view.get("self_check"), dict):
+        view["self_check"] = self_check_view(view["self_check"])
     view["started"] = bool(doc.get("state_hash")) or bool(doc.get("id"))
     return view
 
@@ -827,9 +855,11 @@ def github_app_self_check(
     record: ir.InstallRecord = Depends(install_record),
 ) -> dict:
     """`ForgeApp.check_app_key` (the `/v1/admin/forge/app` check), recorded as
-    `github_app.self_check`. It answers `{ok, app_id, slug, reason}` only."""
+    `github_app.self_check`. It answers `{ok, reason, at, state, message}`
+    only; before infra pass 3 the state is `waiting_for_infra_pass_3`."""
     checked = request.app.state.forge_app.check_app_key()
-    result = {"ok": bool(checked.get("ok")), "reason": checked.get("reason"), "at": ctx.now()}
+    result = self_check_view({"ok": bool(checked.get("ok")), "reason": checked.get("reason"),
+                              "at": ctx.now()})
     record.write(record.console_path(ir.GITHUB_APP), {"self_check": result})
     return result
 
@@ -851,6 +881,30 @@ def github_app_hook(
 # --------------------------------------------------------------------------
 # teams
 # --------------------------------------------------------------------------
+
+
+def check_team_group(directory: MembershipResolver | None, installer: str,
+                     group: str) -> None:
+    """Audit finding 27: before a team is created, swarm-api must be able to
+    read its group and the installer must be in it; the verify runs look for
+    a team the installer is in. One per-group membership question, past the
+    cache (`check_group_readable`). Either failure is a 409 whose detail names
+    the reason and the Google Admin groups page; nothing is written."""
+    detail: dict[str, Any] = {"group": group, "installer": installer,
+                              "admin_groups_url": ADMIN_GROUPS}
+    try:
+        if directory is None:
+            raise GroupLookupError("this deployment has no group directory to ask")
+        member = check_group_readable(directory, installer, group)
+    except GroupLookupError:
+        raise Conflict(f"swarm-api cannot read the group {group}: create it, or check its "
+                       f"address, in Google Admin ({ADMIN_GROUPS}), then try again",
+                       detail={**detail, "reason": "group_unreadable"}) from None
+    if not member:
+        raise Conflict(f"{installer} is not a member of {group}: add them to it in Google "
+                       f"Admin ({ADMIN_GROUPS}), then try again",
+                       detail={**detail, "reason": "installer_not_member",
+                               "add_members_url": admin_members_url(directory, group)})
 
 
 class TeamCreate(StrictModel):
@@ -881,8 +935,12 @@ def create_team(
     Google Admin page that adds the person to the group (decision 4); the
     page's row then polls their membership through the Groups API.
 
-    A one-person install has no team (decision 7): 409, nothing written."""
+    A one-person install has no team (decision 7): 409, nothing written. A
+    group swarm-api cannot read, or one the installer is not in, is refused
+    the same way, with the Google Admin groups page (`check_team_group`)."""
     _refuse_for_one_person(record, "first_team")
+    installer = installer_of(ctx, record.read_engine()) or caller.email.strip().lower()
+    check_team_group(directory, installer, body.group.strip().lower())
     first_admin = roles.subject_for_write(body.first_admin) if body.first_admin else None
     auth = caller.auth
     status, workspace = people.create(

@@ -71,6 +71,7 @@ def test_state_checked_before_exchange(setup_client, github, fake_secrets, db) -
                                 headers=auth_header("root"))
     assert refused.status_code == 403, refused.text
     _start(setup_client)
+    github.requests.clear()  # the start's account lookup; the exchange is what is checked
     wrong = setup_client.post(CONVERSION, json={"code": "c0de", "state": secrets.token_hex(8)},
                               headers=auth_header("root"))
     assert wrong.status_code == 403
@@ -87,6 +88,7 @@ def test_exchange_writes_three_secrets_and_returns_no_value(setup_client, github
     answer = _conversion_answer()
     github.conversion = answer
     _, state = _start(setup_client)
+    github.requests.clear()  # the start's account lookup; the exchange is what is checked
     response = setup_client.post(CONVERSION, json={"code": "c0de", "state": state},
                                  headers=auth_header("root"))
     assert response.status_code == 200, response.text

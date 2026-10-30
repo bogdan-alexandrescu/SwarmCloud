@@ -42,6 +42,7 @@ ALICE = "alice@example.com"
 CAROL = "carol@example.com"
 WORKSPACE_ADMIN = "wadmin@example.com"
 TEAM_GROUP = "platform-team@example.com"
+SECOND_TEAM = "second-team@example.com"
 DEPLOYER = f"swarm-tf-deployer@{PROJECT}.iam.gserviceaccount.com"
 DOCTOR = f"swarm-doctor@{PROJECT}.iam.gserviceaccount.com"
 ENV = "test"
@@ -162,6 +163,10 @@ class FakeGitHubSend:
         self.repositories: list[str] = []
         #: Every installation token minted, built at runtime.
         self.minted: list[str] = []
+        #: `GET /users/<login>`'s `type` by login; any other login is an
+        #: organisation. `users_status` other than 200 is GitHub refusing.
+        self.account_types: dict[str, str] = {}
+        self.users_status = 200
 
     def __call__(self, method, url, headers, body, timeout) -> HttpAnswer:
         self.requests.append({"method": method, "url": url, "headers": dict(headers),
@@ -177,6 +182,12 @@ class FakeGitHubSend:
             rows = [{"full_name": name} for name in self.repositories]
             return HttpAnswer(200, {}, json.dumps({"total_count": len(rows),
                                                    "repositories": rows}).encode())
+        if url.startswith("https://api.github.com/users/"):
+            if self.users_status != 200:
+                return HttpAnswer(self.users_status, {}, b"{}")
+            login = url.rsplit("/", 1)[1]
+            kind = self.account_types.get(login, "Organization")
+            return HttpAnswer(200, {}, json.dumps({"login": login, "type": kind}).encode())
         if url.endswith("/app/hook/config"):
             return HttpAnswer(200, {}, b'{"url": "x", "content_type": "json"}')
         return HttpAnswer(404, {}, b"{}")
@@ -244,7 +255,9 @@ def runs(setup_app) -> FakeRuns:
 @pytest.fixture
 def group_map() -> dict[str, tuple[str, ...]]:
     return {
-        ROOT: (ADMIN_GROUP, ENG_GROUP),
+        # The installer (the platform owner) is in the teams it creates: the
+        # first team's check refuses a group they are not in (finding 27).
+        ROOT: (ADMIN_GROUP, ENG_GROUP, TEAM_GROUP, SECOND_TEAM),
         ALICE: (ENG_GROUP, TEAM_GROUP),
         CAROL: (),
         WORKSPACE_ADMIN: (TEAM_GROUP,),
@@ -552,7 +565,7 @@ def test_grant_waits_for_the_app_and_lands_on_a_later_read(setup_client, db, git
 def test_a_second_team_gets_no_grant(setup_client, db, github) -> None:
     install_app(db, github)
     create_team(setup_client)
-    second = create_team(setup_client, group="second-team@example.com")
+    second = create_team(setup_client, group=SECOND_TEAM)
     assert second.status_code in (200, 202), second.text
     assert second.json()["grant"] is None
     assert "grant" not in team_doc(db, second.json()["team"])

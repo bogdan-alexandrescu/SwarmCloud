@@ -122,9 +122,20 @@ def manifest_for(*, org: str, hostname: str, hooks_url: str, name: str) -> dict[
     return manifest
 
 
-def form_target(org: str, state: str) -> str:
-    return (f"https://github.com/organizations/{quote(org, safe='')}/settings/apps/new"
-            f"?state={quote(state, safe='')}")
+#: `GET /users/<login>`'s `type` for a personal account. Anything else
+#: GitHub answers there (`Organization`) takes the organisations page.
+USER_ACCOUNT = "User"
+
+
+def form_target(org: str, state: str, *, account_type: str = "Organization") -> str:
+    """Where the manifest form posts: a user account's own "new App" page, or
+    the organisation's. The organisations path answers 404 for a user account
+    (audit finding 29), so the account's type picks it."""
+    if account_type == USER_ACCOUNT:
+        page = "https://github.com/settings/apps/new"
+    else:
+        page = f"https://github.com/organizations/{quote(org, safe='')}/settings/apps/new"
+    return f"{page}?state={quote(state, safe='')}"
 
 
 class SetupSecrets(Protocol):
@@ -242,6 +253,16 @@ class GitHubSetupApi:
             raise GitHubRefused("GitHub's conversion answer was not an object")
         return found
 
+    def account_type(self, login: str) -> str:
+        """`GET /users/<login>`'s `type` (`User` or `Organization`): no
+        authentication, the account is public. An answer with no type is
+        refused rather than guessed, since the wrong page is GitHub's 404."""
+        found = self._call("GET", f"/users/{quote(login, safe='')}")
+        kind = found.get("type") if isinstance(found, dict) else None
+        if not isinstance(kind, str) or not kind:
+            raise GitHubRefused("GitHub's account answer named no type")
+        return kind
+
     def installations(self, jwt: str) -> list[dict[str, Any]]:
         found = self._call("GET", "/app/installations", jwt=jwt)
         return [i for i in found if isinstance(i, dict)] if isinstance(found, list) else []
@@ -271,11 +292,13 @@ class ManifestFlow:
         if not org or not hostname:
             raise SetupUnconfigured(
                 "SETUP_GITHUB_ORG and the deployment's hostname must both be set")
+        # Asked before the state is written: nothing starts on a page guessed.
+        account_type = self._github.account_type(org)
         state = new_state()
         self._write({"state_hash": state_hash(state)})
         return {
             "manifest": manifest_for(org=org, hostname=hostname, hooks_url=hooks_url, name=name),
-            "action": form_target(org, state),
+            "action": form_target(org, state, account_type=account_type),
         }
 
     def exchange(self, *, code: str, state: str) -> dict[str, Any]:
@@ -342,8 +365,10 @@ __all__ = [
     "SetupSecrets",
     "SetupUnconfigured",
     "StateMismatch",
+    "USER_ACCOUNT",
     "WEBHOOK_SECRET_SLOT",
     "WebhookSecretMissing",
+    "form_target",
     "manifest_for",
     "state_hash",
 ]
