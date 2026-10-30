@@ -14,7 +14,7 @@
  *     own workspaces only (S1c). The phone drawer holds the same panel (S1f).
  *   * Admin › Workspaces you admin draws each workspace's own progress (S10a).
  */
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 
 type Json = Record<string, unknown>
@@ -105,6 +105,14 @@ async function steps() {
   vi.resetModules()
   return (await import('../ConfigSetup')) as typeof import('../ConfigSetup')
 }
+
+// The first import of App transforms its whole module graph, which on a loaded
+// runner took the first test that renders App past its 30s timeout. Pay it once
+// here, under its own budget: `vi.resetModules()` in app() drops the module
+// instances, not the transform cache, so every test still gets a fresh App.
+beforeAll(async () => {
+  await import('../App')
+}, 120_000)
 
 afterEach(() => {
   cleanup()
