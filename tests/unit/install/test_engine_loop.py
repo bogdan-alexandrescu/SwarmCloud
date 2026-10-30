@@ -325,3 +325,95 @@ def test_dry_run_runs_read_only_stage_0_only(tmp_path: Path) -> None:
     assert rig.engine([preflight, writer, later], dry_run=True).run().exit_code == 0
     assert [line for line in log if line.startswith("apply")] == ["apply preflight.region"]
     assert rig.bucket.writes == []
+
+
+# -- pages: opened once, then polled (DAYONE-OPEN-PAGES) ---------------------------
+
+
+def test_open_page_honours_no_browser_and_no_display_and_never_raises() -> None:
+    """open_page prints why and the URL, opens the browser only with a display
+    and without SWARM_NO_BROWSER=1, and never raises."""
+    from swarm_install.steps import has_display, open_page
+
+    url = "https://console.cloud.google.com/auth/branding?project=p-test"
+    said: list[str] = []
+    opened: list[str] = []
+    linux = {"DISPLAY": ":0"}
+
+    open_page(url, why="create the brand", say=said.append, env=linux, platform="linux", browser=opened.append)
+    assert opened == [url]
+    assert len(said) == 1 and "create the brand" in said[0] and url in said[0]
+
+    opened.clear()
+    open_page(url, why="w", say=said.append, env={**linux, "SWARM_NO_BROWSER": "1"}, platform="linux",
+              browser=opened.append)
+    assert opened == [], "SWARM_NO_BROWSER=1 prints only"
+    open_page(url, why="w", say=said.append, env={}, platform="linux", browser=opened.append)
+    assert opened == [], "no display on Linux: a text browser would take over the terminal"
+    open_page(url, why="w", say=said.append, env={"SSH_CONNECTION": "x"}, platform="darwin", browser=opened.append)
+    assert opened == [], "a Mac reached over SSH has nobody in front of its screen"
+    assert has_display({}, "darwin") and has_display({"WAYLAND_DISPLAY": "wayland-0"}, "linux")
+    assert len(said) == 4 and all(url in line for line in said), "the URL is printed every time"
+
+    def broken(_: object) -> None:
+        raise OSError("no browser")
+
+    open_page(url, why="w", say=broken, env=linux, platform="linux", browser=broken)  # never raises
+
+
+class PagedStep(FakeStep):
+    def __init__(self, *args, link: str | None, actions: tuple[str, ...] = (), **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._actions = actions
+        if link is not None:
+            self.deep_link = lambda ctx: link
+
+    def plan(self, ctx) -> Plan:
+        return Plan(f"make {self.id}", self._actions)
+
+
+def test_human_step_opens_its_page_once_then_polls(tmp_path: Path, monkeypatch) -> None:
+    """A human step's page is opened once, after apply and before the first
+    poll; the polls that follow never open it again."""
+    from swarm_install import engine as engine_module
+
+    rig = Rig(tmp_path)
+    log: list[str] = []
+    monkeypatch.setattr(engine_module, "open_page", lambda url, *, why: log.append(f"open {url}"))
+    appears = rig.clock.now() + 45
+    url = "https://console.cloud.google.com/auth/branding?project=p-test"
+    brand = PagedStep(
+        "edge.oauth-brand", 2, log=log, kind="human", link=url,
+        is_met=lambda: rig.clock.now() >= appears,
+        wait=WaitSpec(reason="the OAuth brand", expected="5 min", expected_s=300, bound_s=600,
+                      look_at="Branding", interval_s=10),
+    )
+    result = rig.engine([brand]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert log.count(f"open {url}") == 1, "opened once, not on every poll"
+    opened = log.index(f"open {url}")
+    assert log[opened - 1] == "apply edge.oauth-brand"
+    assert log[opened + 1:].count("check edge.oauth-brand") > 3, "then the check is polled"
+
+
+def test_human_step_without_deep_link_opens_the_first_url_of_its_plan(tmp_path: Path, monkeypatch) -> None:
+    """A human step that names no deep_link opens the first https URL its plan
+    names; engine and wait steps are never opened by the engine."""
+    from swarm_install import engine as engine_module
+
+    rig = Rig(tmp_path)
+    log: list[str] = []
+    opened: list[str] = []
+    monkeypatch.setattr(engine_module, "open_page", lambda url, *, why: opened.append(url))
+    url = "https://admin.google.com/ac/roles"
+    spec = WaitSpec(reason="r", expected="1 min", expected_s=60, bound_s=120, look_at="l", interval_s=10)
+    steps = [
+        PagedStep("h", 1, log=log, kind="human", link=None, wait=spec, is_met=lambda: "apply h" in log,
+                  actions=("name a group", f"1 admin role: {url}: swarm-api", "https://example.com/second")),
+        PagedStep("e", 2, log=log, link="https://example.com/engine"),
+        PagedStep("w", 3, log=log, kind="wait", link="https://example.com/wait", wait=spec,
+                  is_met=lambda: "apply w" in log),
+    ]
+    result = rig.engine(steps).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert opened == [url]
