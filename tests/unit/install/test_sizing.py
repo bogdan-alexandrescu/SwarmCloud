@@ -1,8 +1,9 @@
 """`swarm_install.sizing` (DAYONE-SIZING-ASK, part of #2688; decision 7).
 
 `propose()` is a pure function: one person gets a small deployment, a team
-the size the live deployment serves lands on the live pool_limits
-(terraform/environments/dev/dev.tfvars), every ceiling is capped at the
+the size the live deployment serves lands half again above the live
+pool_limits (terraform/environments/dev/dev.tfvars; the owner picked "More
+headroom": 3x the expected concurrency, not 2x), every ceiling is capped at the
 region's CPU quota when it is known, and terraform's own floor
 (global >= tenants x provider_tenant) holds for every proposal and is
 enforced on every edit.
@@ -58,16 +59,19 @@ def test_one_person_gets_a_small_deployment() -> None:
     assert found["budget_usd"] == 500
 
 
-def test_a_team_the_live_size_lands_on_the_live_values() -> None:
-    """dev.tfvars: global 180, default_tenant 40, provider_tenant 100, standard
-    80, browser 100, large 40, the runner and backend ceilings, and
-    service_max_instances 5/2/2/1."""
+def test_a_team_the_live_size_lands_above_the_live_values() -> None:
+    """The ceilings sit 3x above the expected concurrency (the owner's "More
+    headroom"), so a team the live size gets dev.tfvars' pool_limits (global
+    180, default_tenant 40, provider_tenant 100, standard 80, browser 100,
+    large 40, the runner and backend ceilings) half again over, in the same
+    ratios; service_max_instances stays the live 5/2/2/1."""
+    assert sizing.HEADROOM == 3
     found = sizing.propose("team", sizing.REFERENCE_MEMBERS)
     assert found["pool_limits"] == {
-        "global": 180, "default_tenant": 40, "provider_tenant": 100,
-        "resource_classes": {"standard": 80, "browser": 100, "large": 40},
-        "runner_profiles": {"claude-code": 80, "claude-code-browser": 100, "codex": 20, "generic": 20, "browser": 20},
-        "backends": {"CLOUD_RUN_JOB": 100, "GKE_AUTOPILOT": 180},
+        "global": 270, "default_tenant": 60, "provider_tenant": 150,
+        "resource_classes": {"standard": 120, "browser": 150, "large": 60},
+        "runner_profiles": {"claude-code": 120, "claude-code-browser": 150, "codex": 30, "generic": 30, "browser": 30},
+        "backends": {"CLOUD_RUN_JOB": 150, "GKE_AUTOPILOT": 270},
     }
     assert found["service_max_instances"] == {"swarm-api": 5, "swarm-scheduler": 2, "swarm-quota-broker": 2,
                                               "swarm-reconciler": 1}
@@ -78,9 +82,9 @@ def test_a_team_the_live_size_lands_on_the_live_values() -> None:
 def test_the_table_for_1_5_15_and_50() -> None:
     """The table the PR body states."""
     got = {n: sizing.propose("individual" if n == 1 else "team", n) for n in (1, 5, 15, 50)}
-    assert [got[n]["pool_limits"]["global"] for n in (1, 5, 15, 50)] == [10, 18, 54, 180]
-    assert [got[n]["pool_limits"]["default_tenant"] for n in (1, 5, 15, 50)] == [10, 6, 12, 40]
-    assert [got[n]["pool_limits"]["provider_tenant"] for n in (1, 5, 15, 50)] == [10, 10, 30, 100]
+    assert [got[n]["pool_limits"]["global"] for n in (1, 5, 15, 50)] == [10, 27, 81, 270]
+    assert [got[n]["pool_limits"]["default_tenant"] for n in (1, 5, 15, 50)] == [10, 9, 18, 60]
+    assert [got[n]["pool_limits"]["provider_tenant"] for n in (1, 5, 15, 50)] == [10, 15, 45, 150]
     assert [got[n]["service_max_instances"]["swarm-api"] for n in (1, 5, 15, 50)] == [2, 2, 2, 5]
     assert [got[n]["pool_accounts"] for n in (1, 5, 15, 50)] == [1, 2, 6, 18]
     assert [got[n]["budget_usd"] for n in (1, 5, 15, 50)] == [500, 700, 1400, 3800]
@@ -110,11 +114,12 @@ def test_capped_keeps_the_persons_numbers_under_the_cap() -> None:
     mine = sizing.with_change(sizing.propose("team", 50), ("budget_usd",), 9000)
     lowered = sizing.capped(mine, 108)  # 25 tasks
     assert lowered["pool_limits"]["global"] == 25
-    assert lowered["pool_limits"]["runner_profiles"]["codex"] == 20
+    assert lowered["pool_limits"]["runner_profiles"]["codex"] == 25
+    assert lowered["service_max_instances"]["swarm-api"] == 5  # not a pool ceiling: kept
     assert lowered["budget_usd"] == 9000
     assert sizing.problems(lowered, region_cpu_quota=108) == []
     assert sizing.capped(mine, None) == mine
-    assert mine["pool_limits"]["global"] == 180  # never changed in place
+    assert mine["pool_limits"]["global"] == 270  # never changed in place
 
 
 @pytest.mark.parametrize(("mode", "members"), [("solo", 1), ("team", 0), ("team", -3), ("individual", 2),
@@ -126,8 +131,8 @@ def test_bad_inputs_are_refused(mode: str, members: object) -> None:
 
 def test_problems_name_every_refused_edit() -> None:
     base = sizing.propose("team", 15)
-    assert sizing.problems(sizing.with_change(base, ("pool_limits", "provider_tenant"), 55))[0].startswith(
-        "global (54) is below 1 x provider_tenant (55)")
+    assert sizing.problems(sizing.with_change(base, ("pool_limits", "provider_tenant"), 82))[0].startswith(
+        "global (81) is below 1 x provider_tenant (82)")
     assert sizing.problems(sizing.with_change(base, ("budget_usd",), 0)) == [
         "budget_usd must be a positive whole number, not 0"]
     assert "above the 10 tasks" in sizing.problems(base, region_cpu_quota=48)[0]
@@ -145,5 +150,5 @@ def test_table_numbers_every_row() -> None:
     lines = shown.splitlines()
     assert lines[0] == "Proposed sizing for a team of 15:"
     assert len(lines) == 1 + len(sizing.rows(sizing.propose("team", 15)))
-    assert "1) tasks at once, the whole deployment (global)" in lines[1] and lines[1].endswith("54")
+    assert "1) tasks at once, the whole deployment (global)" in lines[1] and lines[1].endswith("81")
     assert lines[-1].endswith("1400") and "monthly budget" in lines[-1]
