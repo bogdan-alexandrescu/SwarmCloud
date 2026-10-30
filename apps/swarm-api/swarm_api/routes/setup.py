@@ -383,21 +383,26 @@ def ensure_grant(record: ir.InstallRecord, team_id: str, team: dict[str, Any], *
                  now: datetime) -> dict[str, Any]:
     """Decision 3: the first team's team-level grant over the repositories the
     App installation covers, recorded on `teams/<id>.grant` and shown on the
-    page. Written once the App is installed; until then `state: waiting_for_app`
-    and the next read of the page tries again. A grant already recorded is
-    kept as it is."""
+    page. Written once the App is installed on at least one repository; until
+    then `state: waiting_for_app` (not installed) or `waiting_for_repositories`
+    (installed on none, as a new organisation is), and the next read of the
+    page tries again. A grant already recorded is kept as it is."""
     grant = dict(team.get("grant") or {})
-    if grant.get("state") == "granted":
+    if grant.get("state") == "granted" and grant.get("repositories"):
         return grant
     try:
         found = installation_repositories(flow, github, org)
     except ApiError as exc:
         log.info("first team grant: the installation could not be read code=%s", exc.code)
         found = None
-    if found is None:
-        if grant.get("state") == "waiting_for_app":
+    if found is None or not found["repositories"]:
+        waiting = "waiting_for_app" if found is None else "waiting_for_repositories"
+        if grant.get("state") == waiting:
             return grant  # unchanged: no write on every poll of the page
-        grant = {"state": "waiting_for_app", "checked_at": now}
+        grant = {"state": waiting, "checked_at": now}
+        if found is not None:
+            grant.update({"installation_id": found["installation_id"],
+                          "account": found["account"], "selection": found["selection"]})
     else:
         grant = {"state": "granted", "mode": "write", "at": now, "by": by, **found}
         log.info("first team granted the App's repositories team=%s repositories=%d",
@@ -1006,7 +1011,7 @@ def finish(
     if first is not None and signed:
         team_id, team = first
         grant = (team.get("grant") or {})
-        if grant.get("state") != "granted":
+        if grant.get("state") != "granted" or not grant.get("repositories"):
             grant = ensure_grant(record, team_id, team, flow=flow, github=github,
                                  org=ctx.settings.setup_github_org, by=caller.email,
                                  now=ctx.now())
