@@ -5,10 +5,10 @@ lesson 17: none of these is in Terraform).
 
 | Step | Manifest entries | Kind |
 |---|---|---|
-| `edge.brand` | `oauth-brand.iap` | human: no API creates a brand (B02), so the engine opens the Branding page (`deep_link`) and polls the step's own check every 10 s for 30 min |
-| `edge.iap-agent` | `other.iap-service-agent` | engine: `generateServiceIdentity` for iap.googleapis.com |
+| `edge.brand` | `oauth-brand.iap` | engine: no API reads or creates a brand (Google shut the IAP OAuth Admin API down on 2026-03-19), and the console refuses to create a client before Branding and Audience are set, so the Desktop client is the brand's proof: `apply` opens the Branding page, says to choose Audience: Internal and to create the Desktop client, and asks the client's id; met once a Desktop client id is recorded |
+| `edge.iap-agent` | `other.iap-service-agent` | engine: `generateServiceIdentity` for iap.googleapis.com is both the apply and the proof: it is idempotent and answers the agent's email, which is recorded; the agent's account lives in a Google-owned project, so it is never read |
 | `edge.global-ip` | `network.global-ip` | engine: reserves the address the frontend module names (`swarm-ui-ip`) |
-| `edge.dns` | `dns.frontend-hostname` | wait, 60 min: the record is set at the person's registrar, so `apply` prints it and opens a page showing what the hostname resolves to now; the engine polls until it is the reserved address |
+| `edge.dns` | `dns.frontend-hostname` | wait, 60 min: when one of the project's public Cloud DNS managed zones covers the hostname, `apply` creates the A record there after one typed approval (the hostname); otherwise the record is set at the person's registrar, so `apply` prints it and opens a page showing what the hostname resolves to now. Either way the engine polls Google Public DNS (`dns.google/resolve`, the resolver that page shows), never the local resolver, which can cache a negative answer |
 | `edge.certificate` | `certificate.managed-ssl` | wait, 60 min (`waits.CERTIFICATE`); it never starts before DNS resolves to the reserved address (design R6) |
 | `edge.desktop-client` | `oauth-client.desktop-sc`, `declared-value.frontend_iap_programmatic_clients`, `secret.swarm-iap-desktop-client-secret.container` | engine: no API creates or lists a Desktop client, so `apply` opens the create page (or the recorded client's own page); the id, unless already recorded, is asked; the secret is a credential typed at a hidden prompt (`secret_entry`, echo off) straight to Secret Manager and, the same typed value, to the swarm credential store of the new deployment's context (`verify_context`), so verify never needs it |
 
@@ -22,7 +22,7 @@ and once it is attached it waits, up to the 60 min bound, for `ACTIVE`.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from .. import secret_entry, swarm_context
@@ -30,7 +30,7 @@ from ..exitcodes import MET, UNMET, WAITING
 from ..secret_entry import DevTty, Terminal
 from ..waits import CERTIFICATE, WaitSpec
 from . import Observation, Plan, open_page
-from .preflight import ASK, GCP, Ask, Gcp, project_number, remember
+from .preflight import ASK, GCP, USAGE, ApiError, Ask, Gcp, project_number, remember
 
 #: The frontend module's names (terraform/modules/frontend/main.tf:101, :297,
 #: `${var.name_prefix}-ui` with the default prefix `swarm`).
@@ -40,15 +40,19 @@ CERT = f"{FRONTEND}-cert"
 DESKTOP_SECRET = "swarm-iap-desktop-client-secret"
 CLIENT_ID = re.compile(r"^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$")
 
-#: B02 / plan §9.1: the brand is re-checked every 10 s for 30 min.
-BRAND_WAIT = WaitSpec(
-    reason="the OAuth brand (consent screen) being created in the console",
-    expected="2 to 5 min",
-    expected_s=5 * 60,
-    bound_s=30 * 60,
-    look_at="Google Auth Platform > Branding, then Audience: Internal",
-    interval_s=10,
-)
+DNS_API = "https://dns.googleapis.com/dns/v1"
+#: Google Public DNS over HTTPS, JSON form: the resolver the page `edge.dns`
+#: opens shows, so what the person sees and what the engine polls agree.
+PUBLIC_RESOLVER = "https://dns.google/resolve"
+#: The A record's TTL, as the printed record has always said.
+RECORD_TTL = 300
+#: Typed at the DNS approval instead of the hostname: the person sets the record
+#: at their DNS provider themselves, as when no zone covers the hostname.
+MANUAL = "manual"
+#: `generateServiceIdentity` answers a long-running operation; it is polled
+#: this often, this many times (it is normally done on the first answer).
+IDENTITY_POLL_S = 2
+IDENTITY_POLLS = 30
 
 #: plan §9.1: DNS, 60 min.
 DNS_WAIT = WaitSpec(
@@ -56,9 +60,60 @@ DNS_WAIT = WaitSpec(
     expected="a few minutes after the record is saved",
     expected_s=10 * 60,
     bound_s=60 * 60,
-    look_at="dig +short <hostname> must print the reserved address and nothing else",
+    look_at="https://dns.google/resolve?name=<hostname>&type=A must answer the reserved address and nothing else",
     interval_s=30,
 )
+
+
+class EdgeApi:
+    """The Cloud DNS, Service Usage and Google Public DNS calls stage 2 makes
+    that `preflight.Gcp` has no method for. The authenticated ones go through
+    its one REST session, so errors are the same `ApiError`; the public
+    resolver is asked anonymously."""
+
+    def __init__(self, gcp: Callable[[], Gcp], http_get: Callable[..., Any] | None = None) -> None:
+        self._gcp = gcp
+        self._http_get = http_get
+
+    def managed_zones(self, project: str) -> list[dict[str, Any]]:
+        """Cloud DNS `managedZones.list` for the project."""
+        return self._gcp()._pages(f"{DNS_API}/projects/{project}/managedZones", "managedZones")
+
+    def a_records(self, project: str, zone: str, name: str) -> list[dict[str, Any]]:
+        """Cloud DNS `resourceRecordSets.list`, the A records named `name` (a fully qualified name)."""
+        return self._gcp()._pages(f"{DNS_API}/projects/{project}/managedZones/{zone}/rrsets", "rrsets",
+                                  {"name": name, "type": "A"})
+
+    def change_records(self, project: str, zone: str, change: Mapping[str, Any]) -> dict[str, Any]:
+        """Cloud DNS `changes.create`: the deletions and additions apply together."""
+        return self._gcp()._call("POST", f"{DNS_API}/projects/{project}/managedZones/{zone}/changes",
+                                 body=dict(change))
+
+    def generate_service_identity(self, project: str, service: str) -> dict[str, Any]:
+        """Service Usage `services.generateServiceIdentity`: idempotent; answers an operation."""
+        return self._gcp().generate_service_identity(project, service) or {}
+
+    def operation(self, name: str) -> dict[str, Any]:
+        return self._gcp()._call("GET", f"{USAGE}/v1beta1/{name}") or {}
+
+    def resolve(self, hostname: str) -> set[str] | None:
+        """The IPv4 addresses Google Public DNS answers for `hostname` now
+        (empty when it answers none); `None` when it could not be asked."""
+        get = self._http_get
+        if get is None:
+            import requests
+
+            get = requests.get
+        try:
+            response = get(PUBLIC_RESOLVER, params={"name": hostname, "type": "A"}, timeout=30)
+            if response.status_code >= 400:
+                return None
+            answer = response.json()
+        except Exception:  # noqa: BLE001 - a resolver that cannot be asked is polled again, not fatal
+            return None
+        if answer.get("Status") not in (0, 3):  # NOERROR, NXDOMAIN; SERVFAIL and the rest: ask again
+            return None
+        return {str(a.get("data")) for a in answer.get("Answer") or () if a.get("type") == 1}
 
 
 class _Base:
@@ -67,13 +122,18 @@ class _Base:
     satisfies: tuple[str, ...] = ()
     _explain = ""
 
-    def __init__(self, gcp: Callable[[], Gcp], ask: Ask) -> None:
+    def __init__(self, gcp: Callable[[], Gcp], ask: Ask, edge: Callable[[], EdgeApi] | None = None) -> None:
         self._gcp = gcp
         self._ask = ask
+        self._edge = edge
 
     @property
     def gcp(self) -> Gcp:
         return self._gcp()
+
+    @property
+    def edge(self) -> EdgeApi:
+        return self._edge() if self._edge is not None else EdgeApi(self._gcp)
 
     def verify(self, ctx: Any) -> Observation:
         return self.check(ctx)
@@ -109,41 +169,52 @@ class _Base:
 
 class BrandStep(_Base):
     id = "edge.brand"
-    kind = "human"
-    wait = BRAND_WAIT
     satisfies = ("oauth-brand.iap",)
     _explain = (
-        "IAP needs an OAuth brand (consent screen) before any backend can turn it on. It has no API "
-        "(Google deprecated the one that created brands), is Internal, and can never be deleted, so a "
-        "person creates it once in the console; the engine polls until it exists (lesson 17)."
+        "IAP needs an OAuth brand (consent screen) before any backend can turn it on. No API creates or "
+        "reads one: Google shut the IAP OAuth Admin API down on 2026-03-19. The console refuses to create "
+        "an OAuth client before Branding and Audience are set, so a Desktop client's existence proves the "
+        "brand: a person sets Branding, chooses Audience: Internal and creates the Desktop client in the "
+        "console, once (the brand can never be deleted), and gives the client's id (lesson 17)."
     )
 
     def _check(self, ctx: Any) -> Observation:
-        brands = self.gcp.iap_brands(self._number(ctx))
-        if not brands:
-            return Observation(UNMET, "no OAuth brand exists yet")
-        internal = [b for b in brands if b.get("orgInternalOnly")]
-        if not internal:
-            return Observation(UNMET, "the OAuth brand is External; IAP here needs Audience: Internal")
-        return Observation(MET, "", {"oauth_brand": str(internal[0].get("name", ""))})
+        client = str(ctx.outputs.get("desktop_client_id") or "")
+        if not CLIENT_ID.match(client):
+            return Observation(UNMET, "no Desktop client id is recorded; the console creates one only once the "
+                                      "OAuth brand (Branding and Audience) exists")
+        return Observation(MET, f"the Desktop client {client} exists, so the OAuth brand does")
 
     def deep_link(self, ctx: Any) -> str:
-        """The engine opens this page once, then polls the check (no "press Enter")."""
         return f"https://console.cloud.google.com/auth/branding?project={ctx.project}"
 
     def plan(self, ctx: Any) -> Plan:
         return Plan(
-            "create the OAuth brand in the console (once; it can never be deleted); the install continues "
-            "by itself when it exists",
+            "set the OAuth brand in the console and choose Internal (once; it can never be deleted), then "
+            "create the Desktop client and give its id",
             (
                 f"open {self.deep_link(ctx)}",
-                "App name: SwarmCloud; support email: a group you own; save",
-                f"open https://console.cloud.google.com/auth/audience?project={ctx.project} and choose Internal",
+                "Branding: App name: SwarmCloud; support email: a group you own; save",
+                f"Audience (https://console.cloud.google.com/auth/audience?project={ctx.project}): choose Internal",
+                f"Clients (https://console.cloud.google.com/auth/clients/create?project={ctx.project}): "
+                "Application type: Desktop app; name: SwarmCloud sc; create",
+                "give the Desktop client's id (its secret is asked by edge.desktop-client, at a hidden prompt)",
             ),
         )
 
     def apply(self, ctx: Any, plan: Plan) -> None:
-        """No API creates a brand: the engine opens `deep_link` and polls the check."""
+        """No API reads or creates a brand: the engine opens the Branding page,
+        says what to set there, and asks the Desktop client's id, which proves it."""
+        open_page(self.deep_link(ctx), why=(
+            "Set the OAuth brand once (it can never be deleted): Branding: App name SwarmCloud, support email "
+            f"a group you own; Audience (https://console.cloud.google.com/auth/audience?project={ctx.project}): "
+            "choose Internal; then Clients > Create client: Application type Desktop app, name SwarmCloud sc. "
+            "Give the Desktop client's id here; its secret is asked next, at a hidden prompt."
+        ))
+        client = self._ask(ctx, self.id, "The Desktop client's id (ends .apps.googleusercontent.com)").strip()
+        if not CLIENT_ID.match(client):
+            raise ValueError(f"{client!r} is not a Desktop client id")
+        remember(ctx, outputs={"desktop_client_id": client})
 
 
 class IapAgentStep(_Base):
@@ -151,23 +222,43 @@ class IapAgentStep(_Base):
     satisfies = ("other.iap-service-agent",)
     _explain = (
         "IAP invokes Cloud Run as its own service agent; without it every request through the load "
-        "balancer answers 'The IAP service account is not provisioned' (lesson 17)."
+        "balancer answers 'The IAP service account is not provisioned' (lesson 17). The agent's account "
+        "lives in a Google-owned project no customer can read, so generateServiceIdentity, which is "
+        "idempotent and answers the agent's email, is both the apply and the proof."
     )
 
-    def _email(self, ctx: Any) -> str:
-        return f"service-{self._number(ctx)}@gcp-sa-iap.iam.gserviceaccount.com"
-
     def _check(self, ctx: Any) -> Observation:
-        email = self._email(ctx)
-        if self.gcp.service_account(email) is None:
-            return Observation(UNMET, f"{email} does not exist")
+        email = str(ctx.outputs.get("iap_service_agent") or "")
+        if not email:
+            return Observation(UNMET, "generateServiceIdentity for iap.googleapis.com has not answered yet")
         return Observation(MET, "", {"iap_service_agent": email})
 
     def plan(self, ctx: Any) -> Plan:
-        return Plan("create IAP's service agent", (f"generateServiceIdentity iap.googleapis.com -> {self._email(ctx)}",))
+        return Plan("create IAP's service agent (generateServiceIdentity; idempotent) and record its email",
+                    ("generateServiceIdentity iap.googleapis.com",))
 
     def apply(self, ctx: Any, plan: Plan) -> None:
-        self.gcp.generate_service_identity(ctx.project, "iap.googleapis.com")
+        edge = self.edge
+        answer = edge.generate_service_identity(ctx.project, "iap.googleapis.com")
+        polls = 0
+        while answer.get("name") and answer.get("done") is False:
+            if polls >= IDENTITY_POLLS:
+                raise TimeoutError(f"generateServiceIdentity for iap.googleapis.com did not finish "
+                                   f"({answer.get('name')}); run swarm install again to carry on")
+            ctx.clock.sleep(IDENTITY_POLL_S)
+            polls += 1
+            answer = edge.operation(str(answer["name"]))
+        if answer.get("error"):
+            error = answer["error"]
+            raise RuntimeError(f"generateServiceIdentity for iap.googleapis.com failed: "
+                               f"{error.get('message') or error}")
+        # v1beta1 answers an operation whose `response` is the ServiceIdentity;
+        # an answer that is the ServiceIdentity itself is read the same way.
+        email = str((answer.get("response") or {}).get("email") or answer.get("email") or "")
+        if not email:
+            # Done with no email in the answer: the agent's documented address.
+            email = f"service-{self._number(ctx)}@gcp-sa-iap.iam.gserviceaccount.com"
+        remember(ctx, outputs={"iap_service_agent": email})
 
 
 class GlobalIpStep(_Base):
@@ -209,12 +300,28 @@ def _reserved_ip(step: _Base, ctx: Any) -> str:
 
 
 def dns_problem(step: _Base, ctx: Any) -> str | None:
-    """Why the hostname does not (only) resolve to the reserved address, or None."""
+    """Why the hostname does not (only) resolve to the reserved address, as
+    Google Public DNS answers now, or None."""
     hostname, ip = step._hostname(ctx), _reserved_ip(step, ctx)
-    found = step.gcp.resolve(hostname)
+    found = step.edge.resolve(hostname)
+    if found is None:
+        return f"Google Public DNS ({PUBLIC_RESOLVER}) did not answer for {hostname}; asking again"
     if found == {ip}:
         return None
     return f"{hostname} resolves to {sorted(found) or 'nothing'}, not {ip}"
+
+
+def _fqdn(name: str) -> str:
+    return name.rstrip(".").lower() + "."
+
+
+def covering_zone(zones: list[dict[str, Any]], hostname: str) -> dict[str, Any] | None:
+    """The public managed zone whose DNS name is the longest suffix of `hostname`, or None."""
+    host = _fqdn(hostname)
+    covering = [z for z in zones
+                if str(z.get("visibility") or "public") == "public" and z.get("dnsName")
+                and (host == _fqdn(str(z["dnsName"])) or host.endswith("." + _fqdn(str(z["dnsName"]))))]
+    return max(covering, key=lambda z: len(str(z["dnsName"])), default=None)
 
 
 class DnsStep(_Base):
@@ -224,17 +331,40 @@ class DnsStep(_Base):
     satisfies = ("dns.frontend-hostname",)
     _explain = (
         "Google issues the managed certificate only once the hostname resolves to the load balancer's "
-        "address; until then it stays FAILED_NOT_VISIBLE (lesson 17)."
+        "address; until then it stays FAILED_NOT_VISIBLE (lesson 17). When the project's Cloud DNS holds "
+        "the hostname's zone the engine creates the record there, after a typed approval; otherwise it is "
+        "set at the person's DNS provider. Either way it is polled through Google Public DNS."
     )
 
     def _check(self, ctx: Any) -> Observation:
         problem = dns_problem(self, ctx)
         return Observation(WAITING, problem) if problem else Observation(MET, f"{self._hostname(ctx)} resolves")
 
+    def _record(self, ctx: Any) -> str:
+        return f"{self._hostname(ctx)}.  {RECORD_TTL}  IN  A  {_reserved_ip(self, ctx)}"
+
+    def zone(self, ctx: Any) -> dict[str, Any] | None:
+        """The project's public Cloud DNS zone covering the hostname, or None:
+        none covers it, or the zones cannot be listed (Cloud DNS off, or no
+        right to list them), and the record is then set by hand."""
+        try:
+            zones = self.edge.managed_zones(ctx.project)
+        except ApiError:
+            return None
+        return covering_zone(zones, self._hostname(ctx))
+
     def plan(self, ctx: Any) -> Plan:
+        record = self._record(ctx)
+        zone = self.zone(ctx)
+        if zone is not None:
+            return Plan(
+                f"create the hostname's A record in Cloud DNS zone {zone.get('name')} after your typed approval "
+                "(the hostname); the install continues once it resolves",
+                (record, f"Cloud DNS zone {zone.get('name')} ({zone.get('dnsName')}) in {ctx.project}"),
+            )
         return Plan(
             "set the hostname's A record at your DNS provider; the install continues once it resolves",
-            (f"{self._hostname(ctx)}.  300  IN  A  {_reserved_ip(self, ctx)}",),
+            (record,),
         )
 
     def deep_link(self, ctx: Any) -> str:
@@ -242,15 +372,47 @@ class DnsStep(_Base):
 
         The record itself is set at the person's registrar, which the engine
         cannot know, so the page it opens is the one that shows the change
-        landing; the engine polls the same answer."""
+        landing; the engine polls the same resolver (`PUBLIC_RESOLVER`)."""
         return f"https://toolbox.googleapps.com/apps/dig/#A/{self._hostname(ctx)}"
 
     def apply(self, ctx: Any, plan: Plan) -> None:
-        """The record is set at the person's DNS provider: print it, open the
-        page that shows it landing, and let the engine poll."""
-        record = plan.actions[0] if plan.actions else ""
+        """In the project's Cloud DNS zone, the record is created after one
+        typed approval; else it is set at the person's DNS provider: print it,
+        open the page that shows it landing, and let the engine poll."""
+        zone = self.zone(ctx)
+        if zone is None or not self._create(ctx, zone):
+            self._by_hand(ctx)
+
+    def _create(self, ctx: Any, zone: dict[str, Any]) -> bool:
+        """Create (or correct) the A record in `zone`; False when the person
+        chose to set it themselves."""
+        hostname, ip = self._hostname(ctx), _reserved_ip(self, ctx)
+        name, zone_name = _fqdn(hostname), str(zone["name"])
+        edge = self.edge
+        existing = edge.a_records(ctx.project, zone_name, name)
+        if [r.get("rrdatas") for r in existing] == [[ip]]:
+            return True  # already there: the engine polls until it resolves
+        replacing = "".join(f"\n  replacing {r.get('name')} {r.get('ttl')} IN A {' '.join(r.get('rrdatas') or ())}"
+                            for r in existing)
+        typed = self._ask(ctx, self.id, (
+            f"The installer will {'replace' if existing else 'create'} this record in Cloud DNS zone {zone_name} "
+            f"({zone.get('dnsName')}) of {ctx.project}:\n  {self._record(ctx)}{replacing}\n"
+            f"Type the hostname ({hostname}) to approve, or {MANUAL} to set it at your DNS provider yourself"
+        )).strip()
+        if typed == MANUAL:
+            return False
+        if typed != hostname:
+            raise PermissionError(f"not confirmed (typed {typed!r}, not {hostname!r}); no DNS record was changed")
+        edge.change_records(ctx.project, zone_name, {
+            "deletions": existing,
+            "additions": [{"name": name, "type": "A", "ttl": RECORD_TTL, "rrdatas": [ip]}],
+        })
+        remember(ctx, outputs={"dns_zone": zone_name})
+        return True
+
+    def _by_hand(self, ctx: Any) -> None:
         open_page(self.deep_link(ctx), why=(
-            f"Set this A record at your DNS provider: {record}\n"
+            f"Set this A record at your DNS provider: {self._record(ctx)}\n"
             f"This page shows what {self._hostname(ctx)} resolves to now; the install continues by itself "
             f"once it resolves to {_reserved_ip(self, ctx)} (nothing to press)."
         ))
@@ -306,8 +468,9 @@ class DesktopClientStep(_Base):
 
     def __init__(self, gcp: Callable[[], Gcp], ask: Ask,
                  open_terminal: Callable[[], Terminal] = DevTty.open,
-                 contexts: swarm_context.Run = swarm_context.run_command) -> None:
-        super().__init__(gcp, ask)
+                 contexts: swarm_context.Run = swarm_context.run_command,
+                 edge: Callable[[], EdgeApi] | None = None) -> None:
+        super().__init__(gcp, ask, edge)
         self._open_terminal = open_terminal
         self._contexts = contexts
 
@@ -400,15 +563,16 @@ class DesktopClientStep(_Base):
 
 
 def build_steps(gcp: Callable[[], Gcp] = GCP, ask: Ask = ASK,
-                open_terminal: Callable[[], Terminal] = DevTty.open) -> list[Any]:
+                open_terminal: Callable[[], Terminal] = DevTty.open,
+                edge: Callable[[], EdgeApi] | None = None) -> list[Any]:
     """Stage 2 in order: the brand before the client, the address before DNS before the certificate."""
     return [
-        BrandStep(gcp, ask),
-        IapAgentStep(gcp, ask),
-        GlobalIpStep(gcp, ask),
-        DnsStep(gcp, ask),
-        CertificateStep(gcp, ask),
-        DesktopClientStep(gcp, ask, open_terminal),
+        BrandStep(gcp, ask, edge),
+        IapAgentStep(gcp, ask, edge),
+        GlobalIpStep(gcp, ask, edge),
+        DnsStep(gcp, ask, edge),
+        CertificateStep(gcp, ask, edge),
+        DesktopClientStep(gcp, ask, open_terminal, edge=edge),
     ]
 
 

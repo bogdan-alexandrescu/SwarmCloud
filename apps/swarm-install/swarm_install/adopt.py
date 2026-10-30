@@ -4,7 +4,9 @@ by probing and taken over, never recreated (design §10, D24; review finding 18)
 Some Google resources cannot be deleted, or keep their name long after they
 are: a KMS key ring and its keys live for ever; a deleted custom role keeps its
 id for 37 days and can be undeleted only in the first 7; a project has one
-OAuth brand; a deleted Firestore database's id is unavailable for a while; a
+OAuth brand, which no API can read any more (Google shut the IAP OAuth Admin
+API down on 2026-03-19), so it is never probed: the Desktop client the console
+made under it is its proof (`steps/edge.py`); a deleted Firestore database's id is unavailable for a while; a
 GitHub App's name is global. Each function here probes the live resource
 **every time it is asked**: what remains is re-derived, never read from a cache
 or from the install state (D24), because the state of a failed install is
@@ -15,12 +17,13 @@ exactly what cannot be trusted.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from .events import Events
-from .steps.preflight import IAM, IAP, ApiError, Gcp
+from .steps.preflight import IAM, ApiError, Gcp
 from .waits import Clock, WaitSpec, wait_until
 
 KMS = "https://cloudkms.googleapis.com/v1"
@@ -55,10 +58,6 @@ class InstallGcp(Gcp):
 
     def undelete_role(self, name: str) -> None:
         self._call("POST", f"{IAM}/{name}:undelete", body={})
-
-    def oauth_clients(self, brand: str) -> list[dict[str, Any]]:
-        found = self._call("GET", f"{IAP}/{brand}/identityAwareProxyClients")
-        return list((found or {}).get("identityAwareProxyClients", []))
 
     def firestore_database(self, project: str, database: str) -> dict[str, Any] | None:
         return self._call("GET", f"{FIRESTORE}/projects/{project}/databases/{database}", missing_ok=True)
@@ -148,34 +147,23 @@ def undelete_roles(gcp: Any, project: str, wanted: Iterable[str]) -> RoleFinding
     return RoleFinding(tuple(sorted(undeleted)), tuple(sorted(blocked)))
 
 
-# -- the OAuth brand and the Desktop client -----------------------------------------
+# -- the Desktop client (and, through it, the OAuth brand) -------------------------
+
+#: A Desktop OAuth client's id, as `steps/edge.py` checks it.
+DESKTOP_CLIENT_ID = re.compile(r"^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$")
 
 
-def brand(gcp: Any, project_number: str) -> str | None:
-    """The project's one OAuth brand, if it has one: adopted, never created twice."""
-    brands = gcp.iap_brands(project_number)
-    return str(brands[0]["name"]) if brands else None
+def desktop_client(recorded: Mapping[str, Any] | None) -> str | None:
+    """The Desktop client id an earlier install recorded (the remains record's
+    `desktop_client_id`), adopted as the default; None when there is none.
 
-
-DESKTOP_CLIENT_NAME = "swarm-desktop"
-
-
-def desktop_client(gcp: Any, brand_name: str, ask: Callable[[str], str]) -> str | None:
-    """The Desktop client's id: the one named `swarm-desktop` is adopted; when
-    several clients exist and none has the name, the person is asked which (an
-    empty answer means a new one is made)."""
-    clients = gcp.oauth_clients(brand_name)
-    for client in clients:
-        if client.get("displayName") == DESKTOP_CLIENT_NAME:
-            return str(client["name"]).rsplit("/", 1)[-1]
-    if not clients:
-        return None
-    ids = [str(c["name"]).rsplit("/", 1)[-1] for c in clients]
-    answer = ask(f"The brand already has OAuth clients {', '.join(ids)}. Type the id of the Desktop client to "
-                 "adopt, or press Enter to make a new one: ").strip()
-    if answer and answer not in ids:
-        raise ValueError(f"{answer} is not one of {', '.join(ids)}")
-    return answer or None
+    No API lists OAuth clients or brands any more (the IAP OAuth Admin API was
+    shut down on 2026-03-19), so the record is the only source; the client's
+    existence is shown by verify signing in with it. A recorded client also
+    proves the project's OAuth brand exists: the console refuses to create a
+    client before Branding and Audience are set."""
+    client = str((recorded or {}).get("desktop_client_id") or "").strip()
+    return client if DESKTOP_CLIENT_ID.match(client) else None
 
 
 # -- the GitHub App's name ---------------------------------------------------------

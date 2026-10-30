@@ -1,0 +1,70 @@
+# Lane DAYONE-EDGE-PROBES (part of #2688; audit findings 7, 9 and 25): stage 2
+# checks only what a customer can read. The OAuth brand is never probed (Google
+# shut the IAP OAuth Admin API down on 2026-03-19): the Desktop client the
+# console creates under it is its proof. The IAP service agent is never read
+# (it lives in a Google-owned project): generateServiceIdentity is the apply and
+# the proof. The DNS record is created in the project's Cloud DNS zone when one
+# covers the hostname, and is polled through Google Public DNS. The three
+# entries, whose check and apply change, are restated with replace: true.
+version: 1
+entries:
+- id: oauth-brand.iap
+  kind: oauth-brand
+  scope: core
+  stage: 2
+  provider: engine
+  check: 'a Desktop client id is recorded (outputs.desktop_client_id, ^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$): the console refuses to create an OAuth client before Branding and Audience are set, so the client proves the brand. No API reads a brand: the IAP OAuth Admin API (iap.googleapis.com/v1/projects/N/brands) was shut down on 2026-03-19, so it is never called'
+  apply: 'NOT created by Terraform (google_iap_brand cannot be deleted and its API is shut down). steps/edge.py edge.brand opens https://console.cloud.google.com/auth/branding?project=$P and says what to set there: Branding (App name SwarmCloud, support email a group you own), Audience: choose Internal, then Clients > Create client > Desktop app (name SwarmCloud sc); it asks the Desktop client''s id and records it'
+  verify: verify signs in with the Desktop client (sc login), which only works when the brand exists and the backend's iap{enabled=true} blocks applied
+  explain: 'The OAuth consent screen identity IAP presents; required before IAP can be turned on on any backend. Internal restricts sign-in to the organisation''s accounts'
+  guards: 'undeletable once created -- a mistake here (wrong support email, wrong org) is permanent for the project''s lifetime'
+  secret_entry: null
+  depends_on:
+  - api.iap
+  - switch.project-create-right
+  evidence:
+  - apps/swarm-install/swarm_install/steps/edge.py
+  - terraform/modules/frontend/main.tf:29-57
+  - docs/runbooks/iap-desktop-client.md:44-61
+  notes: 'Assumes the IAP brands API answers nothing a customer can use (the audit, 2026-10-30, finding 7); the step makes no call to it either way, so it works whether Google answers 403, 404 or still serves it.'
+  step: edge.brand
+  replace: true
+- id: other.iap-service-agent
+  kind: other
+  scope: core
+  stage: 2
+  provider: engine
+  check: 'the email generateServiceIdentity answered is recorded (outputs.iap_service_agent). The agent''s account is never read: service agents live in Google-owned projects, so iam.serviceAccounts.get on service-N@gcp-sa-iap answers 403 or 404 to a customer'
+  apply: 'steps/edge.py edge.iap-agent: POST serviceusage.googleapis.com/v1beta1/projects/$P/services/iap.googleapis.com:generateServiceIdentity (idempotent), polls its operation until done, and records response.email; a done operation with no email records the documented address service-<PROJECT_NUMBER>@gcp-sa-iap.iam.gserviceaccount.com'
+  verify: swarm-api's invokers map includes this exact identity (terraform/infra/main.tf:408-410) and IAP-proxied requests do not 500 with 'The IAP service account is not provisioned'
+  explain: 'IAP invokes Cloud Run AS this identity; without the grant every request through the load balancer answers 500 in a way that looks like the app is broken, not like a missing grant'
+  guards: null
+  secret_entry: null
+  depends_on:
+  - oauth-brand.iap
+  - api.iap
+  evidence:
+  - apps/swarm-install/swarm_install/steps/edge.py
+  - terraform/infra/main.tf:384-410
+  notes: 'Works whichever way Google answers the operation: an email in response.email (or in the answer itself) is recorded, else the documented address.'
+  step: edge.iap-agent
+  replace: true
+- id: dns.frontend-hostname
+  kind: dns
+  scope: core
+  stage: 2
+  provider: engine
+  check: 'GET https://dns.google/resolve?name=$H&type=A answers the reserved global address and nothing else (Google Public DNS, the resolver the opened page shows; never the local resolver, which can cache a negative answer)'
+  apply: 'steps/edge.py edge.dns lists the project''s Cloud DNS managed zones (dns/v1 managedZones.list). When a public zone covers $H, it creates (or corrects) the A record with changes.create after one typed approval (the hostname; "manual" sets it by hand instead) and records outputs.dns_zone. Otherwise, or when the zones cannot be listed, it prints the record ($H. 300 IN A <global ip>) and opens https://toolbox.googleapps.com/apps/dig/#A/$H; the engine polls until it resolves (60 min)'
+  verify: https://dns.google/resolve?name=$H&type=A returns the reserved global IP
+  explain: 'Without this the managed cert never leaves FAILED_NOT_VISIBLE and the frontend is unreachable by name: the hostname must resolve to the load balancer''s IP before Google can issue the managed certificate for it'
+  guards: 'a record in Cloud DNS is changed only after the typed hostname; an existing A record there is replaced in the same change, and the approval names it'
+  secret_entry: null
+  depends_on:
+  - network.global-ip
+  evidence:
+  - apps/swarm-install/swarm_install/steps/edge.py
+  - terraform/modules/frontend/variables.tf
+  notes: 'A zone in another project (a company DNS project) is not looked for: the record is then set by hand, as at an outside registrar.'
+  step: edge.dns
+  replace: true
