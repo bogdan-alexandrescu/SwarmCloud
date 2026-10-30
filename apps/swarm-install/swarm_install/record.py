@@ -59,9 +59,16 @@ WRITERS: dict[str, tuple[str, frozenset[str]]] = {
     "swarm-install/{env}/console/accounts": (SWARM_API, frozenset()),
     "swarm-install/{env}/console/teams/{id}": (
         SWARM_API,
-        frozenset({"group", "workspace", "first_admin", "invites", "progress", "smoke"}),
+        frozenset({"group", "workspace", "first_admin", "invites", "progress", "smoke", "grant"}),
     ),
     "swarm-install/{env}/console/finished": (SWARM_API, frozenset({"at", "by"})),
+    # The console's two verification runs: `verify_runs` is
+    # {"console_task": <task id>, "console_workflow": <workflow id>}, copied
+    # into the engine's `state.outputs["verify_runs"]` (DAYONE-SETUP-API-2).
+    "swarm-install/{env}/console/verify_runs": (
+        SWARM_API,
+        frozenset({"verify_runs", "repository", "started_at", "by"}),
+    ),
     "swarm-install/{env}/health/latest": (
         SWARM_API_FOR_DOCTOR,
         frozenset({"run_at", "checks", "findings"}),
@@ -77,6 +84,10 @@ VERIFY_FIELDS = frozenset(
 
 def engine_document(env: str) -> str:
     return f"{COLLECTION}/{env}"
+
+
+#: The console document holding the console's verification runs' ids.
+VERIFY_RUNS = "verify_runs"
 
 
 def console_document(env: str, name: str) -> str:
