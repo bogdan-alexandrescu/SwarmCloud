@@ -205,6 +205,13 @@ say(f"cve-acceptances.json: {len(accepted)} accepted, each with its expiry")
 # -- the wheels (plan R6) -----------------------------------------------------------------
 wheel_version = marketplace.wheel_version(VERSION)
 src = WORK / "src"
+# The engine's wheel force-includes ../../install/manifest.yaml and manifest.d/
+# (apps/swarm-install/pyproject.toml), so the copied tree keeps install/ two
+# levels above src/swarm-install, as in the checkout.
+for f in ["install/manifest.yaml"] + under("install/manifest.d/"):
+    target = WORK / f
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(REPO / f, target)
 for app in ("common", "redaction", "swarm-mcp", "swarm-install"):
     for f in under(f"apps/{app}/"):
         if "/tests/" in f:

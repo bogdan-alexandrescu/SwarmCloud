@@ -139,6 +139,9 @@ def test_two_wheels(bundle: Path) -> None:
             assert name in shipped, f"{req} is required but not in the release"
     with zipfile.ZipFile(bundle / f"swarm_install-{VERSION}-py3-none-any.whl") as zf:
         assert "swarm_install/engine.py" in zf.namelist()
+        # The installed engine loads the release's manifest from the wheel.
+        assert "swarm_install/_manifest/manifest.yaml" in zf.namelist()
+        assert [n for n in zf.namelist() if n.startswith("swarm_install/_manifest/manifest.d/")]
     with zipfile.ZipFile(bundle / f"swarm_mcp-{VERSION}-py3-none-any.whl") as zf:
         assert "swarm_mcp/cli.py" in zf.namelist()
         assert not [n for n in zf.namelist() if n.startswith("swarm_install/")]
