@@ -690,16 +690,24 @@ def directory_declined(ctx: Any) -> bool:
 def adc_scopes() -> frozenset[str] | None:
     """The scopes the application-default credentials' access token carries,
     or None when no credentials load. A token that cannot be read back is an
-    empty set: the sign-in runs again rather than guessing."""
+    empty set: the sign-in runs again rather than guessing.
+
+    The credentials load without scopes: a user's refresh grant then asks for
+    what was granted, where asking for `ADC_SCOPES` would make Google answer
+    invalid_scope after a Cloud-Platform-only sign-in and hide that grant
+    behind an empty set. Only credentials that must be scoped (a service
+    account) are scoped to `ADC_SCOPES`."""
     import google.auth  # lazy: no credentials needed to import the engine
     import requests
+    from google.auth.credentials import with_scopes_if_required
     from google.auth.exceptions import DefaultCredentialsError, GoogleAuthError
     from google.auth.transport.requests import Request
 
     try:
-        credentials, _ = google.auth.default(scopes=list(ADC_SCOPES))
+        credentials, _ = google.auth.default()
     except DefaultCredentialsError:
         return None
+    credentials = with_scopes_if_required(credentials, list(ADC_SCOPES))
     try:
         credentials.refresh(Request())
         # POSTed, so the token is never in a URL a proxy or a log could keep.
@@ -801,8 +809,12 @@ class SignInStep(_Base):
         for what, args in missing:
             ctx.events.emit("step_apply", step=self.id, message=f"{what}; signing in: your browser opens")
             if args == adc_login():
-                self._adc_sign_in(ctx, gcloud, what)
-                continue
+                if directory_declined(ctx):
+                    # Google already refused the Directory scopes; stage 8 asks for them.
+                    args = adc_login((CLOUD_PLATFORM_SCOPE,))
+                else:
+                    self._adc_sign_in(ctx, gcloud, what)
+                    continue
             code = self._login([gcloud, *args])
             if code != 0:
                 raise RuntimeError(f"the Google sign-in did not finish ({what}; gcloud exited {code}); "

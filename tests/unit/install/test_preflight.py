@@ -18,6 +18,7 @@ import datetime as dt
 import hashlib
 import io
 import json
+import secrets
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -1052,6 +1053,74 @@ def test_a_sign_in_that_fails_without_the_directory_scopes_too_still_stops() -> 
     assert "swarm install" in str(stopped.value)
     assert gcloud.ran == [["/opt/gcloud", *ADC_LOGIN], ["/opt/gcloud", *CLOUD_PLATFORM_LOGIN]]
     assert "directory_scopes" not in ctx.outputs
+
+
+def test_a_declined_stage_0_signs_in_again_without_asking_the_directory_scopes() -> None:
+    """Review minor: once `directory_scopes` is false, a missing ADC signs in
+    with Cloud Platform alone; Google's "app is blocked" page never shows again."""
+    gcloud = Login(account="admin@example.com", directory="blocked")
+    step = gcloud.step()
+    ctx = ctx_for(outputs={"directory_scopes": False, "installer": "admin@example.com"})
+    step.apply(ctx, step.plan(ctx))
+    assert gcloud.ran == [["/opt/gcloud", *CLOUD_PLATFORM_LOGIN]]
+    assert ctx.outputs["directory_scopes"] is False
+    assert step.check(ctx).status == MET
+
+
+class GoogleAdc:
+    """google-auth and tokeninfo, faked the way Google answers: an
+    authorized_user refresh grant that asks for a scope the refresh token was
+    never granted gets invalid_scope; one that asks for none gets the token's
+    own grant, which tokeninfo reports."""
+
+    def __init__(self, granted: frozenset[str]) -> None:
+        self.granted = granted
+        self.asked: list[Any] = []
+        self.token = secrets.token_hex(16)
+
+    def default(self, scopes: Any = None, **_: Any) -> tuple[Any, None]:
+        from google.auth.exceptions import RefreshError
+
+        self.asked.append(scopes)
+        adc = self
+
+        class Credentials:
+            token = None
+            requires_scopes = False
+
+            def refresh(self, request: Any) -> None:
+                if scopes and not set(scopes) <= adc.granted:
+                    raise RefreshError("invalid_scope")
+                self.token = adc.token
+
+        return Credentials(), None
+
+    def post(self, url: str, data: dict[str, str], timeout: float) -> Any:
+        assert url == preflight.TOKENINFO and data["access_token"] == self.token
+        return Response(200, {"scope": " ".join(sorted(self.granted))})
+
+
+def test_adc_scopes_reads_a_cloud_platform_only_grant_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review finding: after the Cloud-Platform-only fallback, adc_scopes
+    reads {cloud-platform} back rather than forcing the Directory scopes on
+    the refresh (invalid_scope, an empty set, the sign-in again on every
+    run), and the sign-in step is MET with directory_scopes false."""
+    import google.auth
+    import requests
+
+    google_adc = GoogleAdc(frozenset({preflight.CLOUD_PLATFORM_SCOPE}))
+    monkeypatch.setattr(google.auth, "default", google_adc.default)
+    monkeypatch.setattr(requests, "post", google_adc.post)
+    assert preflight.adc_scopes() == frozenset({preflight.CLOUD_PLATFORM_SCOPE})
+    assert google_adc.asked == [None]
+
+    gcloud = Login(account="admin@example.com")
+    step = preflight.SignInStep(lambda: FakeGcp(), Answers(), gcloud=lambda: "/opt/gcloud",
+                                account=lambda: gcloud.account, login=gcloud)
+    ctx = ctx_for(outputs={"directory_scopes": False, "installer": "admin@example.com"})
+    observed = step.check(ctx)
+    assert observed.status == MET and observed.outputs["directory_scopes"] is False
+    assert gcloud.ran == []
 
 
 def test_the_organisation_sign_in_again_falls_back_the_same_way() -> None:

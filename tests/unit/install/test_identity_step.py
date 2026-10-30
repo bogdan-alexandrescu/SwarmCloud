@@ -844,7 +844,7 @@ def test_the_loopback_sign_in_asks_the_directory_scopes_and_keeps_the_token_in_m
     assert url.startswith("https://accounts.google.com/o/oauth2/v2/auth?")
     assert query["client_id"] == client_id and set(query["scope"].split()) == set(DIRECTORY)
     assert query["redirect_uri"].startswith("http://127.0.0.1:") and query["login_hint"] == INSTALLER
-    assert "access_type" not in query or query["access_type"] == "online"
+    assert query["access_type"] == "online"
     assert client_secret not in url and "Directory" in why
     assert exchanged[0]["code"] == "the-code" and exchanged[0]["client_secret"] == client_secret
     assert exchanged[0]["code_verifier"] and exchanged[0]["redirect_uri"] == query["redirect_uri"]

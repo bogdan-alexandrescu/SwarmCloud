@@ -356,6 +356,8 @@ def desktop_directory_session(ctx: Any, *, client_id: str, client_secret: str,
         "code_challenge_method": "S256",
         "state": state,
         "prompt": "consent",
+        # Online: Google issues no refresh token, so nothing outlives this run.
+        "access_type": "online",
     }
     if installer(ctx):
         query["login_hint"] = installer(ctx)
