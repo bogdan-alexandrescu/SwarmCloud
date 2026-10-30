@@ -85,7 +85,10 @@ run "the_tick_account_is_on_the_list_bootstrap_grants_the_deployer_on" {
   }
 }
 
-run "the_scheduler_module_creates_the_tick_account" {
+# Since DAYONE-BOOT-2 terraform/bootstrap creates the account
+# (platform_service_accounts.tf, the run after this one) and modules/scheduler
+# reads it by the id modules/service_account_ids spells.
+run "the_scheduler_module_reads_the_tick_account" {
   command = plan
 
   module {
@@ -102,8 +105,41 @@ run "the_scheduler_module_creates_the_tick_account" {
   }
 
   assert {
+    condition     = data.google_service_account.schedule_tick.account_id == "swarm-schedule-tick" && data.google_service_account.schedule_tick.project == "saga-agents-staging"
+    error_message = "the scheduler module must read swarm-schedule-tick in the platform's project"
+  }
+
+  assert {
+    condition     = output.schedule_tick_email == "swarm-schedule-tick@saga-agents-staging.iam.gserviceaccount.com"
+    error_message = "the root renders this address as SCHEDULE_TICK_USERS and grants it run.invoker; it must be the account bootstrap creates"
+  }
+
+  assert {
+    condition     = output.schedule_tick_email != output.rollup_sweeper_email
+    error_message = "the schedule tick must not present the rollup sweeper's identity (SD10)"
+  }
+}
+
+run "bootstrap_creates_the_tick_account" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  # terraform/bootstrap/state_bucket.tf imports the state bucket (DAYONE-BOOT-1);
+  # a mock provider cannot import.
+  override_resource {
+    target = google_storage_bucket.state
+  }
+
+  variables {
+    frontend_iap_members = ["domain:example.com"]
+  }
+
+  assert {
     condition     = google_service_account.schedule_tick.account_id == "swarm-schedule-tick" && google_service_account.schedule_tick.project == "saga-agents-staging"
-    error_message = "the scheduler module must create swarm-schedule-tick in the platform's project"
+    error_message = "terraform/bootstrap must create swarm-schedule-tick in the platform's project"
   }
 
   # A service account has no labels; the marker lives at the start of its
@@ -111,16 +147,6 @@ run "the_scheduler_module_creates_the_tick_account" {
   assert {
     condition     = startswith(google_service_account.schedule_tick.description, "managed-by=swarm-terraform;")
     error_message = "swarm-schedule-tick must carry managed-by=swarm-terraform, or make destroy refuses to touch it"
-  }
-
-  assert {
-    condition     = output.schedule_tick_email == "swarm-schedule-tick@saga-agents-staging.iam.gserviceaccount.com"
-    error_message = "the root renders this address as SCHEDULE_TICK_USERS and grants it run.invoker; it must be the account the module creates"
-  }
-
-  assert {
-    condition     = output.schedule_tick_email != output.rollup_sweeper_email
-    error_message = "the schedule tick must not present the rollup sweeper's identity (SD10)"
   }
 }
 
@@ -263,11 +289,19 @@ run "the_tick_holds_no_grant_but_run_invoker_on_swarm_api" {
       ]) : l
       if !contains([
         "modules/service_account_ids/main.tf: schedule_tick_id = \"swarm-schedule-tick\"",
-        "modules/service_account_ids/main.tf: [local.tick_id, local.verify_id, local.rollup_sweeper_id, local.schedule_tick_id],",
+        "modules/service_account_ids/main.tf: [local.tick_id, local.verify_id, local.rollup_sweeper_id, local.schedule_tick_id, local.discovery_id, local.doctor_id],",
         "modules/service_account_ids/outputs.tf: output \"schedule_tick_id\" {",
         "modules/service_account_ids/outputs.tf: value = local.schedule_tick_id",
         "modules/scheduler/main.tf: account_id = module.service_account_ids.schedule_tick_id",
-        "modules/scheduler/main.tf: schedule_tick_email = \"$${google_service_account.schedule_tick.account_id}@$${var.project_id}.iam.gserviceaccount.com\"",
+        "modules/scheduler/main.tf: schedule_tick_email = \"$${data.google_service_account.schedule_tick.account_id}@$${var.project_id}.iam.gserviceaccount.com\"",
+        # DAYONE-BOOT-2: bootstrap creates the account (and adopts infra's,
+        # gated on adopt_from_infra_states), lists its address in an output,
+        # and infra forgets its old address without destroying it.
+        "bootstrap/platform_service_accounts.tf: account_id = module.service_account_ids.schedule_tick_id",
+        "bootstrap/platform_service_accounts.tf: for_each = length(var.adopt_from_infra_states) > 0 ? toset([module.service_account_ids.schedule_tick_id]) : toset([])",
+        "bootstrap/platform_service_accounts.tf: to = google_service_account.schedule_tick",
+        "bootstrap/outputs.tf: (google_service_account.schedule_tick.account_id) = google_service_account.schedule_tick.email",
+        "infra/removed.tf: from = module.scheduler.google_service_account.schedule_tick",
         "modules/scheduler/outputs.tf: output \"schedule_tick_email\" {",
         "modules/scheduler/outputs.tf: value = local.schedule_tick_email",
         "infra/main.tf: member = \"serviceAccount:$${module.scheduler.schedule_tick_email}\"",

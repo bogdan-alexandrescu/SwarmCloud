@@ -130,8 +130,11 @@ run "verify_holds_no_other_project_level_container_role" {
   variables {
     tenant_ids = []
 
-    tf_root   = "../../terraform"
-    verify_re = "google_service_account\\.verify\\.email|swarm-verify@|service_account_ids\\.verify_id"
+    tf_root = "../../terraform"
+    # local.verify_email / data.google_service_account.verify: how
+    # terraform/infra names the account since DAYONE-BOOT-2 moved it to
+    # terraform/bootstrap and infra reads it.
+    verify_re = "google_service_account\\.verify\\.email|swarm-verify@|service_account_ids\\.verify_id|local\\.verify_email|data\\.google_service_account\\.verify\\b"
     grant_re  = "(?ms)^resource \"(google_project_iam_member|google_project_iam_binding|google_project_iam_policy)\" \"([^\"]+)\" \\{\\n(.*?)^\\}"
   }
 
@@ -210,6 +213,11 @@ run "verify_holds_no_other_project_level_container_role" {
         "  member = \"serviceAccount:$${google_service_account.verify.email}\"",
         "}",
         "",
+        "resource \"google_project_iam_member\" \"verify_reads_everything_by_local\" {",
+        "  role   = \"roles/container.viewer\"",
+        "  member = \"serviceAccount:$${local.verify_email}\"",
+        "}",
+        "",
         "resource \"google_project_iam_member\" \"someone_else\" {",
         "  role   = \"roles/container.viewer\"",
         "  member = \"serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com\"",
@@ -220,6 +228,7 @@ run "verify_holds_no_other_project_level_container_role" {
       ]) == tolist([
       "verify_views_swarm_cluster conditioned",
       "verify_reads_everything unconditioned",
+      "verify_reads_everything_by_local unconditioned",
     ])
     error_message = "the scan does not report an unconditioned container role to swarm-verify in a file built to hold one; the checks above could not fail"
   }

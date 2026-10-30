@@ -148,7 +148,8 @@ def test_the_bootstrap_admits_the_account_at_the_front_door() -> None:
 
 def test_swarm_api_admits_the_account_beside_swarm_verify() -> None:
     expression = _allowed_users_expression()
-    assert "google_service_account.verify.email" in expression, expression
+    # local.verify_email since DAYONE-BOOT-2 (the account is bootstrap's).
+    assert "local.verify_email" in expression, expression
     # Since DAYONE-TF-1 the address is an install input, var.allowed_users,
     # rather than a literal in locals.tf: the expression must append it, and
     # dev.tfvars must name the account there.

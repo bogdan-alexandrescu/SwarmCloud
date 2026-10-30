@@ -1320,3 +1320,113 @@ variable "swarm_workers_log_view_enabled" {
   # sink design instead.
   default = false
 }
+
+# ---------------------------------------------------------------------------
+# Day One: the edge, the console's App setup and the scheduled doctor
+# (DAYONE-TF-2; docs/design/day-one-plan.md §1.2, design §9.2)
+# ---------------------------------------------------------------------------
+
+variable "discovery" {
+  description = <<-EOT
+    The non-secret discovery document swarm-discovery serves at
+    https://<frontend_hostname>/.well-known/swarmcloud (discovery.tf, design
+    §9.2): the deployment's display name, the release version, the IAP Desktop
+    OAuth client id the plugin signs in with, and the oldest plugin version the
+    deployment supports. The install engine writes it.
+
+    EMPTY oauth_client_id (the default) creates no swarm-discovery service and
+    no discovery backend: apps/swarm-api/swarm_api/discovery.py builds the
+    document at start-up and refuses to start without each field, so a service
+    without them would fail its first revision. The live deployment stays
+    unchanged until the engine (or the owner) sets it.
+  EOT
+  type = object({
+    name               = optional(string, "SwarmCloud")
+    version            = optional(string, "")
+    oauth_client_id    = optional(string, "")
+    plugin_min_version = optional(string, "")
+  })
+  default = {}
+
+  validation {
+    condition     = var.discovery.oauth_client_id == "" || (var.discovery.version != "" && var.discovery.plugin_min_version != "" && var.discovery.name != "")
+    error_message = "discovery.oauth_client_id is set, so discovery.version, discovery.plugin_min_version and discovery.name must be too: swarm-discovery refuses to start without any of them."
+  }
+}
+
+variable "discovery_serves_client_secret" {
+  description = <<-EOT
+    Serve the IAP Desktop client's secret in the discovery document (design
+    §9.3). Off (the default) swarm-discovery holds no role at all; on, it holds
+    roles/secretmanager.secretAccessor on swarm-iap-desktop-client-secret and
+    on no other secret (discovery.tf).
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "enable_console_app_setup" {
+  description = <<-EOT
+    Create the GitHub App's three secret containers (swarm-github-app-client-
+    secret, -private-key, -webhook-secret) independently of enable_github_app
+    and enable_github_hooks, so the console's Admin > Setup > GitHub App step
+    can store what the manifest exchange returns (plan R3, review finding 2).
+    swarm-api's version-adder and accessor on exactly those three are
+    terraform/bootstrap's (github_app_setup.tf). Off by default: the install
+    engine turns it on in infra pass 2; the live deployment already has the
+    containers through its App switches.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "enable_scheduled_doctor" {
+  description = <<-EOT
+    Run swarm-doctor, the read-only doctor, every hour (doctor.tf, D27), with
+    its Scheduler job and the alert on its finding count. Off by default so
+    nothing runs hourly before DAYONE-DOCTOR-1's code ships in the swarm-verify
+    image; the engine turns it on (review finding 12).
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "enable_acceptance_fixture" {
+  description = <<-EOT
+    The acceptance suite's public fixture bucket and its allUsers object
+    reader (acceptance_fixture.tf), an addon:ci piece. Off by default: an
+    install makes no public bucket (review finding 4; Domain Restricted
+    Sharing refuses allUsers in most organisations). dev.tfvars and prod.tfvars
+    set it true, so the live plan shows no change.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "groups_auth" {
+  description = <<-EOT
+    How swarm-api reads a caller's groups (GROUPS_AUTH, apps/swarm-api/swarm_api/
+    groups.py; design §8, Q2): "delegation" (domain-wide delegation, the live
+    deployment's mode) or "admin_role" (the Groups Reader admin role on
+    swarm-api's own account, what installs use). The default keeps the live
+    deployment unchanged until the owner flips it.
+  EOT
+  type        = string
+  default     = "delegation"
+
+  validation {
+    condition     = contains(["delegation", "admin_role"], var.groups_auth)
+    error_message = "groups_auth is delegation or admin_role; swarm-api refuses to start on any other value."
+  }
+}
+
+variable "setup_github_org" {
+  description = <<-EOT
+    The GitHub organisation the console's Admin > Setup registers the App under
+    (SETUP_GITHUB_ORG, apps/swarm-api/swarm_api/settings.py). Empty: not
+    rendered, and the console's App step answers 409 setup_unconfigured. The
+    install engine writes it from the stage 0 answers.
+  EOT
+  type        = string
+  default     = ""
+}

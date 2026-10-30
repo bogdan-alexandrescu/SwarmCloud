@@ -148,22 +148,20 @@ module "service_account_ids" {
   source = "../service_account_ids"
 }
 
-# NO create_ignore_already_exists, for the reason modules/iam gives for
-# swarm-tick (#334): a release that meets a 409 should fail rather than adopt
-# an account somebody else made under this name, with their keys and policy.
-# The provider caps description at 256 characters; this one is at 252.
-resource "google_service_account" "rollup_sweeper" {
-  project      = var.project_id
-  account_id   = module.service_account_ids.rollup_sweeper_id
-  display_name = "Swarm Workflow Rollup Sweeper"
-  description  = "managed-by=swarm-terraform; OIDC id of workflow-rollup, issue-run-advance, stranded-pr-sweep, repo-index-poll, merge-wake, forge-refresh, workspace-sweep, secrets-rotation-sweep, mcp-credentials-sweep, task_finished push; 10 /v1/admin routes. No roles."
+# The account is terraform/bootstrap's (platform_service_accounts.tf,
+# DAYONE-BOOT-2, design Q7); this module reads it. The live account was
+# forgotten here, never destroyed (terraform/infra/removed.tf), and adopted by
+# bootstrap's gated import; its email and unique id did not change.
+data "google_service_account" "rollup_sweeper" {
+  project    = var.project_id
+  account_id = module.service_account_ids.rollup_sweeper_id
 }
 
 locals {
   # Built from the account id rather than read from `.email`, which a mock
   # provider (tests/terraform) leaves unknown at plan; the reference keeps the
   # job ordered after the account.
-  rollup_sweeper_email = "${google_service_account.rollup_sweeper.account_id}@${var.project_id}.iam.gserviceaccount.com"
+  rollup_sweeper_email = "${data.google_service_account.rollup_sweeper.account_id}@${var.project_id}.iam.gserviceaccount.com"
 }
 
 resource "google_cloud_scheduler_job" "workflow_rollup" {

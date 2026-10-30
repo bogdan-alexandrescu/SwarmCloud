@@ -106,7 +106,6 @@ run "off_by_default_nothing_exists" {
   assert {
     condition = (
       length(google_cloud_run_v2_service.github_hooks) == 0
-      && length(google_cloud_run_v2_service_iam_member.github_hooks_public) == 0
       && length(google_secret_manager_secret.github_webhook_secret) == 0
       && length(google_secret_manager_secret_iam_binding.github_webhook_secret_accessor) == 0
       && length(google_project_iam_member.github_hooks_firestore) == 0
@@ -167,17 +166,16 @@ run "on_the_receiver_is_public_runs_as_the_sweeper_and_reads_its_secret_alone" {
     error_message = "the receiver runs as the rollup sweeper account (owner decision 2026-10-16), and no new identity"
   }
 
-  # allUsers on THIS service and nowhere else.
+  # Public on THIS service and nowhere else. Since DAYONE-TF-2 (Q3) the door
+  # is the service's own invoker check switched off, not an allUsers
+  # run.invoker binding: github_hooks.tf grants allUsers nothing.
   assert {
     condition = (
-      length(google_cloud_run_v2_service_iam_member.github_hooks_public) == 1
-      && google_cloud_run_v2_service_iam_member.github_hooks_public[0].member == "allUsers"
-      && google_cloud_run_v2_service_iam_member.github_hooks_public[0].role == "roles/run.invoker"
-      && google_cloud_run_v2_service_iam_member.github_hooks_public[0].name == "swarm-github-hooks"
+      google_cloud_run_v2_service.github_hooks[0].invoker_iam_disabled == true
       && google_cloud_run_v2_service_iam_member.rollup_sweeper_invokes_api.member != "allUsers"
-      && length(regexall("\"allUsers\"", file("${var.tf_root}/github_hooks.tf"))) == 1
+      && length(regexall("\"allUsers\"", file("${var.tf_root}/github_hooks.tf"))) == 0
     )
-    error_message = "allUsers holds roles/run.invoker on swarm-github-hooks only, and github_hooks.tf names it once"
+    error_message = "swarm-github-hooks is public by invoker_iam_disabled on that service alone, and github_hooks.tf binds allUsers to nothing"
   }
 
   # requests == limits (invariant 7): no idle throttling, no start-up boost.
@@ -286,7 +284,6 @@ run "on_without_a_digest_the_iam_exists_and_the_check_says_why" {
   assert {
     condition = (
       length(google_cloud_run_v2_service.github_hooks) == 0
-      && length(google_cloud_run_v2_service_iam_member.github_hooks_public) == 0
       && length(google_secret_manager_secret.github_webhook_secret) == 1
       && length(google_secret_manager_secret_iam_binding.github_webhook_secret_accessor) == 1
     )

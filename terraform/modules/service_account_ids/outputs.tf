@@ -1,5 +1,5 @@
 output "platform" {
-  description = "account id -> {display_name, description} for the component accounts modules/iam creates."
+  description = "account id -> {display_name, description} for the component accounts terraform/bootstrap creates and modules/iam grants roles to."
   value       = local.platform
 }
 
@@ -23,6 +23,21 @@ output "schedule_tick_id" {
   value       = local.schedule_tick_id
 }
 
+output "discovery_id" {
+  description = "The account the swarm-discovery service runs as (terraform/infra/discovery.tf); created by terraform/bootstrap."
+  value       = local.discovery_id
+}
+
+output "doctor_id" {
+  description = "The account the scheduled swarm-doctor job runs as (terraform/infra/doctor.tf); created by terraform/bootstrap."
+  value       = local.doctor_id
+}
+
+output "bootstrap_platform" {
+  description = "Every platform account id terraform/bootstrap creates (platform_service_accounts.tf), sorted."
+  value       = local.bootstrap_platform
+}
+
 output "tenant_worker_prefix" {
   description = "A tenant's worker account id is this plus the tenant key (modules/tenancy)."
   value       = local.tenant_worker_prefix
@@ -34,7 +49,7 @@ output "worker_ids" {
 }
 
 output "infra_managed" {
-  description = "Every account id terraform/infra manages for var.tenant_ids, sorted."
+  description = "Every account id terraform/infra deploys as or grants on for var.tenant_ids (bootstrap's platform accounts and the workers), sorted."
   value       = local.infra_managed
 
   # IAM's rule for an account id: 6 to 30 characters, lowercase letters,
