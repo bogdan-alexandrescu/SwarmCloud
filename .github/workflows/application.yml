@@ -631,6 +631,10 @@ jobs:
             # holds every image input to this list).
             .dockerignore
             .gcloudignore
+            # The swarm-verify image copies install/ in: the hourly doctor
+            # (swarm-doctor, DAYONE-DOCTOR-1) runs the release's manifest probes, so a
+            # pull request changing only the manifest must build that image.
+            install/**
         run: |
           set -euo pipefail
           emit() {
