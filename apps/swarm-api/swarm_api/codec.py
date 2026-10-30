@@ -358,6 +358,9 @@ def additional_repositories_to_api(value: Any) -> list[dict[str, Any]] | None:
 #: `git` is only ever a service submission's (`SubmissionService._resolve_forge`);
 #: so, in a personal tenant with no `-git` slot, is its owner's `git-u-` slot,
 #: which `metadata.forge_credential_source` = `owner` tells apart (INDEX-CRED).
+#: `app_installation` is a service run the broker mints a GitHub App
+#: installation token for (SERVICE-APP-TOKEN): whatever slot it names, the
+#: installation's token is what runs (DAYONE-CODEC-LABEL).
 _FORGE_SOURCES = (
     ("git-u-", "the submitter's GitHub credential"),
     ("git-r-", "the repository's token"),
@@ -368,9 +371,13 @@ def forge_credential_source(value: str | None, source: Any = None) -> str | None
     """The words for a task's forge credential, or None when it names none
     (no repository, not GitHub, or submitted before #780). `source` is the
     task's `metadata.forge_credential_source`: `owner` on a user slot is the
-    owner's connection run on the tenant's behalf, not the submitter's own."""
+    owner's connection run on the tenant's behalf, not the submitter's own;
+    `app_installation` is a run whose token the broker mints from the GitHub
+    App installation."""
     if value is None:
         return None
+    if source == "app_installation":
+        return "GitHub App installation token, minted for the run"
     if value == "git":
         return "tenant token, service submission"
     if source == "owner" and value.startswith("git-u-"):

@@ -1437,15 +1437,21 @@ START_PROBLEM_METADATA_KEY = "start_problem"
 OWNER_ANSWERS_METADATA_KEY = "owner_answers"
 
 #: Whose slot a service submission's task runs with (INDEX-CRED, part of
-#: #1041): `tenant` (the tenant's `-git` token) or `owner` (a personal
-#: tenant's owner's GitHub connection, `forge.service_slot`). Written only by
+#: #1041): `tenant` (the tenant's `-git` token), `owner` (a personal
+#: tenant's owner's GitHub connection, `forge.service_slot`) or
+#: `app_installation` (a platform service account's run on a repository whose
+#: owner has the GitHub App installed: the broker mints an installation token
+#: for it, SERVICE-APP-TOKEN). Written only by
 #: `SubmissionService._resolve_forge`, before the spec is signed, and read by
 #: `codec.forge_credential_source`: the slot name alone (`git-u-<hex>`) cannot
 #: tell the owner's connection run on the tenant's behalf from a person's
 #: own task, and a caller who set it would mislabel whose credential ran.
-#: Not signed (`swarm_common.specsign.SIGNED_METADATA_KEYS` is frozen): it is
-#: a label no worker acts on, and it says `owner` only beside a `git-u-`
-#: `forge_credential`, which IS signed.
+#: Not signed itself (`swarm_common.specsign.SIGNED_METADATA_KEYS` is
+#: frozen), and reserved from callers. The worker acts on it -- an
+#: `app_installation` run asks for an installation token -- but only once the
+#: task's spec signature has verified, so only a task the platform submitted
+#: and signed carries a label a worker obeys; `owner` appears only beside a
+#: `git-u-` `forge_credential`, which IS signed.
 FORGE_SOURCE_METADATA_KEY = "forge_credential_source"
 
 #: Child tasks (contract request 14, docs/design/child-tasks.md §6.4). The
