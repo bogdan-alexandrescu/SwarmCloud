@@ -189,7 +189,7 @@ enable_forge_user_slots = true
 # verifies approvals against the SPEC_VERIFY_KEYS its command pins) and
 # WK-FAILCOPY (PR 1638), which group and service workspaces need.
 enable_workspace_deployer = true
-workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@sha256:7a03edc768e67fea9f791ab65ec28c726b8e8420799ece96f51169a7fc46028a"
+workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@sha256:3241b525e2a4eb9952f56e4950848fccf127862521fe324e656bd66c6f565994"
 
 # Workspace kinds (docs/design/workspace-kinds.md §4.5, #847; owner 2026-10-19):
 # K2 (the deployer's second swarmWorkspaceSecretBinder grant, on any tenant's
