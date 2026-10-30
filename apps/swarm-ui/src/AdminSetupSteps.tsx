@@ -80,14 +80,33 @@ import {
   type SetupTeam,
   type SetupVerify,
   type SetupVerifyRuns,
+  VERIFY_RUN_RETRIES,
 } from './api'
 import { Banner, Button, ButtonLink, Card, Chip, CodeBlock, ToneMark, type MarkTone } from './components'
 import { agentPath } from './OverviewRegions'
 import type { TaskState } from './types'
 import './styles/onboarding.css'
 
-/** The marketplace the plugin is installed from: the release bucket (DX3 B), as `swarm install` prints it. */
+/** The stable channel's marketplace: the release bucket's root (DX3 B), as `swarm install` prints it. */
 export const PLUGIN_MARKETPLACE = 'https://storage.googleapis.com/swarmcloud/marketplace.json'
+
+/**
+ * The channel a release name came from: a candidate (`YYYY.MM.N-rc.N`) is
+ * published to `rc` only; every other release is `stable`, the channel
+ * install.sh uses when SWARM_CHANNEL is unset.
+ */
+export function releaseChannel(release: string | null): string {
+  return release !== null && /-rc\.\d+$/.test(release.trim()) ? 'rc' : 'stable'
+}
+
+/**
+ * The marketplace of the deployment's own channel (audit 3, N10): stable's at
+ * the bucket root, any other channel's at `channels/<channel>.marketplace.json`,
+ * so an rc deployment installs its own candidate's plugin before any promotion.
+ */
+export function pluginMarketplace(channel: string): string {
+  return channel === 'stable' ? PLUGIN_MARKETPLACE : `https://storage.googleapis.com/swarmcloud/channels/${channel}.marketplace.json`
+}
 
 /** How often the page re-reads while it is open: the verify row's refresh (§5.1). */
 export const SETUP_REFRESH_MS = 5_000
@@ -213,9 +232,9 @@ function untilWords(iso: string | null, nowMs: number): string | null {
   return at <= nowMs ? 'expired' : `expires in ${spanWords((at - nowMs) / 1000)}`
 }
 
-/** The one line a teammate runs; the deployment URL is its only value. */
-export function pluginLine(hostname: string): string {
-  return `claude plugin marketplace add ${PLUGIN_MARKETPLACE} && claude plugin install sc@swarmcloud --config deployment_url=https://${hostname}`
+/** The one line a teammate runs: the deployment URL is its only value, from the marketplace of the release the engine recorded. */
+export function pluginLine(hostname: string, release: string | null): string {
+  return `claude plugin marketplace add ${pluginMarketplace(releaseChannel(release))} && claude plugin install sc@swarmcloud --config deployment_url=https://${hostname}`
 }
 
 /** The page's clock: the given instant (a test, a capture) or the browser's, ticking each second. */
@@ -1028,7 +1047,10 @@ function runStep(word: string | null): RunStep {
 type RunRead = { word: string } | { error: string } | null
 
 function useRunState(id: string | null, read: (id: string) => Promise<Result<string>>): RunRead {
-  const [got, setGot] = useState<RunRead>(null)
+  // Kept with the id it was read for: a run started again has a fresh id, and
+  // the old run's end must not stop the new one being read.
+  const [seen, setSeen] = useState<{ id: string | null; got: RunRead }>({ id: null, got: null })
+  const got = seen.id === id ? seen.got : null
   const [tick, setTick] = useState(0)
   const ended = got !== null && 'word' in got && runStep(got.word) !== 'in_progress'
   useEffect(() => {
@@ -1036,8 +1058,8 @@ function useRunState(id: string | null, read: (id: string) => Promise<Result<str
     let alive = true
     void read(id).then((r) => {
       if (!alive) return
-      if (r.status === 'ok' || r.status === 'stale') setGot({ word: r.data })
-      else if (r.status === 'error') setGot({ error: r.error.message })
+      if (r.status === 'ok' || r.status === 'stale') setSeen({ id, got: { word: r.data } })
+      else if (r.status === 'error') setSeen({ id, got: { error: r.error.message } })
     })
     const t = window.setTimeout(() => setTick((n) => n + 1), RUN_POLL_MS)
     return () => {
@@ -1102,7 +1124,35 @@ function ConsoleChecks({ state, onChanged }: { state: SetupState; onChanged: () 
     items.push(runFact('Console task', runs.task, agentPath({ id: runs.task, state: word }), task, runs.repository))
   }
   if (runs.workflow !== null) items.push(runFact('Console workflow', runs.workflow, `/workflows/${encodeURIComponent(runs.workflow)}`, workflow, runs.repository))
-  return <Facts items={items} label="Console checks" />
+  // A failed or cancelled run is started again by the same route (audit 3, A8),
+  // a fresh start per failed key up to VERIFY_RUN_RETRIES; verify says so too.
+  const failedLeft = [
+    { got: task, used: runs.retries.task },
+    { got: workflow, used: runs.retries.workflow },
+  ]
+    .filter((r) => r.got !== null && 'word' in r.got && runStep(r.got.word) === 'failed')
+    .map((r) => Math.max(0, VERIFY_RUN_RETRIES - r.used))
+  if (failedLeft.length === 0) return <Facts items={items} label="Console checks" />
+  const left = Math.min(...failedLeft)
+  return (
+    <>
+      <Facts items={items} label="Console checks" />
+      <span className="ob-acts">
+        <Button
+          size="sm"
+          busy={act.busy === 'verify-runs' ? 'Starting' : false}
+          disabledReason={left === 0 ? `It failed after ${VERIFY_RUN_RETRIES} fresh starts, so none is started again: read that run for why` : undefined}
+          onClick={() => act.run('verify-runs', startSetupVerifyRuns, setPosted)}
+        >
+          Run the console checks again
+        </Button>
+        <span className="ur-hint">
+          {left} of {VERIFY_RUN_RETRIES} fresh starts left
+        </span>
+      </span>
+      <ErrorLine error={act.error} />
+    </>
+  )
 }
 
 function verifyRow(state: SetupState, onChanged: () => void, nowMs: number): Row {
@@ -1203,7 +1253,7 @@ export function SendToTeam({ state }: { state: SetupState }) {
   } else if (hostname === null) {
     body = <p className="ur-hint">The deployment’s hostname is not set on swarm-api (INSTALL_HOSTNAME), so there is no URL to send yet.</p>
   } else {
-    const line = pluginLine(hostname)
+    const line = pluginLine(hostname, state.engine?.release ?? null)
     body = (
       <>
         <p className="ur-hint">One line for a teammate’s terminal; the plugin asks for nothing else. It reads the rest from https://{hostname}/.well-known/swarmcloud.</p>

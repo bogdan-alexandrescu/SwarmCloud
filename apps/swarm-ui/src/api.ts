@@ -13164,7 +13164,15 @@ export interface SetupVerifyRuns {
   task: string | null
   workflow: string | null
   repository: string | null
+  /** Each run's fresh starts so far, as the route counts them in the document's `retries` (0 when it serves none). */
+  retries: { task: number; workflow: number }
 }
+
+/**
+ * How many fresh starts the verify-runs route gives a failed console run
+ * (swarm-api's `MAX_VERIFY_RETRIES`); past them it answers 409 and starts none.
+ */
+export const VERIFY_RUN_RETRIES = 2
 
 /**
  * `sizing` (INTERFACE SHEET; stage 0's SIZING-ASK, served by the status
@@ -13244,13 +13252,29 @@ function normVerify(raw: unknown): SetupVerify | null {
   }
 }
 
+/**
+ * An engine time as ISO text. The engine writes `lease.heartbeat`,
+ * `hand_off_at`, `ready_at` and `stages[].at` as epoch seconds (audit 3, A7);
+ * a route that converts them serves ISO text. Both read as the same instant,
+ * and anything that is neither is null, so no field renders Invalid Date.
+ */
+function timeOf(v: unknown): string | null {
+  const seconds = typeof v === 'number' ? v : typeof v === 'string' && /^\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : null
+  if (seconds !== null) {
+    const at = new Date(seconds * 1000)
+    return Number.isFinite(seconds) && !Number.isNaN(at.getTime()) ? at.toISOString() : null
+  }
+  if (typeof v !== 'string' || v === '') return null
+  return Number.isNaN(Date.parse(v)) ? null : v
+}
+
 function normEngine(raw: unknown): SetupEngine | null {
   const e = objOf(raw)
   if (e === null) return null
   const stages = Array.isArray(e.stages)
     ? e.stages.map((s) => {
         const o = objOf(s)
-        return o === null || strOf(o.state) === null ? null : { state: strOf(o.state) as string, at: strOf(o.at), by: strOf(o.by) }
+        return o === null || strOf(o.state) === null ? null : { state: strOf(o.state) as string, at: timeOf(o.at), by: strOf(o.by) }
       })
     : []
   const lease = objOf(e.lease)
@@ -13259,10 +13283,10 @@ function normEngine(raw: unknown): SetupEngine | null {
     release: strOf(e.release),
     hostname: strOf(e.hostname),
     stages,
-    lease: lease === null ? null : { holder: strOf(lease.holder), heartbeat: strOf(lease.heartbeat) },
+    lease: lease === null ? null : { holder: strOf(lease.holder), heartbeat: timeOf(lease.heartbeat) },
     verify: normVerify(e.verify),
-    hand_off_at: strOf(e.hand_off_at),
-    ready_at: strOf(e.ready_at),
+    hand_off_at: timeOf(e.hand_off_at),
+    ready_at: timeOf(e.ready_at),
     workspace_groups: teamGroup === null ? null : { team: teamGroup },
   }
 }
@@ -13345,14 +13369,22 @@ function normTeam(raw: unknown): SetupTeam | null {
   }
 }
 
-/** `console/verify_runs` as the status route serves it: `{verify_runs: {console_task, console_workflow}, repository}`. */
+/** `console/verify_runs` as the status route serves it: `{verify_runs: {console_task, console_workflow}, retries, repository}`. */
 function normVerifyRuns(raw: unknown): SetupVerifyRuns | null {
   const doc = objOf(raw)
   const ids = objOf(doc?.verify_runs)
   if (doc === null || ids === null) return null
   const task = strOf(ids.console_task)
   const workflow = strOf(ids.console_workflow)
-  return task === null && workflow === null ? null : { task, workflow, repository: strOf(doc.repository) }
+  // The route's `retries` field; a document written before it kept `<key>_retries` beside each id.
+  const counts = objOf(doc.retries)
+  const count = (key: string): number => {
+    const n = counts?.[key] ?? ids[`${key}_retries`]
+    return typeof n === 'number' && Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0
+  }
+  return task === null && workflow === null
+    ? null
+    : { task, workflow, repository: strOf(doc.repository), retries: { task: count('console_task'), workflow: count('console_workflow') } }
 }
 
 /** `sizing`, or null until stage 0 recorded one. A mode other than the two is not a sizing. */
@@ -13675,8 +13707,8 @@ export function startSetupVerifyRuns(): Promise<Result<SetupVerifyRuns>> {
     route('/v1/admin/setup/verify-runs'),
     'POST',
     undefined,
-    (raw) => normVerifyRuns(raw) ?? { task: null, workflow: null, repository: strOf(objOf(raw)?.repository) },
-    () => ({ task: 'task_fixture_verify', workflow: 'wf_fixture_verify', repository: 'example-org/app' }),
+    (raw) => normVerifyRuns(raw) ?? { task: null, workflow: null, repository: strOf(objOf(raw)?.repository), retries: { task: 0, workflow: 0 } },
+    () => ({ task: 'task_fixture_verify', workflow: 'wf_fixture_verify', repository: 'example-org/app', retries: { task: 0, workflow: 0 } }),
   )
 }
 
