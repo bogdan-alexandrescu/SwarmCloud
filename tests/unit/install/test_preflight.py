@@ -18,6 +18,7 @@ import datetime as dt
 import hashlib
 import io
 import json
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -494,3 +495,146 @@ def test_release_cve_acceptances_shown_with_expiry() -> None:
 
     with pytest.raises(ValueError):
         preflight.parse_acceptances(json.dumps([{"cve": "CVE-1", "package": "x"}]).encode())
+
+
+# -- DAYONE-INSTALL-TOOLS-AUTO: preflight fetches the pinned tools ----------------
+
+PINNED_OUTPUT = {
+    "terraform": "Terraform v1.16.2\non linux_amd64",
+    "kubectl": "Client Version: v1.36.6",
+    "jq": "jq-1.8.2",
+    "cosign": "GitVersion: v2.4.1",
+    "gcrane": "0.20.2",
+    "gcloud": "591.0.0",
+}
+
+
+class FetchingTools:
+    """The machine, faked: what is on PATH, and a fake `tools.ensure` that
+    records every fetch. Nothing touches the network or the person's home."""
+
+    def __init__(self, tmp_path: Path, on_path: dict[str, str]) -> None:
+        self.on_path = on_path  # name -> the `version` output of the one on PATH
+        self.cache = tmp_path / "cache"
+        self.bin = tmp_path / "bin"
+        self.fetched: list[str] = []
+        self.sdk_installs = 0
+        self.logins: list[str] = []
+        self.environ: dict[str, str] = {"PATH": "/usr/local/bin:/usr/bin"}
+
+    def find(self, tool: Any) -> str | None:
+        return f"/usr/local/bin/{tool.name}" if tool.name in self.on_path else None
+
+    def run(self, argv: list[str]) -> str:
+        path = Path(argv[0])
+        if path.parent == self.bin:
+            return PINNED_OUTPUT[path.name]
+        name = path.name
+        return self.on_path.get(name, "1.0.0")
+
+    def ensure(self, name: str) -> Path:
+        self.fetched.append(name)
+        self.cache.mkdir(parents=True, exist_ok=True)
+        binary = self.cache / f"{name}-pinned"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+        return binary
+
+    def install_sdk(self) -> Path:
+        self.sdk_installs += 1
+        gcloud = self.cache / "google-cloud-sdk" / "bin" / "gcloud"
+        gcloud.parent.mkdir(parents=True, exist_ok=True)
+        gcloud.write_text("#!/bin/sh\n")
+        gcloud.chmod(0o755)
+        return gcloud
+
+    def login(self, gcloud: str) -> int:
+        self.logins.append(gcloud)
+        return 0
+
+    def step(self, ask: Any) -> preflight.ToolsStep:
+        return preflight.ToolsStep(lambda: FakeGcp(), ask, find=self.find, run=self.run, ensure=self.ensure,
+                                   install_sdk=self.install_sdk, login=self.login, bin_dir=lambda: self.bin,
+                                   environ=self.environ)
+
+
+EVERY_GOOD = {"gcloud": "591.0.0", "terraform": "Terraform v1.16.2", "kubectl": "Client Version: v1.36.1",
+              "jq": "jq-1.7.1", "uv": "uv 0.13.6", "python3": "Python 3.11.9", "cosign": "v2.4.1", "gcrane": "0.20.2"}
+
+
+def _applied(step: preflight.ToolsStep, ctx: Any) -> Any:
+    assert step.check(ctx).status == UNMET
+    step.apply(ctx, step.plan(ctx))
+    return step.check(ctx)
+
+
+@pytest.mark.parametrize("name", ["terraform", "kubectl", "jq", "cosign", "gcrane"])
+def test_missing_tool_fetched_not_refused(tmp_path: Path, name: str) -> None:
+    """A tool the release pins is fetched (SHA-256 checked by tools.ensure)
+    instead of a refusal telling the person to install it."""
+    machine = FetchingTools(tmp_path, {k: v for k, v in EVERY_GOOD.items() if k != name})
+    step = machine.step(answers())
+    ctx = ctx_for()
+    detail = step.check(ctx).detail
+    assert f"{name} is not installed" in detail
+    assert "fetch the pinned " + name in " ".join(step.plan(ctx).actions)
+
+    assert _applied(step, ctx).status == MET
+    assert machine.fetched == [name]
+    link = machine.bin / name
+    assert link.is_symlink() and link.resolve() == (machine.cache / f"{name}-pinned").resolve()
+    assert machine.environ["PATH"].split(":")[0] == str(machine.bin), "the engine's subprocesses run the pinned one"
+
+
+@pytest.mark.parametrize(("name", "wrong"), [("terraform", "Terraform v1.3.6"),
+                                             ("kubectl", "Client Version: v1.25.3")])
+def test_wrong_version_ignored_and_said_once(tmp_path: Path, name: str, wrong: str) -> None:
+    machine = FetchingTools(tmp_path, {**EVERY_GOOD, name: wrong})
+    step = machine.step(answers())
+    ctx = ctx_for()
+    assert _applied(step, ctx).status == MET
+    assert machine.fetched == [name]
+    said = [e["message"] for e in ctx.events.of_kind("step_apply") if f"/usr/local/bin/{name}" in e.get("message", "")]
+    assert len(said) == 1 and "ignoring it" in said[0]
+    assert machine.environ["PATH"].startswith(str(machine.bin) + ":")
+    # Checked again (a later step, the next run): no second fetch, nothing said again.
+    assert step.check(ctx).status == MET and machine.fetched == [name]
+
+
+def test_override_naming_an_old_kubectl_moves_to_the_pinned_one(tmp_path: Path) -> None:
+    machine = FetchingTools(tmp_path, {**EVERY_GOOD, "kubectl": "Client Version: v1.22.17"})
+    machine.environ["SWARM_KUBECTL"] = "/usr/local/bin/kubectl"
+    step = machine.step(answers())
+    assert _applied(step, ctx_for()).status == MET
+    assert machine.environ["SWARM_KUBECTL"] == str(machine.bin / "kubectl")
+
+
+def test_missing_gcloud_yes_installs_the_sdk_and_signs_in(tmp_path: Path) -> None:
+    machine = FetchingTools(tmp_path, {k: v for k, v in EVERY_GOOD.items() if k != "gcloud"})
+    ask = answers(preflight_tools=[""])  # Enter takes the default, yes
+    step = machine.step(ask)
+    ctx = ctx_for()
+    assert _applied(step, ctx).status == MET
+    assert ask.asked == [("preflight.tools", "Install the Google Cloud SDK into ~/.swarm/google-cloud-sdk? [Y/n]")]
+    assert machine.sdk_installs == 1
+    assert machine.logins == [str(machine.bin / "gcloud")], "signing in is the person's browser step"
+    assert machine.fetched == []
+
+
+def test_missing_gcloud_no_stops_with_how_to_install_it(tmp_path: Path) -> None:
+    machine = FetchingTools(tmp_path, {k: v for k, v in EVERY_GOOD.items() if k != "gcloud"})
+    ask = answers(preflight_tools=["n"])
+    step = machine.step(ask)
+    ctx = ctx_for()
+    with pytest.raises(RuntimeError) as stopped:
+        step.apply(ctx, step.plan(ctx))
+    assert "https://cloud.google.com/sdk/docs/install" in str(stopped.value)
+    assert "gcloud auth login" in str(stopped.value)
+    assert machine.sdk_installs == 0 and machine.logins == []
+    assert len(ask.asked) == 1
+
+
+def test_python_is_the_running_interpreter() -> None:
+    """uv's managed Python runs the installer; python3 on PATH is never a prerequisite."""
+    python = next(t for t in preflight.TOOLS if t.name == "python3")
+    assert preflight.find_tool(python) == sys.executable

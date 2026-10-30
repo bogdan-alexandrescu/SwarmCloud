@@ -32,12 +32,13 @@ import re
 import shutil
 import socket
 import subprocess
-from collections.abc import Callable, Iterable, Mapping, Sequence
+import sys
+from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .. import secret_entry
+from .. import secret_entry, tools
 from ..exitcodes import MET, UNMET
 from ..secret_entry import DevTty, Terminal
 from . import Observation, Plan
@@ -337,7 +338,7 @@ class _Base:
 #: The pins (docs/versions.md; lesson 12). terraform is exact: 1.3.6 refuses
 #: the state and a newer one diverges plans. kubectl is a floor: older clients
 #: silently drop manifest fields (CLAUDE.md "Writing scripts").
-TERRAFORM_VERSION = "1.16.2"
+TERRAFORM_VERSION = tools.TERRAFORM_VERSION
 KUBECTL_MIN = (1, 30)
 PYTHON_MIN = (3, 11)
 
@@ -351,22 +352,35 @@ class Tool:
     exact: str | None = None
     minimum: tuple[int, int] | None = None
     env: str | None = None
+    #: Pinned in `tools.PINS`: preflight fetches it instead of refusing.
+    fetch: bool = False
 
+
+_FETCHES = "the installer fetches the pinned one itself"
 
 TOOLS: tuple[Tool, ...] = (
     Tool("local-tool.gcloud", "gcloud", ("version", "--format=value(core)"), "install the Google Cloud SDK"),
-    Tool("local-tool.terraform", "terraform", ("version",), f"install terraform {TERRAFORM_VERSION} into ~/.local/bin",
-         exact=TERRAFORM_VERSION),
-    Tool("local-tool.kubectl", "kubectl", ("version", "--client"), "install kubectl 1.30 or newer; SWARM_KUBECTL "
-         "names one when an older client is first on $PATH", minimum=KUBECTL_MIN, env="SWARM_KUBECTL"),
-    Tool("local-tool.jq", "jq", ("--version",), "install jq"),
+    Tool("local-tool.terraform", "terraform", ("version",), _FETCHES, exact=TERRAFORM_VERSION, fetch=True),
+    Tool("local-tool.kubectl", "kubectl", ("version", "--client"), _FETCHES, minimum=KUBECTL_MIN,
+         env="SWARM_KUBECTL", fetch=True),
+    Tool("local-tool.jq", "jq", ("--version",), _FETCHES, fetch=True),
     Tool("local-tool.uv", "uv", ("--version",), "install uv (https://docs.astral.sh/uv/)"),
     Tool("local-tool.python", "python3", ("--version",), "install Python 3.11 (uv fetches it)", minimum=PYTHON_MIN),
-    Tool("local-tool.cosign", "cosign", ("version",), "install cosign"),
-    Tool("local-tool.gcrane", "gcrane", ("version",), "install gcrane"),
+    Tool("local-tool.cosign", "cosign", ("version",), _FETCHES, fetch=True),
+    Tool("local-tool.gcrane", "gcrane", ("version",), _FETCHES, fetch=True),
 )
 
 _VERSION = re.compile(r"v?(\d+)\.(\d+)(?:\.(\d+))?")
+
+#: The one optional choice preflight asks when gcloud is missing.
+SDK_QUESTION = "Install the Google Cloud SDK into ~/.swarm/google-cloud-sdk? [Y/n]"
+#: What "no" stops with: exactly how to install it by hand.
+SDK_HOW = (
+    "the Google Cloud SDK (gcloud) is needed and was not installed. Install it from "
+    "https://cloud.google.com/sdk/docs/install and put its bin directory on PATH (or run swarm install "
+    f"again and answer Y to install the pinned {tools.GCLOUD_VERSION} into ~/.swarm/google-cloud-sdk), "
+    "sign in with `gcloud auth login --update-adc`, then run swarm install again"
+)
 
 
 def run_version(argv: Sequence[str]) -> str:
@@ -374,13 +388,24 @@ def run_version(argv: Sequence[str]) -> str:
     return (done.stdout or "") + (done.stderr or "")
 
 
+def run_login(gcloud: str) -> int:
+    """`gcloud auth login --update-adc` on the person's terminal: gcloud opens
+    the browser and the person signs in (their credential step, never ours)."""
+    return subprocess.run([gcloud, "auth", "login", "--update-adc"], check=False).returncode
+
+
 def find_tool(tool: Tool) -> str | None:
-    """Like common.sh's `prefer_local_bin`: the override, ~/.local/bin, then $PATH."""
+    """Like common.sh's `prefer_local_bin`: the override, the pinned tools this
+    installer fetched (`tools.bin_dir`), ~/.local/bin, then $PATH. Python is
+    the interpreter running the installer (uv's managed one), never a prerequisite."""
+    if tool.name == "python3":
+        return sys.executable
     if tool.env and os.environ.get(tool.env):
         return os.environ[tool.env]
-    local = Path("~/.local/bin").expanduser() / tool.name
-    if local.is_file() and os.access(local, os.X_OK):
-        return str(local)
+    for where in (tools.bin_dir(), Path("~/.local/bin").expanduser()):
+        candidate = where / tool.name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
     return shutil.which(tool.name)
 
 
@@ -405,39 +430,109 @@ def tool_problem(tool: Tool, path: str | None, output: str) -> str | None:
 
 
 class ToolsStep(_Base):
+    """Every local tool the install runs. terraform, kubectl, jq, cosign and
+    gcrane are fetched at their pins (SHA-256 checked) when missing or the
+    wrong version, linked into `tools.bin_dir()` and that directory put first
+    on the engine's PATH, so every later step and subprocess runs the pinned
+    ones; a wrong one on the person's PATH is ignored and said once. A missing
+    gcloud is one optional-choice question (DAYONE-INSTALL-TOOLS-AUTO)."""
+
     id = "preflight.tools"
     satisfies = tuple(t.entry for t in TOOLS)
     _explain = (
         "Every Terraform root is pinned to terraform 1.16.2 (Homebrew's 1.3.6 refused the state), and an "
-        "old kubectl client silently drops manifest fields (lesson 12)."
+        "old kubectl client silently drops manifest fields (lesson 12). The installer fetches the pinned "
+        "tools itself, each checked against its pinned SHA-256."
     )
 
     def __init__(self, gcp: Callable[[], Gcp], ask: Ask, *,
                  find: Callable[[Tool], str | None] = find_tool,
-                 run: Callable[[Sequence[str]], str] = run_version) -> None:
+                 run: Callable[[Sequence[str]], str] = run_version,
+                 ensure: Callable[[str], Path] = tools.ensure,
+                 install_sdk: Callable[[], Path] = tools.install_sdk,
+                 login: Callable[[str], int] = run_login,
+                 bin_dir: Callable[[], Path] = tools.bin_dir,
+                 environ: MutableMapping[str, str] | None = None) -> None:
         super().__init__(gcp, ask)
         self._find = find
         self._run = run
+        self._ensure = ensure
+        self._install_sdk = install_sdk
+        self._login = login
+        self._bin_dir = bin_dir
+        self._environ = environ
+        #: tool name -> the link to the pinned binary fetched in this run.
+        self._fetched: dict[str, str] = {}
 
-    def problems(self) -> list[str]:
+    @property
+    def environ(self) -> MutableMapping[str, str]:
+        return os.environ if self._environ is None else self._environ
+
+    def findings(self) -> list[tuple[Tool, str | None, str]]:
+        """(tool, the path found, why it is not good enough) per unfit tool."""
         found = []
         for tool in TOOLS:
-            path = self._find(tool)
+            path = self._fetched.get(tool.name) or self._find(tool)
             output = self._run([path, *tool.argv]) if path else ""
             problem = tool_problem(tool, path, output)
             if problem:
-                found.append(problem)
+                found.append((tool, path, problem))
         return found
 
+    def problems(self) -> list[str]:
+        return [problem for _, _, problem in self.findings()]
+
     def check(self, ctx: Any) -> Observation:
+        tools.use_bin_dir(self._bin_dir(), self.environ)
         problems = self.problems()
         return Observation(UNMET if problems else MET, "; ".join(problems))
 
     def plan(self, ctx: Any) -> Plan:
-        return Plan("install or update the local tools", tuple(self.problems()))
+        actions = []
+        for tool, path, problem in self.findings():
+            if tool.fetch:
+                ignored = f" ({problem.removesuffix(': ' + tool.how)}: ignored)" if path else ""
+                actions.append(f"fetch the pinned {tool.name}, checked against its SHA-256{ignored}")
+            elif tool.name == "gcloud":
+                actions.append(f"ask: {SDK_QUESTION}")
+            else:
+                actions.append(problem)
+        return Plan("fetch the pinned local tools", tuple(actions))
 
     def apply(self, ctx: Any, plan: Plan) -> None:
-        """Nothing to do here but say what to install: the plan names each tool."""
+        """Fetch what is pinned, ask about gcloud; anything else stays a
+        problem the re-check names."""
+        for tool, path, problem in self.findings():
+            if tool.fetch:
+                self._fetch(ctx, tool, path, problem)
+            elif tool.name == "gcloud":
+                self._gcloud(ctx)
+        tools.use_bin_dir(self._bin_dir(), self.environ)
+
+    def _fetch(self, ctx: Any, tool: Tool, path: str | None, problem: str) -> None:
+        binary = self._ensure(tool.name)
+        linked = tools.link(tool.name, binary, directory=self._bin_dir())
+        self._fetched[tool.name] = str(linked)
+        if tool.env and self.environ.get(tool.env):
+            self.environ[tool.env] = str(linked)  # the override named the unfit one
+        message = f"{tool.name}: fetched the pinned {binary.name}, SHA-256 checked ({linked})"
+        if path:
+            message = f"{problem.removesuffix(': ' + tool.how)}; ignoring it: {message}"
+        ctx.events.emit("step_apply", step=self.id, message=message)
+
+    def _gcloud(self, ctx: Any) -> None:
+        answer = self._ask(ctx, self.id, SDK_QUESTION).strip().lower()
+        if answer not in ("", "y", "yes"):
+            raise RuntimeError(SDK_HOW)
+        gcloud = self._install_sdk()
+        linked = tools.link("gcloud", gcloud, directory=self._bin_dir())
+        self._fetched["gcloud"] = str(linked)
+        ctx.events.emit("step_apply", step=self.id, message=(
+            f"installed the Google Cloud SDK {tools.GCLOUD_VERSION} into {gcloud.parent.parent}, SHA-256 checked; "
+            "sign in now: gcloud opens your browser"))
+        if self._login(str(linked)) != 0:
+            raise RuntimeError(f"the Google sign-in did not finish; run `{linked} auth login --update-adc`, "
+                               "then run swarm install again")
 
 
 # -- preflight.inputs (R7) ---------------------------------------------------

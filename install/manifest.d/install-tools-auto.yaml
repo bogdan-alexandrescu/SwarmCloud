@@ -1,0 +1,123 @@
+# Lane DAYONE-INSTALL-TOOLS-AUTO (part of #2688): a new company needs only curl
+# and a Google sign-in. preflight.tools fetches terraform, kubectl and jq at
+# their pins (swarm_install/tools.py, SHA-256 checked) instead of refusing,
+# asks one optional-choice question before installing a pinned Google Cloud
+# SDK, and install/install.sh installs a pinned uv, whose managed Python runs
+# the installer. The six base entries whose apply text changes are restated
+# with replace: true.
+version: 1
+entries:
+- id: local-tool.gcloud
+  kind: local-tool
+  scope: core
+  stage: 0
+  provider: human-in-terminal
+  check: gcloud version (the installer's ~/.cache/swarmcloud/tools/bin, ~/.local/bin, then $PATH)
+  apply: 'when it is missing preflight.tools asks one question, "Install the Google Cloud SDK into
+    ~/.swarm/google-cloud-sdk? [Y/n]"; on yes it installs the pinned SDK archive (swarm_install/tools.py
+    SDK_PINS, SHA-256 checked before it is unpacked) and runs gcloud auth login --update-adc, the person''s
+    browser sign-in; on no it stops and says how to install and sign in by hand'
+  verify: gcloud version prints; gcloud config get-value account names the person
+  explain: every script in scripts/ shells out to gcloud; terraform's google provider uses ADC. Signing in is
+    the person's credential step and stays theirs.
+  guards: docs/runbooks/spec-signing-rollout.md:306 notes GA gcloud 586.0.0 removed 'gcloud services quota list'
+    ('Invalid choice'), so quota must be read with 'gcloud quotas info list' instead -- a command-surface drift
+    to watch across gcloud versions
+  secret_entry: null
+  depends_on: []
+  evidence:
+  - apps/swarm-install/swarm_install/steps/preflight.py
+  - apps/swarm-install/swarm_install/tools.py
+  replace: true
+- id: local-tool.terraform
+  kind: local-tool
+  scope: core
+  stage: 0
+  provider: engine
+  check: terraform version prints 1.16.2 (the installer's ~/.cache/swarmcloud/tools/bin, ~/.local/bin, then $PATH)
+  apply: preflight.tools fetches the pinned terraform 1.16.2 zip from releases.hashicorp.com (SHA-256 from
+    HashiCorp's SHA256SUMS, pinned in swarm_install/tools.py), links it into ~/.cache/swarmcloud/tools/bin and
+    puts that first on the engine's PATH; a wrong version on the person's PATH is ignored and said once
+  verify: preflight.tools re-check is MET; every later terraform call runs the pinned binary
+  explain: every terraform/* apply in this repo is pinned to this version; 1.3.6 refused the state and a newer
+    one diverges plans (lesson 12)
+  guards: docs/versions.md pins it
+  secret_entry: null
+  depends_on: []
+  evidence:
+  - apps/swarm-install/swarm_install/tools.py
+  - apps/swarm-install/swarm_install/steps/preflight.py
+  replace: true
+- id: local-tool.kubectl
+  kind: local-tool
+  scope: core
+  stage: 0
+  provider: engine
+  check: $(kubectl_bin) version --client is 1.30 or newer
+  apply: preflight.tools fetches the pinned kubectl 1.36.6 from dl.k8s.io (SHA-256 from its kubectl.sha256,
+    pinned in swarm_install/tools.py) when the one found is missing or older than 1.30, links it first on the
+    engine's PATH and points SWARM_KUBECTL at it when that named the old one; the old one is ignored and said
+    once
+  verify: preflight.tools re-check is MET; stage 10's kubectl is the pinned one
+  explain: an old kubectl client silently drops manifest fields it does not recognise against a newer control
+    plane (CLAUDE.md 'Writing scripts' rule)
+  guards: 'scripts/lib/common.sh:613-615: this machine had kubectl 1.22 (EKS) and 1.25 (Docker Desktop) ahead of
+    1.36 on $PATH'
+  secret_entry: null
+  depends_on: []
+  evidence:
+  - apps/swarm-install/swarm_install/tools.py
+  - apps/swarm-install/swarm_install/steps/preflight.py
+  replace: true
+- id: local-tool.jq
+  kind: local-tool
+  scope: core
+  stage: 0
+  provider: engine
+  check: jq --version
+  apply: preflight.tools fetches the pinned jq 1.8.2 from its GitHub release (SHA-256 from the release's
+    sha256sum.txt, pinned in swarm_install/tools.py) when none is found
+  verify: preflight.tools re-check is MET
+  explain: scripts/lib/plan-guard.sh and scripts/lib/destroy-guard.jq parse terraform plan JSON with it;
+    CLAUDE.md warns 'false // true is true' so comparisons must be explicit
+  guards: null
+  secret_entry: null
+  depends_on: []
+  evidence:
+  - apps/swarm-install/swarm_install/tools.py
+  replace: true
+- id: local-tool.uv
+  kind: local-tool
+  scope: core
+  stage: 0
+  provider: engine
+  check: uv --version
+  apply: install/install.sh installs the pinned uv 0.13.6 release binary into ~/.local/bin when none is on
+    PATH (the GitHub release tarball for the platform, SHA-256 from the release's .sha256 files, checked
+    before it is unpacked; never a remote script piped to a shell)
+  verify: install.sh's uv tool install of the release's wheels succeeds
+  explain: the installer is one uv tool; every Python command in this repo runs through uv (uv run ...)
+  guards: null
+  secret_entry: null
+  depends_on: []
+  evidence:
+  - install/install.sh
+  replace: true
+- id: local-tool.python
+  kind: local-tool
+  scope: core
+  stage: 0
+  provider: engine
+  check: the interpreter running the installer is 3.11 or newer
+  apply: 'never a prerequisite: install.sh''s uv tool install --python ''>=3.11'' fetches a managed Python, and
+    preflight checks the interpreter running the installer'
+  verify: preflight.tools re-check is MET
+  explain: 'CLAUDE.md ''Writing Python'': Python 3.11, uv for everything'
+  guards: null
+  secret_entry: null
+  depends_on:
+  - local-tool.uv
+  evidence:
+  - install/install.sh
+  - apps/swarm-install/swarm_install/steps/preflight.py
+  replace: true
