@@ -436,10 +436,12 @@ _VERSION = re.compile(r"v?(\d+)\.(\d+)(?:\.(\d+))?")
 
 #: The one optional choice preflight asks when gcloud is missing.
 SDK_QUESTION = "Install the Google Cloud SDK into ~/.swarm/google-cloud-sdk? [Y/n]"
+#: The SDK's install page, opened when the person declines the installer's copy.
+SDK_PAGE = "https://cloud.google.com/sdk/docs/install"
 #: What "no" stops with: exactly how to install it by hand.
 SDK_HOW = (
     "the Google Cloud SDK (gcloud) is needed and was not installed. Install it from "
-    "https://cloud.google.com/sdk/docs/install and put its bin directory on PATH (or run swarm install "
+    f"{SDK_PAGE} and put its bin directory on PATH (or run swarm install "
     f"again and answer Y to install the pinned {tools.GCLOUD_VERSION} into ~/.swarm/google-cloud-sdk), "
     "then run swarm install again: it signs you in itself (your browser opens)"
 )
@@ -588,6 +590,7 @@ class ToolsStep(_Base):
     def _gcloud(self, ctx: Any) -> None:
         answer = self._ask(ctx, self.id, SDK_QUESTION).strip().lower()
         if answer not in ("", "y", "yes"):
+            open_page(SDK_PAGE, why="Install the Google Cloud SDK from its page, then run swarm install again:")
             raise RuntimeError(SDK_HOW)
         gcloud = self._install_sdk()
         linked = tools.link("gcloud", gcloud, directory=self._bin_dir())
