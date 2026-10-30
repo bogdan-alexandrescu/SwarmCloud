@@ -376,3 +376,35 @@ def test_verb_context_saves_through_the_store() -> None:
     remember(ctx, outputs={infra.REOPENED: "203.0.113.9/32"})
     assert ctx.outputs[infra.REOPENED] == "203.0.113.9/32" and saved[0] is ctx.state
     assert ctx.engine.store.bucket == "bucket"
+
+
+# -- N12: a re-apply after the install uses the latest pass it reached -------------
+
+
+@pytest.mark.parametrize(("passes", "reopened", "expected"), [
+    ((), False, "infra-2"),
+    (("infra-1",), False, "infra-2"),
+    (("infra-1", "infra-2"), False, "infra-2"),
+    (("infra-1", "infra-2", "infra-3"), False, "infra-3"),
+    (("infra-1", "infra-2", "infra-3", "infra-4"), False, "infra-4"),
+    (("infra-1", "infra-2", "infra-3", "infra-4", "infra-close"), False, "infra-close"),
+    (("infra-1", "infra-2", "infra-3", "infra-4", "infra-close"), True, infra.REOPEN_PASS),
+])
+def test_latest_pass_is_the_latest_the_install_applied(passes: tuple[str, ...], reopened: bool,
+                                                       expected: str) -> None:
+    outputs: dict[str, Any] = {applied_key(p): "digest" for p in (*passes, "registry", "bootstrap-2")}
+    if reopened:
+        outputs[infra.REOPENED] = "203.0.113.9/32"
+    assert infra.latest_pass(outputs) == expected
+    assert infra.latest_pass(outputs, reopening=True) == (
+        infra.REOPEN_PASS if "infra-close" in passes else expected)
+
+
+def test_latest_pass_keeps_the_github_app_on() -> None:
+    gcp = SecretMetadata(every_key(), every_key())
+    ctx = FakeCtx()
+    ctx.state.outputs["github_app"] = {"id": "1234", "slug": "swarm"}
+    mark_applied(ctx, gcp, "infra-1", "infra-2", "infra-3", "infra-4")
+    inputs = generate(ctx, infra.latest_pass(ctx.outputs), gcp)
+    assert inputs["enable_github_app"] is True and inputs["enable_github_hooks"] is True
+    assert generate(ctx, "infra-2", gcp)["enable_github_app"] is False, "infra-2 is what switched it off"

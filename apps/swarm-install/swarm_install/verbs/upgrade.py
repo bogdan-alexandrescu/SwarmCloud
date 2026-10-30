@@ -46,8 +46,9 @@ _ENV = re.compile(r"^[a-z][a-z0-9-]{0,29}$")
 
 #: Stage 14's quick checks: what `swarm doctor` runs after a release.
 CHECKS = ("verify.scheduler-targets", "verify.digests", "verify.reconciler-jobs", "verify.firestore-migrations")
-#: The latest install pass of each root: an upgrade applies the widest inputs.
-LATEST_PASS = {"bootstrap": "bootstrap-2", "infra": "infra-2"}
+#: Bootstrap's latest install pass: an upgrade applies the widest inputs. Infra's
+#: is the latest pass the install reached (`steps.infra.latest_pass`; N12).
+LATEST_BOOTSTRAP_PASS = "bootstrap-2"
 #: Task states that hold infrastructure (invariant 1; `swarm_common.states.CONCURRENCY_STATES`).
 DEMAND_STATES = ("LEASED", "DISPATCHED", "STARTING", "RUNNING")
 #: What a release may ship to name the GitHub App permissions it needs.
@@ -142,12 +143,22 @@ class LiveWorld:
         from ..steps.bootstrap import generate
 
         ctx = self.ctx(version)
-        inputs = generate(ctx, LATEST_PASS[root], self.deps.gcp())
+        inputs = generate(ctx, self._pass_for(ctx, root), self.deps.gcp())
         tf = self._terraform(ctx, root)
         tfvars.write_local(tf.root_dir, inputs)
         deployer = deployer_email(self.project)
         tf.init(impersonate=deployer)
         return tf.plan(impersonate=deployer)
+
+    @staticmethod
+    def _pass_for(ctx: Context, root: str, *, reopening: bool = False) -> str:
+        """The pass an upgrade applies to `root`: never infra-2 once infra-3 or
+        later has applied, whose inputs switch the GitHub App off (N12)."""
+        from ..steps.infra import latest_pass, reach_closed
+
+        if root == "bootstrap":
+            return LATEST_BOOTSTRAP_PASS
+        return latest_pass(ctx.outputs, reopening=reopening or reach_closed(ctx.outputs))
 
     def apply_root(self, root: str, version: str) -> None:
         from ..steps.bootstrap import apply_pass
@@ -155,14 +166,14 @@ class LiveWorld:
         from ..steps.preflight import remember
 
         ctx = self.ctx(version)
-        # infra-2's inputs carry the installer's address (decision 2): after the
-        # closing pass, refresh it to this machine's /32 (it may not be the network
-        # recorded at install) and record it so the upgrade's close removes it again
-        # (finding 16).
+        # After the closing pass, infra's re-apply is infra-4's inputs, which carry
+        # the installer's address (decision 2): refresh it to this machine's /32 (it
+        # may not be the network recorded at install) and record it so the
+        # upgrade's close removes it again (finding 16).
         reopens = root == "infra" and reach_closed(ctx.outputs)
         if reopens:
             REACH.address(ctx)
-        apply_pass(ctx, self.deps, LATEST_PASS[root])
+        apply_pass(ctx, self.deps, self._pass_for(ctx, root, reopening=reopens))
         if reopens:
             remember(ctx, outputs={REOPENED: str(ctx.outputs.get("installer_cidr") or "")})
 

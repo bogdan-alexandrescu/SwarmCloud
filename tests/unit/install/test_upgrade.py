@@ -374,9 +374,10 @@ def _live_world(monkeypatch: pytest.MonkeyPatch, ctx: Any) -> Any:
 
 
 def test_infra_apply_after_the_close_is_recorded_for_the_close(monkeypatch: pytest.MonkeyPatch) -> None:
-    """infra-2's inputs carry the installer's address (decision 2): once the close
+    """infra-4's inputs carry the installer's address (decision 2): once the close
     had removed it, the upgrade's infra apply records the reopen, so the
-    upgrade's close (or the next swarm install) removes it again."""
+    upgrade's close (or the next swarm install) removes it again. It is never
+    infra-2, whose inputs switch the GitHub App off (N12)."""
     from swarm_install.steps import bootstrap, infra
 
     from .test_terraform_runner import FakeCtx
@@ -390,7 +391,7 @@ def test_infra_apply_after_the_close_is_recorded_for_the_close(monkeypatch: pyte
     world.apply_root("bootstrap", "v1.1.0")
     assert not ctx.outputs.get(infra.REOPENED), "bootstrap never touches the control plane"
     world.apply_root("infra", "v1.1.0")
-    assert applied == ["bootstrap-2", "infra-2"]
+    assert applied == ["bootstrap-2", infra.REOPEN_PASS]
     assert ctx.outputs[infra.REOPENED] == ctx.outputs["installer_cidr"]
 
     closed: list[tuple[Any, str]] = []
@@ -401,7 +402,7 @@ def test_infra_apply_after_the_close_is_recorded_for_the_close(monkeypatch: pyte
 
 def test_infra_apply_after_the_close_carries_this_machines_address(monkeypatch: pytest.MonkeyPatch) -> None:
     """After the close, an upgrade from another network refreshes installer_cidr
-    before infra-2, so the control plane admits this machine's /32, not the one
+    before infra-4, so the control plane admits this machine's /32, not the one
     recorded at install (finding 16)."""
     from swarm_install.steps import bootstrap, infra
 
@@ -431,4 +432,32 @@ def test_infra_apply_before_the_close_records_nothing(monkeypatch: pytest.Monkey
     ctx = FakeCtx()
     monkeypatch.setattr(bootstrap, "apply_pass", lambda c, deps, pass_name, **kw: None)
     _live_world(monkeypatch, ctx).apply_root("infra", "v1.1.0")
+    assert not ctx.outputs.get(infra.REOPENED)
+
+
+@pytest.mark.parametrize(("passes", "expected"), [
+    (("infra-1", "infra-2"), "infra-2"),
+    (("infra-1", "infra-2", "infra-3"), "infra-3"),
+    (("infra-1", "infra-2", "infra-3", "infra-4"), "infra-4"),
+])
+def test_upgrade_applies_the_latest_infra_pass_never_infra_2(monkeypatch: pytest.MonkeyPatch,
+                                                             passes: tuple[str, ...], expected: str) -> None:
+    """An upgrade re-applies the latest pass the install reached: infra-2's inputs
+    have the GitHub App, the forge refresh and the hooks off, so applying it
+    after pass 3 asked to destroy the hooks (N12)."""
+    from swarm_install.steps import bootstrap, infra
+
+    from .test_infra_steps import SecretMetadata, every_key
+    from .test_terraform_runner import FakeCtx
+
+    gcp = SecretMetadata(every_key(), every_key())
+    ctx = FakeCtx()
+    ctx.state.outputs["github_app"] = {"id": "1234", "slug": "swarm"}
+    for pass_name in passes:
+        ctx.state.outputs[bootstrap.applied_key(pass_name)] = "digest"
+    seen: list[tuple[str, bool]] = []
+    monkeypatch.setattr(bootstrap, "apply_pass", lambda c, deps, pass_name, **kw: seen.append(
+        (pass_name, bootstrap.generate(c, pass_name, gcp)["enable_github_app"])))
+    _live_world(monkeypatch, ctx).apply_root("infra", "v1.1.0")
+    assert seen == [(expected, expected != "infra-2")]
     assert not ctx.outputs.get(infra.REOPENED)

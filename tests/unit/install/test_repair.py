@@ -152,3 +152,71 @@ def test_typed_confirmation_reads_the_terminal_never_the_environment(monkeypatch
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False, raising=False)
     monkeypatch.setattr(builtins, "input", lambda prompt="": pytest.fail("input() without a terminal"))
     assert install._typed("Type x: ") == ""
+
+
+# -- N13: every entry doctor prints a repair for is repairable ----------------------
+
+
+def test_repair_accepts_an_entry_owned_through_step_alone(world, monkeypatch, capsys):
+    """The Terraform passes satisfy nothing; about 360 entries name them in
+    `step:` and doctor prints `swarm install --repair <id>` for each (N13). The
+    repair runs the step again even though the step's own check is met."""
+    from swarm_install import doctor
+
+    apis, pass2, ready = world
+    pass2.met = True
+    entry = _entry("service-account.swarm-api", "bootstrap.pass-2", 7)
+    install.load_manifest("").entries.append(entry)
+    assert entry.id not in pass2.satisfies
+    assert doctor.Finding(id=entry.id, status="fail", detail="missing", step=entry.step).repair == (
+        f"swarm install --repair {entry.id}")
+    _typing(monkeypatch, entry.id)
+
+    code = cli.main(["install", "--project", PROJECT, "--repair", entry.id])
+
+    assert code == ExitCode.OK, capsys.readouterr()
+    assert pass2.applied == ["repair bootstrap.pass-2"]
+    assert apis.applied == [] and ready.applied == []
+
+
+def test_repair_of_a_satisfied_entry_with_a_met_check_changes_nothing(world, monkeypatch):
+    apis, _, _ = world
+    _typing(monkeypatch, "api.run")
+    assert cli.main(["install", "--project", PROJECT, "--repair", "api.run"]) == ExitCode.OK
+    assert apis.applied == [], "its check covers the entry: met means there is nothing to repair"
+
+
+@dataclass
+class FakePass(FakeStep):
+    pass_name: str = ""
+
+
+def test_a_superseded_pass_repairs_as_the_latest_pass_of_its_root():
+    """infra.pass-1 owns 85 entries; re-applying infra-1 after pass 3 would switch
+    the GitHub App off, so its repair is the latest applied infra pass's step."""
+    from swarm_install import repair
+    from swarm_install.steps.bootstrap import applied_key
+
+    one = FakePass("infra.pass-1", 5, (), pass_name="infra-1")
+    two = FakePass("infra.pass-2", 7, (), pass_name="infra-2")
+    boot1 = FakePass("bootstrap.pass-1", 3, (), pass_name="bootstrap-1")
+    boot2 = FakePass("bootstrap.pass-2", 7, (), pass_name="bootstrap-2")
+    identity = FakePass("infra.pass-identity", 8, (), pass_name="infra-2")
+    four = FakePass("github.pass-4", 9, (), pass_name="infra-4")
+    close = FakePass("infra.pass-close", 14, (), pass_name="infra-close")
+    other = FakeStep("handoff.console", 12, ())
+    steps = [boot1, one, two, boot2, identity, four, close, other]
+
+    def outputs(*passes):
+        return {applied_key(p): "digest" for p in passes}
+
+    after_ready = outputs("bootstrap-1", "infra-1", "infra-2", "bootstrap-2", "infra-3", "infra-4", "infra-close")
+    assert repair.latest_pass_step(one, steps, after_ready) is close
+    assert repair.latest_pass_step(two, steps, after_ready) is close
+    assert repair.latest_pass_step(close, steps, after_ready) is close
+    assert repair.latest_pass_step(boot1, steps, after_ready) is boot2
+    assert repair.latest_pass_step(other, steps, after_ready) is other
+    mid = outputs("infra-1", "infra-2", "infra-3", "infra-4")
+    assert repair.latest_pass_step(one, steps, mid) is four
+    assert repair.latest_pass_step(one, steps, outputs("infra-1", "infra-2")) is identity
+    assert repair.latest_pass_step(one, steps, outputs("infra-1")) is one

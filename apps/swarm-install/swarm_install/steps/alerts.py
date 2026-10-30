@@ -7,7 +7,10 @@ asked in stage 0), so this stage checks them. The policies are the exception:
 an alert on a log-based metric fails with "Cannot find metric" until the
 metric's descriptor exists (lesson 23), so infra passes run with
 `create_alerts = false` until this step has seen every platform log metric's
-descriptor; then it turns `create_alerts` on and applies infra pass 2 again.
+descriptor; then it turns `create_alerts` on and applies the latest infra pass
+the install reached again (`infra.latest_pass`: infra-4 or infra-3 before the
+close, `infra-close` after it), never infra pass 2 once a later pass has applied,
+whose inputs switch the GitHub App off (N12).
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from ..exitcodes import MET, UNMET
 from ..waits import WaitSpec, wait_until
 from . import Observation, Plan
 from .bootstrap import DEPS, Deps, apply_pass
+from .infra import latest_pass
 from .preflight import remember
 
 #: The platform's log-based metrics (google_logging_metric, `swarm_*`).
@@ -75,7 +79,7 @@ class AlertsStep:
         return self.check(ctx)
 
     def plan(self, ctx: Any) -> Plan:
-        return Plan("wait for the log metrics' descriptors, then apply infra pass 2 with create_alerts on",
+        return Plan(f"wait for the log metrics' descriptors, then apply {latest_pass(ctx.outputs)} with create_alerts on",
                     tuple(self.problems(ctx)))
 
     def descriptors_ready(self, ctx: Any) -> bool:
@@ -89,7 +93,7 @@ class AlertsStep:
             wait_until(self.id, DESCRIPTORS, lambda: MET if self.descriptors_ready(ctx) else UNMET,
                        clock=ctx.clock, events=ctx.events)
             remember(ctx, outputs={"metric_descriptors_ready": True})
-        apply_pass(ctx, self.deps, "infra-2")
+        apply_pass(ctx, self.deps, latest_pass(ctx.outputs))
 
 
 def build_steps(deps: Deps = DEPS) -> list[Any]:

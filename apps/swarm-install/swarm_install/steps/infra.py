@@ -199,6 +199,30 @@ def reach_closed(outputs: Any) -> bool:
     return bool(outputs.get(applied_key("infra-close"))) and not outputs.get(REOPENED)
 
 
+def latest_applied(outputs: Any, root: str) -> str | None:
+    """The last pass of `root` the install has applied, in the install's order
+    (`registry` aside: it targets the registry alone), or None."""
+    applied = [p for p in tfvars.PASSES if tfvars.ROOT_OF[p] == root and p != "registry"
+               and outputs.get(applied_key(p))]
+    return applied[-1] if applied else None
+
+
+def latest_pass(outputs: Any, *, reopening: bool = False) -> str:
+    """The infra pass a re-apply after the install uses: the latest one the
+    install reached, so no switch a later pass turned on goes off again (N12;
+    lesson 39). `infra-close`, or `REOPEN_PASS` while the control plane admits
+    this machine again (`reopening`: the caller is about to put the address
+    back); infra-4 or infra-3 before the close; never earlier than infra-2, the
+    pass that carries the alert channel. `create_alerts` follows
+    `metric_descriptors_ready` in every pass's inputs."""
+    found = latest_applied(outputs, "infra")
+    if found == "infra-close" and (reopening or outputs.get(REOPENED)):
+        return REOPEN_PASS
+    if found is None or not tfvars.after(found, "infra-2"):
+        return "infra-2"
+    return found
+
+
 def _refresh_address(ctx: Any) -> None:
     """`installer_cidr` from this machine's address now (preflight.installer-address)."""
     from .preflight import ASK, GCP, InstallerAddressStep

@@ -73,3 +73,28 @@ def test_alerts_unmet_without_a_channel_or_the_flag() -> None:
     detail = alerts.AlertsStep(Deps(gcp=lambda: gcp)).check(ctx).detail
     assert "no notification channel sends to alerts@example.com" in detail
     assert "require_alert_channels is not true" in detail
+
+
+@pytest.mark.parametrize(("passes", "expected"), [
+    (("infra-2", "infra-3", "infra-4"), "infra-4"),
+    (("infra-2", "infra-3", "infra-4", "infra-close"), "infra-close"),
+])
+def test_alerts_redo_applies_the_latest_pass_never_infra_2(monkeypatch: pytest.MonkeyPatch,
+                                                            passes: tuple[str, ...], expected: str) -> None:
+    """A redo after READY (a deleted policy, a changed alert email, --repair
+    monitoring.alert-policies) never re-applies infra-2, whose inputs switch the
+    GitHub App, the forge refresh and the hooks off and put the address back (N12)."""
+    from swarm_install.steps.bootstrap import applied_key
+
+    clock = FakeClock()
+    ctx = FakeCtx(clock=clock)
+    ctx.state.outputs["metric_descriptors_ready"] = True
+    for pass_name in passes:
+        ctx.state.outputs[applied_key(pass_name)] = "digest"
+    applied: list[str] = []
+    monkeypatch.setattr(alerts, "apply_pass", lambda ctx_, deps, pass_name, **kw: applied.append(pass_name))
+    step = alerts.AlertsStep(Deps(gcp=lambda: FakeMonitoring(clock, appears_at=0)))
+    plan = step.plan(ctx)
+    step.apply(ctx, plan)
+    assert applied == [expected]
+    assert expected in plan.summary and "infra pass 2" not in plan.summary
