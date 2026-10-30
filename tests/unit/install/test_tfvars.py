@@ -398,3 +398,27 @@ def test_no_addon_leaves_core_inputs_alone() -> None:
     assert _infra("infra-2", EVERY_VERSION, addons={}) == _infra("infra-2", EVERY_VERSION)
     off = _infra("infra-2", EVERY_VERSION, addons={"brave-search": {"phase": "off"}})
     assert off["search_tool_enabled"] is False
+
+
+# -- DAYONE-TFVARS-3: the CI add-on's acceptance sandbox ---------------------------------
+
+
+def test_ci_sandbox_repository_reaches_the_verify_job_on_every_infra_pass() -> None:
+    # The swarm-verify job's SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL is the same URL the CI add-on
+    # sets as the repository variable, so the acceptance never falls back to the live deployment's.
+    for pass_name in INFRA_PASSES:
+        inputs = _infra(pass_name, EVERY_VERSION, addons=EVERY_ADDON_ON)
+        assert inputs["acceptance_sandbox_repository_url"] == "https://github.com/acme/sandbox.git", pass_name
+    for pass_name in ("bootstrap-1", "bootstrap-2"):
+        assert "acceptance_sandbox_repository_url" not in _boot(pass_name, addons=EVERY_ADDON_ON), pass_name
+
+
+def test_no_ci_sandbox_repository_leaves_the_input_unset() -> None:
+    # Unset is Terraform's null default: no env on the job, no change planned.
+    no_ci = {name: record for name, record in EVERY_ADDON_ON.items() if name != "ci"}
+    no_sandbox = {"ci": {"phase": "on", "choices": {"github_repository": "acme/swarm"}}}
+    for addons in ({}, no_ci, no_sandbox):
+        for pass_name in INFRA_PASSES:
+            inputs = _infra(pass_name, EVERY_VERSION, addons=addons)
+            assert "acceptance_sandbox_repository_url" not in inputs, (pass_name, addons)
+    assert "acceptance_sandbox_repository_url" not in _infra("infra-2", EVERY_VERSION)
