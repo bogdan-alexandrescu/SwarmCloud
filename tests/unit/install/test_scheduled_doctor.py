@@ -199,3 +199,14 @@ def test_an_unknown_finding_is_a_doctor_finding_too(capsys):
     states = {line["entry"]: line["state"] for line in lines if line.get("event") == "doctor_finding"}
     assert states.get("api.run") == "unknown"
     assert "workspace-group.admins" not in states
+
+
+def test_finding_lines_are_written_when_the_post_fails(capsys):
+    api = sd.SwarmApi(base_url=ENV["API_URL"], audience=ENV["API_AUDIENCE"],
+                      id_token=lambda audience: "t",
+                      send=lambda method, url, bearer, body: (200, {"groups": []}) if url.endswith("/groups-probe")
+                      else (503, {}))
+    code = sd.main(ENV, gcp=FakeGcp({}), api=api, kube=None, manifest=_manifest(), principal="")
+    assert code == ExitCode.FAIL
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert {line["entry"] for line in lines if line.get("event") == "doctor_finding"} >= {"api.run", "secret.x"}

@@ -111,6 +111,28 @@ def report(findings: Sequence[doctor.Finding], at: datetime) -> dict[str, Any]:
     }
 
 
+#: The `event` doctor.tf's `doctor_findings` log metric filters on.
+FINDING_EVENT = "doctor_finding"
+
+
+def finding_lines(findings: Sequence[doctor.Finding]) -> list[dict[str, Any]]:
+    """One log line per finding that is not met. The probe's `detail` stays
+    out: it quotes API answers, and the console already shows it."""
+    return [
+        {
+            "event": FINDING_EVENT,
+            "entry": f.id,
+            "state": f.status,
+            "fix": f.fix or (f"run `{f.repair}`" if f.repair else "see Admin › Setup › Health"),
+            "step": f.step,
+            "repair": f.repair,
+            "cause": f.cause,
+        }
+        for f in findings
+        if f.status != MET
+    ]
+
+
 def main(
     env: Mapping[str, str] | None = None,
     *,
@@ -148,6 +170,9 @@ def main(
     )
     findings = doctor.run(manifest, target, doctor.Deps(gcp=gcp, api=api, kube=kube))
     body = report(findings, now())
+    # Before the post: the alert fires on these even when swarm-api cannot be reached.
+    for line in finding_lines(findings):
+        print(json.dumps(line), flush=True)
     try:
         api.put_health(body)
     except Exception as exc:  # noqa: BLE001 - said, and the next hour retries
