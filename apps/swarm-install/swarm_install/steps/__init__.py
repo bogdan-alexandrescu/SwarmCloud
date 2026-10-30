@@ -21,6 +21,13 @@ A step has one of three kinds (`kind`, default `engine`):
   poll the engine checks each one's `trigger(ctx)` and runs the ones whose
   trigger has landed (how the hand-off runs infra passes 3 and 4, plan §5.5).
 
+**Pages, opened and then polled.** A human step's exact page (its
+`deep_link(ctx)`, else the first URL its plan names) is opened in the browser
+by the engine once, after `apply` and before the first poll, through
+`open_page`; the person never copies a URL and never presses Enter: the check
+sees the change. A wait or engine step that sends a person to a page (the DNS
+record, the Desktop client, the console hand-off) calls `open_page` itself.
+
 A stage-0 step may declare `read_only = True`: its `apply` only asks and
 reads (preflight), so `--dry-run` runs it (design §2.4). No other step's
 `apply` runs in a dry run.
@@ -36,8 +43,12 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import os
 import pkgutil
-from collections.abc import Mapping, Sequence
+import re
+import sys
+import webbrowser
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -111,6 +122,71 @@ def wait_of(step: Step) -> WaitSpec | None:
 
 def triggered_of(step: Step) -> tuple[TriggeredStep, ...]:
     return tuple(getattr(step, "triggered", ()) or ())
+
+
+#: Set to 1 to print pages without opening a browser (SSH sessions, CI, `/sc:install`).
+NO_BROWSER = "SWARM_NO_BROWSER"
+
+_URL = re.compile(r"https://[^\s,;)]+")
+
+
+def has_display(env: Mapping[str, str] | None = None, platform: str | None = None) -> bool:
+    """Whether a browser opened here would be in front of the person.
+
+    Linux and the BSDs need an X or Wayland display: without one `webbrowser`
+    falls back to a text browser (lynx, w3m) that would take over this
+    terminal. A Mac or Windows session has a display unless it is reached over
+    SSH, where the browser would open on a screen nobody is looking at.
+    """
+    env = os.environ if env is None else env
+    platform = sys.platform if platform is None else platform
+    if platform == "darwin" or platform.startswith("win"):
+        return not (env.get("SSH_CONNECTION") or env.get("SSH_TTY"))
+    return bool(env.get("DISPLAY") or env.get("WAYLAND_DISPLAY"))
+
+
+def open_page(url: str, *, why: str, say: Callable[[str], None] = print,
+              env: Mapping[str, str] | None = None, platform: str | None = None,
+              browser: Callable[[str], object] | None = None) -> None:
+    """Print `why` and `url`, then open `url` in the default browser unless
+    SWARM_NO_BROWSER=1 or there is no display. It never raises: a page that
+    cannot be opened is still printed, and the caller goes on polling.
+
+    `say`, `env`, `platform` and `browser` are seams for tests and for a
+    step that prints through its own writer; callers pass `url` and `why`.
+    """
+    env = os.environ if env is None else env
+    try:
+        say(f"{why}\n  {url}")
+    except Exception:  # noqa: BLE001 - printing a page must never stop the install
+        pass
+    try:
+        if str(env.get(NO_BROWSER, "")).strip() in ("1", "true", "yes"):
+            return
+        if not has_display(env, platform):
+            return
+        (browser or _browser)(url)
+    except Exception:  # noqa: BLE001 - a browser that fails to open is not a failed step
+        return
+
+
+def _browser(url: str) -> object:
+    return webbrowser.open(url, new=2)
+
+
+def deep_link_of(step: Step, ctx: Any, plan: Plan | None = None) -> str | None:
+    """The page a human step's person works on: its own `deep_link(ctx)`, else
+    the first https URL its plan names, else None."""
+    link = getattr(step, "deep_link", None)
+    if callable(link):
+        found = link(ctx)
+        if found:
+            return str(found)
+    for line in (plan.actions if plan is not None else ()):
+        match = _URL.search(line)
+        if match:
+            return match.group(0).rstrip(".:")
+    return None
 
 
 def check_steps(steps: Sequence[Step]) -> None:

@@ -5,12 +5,12 @@ lesson 17: none of these is in Terraform).
 
 | Step | Manifest entries | Kind |
 |---|---|---|
-| `edge.brand` | `oauth-brand.iap` | human: no API creates a brand (B02), so the step prints the console steps and polls its own check every 10 s for 30 min |
+| `edge.brand` | `oauth-brand.iap` | human: no API creates a brand (B02), so the engine opens the Branding page (`deep_link`) and polls the step's own check every 10 s for 30 min |
 | `edge.iap-agent` | `other.iap-service-agent` | engine: `generateServiceIdentity` for iap.googleapis.com |
 | `edge.global-ip` | `network.global-ip` | engine: reserves the address the frontend module names (`swarm-ui-ip`) |
-| `edge.dns` | `dns.frontend-hostname` | wait, 60 min: the hostname must resolve to that address |
+| `edge.dns` | `dns.frontend-hostname` | wait, 60 min: the record is set at the person's registrar, so `apply` prints it and opens a page showing what the hostname resolves to now; the engine polls until it is the reserved address |
 | `edge.certificate` | `certificate.managed-ssl` | wait, 60 min (`waits.CERTIFICATE`); it never starts before DNS resolves to the reserved address (design R6) |
-| `edge.desktop-client` | `oauth-client.desktop-sc`, `declared-value.frontend_iap_programmatic_clients`, `secret.swarm-iap-desktop-client-secret.container` | engine: guided console step; the id is asked, the secret goes through `secret_entry` straight to Secret Manager |
+| `edge.desktop-client` | `oauth-client.desktop-sc`, `declared-value.frontend_iap_programmatic_clients`, `secret.swarm-iap-desktop-client-secret.container` | engine: no API creates or lists a Desktop client, so `apply` opens the create page (or the recorded client's own page); the id, unless already recorded, is asked; the secret is a credential typed at a hidden prompt (`secret_entry`, echo off) straight to Secret Manager |
 
 The managed certificate itself is created by infra pass 1 (stage 5), which
 attaches it to the load balancer; Google provisions a managed certificate only
@@ -29,7 +29,7 @@ from .. import secret_entry
 from ..exitcodes import MET, UNMET, WAITING
 from ..secret_entry import DevTty, Terminal
 from ..waits import CERTIFICATE, WaitSpec
-from . import Observation, Plan
+from . import Observation, Plan, open_page
 from .preflight import ASK, GCP, Ask, Gcp, project_number, remember
 
 #: The frontend module's names (terraform/modules/frontend/main.tf:101, :297,
@@ -127,19 +127,23 @@ class BrandStep(_Base):
             return Observation(UNMET, "the OAuth brand is External; IAP here needs Audience: Internal")
         return Observation(MET, "", {"oauth_brand": str(internal[0].get("name", ""))})
 
+    def deep_link(self, ctx: Any) -> str:
+        """The engine opens this page once, then polls the check (no "press Enter")."""
+        return f"https://console.cloud.google.com/auth/branding?project={ctx.project}"
+
     def plan(self, ctx: Any) -> Plan:
         return Plan(
             "create the OAuth brand in the console (once; it can never be deleted); the install continues "
             "by itself when it exists",
             (
-                f"open https://console.cloud.google.com/auth/branding?project={ctx.project}",
+                f"open {self.deep_link(ctx)}",
                 "App name: SwarmCloud; support email: a group you own; save",
                 f"open https://console.cloud.google.com/auth/audience?project={ctx.project} and choose Internal",
             ),
         )
 
     def apply(self, ctx: Any, plan: Plan) -> None:
-        """No API creates a brand: the plan printed the console steps, and the engine polls the check."""
+        """No API creates a brand: the engine opens `deep_link` and polls the check."""
 
 
 class IapAgentStep(_Base):
@@ -233,8 +237,23 @@ class DnsStep(_Base):
             (f"{self._hostname(ctx)}.  300  IN  A  {_reserved_ip(self, ctx)}",),
         )
 
+    def deep_link(self, ctx: Any) -> str:
+        """What the hostname resolves to now, as Google's public resolvers see it.
+
+        The record itself is set at the person's registrar, which the engine
+        cannot know, so the page it opens is the one that shows the change
+        landing; the engine polls the same answer."""
+        return f"https://toolbox.googleapps.com/apps/dig/#A/{self._hostname(ctx)}"
+
     def apply(self, ctx: Any, plan: Plan) -> None:
-        """The record is set at the person's DNS provider (the plan prints it); the engine polls."""
+        """The record is set at the person's DNS provider: print it, open the
+        page that shows it landing, and let the engine poll."""
+        record = plan.actions[0] if plan.actions else ""
+        open_page(self.deep_link(ctx), why=(
+            f"Set this A record at your DNS provider: {record}\n"
+            f"This page shows what {self._hostname(ctx)} resolves to now; the install continues by itself "
+            f"once it resolves to {_reserved_ip(self, ctx)} (nothing to press)."
+        ))
 
 
 class CertificateStep(_Base):
@@ -304,20 +323,37 @@ class DesktopClientStep(_Base):
         return Plan(
             "create the Desktop OAuth client in the console, then give its id, and its secret at a hidden prompt",
             (
-                f"open https://console.cloud.google.com/auth/clients/create?project={ctx.project}",
+                f"open {self.deep_link(ctx)}",
                 "Application type: Desktop app; name: SwarmCloud sc; create",
                 f"the secret goes to Secret Manager ({DESKTOP_SECRET}), never to a chat or a file",
             ),
         )
 
+    def deep_link(self, ctx: Any) -> str:
+        """The recorded client's own page (where its secret is), else the create page."""
+        client = str(ctx.outputs.get("desktop_client_id") or "")
+        if CLIENT_ID.match(client):
+            return f"https://console.cloud.google.com/auth/clients/{client}?project={ctx.project}"
+        return f"https://console.cloud.google.com/auth/clients/create?project={ctx.project}"
+
     def apply(self, ctx: Any, plan: Plan) -> None:
         client = str(ctx.outputs.get("desktop_client_id") or "")
+        gcp = self.gcp
+        has_secret = (gcp.secret(ctx.project, DESKTOP_SECRET) is not None
+                      and gcp.enabled_version(ctx.project, DESKTOP_SECRET) is not None)
+        if not CLIENT_ID.match(client) or not has_secret:
+            open_page(self.deep_link(ctx), why=(
+                "Create the Desktop OAuth client (Application type: Desktop app; name: SwarmCloud sc), "
+                "then give its id here, and its secret at the hidden prompt (it goes to Secret Manager only)"
+                if not CLIENT_ID.match(client) else
+                f"The Desktop client {client}: give its secret at the hidden prompt (it goes to Secret "
+                "Manager only)"
+            ))
         if not CLIENT_ID.match(client):
             client = self._ask(ctx, self.id, "The Desktop client's id (ends .apps.googleusercontent.com)").strip()
             if not CLIENT_ID.match(client):
                 raise ValueError(f"{client!r} is not a Desktop client id")
             remember(ctx, outputs={"desktop_client_id": client})
-        gcp = self.gcp
         if gcp.secret(ctx.project, DESKTOP_SECRET) is None:
             gcp.create_secret(ctx.project, DESKTOP_SECRET, {"managed-by": "swarm-install"})
         if gcp.enabled_version(ctx.project, DESKTOP_SECRET) is None:
