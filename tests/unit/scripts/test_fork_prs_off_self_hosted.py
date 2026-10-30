@@ -32,7 +32,7 @@ The approved expression, with its capacity escape hatch and main's clause: the r
 SELF_HOSTED_CI set to `off` sends every guarded job back to GitHub-hosted
 ubuntu-24.04 (unset, or anything else, means the pool):
 
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
 
 THE SHORT FORM. A workflow no fork's pull request can start does not need
 the fork clause, and two of the repository's own guards forbid the text it is
@@ -40,7 +40,7 @@ made of in those files (`pull_request.head.repo` in auto-merge.yml, which
 must never touch a pull request's code; the repository's name in accept.yml,
 which must not name the public repository):
 
-    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
 
 It is accepted ONLY for a file in SHORT_FORM_WORKFLOWS whose `on:` has no
 `pull_request` trigger (a fork's `pull_request` runs the fork's own copy of the
@@ -91,14 +91,14 @@ FORK_GATED = re.compile(
     r" && github\.ref == 'refs/heads/main'\)"
     r" \|\| \(\(github\.event_name == 'pull_request' \|\| github\.event_name == 'pull_request_target'\)"
     r" && github\.event\.pull_request\.head\.repo\.full_name != github\.repository\)\)"
-    r" && '([^']+)' \|\| fromJSON\('(\[[^']*\])'\)"
+    r" && '([^']+)' \|\| fromJSON\(format\('(\[[^']*\])', vars\.SWARM_CI_RUNNER_LABEL \|\| '[^']+'\)\)"
     r"\s*\}\}$"
 )
 #: The short spelling: the escape hatch only, no fork clause. Same groups.
 SHORT_FORM = re.compile(
     r"^\$\{\{\s*"
     r"vars\.SELF_HOSTED_CI == 'off'"
-    r" && '([^']+)' \|\| fromJSON\('(\[[^']*\])'\)"
+    r" && '([^']+)' \|\| fromJSON\(format\('(\[[^']*\])', vars\.SWARM_CI_RUNNER_LABEL \|\| '[^']+'\)\)"
     r"\s*\}\}$"
 )
 #: Workflow files allowed the short form, and why each qualifies. Each is also
@@ -308,18 +308,18 @@ APPROVED = (
     " || ((github.event_name == 'pull_request'"
     " || github.event_name == 'pull_request_target')"
     " && github.event.pull_request.head.repo.full_name != github.repository))"
-    " && 'ubuntu-24.04' || fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"bogdan-ci\"]') }}"
+    " && 'ubuntu-24.04' || fromJSON(format('[\"self-hosted\",\"linux\",\"x64\",\"{0}\"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}"
 )
 SHORT = (
     "${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04'"
-    " || fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"bogdan-ci\"]') }}"
+    " || fromJSON(format('[\"self-hosted\",\"linux\",\"x64\",\"{0}\"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}"
 )
 #: The spelling PR 1174 approved, before the escape hatch. Fork-safe, but no
 #: longer the one spelling: a job still using it ignores SELF_HOSTED_CI=off.
 PRE_HATCH = (
     "${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_target')"
     " && github.event.pull_request.head.repo.full_name != github.repository"
-    " && 'ubuntu-latest' || fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"bogdan-ci\"]') }}"
+    " && 'ubuntu-latest' || fromJSON(format('[\"self-hosted\",\"linux\",\"x64\",\"{0}\"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}"
 )
 
 
@@ -415,7 +415,8 @@ def test_matrix_runs_on_is_resolved() -> None:
 
 # --- The expression, evaluated ----------------------------------------------
 
-POOL = ["self-hosted", "linux", "x64", "bogdan-ci"]
+#: With SWARM_CI_RUNNER_LABEL unset, the label the expression falls back to.
+POOL = ["self-hosted", "linux", "x64", "swarm-ci"]
 REPOSITORY = "bogdan-alexandrescu/SwarmCloud"
 #: The only context paths the approved expression reads. Anything else in an
 #: expression handed to resolve() is refused rather than guessed at.
@@ -434,17 +435,21 @@ _DEFAULT_REF = {
 MAIN = "refs/heads/main"
 
 
-def resolve(runs_on: str, *, event: str, fork: bool, hatch: str = "", ref: str | None = None) -> object:
+def resolve(
+    runs_on: str, *, event: str, fork: bool, hatch: str = "", ref: str | None = None, label: str = ""
+) -> object:
     """What GitHub would put in `runs-on` for this event: evaluates the
     expression's &&/|| (which, as in Python's and/or, return an operand), with
     `github.event.pull_request` null on a push as it is on GitHub. `hatch` is
-    vars.SELF_HOSTED_CI; GitHub gives an unset variable as ''."""
+    vars.SELF_HOSTED_CI and `label` vars.SWARM_CI_RUNNER_LABEL; GitHub gives
+    an unset variable as ''."""
     body = runs_on.strip()
     assert body.startswith("${{") and body.endswith("}}"), body
     body = body[3:-2]
     is_pr = event in ("pull_request", "pull_request_target")
     values = {
         "vars.SELF_HOSTED_CI": hatch,
+        "vars.SWARM_CI_RUNNER_LABEL": label,
         "github.event_name": event,
         "github.ref": ref if ref is not None else _DEFAULT_REF.get(event, "refs/heads/swarm/task_lane"),
         "github.repository": REPOSITORY,
@@ -465,7 +470,9 @@ def resolve(runs_on: str, *, event: str, fork: bool, hatch: str = "", ref: str |
     # inside a path; the approved expression has neither inside a string.
     py = _CONTEXT_PATH.sub(bind, body)
     py = py.replace("&&", " and ").replace("||", " or ").replace("fromJSON(", "_fromjson(")
-    return eval(py, {"__builtins__": {}}, {**names, "_fromjson": json.loads})  # noqa: S307
+    py = py.replace("format(", "_format(")
+    helpers = {"_fromjson": json.loads, "_format": lambda template, *args: template.format(*args)}
+    return eval(py, {"__builtins__": {}}, {**names, **helpers})  # noqa: S307
 
 
 @pytest.mark.parametrize(
@@ -523,6 +530,17 @@ def test_resolve_can_come_out_the_other_way() -> None:
     # The main clause is what moves main: point it at another ref and a push to main keeps the pool.
     elsewhere = APPROVED.replace("github.ref == 'refs/heads/main'", "github.ref == 'refs/heads/nowhere'")
     assert resolve(elsewhere, event="push", fork=False, ref=MAIN) == POOL
+
+
+def test_the_runner_label_variable_names_the_pool() -> None:
+    """SWARM_CI_RUNNER_LABEL (written by `swarm addon enable ci`) names the
+    pool's label; unset, the pool is 'swarm-ci'. A fork PR stays hosted
+    whatever the variable says."""
+    own = ["self-hosted", "linux", "x64", "acme-ci"]
+    assert resolve(APPROVED, event="pull_request", fork=False, label="acme-ci") == own
+    assert resolve(SHORT, event="push", fork=False, label="acme-ci") == own
+    assert resolve(APPROVED, event="pull_request", fork=False) == POOL
+    assert resolve(APPROVED, event="pull_request", fork=True, label="acme-ci") == "ubuntu-24.04"
 
 
 def test_every_guarded_job_in_the_workflows_resolves_safely() -> None:
