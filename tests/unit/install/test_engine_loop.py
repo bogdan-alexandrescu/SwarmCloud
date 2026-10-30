@@ -21,7 +21,7 @@ from swarm_install.lease import Lease
 from swarm_install.manifest import Entry, Manifest
 from swarm_install.state import STATE_OBJECT, StateStore
 from swarm_install.steps import Observation, Plan
-from swarm_install.waits import WaitSpec
+from swarm_install.waits import WaitGaveUp, WaitSpec
 
 from .test_state_store import FakeBucket, FakeClock
 
@@ -527,3 +527,36 @@ def test_human_step_without_deep_link_opens_the_first_url_of_its_plan(tmp_path: 
     result = rig.engine(steps).run()
     assert result.exit_code == ExitCode.OK, result.message
     assert opened == [url]
+
+
+def test_a_wait_inside_apply_that_gives_up_pauses_then_resumes(tmp_path: Path) -> None:
+    """A step's own wait running out pauses the run (exit 4), the way the
+    engine's waits do, and the next run resumes at that step
+    (DAYONE-ENGINE-WAIT-PAUSE)."""
+    rig = Rig(tmp_path)
+    log: list[str] = []
+    spec = WaitSpec(reason="the billing account link", expected="2 min", expected_s=120,
+                    bound_s=600, look_at="Billing > Account management")
+    gives_up = {"now": True}
+
+    def own_wait() -> None:
+        if gives_up["now"]:
+            raise WaitGaveUp("project.billing", spec)
+
+    first = FakeStep("project.create", 1, log=log)
+    billing = FakeStep("project.billing", 1, log=log, on_apply=own_wait)
+    after = FakeStep("project.apis", 2, log=log)
+    result = rig.engine([first, billing, after]).run()
+    assert result.exit_code == ExitCode.PAUSED == 4 and result.outcome == "paused", result
+    assert result.step == "project.billing"
+    assert "the billing account link" in result.message and "swarm install again" in result.message
+    assert rig.steps_state() == {"project.create": "done", "project.billing": "paused"}
+    assert [e["step"] for e in rig.events.of_kind("step_paused")] == ["project.billing"]
+    assert "apply project.apis" not in log, "nothing after the paused step runs"
+
+    log.clear()
+    gives_up["now"] = False
+    resumed = rig.engine([FakeStep("project.create", 1, met=True, log=log), billing, after]).run()
+    assert resumed.exit_code == ExitCode.OK, resumed
+    assert [line for line in log if line.startswith("apply")] == ["apply project.billing", "apply project.apis"]
+    assert rig.steps_state() == {"project.create": "done", "project.billing": "done", "project.apis": "done"}

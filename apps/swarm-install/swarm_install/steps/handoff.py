@@ -114,7 +114,8 @@ class HandoffStep:
 
     def apply(self, ctx: Any, plan: Plan) -> None:
         # The certificate can take longer than the lease: this wait renews it on
-        # every poll, as the engine's own wait does (B05).
+        # every poll, as the engine's own wait does (B05). Past its bound its
+        # WaitGaveUp is left to the engine, which pauses the run (exit 4).
         wait_until(self.id + ":answers", CONSOLE_ANSWERS, lambda: MET if self.answers(ctx) else UNMET,
                    clock=ctx.clock, events=ctx.events, on_poll=getattr(ctx.engine, "_heartbeat", None))
         url = console_url(ctx)
