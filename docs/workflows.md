@@ -1207,7 +1207,7 @@ minutes for a GKE pod, then failed in the worker's clone, and
 `on_step_failure: fail_workflow` cancelled the review and fix steps.
 
 **What swarm-api does now.** A branch or tag name is asked about once per
-submission, before any task is stored and before any lease exists.
+submission, before any agent is stored and before any lease exists.
 `SubmissionService._check_ref_exists` makes the read with the slot
 `forge.resolve_forge_slot` picks for the submitter (the same read `merge_pr`
 uses). A workflow asks once, not once per step. A batch asks once for each
@@ -1215,10 +1215,10 @@ distinct `(repository_url, repository_ref)`. The order is
 `git/ref/heads/<ref>`, then `git/ref/tags/<ref>`, then the repository itself.
 The submission is refused only when the branch and the tag are both missing
 and the repository answers. The refusal is 422 `repository_ref_not_found`
-with `detail.field: repository_ref`. When the name is `swarm/<task id>` of a
-task in the caller's own tenant, the message names that task and the pull
+with `detail.field: repository_ref`. When the name is `swarm/<task id>` of an
+agent in the caller's own tenant, the message names that agent and the pull
 request it recorded, says whether it was merged or closed, and suggests
-`continues_task` or the default branch. Another tenant's task is never named.
+`continues_task` or the default branch. Another tenant's agent is never named.
 
 Like every new refusal, it ships **report-only** (`swarm_api/refusals.py`).
 While `REFUSAL_REPOSITORY_REF_NOT_FOUND` is unset or `off`, the refusal is
