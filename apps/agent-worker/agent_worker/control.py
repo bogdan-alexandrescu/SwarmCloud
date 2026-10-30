@@ -1461,8 +1461,8 @@ class ControlPlane:
             # Between two capacity-holding states the derived state is RUNNING
             # before and after (`derive()` reports all four as RUNNING), so
             # the startup window's transitions read nothing more. Any other
-            # move writes the workflow's derived state with it (#2838); the
-            # announcements above are writes, so the read comes first.
+            # move writes the workflow's derived state with it (#2838), read
+            # here, after the fence and before the first write.
             workflow = (
                 None if current in CONCURRENCY_STATES and to_state in CONCURRENCY_STATES
                 else self._workflow_write(txn, task, payload)
