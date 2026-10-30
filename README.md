@@ -378,6 +378,21 @@ Lessons that change how one runs or extends SwarmCloud.
   already fixed when picked up, which is why an issue run that changes nothing
   ends `already_on_main` instead of failing (#646).
 
+## Install
+
+A company installs its own SwarmCloud deployment, into a new Google Cloud
+project, with one terminal and the console:
+
+```bash
+curl -fsSL https://storage.googleapis.com/swarmcloud/install.sh | sh
+swarm install
+```
+
+then the console's Admin › Setup. [`docs/install.md`](docs/install.md) is the
+whole procedure: what to have, what it costs, what each stage asks and
+creates, and what to do when one stops. The Quick start below is for working
+on SwarmCloud itself.
+
 ## Quick start
 
 ```bash
