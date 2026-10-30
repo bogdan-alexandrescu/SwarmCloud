@@ -46,6 +46,12 @@ WRITERS: dict[str, tuple[str, frozenset[str]]] = {
                 "verify",
                 "hand_off_at",
                 "ready_at",
+                # The install's sizing (`state.outputs["sizing"]`, lane
+                # SIZING-ASK) and the installer's email: Admin › Setup reads
+                # them to serve the sizing and to know a one-person install
+                # (decision 7) from a team's (DAYONE-SETUP-API-3).
+                "sizing",
+                "installer",
             }
         ),
     ),
@@ -62,6 +68,12 @@ WRITERS: dict[str, tuple[str, frozenset[str]]] = {
         frozenset({"group", "workspace", "first_admin", "invites", "progress", "smoke", "grant"}),
     ),
     "swarm-install/{env}/console/finished": (SWARM_API, frozenset({"at", "by"})),
+    # A one-person install's first workspace: the installer's personal
+    # workspace, its grant and its smoke (decision 7, DAYONE-SETUP-API-3).
+    "swarm-install/{env}/console/personal": (
+        SWARM_API,
+        frozenset({"owner", "workspace", "progress", "grant", "smoke"}),
+    ),
     # The console's two verification runs: `verify_runs` is
     # {"console_task": <task id>, "console_workflow": <workflow id>}, copied
     # into the engine's `state.outputs["verify_runs"]` (DAYONE-SETUP-API-2).
@@ -88,6 +100,8 @@ def engine_document(env: str) -> str:
 
 #: The console document holding the console's verification runs' ids.
 VERIFY_RUNS = "verify_runs"
+#: The console document holding a one-person install's personal workspace.
+PERSONAL = "personal"
 
 
 def console_document(env: str, name: str) -> str:
@@ -148,6 +162,11 @@ class FirestoreDocuments:
             raise RecordConflict(path) from exc
 
 
+def _sizing(value: Any) -> dict[str, Any] | None:
+    """`state.outputs["sizing"]`, copied whole; None until stage 0 wrote it."""
+    return dict(value) if isinstance(value, Mapping) else None
+
+
 def stages_of(state: InstallState, stage_of_step: Mapping[str, int]) -> list[dict[str, Any] | None]:
     """`stages[0..15]`: each stage's latest step record, as `{state, at, by}`."""
     stages: list[dict[str, Any] | None] = [None] * 16
@@ -185,6 +204,8 @@ class InstallRecord:
             "lease": dict(lease) if lease is not None else None,
             "hand_off_at": state.hand_off_at,
             "ready_at": state.ready_at,
+            "sizing": _sizing(state.outputs.get("sizing")),
+            "installer": str(state.outputs.get("installer") or "") or None,
         }
         if verify is not None:
             unknown = set(verify) - VERIFY_FIELDS

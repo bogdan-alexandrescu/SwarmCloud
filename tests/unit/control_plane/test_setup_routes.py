@@ -743,3 +743,209 @@ def test_team_runs_submit_as_the_team_never_as_a_person() -> None:
         assert found.repository_url == f"https://github.com/{ORG}/demo"
     assert [kind for kind, _, _ in submissions.calls] == ["task", "workflow"]
     assert [s.step_id for s in submissions.calls[1][2].steps] == ["write", "open"]
+
+
+# --------------------------------------------------------------------------
+# the install's sizing and mode (lane DAYONE-SETUP-API-3, decision 7)
+# --------------------------------------------------------------------------
+
+PERSONAL_DOC = f"swarm-install/{ENV}/console/personal"
+FINISHED_DOC = f"swarm-install/{ENV}/console/finished"
+
+
+def sizing(mode: str = "individual", members: int = 1) -> dict[str, Any]:
+    """`state.outputs["sizing"]` as the INTERFACE SHEET writes it."""
+    return {
+        "mode": mode, "members": members,
+        "pool_limits": {"global": 4 * members, "default_tenant": 2, "provider_tenant": 2,
+                        "resource_classes": {"small": 2}, "runner_profiles": {"claude-code": 2},
+                        "backends": {"gke": 2}},
+        "service_max_instances": {"swarm-api": 2, "swarm-scheduler": 1,
+                                  "swarm-quota-broker": 1, "swarm-reconciler": 1},
+        "pool_accounts": max(1, members // 4), "budget_usd": 150 * members,
+    }
+
+
+def seed_sized_engine(db, mode: str = "individual", members: int = 1,
+                      installer: str | None = ROOT) -> dict[str, Any]:
+    doc = seed_engine_document(db)
+    doc.update({"sizing": sizing(mode, members), "installer": installer})
+    db.docs[ENGINE_DOC] = dict(doc)
+    return doc
+
+
+def personal_tenant(email: str = ROOT) -> str:
+    from swarm_common.identity import tenant_id_for_user
+
+    return tenant_id_for_user(email)
+
+
+def page(client: TestClient) -> dict[str, Any]:
+    response = client.get("/v1/admin/setup", headers=auth_header("root"))
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_the_page_serves_the_installs_sizing_read_only(setup_client, db) -> None:
+    """The status route serves the engine's `sizing` (mode, members,
+    pool_limits, service_max_instances, pool_accounts, budget_usd) and the
+    mode; the engine's document is not written."""
+    written = seed_sized_engine(db, mode="team", members=12)
+    body = page(setup_client)
+    assert body["mode"] == "team"
+    assert body["sizing"] == sizing("team", 12)
+    assert body["steps"]["first_team"]["needed"] is True
+    assert body["steps"]["invites"]["needed"] is True
+    assert body["personal"] is None
+    assert db.docs[ENGINE_DOC] == written
+
+
+def test_an_engine_document_with_no_sizing_reads_as_a_team(setup_client, db) -> None:
+    seed_engine_document(db)
+    body = page(setup_client)
+    assert body["sizing"] is None and body["mode"] == "team"
+    assert PERSONAL_DOC not in db.docs
+
+
+def test_the_sizing_view_carries_only_its_named_fields(setup_client, db) -> None:
+    doc = seed_sized_engine(db, mode="team", members=3)
+    doc["sizing"] = {**doc["sizing"], "stray": "x"}
+    db.docs[ENGINE_DOC] = doc
+    assert set(page(setup_client)["sizing"]) == {
+        "mode", "members", "pool_limits", "service_max_instances", "pool_accounts",
+        "budget_usd"}
+
+
+def test_one_person_needs_no_first_team_and_no_invites(setup_client, db) -> None:
+    """Decision 7: for one person the first workspace is the installer's
+    personal workspace, filed on the page's read, and the first-team and
+    invites steps say they are not needed."""
+    seed_sized_engine(db)
+    body = page(setup_client)
+    assert body["mode"] == "individual"
+    for step in ("first_team", "invites"):
+        assert body["steps"][step] == {"needed": False, "state": "not_needed",
+                                       "reason": "not needed for one person"}
+    tenant = personal_tenant()
+    assert body["personal"]["workspace"] == tenant
+    assert body["personal"]["owner"] == ROOT
+    assert db.docs[PERSONAL_DOC]["workspace"] == tenant
+    assert db.docs[f"workspaces/{tenant}"]["kind"] == "personal"
+    assert body["teams"] == []
+
+
+def test_one_person_refuses_a_team_and_an_invite(setup_client, db) -> None:
+    seed_sized_engine(db)
+    team = create_team(setup_client)
+    assert team.status_code == 409, team.text
+    assert "not needed for one person" in team.text
+    invite = setup_client.post("/v1/admin/setup/teams/platform-team/invites",
+                               json={"email": CAROL}, headers=auth_header("root"))
+    assert invite.status_code == 409, invite.text
+    assert not [k for k in db.docs if k.startswith(f"swarm-install/{ENV}/console/teams/")]
+
+
+def test_one_persons_smoke_runs_in_the_personal_workspace(setup_client, db, github, pool,
+                                                          runs) -> None:
+    """The smoke runs once the installer's pool account lands in their
+    personal workspace, on a repository of the personal grant, recorded on
+    `console/personal.smoke`."""
+    seed_sized_engine(db)
+    install_app(db, github)
+    tenant = personal_tenant()
+    body = page(setup_client)
+    assert body["personal"]["grant"]["repositories"] == [f"{ORG}/api", f"{ORG}/demo"]
+    assert body["personal"].get("smoke") is None and runs.tasks == []
+    pool.accounts.append({"account_id": f"{tenant}:pool-1", "owner_tenant": tenant,
+                          "label": "pool-1"})
+    smoke = page(setup_client)["personal"]["smoke"]
+    assert smoke["state"] == "running" and smoke["task_id"] == "task-1"
+    assert runs.tasks[0]["tenant"] == tenant and runs.tasks[0]["group"] == ROOT
+    runs.states["task-1"] = "succeeded"
+    assert page(setup_client)["personal"]["smoke"]["state"] == "succeeded"
+    assert db.docs[PERSONAL_DOC]["smoke"]["state"] == "succeeded"
+
+
+def test_one_persons_pool_account_link_is_the_installers(setup_client, db) -> None:
+    seed_sized_engine(db)
+    headers = auth_header("root")
+    other = setup_client.post("/v1/admin/setup/links", headers=headers, json={
+        "kind": "pool-account", "label": "pool-1", "owner": ALICE})
+    assert other.status_code == 403, other.text
+    mine = setup_client.post("/v1/admin/setup/links", headers=headers, json={
+        "kind": "pool-account", "label": "pool-1", "owner": ROOT})
+    assert mine.status_code == 201, mine.text
+    links = [d for k, d in db.docs.items() if k.startswith("setup_links/")]
+    assert [link["tenant_id"] for link in links] == [personal_tenant()]
+    git = setup_client.post("/v1/admin/setup/links", headers=headers, json={
+        "kind": "team-git", "label": personal_tenant(), "owner": ROOT})
+    assert git.status_code == 201, git.text
+    assert db.docs[PERSONAL_DOC]["progress"]["git_link"]["owner"] == ROOT
+
+
+def test_one_person_finishes_on_the_personal_smoke(setup_app, setup_client, db, github, pool,
+                                                   runs) -> None:
+    """`finish` for one person waits for the App, a pool account signed in to
+    the personal workspace and that workspace's smoke; never for a team."""
+    seed_sized_engine(db)
+    headers = auth_header("root")
+    early = setup_client.post("/v1/admin/setup/finish", headers=headers)
+    assert early.status_code == 409
+    assert set(early.json()["detail"]["missing"]) == {
+        "github_app_installed", "github_app_self_check", "pool_account_signed_in",
+        "personal_smoke"}
+    setup_app.state.forge_app = PassingAppCheck()
+    install_app(db, github)
+    assert setup_client.post("/v1/admin/setup/github-app/self-check",
+                             headers=headers).json()["ok"] is True
+    assert setup_client.post("/v1/admin/setup/links", headers=headers, json={
+        "kind": "pool-account", "label": "pool-1", "owner": ROOT}).status_code == 201
+    tenant = personal_tenant()
+    pool.accounts.append({"account_id": f"{tenant}:pool-1", "owner_tenant": tenant,
+                          "label": "pool-1"})
+    smoking = setup_client.post("/v1/admin/setup/finish", headers=headers)
+    assert smoking.status_code == 409
+    assert smoking.json()["detail"]["missing"] == ["personal_smoke"]
+    assert FINISHED_DOC not in db.docs
+    assert runs.tasks[0]["tenant"] == tenant
+    runs.states["task-1"] = "succeeded"
+    done = setup_client.post("/v1/admin/setup/finish", headers=headers)
+    assert done.status_code == 200, done.text
+    assert db.docs[FINISHED_DOC]["by"] == ROOT
+    assert not [k for k in db.docs if k.startswith(f"swarm-install/{ENV}/console/teams/")]
+
+
+def test_one_persons_failed_smoke_starts_again_on_request(setup_client, db, github, pool,
+                                                         runs) -> None:
+    seed_sized_engine(db)
+    install_app(db, github)
+    tenant = personal_tenant()
+    page(setup_client)
+    pool.accounts.append({"account_id": f"{tenant}:pool-1", "owner_tenant": tenant,
+                          "label": "pool-1"})
+    page(setup_client)
+    runs.states["task-1"] = "failed"
+    assert page(setup_client)["personal"]["smoke"]["state"] == "failed"
+    again = setup_client.post("/v1/admin/setup/smoke", headers=auth_header("root"))
+    assert again.status_code == 200, again.text
+    assert again.json()["workspace"] == tenant
+    assert again.json()["smoke"]["task_id"] == "task-2"
+    assert runs.tasks[1]["tenant"] == tenant
+
+
+def test_one_persons_verify_runs_run_in_the_personal_workspace(setup_client, db, github,
+                                                               runs) -> None:
+    seed_sized_engine(db)
+    install_app(db, github)
+    answer = setup_client.post("/v1/admin/setup/verify-runs", headers=auth_header("root"))
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["verify_runs"] == {"console_task": "task-1", "console_workflow": "wf-1"}
+    tenant = personal_tenant()
+    assert runs.tasks[0]["tenant"] == tenant and runs.workflows[0]["tenant"] == tenant
+    assert runs.tasks[0]["group"] == ROOT
+
+
+def test_one_person_with_no_installer_recorded_uses_the_platform_owner(setup_client,
+                                                                      db) -> None:
+    seed_sized_engine(db, installer=None)
+    assert page(setup_client)["personal"]["owner"] == ROOT

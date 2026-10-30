@@ -39,7 +39,19 @@ pool account lands, swarm-api runs its smoke, one small task on a granted
 repository, recorded as `teams/<id>.smoke`; `finish` waits for it to pass.
 The smoke and the console's verify runs are submitted as swarm-api's own
 service account in the team's tenant, so they run on the team's own slot and
-never on a person's GitHub connection. No answer, log record or Firestore field carries a
+never on a person's GitHub connection.
+
+ONE PERSON OR A TEAM (lane DAYONE-SETUP-API-3, decision 7). The page serves
+the install's `sizing` (`state.outputs["sizing"]`, which the engine copies
+into its document) read-only, and its `mode`. For one person
+(`sizing.mode == "individual"`) the first workspace is the installer's
+personal workspace, recorded as `console/personal`: it gets the grant, its
+pool accounts and the smoke the first team gets for a team; the first-team
+and invites steps say they are not needed, and `finish` waits for the
+personal workspace's smoke. An engine document with no `sizing` reads as a
+team, as every install before this lane did.
+
+No answer, log record or Firestore field carries a
 secret: the App's three secrets go from GitHub's answer straight into Secret
 Manager, and a link's value straight into its one container.
 """
@@ -380,13 +392,15 @@ def installation_repositories(flow: ManifestFlow, github: GitHubSetupApi,
 
 def ensure_grant(record: ir.InstallRecord, team_id: str, team: dict[str, Any], *,
                  flow: ManifestFlow, github: GitHubSetupApi, org: str, by: str,
-                 now: datetime) -> dict[str, Any]:
+                 now: datetime, path: str | None = None) -> dict[str, Any]:
     """Decision 3: the first team's team-level grant over the repositories the
     App installation covers, recorded on `teams/<id>.grant` and shown on the
     page. Written once the App is installed on at least one repository; until
     then `state: waiting_for_app` (not installed) or `waiting_for_repositories`
     (installed on none, as a new organisation is), and the next read of the
-    page tries again. A grant already recorded is kept as it is."""
+    page tries again. A grant already recorded is kept as it is. `path` is the
+    document it is recorded on: the team's, or for one person
+    `console/personal`."""
     grant = dict(team.get("grant") or {})
     if grant.get("state") == "granted" and grant.get("repositories"):
         return grant
@@ -407,7 +421,7 @@ def ensure_grant(record: ir.InstallRecord, team_id: str, team: dict[str, Any], *
         grant = {"state": "granted", "mode": "write", "at": now, "by": by, **found}
         log.info("first team granted the App's repositories team=%s repositories=%d",
                  team_id, len(found["repositories"]))
-    record.write(record.team_path(team_id), {"grant": grant})
+    record.write(path or record.team_path(team_id), {"grant": grant})
     return grant
 
 
@@ -443,12 +457,18 @@ def _pool_labels(request: Request, ctx: AppContext, tenant: str) -> list[str]:
 
 
 def advance_smoke(record: ir.InstallRecord, team_id: str, team: dict[str, Any], *,
-                  runs: Any, pool_accounts: list[str], now: datetime) -> dict[str, Any] | None:
+                  runs: Any, pool_accounts: list[str], now: datetime,
+                  path: str | None = None, principal: str | None = None
+                  ) -> dict[str, Any] | None:
     """The first team's smoke (plan §5, stage 12): once its first pool account
     has landed and its grant names a repository, ONE small task on that
     repository, as the team; then its state, read live until it ends. The
     result is `teams/<id>.smoke`, which `finish` waits for. A failed smoke is
-    started again only by `POST /v1/admin/setup/smoke`."""
+    started again only by `POST /v1/admin/setup/smoke`. For one person it is
+    the personal workspace's, on `console/personal` (`path`), submitted with
+    the installer as the tenant's principal (`principal`)."""
+    path = path or record.team_path(team_id)
+    group = principal if principal is not None else str(team.get("group") or "")
     smoke = dict(team.get("smoke") or {})
     tenant = str(team.get("workspace") or team_id)
     if smoke.get("task_id"):
@@ -463,14 +483,14 @@ def advance_smoke(record: ir.InstallRecord, team_id: str, team: dict[str, Any], 
             smoke["state"] = state
             if state != RUNNING:
                 smoke["finished_at"] = now
-            record.write(record.team_path(team_id), {"smoke": smoke})
+            record.write(path, {"smoke": smoke})
         return smoke
     repositories = list((team.get("grant") or {}).get("repositories") or [])
     if not pool_accounts or not repositories:
         return smoke or None
     repository = repositories[0]
     try:
-        task_id = runs.submit_task(tenant_id=tenant, group=str(team.get("group") or ""),
+        task_id = runs.submit_task(tenant_id=tenant, group=group,
                                    repository=repository, prompt=SMOKE_PROMPT,
                                    label=SMOKE_LABEL)
     except ApiError as exc:
@@ -479,8 +499,8 @@ def advance_smoke(record: ir.InstallRecord, team_id: str, team: dict[str, Any], 
     else:
         smoke = {"state": RUNNING, "task_id": task_id, "repository": repository,
                  "started_at": now}
-        log.info("first team smoke started team=%s task=%s", team_id, task_id)
-    record.write(record.team_path(team_id), {"smoke": smoke})
+        log.info("first workspace smoke started workspace=%s task=%s", tenant, task_id)
+    record.write(path, {"smoke": smoke})
     return smoke
 
 
@@ -513,6 +533,148 @@ def team_row(request: Request, ctx: AppContext, record: ir.InstallRecord, team_i
         row["grant"] = team["grant"]
         row["smoke"] = advance_smoke(record, team_id, team, runs=runs,
                                      pool_accounts=pool_accounts, now=now)
+    return row
+
+
+# --------------------------------------------------------------------------
+# one person or a team (lane DAYONE-SETUP-API-3, decision 7)
+# --------------------------------------------------------------------------
+
+#: What the first-team and invites steps say for a one-person install.
+NOT_NEEDED = "not needed for one person"
+
+
+def install_mode(engine: dict[str, Any] | None) -> str:
+    """`individual` when the engine's `sizing.mode` says so; anything else,
+    an absent `sizing` included (an install from before sizing), is a team."""
+    sizing = (engine or {}).get("sizing")
+    mode = sizing.get("mode") if isinstance(sizing, dict) else None
+    return ir.INDIVIDUAL if mode == ir.INDIVIDUAL else ir.TEAM
+
+
+def sizing_view(engine: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The install's sizing as the page serves it, read-only: its named
+    fields and nothing else; None until the engine has written it."""
+    sizing = (engine or {}).get("sizing")
+    if not isinstance(sizing, dict):
+        return None
+    return {name: sizing.get(name) for name in ir.SIZING_FIELDS}
+
+
+def steps_view(mode: str, teams: list[tuple[str, dict[str, Any]]]) -> dict[str, Any]:
+    """The first-team and invites steps: needed for a team, and for one
+    person `not_needed` with the reason the page shows."""
+    if mode == ir.INDIVIDUAL:
+        skipped = {"needed": False, "state": "not_needed", "reason": NOT_NEEDED}
+        return {"first_team": dict(skipped), "invites": dict(skipped)}
+    return {"first_team": {"needed": True, "state": "done" if teams else "to_do"},
+            "invites": {"needed": True,
+                        "state": "done" if any(t.get("invites") for _, t in teams)
+                        else "to_do"}}
+
+
+def installer_of(ctx: AppContext, engine: dict[str, Any] | None) -> str:
+    """The installer's email: the engine's `installer` (state.outputs), else
+    the deployment's platform owner; "" when neither is set."""
+    found = str((engine or {}).get("installer") or ctx.settings.platform_owner or "")
+    return found.strip().lower()
+
+
+def _refuse_for_one_person(record: ir.InstallRecord, step: str) -> None:
+    if install_mode(record.read_engine()) == ir.INDIVIDUAL:
+        raise Conflict(f"a team is {NOT_NEEDED}: this install is for one person, whose "
+                       "first workspace is their personal workspace",
+                       detail={"mode": ir.INDIVIDUAL, "step": step})
+
+
+def ensure_personal(record: ir.InstallRecord, ctx: AppContext, people: People, *,
+                    installer: str, by: str, is_owner: bool) -> dict[str, Any] | None:
+    """A one-person install's first workspace: the installer's personal
+    workspace, filed through the existing workspace path (`People.create`,
+    as `POST /v1/admin/workspaces`; 200 and nothing written when it stands),
+    and recorded once as `console/personal`. None while no installer is
+    known."""
+    path = record.personal_path()
+    doc = record.read(path) or {}
+    if doc.get("workspace") and (not installer or doc.get("owner") == installer):
+        return doc
+    if not installer:
+        return None
+    _, workspace = people.create(
+        ctx.submissions.workspaces, kind=ws.PERSONAL, principal=installer, display_name=None,
+        limits=None, by=by, is_owner=is_owner)
+    tenant = str(workspace.get("tenant_id") or ws.personal_tenant_id(installer))
+    progress = dict(doc.get("progress") or {})
+    progress.setdefault("created_at", ctx.now())
+    progress["workspace_state"] = workspace.get("state")
+    log.info("one-person install: the installer's personal workspace is the first "
+             "workspace=%s", tenant)
+    return record.write(path, {"owner": installer, "workspace": tenant, "progress": progress})
+
+
+@dataclass(frozen=True)
+class FirstWorkspace:
+    """Where the grant, the pool accounts, the smoke and the verify runs go:
+    the first team's workspace, or for one person the personal workspace."""
+
+    key: str  # the team id, or the personal workspace's tenant id
+    doc: dict[str, Any]
+    path: str
+    principal: str  # the team's group, or the installer
+    personal: bool
+
+    @property
+    def tenant(self) -> str:
+        return str(self.doc.get("workspace") or self.key)
+
+
+def first_workspace(record: ir.InstallRecord, ctx: AppContext, people: People, *,
+                    caller: SetupCaller, flow: ManifestFlow, github: GitHubSetupApi,
+                    engine: dict[str, Any] | None = None,
+                    mode: str | None = None) -> FirstWorkspace | None:
+    """The first workspace for this install's mode, or None while there is
+    none. For one person it is filed and granted here (`ensure_personal`,
+    `ensure_grant`), so no step waits on a page read."""
+    if mode is None:
+        engine = record.read_engine() if engine is None else engine
+        mode = install_mode(engine)
+    if mode != ir.INDIVIDUAL:
+        first = _first_team(record)
+        if first is None:
+            return None
+        team_id, team = first
+        return FirstWorkspace(key=team_id, doc=team, path=record.team_path(team_id),
+                              principal=str(team.get("group") or ""), personal=False)
+    installer = installer_of(ctx, engine if engine is not None else record.read_engine())
+    auth = caller.auth
+    doc = ensure_personal(record, ctx, people, installer=installer, by=caller.email,
+                          is_owner=bool(auth.is_owner) if auth is not None else False)
+    if doc is None:
+        return None
+    path = record.personal_path()
+    tenant = str(doc["workspace"])
+    doc = {**doc, "grant": ensure_grant(record, tenant, doc, flow=flow, github=github,
+                                        org=ctx.settings.setup_github_org, by=caller.email,
+                                        now=ctx.now(), path=path)}
+    return FirstWorkspace(key=tenant, doc=doc, path=path, principal=installer, personal=True)
+
+
+def personal_row(request: Request, ctx: AppContext, record: ir.InstallRecord,
+                 first: FirstWorkspace, *, runs: Any) -> dict[str, Any]:
+    """The personal workspace's row, read live: its workspace's state now,
+    its pool accounts, its grant and its smoke, advanced on this read."""
+    tenant = first.tenant
+    workspace = ctx.submissions.workspaces.get(tenant) or {}
+    try:
+        pool_accounts = _pool_labels(request, ctx, tenant)
+    except ApiError as exc:
+        log.info("setup page: the pool could not be read code=%s", exc.code)
+        pool_accounts = []
+    row = dict(first.doc)
+    row.update({"workspace_state": workspace.get("state"), "pool_accounts": pool_accounts})
+    row["smoke"] = advance_smoke(record, first.key, first.doc, runs=runs,
+                                 pool_accounts=pool_accounts, now=ctx.now(), path=first.path,
+                                 principal=first.principal)
     return row
 
 
@@ -563,14 +725,34 @@ def setup_state(
     flow: ManifestFlow = Depends(manifest_flow),
     github: GitHubSetupApi = Depends(setup_github_api),
     runs: Any = Depends(setup_runs),
+    people: People = Depends(people_service),
 ) -> dict:
     """The page's whole state. Each team's row is read live (`team_row`), and
-    the first team's grant and smoke are advanced on the read the page polls."""
+    the first team's grant and smoke are advanced on the read the page polls.
+    It serves the install's `sizing` and `mode` read-only; for one person the
+    personal workspace's row (`personal`) takes the first team's place."""
     engine = record.read_engine()
+    mode = install_mode(engine)
     teams = record.teams()
+    personal = None
+    if mode == ir.INDIVIDUAL:
+        try:
+            first = first_workspace(record, ctx, people, caller=caller, flow=flow,
+                                    github=github, engine=engine, mode=mode)
+        except ApiError as exc:
+            log.info("setup page: the personal workspace could not be filed code=%s", exc.code)
+            personal = {"owner": installer_of(ctx, engine) or None, "workspace": None,
+                        "reason": exc.code}
+        else:
+            if first is not None:
+                personal = personal_row(request, ctx, record, first, runs=runs)
     return {
         "env": record.env,
         "engine": engine,
+        "mode": mode,
+        "sizing": sizing_view(engine),
+        "steps": steps_view(mode, teams),
+        "personal": personal,
         "cli_running": _cli_running(engine, ctx.now()),
         "github_app": _github_view(record.read(record.console_path(ir.GITHUB_APP))),
         "teams": [team_row(request, ctx, record, team_id, doc, directory=directory,
@@ -697,7 +879,10 @@ def create_team(
     The FIRST team also gets its team-level grant over the App installation's
     repositories (decision 3, `ensure_grant`). Each invite comes back with the
     Google Admin page that adds the person to the group (decision 4); the
-    page's row then polls their membership through the Groups API."""
+    page's row then polls their membership through the Groups API.
+
+    A one-person install has no team (decision 7): 409, nothing written."""
+    _refuse_for_one_person(record, "first_team")
     first_admin = roles.subject_for_write(body.first_admin) if body.first_admin else None
     auth = caller.auth
     status, workspace = people.create(
@@ -755,7 +940,8 @@ def invite(
     """Decision 4: record the invite and answer the Google Admin page that adds
     the person to the team's group. swarm-api holds Groups Reader only, so it
     adds no one; the page's row polls the membership (`GET /v1/admin/setup`)
-    until the Groups API says they are in."""
+    until the Groups API says they are in. A one-person install has none: 409."""
+    _refuse_for_one_person(record, "invites")
     team = record.read(record.team_path(team_id))
     if team is None:
         raise NotFound(f"no team {team_id!r}")
@@ -770,41 +956,48 @@ def invite(
             "member": _membership(directory, email, group)}
 
 
-def _granted_repository(record: ir.InstallRecord) -> tuple[str, dict[str, Any], str]:
-    """(team id, team, repository): the first team and the first repository of
-    its grant, which every run Admin › Setup starts uses (decision 3)."""
-    first = _first_team(record)
+def _granted_repository(first: FirstWorkspace | None) -> tuple[FirstWorkspace, str]:
+    """(first workspace, repository): the first team (for one person, the
+    personal workspace) and the first repository of its grant, which every
+    run Admin › Setup starts uses (decision 3)."""
     if first is None:
         raise Conflict("create the first team first")
-    team_id, team = first
-    repositories = list((team.get("grant") or {}).get("repositories") or [])
+    grant = first.doc.get("grant") or {}
+    repositories = list(grant.get("repositories") or [])
     if not repositories:
-        raise Conflict("the first team has no granted repository yet: install the GitHub "
+        whose = "the personal workspace" if first.personal else "the first team"
+        raise Conflict(f"{whose} has no granted repository yet: install the GitHub "
                        "App on the organisation, on at least one repository",
-                       detail={"grant": (team.get("grant") or {}).get("state")})
-    return team_id, team, repositories[0]
+                       detail={"grant": grant.get("state")})
+    return first, repositories[0]
 
 
 @router.post("/smoke", dependencies=[Depends(admin_auth)])
 def restart_smoke(
     request: Request,
-    caller: SetupCaller = Depends(admin_setup_caller),  # noqa: ARG001 - the gate
+    caller: SetupCaller = Depends(admin_setup_caller),
     ctx: AppContext = Depends(get_context),
     record: ir.InstallRecord = Depends(install_record),
     runs: Any = Depends(setup_runs),
+    people: People = Depends(people_service),
+    flow: ManifestFlow = Depends(manifest_flow),
+    github: GitHubSetupApi = Depends(setup_github_api),
 ) -> dict:
-    """Start the first team's smoke again after it failed; a running or passed
-    smoke is answered as it is."""
-    team_id, team, _ = _granted_repository(record)
-    smoke = dict(team.get("smoke") or {})
-    if smoke.get("state") == FAILED:
-        team = {**team, "smoke": None}
-    tenant = str(team.get("workspace") or team_id)
-    smoke = advance_smoke(record, team_id, team, runs=runs,
-                          pool_accounts=_pool_labels(request, ctx, tenant), now=ctx.now())
+    """Start the first team's (for one person, the personal workspace's)
+    smoke again after it failed; a running or passed smoke is answered as it
+    is."""
+    first, _ = _granted_repository(first_workspace(record, ctx, people, caller=caller,
+                                                   flow=flow, github=github))
+    doc = first.doc
+    if (doc.get("smoke") or {}).get("state") == FAILED:
+        doc = {**doc, "smoke": None}
+    smoke = advance_smoke(record, first.key, doc, runs=runs,
+                          pool_accounts=_pool_labels(request, ctx, first.tenant), now=ctx.now(),
+                          path=first.path, principal=first.principal)
     if smoke is None:
-        raise Conflict("the first team's smoke waits for its first pool account")
-    return {"team": team_id, "smoke": smoke}
+        raise Conflict("the first workspace's smoke waits for its first pool account")
+    return {"team": None if first.personal else first.key, "workspace": first.tenant,
+            "smoke": smoke}
 
 
 @router.post("/verify-runs", dependencies=[Depends(admin_auth)])
@@ -813,9 +1006,12 @@ def start_verify_runs(
     ctx: AppContext = Depends(get_context),
     record: ir.InstallRecord = Depends(install_record),
     runs: Any = Depends(setup_runs),
+    people: People = Depends(people_service),
+    flow: ManifestFlow = Depends(manifest_flow),
+    github: GitHubSetupApi = Depends(setup_github_api),
 ) -> dict:
     """The console's two verification runs, one task and one workflow, as the
-    first team on a repository of its grant (decision 3: the team's own slot,
+    first team (for one person, in the personal workspace) on a repository of its grant (decision 3: the team's own slot,
     never a person's token). Their ids go to `console/verify_runs` as
     `verify_runs: {console_task, console_workflow}`, which the engine copies
     into `state.outputs["verify_runs"]`, so nobody pastes an id. Called again,
@@ -825,9 +1021,10 @@ def start_verify_runs(
     started = dict(done.get("verify_runs") or {})
     if started.get("console_task") and started.get("console_workflow"):
         return {"verify_runs": started, "repository": done.get("repository"), "started": False}
-    team_id, team, repository = _granted_repository(record)
-    tenant = str(team.get("workspace") or team_id)
-    group = str(team.get("group") or "")
+    first, repository = _granted_repository(first_workspace(
+        record, ctx, people, caller=caller, flow=flow, github=github))
+    tenant = first.tenant
+    group = first.principal
     if not started.get("console_task"):
         started["console_task"] = runs.submit_task(
             tenant_id=tenant, group=group, repository=repository, prompt=VERIFY_TASK_PROMPT,
@@ -873,13 +1070,36 @@ def mint_link(
     record: ir.InstallRecord = Depends(install_record),
     links: sl.SetupLinks = Depends(links_service),
     directory: MembershipResolver | None = Depends(workspace_directory),
+    people: People = Depends(people_service),
+    flow: ManifestFlow = Depends(manifest_flow),
+    github: GitHubSetupApi = Depends(setup_github_api),
 ) -> dict:
     """One route, three kinds (review finding 21). The token is in this answer
-    and nowhere else; Firestore keeps its digest."""
+    and nowhere else; Firestore keeps its digest.
+
+    For one person (decision 7) a pool account is owned by the installer's
+    personal workspace and its link is the installer's alone, and the
+    `team-git` link names the personal workspace."""
     owner = roles.subject_for_write(body.owner)
     tenant_id: str | None = None
     team_id: str | None = None
-    if body.kind == sl.POOL_ACCOUNT:
+    progress_path: str | None = None
+    engine = record.read_engine()
+    personal = None
+    if install_mode(engine) == ir.INDIVIDUAL and body.kind in (sl.POOL_ACCOUNT, sl.TEAM_GIT):
+        personal = first_workspace(record, ctx, people, caller=caller, flow=flow,
+                                   github=github, engine=engine, mode=ir.INDIVIDUAL)
+        if personal is None:
+            raise Conflict("this one-person install names no installer yet")
+    if personal is not None and body.kind == sl.POOL_ACCOUNT:
+        if owner != personal.principal:
+            raise Forbidden(f"a one-person install's pool accounts are the installer's; "
+                            f"{owner} is not {personal.principal}")
+        team_id, tenant_id = personal.key, personal.tenant
+    elif personal is not None and body.kind == sl.TEAM_GIT and body.label == personal.key:
+        team_id, tenant_id = personal.key, personal.tenant
+        progress_path = personal.path
+    elif body.kind == sl.POOL_ACCOUNT:
         first = _first_team(record)
         if first is None:
             raise Conflict("create the first team first: a pool account is owned by it")
@@ -894,6 +1114,7 @@ def mint_link(
             raise NotFound(f"no team {body.label!r}")
         team_id = body.label
         tenant_id = str(team.get("workspace") or team_id)
+        progress_path = record.team_path(team_id)
     elif body.label not in sl.ADDON_SECRETS:
         raise ValidationFailed(f"no add-on secret for {body.label!r}",
                                detail={"addons": sorted(sl.ADDON_SECRETS)})
@@ -903,11 +1124,11 @@ def mint_link(
         record.write(record.console_path(ir.ACCOUNTS), {body.label: {
             "owner": owner, "link_hash": sl.digest(token), "link_expires": link["expires_at"],
         }})
-    elif body.kind == sl.TEAM_GIT and team_id is not None:
-        team = record.read(record.team_path(team_id)) or {}
+    elif body.kind == sl.TEAM_GIT and progress_path is not None:
+        team = record.read(progress_path) or {}
         progress = dict(team.get("progress") or {})
         progress["git_link"] = {"owner": owner, "expires_at": link["expires_at"]}
-        record.write(record.team_path(team_id), {"progress": progress})
+        record.write(progress_path, {"progress": progress})
     path = sl.FORMS[body.kind].format(token=token)
     base = console_origin(ctx.settings.console_url)
     log.info("minted a setup link kind=%s label=%s", body.kind, body.label)
@@ -977,14 +1198,23 @@ def finish(
     flow: ManifestFlow = Depends(manifest_flow),
     github: GitHubSetupApi = Depends(setup_github_api),
     runs: Any = Depends(setup_runs),
+    people: People = Depends(people_service),
 ) -> dict:
     """Write `console/finished` once every required console step is done: the
     App installed and its self-check passed, a first team, a pool account
     signed in to it, and the first team's smoke passed (`advance_smoke`,
-    started here too if the page has not started it yet). A labelled account seen in the first team's pool gets its
-    `signed_in_at` here. The CLI starts verify when this document exists."""
+    started here too if the page has not started it yet). A labelled account
+    seen in the first team's pool gets its `signed_in_at` here. The CLI
+    starts verify when this document exists.
+
+    For one person (decision 7) the personal workspace takes the first team's
+    place: no team, no invites; its pool account and its smoke
+    (`personal_smoke`) are what `finish` waits for."""
     app = record.read(record.console_path(ir.GITHUB_APP)) or {}
-    first = _first_team(record)
+    engine = record.read_engine()
+    mode = install_mode(engine)
+    first = first_workspace(record, ctx, people, caller=caller, flow=flow, github=github,
+                            engine=engine, mode=mode)
     accounts = record.read(record.console_path(ir.ACCOUNTS)) or {}
     missing: list[str] = []
     if not app.get("installed_on"):
@@ -992,10 +1222,10 @@ def finish(
     if not (app.get("self_check") or {}).get("ok"):
         missing.append("github_app_self_check")
     if first is None:
-        missing.append("first_team")
+        missing.append("personal_workspace" if mode == ir.INDIVIDUAL else "first_team")
     signed = {label for label, value in accounts.items() if (value or {}).get("signed_in_at")}
     if first is not None and accounts:
-        tenant = str(first[1].get("workspace") or first[0])
+        tenant = first.tenant
         listing = account_pool(request, ctx).list_accounts(tenant)
         present = {str(a.get("label") or "") for a in listing.get("accounts") or []
                    if isinstance(a, dict) and a.get("owner_tenant") == tenant}
@@ -1009,18 +1239,18 @@ def finish(
         missing.append("pool_account_signed_in")
     smoke_passed = False
     if first is not None and signed:
-        team_id, team = first
-        grant = (team.get("grant") or {})
+        doc = first.doc
+        grant = (doc.get("grant") or {})
         if grant.get("state") != "granted" or not grant.get("repositories"):
-            grant = ensure_grant(record, team_id, team, flow=flow, github=github,
+            grant = ensure_grant(record, first.key, doc, flow=flow, github=github,
                                  org=ctx.settings.setup_github_org, by=caller.email,
-                                 now=ctx.now())
-            team = {**team, "grant": grant}
-        smoke = advance_smoke(record, team_id, team, runs=runs, pool_accounts=sorted(signed),
-                              now=ctx.now()) or {}
+                                 now=ctx.now(), path=first.path)
+            doc = {**doc, "grant": grant}
+        smoke = advance_smoke(record, first.key, doc, runs=runs, pool_accounts=sorted(signed),
+                              now=ctx.now(), path=first.path, principal=first.principal) or {}
         smoke_passed = smoke.get("state") == SUCCEEDED
     if not smoke_passed:
-        missing.append("first_team_smoke")
+        missing.append("personal_smoke" if mode == ir.INDIVIDUAL else "first_team_smoke")
     if missing:
         raise Conflict("setup is not finished yet", detail={"missing": missing})
     done = record.read(record.console_path(ir.FINISHED))

@@ -33,6 +33,10 @@ SWARM_API_DOCUMENTS: dict[str, frozenset[str]] = {
     "swarm-install/{env}/console/teams/{id}": frozenset(
         {"group", "workspace", "first_admin", "invites", "progress", "smoke", "grant"}),
     "swarm-install/{env}/console/finished": frozenset({"at", "by"}),
+    #: A one-person install's first workspace (decision 7, DAYONE-SETUP-API-3):
+    #: the installer's personal workspace, its grant and its smoke.
+    "swarm-install/{env}/console/personal": frozenset(
+        {"owner", "workspace", "progress", "grant", "smoke"}),
     #: The console's two verification runs (DAYONE-SETUP-API-2): `verify_runs`
     #: is `{"console_task": <task id>, "console_workflow": <workflow id>}`,
     #: which the engine copies into its state's `outputs["verify_runs"]`.
@@ -44,12 +48,23 @@ ACCOUNT_FIELDS = frozenset({"owner", "link_hash", "link_expires", "signed_in_at"
 
 #: Read only, never written here.
 ENGINE_DOCUMENT = "swarm-install/{env}"
+#: The engine document's fields Admin › Setup reads by name; each is in the
+#: engine's row of `swarm_install.record.WRITERS` (`test_record_parity`).
+ENGINE_FIELDS_READ = frozenset({"lease", "sizing", "installer"})
+#: `sizing`'s fields the status route serves (the INTERFACE SHEET's
+#: `state.outputs["sizing"]`, written in stage 0 by lane SIZING-ASK).
+SIZING_FIELDS: tuple[str, ...] = ("mode", "members", "pool_limits", "service_max_instances",
+                                  "pool_accounts", "budget_usd")
+#: `sizing.mode` for a one-person install (decision 7); anything else is a team.
+INDIVIDUAL = "individual"
+TEAM = "team"
 
 GITHUB_APP = "github_app"
 ACCOUNTS = "accounts"
 FINISHED = "finished"
 TEAMS = "teams"
 VERIFY_RUNS = "verify_runs"
+PERSONAL = "personal"
 
 
 class RecordFieldRefused(ValueError):
@@ -99,6 +114,9 @@ class InstallRecord:
 
     def team_path(self, team_id: str) -> str:
         return self.console_path(f"{TEAMS}/{team_id}")
+
+    def personal_path(self) -> str:
+        return self.console_path(PERSONAL)
 
     def health_path(self) -> str:
         return f"{COLLECTION}/{self.env}/health/latest"
@@ -152,11 +170,16 @@ __all__ = [
     "ACCOUNT_FIELDS",
     "COLLECTION",
     "ENGINE_DOCUMENT",
+    "ENGINE_FIELDS_READ",
     "FINISHED",
     "GITHUB_APP",
+    "INDIVIDUAL",
     "InstallRecord",
+    "PERSONAL",
     "RecordFieldRefused",
+    "SIZING_FIELDS",
     "SWARM_API_DOCUMENTS",
+    "TEAM",
     "TEAMS",
     "VERIFY_RUNS",
     "check_fields",
