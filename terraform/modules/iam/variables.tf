@@ -81,10 +81,10 @@ variable "artifact_bucket" {
   type        = string
 }
 
-# tflint-ignore: terraform_unused_declarations
 # Kept so every caller and terraform test that passes `labels` still plans; the
 # platform service accounts it described moved to bootstrap (DAYONE-BOOT2-TF2),
 # so this module no longer reads it.
+# tflint-ignore: terraform_unused_declarations
 variable "labels" {
   description = "Service accounts carry no labels in GCP, so this is recorded in their description instead."
   type        = map(string)
