@@ -16,7 +16,8 @@ entries:
   provider: engine
   check: swarm --context <hostname context> status <run> for each of the seven runs recorded in state.outputs verify_runs
   apply: 'verify.end-to-end writes the swarm context named after the hostname (swarm context add, the Desktop
-    client id, its secret through stdin into the credential store; never --use, never context use), signs the
+    client id, and the secret the deployment''s discovery document serves through stdin into the credential
+    store, or none and swarm login asks; never --use, never context use), signs the
     person in to it once in the browser, picks the first team tenant (swarm tenants --json) as SWARM_TENANT,
     reads verify_repository from the App installation (swarm sc access repos <github_org> --json), launches
     the plugin''s single task, workflow and three check runs, and copies the console''s two run ids from the

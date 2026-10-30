@@ -252,7 +252,7 @@ class FakeRuns:
         self.states[run_id] = verify.RunStatus("succeeded", url, (used,))
 
 
-def _job(task_id: str, *, live: bool = False) -> dict[str, Any]:
+def _worker_job(task_id: str, *, live: bool = False) -> dict[str, Any]:
     """A worker Job as scheduler dispatch makes it: `swarm-<id>-<generation>`;
     a live-browser one with its pod label and display sidecar."""
     stem = task_id.removeprefix("task_").lower().replace("_", "-")
@@ -270,7 +270,7 @@ class FakeKube:
 
     def __init__(self, jobs: list[dict[str, Any]] | None = None) -> None:
         self.jobs = list(jobs if jobs is not None else
-                         [_job("t-plugin-gke"), _job("t-plugin-browser", live=True)])
+                         [_worker_job("t-plugin-gke"), _worker_job("t-plugin-browser", live=True)])
         self.calls: list[tuple[str, ...]] = []
 
     def __call__(self, ctx: Any) -> Any:
@@ -485,7 +485,7 @@ def test_a_check_run_without_its_proof_fails_naming_it(key: str, breaks: str, sa
     if breaks == "no job":
         kube.jobs = [j for j in kube.jobs if "gke" not in j["metadata"]["name"]]
     elif breaks == "not live":
-        kube.jobs = [_job("t-plugin-gke"), _job("t-plugin-browser")]
+        kube.jobs = [_worker_job("t-plugin-gke"), _worker_job("t-plugin-browser")]
     elif breaks == "other page":
         step.runs.finish(run_id, artifact="Example Domain\n")
     elif breaks == "not indexed":
@@ -769,6 +769,48 @@ def test_a_context_with_the_name_and_another_address_is_never_rewritten() -> Non
     assert swarm.contexts[HOSTNAME] == other and swarm.current == HOSTNAME
     assert ctx.outputs["verify_context"] == f"{HOSTNAME}-install"
     assert swarm.contexts[f"{HOSTNAME}-install"]["url"] == f"https://{HOSTNAME}"
+
+
+def test_the_desktop_secret_comes_from_the_deployment_never_secret_manager(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The engine never reads a secret's value from Secret Manager
+    (test_switches). The Desktop client's secret is the one the new
+    deployment's discovery document serves beside its own client id; with
+    none served, the context is added without one and `swarm login` asks."""
+    from swarm_mcp import discovery
+
+    secret = secrets.token_hex(16)
+    served: dict[str, Any] = {"oauth_client_id": CLIENT_ID, "oauth_client_secret": secret}
+    fetched: list[str] = []
+
+    def fetch(url: str, **kw: Any) -> Any:
+        fetched.append(url)
+        if not served:
+            raise discovery.DiscoveryUnreachable("no document")
+        return discovery.Document(url=url, version="1.0.0", **served)
+
+    monkeypatch.setattr(discovery, "fetch", fetch)
+    ctx = _target_ctx()
+    assert verify.secret_from_discovery(ctx) == secret and fetched == [f"https://{HOSTNAME}"]
+    served["oauth_client_id"] = "another-client.apps.googleusercontent.com"
+    assert verify.secret_from_discovery(ctx) == ""
+    served.clear()
+    assert verify.secret_from_discovery(ctx) == ""
+
+    swarm = FakeSwarm({}, None)
+    added: list[list[str]] = []
+
+    def run(argv: Sequence[str], stdin: str | None, env: dict[str, str] | None) -> tuple[int, str, str]:
+        if list(argv[1:3]) == ["context", "add"]:
+            added.append(list(argv))
+            assert "--client-secret-stdin" not in argv and stdin is None
+            swarm.contexts[argv[3]] = {"url": f"https://{HOSTNAME}", "oauth_client_id": CLIENT_ID,
+                                      "signed_in": False}
+            return 0, "", ""
+        return swarm(argv, stdin, env)
+
+    verify.SwarmCli(Answers(), run=run, interactive=swarm).target(ctx)
+    assert len(added) == 1 and swarm.contexts[HOSTNAME]["signed_in"] is True
 
 
 def test_repository_from_the_app_installation_never_asked() -> None:

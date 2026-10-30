@@ -7,7 +7,28 @@
 | `verify.digests` | `other.verify-digests` | every service serves 100 % on its latest ready revision, and that revision's **digest** is the release's | 28: labels lie; a pinned revision served 0 % |
 | `verify.reconciler-jobs` | (lesson 30) | the reconciler may list Jobs in every tenant namespace, namespaced, by email and by uniqueId | 30: it listed Jobs at cluster scope and saw nothing |
 | `verify.firestore-migrations` | `other.firestore-migrations` | the state and the install record are at this engine's schema | |
-| `verify.end-to-end` | `other.verify-end-to-end`, `other.verify-row` | four runs, each to a pull request: a single task and a workflow from the plugin, and from the console | 18: the plugin signs in with the Desktop client; 43: every run's task cloned and pushed with an App installation token (below) |
+| `verify.end-to-end` | `other.verify-end-to-end`, `other.verify-row`, `other.verify-gke`, `other.verify-live-browser`, `other.verify-code-intelligence` | seven runs on the NEW deployment: a single task and a workflow from the plugin and from the console, each to a pull request, and three check runs (a task on GKE, a live-browser task, a code-intelligence read) | 18: the plugin signs in with the Desktop client; 43: every run's task cloned and pushed with an App installation token (below) |
+
+**The new deployment, never the person's current context.** The step writes
+its own swarm context, named after the hostname (`swarm context add`, never
+`--use`; a context of that name pointing elsewhere is left alone and the
+engine's is `<hostname>-install`), signs the person in to it once in the
+browser, and picks the first team as `SWARM_TENANT`. Every run is `swarm
+--context <it>`, with no `SWARM_URL`, `SWARM_CONTEXT` or `SWARM_TENANT` from
+the person's shell. The repository is the first, not archived, the GitHub App
+installation covers (`swarm sc access repos <github_org>`), recorded as
+`verify_repository`. The console's two runs are started in Admin › Setup;
+swarm-api writes their ids into a console document (`verify_runs`:
+`console_task`, `console_workflow`) and the step copies them into
+state.outputs: nobody is asked for an id.
+
+**The check runs prove themselves.** The GKE task's worker Job is seen in the
+team's namespace; the live-browser task (`claude-code-browser`) ran with the
+`swarm-live=enabled` label and the `display` sidecar, and the page title it
+left names the repository; the code-intelligence read left the swarm-graph
+answer with its `freshness.index_sha` and at least one symbol. A finished
+Job is deleted after its TTL, so a poll's sighting is kept in state.outputs
+(`verify_cluster_jobs`).
 
 **Lesson 43 is read from what each run recorded.** The worker writes the
 KIND of GitHub credential an attempt cloned and pushed with into its
@@ -52,10 +73,18 @@ from .preflight import ASK, Ask, Gcp, remember
 SCHEDULER_API = "https://cloudscheduler.googleapis.com/v1"
 
 #: The checks the verify row counts, in the order stage 14 runs them; the
-#: end-to-end check is four runs.
+#: end-to-end check is seven runs: the four product runs, each to a pull
+#: request, and the three check runs (`CHECK_RUNS`), all on the new deployment.
 QUICK_CHECKS = ("scheduler-targets", "digests", "reconciler-jobs", "firestore-migrations")
-RUNS = (("plugin", "single"), ("plugin", "workflow"), ("console", "single"), ("console", "workflow"))
+CHECK_SHAPES = ("gke", "browser", "code-intelligence")
+RUNS = (("plugin", "single"), ("plugin", "workflow"), *(("plugin", shape) for shape in CHECK_SHAPES),
+        ("console", "single"), ("console", "workflow"))
 TOTAL = len(QUICK_CHECKS) + len(RUNS)
+
+#: Where each console run's id is in `verify_runs`: swarm-api writes these two
+#: keys into the console document when Admin › Setup starts them (INTERFACE
+#: SHEET), and the engine copies them into state.outputs.
+CONSOLE_KEYS = {"single": "console_task", "workflow": "console_workflow"}
 
 #: A tick's target may 403 for a while after its grant lands (lesson 19).
 TARGETS_WAIT = WaitSpec(
@@ -67,9 +96,10 @@ TARGETS_WAIT = WaitSpec(
     interval_s=30,
 )
 
-#: Four runs, each to a pull request: an agent's run takes minutes.
+#: Seven runs, four of them to a pull request: an agent's run takes minutes.
 RUNS_WAIT = WaitSpec(
-    reason="four verification runs each opening a pull request",
+    reason="four verification runs each opening a pull request, and the GKE, live-browser and "
+           "code-intelligence checks",
     expected="15 to 25 min",
     expected_s=25 * 60,
     bound_s=60 * 60,
@@ -88,6 +118,12 @@ NOT_FOR_PLUGIN_RUNS = (
     "CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT",
     "GOOGLE_OAUTH_ACCESS_TOKEN",
 )
+
+#: What would send a run to a deployment other than the engine's own context
+#: (apps/swarm-mcp/swarm_mcp/config.py: SWARM_URL and SWARM_CONTEXT win over
+#: `--context`'s default), or as a tenant other than the one verify picked.
+NOT_FOR_VERIFY_RUNS = ("SWARM_URL", "SWARM_API_URL", "SWARM_CONTEXT", "SWARM_TENANT")
+
 
 #: The platform's Scheduler jobs and Cloud Run services are named `swarm-*`.
 PLATFORM_PREFIX = "swarm-"
@@ -127,6 +163,7 @@ class VerifyGcp(Gcp):
     def knative_revision(self, project: str, region: str, name: str) -> dict[str, Any] | None:
         """A revision's v1 view: `status.imageDigest` is the digest it resolved."""
         return self._call("GET", f"{self._knative(project, region)}/revisions/{name}", missing_ok=True)
+
 
 
 @dataclass
@@ -375,7 +412,7 @@ class FirestoreMigrationsStep(_Base):
         return Observation(MET, f"state schema {SCHEMA_VERSION}, record schema {RECORD_SCHEMA_VERSION}")
 
 
-# -- the four runs ----------------------------------------------------------------
+# -- the seven runs ---------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -413,9 +450,61 @@ class RunStatus:
     pull_request: str = ""
     #: Every task of a succeeded run, with the credential kind it recorded.
     credentials: tuple[CredentialUse, ...] = ()
+    #: A check run's runner profile, as `swarm status` names it.
+    profile: str = ""
+    #: A succeeded check run's artifact (`CheckRun.artifact`), or None when it left none.
+    artifact: str | None = None
+
+
+@dataclass(frozen=True)
+class CheckRun:
+    """One check run: a task on the new deployment whose proof is its own.
+
+    `on_cluster`: its worker Job must be seen in the team's namespace (a GKE
+    backend, not a fallback); `live`: that Job carries the live-browser pod
+    label and its display sidecar; `artifact`: the file the agent leaves,
+    read back through `swarm artifact` (the API redacts it at read time)."""
+
+    profile: str
+    prompt: str
+    artifact: str = ""
+    on_cluster: bool = False
+    live: bool = False
+
+    def prompt_for(self, repository: str) -> str:
+        return self.prompt.format(repository=repository, artifact=self.artifact)
+
+
+#: The three checks the console claims (smoke on GKE, the live browser, code
+#: intelligence), each a run. The profiles are the frozen catalogue's
+#: (swarm_common.profiles): `claude-code` runs on GKE Autopilot, and
+#: `claude-code-browser` is the live-browser one.
+CHECK_RUNS: dict[str, CheckRun] = {
+    "gke": CheckRun(
+        "claude-code",
+        "List the top-level entries of {repository} and write them, comma-separated, to the artifact "
+        "gke.txt. Change nothing in the repository and open no pull request.",
+        "gke.txt", on_cluster=True),
+    "browser": CheckRun(
+        "claude-code-browser",
+        "Open https://github.com/{repository} in the live browser and write the page's title, exactly as the "
+        "browser shows it, as the only line of the artifact {artifact}. Change nothing in the repository and "
+        "open no pull request.",
+        "live-browser.txt", on_cluster=True, live=True),
+    "code-intelligence": CheckRun(
+        "claude-code",
+        "Call the swarm-graph `search` tool once on {repository} for its entry point, and write its answer, "
+        "unchanged, as JSON to the artifact {artifact}: the `freshness` object (with `index_sha`) and the "
+        "`rows` it returned. Change nothing in the repository and open no pull request.",
+        "code-intelligence.json"),
+}
 
 
 class Runs(Protocol):
+    def target(self, ctx: Any) -> None: ...
+
+    def repository(self, ctx: Any) -> str: ...
+
     def launch(self, ctx: Any, surface: str, shape: str, repository: str, label: str) -> str: ...
 
     def status(self, ctx: Any, shape: str, run_id: str) -> RunStatus: ...
@@ -429,6 +518,15 @@ def plugin_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
     return {k: v for k, v in source.items() if k not in NOT_FOR_PLUGIN_RUNS}
 
 
+def verify_env(tenant: str | None, environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """`plugin_env` less any address or tenant the person's shell names, with
+    the team verify picked as SWARM_TENANT."""
+    env = {k: v for k, v in plugin_env(environ).items() if k not in NOT_FOR_VERIFY_RUNS}
+    if tenant:
+        env["SWARM_TENANT"] = tenant
+    return env
+
+
 #: `run(argv, stdin, env) -> (exit code, stdout, stderr)`.
 Run = Callable[[Sequence[str], str | None, dict[str, str] | None], tuple[int, str, str]]
 
@@ -438,6 +536,14 @@ def run_command(argv: Sequence[str], stdin: str | None = None,
     done = subprocess.run(list(argv), input=stdin, capture_output=True, text=True, timeout=300,
                           check=False, env=env)
     return done.returncode, done.stdout or "", done.stderr or ""
+
+
+def run_interactive(argv: Sequence[str], stdin: str | None = None,
+                    env: dict[str, str] | None = None) -> tuple[int, str, str]:
+    """A command the person takes part in (a browser sign-in): on the
+    terminal, not captured, bounded at 15 minutes."""
+    done = subprocess.run(list(argv), timeout=15 * 60, check=False, env=env)
+    return done.returncode, "", ""
 
 
 def workflow_spec(repository: str, label: str) -> str:
@@ -463,22 +569,49 @@ def _state(raw: Any) -> str:
     return TERMINAL_STATES.get(str(raw or "").upper(), "running")
 
 
+def _rows(found: Any, key: str) -> list[dict[str, Any]]:
+    rows = found.get(key) if isinstance(found, dict) else None
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+def secret_from_discovery(ctx: Any) -> str:
+    """The Desktop client's secret as the new deployment's own discovery
+    document serves it (only while `discovery_serves_client_secret` is on,
+    and only beside the document's own client id), or "". The engine never
+    reads a secret's value from Secret Manager (test_switches); with "", the
+    context is added without one and `swarm login` asks the person for it."""
+    url = f"https://{ctx.state.hostname or ctx.outputs.get('hostname')}"
+    try:
+        from swarm_mcp import discovery  # the swarm_mcp wheel install.sh installs beside this one
+        from swarm_mcp.client import SwarmError
+    except ImportError:
+        return ""
+    try:
+        document = discovery.fetch(url)
+    except (SwarmError, OSError, ValueError):  # no document is "ask at sign-in", never a failed step
+        return ""
+    if document.oauth_client_id != str(ctx.outputs.get("desktop_client_id") or ""):
+        return ""
+    return document.oauth_client_secret
+
+
 @dataclass
 class SwarmCli:
-    """The four runs through the `swarm` CLI, as the person, signed in with the
-    deployment's Desktop client. The console's two are started by the person
-    in the console (the engine cannot press its buttons); the engine asks for
-    the task id or the workflow id the console shows, then follows all four
-    the same way.
+    """The runs through the `swarm` CLI, as the person, signed in with the
+    deployment's Desktop client, on the engine's OWN context for the new
+    deployment (`target`). The console's two are started by Admin › Setup
+    (the engine cannot press its buttons) and their ids are read from the
+    install record, never asked; then all seven are followed the same way.
 
     Read as the CLI prints them (apps/swarm-mcp/swarm_mcp/cli.py):
     `swarm dispatch --json` prints the task (`id`); `swarm workflow --json`
     prints the envelope (`workflow.workflow_id`); `swarm status <task>` prints
-    `<id>  <STATE>  ...`; `swarm result <task> --json` prints only the task's
-    `result_summary` (`git.pull_request.url`); and a workflow, which
-    `/v1/tasks/<id>` does not serve, is followed by `swarm workflow-status
-    <id> --result --json`: its derived `state` (null, exit 1, while the
-    server did not derive) and each step's `produced.pull_request`.
+    `<id>  <STATE>  <profile>  ...`; `swarm result <task> --json` prints only
+    the task's `result_summary` (`git.pull_request.url`); `swarm artifact
+    <task> <name>` prints an artifact (exit 1 when there is none); and a
+    workflow, which `/v1/tasks/<id>` does not serve, is followed by `swarm
+    workflow-status <id> --result --json`: its derived `state` (null, exit 1,
+    while the server did not derive) and each step's `produced.pull_request`.
 
     Once a run succeeded, each of its tasks' `swarm result <task> --json`
     gives the credential kind the worker recorded (`forge_credential`,
@@ -487,56 +620,221 @@ class SwarmCli:
     ask: Ask
     run: Run = run_command
     swarm: str = "swarm"
+    #: The person's own steps: `swarm login` and `swarm sc setup` sign in in the browser.
+    interactive: Run = run_interactive
+    #: The Desktop client's secret, for `swarm context add --client-secret-stdin`; "" when unknown.
+    desktop_secret: Callable[[Any], str] = secret_from_discovery
 
-    def _call(self, argv: Sequence[str], stdin: str | None = None, *, ok: Sequence[int] = (0,)) -> str:
-        code, out, err = self.run([self.swarm, *argv], stdin, plugin_env())
+    # -- the new deployment's own context ------------------------------------------
+
+    def _env(self, ctx: Any) -> dict[str, str]:
+        return verify_env(ctx.outputs.get("verify_tenant"))
+
+    def _bare(self, ctx: Any, argv: Sequence[str], stdin: str | None = None) -> str:
+        code, out, err = self.run([self.swarm, *argv], stdin, self._env(ctx))
+        if code != 0:
+            raise RuntimeError(f"swarm {' '.join(argv[:2])} failed: {err.strip()[:300]}")
+        return out
+
+    def _context(self, ctx: Any) -> str:
+        name = str(ctx.outputs.get("verify_context") or "")
+        if not name:
+            raise LookupError("verify has no swarm context for the new deployment yet (verify.end-to-end writes it)")
+        return name
+
+    def target(self, ctx: Any) -> None:
+        """Write (once) and sign in to a swarm context for the new deployment,
+        named after its hostname, and pick the first team as the tenant. The
+        person's current context is never switched (`context add` without
+        `--use`), and a context of that name pointing elsewhere is never
+        rewritten: the engine's is then `<hostname>-install`."""
+        hostname = str(ctx.state.hostname or ctx.outputs.get("hostname") or "")
+        client_id = str(ctx.outputs.get("desktop_client_id") or "")
+        if not hostname or not client_id:
+            raise LookupError("the hostname and the Desktop client id are recorded by stages 0 and 6")
+        url = f"https://{hostname}"
+        listed = json.loads(self._bare(ctx, ["context", "list", "--json"]) or "{}")
+        rows = {str(row.get("name")): row for row in _rows(listed, "contexts")}
+        name = hostname
+        if name in rows and str(rows[name].get("url") or "").rstrip("/") != url:
+            name = f"{hostname}-install"
+            if name in rows and str(rows[name].get("url") or "").rstrip("/") != url:
+                raise RuntimeError(f"swarm contexts {hostname} and {name} both point elsewhere; "
+                                   f"neither is rewritten (swarm context list)")
+        row = rows.get(name)
+        if row is None:
+            secret = self.desktop_secret(ctx)
+            self._bare(ctx, ["context", "add", name, f"--url={url}", f"--client-id={client_id}",
+                             *(["--client-secret-stdin"] if secret else [])], secret + "\n" if secret else None)
+            row = {"signed_in": False}
+        if row.get("signed_in") is not True:
+            ctx.events.emit("step_apply", step="verify.end-to-end",
+                            message=f"sign in to {url} in the browser that opens (swarm --context {name} login)")
+            code, _, err = self.interactive([self.swarm, "--context", name, "login"], None, self._env(ctx))
+            if code != 0:
+                raise RuntimeError(f"swarm --context {name} login failed: {err.strip()[:300]}")
+        remember(ctx, outputs={"verify_context": name})
+        tenants = json.loads(self._bare(ctx, ["--context", name, "tenants", "--json"]) or "{}")
+        ids = [str(row.get("tenant_id") or "") for row in _rows(tenants, "tenants")]
+        tenant = str(tenants.get("current") or "") if isinstance(tenants, dict) else ""
+        tenant = tenant if tenant in ids else next((t for t in ids if t), "")
+        if not tenant:
+            raise LookupError(f"{url} lists no team for you yet (the first team, stage 11)")
+        remember(ctx, outputs={"verify_tenant": tenant})
+
+    def repository(self, ctx: Any) -> str:
+        """The first repository, not archived, the GitHub App installation
+        covers, read on the new deployment. With no GitHub connection yet the
+        person connects once in the browser (`swarm sc setup`) and it is read
+        again."""
+        name = self._context(ctx)
+        org = str(ctx.outputs.get("github_org") or "")
+        if not org:
+            raise LookupError("the GitHub organisation is recorded by preflight (github_org)")
+        argv = [self.swarm, "sc", "access", "repos", org, "--json", "--context", name]
+        code, out, err = self.run(argv, None, self._env(ctx))
+        if code != 0:
+            self.interactive([self.swarm, "sc", "setup", "--context", name], None, self._env(ctx))
+            code, out, err = self.run(argv, None, self._env(ctx))
+        found = next((str(row.get("repository") or "") for row in _rows(json.loads(out or "{}") if code == 0 else {},
+                                                                          "repositories")
+                      if not row.get("archived") and str(row.get("repository") or "").count("/") == 1), "")
+        if not found:
+            raise RuntimeError(f"the repositories the GitHub App installation covers in {org} could not be read "
+                               f"on {name}: {err.strip()[:300] or 'none that is not archived'}")
+        return found
+
+    # -- the runs ---------------------------------------------------------------------
+
+    def _call(self, ctx: Any, argv: Sequence[str], stdin: str | None = None, *,
+              ok: Sequence[int] = (0,)) -> str:
+        code, out, err = self.run([self.swarm, "--context", self._context(ctx), *argv], stdin, self._env(ctx))
         if code not in ok:
             raise RuntimeError(f"swarm {argv[0]} failed: {err.strip()[:300]}")
         return out
 
-    def _json(self, argv: Sequence[str], stdin: str | None = None, *, ok: Sequence[int] = (0,)) -> dict[str, Any]:
-        found = json.loads(self._call(argv, stdin, ok=ok) or "{}")
+    def _json(self, ctx: Any, argv: Sequence[str], stdin: str | None = None, *,
+              ok: Sequence[int] = (0,)) -> dict[str, Any]:
+        found = json.loads(self._call(ctx, argv, stdin, ok=ok) or "{}")
         return found if isinstance(found, dict) else {}
 
     def launch(self, ctx: Any, surface: str, shape: str, repository: str, label: str) -> str:
         if surface == "console":
-            what = "a single task (its task id)" if shape == "single" else "a workflow (its workflow id)"
-            return self.ask(ctx, "verify.end-to-end",
-                            f"In the console, start {what} on {repository} labelled {label}").strip()
-        if shape == "single":
-            task = self._json(["dispatch", "--json", f"--repo={repository}", f"--label={label}", "-"], SINGLE_PROMPT)
+            raise ValueError("the console's runs are started in Admin › Setup and their ids read from the "
+                             "install record (verify_runs); the engine never starts or asks for them")
+        check = CHECK_RUNS.get(shape)
+        if check is not None:
+            task = self._json(ctx, ["dispatch", "--json", f"--profile={check.profile}", f"--repo={repository}",
+                                    f"--label={label}", "-"], check.prompt_for(repository))
+            run_id = str(task.get("id") or task.get("task_id") or "")
+        elif shape == "single":
+            task = self._json(ctx, ["dispatch", "--json", f"--repo={repository}", f"--label={label}", "-"],
+                              SINGLE_PROMPT)
             run_id = str(task.get("id") or task.get("task_id") or "")
         else:
-            envelope = self._json(["workflow", "-", "--json", f"--repo={repository}", f"--label={label}"],
+            envelope = self._json(ctx, ["workflow", "-", "--json", f"--repo={repository}", f"--label={label}"],
                                   workflow_spec(repository, label))
             run_id = str((envelope.get("workflow") or {}).get("workflow_id") or "")
         if not run_id:
-            raise RuntimeError(f"swarm {'dispatch' if shape == 'single' else 'workflow'} returned no id")
+            raise RuntimeError(f"swarm {'workflow' if shape == 'workflow' else 'dispatch'} returned no id")
         return run_id
 
     def status(self, ctx: Any, shape: str, run_id: str) -> RunStatus:
         if shape == "workflow":
             # Exit 1 with `state: null` is "not derived on this read": still going.
-            report = self._json(["workflow-status", run_id, "--result", "--json"], ok=(0, 1))
+            report = self._json(ctx, ["workflow-status", run_id, "--result", "--json"], ok=(0, 1))
             rows = report.get("steps") or []
             prs = [str((row.get("produced") or {}).get("pull_request") or "") for row in rows]
             state = _state(report.get("state"))
             if state != "succeeded":
                 return RunStatus(state)
             tasks = [str(row.get("task_id") or "") for row in rows]
-            used = tuple(credential_use(task, self._json(["result", task, "--json"])) if task
+            used = tuple(credential_use(task, self._json(ctx, ["result", task, "--json"])) if task
                          else CredentialUse(str(row.get("step_id") or "a step"), UNRECORDED)
                          for task, row in zip(tasks, rows))
             return RunStatus(state, next((p for p in reversed(prs) if p), ""), used)
-        line = next((ln for ln in self._call(["status", run_id]).splitlines() if ln.startswith(run_id)), "")
+        line = next((ln for ln in self._call(ctx, ["status", run_id]).splitlines() if ln.startswith(run_id)), "")
         words = line.split()
         state = _state(words[1] if len(words) > 1 else "")
+        check = CHECK_RUNS.get(shape)
+        profile = words[2] if check is not None and len(words) > 2 and words[2] != "masked" else ""
         if state != "succeeded":
-            return RunStatus(state)
-        summary = self._json(["result", run_id, "--json"])
+            return RunStatus(state, profile=profile)
+        summary = self._json(ctx, ["result", run_id, "--json"])
+        used = (credential_use(run_id, summary),)
+        if check is not None:
+            artifact = None
+            if check.artifact:
+                code, out, _ = self.run([self.swarm, "--context", self._context(ctx), "artifact", run_id,
+                                         check.artifact], None, self._env(ctx))
+                artifact = out if code == 0 else None
+            return RunStatus(state, "", used, profile, artifact)
         pull = ((summary.get("git") or {}).get("pull_request") or {})
-        return RunStatus(state, str(pull.get("url") or "") if isinstance(pull, dict) else "",
-                         (credential_use(run_id, summary),))
+        return RunStatus(state, str(pull.get("url") or "") if isinstance(pull, dict) else "", used)
+
+
+# -- the check runs' own proof ----------------------------------------------------
+
+
+def job_stem(task_id: str) -> str:
+    """The worker Job's name stem for a task, as scheduler dispatch makes it:
+    `swarm-<id>-<generation>`, the id without `task_`, lower case, `-` for `_`."""
+    return "swarm-" + task_id.removeprefix("task_").lower().replace("_", "-") + "-"
+
+
+def sighting(job: Mapping[str, Any]) -> dict[str, Any]:
+    """What a poll saw of a worker Job: its name, namespace, and whether it ran
+    the live browser (pod label `swarm-live=enabled` and the `display`
+    sidecar)."""
+    meta = job.get("metadata") or {}
+    template = (job.get("spec") or {}).get("template") or {}
+    labels = (template.get("metadata") or {}).get("labels") or {}
+    pod = template.get("spec") or {}
+    sidecars = [c for c in (pod.get("initContainers") or []) + (pod.get("containers") or [])
+                if isinstance(c, dict) and c.get("name") == "display"]
+    return {"job": str(meta.get("name") or ""), "namespace": str(meta.get("namespace") or ""),
+            "live": labels.get("swarm-live") == "enabled" and bool(sidecars)}
+
+
+def check_proof(key: str, run_id: str, check: CheckRun, found: RunStatus, seen: Mapping[str, Any] | None,
+                repository: str, tenant: str) -> tuple[str, str]:
+    """`(proof, "")` when a succeeded check run proved itself, else `("", problem)`."""
+    named = f"{key} ({run_id})"
+    if found.profile != check.profile:
+        return "", f"{named} ran on {found.profile or 'no profile'}, not {check.profile}"
+    proof: list[str] = []
+    if check.on_cluster:
+        if not seen:
+            return "", f"{named}: its worker Job was never seen in the team's namespace swarm-tenant-{tenant}"
+        if check.live and not seen.get("live"):
+            return "", (f"{named}: Job {seen.get('job')} did not run the live browser (no swarm-live=enabled "
+                        "label and display sidecar)")
+        proof.append(f"Job {seen.get('job')} in {seen.get('namespace')}"
+                     + (" with the live display" if check.live else ""))
+    if check.live:
+        title = (found.artifact or "").strip()
+        if found.artifact is None:
+            return "", f"{named} left no {check.artifact}"
+        if repository not in title:
+            return "", f"{named}: the page it opened does not name {repository} ({title[:120]!r})"
+        proof.append(f"page {title[:120]!r}")
+    if check.artifact.endswith(".json"):
+        if found.artifact is None:
+            return "", f"{named} left no {check.artifact}"
+        try:
+            answer = json.loads(found.artifact)
+        except ValueError:
+            return "", f"{named}: {check.artifact} is not JSON"
+        answer = answer if isinstance(answer, dict) else {}
+        sha = str((answer.get("freshness") or {}).get("index_sha") or "") if isinstance(
+            answer.get("freshness"), dict) else ""
+        if not sha:
+            return "", f"{named}: {repository} is not indexed (no freshness.index_sha in {check.artifact})"
+        rows = answer.get("rows")
+        if not isinstance(rows, list) or not rows:
+            return "", f"{named}: the code graph answered no symbol for {repository}"
+        proof.append(f"index {sha[:12]}, {len(rows)} symbols")
+    return "; ".join(proof) or "succeeded", ""
 
 
 class EndToEndStep(_Base):
@@ -544,41 +842,113 @@ class EndToEndStep(_Base):
     kind = "wait"
     wait = RUNS_WAIT
     check_name = "end-to-end"
-    satisfies = ("other.verify-end-to-end", "other.verify-row")
+    satisfies = ("other.verify-end-to-end", "other.verify-row", "other.verify-gke", "other.verify-live-browser",
+                 "other.verify-code-intelligence")
     _explain = (
         "Done means a team can use it: a single task and a workflow from the plugin and from the console, "
-        "each to a pull request (D3). The plugin's runs sign in with the deployment's Desktop client, as a "
-        "teammate's will (lesson 18). Every run must clone and push with a GitHub App installation token, "
-        "never a personal access token (lesson 43): the worker records each task's credential kind in its "
-        "result summary (`forge_credential`), and the step fails naming any task whose kind is not "
-        "app_installation."
+        "each to a pull request (D3), and three check runs: a task on GKE (its Job seen in the team's "
+        "namespace), a live-browser task (claude-code-browser: the Job ran the display sidecar and the page "
+        "it read names the repository) and a code-intelligence read (the swarm-graph index answered with "
+        "its commit and a symbol). Every run goes to the NEW deployment through the engine's own swarm "
+        "context named after the hostname; the person's current context is never switched. The plugin's "
+        "runs sign in with the deployment's Desktop client, as a teammate's will (lesson 18). The console's "
+        "two are started in Admin › Setup and read from the install record. Every run must clone and push "
+        "with a GitHub App installation token, never a personal access token (lesson 43): the worker "
+        "records each task's credential kind in its result summary (`forge_credential`), and the step "
+        "fails naming any task whose kind is not app_installation."
     )
 
-    def __init__(self, gcp: Callable[[], VerifyGcp], ask: Ask, *, runs: Runs | None = None) -> None:
+    def __init__(self, gcp: Callable[[], VerifyGcp], ask: Ask, *, runs: Runs | None = None,
+                 kube: Callable[[Any], Kube] = kube_for) -> None:
         super().__init__(gcp, ask)
-        self._runs = runs if runs is not None else SwarmCli(ask)
+        self.runs: Runs = runs if runs is not None else SwarmCli(ask)
+        self._kube = kube
+
+    def _console_runs(self, ctx: Any, launched: dict[str, str]) -> dict[str, str]:
+        """Copy the console's two run ids from the console document swarm-api
+        wrote them into (INTERFACE SHEET), once both are there."""
+        if all(launched.get(key) for key in CONSOLE_KEYS.values()):
+            return launched
+        read = getattr(ctx, "read_console", None)
+        for name in sorted(getattr(ctx.state, "console", None) or {}):
+            found = read(name) if callable(read) else ctx.state.console.get(name)
+            runs = found.get("verify_runs") if isinstance(found, dict) else None
+            if isinstance(runs, dict) and all(runs.get(key) for key in CONSOLE_KEYS.values()):
+                launched = {**launched, **{key: str(runs[key]) for key in CONSOLE_KEYS.values()}}
+                remember(ctx, outputs={"verify_runs": dict(launched)})
+                break
+        return launched
+
+    def _look_for_jobs(self, ctx: Any, ids: Mapping[str, str]) -> dict[str, Any]:
+        """Sightings of the on-cluster check runs' worker Jobs, kept in
+        state.outputs: a finished Job is deleted after its TTL, so what a poll
+        saw while it ran is what a later poll judges."""
+        seen: dict[str, Any] = dict(ctx.outputs.get("verify_cluster_jobs") or {})
+        wanted = {}
+        for shape, check in CHECK_RUNS.items():
+            key = f"plugin-{shape}"
+            if check.on_cluster and ids.get(key) and not (seen.get(key) and (seen[key].get("live")
+                                                                              or not check.live)):
+                wanted[key] = ids[key]
+        if not wanted:
+            return seen
+        namespace = f"swarm-tenant-{ctx.outputs.get('verify_tenant')}"
+        code, out, err = self._kube(ctx)("get", "jobs", f"--namespace={namespace}", "-o", "json")
+        if code != 0:
+            raise RuntimeError(f"kubectl get jobs in {namespace} failed: {err.strip()[:300]}")
+        jobs = _rows(json.loads(out or "{}"), "items")
+        for key, run_id in wanted.items():
+            job = next((j for j in jobs if str((j.get("metadata") or {}).get("name") or "").startswith(
+                job_stem(run_id))), None)
+            if job is not None:
+                seen[key] = sighting(job)
+        if seen != dict(ctx.outputs.get("verify_cluster_jobs") or {}):
+            remember(ctx, outputs={"verify_cluster_jobs": seen})
+        return seen
 
     def _check(self, ctx: Any) -> Observation:
         launched: dict[str, str] = dict(ctx.outputs.get("verify_runs") or {})
-        if len(launched) < len(RUNS):
-            return Observation(UNMET, "the four verification runs have not all been started")
-        done, problems, prs = 0, [], {}
+        plugin = [f"{surface}-{shape}" for surface, shape in RUNS if surface == "plugin"]
+        if not all(launched.get(key) for key in plugin):
+            return Observation(UNMET, "the plugin's verification runs have not all been started")
+        launched = self._console_runs(ctx, launched)
+        ids = {f"{surface}-{shape}": launched.get(CONSOLE_KEYS[shape] if surface == "console"
+                                                  else f"{surface}-{shape}", "")
+               for surface, shape in RUNS}
+        seen = self._look_for_jobs(ctx, ids)
+        repository = str(ctx.outputs.get("verify_repository") or "")
+        tenant = str(ctx.outputs.get("verify_tenant") or "")
+        done, problems, prs, checks, waiting = 0, [], {}, {}, []
         for surface, shape in RUNS:
             key = f"{surface}-{shape}"
-            found = self._runs.status(ctx, shape, launched[key])
+            run_id = ids[key]
+            if not run_id:
+                waiting.append(f"{key} (started in the console's Admin › Setup; its id is not recorded yet)")
+                continue
+            found = self.runs.status(ctx, shape, run_id)
+            check = CHECK_RUNS.get(shape)
             if found.state in ("failed", "cancelled"):
-                problems.append(f"{key} ({launched[key]}) {found.state}")
-            elif found.state == "succeeded" and not found.pull_request:
-                problems.append(f"{key} ({launched[key]}) finished without a pull request")
-            elif found.state == "succeeded":
+                problems.append(f"{key} ({run_id}) {found.state}")
+            elif found.state != "succeeded":
+                waiting.append(f"{key} ({run_id})")
+            elif check is None and not found.pull_request:
+                problems.append(f"{key} ({run_id}) finished without a pull request")
+            else:
                 wrong = [use for use in found.credentials if use.kind != APP_INSTALLATION]
                 if wrong or not found.credentials:
                     said = "; ".join(use.words() for use in wrong) or "no task's credential was read"
-                    problems.append(f"{key} ({launched[key]}) did not clone and push with a GitHub App "
+                    problems.append(f"{key} ({run_id}) did not clone and push with a GitHub App "
                                     f"installation token (lesson 43): {said}")
                     continue
+                if check is not None:
+                    proof, problem = check_proof(key, run_id, check, found, seen.get(key), repository, tenant)
+                    if problem:
+                        problems.append(problem)
+                        continue
+                    checks[key] = proof
+                else:
+                    prs[key] = found.pull_request
                 done += 1
-                prs[key] = found.pull_request
         result = "failed" if problems else ("passed" if done == len(RUNS) else None)
         write_progress(ctx, self.check_name, len(QUICK_CHECKS) + done, result=result)
         if problems:
@@ -587,35 +957,37 @@ class EndToEndStep(_Base):
             # (`result: failed`) until the bound; nothing reruns by itself.
             return Observation(UNMET, "; ".join(problems))
         if done < len(RUNS):
-            return Observation(WAITING, f"{done} of {len(RUNS)} runs have opened their pull request")
-        return Observation(MET, "four runs, each to a pull request, each task cloning and pushing with a "
-                                "GitHub App installation token (lesson 43)",
-                           {"verify_pull_requests": prs,
-                            "verify_forge_credential": {key: APP_INSTALLATION for key in prs}})
+            return Observation(WAITING, f"{done} of {len(RUNS)} runs have passed; waiting for "
+                                        + ", ".join(waiting))
+        return Observation(MET, "four runs, each to a pull request, and the GKE, live-browser and "
+                                "code-intelligence checks, each task cloning and pushing with a GitHub App "
+                                "installation token (lesson 43)",
+                           {"verify_pull_requests": prs, "verify_checks": checks,
+                            "verify_forge_credential": {key: APP_INSTALLATION for key in (*prs, *checks)}})
 
     def plan(self, ctx: Any) -> Plan:
-        return Plan("run a single task and a workflow from the plugin, and from the console, each to a PR",
+        return Plan("on the new deployment's own swarm context: a single task and a workflow from the plugin, "
+                    "each to a PR, the GKE, live-browser and code-intelligence checks, and the console's two "
+                    "runs from Admin › Setup",
                     tuple(f"{surface}: {shape}" for surface, shape in RUNS))
 
     def apply(self, ctx: Any, plan: Plan) -> None:
+        self.runs.target(ctx)
         repository = str(ctx.outputs.get("verify_repository") or "")
         if not repository:
-            repository = self._ask(ctx, self.id, "A repository the first team's GitHub App installation covers, "
-                                                 "for the verification PRs (owner/name)").strip()
-            if repository.count("/") != 1:
-                raise ValueError(f"{repository!r} is not owner/name")
+            repository = self.runs.repository(ctx)
             remember(ctx, outputs={"verify_repository": repository})
         launched: dict[str, str] = dict(ctx.outputs.get("verify_runs") or {})
         for surface, shape in RUNS:
             key = f"{surface}-{shape}"
-            if key not in launched:
-                launched[key] = self._runs.launch(ctx, surface, shape, repository, f"swarm-install-verify-{key}")
+            if surface == "plugin" and key not in launched:
+                launched[key] = self.runs.launch(ctx, surface, shape, repository, f"swarm-install-verify-{key}")
                 remember(ctx, outputs={"verify_runs": dict(launched)})
         write_progress(ctx, self.check_name, len(QUICK_CHECKS))
 
 
 def build_steps(gcp: Callable[[], VerifyGcp] = VERIFY_GCP, ask: Ask = ASK) -> list[Any]:
-    """Stage 14 in order: the cheap reads first, then the four runs."""
+    """Stage 14 in order: the cheap reads first, then the seven runs."""
     return [
         SchedulerTargetsStep(gcp, ask),
         DigestsStep(gcp, ask),
