@@ -1,7 +1,7 @@
 """scripts/release-home.sh stands up the release home, idempotently and guarded
 (DAYONE-RELHOME-1; part of #2688).
 
-The release home is project `swarmcloud` (D25; `swarmcloud-releases` if that
+The release home is project `swarmcloud-prod` (D25; display name `swarmcloud`; `swarmcloud-releases` if that
 id had been taken, D23): an Artifact Registry repository `swarmcloud` (us,
 Docker), a bucket `gs://swarmcloud` (uniform access, versioning) and a KMS key
 `swarmcloud-release/cosign` (asymmetric P-256) that signs the release, each
@@ -35,7 +35,7 @@ REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "release-home.sh"
 COMMON = REPO / "scripts" / "lib" / "common.sh"
 
-PROJECT = "swarmcloud"
+PROJECT = "swarmcloud-prod"
 BUCKET = "gs://swarmcloud"
 ALL_USERS = "allUsers"
 
@@ -414,3 +414,13 @@ def test_ignores_assume_yes_and_starts_strict() -> None:
     assert os.access(SCRIPT, os.X_OK)
     assert 'source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"' in text
     assert "unset SWARM_ASSUME_YES" in text
+
+
+def test_release_scripts_never_wait_on_a_gcloud_prompt():
+    """A first run against a project with Artifact Registry not yet enabled hung
+    ten minutes on gcloud's "enable it and retry? (y/N)" (2026-10-30). Both
+    release scripts turn gcloud's prompts off before their first call."""
+    for name in ("release-home.sh", "release/publish.sh"):
+        text = (REPO / "scripts" / name).read_text()
+        assert "export CLOUDSDK_CORE_DISABLE_PROMPTS=1" in text, name
+

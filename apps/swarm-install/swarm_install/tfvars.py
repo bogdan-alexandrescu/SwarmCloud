@@ -44,7 +44,7 @@ INPUTS_FILE = "swarm-install.auto.tfvars.json"
 INPUTS_PREFIX = "swarm-install/inputs/"
 
 #: The release-home registry images are copied from (D21, RELHOME-1).
-RELEASE_REGISTRY = "us-docker.pkg.dev/swarmcloud/swarmcloud"
+RELEASE_REGISTRY = "us-docker.pkg.dev/swarmcloud-prod/swarmcloud"
 #: The project's own repository (`var.artifact_registry_repository`'s default).
 REPOSITORY = "swarm"
 

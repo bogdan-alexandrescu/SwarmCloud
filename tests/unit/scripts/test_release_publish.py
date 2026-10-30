@@ -26,8 +26,8 @@ REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "release" / "publish.sh"
 BUCKET = "gs://swarmcloud"
 RELEASE = f"{BUCKET}/releases/{VERSION}"
-HOME_REGISTRY = "us-docker.pkg.dev/swarmcloud/swarmcloud"
-KMS = "gcpkms://projects/swarmcloud/locations/us/keyRings/swarmcloud-release/cryptoKeys/cosign"
+HOME_REGISTRY = "us-docker.pkg.dev/swarmcloud-prod/swarmcloud"
+KMS = "gcpkms://projects/swarmcloud-prod/locations/us/keyRings/swarmcloud-release/cryptoKeys/cosign"
 
 FAKE = r'''#!{python}
 """A fake {tool}: logs argv, answers reads from $FAKE_STATE."""

@@ -9,7 +9,7 @@
 #   ... [--project swarmcloud-releases]   (D23: had `swarmcloud` been taken)
 #
 # Run by a PERSON with rights in the release home, never by CI: CI holds no
-# grant in project `swarmcloud`, so D22's "no IAM change for CI" holds. DIR is
+# grant in project `swarmcloud-prod`, so D22's "no IAM change for CI" holds. DIR is
 # what scripts/release/assemble.sh wrote (release-public.yml uploads it as a
 # workflow artefact); --source-images is the build record it was assembled
 # from, which says where CI's registry holds each digest.
@@ -44,6 +44,13 @@
 # Exit codes: 0 done, 1 refused or failed, 2 bad arguments.
 
 set -euo pipefail
+
+# Never wait on a prompt nobody can see. On a project where an API is not yet
+# enabled, `gcloud ... describe` asks "enable it and retry? (y/N)" and blocks
+# on stdin; the first real run of this script against swarmcloud-prod hung there
+# for ten minutes (2026-10-30). With prompts off it fails at once, which reads
+# as "not there yet", and the enable below runs.
+export CLOUDSDK_CORE_DISABLE_PROMPTS=1
 # shellcheck source-path=SCRIPTDIR/..
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/lib/common.sh"
@@ -57,8 +64,8 @@ fi
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # The release home, as scripts/release-home.sh creates it (D23, D25).
-RELEASE_PROJECTS=("swarmcloud" "swarmcloud-releases")
-PROJECT="swarmcloud"
+RELEASE_PROJECTS=("swarmcloud-prod" "swarmcloud-releases")
+PROJECT="swarmcloud-prod"
 LOCATION="us"
 REPOSITORY="swarmcloud"
 BUCKET="gs://swarmcloud"

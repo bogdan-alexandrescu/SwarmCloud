@@ -9,7 +9,7 @@ digest after its signature is verified (design §4, §6.1; D21; lessons 9, 13).
 The release's `images.json` (`{image: "sha256:<digest>"}`) is read through the
 release's signed `SHA256SUMS`, so a tampered bucket cannot name other digests.
 The images come from the release home's registry
-(`us-docker.pkg.dev/swarmcloud/swarmcloud`) and land in the project's own
+(`us-docker.pkg.dev/swarmcloud-prod/swarmcloud`) and land in the project's own
 (`<region>-docker.pkg.dev/<project>/swarm`): after the install nothing in the
 deployment reads the release home (D21).
 """
