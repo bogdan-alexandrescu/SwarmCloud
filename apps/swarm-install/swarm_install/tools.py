@@ -1,5 +1,8 @@
-"""The two tools stage 4 needs, pinned: cosign and gcrane (manifest
-`local-tool.cosign`, `local-tool.gcrane`; design §6.1, D21).
+"""The local tools the installer fetches itself, pinned: cosign and gcrane
+(stage 4; manifest `local-tool.cosign`, `local-tool.gcrane`; design §6.1, D21),
+terraform, kubectl and jq (preflight, `local-tool.terraform`, `.kubectl`, `.jq`)
+and the Google Cloud SDK (`local-tool.gcloud`, on the person's yes;
+DAYONE-INSTALL-TOOLS-AUTO). A new company needs only curl and a Google sign-in.
 
 Each is downloaded from its project's GitHub release at a pinned version, and
 the bytes are checked against a pinned SHA-256 **before anything is written**:
@@ -18,16 +21,29 @@ import hashlib
 import io
 import os
 import platform as _platform
+import shutil
 import tarfile
-from collections.abc import Callable
+import zipfile
+from collections.abc import Callable, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 
 COSIGN_VERSION = "2.4.1"
 GCRANE_VERSION = "0.20.2"
+#: Exact: 1.3.6 refuses the state and a newer one diverges plans (lesson 12).
+TERRAFORM_VERSION = "1.16.2"
+#: The newest 1.36 patch, the one the images carry (docs/versions.md): within
+#: one minor of the GKE control plane, as kubectl must be.
+KUBECTL_VERSION = "1.36.6"
+JQ_VERSION = "1.8.2"
+GCLOUD_VERSION = "591.0.0"
 
 _COSIGN = f"https://github.com/sigstore/cosign/releases/download/v{COSIGN_VERSION}"
 _GCRANE = f"https://github.com/google/go-containerregistry/releases/download/v{GCRANE_VERSION}"
+_TERRAFORM = f"https://releases.hashicorp.com/terraform/{TERRAFORM_VERSION}/terraform_{TERRAFORM_VERSION}"
+_KUBECTL = f"https://dl.k8s.io/release/v{KUBECTL_VERSION}/bin"
+_JQ = f"https://github.com/jqlang/jq/releases/download/jq-{JQ_VERSION}"
+_GCLOUD = f"https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-{GCLOUD_VERSION}"
 
 
 @dataclass(frozen=True)
@@ -36,7 +52,7 @@ class Pinned:
     version: str
     url: str
     sha256: str
-    #: The binary's path inside a `.tar.gz`; `None` when the download is the binary.
+    #: The binary's path inside a `.tar.gz` or `.zip`; `None` when the download is the binary.
     member: str | None = None
 
 
@@ -67,7 +83,70 @@ PINS: dict[tuple[str, str, str], Pinned] = {
     ("gcrane", "darwin", "arm64"): Pinned(
         "gcrane", GCRANE_VERSION, f"{_GCRANE}/go-containerregistry_Darwin_arm64.tar.gz",
         "b47a8291d1069656bcfb8346dc9494f03e734d7a4058961fa53f0dfc9cb41abb", "gcrane"),
+    # HashiCorp's terraform_1.16.2_SHA256SUMS (releases.hashicorp.com), read 2026-10-30.
+    ("terraform", "linux", "amd64"): Pinned(
+        "terraform", TERRAFORM_VERSION, f"{_TERRAFORM}_linux_amd64.zip",
+        "0d17011f0c4664539b164b044903d04e296c86c13cb9f28040076c65cfb3985a", "terraform"),
+    ("terraform", "linux", "arm64"): Pinned(
+        "terraform", TERRAFORM_VERSION, f"{_TERRAFORM}_linux_arm64.zip",
+        "c040bd1e3122b4290f70f74288d8c5a54ddd4254a3e52a29e7cc666653f50a0a", "terraform"),
+    ("terraform", "darwin", "amd64"): Pinned(
+        "terraform", TERRAFORM_VERSION, f"{_TERRAFORM}_darwin_amd64.zip",
+        "275f50ed172af2f23e15a2ce7e3251aac8b17b768f2e62eceb81c353cd106abf", "terraform"),
+    ("terraform", "darwin", "arm64"): Pinned(
+        "terraform", TERRAFORM_VERSION, f"{_TERRAFORM}_darwin_arm64.zip",
+        "7c0a0b31c8aa541351369bcf7b62a7289fbc21de7e577669aeba6d42f4e6cc41", "terraform"),
+    # dl.k8s.io's own kubectl.sha256 beside each binary (release/v1.36.6/bin/<os>/<arch>/), read 2026-10-30.
+    ("kubectl", "linux", "amd64"): Pinned(
+        "kubectl", KUBECTL_VERSION, f"{_KUBECTL}/linux/amd64/kubectl",
+        "29818b6729dc9262b692307470d0558d027725e738be5dd47c760261868a2634"),
+    ("kubectl", "linux", "arm64"): Pinned(
+        "kubectl", KUBECTL_VERSION, f"{_KUBECTL}/linux/arm64/kubectl",
+        "35507ef408c3d38849e5d3203e18f8e861db822aa664101a9ced0869edd06046"),
+    ("kubectl", "darwin", "amd64"): Pinned(
+        "kubectl", KUBECTL_VERSION, f"{_KUBECTL}/darwin/amd64/kubectl",
+        "2e22d382f2423c88d9d076246f860bb3d5c743dd279ca63e113474bb88382426"),
+    ("kubectl", "darwin", "arm64"): Pinned(
+        "kubectl", KUBECTL_VERSION, f"{_KUBECTL}/darwin/arm64/kubectl",
+        "1cf735c3d35ccfec28d0618784cb06a4614d2c42aade28b6be0eab76a2ffb623"),
+    # jq's sha256sum.txt on its jq-1.8.2 GitHub release, read 2026-10-30.
+    ("jq", "linux", "amd64"): Pinned(
+        "jq", JQ_VERSION, f"{_JQ}/jq-linux-amd64",
+        "b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f"),
+    ("jq", "linux", "arm64"): Pinned(
+        "jq", JQ_VERSION, f"{_JQ}/jq-linux-arm64",
+        "8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b852309"),
+    ("jq", "darwin", "amd64"): Pinned(
+        "jq", JQ_VERSION, f"{_JQ}/jq-macos-amd64",
+        "e94b266e3c26690550006abe63152b782280f4e14374accdf04cbde844f00bc0"),
+    ("jq", "darwin", "arm64"): Pinned(
+        "jq", JQ_VERSION, f"{_JQ}/jq-macos-arm64",
+        "2d75340ba57a4b4b4c8708a21c2dc8e958a48aaa8bba13b27f77f6e4c0eca07e"),
 }
+
+#: (os, arch) -> the Google Cloud SDK's versioned archive, a whole tree rather
+#: than one binary. Google publishes no sums file for the versioned archives
+#: (its install page lists digests only for the unversioned "latest" ones), so
+#: these are the SHA-256 of each versioned archive as downloaded on 2026-10-30,
+#: when the unversioned linux-x86_64 archive (also 591.0.0) matched the page's
+#: published 8b8c1be1...ec4326. A bump re-reads the four in one commit.
+SDK_PINS: dict[tuple[str, str], Pinned] = {
+    ("linux", "amd64"): Pinned(
+        "gcloud", GCLOUD_VERSION, f"{_GCLOUD}-linux-x86_64.tar.gz",
+        "78c570f5fcfe58a9311bd98c06b75530595e3cae6277aad75a676a39e6ee7b63"),
+    ("linux", "arm64"): Pinned(
+        "gcloud", GCLOUD_VERSION, f"{_GCLOUD}-linux-arm.tar.gz",
+        "f5e5df0433f77c0e7f5df9fd4bce2e46c7b7967e79cf66e31b1164d3d4c86546"),
+    ("darwin", "amd64"): Pinned(
+        "gcloud", GCLOUD_VERSION, f"{_GCLOUD}-darwin-x86_64.tar.gz",
+        "89c3ca942eb609293dff5b549ec6bae5d9ec41633a132aeb8dd8087a915ab3a0"),
+    ("darwin", "arm64"): Pinned(
+        "gcloud", GCLOUD_VERSION, f"{_GCLOUD}-darwin-arm.tar.gz",
+        "85cb726919838faff48bfba7cf676b691b0202bec7c25aabdc116649c6843242"),
+}
+
+#: Where the SDK goes on the person's yes (the prompt names this path).
+SDK_HOME = "~/.swarm"
 
 _ARCH = {"x86_64": "amd64", "amd64": "amd64", "arm64": "arm64", "aarch64": "arm64"}
 
@@ -118,6 +197,12 @@ def checked(pin: Pinned, data: bytes) -> bytes:
 def _binary(pin: Pinned, data: bytes) -> bytes:
     if pin.member is None:
         return data
+    if pin.url.endswith(".zip"):
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            try:
+                return archive.read(pin.member)
+            except KeyError:
+                raise LookupError(f"{pin.url} holds no {pin.member}") from None
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
         member = archive.extractfile(pin.member)
         if member is None:
@@ -145,3 +230,85 @@ def ensure(name: str, *, directory: Path | None = None, fetch: Callable[[str], b
     partial.replace(target)
     record.write_text(pin.sha256 + "\n")
     return target
+
+
+def bin_dir() -> Path:
+    """The directory of `<tool>` links to the pinned binaries, first on the
+    engine's PATH (`use_bin_dir`), so its subprocesses run the pinned ones."""
+    return cache_dir() / "bin"
+
+
+def link(name: str, binary: Path, *, directory: Path | None = None) -> Path:
+    """`directory/name` -> `binary`, replacing whatever link was there."""
+    where = directory or bin_dir()
+    where.mkdir(parents=True, exist_ok=True)
+    target = where / name
+    partial = where / f".{name}.partial"
+    if partial.is_symlink() or partial.exists():
+        partial.unlink()
+    partial.symlink_to(binary)
+    partial.replace(target)
+    return target
+
+
+def use_bin_dir(directory: Path | None = None, environ: MutableMapping[str, str] | None = None) -> bool:
+    """Put `directory` first on PATH when it holds a link; True when it does."""
+    where = directory or bin_dir()
+    env: MutableMapping[str, str] = os.environ if environ is None else environ
+    if not where.is_dir() or not any(where.iterdir()):
+        return False
+    parts = [p for p in env.get("PATH", "").split(os.pathsep) if p and p != str(where)]
+    env["PATH"] = os.pathsep.join([str(where), *parts])
+    return True
+
+
+def _extract(archive: tarfile.TarFile, into: Path) -> None:
+    if not hasattr(tarfile, "data_filter"):  # Python 3.11.4; uv's managed Pythons all have it
+        raise RuntimeError("this Python cannot extract an archive safely (3.11.4 or newer is needed)")
+    archive.extractall(into, filter="data")
+
+
+def install_sdk(*, home: Path | None = None, fetch: Callable[[str], bytes] = _fetch,
+                system: tuple[str, str] | None = None) -> Path:
+    """The pinned Google Cloud SDK in `home/google-cloud-sdk`; its `bin/gcloud`.
+
+    The archive is checked before anything is unpacked, unpacked beside the
+    target and moved into place whole, with its digest recorded inside it. A
+    tree there without that record is the person's own and is never touched."""
+    os_name, arch = system or this_platform()
+    try:
+        pin = SDK_PINS[(os_name, arch)]
+    except KeyError:
+        raise LookupError(f"no pinned Google Cloud SDK for {os_name}/{arch}; this release supports "
+                          f"{sorted(SDK_PINS)}") from None
+    where = home or Path(SDK_HOME).expanduser()
+    target = where / "google-cloud-sdk"
+    record = target / ".swarm-sha256"
+    gcloud = target / "bin" / "gcloud"
+    if target.exists():
+        if not record.is_file():
+            raise FileExistsError(f"{target} exists and was not installed by swarm; move it aside or put its "
+                                  "bin directory on PATH, then run swarm install again")
+        if record.read_text().strip() == pin.sha256 and gcloud.is_file():
+            return gcloud
+    data = checked(pin, fetch(pin.url))
+    partial = where / ".google-cloud-sdk.partial"
+    if partial.exists():
+        shutil.rmtree(partial)
+    partial.mkdir(parents=True)
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
+        _extract(archive, partial)
+    unpacked = partial / "google-cloud-sdk"
+    if not (unpacked / "bin" / "gcloud").is_file():
+        shutil.rmtree(partial)
+        raise LookupError(f"{pin.url} holds no google-cloud-sdk/bin/gcloud")
+    (unpacked / ".swarm-sha256").write_text(pin.sha256 + "\n")
+    if target.exists():  # an older pinned SDK this installer put there (its record says so)
+        retired = where / ".google-cloud-sdk.old"
+        if retired.exists():
+            shutil.rmtree(retired)
+        target.replace(retired)
+        shutil.rmtree(retired)
+    unpacked.replace(target)
+    shutil.rmtree(partial)
+    return gcloud
