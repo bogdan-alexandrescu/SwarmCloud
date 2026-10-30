@@ -49,3 +49,61 @@ def test_the_first_teams_grant_is_a_team_field_on_both_sides() -> None:
     path = "swarm-install/{env}/console/teams/{id}"
     assert {"grant", "smoke"} <= api_record.SWARM_API_DOCUMENTS[path]
     assert {"grant", "smoke"} <= _api_rows()[path]
+
+
+# --------------------------------------------------------------------------
+# the install's sizing and mode (DAYONE-SETUP-API-3)
+# --------------------------------------------------------------------------
+
+
+SIZING = {
+    "mode": "individual", "members": 1,
+    "pool_limits": {"global": 4, "default_tenant": 2, "provider_tenant": 2,
+                    "resource_classes": {"small": 2}, "runner_profiles": {"claude-code": 2},
+                    "backends": {"gke": 2}},
+    "service_max_instances": {"swarm-api": 2, "swarm-scheduler": 1,
+                              "swarm-quota-broker": 1, "swarm-reconciler": 1},
+    "pool_accounts": 1, "budget_usd": 150,
+}
+
+
+def _state(**outputs):
+    from swarm_install.state import InstallState
+
+    return InstallState(project="acme-swarm", environment="prod", release="1.0.0",
+                        region="us-central1", hostname="swarm.example.com", outputs=outputs)
+
+
+def test_the_engine_writes_the_installs_sizing_and_installer() -> None:
+    """The INTERFACE SHEET's `state.outputs["sizing"]` goes into the engine's
+    document as `sizing`, whole, with the installer's email beside it: the two
+    things Admin › Setup reads to know a one-person install from a team's."""
+    record = engine_record.InstallRecord(env="prod", documents=None)  # type: ignore[arg-type]
+    data = record.document_for(_state(sizing=SIZING, installer="ada@example.com"), {})
+    assert data["sizing"] == SIZING
+    assert data["installer"] == "ada@example.com"
+    engine_row = engine_record.WRITERS[api_record.ENGINE_DOCUMENT][1]
+    assert set(data) <= engine_row
+
+
+def test_an_install_with_no_sizing_yet_writes_none() -> None:
+    record = engine_record.InstallRecord(env="prod", documents=None)  # type: ignore[arg-type]
+    data = record.document_for(_state(), {})
+    assert data["sizing"] is None and data["installer"] is None
+
+
+def test_every_engine_field_swarm_api_reads_is_in_the_engines_row() -> None:
+    """swarm-api reads the engine's document; each field it names there is one
+    the engine writes, or the page shows a value that never arrives."""
+    engine_row = engine_record.WRITERS[api_record.ENGINE_DOCUMENT][1]
+    assert {"sizing", "installer"} <= api_record.ENGINE_FIELDS_READ <= engine_row
+    assert set(api_record.SIZING_FIELDS) == set(SIZING)
+
+
+def test_the_personal_workspace_document_is_named_alike() -> None:
+    """A one-person install's first workspace, its grant and its smoke live in
+    `console/personal`, a swarm-api document on both sides."""
+    assert api_record.PERSONAL == engine_record.PERSONAL == "personal"
+    path = f"swarm-install/{{env}}/console/{api_record.PERSONAL}"
+    assert {"owner", "workspace", "grant", "smoke"} <= api_record.SWARM_API_DOCUMENTS[path]
+    assert api_record.SWARM_API_DOCUMENTS[path] == _api_rows()[path]
