@@ -35,7 +35,7 @@ roll back (docs/design/day-one-plan.md §9.3, lane DAYONE-UPGRADE-1, part of
 **Resume.** Progress is in the install state (`outputs["upgrade"]`): the
 target, the release it started from, the steps done and the one that
 failed. `swarm upgrade --to V` again resumes at the failed step; a roll back
-drops infra and every step after it from `done`, so they run again.
+drops the drain, infra and every step after it from `done`, so they run again.
 
 **The policy diff.** Each release's rendered policies are compared by
 `(kind, name)`: a policy only the previous release has is deleted, and one
@@ -459,7 +459,8 @@ class Upgrade:
         self.world.copy_images(plan.previous, parse_images_json(self.world.fetch(plan.previous, "images.json")))
         self.world.apply_root("infra", plan.previous)
         progress = self._progress()
-        done = [s for s in progress.get("done") or () if ORDER.index(s) < ORDER.index(INFRA)]
+        # Dispatch resumes below, so the next run drains again, as after _stopped.
+        done = [s for s in progress.get("done") or () if ORDER.index(s) < ORDER.index(INFRA) and s != DRAIN]
 
         def change(state: Any) -> None:
             state.release = plan.previous

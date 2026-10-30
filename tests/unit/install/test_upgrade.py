@@ -325,6 +325,21 @@ def test_rollback_reapplies_previous_digests(tmp_path: Path) -> None:
     assert world.calls[-1] == ("resume_dispatch",)
 
 
+def test_resume_after_rollback_drains_first(tmp_path: Path) -> None:
+    world = FakeWorld()
+    world.check_results = [("digests", "unmet", "swarm-api serves an old revision")]
+    flow, store, _ = make(tmp_path, world)
+    with pytest.raises(up.UpgradeFailed, match="rolled back"):
+        flow.run(NEW)
+    assert up.DRAIN not in store.load().outputs[up.UPGRADE_KEY]["done"], "the rollback resumed dispatch"
+    world.check_results = [("digests", "met", "ok")]
+    world.calls.clear()
+    assert flow.run(NEW) == ExitCode.OK
+    applied = steps_of(world)
+    assert applied[0] == up.DRAIN
+    assert applied.index(up.DRAIN) < applied.index(f"infra:{NEW}")
+
+
 def test_resume_at_failed_step(tmp_path: Path) -> None:
     world = FakeWorld()
     world.fail["apply_namespace:ops"] = RuntimeError("kubectl apply failed")
