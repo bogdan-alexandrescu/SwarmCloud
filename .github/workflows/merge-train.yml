@@ -74,7 +74,7 @@ jobs:
     # starts only on schedule, workflow_run of a train/ branch, or dispatch,
     # never `pull_request` (test_fork_prs_off_self_hosted.py checks the
     # triggers). SELF_HOSTED_CI=off sends it back to ubuntu-24.04.
-    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     # The merge App's key (MERGE_APP_PRIVATE_KEY) lives in environment
     # `repo-secrets`, whose deployment branches are `main` only (BGD,
     # 2026-10-23, REPO-SECRETS-ENV; docs/ci.md): a repository secret is read

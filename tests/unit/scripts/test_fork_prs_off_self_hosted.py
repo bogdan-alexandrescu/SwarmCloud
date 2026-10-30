@@ -32,7 +32,7 @@ The approved expression, with its capacity escape hatch and main's clause: the r
 SELF_HOSTED_CI set to `off` sends every guarded job back to GitHub-hosted
 ubuntu-24.04 (unset, or anything else, means the pool):
 
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
 
 THE SHORT FORM. A workflow no fork's pull request can start does not need
 the fork clause, and two of the repository's own guards forbid the text it is
@@ -40,7 +40,7 @@ made of in those files (`pull_request.head.repo` in auto-merge.yml, which
 must never touch a pull request's code; the repository's name in accept.yml,
 which must not name the public repository):
 
-    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
 
 It is accepted ONLY for a file in SHORT_FORM_WORKFLOWS whose `on:` has no
 `pull_request` trigger (a fork's `pull_request` runs the fork's own copy of the
@@ -308,18 +308,18 @@ APPROVED = (
     " || ((github.event_name == 'pull_request'"
     " || github.event_name == 'pull_request_target')"
     " && github.event.pull_request.head.repo.full_name != github.repository))"
-    " && 'ubuntu-24.04' || fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"bogdan-ci\"]') }}"
+    " && 'ubuntu-24.04' || fromJSON(format('[\"self-hosted\",\"linux\",\"x64\",\"{0}\"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}"
 )
 SHORT = (
     "${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04'"
-    " || fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"bogdan-ci\"]') }}"
+    " || fromJSON(format('[\"self-hosted\",\"linux\",\"x64\",\"{0}\"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}"
 )
 #: The spelling PR 1174 approved, before the escape hatch. Fork-safe, but no
 #: longer the one spelling: a job still using it ignores SELF_HOSTED_CI=off.
 PRE_HATCH = (
     "${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_target')"
     " && github.event.pull_request.head.repo.full_name != github.repository"
-    " && 'ubuntu-latest' || fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"bogdan-ci\"]') }}"
+    " && 'ubuntu-latest' || fromJSON(format('[\"self-hosted\",\"linux\",\"x64\",\"{0}\"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}"
 )
 
 
