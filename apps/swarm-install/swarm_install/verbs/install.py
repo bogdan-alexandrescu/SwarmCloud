@@ -4,6 +4,7 @@ install stands (docs/design/day-one-install.md §2.1-§2.5, §6.3).
     swarm install --project P --env prod --version V --domain H
     swarm install --project P --dry-run [--json-events]
     swarm install --project P --status [--json]
+    swarm install --project P --repair <check>
 
 **Run.** The steps come from `swarm_install.steps` (discovered); the engine
 checks each, skips what is done, applies what is not and records the state
@@ -61,6 +62,7 @@ from ..events import Events
 from ..exitcodes import MET, UNMET, ExitCode, for_statuses
 from ..lease import Lease
 from ..record import stages_of
+from ..repair import RepairEngine, RepairUsage, repair
 from ..state import (
     STATE_OBJECT,
     GcsObjectStore,
@@ -159,6 +161,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                       help="check every step and print each unmet step's plan; write nothing")
     mode.add_argument("--status", action="store_true",
                       help="where the install stands, read from its state; write nothing")
+    mode.add_argument("--repair", metavar="CHECK", default=None,
+                      help="re-run the one step that satisfies this manifest entry (swarm doctor names it), "
+                      "after a typed confirmation")
     parser.add_argument("--json-events", action="store_true",
                         help="write the engine's events as one JSON object per line")
     parser.add_argument("--json", action="store_true", help="with --status: one JSON document")
@@ -252,7 +257,7 @@ def _ask_missing(args: argparse.Namespace) -> int | None:
         if not tty:
             raise _Usage("no --project given and no terminal to ask on: pass --project")
         args.project = _ask("Google Cloud project to create or use:", _project)
-    if args.status or args.dry_run:
+    if args.status or args.dry_run or getattr(args, "repair", None) is not None:
         return None
     recorded = _recorded(args.project)
     missing = [
@@ -369,7 +374,12 @@ def run(args: argparse.Namespace) -> int:
         stopped = _ask_missing(args)
         if stopped is not None:
             return stopped
+        if getattr(args, "repair", None) is not None:
+            return _install(args, repair_check=args.repair)
         return _status(args) if args.status else _install(args)
+    except RepairUsage as exc:
+        print(f"swarm install --repair: {exc}", file=sys.stderr)
+        return ExitCode.USAGE
     except _Usage as exc:
         print(f"swarm install: {exc}", file=sys.stderr)
         return ExitCode.USAGE
@@ -378,7 +388,7 @@ def run(args: argparse.Namespace) -> int:
         return ExitCode.REFUSED
 
 
-def _install(args: argparse.Namespace) -> int:
+def _install(args: argparse.Namespace, repair_check: str | None = None) -> int:
     steps = discover_steps()
     if not steps:
         print(
@@ -418,7 +428,7 @@ def _install(args: argparse.Namespace) -> int:
         if attached is not None
         else Lease.local(holder, clock.now)
     )
-    engine = Engine(
+    engine = (RepairEngine if repair_check is not None else Engine)(
         steps,
         store=store,
         lease=lease,
@@ -429,6 +439,10 @@ def _install(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
         confirm=_typed,
     )
+    if repair_check is not None:
+        # The one step the entry names, after its own typed confirmation
+        # (swarm_install.repair); SWARM_ASSUME_YES is never read for it.
+        return int(repair(repair_check, manifest=manifest, engine=engine, confirm=_typed))
     return int(engine.run(stages=args.stage).exit_code)
 
 
