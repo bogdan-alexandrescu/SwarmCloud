@@ -27,6 +27,17 @@ install has recorded `ready_at`.
 that names a different value from the one an install already records is
 refused (exit 5): the release changes through `swarm upgrade`, and the
 hostname and region do not change in place.
+
+**Asked, not demanded.** A new company types `swarm install` with no flags.
+With a terminal on stdin and stdout, the verb asks for the project (every
+mode needs one), then, for a run, the domain and region the install does not
+already record; it prints one summary of what it will create and asks once
+before it runs exactly as if those flags had been given. With no terminal, a
+missing `--project` exits 2 naming it, so scripts and `/sc:install` (which
+pass flags) never hang on a prompt; a script that gives `--project` alone runs
+as it always has (stage 0's `preflight.inputs` and `preflight.region` own the
+hostname and region then). It never asks for a secret: the engine's own hidden
+prompts own those.
 """
 
 from __future__ import annotations
@@ -61,6 +72,7 @@ from ..state import (
     state_bucket,
 )
 from ..steps import Step, triggered_of
+from ..steps.preflight import DEFAULT_REGION, HOSTNAME, REGION
 from ..steps import discover as _discover_steps
 from ..waits import SystemClock
 
@@ -105,6 +117,18 @@ def _env(value: str) -> str:
     return value
 
 
+def _hostname(value: str) -> str:
+    if not HOSTNAME.match(value):
+        raise argparse.ArgumentTypeError(f"{value!r} is not a hostname, e.g. swarm.example.com")
+    return value
+
+
+def _region(value: str) -> str:
+    if not REGION.match(value):
+        raise argparse.ArgumentTypeError(f"{value!r} is not a Google Cloud region, e.g. {DEFAULT_REGION}")
+    return value
+
+
 def _stage(value: str) -> int:
     try:
         stage = int(value)
@@ -116,15 +140,16 @@ def _stage(value: str) -> int:
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--project", required=True, type=_project,
-                        help="the Google Cloud project to install into")
+    parser.add_argument("--project", default=None, type=_project,
+                        help="the Google Cloud project to install into (asked when not given)")
     parser.add_argument("--env", default=DEFAULT_ENV, type=_env,
                         help=f"the environment's name (default: {DEFAULT_ENV})")
     parser.add_argument("--version", dest="release", default=None,
                         help="the SwarmCloud release to install, e.g. 2026.10.1")
     parser.add_argument("--domain", dest="hostname", default=None,
-                        help="the hostname the console and API answer on")
-    parser.add_argument("--region", default=None, help="the Google Cloud region")
+                        help="the hostname the console and API answer on (asked when not given)")
+    parser.add_argument("--region", default=None,
+                        help=f"the Google Cloud region (asked when not given; default {DEFAULT_REGION})")
     parser.add_argument("--stage", type=_stage, action="append", default=None,
                         help="run only this stage (repeatable); earlier stages are still checked")
     parser.add_argument("--manifest", type=Path, default=None,
@@ -183,6 +208,81 @@ def _typed(prompt: str) -> str:
     if not sys.stdin.isatty():
         return ""
     return input(prompt)
+
+
+def interactive() -> bool:
+    """A person is at a terminal to answer: stdin and stdout are both TTYs."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+# -- asking for what was not given -------------------------------------------
+
+
+def _ask(prompt: str, check: Any, default: str | None = None) -> str:
+    """One prompt, asked again with the reason until `check` accepts the answer."""
+    while True:
+        try:
+            typed = input(f"? {prompt} ").strip()
+        except EOFError:
+            raise _Usage("no answer was typed (end of input)") from None
+        if not typed and default is not None:
+            typed = default
+        try:
+            return check(typed)
+        except argparse.ArgumentTypeError as exc:
+            print(f"  {exc}")
+
+
+def _recorded(project: str) -> InstallState | None:
+    """What the install of `project` already records, read without writing."""
+    _bucket, remote, _problem = _read_bucket(project)
+    if remote is not None:
+        return remote
+    local = local_path(project)
+    return InstallState.from_bytes(local.read_bytes()) if local.is_file() else None
+
+
+def _ask_missing(args: argparse.Namespace) -> int | None:
+    """Fill in what the command line left out, or say which flags are missing.
+
+    Returns an exit code to stop with, or None to go on as if the flags had
+    been given."""
+    tty = interactive()
+    if args.project is None:
+        if not tty:
+            raise _Usage("no --project given and no terminal to ask on: pass --project")
+        args.project = _ask("Google Cloud project to create or use:", _project)
+    if args.status or args.dry_run:
+        return None
+    recorded = _recorded(args.project)
+    missing = [
+        flag for flag, name in (("--domain", "hostname"), ("--region", "region"))
+        if getattr(args, name) is None and (recorded is None or getattr(recorded, name) is None)
+    ]
+    if not missing or not tty:
+        return None
+    if "--domain" in missing:
+        args.hostname = _ask("Domain for the console (a hostname you control):", _hostname)
+    if "--region" in missing:
+        args.region = _ask(f"Region [{DEFAULT_REGION}]:", _region, DEFAULT_REGION)
+    hostname = args.hostname or (recorded.hostname if recorded is not None else None)
+    region = args.region or (recorded.region if recorded is not None else None)
+    release = args.release or (recorded.release if recorded is not None else None)
+    print()
+    print(f"SwarmCloud will be installed into Google Cloud project {args.project} ({args.env}):")
+    print(f"  Project:   {args.project} (created if it does not exist)")
+    print(f"  Hostname:  {hostname}")
+    print(f"  Region:    {region}")
+    print(f"  Release:   {release or 'the current stable release'}")
+    print(f"  Console:   https://{hostname}/ when the install is done")
+    try:
+        answer = input("Continue? [Y/n] ").strip().lower()
+    except EOFError:
+        raise _Usage("no answer was typed (end of input)") from None
+    if answer not in ("", "y", "yes"):
+        print("Stopped; nothing was changed.")
+        return ExitCode.OK
+    return None
 
 
 # -- the store a run uses ----------------------------------------------------
@@ -266,6 +366,9 @@ def run(args: argparse.Namespace) -> int:
             raise _Usage("--json goes with --status; a run's machine output is --json-events")
         if args.json_events and args.status:
             raise _Usage("--status prints the state, not events; use --status --json")
+        stopped = _ask_missing(args)
+        if stopped is not None:
+            return stopped
         return _status(args) if args.status else _install(args)
     except _Usage as exc:
         print(f"swarm install: {exc}", file=sys.stderr)
