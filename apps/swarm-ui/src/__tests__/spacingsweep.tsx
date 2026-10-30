@@ -440,6 +440,7 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   // Workspaces you admin (NAV-ADMIN-ROLE; part of #1633) is Admin's last tab;
   // Runner sizes (SIZES-UI; part of #1689) sits beside Pool limits, as in the rail.
   // Platform secrets (SSC-UI; part of #2158) sits after Platform counts, as in the rail.
+  // Setup and Health (DAYONE-SETUP-UI-3; part of #2688) follow it, as in the rail.
   // THE FALLBACK TOKEN CARD'S `?` (QAFIX4-ADMIN, visual QA run 4 admin-009).
   // Pool limits' GitHub fallback token card draws HelpCard's 14px disc after
   // its <h2> in the card head, where a ghost Button with a bordered box used
@@ -453,7 +454,7 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   // so the ink clears the border by (24 - 2 - 12) / 2 = 5px a side, over the
   // 4px `textInset` floor; a typical initial clears it by more.
   {
-    name: 'admin', routes: ['admin/limits', 'admin/runner-sizes', 'admin/tenants', 'admin/counts', 'admin/platform-secrets', 'admin/people', 'admin/workspaces'], floor: 120,
+    name: 'admin', routes: ['admin/limits', 'admin/runner-sizes', 'admin/tenants', 'admin/counts', 'admin/platform-secrets', 'admin/setup', 'admin/health', 'admin/people', 'admin/workspaces'], floor: 120,
     centred: [
       'button.help-glyph [left] width 14px, centred', 'button.help-glyph [right] width 14px, centred',
       'span.pp-avatar [left] width 24px, centred', 'span.pp-avatar [right] width 24px, centred',

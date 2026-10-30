@@ -166,8 +166,9 @@ describe('who sees Admin (NAV-ADMIN-ROLE)', () => {
     await waitFor(() => expect(adminItem()).not.toBeNull())
     expect(adminItem()!.getAttribute('href')).toBe('/admin/limits')
     // Their workspaces' group first, then the platform's (S1b, CONFIG-PANEL-E).
-    // Platform secrets (SSC-UI, part of #2158) last of the platform's, as proposal E S1b draws it.
-    expect(panelRows()).toEqual(['People and roles', 'Workspaces you admin', 'Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'Platform secrets'])
+    // Platform secrets (SSC-UI, part of #2158) after Platform counts, as proposal E S1b draws it;
+    // Setup and Health (DAYONE-SETUP-UI-3, part of #2688) after it, so Admin still opens Pool limits.
+    expect(panelRows()).toEqual(['People and roles', 'Workspaces you admin', 'Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'Platform secrets', 'Setup', 'Health'])
   })
 })
 
