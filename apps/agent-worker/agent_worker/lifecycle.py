@@ -13435,7 +13435,8 @@ class Worker:
         returned early (a survivor of the reap, a git error, nothing changed)
         -- the harvest already said why nothing was published, and this does
         nothing. The result is scrubbed into `summary["git"]` like the rest
-        of the summary. Never raises: the epilogue cannot fail the attempt.
+        of the summary. Raises only `FencedError` (a fence read before a
+        forge write, #2693); otherwise the epilogue cannot fail the attempt.
         """
         deferred, self._deferred_publish = self._deferred_publish, None
         git = summary.get("git")
@@ -13449,6 +13450,11 @@ class Worker:
                 withheld=withheld or "",
                 publish_repo=deferred["publish_repo"],
             )
+        except FencedError:
+            # A superseded attempt read the fence before a forge write
+            # (`_own_before_forge_write`, #2693): not a failed publish but a
+            # stale generation, which `run` stands down on.
+            raise
         except Exception as exc:  # pragma: no cover - defensive; teardown path
             self.log.exception("the publish raised; continuing without it", exc)
             # Marked failed (G1, #1225): a step whose branch is its deliverable
@@ -13666,6 +13672,28 @@ class Worker:
 
         return confirm
 
+    def _own_before_forge_write(self, write: str) -> None:
+        """Refuse, with `FencedWriteRefused`, a forge write this attempt no longer owns (#2693).
+
+        MEASURED: task_ffc37f64's generation 1 was fenced `dead_worker` at
+        18:54:19 and pushed onto PR #2613 at 18:54:35, because the publish
+        pushed and opened pull requests without reading the fence (only the
+        carrier push and the moved-tip replay did); generation 5's publish
+        then found the head moved and failed. So every push, pull request
+        create or update and comment the publish makes is preceded by this
+        read, and a superseded attempt ends as a stale generation (exit 70,
+        `_stand_down`) with nothing pushed or opened and its lease untouched
+        (invariant 5). It is `ensure_owner`, the carrier push's read: it
+        writes nothing.
+
+        IT NARROWS THE WINDOW, IT CANNOT CLOSE IT: the fence can still land
+        between this read and the forge's answer, and GitHub cannot be asked
+        to check a Firestore document. The broker push's own 409 fence covers
+        its path (`_push_through_broker`); a lease on the push covers a head
+        that moved.
+        """
+        self.control.ensure_owner(write=write)
+
     def _push_over_own_earlier_attempt(
         self,
         publish_repo: Path,
@@ -13731,6 +13759,7 @@ class Worker:
                 reason=str(self._scrub(why)),
             )
             raise rejected
+        self._own_before_forge_write("replacing push")
         pushed = push_branch(
             repo=publish_repo,
             url=url,
@@ -14659,6 +14688,7 @@ class Worker:
                 )
             if workflow_paths:
                 out["workflow_paths"] = workflow_paths[:WORKFLOW_PATHS_NAMED]
+                self._own_before_forge_write("workflow push")
                 pushed, refused = self._push_through_broker(
                     publish_repo, branch=branch, floor=scan_floor
                 )
@@ -14669,6 +14699,9 @@ class Worker:
                     )
                 out["workflow_publish"] = "broker"
             else:
+                # Not inside the `try`: a fence is not a refused push, and
+                # `except GitError` below must not turn it into publish_failed.
+                self._own_before_forge_write("branch push")
                 try:
                     pushed = push_branch(
                         repo=publish_repo,
@@ -14904,6 +14937,8 @@ class Worker:
 
         def open_with(with_token: str) -> PullRequest:
             asked_with[0] = with_token
+            # Here, so the open after a 401 re-read reads the fence again too.
+            self._own_before_forge_write("pull request")
             # Retried on an outage: a POST that timed out after GitHub made
             # the pull request is answered 422 on the next try, which
             # `open_pull_request` resolves by adopting the open one.
@@ -15040,6 +15075,7 @@ class Worker:
             "body": "agent" if body else "kept",
         }
         pr: PullRequest
+        self._own_before_forge_write("pull request text")
         try:
             pr = forge_mod.retry_transient(
                 lambda: update_pull_request_text(
@@ -15587,8 +15623,9 @@ class Worker:
         refuses is recorded in `out["out_of_territory"]` and logged, as a
         refused label is, and the publish stands.
 
-        Reached only from `_publish_git`, after the push: a fenced attempt
-        never gets here (invariant 5), so a stale worker posts nothing.
+        Reached only from `_publish_git`, after the push, and the fence is
+        read again just before the POST (`_own_before_forge_write`, #2693):
+        an attempt fenced after its push posts nothing (invariant 5).
         """
         record = out.setdefault("out_of_territory", {})
         marker = (
@@ -15616,6 +15653,7 @@ class Worker:
         body = _neutralise_mentions(
             territory_mod.warning_header(outside, continuation=True)
         ) + f"\n\n{marker}"
+        self._own_before_forge_write("pull request comment")
         try:
             record["comment"] = forge_mod.create_issue_comment(
                 ref=ref, token=token, number=number, body=body
