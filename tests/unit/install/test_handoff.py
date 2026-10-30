@@ -255,3 +255,29 @@ def test_handoff_is_not_met_while_the_switches_are_off() -> None:
     for switch in handoff.SWITCHES:
         ctx.state.steps[switch] = StepRecord(state="done", at=1.0, by="admin@example.com")
     assert wait.check(ctx).status == "met" and wait.verify(ctx).status == "met"
+
+
+def test_console_that_never_answers_pauses_then_resumes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The console answering behind IAP is waited on inside the hand-off's apply;
+    past that wait's bound the install pauses (exit 4) instead of crashing, and
+    the next run resumes at the hand-off (DAYONE-ENGINE-WAIT-PAUSE)."""
+    never = 10 * handoff.CONSOLE_ANSWERS.bound_s
+    rig, world, engine, said = rig_for(tmp_path, monkeypatch, answers=never, app=never, self_check=never,
+                                       finished=never)
+    result = engine.run()
+    assert result.exit_code == 4 and result.outcome == "paused", result
+    assert result.step == "handoff.console"
+    assert handoff.CONSOLE_ANSWERS.reason in result.message and "swarm install again" in result.message
+    assert rig.steps_state()["handoff.console"] == "paused"
+    assert said == [], "no URL is printed for a console that does not answer"
+    assert rig.bucket.state()["hand_off_at"] is None
+
+    elapsed = rig.clock.now() - world.start
+    world.at = {"answers": elapsed + 60, "app": elapsed + 600, "self_check": elapsed + 900,
+                "finished": elapsed + 1500}
+    resumed = rig.engine(engine.steps)
+    resumed.record = world
+    result = resumed.run()
+    assert result.exit_code == 0, result
+    assert len(said) == 1 and re.findall(r"https://\S+", said[0]) == [URL]
+    assert rig.steps_state()["handoff.console"] == "done"
