@@ -125,7 +125,11 @@ describe('Admin › Setup, the page', () => {
   it('the second team flow prints the swarm team add line beside it', async () => {
     const calls = await mountPage(firstRun({ teams: [FIRST_TEAM] }))
     const flow = screen.getByRole('region', { name: 'Add a team' })
-    const line = () => visible(within(flow).getByLabelText('From a terminal'))
+    // The code block's one line, without its line number.
+    const line = () => {
+      const dl = within(flow).getByRole('group', { name: 'From a terminal' }).querySelector('.c-dl')!
+      return [...dl.childNodes].filter((n) => !(n instanceof Element && n.classList.contains('c-ln'))).map((n) => n.textContent).join('')
+    }
     // Before anything is typed, the line names its one required value.
     expect(line()).toBe('swarm team add <group>')
     fireEvent.change(within(flow).getByLabelText(/Workspace group/), { target: { value: 'research@example.com' } })

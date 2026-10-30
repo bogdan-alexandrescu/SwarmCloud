@@ -14,6 +14,7 @@ import { agentList, agentListPath, agentListQuery, parseAgentList, useAgentName,
 import { AccountsScreen } from './Accounts'
 import { ActivityScreen, TenantsScreen } from './Activity'
 import { AdminSettingsScreen } from './AdminSettings'
+import { AdminSetupCallbackScreen, AdminSetupHealthScreen, AdminSetupScreen } from './AdminSetup'
 import { AgentsScreen } from './Agents'
 import { TimelineLanesScreen } from './TimelineLanes'
 import { AgentSplit } from './AgentSplit'
@@ -562,6 +563,15 @@ export const SECTIONS: SectionDef[] = [
       // S7): each platform secret's status from Secret Manager metadata. No
       // value and no form: the operator's script writes every one of them.
       { id: 'platform-secrets', label: 'Platform secrets', admin: true },
+      // DAYONE-SETUP-UI-3 (part of #2688; docs/design/day-one-plan.md §5.1,
+      // §5.2): Admin › Setup, the people part of an install that swarm
+      // install hands over to the console, and its Health page, the
+      // scheduled doctor's findings. Platform admins only: a workspace admin
+      // who types either address is refused in place. After Platform secrets,
+      // not first, so Admin still lands on Pool limits; the install's own URL
+      // is /admin/setup, which swarm install prints.
+      { id: 'setup', label: 'Setup', admin: true },
+      { id: 'health', label: 'Health', admin: true },
       // #847 W8 (docs/workspaces.md §6.4): who has signed in, their workspace
       // requests to approve or deny, each person's ceiling and Claude account,
       // and who is an admin. Admin only, like the three before it.
@@ -896,7 +906,7 @@ export interface Route {
    */
   view?: string | null
   /** The Timeline's second page, Outcomes (`/timeline/outcomes`); absent is Lanes. */
-  page?: 'outcomes' | null
+  page?: 'outcomes' | typeof SETUP_CALLBACK_PAGE | null
   /** A path this console has no page for: drawn as not-found, kept in the bar (NotFound.tsx). */
   missing?: string | null
   /**
@@ -972,6 +982,11 @@ export function fromLocation(): Route {
   return p.agentTab === null || r.taskId === null ? r : { ...r, list: p.list ?? { tab: p.agentTab, state: null } }
 }
 
+/** Admin › Setup (DAYONE-SETUP-UI-3) and its GitHub App callback page: `/admin/setup/github-app/callback`. */
+const SETUP_TAB = 'setup'
+const SETUP_CALLBACK_PAGE = 'github-app-callback'
+const SETUP_CALLBACK = 'admin/setup/github-app/callback'
+
 /**
  * An address (paths.ts), resolved to a route: the old hash router's grammar,
  * aliases and moved panes included, so every saved hash still lands.
@@ -1023,6 +1038,13 @@ export function fromAddress(full: string): Route {
   // further: the whole of what an old link named is the page itself.
   if (head === REFERENCE) return { sectionId: CAPACITY, tab: API_READS_TAB, ...blank }
   if (hash === GITHUB_CALLBACK) return { sectionId: GITHUB_CALLBACK, tab: '', ...blank }
+  // Admin › Setup's GitHub App callback is a page of the Setup tab, so the
+  // shell refuses it to anyone but a platform admin exactly as it refuses
+  // Setup. GitHub's `code` and `state` ride in `view`, read off the address
+  // on arrival: the bar is rewritten without them (`canonical`).
+  if (hash === SETUP_CALLBACK) {
+    return { sectionId: ADMIN_SECTION, tab: SETUP_TAB, ...blank, page: SETUP_CALLBACK_PAGE, ...(query !== '' ? { view: query } : {}) }
+  }
   // Settings › API keys and its one-time link, before LEGACY reads `settings`
   // as the eleven-item nav's Pool limits. Only the link's scope is kept.
   if (hash === `${SETTINGS}/${PROFILE_TAB}`) return { sectionId: SETTINGS, tab: PROFILE_TAB, ...blank }
@@ -1201,6 +1223,8 @@ export function canonical(r: Route): string {
   }
   if (r.sectionId === SUBMIT) return SUBMIT
   if (r.sectionId === GITHUB_CALLBACK) return GITHUB_CALLBACK
+  // GitHub's single-use code leaves the bar: the route keeps it in `view`.
+  if (r.sectionId === ADMIN_SECTION && r.page === SETUP_CALLBACK_PAGE) return SETUP_CALLBACK
   if (r.sectionId === JOIN) return JOIN
   if (r.sectionId === SETTINGS) return r.view ? `${SETTINGS}/${r.tab}?${r.view}` : `${SETTINGS}/${r.tab}`
   if (r.sectionId === HELP) return r.tab === '' ? HELP : `${HELP}/${r.tab}`
@@ -2230,7 +2254,7 @@ function SectionBody({
   /** The Timeline's view, from the hash's query (#185), or null. */
   view: string | null
   /** The Timeline's page: Outcomes, or null for Lanes. */
-  page: 'outcomes' | null
+  page: 'outcomes' | typeof SETUP_CALLBACK_PAGE | null
   /** Where the Timeline writes a new view; App turns it into the route. */
   onView: (view: string) => void
   go: (to: string) => void
@@ -2351,6 +2375,11 @@ function SectionBody({
     case 'config/workspace':
       return <WorkspaceSettingsScreen part={workspacePartOf(view)} go={go} />
 
+    // DAYONE-SETUP-UI-3: Setup, its GitHub App callback page, and Health.
+    case 'admin/setup':
+      return page === SETUP_CALLBACK_PAGE ? <AdminSetupCallbackScreen search={view ?? ''} /> : <AdminSetupScreen />
+    case 'admin/health':
+      return <AdminSetupHealthScreen />
     case 'admin/limits':
       return <AdminSettingsScreen />
     case 'admin/runner-sizes':
