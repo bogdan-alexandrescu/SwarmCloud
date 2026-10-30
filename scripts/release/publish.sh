@@ -9,7 +9,7 @@
 #   ... [--project swarmcloud-releases]   (D23: had `swarmcloud` been taken)
 #
 # Run by a PERSON with rights in the release home, never by CI: CI holds no
-# grant in project `swarmcloud`, so D22's "no IAM change for CI" holds. DIR is
+# grant in project `swarmcloud-prod`, so D22's "no IAM change for CI" holds. DIR is
 # what scripts/release/assemble.sh wrote (release-public.yml uploads it as a
 # workflow artefact); --source-images is the build record it was assembled
 # from, which says where CI's registry holds each digest.
@@ -57,8 +57,8 @@ fi
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # The release home, as scripts/release-home.sh creates it (D23, D25).
-RELEASE_PROJECTS=("swarmcloud" "swarmcloud-releases")
-PROJECT="swarmcloud"
+RELEASE_PROJECTS=("swarmcloud-prod" "swarmcloud-releases")
+PROJECT="swarmcloud-prod"
 LOCATION="us"
 REPOSITORY="swarmcloud"
 BUCKET="gs://swarmcloud"

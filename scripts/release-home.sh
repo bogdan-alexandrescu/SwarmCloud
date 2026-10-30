@@ -2,7 +2,8 @@
 # Stand up the SwarmCloud release home, idempotently (DAYONE-RELHOME-1; design
 # docs/design/day-one-install.md section 6.1, plan section 7.1).
 #
-# The release home is project `swarmcloud` (D25; `swarmcloud-releases` had that
+# The release home is project `swarmcloud-prod` (D25; its display name is
+# `swarmcloud`, the id `swarmcloud` being taken; `swarmcloud-releases` had that
 # id been taken, D23). It is where every company's install fetches the release,
 # and nothing in a deployment reads it after the install has copied the images
 # (D21). BGD runs this; nothing in CI holds a grant in that project (D22). It
@@ -10,11 +11,11 @@
 #
 #   1. the three APIs it needs (Artifact Registry, Cloud KMS, Cloud Storage);
 #   2. Artifact Registry repository `swarmcloud` in `us`, format Docker
-#      (us-docker.pkg.dev/swarmcloud/swarmcloud);
+#      (us-docker.pkg.dev/swarmcloud-prod/swarmcloud);
 #   3. bucket gs://swarmcloud in `us`, uniform bucket-level access, versioning;
 #   4. KMS key ring `swarmcloud-release` in `us` and, in it, key `cosign`:
 #      asymmetric signing, EC P-256 SHA-256, the key cosign signs every image
-#      digest and SHA256SUMS with (gcpkms://projects/swarmcloud/locations/us/
+#      digest and SHA256SUMS with (gcpkms://projects/swarmcloud-prod/locations/us/
 #      keyRings/swarmcloud-release/cryptoKeys/cosign).
 #
 # The repository, the bucket and the key are labelled managed-by=swarm-release.
@@ -63,8 +64,8 @@ fi
 # The two ids the release home may have (D23). Anything else is refused: this
 # script makes a bucket and a registry world-readable, and the only project
 # where that is the intent is the release home.
-RELEASE_PROJECTS=("swarmcloud" "swarmcloud-releases")
-PROJECT="swarmcloud"
+RELEASE_PROJECTS=("swarmcloud-prod" "swarmcloud-releases")
+PROJECT="swarmcloud-prod"
 # One location for all three: `us` is a multi-region in Artifact Registry,
 # Cloud Storage and Cloud KMS alike, and the paths in the design are us-*.
 LOCATION="us"

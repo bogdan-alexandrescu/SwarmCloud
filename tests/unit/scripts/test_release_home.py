@@ -1,7 +1,7 @@
 """scripts/release-home.sh stands up the release home, idempotently and guarded
 (DAYONE-RELHOME-1; part of #2688).
 
-The release home is project `swarmcloud` (D25; `swarmcloud-releases` if that
+The release home is project `swarmcloud-prod` (D25; display name `swarmcloud`; `swarmcloud-releases` if that
 id had been taken, D23): an Artifact Registry repository `swarmcloud` (us,
 Docker), a bucket `gs://swarmcloud` (uniform access, versioning) and a KMS key
 `swarmcloud-release/cosign` (asymmetric P-256) that signs the release, each
@@ -35,7 +35,7 @@ REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "release-home.sh"
 COMMON = REPO / "scripts" / "lib" / "common.sh"
 
-PROJECT = "swarmcloud"
+PROJECT = "swarmcloud-prod"
 BUCKET = "gs://swarmcloud"
 ALL_USERS = "allUsers"
 
