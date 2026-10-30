@@ -30,8 +30,9 @@ from swarm_install.record import InstallRecord, engine_document
 from swarm_install import swarm_context
 from swarm_install.steps import cluster, verify
 from swarm_install.steps.preflight import RELEASE_HOME
+from swarm_install.terraform import TerraformRefused
 
-from .test_cluster_step import VERSION, ClusterFakeGcp, FakeShell, _kube, bundle_bytes
+from .test_cluster_step import VERSION, ClusterFakeGcp, FakeShell, _kube, bundle_bytes, cosign  # noqa: F401
 from .test_preflight import PROJECT, Answers, FakeGcp, Rig, ctx_for
 from .test_record_writers import FakeDocuments
 
@@ -945,6 +946,7 @@ def test_verify_progress_written_with_countdown(tmp_path: Path) -> None:
     assert last["done"] == verify.TOTAL and last["result"] == "passed" and last["started"] == started
 
 
+@pytest.mark.usefixtures("cosign")
 def test_cluster_objects_from_release_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """`other.release-kubernetes-bundle`: what stage 10 applies and stage 14
     then verifies renders from the release's `kubernetes.tgz`, checked against
@@ -969,7 +971,7 @@ def test_cluster_objects_from_release_bundle(tmp_path: Path, monkeypatch: pytest
     assert f"{RELEASE_HOME}/releases/{VERSION}/{cluster.BUNDLE}" in {a[0] for a in gcp.called("read_public")}
 
     tampered = ClusterFakeGcp(summed=b"another file")
-    with pytest.raises(ValueError, match="SHA256SUMS"):
+    with pytest.raises(TerraformRefused, match="SHA256SUMS"):
         cluster.build_steps(lambda: tampered, Answers(), kube=_kube(FakeShell()))[0].check(_ctx())
 
     escaping = ClusterFakeGcp(bundle=bundle_bytes({"../outside.py": b"x"}))

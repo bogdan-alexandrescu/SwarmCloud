@@ -558,3 +558,104 @@ def test_acceptance_sandbox_comes_from_the_ci_addon_variable() -> None:
     done = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=60, check=False)
     assert done.returncode == 0, done.stderr
     assert done.stdout.split() == ["https://github.com/acme/swarm-sandbox.git", "acme/swarm-sandbox"]
+
+
+# ---------------------------------------------------------------------------
+# Finding 16: an add-on's kubectl after the closing pass
+# ---------------------------------------------------------------------------
+
+
+class ClosingWorld(FakeWorld):
+    """A world whose `kube` reopened the control plane: the flow closes it at the end."""
+
+    def __init__(self, *, left: str | None = None, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.closed = 0
+        self.left = left
+
+    def close_reach(self) -> str | None:
+        self.closed += 1
+        return self.left
+
+
+def test_enable_and_disable_close_the_reach_when_they_finish() -> None:
+    world = ClosingWorld()
+    the_flow, _ = flow(world)
+    the_flow.enable("brave-search")
+    assert world.closed == 1
+    the_flow.disable("brave-search")
+    assert world.closed == 2
+
+
+def test_a_failed_enable_still_closes_the_reach_and_says_what_is_left() -> None:
+    world = ClosingWorld(left="swarm addon: the closing pass did not apply")
+    state = ready_state()
+    state.ready_at = None
+    the_flow, out = flow(world, state)
+    with pytest.raises(addons.AddonError, match="not READY"):
+        the_flow.enable("brave-search")
+    assert world.closed == 1
+    assert "the closing pass did not apply" in out.getvalue()
+
+
+def _real_world(state: InstallState) -> addons.RealWorld:
+    from types import SimpleNamespace
+
+    clock = FakeClock()
+    ctx = SimpleNamespace(project=PROJECT, state=state, outputs=state.outputs, holder="admin@example.com",
+                          environment=state.environment, events=Events(clock.now, out=io.StringIO()),
+                          bucket=object(), dry_run=False)
+    return addons.RealWorld(project=PROJECT, ctx=ctx, gcp=object(), deps=object())
+
+
+def test_real_world_kube_reopens_through_an_engine_shaped_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    from swarm_install.steps import cluster, infra
+
+    seen: list[Any] = []
+
+    class Kube:
+        def credentials(self) -> None:
+            pass
+
+        def __call__(self, *args: str, stdin: str | None = None) -> tuple[int, str, str]:
+            return 0, "", ""
+
+    def kube_for(ctx: Any) -> Kube:
+        seen.append(ctx)
+        return Kube()
+
+    monkeypatch.setattr(cluster, "kube_for", kube_for)
+    world = _real_world(ready_state())
+    assert world.close_reach() is None, "no kubectl ran: nothing was reopened"
+    world.kube("get", "namespaces")
+    assert isinstance(seen[0], infra.VerbContext) and seen[0].engine.store.bucket is world.ctx.bucket
+    closed: list[Any] = []
+    monkeypatch.setattr(infra.REACH, "close_after", lambda ctx, verb: closed.append((ctx, verb)))
+    world.close_reach()
+    assert closed == [(seen[0], "swarm addon")]
+
+
+def test_real_world_apply_keeps_the_reopened_address(monkeypatch: pytest.MonkeyPatch) -> None:
+    from swarm_install.steps import bootstrap, infra
+
+    state = ready_state()
+    state.outputs.update({bootstrap.applied_key("infra-4"): "x", bootstrap.applied_key("infra-close"): "y",
+                          infra.REOPENED: "203.0.113.7/32"})
+    generated: list[str] = []
+
+    class Stop(Exception):
+        pass
+
+    def generate(ctx: Any, pass_name: str, gcp: Any) -> dict:
+        generated.append(pass_name)
+        raise Stop
+
+    monkeypatch.setattr(bootstrap, "generate", generate)
+    world = _real_world(state)
+    with pytest.raises(Stop):
+        world.apply("infra", {}, guard=lambda plan: None)
+    assert generated == ["infra-4"], "the close's inputs would remove the address kubectl still needs"
+    state.outputs[infra.REOPENED] = None
+    with pytest.raises(Stop):
+        world.apply("infra", {}, guard=lambda plan: None)
+    assert generated[-1] == "infra-close"

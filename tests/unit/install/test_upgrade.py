@@ -361,3 +361,49 @@ def test_same_release_is_nothing_to_do(tmp_path: Path) -> None:
     flow, _, lines = make(tmp_path, world, release=NEW)
     assert flow.run(NEW) == ExitCode.OK
     assert world.calls == [] and "nothing to do" in lines[-1]
+
+
+# -- finding 16: after the closing pass, the upgrade closes what it reopened --------
+
+
+def _live_world(monkeypatch: pytest.MonkeyPatch, ctx: Any) -> Any:
+    world = object.__new__(verb.LiveWorld)
+    world.deps = object()
+    monkeypatch.setattr(verb.LiveWorld, "ctx", lambda self, release=None: ctx)
+    return world
+
+
+def test_infra_apply_after_the_close_is_recorded_for_the_close(monkeypatch: pytest.MonkeyPatch) -> None:
+    """infra-2's inputs carry the installer's address (decision 2): once the close
+    had removed it, the upgrade's infra apply records the reopen, so the
+    upgrade's close (or the next swarm install) removes it again."""
+    from swarm_install.steps import bootstrap, infra
+
+    from .test_terraform_runner import FakeCtx
+
+    ctx = FakeCtx()
+    ctx.state.outputs[bootstrap.applied_key("infra-close")] = "digest"
+    applied: list[str] = []
+    monkeypatch.setattr(bootstrap, "apply_pass", lambda c, deps, pass_name, **kw: applied.append(pass_name))
+    world = _live_world(monkeypatch, ctx)
+    world.apply_root("bootstrap", "v1.1.0")
+    assert not ctx.outputs.get(infra.REOPENED), "bootstrap never touches the control plane"
+    world.apply_root("infra", "v1.1.0")
+    assert applied == ["bootstrap-2", "infra-2"]
+    assert ctx.outputs[infra.REOPENED] == ctx.outputs["installer_cidr"]
+
+    closed: list[tuple[Any, str]] = []
+    monkeypatch.setattr(infra.REACH, "close_after", lambda c, name: closed.append((c, name)))
+    world.close_reach()
+    assert closed == [(ctx, "swarm upgrade")]
+
+
+def test_infra_apply_before_the_close_records_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    from swarm_install.steps import bootstrap, infra
+
+    from .test_terraform_runner import FakeCtx
+
+    ctx = FakeCtx()
+    monkeypatch.setattr(bootstrap, "apply_pass", lambda c, deps, pass_name, **kw: None)
+    _live_world(monkeypatch, ctx).apply_root("infra", "v1.1.0")
+    assert not ctx.outputs.get(infra.REOPENED)
