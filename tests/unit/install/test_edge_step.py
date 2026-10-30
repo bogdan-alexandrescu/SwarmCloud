@@ -1,5 +1,6 @@
 """Stage 2's human pages (DAYONE-OPEN-PAGES): the brand, the DNS record and the
-Desktop client each open their exact page and the engine keeps polling; the
+Desktop client each open their exact page (the DNS one when no Cloud DNS zone
+holds the hostname) and the engine keeps polling where it waits; the
 Desktop client's secret is typed at a hidden prompt, never echoed.
 
 On a fake Google Cloud with no credentials; the browser is a fake `open_page`.
@@ -17,6 +18,7 @@ from swarm_install import engine as engine_module
 from swarm_install.exitcodes import ExitCode
 from swarm_install.steps import edge
 
+from .test_edge_probes import FakeEdge
 from .test_preflight import NUMBER, PROJECT, Answers, FakeGcp, Rig
 from .test_secret_entry import FakeContexts
 
@@ -39,28 +41,27 @@ def _pages(monkeypatch: pytest.MonkeyPatch, *modules) -> list[tuple[str, str]]:
     return opened
 
 
-def test_brand_opens_branding_page_once_then_polls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_brand_opens_branding_page_once_then_asks_the_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     opened = _pages(monkeypatch, engine_module, edge)
     gcp = FakeGcp()
     rig = _rig(tmp_path)
-    appears_at = rig.clock.now() + 95
-    gcp.brands = lambda: [{"name": "brand", "orgInternalOnly": True}] if rig.clock.now() >= appears_at else []
 
-    result = rig.engine([edge.BrandStep(lambda: gcp, Answers())]).run()
+    result = rig.engine([edge.BrandStep(lambda: gcp, Answers(edge_brand=[CLIENT_ID]), lambda: FakeEdge())]).run()
     assert result.exit_code == ExitCode.OK, result.message
     assert [url for url, _ in opened] == [f"https://console.cloud.google.com/auth/branding?project={PROJECT}"]
-    assert len(rig.of_kind("wait_countdown", "edge.brand")) >= 9, "then it polls, without opening again"
+    assert rig.store.load().outputs["desktop_client_id"] == CLIENT_ID
 
 
 def test_dns_prints_record_opens_resolution_page_and_polls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     opened = _pages(monkeypatch, engine_module, edge)
     gcp = FakeGcp()
     rig = _rig(tmp_path)
+    dns = FakeEdge()
     appears_at = rig.clock.now() + 70
-    resolve = gcp.resolve
-    gcp.resolve = lambda host: {IP} if rig.clock.now() >= appears_at else resolve(host)
+    resolve = dns.resolve
+    dns.resolve = lambda host: {IP} if rig.clock.now() >= appears_at else resolve(host)
 
-    result = rig.engine([edge.DnsStep(lambda: gcp, Answers())]).run()
+    result = rig.engine([edge.DnsStep(lambda: gcp, Answers(), lambda: dns)]).run()
     assert result.exit_code == ExitCode.OK, result.message
     assert len(opened) == 1
     url, why = opened[0]
