@@ -183,10 +183,21 @@ rounds it may spend (`validation.resolve_fix_rounds`: the spec's
 whose own loop fixes CI before it merges). Three things come with them:
 
 * A FLAKE COSTS NO AGENT. The first red reading at a head whose failing
-  checks are all Actions jobs asks GitHub to re-run those jobs
-  (`GitHubWriter.rerun_job`, `actions: write`) and claims no round:
-  recorded in `merge_fix.reruns` under the same guard a round is claimed
-  under, once per head. Whether a round is left, or any was asked, or the
+  checks are all Actions jobs asks GitHub to re-run the failed jobs of each
+  workflow run they belong to (`GitHubWriter.rerun_failed_jobs`, `actions:
+  write`), once per distinct run, and claims no round: recorded in
+  `merge_fix.reruns` (`jobs`, the failing check ids the worker's
+  `merge._rerun_settling` matches; `runs`, the runs asked) under the same
+  guard a round is claimed under, once per head. The run, not the job
+  (#2841): the failing required check is often a fan-in gate (`ci-gate`,
+  `needs:` every other job), and a job re-run re-runs a job and its
+  dependents, never its needs, so PR 2790's flaky `unit tests (1/1)` never
+  re-ran at d6548f96 and the gate read red again. The run is the check's
+  stamped `workflow_run_id` (`forgechecks.mark_workflow_runs`,
+  `GitHubWriter.actions_check_runs`), else the digits of its
+  `details_url`/`html_url` (`.../actions/runs/<run>/job/<the check's
+  id>`); a failing check whose run neither gives is re-run as its own job
+  (`GitHubWriter.rerun_job`), as before. Whether a round is left, or any was asked, or the
   pull request is on the root's own branch, is no condition: a re-run
   pushes nothing, so neither the round budget nor the branch bounds it
   (#2257: with rounds checked first, an issue run's merge, which asks for
@@ -1004,7 +1015,8 @@ def _waits_on_writer(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any],
 
 
 #: What `_on_red` did: handed the reading to a round, waited on one, asked
-#: GitHub to re-run the failing jobs (SPEED-D2), or woke.
+#: GitHub to re-run the failed jobs of the failing checks' workflow runs
+#: (SPEED-D2, #2841), or woke.
 _FIXING = "fixing"
 _WAITING = "waiting"
 _WAKE = "wake"
@@ -1036,9 +1048,53 @@ def _rerunnable(reading: CiReading | None) -> list[int]:
     return sorted(set(jobs))
 
 
+#: An Actions check run's page, `.../actions/runs/<run id>/job/<job id>`:
+#: only the digits are read, and only when the job is the check run itself.
+_ACTIONS_JOB_URL = re.compile(r"/actions/runs/(\d{1,20})/job/(\d{1,20})/?$")
+
+
+def _workflow_run_of(run: Mapping[str, Any]) -> int | None:
+    """The Actions workflow run a failing Actions check run is a job of, or None.
+
+    `workflow_run_id` when the reading stamped it from the Actions runs it
+    read; else the run id in the check's `details_url` or `html_url`, an int
+    and nothing more, and only when the URL's job is this very check run.
+    """
+    stamped = run.get("workflow_run_id")
+    if isinstance(stamped, int) and not isinstance(stamped, bool) and stamped > 0:
+        return stamped
+    for key in ("details_url", "html_url"):
+        url = run.get(key)
+        if not isinstance(url, str):
+            continue
+        found = _ACTIONS_JOB_URL.search(url.partition("?")[0].partition("#")[0])
+        if found is not None and int(found.group(2)) == run.get("id") and int(found.group(1)) > 0:
+            return int(found.group(1))
+    return None
+
+
+def _rerun_targets(reading: CiReading | None, jobs: list[int]) -> tuple[list[int], list[int]]:
+    """(the workflow runs whose failed jobs to re-run, the jobs to re-run alone).
+
+    A failing job whose run can be resolved is re-run through its run, which
+    re-runs its failed needs too (#2841); the rest as their own job.
+    """
+    runs: set[int] = set()
+    alone: set[int] = set()
+    by_id = {r.get("id"): r for r in (reading.failing_runs if reading else [])}
+    for job in jobs:
+        run_id = _workflow_run_of(by_id.get(job) or {})
+        if run_id is None:
+            alone.add(job)
+        else:
+            runs.add(run_id)
+    return sorted(runs), sorted(alone)
+
+
 def _rerun_first(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any], ref: IssueRef,
                  head: str, read: _Reading, token: str, now: datetime) -> tuple[str, None] | None:
-    """Re-run a red head's failing Actions jobs once before a round (SPEED-D2).
+    """Re-run the failed jobs of a red head's failing Actions checks' workflow
+    runs once before a round (SPEED-D2, #2841).
 
     (`_RERUN` | `_WAITING`, None) when this tick asked for the re-run or is
     waiting for GitHub to make it; None to go on to the round: no job a
@@ -1066,22 +1122,26 @@ def _rerun_first(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any], ref:
                            key=RERUNS_KEY)
     if claimed is None:
         return _WAITING, None
+    runs, alone = _rerun_targets(read.checks, jobs)
     try:
-        for job in jobs:
+        for run_id in runs:
+            ctx.forge_writer.rerun_failed_jobs(ref, run_id, token)
+        for job in alone:
             ctx.forge_writer.rerun_job(ref, job, token)
     except Exception as exc:
         reason = exc.message if isinstance(exc, ApiError) else (
             str(exc) if isinstance(exc, ForgeWriteError) else type(exc).__name__
         )
         _record_round(db, tenant_id, task_id, claimed,
-                      {"jobs": jobs, "error": failure_text(reason)}, RERUNS_KEY)
+                      {"jobs": jobs, "runs": runs, "error": failure_text(reason)}, RERUNS_KEY)
         log.info("merge wake %s tenant=%s: re-run refused (%s); a round instead",
                  task_id, tenant_id, reason)
         return None
-    _record_round(db, tenant_id, task_id, claimed, {"jobs": jobs, "requested_at": now},
-                  RERUNS_KEY)
-    log.info("merge wake %s tenant=%s: re-ran %d failing job(s) at %s before any round",
-             task_id, tenant_id, len(jobs), head[:12])
+    _record_round(db, tenant_id, task_id, claimed,
+                  {"jobs": jobs, "runs": runs, "requested_at": now}, RERUNS_KEY)
+    log.info("merge wake %s tenant=%s: re-ran the failed jobs of %d workflow run(s) and %d "
+             "job(s) alone for %d failing check(s) at %s before any round",
+             task_id, tenant_id, len(runs), len(alone), len(jobs), head[:12])
     return _RERUN, None
 
 

@@ -196,10 +196,13 @@ def mark_workflow_runs(runs: Sequence[Mapping[str, Any]],
     run at the sha has the same `workflow_id`, event and head branch and a
     larger id -- the run a concurrency group cancelled this one for, which
     may not have created this check yet (#2582). The worker's
-    `merge.actions_suites` reads Actions runs the same way.
+    `merge.actions_suites` reads Actions runs the same way. Each also carries
+    the run's `id` as `workflow_run_id`, the run whose failed jobs the merge
+    wake tick's free re-run asks GitHub to re-run (#2841); no reader here
+    judges a check by it.
     """
     rows = [row for row in workflow_runs if isinstance(row, Mapping)]
-    marks: dict[int, tuple[Any, bool]] = {}
+    marks: dict[int, tuple[Any, bool, int | None]] = {}
     for row in rows:
         suite, workflow, run_id = (_int(row.get("check_suite_id")), _int(row.get("workflow_id")),
                                    _int(row.get("id")))
@@ -211,13 +214,14 @@ def mark_workflow_runs(runs: Sequence[Mapping[str, Any]],
             and other.get("head_branch") == row.get("head_branch")
             and (_int(other.get("id")) or 0) > run_id
             for other in rows)
-        marks[suite] = (row.get("conclusion"), superseded)
+        marks[suite] = (row.get("conclusion"), superseded, run_id)
     out: list[dict[str, Any]] = []
     for run in runs:
         suite = run.get("check_suite")
         mark = marks.get(_int(suite.get("id"))) if isinstance(suite, Mapping) else None
         out.append(dict(run) if mark is None else
-                   {**run, "workflow_conclusion": mark[0], "workflow_superseded": mark[1]})
+                   {**run, "workflow_conclusion": mark[0], "workflow_superseded": mark[1],
+                    **({"workflow_run_id": mark[2]} if mark[2] is not None else {})})
     return out
 
 

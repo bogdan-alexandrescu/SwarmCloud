@@ -948,6 +948,8 @@ class GitHubWriter:
         Each job also carries its run's conclusion, from the same read
         (`forgechecks.mark_workflow_runs`, #2582), so a red gate in a run
         concurrency cancelled reads as pending, as `check_runs` reads it.
+        And its run's id as `workflow_run_id`, the run whose failed jobs the
+        merge wake tick's free re-run asks GitHub to re-run (#2841).
         """
         what = f"the Actions runs at {ref.repository}@{sha[:12]}"
         # The newest MAX_ACTIONS_RUNS runs, one read: each costs a jobs read
@@ -970,6 +972,7 @@ class GitHubWriter:
                     "status": job.get("status"), "conclusion": job.get("conclusion"),
                     "app": {"id": GITHUB_ACTIONS_APP_ID, "slug": "github-actions"},
                     "check_suite": {"id": run.get("check_suite_id")},
+                    "workflow_run_id": run_id,
                     **({"event": run["event"]} if isinstance(run.get("event"), str) else {}),
                 })
         return forgechecks.mark_workflow_runs(checks, runs)
@@ -996,6 +999,21 @@ class GitHubWriter:
         self._call(
             "POST", self._url(ref, f"actions/jobs/{int(job_id)}/rerun"), token,
             f"a re-run of Actions job {int(job_id)}", needs=ACTIONS_WRITE,
+            payload={}, ok=(201, 204),
+        )
+
+    def rerun_failed_jobs(self, ref: IssueRef, run_id: int, token: str) -> None:
+        """Ask GitHub to re-run the failed jobs of Actions run `run_id` (#2841).
+
+        GitHub re-runs every failed job of the run AND their dependents. A
+        job re-run (`rerun_job`) re-runs a job and its dependents, never its
+        needs: re-running a fan-in gate such as application.yml's `ci-gate`
+        alone never re-ran the flaky job it aggregates (PR 2790 at
+        d6548f96), so the gate read red again. Same `actions: write`.
+        """
+        self._call(
+            "POST", self._url(ref, f"actions/runs/{int(run_id)}/rerun-failed-jobs"), token,
+            f"a re-run of the failed jobs of Actions run {int(run_id)}", needs=ACTIONS_WRITE,
             payload={}, ok=(201, 204),
         )
 
