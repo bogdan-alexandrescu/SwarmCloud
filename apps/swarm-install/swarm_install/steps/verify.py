@@ -53,6 +53,7 @@ passes.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -142,6 +143,13 @@ UNRECOGNISED = "unrecognised"
 #: A forge slot's secret name (`Tenant.secret_name`), the only `source` named.
 _SOURCE = re.compile(r"swarm-tenant-[a-z0-9][a-z0-9-]{0,200}")
 
+#: `sc access repos` refusing because the person has not connected GitHub
+#: (swarm-api's `github_not_connected`); any other failure is not retried.
+_NOT_CONNECTED = re.compile(r"not[ _]connected", re.IGNORECASE)
+
+#: The commit a code-intelligence answer's `freshness.index_sha` must be.
+_COMMIT = re.compile(r"[0-9a-f]{40}")
+
 #: Task states (swarm_common's vocabulary) as `RunStatus.state` names them;
 #: anything else is still going.
 TERMINAL_STATES = {"SUCCEEDED": "succeeded", "FAILED": "failed", "CANCELLED": "cancelled"}
@@ -163,7 +171,6 @@ class VerifyGcp(Gcp):
     def knative_revision(self, project: str, region: str, name: str) -> dict[str, Any] | None:
         """A revision's v1 view: `status.imageDigest` is the digest it resolved."""
         return self._call("GET", f"{self._knative(project, region)}/revisions/{name}", missing_ok=True)
-
 
 
 @dataclass
@@ -693,7 +700,7 @@ class SwarmCli:
             raise LookupError("the GitHub organisation is recorded by preflight (github_org)")
         argv = [self.swarm, "sc", "access", "repos", org, "--json", "--context", name]
         code, out, err = self.run(argv, None, self._env(ctx))
-        if code != 0:
+        if code != 0 and _NOT_CONNECTED.search(err):
             self.interactive([self.swarm, "sc", "setup", "--context", name], None, self._env(ctx))
             code, out, err = self.run(argv, None, self._env(ctx))
         found = next((str(row.get("repository") or "") for row in _rows(json.loads(out or "{}") if code == 0 else {},
@@ -796,6 +803,16 @@ def sighting(job: Mapping[str, Any]) -> dict[str, Any]:
             "live": labels.get("swarm-live") == "enabled" and bool(sidecars)}
 
 
+def tenant_namespace(tenant: str) -> str:
+    """The team's namespace as the scheduler derives it: its
+    `namespace_template` through `sanitize_name` (scheduler/dispatch.py),
+    restated because the scheduler is another image."""
+    slug = re.sub(r"-{2,}", "-", re.sub(r"[^a-z0-9-]+", "-", f"swarm-tenant-{tenant}".lower()).strip("-"))
+    if len(slug) > 63:
+        slug = slug[:54].rstrip("-") + "-" + hashlib.sha256(slug.encode("utf-8")).hexdigest()[:8]
+    return slug
+
+
 def check_proof(key: str, run_id: str, check: CheckRun, found: RunStatus, seen: Mapping[str, Any] | None,
                 repository: str, tenant: str) -> tuple[str, str]:
     """`(proof, "")` when a succeeded check run proved itself, else `("", problem)`."""
@@ -805,7 +822,7 @@ def check_proof(key: str, run_id: str, check: CheckRun, found: RunStatus, seen: 
     proof: list[str] = []
     if check.on_cluster:
         if not seen:
-            return "", f"{named}: its worker Job was never seen in the team's namespace swarm-tenant-{tenant}"
+            return "", f"{named}: its worker Job was never seen in the team's namespace {tenant_namespace(tenant)}"
         if check.live and not seen.get("live"):
             return "", (f"{named}: Job {seen.get('job')} did not run the live browser (no swarm-live=enabled "
                         "label and display sidecar)")
@@ -828,8 +845,9 @@ def check_proof(key: str, run_id: str, check: CheckRun, found: RunStatus, seen: 
         answer = answer if isinstance(answer, dict) else {}
         sha = str((answer.get("freshness") or {}).get("index_sha") or "") if isinstance(
             answer.get("freshness"), dict) else ""
-        if not sha:
-            return "", f"{named}: {repository} is not indexed (no freshness.index_sha in {check.artifact})"
+        if not _COMMIT.fullmatch(sha):
+            return "", (f"{named}: {repository} is not indexed (no 40-hex commit in freshness.index_sha "
+                        f"of {check.artifact})")
         rows = answer.get("rows")
         if not isinstance(rows, list) or not rows:
             return "", f"{named}: the code graph answered no symbol for {repository}"
@@ -870,8 +888,13 @@ class EndToEndStep(_Base):
         if all(launched.get(key) for key in CONSOLE_KEYS.values()):
             return launched
         read = getattr(ctx, "read_console", None)
-        for name in sorted(getattr(ctx.state, "console", None) or {}):
-            found = read(name) if callable(read) else ctx.state.console.get(name)
+        cached = getattr(ctx.state, "console", None) or {}
+        # Re-read on every poll: the first team's document and `finished`,
+        # which no earlier step reads, and every document already cached.
+        tenant = str(ctx.outputs.get("verify_tenant") or "")
+        names = dict.fromkeys([*([f"teams/{tenant}"] if tenant else []), "finished", *sorted(cached)])
+        for name in names:
+            found = read(name) if callable(read) else cached.get(name)
             runs = found.get("verify_runs") if isinstance(found, dict) else None
             if isinstance(runs, dict) and all(runs.get(key) for key in CONSOLE_KEYS.values()):
                 launched = {**launched, **{key: str(runs[key]) for key in CONSOLE_KEYS.values()}}
@@ -892,7 +915,7 @@ class EndToEndStep(_Base):
                 wanted[key] = ids[key]
         if not wanted:
             return seen
-        namespace = f"swarm-tenant-{ctx.outputs.get('verify_tenant')}"
+        namespace = tenant_namespace(str(ctx.outputs.get("verify_tenant") or ""))
         code, out, err = self._kube(ctx)("get", "jobs", f"--namespace={namespace}", "-o", "json")
         if code != 0:
             raise RuntimeError(f"kubectl get jobs in {namespace} failed: {err.strip()[:300]}")

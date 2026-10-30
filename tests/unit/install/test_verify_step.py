@@ -391,13 +391,15 @@ def test_console_runs_read_from_the_record_never_asked() -> None:
     """INTERFACE SHEET: Admin › Setup starts the console's two runs and
     swarm-api writes `verify_runs: {console_task, console_workflow}` into a
     console document; the engine copies it into state.outputs and follows
-    those ids. Nothing is ever asked (the Answers here refuse any question)."""
-    docs: dict[str, dict[str, Any]] = {"teams/eng": {"group": "eng@acme.example", "workspace": TEAM}}
+    those ids. Nothing is ever asked (the Answers here refuse any question).
+    No step reads the team's document before this one, so the step reads
+    `teams/<verify_tenant>` and `finished` itself on every poll."""
+    docs: dict[str, dict[str, Any]] = {f"teams/{TEAM}": {"group": "eng@acme.example", "workspace": TEAM}}
     runs = FakeRuns()
     step = verify.EndToEndStep(lambda: VerifyFakeGcp(), Answers(), runs=runs, kube=FakeKube())
     ctx = _ctx(verify_runs={key: f"t-{key}" for key in PLUGIN_KEYS}, verify_repository=REPO,
                verify_context=HOSTNAME, verify_tenant=TEAM)
-    ctx.state.console = dict(docs)
+    ctx.state.console = {}
     read: list[str] = []
 
     def read_console(name: str) -> dict[str, Any] | None:
@@ -412,9 +414,9 @@ def test_console_runs_read_from_the_record_never_asked() -> None:
         runs.finish(f"t-{key}")
     observed = step.check(ctx)
     assert observed.status == WAITING and "console-single" in observed.detail
-    assert read == ["teams/eng"]
+    assert read == [f"teams/{TEAM}", "finished"]
 
-    docs["teams/eng"] = {**docs["teams/eng"], "verify_runs": dict(CONSOLE)}
+    docs[f"teams/{TEAM}"] = {**docs[f"teams/{TEAM}"], "verify_runs": dict(CONSOLE)}
     runs.finish("t-console-single")
     runs.finish("t-console-workflow")
     observed = step.check(ctx)
@@ -452,6 +454,14 @@ def test_check_runs_pass_on_their_own_proof() -> None:
     assert INDEX_SHA[:12] in checks["plugin-code-intelligence"]
 
 
+def test_the_namespace_is_the_schedulers_sanitised_one() -> None:
+    """scheduler/dispatch.py: sanitize_name(namespace_template.format(...))."""
+    assert verify.tenant_namespace(TEAM) == f"swarm-tenant-{TEAM}"
+    assert verify.tenant_namespace("Eng_Team") == "swarm-tenant-eng-team"
+    long = verify.tenant_namespace("x" * 80)
+    assert len(long) == 63 and long.startswith("swarm-tenant-xxx")
+
+
 def test_a_finished_jobs_sighting_is_kept_past_its_ttl() -> None:
     """A finished Job is deleted 600 s later: what a poll saw while it ran is
     kept, so a later poll that finds it gone still passes."""
@@ -474,6 +484,7 @@ def test_a_finished_jobs_sighting_is_kept_past_its_ttl() -> None:
     ("plugin-browser", "not live", "did not run the live browser"),
     ("plugin-browser", "other page", f"does not name {REPO}"),
     ("plugin-code-intelligence", "not indexed", "not indexed"),
+    ("plugin-code-intelligence", "made-up commit", "no 40-hex commit"),
     ("plugin-code-intelligence", "no symbol", "answered no symbol"),
     ("plugin-code-intelligence", "no artifact", "left no code-intelligence.json"),
     ("plugin-gke", "other profile", "not claude-code"),
@@ -490,6 +501,9 @@ def test_a_check_run_without_its_proof_fails_naming_it(key: str, breaks: str, sa
         step.runs.finish(run_id, artifact="Example Domain\n")
     elif breaks == "not indexed":
         step.runs.finish(run_id, artifact=json.dumps({"freshness": {}, "rows": [{"symbol": "x"}]}))
+    elif breaks == "made-up commit":
+        step.runs.finish(run_id, artifact=json.dumps({"freshness": {"index_sha": "main"},
+                                                      "rows": [{"symbol": "x"}]}))
     elif breaks == "no symbol":
         step.runs.finish(run_id, artifact=json.dumps({"freshness": {"index_sha": INDEX_SHA}, "rows": []}))
     elif breaks == "no artifact":
@@ -676,6 +690,7 @@ class FakeSwarm:
         self.repos: list[dict[str, Any]] | None = [{"repository": "acme/old", "archived": True},
                                                    {"repository": REPO, "archived": False}]
         self.connect_on_setup: list[dict[str, Any]] | None = None
+        self.repos_error = ""
 
     def __call__(self, argv: Sequence[str], stdin: str | None, env: dict[str, str] | None) -> tuple[int, str, str]:
         self.calls.append((list(argv), stdin, env))
@@ -698,6 +713,8 @@ class FakeSwarm:
             where = args[args.index("--context") + 1]
             assert where in self.contexts
             if args[1:3] == ["access", "repos"]:
+                if self.repos_error:
+                    return 1, "", self.repos_error
                 if self.repos is None:
                     return 1, "", "sc: GitHub: not connected as you"
                 return 0, json.dumps({"owner": args[3], "page": 1, "repositories": self.repos}), ""
@@ -834,6 +851,13 @@ def test_repository_from_the_app_installation_never_asked() -> None:
     swarm.repos, swarm.connect_on_setup = None, None
     with pytest.raises(RuntimeError, match="could not be read"):
         cli.repository(ctx)
+
+    # Any other failure (a network error) is reported, never answered with setup.
+    setups = sum(argv[:2] == ["swarm", "sc"] and argv[2] == "setup" for argv, _, _ in swarm.calls)
+    swarm.repos, swarm.repos_error = [{"repository": REPO, "archived": False}], "sc: connection reset by peer"
+    with pytest.raises(RuntimeError, match="connection reset"):
+        cli.repository(ctx)
+    assert sum(argv[:2] == ["swarm", "sc"] and argv[2] == "setup" for argv, _, _ in swarm.calls) == setups
 
     runs = FakeRuns()
     step = verify.EndToEndStep(lambda: VerifyFakeGcp(), Answers(), runs=runs, kube=FakeKube())
