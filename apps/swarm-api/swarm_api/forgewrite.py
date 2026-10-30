@@ -748,6 +748,24 @@ class GitHubWriter:
             raise ForgeWriteError(f"GitHub's answer for {what} names no commit")
         return sha
 
+    def tag_head(self, ref: IssueRef, tag: str, token: str) -> str | None:
+        """The object `tag` points at (a commit, or an annotated tag's own
+        object), or None when there is no such tag: admission's second look
+        at a `repository_ref` that is no branch (#2726)."""
+        what = f"the tag {tag} of {ref.repository}"
+        try:
+            data = self._call(
+                "GET", self._url(ref, f"git/ref/tags/{quote(tag, safe='/')}"), token, what,
+                needs=PULLS_WRITE,
+            )
+        except ForgeWriteNotFound:
+            return None
+        target = data.get("object") if isinstance(data, dict) else None
+        sha = target.get("sha") if isinstance(target, dict) else None
+        if not isinstance(sha, str) or not sha:
+            raise ForgeWriteError(f"GitHub's answer for {what} names no object")
+        return sha
+
     def create_branch(self, ref: IssueRef, branch: str, sha: str, token: str) -> bool:
         """Point a new `branch` at `sha`. True when made, False when it was
         already there at `sha`; any other branch of that name is refused."""

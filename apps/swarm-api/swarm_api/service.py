@@ -131,7 +131,11 @@ from .validation import (
     MergePlan,
     SinglePrPlan,
     StepSpec,
+    IssueRef,
     check_repository_ref,
+    ref_needs_lookup,
+    repository_ref_not_found,
+    swarm_task_of_ref,
     is_merge_step,
     is_mergeable_forge,
     merge_repository,
@@ -184,6 +188,18 @@ from .waker import SchedulerWaker, ring
 from .workspaces import Workspaces
 
 log = logging.getLogger(__name__)
+
+
+def _recorded_pull_request(task: Task) -> int | None:
+    """The pull request a task opened, from the worker's record
+    (`result_summary.git.pull_request.number`), else None."""
+    summary = task.result_summary if isinstance(task.result_summary, Mapping) else {}
+    git = summary.get("git")
+    pull = git.get("pull_request") if isinstance(git, Mapping) else None
+    number = pull.get("number") if isinstance(pull, Mapping) else None
+    if isinstance(number, int) and not isinstance(number, bool) and number > 0:
+        return number
+    return None
 
 
 @dataclass(frozen=True)
@@ -1056,6 +1072,17 @@ class SubmissionService:
         now = self._now()
         budget_scope = self.budget_scope(tenant.tenant_id)
         try:
+            # Each distinct (repository, ref) asked of the forge once, before
+            # any task is built (#2726). A `publish_to_pr` task's ref is the
+            # pull request's head, and one beside it is refused in the build.
+            asked: set[tuple[str | None, str | None]] = set()
+            for spec in specs:
+                pair = (spec.repository_url, spec.repository_ref)
+                if spec.publish_to_pr is not None or pair in asked:
+                    continue
+                asked.add(pair)
+                check_repository_ref(spec.repository_ref)
+                self._check_ref_exists(tenant, *pair, person=ctx.email)
             # Inside the try so a refused dispatch is counted like every other
             # rejected submission rather than being invisible to the metric.
             tasks = [
@@ -1175,6 +1202,13 @@ class SubmissionService:
             # Every step clones it, so refused once, here and counted, rather
             # than by `_build_task` on the first step (F4).
             check_repository_ref(spec.repository_ref)
+            # And asked of the forge once, here, not per step (#2726). A
+            # continuation, `merge_pr` or `publish_to_pr` supplies the ref
+            # itself and refuses one beside it below, so it is not asked.
+            if (spec.continues_task is None and spec.merge_pr is None
+                    and spec.publish_to_pr is None):
+                self._check_ref_exists(tenant, spec.repository_url, spec.repository_ref,
+                                       person=ctx.email)
             # Inside the try, because resolving each step's `input_layout`
             # (#75) can refuse, and a refusal is counted like every other.
             step_specs = self._step_specs(spec)
@@ -1994,6 +2028,82 @@ class SubmissionService:
         """
         branch = self._registration(tenant_id, repository_url).get("default_branch")
         return branch if isinstance(branch, str) and branch else None
+
+    def _check_ref_exists(self, tenant: Tenant, repository_url: str | None,
+                          ref: str | None, *, person: str | None) -> None:
+        """Refuse a `repository_ref` the forge has neither as a branch nor as
+        a tag (#2726), once per submission, before any task exists.
+
+        wf_81c4f2da named `swarm/task_77d63ca8...`, a branch deleted after its
+        pull request merged; its step took a lease, waited for a pod and
+        failed in the clone. Asked here with the slot `forge.resolve_forge_slot`
+        picks for `person` -- the tenant's own read, as `_named_pull` -- and
+        refused with `RepositoryRefNotFound` only when GitHub says no such
+        branch, no such tag, AND reads the repository itself.
+
+        FAILS OPEN. No forge reader or credential, 401/403, a timeout, a 5xx,
+        a rate limit or an unreadable repository admit as before: the clone
+        still finds a missing ref, and a GitHub outage must not stop
+        admission. A full sha is fetched by sha and never asked about; a
+        repository off GitHub is not asked either.
+        """
+        if self._forge_tokens is None or self._forge_writer is None:
+            return
+        if not ref_needs_lookup(ref):
+            return
+        named = merge_repository(repository_url)
+        if named is None:
+            return
+        assert ref is not None
+        owner, repo = named
+        target = IssueRef(owner=owner, repo=repo, number=0)
+        writer = self._forge_writer
+        task_id = swarm_task_of_ref(ref)
+        task: Task | None = None
+        if task_id is not None:
+            try:
+                # The caller's own tenant only: another tenant's task is
+                # neither named nor read about (the generic refusal).
+                task = self._store.get_task(tenant.tenant_id, task_id, submitted_by=None)
+            except NotFound:
+                task = None
+        pull_request: int | None = None
+        pull_state: str | None = None
+        try:
+            token = self._forge_tokens.token_for(tenant, person=person)
+            try:
+                if writer.branch_head(target, ref, token) is not None:
+                    return
+                if writer.tag_head(target, ref, token) is not None:
+                    return
+                # Neither: a 404 is also what a token that cannot see the
+                # repository reads, so the repository itself must answer.
+                default_branch = writer.default_branch(target, token)
+                if task is not None:
+                    pull_request = _recorded_pull_request(task)
+                    if pull_request is not None:
+                        try:
+                            pull = writer.read_pull(target, pull_request, token)
+                            pull_state = ("merged" if pull.merged
+                                          else "closed" if pull.state != "open" else "open")
+                        except (ApiError, OSError):
+                            pull_state = None
+            finally:
+                del token
+        except (ApiError, OSError) as exc:
+            log.info(
+                "repository_ref %r of %s/%s not checked (%s); admitted",
+                ref, owner, repo, type(exc).__name__,
+                extra={"tenant_id": tenant.tenant_id},
+            )
+            return
+        raise repository_ref_not_found(
+            ref, f"{owner}/{repo}",
+            task_id=task.id if task is not None else None,
+            pull_request=pull_request, pull_state=pull_state,
+            default_branch=self._registered_base(tenant.tenant_id, repository_url)
+            or default_branch,
+        )
 
     @staticmethod
     def _step_dispatch(
