@@ -439,7 +439,7 @@ def test_ci_addon_makes_cloud_build_sa_not_default_sa() -> None:
     assert "cloudbuild.googleapis.com" in world.services
     own = addons.build_account(PROJECT)
     assert addons.build_account_problem(own) is None
-    for default in (f"123456789-compute@developer.gserviceaccount.com", "123456789@cloudbuild.gserviceaccount.com"):
+    for default in ("123456789-compute@developer.gserviceaccount.com", "123456789@cloudbuild.gserviceaccount.com"):
         assert addons.build_account_problem(default), default
     assert addons.build_account_problem("") is not None
 
