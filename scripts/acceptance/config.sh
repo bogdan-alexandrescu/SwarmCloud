@@ -38,7 +38,7 @@ set -euo pipefail
 #: sandbox-sync.sh keeps its tests/acceptance/fixtures/ equal to the released
 #: commit's. A company's own sandbox is the CI add-on's choice: `swarm addon
 #: enable ci` sets the repository variable SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL
-#: (DAYONE-ADDON-1), which the release workflow passes in. Unset, it is the
+#: (DAYONE-ADDON-1), which accept.yml's sandbox steps pass in. Unset, it is the
 #: live deployment's sandbox, created by the owner on 2026-10-05, because the
 #: swarm-verify job cannot be handed an environment variable (ACC_REF below).
 ACC_SANDBOX_REPOSITORY_URL="${SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL:-https://github.com/bogdan-alexandrescu/swarmcloud-sandbox.git}"
