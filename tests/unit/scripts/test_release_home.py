@@ -414,3 +414,13 @@ def test_ignores_assume_yes_and_starts_strict() -> None:
     assert os.access(SCRIPT, os.X_OK)
     assert 'source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"' in text
     assert "unset SWARM_ASSUME_YES" in text
+
+
+def test_release_scripts_never_wait_on_a_gcloud_prompt():
+    """A first run against a project with Artifact Registry not yet enabled hung
+    ten minutes on gcloud's "enable it and retry? (y/N)" (2026-10-30). Both
+    release scripts turn gcloud's prompts off before their first call."""
+    for name in ("release-home.sh", "release/publish.sh"):
+        text = (REPO / "scripts" / name).read_text()
+        assert "export CLOUDSDK_CORE_DISABLE_PROMPTS=1" in text, name
+

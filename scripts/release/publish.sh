@@ -44,6 +44,13 @@
 # Exit codes: 0 done, 1 refused or failed, 2 bad arguments.
 
 set -euo pipefail
+
+# Never wait on a prompt nobody can see. On a project where an API is not yet
+# enabled, `gcloud ... describe` asks "enable it and retry? (y/N)" and blocks
+# on stdin; the first real run of this script against swarmcloud-prod hung there
+# for ten minutes (2026-10-30). With prompts off it fails at once, which reads
+# as "not there yet", and the enable below runs.
+export CLOUDSDK_CORE_DISABLE_PROMPTS=1
 # shellcheck source-path=SCRIPTDIR/..
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/lib/common.sh"
