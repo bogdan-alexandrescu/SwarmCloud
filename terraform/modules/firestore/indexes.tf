@@ -247,6 +247,25 @@ locals {
       ]
     }
 
+    # ---- GET /v1/tasks/open-questions: a person's unanswered questions ------
+    # swarm_api.agent_questions.open_question_tasks (#2835) reads
+    #   tasks where tenant_id == T and submitted_by == me
+    #     and completed_at >= since and result_summary.questions > 0
+    # -- two range filters, so both are in the index, in the lexicographic
+    # order Firestore orders an unordered multi-inequality query by. Only the
+    # tasks whose agent asked questions are read; the session tag and the
+    # answers are filtered from those.
+    "tasks-tenant-submitter-completed-questions" = {
+      collection  = "tasks"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "tenant_id", order = "ASCENDING" },
+        { field_path = "submitted_by", order = "ASCENDING" },
+        { field_path = "completed_at", order = "ASCENDING" },
+        { field_path = "result_summary.questions", order = "ASCENDING" },
+      ]
+    }
+
     # ---- workflow fan-out: the steps of one workflow ------------------------
     "tasks-workflow-step" = {
       collection  = "tasks"

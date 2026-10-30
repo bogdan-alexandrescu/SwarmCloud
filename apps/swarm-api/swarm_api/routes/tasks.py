@@ -22,6 +22,7 @@ is a label; the submitter filter and every check here keep using the email.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query, Request, Response, status
@@ -402,6 +403,57 @@ def _session_page(
         if token is None:
             break
     return Page(items=matched, next_page_token=token), left_out, left_out_single
+
+
+@router.get("/open-questions")
+def list_open_questions(
+    claude_session: str = Query(...),
+    since: datetime | None = Query(default=None),
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The caller's finished tasks of one Claude Code session that ended at or
+    after `since` (default 7 days ago, at most 31) and have at least one
+    owner question without an answer, newest end first, in ONE call (#2835).
+
+    The sc plugin's check (`owner_questions`) paged the session's SUCCEEDED
+    tasks for these and gave up after 10 pages, so a busy session's older
+    questions were never listed. This route asks the store for the tasks
+    whose agent asked questions (`agent_questions.open_question_tasks`) and
+    filters the session and the answers itself. Always the caller's OWN
+    tasks: the questions are the submitter's to answer. Each row is the row
+    `GET /v1/tasks` serves; `filter` echoes the session and the window, and
+    `complete` is false only when the read hit its bound.
+    """
+    session = sessiontag.valid(claude_session)
+    if session is None:
+        raise ValidationFailed(
+            f"claude_session {claude_session!r} is not a Claude Code session id",
+            detail={"pattern": sessiontag.PATTERN},
+        )
+    now = ctx.now()
+    earliest = now - timedelta(days=agent_questions.OPEN_QUESTIONS_MAX_DAYS)
+    if since is None:
+        since = now - timedelta(days=agent_questions.OPEN_QUESTIONS_DEFAULT_DAYS)
+    elif since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
+    if since < earliest:
+        raise ValidationFailed(
+            f"since may reach back at most {agent_questions.OPEN_QUESTIONS_MAX_DAYS} days",
+            detail={"earliest": earliest.isoformat()},
+        )
+    tasks, complete = agent_questions.open_question_tasks(
+        ctx.db, tenant_id, auth.email, session, since
+    )
+    payload: dict = {
+        "tasks": [task_to_api(task, console_url=ctx.settings.console_url) for task in tasks],
+        "complete": complete,
+        "filter": {"claude_session": session, "since": since.isoformat(), "open_questions": True},
+        "tenant_id": tenant_id,
+    }
+    add_names(name_lookup(ctx), payload["tasks"], ("submitted_by",))
+    return payload
 
 
 @router.get("/{task_id}")

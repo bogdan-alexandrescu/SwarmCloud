@@ -142,11 +142,17 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from swarm_common.admission import _snapshot
 from swarm_common.models import TaskEvent, new_id
-from swarm_common.states import EventType, ParkReason, TaskState, assert_transition
+from swarm_common.states import TERMINAL_STATES, EventType, ParkReason, TaskState, assert_transition
 
 from . import refusals, roles
 from .agent_output import AgentOutputService
-from .codec import event_to_firestore, owner_answer_to_api, owner_answers_by_index, task_from_dict
+from .codec import (
+    claude_session_of,
+    event_to_firestore,
+    owner_answer_to_api,
+    owner_answers_by_index,
+    task_from_dict,
+)
 from .errors import Conflict, Forbidden, NotFound, RoleMemberRequired, ValidationFailed
 from .handoff import ready_writes
 from .redaction import redact
@@ -498,6 +504,62 @@ def unanswered(count: int, metadata: dict[str, Any] | None) -> int:
     """How many of the `count` questions have no stored answer."""
     answered = owner_answers_by_index(metadata)
     return sum(1 for index in range(count) if index not in answered)
+
+
+#: `GET /v1/tasks/open-questions` (#2835): how far back `since` may reach, its
+#: default, and the most documents one request reads. The sc plugin's check
+#: raises a finished task's questions for 7 days (`swarm_mcp.check.
+#: OWNER_QUESTIONS_DAYS`); 31 lets a reader ask for a month and no more. The
+#: query reads only the caller's tasks that ended in the window AND whose
+#: agent asked questions -- answered or not -- so 2,000 is many weeks of a
+#: busy person's asking; a read that reaches it says so (`complete: false`).
+OPEN_QUESTIONS_DEFAULT_DAYS = 7
+OPEN_QUESTIONS_MAX_DAYS = 31
+OPEN_QUESTIONS_SCAN = 2000
+
+
+def open_question_tasks(
+    db: Any, tenant_id: str, submitted_by: str, session: str, since: datetime,
+) -> tuple[list[Any], bool]:
+    """`(tasks, complete)`: `submitted_by`'s tasks in `tenant_id`, tagged with
+    the Claude Code `session`, that ended at or after `since` with at least
+    one question the worker validated (`result_summary.questions`) and no
+    stored answer for it (`metadata.owner_answers`), newest end first.
+
+    ONE QUERY, NOT A WALK OF EVERY FINISHED TASK (#2835). The sc plugin's
+    check paged the session's SUCCEEDED tasks to find these and stopped
+    after 10 pages, so a busy session's older questions were never listed.
+    The worker writes the count only for a file it validated, so
+    `result_summary.questions > 0` with `completed_at >= since` (index
+    tasks-tenant-submitter-completed-questions) reads exactly the tasks that
+    asked; the session tag and the answers, which no index can hold, are
+    filtered from those few. `complete` is False only when the read reached
+    `OPEN_QUESTIONS_SCAN` documents."""
+    query = (
+        db.collection(TASKS)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter("submitted_by", "==", submitted_by))
+        .where(filter=FieldFilter("completed_at", ">=", since))
+        .where(filter=FieldFilter(f"result_summary.{QUESTIONS_KEY}", ">", 0))
+        .limit(OPEN_QUESTIONS_SCAN)
+    )
+    found: list[Any] = []
+    read = 0
+    for snap in query.stream():
+        read += 1
+        task = task_from_dict(snap.to_dict() or {})
+        if task.tenant_id != tenant_id or task.submitted_by != submitted_by:
+            continue
+        if task.state not in TERMINAL_STATES:
+            continue
+        if claude_session_of(task, masking_for(task, warm=False)) != session:
+            continue
+        if unanswered(question_count(task.result_summary), task.metadata) == 0:
+            continue
+        found.append(task)
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    found.sort(key=lambda t: (t.completed_at or epoch, t.id), reverse=True)
+    return found, read < OPEN_QUESTIONS_SCAN
 
 
 def answer_refusal(submitted_by: str | None, email: str, *, is_admin: bool) -> str | None:
