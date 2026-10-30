@@ -152,6 +152,16 @@ class Terraform:
         return {name: item.get("value") for name, item in found.items()}
 
 
+def read_outputs(tf: Terraform, names: Sequence[str] = (), *, impersonate: str | None = None) -> dict[str, Any]:
+    """A root's outputs outside a pass (stage 10 reads infra's manifests),
+    `init` first. Terraform keeps no state for an output that is null, so a
+    name in `names` it does not list is read as None."""
+    if not tf.initialized:
+        tf.init(impersonate=impersonate)
+    found = tf.outputs(impersonate=impersonate)
+    return {name: found.get(name) for name in names} if names else found
+
+
 def is_fresh(tf: Terraform, *, impersonate: str | None = None) -> bool:
     """A root nothing was applied to yet: its state is empty (lesson 9)."""
     return not tf.state_list(impersonate=impersonate)

@@ -7,15 +7,17 @@
 | `cluster.bundle` | `other.release-kubernetes-bundle` | engine: the release's `kubernetes.tgz`, checked against its `SHA256SUMS` and unpacked; never a checkout |
 | `cluster.policies` | `cluster-policy.*` (9), `rbac.provisioner-clusterrole` | engine: `render.py policies` from the bundle, applied before anything a tenant runs |
 | `cluster.swarm-system` | `cluster.swarm-system-namespace` | engine: swarm-system's default-deny ingress, only once the policies are in |
-| `cluster.workloads` | `workload.swarm-live`, `workload.swarm-graph` | engine, read-only: the live relay and the graph service run in swarm-system |
+| `cluster.workloads` | `workload.swarm-live`, `workload.swarm-graph` | engine: the live relay and the graph service, infra's renders, applied and rolled out in swarm-system |
 
 **swarm-system's two core workloads are Terraform's renders.** The live
 relay's manifest is terraform/infra's `swarm_live_manifest` output and the
 graph service's `swarm_graph_manifest` (`kubernetes/apply.sh --swarm-system`
-and `--swarm-graph` apply them; neither is in the release bundle). The
-engine's Terraform runner (DAYONE-ENGINE-3) holds those outputs, so stage 10
-checks the workloads run and its apply names that pass rather than reading
-Terraform a second way. The addon workloads (`swarm-egress`,
+and `--swarm-graph` apply them; neither is in the release bundle). Stage 10
+reads them with `terraform output` in the release's infra root, as the
+deployer (`terraform.read_outputs`), applies them with the pinned kubectl and
+waits for their rollouts. Terraform renders null while a workload is switched
+off (`enable_live_browser`, `graph_service.serve`): nothing is applied for it
+and nothing waits on it. The addon workloads (`swarm-egress`,
 `swarm-typesafe-fwd`, `tailscale-egress`) belong to their addons' installs.
 
 **Policies before the code that needs them** (lesson 33): the scheduler once
@@ -35,7 +37,20 @@ current context was once the other team's cluster. The engine writes its own
 kubeconfig (`~/.config/swarmcloud/install/<project>.kubeconfig`), fetches the
 install cluster's credentials into it, and passes `--kubeconfig` and
 `--context gke_<project>_<region>_<cluster>` on every call; a context naming
-any other cluster, or a deny-listed one, is refused before kubectl runs.
+any other cluster, or a deny-listed one, is refused before kubectl runs. The
+person's own `~/.kube/config` and `$KUBECONFIG` are never read or written.
+
+**The auth plugin, first on PATH.** The kubeconfig get-credentials writes runs
+`gke-gcloud-auth-plugin` by its bare name, so gcloud and every kubectl call see
+a PATH whose first directory holds it: the pinned binary from
+`tools.ensure("gke-gcloud-auth-plugin")`, linked under that name beside the
+kubeconfig.
+
+**The control plane admits this machine a minute late** (decision 2): the
+infra passes put `installer_cidr` in `gke_master_authorized_cidrs`, and the
+change takes about a minute to reach the control plane. A kubectl call that
+times out or is refused is polled with a countdown (`CONTROL_PLANE`) until the
+control plane answers; any other error is returned at once.
 
 **kubectl through `prefer_local_bin`'s rule** (`preflight.find_tool`):
 `SWARM_KUBECTL`, then `~/.local/bin`, then `$PATH`. An old client on `$PATH`
@@ -50,14 +65,20 @@ import os
 import subprocess
 import sys
 import tarfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from .. import tools
+from ..api_client import deployer_email
+from ..events import Events
 from ..exitcodes import MET, UNMET
+from ..state import state_bucket
+from ..terraform import Terraform, read_outputs
+from ..waits import Clock, SystemClock, WaitSpec, wait_until
 from . import Observation, Plan
 from .preflight import ASK, COMPUTE, RELEASE_HOME, TOOLS, Ask, Gcp, find_tool, parse_sums
 
@@ -77,6 +98,36 @@ POLICY_SUBJECTS = (
 )
 
 KUBECTL = next(t for t in TOOLS if t.name == "kubectl")
+#: The name the kubeconfig's `exec` runs; `tools.ensure` caches it versioned.
+AUTH_PLUGIN = "gke-gcloud-auth-plugin"
+
+#: The installer's address reaching the control plane once an infra pass has
+#: put `installer_cidr` in its authorized networks (decision 2).
+CONTROL_PLANE = WaitSpec(
+    reason="the cluster's control plane admitting this machine's address",
+    expected="about a minute",
+    expected_s=90,
+    bound_s=10 * 60,
+    look_at="the cluster's authorized networks must hold installer_cidr (display name swarm-install); run "
+            "swarm install again from the network it was recorded on",
+)
+#: kubectl's words for a control plane that does not answer this address yet.
+UNREACHABLE = (
+    "i/o timeout",
+    "connection refused",
+    "was refused",
+    "Unable to connect to the server",
+    "TLS handshake timeout",
+    "no route to host",
+)
+
+
+def unreachable(code: int, err: str) -> bool:
+    return code != 0 and any(words in err for words in UNREACHABLE)
+
+
+def auth_plugin() -> Path:
+    return Path(tools.ensure(AUTH_PLUGIN))
 
 
 class ClusterGcp(Gcp):
@@ -148,7 +199,11 @@ class Kube:
     find: Callable[[Any], str | None] = find_tool
     run: Run = run_command
     gcloud: Callable[[], str | None] = lambda: find_tool(next(t for t in TOOLS if t.name == "gcloud"))
+    plugin: Callable[[], Path] = auth_plugin
+    clock: Clock = field(default_factory=SystemClock)
+    events: Events | None = None
     _credentials: bool = field(default=False, repr=False)
+    _plugin_dir: Path | None = field(default=None, repr=False)
 
     @property
     def context(self) -> str:
@@ -158,9 +213,21 @@ class Kube:
     def config(self) -> Path:
         return self.kubeconfig or kubeconfig_path(self.project)
 
+    def plugin_dir(self) -> Path:
+        """A directory holding `gke-gcloud-auth-plugin` under that exact name."""
+        if self._plugin_dir is None:
+            binary = self.plugin()
+            if binary.name != AUTH_PLUGIN:
+                binary = tools.link(AUTH_PLUGIN, binary, directory=self.config.with_suffix(".bin"))
+            self._plugin_dir = binary.parent
+        return self._plugin_dir
+
     def _env(self) -> dict[str, str]:
         env = {k: v for k, v in os.environ.items() if k != "KUBECONFIG"}
         env["KUBECONFIG"] = str(self.config)
+        first = str(self.plugin_dir())
+        rest = [p for p in env.get("PATH", "").split(os.pathsep) if p and p != first]
+        env["PATH"] = os.pathsep.join([first, *rest])
         return env
 
     def kubectl(self) -> str:
@@ -195,9 +262,19 @@ class Kube:
         self._credentials = True
 
     def __call__(self, *args: str, stdin: str | None = None) -> tuple[int, str, str]:
+        """kubectl `args`; a control plane that does not answer yet is polled
+        with a countdown (`CONTROL_PLANE`), any other answer returned as is."""
         self.credentials()
-        return self.run([self.kubectl(), f"--kubeconfig={self.config}", f"--context={self.context}", *args],
-                        stdin, self._env())
+        argv = [self.kubectl(), f"--kubeconfig={self.config}", f"--context={self.context}", *args]
+        answer: list[tuple[int, str, str]] = []
+
+        def reached() -> str:
+            answer[:] = [self.run(argv, stdin, self._env())]
+            return UNMET if unreachable(answer[0][0], answer[0][2]) else MET
+
+        events = self.events if self.events is not None else Events(self.clock.now)
+        wait_until("cluster.control-plane", CONTROL_PLANE, reached, clock=self.clock, events=events)
+        return answer[0]
 
 
 def kube_for(ctx: Any, *, find: Callable[[Any], str | None] = find_tool, run: Run = run_command) -> Kube:
@@ -205,7 +282,9 @@ def kube_for(ctx: Any, *, find: Callable[[Any], str | None] = find_tool, run: Ru
     if not region:
         raise LookupError("no region is recorded (preflight.region confirms it)")
     return Kube(project=ctx.project, region=str(region), cluster=cluster_name(ctx),
-                deny_list=tuple(ctx.state.deny_list), find=find, run=run)
+                deny_list=tuple(ctx.state.deny_list), find=find, run=run,
+                # `swarm team add` builds a context with neither; it waits on the system clock.
+                clock=getattr(ctx, "clock", None) or SystemClock(), events=getattr(ctx, "events", None))
 
 
 # -- the release's kubernetes bundle -----------------------------------------
@@ -471,6 +550,25 @@ CORE_WORKLOADS = (
     ("workload.swarm-live", "statefulset/swarm-live", "swarm_live_manifest"),
     ("workload.swarm-graph", "deployment/swarm-graph", "swarm_graph_manifest"),
 )
+#: How long `kubectl rollout status` waits for one workload, inside
+#: `run_command`'s own 600 s.
+ROLLOUT_TIMEOUT = "300s"
+
+#: `outputs(ctx) -> {name: value}`: terraform/infra's outputs.
+Outputs = Callable[[Any], Mapping[str, Any]]
+
+
+def infra_outputs(ctx: Any, *, deps: Any = None) -> dict[str, Any]:
+    """The core workloads' manifests from terraform/infra's state: the
+    release's infra root, initialised against the install's state bucket and
+    read as the deployer, as every infra pass runs (`steps.bootstrap`)."""
+    from .bootstrap import DEPS
+
+    deps = deps or DEPS
+    tf = Terraform(root="infra", root_dir=deps.module_root(ctx, "infra"), state_bucket=state_bucket(ctx.project),
+                   environment=ctx.environment, exec_=deps.exec_)
+    return read_outputs(tf, tuple(output for _, _, output in CORE_WORKLOADS),
+                        impersonate=deployer_email(ctx.project))
 
 
 class WorkloadsStep(_Base):
@@ -478,43 +576,75 @@ class WorkloadsStep(_Base):
     satisfies = tuple(entry for entry, _, _ in CORE_WORKLOADS)
     _explain = (
         "The live-browser relay and the shared code graph service run in swarm-system. Their manifests are "
-        "terraform/infra's renders (image digest, bucket, key reference, address), applied after the "
-        "namespace's policies; stage 10 checks every replica is ready."
+        "terraform/infra's renders (image digest, bucket, key reference, address), read from its outputs and "
+        "applied after the namespace's policies; stage 10 waits for their rollouts and checks every replica "
+        "is ready. A workload Terraform has switched off renders null and is skipped."
     )
+
+    def __init__(self, gcp: Callable[[], ClusterGcp], ask: Ask, *, outputs: Outputs = infra_outputs,
+                 **kw: Any) -> None:
+        super().__init__(gcp, ask, **kw)
+        self._outputs = outputs
+        self._read: dict[str, Mapping[str, Any]] = {}
+
+    def manifests(self, ctx: Any) -> list[tuple[str, str, str | None]]:
+        """(kind/name, output, manifest or None when switched off), read once per project."""
+        if ctx.project not in self._read:
+            self._read[ctx.project] = self._outputs(ctx)
+        found = self._read[ctx.project]
+        return [(name, output, str(found[output]) if found.get(output) else None)
+                for _, name, output in CORE_WORKLOADS]
 
     def check(self, ctx: Any) -> Observation:
         problems: list[str] = []
-        for _, name, output in CORE_WORKLOADS:
+        off: list[str] = []
+        for name, output, manifest in self.manifests(ctx):
+            if manifest is None:
+                off.append(f"{name} (terraform output {output} is null: switched off)")
+                continue
             code, out, err = self.kube(ctx)("get", name, "--namespace=swarm-system", "-o", "json")
             if code != 0:
                 if "NotFound" not in err:
                     raise RuntimeError(f"kubectl get {name} failed: {err.strip()[:300]}")
                 problems.append(f"{name} does not exist (terraform output {output})")
                 continue
+            problem = self.differs(ctx, manifest)
+            if problem:
+                problems.append(f"{name}: {problem} (terraform output {output})")
+                continue
             found = yaml.safe_load(out) or {}
             wanted = int((found.get("spec") or {}).get("replicas") or 0)
             ready = int((found.get("status") or {}).get("readyReplicas") or 0)
             if wanted < 1 or ready < wanted:
                 problems.append(f"{name} has {ready} of {wanted} replicas ready")
+        skipped = f"; not applied: {', '.join(off)}" if off else ""
         if problems:
-            return Observation(UNMET, "; ".join(problems))
-        return Observation(MET, "swarm-live and swarm-graph are ready in swarm-system")
+            return Observation(UNMET, "; ".join(problems) + skipped)
+        running = [name for name, _, manifest in self.manifests(ctx) if manifest is not None]
+        if not running:
+            return Observation(MET, "no core workload is switched on" + skipped)
+        return Observation(MET, f"{' and '.join(running)} ready in swarm-system{skipped}")
 
     def plan(self, ctx: Any) -> Plan:
-        return Plan("check swarm-system's core workloads",
-                    tuple(f"{name}: terraform output {output}" for _, name, output in CORE_WORKLOADS))
+        return Plan("apply swarm-system's core workloads from terraform/infra's outputs and wait for their rollouts",
+                    tuple(f"{name}: terraform output {output}" + ("" if manifest else " (null: switched off)")
+                          for name, output, manifest in self.manifests(ctx)))
 
     def apply(self, ctx: Any, plan: Plan) -> None:
-        found = self.check(ctx)
-        if found.status != MET:
-            raise RuntimeError(f"{found.detail}. Their manifests are terraform/infra's outputs, applied by the "
-                               "engine's Terraform pass (DAYONE-ENGINE-3), as kubernetes/apply.sh --swarm-system "
-                               "and --swarm-graph apply them; run swarm install again once it has")
+        wanted = [(name, manifest) for name, _, manifest in self.manifests(ctx) if manifest is not None]
+        for _, manifest in wanted:
+            self.apply_render(ctx, manifest)
+        for name, _ in wanted:
+            code, _, err = self.kube(ctx)("rollout", "status", name, "--namespace=swarm-system",
+                                          f"--timeout={ROLLOUT_TIMEOUT}")
+            if code != 0:
+                raise RuntimeError(f"{name} did not roll out in swarm-system: {err.strip()[:300]}; "
+                                   f"kubectl -n swarm-system describe {name} says why")
 
 
 def build_steps(gcp: Callable[[], ClusterGcp] = CLUSTER_GCP, ask: Ask = ASK, *,
                 kube: Callable[[Any], Kube] = kube_for, bundle: Bundle | None = None,
-                run: Run = run_command) -> list[Any]:
+                run: Run = run_command, outputs: Outputs = infra_outputs) -> list[Any]:
     """Stage 10 in order: the bundle, the policies, then what they admit."""
     shared = bundle or Bundle(gcp)
     policies = PoliciesStep(gcp, ask, kube=kube, bundle=shared, run=run)
@@ -522,7 +652,7 @@ def build_steps(gcp: Callable[[], ClusterGcp] = CLUSTER_GCP, ask: Ask = ASK, *,
         BundleStep(gcp, ask, kube=kube, bundle=shared, run=run),
         policies,
         SwarmSystemStep(gcp, ask, policies=policies, kube=kube, bundle=shared, run=run),
-        WorkloadsStep(gcp, ask, kube=kube, bundle=shared, run=run),
+        WorkloadsStep(gcp, ask, outputs=outputs, kube=kube, bundle=shared, run=run),
     ]
 
 
