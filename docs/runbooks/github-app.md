@@ -175,9 +175,11 @@ No access):
 * Issues: Read and write -- the issue-run comments (#454)
 * Checks: Read-only -- the merge step's CI wait
 * Metadata: Read-only -- mandatory, GitHub sets it
-* Actions: Read and write -- the merge step re-runs a failed CI job at the
-  same commit (`mergewake.py`, `GitHubWriter.rerun_job`,
-  `forgewrite.ACTIONS_WRITE`); held since before 2026-10-23
+* Actions: Read and write -- the merge step re-runs the failed jobs of a
+  red CI run at the same commit (`mergewake.py`,
+  `GitHubWriter.rerun_failed_jobs`, else `GitHubWriter.rerun_job` for one
+  job; both `forgewrite.ACTIONS_WRITE`, no new grant, #2841); held since
+  before 2026-10-23
 * Workflows: Read and write -- added to the App on 2026-10-23 (#2029); each
   installation's owner accepts it. A repository uses it only when its
   `workflow_files` switch is on. A push that changes `.github/workflows/` or

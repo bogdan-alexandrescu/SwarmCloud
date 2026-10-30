@@ -353,10 +353,24 @@ defaulted to 0. What this lane changed, and why:
   mergeable at all, so 0 does not turn them off.
 * **A flake costs no agent.** The first red reading at a head whose every
   failing check is an Actions job asks GitHub to
-  re-run exactly those jobs (`POST actions/jobs/<id>/rerun`, `actions:
-  write`, the tenant's own `-git` token) and spends no round. It is recorded
-  in `metadata.merge_fix.reruns`, claimed under the guard a round is claimed
-  under, once per head. The re-run's check runs are the latest of their name,
+  re-run the failed jobs of each workflow run those checks belong to (`POST
+  actions/runs/<run_id>/rerun-failed-jobs`, once per distinct run, `actions:
+  write`, the tenant's own `-git` token) and spends no round. The run, not
+  the job, because the failing required check is usually the fan-in
+  `ci-gate`, whose `needs:` are every other job: `POST
+  actions/jobs/<id>/rerun` re-runs a job and its dependents, never its
+  needs, so on PR 2790 at d6548f96 the gate alone re-ran, the flaky `unit
+  tests (1/1)` it aggregates never did, the gate read red again and the one
+  re-run was spent (#2841). A run's failed-jobs re-run re-runs every failed
+  job and its dependents, the gate with them. The run id comes from the
+  failing check run itself -- its `workflow_run_id`, stamped from the
+  Actions runs the reading already holds, else the digits of its
+  `details_url` (`.../actions/runs/<run>/job/<the check's own id>`) -- never
+  from a caller; a failing check whose run neither gives is re-run as its
+  own job, as before. It is recorded in `metadata.merge_fix.reruns` (`jobs`,
+  the failing check ids the merge step's `_rerun_settling` matches; `runs`,
+  the runs asked), claimed under the guard a round is claimed under, once
+  per head. The re-run's check runs are the latest of their name,
   so the next reading is the re-run's: green wakes the step to merge, red
   goes to a round if one is left, else wakes the step `red`. The re-run comes
   before the round budget and the branch check, so a merge granted zero

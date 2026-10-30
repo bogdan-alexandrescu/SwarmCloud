@@ -579,6 +579,32 @@ def test_red_after_a_no_change_round_and_its_red_rerun_is_checks_failed(tmp_path
     assert "round 1" in outcome.summary["refusal"]["message"]
 
 
+@pytest.mark.parametrize("rerun, answered", [
+    pytest.param({"runs": [41], "error": "403 Resource not accessible by integration"}, False,
+                 id="run-rerun-refused"),
+    pytest.param({"runs": [41]}, True, id="run-rerun-answered-red"),
+    pytest.param({"runs": [41], "ago": merge.RERUN_SETTLE_SECONDS + 5}, False,
+                 id="run-rerun-settled"),
+])
+def test_red_after_a_no_change_round_with_a_refused_rerun_at_this_head_is_checks_failed(
+    tmp_path, rerun, answered,
+):
+    """#2841: the tick now asks GitHub to re-run the failed jobs of the
+    failing check's workflow run and records the run ids as `runs` beside the
+    failing check ids in `jobs`. The step reads the record as before: a re-run
+    at this head -- refused, answered red, or settled -- is the one free
+    re-run, so a no_change round's red still refuses."""
+    world = MergeWorld(tmp_path)
+    _no_change_round(world, rerun=rerun)
+    if answered:
+        _rerun_answered_red(world)
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
+    assert "round 1" in outcome.summary["refusal"]["message"]
+
+
 def test_red_after_a_no_change_round_with_a_settling_rerun_parks_pending(tmp_path):
     world = MergeWorld(tmp_path)
     _no_change_round(world, rerun={})
