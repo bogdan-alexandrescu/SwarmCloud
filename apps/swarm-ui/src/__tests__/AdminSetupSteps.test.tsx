@@ -657,3 +657,90 @@ describe('the App self-check waits for infra pass 3 (finding 28)', () => {
     expect(document.querySelector('[data-step="github"]')?.className).not.toContain('is-failed')
   })
 })
+
+describe('the first team needs no typing the install already knows (#26, N20; DAYONE-SETUP-UI-6)', () => {
+  const noTeam = (engine: Json = {}): Json => state({ teams: [], accounts: {}, finished: null }, engine)
+
+  it('createSetupTeam keeps the invites and their Google Admin members page the team route returns', async () => {
+    serve((m, url) =>
+      m === 'POST' && url === '/v1/admin/setup/teams'
+        ? {
+            status: 201,
+            body: {
+              team: 'engineering',
+              invites: [
+                { email: 'ravi@example.com', add_members_url: MEMBERS_URL, member: false },
+                { email: 'lea@example.com', add_members_url: 'https://evil.example.com/members', member: true },
+              ],
+            },
+          }
+        : null,
+    )
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const { createSetupTeam } = await import('../api')
+    const r = await createSetupTeam({ group: 'engineering@example.com', invites: ['ravi@example.com', 'lea@example.com'] })
+    expect(r.status).toBe('ok')
+    const data = (r as { data: unknown }).data
+    // MUTATION: keep only `team` and drop the members page the route answered.
+    expect(data).toEqual({
+      team: 'engineering',
+      invites: [
+        { email: 'ravi@example.com', add_members_url: MEMBERS_URL, member: false },
+        // MUTATION: pass through a page that is not Google Admin's.
+        { email: 'lea@example.com', add_members_url: null, member: true },
+      ],
+    })
+  })
+
+  it('creating the team with invites opens the group’s members page, as the form’s hint says', async () => {
+    const opened: string[] = []
+    const open = vi.spyOn(window, 'open').mockImplementation((url) => {
+      opened.push(String(url))
+      return null
+    })
+    serve((m, url) =>
+      m === 'POST' && url === '/v1/admin/setup/teams'
+        ? { status: 201, body: { team: 'eng', invites: [{ email: 'kim@example.com', add_members_url: MEMBERS_URL, member: false }] } }
+        : m === 'GET' && url === '/v1/admin/setup'
+          ? { status: 200, body: noTeam() }
+          : null,
+    )
+    await mountSteps(noTeam())
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    // MUTATION: promise the page "opens from the team's row", where no button appears before an invite there.
+    expect(visible(row)).not.toContain('opens from the team’s row')
+    expect(visible(row)).toContain('opens when you create the team')
+    fireEvent.change(within(row).getByLabelText('Workspace group'), { target: { value: 'eng@example.com' } })
+    fireEvent.change(within(row).getByLabelText('Invite'), { target: { value: 'kim@example.com' } })
+    fireEvent.click(within(row).getByRole('button', { name: 'Create the team' }))
+    // MUTATION: drop the members page the route answered.
+    await waitFor(() => expect(opened).toEqual([MEMBERS_URL]))
+    open.mockRestore()
+  })
+
+  it('pre-fills the group field with the team group swarm install created', async () => {
+    const calls = serve((m, url) =>
+      m === 'POST' && url === '/v1/admin/setup/teams' ? { status: 201, body: { team: 'swarm-team', invites: [] } } : m === 'GET' && url === '/v1/admin/setup' ? { status: 200, body: noTeam() } : null,
+    )
+    await mountSteps(noTeam({ workspace_groups: { team: 'swarm-team@example.com' } }))
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    const input = within(row).getByLabelText('Workspace group') as HTMLInputElement
+    // MUTATION: start the field empty, asking for what the install already made.
+    expect(input.value).toBe('swarm-team@example.com')
+    expect(visible(row)).toContain('swarm install created')
+    fireEvent.click(within(row).getByRole('button', { name: 'Create the team' }))
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.url === '/v1/admin/setup/teams')).toBe(true))
+    expect((calls.find((c) => c.url === '/v1/admin/setup/teams')?.body as Json).group).toBe('swarm-team@example.com')
+    // The person can still change it.
+    cleanup()
+    await mountSteps(noTeam({ workspace_groups: { team: 'swarm-team@example.com' } }))
+    const again = within(document.querySelector('[data-step="team"]') as HTMLElement).getByLabelText('Workspace group') as HTMLInputElement
+    fireEvent.change(again, { target: { value: 'eng@example.com' } })
+    expect(again.value).toBe('eng@example.com')
+    cleanup()
+    // Before stage 8 records a group, the field starts empty.
+    await mountSteps(noTeam())
+    expect((within(document.querySelector('[data-step="team"]') as HTMLElement).getByLabelText('Workspace group') as HTMLInputElement).value).toBe('')
+  })
+})
