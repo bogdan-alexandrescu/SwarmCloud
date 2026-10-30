@@ -70,6 +70,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from .. import record as install_record
 from .. import tfvars
 from ..api_client import deployer_email
 from ..exitcodes import MET, UNMET
@@ -119,6 +120,10 @@ class InfraPass1Step(PassStep):
                 tf.run("import", "-input=false", address, resource_id, impersonate=deployer)
 
         bootstrap.apply_pass(ctx, self.deps, self.pass_name, before_plan=adopt_address)
+        # Firestore exists now: from here every save mirrors to the install
+        # record and the hand-off reads the console (N1). A resumed run skips
+        # this apply; `swarm install` attaches it then (verbs/install.py).
+        ctx.attach_record(install_record.open_record(ctx.project, ctx.environment))
 
 
 class InfraPass2Step(PassStep):

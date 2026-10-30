@@ -272,10 +272,10 @@ class LiveWorld:
         return sum(1 for _ in query.stream())
 
     def checks(self) -> list[tuple[str, str, str]]:
-        from ..record import FirestoreDocuments, InstallRecord
+        from .. import record as install_record
 
         if self.engine.record is None:
-            self.engine.record = InstallRecord(self.environment, FirestoreDocuments(self.project))
+            self.engine.record = install_record.open_record(self.project, self.environment)
         ctx = self.ctx()
         results = []
         for step_id in CHECKS:

@@ -59,6 +59,7 @@ from ..engine import Engine
 from ..events import Events
 from ..exitcodes import MET, UNMET, ExitCode, for_statuses
 from ..lease import Lease
+from .. import record as install_record
 from ..record import stages_of
 from ..repair import RepairEngine, RepairUsage, repair
 from ..state import (
@@ -84,8 +85,14 @@ HELP = "install SwarmCloud into a Google Cloud project, or resume one (--status:
 #: and a company's first deployment is its production one.
 DEFAULT_ENV = "prod"
 
-#: The marketplace a teammate adds (plan §6.4, D28), printed on the ready screen.
+#: The marketplace a teammate adds (plan §6.4, D28), printed on the ready screen:
+#: the stable one at the bucket root; another channel's under `channels/<channel>/`
+#: (N10), so an rc deployment's teammates get the rc's plugin.
 PLUGIN_MARKETPLACE = "https://storage.googleapis.com/swarmcloud/marketplace.json"
+CHANNEL_MARKETPLACE = "https://storage.googleapis.com/swarmcloud/channels/{channel}/marketplace.json"
+
+#: The step whose apply creates Firestore: once it is done the install record exists.
+RECORD_STEP = "infra.pass-1"
 
 #: Google's project id rule: 6-30 characters, lowercase letters, digits and
 #: hyphens, starting with a letter and not ending with a hyphen.
@@ -406,7 +413,8 @@ def _install(args: argparse.Namespace, repair_check: str | None = None) -> int:
         seed=seed,
         read_only=args.dry_run,
     )
-    refused = _refusal(store.peek(), args, seed)
+    current = store.peek()
+    refused = _refusal(current, args, seed)
     if refused is not None:
         print(f"swarm install: refused: {refused}", file=sys.stderr)
         return ExitCode.REFUSED
@@ -420,6 +428,11 @@ def _install(args: argparse.Namespace, repair_check: str | None = None) -> int:
         if attached is not None
         else Lease.local(holder, clock.now)
     )
+    # Firestore exists once pass 1 is done: a resumed run, which skips that
+    # apply, attaches the install record here so the hand-off, the GitHub
+    # passes and verify read the console (N1). Before then pass 1's apply
+    # attaches it (steps/infra.py).
+    record = install_record.open_record(args.project, args.env) if current.done(RECORD_STEP) else None
     engine = (RepairEngine if repair_check is not None else Engine)(
         steps,
         store=store,
@@ -428,6 +441,7 @@ def _install(args: argparse.Namespace, repair_check: str | None = None) -> int:
         clock=clock,
         holder=holder,
         manifest=manifest,
+        record=record,
         dry_run=args.dry_run,
         confirm=_typed,
     )
@@ -436,6 +450,23 @@ def _install(args: argparse.Namespace, repair_check: str | None = None) -> int:
         # (swarm_install.repair); SWARM_ASSUME_YES is never read for it.
         return int(repair(repair_check, manifest=manifest, engine=engine, confirm=_typed))
     return int(engine.run(stages=args.stage).exit_code)
+
+
+def channel_of(release: str | None) -> str:
+    """The deployment's release channel: rc for a release candidate it
+    records (2026.11.3-rc.2), stable for any other release; with none
+    recorded, the channel this installer came from (`SWARM_CHANNEL`)."""
+    if release:
+        return "rc" if "-rc." in release else "stable"
+    try:
+        return preflight.release_channel()
+    except ValueError:
+        return "stable"
+
+
+def plugin_marketplace(release: str | None) -> str:
+    channel = channel_of(release)
+    return PLUGIN_MARKETPLACE if channel == "stable" else CHANNEL_MARKETPLACE.format(channel=channel)
 
 
 def _when(at: float | None) -> str:
@@ -527,7 +558,7 @@ def _status(args: argparse.Namespace) -> int:
         print("Ready.")
         print(f"  Console:    {url}/")
         print(
-            f"  Teammates:  claude plugin marketplace add {PLUGIN_MARKETPLACE}"
+            f"  Teammates:  claude plugin marketplace add {plugin_marketplace(state.release)}"
             f"  (deployment URL: {url})"
         )
         print("  Health:     swarm doctor")
