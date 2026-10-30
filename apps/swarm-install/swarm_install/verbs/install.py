@@ -47,9 +47,7 @@ import argparse
 import getpass
 import json
 import re
-import shutil
 import socket
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -74,6 +72,7 @@ from ..state import (
     state_bucket,
 )
 from ..steps import Step, triggered_of
+from ..steps import preflight
 from ..steps.preflight import DEFAULT_REGION, HOSTNAME, REGION
 from ..steps import discover as _discover_steps
 from ..waits import SystemClock
@@ -192,20 +191,11 @@ def open_bucket(project: str) -> ObjectStore:
 
 def holder_identity() -> str:
     """Who holds the lease: the gcloud account (the email another admin types
-    to take over an expired lease), else the local user at this host."""
-    gcloud = shutil.which("gcloud")
-    if gcloud is not None:
-        try:
-            done = subprocess.run(
-                [gcloud, "config", "get-value", "account"],
-                capture_output=True, text=True, timeout=30, check=False,
-            )
-            account = done.stdout.strip()
-            if done.returncode == 0 and "@" in account:
-                return account
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-    return f"{getpass.getuser()}@{socket.gethostname()}"
+    to take over an expired lease), else the local user at this host. gcloud
+    is found the way preflight finds it, the SDK it fetched into ~/.swarm
+    included, never by bare name on PATH (audit #3)."""
+    account = preflight.gcloud_account(lambda: preflight.find_gcloud())
+    return account or f"{getpass.getuser()}@{socket.gethostname()}"
 
 
 def _typed(prompt: str) -> str:
@@ -278,7 +268,7 @@ def _ask_missing(args: argparse.Namespace) -> int | None:
     print(f"  Project:   {args.project} (created if it does not exist)")
     print(f"  Hostname:  {hostname}")
     print(f"  Region:    {region}")
-    print(f"  Release:   {release or 'the current stable release'}")
+    print(f"  Release:   {release or preflight.default_release_said()}")
     print(f"  Console:   https://{hostname}/ when the install is done")
     try:
         answer = input("Continue? [Y/n] ").strip().lower()
@@ -421,6 +411,8 @@ def _install(args: argparse.Namespace, repair_check: str | None = None) -> int:
         print(f"swarm install: refused: {refused}", file=sys.stderr)
         return ExitCode.REFUSED
 
+    # Stage 1 on, the billing-budget calls name this project as their quota project (audit #8).
+    preflight.GCP.use_quota_project(args.project)
     clock = SystemClock()
     holder = holder_identity()
     lease = (

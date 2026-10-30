@@ -9,7 +9,8 @@ zero mutating calls).
 | Step | Manifest entries | Lesson |
 |---|---|---|
 | `preflight.tools` | the core `local-tool.*` | 12: terraform `1.16.2`, kubectl ≥ 1.30 |
-| `preflight.sign-in` | `other.installer-sign-in` | gcloud and ADC signed in, by the installer itself; ADC with the Directory scopes |
+| `preflight.sign-in` | `other.installer-sign-in` | gcloud and ADC signed in, by the installer itself; ADC with the Directory scopes; records `installer` |
+| `preflight.organization` | — | audit #24: no organisation is said first; the Cloud Identity Free sign-up opens and is polled |
 | `preflight.inputs` | `other.github-org` | R7: the alert email, the hostname (the verb's), the GitHub org, the billing account (listed) |
 | `preflight.region` | — | 2: the region (the verb's) is confirmed, typed, before stage 1 |
 | `preflight.rights` | `switch.project-create-right`, `switch.billing-link-right` | 1 and 16; the parent is listed |
@@ -19,7 +20,7 @@ zero mutating calls).
 | `preflight.quotas` | `quota.*` | 4: the KMS signing quota is read; the Quotas page opens for an increase |
 | `preflight.sizing` | `other.deployment-sizing` | decision 7: one person or a team of N, the proposed ceilings |
 | `preflight.sizing-quota` (stage 1) | `other.deployment-sizing-quota` | the sizing against a new project's CPU quota |
-| `preflight.release` | `other.release-home`, `other.release-bundle` | 27: CVE acceptances with expiry |
+| `preflight.release` | `other.release-home`, `other.release-bundle` | 27: CVE acceptances with expiry; records `state.release` (audit #2) |
 
 This module also holds `Gcp`, the engine's one REST client for stages 0-2. It
 builds its session lazily (no client at import time) and every call is a typed
@@ -39,6 +40,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import urllib.parse
 from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,6 +49,7 @@ from typing import Any
 from .. import secret_entry, sizing, tools
 from ..exitcodes import MET, UNMET
 from ..secret_entry import DevTty, Terminal
+from ..waits import WaitSpec
 from . import Observation, Plan, open_page
 
 # -- the REST client ---------------------------------------------------------
@@ -54,7 +57,6 @@ from . import Observation, Plan, open_page
 CRM = "https://cloudresourcemanager.googleapis.com"
 BILLING = "https://cloudbilling.googleapis.com/v1"
 BUDGETS = "https://billingbudgets.googleapis.com/v1"
-ORGPOLICY = "https://orgpolicy.googleapis.com/v2"
 USAGE = "https://serviceusage.googleapis.com"
 STORAGE = "https://storage.googleapis.com/storage/v1"
 IAM = "https://iam.googleapis.com/v1"
@@ -89,10 +91,18 @@ class ApiError(RuntimeError):
 
 class Gcp:
     """The Google Cloud calls stages 0-2 make, over REST with the person's
-    application-default credentials."""
+    application-default credentials.
 
-    def __init__(self, session: Any = None) -> None:
+    `quota_project` is the install's project, which the billing-budget calls
+    (stage 1 on, once the project exists) send as `x-goog-user-project`: with
+    user credentials the Budgets API refuses a call that names none, and a
+    fresh laptop's sign-in sets none (audit #8). It is the header
+    `credentials.with_quota_project(project)` makes a session send. Every
+    stage-0 call goes without one: no project exists yet."""
+
+    def __init__(self, session: Any = None, *, quota_project: str | None = None) -> None:
         self._session = session
+        self.quota_project = quota_project
 
     @property
     def session(self) -> Any:
@@ -107,8 +117,9 @@ class Gcp:
         return self._session
 
     def _call(self, method: str, url: str, *, body: Any = None, params: Any = None,
-              missing_ok: bool = False) -> Any:
-        response = self.session.request(method, url, json=body, params=params, timeout=60)
+              missing_ok: bool = False, quota_project: str | None = None) -> Any:
+        extra = {"headers": {"x-goog-user-project": quota_project}} if quota_project else {}
+        response = self.session.request(method, url, json=body, params=params, timeout=60, **extra)
         if missing_ok and response.status_code == 404:
             return None
         if response.status_code >= 400:
@@ -122,11 +133,12 @@ class Gcp:
             raise ApiError(response.status_code, reason, str(error.get("message") or response.reason))
         return response.json() if response.content else {}
 
-    def _pages(self, url: str, key: str, params: dict[str, Any] | None = None) -> list[Any]:
+    def _pages(self, url: str, key: str, params: dict[str, Any] | None = None, *,
+               quota_project: str | None = None) -> list[Any]:
         found: list[Any] = []
         params = dict(params or {})
         while True:
-            page = self._call("GET", url, params=params) or {}
+            page = self._call("GET", url, params=params, quota_project=quota_project) or {}
             found.extend(page.get(key, []))
             token = page.get("nextPageToken")
             if not token:
@@ -188,17 +200,31 @@ class Gcp:
         return self._call("POST", f"{CRM}/v1/projects/{project}:setIamPolicy", body={"policy": policy})
 
     def budgets(self, account: str) -> list[dict[str, Any]]:
-        return self._pages(f"{BUDGETS}/billingAccounts/{account}/budgets", "budgets")
+        return self._pages(f"{BUDGETS}/billingAccounts/{account}/budgets", "budgets",
+                           quota_project=self.quota_project)
 
     def create_budget(self, account: str, budget: Mapping[str, Any]) -> dict[str, Any]:
-        return self._call("POST", f"{BUDGETS}/billingAccounts/{account}/budgets", body=budget)
+        return self._call("POST", f"{BUDGETS}/billingAccounts/{account}/budgets", body=budget,
+                          quota_project=self.quota_project)
 
     # Org policy and quotas ---------------------------------------------------
 
     def effective_policy(self, resource: str, constraint: str) -> dict[str, Any]:
         """The policy in force on `resource` (`projects/..`, `folders/..`,
-        `organizations/..`) after inheritance, not only its own."""
-        return self._call("GET", f"{ORGPOLICY}/{resource}/policies/{constraint}:getEffectivePolicy")
+        `organizations/..`) after inheritance, not only its own. Read through
+        Resource Manager v1's `getEffectiveOrgPolicy`, which takes no quota
+        project: the Org Policy v2 API refuses user credentials that name none,
+        and in stage 0 there is no project to name (audit #8). The answer is a
+        v1 policy (`listPolicy`, `booleanPolicy`); `_values` reads it. Should
+        Google ask for a quota project after all, a project that exists is
+        asked again as its own quota project."""
+        url, body = f"{CRM}/v1/{resource}:getEffectiveOrgPolicy", {"constraint": f"constraints/{constraint}"}
+        try:
+            return self._call("POST", url, body=body)
+        except ApiError as exc:
+            if not (exc.status == 403 and "quota project" in str(exc).lower() and resource.startswith("projects/")):
+                raise
+            return self._call("POST", url, body=body, quota_project=resource.removeprefix("projects/"))
 
     def quota_metrics(self, project: str, service: str) -> list[dict[str, Any]]:
         return self._pages(
@@ -705,14 +731,28 @@ class SignInStep(_Base):
 
     def check(self, ctx: Any) -> Observation:
         missing = self.missing()
-        return Observation(UNMET if missing else MET, "; ".join(what for what, _ in missing))
+        if missing:
+            return Observation(UNMET, "; ".join(what for what, _ in missing))
+        installer = str(ctx.outputs.get("installer") or "")
+        if not installer:
+            return Observation(UNMET, "the installer's account is not recorded yet")
+        return Observation(MET, f"signed in as {installer}", {"installer": installer})
 
     def plan(self, ctx: Any) -> Plan:
         return Plan("sign in to Google Cloud (gcloud opens your browser)",
                     tuple(f"{what}: sign in in the browser" for what, _ in self.missing()))
 
     def apply(self, ctx: Any, plan: Plan) -> None:
-        missing = self.missing()
+        """The missing sign-ins, then `installer`: the signed-in gcloud account,
+        which bootstrap, IAP and the admin list read (audit #3). The first
+        installer recorded is kept; preflight.organization replaces a consumer
+        account with the organisation's."""
+        self.sign_in(ctx, self.missing())
+        account = self._account()
+        if account and not ctx.outputs.get("installer"):
+            remember(ctx, outputs={"installer": account})
+
+    def sign_in(self, ctx: Any, missing: Sequence[tuple[str, list[str]]]) -> None:
         if not missing:
             return
         gcloud = self._gcloud()
@@ -725,6 +765,111 @@ class SignInStep(_Base):
             if code != 0:
                 raise RuntimeError(f"the Google sign-in did not finish ({what}; gcloud exited {code}); "
                                    "run swarm install again to sign in")
+
+    def sign_in_again(self, ctx: Any) -> None:
+        """Both sign-ins once more, as another account (preflight.organization)."""
+        self.sign_in(ctx, [("signing in as your organisation's account", ["auth", "login"]),
+                           ("the application-default credentials for that account",
+                            ["auth", "application-default", "login", "--scopes=" + ",".join(ADC_SCOPES)])])
+
+
+# -- preflight.organization (audit #24) ------------------------------------------
+
+#: Google's sign-up for Cloud Identity Free: an organisation for a domain, at no cost.
+CLOUD_IDENTITY_SIGNUP = "https://workspace.google.com/signup/gcpidentity/welcome"
+#: Consumer domains: `domain:gmail.com` in IAP would admit everyone with a Google account there.
+CONSUMER_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
+NEEDS_ORGANISATION = (
+    "SwarmCloud needs a Google organisation: Google Workspace, or the free Cloud Identity, on a domain you "
+    "own. The project lives in it and its people sign in to the console with its accounts."
+)
+#: The sign-up, then the domain's verification record at its registrar.
+ORGANISATION_WAIT = WaitSpec(
+    reason="a Google organisation appearing (the Cloud Identity Free or Google Workspace sign-up)",
+    expected="15 to 60 min (the domain is verified by a DNS record)",
+    expected_s=60 * 60,
+    bound_s=3 * 60 * 60,
+    look_at="admin.google.com: the domain must be verified; then swarm install goes on from here",
+    interval_s=30,
+)
+
+
+def consumer_account(account: str) -> bool:
+    """No account, or one in a consumer domain: no organisation is ever its own."""
+    return account.rpartition("@")[2].strip().lower() in CONSUMER_DOMAINS or "@" not in account
+
+
+class OrganizationStep(_Base):
+    """A Google organisation the signed-in account can see, said FIRST in
+    stage 0, before any question (BGD, 2026-10-30: "Require an org, say so up
+    front"). With none, the step says that SwarmCloud needs one, opens the
+    Cloud Identity Free sign-up and polls (a wait: the person never types
+    "done") until an organisation appears. A consumer account (gmail.com)
+    never sees the new organisation, so it is signed in again first, as the
+    organisation's account, and that account becomes the installer. There is
+    no path that installs without an organisation."""
+
+    id = "preflight.organization"
+    kind = "wait"
+    wait = ORGANISATION_WAIT
+    _explain = (
+        "The project lives in an organisation, IAP admits the organisation's domain and the console's people "
+        "are its accounts; a personal Gmail account has none, so the installer says so before asking "
+        "anything, opens the Cloud Identity Free sign-up and goes on once the organisation exists."
+    )
+
+    def __init__(self, gcp: Callable[[], Gcp], ask: Ask, *,
+                 account: Callable[[], str] = gcloud_account,
+                 sign_in: Callable[[], None] | None = None) -> None:
+        super().__init__(gcp, ask)
+        self._account = account
+        self._sign_in = sign_in
+
+    def organizations(self, ctx: Any) -> list[str]:
+        """The project's organisation when it exists in one; else every
+        organisation (or folder, which lives in one) the account can see."""
+        gcp = self.gcp
+        if gcp.project(ctx.project) is not None:
+            found = [r for r in gcp.ancestry(ctx.project) if r.startswith("organizations/")]
+            if found:
+                return found
+        found = [str(o.get("name", "")) for o in gcp.organizations()]
+        found = [name for name in found if PARENT.match(name)]
+        return found or [str(f.get("name", "")) for f in gcp.folders() if PARENT.match(str(f.get("name", "")))]
+
+    def check(self, ctx: Any) -> Observation:
+        found = self.organizations(ctx)
+        if found:
+            return Observation(MET, f"organisation {', '.join(found[:3])}")
+        who = self._account() or "the signed-in account"
+        return Observation(UNMET, f"{NEEDS_ORGANISATION} {who} sees none yet")
+
+    def plan(self, ctx: Any) -> Plan:
+        return Plan("SwarmCloud needs a Google organisation: sign up for Cloud Identity Free (or Google "
+                    "Workspace); the install goes on by itself once it exists",
+                    ("sign up with a domain you own and verify it with the DNS record the sign-up shows",
+                     "a personal account (gmail.com) signs in again as the new organisation's admin"))
+
+    def apply(self, ctx: Any, plan: Plan) -> None:
+        account = self._account()
+        consumer = consumer_account(account)
+        open_page(CLOUD_IDENTITY_SIGNUP, why=(
+            f"{NEEDS_ORGANISATION} {account or 'The signed-in account'} has none. Sign up for Cloud Identity "
+            "Free on this page with your domain and verify the domain with the DNS record it shows"
+            + ("; then sign in as the new organisation's admin in the browser window that opens next."
+               if consumer else "; this installer goes on by itself once the organisation exists.")))
+        if not consumer:
+            return
+        ctx.events.emit("step_apply", step=self.id, message=(
+            f"{account or 'no account'} is not an organisation's account: sign in as the new organisation's "
+            "admin once the sign-up is done"))
+        if self._sign_in is not None:
+            self._sign_in()
+        else:
+            SignInStep(self._gcp, self._ask).sign_in_again(ctx)
+        now = self._account()
+        if now and not consumer_account(now):
+            remember(ctx, outputs={"installer": now})
 
 
 # -- preflight.inputs (R7) ---------------------------------------------------
@@ -970,8 +1115,6 @@ class RightsStep(_Base):
 # -- preflight.org-domain ------------------------------------------------------
 
 DOMAIN = re.compile(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
-#: Consumer domains: `domain:gmail.com` in IAP would admit everyone with a Google account there.
-CONSUMER_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
 
 
 def _domain_problem(domain: str) -> str | None:
@@ -1136,7 +1279,9 @@ CMEK_SENSITIVE = ("storage.googleapis.com", "secretmanager.googleapis.com", "fir
 
 
 def _values(policy: Mapping[str, Any], kind: str) -> list[str]:
-    found: list[str] = []
+    """`kind` (`allowedValues`, `deniedValues`) of a v1 policy's `listPolicy`,
+    or of a v2 policy's rules."""
+    found: list[str] = list(((policy.get("listPolicy") or {}).get(kind)) or [])
     for rule in (policy.get("spec") or {}).get("rules", []) or []:
         found.extend(((rule.get("values") or {}).get(kind)) or [])
     return found
@@ -1202,32 +1347,40 @@ class OrgPoliciesStep(_Base):
 class Quota:
     entry: str
     service: str
-    metric: str  # a substring of the metric name
+    metric: str  # a substring of the metric name, or its whole name when `exact`
     floor: int
     why: str
+    exact: bool = False
 
 
 QUOTAS: tuple[Quota, ...] = (
     Quota("quota.kms-signing-h4", "cloudkms.googleapis.com", "crypto_requests", 600,
           "every step-spec signature is one KMS AsymmetricSign; running out is a 503 on every submission"),
     Quota("quota.cloud-run-jobs", "run.googleapis.com", "job", 1, "every dispatch is a Cloud Run Job"),
-    Quota("quota.compute-regional-cpus", "compute.googleapis.com", "cpus", 24, "the Autopilot cluster's nodes"),
+    # Exactly `compute.googleapis.com/cpus` (audit #32): `a2_cpus`, `preemptible_cpus` and
+    # `cpus_all_regions` hold "cpus" too, and none of them is what the cluster's nodes draw on.
+    Quota("quota.compute-regional-cpus", "compute.googleapis.com", "compute.googleapis.com/cpus", 24,
+          "the Autopilot cluster's nodes", exact=True),
     Quota("quota.gke-regional", "container.googleapis.com", "clusters", 1, "one Autopilot cluster"),
     Quota("quota.nat-static-ips", "compute.googleapis.com", "static_addresses", 1, "Cloud NAT's address"),
 )
 
 
-def _limits(metrics: Iterable[Mapping[str, Any]], needle: str) -> list[tuple[str, int]]:
+def _limits(metrics: Iterable[Mapping[str, Any]], needle: str, region: str, *,
+            exact: bool = False) -> list[tuple[str, int]]:
+    """Each limit of the metrics `needle` names, as it applies in `region`: a
+    limit's bucket for that region, else its bucket with no region (the
+    default every other region gets). A bucket for another region never applies."""
     found = []
     for metric in metrics:
         name = str(metric.get("metric", ""))
-        if needle not in name:
+        if (name != needle) if exact else (needle not in name):
             continue
         for limit in metric.get("consumerQuotaLimits", []) or []:
-            for bucket in limit.get("quotaBuckets", []) or []:
-                value = bucket.get("effectiveLimit")
-                if value is not None:
-                    found.append((f"{name} ({limit.get('unit', '')})", int(value)))
+            buckets = [b for b in limit.get("quotaBuckets", []) or [] if b.get("effectiveLimit") is not None]
+            ours = [b for b in buckets if (b.get("dimensions") or {}).get("region") == region]
+            ours = ours or [b for b in buckets if "region" not in (b.get("dimensions") or {})]
+            found.extend((f"{name} ({limit.get('unit', '')})", int(b["effectiveLimit"])) for b in ours)
     return found
 
 
@@ -1240,27 +1393,34 @@ class QuotasStep(_Base):
         "below what the platform needs is named before anything is created."
     )
 
-    def findings(self, ctx: Any) -> tuple[list[str], dict[str, Any]]:
+    def binding(self, ctx: Any) -> tuple[list[tuple[Quota, str]], dict[str, Any]]:
+        """Each quota below its floor in the install region, with what to say about it."""
         gcp = self.gcp
         if gcp.project(ctx.project) is None:
             return [], {"quotas": "a new project has the default quotas; swarm doctor reads them after stage 1"}
         enabled = gcp.enabled_services(ctx.project)
-        problems: list[str] = []
+        region = ctx.state.region or DEFAULT_REGION
+        found: list[tuple[Quota, str]] = []
         read: dict[str, Any] = {}
         for quota in QUOTAS:
             if quota.service not in enabled:
                 read[quota.entry] = f"{quota.service} is enabled in stage 1; the default quota applies"
                 continue
-            limits = _limits(gcp.quota_metrics(ctx.project, quota.service), quota.metric)
+            limits = _limits(gcp.quota_metrics(ctx.project, quota.service), quota.metric, region,
+                             exact=quota.exact)
             if not limits:
                 raise LookupError(f"{quota.service} reports no {quota.metric} quota; {quota.entry} could not be read")
             read[quota.entry] = {name: value for name, value in limits}
             bounded = [value for _, value in limits if value >= 0]  # -1 is unlimited
             lowest = min(bounded) if bounded else None
             if lowest is not None and lowest < quota.floor:
-                problems.append(f"{quota.entry}: {lowest} is below {quota.floor} ({quota.why}); request an "
-                                "increase on the console's Quotas page")
-        return problems, {"quotas": read}
+                found.append((quota, f"{quota.entry}: {lowest} is below {quota.floor} ({quota.why}); request an "
+                                     "increase on the console's Quotas page"))
+        return found, {"quotas": read}
+
+    def findings(self, ctx: Any) -> tuple[list[str], dict[str, Any]]:
+        found, outputs = self.binding(ctx)
+        return [said for _, said in found], outputs
 
     def check(self, ctx: Any) -> Observation:
         problems, outputs = self.findings(ctx)
@@ -1271,10 +1431,20 @@ class QuotasStep(_Base):
 
     def apply(self, ctx: Any, plan: Plan) -> None:
         """A quota increase is requested by a person on the Quotas page: the plan
-        names each one, and the page opens."""
-        if plan.actions:
+        names each one, and the page opens, on the metric itself when the
+        quota names one exactly (audit #32)."""
+        if not plan.actions:
+            return
+        found, _ = self.binding(ctx)
+        exact = [(quota, said) for quota, said in found if quota.exact]
+        rest = [said for quota, said in found if not quota.exact]
+        region = ctx.state.region or DEFAULT_REGION
+        for quota, said in exact:
+            open_page(quotas_page(ctx.project, metric=quota.metric, region=region),
+                      why=f"Request this quota increase on the Quotas page:\n  {said}")
+        if rest:
             open_page(quotas_page(ctx.project), why="Request these quota increases on the Quotas page:\n  "
-                                                    + "\n  ".join(plan.actions))
+                                                    + "\n  ".join(rest))
 
 
 # -- preflight.sizing (decision 7) -------------------------------------------------
@@ -1292,8 +1462,10 @@ TRIES = 3
 MAX_CHANGES = 100
 
 
-def quotas_page(project: str) -> str:
-    return f"https://console.cloud.google.com/iam-admin/quotas?project={project}"
+def quotas_page(project: str, *, metric: str | None = None, region: str | None = None) -> str:
+    """The console's Quotas page, filtered to `metric` in `region` when named."""
+    query = {"project": project, **({"metric": metric} if metric else {}), **({"location": region} if region else {})}
+    return "https://console.cloud.google.com/iam-admin/quotas?" + urllib.parse.urlencode(query)
 
 
 class SizingStep(_Base):
@@ -1367,6 +1539,10 @@ class SizingStep(_Base):
         return quota
 
 
+def _one_line(exc: BaseException) -> str:
+    return " ".join(str(exc).split())
+
+
 def checked_quota(ctx: Any) -> int | None:
     """The CPUS quota the recorded sizing was checked against, for this region."""
     found = ctx.outputs.get("sizing_cpu_quota")
@@ -1438,7 +1614,9 @@ class SizingQuotaStep(SizingStep):
             try:
                 known = self.gcp.region_cpu_quota(ctx.project, str(ctx.state.region))
             except ApiError as exc:
-                return Observation(UNMET, f"the {ctx.state.region} CPU quota could not be read yet ({exc})")
+                # BGD, 2026-10-30: one plain line, and the proposal stands.
+                return Observation(MET, f"the {ctx.state.region} CPU quota could not be read "
+                                        f"({_one_line(exc)}), so the proposed sizing is kept")
             if known is None:
                 return Observation(MET, f"{ctx.state.region} reports no CPUS quota: nothing caps the sizing",
                                    {"sizing_cpu_quota": {"region": ctx.state.region, "cpus": None}})
@@ -1456,8 +1634,10 @@ class SizingQuotaStep(SizingStep):
         try:
             quota = self.gcp.region_cpu_quota(ctx.project, str(ctx.state.region))
         except ApiError as exc:
-            raise RuntimeError(f"the {ctx.state.region} CPU quota could not be read ({exc}); run swarm install "
-                               "again") from exc
+            ctx.events.emit("step_apply", step=self.id, message=(
+                f"the {ctx.state.region} CPU quota could not be read ({_one_line(exc)}), so the proposed "
+                "sizing is kept"))
+            return
         chosen = review(self._ask, ctx, self.id, str(found["mode"]), int(found["members"]), quota,
                         start=sizing.capped(found, quota))
         remember(ctx, outputs={"sizing": chosen,
@@ -1500,7 +1680,53 @@ def parse_sums(data: bytes) -> dict[str, str]:
     return sums
 
 
+#: The release channels install.sh reads (`SWARM_CHANNEL`, default stable).
+CHANNELS = ("stable", "rc")
+#: A wheel's PEP 440 version of a release name: 2026.1.2 is 2026.01.2, 2026.11.3rc2 is 2026.11.3-rc.2.
+WHEEL_RELEASE = re.compile(r"^(\d{4})\.(\d{1,2})\.(\d+)(?:rc(\d+))?$")
+
+
+def release_of_wheel(version: str) -> str | None:
+    """The release name a wheel version was built from (install.sh's mapping,
+    reversed), or None for a version no release carries (a source checkout's)."""
+    match = WHEEL_RELEASE.match(version.strip())
+    if not match:
+        return None
+    year, month, number, candidate = match.groups()
+    name = f"{year}.{int(month):02d}.{int(number)}"
+    return name if candidate is None else f"{name}-rc.{int(candidate)}"
+
+
+def installed_release() -> str | None:
+    """The release this engine was installed from: its own wheel's version."""
+    from importlib import metadata
+
+    try:
+        return release_of_wheel(metadata.version("swarm-install"))
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def release_channel(environ: Mapping[str, str] = os.environ) -> str:
+    """The channel install.sh used: `SWARM_CHANNEL`, `stable` when unset."""
+    channel = environ.get("SWARM_CHANNEL") or "stable"
+    if channel not in CHANNELS:
+        raise ValueError(f"SWARM_CHANNEL={channel!r} is not a release channel: use stable (the default) or rc")
+    return channel
+
+
+def default_release_said(environ: Mapping[str, str] = os.environ) -> str:
+    """What `swarm install` with no --version installs, in words, read offline."""
+    return installed_release() or f"the current {environ.get('SWARM_CHANNEL') or 'stable'} release"
+
+
 class ReleaseStep(_Base):
+    """The release every later stage reads (`state.release`: bootstrap,
+    images, the cluster bundle). `--version` records it; with none, this step
+    records it (audit #2, #30): the installed engine wheel's own release, so an
+    rc CLI installs the rc it came as, else the release the channel install.sh
+    used names. A release whose CVE acceptances fail is never recorded."""
+
     id = "preflight.release"
     satisfies = ("other.release-home", "other.release-bundle")
     _explain = (
@@ -1510,14 +1736,22 @@ class ReleaseStep(_Base):
     )
 
     def __init__(self, gcp: Callable[[], Gcp], ask: Ask, *,
-                 today: Callable[[], dt.date] = lambda: dt.datetime.now(dt.timezone.utc).date()) -> None:
+                 today: Callable[[], dt.date] = lambda: dt.datetime.now(dt.timezone.utc).date(),
+                 installed: Callable[[], str | None] = installed_release,
+                 environ: Mapping[str, str] = os.environ) -> None:
         super().__init__(gcp, ask)
         self._today = today
+        self._installed = installed
+        self._environ = environ
 
     def _version(self, ctx: Any) -> str:
         if ctx.state.release:
             return str(ctx.state.release)
-        return self.gcp.read_public(f"{RELEASE_HOME}/channels/stable").decode().strip()
+        own = self._installed()
+        if own:
+            return own
+        channel = release_channel(self._environ)
+        return self.gcp.read_public(f"{RELEASE_HOME}/channels/{channel}").decode().strip()
 
     def findings(self, ctx: Any) -> tuple[list[str], dict[str, Any]]:
         gcp = self.gcp
@@ -1539,10 +1773,12 @@ class ReleaseStep(_Base):
 
     def check(self, ctx: Any) -> Observation:
         problems, outputs = self.findings(ctx)
-        detail = "; ".join(problems) or (
-            f"release {outputs['release']}; accepted CVEs: " + ("; ".join(outputs["cve_acceptances"]) or "none")
-        )
-        return Observation(UNMET if problems else MET, detail, outputs)
+        if problems:
+            return Observation(UNMET, "; ".join(problems), outputs)
+        accepted = "accepted CVEs: " + ("; ".join(outputs["cve_acceptances"]) or "none")
+        if not ctx.state.release:
+            return Observation(UNMET, f"release {outputs['release']} is not recorded yet; {accepted}", outputs)
+        return Observation(MET, f"release {outputs['release']}; {accepted}", outputs)
 
     def plan(self, ctx: Any) -> Plan:
         problems, outputs = self.findings(ctx)
@@ -1550,7 +1786,13 @@ class ReleaseStep(_Base):
                     tuple(outputs["cve_acceptances"]) + tuple(problems))
 
     def apply(self, ctx: Any, plan: Plan) -> None:
-        """Shown, never changed: the plan lists every acceptance and its expiry."""
+        """The plan lists every acceptance and its expiry; a release that
+        passes is recorded as `state.release` when nothing recorded one."""
+        if ctx.state.release:
+            return
+        problems, outputs = self.findings(ctx)
+        if not problems:
+            remember(ctx, release=outputs["release"])
 
 
 # -- the registry ----------------------------------------------------------------
@@ -1561,11 +1803,18 @@ class _Lazy:
     """One `Gcp` for every step, built on first use (never at import)."""
 
     made: list[Gcp] = field(default_factory=list)
+    quota_project: str | None = None
 
     def __call__(self) -> Gcp:
         if not self.made:
-            self.made.append(Gcp())
+            self.made.append(Gcp(quota_project=self.quota_project))
         return self.made[0]
+
+    def use_quota_project(self, project: str) -> None:
+        """The install's project, the quota project of its billing-budget calls (`Gcp`)."""
+        self.quota_project = project
+        for gcp in self.made:
+            gcp.quota_project = project
 
 
 GCP = _Lazy()
@@ -1577,6 +1826,7 @@ def build_steps(gcp: Callable[[], Gcp] = GCP, ask: Ask = ASK) -> list[Any]:
     return [
         ToolsStep(gcp, ask),
         SignInStep(gcp, ask),
+        OrganizationStep(gcp, ask),  # said first: no question is asked of an account with no organisation
         InputsStep(gcp, ask),
         RegionStep(gcp, ask),
         RightsStep(gcp, ask),
