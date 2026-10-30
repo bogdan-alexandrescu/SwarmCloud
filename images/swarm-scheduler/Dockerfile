@@ -93,6 +93,10 @@ COPY apps/quota-broker/ /src/apps/quota-broker/
 # The quota broker's package depends on the credential patterns (it redacts
 # account health messages on write), so it comes with it.
 COPY apps/redaction/ /src/apps/redaction/
+# The workflow state derivation: every step transition admission makes writes
+# the workflow's derived state in its own transaction (#2838).
+# `apps/scheduler/pyproject.toml` resolves it through `{ path = "../workflow-rollup" }`.
+COPY apps/workflow-rollup/ /src/apps/workflow-rollup/
 COPY apps/scheduler/ /src/apps/scheduler/
 
 # Build our own packages into a local wheelhouse. No index has ever heard of
@@ -101,6 +105,7 @@ COPY apps/scheduler/ /src/apps/scheduler/
 RUN uv build --wheel --out-dir /wheels /src/apps/common \
  && uv build --wheel --out-dir /wheels /src/apps/redaction \
  && uv build --wheel --out-dir /wheels /src/apps/quota-broker \
+ && uv build --wheel --out-dir /wheels /src/apps/workflow-rollup \
  && uv build --wheel --out-dir /wheels /src/apps/scheduler
 
 # `--without-pip`: the stdlib venv otherwise seeds pip, setuptools and wheel,
@@ -113,7 +118,7 @@ RUN python -m venv --without-pip /opt/venv
 # Third-party dependencies, exported from uv.lock for this service alone. The
 # root project depends on every app, so the export prunes the internal packages
 # swarm-scheduler does not depend on (`swarm-agent-worker`, `swarm-api`,
-# `swarm-install`, `swarm-mcp`, `swarm-reconciler`, `swarm-workflow-rollup`),
+# `swarm-install`, `swarm-mcp`, `swarm-reconciler`),
 # and the third-party
 # packages only they need go with them. `--no-emit-local` leaves our own
 # packages out of the file: they come from /wheels, below. The export carries a
@@ -121,7 +126,6 @@ RUN python -m venv --without-pip /opt/venv
 RUN uv export --frozen --no-dev --no-emit-local --no-editable \
       --prune swarm-agent-worker --prune swarm-api --prune swarm-install --prune swarm-mcp \
       --prune swarm-reconciler \
-      --prune swarm-workflow-rollup \
       > /tmp/requirements.txt
 
 # Installed at exactly the versions and hashes in uv.lock, with nothing
@@ -141,7 +145,7 @@ RUN uv pip install --python /opt/venv/bin/python --require-hashes --no-deps -r /
 # is ever asked for them; `--no-deps` because their third-party dependencies
 # are already installed above, by hash.
 RUN uv pip install --python /opt/venv/bin/python --no-index --find-links /wheels --no-deps \
-      swarm-common swarm-redaction swarm-quota-broker swarm-scheduler
+      swarm-common swarm-redaction swarm-quota-broker swarm-workflow-rollup swarm-scheduler
 
 # With `--no-deps` on both installs nothing above notices a dependency the
 # export left out. `uv pip check` does, here, instead of an ImportError at the

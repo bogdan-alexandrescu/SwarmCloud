@@ -16,6 +16,11 @@ dependencies = [
     "swarm-common",
     # The credential patterns the per-commit secret scan matches (#259).
     "swarm-redaction",
+    # The workflow state derivation and its in-transaction write (#2838): a
+    # park, a finish or a retry on the direct-Firestore path changes a step's
+    # state, so it writes the workflow's derived state in the same fenced
+    # transaction, by the rule the API and the reconciler use.
+    "swarm-workflow-rollup",
     "google-cloud-firestore>=2.16",
     "google-cloud-storage>=2.18",
     "google-cloud-secret-manager>=2.20",
@@ -40,3 +45,4 @@ packages = ["agent_worker"]
 [tool.uv.sources]
 swarm-common = { path = "../common", editable = true }
 swarm-redaction = { path = "../redaction", editable = true }
+swarm-workflow-rollup = { path = "../workflow-rollup", editable = true }

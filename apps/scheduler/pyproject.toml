@@ -13,6 +13,12 @@ dependencies = [
     # `accounts` and `accountstore` are imported, and both are pure Python
     # over the Firestore client the scheduler already has.
     "swarm-quota-broker",
+    # The workflow state derivation and its in-transaction write
+    # (`swarm_rollup.derived_state_write`, #2838): admission, a woken park and
+    # the `fail_workflow` cancels change a step's state, so they write the
+    # workflow's derived state in the same transaction, by the same rule the
+    # API and the reconciler use. Pure Python over the Firestore client.
+    "swarm-workflow-rollup",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.8",
@@ -26,6 +32,7 @@ dependencies = [
 [tool.uv.sources]
 swarm-common = { path = "../common", editable = true }
 swarm-quota-broker = { path = "../quota-broker", editable = true }
+swarm-workflow-rollup = { path = "../workflow-rollup", editable = true }
 
 [build-system]
 requires = ["hatchling"]

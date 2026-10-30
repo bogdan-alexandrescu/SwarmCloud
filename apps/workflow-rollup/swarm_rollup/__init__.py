@@ -32,8 +32,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Iterable, Mapping, Sequence
 
+from swarm_common.admission import _snapshot
 from swarm_common.models import Workflow, WorkflowStep
 from swarm_common.states import (
     CONCURRENCY_STATES,
@@ -508,3 +510,116 @@ def drift_of(rollup: WorkflowRollup, stored: TaskState) -> dict[str, Any]:
         "repaired": False,
     }
 
+
+#: Firestore collections `derived_state_write` reads. The same names as
+#: `swarm_api.store`, `scheduler.store` and the worker's control plane; spelled
+#: here because none of those packages can be imported from this one.
+TASKS = "tasks"
+WORKFLOWS = "workflows"
+
+
+# --------------------------------------------------------------------------
+# Writing the derived state where a step's state is written (#2838)
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _StepRow:
+    """The two fields of a workflow step `read_steps` reads, from the raw
+    document: the transaction holds the dict, not a decoded `Workflow`."""
+
+    step_id: str
+    task_id: str | None
+
+
+def derived_state_write(
+    txn: Any,
+    db: Any,
+    *,
+    tenant_id: str,
+    workflow_id: Any,
+    now: datetime,
+    changed: Mapping[str, Mapping[str, Any]] | None = None,
+    steps: Sequence[Mapping[str, Any]] | None = None,
+    call_options: Mapping[str, Any] | None = None,
+) -> tuple[Any, dict[str, Any]] | None:
+    """The workflow-document write that keeps `state` equal to `derive()`.
+
+    WHY HERE (#2838, follow-up). It lives beside `derive()`, not in
+    swarm-api, because the scheduler (READY->LEASED, a woken park, the
+    `fail_workflow` cancels) and the worker's direct-Firestore path make step
+    transitions too, and neither image can import swarm-api. It uses only the
+    Firestore transaction API, so every writer of a step's state calls this
+    one function.
+
+    WHY (#2838). The stored state was written only by the read paths, the
+    API's sweep and the reconciler's `state_drift` repair, never where a step
+    changed state. So every park, wake, finish and round step left the stored
+    value behind the derived one until something next looked, and the
+    reconciler reported and repaired the same workflows pass after pass.
+
+    Called INSIDE the transaction that writes the step's change, and only
+    READS: it returns `(ref, patch)` for the caller to `txn.update(...)` with
+    its other writes, or None when nothing should be written. Firestore wants
+    every read of a transaction before its first write, so a caller calls this
+    before it writes anything. One transaction means the workflow's state and
+    the step's state commit together, and a sibling step that moves while it
+    runs makes the commit retry and re-derive, never write a stale value.
+
+    `changed` is each step task as THIS transaction will leave it (task_id ->
+    the merged document): it is not committed yet, so reading it back would
+    derive from the state it is leaving. `steps` replaces the stored step
+    list when the transaction is appending a step. The derivation is
+    `swarm_rollup.derive`, the rule the reconciler checks against, so the two
+    cannot disagree about what to write.
+
+    Refuses what swarm-api's `WorkflowRollups._persist` refuses, for the same reasons: an
+    incomplete read or an UNKNOWN state is never written, and a value that
+    already agrees costs no write. A workflow of another tenant is not read
+    further: a task's `workflow_id` is tenant-writable.
+
+    `call_options` (`retry`, `timeout`) go to every `txn.get`, so a caller
+    whose own reads run under a budget -- the worker inside its startup
+    window -- keeps these reads under it too.
+    """
+    if not isinstance(workflow_id, str) or not workflow_id:
+        return None
+    changed = changed or {}
+    options = dict(call_options or {})
+    ref = db.collection(WORKFLOWS).document(workflow_id)
+    snap = _snapshot(txn.get(ref, **options))
+    data = (snap.to_dict() or {}) if snap.exists else None
+    if data is None or data.get("tenant_id") != tenant_id:
+        return None
+    rows = steps if steps is not None else (data.get("steps") or [])
+    views = [
+        _StepRow(step_id=str(row.get("step_id") or ""), task_id=row.get("task_id") or None)
+        for row in rows
+        if isinstance(row, Mapping)
+    ]
+    states: dict[str, TaskState] = {}
+    absent: set[str] = set()
+    skipped: list[str] = []
+    for task_id in dict.fromkeys(v.task_id for v in views if v.task_id):
+        doc = changed.get(task_id)
+        if doc is None:
+            task_snap = _snapshot(txn.get(db.collection(TASKS).document(task_id), **options))
+            doc = (task_snap.to_dict() or {}) if task_snap.exists else None
+        if doc is None or doc.get("tenant_id", tenant_id) != tenant_id:
+            absent.add(task_id)
+            continue
+        try:
+            states[task_id] = TaskState(doc.get("state"))
+        except ValueError:
+            # Unreadable, not absent: the rollup comes out incomplete and
+            # nothing is written.
+            continue
+        summary = doc.get("result_summary")
+        if isinstance(summary, dict) and isinstance(summary.get(SKIPPED_SUMMARY_KEY), dict):
+            skipped.append(task_id)
+    rollup = derive(read_steps(views, states, absent=absent, skipped=skipped))
+    if not rollup.complete or rollup.state == UNKNOWN:
+        return None
+    if rollup.state == data.get("state"):
+        return None
+    return ref, {"state": TaskState(rollup.state).value, "updated_at": now}
