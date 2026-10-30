@@ -73,8 +73,15 @@ def guards(*, deployer_exists: bool = True, can_impersonate: bool = True, missin
                   act_as_missing=lambda: list(missing or []), lint=lint)
 
 
+#: An OAuth client id in the shape terraform/bootstrap validates (an id, never a secret).
+DESKTOP_CLIENT_ID = "123456789012-" + "a1b2c3" + ".apps.googleusercontent.com"
+
+
 def install_state(**outputs: Any) -> InstallState:
-    base = {"alert_email": "alerts@example.com", "hostname": "swarm.example.com"}
+    # The stage 0 and stage 2 keys every generated input needs (DAYONE-ENGINE-INPUTS).
+    base = {"alert_email": "alerts@example.com", "hostname": "swarm.example.com", "github_org": "example-org",
+            "org_domain": "example.com", "installer_cidr": "203.0.113.7/32",
+            "desktop_client_id": DESKTOP_CLIENT_ID}
     base.update(outputs)
     return InstallState(project=PROJECT, environment="dev", region="europe-west1", hostname="swarm.example.com",
                         release="2026.10.1", outputs=base)

@@ -4,7 +4,7 @@ shares (design §4, §5; plan R7, R8; lessons 7-12, 22, 23).
 | Step | Pass | Manifest entries |
 |---|---|---|
 | `bootstrap.pass-1` | `bootstrap-1`, as the person | `other.engine-terraform-rules` |
-| `bootstrap.pass-2` | `bootstrap-2`, as the deployer (run in stage 7, from `infra.py`) | the IAP programmatic clients, the log view grant |
+| `bootstrap.pass-2` | `bootstrap-2`, as the deployer (run in stage 7, from `infra.py`) | the IAP programmatic client on the two IAP backends, the log view grant |
 
 **The release's module.** `releases/<V>/module.tgz` is fetched from the
 release home, its SHA-256 compared with `SHA256SUMS`, and `SHA256SUMS` itself
@@ -208,7 +208,7 @@ def _confirm_typed(prompt: str) -> str:
 
 
 def all_versions(gcp: Any, project: str) -> dict[str, bool]:
-    return key_versions(gcp, project, (*tfvars.KEY_SWITCHES, *tfvars.APP_SECRETS))
+    return key_versions(gcp, project, (*tfvars.KEY_SWITCHES, *tfvars.APP_SECRETS, tfvars.DESKTOP_SECRET))
 
 
 def generate(ctx: Any, pass_name: str, gcp: Any) -> dict[str, Any]:
@@ -370,8 +370,9 @@ def _swarm_roles(gcp: Any, project: str) -> list[str]:
 class BootstrapPass2Step(PassStep):
     pass_name = "bootstrap-2"
     _explain = (
-        "The second bootstrap pass grants what needs infra's accounts and log view, and the IAP programmatic "
-        "clients; it runs after infra pass 2, as the deployer."
+        "The second bootstrap pass grants what needs infra's accounts and log view, and lets IAP admit the "
+        "deployment's own Desktop client for programmatic sign-in on the backends infra pass 1 made; it runs "
+        "after infra pass 2, as the deployer."
     )
 
     def __init__(self, deps: Deps) -> None:

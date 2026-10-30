@@ -7,6 +7,8 @@
 | `infra.pass-1` | 5 | `infra-1` | the services, jobs, Scheduler, Pub/Sub, Firestore, network, cluster and the secret containers |
 | `infra.pass-2` | 7 | `infra-2` | `tenant_job_vpc_egress`, the key switches, `enable_console_app_setup`, `require_alert_channels` |
 | `bootstrap.pass-2` | 7 | `bootstrap-2` | the IAP programmatic clients and the log view grant |
+| `infra.pass-identity` | 8 | `infra-2` again | none: the admin groups stage 8 recorded, and a version for any platform key pass 2 made (the graph ticket key) |
+| `infra.pass-close` | 14 | `infra-close` | `other.engine-cluster-reach-closed`: the installer's address leaves the control plane's authorised networks, after stage 14's verify steps |
 
 The passes declare no manifest entries as `satisfies`: the manifest's
 `depends_on` among the resources one apply makes runs both ways (a container
@@ -20,13 +22,39 @@ keys their versions; pass 2 turns each switch on exactly when its key has an
 ENABLED version. Pass 2 also records the API backend's IAP audience, which the
 hand-off needs to call swarm-api as the deployer. Bootstrap pass 2 follows it
 in the same stage (registration order: it is listed after pass 2 here).
+
+**Stage 8 applies what it recorded.** `identity.admin-group` records
+`admin_groups` only once swarm-api has read the group, which is after pass 2;
+`infra.pass-identity` re-applies pass 2 with them, so a later run's stage 8
+checks see what stage 8 recorded. It runs after every identity step: the
+registry is discovered by module name and `infra` follows `identity`, and it
+declares no manifest entry (each stage 8 entry is an identity step's), so the
+engine keeps that order. It first gives a version to any
+platform key whose container pass 2 made (the graph service's ticket key is
+made in pass 2, once the cluster's workload pool exists), key before switch.
+
+**The closing pass** (decision 2). Every infra pass before it, infra-3 and
+infra-4 included, carries the installer's `/32` in
+`gke_master_authorized_cidrs`: the control plane admits no public Google range
+(`gcp_public_cidrs_access_enabled = false`), and the cluster stages (10, 11)
+and stage 14's `verify.reconciler-jobs` run kubectl from the laptop.
+`infra.pass-close` is the last pass: in stage 14, its manifest entry depends on
+`other.verify-end-to-end` and `other.firestore-migrations`, so the engine
+orders it after every verify step and before `handoff.ready` (stage 15). It
+applies infra-4's inputs without the address and is met while those are the
+inputs it applied, so a run that stopped before it has the leftover entry
+removed by the next run.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from .. import tfvars
+from ..exitcodes import MET, UNMET
+from . import Observation, Plan
 from .bootstrap import DEPS, BootstrapPass2Step, Deps, PassStep
+from .secrets import PlatformKeysStep
 
 
 class InfraPass1Step(PassStep):
@@ -53,8 +81,53 @@ class InfraPass2Step(PassStep):
         super().__init__(deps, id="infra.pass-2", stage=7, satisfies=())
 
 
+class IdentityPassStep(PassStep):
+    """Infra pass 2 again, in stage 8, after the identity steps."""
+
+    pass_name = "infra-2"
+    _explain = (
+        "Stage 8 registers the admin group only once swarm-api has read it, after infra pass 2 applied. This "
+        "applies pass 2 again with the group, so the console admits its members, and gives a version to any "
+        "platform key pass 2 made first (key before switch)."
+    )
+
+    def __init__(self, deps: Deps) -> None:
+        super().__init__(deps, id="infra.pass-identity", stage=8, satisfies=())
+        self.keys = PlatformKeysStep(deps)
+
+    def check(self, ctx: Any) -> Observation:
+        keys = self.keys.check(ctx)
+        if keys.status != MET:
+            return Observation(UNMET, keys.detail)
+        return super().check(ctx)
+
+    def plan(self, ctx: Any) -> Plan:
+        keys = self.keys.plan(ctx)
+        base = super().plan(ctx)
+        return Plan("Terraform infra-2 with the admin groups stage 8 recorded", (*keys.actions, *base.actions))
+
+    def apply(self, ctx: Any, plan: Plan) -> None:
+        self.keys.apply(ctx, self.keys.plan(ctx))
+        super().apply(ctx, plan)
+
+
+class ClosingPassStep(PassStep):
+    """Decision 2: the installer's address leaves the control plane's authorised networks."""
+
+    pass_name = "infra-close"
+    _explain = (
+        f"The install reached the cluster from your address, listed as {tfvars.CLUSTER_REACH_NAME!r} in the "
+        "control plane's authorised networks. With the cluster stages and the verify reads done, this pass "
+        "removes it and changes nothing else."
+    )
+
+    def __init__(self, deps: Deps) -> None:
+        super().__init__(deps, id="infra.pass-close", stage=14, satisfies=("other.engine-cluster-reach-closed",))
+
+
 def build_steps(deps: Deps = DEPS) -> list[Any]:
-    return [InfraPass1Step(deps), InfraPass2Step(deps), BootstrapPass2Step(deps)]
+    return [InfraPass1Step(deps), InfraPass2Step(deps), BootstrapPass2Step(deps), IdentityPassStep(deps),
+            ClosingPassStep(deps)]
 
 
 STEPS = build_steps()
