@@ -251,6 +251,23 @@ def test_cve_acceptances_carry_each_expiry(bundle: Path) -> None:
         assert a.cve in notes and a.expires.isoformat() in notes, a.cve
 
 
+def test_bundle_ships_the_github_app_permissions(bundle: Path) -> None:
+    """`github-app-permissions.json` is the App manifest's permissions, read from
+    swarm_api.setup_github (never restated), listed in SHA256SUMS, which cosign
+    signs: `swarm upgrade` compares the live App's permissions with it
+    (APP_PERMISSIONS_FILE, DAYONE-RELEASE-2)."""
+    from swarm_api.setup_github import PERMISSIONS
+    from swarm_install.steps.preflight import parse_sums
+    from swarm_install.verbs.upgrade import APP_PERMISSIONS_FILE
+
+    shipped = bundle / APP_PERMISSIONS_FILE
+    # MUTATION: drop the file from assemble.sh and this fails.
+    assert shipped.is_file(), sorted(p.name for p in bundle.iterdir())
+    assert json.loads(shipped.read_text()) == PERMISSIONS
+    sums = parse_sums((bundle / "SHA256SUMS").read_bytes())
+    assert sums.get(APP_PERMISSIONS_FILE) == hashlib.sha256(shipped.read_bytes()).hexdigest()
+
+
 def test_refuses_a_version_that_is_not_a_release_name(tmp_path: Path) -> None:
     proc = assemble(tmp_path, build_record(tmp_path / "r.json"), version="latest")
     assert proc.returncode == 2, proc.stderr[-2000:]
