@@ -23,6 +23,7 @@ from .test_setup_routes import (  # noqa: F401 - fixtures
     ORG,
     ROOT,
     TEAM_GROUP,
+    TEAMS_PREFIX,
     create_team,
     directory,
     fake_secrets,
@@ -43,7 +44,10 @@ NEW_GROUP = "new-team@example.com"
 
 
 def _nothing_written(db) -> bool:
-    return not any(k.startswith("workspaces/") or "/console/teams/" in k for k in db.docs)
+    # Team documents live at TEAMS_PREFIX since DAYONE-SETUP-API-7 (PR 2850):
+    # the old `console/teams/<id>` was not a valid Firestore path, so a check
+    # for it could never fail.
+    return not any(k.startswith("workspaces/") or k.startswith(TEAMS_PREFIX) for k in db.docs)
 
 
 # -- 27: the first team's group ------------------------------------------------
@@ -76,6 +80,9 @@ def test_a_group_the_installer_is_not_in_is_refused_before_any_write(setup_clien
     assert _nothing_written(db)
     directory.join(ROOT, NEW_GROUP)
     assert create_team(setup_client, group=NEW_GROUP).status_code == 202
+    # The control: the same check sees the team the accepted request wrote.
+    assert any(k.startswith(TEAMS_PREFIX) for k in db.docs)
+    assert not _nothing_written(db)
 
 
 def test_the_engine_named_installer_is_the_one_checked(setup_client, db, directory) -> None:

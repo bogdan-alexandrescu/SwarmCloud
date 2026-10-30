@@ -685,7 +685,7 @@ Firestore collection `swarm-install`, document `<env>` (D26), and its subcollect
 | `swarm-install/<env>` | the engine (CLI), only | `schema_version`, `release`, `region`, `hostname`, `stages[0..15]` `{state, at, by}`, `lease {holder, heartbeat, expires}`, `verify {check, done, total, started, expected_end, deadline, result}`, `hand_off_at`, `ready_at` |
 | `swarm-install/<env>/console/github_app` | swarm-api, only | `state_hash`, `id`, `slug`, `client_id`, `installed_on`, `secrets_written_at`, `self_check` |
 | `swarm-install/<env>/console/accounts` | swarm-api, only | per label: `owner`, `link_hash`, `link_expires`, `signed_in_at` |
-| `swarm-install/<env>/console/teams/<id>` | swarm-api, only | `group`, `workspace`, `first_admin`, `invites`, `progress`, `smoke` |
+| `swarm-install/<env>/teams/<id>` (a collection under the env document since PR 2850: `swarm-install/<env>/console/teams/<id>` has five segments, and a Firestore document path needs an even count) | swarm-api, only | `group`, `workspace`, `first_admin`, `invites`, `progress`, `smoke` |
 | `swarm-install/<env>/console/finished` | swarm-api, only | `at`, `by` (written when every required console step is done) |
 | `swarm-install/<env>/health/latest` | swarm-api on behalf of `swarm-doctor`, only | `run_at`, `checks`, `findings` |
 | `gs://swarm-tfstate-<P>/swarm-install/state.json` | the engine, only | the authoritative state (design §2.3); the engine copies the console's results into it when it reads them |
