@@ -61,6 +61,7 @@ export const USER_KEYS: readonly string[] = [
   'swarm.access.owner', // Access.tsx CHOSEN_OWNER_KEY: the phone chooser's owner (sessionStorage)
   'swarm.people.workspace', // People.tsx PEOPLE_WORKSPACE_KEY: the workspace this administrator chose
   'swarm.timezone', // timezone.ts ZONE_KEY, as `swarm.timezone:<email>`: the zone this person picked in Profile
+  'swarm.setup-link.pool', // SetupLink.tsx PENDING_KEY: this tab's redeemed pool link (sessionStorage)
   SIGNED_OUT_KEY,
 ]
 

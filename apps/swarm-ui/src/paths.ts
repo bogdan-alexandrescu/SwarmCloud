@@ -47,6 +47,32 @@ export const GITHUB_CALLBACK_ADDRESS = 'onboarding/github/callback'
 export const GITHUB_CALLBACK_PATH = '/onboarding/github/callback'
 
 /**
+ * ADMIN › SETUP'S ONE-TIME LINK (DAYONE-SETUP-UI-5B; part of #2688): swarm-api
+ * mints `/admin/setup/link/<token>` (`setup_links.LINK_FORM`) for a Claude
+ * pool account's owner, a team's git slot or an add-on's secret, and the person
+ * it names opens it. Not in FIXED and not behind the admin gate: the owner is
+ * rarely a platform admin. ITS TOKEN IS NEVER PART OF AN ADDRESS: App reads it
+ * off the bar once (`setupLinkToken`) and rewrites the bar to SETUP_LINK_PATH.
+ */
+export const SETUP_LINK_PATH = '/admin/setup/link'
+
+/** The link's token, read off a path: only under SETUP_LINK_PATH, '' for a
+ *  segment that is not one, null where the path is not the link's. */
+export function setupLinkToken(pathname: string): string | null {
+  const path = pathname.replace(/\/+$/, '')
+  if (path === SETUP_LINK_PATH) return null
+  if (!path.startsWith(`${SETUP_LINK_PATH}/`)) return null
+  const seg = path.slice(SETUP_LINK_PATH.length + 1)
+  return /^[A-Za-z0-9_-]+$/.test(seg) ? seg : ''
+}
+
+/** Whether a path is the link's page, with or without its token. */
+export function isSetupLinkPath(pathname: string): boolean {
+  const path = pathname.replace(/\/+$/, '')
+  return path === SETUP_LINK_PATH || path.startsWith(`${SETUP_LINK_PATH}/`)
+}
+
+/**
  * THE TYPESAFE KEY FORM'S ONE-TIME LINK (KEYS-UI; docs/provider-keys.md §3):
  * `POST /v1/provider-keys/typesafe/links` answers
  * `/settings/keys/typesafe?scope=user|tenant&t=<token>`, and `/sc` hands that
