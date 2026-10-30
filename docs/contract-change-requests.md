@@ -134,6 +134,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 124 | `profiles.py`: a `fix-loop` catalogue profile, `control_plane: true`, shipped unavailable until FL-ACCEPT passes, as `await-input` was (FL-CONTRACT, fix loop request A, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT): mirrored in `terraform/infra/locals.tf` and listed in `profiles_without_a_job` |
 | 125 | `states.py`: `ParkReason.FIX_ROUNDS_RUNNING`, a fix loop's step while its rounds run: never promoted by the scheduler, in no capacity set, ended by swarm-api (FL-CONTRACT, fix loop request B, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT), with the console's and swarm-mcp's park-reason lists |
 | 126 | `models.py`: `EndCause.FIX_LOOP_EXHAUSTED`, a fix loop that ended without a MERGE (FL-CONTRACT, fix loop request C, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 ('accept-126', answering FL-CONTRACT's question on PR 2570; requested by lane FL-CONTRACT the same day, Q3 (c) needs an end cause). APPLIED 2026-10-28 by the pull request that adds this line (lane FL-CONTRACT-126): appended to `EndCause`; the outcome ledger classes it `fix_loop_exhausted`, its own failure class (DERIVE_VERSION 12), and the console's `EndCause`, `END_CAUSES` and `END_CAUSE_SAY` carry it |
+| 127 | `profiles.py` / `models.py` / `specsign.py`: `RunnerProfile.supports_max_turns` and `max_turns`, `WorkflowStep.max_turns` and `Task.max_turns`, a turn cap the worker passes to the agent CLI (CONTRACT-MAXTURNS, part of #2524) | REQUESTED for BGD 2026-10-28 (BGD decided ~22:20Z that the cap is a contract field; PR 2678 ships a 900 s timeout and a 30-turn instruction as the interim) |
 
 ---
 
@@ -15085,3 +15086,141 @@ accepted to end.
 ### Invariants
 
 None is touched: an end cause records why, it decides nothing.
+
+## 127. `profiles.py` / `models.py` / `specsign.py`: a turn cap, `RunnerProfile.max_turns` and `WorkflowStep.max_turns`, that the worker passes to the agent CLI (CONTRACT-MAXTURNS, part of #2524)
+
+**Status:** open, REQUESTED 2026-10-28 by lane CONTRACT-MAXTURNS. BGD
+decided on 2026-10-28 (~22:20Z, answering question 2 of lane
+REVIEW-GATE-DEFAULT on PR 2678) that the cheap requirements check's turn
+cap is a field in the frozen runner-profile contract, not only a timeout
+and a prompt instruction. Not applied: `apps/common/swarm_common/` is
+frozen, and the shape below is BGD's to accept. Until it is applied, PR 2678
+(REVIEW-GATE-DEFAULT) ships the interim: the `requirements-check` step runs
+on `claude-code` with a 900 s `timeout_seconds` and a 30-turn instruction in
+its prompt, which the agent may ignore.
+
+### What is true today
+
+Nothing in the contract caps an agent's turns. A step's spend is limited
+by `timeout_seconds` (the profile's, lowered by the step,
+`swarm_api.validation.validate_timeout`) and by its budget (requests
+118-121), and both stop an agent only after it has spent the time or the
+money. The claude-code runner can already pass a cap:
+`agent_worker.runners.claude_code.body` adds `--max-turns N` when the
+agent's `input` carries `max_turns`. That path is unreachable: every
+claude-code profile declares its inputs (request 25), `max_turns` is not
+one of them, and swarm-api refuses the key at every door
+(`tests/unit/control_plane/test_runner_inputs_by_declaration.py`,
+`test_claude_code_refuses_every_key_but_its_declared_issue`). So a step
+that should end in about 30 turns -- PR 2678's requirements check, which
+reads an issue and a diff and writes one `requirements.json` -- can only be
+asked to, and pays for the turns until its timeout if it does not listen.
+
+### The change
+
+Two fields on the profile and one on the step and its agent (`Task`), the same shape
+as `timeout_seconds`: the profile sets the ceiling, the step only lowers
+it.
+
+```python
+# profiles.py, class RunnerProfile
+#: Whether this profile's runner passes a turn cap to its agent CLI
+#: (claude_code: `--max-turns`). False: swarm-api refuses a step's
+#: `max_turns` for it, because a cap the runner ignores is a promise
+#: nothing keeps.
+supports_max_turns: bool = False
+#: The most turns an attempt on this profile may run, and the cap for a
+#: step that names none. None: no cap (today's behaviour). Only read when
+#: `supports_max_turns`.
+max_turns: int | None = None
+
+# models.py, class WorkflowStep -- the cap the step ASKED for, as submitted
+max_turns: int | None = None
+# models.py, class Task -- the RESOLVED cap: min(step, profile), or the
+# profile's when the step names none; None: no cap
+max_turns: int | None = None
+```
+
+* **Profile and step, and why both.** The requirements check runs on the
+  shared `claude-code` profile, whose implement steps legitimately run
+  hundreds of turns, so a cap on the profile alone would cap every
+  implementer or need a new catalogue profile (and a Job per tenant) for one
+  step. The cap belongs to the STEP, as `timeout_seconds` and `budget` do.
+  The profile carries what only it can say: whether its runner honours a
+  cap (`supports_max_turns`) and, optionally, a ceiling no step may raise.
+  `supports_max_turns=True` on the five profiles whose `runner_argv` is
+  `agent_worker.runners.claude_code` (`claude-code`, `claude-code-large`,
+  `claude-code-review`, `claude-code-browser`, `indexer`); `max_turns`
+  stays None on every profile in this request, so no running agent changes.
+* **swarm-api** resolves the cap at submission, beside `validate_timeout`:
+  a step's `max_turns` must be an integer of at least 1; it is refused for
+  a profile with `supports_max_turns=False`; it is lowered to the profile's
+  `max_turns` when that is set. `WorkflowStep.max_turns` records what was
+  asked and `Task.max_turns` what was resolved. `input.max_turns` stays
+  refused: the cap is a field, never a caller input to the runner.
+* **Signed.** Spec format 7 is format 6's fields plus `max_turns`, and a
+  `Task` is signed at it only when the field is set, as request 120 did for
+  `budget`: an agent whose cap was raised or removed after submission fails
+  its worker's check.
+* **The worker** reads `Task.max_turns` only from the verified document and
+  passes it to the agent CLI: the claude-code runner's `--max-turns N`,
+  taken from the verified `Task` instead of `input`. None passes no flag,
+  which is today's behaviour exactly. An attempt that ends on the cap ends
+  as the CLI's `error_max_turns` result already ends one.
+
+### What reads it
+
+swarm-api's submission (`validation`, beside `validate_timeout`) and the
+issue-run compiler that writes the `requirements-check` step (PR 2678's
+`issueruns._requirements_check`, which sets `max_turns=30` and drops the
+prompt instruction); `specsign` (format 7); the worker's claude-code runner;
+and, read-only, the console's step detail and `/sc check`, which can show
+the cap beside the timeout. `scripts/lib/check-contract-parity.sh` gains
+nothing: no enum moves.
+
+### What it would break if accepted
+
+Nothing at once. Every new field defaults to None or False, so every
+existing profile, step and stored agent means what it means today, and an
+agent without `max_turns` is still signed at format 6. A reader that lists a
+step's fields shows one more.
+
+### If it is declined
+
+PR 2678's interim stays: a 900 s timeout and a 30-turn instruction the
+agent may ignore. The smaller alternative is to declare `max_turns` as a
+`RunnerInput` (integer, 1 to a ceiling) on the claude-code profiles' inputs,
+which the runner already reads; it is signed with `input` (format 3) but
+lives in the caller's input rather than a typed field, and no profile can
+carry a ceiling or say that its runner ignores a cap.
+
+### Invariants
+
+**10** holds: a step asks for a cap by number, and a cap only lowers a
+limit, as `timeout_seconds` does; it chooses no image, command, resource
+spec or backend, and `input.max_turns` stays refused. **5** holds: the
+field is in the signed spec from format 7, so a tampered cap fails the
+worker's check before the agent runs. **8** holds: an attempt that ends on
+its cap ends like any other, after its checkpoints. **1-4**, **6**, **7**
+and **9** are untouched: no capacity, lease, pod shape or tenant boundary
+moves.
+
+### How it is tested
+
+When it is applied, by the applying lane, red first:
+`tests/unit/control_plane/test_runner_inputs_by_declaration.py` keeps
+refusing `input.max_turns`; new swarm-api tests that a step's `max_turns` is
+stored on the step and resolved on the agent's `Task`, lowered to a profile ceiling,
+and refused for a profile with `supports_max_turns=False` or a value below
+1; a `specsign` test that an agent with `max_turns` is signed at format 7 and
+fails verification when the cap is raised or removed, and that an agent
+without it still signs at format 6; and a worker test in
+`tests/unit/worker/test_runners.py` that the claude-code runner passes
+`--max-turns` from the verified `Task.max_turns` and passes none for None.
+
+### Who decided
+
+BGD, 2026-10-28 (~22:20Z): the turn cap is a contract field (question 2 of
+PR 2678, REVIEW-GATE-DEFAULT). The shape -- step field resolved against the
+profile, rather than a profile field alone -- is this request's proposal
+and BGD's to accept.
