@@ -174,6 +174,12 @@ _GIT_TRANSIENT = re.compile(
             r"remote end hung up unexpectedly",
             r"transfer closed with outstanding read data",
             r"empty reply from server",
+            # The reason phrase alone, as a push's sideband carries it
+            # ("remote: Internal Server Error", #2833), with no status code.
+            r"internal server error",
+            r"bad gateway",
+            r"service (?:temporarily )?unavailable",
+            r"gateway time-?out",
             r"(?:recv|send) failure",
             r"gnutls recv error",
             r"ssl_error_syscall",
@@ -4302,15 +4308,31 @@ def mirror_worktree(
     return copied
 
 
-#: The wait before `push_branch` tries a push again, once, after git's own
-#: words said the forge did not answer (`transient_git_failure`; G1, #1225).
-#: Short, because the publish runs after the agent with the lease held and a
-#: push that fails twice ends the step FAILED (`Worker._publish_failed`)
-#: rather than sleeping longer inside the worker (invariant 4); the clone's
-#: 10 s first wait (`CLONE_RETRY_WAITS_SECONDS`) is the bound it stays under.
-PUSH_RETRY_WAIT_SECONDS = 5.0
-#: Tries of one push in all: the first, and one more for a transient failure.
-PUSH_TRIES = 2
+#: The waits between tries of a push that git's own words said the forge did
+#: not answer (`transient_git_failure`; G1, #1225; widened by #2833): 5 s,
+#: 10 s, then 20 s, so FOUR tries in all and 35 s asleep at most. One 5 s
+#: wait was too short: MEASURED 2026-10-30 (task_982546a3b645480887e3,
+#: task_3ed834efdaa14baab798), GitHub answered both tries 500 and the step
+#: ended FAILED with its work only in `swarm-work.patch`. Not longer: the
+#: publish runs after the agent with the lease held, and the sleeping stays
+#: under `max_in_worker_retry_delay_seconds` (45 s), the platform's bound on
+#: an in-worker wait (invariant 4), as the clone's waits do
+#: (`CLONE_RETRY_WAITS_SECONDS`). Past these the push raises `PushUnreachable`
+#: and the attempt ends retryably (`Worker._publish_unreachable`), so the
+#: scheduler's retry, with the capacity released, does the longer wait.
+PUSH_RETRY_WAITS_SECONDS: tuple[float, ...] = (5.0, 10.0, 20.0)
+#: Tries of one push in all: the first, and one more after each wait.
+PUSH_TRIES = len(PUSH_RETRY_WAITS_SECONDS) + 1
+
+
+class PushUnreachable(GitTransient):
+    """A push the forge did not answer through every try (#2833).
+
+    A 5xx, a timeout or a dropped connection on each of `tries` pushes. A
+    `GitError`, so every `except GitError` still catches it; the publish is
+    the caller that tells it apart, and fails the ATTEMPT retryably for it
+    rather than the step for good: nothing says the next try meets it.
+    """
 
 
 def push_branch(
@@ -4364,13 +4386,15 @@ def push_branch(
     there. Anything that moved it since is refused, as `PushRejected`, as any
     non-fast-forward is. The default None pushes as above.
 
-    A PUSH THE FORGE DID NOT ANSWER IS TRIED ONCE MORE (G1, #1225). git says
-    a reset connection or a 5xx only as text on stderr, so the text is read
-    with the clone's classifier (`transient_git_failure`): a refusal, a
-    missing repository or refused authentication is raised at once, and a
-    second transient failure is raised as the first would have been. Pushing
-    again is safe because the push is never forced: a first try that landed
-    before the connection dropped makes the second one a no-op.
+    A PUSH THE FORGE DID NOT ANSWER IS TRIED AGAIN, WITH BACKOFF (G1, #1225;
+    #2833). git says a reset connection or a 5xx only as text on stderr, so
+    the text is read with the clone's classifier (`transient_git_failure`): a
+    refusal, a non-fast-forward, a missing repository or refused
+    authentication is raised at once, as before. A transient failure is tried
+    again after each of `PUSH_RETRY_WAITS_SECONDS`, and one that outlasts
+    them all is raised as `PushUnreachable`. Pushing again is safe because the
+    push is never forced: a try that landed before the connection dropped
+    makes the next one a no-op.
     """
     branch = validate_ref(branch) or ""
     if not branch:
@@ -4423,20 +4447,24 @@ def push_branch(
             err = logs_dir / "git-publish-push.err.log"
             if err.exists():
                 tail = err.read_text(errors="replace")[-1200:].strip()
-            if attempt < PUSH_TRIES and transient_git_failure(tail):
-                logger.warning(
-                    "the push could not reach the forge; trying it once more",
-                    attempt=attempt,
-                    attempts=PUSH_TRIES,
-                    wait_seconds=PUSH_RETRY_WAIT_SECONDS,
-                    exit_code=code,
-                )
-                time.sleep(PUSH_RETRY_WAIT_SECONDS)
-                continue
             message = f"push failed with exit {code}{_withheld_note(url, token)}: {tail}"
             if _PUSH_REJECTED_RE.search(f"{status}\n{tail}"):
                 raise PushRejected(message)
-            raise GitError(message)
+            if not transient_git_failure(tail):
+                raise GitError(message)
+            if attempt >= PUSH_TRIES:
+                raise PushUnreachable(
+                    f"{message} (the forge did not answer {attempt} tries)", tries=attempt
+                )
+            wait = PUSH_RETRY_WAITS_SECONDS[attempt - 1]
+            logger.warning(
+                "the push could not reach the forge; trying it again",
+                attempt=attempt,
+                attempts=PUSH_TRIES,
+                wait_seconds=wait,
+                exit_code=code,
+            )
+            time.sleep(wait)
     finally:
         # Same discipline as the clone: the credential exists for the length of
         # one git invocation and no longer. The runner has already exited by
