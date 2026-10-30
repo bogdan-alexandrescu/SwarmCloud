@@ -105,7 +105,7 @@ Each row is a fact found in the code while planning. None changes a decision; ea
 - Flags: **held: Terraform, held: IAM** (the job spec is IAM-adjacent: it decides whose signatures grant). The live plan must show the job's command gaining one argument and nothing else. Estimate: **$25**.
 - CI green proves: a fresh project can create a team workspace (issue #2688's first finding), and bootstrap state can never be created twice.
 
-**DAYONE-RELHOME-1** — A script stands up the release home's registry, bucket and signing key in project `swarmcloud`, idempotently. `held: IAM`.
+**DAYONE-RELHOME-1** — A script stands up the release home's registry, bucket and signing key in project `swarmcloud-prod`, idempotently. `held: IAM`.
 - Territory: `scripts/release-home.sh` (new), `tests/unit/scripts/test_release_home.py` (new).
 - depends_on: none. Manifest: `+other.release-home`, `other.release-bundle`.
 - What it does (BGD runs it; CLD does not create projects, D23): Artifact Registry repo `swarmcloud` (us, Docker), bucket `gs://swarmcloud` (uniform access, versioning), KMS key ring `swarmcloud-release` and an asymmetric P-256 key for cosign, each labelled `managed-by=swarm-release`; then, **only after** the Q4 org-policy exception exists (it checks the effective policy first), `allUsers` `roles/storage.objectViewer` on the bucket and `roles/artifactregistry.reader` on the repo. The public grant needs a typed confirmation of the project id that ignores `SWARM_ASSUME_YES`.
@@ -754,9 +754,9 @@ The plugin can run ahead of the deployment it talks to (D28). The rule: **a skew
 
 ## 7. The release (D5, D16, D21, D22, D25, Q4)
 
-### 7.1 The release home (project `swarmcloud`, D25)
+### 7.1 The release home (project `swarmcloud-prod`, D25)
 
-RELHOME-1's script, run by BGD: Artifact Registry `us-docker.pkg.dev/swarmcloud/swarmcloud` (Docker), `gs://swarmcloud`, KMS key `swarmcloud-release/cosign` (P-256). **The one org-policy exception (Q4):** `iam.allowedPolicyMemberDomains` overridden on project `swarmcloud` alone, covering `allUsers` as `roles/storage.objectViewer` on the bucket and `roles/artifactregistry.reader` on the repository. It is an org-admin action (BGD); the script checks the effective policy and refuses the public grant until the exception exists.
+RELHOME-1's script, run by BGD: Artifact Registry `us-docker.pkg.dev/swarmcloud-prod/swarmcloud` (Docker), `gs://swarmcloud`, KMS key `swarmcloud-release/cosign` (P-256). **The one org-policy exception (Q4):** `iam.allowedPolicyMemberDomains` overridden on project `swarmcloud-prod` alone, covering `allUsers` as `roles/storage.objectViewer` on the bucket and `roles/artifactregistry.reader` on the repository. It is an org-admin action (BGD); the script checks the effective policy and refuses the public grant until the exception exists.
 
 ### 7.2 The pipeline
 
@@ -764,7 +764,7 @@ RELHOME-1's script, run by BGD: Artifact Registry `us-docker.pkg.dev/swarmcloud/
 2. **Build prod-shaped images** in SwarmCloud's own CI into its existing registry: the console with no `VITE_SWARM_ENV` (UIENV-1), Dockerfiles with no project (DESAGA-1).
 3. **Scan** with the existing trivy gate; a HIGH or CRITICAL needs an acceptance with an expiry, which `RELEASE.md` lists (lesson 27).
 4. **Assemble** (`scripts/release/assemble.sh`): `module.tgz` (`terraform/{bootstrap,infra,modules}`, no tfvars, no `environments/`), the two wheels, `manifest.yaml`, `images.json` (digests only), `kubernetes.tgz` (`kubernetes/render.py`, `policies/`, `swarm-system/`, `rbac/`, the tenant templates), the plugin directory, `compat.json`, `marketplace.json`, `RELEASE.md`, `SHA256SUMS`. Uploaded as a workflow artefact.
-5. **Publish** (`scripts/release/publish.sh`), run by a person, not CI: copy each image by digest to the release home, sign each digest with cosign and the KMS key, sign `SHA256SUMS`, upload under `releases/<V>/`. CI holds no grant in project `swarmcloud`, so D22's "no IAM change for CI" holds (open question 4 asks whether BGD wants CI to publish later).
+5. **Publish** (`scripts/release/publish.sh`), run by a person, not CI: copy each image by digest to the release home, sign each digest with cosign and the KMS key, sign `SHA256SUMS`, upload under `releases/<V>/`. CI holds no grant in project `swarmcloud-prod`, so D22's "no IAM change for CI" holds (open question 4 asks whether BGD wants CI to publish later).
 6. **Promote** (`publish.sh --promote V`): moves `channels/stable` and the root `marketplace.json`, refused unless the manual test of 7.3 is recorded for `V`.
 
 **Signing: cosign with a KMS key**, not Binary Authorization. cosign signatures live beside the images and are verified on the installer's machine with the public key pinned in the engine wheel (`swarm_install/release_key.pub`, written by ENGINE-3 after BGD has run `release-home.sh`; cosign and gcrane are fetched at pinned versions and checked against pinned SHA-256s by `swarm_install/tools.py`) (design §6.1); Binary Authorization would need a policy and attestors in every company's project, which core does not otherwise need.
@@ -921,9 +921,9 @@ Only what the decisions do not settle.
    - (c) File neither; the engine's environment and doctor's check guard the fallback.
 
    **Recommend (a)**. Built either way: nothing in P3 waits on them.
-4. **Who publishes a release to project `swarmcloud`.** D22 keeps IAM for CI unchanged, so `publish.sh` is run by a person (section 7.2).
-   - (a) A person runs `publish.sh` for v1 (CLD or BGD, with rights in `swarmcloud`), as planned.
-   - (b) Add a release-publisher identity in `swarmcloud` that the tag workflow assumes (an IAM change for CI, held).
+4. **Who publishes a release to project `swarmcloud-prod`.** D22 keeps IAM for CI unchanged, so `publish.sh` is run by a person (section 7.2).
+   - (a) A person runs `publish.sh` for v1 (CLD or BGD, with rights in `swarmcloud-prod`), as planned.
+   - (b) Add a release-publisher identity in `swarmcloud-prod` that the tag workflow assumes (an IAM change for CI, held).
 
    **Recommend (a)** for v1: it honours D22 and the manual test already puts a person in the loop.
 
