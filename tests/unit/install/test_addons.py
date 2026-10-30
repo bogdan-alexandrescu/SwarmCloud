@@ -281,7 +281,7 @@ def test_every_addon_names_its_own_manifest_entries() -> None:
     fragment = manifest_mod.parse_file(ROOT / "install" / "manifest.d" / "addon-1.yaml")
     for entry in fragment.entries:
         assert entry.step, f"{entry.id} names no step"
-        name = entry.step.split(".")[1]
+        name = entry.scope.removeprefix("addon:")
         assert entry.id in addons.ADDONS[name].satisfies
 
 

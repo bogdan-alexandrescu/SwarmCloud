@@ -4,7 +4,10 @@
 # add-on's `satisfies` names them. These three are what the CI add-on adds:
 # its own Cloud Build account (lesson 6), the runner label and the acceptance
 # sandbox as repository variables, and the protected environments its
-# preflight requires (lesson 25). Each names the step that satisfies it.
+# preflight requires (lesson 25). Each names `infra.pass-2`, the step the
+# base manifest's `addon.ci` entry names: `step:` must be a step some module of
+# swarm_install.steps defines (tests/unit/install/test_manifest_steps.py), and
+# the add-on's own phases in addons.py are not engine steps.
 version: 1
 entries:
 - id: sa.ci-build
@@ -21,7 +24,7 @@ entries:
   - api.cloudbuild
   evidence:
   - apps/swarm-install/swarm_install/addons.py
-  step: addon.ci.enable
+  step: infra.pass-2
 - id: other.ci-runner-label
   kind: other
   scope: addon:ci
@@ -38,7 +41,7 @@ entries:
   - other.ci-environments-protected
   evidence:
   - scripts/acceptance/config.sh
-  step: addon.ci.enable
+  step: infra.pass-2
 - id: other.ci-environments-protected
   kind: other
   scope: addon:ci
@@ -52,4 +55,4 @@ entries:
     not core, requires the protected environment.
   evidence:
   - apps/swarm-install/swarm_install/addons.py
-  step: addon.ci.preflight
+  step: infra.pass-2
