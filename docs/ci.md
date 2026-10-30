@@ -2633,7 +2633,7 @@ admitted at 62a6fbac. Attempt 2 pushed 9e193de0 first, and attempt 1's publish
 conflicted. Why: a pull request has one writer at a time, and two CI fixes on
 one branch race exactly as a fix and a lane's round do. So `cifix.stamp`
 answers 409 `ci_fix_lane_owns_pr` while another CI fix of the same pull
-request is live -- a non-terminal agent continuing the same branch task, or a
+request is live -- a non-terminal agent continuing the same branch agent, or a
 claim still inside its two-minute grace whose agent is not written yet -- at
 any head and from any run, before the cap and the claim, so nothing is
 written. The detail names the live fix's `task_id`, `workflow_id` and
