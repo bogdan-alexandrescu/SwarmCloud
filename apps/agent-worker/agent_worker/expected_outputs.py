@@ -209,10 +209,6 @@ def parse_names(value: Any) -> Declared:
 #: The file a review or re-review step writes its verdict into (#2837).
 REVIEW_VERDICT_NAME = "verdict.json"
 
-#: The key swarm-api writes a workflow step's id under, on every step's task
-#: (`swarm_api.service`: `"workflow_step": step_id`).
-WORKFLOW_STEP_KEY = "workflow_step"
-
 #: The last word of a review step's id: `review` (`issueruns.REVIEW_STEP`,
 #: a spec's `dod-data-review`) or `rereview` (a spec's `dod-data-rereview`;
 #: the appended `re-review`, `validation.REREVIEW_STEP_ID`, ends in `review`).
@@ -228,7 +224,10 @@ def is_review_step(step_id: Any) -> bool:
     `handoff.md`. No later step staged its `verdict.json`, so nothing put the
     name in `metadata.expected_outputs`, and the stage a spec gives a step is
     a note for its reader that never reaches the task. The step id does:
-    swarm-api writes it on every step's task.
+    swarm-api writes it on every step's task as the top-level `step_id`,
+    which the step-spec signature covers (`swarm_common.specsign`). NOT
+    `metadata.workflow_step`, the same id written where the signature does
+    not reach (tests/unit/common/test_specsign_covers.py).
 
     The id's LAST word decides, case aside, after any trailing number (the
     suffix a repeated id takes, `re-review-2`): `review` or `rereview`. So
@@ -243,9 +242,10 @@ def is_review_step(step_id: Any) -> bool:
     return bool(words) and words[-1] in _REVIEW_WORDS
 
 
-def declared_outputs(metadata: Any) -> Declared:
+def declared_outputs(metadata: Any, *, step_id: Any = None) -> Declared:
     """What `task.metadata` says this task's dependants will stage from it,
-    and, on a review or re-review step, its `verdict.json` (#2837).
+    and, when `step_id` (the task's signed `step_id`) names a review or a
+    re-review, its `verdict.json` (#2837).
 
     A review step owes its verdict whether or not a later step stages it: the
     merge, the console and `swarm_result` read it from the review's artifacts.
@@ -253,12 +253,10 @@ def declared_outputs(metadata: Any) -> Declared:
     and the absolute path, and a clean finish without it fails the attempt
     retryably instead of ending SUCCEEDED.
     """
-    if not isinstance(metadata, dict):
-        # The contract types `metadata` as a dict. A value of any other type
-        # cannot carry this key, so there is nothing here to honour.
-        return Declared()
-    declared = parse_names(metadata.get(METADATA_KEY))
-    if is_review_step(metadata.get(WORKFLOW_STEP_KEY)) and REVIEW_VERDICT_NAME not in declared.names:
+    # The contract types `metadata` as a dict. A value of any other type
+    # cannot carry the key, so it declares nothing; the step id still counts.
+    declared = parse_names(metadata.get(METADATA_KEY)) if isinstance(metadata, dict) else Declared()
+    if is_review_step(step_id) and REVIEW_VERDICT_NAME not in declared.names:
         declared = Declared(
             names=tuple(sorted((*declared.names, REVIEW_VERDICT_NAME))),
             rejected=declared.rejected,
