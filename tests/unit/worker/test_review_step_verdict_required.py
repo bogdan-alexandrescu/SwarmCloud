@@ -145,3 +145,11 @@ def test_a_step_that_is_not_a_review_is_not_asked_for_a_verdict(db, worker_facto
     assert worker.run() == ExitCode.OK
     assert db.doc("tasks/task_1")["state"] == TaskState.SUCCEEDED.value
 
+
+
+def test_an_unreadable_verdict_is_a_cause_a_retry_can_change():
+    """The cause the worker gives a review's uploaded but unreadable verdict:
+    retryable, because the agent can write a readable one next time."""
+    causes = {"verdict.json": expected_mod.CAUSE_UNREADABLE_VERDICT}
+    assert expected_mod.retryable(["verdict.json"], causes)
+    assert "unreadable_verdict" in expected_mod.missing_error(["verdict.json"], causes=causes)

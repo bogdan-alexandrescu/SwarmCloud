@@ -525,7 +525,11 @@ CAUSE_NO_BASE = "no_base"
 #: never written. Only these leave a missing output retryable.
 CAUSE_UPLOAD_ERROR = "upload_error"
 CAUSE_NOT_WRITTEN = "not_written"
-RETRYABLE_CAUSES = frozenset({CAUSE_UPLOAD_ERROR, CAUSE_NOT_WRITTEN})
+#: A review's own `verdict.json` that was written but does not read as a
+#: verdict (`verdict_problem`, #2837): the agent can write a readable one next
+#: time, so a retry can change it too.
+CAUSE_UNREADABLE_VERDICT = "unreadable_verdict"
+RETRYABLE_CAUSES = frozenset({CAUSE_UPLOAD_ERROR, CAUSE_NOT_WRITTEN, CAUSE_UNREADABLE_VERDICT})
 
 #: `task.result_summary.artifacts_skipped` entries are `{name, cause}` (#165,
 #: owner decision 2026-09-28), one per skipped name, capped at 50. A summary
@@ -559,6 +563,10 @@ def skipped_names(value: Any) -> list[str]:
 #: What each cause says, in a missing-output cause and a dependant's refusal.
 _CAUSE_TEXT = {
     CAUSE_NOT_WRITTEN: "not written to $SWARM_ARTIFACTS_DIR",
+    CAUSE_UNREADABLE_VERDICT: (
+        "written but not a verdict: not a JSON object whose `verdict` is "
+        "MERGE or NOT_YET (unreadable_verdict)"
+    ),
     CAUSE_CAP: "written but not uploaded: over the artifact cap (cap)",
     CAUSE_UPLOAD_ERROR: "written but not uploaded: the upload failed (upload_error)",
     CAUSE_REFUSED: (
