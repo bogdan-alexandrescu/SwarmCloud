@@ -32,17 +32,22 @@
 #   3. copies each image BY DIGEST into us-docker.pkg.dev/<project>/swarmcloud
 #      with gcrane, tagged V, checks the copy's digest, and signs that digest
 #      with cosign and the KMS key (gcpkms://.../swarmcloud-release/cosign);
-#   4. signs SHA256SUMS with the same key, and uploads everything under
+#   4. signs SHA256SUMS with the same key BEFORE any image is copied, and
+#      refuses unless `cosign verify-blob` passes with the release_key.pub in
+#      the bundle's own swarm_install wheel, the key every install pins (audit
+#      3, A11); then uploads everything under
 #      releases/V/ (no object overwritten), SHA256SUMS LAST, so a release cut
 #      short has no SHA256SUMS and no installer reads it;
 #   5. once all of that has succeeded, every publish: the root install.sh
 #      (Cache-Control: no-cache). It is channel-agnostic: it reads
 #      channels/<SWARM_CHANNEL>, so a candidate's is what `curl .../install.sh |
 #      SWARM_CHANNEL=rc sh` runs, before any promotion (audit finding N10);
-#   6. for a candidate (YYYY.MM.N-rc.N) only: channels/rc/marketplace.json (the
+#   6. for a candidate (YYYY.MM.N-rc.N) only: channels/rc.marketplace.json (the
 #      release's marketplace, for a deployment on the rc channel), then LAST
-#      channels/rc (one line: V), both Cache-Control: no-cache; install.sh
-#      reads channels/rc under SWARM_CHANNEL=rc (DAYONE-RELEASE-2).
+#      channels/rc (one line: V), both Cache-Control: no-cache, each written as
+#      exactly that object whatever channels/rc/ prefix exists (A5), and
+#      channels/rc read back: it must hold V. install.sh reads channels/rc under
+#      SWARM_CHANNEL=rc (DAYONE-RELEASE-2).
 #   It never touches channels/stable or the root marketplace.json.
 #
 # --record-test V --record FILE: the manual install-and-upgrade test of
@@ -53,8 +58,8 @@
 # --promote V: refused unless releases/V/TESTED records a pass for V. Then the
 #   root marketplace.json (plugin `sc` at V, the archive releases/V/plugin.zip
 #   by absolute URL and the digest V's SHA256SUMS holds for it), the root
-#   install.sh (V's), and LAST channels/stable (one line: V), each with
-#   Cache-Control: no-cache, so nobody reads yesterday's channel for an hour.
+#   install.sh (V's), and LAST channels/stable (one line: V, read back), each
+#   with Cache-Control: no-cache, so nobody reads yesterday's channel for an hour.
 #
 # --dry-run prints every write and runs none; the reads still run.
 #
@@ -198,6 +203,39 @@ check_tested() {
 
 RELEASE() { printf '%s/releases/%s' "${BUCKET}" "$1"; }
 
+# A channel is objects directly under channels/: channels/<ch>, one line, the
+# version (what install.sh and preflight read), and for a channel other than
+# stable channels/<ch>.marketplace.json (what `swarm install` adds for it).
+# Nothing is ever written under a channels/<ch>/ prefix.
+CHANNELS="${BUCKET}/channels"
+
+# put_channel_object FILE NAME: write FILE as exactly the object channels/NAME,
+# uncached. `gcloud storage cp FILE gs://.../channels/rc` is not that: when no
+# object channels/rc exists but an object under channels/rc/ does, gcloud
+# storage takes the destination for a folder and writes channels/rc/<FILE's
+# name> (audit 3, A5: 2026.10.1-rc.1's line landed as channels/rc/rc, beside
+# channels/rc/marketplace.json). A destination ending in "/" is always a
+# folder, and gcloud names the object by the source's own name, so a file
+# named NAME copied to channels/ is channels/NAME whatever prefixes exist.
+put_channel_object() {
+  local source="$1" name="$2" staged="${WORK}/channel-objects/$2"
+  mkdir -p "${WORK}/channel-objects"
+  cp -- "${source}" "${staged}"
+  dim "$([[ "${DRY_RUN}" -eq 1 ]] && printf 'would write' || printf 'writing') ${CHANNELS}/${name}"
+  write gcloud storage cp --cache-control=no-cache "${staged}" "${CHANNELS}/"
+}
+
+# check_channel NAME VERSION: channels/NAME, read back, holds exactly VERSION.
+check_channel() {
+  local name="$1" version="$2" held
+  [[ "${DRY_RUN}" -eq 0 ]] || return 0
+  held="$(gcloud storage cat "${CHANNELS}/${name}" 2>/dev/null)" \
+    || die "cannot read ${CHANNELS}/${name} back: an installer on that channel cannot find ${version}"
+  [[ "${held}" == "${version}" ]] \
+    || die "${CHANNELS}/${name} holds '${held}', not ${version}: an installer on that channel does not install ${version}"
+  ok "${CHANNELS}/${name} reads back as ${version}"
+}
+
 # ---------------------------------------------------------------------------
 # --record-test V --record FILE
 # ---------------------------------------------------------------------------
@@ -245,7 +283,8 @@ promote() {
   write gcloud storage cp --cache-control=no-cache "${WORK}/marketplace.json" "${BUCKET}/marketplace.json"
   write gcloud storage cp --cache-control=no-cache "${release}/install.sh" "${BUCKET}/install.sh"
   # LAST: an installer that reads the new channel finds everything it names.
-  write gcloud storage cp --cache-control=no-cache "${WORK}/stable" "${CHANNEL}"
+  put_channel_object "${WORK}/stable" stable
+  check_channel stable "${VERSION}"
   ok "${VERSION} is the stable release"
 }
 
@@ -314,6 +353,31 @@ check_marketplace() {
     || die "the bundle's marketplace.json does not name ${VERSION}'s plugin.zip by its release URL and digest; assemble it with this checkout's scripts/release/assemble.sh"
 }
 
+# The key every install pins is the release_key.pub inside this bundle's own
+# engine wheel (steps/bootstrap.py RELEASE_KEY), so that is the key the new
+# signature must verify with (audit 3, A11): a KMS key that is not the pinned
+# one would fail every install, and a published release is never overwritten.
+extract_release_key() {
+  local wheels=("${BUNDLE}"/swarm_install-*.whl)
+  [[ "${#wheels[@]}" -eq 1 && -f "${wheels[0]}" ]] \
+    || die "the bundle has no single swarm_install wheel to read release_key.pub from; assemble it with scripts/release/assemble.sh"
+  python3 - "${wheels[0]}" "${WORK}/release_key.pub" <<'PY' \
+    || die "the bundle's $(basename -- "${wheels[0]}") holds no swarm_install/release_key.pub: no install of it could verify a signature"
+import sys
+import zipfile
+
+try:
+    with zipfile.ZipFile(sys.argv[1]) as wheel:
+        key = wheel.read("swarm_install/release_key.pub")
+except (KeyError, zipfile.BadZipFile):
+    sys.exit(1)
+if b"BEGIN PUBLIC KEY" not in key:
+    sys.exit(1)
+with open(sys.argv[2], "wb") as out:
+    out.write(key)
+PY
+}
+
 publish() {
   [[ -d "${BUNDLE}" ]] || die "--bundle ${BUNDLE}: no such directory"
   [[ -f "${SOURCE_IMAGES}" ]] || die "--source-images ${SOURCE_IMAGES}: no such file"
@@ -331,6 +395,7 @@ publish() {
   check_marketplace
   check_cves
   check_images
+  extract_release_key
   require_cmd gcrane cosign
   local release; release="$(RELEASE "${VERSION}")"
   if object_exists "${release}/"; then
@@ -343,6 +408,25 @@ publish() {
     confirm "Publish ${VERSION}: copy and sign every image into ${REGISTRY}, upload the bundle to ${release}/." "${VERSION}"
   fi
 
+  # SHA256SUMS is signed first and the signature checked with the wheel's
+  # pinned key, the way an install checks it, before any image is copied or
+  # any object written. The public key travels with the release too (design
+  # 6.1); the engine trusts the copy pinned in its wheel, so a tampered bucket
+  # cannot swap both.
+  cosign public-key "--key=${KMS_KEY}" >"${WORK}/cosign.pub" </dev/null
+  write cosign sign-blob --yes "--key=${KMS_KEY}" --output-signature "${WORK}/SHA256SUMS.sig" \
+    --bundle "${WORK}/SHA256SUMS.cosign.bundle" "${BUNDLE}/SHA256SUMS" </dev/null
+  local verify=(cosign verify-blob --key "${WORK}/release_key.pub" --signature "${WORK}/SHA256SUMS.sig"
+    --insecure-ignore-tlog=true "${BUNDLE}/SHA256SUMS")
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    dim "would run: ${verify[*]}"
+  elif ! "${verify[@]}" </dev/null >"${WORK}/verify.log" 2>&1; then
+    redact <"${WORK}/verify.log" >&2
+    die "the new SHA256SUMS signature does not verify with the release_key.pub in the bundle's swarm_install wheel: ${KMS_KEY} is not the key installs pin; nothing was written"
+  else
+    ok "SHA256SUMS's signature verifies with the release key the wheel pins"
+  fi
+
   local name digest source copied
   while IFS=$'\t' read -r name digest <&3; do
     source="$(jq -r --arg n "${name}" '[.images[] | select(.name == $n) | .ref][0]' "${SOURCE_IMAGES}")"
@@ -353,12 +437,6 @@ publish() {
     fi
     write cosign sign --yes "--key=${KMS_KEY}" "${REGISTRY}/${name}@${digest}" </dev/null
   done 3< <(jq -r 'to_entries[] | [.key, .value] | @tsv' "${BUNDLE}/images.json")
-
-  # The public key travels with the release too (design 6.1); the engine
-  # trusts the copy pinned in its wheel, so a tampered bucket cannot swap both.
-  cosign public-key "--key=${KMS_KEY}" >"${WORK}/cosign.pub" </dev/null
-  write cosign sign-blob --yes "--key=${KMS_KEY}" --output-signature "${WORK}/SHA256SUMS.sig" \
-    --bundle "${WORK}/SHA256SUMS.cosign.bundle" "${BUNDLE}/SHA256SUMS" </dev/null
 
   write gcloud storage rsync --recursive --no-clobber --exclude='^SHA256SUMS$' "${BUNDLE}" "${release}"
   write gcloud storage cp --no-clobber "${WORK}/cosign.pub" "${release}/cosign.pub"
@@ -375,12 +453,12 @@ publish() {
   # A candidate moves the rc channel, after the release it names is complete.
   # A final release moves no channel here: stable moves only by --promote.
   if [[ "${VERSION}" == *-rc.* ]]; then
-    local rc_channel="${BUCKET}/channels/rc"
     printf '%s\n' "${VERSION}" >"${WORK}/rc"
     # The rc channel's marketplace, for a deployment that follows rc (N10).
-    write gcloud storage cp --cache-control=no-cache "${BUNDLE}/marketplace.json" "${rc_channel}/marketplace.json"
-    write gcloud storage cp --cache-control=no-cache "${WORK}/rc" "${rc_channel}"
-    [[ "${DRY_RUN}" -eq 1 ]] || ok "${rc_channel} names ${VERSION}: SWARM_CHANNEL=rc installs it"
+    put_channel_object "${BUNDLE}/marketplace.json" rc.marketplace.json
+    put_channel_object "${WORK}/rc" rc
+    check_channel rc "${VERSION}"
+    [[ "${DRY_RUN}" -eq 1 ]] || ok "${CHANNELS}/rc names ${VERSION}: SWARM_CHANNEL=rc installs it"
   fi
   ok "published ${VERSION}$([[ "${DRY_RUN}" -eq 0 ]] || printf ' (dry run: nothing written)')"
   info "next: the manual test (plan section 7.3), then --record-test ${VERSION} --record <file>, then --promote ${VERSION}"

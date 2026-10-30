@@ -665,7 +665,7 @@ def test_candidate_publish_reads_the_channel_back(tmp_path: Path, bundle: Path,
     assert calls.index(read) > last_cp
 
 
-@pytest.mark.parametrize("held", ["2026.10.1-rc.1\n", "", f"{VERSION}-rc.10\n"])
+@pytest.mark.parametrize("held", ["2026.09.9-rc.1\n", "", f"{VERSION}-rc.10\n"])
 def test_candidate_publish_fails_when_the_channel_does_not_read_back(tmp_path: Path, bundle: Path,
                                                                      assembled: tuple[Path, Path], held: str) -> None:
     state = {"lands": {f"{BUCKET}/channels/rc": held}}
