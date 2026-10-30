@@ -41,15 +41,55 @@ def _pages(monkeypatch: pytest.MonkeyPatch, *modules) -> list[tuple[str, str]]:
     return opened
 
 
-def test_brand_opens_branding_page_once_then_asks_the_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    opened = _pages(monkeypatch, engine_module, edge)
+BRANDING = f"https://console.cloud.google.com/auth/branding?project={PROJECT}"
+AUDIENCE = f"https://console.cloud.google.com/auth/audience?project={PROJECT}"
+
+
+def test_brand_opens_branding_then_audience_then_asks_the_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """DAYONE-EDGE-AUDIENCE: Branding first, then Audience with "choose
+    Internal", each opened for the person, and only then the Desktop client's
+    id, the brand's one proof (no API reads a brand)."""
+    log: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(engine_module, "open_page", lambda url, *, why, **_: log.append(("open", url, why)))
+    monkeypatch.setattr(edge, "open_page", lambda url, *, why, **_: log.append(("open", url, why)))
     gcp = FakeGcp()
     rig = _rig(tmp_path)
+    ask = Answers(log, edge_brand=[CLIENT_ID])
 
-    result = rig.engine([edge.BrandStep(lambda: gcp, Answers(edge_brand=[CLIENT_ID]), lambda: FakeEdge())]).run()
+    result = rig.engine([edge.BrandStep(lambda: gcp, ask, lambda: FakeEdge())]).run()
     assert result.exit_code == ExitCode.OK, result.message
-    assert [url for url, _ in opened] == [f"https://console.cloud.google.com/auth/branding?project={PROJECT}"]
+    assert [entry[:2] for entry in log] == [("open", BRANDING), ("open", AUDIENCE), ("ask", "edge.brand")]
+    assert "choose Internal" in log[1][2], "the Audience page's instructions say to choose Internal"
+    assert "Internal" not in log[0][2], "the Branding page says only what to set on Branding"
     assert rig.store.load().outputs["desktop_client_id"] == CLIENT_ID
+
+
+def test_brand_pages_honour_swarm_no_browser(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """The real `open_page`: with SWARM_NO_BROWSER=1 and a display, neither
+    page reaches the browser, and both are still printed, Branding first."""
+    from swarm_install import steps
+
+    browsed: list[str] = []
+    monkeypatch.setattr(steps, "_browser", browsed.append)
+    monkeypatch.setattr(engine_module, "open_page", lambda url, *, why, **_: None)
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setenv(steps.NO_BROWSER, "1")
+    rig = _rig(tmp_path)
+
+    result = rig.engine([edge.BrandStep(lambda: FakeGcp(), Answers(edge_brand=[CLIENT_ID]), lambda: FakeEdge())]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert browsed == []
+    out = capsys.readouterr().out
+    assert BRANDING in out and AUDIENCE in out
+    assert out.index(BRANDING) < out.index(AUDIENCE)
+
+    monkeypatch.delenv(steps.NO_BROWSER)
+    (tmp_path / "browser").mkdir()
+    rig = _rig(tmp_path / "browser")
+    result = rig.engine([edge.BrandStep(lambda: FakeGcp(), Answers(edge_brand=[CLIENT_ID]), lambda: FakeEdge())]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert browsed == [BRANDING, AUDIENCE]
 
 
 def test_dns_prints_record_opens_resolution_page_and_polls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
