@@ -5,6 +5,13 @@
 
 mock_provider "google" {}
 
+# terraform/bootstrap/state_bucket.tf imports the state bucket (DAYONE-BOOT-1):
+# a mock provider cannot import, so the bucket's provider values are the
+# override's and its configuration is still planned and asserted.
+override_resource {
+  target = google_storage_bucket.state
+}
+
 variables {
   project_id = "saga-agents-staging"
 
@@ -262,9 +269,10 @@ run "iap_membership_is_bootstrap_owned_and_the_deployer_has_no_iap_role" {
   }
 
   variables {
-    enable_github_wif    = true
-    github_repository    = "saga/agent-swarm-infra"
-    frontend_iap_members = ["domain:example.com", "serviceAccount:verify@example.iam.gserviceaccount.com"]
+    frontend_iap_backends = ["swarm-ui-backend", "swarm-ui-ui-backend"]
+    enable_github_wif     = true
+    github_repository     = "saga/agent-swarm-infra"
+    frontend_iap_members  = ["domain:example.com", "serviceAccount:verify@example.iam.gserviceaccount.com"]
   }
 
   assert {

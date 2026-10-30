@@ -237,14 +237,15 @@ run "on_in_dev_the_echo_server_admits_only_the_acceptance_identity_scales_to_zer
     error_message = "mcp_test_server.tf names no public member: the owner decided on 2026-10-18 that the echo server is not public"
   }
 
-  # The invoker's address is spelled from the id verify.tf creates swarm-verify
-  # from, never typed: the account and the invoker cannot drift apart.
+  # The invoker's address is spelled from the id verify.tf reads swarm-verify
+  # by (terraform/bootstrap creates it since DAYONE-BOOT-2), never typed: the
+  # account and the invoker cannot drift apart.
   assert {
     condition = (
-      google_service_account.verify.account_id == "swarm-verify"
+      data.google_service_account.verify.account_id == "swarm-verify"
       && strcontains(file("${var.tf_root}/mcp_test_server.tf"), "module.service_account_ids.verify_id")
     )
-    error_message = "the invoker must be spelled from the id swarm-verify is created with (verify.tf), not typed"
+    error_message = "the invoker must be spelled from the id swarm-verify is read by (verify.tf), not typed"
   }
 
   # Its own account, and never one that can read anything.

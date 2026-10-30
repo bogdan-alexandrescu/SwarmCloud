@@ -481,3 +481,66 @@ removed {
     destroy = false
   }
 }
+
+# ---------------------------------------------------------------------------
+# THE PLATFORM SERVICE ACCOUNTS LEAVE THIS ROOT -- FORGOTTEN, NOT DESTROYED
+# (DAYONE-BOOT-2; design docs/design/day-one-install.md §5.3, plan §8, Q7).
+# ---------------------------------------------------------------------------
+#
+# terraform/bootstrap grants roles to these accounts, so it now creates them
+# (bootstrap/platform_service_accounts.tf) and adopts the live ones with
+# `import` blocks gated on adopt_from_infra_states. This root reads them as
+# data sources (modules/iam, modules/scheduler, verify.tf). Without the blocks
+# below every one of them would be PLANNED FOR DESTROY, and deleting an
+# account deletes every grant, Workload Identity binding and RBAC subject that
+# names it -- the whole control plane's identity.
+#
+# `destroy = false` makes the release drop each from this root's state and
+# touch nothing live. NONE OF THESE BLOCKS MAY EVER BE CHANGED TO DESTROY.
+# Each names the whole resource, for_each and all: every instance of
+# module.iam's `platform` moves together, so no per-key step is needed. A
+# state that never held one (an install's) plans nothing for it.
+#
+# The owner's live plans show these five addresses as "will be removed from
+# the state, not destroyed" and 0 to destroy, for infra dev and prod; any
+# destroy or replace blocks the merge (Q7).
+
+removed {
+  from = module.iam.google_service_account.platform
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = module.iam.google_service_account.tick
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = google_service_account.verify
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = module.scheduler.google_service_account.schedule_tick
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = module.scheduler.google_service_account.rollup_sweeper
+
+  lifecycle {
+    destroy = false
+  }
+}

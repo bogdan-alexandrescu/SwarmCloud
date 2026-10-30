@@ -14,8 +14,7 @@
     },
     "swarm-github-hooks": {
       "resources": [
-        "google_cloud_run_v2_service.github_hooks",
-        "google_cloud_run_v2_service_iam_member.github_hooks_public"
+        "google_cloud_run_v2_service.github_hooks"
       ],
       "outputs": []
     },

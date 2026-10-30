@@ -189,13 +189,13 @@ output "dashboard_id" {
 }
 
 output "frontend_iap_audiences" {
-  description = "Paste into frontend_iap_audiences in tfvars. See that variable for why this is a two-step."
+  description = "The audiences swarm-api pins on an IAP assertion; locals.tf computes IAP_AUDIENCES from the same module output (DAYONE-TF-1)."
   value       = var.enable_frontend ? try(module.frontend[0].iap_audiences, []) : []
 }
 
 
 output "quota_broker_url" {
-  description = "Paste into quota_broker_url in tfvars. See that variable for why this is a two-step, and the quota_broker_url_is_wired check for what happens while it is empty."
+  description = "swarm-quota-broker's uri, as Cloud Run reports it. The services are handed main.tf's local.quota_broker_url, the deterministic URL of the same service (DAYONE-TF-1)."
   value       = module.cloud_run.service_urls["swarm-quota-broker"]
 }
 

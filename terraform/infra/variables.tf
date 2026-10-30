@@ -566,57 +566,6 @@ variable "internal_decision_api_enabled" {
   default     = false
 }
 
-variable "frontend_iap_audiences" {
-  description = <<-EOT
-    Audiences swarm-api accepts on an IAP assertion, one per backend service:
-
-        /projects/<PROJECT NUMBER>/global/backendServices/<BACKEND SERVICE ID>
-
-    Declared rather than derived because deriving it from the frontend module is
-    a terraform cycle -- that module consumes the Cloud Run services this value
-    configures. Read it from `terraform output frontend_iap_audiences` once the
-    load balancer exists.
-
-    EMPTY MEANS THE IAP PATH IS OFF, not "accept any audience". An unpinned
-    audience makes google-auth skip the `aud` check, and an IAP assertion is
-    issued to anyone who can reach any IAP-protected resource anywhere.
-  EOT
-  type        = list(string)
-  default     = []
-}
-
-variable "quota_broker_url" {
-  description = <<-EOT
-    Base URL of the swarm-quota-broker Cloud Run service, for the SCHEDULER's
-    environment. The scheduler never calls the broker; it passes this through
-    to every worker it dispatches (scheduler.dispatch.worker_env), and a worker
-    with no QUOTA_BROKER_URL uses no account pool at all.
-
-    Declared rather than derived, for the same reason frontend_iap_audiences
-    is: the scheduler's environment is an INPUT to the Cloud Run module and the
-    broker's URL is an OUTPUT of it, so referencing it is a cycle terraform
-    refuses to plan. Worker JOBS are unaffected -- locals.tf derives the same
-    value for them, because that module reads the Cloud Run outputs rather than
-    feeding them.
-
-    Read it from `terraform output quota_broker_url` after the first apply and
-    put it in <env>.tfvars. The `quota_broker_url_is_wired` check fails while it
-    is empty or stale.
-
-    EMPTY MEANS "NO POOL ON THE GKE PATH", not "guess". A guessed URL is the
-    worst outcome available here: a 404 is a configuration refusal, and a
-    worker that is refused PARKS rather than running on the wrong credential,
-    so a wrong guess would park every browser and GPU task in the fleet.
-  EOT
-  type        = string
-  default     = ""
-
-  validation {
-    condition     = var.quota_broker_url == "" || startswith(var.quota_broker_url, "https://")
-    error_message = "quota_broker_url must be an https:// base URL, or empty."
-  }
-}
-
 variable "groups_impersonate_user" {
   description = <<-EOT
     The Workspace user swarm-api acts AS when it reads Cloud Identity groups.
@@ -919,13 +868,48 @@ variable "settings_env" {
 }
 
 variable "allowed_domains" {
-  description = "Hosted domains permitted to authenticate."
+  description = <<-EOT
+    Hosted domains permitted to authenticate.
+
+    NO DEFAULT DOMAIN (null): a default is what a new install gets without
+    being asked, and the only one this could hold is the live deployment's own
+    domain (DAYONE-TF-1). Unset admits NO hosted domain -- only swarm-verify
+    and var.allowed_users, swarm-api's solo deployment -- so leaving it out
+    fails closed. An explicit [] is still refused: whoever writes it believes
+    it opens sign-in to everyone.
+  EOT
   type        = list(string)
-  default     = ["saga.xyz"]
+  default     = null
 
   validation {
-    condition     = length(var.allowed_domains) > 0
-    error_message = "at least one allowed domain is required; refusing open auth."
+    condition     = var.allowed_domains == null || try(length(var.allowed_domains) > 0, false)
+    error_message = "at least one allowed domain is required; refusing open auth. Leave allowed_domains unset to admit no hosted domain at all."
+  }
+}
+
+variable "allowed_users" {
+  description = <<-EOT
+    Addresses admitted past the domain check in addition to swarm-verify's own
+    account, which locals.tf always adds (swarm-api's ALLOWED_USERS). For a
+    service account that is no Workspace principal and so can never match
+    allowed_domains -- in the live deployment, the oracle-api client
+    application (owner decision 2026-10-18, #1568).
+
+    Empty by default: a new install admits no one by address until its owner
+    names them. An input rather than a literal in locals.tf, because the
+    address names one project and a literal would carry it into every install
+    (DAYONE-TF-1).
+
+    This widens WHICH verified identities are admitted, never whether an
+    identity was verified: swarm-api consults it only after the token has been
+    checked, and the address it compares comes from that token.
+  EOT
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for u in var.allowed_users : can(regex("^[^@,[:space:]]+@[^@,[:space:]]+$", u))])
+    error_message = "allowed_users are bare email addresses (no `user:` or `serviceAccount:` prefix, no comma): each is joined into swarm-api's comma-separated ALLOWED_USERS."
   }
 }
 
@@ -1335,4 +1319,114 @@ variable "swarm_workers_log_view_enabled" {
   # filter nesting depth limit of 1"); this switch now builds the bucket-and-
   # sink design instead.
   default = false
+}
+
+# ---------------------------------------------------------------------------
+# Day One: the edge, the console's App setup and the scheduled doctor
+# (DAYONE-TF-2; docs/design/day-one-plan.md §1.2, design §9.2)
+# ---------------------------------------------------------------------------
+
+variable "discovery" {
+  description = <<-EOT
+    The non-secret discovery document swarm-discovery serves at
+    https://<frontend_hostname>/.well-known/swarmcloud (discovery.tf, design
+    §9.2): the deployment's display name, the release version, the IAP Desktop
+    OAuth client id the plugin signs in with, and the oldest plugin version the
+    deployment supports. The install engine writes it.
+
+    EMPTY oauth_client_id (the default) creates no swarm-discovery service and
+    no discovery backend: apps/swarm-api/swarm_api/discovery.py builds the
+    document at start-up and refuses to start without each field, so a service
+    without them would fail its first revision. The live deployment stays
+    unchanged until the engine (or the owner) sets it.
+  EOT
+  type = object({
+    name               = optional(string, "SwarmCloud")
+    version            = optional(string, "")
+    oauth_client_id    = optional(string, "")
+    plugin_min_version = optional(string, "")
+  })
+  default = {}
+
+  validation {
+    condition     = var.discovery.oauth_client_id == "" || (var.discovery.version != "" && var.discovery.plugin_min_version != "" && var.discovery.name != "")
+    error_message = "discovery.oauth_client_id is set, so discovery.version, discovery.plugin_min_version and discovery.name must be too: swarm-discovery refuses to start without any of them."
+  }
+}
+
+variable "discovery_serves_client_secret" {
+  description = <<-EOT
+    Serve the IAP Desktop client's secret in the discovery document (design
+    §9.3). Off (the default) swarm-discovery holds no role at all; on, it holds
+    roles/secretmanager.secretAccessor on swarm-iap-desktop-client-secret and
+    on no other secret (discovery.tf).
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "enable_console_app_setup" {
+  description = <<-EOT
+    Create the GitHub App's three secret containers (swarm-github-app-client-
+    secret, -private-key, -webhook-secret) independently of enable_github_app
+    and enable_github_hooks, so the console's Admin > Setup > GitHub App step
+    can store what the manifest exchange returns (plan R3, review finding 2).
+    swarm-api's version-adder and accessor on exactly those three are
+    terraform/bootstrap's (github_app_setup.tf). Off by default: the install
+    engine turns it on in infra pass 2; the live deployment already has the
+    containers through its App switches.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "enable_scheduled_doctor" {
+  description = <<-EOT
+    Run swarm-doctor, the read-only doctor, every hour (doctor.tf, D27), with
+    its Scheduler job and the alert on its finding count. Off by default so
+    nothing runs hourly before DAYONE-DOCTOR-1's code ships in the swarm-verify
+    image; the engine turns it on (review finding 12).
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "enable_acceptance_fixture" {
+  description = <<-EOT
+    The acceptance suite's public fixture bucket and its allUsers object
+    reader (acceptance_fixture.tf), an addon:ci piece. Off by default: an
+    install makes no public bucket (review finding 4; Domain Restricted
+    Sharing refuses allUsers in most organisations). dev.tfvars and prod.tfvars
+    set it true, so the live plan shows no change.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "groups_auth" {
+  description = <<-EOT
+    How swarm-api reads a caller's groups (GROUPS_AUTH, apps/swarm-api/swarm_api/
+    groups.py; design §8, Q2): "delegation" (domain-wide delegation, the live
+    deployment's mode) or "admin_role" (the Groups Reader admin role on
+    swarm-api's own account, what installs use). The default keeps the live
+    deployment unchanged until the owner flips it.
+  EOT
+  type        = string
+  default     = "delegation"
+
+  validation {
+    condition     = contains(["delegation", "admin_role"], var.groups_auth)
+    error_message = "groups_auth is delegation or admin_role; swarm-api refuses to start on any other value."
+  }
+}
+
+variable "setup_github_org" {
+  description = <<-EOT
+    The GitHub organisation the console's Admin > Setup registers the App under
+    (SETUP_GITHUB_ORG, apps/swarm-api/swarm_api/settings.py). Empty: not
+    rendered, and the console's App step answers 409 setup_unconfigured. The
+    install engine writes it from the stage 0 answers.
+  EOT
+  type        = string
+  default     = ""
 }

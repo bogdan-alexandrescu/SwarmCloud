@@ -8653,7 +8653,7 @@ entries:
   stage: 0
   provider: company-external
   check: curl -fsI https://storage.googleapis.com/swarmcloud/channels/stable
-  apply: 'NEW (DAYONE-RELHOME-1, run by BGD in project swarmcloud): Artifact Registry us-docker.pkg.dev/swarmcloud/swarmcloud, bucket gs://swarmcloud, KMS key swarmcloud-release/cosign, public read under the one org-policy exception (Q4)'
+  apply: 'NEW (DAYONE-RELHOME-1, run in project swarmcloud-prod): Artifact Registry us-docker.pkg.dev/swarmcloud-prod/swarmcloud, bucket gs://swarmcloud, KMS key swarmcloud-release/cosign, public read under the one org-policy exception (Q4)'
   verify: an unauthenticated read of the stable channel and an image manifest by digest both answer 200
   explain: 'D25: where a company''s install fetches the release; its deployment never depends on it after the copy (D21).'
   guards: null

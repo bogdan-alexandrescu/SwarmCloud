@@ -638,10 +638,10 @@ locals {
       #
       # DERIVED HERE, and it can be: this module reads module.cloud_run's
       # outputs and nothing in module.cloud_run reads local.jobs, so there is
-      # no cycle. The same value cannot be derived for the SCHEDULER's own
-      # environment, which lives inside module.cloud_run and would have to read
-      # a URL that is an attribute of the resource it is part of -- see
-      # var.quota_broker_url and the check block in main.tf.
+      # no cycle. The SCHEDULER's own environment lives inside module.cloud_run
+      # and cannot read the uri of the resource it is part of, so it is handed
+      # the deterministic URL of the same service instead (main.tf
+      # `local.quota_broker_url`).
       #
       # The dispatcher's per-execution overrides MERGE with this, and
       # `worker_env()` omits the name entirely when the scheduler has no URL,
@@ -683,7 +683,7 @@ locals {
     ENVIRONMENT           = var.environment
     FIRESTORE_DATABASE    = var.firestore_database
     ARTIFACT_BUCKET       = module.storage.artifact_bucket_name
-    ALLOWED_DOMAINS       = join(",", var.allowed_domains)
+    ALLOWED_DOMAINS       = join(",", coalesce(var.allowed_domains, []))
     GLOBAL_CAPACITY_UNITS = tostring(var.pool_limits.global * 2)
     MAX_ACTIVE_AGENTS     = tostring(var.pool_limits.global)
   }, var.settings_env)
@@ -802,7 +802,7 @@ locals {
     # SETTINGS_MAC_REQUIRED (settings_mac.tf).
     # local.api_graph_stats_env: SWARM_GRAPH_STATS_URL, the graph service's
     # stats address (graph_service.tf).
-    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, local.api_grant_attestation_env, local.settings_mac_env, local.model_class_env, local.api_graph_stats_env, {
+    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, local.api_grant_attestation_env, local.settings_mac_env, local.model_class_env, local.api_graph_stats_env, local.api_day_one_env, {
       # DISPATCH_TOPIC, not WAKE_TOPIC. Both apps read `DISPATCH_TOPIC`
       # (swarm_api.settings, scheduler.settings); terraform set `WAKE_TOPIC`,
       # which nothing has ever read. swarm_api.deps falls back to NullWaker()
@@ -856,18 +856,21 @@ locals {
       # a signed-in user, a valid certificate, a healthy load balancer, and an
       # API that cannot see any of it.
       #
-      # DECLARED, NOT DERIVED, and that is forced rather than chosen. Reading
-      # module.frontend's output here is a terraform CYCLE: the frontend module
-      # needs the Cloud Run services (for the serverless NEG), and this
-      # environment feeds those same services. I wrote "no cycle" in an earlier
-      # version of this comment and terraform disagreed, in detail.
+      # DERIVED from module.frontend, which is no longer a cycle. It was one
+      # while module.frontend waited for module.cloud_run (its depends_on in
+      # main.tf); nothing in that module reads a Cloud Run output -- it names
+      # the services by string -- so the edge went, and the graph is now
+      # backend service -> audience -> this environment
+      # (docs/design/day-one-install.md §5.2). Until then this was a value
+      # copied by hand out of `terraform output` into tfvars.
       #
       # The audience contains a GCP-GENERATED backend service id, so unlike the
-      # push audiences above it cannot be made a constant known before apply.
-      # So it is an input: read the value from `terraform output
-      # frontend_iap_audiences` after the load balancer exists and put it in
-      # tfvars. The ids are stable for the life of the backend service.
-      IAP_AUDIENCES = join(",", var.frontend_iap_audiences)
+      # push audiences above it cannot be a constant: on a new project it is
+      # known after the backend services are created, in the same apply. The
+      # ids are stable for the life of the backend service. With the frontend
+      # off there is no IAP path, and empty means OFF (swarm-api pins no
+      # audience and refuses every assertion), never "accept any".
+      IAP_AUDIENCES = var.enable_frontend ? join(",", module.frontend[0].iap_audiences) : ""
 
       # `directory_group` as well as `kind`: a tenant can be group-KINDED for
       # naming and isolation while its principal is not a resolvable directory
@@ -1026,12 +1029,13 @@ locals {
       # the orchestrating client application submits workflows as its own
       # tenant, u-or-9a0792 (dev.tfvars), and never as a member of eng. It is
       # in no registered group, so once admitted here it resolves to that
-      # tenant alone. A literal, not derived: the account is not this root's,
-      # and the owner's decision names this exact address.
-      ALLOWED_USERS = join(",", [
-        google_service_account.verify.email,
-        "oracle-api@saga-agents-staging.iam.gserviceaccount.com",
-      ])
+      # tenant alone. Named in var.allowed_users, not here: the account is not
+      # this root's, the owner's decision names one deployment's address, and a
+      # literal in this file would carry it into every install (DAYONE-TF-1).
+      ALLOWED_USERS = join(",", concat(
+        [local.verify_email],
+        var.allowed_users,
+      ))
 
       # The same principals terraform already refuses to let own a DECLARED
       # tenant, handed to the runtime so it can refuse the ones terraform
@@ -1054,18 +1058,16 @@ locals {
       # writes a subscription credential itself, so without this the Settings
       # page cannot list or register an account at all.
       #
-      # DECLARED, NOT DERIVED, for exactly the reason the scheduler's copy is
-      # (see var.quota_broker_url): this environment is an input to
-      # module.cloud_run and the broker's URL is an output of it, so
-      # referencing it here is a cycle terraform refuses to plan. The worker
-      # JOBS can derive it because they live outside that module.
+      # COMPUTED from the project number (main.tf `local.quota_broker_url`):
+      # this environment is an input to module.cloud_run and the broker's
+      # `uri` is an output of it, so reading the uri here would be a cycle.
       #
       # Unlike the silent failure the scheduler's comment warns about, an unset
       # value here is LOUD: BrokerClient refuses to start and /v1/accounts
       # answers 503 naming this variable. That is deliberate -- an account pool
       # that half-exists is worse than one that is plainly absent -- and it is
       # what the deployed API returned before this line was added.
-      QUOTA_BROKER_URL      = var.quota_broker_url
+      QUOTA_BROKER_URL      = local.quota_broker_url
       QUOTA_BROKER_AUDIENCE = local.push_audiences["swarm-quota-broker"]
 
       # The console origin every served task and workflow's `links.console` is
@@ -1195,15 +1197,13 @@ locals {
       # backends. The GKE path has no terraform-managed Job to carry it, so
       # without this every browser/GPU worker runs with no pool.
       #
-      # DECLARED, NOT DERIVED, and that is forced rather than chosen -- exactly
-      # like IAP_AUDIENCES above. This environment is an input to
-      # module.cloud_run, and the broker's URL is an output of it; referencing
-      # it here is a cycle terraform refuses to plan. So: apply once, read
-      # `terraform output quota_broker_url`, put it in tfvars. The check block
-      # in main.tf fails loudly while this is empty or stale, because the
-      # failure it prevents -- a pool that is configured everywhere except in
-      # the one place that matters -- is completely silent at runtime.
-      QUOTA_BROKER_URL      = var.quota_broker_url
+      # COMPUTED from the project number (main.tf `local.quota_broker_url`),
+      # for swarm-api's reason above. It used to be a value pasted from
+      # `terraform output` after a first apply, with a check for a stale paste,
+      # because the failure an empty one causes -- a pool configured
+      # everywhere except in the one place that matters -- is completely
+      # silent at runtime. A computed value cannot be empty or stale.
+      QUOTA_BROKER_URL      = local.quota_broker_url
       QUOTA_BROKER_AUDIENCE = local.push_audiences["swarm-quota-broker"]
 
       # Passed THROUGH to each worker by `scheduler.dispatch.worker_env`, the
@@ -1223,9 +1223,9 @@ locals {
       # also mints a registration nonce for -- only when it holds
       # SWARM_CHILD_KEY, and never to a child -- so the worker can reach the
       # worker-only child routes and mint its ID token for their audience.
-      # DECLARED, for QUOTA_BROKER_URL's reason; the swarm_api_url_is_wired
-      # check holds it to the deployed URL.
-      SWARM_API_URL      = var.swarm_api_url
+      # COMPUTED, for QUOTA_BROKER_URL's reason (main.tf
+      # `local.swarm_api_url`).
+      SWARM_API_URL      = local.swarm_api_url
       SWARM_API_AUDIENCE = local.push_audiences["swarm-api"]
 
       # The forge broker's switch (child_tasks.tf `forge_broker`, #1041),
@@ -1306,11 +1306,18 @@ locals {
       # broker could not resolve it to a tenant anyway. Being listed lets it
       # use every platform route (the sweep, a hard max); it calls only the
       # release, and it is a control-plane identity as trusted as the tick.
-      PLATFORM_SERVICE_ACCOUNTS = join(",", [
+      #
+      # swarm-doctor is here once the scheduled doctor runs (doctor.tf): it
+      # probes the broker's platform routes as a control-plane identity, and an
+      # identity the broker does not list is answered 403 on every call -- the
+      # quota sweep's year of silent 403s (lesson 38) was exactly that. Only
+      # while enable_scheduled_doctor is on, so the live broker's environment
+      # does not change before the doctor exists.
+      PLATFORM_SERVICE_ACCOUNTS = join(",", concat([
         module.iam.tick_service_account,
         module.iam.service_account_emails["swarm-api"],
         module.iam.service_account_emails["swarm-reconciler"],
-      ])
+      ], local.doctor_on ? [local.doctor_email] : []))
 
       # Provisioning an account's two secrets, which moved here when account
       # management became a Settings page rather than a shell script. A pool
@@ -1349,9 +1356,9 @@ locals {
       # Where the reconciler gives back a fenced attempt's account holds
       # (#380, `repair.BrokerHoldReleaser`). Unset, the reconciler logs a
       # warning at start and the holds count against the pool until their TTL.
-      # Declared rather than derived for the same cycle reason as the
-      # scheduler's copy above; the quota_broker_url_is_wired check covers both.
-      QUOTA_BROKER_URL      = var.quota_broker_url
+      # Computed from the project number for the same cycle reason as the
+      # scheduler's copy above (main.tf `local.quota_broker_url`).
+      QUOTA_BROKER_URL      = local.quota_broker_url
       QUOTA_BROKER_AUDIENCE = local.push_audiences["swarm-quota-broker"]
 
       # Where the reconciler rings `task_finished` for a task a repair ended
@@ -1394,4 +1401,25 @@ data "google_service_account" "listed" {
   for_each   = local.listed_service_accounts
   project    = var.project_id
   account_id = split("@", each.value)[0]
+}
+
+# swarm-api's Day One environment (DAYONE-TF-2). GROUPS_AUTH is always
+# rendered (default "delegation", the live deployment's mode, so the live plan
+# shows this one new variable and no behaviour change). The console's App
+# setup values are rendered only once they mean something, so the live
+# deployment's environment gains nothing else:
+#   * SETUP_GITHUB_ORG when setup_github_org names an organisation;
+#   * SWARM_HOSTNAME and GITHUB_HOOKS_URL under enable_console_app_setup (the
+#     receiver's URL only while the receiver is deployed).
+# Unset, apps/swarm-api/swarm_api/settings.py explains each one's fallback.
+locals {
+  api_day_one_env = merge(
+    { GROUPS_AUTH = var.groups_auth },
+    var.setup_github_org == "" ? {} : { SETUP_GITHUB_ORG = var.setup_github_org },
+    var.enable_console_app_setup && var.frontend_hostname != "" ? { SWARM_HOSTNAME = var.frontend_hostname } : {},
+    # The receiver's deterministic run.app URL (main.tf says why), not its
+    # resource's `uri`: the receiver reads swarm-api's URL, so naming its
+    # resource here would be a dependency cycle.
+    var.enable_console_app_setup && local.github_hooks_serving ? { GITHUB_HOOKS_URL = "https://${local.github_hooks_name}-${data.google_project.this.number}.${var.region}.run.app" } : {},
+  )
 }

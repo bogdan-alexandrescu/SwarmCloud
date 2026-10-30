@@ -124,11 +124,6 @@ run "the_mcp_credentials_sweep_runs_every_ten_minutes_as_the_sweeper" {
     condition     = google_cloud_scheduler_job.mcp_credentials_sweep[0].attempt_deadline == "300s" && google_cloud_scheduler_job.mcp_credentials_sweep[0].retry_config[0].retry_count == 0
     error_message = "the sweep answers inside 300 s and is not retried: the next tick, ten minutes on, is the retry"
   }
-
-  assert {
-    condition     = strcontains(google_service_account.rollup_sweeper.description, "mcp-credentials-sweep") && length(google_service_account.rollup_sweeper.description) <= 256
-    error_message = "the sweeper account's description names every job that presents it, inside the provider's 256 characters"
-  }
 }
 
 # The switch on with no endpoint is refused at plan, never a job that calls
@@ -246,5 +241,32 @@ run "swarm_api_env_carries_the_mcp_egress_addresses" {
   assert {
     condition     = !contains(keys(local.service_env["swarm-scheduler"]), "MCP_EGRESS_ADDRESSES")
     error_message = "only swarm-api serves the addresses; no other service reads them"
+  }
+}
+
+# The rollup sweeper account is terraform/bootstrap's since DAYONE-BOOT-2
+# (platform_service_accounts.tf); modules/scheduler only reads it, so its
+# description is held on the root that writes it.
+run "the_sweeper_account_names_the_mcp_credentials_sweep" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  # terraform/bootstrap/state_bucket.tf imports the state bucket (DAYONE-BOOT-1);
+  # a mock provider cannot import.
+  override_resource {
+    target = google_storage_bucket.state
+  }
+
+  variables {
+    project_id           = "saga-agents-staging"
+    frontend_iap_members = ["domain:example.com"]
+  }
+
+  assert {
+    condition     = strcontains(google_service_account.rollup_sweeper.description, "mcp-credentials-sweep") && length(google_service_account.rollup_sweeper.description) <= 256
+    error_message = "the sweeper account's description names every job that presents it, inside the provider's 256 characters"
   }
 }

@@ -22,6 +22,13 @@ mock_provider "google" {
   source = "./mocks/google"
 }
 
+# terraform/bootstrap/state_bucket.tf imports the state bucket (DAYONE-BOOT-1):
+# a mock provider cannot import, so the bucket's provider values are the
+# override's and its configuration is still planned and asserted.
+override_resource {
+  target = google_storage_bucket.state
+}
+
 variables {
   project_id  = "saga-agents-staging"
   environment = "dev"
@@ -52,6 +59,7 @@ run "bootstrap_admits_oracle_api_and_grants_on_its_worker" {
   }
 
   variables {
+    frontend_iap_backends = ["swarm-ui-backend", "swarm-ui-ui-backend"]
     # deployer_admin is made only with the release deployer's WIF on, as the
     # owner's bootstrap apply has it (deployer_sa_admin.tftest.hcl).
     enable_github_wif       = true
@@ -123,6 +131,7 @@ run "infra_gives_u_or_9a0792_its_own_boundaries_and_admits_the_account" {
   }
 
   variables {
+    allowed_users = ["oracle-api@saga-agents-staging.iam.gserviceaccount.com"]
     tenants = {
       eng = {
         kind             = "group"

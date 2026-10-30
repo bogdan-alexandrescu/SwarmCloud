@@ -30,8 +30,8 @@
 #      Cloud Run revision that references a secret with no version FAILS TO
 #      START, so flipping the switch before this would take swarm-api and the
 #      scheduler down, not merely leave child tasks off;
-#   3. `enable_child_tasks = true`, `swarm_api_url` from `terraform output
-#      swarm_api_url`, apply.
+#   3. `enable_child_tasks = true`, apply. swarm-api's address is computed
+#      from the project number (main.tf `local.swarm_api_url`), not copied.
 #
 # AND NOT ANYWHERE BEFORE the measurement design §9 item 2 asks for: that a
 # tenant service account cannot read a Cloud Run execution's overrides
@@ -117,28 +117,6 @@ variable "state_via_api_tenants" {
   validation {
     condition     = alltrue([for t in var.state_via_api_tenants : can(regex("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", t))])
     error_message = "every state_via_api_tenants entry must be a tenant id (lowercase letters, digits and inner hyphens). \"*\" is not supported: list the tenants."
-  }
-}
-
-variable "swarm_api_url" {
-  description = <<-EOT
-    Base URL of the swarm-api Cloud Run service, for the SCHEDULER's
-    environment (SWARM_API_URL). The scheduler never calls swarm-api; it hands
-    this to every worker with a child path (scheduler.dispatch.worker_env), and
-    a worker with no SWARM_API_URL offers its agent no child path.
-
-    Declared rather than derived for quota_broker_url's reason: the scheduler's
-    environment is an input to the Cloud Run module and swarm-api's URL is an
-    output of it, a cycle terraform refuses to plan. Read it from
-    `terraform output swarm_api_url` after the first apply. The
-    `swarm_api_url_is_wired` check fails while it is stale.
-  EOT
-  type        = string
-  default     = ""
-
-  validation {
-    condition     = var.swarm_api_url == "" || startswith(var.swarm_api_url, "https://")
-    error_message = "swarm_api_url must be an https:// base URL, or empty."
   }
 }
 
@@ -235,22 +213,8 @@ locals {
   } : {}
 }
 
-check "swarm_api_url_is_wired" {
-  assert {
-    condition     = var.swarm_api_url == "" || var.swarm_api_url == module.cloud_run.service_urls["swarm-api"]
-    error_message = "swarm_api_url does not match the deployed swarm-api URL. A worker handed a stale one cannot submit children: every request answers api_unavailable. Run `terraform output swarm_api_url` and update tfvars."
-  }
-}
-
-check "child_tasks_have_an_address" {
-  assert {
-    condition     = !var.enable_child_tasks || var.swarm_api_url != ""
-    error_message = "enable_child_tasks is set but swarm_api_url is empty: the scheduler mints a nonce only for a worker it can also give swarm-api's address, so no attempt gets a child path. Set swarm_api_url from `terraform output swarm_api_url`."
-  }
-}
-
 output "swarm_api_url" {
-  description = "Paste into swarm_api_url in tfvars. See that variable for why this is a two-step."
+  description = "swarm-api's own uri, as Cloud Run reports it. Workers are handed main.tf's local.swarm_api_url, the deterministic URL of the same service."
   value       = module.cloud_run.service_urls["swarm-api"]
 }
 

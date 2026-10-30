@@ -31,6 +31,13 @@ mock_provider "google" {
   source = "./mocks/google"
 }
 
+# terraform/bootstrap/state_bucket.tf imports the state bucket (DAYONE-BOOT-1):
+# a mock provider cannot import, so the bucket's provider values are the
+# override's and its configuration is still planned and asserted.
+override_resource {
+  target = google_storage_bucket.state
+}
+
 variables {
   project_id  = "saga-agents-staging"
   environment = "dev"
@@ -144,6 +151,9 @@ run "bootstrap_forgets_every_grant_it_made_for_u_bogdan" {
 
   # Each `moved` lands on an address a `removed` forgets, and every `removed`
   # is `destroy = false`. A target no `removed` names is planned for destroy.
+  # The only `removed` blocks no `moved` lands on are the five platform
+  # service-account addresses terraform/bootstrap took over (DAYONE-BOOT-2):
+  # 33 for u-bogdan plus those 5.
   assert {
     condition = (
       toset([for m in regexall("(?m)^\\s*to\\s*=\\s*(\\S+)\\s*$", file("../../terraform/bootstrap/removed.tf")) : m[0]]) == toset([for m in regexall("(?ms)^removed \\{\\s*from\\s*=\\s*(\\S+)", file("../../terraform/bootstrap/removed.tf")) : m[0]]) &&
@@ -367,11 +377,23 @@ run "infra_forgets_every_instance_it_made_for_u_bogdan" {
 
   # Each `moved` lands on an address a `removed` forgets, and every `removed`
   # is `destroy = false`. A target no `removed` names is planned for destroy.
+  # The only `removed` blocks no `moved` lands on are the five platform
+  # service-account addresses terraform/bootstrap took over (DAYONE-BOOT-2):
+  # 33 for u-bogdan plus those 5.
   assert {
     condition = (
-      toset([for m in regexall("(?m)^\\s*to\\s*=\\s*(\\S+)\\s*$", file("../../terraform/infra/removed.tf")) : m[0]]) == toset([for m in regexall("(?ms)^removed \\{\\s*from\\s*=\\s*(\\S+)", file("../../terraform/infra/removed.tf")) : m[0]]) &&
-      length(regexall("(?m)^removed \\{", file("../../terraform/infra/removed.tf"))) == 33 &&
-      length(regexall("(?m)^\\s*destroy\\s*=\\s*false\\s*$", file("../../terraform/infra/removed.tf"))) == 33 &&
+      setunion(
+        toset([for m in regexall("(?m)^\\s*to\\s*=\\s*(\\S+)\\s*$", file("../../terraform/infra/removed.tf")) : m[0]]),
+        toset([
+          "module.iam.google_service_account.platform",
+          "module.iam.google_service_account.tick",
+          "google_service_account.verify",
+          "module.scheduler.google_service_account.schedule_tick",
+          "module.scheduler.google_service_account.rollup_sweeper",
+        ]),
+      ) == toset([for m in regexall("(?ms)^removed \\{\\s*from\\s*=\\s*(\\S+)", file("../../terraform/infra/removed.tf")) : m[0]]) &&
+      length(regexall("(?m)^removed \\{", file("../../terraform/infra/removed.tf"))) == 38 &&
+      length(regexall("(?m)^\\s*destroy\\s*=\\s*false\\s*$", file("../../terraform/infra/removed.tf"))) == 38 &&
       length(regexall("(?m)^\\s*destroy\\s*=\\s*true", file("../../terraform/infra/removed.tf"))) == 0 &&
       length(output.tenant_namespaces) > 0
     )

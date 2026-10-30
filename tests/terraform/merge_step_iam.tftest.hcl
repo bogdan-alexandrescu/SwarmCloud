@@ -31,6 +31,13 @@ mock_provider "google" {
   source = "./mocks/google"
 }
 
+# terraform/bootstrap/state_bucket.tf imports the state bucket (DAYONE-BOOT-1):
+# a mock provider cannot import, so the bucket's provider values are the
+# override's and its configuration is still planned and asserted.
+override_resource {
+  target = google_storage_bucket.state
+}
+
 variables {
   project_id = "saga-agents-staging"
 
@@ -83,11 +90,14 @@ run "infra_manages_no_account_beyond_the_platforms_and_the_workers" {
 
   # terraform/bootstrap grants the deployer serviceAccountAdmin on exactly
   # infra_managed. The retired accounts are not in it, so bootstrap's next
-  # apply drops the deployer's grant on any it still holds.
+  # apply drops the deployer's grant on any it still holds. swarm-discovery
+  # and swarm-doctor are platform accounts too: terraform/bootstrap creates
+  # them (DAYONE-BOOT-2) and infra deploys as them.
   assert {
     condition = output.infra_managed == sort([
       "swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler",
       "swarm-tick", "swarm-verify", "swarm-rollup-sweeper", "swarm-schedule-tick",
+      "swarm-discovery", "swarm-doctor",
       "swarm-agent-worker-eng", "swarm-agent-worker-research",
     ])
     error_message = "infra_managed is the platform accounts and one worker account per tenant, nothing else"

@@ -223,26 +223,20 @@ resource "google_pubsub_subscription_iam_member" "dlq_subscriber" {
 # tests/terraform/schedule_tick_identity.tftest.hcl reads every IAM resource
 # in terraform/ and fails on a second one.
 #
-# The account id is spelled in modules/service_account_ids, so
-# terraform/bootstrap grants the release deployer serviceAccountAdmin on it
-# (bootstrap/deployer_service_accounts.tf). NO create_ignore_already_exists,
-# for the reason modules/iam gives for swarm-tick (#334). The release creates
-# the account, and its deployer.tf actAs on it 403s until the owner applies
-# bootstrap's grant from main. Then the release is re-run (docs/ci.md, "A new
-# account exists before the release that adds it").
+# The account is terraform/bootstrap's (platform_service_accounts.tf,
+# DAYONE-BOOT-2, design Q7); this module reads it. The live account was
+# forgotten here, never destroyed (terraform/infra/removed.tf), and adopted by
+# bootstrap's gated import; its email and unique id did not change.
 #
-# The job itself is lane S4's (jobs.tf); this lane makes only the identity, so
-# the IAM change is held at dev-iam alone, with no job riding on it.
-resource "google_service_account" "schedule_tick" {
-  project      = var.project_id
-  account_id   = module.service_account_ids.schedule_tick_id
-  display_name = "Swarm Schedule Tick"
-  description  = "managed-by=swarm-terraform; OIDC identity of the schedule tick. swarm-api admits it to POST /v1/admin/schedules/tick only. run.invoker on swarm-api; no project roles."
+# The job itself is lane S4's (jobs.tf).
+data "google_service_account" "schedule_tick" {
+  project    = var.project_id
+  account_id = module.service_account_ids.schedule_tick_id
 }
 
 locals {
   # Built from the account id rather than read from `.email`, which a mock
-  # provider (tests/terraform) leaves unknown at plan, as rollup_sweeper_email
-  # is in jobs.tf.
-  schedule_tick_email = "${google_service_account.schedule_tick.account_id}@${var.project_id}.iam.gserviceaccount.com"
+  # provider (tests/terraform) fills with a random string, as rollup_sweeper_email
+  # is in jobs.tf; the reference orders every job after the read.
+  schedule_tick_email = "${data.google_service_account.schedule_tick.account_id}@${var.project_id}.iam.gserviceaccount.com"
 }
