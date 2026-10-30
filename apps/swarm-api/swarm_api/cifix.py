@@ -813,8 +813,13 @@ def _refuse_if_conflict_fix_live(store: Any, tenant_id: str, continuation: Conti
 
 def _same_failure(other: Mapping[str, Any], record: Mapping[str, Any]) -> bool:
     """Whether `other` (a live fix's `metadata.ci_fix`, or its claim) is on the
-    failure `record` names, by the head and run `record` carries."""
-    return all(other.get(key) == record[key] for key in ("head_sha", "run_id") if key in record)
+    failure `record` names: `record` carries both a head and a run and `other`
+    has the same two. A record that lacks either names no failure `_claim`
+    can answer (it takes no claim), so it is never the live fix's own failure
+    and `_refuse_if_ci_fix_live` refuses it beside any live fix (#2763)."""
+    keys = ("head_sha", "run_id")
+    return (all(key in record for key in keys)
+            and all(other.get(key) == record[key] for key in keys))
 
 
 def _refuse_if_ci_fix_live(store: Any, tenant_id: str, continuation: Continuation,

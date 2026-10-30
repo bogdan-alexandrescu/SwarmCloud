@@ -120,6 +120,31 @@ def test_another_run_at_the_same_head_beside_a_live_fix_is_refused(fix_client, d
     assert len(_claims(db)) == 1
 
 
+@pytest.mark.parametrize("missing", [("head_sha", "run_id"), ("run_id",), ("head_sha",)],
+                         ids=["no-head-no-run", "head-only", "run-only"])
+def test_a_request_without_a_head_or_a_run_beside_a_live_fix_is_refused(
+    fix_client, db, missing
+):
+    """A record lacking a head or a run names no failure `_claim` answers (it
+    takes no claim), so it is never the live fix's own failure: the gate
+    refuses it beside the live fix. Before the review fix it got 201 and a
+    second fix (#2763)."""
+    original, live = _live_fix(fix_client, db)
+    payload = _red_run_payload(original, attempt=2)
+    for key in missing:
+        del payload["metadata"]["ci_fix"][key]
+
+    # MUTATION: `_same_failure` over only the keys the record carries -- 201.
+    second = _submit(fix_client, payload)
+
+    assert second.status_code == 409, second.text
+    assert second.json()["code"] == cifix.CiFixLaneOwnsPr.code
+    assert second.json()["detail"]["task_id"] == live["id"]
+    assert second.json()["detail"]["ci_fix"] is True
+    assert [t["id"] for t in _ci_fix_tasks(db)] == [live["id"]], "a second fix task was made"
+    assert len(_claims(db)) == 1
+
+
 def test_the_same_failure_is_still_answered_ci_fix_in_flight(fix_client, db, monkeypatch):
     """A re-delivery of the very failure the live fix is on is `_claim`'s:
     the new gate passes over it, so its answer is unchanged."""
