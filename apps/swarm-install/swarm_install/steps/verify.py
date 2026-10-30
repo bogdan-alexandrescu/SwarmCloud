@@ -7,7 +7,7 @@
 | `verify.digests` | `other.verify-digests` | every service serves 100 % on its latest ready revision, and that revision's **digest** is the release's | 28: labels lie; a pinned revision served 0 % |
 | `verify.reconciler-jobs` | (lesson 30) | the reconciler may list Jobs in every tenant namespace, namespaced, by email and by uniqueId | 30: it listed Jobs at cluster scope and saw nothing |
 | `verify.firestore-migrations` | `other.firestore-migrations` | the state and the install record are at this engine's schema | |
-| `verify.end-to-end` | `other.verify-end-to-end`, `other.verify-row`, `other.verify-gke`, `other.verify-live-browser`, `other.verify-code-intelligence` | seven runs on the NEW deployment: a single task and a workflow from the plugin and from the console, each to a pull request, and three check runs (a task on GKE, a live-browser task, a code-intelligence read) | 18: the plugin signs in with the Desktop client; 43: every run's task cloned and pushed with an App installation token (below) |
+| `verify.end-to-end` | `other.verify-end-to-end`, `other.verify-row`, `other.verify-gke`, `other.verify-live-browser`, `other.verify-code-intelligence` | seven runs on the NEW deployment: a single task and a workflow from the plugin and from the console, each to a pull request, and three check runs (a task on GKE, a live-browser task, a code-intelligence read) | 18: the plugin signs in with the Desktop client; 43: no run's task cloned or pushed with a personal access token; the console's used an App installation token (below) |
 
 **The new deployment, never the person's current context.** The step uses
 the engine's own swarm context, which `edge.desktop-client` (stage 2) wrote
@@ -42,7 +42,10 @@ result summary (`forge_credential`: `kind`, and `source`, the secret's
 NAME; never a value), and swarm-api serves that summary to anyone who may
 read the task. The step reads it for every task a run is made of (a
 workflow's every step) through `swarm result <task> --json`, and passes
-only when each says `app_installation`; any other kind, or none recorded,
+only when each console run's task says `app_installation` (a service
+submission, minted an installation token) and each plugin run's says
+`app_installation` or `app_user` (the person's own submission on their own
+GitHub connection; BGD, 2026-10-30); any other kind, or none recorded,
 fails the step naming the run, the task, the kind and the secret.
 
 **Only the platform's own** (`swarm-*`) Scheduler jobs and Cloud Run services
@@ -128,6 +131,14 @@ PLATFORM_PREFIX = "swarm-"
 #: Lesson 43: the only credential kind a verification run may clone and push
 #: with, as the worker records it (`result_summary.forge_credential.kind`).
 APP_INSTALLATION = "app_installation"
+#: The person's own GitHub App user token (BGD, 2026-10-30, "Person's token
+#: for plugin runs"): the plugin's runs are the person's own submissions, so
+#: they clone and push on the person's connection; only a service
+#: submission (the console's runs) is minted an installation token.
+APP_USER = "app_user"
+#: The kinds each surface's runs may clone and push with.
+ACCEPTED_KINDS = {"plugin": frozenset({APP_INSTALLATION, APP_USER}),
+                  "console": frozenset({APP_INSTALLATION})}
 
 #: The kinds the worker writes (`agent_worker.secrets.FORGE_CREDENTIAL_KINDS`);
 #: a run is named by one of these, by "unrecorded", or by "unrecognised" --
@@ -937,10 +948,11 @@ class EndToEndStep(_Base):
         "its commit and a symbol). Every run goes to the NEW deployment through the engine's own swarm "
         "context named after the hostname; the person's current context is never switched. The plugin's "
         "runs sign in with the deployment's Desktop client, as a teammate's will (lesson 18). The console's "
-        "two are started in Admin › Setup and read from the install record. Every run must clone and push "
-        "with a GitHub App installation token, never a personal access token (lesson 43): the worker "
-        "records each task's credential kind in its result summary (`forge_credential`), and the step "
-        "fails naming any task whose kind is not app_installation."
+        "two are started in Admin › Setup and read from the install record. No run may clone or push with "
+        "a personal access token (lesson 43): the worker records each task's credential kind in its result "
+        "summary (`forge_credential`). The console's runs are service submissions and must use a GitHub App "
+        "installation token; the plugin's are the person's own and may use their own App user token "
+        "(app_user). The step fails naming any task whose kind is not one of these."
     )
 
     def __init__(self, gcp: Callable[[], VerifyGcp], ask: Ask, *, runs: Runs | None = None,
@@ -961,13 +973,12 @@ class EndToEndStep(_Base):
         cached = getattr(ctx.state, "console", None) or {}
         failed = ctx.outputs.get("verify_failed") or {}
         # Re-read on every poll, since no earlier step reads them: the
-        # console's verify_runs document, the first workspace's (the first
-        # team's, or for one person the personal workspace's; an older
-        # swarm-api wrote the ids there), `finished`, and every document
-        # already cached.
-        tenant = str(ctx.outputs.get("verify_tenant") or "")
+        # console's verify_runs document, for one person the personal
+        # workspace's (an older swarm-api wrote the ids there), `finished`,
+        # and every document already cached. A team's document is not a
+        # console document (audit 3, A2) and never held the ids.
         one_person = (ctx.outputs.get("sizing") or {}).get("mode") == "individual"
-        first = [PERSONAL] if one_person else ([f"teams/{tenant}"] if tenant else [])
+        first = [PERSONAL] if one_person else []
         names = dict.fromkeys([VERIFY_RUNS, *first, "finished", *sorted(cached)])
         found_ids: dict[str, str] = {}
         for name in names:
@@ -1054,6 +1065,7 @@ class EndToEndStep(_Base):
         repository = str(ctx.outputs.get("verify_repository") or "")
         tenant = str(ctx.outputs.get("verify_tenant") or "")
         done, problems, prs, checks, waiting = 0, [], {}, {}, []
+        kinds: dict[str, str] = {}
         for surface, shape in RUNS:
             key = f"{surface}-{shape}"
             run_id = ids[key]
@@ -1071,12 +1083,16 @@ class EndToEndStep(_Base):
             elif check is None and not found.pull_request:
                 problems.append(f"{key} ({run_id}) finished without a pull request")
             else:
-                wrong = [use for use in found.credentials if use.kind != APP_INSTALLATION]
+                accepted = ACCEPTED_KINDS[surface]
+                wrong = [use for use in found.credentials if use.kind not in accepted]
                 if wrong or not found.credentials:
                     said = "; ".join(use.words() for use in wrong) or "no task's credential was read"
-                    problems.append(f"{key} ({run_id}) did not clone and push with a GitHub App "
-                                    f"installation token (lesson 43): {said}")
+                    wanted = ("a GitHub App installation token" if surface == "console"
+                              else "a GitHub App installation token or the person's own App user token")
+                    problems.append(f"{key} ({run_id}) did not clone and push with {wanted} "
+                                    f"(lesson 43): {said}")
                     continue
+                kinds[key] = ",".join(sorted({use.kind for use in found.credentials}))
                 if check is not None:
                     proof, problem = check_proof(key, run_id, check, found, seen.get(key), repository, tenant)
                     if problem:
@@ -1098,10 +1114,11 @@ class EndToEndStep(_Base):
             return Observation(WAITING, f"{done} of {len(RUNS)} runs have passed; waiting for "
                                         + ", ".join(waiting))
         return Observation(MET, "four runs, each to a pull request, and the GKE, live-browser and "
-                                "code-intelligence checks, each task cloning and pushing with a GitHub App "
-                                "installation token (lesson 43)",
+                                "code-intelligence checks; the console's runs cloned and pushed with a GitHub "
+                                "App installation token, the plugin's with the App's installation or the "
+                                "person's own App user token (lesson 43)",
                            {"verify_pull_requests": prs, "verify_checks": checks,
-                            "verify_forge_credential": {key: APP_INSTALLATION for key in (*prs, *checks)}})
+                            "verify_forge_credential": {key: kinds[key] for key in (*prs, *checks)}})
 
     def plan(self, ctx: Any) -> Plan:
         return Plan("on the new deployment's own swarm context: a single task and a workflow from the plugin, "

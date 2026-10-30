@@ -72,7 +72,7 @@ from .. import install_record as ir
 from .. import roles
 from .. import setup_links as sl
 from .. import workspaces as ws
-from ..access import write_workspace_grants
+from ..access import record_workspace_installation, write_workspace_grants
 from ..auth import TENANT_HEADER, AuthContext, bearer_tokens, require_admin
 from ..codec import console_origin
 from ..deps import AppContext, admin_auth, current_auth, get_context
@@ -391,8 +391,17 @@ def installation_repositories(flow: ManifestFlow, github: GitHubSetupApi,
         names += [str(r["full_name"]) for r in rows]
         if len(rows) < 100:
             break
+    kind = (found.get("account") or {}).get("type")
     return {"installation_id": found["id"], "account": org,
+            "owner_type": kind if isinstance(kind, str) else None,
             "selection": found.get("repository_selection"), "repositories": sorted(set(names))}
+
+
+def _grant_held(grant: dict[str, Any]) -> bool:
+    """Whether a granted grant is fully on the submission path: enforced,
+    and its App installation recorded for the workspace when it names one."""
+    return bool(grant.get("enforced_at")) and (
+        not grant.get("installation_id") or bool(grant.get("installation_recorded_at")))
 
 
 def enforce_grant(db: Any, tenant: str, grant: dict[str, Any], *, now: datetime
@@ -402,13 +411,29 @@ def enforce_grant(db: Any, tenant: str, grant: dict[str, Any], *, now: datetime
     `SubmissionService._grant_mode` honours for everyone in the workspace, so
     a teammate's first task on these repositories is not refused under
     `repository_grants_enforced`. Marked `enforced_at` once written; a grant
-    recorded before this existed is written on its next read."""
-    if grant.get("state") != "granted" or not grant.get("repositories") or grant.get("enforced_at"):
+    recorded before this existed is written on its next read.
+
+    The App installation it came from is recorded as the workspace's own
+    `forge_orgs` document (`access.record_workspace_installation`; audit 3,
+    A4), so a service submission for this workspace -- the first team's
+    smoke, the console's verification runs -- is minted an installation
+    token (`SubmissionService._app_installed`). Marked
+    `installation_recorded_at`; keyed by `tenant` alone (invariant 9)."""
+    if grant.get("state") != "granted" or not grant.get("repositories") or _grant_held(grant):
         return grant
-    write_workspace_grants(db, tenant, list(grant["repositories"]),
-                           mode=str(grant.get("mode") or "write"), by=str(grant.get("by") or ""),
-                           at=now, source="admin-setup")
-    return {**grant, "enforced_at": now}
+    if not grant.get("enforced_at"):
+        write_workspace_grants(db, tenant, list(grant["repositories"]),
+                               mode=str(grant.get("mode") or "write"), by=str(grant.get("by") or ""),
+                               at=now, source="admin-setup")
+        grant = {**grant, "enforced_at": now}
+    installation = grant.get("installation_id")
+    if installation and not grant.get("installation_recorded_at"):
+        record_workspace_installation(
+            db, tenant, owner=str(grant.get("account") or ""), installation_id=installation,
+            owner_type=grant.get("owner_type"), selection=grant.get("selection"),
+            by=str(grant.get("by") or ""), at=now)
+        grant = {**grant, "installation_recorded_at": now}
+    return grant
 
 
 def ensure_grant(record: ir.InstallRecord, team_id: str, team: dict[str, Any], *,
@@ -427,7 +452,7 @@ def ensure_grant(record: ir.InstallRecord, team_id: str, team: dict[str, Any], *
     tenant = str(team.get("workspace") or team_id)
     grant = dict(team.get("grant") or {})
     if grant.get("state") == "granted" and grant.get("repositories"):
-        if not grant.get("enforced_at"):
+        if not _grant_held(grant):
             grant = enforce_grant(db, tenant, grant, now=now)
             record.write(path, {"grant": grant})
         return grant
@@ -731,6 +756,14 @@ def personal_row(request: Request, ctx: AppContext, record: ir.InstallRecord,
 
 
 def _as_datetime(value: Any) -> datetime | None:
+    """A datetime, an ISO string, or epoch seconds (int or float): the engine
+    writes `lease.heartbeat`, `hand_off_at`, `ready_at` and `stages[].at` as
+    epoch seconds (`swarm_install.lease`, `state`; audit 3, A7)."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     if isinstance(value, str):

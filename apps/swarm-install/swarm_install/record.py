@@ -71,7 +71,9 @@ WRITERS: dict[str, tuple[str, frozenset[str]]] = {
     ),
     # Fields keyed per account label: owner, link_hash, link_expires, signed_in_at.
     "swarm-install/{env}/console/accounts": (SWARM_API, frozenset()),
-    "swarm-install/{env}/console/teams/{id}": (
+    # A collection under the env document: `console/teams/<id>` has five
+    # segments, which real Firestore refuses as a document (audit 3, A2).
+    "swarm-install/{env}/teams/{id}": (
         SWARM_API,
         frozenset({"group", "workspace", "first_admin", "invites", "progress", "smoke", "grant"}),
     ),

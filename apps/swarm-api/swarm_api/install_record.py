@@ -3,8 +3,9 @@
 Firestore collection `swarm-install`, document `<env>` and its
 subcollections. **Every document has exactly one writer.** The engine (the
 `swarm install` CLI) writes `swarm-install/<env>`; swarm-api reads it and never
-writes it. swarm-api writes the console's documents and `health/latest` (on
-behalf of `swarm-doctor`), and nothing else under the collection.
+writes it. swarm-api writes the console's documents, the team documents
+(`teams/<id>`) and `health/latest` (on behalf of `swarm-doctor`), and
+nothing else under the collection.
 
 `SWARM_API_DOCUMENTS` restates swarm-api's rows of `swarm_install.record.WRITERS`
 (DAYONE-ENGINE-1). It is restated, not imported, because swarm-api's image does
@@ -30,7 +31,9 @@ SWARM_API_DOCUMENTS: dict[str, frozenset[str]] = {
         {"state_hash", "id", "slug", "client_id", "installed_on", "secrets_written_at",
          "self_check"}),
     "swarm-install/{env}/console/accounts": frozenset(),
-    "swarm-install/{env}/console/teams/{id}": frozenset(
+    #: A collection under the env document: `console/teams/<id>` has five
+    #: segments, which real Firestore refuses as a document (audit 3, A2).
+    "swarm-install/{env}/teams/{id}": frozenset(
         {"group", "workspace", "first_admin", "invites", "progress", "smoke", "grant"}),
     "swarm-install/{env}/console/finished": frozenset({"at", "by"}),
     #: A one-person install's first workspace (decision 7, DAYONE-SETUP-API-3):
@@ -79,8 +82,8 @@ def _template(path: str, env: str) -> str:
     if not path.startswith(prefix):
         raise RecordFieldRefused(f"{path!r} is not under {COLLECTION}/{env}")
     rest = path[len(prefix):]
-    if rest.startswith("console/teams/") and rest.count("/") == 2:
-        return "swarm-install/{env}/console/teams/{id}"
+    if rest.startswith(f"{TEAMS}/") and rest.count("/") == 1:
+        return "swarm-install/{env}/teams/{id}"
     template = "swarm-install/{env}/" + rest
     if template not in SWARM_API_DOCUMENTS:
         raise RecordFieldRefused(f"swarm-api writes no document {path!r}")
@@ -114,8 +117,11 @@ class InstallRecord:
     def console_path(self, name: str) -> str:
         return f"{COLLECTION}/{self.env}/console/{name}"
 
+    def teams_collection(self) -> str:
+        return f"{COLLECTION}/{self.env}/{TEAMS}"
+
     def team_path(self, team_id: str) -> str:
-        return self.console_path(f"{TEAMS}/{team_id}")
+        return f"{self.teams_collection()}/{team_id}"
 
     def personal_path(self) -> str:
         return self.console_path(PERSONAL)
@@ -140,7 +146,7 @@ class InstallRecord:
     def teams(self) -> list[tuple[str, dict[str, Any]]]:
         """Every team document, oldest first (`progress.created_at`)."""
         rows = [(snap.id, dict(snap.to_dict() or {}))
-                for snap in self._db.collection(self.console_path(TEAMS)).stream()]
+                for snap in self._db.collection(self.teams_collection()).stream()]
         return sorted(rows, key=lambda row: (str((row[1].get("progress") or {})
                                                  .get("created_at") or ""), row[0]))
 
