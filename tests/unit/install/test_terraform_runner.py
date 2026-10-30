@@ -148,8 +148,9 @@ def test_every_apply_after_pass1_impersonates_deployer(tmp_path: Path) -> None:
         run(tmp_path / pass_name, pass_name, exec_)
         applies = exec_.env_of("apply")
         assert len(applies) == 1, pass_name
-        if pass_name == "bootstrap-1":
-            assert IMPERSONATE_ENV not in applies[0], "bootstrap pass 1 creates the deployer: it runs as the person"
+        if pass_name in ("bootstrap-1", "bootstrap-2"):
+            # Pass 1 creates the deployer; pass 2 applies IAP membership, which the deployer cannot (N4).
+            assert IMPERSONATE_ENV not in applies[0], f"{pass_name} runs as the person"
         else:
             assert applies[0][IMPERSONATE_ENV] == deployer_email(PROJECT), (
                 f"{pass_name} must apply as swarm-tf-deployer (lessons 22, 23)"
