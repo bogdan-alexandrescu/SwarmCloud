@@ -201,14 +201,27 @@ def _block(text: str, header: str) -> str:
     return found.group(0)
 
 
-@pytest.mark.parametrize("path,header", [
-    # Grants serviceAccountAdmin on each platform account by a literal resource name.
-    ("deployer_service_accounts.tf", 'resource "google_service_account_iam_member" "deployer_admin"'),
-    # Names serviceAccount:swarm-api@... by a string in the account's policy.
-    ("qa_identity.tf", 'resource "google_service_account_iam_policy" "qa_identity"'),
+def _platform_account_resources() -> list[str]:
+    # Every account bootstrap_platform names is made by one of these resources
+    # (service_account_ids' bootstrap_platform: the platform map plus tick,
+    # verify, schedule_tick, rollup_sweeper, discovery and doctor).
+    text = (REPO / "terraform" / "bootstrap" / "platform_service_accounts.tf").read_text()
+    found = re.findall(r'^resource "google_service_account" "([a-z_]+)"', text, flags=re.M)
+    assert {"platform", "tick", "doctor"} <= set(found), found
+    return [f"google_service_account.{name}" for name in found]
+
+
+@pytest.mark.parametrize("path,header,needs", [
+    # Grants serviceAccountAdmin on each of bootstrap_platform's accounts by a literal resource name.
+    ("deployer_service_accounts.tf", 'resource "google_service_account_iam_member" "deployer_admin"', None),
+    # Names serviceAccount:swarm-api@... (one of the platform map's) by a string in the account's policy.
+    ("qa_identity.tf", 'resource "google_service_account_iam_policy" "qa_identity"',
+     ["google_service_account.platform"]),
 ])
-def test_grants_naming_platform_accounts_wait_for_them(path: str, header: str) -> None:
+def test_grants_naming_platform_accounts_wait_for_them(path: str, header: str, needs: list[str] | None) -> None:
     block = _block((REPO / "terraform" / "bootstrap" / path).read_text(), header)
     deps = re.search(r"depends_on\s*=\s*\[([^\]]*)\]", block)
     assert deps, f"{header} declares no depends_on, so a first apply can grant before the account exists"
-    assert "google_service_account.platform" in deps.group(1), header
+    listed = set(re.findall(r"google_service_account\.[a-z_]+", deps.group(1)))
+    missing = sorted(set(needs or _platform_account_resources()) - listed)
+    assert not missing, f"{header} can grant before these accounts exist: {missing}"
