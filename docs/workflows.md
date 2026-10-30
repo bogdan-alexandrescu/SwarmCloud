@@ -1220,6 +1220,12 @@ task in the caller's own tenant, the message names that task and the pull
 request it recorded, says whether it was merged or closed, and suggests
 `continues_task` or the default branch. Another tenant's task is never named.
 
+Like every new refusal, it ships **report-only** (`swarm_api/refusals.py`).
+While `REFUSAL_REPOSITORY_REF_NOT_FOUND` is unset or `off`, the refusal is
+logged as `refusal report-only code=repository_ref_not_found` and the
+submission is admitted, as before. Set the switch to `on` (terraform's
+`api_refusals` map) once that log shows only refs that really were gone.
+
 A full 40-character sha is never asked about, because the worker fetches it
 by sha. A `continues_task`, `merge_pr` or `publish_to_pr` supplies its own
 ref and refuses a `repository_ref` beside it, so none of those is asked

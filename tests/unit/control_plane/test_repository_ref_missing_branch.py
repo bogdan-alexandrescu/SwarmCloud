@@ -47,6 +47,8 @@ FULL = "b7bda42e" + "0123456789abcdef" * 2
 # The shape `new_id("task")` mints: a branch `swarm/<this>` names a task.
 OWN_TASK = "task_" + "77d63ca81cbb423ba839"
 OTHER_TASK = "task_" + "0123456789abcdef0123"
+#: `refusals.env_name("repository_ref_not_found")`.
+SWITCH = "REFUSAL_REPOSITORY_REF_NOT_FOUND"
 
 
 class FakeTokens:
@@ -348,6 +350,28 @@ def test_no_token_is_printed(make_client, db, caplog):
     assert forge.tokens and set(forge.tokens) == {forge_tokens.value}
     for text in (refused.text, admitted.text, caplog.text):
         assert forge_tokens.value not in text
+
+
+def test_off_the_refusal_is_logged_and_the_submission_admitted(make_client, db, caplog,
+                                                                  monkeypatch):
+    """A new refusal ships report-only (refusals.py): with its switch unset the
+    missing branch is logged under its code and the workflow goes on."""
+    monkeypatch.delenv(SWITCH, raising=False)
+    caplog.set_level(logging.WARNING, logger="swarm_api.refusals")
+    client = make_client(forge=FakeForge(branches={"main"}))
+
+    response = _workflow(client, MISSING)
+
+    assert response.status_code == 201, response.text
+    assert "code=repository_ref_not_found" in caplog.text
+    assert len(_stored(db)) == 1
+
+
+@pytest.fixture(autouse=True)
+def _switched_on(monkeypatch):
+    """The refusal this file is about, switched on as `REFUSAL_<CODE>=on`
+    turns it on in a deployment; the test above unsets it."""
+    monkeypatch.setenv(SWITCH, "on")
 
 
 @pytest.fixture(autouse=True)

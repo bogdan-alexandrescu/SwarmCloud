@@ -2039,7 +2039,9 @@ class SubmissionService:
         failed in the clone. Asked here with the slot `forge.resolve_forge_slot`
         picks for `person` -- the tenant's own read, as `_named_pull` -- and
         refused with `RepositoryRefNotFound` only when GitHub says no such
-        branch, no such tag, AND reads the repository itself.
+        branch, no such tag, AND reads the repository itself -- and only while
+        the `repository_ref_not_found` switch is on (refusals.py); off, the
+        refusal is logged and the submission admitted.
 
         FAILS OPEN. No forge reader or credential, 401/403, a timeout, a 5xx,
         a rate limit or an unreadable repository admit as before: the clone
@@ -2097,13 +2099,15 @@ class SubmissionService:
                 extra={"tenant_id": tenant.tenant_id},
             )
             return
-        raise repository_ref_not_found(
+        # A new refusal ships report-only (refusals.py): off, it is logged and
+        # the submission goes on, as before this check.
+        refusals.refuse(repository_ref_not_found(
             ref, f"{owner}/{repo}",
             task_id=task.id if task is not None else None,
             pull_request=pull_request, pull_state=pull_state,
             default_branch=self._registered_base(tenant.tenant_id, repository_url)
             or default_branch,
-        )
+        ))
 
     @staticmethod
     def _step_dispatch(
