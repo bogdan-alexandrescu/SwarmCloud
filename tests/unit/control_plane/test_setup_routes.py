@@ -677,6 +677,26 @@ def test_verify_runs_wait_for_a_granted_repository(setup_client, db, github) -> 
     assert f"swarm-install/{ENV}/console/verify_runs" not in db.docs
 
 
+def test_an_installation_with_no_repository_is_read_again_until_one_lands(
+        setup_client, db, github, pool, runs) -> None:
+    """An installation that covers no repository yet (a new organisation) is
+    not a grant: the page reads it again, and once a repository is added the
+    grant lands and the smoke starts."""
+    install_app(db, github, repositories=())
+    team = create_team(setup_client).json()["team"]
+    pool.accounts.append({"account_id": f"{team}:pool-1", "owner_tenant": team,
+                          "label": "pool-1"})
+    row = page_team(setup_client, team)
+    assert row["grant"]["state"] == "waiting_for_repositories"
+    assert row.get("smoke") is None and runs.tasks == []
+    github.repositories = [f"{ORG}/demo"]
+    row = page_team(setup_client, team)
+    assert row["grant"]["state"] == "granted"
+    assert team_doc(db, team)["grant"]["repositories"] == [f"{ORG}/demo"]
+    assert row["smoke"]["state"] == "running"
+    assert runs.tasks[0]["repository"] == f"{ORG}/demo"
+
+
 class _Submitted:
     def __init__(self, ident: str) -> None:
         self.id = ident
