@@ -3206,7 +3206,8 @@ review**, or **the merge credential**.
     `attribute.job_workflow_ref` = `<repo>/.github/workflows/<file>@refs/heads/main`
     for exactly the files that authenticate as it (`release.yml`,
     `application.yml`, `terraform.yml`, `security.yml`,
-    `iam-refusal-probe.yml` and, since 2026-10-08, `hotfix.yml`;
+    `iam-refusal-probe.yml`, since 2026-10-08 `hotfix.yml` and, since
+    2026-10-30, `publish-release.yml`;
     `terraform/bootstrap/wif.tf`
     `deployer_workflows`), so a workflow added later is refused whatever it
     grants itself.

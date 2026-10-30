@@ -53,7 +53,8 @@ locals {
   # infrastructure, infrastructure-iam, deploy; hotfix.yml images,
   # promote, infrastructure, deploy; application.yml
   # build; terraform.yml plan; security.yml images (scheduled);
-  # iam-refusal-probe.yml probe (owner-dispatched).
+  # iam-refusal-probe.yml probe (owner-dispatched); publish-release.yml
+  # publish (dispatched, behind the `release` environment's reviewer).
   deployer_workflows = [
     "release.yml",
     # The hotfix lane (owner decision 2026-10-08, observer proposal H;
@@ -65,6 +66,15 @@ locals {
     "terraform.yml",
     "security.yml",
     "iam-refusal-probe.yml",
+    # Publishing a SwarmCloud release (BGD 2026-10-30, "Move publishing into
+    # CI now"; DAYONE-RELEASE-CI, docs/runbooks/release.md). Dispatch-only and
+    # main-only: its `check` job refuses any other ref. Its `publish` job waits
+    # in the GitHub environment `release`, which has a required reviewer. In
+    # swarmcloud-prod this identity holds only the three roles
+    # `scripts/release-home.sh --ci-publisher` grants (artifactregistry.writer
+    # on the repository, storage.objectAdmin on the bucket, cloudkms
+    # signerVerifier on the cosign key); nothing at project level.
+    "publish-release.yml",
   ]
 
   github_principals = var.enable_github_wif ? {

@@ -606,6 +606,7 @@ HOSTED_JOBS: dict[str, str] = {
     "hotfix.yml:infrastructure": CLOUD,
     "hotfix.yml:deploy": CLOUD,
     "iam-refusal-probe.yml:probe": CLOUD,
+    "publish-release.yml:publish": CLOUD,
     "release.yml:build": CLOUD,
     "release.yml:promote": CLOUD,
     "release.yml:infrastructure": CLOUD,

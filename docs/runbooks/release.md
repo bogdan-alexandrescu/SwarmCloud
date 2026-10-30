@@ -47,6 +47,17 @@ The release home is project `swarmcloud-prod`: images in
 2. In the repository's settings, create the environment `release`: a required
    reviewer (BGD), and deployment branches limited to `main`.
 
+3. Let the deployer's trust admit the workflow. `publish` authenticates as
+   `vars.GCP_DEPLOY_SA` through `attribute.job_workflow_ref`, and the deployer
+   trusts only the files in `terraform/bootstrap/wif.tf` `deployer_workflows`;
+   until `publish-release.yml` is applied there, its auth step fails with
+   `Permission 'iam.serviceAccounts.getAccessToken' denied`, having published
+   nothing. The bootstrap root is applied by a person, on BGD's yes, with
+   [deployer-trust-pin.md](deployer-trust-pin.md): the plan shows one member
+   added, `deployer_wif["publish-release.yml@refs/heads/main"]`, and
+   `scripts/verify-deployer-trust.sh` then ends `checked 7 members, all pinned
+   to workflow files`.
+
 ## Each release
 
 1. Pick the commit: a main commit whose `release` run succeeded. The run must
