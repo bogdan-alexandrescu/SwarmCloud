@@ -1,8 +1,8 @@
 """Stage 14, verify (DAYONE-ENGINE-4; design §4, D3, D26; lessons 18, 28,
 30, 38, 43; manifest `other.verify-row`, `other.release-kubernetes-bundle`).
 
-On fakes, with no credentials: every Scheduler target is called as its job
-calls it and must answer 2xx; what a service serves is read from its
+On fakes, with no credentials: every platform Scheduler job is judged from
+the Scheduler API and its target's invoker binding, and no target is called; what a service serves is read from its
 revision's digest, never a label; the reconciler may list Jobs per tenant
 namespace; the console's verify row is written with its countdown; four runs
 each reach a pull request, read from what the real `swarm` CLI prints, the
@@ -20,12 +20,14 @@ import io
 import json
 import secrets
 from collections.abc import Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from swarm_install.exitcodes import MET, UNMET, WAITING, ExitCode
+from swarm_install import record
 from swarm_install.record import InstallRecord, engine_document
 from swarm_install import swarm_context
 from swarm_install.steps import cluster, verify
@@ -48,10 +50,20 @@ class VerifyFakeGcp(FakeGcp):
         self.jobs: list[dict[str, Any]] = []
         self.services: list[dict[str, Any]] = []
         self.revisions: dict[str, dict[str, Any]] = {}
+        self.run_services_list: list[dict[str, Any]] = []
+        self.policies: dict[str, dict[str, Any]] = {}
 
     def scheduler_jobs(self, project: str, region: str) -> list[dict[str, Any]]:
         self._call("scheduler_jobs", project, region)
         return list(self.jobs)
+
+    def run_services(self, project: str, region: str) -> list[dict[str, Any]]:
+        self._call("run_services", project, region)
+        return list(self.run_services_list)
+
+    def run_iam_policy(self, name: str) -> dict[str, Any]:
+        self._call("run_iam_policy", name)
+        return json.loads(json.dumps(self.policies.get(name) or {"etag": "e0"}))
 
     def knative_services(self, project: str, region: str) -> list[dict[str, Any]]:
         self._call("knative_services", project, region)
@@ -66,23 +78,36 @@ class VerifyFakeGcp(FakeGcp):
         return {"email": email, "uniqueId": RECONCILER_UID}
 
 
-class FakeMinter:
-    def __init__(self) -> None:
-        self.minted: list[tuple[str, str, bool]] = []
-        self.tokens: list[str] = []
+SCHEDULER_URL = "https://swarm-scheduler-abc123-uc.a.run.app"
+SCHEDULER_STABLE_URL = f"https://swarm-scheduler-123456789.{REGION}.run.app"
+RECONCILER_URL = "https://swarm-reconciler-abc123-uc.a.run.app"
+SCHEDULER_AUDIENCE = "https://swarm-scheduler.dev.swarm.internal"
+DOCTOR = cluster.account_email(PROJECT, "swarm-doctor")
+DOCTOR_JOB = f"projects/{PROJECT}/locations/{REGION}/jobs/swarm-doctor"
 
-    def generate_id_token(self, service_account: str, audience: str, *, include_email: bool) -> str:
-        self.minted.append((service_account, audience, include_email))
-        self.tokens.append(secrets.token_hex(16))
-        return self.tokens[-1]
+
+def _run_service(name: str, url: str, *more: str) -> dict[str, Any]:
+    """A Cloud Run v2 service as `services.list` answers it."""
+    return {"name": f"projects/{PROJECT}/locations/{REGION}/services/{name}", "uri": url, "urls": [url, *more]}
+
+
+def _invokers(*members: str, role: str = "roles/run.invoker") -> dict[str, Any]:
+    return {"etag": "e1", "bindings": [{"role": role, "members": list(members)}]}
 
 
 def _job(name: str, uri: str, *, account: str, audience: str | None = None, state: str = "ENABLED",
-         headers: dict[str, str] | None = None) -> dict[str, Any]:
-    oidc = {"serviceAccountEmail": account, **({"audience": audience} if audience else {})}
-    return {"name": f"projects/{PROJECT}/locations/{REGION}/jobs/{name}", "state": state,
-            "httpTarget": {"uri": uri, "httpMethod": "POST", "headers": headers or {}, "oidcToken": oidc,
-                           "body": base64.b64encode(b"{}").decode()}}
+         headers: dict[str, str] | None = None, oauth: bool = False,
+         last: dict[str, Any] | None = None) -> dict[str, Any]:
+    token = ({"oauthToken": {"serviceAccountEmail": account,
+                             "scope": "https://www.googleapis.com/auth/cloud-platform"}} if oauth else
+             {"oidcToken": {"serviceAccountEmail": account, **({"audience": audience} if audience else {})}})
+    job = {"name": f"projects/{PROJECT}/locations/{REGION}/jobs/{name}", "state": state,
+           "httpTarget": {"uri": uri, "httpMethod": "POST", "headers": headers or {}, **token,
+                          "body": base64.b64encode(b"{}").decode()}}
+    if last is not None:
+        job["lastAttemptTime"] = "2026-10-30T09:00:00Z"
+        job["status"] = last
+    return job
 
 
 def _ctx(**outputs: Any) -> Any:
@@ -91,45 +116,103 @@ def _ctx(**outputs: Any) -> Any:
     return ctx
 
 
-def test_every_scheduler_target_must_answer_2xx() -> None:
-    """Lesson 38: Scheduler says "attempted" while its target refuses. Each
-    enabled job's target is called as the job calls it, with an ID token for
-    the job's own account and audience, and a non-2xx keeps the step waiting."""
-    gcp, minter = VerifyFakeGcp(), FakeMinter()
+def _scheduler_rig() -> VerifyFakeGcp:
+    """Three platform jobs as terraform/infra makes them: two OIDC ticks to
+    Cloud Run services and the hourly doctor, an OAuth call to `jobs:run`."""
+    gcp = VerifyFakeGcp()
     sweep = cluster.account_email(PROJECT, "swarm-scheduler")
-    stale_bearer = "Bearer " + secrets.token_hex(8)
+    gcp.run_services_list = [{**_run_service("swarm-scheduler", SCHEDULER_URL, SCHEDULER_STABLE_URL),
+                              "customAudiences": [SCHEDULER_AUDIENCE]},
+                             _run_service("swarm-reconciler", RECONCILER_URL)]
     gcp.jobs = [
-        _job("swarm-quota-sweep", "https://scheduler.run.app/sweep", account=sweep,
-             audience="https://scheduler.run.app",
-             headers={"Authorization": stale_bearer, "Content-Type": "application/json"}),
-        _job("swarm-reconcile", "https://reconciler.run.app/tick", account=RECONCILER),
-        _job("swarm-paused", "https://paused.run.app/x", account=sweep, state="PAUSED"),
-        # Not the platform's: never triggered by the check.
+        # terraform/infra's push audience: a custom audience the service names.
+        _job("swarm-quota-sweep", f"{SCHEDULER_STABLE_URL}/sweep", account=sweep, audience=SCHEDULER_AUDIENCE,
+             headers={"Content-Type": "application/json"}),
+        _job("swarm-reconcile", f"{RECONCILER_URL}/tick", account=RECONCILER, last={}),
+        _job("swarm-doctor-hourly", f"https://run.googleapis.com/v2/{DOCTOR_JOB}:run", account=DOCTOR, oauth=True,
+             last={"code": 0}),
+        _job("swarm-paused", f"{SCHEDULER_URL}/x", account=sweep, state="PAUSED"),
+        # Not the platform's: never judged.
         _job("nightly-export", "https://export.example/run", account=sweep),
     ]
-    status = {"https://scheduler.run.app/sweep": 403, "https://reconciler.run.app/tick": 200}
-    called: list[tuple[str, str, dict[str, str], bytes]] = []
+    gcp.policies = {
+        f"projects/{PROJECT}/locations/{REGION}/services/swarm-scheduler": _invokers(f"serviceAccount:{sweep}"),
+        f"projects/{PROJECT}/locations/{REGION}/services/swarm-reconciler": {"etag": "e1"},
+        DOCTOR_JOB: _invokers(f"serviceAccount:{DOCTOR}"),
+    }
+    # The reconciler's tick account holds run.invoker on the project: inherited, still a grant.
+    gcp.iam = _invokers(f"serviceAccount:{RECONCILER}")
+    return gcp
 
-    def call(method: str, url: str, headers: Any, body: bytes) -> int:
-        called.append((method, url, dict(headers), body))
-        return status[url]
 
-    step = verify.SchedulerTargetsStep(lambda: gcp, Answers(), minter=minter, call=call)
+def test_scheduler_targets_judged_from_scheduler_and_invoker_bindings() -> None:
+    """Lesson 38, without calling a target (#11): calling the doctor's
+    `jobs:run` starts a doctor run, and minting an ID token as each job's own
+    account needs grants the installer does not hold. Each enabled platform
+    job is judged from the Cloud Scheduler API (state ENABLED; its last
+    attempt's status once it has run) and from its target's invoker binding
+    for the job's own account: an OAuth job to `jobs:run` on the Cloud Run
+    job, an OIDC job on the service whose URL it calls, with an audience that
+    service accepts."""
+    gcp = _scheduler_rig()
+    step = verify.SchedulerTargetsStep(lambda: gcp, Answers())
+    observed = step.check(_ctx())
+    assert observed.status == MET, observed.detail
+    assert observed.outputs["scheduler_targets"] == ["swarm-quota-sweep", "swarm-reconcile", "swarm-doctor-hourly"]
+    assert "swarm-paused" in observed.detail
+    assert step.kind == "wait" and step.wait.bound_s >= 60
+    # Read only: the Scheduler list, the services, the policies; nothing else.
+    assert {name for name, _ in gcp.calls} <= {"scheduler_jobs", "run_services", "run_iam_policy", "iam_policy"}
+    assert (DOCTOR_JOB,) in gcp.called("run_iam_policy")
+
+    # The doctor's own account lost run.invoker on its job: named, never called.
+    gcp.policies[DOCTOR_JOB] = _invokers(f"serviceAccount:{RECONCILER}")
     observed = step.check(_ctx())
     assert observed.status == WAITING
-    assert "swarm-quota-sweep -> HTTP 403" in observed.detail and "swarm-reconcile" not in observed.detail
-    assert [url for _, url, _, _ in called] == ["https://scheduler.run.app/sweep", "https://reconciler.run.app/tick"]
-    assert minter.minted == [(sweep, "https://scheduler.run.app", True),
-                             (RECONCILER, "https://reconciler.run.app/tick", True)]
-    first = called[0][2]
-    assert first["Authorization"] == f"Bearer {minter.tokens[0]}" and stale_bearer not in first.values()
-    assert first["Content-Type"] == "application/json" and called[0][3] == b"{}"
-    assert step.kind == "wait" and step.wait.bound_s >= 60
+    assert f"swarm-doctor-hourly: {DOCTOR} may not invoke {DOCTOR_JOB}" in observed.detail
+    gcp.policies[DOCTOR_JOB] = _invokers(f"serviceAccount:{DOCTOR}", role="roles/run.jobsExecutor")
+    assert step.check(_ctx()).status == MET
 
-    status["https://scheduler.run.app/sweep"] = 204
+    # The hourly doctor's tick refused before its grant propagated (lesson
+    # 19): its binding is in place and its next tick is past this wait, so it
+    # is named, not held against the step; a tick this wait will see is waited for.
+    ctx = _ctx()
+    refused = {"code": 7, "message": "PERMISSION_DENIED"}
+    later = datetime.fromtimestamp(ctx.clock.now() + 3600, timezone.utc).isoformat()
+    gcp.jobs[2] = {**_job("swarm-doctor-hourly", f"https://run.googleapis.com/v2/{DOCTOR_JOB}:run", account=DOCTOR,
+                          oauth=True, last=refused), "scheduleTime": later}
+    observed = step.check(ctx)
+    assert observed.status == MET and "swarm-doctor-hourly: its last attempt" in observed.detail
+    gcp.jobs[2]["scheduleTime"] = datetime.fromtimestamp(ctx.clock.now() + 60, timezone.utc).isoformat()
+    assert step.check(ctx).status == WAITING
+    gcp.jobs[2] = _job("swarm-doctor-hourly", f"https://run.googleapis.com/v2/{DOCTOR_JOB}:run", account=DOCTOR,
+                       oauth=True)
+
+    # A last attempt the target refused, a job Scheduler disabled, an audience
+    # the service would refuse and a target that is no Cloud Run service here.
+    gcp.jobs[1] = _job("swarm-reconcile", f"{RECONCILER_URL}/tick", account=RECONCILER,
+                       last={"code": 7, "message": "PERMISSION_DENIED"})
+    gcp.jobs[0]["state"] = "UPDATE_FAILED"
+    gcp.jobs.append(_job("swarm-other", f"{SCHEDULER_URL}/y", account=RECONCILER,
+                         audience="https://elsewhere.example"))
+    gcp.jobs.append(_job("swarm-lost", "https://gone.example/tick", account=RECONCILER))
     observed = step.check(_ctx())
-    assert observed.status == MET
-    assert observed.outputs["scheduler_targets"] == ["swarm-quota-sweep", "swarm-reconcile"]
+    assert observed.status == WAITING
+    assert "swarm-quota-sweep: state UPDATE_FAILED, not ENABLED" in observed.detail
+    assert "swarm-reconcile: its last attempt at 2026-10-30T09:00:00Z failed (code 7: PERMISSION_DENIED)" \
+        in observed.detail
+    assert "swarm-other: audience https://elsewhere.example is not swarm-scheduler's" in observed.detail
+    assert "swarm-lost: https://gone.example/tick is not a Cloud Run service or job" in observed.detail
+    assert "swarm-doctor-hourly" not in observed.detail
+
+    # A service whose binding does not name the job's account.
+    gcp.jobs = gcp.jobs[1:3]
+    gcp.jobs[0] = _job("swarm-reconcile", f"{RECONCILER_URL}/tick", account=RECONCILER)
+    gcp.iam = {"etag": "e1", "bindings": []}
+    observed = step.check(_ctx())
+    assert observed.status == WAITING
+    assert (f"swarm-reconcile: {RECONCILER} may not invoke "
+            f"projects/{PROJECT}/locations/{REGION}/services/swarm-reconciler") in observed.detail
 
 
 def _service(name: str, latest: str, traffic: list[dict[str, Any]], label: str = DIGEST) -> dict[str, Any]:
@@ -233,7 +316,10 @@ class FakeRuns:
 
     def launch(self, ctx: Any, surface: str, shape: str, repository: str, label: str) -> str:
         self.launched.append((surface, shape, repository, label))
-        run_id = f"t-{surface}-{shape}"
+        run_id, again = f"t-{surface}-{shape}", 1
+        while run_id in self.states:  # a relaunch is a new run with a new id
+            again += 1
+            run_id = f"t{again}-{surface}-{shape}"
         self.states[run_id] = verify.RunStatus("running")
         return run_id
 
@@ -391,18 +477,11 @@ def test_a_run_whose_task_recorded_no_credential_fails() -> None:
 # -- the console's runs come from the record ------------------------------------
 
 
-def test_console_runs_read_from_the_record_never_asked() -> None:
-    """INTERFACE SHEET: Admin › Setup starts the console's two runs and
-    swarm-api writes `verify_runs: {console_task, console_workflow}` into a
-    console document; the engine copies it into state.outputs and follows
-    those ids. Nothing is ever asked (the Answers here refuse any question).
-    No step reads the team's document before this one, so the step reads
-    `teams/<verify_tenant>` and `finished` itself on every poll."""
-    docs: dict[str, dict[str, Any]] = {f"teams/{TEAM}": {"group": "eng@acme.example", "workspace": TEAM}}
+def _console_rig(tenant: str, docs: dict[str, dict[str, Any]], **outputs: Any) -> tuple[Any, Any, list[str]]:
     runs = FakeRuns()
     step = verify.EndToEndStep(lambda: VerifyFakeGcp(), Answers(), runs=runs, kube=FakeKube())
     ctx = _ctx(verify_runs={key: f"t-{key}" for key in PLUGIN_KEYS}, verify_repository=REPO,
-               verify_context=HOSTNAME, verify_tenant=TEAM)
+               verify_context=HOSTNAME, verify_tenant=tenant, **outputs)
     ctx.state.console = {}
     read: list[str] = []
 
@@ -416,11 +495,25 @@ def test_console_runs_read_from_the_record_never_asked() -> None:
     ctx.read_console = read_console
     for key in PLUGIN_KEYS:
         runs.finish(f"t-{key}")
+    return (step, runs), ctx, read
+
+
+def test_console_runs_read_from_the_record_never_asked() -> None:
+    """INTERFACE SHEET: Admin › Setup starts the console's two runs and
+    swarm-api writes `verify_runs: {console_task, console_workflow}` into the
+    console document `console/verify_runs` (record.VERIFY_RUNS, #10); the
+    engine copies it into state.outputs and follows those ids. Nothing is
+    ever asked (the Answers here refuse any question). No step reads these
+    documents before this one, so the step reads `verify_runs`, the first
+    team's document and `finished` itself on every poll."""
+    docs: dict[str, dict[str, Any]] = {f"teams/{TEAM}": {"group": "eng@acme.example", "workspace": TEAM}}
+    (step, runs), ctx, read = _console_rig(TEAM, docs)
     observed = step.check(ctx)
     assert observed.status == WAITING and "console-single" in observed.detail
-    assert read == [f"teams/{TEAM}", "finished"]
+    assert read == [record.VERIFY_RUNS, f"teams/{TEAM}", "finished"]
 
-    docs[f"teams/{TEAM}"] = {**docs[f"teams/{TEAM}"], "verify_runs": dict(CONSOLE)}
+    # swarm-api writes the ids into console/verify_runs, never the team's document.
+    docs[record.VERIFY_RUNS] = {"verify_runs": dict(CONSOLE), "repository": REPO}
     runs.finish("t-console-single")
     runs.finish("t-console-workflow")
     observed = step.check(ctx)
@@ -432,6 +525,88 @@ def test_console_runs_read_from_the_record_never_asked() -> None:
     # The CLI never asks for a console run's id: it is not its to start.
     with pytest.raises(ValueError, match="Admin › Setup"):
         verify.SwarmCli(Answers()).launch(ctx, "console", "single", REPO, "v-3")
+
+
+def test_console_runs_found_for_one_person() -> None:
+    """Decision 7: a one-person install's first workspace is the personal
+    one, `console/personal`, never `teams/<tenant>`; the console's ids still
+    come from `console/verify_runs`."""
+    personal = TEAM  # the personal workspace's tenant; FakeKube serves its namespace
+    docs: dict[str, dict[str, Any]] = {record.PERSONAL: {"workspace": personal},
+                                       record.VERIFY_RUNS: {"verify_runs": dict(CONSOLE)}}
+    (step, runs), ctx, read = _console_rig(personal, docs, sizing={"mode": "individual", "members": 1})
+    runs.finish("t-console-single")
+    runs.finish("t-console-workflow")
+    observed = step.check(ctx)
+    assert observed.status == MET, observed.detail
+    assert read[:1] == [record.VERIFY_RUNS] and not any(name.startswith("teams/") for name in read)
+    assert ctx.outputs["verify_runs"]["console_workflow"] == "t-console-workflow"
+
+    # Ids only on the personal document (an older swarm-api) are still found.
+    docs = {record.PERSONAL: {"workspace": personal, "verify_runs": dict(CONSOLE)}}
+    (step, runs), ctx, read = _console_rig(personal, docs, sizing={"mode": "individual", "members": 1})
+    observed = step.check(ctx)
+    assert record.PERSONAL in read and ctx.outputs["verify_runs"]["console_task"] == "t-console-single"
+
+
+# -- a failed run is relaunched, a bounded number of times (#19) -------------------
+
+
+class _Saves:
+    """`ctx.engine` for a check that is not a dry run: `save` changes the state in place."""
+
+    record = None
+
+    def __init__(self, ctx: Any) -> None:
+        self.ctx = ctx
+
+    def save(self, change: Any) -> None:
+        change(self.ctx.state)
+
+
+def test_failed_run_is_relaunched_at_most_twice() -> None:
+    """A failed or cancelled run is dropped from `verify_runs` and relaunched,
+    at most twice; then the step says why it stopped. A failed console run's
+    id is never copied back from the console document: Admin › Setup starts
+    a new one."""
+    (step, runs), ctx, _ = _console_rig(TEAM, {record.VERIFY_RUNS: {"verify_runs": dict(CONSOLE)}})
+    ctx.dry_run = False
+    ctx.engine = _Saves(ctx)
+    runs.finish("t-console-single")
+    runs.finish("t-console-workflow")
+    runs.states["t-plugin-single"] = verify.RunStatus("failed")
+
+    observed = step.check(ctx)
+    assert observed.status == WAITING, observed.detail
+    assert "plugin-single (t-plugin-single) failed; relaunched (1 of 2)" in observed.detail
+    assert [(s, k) for s, k, _, _ in runs.launched] == [("plugin", "single")]
+    relaunched = ctx.outputs["verify_runs"]["plugin-single"]
+    assert ctx.outputs["verify_failed"]["plugin-single"] == ["t-plugin-single"]
+
+    # A dry run looks and relaunches nothing.
+    runs.states[relaunched] = verify.RunStatus("cancelled")
+    ctx.dry_run = True
+    step.check(ctx)
+    assert len(runs.launched) == 1
+    ctx.dry_run = False
+
+    observed = step.check(ctx)
+    assert "relaunched (2 of 2)" in observed.detail and len(runs.launched) == 2
+    runs.states[ctx.outputs["verify_runs"]["plugin-single"]] = verify.RunStatus("failed")
+    observed = step.check(ctx)
+    assert observed.status == UNMET and len(runs.launched) == 2
+    assert "plugin-single failed 3 times" in observed.detail and "not relaunched again" in observed.detail
+
+    # A console run: dropped, and its failed id never copied back.
+    runs.finish(ctx.outputs["verify_runs"]["plugin-single"])
+    runs.states["t-console-workflow"] = verify.RunStatus("failed")
+    observed = step.check(ctx)
+    assert "console-workflow (t-console-workflow) failed; Admin › Setup starts it again (1 of 2)" \
+        in observed.detail
+    assert "console_workflow" not in ctx.outputs["verify_runs"]
+    observed = step.check(ctx)
+    assert "console_workflow" not in ctx.outputs["verify_runs"]
+    assert "console-workflow (started in the console's Admin › Setup" in observed.detail
 
 
 # -- the GKE, live-browser and code-intelligence checks ---------------------------
@@ -916,9 +1091,10 @@ def test_verify_progress_written_with_countdown(tmp_path: Path) -> None:
     rig.store.update(lambda s: setattr(s, "region", REGION))
     documents = FakeDocuments()
     gcp = VerifyFakeGcp()
-    gcp.jobs = [_job("swarm-reconcile", "https://reconciler.run.app/tick", account=RECONCILER)]
-    targets = verify.SchedulerTargetsStep(lambda: gcp, Answers(), minter=FakeMinter(),
-                                          call=lambda m, u, h, b: 200)
+    gcp.jobs = [_job("swarm-reconcile", f"{RECONCILER_URL}/tick", account=RECONCILER)]
+    gcp.run_services_list = [_run_service("swarm-reconciler", RECONCILER_URL)]
+    gcp.iam = _invokers(f"serviceAccount:{RECONCILER}")
+    targets = verify.SchedulerTargetsStep(lambda: gcp, Answers())
     engine = rig.engine([targets])
     engine.record = InstallRecord(env="dev", documents=documents)
     started = rig.clock.now()

@@ -7,11 +7,12 @@ credential store of the new deployment's context (on stdin, never in argv),
 so verify never needs it: stdout, stderr, the event stream and the install
 state hold none of it. With no terminal there is no prompt at all:
 nothing falls back to stdin, the step emits `step_paused` with reason
-`needs_terminal` and the `! swarm install --resume` line, and the run exits 4.
+`needs_terminal` and the `! swarm install` line (which resumes by itself), and the run exits 4.
 """
 
 from __future__ import annotations
 
+import argparse
 import getpass
 import io
 import json
@@ -207,7 +208,8 @@ def test_refuses_without_tty(tmp_path: Path, monkeypatch) -> None:
     assert rig.result.exit_code == ExitCode.PAUSED
     paused = rig.of_kind("step_paused", "edge.desktop-client")
     assert paused and paused[0]["reason"] == NEEDS_TERMINAL
-    assert paused[0]["command"] == RESUME_LINE == "! swarm install --resume"
+    # `swarm install` resumes by itself; it has no `--resume` flag (#18).
+    assert paused[0]["command"] == RESUME_LINE == "! swarm install"
     assert RESUME_LINE in rig.result.message
     assert gcp.called("add_secret_version") == []
     assert piped.tell() == 0  # nothing read the pipe
@@ -218,3 +220,19 @@ def test_refuses_without_tty(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(secret_entry.os, "open", no_dev_tty)
     with pytest.raises(NoTerminal):
         secret_entry.DevTty.open()
+
+
+def test_no_message_names_a_flag_install_does_not_have() -> None:
+    """#18: `swarm install` has no `--resume` (argparse exits 2 on it); it
+    resumes by itself, so every line the engine hands the person says
+    `swarm install`."""
+    from swarm_install.verbs import install
+
+    parser = argparse.ArgumentParser(prog="swarm install")
+    install.add_arguments(parser)
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--resume"])
+    root = Path(install.__file__).resolve().parents[1]
+    named = [str(path.relative_to(root)) for path in sorted(root.rglob("*.py"))
+             if "swarm install --resume" in path.read_text(encoding="utf-8")]
+    assert named == []

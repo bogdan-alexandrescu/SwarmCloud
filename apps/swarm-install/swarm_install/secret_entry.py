@@ -20,7 +20,7 @@ through a Claude session. This module never calls `getpass` and never reads
 stdin: it opens `/dev/tty` itself, and when that fails the step pauses (exit 4)
 with a `step_paused` event whose `reason` is `needs_terminal` and whose
 `command` is the line the person types in their own terminal,
-`! swarm install --resume`.
+`! swarm install`, which resumes by itself (it has no `--resume` flag).
 
 The same terminal asks the plain (non-secret) questions of stage 0 (`ask`), so
 those are never answered by a pipe either.
@@ -39,7 +39,7 @@ NEEDS_TERMINAL = "needs_terminal"
 
 #: What the person types, in their own terminal, to go on (`!` runs it outside
 #: the Claude session in Claude Code).
-RESUME_LINE = "! swarm install --resume"
+RESUME_LINE = "! swarm install"
 
 
 class NoTerminal(OSError):

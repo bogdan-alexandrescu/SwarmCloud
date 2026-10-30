@@ -42,7 +42,7 @@ transcript and should be replaced.
 **A step that needs a terminal: `needs_terminal`.** A step that needs a
 value or a typed answer pauses with a `step_paused` event whose `reason` is
 `needs_terminal` and whose `command` is the line to hand on, today
-`! swarm install --resume`. Give the person that `command` exactly as it
+`! swarm install`. Give the person that `command` exactly as it
 came, to type at the prompt themselves: the engine then asks at a hidden
 prompt on their terminal. Never ask for the value, never read it from
 anywhere and never pipe it into the engine. When they say it is done, run the
