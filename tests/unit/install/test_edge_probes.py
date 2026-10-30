@@ -130,8 +130,9 @@ def test_brand_never_calls_the_brands_api_and_is_met_by_the_desktop_client(
 
     result = rig.engine([step]).run()
     assert result.exit_code == ExitCode.OK, result.message
-    assert [url for url, _ in opened] == [f"https://console.cloud.google.com/auth/branding?project={PROJECT}"]
-    assert "Internal" in opened[0][1], "the page's instructions say to choose Internal"
+    assert [url for url, _ in opened] == [f"https://console.cloud.google.com/auth/branding?project={PROJECT}",
+                                          f"https://console.cloud.google.com/auth/audience?project={PROJECT}"]
+    assert "Internal" in opened[1][1], "the Audience page's instructions say to choose Internal"
     assert rig.store.load().outputs["desktop_client_id"] == CLIENT_ID
     plan = rig.of_kind("step_plan", "edge.brand")[0]
     assert any("choose Internal" in a for a in plan["actions"]), "the plan says to choose Internal"
