@@ -32,7 +32,7 @@ import {
 } from './fetch'
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP as HELP_TOPICS, HELP_GROUPS, HELP_ROUTE, TOPIC_IDS, type TopicId } from './help'
-import { CONFIG_SECRETS_ADDRESS, GITHUB_CALLBACK_ADDRESS, QA_LINK_ADDRESS, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, movedToConfig, pathToAddress, secretsLinkToken, secretsLinkView } from './paths'
+import { CONFIG_SECRETS_ADDRESS, GITHUB_CALLBACK_ADDRESS, QA_LINK_ADDRESS, SETUP_LINK_PATH, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, isSetupLinkPath, movedToConfig, pathToAddress, secretsLinkToken, secretsLinkView, setupLinkToken } from './paths'
 import { GitHubCallbackScreen } from './GitHubConnect'
 import { WorkspaceSettingsScreen, workspacePartOf } from './WorkspaceSettings'
 import { McpServersScreen } from './McpServers'
@@ -57,6 +57,7 @@ import { ProfilesScreen } from './Profiles'
 import { ProfileScreen } from './Profile'
 import { WorkspacePeopleScreen } from './WorkspacePeople'
 import { JOIN_PATH, JoinWorkspaceScreen, joinCodeFrom } from './JoinWorkspace'
+import { SetupLinkScreen } from './SetupLink'
 import { WorkspacesYouAdminScreen } from './WorkspacesYouAdmin'
 import { QuotaDetailScreen } from './QuotaDetail'
 import { tableMode, usePhoneTables } from './capacityPoll'
@@ -638,6 +639,16 @@ const GITHUB_CALLBACK = GITHUB_CALLBACK_ADDRESS
 const JOIN = 'join'
 
 /**
+ * ADMIN › SETUP'S ONE-TIME LINK (`/admin/setup/link/<token>`, lane
+ * DAYONE-SETUP-UI-5B; part of #2688). Not a section and not a tab, and NOT
+ * behind the admin gate though its path is under Admin: the person a link
+ * names -- a Claude account's owner, a team's git admin -- is rarely a
+ * platform admin. Its token is read once by `App` (`setupLinkToken`) before
+ * the bar is rewritten to `/admin/setup/link` without it.
+ */
+const SETUP_LINK = 'setup-link'
+
+/**
  * SETTINGS (KEYS-UI, then PROFILE-NAV): the person's own pages, not a
  * section, for the reason API reads was not one. It held Settings › API keys
  * until SSC-UI (part of #2158) moved it into Config › Secrets as Keys for
@@ -973,6 +984,9 @@ export function fromLocation(): Route {
   // Before the legacy-hash check: the fragment on `/join` is a join code,
   // never an old `#...` address, whatever it happens to spell.
   if (pathname === JOIN_PATH || pathname === `${JOIN_PATH}/`) return { sectionId: JOIN, tab: '', taskId: null, taskPane: 'detail' }
+  // Before pathToAddress: `/admin/setup/...` would otherwise read as Admin ›
+  // Setup, the admin's page, with the token taken for a page of it.
+  if (isSetupLinkPath(pathname)) return { sectionId: SETUP_LINK, tab: '', taskId: null, taskPane: 'detail' }
   if (isLegacyHash(hash, LEGACY_HEADS, pathname)) return fromHash()
   const p = pathToAddress(pathname, search, hash)
   if (p === null) return { ...fromAddress(''), missing: pathname }
@@ -1226,6 +1240,7 @@ export function canonical(r: Route): string {
   // GitHub's single-use code leaves the bar: the route keeps it in `view`.
   if (r.sectionId === ADMIN_SECTION && r.page === SETUP_CALLBACK_PAGE) return SETUP_CALLBACK
   if (r.sectionId === JOIN) return JOIN
+  if (r.sectionId === SETUP_LINK) return SETUP_LINK
   if (r.sectionId === SETTINGS) return r.view ? `${SETTINGS}/${r.tab}?${r.view}` : `${SETTINGS}/${r.tab}`
   if (r.sectionId === HELP) return r.tab === '' ? HELP : `${HELP}/${r.tab}`
   // A list address is written only while no drawer is open: the drawer's own
@@ -1333,6 +1348,12 @@ export function App() {
   // only changes the fragment, so `onHash` below reads it the same way.
   const [joinCode, setJoinCode] = useState<string | null>(() =>
     typeof window === 'undefined' ? null : joinCodeFrom(window.location.pathname, window.location.hash))
+  // THE SETUP LINK'S TOKEN (`/admin/setup/link/<token>`), read here for the
+  // join code's reason, before the normalise effect rewrites the bar to
+  // `/admin/setup/link`. Held in this state alone and handed to the page,
+  // which posts it in a body: never a route, a URL, storage or a log.
+  const [setupToken] = useState<string | null>(() =>
+    typeof window === 'undefined' ? null : setupLinkToken(window.location.pathname))
   const lastList = useRef<AgentList | null>(at.list ?? null)
   if (at.taskId === null) lastList.current = at.list ?? null
 
@@ -1341,6 +1362,7 @@ export function App() {
     (r: Route) => {
       if (r.missing != null) return r.missing
       if (r.sectionId === JOIN) return JOIN_PATH
+      if (r.sectionId === SETUP_LINK) return SETUP_LINK_PATH
       const list = r.list ?? lastList.current
       const path = addressToPath(canonical(r), list?.tab ?? 'live')
       // AN OPEN AGENT KEEPS ITS LIST'S STATE AND TOGGLES in its query (G2-22),
@@ -1531,6 +1553,8 @@ export function App() {
           ? 'Connect GitHub'
           : at.sectionId === JOIN
             ? 'Join a workspace'
+            : at.sectionId === SETUP_LINK
+              ? 'Your setup link'
             : at.sectionId === SETTINGS
               ? PROFILE_LABEL
               : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
@@ -1577,7 +1601,9 @@ export function App() {
           dock={<Dock />}
           // AN UNSENT FORM IS KEPT ON A TENANT SWITCH (intake-tenants.html
           // 2A): the two submit forms re-read under the new tenant in place.
-          keepOnSwitch={at.sectionId === WORK && (at.tab === 'new' || at.tab === 'new-workflow')}
+          // The setup link's page too: it selects the link's workspace itself
+          // (SetupLink.tsx), mid sign-in, and a remount would drop the sign-in.
+          keepOnSwitch={(at.sectionId === WORK && (at.tab === 'new' || at.tab === 'new-workflow')) || at.sectionId === SETUP_LINK}
           place={pathFor(at)}
           // ADMIN IS AN ADMIN'S (CONFIG-NAV; BGD 2026-10-23): someone who
           // administers nothing, on an Admin address, lands on Overview, and
@@ -1644,6 +1670,8 @@ export function App() {
                 ) : at.sectionId === JOIN ? (
                   // Keyed by the code, so a second link pasted into the tab asks afresh.
                   <JoinWorkspaceScreen key={joinCode ?? ''} code={joinCode} />
+                ) : at.sectionId === SETUP_LINK ? (
+                  <SetupLinkScreen token={setupToken} />
                 ) : (
                   // Settings › Profile: the last page that is not a section.
                   // API keys was beside it until SSC-UI moved it to Config ›
@@ -1741,6 +1769,10 @@ export function spineOf(sectionId: string, tab = ''): SpineSection {
     // which named a page the person was not on.
     case JOIN:
       return 'profile'
+    // The link signs a Claude account into a pool: Capacity's, never Admin's,
+    // which would send a person who administers nothing to Overview.
+    case SETUP_LINK:
+      return 'capacity'
     // EVERY SETTINGS PAGE LIGHTS PROFILE (NAV-PROFILE; part of #1633): its
     // panel holds them. Only Profile's exact address is one since SSC-UI;
     // `#settings/<anything else>` is Pool limits (LEGACY), and lights Admin.
