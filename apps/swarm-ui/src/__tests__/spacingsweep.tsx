@@ -472,12 +472,22 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   // (13px, weight 600). A wide capital ("W", "M") advances about 12px there,
   // so the ink clears the border by (24 - 2 - 12) / 2 = 5px a side, over the
   // 4px `textInset` floor; a typical initial clears it by more.
+  //
+  // ADMIN IS TWO SLICES (PR #2815's CI, 2026-10-30). With Setup and Health
+  // added, the one admin slice walked nine routes and ran 958 s in a loaded
+  // shard 1/4 (470 s and 582 s in the 2026-10-26 incident's shards), past the
+  // 900 s timeout with its findings complete. The rail's order is kept: the
+  // first five tabs here, Setup onwards in `admin-setup`. The fallback token
+  // card is on Pool limits and the People rows on People, so each disc's
+  // centring is kept by the slice that renders it.
   {
-    name: 'admin', routes: ['admin/limits', 'admin/runner-sizes', 'admin/tenants', 'admin/counts', 'admin/platform-secrets', 'admin/setup', 'admin/health', 'admin/people', 'admin/workspaces'], floor: 120,
-    centred: [
-      'button.help-glyph [left] width 14px, centred', 'button.help-glyph [right] width 14px, centred',
-      'span.pp-avatar [left] width 24px, centred', 'span.pp-avatar [right] width 24px, centred',
-    ],
+    name: 'admin', routes: ['admin/limits', 'admin/runner-sizes', 'admin/tenants', 'admin/counts', 'admin/platform-secrets'], floor: 70,
+    centred: ['button.help-glyph [left] width 14px, centred', 'button.help-glyph [right] width 14px, centred'],
+    persona: 'platform-admin',
+  },
+  {
+    name: 'admin-setup', routes: ['admin/setup', 'admin/health', 'admin/people', 'admin/workspaces'], floor: 50,
+    centred: ['span.pp-avatar [left] width 24px, centred', 'span.pp-avatar [right] width 24px, centred'],
     persona: 'platform-admin',
   },
 ]
