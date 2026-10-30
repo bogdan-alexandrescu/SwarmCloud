@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 
 from agent_worker.gitops import merge_branches
+from test_strategy_end_to_end import _the_fence_holds  # noqa: F401 -- fixture
 
 
 # -- the dispatch block, read in full ---------------------------------------

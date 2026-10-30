@@ -37,6 +37,7 @@ from agent_worker import workspace as workspace_mod
 from agent_worker.errors import WorkerError
 
 from test_strategy_end_to_end import (  # noqa: F401 -- fixtures
+    _the_fence_holds,
     forge,
     local_urls,
     origin,

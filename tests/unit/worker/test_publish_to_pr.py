@@ -37,6 +37,7 @@ from agent_worker.errors import WorkerError
 from agent_worker.forge import PullHead, PullRequest
 
 from test_strategy_end_to_end import (  # noqa: F401 -- fixtures
+    _the_fence_holds,
     forge,
     local_urls,
     origin,

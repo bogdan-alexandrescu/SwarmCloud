@@ -52,6 +52,7 @@ from swarm_common.states import EventType, TaskState
 
 from worker_seeds import seed_attempt
 from test_strategy_end_to_end import (  # noqa: F401 -- fixtures
+    _the_fence_holds,
     agent_edits_without_committing,
     forge,
     local_urls,

@@ -32,6 +32,7 @@ from test_publish_scans_a_clean_repository import (
     _origin_with_a_sibling,
 )
 from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
+    _the_fence_holds,
     forge,
     local_urls,
     origin,
