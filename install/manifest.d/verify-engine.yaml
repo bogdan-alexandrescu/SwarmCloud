@@ -1,0 +1,98 @@
+# Lane DAYONE-VERIFY-ENGINE (part of #2688): stage 14's verification targets the
+# NEW deployment through the engine's own swarm context (named after the
+# hostname; the person's current context is never switched or rewritten),
+# reads the console's two runs from the install record instead of asking for
+# their ids, takes its repository from the GitHub App installation, and adds
+# three check runs: a GKE-profile task, a live-browser task and a
+# code-intelligence read (swarm_install/steps/verify.py). The base entry
+# other.verify-end-to-end is restated with what the engine now does; the three
+# checks are new entries, each satisfied by verify.end-to-end.
+version: 1
+entries:
+- id: other.verify-end-to-end
+  kind: other
+  scope: core
+  stage: 14
+  provider: engine
+  check: swarm --context <hostname context> status <run> for each of the seven runs recorded in state.outputs verify_runs
+  apply: 'verify.end-to-end writes the swarm context named after the hostname (swarm context add, the Desktop
+    client id, its secret through stdin into the credential store; never --use, never context use), signs the
+    person in to it once in the browser, picks the first team tenant (swarm tenants --json) as SWARM_TENANT,
+    reads verify_repository from the App installation (swarm sc access repos <github_org> --json), launches
+    the plugin''s single task, workflow and three check runs, and copies the console''s two run ids from the
+    install record (verify_runs.console_task, verify_runs.console_workflow); it never asks for an id'
+  verify: the four product runs each reached a pull request, every task of every run cloned and pushed with a
+    GitHub App installation token (lesson 43), and the three check runs each passed their own proof
+  explain: Done is proven, not asserted (brief D3 and section 5 stage 14). The runs go to the deployment just
+    installed, never to whatever the person's current swarm context names (on the owner's laptop, the live
+    deployment).
+  guards: lesson 18 (the plugin signs in with the Desktop client, never a gcloud token); lesson 43 (installation
+    token, never a person's)
+  secret_entry: null
+  depends_on:
+  - other.verify-scheduler-targets
+  - other.verify-digests
+  evidence:
+  - apps/swarm-install/swarm_install/steps/verify.py
+  - apps/swarm-mcp/swarm_mcp/config.py:28
+  step: verify.end-to-end
+  replace: true
+- id: other.verify-gke
+  kind: other
+  scope: core
+  stage: 14
+  provider: engine
+  check: kubectl get jobs -n swarm-tenant-<verify_tenant> -o json names a Job for the gke run's task
+  apply: verify.end-to-end dispatches a task on the claude-code profile (GKE Autopilot in the frozen catalogue)
+    on verify_repository and reads its Job from the team's namespace while it runs
+  verify: the task SUCCEEDED on the claude-code profile and its Job was seen in the team's namespace (recorded
+    as verify_cluster_jobs.plugin-gke)
+  explain: A task that succeeded somewhere is not proof the cluster runs agents; the Job in the tenant namespace
+    is. A finished Job is deleted after 600 s (scheduler FINISHED_JOB_TTL_SECONDS), so it is read on every poll
+    while the run is going.
+  guards: null
+  secret_entry: null
+  depends_on:
+  - other.verify-end-to-end
+  evidence:
+  - apps/swarm-install/swarm_install/steps/verify.py
+  - apps/scheduler/scheduler/dispatch.py:3025
+  step: verify.end-to-end
+- id: other.verify-live-browser
+  kind: other
+  scope: core
+  stage: 14
+  provider: engine
+  check: kubectl get jobs -n swarm-tenant-<verify_tenant> -o json shows the browser run's Job with pod label
+    swarm-live=enabled and the display sidecar; swarm artifact <task> live-browser.txt
+  apply: verify.end-to-end dispatches a claude-code-browser task that opens the repository's GitHub page and
+    writes its title to live-browser.txt
+  verify: the task SUCCEEDED, its Job ran the live display, and the title it read names the repository
+  explain: The live browser is its own image, resource class and pod shape (a display sidecar); a GKE task
+    passing proves none of it.
+  guards: null
+  secret_entry: null
+  depends_on:
+  - other.verify-end-to-end
+  evidence:
+  - apps/swarm-install/swarm_install/steps/verify.py
+  - apps/scheduler/scheduler/dispatch.py:678
+  step: verify.end-to-end
+- id: other.verify-code-intelligence
+  kind: other
+  scope: core
+  stage: 14
+  provider: engine
+  check: swarm artifact <task> code-intelligence.json
+  apply: verify.end-to-end dispatches a claude-code task that calls the code graph's search tool on
+    verify_repository and writes its answer, verbatim, to code-intelligence.json
+  verify: the answer carries freshness.index_sha (a 40-hex commit) and at least one symbol row
+  explain: Code intelligence is the indexer's graph served to an agent; the graph's own answer, with the commit
+    it was indexed at, is what proves it, not the agent's say-so.
+  guards: null
+  secret_entry: null
+  depends_on:
+  - other.verify-end-to-end
+  evidence:
+  - apps/swarm-install/swarm_install/steps/verify.py
+  step: verify.end-to-end
