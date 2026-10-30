@@ -1,0 +1,49 @@
+# Lane DAYONE-SIZING-ASK (part of #2688; decision 7, BGD 2026-10-30): stage 0
+# asks whether the deployment is for one person or a team and how many people,
+# proposes pool ceilings, service maximums, Claude accounts and a monthly
+# budget from that (swarm_install/sizing.py), capped at the region's CPUS
+# quota, and records state.outputs["sizing"], the interface sheet's shape that
+# TFVARS-2, SETUP-API-3 and IDENTITY-STAGE-2 read. A project stage 0 could not
+# read the quota of is checked again once stage 1 has enabled Compute Engine.
+version: 1
+entries:
+- id: other.deployment-sizing
+  kind: other
+  scope: core
+  stage: 0
+  provider: human-in-terminal
+  check: state.outputs.sizing has the interface sheet's shape, every number a positive whole number,
+    global >= tenants x provider_tenant, and no pool ceiling above what the region's CPUS quota runs
+  apply: preflight.sizing asks "Who is this SwarmCloud for? [1] just me  [2] a team" and, for a team, how many
+    people; it reads the region's CPUS quota (Compute Engine regions.get) when the project exists, shows
+    sizing.propose()'s table, and records it once the person presses Enter (any one number changed first,
+    each change validated)
+  verify: preflight.sizing re-check is MET
+  explain: one person and a team of fifty want very different ceilings and budgets; terraform's defaults fit
+    neither, and a ceiling above the region's CPU quota admits pods that never schedule
+  guards: null
+  secret_entry: null
+  depends_on:
+  - other.installer-sign-in
+  evidence:
+  - apps/swarm-install/swarm_install/sizing.py
+  - apps/swarm-install/swarm_install/steps/preflight.py
+  step: preflight.sizing
+- id: other.deployment-sizing-quota
+  kind: other
+  scope: core
+  stage: 1
+  provider: engine
+  check: the recorded sizing's pool ceilings fit the region's CPUS quota, read once the project exists
+  apply: preflight.sizing-quota shows the proposal capped at the quota; the person presses Enter or changes
+    any one number
+  verify: preflight.sizing-quota re-check is MET
+  explain: a new project's CPU quota cannot be read in stage 0, before stage 1 creates the project
+  guards: null
+  secret_entry: null
+  depends_on:
+  - other.deployment-sizing
+  - api.compute
+  evidence:
+  - apps/swarm-install/swarm_install/steps/preflight.py
+  step: preflight.sizing-quota
