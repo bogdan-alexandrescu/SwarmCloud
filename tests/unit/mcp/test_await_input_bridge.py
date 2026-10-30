@@ -501,6 +501,8 @@ class _CheckApi:
                     "tasks": [json.loads(json.dumps(self.task))]}
         if route == "/v1/tasks":
             return {"tasks": [], "next_page_token": None, "tenant_id": "eng"}
+        if route == check.OPEN_QUESTIONS_ROUTE:
+            return {"tasks": [], "complete": True, "tenant_id": "eng"}
         if route.endswith("/events"):
             return {"events": _Reads().events(TID), "next_page_token": None}
         if route == "/v1/tenants/mine":
