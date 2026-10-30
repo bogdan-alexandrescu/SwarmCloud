@@ -350,6 +350,48 @@ def test_an_unanswered_question_the_review_let_pass_holds_nothing(tmp_path):
 
 
 # --------------------------------------------------------------------------
+# 3b. a NOT_YET verdict that names needs_owner gets the round too (#2764)
+# --------------------------------------------------------------------------
+
+def _not_yet(world: MergeWorld) -> None:
+    world.verdict = {**world.verdict, "verdict": "NOT_YET", "findings": ["waits on the owner"]}
+
+
+def test_a_not_yet_verdict_answered_with_an_unbuilt_pick_parks_for_a_pick_fix_round(tmp_path):
+    world = MergeWorld(tmp_path)
+    _unbuilt(world)
+    _not_yet(world)
+
+    outcome = merge.run_merge(world.context())
+
+    # MUTATION: refuse a NOT_YET before the pick check (the #2764 bug) and the
+    # owner's pick is never built.
+    _parked(outcome, PENDING)
+    assert world.merge_calls() == []
+    (line,) = outcome.ci_wait["pending"]
+    assert line.startswith(f"pick {IMPLEMENT} question 0 ")
+    assert "'Needs a look'" in line and "'Needs action'" in line
+
+
+def test_a_not_yet_verdict_whose_pick_round_built_the_pick_refuses_verdict_not_merge(tmp_path):
+    world = MergeWorld(tmp_path)
+    _unbuilt(world)
+    _not_yet(world)
+    _round(world)
+    _round_task(world, report=_built_report())
+    world.pr["head"]["sha"] = BUILT
+    world.serve_checks(BUILT)
+
+    outcome = merge.run_merge(world.context())
+
+    # MUTATION: merge once the pick is built and a NOT_YET head merges unreviewed.
+    assert outcome.state is TaskState.FAILED, outcome.message
+    assert outcome.end_cause is EndCause.MERGE_REFUSED
+    assert outcome.summary["refusal"]["code"] == "verdict_not_merge", outcome.summary
+    assert world.merge_calls() == []
+
+
+# --------------------------------------------------------------------------
 # 4. a pick park whose pull request ended outside the workflow
 # --------------------------------------------------------------------------
 
