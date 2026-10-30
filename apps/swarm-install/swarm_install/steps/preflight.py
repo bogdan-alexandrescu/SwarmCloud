@@ -9,14 +9,16 @@ zero mutating calls).
 | Step | Manifest entries | Lesson |
 |---|---|---|
 | `preflight.tools` | the core `local-tool.*` | 12: terraform `1.16.2`, kubectl ≥ 1.30 |
-| `preflight.sign-in` | `other.installer-sign-in` | gcloud and ADC signed in, by the installer itself |
+| `preflight.sign-in` | `other.installer-sign-in` | gcloud and ADC signed in, by the installer itself; ADC with the Directory scopes |
 | `preflight.inputs` | `other.github-org` | R7: the alert email, the hostname (the verb's), the GitHub org, the billing account (listed) |
 | `preflight.region` | — | 2: the region (the verb's) is confirmed, typed, before stage 1 |
 | `preflight.rights` | `switch.project-create-right`, `switch.billing-link-right` | 1 and 16; the parent is listed |
 | `preflight.org-domain` | `other.org-domain` | the domain IAP admits, read from the organization |
 | `preflight.installer-address` | `other.installer-address` | the installer's /32 for the cluster's authorized networks |
 | `preflight.org-policies` | `org-policy.*` | read **effective** (inherited) policy |
-| `preflight.quotas` | `quota.*` | 4: the KMS signing quota is read |
+| `preflight.quotas` | `quota.*` | 4: the KMS signing quota is read; the Quotas page opens for an increase |
+| `preflight.sizing` | `other.deployment-sizing` | decision 7: one person or a team of N, the proposed ceilings |
+| `preflight.sizing-quota` (stage 1) | `other.deployment-sizing-quota` | the sizing against a new project's CPU quota |
 | `preflight.release` | `other.release-home`, `other.release-bundle` | 27: CVE acceptances with expiry |
 
 This module also holds `Gcp`, the engine's one REST client for stages 0-2. It
@@ -42,10 +44,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .. import secret_entry, tools
+from .. import secret_entry, sizing, tools
 from ..exitcodes import MET, UNMET
 from ..secret_entry import DevTty, Terminal
-from . import Observation, Plan
+from . import Observation, Plan, open_page
 
 # -- the REST client ---------------------------------------------------------
 
@@ -62,6 +64,8 @@ SECRET_MANAGER_API = "https://secretmanager.googleapis.com/v1"
 
 #: The release home (D25, `other.release-home`): public, read anonymously.
 RELEASE_HOME = "https://storage.googleapis.com/swarmcloud"
+#: Where an access token's granted scopes are read (preflight.sign-in).
+TOKENINFO = "https://oauth2.googleapis.com/tokeninfo"
 
 
 class ApiError(RuntimeError):
@@ -203,6 +207,15 @@ class Gcp:
         )
 
     # Services ----------------------------------------------------------------
+
+    def region_cpu_quota(self, project: str, region: str) -> int | None:
+        """The region's CPUS quota limit (Compute Engine `regions.get`), or
+        None when the region reports none."""
+        found = self._call("GET", f"{COMPUTE}/projects/{project}/regions/{region}") or {}
+        for quota in found.get("quotas", []) or []:
+            if quota.get("metric") == "CPUS" and quota.get("limit") is not None:
+                return int(float(quota["limit"]))
+        return None
 
     def enabled_services(self, project: str) -> set[str]:
         found = self._pages(f"{USAGE}/v1/projects/{project}/services", "services",
@@ -608,16 +621,38 @@ def gcloud_account(gcloud: Callable[[], str | None] = find_gcloud) -> str:
     return account if done.returncode == 0 and "@" in account else ""
 
 
-def adc_ready() -> bool:
-    """Whether application-default credentials load (what `Gcp` and terraform use)."""
+#: The scopes preflight's own application-default sign-in asks for: Cloud
+#: Platform for the engine and terraform, and the two read-only Directory
+#: scopes stage 6 (IDENTITY-STAGE) reads the Workspace customer and its admin
+#: roles with (BGD, 2026-10-30, decision 8).
+ADC_SCOPES = (
+    "https://www.googleapis.com/auth/cloud-platform",
+    "https://www.googleapis.com/auth/admin.directory.customer.readonly",
+    "https://www.googleapis.com/auth/admin.directory.rolemanagement",
+)
+
+
+def adc_scopes() -> frozenset[str] | None:
+    """The scopes the application-default credentials' access token carries,
+    or None when no credentials load. A token that cannot be read back is an
+    empty set: the sign-in runs again rather than guessing."""
     import google.auth  # lazy: no credentials needed to import the engine
-    from google.auth.exceptions import DefaultCredentialsError
+    import requests
+    from google.auth.exceptions import DefaultCredentialsError, GoogleAuthError
+    from google.auth.transport.requests import Request
 
     try:
-        google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        credentials, _ = google.auth.default(scopes=list(ADC_SCOPES))
     except DefaultCredentialsError:
-        return False
-    return True
+        return None
+    try:
+        credentials.refresh(Request())
+        # POSTed, so the token is never in a URL a proxy or a log could keep.
+        response = requests.post(TOKENINFO, data={"access_token": credentials.token}, timeout=30)
+        granted = str(response.json().get("scope", "")) if response.status_code == 200 else ""
+    except (GoogleAuthError, requests.RequestException, ValueError):
+        return frozenset()
+    return frozenset(granted.split())
 
 
 def run_auth(argv: Sequence[str]) -> int:
@@ -627,9 +662,11 @@ def run_auth(argv: Sequence[str]) -> int:
 
 class SignInStep(_Base):
     """gcloud signed in (scripts and `gcloud` calls) and application-default
-    credentials present (this engine's REST calls and terraform). When either
-    is missing the step runs the sign-in itself; each opens the browser, the
-    person's credential step. It never prints a command for them to run."""
+    credentials present (this engine's REST calls and terraform) carrying
+    `ADC_SCOPES`, the Directory scopes stage 6 reads with beside Cloud
+    Platform. When either is missing, or an existing ADC lacks a scope, the
+    step runs the sign-in itself; each opens the browser, the person's
+    credential step. It never prints a command for them to run."""
 
     id = "preflight.sign-in"
     satisfies = ("other.installer-sign-in",)
@@ -641,7 +678,7 @@ class SignInStep(_Base):
     def __init__(self, gcp: Callable[[], Gcp], ask: Ask, *,
                  gcloud: Callable[[], str | None] = find_gcloud,
                  account: Callable[[], str] | None = None,
-                 adc: Callable[[], bool] = adc_ready,
+                 adc: Callable[[], frozenset[str] | None] = adc_scopes,
                  login: Callable[[Sequence[str]], int] = run_auth) -> None:
         super().__init__(gcp, ask)
         self._gcloud = gcloud
@@ -654,8 +691,13 @@ class SignInStep(_Base):
         found = []
         if not self._account():
             found.append(("gcloud has no signed-in account", ["auth", "login"]))
-        if not self._adc():
-            found.append(("the application-default credentials are missing", ["auth", "application-default", "login"]))
+        granted = self._adc()
+        lacking = [scope.rsplit("/", 1)[1] for scope in ADC_SCOPES if scope not in (granted or ())]
+        adc_login = ["auth", "application-default", "login", "--scopes=" + ",".join(ADC_SCOPES)]
+        if granted is None:
+            found.append(("the application-default credentials are missing", adc_login))
+        elif lacking:
+            found.append((f"the application-default credentials lack the scopes {', '.join(lacking)}", adc_login))
         return found
 
     def check(self, ctx: Any) -> Observation:
@@ -1225,7 +1267,198 @@ class QuotasStep(_Base):
         return Plan("quota increases to request", tuple(self.findings(ctx)[0]))
 
     def apply(self, ctx: Any, plan: Plan) -> None:
-        """A quota increase is requested by a person on the Quotas page: the plan names each one."""
+        """A quota increase is requested by a person on the Quotas page: the plan
+        names each one, and the page opens."""
+        if plan.actions:
+            open_page(quotas_page(ctx.project), why="Request these quota increases on the Quotas page:\n  "
+                                                    + "\n  ".join(plan.actions))
+
+
+# -- preflight.sizing (decision 7) -------------------------------------------------
+
+WHO_QUESTION = "Who is this SwarmCloud for? [1] just me  [2] a team"
+MEMBERS_QUESTION = "How many people will use it?"
+REVIEW_QUESTION = "Press Enter to accept it, or type a row number (1-{rows}) to change that one number"
+WHO = {"1": sizing.INDIVIDUAL, "just me": sizing.INDIVIDUAL, "me": sizing.INDIVIDUAL,
+       sizing.INDIVIDUAL: sizing.INDIVIDUAL, "2": sizing.TEAM, "a team": sizing.TEAM, sizing.TEAM: sizing.TEAM}
+#: A positive whole number, as typed.
+POSITIVE = re.compile(r"^[1-9][0-9]{0,5}$")
+#: An answer that is not one of the choices is asked again this many times.
+TRIES = 3
+#: Changes one review takes before it stops (a terminal that repeats itself).
+MAX_CHANGES = 100
+
+
+def quotas_page(project: str) -> str:
+    return f"https://console.cloud.google.com/iam-admin/quotas?project={project}"
+
+
+class SizingStep(_Base):
+    """`sizing`: who the deployment is for (one person or a team of N), turned
+    into proposed pool ceilings, service maximums, Claude accounts and a monthly
+    budget (`swarm_install.sizing.propose`), capped at the region's CPU quota
+    when it can be read. The person accepts the proposal with Enter or changes
+    any one number, each change validated. Recorded as `state.outputs["sizing"]`
+    (the interface sheet's shape) and the quota it was checked against as
+    `sizing_cpu_quota`."""
+
+    id = "preflight.sizing"
+    satisfies = ("other.deployment-sizing",)
+    _explain = (
+        "A deployment for one person and one for a team of fifty want very different ceilings; the "
+        "installer proposes them from the answer, capped at the region's CPU quota, and the person accepts "
+        "or changes any one number."
+    )
+
+    def check(self, ctx: Any) -> Observation:
+        found = ctx.outputs.get("sizing")
+        if not isinstance(found, Mapping):
+            return Observation(UNMET, "who the deployment is for is not answered yet")
+        wrong = sizing.problems(found, region_cpu_quota=checked_quota(ctx))
+        if wrong:
+            return Observation(UNMET, "; ".join(wrong))
+        who = "one person" if found["mode"] == sizing.INDIVIDUAL else f"a team of {found['members']}"
+        return Observation(MET, f"sized for {who}: global {found['pool_limits']['global']}, "
+                                f"budget ${found['budget_usd']}/month", {"sizing": dict(found)})
+
+    def plan(self, ctx: Any) -> Plan:
+        return Plan("ask who the deployment is for and propose its capacity and ceilings", (WHO_QUESTION,))
+
+    def apply(self, ctx: Any, plan: Plan) -> None:
+        mode = self._until(ctx, WHO_QUESTION, lambda a: WHO.get(a.lower()), "type 1 or 2", default="1")
+        members = 1 if mode == sizing.INDIVIDUAL else int(self._until(
+            ctx, MEMBERS_QUESTION, lambda a: a if POSITIVE.match(a) else None, "type a whole number, 1 or more"))
+        quota = self.read_quota(ctx)
+        chosen = review(self._ask, ctx, self.id, mode, members, quota)
+        remember(ctx, outputs={"sizing": chosen,
+                               "sizing_cpu_quota": {"region": ctx.state.region, "cpus": quota}})
+
+    def _until(self, ctx: Any, question: str, parse: Callable[[str], Any], hint: str, *,
+               default: str | None = None) -> Any:
+        asked = question
+        for _ in range(TRIES):
+            answer = self._ask(ctx, self.id, asked, default=default).strip()
+            value = parse(answer)
+            if value is not None:
+                return value
+            asked = f"{answer!r} is not an answer ({hint}). {question}"
+        raise ValueError(f"no valid answer to: {question} ({hint})")
+
+    def read_quota(self, ctx: Any) -> int | None:
+        """The region's CPUS quota, or None (said) when it cannot be read yet."""
+        region = ctx.state.region
+        gcp = self.gcp
+        if not region or gcp.project(ctx.project) is None:
+            ctx.events.emit("step_apply", step=self.id, message=(
+                f"project {ctx.project} does not exist yet, so the region's CPU quota cannot be read: the "
+                "proposal is checked against it again after stage 1 creates the project"))
+            return None
+        try:
+            quota = gcp.region_cpu_quota(ctx.project, region)
+        except ApiError as exc:
+            ctx.events.emit("step_apply", step=self.id, message=(
+                f"the {region} CPU quota could not be read ({exc}): the proposal is checked against it again "
+                "after stage 1 enables Compute Engine"))
+            return None
+        ctx.events.emit("step_apply", step=self.id, message=f"{region} CPU quota: {quota}")
+        return quota
+
+
+def checked_quota(ctx: Any) -> int | None:
+    """The CPUS quota the recorded sizing was checked against, for this region."""
+    found = ctx.outputs.get("sizing_cpu_quota")
+    if isinstance(found, Mapping) and found.get("region") == ctx.state.region and isinstance(found.get("cpus"), int):
+        return int(found["cpus"])
+    return None
+
+
+def review(ask: Ask, ctx: Any, step_id: str, mode: str, members: int, quota: int | None, *,
+           start: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Show the proposal (or `start`) as a table; Enter accepts it, a row
+    number changes that one number. A change that terraform or the region's
+    quota would refuse is not taken, and the reason is said with the table."""
+    current: dict[str, Any] = dict(start or sizing.propose(mode, members, region_cpu_quota=quota))
+    uncapped = sizing.propose(mode, members)
+    if quota is not None and current["pool_limits"]["global"] < uncapped["pool_limits"]["global"]:
+        open_page(quotas_page(ctx.project), why=(
+            f"The region's {quota} CPUs cap this proposal at {current['pool_limits']['global']} tasks at once "
+            f"(a {'team of ' + str(members) if mode == sizing.TEAM else 'person'} would get "
+            f"{uncapped['pool_limits']['global']}). To run more, request a CPUS increase on the Quotas page "
+            "(optional; the proposal stands either way)"))
+    said = ""
+    for _ in range(MAX_CHANGES):
+        numbered = sizing.rows(current)
+        answer = ask(ctx, step_id, f"{said}{sizing.table(current)}\n" + REVIEW_QUESTION.format(rows=len(numbered)),
+                     default=None).strip()
+        if not answer:
+            return current
+        if not answer.isdigit() or not 1 <= int(answer) <= len(numbered):
+            said = f"{answer!r} is not a row number.\n"
+            continue
+        path, now = numbered[int(answer) - 1]
+        typed = ask(ctx, step_id, f"New value for {sizing.label(path)} (now {now})", default=None).strip()
+        if not POSITIVE.match(typed):
+            said = f"Not changed: {typed!r} is not a whole number, 1 or more.\n"
+            continue
+        changed = sizing.with_change(current, path, int(typed))
+        wrong = sizing.problems(changed, region_cpu_quota=quota)
+        if wrong:
+            said = "Not changed: " + "; ".join(wrong) + ".\n"
+            continue
+        current, said = changed, f"Changed {sizing.label(path)} to {typed}.\n"
+    raise ValueError(f"the sizing was changed {MAX_CHANGES} times without being accepted; run swarm install again")
+
+
+class SizingQuotaStep(SizingStep):
+    """The proposal checked again against the region's CPUS quota once stage 1
+    has created the project and enabled Compute Engine: stage 0 could not read
+    it for a project that did not exist yet. MET when the recorded sizing fits
+    the quota; otherwise the capped proposal is shown and accepted or changed."""
+
+    id = "preflight.sizing-quota"
+    stage = 1
+    read_only = False
+    satisfies = ("other.deployment-sizing-quota",)
+    _explain = (
+        "A new project's CPU quota can only be read once stage 1 has created it; the sizing chosen in "
+        "stage 0 is checked against it here, and a ceiling the quota cannot run is proposed again."
+    )
+
+    def check(self, ctx: Any) -> Observation:
+        found = ctx.outputs.get("sizing")
+        if not isinstance(found, Mapping):
+            return Observation(UNMET, "no sizing is recorded (preflight.sizing asks it)")
+        known = checked_quota(ctx)
+        if known is None:
+            if self.gcp.project(ctx.project) is None:
+                return Observation(UNMET, f"project {ctx.project} does not exist yet (foundations.project creates it)")
+            try:
+                known = self.gcp.region_cpu_quota(ctx.project, str(ctx.state.region))
+            except ApiError as exc:
+                return Observation(UNMET, f"the {ctx.state.region} CPU quota could not be read yet ({exc})")
+            if known is None:
+                return Observation(MET, f"{ctx.state.region} reports no CPUS quota: nothing caps the sizing",
+                                   {"sizing_cpu_quota": {"region": ctx.state.region, "cpus": None}})
+        wrong = sizing.problems(found, region_cpu_quota=known)
+        if wrong:
+            return Observation(UNMET, "; ".join(wrong))
+        return Observation(MET, f"the sizing fits the {ctx.state.region} CPU quota ({known})",
+                           {"sizing_cpu_quota": {"region": ctx.state.region, "cpus": known}})
+
+    def plan(self, ctx: Any) -> Plan:
+        return Plan("propose the sizing again within the region's CPU quota")
+
+    def apply(self, ctx: Any, plan: Plan) -> None:
+        found = ctx.outputs["sizing"]
+        try:
+            quota = self.gcp.region_cpu_quota(ctx.project, str(ctx.state.region))
+        except ApiError as exc:
+            raise RuntimeError(f"the {ctx.state.region} CPU quota could not be read ({exc}); run swarm install "
+                               "again") from exc
+        chosen = review(self._ask, ctx, self.id, str(found["mode"]), int(found["members"]), quota,
+                        start=sizing.capped(found, quota))
+        remember(ctx, outputs={"sizing": chosen,
+                               "sizing_cpu_quota": {"region": ctx.state.region, "cpus": quota}})
 
 
 # -- preflight.release (lesson 27) -------------------------------------------------
@@ -1348,7 +1581,9 @@ def build_steps(gcp: Callable[[], Gcp] = GCP, ask: Ask = ASK) -> list[Any]:
         InstallerAddressStep(gcp, ask),
         OrgPoliciesStep(gcp, ask),
         QuotasStep(gcp, ask),
+        SizingStep(gcp, ask),
         ReleaseStep(gcp, ask),
+        SizingQuotaStep(gcp, ask),  # stage 1: the engine runs it after foundations creates the project
     ]
 
 
