@@ -219,10 +219,12 @@ def test_graph_service_with_its_key_and_image() -> None:
     assert on["graph_service"] == {"serve": True, "enabled": True}
 
 
-def test_scheduled_doctor_generated_and_gated() -> None:
-    for pass_name in INFRA_PASSES:
+def test_scheduled_doctor_on_from_infra_pass_2() -> None:
+    # DAYONE-TFVARS-2: BGD turned the hourly doctor on; pass 1 keeps every switch off.
+    for pass_name in ("registry", "infra-1"):
         assert _infra(pass_name, EVERY_VERSION)["enable_scheduled_doctor"] is False, pass_name
-    assert tfvars.SCHEDULED_DOCTOR_SHIPPED is False, "DOCTOR-1 flips this one value when its code ships"
+    for pass_name in ("infra-2", "infra-3", "infra-4", "infra-close"):
+        assert _infra(pass_name, {})["enable_scheduled_doctor"] is True, pass_name
 
 
 def test_cluster_reach_until_the_closing_pass() -> None:
@@ -263,7 +265,8 @@ def _declared(root: str) -> set[str]:
 def test_every_generated_input_is_a_declared_variable() -> None:
     # A name the root does not declare is a warning Terraform prints and an input it never applies.
     digests = {"image_digests": {"swarm-api": DIGEST, "workspace-apply": DIGEST, "swarm-graph": DIGEST},
-               "admin_groups": ["swarm-admins@example.com"], "github_app": {"id": "42", "slug": "s"}}
+               "admin_groups": ["swarm-admins@example.com"], "github_app": {"id": "42", "slug": "s"},
+               "sizing": _sizing(), "addons": EVERY_ADDON_ON}
     for pass_name in tfvars.PASSES:
         root = tfvars.ROOT_OF[pass_name]
         if root == "bootstrap":
@@ -271,3 +274,124 @@ def test_every_generated_input_is_a_declared_variable() -> None:
         else:
             inputs = _infra(pass_name, EVERY_VERSION, **digests)
         assert set(inputs) <= _declared(root), (pass_name, sorted(set(inputs) - _declared(root)))
+
+
+# -- DAYONE-TFVARS-2: sizing, one-person admission, add-ons --------------------------------
+
+QA_MEMBER = f"serviceAccount:qa-console@{PROJECT}.iam.gserviceaccount.com"
+EVERY_ADDON_ON = {
+    "bright-data-egress": {"phase": "on"},
+    "tailscale": {"phase": "on", "choices": {"tailscale_egress_target": "100.64.0.1"}},
+    "typesafe": {"phase": "on"},
+    "brave-search": {"phase": "on"},
+    "ci": {"phase": "on", "choices": {"github_repository": "acme/swarm", "sandbox_repository": "acme/sandbox",
+                                      "runner_label": "swarm-ci"}},
+}
+
+
+def _sizing(mode: str = "team", members: int = 8, **pool_limits) -> dict:
+    # The INTERFACE SHEET's shape, as SIZING-ASK writes it in stage 0.
+    limits = {"global": 60, "default_tenant": 12, "provider_tenant": 6,
+              "resource_classes": {"standard": 40}, "runner_profiles": {"claude-code": 30},
+              "backends": {"cloud-run": 50}}
+    limits.update(pool_limits)
+    return {"mode": mode, "members": members, "pool_limits": limits,
+            "service_max_instances": {"swarm-api": 8, "swarm-scheduler": 2, "swarm-quota-broker": 2,
+                                      "swarm-reconciler": 1},
+            "pool_accounts": 2, "budget_usd": 400}
+
+
+def test_sizing_sets_pool_limits_on_every_infra_pass() -> None:
+    sizing = _sizing()
+    for pass_name in INFRA_PASSES:
+        assert _infra(pass_name, sizing=sizing)["pool_limits"] == sizing["pool_limits"], pass_name
+
+
+def test_sizing_sets_service_max_instances_keeping_swarm_ui() -> None:
+    inputs = _infra("infra-2", sizing=_sizing())
+    # infra refuses a map that does not name every control-plane service; sizing has no swarm-ui.
+    assert inputs["service_max_instances"] == {"swarm-api": 8, "swarm-scheduler": 2, "swarm-quota-broker": 2,
+                                               "swarm-reconciler": 1, "swarm-ui": 2}
+
+
+def test_no_sizing_keeps_todays_inputs() -> None:
+    # An install state from before SIZING-ASK: terraform's own defaults stand.
+    for pass_name in INFRA_PASSES:
+        inputs = _infra(pass_name)
+        assert "pool_limits" not in inputs and "service_max_instances" not in inputs, pass_name
+
+
+def test_sizing_breaking_provider_validation_fails_before_any_plan() -> None:
+    # 8 people x provider_tenant 10 = 80 > the provider-wide pool, which is global (60) when unset.
+    with pytest.raises(ValueError, match=r"provider_tenant .*8 .*60"):
+        _infra("infra-1", sizing=_sizing(provider_tenant=10))
+    with pytest.raises(ValueError, match="provider"):
+        _infra("infra-1", sizing=_sizing(providers={"anthropic": 40}))
+    ok = _infra("infra-1", sizing=_sizing(provider_tenant=10, providers={"anthropic": 80}))
+    assert ok["pool_limits"]["providers"] == {"anthropic": 80}
+    # One person is one tenant.
+    assert _infra("infra-1", sizing=_sizing("individual", 1, provider_tenant=60))["pool_limits"]["global"] == 60
+
+
+@pytest.mark.parametrize("bad", [{"global": 0}, {"global": -1}, {"provider_tenant": "ten"}, {"surplus": 3}])
+def test_sizing_pool_limits_refused_when_infra_would_refuse_them(bad: dict) -> None:
+    with pytest.raises(ValueError, match="sizing"):
+        _infra("infra-1", sizing=_sizing(**bad))
+
+
+def test_sizing_service_max_instances_must_be_positive() -> None:
+    sizing = _sizing()
+    sizing["service_max_instances"]["swarm-api"] = 0
+    with pytest.raises(ValueError, match="sizing.*swarm-api"):
+        _infra("infra-1", sizing=sizing)
+    with pytest.raises(ValueError, match="sizing.*mode"):
+        _infra("infra-1", sizing=dict(_sizing(), mode="company"))
+
+
+def test_individual_iap_admits_only_the_installer() -> None:
+    # Decision 7: one person; no domain: member and no team group. The QA identity stays:
+    # terraform/bootstrap refuses enable_qa_identity without it (qa_identity.tf).
+    for pass_name in ("bootstrap-1", "bootstrap-2"):
+        members = _boot(pass_name, sizing=_sizing("individual", 1))["frontend_iap_members"]
+        assert members == ["user:admin@example.com", QA_MEMBER], pass_name
+        assert not [m for m in members if m.startswith(("domain:", "group:"))]
+    second = _boot("bootstrap-2", sizing=_sizing("individual", 1))
+    assert second["frontend_iap_programmatic_clients"] == [DESKTOP_CLIENT_ID], "the Desktop client still signs in"
+
+
+def test_individual_allowed_domains_stays_the_org_domain() -> None:
+    for pass_name in INFRA_PASSES:
+        assert _infra(pass_name, sizing=_sizing("individual", 1))["allowed_domains"] == ["example.com"], pass_name
+
+
+def test_team_iap_keeps_decision_1() -> None:
+    for pass_name in ("bootstrap-1", "bootstrap-2"):
+        members = _boot(pass_name, sizing=_sizing("team", 8))["frontend_iap_members"]
+        assert members == ["domain:example.com", "user:admin@example.com", QA_MEMBER], pass_name
+
+
+def test_addon_overlay_in_every_infra_pass() -> None:
+    for pass_name in INFRA_PASSES:
+        inputs = _infra(pass_name, EVERY_VERSION, addons=EVERY_ADDON_ON)
+        assert inputs["enable_browser_egress"] is True, pass_name
+        assert inputs["enable_tailscale_egress"] is True and inputs["search_tool_enabled"] is True, pass_name
+        assert inputs["enable_typesafe_forwarder"] is True, pass_name
+        assert inputs["typesafe_forwarder"]["serve"] is True, pass_name
+        assert inputs["enable_acceptance_fixture"] is True, pass_name
+
+
+def test_addon_overlay_in_every_bootstrap_pass() -> None:
+    for pass_name in ("bootstrap-1", "bootstrap-2"):
+        inputs = _boot(pass_name, addons=EVERY_ADDON_ON)
+        # Core sets enable_github_wif false; the ci add-on's recorded phase wins.
+        assert inputs["enable_github_wif"] is True, pass_name
+        assert inputs["github_repository"] == "acme/swarm", pass_name
+        assert inputs["enable_typesafe_forwarder_read"] is True, pass_name
+
+
+def test_no_addon_leaves_core_inputs_alone() -> None:
+    assert _boot("bootstrap-1")["enable_github_wif"] is False
+    assert _boot("bootstrap-1", addons={}) == _boot("bootstrap-1")
+    assert _infra("infra-2", EVERY_VERSION, addons={}) == _infra("infra-2", EVERY_VERSION)
+    off = _infra("infra-2", EVERY_VERSION, addons={"brave-search": {"phase": "off"}})
+    assert off["search_tool_enabled"] is False
