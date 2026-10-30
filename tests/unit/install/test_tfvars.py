@@ -4,6 +4,7 @@ design §5.1, §5.4; plan R7, R8; lessons 5, 11, 28, 35; Q2)."""
 from __future__ import annotations
 
 import builtins
+import copy
 import inspect
 import json
 from pathlib import Path
@@ -11,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from swarm_install import terraform as tfmod
+from swarm_install import sizing as sizes
 from swarm_install import tfvars
 from swarm_install.api_client import ADMIN_ROLE, DELEGATION
 
@@ -289,29 +291,42 @@ EVERY_ADDON_ON = {
 }
 
 
-def _sizing(mode: str = "team", members: int = 8, **pool_limits) -> dict:
-    # The INTERFACE SHEET's shape, as SIZING-ASK writes it in stage 0.
-    limits = {"global": 60, "default_tenant": 12, "provider_tenant": 6,
-              "resource_classes": {"standard": 40}, "runner_profiles": {"claude-code": 30},
-              "backends": {"cloud-run": 50}}
-    limits.update(pool_limits)
-    return {"mode": mode, "members": members, "pool_limits": limits,
-            "service_max_instances": {"swarm-api": 8, "swarm-scheduler": 2, "swarm-quota-broker": 2,
-                                      "swarm-reconciler": 1},
-            "pool_accounts": 2, "budget_usd": 400}
+#: The sizes the tests render: one person, a small team, and the reference team (sizing.py).
+ONE_PERSON = (sizes.INDIVIDUAL, 1)
+TEAM_OF_5 = (sizes.TEAM, 5)
+TEAM_OF_50 = (sizes.TEAM, sizes.REFERENCE_MEMBERS)
+EVERY_SIZE = (ONE_PERSON, TEAM_OF_5, TEAM_OF_50)
 
 
-def test_sizing_sets_pool_limits_on_every_infra_pass() -> None:
-    sizing = _sizing()
+def _sizing(mode: str = sizes.TEAM, members: int = 5) -> dict:
+    # What SIZING-ASK records in stage 0: the real proposal, never hand-written
+    # numbers (a hand-written global 60 against 8 x 6 hid audit finding N5).
+    return dict(sizes.propose(mode, members))
+
+
+def _changed(sizing: dict, **pool_limits) -> dict:
+    # The proposal with pool_limits changed, as a person's edit or a corrupt state would.
+    changed = copy.deepcopy(sizing)
+    changed["pool_limits"].update(pool_limits)
+    return changed
+
+
+@pytest.mark.parametrize("size", EVERY_SIZE, ids=lambda size: f"{size[0]}-{size[1]}")
+def test_sizing_sets_pool_limits_on_every_infra_pass(size: tuple[str, int]) -> None:
+    sizing = _sizing(*size)
+    assert sizes.problems(sizing) == [], "the proposal is one terraform takes"
     for pass_name in INFRA_PASSES:
         assert _infra(pass_name, sizing=sizing)["pool_limits"] == sizing["pool_limits"], pass_name
 
 
-def test_sizing_sets_service_max_instances_keeping_swarm_ui() -> None:
-    inputs = _infra("infra-2", sizing=_sizing())
+@pytest.mark.parametrize("size", EVERY_SIZE, ids=lambda size: f"{size[0]}-{size[1]}")
+def test_sizing_sets_service_max_instances_keeping_swarm_ui(size: tuple[str, int]) -> None:
+    sizing = _sizing(*size)
+    inputs = _infra("infra-2", sizing=sizing)
     # infra refuses a map that does not name every control-plane service; sizing has no swarm-ui.
-    assert inputs["service_max_instances"] == {"swarm-api": 8, "swarm-scheduler": 2, "swarm-quota-broker": 2,
-                                               "swarm-reconciler": 1, "swarm-ui": 2}
+    assert "swarm-ui" not in sizing["service_max_instances"]
+    assert inputs["service_max_instances"] == {**sizing["service_max_instances"],
+                                               "swarm-ui": tfvars.SERVICE_MAX_DEFAULTS["swarm-ui"]}
 
 
 def test_no_sizing_keeps_todays_inputs() -> None:
@@ -322,24 +337,36 @@ def test_no_sizing_keeps_todays_inputs() -> None:
 
 
 def test_sizing_breaking_provider_validation_fails_before_any_plan() -> None:
-    # 8 people x provider_tenant 10 = 80 > the provider-wide pool, which is global (60) when unset.
-    with pytest.raises(ValueError, match=r"provider_tenant .*8 .*60"):
-        _infra("infra-1", sizing=_sizing(provider_tenant=10))
+    sizing = _sizing(*TEAM_OF_5)
+    members, ceiling = sizing["members"], sizing["pool_limits"]["global"]
+    # One more per tenant than fits: members x provider_tenant > the provider-wide pool,
+    # which is global when `providers` does not name the provider.
+    over = ceiling // members + 1
+    assert members * over > ceiling
+    with pytest.raises(ValueError, match=rf"provider_tenant {over} x {members} .* = {ceiling}\b"):
+        _infra("infra-1", sizing=_changed(sizing, provider_tenant=over))
+    per_tenant = sizing["pool_limits"]["provider_tenant"]
     with pytest.raises(ValueError, match="provider"):
-        _infra("infra-1", sizing=_sizing(providers={"anthropic": 40}))
+        _infra("infra-1", sizing=_changed(sizing, providers={"anthropic": members * per_tenant - 1}))
     # global is the pool of every provider `providers` does not name, so it is checked too.
+    named = {"anthropic": members * over}
     with pytest.raises(ValueError, match="global"):
-        _infra("infra-1", sizing=_sizing(provider_tenant=10, providers={"anthropic": 80}))
-    ok = _infra("infra-1", sizing=_sizing(provider_tenant=10, providers={"anthropic": 80}, **{"global": 80}))
-    assert ok["pool_limits"]["providers"] == {"anthropic": 80}
-    # One person is one tenant.
-    assert _infra("infra-1", sizing=_sizing("individual", 1, provider_tenant=60))["pool_limits"]["global"] == 60
+        _infra("infra-1", sizing=_changed(sizing, provider_tenant=over, providers=named))
+    ok = _infra("infra-1", sizing=_changed(sizing, provider_tenant=over, providers=named,
+                                           **{"global": members * over}))
+    assert ok["pool_limits"]["providers"] == named
+    # One person is one tenant: their provider_tenant is the whole global, which a team refuses.
+    alone = _sizing(*ONE_PERSON)
+    assert alone["pool_limits"]["provider_tenant"] == alone["pool_limits"]["global"]
+    assert _infra("infra-1", sizing=alone)["pool_limits"] == alone["pool_limits"]
+    with pytest.raises(ValueError, match="provider_tenant"):
+        _infra("infra-1", sizing=_changed(sizing, provider_tenant=ceiling))
 
 
 @pytest.mark.parametrize("bad", [{"global": 0}, {"global": -1}, {"provider_tenant": "ten"}, {"surplus": 3}])
 def test_sizing_pool_limits_refused_when_infra_would_refuse_them(bad: dict) -> None:
     with pytest.raises(ValueError, match="sizing"):
-        _infra("infra-1", sizing=_sizing(**bad))
+        _infra("infra-1", sizing=_changed(_sizing(), **bad))
 
 
 def test_sizing_service_max_instances_must_be_positive() -> None:
@@ -355,21 +382,21 @@ def test_individual_iap_admits_only_the_installer() -> None:
     # Decision 7: one person; no domain: member and no team group. The QA identity stays:
     # terraform/bootstrap refuses enable_qa_identity without it (qa_identity.tf).
     for pass_name in ("bootstrap-1", "bootstrap-2"):
-        members = _boot(pass_name, sizing=_sizing("individual", 1))["frontend_iap_members"]
+        members = _boot(pass_name, sizing=_sizing(*ONE_PERSON))["frontend_iap_members"]
         assert members == ["user:admin@example.com", QA_MEMBER], pass_name
         assert not [m for m in members if m.startswith(("domain:", "group:"))]
-    second = _boot("bootstrap-2", sizing=_sizing("individual", 1))
+    second = _boot("bootstrap-2", sizing=_sizing(*ONE_PERSON))
     assert second["frontend_iap_programmatic_clients"] == [DESKTOP_CLIENT_ID], "the Desktop client still signs in"
 
 
 def test_individual_allowed_domains_stays_the_org_domain() -> None:
     for pass_name in INFRA_PASSES:
-        assert _infra(pass_name, sizing=_sizing("individual", 1))["allowed_domains"] == ["example.com"], pass_name
+        assert _infra(pass_name, sizing=_sizing(*ONE_PERSON))["allowed_domains"] == ["example.com"], pass_name
 
 
 def test_team_iap_keeps_decision_1() -> None:
     for pass_name in ("bootstrap-1", "bootstrap-2"):
-        members = _boot(pass_name, sizing=_sizing("team", 8))["frontend_iap_members"]
+        members = _boot(pass_name, sizing=_sizing(*TEAM_OF_5))["frontend_iap_members"]
         assert members == ["domain:example.com", "user:admin@example.com", QA_MEMBER], pass_name
 
 
