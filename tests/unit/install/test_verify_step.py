@@ -1,8 +1,8 @@
 """Stage 14, verify (DAYONE-ENGINE-4; design §4, D3, D26; lessons 18, 28,
 30, 38, 43; manifest `other.verify-row`, `other.release-kubernetes-bundle`).
 
-On fakes, with no credentials: every Scheduler target is called as its job
-calls it and must answer 2xx; what a service serves is read from its
+On fakes, with no credentials: every platform Scheduler job is judged from
+the Scheduler API and its target's invoker binding, and no target is called; what a service serves is read from its
 revision's digest, never a label; the reconciler may list Jobs per tenant
 namespace; the console's verify row is written with its countdown; four runs
 each reach a pull request, read from what the real `swarm` CLI prints, the
@@ -20,6 +20,7 @@ import io
 import json
 import secrets
 from collections.abc import Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +81,7 @@ class VerifyFakeGcp(FakeGcp):
 SCHEDULER_URL = "https://swarm-scheduler-abc123-uc.a.run.app"
 SCHEDULER_STABLE_URL = f"https://swarm-scheduler-123456789.{REGION}.run.app"
 RECONCILER_URL = "https://swarm-reconciler-abc123-uc.a.run.app"
+SCHEDULER_AUDIENCE = "https://swarm-scheduler.dev.swarm.internal"
 DOCTOR = cluster.account_email(PROJECT, "swarm-doctor")
 DOCTOR_JOB = f"projects/{PROJECT}/locations/{REGION}/jobs/swarm-doctor"
 
@@ -119,10 +121,12 @@ def _scheduler_rig() -> VerifyFakeGcp:
     Cloud Run services and the hourly doctor, an OAuth call to `jobs:run`."""
     gcp = VerifyFakeGcp()
     sweep = cluster.account_email(PROJECT, "swarm-scheduler")
-    gcp.run_services_list = [_run_service("swarm-scheduler", SCHEDULER_URL, SCHEDULER_STABLE_URL),
+    gcp.run_services_list = [{**_run_service("swarm-scheduler", SCHEDULER_URL, SCHEDULER_STABLE_URL),
+                              "customAudiences": [SCHEDULER_AUDIENCE]},
                              _run_service("swarm-reconciler", RECONCILER_URL)]
     gcp.jobs = [
-        _job("swarm-quota-sweep", f"{SCHEDULER_STABLE_URL}/sweep", account=sweep, audience=SCHEDULER_STABLE_URL,
+        # terraform/infra's push audience: a custom audience the service names.
+        _job("swarm-quota-sweep", f"{SCHEDULER_STABLE_URL}/sweep", account=sweep, audience=SCHEDULER_AUDIENCE,
              headers={"Content-Type": "application/json"}),
         _job("swarm-reconcile", f"{RECONCILER_URL}/tick", account=RECONCILER, last={}),
         _job("swarm-doctor-hourly", f"https://run.googleapis.com/v2/{DOCTOR_JOB}:run", account=DOCTOR, oauth=True,
@@ -168,6 +172,21 @@ def test_scheduler_targets_judged_from_scheduler_and_invoker_bindings() -> None:
     assert f"swarm-doctor-hourly: {DOCTOR} may not invoke {DOCTOR_JOB}" in observed.detail
     gcp.policies[DOCTOR_JOB] = _invokers(f"serviceAccount:{DOCTOR}", role="roles/run.jobsExecutor")
     assert step.check(_ctx()).status == MET
+
+    # The hourly doctor's tick refused before its grant propagated (lesson
+    # 19): its binding is in place and its next tick is past this wait, so it
+    # is named, not held against the step; a tick this wait will see is waited for.
+    ctx = _ctx()
+    refused = {"code": 7, "message": "PERMISSION_DENIED"}
+    later = datetime.fromtimestamp(ctx.clock.now() + 3600, timezone.utc).isoformat()
+    gcp.jobs[2] = {**_job("swarm-doctor-hourly", f"https://run.googleapis.com/v2/{DOCTOR_JOB}:run", account=DOCTOR,
+                          oauth=True, last=refused), "scheduleTime": later}
+    observed = step.check(ctx)
+    assert observed.status == MET and "swarm-doctor-hourly: its last attempt" in observed.detail
+    gcp.jobs[2]["scheduleTime"] = datetime.fromtimestamp(ctx.clock.now() + 60, timezone.utc).isoformat()
+    assert step.check(ctx).status == WAITING
+    gcp.jobs[2] = _job("swarm-doctor-hourly", f"https://run.googleapis.com/v2/{DOCTOR_JOB}:run", account=DOCTOR,
+                       oauth=True)
 
     # A last attempt the target refused, a job Scheduler disabled, an audience
     # the service would refuse and a target that is no Cloud Run service here.
@@ -297,8 +316,10 @@ class FakeRuns:
 
     def launch(self, ctx: Any, surface: str, shape: str, repository: str, label: str) -> str:
         self.launched.append((surface, shape, repository, label))
-        again = sum(1 for s, k, _, _ in self.launched if (s, k) == (surface, shape))
-        run_id = f"t-{surface}-{shape}" if again == 1 else f"t{again}-{surface}-{shape}"
+        run_id, again = f"t-{surface}-{shape}", 1
+        while run_id in self.states:  # a relaunch is a new run with a new id
+            again += 1
+            run_id = f"t{again}-{surface}-{shape}"
         self.states[run_id] = verify.RunStatus("running")
         return run_id
 
@@ -577,6 +598,7 @@ def test_failed_run_is_relaunched_at_most_twice() -> None:
     assert "plugin-single failed 3 times" in observed.detail and "not relaunched again" in observed.detail
 
     # A console run: dropped, and its failed id never copied back.
+    runs.finish(ctx.outputs["verify_runs"]["plugin-single"])
     runs.states["t-console-workflow"] = verify.RunStatus("failed")
     observed = step.check(ctx)
     assert "console-workflow (t-console-workflow) failed; Admin › Setup starts it again (1 of 2)" \

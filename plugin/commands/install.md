@@ -73,7 +73,7 @@ should be replaced.
 **A secret step: `needs_terminal`.** Under Claude Code the engine has no
 terminal to prompt on, so a step that needs a value or a typed answer pauses
 with a `step_paused` event whose `reason` is `needs_terminal` and whose
-`command` is the line to hand on, today `! swarm install --resume`. Give the
+`command` is the line to hand on, today `! swarm install`. Give the
 person that `command` exactly as it came, and say they type it at the prompt
 themselves: the engine then asks at a hidden prompt on their terminal. Never
 ask for the value, never read it from anywhere and never pipe it into the

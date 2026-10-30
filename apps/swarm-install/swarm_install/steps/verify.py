@@ -3,7 +3,7 @@
 
 | Step | Manifest entries | Check | Lesson |
 |---|---|---|---|
-| `verify.scheduler-targets` | `other.verify-scheduler-targets` | every enabled Scheduler job's target, called as the job calls it, answers 2xx | 38: Scheduler said success while its target answered 403 on every tick |
+| `verify.scheduler-targets` | `other.verify-scheduler-targets` | every enabled platform Scheduler job is ENABLED, its last attempt (once it has run) answered, and its target's invoker binding names the job's own account with an audience the target accepts; no target is called | 38: Scheduler said success while its target answered 403 on every tick |
 | `verify.digests` | `other.verify-digests` | every service serves 100 % on its latest ready revision, and that revision's **digest** is the release's | 28: labels lie; a pinned revision served 0 % |
 | `verify.reconciler-jobs` | (lesson 30) | the reconciler may list Jobs in every tenant namespace, namespaced, by email and by uniqueId | 30: it listed Jobs at cluster scope and saw nothing |
 | `verify.firestore-migrations` | `other.firestore-migrations` | the state and the install record are at this engine's schema | |
@@ -46,8 +46,12 @@ only when each says `app_installation`; any other kind, or none recorded,
 fails the step naming the run, the task, the kind and the secret.
 
 **Only the platform's own** (`swarm-*`) Scheduler jobs and Cloud Run services
-are verified: the project may hold others, and calling their targets would
-trigger them.
+are verified: the project may hold others. No target is called, the
+platform's either: calling the doctor's `jobs:run` starts a doctor run, and an
+ID token minted as each job's own account needs a Token Creator grant the
+installer does not hold (#11). A job is judged from the Cloud Scheduler API
+(its state, and its last attempt's status once it has run) and from the
+target's IAM policy, the resource's own and the project's.
 
 **The console's verify row** (D26): every step writes the engine document's
 `verify` field as it goes (`check`, `done`, `total`, `started`,
@@ -58,17 +62,16 @@ passes.
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Protocol
 
-from ..api_client import IamCredentials, IdTokenMinter
 from ..exitcodes import MET, UNMET, WAITING
-from ..record import RECORD_SCHEMA_VERSION, engine_document
+from ..record import PERSONAL, RECORD_SCHEMA_VERSION, VERIFY_RUNS, engine_document
 from ..state import SCHEMA_VERSION
 from ..swarm_context import Run, deployment_url, list_contexts, points_at, run_command, run_interactive, verify_env
 from ..waits import WaitSpec
@@ -77,6 +80,7 @@ from .cluster import Kube, account_email, kube_for
 from .preflight import ASK, Ask, Gcp, remember
 
 SCHEDULER_API = "https://cloudscheduler.googleapis.com/v1"
+RUN_API = "https://run.googleapis.com/v2"
 
 #: The checks the verify row counts, in the order stage 14 runs them; the
 #: end-to-end check is seven runs: the four product runs, each to a pull
@@ -94,7 +98,7 @@ CONSOLE_KEYS = {"single": "console_task", "workflow": "console_workflow"}
 
 #: A tick's target may 403 for a while after its grant lands (lesson 19).
 TARGETS_WAIT = WaitSpec(
-    reason="every Scheduler target answering 2xx",
+    reason="every Scheduler job enabled, its last attempt answered and its target invocable by its account",
     expected="at once, or up to 10 min while a new grant propagates",
     expected_s=60,
     bound_s=10 * 60,
@@ -112,6 +116,11 @@ RUNS_WAIT = WaitSpec(
     look_at="swarm status <task id> for each run named above; the console's task pages",
     interval_s=30,
 )
+
+#: How many times a failed or cancelled verification run is relaunched before
+#: the step stops on it (#19): a flaky run gets two more chances; a third
+#: failure is a fault, read in `swarm status`.
+RELAUNCHES = 2
 
 #: The platform's Scheduler jobs and Cloud Run services are named `swarm-*`.
 PLATFORM_PREFIX = "swarm-"
@@ -147,6 +156,15 @@ class VerifyGcp(Gcp):
 
     def scheduler_jobs(self, project: str, region: str) -> list[dict[str, Any]]:
         return self._pages(f"{SCHEDULER_API}/projects/{project}/locations/{region}/jobs", "jobs")
+
+    def run_services(self, project: str, region: str) -> list[dict[str, Any]]:
+        """Cloud Run's v2 view: `uri`, every one of `urls`, `customAudiences`, `invokerIamDisabled`."""
+        return self._pages(f"{RUN_API}/projects/{project}/locations/{region}/services", "services")
+
+    def run_iam_policy(self, name: str) -> dict[str, Any]:
+        """A Cloud Run service's or job's own IAM policy (`projects/p/locations/r/services/s`
+        or `.../jobs/j`)."""
+        return self._call("GET", f"{RUN_API}/{name}:getIamPolicy") or {}
 
     def _knative(self, project: str, region: str) -> str:
         return f"https://{region}-run.googleapis.com/apis/serving.knative.dev/v1/namespaces/{project}"
@@ -207,19 +225,61 @@ def write_progress(ctx: Any, check: str, done: int, *, result: str | None = None
     return row
 
 
-# -- calling a Scheduler target as Scheduler calls it ---------------------------
+# -- judging a Scheduler job without calling its target -------------------------
 
-#: `call(method, url, headers, body) -> HTTP status`, unauthenticated but for
-#: the bearer in `headers`.
-TargetCall = Callable[[str, str, Mapping[str, str], bytes], int]
+#: The roles that let a job's account call a Cloud Run service
+#: (`run.routes.invoke`) or start a Cloud Run job (`run.jobs.run`).
+SERVICE_INVOKER_ROLES = frozenset({"roles/run.invoker", "roles/run.servicesInvoker", "roles/run.developer",
+                                   "roles/run.admin", "roles/editor", "roles/owner"})
+JOB_RUNNER_ROLES = frozenset({"roles/run.invoker", "roles/run.jobsExecutor", "roles/run.jobsExecutorWithOverrides",
+                              "roles/run.developer", "roles/run.admin", "roles/editor", "roles/owner"})
+
+#: `jobs:run` on the Cloud Run Admin API, v2 or the regional v1 form.
+_JOB_RUN = (
+    re.compile(r"https://(?:[a-z0-9-]+-)?run\.googleapis\.com/v2/"
+               r"(projects/[^/]+/locations/[^/]+/jobs/[^/:?]+):run"),
+    re.compile(r"https://(?P<region>[a-z0-9-]+)-run\.googleapis\.com/apis/run\.googleapis\.com/v1/"
+               r"namespaces/(?P<project>[^/]+)/jobs/(?P<job>[^/:?]+):run"),
+)
 
 
-def requests_call(method: str, url: str, headers: Mapping[str, str], body: bytes) -> int:
-    import requests
+def _origin(url: str) -> str:
+    """`https://host` of a URL: what a Cloud Run service's URL is matched on."""
+    found = re.match(r"(https?://[^/?#]+)", url.strip())
+    return found.group(1).lower() if found else ""
 
-    with requests.Session() as session:
-        session.trust_env = False
-        return session.request(method, url, headers=dict(headers), data=body or None, timeout=120).status_code
+
+def _origins(service: Mapping[str, Any]) -> set[str]:
+    """Every `https://host` a Cloud Run service answers on."""
+    return {_origin(str(u)) for u in [service.get("uri") or "", *(service.get("urls") or [])] if u}
+
+
+def _epoch(stamp: str) -> float | None:
+    """An RFC 3339 time as epoch seconds, or None."""
+    try:
+        return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp() if stamp else None
+    except ValueError:
+        return None
+
+
+def _job_run_target(uri: str) -> str:
+    """The Cloud Run job a `jobs:run` URI starts, as `projects/p/locations/r/jobs/j`, or ""."""
+    v2 = _JOB_RUN[0].match(uri)
+    if v2:
+        return v2.group(1)
+    v1 = _JOB_RUN[1].match(uri)
+    if v1:
+        return f"projects/{v1['project']}/locations/{v1['region']}/jobs/{v1['job']}"
+    return ""
+
+
+def _granted(policies: Sequence[Mapping[str, Any]], roles: frozenset[str], account: str) -> bool:
+    """Whether an unconditional binding in any of `policies` gives `account`
+    (or everyone) one of `roles`."""
+    members = {"allUsers", "allAuthenticatedUsers"} | ({f"serviceAccount:{account}"} if account else set())
+    return any(binding.get("role") in roles and not binding.get("condition")
+               and members & set(binding.get("members") or ())
+               for policy in policies for binding in (policy.get("bindings") or ()))
 
 
 class _Base:
@@ -269,42 +329,108 @@ class SchedulerTargetsStep(_Base):
     satisfies = ("other.verify-scheduler-targets",)
     _explain = (
         "Cloud Scheduler reports a tick as attempted even when its target refuses it: the quota sweep "
-        "answered 403 on every tick for weeks (lesson 38). Each target is called as its job calls it, "
-        "with an ID token for the job's own account and audience, and must answer 2xx."
+        "answered 403 on every tick for weeks (lesson 38). Each enabled platform job is judged from the "
+        "Cloud Scheduler API (state ENABLED, and its last attempt's status once it has run) and from its "
+        "target's invoker binding for the job's own account, with an audience the service accepts. No "
+        "target is called: calling the doctor's job starts a doctor run, and an ID token as a job's "
+        "account needs a grant the installer does not hold."
     )
-
-    def __init__(self, gcp: Callable[[], VerifyGcp], ask: Ask, *, minter: IdTokenMinter | None = None,
-                 call: TargetCall = requests_call) -> None:
-        super().__init__(gcp, ask)
-        self._minter = minter if minter is not None else IamCredentials()
-        self._call = call
 
     def jobs(self, ctx: Any) -> list[dict[str, Any]]:
         return self.gcp.scheduler_jobs(ctx.project, str(ctx.state.region))
 
     def _check(self, ctx: Any) -> Observation:
+        services: list[list[dict[str, Any]]] = []  # read once, on the first service target
+        policies: dict[str, dict[str, Any]] = {}
+        project_policy: list[dict[str, Any]] = []
+
+        def policy(name: str) -> dict[str, Any]:
+            if name not in policies:
+                policies[name] = self.gcp.run_iam_policy(name) or {}
+            return policies[name]
+
+        def inherited() -> dict[str, Any]:
+            if not project_policy:
+                project_policy.append(self.gcp.iam_policy(ctx.project) or {})
+            return project_policy[0]
+
         failing: list[str] = []
-        called: list[str] = []
+        judged: list[str] = []
+        paused: list[str] = []
+        noted: list[str] = []
         for job in self.jobs(ctx):
             name = str(job.get("name", "")).rsplit("/", 1)[-1]
-            target = job.get("httpTarget")
-            if not name.startswith(PLATFORM_PREFIX) or job.get("state") == "PAUSED" or not target:
+            if not name.startswith(PLATFORM_PREFIX):
                 continue
-            uri = str(target["uri"])
-            headers = {k: v for k, v in (target.get("headers") or {}).items() if k.lower() != "authorization"}
-            oidc = target.get("oidcToken")
-            if oidc:
-                token = self._minter.generate_id_token(str(oidc["serviceAccountEmail"]),
-                                                       str(oidc.get("audience") or uri), include_email=True)
-                headers["Authorization"] = f"Bearer {token}"
-            body = base64.b64decode(target.get("body") or b"")
-            status = self._call(str(target.get("httpMethod") or "POST"), uri, headers, body)
-            called.append(name)
-            if not 200 <= status < 300:
-                failing.append(f"{name} -> HTTP {status}")
+            state = str(job.get("state") or "STATE_UNSPECIFIED")
+            if state == "PAUSED":
+                paused.append(name)
+                continue
+            judged.append(name)
+            before = len(failing)
+            if state != "ENABLED":
+                failing.append(f"{name}: state {state}, not ENABLED")
+            last = job.get("status") or {}
+            refused = ""
+            if job.get("lastAttemptTime") and int(last.get("code") or 0) != 0:
+                refused = (f"{name}: its last attempt at {job['lastAttemptTime']} failed "
+                           f"(code {last.get('code')}: {str(last.get('message') or '')[:200]})")
+            target = job.get("httpTarget") or {}
+            failing.extend(self._target(ctx, name, target, policy, inherited, services) if target else ())
+            if refused:
+                # A tick refused before its grant propagated (lesson 19) is
+                # only seen again at the next tick: one this wait will see is
+                # waited for; an hourly or daily job's, past the bound, with
+                # its target's binding now in place, is named and not held
+                # against the step.
+                next_tick = _epoch(str(job.get("scheduleTime") or ""))
+                if (len(failing) == before and next_tick is not None
+                        and next_tick > ctx.clock.now() + TARGETS_WAIT.bound_s):
+                    noted.append(f"{refused}; its next tick is at {job['scheduleTime']}")
+                else:
+                    failing.append(refused)
         if failing:
-            return Observation(WAITING, "Scheduler targets that did not answer 2xx: " + "; ".join(failing))
-        return Observation(MET, f"{len(called)} Scheduler targets answered 2xx", {"scheduler_targets": called})
+            return Observation(WAITING, "Scheduler jobs whose targets would not take their ticks: "
+                                        + "; ".join(failing))
+        detail = f"{len(judged)} Scheduler jobs enabled, their last attempts answered and their targets invocable"
+        if paused:
+            detail += f" ({len(paused)} paused, not judged: {', '.join(paused)})"
+        if noted:
+            detail += "; binding in place, next tick past this wait: " + "; ".join(noted)
+        return Observation(MET, detail, {"scheduler_targets": judged})
+
+    def _target(self, ctx: Any, name: str, target: Mapping[str, Any], policy: Callable[[str], dict[str, Any]],
+                inherited: Callable[[], dict[str, Any]], services: list[list[dict[str, Any]]]) -> list[str]:
+        """What would stop `target` taking the job's tick: its invoker binding
+        for the job's own account, and (OIDC) an audience it accepts."""
+        uri = str(target.get("uri") or "")
+        token = target.get("oidcToken") or target.get("oauthToken") or {}
+        account = str(token.get("serviceAccountEmail") or "")
+        caller = account or "an unauthenticated caller"
+        run_job = _job_run_target(uri)
+        if run_job:
+            if _granted([policy(run_job), inherited()], JOB_RUNNER_ROLES, account):
+                return []
+            return [f"{name}: {caller} may not invoke {run_job}"]
+        if not services:
+            services.append(self.gcp.run_services(ctx.project, str(ctx.state.region)))
+        origin = _origin(uri)
+        service = next((s for s in services[0] if origin and origin in _origins(s)), None)
+        if service is None:
+            return [f"{name}: {uri} is not a Cloud Run service or job in {ctx.project}/{ctx.state.region}, "
+                    "so its invoker cannot be read"]
+        resource = str(service.get("name") or "")
+        problems: list[str] = []
+        oidc = target.get("oidcToken")
+        if oidc:
+            audience = str(oidc.get("audience") or uri)
+            if _origin(audience) not in _origins(service) and audience not in (service.get("customAudiences") or []):
+                problems.append(f"{name}: audience {audience} is not {resource.rsplit('/', 1)[-1]}'s "
+                                "(its URLs or custom audiences)")
+        if service.get("invokerIamDisabled") is not True and not _granted(
+                [policy(resource), inherited()], SERVICE_INVOKER_ROLES, account):
+            problems.append(f"{name}: {caller} may not invoke {resource}")
+        return problems
 
 
 class DigestsStep(_Base):
@@ -598,7 +724,7 @@ class SwarmCli:
         row = list_contexts(self.run, self.swarm, self._env(ctx)).get(name)
         if row is None or not points_at(row, url):
             raise LookupError(f"swarm context {name} for {url} is not on this machine; edge.desktop-client "
-                              f"writes it again, its secret typed at a hidden prompt: swarm install --resume")
+                              f"writes it again, its secret typed at a hidden prompt: swarm install")
         if row.get("signed_in") is not True:
             ctx.events.emit("step_apply", step="verify.end-to-end",
                             message=f"sign in to {url} in the browser that opens (swarm --context {name} login)")
@@ -825,23 +951,68 @@ class EndToEndStep(_Base):
 
     def _console_runs(self, ctx: Any, launched: dict[str, str]) -> dict[str, str]:
         """Copy the console's two run ids from the console document swarm-api
-        wrote them into (INTERFACE SHEET), once both are there."""
-        if all(launched.get(key) for key in CONSOLE_KEYS.values()):
+        writes them into, `console/verify_runs` (record.VERIFY_RUNS; INTERFACE
+        SHEET), as each appears. An id that already failed here is never
+        copied back: Admin › Setup starts a new one (#19)."""
+        missing = [key for key in CONSOLE_KEYS.values() if not launched.get(key)]
+        if not missing:
             return launched
         read = getattr(ctx, "read_console", None)
         cached = getattr(ctx.state, "console", None) or {}
-        # Re-read on every poll: the first team's document and `finished`,
-        # which no earlier step reads, and every document already cached.
+        failed = ctx.outputs.get("verify_failed") or {}
+        # Re-read on every poll, since no earlier step reads them: the
+        # console's verify_runs document, the first workspace's (the first
+        # team's, or for one person the personal workspace's; an older
+        # swarm-api wrote the ids there), `finished`, and every document
+        # already cached.
         tenant = str(ctx.outputs.get("verify_tenant") or "")
-        names = dict.fromkeys([*([f"teams/{tenant}"] if tenant else []), "finished", *sorted(cached)])
+        one_person = (ctx.outputs.get("sizing") or {}).get("mode") == "individual"
+        first = [PERSONAL] if one_person else ([f"teams/{tenant}"] if tenant else [])
+        names = dict.fromkeys([VERIFY_RUNS, *first, "finished", *sorted(cached)])
+        found_ids: dict[str, str] = {}
         for name in names:
             found = read(name) if callable(read) else cached.get(name)
             runs = found.get("verify_runs") if isinstance(found, dict) else None
-            if isinstance(runs, dict) and all(runs.get(key) for key in CONSOLE_KEYS.values()):
-                launched = {**launched, **{key: str(runs[key]) for key in CONSOLE_KEYS.values()}}
-                remember(ctx, outputs={"verify_runs": dict(launched)})
+            if not isinstance(runs, dict):
+                continue
+            for key in missing:
+                run_id = str(runs.get(key) or "")
+                if key not in found_ids and run_id and run_id not in (failed.get(key) or ()):
+                    found_ids[key] = run_id
+            if len(found_ids) == len(missing):
                 break
+        if found_ids:
+            launched = {**launched, **found_ids}
+            remember(ctx, outputs={"verify_runs": dict(launched)})
         return launched
+
+    def _relaunch(self, ctx: Any, surface: str, shape: str, slot: str, run_id: str, state: str) -> tuple[str, str]:
+        """A failed or cancelled run (#19): dropped from `verify_runs`, its id
+        kept in `verify_failed`, and relaunched, at most `RELAUNCHES` times.
+        `("waiting", why)` while relaunched, `("problem", why)` once it stops."""
+        key = f"{surface}-{shape}"
+        failed: dict[str, list[str]] = {k: list(v) for k, v in (ctx.outputs.get("verify_failed") or {}).items()}
+        ids = failed.get(slot, [])
+        if run_id not in ids:
+            ids = [*ids, run_id]
+        if len(ids) > RELAUNCHES:
+            return "problem", (f"{key} failed {len(ids)} times ({', '.join(ids)}; the last {state}); not relaunched "
+                               f"again: a run is relaunched at most {RELAUNCHES} times, so this is a fault to read "
+                               f"in swarm status {run_id}, not a flaky run")
+        attempt = f"({len(ids)} of {RELAUNCHES})"
+        if ctx.dry_run:
+            return "waiting", f"{key} ({run_id}) {state}; a run of swarm install relaunches it {attempt}"
+        launched: dict[str, str] = dict(ctx.outputs.get("verify_runs") or {})
+        launched.pop(slot, None)
+        failed[slot] = ids
+        seen = {k: v for k, v in (ctx.outputs.get("verify_cluster_jobs") or {}).items() if k != key}
+        remember(ctx, outputs={"verify_runs": launched, "verify_failed": failed, "verify_cluster_jobs": seen})
+        if surface == "console":
+            return "waiting", f"{key} ({run_id}) {state}; Admin › Setup starts it again {attempt}"
+        repository = str(ctx.outputs.get("verify_repository") or "")
+        launched[slot] = self.runs.launch(ctx, surface, shape, repository, f"swarm-install-verify-{key}")
+        remember(ctx, outputs={"verify_runs": dict(launched)})
+        return "waiting", f"{key} ({run_id}) {state}; relaunched {attempt} as {launched[slot]}"
 
     def _look_for_jobs(self, ctx: Any, ids: Mapping[str, str]) -> dict[str, Any]:
         """Sightings of the on-cluster check runs' worker Jobs, kept in
@@ -892,7 +1063,9 @@ class EndToEndStep(_Base):
             found = self.runs.status(ctx, shape, run_id)
             check = CHECK_RUNS.get(shape)
             if found.state in ("failed", "cancelled"):
-                problems.append(f"{key} ({run_id}) {found.state}")
+                slot = CONSOLE_KEYS[shape] if surface == "console" else key
+                verdict, why = self._relaunch(ctx, surface, shape, slot, run_id, found.state)
+                (problems if verdict == "problem" else waiting).append(why)
             elif found.state != "succeeded":
                 waiting.append(f"{key} ({run_id})")
             elif check is None and not found.pull_request:
@@ -918,7 +1091,8 @@ class EndToEndStep(_Base):
         if problems:
             # The engine's wait cannot end early on a check's word, so the
             # failure is reported on every poll and in the verify row
-            # (`result: failed`) until the bound; nothing reruns by itself.
+            # (`result: failed`) until the bound. A failed or cancelled run
+            # was relaunched first, at most RELAUNCHES times (`_relaunch`).
             return Observation(UNMET, "; ".join(problems))
         if done < len(RUNS):
             return Observation(WAITING, f"{done} of {len(RUNS)} runs have passed; waiting for "
