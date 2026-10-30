@@ -138,6 +138,9 @@ class FakeCtx:
     def read_console(self, name: str):
         return self.console.get(name)
 
+    def attach_record(self, record) -> None:
+        self.record = record
+
 
 # -- the red-first tests ------------------------------------------------------------
 
