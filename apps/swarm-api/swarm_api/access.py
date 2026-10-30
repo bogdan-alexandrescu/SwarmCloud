@@ -357,6 +357,59 @@ def write_workspace_grants(db: Any, tenant_id: str, repositories: list[str], *,
     return written
 
 
+def record_workspace_installation(db: Any, tenant_id: str, *, owner: str, installation_id: int,
+                                  owner_type: str | None, selection: str | None, by: str,
+                                  at: datetime) -> str | None:
+    """Record that the deployment's GitHub App installation on `owner` is
+    enabled in `tenant_id`, as Admin › Setup's grant finds it (audit 3, A4):
+    the document `AccessService.enable` writes (`_installed_doc`), in the
+    same shape and under the id it is read by (`org_id_for`), with the
+    admin who set the workspace up as the one who enabled it. Then
+    `forge_installation.installation_record_in` finds it, so a service
+    submission for this workspace is minted an installation token. Keyed by
+    `tenant_id` alone; it names no other tenant (invariant 9). The id
+    written is returned, or None when `owner` or the installation is not
+    usable, or when the admin already reaches `owner` here through their own
+    token (`via_token`), which is left as it is."""
+    if not owner or not isinstance(installation_id, int) or isinstance(installation_id, bool) \
+            or installation_id <= 0:
+        log.warning("workspace installation: owner or installation id unusable tenant=%s", tenant_id)
+        return None
+    key = by.strip().lower()
+    doc_id = org_id_for(tenant_id, key, owner)
+    ref = db.collection(ORGS).document(doc_id)
+    snap = ref.get()
+    previous = (snap.to_dict() or {}) if snap.exists else {}
+    if via_token(previous):
+        # The admin reaches this owner through their own token here: that
+        # was their choice, and only `AccessService.enable` revokes it.
+        log.info("workspace installation: kept the owner reached by a token tenant=%s owner=%s",
+                 tenant_id, owner.lower())
+        return None
+    doc = {
+        "tenant_id": tenant_id,
+        "user": key,
+        "user_hash": user_hash(key),
+        "owner": owner.lower(),
+        "owner_login": owner,
+        "owner_type": owner_type,
+        "installation_id": installation_id,
+        "repository_selection": selection,
+        "pull_requests": previous.get("pull_requests"),
+        "install_state": INSTALLED,
+        "sso": previous.get("sso") or "unknown",
+        "enabled_at": previous.get("enabled_at") or at,
+        "enabled_by": key,
+        "checked_at": at,
+    }
+    if previous.get("requested_at") is not None:
+        doc["requested_at"] = previous["requested_at"]
+    ref.set(doc)
+    log.info("workspace installation recorded tenant=%s owner=%s installation=%s",
+             tenant_id, owner.lower(), installation_id)
+    return doc_id
+
+
 def workspace_grant_mode(db: Any, tenant_id: str, repo_id: str) -> str | None:
     """The mode of `tenant_id`'s own grant on `repo_id`, or None. Read by
     the id it is stored under and checked again on its own fields: another

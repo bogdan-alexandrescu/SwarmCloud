@@ -36,6 +36,7 @@ from swarm_api.specsigning import SpecSignature
 from swarm_api.waker import NullWaker
 
 from .conftest import ADMIN_GROUP, ENG_GROUP, PROJECT, NoForgeTokens, api_settings, auth_header
+from .fakes import FakeFirestore
 
 ROOT = "root@example.com"
 ALICE = "alice@example.com"
@@ -47,6 +48,9 @@ DEPLOYER = f"swarm-tf-deployer@{PROJECT}.iam.gserviceaccount.com"
 DOCTOR = f"swarm-doctor@{PROJECT}.iam.gserviceaccount.com"
 ENV = "test"
 ENGINE_DOC = f"swarm-install/{ENV}"
+#: Where swarm-api keeps the team documents: a collection under the env
+#: document, so a path real Firestore accepts (audit 3, A2).
+TEAMS_PREFIX = f"swarm-install/{ENV}/teams/"
 HOSTNAME = "swarm.example.com"
 ORG = "example-org"
 HOOKS_URL = "https://hooks.example.com/github"
@@ -247,6 +251,34 @@ class FakeRuns:
 
     def workflow_state(self, *, tenant_id, workflow_id):
         return self.states[workflow_id]
+
+
+class PathCheckingFirestore(FakeFirestore):
+    """The shared fake, refusing what google-cloud-firestore's `verify_path`
+    refuses: a collection path has an odd number of segments, a document
+    path an even one (audit 3, A2: `console/teams` passed the shared fake and
+    500'd on the real client). Only this module's routes run on it."""
+
+    @staticmethod
+    def _check(path: str, *, collection: bool) -> None:
+        parts = path.split("/")
+        if not all(parts) or (len(parts) % 2 == 1) != collection:
+            kind = "collection" if collection else "document"
+            raise ValueError(f"A {kind} must have an {'odd' if collection else 'even'} "
+                             f"number of path elements: {path!r}")
+
+    def collection(self, path: str):
+        self._check(path, collection=True)
+        return super().collection(path)
+
+    def document(self, path: str):
+        self._check(path, collection=False)
+        return super().document(path)
+
+
+@pytest.fixture
+def db() -> PathCheckingFirestore:
+    return PathCheckingFirestore()
 
 
 @pytest.fixture
@@ -466,7 +498,7 @@ def test_a_team_writes_its_workspace_and_team_document(setup_client, db) -> None
     assert response.status_code == 202, response.text
     team_id = response.json()["team"]
     assert db.docs[f"workspaces/{team_id}"]["kind"] == "group"
-    team = db.docs[f"swarm-install/{ENV}/console/teams/{team_id}"]
+    team = db.docs[f"{TEAMS_PREFIX}{team_id}"]
     assert team["group"] == TEAM_GROUP
     assert team["workspace"] == team_id
     assert team["first_admin"] == WORKSPACE_ADMIN
@@ -483,7 +515,7 @@ class PassingAppCheck:
 def install_app(db, github, repositories: tuple[str, ...] = (f"{ORG}/demo", f"{ORG}/api")):
     """The App created and installed on ORG, covering `repositories`."""
     db.docs[f"swarm-install/{ENV}/console/github_app"] = {"id": 4242, "installed_on": ORG}
-    github.installations = [{"id": 77, "account": {"login": ORG},
+    github.installations = [{"id": 77, "account": {"login": ORG, "type": "Organization"},
                              "repository_selection": "selected"}]
     github.repositories = list(repositories)
 
@@ -528,7 +560,7 @@ def test_finish_waits_for_every_console_step(setup_app, setup_client, db, github
 
 
 def team_doc(db, team: str) -> dict[str, Any]:
-    return db.docs[f"swarm-install/{ENV}/console/teams/{team}"]
+    return db.docs[f"{TEAMS_PREFIX}{team}"]
 
 
 def page_team(client: TestClient, team: str) -> dict[str, Any]:
@@ -942,7 +974,7 @@ def test_one_person_refuses_a_team_and_an_invite(setup_client, db) -> None:
     invite = setup_client.post("/v1/admin/setup/teams/platform-team/invites",
                                json={"email": CAROL}, headers=auth_header("root"))
     assert invite.status_code == 409, invite.text
-    assert not [k for k in db.docs if k.startswith(f"swarm-install/{ENV}/console/teams/")]
+    assert not [k for k in db.docs if k.startswith(TEAMS_PREFIX)]
 
 
 def test_one_persons_smoke_runs_in_the_personal_workspace(setup_client, db, github, pool,
@@ -1012,7 +1044,7 @@ def test_one_person_finishes_on_the_personal_smoke(setup_app, setup_client, db, 
     done = setup_client.post("/v1/admin/setup/finish", headers=headers)
     assert done.status_code == 200, done.text
     assert db.docs[FINISHED_DOC]["by"] == ROOT
-    assert not [k for k in db.docs if k.startswith(f"swarm-install/{ENV}/console/teams/")]
+    assert not [k for k in db.docs if k.startswith(TEAMS_PREFIX)]
 
 
 def test_one_persons_failed_smoke_starts_again_on_request(setup_client, db, github, pool,
@@ -1253,3 +1285,114 @@ def test_an_old_document_with_counts_inside_verify_runs_is_still_read(setup_clie
     assert db.docs[VERIFY_DOC]["verify_runs"] == {"console_task": "task-2",
                                                   "console_workflow": "wf-1"}
     assert db.docs[VERIFY_DOC]["retries"] == {"console_task": 2, "console_workflow": 0}
+
+
+# --------------------------------------------------------------------------
+# audit 3 (DAYONE-SETUP-API-7)
+# --------------------------------------------------------------------------
+
+
+def test_the_fake_refuses_the_paths_real_firestore_refuses(db) -> None:
+    with pytest.raises(ValueError):
+        db.collection(f"swarm-install/{ENV}/console/teams")
+    with pytest.raises(ValueError):
+        db.document(f"swarm-install/{ENV}/console")
+    db.collection(f"swarm-install/{ENV}/teams")
+    db.document(f"{TEAMS_PREFIX}platform-team")
+
+
+def test_the_page_and_the_first_team_load_on_real_firestore_paths(setup_client, db,
+                                                                  github) -> None:
+    """A2: the status route lists the teams on every load, and the first team
+    is created, read and granted at a path real Firestore accepts."""
+    seed_engine_document(db)
+    install_app(db, github)
+    assert page(setup_client)["teams"] == []
+    team = create_team(setup_client)
+    assert team.status_code == 202, team.text
+    team_id = team.json()["team"]
+    assert [row["id"] for row in page(setup_client)["teams"]] == [team_id]
+    assert db.docs[f"{TEAMS_PREFIX}{team_id}"]["group"] == TEAM_GROUP
+
+
+def test_the_install_record_names_team_documents_at_a_valid_path() -> None:
+    from swarm_api import install_record as ir
+
+    record = ir.InstallRecord(PathCheckingFirestore(), ENV)
+    assert record.team_path("t1") == f"{TEAMS_PREFIX}t1"
+    assert record.teams() == []
+    ir.check_fields(record.team_path("t1"), ENV, {"group": TEAM_GROUP})
+    with pytest.raises(ir.RecordFieldRefused):
+        ir.check_fields(f"swarm-install/{ENV}/console/teams/t1", ENV, {"group": TEAM_GROUP})
+
+
+@pytest.mark.parametrize("age, running", [(timedelta(seconds=5), True),
+                                          (timedelta(hours=2), False)])
+def test_the_clis_epoch_seconds_heartbeat_reads_as_running(age, running) -> None:
+    """A7: the engine writes `lease.heartbeat` as epoch seconds (a float);
+    a fresh one reads as running, a stale one does not."""
+    from swarm_api.routes import setup as routes
+
+    now = datetime.now(timezone.utc)
+    beat = (now - age).timestamp()
+    assert routes._cli_running({"lease": {"heartbeat": beat}}, now) is running
+    assert routes._cli_running({"lease": {"heartbeat": int(beat)}}, now) is running
+
+
+def test_the_page_says_the_cli_is_running_on_an_epoch_heartbeat(setup_client, db) -> None:
+    import time
+
+    doc = seed_engine_document(db)
+    db.docs[ENGINE_DOC] = {**doc, "lease": {"holder": "laptop", "heartbeat": time.time(),
+                                             "expires": time.time() + 300}}
+    body = page(setup_client)
+    assert body["cli_running"] is True, body
+
+
+def _app_installed(db, tenant: str, owner: str) -> bool:
+    """The submission path's own answer (`SubmissionService._app_installed`,
+    over the real `installation_record_in`), with installation reads on."""
+    from types import SimpleNamespace
+
+    from swarm_api.service import SubmissionService
+
+    probe = SimpleNamespace(_settings=SimpleNamespace(forge_installation_reads=True),
+                            _store=SimpleNamespace(db=db))
+    return SubmissionService._app_installed(probe, tenant, owner)
+
+
+def test_the_first_teams_grant_records_the_app_installation_for_its_workspace(
+        setup_client, db, github) -> None:
+    """A4: the grant also writes the team workspace's own `forge_orgs`
+    document, so a service submission for that workspace is minted an
+    installation token; no other workspace gains one."""
+    install_app(db, github)
+    team = create_team(setup_client).json()["team"]
+    assert _app_installed(db, team, ORG) is True
+    assert _app_installed(db, "another-team", ORG) is False
+    orgs = [v for k, v in db.docs.items() if k.startswith("forge_orgs/")]
+    assert [(o["tenant_id"], o["owner"], o["installation_id"], o["install_state"],
+             o["owner_type"]) for o in orgs] == [(team, ORG, 77, "installed", "Organization")]
+    assert team_doc(db, team)["grant"]["installation_recorded_at"]
+
+
+def test_a_grant_enforced_before_the_installation_was_recorded_records_it_on_the_next_read(
+        setup_client, db, github) -> None:
+    install_app(db, github)
+    team = create_team(setup_client).json()["team"]
+    for key in [k for k in db.docs if k.startswith("forge_orgs/")]:
+        del db.docs[key]
+    grant = dict(team_doc(db, team)["grant"])
+    grant.pop("installation_recorded_at")
+    team_doc(db, team)["grant"] = grant
+    assert _app_installed(db, team, ORG) is False
+    page_team(setup_client, team)
+    assert _app_installed(db, team, ORG) is True
+
+
+def test_one_persons_grant_records_the_app_installation_for_the_personal_workspace(
+        setup_client, db, github) -> None:
+    seed_sized_engine(db)
+    install_app(db, github)
+    page(setup_client)
+    assert _app_installed(db, personal_tenant(), ORG) is True
