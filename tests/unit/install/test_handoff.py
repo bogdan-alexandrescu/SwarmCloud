@@ -186,6 +186,8 @@ def test_ready_only_after_verify_passes(tmp_path: Path, monkeypatch: pytest.Monk
     assert ctx.state.ready_at is None and said == []
 
     ctx.state.steps["verify.b"] = StepRecord(state="done", at=1.0, by="admin@example.com")
+    for switch in handoff.SWITCHES:
+        ctx.state.steps[switch] = StepRecord(state="done", at=1.0, by="admin@example.com")
     ready.apply(ctx, ready.plan(ctx))
     assert ctx.state.ready_at == ctx.clock.now()
     assert said == [f"\nREADY: SwarmCloud answers at https://{HOST}\n"]
@@ -199,3 +201,57 @@ def test_ready_only_after_verify_passes(tmp_path: Path, monkeypatch: pytest.Monk
     result = engine.run()
     assert result.exit_code != 0 and result.step == "verify.a"
     assert rig.bucket.state()["ready_at"] is None
+
+
+def test_ready_needs_the_webhook_pass_and_the_hook(tmp_path: Path) -> None:
+    """Every verify step passed, but pass 4 and the hook have not run: not READY (#17)."""
+    said: list[str] = []
+    ready = handoff.ReadyStep(Deps(gcp=lambda: None), verify_ids=lambda: ["verify.a"], say=said.append)
+    ctx = FakeCtx()
+    for step in ("verify.a", "github.pass-3"):
+        ctx.state.steps[step] = StepRecord(state="done", at=1.0, by="admin@example.com")
+    assert ready.check(ctx).status == "unmet"
+    with pytest.raises(RuntimeError, match="github.pass-4, github.hook"):
+        ready.apply(ctx, ready.plan(ctx))
+    assert ctx.state.ready_at is None and said == []
+
+    ctx.state.steps["github.pass-4"] = StepRecord(state="done", at=1.0, by="admin@example.com")
+    with pytest.raises(RuntimeError, match="github.hook"):
+        ready.apply(ctx, ready.plan(ctx))
+    ctx.state.steps["github.hook"] = StepRecord(state="done", at=1.0, by="admin@example.com")
+    ready.apply(ctx, ready.plan(ctx))
+    assert ready.check(ctx).status == "met"
+
+
+def test_console_finished_before_swarm_install_ran_still_gets_pass4_and_hook(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The console finished while no CLI ran: this run turns the App's switches on before READY (#17)."""
+    said: list[str] = []
+    ready = handoff.ReadyStep(Deps(gcp=lambda: None), verify_ids=lambda: [], say=said.append)
+    rig, world, engine, _ = rig_for(tmp_path, monkeypatch, more=(ready,), answers=0, app=0, self_check=0,
+                                    finished=0)
+    result = engine.run()
+    assert result.exit_code == 0, result
+    actions = [line for line in world.log if line not in ("status", "say")]
+    assert actions == ["apply infra-3", "apply infra-4", "POST hook"]
+    state = rig.bucket.state()
+    steps = {k: v["state"] for k, v in state["steps"].items()}
+    assert steps["github.pass-4"] == steps["github.hook"] == steps["handoff.console"] == "done"
+    assert state["outputs"]["github_hook_active"] is True
+    order = [e["step"] for e in rig.events.of_kind("step_done")]
+    assert order.index("github.hook") < order.index("handoff.console") < order.index("handoff.ready")
+    assert state["ready_at"] is not None
+
+
+def test_handoff_is_not_met_while_the_switches_are_off() -> None:
+    """A hand-off recorded done with the hooks still off (an older run) is repaired, not skipped (#17)."""
+    ctx = FakeCtx(console={handoff.FINISHED: {"at": 1.0}})
+    wait = handoff.HandoffStep(Deps(gcp=lambda: None), status=lambda url: 302)
+    ctx.state.steps["handoff.console"] = StepRecord(state="done", at=1.0, by="admin@example.com")
+    ctx.state.steps["github.pass-3"] = StepRecord(state="done", at=1.0, by="admin@example.com")
+    assert wait.check(ctx).status != "met"
+    assert "github.pass-4" in wait.check(ctx).detail and "github.hook" in wait.check(ctx).detail
+    assert wait.verify(ctx).status != "met"
+    for switch in handoff.SWITCHES:
+        ctx.state.steps[switch] = StepRecord(state="done", at=1.0, by="admin@example.com")
+    assert wait.check(ctx).status == "met" and wait.verify(ctx).status == "met"
