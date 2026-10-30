@@ -80,8 +80,10 @@ INPUTS_PREFIX = "swarm-install/inputs/"
 
 #: The release-home registry images are copied from (D21, RELHOME-1).
 RELEASE_REGISTRY = "us-docker.pkg.dev/swarmcloud-prod/swarmcloud"
-#: The project's own repository (`var.artifact_registry_repository`'s default).
-REPOSITORY = "swarm"
+#: The project's own repository, terraform/infra's `artifact_registry_repository`
+#: default. Stage 4 copies into it and every infra pass names it, so the registry
+#: pass creates the repository the copy pushes to and `image_refs` validates.
+REPOSITORY = "swarm-images"
 
 #: Platform keys and the switch each one gates (design §5.4, lesson 39).
 KEY_SWITCHES: dict[str, str] = {
@@ -330,6 +332,9 @@ def bootstrap_inputs(state: Any, *, pass_name: str, installer: str) -> dict[str,
     inputs: dict[str, Any] = {
         "project_id": project,
         "region": region,
+        # Stage 1 created the state bucket in the install's region; bootstrap imports it
+        # with this location, which cannot change in place (default US-CENTRAL1).
+        "location": region.upper(),
         # Lesson 8: the first bootstrap adopts nothing and grants nothing infra creates.
         "adopt_from_infra_states": [],
         "infra_tenants_tfvars": "",
@@ -395,6 +400,7 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
         "repository_grants_enforced": True,
         "workspace_gate": True,
         "groups_auth": groups_auth(outputs),
+        "artifact_registry_repository": REPOSITORY,
         "image_refs": image_refs(project, region, outputs.get("image_digests") or {}),
     }
     found = sizing(state)

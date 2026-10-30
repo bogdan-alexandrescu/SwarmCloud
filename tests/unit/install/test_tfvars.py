@@ -46,7 +46,7 @@ def test_generated_never_from_committed_tfvars(monkeypatch: pytest.MonkeyPatch) 
     assert boot["frontend_iap_members"] == ["domain:example.com", "user:admin@example.com",
                                             f"serviceAccount:qa-console@{PROJECT}.iam.gserviceaccount.com"]
     assert boot["workspace_apply_image"] == (
-        f"europe-west1-docker.pkg.dev/{PROJECT}/swarm/workspace-apply@{DIGEST}"
+        f"europe-west1-docker.pkg.dev/{PROJECT}/swarm-images/workspace-apply@{DIGEST}"
     ), "the workspace-apply image is the release's digest in the project's own registry"
     assert infra["tenants"] == {}, "design §5.6: installs declare no Terraform tenants"
     for value in _strings(boot) + _strings(infra):
@@ -422,3 +422,41 @@ def test_no_ci_sandbox_repository_leaves_the_input_unset() -> None:
             inputs = _infra(pass_name, EVERY_VERSION, addons=addons)
             assert "acceptance_sandbox_repository_url" not in inputs, (pass_name, addons)
     assert "acceptance_sandbox_repository_url" not in _infra("infra-2", EVERY_VERSION)
+
+
+# -- DAYONE-TF-NAMES: the registry repository and the state bucket's location -----------------
+
+
+def _variable_default(root: str, name: str) -> str:
+    import re
+
+    tf = Path(__file__).resolve().parents[3] / "terraform" / root
+    for path in tf.glob("*.tf"):
+        found = re.search(rf'^variable\s+"{name}"\s*\{{(.*?)^\}}', path.read_text(), flags=re.M | re.S)
+        if found:
+            default = re.search(r'^\s*default\s*=\s*"([^"]*)"', found.group(1), flags=re.M)
+            assert default, f"terraform/{root}'s {name} has no string default"
+            return default.group(1)
+    raise AssertionError(f"terraform/{root} declares no {name}")
+
+
+def test_repository_is_infras_artifact_registry_repository_default() -> None:
+    # Audit finding 4: stage 4 copies into REPOSITORY and infra validates image_refs against
+    # var.artifact_registry_repository; a different name fails the copy and the plan.
+    assert tfvars.REPOSITORY == _variable_default("infra", "artifact_registry_repository")
+
+
+def test_every_infra_pass_names_the_repository_the_images_were_copied_into() -> None:
+    digests = {"image_digests": {"swarm-api": DIGEST}}
+    for pass_name in INFRA_PASSES:
+        inputs = _infra(pass_name, EVERY_VERSION, **digests)
+        assert inputs["artifact_registry_repository"] == tfvars.REPOSITORY, pass_name
+        prefix = f"europe-west1-docker.pkg.dev/{PROJECT}/{inputs['artifact_registry_repository']}/"
+        assert inputs["image_refs"]["swarm-api"].startswith(prefix), pass_name
+
+
+def test_bootstrap_keeps_the_state_bucket_in_the_install_region() -> None:
+    # Audit finding 5: stage 1 creates the bucket in the install's region; bootstrap imports it
+    # with var.location (default US-CENTRAL1), and a location cannot change in place.
+    for pass_name in ("bootstrap-1", "bootstrap-2"):
+        assert _boot(pass_name)["location"] == "EUROPE-WEST1", pass_name
