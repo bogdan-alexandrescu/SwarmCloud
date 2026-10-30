@@ -448,14 +448,26 @@ def test_ci_publisher_grants_only_what_is_missing(tmp_path: Path) -> None:
     "user:someone@example.com",
     "serviceAccount:swarm-deployer@a-ci-project.iam.gserviceaccount.com",
     "allUsers",
-    "swarm-deployer@saga-agents-staging.iam.gserviceaccount.com",
+    "ci-runner@saga-agents-staging.iam.gserviceaccount.com",
 ])
 def test_ci_publisher_refuses_anything_but_a_service_account(tmp_path: Path, email: str) -> None:
-    """A person, a group, allUsers or the shared project's identity is never
-    the publisher; refused before gcloud is called."""
+    """A person, a group, allUsers, or an account of the shared project that is
+    not SwarmCloud's own (swarm-*), is never the publisher; refused before
+    gcloud is called."""
     proc = _run(tmp_path, _all_exist(), "--ci-publisher", email, "--dry-run")
     assert proc.returncode != 0, proc.stdout
     assert _calls(tmp_path) == []
+
+
+def test_ci_publisher_accepts_swarmclouds_own_account_in_the_shared_project(tmp_path: Path) -> None:
+    """The deployer publish-release.yml authenticates as lives in the shared
+    project, like every SwarmCloud account (BGD, 2026-10-30): a swarm-* account
+    there is accepted, and gets exactly the three grants."""
+    deployer = "swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com"
+    proc = _run(tmp_path, _all_exist(), "--ci-publisher", deployer, "--dry-run")
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.count(f"--member=serviceAccount:{deployer}") == 3, proc.stdout
+    assert _writes(_calls(tmp_path)) == [], "a dry run called a write"
 
 
 def test_ci_publisher_refuses_a_deny_listed_service_account(tmp_path: Path) -> None:

@@ -167,14 +167,21 @@ done
 [[ "${release_project}" -eq 1 ]] \
   || die "refusing project ${PROJECT}: the release home is one of ${RELEASE_PROJECTS[*]} (D23, D25)"
 
-# The CI publisher is a service account, and never the shared project's.
+# The CI publisher is a service account. Nothing on SHARED_DENY_LIST ever
+# qualifies. In the shared project only SwarmCloud's own accounts (swarm-*) do:
+# every SwarmCloud account lives there, and the publisher is the deployer,
+# swarm-tf-deployer, the identity publish-release.yml authenticates as (BGD,
+# 2026-10-30). Any other account of the shared project may be the other
+# team's, so it is refused.
 if [[ "${PUBLISHER_SET}" -eq 1 ]]; then
   [[ "${PUBLISHER}" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]@([a-z][a-z0-9-]{4,28}[a-z0-9])\.iam\.gserviceaccount\.com$ ]] \
     || die "refusing --ci-publisher '${PUBLISHER}': it must be a service account email, NAME@PROJECT.iam.gserviceaccount.com (no member prefix)"
   publisher_project="${BASH_REMATCH[1]}"
-  if is_shared_resource "${PUBLISHER}" || is_shared_project "${publisher_project}" \
-      || is_shared_resource "${publisher_project}"; then
-    die "refusing --ci-publisher ${PUBLISHER}: it is on SHARED_DENY_LIST or of the shared project (scripts/lib/common.sh)"
+  if is_shared_resource "${PUBLISHER}" || is_shared_resource "${publisher_project}"; then
+    die "refusing --ci-publisher ${PUBLISHER}: it is on SHARED_DENY_LIST (scripts/lib/common.sh)"
+  fi
+  if is_shared_project "${publisher_project}" && [[ "${PUBLISHER%%@*}" != swarm-* ]]; then
+    die "refusing --ci-publisher ${PUBLISHER}: in the shared project only SwarmCloud's own swarm-* accounts may publish"
   fi
   PUBLISHER_MEMBER="serviceAccount:${PUBLISHER}"
 fi
