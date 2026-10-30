@@ -108,6 +108,11 @@ COPY pyproject.toml uv.lock /src/
 # patterns the worker's per-commit secret scan matches (#259), and the worker.
 COPY apps/common/ /src/apps/common/
 COPY apps/redaction/ /src/apps/redaction/
+# The workflow state derivation: a park, finish or retry on the direct
+# Firestore path writes the workflow's derived state in its own transaction
+# (#2838). `apps/agent-worker/pyproject.toml` resolves it through
+# `{ path = "../workflow-rollup" }`.
+COPY apps/workflow-rollup/ /src/apps/workflow-rollup/
 COPY apps/agent-worker/ /src/apps/agent-worker/
 
 # Build our own packages into a local wheelhouse. No index has ever heard of
@@ -115,6 +120,7 @@ COPY apps/agent-worker/ /src/apps/agent-worker/
 # `--no-index` (#663).
 RUN uv build --wheel --out-dir /wheels /src/apps/common \
  && uv build --wheel --out-dir /wheels /src/apps/redaction \
+ && uv build --wheel --out-dir /wheels /src/apps/workflow-rollup \
  && uv build --wheel --out-dir /wheels /src/apps/agent-worker
 
 # Floors, not pins: both ship inside the stdlib venv at versions Debian's
@@ -146,15 +152,14 @@ RUN python -m venv /opt/venv \
 # Third-party dependencies, exported from uv.lock for the worker alone. The
 # root project depends on every app, so the export prunes the internal packages
 # swarm-agent-worker does not depend on (`swarm-api`, `swarm-install`,
-# `swarm-mcp`, `swarm-quota-broker`, `swarm-reconciler`, `swarm-scheduler`,
-# `swarm-workflow-rollup`), and the third-party packages only they need go with
-# them. `--no-emit-local` leaves our own packages out of the file: they come
+# `swarm-mcp`, `swarm-quota-broker`, `swarm-reconciler`, `swarm-scheduler`),
+# and the third-party packages only they need go with them. `--no-emit-local` leaves our own packages out of the file: they come
 # from /wheels, below. The export carries a hash for every file; `--no-hashes`
 # must never be added here.
 RUN uv export --frozen --no-dev --no-emit-local --no-editable \
       --prune swarm-api --prune swarm-install --prune swarm-mcp \
       --prune swarm-quota-broker --prune swarm-reconciler \
-      --prune swarm-scheduler --prune swarm-workflow-rollup \
+      --prune swarm-scheduler \
       > /tmp/requirements.txt
 
 # Installed at exactly the versions and hashes in uv.lock, with nothing
@@ -174,7 +179,7 @@ RUN uv pip install --python /opt/venv/bin/python --require-hashes --no-deps -r /
 # means no index is ever asked for them; `--no-deps` because their third-party
 # dependencies are already installed above, by hash.
 RUN uv pip install --python /opt/venv/bin/python --no-index --find-links /wheels --no-deps \
-      swarm-common swarm-redaction swarm-agent-worker
+      swarm-common swarm-redaction swarm-workflow-rollup swarm-agent-worker
 
 # pytest for the generic runner's `python -m pytest` (see the venv step above).
 RUN uv pip install --python /opt/venv/bin/python "pytest==${PYTEST_VERSION}"

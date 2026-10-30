@@ -86,6 +86,8 @@ from swarm_common.states import (
     assert_transition,
 )
 
+from swarm_rollup import derived_state_write
+
 from .awaitinput import AWAIT_INPUT_KEY, wait_window
 from .children import cancel_end_cause
 from .codec import (
@@ -650,6 +652,26 @@ class SchedulerStore:
     # onto a task that has moved on since the drain read it; see the module
     # docstring for what used to happen when they did.
 
+    def _workflow_write(
+        self, txn: Any, task_id: str, tenant_id: str, doc: dict[str, Any], now: datetime
+    ) -> tuple[Any, dict[str, Any]] | None:
+        """The task's workflow's derived state, for THIS transaction to write (#2838).
+
+        `doc` is the task as this transaction will leave it. Reads only, so the
+        caller calls it after its guard's reads and before its first write, and
+        applies the returned update beside the task's own: the step's state and
+        the workflow's commit together or not at all, and a guard that refuses
+        the step's write writes neither. Before this, a scheduler transition
+        (READY->LEASED, a woken park, a `fail_workflow` cancel) left the stored
+        state behind the derived one until the reconciler's `state_drift`
+        repair, pass after pass. The rule is `swarm_rollup.derive`, the one the
+        API and the reconciler apply.
+        """
+        return derived_state_write(
+            txn, self._db, tenant_id=tenant_id, workflow_id=doc.get("workflow_id"),
+            now=now, changed={task_id: doc},
+        )
+
     def _write_if_unchanged(
         self,
         write: str,
@@ -701,7 +723,14 @@ class SchedulerStore:
                 reason = PARK_REASON_CHANGED
             else:
                 written = {**patch, **patch_from(stored)} if patch_from is not None else patch
+                workflow = (
+                    self._workflow_write(txn, task.id, task.tenant_id, {**stored, **written},
+                                         written.get("updated_at") or self._now())
+                    if "state" in written else None
+                )
                 txn.update(task_ref, written)
+                if workflow is not None:
+                    txn.update(*workflow)
                 return GuardedWrite(write, True, expected, found, None, patch.get("state"))
             return GuardedWrite(write, False, expected, found, reason)
 
@@ -823,7 +852,10 @@ class SchedulerStore:
                 "metadata": metadata,
                 "updated_at": now,
             }
+            workflow = self._workflow_write(txn, task.id, task.tenant_id, {**stored, **patch}, now)
             txn.update(task_ref, patch)
+            if workflow is not None:
+                txn.update(*workflow)
             written.clear()
             written.update(window)
             return GuardedWrite("park", True, expected, found, None, TaskState.PARKED.value)
@@ -1340,18 +1372,17 @@ class SchedulerStore:
                 },
             )
 
-        def _returned(
-            txn: Any,
-            stored: dict[str, Any],
-            found: str,
-            reclaim: str | None,
-            *,
-            released: bool,
-        ) -> _Settled:
-            """Write the task's way off this lease: READY, or CANCELLED when a
+        def _return_plan(
+            stored: dict[str, Any], found: str, reclaim: str | None
+        ) -> tuple[dict[str, Any], TaskState, int, int, bool, int | None]:
+            """The task's way off this lease: READY, or CANCELLED when a
             cancel was requested, or FAILED when retries are spent. One rule for
             the ordinary return and for finishing a reclaim, as
-            `repair_task_state` applies one rule to every state it repairs."""
+            `repair_task_state` applies one rule to every state it repairs.
+
+            Decided before anything is written, and writes nothing: the
+            workflow's derived state over it is READ before the release's
+            writes (#2838), and Firestore refuses a read after a write."""
             attempt_count = int(stored.get("attempt_count", 0))
             max_attempts = int(stored.get("max_attempts", task.max_attempts))
             # A platform refusal parks only from LEASED on this lease at this
@@ -1417,7 +1448,28 @@ class SchedulerStore:
                 payload["next_eligible_at"] = now + timedelta(
                     seconds=max(0, retry_delay_seconds)
                 )
+            return payload, target, attempt_count, max_attempts, exhausted, refusals
+
+        def _workflow_of(
+            txn: Any, stored: dict[str, Any], payload: dict[str, Any]
+        ) -> tuple[Any, dict[str, Any]] | None:
+            return self._workflow_write(txn, task.id, task.tenant_id, {**stored, **payload}, now)
+
+        def _returned(
+            txn: Any,
+            stored: dict[str, Any],
+            found: str,
+            reclaim: str | None,
+            plan: tuple[dict[str, Any], TaskState, int, int, bool, int | None],
+            workflow: tuple[Any, dict[str, Any]] | None,
+            *,
+            released: bool,
+        ) -> _Settled:
+            """Write the planned return, and the workflow's derived state with it."""
+            payload, target, attempt_count, max_attempts, exhausted, refusals = plan
             txn.update(task_ref, payload)
+            if workflow is not None:
+                txn.update(*workflow)
             return _Settled(
                 GuardedWrite(
                     "return_to_ready", True, TaskState.LEASED.value, found, None, target.value
@@ -1467,11 +1519,18 @@ class SchedulerStore:
                         reclaim=_RECLAIM_PENDING,
                         task_generation=int(stored.get("current_generation", 0)),
                     )
-                settled = _returned(txn, stored, found, _RECLAIM_FINISHED, released=False)
+                plan = _return_plan(stored, found, _RECLAIM_FINISHED)
+                workflow = _workflow_of(txn, stored, plan[0])
+                settled = _returned(txn, stored, found, _RECLAIM_FINISHED, plan, workflow,
+                                    released=False)
                 _end_attempt(txn, attempt, stored, returned=True)
                 return settled
 
             worker_owns_it = refusal == STATE_CHANGED and found in _WORKER_OWNED and points_here
+            returns = refusal is None and stored is not None and found is not None
+            plan = _return_plan(stored, found, None) if returns else None
+            # Read before the release below writes (#2838).
+            workflow = _workflow_of(txn, stored, plan[0]) if plan is not None else None
             released = False
             if not worker_owns_it:
                 released = release_lease_in_transaction(
@@ -1484,7 +1543,8 @@ class SchedulerStore:
                     GuardedWrite("return_to_ready", False, TaskState.LEASED.value, found, refusal),
                     released,
                 )
-            settled = _returned(txn, stored, found, None, released=released)
+            assert plan is not None
+            settled = _returned(txn, stored, found, None, plan, workflow, released=released)
             _end_attempt(txn, attempt, stored, returned=True)
             return settled
 
@@ -1720,19 +1780,20 @@ class SchedulerStore:
                     "cancel_if_not_started", False, _NOT_STARTED, found, STATE_CHANGED
                 )
             assert_transition(TaskState(found), TaskState.CANCELLED)
-            txn.update(
-                task_ref,
-                {
-                    "state": TaskState.CANCELLED.value,
-                    "park_reason": None,
-                    "blocked_by": [],
-                    "next_eligible_at": None,
-                    "completed_at": now,
-                    "last_error": reason[:1000],
-                    "end_cause": end_cause.value,
-                    "updated_at": now,
-                },
-            )
+            patch = {
+                "state": TaskState.CANCELLED.value,
+                "park_reason": None,
+                "blocked_by": [],
+                "next_eligible_at": None,
+                "completed_at": now,
+                "last_error": reason[:1000],
+                "end_cause": end_cause.value,
+                "updated_at": now,
+            }
+            workflow = self._workflow_write(txn, task.id, task.tenant_id, {**stored, **patch}, now)
+            txn.update(task_ref, patch)
+            if workflow is not None:
+                txn.update(*workflow)
             return GuardedWrite(
                 "cancel_if_not_started",
                 True,
@@ -1879,7 +1940,22 @@ class SchedulerStore:
         def _acquire(txn: Any) -> Lease:
             nonlocal runs
             runs += 1
-            return acquire_lease_in_transaction(
+            # READY -> LEASED moves the workflow's derived state (to RUNNING),
+            # so it is written in this transaction (#2838). Read FIRST: the
+            # frozen admission reads and then writes, and Firestore refuses a
+            # read after a write. Applied only once a lease was granted, so a
+            # denial writes neither; a sibling step moving meanwhile aborts
+            # the commit and this re-derives.
+            workflow = (
+                self._workflow_write(
+                    txn, task.id, task.tenant_id,
+                    {"workflow_id": task.workflow_id, "tenant_id": task.tenant_id,
+                     "state": TaskState.LEASED.value},
+                    self._now(),
+                )
+                if task.workflow_id else None
+            )
+            lease = acquire_lease_in_transaction(
                 txn,
                 db=self._db,
                 task=task,
@@ -1887,6 +1963,9 @@ class SchedulerStore:
                 backend=backend,
                 config=config,
             )
+            if workflow is not None:
+                txn.update(*workflow)
+            return lease
 
         started = time.monotonic()
         outcome = "error"

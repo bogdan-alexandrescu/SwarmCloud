@@ -103,6 +103,7 @@ from swarm_common.states import (
     assert_transition,
 )
 from swarm_redaction import redact as redact_text
+from swarm_rollup import derived_state_write
 
 from .accountlease import Assignment, fetch_identity_token
 from .errors import (
@@ -1449,15 +1450,28 @@ class ControlPlane:
             current = _as_state(task.get("state"))
             if current is not to_state:
                 assert_transition(current, to_state)
-            for ref, document in announced:
-                txn.set(ref, document)
             if current is to_state:
+                for ref, document in announced:
+                    txn.set(ref, document)
                 if fields:
                     txn.update(self._task_ref(), {**fields, "updated_at": utcnow()})
                 return
             payload: dict[str, Any] = {"state": to_state.value, "updated_at": utcnow()}
             payload.update(fields or {})
+            # Between two capacity-holding states the derived state is RUNNING
+            # before and after (`derive()` reports all four as RUNNING), so
+            # the startup window's transitions read nothing more. Any other
+            # move writes the workflow's derived state with it (#2838), read
+            # here, after the fence and before the first write.
+            workflow = (
+                None if current in CONCURRENCY_STATES and to_state in CONCURRENCY_STATES
+                else self._workflow_write(txn, task, payload)
+            )
+            for ref, document in announced:
+                txn.set(ref, document)
             txn.update(self._task_ref(), payload)
+            if workflow is not None:
+                txn.update(*workflow)
 
         self._run_transaction(_apply)
         for _, document in announced:
@@ -2013,11 +2027,31 @@ class ControlPlane:
         ref, document = slot
         return ref, {**document, "type": event_type.value, "detail": dict(detail)}
 
+    def _workflow_write(
+        self, txn: Any, task: Mapping[str, Any] | None, payload: Mapping[str, Any]
+    ) -> tuple[Any, dict[str, Any]] | None:
+        """The task's workflow's derived state, for THIS transaction to write (#2838).
+
+        The rule is `swarm_rollup.derive`, the one swarm-api writes by on the
+        attempt-state path and the reconciler checks against. Reads only, under
+        this control plane's call budget, so a caller calls it after its fence
+        read and before its first write.
+        """
+        if task is None:
+            snap = _snapshot(txn.get(self._task_ref(), **self.call_options()))
+            task = (snap.to_dict() or {}) if snap.exists else {}
+        return derived_state_write(
+            txn, self._db, tenant_id=self.tenant_id, workflow_id=task.get("workflow_id"),
+            now=utcnow(), changed={self.task_id: {**task, **payload}},
+            call_options=self.call_options(),
+        )
+
     def _end_in_transaction(
         self,
         txn: Any,
         *,
         payload: dict[str, Any],
+        task: Mapping[str, Any] | None = None,
         release: str,
         exit_code: int | None,
         error: str | None,
@@ -2050,7 +2084,17 @@ class ControlPlane:
         once the commit has landed. `events` are the ones that announce or
         record the end; LEASE_RELEASED is added from `released_slot` when the
         release decremented the pools.
+
+        THE WORKFLOW'S STATE COMMITS WITH IT (#2838). `task` is the document
+        `_fenced_task` read (read again through `txn` when a caller does not
+        pass it, still before any write); the step's workflow's derived state over `payload`
+        is read here, before the release's first write, and written beside the
+        task's own. So a park, a finish or a retry on this direct-Firestore
+        path leaves the workflow's stored state equal to `derive()`, and a
+        fenced attempt -- refused in `_fenced_task`, before this runs --
+        writes neither.
         """
+        workflow = self._workflow_write(txn, task, payload)
         released = release_lease_in_transaction(
             txn, db=self._db, lease_id=self.lease_id, reason=release, now=now
         )
@@ -2062,6 +2106,8 @@ class ControlPlane:
         for ref, document in written:
             txn.set(ref, document)
         txn.update(self._task_ref(), payload)
+        if workflow is not None:
+            txn.update(*workflow)
         txn.set(
             self._attempt_ref(),
             {
@@ -2182,6 +2228,7 @@ class ControlPlane:
                 )
             written = self._end_in_transaction(
                 txn,
+                task=task,
                 payload=payload,
                 release=release,
                 exit_code=ExitCode.PARKED,
@@ -2274,6 +2321,7 @@ class ControlPlane:
             )
             written = self._end_in_transaction(
                 txn,
+                task=task,
                 payload=payload,
                 release=f"parked:{reason.value}",
                 exit_code=ExitCode.PARKED,
@@ -2362,6 +2410,7 @@ class ControlPlane:
             )
             written = self._end_in_transaction(
                 txn,
+                task=task,
                 payload=payload,
                 release=f"parked:{reason.value}",
                 exit_code=ExitCode.PARKED,
@@ -2505,6 +2554,7 @@ class ControlPlane:
             )
             written = self._end_in_transaction(
                 txn,
+                task=task,
                 payload=payload,
                 release=f"parked:{reason.value}",
                 exit_code=ExitCode.PARKED,
@@ -2571,6 +2621,7 @@ class ControlPlane:
             assert_transition(_as_state(task.get("state")), state)
             return self._end_in_transaction(
                 txn,
+                task=task,
                 payload={"state": state.value, "updated_at": now, **fields},
                 release=f"terminal:{state.value}",
                 exit_code=exit_code,
@@ -2740,6 +2791,7 @@ class ControlPlane:
             )
             written = self._end_in_transaction(
                 txn,
+                task=task,
                 payload=payload,
                 release=(
                     f"retry:{cause}" if target is TaskState.READY else f"terminal:{target.value}"
