@@ -375,7 +375,7 @@ jobs:
   # -------------------------------------------------------------------------
   sandbox:
     name: put the deployed commit's fixtures on the sandbox
-    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # The sandbox token (SWARM_SANDBOX_GITHUB_TOKEN) lives in environment
     # `repo-secrets`, whose deployment branches are `main` only (BGD,
     # 2026-10-23, REPO-SECRETS-ENV; docs/ci.md): a repository secret is read
@@ -618,7 +618,7 @@ jobs:
   # -------------------------------------------------------------------------
   sandbox-results:
     name: read back and sweep the sandbox
-    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # The main-only environment that holds the secret: see the comment on
     # `sandbox` above (REPO-SECRETS-ENV).
     environment:
@@ -781,7 +781,7 @@ jobs:
   # says nothing about the group.
   live-browser-report:
     name: report the scheduled live-browser group
-    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: [live-browser]
     if: ${{ !cancelled() && needs.live-browser.result != 'skipped' }}
     concurrency:

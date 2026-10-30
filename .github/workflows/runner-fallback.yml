@@ -65,7 +65,7 @@ env:
   # the pool.
   VARIABLE: SELF_HOSTED_CI
   # The label runner-dispatcher registers SwarmCloud's runners under.
-  POOL_LABEL: ${{ vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci' }}
+  POOL_LABEL: bogdan-ci
   # A bogdan-ci job queued this long with no runner serving means the pool is
   # out. The dispatcher starts a VM in about two minutes; ten is five of those
   # and one schedule tick.
@@ -466,7 +466,7 @@ jobs:
     # Asks the pool for a runner while the hatch is off; the judge reads
     # whether one picked it up. See the header.
     if: vars.SELF_HOSTED_CI == 'off'
-    runs-on: [self-hosted, linux, x64, "${{ vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci' }}"]
+    runs-on: [self-hosted, linux, x64, bogdan-ci]
     timeout-minutes: 2
     permissions: {}
     steps:

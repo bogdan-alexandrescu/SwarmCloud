@@ -230,7 +230,7 @@ concurrency:
 jobs:
   enable:
     name: queue for auto-merge
-    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # The merge App's key (MERGE_APP_PRIVATE_KEY) lives in environment
     # `repo-secrets`, whose deployment branches are `main` only (BGD,
     # 2026-10-23, REPO-SECRETS-ENV; docs/ci.md): a repository secret is read
@@ -999,7 +999,7 @@ jobs:
 
   requeue:
     name: re-evaluate ready pull requests when a run finishes
-    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # A pull request's run only: a push to main has no `ready` pull request
     # at its head. Or any check suite's completion (#815) -- not filtered by
     # branch, because a fork's pull request may come from a branch named
@@ -1046,7 +1046,7 @@ jobs:
 
   requeue-edited:
     name: re-evaluate a ready pull request whose body was edited
-    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # #888 box 97: adding or removing `depends on` changes the gate's answer,
     # and nothing looked again until the next label or finishing CI run --
     # an armed auto-merge merged past a dependency added after the label.
@@ -1083,7 +1083,7 @@ jobs:
 
   disable:
     name: disable auto-merge on a new head
-    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # The main-only environment that holds the secret: see the comment on
     # `enable` above (REPO-SECRETS-ENV).
     environment:
@@ -1343,7 +1343,7 @@ jobs:
 
   close-issues:
     name: close the merged pull request's issues
-    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # Every merge into the default branch, not only the App's: the event does
     # not reliably say who merged, an owner merge's issues are already closed
     # by the time this reads them (the script leaves a closed issue alone),
@@ -1380,7 +1380,7 @@ jobs:
 
   ready-on-green:
     name: mark ready-on-green pull requests ready once green
-    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # The main-only environment that holds the secret: see the comment on
     # `enable` above (REPO-SECRETS-ENV).
     environment:
