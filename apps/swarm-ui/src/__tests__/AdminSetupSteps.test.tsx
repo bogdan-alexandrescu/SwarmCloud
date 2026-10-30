@@ -339,6 +339,8 @@ describe('Admin › Setup says only what exists', () => {
     expect(await within(row).findByRole('link', { name: /task_v2/ })).toBeTruthy()
     await waitFor(() => expect(visible(row)).toContain('failed'))
     expect(within(row).queryByRole('button', { name: 'Run the console checks' })).toBeNull()
+    // A failed run is offered again (audit 3, A8): see the case below.
+    expect(within(row).getByRole('button', { name: 'Run the console checks again' })).toBeTruthy()
   })
 
   it('the team row shows its repository grant', async () => {
@@ -742,5 +744,120 @@ describe('the first team needs no typing the install already knows (#26, N20; DA
     // Before stage 8 records a group, the field starts empty.
     await mountSteps(noTeam())
     expect((within(document.querySelector('[data-step="team"]') as HTMLElement).getByLabelText('Workspace group') as HTMLInputElement).value).toBe('')
+  })
+})
+
+// ADMIN › SETUP FOLLOWS THE ENGINE (DAYONE-SETUP-UI-7; part of #2688; audit 3).
+//
+// WHAT EACH CASE HOLDS:
+//   * N10: the plugin line installs from the marketplace of the deployment's
+//     own release channel (an rc release's `channels/rc.marketplace.json`);
+//   * A7: the engine's epoch-seconds times read as dates, ISO text still
+//     reads, and no field renders Invalid Date;
+//   * A8: a failed or cancelled console run offers "Run the console checks
+//     again" with the fresh starts the route has left, and none past them.
+
+const FAILED_RUNS = (retries: Json = {}): Json => ({
+  finished: null,
+  ...teamWith({ grant: GRANTED }),
+  verify_runs: { verify_runs: { console_task: 'task_f1', console_workflow: 'wf_f1' }, retries, repository: 'example-org/app' },
+})
+
+describe('Admin › Setup follows the engine', () => {
+  it('the plugin line installs from the marketplace of the deployment’s channel', async () => {
+    const passed = { verify: { ...VERIFYING, done: 8, result: 'passed' } }
+    await mountSteps(state({}, { ...passed, release: '2026.10.3-rc.2' }))
+    const rc = visible(screen.getByRole('region', { name: 'Send to your team' }).querySelector('figure.c-code pre'))
+    // MUTATION: install every deployment from the stable marketplace.
+    expect(rc).toContain('claude plugin marketplace add https://storage.googleapis.com/swarmcloud/channels/rc.marketplace.json ')
+    cleanup()
+    await mountSteps(state({}, { ...passed, release: '2026.10.3' }))
+    const stable = visible(screen.getByRole('region', { name: 'Send to your team' }).querySelector('figure.c-code pre'))
+    // MUTATION: send a stable deployment to a channel file.
+    expect(stable).toContain('claude plugin marketplace add https://storage.googleapis.com/swarmcloud/marketplace.json ')
+    const mod = await import('../AdminSetupSteps')
+    expect(mod.releaseChannel(null)).toBe('stable')
+    expect(mod.pluginMarketplace('beta')).toBe('https://storage.googleapis.com/swarmcloud/channels/beta.marketplace.json')
+  })
+
+  it('reads the engine’s epoch-seconds times as dates, and ISO text as before', async () => {
+    const { normSetupState } = await import('../api')
+    const at = T0 - 1200
+    const doc = state({}, {
+      stages: Array.from({ length: 16 }, (_, i) => (i <= 8 || i === 10 || i === 13 ? { state: 'done', at, by: 'ana@example.com' } : null)),
+      lease: { holder: 'laptop', heartbeat: T0 + 230 },
+      hand_off_at: T0 - 900,
+      ready_at: T0 + 60,
+    })
+    const e = normSetupState(doc).engine
+    // MUTATION: keep epoch seconds as text (String(n)), which Date reads as Invalid Date.
+    expect(e?.stages[0]?.at).toBe(new Date(at * 1000).toISOString())
+    expect(e?.lease?.heartbeat).toBe(new Date((T0 + 230) * 1000).toISOString())
+    expect(e?.hand_off_at).toBe(new Date((T0 - 900) * 1000).toISOString())
+    expect(e?.ready_at).toBe(new Date((T0 + 60) * 1000).toISOString())
+    // ISO text reads unchanged; text that is no time is null, never Invalid Date.
+    expect(normSetupState(state()).engine?.hand_off_at).toBe('2026-10-29T14:45:00Z')
+    expect(normSetupState(state({}, { ready_at: 'soon' })).engine?.ready_at).toBeNull()
+    await mountSteps(doc)
+    const text = visible(document.body)
+    expect(text).not.toContain('Invalid Date')
+    expect(visible(document.querySelector('[data-step="cloud"]'))).toContain(`finished ${new Date(at * 1000).toLocaleString()}`)
+  })
+
+  it('a failed console run is offered again, with the fresh starts left', async () => {
+    let posted = false
+    const calls = serve((m, url) => {
+      if (m === 'POST' && url === '/v1/admin/setup/verify-runs') {
+        posted = true
+        return { status: 200, body: { verify_runs: { console_task: 'task_f2', console_workflow: 'wf_f1' }, retries: { console_task: 1, console_workflow: 0 }, repository: 'example-org/app', started: true } }
+      }
+      if (m === 'GET' && url.startsWith('/v1/tasks/task_f1')) return { status: 200, body: { task: { id: 'task_f1', tenant_id: 'engineering', state: 'CANCELLED' } } }
+      if (m === 'GET' && url.startsWith('/v1/tasks/task_f2')) return { status: 200, body: { task: { id: 'task_f2', tenant_id: 'engineering', state: 'RUNNING' } } }
+      if (m === 'GET' && url.startsWith('/v1/workflows/wf_f1')) return { status: 200, body: { workflow: { id: 'wf_f1', state: 'SUCCEEDED' }, tasks: [] } }
+      if (m === 'GET' && url === '/v1/admin/setup') return { status: 200, body: state(FAILED_RUNS()) }
+      return null
+    })
+    await mountSteps(state(FAILED_RUNS()))
+    const row = document.querySelector('[data-step="verify"]') as HTMLElement
+    // MUTATION: offer the button only while no run ids exist.
+    const again = await within(row).findByRole('button', { name: 'Run the console checks again' })
+    // MUTATION: drop the count, or count from anything but the route's `retries`.
+    expect(visible(row)).toContain('2 of 2 fresh starts left')
+    fireEvent.click(again)
+    await waitFor(() => expect(posted).toBe(true))
+    expect(calls.some((c) => c.method === 'POST' && c.url === '/v1/admin/setup/verify-runs')).toBe(true)
+  })
+
+  it('a console run that used its fresh starts is not offered again', async () => {
+    serve((m, url) =>
+      m === 'GET' && url.startsWith('/v1/tasks/task_f1')
+        ? { status: 200, body: { task: { id: 'task_f1', tenant_id: 'engineering', state: 'RUNNING' } } }
+        : m === 'GET' && url.startsWith('/v1/workflows/wf_f1')
+          ? { status: 200, body: { workflow: { id: 'wf_f1', state: 'FAILED' }, tasks: [] } }
+          : null,
+    )
+    await mountSteps(state(FAILED_RUNS({ console_task: 0, console_workflow: 2 })))
+    const row = document.querySelector('[data-step="verify"]') as HTMLElement
+    const again = await within(row).findByRole('button', { name: 'Run the console checks again' })
+    // MUTATION: start a run the route answers 409 for.
+    expect((again as HTMLButtonElement).disabled).toBe(true)
+    expect(visible(row)).toContain('0 of 2 fresh starts left')
+    expect(visible(row)).toContain('failed after 2 fresh starts')
+  })
+
+  it('a run still going or succeeded is not offered again', async () => {
+    serve((m, url) =>
+      m === 'GET' && url.startsWith('/v1/tasks/task_f1')
+        ? { status: 200, body: { task: { id: 'task_f1', tenant_id: 'engineering', state: 'RUNNING' } } }
+        : m === 'GET' && url.startsWith('/v1/workflows/wf_f1')
+          ? { status: 200, body: { workflow: { id: 'wf_f1', state: 'SUCCEEDED' }, tasks: [] } }
+          : null,
+    )
+    await mountSteps(state(FAILED_RUNS()))
+    const row = document.querySelector('[data-step="verify"]') as HTMLElement
+    await waitFor(() => expect(visible(row)).toContain('succeeded'))
+    await waitFor(() => expect(visible(row)).toContain('running'))
+    // MUTATION: offer the button on any recorded run.
+    expect(within(row).queryByRole('button', { name: /Run the console checks/ })).toBeNull()
   })
 })
