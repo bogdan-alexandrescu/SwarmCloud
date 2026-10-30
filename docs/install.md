@@ -389,9 +389,98 @@ Other ways to see where an install stands:
   that is not met. It writes nothing.
 - `swarm install --stage <n>` runs one stage again. You can repeat the flag.
   The stages before it are still checked.
-- `swarm doctor` shows what this machine reaches: its sign-in, the project,
-  the front door, the API, your identity, your workspace and your groups.
-  Admin › Setup › Health in the console shows the deployment's own health.
+- `swarm doctor` checks this machine and then the deployment (below).
+- `swarm install --repair <check>` re-runs the one step that repairs a check
+  `swarm doctor` names (below).
+
+### `swarm doctor`: check the deployment
+
+```bash
+swarm doctor --project <project>
+```
+
+`swarm doctor` never changes anything. It runs in two parts:
+
+1. **This machine.** When the `sc` plugin's bridge is installed beside the
+   installer, it first shows which deployment this machine reaches and how it
+   is signed in. `--platform-only` skips this part, and `--json` leaves it
+   out.
+2. **The deployment.** It reads the install's state (from the state bucket,
+   or else the local copy) and checks the live deployment against every entry
+   in the release's manifest that carries a check. Without `--project` it uses
+   the project gcloud is configured with, and `--env` names the environment
+   (default `prod`). The checks look at:
+   - the Google APIs the deployment needs, which must be enabled;
+   - the Secret Manager secrets, which must exist (it never reads a value);
+   - IAP on the front door, which must admit the deployment's Desktop client;
+   - the Workspace groups, which swarm-api must be able to read;
+   - the region's Cloud Run Jobs, against the limit of 1,000 Jobs a region
+     may hold, and whether finished Jobs are being deleted;
+   - the cluster's control plane, which must have authorised networks on,
+     must not admit `0.0.0.0/0`, and must no longer admit the installer's
+     address;
+   - the cluster's access rules in every team namespace.
+
+Each check prints one line: `met`, `unmet` or `unknown`, its id and what it
+saw. A check that is not met also says, in words, what it is for and how to
+fix it: usually `swarm install --repair <id>`, which for a step done on a
+Google or GitHub page opens that page and waits for the change. A last line counts the results and says how many manifest
+entries carry no check, because the install itself verified them when it ran.
+`--json` prints all of this as one JSON document, with each check's repair
+command.
+
+**`unknown` is never fine.** It means the check could not run: a missing
+right, a timeout, or something the install state does not record yet. It
+counts the same as `unmet`. When Google refuses a check, the doctor asks
+Google's Policy Troubleshooter why. If you hold the right, Google is still
+propagating the grant (45 seconds to 10 minutes), and the line says to run
+`swarm doctor` again. If you do not, the line names the right that is
+missing.
+
+`swarm doctor` exits:
+
+| Exit | Meaning |
+|---|---|
+| 0 | every check is `met` |
+| 1 | the doctor could not start: no install state for the project, or the manifest would not load |
+| 2 | no project to check, or the install state is for another environment |
+| 3 | at least one check is `unmet` or `unknown`, or the check of this machine failed |
+
+### `swarm install --repair <check>`: repair one check
+
+```bash
+swarm install --project <project> --repair <check>
+```
+
+`<check>` is the id `swarm doctor` printed. The installer finds the install
+step that makes that check true and says which step and stage it will re-run.
+You type the check's id to go on. This confirmation ignores
+`SWARM_ASSUME_YES`, and with no terminal to type on the repair is refused
+(exit 5) and nothing changes.
+
+The repair then takes the install's lease, as `swarm install` does. It checks
+the steps before it, and the other steps of the same stage, without changing
+them, and runs the one step. That step asks for its own approvals: a typed
+confirmation, a cost or an IAM grant. When the step is done on a Google or
+GitHub page, the installer opens the page, says what to do there and watches
+for the change. If the step's own check already passes and the install
+recorded the step done, the step is skipped: there is nothing for it to
+repair. A check id
+that is not in the manifest, or that no install step makes, exits 2. Otherwise
+the exit codes are those of `swarm install`, in the table above.
+
+### The hourly doctor
+
+The `swarm-doctor` Cloud Run job runs the same checks every hour, read-only,
+with its own service account. It posts what it finds to **Admin › Setup ›
+Health** in the console. The install turns it on in its second
+infrastructure pass. When the job cannot read the install's state, the checks
+that need it say `unknown`. When it cannot post, the next hour's run tries
+again.
+
+The last line of `swarm doctor` says whether the hourly doctor is on. When it
+is off (`enable_scheduled_doctor` is false in the deployment's Terraform), the
+line says so, and that Admin › Setup › Health then shows no hourly findings.
 
 Only one person runs the install at a time, under a lease. If the person who
 started it is gone and their lease has expired, `swarm install` asks you to
