@@ -159,6 +159,19 @@ def test_propagation_told_apart_from_missing_grant(access, cause):
     assert ("POST", "https://policytroubleshooter.googleapis.com/v3/iam:troubleshoot") in gcp.calls
 
 
+def test_troubleshooter_is_asked_about_the_bare_email():
+    asked = []
+
+    class Recording(FakeGcp):
+        def post(self, url, body, *, permission, resource):
+            asked.append(body["accessTuple"]["principal"])
+            return {"overallAccessState": "CAN_ACCESS"}
+
+    assert doctor.troubleshoot(Recording({}), "user:admin@example.test", "p.get", "//r") == "granted"
+    assert asked == ["admin@example.test"]
+    assert doctor.troubleshoot(Recording({}), "", "p.get", "//r") == "unknown"
+
+
 def _jobs(count: int, finished_ago: timedelta | None) -> dict:
     done = None if finished_ago is None else (datetime.now(UTC) - finished_ago).isoformat()
     job = {"name": "j", "latestCreatedExecution": {"completionTime": done} if done else {}}
