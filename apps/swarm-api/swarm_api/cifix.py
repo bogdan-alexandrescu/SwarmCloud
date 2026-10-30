@@ -334,7 +334,9 @@ class CiFixInFlight(Conflict):
 
 class CiFixLaneOwnsPr(Conflict):
     """409: the continued task's workflow has a live merge step, which runs
-    this pull request's CI-fix rounds itself; `detail` names it."""
+    this pull request's CI-fix rounds itself, or another writer of the pull
+    request -- an issue run, a conflict fix, a plain continuation, or another
+    CI fix at another head or run (#2763) -- is live; `detail` names it."""
 
     code = "ci_fix_lane_owns_pr"
 
@@ -809,6 +811,102 @@ def _refuse_if_conflict_fix_live(store: Any, tenant_id: str, continuation: Conti
     ))
 
 
+def _same_failure(other: Mapping[str, Any], record: Mapping[str, Any]) -> bool:
+    """Whether `other` (a live fix's `metadata.ci_fix`, or its claim) is on the
+    failure `record` names: `record` carries both a head and a run and `other`
+    has the same two. A record that lacks either names no failure `_claim`
+    can answer (it takes no claim), so it is never the live fix's own failure
+    and `_refuse_if_ci_fix_live` refuses it beside any live fix (#2763)."""
+    keys = ("head_sha", "run_id")
+    return (all(key in record for key in keys)
+            and all(other.get(key) == record[key] for key in keys))
+
+
+def _refuse_if_ci_fix_live(store: Any, tenant_id: str, continuation: Continuation,
+                           record: Mapping[str, Any]) -> None:
+    """Refuse `CiFixLaneOwnsPr` while another CI fix of this pull request is
+    live, at any head and from any run (through `refusals.refuse`: switched
+    off, the request goes on as before).
+
+    ONE WRITER PER PULL REQUEST, CI FIX BESIDE CI FIX (#2763). `_claim` keys
+    a failure by (tenant, repository, pull request, head, run), so another
+    head or another run was another failure and got a second fix beside the
+    first. Measured on PR #2730: scripts/ci-fix.sh's attempt 1
+    (task_f11210cf) was RUNNING on bb31584 when attempt 2 (task_af11c3ba) was
+    admitted at 62a6fbac; attempt 2 pushed 9e193de0 first and attempt 1's
+    publish conflicted. So the second fix waits: the live fix's push runs CI
+    again at its head, and a red run there gets its own fix. Two reads,
+    equality filters only: non-terminal tasks of the tenant continuing the
+    branch task with `metadata.ci_fix.pull_request` this one
+    (`live_pr_writer`'s read), and claims by (tenant, branch task, pull
+    request) through `_live_holder`, so a racing fix whose task is not written
+    yet counts while inside `CLAIM_GRACE_SECONDS`. Every filter is checked
+    again in the application (invariant 9). A live fix of the very same
+    failure is passed over: `_claim` answers that one `ci_fix_in_flight`, as
+    before. The refusal is `ci_fix_lane_owns_pr`, which ships on and
+    scripts/ci-fix.sh reads as a skip, not `ci_fix_in_flight`, which ships
+    report-only and is off in production, where it would refuse nothing;
+    `ci_fix` in the detail says which.
+    """
+    db = store.db
+    root = continuation.root_task_id
+    pull_request = record["pull_request"]
+    terminal = {s.value for s in TERMINAL_STATES}
+    live: dict[str, Any] | None = None
+    tasks = (
+        db.collection(TASKS)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter(f"metadata.{DISPATCH_METADATA_KEY}.continues", "==", root))
+        .where(filter=FieldFilter(f"metadata.{CI_FIX_METADATA_FIELD}.pull_request", "==", pull_request))
+        .limit(LIVE_WRITERS_READ)
+    )
+    for snap in tasks.stream():
+        doc = snap.to_dict() or {}
+        metadata = _mapping(doc.get("metadata"))
+        fix = _mapping(metadata.get(CI_FIX_METADATA_FIELD))
+        if (doc.get("tenant_id") != tenant_id
+                or _mapping(metadata.get(DISPATCH_METADATA_KEY)).get("continues") != root
+                or fix.get("pull_request") != pull_request
+                or doc.get("state") in terminal or _same_failure(fix, record)):
+            continue
+        live = {"task_id": str(doc.get("id") or snap.id), "workflow_id": doc.get("workflow_id"),
+                "head_sha": fix.get("head_sha")}
+        break
+    if live is None:
+        clock = getattr(store, "_now", None)
+        now = clock() if callable(clock) else datetime.now(timezone.utc)
+        claims = (
+            db.collection(CLAIMS)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter("root_task_id", "==", root))
+            .where(filter=FieldFilter("pull_request", "==", pull_request))
+            .limit(LIVE_CLAIMS_READ)
+        )
+        for snap in claims.stream():
+            held = snap.to_dict() or {}
+            if (held.get("tenant_id") != tenant_id or held.get("root_task_id") != root
+                    or held.get("pull_request") != pull_request or _same_failure(held, record)):
+                continue
+            holder = _live_holder(_Reads(), db, tenant_id, held, now)
+            if holder is not None:
+                live = {**holder, "head_sha": held.get("head_sha")}
+                break
+    if live is None:
+        return
+    task = live["task_id"]
+    head = live["head_sha"]
+    refuse(CiFixLaneOwnsPr(
+        f"pull request #{pull_request} has a live CI fix"
+        + (f" ({task})" if task else ", still being submitted,")
+        + (f" at {str(head)[:12]}" if head else "")
+        + " pushing to its branch; no second fix is made beside it, and CI runs again "
+        "at the head that fix pushes.",
+        detail={"metadata": CI_FIX_METADATA_FIELD, "task_id": task,
+                "workflow_id": live["workflow_id"], "pull_request": pull_request,
+                "head_sha": head if isinstance(head, str) else None, "ci_fix": True},
+    ))
+
+
 #: A plain continuation's own issue-run mark (`issueci`, `issueruns` write it
 #: as a literal): the run's rounds have the issue run's gate, not this one.
 ISSUE_RUN_METADATA_KEY = "issue_run"
@@ -1142,7 +1240,10 @@ def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
     the second push was rejected) or a plain continuation of the lane pushes
     to its branch (`_refuse_if_continuation_live`: on 2026-10-27 PR #2570's
     fixer was admitted two minutes after a `publish_to_pr` implement step
-    started at 7e55a8d, and the step's publish was refused `head_moved`), and
+    started at 7e55a8d, and the step's publish was refused `head_moved`) or
+    another CI fix of the pull request is live at another head or run
+    (`_refuse_if_ci_fix_live`: on PR #2730 attempt 2 was admitted at 62a6fbac
+    beside attempt 1 RUNNING on bb31584, and attempt 1's publish conflicted), and
     `CiFixInFlight` (409) when the failure
     already has a live fix. A continuation or `publish_to_pr` workflow with no
     `metadata.ci_fix` that pushes and carries no writer mark of its own is
@@ -1188,6 +1289,8 @@ def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
     _refuse_if_conflict_fix_live(store, tenant_id, continuation, record)
     # And a live plain continuation of the lane pushing to the branch (#2583).
     _refuse_if_continuation_live(store, tenant_id, continuation, record)
+    # And another live CI fix of the pull request, at any head or run (#2763).
+    _refuse_if_ci_fix_live(store, tenant_id, continuation, record)
     made = _attempts_made(
         store.db, tenant_id, continuation.root_task_id, record["pull_request"], MAX_ATTEMPTS_CEILING,
     )
