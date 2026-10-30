@@ -36,6 +36,17 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["swarm_install"]
 
+# The release's dependency manifest ships inside the wheel, so the installed
+# engine (`uv tool install` of the release wheel, install/install.sh) loads it
+# with no checkout (lane DAYONE-WHEEL-MANIFEST, part of #2688). The whole
+# fragment directory is mapped, so a lane's new install/manifest.d/<lane>.yaml
+# ships with no edit here. `swarm_install.manifest` finds the copy through
+# importlib.resources; its layout (manifest.yaml beside manifest.d/) is the one
+# SWARM_INSTALL_MANIFEST points at.
+[tool.hatch.build.targets.wheel.force-include]
+"../../install/manifest.yaml" = "swarm_install/_manifest/manifest.yaml"
+"../../install/manifest.d" = "swarm_install/_manifest/manifest.d"
+
 [tool.uv.sources]
 swarm-common = { path = "../common", editable = true }
 swarm-redaction = { path = "../redaction", editable = true }
