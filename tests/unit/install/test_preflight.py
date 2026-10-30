@@ -688,7 +688,9 @@ def test_missing_gcloud_yes_installs_the_sdk_and_signs_in(tmp_path: Path) -> Non
     assert machine.fetched == []
 
 
-def test_missing_gcloud_no_stops_with_how_to_install_it(tmp_path: Path) -> None:
+def test_missing_gcloud_no_stops_with_how_to_install_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    opened: list[str] = []
+    monkeypatch.setattr(preflight, "open_page", lambda url, *, why: opened.append(url))
     machine = FetchingTools(tmp_path, {k: v for k, v in EVERY_GOOD.items() if k != "gcloud"})
     ask = answers(preflight_tools=["n"])
     step = machine.step(ask)
@@ -700,6 +702,7 @@ def test_missing_gcloud_no_stops_with_how_to_install_it(tmp_path: Path) -> None:
     assert "signs you in itself" in str(stopped.value)
     assert machine.sdk_installs == 0 and machine.logins == []
     assert len(ask.asked) == 1
+    assert opened == [preflight.SDK_PAGE]  # the page it names opens (steps.open_page)
 
 
 def test_python_is_the_running_interpreter() -> None:
