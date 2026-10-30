@@ -15,7 +15,7 @@ from swarm_install import tfvars
 from swarm_install.api_client import ADMIN_ROLE, DELEGATION
 
 from .test_state_store import FakeBucket
-from .test_terraform_runner import PROJECT, FakeExec, guards, install_state, run
+from .test_terraform_runner import DESKTOP_CLIENT_ID, PROJECT, FakeExec, guards, install_state, run
 
 DIGEST = "sha256:" + "a" * 64
 
@@ -43,7 +43,8 @@ def test_generated_never_from_committed_tfvars(monkeypatch: pytest.MonkeyPatch) 
 
     assert boot["adopt_from_infra_states"] == [], "lesson 8: the first bootstrap adopts nothing"
     assert boot["ci_fix_service_account"] == "" and boot["infra_tenants_tfvars"] == ""
-    assert boot["frontend_iap_members"] == ["user:admin@example.com"]
+    assert boot["frontend_iap_members"] == ["domain:example.com", "user:admin@example.com",
+                                            f"serviceAccount:qa-console@{PROJECT}.iam.gserviceaccount.com"]
     assert boot["workspace_apply_image"] == (
         f"europe-west1-docker.pkg.dev/{PROJECT}/swarm/workspace-apply@{DIGEST}"
     ), "the workspace-apply image is the release's digest in the project's own registry"
@@ -133,3 +134,140 @@ def test_traffic_latest_100(tmp_path: Path) -> None:
     with pytest.raises(tfmod.TerraformRefused, match="latest revision"):
         run(tmp_path, "infra-2", exec_, g=guards())
     assert "apply" not in exec_.verbs(), "lesson 28: a pinned revision made a later deploy serve 0 %"
+
+
+# -- DAYONE-ENGINE-INPUTS: the inputs the design depends on ------------------------------
+
+INFRA_PASSES = ("registry", "infra-1", "infra-2", "infra-close", "infra-3", "infra-4")
+EVERY_VERSION = {name: True for name in (*tfvars.KEY_SWITCHES, *tfvars.APP_SECRETS, tfvars.DESKTOP_SECRET)}
+
+
+def _infra(pass_name: str, versions: dict | None = None, **outputs) -> dict:
+    return tfvars.infra_inputs(install_state(**outputs), pass_name=pass_name, installer="admin@example.com",
+                               versions=versions)
+
+
+def _boot(pass_name: str, **outputs) -> dict:
+    return tfvars.bootstrap_inputs(install_state(**outputs), pass_name=pass_name, installer="admin@example.com")
+
+
+def test_iap_admits_the_organisation_installer_and_qa_identity() -> None:
+    # Decision 1: domain:<org_domain>, the installer's user:, the QA identity's account.
+    for pass_name in ("bootstrap-1", "bootstrap-2"):
+        members = _boot(pass_name, org_domain="Acme.Example")["frontend_iap_members"]
+        assert members[:2] == ["domain:acme.example", "user:admin@example.com"], pass_name
+        assert f"serviceAccount:qa-console@{PROJECT}.iam.gserviceaccount.com" in members
+        assert not [m for m in members if m.startswith("all")], "never allUsers or allAuthenticatedUsers"
+
+
+def test_allowed_domains_is_the_org_domain() -> None:
+    for pass_name in INFRA_PASSES:
+        assert _infra(pass_name)["allowed_domains"] == ["example.com"], pass_name
+    assert _infra("infra-2", org_domain="@Acme.Example ")["allowed_domains"] == ["acme.example"]
+    for bad in ("gmail", "https://acme.example", "acme.example/x"):
+        with pytest.raises(ValueError, match="not a domain"):
+            _infra("infra-2", org_domain=bad)
+
+
+def test_setup_github_org_from_stage_0() -> None:
+    for pass_name in INFRA_PASSES:
+        assert _infra(pass_name, github_org="acme-eng")["setup_github_org"] == "acme-eng", pass_name
+
+
+def test_discovery_from_desktop_client_id() -> None:
+    discovery = _infra("infra-1")["discovery"]
+    # terraform/infra refuses an oauth_client_id without the other three (variables.tf, var.discovery).
+    assert discovery == {"name": "SwarmCloud", "version": "2026.10.1", "oauth_client_id": DESKTOP_CLIENT_ID,
+                         "plugin_min_version": tfvars.PLUGIN_MIN_VERSION}
+    assert all(discovery.values())
+
+
+def test_discovery_serves_secret_only_with_its_version() -> None:
+    assert _infra("infra-1", EVERY_VERSION)["discovery_serves_client_secret"] is False, "pass 1: every switch off"
+    assert _infra("infra-2", {})["discovery_serves_client_secret"] is False, "no version of the secret yet"
+    for pass_name in ("infra-2", "infra-close", "infra-3", "infra-4"):
+        assert _infra(pass_name, EVERY_VERSION)["discovery_serves_client_secret"] is True, pass_name
+
+
+def test_iap_programmatic_client_and_backends_in_bootstrap_pass_2() -> None:
+    first = _boot("bootstrap-1")
+    assert first["frontend_iap_backends"] == [], "the backends do not exist before infra pass 1"
+    assert first["frontend_iap_programmatic_clients"] == []
+    second = _boot("bootstrap-2")
+    assert second["frontend_iap_backends"] == ["swarm-ui-backend", "swarm-ui-ui-backend"]
+    assert second["frontend_iap_programmatic_clients"] == [DESKTOP_CLIENT_ID]
+    assert all(b.startswith("swarm") for b in second["frontend_iap_backends"]), "only the platform's own backends"
+
+
+def test_qa_identity_and_hooks_dedup_role_on_in_bootstrap() -> None:
+    for pass_name in ("bootstrap-1", "bootstrap-2"):
+        inputs = _boot(pass_name)
+        assert inputs["enable_qa_identity"] is True, pass_name
+        assert inputs["enable_github_hooks_dedup_role"] is True, f"{pass_name}: before infra-4's hooks"
+
+
+def test_graph_service_with_its_key_and_image() -> None:
+    assert "swarm-graph-ticket-key" in tfvars.KEY_SWITCHES, "stage 6 gives the ticket key its version"
+    assert _infra("infra-1")["enable_graph_service"] is False, "the workload pool exists only after pass 1"
+    assert _infra("infra-2")["enable_graph_service"] is True
+    no_image = _infra("infra-2", EVERY_VERSION)
+    assert no_image["graph_service"] == {"serve": False, "enabled": False}, "no swarm-graph digest"
+    digests = {"image_digests": {"swarm-graph": DIGEST}}
+    no_key = _infra("infra-2", dict(EVERY_VERSION, **{"swarm-graph-ticket-key": False}), **digests)
+    assert no_key["graph_service"] == {"serve": False, "enabled": False}, "key before switch"
+    on = _infra("infra-2", EVERY_VERSION, **digests)
+    assert on["graph_service"] == {"serve": True, "enabled": True}
+
+
+def test_scheduled_doctor_generated_and_gated() -> None:
+    for pass_name in INFRA_PASSES:
+        assert _infra(pass_name, EVERY_VERSION)["enable_scheduled_doctor"] is False, pass_name
+    assert tfvars.SCHEDULED_DOCTOR_SHIPPED is False, "DOCTOR-1 flips this one value when its code ships"
+
+
+def test_cluster_reach_until_the_closing_pass() -> None:
+    reach = [{"cidr_block": "203.0.113.7/32", "display_name": "swarm-install"}]
+    for pass_name in ("registry", "infra-1", "infra-2"):
+        assert _infra(pass_name)["gke_master_authorized_cidrs"] == reach, pass_name
+    for pass_name in ("infra-close", "infra-3", "infra-4"):
+        assert _infra(pass_name)["gke_master_authorized_cidrs"] == [], pass_name
+    closing = _infra("infra-close", EVERY_VERSION)
+    second = _infra("infra-2", EVERY_VERSION)
+    assert {k: v for k, v in closing.items() if k != "gke_master_authorized_cidrs"} == {
+        k: v for k, v in second.items() if k != "gke_master_authorized_cidrs"}, "the closing pass changes nothing else"
+    for bad in ("203.0.113.7", "203.0.113.0/24", "2001:db8::1/128", "300.1.1.1/32"):
+        with pytest.raises(ValueError, match="a.b.c.d/32"):
+            _infra("infra-1", installer_cidr=bad)
+
+
+@pytest.mark.parametrize(("key", "stage"), [("github_org", "stage 0"), ("org_domain", "stage 0"),
+                                            ("installer_cidr", "stage 0"), ("desktop_client_id", "stage 2")])
+def test_missing_key_names_the_stage_that_records_it(key: str, stage: str) -> None:
+    with pytest.raises(LookupError, match=f"no {key} yet; {stage}"):
+        _infra("infra-1", **{key: ""})
+    if key in ("org_domain", "desktop_client_id"):
+        with pytest.raises(LookupError, match=f"no {key} yet; {stage}"):
+            _boot("bootstrap-2", **{key: ""})
+
+
+def _declared(root: str) -> set[str]:
+    import re
+
+    tf = Path(__file__).resolve().parents[3] / "terraform" / root
+    found: set[str] = set()
+    for path in tf.glob("*.tf"):
+        found.update(re.findall(r'^variable\s+"([A-Za-z0-9_]+)"', path.read_text(), flags=re.M))
+    return found
+
+
+def test_every_generated_input_is_a_declared_variable() -> None:
+    # A name the root does not declare is a warning Terraform prints and an input it never applies.
+    digests = {"image_digests": {"swarm-api": DIGEST, "workspace-apply": DIGEST, "swarm-graph": DIGEST},
+               "admin_groups": ["swarm-admins@example.com"], "github_app": {"id": "42", "slug": "s"}}
+    for pass_name in tfvars.PASSES:
+        root = tfvars.ROOT_OF[pass_name]
+        if root == "bootstrap":
+            inputs = _boot(pass_name, **digests)
+        else:
+            inputs = _infra(pass_name, EVERY_VERSION, **digests)
+        assert set(inputs) <= _declared(root), (pass_name, sorted(set(inputs) - _declared(root)))

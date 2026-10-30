@@ -19,9 +19,23 @@ The four applies (design §5) and the two after the hand-off (plan §5.5):
 | `registry` | infra | `-target` the registry only, so stage 4 can copy images into it |
 | `infra-1` | infra | everything, every key-gated switch off (lesson 39) |
 | `infra-2` | infra | each key switch on exactly when its key has an ENABLED version; `enable_console_app_setup`, `require_alert_channels`, `tenant_job_vpc_egress` |
-| `bootstrap-2` | bootstrap | the log view grant and the IAP programmatic clients |
+| `bootstrap-2` | bootstrap | the log view grant, the IAP programmatic client and the backends it applies to |
+| `infra-close` | infra | the same inputs without the installer's control-plane CIDR (after the cluster stages) |
 | `infra-3` | infra | the console's GitHub App ids, `enable_github_app`, `enable_forge_refresh` |
 | `infra-4` | infra | `enable_github_hooks` |
+
+**Who gets in (decision 1).** IAP admits `domain:<org_domain>`, the installer's
+`user:`, the QA identity's account, and, for programmatic sign-in, the
+deployment's own Desktop client; swarm-api's `ALLOWED_DOMAINS` is
+`[org_domain]`. Workspace membership still comes from the Google groups.
+
+**Cluster reach (decision 2).** Every infra pass before `infra-close` puts the
+installer's public address (`installer_cidr`) in `gke_master_authorized_cidrs`
+as `swarm-install`, so the cluster stages (10, 11) can reach the control plane;
+`infra-close` and every pass after it leave it out.
+
+A value a pass needs that the state does not hold yet is a `LookupError` that
+names the step recording it, never a default.
 """
 
 from __future__ import annotations
@@ -34,7 +48,7 @@ from typing import Any
 from .api_client import ADMIN_ROLE, DELEGATION, deployer_email
 from .state import ObjectStore, PreconditionFailed
 
-PASSES = ("bootstrap-1", "registry", "infra-1", "infra-2", "bootstrap-2", "infra-3", "infra-4")
+PASSES = ("bootstrap-1", "registry", "infra-1", "infra-2", "bootstrap-2", "infra-close", "infra-3", "infra-4")
 ROOT_OF = {p: ("bootstrap" if p.startswith("bootstrap") else "infra") for p in PASSES}
 
 #: The generated file's name in a root: Terraform loads `*.auto.tfvars.json`
@@ -54,7 +68,11 @@ KEY_SWITCHES: dict[str, str] = {
     "swarm-live-key": "enable_live_browser",
     "swarm-settings-key": "settings_mac_key_ready",
     "swarm-workspace-grant-key": "workspace_grant_attestation.serve",
+    # The graph service serves only with its ticket key and its image's digest.
+    "swarm-graph-ticket-key": "graph_service.serve",
 }
+#: The IAP Desktop client's secret (stage 2, `edge.desktop-client`).
+DESKTOP_SECRET = "swarm-iap-desktop-client-secret"
 #: The three secrets swarm-api writes from the console's App step (plan §5.5).
 APP_SECRETS = (
     "swarm-github-app-private-key",
@@ -66,6 +84,36 @@ APP_SECRETS = (
 #: revision makes a later deploy serve 0 % (lesson 28); every service routes
 #: 100 % to its latest ready revision, as the modules declare by default.
 PINNING_WORDS = ("traffic", "revision")
+
+#: The display name of the installer's entry in the control plane's
+#: authorised networks (decision 2); `infra-close` removes it.
+CLUSTER_REACH_NAME = "swarm-install"
+#: The IAP-protected backends terraform/modules/frontend/main.tf makes for
+#: name_prefix "swarm" (`${name_prefix}-ui-backend`, `${name_prefix}-ui-ui-backend`);
+#: they exist once infra pass 1 has applied, so only bootstrap pass 2 names them.
+IAP_BACKENDS = ("swarm-ui-backend", "swarm-ui-ui-backend")
+#: The QA identity terraform/bootstrap/qa_identity.tf makes; its plan refuses
+#: unless the account is in frontend_iap_members.
+QA_ACCOUNT = "qa-console"
+#: The discovery document's name for the deployment.
+DISCOVERY_NAME = "SwarmCloud"
+#: The oldest plugin a new deployment accepts: the plugin version on main when
+#: discovery (`swarm_mcp/discovery.py`) landed, the first that reads it.
+PLUGIN_MIN_VERSION = "0.5.74"
+#: The hourly doctor runs DAYONE-DOCTOR-1's code in the swarm-verify image.
+#: Off until that code ships: DOCTOR-1 flips this one value (review finding 12).
+SCHEDULED_DOCTOR_SHIPPED = False
+
+#: Which step records each state key a pass needs, for the LookupError.
+RECORDED_BY = {
+    "region": "stage 0 (preflight.region)",
+    "release": "stage 0 (preflight.release)",
+    "hostname": "stage 0 (preflight)",
+    "github_org": "stage 0 (preflight)",
+    "org_domain": "stage 0 (preflight)",
+    "installer_cidr": "stage 0 (preflight)",
+    "desktop_client_id": "stage 2 (edge.desktop-client)",
+}
 
 
 def _order(pass_name: str) -> int:
@@ -98,8 +146,33 @@ def groups_auth(outputs: Mapping[str, Any]) -> str:
 def _required(state: Any, name: str) -> str:
     value = getattr(state, name, None) or state.outputs.get(name)
     if not value:
-        raise LookupError(f"the install state has no {name} yet; stage 0 records it")
+        raise LookupError(f"the install state has no {name} yet; {RECORDED_BY.get(name, 'stage 0')} records it")
     return str(value)
+
+
+def org_domain(state: Any) -> str:
+    """The Workspace or Cloud Identity primary domain, lower-case, no `@`."""
+    domain = _required(state, "org_domain").strip().lower().lstrip("@")
+    if not domain or "." not in domain or "/" in domain or ":" in domain:
+        raise ValueError(f"org_domain {domain!r} is not a domain name")
+    return domain
+
+
+def iap_members(state: Any, installer: str) -> list[str]:
+    """Decision 1: the organisation's domain, the installer, the QA identity."""
+    members = [f"domain:{org_domain(state)}", f"user:{installer}",
+               f"serviceAccount:{QA_ACCOUNT}@{state.project}.iam.gserviceaccount.com"]
+    return list(dict.fromkeys(members))
+
+
+def cluster_reach(state: Any) -> list[dict[str, str]]:
+    """Decision 2: the installer's public address, while the install runs."""
+    cidr = _required(state, "installer_cidr").strip()
+    address, _, bits = cidr.partition("/")
+    parts = address.split(".")
+    if bits != "32" or len(parts) != 4 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+        raise ValueError(f"installer_cidr {cidr!r} is not one IPv4 address as a.b.c.d/32")
+    return [{"cidr_block": cidr, "display_name": CLUSTER_REACH_NAME}]
 
 
 def _set_switch(inputs: dict[str, Any], switch: str, on: bool) -> None:
@@ -129,7 +202,15 @@ def bootstrap_inputs(state: Any, *, pass_name: str, installer: str) -> dict[str,
         "swarm_workers_log_view_exists": second,
         "enable_github_wif": False,
         "ci_fix_service_account": "",
-        "frontend_iap_members": [f"user:{installer}"],
+        "frontend_iap_members": iap_members(state, installer),
+        # The live-browser QA identity; its account is in frontend_iap_members.
+        "enable_qa_identity": True,
+        # The receiver's dedup role exists before infra-4's enable_github_hooks grants it.
+        "enable_github_hooks_dedup_role": True,
+        # The backends exist only after infra pass 1 (a data lookup on a missing
+        # one fails the plan), so bootstrap pass 1 names none.
+        "frontend_iap_backends": list(IAP_BACKENDS) if second else [],
+        "frontend_iap_programmatic_clients": [_required(state, "desktop_client_id")] if second else [],
     }
     digests = state.outputs.get("image_digests") or {}
     if "workspace-apply" in digests:
@@ -141,7 +222,7 @@ def bootstrap_inputs(state: Any, *, pass_name: str, installer: str) -> dict[str,
 
 def infra_inputs(state: Any, *, pass_name: str, installer: str,
                  versions: Mapping[str, bool] | None = None) -> dict[str, Any]:
-    """infra's inputs for `registry`, `infra-1`..`infra-4`.
+    """infra's inputs for `registry`, `infra-1`, `infra-2`, `infra-close`, `infra-3` and `infra-4`.
 
     `versions`: secret name -> it has an ENABLED version now (lesson 39).
     Before `infra-2` every key switch is off whatever `versions` says.
@@ -161,6 +242,17 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
         "enable_frontend": True,
         "frontend_hostname": _required(state, "hostname"),
         "admin_users": [installer],
+        # Decision 1: swarm-api admits the organisation's own domain.
+        "allowed_domains": [org_domain(state)],
+        "setup_github_org": _required(state, "github_org"),
+        "discovery": {
+            "name": DISCOVERY_NAME,
+            "version": _required(state, "release"),
+            "oauth_client_id": _required(state, "desktop_client_id"),
+            "plugin_min_version": PLUGIN_MIN_VERSION,
+        },
+        # Decision 2: reach for the cluster stages, removed by infra-close.
+        "gke_master_authorized_cidrs": [] if after(pass_name, "infra-close") else cluster_reach(state),
         "alert_emails": [str(outputs["alert_email"])] if outputs.get("alert_email") else [],
         "deployer_service_account": deployer_email(project),
         "repository_grants_enforced": True,
@@ -175,6 +267,14 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
     second = after(pass_name, "infra-2")
     for secret, switch in KEY_SWITCHES.items():
         _set_switch(inputs, switch, second and bool(versions.get(secret)))
+    # The ticket key's container is made in pass 2, once the cluster's workload
+    # pool (its reader's principal) exists; the service answers only while it serves.
+    inputs["enable_graph_service"] = second
+    serving = inputs["graph_service"]["serve"] and "swarm-graph" in inputs["image_refs"]
+    inputs["graph_service"] = {"serve": serving, "enabled": serving}
+    # Design §9.3, Q1: the Desktop client's secret is served once it has a version.
+    inputs["discovery_serves_client_secret"] = second and bool(versions.get(DESKTOP_SECRET))
+    inputs["enable_scheduled_doctor"] = second and SCHEDULED_DOCTOR_SHIPPED
     # Plan R7: the channel and the flag go in pass 2; stage 13 checks them.
     inputs["require_alert_channels"] = second and bool(inputs["alert_emails"])
     # Lesson 23: an alert on a log metric fails ("Cannot find metric") until
