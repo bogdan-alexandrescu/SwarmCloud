@@ -1,7 +1,8 @@
 """The order the engine applies its generated inputs in (DAYONE-ENGINE-INPUTS;
 decision 2; design §5): stage 8 re-applies infra pass 2 after the identity
-steps, and a closing infra pass after the cluster stages removes the
-installer's address from the control plane's authorised networks."""
+steps, and a closing infra pass after the last kubectl the install runs from
+the laptop (stage 14's verify reads) removes the installer's address from the
+control plane's authorised networks."""
 
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ import pytest
 
 from swarm_install import tfvars
 from swarm_install.engine import Engine
+from swarm_install.manifest import load as load_manifest
 from swarm_install.steps import bootstrap, discover, infra
 from swarm_install.steps.bootstrap import Deps, applied_key, generate, inputs_digest
 from swarm_install.steps.infra import ClosingPassStep, IdentityPassStep
@@ -108,14 +110,42 @@ def test_identity_pass_versions_a_key_pass_2_made_before_applying(applied: list[
     assert step.check(ctx).status == "met"
 
 
-def test_closing_pass_after_the_cluster_stages() -> None:
+def ordered_ids(steps: list[Any]) -> list[str]:
+    """The order the engine runs the registry in, with the manifest and its fragments."""
+    engine = Engine.__new__(Engine)
+    engine.steps, engine.manifest = steps, load_manifest()
+    engine._owner = {}
+    for step in steps:
+        for entry in step.satisfies:
+            engine._owner.setdefault(entry, step)
+    return [s.id for s in engine._ordered()]
+
+
+def test_closing_pass_is_the_last_infra_pass() -> None:
+    assert tfvars.PASSES[-1] == "infra-close"
+    assert tfvars.after("infra-close", "infra-4") and not tfvars.after("infra-4", "infra-close")
+
+
+def test_closing_pass_after_every_step_that_runs_kubectl() -> None:
     steps = discover()
-    closing = next(s for s in steps if s.id == "infra.pass-close")
-    cluster = [s for s in steps if s.id.startswith("cluster.")]
-    assert cluster and all(s.stage < closing.stage for s in cluster), "after stages 10 and 11"
+    ordered = ordered_ids(steps)
+    closing = ordered.index("infra.pass-close")
+    # A step that runs kubectl from the laptop holds a Kube factory (cluster.py, verify.py).
+    kubectl = [s.id for s in steps if hasattr(s, "_kube")]
+    assert "verify.reconciler-jobs" in kubectl and any(i.startswith("cluster.") for i in kubectl)
+    assert all(ordered.index(i) < closing for i in kubectl), "the address stays while kubectl runs"
+    assert all(ordered.index(s.id) < closing for s in steps if s.id.startswith("verify."))
+    assert closing < ordered.index("handoff.ready"), "closed before READY"
     handoff = next(s for s in steps if s.id == "handoff.console")
-    assert closing.stage < handoff.stage, "before the hand-off's passes 3 and 4"
-    assert tfvars.after("infra-3", "infra-close") and tfvars.after("infra-close", "infra-2")
+    assert handoff.stage < next(s for s in steps if s.id == "infra.pass-close").stage, "after passes 3 and 4"
+
+
+@pytest.mark.parametrize("pass_name", ["infra-1", "infra-2", "infra-3", "infra-4"])
+def test_every_pass_before_the_close_carries_the_address(pass_name: str) -> None:
+    gcp = SecretMetadata(every_key(), every_key())
+    ctx = FakeCtx()
+    reach = generate(ctx, pass_name, gcp)["gke_master_authorized_cidrs"]
+    assert reach == [{"cidr_block": ctx.state.outputs["installer_cidr"], "display_name": "swarm-install"}]
 
 
 def test_closing_pass_removes_the_installer_address(applied: list[tuple[str, dict]]) -> None:
@@ -123,7 +153,7 @@ def test_closing_pass_removes_the_installer_address(applied: list[tuple[str, dic
     ctx = FakeCtx()
     mark_applied(ctx, gcp, "infra-1", "infra-2")
     step = ClosingPassStep(Deps(gcp=lambda: gcp))
-    assert step.check(ctx).status == "unmet", "a run that stopped before stage 12 left the address"
+    assert step.check(ctx).status == "unmet", "a run that stopped before the close left the address"
     step.apply(ctx, step.plan(ctx))
     assert [p for p, _ in applied] == ["infra-close"]
     assert applied[0][1]["gke_master_authorized_cidrs"] == []
@@ -139,10 +169,17 @@ def test_closing_pass_removes_the_installer_address(applied: list[tuple[str, dic
     assert applied[-1][1]["gke_master_authorized_cidrs"] == []
 
 
-def test_closing_pass_met_once_pass_3_applied(applied: list[tuple[str, dict]]) -> None:
+def test_closing_pass_follows_pass_4(applied: list[tuple[str, dict]]) -> None:
     gcp = SecretMetadata(every_key(), every_key())
     ctx = FakeCtx()
-    mark_applied(ctx, gcp, "infra-2", "infra-3")
-    assert ClosingPassStep(Deps(gcp=lambda: gcp)).check(ctx).status == "met", "pass 3 carries no address"
-    assert generate(ctx, "infra-3", gcp)["gke_master_authorized_cidrs"] == []
-    assert applied == []
+    mark_applied(ctx, gcp, "infra-2", "infra-3", "infra-4")
+    step = ClosingPassStep(Deps(gcp=lambda: gcp))
+    assert step.check(ctx).status == "unmet", "pass 4 still carries the address"
+    step.apply(ctx, step.plan(ctx))
+    assert [p for p, _ in applied] == ["infra-close"]
+    closed = dict(applied[0][1])
+    assert closed.pop("gke_master_authorized_cidrs") == []
+    four = generate(ctx, "infra-4", gcp)
+    four.pop("gke_master_authorized_cidrs")
+    assert closed == four, "the close changes nothing else"
+    assert step.check(ctx).status == "met"

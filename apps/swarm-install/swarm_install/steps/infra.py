@@ -8,7 +8,7 @@
 | `infra.pass-2` | 7 | `infra-2` | `tenant_job_vpc_egress`, the key switches, `enable_console_app_setup`, `require_alert_channels` |
 | `bootstrap.pass-2` | 7 | `bootstrap-2` | the IAP programmatic clients and the log view grant |
 | `infra.pass-identity` | 8 | `infra-2` again | none: the admin groups stage 8 recorded, and a version for any platform key pass 2 made (the graph ticket key) |
-| `infra.pass-close` | 12 | `infra-close` | `other.engine-cluster-reach-closed`: the installer's address leaves the control plane's authorised networks |
+| `infra.pass-close` | 14 | `infra-close` | `other.engine-cluster-reach-closed`: the installer's address leaves the control plane's authorised networks, after stage 14's verify steps |
 
 The passes declare no manifest entries as `satisfies`: the manifest's
 `depends_on` among the resources one apply makes runs both ways (a container
@@ -33,12 +33,17 @@ engine keeps that order. It first gives a version to any
 platform key whose container pass 2 made (the graph service's ticket key is
 made in pass 2, once the cluster's workload pool exists), key before switch.
 
-**The closing pass** (decision 2). Every infra pass before it carries the
-installer's `/32` in `gke_master_authorized_cidrs` so stages 10 and 11 reach
-the cluster; `infra.pass-close`, in stage 12, applies the same inputs without
-it. It is met while its inputs are the ones it applied, or once pass 3 or 4
-(which never carry the address) has applied, so a run that stopped between
-pass 2 and stage 12 has its leftover entry removed by the next run.
+**The closing pass** (decision 2). Every infra pass before it, infra-3 and
+infra-4 included, carries the installer's `/32` in
+`gke_master_authorized_cidrs`: the control plane admits no public Google range
+(`gcp_public_cidrs_access_enabled = false`), and the cluster stages (10, 11)
+and stage 14's `verify.reconciler-jobs` run kubectl from the laptop.
+`infra.pass-close` is the last pass: in stage 14, its manifest entry depends on
+`other.verify-end-to-end` and `other.firestore-migrations`, so the engine
+orders it after every verify step and before `handoff.ready` (stage 15). It
+applies infra-4's inputs without the address and is met while those are the
+inputs it applied, so a run that stopped before it has the leftover entry
+removed by the next run.
 """
 
 from __future__ import annotations
@@ -48,7 +53,7 @@ from typing import Any
 from .. import tfvars
 from ..exitcodes import MET, UNMET
 from . import Observation, Plan
-from .bootstrap import DEPS, BootstrapPass2Step, Deps, PassStep, superseded
+from .bootstrap import DEPS, BootstrapPass2Step, Deps, PassStep
 from .secrets import PlatformKeysStep
 
 
@@ -112,19 +117,12 @@ class ClosingPassStep(PassStep):
     pass_name = "infra-close"
     _explain = (
         f"The install reached the cluster from your address, listed as {tfvars.CLUSTER_REACH_NAME!r} in the "
-        "control plane's authorised networks. With the cluster stages done, this pass removes it and changes "
-        "nothing else."
+        "control plane's authorised networks. With the cluster stages and the verify reads done, this pass "
+        "removes it and changes nothing else."
     )
 
     def __init__(self, deps: Deps) -> None:
-        super().__init__(deps, id="infra.pass-close", stage=12, satisfies=("other.engine-cluster-reach-closed",))
-
-    def _pending(self, ctx: Any) -> str | None:
-        # Pass 3 or 4 never carries the address: once either has applied, applying
-        # this narrower pass would turn the App's switches off again (lesson 39).
-        if superseded(ctx, self.pass_name):
-            return None
-        return super()._pending(ctx)
+        super().__init__(deps, id="infra.pass-close", stage=14, satisfies=("other.engine-cluster-reach-closed",))
 
 
 def build_steps(deps: Deps = DEPS) -> list[Any]:

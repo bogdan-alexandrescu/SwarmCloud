@@ -138,7 +138,7 @@ def test_traffic_latest_100(tmp_path: Path) -> None:
 
 # -- DAYONE-ENGINE-INPUTS: the inputs the design depends on ------------------------------
 
-INFRA_PASSES = ("registry", "infra-1", "infra-2", "infra-close", "infra-3", "infra-4")
+INFRA_PASSES = ("registry", "infra-1", "infra-2", "infra-3", "infra-4", "infra-close")
 EVERY_VERSION = {name: True for name in (*tfvars.KEY_SWITCHES, *tfvars.APP_SECRETS, tfvars.DESKTOP_SECRET)}
 
 
@@ -227,14 +227,14 @@ def test_scheduled_doctor_generated_and_gated() -> None:
 
 def test_cluster_reach_until_the_closing_pass() -> None:
     reach = [{"cidr_block": "203.0.113.7/32", "display_name": "swarm-install"}]
-    for pass_name in ("registry", "infra-1", "infra-2"):
+    # Passes 3 and 4 keep it: stage 14's verify.reconciler-jobs runs kubectl after them.
+    for pass_name in ("registry", "infra-1", "infra-2", "infra-3", "infra-4"):
         assert _infra(pass_name)["gke_master_authorized_cidrs"] == reach, pass_name
-    for pass_name in ("infra-close", "infra-3", "infra-4"):
-        assert _infra(pass_name)["gke_master_authorized_cidrs"] == [], pass_name
+    assert _infra("infra-close")["gke_master_authorized_cidrs"] == []
     closing = _infra("infra-close", EVERY_VERSION)
-    second = _infra("infra-2", EVERY_VERSION)
+    fourth = _infra("infra-4", EVERY_VERSION)
     assert {k: v for k, v in closing.items() if k != "gke_master_authorized_cidrs"} == {
-        k: v for k, v in second.items() if k != "gke_master_authorized_cidrs"}, "the closing pass changes nothing else"
+        k: v for k, v in fourth.items() if k != "gke_master_authorized_cidrs"}, "the closing pass changes nothing else"
     for bad in ("203.0.113.7", "203.0.113.0/24", "2001:db8::1/128", "300.1.1.1/32"):
         with pytest.raises(ValueError, match="a.b.c.d/32"):
             _infra("infra-1", installer_cidr=bad)

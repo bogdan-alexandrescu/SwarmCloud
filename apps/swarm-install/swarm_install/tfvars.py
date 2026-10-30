@@ -20,9 +20,9 @@ The four applies (design §5) and the two after the hand-off (plan §5.5):
 | `infra-1` | infra | everything, every key-gated switch off (lesson 39) |
 | `infra-2` | infra | each key switch on exactly when its key has an ENABLED version; `enable_console_app_setup`, `require_alert_channels`, `tenant_job_vpc_egress` |
 | `bootstrap-2` | bootstrap | the log view grant, the IAP programmatic client and the backends it applies to |
-| `infra-close` | infra | the same inputs without the installer's control-plane CIDR (after the cluster stages) |
 | `infra-3` | infra | the console's GitHub App ids, `enable_github_app`, `enable_forge_refresh` |
 | `infra-4` | infra | `enable_github_hooks` |
+| `infra-close` | infra | infra-4's inputs without the installer's control-plane CIDR (after stage 14's last kubectl) |
 
 **Who gets in (decision 1).** IAP admits `domain:<org_domain>`, the installer's
 `user:`, the QA identity's account, and, for programmatic sign-in, the
@@ -31,8 +31,10 @@ deployment's own Desktop client; swarm-api's `ALLOWED_DOMAINS` is
 
 **Cluster reach (decision 2).** Every infra pass before `infra-close` puts the
 installer's public address (`installer_cidr`) in `gke_master_authorized_cidrs`
-as `swarm-install`, so the cluster stages (10, 11) can reach the control plane;
-`infra-close` and every pass after it leave it out.
+as `swarm-install`, so the cluster stages (10, 11) and stage 14's verify reads
+(`verify.reconciler-jobs` runs kubectl from the laptop) can reach the control
+plane, whose module admits no public Google range; `infra-close`, the last
+pass, leaves it out.
 
 A value a pass needs that the state does not hold yet is a `LookupError` that
 names the step recording it, never a default.
@@ -48,7 +50,7 @@ from typing import Any
 from .api_client import ADMIN_ROLE, DELEGATION, deployer_email
 from .state import ObjectStore, PreconditionFailed
 
-PASSES = ("bootstrap-1", "registry", "infra-1", "infra-2", "bootstrap-2", "infra-close", "infra-3", "infra-4")
+PASSES = ("bootstrap-1", "registry", "infra-1", "infra-2", "bootstrap-2", "infra-3", "infra-4", "infra-close")
 ROOT_OF = {p: ("bootstrap" if p.startswith("bootstrap") else "infra") for p in PASSES}
 
 #: The generated file's name in a root: Terraform loads `*.auto.tfvars.json`
@@ -222,7 +224,7 @@ def bootstrap_inputs(state: Any, *, pass_name: str, installer: str) -> dict[str,
 
 def infra_inputs(state: Any, *, pass_name: str, installer: str,
                  versions: Mapping[str, bool] | None = None) -> dict[str, Any]:
-    """infra's inputs for `registry`, `infra-1`, `infra-2`, `infra-close`, `infra-3` and `infra-4`.
+    """infra's inputs for `registry`, `infra-1`, `infra-2`, `infra-3`, `infra-4` and `infra-close`.
 
     `versions`: secret name -> it has an ENABLED version now (lesson 39).
     Before `infra-2` every key switch is off whatever `versions` says.
