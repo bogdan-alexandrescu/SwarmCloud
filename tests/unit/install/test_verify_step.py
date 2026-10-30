@@ -446,16 +446,53 @@ def test_runs_use_installation_tokens() -> None:
     assert not hasattr(verify, "CREDENTIAL_UNRECORDED")
 
 
+#: BGD, 2026-10-30 ("Person's token for plugin runs"): the plugin's runs are
+#: the person's own submissions, so their own GitHub App user token
+#: (`app_user`) is accepted there; the console's runs are service
+#: submissions, minted an installation token, and must show one.
+PLUGIN_RUN_KEYS = tuple(f"{s}-{k}" for s, k in verify.RUNS if s == "plugin")
+CONSOLE_RUN_KEYS = tuple(f"{s}-{k}" for s, k in verify.RUNS if s == "console")
+
+
+@pytest.mark.parametrize("key", PLUGIN_RUN_KEYS)
+def test_a_plugin_run_on_the_persons_own_app_user_token_passes(key: str) -> None:
+    step, ctx = _all_finished({key: "app_user"})
+    observed = step.check(ctx)
+    assert observed.status == MET, observed.detail
+    assert observed.outputs["verify_forge_credential"][key] == "app_user"
+
+
+def test_every_plugin_run_on_the_persons_token_passes() -> None:
+    step, ctx = _all_finished(dict.fromkeys(PLUGIN_RUN_KEYS, "app_user"))
+    observed = step.check(ctx)
+    assert observed.status == MET, observed.detail
+    assert observed.outputs["verify_forge_credential"] == {
+        **dict.fromkeys(PLUGIN_RUN_KEYS, "app_user"),
+        **dict.fromkeys(CONSOLE_RUN_KEYS, "app_installation")}
+
+
+@pytest.mark.parametrize("key", CONSOLE_RUN_KEYS)
 @pytest.mark.parametrize("kind", ["pat", "app_user", "none", "mixed", "unknown"])
-def test_a_run_that_used_anything_but_an_installation_token_fails_naming_it(kind: str) -> None:
-    step, ctx = _all_finished({"console-single": kind})
+def test_a_console_run_on_anything_but_an_installation_token_fails_naming_it(key: str, kind: str) -> None:
+    step, ctx = _all_finished({key: kind})
     observed = step.check(ctx)
     assert observed.status == UNMET
-    assert "console-single (t-console-single)" in observed.detail
+    assert f"{key} (t-{key})" in observed.detail
     assert f"used a {kind} credential from {TENANT_GIT}" in observed.detail
     assert "lesson 43" in observed.detail
-    for other in ("plugin-single", "plugin-workflow", "console-workflow", *CHECK_KEYS):
-        assert other not in observed.detail
+    for other in (*PLUGIN_RUN_KEYS, *CONSOLE_RUN_KEYS):
+        if other != key:
+            assert other not in observed.detail
+
+
+@pytest.mark.parametrize("key", PLUGIN_RUN_KEYS)
+@pytest.mark.parametrize("kind", ["pat", "none", "mixed", "unknown"])
+def test_a_plugin_run_on_any_other_credential_fails_naming_it(key: str, kind: str) -> None:
+    step, ctx = _all_finished({key: kind})
+    observed = step.check(ctx)
+    assert observed.status == UNMET
+    assert f"{key} (t-{key})" in observed.detail
+    assert f"used a {kind} credential from {TENANT_GIT}" in observed.detail
 
 
 def test_a_check_run_that_used_a_personal_token_fails_too() -> None:
@@ -506,12 +543,14 @@ def test_console_runs_read_from_the_record_never_asked() -> None:
     engine copies it into state.outputs and follows those ids. Nothing is
     ever asked (the Answers here refuse any question). No step reads these
     documents before this one, so the step reads `verify_runs`, the first
-    team's document and `finished` itself on every poll."""
-    docs: dict[str, dict[str, Any]] = {f"teams/{TEAM}": {"group": "eng@acme.example", "workspace": TEAM}}
+    team's document and `finished` itself on every poll. A team's document
+    is not under `console/` (audit 3, A2) and never held the ids, so it is
+    not read."""
+    docs: dict[str, dict[str, Any]] = {}
     (step, runs), ctx, read = _console_rig(TEAM, docs)
     observed = step.check(ctx)
     assert observed.status == WAITING and "console-single" in observed.detail
-    assert read == [record.VERIFY_RUNS, f"teams/{TEAM}", "finished"]
+    assert read == [record.VERIFY_RUNS, "finished"]
 
     # swarm-api writes the ids into console/verify_runs, never the team's document.
     docs[record.VERIFY_RUNS] = {"verify_runs": dict(CONSOLE), "repository": REPO}

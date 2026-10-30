@@ -45,8 +45,18 @@ def test_the_console_verify_runs_document_is_named_alike() -> None:
     assert "verify_runs" in _api_rows()[path]
 
 
+def test_every_document_both_sides_name_is_a_path_firestore_accepts() -> None:
+    """Audit 3, A2: a document path has an even number of segments (the
+    real client's `verify_path`); `console/teams/<id>` had five and 500'd
+    Admin › Setup on every load. A team document's collection is odd."""
+    for path in {*api_record.SWARM_API_DOCUMENTS, *engine_record.WRITERS}:
+        assert len(path.split("/")) % 2 == 0, path
+    teams = api_record.InstallRecord(None, "dev").team_path("t1").rpartition("/")[0]
+    assert len(teams.split("/")) % 2 == 1, teams
+
+
 def test_the_first_teams_grant_is_a_team_field_on_both_sides() -> None:
-    path = "swarm-install/{env}/console/teams/{id}"
+    path = "swarm-install/{env}/teams/{id}"
     assert {"grant", "smoke"} <= api_record.SWARM_API_DOCUMENTS[path]
     assert {"grant", "smoke"} <= _api_rows()[path]
 
