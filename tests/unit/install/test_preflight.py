@@ -1216,8 +1216,8 @@ def test_a_change_terraform_would_refuse_is_not_taken() -> None:
 
 def test_the_region_cpu_quota_caps_the_proposal_and_opens_the_quotas_page(pages: list[Any]) -> None:
     gcp = FakeGcp()
-    gcp.cpu_quota = 48  # (48 - 8 for the cluster) / 4 vCPU = 10 tasks
-    _, ask, ctx = _sized(gcp, "2", "50", "")
+    gcp.cpu_quota = 48  # (48 - 8 for the cluster) / 4 vCPU = 10 tasks, room for a team of 5 (not of 50)
+    _, ask, ctx = _sized(gcp, "2", "5", "")
     pools = ctx.outputs["sizing"]["pool_limits"]
     assert pools["global"] == 10
     assert all(v <= 10 for _, v in sizing.rows(ctx.outputs["sizing"]) if _[0] == "pool_limits")
@@ -1228,7 +1228,7 @@ def test_the_region_cpu_quota_caps_the_proposal_and_opens_the_quotas_page(pages:
     assert ctx.outputs["sizing"]["pool_limits"]["global"] == 500
     gcp = FakeGcp()
     gcp.cpu_quota = 48
-    _, ask, ctx = _sized(gcp, "2", "50", "1", "11", "")
+    _, ask, ctx = _sized(gcp, "2", "5", "1", "11", "")
     assert ctx.outputs["sizing"]["pool_limits"]["global"] == 10
     assert "above the 10 tasks the region's 48 CPUs can run" in ask.asked[4][1]
 
@@ -1759,3 +1759,106 @@ def test_the_quotas_step_polls_for_the_increase_after_the_page_opens(tmp_path: P
     assert len(pages) == 1 and "quota.kms-signing-h4" in pages[0][1]
     assert rig.of_kind("wait_countdown", "preflight.quotas")
     assert gcp.mutations == []
+
+
+# -- DAYONE-SIZING-CAP (audit 3, A6): a quota too small for the team is a wait, never optional ----------
+
+CPUS_PAGE = preflight.quotas_page(PROJECT, metric="compute.googleapis.com/cpus", region="us-central1")
+
+
+def _cpus_after(gcp: FakeGcp, first: int, granted: int, *, polls: int) -> None:
+    """The region's CPUS quota reads `first` for `polls` reads, then `granted`."""
+    seen = {"n": 0}
+
+    def region_cpu_quota(project: str, region: str) -> int:
+        gcp._call("region_cpu_quota", project, region)
+        seen["n"] += 1
+        return granted if seen["n"] > polls else first
+
+    gcp.region_cpu_quota = region_cpu_quota  # type: ignore[method-assign]
+
+
+def test_enter_is_refused_while_the_sizing_breaks_a_rule(pages: list[Any]) -> None:
+    """A6: Enter accepted whatever the table held; now it says which number
+    breaks which rule and asks again until the sizing is one terraform takes."""
+    bad = sizing.with_change(sizing.propose("team", 5), ("pool_limits", "provider_tenant"), 10)
+    ask = Answers(preflight_sizing=["", "3", "5", ""])
+    chosen = preflight.review(ask, ctx_for(), "preflight.sizing", "team", 5, None, start=bad)
+    assert ask.asked[1][1].startswith("Not accepted: global (27) is below 5 x provider_tenant (10)")
+    assert chosen["pool_limits"]["provider_tenant"] == 5
+    assert sizing.problems(chosen) == []
+
+
+def test_a_quota_too_small_for_the_team_is_a_required_wait(pages: list[Any]) -> None:
+    """A6: 24 CPUs run 4 tasks, fewer than a team of 5's workspaces, so no
+    edit can pass. The increase is required: the CPUS quota opens on the
+    Quotas page and the step polls it until it is granted, then proposes."""
+    gcp = FakeGcp()
+    _cpus_after(gcp, 24, 48, polls=3)
+    _, ask, ctx = _sized(gcp, "2", "5", "")
+    assert [url for url, _ in pages] == [CPUS_PAGE]
+    assert "required" in pages[0][1] and "optional" not in pages[0][1]
+    assert "at least 28" in pages[0][1]
+    assert len(gcp.called("region_cpu_quota")) == 4  # polled, never "press Enter"
+    assert ctx.clock.sleeps and all(s <= preflight.QUOTA_WAIT.interval_s for s in ctx.clock.sleeps)
+    assert ctx.outputs["sizing"] == sizing.propose("team", 5, region_cpu_quota=48)
+    assert ctx.outputs["sizing_cpu_quota"] == {"region": "us-central1", "cpus": 48}
+    assert preflight.SizingStep(lambda: gcp, Answers()).check(ctx).status == MET
+
+
+def test_a_quota_never_granted_pauses_and_the_rerun_keeps_the_answer(pages: list[Any]) -> None:
+    """A6: past the wait's bound the run pauses (the engine's WaitGaveUp); the
+    answer is recorded, so `swarm install` again never asks who it is for."""
+    gcp = FakeGcp()
+    gcp.cpu_quota = 24
+    ask = Answers(preflight_sizing=["2", "5"])
+    step = preflight.SizingStep(lambda: gcp, ask)
+    ctx = ctx_for()
+    with pytest.raises(WaitGaveUp) as raised:
+        step.apply(ctx, step.plan(ctx))
+    assert preflight.QUOTA_WAIT.look_at in str(raised.value)
+    assert ctx.outputs["sizing"]["mode"] == "team" and ctx.outputs["sizing"]["members"] == 5
+    assert step.check(ctx).status == UNMET
+
+    gcp.cpu_quota = 48  # granted while the run was paused
+    again = Answers(preflight_sizing=[""])
+    rerun = preflight.SizingStep(lambda: gcp, again)
+    rerun.apply(ctx, rerun.plan(ctx))
+    assert preflight.WHO_QUESTION not in [q for _, q in again.asked]
+    assert "Proposed sizing for a team of 5" in again.asked[0][1]
+    assert ctx.outputs["sizing"] == sizing.propose("team", 5, region_cpu_quota=48)  # never accepted: afresh
+    assert rerun.check(ctx).status == MET
+
+
+def test_stage_1_waits_for_the_cpus_a_recorded_team_needs(pages: list[Any]) -> None:
+    """A6 in stage 1: the new project's 24 CPUs cannot fit a team of 10, so
+    preflight.sizing-quota opens the CPUS quota and waits, then caps."""
+    recorded = sizing.propose("team", 10)
+    gcp = FakeGcp()
+    _cpus_after(gcp, 24, 48, polls=2)
+    step = preflight.SizingQuotaStep(lambda: gcp, Answers(preflight_sizing_quota=[""]))
+    ctx = ctx_for(outputs={"sizing": recorded})
+    assert step.check(ctx).status == UNMET
+    step.apply(ctx, step.plan(ctx))
+    assert [url for url, _ in pages] == [CPUS_PAGE]
+    assert "required" in pages[0][1] and "at least 48" in pages[0][1]
+    assert ctx.outputs["sizing"] == sizing.capped(recorded, 48)
+    assert ctx.outputs["sizing_cpu_quota"] == {"region": "us-central1", "cpus": 48}
+    assert step.check(ctx).status == MET
+
+
+@pytest.mark.parametrize(("recorded", "floor"), [(None, 24), (sizing.propose("individual", 1), 24),
+                                                 (sizing.propose("team", 5), 28),
+                                                 (sizing.propose("team", 10), 48)])
+def test_the_cpus_floor_follows_the_recorded_sizing(recorded: Any, floor: int) -> None:
+    """A6: the CPUS floor of 24 let through a quota the sizing cannot use; it
+    is now the smallest quota the recorded sizing can use (never below 24)."""
+    gcp = FakeGcp()
+    gcp.enabled.add("compute.googleapis.com")
+    step = preflight.QuotasStep(lambda: gcp, answers())
+    ctx = ctx_for(outputs={"sizing": recorded} if recorded else None)
+    gcp.quotas["compute.googleapis.com"] = [_metric("compute.googleapis.com/cpus", floor)]
+    assert step.check(ctx).status == MET
+    gcp.quotas["compute.googleapis.com"] = [_metric("compute.googleapis.com/cpus", floor - 1)]
+    observed = step.check(ctx)
+    assert observed.status == UNMET and f"{floor - 1} is below {floor}" in observed.detail

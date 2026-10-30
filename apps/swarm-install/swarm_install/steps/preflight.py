@@ -1498,13 +1498,18 @@ class Quota:
     exact: bool = False
 
 
+#: The regional CPUS quota's metric, exactly (audit #32).
+CPUS_METRIC = "compute.googleapis.com/cpus"
+
 QUOTAS: tuple[Quota, ...] = (
     Quota("quota.kms-signing-h4", "cloudkms.googleapis.com", "crypto_requests", 600,
           "every step-spec signature is one KMS AsymmetricSign; running out is a 503 on every submission"),
     Quota("quota.cloud-run-jobs", "run.googleapis.com", "job", 1, "every dispatch is a Cloud Run Job"),
     # Exactly `compute.googleapis.com/cpus` (audit #32): `a2_cpus`, `preemptible_cpus` and
     # `cpus_all_regions` hold "cpus" too, and none of them is what the cluster's nodes draw on.
-    Quota("quota.compute-regional-cpus", "compute.googleapis.com", "compute.googleapis.com/cpus", 24,
+    # 24 is the floor before anyone says who the deployment is for; once a sizing is
+    # recorded the floor is what it needs, if more (`cpus_floor`, DAYONE-SIZING-CAP).
+    Quota("quota.compute-regional-cpus", "compute.googleapis.com", CPUS_METRIC, 24,
           "the Autopilot cluster's nodes", exact=True),
     Quota("quota.gke-regional", "container.googleapis.com", "clusters", 1, "one Autopilot cluster"),
     Quota("quota.nat-static-ips", "compute.googleapis.com", "static_addresses", 1, "Cloud NAT's address"),
@@ -1579,8 +1584,9 @@ class QuotasStep(_Base):
             read[quota.entry] = {name: value for name, value in limits}
             bounded = [value for _, value in limits if value >= 0]  # -1 is unlimited
             lowest = min(bounded) if bounded else None
-            if lowest is not None and lowest < quota.floor:
-                found.append((quota, f"{quota.entry}: {lowest} is below {quota.floor} ({quota.why}); request an "
+            floor, why = cpus_floor(ctx, quota) if quota.metric == CPUS_METRIC else (quota.floor, quota.why)
+            if lowest is not None and lowest < floor:
+                found.append((quota, f"{quota.entry}: {lowest} is below {floor} ({why}); request an "
                                      "increase on the console's Quotas page"))
         return found, {"quotas": read}
 
@@ -1615,6 +1621,38 @@ class QuotasStep(_Base):
         if rest:
             open_page(quotas_page(ctx.project), why="Request these quota increases on the Quotas page:\n  "
                                                     + "\n  ".join(rest))
+
+
+def _answered(ctx: Any) -> tuple[str, int] | None:
+    """Who the recorded sizing is for, (mode, members), when one is recorded
+    and says it plainly; else None."""
+    found = ctx.outputs.get("sizing")
+    if not isinstance(found, Mapping):
+        return None
+    mode, members = found.get("mode"), found.get("members")
+    if mode not in sizing.MODES or isinstance(members, bool) or not isinstance(members, int) or members < 1:
+        return None
+    if mode == sizing.INDIVIDUAL and members != 1:
+        return None
+    return str(mode), members
+
+
+def _who(mode: str, members: int) -> str:
+    return "one person" if mode == sizing.INDIVIDUAL else f"a team of {members}"
+
+
+def cpus_floor(ctx: Any, quota: Quota) -> tuple[int, str]:
+    """The regional CPUS floor: the smallest quota the recorded sizing can use
+    (`sizing.min_region_cpus`), never below the quota's own floor. Before a
+    sizing is recorded, the quota's own floor."""
+    answered = _answered(ctx)
+    if answered is None:
+        return quota.floor, quota.why
+    need = sizing.min_region_cpus(*answered)
+    if need <= quota.floor:
+        return quota.floor, quota.why
+    return need, (f"{quota.why}, and one task at once for each of the {answered[1]} workspaces of "
+                  f"{_who(*answered)}: {sizing.SYSTEM_CPUS} for the cluster plus {sizing.CPU_PER_UNIT} per task")
 
 
 # -- preflight.sizing (decision 7) -------------------------------------------------
@@ -1670,11 +1708,29 @@ class SizingStep(_Base):
         return Plan("ask who the deployment is for and propose its capacity and ceilings", (WHO_QUESTION,))
 
     def apply(self, ctx: Any, plan: Plan) -> None:
-        mode = self._until(ctx, WHO_QUESTION, lambda a: WHO.get(a.lower()), "type 1 or 2", default="1")
-        members = 1 if mode == sizing.INDIVIDUAL else int(self._until(
-            ctx, MEMBERS_QUESTION, lambda a: a if POSITIVE.match(a) else None, "type a whole number, 1 or more"))
+        # An answer already recorded (a run paused on the CPUS quota, or a sizing a
+        # later quota no longer takes) is kept: who it is for is never asked twice.
+        answered = _answered(ctx)
+        recorded = dict(ctx.outputs["sizing"]) if answered else None
+        if answered is None:
+            mode = self._until(ctx, WHO_QUESTION, lambda a: WHO.get(a.lower()), "type 1 or 2", default="1")
+            members = 1 if mode == sizing.INDIVIDUAL else int(self._until(
+                ctx, MEMBERS_QUESTION, lambda a: a if POSITIVE.match(a) else None, "type a whole number, 1 or more"))
+        else:
+            mode, members = answered
         quota = self.read_quota(ctx)
-        chosen = review(self._ask, ctx, self.id, mode, members, quota)
+        waited = False
+        if not sizing.fits_quota(mode, members, quota):
+            recorded = recorded or dict(sizing.propose(mode, members))
+            remember(ctx, outputs={"sizing": recorded,
+                                   "sizing_cpu_quota": {"region": ctx.state.region, "cpus": quota}})
+            quota = wait_for_cpus(ctx, self.gcp, self.id, mode, members, quota)
+            waited = True
+        # The plain proposal recorded while waiting was never accepted: propose it
+        # afresh within the quota. A sizing the person changed keeps their numbers.
+        kept = recorded is not None and recorded != sizing.propose(mode, members)
+        chosen = review(self._ask, ctx, self.id, mode, members, quota, offer_increase=not waited,
+                        start=sizing.capped(recorded, quota) if kept and recorded else None)
         remember(ctx, outputs={"sizing": chosen,
                                "sizing_cpu_quota": {"region": ctx.state.region, "cpus": quota}})
 
@@ -1721,14 +1777,48 @@ def checked_quota(ctx: Any) -> int | None:
     return None
 
 
+def wait_for_cpus(ctx: Any, gcp: Gcp, step_id: str, mode: str, members: int, quota: int | None) -> int | None:
+    """The region's CPUS quota cannot run one task for each tenant, so no
+    sizing can pass terraform's floor: the increase is REQUIRED. The Quotas
+    page opens on the CPUS quota and the region's quota is polled, like the
+    engine's other waits, until it is at least `sizing.min_region_cpus`; past
+    QUOTA_WAIT's bound the WaitGaveUp goes through and the engine pauses the
+    run, which `swarm install` resumes here. Returns the granted quota."""
+    region = str(ctx.state.region or DEFAULT_REGION)
+    need = sizing.min_region_cpus(mode, members)
+    tenants = sizing.provider_tenants(mode, members)
+    open_page(quotas_page(ctx.project, metric=CPUS_METRIC, region=region), why=(
+        f"The region's {quota} CPUs cannot run one task at once for each of the {tenants} workspaces of "
+        f"{_who(mode, members)} ({sizing.SYSTEM_CPUS} CPUs are kept for the cluster and each task takes "
+        f"{sizing.CPU_PER_UNIT}), and terraform refuses global below {tenants} x provider_tenant. A CPUS quota "
+        f"of at least {need} in {region} is required: request the increase on this page. This installer goes "
+        "on by itself once it is granted."))
+    seen: list[int | None] = [quota]
+
+    def granted() -> str:
+        try:
+            seen[0] = gcp.region_cpu_quota(ctx.project, region)
+        except ApiError:  # an unreadable poll has not seen it yet; the next one reads again
+            return UNMET
+        return MET if sizing.fits_quota(mode, members, seen[0]) else UNMET
+
+    wait_until(f"{step_id}:cpus-quota", QUOTA_WAIT, granted, clock=ctx.clock, events=ctx.events,
+               on_poll=getattr(ctx.engine, "_heartbeat", None))
+    ctx.events.emit("step_apply", step=step_id, message=f"{region} CPU quota: {seen[0]}")
+    return seen[0]
+
+
 def review(ask: Ask, ctx: Any, step_id: str, mode: str, members: int, quota: int | None, *,
-           start: Mapping[str, Any] | None = None) -> dict[str, Any]:
+           start: Mapping[str, Any] | None = None, offer_increase: bool = True) -> dict[str, Any]:
     """Show the proposal (or `start`) as a table; Enter accepts it, a row
     number changes that one number. A change that terraform or the region's
-    quota would refuse is not taken, and the reason is said with the table."""
+    quota would refuse is not taken, nor is Enter on a table they would
+    refuse: the reason (which number breaks which rule) is said with it.
+    `offer_increase` False: the Quotas page was just opened for a required
+    increase (`wait_for_cpus`), so it is not opened again as an optional one."""
     current: dict[str, Any] = dict(start or sizing.propose(mode, members, region_cpu_quota=quota))
     uncapped = sizing.propose(mode, members)
-    if quota is not None and current["pool_limits"]["global"] < uncapped["pool_limits"]["global"]:
+    if offer_increase and quota is not None and current["pool_limits"]["global"] < uncapped["pool_limits"]["global"]:
         open_page(quotas_page(ctx.project), why=(
             f"The region's {quota} CPUs cap this proposal at {current['pool_limits']['global']} tasks at once "
             f"(a {'team of ' + str(members) if mode == sizing.TEAM else 'person'} would get "
@@ -1740,7 +1830,11 @@ def review(ask: Ask, ctx: Any, step_id: str, mode: str, members: int, quota: int
         answer = ask(ctx, step_id, f"{said}{sizing.table(current)}\n" + REVIEW_QUESTION.format(rows=len(numbered)),
                      default=None).strip()
         if not answer:
-            return current
+            wrong = sizing.problems(current, region_cpu_quota=quota)
+            if not wrong:
+                return current
+            said = "Not accepted: " + "; ".join(wrong) + ". Type a row number to change that number.\n"
+            continue
         if not answer.isdigit() or not 1 <= int(answer) <= len(numbered):
             said = f"{answer!r} is not a row number.\n"
             continue
@@ -1808,8 +1902,12 @@ class SizingQuotaStep(SizingStep):
                 f"the {ctx.state.region} CPU quota could not be read ({_one_line(exc)}), so the proposed "
                 "sizing is kept"))
             return
-        chosen = review(self._ask, ctx, self.id, str(found["mode"]), int(found["members"]), quota,
-                        start=sizing.capped(found, quota))
+        mode, members = str(found["mode"]), int(found["members"])
+        waited = not sizing.fits_quota(mode, members, quota)
+        if waited:
+            quota = wait_for_cpus(ctx, self.gcp, self.id, mode, members, quota)
+        chosen = review(self._ask, ctx, self.id, mode, members, quota, start=sizing.capped(found, quota),
+                        offer_increase=not waited)
         remember(ctx, outputs={"sizing": chosen,
                                "sizing_cpu_quota": {"region": ctx.state.region, "cpus": quota}})
 

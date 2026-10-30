@@ -128,6 +128,26 @@ def provider_tenants(mode: str, members: int) -> int:
     return 1 if mode == INDIVIDUAL else members
 
 
+def min_region_cpus(mode: str, members: int) -> int:
+    """The smallest region CPUS quota a sizing for `mode` and `members` can
+    use: the cluster's own CPUs plus one task's for every tenant, so that
+    provider_tenant 1 still meets terraform's floor (global >= tenants x
+    provider_tenant). Below it no number the person types can pass, so the
+    increase is required, not optional (DAYONE-SIZING-CAP, audit 3 A6)."""
+    return SYSTEM_CPUS + CPU_PER_UNIT * provider_tenants(mode, members)
+
+
+def fits_quota(mode: str, members: int, region_cpu_quota: int | None) -> bool:
+    """Whether the region's CPUS quota runs at least one task for every
+    tenant (beside the cluster's own CPUs); an unknown or unlimited quota
+    caps nothing. For a team this is `cpu_cap(quota) >= members`; for one
+    person it also refuses a quota with no room for even one task, which
+    `cpu_cap`'s floor of 1 would let through."""
+    if cpu_cap(region_cpu_quota) is None:
+        return True
+    return int(region_cpu_quota or 0) >= min_region_cpus(mode, members)
+
+
 def _fitted_provider_tenant(provider_tenant: int, global_: int, tenants: int) -> int:
     """`provider_tenant`, lowered (never below 1) so `tenants` of it fit in `global_`."""
     return max(1, min(provider_tenant, global_ // tenants))
@@ -192,9 +212,10 @@ def propose(mode: str, members: int, *, region_cpu_quota: int | None = None) -> 
 
 def capped(sizing: Mapping[str, Any], region_cpu_quota: int | None) -> Sizing:
     """A copy of `sizing` (the person's own numbers kept) with every pool
-    ceiling lowered to what `region_cpu_quota` runs. Lowering `global` lowers
-    `provider_tenant` with it (`with_change`), so tenants x provider_tenant
-    still fits wherever the cap leaves room for every tenant."""
+    ceiling lowered to what `region_cpu_quota` runs. provider_tenant is fitted
+    again after every ceiling is capped, never set back from the original row
+    (audit 3 A6: a team of 2 at 32 CPUs got global 6 and provider_tenant 6),
+    so tenants x provider_tenant fits wherever `fits_quota` holds."""
     cap = cpu_cap(region_cpu_quota)
     changed: Sizing = copy.deepcopy(dict(sizing))  # type: ignore[assignment]
     if cap is None:
@@ -202,6 +223,9 @@ def capped(sizing: Mapping[str, Any], region_cpu_quota: int | None) -> Sizing:
     for path, value in rows(sizing):
         if path[0] == "pool_limits" and value > cap:
             changed = with_change(changed, path, cap)
+    pools = changed["pool_limits"]
+    pools["provider_tenant"] = _fitted_provider_tenant(
+        pools["provider_tenant"], pools["global"], provider_tenants(changed["mode"], changed["members"]))
     return changed
 
 

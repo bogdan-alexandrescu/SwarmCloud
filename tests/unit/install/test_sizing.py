@@ -212,3 +212,62 @@ def test_table_numbers_every_row() -> None:
     assert len(lines) == 1 + len(sizing.rows(sizing.propose("team", 15)))
     assert "1) tasks at once, the whole deployment (global)" in lines[1] and lines[1].endswith("81")
     assert lines[-1].endswith("1400") and "monthly budget" in lines[-1]
+
+
+# -- DAYONE-SIZING-CAP (audit 3, A6): a quota too small for the team is a wait ----------------
+
+#: The audit's quotas against one person and teams of 2, 5, 10 and 50.
+AUDIT_QUOTAS = (24, 32, 96)
+AUDIT_SHAPES = [("individual", 1), ("team", 2), ("team", 5), ("team", 10), ("team", 50)]
+
+
+@pytest.mark.parametrize("quota", AUDIT_QUOTAS)
+@pytest.mark.parametrize(("mode", "members"), AUDIT_SHAPES)
+def test_the_audits_quotas_either_fit_or_need_the_increase(mode: str, members: int, quota: int) -> None:
+    """A6: a quota whose tasks cover every tenant gives a proposal (and a cap of
+    the uncapped one) that terraform's rule takes; a smaller one cannot fit
+    even provider_tenant 1, so the increase is required, not optional."""
+    tenants = sizing.provider_tenants(mode, members)
+    room = sizing.cpu_cap(quota)
+    assert room is not None
+    if room >= tenants:
+        assert sizing.fits_quota(mode, members, quota)
+        assert sizing.min_region_cpus(mode, members) <= quota
+        for found in (sizing.propose(mode, members, region_cpu_quota=quota),
+                      sizing.capped(sizing.propose(mode, members), quota)):
+            assert sizing.problems(found, region_cpu_quota=quota) == []
+            assert found["pool_limits"]["global"] >= tenants * found["pool_limits"]["provider_tenant"]
+            tfvars.pool_limits(found)
+    else:
+        assert not sizing.fits_quota(mode, members, quota)
+        assert sizing.min_region_cpus(mode, members) > quota
+
+
+def test_the_audits_numbers_split_as_it_said() -> None:
+    """Quota 24 runs 4 tasks, 32 runs 6 and 96 runs 22 (4 vCPU each, 8 kept)."""
+    needs = {(q, m): sizing.fits_quota(mode, m, q) for q in AUDIT_QUOTAS for mode, m in AUDIT_SHAPES}
+    assert [m for (q, m), ok in needs.items() if q == 24 and not ok] == [5, 10, 50]
+    assert [m for (q, m), ok in needs.items() if q == 32 and not ok] == [10, 50]
+    assert [m for (q, m), ok in needs.items() if q == 96 and not ok] == [50]
+
+
+@pytest.mark.parametrize(("mode", "members", "cpus"), [("individual", 1, 12), ("team", 2, 16), ("team", 5, 28),
+                                                       ("team", 10, 48), ("team", 50, 208)])
+def test_the_smallest_quota_a_sizing_can_use(mode: str, members: int, cpus: int) -> None:
+    """The cluster's own CPUs plus one task's CPUs for every tenant: one below
+    it cannot fit provider_tenant 1, it itself can."""
+    assert sizing.min_region_cpus(mode, members) == cpus
+    assert sizing.fits_quota(mode, members, cpus)
+    assert not sizing.fits_quota(mode, members, cpus - 1)
+    assert sizing.fits_quota(mode, members, None)  # unknown or unlimited: nothing to wait for
+    assert sizing.fits_quota(mode, members, -1)
+
+
+def test_capping_global_refits_provider_tenant() -> None:
+    """A6, as the audit ran it: a team of 2 at quota 32 was capped to global 6
+    and provider_tenant 6 (the original provider_tenant row set it back)."""
+    lowered = sizing.capped(sizing.propose("team", 2), 32)
+    assert lowered["pool_limits"]["global"] == 6
+    assert lowered["pool_limits"]["provider_tenant"] == 3
+    mine = sizing.with_change(sizing.propose("team", 5), ("pool_limits", "provider_tenant"), 2)
+    assert sizing.capped(mine, 96)["pool_limits"]["provider_tenant"] == 2  # already fits: the person's own kept
