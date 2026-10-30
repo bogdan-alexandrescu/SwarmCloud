@@ -50,7 +50,9 @@ The release home is project `swarmcloud-prod`: images in
 ## Each release
 
 1. Pick the commit: a main commit whose `release` run succeeded. The run must
-   still hold its `scanned-images-dev` artifact (kept 30 days).
+   still hold its `scanned-images-dev` artifact (kept 30 days). The run
+   assembles and publishes with that commit's own scripts, so the commit must
+   be one whose `publish.sh` takes `--ci` (DAYONE-RELEASE-CI or later).
 
    ```bash
    gh run list --workflow release.yml --branch main --status success --limit 5
