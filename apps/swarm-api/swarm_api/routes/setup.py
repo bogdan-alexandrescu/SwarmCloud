@@ -349,6 +349,10 @@ class TeamRuns:
         task = self._ctx.store.get_task(tenant_id, task_id, submitted_by=None)
         return run_state(task.state)
 
+    def workflow_state(self, *, tenant_id: str, workflow_id: str) -> str:
+        workflow = self._ctx.store.get_workflow(tenant_id, workflow_id, submitted_by=None)
+        return run_state(workflow.state)
+
 
 def setup_runs(request: Request, ctx: AppContext = Depends(get_context)) -> Any:
     found = getattr(request.app.state, "setup_runs", None)
@@ -1058,6 +1062,52 @@ def restart_smoke(
             "smoke": smoke}
 
 
+#: The console's two verify runs, by their `verify_runs` key.
+VERIFY_KEYS = ("console_task", "console_workflow")
+#: Fresh runs started per key after the recorded one failed or was cancelled
+#: (BGD, 2026-10-30: "swarm-api restarts a failed key"). The engine waits for
+#: a new id at most twice too (VERIFY-ENGINE-2), so a third would go unread.
+MAX_VERIFY_RETRIES = 2
+#: A key's retry count sits beside its id in `verify_runs`, as
+#: `<key>_retries`, and only once it is not 0: the document's row holds no
+#: other field for it (install_record.SWARM_API_DOCUMENTS), and the engine
+#: reads `verify_runs` by the two id keys alone, so it never mistakes a count
+#: for an id.
+RETRIES_SUFFIX = "_retries"
+
+
+def _verify_ids(runs: dict[str, Any]) -> dict[str, str]:
+    """The two ids of a `verify_runs` value, without the retry counts."""
+    return {key: str(runs[key]) for key in VERIFY_KEYS if runs.get(key)}
+
+
+def _verify_retries(runs: dict[str, Any]) -> dict[str, int]:
+    return {key: int(runs.get(key + RETRIES_SUFFIX) or 0) for key in VERIFY_KEYS}
+
+
+def _verify_value(ids: dict[str, str], retries: dict[str, int]) -> dict[str, Any]:
+    """`verify_runs` as written: the ids, and a key's retry count once it has one."""
+    value: dict[str, Any] = dict(ids)
+    value.update({key + RETRIES_SUFFIX: count for key, count in retries.items() if count})
+    return value
+
+
+def _verify_run_state(runs: Any, key: str, tenant: str, run_id: str) -> str:
+    """A recorded verify run's state as `run_state` says it (CANCELLED and
+    DEAD_LETTERED read as failed)."""
+    if key == "console_task":
+        return runs.task_state(tenant_id=tenant, task_id=run_id)
+    return runs.workflow_state(tenant_id=tenant, workflow_id=run_id)
+
+
+def _submit_verify_run(runs: Any, key: str, tenant: str, group: str, repository: str) -> str:
+    if key == "console_task":
+        return runs.submit_task(tenant_id=tenant, group=group, repository=repository,
+                                prompt=VERIFY_TASK_PROMPT, label=VERIFY_LABEL)
+    return runs.submit_workflow(tenant_id=tenant, group=group, repository=repository,
+                                label=VERIFY_LABEL)
+
+
 @router.post("/verify-runs", dependencies=[Depends(admin_auth)])
 def start_verify_runs(
     caller: SetupCaller = Depends(admin_setup_caller),
@@ -1072,30 +1122,51 @@ def start_verify_runs(
     first team (for one person, in the personal workspace) on a repository of its grant (decision 3: the team's own slot,
     never a person's token). Their ids go to `console/verify_runs` as
     `verify_runs: {console_task, console_workflow}`, which the engine copies
-    into `state.outputs["verify_runs"]`, so nobody pastes an id. Called again,
-    it answers the runs already started and starts nothing."""
+    into `state.outputs["verify_runs"]`, so nobody pastes an id.
+
+    Called again, it reads each recorded run: one that failed or was
+    cancelled counts as missing and a fresh run of its shape replaces its id,
+    the other key kept; one still going, or succeeded, is left alone. Each
+    key's fresh starts are counted beside its id (`<key>_retries`) and
+    answered as `retries`; a key that failed after `MAX_VERIFY_RETRIES` of
+    them is answered as a 409 saying so, and nothing is started."""
     path = record.console_path(ir.VERIFY_RUNS)
     done = record.read(path) or {}
-    started = dict(done.get("verify_runs") or {})
-    if started.get("console_task") and started.get("console_workflow"):
-        return {"verify_runs": started, "repository": done.get("repository"), "started": False}
+    recorded = dict(done.get("verify_runs") or {})
+    started = _verify_ids(recorded)
+    retries = _verify_retries(recorded)
     first, repository = _granted_repository(first_workspace(
         record, ctx, people, caller=caller, flow=flow, github=github))
     tenant = first.tenant
     group = first.principal
-    if not started.get("console_task"):
-        started["console_task"] = runs.submit_task(
-            tenant_id=tenant, group=group, repository=repository, prompt=VERIFY_TASK_PROMPT,
-            label=VERIFY_LABEL)
-        record.write(path, {"verify_runs": dict(started), "repository": repository,
-                            "started_at": ctx.now(), "by": caller.email})
-    started["console_workflow"] = runs.submit_workflow(
-        tenant_id=tenant, group=group, repository=repository, label=VERIFY_LABEL)
-    record.write(path, {"verify_runs": dict(started), "repository": repository,
-                        "started_at": done.get("started_at") or ctx.now(), "by": caller.email})
-    log.info("console verify runs started task=%s workflow=%s by=%s",
-             started["console_task"], started["console_workflow"], caller.email)
-    return {"verify_runs": started, "repository": repository, "started": True}
+    missing: list[str] = []
+    for key in VERIFY_KEYS:
+        if not started.get(key):
+            missing.append(key)
+        elif _verify_run_state(runs, key, tenant, started[key]) == FAILED:
+            if retries[key] >= MAX_VERIFY_RETRIES:
+                raise Conflict(
+                    f"the console's verify {key.removeprefix('console_')} run {started[key]} "
+                    f"failed after {MAX_VERIFY_RETRIES} fresh starts, so none is started "
+                    "again: read that run for why",
+                    detail={"key": key, "run": started[key], "retries": retries[key]})
+            missing.append(key)
+    if not missing:
+        return {"verify_runs": started, "retries": retries,
+                "repository": done.get("repository"), "started": False}
+    for key in missing:
+        if started.get(key):
+            retries[key] += 1
+        started[key] = _submit_verify_run(runs, key, tenant, group, repository)
+        record.write(path, {"verify_runs": _verify_value(started, retries),
+                            "repository": repository,
+                            "started_at": done.get("started_at") or ctx.now(),
+                            "by": caller.email})
+    log.info("console verify runs started %s task=%s workflow=%s retries=%s by=%s",
+             ",".join(missing), started["console_task"], started["console_workflow"],
+             retries, caller.email)
+    return {"verify_runs": started, "retries": retries, "repository": repository,
+            "started": True}
 
 
 # --------------------------------------------------------------------------

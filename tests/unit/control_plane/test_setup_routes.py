@@ -239,10 +239,14 @@ class FakeRuns:
         workflow_id = f"wf-{len(self.workflows) + 1}"
         self.workflows.append({"id": workflow_id, "tenant": tenant_id, "group": group,
                                "repository": repository, "label": label})
+        self.states[workflow_id] = "running"
         return workflow_id
 
     def task_state(self, *, tenant_id, task_id):
         return self.states[task_id]
+
+    def workflow_state(self, *, tenant_id, workflow_id):
+        return self.states[workflow_id]
 
 
 @pytest.fixture
@@ -680,6 +684,87 @@ def test_verify_runs_start_as_the_first_team_and_are_recorded(setup_client, db, 
     again = setup_client.post("/v1/admin/setup/verify-runs", headers=auth_header("root"))
     assert again.json() == {**again.json(), "verify_runs": expected, "started": False}
     assert len(runs.tasks) == 1 and len(runs.workflows) == 1
+
+
+VERIFY_DOC = f"swarm-install/{ENV}/console/verify_runs"
+
+
+def start_verify(client: TestClient):
+    return client.post("/v1/admin/setup/verify-runs", headers=auth_header("root"))
+
+
+def verify_started(setup_client, db, github) -> str:
+    """The first team, and its two console verify runs started: task-1, wf-1."""
+    install_app(db, github)
+    team = create_team(setup_client).json()["team"]
+    assert start_verify(setup_client).status_code == 200
+    return team
+
+
+@pytest.mark.parametrize("raw", ["FAILED", "CANCELLED"])
+def test_a_failed_verify_task_starts_again_and_keeps_the_workflow(setup_client, db, github,
+                                                                  runs, raw) -> None:
+    """BGD, 2026-10-30: "swarm-api restarts a failed key". A recorded task
+    that failed or was cancelled counts as missing: a fresh task replaces its
+    id and the running workflow is kept."""
+    from swarm_api.routes.setup import run_state
+
+    team = verify_started(setup_client, db, github)
+    runs.states["task-1"] = run_state(raw)
+    answer = start_verify(setup_client)
+    assert answer.status_code == 200, answer.text
+    expected = {"console_task": "task-2", "console_workflow": "wf-1"}
+    assert answer.json()["verify_runs"] == expected and answer.json()["started"] is True
+    assert answer.json()["retries"] == {"console_task": 1, "console_workflow": 0}
+    assert db.docs[VERIFY_DOC]["verify_runs"] == {**expected, "console_task_retries": 1}
+    assert len(runs.tasks) == 2 and len(runs.workflows) == 1
+    assert runs.tasks[1]["tenant"] == team and runs.tasks[1]["label"] == "swarm-install-verify"
+
+
+def test_a_failed_verify_workflow_starts_again_and_keeps_the_task(setup_client, db, github,
+                                                                  runs) -> None:
+    verify_started(setup_client, db, github)
+    runs.states["wf-1"] = "failed"
+    answer = start_verify(setup_client)
+    assert answer.status_code == 200, answer.text
+    expected = {"console_task": "task-1", "console_workflow": "wf-2"}
+    assert answer.json()["verify_runs"] == expected
+    assert db.docs[VERIFY_DOC]["verify_runs"] == {**expected, "console_workflow_retries": 1}
+    assert len(runs.tasks) == 1 and len(runs.workflows) == 2
+
+
+@pytest.mark.parametrize("state", ["running", "succeeded"])
+def test_a_going_or_succeeded_verify_run_is_left_alone(setup_client, db, github, runs,
+                                                       state) -> None:
+    verify_started(setup_client, db, github)
+    runs.states["task-1"] = state
+    runs.states["wf-1"] = state
+    answer = start_verify(setup_client)
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["verify_runs"] == {"console_task": "task-1", "console_workflow": "wf-1"}
+    assert answer.json()["started"] is False
+    assert db.docs[VERIFY_DOC]["verify_runs"] == {"console_task": "task-1",
+                                                  "console_workflow": "wf-1"}
+    assert len(runs.tasks) == 1 and len(runs.workflows) == 1
+
+
+def test_a_verify_run_that_spent_its_retries_starts_nothing(setup_client, db, github,
+                                                            runs) -> None:
+    """Two fresh starts per key; the third failure is answered with why, and
+    nothing is started, not even the other key's failed run."""
+    verify_started(setup_client, db, github)
+    for retry in (2, 3):
+        runs.states[f"task-{retry - 1}"] = "failed"
+        assert start_verify(setup_client).json()["verify_runs"]["console_task"] == f"task-{retry}"
+    runs.states["task-3"] = "failed"
+    runs.states["wf-1"] = "failed"
+    answer = start_verify(setup_client)
+    assert answer.status_code == 409, answer.text
+    assert "task-3" in answer.text and "2 fresh starts" in answer.text
+    assert len(runs.tasks) == 3 and len(runs.workflows) == 1
+    assert db.docs[VERIFY_DOC]["verify_runs"] == {"console_task": "task-3",
+                                                  "console_workflow": "wf-1",
+                                                  "console_task_retries": 2}
 
 
 def test_verify_runs_wait_for_a_granted_repository(setup_client, db, github) -> None:
