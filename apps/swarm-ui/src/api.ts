@@ -13041,6 +13041,11 @@ export interface SetupEngine {
   verify: SetupVerify | null
   hand_off_at: string | null
   ready_at: string | null
+  /**
+   * The first team's group stage 8 created (`state.outputs["workspace_groups"]`,
+   * N20): the team form starts from it. Null before stage 8, and for one person.
+   */
+  workspace_groups: { team: string } | null
 }
 
 /** `console/github_app`, without its state hash (the route drops it). */
@@ -13249,6 +13254,7 @@ function normEngine(raw: unknown): SetupEngine | null {
       })
     : []
   const lease = objOf(e.lease)
+  const teamGroup = strOf(objOf(e.workspace_groups)?.team)
   return {
     release: strOf(e.release),
     hostname: strOf(e.hostname),
@@ -13257,6 +13263,7 @@ function normEngine(raw: unknown): SetupEngine | null {
     verify: normVerify(e.verify),
     hand_off_at: strOf(e.hand_off_at),
     ready_at: strOf(e.ready_at),
+    workspace_groups: teamGroup === null ? null : { team: teamGroup },
   }
 }
 
@@ -13592,9 +13599,22 @@ export function restartSetupSmoke(): Promise<Result<{ workspace: string | null; 
   )
 }
 
-/** `POST /v1/admin/setup/teams`: the same call `swarm team add` makes. */
-export function createSetupTeam(body: { group: string; display_name?: string; first_admin?: string; invites: string[] }): Promise<Result<{ team: string | null }>> {
-  return setupWrite(route('/v1/admin/setup/teams'), 'POST', body, (raw) => ({ team: strOf(objOf(raw)?.team) }), () => ({ team: body.group.split('@')[0] ?? null }))
+/**
+ * `POST /v1/admin/setup/teams`: the same call `swarm team add` makes. It
+ * answers each invite with the group's Google Admin members page (#26), kept
+ * so the form opens it; a page that is not Google Admin's is dropped.
+ */
+export function createSetupTeam(body: { group: string; display_name?: string; first_admin?: string; invites: string[] }): Promise<Result<{ team: string | null; invites: SetupInvite[] }>> {
+  return setupWrite(
+    route('/v1/admin/setup/teams'),
+    'POST',
+    body,
+    (raw) => {
+      const d = objOf(raw) ?? {}
+      return { team: strOf(d.team), invites: (Array.isArray(d.invites) ? d.invites : []).map(normInvite).filter((i): i is SetupInvite => i !== null) }
+    },
+    () => ({ team: body.group.split('@')[0] ?? null, invites: body.invites.map((email) => ({ email, add_members_url: 'https://admin.google.com/ac/groups', member: false })) }),
+  )
 }
 
 /** `POST /v1/admin/setup/links`: a one-time link for one named person. */
@@ -13618,6 +13638,15 @@ export interface SetupInvite {
   member: boolean | null
 }
 
+/** One invite as the team routes answer it; only a Google Admin page is kept as its members page. */
+function normInvite(raw: unknown): SetupInvite | null {
+  const d = objOf(raw)
+  const email = d === null ? null : strOf(d.email)
+  if (d === null || email === null) return null
+  const url = strOf(d.add_members_url)
+  return { email, add_members_url: url !== null && url.startsWith('https://admin.google.com/') ? url : null, member: typeof d.member === 'boolean' ? d.member : null }
+}
+
 /**
  * `POST /v1/admin/setup/teams/{id}/invites` (decision 4): records the invite
  * and answers the Google Admin members page. swarm-api holds Groups Reader
@@ -13630,8 +13659,7 @@ export function inviteToSetupTeam(teamId: string, email: string): Promise<Result
     { email },
     (raw) => {
       const d = objOf(raw) ?? {}
-      const url = strOf(d.add_members_url)
-      return { email: strOf(d.email) ?? email, add_members_url: url !== null && url.startsWith('https://admin.google.com/') ? url : null, member: typeof d.member === 'boolean' ? d.member : null }
+      return normInvite({ ...d, email: strOf(d.email) ?? email }) ?? { email, add_members_url: null, member: null }
     },
     () => ({ email, add_members_url: 'https://admin.google.com/ac/groups', member: false }),
   )

@@ -539,9 +539,15 @@ function githubRow(state: SetupState, onChanged: () => void, act: ReturnType<typ
 const WORKSPACE_READY = 'ready'
 const FAILED_WORKSPACE = new Set(['failed', 'denied'])
 
-function TeamForm({ onChanged }: { onChanged: () => void }) {
+/**
+ * The first team's form. `created` is the group swarm install's stage 8
+ * created, with the installer as its owner (N20): the field starts from it,
+ * even when the record arrives on a later poll, until the person types.
+ */
+function TeamForm({ created, onChanged }: { created: string | null; onChanged: () => void }) {
   const act = useAction(onChanged)
-  const [group, setGroup] = useState('')
+  const [typed, setGroup] = useState<string | null>(null)
+  const group = typed ?? created ?? ''
   const [name, setName] = useState('')
   const [admin, setAdmin] = useState('')
   const [invites, setInvites] = useState('')
@@ -563,6 +569,11 @@ function TeamForm({ onChanged }: { onChanged: () => void }) {
         ...(admin.trim() === '' ? {} : { first_admin: admin.trim() }),
         invites: invites.split(/[\s,]+/).filter(Boolean),
       }),
+      // The route answers each invite with the group's members page (#26): open it, as the Invite hint says.
+      (d) => {
+        const page = d.invites.map((i) => i.add_members_url).find((u): u is string => u !== null)
+        if (page !== undefined) window.open(page, '_blank', 'noopener,noreferrer')
+      },
     )
   return (
     <form
@@ -575,7 +586,9 @@ function TeamForm({ onChanged }: { onChanged: () => void }) {
         'Workspace group',
         group,
         setGroup,
-        'A Google Workspace group you are a member of; its members are the team. No group yet? ',
+        group !== '' && group === created
+          ? 'The group swarm install created, with you as its owner; its members are the team. Another group? '
+          : 'A Google Workspace group you are a member of; its members are the team. No group yet? ',
         'engineering@your-domain',
         <a href={ADMIN_GROUPS_URL} target="_blank" rel="noreferrer">
           Create group in Google Admin
@@ -583,7 +596,7 @@ function TeamForm({ onChanged }: { onChanged: () => void }) {
       )}
       {field('Workspace name', name, setName, 'Shown in the console; the group’s name when left empty', 'engineering')}
       {field('First workspace admin', admin, setAdmin, 'Administers the team’s workspace', 'name@your-domain')}
-      {field('Invite', invites, setInvites, 'Each is added to the group in Google Admin, which opens from the team’s row; the row shows them as joined once the Groups API sees them', 'one or more emails')}
+      {field('Invite', invites, setInvites, 'Each is added to the group on its members page in Google Admin, which opens when you create the team; the team’s row shows them as joined once the Groups API sees them', 'one or more emails')}
       <span className="ob-acts">
         <Button size="sm" kind="primary" type="submit" busy={act.busy === 'team' ? 'Creating' : false} disabledReason={group.trim().length < 3 ? 'Name the Workspace group first' : undefined}>
           Create the team
@@ -819,7 +832,7 @@ function teamRow(state: SetupState, onChanged: () => void, nowMs: number): Row {
       state: 'todo',
       by: 'this page',
       line: 'A Workspace group becomes the first workspace: the same call swarm team add makes',
-      body: <TeamForm onChanged={onChanged} />,
+      body: <TeamForm created={state.engine?.workspace_groups?.team ?? null} onChanged={onChanged} />,
     }
   }
   const ws = typeof team.progress.workspace_state === 'string' ? team.progress.workspace_state : null
