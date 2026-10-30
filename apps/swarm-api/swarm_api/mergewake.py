@@ -299,6 +299,7 @@ from swarm_common.admission import _snapshot
 from swarm_common.states import ParkReason, TaskState
 
 from swarm_common.identity import Principal
+from swarm_common.models import utcnow
 from swarm_common.states import TERMINAL_STATES
 from swarm_rollup import is_fix_round_step
 
@@ -327,7 +328,7 @@ from .issueci import (
 from .issueruns import NO_CLOSING_KEYWORD, STEP_PROFILE, failure_text
 from .redaction import redact
 from .repositories import parse_repository
-from .rollup import SKIPPED_SUMMARY_KEY
+from .rollup import SKIPPED_SUMMARY_KEY, derived_state_write
 from .schemas import WorkflowCreate
 from . import sessiontag
 from .validation import (
@@ -1128,6 +1129,12 @@ def _append_round_step(db: Any, tenant_id: str, workflow_id: Any, step: Mapping[
         if merge_task is not None and not any(s.get("task_id") == merge_task for s in steps):
             return False
         patch: dict[str, Any] = {"steps": [*steps, dict(step)]}
+        # The round's step is a step of this workflow from this write on, so
+        # the workflow's state is derived over it here too (#2838).
+        derived = derived_state_write(txn, db, tenant_id=tenant_id, workflow_id=workflow_id,
+                                      now=now or utcnow(), steps=patch["steps"])
+        if derived is not None:
+            patch.update(derived[1])
         if now is not None:
             patch["updated_at"] = now
         txn.update(ref, patch)
@@ -1836,9 +1843,15 @@ def _write_release(db: Any, tenant_id: str, task_id: str, wait: Mapping[str, Any
         if woken:
             metadata[RELEASE_WAIT_KEY] = {**record, "woken_at": now, "wake_reason": reason}
             assert_transition(TaskState.PARKED, TaskState.READY)
-            txn.update(ref, {"state": TaskState.READY.value, "park_reason": None,
-                             "next_eligible_at": None, "blocked_by": [], "metadata": metadata,
-                             "updated_at": now})
+            patch = {"state": TaskState.READY.value, "park_reason": None,
+                     "next_eligible_at": None, "blocked_by": [], "metadata": metadata,
+                     "updated_at": now}
+            workflow = derived_state_write(txn, db, tenant_id=tenant_id,
+                                           workflow_id=data.get("workflow_id"), now=now,
+                                           changed={task_id: {**data, **patch}})
+            txn.update(ref, patch)
+            if workflow is not None:
+                txn.update(*workflow)
             event = TaskEvent(
                 event_id=new_id("ev"), task_id=task_id, tenant_id=tenant_id, type=EventType.READY,
                 at=now, attempt_id=None,

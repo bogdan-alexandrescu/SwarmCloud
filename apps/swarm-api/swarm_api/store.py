@@ -2040,7 +2040,9 @@ class Store:
     def set_workflow_state(self, workflow_id: str, state: TaskState) -> None:
         """Write the derived state onto the workflow document.
 
-        The ONLY writer of `workflow.state` after `create_workflow`. It takes a
+        The read paths' and the sweep's writer of `workflow.state` after
+        `create_workflow`; the API's step transitions write it in their own
+        transaction through `rollup.derived_state_write` (#2838). It takes a
         `TaskState`, not a string, so nothing can put `"UNKNOWN"` in a field that
         `workflow_from_dict` decodes with `TaskState(...)` and would then raise on
         for every subsequent read.
