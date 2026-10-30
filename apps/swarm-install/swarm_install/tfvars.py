@@ -28,6 +28,20 @@ The four applies (design §5) and the two after the hand-off (plan §5.5):
 `user:`, the QA identity's account, and, for programmatic sign-in, the
 deployment's own Desktop client; swarm-api's `ALLOWED_DOMAINS` is
 `[org_domain]`. Workspace membership still comes from the Google groups.
+For one person (`sizing.mode == "individual"`, decision 7) IAP admits the
+installer's `user:` and no `domain:` member; the QA identity and the Desktop
+client stay (bootstrap refuses `enable_qa_identity` without the QA account),
+and `ALLOWED_DOMAINS` is still `[org_domain]`.
+
+**Sizing (decision 7).** Stage 0 records `outputs["sizing"]`; its
+`pool_limits` and `service_max_instances` become infra's variables of the same
+names on every infra pass, checked here against infra's own validations so a
+proposal Terraform would refuse fails before any plan. An install state with
+no `sizing` (older than the question) keeps Terraform's defaults.
+
+**Add-ons.** Every pass merges `addons.inputs_for(outputs, root)` over the
+core inputs, so an add-on's recorded phase survives a later install or
+upgrade apply instead of being turned back off by core's defaults.
 
 **Cluster reach (decision 2).** Every infra pass before `infra-close` puts the
 installer's public address (`installer_cidr`) in `gke_master_authorized_cidrs`
@@ -47,6 +61,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from . import addons
 from .api_client import ADMIN_ROLE, DELEGATION, deployer_email
 from .state import ObjectStore, PreconditionFailed
 
@@ -103,8 +118,20 @@ DISCOVERY_NAME = "SwarmCloud"
 #: discovery (`swarm_mcp/discovery.py`) landed, the first that reads it.
 PLUGIN_MIN_VERSION = "0.5.74"
 #: The hourly doctor runs DAYONE-DOCTOR-1's code in the swarm-verify image.
-#: Off until that code ships: DOCTOR-1 flips this one value (review finding 12).
-SCHEDULED_DOCTOR_SHIPPED = False
+#: On from infra pass 2: BGD turned it on (DAYONE-TFVARS-2, review finding 12).
+SCHEDULED_DOCTOR_SHIPPED = True
+
+#: `sizing.mode` (decision 7): one person, or a team of `members` people.
+INDIVIDUAL = "individual"
+TEAM = "team"
+#: terraform/infra's `pool_limits` attributes (variables.tf, var.pool_limits).
+POOL_LIMIT_NUMBERS = ("global", "default_tenant", "provider_tenant")
+POOL_LIMIT_MAPS = ("resource_classes", "runner_profiles", "backends", "providers")
+#: terraform/infra's `service_max_instances` default (variables.tf). Its
+#: validation needs every control-plane service named; sizing names the four
+#: it scales, so swarm-ui keeps its default.
+SERVICE_MAX_DEFAULTS = {"swarm-api": 20, "swarm-scheduler": 3, "swarm-quota-broker": 3,
+                        "swarm-reconciler": 2, "swarm-ui": 2}
 
 #: Which step records each state key a pass needs, for the LookupError.
 RECORDED_BY = {
@@ -160,10 +187,89 @@ def org_domain(state: Any) -> str:
     return domain
 
 
+def sizing(state: Any) -> dict[str, Any] | None:
+    """Stage 0's `sizing`, or None for an install state recorded before it."""
+    found = state.outputs.get("sizing")
+    if not found:
+        return None
+    if not isinstance(found, Mapping):
+        raise ValueError(f"the install state's sizing is {type(found).__name__}, not a mapping; rerun stage 0")
+    mode = found.get("mode")
+    if mode not in (INDIVIDUAL, TEAM):
+        raise ValueError(f"the install state's sizing mode is {mode!r}; one of {INDIVIDUAL!r}, {TEAM!r}")
+    return dict(found)
+
+
+def individual(state: Any) -> bool:
+    """Decision 7: the deployment is for one person."""
+    found = sizing(state)
+    return bool(found) and found["mode"] == INDIVIDUAL
+
+
+def _positive(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+
+
+def pool_limits(found: Mapping[str, Any]) -> dict[str, Any]:
+    """infra's `pool_limits` from the sizing, refused where infra would refuse it."""
+    limits = found.get("pool_limits")
+    if not isinstance(limits, Mapping):
+        raise ValueError("the install state's sizing has no pool_limits mapping; rerun stage 0")
+    unknown = sorted(set(limits) - set(POOL_LIMIT_NUMBERS) - set(POOL_LIMIT_MAPS))
+    if unknown:
+        raise ValueError(f"the sizing's pool_limits name {unknown}, which terraform/infra's pool_limits does not "
+                         f"declare; it declares {[*POOL_LIMIT_NUMBERS, *POOL_LIMIT_MAPS]}")
+    out: dict[str, Any] = {}
+    for key in POOL_LIMIT_NUMBERS:
+        if key in limits:
+            if not _positive(limits[key]):
+                raise ValueError(f"the sizing's pool_limits.{key} is {limits[key]!r}; it must be a positive number")
+            out[key] = limits[key]
+    for key in POOL_LIMIT_MAPS:
+        if key in limits:
+            values = limits[key]
+            if not isinstance(values, Mapping) or not all(_positive(v) for v in values.values()):
+                raise ValueError(f"the sizing's pool_limits.{key} is {values!r}; it must map names to positive "
+                                 "numbers")
+            out[key] = {str(k): v for k, v in values.items()}
+    # terraform/infra's provider validation: a provider's platform-wide pool
+    # (providers[p], else global) is at least (tenants holding it) x
+    # provider_tenant. Installs declare no Terraform tenants, so the tenants are
+    # the workspaces the sizing serves: one for one person, `members` for a team.
+    # `global` is every provider's pool that `providers` does not name.
+    tenants = 1 if found["mode"] == INDIVIDUAL else int(found.get("members") or 1)
+    per_tenant = out.get("provider_tenant", 10)
+    ceiling = out.get("global", 100)
+    for name, value in {"global (every provider not named)": ceiling, **out.get("providers", {})}.items():
+        if value < tenants * per_tenant:
+            raise ValueError(f"the sizing breaks terraform/infra's pool_limits validation: provider_tenant "
+                             f"{per_tenant} x {tenants} tenants = {tenants * per_tenant} is more than the "
+                             f"provider-wide pool {name} = {value}; lower provider_tenant or raise that pool "
+                             "in the sizing")
+    return out
+
+
+def service_max_instances(found: Mapping[str, Any]) -> dict[str, Any]:
+    """infra's `service_max_instances`: the sizing's ceilings over infra's default."""
+    chosen = found.get("service_max_instances") or {}
+    if not isinstance(chosen, Mapping):
+        raise ValueError("the install state's sizing has no service_max_instances mapping; rerun stage 0")
+    out = dict(SERVICE_MAX_DEFAULTS)
+    for name, value in chosen.items():
+        if not _positive(value) or int(value) != value:
+            raise ValueError(f"the sizing's service_max_instances[{name!r}] is {value!r}; every service needs a "
+                             "positive whole max-instances")
+        out[str(name)] = int(value)
+    return out
+
+
 def iap_members(state: Any, installer: str) -> list[str]:
-    """Decision 1: the organisation's domain, the installer, the QA identity."""
-    members = [f"domain:{org_domain(state)}", f"user:{installer}",
-               f"serviceAccount:{QA_ACCOUNT}@{state.project}.iam.gserviceaccount.com"]
+    """Decision 1: the organisation's domain, the installer, the QA identity.
+
+    Decision 7: for one person, no `domain:` member.
+    """
+    members = [] if individual(state) else [f"domain:{org_domain(state)}"]
+    members += [f"user:{installer}", f"serviceAccount:{QA_ACCOUNT}@{state.project}.iam.gserviceaccount.com"]
     return list(dict.fromkeys(members))
 
 
@@ -183,6 +289,22 @@ def _set_switch(inputs: dict[str, Any], switch: str, on: bool) -> None:
         inputs.setdefault(variable, {})[field] = on
     else:
         inputs[switch] = on
+
+
+def _with_addons(inputs: dict[str, Any], state: Any, root: str) -> dict[str, Any]:
+    """Every add-on's recorded phase over the core inputs (addons.inputs_for)."""
+    _overlay(inputs, addons.inputs_for(state.outputs, root))
+    return inputs
+
+
+def _overlay(into: dict[str, Any], overlay: Mapping[str, Any]) -> None:
+    for key, value in overlay.items():
+        if isinstance(value, Mapping) and isinstance(into.get(key), Mapping):
+            merged = dict(into[key])
+            _overlay(merged, value)
+            into[key] = merged
+        else:
+            into[key] = dict(value) if isinstance(value, Mapping) else value
 
 
 def bootstrap_inputs(state: Any, *, pass_name: str, installer: str) -> dict[str, Any]:
@@ -219,7 +341,7 @@ def bootstrap_inputs(state: Any, *, pass_name: str, installer: str) -> dict[str,
         inputs["workspace_apply_image"] = image_refs(project, region, {"workspace-apply": digests["workspace-apply"]})[
             "workspace-apply"
         ]
-    return inputs
+    return _with_addons(inputs, state, "bootstrap")
 
 
 def infra_inputs(state: Any, *, pass_name: str, installer: str,
@@ -262,6 +384,10 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
         "groups_auth": groups_auth(outputs),
         "image_refs": image_refs(project, region, outputs.get("image_digests") or {}),
     }
+    found = sizing(state)
+    if found:
+        inputs["pool_limits"] = pool_limits(found)
+        inputs["service_max_instances"] = service_max_instances(found)
     if outputs.get("admin_groups"):
         inputs["admin_groups"] = list(outputs["admin_groups"])
     if inputs["groups_auth"] == DELEGATION and outputs.get("groups_impersonate_user"):
@@ -300,7 +426,7 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
                 inputs[variable] = str(app[key])
     inputs["enable_github_hooks"] = (after(pass_name, "infra-4") and inputs["enable_github_app"]
                                      and bool(versions.get("swarm-github-app-webhook-secret")))
-    return inputs
+    return _with_addons(inputs, state, "infra")
 
 
 def refuse_unsafe(inputs: Mapping[str, Any]) -> None:

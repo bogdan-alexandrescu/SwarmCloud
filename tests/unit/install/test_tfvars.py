@@ -281,7 +281,7 @@ def test_every_generated_input_is_a_declared_variable() -> None:
 QA_MEMBER = f"serviceAccount:qa-console@{PROJECT}.iam.gserviceaccount.com"
 EVERY_ADDON_ON = {
     "bright-data-egress": {"phase": "on"},
-    "tailscale": {"phase": "on", "choices": {"tailscale_egress_target": "100.64.0.1"}},
+    "tailscale": {"phase": "on", "choices": {"tailscale_egress_target": "egress.tailnet.ts.net"}},
     "typesafe": {"phase": "on"},
     "brave-search": {"phase": "on"},
     "ci": {"phase": "on", "choices": {"github_repository": "acme/swarm", "sandbox_repository": "acme/sandbox",
@@ -327,7 +327,10 @@ def test_sizing_breaking_provider_validation_fails_before_any_plan() -> None:
         _infra("infra-1", sizing=_sizing(provider_tenant=10))
     with pytest.raises(ValueError, match="provider"):
         _infra("infra-1", sizing=_sizing(providers={"anthropic": 40}))
-    ok = _infra("infra-1", sizing=_sizing(provider_tenant=10, providers={"anthropic": 80}))
+    # global is the pool of every provider `providers` does not name, so it is checked too.
+    with pytest.raises(ValueError, match="global"):
+        _infra("infra-1", sizing=_sizing(provider_tenant=10, providers={"anthropic": 80}))
+    ok = _infra("infra-1", sizing=_sizing(provider_tenant=10, providers={"anthropic": 80}, **{"global": 80}))
     assert ok["pool_limits"]["providers"] == {"anthropic": 80}
     # One person is one tenant.
     assert _infra("infra-1", sizing=_sizing("individual", 1, provider_tenant=60))["pool_limits"]["global"] == 60
