@@ -9,11 +9,14 @@
 | `verify.firestore-migrations` | `other.firestore-migrations` | the state and the install record are at this engine's schema | |
 | `verify.end-to-end` | `other.verify-end-to-end`, `other.verify-row`, `other.verify-gke`, `other.verify-live-browser`, `other.verify-code-intelligence` | seven runs on the NEW deployment: a single task and a workflow from the plugin and from the console, each to a pull request, and three check runs (a task on GKE, a live-browser task, a code-intelligence read) | 18: the plugin signs in with the Desktop client; 43: every run's task cloned and pushed with an App installation token (below) |
 
-**The new deployment, never the person's current context.** The step writes
-its own swarm context, named after the hostname (`swarm context add`, never
-`--use`; a context of that name pointing elsewhere is left alone and the
-engine's is `<hostname>-install`), signs the person in to it once in the
-browser, and picks the first team as `SWARM_TENANT`. Every run is `swarm
+**The new deployment, never the person's current context.** The step uses
+the engine's own swarm context, which `edge.desktop-client` (stage 2) wrote
+with the Desktop client's secret in the swarm credential store, the value
+the person typed at its hidden prompt (`swarm_context`; named after the
+hostname, never `--use`; a context of that name pointing elsewhere is left
+alone and the engine's is `<hostname>-install`), so verify never needs the
+secret. It signs the person in to that context once in the browser, and
+picks the first team as `SWARM_TENANT`. Every run is `swarm
 --context <it>`, with no `SWARM_URL`, `SWARM_CONTEXT` or `SWARM_TENANT` from
 the person's shell. The repository is the first, not archived, the GitHub App
 installation covers (`swarm sc access repos <github_org>`), recorded as
@@ -26,7 +29,10 @@ state.outputs: nobody is asked for an id.
 team's namespace; the live-browser task (`claude-code-browser`) ran with the
 `swarm-live=enabled` label and the `display` sidecar, and the page title it
 left names the repository; the code-intelligence read left the swarm-graph
-answer with its `freshness.index_sha` and at least one symbol. A finished
+answer with at least one symbol and a `freshness.index_sha` that is the
+commit the graph's own index record names for the repository (`swarm
+graph-index`: swarm-api's graph-cache route, `index.commit_sha`, which only
+swarm-graph's promotion writes), so the agent cannot make the proof up. A finished
 Job is deleted after its TTL, so a poll's sighting is kept in state.outputs
 (`verify_cluster_jobs`).
 
@@ -55,9 +61,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import os
 import re
-import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -66,6 +70,7 @@ from ..api_client import IamCredentials, IdTokenMinter
 from ..exitcodes import MET, UNMET, WAITING
 from ..record import RECORD_SCHEMA_VERSION, engine_document
 from ..state import SCHEMA_VERSION
+from ..swarm_context import Run, deployment_url, list_contexts, points_at, run_command, run_interactive, verify_env
 from ..waits import WaitSpec
 from . import Observation, Plan
 from .cluster import Kube, account_email, kube_for
@@ -107,24 +112,6 @@ RUNS_WAIT = WaitSpec(
     look_at="swarm status <task id> for each run named above; the console's task pages",
     interval_s=30,
 )
-
-#: The tier-forcing variables the swarm CLI honours before the signed-in tier
-#: (apps/swarm-mcp/swarm_mcp/auth.py `detect`), and gcloud's own token
-#: overrides: none of them reaches a plugin run (lesson 18).
-NOT_FOR_PLUGIN_RUNS = (
-    "SWARM_ID_TOKEN",
-    "SWARM_IMPERSONATE_SA",
-    "SWARM_IAP_CLIENT_ID",
-    "CLOUDSDK_AUTH_ACCESS_TOKEN_FILE",
-    "CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT",
-    "GOOGLE_OAUTH_ACCESS_TOKEN",
-)
-
-#: What would send a run to a deployment other than the engine's own context
-#: (apps/swarm-mcp/swarm_mcp/config.py: SWARM_URL and SWARM_CONTEXT win over
-#: `--context`'s default), or as a tenant other than the one verify picked.
-NOT_FOR_VERIFY_RUNS = ("SWARM_URL", "SWARM_API_URL", "SWARM_CONTEXT", "SWARM_TENANT")
-
 
 #: The platform's Scheduler jobs and Cloud Run services are named `swarm-*`.
 PLATFORM_PREFIX = "swarm-"
@@ -461,6 +448,9 @@ class RunStatus:
     profile: str = ""
     #: A succeeded check run's artifact (`CheckRun.artifact`), or None when it left none.
     artifact: str | None = None
+    #: The commit the code graph's own index record names for the repository
+    #: (`swarm graph-index`), for a `CheckRun.graph_record` run; "" when none.
+    index_commit: str = ""
 
 
 @dataclass(frozen=True)
@@ -470,13 +460,17 @@ class CheckRun:
     `on_cluster`: its worker Job must be seen in the team's namespace (a GKE
     backend, not a fallback); `live`: that Job carries the live-browser pod
     label and its display sidecar; `artifact`: the file the agent leaves,
-    read back through `swarm artifact` (the API redacts it at read time)."""
+    read back through `swarm artifact` (the API redacts it at read time);
+    `graph_record`: the answer's `freshness.index_sha` must be the commit the
+    code graph's own index record names (`swarm graph-index`), which only
+    swarm-graph's promotion writes, so an agent cannot make the proof up."""
 
     profile: str
     prompt: str
     artifact: str = ""
     on_cluster: bool = False
     live: bool = False
+    graph_record: bool = False
 
     def prompt_for(self, repository: str) -> str:
         return self.prompt.format(repository=repository, artifact=self.artifact)
@@ -503,7 +497,7 @@ CHECK_RUNS: dict[str, CheckRun] = {
         "Call the swarm-graph `search` tool once on {repository} for its entry point, and write its answer, "
         "unchanged, as JSON to the artifact {artifact}: the `freshness` object (with `index_sha`) and the "
         "`rows` it returned. Change nothing in the repository and open no pull request.",
-        "code-intelligence.json"),
+        "code-intelligence.json", graph_record=True),
 }
 
 
@@ -515,42 +509,6 @@ class Runs(Protocol):
     def launch(self, ctx: Any, surface: str, shape: str, repository: str, label: str) -> str: ...
 
     def status(self, ctx: Any, shape: str, run_id: str) -> RunStatus: ...
-
-
-def plugin_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
-    """The environment a plugin run gets: the person's own, less anything
-    that would put the swarm CLI on a tier other than the Desktop-client
-    sign-in (lesson 18: a gcloud token is refused at IAP)."""
-    source = os.environ if environ is None else environ
-    return {k: v for k, v in source.items() if k not in NOT_FOR_PLUGIN_RUNS}
-
-
-def verify_env(tenant: str | None, environ: Mapping[str, str] | None = None) -> dict[str, str]:
-    """`plugin_env` less any address or tenant the person's shell names, with
-    the team verify picked as SWARM_TENANT."""
-    env = {k: v for k, v in plugin_env(environ).items() if k not in NOT_FOR_VERIFY_RUNS}
-    if tenant:
-        env["SWARM_TENANT"] = tenant
-    return env
-
-
-#: `run(argv, stdin, env) -> (exit code, stdout, stderr)`.
-Run = Callable[[Sequence[str], str | None, dict[str, str] | None], tuple[int, str, str]]
-
-
-def run_command(argv: Sequence[str], stdin: str | None = None,
-                env: dict[str, str] | None = None) -> tuple[int, str, str]:
-    done = subprocess.run(list(argv), input=stdin, capture_output=True, text=True, timeout=300,
-                          check=False, env=env)
-    return done.returncode, done.stdout or "", done.stderr or ""
-
-
-def run_interactive(argv: Sequence[str], stdin: str | None = None,
-                    env: dict[str, str] | None = None) -> tuple[int, str, str]:
-    """A command the person takes part in (a browser sign-in): on the
-    terminal, not captured, bounded at 15 minutes."""
-    done = subprocess.run(list(argv), timeout=15 * 60, check=False, env=env)
-    return done.returncode, "", ""
 
 
 def workflow_spec(repository: str, label: str) -> str:
@@ -581,27 +539,6 @@ def _rows(found: Any, key: str) -> list[dict[str, Any]]:
     return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
 
-def secret_from_discovery(ctx: Any) -> str:
-    """The Desktop client's secret as the new deployment's own discovery
-    document serves it (only while `discovery_serves_client_secret` is on,
-    and only beside the document's own client id), or "". The engine never
-    reads a secret's value from Secret Manager (test_switches); with "", the
-    context is added without one and `swarm login` asks the person for it."""
-    url = f"https://{ctx.state.hostname or ctx.outputs.get('hostname')}"
-    try:
-        from swarm_mcp import discovery  # the swarm_mcp wheel install.sh installs beside this one
-        from swarm_mcp.client import SwarmError
-    except ImportError:
-        return ""
-    try:
-        document = discovery.fetch(url)
-    except (SwarmError, OSError, ValueError):  # no document is "ask at sign-in", never a failed step
-        return ""
-    if document.oauth_client_id != str(ctx.outputs.get("desktop_client_id") or ""):
-        return ""
-    return document.oauth_client_secret
-
-
 @dataclass
 class SwarmCli:
     """The runs through the `swarm` CLI, as the person, signed in with the
@@ -629,8 +566,6 @@ class SwarmCli:
     swarm: str = "swarm"
     #: The person's own steps: `swarm login` and `swarm sc setup` sign in in the browser.
     interactive: Run = run_interactive
-    #: The Desktop client's secret, for `swarm context add --client-secret-stdin`; "" when unknown.
-    desktop_secret: Callable[[Any], str] = secret_from_discovery
 
     # -- the new deployment's own context ------------------------------------------
 
@@ -650,37 +585,26 @@ class SwarmCli:
         return name
 
     def target(self, ctx: Any) -> None:
-        """Write (once) and sign in to a swarm context for the new deployment,
-        named after its hostname, and pick the first team as the tenant. The
-        person's current context is never switched (`context add` without
-        `--use`), and a context of that name pointing elsewhere is never
-        rewritten: the engine's is then `<hostname>-install`."""
-        hostname = str(ctx.state.hostname or ctx.outputs.get("hostname") or "")
-        client_id = str(ctx.outputs.get("desktop_client_id") or "")
-        if not hostname or not client_id:
-            raise LookupError("the hostname and the Desktop client id are recorded by stages 0 and 6")
-        url = f"https://{hostname}"
-        listed = json.loads(self._bare(ctx, ["context", "list", "--json"]) or "{}")
-        rows = {str(row.get("name")): row for row in _rows(listed, "contexts")}
-        name = hostname
-        if name in rows and str(rows[name].get("url") or "").rstrip("/") != url:
-            name = f"{hostname}-install"
-            if name in rows and str(rows[name].get("url") or "").rstrip("/") != url:
-                raise RuntimeError(f"swarm contexts {hostname} and {name} both point elsewhere; "
-                                   f"neither is rewritten (swarm context list)")
-        row = rows.get(name)
-        if row is None:
-            secret = self.desktop_secret(ctx)
-            self._bare(ctx, ["context", "add", name, f"--url={url}", f"--client-id={client_id}",
-                             *(["--client-secret-stdin"] if secret else [])], secret + "\n" if secret else None)
-            row = {"signed_in": False}
+        """Sign in (once) to the swarm context `edge.desktop-client` wrote for
+        the new deployment, with the Desktop client's secret already in the
+        credential store (`swarm_context.store_desktop_secret`), and pick the
+        first team as the tenant. Verify never needs the secret: it writes no
+        context, and the person's current context is never switched."""
+        url = deployment_url(ctx)
+        name = str(ctx.outputs.get("verify_context") or "")
+        if not url or not name:
+            raise LookupError("edge.desktop-client (stage 2) writes the swarm context for the new deployment, "
+                              "with the Desktop client's secret, and records it as verify_context")
+        row = list_contexts(self.run, self.swarm, self._env(ctx)).get(name)
+        if row is None or not points_at(row, url):
+            raise LookupError(f"swarm context {name} for {url} is not on this machine; edge.desktop-client "
+                              f"writes it again, its secret typed at a hidden prompt: swarm install --resume")
         if row.get("signed_in") is not True:
             ctx.events.emit("step_apply", step="verify.end-to-end",
                             message=f"sign in to {url} in the browser that opens (swarm --context {name} login)")
             code, _, err = self.interactive([self.swarm, "--context", name, "login"], None, self._env(ctx))
             if code != 0:
                 raise RuntimeError(f"swarm --context {name} login failed: {err.strip()[:300]}")
-        remember(ctx, outputs={"verify_context": name})
         tenants = json.loads(self._bare(ctx, ["--context", name, "tenants", "--json"]) or "{}")
         ids = [str(row.get("tenant_id") or "") for row in _rows(tenants, "tenants")]
         tenant = str(tenants.get("current") or "") if isinstance(tenants, dict) else ""
@@ -746,6 +670,17 @@ class SwarmCli:
             raise RuntimeError(f"swarm {'workflow' if shape == 'workflow' else 'dispatch'} returned no id")
         return run_id
 
+    def index_commit(self, ctx: Any) -> str:
+        """The commit the new deployment's code graph records for
+        `verify_repository` (`swarm graph-index --json`: the graph-cache
+        route's `index.commit_sha`), or "" when it records no index."""
+        repository = str(ctx.outputs.get("verify_repository") or "")
+        if not repository:
+            return ""
+        found = self._json(ctx, ["graph-index", repository, "--json"], ok=(0, 1))
+        index = found.get("index")
+        return str(index.get("commit_sha") or "") if isinstance(index, dict) else ""
+
     def status(self, ctx: Any, shape: str, run_id: str) -> RunStatus:
         if shape == "workflow":
             # Exit 1 with `state: null` is "not derived on this read": still going.
@@ -775,7 +710,8 @@ class SwarmCli:
                 code, out, _ = self.run([self.swarm, "--context", self._context(ctx), "artifact", run_id,
                                          check.artifact], None, self._env(ctx))
                 artifact = out if code == 0 else None
-            return RunStatus(state, "", used, profile, artifact)
+            index_commit = self.index_commit(ctx) if check.graph_record else ""
+            return RunStatus(state, "", used, profile, artifact, index_commit)
         pull = ((summary.get("git") or {}).get("pull_request") or {})
         return RunStatus(state, str(pull.get("url") or "") if isinstance(pull, dict) else "", used)
 
@@ -848,10 +784,15 @@ def check_proof(key: str, run_id: str, check: CheckRun, found: RunStatus, seen: 
         if not _COMMIT.fullmatch(sha):
             return "", (f"{named}: {repository} is not indexed (no 40-hex commit in freshness.index_sha "
                         f"of {check.artifact})")
+        if check.graph_record and not found.index_commit:
+            return "", f"{named}: the code graph records no index for {repository} (swarm graph-index)"
+        if check.graph_record and sha != found.index_commit:
+            return "", (f"{named}: freshness.index_sha {sha[:12]} is not the commit the code graph records "
+                        f"for {repository} ({found.index_commit[:12]})")
         rows = answer.get("rows")
         if not isinstance(rows, list) or not rows:
             return "", f"{named}: the code graph answered no symbol for {repository}"
-        proof.append(f"index {sha[:12]}, {len(rows)} symbols")
+        proof.append(f"index {sha[:12]}, the graph's own record, {len(rows)} symbols")
     return "; ".join(proof) or "succeeded", ""
 
 

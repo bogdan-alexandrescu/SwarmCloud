@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import dataclasses
 import io
 import json
 import secrets
@@ -26,6 +27,7 @@ import pytest
 
 from swarm_install.exitcodes import MET, UNMET, WAITING, ExitCode
 from swarm_install.record import InstallRecord, engine_document
+from swarm_install import swarm_context
 from swarm_install.steps import cluster, verify
 from swarm_install.steps.preflight import RELEASE_HOME
 
@@ -200,6 +202,7 @@ HOSTNAME = "swarm.acme.example"
 TEAM = "eng"
 #: The code graph's indexed commit, made at runtime.
 INDEX_SHA = secrets.token_hex(20)
+REPO_ID = "repo_" + secrets.token_hex(8)
 CONSOLE = {"console_task": "t-console-single", "console_workflow": "t-console-workflow"}
 PLUGIN_KEYS = [f"plugin-{k}" for s, k in verify.RUNS if s == "plugin"]
 CHECK_KEYS = [f"plugin-{k}" for k in verify.CHECK_SHAPES]
@@ -239,14 +242,15 @@ class FakeRuns:
         return self.states.get(run_id, verify.RunStatus("running"))
 
     def finish(self, run_id: str, *, pr: str | None = None, kind: str = "app_installation",
-               artifact: str | None = None, profile: str | None = None) -> None:
+               artifact: str | None = None, profile: str | None = None, index_commit: str = INDEX_SHA) -> None:
         used = verify.credential_use(run_id, {"forge_credential": {"kind": kind, "source": TENANT_GIT}})
         shape = run_id.split("-", 2)[2]
         check = verify.CHECK_RUNS.get(shape)
         if check is not None:
             self.states[run_id] = verify.RunStatus(
                 "succeeded", "", (used,), profile or check.profile,
-                artifact if artifact is not None else check_artifact(shape))
+                artifact if artifact is not None else check_artifact(shape),
+                index_commit if check.graph_record else "")
             return
         url = pr if pr is not None else f"https://github.com/{REPO}/pull/{len(run_id)}"
         self.states[run_id] = verify.RunStatus("succeeded", url, (used,))
@@ -440,7 +444,7 @@ def test_check_runs_pick_their_profiles_from_the_frozen_catalogue() -> None:
     assert RUNNER_PROFILES[gke.profile].backend == Backend.GKE_AUTOPILOT and gke.on_cluster
     assert browser.profile == "claude-code-browser" and RUNNER_PROFILES[browser.profile].live_browser
     assert browser.live and browser.on_cluster
-    assert graph.artifact == "code-intelligence.json" and "swarm-graph" in graph.prompt
+    assert graph.artifact == "code-intelligence.json" and "swarm-graph" in graph.prompt and graph.graph_record
     assert verify.TOTAL == len(verify.QUICK_CHECKS) + 7
 
 
@@ -487,6 +491,8 @@ def test_a_finished_jobs_sighting_is_kept_past_its_ttl() -> None:
     ("plugin-code-intelligence", "made-up commit", "no 40-hex commit"),
     ("plugin-code-intelligence", "no symbol", "answered no symbol"),
     ("plugin-code-intelligence", "no artifact", "left no code-intelligence.json"),
+    ("plugin-code-intelligence", "graph disagrees", "is not the commit the code graph records"),
+    ("plugin-code-intelligence", "graph records none", "records no index"),
     ("plugin-gke", "other profile", "not claude-code"),
 ])
 def test_a_check_run_without_its_proof_fails_naming_it(key: str, breaks: str, said: str) -> None:
@@ -509,6 +515,10 @@ def test_a_check_run_without_its_proof_fails_naming_it(key: str, breaks: str, sa
     elif breaks == "no artifact":
         step.runs.states[run_id] = verify.RunStatus(
             "succeeded", "", step.runs.states[run_id].credentials, "claude-code", None)
+    elif breaks == "graph disagrees":
+        step.runs.finish(run_id, index_commit=secrets.token_hex(20))
+    elif breaks == "graph records none":
+        step.runs.finish(run_id, index_commit="")
     elif breaks == "other profile":
         step.runs.finish(run_id, profile="claude-code-large")
     observed = step.check(ctx)
@@ -539,6 +549,12 @@ class FakeSwarmApi:
         self.posted: list[dict[str, Any]] = []
         self.dispatched: list[dict[str, Any]] = []
         self.artifacts: dict[tuple[str, str], str] = {}
+        #: The graph-cache route's `index`, by repo_id; None is "no index".
+        self.indexes: dict[str, dict[str, Any] | None] = {REPO_ID: {"commit_sha": INDEX_SHA,
+                                                                   "manifest_digest": "sha256:" + "0" * 64}}
+
+    def registration(self, owner: str, repo: str) -> dict[str, Any] | None:
+        return {"repo_id": REPO_ID, "owner": owner, "repo": repo} if f"{owner}/{repo}" == REPO else None
 
     def task(self, task_id: str) -> dict[str, Any]:
         return self.tasks[task_id]
@@ -565,6 +581,9 @@ class FakeSwarmApi:
             return self.workflows["wf_1"]
         if method == "GET" and path.startswith("/v1/workflows/"):
             return self.workflows[path.rsplit("/", 1)[-1]]
+        if method == "GET" and path.startswith("/v1/repositories/") and path.endswith("/graph-cache"):
+            repo_id = path.split("/")[3]
+            return {"repo_id": repo_id, "index": self.indexes.get(repo_id), "facts": None, "replicas": []}
         raise AssertionError(f"the CLI made a call this test does not expect: {method} {path}")
 
 
@@ -645,7 +664,7 @@ def test_plugin_run_signs_in_with_desktop_client_not_gcloud_token(monkeypatch: p
     """Lesson 18: IAP refuses a gcloud user token. The plugin's runs go through
     the swarm CLI with every tier-forcing variable removed, so it signs in with
     the deployment's Desktop client; the engine never mints or passes a token."""
-    for name in verify.NOT_FOR_PLUGIN_RUNS:
+    for name in swarm_context.NOT_FOR_PLUGIN_RUNS:
         monkeypatch.setenv(name, secrets.token_hex(8))
     monkeypatch.setenv("HOME", "/home/person")
     calls: list[tuple[list[str], str | None, dict[str, str] | None]] = []
@@ -663,10 +682,10 @@ def test_plugin_run_signs_in_with_desktop_client_not_gcloud_token(monkeypatch: p
     for argv, _, env in calls:
         assert argv[0] == "swarm"
         assert env is not None and env["HOME"] == "/home/person"
-        assert not set(verify.NOT_FOR_PLUGIN_RUNS) & set(env)
+        assert not set(swarm_context.NOT_FOR_PLUGIN_RUNS) & set(env)
         for word in ("gcloud", "print-identity-token", "print-access-token", "--token", "--id-token"):
             assert not any(word in a for a in argv)
-    assert "SWARM_ID_TOKEN" in verify.NOT_FOR_PLUGIN_RUNS and "SWARM_IMPERSONATE_SA" in verify.NOT_FOR_PLUGIN_RUNS
+    assert "SWARM_ID_TOKEN" in swarm_context.NOT_FOR_PLUGIN_RUNS and "SWARM_IMPERSONATE_SA" in swarm_context.NOT_FOR_PLUGIN_RUNS
 
 
 # -- the new deployment, never the person's current context -------------------------
@@ -740,29 +759,41 @@ def _target_ctx(**outputs: Any) -> Any:
     return ctx
 
 
+def _stored(swarm: "FakeSwarm", ctx: Any) -> tuple[str, str]:
+    """What edge.desktop-client (stage 2) leaves: the context for the new
+    deployment, the typed secret in its credential store, `verify_context`."""
+    secret = "GOCSPX-" + secrets.token_hex(12)
+    name = swarm_context.store_desktop_secret(ctx, secret.encode(), run=swarm)
+    ctx.outputs["verify_context"] = name
+    return name, secret
+
+
 def test_verify_targets_the_new_deployment_not_the_current_context(monkeypatch: pytest.MonkeyPatch) -> None:
     """On the owner's laptop the current swarm context is the live deployment.
-    Verify writes its own context, named after the new hostname, signs the
-    person in to it in the browser, and sends every run there as the first
-    team; the current context and the context it found are left untouched,
-    and no address or tenant from the environment reaches a run."""
+    Verify signs the person in to the engine's own context, named after the
+    new hostname and written at stage 2 with the Desktop secret, and sends
+    every run there as the first team; the current context and the context it
+    found are left untouched, and no address or tenant from the environment
+    reaches a run."""
     for name in ("SWARM_URL", "SWARM_CONTEXT", "SWARM_API_URL", "SWARM_TENANT"):
         monkeypatch.setenv(name, "https://swarm.live.example" if "URL" in name else "live")
-    secret = secrets.token_hex(16)
     swarm = FakeSwarm({"live": LIVE}, "live")
-    read: list[str] = []
-    cli = verify.SwarmCli(Answers(), run=swarm, interactive=swarm,
-                          desktop_secret=lambda ctx: read.append(ctx.project) or secret)
     ctx = _target_ctx()
+    name, secret = _stored(swarm, ctx)
+    assert name == HOSTNAME and swarm.secrets[HOSTNAME] == secret
+    stored_at = len(swarm.calls)
+    cli = verify.SwarmCli(Answers(), run=swarm, interactive=swarm)
     cli.target(ctx)
 
     assert ctx.outputs["verify_context"] == HOSTNAME and ctx.outputs["verify_tenant"] == TEAM
     assert swarm.current == "live" and swarm.contexts["live"] == LIVE
     assert swarm.contexts[HOSTNAME] == {"url": f"https://{HOSTNAME}", "oauth_client_id": CLIENT_ID,
                                         "signed_in": True}
-    assert swarm.secrets[HOSTNAME] == secret and read == [PROJECT]
     assert not any(secret in a for argv, _, _ in swarm.calls for a in argv)
-    assert ["swarm", "--context", HOSTNAME, "login"] in [argv for argv, _, _ in swarm.calls]
+    verify_calls = [(argv, stdin) for argv, stdin, _ in swarm.calls[stored_at:]]
+    assert not [argv for argv, _ in verify_calls if argv[1:3] == ["context", "add"]], "verify writes no context"
+    assert all(stdin is None for _, stdin in verify_calls), "verify never handles the secret"
+    assert ["swarm", "--context", HOSTNAME, "login"] in [argv for argv, _ in verify_calls]
     assert not any("use" in argv[1:3] or "remove" in argv[1:3] for argv, _, _ in swarm.calls)
 
     assert cli.launch(ctx, "plugin", "single", REPO, "v-1") == "task_0123456789abcdef0123"
@@ -780,54 +811,32 @@ def test_verify_targets_the_new_deployment_not_the_current_context(monkeypatch: 
 def test_a_context_with_the_name_and_another_address_is_never_rewritten() -> None:
     other = {"url": "https://elsewhere.example", "oauth_client_id": "", "signed_in": False}
     swarm = FakeSwarm({HOSTNAME: other}, HOSTNAME)
-    cli = verify.SwarmCli(Answers(), run=swarm, interactive=swarm, desktop_secret=lambda ctx: secrets.token_hex(8))
     ctx = _target_ctx()
-    cli.target(ctx)
+    _stored(swarm, ctx)
+    verify.SwarmCli(Answers(), run=swarm, interactive=swarm).target(ctx)
     assert swarm.contexts[HOSTNAME] == other and swarm.current == HOSTNAME
     assert ctx.outputs["verify_context"] == f"{HOSTNAME}-install"
     assert swarm.contexts[f"{HOSTNAME}-install"]["url"] == f"https://{HOSTNAME}"
 
 
-def test_the_desktop_secret_comes_from_the_deployment_never_secret_manager(
-        monkeypatch: pytest.MonkeyPatch) -> None:
-    """The engine never reads a secret's value from Secret Manager
-    (test_switches). The Desktop client's secret is the one the new
-    deployment's discovery document serves beside its own client id; with
-    none served, the context is added without one and `swarm login` asks."""
-    from swarm_mcp import discovery
-
-    secret = secrets.token_hex(16)
-    served: dict[str, Any] = {"oauth_client_id": CLIENT_ID, "oauth_client_secret": secret}
-    fetched: list[str] = []
-
-    def fetch(url: str, **kw: Any) -> Any:
-        fetched.append(url)
-        if not served:
-            raise discovery.DiscoveryUnreachable("no document")
-        return discovery.Document(url=url, version="1.0.0", **served)
-
-    monkeypatch.setattr(discovery, "fetch", fetch)
-    ctx = _target_ctx()
-    assert verify.secret_from_discovery(ctx) == secret and fetched == [f"https://{HOSTNAME}"]
-    served["oauth_client_id"] = "another-client.apps.googleusercontent.com"
-    assert verify.secret_from_discovery(ctx) == ""
-    served.clear()
-    assert verify.secret_from_discovery(ctx) == ""
-
+def test_verify_never_needs_the_desktop_secret() -> None:
+    """Owner pick store-at-stage-6: the secret is in the swarm credential
+    store from edge.desktop-client, typed once at its hidden prompt. Verify
+    reads it from nowhere (not Secret Manager, not the discovery document)
+    and writes no context; without the stage-2 context it stops, naming it."""
+    assert not hasattr(verify, "secret_from_discovery")
+    assert "desktop_secret" not in {f.name for f in dataclasses.fields(verify.SwarmCli)}
     swarm = FakeSwarm({}, None)
-    added: list[list[str]] = []
-
-    def run(argv: Sequence[str], stdin: str | None, env: dict[str, str] | None) -> tuple[int, str, str]:
-        if list(argv[1:3]) == ["context", "add"]:
-            added.append(list(argv))
-            assert "--client-secret-stdin" not in argv and stdin is None
-            swarm.contexts[argv[3]] = {"url": f"https://{HOSTNAME}", "oauth_client_id": CLIENT_ID,
-                                      "signed_in": False}
-            return 0, "", ""
-        return swarm(argv, stdin, env)
-
-    verify.SwarmCli(Answers(), run=run, interactive=swarm).target(ctx)
-    assert len(added) == 1 and swarm.contexts[HOSTNAME]["signed_in"] is True
+    cli = verify.SwarmCli(Answers(), run=swarm, interactive=swarm)
+    with pytest.raises(LookupError, match="edge.desktop-client"):
+        cli.target(_target_ctx())
+    with pytest.raises(LookupError, match="not on this machine"):
+        cli.target(_target_ctx(verify_context=HOSTNAME))
+    moved = {"url": "https://elsewhere.example", "oauth_client_id": CLIENT_ID, "signed_in": True}
+    swarm.contexts[HOSTNAME] = moved
+    with pytest.raises(LookupError, match="not on this machine"):
+        cli.target(_target_ctx(verify_context=HOSTNAME))
+    assert not [argv for argv, _, _ in swarm.calls if argv[1:3] == ["context", "add"] or "login" in argv]
 
 
 def test_repository_from_the_app_installation_never_asked() -> None:
@@ -872,7 +881,7 @@ def test_check_runs_launch_and_finish_as_the_real_cli_prints(monkeypatch: pytest
     through `swarm artifact`."""
     api = FakeSwarmApi()
     cli = verify.SwarmCli(Answers(), run=real_swarm(api, monkeypatch))
-    ctx = _ctx(verify_context=HOSTNAME, verify_tenant=TEAM)
+    ctx = _ctx(verify_context=HOSTNAME, verify_tenant=TEAM, verify_repository=REPO)
     assert cli.launch(ctx, "plugin", "single", REPO, "v-1") == "t-single"
     browser = cli.launch(ctx, "plugin", "browser", REPO, "v-b")
     graph = cli.launch(ctx, "plugin", "code-intelligence", REPO, "v-c")
@@ -890,6 +899,11 @@ def test_check_runs_launch_and_finish_as_the_real_cli_prints(monkeypatch: pytest
         check_artifact("browser"))
     found = cli.status(ctx, "code-intelligence", graph)
     assert found.artifact == check_artifact("code-intelligence") and found.profile == "claude-code"
+    # The graph's own record, through `swarm graph-index` (the graph-cache route), not the agent's answer.
+    assert found.index_commit == INDEX_SHA
+    api.indexes[REPO_ID] = None
+    assert cli.status(ctx, "code-intelligence", graph).index_commit == ""
+    assert cli.status(ctx, "browser", browser).index_commit == ""
     del api.artifacts[(graph, "code-intelligence.json")]
     assert cli.status(ctx, "code-intelligence", graph).artifact is None
 
