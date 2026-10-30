@@ -343,6 +343,11 @@ def bootstrap_inputs(state: Any, *, pass_name: str, installer: str) -> dict[str,
         "grant_broker_secret_lister": second,
         "swarm_workers_log_view_exists": second,
         "enable_github_wif": False,
+        # The deployer without the GitHub pool: every pass after bootstrap-1
+        # runs as it (N2), and the installer may mint its tokens (N3), on the
+        # deployer alone; `swarm uninstall` removes exactly this grant.
+        "enable_deployer": True,
+        "deployer_impersonator": f"user:{installer}",
         "ci_fix_service_account": "",
         "frontend_iap_members": iap_members(state, installer),
         # The live-browser QA identity; its account is in frontend_iap_members.

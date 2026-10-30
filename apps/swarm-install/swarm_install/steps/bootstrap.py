@@ -4,7 +4,14 @@ shares (design §4, §5; plan R7, R8; lessons 7-12, 22, 23).
 | Step | Pass | Manifest entries |
 |---|---|---|
 | `bootstrap.pass-1` | `bootstrap-1`, as the person | `other.engine-terraform-rules` |
-| `bootstrap.pass-2` | `bootstrap-2`, as the deployer (run in stage 7, from `infra.py`) | the IAP programmatic client on the two IAP backends, the log view grant |
+| `bootstrap.pass-2` | `bootstrap-2`, as the person (run in stage 7, from `infra.py`) | the IAP programmatic client on the two IAP backends, the log view grant |
+
+**Both bootstrap passes run as the person** (`terraform.AS_PERSON`). Pass 1
+creates the deployer and grants the person roles/iam.serviceAccountTokenCreator
+on it (`deployer_impersonator`); the step then polls generateAccessToken until
+that grant has spread, so the next pass, the first one run as the deployer,
+does not fail on a grant IAM has not propagated yet. Pass 2 applies IAP
+membership, which the deployer by design cannot (it holds no iap.admin).
 
 **The release's module.** `releases/<V>/module.tgz` is fetched from the
 release home, its SHA-256 compared with `SHA256SUMS`, and `SHA256SUMS` itself
@@ -33,6 +40,7 @@ import hashlib
 import json
 import os
 import tarfile
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,13 +51,24 @@ from ..adopt import InstallGcp
 from ..api_client import deployer_email
 from ..exitcodes import MET, UNMET
 from ..state import state_bucket
-from ..terraform import Exec, Guards, Terraform, TerraformRefused, run_pass, subprocess_exec
+from ..terraform import AS_PERSON, Exec, Guards, Terraform, TerraformRefused, run_pass, subprocess_exec
 from . import Observation, Plan
 from .preflight import RELEASE_HOME, parse_sums
 
 #: The cosign public key of `swarmcloud-release/cosign`, printed by BGD's run
 #: of `scripts/release-home.sh` (its last step) and committed beside this file.
 RELEASE_KEY = Path(__file__).resolve().parent.parent / "release_key.pub"
+
+#: How long bootstrap pass 1 waits for its token-creator grant to reach
+#: generateAccessToken. IAM says a grant usually takes effect within two
+#: minutes and can take seven or more; ten minutes covers that with room.
+IMPERSONATION_WAIT_S = 600.0
+#: The pause between two generateAccessToken attempts while it waits.
+IMPERSONATION_POLL_S = 10.0
+#: The output bootstrap pass 1 records once the person can mint the deployer's tokens.
+IMPERSONABLE_KEY = "deployer_impersonable"
+
+_CLOUD_PLATFORM = "https://www.googleapis.com/auth/cloud-platform"
 
 #: The platform accounts the deployer must be able to act as (lesson 23).
 PLATFORM_ACCOUNTS = ("swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler", "swarm-verify")
@@ -138,6 +157,32 @@ def _impersonated(email: str) -> InstallGcp:
     return InstallGcp(AuthorizedSession(target))
 
 
+def can_mint_token(email: str) -> bool:
+    """generateAccessToken on `email`, as the person, answers with a token.
+
+    The token is discarded; only whether IAM issued one matters. A refusal
+    (403 while the grant spreads) or a transport failure is False, so the
+    caller polls again; missing application-default credentials raise.
+    """
+    import google.auth
+    from google.auth import exceptions, impersonated_credentials
+    from google.auth.transport.requests import Request
+
+    source, _ = google.auth.default(scopes=[_CLOUD_PLATFORM])
+    target = impersonated_credentials.Credentials(
+        source_credentials=source, target_principal=email, target_scopes=[_CLOUD_PLATFORM], lifetime=300,
+    )
+    try:
+        target.refresh(Request())
+    except (exceptions.RefreshError, exceptions.TransportError):
+        return False
+    return True
+
+
+class ImpersonationPending(RuntimeError):
+    """The person still cannot mint the deployer's tokens after the wait."""
+
+
 def account(name: str, project: str) -> str:
     return f"{name}@{project}.iam.gserviceaccount.com"
 
@@ -185,6 +230,9 @@ class Deps:
     release: Release | None = None
     confirm: Callable[[str], str] = field(default=lambda prompt: _confirm_typed(prompt))
     root_dir: Callable[[Any, str], Path] | None = None
+    mint_token: Callable[[str], bool] = can_mint_token
+    sleep: Callable[[float], None] = time.sleep
+    monotonic: Callable[[], float] = time.monotonic
 
     def module_root(self, ctx: Any, root: str) -> Path:
         if self.root_dir is not None:
@@ -311,7 +359,7 @@ class PassStep:
 
     def plan(self, ctx: Any) -> Plan:
         root = tfvars.ROOT_OF[self.pass_name]
-        who = "you" if self.pass_name == "bootstrap-1" else deployer_email(ctx.project)
+        who = "you" if self.pass_name in AS_PERSON else deployer_email(ctx.project)
         actions = [f"write the generated inputs to gs://{state_bucket(ctx.project)}/{tfvars.object_name(root)}",
                    f"terraform init, plan and apply {root} as {who}"]
         if self.targets:
@@ -325,8 +373,9 @@ class PassStep:
 class BootstrapPass1Step(PassStep):
     pass_name = "bootstrap-1"
     _explain = (
-        "Bootstrap makes the custom roles, the deployer and the spec-signing key infra needs (lesson 8). It is "
-        "the one apply that runs as you; every later one runs as swarm-tf-deployer (lessons 22, 23). Its "
+        "Bootstrap makes the custom roles, the deployer and the spec-signing key infra needs (lesson 8), and "
+        "lets you impersonate the deployer: it runs as you, and every infra pass after it runs as "
+        "swarm-tf-deployer (lessons 22, 23), so it waits until Google issues you the deployer's token. Its "
         "state is in the state bucket from the first run, and an empty state is refused while the deployer "
         "exists (lesson 7)."
     )
@@ -338,7 +387,10 @@ class BootstrapPass1Step(PassStep):
     def check(self, ctx: Any) -> Observation:
         if self.deps.gcp().service_account(deployer_email(ctx.project)) is None:
             return Observation(UNMET, f"{deployer_email(ctx.project)} does not exist yet")
-        return super().check(ctx)
+        seen = super().check(ctx)
+        if seen.status == MET and not ctx.outputs.get(IMPERSONABLE_KEY) and not superseded(ctx, self.pass_name):
+            return Observation(UNMET, f"you cannot impersonate {deployer_email(ctx.project)} yet")
+        return seen
 
     def apply(self, ctx: Any, plan: Plan) -> None:
         gcp = self.deps.gcp()
@@ -358,7 +410,36 @@ class BootstrapPass1Step(PassStep):
                     "held for 37 days and cannot be undeleted or reused. Wait, or install into a new project"
                 )
 
-        apply_pass(ctx, self.deps, self.pass_name, before_plan=adopt_first)
+        if self._pending(ctx) is not None:
+            apply_pass(ctx, self.deps, self.pass_name, before_plan=adopt_first)
+        await_impersonation(ctx, self.deps, deployer_email(ctx.project), step=self.id)
+
+
+def await_impersonation(ctx: Any, deps: Deps, deployer: str, *, step: str) -> None:
+    """Poll generateAccessToken on the deployer until the person's grant has spread (N3).
+
+    Bootstrap pass 1 grants it; IAM propagates a grant in minutes, not at once,
+    and the next pass, the first run as the deployer, would otherwise fail on
+    a grant that is already made.
+    """
+    from .preflight import remember
+
+    deadline = deps.monotonic() + IMPERSONATION_WAIT_S
+    waiting = False
+    while not deps.mint_token(deployer):
+        if deps.monotonic() >= deadline:
+            raise ImpersonationPending(
+                f"bootstrap pass 1 granted you roles/iam.serviceAccountTokenCreator on {deployer}, but Google "
+                f"still refuses you its token after {int(IMPERSONATION_WAIT_S) // 60} minutes; run swarm install "
+                "again to keep waiting"
+            )
+        if not waiting:
+            ctx.events.emit("step_apply", step=step,
+                            message=f"waiting for your token-creator grant on {deployer} to take effect")
+            waiting = True
+        deps.sleep(IMPERSONATION_POLL_S)
+    ctx.events.emit("step_apply", step=step, message=f"you can impersonate {deployer}")
+    remember(ctx, outputs={IMPERSONABLE_KEY: True})
 
 
 def _swarm_roles(gcp: Any, project: str) -> list[str]:
@@ -372,7 +453,8 @@ class BootstrapPass2Step(PassStep):
     _explain = (
         "The second bootstrap pass grants what needs infra's accounts and log view, and lets IAP admit the "
         "deployment's own Desktop client for programmatic sign-in on the backends infra pass 1 made; it runs "
-        "after infra pass 2, as the deployer."
+        "after infra pass 2, as you, because IAP membership is applied by the owner and the deployer holds no "
+        "iap.admin."
     )
 
     def __init__(self, deps: Deps) -> None:
