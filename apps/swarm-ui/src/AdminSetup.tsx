@@ -137,7 +137,7 @@ export function stripSteps(state: SetupState): StripStep[] {
   ]
 }
 
-function Mark({ state }: { state: StepState }) {
+function StepMark({ state }: { state: StepState }) {
   return (
     <svg className="cfg-mark" viewBox="0 0 20 20" aria-hidden>
       <circle cx={10} cy={10} r={8.5} />
@@ -173,7 +173,7 @@ export function SetupStrip({ state }: { state: SetupState }) {
       <ol className="cfg-steps" style={{ ['--cfg-n' as string]: steps.length }}>
         {steps.map((s, i) => (
           <li key={s.key} data-step={s.key} className={`cfg-step ${STRIP_CLASS[s.state]}${s === next ? ' is-next' : ''}`}>
-            <Mark state={s.state} />
+            <StepMark state={s.state} />
             <div className="cfg-step-main">
               <b>
                 {i + 1}. {s.label}

@@ -326,7 +326,26 @@ const NAV_CHROME_HAIRLINES: Exemption = {
     f.kind === 'divider-under-floor' && classesOf(f).some((c) => NAV_CHROME_HAIRLINE_CLASSES.includes(c)),
 }
 
-const EXEMPTIONS: readonly Exemption[] = [APP_FRAME, NAV_CHROME_HAIRLINES]
+/**
+ * THE BAD BANNER'S HAIRLINE ON DARK: a measurement the probe gets wrong, not
+ * a border that is faint. `.c-banner.is-bad` draws `color-mix(in srgb,
+ * var(--s-bad) 35%, transparent)`; CSS Color 5 premultiplies, interpolates
+ * and un-premultiplies, so the border is #ff8a80 at 0.35 alpha, about 1.97:1
+ * on the dark page (rgb 12 26 46), over the 1.15 hairline floor. The probe's
+ * `colour()` leaves the mix premultiplied (rgba 89 48 45 / 0.35) and then
+ * composites the alpha a second time, which reads 1.12. Admin › Health
+ * (DAYONE-SETUP-UI-23) is the first swept route to draw a bad banner: its
+ * fixture's doctor run has a finding. Exactly that selector, and only its
+ * divider contrast; correcting `colour()` moves every swept colour-mix
+ * border, so it is its own change.
+ */
+const BAD_BANNER_HAIRLINE: Exemption = {
+  name: 'bad banner hairline',
+  why: "the probe composites color-mix(..., transparent)'s alpha twice; the drawn border is 1.97:1",
+  matches: (f) => f.kind === 'divider-under-floor' && f.where === 'div.c-banner.is-bad',
+}
+
+const EXEMPTIONS: readonly Exemption[] = [APP_FRAME, NAV_CHROME_HAIRLINES, BAD_BANNER_HAIRLINE]
 
 function lines(r: Report): string[] {
   return r.findings
