@@ -86,10 +86,12 @@ HELP = "install SwarmCloud into a Google Cloud project, or resume one (--status:
 DEFAULT_ENV = "prod"
 
 #: The marketplace a teammate adds (plan §6.4, D28), printed on the ready screen:
-#: the stable one at the bucket root; another channel's under `channels/<channel>/`
-#: (N10), so an rc deployment's teammates get the rc's plugin.
+#: the stable one at the bucket root; another channel's beside its channel line,
+#: `channels/<channel>.marketplace.json` (N10), so an rc deployment's teammates
+#: get the rc's plugin. Never under a `channels/<channel>/` prefix: that makes
+#: gcloud storage copy the channel line into it (audit 3, A5).
 PLUGIN_MARKETPLACE = "https://storage.googleapis.com/swarmcloud/marketplace.json"
-CHANNEL_MARKETPLACE = "https://storage.googleapis.com/swarmcloud/channels/{channel}/marketplace.json"
+CHANNEL_MARKETPLACE = "https://storage.googleapis.com/swarmcloud/channels/{channel}.marketplace.json"
 
 #: The step whose apply creates Firestore: once it is done the install record exists.
 RECORD_STEP = "infra.pass-1"

@@ -7,7 +7,10 @@ install` (DAYONE-INSTALL-SH; part of #2688).
   which file changed.
 * SWARM_CHANNEL picks `channels/<channel>`: `stable` by default, `rc` allowed,
   anything else refused before anything is fetched (decision 5).
-* The last line printed is exactly `Next: swarm install`.
+* The last line printed is exactly `Next: swarm install` when this terminal
+  finds `swarm`; when it does not (no writable directory of the person's own on
+  PATH: macOS zsh's default), it names the path installed, `Next:
+  ~/.local/bin/swarm install`, which works in the same terminal (audit 3, A9).
 
 No network: a fake `curl` serves the release home from a directory, a fake
 `uv` records its calls and puts `swarm` and `sc` where uv would, and HOME is a
@@ -34,6 +37,9 @@ STABLE = "2026.10.1"
 RC = "2026.11.1-rc.2"
 DISTS = ("swarm_mcp", "swarm_install", "swarm_common", "swarm_redaction")
 NEXT = "Next: swarm install"
+#: The last line when this terminal's PATH does not find swarm: uv's default
+#: tool bin directory, under HOME, named so the same terminal can type it.
+NEXT_BY_PATH = "Next: ~/.local/bin/swarm install"
 
 FAKE_CURL = r'''#!{python}
 """A fake curl: serves https://<host>/<path> from FAKE_ROOT/<host>/<path>."""
@@ -169,7 +175,7 @@ def test_rc_line_is_written_once_however_often_it_runs(tmp_path: Path) -> None:
     for _ in range(3):
         proc, _, _ = _run(tmp_path, env)
         assert proc.returncode == 0, proc.stderr
-        assert _last_line(proc) == NEXT
+        assert _last_line(proc) == NEXT_BY_PATH
     text = rc.read_text()
     assert text.startswith("# the person's own settings\nalias ll='ls -l'\n"), "the person's lines are kept"
     assert len(_path_lines(rc, Path(env["HOME"]) / ".local" / "bin")) == 1, text
@@ -232,7 +238,7 @@ def test_swarm_channel_rc_installs_the_release_candidate(tmp_path: Path) -> None
     assert f"https://{HOME_URL}/releases/{RC}/SHA256SUMS" in urls
     (call,) = calls
     assert any("swarm_mcp-2026.11.1rc2-py3-none-any.whl" in arg for arg in call)
-    assert _last_line(proc) == NEXT
+    assert _last_line(proc) == NEXT_BY_PATH
 
 
 @pytest.mark.parametrize("channel", ["beta", "Stable", "../stable", "rc/x", ""])
@@ -264,8 +270,82 @@ def test_a_wheel_that_does_not_match_still_installs_nothing(tmp_path: Path) -> N
 
 def test_last_line_is_exactly_next_swarm_install(tmp_path: Path) -> None:
     env = _sandbox(tmp_path)
+    env["PATH"] = f"{env['PATH']}{os.pathsep}{Path(env['HOME']) / '.local' / 'bin'}"
     proc, _, _ = _run(tmp_path, env)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout == ""
     assert _last_line(proc) == NEXT
     assert "--project" not in proc.stderr and "<" not in proc.stderr, "no flags, no placeholders"
+
+
+def _runs_in_this_terminal(env: dict[str, str], line: str) -> str:
+    """What the person's own shell finds for the command `line` names, with
+    the PATH they typed `curl | sh` in (the rc file is not read again)."""
+    command = line.removeprefix("Next: ").removesuffix(" install")
+    probe = subprocess.run(["sh", "-c", f"command -v {command}"],
+                           env={"PATH": env["PATH"], "HOME": env["HOME"]},
+                           capture_output=True, text=True, check=False)
+    return probe.stdout.strip()
+
+
+@pytest.mark.parametrize(("shell", "system"), [("/bin/zsh", "Darwin"), ("/bin/bash", "Linux")])
+def test_swarm_not_on_this_terminals_path_names_the_installed_path(tmp_path: Path, shell: str,
+                                                                    system: str) -> None:
+    """With no writable directory of the person's own on PATH (macOS zsh's
+    default), `swarm install` is `command not found` in this terminal: the
+    last line names the path installed, which this terminal runs (A9)."""
+    env = _sandbox(tmp_path, shell=shell, system=system)
+    proc, _, _ = _run(tmp_path, env)
+    assert proc.returncode == 0, proc.stderr
+    # MUTATION: print plain `Next: swarm install` here and this fails.
+    assert _last_line(proc) == NEXT_BY_PATH, proc.stderr
+    bindir = Path(env["HOME"]) / ".local" / "bin"
+    assert _runs_in_this_terminal(env, _last_line(proc)) == str(bindir / "swarm")
+
+
+def test_a_tool_bin_outside_home_is_named_absolutely(tmp_path: Path) -> None:
+    env = _sandbox(tmp_path)
+    custom = tmp_path / "tools-bin"
+    env["UV_TOOL_BIN_DIR"] = str(custom)
+    proc, _, _ = _run(tmp_path, env)
+    assert proc.returncode == 0, proc.stderr
+    assert _last_line(proc) == f"Next: {custom / 'swarm'} install", proc.stderr
+
+
+def test_a_tool_bin_with_a_space_is_quoted(tmp_path: Path) -> None:
+    env = _sandbox(tmp_path)
+    custom = tmp_path / "my tools"
+    env["UV_TOOL_BIN_DIR"] = str(custom)
+    proc, _, _ = _run(tmp_path, env)
+    assert proc.returncode == 0, proc.stderr
+    line = _last_line(proc)
+    assert line == f"Next: '{custom / 'swarm'}' install", proc.stderr
+    probe = subprocess.run(["sh", "-c", f"command -v {line.removeprefix('Next: ').removesuffix(' install')}"],
+                           env={"PATH": env["PATH"]}, capture_output=True, text=True, check=False)
+    assert probe.stdout.strip() == str(custom / "swarm")
+
+
+def test_a_linked_swarm_is_plain_swarm_install(tmp_path: Path) -> None:
+    """Linked into a directory this terminal's PATH holds, plain `swarm` works."""
+    env = _sandbox(tmp_path)
+    own = Path(env["HOME"]) / "bin"
+    own.mkdir()
+    env["PATH"] = f"{env['PATH']}{os.pathsep}{own}"
+    proc, _, _ = _run(tmp_path, env)
+    assert proc.returncode == 0, proc.stderr
+    assert _last_line(proc) == NEXT
+
+
+def test_a_swarm_that_is_not_ours_in_the_own_directory_is_not_trusted(tmp_path: Path) -> None:
+    """The person's own directory already holds a `swarm` that is not a link:
+    it is left alone, so plain `swarm` would run that one; the line names ours."""
+    env = _sandbox(tmp_path)
+    own = Path(env["HOME"]) / "bin"
+    own.mkdir()
+    (own / "swarm").write_text("#!/bin/sh\necho another swarm\n")
+    (own / "swarm").chmod(0o755)
+    env["PATH"] = f"{env['PATH']}{os.pathsep}{own}"
+    proc, _, _ = _run(tmp_path, env)
+    assert proc.returncode == 0, proc.stderr
+    assert _last_line(proc) == NEXT_BY_PATH, proc.stderr
+    assert (own / "swarm").read_text() == "#!/bin/sh\necho another swarm\n"

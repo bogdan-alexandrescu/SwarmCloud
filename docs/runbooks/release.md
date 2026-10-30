@@ -81,10 +81,25 @@ The release home is project `swarmcloud-prod`: images in
    approve.
 
 3. Approve the `release` environment on the run's page. That is the
-   confirmation. The run publishes under `releases/<version>/`, SHA256SUMS last;
-   a version already published is refused, never overwritten.
-   A candidate (`-rc.N`) then moves `channels/rc` to itself, after SHA256SUMS, so
-   `SWARM_CHANNEL=rc` installs it; every bundle carries
+   confirmation. Before it copies anything it signs SHA256SUMS and checks the
+   signature with `cosign verify-blob` against the `release_key.pub` inside the
+   bundle's own `swarm_install` wheel, the key every install pins; a KMS key
+   that is not that one is refused with nothing written, since it would fail
+   every install of a release that can never be overwritten. The run then
+   publishes under `releases/<version>/`, SHA256SUMS last; a version already
+   published is refused, never overwritten.
+   A candidate (`-rc.N`) then writes `channels/rc.marketplace.json` (its
+   marketplace, which an rc deployment's teammates add) and, last,
+   `channels/rc` (one line, its version), after SHA256SUMS, so
+   `SWARM_CHANNEL=rc` installs it, and reads `channels/rc` back: the publish
+   fails unless it holds exactly that version. A channel is objects directly
+   under `channels/`, never a `channels/<channel>/` prefix: where one exists,
+   `gcloud storage cp FILE gs://swarmcloud/channels/rc` copies INTO it, which is
+   how 2026.10.1-rc.1's line landed as `channels/rc/rc` (audit 3, A5). Those
+   leftover `channels/rc/` objects are read by nothing and need no clean-up;
+   publish writes each channel object by copying a file of that name into
+   `channels/`, which names exactly that object whatever prefixes exist.
+   Every bundle carries
    `github-app-permissions.json` (from `swarm_api.setup_github`), which
    `swarm upgrade` compares with the live App's permissions.
 
@@ -98,7 +113,8 @@ The release home is project `swarmcloud-prod`: images in
    ```
 
    `--promote` refuses a release with no passing test record, and moves
-   `marketplace.json`, `install.sh` and, last, `channels/stable`.
+   `marketplace.json`, `install.sh` and, last, `channels/stable`, which it
+   reads back.
 
 ## If the run fails
 

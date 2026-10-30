@@ -214,7 +214,7 @@ def test_a_one_person_install_or_one_before_stage_8_publishes_no_team():
     ("release", "url"),
     [
         ("2026.11.3", "https://storage.googleapis.com/swarmcloud/marketplace.json"),
-        ("2026.11.3-rc.2", "https://storage.googleapis.com/swarmcloud/channels/rc/marketplace.json"),
+        ("2026.11.3-rc.2", "https://storage.googleapis.com/swarmcloud/channels/rc.marketplace.json"),
     ],
 )
 def test_the_ready_screen_names_the_channels_marketplace(release, url, world, monkeypatch, capsys):  # noqa: F811
@@ -233,6 +233,6 @@ def test_the_ready_screen_names_the_channels_marketplace(release, url, world, mo
 
 def test_with_no_release_recorded_the_channel_is_the_installers(monkeypatch):
     monkeypatch.setenv("SWARM_CHANNEL", "rc")
-    assert install.plugin_marketplace(None).endswith("/channels/rc/marketplace.json")
+    assert install.plugin_marketplace(None).endswith("/channels/rc.marketplace.json")
     monkeypatch.delenv("SWARM_CHANNEL")
     assert install.plugin_marketplace(None) == install.PLUGIN_MARKETPLACE

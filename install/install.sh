@@ -230,14 +230,39 @@ link_into_person_path() {
     if [ -n "${linked}" ]; then
       say "linked${linked} into ${dir}, which this terminal's PATH holds"
     fi
+    case " ${linked} " in
+      *" swarm "*) SWARM_FOUND=1 ;;
+    esac
     return 0
   done
-  say "open a new terminal for swarm to be found"
 }
 
-if ! on_person_path "${TOOL_BIN}"; then
+# How this terminal runs swarm: plain `swarm` when its PATH finds ours, else
+# the path installed, so the last line works without a new terminal (audit 3,
+# A9: macOS zsh has no directory of the person's own on PATH, and `Next: swarm
+# install` there was `command not found`). Under HOME it is shown as ~/...;
+# a path with a character the shell would split or expand is single-quoted.
+swarm_command() {
+  if [ "${SWARM_FOUND}" -eq 1 ]; then
+    printf 'swarm\n'
+    return 0
+  fi
+  shown="${TOOL_BIN}/swarm"
+  case "${shown}" in
+    *[!A-Za-z0-9_./+@%:=,-]*) printf "'%s'\n" "${shown}"; return 0 ;;
+  esac
+  case "${shown}" in
+    "${HOME}"/*) shown="~${shown#"${HOME}"}" ;;
+  esac
+  printf '%s\n' "${shown}"
+}
+
+SWARM_FOUND=0
+if on_person_path "${TOOL_BIN}"; then
+  SWARM_FOUND=1
+else
   add_to_rc
   link_into_person_path
 fi
 
-printf '\nNext: swarm install\n' >&2
+printf '\nNext: %s install\n' "$(swarm_command)" >&2
