@@ -84,10 +84,12 @@ WRITERS: dict[str, tuple[str, frozenset[str]]] = {
     ),
     # The console's two verification runs: `verify_runs` is
     # {"console_task": <task id>, "console_workflow": <workflow id>}, copied
-    # into the engine's `state.outputs["verify_runs"]` (DAYONE-SETUP-API-2).
+    # into the engine's `state.outputs["verify_runs"]` (DAYONE-SETUP-API-2);
+    # `retries` is {"console_task": n, "console_workflow": n}, each key's
+    # fresh starts (DAYONE-SETUP-API-6).
     "swarm-install/{env}/console/verify_runs": (
         SWARM_API,
-        frozenset({"verify_runs", "repository", "started_at", "by"}),
+        frozenset({"verify_runs", "retries", "repository", "started_at", "by"}),
     ),
     "swarm-install/{env}/health/latest": (
         SWARM_API_FOR_DOCTOR,

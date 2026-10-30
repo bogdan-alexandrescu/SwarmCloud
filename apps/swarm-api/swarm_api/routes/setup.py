@@ -72,6 +72,7 @@ from .. import install_record as ir
 from .. import roles
 from .. import setup_links as sl
 from .. import workspaces as ws
+from ..access import write_workspace_grants
 from ..auth import TENANT_HEADER, AuthContext, bearer_tokens, require_admin
 from ..codec import console_origin
 from ..deps import AppContext, admin_auth, current_auth, get_context
@@ -394,9 +395,25 @@ def installation_repositories(flow: ManifestFlow, github: GitHubSetupApi,
             "selection": found.get("repository_selection"), "repositories": sorted(set(names))}
 
 
+def enforce_grant(db: Any, tenant: str, grant: dict[str, Any], *, now: datetime
+                  ) -> dict[str, Any]:
+    """The recorded grant made the one the submission path reads (finding N11):
+    the workspace's grant documents (`access.write_workspace_grants`), which
+    `SubmissionService._grant_mode` honours for everyone in the workspace, so
+    a teammate's first task on these repositories is not refused under
+    `repository_grants_enforced`. Marked `enforced_at` once written; a grant
+    recorded before this existed is written on its next read."""
+    if grant.get("state") != "granted" or not grant.get("repositories") or grant.get("enforced_at"):
+        return grant
+    write_workspace_grants(db, tenant, list(grant["repositories"]),
+                           mode=str(grant.get("mode") or "write"), by=str(grant.get("by") or ""),
+                           at=now, source="admin-setup")
+    return {**grant, "enforced_at": now}
+
+
 def ensure_grant(record: ir.InstallRecord, team_id: str, team: dict[str, Any], *,
                  flow: ManifestFlow, github: GitHubSetupApi, org: str, by: str,
-                 now: datetime, path: str | None = None) -> dict[str, Any]:
+                 now: datetime, db: Any, path: str | None = None) -> dict[str, Any]:
     """Decision 3: the first team's team-level grant over the repositories the
     App installation covers, recorded on `teams/<id>.grant` and shown on the
     page. Written once the App is installed on at least one repository; until
@@ -404,9 +421,15 @@ def ensure_grant(record: ir.InstallRecord, team_id: str, team: dict[str, Any], *
     (installed on none, as a new organisation is), and the next read of the
     page tries again. A grant already recorded is kept as it is. `path` is the
     document it is recorded on: the team's, or for one person
-    `console/personal`."""
+    `console/personal`. A grant is enforced as it is recorded (`enforce_grant`):
+    its workspace holds it on the submission path, not only on the page."""
+    path = path or record.team_path(team_id)
+    tenant = str(team.get("workspace") or team_id)
     grant = dict(team.get("grant") or {})
     if grant.get("state") == "granted" and grant.get("repositories"):
+        if not grant.get("enforced_at"):
+            grant = enforce_grant(db, tenant, grant, now=now)
+            record.write(path, {"grant": grant})
         return grant
     try:
         found = installation_repositories(flow, github, org)
@@ -422,10 +445,11 @@ def ensure_grant(record: ir.InstallRecord, team_id: str, team: dict[str, Any], *
             grant.update({"installation_id": found["installation_id"],
                           "account": found["account"], "selection": found["selection"]})
     else:
-        grant = {"state": "granted", "mode": "write", "at": now, "by": by, **found}
+        grant = enforce_grant(db, tenant, {"state": "granted", "mode": "write", "at": now,
+                                           "by": by, **found}, now=now)
         log.info("first team granted the App's repositories team=%s repositories=%d",
                  team_id, len(found["repositories"]))
-    record.write(path or record.team_path(team_id), {"grant": grant})
+    record.write(path, {"grant": grant})
     return grant
 
 
@@ -458,6 +482,23 @@ def _pool_labels(request: Request, ctx: AppContext, tenant: str) -> list[str]:
     listing = account_pool(request, ctx).list_accounts(tenant)
     return sorted({str(a.get("label") or "") for a in listing.get("accounts") or []
                    if isinstance(a, dict) and a.get("owner_tenant") == tenant} - {""})
+
+
+def mark_signed_in(record: ir.InstallRecord, pool_accounts: list[str], *,
+                   now: datetime) -> None:
+    """Finding N7: each labelled account the first workspace's pool holds
+    (`_pool_labels`) is signed in, so `console/accounts.<label>.signed_in_at`
+    is stamped here, on the read the page polls, as `finish` stamps it; the
+    page's "Hand over to swarm install" waits on it, and the link page that
+    signed it in writes nothing of its own. A stamp already there is kept."""
+    if not pool_accounts:
+        return
+    accounts = record.read(record.console_path(ir.ACCOUNTS)) or {}
+    newly = {label: {**(accounts.get(label) or {}), "signed_in_at": now}
+             for label in pool_accounts if not (accounts.get(label) or {}).get("signed_in_at")}
+    if newly:
+        record.write(record.console_path(ir.ACCOUNTS), newly)
+        log.info("setup page: pool accounts signed in labels=%s", ",".join(sorted(newly)))
 
 
 def advance_smoke(record: ir.InstallRecord, team_id: str, team: dict[str, Any], *,
@@ -531,9 +572,10 @@ def team_row(request: Request, ctx: AppContext, record: ir.InstallRecord, team_i
                 "pool_accounts": pool_accounts, "first": first})
     if first:
         now = ctx.now()
+        mark_signed_in(record, pool_accounts, now=now)
         team = {**team, "grant": ensure_grant(
             record, team_id, team, flow=flow, github=github,
-            org=ctx.settings.setup_github_org, by=by, now=now)}
+            org=ctx.settings.setup_github_org, by=by, now=now, db=ctx.db)}
         row["grant"] = team["grant"]
         row["smoke"] = advance_smoke(record, team_id, team, runs=runs,
                                      pool_accounts=pool_accounts, now=now)
@@ -659,7 +701,7 @@ def first_workspace(record: ir.InstallRecord, ctx: AppContext, people: People, *
     tenant = str(doc["workspace"])
     doc = {**doc, "grant": ensure_grant(record, tenant, doc, flow=flow, github=github,
                                         org=ctx.settings.setup_github_org, by=caller.email,
-                                        now=ctx.now(), path=path)}
+                                        now=ctx.now(), db=ctx.db, path=path)}
     return FirstWorkspace(key=tenant, doc=doc, path=path, principal=installer, personal=True)
 
 
@@ -676,6 +718,7 @@ def personal_row(request: Request, ctx: AppContext, record: ir.InstallRecord,
         pool_accounts = []
     row = dict(first.doc)
     row.update({"workspace_state": workspace.get("state"), "pool_accounts": pool_accounts})
+    mark_signed_in(record, pool_accounts, now=ctx.now())
     row["smoke"] = advance_smoke(record, first.key, first.doc, runs=runs,
                                  pool_accounts=pool_accounts, now=ctx.now(), path=first.path,
                                  principal=first.principal)
@@ -974,7 +1017,8 @@ def create_team(
     grant = None
     if first is None or first[0] == team_id:
         grant = ensure_grant(record, team_id, team, flow=flow, github=github,
-                             org=ctx.settings.setup_github_org, by=caller.email, now=ctx.now())
+                             org=ctx.settings.setup_github_org, by=caller.email, now=ctx.now(),
+                             db=ctx.db)
     members_url = admin_members_url(directory, group) if invites else None
     return JSONResponse(status_code=status, content=jsonable_encoder({
         "team": team_id, "workspace": content, "first_admin": granted, "grant": grant,
@@ -1068,28 +1112,27 @@ VERIFY_KEYS = ("console_task", "console_workflow")
 #: (BGD, 2026-10-30: "swarm-api restarts a failed key"). The engine waits for
 #: a new id at most twice too (VERIFY-ENGINE-2), so a third would go unread.
 MAX_VERIFY_RETRIES = 2
-#: A key's retry count sits beside its id in `verify_runs`, as
-#: `<key>_retries`, and only once it is not 0: the document's row holds no
-#: other field for it (install_record.SWARM_API_DOCUMENTS), and the engine
-#: reads `verify_runs` by the two id keys alone, so it never mistakes a count
-#: for an id.
-RETRIES_SUFFIX = "_retries"
+#: A key's retry count lives in the document's own `retries` field,
+#: `{console_task: n, console_workflow: n}` (BGD, 2026-10-30), so
+#: `verify_runs` holds exactly the INTERFACE SHEET's two id keys. A document
+#: written before that kept each count beside its id, as `<key>_retries`:
+#: it is still read (`_verify_retries`), and the next write moves it.
+LEGACY_RETRIES_SUFFIX = "_retries"
 
 
 def _verify_ids(runs: dict[str, Any]) -> dict[str, str]:
-    """The two ids of a `verify_runs` value, without the retry counts."""
+    """The two ids of a `verify_runs` value, without any legacy retry count."""
     return {key: str(runs[key]) for key in VERIFY_KEYS if runs.get(key)}
 
 
-def _verify_retries(runs: dict[str, Any]) -> dict[str, int]:
-    return {key: int(runs.get(key + RETRIES_SUFFIX) or 0) for key in VERIFY_KEYS}
-
-
-def _verify_value(ids: dict[str, str], retries: dict[str, int]) -> dict[str, Any]:
-    """`verify_runs` as written: the ids, and a key's retry count once it has one."""
-    value: dict[str, Any] = dict(ids)
-    value.update({key + RETRIES_SUFFIX: count for key, count in retries.items() if count})
-    return value
+def _verify_retries(done: dict[str, Any]) -> dict[str, int]:
+    """Each key's retry count: the `retries` field, else the count an older
+    document kept inside `verify_runs`."""
+    found = done.get("retries")
+    if isinstance(found, dict):
+        return {key: int(found.get(key) or 0) for key in VERIFY_KEYS}
+    legacy = done.get("verify_runs") or {}
+    return {key: int(legacy.get(key + LEGACY_RETRIES_SUFFIX) or 0) for key in VERIFY_KEYS}
 
 
 def _verify_run_state(runs: Any, key: str, tenant: str, run_id: str) -> str:
@@ -1127,14 +1170,13 @@ def start_verify_runs(
     Called again, it reads each recorded run: one that failed or was
     cancelled counts as missing and a fresh run of its shape replaces its id,
     the other key kept; one still going, or succeeded, is left alone. Each
-    key's fresh starts are counted beside its id (`<key>_retries`) and
+    key's fresh starts are counted in the document's `retries` field and
     answered as `retries`; a key that failed after `MAX_VERIFY_RETRIES` of
     them is answered as a 409 saying so, and nothing is started."""
     path = record.console_path(ir.VERIFY_RUNS)
     done = record.read(path) or {}
-    recorded = dict(done.get("verify_runs") or {})
-    started = _verify_ids(recorded)
-    retries = _verify_retries(recorded)
+    started = _verify_ids(dict(done.get("verify_runs") or {}))
+    retries = _verify_retries(done)
     first, repository = _granted_repository(first_workspace(
         record, ctx, people, caller=caller, flow=flow, github=github))
     tenant = first.tenant
@@ -1158,7 +1200,7 @@ def start_verify_runs(
         if started.get(key):
             retries[key] += 1
         started[key] = _submit_verify_run(runs, key, tenant, group, repository)
-        record.write(path, {"verify_runs": _verify_value(started, retries),
+        record.write(path, {"verify_runs": dict(started), "retries": dict(retries),
                             "repository": repository,
                             "started_at": done.get("started_at") or ctx.now(),
                             "by": caller.email})
@@ -1373,7 +1415,7 @@ def finish(
         if grant.get("state") != "granted" or not grant.get("repositories"):
             grant = ensure_grant(record, first.key, doc, flow=flow, github=github,
                                  org=ctx.settings.setup_github_org, by=caller.email,
-                                 now=ctx.now(), path=first.path)
+                                 now=ctx.now(), db=ctx.db, path=first.path)
             doc = {**doc, "grant": grant}
         smoke = advance_smoke(record, first.key, doc, runs=runs, pool_accounts=sorted(signed),
                               now=ctx.now(), path=first.path, principal=first.principal) or {}
@@ -1419,17 +1461,46 @@ def get_health(
     return {"latest": record.read(record.health_path())}
 
 
-@router.post("/health/groups-probe")
-def groups_probe(
-    caller: SetupCaller = Depends(setup_caller),
-    ctx: AppContext = Depends(get_context),
-    directory: MembershipResolver | None = Depends(workspace_directory),
-) -> dict:
-    """Stage 8's and the doctor's re-probe, asked with swarm-api's OWN group
-    identity (review finding 12): one per-group membership question per
-    registered group (`searchTransitiveGroups` 403s here), past the cache. Any
-    answer proves the group readable (`met`); a failed lookup is `unmet`. The
-    answer is met/unmet per group, never a member list or a membership."""
+class GroupProbe(StrictModel):
+    group: str = Field(min_length=3, max_length=320)
+    member: str = Field(min_length=3, max_length=320)
+
+
+class GroupsProbeRequest(StrictModel):
+    #: The `{group, member}` pairs to probe (stage 8's identity steps). Empty
+    #: or absent: every registered group, readability only (the doctor).
+    groups: list[GroupProbe] = Field(default_factory=list, max_length=50)
+
+
+#: A failed lookup's reason, by what its error says; the engine's `why_unmet`
+#: turns each into the sentence a person can act on. The message itself
+#: (Cloud Identity's error body) is never answered.
+_PROBE_REASONS: tuple[tuple[str, str], ...] = (
+    ("unauthorized_client", "unauthorized_client"),
+    ("may not sign as itself", "sign_jwt_denied"),
+    ("signjwt", "sign_jwt_denied"),
+    ("returned 403", "permission_denied"),
+    ("returned 404", "not_found"),
+    ("returned no name", "group_not_found"),
+)
+
+
+def probe_reason(exc: BaseException) -> str:
+    text = str(exc).lower()
+    return next((reason for needle, reason in _PROBE_REASONS if needle in text), "unreadable")
+
+
+def probe_member(directory: MembershipResolver, member: str, group: str) -> bool:
+    """One `checkTransitiveMembership`, past the cache. `is_member` when the
+    directory has it (`CloudIdentityGroups`), so its error keeps Cloud
+    Identity's status for `probe_reason`; else `groups_for` on one group."""
+    ask = getattr(directory, "is_member", None)
+    if callable(ask):
+        return bool(ask(member, group, fresh=True))
+    return check_group_readable(directory, member, group)
+
+
+def _registered_groups(ctx: AppContext) -> list[str]:
     authenticator = ctx.authenticator
     registered = getattr(authenticator, "registered_group_workspaces", None)
     groups: list[str] = list(ctx.settings.tenant_groups) + list(ctx.settings.admin_groups)
@@ -1438,24 +1509,60 @@ def groups_probe(
             groups += list(registered().values())
         except Exception:  # noqa: BLE001 - the configured groups still answer
             log.warning("groups probe: the registry could not be read")
-    seen: list[str] = []
-    for group in groups:
-        key = group.strip().lower()
-        if key and key not in seen:
-            seen.append(key)
-    results = []
-    for group in seen:
+    return groups
+
+
+@router.post("/health/groups-probe")
+def groups_probe(
+    body: GroupsProbeRequest | None = None,
+    caller: SetupCaller = Depends(setup_caller),
+    ctx: AppContext = Depends(get_context),
+    directory: MembershipResolver | None = Depends(workspace_directory),
+) -> dict:
+    """Stage 8's and the doctor's re-probe, asked with swarm-api's OWN group
+    identity (review finding 12), one per-group membership question each
+    (`searchTransitiveGroups` 403s here), past the cache.
+
+    Asked with `{"groups": [{group, member}]}` (stage 8, `ApiClient.groups_probe`)
+    it probes exactly those pairs: `met` when the member is in the group,
+    `unmet` with `not_a_member` when the group answered no, and `unmet` with
+    the failure's reason when it could not be read. Asked with none (the
+    doctor), it probes every registered group as the caller: any answer is
+    `met`. The answer is `{"mode": <GROUPS_AUTH>, "results": [...]}` (finding
+    N6), with `groups` (the same rows) and `met` kept for the doctor's older
+    readers; never a member list."""
+    pairs: list[tuple[str, str | None]] = [
+        (p.group.strip(), p.member.strip().lower()) for p in (body.groups if body else [])]
+    if not pairs:
+        pairs = [(group.strip().lower(), None) for group in _registered_groups(ctx)]
+    # Each group is answered under the name it was asked by (the engine's
+    # `GroupsProbe.of` matches it exactly), once per (group, member).
+    seen: list[tuple[str, str | None]] = []
+    keys: set[tuple[str, str | None]] = set()
+    for group, member in pairs:
+        key = (group.lower(), member)
+        if group and key not in keys:
+            keys.add(key)
+            seen.append((group, member))
+    results: list[dict[str, Any]] = []
+    for group, member in seen:
         if directory is None:
             results.append({"group": group, "state": "unmet", "reason": "no_directory"})
             continue
         try:
-            check_group_readable(directory, caller.email, group)
+            found = probe_member(directory, member or caller.email, group)
+        except Exception as exc:  # noqa: BLE001 - every failure is this group's unmet
+            results.append({"group": group, "state": "unmet", "reason": probe_reason(exc),
+                            "detail": type(exc).__name__})
+            continue
+        if member is not None and not found:
+            results.append({"group": group, "state": "unmet", "reason": "not_a_member"})
+        else:
             results.append({"group": group, "state": "met"})
-        except GroupLookupError:
-            results.append({"group": group, "state": "unmet", "reason": "unreadable"})
     log.info("groups probe by=%s groups=%d unmet=%d", caller.kind, len(results),
              sum(1 for r in results if r["state"] != "met"))
-    return {"groups": results, "met": all(r["state"] == "met" for r in results)}
+    return {"mode": ctx.settings.groups_auth, "results": results, "groups": results,
+            "met": all(r["state"] == "met" for r in results)}
 
 
 __all__ = ["admin_setup_caller", "links_router", "router", "setup_caller"]
