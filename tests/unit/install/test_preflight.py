@@ -110,6 +110,9 @@ class FakeGcp:
     def called(self, name: str) -> list[tuple[Any, ...]]:
         return [args for n, args in self.calls if n == name]
 
+    def reset_credentials(self):
+        self._call("reset_credentials")
+
     # reads
     def project(self, project):
         self._call("project", project)
@@ -949,8 +952,8 @@ def test_sign_in_failure_never_hands_the_person_a_command() -> None:
 
 def test_stage_0_order_signs_in_before_any_api_read() -> None:
     ids = [step.id for step in preflight.build_steps(lambda: FakeGcp(), Answers())]
-    assert ids == ["preflight.tools", "preflight.sign-in", "preflight.organization", "preflight.inputs", "preflight.region", "preflight.rights",
-                   "preflight.org-domain", "preflight.installer-address", "preflight.org-policies",
+    assert ids == ["preflight.tools", "preflight.sign-in", "preflight.organization", "preflight.inputs",
+                   "preflight.region", "preflight.rights", "preflight.org-domain", "preflight.installer-address", "preflight.org-policies",
                    "preflight.quotas", "preflight.sizing", "preflight.release", "preflight.sizing-quota"]
 
 
@@ -1187,6 +1190,21 @@ def test_with_no_wheel_release_the_channel_install_sh_used_is_read() -> None:
     assert (f"{RELEASE_HOME}/channels/stable",) in stable.called("read_public")
 
 
+def test_the_summary_never_names_a_channel_that_is_not_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(preflight, "installed_release", lambda: None)
+    assert preflight.default_release_said({"SWARM_CHANNEL": "rc"}) == "the current rc release"
+    said = preflight.default_release_said({"SWARM_CHANNEL": "foo"})
+    assert "the current foo release" not in said and "not a release channel" in said
+
+
+def test_a_workspace_account_that_sees_no_organisation_is_told_to_ask_for_a_role() -> None:
+    gcp = _no_organisation()
+    workspace = preflight.OrganizationStep(lambda: gcp, answers(), account=lambda: "dev@acme.example")
+    assert "ask your organisation's admin for a role" in workspace.check(ctx_for()).detail
+    consumer = preflight.OrganizationStep(lambda: gcp, answers(), account=lambda: NO_ORG_ACCOUNT)
+    assert "admin for a role" not in consumer.check(ctx_for()).detail
+
+
 def test_a_release_whose_acceptances_expired_is_never_recorded() -> None:
     gcp = FakeGcp()
     gcp.release = release_files(dt.date(2026, 10, 1))
@@ -1357,6 +1375,54 @@ def test_org_policy_is_read_through_resource_manager_v1_with_no_quota_project() 
     fake.policies["gcp.resourceLocations"] = policy
     blocked = preflight.OrgPoliciesStep(lambda: fake, answers()).check(ctx_for(region="us-central1"))
     assert blocked.status == UNMET and "gcp.resourceLocations" in blocked.detail
+
+
+def test_the_organisation_wait_polls_as_the_account_signed_in_again(monkeypatch: pytest.MonkeyPatch,
+                                                                     pages: list[Any]) -> None:
+    """A gmail account signs in again as the new organisation's admin; the
+    wait's polls then load the application-default credentials afresh. The
+    session cached from the gmail sign-in never sees the organisation."""
+    import google.auth
+    import google.auth.transport.requests as transport
+
+    signed_in = ["gmail"]
+    loaded: list[str] = []
+
+    def default(scopes=None):
+        loaded.append(signed_in[-1])
+        return signed_in[-1], None
+
+    class AccountSession(Session):
+        def __init__(self, credentials: str) -> None:
+            super().__init__()
+            self.credentials = credentials
+
+        def request(self, method, url, **kw):
+            super().request(method, url, **kw)
+            if url.endswith("organizations:search") and self.credentials == "admin":
+                return Response(200, {"organizations": [{"name": ORG, "displayName": "acme.example"}]})
+            return Response(200, {})
+
+    monkeypatch.setattr(google.auth, "default", default)
+    monkeypatch.setattr(transport, "AuthorizedSession", AccountSession)
+    gcp = preflight.Gcp()
+    accounts = [NO_ORG_ACCOUNT]
+
+    def sign_in() -> None:
+        signed_in.append("admin")
+        accounts.append("admin@acme.example")
+
+    step = preflight.OrganizationStep(lambda: gcp, answers(), account=lambda: accounts[-1], sign_in=sign_in)
+    ctx = ctx_for()
+    assert step.check(ctx).status == UNMET
+    step.apply(ctx, step.plan(ctx))
+    assert step.check(ctx).status == MET
+    assert loaded == ["gmail", "admin"]
+
+    given = Session()
+    kept = preflight.Gcp(given)
+    kept.reset_credentials()
+    assert kept.session is given  # a session given in is never dropped
 
 
 def test_budget_calls_carry_the_project_as_quota_project() -> None:

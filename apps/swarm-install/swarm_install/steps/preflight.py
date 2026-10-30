@@ -102,7 +102,16 @@ class Gcp:
 
     def __init__(self, session: Any = None, *, quota_project: str | None = None) -> None:
         self._session = session
+        self._from_adc = session is None
         self.quota_project = quota_project
+
+    def reset_credentials(self) -> None:
+        """Forget the session built from application-default credentials, so the
+        next call loads them again: after preflight.organization signs in as
+        another account, the cached session still holds the old account's and
+        would never see the new organisation. A session given in is kept."""
+        if self._from_adc:
+            self._session = None
 
     @property
     def session(self) -> Any:
@@ -841,8 +850,13 @@ class OrganizationStep(_Base):
         found = self.organizations(ctx)
         if found:
             return Observation(MET, f"organisation {', '.join(found[:3])}")
-        who = self._account() or "the signed-in account"
-        return Observation(UNMET, f"{NEEDS_ORGANISATION} {who} sees none yet")
+        account = self._account()
+        who = account or "the signed-in account"
+        if consumer_account(account):
+            return Observation(UNMET, f"{NEEDS_ORGANISATION} {who} sees none yet")
+        # organizations:search shows only what the caller holds a role on
+        return Observation(UNMET, f"{NEEDS_ORGANISATION} {who} sees none yet: sign one up, or ask your "
+                                  "organisation's admin for a role on it")
 
     def plan(self, ctx: Any) -> Plan:
         return Plan("SwarmCloud needs a Google organisation: sign up for Cloud Identity Free (or Google "
@@ -867,6 +881,7 @@ class OrganizationStep(_Base):
             self._sign_in()
         else:
             SignInStep(self._gcp, self._ask).sign_in_again(ctx)
+        self.gcp.reset_credentials()  # the wait's polls go as the account just signed in
         now = self._account()
         if now and not consumer_account(now):
             remember(ctx, outputs={"installer": now})
@@ -1716,8 +1731,15 @@ def release_channel(environ: Mapping[str, str] = os.environ) -> str:
 
 
 def default_release_said(environ: Mapping[str, str] = os.environ) -> str:
-    """What `swarm install` with no --version installs, in words, read offline."""
-    return installed_release() or f"the current {environ.get('SWARM_CHANNEL') or 'stable'} release"
+    """What `swarm install` with no --version installs, in words, read offline.
+    A channel that is not one is said as such, never as a release."""
+    found = installed_release()
+    if found:
+        return found
+    try:
+        return f"the current {release_channel(environ)} release"
+    except ValueError as error:
+        return f"none: {error}"
 
 
 class ReleaseStep(_Base):
