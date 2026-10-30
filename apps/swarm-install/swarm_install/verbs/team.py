@@ -18,12 +18,11 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-from types import SimpleNamespace
 from typing import Any
 
 from ..events import Events
 from ..exitcodes import ExitCode
-from ..state import STATE_OBJECT, GcsObjectStore, InstallState, state_bucket
+from ..state import STATE_OBJECT, GcsObjectStore, InstallState, StateStore, local_path, state_bucket
 from ..team import KubeCluster, SwarmApi, TeamAdd, TeamError, scheduler_spec_settings
 from ..waits import SystemClock, WaitGaveUp
 
@@ -69,12 +68,24 @@ def read_state(project: str) -> InstallState:
     return InstallState.from_bytes(found[0])
 
 
-def build(args: argparse.Namespace, state: InstallState, events: Events) -> TeamAdd:
+def verb_context(project: str, state: InstallState, events: Events) -> Any:
+    """What kube_for and the reopen read off an engine context (finding 16):
+    the project, the state's region and deny-list, infra pass 1's cluster name,
+    and the bucket and a re-reading save for the infra pass that reopens the
+    control plane after the closing pass."""
+    from ..steps.infra import VerbContext
+    from .install import holder_identity
+
+    store = StateStore(project=project, environment=state.environment, local=local_path(project),
+                       bucket=GcsObjectStore(state_bucket(project)))
+    return VerbContext(project=project, environment=state.environment, holder=holder_identity(), state=state,
+                       events=events, bucket=store.bucket, save=store.update)
+
+
+def build(args: argparse.Namespace, state: InstallState, events: Events, ctx: Any = None) -> TeamAdd:
     from ..steps.cluster import CLUSTER_GCP, kube_for
 
-    # What kube_for reads off an engine context: the project, the state's
-    # region and deny-list, and infra pass 1's cluster name.
-    ctx = SimpleNamespace(project=args.project, state=state, outputs=state.outputs)
+    ctx = ctx if ctx is not None else verb_context(args.project, state, events)
     region = str(state.region or "")
     if not region:
         raise TeamError("the install state records no region: run swarm install --status")
@@ -91,11 +102,20 @@ def build(args: argparse.Namespace, state: InstallState, events: Events) -> Team
 def run(args: argparse.Namespace) -> int:
     clock = SystemClock()
     events = Events(clock.now, json_lines=bool(getattr(args, "json_events", False)))
+    from ..steps.infra import REACH
+
     try:
         state = read_state(args.project)
-        flow = build(args, state, events)
-        result: dict[str, Any] = flow.run(args.group, display_name=args.display_name,
-                                          first_admin=args.first_admin, git_owner=args.git_owner)
+        ctx = verb_context(args.project, state, events)
+        flow = build(args, state, events, ctx)
+        try:
+            result: dict[str, Any] = flow.run(args.group, display_name=args.display_name,
+                                              first_admin=args.first_admin, git_owner=args.git_owner)
+        finally:
+            # The control plane admits this machine only while kubectl runs (decision 2, finding 16).
+            left = REACH.close_after(ctx, "swarm team add")
+            if left:
+                print(left, file=sys.stderr)
     except WaitGaveUp as exc:
         print(str(exc), file=sys.stderr)
         return int(ExitCode.PAUSED)
