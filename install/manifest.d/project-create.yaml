@@ -2,7 +2,8 @@
 # creates the project and links its billing through the APIs after ONE typed
 # approval that shows the monthly cost estimate and the budget amount
 # (swarm_install/steps/foundations.py ProjectStep). The budget's amount is the
-# one chosen at that approval, and containerscanning is disabled through the
+# one chosen at that approval (asked by foundations.budget when there was no
+# approval), and containerscanning is disabled through the
 # Service Usage API rather than by a printed command. The four base entries
 # whose provider or apply text changes are restated with replace: true.
 version: 1
@@ -83,8 +84,9 @@ entries:
   provider: engine
   check: gcloud billing budgets list --billing-account=<account> --format='value(displayName)' | grep -x swarm-$P
   apply: foundations.budget creates budget swarm-$P scoped to $P with 50/90/100 percent thresholds; its amount is
-    the one typed at foundations.project's approval (an optional choice, default 1000 USD a month), or the
-    default when the project already existed
+    the one typed at foundations.project's approval (an optional choice, default 1000 USD a month); when the
+    project already existed and was linked there is no approval, so foundations.budget asks the amount itself
+    (Enter keeps the default)
   verify: the budget lists $P in budgetFilter.projects
   explain: The fixed floor (swarm-api min 2 instances, the GKE cluster fee, the load balancer) costs money from
     the first apply; the approval shows a cost estimate and the budget before any write.

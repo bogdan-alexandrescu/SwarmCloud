@@ -280,20 +280,42 @@ def test_project_created_and_billing_linked_after_one_typed_approval(tmp_path: P
 
 def test_project_that_exists_and_is_linked_is_left_alone(tmp_path: Path) -> None:
     """Decision 6, item 4: an existing, linked project is reported and left
-    alone: no question, no write, and the budget takes the default."""
+    alone: no approval and no write. There was no approval to choose the
+    budget at, so foundations.budget asks the amount itself (owner pick,
+    2026-10-30), and the budget is created with the amount typed."""
     gcp = FakeGcp()
     api = FakeProjectApi(gcp)
     rig = _recorded(tmp_path)
-    ask = Answers()
+    ask = Answers(foundations_budget=["$2,000"])
     step = foundations.ProjectStep(lambda: gcp, ask, api)
     result = rig.engine([step, foundations.BudgetStep(lambda: gcp, ask)]).run()
     assert result.exit_code == ExitCode.OK, result.message
-    assert ask.asked == []
+    assert [step_id for step_id, _ in ask.asked] == ["foundations.budget"]
+    assert "Monthly budget" in ask.asked[0][1]
     assert api.calls == []
     assert not rig.of_kind("step_apply", "foundations.project")
     assert rig.of_kind("step_check", "foundations.project")[0]["state"] == MET
     (budget,) = gcp.budget_list
+    assert budget["amount"]["specifiedAmount"]["units"] == "2000"
+    assert rig.store.load().outputs["budget_amount"] == 2000
+
+
+def test_budget_asked_on_an_existing_project_keeps_the_default_on_enter(tmp_path: Path) -> None:
+    """Enter at foundations.budget's question keeps the default; an answer that
+    is not a whole dollar amount refuses and creates no budget."""
+    gcp = FakeGcp()
+    rig = _recorded(tmp_path)
+    result = rig.engine([foundations.BudgetStep(lambda: gcp, Answers(foundations_budget=[""]))]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    (budget,) = gcp.budget_list
     assert budget["amount"]["specifiedAmount"]["units"] == str(foundations.DEFAULT_BUDGET_USD)
+
+    gcp = FakeGcp()
+    rig = _recorded(tmp_path / "second")
+    result = rig.engine([foundations.BudgetStep(lambda: gcp, Answers(foundations_budget=["lots"]))]).run()
+    assert result.exit_code == ExitCode.FAIL
+    assert gcp.budget_list == []
+    assert "budget_amount" not in rig.store.load().outputs
 
 
 def test_wrong_confirmation_creates_and_links_nothing(tmp_path: Path, monkeypatch) -> None:

@@ -6,7 +6,7 @@ APIs, the default compute account's Editor grant, and the state bucket
 |---|---|---|
 | `foundations.project` | `other.gcp-project`, `other.billing-link` | decision 6 (2026-10-30): one typed approval showing the cost estimate and the budget, then `projects.create` and `projects.updateBillingInfo` |
 | `foundations.apis` | every core `api.*` entry with a `service_enabled` probe, and `api.containerscanning-NOT-enabled` | 4: one list, read from the manifest; containerscanning is disabled through Service Usage |
-| `foundations.budget` | `monitoring.budget-alert` | the amount chosen at the approval, else the default |
+| `foundations.budget` | `monitoring.budget-alert` | the amount chosen at the approval; asked here when there was no approval (the project already existed and was linked) |
 | `foundations.default-compute-editor` | `iam-binding.default-compute-sa-editor-removed` | 6 (#1020); 3: a write-rate limit is retried, never reported as a denial |
 | `foundations.state-bucket` | `bucket.state`, `other.install-state` | 7: created with bootstrap.sh's settings, then the local state is uploaded |
 
@@ -59,7 +59,8 @@ OPERATION_BOUND_S = 5 * 60.0
 
 #: The budget's default, in USD a month: five times the fixed floor below, so
 #: the 50 % alert fires only once agents run in earnest. The person may type
-#: another amount at the approval (an optional choice).
+#: another amount at the approval, or at foundations.budget when there was no
+#: approval (an optional choice; Enter keeps this).
 DEFAULT_BUDGET_USD = 1000
 
 #: The monthly fixed floor at Google's list price, before any agent runs: what
@@ -107,7 +108,8 @@ class ProjectApi:
 
 
 def parse_budget(answer: str, default: int = DEFAULT_BUDGET_USD) -> int:
-    """The budget typed at the approval: whole US dollars, Enter keeps the default."""
+    """The budget typed at the approval or at foundations.budget: whole US
+    dollars, Enter keeps the default."""
     text = answer.strip().removeprefix("$").replace(",", "")
     if not text:
         return default
@@ -365,7 +367,9 @@ class BudgetStep(_Base):
     _explain = (
         "The platform's fixed floor (swarm-api's minimum instances, NAT, the cluster) costs money from the "
         "first apply; a budget with 50, 90 and 100 percent alerts is set before anything bills. Its amount "
-        "is the one chosen at foundations.project's approval, else the default."
+        "is the one chosen at foundations.project's approval; when there was no approval (the project "
+        "already existed and was linked) it is asked here, Enter keeping the default (owner pick, "
+        "2026-10-30)."
     )
 
     def _amount(self, ctx: Any) -> int:
@@ -387,11 +391,20 @@ class BudgetStep(_Base):
         return Observation(UNMET, f"no budget named {self._name(ctx)}")
 
     def plan(self, ctx: Any) -> Plan:
-        return Plan(f"create budget {self._name(ctx)} of {self._amount(ctx)} USD a month on the project, "
-                    "alerts at 50/90/100 %",
+        amount = (f"{self._amount(ctx)} USD a month" if ctx.outputs.get("budget_amount")
+                  else f"an amount asked before it is created (Enter keeps {DEFAULT_BUDGET_USD} USD a month)")
+        return Plan(f"create budget {self._name(ctx)} of {amount} on the project, alerts at 50/90/100 %",
                     (f"billing account {self._account(ctx)}",))
 
     def apply(self, ctx: Any, plan: Plan) -> None:
+        if not ctx.outputs.get("budget_amount"):
+            # No approval ran (the project already existed and was linked), so
+            # nobody has chosen the amount yet: ask it here (owner pick, 2026-10-30).
+            amount = parse_budget(self._ask(
+                ctx, self.id, f"Monthly budget for {ctx.project}, in US dollars (Enter keeps it)",
+                default=str(DEFAULT_BUDGET_USD),
+            ))
+            remember(ctx, outputs={"budget_amount": amount})
         number = ctx.outputs.get("project_number") or project_number(self.gcp, ctx.project)
         body = {
             "displayName": self._name(ctx),
