@@ -47,11 +47,21 @@ OWNER_CHOICES = {
 }
 #: Not a bool: a map of refusal codes, every one shipped off (report-only).
 NOT_A_BOOL = {"switch.api_refusals"}
-#: Owned by bootstrap pass 1 in the BOOT-2 fragment, but its grant names
-#: swarm-quota-broker by a string in platform_roles.tf, so the renderer turns
-#: it on from bootstrap pass 2, once the account exists. The pass it does
-#: turn on in is held here.
-TURNS_ON_LATER = {"switch.grant_broker_secret_lister": "bootstrap-2"}
+#: Switches the manifest gives to an earlier pass than the one that can turn
+#: them on, each held to the pass it does turn on in. A fragment may not move
+#: an entry's step (test_manifest_steps.py), so moving them is asked of lane
+#: MANIFEST-STEPS (this lane's questions.json):
+TURNS_ON_LATER = {
+    # BOOT-2's fragment gives it bootstrap pass 1, but platform_roles.tf names
+    # swarm-quota-broker by a string, so it waits for the account's pass.
+    "switch.grant_broker_secret_lister": "bootstrap-2",
+    # forge_user_slots.tf names swarm-api by a string, and bootstrap pass 1
+    # creates swarm-api in the same apply: nothing orders the grant after it.
+    "switch.enable_forge_user_slots": "bootstrap-2",
+    # Publishing needs the swarm-workspace-apply job, which bootstrap pass 2
+    # makes after infra-2; infra-3 is the first infra pass after it.
+    "switch.workspace_apply_publish": "infra-3",
+}
 
 
 def _pass_of_step() -> dict[str, str]:
@@ -126,6 +136,9 @@ def test_the_guard_reads_the_workspace_switches() -> None:
                      "switch.workspace_apply_publish", *OWNER_CHOICES):
         assert entry_id in owned, f"{entry_id} is not owned by a Terraform pass"
     assert len(owned) >= 30, len(owned)
+    for entry_id, late in TURNS_ON_LATER.items():
+        # Once the manifest names the pass that turns it on, the exception goes.
+        assert not tfvars.after(owned[entry_id], late), f"{entry_id} is owned by {late}: drop it from TURNS_ON_LATER"
 
 
 @pytest.mark.parametrize("mode,members", MODES, ids=[m for m, _ in MODES])

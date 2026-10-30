@@ -19,8 +19,8 @@ The four applies (design §5) and the two after the hand-off (plan §5.5):
 | `registry` | infra | `-target` the registry only, so stage 4 can copy images into it |
 | `infra-1` | infra | everything, every key-gated switch off (lesson 39) |
 | `infra-2` | infra | each key switch on exactly when its key has an ENABLED version; `enable_console_app_setup`, `require_alert_channels`, `tenant_job_vpc_egress` |
-| `bootstrap-2` | bootstrap | the log view grant, the IAP programmatic client and the backends it applies to |
-| `infra-3` | infra | the console's GitHub App ids, `enable_github_app`, `enable_forge_refresh` |
+| `bootstrap-2` | bootstrap | the log view grant, the IAP programmatic client and the backends it applies to; swarm-api's grants (`API_GRANT_SWITCHES`); the workspace deployer and its kinds, with the workspace-apply image |
+| `infra-3` | infra | the console's GitHub App ids, `enable_github_app`, `enable_forge_refresh`; `workspace_apply_publish`, `mcp_servers_enabled` |
 | `infra-4` | infra | `enable_github_hooks` |
 | `infra-close` | infra | infra-4's inputs without the installer's control-plane CIDR (after stage 14's last kubectl) |
 
@@ -94,6 +94,18 @@ KEY_SWITCHES: dict[str, str] = {
     # The graph service serves only with its ticket key and its image's digest.
     "swarm-graph-ticket-key": "graph_service.serve",
 }
+#: bootstrap's switches that grant swarm-api a role (forge user slots, browser
+#: logins, provider keys, workspace secrets, MCP credentials, secret status).
+#: Each grant names `serviceAccount:swarm-api@...` by a string, which orders
+#: nothing, so they go on from bootstrap pass 2, after pass 1 made the account.
+API_GRANT_SWITCHES = (
+    "enable_forge_user_slots",
+    "enable_browser_logins",
+    "enable_provider_keys",
+    "enable_workspace_secrets",
+    "enable_mcp_credentials",
+    "enable_platform_secret_status",
+)
 #: The IAP Desktop client's secret (stage 2, `edge.desktop-client`).
 DESKTOP_SECRET = "swarm-iap-desktop-client-secret"
 #: The three secrets swarm-api writes from the console's App step (plan §5.5).
@@ -364,6 +376,16 @@ def bootstrap_inputs(state: Any, *, pass_name: str, installer: str) -> dict[str,
         inputs["workspace_apply_image"] = image_refs(project, region, {"workspace-apply": digests["workspace-apply"]})[
             "workspace-apply"
         ]
+    # Audit 3 A1: swarm-api's grants (each names the account by a string, so
+    # they wait for the pass after the one that creates it) and the workspace
+    # deployer, whose job needs the image and infra's Workflows and Eventarc.
+    for switch in API_GRANT_SWITCHES:
+        inputs[switch] = second
+    workspaces = second and "workspace_apply_image" in inputs
+    inputs["enable_workspace_deployer"] = workspaces
+    # K2 and K3 only: K1 also needs swarmFrontDoorAdmitter in
+    # workspace_deployer_roles, which an install leaves at its default.
+    inputs["enable_workspace_kinds"] = workspaces
     return _with_addons(inputs, state, "bootstrap")
 
 
@@ -448,6 +470,14 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
                               ("name", "github_app_name")):
             if app.get(key):
                 inputs[variable] = str(app[key])
+    # Audit 3 A1: approving a workspace publishes to swarm-workspace-apply
+    # once bootstrap pass 2 has made its job (with the image); infra-3 is the
+    # first infra pass after it.
+    inputs["workspace_apply_publish"] = after(pass_name, "infra-3") and "workspace-apply" in (
+        outputs.get("image_digests") or {})
+    # swarm-api reads a stored MCP credential through bootstrap pass 2's
+    # enable_mcp_credentials grant, which is in place by infra-3.
+    inputs["mcp_servers_enabled"] = after(pass_name, "infra-3")
     inputs["enable_github_hooks"] = (after(pass_name, "infra-4") and inputs["enable_github_app"]
                                      and bool(versions.get("swarm-github-app-webhook-secret")))
     sandbox = acceptance_sandbox(state)
