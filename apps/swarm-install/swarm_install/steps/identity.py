@@ -48,6 +48,19 @@ read fails its members' requests. The engine records a group in
 `frontend_iap_members`) only after the probe for that group is `met`; a failed
 probe registers nothing.
 
+**The Directory scopes when stage 0 has none** (audit N14). Google may refuse
+the Directory scopes to gcloud's own client at stage 0, which then records
+`directory_scopes` false and goes on. The first step here that calls the
+Directory API then signs the person in through the deployment's own Desktop
+client (stage 2 made it; its id is `desktop_client_id` and its secret is in the
+new context's swarm credential store, `verify_context`): `open_page` opens the
+consent page for the two Directory scopes, a listener on 127.0.0.1 takes the
+redirect, and the access token goes into an in-memory session used for the
+Directory calls only (`IdentityGcp.use_directory`). No refresh token is asked
+for, and the token is never written to the state, a file, an event or a log.
+A check never signs in: until an apply has, it reads swarm-api's own probe.
+A refused sign-in is a refusal like any other: the Admin console's page opens.
+
 **B04, lesson 20:** an `unauthorized_client` answer is the Admin console (the
 delegation or the admin role was never granted there), never IAM; only a
 `signJwt` refusal is a Google Cloud grant.
@@ -55,16 +68,24 @@ delegation or the admin role was never granted there), never IAM; only a
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import base64
+import datetime as dt
+import hashlib
+import html
+import secrets
+import threading
+import urllib.parse
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
-from .. import api_client
+from .. import api_client, secret_entry
 from ..api_client import ADMIN_ROLE, DELEGATION, ApiClient, GroupResult
 from ..exitcodes import MET, UNMET, WAITING
 from ..waits import WaitSpec
 from . import Observation, Plan, open_page
-from .preflight import ASK, EMAIL, GCP, IAM, ApiError, Ask, Gcp, remember
+from .preflight import ASK, EMAIL, GCP, IAM, ApiError, Ask, Gcp, directory_declined, remember
 
 GROUPS_SCOPE = "https://www.googleapis.com/auth/cloud-identity.groups.readonly"
 SWARM_API_ACCOUNT = "swarm-api"
@@ -108,6 +129,13 @@ WORKSPACE_SCOPES = (
     "https://www.googleapis.com/auth/admin.directory.rolemanagement",
 )
 
+#: The Desktop client's sign-in for the Directory scopes (stage 0 had none).
+DIRECTORY_SCOPES = WORKSPACE_SCOPES[1:]
+CONSENT_PAGE = "https://accounts.google.com/o/oauth2/v2/auth"
+CODE_EXCHANGE = "https://oauth2.googleapis.com/token"
+#: Long enough to pick the account and read the consent screen.
+DIRECTORY_SIGN_IN_TIMEOUT_S = 10 * 60
+
 #: The Admin console pages a person works on where no API answered.
 GROUPS_PAGE = "https://admin.google.com/ac/groups"
 ADMIN_ROLES_PAGE = "https://admin.google.com/ac/roles"
@@ -134,8 +162,33 @@ RUN_API = "https://run.googleapis.com/v2"
 CONSUMER_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
 
 
+class DirectorySignInFailed(LookupError):
+    """The Desktop client's sign-in for the Directory scopes did not give a
+    token that carries them; the step takes its Admin console page instead."""
+
+
 class IdentityGcp(Gcp):
-    """`preflight.Gcp` plus the reads stage 8's read-only checks make."""
+    """`preflight.Gcp` plus the reads stage 8's read-only checks make. The
+    Directory calls go through the Desktop client's session once one is
+    handed in (`use_directory`), else through the application-default one."""
+
+    _directory: Gcp | None = None
+
+    def use_directory(self, session: Any) -> None:
+        """The session the Desktop client's sign-in made, for the Directory
+        calls only; held in this process's memory, never written anywhere."""
+        self._directory = Gcp(session)
+
+    @property
+    def directory_ready(self) -> bool:
+        """A Directory session is held and its token has not expired."""
+        if self._directory is None:
+            return False
+        return not getattr(getattr(self._directory.session, "credentials", None), "expired", False)
+
+    @property
+    def _admin(self) -> Gcp:
+        return self._directory or self
 
     def custom_role(self, project: str, role: str) -> dict[str, Any] | None:
         return self._call("GET", f"{IAM}/projects/{project}/roles/{role}", missing_ok=True)
@@ -177,24 +230,24 @@ class IdentityGcp(Gcp):
 
     def customer_id(self) -> str:
         """The organisation's Workspace or Cloud Identity customer id (`C0...`)."""
-        found = self._call("GET", f"{ADMIN_DIRECTORY}/customers/my_customer") or {}
+        found = self._admin._call("GET", f"{ADMIN_DIRECTORY}/customers/my_customer") or {}
         customer = str(found.get("id") or "")
         if not customer:
             raise LookupError("the Directory API named no customer for the signed-in account")
         return customer
 
     def admin_roles(self, customer: str) -> list[dict[str, Any]]:
-        return self._pages(f"{ADMIN_DIRECTORY}/customer/{customer}/roles", "items")
+        return self._admin._pages(f"{ADMIN_DIRECTORY}/customer/{customer}/roles", "items")
 
     def role_assignments(self, customer: str, role_id: str) -> list[dict[str, Any]]:
-        return self._pages(f"{ADMIN_DIRECTORY}/customer/{customer}/roleassignments", "items",
-                           {"roleId": role_id})
+        return self._admin._pages(f"{ADMIN_DIRECTORY}/customer/{customer}/roleassignments", "items",
+                                  {"roleId": role_id})
 
     def assign_role(self, customer: str, role_id: str, assigned_to: str) -> dict[str, Any]:
         """`roleAssignments.insert`, organisation-wide, to a numeric unique id
         (a service account's `uniqueId`)."""
-        return self._call("POST", f"{ADMIN_DIRECTORY}/customer/{customer}/roleassignments",
-                          body={"roleId": role_id, "assignedTo": assigned_to, "scopeType": "CUSTOMER"}) or {}
+        return self._admin._call("POST", f"{ADMIN_DIRECTORY}/customer/{customer}/roleassignments",
+                                 body={"roleId": role_id, "assignedTo": assigned_to, "scopeType": "CUSTOMER"}) or {}
 
     # The Cloud Identity Groups API ---------------------------------------------
 
@@ -225,6 +278,146 @@ class _LazyIdentity:
 
 
 IDENTITY_GCP = _LazyIdentity()
+
+
+# -- the Directory scopes through the deployment's Desktop client (audit N14) -----
+
+
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def _post_token(form: Mapping[str, str]) -> dict[str, Any]:
+    """The code exchange at Google's token endpoint; an error names only Google's error code."""
+    import requests
+
+    try:
+        response = requests.post(CODE_EXCHANGE, data=dict(form), timeout=30)
+        answer = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise DirectorySignInFailed(f"Google's token endpoint did not answer ({type(exc).__name__})") from None
+    if response.status_code != 200:
+        raise DirectorySignInFailed(f"Google refused the sign-in code ({answer.get('error') or response.status_code})")
+    return answer
+
+
+def _loopback(answer: dict[str, str], done: threading.Event) -> HTTPServer:
+    """A listener on 127.0.0.1 that keeps the query of the first redirect."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args: Any) -> None:  # nothing on the terminal mid-flow
+            pass
+
+        def do_GET(self) -> None:  # noqa: N802
+            params = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(self.path).query))
+            if "code" not in params and "error" not in params:
+                self.send_response(404)  # a favicon or a pre-fetch, not the redirect
+                self.end_headers()
+                return
+            if not done.is_set():
+                answer.update(params)
+                done.set()
+            said = ("Signed in. You can close this tab; swarm install goes on." if "code" in params
+                    else f"The sign-in did not complete: {html.escape(params.get('error', ''))}")
+            page = f"<!doctype html><title>SwarmCloud</title><p>{said}</p>".encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(page)))
+            self.end_headers()
+            self.wfile.write(page)
+
+    return HTTPServer(("127.0.0.1", 0), Handler)
+
+
+def desktop_directory_session(ctx: Any, *, client_id: str, client_secret: str,
+                              exchange: Callable[[Mapping[str, str]], dict[str, Any]] = _post_token,
+                              timeout: float = DIRECTORY_SIGN_IN_TIMEOUT_S) -> Any:
+    """The installed-app flow (PKCE and the client's secret) for the two
+    Directory scopes, through the deployment's Desktop client: the consent
+    page opens with `open_page`, the redirect comes back to a listener on
+    127.0.0.1, and the code is exchanged for an access token. Returns an
+    authorized session over that token; no refresh token is asked for and
+    nothing is written anywhere."""
+    from google.auth.transport.requests import AuthorizedSession
+    from google.oauth2.credentials import Credentials
+
+    verifier = _b64url(secrets.token_bytes(48))
+    state = _b64url(secrets.token_bytes(24))
+    answer: dict[str, str] = {}
+    done = threading.Event()
+    server = _loopback(answer, done)
+    redirect_uri = f"http://127.0.0.1:{server.server_address[1]}"
+    query = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": " ".join(DIRECTORY_SCOPES),
+        "code_challenge": _b64url(hashlib.sha256(verifier.encode()).digest()),
+        "code_challenge_method": "S256",
+        "state": state,
+        "prompt": "consent",
+        # Online: Google issues no refresh token, so nothing outlives this run.
+        "access_type": "online",
+    }
+    if installer(ctx):
+        query["login_hint"] = installer(ctx)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True)
+    thread.start()
+    try:
+        open_page(f"{CONSENT_PAGE}?{urllib.parse.urlencode(query)}", why=(
+            "Stage 0's Google sign-in went without the Directory scopes, and this step reads your "
+            "organisation's Directory (its customer id and admin roles). Sign in on this page and allow "
+            "the two read and role-management Directory scopes for this deployment's own client; the "
+            "install goes on by itself once you have."))
+        if not done.wait(timeout):
+            raise DirectorySignInFailed(f"no answer from the browser within {int(timeout)} s")
+    finally:
+        server.shutdown()
+        server.server_close()
+    if answer.get("state") != state:
+        raise DirectorySignInFailed("the redirect carried another sign-in's state; nothing was used")
+    if "error" in answer:
+        raise DirectorySignInFailed(f"Google did not grant the Directory scopes: {answer['error']}")
+    tokens = exchange({"client_id": client_id, "client_secret": client_secret, "code": answer.get("code", ""),
+                       "code_verifier": verifier, "redirect_uri": redirect_uri,
+                       "grant_type": "authorization_code"})
+    granted = set(str(tokens.get("scope") or "").split())
+    token = str(tokens.get("access_token") or "")
+    if not token or not set(DIRECTORY_SCOPES) <= granted:
+        raise DirectorySignInFailed("Google signed you in without the Directory scopes")
+    expires_in = int(tokens.get("expires_in") or 3600)
+    # google-auth compares a naive UTC expiry.
+    expiry = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(seconds=max(expires_in - 60, 0))
+    return AuthorizedSession(Credentials(token=token, expiry=expiry, scopes=list(DIRECTORY_SCOPES)))
+
+
+def _stored_desktop_secret(ctx: Any) -> str:
+    """The Desktop client's secret from the new deployment's context in the
+    swarm credential store (stage 2 put it there, `verify_context`), else ""."""
+    context = str(ctx.outputs.get("verify_context") or "")
+    if not context:
+        return ""
+    try:
+        from swarm_mcp import credentials  # the swarm_mcp wheel install.sh installs beside this one
+    except ImportError:
+        return ""
+    try:
+        return credentials.store().get(credentials.key(context, credentials.CLIENT_SECRET)) or ""
+    except Exception:  # noqa: BLE001 - a store that cannot be read is the hidden prompt's case
+        return ""
+
+
+def directory_sign_in(ctx: Any, *, step_id: str = "identity.directory-sign-in") -> Any:
+    """A Directory session through the deployment's Desktop client: its id
+    from the state, its secret from the credential store (typed at a hidden
+    prompt only when the store has none)."""
+    client_id = str(ctx.outputs.get("desktop_client_id") or "")
+    if not client_id:
+        raise DirectorySignInFailed("no Desktop client id is recorded (edge.desktop-client records it)")
+    client_secret = _stored_desktop_secret(ctx) or secret_entry.type_secret(
+        ctx, step_id=step_id, what="the Desktop client's secret",
+        prompt="The Desktop client's secret, for the Directory sign-in", use=lambda value: value.decode())
+    return desktop_directory_session(ctx, client_id=client_id, client_secret=client_secret)
 
 
 def swarm_api_email(project: str) -> str:
@@ -330,12 +523,26 @@ def described(groups: dict[str, str]) -> str:
 class _Workspace(_Base):
     """A stage 8 step that writes through the Groups or Directory API."""
 
-    def __init__(self, gcp: Callable[[], IdentityGcp], ask: Ask, api: ApiFactory = api_client.for_install) -> None:
+    def __init__(self, gcp: Callable[[], IdentityGcp], ask: Ask, api: ApiFactory = api_client.for_install, *,
+                 directory: Callable[[Any], Any] | None = None) -> None:
         super().__init__(gcp, ask, api)
+        self._directory = directory
 
     @property
     def gcp(self) -> IdentityGcp:
         return self._gcp()  # type: ignore[return-value]
+
+    def _directory_pending(self, ctx: Any) -> bool:
+        """Stage 0 went without the Directory scopes and no Desktop-client
+        session is held yet: a Directory call would be refused."""
+        return directory_declined(ctx) and not getattr(self.gcp, "directory_ready", False)
+
+    def _directory_access(self, ctx: Any) -> None:
+        """Before an apply's Directory calls: sign in through the Desktop
+        client when `_directory_pending`. Raises DirectorySignInFailed."""
+        if self._directory_pending(ctx):
+            sign_in = self._directory or (lambda c: directory_sign_in(c, step_id=self.id))
+            self.gcp.use_directory(sign_in(ctx))
 
     def deep_link(self, ctx: Any) -> None:
         """No page by default: the step opens one itself, only when an API refused."""
@@ -390,6 +597,7 @@ class GroupsStep(_Workspace):
             why = "You chose to create the groups yourself"
         else:
             try:
+                self._directory_access(ctx)
                 parent = f"customers/{self.gcp.customer_id()}"
                 for role, email in groups.items():
                     if email in missing:
@@ -448,16 +656,23 @@ class GroupsReaderRoleStep(_Workspace):
         unique_id = self._client_id(ctx)
         if not unique_id:
             return Observation(UNMET, f"{account} does not exist yet (bootstrap pass 1 creates it)")
-        try:
-            assigned = self._assigned(ctx, unique_id)
-        except ApiError as exc:
+        assigned: bool | None = None
+        if self._directory_pending(ctx):
+            # A check never signs in: the apply asks for the Directory scopes.
+            unlisted = "are not listed until stage 8 signs in with the Directory scopes"
+        else:
+            try:
+                assigned = self._assigned(ctx, unique_id)
+            except ApiError as exc:
+                unlisted = f"could not be listed ({exc})"
+        if assigned is None:
             # The assignment list is closed to this sign-in: swarm-api's own read
             # in admin-role mode is then the proof the role is there.
             found = self._probed(ctx)
             if found is not None and found.state == MET:
                 return Observation(MET, f"swarm-api reads {found.group} with the {GROUPS_READER} role",
                                    {"groups_auth": ADMIN_ROLE})
-            return Observation(UNMET, f"the {GROUPS_READER} assignments could not be listed ({exc}) and swarm-api "
+            return Observation(UNMET, f"the {GROUPS_READER} assignments {unlisted} and swarm-api "
                                       f"does not read groups as {account} yet")
         if not assigned:
             return Observation(UNMET, f"{account} does not hold the {GROUPS_READER} admin role")
@@ -490,6 +705,7 @@ class GroupsReaderRoleStep(_Workspace):
             unique_id = self._client_id(ctx)
             if not unique_id:
                 raise LookupError(f"{account} does not exist yet")
+            self._directory_access(ctx)
             customer = self.gcp.customer_id()
             self.gcp.assign_role(customer, self._role_id(customer), unique_id)
             ctx.events.emit("step_apply", step=self.id, message=f"assigned {GROUPS_READER} to {account}")
