@@ -6,6 +6,7 @@ No credentials and no emulator: Google's APIs and swarm-api are fakes.
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -143,3 +144,58 @@ def test_scheduled_doctor_stays_off_until_a_later_lane_turns_it_on():
     assert "off" in line and "enable_scheduled_doctor" in line
     on = FakeGcp({f"https://run.googleapis.com/v2/projects/{PROJECT}/locations/us-central1/jobs/swarm-doctor": {}})
     assert "is on" in doctor.hourly_doctor(target, doctor.Deps(gcp=on))
+
+
+def _doctor_tf_metric() -> tuple[dict[str, str], set[str]]:
+    """doctor_findings' jsonPayload equalities, and the jsonPayload fields its
+    label extractors read, from terraform/infra/doctor.tf itself."""
+    doctor_tf = (ROOT / "terraform/infra/doctor.tf").read_text()
+    block = re.search(r'resource "google_logging_metric" "doctor_findings" \{(.*?)\n\}', doctor_tf, re.S)
+    assert block, "terraform/infra/doctor.tf has no google_logging_metric.doctor_findings"
+    body = block.group(1)
+    filter_line = re.search(r'^\s*filter\s*=\s*"(.*)"\s*$', body, re.M)
+    assert filter_line
+    equalities = dict(re.findall(r'jsonPayload\.(\w+)=\\"([^"\\]*)\\"', filter_line.group(1)))
+    extracted = set(re.findall(r'EXTRACT\(jsonPayload\.(\w+)\)', body))
+    return equalities, extracted
+
+
+def test_one_doctor_finding_line_per_finding_carries_what_the_metric_reads(capsys):
+    equalities, extracted = _doctor_tf_metric()
+    assert equalities.get("event") == "doctor_finding"
+    gcp = FakeGcp({
+        "https://storage.googleapis.com/storage/v1/b/swarm-tfstate-proj-hourly/":
+            {"outputs": {"desktop_client_id": "c"}},
+        "https://serviceusage.googleapis.com/": {"state": "DISABLED"},
+    })
+    code = sd.main(ENV, gcp=gcp, api=_api([]), kube=None, manifest=_manifest(), principal="")
+    assert code == ExitCode.OK
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+    # The metric's filter matches exactly the two unmet findings, not the met check.
+    matched = [line for line in lines if all(line.get(k) == v for k, v in equalities.items())]
+    assert [line["entry"] for line in matched] == ["api.run", "secret.x"]
+    for line in matched:
+        assert line["state"] == "unmet"
+        assert isinstance(line["fix"], str) and line["fix"]
+        assert extracted <= set(line), f"doctor.tf's label extractors read {sorted(extracted - set(line))}"
+        assert "id-token" not in json.dumps(line)
+    # The summary line is still written, and is not counted.
+    summary = [line for line in lines if "checks" in line]
+    assert summary == [{"checks": 3, "findings": 2, "exit_code": summary[0]["exit_code"]}]
+    assert "event" not in summary[0]
+
+
+def test_an_unknown_finding_is_a_doctor_finding_too(capsys):
+    # An unreadable answer is unknown, and the alert fires for it as for unmet.
+    class Broken(FakeGcp):
+        def get(self, url, *, permission, resource):
+            if url.startswith("https://serviceusage.googleapis.com/"):
+                raise RuntimeError("the service did not answer")
+            return super().get(url, permission=permission, resource=resource)
+
+    sd.main(ENV, gcp=Broken({}), api=_api([]), kube=None, manifest=_manifest(), principal="")
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+    states = {line["entry"]: line["state"] for line in lines if line.get("event") == "doctor_finding"}
+    assert states.get("api.run") == "unknown"
+    assert "workspace-group.admins" not in states
