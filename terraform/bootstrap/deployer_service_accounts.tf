@@ -94,7 +94,7 @@ locals {
 }
 
 resource "google_service_account_iam_member" "deployer_admin" {
-  for_each = var.enable_github_wif ? local.deployer_admin_accounts : toset([])
+  for_each = local.deployer_on ? local.deployer_admin_accounts : toset([])
 
   service_account_id = "projects/${var.project_id}/serviceAccounts/${each.key}@${var.project_id}.iam.gserviceaccount.com"
   role               = "roles/iam.serviceAccountAdmin"
