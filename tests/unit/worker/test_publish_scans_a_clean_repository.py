@@ -47,6 +47,7 @@ from test_agent_commits_are_kept import (
     _rev,
 )
 from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
+    _the_fence_holds,
     forge,
     local_urls,
     origin,
