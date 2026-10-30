@@ -584,3 +584,85 @@ def test_team_or_older_state_keeps_the_team_group() -> None:
     for outputs in ({}, {"sizing": _sizing("team", 12)}):
         ctx = ctx_for(outputs={"org_domain": DOMAIN, "installer": INSTALLER, **outputs})
         assert identity.install_groups(ctx) == {"admin": f"swarm-admins@{DOMAIN}", "team": f"swarm-team@{DOMAIN}"}
+
+
+def test_delegation_reapplies_and_opens_the_delegation_page(tmp_path: Path, pages: list[tuple[str, str]]) -> None:
+    """Audit #21: choosing delegation finishes in the same run. The apply
+    records the choice, opens the Admin console's domain-wide delegation page
+    with swarm-api's numeric client id and the scope to paste there, and runs
+    the stage-8 re-apply (so GROUPS_AUTH is rendered) before the poll, which
+    then passes instead of waiting on a mode swarm-api cannot reach."""
+    gcp = QaFakeGcp()
+    reapply = FakeReapply(gcp)
+    api = FakeApi(ADMIN_ROLE)
+
+    def rendered(group: str) -> GroupResult:
+        # swarm-api reads in delegation mode only once the re-apply rendered it.
+        api.mode = DELEGATION if reapply.applied else ADMIN_ROLE
+        return GroupResult(group, MET)
+
+    api.answer = rendered
+    rig = Rig(tmp_path)
+    _seed(rig, groups_auth=DELEGATION, workspace_groups={"admin": ADMINS, "team": GROUP})
+    ask = Answers(identity_group_read=["groups-reader@example.com"])
+    step = identity.GroupReadStep(lambda: IdentityGcp(), ask, lambda c: api)
+    result = rig.engine([step, reapply]).run()
+
+    assert result.exit_code == ExitCode.OK, result.message
+    assert reapply.applied == 1
+    state = rig.store.load()
+    assert state.done(step.id) and state.outputs["groups_auth"] == DELEGATION
+    assert state.outputs["groups_impersonate_user"] == "groups-reader@example.com"
+    assert [url for url, _ in pages] == [identity.DELEGATION_PAGE]
+    assert identity.DELEGATION_PAGE == "https://admin.google.com/ac/owl/domainwidedelegation"
+    why = pages[0][1]
+    assert "112233445566778899001" in why and identity.GROUPS_SCOPE in why
+
+
+def test_admin_role_path_neither_reapplies_nor_opens_the_delegation_page(
+        tmp_path: Path, pages: list[tuple[str, str]]) -> None:
+    """The admin-role path keeps its order: no delegation page, and the
+    re-apply runs where the engine puts it, not from identity.group-read."""
+    gcp = QaFakeGcp()
+    reapply = FakeReapply(gcp)
+    rig = Rig(tmp_path)
+    _seed(rig, groups_auth=ADMIN_ROLE, workspace_groups={"admin": ADMINS, "team": GROUP})
+    step = identity.GroupReadStep(lambda: IdentityGcp(), Answers(), lambda c: FakeApi(ADMIN_ROLE))
+    ctx = ctx_for(outputs=rig.store.load().outputs)
+    ctx.engine = type("E", (), {"steps": [reapply]})()
+    ctx.dry_run = True
+    step.apply(ctx, step.plan(ctx))
+    assert reapply.applied == 0 and pages == []
+
+
+def test_delegation_mismatch_never_says_run_again() -> None:
+    """A swarm-api still in the other mode is unmet with a reason that names
+    the re-apply, never "run swarm install again"."""
+    ctx = ctx_for(outputs={"probe_group": GROUP, "probe_member": MEMBER, "groups_auth": DELEGATION})
+    observed = identity.GroupReadStep(lambda: IdentityGcp(), Answers(), lambda c: FakeApi(ADMIN_ROLE)).check(ctx)
+    assert observed.status == UNMET and "GROUPS_AUTH" in observed.detail
+    assert "run swarm install again" not in observed.detail
+
+
+def test_stage_1_enables_the_directory_api() -> None:
+    """Audit #22: stage 8 calls admin.googleapis.com billed to the project, so
+    stage 1's one API list (foundations.core_apis) enables it."""
+    from swarm_install.manifest import load
+    from swarm_install.steps.foundations import core_apis
+
+    manifest = load()
+    assert core_apis(manifest).get("api.admin") == "admin.googleapis.com"
+    entry = next(e for e in manifest.entries if e.id == "api.admin")
+    assert entry.step == "foundations.apis" and entry.stage == 1
+    assert identity.ADMIN_DIRECTORY.startswith("https://admin.googleapis.com/")
+
+
+def test_one_person_install_keeps_the_group_steps() -> None:
+    """Owner decision (audit #23): a one-person install keeps stage 8's
+    identity.groups and identity.groups-reader-role; only the team group goes."""
+    ctx = ctx_for(outputs={"org_domain": DOMAIN, "installer": INSTALLER, "sizing": _sizing("individual", 1)})
+    ids = [step.id for step in identity.build_steps()]
+    assert "identity.groups" in ids and "identity.groups-reader-role" in ids
+    assert identity.install_groups(ctx) == {"admin": f"swarm-admins@{DOMAIN}"}
+    plan = identity.GroupsStep(lambda: WorkspaceGcp(), Answers(), lambda c: FakeApi()).plan(ctx)
+    assert f"swarm-admins@{DOMAIN}" in plan.summary
