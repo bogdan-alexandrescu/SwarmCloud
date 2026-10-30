@@ -216,7 +216,9 @@ link_into_person_path() {
       "${HOME}"/*) ;;
       *) continue ;;
     esac
-    [ -d "${dir}" ] && [ -w "${dir}" ] || continue
+    if [ ! -d "${dir}" ] || [ ! -w "${dir}" ]; then
+      continue
+    fi
     linked=""
     for tool in swarm sc; do
       [ -x "${TOOL_BIN}/${tool}" ] || continue
