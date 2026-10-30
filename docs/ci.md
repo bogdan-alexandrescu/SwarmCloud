@@ -2624,6 +2624,28 @@ as before. A `publish_to_pr` workflow is not read here: its branch's agent is
 known only after `stamp`. The same switch turns it off
 (`REFUSAL_CI_FIX_LANE_OWNS_PR=off`).
 
+**A CI fix waits for another live CI fix of its pull request** (#2763). The
+claim (`ci_fix_in_flight`) keys a failure by head and run, so a red run at
+another head, or another red run at the same head, counted as another failure
+and got a second fix beside the first. On PR #2730 this fixer's attempt 1
+(task_f11210cf) was RUNNING on bb31584 when attempt 2 (task_af11c3ba) was
+admitted at 62a6fbac. Attempt 2 pushed 9e193de0 first, and attempt 1's publish
+conflicted. Why: a pull request has one writer at a time, and two CI fixes on
+one branch race exactly as a fix and a lane's round do. So `cifix.stamp`
+answers 409 `ci_fix_lane_owns_pr` while another CI fix of the same pull
+request is live -- a non-terminal agent continuing the same branch agent, or a
+claim still inside its two-minute grace whose agent is not written yet -- at
+any head and from any run, before the cap and the claim, so nothing is
+written. The detail names the live fix's `task_id`, `workflow_id` and
+`head_sha`, with `ci_fix: true`. When that fix pushes, CI runs again at its
+head, and a red run there gets its own fix. It is this refusal, not
+`ci_fix_in_flight`, because this one ships on and the script reads it as a
+skip, while `ci_fix_in_flight` is report-only and refuses nothing in
+production. A re-delivery of the very failure the live fix is on is still
+answered `ci_fix_in_flight` by the claim, as before. A finished fix, a fix of
+another pull request and another tenant's fix are passed over. The same
+switch turns it off (`REFUSAL_CI_FIX_LANE_OWNS_PR=off`).
+
 **A request that pushes to a pull request waits while a fix holds it**
 (#2535). The gates above read only a request that carries `metadata.ci_fix`.
 Anything else went straight through. On 2026-10-26 an `implement` step of

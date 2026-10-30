@@ -380,7 +380,10 @@ SWITCHES: dict[str, Switch] = {
     # runs its own CI-fix rounds from issueci and has no merge step), or
     # while a conflict fix (#2456) or a plain continuation of the lane --
     # `continues_task` or `publish_to_pr` onto its branch, no writer mark
-    # (#2583, `_refuse_if_continuation_live`) -- is live and pushes to it.
+    # (#2583, `_refuse_if_continuation_live`) -- is live and pushes to it,
+    # or while another CI fix of the pull request is live at another head or
+    # run (#2763, `_refuse_if_ci_fix_live`: on PR #2730 attempt 2 pushed
+    # beside a RUNNING attempt 1, whose publish conflicted).
     # SHIPS ON (default=True) by owner decision 2026-10-21 (~15:15Z, asked
     # after this lane was held), unlike a new refusal's usual report-only
     # start (the 2026-10-08 rule): about 20% of standalone ci-fix pushes were
@@ -398,7 +401,8 @@ SWITCHES: dict[str, Switch] = {
         "request (its pr_task_id is the continued root, or the root's workflow is one of its "
         "ci_fix_workflows), refused naming the run, which runs its own rounds, or while a "
         "conflict fix or a plain continuation of the lane (continues_task or publish_to_pr "
-        "onto its branch) is live and pushing to it, refused naming that task. Ships on by owner decision 2026-10-21: scripts/ci-fix.sh reads "
+        "onto its branch) is live and pushing to it, or another CI fix of the pull request is "
+        "live at another head or run, refused naming that task. Ships on by owner decision 2026-10-21: scripts/ci-fix.sh reads "
         "the 409 as a skip, and off "
         "the standalone fixer races the lane's round for the branch again",
         default=True,

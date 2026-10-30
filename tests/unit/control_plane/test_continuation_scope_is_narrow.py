@@ -529,6 +529,9 @@ def test_the_listed_accounts_integrator_fix_is_capped_and_stamped_for_the_post_b
         assert response.status_code == 201, response.text
         fix_task_id = response.json()["workflow"]["steps"][0]["task_id"]
         assert db.docs[f"tasks/{fix_task_id}"]["metadata"]["ci_fix"]["postback"] == "pending"
+        # Ended before the next: a live CI fix of the pull request refuses
+        # another at any head or run (#2763, test_cifix_one_fix_per_pr.py).
+        db.docs[f"tasks/{fix_task_id}"]["state"] = "FAILED"
     # Numbered 2 again: only the API's own count of the pull request's fix
     # workflows can refuse it, not the record's attempt <= max_attempts check.
     third = fixer_client.post("/v1/workflows", headers=FIXER_HEADERS, json=red_run(2, run_id=3))
