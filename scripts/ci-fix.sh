@@ -43,6 +43,10 @@
 #      live plain continuation of the lane -- a `continues_task` or
 #      `publish_to_pr` step pushing to the same branch (#2583,
 #      `detail.plain_continuation`): CI runs again at the head it pushes.
+#      So does another CI fix of the same pull request that is live at
+#      another head or from another run (#2763, `detail.ci_fix`,
+#      `detail.head_sha`): two fixes of one pull request raced each other
+#      for its branch, and the one that pushed second conflicted.
 #      This script makes no read of its own, and on that answer logs the
 #      skip, comments nothing and passes.
 #   1b. NOT A FAILURE MAIN HAS TOO (#2367). Before any log is read, the
@@ -88,8 +92,9 @@
 # nothing ran -- except two 409s, each logged with the ids it names, with no
 # comment, and the run passes: `ci_fix_in_flight`, the failure already has a
 # live fix task; and `ci_fix_lane_owns_pr`, the lane's merge step or a live
-# issue run owns the pull request and fixes CI here itself, or a conflict fix
-# or a continuation of the lane is pushing to its branch (1a).
+# issue run owns the pull request and fixes CI here itself, or a conflict fix,
+# a continuation of the lane or another CI fix of the pull request (#2763) is
+# pushing to its branch (1a).
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
@@ -568,10 +573,11 @@ run_fix() {
     fi
     # 409 `ci_fix_lane_owns_pr` (swarm_api.cifix.CiFixLaneOwnsPr, 1a): the
     # lane's merge step, or a non-terminal issue run (#2216), is live and runs
-    # this pull request's CI-fix rounds, or a conflict fix or a continuation
-    # of the lane is pushing to its branch. Skip: name the live task and its
-    # workflow, or the issue run and its state, post no comment, pass. The
-    # same rule as above -- only the ids, only in their minted shape.
+    # this pull request's CI-fix rounds, or a conflict fix, a continuation of
+    # the lane or another CI fix of the pull request (#2763) is pushing to its
+    # branch. Skip: name the live task and its workflow, or the issue run and
+    # its state, post no comment, pass. The same rule as above -- only the
+    # ids, only in their minted shape.
     if [[ "${API_STATUS}" == "409" && "${code}" == "ci_fix_lane_owns_pr" ]]; then
       local merge_task lane_workflow
       merge_task="$(jq -r '.detail.task_id // empty | strings | select(test("^task_[0-9a-f]{20}$"))' \
@@ -591,10 +597,20 @@ run_fix() {
       local plain_continuation conflict_fix
       plain_continuation="$(jq -r '.detail.plain_continuation == true' "${WORK}/response" 2>/dev/null || printf 'false')"
       conflict_fix="$(jq -r '.detail.conflict_fix == true' "${WORK}/response" 2>/dev/null || printf 'false')"
+      # Another CI fix of this pull request is live at another head or from
+      # another run (#2763): the detail names it and its head, read only as
+      # a 40-hex sha.
+      local live_ci_fix live_head
+      live_ci_fix="$(jq -r '.detail.ci_fix == true' "${WORK}/response" 2>/dev/null || printf 'false')"
+      live_head="$(jq -r '.detail.head_sha // empty | strings | select(test("^[0-9a-f]{40}$"))' \
+        "${WORK}/response" 2>/dev/null || true)"
+      live_head="${live_head:0:12}"
       if [[ "${plain_continuation}" == "true" ]]; then
         ok "#${pr}: a continuation of the lane (task ${merge_task:-unknown}, workflow ${lane_workflow:-unknown}) is pushing to this pull request's branch; no standalone fix, no comment"
       elif [[ "${conflict_fix}" == "true" ]]; then
         ok "#${pr}: a conflict fix (task ${merge_task:-unknown}, workflow ${lane_workflow:-unknown}) is merging the base into this pull request's branch; no standalone fix, no comment"
+      elif [[ "${live_ci_fix}" == "true" ]]; then
+        ok "#${pr}: a CI fix (task ${merge_task:-unknown}, workflow ${lane_workflow:-unknown}) at ${live_head:-an unknown head} is live on this pull request and pushes to its branch; CI runs again at its head; no second fix, no comment"
       elif [[ -n "${issue_run}" ]]; then
         ok "#${pr}: issue run ${issue_run} (${issue_run_state:-unknown}) owns this pull request and runs its own CI-fix rounds; no standalone fix, no comment"
       else
