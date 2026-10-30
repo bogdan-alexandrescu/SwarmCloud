@@ -2,6 +2,12 @@
 a person, signed, and the stable channel moves only after the manual test
 (DAYONE-RELEASE-1; plan §7.2 steps 5-6, §7.3; D22; lesson 27).
 
+Since DAYONE-RELEASE-CI (BGD, 2026-10-30) the person may be the reviewer of a
+dispatched publish-release run instead of a terminal: `--ci` takes the
+version typed into the dispatch form (`SWARM_PUBLISH_VERSION`) as the typed
+confirmation, under GitHub Actions only, for a publish only. A promotion stays
+a person's typed act.
+
 Every test runs the script against fake `gcloud`, `gcrane` and `cosign` first
 on PATH: each logs its argv and answers reads from a state file. Nothing here
 reaches Google Cloud. The bundle is one real assemble.sh run of this checkout.
@@ -101,7 +107,10 @@ def _env(tmp_path: Path, state: dict) -> dict[str, str]:
         path.chmod(0o755)
     (tmp_path / "state.json").write_text(json.dumps(state))
     (tmp_path / "calls.log").write_text("")
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("CLOUDSDK_", "GOOGLE_", "SWARM_"))}
+    # GITHUB_ too: a run of these tests inside Actions must not stand in for
+    # the Actions run `--ci` asks for; a test that wants one says so.
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("CLOUDSDK_", "GOOGLE_", "SWARM_", "GITHUB_"))}
     env.update(
         PATH=f"{bindir}{os.pathsep}{env.get('PATH', '')}",
         FAKE_STATE=str(tmp_path / "state.json"),
@@ -333,6 +342,92 @@ def test_dry_run_writes_nothing(tmp_path: Path, bundle: Path, assembled: tuple[P
     assert proc.returncode == 0, proc.stderr[-3000:]
     assert _writes(_calls(tmp_path)) == []
     assert "gcrane cp" in proc.stderr and "cosign sign" in proc.stderr
+
+
+# -- --ci: the dispatched, approved run stands for the typed version (DAYONE-RELEASE-CI) -----
+
+
+def _actions(version: str | None = VERSION, actions: str | None = "true", **extra: str) -> dict:
+    """The environment publish-release.yml gives publish.sh."""
+    env = dict(extra)
+    if actions is not None:
+        env["GITHUB_ACTIONS"] = actions
+    if version is not None:
+        env["SWARM_PUBLISH_VERSION"] = version
+    return env
+
+
+def _publish_ci(tmp_path: Path, bundle: Path, record: Path, env: dict, *more: str) -> subprocess.CompletedProcess:
+    # No terminal: nobody is there to type, which is the point.
+    return _run(tmp_path, {}, "--bundle", str(bundle), "--source-images", str(record), "--ci", *more,
+                typed=None, extra_env=env)
+
+
+def test_ci_publish_under_actions_with_the_dispatched_version(tmp_path: Path, bundle: Path,
+                                                              assembled: tuple[Path, Path]) -> None:
+    """In Actions, with the dispatch form's version equal to the bundle's,
+    `--ci` publishes with no terminal, exactly as a typed publish does."""
+    proc = _publish_ci(tmp_path, bundle, assembled[1], _actions())
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-3000:]
+    calls = _calls(tmp_path)
+    assert [c for c in calls if c[:2] == ["gcrane", "cp"]], "nothing was copied"
+    assert [c for c in calls if c[:2] == ["cosign", "sign"]], "nothing was signed"
+    dest = _destinations(calls)
+    assert dest[-1] == f"{RELEASE}/SHA256SUMS", dest
+    assert all(d.startswith(RELEASE) for d in dest), dest
+    assert "to continue" not in proc.stderr
+    assert "SWARM_PUBLISH_VERSION" in proc.stderr, proc.stderr
+
+
+@pytest.mark.parametrize("actions", [None, "", "false", "1", "TRUE"])
+def test_ci_refused_outside_actions(tmp_path: Path, bundle: Path, assembled: tuple[Path, Path],
+                                    actions: str | None) -> None:
+    """Outside GitHub Actions `--ci` is refused before anything is called,
+    even with the matching version set."""
+    proc = _publish_ci(tmp_path, bundle, assembled[1], _actions(actions=actions))
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "GITHUB_ACTIONS" in proc.stderr, proc.stderr
+    assert _calls(tmp_path) == []
+
+
+@pytest.mark.parametrize("version", [None, "", "2026.10.2", f"{VERSION}-rc.1", f" {VERSION}"])
+def test_ci_refused_unless_the_dispatched_version_matches(tmp_path: Path, bundle: Path,
+                                                          assembled: tuple[Path, Path],
+                                                          version: str | None) -> None:
+    """The version typed into the dispatch form is the confirmation: absent,
+    or not the bundle's, it confirms nothing and nothing is written."""
+    proc = _publish_ci(tmp_path, bundle, assembled[1], _actions(version=version))
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "SWARM_PUBLISH_VERSION" in proc.stderr, proc.stderr
+    assert _writes(_calls(tmp_path)) == []
+
+
+def test_ci_is_not_answered_by_assume_yes(tmp_path: Path, bundle: Path, assembled: tuple[Path, Path]) -> None:
+    proc = _publish_ci(tmp_path, bundle, assembled[1], _actions(version="2026.10.2", SWARM_ASSUME_YES="1"))
+    assert proc.returncode != 0
+    assert _writes(_calls(tmp_path)) == []
+
+
+def test_actions_without_ci_still_needs_the_version_typed(tmp_path: Path, bundle: Path,
+                                                          assembled: tuple[Path, Path]) -> None:
+    """Nothing but `--ci` turns the dispatched version into a confirmation."""
+    proc = _run(tmp_path, {}, "--bundle", str(bundle), "--source-images", str(assembled[1]),
+                typed=None, extra_env=_actions())
+    assert proc.returncode != 0
+    assert _writes(_calls(tmp_path)) == []
+
+
+@pytest.mark.parametrize("mode", ["promote", "record-test"])
+def test_ci_never_promotes_or_records(tmp_path: Path, mode: str) -> None:
+    """The stable channel and the test record stay a person's typed act."""
+    record = tmp_path / "tested.json"
+    record.write_text(_tested())
+    args = ["--promote", VERSION] if mode == "promote" else ["--record-test", VERSION, "--record", str(record)]
+    state = _published(**({f"{RELEASE}/TESTED": _tested()} if mode == "promote" else {}))
+    proc = _run(tmp_path, state, *args, "--ci", typed=None, extra_env=_actions())
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "--ci" in proc.stderr, proc.stderr
+    assert _calls(tmp_path) == []
 
 
 @pytest.mark.parametrize("project", ["agents-staging", "some-other-project"])

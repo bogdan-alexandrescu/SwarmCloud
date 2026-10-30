@@ -3,16 +3,23 @@
 # promote it to the stable channel (DAYONE-RELEASE-1; docs/design/day-one-plan.md
 # sections 7.2 steps 5-6 and 7.3; D22).
 #
-#   scripts/release/publish.sh --bundle DIR --source-images build/images-<env>.json [--dry-run]
+#   scripts/release/publish.sh --bundle DIR --source-images build/images-<env>.json [--dry-run] [--ci]
 #   scripts/release/publish.sh --record-test V --record tested.json [--dry-run]
 #   scripts/release/publish.sh --promote V [--dry-run]
 #   ... [--project swarmcloud-releases]   (D23: had `swarmcloud` been taken)
 #
-# Run by a PERSON with rights in the release home, never by CI: CI holds no
-# grant in project `swarmcloud-prod`, so D22's "no IAM change for CI" holds. DIR is
-# what scripts/release/assemble.sh wrote (release-public.yml uploads it as a
-# workflow artefact); --source-images is the build record it was assembled
-# from, which says where CI's registry holds each digest.
+# A publish is confirmed by a PERSON, one of two ways. At a terminal, by typing
+# V. Or, since BGD's "Move publishing into CI now" (2026-10-30, DAYONE-RELEASE-CI,
+# which ends D22's "CI holds no grant in the release home"), by dispatching
+# .github/workflows/publish-release.yml with V and approving its `release`
+# environment: that run calls --bundle ... --ci, and the version typed into
+# the dispatch form, handed over as SWARM_PUBLISH_VERSION, stands for the typed
+# V. --ci is refused unless GITHUB_ACTIONS is `true` and SWARM_PUBLISH_VERSION
+# is exactly the bundle's version; nothing else (SWARM_ASSUME_YES least of
+# all) answers the confirmation. --record-test and --promote take no --ci: the
+# stable channel moves only by a person's typed act. DIR is what
+# scripts/release/assemble.sh wrote; --source-images is the build record it
+# was assembled from, which says where CI's registry holds each digest.
 #
 # --bundle: publish release V (read from the bundle) under releases/V/:
 #   1. checks, before anything is written: every file matches SHA256SUMS and
@@ -72,7 +79,7 @@ BUCKET="gs://swarmcloud"
 KEYRING="swarmcloud-release"
 KEY="cosign"
 
-MODE=""; BUNDLE=""; SOURCE_IMAGES=""; VERSION=""; RECORD=""; DRY_RUN=0
+MODE=""; BUNDLE=""; SOURCE_IMAGES=""; VERSION=""; RECORD=""; DRY_RUN=0; CI_RUN=0
 
 usage() { sed -n '2,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 set_mode() {
@@ -89,6 +96,7 @@ while [[ $# -gt 0 ]]; do
     --promote)       [[ $# -ge 2 ]] || usage; set_mode promote; VERSION="$2"; shift 2 ;;
     --project)       [[ $# -ge 2 ]] || usage; PROJECT="$2"; shift 2 ;;
     --dry-run)       DRY_RUN=1; shift ;;
+    --ci)            CI_RUN=1; shift ;;
     -h|--help)       usage ;;
     *) err "unknown argument: $1"; usage ;;
   esac
@@ -96,6 +104,17 @@ done
 [[ -n "${MODE}" ]] || usage
 [[ "${MODE}" != publish || -n "${SOURCE_IMAGES}" ]] || { err "--bundle needs --source-images"; usage; }
 [[ "${MODE}" != record || -n "${RECORD}" ]] || { err "--record-test needs --record"; usage; }
+
+# --ci: the dispatched, approved publish-release run is the confirmation. Only
+# for a publish, and only inside GitHub Actions; refused before anything runs.
+if [[ "${CI_RUN}" -eq 1 ]]; then
+  [[ "${MODE}" == publish ]] \
+    || die "refusing --ci with --${MODE/record/record-test}: recording the manual test and promoting stay a person's typed act"
+  [[ "${GITHUB_ACTIONS:-}" == "true" ]] \
+    || die "refusing --ci outside GitHub Actions (GITHUB_ACTIONS is not true): at a terminal, publish without --ci and type the version"
+  [[ -n "${SWARM_PUBLISH_VERSION:-}" ]] \
+    || die "refusing --ci: SWARM_PUBLISH_VERSION, the version typed into the publish-release dispatch, is not set"
+fi
 
 # ---------------------------------------------------------------------------
 # Guards, before anything is called
@@ -272,6 +291,11 @@ publish() {
   release_name_ok "${VERSION}" || die "the bundle's compat.json names no release (${VERSION:-nothing})"
   [[ "$(jq -r '.version' "${BUNDLE}/plugin/.claude-plugin/plugin.json")" == "${VERSION}" ]] \
     || die "the bundle's plugin is not at ${VERSION}"
+  # The dispatch's version must be the bundle's, exactly: a run dispatched for
+  # one version never publishes another.
+  if [[ "${CI_RUN}" -eq 1 && "${SWARM_PUBLISH_VERSION}" != "${VERSION}" ]]; then
+    die "refusing --ci: SWARM_PUBLISH_VERSION is '${SWARM_PUBLISH_VERSION}', the bundle is ${VERSION}; nothing was written"
+  fi
   check_cves
   check_images
   require_cmd gcrane cosign
@@ -280,7 +304,11 @@ publish() {
     die "release ${VERSION} is already published (${release}/); a release is never overwritten -- assemble the next version"
   fi
   step "Publishing SwarmCloud ${VERSION} to ${release}/ and ${REGISTRY}"
-  [[ "${DRY_RUN}" -eq 1 ]] || confirm "Publish ${VERSION}: copy and sign every image into ${REGISTRY}, upload the bundle to ${release}/." "${VERSION}"
+  if [[ "${CI_RUN}" -eq 1 ]]; then
+    ok "confirmed by the dispatch: SWARM_PUBLISH_VERSION is ${VERSION}, approved in the release environment"
+  elif [[ "${DRY_RUN}" -eq 0 ]]; then
+    confirm "Publish ${VERSION}: copy and sign every image into ${REGISTRY}, upload the bundle to ${release}/." "${VERSION}"
+  fi
 
   local name digest source copied
   while IFS=$'\t' read -r name digest <&3; do
