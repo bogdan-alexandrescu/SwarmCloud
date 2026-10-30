@@ -4,9 +4,9 @@ APIs, the default compute account's Editor grant, and the state bucket
 
 | Step | Manifest entries | Lesson |
 |---|---|---|
-| `foundations.project` | `other.gcp-project`, `other.billing-link` | decision 6 (2026-10-30): one typed approval showing the cost estimate and the budget, then `projects.create` and `projects.updateBillingInfo` |
+| `foundations.project` | `other.gcp-project`, `other.billing-link` | decision 6 (2026-10-30): one typed approval showing the cost estimate and the budget, then `projects.create` and `projects.updateBillingInfo`; a refusal opens the parent's IAM page or the project's billing page and polls until the grant or the link is seen |
 | `foundations.apis` | every core `api.*` entry with a `service_enabled` probe, and `api.containerscanning-NOT-enabled` | 4: one list, read from the manifest; containerscanning is disabled through Service Usage |
-| `foundations.budget` | `monitoring.budget-alert` | the amount chosen at the approval; asked here when there was no approval (the project already existed and was linked) |
+| `foundations.budget` | `monitoring.budget-alert` | the amount chosen at the approval; asked here when there was no approval (the project already existed and was linked); both questions default to the sizing's `budget_usd`; a refusal opens the account's Budgets page and polls for the budget |
 | `foundations.default-compute-editor` | `iam-binding.default-compute-sa-editor-removed` | 6 (#1020); 3: a write-rate limit is retried, never reported as a denial |
 | `foundations.state-bucket` | `bucket.state`, `other.install-state` | 7: created with bootstrap.sh's settings, then the local state is uploaded |
 
@@ -23,8 +23,8 @@ from ..exitcodes import MET, UNMET
 from ..manifest import Manifest
 from ..manifest import load as load_manifest
 from ..state import STATE_OBJECT, state_bucket
-from ..waits import Clock, WaitSpec
-from . import Observation, Plan
+from ..waits import Clock, WaitGaveUp, WaitSpec, wait_until
+from . import Observation, Plan, open_page
 from .preflight import ASK, BILLING, CRM, GCP, USAGE, ApiError, Ask, Gcp, project_number, remember
 
 #: API enablement is polled (plan §9.1: 10 min).
@@ -57,11 +57,73 @@ PROJECT_READY = WaitSpec(
 OPERATION_INTERVAL_S = 2.0
 OPERATION_BOUND_S = 5 * 60.0
 
-#: The budget's default, in USD a month: five times the fixed floor below, so
-#: the 50 % alert fires only once agents run in earnest. The person may type
-#: another amount at the approval, or at foundations.budget when there was no
-#: approval (an optional choice; Enter keeps this).
+#: The budget's default, in USD a month, when stage 0 recorded no sizing (the
+#: sizing's `budget_usd` is the default otherwise, `default_budget`): five times
+#: the fixed floor below, so the 50 % alert fires only once agents run in
+#: earnest. The person may type another amount at the approval, or at
+#: foundations.budget when there was no approval (an optional choice; Enter
+#: keeps the default).
 DEFAULT_BUDGET_USD = 1000
+
+#: When a write is refused, the engine opens the page where the person (or
+#: someone with the right) does it by hand, and polls until it sees the change
+#: (the Day One goal: never "press Enter when done"). A grant or a click takes
+#: minutes; past the bound the step fails naming the right, and a re-run
+#: carries on from there.
+CREATOR_GRANT = WaitSpec(
+    reason="roles/resourcemanager.projectCreator on the parent",
+    expected="1 to 10 min",
+    expected_s=10 * 60,
+    bound_s=30 * 60,
+    look_at="the parent's IAM page: your account needs roles/resourcemanager.projectCreator there",
+    interval_s=10,
+)
+BILLING_BY_HAND = WaitSpec(
+    reason="the project's billing linked on its billing page",
+    expected="1 to 10 min",
+    expected_s=10 * 60,
+    bound_s=30 * 60,
+    look_at="the project's billing page: link the billing account, or get roles/billing.user on it",
+    interval_s=10,
+)
+BUDGET_BY_HAND = WaitSpec(
+    reason="the budget created on the billing account's Budgets page",
+    expected="1 to 10 min",
+    expected_s=10 * 60,
+    bound_s=30 * 60,
+    look_at="Billing > Budgets & alerts: a budget of the name the step gave",
+    interval_s=10,
+)
+
+CONSOLE = "https://console.cloud.google.com"
+CREATE_PERMISSION = "resourcemanager.projects.create"
+
+
+def iam_page(parent: str) -> str:
+    """The IAM page of an organization or folder ("organizations/N", "folders/N")."""
+    kind, _, number = parent.partition("/")
+    return f"{CONSOLE}/iam-admin/iam?{'folderId' if kind == 'folders' else 'organizationId'}={number}"
+
+
+def billing_page(project: str) -> str:
+    """The project's billing page, where its billing account is linked."""
+    return f"{CONSOLE}/billing/linkedaccount?project={project}"
+
+
+def budgets_page(account: str, project: str) -> str:
+    """The billing account's Budgets & alerts page."""
+    return f"{CONSOLE}/billing/{account}/budgets?project={project}"
+
+
+def default_budget(ctx: Any) -> int:
+    """The budget question's default: the sizing's `budget_usd` when stage 0
+    recorded a sizing (lane SIZING-ASK's proposal, which the person already
+    accepted or changed), else DEFAULT_BUDGET_USD."""
+    found = ctx.outputs.get("sizing")
+    budget = found.get("budget_usd") if isinstance(found, Mapping) else None
+    if isinstance(budget, int) and not isinstance(budget, bool) and budget > 0:
+        return budget
+    return DEFAULT_BUDGET_USD
 
 #: The monthly fixed floor at Google's list price, before any agent runs: what
 #: the deployment costs while nobody uses it. Agent runs bill on top, by the
@@ -95,6 +157,13 @@ class ProjectApi:
 
     def operation(self, name: str) -> dict[str, Any]:
         return self._gcp()._call("GET", f"{CRM}/v3/{name}")
+
+    def can_create_projects(self, parent: str) -> bool:
+        """Resource Manager v3 `testIamPermissions` on the parent: whether the
+        signed-in account holds resourcemanager.projects.create there."""
+        found = self._gcp()._call("POST", f"{CRM}/v3/{parent}:testIamPermissions",
+                                  body={"permissions": [CREATE_PERMISSION]}) or {}
+        return CREATE_PERMISSION in (found.get("permissions") or [])
 
     def link_billing(self, project: str, account: str) -> dict[str, Any]:
         """Cloud Billing `projects.updateBillingInfo`."""
@@ -248,7 +317,7 @@ class ProjectStep(_Base):
 
     def plan(self, ctx: Any) -> Plan:
         create, link = self._work(ctx)
-        budget = int(ctx.outputs.get("budget_amount") or DEFAULT_BUDGET_USD)
+        budget = int(ctx.outputs.get("budget_amount") or default_budget(ctx))
         doing = [*(["create the project"] if create else []), *(["link its billing"] if link else [])]
         return Plan(
             f"{' and '.join(doing)}, after one typed approval (the project id)",
@@ -264,10 +333,11 @@ class ProjectStep(_Base):
         if link and not account:
             raise LookupError("no billing account is recorded (preflight.inputs records it)")
 
+        default = default_budget(ctx)
         budget = parse_budget(self._ask(
             ctx, self.id, f"Monthly budget for {ctx.project}, in US dollars (Enter keeps it)",
-            default=str(DEFAULT_BUDGET_USD),
-        ))
+            default=str(default),
+        ), default)
         summary = "\n".join(f"  {line}" for line in self._summary(ctx, create, link, budget))
         doing = " and ".join([*(["create"] if create else []), *(["link billing for"] if link else [])])
         typed = self._ask(
@@ -287,15 +357,10 @@ class ProjectStep(_Base):
     def _create(self, ctx: Any, parent: str) -> None:
         labels = {"managed-by": "swarm-install", "environment": ctx.environment}
         try:
-            operation = self.api.create_project(ctx.project, parent, labels)
-        except ApiError as exc:
-            if exc.status == 409:
-                raise RuntimeError(f"project id {ctx.project} is taken (project ids are global, and one deleted "
-                                   "in the last 30 days stays taken); choose another") from None
-            if exc.denied:
-                raise PermissionError(f"you cannot create projects in {parent} (resourcemanager.projects.create; "
-                                      f"roles/resourcemanager.projectCreator on {parent}): {exc}") from None
-            raise
+            operation = self._start(ctx, parent, labels)
+        except PermissionError as refused:
+            self._until_creator(ctx, parent, refused)
+            operation = self._start(ctx, parent, labels)
         waited = 0.0
         while not operation.get("done"):
             if waited >= OPERATION_BOUND_S:
@@ -308,15 +373,70 @@ class ProjectStep(_Base):
             error = operation["error"]
             raise RuntimeError(f"creating project {ctx.project} failed: {error.get('message') or error}")
 
+    def _start(self, ctx: Any, parent: str, labels: Mapping[str, str]) -> dict[str, Any]:
+        try:
+            return self.api.create_project(ctx.project, parent, labels)
+        except ApiError as exc:
+            if exc.status == 409:
+                raise RuntimeError(f"project id {ctx.project} is taken (project ids are global, and one deleted "
+                                   "in the last 30 days stays taken); choose another") from None
+            if exc.denied:
+                raise PermissionError(f"you cannot create projects in {parent} (resourcemanager.projects.create; "
+                                      f"roles/resourcemanager.projectCreator on {parent}): {exc}") from None
+            raise
+
+    def _until_creator(self, ctx: Any, parent: str, refused: PermissionError) -> None:
+        """Open the parent's IAM page and poll testIamPermissions until the
+        signed-in account may create projects there; past the bound, `refused`."""
+        who = str(ctx.outputs.get("installer") or "your account")
+        open_page(iam_page(parent), why=(
+            f"You cannot create projects in {parent}. On its IAM page, grant {who} the Project Creator role "
+            f"(roles/resourcemanager.projectCreator), or ask an organization administrator to; the installer "
+            "carries on by itself once it sees the grant"))
+
+        def granted() -> str:
+            try:
+                return MET if self.api.can_create_projects(parent) else UNMET
+            except ApiError:
+                return UNMET
+
+        try:
+            wait_until(f"{self.id}:project-creator", CREATOR_GRANT, granted, clock=ctx.clock, events=ctx.events)
+        except WaitGaveUp:
+            raise refused from None
+
     def _link(self, ctx: Any, account: str, *, created: bool) -> None:
         try:
             self.api.link_billing(ctx.project, account)
+            return
         except ApiError as exc:
+            if not exc.denied:
+                left = (f"project {ctx.project} was created and is left in place; " if created else "")
+                raise PermissionError(f"linking billing account {account} failed: {exc}. {left}run swarm "
+                                      "install again to link it") from None
+        # Refused: the person (or a billing administrator) links it on the
+        # project's billing page, and the engine polls the project's billing.
+        open_page(billing_page(ctx.project), why=(
+            f"You cannot link billing account billingAccounts/{account} to {ctx.project} "
+            f"(billing.resourceAssociations.create). Link it on the project's billing page, or ask a billing "
+            f"administrator to grant you roles/billing.user on billingAccounts/{account}; the installer carries "
+            "on by itself once the project shows billing enabled"))
+
+        def linked() -> str:
+            try:
+                return MET if self.gcp.billing_info(ctx.project).get("billingEnabled") else UNMET
+            except ApiError:
+                return UNMET
+
+        try:
+            wait_until(f"{self.id}:billing", BILLING_BY_HAND, linked, clock=ctx.clock, events=ctx.events)
+        except WaitGaveUp:
             left = (f"project {ctx.project} was created and is left in place; " if created else "")
-            why = (f"you cannot link billing account {account} (billing.resourceAssociations.create; "
-                   f"roles/billing.user on billingAccounts/{account})" if exc.denied
-                   else f"linking billing account {account} failed: {exc}")
-            raise PermissionError(f"{why}. {left}run swarm install again to link it") from None
+            raise PermissionError(
+                f"you cannot link billing account {account} (billing.resourceAssociations.create; "
+                f"roles/billing.user on billingAccounts/{account}), and the project's billing page did not link "
+                f"it within {BILLING_BY_HAND.bound_s / 60:.0f} min. {left}run swarm install again to link it"
+            ) from None
 
 
 class ApisStep(_Base):
@@ -368,12 +488,12 @@ class BudgetStep(_Base):
         "The platform's fixed floor (swarm-api's minimum instances, NAT, the cluster) costs money from the "
         "first apply; a budget with 50, 90 and 100 percent alerts is set before anything bills. Its amount "
         "is the one chosen at foundations.project's approval; when there was no approval (the project "
-        "already existed and was linked) it is asked here, Enter keeping the default (owner pick, "
-        "2026-10-30)."
+        "already existed and was linked) it is asked here, Enter keeping the sizing's proposed budget (owner "
+        "pick, 2026-10-30)."
     )
 
     def _amount(self, ctx: Any) -> int:
-        return int(ctx.outputs.get("budget_amount") or DEFAULT_BUDGET_USD)
+        return int(ctx.outputs.get("budget_amount") or default_budget(ctx))
 
     def _name(self, ctx: Any) -> str:
         return f"swarm-{ctx.project}"
@@ -392,7 +512,7 @@ class BudgetStep(_Base):
 
     def plan(self, ctx: Any) -> Plan:
         amount = (f"{self._amount(ctx)} USD a month" if ctx.outputs.get("budget_amount")
-                  else f"an amount asked before it is created (Enter keeps {DEFAULT_BUDGET_USD} USD a month)")
+                  else f"an amount asked before it is created (Enter keeps {default_budget(ctx)} USD a month)")
         return Plan(f"create budget {self._name(ctx)} of {amount} on the project, alerts at 50/90/100 %",
                     (f"billing account {self._account(ctx)}",))
 
@@ -400,10 +520,11 @@ class BudgetStep(_Base):
         if not ctx.outputs.get("budget_amount"):
             # No approval ran (the project already existed and was linked), so
             # nobody has chosen the amount yet: ask it here (owner pick, 2026-10-30).
+            default = default_budget(ctx)
             amount = parse_budget(self._ask(
                 ctx, self.id, f"Monthly budget for {ctx.project}, in US dollars (Enter keeps it)",
-                default=str(DEFAULT_BUDGET_USD),
-            ))
+                default=str(default),
+            ), default)
             remember(ctx, outputs={"budget_amount": amount})
         number = ctx.outputs.get("project_number") or project_number(self.gcp, ctx.project)
         body = {
@@ -414,14 +535,34 @@ class BudgetStep(_Base):
         }
         try:
             self.gcp.create_budget(self._account(ctx), body)
+            return
         except ApiError as exc:
-            if exc.denied:
-                raise PermissionError(
-                    f"you cannot create budgets on billing account {self._account(ctx)} "
-                    "(billing.budgets.create). Create it in the console: Billing > Budgets & alerts > Create "
-                    f"budget, named {self._name(ctx)}, scoped to {ctx.project}, alerts at 50/90/100 %"
-                ) from None
-            raise
+            if not exc.denied:
+                raise
+        # Refused: the budget is made by hand on the account's Budgets page,
+        # and the engine polls the account's budgets for its name.
+        account = self._account(ctx)
+        open_page(budgets_page(account, ctx.project), why=(
+            f"You cannot create budgets on billing account {account} (billing.budgets.create). On its Budgets "
+            f"& alerts page, Create budget: named {self._name(ctx)}, scoped to project {ctx.project}, "
+            f"{self._amount(ctx)} USD a month, alerts at 50/90/100 % (or ask a billing administrator to); the "
+            "installer carries on by itself once it sees it"))
+
+        def made() -> str:
+            try:
+                return MET if self._check(ctx).status == MET else UNMET
+            except ApiError:
+                return UNMET
+
+        try:
+            wait_until(f"{self.id}:by-hand", BUDGET_BY_HAND, made, clock=ctx.clock, events=ctx.events)
+        except WaitGaveUp:
+            raise PermissionError(
+                f"you cannot create budgets on billing account {account} (billing.budgets.create), and no "
+                f"budget named {self._name(ctx)} appeared on its Budgets page within "
+                f"{BUDGET_BY_HAND.bound_s / 60:.0f} min; create it there, scoped to {ctx.project}, alerts at "
+                "50/90/100 %, and run swarm install again"
+            ) from None
 
 
 def _editor_members(policy: Mapping[str, Any], member: str) -> bool:
