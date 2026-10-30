@@ -5,10 +5,12 @@
 #
 #   curl -fsSL https://storage.googleapis.com/swarmcloud/install.sh | sh
 #   curl -fsSL https://storage.googleapis.com/swarmcloud/install.sh | SWARMCLOUD_VERSION=2026.10.1 sh
+#   curl -fsSL https://storage.googleapis.com/swarmcloud/install.sh | SWARM_CHANNEL=rc sh
 #
 # Published at the root of the release home by `scripts/release/publish.sh
-# --promote`. With no SWARMCLOUD_VERSION it installs the stable channel's
-# release. It downloads that release's wheels, checks each against the
+# --promote`. With no SWARMCLOUD_VERSION it installs the release that
+# channels/<SWARM_CHANNEL> names: `stable` by default, `rc` for a release
+# candidate (day-one decision 5); any other channel is refused. It downloads that release's wheels, checks each against the
 # release's SHA256SUMS, and installs them as ONE uv tool, so `swarm install`
 # finds the engine beside the bridge:
 #
@@ -31,6 +33,13 @@ HOME_URL="${SWARMCLOUD_HOME_URL:-https://storage.googleapis.com/swarmcloud}"
 
 say() { printf 'swarmcloud: %s\n' "$*" >&2; }
 fail() { say "$*"; exit 1; }
+
+# Checked before anything is fetched: the value becomes part of a URL.
+CHANNEL="${SWARM_CHANNEL:-stable}"
+case "${CHANNEL}" in
+  stable | rc) ;;
+  *) fail "SWARM_CHANNEL='${CHANNEL}' is not a release channel: use stable (the default) or rc" ;;
+esac
 
 command -v curl >/dev/null 2>&1 || fail "curl is needed"
 if command -v sha256sum >/dev/null 2>&1; then
@@ -94,7 +103,7 @@ fi
 
 VERSION="${SWARMCLOUD_VERSION:-}"
 if [ -z "${VERSION}" ]; then
-  VERSION="$(curl -fsSL "${HOME_URL}/channels/stable")" || fail "cannot read ${HOME_URL}/channels/stable"
+  VERSION="$(curl -fsSL "${HOME_URL}/channels/${CHANNEL}")" || fail "cannot read ${HOME_URL}/channels/${CHANNEL}"
   VERSION="$(printf '%s' "${VERSION}" | tr -d '[:space:]')"
 fi
 case "${VERSION}" in
@@ -125,8 +134,108 @@ uv tool install --force --python '>=3.11' \
   || fail "uv tool install failed (its error is above)"
 
 say "installed SwarmCloud ${VERSION}: swarm and sc"
-case ":${PERSON_PATH}:" in
-  *":${UV_BIN}:"*) ;;
-  *) say "add ${UV_BIN} to your PATH (uv tool update-shell does it), or open a new terminal" ;;
-esac
-say "next: swarm install --project <project> --env prod --version ${VERSION} --domain <host>"
+
+# Make `swarm` callable without asking the person to edit anything. uv puts a
+# tool's commands in its tool bin directory: $UV_TOOL_BIN_DIR, else
+# $XDG_BIN_HOME, else $XDG_DATA_HOME/../bin, else ~/.local/bin (uv's own order).
+if [ -n "${UV_TOOL_BIN_DIR:-}" ]; then
+  TOOL_BIN="${UV_TOOL_BIN_DIR}"
+elif [ -n "${XDG_BIN_HOME:-}" ]; then
+  TOOL_BIN="${XDG_BIN_HOME}"
+elif [ -n "${XDG_DATA_HOME:-}" ]; then
+  TOOL_BIN="${XDG_DATA_HOME}/../bin"
+else
+  TOOL_BIN="${HOME}/.local/bin"
+fi
+
+on_person_path() {
+  case ":${PERSON_PATH}:" in
+    *":$1:"* | *":$1/:"*) return 0 ;;
+  esac
+  return 1
+}
+
+# The rc file the person's login shell reads for a new terminal: zsh reads
+# .zshrc; bash on macOS opens login shells, which read .bash_profile, and
+# elsewhere interactive shells, which read .bashrc.
+rc_file() {
+  case "${SHELL:-}" in
+    */zsh | zsh) printf '%s\n' "${ZDOTDIR:-${HOME}}/.zshrc" ;;
+    */bash | bash)
+      if [ "$(uname -s)" = "Darwin" ]; then
+        printf '%s\n' "${HOME}/.bash_profile"
+      else
+        printf '%s\n' "${HOME}/.bashrc"
+      fi
+      ;;
+    */fish | fish) printf '%s\n' "${XDG_CONFIG_HOME:-${HOME}/.config}/fish/config.fish" ;;
+    *) printf '%s\n' "${HOME}/.profile" ;;
+  esac
+}
+
+# One line, found again by its marker so a second run writes nothing.
+RC_MARKER="# swarmcloud: swarm on PATH"
+add_to_rc() {
+  rc="$(rc_file)"
+  if [ -f "${rc}" ] && grep -qF "${RC_MARKER}" "${rc}"; then
+    say "${TOOL_BIN} is already put on PATH by ${rc}"
+    return 0
+  fi
+  case "${TOOL_BIN}" in
+    *"'"*)
+      say "cannot write ${TOOL_BIN} into ${rc} (its name holds a quote); open a new terminal after adding it to PATH"
+      return 0
+      ;;
+  esac
+  case "${rc}" in
+    *.fish) line="fish_add_path '${TOOL_BIN}' ${RC_MARKER}" ;;
+    *) line="export PATH='${TOOL_BIN}':\"\${PATH}\" ${RC_MARKER}" ;;
+  esac
+  mkdir -p "$(dirname "${rc}")" 2>/dev/null || true
+  if printf '\n%s\n' "${line}" >>"${rc}" 2>/dev/null; then
+    say "added ${TOOL_BIN} to PATH in ${rc}"
+  else
+    say "cannot write ${rc}: add ${TOOL_BIN} to your PATH"
+  fi
+}
+
+# A piped install cannot change the PATH of the shell it was typed in. When
+# that PATH already holds a writable directory of the person's own (under
+# HOME), swarm and sc are linked there, so this terminal's next command finds
+# them; the rc line covers every new terminal.
+link_into_person_path() {
+  old_ifs="${IFS}"
+  IFS=:
+  set -f
+  # shellcheck disable=SC2086 # split on ':' on purpose, with globbing off
+  set -- ${PERSON_PATH}
+  set +f
+  IFS="${old_ifs}"
+  for dir in "$@"; do
+    case "${dir}" in
+      "${HOME}"/*) ;;
+      *) continue ;;
+    esac
+    [ -d "${dir}" ] && [ -w "${dir}" ] || continue
+    linked=""
+    for tool in swarm sc; do
+      [ -x "${TOOL_BIN}/${tool}" ] || continue
+      if [ -e "${dir}/${tool}" ] && [ ! -L "${dir}/${tool}" ]; then
+        continue
+      fi
+      ln -sf "${TOOL_BIN}/${tool}" "${dir}/${tool}" && linked="${linked} ${tool}"
+    done
+    if [ -n "${linked}" ]; then
+      say "linked${linked} into ${dir}, which this terminal's PATH holds"
+    fi
+    return 0
+  done
+  say "open a new terminal for swarm to be found"
+}
+
+if ! on_person_path "${TOOL_BIN}"; then
+  add_to_rc
+  link_into_person_path
+fi
+
+printf '\nNext: swarm install\n' >&2
