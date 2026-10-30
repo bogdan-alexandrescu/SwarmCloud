@@ -289,7 +289,11 @@ def guidance(path: Path | str, rows: list[dict[str, Any]]) -> str:
         f"question, in the same shape, in `{OPEN_QUESTIONS_KEY}`, so the pull request "
         f"lists it. The merge step will not merge while a `{NEEDS_OWNER_KEY}` question "
         "is unanswered, nor once its answer picks an option other than its `built`; "
-        "it merges past the others. An answered question goes in neither."
+        "it merges past the others. An answered question goes in neither. "
+        "A finding that waits only on an unanswered owner question is not a NOT_YET "
+        f"finding: put that question in `{NEEDS_OWNER_KEY}` (the merge step holds for "
+        "its answer and builds the owner's pick in a pick-fix round) and give MERGE if "
+        "nothing else is open; give NOT_YET only for findings a fix step can act on now."
     )
 
 

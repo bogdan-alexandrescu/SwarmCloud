@@ -115,6 +115,16 @@ listed, in the asking task's own words, in the comment that records the
 merge -- so a merge made by `auto-merge.yml` rather than this step lists
 none.
 
+A NOT_YET VERDICT THAT NAMES `needs_owner` IS HELD TOO (#2764). A review
+may record a finding that waits only on the owner's answer as NOT_YET; the
+step refused it `verdict_not_merge` before the hold was read, so the lane
+died instead of parking. Now a NOT_YET with `needs_owner` (or unreadable
+entries) goes through the same `_ended_outside`, hold and pick-fix round as
+a MERGE verdict, and only once no question is open and no pick is left to
+build does it refuse `verdict_not_merge`: a NOT_YET is never merged without
+a review of the head, which a re-review gives. A NOT_YET with no
+`needs_owner` refuses at once, exactly as before.
+
 ANSWERED IS NOT ENOUGH: THE PICK MUST BE WHAT THE BRANCH BUILT
 (ANSWER-CONTENT-CHECK, part of #2441; owner decision 2026-10-26). Once every
 `needs_owner` question is answered, the step reads the validated
@@ -1808,11 +1818,15 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         except InputUnavailable as exc:
             return run.refuse("verdict_unreadable", str(exc))
         summary["verdict"] = verdict.verdict
-        if verdict.verdict != "MERGE":
+        found = f" ({len(verdict.findings)} finding(s))" if verdict.findings else ""
+        # #2764: a NOT_YET that names no owner question refuses here, as it
+        # always has; one that names some is held and pick-fixed like a MERGE
+        # verdict below, and refused only after.
+        if verdict.verdict != "MERGE" and not (
+                verdict.needs_owner or verdict.needs_owner_unreadable):
             return run.refuse(
                 "verdict_not_merge",
-                f"the review's verdict is {verdict.verdict}, not MERGE"
-                + (f" ({len(verdict.findings)} finding(s))" if verdict.findings else ""),
+                f"the review's verdict is {verdict.verdict}, not MERGE{found}",
             )
         # #2441: a hold woken because its pull request was merged or closed
         # outside the workflow ends here, before any question is read again:
@@ -1838,6 +1852,16 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
             fixing = _pick_fix(run, target, opener, unbuilt)
             if fixing is not None:
                 return fixing
+        # #2764: the owner's answers are in and their picks built, but a
+        # NOT_YET verdict's findings still stand: never merged without a
+        # review of the head.
+        if verdict.verdict != "MERGE":
+            return run.refuse(
+                "verdict_not_merge",
+                f"the review's verdict is {verdict.verdict}, not MERGE{found}; its "
+                "needs_owner questions are answered and their picks built, so a "
+                "re-review must judge the head",
+            )
         still_open = _unanswered(ctx, verdict.open_questions, asked_text=True)
         if still_open:
             summary["open_questions"] = still_open
