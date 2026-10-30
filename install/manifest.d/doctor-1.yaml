@@ -28,3 +28,6 @@ entries:
   - docs/design/day-one-plan.md
   notes: added by DAYONE-P2; depends_on cloud-run-job.swarm-doctor added by DAYONE-DOCTOR-1
   step: handoff.ready
+env:
+  API_URL:
+    setter: terraform/infra/doctor.tf:80
