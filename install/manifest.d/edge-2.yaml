@@ -4,13 +4,15 @@
 # 8's first call through the hostname (identity.group-read) meets neither a TLS
 # error nor a load balancer still routing. It is in stage 8, not 7, because
 # within a stage the engine keeps registration order and both pass-2 steps are
-# registered after steps/edge.py.
+# registered after steps/edge.py. The entry is stage 7, what it records being
+# stage 7's product (pass 2's HTTPS front end, served and behind IAP); its step
+# is the first of stage 8, which checks it before anything else there.
 version: 1
 entries:
 - id: other.console-through-iap
   kind: other
   scope: core
-  stage: 8
+  stage: 7
   provider: engine
   check: 'GET compute/v1 projects/$P/global/sslCertificates/${name_prefix}-cert answers managed.status ACTIVE, and an anonymous GET of https://$H/ (redirects not followed) answers 302, 401 or 403, IAP''s sign-in (handoff.IAP_ANSWERS)'
   apply: 'nothing is made: steps/edge.py edge.console-answers is a wait step (handoff.CONSOLE_ANSWERS, polled every 15 s, bounded at 60 min); past the bound the install pauses and swarm install resumes at it'
