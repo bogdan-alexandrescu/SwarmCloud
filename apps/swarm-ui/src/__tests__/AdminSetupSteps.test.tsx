@@ -422,8 +422,8 @@ describe('Admin › Setup says only what exists', () => {
   })
 
   it('a one-person install replaces the first-team and invites steps with one line', async () => {
-    const sizing = { mode: 'individual', members: 1, pool_limits: { global: 4, default_tenant: 4 }, service_max_instances: {}, pool_accounts: 1, budget_usd: 150 }
-    await mountSteps(state({ sizing, teams: [], accounts: {}, finished: null }))
+    // The route's `personal` row, the installer's personal workspace, ready (DAYONE-SETUP-UI-5A).
+    await mountSteps(onePerson({}, { accounts: {} }))
     const row = document.querySelector('[data-step="team"]') as HTMLElement
     // MUTATION: draw the team form for one person.
     expect(visible(row)).toContain('One-person install: your personal workspace is ready.')
@@ -441,5 +441,219 @@ describe('Admin › Setup says only what exists', () => {
     await mountSteps(state({}, { verify: { ...VERIFYING, done: 8, result: 'passed' } }))
     // MUTATION: keep "swarm doctor": the CLI has no such verb.
     expect(visible(screen.getByRole('region', { name: 'Send to your team' }))).not.toContain('swarm doctor')
+  })
+})
+
+// DAYONE-SETUP-UI-5A (part of #2688; audit findings 12, 20, 27 and 28):
+//   * a one-person install reaches the hand-over: the personal workspace's
+//     row (the route's `personal`) takes the first team's place, its pool
+//     accounts count as signed in, and the hand-over rests on its smoke;
+//   * the smoke reads the route's own word, `succeeded`; a failed one has a
+//     Retry that posts `POST /v1/admin/setup/smoke`; the hand-over waits for it;
+//   * the team form links Google Admin's groups page and shows the route's
+//     refusal when the group cannot be read or the installer is not in it;
+//   * the App self-check waits for swarm install's infra pass 3, and
+//     `app_id_not_configured` reads as that wait, never as a failure.
+
+const ONE_PERSON_SIZING = { mode: 'individual', members: 1, pool_limits: { global: 4, default_tenant: 4 }, service_max_instances: {}, pool_accounts: 1, budget_usd: 150 }
+const SUCCEEDED_SMOKE = { state: 'succeeded', task_id: 'task_smoke', repository: 'example-org/app' }
+
+/** A one-person install as the route serves it: `mode`, `personal` and `steps`, and no team. */
+function onePerson(personal: Json = {}, over: Json = {}): Json {
+  return state({
+    sizing: ONE_PERSON_SIZING,
+    mode: 'individual',
+    steps: {
+      first_team: { needed: false, state: 'not_needed', reason: 'not needed for one person' },
+      invites: { needed: false, state: 'not_needed', reason: 'not needed for one person' },
+    },
+    personal: {
+      owner: 'ana@example.com',
+      workspace: 'u-ana',
+      progress: { created_at: '2026-10-29T14:53:00Z' },
+      workspace_state: 'ready',
+      grant: GRANTED,
+      smoke: SUCCEEDED_SMOKE,
+      pool_accounts: ['ana'],
+      ...personal,
+    },
+    teams: [],
+    accounts: { ana: { owner: 'ana@example.com', link_expires: '2026-10-30T14:54:00Z' } },
+    finished: null,
+    ...over,
+  })
+}
+
+const handOver = () => screen.queryByRole('button', { name: 'Hand over to swarm install' })
+
+describe('Admin › Setup finishes a one-person install (finding 12)', () => {
+  it('carries mode, personal and steps through normSetupState', async () => {
+    const { normSetupState } = await import('../api')
+    const s = normSetupState(onePerson())
+    // MUTATION: drop any of the three the route serves.
+    expect(s.mode).toBe('individual')
+    expect(s.personal?.workspace).toBe('u-ana')
+    expect(s.personal?.pool_accounts).toEqual(['ana'])
+    expect(s.personal?.smoke?.state).toBe('succeeded')
+    expect(s.steps?.first_team?.needed).toBe(false)
+    expect(s.steps?.invites?.reason).toBe('not needed for one person')
+    // A route from before `mode` is read by the sizing.
+    expect(normSetupState(state({ sizing: ONE_PERSON_SIZING })).mode).toBe('individual')
+    expect(normSetupState(state()).mode).toBe('team')
+  })
+
+  it('draws the personal workspace in the first team’s place, with the first-team and invites steps not needed', async () => {
+    await mountSteps(onePerson())
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    const text = visible(row)
+    // MUTATION: draw the team form, or nothing of the personal workspace.
+    expect(text).toContain('u-ana')
+    expect(text).toContain('not needed for one person')
+    expect(within(row).queryByRole('button', { name: 'Create the team' })).toBeNull()
+    expect(within(row).getByText('Repository grant').closest('li')?.className).toContain('is-done')
+    expect(within(row).getByText('Smoke agent').closest('li')?.className).toContain('is-done')
+  })
+
+  it('counts an account in the personal workspace’s pool as signed in, and hands over on the personal smoke', async () => {
+    await mountSteps(onePerson())
+    const accounts = document.querySelector('[data-step="accounts"]') as HTMLElement
+    // MUTATION: count signed in only from `signed_in_at`, which only the hand-over writes.
+    expect(accounts.className).toContain('is-done')
+    expect(visible(accounts)).toContain('your personal workspace')
+    // MUTATION: keep the hand-over on `state.teams`, which one person never has.
+    expect(handOver()).not.toBeNull()
+  })
+
+  it('says sign-in goes through the console’s own link, never sc account add', async () => {
+    await mountSteps(onePerson({ pool_accounts: [] }, { accounts: { ana: { owner: 'ana@example.com', link_expires: '2026-10-30T14:54:00Z' } } }))
+    // MUTATION: keep "or they run sc account add".
+    expect(visible(document.body)).not.toContain('sc account add')
+    cleanup()
+    await mountSteps(onePerson({ pool_accounts: [] }, { accounts: {} }))
+    expect(visible(document.body)).not.toContain('sc account add')
+    expect(visible(document.querySelector('[data-step="accounts"]'))).toContain('one-time link')
+  })
+
+  it('waits while the personal workspace is not filed yet, with the route’s reason', async () => {
+    await mountSteps(onePerson({ workspace: null, workspace_state: null, grant: null, smoke: null, pool_accounts: [], reason: 'no_installer' }))
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    // MUTATION: call the personal workspace ready before it exists.
+    expect(row.className).not.toContain('is-done')
+    expect(visible(row)).toContain('no_installer')
+    expect(handOver()).toBeNull()
+  })
+})
+
+describe('the first workspace’s smoke (finding 20)', () => {
+  it('reads the route’s `succeeded` as done', async () => {
+    await mountSteps(state({ finished: null, ...teamWith({ grant: GRANTED, smoke: SUCCEEDED_SMOKE }) }))
+    const fact = within(document.querySelector('[data-step="team"]') as HTMLElement).getByText('Smoke agent').closest('li') as HTMLElement
+    // MUTATION: compare against `passed`, a word the route never writes.
+    expect(fact.className).toContain('is-done')
+    expect(handOver()).not.toBeNull()
+  })
+
+  it('a failed smoke shows its cause and a Retry that posts the smoke route', async () => {
+    const calls = serve((m, url) =>
+      m === 'POST' && url === '/v1/admin/setup/smoke'
+        ? { status: 200, body: { team: 'engineering', workspace: 'engineering', smoke: { state: 'running', task_id: 'task_again' } } }
+        : m === 'GET' && url === '/v1/admin/setup'
+          ? { status: 200, body: state() }
+          : null,
+    )
+    await mountSteps(state({ finished: null, ...teamWith({ grant: GRANTED, smoke: { state: 'failed', reason: 'quota_exceeded' } }) }))
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    expect(within(row).getByText('Smoke agent').closest('li')?.className).toContain('is-failed')
+    expect(visible(row)).toContain('quota_exceeded')
+    // MUTATION: leave a failed smoke with no way to run it again.
+    fireEvent.click(within(row).getByRole('button', { name: 'Retry the smoke' }))
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.url === '/v1/admin/setup/smoke')).toBe(true))
+    // MUTATION: offer the hand-over while the smoke has not passed (the route answers 409).
+    expect(handOver()).toBeNull()
+  })
+
+  it('a one-person failed smoke retries through the same route', async () => {
+    const calls = serve((m, url) => (m === 'POST' && url === '/v1/admin/setup/smoke' ? { status: 200, body: { team: null, workspace: 'u-ana', smoke: { state: 'running' } } } : null))
+    await mountSteps(onePerson({ smoke: { state: 'failed', reason: 'no_capacity' } }))
+    fireEvent.click(within(document.querySelector('[data-step="team"]') as HTMLElement).getByRole('button', { name: 'Retry the smoke' }))
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.url === '/v1/admin/setup/smoke')).toBe(true))
+    expect(handOver()).toBeNull()
+  })
+
+  it('no hand-over while the smoke is running', async () => {
+    await mountSteps(state({ finished: null, ...teamWith({ grant: GRANTED, smoke: { state: 'running', task_id: 'task_smoke' } }) }))
+    expect(handOver()).toBeNull()
+  })
+})
+
+describe('the team form and the group (finding 27)', () => {
+  it('links Google Admin’s groups page beside the group field', async () => {
+    await mountSteps(state({ teams: [], accounts: {}, finished: null }))
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    // MUTATION: drop the link, or point it anywhere else.
+    const link = within(row).getByRole('link', { name: /Create group/ })
+    expect(link.getAttribute('href')).toBe('https://admin.google.com/ac/groups')
+    expect(link.getAttribute('target')).toBe('_blank')
+  })
+
+  it('shows the route’s refusal and the page that fixes it when the installer is not in the group', async () => {
+    const message = 'ana@example.com is not a member of eng@example.com: add them to it in Google Admin (https://admin.google.com/ac/groups), then try again'
+    serve((m, url) =>
+      m === 'POST' && url === '/v1/admin/setup/teams'
+        ? {
+            status: 409,
+            body: { code: 'conflict', message, detail: { reason: 'installer_not_member', group: 'eng@example.com', admin_groups_url: 'https://admin.google.com/ac/groups', add_members_url: MEMBERS_URL } },
+          }
+        : null,
+    )
+    await mountSteps(state({ teams: [], accounts: {}, finished: null }))
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    fireEvent.change(within(row).getByLabelText('Workspace group'), { target: { value: 'eng@example.com' } })
+    fireEvent.click(within(row).getByRole('button', { name: 'Create the team' }))
+    // MUTATION: swallow the route's reason.
+    await waitFor(() => expect(visible(row)).toContain('is not a member of eng@example.com'))
+    // MUTATION: leave the person to find the members page.
+    const add = within(row).getByRole('link', { name: /Add yourself to the group/ })
+    expect(add.getAttribute('href')).toBe(MEMBERS_URL)
+  })
+})
+
+describe('the App self-check waits for infra pass 3 (finding 28)', () => {
+  const installed = (self_check: Json | null): Json => ({ github_app: { ...(state().github_app as Json), self_check } })
+
+  it('is disabled, with the reason, until stage 9 reports pass 3', async () => {
+    await mountSteps(state(installed(null)))
+    const row = document.querySelector('[data-step="github"]') as HTMLElement
+    const button = within(row).getByRole('button', { name: 'Run the self-check' }) as HTMLButtonElement
+    // MUTATION: offer the check before pass 3 gives swarm-api the App's id.
+    expect(button.disabled).toBe(true)
+    expect(visible(row)).toContain('infra pass 3')
+    cleanup()
+    await mountSteps(state(installed(null), { stages: (state().engine as Json & { stages: unknown[] }).stages.map((s, i) => (i === 9 ? { state: 'done', at: '2026-10-29T14:55:00Z', by: 'ana@example.com' } : s)) }))
+    const after = within(document.querySelector('[data-step="github"]') as HTMLElement).getByRole('button', { name: 'Run the self-check' }) as HTMLButtonElement
+    // MUTATION: keep it disabled once pass 3 has run.
+    expect(after.disabled).toBe(false)
+  })
+
+  it('says why it waits in a few words beside the button, leaving the sentence to the row', async () => {
+    await mountSteps(state(installed(null)))
+    const why = (document.querySelector('[data-step="github"]') as HTMLElement).querySelector('.c-why') as HTMLElement
+    // MUTATION: put the full sentence beside the button: the action column widens and squeezes the row's body.
+    expect(visible(why).length).toBeLessThanOrEqual(24)
+    expect(visible(why)).toContain('infra pass 3')
+  })
+
+  it('reads app_id_not_configured as waiting for swarm install’s infra pass 3, not as a failure', async () => {
+    await mountSteps(state(installed({ ok: false, reason: 'app_id_not_configured', at: '2026-10-29T14:52:00Z', state: 'waiting_for_infra_pass_3' })))
+    const row = document.querySelector('[data-step="github"]') as HTMLElement
+    // MUTATION: draw the wait as a failed step.
+    expect(row.className).not.toContain('is-failed')
+    expect(visible(row)).toContain('waiting for swarm install’s infra pass 3')
+    // MUTATION: send the person to create the App again.
+    expect(visible(row)).not.toContain('create the App again')
+    cleanup()
+    // A check recorded before the route served `state` is read by its reason.
+    await mountSteps(state(installed({ ok: false, reason: 'app_id_not_configured', at: '2026-10-29T14:52:00Z' })))
+    expect(document.querySelector('[data-step="github"]')?.className).not.toContain('is-failed')
   })
 })

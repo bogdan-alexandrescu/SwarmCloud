@@ -13051,7 +13051,35 @@ export interface SetupGitHubApp {
   slug: string | null
   installed_on: string | null
   secrets_written_at: string | null
-  self_check: { ok: boolean; reason: string | null; at: string | null } | null
+  self_check: SetupSelfCheck | null
+}
+
+/**
+ * The route's self-check states (`routes/setup.py` `self_check_view`, audit
+ * finding 28): before swarm install's infra pass 3 gives swarm-api the App's
+ * id, `check_app_key` answers `app_id_not_configured`, which is a wait for
+ * that pass, never a failure.
+ */
+export type SetupSelfCheckState = 'passed' | 'failed' | 'waiting_for_infra_pass_3'
+
+/** The `check_app_key` reasons that mean infra pass 3 has not landed yet (`BEFORE_PASS_3`). */
+const BEFORE_PASS_3 = new Set(['app_id_not_configured', 'app_slug_not_configured'])
+
+export interface SetupSelfCheck {
+  ok: boolean
+  reason: string | null
+  at: string | null
+  state: SetupSelfCheckState
+}
+
+/** A self-check as the route served it; one recorded before its `state` existed is read by its reason, the route's way. */
+export function normSelfCheck(raw: unknown): SetupSelfCheck | null {
+  const c = objOf(raw)
+  if (c === null) return null
+  const ok = c.ok === true
+  const reason = strOf(c.reason)
+  const state: SetupSelfCheckState = ok ? 'passed' : c.state === 'waiting_for_infra_pass_3' || (reason !== null && BEFORE_PASS_3.has(reason)) ? 'waiting_for_infra_pass_3' : 'failed'
+  return { ok, reason, at: strOf(c.at), state }
 }
 
 /**
@@ -13073,6 +13101,21 @@ export interface SetupMember {
   member: boolean | null
 }
 
+/**
+ * The first workspace's smoke (`teams/<id>.smoke`, or `personal.smoke` for one
+ * person): `running`, then `succeeded` or `failed`, the words the route
+ * writes (`routes/setup.py` SUCCEEDED/FAILED). `detail` is the route's
+ * `reason` when it failed to start.
+ */
+export interface SetupSmoke {
+  state: string
+  detail: string | null
+  url: string | null
+}
+
+/** The route's word for a smoke that passed; `finish` waits for exactly this. */
+export const SMOKE_SUCCEEDED = 'succeeded'
+
 /** `console/teams/<id>`, as the status route reads it live. `smoke` is the team's smoke agent, once it has one. */
 export interface SetupTeam {
   id: string
@@ -13082,9 +13125,33 @@ export interface SetupTeam {
   invites: string[]
   /** The record's progress, with the workspace's live `workspace_state` the route reads beside it. */
   progress: Record<string, unknown>
-  smoke: { state: string; detail: string | null; url: string | null } | null
+  smoke: SetupSmoke | null
   grant: SetupGrant | null
   members: SetupMember[]
+  /** The labels of the pool accounts the route found in the team's own pool, read live. */
+  pool_accounts: string[]
+}
+
+/**
+ * `personal` (decision 7): a one-person install's first workspace, the
+ * installer's personal workspace, in the first team's place. `reason` is the
+ * route's code when it could not be filed on this read.
+ */
+export interface SetupPersonal {
+  owner: string | null
+  workspace: string | null
+  reason: string | null
+  progress: Record<string, unknown>
+  grant: SetupGrant | null
+  smoke: SetupSmoke | null
+  pool_accounts: string[]
+}
+
+/** One of the steps the route says are needed or not (`steps_view`): `first_team`, `invites`. */
+export interface SetupStepNeed {
+  needed: boolean
+  state: string
+  reason: string | null
 }
 
 /** `console/verify_runs` (SETUP-API-2): the console's two verification runs, once Admin › Setup started them. */
@@ -13138,6 +13205,12 @@ export interface SetupState {
   github_org: string | null
   verify_runs: SetupVerifyRuns | null
   sizing: SetupSizing | null
+  /** `individual` for one person (decision 7), else `team`; the route's `mode`, else the sizing's. */
+  mode: 'individual' | 'team'
+  /** The personal workspace's row for one person; null for a team. */
+  personal: SetupPersonal | null
+  /** Whether the first-team and invites steps are needed, as the route says; null from a route that serves none. */
+  steps: { first_team: SetupStepNeed | null; invites: SetupStepNeed | null } | null
 }
 
 const objOf = (v: unknown): Record<string, unknown> | null => (typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null)
@@ -13190,23 +13263,61 @@ function normEngine(raw: unknown): SetupEngine | null {
 function normGitHubApp(raw: unknown): SetupGitHubApp | null {
   const g = objOf(raw)
   if (g === null) return null
-  const check = objOf(g.self_check)
   return {
     started: g.started === true || strOf(g.id) !== null,
     id: strOf(g.id),
     slug: strOf(g.slug),
     installed_on: strOf(g.installed_on),
     secrets_written_at: strOf(g.secrets_written_at),
-    self_check: check === null ? null : { ok: check.ok === true, reason: strOf(check.reason), at: strOf(check.at) },
+    self_check: normSelfCheck(g.self_check),
   }
+}
+
+function normSmoke(raw: unknown): SetupSmoke | null {
+  const smoke = objOf(raw)
+  return smoke === null ? null : { state: strOf(smoke.state) ?? 'waiting', detail: strOf(smoke.detail) ?? strOf(smoke.reason), url: strOf(smoke.url) }
+}
+
+function normGrant(raw: unknown): SetupGrant | null {
+  const grant = objOf(raw)
+  return grant === null || strOf(grant.state) === null
+    ? null
+    : {
+        state: strOf(grant.state) as string,
+        account: strOf(grant.account),
+        selection: strOf(grant.selection),
+        repositories: Array.isArray(grant.repositories) ? grant.repositories.filter((r): r is string => typeof r === 'string' && r !== '') : [],
+      }
+}
+
+const labelsOf = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x !== '') : [])
+
+function normPersonal(raw: unknown): SetupPersonal | null {
+  const p = objOf(raw)
+  if (p === null) return null
+  const progress = objOf(p.progress) ?? {}
+  // The route reads the workspace's state live and serves it beside the record, as `workspace_state`.
+  const live = strOf(p.workspace_state)
+  return {
+    owner: strOf(p.owner),
+    workspace: strOf(p.workspace),
+    reason: strOf(p.reason),
+    progress: live === null ? progress : { ...progress, workspace_state: live },
+    grant: normGrant(p.grant),
+    smoke: normSmoke(p.smoke),
+    pool_accounts: labelsOf(p.pool_accounts),
+  }
+}
+
+function normStepNeed(raw: unknown): SetupStepNeed | null {
+  const s = objOf(raw)
+  return s === null ? null : { needed: s.needed !== false, state: strOf(s.state) ?? '', reason: strOf(s.reason) }
 }
 
 function normTeam(raw: unknown): SetupTeam | null {
   const t = objOf(raw)
   const id = t === null ? null : strOf(t.id)
   if (t === null || id === null) return null
-  const smoke = objOf(t.smoke)
-  const grant = objOf(t.grant)
   const progress = objOf(t.progress) ?? {}
   // The route reads the workspace's state live and serves it beside the record, as `workspace_state`.
   const live = strOf(t.workspace_state)
@@ -13217,20 +13328,13 @@ function normTeam(raw: unknown): SetupTeam | null {
     first_admin: strOf(t.first_admin),
     invites: Array.isArray(t.invites) ? t.invites.filter((x): x is string => typeof x === 'string') : [],
     progress: live === null ? progress : { ...progress, workspace_state: live },
-    smoke: smoke === null ? null : { state: strOf(smoke.state) ?? 'waiting', detail: strOf(smoke.detail) ?? strOf(smoke.reason), url: strOf(smoke.url) },
-    grant:
-      grant === null || strOf(grant.state) === null
-        ? null
-        : {
-            state: strOf(grant.state) as string,
-            account: strOf(grant.account),
-            selection: strOf(grant.selection),
-            repositories: Array.isArray(grant.repositories) ? grant.repositories.filter((r): r is string => typeof r === 'string' && r !== '') : [],
-          },
+    smoke: normSmoke(t.smoke),
+    grant: normGrant(t.grant),
     members: (Array.isArray(t.members) ? t.members : [])
       .map(objOf)
       .filter((m): m is Record<string, unknown> => m !== null && strOf(m.email) !== null)
       .map((m) => ({ email: strOf(m.email) as string, member: typeof m.member === 'boolean' ? m.member : null })),
+    pool_accounts: labelsOf(t.pool_accounts),
   }
 }
 
@@ -13268,6 +13372,9 @@ export function normSetupState(raw: unknown): SetupState {
   const d = objOf(raw) ?? {}
   const accounts = objOf(d.accounts) ?? {}
   const finished = objOf(d.finished)
+  const sizing = normSizing(d.sizing)
+  const mode = d.mode === 'individual' || d.mode === 'team' ? d.mode : (sizing?.mode ?? 'team')
+  const steps = objOf(d.steps)
   return {
     env: strOf(d.env) ?? '',
     engine: normEngine(d.engine),
@@ -13290,7 +13397,10 @@ export function normSetupState(raw: unknown): SetupState {
     hostname: strOf(d.hostname),
     github_org: strOf(d.github_org),
     verify_runs: normVerifyRuns(d.verify_runs),
-    sizing: normSizing(d.sizing),
+    sizing,
+    mode,
+    personal: mode === 'individual' ? normPersonal(d.personal) : null,
+    steps: steps === null ? null : { first_team: normStepNeed(steps.first_team), invites: normStepNeed(steps.invites) },
   }
 }
 
@@ -13457,13 +13567,28 @@ export async function checkGitHubAppInstallation(): Promise<Result<GitHubAppInst
 }
 
 /** `POST /v1/admin/setup/github-app/self-check`: the `/admin/forge/app` check, recorded. */
-export function runGitHubAppSelfCheck(): Promise<Result<{ ok: boolean; reason: string | null }>> {
+export function runGitHubAppSelfCheck(): Promise<Result<SetupSelfCheck>> {
   return setupWrite(
     route('/v1/admin/setup/github-app/self-check'),
     'POST',
     undefined,
-    (raw) => ({ ok: objOf(raw)?.ok === true, reason: strOf(objOf(raw)?.reason) }),
-    () => ({ ok: true, reason: null }),
+    (raw) => normSelfCheck(raw) ?? { ok: false, reason: null, at: null, state: 'failed' },
+    () => ({ ok: true, reason: null, at: new Date(FIXTURE_NOW).toISOString(), state: 'passed' }),
+  )
+}
+
+/**
+ * `POST /v1/admin/setup/smoke` (audit finding 20): the first workspace's
+ * smoke (the first team's; for one person the personal workspace's) started
+ * again after it failed. A running or passed smoke is answered as it stands.
+ */
+export function restartSetupSmoke(): Promise<Result<{ workspace: string | null; smoke: SetupSmoke | null }>> {
+  return setupWrite(
+    route('/v1/admin/setup/smoke'),
+    'POST',
+    undefined,
+    (raw) => ({ workspace: strOf(objOf(raw)?.workspace), smoke: normSmoke(objOf(raw)?.smoke) }),
+    () => ({ workspace: 'engineering', smoke: { state: 'running', detail: null, url: null } }),
   )
 }
 

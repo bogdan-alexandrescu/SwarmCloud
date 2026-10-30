@@ -51,7 +51,7 @@ function teamFact(t: SetupTeam): Fact {
   const ws = typeof t.progress.workspace_state === 'string' ? t.progress.workspace_state : null
   const smoke = t.smoke
   const failed = (ws !== null && (ws === 'failed' || ws === 'denied')) || smoke?.state === 'failed'
-  const done = ws === 'ready' && smoke?.state === 'passed'
+  const done = ws === 'ready' && smoke?.state === 'succeeded'
   const parts = [
     t.group,
     t.first_admin === null ? null : `admin ${t.first_admin}`,
@@ -120,7 +120,7 @@ export function AdminSetupTeam({ teams, onChanged }: { teams: SetupTeam[]; onCha
             {field('Workspace group', group, setGroup, 'A Google Workspace group; its members are the team', 'research@your-domain')}
             {field('Workspace name', name, setName, 'Shown in the console; the group’s name when left empty', 'research')}
             {field('First workspace admin', admin, setAdmin, 'Administers the team’s workspace', 'name@your-domain')}
-            {field('Invite', invites, setInvites, 'Each gets a sign-in link; nobody pastes anything', 'one or more emails')}
+            {field('Invite', invites, setInvites, 'Each is added to the group on its members page in Google Admin (swarm-api adds no one); they count as joined once the Groups API sees them', 'one or more emails')}
           </div>
           <span className="ob-acts">
             <Button size="sm" kind="primary" type="submit" busy={busy ? 'Adding' : false} disabledReason={group.trim().length < 3 ? 'Name the Workspace group first' : undefined}>

@@ -151,4 +151,79 @@ describe('Admin › Setup, the page', () => {
     // MUTATION: draw Add a team before a first team exists -> two team forms, and this fails.
     expect(screen.queryByRole('region', { name: 'Add a team' })).toBeNull()
   })
+
+  it('the Add a team hint says what an invite does, not a sign-in link nobody sends', async () => {
+    await mountPage(firstRun({ teams: [FIRST_TEAM] }))
+    const flow = screen.getByRole('region', { name: 'Add a team' })
+    // MUTATION: keep "Each gets a sign-in link".
+    expect(visible(flow)).not.toContain('sign-in link')
+    expect(visible(flow)).toContain('Google Admin')
+  })
+})
+
+// DAYONE-SETUP-UI-5A (part of #2688; audit finding 12): the strip and the
+// lead rest on the route's `mode` and `personal` for one person, and say
+// `swarm doctor` only for what that verb does.
+describe('Admin › Setup, one person and the doctor', () => {
+  const ONE_PERSON = {
+    sizing: { mode: 'individual', members: 1, pool_limits: { global: 4 }, service_max_instances: {}, pool_accounts: 1, budget_usd: 150 },
+    mode: 'individual',
+    steps: { first_team: { needed: false, state: 'not_needed', reason: 'not needed for one person' }, invites: { needed: false, state: 'not_needed', reason: 'not needed for one person' } },
+    personal: { owner: 'ana@example.com', workspace: 'u-ana', workspace_state: 'ready', progress: {}, pool_accounts: [] },
+    github_app: { started: true, id: 4242, slug: 'swarmcloud-example', installed_on: 'example-org', secrets_written_at: '2026-10-29T14:50:00Z', self_check: { ok: true, reason: null, at: '2026-10-29T14:52:00Z' } },
+  }
+
+  it('the strip counts the personal workspace as the first workspace, and the accounts are next', async () => {
+    await mountPage(firstRun(ONE_PERSON))
+    // MUTATION: keep the strip's team step on `state.teams`, which one person never has.
+    expect(stripStep('team').className).toContain('is-done')
+    expect(visible(stripStep('team'))).toContain('u-ana')
+    expect(visible(stripStep('accounts'))).not.toContain('after the first team')
+    expect(stripStep('accounts').className).toContain('is-next')
+    const lead = visible(document.querySelector('.ws-lead'))
+    expect(lead).toContain('Claude accounts')
+    // MUTATION: keep "or sc account add" in the lead.
+    expect(lead).not.toContain('sc account add')
+    expect(lead).toContain('your personal workspace')
+  })
+
+  // Review of DAYONE-SETUP-UI-5A: the strip and the lead rest on the smoke as the hand-over does.
+  const SIGNED_IN = { ana: { owner: 'ana@example.com', link_expires: '2026-10-30T14:54:00Z' } }
+  const withSmoke = (smoke: Json) => ({ ...ONE_PERSON, personal: { ...ONE_PERSON.personal, pool_accounts: ['ana'], smoke }, accounts: SIGNED_IN })
+
+  it('a failed smoke keeps the first workspace failed, and the lead never says hand over', async () => {
+    await mountPage(firstRun(withSmoke({ state: 'failed', reason: 'no_capacity' })))
+    // MUTATION: tick the first workspace on its apply alone, with the smoke failed.
+    expect(stripStep('team').className).not.toContain('is-done')
+    expect(stripStep('team').className).toContain('is-failed')
+    const lead = visible(document.querySelector('.ws-lead'))
+    // MUTATION: say "hand over" while the page offers no hand-over button.
+    expect(lead).not.toMatch(/hand over/i)
+    expect(lead).toContain('smoke')
+  })
+
+  it('a running smoke keeps the first workspace in progress; a succeeded one lets the lead say hand over', async () => {
+    await mountPage(firstRun(withSmoke({ state: 'running', task_id: 'task_smoke' })))
+    expect(stripStep('team').className).toContain('is-in_progress')
+    expect(visible(document.querySelector('.ws-lead'))).not.toMatch(/hand over/i)
+    cleanup()
+    await mountPage(firstRun(withSmoke({ state: 'succeeded', task_id: 'task_smoke' })))
+    expect(stripStep('team').className).toContain('is-done')
+    expect(visible(document.querySelector('.ws-lead'))).toMatch(/hand over to swarm install/)
+  })
+
+  it('a team’s failed smoke keeps the first team failed in the strip', async () => {
+    await mountPage(firstRun({ github_app: ONE_PERSON.github_app, teams: [{ ...FIRST_TEAM, smoke: { state: 'failed', detail: 'quota_exceeded', url: null } }] }))
+    // MUTATION: count the first team done once it exists, whatever its smoke.
+    expect(stripStep('team').className).not.toContain('is-done')
+    expect(visible(document.querySelector('.ws-lead'))).not.toMatch(/hand over/i)
+  })
+
+  it('names swarm doctor only for what it does, and the hourly doctor’s findings on Health', async () => {
+    await mountPage(firstRun())
+    const card = visible(screen.getByRole('heading', { name: 'Health' }).closest('section'))
+    // MUTATION: say the Health card shows what swarm doctor runs (it shows the hourly doctor's run).
+    expect(card).not.toContain('The checks swarm doctor runs')
+    expect(card).toContain('Admin › Setup › Health')
+  })
 })
