@@ -6,7 +6,7 @@ read Google groups, and a group is registered only once swarm-api has read it
 |---|---|---|
 | `identity.groups` | `workspace-group.install-groups` | human only where no API answers: the platform admins' group and, for a team (not one person, decision 7), the first team's group, created through the Cloud Identity Groups API on one optional choice; without the right, the Admin console's groups page opens and the check is polled |
 | `identity.groups-reader-role` | `workspace-delegation.groups-reader-assignment` | human only where no API answers: the predefined Groups Reader admin role assigned to swarm-api's account through the Directory API after a typed approval; refused, the Admin console's roles page opens and `roleAssignments.list` is polled |
-| `identity.group-read` | `workspace-group.cloud-identity-presence`, `workspace-group.tenant-groups`, `workspace-delegation.groups-reader-admin-role`, `workspace-delegation.groups-dwd` | human: the admin-role path first (Q2), delegation the fallback; polls the probe through swarm-api |
+| `identity.group-read` | `workspace-group.cloud-identity-presence`, `workspace-group.tenant-groups`, `workspace-delegation.groups-reader-admin-role`, `workspace-delegation.groups-dwd` | human: the admin-role path first (Q2), delegation the fallback (its Admin console page opens with the client id and scope, and the stage-8 re-apply runs before the poll); polls the probe through swarm-api |
 | `identity.admin-group` | `workspace-group.admin-surface-swarm-admins` | engine: the platform admins' group, registered only after its probe passes |
 | `identity.qa-console` | `switch.enable_qa_identity`, `sa.qa-console`, `role.custom.swarmQaJwtSigner`, `iam-binding.qa-console-authoritative-policy` | engine, read-only: the live-browser QA identity terraform/bootstrap creates (`qa_identity.tf`) is exactly as designed |
 | `identity.allowed-domains` | `declared-value.allowed-domains-solo` | engine, read-only: swarm-api's `ALLOWED_DOMAINS` is this organisation's domain, never a consumer domain |
@@ -111,6 +111,7 @@ WORKSPACE_SCOPES = (
 #: The Admin console pages a person works on where no API answered.
 GROUPS_PAGE = "https://admin.google.com/ac/groups"
 ADMIN_ROLES_PAGE = "https://admin.google.com/ac/roles"
+DELEGATION_PAGE = "https://admin.google.com/ac/owl/domainwidedelegation"
 
 #: The groups an install creates, under the organisation's domain (`org_domain`).
 ADMIN_GROUP = "swarm-admins"
@@ -240,7 +241,7 @@ def why_unmet(found: GroupResult, mode: str, project: str, client_id: str | None
         if mode == DELEGATION:
             return (f"{found.group}: the Admin console has not authorised swarm-api's client "
                     f"{client_id or '(its numeric unique id)'} for {GROUPS_SCOPE}. This is not IAM: "
-                    f"{DELEGATION_PATH}")
+                    f"{DELEGATION_PATH} ({DELEGATION_PAGE})")
         return (f"{found.group}: swarm-api's account {account} does not hold the Groups Reader admin role. "
                 f"This is not IAM: {ADMIN_ROLE_PATH}")
     if found.reason in ("not_found", "group_not_found"):
@@ -527,7 +528,7 @@ class GroupReadStep(_Base):
         found, mode = self._probe(ctx, group, member)
         if mode and mode != chosen:
             return Observation(UNMET, f"swarm-api reads groups in {mode} mode and this install chose {chosen}; "
-                                      "run swarm install again so infra pass 2 renders GROUPS_AUTH")
+                                      "the stage-8 re-apply renders GROUPS_AUTH, and this step runs it")
         if found.state != MET:
             client = self._client_id(ctx) if chosen == DELEGATION else None
             return Observation(UNMET, why_unmet(found, chosen, ctx.project, client))
@@ -579,6 +580,21 @@ class GroupReadStep(_Base):
                     raise ValueError(f"{value!r} is not an email address")
                 outputs[key] = value
         remember(ctx, outputs=outputs)
+        if outputs["groups_auth"] == DELEGATION and not ctx.dry_run:
+            self._delegate(ctx)
+
+    def _delegate(self, ctx: Any) -> None:
+        """The delegation fallback finishes in this run (audit #21): the Admin
+        console's domain-wide delegation page opens with what to paste there,
+        and the stage-8 re-apply runs now, so swarm-api's GROUPS_AUTH says
+        delegation before the poll. The engine re-checks a re-apply already
+        done and runs it again only if its check is no longer met."""
+        client = self._client_id(ctx) or f"(the numeric unique id of {swarm_api_email(ctx.project)})"
+        open_page(DELEGATION_PAGE, why=(
+            f"Domain-wide delegation for swarm-api: Add new, Client ID {client}, OAuth scopes "
+            f"{GROUPS_SCOPE}, then Authorise. The install continues by itself once swarm-api reads the group."))
+        for step in reapply_steps(ctx):
+            ctx.engine.run_step(step)
 
 
 class AdminGroupStep(_Base):
