@@ -151,10 +151,14 @@ describe('the swarm-ui image', () => {
     // nginx's own entrypoint runs every executable script in this directory
     // before it starts nginx.
     // Copied from a file, not written by a heredoc: main's Cloud Build uses
-    // the classic builder, which does not run one (SWARM-UI-IMAGE-FIX).
+    // the classic builder, which does not run one (SWARM-UI-IMAGE-FIX). It is
+    // executable by its git mode (100755), with no RUN chmod after the COPY:
+    // that chmod's layer repeated the COPY's, and the release refuses an image
+    // that repeats a layer (PR 2762).
     expect(code).toMatch(
-      /^COPY images\/swarm-ui\/(\d+-swarm-ui-config\.sh) (\/docker-entrypoint\.d\/\1)\nRUN chmod 0755 \2$/m,
+      /^COPY images\/swarm-ui\/(\d+-swarm-ui-config\.sh) \/docker-entrypoint\.d\/\1$/m,
     )
+    expect(code).not.toMatch(/^RUN chmod .*swarm-ui-config\.sh/m)
     expect(code).not.toMatch(/<<"?EOF/)
     expect(script.startsWith('#!/bin/sh\n')).toBe(true)
     expect(script).toMatch(/\$\{ENVIRONMENT:-\}/)
