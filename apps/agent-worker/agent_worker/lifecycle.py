@@ -258,6 +258,7 @@ from .gitops import (
     moved_branch_tip,
     origin_tips_as_data,
     own_branch_tip,
+    own_moved_head,
     prepare_publish_repo,
     push_branch,
     read_agent_excludes,
@@ -13101,11 +13102,17 @@ class Worker:
 
     def _check_pull_before_push(
         self, publish_repo: Path, target: "publishpr_mod.Target", *,
-        access: RepoAccess, token: str,
-    ) -> PullHead:
+        access: RepoAccess, token: str, url: str,
+    ) -> tuple[PullHead, bool]:
         """Read the pull request again and refuse, as a GitError, everything
         that would make the push onto it anything but a fast-forward of the
-        head this step started from (#2183). Nothing has been pushed yet."""
+        head this step started from (#2183). Nothing has been pushed yet.
+
+        Returns the pull request and whether its head moved ONLY BY THIS
+        TASK'S OWN earlier generation (#2693, `_own_moved_pull_head`): then
+        the lane's work stands on the head it started from, not on the
+        moved one, and `_publish_git` publishes nothing or replays onto it.
+        """
         ws = self.ws
         assert ws is not None
         try:
@@ -13126,14 +13133,19 @@ class Worker:
         moved = publishpr_mod.head_moved(
             started=self._pr_start_head, now=pull.head_sha, number=target.number
         )
+        own_moved = False
         if moved:
-            raise GitError(moved)
+            if not self._own_moved_pull_head(publish_repo, pull, url=url, token=token):
+                raise GitError(moved)
+            own_moved = True
         # The lane's HEAD must DESCEND from that head, or the push is not a
         # fast-forward: an upstream step that started from an older head of
         # the pull request (it moved between that step and this one) left a
-        # branch this one stands on.
+        # branch this one stands on. Moved by this task's own earlier
+        # generation, it must descend from the head it started from.
+        stands_on = self._pr_start_head if own_moved else pull.head_sha
         code, _ = _git_text(
-            ["git", *_NO_HOOKS, "merge-base", "--is-ancestor", pull.head_sha, "HEAD"],
+            ["git", *_NO_HOOKS, "merge-base", "--is-ancestor", str(stands_on), "HEAD"],
             repo=Path(publish_repo), private_dir=ws.private, logs_dir=ws.logs,
             slug="publish-to-pr-ancestor",
             timeout_seconds=self.cfg.git_harvest_timeout_seconds, logger=self.log,
@@ -13141,11 +13153,55 @@ class Worker:
         if code != 0:
             raise GitError(
                 f"{publishpr_mod.HEAD_MOVED}: the lane's work does not stand on pull "
-                f"request #{target.number}'s head {pull.head_sha[:12]}, so pushing it "
+                f"request #{target.number}'s head {str(stands_on)[:12]}, so pushing it "
                 "would not be a fast-forward; the head moved after the lane's first "
                 "step started. Nothing was pushed and nothing was forced"
             )
-        return pull
+        return pull, own_moved
+
+    def _own_moved_pull_head(
+        self, publish_repo: Path, pull: PullHead, *, url: str, token: str
+    ) -> bool:
+        """Whether the pull request's head moved off `_pr_start_head` only by
+        commits this task's own worker wrote (#2693).
+
+        MEASURED: task_ffc37f64's generation 1 was fenced `dead_worker` and
+        still pushed onto PR #2613 (a273bb75 -> 7eb64482, before the publish
+        read the fence: `_own_before_forge_write`); generation 5, holding the
+        same work as 831e2bef on a273bb75, then refused its own publish
+        `head_moved` and the task failed with its work on the pull request.
+        A head moved only by this task's worker -- its identities, the
+        task's own "Made by the worker for task <id>." line on every commit
+        (`gitops.own_moved_head`, the predicate `own_branch_tip` uses) --
+        was moved by nobody else, so it is not refused. Anyone else's commit
+        anywhere in the span still is, exactly as before. The fetch carries
+        the token, so it runs only in the worker-owned publish repository.
+        """
+        ws = self.ws
+        assert ws is not None
+        cfg = self.cfg
+        author_name, author_email = self._publish_identity()
+        own, why = own_moved_head(
+            repo=publish_repo,
+            url=url,
+            branch=pull.head_ref,
+            token=token,
+            task_id=cfg.task_id,
+            started=self._pr_start_head,
+            now=pull.head_sha,
+            author_name=author_name,
+            author_email=author_email,
+            also_own=((cfg.git_author_name, cfg.git_author_email),),
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            timeout_seconds=cfg.git_clone_timeout_seconds,
+            logger=self.log,
+            branch_prefix=cfg.git_branch_prefix,
+        )
+        if not own:
+            self.log.info("the pull request's head moved by more than this task's own "
+                          "commits", number=pull.number, reason=str(self._scrub(why)))
+        return own
 
     def _dispatch_carrier(self) -> str:
         """Where a step's work is kept for the next step. Defaults to checkpoints.
@@ -13672,6 +13728,68 @@ class Worker:
 
         return confirm
 
+    def _publish_onto_own_moved_head(
+        self,
+        publish_repo: Path,
+        pull: PullHead,
+        *,
+        url: str,
+        token: str,
+        branch: str,
+        protected: tuple[str, ...],
+        default_branch: str | None,
+        author_name: str,
+        author_email: str,
+        out: dict[str, Any],
+    ) -> str:
+        """Publish onto a pull request head moved only by this task's own
+        earlier generation (#2693, task_ffc37f64 on PR #2613); the sha the
+        pull request's branch holds afterwards.
+
+        A head whose tree is already this attempt's (the fenced generation
+        pushed this same work) is published as it stands: nothing is pushed.
+        Otherwise this attempt's commits are replayed onto it through the
+        moved-tip path (`_push_onto_base_merge` with `expect_tip`: replay,
+        authorship, leak re-scan, the fence, one fast-forward push leased on
+        that head, never forced). A replay that leaves nothing over the head
+        has nothing to push either.
+        """
+        ws = self.ws
+        assert ws is not None
+        trees = []
+        for rev in ("HEAD", pull.head_sha):
+            code, text = _git_text(
+                ["git", *_NO_HOOKS, "rev-parse", "--verify", "--quiet", f"{rev}^{{tree}}"],
+                repo=Path(publish_repo), private_dir=ws.private, logs_dir=ws.logs,
+                slug="publish-to-pr-own-tree",
+                timeout_seconds=self.cfg.git_harvest_timeout_seconds, logger=self.log,
+            )
+            trees.append(text.strip() if code == 0 else "")
+        out["publish_to_pr_own_moved_head"] = pull.head_sha
+        if trees[0] and trees[0] == trees[1]:
+            self.log.info(
+                "the pull request's head moved only by this task's own earlier commits "
+                "and already holds this attempt's tree; nothing to push",
+                number=pull.number, head=pull.head_sha,
+            )
+            return pull.head_sha
+        pushed = self._push_onto_base_merge(
+            publish_repo,
+            PushRejected(
+                f"{publishpr_mod.HEAD_MOVED}: pull request #{pull.number}'s branch moved "
+                f"off {pull.head_sha[:12]} while this step replayed onto it; nothing was "
+                "pushed or forced"
+            ),
+            url=url, token=token, branch=branch, protected=protected,
+            default_branch=default_branch, author_name=author_name,
+            author_email=author_email, out=out, expect_tip=pull.head_sha,
+        )
+        if pushed is None:
+            # The moved head already holds every change this attempt made.
+            out.pop(BASE_MERGE_NO_CHANGE_FIELD, None)
+            return pull.head_sha
+        return pushed
+
     def _own_before_forge_write(self, write: str) -> None:
         """Refuse, with `FencedWriteRefused`, a forge write this attempt no longer owns (#2693).
 
@@ -13796,6 +13914,7 @@ class Worker:
         author_name: str,
         author_email: str,
         out: dict[str, Any],
+        expect_tip: str | None = None,
     ) -> str | None:
         """Publish onto a continued branch moved only by merges of the default branch (#2179).
 
@@ -13845,24 +13964,33 @@ class Worker:
         attempt ends publish_failed with nothing pushed; a rewritten branch
         (the clone base no longer under it) re-raises `rejected` as before.
         The tip is recorded in `MOVED_TIP_FIELD`.
+
+        `expect_tip`: a pull request's head moved only by this task's own
+        earlier generation (#2693, `_own_moved_pull_head`). Only that tip is
+        replayed onto -- a branch fetched anywhere else re-raises `rejected`
+        -- and the push is leased on it, so a commit landing after the proof
+        is refused, never replaced.
         """
         cfg = self.cfg
         ws = self.ws
         assert ws is not None
         base = self._publish_base
-        tip, why = base_merge_tip(
-            repo=publish_repo,
-            url=url,
-            branch=branch,
-            default_branch=default_branch or "",
-            token=token,
-            base=base,
-            private_dir=ws.private,
-            logs_dir=ws.logs,
-            timeout_seconds=cfg.git_clone_timeout_seconds,
-            logger=self.log,
-            branch_prefix=cfg.git_branch_prefix,
-        )
+        tip: str | None = None
+        why = "the pull request's head moved only by this task's own commits"
+        if expect_tip is None:
+            tip, why = base_merge_tip(
+                repo=publish_repo,
+                url=url,
+                branch=branch,
+                default_branch=default_branch or "",
+                token=token,
+                base=base,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_clone_timeout_seconds,
+                logger=self.log,
+                branch_prefix=cfg.git_branch_prefix,
+            )
         by_base_merge = tip is not None
         if tip is None and base is not None:
             tip, other_why = moved_branch_tip(
@@ -13878,6 +14006,9 @@ class Worker:
                 branch_prefix=cfg.git_branch_prefix,
             )
             why = f"{why}; {other_why}" if tip is None else why
+        if expect_tip is not None and tip != expect_tip:
+            why = f"{why}; {branch} is no longer at {expect_tip[:12]}"
+            tip = None
         if tip is None or base is None:
             self.log.warning(
                 "the push was refused and the branch did not move on top of the clone "
@@ -13891,6 +14022,8 @@ class Worker:
                 f"{branch} moved to {tip[:12]} by a base merge of "
                 f"{default_branch or 'the default branch'} only"
             )
+        elif expect_tip is not None:
+            moved = f"{branch} moved to {tip[:12]} by this task's own earlier commits"
         else:
             moved = f"{branch} moved to {tip[:12]} by commits this round did not write"
         superseded: list[str] = []
@@ -13991,7 +14124,9 @@ class Worker:
             raise
         try:
             # No lease: HEAD descends from the tip just fetched, so this is
-            # a fast-forward, and a branch moved again is refused.
+            # a fast-forward, and a branch moved again is refused. Onto a
+            # pull request's own moved head, leased on it as every push onto
+            # a pull request is (#2183).
             pushed = push_branch(
                 repo=publish_repo,
                 url=url,
@@ -14003,6 +14138,7 @@ class Worker:
                 logger=self.log,
                 branch_prefix=cfg.git_branch_prefix,
                 protected=protected,
+                lease=expect_tip,
             )
         except GitError:
             self._publish_base = base
@@ -14667,9 +14803,11 @@ class Worker:
             # THIS STEP STARTED FROM (#2183): read again, checked again, and
             # the push below is leased on that head. Refused here, as the
             # attempt's error, before anything is pushed.
-            onto_pull = (
-                self._check_pull_before_push(publish_repo, onto_pr, access=access, token=token)
-                if onto_pr is not None else None
+            onto_pull, own_moved = (
+                self._check_pull_before_push(
+                    publish_repo, onto_pr, access=access, token=token, url=url
+                )
+                if onto_pr is not None else (None, False)
             )
             workflow_paths = self._workflow_paths(publish_repo, floor=scan_floor)
             if workflow_paths and onto_pr is not None:
@@ -14698,6 +14836,12 @@ class Worker:
                         auto_committed=auto_committed,
                     )
                 out["workflow_publish"] = "broker"
+            elif onto_pull is not None and own_moved:
+                pushed = self._publish_onto_own_moved_head(
+                    publish_repo, onto_pull, url=url, token=token, branch=branch,
+                    protected=protected, default_branch=access.default_branch,
+                    author_name=author_name, author_email=author_email, out=out,
+                )
             else:
                 # Not inside the `try`: a fence is not a refused push, and
                 # `except GitError` below must not turn it into publish_failed.

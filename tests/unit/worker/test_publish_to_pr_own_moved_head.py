@@ -82,6 +82,14 @@ def _commit_as(origin: Path, tmp: Path, name: str, files: dict[str, str], *,
                           capture_output=True, text=True).stdout.strip()
 
 
+@pytest.fixture(autouse=True)
+def _the_replays_fence_holds(monkeypatch):
+    """The replay reads the fence with `validate_generation` before its push,
+    and these harnesses write no task document: it holds here, as
+    `_the_fence_holds` makes the publish's other reads hold."""
+    monkeypatch.setattr(lifecycle.ControlPlane, "validate_generation", lambda self: None)
+
+
 @pytest.fixture
 def leases(monkeypatch) -> list:
     seen: list = []

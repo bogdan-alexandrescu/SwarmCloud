@@ -4552,9 +4552,38 @@ def own_branch_tip(
         span = f"{base}..{tip}"
     else:
         return None, "the clone base is unknown, so the branch's commits cannot be told apart"
+    why = _not_this_tasks_worker(
+        run, g, span=span, task_id=task_id, author_name=author_name,
+        author_email=author_email, also_own=also_own, git_binary=git_binary,
+    )
+    if why:
+        return None, f"{why} on {branch}"
+    return tip, ""
+
+
+def _not_this_tasks_worker(
+    run: Callable[[list[str], str], tuple[int, str]],
+    g: list[str],
+    *,
+    span: str,
+    task_id: str,
+    author_name: str,
+    author_email: str,
+    also_own: Sequence[tuple[str, str]],
+    git_binary: str,
+    must_name: bool = False,
+) -> str:
+    """Why a commit on `span`'s first-parent line is not this task's worker's; "" when all are.
+
+    The one predicate `own_branch_tip` and `own_moved_head` share: written
+    whole by one of the worker's identities (`_foreign`, the check
+    `verify_worker_authorship` runs before every push) and naming no other
+    task. `must_name` also requires the task's own "Made by the worker for
+    task <id>." line, for a branch other tasks' workers write too.
+    """
     code, text = run([*g, "rev-list", "--first-parent", span], "own-branch-list")
     if code != 0:
-        return None, f"could not list the commits on {branch}"
+        return "could not list the commits"
     author, committer = _worker_idents(run, g)
     also = [
         _worker_idents(run, [git_binary, *_NO_HOOKS, *_worker_identity(name, email)])
@@ -4564,12 +4593,86 @@ def own_branch_tip(
     for sha in text.split():
         commit = _read_commit(run, g, sha)
         problems = _foreign(commit, author, committer, also=also)
-        named = [found for found in _MADE_FOR_TASK_RE.findall(commit.message) if found != task_id]
+        found = _MADE_FOR_TASK_RE.findall(commit.message)
+        named = [other for other in found if other != task_id]
         if named:
             problems.append(f"it was made for task {named[0]}")
+        elif must_name and task_id not in found:
+            problems.append(f"it does not name task {task_id}")
         if problems:
-            return None, f"commit {sha[:12]} on {branch} is not this task's worker's: {'; '.join(problems)}"
-    return tip, ""
+            return f"commit {sha[:12]} is not this task's worker's: {'; '.join(problems)}"
+    return ""
+
+
+def own_moved_head(
+    *,
+    repo: Path,
+    url: str,
+    branch: str,
+    token: str,
+    task_id: str,
+    started: str | None,
+    now: str,
+    author_name: str,
+    author_email: str,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+    branch_prefix: str = "swarm/",
+    also_own: Sequence[tuple[str, str]] = (),
+) -> tuple[bool, str]:
+    """Whether `branch` moved from `started` to `now` only by this task's own worker commits.
+
+    `(True, "")` when the fetched tip is `now`, `started` is under it, and
+    every first-parent commit `started..now` adds was written by this
+    task's worker (`_not_this_tasks_worker`) AND names this task: a pull
+    request's branch carries other tasks' worker commits, so naming no
+    other task is not enough there. Otherwise `(False, why)`.
+
+    WHY (#2693, measured): task_ffc37f64's generation 1, fenced, pushed onto
+    PR #2613 (a273bb75 -> 7eb64482), and generation 5 -- holding the same
+    work on a273bb75 -- refused its own publish `head_moved`. A head moved
+    only by this task's own earlier generation was moved by nobody else.
+
+    `repo` MUST be the worker-owned publish repository: the fetch carries
+    the token (`fetch_branch_tip`).
+    """
+    started = (started or "").strip()
+    if not _FULL_SHA_RE.match(started):
+        return False, "the head this step started from is unknown"
+    tip = fetch_branch_tip(
+        repo=repo, url=url, branch=branch, token=token, private_dir=private_dir,
+        logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
+        git_binary=git_binary, branch_prefix=branch_prefix,
+    )
+    if tip is None:
+        return False, f"could not fetch {branch} to read what moved it"
+    if tip != now:
+        return False, f"{branch} is at {tip[:12]}, not the head the forge reported {now[:12]}"
+    repo = Path(repo)
+    g = [git_binary, *_NO_HOOKS, *_worker_identity(author_name, author_email)]
+
+    def run(argv: list[str], slug: str) -> tuple[int, str]:
+        return _git_text(
+            argv,
+            repo=repo,
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            slug=slug,
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+        )
+
+    code, _ = run([*g, "merge-base", "--is-ancestor", started, tip], "own-moved-ancestor")
+    if code != 0:
+        return False, f"{branch} was rewritten: {started[:12]} is not under {tip[:12]}"
+    why = _not_this_tasks_worker(
+        run, g, span=f"{started}..{tip}", task_id=task_id, author_name=author_name,
+        author_email=author_email, also_own=also_own, git_binary=git_binary, must_name=True,
+    )
+    return (False, why) if why else (True, "")
 
 
 #: The most default-branch merges `base_merge_tip` walks down from a moved
