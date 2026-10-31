@@ -21,6 +21,8 @@ import { serve, visible } from './repofixture'
 
 type Json = Record<string, unknown>
 
+const rand = (n: number) => Array.from(crypto.getRandomValues(new Uint8Array(n)), (b) => (b % 36).toString(36)).join('')
+
 /** The instant every case reads as "now", in epoch seconds (the engine's clock). */
 const T0 = Date.parse('2026-10-29T15:00:00Z') / 1000
 const NOW_MS = (T0 + 240) * 1000
@@ -209,7 +211,7 @@ describe('Admin › Setup step panels', () => {
     await mountSteps(state({ teams: [], accounts: {}, finished: null }))
     const row = document.querySelector('[data-step="accounts"]') as HTMLElement
     expect(visible(row)).toContain('after the first team')
-    expect(within(row).queryByRole('button', { name: 'Send a sign-in link' })).toBeNull()
+    expect(within(row).queryByRole('button', { name: /sign-in link|Sign in my Claude account/ })).toBeNull()
   })
 })
 
@@ -435,7 +437,7 @@ describe('Admin › Setup says only what exists', () => {
     // MUTATION: keep the accounts gated on a team one person never makes.
     const accounts = document.querySelector('[data-step="accounts"]') as HTMLElement
     expect(visible(accounts)).not.toContain('after the first team')
-    expect(within(accounts).getByRole('button', { name: 'Send a sign-in link' })).toBeTruthy()
+    expect(within(accounts).getByRole('button', { name: 'Sign in my Claude account' })).toBeTruthy()
     expect(visible(screen.getByRole('region', { name: 'Capacity' }))).toContain('One person')
   })
 
@@ -631,10 +633,13 @@ describe('the App self-check waits for infra pass 3 (finding 28)', () => {
     expect(button.disabled).toBe(true)
     expect(visible(row)).toContain('infra pass 3')
     cleanup()
+    const calls = serve((m, url) => (m === 'POST' && url === '/v1/admin/setup/github-app/self-check' ? { status: 200, body: { ok: false, reason: 'app_id_not_configured', at: null, state: 'waiting_for_infra_pass_3' } } : null))
     await mountSteps(state(installed(null), { stages: (state().engine as Json & { stages: unknown[] }).stages.map((s, i) => (i === 9 ? { state: 'done', at: '2026-10-29T14:55:00Z', by: 'ana@example.com' } : s)) }))
+    // Once pass 3 has run the page runs the check by itself (audit 4d, F7), and the button stays as the way to run it again.
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.url === '/v1/admin/setup/github-app/self-check')).toBe(true))
     const after = within(document.querySelector('[data-step="github"]') as HTMLElement).getByRole('button', { name: 'Run the self-check' }) as HTMLButtonElement
     // MUTATION: keep it disabled once pass 3 has run.
-    expect(after.disabled).toBe(false)
+    await waitFor(() => expect(after.disabled).toBe(false))
   })
 
   it('says why it waits in a few words beside the button, leaving the sentence to the row', async () => {
@@ -859,5 +864,160 @@ describe('Admin › Setup follows the engine', () => {
     await waitFor(() => expect(visible(row)).toContain('running'))
     // MUTATION: offer the button on any recorded run.
     expect(within(row).queryByRole('button', { name: /Run the console checks/ })).toBeNull()
+  })
+})
+
+// DAYONE-SETUP-UI-8 (part of #2688; audit 4d, F5, F6 and F7):
+//   * F7: once infra pass 3 has run, the page runs the App's self-check by
+//     itself (pass 4 and the hand-off wait on it); before pass 3, or once a
+//     check has passed or failed, it runs none;
+//   * F5: the pool account's owner is filled in with the installer; the
+//     installer's own sign-in opens in a tab of its own, never as a link to
+//     copy, and a link for someone else is "made", not "sent";
+//   * F6: no link is made before the workspace it signs into is `ready`.
+
+describe('the App self-check runs by itself once infra pass 3 has run (audit 4d, F7)', () => {
+  const PASS_3 = (state().engine as Json & { stages: unknown[] }).stages.map((s, i) => (i === 9 ? { state: 'switches_on', at: '2026-10-29T14:55:00Z', by: 'ana@example.com' } : s))
+  const installed = (self_check: Json | null): Json => ({ github_app: { ...(state().github_app as Json), self_check } })
+  const selfChecks = (calls: { method: string; url: string }[]) => calls.filter((c) => c.method === 'POST' && c.url === '/v1/admin/setup/github-app/self-check')
+
+  it('posts the self-check with no click when pass 3 has run and no check is recorded', async () => {
+    const calls = serve((m, url) =>
+      m === 'POST' && url === '/v1/admin/setup/github-app/self-check' ? { status: 200, body: { ok: true, reason: null, at: '2026-10-29T15:04:00Z', state: 'passed' } } : null,
+    )
+    await mountSteps(state(installed(null), { stages: PASS_3 }))
+    // MUTATION: leave the check to the "Run the self-check" button -> the hand-off waits on a click.
+    await waitFor(() => expect(selfChecks(calls)).toHaveLength(1))
+    expect(visible(document.querySelector('[data-step="github"]'))).not.toContain('the self-check is next')
+  })
+
+  it('also runs a check still recorded as waiting for pass 3, once', async () => {
+    const calls = serve((m, url) =>
+      m === 'POST' && url === '/v1/admin/setup/github-app/self-check' ? { status: 200, body: { ok: false, reason: 'app_id_not_configured', at: null, state: 'waiting_for_infra_pass_3' } } : null,
+    )
+    const { unmount } = await mountSteps(state(installed({ ok: false, reason: 'app_id_not_configured', at: '2026-10-29T14:52:00Z', state: 'waiting_for_infra_pass_3' }), { stages: PASS_3 }))
+    await waitFor(() => expect(selfChecks(calls)).toHaveLength(1))
+    // MUTATION: re-run on every render -> the check is posted in a loop.
+    await new Promise((r) => setTimeout(r, 50))
+    expect(selfChecks(calls)).toHaveLength(1)
+    unmount()
+  })
+
+  it('runs none before pass 3, after a pass, or after a failure', async () => {
+    const calls = serve(() => null)
+    await mountSteps(state(installed(null)))
+    cleanup()
+    await mountSteps(state(installed({ ok: true, reason: null, at: '2026-10-29T14:52:00Z' }), { stages: PASS_3 }))
+    cleanup()
+    await mountSteps(state(installed({ ok: false, reason: 'the App key did not sign', at: '2026-10-29T14:52:00Z' }), { stages: PASS_3 }))
+    await new Promise((r) => setTimeout(r, 50))
+    // MUTATION: run it before pass 3 gives swarm-api the App's id, or again over a recorded result.
+    expect(selfChecks(calls)).toHaveLength(0)
+  })
+
+  it('selfCheckDue reads the same four facts', async () => {
+    const { selfCheckDue } = await import('../AdminSetupSteps')
+    const { normSetupState } = await import('../api')
+    expect(selfCheckDue(normSetupState(state(installed(null), { stages: PASS_3 })))).toBe(true)
+    expect(selfCheckDue(normSetupState(state(installed(null))))).toBe(false)
+    expect(selfCheckDue(normSetupState(state({ github_app: { ...(state().github_app as Json), installed_on: null, self_check: null } }, { stages: PASS_3 })))).toBe(false)
+  })
+})
+
+describe('the installer adds their own Claude account without copying a link (audit 4d, F5)', () => {
+  const linkFor = (owner: string, label: string): Json => {
+    const token = rand(43)
+    return { kind: 'pool-account', label, owner, url: `https://${HOST}/admin/setup/link/${token}`, path: `/admin/setup/link/${token}`, expires_at: '2026-10-30T15:00:00Z' }
+  }
+  const fakeTab = () => ({ location: { href: '' }, close: vi.fn() })
+
+  it('one person: the owner is the installer, fixed, and the sign-in opens in its own tab', async () => {
+    const { OWN_SIGN_IN_WINDOW } = await import('../SetupLink')
+    const link = linkFor('ana@example.com', 'ana')
+    const tab = fakeTab()
+    const open = vi.spyOn(window, 'open').mockImplementation(() => tab as unknown as Window)
+    const calls = serve((m, url) => (m === 'POST' && url === '/v1/admin/setup/links' ? { status: 200, body: link } : m === 'GET' && url === '/v1/admin/setup' ? { status: 200, body: onePerson({}, { accounts: {} }) } : null))
+    await mountSteps(onePerson({}, { accounts: {} }))
+    const row = document.querySelector('[data-step="accounts"]') as HTMLElement
+    const owner = within(row).getByLabelText(/^Its owner/) as HTMLInputElement
+    // MUTATION: leave the owner empty -> the installer types their own address.
+    expect(owner.value).toBe('ana@example.com')
+    // MUTATION: let one person name another owner the route refuses.
+    expect(owner.readOnly).toBe(true)
+    fireEvent.change(within(row).getByLabelText('Account label'), { target: { value: 'ana' } })
+    // MUTATION: keep "Send a sign-in link" -> a send that sends nothing.
+    expect(within(row).queryByRole('button', { name: /Send/ })).toBeNull()
+    fireEvent.click(within(row).getByRole('button', { name: 'Sign in my Claude account' }))
+    await waitFor(() => expect(tab.location.href).toBe(link.url))
+    // The tab is opened inside the click (no popup blocker) and named so the link page opens the link at once.
+    expect(open).toHaveBeenCalledWith('', OWN_SIGN_IN_WINDOW)
+    expect(calls.find((c) => c.url === '/v1/admin/setup/links')?.body).toEqual({ kind: 'pool-account', label: 'ana', owner: 'ana@example.com' })
+    // MUTATION: show the installer their own link to copy.
+    expect(row.querySelector('figure.c-code')).toBeNull()
+    expect(visible(row)).not.toContain(String(link.path))
+    expect(visible(row)).toContain('opened in a new tab')
+    open.mockRestore()
+  })
+
+  it('a team: the owner is the signed-in admin; another owner gets a link made to send them', async () => {
+    const tab = fakeTab()
+    const open = vi.spyOn(window, 'open').mockImplementation(() => tab as unknown as Window)
+    const ravi = linkFor('ravi@example.com', 'ravi')
+    const calls = serve((m, url) =>
+      m === 'GET' && url === '/v1/tenants/me'
+        ? { status: 200, body: { tenant: { tenant_id: 'u-ana', kind: 'user', display_name: 'ana@example.com' }, principal: { email: 'ana@example.com', domain: 'example.com', groups: [], is_admin: true }, environment: 'prod', environment_declared: true } }
+        : m === 'POST' && url === '/v1/admin/setup/links'
+          ? { status: 200, body: ravi }
+          : m === 'GET' && url === '/v1/admin/setup'
+            ? { status: 200, body: state() }
+            : null,
+    )
+    await mountSteps(state({ accounts: {}, finished: null }))
+    const row = document.querySelector('[data-step="accounts"]') as HTMLElement
+    const owner = within(row).getByLabelText(/^Its owner/) as HTMLInputElement
+    // MUTATION: leave the owner empty in team mode -> the installer types their own address.
+    await waitFor(() => expect(owner.value).toBe('ana@example.com'))
+    expect(within(row).getByRole('button', { name: 'Sign in my Claude account' })).toBeTruthy()
+    fireEvent.change(owner, { target: { value: 'ravi@example.com' } })
+    fireEvent.change(within(row).getByLabelText('Account label'), { target: { value: 'ravi' } })
+    // MUTATION: keep "Send" for a link this page only makes.
+    fireEvent.click(within(row).getByRole('button', { name: 'Make a sign-in link' }))
+    await waitFor(() => expect(row.querySelector('figure.c-code')).not.toBeNull())
+    expect(visible(row)).toContain('One-time link for ravi@example.com, shown once: send it to them')
+    // Someone else's link is never opened in this browser.
+    expect(open).not.toHaveBeenCalled()
+    expect(calls.find((c) => c.url === '/v1/admin/setup/links')?.body).toEqual({ kind: 'pool-account', label: 'ravi', owner: 'ravi@example.com' })
+    open.mockRestore()
+  })
+})
+
+describe('no sign-in link is made before its workspace is ready (audit 4d, F6)', () => {
+  it('one person: waits for the personal workspace, then offers the sign-in', async () => {
+    const calls = serve(() => null)
+    await mountSteps(onePerson({ workspace_state: 'applying' }, { accounts: {} }))
+    const row = document.querySelector('[data-step="accounts"]') as HTMLElement
+    fireEvent.change(within(row).getByLabelText('Account label'), { target: { value: 'ana' } })
+    const button = within(row).getByRole('button', { name: 'Sign in my Claude account' }) as HTMLButtonElement
+    // MUTATION: offer the link while swarm-workspace-apply runs -> the link is spent on a 403.
+    expect(button.disabled).toBe(true)
+    expect(visible(row)).toContain('Waiting for the workspace u-ana (swarm-workspace-apply: applying)')
+    fireEvent.click(button)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(calls.some((c) => c.url === '/v1/admin/setup/links')).toBe(false)
+    cleanup()
+    await mountSteps(onePerson({}, { accounts: {} }))
+    const ready = document.querySelector('[data-step="accounts"]') as HTMLElement
+    fireEvent.change(within(ready).getByLabelText('Account label'), { target: { value: 'ana' } })
+    expect((within(ready).getByRole('button', { name: 'Sign in my Claude account' }) as HTMLButtonElement).disabled).toBe(false)
+    expect(visible(ready)).not.toContain('Waiting for the workspace')
+  })
+
+  it('a team: waits for the first team’s workspace', async () => {
+    await mountSteps(state({ teams: [{ ...(state().teams as Json[])[0], progress: { workspace_state: 'pending' } }], accounts: {}, finished: null }))
+    const row = document.querySelector('[data-step="accounts"]') as HTMLElement
+    fireEvent.change(within(row).getByLabelText('Account label'), { target: { value: 'ravi' } })
+    fireEvent.change(within(row).getByLabelText(/^Its owner/), { target: { value: 'ravi@example.com' } })
+    expect((within(row).getByRole('button', { name: 'Make a sign-in link' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(visible(row)).toContain('Waiting for the workspace engineering (swarm-workspace-apply: pending)')
   })
 })
