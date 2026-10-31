@@ -134,7 +134,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 124 | `profiles.py`: a `fix-loop` catalogue profile, `control_plane: true`, shipped unavailable until FL-ACCEPT passes, as `await-input` was (FL-CONTRACT, fix loop request A, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT): mirrored in `terraform/infra/locals.tf` and listed in `profiles_without_a_job` |
 | 125 | `states.py`: `ParkReason.FIX_ROUNDS_RUNNING`, a fix loop's step while its rounds run: never promoted by the scheduler, in no capacity set, ended by swarm-api (FL-CONTRACT, fix loop request B, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT), with the console's and swarm-mcp's park-reason lists |
 | 126 | `models.py`: `EndCause.FIX_LOOP_EXHAUSTED`, a fix loop that ended without a MERGE (FL-CONTRACT, fix loop request C, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 ('accept-126', answering FL-CONTRACT's question on PR 2570; requested by lane FL-CONTRACT the same day, Q3 (c) needs an end cause). APPLIED 2026-10-28 by the pull request that adds this line (lane FL-CONTRACT-126): appended to `EndCause`; the outcome ledger classes it `fix_loop_exhausted`, its own failure class (DERIVE_VERSION 12), and the console's `EndCause`, `END_CAUSES` and `END_CAUSE_SAY` carry it |
-| 127 | `profiles.py`: a `claude-code-lightpanda` catalogue profile, claude-code's runner on image `agent-runtime-lightpanda` and the `standard` class, no live browser, for DOM-only browser work (LIGHTPANDA-ANALYSIS, part of #2688; docs/design/lightpanda-runtime.md) | open |
+| 127 | `profiles.py`: a `claude-code-lightpanda` catalogue profile, claude-code's runner on image `agent-runtime-lightpanda` and the `standard` class, no live browser, for DOM-only browser work (LIGHTPANDA-ANALYSIS, part of #2688; docs/design/lightpanda-runtime.md) | ACCEPTED by the owner 2026-10-31 and APPLIED by the pull request that adds this line (lane LIGHTPANDA-CONTRACT, part of #2688; BGD: "go with the recommended options", accept contract request 127). Its `terraform/infra/locals.tf` mirror lands in the same pull request once `agent-runtime-lightpanda` is built and pinned, so no plan fails on a missing image digest (CLD for BGD, 2026-10-31) |
 
 ---
 
@@ -15089,10 +15089,19 @@ None is touched: an end cause records why, it decides nothing.
 
 ## 127. `profiles.py`: a `claude-code-lightpanda` catalogue profile, DOM-only browser work on `standard` with no live browser (LIGHTPANDA-ANALYSIS)
 
-**Status:** open. Requested 2026-10-31 by lane LIGHTPANDA-ANALYSIS (part of
-#2688), answering BGD's ask of the same day to analyse Lightpanda as a
-runtime for browser agents and, if it adds value, design and build it.
-BGD said to go with the recommended options. This is decision B (2) of
+**Status:** ACCEPTED by the owner 2026-10-31 and APPLIED by lane
+LIGHTPANDA-CONTRACT (part of #2688), in the pull request that rewrote row 127
+of the index above: one literal entry in `RUNNER_PROFILES`, right after
+`claude-code-browser`, exactly as below, held equal to `claude-code` in every
+field but its name and image by
+`tests/unit/common/test_claude_code_lightpanda.py`. Its `terraform/infra/locals.tf`
+mirror waits for the image: it lands in the same pull request once
+`agent-runtime-lightpanda` is built and pinned, so no plan fails on a missing
+image digest (CLD for BGD, 2026-10-31). Requested 2026-10-31 by
+lane LIGHTPANDA-ANALYSIS (part of #2688), answering BGD's ask of the same day
+to analyse Lightpanda as a runtime for browser agents and, if it adds value,
+design and build it. BGD said to go with the recommended options. This is
+decision B (2) of
 [`docs/design/lightpanda-runtime.md`](design/lightpanda-runtime.md) §5.
 
 ### What is true today

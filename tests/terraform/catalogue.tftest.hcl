@@ -43,15 +43,16 @@ variables {
   # Every image by digest, because the root refuses to plan without one. See
   # image_refs.tftest.hcl.
   image_refs = {
-    "swarm-api"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-    "swarm-scheduler"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-    "swarm-quota-broker"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-    "swarm-reconciler"      = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    "swarm-ui"              = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    "swarm-verify"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-    "agent-runtime-base"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    "agent-runtime-browser" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    "agent-runtime-indexer" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   }
 }
 
@@ -157,8 +158,15 @@ run "runner_backends_match_resolve_backend" {
   }
 
   assert {
-    condition     = length(output.runner_backends) == 13
-    error_message = "thirteen runner profiles: mock, generic, claude-code, codex, browser, #295's merge, post-verdict, claude-code-review, contract request 48's indexer, contract request 67's claude-code-browser, contract request 94's await-input, contract request 113's claude-code-large and contract request 124's fix-loop"
+    condition     = length(output.runner_backends) == 14
+    error_message = "fourteen runner profiles: mock, generic, claude-code, codex, browser, #295's merge, post-verdict, claude-code-review, contract request 48's indexer, contract request 67's claude-code-browser, contract request 94's await-input, contract request 113's claude-code-large, contract request 124's fix-loop and contract request 127's claude-code-lightpanda"
+  }
+
+  # Contract request 127 (owner, 2026-10-31): claude-code on the Lightpanda
+  # image runs on Autopilot, as claude-code does, on the standard class.
+  assert {
+    condition     = output.runner_backends["claude-code-lightpanda"] == "GKE_AUTOPILOT"
+    error_message = "claude-code-lightpanda runs on GKE Autopilot (contract request 127)"
   }
 
   # Contract request 94: await-input is a control_plane profile (request 93)
@@ -440,8 +448,8 @@ run "the_python_catalogue_is_readable" {
   }
 
   assert {
-    condition     = length(output.runner_profiles) == 13
-    error_message = "expected 13 runner profiles in profiles.py (mock, generic, claude-code, claude-code-large, codex, browser, merge, post-verdict, claude-code-review, indexer, claude-code-browser, await-input, fix-loop); the parser read a different number"
+    condition     = length(output.runner_profiles) == 14
+    error_message = "expected 14 runner profiles in profiles.py (mock, generic, claude-code, claude-code-large, claude-code-lightpanda, codex, browser, merge, post-verdict, claude-code-review, indexer, claude-code-browser, await-input, fix-loop); the parser read a different number"
   }
 
   # claude-code's and indexer's entries carry a comment above their backend;
@@ -534,14 +542,15 @@ run "the_mirror_carries_each_profiles_model_classes" {
     source = "../../terraform/infra"
   }
 
-  # Q3: the three claude-code-family profiles accept all four, opus by default.
+  # Q3: the claude-code-family profiles accept all four, opus by default;
+  # claude-code-lightpanda (contract request 127) is claude-code's classes too.
   assert {
     condition = alltrue([
-      for name in ["claude-code", "claude-code-browser", "indexer"] :
+      for name in ["claude-code", "claude-code-browser", "indexer", "claude-code-lightpanda"] :
       local.runner_profiles[name].model_classes == ["opus", "fable", "sonnet", "haiku"]
       && local.runner_profiles[name].default_model_class == "opus"
     ])
-    error_message = "claude-code, claude-code-browser and indexer must accept opus, fable, sonnet and haiku, opus by default (owner decision Q3, 2026-10-17)"
+    error_message = "claude-code, claude-code-browser, indexer and claude-code-lightpanda must accept opus, fable, sonnet and haiku, opus by default (owner decision Q3, 2026-10-17; contract request 127)"
   }
 
   # Retired under contract request 50: it keeps the pin it has and gains nothing.

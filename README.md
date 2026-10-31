@@ -67,7 +67,8 @@ rollups. **Execution plane** — Cloud Run Jobs for `mock` (and the disabled
 `indexer` (contract request 63, the canary for #939), `generic`, `codex`
 and `merge` (contract requests 64-66, #939 option A), and `claude-code-large`,
 `claude-code` on the `large` class with a 14,400 s timeout (contract request
-113). The full picture is in
+113), and `claude-code-lightpanda`, `claude-code` on the Lightpanda image for
+DOM-only browser work (contract request 127). The full picture is in
 [`docs/architecture.md`](docs/architecture.md).
 
 **Clients.** One Python package, `apps/swarm-mcp`, ships three commands: `swarm`
@@ -90,7 +91,8 @@ instance's internet path opens about 20 s after start. As the catalogue
 (`apps/common/swarm_common/profiles.py`) declares it on 2026-10-21, GKE
 Autopilot runs `browser` and `claude-code-browser` (Chromium needs a large
 `/dev/shm`), `claude-code`, `claude-code-large` (the `large` class, 14,400 s,
-contract request 113 on 2026-10-22), `indexer`, `generic`, `codex` and `merge`; Cloud
+contract request 113 on 2026-10-22), `claude-code-lightpanda` (the Lightpanda
+image, contract request 127 on 2026-10-31), `indexer`, `generic`, `codex` and `merge`; Cloud
 Run Jobs runs `mock`, which reaches no internet, and the disabled
 `post-verdict` and `claude-code-review`, each designed to run as an account of
 its own that a GKE pod cannot be. GKE brings back the node-side failure modes;

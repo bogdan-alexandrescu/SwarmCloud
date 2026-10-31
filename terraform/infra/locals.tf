@@ -127,6 +127,25 @@ locals {
       model_classes       = ["opus", "fable", "sonnet", "haiku"]
       default_model_class = "opus"
     }
+    # Contract request 127, accepted by the owner 2026-10-31 (LIGHTPANDA-CONTRACT,
+    # docs/design/lightpanda-runtime.md): claude-code on agent-runtime-lightpanda,
+    # on the standard class, and nothing else different. A GKE profile, not in
+    # `cloud_run_fallback_profiles`, so no Cloud Run Job is made for it;
+    # mirrored so the catalogue comparison holds, so its
+    # `runner:claude-code-lightpanda` pool exists, and so agent-runtime-lightpanda
+    # is in runner_images: its digest is pinned and handed to the scheduler
+    # with the others.
+    "claude-code-lightpanda" = {
+      image           = "agent-runtime-lightpanda"
+      resource_class  = "standard"
+      backend         = "GKE_AUTOPILOT"
+      provider        = "anthropic"
+      secret_env      = { for name in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] : name => "anthropic" }
+      timeout_seconds = 7200
+
+      model_classes       = ["opus", "fable", "sonnet", "haiku"]
+      default_model_class = "opus"
+    }
     # GKE Autopilot since contract request 65 (owner, 2026-10-10, option A of
     # #939); its Cloud Run Jobs stay as the rollback, as generic's do.
     "codex" = {
@@ -362,7 +381,7 @@ locals {
   }
 
   # Profile -> the pin of its `default_model_class` (the mirror above), for
-  # every profile that has one: claude-code, claude-code-large,
+  # every profile that has one: claude-code, claude-code-large, claude-code-lightpanda,
   # claude-code-review, indexer and claude-code-browser, all opus, so exactly the map #226 wrote by hand.
   # codex is an OpenAI CLI, where a Claude name would fail every run, and
   # mock, generic, browser, merge, post-verdict, await-input and fix-loop start no
