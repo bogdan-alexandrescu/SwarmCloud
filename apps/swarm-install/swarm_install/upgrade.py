@@ -8,27 +8,34 @@ roll back (docs/design/day-one-plan.md §9.3, lane DAYONE-UPGRADE-1, part of
    wheel (as stage 4 does, `steps/images.py`).
 3. **Plan everything and show it**: both roots' Terraform plans, the image
    digests that change, the Firestore migrations still to run, the cluster
-   policy diff, and new GitHub App permissions with the page where the owner
-   accepts them on the installation (lesson 44: a changed permission is not in
-   force until accepted).
+   policy diff, and the GitHub App permissions release V adds.
 4. **IAM gate** (lesson 26): an IAM resource created, changed or deleted in
    either plan is shown row by row and waits for the project id TYPED;
    anything else refuses (exit 5) and nothing is applied. The prompt says what
    it blocks. A destroy-first IAM swap or a condition the linter refuses is
-   refused outright (lesson 10).
-5. **Drain**: dispatch paused (the platform's own switch,
+   refused outright (lesson 10). With `confirm_plan` (an upgrade to the
+   channel's release, chosen without `--to`) the plan waits for the typed
+   project id even with no IAM change.
+5. **GitHub App permissions** (lesson 44): a permission release V adds is
+   first added to the App's definition by its owner, then accepted on the
+   installation; it is not in force before both. The engine opens the App's
+   permissions page and polls `GET /app` until the definition holds V's
+   permissions, then opens the installation's page and polls the installation
+   until it does too. Both come before the drain, so dispatch is never paused
+   while a person works on GitHub, and before the new code runs.
+6. **Drain**: dispatch paused (the platform's own switch,
    `POST /v1/admin/dispatch/pause`), running work left to checkpoint and park
    (invariant 4), bounded at 30 min with a countdown.
-6. **Apply in this order** (`ORDER`; lesson 33): copy images, `additive`
+7. **Apply in this order** (`ORDER`; lesson 33): copy images, `additive`
    migrations, bootstrap, the policies that admit more, infra, the policies
    that tighten, `needs-new-code` migrations, the namespaces and verify keys
    of EVERY tenant (lesson 31). Infra's plan replacing a log-based metric (a
    new label forces it, and GCP will not delete a metric an alert uses) is
    split: the label is added to the live metric first, then infra applies in
    place (lesson 14).
-7. **Verify**: the platform checks (stage 14's quick checks), then
+8. **Verify**: the platform checks (stage 14's quick checks), then
    `removes-data` migrations, then dispatch resumed.
-8. **Roll back** a failed image roll (infra or the checks): the previous
+9. **Roll back** a failed image roll (infra or the checks): the previous
    release's digests and generated inputs are applied again and the install
    state records the previous release. Data-removing migrations never ran.
 
@@ -62,7 +69,10 @@ from .terraform import _IAM_TYPE, review_plan
 from .events import Events
 from .waits import Clock, WaitGaveUp, WaitSpec, wait_until
 
-#: §9.3 step 6, then 7: the order the upgrade applies in.
+#: §9.3 step 6, then 7: the order the upgrade applies in, after the App's
+#: permissions (step 5 above), which come first so no person works on GitHub
+#: while dispatch is paused.
+APP_PERMISSIONS = "app-permissions"
 DRAIN = "drain"
 COPY_IMAGES = "copy-images"
 MIGRATIONS_ADDITIVE = "migrations-additive"
@@ -75,7 +85,7 @@ NAMESPACES = "namespaces"
 VERIFY = "verify"
 MIGRATIONS_CLEANUP = "migrations-cleanup"
 RESUME = "resume-dispatch"
-ORDER = (DRAIN, COPY_IMAGES, MIGRATIONS_ADDITIVE, BOOTSTRAP, POLICIES_ADMIT, INFRA, POLICIES_TIGHTEN,
+ORDER = (APP_PERMISSIONS, DRAIN, COPY_IMAGES, MIGRATIONS_ADDITIVE, BOOTSTRAP, POLICIES_ADMIT, INFRA, POLICIES_TIGHTEN,
          MIGRATIONS_NEW_CODE, NAMESPACES, VERIFY, MIGRATIONS_CLEANUP, RESUME)
 
 #: A failure of these is a failed image roll, and is rolled back (§9.3 step 8).
@@ -93,6 +103,28 @@ DRAIN_WAIT = WaitSpec(
     look_at="the console's Tasks page: a task still RUNNING past 30 min is not checkpointing",
     interval_s=15,
 )
+
+#: The owner adds V's permissions to the App's definition: a person's click,
+#: GitHub has no API for it.
+APP_DEFINITION_WAIT = WaitSpec(
+    reason="the GitHub App's owner adding the permissions this release needs to the App",
+    expected="a few minutes",
+    expected_s=5 * 60,
+    bound_s=30 * 60,
+    look_at="the App's Permissions & events page on GitHub: save the permissions listed above",
+    interval_s=10,
+)
+#: The organisation (or account) owner accepts them on the installation.
+APP_INSTALLATION_WAIT = WaitSpec(
+    reason="the installation's owner accepting the GitHub App's new permissions",
+    expected="a few minutes",
+    expected_s=5 * 60,
+    bound_s=30 * 60,
+    look_at="the App installation's page on GitHub: review the request and accept the new permissions",
+    interval_s=10,
+)
+#: GitHub's permission levels, weakest first: a stronger one holds a weaker.
+_LEVELS = {"read": 1, "write": 2, "admin": 3}
 
 _LOG_METRIC = "google_logging_metric"
 _CUSTOM_ROLE = re.compile(r"^google_.*_iam_custom_role$")
@@ -116,6 +148,55 @@ def version_key(version: str) -> tuple[Any, ...]:
     if not pre:
         return (numbers, 1, ())
     return (numbers, 0, tuple(int(p) if p.isdigit() else 0 for p in re.split(r"[.-]", pre)))
+
+
+# -- the GitHub App -----------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class GithubApp:
+    """The App's definition as `GET /app` answers it."""
+
+    slug: str
+    owner: str
+    owner_is_org: bool
+    permissions: dict[str, str]
+
+
+@dataclass(frozen=True)
+class AppInstallation:
+    """The installation the deployment uses, as `GET /app/installations/{id}` answers it."""
+
+    id: int
+    account: str
+    account_is_org: bool
+    permissions: dict[str, str]
+
+
+def missing_permissions(have: Mapping[str, str], wanted: Mapping[str, str]) -> dict[str, str]:
+    """The permissions in `wanted` that `have` does not hold at that level or a stronger one."""
+    return {name: level for name, level in sorted(wanted.items())
+            if _LEVELS.get(str(have.get(name)), 0) < _LEVELS.get(str(level), 1)}
+
+
+def app_permissions_url(app: GithubApp) -> str:
+    """The App definition's permissions page: under the organisation that owns it, or the account's settings."""
+    if app.owner_is_org:
+        return f"https://github.com/organizations/{app.owner}/settings/apps/{app.slug}/permissions"
+    return f"https://github.com/settings/apps/{app.slug}/permissions"
+
+
+def installation_url(installation: AppInstallation) -> str:
+    """The installation's page, where its owner reviews and accepts a permission request."""
+    if installation.account_is_org:
+        return f"https://github.com/organizations/{installation.account}/settings/installations/{installation.id}"
+    return f"https://github.com/settings/installations/{installation.id}"
+
+
+def _open_page(url: str, *, why: str, say: Callable[[str], None] = print) -> None:
+    from .steps import open_page
+
+    open_page(url, why=why, say=say)
 
 
 # -- the world --------------------------------------------------------------------
@@ -146,13 +227,14 @@ class UpgradeWorld(Protocol):
 
     def delete_policies(self, documents: Sequence[tuple[str, str]]) -> None: ...
 
-    def app_permissions(self) -> dict[str, str] | None:
-        """The GitHub App's permissions as they are now, or None with no App yet."""
+    def app(self) -> GithubApp | None:
+        """The GitHub App's definition now (`GET /app`, as the App), or None with no App yet."""
+
+    def installation(self) -> AppInstallation | None:
+        """The App's installation for this deployment now, or None when it is not installed yet."""
 
     def release_app_permissions(self, version: str) -> dict[str, str] | None:
         """The permissions release `version` asks the App for, or None if it names none."""
-
-    def app_review_url(self) -> str: ...
 
     def tenants(self) -> list[str]: ...
 
@@ -207,6 +289,8 @@ class UpgradePlan:
     iam: list[IamRow]
     app_added: dict[str, str]
     replaced_metrics: list[str] = field(default_factory=list)
+    #: The App the permissions are added to, when there is one.
+    app: GithubApp | None = None
 
 
 def _actions(change: Mapping[str, Any]) -> list[str]:
@@ -286,6 +370,13 @@ class Upgrade:
     confirm: Callable[[str], str]
     out: Callable[[str], None] = print
     migrations: Sequence[mig.Migration] = field(default_factory=mig.discover)
+    #: The plan waits for the typed project id even with no IAM change: the
+    #: person did not name the release (`swarm upgrade` with no `--to`).
+    confirm_plan: bool = False
+    #: Prints `why` and the URL and opens it in the browser (`steps.open_page`).
+    open_page: Callable[..., None] = _open_page
+    #: Called on every poll of a wait: the verb renews its lease here.
+    heartbeat: Callable[[], None] | None = None
 
     # -- state ----------------------------------------------------------------
 
@@ -332,14 +423,13 @@ class Upgrade:
         done = mig.applied(self.store.load().outputs)
         pending = [f"{mig.key(m.number)} {m.name} ({m.phase})" for m in self.migrations
                    if mig.key(m.number) not in done]
-        current_app = self.world.app_permissions()
         wanted = self.world.release_app_permissions(target) or {}
-        added_perms = {name: level for name, level in sorted(wanted.items())
-                       if current_app is not None and current_app.get(name) != level}
+        app = self.world.app() if wanted else None
+        added_perms = missing_permissions(app.permissions, wanted) if app is not None else {}
         return UpgradePlan(previous=previous, target=target, terraform=terraform, images=images,
                            migrations=pending, policy_admit=changed, policy_delete=removed, policy_tighten=added,
                            iam=iam, app_added=added_perms,
-                           replaced_metrics=[a for a, _ in replaced_metrics(terraform["infra"])])
+                           replaced_metrics=[a for a, _ in replaced_metrics(terraform["infra"])], app=app)
 
     def show(self, plan: UpgradePlan) -> None:
         say = self.out
@@ -360,11 +450,12 @@ class Upgrade:
             f"the new code, {len(plan.policy_tighten)} added after it")
         for address in plan.replaced_metrics:
             say(f"  {address}: a new label would replace it; the label is added to the live metric first (lesson 14)")
-        if plan.app_added:
+        if plan.app_added and plan.app is not None:
             say("  GitHub App permissions this release adds: "
                 + ", ".join(f"{k}: {v}" for k, v in plan.app_added.items()))
-            say("    They are not in force until the organisation owner accepts them on the installation (lesson "
-                f"44). Review and accept them at: {self.world.app_review_url()}")
+            say("    Before anything is applied, the upgrade opens the App's permissions page for its owner to add "
+                "them, then the installation's page to accept them, and waits for each (lesson 44): "
+                f"{app_permissions_url(plan.app)}")
         if plan.iam:
             say(f"  IAM changes ({len(plan.iam)}):")
             for row in plan.iam:
@@ -372,6 +463,12 @@ class Upgrade:
 
     def gate(self, plan: UpgradePlan) -> None:
         if not plan.iam:
+            if self.confirm_plan:
+                prompt = (f"Upgrade {self.project} from {plan.previous} to {plan.target} as planned above? Type the "
+                          f"project id ({self.project}) to approve, anything else refuses: ")
+                if self.confirm(prompt).strip() != self.project:
+                    raise UpgradeRefused(f"the upgrade to {plan.target} was not approved; nothing was applied and "
+                                         f"{plan.previous} keeps running")
             return
         prompt = (f"These {len(plan.iam)} IAM changes block the upgrade to {plan.target}: nothing is applied, and "
                   f"the platform keeps running {plan.previous}, until they are approved. Type the project id "
@@ -400,7 +497,50 @@ class Upgrade:
             return "met" if self.world.running() == 0 else "waiting"
 
         wait_until("upgrade.drain", DRAIN_WAIT, check, clock=self.clock, events=self.events,
-                   resume="swarm upgrade")
+                   on_poll=self.heartbeat, resume="swarm upgrade")
+
+    def _app_permissions(self, target: str) -> None:
+        """Release `target`'s App permissions in the definition, then accepted
+        on the installation; each page opened and polled until GitHub shows it."""
+        wanted = self.world.release_app_permissions(target) or {}
+        app = self.world.app() if wanted else None
+        if app is None:
+            # No App yet: Admin › Setup creates it from this release's manifest.
+            return
+        lacking = missing_permissions(app.permissions, wanted)
+        if lacking:
+            self.open_page(app_permissions_url(app), say=self.out, why=(
+                f"Release {target} needs these GitHub App permissions: "
+                + ", ".join(f"{k}: {v}" for k, v in lacking.items())
+                + f". On the App's permissions page, as its owner ({app.owner}), set them and save; the upgrade "
+                "goes on when GitHub shows them on the App:"))
+
+            def defined() -> str:
+                now = self.world.app()
+                return "met" if now is not None and not missing_permissions(now.permissions, wanted) else "waiting"
+
+            wait_until("upgrade.app-definition", APP_DEFINITION_WAIT, defined, clock=self.clock,
+                       events=self.events, on_poll=self.heartbeat, resume="swarm upgrade")
+        installation = self.world.installation()
+        if installation is None:
+            # Not installed yet: an installation made now is granted the definition's permissions.
+            return
+        unaccepted = missing_permissions(installation.permissions, wanted)
+        if not unaccepted:
+            return
+        self.open_page(installation_url(installation), say=self.out, why=(
+            "GitHub asks the installation's owner "
+            f"({installation.account}) to accept the App's new permissions ("
+            + ", ".join(f"{k}: {v}" for k, v in unaccepted.items())
+            + "): on the installation's page, review the request and accept it. The upgrade goes on when GitHub "
+            "shows them accepted:"))
+
+        def accepted() -> str:
+            now = self.world.installation()
+            return "met" if now is not None and not missing_permissions(now.permissions, wanted) else "waiting"
+
+        wait_until("upgrade.app-installation", APP_INSTALLATION_WAIT, accepted, clock=self.clock,
+                   events=self.events, on_poll=self.heartbeat, resume="swarm upgrade")
 
     def _infra(self, target: str) -> None:
         found = self.world.plan_root("infra", target)
@@ -423,7 +563,9 @@ class Upgrade:
 
     def _step(self, name: str, plan: UpgradePlan) -> None:
         target = plan.target
-        if name == DRAIN:
+        if name == APP_PERMISSIONS:
+            self._app_permissions(target)
+        elif name == DRAIN:
             self._drain()
         elif name == COPY_IMAGES:
             self.world.copy_images(target, parse_images_json(self.world.fetch(target, "images.json")))
@@ -534,6 +676,8 @@ class Upgrade:
 
 
 __all__ = [
-    "DRAIN_WAIT", "IamRow", "ORDER", "ROLLED_BACK", "Upgrade", "UpgradeFailed", "UpgradePlan", "UpgradeRefused",
-    "UpgradeWorld", "iam_rows", "policy_diff", "replaced_metrics", "version_key",
+    "APP_DEFINITION_WAIT", "APP_INSTALLATION_WAIT", "AppInstallation", "DRAIN_WAIT", "GithubApp", "IamRow", "ORDER",
+    "ROLLED_BACK", "Upgrade", "UpgradeFailed", "UpgradePlan", "UpgradeRefused", "UpgradeWorld",
+    "app_permissions_url", "iam_rows", "installation_url", "missing_permissions", "policy_diff", "replaced_metrics",
+    "version_key",
 ]

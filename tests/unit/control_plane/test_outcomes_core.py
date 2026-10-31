@@ -152,11 +152,34 @@ def test_a_midnight_that_does_not_exist_starts_the_day_after_the_gap():
 
 
 def test_an_ambiguous_midnight_is_its_first_occurrence():
-    """Havana's clocks go back from 01:00 to 00:00 on 1 Nov 2026."""
+    """Two ambiguous midnights, both fixed under tzdata 2026f.
+
+    The Azores' clocks go back from 01:00 to 00:00 on 25 Oct 2026; they follow
+    the EU's rule. Havana's went back on 2 Nov 2025: a past transition, which
+    does not move with a new tzdata release (2026f has Cuba keep -04 all year,
+    so its 1 Nov 2026 midnight is no longer ambiguous).
+    """
+    azores = ZoneInfo("Atlantic/Azores")
+    day = floor_boundary(datetime(2026, 10, 25, 12, tzinfo=UTC), "day", azores)
+    assert day.astimezone(azores).isoformat() == "2026-10-25T00:00:00+00:00"
+    assert next_boundary(day, "day", azores) - day == timedelta(hours=25)
+
     havana = ZoneInfo("America/Havana")
-    day = floor_boundary(datetime(2026, 11, 1, 12, tzinfo=UTC), "day", havana)
-    assert day.astimezone(havana).isoformat() == "2026-11-01T00:00:00-04:00"
+    day = floor_boundary(datetime(2025, 11, 2, 12, tzinfo=UTC), "day", havana)
+    assert day.astimezone(havana).isoformat() == "2025-11-02T00:00:00-04:00"
     assert next_boundary(day, "day", havana) - day == timedelta(hours=25)
+
+
+def test_an_ambiguous_midnight_under_the_eu_rule_is_its_first_occurrence():
+    """The Azores' clocks go back from 01:00 to 00:00 on 25 Oct 2026.
+
+    The Azores follow the EU rule (back at 01:00 UTC), which is their 01:00
+    local, so their fall-back repeats midnight on a current tz database.
+    """
+    azores = ZoneInfo("Atlantic/Azores")
+    day = floor_boundary(datetime(2026, 10, 25, 12, tzinfo=UTC), "day", azores)
+    assert day.astimezone(azores).isoformat() == "2026-10-25T00:00:00+00:00"
+    assert next_boundary(day, "day", azores) - day == timedelta(hours=25)
 
 
 def test_a_week_starts_on_monday_and_a_month_on_the_first():

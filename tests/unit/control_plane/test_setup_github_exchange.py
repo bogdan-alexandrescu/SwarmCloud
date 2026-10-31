@@ -137,6 +137,20 @@ def test_manifest_requests_statuses_read(setup_client, db) -> None:
     assert db.docs[GITHUB_APP_DOC]["state_hash"]
 
 
+def test_manifest_returns_the_person_to_admin_setup(setup_client, db) -> None:
+    """Audit 5b M4 (DAYONE-FLOW-APP-RETURN): installing the App sends the
+    person back to Admin › Setup, where the GitHub step polls for the
+    installation, instead of leaving them on GitHub's installation page. An
+    update to the installation's repositories returns there too."""
+    body, _state = _start(setup_client)
+    manifest = body["manifest"]
+    # MUTATION: drop `setup_url` -> GitHub stays on its own page, and this fails.
+    assert manifest["setup_url"] == f"https://{HOSTNAME}/admin/setup"
+    assert manifest["setup_on_update"] is True
+    # The creation callback is still the conversion page, not the setup page.
+    assert manifest["redirect_url"] == f"https://{HOSTNAME}/admin/setup/github-app/callback"
+
+
 def _created(setup_client, github) -> None:
     github.conversion = _conversion_answer()
     _, state = _start(setup_client)

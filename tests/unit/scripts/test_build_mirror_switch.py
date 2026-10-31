@@ -145,8 +145,14 @@ def test_every_base_is_pulled_from_a_mirror_by_digest(dockerfile: Path) -> None:
 
 #: The Dockerfiles that read the tool mirror. agent-runtime-browser joined the
 #: base on 2026-10-14 for the pinned dev-browser binary (DEVB-INSTALL, part of
-#: #1030); the manifest is still one file, listing what all of them read.
-MIRROR_READERS = (BASE_DOCKERFILE, REPO / "images" / "agent-runtime-browser" / "Dockerfile")
+#: #1030), and agent-runtime-lightpanda on 2026-10-31 for the Lightpanda
+#: binaries and the tag's source archive (LIGHTPANDA-IMAGE, part of #2688);
+#: the manifest is still one file, listing what all of them read.
+MIRROR_READERS = (
+    BASE_DOCKERFILE,
+    REPO / "images" / "agent-runtime-browser" / "Dockerfile",
+    REPO / "images" / "agent-runtime-lightpanda" / "Dockerfile",
+)
 
 
 def test_the_mirror_readers_are_every_dockerfile_that_bind_mounts_it() -> None:
