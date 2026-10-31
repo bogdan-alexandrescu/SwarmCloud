@@ -960,6 +960,20 @@ def github_app_installation(
     return flow.installation(ctx.settings.setup_github_org)
 
 
+@router.get("/github-app/permissions", dependencies=[Depends(admin_auth)])
+def github_app_permissions(
+    caller: SetupCaller = Depends(admin_setup_caller),  # noqa: ARG001 - the gate
+    ctx: AppContext = Depends(get_context),
+    flow: ManifestFlow = Depends(manifest_flow),
+    github: GitHubSetupApi = Depends(setup_github_api),
+) -> dict:
+    """The App's and its installation's permissions, read as the App, for
+    `swarm upgrade` (`setup_app_read`): no token, key or secret field."""
+    from ..setup_app_read import app_permissions
+
+    return app_permissions(flow, github, org=ctx.settings.setup_github_org)
+
+
 @router.post("/github-app/self-check", dependencies=[Depends(admin_auth)])
 def github_app_self_check(
     request: Request,
