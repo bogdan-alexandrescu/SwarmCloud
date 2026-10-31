@@ -235,17 +235,24 @@ def test_the_self_test_refuses_a_binary_the_agent_could_replace(tmp_path: Path) 
     fake = _fake_binary(tmp_path, VERSION)
     fake.chmod(0o775)
     with pytest.raises(SystemExit) as failed:
-        _selftest().check_owner_and_mode(fake, uid=fake.stat().st_uid)
+        _selftest().check_owner_and_mode(fake, uid=fake.stat().st_uid, gid=None)
     assert "0755" in str(failed.value)
     fake.chmod(0o755)
-    _selftest().check_owner_and_mode(fake, uid=fake.stat().st_uid)
+    _selftest().check_owner_and_mode(fake, uid=fake.stat().st_uid, gid=fake.stat().st_gid)
     with pytest.raises(SystemExit):
-        _selftest().check_owner_and_mode(fake, uid=fake.stat().st_uid + 1)
+        _selftest().check_owner_and_mode(fake, uid=fake.stat().st_uid + 1, gid=None)
 
 
 def test_the_self_test_finds_a_chromium(tmp_path: Path) -> None:
     selftest = _selftest()
+    # A protocol library and a non-executable file of the same name are not a browser.
+    (tmp_path / "node_modules" / "chromium-bidi").mkdir(parents=True)
+    (tmp_path / "node_modules" / "chrome").write_text("")
     assert selftest.find_chromium([tmp_path]) == []
+    playwright = tmp_path / "ms-playwright" / "chromium-1187"
+    playwright.mkdir(parents=True)
+    assert selftest.find_chromium([tmp_path]) == [str(playwright)]
+    playwright.rmdir()
     browser = tmp_path / "lib" / "chromium" / "chrome"
     browser.parent.mkdir(parents=True)
     browser.write_text("")
