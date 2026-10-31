@@ -123,7 +123,8 @@ def test_a_lightpanda_agent_never_receives_chromium_and_never_claims_a_live_view
     assert seen["states"] == []
     assert "no live view" in seen["prompt"]
     assert seen["prompt"].startswith("Read three pages.")
-    assert lightpanda.LIGHTPANDA_NOTE in seen["prompt"]
+    # No child path here, so the child's note (test_lightpanda_child_note.py).
+    assert lightpanda.LIGHTPANDA_CHILD_NOTE in seen["prompt"]
 
 
 def test_a_submitted_browser_tool_is_refused_at_validation():

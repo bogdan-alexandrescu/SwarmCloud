@@ -22,8 +22,11 @@ pure helpers, so each is testable without the CLI:
   * `DISALLOWED_TOOLS`: `screenshot` crashes on heavy pages and its picture is
     not the page; `search` would call Brave without a key (the CLI's WebSearch
     serves); `getEnv` has nothing to return under `env -i`;
-  * `LIGHTPANDA_NOTE`, appended to the prompt. There is no live view here, so
-    `browser_tools.write_state` is never called and no `browser.json` exists.
+  * `lightpanda_note`, appended to the prompt: `LIGHTPANDA_NOTE` sends a failing
+    page to a `claude-code-browser` child, `LIGHTPANDA_CHILD_NOTE` (an attempt
+    without the child path) lists it in the answer for the parent to route.
+    There is no live view here, so `browser_tools.write_state` is never called
+    and no `browser.json` exists.
 """
 
 from __future__ import annotations
@@ -82,7 +85,7 @@ RESTART_FLOOR_SECONDS = 1.0
 #: How long a stopped `serve` has after SIGTERM before SIGKILL.
 STOP_GRACE_SECONDS = 5.0
 
-LIGHTPANDA_NOTE = (
+_NOTE_HEAD = (
     "Browser for this task: Lightpanda, a headless browser that runs "
     "JavaScript but draws no pixels. Read and act on pages with the lightpanda "
     "tools (goto, markdown, links, tree, interactiveElements, click, fill, "
@@ -93,12 +96,34 @@ LIGHTPANDA_NOTE = (
     "Lightpanda does not load iframes, and a page's text includes text the page "
     "hides. For a web search, use the WebSearch tool. When a page fails here (an "
     "error, an empty page, content in an iframe, a sign-in, a CAPTCHA or a "
-    "consent wall, or anything you must see), do not work around it: submit a "
-    "child agent on runner_profile `claude-code-browser` through "
-    ".swarm-children ($SWARM_CHILDREN) with those URLs and what to do there, wait for it, and say "
-    "in your answer which pages went there and why. On any one site, keep to "
-    "about one navigation a second."
+    "consent wall, or anything you must see), do not work around it: "
 )
+_NOTE_TAIL = "On any one site, keep to about one navigation a second."
+
+#: For an attempt with the child path: it hands failing pages to a
+#: live-browser child itself.
+LIGHTPANDA_NOTE = (
+    _NOTE_HEAD
+    + "submit a child agent on runner_profile `claude-code-browser` through "
+    ".swarm-children ($SWARM_CHILDREN) with those URLs and what to do there, wait for it, and say "
+    "in your answer which pages went there and why. "
+    + _NOTE_TAIL
+)
+
+#: For an attempt without the child path (a child: it may not submit children,
+#: `agent_worker.children`): it reports failing pages for its parent to route.
+#: Owner-side answer of 2026-10-31, option "variant".
+LIGHTPANDA_CHILD_NOTE = (
+    _NOTE_HEAD
+    + "list in your answer each page that failed and why, for the parent task "
+    "to route to a live-browser child. "
+    + _NOTE_TAIL
+)
+
+
+def lightpanda_note(*, children: bool) -> str:
+    """The note for an attempt with (`children`) or without the child path."""
+    return LIGHTPANDA_NOTE if children else LIGHTPANDA_CHILD_NOTE
 
 
 def is_lightpanda(environ: Mapping[str, str]) -> bool:
