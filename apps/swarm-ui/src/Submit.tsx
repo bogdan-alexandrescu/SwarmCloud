@@ -350,8 +350,8 @@ const SUGGESTED: Record<string, Suggestion[]> = {
   'claude-code-large': [
     { name: 'prompt', kind: 'text', note: 'the whole instruction, passed as one argument' },
   ],
-  // claude-code on agent-runtime-lightpanda, a headless browser with no live
-  // view (contract request 127).
+  // claude-code's runner on agent-runtime-lightpanda: a headless browser with
+  // no screen (contract request 127).
   'claude-code-lightpanda': [
     { name: 'prompt', kind: 'text', note: 'the whole instruction, passed as one argument' },
   ],
@@ -399,6 +399,19 @@ const SUGGESTED: Record<string, Suggestion[]> = {
     { name: 'fail', kind: 'flag', note: 'fail deterministically, to exercise the failure path' },
     { name: 'artifact_text', kind: 'text', note: 'written to the artifact upload path' },
   ],
+}
+
+/**
+ * ONE LINE ABOUT WHAT A PROFILE IS FOR, under the chosen runner's facts, where
+ * the name alone does not say it. claude-code-lightpanda's is the design's
+ * wording (docs/design/lightpanda-runtime.md §6.3): the name says "browser"
+ * and a person who reads only that expects the live view and the screenshots
+ * claude-code-browser gives, which this one does not. A profile without a
+ * line here shows none.
+ */
+export const PROFILE_HINTS: Readonly<Record<string, string>> = {
+  'claude-code-lightpanda':
+    'reads and fills web pages without a screen — no live view, no screenshots, no iframes; pages it cannot read go to a live-browser child',
 }
 
 /** `timeout_seconds` (`runners/limits.py`, which a caller may only LOWER) is
@@ -1558,6 +1571,7 @@ function Form({ capacity }: { capacity: Capacity }) {
           {bad.runner_profile && (chosen === '' || outcome.kind !== 'refused' || outcome.sent) && (
             <p id={refusedSayId('runner_profile')} tabIndex={-1} className="warn-text" role="alert">{bad.runner_profile}</p>
           )}
+          {profile && PROFILE_HINTS[chosen] && <p className="muted sbf-profile-hint">{PROFILE_HINTS[chosen]}</p>}
           {profile && <ProfileFacts name={chosen} profile={profile} pools={capacity.pools} />}
           {whyAt(1)}
         </Move>
