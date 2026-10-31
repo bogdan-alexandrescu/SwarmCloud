@@ -677,8 +677,8 @@ The right column holds **The installer** card, which shows what
 
 6. **Verify, run by swarm install.**
    1. Press **Run the console checks**. The console starts two runs on the
-      granted repository, as swarm-api's own service account: a task and a
-      two-step workflow. Each opens a pull request. Their ids go into the
+      granted repository, as swarm-api's own service account: a single agent
+      and a two-step workflow. Each opens a pull request. Their ids go into the
       install's records, so nobody pastes a run id.
    2. Once every console step is done, press **Hand over to swarm install**.
       The terminal then runs stage 14, and this row shows its progress, for
@@ -713,8 +713,8 @@ shows on the console's verify row.
 4. **Firestore.** The migrations are current.
 5. **Seven runs** on this deployment. This takes 15 to 25 minutes, for up to
    an hour.
-   - From the plugin, as you: a task and a workflow, each of which opens a
-     pull request; a task on GKE; a live-browser task; and a
+   - From the plugin, as you: a single agent and a workflow, each of which
+     opens a pull request; an agent on GKE; a live-browser agent; and a
      code-intelligence read. The code-intelligence read is checked against
      the graph's own record of the commit it indexed.
    - From the console: the two runs you started in Admin › Setup.
