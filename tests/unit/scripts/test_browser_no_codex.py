@@ -194,6 +194,8 @@ def test_a_change_to_the_base_reaches_the_nocodex_base_and_the_browser(tmp_path)
     assert proc.returncode == 0, proc.stderr
     assert set(proc.stdout.split()) == {
         "agent-runtime-base", NOCODEX, "agent-runtime-browser", "agent-runtime-indexer",
+        # Built FROM the base by digest too (LIGHTPANDA-BUILD-SCRIPTS).
+        "agent-runtime-lightpanda",
     }
 
 
