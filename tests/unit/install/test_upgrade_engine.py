@@ -1,17 +1,16 @@
-"""`swarm upgrade` runs release V's own engine, reads the GitHub App as the App,
-and finds V on the deployment's channel when no `--to` is given (audit 4e F3,
-F4, F6; lane DAYONE-UPGRADE-2, part of #2688).
+"""`swarm upgrade` runs release V's own engine, reads the GitHub App through
+swarm-api (which reads it as the App), and finds V on the deployment's channel
+when no `--to` is given (audit 4e F3, F4, F6; lanes DAYONE-UPGRADE-2 and
+DAYONE-UPGRADE-APP-VIA-API, part of #2688).
 
 No test needs credentials or an emulator: the release home, uv, `execve`,
-Secret Manager and GitHub are fakes, and the App's RSA key is generated here.
+swarm-api and Google are fakes, and the fake gcp refuses any secret-value read.
 """
 
 from __future__ import annotations
 
 import argparse
-import base64
 import hashlib
-import json
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -321,62 +320,49 @@ def test_an_api_error_is_one_line_never_a_traceback(tmp_path: Path, monkeypatch:
     assert "swarm upgrade: HTTPError: 404" in err and "Traceback" not in err
 
 
-# -- F4: the App, read as itself ------------------------------------------------------
+# -- F4: the App, read as itself, by swarm-api ------------------------------------------
 
 
-@pytest.fixture(scope="module")
-def app_key() -> tuple[str, Any]:
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
+class RefusingGcp:
+    """A gcp that refuses any secret-value read: the engine never makes one."""
 
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL,
-                            serialization.NoEncryption()).decode()
-    return pem, key.public_key()
-
-
-def _verify(token: str, public: Any) -> dict[str, Any]:
-    from cryptography.hazmat.primitives import hashes
-    from cryptography.hazmat.primitives.asymmetric import padding
-
-    def unb64(part: str) -> bytes:
-        return base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))
-
-    header, claims, signature = token.split(".")
-    public.verify(unb64(signature), f"{header}.{claims}".encode(), padding.PKCS1v15(), hashes.SHA256())
-    assert json.loads(unb64(header))["alg"] == "RS256"
-    return dict(json.loads(unb64(claims)))
-
-
-def test_app_jwt_is_rs256_signed_by_the_apps_key(app_key: tuple[str, Any]) -> None:
-    pem, public = app_key
-    claims = _verify(verb.app_jwt("12345", pem, 1_000_000.0), public)
-    assert claims == {"iat": 1_000_000 - 60, "exp": 1_000_000 + 540, "iss": "12345"}
-    with pytest.raises(up.UpgradeFailed, match="not an RSA private key") as bad:
-        verb.app_jwt("12345", "not a key", 1_000_000.0)
-    assert "not a key" not in str(bad.value)
-
-
-class FakeGcp:
-    def __init__(self, pem: str) -> None:
-        self.pem = pem
+    def __init__(self) -> None:
         self.calls: list[str] = []
 
     def _call(self, method: str, url: str, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(url)
-        return {"payload": {"data": base64.b64encode(self.pem.encode()).decode()}}
+        if ":access" in url:
+            pytest.fail(f"the engine read a secret's value: {url}")
+        return {}
 
 
-class FakeResponse:
-    def __init__(self, status: int, body: Any) -> None:
-        self.status_code = status
-        self.body = body
+class FakeSwarmApi:
+    """swarm-api as the person: `GET APP_ROUTE` answers from a script, in order
+    (the last answer repeats); an int is that HTTP status as a `SwarmError`."""
 
-    def json(self) -> Any:
-        return self.body
+    def __init__(self, *answers: Any) -> None:
+        self.answers = list(answers)
+        self.asked: list[tuple[str, str]] = []
+
+    def request(self, method: str, path: str, **kwargs: Any) -> Any:
+        from swarm_mcp.client import SwarmError
+
+        self.asked.append((method, path))
+        answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+        if isinstance(answer, int):
+            raise SwarmError(f"{method} {path} -> {answer}", status=answer)
+        return answer
 
 
-def app_world(tmp_path: Path, pem: str, *, console: dict[str, Any] | None = None) -> verb.LiveWorld:
+READ = {"state": "read",
+        "app": {"slug": "acme-swarm", "owner": "acme", "owner_is_org": True,
+                "permissions": {"contents": "write", "metadata": "read"}},
+        "installation": {"id": 4242, "account": "acme", "account_is_org": True,
+                         "permissions": {"contents": "write"}}}
+
+
+def app_world(tmp_path: Path, api: FakeSwarmApi, *, console: dict[str, Any] | None = None,
+              wanted: dict[str, str] | None = None) -> verb.LiveWorld:
     store = StateStore(project=PROJECT, environment="prod", local=tmp_path / "state.json")
     state = InstallState(project=PROJECT, environment="prod", release=OLD, region="us-central1")
     state.outputs["github_org"] = "acme"
@@ -386,66 +372,97 @@ def app_world(tmp_path: Path, pem: str, *, console: dict[str, Any] | None = None
     world = object.__new__(verb.LiveWorld)
     world.project = PROJECT
     world.store = store
-    world._key = None
-    world._installation_id = None
-    gcp = FakeGcp(pem)
+    world._api = api
+    world._app_route_missing = False
+    gcp = RefusingGcp()
     world.deps = type("Deps", (), {"gcp": staticmethod(lambda: gcp)})()
+    world.release_app_permissions = lambda version: wanted  # type: ignore[method-assign]
     return world
 
 
-def test_a_private_app_is_read_as_the_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-                                          app_key: tuple[str, Any]) -> None:
+def test_the_app_is_read_through_swarm_api_never_a_secret(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import requests
 
-    pem, public = app_key
-    asked: list[tuple[str, dict[str, str]]] = []
-    answers = {
-        "https://api.github.com/app": FakeResponse(200, {
-            "slug": "acme-swarm", "owner": {"login": "acme", "type": "Organization"},
-            "permissions": {"contents": "write", "metadata": "read"}}),
-        "https://api.github.com/app/installations?per_page=100": FakeResponse(200, [
-            {"id": 7, "account": {"login": "someone-else", "type": "User"}},
-            {"id": 4242, "account": {"login": "Acme", "type": "Organization"}}]),
-        "https://api.github.com/app/installations/4242": FakeResponse(200, {
-            "id": 4242, "account": {"login": "acme", "type": "Organization"},
-            "permissions": {"contents": "write"}}),
-    }
-
-    def get(url: str, **kwargs: Any) -> FakeResponse:
-        asked.append((url, dict(kwargs["headers"])))
-        return answers[url]
-
-    monkeypatch.setattr(requests, "get", get)
-    world = app_world(tmp_path, pem)
+    monkeypatch.setattr(requests, "get", lambda url, **kw: pytest.fail(f"GitHub was asked directly: {url}"))
+    api = FakeSwarmApi(READ)
+    world = app_world(tmp_path, api)
     assert world.app() == up.GithubApp(slug="acme-swarm", owner="acme", owner_is_org=True,
                                        permissions={"contents": "write", "metadata": "read"})
     assert world.installation() == up.AppInstallation(id=4242, account="acme", account_is_org=True,
                                                       permissions={"contents": "write"})
-    assert world.installation() is not None
-    assert [url for url, _ in asked] == [
-        "https://api.github.com/app", "https://api.github.com/app/installations?per_page=100",
-        "https://api.github.com/app/installations/4242", "https://api.github.com/app/installations/4242"]
-    for _, headers in asked:
-        scheme, token = headers["Authorization"].split(" ", 1)
-        assert scheme == "Bearer" and _verify(token, public)["iss"] == "12345"
-    assert world.deps.gcp().calls == [
-        f"https://secretmanager.googleapis.com/v1/projects/{PROJECT}/secrets/swarm-github-app-private-key"
-        "/versions/latest:access"], "the key is read once"
+    assert api.asked == [("GET", "/v1/admin/setup/github-app/permissions")] * 2
+    assert world.deps.gcp().calls == [], "no Secret Manager call at all"
+    assert not hasattr(verb, "app_jwt") and not hasattr(verb.LiveWorld, "_app_key")
 
 
-def test_a_github_error_is_a_failed_step(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-                                         app_key: tuple[str, Any]) -> None:
-    import requests
+def test_no_app_yet_is_none(tmp_path: Path) -> None:
+    for answer in ({"state": "no_app", "app": None, "installation": None},
+                   {"state": "key_unavailable", "app": None, "installation": None}):
+        world = app_world(tmp_path, FakeSwarmApi(answer), console={})
+        assert world.app() is None and world.installation() is None
+    not_installed = {**READ, "installation": None}
+    world = app_world(tmp_path, FakeSwarmApi(not_installed))
+    assert world.app() is not None and world.installation() is None
 
-    monkeypatch.setattr(requests, "get", lambda url, **kw: FakeResponse(404, {"message": "Not Found"}))
-    with pytest.raises(up.UpgradeFailed, match="GitHub answered 404 to GET /app as App 12345: Not Found"):
-        app_world(tmp_path, app_key[0]).app()
+
+def test_a_swarm_api_error_is_a_failed_step(tmp_path: Path) -> None:
+    with pytest.raises(up.UpgradeFailed, match="swarm-api could not report the GitHub App's permissions"):
+        app_world(tmp_path, FakeSwarmApi(503)).app()
 
 
-def test_no_app_yet_reads_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-                                  app_key: tuple[str, Any]) -> None:
-    import requests
-
-    monkeypatch.setattr(requests, "get", lambda url, **kw: pytest.fail("GitHub was asked"))
-    world = app_world(tmp_path, app_key[0], console={})
+def test_an_older_swarm_api_without_the_route_does_not_fail_the_upgrade(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """404 before the deploy: said once, no App to wait on; after infra, read
+    again, and the pages still needing a person are opened."""
+    opened: list[str] = []
+    monkeypatch.setattr("swarm_install.steps.open_page", lambda url, *, why, **kw: opened.append(url))
+    lacking = {**READ, "app": {**READ["app"], "permissions": {"contents": "write"}}}
+    api = FakeSwarmApi(404, 404, lacking)
+    world = app_world(tmp_path, api, wanted={"contents": "write", "issues": "write"})
     assert world.app() is None and world.installation() is None
+    out = capsys.readouterr().out
+    assert out.count("cannot report the GitHub App's permissions yet") == 1
+    world.app_after_deploy(NEW)
+    assert opened == ["https://github.com/organizations/acme/settings/apps/acme-swarm/permissions",
+                      "https://github.com/organizations/acme/settings/installations/4242"]
+    world.app_after_deploy(NEW)
+    assert len(api.asked) == 5, "read again once only"
+
+
+def test_still_no_route_after_the_deploy_prints_the_settings_page(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr("swarm_install.steps.open_page", lambda *a, **kw: pytest.fail("a page was opened"))
+    world = app_world(tmp_path, FakeSwarmApi(404), wanted={"issues": "write"})
+    assert world.app() is None
+    world.app_after_deploy(NEW)
+    out = capsys.readouterr().out
+    assert "still cannot report the GitHub App's permissions" in out and "issues: write" in out
+    assert "https://github.com/organizations/acme/settings/apps/acme-swarm" in out
+
+
+def test_with_the_route_there_is_no_read_after_the_deploy(tmp_path: Path) -> None:
+    api = FakeSwarmApi(READ)
+    world = app_world(tmp_path, api, wanted={"contents": "write"})
+    assert world.app() is not None
+    world.app_after_deploy(NEW)
+    assert len(api.asked) == 1
+
+
+def test_the_upgrade_goes_on_through_a_404_and_reads_after_infra(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`apply_root("infra", V)` reads the App again after release V's services
+    are deployed; a roll back's apply of the previous release does not."""
+    seen: list[str] = []
+    world = app_world(tmp_path, FakeSwarmApi(404), wanted={"issues": "write"})
+    state = world.store.load()
+    state.outputs["upgrade"] = {"to": NEW}
+    world.store.save(state)
+    world.app_after_deploy = seen.append  # type: ignore[method-assign]
+    monkeypatch.setattr("swarm_install.steps.bootstrap.apply_pass", lambda ctx, deps, name: None)
+    monkeypatch.setattr("swarm_install.steps.infra.reach_closed", lambda outputs: False)
+    monkeypatch.setattr("swarm_install.steps.infra.latest_pass", lambda outputs, reopening=False: "infra-3")
+    world.ctx = lambda release=None: type("Ctx", (), {"outputs": world.store.load().outputs})()  # type: ignore
+    world.apply_root("infra", NEW)
+    world.apply_root("infra", OLD)
+    world.apply_root("bootstrap", NEW)
+    assert seen == [NEW]

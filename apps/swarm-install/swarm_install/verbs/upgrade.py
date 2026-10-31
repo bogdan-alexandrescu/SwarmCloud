@@ -17,9 +17,13 @@ the pinned release key, installs them as the `swarm` uv tool exactly as
 install.sh does, and runs `swarm upgrade --to V` again from V's engine.
 
 **The GitHub App** is read as the App (audit 4e F4): a private App answers
-`GET /apps/{slug}` only with a token, so the engine signs an App JWT with
-`swarm-github-app-private-key`, which it reads as the owner, held in memory
-only, and reads `GET /app` and the installation.
+`GET /app` only to the App itself, so swarm-api, the App key's one accessor,
+reads the App and its installation, and the engine asks it as the person
+(`GET /v1/admin/setup/github-app/permissions`). The engine never reads a
+secret's value. A running swarm-api older than that route (404) cannot report
+the App's permissions yet: the engine says so, reads the route again once
+release V's services are deployed (infra applied) in this same upgrade, and,
+if it is still missing, prints the App's settings page and goes on.
 
 The real `UpgradeWorld` is built here from the install's own steps, so an
 upgrade applies exactly what the install applies: the release's images through
@@ -39,7 +43,6 @@ cannot be applied safely, V's engine not approved).
 from __future__ import annotations
 
 import argparse
-import base64
 import hashlib
 import json
 import os
@@ -47,7 +50,6 @@ import re
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -59,7 +61,6 @@ from ..lease import Lease, LeaseHeld, LeaseRefused
 from ..migrations import FirestoreMigrationDocuments, MigrationFailed
 from ..record import DATABASE
 from ..state import GcsObjectStore, StateStore, local_path, state_bucket
-from ..tfvars import APP_SECRETS
 from ..upgrade import AppInstallation, GithubApp, Upgrade, UpgradeFailed, UpgradeRefused, version_key
 from ..waits import SystemClock, WaitGaveUp
 
@@ -80,10 +81,9 @@ DEMAND_STATES = ("LEASED", "DISPATCHED", "STARTING", "RUNNING")
 #: What a release may ship to name the GitHub App permissions it needs.
 APP_PERMISSIONS_FILE = "github-app-permissions.json"
 LOGGING = "https://logging.googleapis.com/v2"
-GITHUB_API = "https://api.github.com"
-#: The secret holding the App's private key (the first of `tfvars.APP_SECRETS`,
-#: which Admin › Setup writes); the engine reads it as the owner.
-APP_KEY_SECRET = APP_SECRETS[0]
+#: swarm-api's read of the GitHub App and its installation, as the App
+#: (`swarm_api.setup_app_read`): permissions only, never a token or a key.
+APP_ROUTE = "/v1/admin/setup/github-app/permissions"
 #: Set on the re-exec into V's engine: the release it was installed as, so a
 #: CLI that still is not V refuses rather than installing again.
 ENGINE_ENV = "SWARM_UPGRADE_ENGINE"
@@ -125,26 +125,6 @@ def exit_code_for(exc: BaseException) -> ExitCode:
     if isinstance(exc, (UpgradeFailed, MigrationFailed)):
         return ExitCode.FAIL
     return ExitCode.TROUBLE
-
-
-# -- the GitHub App as itself ---------------------------------------------------------
-
-
-def app_jwt(app_id: str, private_key_pem: str, now: float) -> str:
-    """A GitHub App JWT: RS256, `iss` the App id, `iat` a minute back (clock
-    skew), `exp` nine minutes on, signed with google-auth's RSA signer (already
-    this wheel's), so no JWT library is added. A key that cannot sign is said
-    in constant words: a parser error may quote the key."""
-    from google.auth import crypt, jwt
-
-    if not app_id:
-        raise UpgradeFailed("the install records no GitHub App id to read the App as itself")
-    try:
-        signer = crypt.RSASigner.from_string(private_key_pem)
-        token = jwt.encode(signer, {"iat": int(now) - 60, "exp": int(now) + 9 * 60, "iss": app_id})
-    except Exception:  # noqa: BLE001 -- constant text, never the key or the parser's view of it
-        raise UpgradeFailed(f"{APP_KEY_SECRET} is not an RSA private key the App JWT can be signed with") from None
-    return token.decode("ascii") if isinstance(token, bytes) else str(token)
 
 
 # -- which release, and whose engine ------------------------------------------------
@@ -284,6 +264,9 @@ def nothing_to_do(state: Any, target: str) -> bool:
 class LiveWorld:
     """`UpgradeWorld` on the real project, through the install's own steps."""
 
+    #: Set when the running swarm-api has no `APP_ROUTE` (404): read again after infra.
+    _app_route_missing = False
+
     def __init__(self, project: str, environment: str, store: StateStore, engine: Engine, events: Events,
                  clock: SystemClock, holder: str, context: str | None) -> None:
         from ..steps import discover as discover_steps
@@ -301,8 +284,6 @@ class LiveWorld:
         self._documents = FirestoreMigrationDocuments(project, database=DATABASE)
         self._context = context
         self._api: Any = None
-        self._key: str | None = None
-        self._installation_id: int | None = None
 
     def ctx(self, release: str | None = None) -> Context:
         state = self.store.load()
@@ -375,6 +356,9 @@ class LiveWorld:
         apply_pass(ctx, self.deps, self._pass_for(ctx, root, reopening=reopens))
         if reopens:
             remember(ctx, outputs={REOPENED: str(ctx.outputs.get("installer_cidr") or "")})
+        if root == "infra" and version == str(dict(ctx.outputs.get("upgrade") or {}).get("to") or version):
+            # Release V's services are deployed now (not a roll back's): a swarm-api that could not report the App can.
+            self.app_after_deploy(version)
 
     def close_reach(self) -> str | None:
         """The closing pass again when this upgrade reopened the control plane; the line to print if it failed."""
@@ -441,69 +425,97 @@ class LiveWorld:
         app.update({k: v for k, v in dict(state.console.get("github_app") or {}).items() if v})
         return app
 
-    def _app_key(self) -> str:
-        """The App's private key, read once per run and held in memory only."""
-        from ..steps.preflight import SECRET_MANAGER_API
+    def _app_read(self) -> dict[str, Any] | None:
+        """swarm-api's answer at `APP_ROUTE` (as the person), or None while the
+        running services have no such route (404), which is said once."""
+        from swarm_mcp.client import SwarmError  # the swarm_mcp wheel install.sh installs beside this one
 
-        if self._key is None:
-            try:
-                found = self.deps.gcp()._call(
-                    "GET", f"{SECRET_MANAGER_API}/projects/{self.project}/secrets/{APP_KEY_SECRET}/versions/latest:access")
-                self._key = base64.b64decode(found["payload"]["data"]).decode("utf-8")
-            except Exception as exc:  # noqa: BLE001 -- the error names the secret, never its value
-                raise UpgradeFailed(f"cannot read {APP_KEY_SECRET} in {self.project} to read the GitHub App as "
-                                    f"itself ({type(exc).__name__}: {str(exc)[:200]})") from None
-        return self._key
-
-    def _github(self, path: str) -> Any:
-        """`GET path` on GitHub's API as the App (an App JWT); an error is an `UpgradeFailed`."""
-        import requests
-
-        app_id = str(self._app_record().get("id") or "")
-        token = app_jwt(app_id, self._app_key(), time.time())
         try:
-            found = requests.get(f"{GITHUB_API}{path}", timeout=30, headers={
-                "Accept": "application/vnd.github+json", "Authorization": f"Bearer {token}",
-                "X-GitHub-Api-Version": "2022-11-28"})
-        except requests.RequestException as exc:
-            raise UpgradeFailed(f"GitHub did not answer GET {path} ({type(exc).__name__})") from None
-        if found.status_code >= 400:
-            try:
-                message = str(found.json().get("message") or "")
-            except ValueError:
-                message = ""
-            raise UpgradeFailed(f"GitHub answered {found.status_code} to GET {path} as App {app_id}"
-                                + (f": {message[:200]}" if message else ""))
-        return found.json()
+            found = self._swarm_api().request("GET", APP_ROUTE)
+        except SwarmError as exc:
+            if exc.status != 404 or exc.edge:  # an edge 404 is Google refusing, not a missing route
+                raise UpgradeFailed(f"swarm-api could not report the GitHub App's permissions: "
+                                    f"{str(exc)[:300]}") from None
+            if not self._app_route_missing:
+                self._app_route_missing = True
+                print("swarm upgrade: the running services cannot report the GitHub App's permissions yet (swarm-api "
+                      f"has no GET {APP_ROUTE}); they are read again once this release's services are deployed")
+            return None
+        return dict(found or {})
 
     def app(self) -> GithubApp | None:
-        if not self._app_record().get("id"):
+        """The App's definition as swarm-api reads it, or None with no App yet
+        (or while the running swarm-api cannot report it)."""
+        found = self._app_read() or {}
+        app = found.get("app")
+        if not isinstance(app, dict):
             return None
-        found = dict(self._github("/app") or {})
-        owner = dict(found.get("owner") or {})
-        return GithubApp(slug=str(found.get("slug") or self._app_record().get("slug") or ""),
-                         owner=str(owner.get("login") or ""), owner_is_org=owner.get("type") == "Organization",
-                         permissions={str(k): str(v) for k, v in dict(found.get("permissions") or {}).items()})
+        return GithubApp(slug=str(app.get("slug") or self._app_record().get("slug") or ""),
+                         owner=str(app.get("owner") or ""), owner_is_org=app.get("owner_is_org") is True,
+                         permissions={str(k): str(v) for k, v in dict(app.get("permissions") or {}).items()})
 
     def installation(self) -> AppInstallation | None:
         """The installation on the account Admin › Setup installed the App on
-        (`installed_on`, else the deployment's `github_org`), else the App's only one."""
-        if not self._app_record().get("id"):
+        (`installed_on`, else SETUP_GITHUB_ORG, else the App's only one), as
+        swarm-api reads it; None while it is not installed."""
+        found = (self._app_read() or {}).get("installation")
+        if not isinstance(found, dict) or not isinstance(found.get("id"), int):
             return None
-        if self._installation_id is None:
-            wanted = str(self._app_record().get("installed_on") or self.store.load().outputs.get("github_org")
-                         or "").lower()
-            found = [dict(i) for i in self._github("/app/installations?per_page=100") or ()]
-            matching = [i for i in found if str((i.get("account") or {}).get("login") or "").lower() == wanted]
-            chosen = matching or (found if len(found) == 1 else [])
-            if not chosen:
-                return None
-            self._installation_id = int(chosen[0]["id"])
-        found = dict(self._github(f"/app/installations/{self._installation_id}") or {})
-        account = dict(found.get("account") or {})
-        return AppInstallation(id=int(found.get("id") or self._installation_id), account=str(account.get("login") or ""),
-                               account_is_org=account.get("type") == "Organization",
+        return AppInstallation(id=int(found["id"]), account=str(found.get("account") or ""),
+                               account_is_org=found.get("account_is_org") is True,
                                permissions={str(k): str(v) for k, v in dict(found.get("permissions") or {}).items()})
+
+    def app_after_deploy(self, version: str) -> None:
+        """After release `version`'s services are deployed, the App's
+        permissions again when the services that ran before could not report
+        them: each page that still needs a person is opened (the upgrade does
+        not wait on it with dispatch paused); with the route still missing, the
+        App's settings page is printed. Never fails the upgrade."""
+        from ..steps import open_page
+        from ..upgrade import app_permissions_url, installation_url, missing_permissions
+
+        if not self._app_route_missing:
+            return
+        self._app_route_missing = False
+        try:
+            wanted = self.release_app_permissions(version) or {}
+            if not wanted:
+                return
+            listed = ", ".join(f"{k}: {v}" for k, v in sorted(wanted.items()))
+            found = self._app_read()
+            if found is None:
+                print(f"swarm upgrade: swarm-api still cannot report the GitHub App's permissions. Release {version} "
+                      f"needs {listed}; check them on the App's settings page: {self._app_settings_url()}")
+                return
+            app, installation = self.app(), self.installation()
+            lacking = missing_permissions(app.permissions, wanted) if app is not None else {}
+            if app is not None and lacking:
+                open_page(app_permissions_url(app), why=(
+                    f"Release {version} needs these GitHub App permissions: "
+                    + ", ".join(f"{k}: {v}" for k, v in lacking.items())
+                    + f". On the App's permissions page, as its owner ({app.owner}), set them and save:"))
+            unaccepted = missing_permissions(installation.permissions, wanted) if installation is not None else {}
+            if installation is not None and unaccepted:
+                open_page(installation_url(installation), why=(
+                    f"The installation's owner ({installation.account}) accepts the App's new permissions ("
+                    + ", ".join(f"{k}: {v}" for k, v in unaccepted.items()) + ") on the installation's page:"))
+            if not lacking and not unaccepted:
+                print(f"swarm upgrade: the GitHub App holds release {version}'s permissions ({listed})")
+        except Exception as exc:  # noqa: BLE001 -- informative after the deploy; never rolls the release back
+            print(f"swarm upgrade: the GitHub App's permissions could not be read after the deploy "
+                  f"({type(exc).__name__}); check them on the App's settings page: {self._app_settings_url()}")
+
+    def _app_settings_url(self) -> str:
+        """The App's settings page, from the install's record of it (no GitHub read)."""
+        record = self._app_record()
+        slug = str(record.get("slug") or "")
+        owner = str(record.get("installed_on") or self.store.load().outputs.get("github_org") or "")
+        if not slug:
+            return "https://github.com/settings/apps"
+        if owner:
+            return (f"https://github.com/organizations/{owner}/settings/apps/{slug} (an App owned by a personal "
+                    f"account: https://github.com/settings/apps/{slug})")
+        return f"https://github.com/settings/apps/{slug}"
 
     def release_app_permissions(self, version: str) -> dict[str, str] | None:
         from ..steps.bootstrap import workdir
@@ -627,5 +639,5 @@ def _failed(events: Events, exc: BaseException) -> int:
     return int(code)
 
 
-__all__ = ["CHECKS", "HELP", "LiveWorld", "NAME", "MET", "add_arguments", "app_jwt", "channel_release",
+__all__ = ["CHECKS", "HELP", "LiveWorld", "NAME", "MET", "add_arguments", "channel_release",
            "ensure_engine", "exit_code_for", "fetch_wheels", "install_engine", "run", "wheel_version"]
