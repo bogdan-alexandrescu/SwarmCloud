@@ -16,6 +16,7 @@ DAYONE-SETUP-API-1, part of #2688).
     PUT  /v1/admin/setup/health                   `health/latest` (swarm-doctor only)
     GET  /v1/admin/setup/health                   `health/latest`
     POST /v1/admin/setup/health/groups-probe      registered groups readable, met/unmet
+    POST /v1/admin/setup/addons/brave-search/probe  one real search as swarm-api, met/unmet
     POST /v1/setup/links/redeem                   a link's named person opens it
 
 WHO MAY CALL (§5.2, §5.3). Every `/v1/admin/setup/*` route is a PLATFORM
@@ -70,6 +71,7 @@ from pydantic import Field
 
 from .. import install_record as ir
 from .. import roles
+from .. import search as search_tool
 from .. import setup_links as sl
 from .. import workspaces as ws
 from ..access import record_workspace_installation, write_workspace_grants
@@ -1648,6 +1650,28 @@ def groups_probe(
              sum(1 for r in results if r["state"] != "met"))
     return {"mode": ctx.settings.groups_auth, "results": results, "groups": results,
             "met": all(r["state"] == "met" for r in results)}
+
+
+@router.post("/addons/brave-search/probe", dependencies=[Depends(admin_auth)])
+def brave_search_probe(
+    request: Request,
+    caller: SetupCaller = Depends(admin_setup_caller),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """`swarm addon enable brave-search`'s check (owner pick 2026-10-31,
+    "admin-probe"): one search of one result, with the key swarm-api reads
+    and the provider SEARCH_PROVIDER names, exactly as an agent's search
+    would reach them (`search.probe`). A platform admin's only: the engine
+    calls it as the person signed in with `swarm login`. Met/unmet with a
+    reason; never the key, a result or the provider's body. A test sets
+    `app.state.search_probe_provider` and `.search_probe_key` to fakes."""
+    answer = search_tool.probe(
+        ctx.settings,
+        provider=getattr(request.app.state, "search_probe_provider", None),
+        key=getattr(request.app.state, "search_probe_key", None))
+    log.info("brave-search probe by=%s state=%s reason=%s", caller.kind, answer["state"],
+             answer.get("reason"))
+    return answer
 
 
 __all__ = ["admin_setup_caller", "links_router", "router", "setup_caller"]

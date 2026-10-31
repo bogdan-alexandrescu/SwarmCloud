@@ -12,6 +12,7 @@ setup test files.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -29,6 +30,7 @@ from swarm_api.deps import build_context
 from swarm_api.errors import UpstreamUnavailable
 from swarm_api.forgeapp import HttpAnswer
 from swarm_api.groups import GroupLookupError, StaticGroups
+from swarm_api.search import BraveSearch, KeyUnavailable
 from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
 from swarm_api.routes import setup as setup_routes
@@ -79,6 +81,7 @@ ROUTES: list[tuple[str, str, Any]] = [
     ("PUT", "/v1/admin/setup/health", {"run_at": "2026-10-29T12:00:00Z"}),
     ("GET", "/v1/admin/setup/health", None),
     ("POST", "/v1/admin/setup/health/groups-probe", None),
+    ("POST", "/v1/admin/setup/addons/brave-search/probe", None),
 ]
 
 
@@ -1556,3 +1559,97 @@ def test_one_persons_grant_records_the_app_installation_for_the_personal_workspa
     install_app(db, github)
     page(setup_client)
     assert _app_installed(db, personal_tenant(), ORG) is True
+
+
+# --------------------------------------------------------------------------
+# brave-search's probe (owner pick 2026-10-31, "admin-probe")
+# --------------------------------------------------------------------------
+
+
+class ProbeKey:
+    """swarm-search-api-key as swarm-api reads it; built at run time."""
+
+    def __init__(self) -> None:
+        self.value = "BSA" + secrets.token_hex(16)
+        self.fail: str | None = None
+        self.reads = 0
+
+    def read(self) -> str:
+        self.reads += 1
+        if self.fail:
+            raise KeyUnavailable(self.fail)
+        return self.value
+
+
+class ProbeBrave:
+    """Brave's endpoint, faked: records each call, answers `status`."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, str]]] = []
+        self.status = 200
+
+    def __call__(self, method, url, headers, timeout):
+        self.calls.append((url, dict(headers)))
+        body = {"web": {"results": [{"title": "SwarmCloud", "url": "https://example.com/",
+                                     "description": "one"}]}}
+        return self.status, json.dumps(body).encode()
+
+
+@pytest.fixture
+def probe_parts(setup_app):
+    key, brave = ProbeKey(), ProbeBrave()
+    setup_app.state.search_probe_key = key
+    setup_app.state.search_probe_provider = BraveSearch(send=brave)
+    ctx = setup_app.state.ctx
+    ctx.settings = dataclasses.replace(ctx.settings, search_tool_enabled=True)
+    return key, brave
+
+
+PROBE = "/v1/admin/setup/addons/brave-search/probe"
+
+
+def test_brave_search_probe_runs_one_real_search_as_swarm_api(setup_client, probe_parts) -> None:
+    """Met only after swarm-api read the key and Brave answered one search; the
+    answer carries neither the key nor a result."""
+    key, brave = probe_parts
+    answer = setup_client.post(PROBE, headers=auth_header("root"))
+    assert answer.status_code == 200, answer.text
+    assert answer.json() == {"state": "met", "provider": "brave", "results": 1}
+    assert key.reads == 1 and len(brave.calls) == 1
+    url, headers = brave.calls[0]
+    assert "count=1" in url and headers["X-Subscription-Token"] == key.value
+    assert key.value not in answer.text and "example.com" not in answer.text
+
+
+@pytest.mark.parametrize(("fail", "status", "reason"), [
+    ("swarm-api may not read swarm-search-api-key", 200, "search_unconfigured"),
+    (None, 401, "search_provider_refused"),
+    (None, 429, "search_provider_busy"),
+    (None, 503, "search_provider_unavailable"),
+])
+def test_brave_search_probe_is_unmet_with_the_reason(setup_client, probe_parts, fail, status,
+                                                     reason) -> None:
+    key, brave = probe_parts
+    key.fail, brave.status = fail, status
+    answer = setup_client.post(PROBE, headers=auth_header("root"))
+    assert answer.status_code == 200, answer.text
+    body = answer.json()
+    assert (body["state"], body["reason"]) == ("unmet", reason)
+    assert key.value not in answer.text
+
+
+def test_brave_search_probe_reads_nothing_while_the_tool_is_off(setup_app, setup_client,
+                                                               probe_parts) -> None:
+    key, brave = probe_parts
+    ctx = setup_app.state.ctx
+    ctx.settings = dataclasses.replace(ctx.settings, search_tool_enabled=False)
+    answer = setup_client.post(PROBE, headers=auth_header("root"))
+    assert answer.json()["reason"] == "search_tool_disabled"
+    assert key.reads == 0 and brave.calls == []
+
+
+def test_brave_search_probe_is_a_platform_admins_only(setup_client, probe_parts) -> None:
+    key, brave = probe_parts
+    for user in ("wadmin", "alice", "deployer", "doctor"):
+        assert setup_client.post(PROBE, headers=auth_header(user)).status_code == 403, user
+    assert key.reads == 0 and brave.calls == []

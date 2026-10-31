@@ -82,8 +82,9 @@ class FakeWorld:
         self.variables: dict[str, str] = {}
         self.workloads: set[str] = set()
         self.added: list[str] = []
-        #: swarm-api reads swarm-search-api-key once the owner's IAM grant is in.
-        self.readers = {f"serviceAccount:swarm-api@{PROJECT}.iam.gserviceaccount.com"}
+        #: swarm-api's brave-search probe: one real search, met once it can read the key.
+        self.probe: dict[str, Any] = {"state": "met", "provider": "brave", "results": 1}
+        self.probes = 0
         #: The repository's environments and their protection rule counts.
         self.environments: dict[str, int] = {"dev": 0, "prod": 1}
         self.created_environments: list[tuple[str, str | None]] = []
@@ -116,9 +117,6 @@ class FakeWorld:
         self.calls.append(("delete_secret", name))
         self.containers.discard(name)
 
-    def secret_readers(self, name: str) -> set[str]:
-        return set(self.readers) if name == "swarm-search-api-key" else set()
-
     def enabled_services(self) -> set[str]:
         return set(self.services)
 
@@ -138,6 +136,10 @@ class FakeWorld:
         return {"kind": "addon-secret", "label": addon, "owner": owner,
                 "url": f"https://console.example.com/admin/setup/link/{secrets.token_hex(8)}",
                 "expires_at": "2026-10-31T00:00:00+00:00"}
+
+    def search_probe(self) -> Mapping[str, Any]:
+        self.probes += 1
+        return dict(self.probe)
 
     # Terraform: a root's containers appear with the switch that creates them.
     def apply(self, root: str, overlay: Mapping[str, Any], *,
@@ -724,16 +726,38 @@ def test_the_workload_waited_on_is_the_one_the_manifest_declares(name: str) -> N
 
 def test_brave_search_is_not_on_while_swarm_api_cannot_read_its_key() -> None:
     """F10: the check looked only for a version, so it said on while every search
-    answered search_unconfigured."""
+    answered search_unconfigured. It now asks swarm-api to run one real search."""
     world = FakeWorld()
-    world.readers = set()
+    world.probe = {"state": "unmet", "reason": "search_unconfigured", "provider": "brave", "results": 0}
     the_flow, _ = flow(world)
-    with pytest.raises(addons.AddonError, match="swarm-api .* cannot read swarm-search-api-key"):
+    with pytest.raises(addons.AddonError, match="swarm-api cannot read swarm-search-api-key"):
         the_flow.enable("brave-search")
     status, why = the_flow.check(addons.ADDONS["brave-search"])
     assert status != MET and "search_unconfigured" in why
-    world.readers = {f"serviceAccount:swarm-api@{PROJECT}.iam.gserviceaccount.com"}
+    world.probe = {"state": "met", "provider": "brave", "results": 1}
     assert the_flow.check(addons.ADDONS["brave-search"]) == (MET, "brave-search is on")
+
+
+@pytest.mark.parametrize(("reason", "says"), [
+    ("search_tool_disabled", "SEARCH_TOOL_ENABLED off"),
+    ("search_provider_refused", "Brave refused the key"),
+    ("search_provider_busy", "did not answer"),
+])
+def test_brave_search_is_on_only_when_swarm_apis_probe_searches(reason: str, says: str) -> None:
+    """Owner pick "admin-probe": the check is swarm-api's one real search, not a
+    policy read, so a key Brave refuses or a flag the revision lacks is not on."""
+    world = FakeWorld()
+    world.probe = {"state": "unmet", "reason": reason, "provider": "brave", "results": 0}
+    the_flow, _ = flow(world)
+    with pytest.raises(addons.AddonError, match=says):
+        the_flow.enable("brave-search")
+    assert world.probes >= 1
+    # Only brave-search asks swarm-api to search.
+    other = FakeWorld()
+    other.probe = dict(world.probe)
+    the_other, _ = flow(other)
+    the_other.enable("typesafe")
+    assert other.probes == 0
 
 
 def test_tailscale_turns_the_decision_api_url_on_and_names_the_right_scope() -> None:

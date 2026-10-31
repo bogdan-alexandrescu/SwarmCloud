@@ -502,7 +502,8 @@ The add-ons are `bright-data-egress`, `tailscale`, `typesafe`, `brave-search`
 and `ci`. An add-on that needs a secret gives you a one-time link in the
 console to enter it, or a hidden prompt with `--in-terminal`. `disable` keeps
 the add-on's secret containers. `--delete-secrets` deletes them too, after you
-type the project id.
+type the project id. `brave-search` is reported on only once swarm-api has
+run one real search with the key it reads (docs/search-tool.md §3).
 
 ### More teams
 

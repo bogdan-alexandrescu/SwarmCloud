@@ -569,3 +569,46 @@ class SearchTool:
             out.append({**{k: v for k, v in row.items() if k != "at"},
                         "at": at.isoformat() if isinstance(at, datetime) else at})
         return out
+
+
+# --------------------------------------------------------------------------
+# the add-on's probe: one real search, as swarm-api, for a platform admin
+# --------------------------------------------------------------------------
+
+#: The one query the probe sends. Fixed: the caller names nothing (invariant 10).
+PROBE_QUERY = "SwarmCloud"
+
+
+def probe(settings: Any, *, provider: SearchProvider | None = None,
+          key: KeySource | None = None) -> dict[str, Any]:
+    """`swarm addon enable brave-search`'s check, answered by doing what an
+    agent's search does: read the key as swarm-api, then send one search of
+    one result to the provider (owner pick 2026-10-31, "admin-probe": a policy
+    read said nothing about whether the key works or the flag is on).
+
+    `{"state": "met"|"unmet", "reason", "provider", "results"}`. `reason` is
+    `search_tool_disabled` while SEARCH_TOOL_ENABLED is off on this revision
+    (nothing is read), `search_unconfigured` when the key cannot be read, and
+    a `PROVIDER_ERRORS` code when the provider refuses it. No tenant's quota
+    is spent and no audit row is written: this is no tenant's search. The
+    answer never carries the key, a result or the provider's body."""
+    name = str(getattr(settings, "search_provider", "brave"))
+    if not getattr(settings, "search_tool_enabled", False):
+        return {"state": "unmet", "reason": "search_tool_disabled", "provider": name, "results": 0}
+    source = key or SecretManagerKey(settings.project_id, settings.search_api_key_secret)
+    try:
+        value = source.read()
+    except KeyUnavailable as exc:
+        log.warning("search_probe key_unavailable (%s)", exc)
+        return {"state": "unmet", "reason": "search_unconfigured", "provider": name, "results": 0,
+                "detail": str(exc)}
+    engine = provider or PROVIDERS[name]()
+    try:
+        results = engine.search(PROBE_QUERY, 1, key=value)
+    except ProviderError as exc:
+        code = PROVIDER_ERRORS.get(exc.kind, PROVIDER_ERRORS["bad_answer"])[0]
+        log.warning("search_probe provider=%s kind=%s status=%s", engine.name, exc.kind, exc.status)
+        return {"state": "unmet", "reason": code, "provider": engine.name, "results": 0,
+                "detail": scrub(str(exc), value)}
+    log.info("search_probe provider=%s results=%d", engine.name, len(results))
+    return {"state": "met", "provider": engine.name, "results": len(results)}

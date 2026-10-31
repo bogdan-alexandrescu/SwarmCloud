@@ -21,7 +21,7 @@ runs, in order:
 | `bright-data-egress` | `swarm-egress-key` (generated), `swarm-egress-credential` (link) | `enable_browser_egress`, `browser_egress.enabled` and `.tenants` (the tenants it routes: an optional choice); the `statefulset/swarm-egress` workload |
 | `tailscale` | `swarm-tailscale-oauth` (link) | `enable_tailscale_egress`, `internal_decision_api_enabled` (swarm-api's INTERNAL_DECISION_API_URL), `tailscale_egress_target` (asked; no default); the `deployment/decision-api-egress` workload |
 | `typesafe` | `swarm-typesafe-fwd-key` (generated) | `enable_typesafe_forwarder_read` (bootstrap), `enable_typesafe_forwarder`, `typesafe_forwarder.serve`, `.enabled` and `.tenants` (an optional choice); the `deployment/swarm-typesafe-fwd` workload |
-| `brave-search` | `swarm-search-api-key` (link; the one container the engine creates, as create-secrets.sh did) | `search_tool_enabled`; on only once swarm-api may read the key |
+| `brave-search` | `swarm-search-api-key` (link; the one container the engine creates, as create-secrets.sh did) | `search_tool_enabled`; on only once swarm-api's probe (`POST /v1/admin/setup/addons/brave-search/probe`) runs one real search with the key |
 | `ci` | none: Workload Identity and the merge App | `enable_github_wif`, `github_repository` (bootstrap), `enable_acceptance_fixture`; Cloud Build with its OWN service account (lesson 6); the `dev` and `prod` environments (created through the API after a typed approval); the runner label and the sandbox as repository variables |
 
 **The person stays in the terminal.** A vendor page with no API is opened in
@@ -129,10 +129,18 @@ _TENANT = r"[a-z0-9]([a-z0-9-]{0,9}[a-z0-9])?"
 #: The tenants an add-on routes, comma-separated; empty routes none.
 TENANTS = rf"^({_TENANT}(,{_TENANT})*)?$"
 
-#: The roles that let a principal read a secret's versions.
-SECRET_READ_ROLES = ("roles/secretmanager.secretAccessor", "roles/secretmanager.admin", "roles/owner")
-#: The account swarm-api runs as (steps.identity.SWARM_API_ACCOUNT).
-SWARM_API_ACCOUNT = "swarm-api"
+#: swarm-api's probe of the search tool: one real search, as swarm-api.
+BRAVE_SEARCH_PROBE = "/v1/admin/setup/addons/brave-search/probe"
+#: What a probe's unmet reason means, and what to do about it.
+PROBE_WHY: dict[str, str] = {
+    "search_tool_disabled": "swarm-api's running revision has SEARCH_TOOL_ENABLED off; the switch pass "
+                            "has not reached it",
+    "search_unconfigured": "swarm-api cannot read swarm-search-api-key, so every search answers "
+                           "search_unconfigured: swarm-api needs roles/secretmanager.secretAccessor on "
+                           "the secret",
+    "search_provider_refused": "Brave refused the key in swarm-search-api-key; store a valid one with "
+                               "swarm addon enable brave-search",
+}
 
 
 class AddonError(RuntimeError):
@@ -429,7 +437,6 @@ class World(Protocol):
 
     def delete_secret(self, name: str) -> None: ...
 
-    def secret_readers(self, name: str) -> set[str]: ...
 
     def enabled_services(self) -> set[str]: ...
 
@@ -440,6 +447,8 @@ class World(Protocol):
     def create_service_account(self, account_id: str, display_name: str) -> None: ...
 
     def mint_link(self, addon: str, owner: str) -> Mapping[str, Any]: ...
+
+    def search_probe(self) -> Mapping[str, Any]: ...
 
     def apply(self, root: str, overlay: Mapping[str, Any], *,
               guard: Callable[[Mapping[str, Any]], None]) -> Mapping[str, Any]: ...
@@ -699,11 +708,13 @@ class Flow:
             if code != 0 or not wanted or ready != wanted:
                 return UNMET, f"{addon.workload[0]} is not ready ({out.strip() or 'absent'})"
         if addon.name == "brave-search":
-            reader = f"serviceAccount:{SWARM_API_ACCOUNT}@{self.world.project}.iam.gserviceaccount.com"
-            if reader not in self.world.secret_readers("swarm-search-api-key"):
-                return UNMET, (f"swarm-api ({reader.partition(':')[2]}) cannot read swarm-search-api-key, so every "
-                               "search answers search_unconfigured: it needs roles/secretmanager.secretAccessor "
-                               "on the secret")
+            # One real search through swarm-api, the key and the provider an
+            # agent's search reaches (owner pick 2026-10-31, "admin-probe").
+            answer = self.world.search_probe()
+            if answer.get("state") != MET:
+                reason = str(answer.get("reason") or "unanswered")
+                return UNMET, (f"swarm-api's search probe is {reason}: "
+                               f"{PROBE_WHY.get(reason, 'the search provider did not answer; check again')}")
         if addon.name == "ci":
             if self.world.service_account(build_account(self.world.project)) is None:
                 return UNMET, f"{build_account(self.world.project)} does not exist"
@@ -849,18 +860,6 @@ class RealWorld:
 
         self.gcp._call("DELETE", f"{SECRET_MANAGER_API}/projects/{self.project}/secrets/{name}")
 
-    def secret_readers(self, name: str) -> set[str]:
-        """Who may read `name`'s versions: its own policy and the project's,
-        unconditional bindings of a reading role only. Read, never changed."""
-        from .steps.preflight import SECRET_MANAGER_API
-
-        policies = [self.gcp._call("GET", f"{SECRET_MANAGER_API}/projects/{self.project}/secrets/{name}"
-                                          ":getIamPolicy") or {},
-                    self.gcp.iam_policy(self.project) or {}]
-        return {str(member) for policy in policies for binding in policy.get("bindings") or ()
-                if binding.get("role") in SECRET_READ_ROLES and not binding.get("condition")
-                for member in binding.get("members") or ()}
-
     def enabled_services(self) -> set[str]:
         return set(self.gcp.enabled_services(self.project))
 
@@ -881,6 +880,11 @@ class RealWorld:
 
         return SwarmClient(context=self.api_context).request(
             "POST", "/v1/admin/setup/links", payload={"kind": "addon-secret", "label": addon, "owner": owner}) or {}
+
+    def search_probe(self) -> Mapping[str, Any]:
+        from swarm_mcp.client import SwarmClient
+
+        return SwarmClient(context=self.api_context).request("POST", BRAVE_SEARCH_PROBE, payload={}) or {}
 
     # Terraform: the root's latest applied inputs plus every add-on's overlay.
 
