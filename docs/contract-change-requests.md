@@ -134,6 +134,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 124 | `profiles.py`: a `fix-loop` catalogue profile, `control_plane: true`, shipped unavailable until FL-ACCEPT passes, as `await-input` was (FL-CONTRACT, fix loop request A, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT): mirrored in `terraform/infra/locals.tf` and listed in `profiles_without_a_job` |
 | 125 | `states.py`: `ParkReason.FIX_ROUNDS_RUNNING`, a fix loop's step while its rounds run: never promoted by the scheduler, in no capacity set, ended by swarm-api (FL-CONTRACT, fix loop request B, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT), with the console's and swarm-mcp's park-reason lists |
 | 126 | `models.py`: `EndCause.FIX_LOOP_EXHAUSTED`, a fix loop that ended without a MERGE (FL-CONTRACT, fix loop request C, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 ('accept-126', answering FL-CONTRACT's question on PR 2570; requested by lane FL-CONTRACT the same day, Q3 (c) needs an end cause). APPLIED 2026-10-28 by the pull request that adds this line (lane FL-CONTRACT-126): appended to `EndCause`; the outcome ledger classes it `fix_loop_exhausted`, its own failure class (DERIVE_VERSION 12), and the console's `EndCause`, `END_CAUSES` and `END_CAUSE_SAY` carry it |
+| 127 | `profiles.py`: a `claude-code-lightpanda` catalogue profile, claude-code's runner on image `agent-runtime-lightpanda` and the `standard` class, no live browser, for DOM-only browser work (LIGHTPANDA-ANALYSIS, part of #2688; docs/design/lightpanda-runtime.md) | open |
 
 ---
 
@@ -15085,3 +15086,119 @@ accepted to end.
 ### Invariants
 
 None is touched: an end cause records why, it decides nothing.
+
+## 127. `profiles.py`: a `claude-code-lightpanda` catalogue profile, DOM-only browser work on `standard` with no live browser (LIGHTPANDA-ANALYSIS)
+
+**Status:** open. Requested 2026-10-31 by lane LIGHTPANDA-ANALYSIS (part of
+#2688), answering BGD's ask of the same day to analyse Lightpanda as a
+runtime for browser agents and, if it adds value, design and build it.
+BGD said to go with the recommended options. This is decision B (2) of
+[`docs/design/lightpanda-runtime.md`](design/lightpanda-runtime.md) §5.
+
+### What is true today
+
+`claude-code-browser` (`RUNNER_PROFILES` in `profiles.py`) is the only profile with a
+browser. It is `live_browser=True` on the `browser` class, so every browser
+agent is one pod with a worker and a `display` sidecar (Xvfb and a headed
+Chromium, 2 CPU / 5 GiB of the class). Each agent leases a unit from
+`resource:browser`, which is 20 in prod against 100 for `standard`
+(`pool_limits.resource_classes` in the prod tfvars). That holds even when the
+work needs no pixels: reading pages, scraping, link checks, form flows.
+
+Measured on 2026-10-31 (§3 of the design;
+`docs/design/lightpanda-runtime/results.json`), Lightpanda 1.0.2 on 17 real
+pages returned the same links as headless Chromium on 16 of 17. Its medians
+against Chromium's were:
+
+* proportional memory: 48 against 454 MiB;
+* CPU: 0.30 against 4.61 s;
+* time to DOM ready: 253 against 470 ms.
+
+Ten pages at once took 183 MiB and 3.0 CPU-s, against 1,831 MiB and
+37.3 CPU-s. Lightpanda draws no pixels and loaded no iframe content, so it
+cannot replace the live browser. It can carry DOM-only work outside the
+`browser` pool.
+
+### The change
+
+```python
+# profiles.py, RUNNER_PROFILES, immediately after "claude-code-browser"
+    # CONTRACT REQUEST 127 (LIGHTPANDA-ANALYSIS, part of #2688;
+    # docs/design/lightpanda-runtime.md): claude-code's runner on
+    # agent-runtime-lightpanda, a headless browser that runs JavaScript and
+    # draws no pixels, for DOM-only browser work: reading, scraping, link
+    # checks, form flows. The `standard` class and one container: no display
+    # sidecar, no live view, no take-control, so `live_browser` stays False
+    # and the task leases `resource:standard`, not the scarce
+    # `resource:browser`. A page it cannot read goes to a claude-code-browser
+    # child the agent submits. A literal, not `replace()`, so
+    # tests/terraform/catalogue_mirror sees it (request 113's reason).
+    # GKE Autopilot, on-demand only (invariant 6).
+    "claude-code-lightpanda": RunnerProfile(
+        name="claude-code-lightpanda",
+        image="agent-runtime-lightpanda",
+        resource_class="standard",
+        backend=Backend.GKE_AUTOPILOT,
+        runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+        provider="anthropic",
+        secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+        secrets_any_of=True,
+        timeout_seconds=7200,
+        inputs=_CLI_AGENT_MCP_INPUTS,   # claude-code's; no browser_tool
+        secret_slots={"files": _FILES_SLOT},
+        model_classes=_CLAUDE_CODE_MODEL_CLASSES,
+        default_model_class="opus",
+    ),
+```
+
+Nothing else in `apps/common/swarm_common/` changes:
+
+* no new resource class (a smaller class would still be 1 unit, because of
+  the `units_for` floor);
+* no new `browser_tool` choice;
+* no `RUNTIME_TOOLS` entry (that table is keyed by `browser_tool` choices,
+  and this profile declares none);
+* no state, end cause or model field.
+
+### What it would break if accepted
+
+Nothing at once. A new profile with no Job and no pool is never dispatched.
+These mirrors must follow it, all listed with their lanes in §6 and §7 of the
+design:
+
+* `terraform/infra/locals.tf` `runner_profiles` (and so the
+  `runner:claude-code-lightpanda` pool);
+* the environments' `runner_profiles` pool limits;
+* the stream-file tuples in `runners/streams.py` and `agent_streams.py`;
+* the console's `Submit.tsx` and `api.ts` mirrors;
+* the parity section in `scripts/lib/check-contract-parity.sh`.
+
+`tests/terraform/catalogue.tftest.hcl` fails until `locals.tf` mirrors it,
+and so does the parity script's catalogue comparison. They are to land in
+the same wave.
+
+### If it is declined
+
+DOM-only browser work stays on `claude-code-browser`. It queues on the 20
+`browser` units and pays for a display it never shows. An agent that needs
+tens of pages at once pays Chromium's measured ~180 MiB and 3.7 CPU-s a page
+inside the display's 3-CPU limit.
+
+The alternatives are both worse:
+
+* a fifth `browser_tool` would change the frozen `browser_tool` choices
+  instead and save no capacity;
+* a `claude-code` input would put an AGPL binary in every claude-code image.
+
+### Invariants
+
+* **2 and 3:** the lease takes `runner:claude-code-lightpanda` with the
+  other pools, all or nothing, counted from LEASED.
+* **6:** GKE on-demand, no Spot.
+* **7:** the `standard` class already holds it (memory request = limit, CPU
+  4 ≤ 8 ≤ 2 × 4). There is one container, so no split.
+* **9:** the tenant's own GSA, secrets, prefix and namespace, as `claude-code`.
+* **10:** a caller names the profile. The image, the command and Lightpanda's
+  flags come from the catalogue and the runner.
+* **1, 4, 5, 8:** unchanged; the claude-code runner's checkpointing and
+  fencing are reused as they are.

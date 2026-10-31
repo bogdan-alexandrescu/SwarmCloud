@@ -43,6 +43,7 @@ KINDS = frozenset(
         "step_triggered",
         "wait_countdown",
         "wait_gave_up",
+        "wait_failed",
         "lease",
         "run_end",
     }
@@ -83,13 +84,17 @@ def _human_line(event: dict[str, Any]) -> str:
     kind = event["event"]
     step = event.get("step")
     if kind == "wait_countdown":
+        # `detail` is why the probe is not met yet; the wait sends it whenever it changes.
         return (
             f"  waiting on {step}: {event.get('reason')} -- "
             f"{int(event.get('remaining_s', 0))} s left of the bound "
             f"(usually {event.get('expected')})"
-        )
+        ) + (f"\n      now: {event['detail']}" if event.get("detail") else "")
     if kind == "wait_gave_up":
-        return f"  gave up waiting on {step} after {event.get('bound_s')} s. Look at: {event.get('look_at')}"
+        said = f" Its last check said: {event['detail']}." if event.get("detail") else ""
+        return f"  gave up waiting on {step} after {event.get('bound_s')} s.{said} Look at: {event.get('look_at')}"
+    if kind == "wait_failed":
+        return f"  stopped waiting on {step}: {event.get('detail')}"
     if kind == "stage_start":
         return f"Stage {event.get('stage')}"
     if kind == "run_end":

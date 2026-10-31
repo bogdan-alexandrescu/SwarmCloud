@@ -41,7 +41,7 @@ from typing import Any
 
 from . import exitcodes
 from .events import Events
-from .exitcodes import MET, UNKNOWN, ExitCode
+from .exitcodes import MET, UNKNOWN, UNMET, ExitCode
 from .lease import HEARTBEAT_SECONDS, Lease, LeaseHeld, LeaseLost, LeaseRefused
 from .manifest import Entry, Manifest
 from .record import InstallRecord, RecordConflict
@@ -70,7 +70,7 @@ from .steps import (
     triggered_of,
     wait_of,
 )
-from .waits import Clock, WaitGaveUp, WaitSpec, wait_until
+from .waits import CheckFailed, Clock, WaitGaveUp, WaitSpec, wait_until
 
 #: A human step that names no bound of its own waits this long for its check.
 HUMAN_WAIT = WaitSpec(
@@ -236,7 +236,18 @@ class Engine:
 
     def _observe(self, step: Step, what: Callable[[Any], Observation]) -> Observation:
         try:
+            return self._poll(what)
+        except CheckFailed as failed:  # outside a wait, a definite failure reads as unmet
+            return Observation(UNMET, failed.detail)
+
+    def _poll(self, what: Callable[[Any], Observation]) -> Observation:
+        """One check, as the wait loop polls it: a `CheckFailed` is raised on
+        (it ends the wait); any other exception is an `unknown` whose detail
+        is the exception's text, so the countdown shows why the probe fails."""
+        try:
             return what(self.ctx)
+        except CheckFailed:
+            raise
         except Exception as exc:  # a probe that cannot run is unknown, not fine
             return Observation(UNKNOWN, f"{type(exc).__name__}: {exc}")
 
@@ -470,16 +481,22 @@ class Engine:
             spec = wait_of(step) or HUMAN_WAIT
             done: set[str] = set()
             try:
+                # The whole Observation goes in: its detail is what names the
+                # problem (audit 5b M1), and the countdown prints it.
                 wait_until(
                     step.id,
                     spec,
-                    lambda: self._observe(step, step.check).status,
+                    lambda: self._poll(step.check),
                     clock=self.clock,
                     events=self.events,
                     on_poll=lambda: (self._heartbeat(), self._run_triggered(step, done)),
+                    ctx=self.ctx,
                 )
             except WaitGaveUp as gave_up:
                 raise self._paused(step, plan, gave_up) from gave_up
+            except CheckFailed as failed:
+                self._record(step, STEP_FAILED, plan=plan, detail=failed.detail)
+                raise self._failed(step, failed.detail) from failed
             rechecked = self._observe(step, step.check)
         else:
             rechecked = self._observe(step, step.check)
