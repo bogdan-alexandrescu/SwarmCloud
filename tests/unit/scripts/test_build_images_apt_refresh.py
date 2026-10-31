@@ -61,13 +61,15 @@ from .test_release_rebuilds_stale_images import Release
 REPO = Path(__file__).resolve().parents[3]
 
 # The images whose recipe Dockerfile runs `apt-get upgrade` or `apk upgrade`,
-# and the two built FROM a base, which are rebuilt with it.
+# and the three built FROM a base, which are rebuilt with it.
 UPGRADES = {
     "agent-runtime-base", "agent-runtime-base-nocodex", "swarm-api", "swarm-scheduler",
     "swarm-quota-broker", "swarm-reconciler", "swarm-ui", "swarm-live", "swarm-egress",
     "swarm-typesafe-fwd", "swarm-graph", "swarm-github-hooks", "workspace-apply",
 }
-BUILT_FROM_A_BASE = {"agent-runtime-browser", "agent-runtime-indexer"}
+# agent-runtime-lightpanda (LIGHTPANDA-BUILD-SCRIPTS) is built FROM the base
+# by digest, as the indexer is.
+BUILT_FROM_A_BASE = {"agent-runtime-browser", "agent-runtime-indexer", "agent-runtime-lightpanda"}
 NO_UPGRADE = set(IMAGES) - UPGRADES - BUILT_FROM_A_BASE
 REBUILT = UPGRADES | BUILT_FROM_A_BASE
 

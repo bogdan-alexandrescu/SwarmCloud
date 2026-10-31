@@ -62,7 +62,10 @@ pytestmark = pytest.mark.skipif(
 PYTHON_SERVICES = {"swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler"}
 # agent-runtime-base-nocodex (BROWSER-NO-CODEX) is the base's Dockerfile built
 # without codex, so it takes exactly the base's inputs.
-WORKER = {"agent-runtime-base", "agent-runtime-base-nocodex", "agent-runtime-browser", "agent-runtime-indexer"}
+# agent-runtime-lightpanda (LIGHTPANDA-BUILD-SCRIPTS) is built FROM the base
+# by digest, as the indexer is, so whatever reaches the base reaches it.
+WORKER = {"agent-runtime-base", "agent-runtime-base-nocodex", "agent-runtime-browser", "agent-runtime-indexer",
+          "agent-runtime-lightpanda"}
 # workspace-apply (#847, lane W4) copies nothing from the repository: the job's
 # code is the checkout Cloud Build hands each step, so only its own directory
 # and the two ignore files reach it.
@@ -137,6 +140,10 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         (["images/agent-runtime-indexer/repo-index/lsp/servers.py"], {"agent-runtime-indexer"}),
         (["images/agent-runtime-indexer/Dockerfile"], {"agent-runtime-indexer"}),
         (["images/agent-runtime-indexer/cloudbuild.yaml"], {"agent-runtime-indexer"}),
+        # The Lightpanda image's own recipe reaches it alone.
+        (["images/agent-runtime-lightpanda/Dockerfile"], {"agent-runtime-lightpanda"}),
+        (["images/agent-runtime-lightpanda/cloudbuild.yaml"], {"agent-runtime-lightpanda"}),
+        (["images/agent-runtime-lightpanda/selftest.py"], {"agent-runtime-lightpanda"}),
         (["images/agent-runtime-browser/Dockerfile"], {"agent-runtime-browser"}),
         (["images/agent-runtime-browser/cloudbuild.yaml"], {"agent-runtime-browser"}),
         (["images/swarm-ui/nginx.conf"], {"swarm-ui"}),

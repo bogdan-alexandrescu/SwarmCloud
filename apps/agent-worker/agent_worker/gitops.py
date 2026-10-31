@@ -1014,6 +1014,15 @@ TRACK_EVERY_BRANCH = (
 )
 
 
+#: NO AUTOMATIC MAINTENANCE (#2922): git ends a fetch with `git maintenance
+#: run --auto` (`gc --auto` before 2.29), which git 2.56 detaches; its repack
+#: can hold or rewrite `.git/shallow` while the next git command over the same
+#: clone runs ("shallow file has changed since we read it"). Every fetch that
+#: another git command can follow over one clone carries both settings:
+#: `gc.auto=0` alone gates only maintenance's gc task, not the run itself.
+_NO_AUTO_MAINTENANCE = ("-c", "maintenance.auto=false", "-c", "gc.auto=0")
+
+
 def shallow_clone(
     *,
     url: str,
@@ -1074,7 +1083,7 @@ def shallow_clone(
             [git_binary, *config_args, "init", "--quiet", str(destination)],
             [git_binary, *config_args, "-C", str(destination), "remote", "add", "origin", url],
             [
-                git_binary, *config_args, "-C", str(destination),
+                git_binary, *config_args, *_NO_AUTO_MAINTENANCE, "-C", str(destination),
                 "fetch", "--depth", "1", "--no-tags", "origin", ref,
             ],
             [git_binary, *config_args, "-C", str(destination), "checkout", "--quiet", "FETCH_HEAD"],
@@ -1155,8 +1164,8 @@ def history_fetch_argv(
     """
     since = datetime.fromtimestamp(head_time - days * 86_400, tz=timezone.utc).strftime(
         "%Y-%m-%dT%H:%M:%SZ")
-    return [git_binary, *config_args, "-C", str(destination), "fetch", "--quiet", "--no-tags",
-            f"--shallow-since={since}", "origin", head_sha]
+    return [git_binary, *config_args, *_NO_AUTO_MAINTENANCE, "-C", str(destination), "fetch",
+            "--quiet", "--no-tags", f"--shallow-since={since}", "origin", head_sha]
 
 
 def history_parent_argv(
@@ -1169,8 +1178,8 @@ def history_parent_argv(
     file it holds. One more generation makes every commit in the window a
     real diff; the extractor skips the boundary commit, now outside it.
     """
-    return [git_binary, *config_args, "-C", str(destination), "fetch", "--quiet", "--no-tags",
-            "--deepen=1", "origin", head_sha]
+    return [git_binary, *config_args, *_NO_AUTO_MAINTENANCE, "-C", str(destination), "fetch",
+            "--quiet", "--no-tags", "--deepen=1", "origin", head_sha]
 
 
 def deepen_history(
@@ -1326,8 +1335,16 @@ def fetch_pull_base(
     seconds = 0.0
     depth = max(1, int(first_depth))
     for round_ in range(1, max(1, int(max_rounds)) + 1):
-        fetch = [git_binary, *config_args, "-C", str(destination), "fetch", "--quiet",
-                 "--no-tags", f"--depth={depth}", "origin"]
+        # NO AUTOMATIC MAINTENANCE (#2922). git ends a fetch with `git
+        # maintenance run --auto` (`gc --auto` before 2.29); git 2.56 detaches
+        # it, and its `repack --cruft` held or rewrote `.git/shallow` while
+        # the next round's fetch deepened it: that fetch died with "shallow
+        # file has changed since we read it" or "Unable to create
+        # '.git/shallow.lock'", and the clone ended without its merge base
+        # (5 runs in 200, measured). The repack also outlived the clone.
+        fetch = [git_binary, *config_args, *_NO_AUTO_MAINTENANCE,
+                 "-C", str(destination), "fetch", "--quiet", "--no-tags", f"--depth={depth}",
+                 "origin"]
         # Two fetches, not one: git 2.39 measured skipping the deepen of a
         # fetch whose wants include a sha already complete here, so a head
         # with all its history kept the base at the first round's depth.
@@ -1470,7 +1487,7 @@ def fetch_base_history(
         config_args = ["-c", "credential.helper=", *config_args]
     note = f" (forge token withheld: {withheld})" if withheld else ""
     argv = [git_binary, *config_args, "-c", "http.proxy=",
-            "-c", "core.hooksPath=/dev/null", "-c", "gc.auto=0",
+            "-c", "core.hooksPath=/dev/null", *_NO_AUTO_MAINTENANCE,
             "-C", str(checkout), "fetch", "--quiet", "--no-tags", "--no-write-fetch-head",
             "--no-recurse-submodules", f"--depth={int(depth)}", "--", url, base_sha]
     # Through `run_child`, never `subprocess.run(timeout=)`: that SIGKILLs git,
@@ -1607,7 +1624,8 @@ def clone_at_commit(
         [*g, "remote", "add", "origin", url],
     ]
     by_sha = [
-        [*g, "fetch", "--depth", "1", "--no-tags", "origin", commit],
+        [git_binary, *config_args, *_NO_AUTO_MAINTENANCE, "-C", str(destination),
+         "fetch", "--depth", "1", "--no-tags", "origin", commit],
         [*g, "checkout", "--quiet", commit],
     ]
     total = 0.0
@@ -1641,7 +1659,8 @@ def clone_at_commit(
             # Not shallow: the pinned commit is somewhere in the branch's past,
             # and a depth would have to guess how far.
             by_branch = [
-                [*g, "fetch", "--no-tags", "origin", f"refs/heads/{branch}" if branch else "HEAD"],
+                [git_binary, *config_args, *_NO_AUTO_MAINTENANCE, "-C", str(destination),
+                 "fetch", "--no-tags", "origin", f"refs/heads/{branch}" if branch else "HEAD"],
                 [*g, "checkout", "--quiet", commit],
             ]
             total += _run_git_steps(
@@ -3636,7 +3655,7 @@ def prepare_publish_repo(
             "-c", "fetch.fsckObjects=true",
             "-c", "fetch.recurseSubmodules=false",
             "-c", "submodule.recurse=false",
-            "-c", "gc.auto=0",
+            *_NO_AUTO_MAINTENANCE,
             "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--update-shallow",
             f"--upload-pack={upload_pack}",
             "--", str(source_repo), *refspecs,
@@ -5413,7 +5432,8 @@ def fetch_branch_tip(
     try:
         code, _ = _git_text(
             [
-                git_binary, *config_args, "fetch", "--no-tags", "--depth=2147483647",
+                git_binary, *config_args, *_NO_AUTO_MAINTENANCE, "fetch", "--no-tags",
+                "--depth=2147483647",
                 "--", url, f"refs/heads/{branch}",
             ],
             repo=repo,
@@ -5595,7 +5615,8 @@ def merge_branches(
             slug = branch.replace("/", "-")
             code, _ = _git_text(
                 [
-                    git_binary, *config_args, "fetch", "--no-tags", "--depth=2147483647",
+                    git_binary, *config_args, *_NO_AUTO_MAINTENANCE, "fetch", "--no-tags",
+                    "--depth=2147483647",
                     "--", url, f"refs/heads/{branch}",
                 ],
                 repo=repo,
@@ -5615,7 +5636,11 @@ def merge_branches(
 
             code, _ = _git_text(
                 [
-                    git_binary, *config_args, "merge", "--no-ff", "--no-edit",
+                    # No background maintenance after the merge commit: the
+                    # next contributor's fetch rewrites `.git/shallow` in
+                    # this same repository (#2922).
+                    git_binary, *config_args, *_NO_AUTO_MAINTENANCE, "merge", "--no-ff",
+                    "--no-edit",
                     "-m", f"swarm: integrate {branch}",
                     "FETCH_HEAD",
                 ],
