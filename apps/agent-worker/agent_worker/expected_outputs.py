@@ -111,12 +111,15 @@ Two things are deliberately NOT done here.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Collection, Iterable, Mapping, Sequence
 
 from agent_worker import questions as questions_mod
+from agent_worker import verdict as verdict_mod
 
 #: The key under `task.metadata`, and the key `input.json` carries it under.
 #:
@@ -203,13 +206,97 @@ def parse_names(value: Any) -> Declared:
     return Declared(names=tuple(sorted(names)), rejected=tuple(rejected))
 
 
-def declared_outputs(metadata: Any) -> Declared:
-    """What `task.metadata` says this task's dependants will stage from it."""
-    if not isinstance(metadata, dict):
-        # The contract types `metadata` as a dict. A value of any other type
-        # cannot carry this key, so there is nothing here to honour.
-        return Declared()
-    return parse_names(metadata.get(METADATA_KEY))
+#: The file a review or re-review step writes its verdict into (#2837).
+REVIEW_VERDICT_NAME = "verdict.json"
+
+#: The last word of a review step's id: `review` (`issueruns.REVIEW_STEP`,
+#: a spec's `dod-data-review`) or `rereview` (a spec's `dod-data-rereview`;
+#: the appended `re-review`, `validation.REREVIEW_STEP_ID`, ends in `review`).
+_REVIEW_WORDS = frozenset({"review", "rereview"})
+_STEP_WORD_BREAK = re.compile(r"[-_.\s]+")
+
+
+def is_review_step(step_id: Any) -> bool:
+    """Whether a workflow step's id names a review or a re-review (#2837).
+
+    WHY BY ID. Reported 2026-10-30 (`wf_a1efae5b3f2f470496e5`): the leaf
+    step `dod-data-rereview` ended SUCCEEDED with its NOT_YET only in
+    `handoff.md`. No later step staged its `verdict.json`, so nothing put the
+    name in `metadata.expected_outputs`, and the stage a spec gives a step is
+    a note for its reader that never reaches the task. The step id does:
+    swarm-api writes it on every step's task as the top-level `step_id`,
+    which the step-spec signature covers (`swarm_common.specsign`). NOT
+    `metadata.workflow_step`, the same id written where the signature does
+    not reach (tests/unit/common/test_specsign_covers.py).
+
+    The id's LAST word decides, case aside, after any trailing number (the
+    suffix a repeated id takes, `re-review-2`): `review` or `rereview`. So
+    `review-ui` (a QA spec's per-group review, which writes a report) and
+    `dod-data-fix` (which stages the review's verdict) are not reviews.
+    """
+    if not isinstance(step_id, str):
+        return False
+    words = [w for w in _STEP_WORD_BREAK.split(step_id.strip().lower()) if w]
+    while words and words[-1].isdigit():
+        words.pop()
+    return bool(words) and words[-1] in _REVIEW_WORDS
+
+
+def declared_outputs(metadata: Any, *, step_id: Any = None) -> Declared:
+    """What `task.metadata` says this task's dependants will stage from it,
+    and, when `step_id` (the task's signed `step_id`) names a review or a
+    re-review, its `verdict.json` (#2837).
+
+    A review step owes its verdict whether or not a later step stages it: the
+    merge, the console and `swarm_result` read it from the review's artifacts.
+    Declared here, it takes the #149 path whole: the agent is told the name
+    and the absolute path, and a clean finish without it fails the attempt
+    retryably instead of ending SUCCEEDED.
+    """
+    # The contract types `metadata` as a dict. A value of any other type
+    # cannot carry the key, so it declares nothing; the step id still counts.
+    declared = parse_names(metadata.get(METADATA_KEY)) if isinstance(metadata, dict) else Declared()
+    if is_review_step(step_id) and REVIEW_VERDICT_NAME not in declared.names:
+        declared = Declared(
+            names=tuple(sorted((*declared.names, REVIEW_VERDICT_NAME))),
+            rejected=declared.rejected,
+        )
+    return declared
+
+
+def verdict_problem(artifacts_dir: Path | str) -> str | None:
+    """Why the review's own `verdict.json` in `artifacts_dir` is not a verdict,
+    or None when it reads (#2837).
+
+    The same reading a dependant gives a staged verdict
+    (`verdict.verdict_of_document`, bounded by `verdict.MAX_VERDICT_BYTES`), so
+    a file that passes here passes there. Not followed if it is a link: the
+    verdict is the bytes of a file the agent wrote into the directory.
+    """
+    path = Path(artifacts_dir) / REVIEW_VERDICT_NAME
+    accepted = " or ".join(verdict_mod.REVIEW_VERDICTS)
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return f"{REVIEW_VERDICT_NAME} was not written"
+    except OSError as exc:
+        return f"{REVIEW_VERDICT_NAME} could not be read ({type(exc).__name__})"
+    with os.fdopen(fd, "rb") as handle:
+        data = handle.read(verdict_mod.MAX_VERDICT_BYTES + 1)
+    if len(data) > verdict_mod.MAX_VERDICT_BYTES:
+        return f"{REVIEW_VERDICT_NAME} is over the {verdict_mod.MAX_VERDICT_BYTES}-byte bound"
+    try:
+        document = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        return f"{REVIEW_VERDICT_NAME} is not JSON ({type(exc).__name__})"
+    if not isinstance(document, dict):
+        return f"{REVIEW_VERDICT_NAME} is not a JSON object"
+    if verdict_mod.verdict_of_document(document) is None:
+        return (
+            f"{REVIEW_VERDICT_NAME} has `verdict` {document.get('verdict')!r}, "
+            f"not {accepted}"
+        )
+    return None
 
 
 def without_platform_names(names: Sequence[str], platform_written: Iterable[str]) -> tuple[str, ...]:
@@ -436,7 +523,11 @@ CAUSE_NO_BASE = "no_base"
 #: never written. Only these leave a missing output retryable.
 CAUSE_UPLOAD_ERROR = "upload_error"
 CAUSE_NOT_WRITTEN = "not_written"
-RETRYABLE_CAUSES = frozenset({CAUSE_UPLOAD_ERROR, CAUSE_NOT_WRITTEN})
+#: A review's own `verdict.json` that was written but does not read as a
+#: verdict (`verdict_problem`, #2837): the agent can write a readable one next
+#: time, so a retry can change it too.
+CAUSE_UNREADABLE_VERDICT = "unreadable_verdict"
+RETRYABLE_CAUSES = frozenset({CAUSE_UPLOAD_ERROR, CAUSE_NOT_WRITTEN, CAUSE_UNREADABLE_VERDICT})
 
 #: `task.result_summary.artifacts_skipped` entries are `{name, cause}` (#165,
 #: owner decision 2026-09-28), one per skipped name, capped at 50. A summary
@@ -470,6 +561,10 @@ def skipped_names(value: Any) -> list[str]:
 #: What each cause says, in a missing-output cause and a dependant's refusal.
 _CAUSE_TEXT = {
     CAUSE_NOT_WRITTEN: "not written to $SWARM_ARTIFACTS_DIR",
+    CAUSE_UNREADABLE_VERDICT: (
+        "written but not a verdict: not a JSON object whose `verdict` is "
+        "MERGE or NOT_YET (unreadable_verdict)"
+    ),
     CAUSE_CAP: "written but not uploaded: over the artifact cap (cap)",
     CAUSE_UPLOAD_ERROR: "written but not uploaded: the upload failed (upload_error)",
     CAUSE_REFUSED: (

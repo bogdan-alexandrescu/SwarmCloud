@@ -1140,6 +1140,9 @@ class Worker:
         # The same names, each with its cause (#165): the file cap is `cap`,
         # the name bound `refused`.
         self._not_uploaded_causes: dict[str, str] = {}
+        # Whether an owed `verdict.json` was uploaded but is not a verdict
+        # (#2837), as `_report_missing_outputs` last found it.
+        self._verdict_unreadable = False
         # A CLI agent's task with no repository has what its agent CREATED in
         # the working folder uploaded, under `workdir/` (#184, owner decision
         # of 2026-09-26; `agent_worker.standalone_outputs`). `_standalone` is
@@ -8485,7 +8488,11 @@ class Worker:
         (`_fail_for_missing_outputs`). See `agent_worker.expected_outputs` for
         the measurements behind both.
         """
-        declared = expected_mod.declared_outputs(task.get("metadata"))
+        # A review or re-review step owes `verdict.json` by its signed
+        # `step_id`, whether or not a later step stages it (#2837).
+        declared = expected_mod.declared_outputs(
+            task.get("metadata"), step_id=task.get("step_id")
+        )
         if declared.rejected:
             self.log.warning(
                 "dropped unusable expected_outputs entries: "
@@ -8540,6 +8547,11 @@ class Worker:
             if isinstance(entry, dict) and isinstance(entry.get("name"), str)
         ]
         missing = expected_mod.missing_outputs(self._expected_outputs, produced)
+        # Uploaded, but not a verdict (#2837): missing, with the cause
+        # `_missing_causes` names, so a retry writes a readable one.
+        self._verdict_unreadable = self._unreadable_verdict(missing)
+        if self._verdict_unreadable:
+            missing = [*missing, expected_mod.REVIEW_VERDICT_NAME]
         if summary.get(expected_mod.NO_CHANGE_SUMMARY_KEY) is True:
             # An allowed empty diff (2026-10-05) writes no patch and opens no
             # pull request, so neither the patch nor a title is owed; every
@@ -8588,6 +8600,22 @@ class Worker:
         )
         return list(missing)
 
+    def _unreadable_verdict(self, missing: Sequence[str]) -> bool:
+        """Whether an owed `verdict.json` was uploaded but does not read as a
+        verdict (`expected_outputs.verdict_problem`, #2837), logged with why.
+
+        Only when it is owed and was not already missing: a file never
+        written, or one not uploaded, keeps the cause it has.
+        """
+        name = expected_mod.REVIEW_VERDICT_NAME
+        if name not in self._expected_outputs or name in missing or self.ws is None:
+            return False
+        problem = expected_mod.verdict_problem(self.ws.artifacts)
+        if problem is None:
+            return False
+        self.log.warning(f"the review's verdict does not read: {problem}")
+        return True
+
     def _missing_causes(self, summary: dict[str, Any]) -> dict[str, str]:
         """Each name the last upload did not upload, with WHY (#165).
 
@@ -8600,6 +8628,8 @@ class Worker:
         here (`expected_mod.retryable`).
         """
         causes = {**self._not_uploaded_causes, **self._skip_causes}
+        if self._verdict_unreadable and expected_mod.REVIEW_VERDICT_NAME not in causes:
+            causes[expected_mod.REVIEW_VERDICT_NAME] = expected_mod.CAUSE_UNREADABLE_VERDICT
         if PATCH_NAME in self._expected_outputs and PATCH_NAME not in causes:
             patch = expected_mod.patch_cause(summary.get("git"))
             if patch is not None:
