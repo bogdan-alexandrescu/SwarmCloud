@@ -58,6 +58,7 @@ import {
   createSetupTeam,
   finishSetup,
   inviteToSetupTeam,
+  loadMe,
   loadSetup,
   loadTask,
   loadWorkflow,
@@ -84,6 +85,7 @@ import {
 } from './api'
 import { Banner, Button, ButtonLink, Card, Chip, CodeBlock, ToneMark, type MarkTone } from './components'
 import { agentPath } from './OverviewRegions'
+import { OWN_SIGN_IN_WINDOW } from './SetupLink'
 import type { TaskState } from './types'
 import './styles/onboarding.css'
 
@@ -428,7 +430,7 @@ function GitHubAppPanel({ state, onChanged, act }: { state: SetupState; onChange
           : check?.state === 'failed'
             ? check.reason ?? 'GitHub did not answer as the App'
             : switched
-              ? 'swarm install’s infra pass 3 gave swarm-api the App’s id; run the self-check'
+              ? 'swarm install’s infra pass 3 gave swarm-api the App’s id; this page runs the self-check by itself'
               : WAITING_FOR_PASS_3,
     })
   }
@@ -537,7 +539,7 @@ function githubRow(state: SetupState, onChanged: () => void, act: ReturnType<typ
       title: 'GitHub App',
       state: 'in_progress',
       by: 'this page',
-      line: pass3Ran(state) ? `Installed on ${app.installed_on}; the self-check is next` : `Installed on ${app.installed_on}; ${WAITING_FOR_PASS_3}`,
+      line: pass3Ran(state) ? `Installed on ${app.installed_on}; this page runs the self-check now` : `Installed on ${app.installed_on}; ${WAITING_FOR_PASS_3}`,
       body,
       act: selfCheck('Run the self-check'),
     }
@@ -901,19 +903,73 @@ function accountFact(a: SetupAccount, signedIn: boolean, nowMs: number, pool: st
   return { state: 'in_progress', name: a.label, text: `waiting for ${a.owner ?? 'its owner'} to open their one-time link and sign in${until === null ? '' : `, ${until}`}` }
 }
 
-function AccountLinkForm({ onChanged, onePerson }: { onChanged: () => void; onePerson: boolean }) {
+/**
+ * The pool account's one-time link (audit 4d, F5 and F6). The owner is filled
+ * in with the installer (one person: always, and only the installer); when the
+ * owner is the person signed in here, the page opens their link itself in a
+ * tab of its own, named OWN_SIGN_IN_WINDOW, which the link page reads as "open
+ * it now", so nobody copies a link to themselves. A link for someone else is
+ * made and shown once, to send them. No link is made before the workspace it
+ * signs into is ready: before then the account sign-in is refused, and the
+ * link would be spent for nothing.
+ */
+function AccountLinkForm({ onChanged, onePerson, installer, waitingFor }: { onChanged: () => void; onePerson: boolean; installer: string | null; waitingFor: string | null }) {
   const act = useAction(onChanged)
   const [label, setLabel] = useState('')
-  const [owner, setOwner] = useState('')
+  const [me, setMe] = useState<string | null>(installer)
+  const [owner, setOwner] = useState(installer ?? '')
+  const typed = useRef(false)
   const [minted, setMinted] = useState<SetupLink | null>(null)
+  const [opened, setOpened] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  useEffect(() => {
+    if (installer !== null) return undefined
+    let live = true
+    void loadMe().then((r) => {
+      const email = (r.status === 'ok' || r.status === 'stale') && typeof r.data?.principal?.email === 'string' ? r.data.principal.email : null
+      if (!live || email === null || email === '') return
+      setMe(email)
+      if (!typed.current) setOwner(email)
+    })
+    return () => {
+      live = false
+    }
+  }, [installer])
+  const self = me !== null && owner.trim().toLowerCase() === me.toLowerCase()
   const shown = minted === null ? null : minted.url ?? minted.path
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault()
         setCopied(false)
-        act.run('link', () => mintSetupLink({ kind: 'pool-account', label: label.trim(), owner: owner.trim() }), setMinted)
+        setMinted(null)
+        setOpened(null)
+        const body = { kind: 'pool-account' as const, label: label.trim(), owner: owner.trim() }
+        if (!self) {
+          act.run('link', () => mintSetupLink(body), setMinted)
+          return
+        }
+        // Opened now, inside the click, so no popup blocker stops it; the link goes into it once it is made.
+        const tab = window.open('', OWN_SIGN_IN_WINDOW) ?? null
+        if (tab !== null) tab.opener = null
+        act.run(
+          'link',
+          () =>
+            mintSetupLink(body).then((r) => {
+              if (r.status === 'error') tab?.close()
+              return r
+            }),
+          (link) => {
+            const href = link.url ?? link.path
+            if (tab !== null) {
+              tab.location.href = href
+            } else {
+              window.name = OWN_SIGN_IN_WINDOW
+              window.location.assign(href)
+            }
+            setOpened(link.label)
+          },
+        )
       }}
     >
       <label className="c-field">
@@ -922,17 +978,37 @@ function AccountLinkForm({ onChanged, onePerson }: { onChanged: () => void; oneP
       </label>
       <label className="c-field">
         <span className="c-lbl">Its owner</span>
-        <input className="c-inp" value={owner} placeholder="name@your-domain" onChange={(e) => setOwner(e.target.value)} />
-        <p className="c-hint">{onePerson ? 'You, or whoever holds the subscription' : 'A member of the first team’s group'}; the link opens for them only, once, within 24 h</p>
+        <input
+          className="c-inp"
+          value={owner}
+          placeholder="name@your-domain"
+          readOnly={onePerson && installer !== null}
+          onChange={(e) => {
+            typed.current = true
+            setOwner(e.target.value)
+          }}
+        />
+        <p className="c-hint">
+          {onePerson ? 'You: a one-person install’s pool takes your own subscription' : 'You, or a member of the first team’s group'}
+          {self ? '; your sign-in opens in a new tab' : '; the link opens for them only, once, within 24 h'}
+        </p>
       </label>
+      {waitingFor !== null && <p className="c-hint">{waitingFor}</p>}
       <span className="ob-acts">
-        <Button size="sm" kind="primary" type="submit" busy={act.busy === 'link' ? 'Sending' : false} disabledReason={label.trim() === '' || owner.trim() === '' ? 'Name the account and its owner first' : undefined}>
-          Send a sign-in link
+        <Button
+          size="sm"
+          kind="primary"
+          type="submit"
+          busy={act.busy === 'link' ? (self ? 'Opening' : 'Making') : false}
+          disabledReason={waitingFor !== null ? 'Workspace not ready' : label.trim() === '' || owner.trim() === '' ? 'Name the account and its owner first' : undefined}
+        >
+          {self ? 'Sign in my Claude account' : 'Make a sign-in link'}
         </Button>
       </span>
+      {opened !== null && <p className="c-hint" role="status">{`Your sign-in for ${opened} opened in a new tab: sign in to Claude there, and this page sees the account at its next read.`}</p>}
       {shown !== null && minted !== null && (
         <CodeBlock
-          title={`One-time link for ${minted.owner}, shown once`}
+          title={`One-time link for ${minted.owner}, shown once: send it to them`}
           lang="url"
           text={shown}
           action={
@@ -967,6 +1043,15 @@ function accountsRow(state: SetupState, onChanged: () => void, nowMs: number): R
   }
   const signed = signedInCount(state)
   const st: StepState = signed > 0 ? 'done' : state.accounts.length > 0 ? 'in_progress' : 'todo'
+  // F6: the sign-in is refused until the workspace is `ready`, so no link is made for it before then.
+  const first = firstWorkspace(state)
+  const ws = first === null ? null : typeof first.progress.workspace_state === 'string' ? first.progress.workspace_state : null
+  const waitingFor =
+    ws === WORKSPACE_READY
+      ? null
+      : first === null
+        ? 'Waiting for the workspace: a sign-in link is made once swarm-api has filed it and it is ready'
+        : `Waiting for the workspace ${first.workspace} (${ws === null ? 'swarm-workspace-apply has not reported yet' : `swarm-workspace-apply: ${ws}`}): a sign-in link is made once it is ready`
   return {
     key: 'accounts',
     title: 'Claude accounts',
@@ -974,12 +1059,12 @@ function accountsRow(state: SetupState, onChanged: () => void, nowMs: number): R
     by: 'this page',
     line:
       state.accounts.length === 0
-        ? `Each subscription’s owner signs in once, through the one-time link this page sends, into ${pool}`
+        ? `Each subscription’s owner signs in once, through a one-time link this page makes, into ${pool}`
         : `Pool: ${signed} of ${state.accounts.length} signed in`,
     body: (
       <>
         {state.accounts.length > 0 && <Facts items={state.accounts.map((a) => accountFact(a, accountSignedIn(state, a), nowMs, pool))} label="Pool accounts" />}
-        <AccountLinkForm onChanged={onChanged} onePerson={onePerson} />
+        <AccountLinkForm onChanged={onChanged} onePerson={onePerson} installer={onePerson ? state.personal?.owner ?? null : null} waitingFor={waitingFor} />
       </>
     ),
   }
@@ -1342,6 +1427,36 @@ export function InstallerCard({ state, now }: { state: SetupState; now?: number 
   )
 }
 
+/** How long the page waits before it runs a self-check that came back still waiting again. */
+export const SELF_CHECK_RETRY_MS = 30_000
+
+/** Whether the App's self-check is due: installed, infra pass 3 has run, and no check has passed or failed yet. */
+export function selfCheckDue(state: SetupState): boolean {
+  const app = state.github_app
+  if (app === null || app.id === null || app.installed_on === null || !pass3Ran(state)) return false
+  return app.self_check === null || app.self_check.state === 'waiting_for_infra_pass_3'
+}
+
+/**
+ * Audit 4d, F7: pass 4 and the hand-off wait on a passing self-check, so the
+ * page runs it itself as soon as it is due, not on a click. A check that still
+ * answers "waiting" (swarm-api's new revision not serving yet) is run again
+ * on a later read, at most once per SELF_CHECK_RETRY_MS; a failed one waits
+ * for its Retry.
+ */
+function useAutoSelfCheck(state: SetupState, act: ReturnType<typeof useAction>): void {
+  const due = selfCheckDue(state)
+  const last = useRef<number | null>(null)
+  const { busy, run } = act
+  useEffect(() => {
+    if (!due || busy !== null) return
+    const at = Date.now()
+    if (last.current !== null && at - last.current < SELF_CHECK_RETRY_MS) return
+    last.current = at
+    run('self-check', runGitHubAppSelfCheck)
+  }, [due, busy, run, state])
+}
+
 /**
  * The console's steps, in order, with the verify row and "Send to your
  * team": the panels SETUP-UI-2's page lays out. `now` fixes the clock (a
@@ -1353,6 +1468,7 @@ export function AdminSetupSteps({ state, now, onChanged }: { state: SetupState; 
   changed.current = onChanged
   const reread = useCallback(() => changed.current?.(), [])
   const githubAct = useAction(reread)
+  useAutoSelfCheck(state, githubAct)
   const rows = [
     cloudRow(state),
     githubRow(state, reread, githubAct),

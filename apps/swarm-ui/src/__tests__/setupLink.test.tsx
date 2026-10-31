@@ -184,3 +184,103 @@ describe('/admin/setup/link/<token>', () => {
     expect(setupLinkToken('/admin/setup/link/a%20b')).toBe('')
   })
 })
+
+// DAYONE-SETUP-UI-8 (part of #2688; audit 4d, F5 and F6).
+//
+// THE FAKE REFUSES WHAT THE REAL SERVICE REFUSES: `liveLinks` keeps the link
+// unused and answers 409 while its workspace is not `ready`, spends it on the
+// first 200 (404 after), and `/v1/accounts/authorize` answers swarm-api's 403
+// ("not a verified member") until the workspace's membership is readable. A
+// page that spent the link early, or gave up on the first 403, fails here.
+//
+// WHAT EACH CASE HOLDS:
+//   * a 409 leaves the link unused, says the workspace is still being set up,
+//     and the page opens it again by itself once it is ready;
+//   * a 403 just after is started again by itself;
+//   * the tab Admin › Setup opened for the installer's own link (named
+//     OWN_SIGN_IN_WINDOW) opens it with no click, once; any other tab waits.
+
+function liveLinks(token: string) {
+  const world = { ready: false, member: false, spent: false }
+  const calls = stub((m, url, body) => {
+    if (m === 'POST' && url === '/v1/setup/links/redeem') {
+      if (body?.token !== token || world.spent) return refused(404, 'not_found', 'this link is not valid: ask the admin for a new one')
+      if (!world.ready) return refused(409, 'conflict', 'the workspace u-ana is not ready yet; the link is still unused, open it again shortly')
+      world.spent = true
+      return { status: 200, body: { kind: 'pool-account', label: 'ana', tenant: 'u-ana' } }
+    }
+    if (m === 'POST' && url === '/v1/accounts/authorize') {
+      if (!world.member) return refused(403, 'forbidden', 'X-Swarm-Tenant names a tenant you are not a verified member of')
+      return { status: 200, body: { authorize_url: 'https://claude.example.test/oauth/authorize', state: rand(24), expires_in_seconds: 600 } }
+    }
+    return null
+  })
+  return { world, calls }
+}
+
+/** The page's 10 s retries, run at 40 ms so a case waits for them in real time. */
+function quickRetries() {
+  const real = globalThis.setTimeout
+  return vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number, ...rest: unknown[]) =>
+    real(fn, ms === 10_000 ? 40 : ms, ...rest)) as unknown as typeof setTimeout)
+}
+
+describe('a link whose workspace is not ready (audit 4d, F6)', () => {
+  it('keeps the link unused on 409, says why, and opens it by itself once the workspace is ready', async () => {
+    const token = rand(43)
+    const { world, calls } = liveLinks(token)
+    const timers = quickRetries()
+    await mount(`/admin/setup/link/${token}`)
+    fireEvent.click(await button('Open the link'))
+    // MUTATION: read the 409 as a dead link -> the person is sent back to the admin for a new one.
+    await screen.findByText('Your workspace is still being set up.', {}, WAIT)
+    expect(visible(document.body)).not.toMatch(/already been used/)
+    world.ready = true
+    // MUTATION: wait for another click -> the page sits on the 409.
+    await waitFor(() => expect(calls.filter((c) => c.url === '/v1/setup/links/redeem' && c.method === 'POST').length).toBeGreaterThanOrEqual(2), WAIT)
+    await waitFor(() => expect(calls.some((c) => c.url === '/v1/accounts/authorize')).toBe(true), WAIT)
+    world.member = true
+    // MUTATION: give up on the first 403 -> "Start the sign-in again" is a click the person must find.
+    const link = (await screen.findByText('Open the Claude sign-in page', {}, WAIT)).closest('a')!
+    expect(link.getAttribute('href')).toBe('https://claude.example.test/oauth/authorize')
+    // The link was spent exactly once.
+    expect(world.spent).toBe(true)
+    expect(visible(document.body)).not.toMatch(/already been used/)
+    timers.mockRestore()
+  })
+})
+
+describe('the installer’s own link, opened by Admin › Setup (audit 4d, F5)', () => {
+  afterEach(() => {
+    window.name = ''
+  })
+
+  it('opens the link with no click in the tab Admin › Setup named, once', async () => {
+    const token = rand(43)
+    const { OWN_SIGN_IN_WINDOW } = await import('../SetupLink')
+    const { world, calls } = liveLinks(token)
+    world.ready = true
+    world.member = true
+    window.name = OWN_SIGN_IN_WINDOW
+    await mount(`/admin/setup/link/${token}`)
+    // MUTATION: wait for "Open the link" in the installer's own tab -> a click that is no approval, credential or choice.
+    await screen.findByText('Open the Claude sign-in page', {}, WAIT)
+    const redeems = calls.filter((c) => c.url === '/v1/setup/links/redeem')
+    expect(redeems).toHaveLength(1)
+    expect(redeems[0]!.body).toEqual({ token })
+    // MUTATION: keep the name -> a reload of this tab would open a link again by itself.
+    expect(window.name).toBe('')
+  })
+
+  it('any other tab still waits for the click', async () => {
+    const token = rand(43)
+    const { world, calls } = liveLinks(token)
+    world.ready = true
+    window.name = 'some-other-tab'
+    await mount(`/admin/setup/link/${token}`)
+    await button('Open the link')
+    await new Promise((r) => setTimeout(r, 50))
+    // MUTATION: open on mount for every tab -> a preview or a prefetch spends the link.
+    expect(calls.filter((c) => c.url === '/v1/setup/links/redeem')).toHaveLength(0)
+  })
+})
