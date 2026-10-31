@@ -16,7 +16,13 @@ the person typed at its hidden prompt (`swarm_context`; named after the
 hostname, never `--use`; a context of that name pointing elsewhere is left
 alone and the engine's is `<hostname>-install`), so verify never needs the
 secret. It signs the person in to that context once in the browser, and
-picks the first team as `SWARM_TENANT`. Every run is `swarm
+picks as `SWARM_TENANT` the first workspace Admin › Setup filed, the one
+swarm-api's `first_workspace` sends the console's runs, the pool account and
+the repository grant to: for a team the oldest team of the install record
+(`teams/<id>`, its `workspace`), for one person the personal workspace
+(`console/personal`). Never `swarm tenants`' current or default entry: that is
+the installer's own personal workspace, or a stored profile default, which
+for a team has no pool account and no repository grant. Every run is `swarm
 --context <it>`, with no `SWARM_URL`, `SWARM_CONTEXT` or `SWARM_TENANT` from
 the person's shell. The repository is the first, not archived, the GitHub App
 installation covers (`swarm sc access repos <github_org>`), recorded as
@@ -79,7 +85,9 @@ from datetime import datetime
 from typing import Any, Protocol
 
 from ..exitcodes import MET, UNMET, WAITING
-from ..record import PERSONAL, RECORD_SCHEMA_VERSION, VERIFY_RUNS, engine_document
+from swarm_common.identity import tenant_id_for_group
+
+from ..record import PERSONAL, RECORD_SCHEMA_VERSION, VERIFY_RUNS, console_document, engine_document
 from ..state import SCHEMA_VERSION
 from ..swarm_context import (Run, deployment_url, list_contexts, points_at, run_command, run_interactive, swarm_cli,
                              verify_env)
@@ -716,6 +724,48 @@ def _rows(found: Any, key: str) -> list[dict[str, Any]]:
     return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
 
+def _install_document(ctx: Any, path: str) -> dict[str, Any] | None:
+    """A document of the install record (`ctx.engine.record`), or None when
+    it is absent or the record is not open yet (before stage 5)."""
+    record = getattr(getattr(ctx, "engine", None), "record", None)
+    found = record.documents.get(path) if record is not None else None
+    return dict(found[0] or {}) if found is not None else None
+
+
+def first_workspace(ctx: Any, listed: Sequence[str]) -> str:
+    """The first workspace's tenant, read from the install record exactly as
+    swarm-api's `first_workspace` (routes/setup.py) picks it, so verify's own
+    runs land where the console's runs, the pool account and the team's
+    repository grant are.
+
+    For one person: `console/personal`'s `workspace`. For a team: the oldest
+    `teams/<id>` document (`progress.created_at`, then the id, the order of
+    swarm-api's `InstallRecord.teams`), its `workspace` (else its id). The
+    engine's record reads documents and lists no collection, so the team
+    documents read are those of every tenant `swarm tenants` lists and of
+    the team group stage 8 recorded (`workspace_groups.team`), keyed by
+    `tenant_id_for_group` as swarm-api keys a team (its workspace's tenant
+    id). `LookupError` while Admin › Setup has filed none."""
+    env = str(getattr(ctx, "environment", "") or "")
+    if (ctx.outputs.get("sizing") or {}).get("mode") == "individual":
+        personal = _install_document(ctx, console_document(env, PERSONAL)) or {}
+        tenant = str(personal.get("workspace") or "")
+        if not tenant:
+            raise LookupError("Admin › Setup has not filed the personal workspace yet (console/personal)")
+        return tenant
+    group = str((ctx.outputs.get("workspace_groups") or {}).get("team") or "")
+    candidates = dict.fromkeys([*([tenant_id_for_group(group)] if group else []), *listed])
+    teams: list[tuple[str, str, str]] = []
+    for team_id in candidates:
+        doc = _install_document(ctx, f"{engine_document(env)}/teams/{team_id}")
+        if doc is not None:
+            created = str((doc.get("progress") or {}).get("created_at") or "")
+            teams.append((created, team_id, str(doc.get("workspace") or team_id)))
+    if not teams:
+        raise LookupError("Admin › Setup has not filed the first team yet (teams/<id>, its first-team step)")
+    return min(teams)[2]
+
+
 @dataclass
 class SwarmCli:
     """The runs through the `swarm` CLI, as the person, signed in with the
@@ -773,7 +823,8 @@ class SwarmCli:
         """Sign in (once) to the swarm context `edge.desktop-client` wrote for
         the new deployment, with the Desktop client's secret already in the
         credential store (`swarm_context.store_desktop_secret`), and pick the
-        first team as the tenant. Verify never needs the secret: it writes no
+        first workspace from the install record as the tenant
+        (`first_workspace`). Verify never needs the secret: it writes no
         context, and the person's current context is never switched."""
         url = deployment_url(ctx)
         name = str(ctx.outputs.get("verify_context") or "")
@@ -791,11 +842,11 @@ class SwarmCli:
             if code != 0:
                 raise RuntimeError(f"swarm --context {name} login failed: {err.strip()[:300]}")
         tenants = json.loads(self._bare(ctx, ["--context", name, "tenants", "--json"]) or "{}")
-        ids = [str(row.get("tenant_id") or "") for row in _rows(tenants, "tenants")]
-        tenant = str(tenants.get("current") or "") if isinstance(tenants, dict) else ""
-        tenant = tenant if tenant in ids else next((t for t in ids if t), "")
-        if not tenant:
-            raise LookupError(f"{url} lists no team for you yet (the first team, stage 11)")
+        ids = [t for t in (str(row.get("tenant_id") or "") for row in _rows(tenants, "tenants")) if t]
+        tenant = first_workspace(ctx, ids)
+        if tenant not in ids:
+            raise LookupError(f"{url} does not list the first workspace, {tenant}, for you yet "
+                              f"(swarm --context {name} tenants)")
         remember(ctx, outputs={"verify_tenant": tenant})
 
     def repository(self, ctx: Any) -> str:

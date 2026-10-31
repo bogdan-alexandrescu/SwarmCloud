@@ -92,6 +92,11 @@ def test_the_walk_reaches_ready(mode, monkeypatch, tmp_path, capsys):
     assert world.person.unscripted == []
     assert world.person.asked_to_run_elsewhere() == []
     asked = " ".join(prompt for _, prompt in world.person.asked)
+    # Audit 5b, M3: verify's own runs land in the first workspace (the first
+    # team, or one person's own), where the console's runs, the pool account
+    # and the grant are, never the personal default `swarm tenants` lists first.
+    plugin_tenants = {t.tenant for t in world.deployment.tasks.values() if t.submitter == deployment.PERSON}
+    assert plugin_tenants == {world.first_workspace}, plugin_tenants
     bootstrap = [inputs for root, inputs, _ in world.tf_applies if root == "bootstrap"][-1]
     members = set(bootstrap["frontend_iap_members"])
     if mode == "team":  # decision 1: the organisation's domain, the installer, the Desktop client
