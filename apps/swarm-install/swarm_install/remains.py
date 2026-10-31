@@ -10,7 +10,7 @@ takes if they want it gone:
 | `oauth-brand` | the OAuth brand (consent screen) has no delete method; it goes with the project |
 | `kms-key-ring` | key rings and keys cannot be deleted; their versions are destroyed |
 | `custom-roles` | a deleted custom role's id is reserved (undeletable for 7 days) |
-| `firestore-database` | a deleted database's id is reusable only after Google's delay |
+| `firestore-database` | deleted by the uninstall, its id reusable only after Google's delay; or, when it was not deleted, kept with its data (infra abandons it) |
 | `desktop-client` | deleting the Desktop OAuth client is a console step; it is kept for reuse |
 | `github-app` | only the organisation can delete its App |
 | `dns-record` | the record is at the company's registrar, or in the project's Cloud DNS zone `edge.dns` wrote it to |
@@ -18,7 +18,8 @@ takes if they want it gone:
 
 The record also carries `left`: anything else the uninstall did not remove (a
 resource in Terraform state that carries no `managed-by` label, so it is not
-ours to delete), each with why.
+ours to delete), each with why; a budget the billing account would not let it
+delete; and the project, deleted or kept, when stage 1 created it.
 
 The record is written to the local cache, `~/.config/swarmcloud/install/
 <project>.remains.json`, and printed, before the state bucket is deleted. A
@@ -82,8 +83,9 @@ def survivors(state: Any, found: Mapping[str, Any] | None = None) -> list[Remain
     """The eight survivors of design §10, named from the install state.
 
     `found` holds what the uninstall read from Terraform before destroying it:
-    `custom_roles` (role ids) and `kms_key_ring` (the ring's id), and
-    `firestore_database` (the database id infra's inputs named).
+    `custom_roles` (role ids) and `kms_key_ring` (the ring's id),
+    `firestore_database` (the database id infra's inputs named) and
+    `firestore_deleted` (step 7 deleted it).
     """
     outputs: Mapping[str, Any] = state.outputs
     found = found or {}
@@ -120,9 +122,18 @@ def survivors(state: Any, found: Mapping[str, Any] | None = None) -> list[Remain
         Remain("custom-roles", ", ".join(roles) or "(none recorded in bootstrap's state)",
                f"a deleted custom role's id stays reserved and can be undeleted for 7 days ({CUSTOM_ROLE_DOCS})",
                "nothing to do: a reinstall inside 7 days undeletes them, later it re-creates them"),
-        Remain("firestore-database", f"projects/{project}/databases/{database}",
-               f"a deleted Firestore database's id is reusable only after Google's delay ({FIRESTORE_DOCS})",
-               "nothing to do: a reinstall waits for the id with a countdown"),
+        # infra abandons its database (deletion_policy = "ABANDON"), so only the
+        # uninstall's own delete removes it; the record says which happened (audit 4e F7).
+        (Remain("firestore-database", f"projects/{project}/databases/{database}",
+                f"it was deleted; a deleted Firestore database's id is reusable only after Google's delay "
+                f"({FIRESTORE_DOCS})",
+                "nothing to do: a reinstall waits for the id with a countdown")
+         if found.get("firestore_deleted") else
+         Remain("firestore-database", f"projects/{project}/databases/{database}",
+                "it is kept, with its data, if the install made it: infra's Terraform abandons the database "
+                "(deletion_policy ABANDON) and this uninstall did not delete it",
+                f"https://console.cloud.google.com/firestore/databases/{database}/data?project={project}: "
+                f"delete the database ({FIRESTORE_DOCS})")),
         Remain("desktop-client", _text(outputs.get("desktop_client_id")),
                "the Desktop OAuth client is deleted only in the console, and is kept for a reinstall to reuse",
                f"https://console.cloud.google.com/auth/clients?project={project}: delete the client with this id"),

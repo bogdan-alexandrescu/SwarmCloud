@@ -1,0 +1,47 @@
+# Lane DAYONE-TEAM-REPAIR (part of #2688): a team's dispatcher RBAC is repaired
+# per team. `swarm doctor` prints `swarm team repair <team> --project <project>`
+# for each team whose namespace fails rbac.dispatcher-role's probe (doctor.py
+# `team_repairable`: a per-tenant entry whose refs.kubernetes names a file of
+# the tenant render), and `swarm install --repair rbac.dispatcher-role` names
+# that command instead of re-running the console hand-off, which remakes no
+# team's namespace. The entry is restated with replace: true for its apply
+# text; its step stays handoff.console, the step after which the first team's
+# namespace exists.
+version: 1
+entries:
+- id: rbac.dispatcher-role
+  kind: namespace-object
+  scope: core
+  stage: 11
+  provider: engine
+  check: kubectl --context $E -n swarm-tenant-$T get role,rolebinding -o name | grep dispatcher
+  apply: kubernetes/rbac/dispatcher-rbac.yaml:46,76,121,142; TWO Role+RoleBinding pairs, applied per tenant via TENANT_FILES by swarm-workspace-apply when the team is made; swarm team repair <team> --project <project> has that job apply the team's tenant render again (a limits run, A7), then checks both pairs are in the namespace
+  verify: kubectl get rolebinding <name> -n swarm-tenant-$T -o yaml shows the scheduler GSA bound BOTH by email and by its numeric uniqueId subject
+  explain: the control plane's own GKE dispatch access, without which the GKE backend cannot dispatch at all; bound twice deliberately -- the uniqueId binding is the one that actually authorizes, because GKE presents the scheduler's identity by uniqueId, not email
+  guards: the 2026-09-24 dispatch failure (email-only binding authorised nobody)
+  secret_entry: 'null'
+  depends_on:
+  - namespace-object.tenant-namespace
+  evidence:
+  - apps/swarm-install/swarm_install/team.py
+  - kubernetes/rbac/dispatcher-rbac.yaml:46
+  - kubernetes/rbac/dispatcher-rbac.yaml:76
+  - kubernetes/rbac/dispatcher-rbac.yaml:85
+  - kubernetes/rbac/dispatcher-rbac.yaml:93-118
+  - kubernetes/rbac/dispatcher-rbac.yaml:121
+  - kubernetes/rbac/dispatcher-rbac.yaml:142
+  - kubernetes/rbac/dispatcher-rbac.yaml:151-164
+  - kubernetes/render.py:399-405
+  notes: 'null'
+  probe:
+    type: kubernetes_can_i
+    subject: swarm-reconciler
+    verb: list
+    resource: jobs.batch
+    namespace: swarm-tenant-$T
+  step: handoff.console
+  refs:
+    kubernetes:
+    - rbac/dispatcher-rbac.yaml
+  expand: per_tenant
+  replace: true
