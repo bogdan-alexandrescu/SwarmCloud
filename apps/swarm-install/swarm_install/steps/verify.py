@@ -83,7 +83,7 @@ from ..record import PERSONAL, RECORD_SCHEMA_VERSION, VERIFY_RUNS, engine_docume
 from ..state import SCHEMA_VERSION
 from ..swarm_context import (Run, deployment_url, list_contexts, points_at, run_command, run_interactive, swarm_cli,
                              verify_env)
-from ..waits import WaitSpec
+from ..waits import FAILED, WaitSpec, cloud_page
 from . import Observation, Plan
 from .cluster import Kube, account_email, kube_for
 from .preflight import ASK, Ask, Gcp, remember
@@ -109,17 +109,38 @@ INDEXED_KEY = f"plugin-{INDEXED_SHAPE}"
 #: SHEET), and the engine copies them into state.outputs.
 CONSOLE_KEYS = {"single": "console_task", "workflow": "console_workflow"}
 
+def _targets_look_at(ctx: Any) -> str:
+    return (f"the job named above and its target's answer on the Cloud Scheduler page, "
+            f"{cloud_page('cloudscheduler', ctx)}")
+
+
 #: A tick's target may 403 for a while after its grant lands (lesson 19).
 TARGETS_WAIT = WaitSpec(
     reason="every Scheduler job enabled, its last attempt answered and its target invocable by its account",
     expected="at once, or up to 10 min while a new grant propagates",
     expected_s=60,
     bound_s=10 * 60,
-    look_at="the job named above and its target's answer on the Cloud Scheduler page, "
-            "https://console.cloud.google.com/cloudscheduler?project=<project>; once fixed, "
-            "swarm install --repair other.verify-scheduler-targets checks it again",
+    look_at=_targets_look_at,
     interval_s=30,
 )
+
+
+def _runs_look_at(ctx: Any) -> str:
+    """The verification runs by their real ids, and the console page that
+    shows each one's state (audit 5b M2: never `swarm status <task id>`)."""
+    outputs = getattr(ctx, "outputs", None) or {}
+    launched = outputs.get("verify_runs") or {}
+    named = []
+    for surface, shape in RUNS:
+        key = f"{surface}-{shape}"
+        run_id = launched.get(CONSOLE_KEYS[shape] if surface == "console" else key)
+        named.append(f"{key} {run_id}" if run_id else f"{key} (not started yet)")
+    state = getattr(ctx, "state", None)
+    hostname = getattr(state, "hostname", None) or outputs.get("hostname")
+    page = f"https://{hostname}/admin/setup" if hostname else "the console's Admin › Setup page"
+    return (f"the runs {', '.join(named)}: {page} shows each run's state and why one failed; the "
+            "countdown above named the ones still running")
+
 
 #: Seven runs, four of them to a pull request: an agent's run takes minutes.
 RUNS_WAIT = WaitSpec(
@@ -128,13 +149,13 @@ RUNS_WAIT = WaitSpec(
     expected="15 to 25 min",
     expected_s=25 * 60,
     bound_s=60 * 60,
-    look_at="swarm status <task id> for each run named above; the console's task pages",
+    look_at=_runs_look_at,
     interval_s=30,
 )
 
 #: How many times a failed or cancelled verification run is relaunched before
 #: the step stops on it (#19): a flaky run gets two more chances; a third
-#: failure is a fault, read in `swarm status`.
+#: failure is a fault, read on its task page in the console.
 RELAUNCHES = 2
 
 #: The platform's Scheduler jobs and Cloud Run services are named `swarm-*`.
@@ -242,9 +263,12 @@ def write_progress(ctx: Any, check: str, done: int, *, result: str | None = None
         record.write(ctx.state, getattr(engine, "_stage_of", {}), lease=engine.lease.as_record(), verify=row)
     # The terminal's countdown is the events' own `wait_countdown` kind,
     # carrying the row's fields, so a reader of the JSON events needs no new kind.
+    # Its detail is where the row stands, as every countdown names why it waits (audit 5b M1).
     ctx.events.emit("wait_countdown", step=f"verify.{check}", reason=RUNS_WAIT.reason,
                     state=result or "waiting", expected=RUNS_WAIT.expected,
-                    remaining_s=max(0.0, row["deadline"] - ctx.clock.now()), **row)
+                    remaining_s=max(0.0, row["deadline"] - ctx.clock.now()),
+                    detail=f"{done} of {TOTAL} verification checks passed; checking {check}"
+                           + (f" ({result})" if result else ""), **row)
     return row
 
 
@@ -1039,8 +1063,8 @@ class EndToEndStep(_Base):
             ids = [*ids, run_id]
         if len(ids) > RELAUNCHES:
             return "problem", (f"{key} failed {len(ids)} times ({', '.join(ids)}; the last {state}); not relaunched "
-                               f"again: a run is relaunched at most {RELAUNCHES} times, so this is a fault to read "
-                               f"in swarm status {run_id}, not a flaky run")
+                               f"again: a run is relaunched at most {RELAUNCHES} times, so this is a fault, not a "
+                               f"flaky run; its task page in the console says why {run_id} failed")
         attempt = f"({len(ids)} of {RELAUNCHES})"
         if ctx.dry_run:
             return "waiting", f"{key} ({run_id}) {state}; a run of swarm install relaunches it {attempt}"
@@ -1158,11 +1182,13 @@ class EndToEndStep(_Base):
         result = "failed" if problems else ("passed" if done == len(RUNS) else None)
         write_progress(ctx, self.check_name, len(QUICK_CHECKS) + done, result=result)
         if problems:
-            # The engine's wait cannot end early on a check's word, so the
-            # failure is reported on every poll and in the verify row
-            # (`result: failed`) until the bound. A failed or cancelled run
-            # was relaunched first, at most RELAUNCHES times (`_relaunch`).
-            return Observation(UNMET, "; ".join(problems))
+            # A definite failure (a run cloned with a personal token, a run
+            # relaunched to its limit, a check run without its proof): no
+            # later poll mends it, so the wait ends now with what failed
+            # (audit 5b M1) instead of polling to the bound. A failed or
+            # cancelled run was relaunched first, at most RELAUNCHES times
+            # (`_relaunch`); the verify row says `result: failed`.
+            return Observation(UNMET, "; ".join(problems), {FAILED: True})
         if done < len(RUNS):
             return Observation(WAITING, f"{done} of {len(RUNS)} runs have passed; waiting for "
                                         + ", ".join(waiting))
