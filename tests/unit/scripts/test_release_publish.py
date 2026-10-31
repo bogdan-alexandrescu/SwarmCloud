@@ -20,6 +20,7 @@ import json
 import os
 import importlib.util
 import pty
+import re
 import secrets
 import shutil
 import subprocess
@@ -29,12 +30,15 @@ from pathlib import Path
 
 import pytest
 
-from .test_release_assemble import VERSION, assemble, build_record, fake_digest, image_names
+from .test_release_assemble import (LIGHTPANDA_SOURCE, LIGHTPANDA_SOURCE_BODY, VERSION, assemble, build_record,
+                                    fake_digest, image_names)
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "release" / "publish.sh"
 BUCKET = "gs://swarmcloud"
 RELEASE = f"{BUCKET}/releases/{VERSION}"
+#: Where the Lightpanda image's SOURCE notice says its Corresponding Source is.
+ROOT_SOURCE = f"{BUCKET}/{LIGHTPANDA_SOURCE}"
 HOME_REGISTRY = "us-docker.pkg.dev/swarmcloud-prod/swarmcloud"
 KMS = "gcpkms://projects/swarmcloud-prod/locations/us/keyRings/swarmcloud-release/cryptoKeys/cosign"
 #: The release key the engine pins; the assembled bundle's swarm_install wheel carries it.
@@ -353,7 +357,7 @@ def test_channel_moved_only_by_promote(tmp_path: Path, bundle: Path, assembled: 
     assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-3000:]
     dest = _destinations(_calls(tmp_path))
     assert dest, "publish uploaded nothing"
-    assert all(d.startswith(RELEASE) or d == f"{BUCKET}/install.sh" for d in dest), dest
+    assert all(d.startswith(RELEASE) or d in (f"{BUCKET}/install.sh", ROOT_SOURCE) for d in dest), dest
     assert f"{BUCKET}/marketplace.json" not in dest, dest
     text = (SCRIPT.read_text())
     # The one place the script names the channel is the promotion.
@@ -770,7 +774,7 @@ def test_ci_publish_under_actions_with_the_dispatched_version(tmp_path: Path, bu
     assert [c for c in calls if c[:2] == ["cosign", "sign"]], "nothing was signed"
     dest = _destinations(calls)
     assert dest[-2:] == [f"{RELEASE}/SHA256SUMS", f"{BUCKET}/install.sh"], dest
-    assert all(d.startswith(RELEASE) for d in dest[:-1]), dest
+    assert all(d.startswith(RELEASE) or d == ROOT_SOURCE for d in dest[:-1]), dest
     assert "to continue" not in proc.stderr
     assert "SWARM_PUBLISH_VERSION" in proc.stderr, proc.stderr
 
@@ -839,3 +843,67 @@ def test_shellcheck_clean() -> None:
     proc = subprocess.run(["shellcheck", "-x", str(SCRIPT)], cwd=REPO / "scripts",
                           capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+# -- the Lightpanda Corresponding Source (AGPL section 6(d)) ------------------------------------
+
+
+def _rsync_excludes(calls: list[list[str]]) -> list[str]:
+    (rsync,) = [c for c in calls if c[:3] == ["gcloud", "storage", "rsync"]]
+    return [a.split("=", 1)[1] for a in rsync if a.startswith("--exclude=")]
+
+
+def test_publish_puts_the_lightpanda_source_at_the_bucket_root(tmp_path: Path, bundle: Path,
+                                                                assembled: tuple[Path, Path]) -> None:
+    """The bundle's third-party/ tree goes to the bucket ROOT, so the URL the
+    image's SOURCE notice names answers once the release is published: never
+    overwriting, after SHA256SUMS's signature verifies, and before SHA256SUMS,
+    which stays the last object of the release."""
+    proc = _publish(tmp_path, bundle, assembled[1])
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-3000:]
+    # MUTATION: drop the third-party upload from publish.sh and this fails.
+    (args,) = _object_writes(tmp_path, ROOT_SOURCE)
+    assert "--no-clobber" in args, args
+    assert [a for a in args if not a.startswith("-")][-2] == str(bundle / LIGHTPANDA_SOURCE), args
+    uploaded = json.loads((tmp_path / "state.json").read_text())["uploaded"]
+    assert uploaded[ROOT_SOURCE] == LIGHTPANDA_SOURCE_BODY.decode()
+    calls = _calls(tmp_path)
+    writes = _writes(calls)
+    verify = next(i for i, c in enumerate(calls) if c[:2] == ["cosign", "verify-blob"])
+    upload = next(i for i, c in enumerate(calls) if c[:3] == ["gcloud", "storage", "cp"] and c[-1] == ROOT_SOURCE)
+    assert verify < upload, "the source archive went up before SHA256SUMS's signature verified"
+    dest = _destinations(calls)
+    assert dest.index(ROOT_SOURCE) < dest.index(f"{RELEASE}/SHA256SUMS"), dest
+    assert [d for d in dest if d.startswith(RELEASE)][-1] == f"{RELEASE}/SHA256SUMS", dest
+    assert writes, "publish wrote nothing"
+    # One copy, at the root: the release's own upload leaves third-party/ out.
+    excludes = _rsync_excludes(calls)
+    assert any(re.search(x, LIGHTPANDA_SOURCE) for x in excludes), excludes
+    assert any(re.search(x, "SHA256SUMS") for x in excludes), excludes
+    for shipped in ("install.sh", "plugin.zip", "module.tgz", "plugin/compat.json"):
+        assert not any(re.search(x, shipped) for x in excludes), (shipped, excludes)
+
+
+def test_a_later_release_with_the_same_lightpanda_writes_no_second_copy(tmp_path: Path, bundle: Path,
+                                                                         assembled: tuple[Path, Path]) -> None:
+    """A release whose Lightpanda an earlier release (2026.10.0) already
+    published finds the archive at the root and writes nothing there; the rest
+    of the release publishes."""
+    state = {"objects": {f"{BUCKET}/releases/2026.10.0/SHA256SUMS": "x", ROOT_SOURCE: "published before"}}
+    proc = _publish(tmp_path, bundle, assembled[1], state=state)
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-3000:]
+    assert _object_writes(tmp_path, ROOT_SOURCE) == []
+    assert not [c for c in _writes(_calls(tmp_path)) if ROOT_SOURCE in c], _writes(_calls(tmp_path))
+    assert json.loads((tmp_path / "state.json").read_text())["objects"][ROOT_SOURCE] == "published before"
+    assert ROOT_SOURCE in proc.stdout + proc.stderr and "already" in proc.stdout + proc.stderr
+    assert _destinations(_calls(tmp_path))[-1] == f"{BUCKET}/install.sh"
+
+
+def test_a_publish_that_does_not_verify_writes_no_source_archive(tmp_path: Path, bundle: Path,
+                                                                  assembled: tuple[Path, Path]) -> None:
+    """Nothing, the root source archive included, is written before
+    SHA256SUMS's signature verifies with the key installs pin."""
+    proc = _publish(tmp_path, bundle, assembled[1], state={"kms_key": "another key"})
+    assert proc.returncode == 1, proc.stdout[-2000:] + proc.stderr[-3000:]
+    assert _object_writes(tmp_path, ROOT_SOURCE) == []
+    assert not [c for c in _writes(_calls(tmp_path)) if c[0] == "gcloud"], _writes(_calls(tmp_path))

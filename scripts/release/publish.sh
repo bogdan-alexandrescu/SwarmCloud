@@ -37,7 +37,11 @@
 #      the bundle's own swarm_install wheel, the key every install pins (audit
 #      3, A11); then uploads everything under
 #      releases/V/ (no object overwritten), SHA256SUMS LAST, so a release cut
-#      short has no SHA256SUMS and no installer reads it;
+#      short has no SHA256SUMS and no installer reads it. The bundle's
+#      third-party/ tree (the Lightpanda image's Corresponding Source, AGPL
+#      section 6(d)) goes instead to the bucket ROOT, third-party/..., the URL
+#      the image's SOURCE notice names, before SHA256SUMS: one copy for every
+#      release with that Lightpanda, an object already there left as it is;
 #   5. once all of that has succeeded, every publish: the root install.sh
 #      (Cache-Control: no-cache). It is channel-agnostic: it reads
 #      channels/<SWARM_CHANNEL>, so a candidate's is what `curl .../install.sh |
@@ -451,12 +455,26 @@ publish() {
     write cosign sign --yes "--key=${KMS_KEY}" "${REGISTRY}/${name}@${digest}" </dev/null
   done 3< <(jq -r 'to_entries[] | [.key, .value] | @tsv' "${BUNDLE}/images.json")
 
-  write gcloud storage rsync --recursive --no-clobber --exclude='^SHA256SUMS$' "${BUNDLE}" "${release}"
+  write gcloud storage rsync --recursive --no-clobber --exclude='^(SHA256SUMS$|third-party/)' "${BUNDLE}" "${release}"
   write gcloud storage cp --no-clobber "${WORK}/cosign.pub" "${release}/cosign.pub"
   write gcloud storage cp --no-clobber "${WORK}/SHA256SUMS.sig" "${release}/SHA256SUMS.sig"
   if [[ "${DRY_RUN}" -eq 1 || -f "${WORK}/SHA256SUMS.cosign.bundle" ]]; then
     write gcloud storage cp --no-clobber "${WORK}/SHA256SUMS.cosign.bundle" "${release}/SHA256SUMS.cosign.bundle"
   fi
+  # The Corresponding Source of the AGPL software the images carry
+  # (assemble.sh; docs/design/lightpanda-runtime.md 6.4) at the bucket root,
+  # where the image's SOURCE notice points, so it answers before the release
+  # does. Its path names the upstream version, so a later release with the
+  # same Lightpanda finds it there and writes no second copy; --no-clobber
+  # keeps a concurrent publish from replacing it.
+  local rel
+  while IFS= read -r rel <&4; do
+    if object_exists "${BUCKET}/${rel}"; then
+      ok "${BUCKET}/${rel} is already published, by an earlier release; left as it is"
+      continue
+    fi
+    write gcloud storage cp --no-clobber "${BUNDLE}/${rel}" "${BUCKET}/${rel}"
+  done 4< <(if [[ -d "${BUNDLE}/third-party" ]]; then cd -- "${BUNDLE}" && find third-party -type f | LC_ALL=C sort; fi)
   # LAST: a release cut short above has no SHA256SUMS, so no installer reads it.
   write gcloud storage cp --no-clobber "${BUNDLE}/SHA256SUMS" "${release}/SHA256SUMS"
   # Every publish puts install.sh at the root: it reads the channel it is asked
