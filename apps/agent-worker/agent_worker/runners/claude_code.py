@@ -289,7 +289,7 @@ On `claude-code-lightpanda` (SWARM_RUNNER_PROFILE, which the worker sets) this
 runner starts and supervises `lightpanda serve` on 127.0.0.1:9223 under
 `env -i`, sets SWARM_LIGHTPANDA_CDP and never SWARM_CDP_ENDPOINT, registers the
 `lightpanda` MCP server and no `playwright` one, denies three of its tools and
-adds `lightpanda.LIGHTPANDA_NOTE` to the prompt. There is no live view, so no
+adds `lightpanda.lightpanda_note` to the prompt. There is no live view, so no
 `browser.json`. Checkpointing and fencing are this runner's, unchanged: the
 child starts inside `body`, after the worker's fencing check, and stops with
 it (`agent_worker.lightpanda`).
@@ -1553,7 +1553,9 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     if refusal:
         raise RunnerFailure(f"{refusal}; the agent was not started")
     if on_lightpanda and isinstance(prompt, str) and prompt.strip():
-        prompt = f"{prompt.rstrip()}\n\n{lightpanda.LIGHTPANDA_NOTE}"
+        # A child has no child path: it lists failing pages for its parent.
+        lp_note = lightpanda.lightpanda_note(children=bool(env.get(CHILDREN_ENV)))
+        prompt = f"{prompt.rstrip()}\n\n{lp_note}"
         ctx.payload = {**ctx.payload, "prompt": prompt}
     if browsers:
         spec = dataclasses.replace(SPEC, path_prefix=(VENV_BIN,))
