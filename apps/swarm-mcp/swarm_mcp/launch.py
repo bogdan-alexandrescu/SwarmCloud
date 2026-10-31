@@ -161,6 +161,17 @@ bridge writes its copies to) and checks them against the digest as it checks
 `spec_path`, so a changed file still submits nothing. A spec given to
 /sc:swarmcloud only as text, with no launch behind it, keeps the by-value
 path and its digest check.
+
+THE ARGS CARRY THE HANDLE, NEVER THE SPEC (LAUNCH-LARGE-SPEC, #2875).
+Measured 2026-10-31 (product-oracle-2f): a 24-step spec with ~90 KB of
+prompts made this launch answer 94,498 characters -- over Claude Code's
+tool-output limit, so the reply landed in a file -- and the session was told
+to pass `args` as given, the whole spec included, which it cannot retype. So
+`args` are `{spec_handle, details, rows, titled_copy}`: run.js has one
+sc:workflow row read the handle's OUTLINE with `swarm_workflow_spec
+{spec_handle, spec_digest}` (the digest checked where the bytes are read),
+and the submit row passes the handle again. Args from before this change,
+with `spec` beside the handle, still submit from the handle.
 """
 
 from __future__ import annotations
@@ -818,8 +829,9 @@ def for_spec(
     `embedded` is the spec as it is submitted -- `document` is the same spec
     with what a title does not need already taken out (its model classes) --
     and defaults to `document`. It is written to the spec handle
-    (`write_spec`) and embedded in the reply's `args` beside that handle, so
-    the run submits by reference (SC-LAUNCH-SPEC, #2034)."""
+    (`write_spec`), and the reply's `args` carry that handle, never the spec,
+    so the run submits by reference (SC-LAUNCH-SPEC, #2034) and the reply
+    stays small whatever the spec's size (LAUNCH-LARGE-SPEC, #2875)."""
     spec = workflows.read_spec(document, where="the spec")
     steps = len(spec["steps"])
     name = workflows.title_name(title=spec["title"], label=spec["label"])
@@ -853,13 +865,13 @@ def for_spec(
     }}
     # The row mode reaches run.js in the args the session builds: `rows`.
     out["rows"] = mode
-    # THE HANDLE, beside the copy: the bytes the args embed, which the submit
-    # row hands swarm_workflow by path and digest instead of retyping them.
+    # THE HANDLE, beside the copy: the spec's bytes, which the run reads back
+    # (swarm_workflow_spec) and submits (swarm_workflow) by path and digest.
+    # The args carry the handle and never the spec (LAUNCH-LARGE-SPEC, #2875).
     embedded = document if embedded is None else embedded
     handle = write_spec(embedded, Path(out["script_path"]).parent)
     out["spec_handle"] = handle
     out["args"] = {
-        "spec": embedded,
         "spec_handle": handle,
         "details": out["row_details"],
         "rows": mode,
@@ -867,8 +879,9 @@ def for_spec(
     }
     out["launch_with"] = (
         "the Workflow tool with {scriptPath: <script_path>, args: <this reply's `args`, as given>}. "
-        "`args.spec_handle` is the file this bridge wrote the spec to: the run submits from it, "
-        "checked against its digest, so no agent retypes the spec; keep it beside `spec`"
+        "`args.spec_handle` is the file this bridge wrote the spec to: the run reads its outline "
+        "and submits from it, checked against its digest, so no agent retypes the spec. Never add "
+        "the spec to the args"
     )
     if mode == layout.ROWS_BAND:
         # The run is the submission alone: no follow row after it (run.js).

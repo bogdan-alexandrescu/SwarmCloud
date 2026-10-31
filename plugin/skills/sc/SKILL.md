@@ -160,11 +160,14 @@ first call `swarm_workflow_launch`, which writes a copy of the
 `/sc:swarmcloud` script with that name and returns its `script_path`, and
 then launch THAT copy with the Workflow tool, `{scriptPath: <script_path>,
 args: <the reply's `args`, as given>}`, `spec_handle` included: the session
-never builds those args itself. If `swarm_workflow_launch` answers an error,
-say so in one line and run the `/sc:swarmcloud` workflow by name with
-`{attach: <wf_id>}` for an attach or `{spec: <the spec object>}` for a run (no
-handle exists then, so the spec goes by value and the digest check still
-refuses one that changed): the rows are the same, only the run's title is the
+never builds those args itself, and never adds the spec to them -- a spec's
+`args` carry its handle, not the spec, so they stay small however large the
+spec is (#2875). If `swarm_workflow_launch` answers an error, say so in one
+line and run the `/sc:swarmcloud` workflow by name with `{attach: <wf_id>}`
+for an attach, or for a run the spec file's path (the bridge reads it and
+answers an outline) or, with no file, `{spec: <the spec object>}` (no handle
+exists then, so the spec goes by value and the digest check still refuses
+one that changed): the rows are the same, only the run's title is the
 generic one.
 
 ### `attach <wf_id>`
@@ -753,13 +756,16 @@ The one verb that writes: it spends the shared pool, a step at a time.
    file outside it; pass such a file's parsed object as `spec` instead), or
    `{spec: <the spec object>}` given JSON text, and launch
    the `script_path` it returns (see "Every run is titled after its
-   workflow"). Run that script with the reply's `args` AS GIVEN: `{spec,
-   spec_handle, details, rows, titled_copy}`. `spec_handle` is the file the
-   bridge wrote the spec to, `{path, digest}`; the run's submit row hands
-   `swarm_workflow` that handle and never the spec text, so nothing is
+   workflow"). Run that script with the reply's `args` AS GIVEN: `{spec_handle,
+   details, rows, titled_copy}` -- never the spec. `spec_handle` is the file
+   the bridge wrote the spec to, `{path, digest}`; the run reads its outline
+   with `swarm_workflow_spec` (the bridge checks the digest) and its submit
+   row hands `swarm_workflow` that handle, never the spec text, so nothing is
    retyped (SC-LAUNCH-SPEC, #2034: a brief holding backticks around `${...}`
-   came back altered and was refused). Never drop `spec_handle`, never pass a
-   bare path, and never the JSON as a string. `rows` is `summary` (the
+   came back altered and was refused) and a spec of any size launches
+   (#2875: a 90 KB spec's reply was too long to read). Never drop
+   `spec_handle`, never add `spec` beside it, never pass a bare path, and
+   never the JSON as a string. `rows` is `summary` (the
    default), which follows the submitted workflow with ONE summary row, or
    `per-step`, a row per step in this one run (Claude Code queues the rows
    past its per-run limit; `/sc attach <wf_id> --per-step` after the run
