@@ -251,7 +251,8 @@ class BrandStep(_Base):
             "create the Desktop client and give its id",
             (
                 f"open {self.deep_link(ctx)}",
-                "Branding: App name: SwarmCloud; support email: a group you own; save",
+                "Branding: App name: SwarmCloud; support email: your own address (or a group you manage; the "
+                "install's groups exist only from stage 8); save",
                 f"open {self.audience_link(ctx)}: choose Internal",
                 f"Clients (https://console.cloud.google.com/auth/clients/create?project={ctx.project}): "
                 "Application type: Desktop app; name: SwarmCloud sc; create",
@@ -269,7 +270,7 @@ class BrandStep(_Base):
         once: Google shows it only in the dialog that creates the client."""
         open_page(self.deep_link(ctx), why=(
             "Set the OAuth brand once (it can never be deleted): Branding: App name SwarmCloud, support email "
-            "a group you own; save."
+            "your own address (or a group you manage); save."
         ))
         open_page(self.audience_link(ctx), why=(
             "Then Audience: choose Internal. Then Clients > Create client "
