@@ -17167,6 +17167,7 @@ class Worker:
         except Exception as exc:  # pragma: no cover - defensive; teardown path
             self.log.warning("could not read the runner's spend", error=str(exc))
             return
+        stopped_cost: float | None = None
         if "total_cost_usd" in usage and unpriced:
             # SESSIONS A CONTEXT-CEILING HANDOFF ENDED (#2896): stopped at a
             # turn boundary, they printed no result event, and the reported
@@ -17174,7 +17175,11 @@ class Worker:
             # counts are priced by swarm-api like a stopped run's and added,
             # so the attempt's cost is every session's. Only here: a run with
             # no reported cost at all is priced from its whole stream below,
-            # which covers these sessions already.
+            # which covers these sessions already. They ended before the
+            # last session began, so their cost goes on the session base
+            # below, never into the last session's running total: a later
+            # runner that RESUMES that session must neither lose it nor
+            # count it twice (`_add_spend`).
             cost, tier_estimated = self.spend_pricer.estimate(unpriced)
             if cost is None:
                 self.log.warning(
@@ -17182,7 +17187,7 @@ class Worker:
                     "reported; the attempt's cost covers its other sessions only",
                     sessions_models=sorted(unpriced))
             else:
-                usage = {**usage, "total_cost_usd": round(usage["total_cost_usd"] + cost, 10)}
+                stopped_cost = cost
                 self._spend["cost_estimated"] = True
                 if tier_estimated:
                     self._spend["tier_estimated"] = True
@@ -17211,6 +17216,11 @@ class Worker:
                         # not per request (PRICES-TIER-PROMPT).
                         self._spend["tier_estimated"] = True
         self._note_model_mismatch(usage.get("models"))
+        if stopped_cost is not None:
+            self._spend = _add_spend(self._spend, {"total_cost_usd": stopped_cost})
+            if self._session_spend_base is not None:
+                self._session_spend_base = _add_spend(
+                    self._session_spend_base, {"total_cost_usd": stopped_cost})
         if usage:
             self._spend = _add_spend(
                 self._spend,

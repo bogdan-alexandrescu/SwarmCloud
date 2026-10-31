@@ -139,9 +139,9 @@ def _starts(ctx: RunnerContext) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
 
-def _worker_spend(worker_factory, output: dict[str, Any], *, times: int = 1):
-    """The worker's spend after reading `output` as one runner's result.json,
-    `times` times (the teardown backstop reads it again)."""
+def _spend_worker(worker_factory, output: dict[str, Any], *, times: int = 1):
+    """A worker that has read `output` as one runner's result.json, `times`
+    times (the teardown backstop reads it again), and the pricer it asked."""
     from agent_worker import workspace as workspace_mod
 
     worker, config, _ = worker_factory()
@@ -153,6 +153,12 @@ def _worker_spend(worker_factory, output: dict[str, Any], *, times: int = 1):
     worker._spend_pending = True
     for _ in range(times):
         worker._collect_spend()
+    return worker, pricer
+
+
+def _worker_spend(worker_factory, output: dict[str, Any], *, times: int = 1):
+    """The worker's spend after reading `output` (`_spend_worker`)."""
+    worker, pricer = _spend_worker(worker_factory, output, times=times)
     return worker._spend, pricer
 
 
@@ -188,6 +194,38 @@ def test_a_sessions_result_read_twice_is_counted_once(ctx, worker_factory):
     total, pricer = _worker_spend(worker_factory, out, times=2)
     assert total["total_cost_usd"] == pytest.approx(0.21 + 0.20)
     assert len(pricer.asked) == 1
+
+
+@pytest.mark.parametrize(
+    ("resumed_reports", "expected"),
+    [
+        # The resumed runner carried S2's $0.20 over and spent $0.30 more:
+        # S1 $0.21 + S2 $0.50 in all. MUTATION: fold S1 into S2's running
+        # total and this reads $0.50, S1 lost.
+        (0.50, 0.21 + 0.50),
+        # It carried S2 over and spent $0.10 more: S1 $0.21 + S2 $0.30.
+        # MUTATION: the same fold reads $0.71, S2's $0.20 counted twice.
+        (0.30, 0.21 + 0.30),
+    ],
+)
+def test_a_resumed_last_session_keeps_the_stopped_sessions_cost_once(
+    ctx, worker_factory, resumed_reports, expected
+):
+    # Runner 1: S1 stopped by the ceiling (priced $0.21), S2 reports $0.20.
+    # Runner 2 RESUMES S2 (an account swap, a short rate-limit resume) and
+    # reports S2's running total. S1 ended before S2 began, so it is on the
+    # session base, never in S2's running total.
+    _plan(ctx, STOPPED, LAST)
+    out = run_cli_agent(ctx, _spec())
+    worker, _ = _spend_worker(worker_factory, out)
+    assert worker._spend["total_cost_usd"] == pytest.approx(0.21 + 0.20)
+
+    worker._note_runner_spend_start(resumed=True)
+    worker.ws.result_path.write_text(json.dumps(
+        {"output": {"structured_output": {"total_cost_usd": resumed_reports, "num_turns": 1}}}))
+    worker._spend_pending = True
+    worker._collect_spend()
+    assert worker._spend["total_cost_usd"] == pytest.approx(expected)
 
 
 def test_an_attempt_with_no_reported_cost_is_not_priced_twice(worker_factory):
