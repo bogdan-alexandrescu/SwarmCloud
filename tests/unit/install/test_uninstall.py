@@ -39,13 +39,29 @@ class Crash(BaseException):
 
 
 class FakeTf:
-    """One root's terraform: `resources` maps address -> (type, before)."""
+    """One root's terraform: `resources` maps address -> (type, before).
 
-    def __init__(self, root: str, log: list[tuple], resources: dict[str, tuple[str, dict]]) -> None:
+    It refuses what the real providers refuse (audit 4e F1): a destroy of a
+    resource whose `deletion_protection` is true, of a bucket that still holds
+    objects without `force_destroy`, and prod inputs that drop the protection
+    without `allow_unprotected_prod` (terraform/infra/variables.tf). A
+    `deletion_policy = "ABANDON"` resource leaves state and stays in `abandoned`.
+    """
+
+    def __init__(self, root: str, log: list[tuple], resources: dict[str, tuple[str, dict]],
+                 objects: dict[str, int] | None = None) -> None:
         self.root = root
         self.log = log
         self.resources = dict(resources)
+        self.objects = objects if objects is not None else {}
+        self.abandoned: list[str] = []
+        self.planned: list[dict] = []
         self.crash_on_apply = 0
+
+    @staticmethod
+    def _inputs(cwd) -> dict:
+        path = Path(cwd) / tfvars.INPUTS_FILE
+        return json.loads(path.read_text()) if path.is_file() else {}
 
     def __call__(self, argv, env, cwd) -> Completed:
         argv = list(argv)
@@ -58,15 +74,46 @@ class FakeTf:
         if verb == "state" and argv[2] == "rm":
             self.resources.pop(argv[3], None)
             return Completed(0, "")
+        if verb == "plan":
+            inputs = self._inputs(cwd)
+            if (inputs.get("environment") == "prod" and inputs.get("deletion_protection") is False
+                    and not inputs.get("allow_unprotected_prod")):
+                return Completed(1, "", "prod requires deletion_protection = true")
+            if "-destroy" in argv:
+                self.planned = [{"address": a, "type": t, "change": {"actions": ["delete"], "before": b,
+                                                                     "after": None}}
+                                for a, (t, b) in self.resources.items()]
+            else:
+                self.planned = []
+                for target in (a.split("=", 1)[1] for a in argv if a.startswith("-target=")):
+                    rtype, before = self.resources[target]
+                    after = dict(before)
+                    if "deletion_protection" in before:
+                        after["deletion_protection"] = inputs.get("deletion_protection", True)
+                    self.planned.append({"address": target, "type": rtype, "change": {
+                        "actions": ["update"] if after != before else ["no-op"], "before": before, "after": after}})
+            return Completed(0, "")
         if verb == "show":
-            changes = [{"address": a, "type": t, "change": {"actions": ["delete"], "before": b, "after": None}}
-                       for a, (t, b) in self.resources.items()]
-            return Completed(0, json.dumps({"resource_changes": changes}))
+            return Completed(0, json.dumps({"resource_changes": self.planned}))
         if verb == "apply":
             if self.crash_on_apply:
                 self.crash_on_apply -= 1
                 raise Crash(f"killed during {self.root} destroy")
-            self.resources.clear()
+            if any("delete" in c["change"]["actions"] for c in self.planned):
+                for address, (rtype, before) in self.resources.items():
+                    if before.get("deletion_protection") is True:
+                        return Completed(1, "", f"Error: cannot destroy {address}: deletion_protection is set "
+                                                "to true")
+                    if (rtype == "google_storage_bucket" and not before.get("force_destroy")
+                            and self.objects.get(before.get("name"))):
+                        return Completed(1, "", f"Error: bucket {before.get('name')} is not empty")
+                self.abandoned.extend(a for a, (_, b) in self.resources.items()
+                                      if b.get("deletion_policy") == "ABANDON")
+                self.resources.clear()
+            else:
+                for change in self.planned:
+                    rtype, _ = self.resources[change["address"]]
+                    self.resources[change["address"]] = (rtype, change["change"]["after"])
         return Completed(0, "")
 
 
@@ -85,13 +132,34 @@ class FakeWorld:
         self.grant = True
         self.deployer_deleted = False
         self.buckets = {f"swarm-tfstate-{PROJECT}", un.logs_bucket(PROJECT)}
+        #: Objects in infra's buckets, by bucket name (checkpoints, artifacts).
+        self.objects = {f"swarm-artifacts-{PROJECT}": 3}
+        self.accounts = [f"swarm-agent-worker-w-3f9a2c@{PROJECT}.iam.gserviceaccount.com"]
+        self.member_bindings = {f"serviceAccount:{a}": 2 for a in self.accounts}
+        self.firestore = {"swarm"}
+        self.budgets = {"billingAccounts/0000-1111/budgets/b1": f"swarm-{PROJECT}",
+                        "billingAccounts/0000-1111/budgets/b2": "another-budget"}
+        self.made_by_install = False
+        self.project_deleted = False
+        self.reach_closed = False
         self.tf = {
             "infra": FakeTf("infra", self.log, {
                 "google_cloud_run_v2_service.api": ("google_cloud_run_v2_service",
-                                                    {"name": "swarm-api", "labels": OURS}),
+                                                    {"name": "swarm-api", "labels": OURS,
+                                                     "deletion_protection": True}),
+                "module.gke.google_container_cluster.agents": ("google_container_cluster",
+                                                               {"name": "swarm-autopilot",
+                                                                "effective_labels": OURS,
+                                                                "deletion_protection": True}),
+                "google_storage_bucket.artifacts": ("google_storage_bucket",
+                                                    {"name": f"swarm-artifacts-{PROJECT}", "labels": OURS,
+                                                     "force_destroy": False}),
+                "google_firestore_database.swarm": ("google_firestore_database",
+                                                    {"name": "swarm", "deletion_policy": "ABANDON",
+                                                     "delete_protection_state": "DELETE_PROTECTION_ENABLED"}),
                 "google_project_iam_member.api": ("google_project_iam_member",
                                                   {"member": "serviceAccount:swarm-api@x", "role": "r"}),
-            }),
+            }, self.objects),
             "bootstrap": FakeTf("bootstrap", self.log, {
                 "google_service_account.deployer": ("google_service_account", {"email": DEPLOYER}),
                 "google_project_iam_custom_role.dispatch": ("google_project_iam_custom_role",
@@ -130,6 +198,8 @@ class FakeWorld:
 
     def tenant_namespaces(self, who):
         self._call("tenant_namespaces", who)
+        if self.reach_closed:
+            raise AssertionError("kubectl timed out: the closing pass removed this machine from the control plane")
         return list(self.namespaces)
 
     def delete_namespace(self, name, who):
@@ -186,6 +256,47 @@ class FakeWorld:
             return True
         return False
 
+    def empty_bucket(self, name, who):
+        self._call("empty_bucket", who, name)
+        return self.objects.pop(name, 0)
+
+    def workspace_accounts(self):
+        self._call("workspace_accounts")
+        return list(self.accounts)
+
+    def remove_member_bindings(self, member):
+        self._call("remove_member_bindings", None, member)
+        return self.member_bindings.pop(member, 0)
+
+    def delete_account(self, email):
+        self._call("delete_account", None, email)
+        if email in self.accounts:
+            self.accounts.remove(email)
+            return True
+        return False
+
+    def delete_firestore(self, database):
+        self._call("delete_firestore", None, database)
+        if database in self.firestore:
+            self.firestore.remove(database)
+            return True
+        return False
+
+    def delete_budgets(self, account, display_name):
+        self._call("delete_budgets", None, account, display_name)
+        gone = [n for n, d in self.budgets.items() if n.startswith(f"billingAccounts/{account}/") and d == display_name]
+        for name in gone:
+            del self.budgets[name]
+        return gone
+
+    def project_made_by_install(self):
+        self._call("project_made_by_install")
+        return self.made_by_install
+
+    def delete_project(self):
+        self._call("delete_project")
+        self.project_deleted = True
+
     def names(self) -> list[str]:
         return [entry[0] if entry[0] != "terraform" else f"terraform {entry[1]} {entry[2]}" for entry in self.log]
 
@@ -204,7 +315,7 @@ def install_state(*, steps: tuple[str, ...] = INSTALLED, deny: list[str] | None 
         outputs={"installer": "owner@example.com", "desktop_client_id": "1234-desktop.apps.googleusercontent.com",
                  "github_org": "acme-org", "github_app": {"slug": "acme-swarm", "id": 7},
                  "admin_groups": ["swarm-admins@example.com"], "oauth_brand": "projects/42/brands/42",
-                 "global_ip": "203.0.113.7",
+                 "global_ip": "203.0.113.7", "billing_account": "0000-1111",
                  "engine_iam_bindings": [{"role": "roles/logging.viewer", "member": "group:ops@example.com"}]},
         deny_list=list(deny or []),
     )
@@ -575,3 +686,266 @@ def test_verb_without_install_state_fails_and_touches_nothing(tmp_path, monkeypa
     args = argparse.Namespace(project=PROJECT, env="dev", json_events=False)
     assert verb.run(args) == ExitCode.FAIL
     assert "no install state" in capsys.readouterr().err
+
+
+# -- audit 4e (DAYONE-UNINSTALL-2) ------------------------------------------------
+
+
+def test_infra_destroy_lifts_deletion_protection_and_empties_buckets(tmp_path):
+    # F1: the cluster and the Cloud Run services are protected, and a bucket holds
+    # checkpoints; the destroy lifts the one and empties the other before it applies.
+    store, _ = stored_store(tmp_path, install_state())
+    world = FakeWorld(tmp_path)
+    f = flow(tmp_path, store, world)
+    assert f.run() == ExitCode.OK, f.out.getvalue()
+    assert world.tf["infra"].resources == {}
+    assert world.objects == {}
+    infra = [e for e in world.log if e[:2] == ("terraform", "infra")]
+    applies = [i for i, e in enumerate(infra) if e[2] == "apply"]
+    assert len(applies) == 2  # the unprotect pass, then the destroy
+    # Both as the deployer, and the buckets emptied between them.
+    assert all(e[3] == DEPLOYER for e in infra if e[2] != "version")
+    names = world.names()
+    first = names.index("terraform infra apply")
+    last = len(names) - 1 - names[::-1].index("terraform infra apply")
+    assert first < names.index("empty_bucket") < last
+    assert ("empty_bucket", DEPLOYER, f"swarm-artifacts-{PROJECT}") in world.log
+
+
+def test_unprotect_pass_targets_only_the_protected_and_carries_the_prod_override(tmp_path):
+    world = FakeWorld(tmp_path)
+    tf = world.terraform("infra")
+    inputs = {"project_id": PROJECT, "environment": "prod"}
+    done = un.destroy_root(tf, project=PROJECT, who=DEPLOYER, inputs=tfvars.uninstall_inputs("infra", inputs),
+                           deny_list=[], approved=PROJECT, empty_bucket=lambda name: world.empty_bucket(name, DEPLOYER))
+    assert world.tf["infra"].resources == {}
+    assert "google_storage_bucket.artifacts" in done.deleted
+    written = json.loads((tf.root_dir / tfvars.INPUTS_FILE).read_text())
+    assert written["deletion_protection"] is False and written["allow_unprotected_prod"] is True
+    # The stored inputs themselves are never changed: the next install renders its own.
+    assert "deletion_protection" not in inputs
+    assert tfvars.uninstall_inputs("bootstrap", {"project_id": PROJECT}) == {"project_id": PROJECT}
+
+
+def test_unprotect_needs_the_typed_project_id(tmp_path):
+    world = FakeWorld(tmp_path)
+    tf = world.terraform("infra")
+    with pytest.raises(un.UninstallRefused, match="not approved"):
+        un.destroy_root(tf, project=PROJECT, who=DEPLOYER,
+                        inputs=tfvars.uninstall_inputs("infra", {"project_id": PROJECT}), deny_list=[],
+                        approved="yes", empty_bucket=lambda name: world.empty_bucket(name, DEPLOYER))
+    assert "apply" not in [e[2] for e in world.log if e[0] == "terraform"]
+    assert "empty_bucket" not in world.names()
+
+
+def test_closed_cluster_is_not_waited_on_when_step_3_destroys_it(tmp_path):
+    # F2: after infra.pass-close the control plane no longer admits this machine.
+    state = install_state()
+    state.outputs["tf_applied_infra_close"] = True
+    store, _ = stored_store(tmp_path, state)
+    world = FakeWorld(tmp_path)
+    world.reach_closed = True
+    f = flow(tmp_path, store, world)
+    assert f.run() == ExitCode.OK, f.out.getvalue()
+    assert "tenant_namespaces" not in world.names() and "delete_policies" not in world.names()
+    detail = StateStore(project=PROJECT, environment="dev", local=store.local).load().steps["uninstall.kubernetes"]
+    assert "step 3" in detail.detail
+    assert world.tf["infra"].resources == {}
+
+
+def test_forge_and_tenant_secrets_are_listed_too():
+    # F7: the -git slots swarm-api writes carry managed-by=swarm-api.
+    from swarm_install.verbs.uninstall import ENGINE_SECRET_FILTER, SECRET_FILTERS, SECRET_MANAGER
+
+    url = f"{SECRET_MANAGER}/projects/{PROJECT}/secrets"
+    assert ENGINE_SECRET_FILTER in SECRET_FILTERS
+    assert "labels.managed-by=swarm-api" in SECRET_FILTERS
+    assert "name:swarm-tenant-" in SECRET_FILTERS
+
+    class Filtered(FakeApi):
+        def _pages(self, url, key, params=None, **kwargs):
+            self.calls.append(("GET", url, params))
+            return {
+                ENGINE_SECRET_FILTER: [{"name": "projects/1/secrets/swarm-platform-key"}],
+                "labels.managed-by=swarm-api": [{"name": "projects/1/secrets/swarm-tenant-eng-git"}],
+                "name:swarm-tenant-": [{"name": "projects/1/secrets/swarm-tenant-eng-git"},
+                                       {"name": "projects/1/secrets/swarm-tenant-eng-claude"}],
+            }.get((params or {}).get("filter"), [])
+
+    api = Filtered({})
+    assert teardown_on(api).engine_secrets(DEPLOYER) == [
+        "projects/1/secrets/swarm-platform-key", "projects/1/secrets/swarm-tenant-eng-git",
+        "projects/1/secrets/swarm-tenant-eng-claude"]
+    assert [c[2]["filter"] for c in api.calls if c[1] == url] == list(SECRET_FILTERS)
+    # Step 5 runs whenever infra ran: swarm-api writes the slots, not an engine step.
+    assert "infra." in un.STEPS[4].reverses and "team." in un.STEPS[4].reverses
+
+
+def test_workspace_accounts_and_their_bindings_are_removed(tmp_path):
+    store, _ = stored_store(tmp_path, install_state())
+    world = FakeWorld(tmp_path)
+    account = world.accounts[0]
+    assert flow(tmp_path, store, world).run() == ExitCode.OK
+    assert world.accounts == [] and world.member_bindings == {}
+    names = world.names()
+    assert names.index("remove_member_bindings") < names.index("delete_account") < names.index(
+        "terraform bootstrap apply")
+    assert ("delete_account", None, account) in world.log
+
+
+def test_real_world_workspace_accounts_are_the_worker_prefix_only():
+    from swarm_install.steps.preflight import IAM
+
+    url = f"{IAM}/projects/{PROJECT}/serviceAccounts"
+    worker = f"swarm-agent-worker-eng@{PROJECT}.iam.gserviceaccount.com"
+    api = FakeApi({("PAGES", url): [{"email": worker}, {"email": f"swarm-api@{PROJECT}.iam.gserviceaccount.com"},
+                                    {"email": f"other@{PROJECT}.iam.gserviceaccount.com"}],
+                   ("DELETE", f"{url}/{worker}"): {}})
+    world = teardown_on(api)
+    assert world.workspace_accounts() == [worker]
+    assert world.delete_account(worker) is True
+
+
+def test_real_world_removes_every_binding_of_a_member():
+    api = FakeApi({})
+    policy = {"etag": "e9", "bindings": [
+        {"role": "roles/logging.logWriter", "members": ["serviceAccount:w@x", "user:a@example.com"]},
+        {"role": "roles/monitoring.metricWriter", "members": ["serviceAccount:w@x"]}]}
+
+    class Policy:
+        set_to: Any = None
+
+        def iam_policy(self, project):
+            return policy
+
+        def set_iam_policy(self, project, new):
+            Policy.set_to = new
+
+    world = teardown_on(api)
+    world._apis[None] = Policy()
+    assert world.remove_member_bindings("serviceAccount:w@x") == 2
+    assert Policy.set_to == {"etag": "e9", "bindings": [
+        {"role": "roles/logging.logWriter", "members": ["user:a@example.com"]}]}
+
+
+def test_budget_is_deleted_by_its_name(tmp_path):
+    store, _ = stored_store(tmp_path, install_state())
+    world = FakeWorld(tmp_path)
+    assert flow(tmp_path, store, world).run() == ExitCode.OK
+    assert world.budgets == {"billingAccounts/0000-1111/budgets/b2": "another-budget"}
+    assert ("delete_budgets", None, "0000-1111", f"swarm-{PROJECT}") in world.log
+    names = world.names()
+    assert names.index("delete_budgets") < names.index("delete_bucket")
+
+
+def test_real_world_budget_delete_names_the_quota_project():
+    from swarm_install.steps.preflight import BUDGETS
+
+    calls: list[tuple] = []
+
+    class Budgets(FakeApi):
+        def _pages(self, url, key, params=None, **kwargs):
+            calls.append(("PAGES", url, kwargs.get("quota_project")))
+            return [{"name": "billingAccounts/0000-1111/budgets/b1", "displayName": f"swarm-{PROJECT}"},
+                    {"name": "billingAccounts/0000-1111/budgets/b2", "displayName": "theirs"}]
+
+        def _call(self, method, url, *, body=None, params=None, missing_ok=False, quota_project=None):
+            calls.append((method, url, quota_project))
+            return {}
+
+    world = teardown_on(Budgets({}))
+    assert world.delete_budgets("0000-1111", f"swarm-{PROJECT}") == ["billingAccounts/0000-1111/budgets/b1"]
+    assert calls == [("PAGES", f"{BUDGETS}/billingAccounts/0000-1111/budgets", PROJECT),
+                     ("DELETE", f"{BUDGETS}/billingAccounts/0000-1111/budgets/b1", PROJECT)]
+
+
+def test_firestore_is_deleted_and_the_record_says_so(tmp_path):
+    store, _ = stored_store(tmp_path, install_state())
+    world = FakeWorld(tmp_path)
+    assert flow(tmp_path, store, world).run() == ExitCode.OK
+    # infra abandons the database (deletion_policy ABANDON); the owner deletes it.
+    assert world.tf["infra"].abandoned == ["google_firestore_database.swarm"]
+    assert world.firestore == set()
+    names = world.names()
+    assert names.index("delete_firestore") < names.index("destroy_key_versions")
+    record = remains_mod.Record.from_bytes(remains_mod.record_path(PROJECT, tmp_path / "cache").read_bytes())
+    by = {r.kind: r for r in record.remains}
+    assert "was deleted" in by["firestore-database"].why
+
+
+def test_firestore_kept_is_recorded_as_kept():
+    state = install_state()
+    kept = {r.kind: r for r in remains_mod.survivors(state, {"firestore_database": "swarm"})}
+    assert "kept" in kept["firestore-database"].why and "deleted" not in kept["firestore-database"].why
+    assert "/databases/swarm" in kept["firestore-database"].step
+    gone = {r.kind: r for r in remains_mod.survivors(state, {"firestore_database": "swarm",
+                                                             "firestore_deleted": True})}
+    assert "was deleted" in gone["firestore-database"].why
+
+
+def test_real_world_firestore_delete_lifts_its_protection_first():
+    from swarm_install.verbs.uninstall import FIRESTORE
+
+    db = f"{FIRESTORE}/projects/{PROJECT}/databases/swarm"
+    api = FakeApi({("GET", db): {"name": "swarm", "deleteProtectionState": "DELETE_PROTECTION_ENABLED"}})
+    assert teardown_on(api).delete_firestore("swarm") is True
+    assert [(c[0], c[1]) for c in api.calls] == [("GET", db), ("PATCH", db), ("DELETE", db)]
+    assert api.calls[1][2] == {"deleteProtectionState": "DELETE_PROTECTION_DISABLED"}
+    assert teardown_on(FakeApi({})).delete_firestore("swarm") is False
+
+
+def _answers(*typed: str):
+    asked: list[str] = []
+    replies = list(typed)
+
+    def confirm(prompt: str) -> str:
+        asked.append(prompt)
+        return replies.pop(0)
+
+    return asked, confirm
+
+
+def test_project_the_install_created_is_deleted_behind_its_own_typed_id(tmp_path):
+    store, _ = stored_store(tmp_path, install_state())
+    world = FakeWorld(tmp_path)
+    world.made_by_install = True
+    f = flow(tmp_path, store, world)
+    asked, f.confirm = _answers(PROJECT, PROJECT)
+    assert f.run() == ExitCode.OK, f.out.getvalue()
+    assert len(asked) == 2 and "delete the project" in asked[1].lower()
+    assert world.project_deleted
+    names = world.names()
+    assert names.index("delete_bucket") < names.index("delete_project")
+    record = remains_mod.Record.from_bytes(remains_mod.record_path(PROJECT, tmp_path / "cache").read_bytes())
+    assert [r.kind for r in record.left if r.kind == "project"] == ["project"]
+    assert "30 days" in next(r for r in record.left if r.kind == "project").why
+
+
+def test_project_kept_when_its_deletion_is_not_typed(tmp_path):
+    store, _ = stored_store(tmp_path, install_state())
+    world = FakeWorld(tmp_path)
+    world.made_by_install = True
+    f = flow(tmp_path, store, world)
+    asked, f.confirm = _answers(PROJECT, "")
+    assert f.run() == ExitCode.OK
+    assert len(asked) == 2 and not world.project_deleted
+    record = remains_mod.Record.from_bytes(remains_mod.record_path(PROJECT, tmp_path / "cache").read_bytes())
+    project = next(r for r in record.left if r.kind == "project")
+    assert "kept" in project.why
+    # A project the install did not create is never offered.
+    store2, _ = stored_store(tmp_path / "again", install_state())
+    world2 = FakeWorld(tmp_path / "again")
+    asked2: list[str] = []
+    assert flow(tmp_path / "again", store2, world2, asked=asked2).run() == ExitCode.OK
+    assert len(asked2) == 1 and "delete_project" not in world2.names()
+
+
+def test_real_world_project_made_by_install_reads_its_label():
+    from swarm_install.steps.preflight import CRM
+
+    url = f"{CRM}/v1/projects/{PROJECT}"
+    made = FakeApi({("GET", url): {"labels": {"managed-by": "swarm-install"}}, ("DELETE", url): {}})
+    assert teardown_on(made).project_made_by_install() is True
+    teardown_on(made).delete_project()
+    assert ("DELETE", url, None) in made.calls
+    assert teardown_on(FakeApi({("GET", url): {"labels": {}}})).project_made_by_install() is False
