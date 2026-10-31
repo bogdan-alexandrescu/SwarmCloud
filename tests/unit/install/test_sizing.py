@@ -271,3 +271,21 @@ def test_capping_global_refits_provider_tenant() -> None:
     assert lowered["pool_limits"]["provider_tenant"] == 3
     mine = sizing.with_change(sizing.propose("team", 5), ("pool_limits", "provider_tenant"), 2)
     assert sizing.capped(mine, 96)["pool_limits"]["provider_tenant"] == 2  # already fits: the person's own kept
+
+
+@pytest.mark.parametrize(("region", "all_regions", "usable"), [
+    (200, 12, 12),      # a new project: the project-wide quota binds, not the region's
+    (24, 3000, 24),
+    (48, None, 48),     # no CPUS_ALL_REGIONS reported
+    (None, 12, 12),
+    (-1, 32, 32),       # an unlimited region still draws on the project-wide quota
+    (-1, -1, -1),
+    (None, None, None),
+])
+def test_usable_cpus_is_the_smaller_of_the_regional_and_project_wide_quota(
+        region: int | None, all_regions: int | None, usable: int | None) -> None:
+    """Audit 4a F5: every Autopilot node counts against both CPUS (regional)
+    and CPUS_ALL_REGIONS (project-wide), so the sizing caps and requires on the
+    smaller; a 200-CPU region in a project held to 12 cannot fit a team of 5."""
+    assert sizing.usable_cpus(region, all_regions) == usable
+    assert not sizing.fits_quota("team", 5, sizing.usable_cpus(200, 12))

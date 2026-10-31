@@ -113,6 +113,16 @@ def _scaled(reference: int, global_: int) -> int:
     return max(1, math.ceil(reference * global_ / REFERENCE_GLOBAL))
 
 
+def usable_cpus(region: int | None, all_regions: int | None) -> int | None:
+    """The CPUs a GKE Autopilot cluster's nodes can draw in the region: the
+    smaller of the region's CPUS quota and the project-wide CPUS_ALL_REGIONS
+    quota, since every node counts against both (audit 4a F5). None (unknown)
+    and -1 (unlimited) cap nothing; with neither bounded, the region's own
+    reading is the answer."""
+    bounded = [q for q in (region, all_regions) if q is not None and q >= 0]
+    return min(bounded) if bounded else region
+
+
 def cpu_cap(region_cpu_quota: int | None) -> int | None:
     """The most admission units the region's CPUS quota can run at once, or
     None when the quota is unknown or unlimited (-1)."""
@@ -336,6 +346,6 @@ def problems(sizing: Mapping[str, Any], *, region_cpu_quota: int | None = None) 
     if cap is not None:
         over = [f"{'.'.join(p)} {v}" for p, v in numbers if p[0] == "pool_limits" and v > cap]
         if over:
-            found.append(f"above the {cap} tasks the region's {region_cpu_quota} CPUs can run "
+            found.append(f"above the {cap} tasks the {region_cpu_quota} usable CPUs can run "
                          f"({CPU_PER_UNIT} vCPU each, {SYSTEM_CPUS} kept for the cluster): {', '.join(over)}")
     return found
