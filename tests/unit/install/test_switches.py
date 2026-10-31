@@ -180,12 +180,25 @@ def test_engine_never_reads_an_app_secret() -> None:
     assert Pass3Step(Deps(gcp=lambda: gcp)).trigger(ctx) is True
     assert {verb for verb, _ in gcp.calls} == {"secret", "enabled_version"}, "metadata only"
 
-    # No module of the installer names a secret-value read (`:access`, `access_secret_version`).
+    # No module of the installer names a secret-value read (`:access`, `access_secret_version`),
+    # but for the one place that must: `swarm upgrade` signs an App JWT with the App's private key
+    # to read the App as itself (#2885), held in memory only. Every other function stays refused.
+    allowed = {("verbs/upgrade.py", "_app_key")}
+    reads: set[tuple[str, str]] = set()
     for path in PACKAGE.rglob("*.py"):
-        tree = ast.parse(path.read_text())
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                assert ":access" not in node.value, f"{path.name} reads a secret's value"
+        relative = path.relative_to(PACKAGE).as_posix()
+
+        def visit(node: ast.AST, function: str) -> None:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                function = node.name
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and ":access" in node.value:
+                reads.add((relative, function))
             if isinstance(node, (ast.Attribute, ast.Name)):
                 name = node.attr if isinstance(node, ast.Attribute) else node.id
-                assert "access_secret" not in name, f"{path.name} reads a secret's value"
+                if "access_secret" in name:
+                    reads.add((relative, function))
+            for child in ast.iter_child_nodes(node):
+                visit(child, function)
+
+        visit(ast.parse(path.read_text()), "<module>")
+    assert reads <= allowed, f"reads a secret's value: {sorted(reads - allowed)}"
