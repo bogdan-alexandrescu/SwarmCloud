@@ -16,6 +16,7 @@ DAYONE-SETUP-API-1, part of #2688).
     PUT  /v1/admin/setup/health                   `health/latest` (swarm-doctor only)
     GET  /v1/admin/setup/health                   `health/latest`
     POST /v1/admin/setup/health/groups-probe      registered groups readable, met/unmet
+    POST /v1/admin/setup/addons/brave-search/probe  one real search as swarm-api (routes/addon_probe.py)
     POST /v1/setup/links/redeem                   a link's named person opens it
 
 WHO MAY CALL (§5.2, §5.3). Every `/v1/admin/setup/*` route is a PLATFORM

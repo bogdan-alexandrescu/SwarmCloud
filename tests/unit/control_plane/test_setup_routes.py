@@ -79,6 +79,7 @@ ROUTES: list[tuple[str, str, Any]] = [
     ("PUT", "/v1/admin/setup/health", {"run_at": "2026-10-29T12:00:00Z"}),
     ("GET", "/v1/admin/setup/health", None),
     ("POST", "/v1/admin/setup/health/groups-probe", None),
+    ("POST", "/v1/admin/setup/addons/brave-search/probe", None),
 ]
 
 

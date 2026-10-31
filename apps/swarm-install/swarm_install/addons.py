@@ -18,11 +18,17 @@ runs, in order:
 
 | Add-on | Secret | Switch |
 |---|---|---|
-| `bright-data-egress` | `swarm-egress-key` (generated), `swarm-egress-credential` (link) | `enable_browser_egress`; the `swarm-egress` workload |
-| `tailscale` | `swarm-tailscale-oauth` (link) | `enable_tailscale_egress`, `tailscale_egress_target` (asked; no default); the `tailscale-egress` workload |
-| `typesafe` | `swarm-typesafe-fwd-key` (generated) | `enable_typesafe_forwarder_read` (bootstrap), `enable_typesafe_forwarder`, `typesafe_forwarder.serve`; the `swarm-typesafe-fwd` workload |
-| `brave-search` | `swarm-search-api-key` (link; the one container the engine creates, as create-secrets.sh did) | `search_tool_enabled` |
-| `ci` | none: Workload Identity and the merge App | `enable_github_wif`, `github_repository` (bootstrap), `enable_acceptance_fixture`; Cloud Build with its OWN service account (lesson 6); the runner label and the sandbox as repository variables |
+| `bright-data-egress` | `swarm-egress-key` (generated), `swarm-egress-credential` (link) | `enable_browser_egress`, `browser_egress.enabled` and `.tenants` (the tenants it routes: an optional choice); the `statefulset/swarm-egress` workload |
+| `tailscale` | `swarm-tailscale-oauth` (link) | `enable_tailscale_egress`, `internal_decision_api_enabled` (swarm-api's INTERNAL_DECISION_API_URL), `tailscale_egress_target` (asked; no default); the `deployment/decision-api-egress` workload |
+| `typesafe` | `swarm-typesafe-fwd-key` (generated) | `enable_typesafe_forwarder_read` (bootstrap), `enable_typesafe_forwarder`, `typesafe_forwarder.serve`, `.enabled` and `.tenants` (an optional choice); the `deployment/swarm-typesafe-fwd` workload |
+| `brave-search` | `swarm-search-api-key` (link; the one container the engine creates, as create-secrets.sh did) | `search_tool_enabled`; on only once swarm-api's probe (`POST /v1/admin/setup/addons/brave-search/probe`) runs one real search with the key |
+| `ci` | none: Workload Identity and the merge App | `enable_github_wif`, `github_repository` (bootstrap), `enable_acceptance_fixture`; Cloud Build with its OWN service account (lesson 6); the `dev` and `prod` environments (created through the API after a typed approval); the runner label and the sandbox as repository variables |
+
+**The person stays in the terminal.** A vendor page with no API is opened in
+the browser (`steps.open_page`) with what to do there; gcloud is the one the
+installer fetched (`steps.preflight.find_gcloud`), and gh is the pinned one
+`tools.ensure("gh")` fetches, signed in with `gh auth login --web` when it
+is not.
 
 **A secret's value never passes through the terminal.** The link is minted by
 swarm-api (`POST /v1/admin/setup/links`, kind `addon-secret`) and redeemed in
@@ -56,7 +62,6 @@ from __future__ import annotations
 import os
 import re
 import secrets as _secrets
-import shutil
 import subprocess
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
@@ -106,8 +111,10 @@ RUNNER_LABEL = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$"
 #: Lesson 6: a build never runs as Google's default service accounts, which
 #: hold Editor (or did) on every project they live in.
 DEFAULT_BUILD_ACCOUNTS = ("-compute@developer.gserviceaccount.com", "@cloudbuild.gserviceaccount.com")
-#: The CI add-on's own Cloud Build service account (no key, no project role
-#: but what its builds need, granted by the release pipeline's own runbook).
+#: The CI add-on's own Cloud Build service account: no key and, today, no
+#: project role. Which roles its builds get is an IAM decision held for the
+#: owner (DAYONE-ADDON-2's question); the add-on makes the identity, so no
+#: build ever falls back to a default account, and claims nothing more.
 CI_BUILD_ACCOUNT = "swarm-ci-build"
 
 #: Resources an add-on's apply never destroys: Secret Manager containers (a
@@ -122,6 +129,12 @@ CI_PROTECTED = ("prod",)
 #: The repository variables the CI add-on writes (the runner label the
 #: workflow patch reads, and the acceptance sandbox scripts/acceptance/config.sh reads).
 CI_VARIABLES = {"runner_label": "SWARM_CI_RUNNER_LABEL", "sandbox": "SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL"}
+
+#: A tenant id (swarm_common.identity: lower-case letters, digits and hyphens,
+#: at most 11 so `swarm-agent-worker-<tenant>` fits a service account id).
+_TENANT = r"[a-z0-9]([a-z0-9-]{0,9}[a-z0-9])?"
+#: The tenants an add-on routes, comma-separated; empty routes none.
+TENANTS = rf"^({_TENANT}(,{_TENANT})*)?$"
 
 #: swarm-api's admin probe for brave-search: one fixed search, a count back.
 SEARCH_PROBE = "/v1/admin/setup/addons/brave-search/probe"
@@ -161,6 +174,9 @@ class Choice:
     question: str
     pattern: str
     default: str | None = None
+    #: An optional choice: an empty answer is a valid one, and a recorded
+    #: answer (empty included) is not asked again.
+    optional: bool = False
 
 
 @dataclass(frozen=True)
@@ -211,6 +227,16 @@ def _sample_choices(addon: Addon) -> dict[str, str]:
     return {c.key: c.default or "" for c in addon.choices}
 
 
+def tenants(choices: Mapping[str, str]) -> list[str]:
+    """The `tenants` choice as Terraform's list(string)."""
+    return [t for t in str(choices.get("tenants") or "").split(",") if t]
+
+
+def _tenants_choice(what: str) -> Choice:
+    return Choice("tenants", f"The tenants {what}, comma-separated (empty for none yet)", TENANTS, "",
+                  optional=True)
+
+
 ADDONS: dict[str, Addon] = {
     "bright-data-egress": Addon(
         name="bright-data-egress",
@@ -220,15 +246,19 @@ ADDONS: dict[str, Addon] = {
         page=Page("https://brightdata.com/cp/zones",
                   "create the residential zone and copy its credential JSON; you paste it into the console "
                   "link below, never into this terminal"),
-        workload=("deployment/swarm-egress", "swarm_egress_manifest"),
+        choices=(_tenants_choice("whose live-browser attempts go out through Bright Data"),),
+        # kubernetes/swarm-system/swarm-egress.yaml: a StatefulSet.
+        workload=("statefulset/swarm-egress", "swarm_egress_manifest"),
         satisfies=("secret.swarm-egress-key.value", "secret.swarm-egress-credential.value",
                    "workload.swarm-egress", "addon.bright-data-egress"),
         # Both containers are unconditional in terraform/infra/egress.tf, so
-        # there is nothing to prepare; `browser_egress.enabled` (the per-tenant
-        # kill switch) stays off until an admin routes a tenant.
+        # there is nothing to prepare. swarm-egress proxies an attempt only
+        # when `browser_egress.enabled` (the kill switch) is on and its tenant
+        # is in `tenants`, so the switch goes on with the first tenant.
         overlays={
-            ON: lambda c: (("infra", {"enable_browser_egress": True}),),
-            OFF: lambda c: (("infra", {"enable_browser_egress": False}),),
+            ON: lambda c: (("infra", {"enable_browser_egress": True,
+                                      "browser_egress": {"enabled": bool(tenants(c)), "tenants": tenants(c)}}),),
+            OFF: lambda c: (("infra", {"enable_browser_egress": False, "browser_egress": {"enabled": False}}),),
         },
     ),
     "tailscale": Addon(
@@ -237,22 +267,31 @@ ADDONS: dict[str, Addon] = {
         secrets=(SecretSpec("swarm-tailscale-oauth", LINK),),
         choices=(Choice("tailscale_egress_target",
                         "The tailnet host the forwarder dials, <host>.<tailnet>.ts.net", MAGIC_DNS),),
+        # docs/runbooks/tailscale-egress.md §2: the tag needs an owner in the
+        # policy file, and the operator mints auth keys, so Auth Keys: write.
         page=Page("https://login.tailscale.com/admin/settings/oauth",
-                  "generate an OAuth client with the tag:swarmcloud tag (Devices: write) and copy its "
-                  "client secret (it starts tskey-client-); you paste it into the console link below"),
-        workload=("deployment/tailscale-egress", "tailscale_egress_manifest"),
+                  "make sure the tailnet policy file (Access controls) gives tag:swarmcloud an owner "
+                  "(\"tagOwners\": {\"tag:swarmcloud\": [\"autogroup:admin\"]}) and lets it reach only the "
+                  "decision API on tcp:443; then generate an OAuth client with scope Auth Keys: write and tag "
+                  "tag:swarmcloud, nothing else, and copy its client secret (it starts tskey-client-); you "
+                  "paste it into the console link below"),
+        # kubernetes/swarm-system/tailscale-egress.yaml: the egress Deployment.
+        workload=("deployment/decision-api-egress", "tailscale_egress_manifest"),
         satisfies=("addon.tailscale-egress-target", "secret.swarm-tailscale-oauth.value",
                    "workload.tailscale-egress"),
+        # internal_decision_api_enabled gives swarm-api and the scheduler
+        # INTERNAL_DECISION_API_URL; without it the egress reaches nothing.
         overlays={
-            ON: lambda c: (("infra", {"enable_tailscale_egress": True,
+            ON: lambda c: (("infra", {"enable_tailscale_egress": True, "internal_decision_api_enabled": True,
                                       "tailscale_egress_target": c["tailscale_egress_target"]}),),
-            OFF: lambda c: (("infra", {"enable_tailscale_egress": False}),),
+            OFF: lambda c: (("infra", {"enable_tailscale_egress": False, "internal_decision_api_enabled": False}),),
         },
     ),
     "typesafe": Addon(
         name="typesafe",
         summary="the TypeSafe/Jev forwarder (swarm-typesafe-fwd): agents' judgment requests with a person's key",
         secrets=(SecretSpec("swarm-typesafe-fwd-key", GENERATED),),
+        choices=(_tenants_choice("whose judgment requests the forwarder serves"),),
         images=("swarm-typesafe-fwd",),
         workload=("deployment/swarm-typesafe-fwd", "swarm_typesafe_fwd_manifest"),
         satisfies=("secret.swarm-typesafe-fwd-key.value", "switch.enable_typesafe_forwarder_read",
@@ -260,12 +299,15 @@ ADDONS: dict[str, Addon] = {
         # enable_typesafe_forwarder creates the key's container (count), so it
         # goes on before the key and STAYS on when the add-on is disabled:
         # disabling turns serving and forwarding off and keeps the container.
+        # The forwarder forwards only when `enabled` and only for a listed
+        # tenant, so forwarding goes on with the first tenant.
         overlays={
             PREPARED: lambda c: (("bootstrap", {"enable_typesafe_forwarder_read": True}),
                                  ("infra", {"enable_typesafe_forwarder": True})),
             ON: lambda c: (("bootstrap", {"enable_typesafe_forwarder_read": True}),
                            ("infra", {"enable_typesafe_forwarder": True,
-                                      "typesafe_forwarder": {"serve": True}})),
+                                      "typesafe_forwarder": {"serve": True, "enabled": bool(tenants(c)),
+                                                             "tenants": tenants(c)}})),
             OFF: lambda c: (("infra", {"enable_typesafe_forwarder": True,
                                        "typesafe_forwarder": {"serve": False, "enabled": False}}),
                             ("bootstrap", {"enable_typesafe_forwarder_read": False})),
@@ -287,7 +329,8 @@ ADDONS: dict[str, Addon] = {
     "ci": Addon(
         name="ci",
         summary="SwarmCloud's own CI machinery: GitHub Actions through Workload Identity, Cloud Build with its "
-                "own account, the acceptance fixture, self-hosted runners and the acceptance sandbox",
+                "own account, the acceptance fixture, the release environments, the self-hosted runners' label and "
+                "the acceptance sandbox",
         choices=(
             Choice("github_repository", "The repository whose GitHub Actions deploy (owner/repo)", GITHUB_REPO),
             Choice("sandbox_repository", "The PRIVATE acceptance sandbox repository (owner/repo)", GITHUB_REPO),
@@ -394,6 +437,7 @@ class World(Protocol):
 
     def delete_secret(self, name: str) -> None: ...
 
+
     def enabled_services(self) -> set[str]: ...
 
     def enable_services(self, names: Sequence[str]) -> None: ...
@@ -418,7 +462,7 @@ class World(Protocol):
 
     def sync_tailscale_secret(self) -> None: ...
 
-    def github(self, *args: str) -> tuple[int, str, str]: ...
+    def github(self, *args: str, stdin: str | None = None) -> tuple[int, str, str]: ...
 
 
 @dataclass
@@ -435,6 +479,8 @@ class Flow:
     confirm: Callable[[str], str]
     #: The hidden prompt on /dev/tty, for `--in-terminal` (secret_entry.enter_secret).
     hidden_entry: Callable[[str, str], int] | None = None
+    #: Opens a page with no API in the browser (steps.open_page).
+    open_page: Callable[[str, str], None] | None = None
 
     def say(self, line: str) -> None:
         self.out.write(line + "\n")
@@ -470,9 +516,11 @@ class Flow:
         chosen: dict[str, str] = {}
         for choice in addon.choices:
             value = given.get(choice.key) or known.get(choice.key)
-            if not value:
+            if not value and not (choice.optional and choice.key in known):
                 value = self.ask(choice.question, choice.default)
             value = str(value or "").strip()
+            if choice.optional:
+                value = ",".join(part.strip() for part in value.split(",") if part.strip())
             if not re.match(choice.pattern, value):
                 raise AddonError(f"{choice.key}: {value!r} does not match {choice.pattern}")
             chosen[choice.key] = value
@@ -501,29 +549,59 @@ class Flow:
         if problem:
             raise AddonError(problem)
         repo = chosen["github_repository"]
+        absent, open_ = self._ci_environments(repo)
+        if absent or open_:
+            self._create_ci_environments(repo, absent, open_)
+            absent, open_ = self._ci_environments(repo)
+            if absent or open_:
+                raise AddonError(f"{repo}'s environments are still not right after creating them: missing "
+                                 f"{', '.join(absent) or 'none'}, unprotected {', '.join(open_) or 'none'}")
+        code, out, err = self.world.github("api", f"repos/{chosen['sandbox_repository']}", "--jq", ".private")
+        if code != 0 or out.strip() != "true":
+            raise AddonError(f"{chosen['sandbox_repository']} is not a private repository gh can read; the "
+                             "acceptance sandbox is private (#628)")
+
+    def _ci_environments(self, repo: str) -> tuple[list[str], list[str]]:
+        """(missing environments, protected ones with no protection rule)."""
         code, out, err = self.world.github("api", f"repos/{repo}/environments", "--jq",
                                            ".environments[] | [.name, (.protection_rules | length)] | @tsv")
         if code != 0:
-            raise AddonError(f"could not read {repo}'s environments through gh ({err.strip()[:200]}); sign in "
-                             "with gh auth login as an admin of the repository")
+            raise AddonError(f"could not read {repo}'s environments through gh ({err.strip()[:200]}): the GitHub "
+                             "account signed in here must be an admin of the repository")
         rules: dict[str, int] = {}
         for line in out.splitlines():
             parts = line.split("\t")
             if len(parts) == 2 and parts[1].isdigit():
                 rules[parts[0]] = int(parts[1])
-        absent = [e for e in CI_ENVIRONMENTS if e not in rules]
-        open_ = [e for e in CI_PROTECTED if e in rules and rules[e] < 1]
-        if absent or open_:
-            page = f"https://github.com/{repo}/settings/environments"
-            why = ([f"missing environment(s) {', '.join(absent)}"] if absent else []) + (
-                [f"{', '.join(open_)} has no protection rule (lesson 25: a prod tag moved before approval)"]
-                if open_ else [])
-            raise AddonError(f"{'; '.join(why)}. Create them with a required reviewer on prod at {page}, then "
-                             "run swarm addon enable ci again")
-        code, out, err = self.world.github("api", f"repos/{chosen['sandbox_repository']}", "--jq", ".private")
-        if code != 0 or out.strip() != "true":
-            raise AddonError(f"{chosen['sandbox_repository']} is not a private repository gh can read; the "
-                             "acceptance sandbox is private (#628)")
+        return ([e for e in CI_ENVIRONMENTS if e not in rules],
+                [e for e in CI_PROTECTED if e in rules and rules[e] < 1])
+
+    def _create_ci_environments(self, repo: str, absent: Sequence[str], open_: Sequence[str]) -> None:
+        """Lesson 25: create the release environments, `prod` with the signed-in
+        GitHub account as its required reviewer, after a typed approval."""
+        code, out, err = self.world.github("api", "user", "--jq", "[.login, .id] | @tsv")
+        login, _, user_id = out.strip().partition("\t")
+        if code != 0 or not user_id.isdigit():
+            raise AddonError(f"could not read the GitHub account signed in here ({err.strip()[:200]})")
+        why = ([f"{', '.join(absent)} {'does' if len(absent) == 1 else 'do'} not exist"] if absent else []) + (
+            [f"{', '.join(open_)} has no protection rule (lesson 25: a prod tag moved before approval)"]
+            if open_ else [])
+        answer = self.confirm(
+            f"{repo}: {'; '.join(why)}. Create {', '.join(dict.fromkeys([*absent, *open_]))}, with {login} as "
+            f"the required reviewer on {', '.join(CI_PROTECTED)}? Type the repository ({repo}) to create them, "
+            "anything else stops: ")
+        if answer.strip() != repo:
+            raise AddonRefused(f"{repo}'s environments were not created ({'; '.join(why)}): the repository "
+                              "was not typed")
+        for environment in dict.fromkeys([*absent, *open_]):
+            body = ('{"reviewers": [{"type": "User", "id": %d}]}' % int(user_id)
+                    if environment in CI_PROTECTED else "{}")
+            code, _, err = self.world.github("api", "--method", "PUT", f"repos/{repo}/environments/{environment}",
+                                             "--input", "-", stdin=body)
+            if code != 0:
+                raise AddonError(f"could not create the {environment} environment on {repo}: {err.strip()[:300]} "
+                                 "(a required reviewer on a private repository needs GitHub Team or Enterprise)")
+            self.events.emit("step_apply", step="addon.ci.environments", detail=f"{repo}: {environment}")
 
     # -- secrets ------------------------------------------------------------
 
@@ -551,7 +629,12 @@ class Flow:
                              detail=f"generated version {number} of {spec.name}; its value was never shown")
             return
         if addon.page is not None:
-            self.say(f"{addon.summary}: first, at {addon.page.url}, {addon.page.what}.")
+            why = f"{addon.summary}: first, at this page, {addon.page.what}."
+            if self.open_page is not None:
+                self.open_page(addon.page.url, why)
+            else:
+                self.say(why)
+                self.say(f"  {addon.page.url}")
         if in_terminal:
             if self.hidden_entry is None:
                 raise AddonError("there is no terminal to prompt on; open the console link instead")
@@ -642,6 +725,12 @@ class Flow:
                 code, out, _ = self.world.github("variable", "get", variable, "--repo", repo)
                 if code != 0 or out.strip() != self._ci_variable(key, record.get("choices") or {}):
                     return UNMET, f"{repo}'s repository variable {variable} is not set"
+        if any(c.key == "tenants" for c in addon.choices):
+            routed = tenants(record.get("choices") or {})
+            if not routed:
+                return MET, (f"{addon.name} is on and routes no tenant yet: swarm addon enable {addon.name} "
+                             "--tenants <id>[,<id>...] routes one")
+            return MET, f"{addon.name} is on for {', '.join(routed)}"
         return MET, f"{addon.name} is on"
 
     def _search_check(self, addon: Addon) -> tuple[str, str]:
@@ -767,6 +856,8 @@ class RealWorld:
     api_context: str | None = None
     _kube: Any = None
     _reach: Any = None
+    _gh: str | None = None
+    _signed_in: bool = False
 
     # Secret Manager: metadata, a generated key's addVersion, and the typed delete.
 
@@ -903,9 +994,13 @@ class RealWorld:
     def sync_tailscale_secret(self) -> None:
         """Secret Manager -> a 0600 file -> `kubectl create --dry-run` -> `kubectl apply`,
         as kubernetes/apply.sh does; the value is never an argument or a line of output."""
-        gcloud = shutil.which("gcloud")
+        from .steps.preflight import find_gcloud
+
+        # The installer's own gcloud (tools.bin_dir), then ~/.local/bin and PATH.
+        gcloud = find_gcloud()
         if gcloud is None:
-            raise AddonError("gcloud is not on PATH; swarm install fetches it (run it once)")
+            raise AddonError("no gcloud: neither the one swarm install fetched nor one on PATH; swarm install "
+                             "fetches the pinned Google Cloud SDK on its next run")
         with tempfile.TemporaryDirectory(prefix="swarm-tailscale-") as work:
             os.chmod(work, 0o700)
             path = Path(work) / "client_secret"
@@ -928,9 +1023,36 @@ class RealWorld:
             if code != 0:
                 raise AddonError("kubectl could not apply swarm-system/operator-oauth")
 
-    def github(self, *args: str) -> tuple[int, str, str]:
-        gh = shutil.which("gh")
-        if gh is None:
-            return 127, "", "gh (the GitHub CLI) is not on PATH: install it and run gh auth login"
-        done = subprocess.run([gh, *args], capture_output=True, text=True, timeout=120, check=False)
+    #: gh's exit code when it has no GitHub sign-in (cli/cli: "authentication required").
+    GH_AUTH_REQUIRED = 4
+
+    def github(self, *args: str, stdin: str | None = None) -> tuple[int, str, str]:
+        """`gh <args>` with the pinned gh (tools.ensure), signed in through
+        `gh auth login --web` the first time it says it is not."""
+        if self._gh is None:
+            from . import tools
+
+            try:
+                self._gh = str(tools.ensure("gh"))
+            except (OSError, LookupError, tools.ChecksumMismatch) as exc:
+                return 127, "", f"could not fetch the pinned gh (the GitHub CLI): {exc}"
+        done = self._run([self._gh, *args], stdin)
+        if done.returncode == self.GH_AUTH_REQUIRED and not self._signed_in:
+            self._signed_in = True
+            self.ctx.events.emit("step_apply", step="addon.github-sign-in",
+                                 message="gh is not signed in to GitHub: signing in through the browser")
+            login = self._login([self._gh, "auth", "login", "--web", "--hostname", "github.com",
+                                 "--git-protocol", "https"])
+            if login != 0:
+                return login, "", "the GitHub sign-in (gh auth login --web) did not finish"
+            done = self._run([self._gh, *args], stdin)
         return done.returncode, done.stdout, done.stderr
+
+    @staticmethod
+    def _run(argv: list[str], stdin: str | None) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(argv, input=stdin, capture_output=True, text=True, timeout=120, check=False)
+
+    @staticmethod
+    def _login(argv: list[str]) -> int:
+        # On the person's terminal: gh prints its one-time code and opens github.com/login/device.
+        return subprocess.run(argv, timeout=900, check=False).returncode

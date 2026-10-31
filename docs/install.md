@@ -882,7 +882,9 @@ and `ci`.
   instead.
 
 `disable` keeps the add-on's secret containers. `--delete-secrets` deletes
-them too, after you type the project id.
+them too, after you type the project id. `brave-search` is reported on only
+once swarm-api has run one real search with the key it reads
+(docs/search-tool.md §3).
 
 ### More teams
 
