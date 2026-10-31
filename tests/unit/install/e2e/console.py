@@ -15,6 +15,7 @@ from subprocess import run as _real_run  # bound before the walk patches subproc
 from typing import Any
 
 from swarm_api.install_record import INDIVIDUAL, InstallRecord, check_fields
+from swarm_common.identity import tenant_id_for_user
 from swarm_install import tfvars
 
 from .world import REPO, World
@@ -85,24 +86,30 @@ def _steps(world: World) -> None:
     accounts = {f"pool-{n}": {"owner": world.installer, "signed_in_at": now}
                 for n in range(1, int(sizing.get("pool_accounts") or 1) + 1)}
     write(record.console_path("accounts"), accounts)
-    # The first workspace: one person's own, or the first team.
+    # The first workspace: one person's own, or the first team. swarm-api
+    # keys a team by its workspace's tenant id and writes it as `workspace`.
+    personal = tenant_id_for_user(world.installer)
     if sizing.get("mode") == INDIVIDUAL:
-        write(record.personal_path(), {"owner": world.installer, "workspace": "ws-personal",
+        write(record.personal_path(), {"owner": world.installer, "workspace": personal,
                                        "progress": {"created_at": now}, "grant": {"ok": True},
                                        "smoke": {"state": "SUCCEEDED"}})
     else:
-        write(record.team_path("team-1"), {"group": "swarm-team@" + world.installer.split("@")[1], "workspace": "ws-team-1",
+        write(record.team_path("team-1"), {"group": "swarm-team@" + world.installer.split("@")[1], "workspace": "team-1",
                                            "first_admin": world.installer, "invites": [],
                                            "progress": {"created_at": now}, "grant": {"ok": True},
                                            "smoke": {"state": "SUCCEEDED"}})
     # swarm-workspace-apply makes the workspace's tenant namespace.
-    tenant = "personal" if sizing.get("mode") == INDIVIDUAL else "team-1"
+    tenant = personal if sizing.get("mode") == INDIVIDUAL else "team-1"
     world.apply_in_cluster(tenant_render(world, tenant))  # type: ignore[attr-defined]
     # The console's two verification runs (DAYONE-SETUP-API-2).
     # The console's two verification runs (DAYONE-SETUP-API-2): swarm-api
     # submits them as a service, on the team's -git slot.
     deployment = world.deployment  # type: ignore[attr-defined]
-    deployment.tenants.append(tenant)
+    # `GET /v1/tenants/mine` lists the installer's own READY personal
+    # workspace first, as the default and current one (owner decision
+    # 2026-10-12), then the team (audit 5b, M3).
+    deployment.tenants[:] = list(dict.fromkeys([personal, tenant]))
+    world.first_workspace = tenant  # type: ignore[attr-defined]
     from swarm_install.steps.verify import SINGLE_PROMPT, workflow_spec
 
     from .deployment import REPOSITORY, SERVICE
