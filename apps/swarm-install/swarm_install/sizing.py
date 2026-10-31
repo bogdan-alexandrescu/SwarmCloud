@@ -69,8 +69,10 @@ REFERENCE_PROVIDER_TENANT = 100
 #: RESOURCE_CLASSES["large"].units of them).
 REFERENCE_RESOURCE_CLASSES = {"standard": 80, "browser": 100, "large": 40}
 #: The live runner:<profile> ceilings (mock is the test runner: not proposed).
-REFERENCE_RUNNER_PROFILES = {"claude-code": 80, "claude-code-browser": 100, "codex": 20, "generic": 20,
-                             "browser": 20}
+#: claude-code-lightpanda equals claude-code-browser, as in dev.tfvars, so
+#: moving work to it never lowers the browser ceiling.
+REFERENCE_RUNNER_PROFILES = {"claude-code": 80, "claude-code-browser": 100, "claude-code-lightpanda": 100,
+                             "codex": 20, "generic": 20, "browser": 20}
 #: The live backend:<backend> ceilings.
 REFERENCE_BACKENDS = {"CLOUD_RUN_JOB": 100, "GKE_AUTOPILOT": 180}
 #: Team members per swarm-api instance, and the floor (two: one can roll).
