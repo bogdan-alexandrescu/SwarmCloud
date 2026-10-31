@@ -566,7 +566,7 @@ jobs:
           # swarm-typesafe-fwd too (SEC-INJECT-B, PR 1385): it holds every tenant's TypeSafe key in memory.
           # swarm-graph too (GS-ROLL, part of #1384): it verifies every agent's graph ticket and serves every tenant's index.
           # swarm-github-hooks too (GS-HOOKS, part of #1384): the one public service, running as the rollup sweeper account.
-          for image in agent-runtime-base agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler workspace-apply swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks; do
+          for image in agent-runtime-base agent-runtime-browser agent-runtime-lightpanda agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler workspace-apply swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks; do
             echo "==> ${image}:dev"
             trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
               --exit-code 1 --no-progress "${repo}/${image}:dev" || status=1
