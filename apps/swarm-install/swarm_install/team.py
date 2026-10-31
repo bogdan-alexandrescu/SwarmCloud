@@ -47,6 +47,21 @@ is a `claude-code` task, which needs a Claude pool account the team may run
 on. For the first team those are stage 12's accounts, added in Admin › Setup
 and owned by the first team; for any later team, an account lent to it in
 Admin › People. The wait says which.
+
+**`swarm team repair <team>` applies one team's tenant render again**
+(DAYONE-TEAM-REPAIR; `TeamRepair`). `swarm doctor` names it for a team whose
+namespace lacks what the render holds (the dispatcher RBAC, rbac.dispatcher-role).
+It reuses what team creation applies and nothing else: swarm-workspace-apply
+is the one writer of a team's namespace (design §5.7), so for a ready
+workspace the repair writes the record's own ceiling again through the console's
+ceiling route (`PUT /v1/admin/workspaces/{id}/limits`), which starts the job's
+`limits` run, and that run re-runs A7, `kubernetes/apply.sh --tenant`, the
+whole tenant render; a stopped workspace is retried instead, through the
+console's retry, and its create run re-applies everything. The repair waits for
+the run to end, puts the namespace's verify keys back as `team add` does (the
+job's identity holds no ConfigMap grant), and ends only when the dispatcher and
+reaper Roles and RoleBindings are in the namespace. Nothing changes until the
+person types the team (`SWARM_ASSUME_YES` is not read).
 """
 
 from __future__ import annotations
@@ -55,6 +70,8 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, TextIO
+
+from swarm_common.identity import tenant_id_for_group, tenant_id_for_user
 
 from . import steps
 from .events import Events
@@ -129,6 +146,10 @@ SMOKE_WAIT = WaitSpec(
 
 class TeamError(RuntimeError):
     """The team cannot go on; the message says why and what to do."""
+
+
+class RepairRefused(TeamError):
+    """The person did not type the team, so nothing was changed."""
 
 
 class TeamApi(Protocol):
@@ -440,6 +461,172 @@ class TeamAdd:
 
 
 # ---------------------------------------------------------------------------
+# `swarm team repair <team>`: the team's tenant render, applied again
+# ---------------------------------------------------------------------------
+
+#: What the doctor's rbac.dispatcher-role probe reads, and what the tenant
+#: render holds for it (kubernetes/rbac/dispatcher-rbac.yaml): checked present
+#: after the run.
+DISPATCHER_RBAC = (("Role", "swarm-dispatcher"), ("RoleBinding", "swarm-dispatcher"),
+                   ("Role", "swarm-reaper"), ("RoleBinding", "swarm-reaper"))
+
+REPAIR_RUN_WAIT = WaitSpec(
+    reason="swarm-workspace-apply applying the team's tenant render again",
+    expected="2 to 10 min",
+    expected_s=10 * 60,
+    bound_s=30 * 60,
+    look_at="Admin › People shows the workspace's run and failure; the job's execution log",
+    interval_s=15,
+)
+
+
+class RepairApi(Protocol):
+    """swarm-api, called as the person running the verb (a platform admin)."""
+
+    def workspaces(self) -> Sequence[Mapping[str, Any]]: ...
+
+    def workspace(self, workspace_id: str) -> Mapping[str, Any]: ...
+
+    def set_ceiling(self, workspace_id: str, max_active: int) -> Mapping[str, Any]: ...
+
+    def retry_workspace(self, workspace_id: str) -> Mapping[str, Any]: ...
+
+
+def tenant_of(record: Mapping[str, Any]) -> str:
+    """The tenant a workspace record makes, by the frozen contract's rule (the
+    admin view carries no tenant id): a group's from its address, a person's
+    or a service account's with the `u-` prefix (swarm_api.workspaces)."""
+    principal = str(record.get("principal") or "").strip().lower()
+    if not principal:
+        return ""
+    if str(record.get("kind") or "personal") == "group":
+        return tenant_id_for_group(principal)
+    return tenant_id_for_user(principal)
+
+
+def _run_of(record: Mapping[str, Any]) -> Mapping[str, Any]:
+    run = record.get("run")
+    return run if isinstance(run, Mapping) else {}
+
+
+@dataclass
+class TeamRepair:
+    api: RepairApi
+    cluster: Callable[[], Cluster]
+    spec_settings: Callable[[], Mapping[str, str]]
+    #: Reads the typed answer (verbs/install.py `_typed`: the terminal, never the environment).
+    confirm: Callable[[str], str]
+    clock: Clock
+    events: Events
+    out: TextIO
+    #: The command a give-up tells the person to run again.
+    resume: str = "swarm team repair"
+
+    def say(self, line: str) -> None:
+        self.out.write(line + "\n")
+        self.out.flush()
+
+    def find(self, team: str) -> tuple[str, Mapping[str, Any]]:
+        """(tenant, record) for a team id (`eng`, as swarm doctor names it) or
+        its group's address."""
+        wanted = team.strip().lower()
+        for record in self.api.workspaces():
+            tenant = tenant_of(record)
+            if wanted in (tenant, str(record.get("principal") or "").strip().lower()):
+                return tenant, record
+        raise TeamError(f"no workspace makes team {team}: swarm doctor names the team, and Admin › People "
+                        "lists every workspace. Nothing was changed.")
+
+    def start(self, tenant: str, record: Mapping[str, Any]) -> str:
+        """Start the run that applies the tenant render again; the mode it runs."""
+        workspace_id = str(record.get("workspace_id") or "")
+        state = str(record.get("state") or "")
+        if state in RETRYABLE:
+            self.api.retry_workspace(workspace_id)
+            self.events.emit("step_apply", step="team.repair", detail=f"retry workspace {workspace_id} ({state})")
+            return "create"
+        limits = dict(record.get("limits") or {})
+        answer = self.api.set_ceiling(workspace_id, int(limits["max_active"]))
+        dispatch = answer.get("dispatch") or {}
+        if not isinstance(dispatch, Mapping) or dispatch.get("published") is not True:
+            reason = dispatch.get("reason") if isinstance(dispatch, Mapping) else None
+            raise TeamError(
+                f"swarm-api did not start swarm-workspace-apply for {workspace_id} ({reason or 'no run'}), so "
+                f"nothing was applied. With publishing off the deployment builds no workspace; otherwise run "
+                f"{self.resume} again.")
+        after = answer.get("workspace") or {}
+        changed = [f"{k} {limits.get(k)} -> {v}" for k, v in sorted(dict(after.get("limits") or {}).items())
+                   if isinstance(after, Mapping) and limits.get(k) != v]
+        if changed:
+            self.say("The ceiling route wrote the ceiling's own limits: " + ", ".join(changed) + ".")
+        self.events.emit("step_apply", step="team.repair", detail=f"limits run for workspace {workspace_id}")
+        return "limits"
+
+    def await_run(self, workspace_id: str, before: Mapping[str, Any], mode: str) -> str:
+        """Wait for the run started after `before` to end; its build id."""
+        done: list[str] = []
+
+        def check() -> str:
+            view = self.api.workspace(workspace_id)
+            run = _run_of(view)
+            fresh = run.get("claimed_at") and (run.get("claimed_at"), run.get("build_id")) != (
+                before.get("claimed_at"), before.get("build_id"))
+            if not fresh or not run.get("finished_at"):
+                return WAITING
+            failure = view.get("failure")
+            if isinstance(failure, Mapping) and failure:
+                raise TeamError(
+                    f"swarm-workspace-apply's {mode} run for {workspace_id} stopped at step "
+                    f"{failure.get('step') or '?'}, code {failure.get('code') or '?'}. Admin › People shows it; "
+                    f"fix what it names, then run {self.resume} again.")
+            if mode == "create" and str(view.get("state") or "") != READY:
+                return WAITING
+            done.append(str(run.get("build_id") or ""))
+            return MET
+
+        wait_until("team.repair", REPAIR_RUN_WAIT, check, clock=self.clock, events=self.events, resume=self.resume)
+        return done[-1]
+
+    def verify(self, tenant: str) -> None:
+        cluster = self.cluster()
+        ensure_verify_keys(cluster, tenant=tenant, settings=self.spec_settings())
+        namespace = namespace_of(tenant)
+        absent = [f"{kind} {name}" for kind, name in DISPATCHER_RBAC if cluster.get(kind, name, namespace) is None]
+        if absent:
+            raise TeamError(f"{', '.join(absent)} still absent from {namespace} after swarm-workspace-apply's run; "
+                            "its execution log says what A7 applied.")
+
+    def run(self, team: str) -> dict[str, Any]:
+        tenant, record = self.find(team)
+        workspace_id = str(record.get("workspace_id") or "")
+        state = str(record.get("state") or "")
+        if state != READY and state not in RETRYABLE:
+            raise TeamError(f"the workspace {workspace_id} of team {tenant} is {state or 'without a state'}: only "
+                            "a ready or a stopped workspace is applied again. Admin › People shows it.")
+        limits = dict(record.get("limits") or {})
+        if state == READY and not isinstance(limits.get("max_active"), int):
+            raise TeamError(f"the workspace {workspace_id} records no ceiling (limits.max_active)")
+        how = (f"retries the stopped workspace {workspace_id} ({state}): its create run applies everything again"
+               if state in RETRYABLE else
+               f"writes the workspace {workspace_id}'s ceiling again (limits: "
+               + ", ".join(f"{k} {v}" for k, v in sorted(limits.items()))
+               + "); the ceiling route writes the ceiling's own quota, and its limits run re-applies the "
+               "namespace's whole tenant render")
+        typed = self.confirm(f"This has swarm-workspace-apply apply team {tenant}'s tenant render to "
+                             f"{namespace_of(tenant)} again: it {how}.\nType {team} to go on: ")
+        if typed.strip() != team:
+            raise RepairRefused(f"{team} was not typed; nothing was changed")
+        before = _run_of(record)
+        mode = self.start(tenant, record)
+        build = self.await_run(workspace_id, before, mode)
+        self.verify(tenant)
+        self.events.emit("step_done", step="team.repair", state=MET, detail=f"{namespace_of(tenant)} applied again")
+        self.say(f"Team {tenant}'s tenant render is applied again in {namespace_of(tenant)} (run {build}): the "
+                 "dispatcher and reaper RBAC and the verify keys are there.")
+        return {"team": tenant, "workspace": workspace_id, "run": build}
+
+
+# ---------------------------------------------------------------------------
 # The real seams: swarm-api as the person, the install cluster, the scheduler
 # ---------------------------------------------------------------------------
 
@@ -483,7 +670,18 @@ class SwarmApi:
         return self._client().request("POST", "/v1/admin/setup/teams", payload=body) or {}
 
     def workspace(self, workspace_id: str) -> Mapping[str, Any]:
-        return self._client().request("GET", f"/v1/admin/workspaces/{workspace_id}") or {}
+        # The route answers {"workspace": <the admin view>} (routes/people.py).
+        found = self._client().request("GET", f"/v1/admin/workspaces/{workspace_id}") or {}
+        inner = found.get("workspace")
+        return inner if isinstance(inner, Mapping) else found
+
+    def workspaces(self) -> Sequence[Mapping[str, Any]]:
+        found = self._client().request("GET", "/v1/admin/workspaces") or {}
+        return [w for w in found.get("workspaces") or () if isinstance(w, Mapping)]
+
+    def set_ceiling(self, workspace_id: str, max_active: int) -> Mapping[str, Any]:
+        return self._client().request("PUT", f"/v1/admin/workspaces/{workspace_id}/limits",
+                                      payload={"max_active": int(max_active)}) or {}
 
     def retry_workspace(self, workspace_id: str) -> Mapping[str, Any]:
         return self._client().request("POST", f"/v1/admin/workspaces/{workspace_id}/retry", payload={}) or {}
@@ -543,6 +741,7 @@ def scheduler_spec_settings(gcp: Any, project: str, region: str) -> dict[str, st
 
 
 __all__ = [
-    "Cluster", "KubeCluster", "SwarmApi", "TeamAdd", "TeamApi", "TeamError", "ensure_verify_keys",
+    "Cluster", "KubeCluster", "RepairApi", "RepairRefused", "SwarmApi", "TeamAdd", "TeamApi", "TeamError",
+    "TeamRepair", "ensure_verify_keys", "tenant_of",
     "git_secret_of", "git_secret_ready", "namespace_of", "scheduler_spec_settings", "verify_keys_manifest",
 ]

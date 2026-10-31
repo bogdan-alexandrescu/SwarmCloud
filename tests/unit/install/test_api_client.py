@@ -125,6 +125,24 @@ def test_error_names_status_and_code_never_the_token() -> None:
     assert adc.minted not in str(raised.value)
 
 
+@pytest.mark.parametrize("body", [
+    # swarm-api's own `ApiError` handler: the flat `to_payload`.
+    {"code": "conflict", "message": "GITHUB_HOOKS_URL is not set", "detail": {"unset": ["GITHUB_HOOKS_URL"]}},
+    # The same refusal nested under `error`, as a front end may wrap it.
+    {"error": {"code": "conflict", "message": "GITHUB_HOOKS_URL is not set",
+               "detail": {"unset": ["GITHUB_HOOKS_URL"]}}},
+])
+def test_error_reads_the_served_code_message_and_detail(body) -> None:
+    """audit 4c M1: the engine read only `error.code`, so swarm-api's flat body
+    gave an empty code and the hook's "not yet" was never recognised."""
+    with pytest.raises(ApiCallError) as raised:
+        _client(FakeAdcSession(), FakeHttp(body, status=409)).activate_hook()
+    assert raised.value.status == 409
+    assert raised.value.code == "conflict"
+    assert raised.value.message == "GITHUB_HOOKS_URL is not set"
+    assert raised.value.detail == {"unset": ["GITHUB_HOOKS_URL"]}
+
+
 def test_for_install_needs_the_recorded_audience() -> None:
     from types import SimpleNamespace
 

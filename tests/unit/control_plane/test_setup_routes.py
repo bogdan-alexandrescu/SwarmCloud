@@ -1556,3 +1556,54 @@ def test_one_persons_grant_records_the_app_installation_for_the_personal_workspa
     install_app(db, github)
     page(setup_client)
     assert _app_installed(db, personal_tenant(), ORG) is True
+
+
+# --------------------------------------------------------------------------
+# no workspace is approved before infra pass 3 turns publishing on
+# (DAYONE-MANIFEST-STEPS-2)
+# --------------------------------------------------------------------------
+
+
+def publishing_off(setup_app) -> FakePublisher:
+    """swarm-api as infra passes 1 and 2 deploy it: `workspace_apply_publish`
+    is false until infra pass 3 (`github.pass-3`), so an approval would only
+    be logged `workspace_stuck` (reason `publishing_off`)."""
+    publisher = setup_app.state.workspace_publisher
+    publisher.enabled = False
+    return publisher
+
+
+def test_the_first_team_waits_for_publishing(setup_app, setup_client, db) -> None:
+    publisher = publishing_off(setup_app)
+    seed_sized_engine(db, mode="team", members=5)
+    step = page(setup_client)["steps"]["first_team"]
+    assert step["needed"] is True and step["state"] == "waiting", step
+    assert "infra pass 3" in step["reason"], step
+    refused = create_team(setup_client, first_admin=WORKSPACE_ADMIN)
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["code"] == "publishing_off", refused.text
+    assert not [k for k in db.docs if k.startswith("workspaces/") or k.startswith(TEAMS_PREFIX)]
+    assert publisher.messages == []
+    # Infra pass 3's revision serves `workspace_apply_publish`: the team is approved and published.
+    publisher.enabled = True
+    assert page(setup_client)["steps"]["first_team"]["state"] == "to_do"
+    created = create_team(setup_client, first_admin=WORKSPACE_ADMIN)
+    assert created.status_code == 202, created.text
+    assert len(publisher.messages) == 1, publisher.messages
+
+
+def test_one_persons_workspace_waits_for_publishing(setup_app, setup_client, db) -> None:
+    publisher = publishing_off(setup_app)
+    seed_sized_engine(db)
+    tenant = personal_tenant()
+    body = page(setup_client)
+    assert body["personal"] == {"owner": ROOT, "workspace": None, "reason": "publishing_off"}
+    assert PERSONAL_DOC not in db.docs and f"workspaces/{tenant}" not in db.docs
+    link = setup_client.post("/v1/admin/setup/links",
+                             json={"kind": "pool-account", "label": "a1", "owner": ROOT},
+                             headers=auth_header("root"))
+    assert link.status_code == 409 and link.json()["code"] == "publishing_off", link.text
+    assert f"workspaces/{tenant}" not in db.docs and publisher.messages == []
+    publisher.enabled = True
+    assert page(setup_client)["personal"]["workspace"] == tenant
+    assert len(publisher.messages) == 1, publisher.messages

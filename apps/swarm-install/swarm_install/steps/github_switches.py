@@ -8,7 +8,7 @@ the hand-off wait** (`handoff.py`):
 | Step | Trigger | What it does |
 |---|---|---|
 | `github.pass-3` | `github_app.secrets_written_at` and the App's three secrets each have an ENABLED version | infra pass 3: the App ids, `enable_github_app`, `enable_forge_refresh` |
-| `github.pass-4` | pass 3 done and the console's self-check `ok` | infra pass 4: `enable_github_hooks`, which makes the receiver and gives swarm-api its `GITHUB_HOOKS_URL` |
+| `github.pass-4` | pass 3 done and the console's self-check `ok` | infra pass 4: `enable_github_hooks`, which makes the receiver behind the `GITHUB_HOOKS_URL` swarm-api has had since infra pass 2 |
 | `github.hook` | pass 4 done and its apply reported the receiver serving | `POST /v1/admin/setup/github-app/hook` as `swarm-tf-deployer`: swarm-api signs the App JWT, so the key never reaches the laptop |
 
 **The hand-off waits for them.** The console can finish while no CLI runs; the
@@ -16,12 +16,15 @@ hand-off is met only once `console/finished` exists AND pass 4 and the hook are
 done, so a later `swarm install` re-enters its wait and the first poll runs
 them, and `handoff.ready` requires both (audit finding 17).
 
-**The webhook waits for its receiver.** swarm-api has `GITHUB_HOOKS_URL` only
-once the receiver serves (terraform/infra/locals.tf, `api_day_one_env`), which
-is infra pass 4's apply; before it, the hook route answers 409
-`setup_unconfigured`. So the hook runs after pass 4, and an
-`setup_unconfigured` answer (a revision still rolling out) is "not yet": the
-step keeps polling within `RECEIVER_WAIT` and never stops the hand-off on it.
+**The webhook waits for its receiver.** swarm-api has `GITHUB_HOOKS_URL`, the
+receiver's deterministic URL with its `/github/events` path, from infra pass 2
+on (terraform/infra/locals.tf, `api_day_one_env`), so the App's manifest names
+it; the receiver itself serves only after infra pass 4's apply, so the hook
+runs after pass 4. A revision without the URL (one still rolling out, or one
+from before it was rendered early) answers the hook with 409 `conflict` and
+`detail.unset` naming it (swarm_api/setup_github.py `SetupUnconfigured`); that
+is "not yet" (`not_yet`): the step keeps polling within `RECEIVER_WAIT` and
+never stops the hand-off on it. Every other refusal stops it.
 
 A switch is true only when its secret has an ENABLED version (lesson 39);
 whether it has one is read from the version's **metadata**. The engine holds
@@ -45,8 +48,26 @@ from .preflight import remember
 GITHUB_APP = "github_app"
 #: The App fields infra pass 3 needs; none is a secret.
 APP_FIELDS = ("id", "client_id", "slug", "name")
-#: swarm-api's answer while it has no GITHUB_HOOKS_URL (setup_github.py).
-NOT_YET = "setup_unconfigured"
+#: swarm-api's answer while a revision has no GITHUB_HOOKS_URL
+#: (setup_github.py `SetupUnconfigured`): the established code `conflict`,
+#: with the setting named in `detail.unset`.
+NOT_YET_STATUS = 409
+NOT_YET_CODE = "conflict"
+NOT_YET_SETTING = "GITHUB_HOOKS_URL"
+#: The sentence a swarm-api revision from before `detail.unset` serves.
+NOT_YET_MESSAGE = "GITHUB_HOOKS_URL is not set"
+
+
+def not_yet(refused: ApiCallError) -> bool:
+    """Whether swarm-api refused the hook only because the revision answering
+    has no GITHUB_HOOKS_URL yet. A 409 for anything else (no webhook secret
+    version, no App yet, a key that could not sign) is not "not yet"."""
+    if refused.status != NOT_YET_STATUS or refused.code != NOT_YET_CODE:
+        return False
+    unset = refused.detail.get("unset")
+    if isinstance(unset, (list, tuple)):
+        return NOT_YET_SETTING in unset
+    return refused.message == NOT_YET_MESSAGE
 #: Pass 4's apply waits for the new swarm-api revision, so the URL is normally
 #: served at once; this covers a revision still taking traffic. Well inside the
 #: lease (30 min), which the engine renews only between polls of the hand-off.
@@ -126,7 +147,7 @@ class HookStep:
             try:
                 api.activate_hook()
             except ApiCallError as refused:
-                if refused.code == NOT_YET:
+                if not_yet(refused):
                     return WAITING
                 raise
             return MET

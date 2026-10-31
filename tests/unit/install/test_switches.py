@@ -18,6 +18,9 @@ from .test_state_store import FakeClock
 from .test_terraform_runner import FakeCtx, install_state
 
 PACKAGE = Path(github_switches.__file__).resolve().parent.parent
+#: The installer's one secret-value read, and the exact path segment it names: `swarm
+#: upgrade` reading the GitHub App's private key as the owner (#2885).
+UPGRADE_APP_KEY_READ = ("verbs/upgrade.py", "/versions/latest:access")
 
 
 class SecretMetadata:
@@ -136,35 +139,60 @@ def test_pass4_records_the_receiver_serving(monkeypatch) -> None:
     assert applied == ["infra-4"] and ctx.outputs["github_hooks_serving"] is True
 
 
-def test_hook_treats_setup_unconfigured_as_not_yet() -> None:
-    from swarm_install.api_client import ApiCallError
+def _served(status: int, body: dict):
+    """The error as the engine reads it from swarm-api's served body
+    (`ApiError.to_payload`: a flat `{code, message, detail?}`), never a
+    hand-made code swarm-api does not serve."""
+    from swarm_install.api_client import refusal
 
+    return refusal(status, body, "/v1/admin/setup/github-app/hook")
+
+
+#: swarm-api's `SetupUnconfigured("GITHUB_HOOKS_URL is not set", unset=...)`.
+NOT_SET = {"code": "conflict", "message": "GITHUB_HOOKS_URL is not set",
+           "detail": {"unset": ["GITHUB_HOOKS_URL"]}}
+
+
+@pytest.mark.parametrize("answer", [
+    NOT_SET,
+    # A revision from before `detail.unset`: the same sentence, no detail.
+    {"code": "conflict", "message": "GITHUB_HOOKS_URL is not set"},
+])
+def test_hook_treats_an_unset_hooks_url_as_not_yet(answer) -> None:
     clock = FakeClock()
     ctx = FakeCtx(clock=clock)
-    answers = ["setup_unconfigured", "setup_unconfigured", None]
+    answers = [answer, answer, None]
     calls: list[float] = []
 
     class Api:
         def activate_hook(self):
             calls.append(clock.now())
-            code = answers.pop(0)
-            if code:
-                raise ApiCallError(409, code, "/v1/admin/setup/github-app/hook")
+            body = answers.pop(0)
+            if body:
+                raise _served(409, body)
             return {"active": True}
 
     hook = HookStep(Deps(gcp=lambda: SecretMetadata()), api=lambda c: Api())
     hook.apply(ctx, hook.plan(ctx))
-    assert len(calls) == 3, "it kept polling through two setup_unconfigured answers"
+    assert len(calls) == 3, "it kept polling through two 'GITHUB_HOOKS_URL is not set' answers"
     assert calls[-1] > calls[0], "between attempts it waited"
     assert hook.check(ctx).status == "met"
 
 
-def test_hook_raises_other_refusals() -> None:
+@pytest.mark.parametrize("status, body", [
+    (409, {"code": "conflict",
+           "message": "swarm-github-app-webhook-secret has no enabled version; the webhook stays off"}),
+    (409, {"code": "conflict", "message": "the GitHub App has not been created yet"}),
+    (409, {"code": "conflict", "message": "the App's private key could not sign"}),
+    (409, {"code": "conflict", "message": "x", "detail": {"unset": ["SETUP_GITHUB_ORG"]}}),
+    (503, NOT_SET),
+])
+def test_hook_raises_other_refusals(status, body) -> None:
     from swarm_install.api_client import ApiCallError
 
     class Api:
         def activate_hook(self):
-            raise ApiCallError(409, "webhook_secret_missing", "/v1/admin/setup/github-app/hook")
+            raise _served(status, body)
 
     hook = HookStep(Deps(gcp=lambda: SecretMetadata()), api=lambda c: Api())
     ctx = FakeCtx(clock=FakeClock())
@@ -180,12 +208,21 @@ def test_engine_never_reads_an_app_secret() -> None:
     assert Pass3Step(Deps(gcp=lambda: gcp)).trigger(ctx) is True
     assert {verb for verb, _ in gcp.calls} == {"secret", "enabled_version"}, "metadata only"
 
-    # No module of the installer names a secret-value read (`:access`, `access_secret_version`).
+    # No module of the installer names a secret-value read (`:access`, `access_secret_version`),
+    # but one: `swarm upgrade` reads the App's private key to read the GitHub App as
+    # itself (DAYONE-UPGRADE-2, #2885; `verbs/upgrade.py` `_app_key`), held in memory only.
+    # That one read is the only exemption; stage 9's switches above stay metadata-only.
     for path in PACKAGE.rglob("*.py"):
         tree = ast.parse(path.read_text())
+        accesses = []
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                assert ":access" not in node.value, f"{path.name} reads a secret's value"
+                if ":access" in node.value:
+                    accesses.append(node.value)
             if isinstance(node, (ast.Attribute, ast.Name)):
                 name = node.attr if isinstance(node, ast.Attribute) else node.id
                 assert "access_secret" not in name, f"{path.name} reads a secret's value"
+        if path.relative_to(PACKAGE).as_posix() == UPGRADE_APP_KEY_READ[0]:
+            assert accesses == [UPGRADE_APP_KEY_READ[1]], f"{path.name} reads a secret's value"
+        else:
+            assert not accesses, f"{path.name} reads a secret's value"

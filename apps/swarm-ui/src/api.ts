@@ -13469,31 +13469,37 @@ export interface SetupLink {
 
 export type SetupLinkKind = 'pool-account' | 'team-git' | 'addon-secret'
 
-/** One check's last result in `health/latest`. "Not checked" is its own result, never a pass. */
+/**
+ * One check's last result in `health/latest`, read from the row
+ * swarm-doctor writes (`doctor.Finding.to_json`: `{id, status, detail, step,
+ * fix, cause, repair}`). "Not checked" is its own result, never a pass.
+ */
 export interface HealthCheck {
+  /** The manifest entry's id; the doctor writes no other title. */
   id: string
-  title: string
-  /** `passed`, `failed`, or `not_checked` (anything unread is not checked). */
-  result: string
-  at: string | null
+  /** `passed` (met), `failed` (unmet), or `not_checked` (unknown, or anything unread). */
+  result: HealthResult
   detail: string | null
+  /** The install step that satisfies the entry, when one does. */
+  step: string | null
 }
 
-/** One doctor finding: what drifted, what changed, and how to repair it. */
+export type HealthResult = 'passed' | 'failed' | 'not_checked'
+
+/** One doctor finding (a check that is not met): what the probe saw, why, and how to repair it. */
 export interface HealthFinding {
-  check: string
-  title: string
+  id: string
+  /** `failed` (unmet: it drifted) or `not_checked` (unknown: the probe could not say). */
+  result: Exclude<HealthResult, 'passed'>
+  /** What the probe saw. */
+  detail: string | null
+  step: string | null
+  /** The doctor's fix, in words: what the entry is for and what repairs it. */
+  fix: string | null
+  /** Why a probe saw a 403: `propagating` or `missing_grant`; null otherwise. */
   cause: string | null
-  /** The audit-log entry, when the check knows it. */
-  changed: string | null
-  /**
-   * The repair command; `swarm install` when the finding names none: it
-   * re-checks every step and repairs the one that drifted (there is no
-   * `--repair` flag).
-   */
-  repair: string
-  /** Where in the Cloud console the same repair is, when there is one. */
-  console_path: string | null
+  /** `swarm install --repair <id>`, or null when no install step makes the entry. */
+  repair: string | null
 }
 
 export interface SetupHealth {
@@ -13502,37 +13508,38 @@ export interface SetupHealth {
   findings: HealthFinding[]
 }
 
-const CHECK_RESULTS = new Set(['passed', 'failed'])
+/**
+ * The doctor's `status` (swarm_install/exitcodes.py's MET, UNMET, UNKNOWN) as
+ * the console's result. Only the doctor's own words are read: a row in any
+ * other shape (a `result: passed` the doctor never writes) is not checked,
+ * so a fake in the console's own shape cannot draw a clean page.
+ */
+const HEALTH_RESULT_OF_STATUS: Record<string, HealthResult> = { met: 'passed', unmet: 'failed', unknown: 'not_checked' }
 
-/** A finding's repair when the doctor names none: swarm install re-checks every step and repairs what drifted. */
-export const REPAIR_BY_REINSTALL = 'swarm install'
+const healthResultOf = (status: unknown): HealthResult => {
+  const s = strOf(status)
+  return (s !== null && Object.prototype.hasOwnProperty.call(HEALTH_RESULT_OF_STATUS, s) ? HEALTH_RESULT_OF_STATUS[s] : undefined) ?? 'not_checked'
+}
+
+const doctorRows = (rows: unknown): Record<string, unknown>[] =>
+  (Array.isArray(rows) ? rows : []).map(objOf).filter((r): r is Record<string, unknown> => r !== null && strOf(r.id) !== null)
 
 /** `GET /v1/admin/setup/health`'s `latest`, or null when no doctor run is recorded. */
 export function normSetupHealth(raw: unknown): SetupHealth | null {
   const latest = objOf(objOf(raw)?.latest)
   if (latest === null) return null
-  const checks = (Array.isArray(latest.checks) ? latest.checks : [])
-    .map(objOf)
-    .filter((c): c is Record<string, unknown> => c !== null && strOf(c.id ?? c.check) !== null)
-    .map((c) => {
-      const id = strOf(c.id ?? c.check) as string
-      const result = strOf(c.result ?? c.state)
-      return { id, title: strOf(c.title) ?? id, result: result !== null && CHECK_RESULTS.has(result) ? result : 'not_checked', at: strOf(c.at), detail: strOf(c.detail) }
-    })
-  const findings = (Array.isArray(latest.findings) ? latest.findings : [])
-    .map(objOf)
-    .filter((f): f is Record<string, unknown> => f !== null && strOf(f.check) !== null)
-    .map((f) => {
-      const check = strOf(f.check) as string
-      return {
-        check,
-        title: strOf(f.title) ?? check,
-        cause: strOf(f.cause),
-        changed: strOf(f.changed),
-        repair: strOf(f.repair) ?? REPAIR_BY_REINSTALL,
-        console_path: strOf(f.console_path),
-      }
-    })
+  const checks = doctorRows(latest.checks).map((c) => ({
+    id: strOf(c.id) as string,
+    result: healthResultOf(c.status),
+    detail: strOf(c.detail),
+    step: strOf(c.step),
+  }))
+  // The doctor lists every finding that is not met; a met row here is not a finding.
+  const findings = doctorRows(latest.findings).flatMap((f): HealthFinding[] => {
+    const result = healthResultOf(f.status)
+    if (result === 'passed') return []
+    return [{ id: strOf(f.id) as string, result, detail: strOf(f.detail), step: strOf(f.step), fix: strOf(f.fix), cause: strOf(f.cause), repair: strOf(f.repair) }]
+  })
   return { run_at: strOf(latest.run_at), checks, findings }
 }
 
@@ -13793,26 +13800,25 @@ function fixtureSetupState(): Record<string, unknown> {
   }
 }
 
-/** The fixture build's latest doctor run: one finding, one check not run. */
-function fixtureSetupHealth(): Record<string, unknown> {
+/**
+ * The fixture build's latest doctor run, in the shape swarm-doctor writes
+ * (`scheduled_doctor.report()`: every row is `doctor.Finding.to_json()`, and
+ * `findings` repeats each row that is not met): two met, one unmet, one
+ * unknown. AdminSetupHealth.test.tsx holds these rows to the writer's keys.
+ */
+export function fixtureSetupHealth(): Record<string, unknown> {
+  const fix = (why: string, step: string, id: string) => `${why} Fix: the install's step ${step} makes it: swarm install --repair ${id}.`
+  const rows = [
+    { id: 'api.artifactregistry', status: 'met', detail: 'artifactregistry.googleapis.com is enabled', step: 'foundations.apis', fix: fix('The registry the images are pulled from.', 'foundations.apis', 'api.artifactregistry'), cause: '', repair: 'swarm install --repair api.artifactregistry' },
+    { id: 'api.cloudkms', status: 'unmet', detail: 'cloudkms.googleapis.com is not enabled', step: 'foundations.apis', fix: fix('The keys the state bucket and the secrets are encrypted with.', 'foundations.apis', 'api.cloudkms'), cause: '', repair: 'swarm install --repair api.cloudkms' },
+    { id: 'api.cloudbuild', status: 'met', detail: 'cloudbuild.googleapis.com is enabled', step: 'foundations.apis', fix: fix('The builds the release images come from.', 'foundations.apis', 'api.cloudbuild'), cause: '', repair: 'swarm install --repair api.cloudbuild' },
+    { id: 'quota.cloud-run-jobs', status: 'unknown', detail: 'missing grant: swarm-doctor@example.iam.gserviceaccount.com lacks serviceusage.quotas.get on projects/example, so this could not be checked', step: null, fix: 'Fix: no install step makes this; see the entry\'s check: quota.cloud-run-jobs.', cause: 'missing_grant', repair: null },
+  ]
   return {
     latest: {
       run_at: new Date(FIXTURE_NOW - 2 * 60_000).toISOString(),
-      checks: [
-        { id: 'edge.certificate', title: 'Front door', result: 'passed', detail: 'certificate ACTIVE · IAP on' },
-        { id: 'iap.programmatic_clients', title: 'IAP programmatic clients', result: 'failed', detail: '0 of 1 present' },
-        { id: 'images.digests', title: 'Images', result: 'passed', detail: 'every service on its expected digest' },
-        { id: 'scheduler.targets', title: 'Scheduler ticks', result: 'not_checked', detail: null },
-      ],
-      findings: [
-        {
-          check: 'iap.programmatic_clients',
-          title: 'The Desktop OAuth client is no longer on IAP’s programmatic allowlist',
-          cause: 'Every new sc login answers 401 with code 900; signed-in sessions keep working until their token expires.',
-          changed: 'removed 3 h ago by ravi@example.com (Cloud Audit Logs)',
-          console_path: 'Security › Identity-Aware Proxy › Settings › Programmatic clients',
-        },
-      ],
+      checks: rows,
+      findings: rows.filter((r) => r.status !== 'met'),
     },
   }
 }
