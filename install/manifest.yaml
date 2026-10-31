@@ -105,13 +105,13 @@ counts:
     '0': 28
     '1': 39
     '2': 12
-    '3': 43
+    '3': 42
     '4': 31
     '5': 59
-    '6': 42
-    '7': 109
+    '6': 38
+    '7': 113
     '8': 10
-    '9': 19
+    '9': 20
     '10': 17
     '11': 18
     '12': 1
@@ -2431,7 +2431,7 @@ entries:
 - id: switch.grant_broker_secret_lister
   kind: switch
   scope: core
-  stage: 3
+  stage: 7
   provider: engine
   check: grep -n grant_broker_secret_lister terraform/bootstrap/variables.tf terraform/bootstrap/terraform.tfvars
   apply: terraform/bootstrap/variables.tf:591-601, default TRUE; not set in terraform.tfvars
@@ -2443,7 +2443,7 @@ entries:
   evidence:
   - terraform/bootstrap/variables.tf:591-601
   notes: 'FIRST-APPLY TRAP: committed terraform.tfvars never sets this, so the default (true) is what a copy-and-run install gets on its very first apply -- before any account exists to grant on.'
-  step: bootstrap.pass-1
+  step: bootstrap.pass-2
   refs:
     variable:
     - bootstrap/grant_broker_secret_lister
@@ -4412,7 +4412,7 @@ entries:
 - id: role.custom.swarmForgeSlotCreator
   kind: custom-role
   scope: core
-  stage: 6
+  stage: 7
   provider: engine
   check: gcloud iam roles describe swarmForgeSlotCreator --project=$P
   apply: terraform/bootstrap/forge_user_slots.tf resource "google_project_iam_custom_role" "forge_slot_creator", count=switch.enable_forge_user_slots
@@ -4424,14 +4424,14 @@ entries:
   - switch.enable_forge_user_slots
   evidence:
   - terraform/bootstrap/forge_user_slots.tf:206-220
-  step: bootstrap.pass-1
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.forge_slot_creator
 - id: role.custom.swarmForgeSlotVersionManager
   kind: custom-role
   scope: core
-  stage: 6
+  stage: 7
   provider: engine
   check: gcloud iam roles describe swarmForgeSlotVersionManager --project=$P
   apply: terraform/bootstrap/forge_user_slots.tf resource "google_project_iam_custom_role" "forge_slot_version_manager", count=switch.enable_forge_user_slots
@@ -4443,7 +4443,7 @@ entries:
   - switch.enable_forge_user_slots
   evidence:
   - terraform/bootstrap/forge_user_slots.tf:252-268
-  step: bootstrap.pass-1
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_custom_role.forge_slot_version_manager
@@ -4466,7 +4466,7 @@ entries:
 - id: iam-binding.swarm-api-forge-slots
   kind: iam-binding
   scope: core
-  stage: 6
+  stage: 7
   provider: engine
   check: gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:serviceAccount:swarm-api@* AND (bindings.role:swarmForgeSlotCreator OR bindings.role:swarmForgeSlotVersionManager OR bindings.role=roles/secretmanager.secretVersionAdder OR bindings.role=roles/secretmanager.secretAccessor)'
   apply: 'terraform/bootstrap/forge_user_slots.tf: forge_slot_creator (unconditioned), forge_slot_version_adder (per-tenant condition), forge_slot_version_manager (per-tenant), forge_refresh_reader (per-tenant secretAccessor, base+refresh), forge_repo_slot_reader (per-tenant, -git-r- slots), plus forge_personal_* (personal tenants) and forge_member_slots_any_tenant (K3, any tenant, behind enable_workspace_kinds)'
@@ -4479,10 +4479,11 @@ entries:
   - role.custom.swarmForgeSlotVersionManager
   - sa.swarm-api
   - declared-value.infra_tenants_tfvars
+  - switch.enable_forge_user_slots
   evidence:
   - terraform/bootstrap/forge_user_slots.tf:222-541
   notes: forge_slot_reader (the tenant worker's own read of base slots) has a precondition refusing any tenant id that is a PREFIX of another's -git-u- name (forge_nested_tenants check); rename the tenant if it fires.
-  step: bootstrap.pass-1
+  step: bootstrap.pass-2
   refs:
     terraform:
     - bootstrap/google_project_iam_member.forge_slot_creator
@@ -5173,7 +5174,7 @@ entries:
 - id: switch.enable_forge_user_slots
   kind: switch
   scope: core
-  stage: 6
+  stage: 7
   provider: engine
   check: grep -n enable_forge_user_slots terraform/bootstrap/terraform.tfvars
   apply: terraform/bootstrap/terraform.tfvars:178 enable_forge_user_slots = true
@@ -5185,7 +5186,7 @@ entries:
   - sa.swarm-api
   evidence:
   - terraform/bootstrap/terraform.tfvars:172-178
-  step: bootstrap.pass-1
+  step: bootstrap.pass-2
   refs:
     variable:
     - bootstrap/enable_forge_user_slots
@@ -7374,7 +7375,7 @@ entries:
 - id: switch.workspace_apply_publish
   kind: switch
   scope: core
-  stage: 7
+  stage: 9
   provider: engine
   check: grep -n workspace_apply_publish terraform/environments/*/*.tfvars
   apply: terraform/infra/variables.tf:1083, type bool, default false
@@ -7388,7 +7389,7 @@ entries:
   evidence:
   - terraform/infra/variables.tf:1083-1098
   notes: 'Cross-track dependency: the topic''s consumer (Eventarc trigger + Workflow + the swarm-workspace-apply Cloud Run job) is created in terraform/bootstrap/workspace_dispatch.tf and workspace_deployer.tf, not this track.'
-  step: infra.pass-2
+  step: github.pass-3
   refs:
     variable:
     - infra/workspace_apply_publish
@@ -8693,7 +8694,7 @@ entries:
   - switch.workspace_apply_publish
   evidence:
   - terraform/infra/variables.tf:1101-1112
-  step: infra.pass-2
+  step: github.pass-3
   refs:
     variable:
     - infra/workspace_gate
