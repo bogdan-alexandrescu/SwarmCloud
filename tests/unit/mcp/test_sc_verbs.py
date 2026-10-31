@@ -64,8 +64,10 @@ def test_run_launches_with_the_replys_args_and_its_spec_handle():
     run = _section(body, "### `run <spec path|JSON>`")
     # MUTATION: tell step 3 to run the script with "the spec OBJECT as its args" again -> fails.
     assert "the reply's `args` AS GIVEN" in run, "step 3 must run the script with the launch reply's args"
-    # MUTATION: drop `spec_handle` from the args step 3 lists -> fails.
-    assert "`{spec, spec_handle, details, rows, titled_copy}`" in run
+    # MUTATION: drop `spec_handle` from the args step 3 lists, or list the
+    # spec beside it again (#2875: a 90 KB spec's reply was too long) -> fails.
+    assert "`{spec_handle, details, rows, titled_copy}` -- never the spec" in run
+    assert "`{spec, spec_handle" not in run
     # MUTATION: delete "Never drop `spec_handle`" -> fails.
     assert "Never drop `spec_handle`" in run
     # MUTATION: delete "never pass a bare path" -> fails.
