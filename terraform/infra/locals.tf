@@ -127,6 +127,25 @@ locals {
       model_classes       = ["opus", "fable", "sonnet", "haiku"]
       default_model_class = "opus"
     }
+    # Contract request 127, accepted by the owner 2026-10-31 (LIGHTPANDA-CONTRACT,
+    # docs/design/lightpanda-runtime.md): claude-code on agent-runtime-lightpanda,
+    # on the standard class, and nothing else different. A GKE profile, not in
+    # `cloud_run_fallback_profiles`, so no Cloud Run Job is made for it;
+    # mirrored so the catalogue comparison holds, so its
+    # `runner:claude-code-lightpanda` pool exists, and so agent-runtime-lightpanda
+    # is in runner_images: its digest is pinned and handed to the scheduler
+    # with the others.
+    "claude-code-lightpanda" = {
+      image           = "agent-runtime-lightpanda"
+      resource_class  = "standard"
+      backend         = "GKE_AUTOPILOT"
+      provider        = "anthropic"
+      secret_env      = { for name in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] : name => "anthropic" }
+      timeout_seconds = 7200
+
+      model_classes       = ["opus", "fable", "sonnet", "haiku"]
+      default_model_class = "opus"
+    }
     # GKE Autopilot since contract request 65 (owner, 2026-10-10, option A of
     # #939); its Cloud Run Jobs stay as the rollback, as generic's do.
     "codex" = {
@@ -362,7 +381,7 @@ locals {
   }
 
   # Profile -> the pin of its `default_model_class` (the mirror above), for
-  # every profile that has one: claude-code, claude-code-large,
+  # every profile that has one: claude-code, claude-code-large, claude-code-lightpanda,
   # claude-code-review, indexer and claude-code-browser, all opus, so exactly the map #226 wrote by hand.
   # codex is an OpenAI CLI, where a Claude name would fail every run, and
   # mock, generic, browser, merge, post-verdict, await-input and fix-loop start no
@@ -1409,8 +1428,13 @@ data "google_service_account" "listed" {
 # setup values are rendered only once they mean something, so the live
 # deployment's environment gains nothing else:
 #   * SETUP_GITHUB_ORG when setup_github_org names an organisation;
-#   * SWARM_HOSTNAME and GITHUB_HOOKS_URL under enable_console_app_setup (the
-#     receiver's URL only while the receiver is deployed).
+#   * SWARM_HOSTNAME and GITHUB_HOOKS_URL under enable_console_app_setup.
+#     GITHUB_HOOKS_URL is the receiver's deterministic URL WITH its route,
+#     /github/events (apps/swarm-github-hooks receiver.py `PATH`; any other path
+#     is a 404), rendered from infra pass 2 on, before the receiver exists: the
+#     App's manifest names it (an empty hook URL may be refused by GitHub after
+#     the App is made), and the hook stays inactive until the engine turns it
+#     on after infra pass 4 makes the receiver.
 # Unset, apps/swarm-api/swarm_api/settings.py explains each one's fallback.
 locals {
   api_day_one_env = merge(
@@ -1420,6 +1444,6 @@ locals {
     # The receiver's deterministic run.app URL (main.tf says why), not its
     # resource's `uri`: the receiver reads swarm-api's URL, so naming its
     # resource here would be a dependency cycle.
-    var.enable_console_app_setup && local.github_hooks_serving ? { GITHUB_HOOKS_URL = "https://${local.github_hooks_name}-${data.google_project.this.number}.${var.region}.run.app" } : {},
+    var.enable_console_app_setup ? { GITHUB_HOOKS_URL = "https://${local.github_hooks_name}-${data.google_project.this.number}.${var.region}.run.app/github/events" } : {},
   )
 }

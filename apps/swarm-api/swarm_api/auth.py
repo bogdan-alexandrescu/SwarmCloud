@@ -494,11 +494,19 @@ class PersonalTenants:
 
     Asked of `email` only, which the caller passes from the verified token.
 
-    Cached per email for `cache_seconds`, both answers, as `AdminRoles` caches
-    a role: two document reads on every request otherwise. A workspace that
-    becomes ready is offered within that window; nothing here can offer one
-    person's tenant to another, so staleness only delays. Raises whatever
-    Firestore raises; `Authenticator` turns that into a 503.
+    Only a READY answer is cached, per email for `cache_seconds`, as
+    `AdminRoles` caches a role: two document reads on every request otherwise.
+    A 'not ready' or absent answer is read again on every request (one read
+    when there is no `tenants/u-<caller>`, two otherwise), because the moment
+    the workspace job finishes is exactly when the person acts: Admin › Setup
+    polls while the workspace is built, and a cached 'not ready' refused the
+    one-person installer's pool-account sign-in 403 for up to the window after
+    it turned ready (E2E-3, DAYONE-PERSONAL-READY). No cap of a few seconds
+    either: the person clicks within one. Nothing refused becomes allowed
+    except by the documents really saying ready, and nothing here can offer
+    one person's tenant to another, so a cached ready only delays a
+    withdrawal by the window. Raises whatever Firestore raises, and caches
+    nothing then; `Authenticator` turns that into a 503.
     """
 
     def __init__(
@@ -516,7 +524,7 @@ class PersonalTenants:
         self._lock = threading.Lock()
 
     def ready(self, email: str) -> bool:
-        return self._cached(self._cache, email, self._read)
+        return self._cached(self._cache, email, self._read, keep_false=False)
 
     def owns_service_tenant(self, email: str) -> bool:
         """Whether `tenants/<tenant_id_for_user(email)>` is `kind: user` with
@@ -531,7 +539,7 @@ class PersonalTenants:
         return self._cached(self._service_cache, email, self._names)
 
     def _cached(self, cache: dict[str, tuple[float, bool]], email: str,
-                read: Callable[[str], bool]) -> bool:
+                read: Callable[[str], bool], *, keep_false: bool = True) -> bool:
         email = (email or "").strip().lower()
         if not email:
             return False
@@ -542,7 +550,10 @@ class PersonalTenants:
             return cached[1]
         answer = read(email)
         with self._lock:
-            cache[email] = (stamp + self._cache_seconds, answer)
+            if answer or keep_false:
+                cache[email] = (stamp + self._cache_seconds, answer)
+            else:
+                cache.pop(email, None)
         return answer
 
     def _names(self, email: str) -> bool:

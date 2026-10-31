@@ -515,6 +515,51 @@ def test_unhealthy_rollout_fails_the_apply() -> None:
         workloads.apply(ctx, workloads.plan(ctx))
 
 
+def test_a_failed_rollout_says_why_and_never_names_kubectl() -> None:
+    """Audit 5b M8: a rollout that fails names its reason, read by the engine
+    through its own kubeconfig (the workload's conditions and its pods'
+    warning events), never "kubectl -n swarm-system describe <name> says why",
+    which would run on the person's current context (lesson 37)."""
+    gcp, shell = ClusterFakeGcp(), FakeShell(namespaces=("swarm-system",))
+    shell.rollouts["deployment/swarm-graph"] = "error: timed out waiting for the condition"
+    events = {"items": [
+        {"type": "Warning", "reason": "Failed", "lastTimestamp": "2026-10-31T01:00:00Z",
+         "message": 'Failed to pull image "swarm-graph@sha256:0": not found',
+         "involvedObject": {"kind": "Pod", "name": "swarm-graph-7d9c-abcde"}},
+        {"type": "Warning", "reason": "BackOff", "lastTimestamp": "2026-10-31T00:59:00Z",
+         "message": "Back-off restarting failed container",
+         "involvedObject": {"kind": "Pod", "name": "swarm-live-0"}},
+    ]}
+    status = {"spec": {"replicas": 2}, "status": {"readyReplicas": 0, "conditions": [
+        {"type": "Available", "status": "False", "message": "Deployment does not have minimum availability."}]}}
+    answer = shell.__call__
+
+    def kubectl(argv: Sequence[str], stdin: str | None, env: dict[str, str] | None) -> tuple[int, str, str]:
+        verbs = [a for a in argv[1:] if not a.startswith("--")]
+        if argv[0].endswith("kubectl") and verbs[:2] == ["get", "events"]:
+            shell.calls.append((list(argv), stdin, env))
+            return 0, json.dumps(events), ""
+        if argv[0].endswith("kubectl") and verbs[:2] == ["get", "deployment/swarm-graph"] and shell.rollouts:
+            shell.calls.append((list(argv), stdin, env))
+            return 0, json.dumps(status), ""
+        return answer(argv, stdin, env)
+
+    *_, workloads = cluster.build_steps(lambda: gcp, Answers(), kube=_kube(kubectl, ()), run=kubectl,
+                                        outputs=FakeOutputs())
+    ctx = _ctx()
+    with pytest.raises(RuntimeError) as raised:
+        workloads.apply(ctx, workloads.plan(ctx))
+    said = str(raised.value)
+    assert "deployment/swarm-graph did not roll out" in said and "timed out" in said
+    assert 'swarm-graph-7d9c-abcde: Failed: Failed to pull image "swarm-graph@sha256:0"' in said
+    assert "Deployment does not have minimum availability" in said
+    assert "swarm-live-0" not in said, "only the failed workload's own events"
+    assert "kubectl" not in said and "describe" not in said
+    reads = [argv for argv in shell.kubectl_calls() if "events" in argv]
+    assert reads and all(any(a.startswith("--kubeconfig") for a in argv) for argv in reads), \
+        "the reason is read through the engine's own kubeconfig"
+
+
 def test_switched_off_workload_is_not_demanded() -> None:
     """Terraform renders null while a workload is switched off (live.tf,
     graph_service.tf); nothing is applied for it and the step does not wait on it."""

@@ -74,9 +74,22 @@ copy, or "waiting for the scheduler's next pass" when there is none.
 | AWAITING_INPUT | `who_may_answer {tenant_id, text}`, `opened_at`, `expires_at`, `answer_command` (`/sc answer WF STEP`) |
 | HUMAN_REQUIRED | `who_may_answer`, `expires_at` (null: no park records it), `answer_route` (`POST /v1/tasks/{id}/human-ready`), `cause` |
 | HUMAN_REQUIRED, a merge held by owner questions (`park_phase: owner_questions`, #2313) | `park_phase`, `questions [{task_id, step_id, question_index, question}]` (each asking step's question; the answer that clears the last one returns the merge to READY on its own), `unreadable`, `who_may_answer {submitted_by, admin, text}` (the answer route's rule: the submitter or an admin). NO `answer_route`: `human-ready` would only re-run the merge into the same park, and the summary says "Waiting for answers to N owner questions before merging (step: n, ...)", never "sign in". A hold with an `unreadable` entry is the exception: the answer route fails closed on it, so `answer_route` (`human-ready`) is served and the summary says to press it once the questions are answered |
+| HUMAN_REQUIRED, an agent's blocking owner questions (`park_phase: question_wait`, AU-7) | An answer, not a sign-in (#2859): `waiting_detail._question_wait` reads the wait the way the answer route reads it (`agent_questions.current_wait`, so a stored answer counts only for the attempt that asked) and serves `park_phase`, `questions [{question_index, question}]` (each blocking question still unanswered, its text redacted, on one line and cut to 80 characters), `blocking` (the question indices that block), `unanswered` (the blocking indices with no stored answer), `who_may_answer {submitted_by, admin, text}`, `answer_route` (`POST /v1/tasks/{id}/answers`), `questions_route` (`GET /v1/tasks/{id}/questions`), `console_section` (`#questions`) and `expires_at` (when it was asked + 72 hours, `QUESTION_WAIT_MAX_SECONDS`; null when no ask instant is readable). The summary counts the unanswered blocking questions and quotes the first: "Waiting for the owner's answer to N questions: “...”; answer on its console page (Questions) or in Claude Code with /sc check", never "sign in" (`/sc answer` is a workflow step's await-input form, not this). A record that is not a question wait's shape is served with empty lists and the same how-to. What the question wait itself carries is also served by `GET /v1/tasks/{id}/questions` (`agent_questions`), under `waiting`: `open`, `blocking`, `unanswered`, `asked_at`, `expires_at` and `issue_comment_url`. The owner answers on the agent's console page, from Claude Code (`swarm_task_answer`), or with `POST /v1/tasks/{id}/answers`; who may answer is the submitter or an admin (and, with the role switch on, a `member` or above). The answer that leaves no blocking question unanswered returns the agent to READY in the same transaction, so nobody presses `human-ready`; unanswered at `expires_at`, swarm-api dead-letters it with `last_error: "owner question unanswered"` (the scheduler's human-park sweep skips it). Every blocking question answered while it is still parked (a cancel was asked for, or its last attempt is used) says so, and the scheduler's sweeps end it |
 | CREDENTIAL_MISSING | `provider`, `secret_names`, `account_pool`, `forge_connection`, `workspace_secrets [{consumer, slot}]`, `mcp_servers [{name, code}]` |
 | BUDGET_EXHAUSTED | `budget` (null: no writer records it today) |
 | MANUAL_PAUSE | `paused_by` (null unless recorded), `paused_at` (the park event's time), `error` |
+
+**Why a question wait holds no capacity.** An agent that asks a blocking
+question with `await-answers` does not sleep on its lease waiting for the
+owner, who may take hours. Its worker checkpoints, parks the agent
+PARKED(HUMAN_REQUIRED) with the `question_wait` record in the park's
+`blocked_by`, releases the lease and exits (invariant 4). A parked agent
+creates no infrastructure demand and counts against no pool (invariants 1
+and 3), so a day of unanswered questions costs nothing and blocks no other
+agent. The answer does not hand the old attempt back its slot: it returns
+the agent to READY, and the next attempt is admitted all-or-nothing under a
+new fencing generation (invariants 2 and 5), reading the stored answers
+when it starts.
 
 ## Where it is served
 

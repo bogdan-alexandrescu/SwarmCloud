@@ -2113,6 +2113,32 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
     ),
+    # CONTRACT REQUEST 127 (LIGHTPANDA-ANALYSIS, part of #2688;
+    # docs/design/lightpanda-runtime.md), accepted by the owner 2026-10-31:
+    # claude-code's runner on agent-runtime-lightpanda, a headless browser
+    # that runs JavaScript and draws no pixels, for DOM-only browser work:
+    # reading, scraping, link checks, form flows. The `standard` class and one
+    # container: no display sidecar, no live view, no take-control, so
+    # `live_browser` stays False and the task leases `resource:standard`, not
+    # the scarce `resource:browser`. A page it cannot read goes to a
+    # claude-code-browser child the agent submits. A literal, not `replace()`,
+    # so tests/terraform/catalogue_mirror sees it (request 113's reason).
+    # GKE Autopilot, on-demand only (invariant 6).
+    "claude-code-lightpanda": RunnerProfile(
+        name="claude-code-lightpanda",
+        image="agent-runtime-lightpanda",
+        resource_class="standard",
+        backend=Backend.GKE_AUTOPILOT,
+        runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+        provider="anthropic",
+        secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+        secrets_any_of=True,
+        timeout_seconds=7200,
+        inputs=_CLI_AGENT_MCP_INPUTS,   # claude-code's; no browser_tool
+        secret_slots={"files": _FILES_SLOT},
+        model_classes=_CLAUDE_CODE_MODEL_CLASSES,
+        default_model_class="opus",
+    ),
     # CONTRACT REQUEST 94, accepted by the owner 2026-10-17 (HW-CONTRACT,
     # docs/design/human-steps.md §5 request C): a workflow step that waits for
     # a tenant member's answer. control_plane (request 93): no container runs

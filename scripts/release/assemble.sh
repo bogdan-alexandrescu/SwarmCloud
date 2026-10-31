@@ -8,9 +8,11 @@
 # the build record scripts/build-images.sh writes (and the release-images
 # action has scanned): every image's name, digest and source ref. DIR must not
 # exist or be empty. Nothing here reaches Google Cloud; the publish is
-# scripts/release/publish.sh, run by a person (D22).
+# scripts/release/publish.sh, run by a person (D22). The one download is the
+# Lightpanda source archive, from github.com (below).
 #
-# DIR then holds exactly what is uploaded to gs://swarmcloud/releases/V/:
+# DIR then holds exactly what is uploaded to gs://swarmcloud/releases/V/, and
+# third-party/, which goes to the bucket's root:
 #
 #   module.tgz            terraform/{bootstrap,infra,modules}: no tfvars, no
 #                         environments/ (design 5.1: the engine writes its own);
@@ -46,6 +48,14 @@
 #                         swarm_api.setup_github.PERMISSIONS; `swarm upgrade`
 #                         compares the live App's with it
 #   RELEASE.md            the commit, the digests, the accepted CVEs, the notes
+#   third-party/lightpanda/<version>/source.tar.gz
+#                         the Corresponding Source of agent-runtime-lightpanda's
+#                         Lightpanda (AGPL section 6(d)): the tag's source
+#                         archive, from upstream, checked against the sha256 the
+#                         image's Dockerfile pins (lib/build-mirror.sh
+#                         lightpanda_source_stage). publish.sh puts third-party/
+#                         at the bucket ROOT, the URL the image's SOURCE notice
+#                         names, not under releases/V/
 #   SHA256SUMS            every file above; publish.sh signs it
 #
 # Only files git tracks are shipped: a local tfvars, a .terraform/ directory or
@@ -58,6 +68,9 @@ set -euo pipefail
 # shellcheck source-path=SCRIPTDIR/..
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/lib/common.sh"
+# shellcheck source-path=SCRIPTDIR/..
+# shellcheck source=lib/build-mirror.sh
+source "${REPO_ROOT}/scripts/lib/build-mirror.sh"
 
 usage() {
   sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
@@ -87,6 +100,7 @@ if [[ -e "${OUT}" ]] && [[ -n "$(ls -A "${OUT}")" ]]; then
 fi
 require_cmd git
 require_cmd uv
+require_cmd curl
 
 COMMIT="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
 DIRTY=0
@@ -105,6 +119,13 @@ fail_clean() { rm -rf "${OUT:?}"/* "${OUT:?}"/.[!.]* 2>/dev/null || true; }
 trap 'fail_clean; cleanup' ERR
 
 step "Assembling SwarmCloud ${VERSION} from ${COMMIT:0:12}"
+# The Lightpanda image's Corresponding Source, staged before SHA256SUMS is
+# written so it is listed like every other file. In a subshell: the staging
+# exits on a refusal, and the bundle must still be cleaned.
+if ! (lightpanda_source_stage "${OUT}"); then
+  fail_clean
+  die "release ${VERSION} was not assembled: it must carry the Lightpanda source archive the image's SOURCE notice names"
+fi
 read -r -a PY <<<"$(swarm_python)"
 
 if ! REPO_ROOT="${REPO_ROOT}" OUT="${OUT}" WORK="${WORK}" VERSION="${VERSION}" IMAGES="${IMAGES}" \

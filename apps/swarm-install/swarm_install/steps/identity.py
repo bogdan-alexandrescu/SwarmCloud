@@ -102,8 +102,8 @@ GRANT_WAIT = WaitSpec(
     expected="1 to 10 min after it is saved",
     expected_s=10 * 60,
     bound_s=45 * 60,
-    look_at="the Admin console path above, for swarm-api's account; swarm doctor --explain "
-            "workspace-delegation.groups-reader-admin-role",
+    look_at="the Admin console path above, for swarm-api's account: the role must be saved there; a saved "
+            "grant takes up to 10 min to reach the Groups API",
     interval_s=15,
 )
 
@@ -113,7 +113,7 @@ GROUPS_WAIT = WaitSpec(
     expected="1 to 5 min after they are saved",
     expected_s=5 * 60,
     bound_s=45 * 60,
-    look_at="the Admin console's groups page (opened above); swarm doctor --explain workspace-group.install-groups",
+    look_at="the Admin console's groups page (opened above): each group the step named must be listed there",
     interval_s=15,
 )
 

@@ -444,6 +444,18 @@ def team_walk(walk, setup_app, db, github, pool, directory, runs) -> Console:
     assert team and [i["email"] for i in made["invites"]] == [CAROL]
     assert made["invites"][0]["member"] is False
     assert made["invites"][0]["add_members_url"].startswith("https://admin.google.com/ac/groups/")
+    # The row keeps the members page for the invites made with the team (M5).
+    row = console.page()["teams"][0]
+    assert row["add_members_url"] == made["invites"][0]["add_members_url"]
+    # 4b. swarm-workspace-apply fails once. Asking for the team again is
+    #     refused; Retry re-runs the workspace by its `w-` id (audit 5b, M6).
+    db.docs[f"workspaces/{team}"]["state"] = "failed"
+    console.call(cv.TEAMS, body={"group": TEAM_GROUP, "first_admin": ALICE,
+                                 "invites": [CAROL]}, expect=409)
+    row = console.page()["teams"][0]
+    assert row["progress"]["workspace_state"] == "failed" and row["workspace_id"]
+    console.call(cv.RETRY, f"/v1/admin/workspaces/{row['workspace_id']}/retry")
+    assert console.page()["teams"][0]["progress"]["workspace_state"] == "approved"
     workspace_ready(db, team)
     view = console.page()
     row = view["teams"][0]
@@ -479,12 +491,8 @@ def team_walk(walk, setup_app, db, github, pool, directory, runs) -> Console:
     assert view["teams"][0]["smoke"]["state"] == "running"
     assert runs.tasks[0]["tenant"] == team and runs.tasks[0]["group"] == TEAM_GROUP
 
-    # 7. The console's verify runs, as the first team, on its granted repository.
-    started = cv.norm_verify_runs(console.call(cv.VERIFY_RUNS))
-    assert started["task"] and started["workflow"]
-    assert started["repository"] in REPOSITORIES
-    assert started["retries"] == {"task": 0, "workflow": 0}
-    assert console.page()["verify_runs"] == started
+    # 7. Nobody starts the console's verify runs by hand: `finish` does (B1).
+    assert console.page()["verify_runs"] is None
 
     # 8. The smoke fails once and is started again on request; finish waits.
     runs.states[runs.tasks[0]["id"]] = "failed"
@@ -509,10 +517,24 @@ def team_walk(walk, setup_app, db, github, pool, directory, runs) -> Console:
         "token": addon["path"].rsplit("/", 1)[1], "value": secrets.token_hex(20)}))
     assert opened["kind"] == "addon-secret" and opened["secret"]
 
-    # 10. Finish, and the engine reads it.
+    # 10. Finish starts the console's verify runs, as the first team, on its
+    #     granted repository (audit 5b, B1), and the engine reads both.
     done = cv.norm_finish(console.call(cv.FINISH))
     assert done["at"]
-    assert console.page()["finished"]["by"] == ROOT
+    view = console.page()
+    assert view["finished"]["by"] == ROOT
+    started = view["verify_runs"]
+    assert started["task"] and started["workflow"]
+    assert started["repository"] in REPOSITORIES
+    assert started["retries"] == {"task": 0, "workflow": 0}
+    assert runs.workflows[0]["tenant"] == team
+    # A failed run is started again on the page's next read; the route the
+    # page keeps for spent retries answers the same runs.
+    runs.states[started["workflow"]] = "failed"
+    again = console.page()["verify_runs"]
+    assert again["task"] == started["task"] and again["workflow"] != started["workflow"]
+    assert again["retries"] == {"task": 0, "workflow": 1}
+    assert cv.norm_verify_runs(console.call(cv.VERIFY_RUNS)) == again
     engine_sees_finished(console, tenant=team, one_person=False)
     return console
 
@@ -556,10 +578,8 @@ def individual_walk(walk, setup_app, db, github, pool, runs) -> Console:
     assert view["personal"]["smoke"]["state"] == "running"
     assert runs.tasks[0]["tenant"] == tenant and runs.tasks[0]["group"] == ROOT
 
-    # 5. The verify runs, in the personal workspace.
-    started = cv.norm_verify_runs(console.call(cv.VERIFY_RUNS))
-    assert started["task"] and started["workflow"] and started["repository"] in REPOSITORIES
-    assert runs.workflows[0]["tenant"] == tenant
+    # 5. No verify run before the hand-over: `finish` starts them (B1).
+    assert console.page()["verify_runs"] is None
 
     # 6. The smoke fails, starts again, passes.
     runs.states[runs.tasks[0]["id"]] = "failed"
@@ -578,6 +598,10 @@ def individual_walk(walk, setup_app, db, github, pool, runs) -> Console:
     assert opened["kind"] == "team-git" and opened["secret"]
     assert cv.norm_finish(console.call(cv.FINISH))["at"]
     assert not db.paths(f"swarm-install/{ENV}/teams/")
+    started = console.page()["verify_runs"]
+    assert started["task"] and started["workflow"] and started["repository"] in REPOSITORIES
+    assert runs.workflows[0]["tenant"] == tenant
+    assert cv.norm_verify_runs(console.call(cv.VERIFY_RUNS)) == started
     engine_sees_finished(console, tenant=tenant, one_person=True)
     return console
 
@@ -647,10 +671,6 @@ def test_the_smoke_row_serves_the_detail_and_link_the_page_shows(walk, setup_app
             for route, paths in gaps.items() if route in NEVER_SERVED} == {}
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "E2E-1 (findings): swarm-api never records the App's `name` in console/github_app (it "
-    "is not in the document's row of the one-writer table), so infra pass 3 copies no name "
-    "and renders github_app_name empty beside a set github_app_id"))
 def test_the_engine_reads_every_app_field_pass_3_carries(walk, setup_app, github) -> None:
     """Infra pass 3 copies `github_switches.APP_FIELDS` from the console's
     `github_app` document into its tfvars (`tfvars.py`), which terraform/infra
@@ -663,10 +683,6 @@ def test_the_engine_reads_every_app_field_pass_3_carries(walk, setup_app, github
     assert [k for k in github_switches.APP_FIELDS if not app.get(k)] == []
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "E2E-3 (findings): for one person, the installer's pool-account sign-in is refused "
-    "403 tenant_not_member for up to 30 s after the personal workspace turns ready: "
-    "auth.PersonalTenants caches the 'not ready' the page's own polling read"))
 def test_one_persons_sign_in_works_as_soon_as_the_workspace_is_ready(walk, setup_app, db,
                                                                     github, pool) -> None:
     """The page is read (as it polls) before swarm-workspace-apply finishes

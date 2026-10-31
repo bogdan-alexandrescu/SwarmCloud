@@ -64,17 +64,18 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # shellcheck source=lib/image-scan.sh
 source "${REPO_ROOT}/scripts/lib/image-scan.sh"
 
-# The same sixteen build-images.sh builds (agent-runtime-indexer since #625, workspace-apply since #847, swarm-live since LB-L8e,
+# The same seventeen build-images.sh builds (agent-runtime-indexer since #625, workspace-apply since #847, swarm-live since LB-L8e,
 # agent-runtime-base-nocodex -- the codex-less base agent-runtime-browser is built FROM -- since BROWSER-NO-CODEX, swarm-egress since
 # EGRESS-BUILD: its promoted digest is the image_refs entry egress.tf renders swarm_egress_manifest from, swarm-typesafe-fwd since
 # SEC-INJECT-B, for typesafe_fwd.tf's swarm_typesafe_fwd_manifest, swarm-graph since GS-INFRA, for graph_service.tf's
-# swarm_graph_manifest, swarm-github-hooks since GS-HOOKS, for github_hooks.tf's Cloud Run service). This list had six -- no swarm-ui, no
+# swarm_graph_manifest, swarm-github-hooks since GS-HOOKS, for github_hooks.tf's Cloud Run service, agent-runtime-lightpanda since
+# LIGHTPANDA-BUILD-SCRIPTS, the runner image a claude-code-lightpanda profile will name). This list had six -- no swarm-ui, no
 # swarm-verify -- and it is the fallback whenever build/images-<env>.json is
 # absent. That used to cost only an unpromoted image; now terraform deploys
 # every image by digest from the manifest this writes and refuses to plan one
 # with no digest, so a promotion that silently skips two images is a deploy
 # that fails naming them. Better to promote them.
-ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks workspace-apply)
+ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer agent-runtime-lightpanda swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks workspace-apply)
 TARGETS=()
 TAG=""
 CHANNEL="${ENVIRONMENT}"

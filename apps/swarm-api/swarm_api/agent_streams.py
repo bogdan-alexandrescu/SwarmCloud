@@ -51,6 +51,8 @@ AGENT_STREAM_FILES: dict[str, tuple[str, str, str | None] | None] = {
     "claude-code-browser": ("claude-code.stdout.log", "claude-code.stderr.log", "claude-transcript.json"),
     # Contract request 113: claude-code's runner on the large class.
     "claude-code-large": ("claude-code.stdout.log", "claude-code.stderr.log", "claude-transcript.json"),
+    # Contract request 127: claude-code's runner on agent-runtime-lightpanda.
+    "claude-code-lightpanda": ("claude-code.stdout.log", "claude-code.stderr.log", "claude-transcript.json"),
     # Contract request 94: a control_plane profile; nothing runs it, so it
     # has no agent child and no streams.
     "await-input": None,

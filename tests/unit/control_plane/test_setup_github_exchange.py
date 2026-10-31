@@ -54,7 +54,7 @@ def _start(client) -> tuple[dict, str]:
 def _conversion_answer() -> dict:
     return {
         "id": 4242, "slug": "swarmcloud-test", "client_id": "Iv1.example",
-        "pem": secrets.token_hex(64), "client_secret": secrets.token_hex(20),
+        "name": "SwarmCloud test", "pem": secrets.token_hex(64), "client_secret": secrets.token_hex(20),
         "webhook_secret": secrets.token_hex(20), "owner": {"login": ORG},
     }
 
@@ -103,6 +103,8 @@ def test_exchange_writes_three_secrets_and_returns_no_value(setup_client, github
     doc = db.docs[GITHUB_APP_DOC]
     assert doc["id"] == 4242 and doc["slug"] == "swarmcloud-test"
     assert doc["client_id"] == "Iv1.example"
+    # E2E-1 (DAYONE-APP-NAME): infra pass 3 renders github_app_name from it.
+    assert doc["name"] == "SwarmCloud test"
     assert doc["secrets_written_at"] is not None
     assert doc["state_hash"] is None
     stored = _firestore_text(db)
@@ -133,6 +135,20 @@ def test_manifest_requests_statuses_read(setup_client, db) -> None:
     # Only the state's hash is kept.
     assert state not in _firestore_text(db)
     assert db.docs[GITHUB_APP_DOC]["state_hash"]
+
+
+def test_manifest_returns_the_person_to_admin_setup(setup_client, db) -> None:
+    """Audit 5b M4 (DAYONE-FLOW-APP-RETURN): installing the App sends the
+    person back to Admin › Setup, where the GitHub step polls for the
+    installation, instead of leaving them on GitHub's installation page. An
+    update to the installation's repositories returns there too."""
+    body, _state = _start(setup_client)
+    manifest = body["manifest"]
+    # MUTATION: drop `setup_url` -> GitHub stays on its own page, and this fails.
+    assert manifest["setup_url"] == f"https://{HOSTNAME}/admin/setup"
+    assert manifest["setup_on_update"] is True
+    # The creation callback is still the conversion page, not the setup page.
+    assert manifest["redirect_url"] == f"https://{HOSTNAME}/admin/setup/github-app/callback"
 
 
 def _created(setup_client, github) -> None:

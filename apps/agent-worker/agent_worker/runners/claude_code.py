@@ -283,6 +283,16 @@ last one is warned, never blocked (`guards_repeat_hook.py`). And the prompt
 gains one line (`exploration_note`): the graph's `search` and `call_graph`
 before a `grep -rn` across the tree, and broad exploration sent to a sonnet
 or haiku child, each clause only when the attempt has that tool.
+
+LIGHTPANDA (docs/design/lightpanda-runtime.md §6.2, contract request 127).
+On `claude-code-lightpanda` (SWARM_RUNNER_PROFILE, which the worker sets) this
+runner starts and supervises `lightpanda serve` on 127.0.0.1:9223 under
+`env -i`, sets SWARM_LIGHTPANDA_CDP and never SWARM_CDP_ENDPOINT, registers the
+`lightpanda` MCP server and no `playwright` one, denies three of its tools and
+adds `lightpanda.lightpanda_note` to the prompt. There is no live view, so no
+`browser.json`. Checkpointing and fencing are this runner's, unchanged: the
+child starts inside `body`, after the worker's fencing check, and stops with
+it (`agent_worker.lightpanda`).
 """
 
 from __future__ import annotations
@@ -302,7 +312,7 @@ from swarm_common.models import (
     RESERVED_MCP_SERVER_PREFIX,
 )
 
-from .. import browser_tools, graphstage
+from .. import browser_tools, graphstage, lightpanda
 from ..budget import NOTE_ENV as BUDGET_NOTE_ENV
 from ..cachedirs import image_browsers_path, scratch_note
 from ..children import CHILDREN_ENV, git_shim_argv, search_shim_argv
@@ -1090,6 +1100,7 @@ def write_mcp_config(
     graph_served: tuple[str, str, str] | None = None,
     relay: tuple[str, list[RelayServer]] | None = None,
     screenshots_dir: str | None = None,
+    lightpanda_server: dict[str, Any] | None = None,
 ) -> Path:
     """Write the CLI's `--mcp-config` and return it: Playwright MCP on the live
     browser when `endpoint` is given (writing what it names itself into
@@ -1103,7 +1114,10 @@ def write_mcp_config(
     `graph_served` (`graphstage.served_env`: pin, ticket file, URL) is, and
     each of the caller's registered servers when `relay` (`relay_servers`) is:
     an `http` entry at the relay's loopback URL whose one header carries the
-    LOCAL token, never the caller's credential (module docstring).
+    LOCAL token, never the caller's credential (module docstring), and
+    `lightpanda_server` (`lightpanda.mcp_server`) as the `lightpanda` server
+    when it is given: claude-code-lightpanda's, which has no `endpoint` and so
+    no `playwright` server (docs/design/lightpanda-runtime.md §6.2).
 
     Playwright MCP connects with its client tag on the endpoint
     (`browser_tools.tag_endpoint`), so the gate can say which tool drove the
@@ -1139,6 +1153,8 @@ def write_mcp_config(
                 }
             else:
                 servers[JEV_MCP_SERVER_NAME] = {"type": "stdio", "command": JEV_MCP_BIN, "args": []}
+    if lightpanda_server:
+        servers[lightpanda.MCP_SERVER_NAME] = lightpanda_server
     if git_spool:
         command, *args = git_shim_argv(git_spool)
         servers[GIT_MCP_SERVER_NAME] = {"type": "stdio", "command": command, "args": args}
@@ -1463,6 +1479,12 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     max_turns = ctx.payload.get("max_turns")
     if max_turns is not None:
         extra += ["--max-turns", str(int(max_turns))]
+    # claude-code-lightpanda (docs/design/lightpanda-runtime.md §6.2): the
+    # profile the worker named, never input. Its three denied tools go before
+    # `--settings`, because the CLI's flag is variadic.
+    on_lightpanda = lightpanda.is_lightpanda(os.environ)
+    if on_lightpanda:
+        extra += lightpanda.disallowed_tools_args()
     # After the platform's flags, so a deployment's CLAUDE_CODE_ARGS cannot
     # leave background commands switched on by replacing the flag set.
     settings = write_headless_settings(Path(ctx.work_dir) / SETTINGS_DIR_NAME)
@@ -1486,6 +1508,13 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     git_spool = os.environ.get(GIT_SPOOL_ENV, "").strip()
     if git_spool:
         env[GIT_SPOOL_ENV] = git_spool
+    # The child path's spool, likewise: the worker sets it only for an attempt
+    # with the child path (`children.ChildPath.prepare`), never for a child,
+    # which may not submit children. Without it the agent's shell had no
+    # $SWARM_CHILDREN while the notes below named it (measured 2026-10-31).
+    children_spool = os.environ.get(CHILDREN_ENV, "").strip()
+    if children_spool:
+        env[CHILDREN_ENV] = children_spool
     # The search tool's spool, likewise: set only for an attempt offered it.
     search_spool = os.environ.get(SEARCH_SPOOL_ENV, "").strip()
     if search_spool:
@@ -1513,6 +1542,19 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     if cache_browsers:
         env[BROWSERS_PATH_ENV] = cache_browsers
     endpoint = os.environ.get(CDP_ENDPOINT_ENV, "").strip()
+    lightpanda_env: dict[str, str] = {}
+    if on_lightpanda:
+        # Lightpanda, never Chromium and never the live browser: no
+        # SWARM_CDP_ENDPOINT, no browser note, no `browser.json`
+        # (`browser_tools.write_state` is in the endpoint branch below), and
+        # the agent's CDP is the `serve` child's, on 9223.
+        endpoint = ""
+        browsers = ""
+        env.pop(CDP_ENDPOINT_ENV, None)
+        env[lightpanda.CDP_ENV] = lightpanda.CDP_URL
+        cache_home = os.environ.get(CACHE_HOME_ENV, "").strip()
+        lightpanda_env = lightpanda.child_env(
+            os.environ, Path(cache_home) if cache_home else Path(ctx.work_dir) / ".cache")
     prompt = ctx.payload.get("prompt")
     spec = SPEC
     unstaged = graphstage.unstaged_note(os.environ)
@@ -1532,7 +1574,7 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         ctx.payload = {**ctx.payload, "prompt": prompt}
     # Where to explore first, naming only the tools this attempt has (LANE CAPS).
     explore = exploration_note(graph=bool(graph_snapshot or graph_served),
-                               children=os.environ.get(CHILDREN_ENV, "").strip())
+                               children=env.get(CHILDREN_ENV, ""))
     if explore and isinstance(prompt, str) and prompt.strip():
         prompt = f"{prompt.rstrip()}\n\n{explore}"
         ctx.payload = {**ctx.payload, "prompt": prompt}
@@ -1564,6 +1606,11 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     refusal = live_browser_refusal(env, browsers, endpoint)
     if refusal:
         raise RunnerFailure(f"{refusal}; the agent was not started")
+    if on_lightpanda and isinstance(prompt, str) and prompt.strip():
+        # A child has no child path: it lists failing pages for its parent.
+        lp_note = lightpanda.lightpanda_note(children=bool(env.get(CHILDREN_ENV)))
+        prompt = f"{prompt.rstrip()}\n\n{lp_note}"
+        ctx.payload = {**ctx.payload, "prompt": prompt}
     if browsers:
         spec = dataclasses.replace(SPEC, path_prefix=(VENV_BIN,))
         note = BROWSER_NOTE
@@ -1615,7 +1662,7 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             ctx.payload = {**ctx.payload, "prompt": f"{prompt.rstrip()}\n\n{note}"}
     # ONE `--mcp-config` for every server this attempt has (module docstring).
     if (live_endpoint or git_spool or search_spool or state_spool or graph_snapshot
-            or graph_served or relay[1]):
+            or graph_served or relay[1] or lightpanda_env):
         mcp = write_mcp_config(
             Path(ctx.work_dir) / SETTINGS_DIR_NAME, live_endpoint or None,
             git_spool=git_spool or None, search_spool=search_spool or None,
@@ -1626,14 +1673,24 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
                            else None),
             graph_served=graph_served, relay=relay if relay[1] else None,
             screenshots_dir=(str(Path(ctx.artifacts_dir) / SCREENSHOTS_DIR_NAME)
-                             if live_endpoint else None))
+                             if live_endpoint else None),
+            lightpanda_server=lightpanda.mcp_server(lightpanda_env) if lightpanda_env else None)
         # BROWSER-START: the live browser's tool is in the config the CLI
         # reads, or the agent does not start.
         if env.get(HANDOFF_ENV) and MCP_SERVER_NAME not in json.loads(mcp.read_text())["mcpServers"]:
             raise RunnerFailure(f"{LIVE_BROWSER_UNAVAILABLE}: Playwright MCP is not registered; "
                                 "the agent was not started")
         extra += ["--mcp-config", str(mcp)]
+    supervisor: lightpanda.Supervisor | None = None
     try:
+        if lightpanda_env:
+            # Started here, in the runner the worker starts only after its
+            # fencing check, and in the runner's process group, so it ends with
+            # the attempt; stopped below whatever the CLI did.
+            supervisor = lightpanda.Supervisor(
+                lightpanda.serve_argv(lightpanda_env), lightpanda_env,
+                log=StructuredLogger(stream=sys.stderr, component="claude-code-runner").warning)
+            supervisor.start()
         result = run_cli_agent(ctx, spec, extra_args=extra, extra_env=env)
         if live_endpoint and isinstance(result, dict):
             # QA-KIT: what the model was given of its screenshots, read off the
@@ -1648,6 +1705,8 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
                 stream, Path(ctx.artifacts_dir), complete=not result.get("stdout_truncated"))
         return result
     finally:
+        if supervisor is not None:
+            supervisor.stop()
         # The worker's key file, whether or not jev was registered: the agent
         # is done, so nothing reads it again (`jev_launch.py`).
         _remove_jev_key_file()

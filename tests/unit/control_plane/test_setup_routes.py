@@ -809,6 +809,97 @@ def test_a_verify_run_that_spent_its_retries_starts_nothing(setup_client, db, gi
     assert db.docs[VERIFY_DOC]["retries"] == {"console_task": 2, "console_workflow": 0}
 
 
+def finished_install(setup_client, db, github, pool, runs) -> str:
+    """Every console step done and `finish` posted: the App, the first team,
+    its pool account signed in and its smoke passed. Answers the team."""
+    install_app(db, github)
+    team = create_team(setup_client).json()["team"]
+    pool.accounts.append({"account_id": f"{team}:pool-1", "owner_tenant": team,
+                          "label": "pool-1"})
+    db.docs[f"swarm-install/{ENV}/console/accounts"] = {"pool-1": {"owner": ALICE}}
+    assert setup_client.post("/v1/admin/setup/finish",
+                             headers=auth_header("root")).status_code == 409
+    runs.states["task-1"] = "succeeded"
+    return team
+
+
+def test_finish_starts_the_console_verify_runs(setup_client, db, github, pool, runs) -> None:
+    """Audit 5b, B1: nothing tells the person to press a button, and swarm
+    install's verify waits for the console's two runs; `finish` starts them
+    itself, as the first team, and answers their ids. Again, it starts none."""
+    team = finished_install(setup_client, db, github, pool, runs)
+    done = setup_client.post("/v1/admin/setup/finish", headers=auth_header("root"))
+    assert done.status_code == 200, done.text
+    expected = {"console_task": "task-2", "console_workflow": "wf-1"}
+    assert db.docs[VERIFY_DOC]["verify_runs"] == expected
+    assert done.json()["verify_runs"]["verify_runs"] == expected
+    assert runs.tasks[1]["tenant"] == team and runs.tasks[1]["label"] == "swarm-install-verify"
+    again = setup_client.post("/v1/admin/setup/finish", headers=auth_header("root"))
+    assert again.status_code == 200 and again.json()["verify_runs"]["started"] is False
+    assert len(runs.tasks) == 2 and len(runs.workflows) == 1
+
+
+def test_after_finish_each_read_restarts_a_failed_verify_run(setup_client, db, github, pool,
+                                                             runs) -> None:
+    """Audit 5b, B1: once handed over, the page's read restarts a failed key,
+    up to MAX_VERIFY_RETRIES, then starts nothing and still answers."""
+    finished_install(setup_client, db, github, pool, runs)
+    assert setup_client.post("/v1/admin/setup/finish",
+                             headers=auth_header("root")).status_code == 200
+    for retry in (3, 4):
+        runs.states[f"task-{retry - 1}"] = "failed"
+        view = setup_client.get("/v1/admin/setup", headers=auth_header("root"))
+        assert view.status_code == 200, view.text
+        assert view.json()["verify_runs"]["verify_runs"]["console_task"] == f"task-{retry}"
+    assert db.docs[VERIFY_DOC]["retries"] == {"console_task": 2, "console_workflow": 0}
+    runs.states["task-4"] = "failed"
+    view = setup_client.get("/v1/admin/setup", headers=auth_header("root"))
+    assert view.status_code == 200, view.text
+    assert view.json()["verify_runs"]["verify_runs"]["console_task"] == "task-4"
+    assert len(runs.tasks) == 4 and len(runs.workflows) == 1
+
+
+def test_finish_starts_verify_runs_it_could_not_start_on_the_next_read(
+        setup_client, db, github, pool, runs) -> None:
+    """A `console/finished` written before `finish` started the runs (an older
+    swarm-api) gets them on the page's next read; before finish, a read
+    starts nothing."""
+    finished_install(setup_client, db, github, pool, runs)
+    setup_client.get("/v1/admin/setup", headers=auth_header("root"))
+    assert VERIFY_DOC not in db.docs
+    db.docs[f"swarm-install/{ENV}/console/finished"] = {"at": "2026-10-30T00:00:00Z", "by": ROOT}
+    view = setup_client.get("/v1/admin/setup", headers=auth_header("root")).json()
+    assert view["verify_runs"]["verify_runs"] == {"console_task": "task-2",
+                                                  "console_workflow": "wf-1"}
+
+
+def test_the_team_row_keeps_the_members_page_and_the_workspace_id(setup_client, db,
+                                                                   directory) -> None:
+    """Audit 5b, M5 and M6: every team row serves its group's members page
+    (the invites made with the team get their link too) and its workspace's
+    `w-` id, which the workspace retry route takes."""
+    team = create_team(setup_client, invites=["bob@example.com"]).json()["team"]
+    row = page_team(setup_client, team)
+    assert row["add_members_url"] == "https://admin.google.com/ac/groups/0idplatformteam/members"
+    assert row["workspace_id"] == db.docs[f"workspaces/{team}"]["workspace_id"]
+    assert row["workspace_id"].startswith("w-")
+
+
+def test_a_failed_first_team_workspace_is_retried_by_its_workspace_id(setup_client, db) -> None:
+    """Audit 5b, M6: asking for the team again answers 409 WORKSPACE_FAILED;
+    the row's `workspace_id` retried through the workspace route re-runs it."""
+    team = create_team(setup_client).json()["team"]
+    db.docs[f"workspaces/{team}"]["state"] = "failed"
+    again = create_team(setup_client)
+    assert again.status_code == 409 and "WORKSPACE_FAILED" in again.text
+    row = page_team(setup_client, team)
+    assert row["workspace_state"] == "failed"
+    retried = setup_client.post(f"/v1/admin/workspaces/{row['workspace_id']}/retry",
+                                headers=auth_header("root"))
+    assert retried.status_code == 200, retried.text
+    assert page_team(setup_client, team)["workspace_state"] == "approved"
+
+
 def test_verify_runs_wait_for_a_granted_repository(setup_client, db, github) -> None:
     install_app(db, github, repositories=())
     create_team(setup_client)
@@ -1556,3 +1647,54 @@ def test_one_persons_grant_records_the_app_installation_for_the_personal_workspa
     install_app(db, github)
     page(setup_client)
     assert _app_installed(db, personal_tenant(), ORG) is True
+
+
+# --------------------------------------------------------------------------
+# no workspace is approved before infra pass 3 turns publishing on
+# (DAYONE-MANIFEST-STEPS-2)
+# --------------------------------------------------------------------------
+
+
+def publishing_off(setup_app) -> FakePublisher:
+    """swarm-api as infra passes 1 and 2 deploy it: `workspace_apply_publish`
+    is false until infra pass 3 (`github.pass-3`), so an approval would only
+    be logged `workspace_stuck` (reason `publishing_off`)."""
+    publisher = setup_app.state.workspace_publisher
+    publisher.enabled = False
+    return publisher
+
+
+def test_the_first_team_waits_for_publishing(setup_app, setup_client, db) -> None:
+    publisher = publishing_off(setup_app)
+    seed_sized_engine(db, mode="team", members=5)
+    step = page(setup_client)["steps"]["first_team"]
+    assert step["needed"] is True and step["state"] == "waiting", step
+    assert "infra pass 3" in step["reason"], step
+    refused = create_team(setup_client, first_admin=WORKSPACE_ADMIN)
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["code"] == "publishing_off", refused.text
+    assert not [k for k in db.docs if k.startswith("workspaces/") or k.startswith(TEAMS_PREFIX)]
+    assert publisher.messages == []
+    # Infra pass 3's revision serves `workspace_apply_publish`: the team is approved and published.
+    publisher.enabled = True
+    assert page(setup_client)["steps"]["first_team"]["state"] == "to_do"
+    created = create_team(setup_client, first_admin=WORKSPACE_ADMIN)
+    assert created.status_code == 202, created.text
+    assert len(publisher.messages) == 1, publisher.messages
+
+
+def test_one_persons_workspace_waits_for_publishing(setup_app, setup_client, db) -> None:
+    publisher = publishing_off(setup_app)
+    seed_sized_engine(db)
+    tenant = personal_tenant()
+    body = page(setup_client)
+    assert body["personal"] == {"owner": ROOT, "workspace": None, "reason": "publishing_off"}
+    assert PERSONAL_DOC not in db.docs and f"workspaces/{tenant}" not in db.docs
+    link = setup_client.post("/v1/admin/setup/links",
+                             json={"kind": "pool-account", "label": "a1", "owner": ROOT},
+                             headers=auth_header("root"))
+    assert link.status_code == 409 and link.json()["code"] == "publishing_off", link.text
+    assert f"workspaces/{tenant}" not in db.docs and publisher.messages == []
+    publisher.enabled = True
+    assert page(setup_client)["personal"]["workspace"] == tenant
+    assert len(publisher.messages) == 1, publisher.messages

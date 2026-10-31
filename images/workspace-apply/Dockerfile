@@ -73,13 +73,17 @@
 # COPY added below must be added to that assembly too; a test holds the two
 # together (test_build_images_pr_check.py).
 
-# google-cloud-cli 587.0.0, the -stable (Debian trixie) variant, by digest of
+# google-cloud-cli 591.0.0, the -stable (Debian trixie) variant, by digest of
 # its multi-arch index: `HEAD
-# https://gcr.io/v2/google.com/cloudsdktool/google-cloud-cli/manifests/587.0.0-stable`,
-# docker-content-digest, read 2026-10-08. 587.0.0 because it is the gcloud
+# https://gcr.io/v2/google.com/cloudsdktool/google-cloud-cli/manifests/591.0.0-stable`,
+# docker-content-digest, read 2026-10-31. 591.0.0 because it is the gcloud
 # agent-runtime-base pins, so the auth plugin's .deb pin below is the one that
-# image already verified against this exact gcloud.
-ARG GCLOUD_IMAGE=gcr.io/google.com/cloudsdktool/google-cloud-cli:587.0.0-stable@sha256:73a97b855d386c74bee3facd59ccc261006c55a9812b7913fa6b93816010a1bc
+# image already verified against this exact gcloud. Raised from 587.0.0 on
+# 2026-10-31 (lane IMAGE-SCAN-NOV): 591.0.0's gcloud-crc32c is go1.27.2, which
+# fixes CVE-2026-78667, CVE-2026-78669 and CVE-2026-97031 that 587.0.0's
+# (go1.26.6) carried; `trivy image` over both digests found 591.0.0's
+# HIGH/CRITICAL fixable findings a subset of 587.0.0's.
+ARG GCLOUD_IMAGE=gcr.io/google.com/cloudsdktool/google-cloud-cli:591.0.0-stable@sha256:d3f74bb21280869467e4e901c66280d4610e0bda81bab1cd7d9c112ccd1d2276
 # The uv every other image copies in, for the same reason they give
 # (images/swarm-api/Dockerfile): 0.12.15 is the release whose static Rust
 # dependencies pass the promote scan.
@@ -119,7 +123,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # python3 is needed twice: register-tenant.sh asks the frozen contract for
 # names with `python3 - <<PY`, and gcloud itself runs on it once the bundled
 # interpreter is gone (below). Debian trixie's python3 is 3.13, inside the
-# 3.9-3.14 range gcloud 587's launcher accepts.
+# 3.9-3.14 range gcloud 591's launcher accepts.
 #
 # A FRESH LAYER, EVERY BUILD AND EVERY RELEASE (owner decision 2026-10-14).
 # Releases 38535875750 and 38540997006 refused this image over curl and
@@ -166,7 +170,7 @@ RUN rm -rf /usr/lib/google-cloud-sdk/platform/bundledpythonunix \
 # The GKE auth plugin and kubectl, at the pins agent-runtime-base verified.
 #
 # GKE_PLUGIN_*: the Filename and SHA256 of
-# google-cloud-cli-gke-gcloud-auth-plugin 587.0.0-0 in
+# google-cloud-cli-gke-gcloud-auth-plugin 591.0.0-0 in
 # https://packages.cloud.google.com/apt/dists/cloud-sdk/main/binary-amd64/Packages.
 # The .deb declares no Depends, so it installs beside an SDK this image did not
 # install through dpkg. Named GKE_PLUGIN_*, not GKE_AUTH_PLUGIN_*: Trivy DS-0031
@@ -179,9 +183,9 @@ RUN rm -rf /usr/lib/google-cloud-sdk/platform/bundledpythonunix \
 #
 # amd64 only, like every image here: Cloud Build's default pool is amd64, and
 # so is Cloud Run.
-ARG GCLOUD_VERSION=587.0.0
-ARG GKE_PLUGIN_POOL_ID=207adf5dccdc107f7d16bf1e01bd1398
-ARG GKE_PLUGIN_SHA256=c572f6cf9b401820032e8459b2bade792442dfbbce30e53d3b1b0d7be1bf9e24
+ARG GCLOUD_VERSION=591.0.0
+ARG GKE_PLUGIN_POOL_ID=0f14e7e21ca8f8a0ba22a1f83c4b26b1
+ARG GKE_PLUGIN_SHA256=b46d7490fd2b596e3b58b0d94aa8f0328c288fcfa517a6f6b8a01e704b5760c7
 ARG KUBECTL_VERSION=1.36.6
 ARG KUBECTL_SHA256=29818b6729dc9262b692307470d0558d027725e738be5dd47c760261868a2634
 RUN mkdir -p /tmp/toolbox \

@@ -67,6 +67,8 @@ IMAGES = [
     "agent-runtime-base-nocodex",
     "agent-runtime-browser",
     "agent-runtime-indexer",
+    # agent-runtime-base by digest plus Lightpanda (LIGHTPANDA-BUILD-SCRIPTS).
+    "agent-runtime-lightpanda",
     "swarm-api",
     "swarm-scheduler",
     "swarm-quota-broker",

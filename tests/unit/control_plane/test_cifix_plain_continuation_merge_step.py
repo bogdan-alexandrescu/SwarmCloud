@@ -222,6 +222,10 @@ def test_the_merge_steps_own_ci_conflict_and_pick_rounds_are_not_refused(db, clo
         metadata={"merge_fix_round": {
             "kind": mergewake.ROUND_KIND[mergewake.PICK_ROUNDS_KEY], **record}},
     )
+    # #2858: a pick the branch already builds is reported built with nothing
+    # pushed, which the merge counts; the brief says so.
+    prompt = pick_round.steps[0].input["prompt"]
+    assert "ALREADY builds a pick" in prompt and "pushing nothing then is correct" in prompt
     # The pick round's mark, pinned: a writer kind, so the new read leaves it alone.
     assert "merge_fix_round" in pick_round.metadata
     assert pick_round.metadata["merge_fix_round"]["kind"] == "pick"

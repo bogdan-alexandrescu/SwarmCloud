@@ -366,8 +366,9 @@ this order.
 
 1. **The OAuth brand and the Desktop client.** Google has no API for either.
    - The installer opens `https://console.cloud.google.com/auth/branding?project=<project>`.
-     Set the App name to `SwarmCloud` and the support email to a group you
-     own, then save. The brand can never be deleted.
+     Set the App name to `SwarmCloud` and the support email to your own address
+     (or a group you manage; the install's own groups are created only at
+     stage 8), then save. The brand can never be deleted.
    - It then opens `https://console.cloud.google.com/auth/audience?project=<project>`.
      Choose **Internal**.
    - Then, on Clients › Create client
@@ -678,14 +679,29 @@ Admin › Setup › Health, the hourly doctor's checks once setup is done.
    without them. To turn one on, use `swarm addon enable <name>` in the
    terminal ([add-ons](#add-ons)).
 
-6. **Verify, run by swarm install.**
-   1. Press **Run the console checks**. The console starts two runs on the
-      granted repository, as swarm-api's own service account: a single agent
-      and a two-step workflow. Each opens a pull request. Their ids go into the
-      install's records, so nobody pastes a run id.
-   2. Once every console step is done, press **Hand over to swarm install**.
-      The terminal then runs stage 14, and this row shows its progress, for
-      example `<check> · 3 of 11 · 4 min elapsed · about 12 min left`.
+6. **Verify, run by swarm install.** Once every console step above is done,
+   the row says `Every console step is done: hand over, and swarm install
+   checks ...`. Press **Hand over to swarm install**. There is no separate
+   button to start the checks:
+   1. swarm-api starts the console's two runs on a repository of the grant: a
+      single agent and a two-step workflow, each opening a pull request. They
+      run as swarm-api's own service account in the first team's tenant (for
+      one person, your personal workspace's), on its own GitHub slot, never
+      on a person's GitHub connection. They wait for swarm install's infra
+      pass 3 to give swarm-api the App's id; until then the page's next read
+      starts them.
+   2. Their ids go into the install's records, and swarm install copies them
+      from there, so nobody pastes a run id. The row lists both runs, each
+      linked, with its state and the repository.
+   3. A run that fails or is cancelled is started again by swarm-api on the
+      page's next read, up to twice for each run; the row says how many fresh
+      starts are left. Only a run that failed after both shows **Run the
+      console checks again**, disabled, and says to read that run for why.
+   4. The terminal then runs stage 14, and this row shows its progress, for
+      example `<check> · 3 of 11 · 4 min elapsed · about 12 min left`, then
+      the deadline. If a check fails, the row names it; fix what swarm install
+      printed and run `swarm install` again: it re-runs verify from the
+      failed check.
 
 7. **Send to your team.** This row unlocks when verify passes. Until then it
    says:
