@@ -252,6 +252,29 @@ describe('GitHubAppCallback', () => {
     expect(window.location.search).toBe('')
   })
 
+  it('the created card sends the person on to Admin › Setup, never to GitHub in this tab', async () => {
+    // Audit 5b M4 (DAYONE-FLOW-APP-RETURN): the card's "Install the App"
+    // opened GitHub in this tab, and nothing on GitHub's page led back.
+    // Admin › Setup holds the install button and polls for the installation.
+    serve((m, url) =>
+      m === 'POST' && url === '/v1/admin/setup/github-app/conversion' ? { status: 200, body: { id: 4242, slug: 'swarmcloud-example' } } : null,
+    )
+    window.history.replaceState(null, '', `/admin/setup/github-app/callback?code=c${rand(12)}&state=s${rand(12)}`)
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const { GitHubAppCallback } = await import('../AdminSetupSteps')
+    render(<GitHubAppCallback />)
+    await screen.findByText('GitHub App created')
+    const go = screen.getByRole('link', { name: 'Continue in Admin › Setup' })
+    expect(go.getAttribute('href')).toBe('/admin/setup')
+    // MUTATION: keep the same-tab install link -> fails.
+    for (const a of Array.from(document.querySelectorAll('a'))) {
+      if ((a.getAttribute('href') ?? '').startsWith('https://github.com/')) expect(a.getAttribute('target')).toBe('_blank')
+    }
+    expect(document.querySelector('a[href*="/installations/new"]')).toBeNull()
+    expect(visible(document.body)).toContain('Admin › Setup has the install button')
+  })
+
   it('a callback without a code or state posts nothing and says how to start again', async () => {
     const calls = serve(() => null)
     window.history.replaceState(null, '', '/admin/setup/github-app/callback')

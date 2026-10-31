@@ -8,6 +8,10 @@
 //   * /admin/setup/health is the Health panel, with a nav row of its own;
 //   * /admin/setup/github-app/callback is `GitHubAppCallback`, which posts
 //     GitHub's `{code, state}` once, even though the router rewrites the bar;
+//   * GitHub's return after the App is installed (the manifest's
+//     `setup_url`, `/admin/setup?installation_id=..&setup_action=install`)
+//     lands on Admin › Setup, which asks swarm-api about the installation at
+//     once rather than after the first 10 s poll (DAYONE-FLOW-APP-RETURN);
 //   * the paths and the Admin panel rows: Setup and Health are a platform
 //     admin's, never in a workspace admin's `adminPagesFor`.
 //
@@ -127,6 +131,29 @@ describe('Admin › Setup and Health, routed', () => {
     // The code is single-use and leaves the bar.
     expect(window.location.search).toBe('')
     expect(window.location.pathname).toBe('/admin/setup/github-app/callback')
+  })
+
+  it('GitHub\'s return after the install lands on Admin › Setup and checks the installation at once', async () => {
+    const created = { ...SETUP, github_app: { started: true, id: 4242, slug: 'swarmcloud-example', client_id: 'Iv1.example', installed_on: null, secrets_written_at: '2026-10-29T14:50:00Z', self_check: null } }
+    const calls = serve((m, url) => {
+      if (url.includes('/v1/tenants/mine')) return { status: 200, body: [] }
+      if (url.includes('/v1/tenants/me')) return { status: 200, body: me(true) }
+      if (m === 'GET' && url === '/v1/admin/setup') return { status: 200, body: created }
+      if (m === 'GET' && url === '/v1/admin/setup/github-app/installation') return { status: 200, body: { installed: true, org: 'example-org', slug: 'swarmcloud-example' } }
+      return null
+    })
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const mod = await import('../App')
+    window.history.replaceState(null, '', '/admin/setup?installation_id=7&setup_action=install')
+    render(<mod.App />)
+    await waitFor(() => expect(document.querySelector('[aria-label="Install setup"]')).not.toBeNull())
+    expect(window.location.pathname).toBe('/admin/setup')
+    // MUTATION: check only on the 10 s interval -> no read within waitFor's
+    // second, and this fails.
+    await waitFor(() => expect(calls.some((c) => c.url === '/v1/admin/setup/github-app/installation')).toBe(true))
+    // The installation's id from the query is never trusted or forwarded.
+    expect(calls.every((c) => !c.url.includes('installation_id'))).toBe(true)
   })
 
   it('has its addresses, and its nav rows are a platform admin\'s alone', () => {
