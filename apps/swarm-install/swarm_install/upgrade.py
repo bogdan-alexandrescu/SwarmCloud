@@ -399,7 +399,8 @@ class Upgrade:
         def check() -> str:
             return "met" if self.world.running() == 0 else "waiting"
 
-        wait_until("upgrade.drain", DRAIN_WAIT, check, clock=self.clock, events=self.events)
+        wait_until("upgrade.drain", DRAIN_WAIT, check, clock=self.clock, events=self.events,
+                   resume="swarm upgrade")
 
     def _infra(self, target: str) -> None:
         found = self.world.plan_root("infra", target)

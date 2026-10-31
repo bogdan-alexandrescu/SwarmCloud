@@ -108,6 +108,9 @@ class Api:
 
     def workspace(self, workspace_id: str) -> Mapping[str, Any]:
         self.calls.append("workspace")
+        if self._create_state in ("failed", "needs_owner", "denied"):
+            # A stopped workspace stays stopped until it is retried.
+            return {"workspace_id": workspace_id, "state": self._create_state}
         state = self._ws.pop(0) if len(self._ws) > 1 else self._ws[0]
         return {"workspace_id": workspace_id, "state": state}
 
@@ -524,7 +527,7 @@ def test_a_rerun_retries_a_stopped_workspace(stopped: str) -> None:
 
 
 def test_a_rerun_of_a_standing_team_does_not_retry() -> None:
-    api = Api(teams=(TEAM,), create_state="ready")
+    api = Api(teams=(TEAM,), create_state="ready", accounts_after=1)
     flow, out, _ = _flow(api)
     flow.run(GROUP, first_admin=ADMIN)
     assert not any(c.startswith("retry") for c in api.calls), api.calls

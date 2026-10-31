@@ -14,7 +14,7 @@ the worker identity, the slots, the namespace and its quota from the record
 | `team.create` | the team route answered with the team's workspace | |
 | `team.workspace` | the job ran to `ready` (identity, slots, namespace, quota, its own A9 check) | 32 |
 | `team.namespace` | the namespace exists and holds `swarm-spec-verify-keys` | 31 |
-| `team.git-link` | the team's `-git` slot is filled through a one-time console link, never the terminal | CLAUDE.md |
+| `team.git-link` | the team's `-git` slot has an enabled version, filled through a one-time console link, never the terminal | CLAUDE.md |
 | `team.pool-account` | a Claude pool account is owned by or lent to the team | review-fix 1 |
 | `team.smoke` | a smoke agent ran on the team and SUCCEEDED | |
 
@@ -30,7 +30,17 @@ never differ, and applies it on the install cluster as the installer.
 **No forge token ever passes through here.** The team's `-git` value is
 written by swarm-api's credential writer when the person named on the link
 opens it in the console (`POST /v1/setup/links/redeem`); this module only
-asks swarm-api to mint the link and prints it. It never reads stdin.
+asks swarm-api to mint the link, opens it (the owner is the caller unless
+`--git-owner` or `--first-admin` names another), and polls Secret Manager for
+the secret's enabled version: the team is not ready until it has one (audit 4e
+F12). For another owner it prints the link for them, since it redeems for
+them alone, and opens Admin › Setup, where the team's row shows the link. A
+value already there mints no link. It never reads stdin.
+
+**A re-run resumes** (audit 4e F13). The team route answers a workspace already
+standing as it is; a failed or `needs_owner` one is retried through
+`POST /v1/admin/workspaces/{id}/retry`, the console's own retry, and every
+wait's give-up names `swarm team add`, not `swarm install`.
 
 **The smoke waits for a pool account** (review-fix finding 1): the smoke agent
 is a `claude-code` task, which needs a Claude pool account the team may run
@@ -46,6 +56,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, TextIO
 
+from . import steps
 from .events import Events
 from .exitcodes import MET, UNMET, WAITING
 from .waits import Clock, WaitSpec, wait_until
@@ -61,6 +72,15 @@ SPEC_REQUIRED = ("SPEC_VERIFY_KEYS", "SPEC_SIGNING_KEY")
 #: The workspace states (swarm_api.workspaces) the job's run ends in.
 READY = "ready"
 STOPPED = ("failed", "needs_owner", "denied")
+#: The ones `People.retry` starts again (swarm_api.people.RETRYABLE); `denied` is an admin's decision.
+RETRYABLE = ("failed", "needs_owner")
+
+#: The verb a person runs again to resume; the verb passes the whole command.
+RESUME = "swarm team add"
+
+#: The console's pages a wait sends the person to (apps/swarm-ui App.tsx routes).
+SETUP_PAGE = "/admin/setup"
+PEOPLE_PAGE = "/admin/people"
 
 #: The task states a smoke run ends in.
 SUCCEEDED = "SUCCEEDED"
@@ -79,6 +99,14 @@ WORKSPACE_WAIT = WaitSpec(
     expected_s=10 * 60,
     bound_s=30 * 60,
     look_at="Admin › People shows the workspace's step and failure; the job's execution log",
+    interval_s=15,
+)
+GIT_WAIT = WaitSpec(
+    reason="the team's GitHub credential to be stored",
+    expected="as long as the link's owner takes to open it",
+    expected_s=15 * 60,
+    bound_s=60 * 60,
+    look_at="Admin › Setup shows the team's git link, its owner and when it expires; mint a fresh one there",
     interval_s=15,
 )
 POOL_ACCOUNT_WAIT = WaitSpec(
@@ -108,12 +136,16 @@ class TeamApi(Protocol):
 
     def groups_probe(self) -> Mapping[str, Any]: ...
 
+    def caller(self) -> str: ...
+
     def team_ids(self) -> Sequence[str]: ...
 
     def create_team(self, group: str, *, display_name: str | None,
                     first_admin: str | None) -> Mapping[str, Any]: ...
 
     def workspace(self, workspace_id: str) -> Mapping[str, Any]: ...
+
+    def retry_workspace(self, workspace_id: str) -> Mapping[str, Any]: ...
 
     def team_git_link(self, team: str, owner: str) -> Mapping[str, Any]: ...
 
@@ -134,6 +166,18 @@ class Cluster(Protocol):
 
 def namespace_of(team: str) -> str:
     return f"{NAMESPACE_PREFIX}{team}"
+
+
+def git_secret_of(team: str) -> str:
+    """The team's git slot (swarm_api.setup_links: `swarm-tenant-<tenant>-git`)."""
+    return f"swarm-tenant-{team}-git"
+
+
+def git_secret_ready(gcp: Any, project: str, team: str) -> bool:
+    """True once the team's git slot exists and holds an enabled version: what
+    the redeemed link writes, and what a task's forge broker reads."""
+    name = git_secret_of(team)
+    return gcp.secret(project, name) is not None and gcp.enabled_version(project, name) is not None
 
 
 def verify_keys_manifest(tenant: str, settings: Mapping[str, str]) -> str:
@@ -201,13 +245,26 @@ class TeamAdd:
     api: TeamApi
     cluster: Callable[[], Cluster]
     spec_settings: Callable[[], Mapping[str, str]]
+    #: True once `swarm-tenant-<team>-git` has an enabled version (`git_secret_ready`).
+    git_secret: Callable[[str], bool]
+    #: The console's origin, `https://<hostname>`.
+    console: str
     clock: Clock
     events: Events
     out: TextIO
+    #: The command a give-up tells the person to run again.
+    resume: str = RESUME
+    open_page: Callable[..., None] = steps.open_page
 
     def say(self, line: str) -> None:
         self.out.write(line + "\n")
         self.out.flush()
+
+    def page(self, path: str, why: str) -> None:
+        self.open_page(f"{self.console}{path}", why=why, say=self.say)
+
+    def wait(self, step: str, spec: WaitSpec, check: Callable[[], str]) -> None:
+        wait_until(step, spec, check, clock=self.clock, events=self.events, resume=self.resume)
 
     # -- the steps ---------------------------------------------------------
 
@@ -227,6 +284,9 @@ class TeamAdd:
         self.events.emit("step_done", step="team.probe", state=MET)
 
     def create(self, group: str, display_name: str | None, first_admin: str | None) -> tuple[str, str]:
+        """The team route; on a re-run it answers the workspace already
+        standing, and a stopped one is retried here, as the console's retry
+        does, so the re-run resumes instead of stopping on the same failure."""
         self.events.emit("step_apply", step="team.create", detail=group)
         answer = self.api.create_team(group, display_name=display_name, first_admin=first_admin)
         team = str(answer.get("team") or "")
@@ -234,6 +294,11 @@ class TeamAdd:
         workspace_id = str(workspace.get("workspace_id") or "") if isinstance(workspace, Mapping) else ""
         if not team or not workspace_id:
             raise TeamError("swarm-api's team route answered without the team or its workspace")
+        state = str(workspace.get("state") or "")
+        if state in RETRYABLE:
+            self.events.emit("step_apply", step="team.create", detail=f"retry workspace {workspace_id} ({state})")
+            self.api.retry_workspace(workspace_id)
+            self.say(f"The team's workspace {workspace_id} had stopped at {state}; it is being retried.")
         self.events.emit("step_done", step="team.create", detail=f"team {team}, workspace {workspace_id}")
         return team, workspace_id
 
@@ -248,13 +313,15 @@ class TeamAdd:
                 code = failure.get("code") if isinstance(failure, Mapping) else None
                 step = (failure.get("step") if isinstance(failure, Mapping) else None) or view.get(
                     "needs_owner_step")
+                then = (f" Fix what it names, then run {self.resume} again: it retries the workspace."
+                        if state in RETRYABLE else " An admin denied it in Admin › People; nothing retries it.")
                 raise TeamError(
                     f"swarm-workspace-apply stopped the team's workspace {workspace_id} at {state}"
                     + (f", step {step}" if step else "") + (f", code {code}" if code else "")
-                    + ". Admin › People shows it; an admin's retry runs it again.")
+                    + ". Admin › People shows it." + then)
             return WAITING
 
-        wait_until("team.workspace", WORKSPACE_WAIT, check, clock=self.clock, events=self.events)
+        self.wait("team.workspace", WORKSPACE_WAIT, check)
         self.events.emit("step_done", step="team.workspace", state=MET)
 
     def namespace(self, team: str) -> None:
@@ -262,34 +329,67 @@ class TeamAdd:
         self.events.emit("step_done", step="team.namespace",
                          detail=f"{namespace_of(team)}: verify keys " + ("applied" if applied else "present"))
 
-    def git_link(self, team: str, owner: str) -> None:
+    def git_link(self, team: str, owner: str, *, caller: str) -> None:
+        """The team is not ready until its `-git` slot holds a value: mint
+        the link, open it (or Admin › Setup, when it is another person's),
+        and poll Secret Manager for the enabled version."""
+        secret = git_secret_of(team)
+        if self.git_secret(team):
+            self.events.emit("step_done", step="team.git-link", state=MET, detail=f"{secret} has a value")
+            return
         link = self.api.team_git_link(team, owner)
-        where = link.get("url") or link.get("path")
+        path = str(link.get("path") or "")
+        where = str(link.get("url") or (f"{self.console}{path}" if path.startswith("/") else ""))
         if not where:
             raise TeamError("swarm-api minted the team's git link but answered no address for it")
-        self.say(f"The team's GitHub credential goes in through a one-time link, for {owner} only, "
-                 f"until {link.get('expires_at')}:")
-        self.say(f"  {where}")
-        self.say("Open it in a browser signed in as that person. The value is never typed here.")
-        self.events.emit("step_done", step="team.git-link", detail=f"link minted for {owner}")
+        self.events.emit("step_apply", step="team.git-link", detail=f"link minted for {owner}")
+        until = link.get("expires_at")
+        if owner == caller:
+            self.open_page(where, why=(
+                f"The team's GitHub credential goes in through a one-time link, for you only, until {until}. "
+                "Opening it in your browser; the value is never typed here."), say=self.say)
+        else:
+            self.say(f"The team's GitHub credential goes in through a one-time link, for {owner} only, "
+                     f"until {until}. Send it to them to open in a browser signed in as themselves:")
+            self.say(f"  {where}")
+            self.say("The value is never typed here.")
+            self.page(SETUP_PAGE, f"Admin › Setup shows the team's git link and whether {owner} has used it.")
+
+        def check() -> str:
+            return MET if self.git_secret(team) else WAITING
+
+        spec = WaitSpec(reason=f"{GIT_WAIT.reason} ({secret}, through {owner}'s link)", expected=GIT_WAIT.expected,
+                        expected_s=GIT_WAIT.expected_s, bound_s=GIT_WAIT.bound_s, look_at=GIT_WAIT.look_at,
+                        interval_s=GIT_WAIT.interval_s)
+        self.wait("team.git-link", spec, check)
+        self.events.emit("step_done", step="team.git-link", state=MET, detail=f"{secret} has a value")
 
     def await_pool_account(self, team: str, *, first_team: bool) -> None:
         if first_team:
             how = ("this is the first team, so its accounts are stage 12's: add them in "
                    "Admin › Setup › Claude pool accounts (they are owned by this team)")
+            where = SETUP_PAGE
         else:
             how = "lend one of the pool's accounts to this team in Admin › People"
-        self.say(f"The smoke agent starts once a Claude pool account is owned by or lent to {team}; {how}.")
+            where = PEOPLE_PAGE
+
+        opened: list[bool] = []
 
         def check() -> str:
             accounts = self.api.pool_accounts(team)
-            usable = [a for a in accounts if str(a.get("state") or "").upper() == "AVAILABLE"]
-            return MET if usable else WAITING
+            if [a for a in accounts if str(a.get("state") or "").upper() == "AVAILABLE"]:
+                return MET
+            if not opened:
+                # Only when there is none yet: the page is where the person adds or lends one.
+                opened.append(True)
+                self.page(where, f"The smoke agent starts once a Claude pool account is owned by or lent to "
+                                 f"{team}; {how}.")
+            return WAITING
 
         spec = WaitSpec(reason=f"{POOL_ACCOUNT_WAIT.reason} ({how})", expected=POOL_ACCOUNT_WAIT.expected,
                         expected_s=POOL_ACCOUNT_WAIT.expected_s, bound_s=POOL_ACCOUNT_WAIT.bound_s,
                         look_at=POOL_ACCOUNT_WAIT.look_at, interval_s=POOL_ACCOUNT_WAIT.interval_s)
-        wait_until("team.pool-account", spec, check, clock=self.clock, events=self.events)
+        self.wait("team.pool-account", spec, check)
         self.events.emit("step_done", step="team.pool-account", state=MET)
 
     def smoke(self, team: str) -> str:
@@ -312,7 +412,7 @@ class TeamAdd:
                 raise TeamError(f"the smoke agent {task_id} ended {final[-1]}; its page in the console says why")
             return status
 
-        wait_until("team.smoke", SMOKE_WAIT, check_until_terminal, clock=self.clock, events=self.events)
+        self.wait("team.smoke", SMOKE_WAIT, check_until_terminal)
         self.events.emit("step_done", step="team.smoke", state=MET, detail=f"task {task_id} SUCCEEDED")
         return task_id
 
@@ -321,20 +421,21 @@ class TeamAdd:
     def run(self, group: str, *, display_name: str | None = None, first_admin: str | None = None,
             git_owner: str | None = None) -> dict[str, Any]:
         self.probe(group)
-        # The first team owns stage 12's pool accounts; a later one is lent one.
-        first_team = not self.api.team_ids()
+        caller = self.api.caller().strip().lower()
+        if not caller:
+            raise TeamError("swarm-api did not say who is signed in; run swarm login, then swarm team add again")
+        before = list(self.api.team_ids())
         team, workspace_id = self.create(group, display_name, first_admin)
+        # The first team owns stage 12's pool accounts; a later one is lent one.
+        # On a re-run the team itself is already listed, and is still the first.
+        first_team = not [t for t in before if t != team]
         self.await_workspace(workspace_id)
         self.namespace(team)
-        owner = git_owner or first_admin
-        if owner:
-            self.git_link(team, owner)
-        else:
-            self.say("No --git-owner or --first-admin: mint the team's git link later in Admin › Setup.")
+        self.git_link(team, (git_owner or first_admin or caller).strip().lower(), caller=caller)
         self.await_pool_account(team, first_team=first_team)
         task_id = self.smoke(team)
         self.say(f"Team {team} is ready: namespace {namespace_of(team)}, quota, verify keys, worker identity, "
-                 f"slots, and a green smoke agent ({task_id}).")
+                 f"its GitHub credential ({git_secret_of(team)}), slots, and a green smoke agent ({task_id}).")
         return {"team": team, "workspace": workspace_id, "smoke_task": task_id}
 
 
@@ -364,6 +465,11 @@ class SwarmApi:
     def groups_probe(self) -> Mapping[str, Any]:
         return self._client().request("POST", "/v1/admin/setup/health/groups-probe", payload={}) or {}
 
+    def caller(self) -> str:
+        found = self._client().request("GET", "/v1/tenants/me") or {}
+        principal = found.get("principal") or {}
+        return str(principal.get("email") or "") if isinstance(principal, Mapping) else ""
+
     def team_ids(self) -> Sequence[str]:
         found = self._client().request("GET", "/v1/admin/setup") or {}
         return [str(t.get("id")) for t in found.get("teams") or () if isinstance(t, Mapping) and t.get("id")]
@@ -378,6 +484,9 @@ class SwarmApi:
 
     def workspace(self, workspace_id: str) -> Mapping[str, Any]:
         return self._client().request("GET", f"/v1/admin/workspaces/{workspace_id}") or {}
+
+    def retry_workspace(self, workspace_id: str) -> Mapping[str, Any]:
+        return self._client().request("POST", f"/v1/admin/workspaces/{workspace_id}/retry", payload={}) or {}
 
     def team_git_link(self, team: str, owner: str) -> Mapping[str, Any]:
         return self._client().request("POST", "/v1/admin/setup/links",
@@ -435,5 +544,5 @@ def scheduler_spec_settings(gcp: Any, project: str, region: str) -> dict[str, st
 
 __all__ = [
     "Cluster", "KubeCluster", "SwarmApi", "TeamAdd", "TeamApi", "TeamError", "ensure_verify_keys",
-    "namespace_of", "scheduler_spec_settings", "verify_keys_manifest",
+    "git_secret_of", "git_secret_ready", "namespace_of", "scheduler_spec_settings", "verify_keys_manifest",
 ]
