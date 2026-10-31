@@ -1326,8 +1326,16 @@ def fetch_pull_base(
     seconds = 0.0
     depth = max(1, int(first_depth))
     for round_ in range(1, max(1, int(max_rounds)) + 1):
-        fetch = [git_binary, *config_args, "-C", str(destination), "fetch", "--quiet",
-                 "--no-tags", f"--depth={depth}", "origin"]
+        # NO AUTOMATIC MAINTENANCE (#2922). git ends a fetch with `git
+        # maintenance run --auto` (`gc --auto` before 2.29); git 2.56 detaches
+        # it, and its `repack --cruft` held or rewrote `.git/shallow` while
+        # the next round's fetch deepened it: that fetch died with "shallow
+        # file has changed since we read it" or "Unable to create
+        # '.git/shallow.lock'", and the clone ended without its merge base
+        # (5 runs in 200, measured). The repack also outlived the clone.
+        fetch = [git_binary, *config_args, "-c", "maintenance.auto=false", "-c", "gc.auto=0",
+                 "-C", str(destination), "fetch", "--quiet", "--no-tags", f"--depth={depth}",
+                 "origin"]
         # Two fetches, not one: git 2.39 measured skipping the deepen of a
         # fetch whose wants include a sha already complete here, so a head
         # with all its history kept the base at the first round's depth.
