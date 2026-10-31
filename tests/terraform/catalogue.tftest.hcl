@@ -440,8 +440,8 @@ run "the_python_catalogue_is_readable" {
   }
 
   assert {
-    condition     = length(output.runner_profiles) == 13
-    error_message = "expected 13 runner profiles in profiles.py (mock, generic, claude-code, claude-code-large, codex, browser, merge, post-verdict, claude-code-review, indexer, claude-code-browser, await-input, fix-loop); the parser read a different number"
+    condition     = length(output.runner_profiles) == 14
+    error_message = "expected 14 runner profiles in profiles.py (mock, generic, claude-code, claude-code-large, claude-code-lightpanda, codex, browser, merge, post-verdict, claude-code-review, indexer, claude-code-browser, await-input, fix-loop); the parser read a different number"
   }
 
   # claude-code's and indexer's entries carry a comment above their backend;

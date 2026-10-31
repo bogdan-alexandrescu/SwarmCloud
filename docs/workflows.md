@@ -198,6 +198,21 @@ on-demand (contract request 113). A heavy lane picks it by name when
 | `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
 <!-- /runner-inputs:claude-code-large -->
 
+`claude-code-lightpanda` is `claude-code` on the `agent-runtime-lightpanda`
+image (contract request 127): the same runner, inputs, secret slots and
+model classes on the `standard` class, on GKE Autopilot on-demand, with
+Lightpanda, a headless browser that runs JavaScript and draws no pixels,
+for DOM-only browser work: reading, scraping, link checks and form flows.
+It has no live view and no `browser_tool`; a page it cannot read goes to a
+`claude-code-browser` child. It declares what `claude-code` does:
+
+<!-- runner-inputs:claude-code-lightpanda generated from RUNNER_PROFILES["claude-code-lightpanda"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the claude-code-lightpanda runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+<!-- /runner-inputs:claude-code-lightpanda -->
+
 Which browser agent type serves which kind of visual QA, and a workflow that
 sweeps the console at 1440 and 390, light and dark: [browser-qa.md](browser-qa.md).
 
@@ -459,7 +474,7 @@ ID per class (`local.runner_models`), and the platform runs that pin:
 ```
 
 **Which profiles take one.** `claude-code`, `claude-code-browser`,
-`claude-code-large` and `indexer` accept all four. The retired `claude-code-review` accepts only `opus`. Every
+`claude-code-large`, `claude-code-lightpanda` and `indexer` accept all four. The retired `claude-code-review` accepts only `opus`. Every
 other profile (`codex`, `mock`, `generic`, `browser` and the worker actions)
 runs no Claude model and accepts none. `GET /v1/runtimes`, `swarm_profiles` and
 the console's Runtimes screen list each profile's `model_classes`, its

@@ -3,7 +3,8 @@
 GKE Autopilot runs every agent profile but `mock`, `post-verdict` and
 `claude-code-review`: `browser` and `claude-code-browser` for a `/dev/shm`
 Cloud Run will not let us size, and `claude-code`, `claude-code-large`
-(the `large` class, 14,400 s, contract request 113), `codex`, `generic`,
+(the `large` class, 14,400 s, contract request 113), `claude-code-lightpanda`
+(the Lightpanda image, contract request 127), `codex`, `generic`,
 `indexer` and `merge` for their start time and internet path
 ([docs/architecture.md](../docs/architecture.md) §5). This directory is that
 path's tenant namespace, policies and Job templates.
@@ -257,7 +258,7 @@ and the policy appear there as `configured (server dry run)`.
 Worth stating plainly, because the care taken over these files invites the
 assumption that they protect the platform: **they protect the GKE path only.**
 Per `swarm_common.profiles`, that path carries `browser`, `claude-code`,
-`claude-code-browser`, `claude-code-large`, `codex`, `generic`, `indexer` and `merge`, which is
+`claude-code-browser`, `claude-code-large`, `claude-code-lightpanda`, `codex`, `generic`, `indexer` and `merge`, which is
 nearly every step; `mock`, `post-verdict` and `claude-code-review` stay on
 `Backend.CLOUD_RUN_JOB` (and `await-input` is never run at all).
 
