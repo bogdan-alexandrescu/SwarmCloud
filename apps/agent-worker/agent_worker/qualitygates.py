@@ -1,0 +1,239 @@
+"""The claude-code lanes' quality gates: jev-belay and jev-enforce, keyed with the workspace's TypeSafe key (JEV-LANES).
+
+BGD decided 2026-10-31: 25% of lane PRs were red on their first CI run
+(#642), and a review's NOT_YET round costs a fix step and a re-review. So a
+claude-code lane in a workspace that turned `quality_gates.jev` on runs two
+Claude Code hooks, both checked by TypeSafe's Jev:
+
+* **jev-belay** (v0.2.0), a Stop hook: when files changed and no test, build
+  or lint run passed since, one Jev call on whether the closing message is
+  an unverified "done"; if so the stop is blocked with the reason.
+* **jev-enforce** (v1.1.1) with `JEV_ENFORCE_MODE=end`: every Edit/Write is
+  recorded while the agent works, and the Stop hook checks the final reply
+  and the edits against the repository's CLAUDE.md rule files in one request.
+
+Both are inert without TYPESAFE_API_KEY and let the turn end on every error.
+This module is the worker's half: whether, which key, and the counts after.
+
+WHETHER. `workspace_settings/{tenant}.quality_gates.jev is True`
+(`swarm_api.qualitygates`, owner/admin-only and audited, default off). Off,
+or anything but `True`: nothing is read and the runner gets nothing, so no
+hook is registered and nothing leaves the pod.
+
+WHICH KEY. The WORKSPACE's TypeSafe key, `swarm-tenant-<tenant>-typesafe`,
+the secret the jev browser tools read (`jevkey.resolve`), resolved with no
+submitter so a person's own key is never spent on a workspace's switch.
+Read as this worker's own service account; no route serves it.
+
+HANDED OVER HOW. Exactly as `jevkey` hands the browser tools theirs: the key
+goes into ONE 0600 file in `private/` (never checkpointed, never uploaded),
+registered with the logger for redaction the moment it is read. The runner
+gets `CONFIG_ENV`, the PATH of a 0600 config naming that file, the counts
+file, the hooks' data directory and the profile's registered secret NAMES --
+never a value. The image's launcher (`/opt/swarm/jev-gates/bin/
+swarm-jev-gate.mjs`), which each hook command names, reads the key into its
+own process alone and scrubs every registered secret's value from the
+request before it is sent (docs/jev-data-flow.md, "The lane hooks"). With
+the TypeSafe forwarder on (`typesafe_shim.switched_on`) no key is read: the
+config names the worker's shim file instead, and the launcher sends to the
+loopback shim with its local token.
+
+THE COUNTS. Each hook run appends one line of counts -- which hook, how many
+Jev calls, whether it blocked, how many rules it flagged; never text -- to
+the counts file. After the agent, `finish` sums them for the attempt's
+summary, removes the key file, and the lifecycle records one RUNNING mark,
+cause `quality_gate`, when belay blocked a stop or enforce flagged a rule.
+
+NEVER FATAL. A switch that cannot be read is off; a key that cannot be read
+costs the attempt its gates, not the attempt.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from typing import Any, Iterable, Mapping
+
+from . import indexrun
+from . import jevkey
+
+SETTINGS_COLLECTION = "workspace_settings"
+FIELD = "quality_gates"
+JEV = "jev"
+
+#: The runner's variable: the PATH of the gates' config, never the key.
+CONFIG_ENV = "SWARM_JEV_GATES_CONFIG"
+CONFIG_FILE_NAME = "jev-gates.json"
+KEY_FILE_NAME = "jev-gates.key"
+COUNTS_FILE_NAME = "jev-gates.counts"
+#: jev-enforce's CLAUDE_PLUGIN_DATA: its rule cache and, in `end` mode, the
+#: edits it holds until the Stop hook. In `private/`, so never checkpointed.
+DATA_DIR_NAME = "jev-gates-data"
+
+#: The config's fields (the launcher reads exactly these).
+KEY_FILE_FIELD = "key_file"
+COUNTS_FILE_FIELD = "counts_file"
+DATA_DIR_FIELD = "data_dir"
+SECRET_NAMES_FIELD = "secret_env_names"
+
+#: The hooks the counts name (the launcher's modes).
+BELAY = "belay"
+ENFORCE = "enforce"
+#: The summary's key, and the RUNNING mark's `cause`.
+SUMMARY_KEY = "quality_gates"
+EVENT_CAUSE = "quality_gate"
+#: A counts file larger than this is not the launcher's: read as nothing.
+MAX_COUNTS_BYTES = 256 * 1024
+
+
+def switched_on(workspace: Mapping[str, Any] | None) -> bool:
+    """`quality_gates.jev is True`; anything else, malformed or absent, is off."""
+    block = workspace.get(FIELD) if isinstance(workspace, Mapping) else None
+    return isinstance(block, Mapping) and block.get(JEV) is True
+
+
+def read_settings(db: Any, tenant_id: str, *,
+                  call_options: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+    """`workspace_settings/{tenant}`: from `state/context` for a tenant on the
+    state routes, else its Firestore document; {} when there is none."""
+    state = indexrun.state_routes(db)
+    if state is not None:
+        served = indexrun.route_context(state).get("workspace_settings")
+        return served if isinstance(served, Mapping) else {}
+    snap = db.collection(SETTINGS_COLLECTION).document(tenant_id).get(**dict(call_options or {}))
+    return (snap.to_dict() or {}) if snap.exists else {}
+
+
+def _write_private(path: Path, text: str) -> None:
+    if path.is_symlink() or path.exists():
+        path.unlink()
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(text)
+
+
+def prepare(*, db: Any, client: Any, tenant_id: str, private_dir: Path, logger: Any,
+            call_options: Mapping[str, Any] | None = None,
+            secret_env_names: Iterable[str] = (), inject: bool = False,
+            shim_file: Path | None = None) -> dict[str, str]:
+    """`{CONFIG_ENV: path}` when this workspace turned the gates on and a key
+    (or, with the forwarder, the shim) is available; else {}. Never raises."""
+    if db is None:
+        return {}
+    try:
+        if not switched_on(read_settings(db, tenant_id, call_options=call_options)):
+            return {}
+        private = Path(private_dir)
+        if inject:
+            if shim_file is None or not Path(shim_file).is_file():
+                logger.info("jev_gates_unavailable", reason="no_shim")
+                return {}
+            key_file = Path(shim_file)
+        else:
+            if client is None:
+                return {}
+            found = jevkey.resolve(db=db, client=client, tenant_id=tenant_id,
+                                   submitted_by=None, logger=logger, call_options=call_options)
+            if found is None:
+                logger.info("jev_gates_unavailable", reason="no_key")
+                return {}
+            key, _scope, secret = found
+            key_file = private / KEY_FILE_NAME
+            _write_private(key_file, key)
+            logger.info("jev_gates_key_resolved", secret=secret)
+        counts = private / COUNTS_FILE_NAME
+        if counts.is_symlink() or counts.exists():
+            counts.unlink()
+        data_dir = private / DATA_DIR_NAME
+        data_dir.mkdir(mode=0o700, exist_ok=True)
+        names = sorted({n for n in secret_env_names if isinstance(n, str) and n})
+        config = private / CONFIG_FILE_NAME
+        _write_private(config, json.dumps({
+            KEY_FILE_FIELD: str(key_file),
+            COUNTS_FILE_FIELD: str(counts),
+            DATA_DIR_FIELD: str(data_dir),
+            SECRET_NAMES_FIELD: names,
+        }, indent=2) + "\n")
+    except Exception as exc:  # noqa: BLE001 -- never fatal, said by type
+        logger.warning("jev_gates_unavailable", reason="error", error=type(exc).__name__)
+        return {}
+    return {CONFIG_ENV: str(config)}
+
+
+def _count(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and 0 <= value < 10_000 else 0
+
+
+def tally(counts_file: Path) -> dict[str, int] | None:
+    """The hooks' counts summed, or None when no hook ran. Lines that are not
+    the launcher's are skipped; only integers are read, never text."""
+    path = Path(counts_file)
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_COUNTS_BYTES:
+            return None
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    out = {"belay_runs": 0, "belay_calls": 0, "belay_blocks": 0,
+           "enforce_runs": 0, "enforce_calls": 0, "enforce_flags": 0, "enforce_rules_flagged": 0}
+    seen = False
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or row.get("hook") not in (BELAY, ENFORCE):
+            continue
+        seen = True
+        hook = row["hook"]
+        out[f"{hook}_runs"] += 1
+        out[f"{hook}_calls"] += _count(row.get("calls"))
+        if row.get("blocked") is True:
+            out["belay_blocks" if hook == BELAY else "enforce_flags"] += 1
+        if hook == ENFORCE:
+            out["enforce_rules_flagged"] += _count(row.get("rules"))
+    return out if seen else None
+
+
+def finish(env: Mapping[str, str]) -> dict[str, int] | None:
+    """After the agent: the counts, and the key file removed. `env` is the
+    runner's environment as built; without the gates' config it is None."""
+    config_path = env.get(CONFIG_ENV)
+    if not config_path:
+        return None
+    try:
+        config = json.loads(Path(config_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(config, dict):
+        return None
+    key_file = config.get(KEY_FILE_FIELD)
+    if isinstance(key_file, str) and Path(key_file).name == KEY_FILE_NAME:
+        # Only the file this module wrote: the shim file is the worker's.
+        try:
+            Path(key_file).unlink()
+        except OSError:
+            pass
+    counts_file = config.get(COUNTS_FILE_FIELD)
+    return tally(Path(counts_file)) if isinstance(counts_file, str) else None
+
+
+def worth_an_event(counts: Mapping[str, int] | None) -> bool:
+    """A RUNNING mark only when belay blocked a stop or enforce flagged a rule."""
+    return bool(counts) and (counts.get("belay_blocks", 0) > 0 or counts.get("enforce_flags", 0) > 0)
+
+
+__all__ = [
+    "BELAY",
+    "CONFIG_ENV",
+    "ENFORCE",
+    "EVENT_CAUSE",
+    "SUMMARY_KEY",
+    "finish",
+    "prepare",
+    "read_settings",
+    "switched_on",
+    "tally",
+    "worth_an_event",
+]
