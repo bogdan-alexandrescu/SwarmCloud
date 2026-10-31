@@ -105,6 +105,15 @@ if tool == "cosign" and args[:1] == ["sign-blob"]:
     out = args[args.index("--output-signature") + 1]
     open(out, "w").write("signed by " + state["kms_key"] + "\n")
     sys.exit(0)
+if tool == "cosign" and args[:1] == ["sign"]:
+    # cosign pushes a signature with docker's credentials, so record the docker
+    # config it would read: $DOCKER_CONFIG/config.json, else ~/.docker/config.json.
+    config = os.path.join(os.environ.get("DOCKER_CONFIG") or os.path.join(os.environ["HOME"], ".docker"),
+                          "config.json")
+    seen = json.load(open(config)) if os.path.isfile(config) else None
+    state.setdefault("sign_docker_config", []).append(seen)
+    json.dump(state, open(os.environ["FAKE_STATE"], "w"))
+    sys.exit(0)
 if tool == "cosign" and args[:1] == ["public-key"]:
     print(state["kms_key"])
     sys.exit(0)
@@ -140,7 +149,7 @@ def _env(tmp_path: Path, state: dict) -> dict[str, str]:
     assert SCRIPT.is_file(), f"{SCRIPT.relative_to(REPO)} does not exist"
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
-    for tool in ("gcloud", "gcrane", "cosign"):
+    for tool in ("gcloud", "gcrane", "cosign", "docker-credential-gcloud"):
         path = bindir / tool
         path.write_text(FAKE.replace("{python}", sys.executable).replace("{tool}", tool))
         path.chmod(0o755)
@@ -410,6 +419,25 @@ def test_publish_copies_and_signs_every_image_by_digest(tmp_path: Path, bundle: 
     assert [d for d in dest if d.startswith(RELEASE)][-1] == f"{RELEASE}/SHA256SUMS", dest
     assert dest[-1] == f"{BUCKET}/install.sh", dest
     assert f"{RELEASE}/SHA256SUMS.sig" in dest and f"{RELEASE}/cosign.pub" in dest
+
+
+def test_publish_signs_with_gclouds_credentials_for_the_release_registry(
+        tmp_path: Path, bundle: Path, assembled: tuple[Path, Path]) -> None:
+    """cosign signs through the registry's own API with docker's credentials, not
+    the Google keychain gcrane copies with: on 2026-10-31 the second release
+    candidate's publish copied agent-runtime-base into the release registry and
+    then had its signature refused as an "Unauthenticated request". Every
+    signature is pushed with a docker config that names gcloud's credential
+    helper for the release registry's host, and the runner's own
+    ~/.docker/config.json is never written."""
+    proc = _publish(tmp_path, bundle, assembled[1])
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    seen = json.loads((tmp_path / "state.json").read_text()).get("sign_docker_config", [])
+    signs = [c for c in _calls(tmp_path) if c[:2] == ["cosign", "sign"]]
+    assert signs and len(seen) == len(signs), seen
+    host = HOME_REGISTRY.split("/", 1)[0]
+    assert all(config == {"credHelpers": {host: "gcloud"}} for config in seen), seen
+    assert not (tmp_path / ".docker" / "config.json").exists()
 
 
 def _rekey_wheel(bundle: Path, tmp_path: Path, key: str | None) -> None:
