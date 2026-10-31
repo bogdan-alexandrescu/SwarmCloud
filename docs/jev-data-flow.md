@@ -196,7 +196,7 @@ per Jev call, `{model, state, questions}`):
 
 | Hook | When it calls Jev | `state` | `questions` |
 |---|---|---|---|
-| jev-belay, Stop | only when the turn changed files and no test, build or lint run passed since: at most one call | the turn's task (the user's prompt), **the final reply**, the file-change count and the names of the checks run with passed/failed; no tool input, diff or file content | four fixed questions of its own |
+| jev-belay, Stop | only when the turn changed files and no test, build or lint run passed since: at most one call | the turn's request (the user's prompt), **the final reply**, the file-change count and the names of the checks run with passed/failed; no tool input, diff or file content | four fixed questions of its own |
 | jev-enforce, Stop (`end` mode) | when the final reply or a recorded edit is at least 20 characters and an applicable rule exists | **the final reply** (up to 60,000 characters), then **each edited file's written text** with its path | one per applicable rule: **the rule's text**, from the repository's CLAUDE.md, `.claude/CLAUDE.md` and `CLAUDE.local.md` files |
 | jev-enforce, first run in a checkout | once per rule set, cached in the data directory | the rule texts | what each rule constrains |
 | jev-enforce, Edit/Write | **never**: in `end` mode it only records the edit's text in the data directory (`private/jev-gates-data`) for the Stop hook | -- | -- |
