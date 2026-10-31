@@ -238,6 +238,60 @@ tool_mirror_stage_upstream() {
   info "staged ${n} release file(s) from upstream into ${TOOL_MIRROR_CONTEXT_DIR}, each matching its pinned sha256"
 }
 
+# LIGHTPANDA'S CORRESPONDING SOURCE (LIGHTPANDA-BUILD-SCRIPTS, part of #2688;
+# docs/design/lightpanda-runtime.md 5.D and 6.4). agent-runtime-lightpanda
+# ships Lightpanda, which is AGPL-3.0, so whoever conveys the image offers the
+# source of the exact tag (section 6(d)). Its two release assets and the tag's
+# source archive are rows of TOOL_MIRROR_MANIFEST, so refresh-build-mirror.sh
+# mirrors all three and every build reads them from the mirror; the image's
+# SOURCE notice names LIGHTPANDA_SOURCE_URL, the archive's public copy under
+# the release home. A version bump changes the Dockerfile's ARGs and the
+# manifest rows together; these read both and refuse a disagreement.
+LIGHTPANDA_DOCKERFILE_REL="images/agent-runtime-lightpanda/Dockerfile"
+LIGHTPANDA_RELEASE_HOME="https://storage.googleapis.com/swarmcloud"
+
+# dockerfile_arg_default DOCKERFILE NAME -- the default of `ARG NAME=VALUE`, or
+# nothing.
+dockerfile_arg_default() {
+  sed -n "s/^ARG $2=\\([^[:space:]]*\\)[[:space:]]*\$/\\1/p" "$1" | head -n 1
+}
+
+# lightpanda_source_row -- `<sha256> <mirror object> <release object>` for the
+# tag's source archive: the sha256 the Dockerfile pins, the object the tool
+# mirror holds it at, and where the release home serves it (relative to
+# LIGHTPANDA_RELEASE_HOME). Dies when the Dockerfile and the manifest disagree,
+# or when the image's SOURCE notice would point outside the release home.
+lightpanda_source_row() {
+  local df="${REPO_ROOT}/${LIGHTPANDA_DOCKERFILE_REL}" version sha url obj release rows
+  [[ -f "${df}" ]] || die "no Dockerfile at ${LIGHTPANDA_DOCKERFILE_REL}"
+  version="$(dockerfile_arg_default "${df}" LIGHTPANDA_VERSION)"
+  sha="$(dockerfile_arg_default "${df}" LIGHTPANDA_SOURCE_SHA256)"
+  url="$(dockerfile_arg_default "${df}" LIGHTPANDA_SOURCE_URL)"
+  [[ "${version}" =~ ^[0-9A-Za-z._-]+$ ]] || die "${LIGHTPANDA_DOCKERFILE_REL}: LIGHTPANDA_VERSION is not a version: ${version}"
+  [[ "${sha}" =~ ^[0-9a-f]{64}$ ]] || die "${LIGHTPANDA_DOCKERFILE_REL}: LIGHTPANDA_SOURCE_SHA256 is not a sha256: ${sha}"
+  obj="github.com/lightpanda-io/browser/archive/refs/tags/${version}.tar.gz"
+  release="third-party/lightpanda/${version}/source.tar.gz"
+  [[ "${url}" == "${LIGHTPANDA_RELEASE_HOME}/${release}" ]] \
+    || die "${LIGHTPANDA_DOCKERFILE_REL}: LIGHTPANDA_SOURCE_URL is ${url}, not ${LIGHTPANDA_RELEASE_HOME}/${release}, where the release serves the source archive"
+  rows="$(tool_mirror_rows)" || exit 1
+  grep -qxF "${sha} ${obj}" <<<"${rows}" \
+    || die "${TOOL_MIRROR_MANIFEST#"${REPO_ROOT}/"} has no row '${sha}  ${obj}': the source archive ${LIGHTPANDA_DOCKERFILE_REL} pins is not mirrored"
+  printf '%s %s %s\n' "${sha}" "${obj}" "${release}"
+}
+
+# lightpanda_source_stage DIR -- the tag's source archive from upstream into
+# DIR/<release object> (lightpanda_source_row), checked against its sha256, so
+# a release bundle carries it beside the image. Dies naming the archive, and
+# leaves nothing at its path, when the download fails or is not the one pinned.
+lightpanda_source_stage() {
+  local dir="$1" row sha obj release
+  row="$(lightpanda_source_row)" || exit 1
+  read -r sha obj release <<<"${row}"
+  tool_mirror_fetch_upstream "${sha}" "${obj}" "${dir}/${release}" \
+    || die "the Lightpanda source archive could not be staged: ${obj}"
+  info "staged ${release}: the Lightpanda ${obj##*/} source archive, matching its pinned sha256"
+}
+
 # mirror_build_args_yaml DOCKERFILE -- mirror_build_args as YAML list items
 # for a docker step's args (scripts/build-images.sh generate_config), so the
 # live project's build pulls what it pulled when the Dockerfiles named its
