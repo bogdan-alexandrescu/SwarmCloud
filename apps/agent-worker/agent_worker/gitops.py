@@ -1567,6 +1567,7 @@ def clone_at_commit(
     git_binary: str = "git",
     egress: Any = None,
     peers: PeerPin | None = None,
+    pull_base: str | None = None,
 ) -> CloneResult:
     """Check out exactly `commit` of `url` into `destination` (the workflow base pin).
 
@@ -1581,6 +1582,9 @@ def clone_at_commit(
     `destination` again, so the caller can clone the branch tip into it as
     it always did. `commit` must be a full 40-character sha: an abbreviation
     is not a pin.
+
+    `pull_base`: as `shallow_clone`'s -- a `publish_to_pr` step starts from
+    its pull request's head through this pin, and fetches the base here.
     """
     url = validate_repository_url(url)
     branch = validate_ref(branch)
@@ -1611,6 +1615,7 @@ def clone_at_commit(
     env = trace.env(env)
     phases: dict[str, Any] = {}
     failed: GitError | None = None
+    base_record: dict[str, Any] | None = None
     try:
         total += _run_git_steps(
             setup, url=url, token=token, private_dir=private_dir, env=env,
@@ -1644,6 +1649,14 @@ def clone_at_commit(
                 logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
                 label="git-pin-branch",
             )
+        if pull_base:
+            # With the pin's credential, before it is removed; never fatal.
+            base_record = pull_base_record(
+                destination, pull_base, git_binary=git_binary, config_args=config_args,
+                url=url, token=token, private_dir=private_dir, env=env,
+                logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
+            )
+            total += float(base_record.get("seconds") or 0.0)
     except GitError as exc:
         failed = exc
         _empty_directory(destination)
@@ -1667,7 +1680,7 @@ def clone_at_commit(
     )
     return CloneResult(
         path=destination, url=url, ref=branch, commit=head, duration_seconds=total,
-        phases=phases,
+        phases=phases, base=base_record,
     )
 
 

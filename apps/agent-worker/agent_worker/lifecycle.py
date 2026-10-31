@@ -1069,6 +1069,9 @@ class Worker:
         # clone, or back from the checkpoint manifest on a resume. The push
         # onto that pull request fast-forwards exactly this sha or nothing.
         self._pr_start_head: str | None = None
+        # That pull request's base branch, read with its head (#2901): the
+        # clone fetches it as `origin/<base>`, deep enough to merge it in.
+        self._pr_base_ref: str = ""
         # The base BRANCH the runner rebases the lane onto before it publishes
         # (SPEED-D1, `agent_worker.prepublish`), when that is safe for this
         # step (`_prepublish_rebase_ref`); None, and no rebase, otherwise.
@@ -5929,6 +5932,8 @@ class Worker:
                     token=clone_token(),
                     egress=self._egress,
                     peers=peers,
+                    # #2901: the pull request's head is cloned through this pin.
+                    pull_base=self._pr_base_ref if pr_start else None,
                 ))
             except GitTransient as exc:
                 # Not a fall back to the branch tip: the tip is on the same
@@ -5987,6 +5992,7 @@ class Worker:
                 egress=self._egress,
                 peers=peers,
                 history_days=history_days,
+                pull_base=self._pr_base_ref if onto_pr is not None else None,
             ))
         except GitTransient as exc:
             self._mark_clone_timed(None, tries=tries, pinned=False)
@@ -6063,6 +6069,8 @@ class Worker:
             info["publish_to_pr"] = {
                 **onto_pr.to_record(self.cfg.git_branch_prefix), "head": pr_head,
             }
+            if clone.base is not None:
+                info["publish_to_pr"]["base"] = clone.base
         if self._base_pin is not None:
             info["base_pin"] = dict(self._base_pin)
         if refusal:
@@ -13465,8 +13473,9 @@ class Worker:
             )
         self.log.info(
             "publish_to_pr: starting from the pull request's head",
-            number=number, branch=pull.head_ref, head=pull.head_sha,
+            number=number, branch=pull.head_ref, head=pull.head_sha, base=pull.base_ref,
         )
+        self._pr_base_ref = pull.base_ref
         return pull.head_sha
 
     def _check_pull_before_push(
