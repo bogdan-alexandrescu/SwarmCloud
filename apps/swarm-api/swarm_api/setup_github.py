@@ -80,7 +80,15 @@ class SetupUnconfigured(Conflict):
     """A setting the install has not rendered yet (SETUP_GITHUB_ORG, the
     hostname, GITHUB_HOOKS_URL). 409, not 503: the deployment is reachable
     and answering; it is not yet at the step that sets the value, and a 503
-    reads as a gate that could not decide (test_pool_admin_is_narrow.py)."""
+    reads as a gate that could not decide (test_pool_admin_is_narrow.py).
+
+    It keeps the established code `conflict` (above). What tells a caller
+    "not yet" apart from every other 409 is `detail.unset`, the settings this
+    revision has not been given: the install engine waits on that while
+    swarm-api's next revision, the one that carries them, rolls out."""
+
+    def __init__(self, message: str, *, unset: tuple[str, ...] = ()) -> None:
+        super().__init__(message, detail={"unset": list(unset)} if unset else None)
 
 
 class StateMismatch(Forbidden):
@@ -298,9 +306,15 @@ class ManifestFlow:
         return self._record.write(self._record.console_path("github_app"), fields)
 
     def start(self, *, org: str, hostname: str, hooks_url: str, name: str) -> dict[str, Any]:
-        if not org or not hostname:
+        # The webhook URL is asked for here too: a manifest posted with an
+        # empty hook URL is one GitHub may refuse, or convert with no webhook
+        # secret, after the App exists and the one-time code is spent.
+        unset = tuple(name for name, value in (("SETUP_GITHUB_ORG", org), ("SWARM_HOSTNAME", hostname),
+                                               ("GITHUB_HOOKS_URL", hooks_url)) if not value)
+        if unset:
             raise SetupUnconfigured(
-                "SETUP_GITHUB_ORG and the deployment's hostname must both be set")
+                "SETUP_GITHUB_ORG, the deployment's hostname and GITHUB_HOOKS_URL must all be set; "
+                f"not set: {', '.join(unset)}", unset=unset)
         # Asked before the state is written: nothing starts on a page guessed.
         account_type = self._github.account_type(org)
         state = new_state()
@@ -355,7 +369,7 @@ class ManifestFlow:
     def activate_hook(self, hooks_url: str) -> dict[str, Any]:
         """Turn the webhook on, once its secret has a version."""
         if not hooks_url:
-            raise SetupUnconfigured("GITHUB_HOOKS_URL is not set")
+            raise SetupUnconfigured("GITHUB_HOOKS_URL is not set", unset=("GITHUB_HOOKS_URL",))
         if not self._secrets.has_enabled_version(WEBHOOK_SECRET_SLOT):
             raise WebhookSecretMissing(
                 f"{WEBHOOK_SECRET_SLOT} has no enabled version; the webhook stays off")

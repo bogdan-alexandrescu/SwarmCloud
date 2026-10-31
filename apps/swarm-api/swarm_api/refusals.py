@@ -559,6 +559,23 @@ SWITCHES: dict[str, Switch] = {
         "the submitter's forge slot can read is answered 422 repository_ref_not_found before "
         "any task is stored. On once the report-only log shows only refs that really were gone",
     ),
+    # Admin › Setup's first workspace before infra pass 3 (DAYONE-MANIFEST-
+    # STEPS-2, routes/setup.py "NO WORKSPACE BEFORE PUBLISHING"). Filing it
+    # approves it, and an approval while swarm-api's publisher is off is only
+    # logged workspace_stuck (publishing_off) and pages. SHIPS ON
+    # (default=True), unlike a new refusal's usual report-only start: the
+    # console never offers the step before then (its first_team step reads
+    # `waiting`), so no caller it guides can meet the 409, and off, the
+    # workspace is filed and never built. Set REFUSAL_PUBLISHING_OFF=off to
+    # file it before publishing again.
+    "publishing_off": Switch(
+        code="publishing_off",
+        why="Admin › Setup files no first workspace (a team, or one person's personal "
+        "workspace) while swarm-api's workspace publisher is off, which swarm install's "
+        "infra pass 3 turns on; the team route answers 409 publishing_off and writes nothing. "
+        "Ships on: the console shows the step waiting until then",
+        default=True,
+    ),
     # Join requests (docs/design/join-requests.md §4.9, lane JOIN-STORE, part
     # of #2325) have NO switch here, deliberately: join_link_unknown,
     # join_already_member, join_already_reaches, join_not_offered,

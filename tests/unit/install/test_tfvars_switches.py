@@ -43,12 +43,13 @@ OWNER_CHOICES = {
 #: Not a bool: a map of refusal codes, every one shipped off (report-only).
 NOT_A_BOOL = {"switch.api_refusals"}
 #: Switches the manifest gives to an earlier pass than the one that can turn
-#: them on, each held to the pass it does turn on in. A fragment may not move
-#: an entry's step (test_manifest_steps.py), so moving them is asked of lane
-#: MANIFEST-STEPS (this lane's questions.json):
-TURNS_ON_LATER = {
-    # BOOT-2's fragment gives it bootstrap pass 1, but platform_roles.tf names
-    # swarm-quota-broker by a string, so it waits for the account's pass.
+#: them on, each held to the pass it does turn on in. Empty since
+#: DAYONE-MANIFEST-STEPS-2 moved the three WORKSPACE-SWITCHES listed here to
+#: the pass that turns them on; an entry added here is a manifest step to move.
+TURNS_ON_LATER: dict[str, str] = {}
+#: The switches DAYONE-MANIFEST-STEPS-2 moved, by the pass that turns each on.
+MOVED = {
+    # platform_roles.tf names swarm-quota-broker by a string, so it waits for the account's pass.
     "switch.grant_broker_secret_lister": "bootstrap-2",
     # forge_user_slots.tf names swarm-api by a string, and bootstrap pass 1
     # creates swarm-api in the same apply: nothing orders the grant after it.
@@ -56,6 +57,16 @@ TURNS_ON_LATER = {
     # Publishing needs the swarm-workspace-apply job, which bootstrap pass 2
     # makes after infra-2; infra-3 is the first infra pass after it.
     "switch.workspace_apply_publish": "infra-3",
+}
+#: Entries counted on a moved switch (their resources' count is the switch, or
+#: their depends_on names it), so the manifest counts them met no earlier.
+COUNTED_ON = {
+    "role.custom.swarmForgeSlotCreator": "switch.enable_forge_user_slots",
+    "role.custom.swarmForgeSlotVersionManager": "switch.enable_forge_user_slots",
+    "iam-binding.swarm-api-forge-slots": "switch.enable_forge_user_slots",
+    "iam-binding.broker-secret-lister": "switch.grant_broker_secret_lister",
+    "switch.broker_secret_lister_project_wide_versions_add": "switch.grant_broker_secret_lister",
+    "switch.workspace_gate": "switch.workspace_apply_publish",
 }
 
 
@@ -135,6 +146,22 @@ def test_the_guard_reads_the_workspace_switches() -> None:
     for entry_id, late in TURNS_ON_LATER.items():
         # Once the manifest names the pass that turns it on, the exception goes.
         assert not tfvars.after(owned[entry_id], late), f"{entry_id} is owned by {late}: drop it from TURNS_ON_LATER"
+
+
+@pytest.mark.parametrize("entry_id", sorted(MOVED))
+def test_a_moved_switch_is_owned_by_the_pass_that_turns_it_on(entry_id: str) -> None:
+    owned = {e: pass_name for e, pass_name, _ in _owned_switches()}
+    assert owned[entry_id] == MOVED[entry_id], f"{entry_id} is owned by {owned[entry_id]}"
+
+
+@pytest.mark.parametrize("entry_id", sorted(COUNTED_ON))
+def test_what_a_moved_switch_counts_is_met_no_earlier(entry_id: str) -> None:
+    by_id = manifest_mod.load().by_id()
+    passes = _pass_of_step()
+    entry, switch = by_id[entry_id], COUNTED_ON[entry_id]
+    assert switch in entry.depends_on, f"{entry_id} does not depend on {switch}"
+    mine, needed = passes[entry.step], passes[by_id[switch].step]
+    assert tfvars.after(mine, needed), f"{entry_id} is met at {mine}, before {switch} at {needed}"
 
 
 @pytest.mark.parametrize("mode,members", MODES, ids=[m for m, _ in MODES])
