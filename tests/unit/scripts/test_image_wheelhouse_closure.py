@@ -1,15 +1,17 @@
 """Every image's wheelhouse install carries the whole local closure of what it installs.
 
-WHY THIS EXISTS. On 2026-10-31 main's release run for 73a41dede shipped
-nothing: application.yml's build refused swarm-graph (Cloud Build
-83b66252-962e-42ac-bbc1-f2305861d767) at `uv pip check`, with "The package
-`swarm-agent-worker` requires `swarm-workflow-rollup`, but it's not installed".
-The worker had depended on the rollup since the derived-state change of
-2026-10-30 (#2838, pull request 2853), and every other image that installs a
-package depending on it was given the rollup's wheel then. apps/swarm-graph's
-Dockerfile installs the worker too and was missed. Its image was reused from an
-ancestor build until a lock change forced a full build, so the gap stayed
-invisible for a day and then stopped the second release candidate.
+WHY THIS EXISTS. On 2026-10-31 main's release shipped nothing: the image build
+refused swarm-graph at `uv pip check`, with "The package `swarm-agent-worker`
+requires `swarm-workflow-rollup`, but it's not installed". The worker had
+depended on the rollup since 2026-10-30, when the scheduler and the direct
+worker began writing a workflow's derived state in the transaction that moves
+its step, and every other image that installs a package depending on it was
+given the rollup's wheel then. apps/swarm-graph's Dockerfile installs the
+worker too and was missed. Its image was reused from an older build until a
+lock change forced a full one, so the gap stayed invisible for a day and then
+stopped the second release candidate. A Dockerfile's own `uv pip check` finds
+such a gap only when that image is rebuilt; this test finds it on the change
+that opens it.
 
 WHAT IS ASSERTED. For each Dockerfile under apps/ and images/ that installs our
 own packages from the wheelhouse (`--no-index --find-links /wheels --no-deps`),
