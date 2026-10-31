@@ -161,6 +161,18 @@ def test_an_ambiguous_midnight_is_its_first_occurrence():
     assert next_boundary(day, "day", havana) - day == timedelta(hours=25)
 
 
+def test_an_ambiguous_midnight_under_the_eu_rule_is_its_first_occurrence():
+    """The Azores' clocks go back from 01:00 to 00:00 on 25 Oct 2026.
+
+    The Azores follow the EU rule (back at 01:00 UTC), which is their 01:00
+    local, so their fall-back repeats midnight on a current tz database.
+    """
+    azores = ZoneInfo("Atlantic/Azores")
+    day = floor_boundary(datetime(2026, 10, 25, 12, tzinfo=UTC), "day", azores)
+    assert day.astimezone(azores).isoformat() == "2026-10-25T00:00:00+00:00"
+    assert next_boundary(day, "day", azores) - day == timedelta(hours=25)
+
+
 def test_a_week_starts_on_monday_and_a_month_on_the_first():
     assert floor_boundary(NOW, "week", ZoneInfo("UTC")) == datetime(2026, 9, 21, tzinfo=UTC)
     assert next_boundary(datetime(2026, 1, 1, tzinfo=UTC), "month", ZoneInfo("UTC")) == datetime(
