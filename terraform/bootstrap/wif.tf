@@ -80,10 +80,11 @@ locals {
     # CI now"; DAYONE-RELEASE-CI, docs/runbooks/release.md). Dispatch-only and
     # main-only: its `check` job refuses any other ref. Its `publish` job waits
     # in the GitHub environment `release`, which has a required reviewer. In
-    # swarmcloud-prod this identity holds only the three roles
+    # swarmcloud-prod this identity holds only the four roles
     # `scripts/release-home.sh --ci-publisher` grants (artifactregistry.writer
     # on the repository, storage.objectAdmin on the bucket, cloudkms
-    # signerVerifier on the cosign key); nothing at project level.
+    # signerVerifier and cloudkms viewer on the cosign key); nothing at
+    # project level.
     "publish-release.yml",
   ]
 
