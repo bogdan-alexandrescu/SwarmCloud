@@ -18,9 +18,9 @@ The four applies (design §5) and the two after the hand-off (plan §5.5):
 | `bootstrap-1` | bootstrap | roles, the deployer, KMS; no adoption, no broker lister, no log view |
 | `registry` | infra | `-target` the registry only, so stage 4 can copy images into it |
 | `infra-1` | infra | everything, every key-gated switch off (lesson 39) |
-| `infra-2` | infra | each key switch on exactly when its key has an ENABLED version; `enable_console_app_setup`, `require_alert_channels`, `tenant_job_vpc_egress` |
+| `infra-2` | infra | each key switch on exactly when its key has an ENABLED version; `enable_console_app_setup`, `require_alert_channels`, `tenant_job_vpc_egress`, `platform_admin_reach` |
 | `bootstrap-2` | bootstrap | the log view grant, the IAP programmatic client and the backends it applies to; swarm-api's grants (`API_GRANT_SWITCHES`); the workspace deployer and its kinds, with the workspace-apply image |
-| `infra-3` | infra | the console's GitHub App ids, `enable_github_app`, `enable_forge_refresh`; `workspace_apply_publish`, `mcp_servers_enabled` |
+| `infra-3` | infra | the console's GitHub App ids, `enable_github_app`, `enable_forge_refresh`; `workspace_apply_publish`, `mcp_servers_enabled`, `forge_broker` (with `enable_child_tasks`) |
 | `infra-4` | infra | `enable_github_hooks` |
 | `infra-close` | infra | infra-4's inputs without the installer's control-plane CIDR (after stage 14's last kubectl) |
 
@@ -459,6 +459,10 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
     inputs["enable_console_app_setup"] = second
     # Lesson 35: scheduler-created Jobs reach the internal API.
     inputs["tenant_job_vpc_egress"] = second
+    # Owner's pick (PR #2854, question 0): a platform admin may enter a
+    # registered group workspace as its admin, each request audited (never a
+    # person's own workspace), from infra-2 on, as dev has it.
+    inputs["platform_admin_reach"] = second
     app = outputs.get("github_app") or {}
     third = after(pass_name, "infra-3") and bool(app.get("id"))
     app_keys = all(versions.get(s) for s in APP_SECRETS)
@@ -478,6 +482,11 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
     # swarm-api reads a stored MCP credential through bootstrap pass 2's
     # enable_mcp_credentials grant, which is in place by infra-3.
     inputs["mcp_servers_enabled"] = after(pass_name, "infra-3")
+    # Owner's pick (PR #2854, question 1): the forge broker (#1041) is on
+    # from infra-3, after bootstrap pass 2's enable_forge_user_slots. It
+    # proves an attempt with the child path's key, so it goes on only with
+    # enable_child_tasks (child_tasks.tf refuses it otherwise).
+    inputs["forge_broker"] = after(pass_name, "infra-3") and inputs["enable_child_tasks"] is True
     inputs["enable_github_hooks"] = (after(pass_name, "infra-4") and inputs["enable_github_app"]
                                      and bool(versions.get("swarm-github-app-webhook-secret")))
     sandbox = acceptance_sandbox(state)

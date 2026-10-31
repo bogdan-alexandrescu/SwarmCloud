@@ -36,11 +36,6 @@ INSTALLER = "admin@example.com"
 #: is the owner's decision (asked in this lane's questions.json). The guard
 #: holds them off too, so neither a silent flip nor a silent drop passes.
 OWNER_CHOICES = {
-    # Widens who may enter a tenant (invariant 9); dev turned it on as a
-    # dev-then-prod rollout, never by default.
-    "switch.platform_admin_reach": "platform_admin_reach",
-    # The forge broker is the owner's rollout step (#1041); dev keeps it off.
-    "switch.forge_broker": "forge_broker",
     # Off until the owner's O1 step 3 proves IAP evaluates the attribute;
     # bounds K1 only, which a fresh install does not grant.
     "switch.front_door_admit_role_bound": "front_door_admit_role_bound",
@@ -133,7 +128,8 @@ def test_the_guard_reads_the_workspace_switches() -> None:
                      "switch.enable_workspace_kinds", "switch.enable_provider_keys",
                      "switch.enable_workspace_secrets", "switch.enable_browser_logins",
                      "switch.enable_mcp_credentials", "switch.enable_platform_secret_status",
-                     "switch.workspace_apply_publish", *OWNER_CHOICES):
+                     "switch.workspace_apply_publish", "switch.platform_admin_reach",
+                     "switch.forge_broker", *OWNER_CHOICES):
         assert entry_id in owned, f"{entry_id} is not owned by a Terraform pass"
     assert len(owned) >= 30, len(owned)
     for entry_id, late in TURNS_ON_LATER.items():
@@ -178,6 +174,30 @@ def test_workspace_switches_wait_for_what_they_need(mode: str, members: int) -> 
         assert _render(state, pass_name).get("workspace_apply_publish") is not True, pass_name
     for pass_name in ("infra-3", "infra-4", "infra-close"):
         assert _render(state, pass_name)["workspace_apply_publish"] is True, pass_name
+
+
+@pytest.mark.parametrize("mode,members", MODES, ids=[m for m, _ in MODES])
+def test_owner_picked_switches_go_on_from_their_pass(mode: str, members: int) -> None:
+    # PR #2854's owner picks: platform_admin_reach from infra-2, forge_broker from infra-3.
+    state = _state(mode, members)
+    for pass_name in ("infra-1",):
+        assert _render(state, pass_name)["platform_admin_reach"] is False, pass_name
+    for pass_name in ("infra-2", "infra-3", "infra-4", "infra-close"):
+        assert _render(state, pass_name)["platform_admin_reach"] is True, pass_name
+    for pass_name in ("infra-1", "infra-2"):
+        assert _render(state, pass_name)["forge_broker"] is False, pass_name
+    for pass_name in ("infra-3", "infra-4", "infra-close"):
+        assert _render(state, pass_name)["forge_broker"] is True, pass_name
+
+
+def test_no_child_key_leaves_the_forge_broker_off() -> None:
+    # child_tasks.tf refuses forge_broker without enable_child_tasks: no child
+    # key version, no broker, in every pass.
+    state = _state(sizes.TEAM, 5)
+    versions = {k: v for k, v in EVERY_VERSION.items() if k != "swarm-child-key"}
+    for pass_name in ("infra-3", "infra-4", "infra-close"):
+        inputs = tfvars.infra_inputs(state, pass_name=pass_name, installer=INSTALLER, versions=versions)
+        assert inputs["enable_child_tasks"] is False and inputs["forge_broker"] is False, pass_name
 
 
 def test_no_workspace_apply_image_leaves_the_deployer_off() -> None:
