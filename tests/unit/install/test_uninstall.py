@@ -417,7 +417,8 @@ def test_identity_of_each_step(tmp_path):
     world = FakeWorld(tmp_path)
     assert flow(tmp_path, store, world).run() == ExitCode.OK
     deployer_calls = {"scheduler_jobs", "pause_job", "running_executions", "tenant_namespaces", "delete_namespace",
-                      "delete_policies", "registry_images", "delete_image", "engine_secrets", "delete_secret"}
+                      "delete_policies", "registry_images", "delete_image", "engine_secrets", "delete_secret",
+                      "empty_bucket"}
     for entry in world.log:
         if entry[0] in deployer_calls:
             assert entry[1] == DEPLOYER, entry
