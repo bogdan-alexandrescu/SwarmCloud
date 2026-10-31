@@ -4,23 +4,30 @@
  *
  * The latest scheduled doctor run, read from `GET /v1/admin/setup/health`
  * (swarm-doctor writes it; this page only reads): when it ran, the checks it
- * ran and its findings. Each finding says what drifted, what changed (the
- * audit-log entry, when the check knows it), the doctor's repair command
- * (or `swarm install`, which re-checks every step and repairs the one that
- * drifted, when it names none) and the Cloud console path where one exists.
- * The full check list shows each check's last result.
+ * ran and its findings. Each finding says what the probe saw, why it could
+ * not check when it could not (a grant still propagating, or one missing),
+ * the doctor's fix in words and its repair command (`swarm install --repair
+ * <id>`, which re-runs the one step that satisfies the entry); an entry no
+ * install step makes has no repair command, and the page says so rather than
+ * inventing one. The full check list shows each check's last result.
+ *
+ * READ IN THE SHAPE THE DOCTOR WRITES (DAYONE-HEALTH-SHAPE): every row is
+ * `doctor.Finding.to_json()`, `{id, status: met|unmet|unknown, detail, step,
+ * fix, cause, repair}`; api.ts's normSetupHealth maps it, and the test holds
+ * the fixture to the writer's keys.
  *
  * SAYS ONLY WHAT EXISTS (DAYONE-SETUP-UI-4): the hourly doctor is off unless
  * `enable_scheduled_doctor` turned it on (terraform/infra/doctor.tf), so no
- * run recorded says it is off rather than promising one every hour, and no
- * text names a `swarm doctor` verb or a `--repair` flag the CLI does not have.
+ * run recorded says it is off rather than promising one every hour.
  *
- * "NOT CHECKED" IS SHOWN AS SUCH, NEVER AS PASSING: a check whose result is
- * anything but `passed` or `failed` is drawn as not checked and counted
- * apart, and no doctor run at all says so rather than drawing a clean page.
+ * "NOT CHECKED" IS SHOWN AS SUCH, NEVER AS PASSING: a check the doctor could
+ * not decide (`unknown`, or any status it did not write) is drawn as not
+ * checked and counted apart, and its finding says it could not be checked
+ * rather than that it drifted; no doctor run at all says so rather than
+ * drawing a clean page.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { loadSetupHealth, REPAIR_BY_REINSTALL, type HealthCheck, type HealthFinding, type Result, type SetupHealth } from './api'
+import { loadSetupHealth, type HealthCheck, type HealthFinding, type Result, type SetupHealth } from './api'
 import { Banner, Button, Card, Chip, CodeBlock, ToneMark, type MarkTone } from './components'
 import { spanWords } from './AdminSetupSteps'
 import './styles/onboarding.css'
@@ -37,29 +44,34 @@ const NOT_CHECKED: ResultLook = { tone: 'unknown', word: 'not checked', cls: 'is
 
 const resultOf = (c: HealthCheck): ResultLook => (c.result === 'passed' ? PASSED : c.result === 'failed' ? FAILED : NOT_CHECKED)
 
-/** One finding: what drifted, what changed, the repair command and the console path. */
+/** Why a probe saw a 403, in words (doctor.Finding.cause). */
+const CAUSE_WORDS: Record<string, string> = {
+  propagating: 'the doctor holds the permission, but IAM is still propagating the grant; the next run should see it.',
+  missing_grant: 'the doctor’s identity lacks a permission this check needs, so it could not look.',
+}
+
+/** One finding: what the probe saw, why, the doctor's fix and its repair command. */
 export function HealthFindingPanel({ finding }: { finding: HealthFinding }) {
+  const drifted = finding.result === 'failed'
+  const cause = finding.cause === null ? null : (CAUSE_WORDS[finding.cause] ?? finding.cause)
   return (
-    <section aria-label={finding.title}>
-      <Banner tone="bad" title={finding.title}>
-        {finding.cause ?? `The ${finding.check} check failed on the last doctor run.`}
+    <section aria-label={finding.id}>
+      <Banner tone={drifted ? 'bad' : 'warn'} title={drifted ? `${finding.id} drifted` : `${finding.id} could not be checked`}>
+        {finding.detail ?? (drifted ? `The ${finding.id} check failed on the last doctor run.` : `The ${finding.id} check could not decide on the last doctor run.`)}
       </Banner>
-      {finding.changed !== null && (
+      {cause !== null && (
         <p className="ur-hint">
-          <b>What changed:</b> {finding.changed}
+          <b>Why:</b> {cause}
         </p>
       )}
-      <CodeBlock title="Repair" lang="shell" text={finding.repair} />
-      {finding.repair === REPAIR_BY_REINSTALL && <p className="ur-hint">The doctor named no command for this one: swarm install re-checks every step and repairs what drifted.</p>}
-      <p className="ur-hint">
-        {finding.console_path !== null ? (
-          <>
-            <b>In the Cloud console:</b> {finding.console_path}
-          </>
-        ) : (
-          'No console path for this one: repair it from a terminal with the command above.'
-        )}
-      </p>
+      {finding.fix !== null && (
+        <p className="ur-hint">{finding.fix}</p>
+      )}
+      {finding.repair !== null ? (
+        <CodeBlock title="Repair" lang="shell" text={finding.repair} />
+      ) : (
+        <p className="ur-hint">No install step makes this one, so there is no repair command: the doctor’s fix says what to do.</p>
+      )}
     </section>
   )
 }
@@ -80,6 +92,8 @@ export function HealthPanel({ health, now, onReload, busy }: { health: SetupHeal
     )
   }
   const notChecked = health.checks.filter((c) => resultOf(c) === NOT_CHECKED).length
+  const drifted = health.findings.filter((f) => f.result === 'failed').length
+  const undecided = health.findings.length - drifted
   const at = health.run_at === null ? Number.NaN : Date.parse(health.run_at)
   const when = Number.isNaN(at) ? 'at an unrecorded time' : `${spanWords((now - at) / 1000)} ago`
   return (
@@ -87,14 +101,16 @@ export function HealthPanel({ health, now, onReload, busy }: { health: SetupHeal
       title="Health"
       action={
         <span className="ob-acts">
-          {health.findings.length > 0 ? <Chip tone="bad">{health.findings.length} drifted</Chip> : <Chip>no findings</Chip>}
+          {drifted > 0 && <Chip tone="bad">{drifted} drifted</Chip>}
+          {undecided > 0 && <Chip tone="park">{undecided} could not be checked</Chip>}
+          {health.findings.length === 0 && <Chip>no findings</Chip>}
           {reload}
         </span>
       }
       foot={`The checks the hourly doctor runs, read-only, on the live deployment · last run ${when}`}
     >
       {health.findings.map((f) => (
-        <HealthFindingPanel key={`${f.check}:${f.title}`} finding={f} />
+        <HealthFindingPanel key={f.id} finding={f} />
       ))}
       <p className="ob-summary">
         {health.checks.length} checks · {health.checks.length - notChecked} run
@@ -108,7 +124,7 @@ export function HealthPanel({ health, now, onReload, busy }: { health: SetupHeal
               <ToneMark tone={r.tone} hidden />
               <div className="ob-step-main">
                 <p className="ob-step-h">
-                  <b>{c.title}</b>
+                  <b>{c.id}</b>
                   <span className="ob-state">{r.word}</span>
                 </p>
                 {c.detail !== null && <p className="ur-hint ob-line">{c.detail}</p>}

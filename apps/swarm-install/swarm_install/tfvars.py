@@ -495,6 +495,25 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
     return _with_addons(inputs, state, "infra")
 
 
+#: `swarm uninstall`'s overlay on infra's stored inputs (audit 4e F1). The
+#: cluster and the Cloud Run services carry `deletion_protection =
+#: var.deletion_protection`, true by default, and prod refuses false without
+#: `allow_unprotected_prod` (terraform/infra/variables.tf), so a destroy with the
+#: install's own inputs is refused by every one of them. The person typed the
+#: project id to approve deleting the deployment; that is the deliberate
+#: override the variable asks for. `bucket_force_destroy` stays as rendered
+#: (prod refuses it): the uninstall empties the buckets through the Storage API.
+UNINSTALL_OVERLAY: dict[str, dict[str, Any]] = {
+    "infra": {"deletion_protection": False, "allow_unprotected_prod": True},
+    "bootstrap": {},
+}
+
+
+def uninstall_inputs(root: str, inputs: Mapping[str, Any]) -> dict[str, Any]:
+    """A root's stored inputs with the uninstall's overlay; the stored copy is never changed."""
+    return {**dict(inputs), **UNINSTALL_OVERLAY.get(root, {})}
+
+
 def refuse_unsafe(inputs: Mapping[str, Any]) -> None:
     for name in inputs:
         if any(word in name for word in PINNING_WORDS):
