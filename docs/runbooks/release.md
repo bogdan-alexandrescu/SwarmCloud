@@ -40,9 +40,12 @@ The release home is project `swarmcloud-prod`: images in
    ```
 
    It grants, in `swarmcloud-prod`, `roles/artifactregistry.writer` on the
-   repository `swarmcloud`, `roles/storage.objectAdmin` on `gs://swarmcloud`
-   and `roles/cloudkms.signerVerifier` on `swarmcloud-release/cosign`. A second
-   run grants nothing.
+   repository `swarmcloud`, `roles/storage.objectAdmin` on `gs://swarmcloud`,
+   and `roles/cloudkms.signerVerifier` and `roles/cloudkms.viewer` on
+   `swarmcloud-release/cosign`. cosign reads the key's metadata before it signs
+   (`cloudkms.cryptoKeys.get`), which signerVerifier does not allow: the first
+   CI publish, run 41114178639 of 2026.10.1-rc.1, stopped on exactly that.
+   Viewer reads metadata only. A second run grants nothing.
 
 2. In the repository's settings, create the environment `release`: a required
    reviewer (BGD), and deployment branches limited to `main`.
