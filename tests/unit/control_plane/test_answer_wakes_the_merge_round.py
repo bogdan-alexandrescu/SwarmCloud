@@ -279,3 +279,10 @@ def test_another_tenants_round_never_clears_the_merge(client, db, objects) -> No
     assert _answer(client, IMPLEMENT, 0, "exempt").status_code == 200
 
     _assert_held(db)
+
+
+def test_the_round_keys_are_mergewakes_own() -> None:
+    from swarm_api import agent_questions, mergewake
+
+    assert agent_questions.MERGE_FIX_METADATA_KEY == mergewake.MERGE_FIX_METADATA_KEY
+    assert set(agent_questions.MERGE_ROUND_LISTS) == set(mergewake.ROUND_KIND)
