@@ -55,11 +55,66 @@ def build_record(path: Path, names: list[str] | None = None, **override: dict) -
     return path
 
 
-def assemble(tmp: Path, record: Path, version: str = VERSION) -> subprocess.CompletedProcess:
+def _lightpanda_arg(name: str) -> str:
+    found = re.search(rf"^ARG {name}=(\S+)$", LIGHTPANDA_DOCKERFILE.read_text(), re.M)
+    assert found, f"no ARG {name}= in {LIGHTPANDA_DOCKERFILE}"
+    return found.group(1)
+
+
+# The Lightpanda image's Corresponding Source (AGPL section 6(d); docs/design/
+# lightpanda-runtime.md 6.4): the bundle carries the tag's source archive at
+# the release-home path the image's SOURCE notice names.
+LIGHTPANDA_DOCKERFILE = REPO / "images" / "agent-runtime-lightpanda" / "Dockerfile"
+LIGHTPANDA_VERSION = _lightpanda_arg("LIGHTPANDA_VERSION")
+LIGHTPANDA_SOURCE_SHA256 = _lightpanda_arg("LIGHTPANDA_SOURCE_SHA256")
+LIGHTPANDA_SOURCE = f"third-party/lightpanda/{LIGHTPANDA_VERSION}/source.tar.gz"
+LIGHTPANDA_UPSTREAM = f"https://github.com/lightpanda-io/browser/archive/refs/tags/{LIGHTPANDA_VERSION}.tar.gz"
+#: What the fake curl serves for it. Nothing here downloads the real archive.
+LIGHTPANDA_SOURCE_BODY = b"a stand-in for the lightpanda source archive\n"
+
+# assemble.sh stages the archive with build-mirror.sh's
+# tool_mirror_fetch_upstream: curl, then sha256_of against the Dockerfile's pin.
+# The fake curl logs the URL and writes LIGHTPANDA_SOURCE_BODY; the fake
+# sha256sum answers the pin for the staged download (no test can produce the
+# real archive's bytes offline) unless FAKE_SHA256_HONEST=1, and hashes every
+# other file truly.
+LIGHTPANDA_FAKE_CURL = r'''#!{python}
+import os, sys
+args = sys.argv[1:]
+out = args[args.index("-o") + 1]
+url = [a for a in args if a.startswith("https://")][-1]
+with open(os.environ["FAKE_CURL_LOG"], "a") as fh:
+    fh.write(url + "\n")
+open(out, "wb").write({body!r})
+'''
+LIGHTPANDA_FAKE_SHA256SUM = r'''#!{python}
+import hashlib, os, sys
+for path in sys.argv[1:]:
+    digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+    if path.endswith("/source.tar.gz.part") and os.environ.get("FAKE_SHA256_HONEST") != "1":
+        digest = {pin!r}
+    print(f"{digest}  {path}")
+'''
+
+
+def lightpanda_fakes(tmp: Path) -> Path:
+    """A bin directory with the fake curl and sha256sum."""
+    bindir = tmp / "lightpanda-bin"
+    bindir.mkdir(exist_ok=True)
+    for name, text in (("curl", LIGHTPANDA_FAKE_CURL.replace("{body!r}", repr(LIGHTPANDA_SOURCE_BODY))),
+                       ("sha256sum", LIGHTPANDA_FAKE_SHA256SUM.replace("{pin!r}", repr(LIGHTPANDA_SOURCE_SHA256)))):
+        (bindir / name).write_text(text.replace("{python}", sys.executable))
+        (bindir / name).chmod(0o755)
+    return bindir
+
+
+def assemble(tmp: Path, record: Path, version: str = VERSION, **extra: str) -> subprocess.CompletedProcess:
     # A refusal test must not pass because there is no script to refuse.
     assert ASSEMBLE.is_file(), f"{ASSEMBLE.relative_to(REPO)} does not exist"
     env = {k: v for k, v in os.environ.items() if not k.startswith(("CLOUDSDK_", "GOOGLE_"))}
-    env.update(NO_COLOR="1", SWARM_ENV_FILE=str(tmp / "absent.env"))
+    env.update(NO_COLOR="1", SWARM_ENV_FILE=str(tmp / "absent.env"),
+               PATH=f"{lightpanda_fakes(tmp)}{os.pathsep}{env.get('PATH', '/usr/bin:/bin')}",
+               FAKE_CURL_LOG=str(tmp / "curl.log"), **extra)
     return subprocess.run(
         ["bash", str(ASSEMBLE), "--version", version, "--images", str(record), "--out", str(tmp / "out")],
         env=env, capture_output=True, text=True, timeout=600, check=False,
@@ -218,8 +273,41 @@ def test_sha256sums_cover_every_file(bundle: Path) -> None:
         assert sums[name] == hashlib.sha256((bundle / name).read_bytes()).hexdigest(), name
     for must in ("module.tgz", "manifest.yaml", "images.json", "kubernetes.tgz", "compat.json",
                  "marketplace.json", "cve-acceptances.json", "RELEASE.md", "install.sh",
-                 "plugin/.claude-plugin/plugin.json", "plugin/compat.json", "plugin.zip"):
+                 "plugin/.claude-plugin/plugin.json", "plugin/compat.json", "plugin.zip", LIGHTPANDA_SOURCE):
         assert must in sums, must
+
+
+# -- the Lightpanda Corresponding Source (AGPL section 6(d)) ---------------------------------
+
+
+def test_bundle_carries_the_lightpanda_source_archive(bundle: Path) -> None:
+    """The bundle holds the Lightpanda tag's source archive at the path the
+    image's SOURCE notice names under the release home, staged from upstream
+    and listed in SHA256SUMS like every other file, so publish.sh can put it
+    where that URL answers."""
+    from swarm_install.steps.preflight import parse_sums
+
+    notice = _lightpanda_arg("LIGHTPANDA_SOURCE_URL")
+    assert notice == f"https://storage.googleapis.com/swarmcloud/{LIGHTPANDA_SOURCE}", notice
+    # MUTATION: drop the lightpanda_source_stage call from assemble.sh and this fails.
+    staged = bundle / LIGHTPANDA_SOURCE
+    assert staged.is_file(), sorted(p.relative_to(bundle).as_posix() for p in bundle.rglob("*"))[:20]
+    assert staged.read_bytes() == LIGHTPANDA_SOURCE_BODY
+    sums = parse_sums((bundle / "SHA256SUMS").read_bytes())
+    assert sums[LIGHTPANDA_SOURCE] == hashlib.sha256(LIGHTPANDA_SOURCE_BODY).hexdigest()
+    # Fetched once, from the tag's upstream archive (the fake curl's log).
+    assert (bundle.parent / "curl.log").read_text().split() == [LIGHTPANDA_UPSTREAM]
+    assert not [p for p in bundle.rglob("*.part")]
+
+
+def test_refuses_a_lightpanda_source_archive_that_is_not_the_pinned_one(tmp_path: Path) -> None:
+    """A download whose sha256 is not the Dockerfile's pin is no Corresponding
+    Source of the image: the bundle is not assembled, and nothing is left."""
+    proc = assemble(tmp_path, build_record(tmp_path / "record.json"), FAKE_SHA256_HONEST="1")
+    assert proc.returncode == 1, proc.stdout[-2000:] + proc.stderr[-2000:]
+    assert "refusing it" in proc.stderr and "Lightpanda source archive" in proc.stderr, proc.stderr[-2000:]
+    out = tmp_path / "out"
+    assert not out.exists() or not any(out.iterdir()), sorted(p.name for p in out.iterdir())
 
 
 def test_marketplace_names_the_release_plugin_zip_by_url(bundle: Path) -> None:
