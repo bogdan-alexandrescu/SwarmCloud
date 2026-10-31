@@ -1017,8 +1017,10 @@ TRACK_EVERY_BRANCH = (
 #: NO AUTOMATIC MAINTENANCE (#2922): git ends a fetch with `git maintenance
 #: run --auto` (`gc --auto` before 2.29), which git 2.56 detaches; its repack
 #: can hold or rewrite `.git/shallow` while the next git command over the same
-#: clone runs ("shallow file has changed since we read it"). Every fetch that
-#: another git command can follow over one clone carries both settings:
+#: clone runs ("shallow file has changed since we read it"). Every command
+#: that starts it in its own repository carries both settings -- the fetches,
+#: the `git commit`s and the integrator's merge; which ones those are is
+#: measured, command by command, in `test_gitops_no_auto_maintenance.py`.
 #: `gc.auto=0` alone gates only maintenance's gc task, not the run itself.
 _NO_AUTO_MAINTENANCE = ("-c", "maintenance.auto=false", "-c", "gc.auto=0")
 
@@ -2801,7 +2803,8 @@ def commit_dirty(
     # otherwise give it the picked commit's author (see `_worker_identity`).
     commit_code, _ = run(
         [
-            *g, "commit", "--no-verify", _author_option(author_name, author_email),
+            *g, *_NO_AUTO_MAINTENANCE, "commit", "--no-verify",
+            _author_option(author_name, author_email),
             "--message", message,
         ],
         "publish-commit",
@@ -3011,7 +3014,8 @@ def fold_agent_commits(
         elif code != 0:
             code, _ = run(
                 [
-                    *g, "commit", "--no-verify", _author_option(author_name, author_email),
+                    *g, *_NO_AUTO_MAINTENANCE, "commit", "--no-verify",
+                    _author_option(author_name, author_email),
                     "--message", message,
                 ],
                 "publish-fold-commit",
