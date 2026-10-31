@@ -16,6 +16,9 @@ import hashlib
 import io
 import json
 import os
+import re
+import subprocess
+import sys
 import tarfile
 from collections.abc import Sequence
 from pathlib import Path
@@ -44,6 +47,10 @@ UNREACHABLE = "Unable to connect to the server: dial tcp 34.1.2.3:443: i/o timeo
 POLICIES = ("---\nkind: ValidatingAdmissionPolicy\nmetadata:\n  name: swarm-worker-pod-constraints\n"
             "---\nkind: ClusterRole\nmetadata:\n  name: swarm-provisioner\n")
 SWARM_SYSTEM = "---\nkind: NetworkPolicy\nmetadata:\n  name: default-deny-ingress\n  namespace: swarm-system\n"
+REPO = Path(__file__).resolve().parents[3]
+#: The checkout's renderer: the fake runs it on the engine's argv, so an
+#: argument the real render.py refuses fails here as it fails on a cluster.
+RENDER = REPO / "kubernetes" / "render.py"
 
 
 def bundle_bytes(extra: dict[str, bytes] | None = None) -> bytes:
@@ -115,8 +122,10 @@ class FakeShell:
     `kubectl diff` exits 0 only for a render it already holds."""
 
     def __init__(self, *, current_context: str = CONTEXT, unreachable: int = 0,
-                 unreachable_error: str = UNREACHABLE) -> None:
+                 unreachable_error: str = UNREACHABLE, namespaces: Sequence[str] = ()) -> None:
         self.current_context = current_context
+        # A new Autopilot cluster: terraform/infra creates no namespace.
+        self.namespaces = set(namespaces)
         # The control plane answers neither the first `unreachable` acting calls.
         self.unreachable = unreachable
         self.unreachable_error = unreachable_error
@@ -136,6 +145,10 @@ class FakeShell:
         argv = list(argv)
         self.calls.append((argv, stdin, env))
         if argv[1].endswith("render.py"):
+            real = subprocess.run([sys.executable, str(RENDER), *argv[2:]], capture_output=True, text=True,
+                                  check=False)
+            if real.returncode != 0:
+                return real.returncode, "", real.stderr
             return 0, POLICIES if argv[2] == "policies" else SWARM_SYSTEM, ""
         if argv[0].endswith("gcloud"):
             return 0, "", ""
@@ -148,7 +161,11 @@ class FakeShell:
         if verbs[0] == "diff":
             return (0, "", "") if stdin in self.applied else (1, "diff -u a/x b/x\n", "")
         if verbs[0] == "apply":
+            if "kind: Namespace" not in str(stdin) and "namespace: swarm-system" in str(stdin) \
+                    and "swarm-system" not in self.namespaces:
+                return 1, "", 'Error from server (NotFound): namespaces "swarm-system" not found'
             self.applied.append(str(stdin))
+            self.namespaces |= set(re.findall(r"kind: Namespace\nmetadata:\n  name: ([a-z0-9-]+)", str(stdin)))
             for manifest, name in ((LIVE, "statefulset/swarm-live"), (GRAPH, "deployment/swarm-graph")):
                 if stdin == manifest:
                     self.workloads[name] = (1, 1)
@@ -162,8 +179,12 @@ class FakeShell:
             if found is None:
                 return 1, "", f'Error from server (NotFound): {verbs[1]} not found'
             return 0, json.dumps({"spec": {"replicas": found[0]}, "status": {"readyReplicas": found[1]}}), ""
+        if verbs[:2] == ["get", "namespace"]:
+            if verbs[2] in self.namespaces:
+                return 0, f"namespace/{verbs[2]}\n", ""
+            return 1, "", f'Error from server (NotFound): namespaces "{verbs[2]}" not found'
         if verbs[0] == "get":
-            return 0, "namespace/swarm-system\n", ""
+            return 0, "", ""
         raise AssertionError(f"unexpected command {argv}")
 
 
@@ -264,7 +285,7 @@ def test_policies_before_tenant_objects(tmp_path: Path) -> None:
     result = _rig(tmp_path).engine(_steps(gcp, shell := FakeShell())).run()
     assert result.exit_code == ExitCode.OK, result.message
     # The relay and the graph service, infra's renders, go last (DAYONE-CLUSTER-REACH).
-    assert shell.applied == [POLICIES, SWARM_SYSTEM, LIVE, GRAPH]
+    assert shell.applied == [POLICIES, cluster.SWARM_SYSTEM_NAMESPACE, SWARM_SYSTEM, LIVE, GRAPH]
 
 
 def test_subjects_from_unique_id_read_from_iam() -> None:
@@ -408,7 +429,7 @@ def test_credentials_in_the_engines_kubeconfig_with_the_auth_plugin_on_path(
         return fake_plugin()
 
     monkeypatch.setattr(cluster.tools, "ensure", ensure)
-    shell = FakeShell()
+    shell = FakeShell(namespaces=("swarm-system",))
     ctx = _ctx()
     kube = cluster.kube_for(ctx, find=lambda tool: "/opt/bin/kubectl", run=shell)
     kube.gcloud = lambda: "/opt/bin/gcloud"
@@ -439,7 +460,7 @@ def test_unreachable_control_plane_is_polled_with_a_countdown() -> None:
     for error in (UNREACHABLE, "The connection to the server 34.1.2.3:443 was refused - did you specify "
                                "the right host or port?"):
         ctx = _ctx()
-        shell = FakeShell(unreachable=2, unreachable_error=error)
+        shell = FakeShell(unreachable=2, unreachable_error=error, namespaces=("swarm-system",))
         kube = _kube(shell)(ctx)
         code, out, _ = kube("get", "namespace", "swarm-system", "-o", "name")
         assert (code, out) == (0, "namespace/swarm-system\n")
@@ -463,7 +484,7 @@ def test_relay_and_graph_applied_from_infra_outputs() -> None:
     """swarm_live_manifest and swarm_graph_manifest, read from infra's
     Terraform outputs, are applied with the engine's pinned kubectl on the
     install cluster's context, then their rollouts are waited for."""
-    gcp, shell, outputs = ClusterFakeGcp(), FakeShell(), FakeOutputs()
+    gcp, shell, outputs = ClusterFakeGcp(), FakeShell(namespaces=("swarm-system",)), FakeOutputs()
     shell.workloads = {"statefulset/swarm-live": None, "deployment/swarm-graph": None}
     *_, workloads = _steps(gcp, shell, outputs=outputs)
     ctx = _ctx()
@@ -486,7 +507,7 @@ def test_relay_and_graph_applied_from_infra_outputs() -> None:
 
 
 def test_unhealthy_rollout_fails_the_apply() -> None:
-    gcp, shell = ClusterFakeGcp(), FakeShell()
+    gcp, shell = ClusterFakeGcp(), FakeShell(namespaces=("swarm-system",))
     shell.rollouts["deployment/swarm-graph"] = "error: timed out waiting for the condition"
     *_, workloads = _steps(gcp, shell)
     ctx = _ctx()
@@ -497,7 +518,7 @@ def test_unhealthy_rollout_fails_the_apply() -> None:
 def test_switched_off_workload_is_not_demanded() -> None:
     """Terraform renders null while a workload is switched off (live.tf,
     graph_service.tf); nothing is applied for it and the step does not wait on it."""
-    gcp, shell = ClusterFakeGcp(), FakeShell()
+    gcp, shell = ClusterFakeGcp(), FakeShell(namespaces=("swarm-system",))
     shell.workloads = {"statefulset/swarm-live": None, "deployment/swarm-graph": None}
     *_, workloads = _steps(gcp, shell, outputs=FakeOutputs({"swarm_live_manifest": LIVE}))
     ctx = _ctx()
@@ -522,7 +543,7 @@ def test_infra_outputs_read_through_terraform(tmp_path: Path) -> None:
             return terraform.Completed(0, json.dumps({"terraform_version": terraform.TERRAFORM_VERSION}), "")
         if argv[1] == "output":
             return terraform.Completed(0, json.dumps({"swarm_live_manifest": {"value": LIVE, "sensitive": False},
-                                                      "gke_cluster_name": {"value": "swarm-agents"}}), "")
+                                                      "gke_cluster_name": {"value": "swarm-autopilot"}}), "")
         return terraform.Completed(0, "", "")
 
     deps = Deps(gcp=lambda: None, exec_=exec_, root_dir=lambda ctx, root: tmp_path / root)
@@ -603,3 +624,84 @@ def test_kube_for_reopens_through_the_reach_on_an_engine_context(monkeypatch: py
         outputs = ctx.state.outputs
 
     assert cluster.kube_for(Bare()).reach is None
+
+
+# -- DAYONE-CLUSTER-FIX (audit 4: S1/B1, B2, B3) --------------------------------------
+
+
+def test_default_cluster_is_the_name_terraform_gives() -> None:
+    """terraform/infra names the cluster `${name_prefix}-autopilot` and the
+    engine never renders name_prefix, so before an infra pass has recorded
+    the name, the engine looks for exactly that cluster."""
+    main = (REPO / "terraform" / "infra" / "main.tf").read_text()
+    variables = (REPO / "terraform" / "infra" / "variables.tf").read_text()
+    template = re.search(r'cluster_name\s*=\s*"([^"]+)"', main)
+    prefix = re.search(r'variable "name_prefix" \{.*?default\s*=\s*"([^"]+)"', variables, re.S)
+    assert template and prefix
+    assert cluster.DEFAULT_CLUSTER == template.group(1).replace("${var.name_prefix}", prefix.group(1))
+    assert cluster.cluster_name(_ctx()) == cluster.DEFAULT_CLUSTER
+
+
+@pytest.mark.parametrize("pass_name, recorded", [("infra-1", True), ("infra-2", True), ("bootstrap-1", False)])
+def test_infra_pass_records_the_cluster_terraform_created(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+                                                          pass_name: str, recorded: bool) -> None:
+    """`apply_pass` copies terraform/infra's `gke_cluster_name` output into the
+    state, and stage 10 reaches that cluster by it (a renamed prefix included)."""
+    from swarm_install.steps import bootstrap
+
+    from .test_terraform_runner import FakeCtx
+
+    monkeypatch.setattr(bootstrap, "generate", lambda ctx, name, gcp: {"project_id": ctx.project})
+    monkeypatch.setattr(bootstrap, "guards_for", lambda gcp, as_deployer, project: None)
+    monkeypatch.setattr(bootstrap, "run_pass", lambda tf, name, inputs, **kw: {
+        "gke_cluster_name": "swarm-blue-autopilot", "quota_broker_url": "https://broker.example"})
+    ctx = FakeCtx()
+    deps = bootstrap.Deps(gcp=lambda: None, root_dir=lambda ctx, root: tmp_path / root)
+    bootstrap.apply_pass(ctx, deps, pass_name)
+    if recorded:
+        assert ctx.outputs["gke_cluster_name"] == "swarm-blue-autopilot"
+        assert cluster.cluster_name(ctx) == "swarm-blue-autopilot"
+    else:
+        assert "gke_cluster_name" not in ctx.outputs
+
+
+def test_swarm_system_egress_source_is_the_form_render_accepts() -> None:
+    """The source names the Cloud Run service and its subnetwork, render.py's
+    `run/<project>/<region>/<service>/<subnetwork>`; the fake shell runs the
+    real render.py on the argv, so a source it refuses fails here."""
+    gcp, shell = ClusterFakeGcp(), FakeShell()
+    _, _, swarm_system, _ = _steps(gcp, shell)
+    ctx = _ctx()
+    assert swarm_system.rendered(ctx) == SWARM_SYSTEM
+    render = next(argv for argv, _, _ in shell.calls if argv[1].endswith("render.py"))
+    region = ctx.state.region
+    assert render[2:] == ["swarm-system", "--swarm-api-egress-cidr=10.8.0.0/28",
+                          f"--swarm-api-egress-source=run/{PROJECT}/{region}/swarm-api/swarm-api-egress"]
+
+
+def test_swarm_system_creates_its_namespace_before_its_policies() -> None:
+    """terraform/infra creates no namespace and the workloads that carry one
+    come later: on a new cluster the step reports the namespace missing as its
+    own work, then creates it, labelled as every kubernetes/swarm-system copy
+    is, before the ingress policies that live in it."""
+    gcp, shell = ClusterFakeGcp(), FakeShell()
+    _, policies, swarm_system, _ = _steps(gcp, shell)
+    ctx = _ctx()
+    policies.apply(ctx, policies.plan(ctx))
+    observed = swarm_system.check(ctx)
+    assert observed.status == UNMET and "this step creates it" in observed.detail
+    assert "infra pass 1" not in observed.detail
+    assert "Namespace/swarm-system" in swarm_system.plan(ctx).actions
+
+    swarm_system.apply(ctx, swarm_system.plan(ctx))
+    assert shell.applied == [POLICIES, cluster.SWARM_SYSTEM_NAMESPACE, SWARM_SYSTEM]
+    assert swarm_system.check(ctx).status == MET
+
+    import yaml
+
+    ours = yaml.safe_load(cluster.SWARM_SYSTEM_NAMESPACE)
+    copies = [d for f in sorted((REPO / "kubernetes" / "swarm-system").glob("*.yaml"))
+              for d in yaml.safe_load_all(f.read_text()) if isinstance(d, dict) and d.get("kind") == "Namespace"]
+    assert len(copies) >= 2
+    for copy in copies:
+        assert copy["metadata"] == ours["metadata"]
