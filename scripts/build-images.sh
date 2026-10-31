@@ -168,7 +168,15 @@ source "${REPO_ROOT}/scripts/lib/build-mirror.sh"
 # reasons: terraform/infra/github_hooks.tf deploys the Cloud Run service only
 # once image_refs has its digest (docs/design/graph-service.md §6.2). It
 # copies apps/common and apps/redaction in, and nothing of the worker.
-ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks workspace-apply)
+#
+# agent-runtime-lightpanda (LIGHTPANDA-BUILD-SCRIPTS, part of #2688) is
+# agent-runtime-base by digest plus Lightpanda, images/agent-runtime-lightpanda
+# (docs/design/lightpanda-runtime.md 5.D and 6.4). Beside agent-runtime-indexer,
+# the other image its checked-in recipe builds FROM the base, so it is built
+# after the base (build_after) and rebuilt with it (affected_images). No
+# runner profile names it until contract request 127 is applied; until then it
+# is built and promoted, and never dispatched.
+ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer agent-runtime-lightpanda swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks workspace-apply)
 
 # The target whose recipe an image is built from. Every image is its own,
 # except agent-runtime-base-nocodex: agent-runtime-base's Dockerfile built
