@@ -663,10 +663,6 @@ def test_the_engine_reads_every_app_field_pass_3_carries(walk, setup_app, github
     assert [k for k in github_switches.APP_FIELDS if not app.get(k)] == []
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "E2E-3 (findings): for one person, the installer's pool-account sign-in is refused "
-    "403 tenant_not_member for up to 30 s after the personal workspace turns ready: "
-    "auth.PersonalTenants caches the 'not ready' the page's own polling read"))
 def test_one_persons_sign_in_works_as_soon_as_the_workspace_is_ready(walk, setup_app, db,
                                                                     github, pool) -> None:
     """The page is read (as it polls) before swarm-workspace-apply finishes
