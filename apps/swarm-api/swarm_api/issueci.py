@@ -157,7 +157,7 @@ import logging
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import quote
 
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -174,7 +174,9 @@ from .forgechecks import (
     RED,
     CiReading,
     evaluate,
+    latest_per_event,
     required_status_checks,
+    workflow_run_of,
 )
 from .forge import NoForgeCredential
 from .forge_installation import read_token
@@ -232,6 +234,10 @@ CI_FIX_STEP = "ci-fix"
 MAX_EXCERPT_BYTES = 8 * 1024
 #: Failing check runs whose output goes in the excerpt: each name once, in
 #: GitHub's order, except that a gate over `needs` comes last (`_excerpt_order`).
+#: A red Actions gate's failed leaf jobs, read from its workflow run, take
+#: these slots ahead of it (#2937): on PR #2888's round 2 the only red required
+#: check was `ci-gate`, whose log names no test, so the round never saw the
+#: failing node id. So at most this many job logs are read in all.
 MAX_EXCERPT_CHECKS = 5
 #: Per check run: each output field, the annotations, the log's failure lines.
 MAX_FIELD_CHARS = 1_500
@@ -708,10 +714,11 @@ def _annotation_lines(entries: list[Mapping[str, Any]]) -> list[str]:
 
 
 def _check_section(writer: GitHubWriter, ref: IssueRef, label: str, check: Mapping[str, Any],
-                   token: str) -> str:
+                   token: str, events: Sequence[str] = (), notes: Sequence[str] = ()) -> str:
     name = _clip(check.get("name"), MAX_TITLE_CHARS) or "check"
     conclusion = check.get("conclusion") or check.get("status") or "failed"
-    out = [f"## {name} ({conclusion})"]
+    on = f" on {', '.join(events)}" if events else ""
+    out = [f"## {name} ({conclusion}{on})", *notes]
     output = check.get("output") if isinstance(check.get("output"), Mapping) else {}
     title = _clip(output.get("title"), MAX_TITLE_CHARS)
     if title:
@@ -732,7 +739,11 @@ def _check_section(writer: GitHubWriter, ref: IssueRef, label: str, check: Mappi
         app = check.get("app") if isinstance(check.get("app"), Mapping) else {}
         if app.get("slug") == "github-actions":
             # An Actions check run's id is its job's id.
-            tail = writer.job_log_tail(ref, check_id, token, limit=LOG_READ_BYTES)
+            try:
+                tail = writer.job_log_tail(ref, check_id, token, limit=LOG_READ_BYTES)
+            except Exception as exc:
+                log.info("%s: log of %s not read (%s)", label, check_id, type(exc).__name__)
+                tail = None
             heading, kept = _log_failures(tail or "")
             if kept:
                 out += [heading, kept]
@@ -829,20 +840,145 @@ def _is_gate(name: str) -> bool:
     return re.search(r"(?:^|[\s_/-])gate$", name.strip(), re.IGNORECASE) is not None
 
 
-def _excerpt_order(checks: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
-    """Each check name once (two runs of one workflow report it twice), gates last.
+#: A job that concluded one of these failed: a gate's leaf jobs excerpted are these.
+LEAF_FAILED_CONCLUSIONS = ("failure", "timed_out", "startup_failure")
+#: Events are named push first, then pull_request, then any other by name.
+_EVENT_ORDER = ("push", "pull_request")
+
+
+def _event_of(check: Mapping[str, Any]) -> str | None:
+    event = check.get("event")
+    return event if isinstance(event, str) and event else None
+
+
+def _ordered_events(events: Any) -> list[str]:
+    return sorted({e for e in events if e}, key=lambda e: (
+        _EVENT_ORDER.index(e) if e in _EVENT_ORDER else len(_EVENT_ORDER), e))
+
+
+def _excerpt_order(checks: list[Mapping[str, Any]]) -> list[tuple[Mapping[str, Any], list[str]]]:
+    """Each check name once, with every event it failed on, gates last.
 
     Measured on PR 1905: `ci-gate` came first in GitHub's order and took a
-    slot and bytes from the shard jobs that actually failed.
+    slot and bytes from the shard jobs that actually failed. Two runs of one
+    name (a push run and a pull_request run of `ci-gate`) are one section,
+    but the events of both are carried forward to its heading (#2937): which
+    event failed is what tells a branch behind main from a real failure.
     """
-    seen: set[str] = set()
+    events: dict[str, list[str | None]] = {}
     distinct = []
     for check in checks:
         name = str(check.get("name") or "check")
-        if name not in seen:
-            seen.add(name)
+        if name not in events:
+            events[name] = []
             distinct.append(check)
-    return sorted(distinct, key=lambda check: _is_gate(str(check.get("name") or "")))
+        events[name].append(_event_of(check))
+    ordered = sorted(distinct, key=lambda check: _is_gate(str(check.get("name") or "")))
+    return [(check, _ordered_events(events[str(check.get("name") or "check")]))
+            for check in ordered]
+
+
+def _gate_jobs(writer: GitHubWriter, ref: IssueRef, label: str,
+               failing: Sequence[Mapping[str, Any]], token: str) -> dict[str | None, list[Mapping[str, Any]]]:
+    """The jobs of each failing Actions gate's workflow run, by the gate run's event.
+
+    A run that cannot be resolved (`forgechecks.workflow_run_of`) or read is
+    left out: the gate's own section is still there. At most
+    MAX_EXCERPT_CHECKS runs are read.
+    """
+    runs: dict[int, str | None] = {}
+    for check in failing:
+        app = check.get("app") if isinstance(check.get("app"), Mapping) else {}
+        if app.get("slug") != "github-actions" or not _is_gate(str(check.get("name") or "")):
+            continue
+        run_id = workflow_run_of(check)
+        if run_id is not None:
+            runs.setdefault(run_id, _event_of(check))
+    jobs: dict[str | None, list[Mapping[str, Any]]] = {}
+    for run_id, event in list(runs.items())[:MAX_EXCERPT_CHECKS]:
+        try:
+            read = writer.run_jobs(ref, run_id, token)
+        except Exception as exc:
+            log.info("%s: jobs of Actions run %s not read (%s)", label, run_id, type(exc).__name__)
+            continue
+        jobs.setdefault(event, []).extend(job for job in read if isinstance(job, Mapping))
+    return jobs
+
+
+def _int_id(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _gate_leaves(
+    writer: GitHubWriter, ref: IssueRef, sha: str, label: str, failing: Sequence[Mapping[str, Any]],
+    shown: list[tuple[Mapping[str, Any], list[str]]], token: str,
+) -> tuple[list[tuple[Mapping[str, Any], list[str], list[str]]], list[str]]:
+    """(the failed leaf jobs of the failing gates' runs, the "merge main" lines).
+
+    Each leaf is (its check run, the events it failed on, notes for its
+    section). A leaf red on exactly one event is looked up on the others: in
+    the other gate runs read, else in one read of every Actions job at the
+    sha. Red on push and green on pull_request at one sha is the branch
+    missing a fix main has (#2937, PR #2888 round 2).
+    """
+    by_event = _gate_jobs(writer, ref, label, failing, token)
+    if not by_event:
+        return [], []
+    required_ids = {_int_id(check.get("id")) for check in failing} - {None}
+    shown_events = {str(check.get("name") or "check"): events for check, events in shown}
+    leaves: dict[str, tuple[Mapping[str, Any], list[str | None]]] = {}
+    for event, jobs in by_event.items():
+        for job in jobs:
+            name = str(job.get("name") or "")
+            job_id = _int_id(job.get("id"))
+            if (not name or job_id is None or _is_gate(name)
+                    or job.get("conclusion") not in LEAF_FAILED_CONCLUSIONS):
+                continue
+            if job_id in required_ids or name in shown_events:
+                # Already a section of its own: only its event is added.
+                if name in shown_events and event and event not in shown_events[name]:
+                    shown_events[name][:] = _ordered_events([*shown_events[name], event])
+                continue
+            check = {"id": job_id, "name": name, "conclusion": job.get("conclusion"),
+                     "app": {"slug": "github-actions"}}
+            leaves.setdefault(name, (check, []))[1].append(event)
+    at_sha: list[Mapping[str, Any]] | None = None
+    out: list[tuple[Mapping[str, Any], list[str], list[str]]] = []
+    merge_main: list[str] = []
+    for name, (check, raw_events) in leaves.items():
+        failed = _ordered_events(raw_events)
+        passed: list[str] = []
+        if len(failed) == 1:
+            others = [ev for ev in by_event if ev and ev != failed[0]]
+            if others:
+                elsewhere = [{**job, "event": ev} for ev in others for job in by_event[ev]]
+            else:
+                if at_sha is None:
+                    try:
+                        at_sha = [run for run in writer.actions_check_runs(ref, sha, token)
+                                  if isinstance(run, Mapping)]
+                    except Exception as exc:
+                        log.info("%s: Actions jobs at the head not read (%s)", label,
+                                 type(exc).__name__)
+                        at_sha = []
+                elsewhere = [run for run in at_sha if _event_of(run) not in (None, failed[0])]
+            mine = [run for run in elsewhere if run.get("name") == name]
+            for run in latest_per_event(mine):
+                event = _event_of(run)
+                if run.get("conclusion") == "success":
+                    passed.append(event or "")
+                elif run.get("conclusion") in LEAF_FAILED_CONCLUSIONS:
+                    failed.append(event or "")
+            failed, passed = _ordered_events(failed), _ordered_events(passed)
+        notes = [f"passed on {', '.join(passed)} at {sha[:12]}"] if passed else []
+        if failed == ["push"] and "pull_request" in passed:
+            merge_main.append(
+                f"{_clip(name, MAX_TITLE_CHARS)} failed on push but passed on pull_request at "
+                f"{sha[:12]}: the push run tests the branch as it is, the pull_request run tests "
+                "it merged into main, so the branch is behind a fix on main: merge main "
+                "(`git merge origin/main`) before you change any code.")
+        out.append((check, failed, notes))
+    return out, merge_main
 
 
 def _bound(text: str, limit: int = MAX_EXCERPT_BYTES) -> str:
@@ -868,16 +1004,29 @@ def excerpt_at(
 
     The merge step's wake tick (`mergewake`, lane MS7) hands a red reading
     to a fix round with exactly the excerpt an issue run's round gets.
-    `label` names the caller in the one log line a failed annotation read
-    writes; it never reaches the excerpt.
+    `label` names the caller in the one log line a failed read writes; it
+    never reaches the excerpt.
+
+    A failing Actions gate (`ci-gate`) is only a roll-up, so its workflow
+    run's failed leaf jobs are excerpted before it, each section naming the
+    events it failed on, and a job red on push but green on pull_request at
+    this sha is called out under the header as "merge main" (#2937, PR #2888
+    round 2). Every read fails soft, back to the gate's own section.
     """
     names = reading.failing_names()
     parts = [f"CI is red at {sha[:12]}: {', '.join(names) or 'a required check'}"]
-    checks = _excerpt_order(list(reading.failing_runs))
-    for check in checks[:MAX_EXCERPT_CHECKS]:
-        parts.append(_check_section(writer, ref, label, check, token))
-    if len(checks) > MAX_EXCERPT_CHECKS:
-        parts.append(f"[{len(checks) - MAX_EXCERPT_CHECKS} more failing checks not shown]")
+    order = _excerpt_order(list(reading.failing_runs))
+    leaves, merge_main = _gate_leaves(writer, ref, sha, label, list(reading.failing_runs), order,
+                                      token)
+    parts += merge_main
+    gate = [_is_gate(str(check.get("name") or "")) for check, _events in order]
+    sections = [(check, events, []) for (check, events), g in zip(order, gate) if not g]
+    sections += leaves
+    sections += [(check, events, []) for (check, events), g in zip(order, gate) if g]
+    for check, events, notes in sections[:MAX_EXCERPT_CHECKS]:
+        parts.append(_check_section(writer, ref, label, check, token, events, notes))
+    if len(sections) > MAX_EXCERPT_CHECKS:
+        parts.append(f"[{len(sections) - MAX_EXCERPT_CHECKS} more failing checks not shown]")
     for status in reading.failing_statuses[:MAX_EXCERPT_CHECKS]:
         context = _clip(status.get("context"), MAX_TITLE_CHARS) or "status"
         description = _clip(status.get("description"), MAX_FIELD_CHARS)
