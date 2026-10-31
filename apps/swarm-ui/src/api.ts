@@ -13137,6 +13137,10 @@ export interface SetupTeam {
   members: SetupMember[]
   /** The labels of the pool accounts the route found in the team's own pool, read live. */
   pool_accounts: string[]
+  /** The workspace record's `w-` id: a failed workspace is retried with `retryWorkspace(workspace_id)` (audit 5b, M6). */
+  workspace_id: string | null
+  /** The group's members page in Google Admin, served on every row so every invite keeps its link (audit 5b, M5). */
+  add_members_url: string | null
 }
 
 /**
@@ -13368,6 +13372,8 @@ function normTeam(raw: unknown): SetupTeam | null {
       .filter((m): m is Record<string, unknown> => m !== null && strOf(m.email) !== null)
       .map((m) => ({ email: strOf(m.email) as string, member: typeof m.member === 'boolean' ? m.member : null })),
     pool_accounts: labelsOf(t.pool_accounts),
+    workspace_id: strOf(t.workspace_id),
+    add_members_url: adminMembersPage(t.add_members_url),
   }
 }
 
@@ -13679,13 +13685,18 @@ export interface SetupInvite {
   member: boolean | null
 }
 
+/** A members page as the setup routes serve it: kept only when it is Google Admin's. */
+function adminMembersPage(raw: unknown): string | null {
+  const url = strOf(raw)
+  return url !== null && url.startsWith('https://admin.google.com/') ? url : null
+}
+
 /** One invite as the team routes answer it; only a Google Admin page is kept as its members page. */
 function normInvite(raw: unknown): SetupInvite | null {
   const d = objOf(raw)
   const email = d === null ? null : strOf(d.email)
   if (d === null || email === null) return null
-  const url = strOf(d.add_members_url)
-  return { email, add_members_url: url !== null && url.startsWith('https://admin.google.com/') ? url : null, member: typeof d.member === 'boolean' ? d.member : null }
+  return { email, add_members_url: adminMembersPage(d.add_members_url), member: typeof d.member === 'boolean' ? d.member : null }
 }
 
 /**

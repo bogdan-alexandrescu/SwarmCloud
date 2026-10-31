@@ -334,16 +334,46 @@ def test_an_unreadable_workspace_is_a_503_never_a_guess(group_map):
     assert auth.authenticate("Bearer t-alice", None, tenant="eng").tenant_id == "eng"
 
 
-def test_the_answer_is_cached_briefly_and_then_read_again(group_map, db):
+def test_a_ready_answer_is_cached_briefly_and_then_read_again(group_map, db):
+    seed_personal(db, "alice")
+    clock = [0.0]
+    auth = _authenticator(group_map, db, cache_seconds=30.0, clock=lambda: clock[0])
+    assert auth.authenticate("Bearer t-alice").tenant_id == "u-alice"
+    db.docs["workspaces/u-alice"]["state"] = "applying"
+    clock[0] = 29.0
+    assert auth.authenticate("Bearer t-alice").tenant_id == "u-alice"
+    clock[0] = 31.0
+    assert auth.authenticate("Bearer t-alice").tenant_id == "eng"
+
+
+def test_a_not_ready_answer_is_never_cached(group_map, db):
+    """E2E-3: the console polls while the workspace is built; the request that
+    follows the build is admitted at once, not after the cache window."""
     seed_personal(db, "alice", state="applying")
     clock = [0.0]
     auth = _authenticator(group_map, db, cache_seconds=30.0, clock=lambda: clock[0])
     assert auth.authenticate("Bearer t-alice").tenant_id == "eng"
+    with pytest.raises(Forbidden):
+        auth.authenticate("Bearer t-alice", None, tenant="u-alice")
     db.docs["workspaces/u-alice"]["state"] = "ready"
-    clock[0] = 29.0
-    assert auth.authenticate("Bearer t-alice").tenant_id == "eng"
-    clock[0] = 31.0
+    assert auth.authenticate("Bearer t-alice", None, tenant="u-alice").tenant_id == "u-alice"
     assert auth.authenticate("Bearer t-alice").tenant_id == "u-alice"
+
+
+def test_an_absent_workspace_is_read_again_and_isolation_holds(group_map, db):
+    """No record at all is not cached either; and another person's ready
+    workspace never makes this caller's id admissible."""
+    seed_personal(db, "bob")
+    clock = [0.0]
+    auth = _authenticator(group_map, db, cache_seconds=30.0, clock=lambda: clock[0])
+    with pytest.raises(Forbidden):
+        auth.authenticate("Bearer t-alice", None, tenant="u-alice")
+    with pytest.raises(Forbidden):
+        auth.authenticate("Bearer t-alice", None, tenant="u-bob")
+    seed_personal(db, "alice")
+    assert auth.authenticate("Bearer t-alice", None, tenant="u-alice").tenant_id == "u-alice"
+    with pytest.raises(Forbidden):
+        auth.authenticate("Bearer t-alice", None, tenant="u-bob")
 
 
 def test_no_reader_is_todays_behaviour(group_map, seeded):

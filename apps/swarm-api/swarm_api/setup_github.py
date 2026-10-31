@@ -6,8 +6,8 @@ to `https://<H>/admin/setup/github-app/callback` with `code` and `state`; the
 console hands both to swarm-api, which checks `state` BEFORE it calls GitHub,
 exchanges the code (`POST /app-manifests/<code>/conversions`), writes `pem`,
 `client_secret` and `webhook_secret` straight into their Secret Manager
-containers and drops them. Only `id`, `slug` and `client_id` -- none of them
-secret -- are kept, in the console's `github_app` document. Nothing of
+containers and drops them. Only `id`, `slug`, `client_id` and `name` -- none
+of them secret -- are kept, in the console's `github_app` document. Nothing of
 GitHub's answer is logged.
 
 The webhook is registered inactive (`hook_attributes.active = false`); it is
@@ -63,6 +63,9 @@ EVENTS: tuple[str, ...] = ("push",)
 CALLBACK_PATH = "/admin/setup/github-app/callback"
 #: The console's GitHub sign-in callback (`GITHUB_CALLBACK_PATH`, apps/swarm-ui/src/paths.ts).
 SIGN_IN_CALLBACK_PATH = "/onboarding/github/callback"
+#: Admin › Setup: the manifest's `setup_url`, where the App's installation
+#: returns the person.
+SETUP_PATH = "/admin/setup"
 API = "https://api.github.com"
 TIMEOUT_SECONDS = 15.0
 
@@ -122,6 +125,12 @@ def manifest_for(*, org: str, hostname: str, hooks_url: str, name: str) -> dict[
         "url": base,
         "redirect_url": base + CALLBACK_PATH,
         "callback_urls": [base + SIGN_IN_CALLBACK_PATH],
+        # Where GitHub sends the person after they install the App, and after
+        # they change the installation's repositories: Admin › Setup, whose
+        # GitHub step checks the installation on arrival (audit 5b M4).
+        # Without it GitHub stays on its own installation page.
+        "setup_url": base + SETUP_PATH,
+        "setup_on_update": True,
         "public": False,
         "default_permissions": dict(PERMISSIONS),
         "default_events": list(EVENTS),
@@ -326,11 +335,13 @@ class ManifestFlow:
         for field, slot in SECRET_FIELDS.items():
             self._secrets.add_version(slot, values[field])
         values.clear()
-        answer = {k: answer.get(k) for k in ("id", "slug", "client_id")}
+        answer = {k: answer.get(k) for k in ("id", "slug", "client_id", "name")}
         self._write({
             "id": answer["id"],
             "slug": answer["slug"],
             "client_id": answer["client_id"],
+            # Infra pass 3 renders github_app_name from it (E2E-1).
+            "name": answer["name"],
             "secrets_written_at": self._now(),
             "state_hash": None,
         })

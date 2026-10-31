@@ -203,6 +203,8 @@ def norm_team(raw: Any) -> dict[str, Any] | None:
                      "member": m.get("member") if isinstance(m.get("member"), bool) else None}
                     for m in members],
         "pool_accounts": labels_of(t.get("pool_accounts")),
+        "workspace_id": str_of(t.get("workspace_id")),
+        "add_members_url": _admin_page(t.get("add_members_url")),
     }
 
 
@@ -302,6 +304,12 @@ def norm_installation(raw: Any) -> dict[str, Any]:
             "slug": str_of(d.get("slug"))}
 
 
+def _admin_page(raw: Any) -> str | None:
+    """api.ts keeps a members page only when it is Google Admin's."""
+    url = str_of(raw)
+    return url if url and url.startswith("https://admin.google.com/") else None
+
+
 def norm_invite(raw: Any) -> dict[str, Any] | None:
     """api.ts `normInvite`: only a Google Admin page is kept as the members page."""
     d = obj_of(raw)
@@ -372,6 +380,8 @@ INVITES = "POST /v1/admin/setup/teams/{id}/invites"
 LINKS = "POST /v1/admin/setup/links"
 REDEEM = "POST /v1/setup/links/redeem"
 SMOKE = "POST /v1/admin/setup/smoke"
+#: `retryWorkspace`: the page reads nothing from its answer but its status.
+RETRY = "POST /v1/admin/workspaces/{workspace_id}/retry"
 VERIFY_RUNS = "POST /v1/admin/setup/verify-runs"
 FINISH = "POST /v1/admin/setup/finish"
 
@@ -394,6 +404,7 @@ FIELDS_READ: dict[str, list[str]] = {
         "teams[].invites", "teams[].progress", "teams[].workspace_state",
         *(f"teams[].smoke.{f}" for f in _SMOKE), *(f"teams[].grant.{f}" for f in _GRANT),
         "teams[].members[].email", "teams[].members[].member", "teams[].pool_accounts",
+        "teams[].workspace_id", "teams[].add_members_url",
         "finished.at", "finished.by",
         "addons[].name", "addons[].enable", "addons[].secret_link",
         "verify_runs.verify_runs.console_task", "verify_runs.verify_runs.console_workflow",

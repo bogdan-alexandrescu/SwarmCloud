@@ -42,6 +42,13 @@ its Terraform resources are destroyed, after the typed approval every destroy
 needs; a plan that would delete a Secret Manager container (or the deployer)
 is refused before anything is applied. Deleting the containers is a second,
 typed step: `swarm addon disable <name> --delete-secrets`.
+
+**brave-search's check is one real search** (lane DAYONE-SEARCH-PROBE).
+swarm-api's admin probe, `POST /v1/admin/setup/addons/brave-search/probe`,
+runs one fixed query with swarm-api's own key and answers `{ok, reason,
+status, results}`; the add-on is on only when it answers `ok`. A swarm-api
+older than that route answers 404, and the check falls back to reading
+`swarm-search-api-key`'s IAM policy for swarm-api's read grant, and says so.
 """
 
 from __future__ import annotations
@@ -115,6 +122,12 @@ CI_PROTECTED = ("prod",)
 #: The repository variables the CI add-on writes (the runner label the
 #: workflow patch reads, and the acceptance sandbox scripts/acceptance/config.sh reads).
 CI_VARIABLES = {"runner_label": "SWARM_CI_RUNNER_LABEL", "sandbox": "SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL"}
+
+#: swarm-api's admin probe for brave-search: one fixed search, a count back.
+SEARCH_PROBE = "/v1/admin/setup/addons/brave-search/probe"
+#: The account the probe's 404 fallback looks for on the key's IAM policy, and the role.
+SEARCH_READER = "swarm-api"
+SECRET_ACCESSOR = "roles/secretmanager.secretAccessor"
 
 
 class AddonError(RuntimeError):
@@ -391,6 +404,13 @@ class World(Protocol):
 
     def mint_link(self, addon: str, owner: str) -> Mapping[str, Any]: ...
 
+    # swarm-api's brave-search probe answer; None for a swarm-api without the route (its 404);
+    # AddonError when swarm-api could not be asked.
+    def search_probe(self) -> Mapping[str, Any] | None: ...
+
+    # The members holding the secret accessor role on the secret's own IAM policy.
+    def secret_accessors(self, name: str) -> set[str]: ...
+
     def apply(self, root: str, overlay: Mapping[str, Any], *,
               guard: Callable[[Mapping[str, Any]], None]) -> Mapping[str, Any]: ...
 
@@ -609,6 +629,8 @@ class Flow:
             ready, _, wanted = out.strip().partition("/")
             if code != 0 or not wanted or ready != wanted:
                 return UNMET, f"{addon.workload[0]} is not ready ({out.strip() or 'absent'})"
+        if addon.name == "brave-search":
+            return self._search_check(addon)
         if addon.name == "ci":
             if self.world.service_account(build_account(self.world.project)) is None:
                 return UNMET, f"{build_account(self.world.project)} does not exist"
@@ -621,6 +643,25 @@ class Flow:
                 if code != 0 or out.strip() != self._ci_variable(key, record.get("choices") or {}):
                     return UNMET, f"{repo}'s repository variable {variable} is not set"
         return MET, f"{addon.name} is on"
+
+    def _search_check(self, addon: Addon) -> tuple[str, str]:
+        """One real search through swarm-api's probe; a swarm-api without the
+        probe (404) is read through the key's IAM policy instead."""
+        try:
+            answer = self.world.search_probe()
+        except AddonError as exc:
+            return UNMET, f"swarm-api's search probe could not be asked: {exc}"
+        if answer is not None:
+            if answer.get("ok") is True:
+                return MET, f"{addon.name} is on"
+            return UNMET, f"swarm-api's search probe answered not ok: {answer.get('reason') or 'no reason given'}"
+        secret = addon.secrets[0].name
+        account = f"{SEARCH_READER}@{self.world.project}.iam.gserviceaccount.com"
+        fallback = (f"swarm-api has no search probe route (an older release), so {secret}'s IAM policy was "
+                    f"read instead")
+        if f"serviceAccount:{account}" not in self.world.secret_accessors(secret):
+            return UNMET, f"{fallback}: {account} does not hold {SECRET_ACCESSOR} on it"
+        return MET, f"{addon.name} is on ({fallback}: {account} may read the key; no search was run)"
 
     @staticmethod
     def _ci_variable(key: str, chosen: Mapping[str, str]) -> str:
@@ -766,6 +807,23 @@ class RealWorld:
 
         return SwarmClient(context=self.api_context).request(
             "POST", "/v1/admin/setup/links", payload={"kind": "addon-secret", "label": addon, "owner": owner}) or {}
+
+    def search_probe(self) -> Mapping[str, Any] | None:
+        from swarm_mcp.client import SwarmClient, SwarmError
+
+        try:
+            return SwarmClient(context=self.api_context).request("POST", SEARCH_PROBE) or {}
+        except SwarmError as exc:
+            if exc.status == 404 and not exc.edge:  # the API's own 404: a release without the probe
+                return None
+            raise AddonError(str(exc)) from None
+
+    def secret_accessors(self, name: str) -> set[str]:
+        from .steps.preflight import SECRET_MANAGER_API
+
+        policy = self.gcp._call("GET", f"{SECRET_MANAGER_API}/projects/{self.project}/secrets/{name}:getIamPolicy")
+        return {str(member) for binding in (policy or {}).get("bindings") or []
+                if binding.get("role") == SECRET_ACCESSOR for member in binding.get("members") or []}
 
     # Terraform: the root's latest applied inputs plus every add-on's overlay.
 

@@ -22,8 +22,8 @@
  * rest from the deployment's discovery document.
  *
  * SAYS ONLY WHAT EXISTS (DAYONE-SETUP-UI-4): the verify row names the checks
- * stage 14 runs and "Run the console checks" starts the console's two runs
- * (SETUP-API-2's route), each drawn with its state and linked; the first
+ * stage 14 runs and draws the console's two runs, which the hand-over starts
+ * (`finish`; audit 5b, B1), each with its state and linked; the first
  * team's row shows its grant over the App installation's repositories and each
  * invitee as waiting until the Groups API sees them in the group; an invite
  * opens the group's members page in Google Admin (decision 4: swarm-api adds
@@ -64,6 +64,7 @@ import {
   loadWorkflow,
   mintSetupLink,
   restartSetupSmoke,
+  retryWorkspace,
   runGitHubAppSelfCheck,
   SMOKE_SUCCEEDED,
   startGitHubApp,
@@ -364,6 +365,27 @@ function useAction(onChanged: () => void): { busy: string | null; error: ApiErro
   return { busy, error, run }
 }
 
+/**
+ * A tab opened now, inside the click, so no popup blocker stops it (audit 5b,
+ * M5): `go` points it at the page once the route's answer names one, and
+ * closes it when the answer names none or the call failed.
+ */
+function openTabNow(): { go: (url: string | null) => void } {
+  const tab = window.open('', '_blank') ?? null
+  if (tab !== null) tab.opener = null
+  return {
+    go: (url) => {
+      if (tab === null) {
+        if (url !== null) window.open(url, '_blank', 'noopener,noreferrer')
+      } else if (url === null) {
+        tab.close()
+      } else {
+        tab.location.href = url
+      }
+    },
+  }
+}
+
 /** Post the App manifest to github.com as the manifest flow requires: a form POST, never a fetch. */
 function postManifest(action: string, manifest: Record<string, unknown>): void {
   const form = document.createElement('form')
@@ -405,7 +427,11 @@ function GitHubAppPanel({ state, onChanged, act }: { state: SetupState; onChange
   const polling = created && app.installed_on === null
   useEffect(() => {
     if (!polling) return undefined
-    const id = window.setInterval(() => void checkGitHubAppInstallation().then((r) => r.status === 'ok' && r.data.installed && onChanged()), INSTALL_POLL_MS)
+    const check = () => void checkGitHubAppInstallation().then((r) => r.status === 'ok' && r.data.installed && onChanged())
+    // Once on arrival, then every 10 s: GitHub's return after the install
+    // (the manifest's setup_url) lands here, and the row turns at once.
+    check()
+    const id = window.setInterval(check, INSTALL_POLL_MS)
     return () => window.clearInterval(id)
   }, [polling, onChanged])
   if (!created) return null
@@ -587,20 +613,26 @@ function TeamForm({ created, waiting, onChanged }: { created: string | null; wai
       </p>
     </label>
   )
-  const submit = () =>
-    act.run('team', () =>
-      createSetupTeam({
-        group: group.trim(),
-        ...(name.trim() === '' ? {} : { display_name: name.trim() }),
-        ...(admin.trim() === '' ? {} : { first_admin: admin.trim() }),
-        invites: invites.split(/[\s,]+/).filter(Boolean),
-      }),
-      // The route answers each invite with the group's members page (#26): open it, as the Invite hint says.
-      (d) => {
-        const page = d.invites.map((i) => i.add_members_url).find((u): u is string => u !== null)
-        if (page !== undefined) window.open(page, '_blank', 'noopener,noreferrer')
-      },
+  const submit = () => {
+    const asked = invites.split(/[\s,]+/).filter(Boolean)
+    // The route answers each invite with the group's members page (#26): the
+    // tab for it opens here, inside the click, and the answer fills it in.
+    const tab = asked.length > 0 ? openTabNow() : null
+    act.run(
+      'team',
+      () =>
+        createSetupTeam({
+          group: group.trim(),
+          ...(name.trim() === '' ? {} : { display_name: name.trim() }),
+          ...(admin.trim() === '' ? {} : { first_admin: admin.trim() }),
+          invites: asked,
+        }).then((r) => {
+          if (r.status === 'error') tab?.go(null)
+          return r
+        }),
+      (d) => tab?.go(d.invites.map((i) => i.add_members_url).find((u): u is string => u !== null) ?? null),
     )
+  }
   return (
     <form
       onSubmit={(e) => {
@@ -764,8 +796,11 @@ function InviteControl({ team, onChanged }: { team: SetupTeam; onChanged: () => 
   const [asked, setAsked] = useState<SetupInvite[]>([])
   const known = new Set(teamPeople(team).map((p) => p.email))
   const pending = asked.filter((a) => !known.has(a.email))
-  const page = asked.map((a) => a.add_members_url).filter((u): u is string => u !== null).pop() ?? null
+  // The row's own members page first: the invites made with the team have no
+  // answer in this session, and still need it (audit 5b, M5).
+  const page = team.add_members_url ?? asked.map((a) => a.add_members_url).filter((u): u is string => u !== null).pop() ?? null
   const people = teamPeople(team)
+  const waiting = [...people, ...pending].some((p) => p.member !== true)
   return (
     <>
       {(people.length > 0 || pending.length > 0) && (
@@ -775,11 +810,20 @@ function InviteControl({ team, onChanged }: { team: SetupTeam; onChanged: () => 
         onSubmit={(e) => {
           e.preventDefault()
           const who = email.trim().toLowerCase()
-          act.run('invite', () => inviteToSetupTeam(team.id, who), (d) => {
-            setAsked((xs) => [...xs.filter((x) => x.email !== d.email), d])
-            setEmail('')
-            if (d.add_members_url !== null) window.open(d.add_members_url, '_blank', 'noopener,noreferrer')
-          })
+          const tab = openTabNow()
+          act.run(
+            'invite',
+            () =>
+              inviteToSetupTeam(team.id, who).then((r) => {
+                if (r.status === 'error') tab.go(null)
+                return r
+              }),
+            (d) => {
+              setAsked((xs) => [...xs.filter((x) => x.email !== d.email), d])
+              setEmail('')
+              tab.go(d.add_members_url)
+            },
+          )
         }}
       >
         <label className="c-field">
@@ -791,7 +835,7 @@ function InviteControl({ team, onChanged }: { team: SetupTeam; onChanged: () => 
           <Button size="sm" type="submit" busy={act.busy === 'invite' ? 'Inviting' : false} disabledReason={email.trim().length < 3 ? 'Enter their email first' : undefined}>
             Invite
           </Button>
-          {page !== null && (
+          {page !== null && (waiting || asked.length > 0) && (
             <ButtonLink size="sm" kind="ghost" href={page} target="_blank" rel="noreferrer">
               Open the group in Google Admin
             </ButtonLink>
@@ -889,14 +933,35 @@ function teamRow(state: SetupState, onChanged: () => void, nowMs: number): Row {
   }
 }
 
+/**
+ * A failed or denied first-team workspace. A `failed` one is retried by its
+ * record's `w-` id (`POST /v1/admin/workspaces/{id}/retry`), which re-runs
+ * the apply: asking for the team again answers 409 WORKSPACE_FAILED (audit
+ * 5b, M6). A `denied` one is asked for again, which files a fresh request.
+ */
 function TeamRetry({ team, onChanged }: { team: SetupTeam; onChanged: () => void }) {
   const act = useAction(onChanged)
+  const ws = String(team.progress.workspace_state)
+  const denied = ws === 'denied'
+  const id = team.workspace_id
+  const retry = () =>
+    denied
+      ? act.run('retry', () => createSetupTeam({ group: team.group, ...(team.first_admin === null ? {} : { first_admin: team.first_admin }), invites: team.invites }))
+      : id !== null
+        ? act.run('retry', () => retryWorkspace(id))
+        : undefined
   return (
     <>
       <StepFailure
-        cause={`swarm-workspace-apply reported ${String(team.progress.workspace_state)} for ${team.workspace}`}
-        fix="the workspace apply job’s log says which part failed; Retry asks for the team again, which re-runs the apply."
-        onRetry={() => act.run('retry', () => createSetupTeam({ group: team.group, ...(team.first_admin === null ? {} : { first_admin: team.first_admin }), invites: team.invites }))}
+        cause={`swarm-workspace-apply reported ${ws} for ${team.workspace}`}
+        fix={
+          denied
+            ? 'the decision says why it was denied; Retry asks for the team’s workspace again.'
+            : id === null
+              ? 'the workspace apply job’s log says which part failed; this page has not read the workspace’s id yet, so Retry waits for the next refresh.'
+              : 'the workspace apply job’s log says which part failed; Retry runs the workspace apply again.'
+        }
+        onRetry={denied || id !== null ? retry : undefined}
         busy={act.busy === 'retry'}
       />
       <ErrorLine error={act.error} />
@@ -1180,11 +1245,14 @@ function runFact(name: string, id: string, href: string, got: RunRead, repositor
 }
 
 /**
- * "Run the console checks" (SETUP-API-2's `POST /v1/admin/setup/verify-runs`):
- * the console's task and workflow, as the first team on a repository of its
- * grant. Their ids come from the status route's `verify_runs` (or the post's
- * answer, before the next read), and each run is drawn with its state, linked.
- * swarm install's verify reads the same ids from the record: nobody pastes one.
+ * The console's two verify runs, a task and a workflow, as the first team on a
+ * repository of its grant. Nobody starts them here: `finish` (the hand-over)
+ * starts them, and once handed over each read of the status route restarts a
+ * failed one, up to VERIFY_RUN_RETRIES fresh starts (audit 5b, B1). Their ids
+ * come from the status route's `verify_runs`, each run drawn with its state,
+ * linked; swarm install's verify reads the same ids: nobody pastes one. Only
+ * once a run has spent its fresh starts does "Run the console checks again"
+ * show, disabled with why, as the route answers 409 for it.
  */
 function ConsoleChecks({ state, onChanged }: { state: SetupState; onChanged: () => void }) {
   const act = useAction(onChanged)
@@ -1194,25 +1262,13 @@ function ConsoleChecks({ state, onChanged }: { state: SetupState; onChanged: () 
   const workflow = useRunState(runs?.workflow ?? null, readWorkflowState)
   if (runs === null || (runs.task === null && runs.workflow === null)) {
     const first = firstWorkspace(state)
-    const whose = isOnePerson(state) ? 'Your personal workspace' : 'The first team'
-    const blocked =
-      first === null
-        ? isOnePerson(state)
-          ? 'Your personal workspace is filed on the next read'
-          : 'Create the first team first'
-        : first.grant?.state === 'granted' && first.grant.repositories.length > 0
-          ? undefined
-          : `${whose} needs its repository grant first`
-    return (
-      <>
-        <span className="ob-acts">
-          <Button size="sm" busy={act.busy === 'verify-runs' ? 'Starting' : false} disabledReason={blocked} onClick={() => act.run('verify-runs', startSetupVerifyRuns, setPosted)}>
-            Run the console checks
-          </Button>
-        </span>
-        <ErrorLine error={act.error} />
-      </>
-    )
+    const whose = isOnePerson(state) ? 'your personal workspace' : 'the first team'
+    const granted = first !== null && first.grant?.state === 'granted' && first.grant.repositories.length > 0
+    const text =
+      state.finished !== null
+        ? `swarm-api starts them on this page’s next read, as ${whose}${granted ? '' : ', once it has its repository grant'}`
+        : `start by themselves when you hand over, as ${whose} on a repository of its grant`
+    return <Facts items={[{ state: 'todo', name: 'Console task and workflow', text }]} label="Console checks" />
   }
   const items: Fact[] = []
   if (runs.task !== null) {
@@ -1220,8 +1276,8 @@ function ConsoleChecks({ state, onChanged }: { state: SetupState; onChanged: () 
     items.push(runFact('Console task', runs.task, agentPath({ id: runs.task, state: word }), task, runs.repository))
   }
   if (runs.workflow !== null) items.push(runFact('Console workflow', runs.workflow, `/workflows/${encodeURIComponent(runs.workflow)}`, workflow, runs.repository))
-  // A failed or cancelled run is started again by the same route (audit 3, A8),
-  // a fresh start per failed key up to VERIFY_RUN_RETRIES; verify says so too.
+  // A failed or cancelled run is started again by swarm-api itself (audit 3,
+  // A8; audit 5b, B1), a fresh start per failed key up to VERIFY_RUN_RETRIES.
   const failedLeft = [
     { got: task, used: runs.retries.task },
     { got: workflow, used: runs.retries.workflow },
@@ -1230,6 +1286,16 @@ function ConsoleChecks({ state, onChanged }: { state: SetupState; onChanged: () 
     .map((r) => Math.max(0, VERIFY_RUN_RETRIES - r.used))
   if (failedLeft.length === 0) return <Facts items={items} label="Console checks" />
   const left = Math.min(...failedLeft)
+  if (left > 0) {
+    return (
+      <>
+        <Facts items={items} label="Console checks" />
+        <p className="ur-hint">
+          {state.finished !== null ? 'swarm-api starts it again on this page’s next read' : 'it starts again when you hand over'}: {left} of {VERIFY_RUN_RETRIES} fresh starts left
+        </p>
+      </>
+    )
+  }
   return (
     <>
       <Facts items={items} label="Console checks" />
@@ -1237,7 +1303,7 @@ function ConsoleChecks({ state, onChanged }: { state: SetupState; onChanged: () 
         <Button
           size="sm"
           busy={act.busy === 'verify-runs' ? 'Starting' : false}
-          disabledReason={left === 0 ? `It failed after ${VERIFY_RUN_RETRIES} fresh starts, so none is started again: read that run for why` : undefined}
+          disabledReason={`It failed after ${VERIFY_RUN_RETRIES} fresh starts, so none is started again: read that run for why`}
           onClick={() => act.run('verify-runs', startSetupVerifyRuns, setPosted)}
         >
           Run the console checks again
@@ -1579,7 +1645,7 @@ export function GitHubAppCallback({ search }: { search?: string }) {
   }
   const { id, slug } = result.data
   return (
-    <Card title="GitHub App created" action={back}>
+    <Card title="GitHub App created">
       <Facts
         items={[
           { state: 'done', name: 'Created from the manifest', text: `${slug ?? 'the App'}${id === null ? '' : ` (app id ${id})`}` },
@@ -1588,16 +1654,18 @@ export function GitHubAppCallback({ search }: { search?: string }) {
             name: 'Secrets stored',
             text: 'the private key, the client secret and the webhook secret went from GitHub’s answer straight into Secret Manager; none is shown here or anywhere',
           },
-          { state: 'todo', name: 'Next', text: 'install the App on your organisation, then come back to Admin › Setup' },
+          {
+            state: 'todo',
+            name: 'Next',
+            text: 'install the App on your organisation: Admin › Setup has the install button, watches for the installation, and GitHub sends you back there when it is done',
+          },
         ]}
       />
-      {slug !== null && (
-        <span className="ob-acts">
-          <ButtonLink size="sm" kind="primary" href={`https://github.com/apps/${encodeURIComponent(slug)}/installations/new`}>
-            Install the App
-          </ButtonLink>
-        </span>
-      )}
+      <span className="ob-acts">
+        <ButtonLink size="sm" kind="primary" href="/admin/setup">
+          Continue in Admin › Setup
+        </ButtonLink>
+      </span>
     </Card>
   )
 }

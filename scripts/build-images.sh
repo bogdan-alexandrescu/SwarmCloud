@@ -214,7 +214,8 @@ find_recipe() {
 # agent-runtime-base-nocodex:<tag> in its first step and builds FROM that
 # digest, so submitting it before that base has been pushed fails with
 # manifest-unknown. images/agent-runtime-indexer/cloudbuild.yaml does the same
-# with agent-runtime-base:<tag> (#625). When builds ran one at a
+# with agent-runtime-base:<tag> (#625), and so does
+# images/agent-runtime-lightpanda/cloudbuild.yaml (LIGHTPANDA-IMAGE). When builds ran one at a
 # time this was satisfied by ALL_TARGETS happening to list the base first --
 # which a targeted `build-images.sh agent-runtime-browser agent-runtime-base`
 # did not, and which concurrency would not either.
@@ -226,6 +227,7 @@ build_after() {
   case "$1" in
     agent-runtime-browser) printf '%s' "agent-runtime-base-nocodex" ;;
     agent-runtime-indexer) printf '%s' "agent-runtime-base" ;;
+    agent-runtime-lightpanda) printf '%s' "agent-runtime-base" ;;
     *) : ;;
   esac
 }

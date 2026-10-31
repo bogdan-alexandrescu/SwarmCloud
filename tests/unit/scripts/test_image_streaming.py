@@ -45,6 +45,7 @@ IMAGES = REPO / "images"
 BASE = IMAGES / "agent-runtime-base" / "Dockerfile"
 BROWSER = IMAGES / "agent-runtime-browser" / "Dockerfile"
 INDEXER = IMAGES / "agent-runtime-indexer" / "Dockerfile"
+LIGHTPANDA = IMAGES / "agent-runtime-lightpanda" / "Dockerfile"
 RELEASE_IMAGES = REPO / ".github" / "actions" / "release-images" / "action.yml"
 RELEASE_PROMOTE = REPO / ".github" / "actions" / "release-promote" / "action.yml"
 
@@ -89,7 +90,7 @@ def _derived_runner_dockerfiles() -> list[Path]:
 
 def test_the_derived_runner_images_are_found():
     # The glob must not quietly match nothing: a rule over no files is no rule.
-    assert _derived_runner_dockerfiles() == [BROWSER, INDEXER]
+    assert _derived_runner_dockerfiles() == [BROWSER, INDEXER, LIGHTPANDA]
 
 
 @pytest.mark.parametrize("dockerfile", _derived_runner_dockerfiles(), ids=lambda p: p.parent.name)

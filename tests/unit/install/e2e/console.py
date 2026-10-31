@@ -12,9 +12,11 @@ from __future__ import annotations
 import json
 import secrets
 from subprocess import run as _real_run  # bound before the walk patches subprocess.run
+from types import SimpleNamespace
 from typing import Any
 
 from swarm_api.install_record import INDIVIDUAL, InstallRecord, check_fields
+from swarm_api.routes import setup as setup_routes
 from swarm_common.identity import tenant_id_for_user
 from swarm_install import tfvars
 
@@ -86,39 +88,85 @@ def _steps(world: World) -> None:
     accounts = {f"pool-{n}": {"owner": world.installer, "signed_in_at": now}
                 for n in range(1, int(sizing.get("pool_accounts") or 1) + 1)}
     write(record.console_path("accounts"), accounts)
-    # The first workspace: one person's own, or the first team. swarm-api
-    # keys a team by its workspace's tenant id and writes it as `workspace`.
+    # The first workspace: one person's own, or the first team, granted the
+    # repository the App installation covers (decision 3). swarm-api keys a
+    # team by its workspace's tenant id and writes it as `workspace`.
+    from .deployment import REPOSITORY
+
+    grant = {"state": "granted", "repositories": [REPOSITORY]}
     personal = tenant_id_for_user(world.installer)
     if sizing.get("mode") == INDIVIDUAL:
         write(record.personal_path(), {"owner": world.installer, "workspace": personal,
-                                       "progress": {"created_at": now}, "grant": {"ok": True},
+                                       "progress": {"created_at": now}, "grant": grant,
                                        "smoke": {"state": "SUCCEEDED"}})
     else:
         write(record.team_path("team-1"), {"group": "swarm-team@" + world.installer.split("@")[1], "workspace": "team-1",
                                            "first_admin": world.installer, "invites": [],
-                                           "progress": {"created_at": now}, "grant": {"ok": True},
+                                           "progress": {"created_at": now}, "grant": grant,
                                            "smoke": {"state": "SUCCEEDED"}})
     # swarm-workspace-apply makes the workspace's tenant namespace.
     tenant = personal if sizing.get("mode") == INDIVIDUAL else "team-1"
     world.apply_in_cluster(tenant_render(world, tenant))  # type: ignore[attr-defined]
-    # The console's two verification runs (DAYONE-SETUP-API-2).
-    # The console's two verification runs (DAYONE-SETUP-API-2): swarm-api
-    # submits them as a service, on the team's -git slot.
+    # Hand-over: `finish` writes `console/finished`, then starts the console's
+    # two verification runs through swarm-api's own `ensure_verify_runs` (audit
+    # 5b, B1), as a service on the team's -git slot. Nothing here writes
+    # `console/verify_runs` itself, so a `finish` that started nothing would
+    # leave the engine's verify waiting, as it would live.
     deployment = world.deployment  # type: ignore[attr-defined]
     # `GET /v1/tenants/mine` lists the installer's own READY personal
     # workspace first, as the default and current one (owner decision
     # 2026-10-12), then the team (audit 5b, M3).
     deployment.tenants[:] = list(dict.fromkeys([personal, tenant]))
     world.first_workspace = tenant  # type: ignore[attr-defined]
-    from swarm_install.steps.verify import SINGLE_PROMPT, workflow_spec
-
-    from .deployment import REPOSITORY, SERVICE
-
-    task = deployment.submit(profile="claude-code", submitter=SERVICE, tenant=tenant, repository=REPOSITORY,
-                             prompt=SINGLE_PROMPT, opens_pr=True)
-    workflow = deployment.workflow(submitter=SERVICE, tenant=tenant, repository=REPOSITORY,
-                                   spec=json.loads(workflow_spec(REPOSITORY, "console")))
-    write(record.console_path("verify_runs"), {
-        "verify_runs": {"console_task": task.id, "console_workflow": workflow},
-        "started_at": now, "by": world.installer})
     write(record.console_path("finished"), {"at": now, "by": world.installer})
+    path = record.personal_path() if sizing.get("mode") == INDIVIDUAL else record.team_path("team-1")
+    doc = (world.documents.get(path) or ({}, 0))[0]
+    first = setup_routes.FirstWorkspace(key=tenant, doc={**doc, "workspace": tenant}, path=path,
+                                        principal=str(doc.get("group") or world.installer),
+                                        personal=sizing.get("mode") == INDIVIDUAL)
+    setup_routes.ensure_verify_runs(_Record(db, env), SimpleNamespace(now=lambda: now),
+                                    first, runs=_Runs(deployment), by=world.installer)
+
+
+class _Record(InstallRecord):
+    """swarm-api's `InstallRecord` over the engine world's Firestore client:
+    its reads, its paths and its `check_fields` as they are; only the
+    transaction of `write` is the client's merge, which the fake holds."""
+
+    def _ref(self, path: str) -> Any:
+        return self._db.document(path)
+
+    def write(self, path: str, data: Any) -> dict[str, Any]:
+        check_fields(path, self.env, data)
+        self._ref(path).set(dict(data), merge=True)
+        return self.read(path) or {}
+
+
+class _Runs:
+    """swarm-api's `TeamRuns` over the fake deployment: a submission as the
+    service, the task with the prompt swarm-api sends, the workflow with
+    verify's own console spec."""
+
+    def __init__(self, deployment: Any) -> None:
+        self._deployment = deployment
+
+    def submit_task(self, *, tenant_id: str, group: str, repository: str, prompt: str, label: str,
+                    strategy: str = setup_routes.SMOKE_STRATEGY) -> str:
+        from .deployment import SERVICE
+
+        return self._deployment.submit(profile=setup_routes.RUN_PROFILE, submitter=SERVICE, tenant=tenant_id,
+                                       repository=repository, prompt=prompt, opens_pr=True).id
+
+    def submit_workflow(self, *, tenant_id: str, group: str, repository: str, label: str) -> str:
+        from swarm_install.steps.verify import workflow_spec
+
+        from .deployment import SERVICE
+
+        return self._deployment.workflow(submitter=SERVICE, tenant=tenant_id, repository=repository,
+                                         spec=json.loads(workflow_spec(repository, "console")))
+
+    def task_state(self, *, tenant_id: str, task_id: str) -> str:
+        return setup_routes.RUNNING
+
+    def workflow_state(self, *, tenant_id: str, workflow_id: str) -> str:
+        return setup_routes.RUNNING
