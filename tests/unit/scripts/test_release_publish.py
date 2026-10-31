@@ -774,7 +774,7 @@ def test_ci_publish_under_actions_with_the_dispatched_version(tmp_path: Path, bu
     assert [c for c in calls if c[:2] == ["cosign", "sign"]], "nothing was signed"
     dest = _destinations(calls)
     assert dest[-2:] == [f"{RELEASE}/SHA256SUMS", f"{BUCKET}/install.sh"], dest
-    assert all(d.startswith(RELEASE) for d in dest[:-1]), dest
+    assert all(d.startswith(RELEASE) or d == ROOT_SOURCE for d in dest[:-1]), dest
     assert "to continue" not in proc.stderr
     assert "SWARM_PUBLISH_VERSION" in proc.stderr, proc.stderr
 

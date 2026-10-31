@@ -100,7 +100,7 @@ for path in sys.argv[1:]:
 def lightpanda_fakes(tmp: Path) -> Path:
     """A bin directory with the fake curl and sha256sum."""
     bindir = tmp / "lightpanda-bin"
-    bindir.mkdir(exist_ok=True)
+    bindir.mkdir(parents=True, exist_ok=True)
     for name, text in (("curl", LIGHTPANDA_FAKE_CURL.replace("{body!r}", repr(LIGHTPANDA_SOURCE_BODY))),
                        ("sha256sum", LIGHTPANDA_FAKE_SHA256SUM.replace("{pin!r}", repr(LIGHTPANDA_SOURCE_SHA256)))):
         (bindir / name).write_text(text.replace("{python}", sys.executable))

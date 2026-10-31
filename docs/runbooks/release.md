@@ -91,6 +91,15 @@ The release home is project `swarmcloud-prod`: images in
    every install of a release that can never be overwritten. The run then
    publishes under `releases/<version>/`, SHA256SUMS last; a version already
    published is refused, never overwritten.
+   Before that SHA256SUMS it puts the bundle's `third-party/` tree at the
+   bucket root: `third-party/lightpanda/<lightpanda version>/source.tar.gz`,
+   the Lightpanda tag's source archive, which `assemble.sh` downloads and
+   checks against the sha256 the image's Dockerfile pins. That is the URL the
+   `agent-runtime-lightpanda` image's SOURCE notice names, and the AGPL
+   (section 6(d)) requires it to answer wherever the image is offered, so it
+   is never deleted while a release that carries that image is. A later
+   release with the same Lightpanda finds the object there and writes nothing
+   (`--no-clobber` as well), so there is one copy, not one per release.
    A candidate (`-rc.N`) then writes `channels/rc.marketplace.json` (its
    marketplace, which an rc deployment's teammates add) and, last,
    `channels/rc` (one line, its version), after SHA256SUMS, so
