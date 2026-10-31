@@ -635,9 +635,10 @@ def test_a_one_person_install_walks_from_the_hand_off_to_finished(walk, setup_ap
 
 
 @pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "E2E-2 (findings): api.ts reads a smoke's `detail` and `url` (AdminSetupSteps.tsx shows "
-    "them on the smoke row), and no route serves either: routes/setup.py advance_smoke "
-    "records state, task_id, repository and times only"))
+    "E2E-2 (findings): api.ts reads a smoke's `detail` (or `reason`) and `url`, and a smoke "
+    "whose task fails serves neither: routes/setup.py advance_smoke records state, task_id, "
+    "repository and times, a `reason` only when the submission itself fails, so the "
+    "failed row says 'its task's page says why' with no why and no link to that page"))
 def test_the_smoke_row_serves_the_detail_and_link_the_page_shows(walk, setup_app, db, github,
                                                                  pool, directory, runs) -> None:
     console = team_walk(walk, setup_app, db, github, pool, directory, runs)

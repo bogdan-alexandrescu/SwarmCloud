@@ -426,12 +426,19 @@ PERSONAL_FIELDS = ["personal.owner", "personal.workspace", "personal.progress",
 
 _MISSING = object()
 
+#: A field api.ts reads under one name or, failing that, another
+#: (`norm_smoke`: `detail ?? reason`): either name serves it.
+FALLBACKS: dict[str, tuple[str, ...]] = {"detail": ("reason",)}
+
 
 def _served(value: Any, parts: list[str]) -> bool:
     """Whether `value` carries the path `parts` with a non-null value."""
     if not parts:
         return value is not None
     head, rest = parts[0], parts[1:]
+    if not rest and isinstance(value, dict) and any(
+            value.get(other) is not None for other in FALLBACKS.get(head, ())):
+        return True
     if head.endswith("[]"):
         items = value.get(head[:-2]) if isinstance(value, dict) else None
         return isinstance(items, list) and any(_served(item, rest) for item in items) \
