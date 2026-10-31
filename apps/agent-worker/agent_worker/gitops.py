@@ -5636,7 +5636,11 @@ def merge_branches(
 
             code, _ = _git_text(
                 [
-                    git_binary, *config_args, "merge", "--no-ff", "--no-edit",
+                    # No background maintenance after the merge commit: the
+                    # next contributor's fetch rewrites `.git/shallow` in
+                    # this same repository (#2922).
+                    git_binary, *config_args, *_NO_AUTO_MAINTENANCE, "merge", "--no-ff",
+                    "--no-edit",
                     "-m", f"swarm: integrate {branch}",
                     "FETCH_HEAD",
                 ],
