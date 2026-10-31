@@ -162,6 +162,7 @@ from . import handoff as handoff_mod
 from . import inputs as inputs_mod
 from . import issue as issue_mod
 from . import jevkey as jevkey_mod
+from . import qualitygates as qualitygates_mod
 from . import mcp_attach as mcp_attach_mod
 from . import secretrelease as secretrelease_mod
 from . import territory as territory_mod
@@ -929,6 +930,8 @@ class Worker:
         #: The staged graph's runner variables (CTXQ-S), decided once per
         #: attempt: a credential reload rebuilds the env and must not restage.
         self._graph_env: dict[str, str] | None = None
+        #: The lane quality gates' runner variable (`qualitygates`), once per attempt.
+        self._gates_env: dict[str, str] | None = None
         self.checkpoints = CheckpointManager(
             store=deps.store,
             tenant_id=config.tenant_id,
@@ -4544,6 +4547,7 @@ class Worker:
             summary[verdict_mod.RENDERED_REVIEW_KEY] = self._scrub(dict(self._rendered_review))
 
         runner_result = self._add_runner_block(summary)
+        self._record_quality_gates(summary)
 
         if self.budget is not None:
             # The limits, what the attempt used and, when it stopped the
@@ -9993,6 +9997,11 @@ class Worker:
             inject=self.typesafe.on,
             shim_file=self.typesafe.shim_file,
         ))
+        # The lane quality gates (JEV-LANES, `qualitygates`): on a claude-code
+        # attempt whose workspace turned `quality_gates.jev` on, the PATH of a
+        # 0600 config naming the workspace key's 0600 file in private/, never
+        # the key. Off, or no key: nothing, and no hook is registered.
+        base.update(self._quality_gates_env(ws, profile))
         # The released workspace secrets (SEC-RELEASE): the manifest's PATH,
         # `SWARM_SECRETS_MANIFEST`, and nothing else -- never a value. The
         # release ran once, in STEP 6a; a rebuild on a credential reload
@@ -10004,6 +10013,45 @@ class Worker:
         # are loopback URLs and the local token -- never a credential.
         base.update(self.mcp.env)
         return ws.child_env(base)
+
+    def _quality_gates_env(self, ws: Any, profile: Any) -> dict[str, str]:
+        """`qualitygates.prepare`, once per attempt: a rebuild on a credential
+        reload hands the same path. Only the claude-code runner registers the
+        hooks, so no other runner's attempt reads the switch or the key."""
+        if self._gates_env is None:
+            spec = cli_agent_spec(self.cfg.runner_profile)
+            if spec is None or spec.name != "claude-code":
+                self._gates_env = {}
+            else:
+                self._gates_env = qualitygates_mod.prepare(
+                    db=self.db,
+                    client=self.secret_client,
+                    tenant_id=self.cfg.tenant_id,
+                    private_dir=ws.private,
+                    logger=self.log,
+                    call_options=self.control.call_options("tenant"),
+                    secret_env_names=tuple(profile.secrets or ()),
+                    inject=self.typesafe.on,
+                    shim_file=self.typesafe.shim_file,
+                )
+        return dict(self._gates_env)
+
+    def _record_quality_gates(self, summary: dict[str, Any]) -> None:
+        """After the agent (JEV-LANES): the hooks' counts in the summary, and
+        one RUNNING mark, cause `quality_gate`, when jev-belay blocked a stop
+        or jev-enforce flagged a rule -- counts only, never text -- so a wave
+        can compare first-CI-red and NOT_YET rates with the switch on and
+        off. The key file is removed. Never raises."""
+        if not self._gates_env:
+            return
+        try:
+            counts = qualitygates_mod.finish(self._gates_env)
+        except Exception as exc:
+            self.log.warning("could not read the quality gates' counts", error=type(exc).__name__)
+            return
+        summary[qualitygates_mod.SUMMARY_KEY] = {"jev": True, **(counts or {})}
+        if qualitygates_mod.worth_an_event(counts):
+            self._emit_startup_mark(qualitygates_mod.EVENT_CAUSE, dict(counts or {}))
 
     def _graph_context_env(self, ws: Any, clone_base: str | None) -> dict[str, str]:
         """The staged graph snapshot's variables (docs/design/context-quality.md

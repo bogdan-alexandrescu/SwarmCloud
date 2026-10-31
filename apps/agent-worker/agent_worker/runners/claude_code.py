@@ -616,6 +616,46 @@ JEV_LAUNCH = Path(__file__).resolve().parent / "jev_launch.py"
 #: jev-browser's own switch: never download a Chromium on first use.
 JEV_NO_INSTALL_ENV = "JEV_BROWSER_NO_INSTALL"
 
+#: THE LANE QUALITY GATES (JEV-LANES, BGD 2026-10-31; `agent_worker.qualitygates`).
+#: jev-belay 0.2.0 (a Stop hook that blocks an unverified "done") and
+#: jev-enforce 1.1.1 (the final reply and every edit against the repository's
+#: CLAUDE.md rule files, `JEV_ENFORCE_MODE=end`: edits recorded, checked once
+#: at the Stop), installed by images/agent-runtime-base beside this launcher,
+#: which every hook command names with the gates' config PATH. The launcher
+#: reads the workspace key into its own process alone, sends only to
+#: TypeSafe's API (or the worker's shim), and scrubs the registered secrets
+#: from what it sends (docs/jev-data-flow.md, "The lane hooks").
+JEV_GATES_LAUNCHER = "/opt/swarm/jev-gates/bin/swarm-jev-gate.mjs"
+#: `qualitygates.CONFIG_ENV`, restated so the runner never imports the key
+#: code; tests/unit/worker/test_quality_gates.py holds them equal.
+JEV_GATES_CONFIG_ENV = "SWARM_JEV_GATES_CONFIG"
+JEV_GATES_NODE = "/usr/local/bin/node"
+JEV_ENFORCE_MODE_ENV = "JEV_ENFORCE_MODE"
+#: The tools' own hook timeouts (their hooks/hooks.json), in seconds.
+JEV_BELAY_TIMEOUT = 25
+JEV_ENFORCE_TIMEOUT = 30
+#: jev-enforce's PostToolUse matcher (its hooks/hooks.json).
+JEV_ENFORCE_EDIT_MATCHER = "Edit|Write|MultiEdit"
+
+
+def jev_gates_config() -> str | None:
+    """The gates' config PATH when the worker handed one and the image has
+    the launcher, else None: the hooks are not registered and nothing leaves."""
+    config = os.environ.get(JEV_GATES_CONFIG_ENV, "").strip()
+    if not config or not Path(config).is_file() or not Path(JEV_GATES_LAUNCHER).is_file():
+        return None
+    return config
+
+
+def _jev_gate_hook(config: str, mode: str, timeout: int) -> dict[str, Any]:
+    node = JEV_GATES_NODE if Path(JEV_GATES_NODE).is_file() else "node"
+    return {
+        "type": "command",
+        "command": " ".join(shlex.quote(part) for part in (node, JEV_GATES_LAUNCHER, config, mode)),
+        "timeout": timeout,
+    }
+
+
 #: The first sentence of the live-browser note, per selection.
 BROWSER_TOOL_LEAD = {
     "auto": (
@@ -934,6 +974,20 @@ def write_headless_settings(directory: Path) -> Path:
                     "timeout": 10,
                 }
             ],
+        })
+    gates = jev_gates_config()
+    if gates:
+        # JEV-LANES: the workspace turned `quality_gates.jev` on and the worker
+        # read its key. Both Stop hooks in one entry, so both run on every
+        # stop; jev-enforce's edit hook only records the edit (`end` mode).
+        settings["env"][JEV_ENFORCE_MODE_ENV] = "end"
+        settings["hooks"]["Stop"] = [{"hooks": [
+            _jev_gate_hook(gates, "belay", JEV_BELAY_TIMEOUT),
+            _jev_gate_hook(gates, "enforce-stop", JEV_ENFORCE_TIMEOUT),
+        ]}]
+        post_tool_use.append({
+            "matcher": JEV_ENFORCE_EDIT_MATCHER,
+            "hooks": [_jev_gate_hook(gates, "enforce-edit", JEV_ENFORCE_TIMEOUT)],
         })
     if post_tool_use:
         settings["hooks"]["PostToolUse"] = post_tool_use

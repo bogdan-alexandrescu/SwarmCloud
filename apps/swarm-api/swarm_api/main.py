@@ -76,6 +76,7 @@ from .routes import (
     qa_identity,
     qa_settings,
     qatargets,
+    quality_gates,
     repositories,
     review_gate_settings,
     roles,
@@ -415,6 +416,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # A workspace's visual-QA settings: how many flows one live-browser step
     # runs when a run names none (QA-FLOWS-CAP): its owner or admin, audited.
     app.include_router(qa_settings.router)
+    # A workspace's quality gates: whether its claude-code lanes run
+    # jev-belay and jev-enforce (JEV-LANES): its owner or admin, audited.
+    app.include_router(quality_gates.router)
     # A workspace's per-agent budget, which a step may only lower and the
     # platform ceiling caps (BUDGET-CAP, #2459): its owner or admin, audited.
     app.include_router(budget_settings.router)

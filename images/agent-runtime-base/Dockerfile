@@ -1024,6 +1024,56 @@ RUN if [ "${INSTALL_AGENT_CLIS}" = "1" ]; then \
       && npm cache clean --force ; \
     fi
 
+# THE LANE QUALITY GATES (JEV-LANES, BGD 2026-10-31; #642: 25% of lane PRs were
+# red on their first CI run). Two Claude Code hooks checked by TypeSafe's Jev,
+# pinned to the commit each release tag names, MIT both:
+#   * jev-belay v0.2.0 (github.com/valentynkit/jev-belay), a Stop hook that
+#     blocks an unverified "done";
+#   * jev-enforce v1.1.1 (github.com/erkamyaman/jev-enforce), the final reply
+#     and every Edit/Write checked against the repository's CLAUDE.md rules.
+# Fetched by COMMIT, not by tag, and the checkout's HEAD compared with it: a
+# moved tag cannot change what is built. Each fetch retries like every
+# download here (1+2+4+8+16 s); one that never lands fails at the HEAD check. Neither has a runtime dependency, so
+# only their own files are kept (jev-enforce's committed dist/src, which is
+# what its plugin runs), root-owned and read-only, off PATH.
+# They are NOT a plugin the CLI enables by itself: the claude-code runner
+# registers them in its `--settings` hooks (`claude_code.write_headless_settings`)
+# only when the worker handed it the gates' config, i.e. the workspace turned
+# `quality_gates.jev` on and its TypeSafe key was readable, and every hook
+# command is the launcher below (`swarm-jev-gate.mjs`), which holds the key in
+# its own process, sends only to TypeSafe's API and scrubs the registered
+# secrets (docs/jev-data-flow.md, "The lane hooks"). Without that config, or
+# without TYPESAFE_API_KEY, both are inert. With INSTALL_AGENT_CLIS=0 nothing
+# is fetched, the launcher is still installed, and the runner, finding no
+# tool, registers nothing.
+ARG JEV_BELAY_COMMIT=ef719db7eaadc56aa4def86c4da4ffff5bcbca35
+ARG JEV_ENFORCE_COMMIT=ed9c7d79bad2bfdea474df5e414b8b601c0e92cd
+RUN --mount=type=bind,source=images/agent-runtime-base/jev-gates,target=/tmp/jev-gates-build \
+    install -d -m 0755 /opt/swarm/jev-gates /opt/swarm/jev-gates/bin \
+ && install -o root -g root -m 0555 /tmp/jev-gates-build/bin/swarm-jev-gate.mjs /opt/swarm/jev-gates/bin/swarm-jev-gate.mjs \
+ && if [ "${INSTALL_AGENT_CLIS}" = "1" ]; then \
+      fetch_at() { \
+        git init -q "$1" \
+        && { for wait in 1 2 4 8 16; do \
+               git -C "$1" fetch -q --depth 1 "$2" "$3" && break; sleep "${wait}"; \
+             done; } \
+        && git -C "$1" checkout -q FETCH_HEAD \
+        && test "$(git -C "$1" rev-parse HEAD)" = "$3"; \
+      } \
+      && fetch_at /tmp/jev-belay-src https://github.com/valentynkit/jev-belay.git "${JEV_BELAY_COMMIT}" \
+      && fetch_at /tmp/jev-enforce-src https://github.com/erkamyaman/jev-enforce.git "${JEV_ENFORCE_COMMIT}" \
+      && grep -q '"version": "0.2.0"' /tmp/jev-belay-src/package.json \
+      && grep -q '"version": "1.1.1"' /tmp/jev-enforce-src/package.json \
+      && install -d -m 0755 /opt/swarm/jev-gates/jev-belay /opt/swarm/jev-gates/jev-enforce/dist/src \
+      && install -o root -g root -m 0444 /tmp/jev-belay-src/belay.mjs /tmp/jev-belay-src/package.json \
+           /tmp/jev-belay-src/LICENSE /opt/swarm/jev-gates/jev-belay/ \
+      && install -o root -g root -m 0444 /tmp/jev-enforce-src/package.json /tmp/jev-enforce-src/LICENSE \
+           /opt/swarm/jev-gates/jev-enforce/ \
+      && install -o root -g root -m 0444 /tmp/jev-enforce-src/dist/src/*.js /opt/swarm/jev-gates/jev-enforce/dist/src/ \
+      && rm -rf /tmp/jev-belay-src /tmp/jev-enforce-src ; \
+    fi \
+ && chmod -R a+rX,a-w /opt/swarm/jev-gates
+
 # A warmed npm cache for this repository's UI (docs/design/agent-autonomy.md
 # §3.10, lane AU-8). Built from apps/swarm-ui's lockfile with `npm ci --cache
 # /opt/npm-cache`; the node_modules that install wrote is then thrown away and
