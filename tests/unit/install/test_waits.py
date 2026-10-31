@@ -40,7 +40,7 @@ def test_wait_gives_up_at_bound_with_exit_4() -> None:
     assert len(polls) == IAM_PROPAGATION.bound_s / IAM_PROPAGATION.interval_s + 1
     gave_up = events.of_kind("wait_gave_up")
     assert len(gave_up) == 1
-    assert gave_up[0]["look_at"] == IAM_PROPAGATION.look_at
+    assert gave_up[0]["look_at"] == IAM_PROPAGATION.look_at_for(None)
     assert "swarm install" in str(raised.value), "it says how to resume"
 
 

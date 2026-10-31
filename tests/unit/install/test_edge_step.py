@@ -366,3 +366,28 @@ def test_edge_api_http_status_is_none_on_a_tls_error() -> None:
     seen: dict = {}
     assert edge.EdgeApi(lambda: FakeGcp(), lambda url, **kw: (seen.update(kw), Answer())[1]).http_status("x") == 302
     assert seen["allow_redirects"] is False
+
+
+def test_brand_support_email_is_the_persons_own_address_not_a_group(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Audit 5b M7: stage 2 sets the brand, but the install's groups exist
+    only from stage 8 (`identity.groups`), so on a new organisation "a group
+    you own" sends the person to Google Admin to make one. The Branding
+    page's dropdown offers the person's own address, which works: the plan,
+    the opened page's instructions and docs/install.md all say that."""
+    opened = _pages(monkeypatch, edge)
+    monkeypatch.setattr(engine_module, "open_page", lambda url, *, why, **_: None)
+    rig = _rig(tmp_path)
+    step = edge.BrandStep(lambda: FakeGcp(), Answers(edge_brand=[CLIENT_ID]), lambda: FakeEdge())
+
+    result = rig.engine([step]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    branding = [why for url, why in opened if url == BRANDING]
+    branding_action = [a for a in step.plan(ctx_for()).actions if a.startswith("Branding")]
+    docs = (Path(__file__).resolve().parents[3] / "docs" / "install.md").read_text()
+    brand_doc = docs[docs.index("auth/branding?project="):docs.index("auth/audience?project=")]
+    for text in (*branding, *branding_action, brand_doc):
+        flat = " ".join(text.split())
+        assert "your own address" in flat, flat
+        assert "a group you own" not in flat, flat
+    assert branding and branding_action

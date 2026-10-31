@@ -918,7 +918,7 @@ ORGANISATION_WAIT = WaitSpec(
     expected="15 to 60 min (the domain is verified by a DNS record)",
     expected_s=60 * 60,
     bound_s=3 * 60 * 60,
-    look_at=("the account signed in here (gcloud auth list) must be in the new domain, not gmail.com; "
+    look_at=("the account swarm install signed in with must be in the new domain, not gmail.com; "
              "admin.google.com must show the domain verified; Google creates the organisation when that account "
              "first creates a billing account (console.cloud.google.com/billing/create) or a project; "
              "then swarm install goes on from here"),
@@ -932,8 +932,8 @@ BILLING_WAIT = WaitSpec(
     expected="5 to 15 min",
     expected_s=15 * 60,
     bound_s=60 * 60,
-    look_at=("console.cloud.google.com/billing: the account must be open and created by the account signed in "
-             "here (gcloud auth list), or shared with it as Billing Account User"),
+    look_at=("console.cloud.google.com/billing: the account must be open and created by the account swarm install "
+             "signed in with, or shared with it as Billing Account User"),
     interval_s=15,
 )
 
