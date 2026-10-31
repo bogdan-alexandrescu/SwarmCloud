@@ -10,7 +10,9 @@ It reads the install's state (`gs://swarm-tfstate-<P>/swarm-install/state.json`)
 for the region, the cluster and the deny-list, calls swarm-api as the person
 (a platform admin, signed in with `swarm login`), and ends only when the
 team's smoke agent SUCCEEDED. It never asks for a forge token: the team's git
-value goes in through the one-time link it prints.
+value goes in through the one-time link it opens, and the team is not ready
+until Secret Manager holds it. Running the same command again resumes: a
+stopped workspace is retried, and every give-up names this command.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from typing import Any
 from ..events import Events
 from ..exitcodes import ExitCode
 from ..state import STATE_OBJECT, GcsObjectStore, InstallState, StateStore, local_path, state_bucket
-from ..team import KubeCluster, SwarmApi, TeamAdd, TeamError, scheduler_spec_settings
+from ..team import KubeCluster, SwarmApi, TeamAdd, TeamError, git_secret_ready, scheduler_spec_settings
 from ..waits import SystemClock, WaitGaveUp
 
 NAME = "team"
@@ -53,7 +55,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     add.add_argument("--display-name", default=None, help="the team's name in the console")
     add.add_argument("--first-admin", type=_email, default=None, help="the team's first workspace admin")
     add.add_argument("--git-owner", type=_email, default=None,
-                     help="who opens the team's one-time GitHub credential link (default: the first admin)")
+                     help="who opens the team's one-time GitHub credential link (default: the first admin, else you)")
     add.add_argument("--context", default=None, help="the swarm CLI context naming this deployment")
     add.add_argument("--json-events", action="store_true", help="write events as one JSON object per line")
 
@@ -89,14 +91,29 @@ def build(args: argparse.Namespace, state: InstallState, events: Events, ctx: An
     region = str(state.region or "")
     if not region:
         raise TeamError("the install state records no region: run swarm install --status")
+    hostname = str(state.hostname or state.outputs.get("hostname") or "")
+    if not hostname:
+        raise TeamError("the install state records no hostname: run swarm install --status")
     return TeamAdd(
         api=SwarmApi(context=args.context),
         cluster=lambda: KubeCluster(kube_for(ctx)),
         spec_settings=lambda: scheduler_spec_settings(CLUSTER_GCP(), args.project, region),
+        git_secret=lambda team: git_secret_ready(CLUSTER_GCP(), args.project, team),
+        console=f"https://{hostname}",
         clock=SystemClock(),
         events=events,
         out=sys.stdout,
+        resume=resume_command(args),
     )
+
+
+def resume_command(args: argparse.Namespace) -> str:
+    """The command that resumes this add: the same verb, group and project
+    (audit 4e F13; `swarm install` resumes none of it)."""
+    command = f"swarm team add {args.group} --project {args.project}"
+    if getattr(args, "context", None):
+        command += f" --context {args.context}"
+    return command
 
 
 def run(args: argparse.Namespace) -> int:

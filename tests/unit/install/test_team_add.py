@@ -66,8 +66,11 @@ class Api:
 
     def __init__(self, *, probe: Mapping[str, Any] | None = None, teams: Sequence[str] = (),
                  workspace_states: Sequence[str] = ("approved", "provisioning", "ready"),
-                 accounts_after: int = 0, smoke_states: Sequence[str] = ("QUEUED", "RUNNING", "SUCCEEDED")) -> None:
+                 accounts_after: int = 0, smoke_states: Sequence[str] = ("QUEUED", "RUNNING", "SUCCEEDED"),
+                 create_state: str = "approved", caller: str = ADMIN) -> None:
         self.calls: list[str] = []
+        self._create_state = create_state
+        self._caller = caller
         self._probe = probe if probe is not None else {"groups": [{"group": "admins@example.com", "state": "met"}],
                                                        "met": True}
         self._teams = list(teams)
@@ -84,12 +87,30 @@ class Api:
         self.calls.append("teams")
         return list(self._teams)
 
+    def caller(self) -> str:
+        self.calls.append("me")
+        return self._caller
+
     def create_team(self, group: str, *, display_name: str | None, first_admin: str | None) -> Mapping[str, Any]:
+        """A re-run answers the workspace already standing, in whatever state
+        it is (routes/people.py: 200, nothing new written)."""
         self.calls.append(f"create {group}")
-        return {"team": TEAM, "workspace": {"workspace_id": WORKSPACE, "state": "approved"}}
+        return {"team": TEAM, "workspace": {"workspace_id": WORKSPACE, "state": self._create_state}}
+
+    def retry_workspace(self, workspace_id: str) -> Mapping[str, Any]:
+        """The real route refuses anything but failed or needs_owner (409
+        WorkspaceWrongState, `People.retry`); so does this fake."""
+        self.calls.append(f"retry {workspace_id}")
+        if self._create_state not in ("failed", "needs_owner"):
+            raise AssertionError(f"409: workspace {workspace_id} is {self._create_state}; it cannot be retried")
+        self._create_state = "approved"
+        return {"workspace_id": workspace_id, "state": "approved"}
 
     def workspace(self, workspace_id: str) -> Mapping[str, Any]:
         self.calls.append("workspace")
+        if self._create_state in ("failed", "needs_owner", "denied"):
+            # A stopped workspace stays stopped until it is retried.
+            return {"workspace_id": workspace_id, "state": self._create_state}
         state = self._ws.pop(0) if len(self._ws) > 1 else self._ws[0]
         return {"workspace_id": workspace_id, "state": state}
 
@@ -127,13 +148,48 @@ class Cluster:
             self.objects[(doc["kind"], meta.get("namespace", ""), meta["name"])] = doc
 
 
-def _flow(api: Api, cluster: Cluster | None = None) -> tuple[team_mod.TeamAdd, io.StringIO, Events]:
+CONSOLE = "https://console.example.com"
+
+
+class GitSecret:
+    """Secret Manager's `swarm-tenant-<team>-git`: it has an enabled version
+    only once the link's owner has opened it, `polls` reads after the link
+    was minted (never before: no link, no value)."""
+
+    def __init__(self, api: Api, *, polls: int = 1, standing: bool = False) -> None:
+        self.api = api
+        self.polls = polls
+        self.standing = standing
+        self.reads: list[str] = []
+
+    def __call__(self, team: str) -> bool:
+        self.reads.append(team)
+        if self.standing:
+            return True
+        if not any(c.startswith("git-link") for c in self.api.calls):
+            return False
+        self.polls -= 1
+        return self.polls < 0
+
+
+class Pages:
+    def __init__(self) -> None:
+        self.opened: list[tuple[str, str]] = []
+
+    def __call__(self, url: str, *, why: str, say: Any = print) -> None:
+        self.opened.append((url, why))
+        say(f"{why}\n  {url}")
+
+
+def _flow(api: Api, cluster: Cluster | None = None, *, git: GitSecret | None = None,
+          pages: Pages | None = None) -> tuple[team_mod.TeamAdd, io.StringIO, Events]:
     out = io.StringIO()
     clock = Clock()
     events = Events(clock.now, out=out)
     the_cluster = cluster or Cluster()
     flow = team_mod.TeamAdd(api=api, cluster=lambda: the_cluster, spec_settings=_settings,
-                            clock=clock, events=events, out=out)
+                            git_secret=git if git is not None else GitSecret(api), console=CONSOLE,
+                            clock=clock, events=events, out=out, open_page=pages or Pages())
     return flow, out, events
 
 
@@ -373,3 +429,165 @@ def test_the_verb_context_can_apply_a_pass(monkeypatch) -> None:
     assert isinstance(ctx, infra.VerbContext) and ctx.engine.store.bucket.startswith("gs://")
     assert (ctx.project, ctx.holder, ctx.state) == (PROJECT, ADMIN, state)
     assert cluster.kube_for(ctx).reach is not None, "kubectl reopens the control plane after the close"
+
+
+# ---------------------------------------------------------------------------
+# audit 4e F12: "ready" only once the team's -git value exists; pages opened
+# ---------------------------------------------------------------------------
+
+
+def test_ready_only_once_the_git_secret_has_an_enabled_version() -> None:
+    api = Api()
+    git = GitSecret(api, polls=3)
+    flow, out, events = _flow(api, git=git)
+    flow.run(GROUP, first_admin=ADMIN)
+    assert git.reads and set(git.reads) == {TEAM}, git.reads
+    waits = [e for e in events.of_kind("wait_countdown") if e["step"] == "team.git-link"]
+    assert len(waits) == 3, waits
+    assert f"swarm-tenant-{TEAM}-git" in waits[0]["reason"], waits[0]
+    done = [e["step"] for e in events.of_kind("step_done")]
+    assert done.index("team.git-link") < done.index("team.smoke"), done
+    assert "is ready" in out.getvalue()
+
+
+def test_a_git_value_that_never_arrives_is_not_ready() -> None:
+    from swarm_install.waits import WaitGaveUp
+
+    api = Api()
+    flow, out, _ = _flow(api, git=GitSecret(api, polls=10**6))
+    with pytest.raises(WaitGaveUp) as gave_up:
+        flow.run(GROUP, first_admin=ADMIN)
+    assert gave_up.value.step == "team.git-link"
+    assert "is ready" not in out.getvalue()
+    assert not any(c.startswith("smoke") for c in api.calls), api.calls
+
+
+def test_the_git_owner_defaults_to_the_caller_and_the_link_opens() -> None:
+    api = Api()
+    pages = Pages()
+    flow, out, _ = _flow(api, pages=pages)
+    flow.run(GROUP)
+    assert f"git-link {TEAM} {ADMIN}" in api.calls, api.calls
+    link = f"https://console.example.com/setup/link/{api.link_token}"
+    assert [u for u, _ in pages.opened if u == link] == [link], pages.opened
+    assert "later in Admin › Setup" not in out.getvalue()
+
+
+def test_another_owner_gets_the_link_and_the_caller_gets_admin_setup() -> None:
+    api = Api()
+    pages = Pages()
+    flow, out, _ = _flow(api, pages=pages)
+    flow.run(GROUP, git_owner="bob@example.com")
+    link = f"https://console.example.com/setup/link/{api.link_token}"
+    # The link redeems for bob only: it is printed for him, never opened here.
+    assert link not in [u for u, _ in pages.opened], pages.opened
+    assert out.getvalue().count(link) == 1
+    assert (f"{CONSOLE}/admin/setup", ) == tuple(u for u, _ in pages.opened if u.endswith("/admin/setup"))[:1]
+
+
+def test_a_standing_git_value_mints_no_link() -> None:
+    api = Api()
+    pages = Pages()
+    flow, _out, _ = _flow(api, git=GitSecret(api, standing=True), pages=pages)
+    flow.run(GROUP, first_admin=ADMIN)
+    assert not any(c.startswith("git-link") for c in api.calls), api.calls
+
+
+@pytest.mark.parametrize(("teams", "page"), [((), "/admin/setup"), (("g-first",), "/admin/people")])
+def test_the_pool_account_wait_opens_its_page(teams: tuple[str, ...], page: str) -> None:
+    api = Api(teams=teams, accounts_after=2)
+    pages = Pages()
+    flow, _out, _ = _flow(api, git=GitSecret(api, standing=True), pages=pages)
+    flow.run(GROUP, first_admin=ADMIN)
+    assert f"{CONSOLE}{page}" in [u for u, _ in pages.opened], pages.opened
+
+    # An account already there opens nothing.
+    ready = Api(teams=teams)
+    pages = Pages()
+    flow, _out, _ = _flow(ready, git=GitSecret(ready, standing=True), pages=pages)
+    flow.run(GROUP, first_admin=ADMIN)
+    assert pages.opened == [], pages.opened
+
+
+# ---------------------------------------------------------------------------
+# audit 4e F13: the re-run resumes, and the waits name the verb that does
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("stopped", ["failed", "needs_owner"])
+def test_a_rerun_retries_a_stopped_workspace(stopped: str) -> None:
+    api = Api(teams=(TEAM,), create_state=stopped, workspace_states=("approved", "ready"))
+    flow, _out, _ = _flow(api)
+    flow.run(GROUP, first_admin=ADMIN)
+    assert f"retry {WORKSPACE}" in api.calls, api.calls
+    assert api.calls.index(f"create {GROUP}") < api.calls.index(f"retry {WORKSPACE}") \
+        < api.calls.index("workspace"), api.calls
+    # The re-run of the first team is still the first team.
+    assert any(c.startswith("smoke") for c in api.calls)
+
+
+def test_a_rerun_of_a_standing_team_does_not_retry() -> None:
+    api = Api(teams=(TEAM,), create_state="ready", accounts_after=1)
+    flow, out, _ = _flow(api)
+    flow.run(GROUP, first_admin=ADMIN)
+    assert not any(c.startswith("retry") for c in api.calls), api.calls
+    # The team itself is not a team before it: it is still the first team.
+    assert "first team" in out.getvalue()
+
+
+def test_a_denied_workspace_is_not_retried() -> None:
+    api = Api(create_state="denied")
+    flow, _out, _ = _flow(api)
+    with pytest.raises(team_mod.TeamError, match="denied"):
+        flow.run(GROUP, first_admin=ADMIN)
+    assert not any(c.startswith("retry") for c in api.calls), api.calls
+
+
+def test_a_stopped_workspace_says_the_rerun_retries_it() -> None:
+    api = Api(workspace_states=("provisioning", "failed"))
+    flow, _out, _ = _flow(api)
+    flow.resume = f"swarm team add {GROUP} --project {PROJECT}"
+    with pytest.raises(team_mod.TeamError) as stopped:
+        flow.run(GROUP, first_admin=ADMIN)
+    assert f"swarm team add {GROUP} --project {PROJECT}" in str(stopped.value)
+
+
+def test_a_team_wait_names_swarm_team_add_to_resume() -> None:
+    from swarm_install.waits import WaitGaveUp
+
+    api = Api(workspace_states=("provisioning",))
+    flow, _out, _ = _flow(api)
+    flow.resume = f"swarm team add {GROUP} --project {PROJECT}"
+    with pytest.raises(WaitGaveUp) as gave_up:
+        flow.run(GROUP, first_admin=ADMIN)
+    text = str(gave_up.value)
+    assert f"Run swarm team add {GROUP} --project {PROJECT} again to resume." in text, text
+    assert "swarm install" not in text, text
+
+
+def test_the_verb_builds_its_resume_command_and_console(monkeypatch) -> None:
+    from swarm_install.state import InstallState
+
+    verb = discover()["team"]
+    state = InstallState(project=PROJECT, environment="dev", region="us-central1",
+                         hostname="swarm.example.com")
+    flow = verb.build(_team_args(), state, Events(lambda: 0.0, out=io.StringIO()), ctx=object())
+    assert flow.resume == f"swarm team add {GROUP} --project {PROJECT}"
+    assert flow.console == "https://swarm.example.com"
+
+
+def test_the_git_secret_is_read_from_secret_manager() -> None:
+    class Gcp:
+        def __init__(self, secret: bool, version: int | None) -> None:
+            self._secret, self._version = secret, version
+
+        def secret(self, project: str, secret_id: str) -> dict | None:
+            assert (project, secret_id) == (PROJECT, f"swarm-tenant-{TEAM}-git")
+            return {"name": secret_id} if self._secret else None
+
+        def enabled_version(self, project: str, secret_id: str) -> int | None:
+            return self._version
+
+    assert team_mod.git_secret_ready(Gcp(True, 1), PROJECT, TEAM) is True
+    assert team_mod.git_secret_ready(Gcp(True, None), PROJECT, TEAM) is False
+    assert team_mod.git_secret_ready(Gcp(False, None), PROJECT, TEAM) is False

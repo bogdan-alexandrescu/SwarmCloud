@@ -78,3 +78,20 @@ def test_countdown_event_carries_expected_and_deadline() -> None:
 def test_bound_is_required_to_hold_the_interval() -> None:
     with pytest.raises(ValueError):
         WaitSpec(reason="x", expected="x", expected_s=1, bound_s=5, look_at="x", interval_s=10)
+
+
+def test_a_wait_names_the_verb_that_resumes_it() -> None:
+    """Audit 4e F13: a day-two verb's wait says to run that verb again, not
+    `swarm install`; without a verb the text is today's."""
+    clock = FakeClock()
+    with pytest.raises(WaitGaveUp) as default:
+        wait_until("iam.propagation", IAM_PROPAGATION, lambda: UNMET, clock=clock, events=_events(clock))
+    assert str(default.value).endswith("Run swarm install again to resume.")
+
+    clock = FakeClock()
+    with pytest.raises(WaitGaveUp) as named:
+        wait_until("upgrade.drain", IAM_PROPAGATION, lambda: UNMET, clock=clock, events=_events(clock),
+                   resume="swarm upgrade")
+    assert str(named.value).endswith("Run swarm upgrade again to resume.")
+    assert "swarm install" not in str(named.value)
+    assert named.value.resume == "swarm upgrade"
