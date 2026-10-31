@@ -67,6 +67,7 @@ from .browser_logins import refuse_unless_personal
 from .qa_identity import refuse_unless_granted
 from .expected_outputs import expected_outputs_by_step, record_expected_outputs
 from .forge import (
+    GIT_PROVIDER,
     FirestoreSlotIndex,
     ForgeSlot,
     NoForgeCredential,
@@ -324,8 +325,10 @@ class SubmissionService:
         `metadata.forge_credential_source`, so the task says so. When the
         submitter is a platform service account and the repository's owner
         has the deployment's GitHub App installed for this tenant (`_app_installed`), the source is `app_installation`
-        instead: the slot stays as the rule picked it (the frozen
-        `forge_credential` shape has no other name), and the broker mints
+        instead, and the slot is the tenant's `-git` (the frozen
+        `forge_credential` shape has no other name for a minted run; a
+        personal tenant's owner's user slot would park it, as a `git-u-`
+        slot is held to its own person: DAYONE-SERVICE-SLOT-APP), and the broker mints
         that run an installation token for its one repository at release
         (`credbroker`, DAYONE-SERVICE-APP-TOKEN; lesson 43), recomputing
         the decision from the signed fields, never from this label. A personal
@@ -367,7 +370,14 @@ class SubmissionService:
                     and self._registered_private(tenant_id, owner, repo)):
                 uncredentialed.append(f"{owner}/{repo}")
                 return
-            task.forge_credential = slot.provider
+            # A minted run names the tenant's `-git` slot, never a personal
+            # tenant's owner's user slot (DAYONE-SERVICE-SLOT-APP): the
+            # scheduler and the worker hold a `git-u-` slot to its own person,
+            # and a service account is nobody's, so the owner's slot parked
+            # the one-person install's smoke and verify runs for good. If the
+            # broker cannot mint at release, the worker reads `-git`: the
+            # tenant's own, or none, never another person's.
+            task.forge_credential = GIT_PROVIDER if minted else slot.provider
             task.forge_access = SERVICE_FORGE_ACCESS
             task.metadata[FORGE_SOURCE_METADATA_KEY] = (
                 APP_INSTALLATION_SOURCE if minted else slot.source)

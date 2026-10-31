@@ -9,8 +9,9 @@ over the in-memory Firestore with no credentials, no network and no emulator:
 
   * submission: a platform service account's task on a repository whose
     owner has the App installed for THIS tenant is labelled
-    `app_installation`, on the slot the service rule picked (the frozen
-    `forge_credential` shape has no other name), with write;
+    `app_installation`, on the tenant's `-git` slot (the frozen
+    `forge_credential` shape has no other name; a personal tenant's owner's
+    slot is test_service_slot_app.py's), with write;
   * the fallback: no installation, an owner reached through a person's
     token, another tenant's installation, FORGE_INSTALLATION_READS off, a
     person's own task, or an index run submitted as a person keep today's
@@ -134,7 +135,7 @@ def test_a_service_accounts_task_on_an_installed_owner_is_labelled_app_installat
 
     # MUTATION: drop the installation check in `_resolve_forge` and this says "tenant".
     assert task.metadata[FORGE_SOURCE_METADATA_KEY] == "app_installation"
-    # The slot stays the service rule's: the frozen shape names no other.
+    # The tenant's `-git` slot: the frozen shape names no other.
     assert task.forge_credential == "git"
     assert task.forge_access == "write"
 
