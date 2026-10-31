@@ -356,9 +356,10 @@ Lightpanda page. A same-origin local probe, `parent.html` with
 * **Forms:** 4 of 4 flows passed on both.
 * **Text:** a superset on Lightpanda (hidden text included).
 * **Iframes:** 0 of 3 on Lightpanda.
-* **Screenshots:** 15 of 17 succeeded on Lightpanda, all text-only renderings.
-  The 2 failures were github.com, both process crashes (`TargetClosedError`,
-  and `process_alive_at_end: false`). Chromium took 17 of 17, all real pixels.
+* **Screenshots:** 32 of 34 page-runs (16 of 17 pages) succeeded on
+  Lightpanda, all text-only renderings. The 2 failures were both github.com
+  runs, each a process crash (`TargetClosedError`, and
+  `process_alive_at_end: false`). Chromium took 34 of 34, all real pixels.
 
 ### 3.2 Ten pages at once in one process
 
