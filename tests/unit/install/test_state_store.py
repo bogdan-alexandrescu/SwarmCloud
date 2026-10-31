@@ -192,3 +192,39 @@ def test_lease_one_holder_and_typed_takeover() -> None:
         bob.acquire(lambda prompt: "yes")
     bob.acquire(lambda prompt: "alice@example.com")
     assert json.loads(bucket.objects["swarm-install/lock"][0])["holder"] == "bob@example.com"
+
+
+def test_rename_moves_the_local_state_with_every_answer(tmp_path: Path) -> None:
+    """Audit 4a F1: when stage 1 finds the project id taken, the install moves
+    to the id typed instead. The local file moves with every step and output
+    recorded, records the new id, and the old file is gone; the store then
+    reads and writes the new file. Another install's file is never
+    overwritten, and a state already in its bucket never moves."""
+    store = _store(tmp_path, None)
+    store.load()
+    store.update(lambda s: (s.steps.__setitem__("preflight", _done("preflight")),
+                            s.outputs.__setitem__("org_domain", "acme.example")))
+    old = tmp_path / "a" / "p-test.json"
+
+    moved = store.rename("p-test-two")
+    new = tmp_path / "a" / "p-test-two.json"
+    assert store.project == "p-test-two" and store.local == new
+    assert not old.exists()
+    assert moved.project == "p-test-two"
+    on_disk = InstallState.from_bytes(new.read_bytes())
+    assert on_disk.project == "p-test-two"
+    assert set(on_disk.steps) == {"preflight"} and on_disk.outputs == {"org_domain": "acme.example"}
+    store.update(lambda s: s.steps.__setitem__("foundations", _done("foundations")))
+    assert set(InstallState.from_bytes(new.read_bytes()).steps) == {"preflight", "foundations"}
+    assert not old.exists()
+
+    other = tmp_path / "a" / "p-other-one.json"
+    other.write_bytes(InstallState(project="p-other-one", environment="dev").to_bytes())
+    with pytest.raises(FileExistsError, match="p-other-one"):
+        store.rename("p-other-one")
+    assert InstallState.from_bytes(other.read_bytes()).project == "p-other-one"
+    assert store.project == "p-test-two"
+
+    store.attach_bucket(FakeBucket())
+    with pytest.raises(RuntimeError, match="state bucket"):
+        store.rename("p-test-three")
