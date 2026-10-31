@@ -24,9 +24,24 @@ from ..exitcodes import MET, UNMET
 from ..manifest import Manifest
 from ..manifest import load as load_manifest
 from ..state import STATE_OBJECT, state_bucket
-from ..waits import Clock, WaitGaveUp, WaitSpec, wait_until
+from ..waits import Clock, WaitGaveUp, WaitSpec, cloud_page, wait_until
 from . import Observation, Plan, open_page
 from .preflight import ASK, BILLING, CRM, GCP, USAGE, ApiError, Ask, Gcp, project_number, remember
+
+def _enablement_look_at(ctx: Any) -> str:
+    return (f"the project's enabled APIs, {cloud_page('apis/dashboard', ctx)}: an API stuck enabling usually "
+            f"means billing is not linked, {cloud_page('billing/linkedaccount', ctx)}")
+
+
+def _project_look_at(ctx: Any) -> str:
+    return (f"the project's dashboard, {cloud_page('home/dashboard', ctx)}, must show the project, and its "
+            f"billing page, {cloud_page('billing/linkedaccount', ctx)}, the billing account linked")
+
+
+def _propagation_look_at(ctx: Any) -> str:
+    return (f"the project's enabled APIs, {cloud_page('apis/dashboard', ctx)}: the API is listed there, and "
+            "Google says to wait a few minutes after enabling it")
+
 
 #: API enablement is polled (plan §9.1: 10 min).
 API_ENABLEMENT = WaitSpec(
@@ -34,7 +49,7 @@ API_ENABLEMENT = WaitSpec(
     expected="1 to 3 min",
     expected_s=3 * 60,
     bound_s=10 * 60,
-    look_at="gcloud services list --enabled: an API stuck enabling usually means billing is not linked",
+    look_at=_enablement_look_at,
     interval_s=10,
 )
 
@@ -49,7 +64,7 @@ PROJECT_READY = WaitSpec(
     expected="under 1 min",
     expected_s=60,
     bound_s=5 * 60,
-    look_at="gcloud projects describe <project> and gcloud billing projects describe <project>",
+    look_at=_project_look_at,
     interval_s=5,
 )
 
@@ -106,8 +121,7 @@ API_PROPAGATION = WaitSpec(
     expected="1 to 3 min",
     expected_s=3 * 60,
     bound_s=5 * 60,
-    look_at="gcloud services list --enabled: the API is listed, and Google says to wait a few minutes after "
-            "enabling it",
+    look_at=_propagation_look_at,
     interval_s=15,
 )
 
@@ -169,7 +183,7 @@ def after_enabling(ctx: Any, step_id: str, call: Callable[[], Any]) -> Any:
             return "waiting"
         return MET
 
-    wait_until(f"{step_id}:api-propagation", API_PROPAGATION, attempt, clock=ctx.clock, events=ctx.events)
+    wait_until(f"{step_id}:api-propagation", API_PROPAGATION, attempt, clock=ctx.clock, events=ctx.events, ctx=ctx)
     return done["value"]
 
 

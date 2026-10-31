@@ -126,6 +126,11 @@ const RUN_POLL_MS = 10_000
 export const VERIFY_CHECKS =
   'the Scheduler targets, the image digests, the reconciler’s reach into each workspace namespace and the Firestore migrations, then seven runs on this deployment: a task and a workflow from the plugin and from this console, a task on GKE, a live-browser task and a code-intelligence read'
 
+/** The route's reason while swarm-api publishes no workspace yet: infra pass 3 has not turned publishing on. */
+const PUBLISHING_OFF = 'publishing_off'
+/** What the first workspace waits for while publishing is off, as the route says it (`PUBLISHING_WAIT`). */
+const PUBLISHING_WAIT = 'waiting for swarm install’s infra pass 3, which turns on workspace publishing: a workspace approved before it is never built'
+
 /** The one line a one-person install shows in place of the first-team and invites steps (decision 7). */
 export const ONE_PERSON_LINE = 'One-person install: your personal workspace is ready.'
 
@@ -400,7 +405,11 @@ function GitHubAppPanel({ state, onChanged, act }: { state: SetupState; onChange
   const polling = created && app.installed_on === null
   useEffect(() => {
     if (!polling) return undefined
-    const id = window.setInterval(() => void checkGitHubAppInstallation().then((r) => r.status === 'ok' && r.data.installed && onChanged()), INSTALL_POLL_MS)
+    const check = () => void checkGitHubAppInstallation().then((r) => r.status === 'ok' && r.data.installed && onChanged())
+    // Once on arrival, then every 10 s: GitHub's return after the install
+    // (the manifest's setup_url) lands here, and the row turns at once.
+    check()
+    const id = window.setInterval(check, INSTALL_POLL_MS)
     return () => window.clearInterval(id)
   }, [polling, onChanged])
   if (!created) return null
@@ -565,7 +574,7 @@ const FAILED_WORKSPACE = new Set(['failed', 'denied'])
  * created, with the installer as its owner (N20): the field starts from it,
  * even when the record arrives on a later poll, until the person types.
  */
-function TeamForm({ created, onChanged }: { created: string | null; onChanged: () => void }) {
+function TeamForm({ created, waiting, onChanged }: { created: string | null; waiting: string | null; onChanged: () => void }) {
   const act = useAction(onChanged)
   const [typed, setGroup] = useState<string | null>(null)
   const group = typed ?? created ?? ''
@@ -619,7 +628,7 @@ function TeamForm({ created, onChanged }: { created: string | null; onChanged: (
       {field('First workspace admin', admin, setAdmin, 'Administers the team’s workspace', 'name@your-domain')}
       {field('Invite', invites, setInvites, 'Each is added to the group on its members page in Google Admin, which opens when you create the team; the team’s row shows them as joined once the Groups API sees them', 'one or more emails')}
       <span className="ob-acts">
-        <Button size="sm" kind="primary" type="submit" busy={act.busy === 'team' ? 'Creating' : false} disabledReason={group.trim().length < 3 ? 'Name the Workspace group first' : undefined}>
+        <Button size="sm" kind="primary" type="submit" busy={act.busy === 'team' ? 'Creating' : false} disabledReason={waiting !== null ? 'Waits for infra pass 3' : group.trim().length < 3 ? 'Name the Workspace group first' : undefined}>
           Create the team
         </Button>
       </span>
@@ -812,7 +821,10 @@ function personalRow(state: SetupState, onChanged: () => void): Row {
     return {
       ...base,
       state: 'in_progress',
-      line: `One-person install: your personal workspace becomes the first workspace; swarm-api files it on this page’s next read${p?.reason ? ` (last read: ${p.reason})` : ''}`,
+      line:
+        p?.reason === PUBLISHING_OFF
+          ? `One-person install: your personal workspace becomes the first workspace, ${PUBLISHING_WAIT}`
+          : `One-person install: your personal workspace becomes the first workspace; swarm-api files it on this page’s next read${p?.reason ? ` (last read: ${p.reason})` : ''}`,
       body: <Facts items={[skipped]} label="First workspace" />,
     }
   }
@@ -847,13 +859,16 @@ function teamRow(state: SetupState, onChanged: () => void, nowMs: number): Row {
   if (isOnePerson(state)) return personalRow(state, onChanged)
   const team = state.teams[0]
   if (team === undefined) {
+    // Creating the team approves its workspace: before infra pass 3 turns publishing on it would never be built (DAYONE-MANIFEST-STEPS-2).
+    const step = state.steps?.first_team
+    const waiting = step?.state === 'waiting' ? step.reason ?? PUBLISHING_WAIT : null
     return {
       key: 'team',
       title: 'First team',
       state: 'todo',
       by: 'this page',
-      line: 'A Workspace group becomes the first workspace: the same call swarm team add makes',
-      body: <TeamForm created={state.engine?.workspace_groups?.team ?? null} onChanged={onChanged} />,
+      line: waiting === null ? 'A Workspace group becomes the first workspace: the same call swarm team add makes' : `A Workspace group becomes the first workspace, ${waiting}`,
+      body: <TeamForm created={state.engine?.workspace_groups?.team ?? null} waiting={waiting} onChanged={onChanged} />,
     }
   }
   const ws = typeof team.progress.workspace_state === 'string' ? team.progress.workspace_state : null
@@ -1568,7 +1583,7 @@ export function GitHubAppCallback({ search }: { search?: string }) {
   }
   const { id, slug } = result.data
   return (
-    <Card title="GitHub App created" action={back}>
+    <Card title="GitHub App created">
       <Facts
         items={[
           { state: 'done', name: 'Created from the manifest', text: `${slug ?? 'the App'}${id === null ? '' : ` (app id ${id})`}` },
@@ -1577,16 +1592,18 @@ export function GitHubAppCallback({ search }: { search?: string }) {
             name: 'Secrets stored',
             text: 'the private key, the client secret and the webhook secret went from GitHub’s answer straight into Secret Manager; none is shown here or anywhere',
           },
-          { state: 'todo', name: 'Next', text: 'install the App on your organisation, then come back to Admin › Setup' },
+          {
+            state: 'todo',
+            name: 'Next',
+            text: 'install the App on your organisation: Admin › Setup has the install button, watches for the installation, and GitHub sends you back there when it is done',
+          },
         ]}
       />
-      {slug !== null && (
-        <span className="ob-acts">
-          <ButtonLink size="sm" kind="primary" href={`https://github.com/apps/${encodeURIComponent(slug)}/installations/new`}>
-            Install the App
-          </ButtonLink>
-        </span>
-      )}
+      <span className="ob-acts">
+        <ButtonLink size="sm" kind="primary" href="/admin/setup">
+          Continue in Admin › Setup
+        </ButtonLink>
+      </span>
     </Card>
   )
 }

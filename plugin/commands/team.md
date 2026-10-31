@@ -25,7 +25,10 @@ waits for a pool account, and read its output as it arrives.
 `{"v": 1, "event": <kind>, "at": <seconds>, ...}`, the same events as
 `/sc:install`: show `step_done` and `step_skip` as one short line each, a
 `wait_countdown` with its `reason`, the seconds left and what is `expected`,
-and `step_failed`, `stage_refused` and `wait_gave_up` with their `message`
+and its `detail` (what the last check saw) word for word, which the wait sends
+only whenever it changes, so show it each time it comes, a `wait_failed`,
+which ends the wait at once, with its `detail` word for word (what failed, and
+no further polling can mend it), and `step_failed`, `stage_refused` and `wait_gave_up` with their `message`
 and `look_at` word for word. `run_end` carries the `outcome` and the
 `exit_code`: 0 the team is ready and its smoke is green; 1 a step failed and
 its `message` says how to go on; 3 not met or not checked; 4 paused, resumed

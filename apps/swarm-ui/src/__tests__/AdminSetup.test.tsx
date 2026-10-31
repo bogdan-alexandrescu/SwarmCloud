@@ -187,6 +187,17 @@ describe('Admin › Setup, one person and the doctor', () => {
     expect(lead).toContain('your personal workspace')
   })
 
+  // DAYONE-SETUP-WORDS (part of #2688): the lead says what the step panel says,
+  // that the page makes the link and opens it for the person's own account; nothing is sent.
+  it('the accounts lead says the page makes the one-time link and opens it for your own account', async () => {
+    await mountPage(firstRun(ONE_PERSON))
+    const lead = visible(document.querySelector('.ws-lead'))
+    // MUTATION: say the page sends the link.
+    expect(lead).not.toContain('this page sends')
+    expect(lead).toContain('a one-time link this page makes')
+    expect(lead).toContain('opens it for you')
+  })
+
   // Review of DAYONE-SETUP-UI-5A: the strip and the lead rest on the smoke as the hand-over does.
   const SIGNED_IN = { ana: { owner: 'ana@example.com', link_expires: '2026-10-30T14:54:00Z' } }
   const withSmoke = (smoke: Json) => ({ ...ONE_PERSON, personal: { ...ONE_PERSON.personal, pool_accounts: ['ana'], smoke }, accounts: SIGNED_IN })

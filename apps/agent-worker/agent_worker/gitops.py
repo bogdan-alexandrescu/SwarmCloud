@@ -329,6 +329,9 @@ class CloneResult:
     #: numbers and git's version, nothing read from the wire. Empty when git
     #: wrote no trace this function could read.
     phases: dict[str, Any] = field(default_factory=dict)
+    #: A `publish_to_pr` clone's base branch (`fetch_pull_base`, #2901): its
+    #: `pull_base_record`, or None when the clone was asked for no base.
+    base: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1025,8 +1028,16 @@ def shallow_clone(
     egress: Any = None,
     peers: PeerPin | None = None,
     history_days: int | None = None,
+    pull_base: str | None = None,
 ) -> CloneResult:
     """Clone `url` at `ref` into `destination`, shallow and single-branch.
+
+    `pull_base` (a `publish_to_pr` step, #2901): the pull request's base
+    branch. After the one-commit clone, it is fetched as `origin/<base>` and
+    both sides deepened until they share a merge base (`fetch_pull_base`),
+    with the clone's own credential and egress, so the agent can merge the
+    base in. Never fatal: a base the budget cannot reach is recorded in
+    `CloneResult.base` with the reason, and the clone stands as it was.
 
     `history_days` (an index run, `indexrun.clone_history_days`, G4-06):
     after the one-commit clone, deepen it to the `history_days` before the
@@ -1083,6 +1094,7 @@ def shallow_clone(
     trace = _CloneTrace.create(private_dir)
     phases: dict[str, Any] = {}
     failed: GitError | None = None
+    base_record: dict[str, Any] | None = None
     try:
         total = _run_git_steps(
             steps, url=url, token=token, private_dir=private_dir, env=trace.env(env),
@@ -1096,6 +1108,15 @@ def shallow_clone(
                 url=url, token=token, private_dir=private_dir, env=trace.env(env),
                 logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
             )
+        if pull_base:
+            # Inside the try for the same reason: the base is fetched with
+            # the credential the clone used, and loses it with the clone.
+            base_record = pull_base_record(
+                destination, pull_base, git_binary=git_binary, config_args=config_args,
+                url=url, token=token, private_dir=private_dir, env=trace.env(env),
+                logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
+            )
+            total += float(base_record.get("seconds") or 0.0)
     except GitError as exc:
         failed = exc
         raise
@@ -1118,7 +1139,7 @@ def shallow_clone(
     )
     return CloneResult(
         path=destination, url=url, ref=ref, commit=commit, duration_seconds=total, empty=empty,
-        phases=phases,
+        phases=phases, base=base_record,
     )
 
 
@@ -1215,6 +1236,155 @@ def deepen_history(
         return head.duration_seconds
     logger.info("clone history deepened", days=days, seconds=round(seconds, 2))
     return head.duration_seconds + seconds
+
+
+# ---------------------------------------------------------------------------
+# A publish_to_pr clone's base branch (#2901)
+# ---------------------------------------------------------------------------
+#
+# MEASURED 2026-10-31: two `publish_to_pr` tasks asked to "merge main and
+# resolve conflicts" found a one-commit clone of the pull request's head, a
+# platform fetch of `main` that answered `too_large` and a `git fetch` with
+# no credential, and published nothing. The platform fetch cannot serve it:
+# its haves are the clone's depth-1 tips, which hide every ancestor, so git
+# sends the base's whole history (a 3-commit gap measured as the repository's
+# full 8 MB). So the clone fetches the base itself, with the credential and
+# egress it already holds, only as deep as the merge base.
+
+#: The depth of the first round, both sides; each later round doubles it.
+#: A pull request a few days behind its base is reached in the first round.
+PULL_BASE_FIRST_DEPTH = 64
+#: Rounds before the deepen gives up: 64 doubled seven times is 8,192
+#: commits on each side, more than a pull request open for months.
+PULL_BASE_MAX_ROUNDS = 8
+#: The most the deepen may add to the clone's object store, all rounds. The
+#: platform's own bundle cap (swarm-api `gitexec.MAX_BUNDLE_BYTES`, Q6), so a
+#: base the platform could hand over is one the clone can fetch. Checked
+#: after each round: one round can pass it by at most its own size.
+PULL_BASE_MAX_BYTES = 256 * 1024 * 1024
+
+
+class PullBaseError(GitError):
+    """The base branch could not be fetched deep enough to reach a merge base."""
+
+
+def _object_bytes(destination: Path) -> int:
+    """The bytes in the clone's object store: what its fetches have added."""
+    total = 0
+    for root, _dirs, files in os.walk(destination / ".git" / "objects"):
+        for name in files:
+            try:
+                total += (Path(root) / name).lstat().st_size
+            except OSError:
+                continue
+    return total
+
+
+def fetch_pull_base(
+    destination: Path,
+    base: str,
+    *,
+    git_binary: str,
+    config_args: Sequence[str],
+    url: str,
+    token: str | None,
+    private_dir: Path,
+    env: dict[str, str],
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    first_depth: int | None = None,
+    max_rounds: int | None = None,
+    max_bytes: int | None = None,
+) -> dict[str, Any]:
+    """Fetch `base` as `origin/<base>` and deepen it and HEAD until they meet.
+
+    Each round fetches the base branch, then the head commit, to `--depth=<d>`,
+    `d` doubling from `first_depth`, then asks `git merge-base`. Never
+    `--unshallow`: the history the merge needs, not the repository's.
+    Raises `PullBaseError` when `max_rounds` pass without a merge base, when
+    the object store grew past `max_bytes`, or when the clone holds the whole
+    history and the two still share no commit. Returns the record
+    `pull_base_record` hands on. The bounds default to the module's
+    `PULL_BASE_*` values, read at the call.
+    """
+    first_depth = PULL_BASE_FIRST_DEPTH if first_depth is None else first_depth
+    max_rounds = PULL_BASE_MAX_ROUNDS if max_rounds is None else max_rounds
+    max_bytes = PULL_BASE_MAX_BYTES if max_bytes is None else max_bytes
+    base = validate_ref(base) or ""
+    if not base or base.startswith("refs/") or _SHA_RE.match(base):
+        raise PullBaseError(f"the pull request's base {base!r} is not a branch name")
+    remote_ref = f"refs/remotes/origin/{base}"
+    g = [git_binary, "-C", str(destination)]
+    code, head = _git_text([*g, "rev-parse", "--verify", "HEAD^{commit}"], repo=destination,
+                           private_dir=private_dir, logs_dir=logs_dir, slug="pull-base-head",
+                           timeout_seconds=30, logger=logger)
+    head = head.strip()
+    if code != 0 or not _FULL_SHA_RE.match(head):
+        raise PullBaseError("the clone's head commit could not be read")
+    start = _object_bytes(destination)
+    seconds = 0.0
+    depth = max(1, int(first_depth))
+    for round_ in range(1, max(1, int(max_rounds)) + 1):
+        fetch = [git_binary, *config_args, "-C", str(destination), "fetch", "--quiet",
+                 "--no-tags", f"--depth={depth}", "origin"]
+        # Two fetches, not one: git 2.39 measured skipping the deepen of a
+        # fetch whose wants include a sha already complete here, so a head
+        # with all its history kept the base at the first round's depth.
+        seconds += _run_git_steps(
+            [[*fetch, f"+refs/heads/{base}:{remote_ref}"], [*fetch, head]], url=url, token=token, private_dir=private_dir, env=env, logs_dir=logs_dir,
+            timeout_seconds=timeout_seconds, logger=logger, label=f"git-pull-base-{round_}",
+        )
+        fetched = _object_bytes(destination) - start
+        code, merge_base = _git_text(
+            [*g, "merge-base", "HEAD", remote_ref], repo=destination, private_dir=private_dir,
+            logs_dir=logs_dir, slug=f"pull-base-merge-base-{round_}", timeout_seconds=60,
+            logger=logger)
+        merge_base = merge_base.strip()
+        if code == 0 and _FULL_SHA_RE.match(merge_base):
+            logger.info("publish_to_pr: the base branch reaches a merge base", base=base,
+                        merge_base=merge_base, depth=depth, rounds=round_, bytes=fetched)
+            return {"ref": base, "remote_ref": f"origin/{base}", "merge_base": merge_base,
+                    "depth": depth, "rounds": round_, "bytes": fetched,
+                    "seconds": round(seconds, 2)}
+        if fetched > max_bytes:
+            raise PullBaseError(
+                f"the base branch {base} was deepened to {depth} commits on each side in "
+                f"{round_} rounds and fetched {fetched} bytes, over the {max_bytes}-byte "
+                "budget, without reaching a merge base; it is too far from the pull "
+                "request's head to fetch here")
+        if not (destination / ".git" / "shallow").exists():
+            raise PullBaseError(
+                f"the clone holds the whole history of the head and of {base} and they "
+                "share no commit: the pull request's branch and its base are unrelated")
+        depth *= 2
+    raise PullBaseError(
+        f"the base branch {base} was deepened to {depth // 2} commits on each side in "
+        f"{max_rounds} rounds without reaching a merge base")
+
+
+def pull_base_record(
+    destination: Path,
+    base: str,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """`fetch_pull_base`, never raising: the record the step's repository
+    context carries, with a `note` the agent reads either way."""
+    logger = kwargs["logger"]
+    try:
+        record = fetch_pull_base(destination, base, **kwargs)
+    except GitError as exc:  # PullBaseError and GitTransient included
+        reason = redact_text(str(exc)).text[-600:]
+        logger.warning("publish_to_pr: the base branch did not reach a merge base",
+                       base=base, error=reason)
+        return {"ref": base, "merge_base": None, "error": reason,
+                "note": (f"The pull request's base branch {base} could not be fetched deep "
+                         f"enough to merge: {reason}")}
+    record["note"] = (
+        f"The pull request's base branch is in this clone as {record['remote_ref']}, deep "
+        f"enough to reach the merge base {record['merge_base']}: `git merge "
+        f"{record['remote_ref']}` merges it in.")
+    return record
 
 
 #: How many commits back from the step's base `fetch_base_history` deepens a
@@ -1397,6 +1567,7 @@ def clone_at_commit(
     git_binary: str = "git",
     egress: Any = None,
     peers: PeerPin | None = None,
+    pull_base: str | None = None,
 ) -> CloneResult:
     """Check out exactly `commit` of `url` into `destination` (the workflow base pin).
 
@@ -1411,6 +1582,9 @@ def clone_at_commit(
     `destination` again, so the caller can clone the branch tip into it as
     it always did. `commit` must be a full 40-character sha: an abbreviation
     is not a pin.
+
+    `pull_base`: as `shallow_clone`'s -- a `publish_to_pr` step starts from
+    its pull request's head through this pin, and fetches the base here.
     """
     url = validate_repository_url(url)
     branch = validate_ref(branch)
@@ -1441,6 +1615,7 @@ def clone_at_commit(
     env = trace.env(env)
     phases: dict[str, Any] = {}
     failed: GitError | None = None
+    base_record: dict[str, Any] | None = None
     try:
         total += _run_git_steps(
             setup, url=url, token=token, private_dir=private_dir, env=env,
@@ -1474,6 +1649,14 @@ def clone_at_commit(
                 logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
                 label="git-pin-branch",
             )
+        if pull_base:
+            # With the pin's credential, before it is removed; never fatal.
+            base_record = pull_base_record(
+                destination, pull_base, git_binary=git_binary, config_args=config_args,
+                url=url, token=token, private_dir=private_dir, env=env,
+                logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
+            )
+            total += float(base_record.get("seconds") or 0.0)
     except GitError as exc:
         failed = exc
         _empty_directory(destination)
@@ -1497,7 +1680,7 @@ def clone_at_commit(
     )
     return CloneResult(
         path=destination, url=url, ref=branch, commit=head, duration_seconds=total,
-        phases=phases,
+        phases=phases, base=base_record,
     )
 
 

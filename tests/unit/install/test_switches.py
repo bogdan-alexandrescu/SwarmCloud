@@ -18,6 +18,9 @@ from .test_state_store import FakeClock
 from .test_terraform_runner import FakeCtx, install_state
 
 PACKAGE = Path(github_switches.__file__).resolve().parent.parent
+#: The installer's one secret-value read, and the exact path segment it names: `swarm
+#: upgrade` reading the GitHub App's private key as the owner (#2885).
+UPGRADE_APP_KEY_READ = ("verbs/upgrade.py", "/versions/latest:access")
 
 
 class SecretMetadata:
@@ -205,12 +208,21 @@ def test_engine_never_reads_an_app_secret() -> None:
     assert Pass3Step(Deps(gcp=lambda: gcp)).trigger(ctx) is True
     assert {verb for verb, _ in gcp.calls} == {"secret", "enabled_version"}, "metadata only"
 
-    # No module of the installer names a secret-value read (`:access`, `access_secret_version`).
+    # No module of the installer names a secret-value read (`:access`, `access_secret_version`),
+    # but one: `swarm upgrade` reads the App's private key to read the GitHub App as
+    # itself (DAYONE-UPGRADE-2, #2885; `verbs/upgrade.py` `_app_key`), held in memory only.
+    # That one read is the only exemption; stage 9's switches above stay metadata-only.
     for path in PACKAGE.rglob("*.py"):
         tree = ast.parse(path.read_text())
+        accesses = []
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                assert ":access" not in node.value, f"{path.name} reads a secret's value"
+                if ":access" in node.value:
+                    accesses.append(node.value)
             if isinstance(node, (ast.Attribute, ast.Name)):
                 name = node.attr if isinstance(node, ast.Attribute) else node.id
                 assert "access_secret" not in name, f"{path.name} reads a secret's value"
+        if path.relative_to(PACKAGE).as_posix() == UPGRADE_APP_KEY_READ[0]:
+            assert accesses == [UPGRADE_APP_KEY_READ[1]], f"{path.name} reads a secret's value"
+        else:
+            assert not accesses, f"{path.name} reads a secret's value"

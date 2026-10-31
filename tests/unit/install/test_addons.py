@@ -81,6 +81,10 @@ class FakeWorld:
         self.variables: dict[str, str] = {}
         self.workloads: set[str] = set()
         self.added: list[str] = []
+        #: swarm-api's brave-search probe answer; None is a swarm-api without the route.
+        self.probe: Mapping[str, Any] | None = {"ok": True, "reason": "one search answered 1 result(s)",
+                                                "status": 200, "results": 1}
+        self.accessors: dict[str, set[str]] = {}
 
     # Secret Manager
     def secret_exists(self, name: str) -> bool:
@@ -129,6 +133,16 @@ class FakeWorld:
         return {"kind": "addon-secret", "label": addon, "owner": owner,
                 "url": f"https://console.example.com/admin/setup/link/{secrets.token_hex(8)}",
                 "expires_at": "2026-10-31T00:00:00+00:00"}
+
+    def search_probe(self) -> Mapping[str, Any] | None:
+        self.calls.append(("search_probe", None))
+        if isinstance(self.probe, Exception):
+            raise self.probe
+        return self.probe
+
+    def secret_accessors(self, name: str) -> set[str]:
+        self.calls.append(("secret_accessors", name))
+        return set(self.accessors.get(name, ()))
 
     # Terraform: a root's containers appear with the switch that creates them.
     def apply(self, root: str, overlay: Mapping[str, Any], *,
@@ -659,3 +673,112 @@ def test_real_world_apply_keeps_the_reopened_address(monkeypatch: pytest.MonkeyP
     with pytest.raises(Stop):
         world.apply("infra", {}, guard=lambda plan: None)
     assert generated[-1] == "infra-close"
+
+
+# ---------------------------------------------------------------------------
+# brave-search's check: one real search through swarm-api's probe (DAYONE-SEARCH-PROBE)
+# ---------------------------------------------------------------------------
+
+SEARCH_ACCOUNT = f"serviceAccount:swarm-api@{PROJECT}.iam.gserviceaccount.com"
+
+
+def _search_on(world: FakeWorld) -> addons.Flow:
+    the_flow, _ = flow(world)
+    the_flow.enable("brave-search")
+    return the_flow
+
+
+def test_brave_search_is_on_when_the_probe_answers_ok() -> None:
+    world = FakeWorld()
+    the_flow = _search_on(world)
+    assert the_flow.check(addons.ADDONS["brave-search"]) == (MET, "brave-search is on")
+    assert ("search_probe", None) in world.calls
+    assert not [c for c in world.calls if c[0] == "secret_accessors"], "the probe answered: no policy read"
+
+
+def test_brave_search_is_off_when_the_probe_answers_not_ok() -> None:
+    world = FakeWorld()
+    the_flow = _search_on(world)
+    world.accessors["swarm-search-api-key"] = {SEARCH_ACCOUNT}  # a policy read would have said yes
+    reason = "swarm-api's service account has no read access to swarm-search-api-key"
+    world.probe = {"ok": False, "reason": reason, "status": None, "results": 0}
+    status, why = the_flow.check(addons.ADDONS["brave-search"])
+    assert status != MET and reason in why
+
+
+def test_enabling_brave_search_fails_on_a_not_ok_probe() -> None:
+    world = FakeWorld()
+    world.probe = {"ok": False, "reason": "the search provider (brave) answered unauthorized (HTTP 401)",
+                   "status": 401, "results": 0}
+    the_flow, _ = flow(world)
+    with pytest.raises(addons.AddonError, match="answered unauthorized"):
+        the_flow.enable("brave-search")
+
+
+def test_an_unreachable_probe_is_not_on() -> None:
+    world = FakeWorld()
+    the_flow = _search_on(world)
+    world.probe = addons.AddonError("POST /v1/admin/setup/addons/brave-search/probe -> 503")
+    status, why = the_flow.check(addons.ADDONS["brave-search"])
+    assert status != MET and "could not be asked" in why
+
+
+def test_a_swarm_api_without_the_probe_falls_back_to_the_policy_read_and_says_so() -> None:
+    world = FakeWorld()
+    world.accessors["swarm-search-api-key"] = {SEARCH_ACCOUNT}
+    world.probe = None
+    the_flow = _search_on(world)
+    status, why = the_flow.check(addons.ADDONS["brave-search"])
+    assert status == MET and "no search probe route" in why and "IAM policy" in why
+    assert ("secret_accessors", "swarm-search-api-key") in world.calls
+    world.accessors.clear()
+    status, why = the_flow.check(addons.ADDONS["brave-search"])
+    assert status != MET and "roles/secretmanager.secretAccessor" in why
+
+
+def test_real_world_probe_reads_404_as_no_route_and_an_edge_404_as_an_error(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    import swarm_mcp.client as client_mod
+
+    asked: list[tuple[str, str]] = []
+    raised: list[Exception] = []
+
+    class Client:
+        def __init__(self, context: Any = None) -> None:
+            pass
+
+        def request(self, method: str, path: str, **_: Any) -> Any:
+            asked.append((method, path))
+            if raised:
+                raise raised[0]
+            return {"ok": True, "reason": "fine", "status": 200, "results": 1}
+
+    monkeypatch.setattr(client_mod, "SwarmClient", Client)
+    world = _real_world(ready_state())
+    assert world.search_probe()["ok"] is True
+    assert asked == [("POST", addons.SEARCH_PROBE)]
+    raised.append(client_mod.SwarmError("not found", status=404))
+    assert world.search_probe() is None
+    raised[0] = client_mod.SwarmError("an HTML 404 from Google's edge", status=404, edge=True)
+    with pytest.raises(addons.AddonError):
+        world.search_probe()
+    raised[0] = client_mod.SwarmError("boom", status=500)
+    with pytest.raises(addons.AddonError):
+        world.search_probe()
+
+
+def test_real_world_reads_the_secrets_own_accessors() -> None:
+    from types import SimpleNamespace
+
+    asked: list[tuple[str, str]] = []
+
+    def call(method: str, url: str, **_: Any) -> Any:
+        asked.append((method, url))
+        return {"bindings": [{"role": addons.SECRET_ACCESSOR, "members": [SEARCH_ACCOUNT]},
+                             {"role": "roles/secretmanager.viewer", "members": ["user:x@example.com"]}]}
+
+    world = _real_world(ready_state())
+    world.gcp = SimpleNamespace(_call=call)
+    assert world.secret_accessors("swarm-search-api-key") == {SEARCH_ACCOUNT}
+    assert asked == [("GET", "https://secretmanager.googleapis.com/v1/projects/"
+                             f"{PROJECT}/secrets/swarm-search-api-key:getIamPolicy")]
