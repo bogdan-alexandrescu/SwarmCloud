@@ -514,3 +514,16 @@ def test_migration_documents_default_to_the_install_database(monkeypatch: pytest
     monkeypatch.setattr(firestore, "Client", clients)
     _ = mig.FirestoreMigrationDocuments("proj").client
     assert clients.databases == [record.DATABASE]
+
+
+def test_a_drain_that_gives_up_names_swarm_upgrade(tmp_path: Path) -> None:
+    """Audit 4e F13: `swarm install` does not resume an upgrade's drain."""
+    from swarm_install.waits import WaitGaveUp
+
+    world = FakeWorld()
+    world.running = lambda: 3  # type: ignore[method-assign]
+    flow, _store, _ = make(tmp_path, world)
+    with pytest.raises(WaitGaveUp) as gave_up:
+        flow.run(NEW)
+    assert gave_up.value.step == "upgrade.drain"
+    assert "Run swarm upgrade" in str(gave_up.value) and "swarm install" not in str(gave_up.value)
