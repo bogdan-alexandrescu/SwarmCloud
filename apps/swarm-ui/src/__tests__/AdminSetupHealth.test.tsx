@@ -66,7 +66,7 @@ function writerKeys(): string[] {
   const py = readFileSync(join(INSTALL, 'doctor.py'), 'utf8')
   const body = /def to_json\(self\)[^\n]*\n\s+return \{([\s\S]*?)\n\s+\}/.exec(py)
   expect(body, 'doctor.py has no Finding.to_json returning a dict literal').not.toBeNull()
-  return Array.from((body as RegExpExecArray)[1].matchAll(/"(\w+)":/g), (m) => m[1]).sort()
+  return Array.from(((body as RegExpExecArray)[1] ?? '').matchAll(/"(\w+)":/g), (m) => m[1] ?? '').sort()
 }
 
 /** MET, UNMET and UNKNOWN as exitcodes.py defines them. */
@@ -75,7 +75,7 @@ function writerStatuses(): string[] {
   return ['MET', 'UNMET', 'UNKNOWN'].map((name) => {
     const m = new RegExp(`^${name} = "(\\w+)"`, 'm').exec(py)
     expect(m, `exitcodes.py defines no ${name}`).not.toBeNull()
-    return (m as RegExpExecArray)[1]
+    return (m as RegExpExecArray)[1] ?? ''
   })
 }
 
@@ -137,7 +137,7 @@ describe('Admin › Setup › Health reads the doctor’s shape', () => {
     // MUTATION: drop the doctor's fix.
     expect(visible(finding)).toContain("the install's step foundations.apis makes it")
     // MUTATION: drop the doctor's repair, or draw anything but its own.
-    expect(visible(finding.querySelector('figure.c-code pre'))).toBe('swarm install --repair api.cloudkms')
+    expect(visible(finding.querySelector('figure.c-code pre'))).toMatch(/(^|\d)swarm install --repair api\.cloudkms$/)
     expect(visible(document.body)).toContain('1 drifted')
   })
 

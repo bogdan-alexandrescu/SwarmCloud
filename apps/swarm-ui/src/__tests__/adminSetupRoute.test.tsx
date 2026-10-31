@@ -59,7 +59,8 @@ const SETUP: Json = {
 const HEALTH: Json = {
   latest: {
     run_at: '2026-10-29T14:58:00Z',
-    checks: [{ id: 'edge.certificate', title: 'Front door', result: 'passed', detail: 'certificate ACTIVE' }],
+    // A row as swarm-doctor writes it (doctor.Finding.to_json).
+    checks: [{ id: 'edge.certificate', status: 'met', detail: 'certificate ACTIVE', step: 'edge.front_door', fix: '', cause: '', repair: 'swarm install --repair edge.certificate' }],
     findings: [],
   },
 }
@@ -107,7 +108,7 @@ describe('Admin › Setup and Health, routed', () => {
   it('/admin/setup/health renders the Health panel', async () => {
     await mountApp('/admin/setup/health', true)
     // MUTATION: map /admin/setup/health to Setup, or drop its case -> fails.
-    await waitFor(() => expect(screen.getByText('Front door')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('edge.certificate')).toBeTruthy())
     expect(window.location.pathname).toBe('/admin/setup/health')
     expect(document.querySelector('[aria-label="Install setup"]')).toBeNull()
   })
