@@ -204,7 +204,7 @@ def test_no_dockerfile_names_a_project() -> None:
         ["git", "ls-files", "--", "*Dockerfile*"], cwd=REPO, capture_output=True, text=True, check=True,
     ).stdout.split()
     assert sorted(tracked) == sorted(_rel(p) for p in DOCKERFILES), tracked
-    assert len(tracked) == 15, tracked
+    assert len(tracked) == 16, tracked
     hits = []
     for rel in tracked:
         text = (REPO / rel).read_text()
