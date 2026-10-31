@@ -6,8 +6,8 @@ to `https://<H>/admin/setup/github-app/callback` with `code` and `state`; the
 console hands both to swarm-api, which checks `state` BEFORE it calls GitHub,
 exchanges the code (`POST /app-manifests/<code>/conversions`), writes `pem`,
 `client_secret` and `webhook_secret` straight into their Secret Manager
-containers and drops them. Only `id`, `slug` and `client_id` -- none of them
-secret -- are kept, in the console's `github_app` document. Nothing of
+containers and drops them. Only `id`, `slug`, `client_id` and `name` -- none
+of them secret -- are kept, in the console's `github_app` document. Nothing of
 GitHub's answer is logged.
 
 The webhook is registered inactive (`hook_attributes.active = false`); it is
@@ -312,11 +312,13 @@ class ManifestFlow:
         for field, slot in SECRET_FIELDS.items():
             self._secrets.add_version(slot, values[field])
         values.clear()
-        answer = {k: answer.get(k) for k in ("id", "slug", "client_id")}
+        answer = {k: answer.get(k) for k in ("id", "slug", "client_id", "name")}
         self._write({
             "id": answer["id"],
             "slug": answer["slug"],
             "client_id": answer["client_id"],
+            # Infra pass 3 renders github_app_name from it (E2E-1).
+            "name": answer["name"],
             "secrets_written_at": self._now(),
             "state_hash": None,
         })

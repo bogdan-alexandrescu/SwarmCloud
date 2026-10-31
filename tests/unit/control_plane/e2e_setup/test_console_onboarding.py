@@ -647,10 +647,6 @@ def test_the_smoke_row_serves_the_detail_and_link_the_page_shows(walk, setup_app
             for route, paths in gaps.items() if route in NEVER_SERVED} == {}
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "E2E-1 (findings): swarm-api never records the App's `name` in console/github_app (it "
-    "is not in the document's row of the one-writer table), so infra pass 3 copies no name "
-    "and renders github_app_name empty beside a set github_app_id"))
 def test_the_engine_reads_every_app_field_pass_3_carries(walk, setup_app, github) -> None:
     """Infra pass 3 copies `github_switches.APP_FIELDS` from the console's
     `github_app` document into its tfvars (`tfvars.py`), which terraform/infra
