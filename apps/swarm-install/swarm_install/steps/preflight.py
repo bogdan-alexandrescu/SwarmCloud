@@ -9,7 +9,7 @@ zero mutating calls).
 | Step | Manifest entries | Lesson |
 |---|---|---|
 | `preflight.tools` | the core `local-tool.*` | 12: terraform `1.16.2`, kubectl ≥ 1.30 |
-| `preflight.sign-in` | `other.installer-sign-in` | gcloud and ADC signed in, by the installer itself; ADC with the Directory scopes, or without them when Google refuses them (`directory_scopes` false; stage 8 asks, N14); records `installer` |
+| `preflight.sign-in` | `other.installer-sign-in` | gcloud and ADC signed in, by the installer itself; ADC with the Directory scopes, or without them when Google refuses them (`directory_scopes` false; stage 8 asks, N14), a blocked consent page included: that sign-in waits at most `CONSENT_WAIT_S` and Ctrl-C stops gcloud, not the run (audit 4a F2); records `installer` |
 | `preflight.organization` | — | audit #24: no organisation is said first; the Cloud Identity Free sign-up opens and is polled; billing creation opens when the organisation waits on it (N16) |
 | `preflight.inputs` | `other.github-org` | R7: the alert email, the hostname (the verb's), the GitHub org, the billing account (listed; with none, billing creation opens and is polled, N15) |
 | `preflight.region` | — | 2: the region (the verb's) is confirmed, typed, before stage 1 |
@@ -17,9 +17,9 @@ zero mutating calls).
 | `preflight.org-domain` | `other.org-domain` | the domain IAP admits, read from the organization |
 | `preflight.installer-address` | `other.installer-address` | the installer's /32 for the cluster's authorized networks |
 | `preflight.org-policies` | `org-policy.*` | read **effective** (inherited) policy |
-| `preflight.quotas` | `quota.*` | 4: the KMS signing quota is read; the Quotas page opens and the increase is polled for (#32) |
+| `preflight.quotas` | `quota.*` | 4: the KMS signing quota is read; the CPUS quota is the smaller of the region's and the project-wide CPUS_ALL_REGIONS (audit 4a F5); the Quotas page opens (a Free Trial account's upgrade page when that is the cap) and the increase is polled for (#32) |
 | `preflight.sizing` | `other.deployment-sizing` | decision 7: one person or a team of N, the proposed ceilings |
-| `preflight.sizing-quota` (stage 1) | `other.deployment-sizing-quota` | the sizing against a new project's CPU quota |
+| `preflight.sizing-quota` (stage 1) | `other.deployment-sizing-quota` | the sizing against a new project's usable CPU quota (regional and project-wide) |
 | `preflight.release` | `other.release-home`, `other.release-bundle` | 27: CVE acceptances with expiry; records `state.release` (audit #2) |
 
 This module also holds `Gcp`, the engine's one REST client for stages 0-2. It
@@ -53,6 +53,37 @@ from ..waits import WaitSpec, wait_until
 from . import Observation, Plan, open_page
 
 # -- the REST client ---------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CpuQuotas:
+    """The two Compute Engine CPU quotas a GKE Autopilot cluster's nodes count
+    against: the region's CPUS and the project-wide CPUS_ALL_REGIONS (audit 4a
+    F5). `usable` is the smaller, what the sizing caps and requires on."""
+
+    region: int | None
+    all_regions: int | None
+
+    @property
+    def usable(self) -> int | None:
+        return sizing.usable_cpus(self.region, self.all_regions)
+
+    @property
+    def all_regions_binds(self) -> bool:
+        """CPUS_ALL_REGIONS, not the region's CPUS, is the smaller limit."""
+        return (self.all_regions is not None and self.all_regions >= 0
+                and (self.region is None or self.region < 0 or self.all_regions < self.region))
+
+    def said(self, region: str) -> str:
+        return f"{self.usable} ({region} CPUS {self.region}, CPUS_ALL_REGIONS {self.all_regions})"
+
+
+def _compute_limit(found: Mapping[str, Any], metric: str) -> int | None:
+    """`metric`'s limit in a Compute Engine region or project's `quotas`, or None."""
+    for quota in found.get("quotas", []) or []:
+        if quota.get("metric") == metric and quota.get("limit") is not None:
+            return int(float(quota["limit"]))
+    return None
 
 CRM = "https://cloudresourcemanager.googleapis.com"
 BILLING = "https://cloudbilling.googleapis.com/v1"
@@ -243,14 +274,13 @@ class Gcp:
 
     # Services ----------------------------------------------------------------
 
-    def region_cpu_quota(self, project: str, region: str) -> int | None:
-        """The region's CPUS quota limit (Compute Engine `regions.get`), or
-        None when the region reports none."""
-        found = self._call("GET", f"{COMPUTE}/projects/{project}/regions/{region}") or {}
-        for quota in found.get("quotas", []) or []:
-            if quota.get("metric") == "CPUS" and quota.get("limit") is not None:
-                return int(float(quota["limit"]))
-        return None
+    def cpu_quotas(self, project: str, region: str) -> CpuQuotas:
+        """The region's CPUS limit (Compute Engine `regions.get`) and the
+        project's CPUS_ALL_REGIONS limit (`projects.get`), each None when it
+        is not reported: an Autopilot node counts against both (audit 4a F5)."""
+        regional = self._call("GET", f"{COMPUTE}/projects/{project}/regions/{region}") or {}
+        project_wide = self._call("GET", f"{COMPUTE}/projects/{project}") or {}
+        return CpuQuotas(_compute_limit(regional, "CPUS"), _compute_limit(project_wide, "CPUS_ALL_REGIONS"))
 
     def enabled_services(self, project: str) -> set[str]:
         found = self._pages(f"{USAGE}/v1/projects/{project}/services", "services",
@@ -718,9 +748,27 @@ def adc_scopes() -> frozenset[str] | None:
     return frozenset(granted.split())
 
 
-def run_auth(argv: Sequence[str]) -> int:
-    """One gcloud sign-in on the person's terminal: gcloud opens the browser."""
-    return subprocess.run(list(argv), check=False).returncode
+#: How long the sign-in that asks the Directory scopes may wait on Google's
+#: consent page. Google's "This app is blocked" page never redirects back to
+#: gcloud, so gcloud would wait forever (audit 4a F2); past this the sign-in
+#: goes on with Cloud Platform alone. Five minutes is ample for a password and
+#: a second factor.
+CONSENT_WAIT_S = 5 * 60
+#: `run_auth`'s answer when gcloud was stopped at `timeout` (timeout(1)'s code).
+TIMED_OUT = 124
+CONSENT_HINT = ("If Google says this app is blocked, press Ctrl-C here (or wait "
+                f"{CONSENT_WAIT_S // 60} minutes): the installer then signs in with Cloud Platform alone and "
+                "asks for the Directory scopes later, through the deployment's own client.")
+
+
+def run_auth(argv: Sequence[str], *, timeout: float | None = None) -> int:
+    """One gcloud sign-in on the person's terminal: gcloud opens the browser.
+    With `timeout`, gcloud is stopped once it has waited that long and the
+    answer is `TIMED_OUT`."""
+    try:
+        return subprocess.run(list(argv), check=False, timeout=timeout).returncode
+    except subprocess.TimeoutExpired:  # subprocess.run has already killed gcloud
+        return TIMED_OUT
 
 
 class SignInStep(_Base):
@@ -749,7 +797,7 @@ class SignInStep(_Base):
                  gcloud: Callable[[], str | None] = find_gcloud,
                  account: Callable[[], str] | None = None,
                  adc: Callable[[], frozenset[str] | None] = adc_scopes,
-                 login: Callable[[Sequence[str]], int] = run_auth) -> None:
+                 login: Callable[..., int] = run_auth) -> None:
         super().__init__(gcp, ask)
         self._gcloud = gcloud
         self._account = account or (lambda: gcloud_account(gcloud))
@@ -823,8 +871,20 @@ class SignInStep(_Base):
     def _adc_sign_in(self, ctx: Any, gcloud: str, what: str) -> None:
         """The application-default sign-in with `ADC_SCOPES`; refused the
         Directory scopes (gcloud fails, or the token comes back without them),
-        once more with Cloud Platform alone. `directory_scopes` records which."""
-        code = self._login([gcloud, *adc_login()])
+        once more with Cloud Platform alone. `directory_scopes` records which.
+
+        Google's "This app is blocked" page never returns to gcloud, so the
+        scoped sign-in waits at most `CONSENT_WAIT_S`, and Ctrl-C during it
+        stops gcloud alone, not the run (audit 4a F2). Either records
+        `directory_scopes` false before the Cloud-Platform-only sign-in, so a
+        run stopped during that one never asks the blocked scopes again."""
+        ctx.events.emit("step_apply", step=self.id, message=CONSENT_HINT)
+        try:
+            code = self._login([gcloud, *adc_login()], timeout=CONSENT_WAIT_S)
+        except KeyboardInterrupt:
+            code = TIMED_OUT
+        if code == TIMED_OUT:
+            remember(ctx, outputs={"directory_scopes": False})
         granted = self._adc() if code == 0 else None
         if granted is not None and set(ADC_SCOPES) <= granted:
             remember(ctx, outputs={"directory_scopes": True})
@@ -1500,14 +1560,21 @@ class Quota:
 
 #: The regional CPUS quota's metric, exactly (audit #32).
 CPUS_METRIC = "compute.googleapis.com/cpus"
+#: The project-wide CPUS_ALL_REGIONS quota's metric: every Autopilot node
+#: counts against it as well as against the region's CPUS (audit 4a F5).
+CPUS_ALL_REGIONS_METRIC = "compute.googleapis.com/cpus_all_regions"
+#: The most vCPUs a Free Trial billing account runs at once across all
+#: regions; Google grants such an account no quota increase until it is
+#: upgraded to a paid account.
+FREE_TRIAL_CPUS = 8
 
 QUOTAS: tuple[Quota, ...] = (
     Quota("quota.kms-signing-h4", "cloudkms.googleapis.com", "crypto_requests", 600,
           "every step-spec signature is one KMS AsymmetricSign; running out is a 503 on every submission"),
     Quota("quota.cloud-run-jobs", "run.googleapis.com", "job", 1, "every dispatch is a Cloud Run Job"),
-    # Exactly `compute.googleapis.com/cpus` (audit #32): `a2_cpus`, `preemptible_cpus` and
-    # `cpus_all_regions` hold "cpus" too, and none of them is what the cluster's nodes draw on.
-    # 24 is the floor before anyone says who the deployment is for; once a sizing is
+    # Exactly `compute.googleapis.com/cpus` (audit #32), not `a2_cpus` or `preemptible_cpus`;
+    # the cluster's nodes also draw on the project-wide `cpus_all_regions`, read with it
+    # (CPUS_ALL_REGIONS_METRIC, audit 4a F5), and the smaller binds. 24 is the floor before anyone says who the deployment is for; once a sizing is
     # recorded the floor is what it needs, if more (`cpus_floor`, DAYONE-SIZING-CAP).
     Quota("quota.compute-regional-cpus", "compute.googleapis.com", CPUS_METRIC, 24,
           "the Autopilot cluster's nodes", exact=True),
@@ -1563,21 +1630,28 @@ class QuotasStep(_Base):
         "below what the platform needs is named before anything is created."
     )
 
-    def binding(self, ctx: Any) -> tuple[list[tuple[Quota, str]], dict[str, Any]]:
-        """Each quota below its floor in the install region, with what to say about it."""
+    def binding(self, ctx: Any) -> tuple[list[tuple[Quota, str, str | None]], dict[str, Any]]:
+        """Each quota below its floor in the install region, with what to say
+        about it and the page to open on it (None: the Quotas page at large)."""
         gcp = self.gcp
         if gcp.project(ctx.project) is None:
             return [], {"quotas": "a new project has the default quotas; swarm doctor reads them after stage 1"}
         enabled = gcp.enabled_services(ctx.project)
         region = ctx.state.region or DEFAULT_REGION
-        found: list[tuple[Quota, str]] = []
+        found: list[tuple[Quota, str, str | None]] = []
         read: dict[str, Any] = {}
         for quota in QUOTAS:
             if quota.service not in enabled:
                 read[quota.entry] = f"{quota.service} is enabled in stage 1; the default quota applies"
                 continue
-            limits = _limits(gcp.quota_metrics(ctx.project, quota.service), quota.metric, region,
-                             exact=quota.exact)
+            metrics = gcp.quota_metrics(ctx.project, quota.service)
+            limits = _limits(metrics, quota.metric, region, exact=quota.exact)
+            if quota.metric == CPUS_METRIC and limits:
+                cpus = self._cpus(ctx, quota, limits, _limits(metrics, CPUS_ALL_REGIONS_METRIC, region, exact=True))
+                read[quota.entry] = {name: value for name, value in limits + cpus[1]}
+                if cpus[0] is not None:
+                    found.append(cpus[0])
+                continue
             if not limits:  # audit #32: said in one line, never raised
                 read[quota.entry] = f"{quota.service} reports no {quota.metric} quota, so {quota.entry} is not checked"
                 continue
@@ -1587,12 +1661,33 @@ class QuotasStep(_Base):
             floor, why = cpus_floor(ctx, quota) if quota.metric == CPUS_METRIC else (quota.floor, quota.why)
             if lowest is not None and lowest < floor:
                 found.append((quota, f"{quota.entry}: {lowest} is below {floor} ({why}); request an "
-                                     "increase on the console's Quotas page"))
+                                     "increase on the console's Quotas page",
+                              quotas_page(ctx.project, metric=quota.metric, region=region) if quota.exact else None))
         return found, {"quotas": read}
+
+    def _cpus(self, ctx: Any, quota: Quota, regional: list[tuple[str, int]],
+              project_wide: list[tuple[str, int]]) -> tuple[tuple[Quota, str, str | None] | None, list[tuple[str, int]]]:
+        """The CPUS quota: the smaller of the region's CPUS and the project's
+        CPUS_ALL_REGIONS below the floor, with the page that raises it (a
+        Free Trial account's upgrade page when it is the project-wide cap of
+        one), else None; and the project-wide limits read."""
+        def lowest(limits: list[tuple[str, int]]) -> int | None:
+            bounded = [value for _, value in limits if value >= 0]  # -1 is unlimited
+            return min(bounded) if bounded else None
+
+        quotas = CpuQuotas(lowest(regional), lowest(project_wide))
+        floor, why = cpus_floor(ctx, quota)
+        usable = quotas.usable
+        if usable is None or usable < 0 or usable >= floor:
+            return None, project_wide
+        key, url, what = cpus_page(ctx, quotas, floor)
+        name = "CPUS_ALL_REGIONS" if key != "region" else str(ctx.state.region or DEFAULT_REGION) + " CPUS"
+        return (quota, f"{quota.entry}: {usable} is below {floor} ({why}; {name} is the smaller limit); {what}",
+                url), project_wide
 
     def findings(self, ctx: Any) -> tuple[list[str], dict[str, Any]]:
         found, outputs = self.binding(ctx)
-        return [said for _, said in found], outputs
+        return [said for _, said, _ in found], outputs
 
     def check(self, ctx: Any) -> Observation:
         problems, outputs = self.findings(ctx)
@@ -1612,12 +1707,11 @@ class QuotasStep(_Base):
         if not plan.actions:
             return
         found, _ = self.binding(ctx)
-        exact = [(quota, said) for quota, said in found if quota.exact]
-        rest = [said for quota, said in found if not quota.exact]
-        region = ctx.state.region or DEFAULT_REGION
-        for quota, said in exact:
-            open_page(quotas_page(ctx.project, metric=quota.metric, region=region),
-                      why=f"Request this quota increase on the Quotas page:\n  {said}")
+        exact = [(said, url) for _, said, url in found if url]
+        rest = [said for _, said, url in found if not url]
+        for said, url in exact:
+            open_page(url, why=f"Request this quota increase on the Quotas page:\n  {said}"
+                      if url.startswith(QUOTAS_PAGE) else f"Do this on the page that opens:\n  {said}")
         if rest:
             open_page(quotas_page(ctx.project), why="Request these quota increases on the Quotas page:\n  "
                                                     + "\n  ".join(rest))
@@ -1670,10 +1764,42 @@ TRIES = 3
 MAX_CHANGES = 100
 
 
+QUOTAS_PAGE = "https://console.cloud.google.com/iam-admin/quotas"
+
+
 def quotas_page(project: str, *, metric: str | None = None, region: str | None = None) -> str:
     """The console's Quotas page, filtered to `metric` in `region` when named."""
     query = {"project": project, **({"metric": metric} if metric else {}), **({"location": region} if region else {})}
-    return "https://console.cloud.google.com/iam-admin/quotas?" + urllib.parse.urlencode(query)
+    return f"{QUOTAS_PAGE}?" + urllib.parse.urlencode(query)
+
+
+def billing_page(ctx: Any) -> str:
+    """The billing account's overview, where a Free Trial account is upgraded
+    to a paid one ("Activate full account"); the billing list when no account
+    is recorded."""
+    account = str(ctx.outputs.get("billing_account") or "")
+    path = f"/{account}" if BILLING_ACCOUNT.match(account) else ""
+    return f"https://console.cloud.google.com/billing{path}?" + urllib.parse.urlencode({"project": ctx.project})
+
+
+def cpus_page(ctx: Any, quotas: CpuQuotas, need: int) -> tuple[str, str, str]:
+    """(which, the page, what to do there) for a usable CPU quota below `need`
+    (audit 4a F5). A project-wide CPUS_ALL_REGIONS at a Free Trial account's
+    cap is raised by upgrading the account, never on the Quotas page, where
+    Google refuses the request; a larger CPUS_ALL_REGIONS that binds has its own
+    Quotas page; else the region's CPUS."""
+    region = str(ctx.state.region or DEFAULT_REGION)
+    if quotas.all_regions_binds and int(quotas.all_regions or 0) <= FREE_TRIAL_CPUS:
+        return "upgrade", billing_page(ctx), (
+            f"the project may run only {quotas.all_regions} CPUs across all regions (CPUS_ALL_REGIONS), the cap "
+            "of a Free Trial billing account, and Google grants a Free Trial account no quota increase: activate "
+            "a paid account on this page (Activate full account); the quota is then read again")
+    if quotas.all_regions_binds:
+        return "all-regions", quotas_page(ctx.project, metric=CPUS_ALL_REGIONS_METRIC), (
+            f"request a CPUS_ALL_REGIONS increase to at least {need} on this page (a Free Trial billing account "
+            f"is granted none: upgrade it first at {billing_page(ctx)})")
+    return "region", quotas_page(ctx.project, metric=CPUS_METRIC, region=region), (
+        f"request a CPUS increase in {region} to at least {need} on this page")
 
 
 class SizingStep(_Base):
@@ -1718,13 +1844,14 @@ class SizingStep(_Base):
                 ctx, MEMBERS_QUESTION, lambda a: a if POSITIVE.match(a) else None, "type a whole number, 1 or more"))
         else:
             mode, members = answered
-        quota = self.read_quota(ctx)
+        quotas = self.read_quota(ctx)
+        quota = quotas.usable if quotas else None
         waited = False
-        if not sizing.fits_quota(mode, members, quota):
+        if quotas and not sizing.fits_quota(mode, members, quota):
             recorded = recorded or dict(sizing.propose(mode, members))
             remember(ctx, outputs={"sizing": recorded,
                                    "sizing_cpu_quota": {"region": ctx.state.region, "cpus": quota}})
-            quota = wait_for_cpus(ctx, self.gcp, self.id, mode, members, quota)
+            quota = wait_for_cpus(ctx, self.gcp, self.id, mode, members, quotas)
             waited = True
         # The plain proposal recorded while waiting was never accepted: propose it
         # afresh within the quota. A sizing the person changed keeps their numbers.
@@ -1745,8 +1872,9 @@ class SizingStep(_Base):
             asked = f"{answer!r} is not an answer ({hint}). {question}"
         raise ValueError(f"no valid answer to: {question} ({hint})")
 
-    def read_quota(self, ctx: Any) -> int | None:
-        """The region's CPUS quota, or None (said) when it cannot be read yet."""
+    def read_quota(self, ctx: Any) -> CpuQuotas | None:
+        """The region's CPUS and the project's CPUS_ALL_REGIONS quotas, or None
+        (said) when they cannot be read yet."""
         region = ctx.state.region
         gcp = self.gcp
         if not region or gcp.project(ctx.project) is None:
@@ -1755,14 +1883,14 @@ class SizingStep(_Base):
                 "proposal is checked against it again after stage 1 creates the project"))
             return None
         try:
-            quota = gcp.region_cpu_quota(ctx.project, region)
+            quotas = gcp.cpu_quotas(ctx.project, region)
         except ApiError as exc:
             ctx.events.emit("step_apply", step=self.id, message=(
                 f"the {region} CPU quota could not be read ({exc}): the proposal is checked against it again "
                 "after stage 1 enables Compute Engine"))
             return None
-        ctx.events.emit("step_apply", step=self.id, message=f"{region} CPU quota: {quota}")
-        return quota
+        ctx.events.emit("step_apply", step=self.id, message=f"{region} CPU quota: {quotas.said(region)}")
+        return quotas
 
 
 def _one_line(exc: BaseException) -> str:
@@ -1777,35 +1905,64 @@ def checked_quota(ctx: Any) -> int | None:
     return None
 
 
-def wait_for_cpus(ctx: Any, gcp: Gcp, step_id: str, mode: str, members: int, quota: int | None) -> int | None:
-    """The region's CPUS quota cannot run one task for each tenant, so no
-    sizing can pass terraform's floor: the increase is REQUIRED. The Quotas
-    page opens on the CPUS quota and the region's quota is polled, like the
-    engine's other waits, until it is at least `sizing.min_region_cpus`; past
-    QUOTA_WAIT's bound the WaitGaveUp goes through and the engine pauses the
-    run, which `swarm install` resumes here. Returns the granted quota."""
+#: QUOTA_WAIT for a project held to a Free Trial account's CPUs: the account
+#: is upgraded on its billing page, and only then can a quota be raised.
+FREE_TRIAL_WAIT = WaitSpec(
+    reason="the billing account being upgraded from its Free Trial to a paid account (on its billing page)",
+    expected="a few minutes once the account is upgraded",
+    expected_s=30 * 60,
+    bound_s=4 * 60 * 60,
+    look_at="the billing account's page (Activate full account); then, if the CPU quota is still too low, the "
+            "Quotas page this installer opens; swarm install goes on from here once the CPUs are there",
+    interval_s=60,
+)
+
+
+def wait_for_cpus(ctx: Any, gcp: Gcp, step_id: str, mode: str, members: int, quotas: CpuQuotas) -> int | None:
+    """The usable CPU quota (the smaller of the region's CPUS and the
+    project's CPUS_ALL_REGIONS, audit 4a F5) cannot run one task for each
+    tenant, so no sizing can pass terraform's floor: the increase is
+    REQUIRED. The page that raises the binding quota opens (`cpus_page`: a
+    Free Trial account's upgrade page, else the Quotas page on that quota)
+    and both are polled, like the engine's other waits, until the usable
+    quota is at least `sizing.min_region_cpus`; a poll that finds another
+    quota binding opens that one's page. Past the wait's bound the WaitGaveUp
+    goes through and the engine pauses the run, which `swarm install` resumes
+    here. Returns the granted usable quota."""
     region = str(ctx.state.region or DEFAULT_REGION)
     need = sizing.min_region_cpus(mode, members)
     tenants = sizing.provider_tenants(mode, members)
-    open_page(quotas_page(ctx.project, metric=CPUS_METRIC, region=region), why=(
-        f"The region's {quota} CPUs cannot run one task at once for each of the {tenants} workspaces of "
-        f"{_who(mode, members)} ({sizing.SYSTEM_CPUS} CPUs are kept for the cluster and each task takes "
-        f"{sizing.CPU_PER_UNIT}), and terraform refuses global below {tenants} x provider_tenant. A CPUS quota "
-        f"of at least {need} in {region} is required: request the increase on this page. This installer goes "
-        "on by itself once it is granted."))
-    seen: list[int | None] = [quota]
+    opened: set[str] = set()
+
+    def show(found: CpuQuotas) -> str:
+        which, url, what = cpus_page(ctx, found, need)
+        if which not in opened:
+            opened.add(which)
+            open_page(url, why=(
+                f"The {found.usable} CPUs this project may use in {region} cannot run one task at once for each "
+                f"of the {tenants} workspaces of {_who(mode, members)} ({sizing.SYSTEM_CPUS} CPUs are kept for the "
+                f"cluster and each task takes {sizing.CPU_PER_UNIT}), and terraform refuses global below "
+                f"{tenants} x provider_tenant. At least {need} usable CPUs are required: {what}. This installer "
+                "goes on by itself once they are there."))
+        return which
+
+    first = show(quotas)
+    seen: list[CpuQuotas] = [quotas]
 
     def granted() -> str:
         try:
-            seen[0] = gcp.region_cpu_quota(ctx.project, region)
+            seen[0] = gcp.cpu_quotas(ctx.project, region)
         except ApiError:  # an unreadable poll has not seen it yet; the next one reads again
             return UNMET
-        return MET if sizing.fits_quota(mode, members, seen[0]) else UNMET
+        if sizing.fits_quota(mode, members, seen[0].usable):
+            return MET
+        show(seen[0])
+        return UNMET
 
-    wait_until(f"{step_id}:cpus-quota", QUOTA_WAIT, granted, clock=ctx.clock, events=ctx.events,
-               on_poll=getattr(ctx.engine, "_heartbeat", None))
-    ctx.events.emit("step_apply", step=step_id, message=f"{region} CPU quota: {seen[0]}")
-    return seen[0]
+    wait_until(f"{step_id}:cpus-quota", FREE_TRIAL_WAIT if first == "upgrade" else QUOTA_WAIT, granted,
+               clock=ctx.clock, events=ctx.events, on_poll=getattr(ctx.engine, "_heartbeat", None))
+    ctx.events.emit("step_apply", step=step_id, message=f"{region} CPU quota: {seen[0].said(region)}")
+    return seen[0].usable
 
 
 def review(ask: Ask, ctx: Any, step_id: str, mode: str, members: int, quota: int | None, *,
@@ -1820,7 +1977,7 @@ def review(ask: Ask, ctx: Any, step_id: str, mode: str, members: int, quota: int
     uncapped = sizing.propose(mode, members)
     if offer_increase and quota is not None and current["pool_limits"]["global"] < uncapped["pool_limits"]["global"]:
         open_page(quotas_page(ctx.project), why=(
-            f"The region's {quota} CPUs cap this proposal at {current['pool_limits']['global']} tasks at once "
+            f"The {quota} CPUs this project may use in the region cap this proposal at {current['pool_limits']['global']} tasks at once "
             f"(a {'team of ' + str(members) if mode == sizing.TEAM else 'person'} would get "
             f"{uncapped['pool_limits']['global']}). To run more, request a CPUS increase on the Quotas page "
             "(optional; the proposal stands either way)"))
@@ -1853,7 +2010,8 @@ def review(ask: Ask, ctx: Any, step_id: str, mode: str, members: int, quota: int
 
 
 class SizingQuotaStep(SizingStep):
-    """The proposal checked again against the region's CPUS quota once stage 1
+    """The proposal checked again against the usable CPU quota (the region's
+    CPUS and the project's CPUS_ALL_REGIONS, the smaller binding) once stage 1
     has created the project and enabled Compute Engine: stage 0 could not read
     it for a project that did not exist yet. MET when the recorded sizing fits
     the quota; otherwise the capped proposal is shown and accepted or changed."""
@@ -1876,7 +2034,7 @@ class SizingQuotaStep(SizingStep):
             if self.gcp.project(ctx.project) is None:
                 return Observation(UNMET, f"project {ctx.project} does not exist yet (foundations.project creates it)")
             try:
-                known = self.gcp.region_cpu_quota(ctx.project, str(ctx.state.region))
+                known = self.gcp.cpu_quotas(ctx.project, str(ctx.state.region)).usable
             except ApiError as exc:
                 # BGD, 2026-10-30: one plain line, and the proposal stands.
                 return Observation(MET, f"the {ctx.state.region} CPU quota could not be read "
@@ -1896,16 +2054,17 @@ class SizingQuotaStep(SizingStep):
     def apply(self, ctx: Any, plan: Plan) -> None:
         found = ctx.outputs["sizing"]
         try:
-            quota = self.gcp.region_cpu_quota(ctx.project, str(ctx.state.region))
+            quotas = self.gcp.cpu_quotas(ctx.project, str(ctx.state.region))
         except ApiError as exc:
             ctx.events.emit("step_apply", step=self.id, message=(
                 f"the {ctx.state.region} CPU quota could not be read ({_one_line(exc)}), so the proposed "
                 "sizing is kept"))
             return
+        quota = quotas.usable
         mode, members = str(found["mode"]), int(found["members"])
         waited = not sizing.fits_quota(mode, members, quota)
         if waited:
-            quota = wait_for_cpus(ctx, self.gcp, self.id, mode, members, quota)
+            quota = wait_for_cpus(ctx, self.gcp, self.id, mode, members, quotas)
         chosen = review(self._ask, ctx, self.id, mode, members, quota, start=sizing.capped(found, quota),
                         offer_increase=not waited)
         remember(ctx, outputs={"sizing": chosen,
