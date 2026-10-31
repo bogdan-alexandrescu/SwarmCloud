@@ -178,6 +178,8 @@ def test_every_core_switch_and_api_is_held_at_ready(mode, monkeypatch, tmp_path,
     unmet = manifest_met.unmet(world, REPO)
     known = set().union(*UNRENDERED.values())
     assert [line for line in unmet if line.split(":", 1)[0] not in known] == []
+    held = sorted(known - {line.split(":", 1)[0] for line in unmet})
+    assert held == [], f"held now, so drop them from UNRENDERED (strict: each fixed switch turns this red): {held}"
     open_findings = sorted(f for f, ids in UNRENDERED.items() if any(line.split(":", 1)[0] in ids for line in unmet))
     if open_findings:
         pytest.xfail(f"{', '.join(open_findings)} (e2e-findings.md): " + "; ".join(unmet))

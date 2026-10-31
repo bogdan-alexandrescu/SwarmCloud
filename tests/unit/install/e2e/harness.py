@@ -100,6 +100,10 @@ def install(world: World, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    # The release cache too (bootstrap.workdir, tools.py): $XDG_CACHE_HOME wins
+    # over HOME, and a shared one lets xdist workers overwrite each other's
+    # SHA256SUMS before cosign verifies it, or a leftover module skip the fetch.
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     # A display, so every page the install sends the person to opens in the
     # "browser": the scripted person acts on it there (World.browse).
     monkeypatch.setenv("DISPLAY", ":0")
