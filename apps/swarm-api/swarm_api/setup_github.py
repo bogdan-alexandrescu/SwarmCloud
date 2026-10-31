@@ -63,6 +63,9 @@ EVENTS: tuple[str, ...] = ("push",)
 CALLBACK_PATH = "/admin/setup/github-app/callback"
 #: The console's GitHub sign-in callback (`GITHUB_CALLBACK_PATH`, apps/swarm-ui/src/paths.ts).
 SIGN_IN_CALLBACK_PATH = "/onboarding/github/callback"
+#: Admin › Setup: the manifest's `setup_url`, where the App's installation
+#: returns the person.
+SETUP_PATH = "/admin/setup"
 API = "https://api.github.com"
 TIMEOUT_SECONDS = 15.0
 
@@ -122,6 +125,12 @@ def manifest_for(*, org: str, hostname: str, hooks_url: str, name: str) -> dict[
         "url": base,
         "redirect_url": base + CALLBACK_PATH,
         "callback_urls": [base + SIGN_IN_CALLBACK_PATH],
+        # Where GitHub sends the person after they install the App, and after
+        # they change the installation's repositories: Admin › Setup, whose
+        # GitHub step checks the installation on arrival (audit 5b M4).
+        # Without it GitHub stays on its own installation page.
+        "setup_url": base + SETUP_PATH,
+        "setup_on_update": True,
         "public": False,
         "default_permissions": dict(PERMISSIONS),
         "default_events": list(EVENTS),

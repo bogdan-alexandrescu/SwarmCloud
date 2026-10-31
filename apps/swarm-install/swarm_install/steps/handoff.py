@@ -51,7 +51,7 @@ CONSOLE_ANSWERS = WaitSpec(
     bound_s=60 * 60,
     look_at=("the project's SSL certificates page in the Google Cloud console (opened when this wait gives up): "
              "the certificate's status and its domain's status say whether DNS or provisioning is behind; "
-             "swarm doctor checks the rest"),
+             "the countdown above says what the console answered last"),
     interval_s=15,
 )
 

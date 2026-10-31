@@ -92,6 +92,11 @@ def test_the_walk_reaches_ready(mode, monkeypatch, tmp_path, capsys):
     assert world.person.unscripted == []
     assert world.person.asked_to_run_elsewhere() == []
     asked = " ".join(prompt for _, prompt in world.person.asked)
+    # Audit 5b, M3: verify's own runs land in the first workspace (the first
+    # team, or one person's own), where the console's runs, the pool account
+    # and the grant are, never the personal default `swarm tenants` lists first.
+    plugin_tenants = {t.tenant for t in world.deployment.tasks.values() if t.submitter == deployment.PERSON}
+    assert plugin_tenants == {world.first_workspace}, plugin_tenants
     bootstrap = [inputs for root, inputs, _ in world.tf_applies if root == "bootstrap"][-1]
     members = set(bootstrap["frontend_iap_members"])
     if mode == "team":  # decision 1: the organisation's domain, the installer, the Desktop client
@@ -111,3 +116,19 @@ def test_every_core_switch_and_api_is_held_at_ready(mode, monkeypatch, tmp_path,
     world, code = walked(mode, monkeypatch, tmp_path, capsys)
     assert code == 0, world.said[-1][-3000:]
     assert manifest_met.unmet(world, REPO) == []
+
+
+def test_every_wait_in_the_walk_says_why_it_is_still_waiting(monkeypatch, tmp_path, capsys):
+    """Audit 5b M1: a wait's countdown carries its probe's detail, so the
+    person reads why it is still waiting (here the certificate still
+    provisioning behind the console), not only the wait's static reason."""
+    world, code = walked("team", monkeypatch, tmp_path, capsys)
+    lines = world.said[-1].splitlines()
+    assert code == 0, "\n".join(lines[-60:])
+    waits = [i for i, line in enumerate(lines) if line.startswith("  waiting on ")]
+    assert waits, "the walk waits on something"
+    steps = {lines[i].split(":", 1)[0].removeprefix("  waiting on ") for i in waits}
+    for step in steps:
+        first = next(i for i in waits if lines[i].startswith(f"  waiting on {step}:"))
+        assert lines[first + 1].startswith("      now: "), (step, lines[first:first + 2])
+    assert any("swarm-ui-cert is PROVISIONING" in line for line in lines if line.startswith("      now: "))

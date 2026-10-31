@@ -405,7 +405,11 @@ function GitHubAppPanel({ state, onChanged, act }: { state: SetupState; onChange
   const polling = created && app.installed_on === null
   useEffect(() => {
     if (!polling) return undefined
-    const id = window.setInterval(() => void checkGitHubAppInstallation().then((r) => r.status === 'ok' && r.data.installed && onChanged()), INSTALL_POLL_MS)
+    const check = () => void checkGitHubAppInstallation().then((r) => r.status === 'ok' && r.data.installed && onChanged())
+    // Once on arrival, then every 10 s: GitHub's return after the install
+    // (the manifest's setup_url) lands here, and the row turns at once.
+    check()
+    const id = window.setInterval(check, INSTALL_POLL_MS)
     return () => window.clearInterval(id)
   }, [polling, onChanged])
   if (!created) return null
@@ -1579,7 +1583,7 @@ export function GitHubAppCallback({ search }: { search?: string }) {
   }
   const { id, slug } = result.data
   return (
-    <Card title="GitHub App created" action={back}>
+    <Card title="GitHub App created">
       <Facts
         items={[
           { state: 'done', name: 'Created from the manifest', text: `${slug ?? 'the App'}${id === null ? '' : ` (app id ${id})`}` },
@@ -1588,16 +1592,18 @@ export function GitHubAppCallback({ search }: { search?: string }) {
             name: 'Secrets stored',
             text: 'the private key, the client secret and the webhook secret went from GitHub’s answer straight into Secret Manager; none is shown here or anywhere',
           },
-          { state: 'todo', name: 'Next', text: 'install the App on your organisation, then come back to Admin › Setup' },
+          {
+            state: 'todo',
+            name: 'Next',
+            text: 'install the App on your organisation: Admin › Setup has the install button, watches for the installation, and GitHub sends you back there when it is done',
+          },
         ]}
       />
-      {slug !== null && (
-        <span className="ob-acts">
-          <ButtonLink size="sm" kind="primary" href={`https://github.com/apps/${encodeURIComponent(slug)}/installations/new`}>
-            Install the App
-          </ButtonLink>
-        </span>
-      )}
+      <span className="ob-acts">
+        <ButtonLink size="sm" kind="primary" href="/admin/setup">
+          Continue in Admin › Setup
+        </ButtonLink>
+      </span>
     </Card>
   )
 }

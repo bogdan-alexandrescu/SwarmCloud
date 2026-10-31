@@ -366,8 +366,9 @@ this order.
 
 1. **The OAuth brand and the Desktop client.** Google has no API for either.
    - The installer opens `https://console.cloud.google.com/auth/branding?project=<project>`.
-     Set the App name to `SwarmCloud` and the support email to a group you
-     own, then save. The brand can never be deleted.
+     Set the App name to `SwarmCloud` and the support email to your own address
+     (or a group you manage; the install's own groups are created only at
+     stage 8), then save. The brand can never be deleted.
    - It then opens `https://console.cloud.google.com/auth/audience?project=<project>`.
      Choose **Internal**.
    - Then, on Clients › Create client
