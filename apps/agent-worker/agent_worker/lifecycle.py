@@ -313,6 +313,7 @@ from .runners.cliagent import (
     STOP_EXHAUSTED,
     carries_session_totals,
 )
+from .runners.ceiling import UNPRICED_KEY as CEILING_UNPRICED_KEY
 from .runners.limits import GRACE_ENV, STDERR_ENV, STDOUT_ENV, TIMEOUT_ENV
 from .runners.streams import agent_stream_files, cli_agent_spec
 from .secrets import (
@@ -17171,9 +17172,34 @@ class Worker:
         try:
             result = _read_json(self.ws.result_path) or {}
             usage = _usage_summary(result.get("output"))
+            unpriced = _unpriced_sessions(result.get("output"))
         except Exception as exc:  # pragma: no cover - defensive; teardown path
             self.log.warning("could not read the runner's spend", error=str(exc))
             return
+        stopped_cost: float | None = None
+        if "total_cost_usd" in usage and unpriced:
+            # SESSIONS A CONTEXT-CEILING HANDOFF ENDED (#2896): stopped at a
+            # turn boundary, they printed no result event, and the reported
+            # `total_cost_usd` is the last session's alone. Their per-model
+            # counts are priced by swarm-api like a stopped run's and added,
+            # so the attempt's cost is every session's. Only here: a run with
+            # no reported cost at all is priced from its whole stream below,
+            # which covers these sessions already. They ended before the
+            # last session began, so their cost goes on the session base
+            # below, never into the last session's running total: a later
+            # runner that RESUMES that session must neither lose it nor
+            # count it twice (`_add_spend`).
+            cost, tier_estimated = self.spend_pricer.estimate(unpriced)
+            if cost is None:
+                self.log.warning(
+                    "the cost of the sessions a context-ceiling handoff ended is not "
+                    "reported; the attempt's cost covers its other sessions only",
+                    sessions_models=sorted(unpriced))
+            else:
+                stopped_cost = cost
+                self._spend["cost_estimated"] = True
+                if tier_estimated:
+                    self._spend["tier_estimated"] = True
         if "total_cost_usd" not in usage:
             # A RUN STOPPED BEFORE IT COULD SAY (#627): a CLI killed on a
             # cancel, a SIGTERM, a fence or a timeout prints no result event.
@@ -17199,6 +17225,11 @@ class Worker:
                         # not per request (PRICES-TIER-PROMPT).
                         self._spend["tier_estimated"] = True
         self._note_model_mismatch(usage.get("models"))
+        if stopped_cost is not None:
+            self._spend = _add_spend(self._spend, {"total_cost_usd": stopped_cost})
+            if self._session_spend_base is not None:
+                self._session_spend_base = _add_spend(
+                    self._session_spend_base, {"total_cost_usd": stopped_cost})
         if usage:
             self._spend = _add_spend(
                 self._spend,
@@ -20697,6 +20728,22 @@ def _workspace_label(ws: workspace_mod.Workspace, path: Path) -> str:
 
 def _has_usage_keys(candidate: dict[str, Any]) -> bool:
     return any(key in candidate for key in _USAGE_KEYS)
+
+
+def _unpriced_sessions(output: Any) -> dict[str, Any]:
+    """The per-model counts of the sessions a context-ceiling handoff ended
+    (`ceiling.UNPRICED_KEY`, #2896), from a runner's output or its nested
+    `structured_output`, or {}."""
+    if not isinstance(output, dict):
+        return {}
+    for source in (output, output.get("structured_output")):
+        if isinstance(source, dict) and isinstance(source.get(CEILING_UNPRICED_KEY), dict):
+            return {
+                str(model): counts
+                for model, counts in source[CEILING_UNPRICED_KEY].items()
+                if isinstance(counts, dict)
+            }
+    return {}
 
 
 def _usage_summary(output: Any) -> dict[str, Any]:

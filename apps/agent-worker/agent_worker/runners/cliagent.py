@@ -1709,7 +1709,10 @@ def _combined_spend(
     out = dict(first)
     for key, value in second.items():
         prior = out.get(key)
-        if session and key in SESSION_SPEND_KEYS:
+        if key == ceiling_mod.UNPRICED_KEY:
+            # Per-model counts with bucket rows: merged, never replaced (#2896).
+            out[key] = ceiling_mod.merged_usage_by_model(prior, value)
+        elif session and key in SESSION_SPEND_KEYS:
             out[key] = value
         elif isinstance(prior, dict) and isinstance(value, dict):
             out[key] = _combined_spend(prior, value)
@@ -1721,6 +1724,18 @@ def _combined_spend(
         else:
             out[key] = value
     return out
+
+
+def _stopped_start_spend(watcher: ceiling_mod.CeilingWatcher, result: Any) -> dict[str, Any]:
+    """The spend of a start stopped at the context ceiling, which printed no
+    `result` event: its tokens and turns off the stream, its per-model counts
+    for the worker to price (`ceiling.UNPRICED_KEY`, #2896), and its wall
+    time as `duration_ms`, so the attempt's duration adds up every session."""
+    spend = watcher.start_spend()
+    seconds = getattr(result, "duration_seconds", None)
+    if isinstance(seconds, (int, float)) and not isinstance(seconds, bool):
+        spend["duration_ms"] = int(round(seconds * 1000))
+    return spend
 
 
 def run_cli_agent(
@@ -2271,9 +2286,16 @@ def run_cli_agent(
             diff_stat, commits = ceiling_mod.branch_summary(
                 cwd, env, base if base and base != EMPTY_BASE else None)
             ctx.report["context_ceiling"] = ceiling_watcher.summary() if ceiling_watcher else None
+        # The previous session's notes (#2897): its note file, the notes
+        # files it kept, its todo list and its own last words -- all of this
+        # attempt's own artifacts and stream, scrubbed of the run's secrets.
+        tail = ceiling_watcher.session_tail() if ceiling_watcher is not None else None
         return ceiling_mod.handoff_prompt(
             stop=stop, task_prompt=task_prompt, diff_stat=diff_stat, commits=commits,
             wip=wip, note=ceiling_mod.agent_note(Path(ctx.artifacts_dir)), then=then,
+            session_tail=scrub_text(tail, secrets) if tail else None,
+            todos=_scrub_json(ceiling_watcher.todos, secrets) if ceiling_watcher else None,
+            files=ceiling_mod.notes_files(Path(ctx.artifacts_dir)),
         )
 
     if ceiling_watcher is not None:
@@ -2318,7 +2340,7 @@ def run_cli_agent(
     if ceiling_stop_pending() and not spend:
         # Stopped at the ceiling before the CLI printed its totals (#2524).
         assert ceiling_watcher is not None
-        spend = ceiling_watcher.start_spend()
+        spend = _stopped_start_spend(ceiling_watcher, result)
     combined = detection_text(raw_stdout, parsed)
     if not ceiling_stop_pending():
         judge(result, watcher, spend, combined)
@@ -2384,7 +2406,7 @@ def run_cli_agent(
         pass_spend = _scrub_json(_spend_of(pass_parsed), secrets)
         if ceiling_stop_pending() and not pass_spend:
             assert ceiling_watcher is not None
-            pass_spend = ceiling_watcher.start_spend()
+            pass_spend = _stopped_start_spend(ceiling_watcher, result)
         if fresh:
             ended_spend = _combined_spend(ended_spend, session_spend, fresh=True)
             session_spend = pass_spend
