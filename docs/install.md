@@ -113,7 +113,8 @@ curl -fsSL https://storage.googleapis.com/swarmcloud/install.sh | SWARM_CHANNEL=
 
 To pin one release, set `SWARMCLOUD_VERSION=<version>` (for example
 `2026.10.1`). The script refuses any channel other than `stable` or `rc`, and
-any version that is not of the form `YYYY.MM.N`.
+any version that does not start `YYYY.MM.` and a digit, such as `2026.10.1`
+or a release candidate's `2026.10.1-rc.1`.
 
 What the script does:
 
@@ -594,7 +595,8 @@ switches are on.
 
 Sign in with your Workspace or Cloud Identity account. The page is titled
 **Setup**. A strip across the top shows six steps and which one is next, for
-example `Step 2 of 6 · next`. The page reads its state again every 5 seconds.
+example `Step 2 of 6 · next`. The strip does not count Add-ons, which are
+optional, so the checklist below has seven rows. The page reads its state again every 5 seconds.
 Nothing on it is marked done by hand: each row is done when the page sees it
 done.
 
@@ -606,7 +608,8 @@ The left column holds:
 - the **First run** checklist, with the rows below.
 
 The right column holds **The installer** card, which shows what
-`swarm install` is doing.
+`swarm install` is doing, and the **Health** card, which links to
+Admin › Setup › Health, the hourly doctor's checks once setup is done.
 
 1. **Project, infrastructure, identity, edge and secrets**, by
    `swarm install`. This row is already done when the page opens:
@@ -729,6 +732,13 @@ never asks for the Desktop client secret. If that context is not signed in
 yet, it opens the browser once for you to sign in
 (`swarm --context <context> login`).
 
+To pick the repository the runs use, verify reads the repositories the
+GitHub App installation covers in your organisation, as you. If your own
+GitHub account is not connected to the deployment yet, it runs
+`swarm sc setup --context <context>`, which opens GitHub in the browser for
+you to connect GitHub as yourself through the App. It waits up to 10 minutes
+for that, then reads the repositories again.
+
 Then a last infrastructure pass removes this machine's address from the
 cluster's control plane. Nothing else changes.
 
@@ -759,6 +769,8 @@ the console watches for the result.
 | Where | When | Why it is a page |
 |---|---|---|
 | Google sign-in | stage 0, and stage 8 if the Directory scopes were deferred | your own sign-in |
+| The deployment's own sign-in (`swarm --context <context> login`) | stage 14, only if that context is not signed in yet | your own sign-in |
+| GitHub: connect your own GitHub account through the App (`swarm sc setup`) | stage 14, only if your account is not connected yet | GitHub authorizes a person's connection only in the browser |
 | Cloud Identity Free sign-up, and creating a billing account | stage 0, only without an organisation or a billing account | sign-ups and payment methods have no API |
 | The Quotas page, or the billing page on a Free Trial | stage 0 or 1, only when a quota is too low | quota increases and account upgrades are requested by a person |
 | The Cloud console, to accept the Terms of Service | stage 1, only if Google asks | the Terms are accepted by a person |
