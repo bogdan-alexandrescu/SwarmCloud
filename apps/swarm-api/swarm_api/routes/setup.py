@@ -59,7 +59,7 @@ Manager, and a link's value straight into its one container.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
@@ -610,6 +610,13 @@ def team_row(request: Request, ctx: AppContext, record: ir.InstallRecord, team_i
         pool_accounts = []
     row = dict(team)
     row.update({"id": team_id, "workspace_state": workspace.get("state"),
+                # The record's `w-` id, which POST /v1/admin/workspaces/{id}/retry
+                # takes: a failed workspace is retried there, not by asking for
+                # the team again (audit 5b, M6).
+                "workspace_id": workspace.get("workspace_id"),
+                # The group's members page on every row, so the invites made
+                # with the team keep their link (audit 5b, M5).
+                "add_members_url": admin_members_url(directory, group) if group else None,
                 "members": [{"email": e, "member": m} for e, m in members.items()],
                 "pool_accounts": pool_accounts, "first": first})
     if first:
@@ -887,6 +894,17 @@ def setup_state(
         else:
             if first is not None:
                 personal = personal_row(request, ctx, record, first, runs=runs)
+    finished = record.read(record.console_path(ir.FINISHED))
+    if finished is not None:
+        # Once handed over, each read starts a verify run `finish` could not
+        # start and restarts a failed one, up to MAX_VERIFY_RETRIES (B1).
+        try:
+            handed = first_workspace(record, ctx, people, caller=caller, flow=flow,
+                                     github=github, engine=engine, mode=mode)
+        except ApiError as exc:
+            log.info("setup page: the first workspace could not be read code=%s", exc.code)
+        else:
+            keep_verify_runs(record, ctx, handed, runs=runs, by=caller.email)
     return {
         "env": record.env,
         "engine": engine,
@@ -902,7 +920,7 @@ def setup_state(
                   for index, (team_id, doc) in enumerate(teams)],
         "verify_runs": record.read(record.console_path(ir.VERIFY_RUNS)),
         "accounts": _accounts_view(record.read(record.console_path(ir.ACCOUNTS))),
-        "finished": record.read(record.console_path(ir.FINISHED)),
+        "finished": finished,
         "addons": [{"name": name, "enable": f"swarm addon enable {name}",
                     "secret_link": name in sl.ADDON_SECRETS} for name in ADDONS],
         "hostname": ctx.settings.install_hostname or None,
@@ -1218,34 +1236,28 @@ def _submit_verify_run(runs: Any, key: str, tenant: str, group: str, repository:
                                 label=VERIFY_LABEL)
 
 
-@router.post("/verify-runs", dependencies=[Depends(admin_auth)])
-def start_verify_runs(
-    caller: SetupCaller = Depends(admin_setup_caller),
-    ctx: AppContext = Depends(get_context),
-    record: ir.InstallRecord = Depends(install_record),
-    runs: Any = Depends(setup_runs),
-    people: People = Depends(people_service),
-    flow: ManifestFlow = Depends(manifest_flow),
-    github: GitHubSetupApi = Depends(setup_github_api),
-) -> dict:
+def ensure_verify_runs(record: ir.InstallRecord, ctx: AppContext, first: FirstWorkspace | None,
+                       *, runs: Any, by: str) -> dict[str, Any]:
     """The console's two verification runs, one task and one workflow, as the
-    first team (for one person, in the personal workspace) on a repository of its grant (decision 3: the team's own slot,
-    never a person's token). Their ids go to `console/verify_runs` as
-    `verify_runs: {console_task, console_workflow}`, which the engine copies
-    into `state.outputs["verify_runs"]`, so nobody pastes an id.
+    first team (for one person, in the personal workspace) on a repository of
+    its grant (decision 3: the team's own slot, never a person's token). Their
+    ids go to `console/verify_runs` as `verify_runs: {console_task,
+    console_workflow}`, which the engine copies into
+    `state.outputs["verify_runs"]`, so nobody pastes an id.
 
-    Called again, it reads each recorded run: one that failed or was
+    Idempotent: each recorded run is read, and one that failed or was
     cancelled counts as missing and a fresh run of its shape replaces its id,
     the other key kept; one still going, or succeeded, is left alone. Each
     key's fresh starts are counted in the document's `retries` field and
     answered as `retries`; a key that failed after `MAX_VERIFY_RETRIES` of
-    them is answered as a 409 saying so, and nothing is started."""
+    them is a 409 saying so, and nothing is started. `finish`, the status
+    route (once `console/finished` exists) and `POST /verify-runs` all call
+    this, so the runs start without anyone pressing a button (audit 5b, B1)."""
     path = record.console_path(ir.VERIFY_RUNS)
     done = record.read(path) or {}
     started = _verify_ids(dict(done.get("verify_runs") or {}))
     retries = _verify_retries(done)
-    first, repository = _granted_repository(first_workspace(
-        record, ctx, people, caller=caller, flow=flow, github=github))
+    first, repository = _granted_repository(first)
     tenant = first.tenant
     group = first.principal
     missing: list[str] = []
@@ -1273,12 +1285,42 @@ def start_verify_runs(
         record.write(path, {"verify_runs": dict(started), "retries": dict(retries),
                             "repository": repository,
                             "started_at": done.get("started_at") or ctx.now(),
-                            "by": caller.email})
+                            "by": by})
     log.info("console verify runs started %s task=%s workflow=%s retries=%s by=%s",
              ",".join(missing), started["console_task"], started["console_workflow"],
-             retries, caller.email)
+             retries, by)
     return {"verify_runs": started, "retries": retries, "repository": repository,
             "started": True}
+
+
+def keep_verify_runs(record: ir.InstallRecord, ctx: AppContext, first: FirstWorkspace | None,
+                     *, runs: Any, by: str) -> dict[str, Any] | None:
+    """`ensure_verify_runs` for a step that must not fail on it (`finish`,
+    the status route): its answer, or None with the reason logged (a key
+    whose retries are spent, a read that failed); the page then serves the
+    document as it stands."""
+    try:
+        return ensure_verify_runs(record, ctx, first, runs=runs, by=by)
+    except ApiError as exc:
+        log.info("console verify runs not started code=%s", exc.code)
+        return None
+
+
+@router.post("/verify-runs", dependencies=[Depends(admin_auth)])
+def start_verify_runs(
+    caller: SetupCaller = Depends(admin_setup_caller),
+    ctx: AppContext = Depends(get_context),
+    record: ir.InstallRecord = Depends(install_record),
+    runs: Any = Depends(setup_runs),
+    people: People = Depends(people_service),
+    flow: ManifestFlow = Depends(manifest_flow),
+    github: GitHubSetupApi = Depends(setup_github_api),
+) -> dict:
+    """`ensure_verify_runs`, on request: `finish` and the status route start
+    and restart the runs themselves, so the page offers this only once a
+    key's retries are spent (a 409 says so)."""
+    first = first_workspace(record, ctx, people, caller=caller, flow=flow, github=github)
+    return ensure_verify_runs(record, ctx, first, runs=runs, by=caller.email)
 
 
 # --------------------------------------------------------------------------
@@ -1460,8 +1502,10 @@ def finish(
     App installed and its self-check passed, a first team, a pool account
     signed in to it, and the first team's smoke passed (`advance_smoke`,
     started here too if the page has not started it yet). A labelled account
-    seen in the first team's pool gets its `signed_in_at` here. The CLI
-    starts verify when this document exists.
+    seen in the first team's pool gets its `signed_in_at` here. It then
+    starts the console's two verify runs (`keep_verify_runs`, idempotent),
+    answered as `verify_runs`; the CLI starts verify when `finished` exists
+    and reads their ids from `console/verify_runs`.
 
     For one person (decision 7) the personal workspace takes the first team's
     place: no team, no invites; its pool account and its smoke
@@ -1502,6 +1546,7 @@ def finish(
                                  org=ctx.settings.setup_github_org, by=caller.email,
                                  now=ctx.now(), db=ctx.db, path=first.path)
             doc = {**doc, "grant": grant}
+            first = replace(first, doc=doc)
         smoke = advance_smoke(record, first.key, doc, runs=runs, pool_accounts=sorted(signed),
                               now=ctx.now(), path=first.path, principal=first.principal) or {}
         smoke_passed = smoke.get("state") == SUCCEEDED
@@ -1512,7 +1557,10 @@ def finish(
     done = record.read(record.console_path(ir.FINISHED))
     if done is None:
         done = record.write(record.console_path(ir.FINISHED), {"at": ctx.now(), "by": caller.email})
-    return {"finished": done}
+    # The console's two verify runs start here, not on a button nobody is
+    # told to press (audit 5b, B1): swarm install's verify waits for them.
+    verify = keep_verify_runs(record, ctx, first, runs=runs, by=caller.email)
+    return {"finished": done, "verify_runs": verify}
 
 
 # --------------------------------------------------------------------------
