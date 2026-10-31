@@ -80,7 +80,7 @@ from fastapi.responses import JSONResponse
 from pydantic import Field
 
 from .. import install_record as ir
-from .. import roles
+from .. import refusals, roles
 from .. import setup_links as sl
 from .. import workspaces as ws
 from ..access import record_workspace_installation, write_workspace_grants
@@ -675,10 +675,11 @@ class PublishingOff(Conflict):
 
 
 def refuse_before_publishing(publisher: WorkspacePublisher, step: str) -> None:
-    """409 `publishing_off`, nothing written, until swarm-api's publisher is on."""
+    """409 `publishing_off`, nothing written, until swarm-api's publisher is on
+    (a switched refusal, on by default: `refusals.SWITCHES`)."""
     if not getattr(publisher, "enabled", False):
-        raise PublishingOff(f"the first workspace is {PUBLISHING_WAIT}",
-                            detail={"step": step, "reason": "publishing_off"})
+        refusals.refuse(PublishingOff(f"the first workspace is {PUBLISHING_WAIT}",
+                                      detail={"step": step, "reason": "publishing_off"}))
 
 
 def steps_view(mode: str, teams: list[tuple[str, dict[str, Any]]], *,
