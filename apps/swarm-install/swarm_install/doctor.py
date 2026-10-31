@@ -8,7 +8,11 @@ that repairs it: `swarm install --repair <id>`, which re-runs the entry's
 `step:` with that step's own approvals (`swarm_install.repair`). A per-tenant
 entry (`expand: per_tenant`) gets no such command: each team's namespace is
 written by the platform's swarm-workspace-apply job when the team is made, and
-re-running an install step remakes none of it (`PLATFORM_MADE`).
+re-running an install step remakes none of it (`PLATFORM_MADE`). One the
+tenant render holds (its `refs.kubernetes` names a file) is repaired per team:
+the finding names each team whose namespace fails, with `swarm team repair
+<team> --project <project>`, which has that job apply the team's render again
+(`swarm_install.team.TeamRepair`).
 
 **It never writes.** Every call is a GET, except two read-only POSTs: the
 Policy Troubleshooter (which explains a 403; it changes nothing) and swarm-api's
@@ -106,6 +110,20 @@ CLOSED_CONTROL_PLANE = (
 #: only sees Admin › Setup finished again and changes nothing (audit 4c M2).
 PLATFORM_MADE = "per_tenant"
 
+#: The verb that re-applies one team's tenant render (verbs/team.py `repair`;
+#: a test holds its command equal to `team_repair_command`).
+TEAM_REPAIR = "swarm team repair"
+
+
+def team_repairable(entry: Entry) -> bool:
+    """A per-tenant entry the tenant render holds, so `swarm team repair`
+    re-applies it: the manifest names its file under `refs.kubernetes`."""
+    return entry.expand == PLATFORM_MADE and bool(entry.refs.kubernetes)
+
+
+def team_repair_command(team: str, project: str) -> str:
+    return f"{TEAM_REPAIR} {team} --project {project}"
+
 
 # -- what the doctor reports ---------------------------------------------------
 
@@ -136,9 +154,14 @@ class Finding:
     #: False where no install step makes the entry (`PLATFORM_MADE`), so
     #: re-running its `step:` would repair nothing.
     repairable: bool = True
+    #: A per-team entry's repair: `swarm team repair` for each team whose
+    #: namespace fails (`team_repairable`).
+    team_repairs: tuple[str, ...] = ()
 
     @property
     def repair(self) -> str | None:
+        if self.team_repairs:
+            return "; ".join(self.team_repairs)
         return f"swarm install --repair {self.id}" if self.step and self.repairable else None
 
     def to_json(self) -> dict[str, Any]:
@@ -221,7 +244,9 @@ def _sub(value: Any, target: Target) -> str:
 
 # -- the probes ------------------------------------------------------------------
 
-Result = tuple[str, str]
+#: (status, detail), or (status, detail, teams): a per-tenant probe names the
+#: tenants whose namespace failed, so the finding can name each one's repair.
+Result = tuple[str, str] | tuple[str, str, tuple[str, ...]]
 ProbeFn = Callable[[Mapping[str, Any], Target, Deps], Result]
 
 
@@ -502,13 +527,15 @@ def _kubernetes_can_i(args: Mapping[str, Any], t: Target, deps: Deps) -> Result:
     if not namespaces:
         return UNMET, f"no {prefix}* namespace exists yet (the first team's, Admin › Setup)"
     refused = [
-        f"{ns} as {who}"
+        (ns, who)
         for ns in namespaces
         for who in (email, uid)
         if not (who and _can_in(kube, ns, who, verb, group, resource))
     ]
     if refused:
-        return UNMET, f"{subject} may not {verb} {args['resource']} in " + "; ".join(refused)
+        teams = tuple(dict.fromkeys(ns[len(prefix):] for ns, _ in refused))
+        return (UNMET, f"{subject} may not {verb} {args['resource']} in "
+                + "; ".join(f"{ns} as {who}" for ns, who in refused), teams)
     return MET, f"{subject} may {verb} {args['resource']} in {len(namespaces)} namespaces, by email and uniqueId"
 
 
@@ -559,7 +586,13 @@ def fix_words(entry: Entry) -> str:
     why = (entry.explain or "").strip()
     if len(why) > 240:
         why = why[:237].rstrip() + "..."
-    if entry.expand == PLATFORM_MADE:
+    if team_repairable(entry):
+        how = (
+            "the platform's swarm-workspace-apply job writes it into each team's namespace when the "
+            f"team is made; {TEAM_REPAIR} <team> --project <project> has that job apply one team's "
+            "tenant render again (no install step remakes it)"
+        )
+    elif entry.expand == PLATFORM_MADE:
         how = (
             "the platform's swarm-workspace-apply job writes it into each team's namespace when the "
             "team is made (Admin › Setup's first team, or a team added later); no install step makes "
@@ -587,7 +620,7 @@ def check_entry(entry: Entry, target: Target, deps: Deps) -> Finding:
         return Finding(entry.id, UNKNOWN, f"this doctor has no probe of type {entry.probe.type!r}",
                        entry.step, fix, repairable=repairable)
     try:
-        status, detail = probe(args, target, deps)
+        status, detail, *rest = probe(args, target, deps)
     except Denied as denied:
         verdict = troubleshoot(deps.gcp, target.principal, denied.permission, denied.resource)
         if verdict == "granted":
@@ -608,7 +641,11 @@ def check_entry(entry: Entry, target: Target, deps: Deps) -> Finding:
                        entry.step, fix, repairable=repairable)
     except Exception as exc:  # noqa: BLE001 - a probe that cannot run is unknown, never fine
         return Finding(entry.id, UNKNOWN, f"{type(exc).__name__}: {exc}", entry.step, fix, repairable=repairable)
-    return Finding(entry.id, status, detail, entry.step, fix, repairable=repairable)
+    teams: tuple[str, ...] = tuple(rest[0]) if rest and status != MET and team_repairable(entry) else ()
+    repairs = tuple(team_repair_command(team, target.project) for team in teams)
+    if repairs:
+        fix = f"{fix} Repair: " + "; ".join(repairs) + "."
+    return Finding(entry.id, status, detail, entry.step, fix, repairable=repairable, team_repairs=repairs)
 
 
 def probed(manifest: Manifest) -> list[Entry]:

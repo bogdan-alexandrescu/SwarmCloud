@@ -306,6 +306,11 @@ def register(world: World, cloud: Cloud) -> None:
                                                    {"metric": "SSD_TOTAL_GB", "limit": 4096.0, "usage": 0.0},
                                                    {"metric": "IN_USE_ADDRESSES", "limit": 64.0, "usage": 0.0}]}
 
+    @route("GET", rf"{COMPUTE}/projects/([^/]+)")
+    def compute_project(call: Call) -> Any:
+        """`projects.get`: preflight reads CPUS_ALL_REGIONS beside the region's CPUS (audit 4a F5)."""
+        return {"name": call.group(1), "quotas": [{"metric": "CPUS_ALL_REGIONS", "limit": 200.0, "usage": 0.0}]}
+
     @route("GET", rf"{COMPUTE}/projects/([^/]+)/global/addresses/([^/]+)")
     def address(call: Call) -> Any:
         return cloud.addresses.get((call.group(1), call.group(2))) or error(404, "NOT_FOUND", call.group(2))
