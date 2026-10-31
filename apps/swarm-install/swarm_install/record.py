@@ -66,7 +66,7 @@ WRITERS: dict[str, tuple[str, frozenset[str]]] = {
     "swarm-install/{env}/console/github_app": (
         SWARM_API,
         frozenset(
-            {"state_hash", "id", "slug", "client_id", "installed_on", "secrets_written_at", "self_check"}
+            {"state_hash", "id", "slug", "client_id", "name", "installed_on", "secrets_written_at", "self_check"}
         ),
     ),
     # Fields keyed per account label: owner, link_hash, link_expires, signed_in_at.
