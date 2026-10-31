@@ -20,6 +20,7 @@ import io
 import json
 import os
 import secrets
+import shlex
 import shutil
 import sys
 from collections.abc import Sequence
@@ -785,13 +786,19 @@ def test_only_a_known_kind_and_a_slot_name_are_repeated_from_a_summary() -> None
 def swarm_off_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     """Audit 4b, B4: install.sh put swarm in ~/.local/bin, which is not on the
     PATH of the terminal it ran in, so the person typed `~/.local/bin/swarm
-    install`. Every fake below spawns as a subprocess would (`spawn`)."""
+    install`. Every fake below spawns as a subprocess would (`spawn`). The
+    tool's interpreter is a real one, as in uv's tool bin: stage 10 renders
+    the release bundle with `sys.executable`."""
     path = tmp_path / "home" / ".local" / "bin" / "swarm"
     path.parent.mkdir(parents=True)
     path.write_text("#!/bin/sh\n")
     path.chmod(0o755)
+    interpreter = tmp_path / "tools" / "swarmcloud" / "bin" / "python3"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$@\"\n")
+    interpreter.chmod(0o755)
     monkeypatch.setattr(sys, "argv", [str(path), "install"])
-    monkeypatch.setattr(sys, "executable", str(tmp_path / "tools" / "swarmcloud" / "bin" / "python3"))
+    monkeypatch.setattr(sys, "executable", str(interpreter))
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
     return str(path)
 

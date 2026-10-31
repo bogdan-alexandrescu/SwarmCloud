@@ -140,6 +140,24 @@ def test_repair_of_an_unknown_or_stepless_entry_is_a_usage_error(world, monkeypa
     assert "not a manifest entry" in capsys.readouterr().err
 
 
+def test_repair_of_a_per_team_entry_names_the_team_repair(world, monkeypatch, capsys):
+    # DAYONE-TEAM-REPAIR: re-running the console hand-off remakes no team's
+    # namespace; the entry is repaired per team, by `swarm team repair`.
+    asked = _typing(monkeypatch, "rbac.dispatcher-role")
+    entry = m.Entry(id="rbac.dispatcher-role", kind="namespace-object", scope="core", stage=9,
+                    provider="engine", step="handoff.ready", expand="per_tenant",
+                    refs=m.Refs(kubernetes=["rbac/dispatcher-rbac.yaml"]))
+    manifest = m.Manifest(entries=[entry], ignored={}, env={}, sources={})
+    monkeypatch.setattr(install, "load_manifest", lambda path: manifest)
+
+    assert cli.main(["install", "--project", PROJECT, "--repair", "rbac.dispatcher-role"]) == ExitCode.USAGE
+
+    err = capsys.readouterr().err
+    assert f"swarm team repair <team> --project {PROJECT}" in err and "swarm doctor" in err
+    assert asked == [], "nothing is confirmed: nothing would run"
+    assert all(s.applied == [] for s in world)
+
+
 def test_repair_and_dry_run_are_exclusive(world):
     with pytest.raises(SystemExit) as stopped:
         cli.main(["install", "--project", PROJECT, "--repair", "api.run", "--dry-run"])
