@@ -227,6 +227,10 @@ pool_limits = {
     # Stated rather than left to fall back to `global`, which is 180 now and
     # would say nothing about browser: resource:browser's 100.
     claude-code-browser = 100
+    # DOM-only browser agents on `standard` (contract request 127). Equal to
+    # claude-code-browser's ceiling, so moving work here never lowers the
+    # browser ceiling; resource:standard (80) still binds below it.
+    claude-code-lightpanda = 100
   }
 
   # GKE_AUTOPILOT 40 -> 100: owner, 2026-10-07, accepting contract request 53
