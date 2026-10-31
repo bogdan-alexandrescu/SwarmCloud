@@ -277,7 +277,7 @@ advice. The obligations are the minimum the text states.
 ## 3. Measurements
 
 **Where and when.** This container, 2026-10-31 at 04:25 UTC
-(`results.json` `when_utc`): task on `claude-code-browser`, x86_64,
+(`results.json` `when_utc`): agent on `claude-code-browser`, x86_64,
 kernel 6.12.110+, cgroup CPU limit 4 (`cpu.max 400000 100000`), memory limit
 5 GiB.
 
@@ -287,7 +287,7 @@ image's `/opt/playwright/chromium-1243`. Both were driven by the **same Python
 Playwright 1.63.0 script** over `connect_over_cdp`.
 
 Chromium was started as a headless test process through `swarm-test-browsers`,
-the sanctioned exception for a headless test process. The task's live browser
+the sanctioned exception for a headless test process. The agent's live browser
 was not used: it is in the display container, where its memory and CPU cannot
 be read.
 
@@ -308,7 +308,7 @@ times: 1.5 GiB RSS against 454 MiB PSS. Lightpanda is one process, so its RSS
 and PSS agree.
 
 **Chromium's CPU includes its start-up.** Full headless Chrome spends about
-3.5 CPU-s before the first page. That is the real cost of the per-task process
+3.5 CPU-s before the first page. That is the real cost of the per-agent process
 this runtime would replace, and it is why the parallel run below is the fairer
 per-page figure.
 
@@ -381,7 +381,7 @@ The ten were the first ten pages above, one CDP connection and context each.
 * pages behind a real sign-in;
 * behaviour under the platform's browser egress policy
   (`docs/browser-egress.md`): the bench used this pod's ordinary egress;
-* a task end-to-end on a SwarmCloud profile, since none exists yet.
+* an agent end-to-end on a SwarmCloud profile, since none exists yet.
 
 Upstream's own benchmark (README "Benchmarks": 100 pages on an m5.large,
 123 MB against 2 GB, 5 s against 46 s) is **not measured here**. It agrees in
@@ -411,18 +411,18 @@ direction with §3.2.
 * pages whose content is in an iframe (embedded editors, payment fields,
   most third-party sign-in widgets);
 * `Page.captureScreenshot` on heavy pages (it crashes the process);
-* any task where hidden text must be told from visible text.
+* any agent where hidden text must be told from visible text.
 
 **What a lighter runtime saves, in SwarmCloud's own units:**
 
-* **Units do not shrink.** `units_for` is at least 1 per task, so a Lightpanda
+* **Units do not shrink.** `units_for` is at least 1 per agent, so a Lightpanda
   agent costs **1 unit**, like a browser agent. A smaller class (say 2 CPU /
   4 GiB) would still be 1 unit. It would halve the GKE request but squeeze
   the Claude Code CLI, which #1926 found OOM-killed at 8 GiB. **No new class.**
 * **The pool moves.** On `standard`, a Lightpanda agent leases
   `resource:standard` (100 in prod), not `resource:browser` (20). DOM-only
   browser work stops queuing behind visual work, and 20 browser slots stay for
-  tasks that need a screen.
+  agents that need a screen.
 * **The display share goes to the agent.** The browser class gives Chromium,
   Xvfb and capture 2 CPU / 5 GiB of the pod. A `standard` pod gives the whole
   4 CPU / 8 GiB to the worker, and Lightpanda takes 48-132 MiB a page from it.
@@ -472,10 +472,10 @@ measured.
 
 | option | capacity | live view | frozen contract | invariant 7 | invariant 10 | verdict |
 |---|---|---|---|---|---|---|
-| **(1)** a fifth `browser_tool`, `lightpanda`, in `claude-code-browser` | unchanged: still a `browser` unit and the 2 CPU / 5 GiB display, so nothing is saved | the pod keeps one, so the task "has" a live view the tool cannot show | `browser_tool` choices, `RUNTIME_TOOLS`, parity §16, the API's `Literal`s, the gate's client tags | unchanged | holds (a name) | **not built.** It adds a choice that saves nothing, and its tasks still hold Chromium, so "never receives Chromium" cannot be true of it |
+| **(1)** a fifth `browser_tool`, `lightpanda`, in `claude-code-browser` | unchanged: still a `browser` unit and the 2 CPU / 5 GiB display, so nothing is saved | the pod keeps one, so the agent "has" a live view the tool cannot show | `browser_tool` choices, `RUNTIME_TOOLS`, parity §16, the API's `Literal`s, the gate's client tags | unchanged | holds (a name) | **not built.** It adds a choice that saves nothing, and its agents still hold Chromium, so "never receives Chromium" cannot be true of it |
 | **(2)** a new profile, `claude-code-lightpanda`, on `standard`, one container, no display | 1 unit in `resource:standard`; frees the browser pool | none, and the profile says so (`live_browser=False`) | one catalogue entry (request 127), mirrored as `claude-code-large` was (request 113) | `standard` already holds it: memory request = limit, CPU 4 ≤ limit 8 ≤ 2×4 | holds: a caller names the profile; image and command come from the catalogue | **recommended** |
 | **(3)** both | (2)'s, plus (1)'s cost | | both changes | | | not now: (1) has no measured value of its own |
-| **(4)** a `browser` input on `claude-code` (Lightpanda in `agent-runtime-base`) | as (2) | none | changes claude-code's inputs | holds | holds | **not built.** It ships an AGPL 76 MB binary in every claude-code image, and every claude-code task carries the licence notice and source obligation |
+| **(4)** a `browser` input on `claude-code` (Lightpanda in `agent-runtime-base`) | as (2) | none | changes claude-code's inputs | holds | holds | **not built.** It ships an AGPL 76 MB binary in every claude-code image, and every claude-code agent carries the licence notice and source obligation |
 | **(5)** a smaller class, e.g. `lite` 2 CPU / 4 GiB | still 1 unit (`units_for` floor) | none | a new class, units, admin bounds | needs its own split | holds | **not built.** No unit saving, and it risks the CLI's memory (#1926) |
 
 **Recommended: (2).** It is the only shape that saves real capacity
@@ -494,8 +494,8 @@ agent names it for a child.
 
 `auto` is not involved: it is a `browser_tool` value inside
 `claude-code-browser` and resolves tools within the live browser. No platform
-rule rewrites a task's profile. The lease was taken for the named profile's
-pools all-or-nothing (invariants 2 and 3), and silently moving a task to
+rule rewrites an agent's profile. The lease was taken for the named profile's
+pools all-or-nothing (invariants 2 and 3), and silently moving an agent to
 `browser` would spend the scarce pool without the caller's choice.
 
 **The fallback when a page fails in Lightpanda** is the agent's, and the
@@ -506,9 +506,9 @@ runner's prompt states it. A page has failed when any of these holds:
 * the body is empty;
 * the page's content is in an iframe;
 * it shows a sign-in, a CAPTCHA, a bot check or a consent wall;
-* the task needs something visual.
+* the agent needs something visual.
 
-The agent then **submits a child task on `claude-code-browser`** through
+The agent then **submits a child agent on `claude-code-browser`** through
 `.swarm-children` (`runner_profile` named, the URLs and what to do with them
 in the prompt). It waits for the child's result and says in its answer which
 pages went to the live browser and why.
@@ -518,7 +518,7 @@ The children mechanism already exists and already takes a profile by name
 The person sees the child in the console like any other.
 
 **Alternative, not recommended:** have the platform re-submit a failed
-Lightpanda task on `claude-code-browser`. It repeats the whole task for one
+Lightpanda agent on `claude-code-browser`. It repeats the whole agent for one
 bad page, and it needs a new end cause and a new scheduler rule.
 
 ### D. Packaging
@@ -547,12 +547,12 @@ base) plus one layer:
 
 *Why not the same image as `claude-code` or `claude-code-browser`:* either
 would put an AGPL binary, its notices and its source obligation into every
-task of that profile, and grow the image by 76 MB for tasks that never use it.
+agent of that profile, and grow the image by 76 MB for agents that never use it.
 
 **Updating it.** A version bump is one PR that changes the two `ARG`s, the
 mirror line and the mirrored source archive. Its acceptance is three things:
 
-* `bench.py` rerun in a `claude-code-browser` task, with the new
+* `bench.py` rerun in a `claude-code-browser` agent, with the new
   `results.json` committed beside the old one;
 * the image's self-test;
 * the probe tests of §6.6.
@@ -643,7 +643,7 @@ mcp__lightpanda__screenshot,mcp__lightpanda__search,mcp__lightpanda__getEnv`:
 > hides. For a web search, use the WebSearch tool. When a page fails here (an
 > error, an empty page, content in an iframe, a sign-in, a CAPTCHA or a
 > consent wall, or anything you must see), do not work around it: submit a
-> child task on runner_profile `claude-code-browser` through
+> child agent on runner_profile `claude-code-browser` through
 > $SWARM_CHILDREN with those URLs and what to do there, wait for it, and say in your answer which pages went there and
 > why. On any one site, keep to about one navigation a second."
 
@@ -731,7 +731,7 @@ hostname** (guard test). The console text above names neither.
 | test file | holds | red first because |
 |---|---|---|
 | `tests/unit/common/test_claude_code_lightpanda.py` | the profile exists; every field but `name`, `image` and `secret_slots` equals `claude-code`'s; class `standard`; `live_browser` false; no `browser_tool` input; units 1 | the profile does not exist |
-| `tests/unit/worker/test_lightpanda_runner.py` | **a `claude-code-lightpanda` task never receives Chromium and never claims a live view**: with a fake `RunnerContext` for the profile, the env handed to the CLI has no `SWARM_CDP_ENDPOINT`; the MCP config has `lightpanda` and no `playwright`; the argv has no `--cdp-endpoint` and no `9222`; `browser_tools.write_state` is never called (spy); the prompt note says "no live view"; a submitted `browser_tool` is refused at validation (the profile declares none) | the branch does not exist |
+| `tests/unit/worker/test_lightpanda_runner.py` | **a `claude-code-lightpanda` agent never receives Chromium and never claims a live view**: with a fake `RunnerContext` for the profile, the env handed to the CLI has no `SWARM_CDP_ENDPOINT`; the MCP config has `lightpanda` and no `playwright`; the argv has no `--cdp-endpoint` and no `9222`; `browser_tools.write_state` is never called (spy); the prompt note says "no live view"; a submitted `browser_tool` is refused at validation (the profile declares none) | the branch does not exist |
 | same file | the `serve` child's env is exactly the allow-list (`PATH`, `HOME`, `TMPDIR`, the two `LIGHTPANDA_*`), and is given no variable from a parent env seeded with a fake token built by `secrets.token_hex`; `--block-private-networks` is on both commands; `--disallowedTools` names the three tools | as above |
 | same file | the supervisor restarts a fake `serve` that exits, stops after 20, and logs one line per exit with no env | as above |
 | `tests/unit/worker/test_lightpanda_image.py` | the Dockerfile pins version and both sha256s; the hashes equal `tool-mirror.sha256`; `ENV LIGHTPANDA_DISABLE_TELEMETRY=true`; the LICENSE and SOURCE files are copied; no `playwright install` and no `chromium` in the Dockerfile | the image does not exist |
@@ -803,7 +803,7 @@ red-first test.
 | **L8 LP-PARITY** | L1, L4, L5 | `scripts/lib/check-contract-parity.sh` (§6.5), its test under `tests/unit/scripts/` | the parity test red against a fixture missing the profile |
 | **L9 LP-UI** | L1 | `apps/swarm-ui/src/Submit.tsx`, `apps/swarm-ui/src/api.ts`, `apps/swarm-ui/src/__tests__/submit.lightpanda.test.tsx` | the new vitest file red: no entry |
 | **L10 LP-DOCS** | L4 | `docs/worker-images.md`, `docs/browser-qa.md`, `docs/browser-egress.md` (and `execution-backends.md`, `mirrored-values.md`) | the docs guards (`tests/unit/scripts/test_docs_*`) the selection names |
-| **L11 LP-ACCEPT** | all, deployed to dev | none in-repo: one `claude-code-lightpanda` task in dev reading three of §3's pages, one iframe page that it must hand to a `claude-code-browser` child, and ten pages in parallel; then `make smoke` | the task's result and the child's existence, recorded on #2688 |
+| **L11 LP-ACCEPT** | all, deployed to dev | none in-repo: one `claude-code-lightpanda` agent in dev reading three of §3's pages, one iframe page that it must hand to a `claude-code-browser` child, and ten pages in parallel; then `make smoke` | the agent's result and the child's existence, recorded on #2688 |
 
 **Needs request 127 applied first:** L4, L5, L6, L8, L9, L10 and L11.
 **Does not:** L2, L3 and L7.
@@ -827,9 +827,9 @@ but never dispatched.
   * Puppeteer;
   * arm64 runs;
   * token-size comparison;
-  * an end-to-end task.
+  * an end-to-end agent.
 * **If Lightpanda misbehaves in production:** set the profile's pool limit
   to 0 (`runner_profiles.claude-code-lightpanda` in the environment's tfvars)
-  and apply. No new lease is taken; tasks already queued on it stay QUEUED,
+  and apply. No new lease is taken; agents already queued on it stay QUEUED,
   which costs nothing (invariant 1); the live browser is untouched, and no
   other profile depends on this one.

@@ -15097,12 +15097,12 @@ BGD said to go with the recommended options. This is decision B (2) of
 
 ### What is true today
 
-`claude-code-browser` (`profiles.py:2096-2117`) is the only profile with a
+`claude-code-browser` (`RUNNER_PROFILES` in `profiles.py`) is the only profile with a
 browser. It is `live_browser=True` on the `browser` class, so every browser
-task is one pod with a worker and a `display` sidecar (Xvfb and a headed
-Chromium, 2 CPU / 5 GiB of the class). Each task leases a unit from
+agent is one pod with a worker and a `display` sidecar (Xvfb and a headed
+Chromium, 2 CPU / 5 GiB of the class). Each agent leases a unit from
 `resource:browser`, which is 20 in prod against 100 for `standard`
-(`terraform/environments/prod/prod.tfvars:72-74`). That holds even when the
+(`pool_limits.resource_classes` in the prod tfvars). That holds even when the
 work needs no pixels: reading pages, scraping, link checks, form flows.
 
 Measured on 2026-10-31 (§3 of the design;
