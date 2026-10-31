@@ -5,7 +5,8 @@ docs/design/day-one-plan.md lane DAYONE-ADDON-1, part of #2688;
 
     swarm addon enable <name> --project P [--owner alice@example.com] [--in-terminal]
         [--tailscale-target host.tailnet.ts.net] [--github-repository owner/repo]
-        [--sandbox-repository owner/repo] [--runner-label swarm-ci] [--json-events]
+        [--sandbox-repository owner/repo] [--runner-label swarm-ci]
+        [--tenants id[,id...]] [--json-events]
     swarm addon disable <name> --project P [--delete-secrets] [--json-events]
     swarm addon status --project P
 
@@ -41,6 +42,7 @@ CHOICE_FLAGS = {
     "github_repository": "github_repository",
     "sandbox_repository": "sandbox_repository",
     "runner_label": "runner_label",
+    "tenants": "tenants",
 }
 
 
@@ -69,6 +71,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     enable.add_argument("--github-repository", default=None, help="ci: the owner/repo whose Actions deploy")
     enable.add_argument("--sandbox-repository", default=None, help="ci: the private acceptance sandbox owner/repo")
     enable.add_argument("--runner-label", default=None, help="ci: the self-hosted runners' label")
+    enable.add_argument("--tenants", default=None,
+                        help="bright-data-egress, typesafe: the tenant ids it routes, comma-separated")
     enable.add_argument("--context", default=None, help="the swarm CLI context naming this deployment")
     enable.add_argument("--json-events", action="store_true", help="write events as one JSON object per line")
     disable = sub.add_parser("disable", help="turn an add-on off; its secret containers stay")
@@ -96,7 +100,7 @@ def open_state(project: str) -> tuple[StateStore, InstallState]:
 
 def build(args: argparse.Namespace, store: StateStore, state: InstallState, events: Events) -> addons.Flow:
     from ..secret_entry import enter_secret
-    from ..steps import bootstrap
+    from ..steps import bootstrap, open_page
     from ..steps.preflight import Gcp, terminal_ask
     from .install import holder_identity
 
@@ -122,7 +126,8 @@ def build(args: argparse.Namespace, store: StateStore, state: InstallState, even
     world = addons.RealWorld(project=args.project, ctx=ctx, gcp=gcp, deps=bootstrap.DEPS,
                              api_context=getattr(args, "context", None))
     flow = addons.Flow(world=world, state=state, save=save, events=events, clock=SystemClock(), out=sys.stdout,
-                       ask=ask, confirm=bootstrap.DEPS.confirm, hidden_entry=hidden)
+                       ask=ask, confirm=bootstrap.DEPS.confirm, hidden_entry=hidden,
+                       open_page=lambda url, why: open_page(url, why=why))
     return flow
 
 

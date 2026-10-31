@@ -3,7 +3,8 @@
 terraform, kubectl and jq (preflight, `local-tool.terraform`, `.kubectl`, `.jq`)
 the Google Cloud SDK (`local-tool.gcloud`, on the person's yes;
 DAYONE-INSTALL-TOOLS-AUTO) and the gke-gcloud-auth-plugin kubectl execs for a
-GKE context (`local-tool.gke-gcloud-auth-plugin`, DAYONE-PREFLIGHT-ASKS). A new company needs only curl and a Google sign-in.
+GKE context (`local-tool.gke-gcloud-auth-plugin`, DAYONE-PREFLIGHT-ASKS), and gh,
+the GitHub CLI `swarm addon enable ci` drives (DAYONE-ADDON-2). A new company needs only curl and a Google sign-in.
 
 Each is downloaded from its project's GitHub release at a pinned version, and
 the bytes are checked against a pinned SHA-256 **before anything is written**:
@@ -43,6 +44,7 @@ GCLOUD_VERSION = "591.0.0"
 #: 20261016073856.
 GKE_AUTH_PLUGIN_VERSION = "0.5.20"
 GKE_AUTH_PLUGIN_BUILD = "20261016073856"
+GH_VERSION = "2.103.3"
 
 _COSIGN = f"https://github.com/sigstore/cosign/releases/download/v{COSIGN_VERSION}"
 _GCRANE = f"https://github.com/google/go-containerregistry/releases/download/v{GCRANE_VERSION}"
@@ -50,6 +52,7 @@ _TERRAFORM = f"https://releases.hashicorp.com/terraform/{TERRAFORM_VERSION}/terr
 _KUBECTL = f"https://dl.k8s.io/release/v{KUBECTL_VERSION}/bin"
 _JQ = f"https://github.com/jqlang/jq/releases/download/jq-{JQ_VERSION}"
 _GCLOUD = f"https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-{GCLOUD_VERSION}"
+_GH = f"https://github.com/cli/cli/releases/download/v{GH_VERSION}/gh_{GH_VERSION}"
 _GKE_AUTH = "https://dl.google.com/dl/cloudsdk/channels/rapid/components/google-cloud-sdk-gke-gcloud-auth-plugin"
 
 
@@ -133,6 +136,19 @@ PINS: dict[tuple[str, str, str], Pinned] = {
         "jq", JQ_VERSION, f"{_JQ}/jq-macos-arm64",
         "2d75340ba57a4b4b4c8708a21c2dc8e958a48aaa8bba13b27f77f6e4c0eca07e"),
 }
+
+#: gh from its GitHub release's gh_2.103.3_checksums.txt, read 2026-10-31 and
+#: matched by downloading the linux_amd64 and macOS_arm64 archives that day.
+PINS.update({
+    ("gh", os_name, arch): Pinned(
+        "gh", GH_VERSION, f"{_GH}_{label}_{arch}.{ext}", digest, f"gh_{GH_VERSION}_{label}_{arch}/bin/gh")
+    for (os_name, label, arch, ext), digest in (
+        (("linux", "linux", "amd64", "tar.gz"), "4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d"),
+        (("linux", "linux", "arm64", "tar.gz"), "ee32df2323c8847f5fac6cb6b4b69ca75828e9329a8f22f677021f7b3306ce63"),
+        (("darwin", "macOS", "amd64", "zip"), "a2f86418f4350ae6e9ec60d5000bdf7665728436946a97fc27fe50e6ae752682"),
+        (("darwin", "macOS", "arm64", "zip"), "d700207eae9ae98fe2b89535c2c087c07823d4628c56364695a5a07ef311c062"),
+    )
+})
 
 #: The gke-gcloud-auth-plugin component for each platform. The digests are the
 #: `data.checksum` (SHA-256 of the archive) of each `gke-gcloud-auth-plugin-*`

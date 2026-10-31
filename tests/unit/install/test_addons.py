@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import ast
 import io
+import json
 import re
 import secrets
 import shlex
@@ -81,6 +82,11 @@ class FakeWorld:
         self.variables: dict[str, str] = {}
         self.workloads: set[str] = set()
         self.added: list[str] = []
+        #: swarm-api reads swarm-search-api-key once the owner's IAM grant is in.
+        self.readers = {f"serviceAccount:swarm-api@{PROJECT}.iam.gserviceaccount.com"}
+        #: The repository's environments and their protection rule counts.
+        self.environments: dict[str, int] = {"dev": 0, "prod": 1}
+        self.created_environments: list[tuple[str, str | None]] = []
 
     # Secret Manager
     def secret_exists(self, name: str) -> bool:
@@ -109,6 +115,9 @@ class FakeWorld:
     def delete_secret(self, name: str) -> None:
         self.calls.append(("delete_secret", name))
         self.containers.discard(name)
+
+    def secret_readers(self, name: str) -> set[str]:
+        return set(self.readers) if name == "swarm-search-api-key" else set()
 
     def enabled_services(self) -> set[str]:
         return set(self.services)
@@ -142,30 +151,41 @@ class FakeWorld:
         if root == "infra":
             if overlay.get("enable_typesafe_forwarder"):
                 self.containers.add("swarm-typesafe-fwd-key")
+            # Terraform renders the repository's own manifests (egress.tf, tailscale.tf, typesafe_fwd.tf).
             if overlay.get("enable_browser_egress"):
-                outputs["swarm_egress_manifest"] = "kind: Deployment\nmetadata: {name: swarm-egress}\n"
+                outputs["swarm_egress_manifest"] = workload_manifest("swarm-egress.yaml")
             if overlay.get("enable_tailscale_egress"):
-                outputs["tailscale_egress_manifest"] = "kind: Deployment\nmetadata: {name: tailscale-egress}\n"
+                outputs["tailscale_egress_manifest"] = workload_manifest("tailscale-egress.yaml")
             if (overlay.get("typesafe_forwarder") or {}).get("serve"):
-                outputs["swarm_typesafe_fwd_manifest"] = "kind: Deployment\nmetadata: {name: fwd}\n"
+                outputs["swarm_typesafe_fwd_manifest"] = workload_manifest("swarm-typesafe-fwd.yaml")
         return outputs
 
     def kube(self, *args: str, stdin: str | None = None) -> tuple[int, str, str]:
         self.calls.append(("kube", args))
         if args[0] == "apply":
-            self.workloads.add(str(stdin))
+            self.workloads.update(f"{k.lower()}/{n}" for k, n in WORKLOAD.findall(str(stdin)))
             return 0, "applied", ""
         if args[0] == "get":
-            return 0, ("1/1" if self.workloads else ""), ""
+            # Only the workload the manifest declares is there, by kind and name.
+            return (0, "1/1", "") if args[1] in self.workloads else (1, "", f"{args[1]} not found")
+        if args[0] == "delete":
+            self.workloads.discard(args[1])
         return 0, "", ""
 
     def sync_tailscale_secret(self) -> None:
         self.calls.append(("sync_tailscale_secret", None))
 
-    def github(self, *args: str) -> tuple[int, str, str]:
+    def github(self, *args: str, stdin: str | None = None) -> tuple[int, str, str]:
         self.calls.append(("github", args))
+        if args[:2] == ("api", "user"):
+            return 0, "alice-gh\t4242\n", ""
+        if args[:3] == ("api", "--method", "PUT"):
+            name = args[3].rsplit("/", 1)[1]
+            self.created_environments.append((name, stdin))
+            self.environments[name] = len(json.loads(stdin or "{}").get("reviewers") or ())
+            return 0, "{}", ""
         if args[:1] == ("api",) and args[1].endswith("/environments"):
-            return 0, "dev\t0\nprod\t1\n", ""
+            return 0, "".join(f"{n}\t{r}\n" for n, r in self.environments.items()), ""
         if args[:1] == ("api",):
             return 0, "true\n", ""
         if args[:2] == ("variable", "set"):
@@ -217,7 +237,22 @@ CI_CHOICES = {"github_repository": "acme/swarm", "sandbox_repository": "acme/swa
 GIVEN: dict[str, dict[str, str]] = {
     "tailscale": {"tailscale_egress_target": "decision.acme-tailnet.ts.net"},
     "ci": CI_CHOICES,
+    "bright-data-egress": {"tenants": "acme"},
+    "typesafe": {"tenants": "acme"},
 }
+#: What each add-on's check says once it is on.
+ON_MESSAGE = {"bright-data-egress": "bright-data-egress is on for acme", "typesafe": "typesafe is on for acme"}
+
+#: An apps/v1 workload's kind and name in a manifest.
+WORKLOAD = re.compile(r"^kind: (Deployment|StatefulSet)\nmetadata:\n  name: ([a-z0-9-]+)$", re.MULTILINE)
+
+
+def workload_manifest(file: str) -> str:
+    """The workload document of kubernetes/swarm-system/<file>, as Terraform renders it."""
+    text = (ROOT / "kubernetes" / "swarm-system" / file).read_text()
+    found = WORKLOAD.findall(text)
+    assert len(found) == 1, f"{file} declares {found}"
+    return "kind: {}\nmetadata:\n  name: {}\n".format(*found[0])
 
 
 def _variables(root: str) -> set[str]:
@@ -294,14 +329,14 @@ def test_each_addon_enables_end_to_end_on_fakes(name: str) -> None:
     world = FakeWorld()
     the_flow, out = flow(world)
     message = the_flow.enable(name, given=GIVEN.get(name, {}))
-    assert message == f"{name} is on"
+    assert message == ON_MESSAGE.get(name, f"{name} is on")
     record = addons.recorded(the_flow.state.outputs)[name]
     assert record["phase"] == addons.ON
     for spec in addons.ADDONS[name].secrets:
         assert spec.name in world.versions
     if addons.ADDONS[name].workload is not None:
         assert world.workloads, "the workload's manifest was applied"
-    assert the_flow.check(addons.ADDONS[name]) == (MET, f"{name} is on")
+    assert the_flow.check(addons.ADDONS[name]) == (MET, ON_MESSAGE.get(name, f"{name} is on"))
 
 
 def test_enabling_one_addon_keeps_another_on() -> None:
@@ -659,3 +694,176 @@ def test_real_world_apply_keeps_the_reopened_address(monkeypatch: pytest.MonkeyP
     with pytest.raises(Stop):
         world.apply("infra", {}, guard=lambda plan: None)
     assert generated[-1] == "infra-close"
+
+
+# ---------------------------------------------------------------------------
+# DAYONE-ADDON-2 (audit 4e F8, F10, F11): every add-on finishes, says on only
+# when the feature works, and keeps the person in the terminal
+# ---------------------------------------------------------------------------
+
+#: The manifest each workload add-on applies (Terraform renders these files).
+WORKLOAD_FILES = {"bright-data-egress": "swarm-egress.yaml", "tailscale": "tailscale-egress.yaml",
+                  "typesafe": "swarm-typesafe-fwd.yaml"}
+
+
+@pytest.mark.parametrize("name", sorted(WORKLOAD_FILES))
+def test_the_workload_waited_on_is_the_one_the_manifest_declares(name: str) -> None:
+    """F8: bright-data-egress waited on deployment/swarm-egress (a StatefulSet) and
+    tailscale on deployment/tailscale-egress (decision-api-egress) for ever."""
+    kind, workload = WORKLOAD.findall(workload_manifest(WORKLOAD_FILES[name]))[0]
+    assert addons.ADDONS[name].workload is not None
+    assert addons.ADDONS[name].workload[0] == f"{kind.lower()}/{workload}"
+    world = FakeWorld()
+    the_flow, _ = flow(world)
+    the_flow.enable(name, given=GIVEN.get(name, {}))
+    assert f"{kind.lower()}/{workload}" in world.workloads
+    # Disabling deletes the real workload, not a name that was never there.
+    the_flow.disable(name)
+    assert f"{kind.lower()}/{workload}" not in world.workloads
+
+
+def test_brave_search_is_not_on_while_swarm_api_cannot_read_its_key() -> None:
+    """F10: the check looked only for a version, so it said on while every search
+    answered search_unconfigured."""
+    world = FakeWorld()
+    world.readers = set()
+    the_flow, _ = flow(world)
+    with pytest.raises(addons.AddonError, match="swarm-api .* cannot read swarm-search-api-key"):
+        the_flow.enable("brave-search")
+    status, why = the_flow.check(addons.ADDONS["brave-search"])
+    assert status != MET and "search_unconfigured" in why
+    world.readers = {f"serviceAccount:swarm-api@{PROJECT}.iam.gserviceaccount.com"}
+    assert the_flow.check(addons.ADDONS["brave-search"]) == (MET, "brave-search is on")
+
+
+def test_tailscale_turns_the_decision_api_url_on_and_names_the_right_scope() -> None:
+    """F10: without internal_decision_api_enabled swarm-api never gets INTERNAL_DECISION_API_URL."""
+    world = FakeWorld()
+    the_flow, out = flow(world)
+    the_flow.enable("tailscale", given=GIVEN["tailscale"])
+    on = addons.inputs_for(the_flow.state.outputs, "infra")
+    assert on["internal_decision_api_enabled"] is True and on["enable_tailscale_egress"] is True
+    the_flow.disable("tailscale")
+    off = addons.inputs_for(the_flow.state.outputs, "infra")
+    assert off["internal_decision_api_enabled"] is False
+    # docs/runbooks/tailscale-egress.md: Auth Keys: write, and the tag has an owner.
+    page = addons.ADDONS["tailscale"].page
+    assert page is not None
+    assert "Auth Keys: write" in page.what and "tagOwners" in page.what and "Devices" not in page.what
+
+
+@pytest.mark.parametrize(("name", "setting"), [("bright-data-egress", "browser_egress"),
+                                               ("typesafe", "typesafe_forwarder")])
+def test_routing_addons_render_the_tenants_they_serve(name: str, setting: str) -> None:
+    """F10: the overlays set only the service switch, so no tenant was ever routed."""
+    world = FakeWorld()
+    the_flow, _ = flow(world, answers={"tenants": " acme, beta "})
+    message = the_flow.enable(name)
+    inputs = addons.inputs_for(the_flow.state.outputs, "infra")
+    assert inputs[setting]["enabled"] is True and inputs[setting]["tenants"] == ["acme", "beta"]
+    assert message == f"{name} is on for acme, beta"
+    # The tenants are an optional choice: none is a valid answer, and the check says so.
+    world = FakeWorld()
+    the_flow, _ = flow(world)
+    message = the_flow.enable(name)
+    inputs = addons.inputs_for(the_flow.state.outputs, "infra")
+    assert inputs[setting]["enabled"] is False and inputs[setting]["tenants"] == []
+    assert "routes no tenant" in message and "--tenants" in message
+    # A tenant id is swarm_common's shape.
+    the_flow, _ = flow(FakeWorld())
+    with pytest.raises(addons.AddonError, match="tenants"):
+        the_flow.enable(name, given={"tenants": "Not A Tenant"})
+    # The verb takes them as a flag.
+    parser = argparse.ArgumentParser()
+    discover()["addon"].add_arguments(parser)
+    args = parser.parse_args(["enable", name, "--project", PROJECT, "--tenants", "acme,beta"])
+    from swarm_install.verbs import addon as addon_verb
+    assert addon_verb._given(args) == {"tenants": "acme,beta"}
+
+
+def test_a_vendor_page_is_opened_in_the_browser() -> None:
+    world = FakeWorld()
+    the_flow, _ = flow(world)
+    opened: list[tuple[str, str]] = []
+    the_flow.open_page = lambda url, why: opened.append((url, why))
+    the_flow.enable("brave-search")
+    assert opened and opened[0][0] == "https://api-dashboard.search.brave.com/app/keys"
+    assert "API key" in opened[0][1]
+
+
+def test_ci_creates_the_release_environments_after_a_typed_approval() -> None:
+    """F11: the person was sent to github.com/<repo>/settings/environments by hand."""
+    world = FakeWorld()
+    world.environments = {}
+    the_flow, _ = flow(world, typed="no")
+    with pytest.raises(addons.AddonRefused, match="not created"):
+        the_flow.enable("ci", given=CI_CHOICES)
+    assert world.created_environments == []
+    world = FakeWorld()
+    world.environments = {"dev": 0, "prod": 0}
+    the_flow, _ = flow(world, typed="acme/swarm")
+    assert the_flow.enable("ci", given=CI_CHOICES) == "ci is on"
+    assert world.created_environments == [("prod", '{"reviewers": [{"type": "User", "id": 4242}]}')]
+    world = FakeWorld()
+    world.environments = {}
+    the_flow, _ = flow(world, typed="acme/swarm")
+    the_flow.enable("ci", given=CI_CHOICES)
+    assert [n for n, _ in world.created_environments] == ["dev", "prod"]
+    assert world.environments == {"dev": 0, "prod": 1}
+
+
+def test_tailscale_secret_sync_finds_the_installers_own_gcloud(monkeypatch: pytest.MonkeyPatch) -> None:
+    """F11: shutil.which missed ~/.cache/swarmcloud/tools/bin, on PATH only inside swarm install."""
+    from swarm_install.steps import preflight
+
+    monkeypatch.setenv("PATH", "/nonexistent")
+    monkeypatch.setattr(preflight, "find_gcloud", lambda: "/home/alice/.cache/swarmcloud/tools/bin/gcloud")
+    ran: list[list[str]] = []
+
+    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        ran.append(argv)
+        out_file = next(a for a in argv if a.startswith("--out-file=")).split("=", 1)[1]
+        Path(out_file).write_bytes(b"tskey-client-" + secrets.token_hex(16).encode())
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(addons.subprocess, "run", run)
+    world = _real_world(ready_state())
+    kubed: list[tuple[str, ...]] = []
+    world._kube = lambda *args, stdin=None: (kubed.append(args), (0, "rendered", ""))[1]
+    world.sync_tailscale_secret()
+    assert ran[0][0] == "/home/alice/.cache/swarmcloud/tools/bin/gcloud"
+    assert kubed[-1][:1] == ("apply",)
+
+
+def test_github_uses_the_pinned_gh_and_signs_in_through_the_browser(monkeypatch: pytest.MonkeyPatch) -> None:
+    """F11: with no gh on PATH the person was told to install it and run gh auth login."""
+    from swarm_install import tools
+
+    monkeypatch.setenv("PATH", "/nonexistent")
+    ensured: list[str] = []
+    monkeypatch.setattr(tools, "ensure", lambda name, **kw: (ensured.append(name), Path("/cache/gh-2/gh"))[1])
+    answers = [subprocess.CompletedProcess([], 4, "", "gh: To get started with GitHub CLI, please run: gh auth login"),
+               subprocess.CompletedProcess([], 0, "true\n", "")]
+    runs: list[tuple[list[str], str | None]] = []
+    logins: list[list[str]] = []
+    world = _real_world(ready_state())
+    monkeypatch.setattr(world, "_run", lambda argv, stdin: (runs.append((argv, stdin)), answers.pop(0))[1])
+    monkeypatch.setattr(world, "_login", lambda argv: (logins.append(argv), 0)[1])
+    assert world.github("api", "repos/acme/swarm-sandbox", "--jq", ".private") == (0, "true\n", "")
+    assert ensured == ["gh"]
+    assert [argv[0] for argv, _ in runs] == ["/cache/gh-2/gh", "/cache/gh-2/gh"]
+    assert logins == [["/cache/gh-2/gh", "auth", "login", "--web", "--hostname", "github.com",
+                       "--git-protocol", "https"]]
+    # A second "not signed in" does not loop through the browser again.
+    answers.append(subprocess.CompletedProcess([], 4, "", "auth"))
+    assert world.github("api", "user")[0] == 4 and len(logins) == 1
+
+
+def test_gh_is_pinned_for_every_platform() -> None:
+    from swarm_install import tools
+
+    for system in (("linux", "amd64"), ("linux", "arm64"), ("darwin", "amd64"), ("darwin", "arm64")):
+        pin = tools.pin_for("gh", system)
+        assert pin.version == tools.GH_VERSION and len(pin.sha256) == 64
+        assert pin.url.startswith(f"https://github.com/cli/cli/releases/download/v{tools.GH_VERSION}/")
+        assert pin.member is not None and pin.member.endswith("/bin/gh") and pin.member.split("/")[0] in pin.url
