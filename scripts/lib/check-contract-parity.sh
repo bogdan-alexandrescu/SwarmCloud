@@ -2282,7 +2282,7 @@ else:
     else:
         emit("OK", "browser_tool", "%s declares no browser_tool input" % NAME)
 
-    # 2. The Terraform mirror has the entry, with the catalogue's image, class
+    # 2. The Terraform mirror has the entry, with the catalogue image, class
     # and backend.
     locals_tf = read("terraform/infra/locals.tf") or ""
     entry = re.search(r"^    \"" + re.escape(NAME) + r"\" = \{\n(.*?)^    \}", locals_tf, re.M | re.S)
@@ -2305,7 +2305,7 @@ else:
             emit("OK", "locals.tf", "terraform/infra/locals.tf mirrors %s (%s, %s, %s)"
                  % (NAME, expected[0][1], expected[1][1], expected[2][1]))
 
-# 3 and 4. The runner module's CDP_PORT and DISALLOWED_TOOLS.
+# 3 and 4. The runner module: its CDP_PORT and DISALLOWED_TOOLS.
 RUNNER = "apps/agent-worker/agent_worker/lightpanda.py"
 source = read(RUNNER)
 assigned = {}
@@ -2318,7 +2318,7 @@ port = assigned.get("CDP_PORT")
 if not (isinstance(port, ast.Constant) and isinstance(port.value, int)):
     emit("DRIFT", "CDP_PORT", "%s no longer assigns CDP_PORT an integer literal" % RUNNER)
 elif port.value == 9222:
-    emit("DRIFT", "CDP_PORT", "%s CDP_PORT is 9222, the live-browser pods' port; "
+    emit("DRIFT", "CDP_PORT", "%s CDP_PORT is 9222, the port of the live-browser pods; "
          "Lightpanda would be taken for a live view" % RUNNER)
 else:
     emit("OK", "CDP_PORT", "%s CDP_PORT is %d, not the live-browser 9222" % (RUNNER, port.value))
@@ -2326,7 +2326,7 @@ else:
 
 def literal_tail(element):
     # A tool is a plain string or an f-string ending in a literal, e.g.
-    # f"mcp__{MCP_SERVER_NAME}__screenshot"; the tool's own name is that tail.
+    # f"mcp__{MCP_SERVER_NAME}__screenshot"; the tool name itself is that tail.
     if isinstance(element, ast.Constant) and isinstance(element.value, str):
         return element.value
     if isinstance(element, ast.JoinedStr) and element.values:
