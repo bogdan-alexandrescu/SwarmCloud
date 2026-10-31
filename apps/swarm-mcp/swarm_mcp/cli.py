@@ -1504,6 +1504,44 @@ def cmd_graph_index(client: SwarmClient, args) -> int:
     return EXIT_OK if index else EXIT_FAIL
 
 
+def cmd_repo_index(client: SwarmClient, args) -> int:
+    """Register `owner/repo` in the selected workspace when it is not yet
+    (`POST /v1/repositories`, a member's write, on the caller's own GitHub
+    connection, as the console's Repositories page does), then ask for an
+    index run of it (`POST /v1/repositories/{repo_id}/index`, "Index now").
+    The installer's verify runs it before its code-intelligence check, which
+    needs the code graph's own record (`graph-index`) of a repository nobody
+    has registered on a new deployment. Run twice, it registers nothing new
+    and the API coalesces the second run into the first."""
+    from .secrets import REPO_ID, REPO_SLUG
+
+    match = REPO_SLUG.fullmatch(args.repository.strip())
+    if match is None:
+        raise SwarmError("repository must be owner/repo; nothing was sent")
+    repository = f"{match.group(1)}/{match.group(2)}"
+    row = client.registration(match.group(1), match.group(2))
+    registered = row is None
+    if registered:
+        body = client.request("POST", "/v1/repositories", payload={"repository": repository})
+        row = body.get("repository") if isinstance(body, dict) else None
+    repo_id = row.get("repo_id") if isinstance(row, dict) else None
+    if not isinstance(repo_id, str) or not REPO_ID.fullmatch(repo_id):
+        raise SwarmError(f"{repository}: the API answered no repo_id for its registration")
+    answer = client.request("POST", f"/v1/repositories/{repo_id}/index")
+    answer = answer if isinstance(answer, dict) else {}
+    run = answer.get("run") if isinstance(answer.get("run"), dict) else None
+    found = {"repository": repository, "repo_id": repo_id, "registered": registered,
+             "task_id": str((run or {}).get("task_id") or "") or None,
+             "coalesced": bool(answer.get("coalesced")), "skipped": answer.get("skipped")}
+    if args.json:
+        print(json.dumps(found, indent=2))
+    else:
+        said = ("already indexed at its head" if found["skipped"]
+                else "joined the index run already going" if found["coalesced"] else "index run requested")
+        print(f"{repository}  {'registered; ' if registered else ''}{said}")
+    return EXIT_OK
+
+
 def cmd_tenants(client: SwarmClient, args) -> int:
     """The tenants you may act as, from `GET /v1/tenants/mine`, current marked.
 
@@ -2146,6 +2184,14 @@ def build_parser() -> argparse.ArgumentParser:
     gi.add_argument("repository", help="owner/repo, registered in the selected workspace")
     gi.add_argument("--json", action="store_true")
     gi.set_defaults(func=cmd_graph_index)
+
+    ri = sub.add_parser(
+        "repo-index",
+        help="register a repository in the selected workspace when it is not, and request an index run of it",
+    )
+    ri.add_argument("repository", help="owner/repo, one the workspace's GitHub access reaches")
+    ri.add_argument("--json", action="store_true")
+    ri.set_defaults(func=cmd_repo_index)
 
     ten = sub.add_parser("tenants", help="the tenants you may act as, the current one marked")
     ten.add_argument("--json", action="store_true")
