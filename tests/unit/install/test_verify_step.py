@@ -1402,7 +1402,10 @@ def test_verify_waits_point_only_at_what_exists() -> None:
 
     covered = {entry for step in verify.STEPS for entry in step.satisfies}
     for spec in (verify.TARGETS_WAIT, verify.RUNS_WAIT):
-        assert "--explain" not in spec.look_at and "gcloud " not in spec.look_at
-        for entry in re.findall(r"--repair (\S+)", spec.look_at):
+        said = spec.look_at_for(_ctx())
+        assert "--explain" not in said and "gcloud " not in said
+        for entry in re.findall(r"--repair (\S+)", said):
             assert entry in covered
-    assert "swarm install --repair other.verify-scheduler-targets" in verify.TARGETS_WAIT.look_at
+    # Audit 5b M2: the give-up already says "run swarm install again", which
+    # re-checks it; the page is the project's own, not `<project>`.
+    assert f"cloudscheduler?project={PROJECT}" in verify.TARGETS_WAIT.look_at_for(_ctx())

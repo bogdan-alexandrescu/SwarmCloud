@@ -73,13 +73,24 @@ IDENTITY_POLLS = 30
 ADDRESS_POLL_S = 2
 ADDRESS_POLLS = 60
 
+def _dns_look_at(ctx: Any) -> str:
+    """Google Public DNS's answer for the real hostname, and the address it must hold."""
+    outputs = getattr(ctx, "outputs", None) or {}
+    hostname = getattr(getattr(ctx, "state", None), "hostname", None) or outputs.get("hostname")
+    address = outputs.get("global_ip") or "the reserved address (edge.global-ip)"
+    if not hostname:
+        return f"the hostname's A record must answer {address} and nothing else"
+    return (f"{PUBLIC_RESOLVER}?name={hostname}&type=A must answer {address} and nothing else; the record "
+            "is set where the step above said (the project's Cloud DNS zone, or your DNS provider)")
+
+
 #: plan §9.1: DNS, 60 min.
 DNS_WAIT = WaitSpec(
     reason="the hostname's A record resolving to the reserved address",
     expected="a few minutes after the record is saved",
     expected_s=10 * 60,
     bound_s=60 * 60,
-    look_at="https://dns.google/resolve?name=<hostname>&type=A must answer the reserved address and nothing else",
+    look_at=_dns_look_at,
     interval_s=30,
 )
 
