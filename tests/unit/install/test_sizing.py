@@ -12,6 +12,9 @@ edit (DAYONE-SIZING-TENANTS, N5).
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
 from swarm_install import sizing, tfvars
@@ -117,13 +120,45 @@ def test_a_team_the_live_size_lands_above_the_live_values() -> None:
     assert found["pool_limits"] == {
         "global": 270, "default_tenant": 60, "provider_tenant": 5,  # 270 // 50 tenants
         "resource_classes": {"standard": 120, "browser": 150, "large": 60},
-        "runner_profiles": {"claude-code": 120, "claude-code-browser": 150, "codex": 30, "generic": 30, "browser": 30},
+        "runner_profiles": {"claude-code": 120, "claude-code-browser": 150, "claude-code-lightpanda": 150, "codex": 30,
+                            "generic": 30, "browser": 30},
         "backends": {"CLOUD_RUN_JOB": 150, "GKE_AUTOPILOT": 270},
     }
     assert found["service_max_instances"] == {"swarm-api": 5, "swarm-scheduler": 2, "swarm-quota-broker": 2,
                                               "swarm-reconciler": 1}
     assert found["pool_accounts"] == 18
     assert found["budget_usd"] == 3800
+
+
+# -- LIGHTPANDA-POOLS (docs/design/lightpanda-runtime.md, part of #2688) ----------------------
+
+#: The live pool_limits the reference numbers mirror.
+DEV_TFVARS = Path(__file__).resolve().parents[3] / "terraform" / "environments" / "dev" / "dev.tfvars"
+
+
+def _runner_profile_limit(text: str, profile: str) -> int | None:
+    found = re.search(rf"^\s*{re.escape(profile)}\s*=\s*(\d+)\s*$", text, re.MULTILINE)
+    return int(found.group(1)) if found else None
+
+
+@pytest.mark.parametrize(("mode", "members"), SHAPES)
+def test_lightpanda_is_proposed_at_the_browser_ceiling(mode: str, members: int) -> None:
+    """The design's rule: claude-code-lightpanda's ceiling equals
+    claude-code-browser's, so moving work to it never lowers the browser one."""
+    profiles = sizing.propose(mode, members)["pool_limits"]["runner_profiles"]
+    assert profiles["claude-code-lightpanda"] == profiles["claude-code-browser"]
+    assert sizing.REFERENCE_RUNNER_PROFILES["claude-code-lightpanda"] == sizing.REFERENCE_RUNNER_PROFILES[
+        "claude-code-browser"]
+
+
+def test_dev_tfvars_states_lightpanda_at_the_browser_ceiling() -> None:
+    """dev.tfvars, the live pool_limits, states the same rule, and sizing's
+    reference reads the same number from it."""
+    text = DEV_TFVARS.read_text()
+    browser = _runner_profile_limit(text, "claude-code-browser")
+    assert browser is not None
+    assert _runner_profile_limit(text, "claude-code-lightpanda") == browser
+    assert sizing.REFERENCE_RUNNER_PROFILES["claude-code-lightpanda"] == browser
 
 
 def test_the_table_for_1_5_15_and_50() -> None:

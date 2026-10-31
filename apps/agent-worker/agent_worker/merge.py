@@ -128,7 +128,10 @@ a review of the head, which a re-review gives. A NOT_YET with no
 ANSWERED IS NOT ENOUGH: THE PICK MUST BE WHAT THE BRANCH BUILT
 (ANSWER-CONTENT-CHECK, part of #2441; owner decision 2026-10-26). Once every
 `needs_owner` question is answered, the step reads the validated
-`questions.json` of every step of its workflow it depends on and compares
+`questions.json` of every step of its workflow it depends on, and of every
+fix round appended to it since (`ci-fix:<n>`, `conflict-fix:<n>`,
+`pick-fix:<n>`, which the merge depends on none of: PR 2878 merged past a
+ci-fix:1 question's answer, #2898), and compares
 each ANSWERED question's `choice` with its `built`, the option label the
 asking agent said its branch implements -- the `needs_owner` ones and every
 other answered one, such as a question the owner answered before the review
@@ -137,7 +140,8 @@ different option, or free text that names none, is an unbuilt pick
 (`unbuilt_picks`), found before any credential. `built: null` (the answer
 changes nothing the branch builds) passes, and so does a question with no
 `built` at all, written before this check, so a lane parked on its answers is
-not stranded. On 2026-10-26 three lanes (VQ-CAPACITY, VQ-CONFIG-B,
+not stranded. A round's blocking question still unanswered holds the merge
+as a `needs_owner` one does. On 2026-10-26 three lanes (VQ-CAPACITY, VQ-CONFIG-B,
 BROWSER-POOL-100) would have merged the opposite of the owner's pick without
 it.
 
@@ -148,8 +152,10 @@ reads that park as it reads a CI or conflict park and submits a claude-code
 round on the pull request's branch whose brief names each pick. The round
 builds it, pushes to the same pull request and writes `picks-built.json`;
 the merge then runs again. A round counts only for the picks its report says
-it built, at a head it pushed; one that pushed nothing, did not succeed, or
-left a pick it was sent for unbuilt refuses `owner_pick_not_built`, and at
+it built, at a head it pushed -- or, pushing nothing, for the picks it was
+sent for that its report says the branch already builds (#2858); one that did
+not succeed, or left a pick it was sent for unbuilt, refuses
+`owner_pick_not_built`, and at
 most MERGE_PICK_ROUNDS_MAX are run, so the step never loops (`_pick_fix`).
 
 THE RULES `auto-merge.yml` ALSO STATES are the module-level functions
@@ -1719,7 +1725,8 @@ class _Run:
     def wait_for_owner(self, held: list[dict[str, Any]], *, unreadable: int) -> ActionOutcome:
         """The owner's questions are a hold no tick can clear: park for a person.
 
-        `held` is each still-unanswered `needs_owner` question, `unreadable`
+        `held` is each still-unanswered `needs_owner` question, or each
+        unanswered blocking question a fix round asked (#2898), `unreadable`
         how many entries could not be read. The lifecycle writes the park in
         one fenced transaction (`handoff.park_human_required`), releases the
         lease and exits 75.
@@ -1729,8 +1736,8 @@ class _Run:
         if unreadable:
             named.append(f"{unreadable} needs_owner entr{'y' if unreadable == 1 else 'ies'} "
                          "the merge cannot read")
-        message = ("the review said these owner questions hold the merge, and they are "
-                   "unanswered: " + "; ".join(named))
+        message = ("the review, or a blocking question of a fix round, says these owner "
+                   "questions hold the merge, and they are unanswered: " + "; ".join(named))
         wait = {"code": OWNER_QUESTIONS_OPEN, "questions": held, "unreadable": unreadable}
         self.summary["wait"] = {"code": OWNER_QUESTIONS_OPEN, "message": message}
         return _outcome(
@@ -1842,12 +1849,20 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         # ANSWER-CONTENT-CHECK: answered is not enough; the pick must be
         # the option the asking branch built -- for every answered question
         # that names `built`, held or not (PICK-FIX-ROUND). One it did not
-        # build is a pick-fix round's to build, bounded.
+        # build is a pick-fix round's to build, bounded. #2898: the merge's
+        # own fix rounds (`ci-fix:<n>`, `conflict-fix:<n>`, `pick-fix:<n>`)
+        # ran after the review, so their questions are read here, and a
+        # blocking one still unanswered holds the merge as `needs_owner` does.
         try:
-            unbuilt = _unbuilt_picks(ctx, target, verdict.needs_owner)
+            asked_by_rounds = _round_questions(ctx, target, opener)
+            unbuilt = _unbuilt_picks(ctx, target, verdict.needs_owner, asked_by_rounds)
         except InputUnavailable as exc:
             summary["refusal"] = {"code": OWNER_QUESTIONS_UNREADABLE, "message": str(exc)}
             return _outcome(TaskState.FAILED, EndCause.INPUTS_UNAVAILABLE, summary, str(exc))
+        held = [_held_row(row) for row in asked_by_rounds
+                if row.get("blocking") is True and row.get("answer") is None]
+        if held:
+            return run.wait_for_owner(held, unreadable=0)
         if unbuilt:
             fixing = _pick_fix(run, target, opener, unbuilt)
             if fixing is not None:
@@ -1985,7 +2000,8 @@ def _answered(doc: Mapping[str, Any], index: int) -> bool:
 
 
 def _unbuilt_picks(ctx: ActionContext, target: MergeTarget,
-                   refs: tuple[verdict_mod.OwnerQuestionRef, ...]) -> list[dict[str, Any]]:
+                   refs: tuple[verdict_mod.OwnerQuestionRef, ...],
+                   asked_by_rounds: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Each answered question whose pick is not the option its branch built.
 
     Which questions: every `refs` question -- the review's `needs_owner`,
@@ -1995,13 +2011,19 @@ def _unbuilt_picks(ctx: ActionContext, target: MergeTarget,
     task document, or from its signed target's review and opener when that
     cannot be read): one answered before the review ran is in neither of the
     review's lists, and its pick binds the merge all the same (PICK-FIX-ROUND,
-    BGD 2026-10-26). Each step's validated `questions.json` is read again
+    BGD 2026-10-26). And every answered question in `asked_by_rounds`, the
+    questions this merge's own fix rounds asked (`_round_questions`): a round
+    is a step appended to the workflow after the merge, which depends on none
+    of them (#2898). Each step's validated `questions.json` is read again
     (`owner_questions.questions_of`, which raises `InputUnavailable` for a
     counted file it cannot read, as the walk does for a parent it cannot).
 
     A question passes when its asker wrote no `built` (a file from before this
     check), `built: null` (the answer changes nothing the branch builds), or
-    the answer's `choice` is `built`. Anything else -- another option, or free
+    the answer's `choice` is `built` -- as the LATEST step that asked the same
+    question (`owner_questions.normalised` text) records it, nearest step
+    first, so a fix step that built the other option after the question was
+    asked decides it (#2858). Anything else -- another option, or free
     text with no option -- is a row naming the question, the pick (None for
     free text, with the answer's `text`) and the build.
     """
@@ -2024,18 +2046,30 @@ def _unbuilt_picks(ctx: ActionContext, target: MergeTarget,
     if not start.get("depends_on"):
         start = {"workflow_id": ctx.workflow_id,
                  "depends_on": [t for t in (target.review, target.pull_request) if t]}
-    for row in owner_questions_mod.workflow_questions(
-            start, fetch=ctx.fetch_upstream, store=ctx.store, tenant_id=ctx.tenant_id):
+    # The latest build of each question, by its text: the walk is nearest
+    # step first, so a fix step that asked the same question again after it
+    # built the other option is read before the step that first asked it
+    # (#2858: PR 2855's fix built 'apply' after implement recorded
+    # 'follow-up', and the owner's 'apply' was refused).
+    # The rounds ran after every step the merge depends on, so they are read
+    # first, newest first, as `_round_questions` orders them.
+    latest: dict[str, str] = {}
+    for row in [*asked_by_rounds, *owner_questions_mod.workflow_questions(
+            start, fetch=ctx.fetch_upstream, store=ctx.store, tenant_id=ctx.tenant_id)]:
         asked.setdefault(row["task_id"], {}).setdefault(row["question_index"], row)
         key = (row["task_id"], row["question_index"])
         if row.get("answer") is not None and key not in keys:
             keys.append(key)
+        text = owner_questions_mod.normalised(row.get("question"))
+        if text and isinstance(row.get(owner_questions_mod.BUILT_KEY), str):
+            latest.setdefault(text, row[owner_questions_mod.BUILT_KEY])
     out: list[dict[str, Any]] = []
     for task_id, index in keys:
         row = asked.get(task_id, {}).get(index)
         built = row.get(owner_questions_mod.BUILT_KEY) if row is not None else None
         if row is None or not isinstance(built, str):
             continue
+        built = latest.get(owner_questions_mod.normalised(row.get("question")), built)
         answer = _mapping(row.get("answer"))
         choice = answer.get("choice")
         if choice == built:
@@ -2052,6 +2086,62 @@ def _unbuilt_picks(ctx: ActionContext, target: MergeTarget,
             found["text"] = answer["text"]
         out.append(found)
     return out
+
+
+#: `merge_fix`'s round lists and the step each kind is appended to the
+#: workflow as (`swarm_api.mergewake.round_step_id`: `<kind>-fix:<n>`).
+_ROUND_STEP_KINDS = (("rounds", "ci"), (CONFLICT_ROUNDS_KEY, "conflict"),
+                     (PICK_ROUNDS_KEY, "pick"))
+
+
+def _round_questions(ctx: ActionContext, target: MergeTarget,
+                     opener: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Every question this merge's own fix rounds asked, newest round first (#2898).
+
+    swarm-api's wake tick appends each CI-fix, conflict fix and pick-fix round
+    to the merge's workflow as a step (`ci-fix:<n>`, `conflict-fix:<n>`,
+    `pick-fix:<n>`) AFTER the merge step, so the merge depends on none of them
+    and the `depends_on` walk never reaches them: PR 2878 merged with a
+    ci-fix:1 exemption the owner had answered "forbid". The rounds are named
+    by the step's own `merge_fix` record, and each is held to what
+    `_pick_round_doc` holds any round to (the tenant-gated read, this tenant,
+    its signed spec, its signed `continues` the branch's root), so a forged
+    entry adds no question. A round that fails that, or names no task yet,
+    asked nothing this merge reads. Its validated `questions.json` is read as
+    any step's is (`owner_questions.questions_of`, raising `InputUnavailable`
+    for a counted file it cannot read); each row's `step_id` is the step the
+    round is on the workflow as.
+    """
+    assert target.pull_request is not None
+    own = _own_doc(ctx)
+    root = _branch_task(opener, target.pull_request)
+    entries: list[tuple[str, Mapping[str, Any]]] = []
+    for key, kind in _ROUND_STEP_KINDS:
+        entries += [(kind, entry) for entry in reversed(_fix_rounds(own, key))]
+    # Newest first across the kinds: the claim instants are ISO strings, and
+    # sorted() is stable, so a kind's own order holds where they tie.
+    entries.sort(key=lambda item: str(item[1].get("claimed_at") or ""), reverse=True)
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for kind, entry in entries:
+        task_id = _task_id(entry.get("task_id"))
+        if task_id is None or task_id in seen:
+            continue
+        doc = _pick_round_doc(ctx, entry, root=root, target=target.pull_request)
+        if doc is None:
+            continue
+        seen.add(task_id)
+        step = f"{kind}-fix:{entry.get('round')}"
+        for row in owner_questions_mod.questions_of(
+                task_id, doc, store=ctx.store, tenant_id=ctx.tenant_id):
+            rows.append({**row, "step_id": step})
+    return rows
+
+
+def _held_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """An unanswered blocking round question as an owner hold names it."""
+    return {"task_id": row.get("task_id"), "step_id": row.get("step_id"),
+            "question_index": row.get("question_index"), "question": row.get("question")}
 
 
 def _picks_named(rows: list[Mapping[str, Any]]) -> str:
@@ -2128,6 +2218,13 @@ def _round_pushed(doc: Mapping[str, Any], entry: Mapping[str, Any]) -> str | Non
     return pushed if pushed is not None and pushed != start else None
 
 
+def _round_picks(entry: Mapping[str, Any]) -> set[tuple[Any, Any]]:
+    """The `(task, question index)` picks round `entry` was sent for; empty if none."""
+    picks = entry.get("picks")
+    return set() if not isinstance(picks, list) else {
+        (_mapping(p).get("task_id"), _mapping(p).get("question_index")) for p in picks}
+
+
 def _pick_fix(run: _Run, target: MergeTarget, opener: Mapping[str, Any],
               unbuilt: list[dict[str, Any]]) -> ActionOutcome | None:
     """Picks the branch did not build: a pick-fix round's, or `owner_pick_not_built`.
@@ -2145,9 +2242,15 @@ def _pick_fix(run: _Run, target: MergeTarget, opener: Mapping[str, Any],
         (`owner_questions.picks_built`) says it builds THAT pick -- the
         owner's option as now answered, or the free text -- and the head it
         pushed is accepted by the merge like any round's (`_fix_round_heads`);
+      * a round that SUCCEEDED and pushed nothing counts as finding a pick
+        it was sent for ALREADY built when its `picks-built.json` says the
+        branch builds THAT pick: the merge goes on, and the summary says so
+        (`picks_already_built`, #2858) -- the question's recorded `built`
+        can be stale, a fix step having built the other option since;
       * once the last round has ended, a round that did not succeed, pushed
-        nothing, or left a pick it was sent for unbuilt, refuses: no pick is
-        sent to a second round, so the step never loops;
+        nothing and reported no pick built, or left a pick it was sent for
+        unbuilt, refuses: no pick is sent to a second round, so the step
+        never loops;
       * a pick no round was sent for (answered after the last one) parks
         OWNER_PICK_FIX_PENDING for the next round, at most
         MERGE_PICK_ROUNDS_MAX of them; past that, `owner_pick_not_built`.
@@ -2196,19 +2299,35 @@ def _pick_fix(run: _Run, target: MergeTarget, opener: Mapping[str, Any],
                         f"pick fix round {n} ({task_id}) is running")
 
     # Every ended round's report, oldest first, so a later round's word wins.
+    # A round that pushed nothing reports picks the branch ALREADY built at
+    # the head it started from (#2858): its finding is the build, not the
+    # question's stale `built`; it counts only for picks it was sent for.
     reports: dict[tuple[str, int], tuple[str | None, bool]] = {}
+    already: set[tuple[str, int]] = set()
     for entry in rounds:
         doc = _pick_round_doc(ctx, entry, root=root, target=target.pull_request)
-        if (doc is None or doc.get("state") != TaskState.SUCCEEDED.value
-                or _round_pushed(doc, entry) is None):
+        if doc is None or doc.get("state") != TaskState.SUCCEEDED.value:
+            continue
+        pushed = _round_pushed(doc, entry) is not None
+        sent = _round_picks(entry)
+        if not pushed and not sent:
             continue
         round_task = str(_task_id(entry.get("task_id")))
         try:
-            reports.update(owner_questions_mod.picks_built(
-                round_task, doc, store=ctx.store, tenant_id=ctx.tenant_id))
+            report = owner_questions_mod.picks_built(
+                round_task, doc, store=ctx.store, tenant_id=ctx.tenant_id)
         except Exception as exc:  # noqa: BLE001 - an unread report built nothing
             why = str(exc)[:300] if isinstance(exc, InputUnavailable) else type(exc).__name__
             summary.setdefault("pick_reports_unread", []).append(f"{round_task}: {why}")
+            continue
+        if not pushed:
+            report = {key: value for key, value in report.items() if key in sent}
+        for key, value in report.items():
+            reports[key] = value
+            if pushed:
+                already.discard(key)
+            else:
+                already.add(key)
 
     def built(row: Mapping[str, Any]) -> bool:
         reported = reports.get((row["task_id"], row["question_index"]))
@@ -2216,9 +2335,12 @@ def _pick_fix(run: _Run, target: MergeTarget, opener: Mapping[str, Any],
 
     still = [row for row in unbuilt if not built(row)]
     if not still:
+        done = [{"task_id": row["task_id"], "question_index": row["question_index"],
+                 "picked": row.get("picked")} for row in unbuilt]
         summary["picks_built_by_rounds"] = [
-            {"task_id": row["task_id"], "question_index": row["question_index"],
-             "picked": row.get("picked")} for row in unbuilt]
+            row for row in done if (row["task_id"], row["question_index"]) not in already]
+        summary["picks_already_built"] = [
+            row for row in done if (row["task_id"], row["question_index"]) in already]
         return None
 
     if last is not None:
@@ -2236,8 +2358,7 @@ def _pick_fix(run: _Run, target: MergeTarget, opener: Mapping[str, Any],
             return refuse(still, f"pick fix round {n} ({task_id}) changed nothing: it pushed "
                                  "no new head")
         picks = last.get("picks")
-        sent = None if not isinstance(picks, list) else {
-            (_mapping(p).get("task_id"), _mapping(p).get("question_index")) for p in picks}
+        sent = _round_picks(last) if isinstance(picks, list) else None
         repeated = [row for row in still
                     if sent is None or (row["task_id"], row["question_index"]) in sent]
         if repeated:

@@ -1035,6 +1035,9 @@ class PullHead:
     base_repo: str
     title: str = ""
     body: str = ""
+    #: The branch the pull request merges INTO; a `publish_to_pr` clone
+    #: fetches it as `origin/<base>` (#2901). "" when GitHub named none.
+    base_ref: str = ""
 
 
 def _full_name(side: Any) -> str:
@@ -1073,6 +1076,7 @@ def read_pull_request(*, ref: RepoRef, token: str, number: int) -> PullHead:
             f"could not read pull request {what} ({status}){': ' + message if message else ''}"
         )
     head = data.get("head") if isinstance(data.get("head"), dict) else {}
+    base = data.get("base") if isinstance(data.get("base"), dict) else {}
     try:
         answered = int(data.get("number") or 0)
     except (TypeError, ValueError):
@@ -1093,6 +1097,7 @@ def read_pull_request(*, ref: RepoRef, token: str, number: int) -> PullHead:
         base_repo=_full_name(data.get("base")),
         title=title if isinstance(title, str) else "",
         body=body if isinstance(body, str) else "",
+        base_ref=str(base.get("ref") or ""),
     )
 
 

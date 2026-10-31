@@ -16,7 +16,7 @@ DAYONE-SETUP-API-1, part of #2688).
     PUT  /v1/admin/setup/health                   `health/latest` (swarm-doctor only)
     GET  /v1/admin/setup/health                   `health/latest`
     POST /v1/admin/setup/health/groups-probe      registered groups readable, met/unmet
-    POST /v1/admin/setup/addons/brave-search/probe  one real search as swarm-api, met/unmet
+    POST /v1/admin/setup/addons/brave-search/probe  one real search as swarm-api (routes/addon_probe.py)
     POST /v1/setup/links/redeem                   a link's named person opens it
 
 WHO MAY CALL (§5.2, §5.3). Every `/v1/admin/setup/*` route is a PLATFORM
@@ -52,6 +52,17 @@ and invites steps say they are not needed, and `finish` waits for the
 personal workspace's smoke. An engine document with no `sizing` reads as a
 team, as every install before this lane did.
 
+NO WORKSPACE BEFORE PUBLISHING (lane DAYONE-MANIFEST-STEPS-2). Filing the
+first workspace approves it, and an approval publishes to
+swarm-workspace-apply only once `workspace_apply_publish` is on, which swarm
+install's infra pass 3 (`github.pass-3`) turns on after the console's GitHub
+step. Approved before it, the workspace would only be logged
+`workspace_stuck` (reason `publishing_off`) and page. So while swarm-api's own
+publisher is off the first-team step says it waits (`steps.first_team.state
+== "waiting"`), the team route answers 409 `publishing_off` and writes
+nothing, and for one person the personal workspace is not filed: the page's
+`personal.reason` is `publishing_off` until it is.
+
 No answer, log record or Firestore field carries a
 secret: the App's three secrets go from GitHub's answer straight into Secret
 Manager, and a link's value straight into its one container.
@@ -60,7 +71,7 @@ Manager, and a link's value straight into its one container.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
@@ -70,8 +81,7 @@ from fastapi.responses import JSONResponse
 from pydantic import Field
 
 from .. import install_record as ir
-from .. import roles
-from .. import search as search_tool
+from .. import refusals, roles
 from .. import setup_links as sl
 from .. import workspaces as ws
 from ..access import record_workspace_installation, write_workspace_grants
@@ -81,6 +91,7 @@ from ..deps import AppContext, admin_auth, current_auth, get_context
 from ..errors import ApiError, Conflict, Forbidden, NotFound, UpstreamUnavailable, ValidationFailed
 from ..groups import GroupLookupError, MembershipResolver, check_group_readable
 from ..people import People
+from ..publish_workspace import WorkspacePublisher
 from ..schemas import StrictModel
 from ..setup_github import (
     GitHubSetupApi,
@@ -90,7 +101,7 @@ from ..setup_github import (
     SetupUnconfigured,
 )
 from .accounts import account_pool
-from .people import name_first_admin, people_service, workspace_directory
+from .people import name_first_admin, people_service, workspace_directory, workspace_publisher
 
 log = logging.getLogger(__name__)
 
@@ -612,6 +623,13 @@ def team_row(request: Request, ctx: AppContext, record: ir.InstallRecord, team_i
         pool_accounts = []
     row = dict(team)
     row.update({"id": team_id, "workspace_state": workspace.get("state"),
+                # The record's `w-` id, which POST /v1/admin/workspaces/{id}/retry
+                # takes: a failed workspace is retried there, not by asking for
+                # the team again (audit 5b, M6).
+                "workspace_id": workspace.get("workspace_id"),
+                # The group's members page on every row, so the invites made
+                # with the team keep their link (audit 5b, M5).
+                "add_members_url": admin_members_url(directory, group) if group else None,
                 "members": [{"email": e, "member": m} for e, m in members.items()],
                 "pool_accounts": pool_accounts, "first": first})
     if first:
@@ -651,13 +669,40 @@ def sizing_view(engine: dict[str, Any] | None) -> dict[str, Any] | None:
     return {name: sizing.get(name) for name in ir.SIZING_FIELDS}
 
 
-def steps_view(mode: str, teams: list[tuple[str, dict[str, Any]]]) -> dict[str, Any]:
+#: What the first workspace waits for while swarm-api publishes nothing: an
+#: approval before infra pass 3 is logged `workspace_stuck` (reason
+#: `publishing_off`) and pages (DAYONE-MANIFEST-STEPS-2).
+PUBLISHING_WAIT = ("waiting for swarm install’s infra pass 3, which turns on workspace "
+                   "publishing: a workspace approved before it is never built")
+
+
+class PublishingOff(Conflict):
+    """No workspace is filed (and so approved) while publishing is off."""
+
+    code = "publishing_off"
+
+
+def refuse_before_publishing(publisher: WorkspacePublisher, step: str) -> None:
+    """409 `publishing_off`, nothing written, until swarm-api's publisher is on
+    (a switched refusal, on by default: `refusals.SWITCHES`)."""
+    if not getattr(publisher, "enabled", False):
+        refusals.refuse(PublishingOff(f"the first workspace is {PUBLISHING_WAIT}",
+                                      detail={"step": step, "reason": "publishing_off"}))
+
+
+def steps_view(mode: str, teams: list[tuple[str, dict[str, Any]]], *,
+               publishing: bool) -> dict[str, Any]:
     """The first-team and invites steps: needed for a team, and for one
-    person `not_needed` with the reason the page shows."""
+    person `not_needed` with the reason the page shows. With no team yet and
+    publishing off, the first team `waiting`, with what it waits for."""
     if mode == ir.INDIVIDUAL:
         skipped = {"needed": False, "state": "not_needed", "reason": NOT_NEEDED}
         return {"first_team": dict(skipped), "invites": dict(skipped)}
-    return {"first_team": {"needed": True, "state": "done" if teams else "to_do"},
+    if not teams and not publishing:
+        first_team = {"needed": True, "state": "waiting", "reason": PUBLISHING_WAIT}
+    else:
+        first_team = {"needed": True, "state": "done" if teams else "to_do"}
+    return {"first_team": first_team,
             "invites": {"needed": True,
                         "state": "done" if any(t.get("invites") for _, t in teams)
                         else "to_do"}}
@@ -678,18 +723,21 @@ def _refuse_for_one_person(record: ir.InstallRecord, step: str) -> None:
 
 
 def ensure_personal(record: ir.InstallRecord, ctx: AppContext, people: People, *,
-                    installer: str, by: str, is_owner: bool) -> dict[str, Any] | None:
+                    installer: str, by: str, is_owner: bool,
+                    publisher: WorkspacePublisher) -> dict[str, Any] | None:
     """A one-person install's first workspace: the installer's personal
     workspace, filed through the existing workspace path (`People.create`,
     as `POST /v1/admin/workspaces`; 200 and nothing written when it stands),
     and recorded once as `console/personal`. None while no installer is
-    known."""
+    known; `PublishingOff` while publishing is off, since filing it approves
+    it."""
     path = record.personal_path()
     doc = record.read(path) or {}
     if doc.get("workspace") and (not installer or doc.get("owner") == installer):
         return doc
     if not installer:
         return None
+    refuse_before_publishing(publisher, "personal")
     _, workspace = people.create(
         ctx.submissions.workspaces, kind=ws.PERSONAL, principal=installer, display_name=None,
         limits=None, by=by, is_owner=is_owner)
@@ -720,7 +768,7 @@ class FirstWorkspace:
 
 def first_workspace(record: ir.InstallRecord, ctx: AppContext, people: People, *,
                     caller: SetupCaller, flow: ManifestFlow, github: GitHubSetupApi,
-                    engine: dict[str, Any] | None = None,
+                    publisher: WorkspacePublisher, engine: dict[str, Any] | None = None,
                     mode: str | None = None) -> FirstWorkspace | None:
     """The first workspace for this install's mode, or None while there is
     none. For one person it is filed and granted here (`ensure_personal`,
@@ -738,7 +786,8 @@ def first_workspace(record: ir.InstallRecord, ctx: AppContext, people: People, *
     installer = installer_of(ctx, engine if engine is not None else record.read_engine())
     auth = caller.auth
     doc = ensure_personal(record, ctx, people, installer=installer, by=caller.email,
-                          is_owner=bool(auth.is_owner) if auth is not None else False)
+                          is_owner=bool(auth.is_owner) if auth is not None else False,
+                          publisher=publisher)
     if doc is None:
         return None
     path = record.personal_path()
@@ -869,6 +918,7 @@ def setup_state(
     github: GitHubSetupApi = Depends(setup_github_api),
     runs: Any = Depends(setup_runs),
     people: People = Depends(people_service),
+    publisher: WorkspacePublisher = Depends(workspace_publisher),
 ) -> dict:
     """The page's whole state. Each team's row is read live (`team_row`), and
     the first team's grant and smoke are advanced on the read the page polls.
@@ -881,7 +931,7 @@ def setup_state(
     if mode == ir.INDIVIDUAL:
         try:
             first = first_workspace(record, ctx, people, caller=caller, flow=flow,
-                                    github=github, engine=engine, mode=mode)
+                                    github=github, publisher=publisher, engine=engine, mode=mode)
         except ApiError as exc:
             log.info("setup page: the personal workspace could not be filed code=%s", exc.code)
             personal = {"owner": installer_of(ctx, engine) or None, "workspace": None,
@@ -889,12 +939,24 @@ def setup_state(
         else:
             if first is not None:
                 personal = personal_row(request, ctx, record, first, runs=runs)
+    finished = record.read(record.console_path(ir.FINISHED))
+    if finished is not None:
+        # Once handed over, each read starts a verify run `finish` could not
+        # start and restarts a failed one, up to MAX_VERIFY_RETRIES (B1).
+        try:
+            handed = first_workspace(record, ctx, people, caller=caller, flow=flow,
+                                     github=github, publisher=publisher, engine=engine,
+                                     mode=mode)
+        except ApiError as exc:
+            log.info("setup page: the first workspace could not be read code=%s", exc.code)
+        else:
+            keep_verify_runs(record, ctx, handed, runs=runs, by=caller.email)
     return {
         "env": record.env,
         "engine": engine,
         "mode": mode,
         "sizing": sizing_view(engine),
-        "steps": steps_view(mode, teams),
+        "steps": steps_view(mode, teams, publishing=bool(getattr(publisher, "enabled", False))),
         "personal": personal,
         "cli_running": _cli_running(engine, ctx.now()),
         "github_app": _github_view(record.read(record.console_path(ir.GITHUB_APP))),
@@ -904,7 +966,7 @@ def setup_state(
                   for index, (team_id, doc) in enumerate(teams)],
         "verify_runs": record.read(record.console_path(ir.VERIFY_RUNS)),
         "accounts": _accounts_view(record.read(record.console_path(ir.ACCOUNTS))),
-        "finished": record.read(record.console_path(ir.FINISHED)),
+        "finished": finished,
         "addons": [{"name": name, "enable": f"swarm addon enable {name}",
                     "secret_link": name in sl.ADDON_SECRETS} for name in ADDONS],
         "hostname": ctx.settings.install_hostname or None,
@@ -960,6 +1022,20 @@ def github_app_installation(
     if not ctx.settings.setup_github_org:
         raise SetupUnconfigured("SETUP_GITHUB_ORG is not set")
     return flow.installation(ctx.settings.setup_github_org)
+
+
+@router.get("/github-app/permissions", dependencies=[Depends(admin_auth)])
+def github_app_permissions(
+    caller: SetupCaller = Depends(admin_setup_caller),  # noqa: ARG001 - the gate
+    ctx: AppContext = Depends(get_context),
+    flow: ManifestFlow = Depends(manifest_flow),
+    github: GitHubSetupApi = Depends(setup_github_api),
+) -> dict:
+    """The App's and its installation's permissions, read as the App, for
+    `swarm upgrade` (`setup_app_read`): no token, key or secret field."""
+    from ..setup_app_read import app_permissions
+
+    return app_permissions(flow, github, org=ctx.settings.setup_github_org)
 
 
 @router.post("/github-app/self-check", dependencies=[Depends(admin_auth)])
@@ -1039,6 +1115,7 @@ def create_team(
     directory: MembershipResolver | None = Depends(workspace_directory),
     flow: ManifestFlow = Depends(manifest_flow),
     github: GitHubSetupApi = Depends(setup_github_api),
+    publisher: WorkspacePublisher = Depends(workspace_publisher),
 ) -> JSONResponse:
     """A team: the group workspace through the existing workspace path
     (`People.create`, as `POST /v1/admin/workspaces`; `swarm-workspace-apply`
@@ -1052,8 +1129,11 @@ def create_team(
 
     A one-person install has no team (decision 7): 409, nothing written. A
     group swarm-api cannot read, or one the installer is not in, is refused
-    the same way, with the Google Admin groups page (`check_team_group`)."""
+    the same way, with the Google Admin groups page (`check_team_group`).
+    Before infra pass 3 turns publishing on, 409 `publishing_off`: the
+    workspace this approves would never be built."""
     _refuse_for_one_person(record, "first_team")
+    refuse_before_publishing(publisher, "first_team")
     installer = installer_of(ctx, record.read_engine()) or caller.email.strip().lower()
     check_team_group(directory, installer, body.group.strip().lower())
     first_admin = roles.subject_for_write(body.first_admin) if body.first_admin else None
@@ -1156,12 +1236,13 @@ def restart_smoke(
     people: People = Depends(people_service),
     flow: ManifestFlow = Depends(manifest_flow),
     github: GitHubSetupApi = Depends(setup_github_api),
+    publisher: WorkspacePublisher = Depends(workspace_publisher),
 ) -> dict:
     """Start the first team's (for one person, the personal workspace's)
     smoke again after it failed; a running or passed smoke is answered as it
     is."""
     first, _ = _granted_repository(first_workspace(record, ctx, people, caller=caller,
-                                                   flow=flow, github=github))
+                                                   flow=flow, github=github, publisher=publisher))
     doc = first.doc
     if (doc.get("smoke") or {}).get("state") == FAILED:
         doc = {**doc, "smoke": None}
@@ -1220,34 +1301,28 @@ def _submit_verify_run(runs: Any, key: str, tenant: str, group: str, repository:
                                 label=VERIFY_LABEL)
 
 
-@router.post("/verify-runs", dependencies=[Depends(admin_auth)])
-def start_verify_runs(
-    caller: SetupCaller = Depends(admin_setup_caller),
-    ctx: AppContext = Depends(get_context),
-    record: ir.InstallRecord = Depends(install_record),
-    runs: Any = Depends(setup_runs),
-    people: People = Depends(people_service),
-    flow: ManifestFlow = Depends(manifest_flow),
-    github: GitHubSetupApi = Depends(setup_github_api),
-) -> dict:
+def ensure_verify_runs(record: ir.InstallRecord, ctx: AppContext, first: FirstWorkspace | None,
+                       *, runs: Any, by: str) -> dict[str, Any]:
     """The console's two verification runs, one task and one workflow, as the
-    first team (for one person, in the personal workspace) on a repository of its grant (decision 3: the team's own slot,
-    never a person's token). Their ids go to `console/verify_runs` as
-    `verify_runs: {console_task, console_workflow}`, which the engine copies
-    into `state.outputs["verify_runs"]`, so nobody pastes an id.
+    first team (for one person, in the personal workspace) on a repository of
+    its grant (decision 3: the team's own slot, never a person's token). Their
+    ids go to `console/verify_runs` as `verify_runs: {console_task,
+    console_workflow}`, which the engine copies into
+    `state.outputs["verify_runs"]`, so nobody pastes an id.
 
-    Called again, it reads each recorded run: one that failed or was
+    Idempotent: each recorded run is read, and one that failed or was
     cancelled counts as missing and a fresh run of its shape replaces its id,
     the other key kept; one still going, or succeeded, is left alone. Each
     key's fresh starts are counted in the document's `retries` field and
     answered as `retries`; a key that failed after `MAX_VERIFY_RETRIES` of
-    them is answered as a 409 saying so, and nothing is started."""
+    them is a 409 saying so, and nothing is started. `finish`, the status
+    route (once `console/finished` exists) and `POST /verify-runs` all call
+    this, so the runs start without anyone pressing a button (audit 5b, B1)."""
     path = record.console_path(ir.VERIFY_RUNS)
     done = record.read(path) or {}
     started = _verify_ids(dict(done.get("verify_runs") or {}))
     retries = _verify_retries(done)
-    first, repository = _granted_repository(first_workspace(
-        record, ctx, people, caller=caller, flow=flow, github=github))
+    first, repository = _granted_repository(first)
     tenant = first.tenant
     group = first.principal
     missing: list[str] = []
@@ -1275,12 +1350,44 @@ def start_verify_runs(
         record.write(path, {"verify_runs": dict(started), "retries": dict(retries),
                             "repository": repository,
                             "started_at": done.get("started_at") or ctx.now(),
-                            "by": caller.email})
+                            "by": by})
     log.info("console verify runs started %s task=%s workflow=%s retries=%s by=%s",
              ",".join(missing), started["console_task"], started["console_workflow"],
-             retries, caller.email)
+             retries, by)
     return {"verify_runs": started, "retries": retries, "repository": repository,
             "started": True}
+
+
+def keep_verify_runs(record: ir.InstallRecord, ctx: AppContext, first: FirstWorkspace | None,
+                     *, runs: Any, by: str) -> dict[str, Any] | None:
+    """`ensure_verify_runs` for a step that must not fail on it (`finish`,
+    the status route): its answer, or None with the reason logged (a key
+    whose retries are spent, a read that failed); the page then serves the
+    document as it stands."""
+    try:
+        return ensure_verify_runs(record, ctx, first, runs=runs, by=by)
+    except ApiError as exc:
+        log.info("console verify runs not started code=%s", exc.code)
+        return None
+
+
+@router.post("/verify-runs", dependencies=[Depends(admin_auth)])
+def start_verify_runs(
+    caller: SetupCaller = Depends(admin_setup_caller),
+    ctx: AppContext = Depends(get_context),
+    record: ir.InstallRecord = Depends(install_record),
+    runs: Any = Depends(setup_runs),
+    people: People = Depends(people_service),
+    flow: ManifestFlow = Depends(manifest_flow),
+    github: GitHubSetupApi = Depends(setup_github_api),
+    publisher: WorkspacePublisher = Depends(workspace_publisher),
+) -> dict:
+    """`ensure_verify_runs`, on request: `finish` and the status route start
+    and restart the runs themselves, so the page offers this only once a
+    key's retries are spent (a 409 says so)."""
+    first = first_workspace(record, ctx, people, caller=caller, flow=flow, github=github,
+                            publisher=publisher)
+    return ensure_verify_runs(record, ctx, first, runs=runs, by=caller.email)
 
 
 # --------------------------------------------------------------------------
@@ -1316,6 +1423,7 @@ def mint_link(
     people: People = Depends(people_service),
     flow: ManifestFlow = Depends(manifest_flow),
     github: GitHubSetupApi = Depends(setup_github_api),
+    publisher: WorkspacePublisher = Depends(workspace_publisher),
 ) -> dict:
     """One route, three kinds (review finding 21). The token is in this answer
     and nowhere else; Firestore keeps its digest.
@@ -1331,7 +1439,8 @@ def mint_link(
     personal = None
     if install_mode(engine) == ir.INDIVIDUAL and body.kind in (sl.POOL_ACCOUNT, sl.TEAM_GIT):
         personal = first_workspace(record, ctx, people, caller=caller, flow=flow,
-                                   github=github, engine=engine, mode=ir.INDIVIDUAL)
+                                   github=github, publisher=publisher, engine=engine,
+                                   mode=ir.INDIVIDUAL)
         if personal is None:
             raise Conflict("this one-person install names no installer yet")
     if personal is not None and body.kind == sl.POOL_ACCOUNT:
@@ -1457,13 +1566,16 @@ def finish(
     github: GitHubSetupApi = Depends(setup_github_api),
     runs: Any = Depends(setup_runs),
     people: People = Depends(people_service),
+    publisher: WorkspacePublisher = Depends(workspace_publisher),
 ) -> dict:
     """Write `console/finished` once every required console step is done: the
     App installed and its self-check passed, a first team, a pool account
     signed in to it, and the first team's smoke passed (`advance_smoke`,
     started here too if the page has not started it yet). A labelled account
-    seen in the first team's pool gets its `signed_in_at` here. The CLI
-    starts verify when this document exists.
+    seen in the first team's pool gets its `signed_in_at` here. It then
+    starts the console's two verify runs (`keep_verify_runs`, idempotent),
+    answered as `verify_runs`; the CLI starts verify when `finished` exists
+    and reads their ids from `console/verify_runs`.
 
     For one person (decision 7) the personal workspace takes the first team's
     place: no team, no invites; its pool account and its smoke
@@ -1471,8 +1583,11 @@ def finish(
     app = record.read(record.console_path(ir.GITHUB_APP)) or {}
     engine = record.read_engine()
     mode = install_mode(engine)
-    first = first_workspace(record, ctx, people, caller=caller, flow=flow, github=github,
-                            engine=engine, mode=mode)
+    try:
+        first = first_workspace(record, ctx, people, caller=caller, flow=flow, github=github,
+                                publisher=publisher, engine=engine, mode=mode)
+    except PublishingOff:
+        first = None
     accounts = record.read(record.console_path(ir.ACCOUNTS)) or {}
     missing: list[str] = []
     if not app.get("installed_on"):
@@ -1504,6 +1619,7 @@ def finish(
                                  org=ctx.settings.setup_github_org, by=caller.email,
                                  now=ctx.now(), db=ctx.db, path=first.path)
             doc = {**doc, "grant": grant}
+            first = replace(first, doc=doc)
         smoke = advance_smoke(record, first.key, doc, runs=runs, pool_accounts=sorted(signed),
                               now=ctx.now(), path=first.path, principal=first.principal) or {}
         smoke_passed = smoke.get("state") == SUCCEEDED
@@ -1514,7 +1630,10 @@ def finish(
     done = record.read(record.console_path(ir.FINISHED))
     if done is None:
         done = record.write(record.console_path(ir.FINISHED), {"at": ctx.now(), "by": caller.email})
-    return {"finished": done}
+    # The console's two verify runs start here, not on a button nobody is
+    # told to press (audit 5b, B1): swarm install's verify waits for them.
+    verify = keep_verify_runs(record, ctx, first, runs=runs, by=caller.email)
+    return {"finished": done, "verify_runs": verify}
 
 
 # --------------------------------------------------------------------------
@@ -1650,28 +1769,6 @@ def groups_probe(
              sum(1 for r in results if r["state"] != "met"))
     return {"mode": ctx.settings.groups_auth, "results": results, "groups": results,
             "met": all(r["state"] == "met" for r in results)}
-
-
-@router.post("/addons/brave-search/probe", dependencies=[Depends(admin_auth)])
-def brave_search_probe(
-    request: Request,
-    caller: SetupCaller = Depends(admin_setup_caller),
-    ctx: AppContext = Depends(get_context),
-) -> dict:
-    """`swarm addon enable brave-search`'s check (owner pick 2026-10-31,
-    "admin-probe"): one search of one result, with the key swarm-api reads
-    and the provider SEARCH_PROVIDER names, exactly as an agent's search
-    would reach them (`search.probe`). A platform admin's only: the engine
-    calls it as the person signed in with `swarm login`. Met/unmet with a
-    reason; never the key, a result or the provider's body. A test sets
-    `app.state.search_probe_provider` and `.search_probe_key` to fakes."""
-    answer = search_tool.probe(
-        ctx.settings,
-        provider=getattr(request.app.state, "search_probe_provider", None),
-        key=getattr(request.app.state, "search_probe_key", None))
-    log.info("brave-search probe by=%s state=%s reason=%s", caller.kind, answer["state"],
-             answer.get("reason"))
-    return answer
 
 
 __all__ = ["admin_setup_caller", "links_router", "router", "setup_caller"]

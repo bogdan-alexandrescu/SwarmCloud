@@ -4526,7 +4526,7 @@ const FIXTURE_REASON_GROUPS: Record<string, string[]> = {
  * demanding a key fails that test here rather than teaching the screen a rule
  * production does not apply.
  *
- * `inputs` ON claude-code, codex AND claude-code-large, the profiles that take
+ * `inputs` ON claude-code, codex, claude-code-large AND claude-code-lightpanda, the profiles that take
  * MCP servers and declare nothing else a form draws (QAFIX6-FIXTURE f, run 6
  * overview-automate-019, box 6343758363): with no profile serving `inputs`,
  * `mcpProfiles` (McpServers.tsx) read the fixture as an API too old to say,
@@ -4557,6 +4557,7 @@ const FIXTURE_INPUT_CONTRACTS: Record<string, FixtureInputContract> = {
   "indexer": {"required_keys": ["prompt"]},
   "claude-code-browser": {"required_keys": ["prompt"]},
   "claude-code-large": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}}},
+  "claude-code-lightpanda": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}}},
   "await-input": {"required_keys": []},
   "fix-loop": {"required_keys": []}
 }
@@ -4593,6 +4594,7 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
   "indexer": {"available": true, "disabled_reason": ""},
   "claude-code-browser": {"available": true, "disabled_reason": ""},
   "claude-code-large": {"available": true, "disabled_reason": ""},
+  "claude-code-lightpanda": {"available": true, "disabled_reason": ""},
   "await-input": {"available": true, "disabled_reason": ""},
   "fix-loop": {"available": false, "disabled_reason": "fix-loop is not available yet: it ships unavailable until its acceptance run passes, as docs/design/fix-loop.md says."}
 }
@@ -13135,6 +13137,10 @@ export interface SetupTeam {
   members: SetupMember[]
   /** The labels of the pool accounts the route found in the team's own pool, read live. */
   pool_accounts: string[]
+  /** The workspace record's `w-` id: a failed workspace is retried with `retryWorkspace(workspace_id)` (audit 5b, M6). */
+  workspace_id: string | null
+  /** The group's members page in Google Admin, served on every row so every invite keeps its link (audit 5b, M5). */
+  add_members_url: string | null
 }
 
 /**
@@ -13366,6 +13372,8 @@ function normTeam(raw: unknown): SetupTeam | null {
       .filter((m): m is Record<string, unknown> => m !== null && strOf(m.email) !== null)
       .map((m) => ({ email: strOf(m.email) as string, member: typeof m.member === 'boolean' ? m.member : null })),
     pool_accounts: labelsOf(t.pool_accounts),
+    workspace_id: strOf(t.workspace_id),
+    add_members_url: adminMembersPage(t.add_members_url),
   }
 }
 
@@ -13469,31 +13477,37 @@ export interface SetupLink {
 
 export type SetupLinkKind = 'pool-account' | 'team-git' | 'addon-secret'
 
-/** One check's last result in `health/latest`. "Not checked" is its own result, never a pass. */
+/**
+ * One check's last result in `health/latest`, read from the row
+ * swarm-doctor writes (`doctor.Finding.to_json`: `{id, status, detail, step,
+ * fix, cause, repair}`). "Not checked" is its own result, never a pass.
+ */
 export interface HealthCheck {
+  /** The manifest entry's id; the doctor writes no other title. */
   id: string
-  title: string
-  /** `passed`, `failed`, or `not_checked` (anything unread is not checked). */
-  result: string
-  at: string | null
+  /** `passed` (met), `failed` (unmet), or `not_checked` (unknown, or anything unread). */
+  result: HealthResult
   detail: string | null
+  /** The install step that satisfies the entry, when one does. */
+  step: string | null
 }
 
-/** One doctor finding: what drifted, what changed, and how to repair it. */
+export type HealthResult = 'passed' | 'failed' | 'not_checked'
+
+/** One doctor finding (a check that is not met): what the probe saw, why, and how to repair it. */
 export interface HealthFinding {
-  check: string
-  title: string
+  id: string
+  /** `failed` (unmet: it drifted) or `not_checked` (unknown: the probe could not say). */
+  result: Exclude<HealthResult, 'passed'>
+  /** What the probe saw. */
+  detail: string | null
+  step: string | null
+  /** The doctor's fix, in words: what the entry is for and what repairs it. */
+  fix: string | null
+  /** Why a probe saw a 403: `propagating` or `missing_grant`; null otherwise. */
   cause: string | null
-  /** The audit-log entry, when the check knows it. */
-  changed: string | null
-  /**
-   * The repair command; `swarm install` when the finding names none: it
-   * re-checks every step and repairs the one that drifted (there is no
-   * `--repair` flag).
-   */
-  repair: string
-  /** Where in the Cloud console the same repair is, when there is one. */
-  console_path: string | null
+  /** `swarm install --repair <id>`, or null when no install step makes the entry. */
+  repair: string | null
 }
 
 export interface SetupHealth {
@@ -13502,37 +13516,38 @@ export interface SetupHealth {
   findings: HealthFinding[]
 }
 
-const CHECK_RESULTS = new Set(['passed', 'failed'])
+/**
+ * The doctor's `status` (swarm_install/exitcodes.py's MET, UNMET, UNKNOWN) as
+ * the console's result. Only the doctor's own words are read: a row in any
+ * other shape (a `result: passed` the doctor never writes) is not checked,
+ * so a fake in the console's own shape cannot draw a clean page.
+ */
+const HEALTH_RESULT_OF_STATUS: Record<string, HealthResult> = { met: 'passed', unmet: 'failed', unknown: 'not_checked' }
 
-/** A finding's repair when the doctor names none: swarm install re-checks every step and repairs what drifted. */
-export const REPAIR_BY_REINSTALL = 'swarm install'
+const healthResultOf = (status: unknown): HealthResult => {
+  const s = strOf(status)
+  return (s !== null && Object.prototype.hasOwnProperty.call(HEALTH_RESULT_OF_STATUS, s) ? HEALTH_RESULT_OF_STATUS[s] : undefined) ?? 'not_checked'
+}
+
+const doctorRows = (rows: unknown): Record<string, unknown>[] =>
+  (Array.isArray(rows) ? rows : []).map(objOf).filter((r): r is Record<string, unknown> => r !== null && strOf(r.id) !== null)
 
 /** `GET /v1/admin/setup/health`'s `latest`, or null when no doctor run is recorded. */
 export function normSetupHealth(raw: unknown): SetupHealth | null {
   const latest = objOf(objOf(raw)?.latest)
   if (latest === null) return null
-  const checks = (Array.isArray(latest.checks) ? latest.checks : [])
-    .map(objOf)
-    .filter((c): c is Record<string, unknown> => c !== null && strOf(c.id ?? c.check) !== null)
-    .map((c) => {
-      const id = strOf(c.id ?? c.check) as string
-      const result = strOf(c.result ?? c.state)
-      return { id, title: strOf(c.title) ?? id, result: result !== null && CHECK_RESULTS.has(result) ? result : 'not_checked', at: strOf(c.at), detail: strOf(c.detail) }
-    })
-  const findings = (Array.isArray(latest.findings) ? latest.findings : [])
-    .map(objOf)
-    .filter((f): f is Record<string, unknown> => f !== null && strOf(f.check) !== null)
-    .map((f) => {
-      const check = strOf(f.check) as string
-      return {
-        check,
-        title: strOf(f.title) ?? check,
-        cause: strOf(f.cause),
-        changed: strOf(f.changed),
-        repair: strOf(f.repair) ?? REPAIR_BY_REINSTALL,
-        console_path: strOf(f.console_path),
-      }
-    })
+  const checks = doctorRows(latest.checks).map((c) => ({
+    id: strOf(c.id) as string,
+    result: healthResultOf(c.status),
+    detail: strOf(c.detail),
+    step: strOf(c.step),
+  }))
+  // The doctor lists every finding that is not met; a met row here is not a finding.
+  const findings = doctorRows(latest.findings).flatMap((f): HealthFinding[] => {
+    const result = healthResultOf(f.status)
+    if (result === 'passed') return []
+    return [{ id: strOf(f.id) as string, result, detail: strOf(f.detail), step: strOf(f.step), fix: strOf(f.fix), cause: strOf(f.cause), repair: strOf(f.repair) }]
+  })
   return { run_at: strOf(latest.run_at), checks, findings }
 }
 
@@ -13670,13 +13685,18 @@ export interface SetupInvite {
   member: boolean | null
 }
 
+/** A members page as the setup routes serve it: kept only when it is Google Admin's. */
+function adminMembersPage(raw: unknown): string | null {
+  const url = strOf(raw)
+  return url !== null && url.startsWith('https://admin.google.com/') ? url : null
+}
+
 /** One invite as the team routes answer it; only a Google Admin page is kept as its members page. */
 function normInvite(raw: unknown): SetupInvite | null {
   const d = objOf(raw)
   const email = d === null ? null : strOf(d.email)
   if (d === null || email === null) return null
-  const url = strOf(d.add_members_url)
-  return { email, add_members_url: url !== null && url.startsWith('https://admin.google.com/') ? url : null, member: typeof d.member === 'boolean' ? d.member : null }
+  return { email, add_members_url: adminMembersPage(d.add_members_url), member: typeof d.member === 'boolean' ? d.member : null }
 }
 
 /**
@@ -13793,26 +13813,25 @@ function fixtureSetupState(): Record<string, unknown> {
   }
 }
 
-/** The fixture build's latest doctor run: one finding, one check not run. */
-function fixtureSetupHealth(): Record<string, unknown> {
+/**
+ * The fixture build's latest doctor run, in the shape swarm-doctor writes
+ * (`scheduled_doctor.report()`: every row is `doctor.Finding.to_json()`, and
+ * `findings` repeats each row that is not met): two met, one unmet, one
+ * unknown. AdminSetupHealth.test.tsx holds these rows to the writer's keys.
+ */
+export function fixtureSetupHealth(): Record<string, unknown> {
+  const fix = (why: string, step: string, id: string) => `${why} Fix: the install's step ${step} makes it: swarm install --repair ${id}.`
+  const rows = [
+    { id: 'api.artifactregistry', status: 'met', detail: 'artifactregistry.googleapis.com is enabled', step: 'foundations.apis', fix: fix('The registry the images are pulled from.', 'foundations.apis', 'api.artifactregistry'), cause: '', repair: 'swarm install --repair api.artifactregistry' },
+    { id: 'api.cloudkms', status: 'unmet', detail: 'cloudkms.googleapis.com is not enabled', step: 'foundations.apis', fix: fix('The keys the state bucket and the secrets are encrypted with.', 'foundations.apis', 'api.cloudkms'), cause: '', repair: 'swarm install --repair api.cloudkms' },
+    { id: 'api.cloudbuild', status: 'met', detail: 'cloudbuild.googleapis.com is enabled', step: 'foundations.apis', fix: fix('The builds the release images come from.', 'foundations.apis', 'api.cloudbuild'), cause: '', repair: 'swarm install --repair api.cloudbuild' },
+    { id: 'quota.cloud-run-jobs', status: 'unknown', detail: 'missing grant: swarm-doctor@example.iam.gserviceaccount.com lacks serviceusage.quotas.get on projects/example, so this could not be checked', step: null, fix: 'Fix: no install step makes this; see the entry\'s check: quota.cloud-run-jobs.', cause: 'missing_grant', repair: null },
+  ]
   return {
     latest: {
       run_at: new Date(FIXTURE_NOW - 2 * 60_000).toISOString(),
-      checks: [
-        { id: 'edge.certificate', title: 'Front door', result: 'passed', detail: 'certificate ACTIVE · IAP on' },
-        { id: 'iap.programmatic_clients', title: 'IAP programmatic clients', result: 'failed', detail: '0 of 1 present' },
-        { id: 'images.digests', title: 'Images', result: 'passed', detail: 'every service on its expected digest' },
-        { id: 'scheduler.targets', title: 'Scheduler ticks', result: 'not_checked', detail: null },
-      ],
-      findings: [
-        {
-          check: 'iap.programmatic_clients',
-          title: 'The Desktop OAuth client is no longer on IAP’s programmatic allowlist',
-          cause: 'Every new sc login answers 401 with code 900; signed-in sessions keep working until their token expires.',
-          changed: 'removed 3 h ago by ravi@example.com (Cloud Audit Logs)',
-          console_path: 'Security › Identity-Aware Proxy › Settings › Programmatic clients',
-        },
-      ],
+      checks: rows,
+      findings: rows.filter((r) => r.status !== 'met'),
     },
   }
 }

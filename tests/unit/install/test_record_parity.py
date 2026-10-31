@@ -55,6 +55,17 @@ def test_every_document_both_sides_name_is_a_path_firestore_accepts() -> None:
     assert len(teams.split("/")) % 2 == 1, teams
 
 
+def test_the_github_app_document_carries_every_field_pass_3_reads() -> None:
+    """E2E-1 (DAYONE-APP-NAME): infra pass 3 copies `github_switches.APP_FIELDS`
+    (`name` among them) from the console's `github_app` document into its
+    tfvars, so both sides list each of them as a field swarm-api writes."""
+    from swarm_install.steps.github_switches import APP_FIELDS
+
+    path = "swarm-install/{env}/console/github_app"
+    assert set(APP_FIELDS) <= api_record.SWARM_API_DOCUMENTS[path]
+    assert set(APP_FIELDS) <= _api_rows()[path]
+
+
 def test_the_first_teams_grant_is_a_team_field_on_both_sides() -> None:
     path = "swarm-install/{env}/teams/{id}"
     assert {"grant", "smoke"} <= api_record.SWARM_API_DOCUMENTS[path]

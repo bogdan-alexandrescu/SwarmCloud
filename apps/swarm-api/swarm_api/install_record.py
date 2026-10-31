@@ -28,8 +28,8 @@ COLLECTION = "swarm-install"
 #: is keyed per account label; each label's value holds `ACCOUNT_FIELDS`.
 SWARM_API_DOCUMENTS: dict[str, frozenset[str]] = {
     "swarm-install/{env}/console/github_app": frozenset(
-        {"state_hash", "id", "slug", "client_id", "installed_on", "secrets_written_at",
-         "self_check"}),
+        {"state_hash", "id", "slug", "client_id", "name", "installed_on",
+         "secrets_written_at", "self_check"}),
     "swarm-install/{env}/console/accounts": frozenset(),
     #: A collection under the env document: `console/teams/<id>` has five
     #: segments, which real Firestore refuses as a document (audit 3, A2).

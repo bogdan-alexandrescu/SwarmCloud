@@ -60,11 +60,15 @@ class ApiCallError(RuntimeError):
     """swarm-api (or IAP in front of it) answered with an error. The message
     carries the status and swarm-api's error code, never a header."""
 
-    def __init__(self, status: int, code: str, path: str) -> None:
-        super().__init__(f"{path} answered HTTP {status}" + (f" ({code})" if code else ""))
+    def __init__(self, status: int, code: str, path: str, *, message: str = "",
+                 detail: Mapping[str, Any] | None = None) -> None:
+        super().__init__(f"{path} answered HTTP {status}" + (f" ({code})" if code else "")
+                         + (f": {message}" if message else ""))
         self.status = status
         self.code = code
         self.path = path
+        self.message = message
+        self.detail: Mapping[str, Any] = detail or {}
 
 
 class IdTokenMinter(Protocol):
@@ -148,6 +152,20 @@ class GroupsProbe:
         return GroupResult(group, "unknown", "absent", f"swarm-api's answer did not name {group}")
 
 
+def refusal(status: int, body: Any, path: str) -> ApiCallError:
+    """swarm-api's `ApiError` handler serves the flat `{code, message, detail?}`
+    (swarm_api/errors.py `to_payload`); a body nested under `error` (IAP, or a
+    front end in between) is read too, so neither shape loses the code."""
+    error: Any = body if isinstance(body, Mapping) else {}
+    if "code" not in error and "error" in error:
+        error = error["error"]
+    if not isinstance(error, Mapping):
+        return ApiCallError(status, str(error or ""), path)
+    detail = error.get("detail")
+    return ApiCallError(status, str(error.get("code") or ""), path, message=str(error.get("message") or ""),
+                        detail=detail if isinstance(detail, Mapping) else None)
+
+
 @dataclass
 class ApiClient:
     project: str
@@ -166,9 +184,7 @@ class ApiClient:
         found = self.http(method, self.base_url.rstrip("/") + path,
                           {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}, body)
         if not 200 <= found.status < 300:
-            error = found.body.get("error") if isinstance(found.body, Mapping) else None
-            code = str((error or {}).get("code", "") if isinstance(error, Mapping) else error or "")
-            raise ApiCallError(found.status, code, path)
+            raise refusal(found.status, found.body, path)
         return found.body
 
     def activate_hook(self) -> Mapping[str, Any]:

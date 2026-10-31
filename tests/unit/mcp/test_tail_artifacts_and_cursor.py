@@ -400,7 +400,8 @@ def test_the_bridge_reads_a_spec_file_and_hands_back_its_digest_submitting_nothi
 
     reply = json.loads(server._call(_Nothing(), "swarm_workflow_spec", {"path": "specs/scan.json"}))
 
-    assert reply["spec"] == _SPEC
+    # The outline, never the spec (#2875): the bridge holds it under `spec_ref`.
+    assert "spec" not in reply and server._HELD_SPECS[reply["spec_ref"]]["spec"] == _SPEC
     assert reply["spec_digest"] == workflows.spec_digest(_SPEC)
     assert reply["path"] == str((tmp_path / "specs" / "scan.json").resolve())
 
@@ -484,7 +485,7 @@ def test_a_symlinked_checkout_still_reads_its_own_files(tmp_path, monkeypatch):
     for path in ("specs/scan.json", str(via / "specs" / "scan.json"), str(work / "specs" / "scan.json"),
                  "specs/alias.json"):
         reply = json.loads(server._call(_Nothing(), "swarm_workflow_spec", {"path": path}))
-        assert reply["spec"] == _SPEC, path
+        assert server._HELD_SPECS[reply["spec_ref"]]["spec"] == _SPEC, path
 
 
 def test_spec_path_on_the_other_tools_is_held_to_the_checkout_too(tmp_path, monkeypatch):

@@ -118,6 +118,38 @@ def test_a_running_task_carries_no_waiting(swarm, world):
     assert "waiting" not in row  # MUTATION: serve the API's `waiting: null` as a key -- present.
 
 
+def _parked_on_a_person(world, blocked: dict) -> None:  # noqa: F811
+    """task_a PARKED HUMAN_REQUIRED with the worker's `blocked_by` entry, as the real API reads it."""
+    _parked(world, reason="HUMAN_REQUIRED")
+    doc = world.db.docs["tasks/task_a"]
+    doc["step_id"] = "implement"
+    doc["next_eligible_at"] = datetime.now(timezone.utc) - timedelta(hours=3)
+    doc["blocked_by"] = [blocked]
+
+
+def test_status_of_a_question_wait_says_it_waits_for_the_owners_answer(swarm, world):
+    # #2859: task_aaf56ef0026746928cdf's waiting_line was the hand-off's sign-in text.
+    _parked_on_a_person(world, {
+        "reason": "HUMAN_REQUIRED", "park_phase": "question_wait",
+        "question_wait": {"questions": [{"question": "Refuse the merge or warn?", "options": [],
+                                         "recommended": None, "context": None, "blocking": True}],
+                          "blocking": [0], "attempt_id": "att_ask",
+                          "asked_at": datetime.now(timezone.utc).isoformat()}})
+    (row,) = json.loads(server._call(swarm, "swarm_status", {"task_ids": ["task_a"]}))
+    # MUTATION: the sign-in sentence for a question wait turns this red.
+    assert "sign in" not in row["waiting_line"]
+    assert row["waiting_line"] == (
+        "Waiting for the owner's answer to 1 question: \u201cRefuse the merge or warn?\u201d; "
+        "answer on its console page (Questions) or in Claude Code with /sc check")
+
+
+def test_status_of_a_hand_off_keeps_the_sign_in_line(swarm, world):
+    _parked_on_a_person(world, {"reason": "HUMAN_REQUIRED", "park_phase": "human_wait", "cause": "captcha"})
+    (row,) = json.loads(server._call(swarm, "swarm_status", {"task_ids": ["task_a"]}))
+    # MUTATION: the question line for a hand-off turns this red.
+    assert row["waiting_line"] == "Waiting for a person: sign in on its console page, then say it is ready"
+
+
 def test_the_skill_prints_the_waiting_line_after_the_state():
     from pathlib import Path
 

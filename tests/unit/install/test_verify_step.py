@@ -20,11 +20,13 @@ import io
 import json
 import os
 import secrets
+import shlex
 import shutil
 import sys
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -287,6 +289,8 @@ def test_reconciler_can_list_jobs() -> None:
 REPO = "acme/demo"
 HOSTNAME = "swarm.acme.example"
 TEAM = "eng"
+#: The installer's own personal workspace, as `tenant_id_for_user` names it.
+PERSONAL_TENANT = "u-ada-acme-example"
 #: The code graph's indexed commit, made at runtime.
 INDEX_SHA = secrets.token_hex(20)
 REPO_ID = "repo_" + secrets.token_hex(8)
@@ -785,13 +789,19 @@ def test_only_a_known_kind_and_a_slot_name_are_repeated_from_a_summary() -> None
 def swarm_off_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     """Audit 4b, B4: install.sh put swarm in ~/.local/bin, which is not on the
     PATH of the terminal it ran in, so the person typed `~/.local/bin/swarm
-    install`. Every fake below spawns as a subprocess would (`spawn`)."""
+    install`. Every fake below spawns as a subprocess would (`spawn`). The
+    tool's interpreter is a real one, as in uv's tool bin: stage 10 renders
+    the release bundle with `sys.executable`."""
     path = tmp_path / "home" / ".local" / "bin" / "swarm"
     path.parent.mkdir(parents=True)
     path.write_text("#!/bin/sh\n")
     path.chmod(0o755)
+    interpreter = tmp_path / "tools" / "swarmcloud" / "bin" / "python3"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$@\"\n")
+    interpreter.chmod(0o755)
     monkeypatch.setattr(sys, "argv", [str(path), "install"])
-    monkeypatch.setattr(sys, "executable", str(tmp_path / "tools" / "swarmcloud" / "bin" / "python3"))
+    monkeypatch.setattr(sys, "executable", str(interpreter))
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
     return str(path)
 
@@ -1002,6 +1012,10 @@ class FakeSwarm:
                                                    {"repository": REPO, "archived": False}]
         self.connect_on_setup: list[dict[str, Any]] | None = None
         self.repos_error = ""
+        #: What `GET /v1/tenants/mine` lists: the installer's own READY
+        #: personal workspace first and current (owner decision 2026-10-12,
+        #: "personal by default"), then the team groups.
+        self.tenants = [PERSONAL_TENANT, TEAM]
 
     def __call__(self, argv: Sequence[str], stdin: str | None, env: dict[str, str] | None) -> tuple[int, str, str]:
         spawn(argv[0])
@@ -1040,17 +1054,105 @@ class FakeSwarm:
             self.contexts[name]["signed_in"] = True
             return 0, "", ""
         if rest == ["tenants", "--json"]:
-            return 0, json.dumps({"tenants": [{"tenant_id": TEAM, "display_name": "Eng", "current": True}],
-                                  "current": TEAM, "chosen": False}), ""
+            current = self.tenants[0] if self.tenants else None
+            rows = [{"tenant_id": t, "display_name": t, "current": t == current, "is_default": t == current,
+                     "via": "personal" if t.startswith("u-") else "member"} for t in self.tenants]
+            return 0, json.dumps({"tenants": rows, "current": current, "chosen": None,
+                                  "default": current, "default_source": "personal"}), ""
         if rest[0] == "dispatch":
             return 0, json.dumps({"id": "task_0123456789abcdef0123"}), ""
         raise AssertionError(f"an unexpected swarm call: {argv}")
 
 
+def _with_record(ctx: Any, *, teams: dict[str, dict[str, Any]] | None = None,
+                 personal: dict[str, Any] | None = None) -> FakeDocuments:
+    """The install record Admin › Setup left: `teams/<id>` per team (swarm-api
+    writes `workspace` as the id, the team workspace's tenant) and, for one
+    person, `console/personal`."""
+    docs = FakeDocuments()
+    for team_id, doc in (teams or {}).items():
+        docs.create(f"{engine_document(ctx.environment)}/teams/{team_id}", doc)
+    if personal is not None:
+        docs.create(record.console_document(ctx.environment, record.PERSONAL), personal)
+    ctx.engine = SimpleNamespace(record=InstallRecord(ctx.environment, docs))
+    return docs
+
+
+def _team_doc(tenant: str, created_at: str = "2026-10-30T20:00:00+00:00") -> dict[str, Any]:
+    return {"group": f"{tenant}@acme.example", "workspace": tenant, "first_admin": None, "invites": [],
+            "progress": {"created_at": created_at}}
+
+
 def _target_ctx(**outputs: Any) -> Any:
     ctx = _ctx(desktop_client_id=CLIENT_ID, github_org="acme", **outputs)
     ctx.state.hostname = HOSTNAME
+    _with_record(ctx, teams={TEAM: _team_doc(TEAM)})
     return ctx
+
+
+def _signed_in(swarm: "FakeSwarm") -> None:
+    swarm.contexts[HOSTNAME] = {"url": f"https://{HOSTNAME}", "oauth_client_id": CLIENT_ID, "signed_in": True}
+
+
+def test_a_team_runs_in_the_first_team_never_the_personal_default() -> None:
+    """Audit 5b, M3: `swarm tenants` lists the installer's own READY personal
+    workspace first, and it is the current one (or a stored profile default
+    is). The plugin's runs must land in the first team's workspace, where
+    swarm-api sends the console's runs, the pool account and the repository
+    grant (`first_workspace`), so the tenant is the install record's first
+    team, never `current`."""
+    swarm = FakeSwarm({}, None)
+    _signed_in(swarm)
+    cli = verify.SwarmCli(Answers(), run=swarm, interactive=swarm)
+    ctx = _target_ctx(verify_context=HOSTNAME)
+    cli.target(ctx)
+    assert ctx.outputs["verify_tenant"] == TEAM
+
+    # A profile default naming another listed team: still the first team.
+    swarm.tenants = ["design", PERSONAL_TENANT, TEAM]
+    cli.target(ctx)
+    assert ctx.outputs["verify_tenant"] == TEAM
+
+    # Two teams: the oldest, as swarm-api's InstallRecord.teams orders them,
+    # even when the group stage 8 recorded is the later one.
+    ctx = _target_ctx(verify_context=HOSTNAME, workspace_groups={"team": "late@acme.example"})
+    _with_record(ctx, teams={"late": _team_doc("late", "2026-10-30T22:00:00+00:00"),
+                             TEAM: _team_doc(TEAM, "2026-10-30T21:00:00+00:00")})
+    swarm.tenants = [PERSONAL_TENANT, "late", TEAM]
+    cli.target(ctx)
+    assert ctx.outputs["verify_tenant"] == TEAM
+
+    # The team stage 8 recorded, found by its group even before it is listed:
+    # verify waits for it rather than running anywhere else.
+    ctx = _target_ctx(verify_context=HOSTNAME, workspace_groups={"team": f"{TEAM}@acme.example"})
+    swarm.tenants = [PERSONAL_TENANT]
+    with pytest.raises(LookupError, match=f"does not list the first workspace, {TEAM}"):
+        cli.target(ctx)
+    assert "verify_tenant" not in ctx.outputs
+
+    # No team filed yet: verify says so and never falls back to the personal one.
+    ctx = _target_ctx(verify_context=HOSTNAME)
+    _with_record(ctx)
+    swarm.tenants = [PERSONAL_TENANT, TEAM]
+    with pytest.raises(LookupError, match="has not filed the first team"):
+        cli.target(ctx)
+    assert "verify_tenant" not in ctx.outputs
+
+
+def test_one_person_runs_in_the_personal_workspace_admin_setup_filed() -> None:
+    """Decision 7: for one person the first workspace is the installer's
+    personal one, read from `console/personal`, never guessed."""
+    swarm = FakeSwarm({}, None)
+    _signed_in(swarm)
+    swarm.tenants = [PERSONAL_TENANT]
+    cli = verify.SwarmCli(Answers(), run=swarm, interactive=swarm)
+    ctx = _target_ctx(verify_context=HOSTNAME, sizing={"mode": "individual"})
+    _with_record(ctx)
+    with pytest.raises(LookupError, match="personal workspace"):
+        cli.target(ctx)
+    _with_record(ctx, personal={"owner": "ada@acme.example", "workspace": PERSONAL_TENANT})
+    cli.target(ctx)
+    assert ctx.outputs["verify_tenant"] == PERSONAL_TENANT
 
 
 def _stored(swarm: "FakeSwarm", ctx: Any) -> tuple[str, str]:
@@ -1395,7 +1497,10 @@ def test_verify_waits_point_only_at_what_exists() -> None:
 
     covered = {entry for step in verify.STEPS for entry in step.satisfies}
     for spec in (verify.TARGETS_WAIT, verify.RUNS_WAIT):
-        assert "--explain" not in spec.look_at and "gcloud " not in spec.look_at
-        for entry in re.findall(r"--repair (\S+)", spec.look_at):
+        said = spec.look_at_for(_ctx())
+        assert "--explain" not in said and "gcloud " not in said
+        for entry in re.findall(r"--repair (\S+)", said):
             assert entry in covered
-    assert "swarm install --repair other.verify-scheduler-targets" in verify.TARGETS_WAIT.look_at
+    # Audit 5b M2: the give-up already says "run swarm install again", which
+    # re-checks it; the page is the project's own, not `<project>`.
+    assert f"cloudscheduler?project={PROJECT}" in verify.TARGETS_WAIT.look_at_for(_ctx())

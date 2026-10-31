@@ -98,6 +98,7 @@ from .routes import actions_secrets
 from .routes import secrets_overview
 from .routes import join_requests
 from .routes import setup
+from .routes import addon_probe
 from .qa_identity import QaIdentityOrigin
 from .validation import FORBIDDEN_CALLER_FIELDS
 
@@ -573,6 +574,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # redemption is any signed-in person's, for their own link.
     app.include_router(setup.router)
     app.include_router(setup.links_router)
+    # The brave-search add-on's probe (lane DAYONE-SEARCH-PROBE): a platform
+    # admin's, one fixed search with swarm-api's own key, a count back.
+    app.include_router(addon_probe.router)
 
     # Gzip for a caller that asks (#1822, lane API-GZIP): 3.23 GB left this
     # API in 48 h uncompressed, a build-board task page averaging 1.43 MB and

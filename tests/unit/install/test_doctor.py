@@ -299,7 +299,8 @@ def _rbac_finding(cluster: Mapping[str, Any], *, on_google: bool, objects=None) 
         return built[-1]
 
     entry = _entry("rbac.dispatcher-role", _RBAC_ENTRY, step="handoff.console")
-    entry = entry.model_copy(update={"expand": "per_tenant"})
+    entry = entry.model_copy(update={"expand": "per_tenant",
+                                     "refs": m.Refs(kubernetes=["rbac/dispatcher-rbac.yaml"])})
     return _one(entry, _rbac_gcp(cluster), kube=kube, on_google=on_google), built
 
 
@@ -347,23 +348,36 @@ def test_the_fake_cluster_refuses_a_laptop_after_the_close():
         kube.get("/api/v1/namespaces")
 
 
-def test_a_per_tenant_entry_prints_no_install_repair():
+def test_a_per_tenant_entry_prints_the_team_repair_for_that_team():
     # Audit 4c M2: rbac.dispatcher-role's step is the console hand-off, which
-    # only sees Admin › Setup finished again; the platform's workspace-apply job
-    # writes the RBAC per team. So no `swarm install --repair` is printed.
+    # only sees Admin › Setup finished again, so no `swarm install --repair`.
+    # DAYONE-TEAM-REPAIR: the team whose namespace lacks the RBAC is named, with
+    # the command that re-applies its tenant render.
     finding, _ = _rbac_finding(_cluster(), on_google=True, objects=_rbac_objects(users=[_RECONCILER]))
     assert finding.status == UNMET
-    assert finding.repair is None
-    assert finding.to_json()["repair"] is None
-    assert "swarm install --repair rbac.dispatcher-role" not in finding.fix
-    assert "swarm-workspace-apply" in finding.fix and "when the team is made" in finding.fix
+    command = f"swarm team repair eng --project {PROJECT}"
+    assert finding.repair == command
+    assert finding.to_json()["repair"] == command
+    assert "swarm install --repair" not in finding.fix
+    assert command in finding.fix
+    said: list[str] = []
+    doctor.render([finding], 0, say=said.append)
+    assert any(command in line for line in said)
 
 
-def test_the_real_manifest_dispatcher_entry_prints_no_install_repair():
+def test_a_met_per_tenant_entry_names_no_team():
+    finding, _ = _rbac_finding(_cluster(), on_google=True)
+    assert finding.status == MET and finding.repair is None
+
+
+def test_the_real_manifest_dispatcher_entry_names_the_team_repair():
     entry = m.load().by_id()["rbac.dispatcher-role"]
     assert entry.probe is not None and entry.probe.type == "kubernetes_can_i"
-    assert "swarm install --repair rbac.dispatcher-role" not in doctor.fix_words(entry)
-    assert "swarm-workspace-apply" in doctor.fix_words(entry)
+    assert doctor.team_repairable(entry)
+    words = doctor.fix_words(entry)
+    assert "swarm install --repair rbac.dispatcher-role" not in words
+    assert "swarm team repair <team> --project <project>" in words
+    assert "swarm team repair" in (entry.apply or "")
 
 
 def test_installer_network_name_matches_the_tfvars_one():

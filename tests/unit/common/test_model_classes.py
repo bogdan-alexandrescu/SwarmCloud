@@ -102,13 +102,16 @@ def test_a_value_that_is_not_a_string_is_never_admitted():
 
 def test_every_available_claude_code_family_profile_accepts_all_four():
     """Q3: claude-code, claude-code-browser and indexer, by the runner they start, and
-    claude-code-large (contract request 113), which is claude-code on the large class."""
+    claude-code-large (contract request 113), which is claude-code on the large class, and
+    claude-code-lightpanda (contract request 127), claude-code on the Lightpanda image."""
     family = sorted(
         name
         for name, profile in RUNNER_PROFILES.items()
         if profile.runner_argv == CLAUDE_CODE_RUNNER and profile.available
     )
-    assert family == ["claude-code", "claude-code-browser", "claude-code-large", "indexer"]
+    assert family == [
+        "claude-code", "claude-code-browser", "claude-code-large", "claude-code-lightpanda", "indexer",
+    ]
     for name in family:
         assert RUNNER_PROFILES[name].model_classes == ALL_CLASSES, name
         assert RUNNER_PROFILES[name].default_model_class == "opus", name
@@ -121,7 +124,10 @@ def test_the_retired_review_profile_keeps_only_the_pin_it_has():
 
 
 def test_a_profile_that_runs_no_claude_model_has_no_classes():
-    classed = {"claude-code", "claude-code-browser", "claude-code-large", "indexer", "claude-code-review"}
+    classed = {
+        "claude-code", "claude-code-browser", "claude-code-large", "claude-code-lightpanda", "indexer",
+        "claude-code-review",
+    }
     unclassed = sorted(set(RUNNER_PROFILES) - classed)
     # The control: the profiles this statement is about exist.
     assert {"codex", "mock", "generic", "browser", "merge", "post-verdict"} <= set(unclassed)
