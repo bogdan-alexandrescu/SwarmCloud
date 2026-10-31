@@ -61,7 +61,7 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse
 
@@ -71,6 +71,8 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from swarm_common.models import Task, TaskEvent
 from swarm_common.profiles import RUNNER_PROFILES, resolve_backend
 from swarm_common.states import EventType, ParkReason, TaskState, TERMINAL_STATES
+
+from .redaction import redact
 
 log = logging.getLogger(__name__)
 
@@ -659,9 +661,96 @@ def _owner_questions(task: Task, facts: dict[str, Any]) -> dict[str, Any]:
     return {"detail": detail, "summary": summary, "resumes_when": resumes, "since": None}
 
 
+#: The task's own blocking questions (`agent_worker.lifecycle._park_for_answers`):
+#: `park_phase` names it and `question_wait` holds the questions the worker
+#: validated, the indices that block, the attempt and when it asked. Spelled
+#: again: the worker is not installed in this image.
+QUESTION_WAIT_PHASE = "question_wait"
+#: How much of the first unanswered question the one line carries.
+QUESTION_EXCERPT_CHARS = 80
+
+
+def _excerpt(text: str | None) -> str | None:
+    """`text` on one line, redacted, cut to `QUESTION_EXCERPT_CHARS` with an ellipsis."""
+    if not text or not text.strip():
+        return None
+    words = " ".join(redact(text).text.split())
+    if len(words) <= QUESTION_EXCERPT_CHARS:
+        return words
+    return words[:QUESTION_EXCERPT_CHARS - 1].rstrip() + "\u2026"
+
+
+def _question_wait(task: Task, facts: dict[str, Any]) -> dict[str, Any]:
+    """The task's agent parked on its own blocking questions: an answer, not a sign-in (#2859).
+
+    The worker parks HUMAN_REQUIRED, as a hand-off does, but nobody signs in
+    to anything: the answer that leaves no blocking question unanswered
+    returns it to READY in the answer's own transaction (`agent_questions`,
+    AU-7), and unanswered for `QUESTION_WAIT_MAX_SECONDS` it is
+    dead-lettered. So the line counts the blocking questions still
+    unanswered, quotes the first (redacted, cut short) and names where it is
+    answered: the console page's questions, or `/sc check` in Claude Code,
+    which lists them and records the developer's answer through the same
+    route. `/sc answer` is a workflow step's await-input form, not this.
+
+    The wait is read the way the answer route reads it (`current_wait`), so
+    an answer already stored counts only for the attempt that asked; a
+    record that is not a question wait's shape is no wait, never guessed at.
+    """
+    # Imported here: agent_questions imports codec, which imports this module.
+    from .agent_questions import QUESTION_WAIT_MAX_SECONDS, asked_at, blocking_unanswered, current_wait
+
+    wait, adopted = current_wait(task)
+    by = task.submitted_by
+    launched = f"workflow {task.workflow_id}" if task.workflow_id else "it"
+    detail: dict[str, Any] = {
+        "park_phase": QUESTION_WAIT_PHASE,
+        "questions": [],
+        "blocking": [],
+        "unanswered": [],
+        "who_may_answer": {"submitted_by": by, "admin": True,
+                           "text": f"{by}, who launched {launched}, or an admin"},
+        "answer_route": f"POST /v1/tasks/{task.id}/answers",
+        "questions_route": f"GET /v1/tasks/{task.id}/questions",
+        "console_section": "#questions",
+        "expires_at": None,
+    }
+    how = "answer on its console page (Questions) or in Claude Code with /sc check"
+    resumes = ("the owner answers the last blocking question (it resumes on its own); "
+               f"unanswered for {QUESTION_WAIT_MAX_SECONDS // 3600} hours it is dead-lettered")
+    if wait is None:
+        summary = f"Waiting for the owner's answers to its questions; {how}"
+        return {"detail": detail, "summary": summary, "resumes_when": resumes, "since": None}
+    pending = blocking_unanswered(wait, task.metadata if adopted else None)
+    questions = wait["questions"]
+    detail["blocking"] = sorted(wait["blocking"])
+    detail["unanswered"] = sorted(pending)
+    detail["questions"] = [
+        {"question_index": i, "question": _excerpt(_str(questions[i].get("question")))}
+        for i in sorted(pending)
+    ]
+    began = asked_at(task, wait)
+    detail["expires_at"] = (began + timedelta(seconds=QUESTION_WAIT_MAX_SECONDS)
+                            if began is not None else None)
+    n = len(pending)
+    if n:
+        summary = f"Waiting for the owner's answer to {n} question{'' if n == 1 else 's'}"
+        first = detail["questions"][0]["question"]
+        if first:
+            summary += f": \u201c{first}\u201d"
+        summary += f"; {how}"
+    else:
+        summary = ("Every blocking question has the owner's answer and it was not resumed: "
+                   "a cancel was asked for, or its last attempt is used")
+        resumes = "the scheduler's sweeps end it"
+    return {"detail": detail, "summary": summary, "resumes_when": resumes, "since": began}
+
+
 def _human(task: Task, facts: dict[str, Any]) -> dict[str, Any]:
     if facts.get("park_phase") == OWNER_QUESTIONS_PHASE:
         return _owner_questions(task, facts)
+    if facts.get("park_phase") == QUESTION_WAIT_PHASE:
+        return _question_wait(task, facts)
     detail = {
         "who_may_answer": _who(task),
         "expires_at": _as_dt(facts.get("expires_at")),
