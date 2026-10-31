@@ -19,8 +19,8 @@ from typing import Any
 
 from .. import tfvars
 from ..exitcodes import MET, UNMET
-from ..waits import WaitSpec, wait_until
-from . import Observation, Plan
+from ..waits import WaitGaveUp, WaitSpec, wait_until
+from . import Observation, Plan, open_page
 from .bootstrap import DEPS, Deps, apply_pass
 from .infra import latest_pass
 from .preflight import remember
@@ -33,7 +33,8 @@ DESCRIPTORS = WaitSpec(
     expected="1 to 5 min after infra pass 2",
     expected_s=5 * 60,
     bound_s=20 * 60,
-    look_at="gcloud logging metrics list: each swarm_* metric's descriptor appears after it is created",
+    look_at=("the project's log-based metrics page in the Google Cloud console (opened when this wait gives up): "
+             "each swarm_* metric's descriptor appears after it is created"),
     interval_s=20,
 )
 
@@ -90,10 +91,21 @@ class AlertsStep:
 
     def apply(self, ctx: Any, plan: Plan) -> None:
         if not ctx.outputs.get("metric_descriptors_ready"):
-            wait_until(self.id, DESCRIPTORS, lambda: MET if self.descriptors_ready(ctx) else UNMET,
-                       clock=ctx.clock, events=ctx.events)
+            try:
+                wait_until(self.id, DESCRIPTORS, lambda: MET if self.descriptors_ready(ctx) else UNMET,
+                           clock=ctx.clock, events=ctx.events)
+            except WaitGaveUp:
+                open_page(metrics_page(ctx.project), why=(
+                    "\nThe swarm_* log metrics' descriptors have not appeared in Cloud Monitoring. Look at the "
+                    "log-based metrics on this page (opening it now); run swarm install again to resume."))
+                raise
             remember(ctx, outputs={"metric_descriptors_ready": True})
         apply_pass(ctx, self.deps, latest_pass(ctx.outputs))
+
+
+def metrics_page(project: str) -> str:
+    """The Google Cloud console's log-based metrics page for `project`."""
+    return f"https://console.cloud.google.com/logs/metrics?project={project}"
 
 
 def build_steps(deps: Deps = DEPS) -> list[Any]:
