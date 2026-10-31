@@ -75,14 +75,14 @@ release of either, and the same findings.
 
 | Tool | In the image | Default build | Why this version |
 |---|---|---|---|
-| `gh` | **2.102.0** | yes | newest; scan clean |
-| `gcloud` | **587.0.0** | yes | newest; its bundled Python 3.14 is removed (7 fixable HIGHs in its site-packages) and gcloud runs on the image's 3.11 |
-| `kubectl` | **1.36.6** | yes | newest 1.36 patch (go1.26.10: CVE-2026-56857 and -111943 fixed); operators pin 1.36.3 |
-| `terraform` | **1.16.4** | yes | operators and CI pin 1.16.2, whose Go 1.26.4 stdlib has 9 fixable HIGHs |
+| `gh` | **2.103.3** | yes | newest; go1.27.3 and x/net 0.60.0 fix CVE-2026-78667 and -78669 (2026-10-31) |
+| `gcloud` | **591.0.0** | yes | newest; its bundled Python 3.14 is removed (7 fixable HIGHs in its site-packages) and gcloud runs on the image's 3.11; its gcloud-crc32c is go1.27.2, its gke-gcloud-auth-plugin still go1.27.1 (accepted in `.trivyignore.yaml`, 2026-10-31) |
+| `kubectl` | **1.36.6** | yes | newest 1.36 patch (go1.26.10: CVE-2026-56857, -78667 and -111943 fixed; x/net 0.56.0's CVE-2026-78669 is in every kubectl release and accepted); operators pin 1.36.3 |
+| `terraform` | **1.17.1** | yes | newest; go1.26.10, x/net 0.62.0 and go-jose 4.1.6 fix CVE-2026-78667, -78669 and -116587 (1.16.7 still has go-jose 4.1.4); operators and CI pin 1.16.2, whose Go 1.26.4 stdlib has 9 fixable HIGHs |
 | `checkov` | **3.3.17** | yes | matches CI; isolated `uv tool` env, resolution pinned to 2026-10-01 |
 | `shellcheck` | **0.11.0** | yes | matches the operator pin |
-| `docker` | **29.8.2** | yes | CLI only, from Docker's bookworm `.deb`; no daemon, no socket |
-| `trivy` | **0.75.0** | yes | newest; scan clean on 2026-10-06 (0.74.0 had grpc 1.82.1; #442) |
+| `docker` | **29.9.2** | yes | CLI only, from Docker's bookworm `.deb`; no daemon, no socket; go1.26.10 fixes CVE-2026-78667 and -78669 |
+| `trivy` | **0.76.1** | yes | newest; go1.27.3 and x/net 0.60.0 fix CVE-2026-78667 and -78669; go-jose 4.1.5 (CVE-2026-116587) accepted until a release has 4.1.6 (0.74.0 had grpc 1.82.1; #442) |
 | `coderabbit` | **0.9.1** | yes | the release the vendor's installer binds Linux to; checksum from its signed `SHA256SUMS`; 91.1 MiB on disk; nothing in it trivy can analyse (2026-10-26). Fetched from `cli.coderabbit.ai`, not the tool mirror; its key is a workspace secret ([worker-images.md](worker-images.md#coderabbit)) |
 | `tofu` | **1.13.1** | **no** | no release scans clean (2026-10-09): x/mod 0.39.0, grpc 1.83.1 (1.12.7 has eight) |
 | `tflint` | **0.64.0** | **no** | no release scans clean (2026-10-09): Go 1.26.3 stdlib, x/crypto, x/mod, grpc |
