@@ -560,3 +560,97 @@ def test_a_wait_inside_apply_that_gives_up_pauses_then_resumes(tmp_path: Path) -
     assert resumed.exit_code == ExitCode.OK, resumed
     assert [line for line in log if line.startswith("apply")] == ["apply project.billing", "apply project.apis"]
     assert rig.steps_state() == {"project.create": "done", "project.billing": "done", "project.apis": "done"}
+
+
+def test_a_triggered_pass_heartbeats_the_record_while_it_applies(tmp_path: Path) -> None:
+    """Audit 4d F8: pass 3 and pass 4 run as one Terraform apply inside the
+    hand-off's poll. The console reads a lease heartbeat older than 2 minutes
+    as "swarm install is not running", so the engine must keep beating while
+    the apply runs, not only between polls."""
+    import threading
+
+    from swarm_install.record import InstallRecord, engine_document
+
+    from .test_record_writers import FakeDocuments
+
+    rig = Rig(tmp_path)
+    documents = FakeDocuments()
+    log: list[str] = []
+    beaten = threading.Event()
+    seen: dict[str, float] = {}
+
+    def record_heartbeat() -> float:
+        found = documents.get(engine_document("dev"))
+        return float(((found or ({}, 0))[0].get("lease") or {}).get("heartbeat", 0.0))
+
+    def long_terraform_apply() -> None:
+        # Ten minutes of Terraform: the console's two-minute window passes.
+        rig.clock.t += 10 * 60
+        seen["apply_started"] = rig.clock.now()
+        deadline = 5.0
+        while deadline > 0 and record_heartbeat() < seen["apply_started"]:
+            beaten.wait(0.01)
+            deadline -= 0.01
+        seen["during_apply"] = record_heartbeat()
+
+    pass3 = FakeStep("handoff.infra-pass3", 9, log=log, trigger=lambda ctx: True,
+                     on_apply=long_terraform_apply)
+    handoff = FakeStep(
+        "handoff.wait", 9, log=log, kind="wait",
+        wait=WaitSpec(reason="the console's people steps", expected="about an hour",
+                      expected_s=3600, bound_s=4 * 3600, look_at="Admin > Setup"),
+        triggered=(pass3,),
+        is_met=lambda: "apply handoff.infra-pass3" in log,
+    )
+    engine = rig.engine([handoff])
+    engine.record = InstallRecord(env="dev", documents=documents)
+    engine.heartbeat_interval = 0.01
+
+    result = engine.run()
+
+    assert result.exit_code == 0, result
+    assert seen["during_apply"] >= seen["apply_started"], (
+        "the install record's lease heartbeat was not refreshed while the triggered "
+        f"apply ran: {seen['apply_started'] - seen['during_apply']:.0f} s stale"
+    )
+
+
+def test_a_lease_lost_while_a_step_applies_stops_the_run(tmp_path: Path) -> None:
+    """Another admin who takes the lease over during a long apply is seen by
+    the heartbeat; the run stops once the apply returns, and the step is not
+    recorded done."""
+    import threading
+
+    from swarm_install.lease import LEASE_OBJECT, LeaseLost
+
+    rig = Rig(tmp_path)
+    log: list[str] = []
+    stolen = threading.Event()
+
+    def taken_over_mid_apply() -> None:
+        generation = rig.bucket.objects[LEASE_OBJECT][1]
+        rig.bucket.write(LEASE_OBJECT, b'{"holder": "other@example.com"}', if_generation_match=generation)
+        rig.clock.t += 10 * 60
+        stolen.wait(5.0)
+
+    step = FakeStep("infra.pass1", 2, log=log, on_apply=taken_over_mid_apply)
+    engine = rig.engine([step])
+    engine.heartbeat_interval = 0.01
+    real_heartbeat = engine._heartbeat
+
+    def heartbeat() -> None:
+        try:
+            real_heartbeat()
+        except LeaseLost:
+            stolen.set()
+            raise
+
+    engine._heartbeat = heartbeat  # type: ignore[method-assign]
+
+    result = engine.run()
+
+    assert stolen.is_set(), "the heartbeat never ran while the step applied"
+    assert result.outcome == "failed" and "taken over" in result.message, result
+    assert "verify infra.pass1" not in log
+    if STATE_OBJECT in rig.bucket.objects:
+        assert "infra.pass1" not in rig.bucket.state().get("steps", {})
