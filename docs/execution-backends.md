@@ -82,6 +82,7 @@ backend.
 | `browser` | `agent-runtime-browser` | browser | **GKE Autopilot** | anthropic |
 | `indexer` | `agent-runtime-indexer` | standard | **GKE Autopilot** (contract request 63, the canary for #939; its Cloud Run Jobs kept, idle, as the rollback) | anthropic |
 | `claude-code-browser` | `agent-runtime-browser` | browser | **GKE Autopilot** (contract request 67: Cloud Run cannot size Chromium's `/dev/shm`) | anthropic |
+| `claude-code-lightpanda` | `agent-runtime-lightpanda` | standard | **GKE Autopilot** (contract request 127: born on GKE, so it has no Cloud Run rollback Job) | anthropic |
 
 `claude-code-browser` (contract request 67, accepted by the owner 2026-10-11)
 is `claude-code` with Playwright and Chromium beside the agent, for work that
@@ -102,6 +103,21 @@ still costs that claude-code does not is a GKE pod and a place in the
 page. Chromium's own sandbox stays off (the pod refuses user namespaces and
 drops every capability; the pod is the isolation), so the agent launches it
 with `chromium_sandbox=False`, and the runner says so in its instructions.
+
+`claude-code-lightpanda` (contract request 127, accepted by the owner
+2026-10-31; [design](design/lightpanda-runtime.md)) is `claude-code` on
+`agent-runtime-lightpanda`, which is `agent-runtime-base` plus the Lightpanda
+headless browser and no Chromium. It runs on the **`standard` class**, not
+`browser`: Lightpanda draws no pixels, so the pod needs neither the display
+container nor the memory a Chromium needs, and the agent is charged to
+`resource:standard` and its own `runner:claude-code-lightpanda` pool rather
+than to the `resource:browser` pool that caps live browsers. That is the
+point of it: DOM-only reading, scraping and link checks stop taking a place
+a live browser could use. It is on GKE for the same reason `claude-code` is
+(start latency, §4) and because `terraform/infra/locals.tf` leaves it out of
+`cloud_run_fallback_profiles`, so no Cloud Run Job exists for it to fall back
+to. Which profile to pick for which page is
+[browser-qa.md §2](browser-qa.md#2-which-one-for-which-job).
 
 `Backend.AUTO` resolves to Cloud Run when the class fits within 8 vCPU / 32 GiB,
 and to Autopilot otherwise.
@@ -225,6 +241,13 @@ Reserved for:
    Job's Terraform-rendered environment, while a GKE pod runs as the tenant's
    one worker KSA and carries neither. Both are disabled, so nothing waits on
    them. `mock` reaches no internet and stays.
+7. **`claude-code-large` and `claude-code-lightpanda`, born here** (contract
+   requests 113 and 127). Each is `claude-code` with one thing changed (the
+   `large` class; the Lightpanda image), so each carries `claude-code`'s
+   reasons and costs above. Neither ever had a Cloud Run Job, so neither has
+   a rollback to one: rolling either back means withdrawing the profile, or
+   for `claude-code-lightpanda` setting `runner_profiles.claude-code-lightpanda`
+   to 0 in the environment's `pool_limits` so nothing new is leased.
 
 Every pod carries:
 

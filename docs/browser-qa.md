@@ -13,7 +13,7 @@ says what to pick and why. Read on 2026-10-20 at `87896ff`.
 
 ## 1. The agent types, and what each one sees
 
-There are seven ways an agent can have a browser. They differ most in **what the
+There are eight ways an agent can have a browser. They differ most in **what the
 model sees**, which is what decides the job each one is for.
 
 | | agent type | who drives | sees | reaches the fixture build on `localhost` | dark mode |
@@ -25,13 +25,14 @@ model sees**, which is what decides the job each one is for.
 | **F5** | `swarm_browser.live()` from Python, on any `claude-code-browser` agent | a fixed, committed script, such as `python -m swarm_qa` | everything Playwright's Python API gives | yes | yes |
 | **F6** | `claude-code-browser` where the deployment has no live browser | a headless Playwright the agent launches | anything Playwright can, at any size | yes | yes |
 | **F7** | plain `claude-code` | the model, with no browser | **image files** it opens with `Read` | no browser to reach it with | — |
+| **F8** | `claude-code-lightpanda` | the model, through the `lightpanda` MCP tools, or Python Playwright over CDP | **the DOM and its text, never pixels**; iframes not at all | not verified (see F8 below) | no |
 
 What each is, in one paragraph:
 
 **F1, the scripted `browser` profile.** Eight actions run in order (`goto`,
 `click`, `fill`, `press`, `wait_for`, `wait`, `screenshot`, `extract`), at
 most 200, at a viewport you choose. No model is called: the result is
-screenshots and text files. It is the most repeatable of the seven, and it
+screenshots and text files. It is the most repeatable of the eight, and it
 reaches public `http(s)` pages only, with no sign-in, no dark mode and no
 judgment. See [browser-scripted-runner.md](browser-scripted-runner.md).
 
@@ -79,6 +80,31 @@ place to **look at** screenshots: Claude Code's `Read` tool shows an image file
 to the model, and a review step receives the PNGs from an earlier step with
 `input_from`. It cannot start a browser reliably; the image carries none.
 
+**F8, Lightpanda on `claude-code-lightpanda`** (contract request 127;
+[the design](design/lightpanda-runtime.md)). A headless browser that runs a
+page's JavaScript and builds its DOM but **draws no pixels**, beside the agent
+in its own image, `agent-runtime-lightpanda`, on the `standard` class. The
+runner (`apps/agent-worker/agent_worker/lightpanda.py` and its branch in
+`runners/claude_code.py`) gives the agent two ways in: the `lightpanda` MCP
+server (`goto`, `markdown`, `links`, `tree`, `interactiveElements`, `click`,
+`fill`, `press`, `waitForSelector` and the rest of `lightpanda mcp`'s tools),
+and a CDP endpoint in `$SWARM_LIGHTPANDA_CDP` (`http://127.0.0.1:9223`) for
+`playwright.chromium.connect_over_cdp(...)` from Python, **one connection per
+page** because Lightpanda allows one browser context per connection. Three of
+its MCP tools are denied to the agent: `screenshot` (its picture is text in a
+default stylesheet, not the page, and it crashed the process on heavy pages),
+`search` (it would call Brave with no key; the CLI's WebSearch serves) and
+`getEnv`. There is **no live view, no screenshot, no hand-off, no recording,
+no device preset and no theme**, and the console shows no live-browser status
+for it, because the runner never writes `browser.json`. Two things read
+differently from Chromium: an iframe's content is not loaded at all, and a
+page's text includes text the page hides with CSS. Whether it reaches a
+fixture build on `localhost` was not measured: Lightpanda runs with
+`--block-private-networks`, so use F5 for the fixture build. What it buys is
+cost: on the design's 17 pages it used a median 48 MiB against Chromium's
+454 MiB and 0.30 against 4.61 CPU-seconds, and it holds a `standard` pod and
+a `runner:claude-code-lightpanda` place, never a `browser` one.
+
 ### Device and theme are the agent's commands, not the caller's
 
 A caller picks `runner_profile` and, for `claude-code-browser`, the
@@ -115,6 +141,26 @@ started again under the same name, the new GIF is written over the old.
 | **Comparing with a mockup or another capture** | **F5** captures, then `python -m swarm_qa diff A.tar B.tar`, then F7 on the diff images | a comparison means something only when both sides were captured the same way. A mockup is served over `http` with `swarm-handoff serve <dir>` (`file://` is blocked) | a model-driven capture differs run to run for reasons that are not regressions |
 | **Accessibility** | **F2** / **F5**: keyboard-only navigation, the accessibility tree, emulated vision deficiencies and reduced motion, and axe-core (`swarm_qa capture --axe`) | the live browser passes the accessibility, input and media-emulation commands | F1 sees no tree; F4 sees labels but cannot measure contrast or focus order |
 | **Signed-in pages of a real console** | not in the template yet; see §4 | — | — |
+
+| **Reading pages that need no eyes**: docs, articles, a page's text or its links, many pages at once | **F8**: `claude-code-lightpanda`, its `markdown` and `links` tools, or Python Playwright over `$SWARM_LIGHTPANDA_CDP` with one connection per page | the DOM is the input; no pixels are needed, so no `browser` pod is held; ten pages at once peaked at 183 MiB against Chromium's 1,831 MiB in the design's §3.2 | F2-F5 hold a `browser` pod (and its pool place) to read text; F1 has no model |
+| **Scraping and link checks** on public pages | **F8** | the same reason, and its links matched headless Chromium's on every one of the design's 17 pages | anything inside an iframe is missing: send those pages to `claude-code-browser` |
+| **A form flow you check by its result**, not by how it looks: a field filled, a button pressed, the next page's text | **F8** (`fill`, `click`, `press`, `waitForSelector`) | 4 of 4 of the design's form flows passed under Playwright over CDP | not when the form is in an iframe, behind a sign-in or a CAPTCHA, or when what it looked like matters: that is F2 |
+
+**Lightpanda or the live browser.** Pick `claude-code-lightpanda` (F8) when
+the job is the DOM: reading, scraping, link checks, form flows judged by
+their result. Pick `claude-code-browser` (F2-F6) for **anything that needs
+pixels, a live view, a hand-off, an iframe or a sign-in**: a screenshot as
+evidence, a person watching or taking control, content in an iframe (an
+embedded widget, most third-party sign-in), a sign-in, a CAPTCHA or a consent
+wall. Nothing moves an agent between the two for you (invariant 10: the
+caller names the profile, and the lease was taken for that profile's pools).
+Instead, the runner's prompt note (`LIGHTPANDA_NOTE`) tells a Lightpanda
+agent that when a page fails there (an error, an empty page, content in an
+iframe, a sign-in, a CAPTCHA, a consent wall, or anything it must see) it
+does not work around it: it submits a child agent on `claude-code-browser`
+through `$SWARM_CHILDREN` with those URLs, waits for it, and says in its
+answer which pages went there and why. So a mixed job can start on F8 and
+pay for a `browser` pod only for the pages that need one.
 
 **Jev runs only against the fixture build** (owner, 2026-10-19). On the fixture
 build the page text is made-up data, so sending it to Jev's judge sends

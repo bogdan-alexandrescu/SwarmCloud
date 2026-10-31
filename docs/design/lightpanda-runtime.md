@@ -1,8 +1,29 @@
 # Lightpanda as a runtime for browser agents
 
 **Status:** analysis and design, 2026-10-31 (lane LIGHTPANDA-ANALYSIS, part of
-#2688). Nothing in it is built. Its one contract change is request 127 in
-[`docs/contract-change-requests.md`](../contract-change-requests.md), open.
+#2688); partly built, as read on main on 2026-10-31. Its one contract change,
+request 127 in
+[`docs/contract-change-requests.md`](../contract-change-requests.md), is
+accepted and applied: the frozen catalogue has `claude-code-lightpanda`.
+**Landed:** the `agent-runtime-lightpanda` image, pinned, self-tested,
+carrying its AGPL notices (L2); the build, push, warm and mirror scripts that
+build it and stage its Corresponding Source into the release bundle (L3); the
+claude-code runner's branch that starts and supervises `lightpanda serve` on
+127.0.0.1:9223, registers the `lightpanda` MCP server instead of Playwright,
+denies three of its tools, adds the prompt note and never sets
+`SWARM_CDP_ENDPOINT` (L4); the stream tables and the `terraform/infra/locals.tf`
+mirror with its `runner:` pool (L5); the console's Submit entry and fixtures
+(part of L9); and the docs (L10: [worker-images.md](../worker-images.md),
+[browser-qa.md](../browser-qa.md), [browser-egress.md](../browser-egress.md),
+[execution-backends.md](../execution-backends.md),
+[mirrored-values.md](../mirrored-values.md)). **Not landed:** the stated pool
+limit in the environments' tfvars and the sizing proposal (L6; until then the
+`runner:claude-code-lightpanda` pool takes `pool_limits.global`); the weekly
+scan's image list in `.github/workflows/security.yml` (L7, owner-held); the
+parity section of §6.5 (L8); the console's one-line profile hint and its
+vitest (rest of L9); and the dev acceptance run (L11). Where the build
+differs from this text, the build is described in the docs above: the image's
+`/usr/share/doc/lightpanda/` also holds `LICENSING.md` and `FONTS-LICENSE`.
 
 **Owner's ask (BGD, 2026-10-31):** "do a detailed analysis of this project and
 determine if this would provide additional value or a new capability if we
