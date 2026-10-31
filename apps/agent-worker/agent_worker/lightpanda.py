@@ -95,7 +95,7 @@ LIGHTPANDA_NOTE = (
     "error, an empty page, content in an iframe, a sign-in, a CAPTCHA or a "
     "consent wall, or anything you must see), do not work around it: submit a "
     "child agent on runner_profile `claude-code-browser` through "
-    "$SWARM_CHILDREN with those URLs and what to do there, wait for it, and say "
+    ".swarm-children ($SWARM_CHILDREN) with those URLs and what to do there, wait for it, and say "
     "in your answer which pages went there and why. On any one site, keep to "
     "about one navigation a second."
 )
