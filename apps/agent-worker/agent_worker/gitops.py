@@ -1143,6 +1143,15 @@ def shallow_clone(
     )
 
 
+#: NO AUTOMATIC MAINTENANCE (#2922), as in `fetch_pull_base`: git ends a
+#: fetch with `git maintenance run --auto` (`gc --auto` before 2.29), which
+#: git 2.56 detaches; its repack can hold or rewrite `.git/shallow` while the
+#: next shallow fetch over the same clone deepens it ("shallow file has
+#: changed since we read it"). `deepen_history` runs two such fetches back
+#: to back.
+_NO_AUTO_MAINTENANCE = ("-c", "maintenance.auto=false", "-c", "gc.auto=0")
+
+
 def history_fetch_argv(
     git_binary: str, config_args: Sequence[str], destination: Path, head_sha: str,
     head_time: int, days: int,
@@ -1155,8 +1164,8 @@ def history_fetch_argv(
     """
     since = datetime.fromtimestamp(head_time - days * 86_400, tz=timezone.utc).strftime(
         "%Y-%m-%dT%H:%M:%SZ")
-    return [git_binary, *config_args, "-C", str(destination), "fetch", "--quiet", "--no-tags",
-            f"--shallow-since={since}", "origin", head_sha]
+    return [git_binary, *config_args, *_NO_AUTO_MAINTENANCE, "-C", str(destination), "fetch",
+            "--quiet", "--no-tags", f"--shallow-since={since}", "origin", head_sha]
 
 
 def history_parent_argv(
@@ -1169,8 +1178,8 @@ def history_parent_argv(
     file it holds. One more generation makes every commit in the window a
     real diff; the extractor skips the boundary commit, now outside it.
     """
-    return [git_binary, *config_args, "-C", str(destination), "fetch", "--quiet", "--no-tags",
-            "--deepen=1", "origin", head_sha]
+    return [git_binary, *config_args, *_NO_AUTO_MAINTENANCE, "-C", str(destination), "fetch",
+            "--quiet", "--no-tags", "--deepen=1", "origin", head_sha]
 
 
 def deepen_history(
