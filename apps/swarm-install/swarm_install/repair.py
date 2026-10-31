@@ -30,6 +30,10 @@ its approvals.
    that applies the latest applied pass of the same root (`infra-close`,
    `github.pass-4`, `bootstrap.pass-2`), whose inputs hold every resource the
    earlier pass made.
+5. **A per-team entry is not repaired here.** One the tenant render holds
+   (`doctor.team_repairable`) lives in each team's namespace, written by
+   swarm-workspace-apply; its `step:` remakes none of it, so the repair is
+   refused as a usage error naming `swarm team repair <team>`.
 """
 
 from __future__ import annotations
@@ -38,6 +42,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from . import tfvars
+from .doctor import team_repair_command, team_repairable
 from .engine import Context, Engine, Result, _Stop
 from .exitcodes import UNMET, ExitCode
 from .lease import LeaseHeld, LeaseLost, LeaseRefused
@@ -62,11 +67,18 @@ def all_steps(steps: Sequence[Step]) -> list[Step]:
     return found
 
 
-def step_for(entry_id: str, manifest: Manifest, steps: Sequence[Step]) -> Step:
-    """The step that makes `entry_id`, by the entry's `step:`."""
+def step_for(entry_id: str, manifest: Manifest, steps: Sequence[Step], project: str = "<project>") -> Step:
+    """The step that makes `entry_id`, by the entry's `step:`. A per-team
+    entry has none to re-run: its `step:` (the console hand-off) remakes no
+    team's namespace, so the repair is `swarm team repair`, one team at a time."""
     entry = manifest.by_id().get(entry_id)
     if entry is None:
         raise RepairUsage(f"{entry_id!r} is not a manifest entry (swarm doctor lists the ids)")
+    if team_repairable(entry):
+        raise RepairUsage(
+            f"{entry_id} is in each team's namespace, which swarm-workspace-apply writes; no install step "
+            f"remakes it. Run {team_repair_command('<team>', project)} for each team swarm doctor names: "
+            "it has that job apply the team's tenant render again. Nothing was changed.")
     if not entry.step:
         raise RepairUsage(f"{entry_id} names no step: no install step makes it")
     for step in all_steps(steps):
@@ -169,7 +181,7 @@ class RepairEngine(Engine):
 def repair(entry_id: str, *, manifest: Manifest, engine: RepairEngine,
            confirm: Callable[[str], str], say: Callable[[str], None] = print) -> ExitCode:
     """Confirm, then re-run the step that makes `entry_id`."""
-    step = step_for(entry_id, manifest, engine.steps)
+    step = step_for(entry_id, manifest, engine.steps, engine.store.project)
     if not confirmed(entry_id, step, confirm):
         say(f"swarm install --repair: refused: {entry_id} was not typed; nothing was changed")
         return ExitCode.REFUSED
