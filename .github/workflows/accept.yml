@@ -136,6 +136,11 @@ env:
   PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
   REGION: ${{ vars.GCP_REGION }}
   TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+  # Every swarm-verify execution this run starts carries it (verify-remote.sh
+  # passes it as an environment override), so a later run's quiesce cancels
+  # this run's executions and never an operator's `make verify-remote`, which
+  # carries `operator` (#1822). Set here once, for every job.
+  SWARM_VERIFY_ORIGIN: accept-${{ github.run_id }}
 
 # RUNNERS (owner decision 2026-10-14). A job that holds no cloud identity
 # (id-token) runs on the self-hosted `bogdan-ci` VMs through the one guarded
@@ -256,14 +261,26 @@ jobs:
           done
 
       - name: cancel the swarm-verify executions still running
+        # Only those another accept run started: an execution's
+        # SWARM_VERIFY_ORIGIN (verify-remote.sh) names who started it. An
+        # operator's, or one older than the marker, is left running and
+        # printed as skipped (#1822).
         run: |
           set -euo pipefail
           gcloud run jobs executions list --job swarm-verify --region "${REGION}" --project "${PROJECT_ID}" \
-            --filter 'status.runningCount>0' --format 'value(metadata.name)' > running.txt
+            --filter 'status.runningCount>0' --format json \
+            | jq -r '.[] | [.metadata.name, ([(.spec.template.spec.containers // [])[].env // [] | .[]
+                | select(.name == "SWARM_VERIFY_ORIGIN") | .value][0] // "")] | @tsv' > running.txt
           n=0
-          while read -r name; do
+          while IFS=$'\t' read -r name origin; do
             [ -n "${name}" ] || continue
-            echo "cancelling swarm-verify execution ${name}"
+            case "${origin}" in
+              accept-*) [ "${origin}" != "${SWARM_VERIFY_ORIGIN}" ] || continue ;;
+              *)
+                echo "skipped swarm-verify execution ${name}: started by ${origin:-a caller that did not mark it}, not by an accept run"
+                continue ;;
+            esac
+            echo "cancelling swarm-verify execution ${name} (${origin})"
             # An execution can finish between the list above and this cancel;
             # gcloud then answers "Failed to cancel" for one that is already
             # done (run 38072148450, 2026-10-10: swarm-verify-zkzcx). A failed
@@ -347,9 +364,31 @@ jobs:
           fi
           ./scripts/verify-remote.sh prove-gke-dispatch
 
+      - name: workspace roles probe (ROLES-ACCEPT, inside the VPC)
+        # docs/design/workspace-roles.md §6 row 6 (#1518), in this job by
+        # BGD's decision of 2026-10-28, not as a new acceptance group: a
+        # viewer's submission is 403 role_member_required and its read 200,
+        # the viewer grant and its revocation are in the workspace's audit, a
+        # platform admin's write there is platform_admin_acted, and another
+        # identity's u- workspace is 403 tenant_not_member. Its identities and
+        # test workspace are the owner's to provision; until these variables
+        # name them, every check SKIPs and says which is missing.
+        # verify-remote.sh carries them into the execution. It clones no
+        # fixture, so unlike the acceptance groups it does not wait for the
+        # sandbox sync (the target is unquoted: test_acceptance_target.py
+        # reads a quoted "acceptance/..." target as a fixture-cloning suite).
+        if: ${{ !cancelled() }}
+        env:
+          SWARM_ACCEPTANCE_ROLES_TENANT: ${{ vars.ROLES_TENANT }}
+          SWARM_ACCEPTANCE_ROLES_VIEWER_SA: ${{ vars.ROLES_VIEWER_SA }}
+          SWARM_ACCEPTANCE_ROLES_ADMIN_SA: ${{ vars.ROLES_ADMIN_SA }}
+          SWARM_ACCEPTANCE_ROLES_OTHER_WORKSPACE: ${{ vars.ROLES_OTHER_WORKSPACE }}
+        run: ./scripts/verify-remote.sh acceptance/groups/roles
+
       - name: cancel the executions this job started
         # A cancel stops the client, not the Cloud Run execution (header).
-        # Cancels the swarm-verify executions created since this job started.
+        # Cancels the swarm-verify executions THIS RUN created since this job
+        # started (SWARM_VERIFY_ORIGIN), never an operator's (#1822).
         if: ${{ cancelled() }}
         continue-on-error: true
         env:
@@ -357,7 +396,10 @@ jobs:
         run: |
           [ -n "${STARTED}" ] || exit 0
           gcloud run jobs executions list --job swarm-verify --region "${REGION}" --project "${PROJECT_ID}" \
-            --filter 'status.runningCount>0' --format 'value(metadata.name,metadata.creationTimestamp)' \
+            --filter 'status.runningCount>0' --format json \
+            | jq -r --arg o "${SWARM_VERIFY_ORIGIN}" '.[] | select([(.spec.template.spec.containers // [])[].env // []
+                | .[] | select(.name == "SWARM_VERIFY_ORIGIN") | .value] | any(. == $o))
+                | [.metadata.name, .metadata.creationTimestamp] | @tsv' \
             | while read -r name created; do
                 if [ -n "${name}" ] && [[ "${created}" > "${STARTED}" ]]; then
                   gcloud run jobs executions cancel "${name}" --region "${REGION}" --project "${PROJECT_ID}" --quiet || true
@@ -463,7 +505,8 @@ jobs:
 
       - name: cancel the executions this job started
         # A cancel stops the client, not the Cloud Run execution (header).
-        # Cancels the swarm-verify executions created since this job started.
+        # Cancels the swarm-verify executions THIS RUN created since this job
+        # started (SWARM_VERIFY_ORIGIN), never an operator's (#1822).
         if: ${{ cancelled() }}
         continue-on-error: true
         env:
@@ -471,7 +514,10 @@ jobs:
         run: |
           [ -n "${STARTED}" ] || exit 0
           gcloud run jobs executions list --job swarm-verify --region "${REGION}" --project "${PROJECT_ID}" \
-            --filter 'status.runningCount>0' --format 'value(metadata.name,metadata.creationTimestamp)' \
+            --filter 'status.runningCount>0' --format json \
+            | jq -r --arg o "${SWARM_VERIFY_ORIGIN}" '.[] | select([(.spec.template.spec.containers // [])[].env // []
+                | .[] | select(.name == "SWARM_VERIFY_ORIGIN") | .value] | any(. == $o))
+                | [.metadata.name, .metadata.creationTimestamp] | @tsv' \
             | while read -r name created; do
                 if [ -n "${name}" ] && [[ "${created}" > "${STARTED}" ]]; then
                   gcloud run jobs executions cancel "${name}" --region "${REGION}" --project "${PROJECT_ID}" --quiet || true
@@ -520,7 +566,8 @@ jobs:
 
       - name: cancel the executions this job started
         # A cancel stops the client, not the Cloud Run execution (header).
-        # Cancels the swarm-verify executions created since this job started.
+        # Cancels the swarm-verify executions THIS RUN created since this job
+        # started (SWARM_VERIFY_ORIGIN), never an operator's (#1822).
         if: ${{ cancelled() }}
         continue-on-error: true
         env:
@@ -528,7 +575,10 @@ jobs:
         run: |
           [ -n "${STARTED}" ] || exit 0
           gcloud run jobs executions list --job swarm-verify --region "${REGION}" --project "${PROJECT_ID}" \
-            --filter 'status.runningCount>0' --format 'value(metadata.name,metadata.creationTimestamp)' \
+            --filter 'status.runningCount>0' --format json \
+            | jq -r --arg o "${SWARM_VERIFY_ORIGIN}" '.[] | select([(.spec.template.spec.containers // [])[].env // []
+                | .[] | select(.name == "SWARM_VERIFY_ORIGIN") | .value] | any(. == $o))
+                | [.metadata.name, .metadata.creationTimestamp] | @tsv' \
             | while read -r name created; do
                 if [ -n "${name}" ] && [[ "${created}" > "${STARTED}" ]]; then
                   gcloud run jobs executions cancel "${name}" --region "${REGION}" --project "${PROJECT_ID}" --quiet || true
@@ -595,7 +645,8 @@ jobs:
 
       - name: cancel the executions this job started
         # A cancel stops the client, not the Cloud Run execution (header).
-        # Cancels the swarm-verify executions created since this job started.
+        # Cancels the swarm-verify executions THIS RUN created since this job
+        # started (SWARM_VERIFY_ORIGIN), never an operator's (#1822).
         if: ${{ cancelled() }}
         continue-on-error: true
         env:
@@ -603,7 +654,10 @@ jobs:
         run: |
           [ -n "${STARTED}" ] || exit 0
           gcloud run jobs executions list --job swarm-verify --region "${REGION}" --project "${PROJECT_ID}" \
-            --filter 'status.runningCount>0' --format 'value(metadata.name,metadata.creationTimestamp)' \
+            --filter 'status.runningCount>0' --format json \
+            | jq -r --arg o "${SWARM_VERIFY_ORIGIN}" '.[] | select([(.spec.template.spec.containers // [])[].env // []
+                | .[] | select(.name == "SWARM_VERIFY_ORIGIN") | .value] | any(. == $o))
+                | [.metadata.name, .metadata.creationTimestamp] | @tsv' \
             | while read -r name created; do
                 if [ -n "${name}" ] && [[ "${created}" > "${STARTED}" ]]; then
                   gcloud run jobs executions cancel "${name}" --region "${REGION}" --project "${PROJECT_ID}" --quiet || true
@@ -765,7 +819,8 @@ jobs:
 
       - name: cancel the executions this job started
         # A cancel stops the client, not the Cloud Run execution (header).
-        # Cancels the swarm-verify executions created since this job started.
+        # Cancels the swarm-verify executions THIS RUN created since this job
+        # started (SWARM_VERIFY_ORIGIN), never an operator's (#1822).
         if: ${{ cancelled() }}
         continue-on-error: true
         env:
@@ -773,7 +828,10 @@ jobs:
         run: |
           [ -n "${STARTED}" ] || exit 0
           gcloud run jobs executions list --job swarm-verify --region "${REGION}" --project "${PROJECT_ID}" \
-            --filter 'status.runningCount>0' --format 'value(metadata.name,metadata.creationTimestamp)' \
+            --filter 'status.runningCount>0' --format json \
+            | jq -r --arg o "${SWARM_VERIFY_ORIGIN}" '.[] | select([(.spec.template.spec.containers // [])[].env // []
+                | .[] | select(.name == "SWARM_VERIFY_ORIGIN") | .value] | any(. == $o))
+                | [.metadata.name, .metadata.creationTimestamp] | @tsv' \
             | while read -r name created; do
                 if [ -n "${name}" ] && [[ "${created}" > "${STARTED}" ]]; then
                   gcloud run jobs executions cancel "${name}" --region "${REGION}" --project "${PROJECT_ID}" --quiet || true
