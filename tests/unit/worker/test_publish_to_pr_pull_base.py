@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -110,7 +111,7 @@ def test_a_publish_to_pr_clone_holds_its_base_and_a_merge_base(
     repo = tmp_path / "repo"
 
     assert result.base is not None
-    assert result.base["merge_base"] == fork
+    assert result.base["merge_base"] == fork, result.base.get("error")
     assert result.base["remote_ref"] == "origin/main"
     assert result.base["rounds"] == 2                 # 64 is short of 100; 128 reaches
     assert "origin/main" in result.base["note"] and fork in result.base["note"]
@@ -124,6 +125,41 @@ def test_a_publish_to_pr_clone_holds_its_base_and_a_merge_base(
          "--no-edit", "origin/main")
     # The credential file, had there been one, is gone with the clone's.
     assert not (tmp_path / "private" / ".git-credentials").exists()
+
+
+#: A git that starts automatic maintenance after a fetch, as `GIT_TRACE`
+#: writes it: `maintenance run --auto` (git 2.29 on) or `gc --auto` before.
+_AUTO_MAINTENANCE = re.compile(r"run_command: git (maintenance run|gc) --auto")
+
+
+def test_the_deepen_starts_no_background_maintenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#2922: git 2.56 (CI's runner) ends every fetch with a detached
+    `git maintenance run --auto`, whose `repack --cruft` held or rewrote
+    `.git/shallow` while the next round's fetch deepened it ("shallow file has
+    changed since we read it", "Unable to create '.git/shallow.lock'"): the
+    round failed and the clone ended without its merge base, 5 runs in 200
+    of the test above. The deepen's fetches start no maintenance at all.
+    MUTATION: drop `maintenance.auto=false` from `fetch_pull_base`'s fetch
+    and the trace shows `git maintenance run --auto` after each one."""
+    url, fork = _forge(tmp_path, monkeypatch)
+    trace = tmp_path / "git-trace.log"
+    run_steps = gitops._run_git_steps
+
+    def traced(steps, **kwargs):
+        if str(kwargs.get("label", "")).startswith("git-pull-base-"):
+            kwargs["env"] = {**kwargs["env"], "GIT_TRACE": str(trace)}
+        return run_steps(steps, **kwargs)
+
+    monkeypatch.setattr(gitops, "_run_git_steps", traced)
+    result = _clone(tmp_path, url, pull_base="main")
+
+    assert result.base is not None
+    assert result.base["merge_base"] == fork, result.base.get("error")
+    started = trace.read_text()
+    assert "built-in: git fetch" in started          # the trace saw the deepen's fetches
+    assert not _AUTO_MAINTENANCE.findall(started)
 
 
 def test_a_clone_without_a_pull_base_is_still_one_commit(
