@@ -900,15 +900,16 @@ def test_installer_cidr_asked_when_the_echoes_disagree() -> None:
         preflight.InstallerAddressStep(lambda: gcp, ask).apply(ctx_for(), step.plan(ctx_for()))
 
 
-#: The ADC sign-in preflight runs: Cloud Platform and the two Directory scopes.
-ADC_LOGIN = ["auth", "application-default", "login",
+#: The ADC sign-in preflight runs: Cloud Platform and the two Directory scopes,
+#: with no quota project copied from the laptop's gcloud (issue 2942).
+ADC_LOGIN = ["auth", "application-default", "login", "--disable-quota-project",
              "--scopes=https://www.googleapis.com/auth/cloud-platform,"
              "https://www.googleapis.com/auth/admin.directory.customer.readonly,"
              "https://www.googleapis.com/auth/admin.directory.rolemanagement"]
 CLOUD_PLATFORM_ONLY = frozenset({"https://www.googleapis.com/auth/cloud-platform", "openid"})
 DIRECTORY_SCOPES = frozenset({"https://www.googleapis.com/auth/admin.directory.customer.readonly",
                               "https://www.googleapis.com/auth/admin.directory.rolemanagement"})
-CLOUD_PLATFORM_LOGIN = ["auth", "application-default", "login",
+CLOUD_PLATFORM_LOGIN = ["auth", "application-default", "login", "--disable-quota-project",
                         "--scopes=https://www.googleapis.com/auth/cloud-platform"]
 
 
