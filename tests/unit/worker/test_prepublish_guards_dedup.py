@@ -52,9 +52,14 @@ _IDENT = {"GIT_AUTHOR_NAME": "lane", "GIT_AUTHOR_EMAIL": "lane@example.invalid",
 
 #: The stand-in project python: logs each pytest call to $CALLS, then exits
 #: with the next code in $EXITS (one per line, consumed), or 0. Exit 124 is
-#: what `timeout` returns, so the script reads it as `ran past 540 s`.
+#: what `timeout` returns, so the script reads it as `ran past 540 s`. The
+#: n-th call prints the file $OUTS/<n>, when there is one.
 FAKE_PYTHON = r'''#!/usr/bin/env bash
 printf 'pytest %s\n' "$*" >> "$CALLS"
+n="$(wc -l < "$CALLS" | tr -d ' ')"
+if [[ -n "${OUTS:-}" && -f "$OUTS/$n" ]]; then
+  cat "$OUTS/$n"
+fi
 code=0
 if [[ -s "$EXITS" ]]; then
   code="$(head -n 1 "$EXITS")"
@@ -107,6 +112,7 @@ def lane(tmp_path: Path) -> dict[str, Any]:
     env = {"PATH": ":".join(dirs + ["/usr/bin", "/bin"]), "HOME": str(tmp_path),
            "NO_COLOR": "1", "SWARM_ENV_FILE": str(tmp_path / "no.env"),
            "CALLS": str(tmp_path / "calls"), "EXITS": str(tmp_path / "exits"),
+           "OUTS": str(tmp_path / "outs"),
            prepublish.CLONE_BASE_ENV: base, **_IDENT}
     return {"repo": repo, "base": base, "env": env, "tmp": tmp_path}
 
@@ -355,3 +361,95 @@ def test_the_timeout_reading_covers_the_scripts_line_and_the_runners_kill():
     assert prepublish.guards_parts("run it as 3 commands: scripts/changed-guards.sh "
                                    "--shard 1/3 ... --shard 3/3") == 3
     assert prepublish.guards_parts("[timed out after 600s]") == 2
+
+
+#: More than OUTPUT_TAIL_CHARS of a passing part's own output: 25 lines, the
+#: script's `tail -n 25` of the pytest log, ending as a part's last line does.
+_LONG_PASS = "".join(f"tests/unit/test_long.py::test_case_{i:03d} PASSED {'.' * 140}\n"
+                     for i in range(24)) + "ok part 4 of 4\n"
+
+
+def test_a_failing_part_before_a_long_passing_part_reaches_the_fix_prompt_and_the_pr_section(lane):
+    assert len(_LONG_PASS) > prepublish.OUTPUT_TAIL_CHARS
+    outs = lane["tmp"] / "outs"
+    outs.mkdir()
+    # The full run runs out of time and advises four parts; part 1 then
+    # fails and part 4 passes with a long output (task_7aa1df5f, #2927).
+    (outs / "1").write_text("run it as 4 commands: scripts/changed-guards.sh "
+                            "--shard 1/4 ... --shard 4/4\n")
+    (outs / "2").write_text("FAILED tests/x.py::test_y - assert 1 == 2\n")
+    (outs / "5").write_text(_LONG_PASS)
+    (lane["tmp"] / "exits").write_text("124\n1\n0\n0\n0\n")
+    record = _gate(lane, Turns()).run()
+    calls = _pytest_calls(lane)
+    assert len(calls) == 5, calls  # the timed-out run, then parts 1/4 ... 4/4
+    assert record["failed"] == ["changed-guards"]
+    section = _artifact(lane, prepublish.PR_SECTION_NAME)
+    assert section is not None
+    # MUTATION: joining the parts in part order in `_sharded_guards` lets part
+    # 4's long output push part 1's failure out of clean_output's tail, and
+    # turns this red.
+    assert "FAILED tests/x.py::test_y" in section
+    assert "changed-guards failed" in section
+
+
+def _part_runner(outputs: dict[str, prepublish.Ran]) -> Any:
+    calls: list[list[str]] = []
+
+    def runner(argv: Any, repo: Path, env: Any, timeout: float) -> prepublish.Ran:
+        calls.append(list(argv))
+        return outputs[argv[argv.index("--shard") + 1]]
+    runner.calls = calls  # type: ignore[attr-defined]
+    return runner
+
+
+def test_sharded_guards_puts_the_failing_parts_output_last(tmp_path):
+    runner = _part_runner({
+        "1/4": prepublish.Ran(1, "fail pytest\nFAILED tests/x.py::test_y - assert 1 == 2\n"
+                                 "fail pytest failed (exit 1)\n"),
+        "2/4": prepublish.Ran(0, "ok part 2 of 4\n"),
+        "3/4": prepublish.Ran(0, "ok part 3 of 4\n"),
+        "4/4": prepublish.Ran(0, _LONG_PASS),
+    })
+    run = prepublish._sharded_guards(["bash", prepublish.GUARDS_SCRIPT, "--base", "b"], 4,
+                                     lambda: 3600.0)
+    status, output = run(runner, tmp_path, {}, 600.0)
+    assert len(runner.calls) == 4
+    assert status == prepublish.FAILED
+    # MUTATION: returning the parts in part order turns this red: the long
+    # passing part 4 fills the tail clean_output keeps.
+    assert "FAILED tests/x.py::test_y" in prepublish.clean_output(output, [])
+    # Every passing part is still accounted for, in one line each.
+    for k in (2, 3, 4):
+        assert f"--- part {k}/4 passed ---" in output
+    assert output.rstrip().endswith("fail pytest failed (exit 1)")
+    outcome = prepublish.Outcome(prepublish.GUARDS_CHECK, status, 1.0, ("apps/w/notes.txt",),
+                                 "bash scripts/changed-guards.sh", output=output)
+    # MUTATION: the same ordering defect turns both of these red.
+    assert "FAILED tests/x.py::test_y" in prepublish.fix_prompt([outcome], [])
+    assert "FAILED tests/x.py::test_y" in (prepublish.pr_section(None, [outcome], []) or "")
+
+
+def test_sharded_guards_keeps_a_timed_out_part_readable_and_the_budget_note_last(tmp_path):
+    runner = _part_runner({
+        "1/2": prepublish.Ran(0, _LONG_PASS),
+        "2/2": prepublish.Ran(124, "fail pytest ran past 540 s\n[timed out after 600s]",
+                              timed_out=True),
+    })
+    status, output = prepublish._sharded_guards(["bash", prepublish.GUARDS_SCRIPT], 2,
+                                                lambda: 3600.0)(runner, tmp_path, {}, 600.0)
+    # MUTATION: dropping a timed-out part's output turns this red.
+    assert status == prepublish.FAILED and prepublish.guards_timed_out(output)
+    assert "ran past 540 s" in prepublish.clean_output(output, [])
+
+    left = iter([3600.0, 3600.0, 1.0])
+    runner = _part_runner({
+        "1/3": prepublish.Ran(1, "FAILED tests/x.py::test_y\n"),
+        "2/3": prepublish.Ran(0, _LONG_PASS),
+    })
+    status, output = prepublish._sharded_guards(["bash", prepublish.GUARDS_SCRIPT], 3,
+                                                lambda: next(left))(runner, tmp_path, {}, 600.0)
+    assert status == prepublish.ERROR
+    # MUTATION: dropping the budget note, or putting it before the parts, turns this red.
+    assert output.rstrip().endswith("[the step's budget ran out before part 3 of 3]")
+    assert "FAILED tests/x.py::test_y" in prepublish.clean_output(output, [])
