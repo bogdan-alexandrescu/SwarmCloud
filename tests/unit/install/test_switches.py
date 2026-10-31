@@ -211,24 +211,18 @@ def test_engine_never_reads_an_app_secret() -> None:
     # No module of the installer names a secret-value read (`:access`, `access_secret_version`),
     # but one: `swarm upgrade` reads the App's private key to read the GitHub App as
     # itself (DAYONE-UPGRADE-2, #2885; `verbs/upgrade.py` `_app_key`), held in memory only.
-    # That one read, in that one function, is the only exemption; stage 9's switches above stay
-    # metadata-only.
-    allowed = {(UPGRADE_APP_KEY_READ[0], "_app_key", UPGRADE_APP_KEY_READ[1])}
-    reads: set[tuple[str, str, str]] = set()
+    # That one read is the only exemption; stage 9's switches above stay metadata-only.
     for path in PACKAGE.rglob("*.py"):
-        relative = path.relative_to(PACKAGE).as_posix()
-
-        def visit(node: ast.AST, function: str) -> None:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                function = node.name
-            if isinstance(node, ast.Constant) and isinstance(node.value, str) and ":access" in node.value:
-                reads.add((relative, function, node.value))
+        tree = ast.parse(path.read_text())
+        accesses = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if ":access" in node.value:
+                    accesses.append(node.value)
             if isinstance(node, (ast.Attribute, ast.Name)):
                 name = node.attr if isinstance(node, ast.Attribute) else node.id
-                if "access_secret" in name:
-                    reads.add((relative, function, name))
-            for child in ast.iter_child_nodes(node):
-                visit(child, function)
-
-        visit(ast.parse(path.read_text()), "<module>")
-    assert reads <= allowed, f"reads a secret's value: {sorted(reads - allowed)}"
+                assert "access_secret" not in name, f"{path.name} reads a secret's value"
+        if path.relative_to(PACKAGE).as_posix() == UPGRADE_APP_KEY_READ[0]:
+            assert accesses == [UPGRADE_APP_KEY_READ[1]], f"{path.name} reads a secret's value"
+        else:
+            assert not accesses, f"{path.name} reads a secret's value"
